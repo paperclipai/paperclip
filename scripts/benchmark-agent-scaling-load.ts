@@ -35,7 +35,7 @@ import { randomBytes, randomUUID } from "node:crypto";
 import type { AddressInfo } from "node:net";
 import { monitorEventLoopDelay, performance } from "node:perf_hooks";
 import { createRequire } from "node:module";
-import { agents, companies, createDb, heartbeatRuns, issues, nativeRunFinalizations,
+import { agents, checkpointDb, companies, createDb, heartbeatRuns, issues, livenessDb, nativeRunFinalizations,
   startEmbeddedPostgresTestDatabase } from "../packages/db/src/index.js";
 import { meterDatabaseStatements } from "../server/src/__tests__/helpers/database-statement-meter.js";
 import { createLocalAgentJwt } from "../server/src/agent-auth-jwt.js";
@@ -66,7 +66,10 @@ const round = (value: number, digits = 1) => Number(value.toFixed(digits));
 
 const temporary = await startEmbeddedPostgresTestDatabase("agent-scaling-load-");
 const db = createDb(temporary.connectionString);
-const meter = meterDatabaseStatements(db, temporary.connectionString);
+// Checkpoint saves and lease renewals use their own pools; meter all three.
+const meters = [db, checkpointDb(db), livenessDb(db)].map(client => meterDatabaseStatements(client, temporary.connectionString));
+const meter = { read: () => meters.map(one => one.read()).reduce((sum, one) => ({ statements: sum.statements + one.statements,
+  transactions: sum.transactions + one.transactions, sqlBytes: sum.sqlBytes + one.sqlBytes }), { statements: 0, transactions: 0, sqlBytes: 0 }) };
 const controller = { bootId: randomUUID(), pid: process.pid, processStartedAt: new Date() };
 let server: import("node:http").Server | undefined;
 try {
@@ -97,7 +100,7 @@ try {
     }) as unknown as Parameters<typeof write>[0];
     await write(checkpoint(new Map(records), true));
     fleet.push({ agentId: agent!.id, issueId: issue!.id, runId, leaseOwner, write, records, checkpoint, seq: 0,
-      checkpointTail: Promise.resolve(), token: createLocalAgentJwt(agent!.id, companyId, "process", runId, null)! });
+      checkpointTail: Promise.resolve(), appendTail: Promise.resolve() as Promise<unknown>, token: createLocalAgentJwt(agent!.id, companyId, "process", runId, null)! });
   }
 
   const app = express();
@@ -108,7 +111,16 @@ try {
   const origin = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
 
   type Agent = (typeof fleet)[number];
+  let checkpointFailures = 0, firstCheckpointError = "";
+  // One runner connection delivers a run's events in order, and the server
+  // awaits each append before it reads the next. So deltas and other events
+  // of one agent share one queue and never append at the same time.
   const append = (agent: Agent, eventType: string, bytes: number) => {
+    const queued = agent.appendTail.then(() => appendNow(agent, eventType, bytes));
+    agent.appendTail = queued.catch(() => undefined);
+    return queued;
+  };
+  const appendNow = (agent: Agent, eventType: string, bytes: number) => {
     const seq = ++agent.seq;
     const event = { sourceSeq: seq, eventType, runId: agent.runId, text: randomBytes(Math.ceil(bytes * 0.75)).toString("base64") };
     return appendHeartbeatRunEvent(db, { companyId, agentId: agent.agentId, runId: agent.runId, eventType, stream: "system",
@@ -123,7 +135,10 @@ try {
       const changed = new Map([[`event:${seq}`, JSON.stringify(event)], ["cursor", JSON.stringify({ ackedSourceSeq: seq })]]);
       for (const [key, value] of changed) agent.records.set(key, value);
       // The save is serial per controller and does not block the next frame.
-      agent.checkpointTail = agent.checkpointTail.then(() => agent.write(agent.checkpoint(changed, false)));
+      agent.checkpointTail = agent.checkpointTail.then(() => agent.write(agent.checkpoint(changed, false))).catch(error => {
+        checkpointFailures += 1;
+        firstCheckpointError ||= String((error as Error)?.message ?? error).slice(0, 200);
+      });
     },
     lease: agent => renewNativeSessionExecutionLease({ db, runId: agent.runId, companyId, issueId: agent.issueId,
       leaseOwner: agent.leaseOwner, attempt: 0, controller, leaseTtlMs: 60_000 }),
@@ -137,6 +152,7 @@ try {
   // One warm pass per source, outside the window.
   for (const source of SOURCES) await operations[source](fleet[0]!);
   await fleet[0]!.checkpointTail;
+  assert.equal(checkpointFailures, 0, `checkpoint save failed during warm-up: ${firstCheckpointError}`);
 
   const stats = Object.fromEntries(SOURCES.map(source => [source, { done: 0, failed: 0, late: [] as number[], firstError: "" }])) as
     Record<Source, { done: number; failed: number; late: number[]; firstError: string }>;
@@ -167,7 +183,7 @@ try {
   delay.disable();
   clearInterval(sampler);
   const loop = performance.eventLoopUtilization(loopBefore), cpu = process.cpuUsage(cpuBefore), statementsAfter = meter.read();
-  await Promise.all(fleet.map(agent => agent.checkpointTail.catch(() => undefined)));
+  await Promise.all(fleet.map(agent => agent.checkpointTail));
   const [commitsAfter] = await db.$client.unsafe("select xact_commit::float8 as commits from pg_stat_database where datname = current_database()");
   const seconds = elapsedMs / 1000;
 
@@ -190,11 +206,18 @@ try {
       const stat = stats[source], offered = Math.floor(AGENTS * RATES[source] * SECONDS);
       return [source, { offered, done: stat.done, failed: stat.failed, firstError: stat.firstError || undefined,
         donePerSecond: round(stat.done / seconds), lateMs: { p50: quantile(stat.late, 0.5), p99: quantile(stat.late, 0.99),
-          max: stat.late.length ? round(Math.max(...stat.late)) : null } }];
+          max: stat.late.length ? round(stat.late.reduce((max, value) => Math.max(max, value), -Infinity)) : null } }];
     })),
+    checkpointSaves: { failed: checkpointFailures, firstError: firstCheckpointError || undefined },
   }, null, 2));
 } finally {
+  server?.closeAllConnections();
   server?.close();
-  await db.$client.end({ timeout: 5 }).catch(() => undefined);
+  // The side pools keep the process alive unless they are ended as well. An
+  // end can wait on a connection that is still closing, so it is bounded.
+  await Promise.race([sleep(6_000), Promise.all([db, checkpointDb(db), livenessDb(db)]
+    .map(client => client.$client.end({ timeout: 5 }).catch(() => undefined)))]);
   await temporary.cleanup();
 }
+// Metered sockets and keep-alive HTTP agents can outlive the report.
+process.exit(process.exitCode ?? 0);

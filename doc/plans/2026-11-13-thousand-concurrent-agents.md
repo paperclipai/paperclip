@@ -79,6 +79,14 @@ What it shows:
   saturates sooner.
 - Lease renewal is negligible at 50 agents (about 16 commits/s).
 
+The table predates two corrections to the model: statement totals now include
+the checkpoint and lease pools, and an agent's deltas and other events now
+share one ordered queue, as one runner connection delivers them. The first
+raises the totals of the rows with events or lease renewals; the second removes
+lock waits between an agent's own appends in the "all sources" rows. Measure
+the baseline again, on a quiet machine, before a fix uses these rows as its
+"before".
+
 Limits: the machine was under other load (load average 13–20), so absolute
 figures are noisy; an earlier pass under heavier load finished fewer deltas.
 Raw output is not kept in the repository.
