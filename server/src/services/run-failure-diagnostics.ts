@@ -380,7 +380,10 @@ export function collectRunFailureDiagnostics(run: Run, options: RunFailureReport
       break;
     }
     if (typeof error !== "object") break;
-    const acquisition = options.phase === "setup" && run.errorCode === "setup_failed"
+    // A lease acquisition timeout is retried as a transient provider failure;
+    // it needs the same phase and provider state as a plain setup failure.
+    const acquisition = options.phase === "setup" && (run.errorCode === "setup_failed"
+      || run.errorCode === "environment_provider_unavailable")
       ? getEnvironmentAcquisitionDiagnostic(error, run) : null;
     if (acquisition && execution.environmentAcquisitionPhase === undefined) {
       execution.environmentAcquisitionPhase = acquisition.phase;
@@ -430,7 +433,7 @@ export function sanitizeRunFailureText(input: string, limit: number): string {
   const normalized = input
     .replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, "")
     .replace(/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/g, "")
-    .replace(/[\ud800-\udfff]/gu, "\ufffd");
+    .replace(/[\ud800-\udfff]/gu, "�");
   const clean = redactSensitiveText(redactDiagnosticText(redactCurrentUserText(normalized)));
   if (clean.length <= limit) return clean;
   const suffix = "\n[truncated]";
