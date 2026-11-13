@@ -75,7 +75,7 @@ describe("tool call progress matching", () => {
     expect([...store.entries()].map((entry) => entry.progress)).toEqual([3]);
     store.put(snapshot({ progress: 3, done: true, updatedAt: "2026-11-13T10:00:06.000Z" }));
     store.put(snapshot({ progress: 4, updatedAt: "2026-11-13T10:00:09.000Z" }));
-    expect([...store.entries()][0]!.done).toBe(true);
+    expect([...store.entries()]).toEqual([]);
     for (let i = 0; i < 80; i++) store.put(snapshot({ invocationId: `call-${i + 2}` }));
     expect([...store.entries()]).toHaveLength(50);
   });
@@ -87,22 +87,24 @@ describe("tool call progress matching", () => {
     // The read reports the finished call as done and does not list the other one yet.
     for (const entry of [snapshot({ invocationId: "finished-while-hidden", done: true, updatedAt: "2026-11-13T10:00:09.000Z" })]) store.put(entry);
     expect(pickToolCallProgress(store.entries(), tool(), "run-1")?.invocationId).toBe("not-saved-yet");
-    expect([...store.entries()].find((entry) => entry.invocationId === "finished-while-hidden")?.done).toBe(true);
+    expect([...store.entries()].map((entry) => entry.invocationId)).toEqual(["not-saved-yet"]);
   });
 
   it("keeps running calls when a read reports many finished ones", () => {
     const store = new ToolCallProgressStore();
     for (let i = 0; i < 50; i++) store.put(snapshot({ invocationId: `running-${i}` }));
-    // 50 finished calls this chat never saw, then one it did.
     for (let i = 0; i < 50; i++) store.put(snapshot({ invocationId: `history-${i}`, done: true }));
-    store.put(snapshot({ invocationId: "running-0", done: true, updatedAt: "2026-11-13T10:00:09.000Z" }));
-    const entries = [...store.entries()];
-    expect(entries).toHaveLength(50);
-    expect(entries.filter((entry) => !entry.done)).toHaveLength(49);
-    expect(entries.some((entry) => entry.invocationId.startsWith("history-"))).toBe(false);
-    // Over the limit, the finished call goes before any running one.
-    store.put(snapshot({ invocationId: "running-new" }));
-    expect([...store.entries()].filter((entry) => !entry.done)).toHaveLength(50);
+    expect([...store.entries()]).toHaveLength(50);
+    expect([...store.entries()].every((entry) => entry.invocationId.startsWith("running-") && !entry.done)).toBe(true);
+  });
+
+  it("a call's live end before a delayed read listing it as running keeps it ended", () => {
+    const store = new ToolCallProgressStore();
+    // Opened near the end: the live end arrives first, then the read made just before it.
+    store.put(snapshot({ invocationId: "ending", done: true, updatedAt: "2026-11-13T10:00:10.000Z" }));
+    store.put(snapshot({ invocationId: "ending", progress: 9, total: 10, updatedAt: "2026-11-13T10:00:09.000Z" }));
+    expect([...store.entries()]).toEqual([]);
+    expect(pickToolCallProgress(store.entries(), tool(), "run-1")).toBeNull();
   });
 
   it("reads live events defensively", () => {

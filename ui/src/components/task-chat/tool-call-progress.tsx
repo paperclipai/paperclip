@@ -79,8 +79,10 @@ export function pickToolCallProgress(
   return best;
 }
 
-/** Calls kept per chat; the oldest are forgotten first. */
+/** Running calls kept per chat; the oldest are forgotten first. */
 const MAX_TRACKED_CALLS = 50;
+/** Finished call ids remembered per chat, so a delayed read cannot revive one. */
+const MAX_REMEMBERED_FINISHED = 500;
 
 /**
  * The chat's known tool call progress. Rows subscribe only while running, so a
@@ -88,6 +90,7 @@ const MAX_TRACKED_CALLS = 50;
  */
 export class ToolCallProgressStore {
   #entries = new Map<string, ToolCallProgressSnapshot>();
+  #finished = new Set<string>();
   #listeners = new Set<() => void>();
   #onWanted: () => void;
   constructor(onWanted: () => void = () => undefined) { this.#onWanted = onWanted; }
@@ -98,19 +101,24 @@ export class ToolCallProgressStore {
   /** A running row asks once for the saved progress (a reload mid-call). */
   want() { this.#onWanted(); }
   entries() { return this.#entries.values(); }
-  /** Keeps the newer of what is known; a finished call stays finished. */
+  /**
+   * Keeps the newer update of each running call. A finished call is removed
+   * and remembered (bounded, apart from shown progress), so a later "running"
+   * snapshot of it, from a delayed read, never brings its progress back.
+   */
   put(snapshot: ToolCallProgressSnapshot) {
-    const previous = this.#entries.get(snapshot.invocationId);
-    // The end of a call this chat never saw has nothing to clear.
-    if (!previous && snapshot.done) return;
-    if (previous && (previous.done || (!snapshot.done && previous.updatedAt > snapshot.updatedAt))) return;
-    this.#entries.delete(snapshot.invocationId);
-    this.#entries.set(snapshot.invocationId, snapshot);
-    // Over the limit, forget finished calls first, then the oldest running ones.
-    while (this.#entries.size > MAX_TRACKED_CALLS) {
-      let evict: string | undefined;
-      for (const [id, entry] of this.#entries) if (entry.done) { evict = id; break; }
-      this.#entries.delete(evict ?? this.#entries.keys().next().value!);
+    const id = snapshot.invocationId;
+    if (this.#finished.has(id)) return;
+    if (snapshot.done) {
+      this.#finished.add(id);
+      while (this.#finished.size > MAX_REMEMBERED_FINISHED) this.#finished.delete(this.#finished.values().next().value!);
+      if (!this.#entries.delete(id)) return;
+    } else {
+      const previous = this.#entries.get(id);
+      if (previous && previous.updatedAt > snapshot.updatedAt) return;
+      this.#entries.delete(id);
+      this.#entries.set(id, snapshot);
+      while (this.#entries.size > MAX_TRACKED_CALLS) this.#entries.delete(this.#entries.keys().next().value!);
     }
     for (const listener of this.#listeners) listener();
   }
