@@ -384,15 +384,25 @@ describe("executeNativeSession recovery", () => {
     }, () => commitReleased);
     let settled = false;
     const execution = executeNativeSession({ input: preparedInput(), backend: f.backend, controlPlane: f.port,
-      runnerInstanceId: "runner-recovery", controlPlaneInstanceId: "control-recovery" }).finally(() => { settled = true; });
+      runnerInstanceId: "runner-recovery", controlPlaneInstanceId: "control-recovery" }).finally(() => { settled = true; f.log.push("settled"); });
     void execution.catch(() => undefined);
     await vi.waitFor(() => expect(f.log).toContain("flush"));
-    await new Promise(resolve => setTimeout(resolve, 20));
     // The delta's commit still runs, so the turn has not settled.
     expect(settled).toBe(false);
     releaseCommit();
     await expect(execution).rejects.toThrow("provider stream broke");
-    expect(f.log).toContain("committed:1");
+    expect(f.log.indexOf("committed:1")).toBeLessThan(f.log.indexOf("settled"));
+  });
+
+  it("fails the turn within the cleanup bound when a pending delta append never settles", async () => {
+    const f = batchingDeltaFixture(async function* () {
+      yield streamedDelta(1);
+      throw new Error("provider stream broke");
+    }, () => new Promise<void>(() => {}));
+    // No turn timeout: only the bounded cleanup can end this turn.
+    await expect(executeNativeSession({ input: preparedInput(), backend: f.backend, controlPlane: f.port,
+      runnerInstanceId: "runner-recovery", controlPlaneInstanceId: "control-recovery" })).rejects.toThrow("provider stream broke");
+    expect(f.log).not.toContain("committed:1");
   });
 
   it.each([false, true].flatMap(recovered => [

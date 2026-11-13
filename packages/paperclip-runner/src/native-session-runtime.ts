@@ -1671,6 +1671,9 @@ async function consumeTurn(
       }
     }
   })();
+  // The race below sees the consumer's own outcome, so a failure reaches abort
+  // and provider cancellation at once. Teardown waits, within its bound, for
+  // the consumer together with its pending delta appends.
   const consumer = consumerBody.finally(joinOutstandingDeltas);
   // A timeout can win the race while an iterator is still waiting for data.
   // Observe any later consumer rejection so it cannot become process-fatal.
@@ -1678,7 +1681,7 @@ async function consumeTurn(
   let consumptionFailed = false;
   try {
     return await Promise.race([
-      consumer,
+      consumerBody,
       new Promise<never>((_, reject) => {
         if (timeoutMs <= 0) return;
         // Node timers overflow above ~24.8 days. Keep explicit long deadlines
