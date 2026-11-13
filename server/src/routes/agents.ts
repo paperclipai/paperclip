@@ -4378,6 +4378,10 @@ export function agentRoutes(
       );
     }
 
+    // A rollback restores the revision's env and environment (null when it had none).
+    const rollbackWarnings = await checkAgentProtectedEnvironmentKeys(db, rollbackAdapterConfig,
+      typeof rollbackConfig.defaultEnvironmentId === "string" ? rollbackConfig.defaultEnvironmentId : null);
+
     const actor = getActorInfo(req);
     const updated = await svc.rollbackConfigRevision(id, revisionId, {
       agentId: actor.agentId,
@@ -4401,7 +4405,7 @@ export function agentRoutes(
       details: { revisionId },
     });
 
-    res.json(redactAgentRowForResponse(updated));
+    res.json({ ...redactAgentRowForResponse(updated), ...(rollbackWarnings.length ? { configurationWarnings: rollbackWarnings } : {}) });
   });
 
   router.get("/agents/:id/runtime-state", async (req, res) => {

@@ -913,6 +913,8 @@ describe("plugin task configured environment", () => {
     const submit = task.mock.calls.find(([op]) => op.kind === "submit")?.[0];
     if (version === 1) expect(submit).toMatchObject({ configuredEnvironment });
     else expect(submit).not.toHaveProperty("configuredEnvironment");
+    // Core retires a warm Runner that started without the variables once the provider supports them.
+    expect(owner.configuredEnvironmentDelivered()).toBe(version === 1);
     expect(task.mock.calls.find(([op]) => op.kind === "prepare")?.[0]).not.toHaveProperty("configuredEnvironment");
   });
 
@@ -926,5 +928,7 @@ describe("plugin task configured environment", () => {
       kind: "resume", identity: requirements.identity, bootstrapTicket: "transient-ticket",
       ...(sessionHandoff ? { configuredEnvironment } : {}),
     }, { expectedTaskId: "task" });
+    // An adopted Runner's environment is unknown unless a handoff just started it.
+    expect(owner.configuredEnvironmentDelivered()).toBe(sessionHandoff ? true : undefined);
   });
 });

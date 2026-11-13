@@ -11923,6 +11923,10 @@ async function executePaperclipNativeSessionAttempt(
         entry.closeOnReleaseReason !== undefined ||
         entry.configDigest !== warmConfigDigest ||
         !canReuseNativeProcess(input, entry.processConfigDigest) ||
+        // The provider now accepts configured variables, but this Runner started without them.
+        (entry.pluginTaskId !== undefined && pluginTaskDescription?.configuredEnvironmentVersion === 1
+          && pluginTaskSessionOwners.get(entry.session)?.configuredEnvironmentDelivered() === false
+          && Object.keys(pluginTaskConfiguredEnvironment(input.runnerEnvironment)).length > 0) ||
         Boolean(entry.githubAccess) !== needsCoreGitHubAccess(input) ||
         entry.githubAccess?.ready === false ||
         (entry.githubAccess !== undefined && entry.githubAccess.duplexRequested !== adapterExecutionTargetEnablesSandboxDuplexBridge(input.runnerExecutionTarget))

@@ -91,6 +91,10 @@ export function createPluginRunnerTaskOwner(input: {
   // them, so Core starts a new task instead of a warm resume.
   const configuredEnvironmentFields = (launchesRunner: boolean) =>
     input.configuredEnvironmentVersion === 1 && launchesRunner ? { configuredEnvironment: { ...input.configuredEnvironment } } : {};
+  // Whether this owner's Runner started with the configured environment. Unknown
+  // for an adopted Runner. A provider that gains the capability later cannot add
+  // variables to a Runner that is already running.
+  let configuredEnvironmentDelivered: boolean | undefined = input.adoptIdentity ? undefined : false;
   const call = async (operation: PluginEnvironmentTaskOperation) => {
     const phase = ({ prepare: "execution.plugin_prepare", check_project_auth: "execution.plugin_project_auth",
       submit: "execution.plugin_submit", connection: "execution.plugin_connection" } as const)[operation.kind as "prepare" | "check_project_auth" | "submit" | "connection"];
@@ -226,6 +230,7 @@ export function createPluginRunnerTaskOwner(input: {
     });
     launchIdentity = native.identity;
     launched = true;
+    configuredEnvironmentDelivered = "configuredEnvironment" in operation;
     const child: RunnerProcessHandle["child"] = { exitCode: null, signalCode: null,
       kill: () => {
         stopRequested = true;
@@ -438,6 +443,8 @@ export function createPluginRunnerTaskOwner(input: {
     }));
     requireReleaseResume();
     if (result.kind !== "resume") throw new Error("Plugin Runner resume result unavailable");
+    // A handoff starts a new Runner with the variables it was sent.
+    if (result.outcome === "resumed" && input.sessionHandoff) configuredEnvironmentDelivered = input.configuredEnvironmentVersion === 1;
     if (result.outcome === "unavailable") {
       const state = await call({ kind: "status" }).catch(() => undefined);
       retiredBeforeClaim = state?.kind === "status" && state.executionStopped === true && state.sessionStateAvailable === true;
@@ -471,6 +478,7 @@ export function createPluginRunnerTaskOwner(input: {
     // stop request. Completion also proves credential/writeback obligations ran.
     isRetired: () => stoppedState?.executionStopped === true && completed && !detached,
     retiredBeforeClaim: () => retiredBeforeClaim,
+    configuredEnvironmentDelivered: () => configuredEnvironmentDelivered,
     rebind(next: typeof input) {
       if (!launched || stopRequested || stoppedState || detached || next.taskId !== taskId || next.harness !== input.harness ||
           input.accountIdentity !== next.accountIdentity || input.credentialIdentity !== next.credentialIdentity ||
