@@ -3679,7 +3679,10 @@ mod tests {
             }}),
         );
         assert_eq!(served[0].payload["upstreamProvider"], "Novita");
-        assert_eq!(served[0].payload["providerRequestId"], "gen-1762981234-AbCdEfGh");
+        assert_eq!(
+            served[0].payload["providerRequestId"],
+            "gen-1762981234-AbCdEfGh"
+        );
 
         let unnamed = normalize_codex_notification(
             "thread/tokenUsage/updated",

@@ -708,6 +708,11 @@ class OpenCodeHarnessSession implements HarnessSession {
     this.#reasoningEchoPartIds.clear();
     this.#completedTextParts.length = 0;
     this.#outputLimitedMessageIds.clear();
+    this.#upstreamServed = null;
+    if (this.#usage) {
+      const { upstreamProvider: _upstreamProvider, providerRequestId: _providerRequestId, ...usage } = this.#usage;
+      this.#usage = usage;
+    }
     // `#terminalTurns` clears here for its own persisted-snapshot bookkeeping.
     // The late-frame gate in `#emit` does not depend on this map: it compares
     // against `#activeTurnId` directly, so a frame for the just-finished turn
@@ -1195,7 +1200,7 @@ class OpenCodeHarnessSession implements HarnessSession {
     );
   }
 
-  observeUpstreamServed(served: UpstreamServed): void {
+  observeUpstreamServed(served: UpstreamServed | null): void {
     if (!this.#closed) this.#upstreamServed = served;
   }
 
@@ -2450,7 +2455,7 @@ class OpenCodeHarnessSession implements HarnessSession {
 }
 
 /** Retain the reusable gateway key in the runner; the harness gets a session-scoped capability. */
-async function startOpenCodeProviderProxy(baseUrl: string, key: string, model: string, environment: NodeJS.ProcessEnv, onServed?: (served: UpstreamServed) => void) {
+async function startOpenCodeProviderProxy(baseUrl: string, key: string, model: string, environment: NodeJS.ProcessEnv, onServed?: (served: UpstreamServed | null) => void) {
   const upstreamUrl = new URL(`${baseUrl.replace(/\/+$/, "")}/chat/completions`);
   const token = randomBytes(32).toString("base64url");
   // Agent-local settings keep one runtime's transport configuration out of other sessions.
@@ -2506,6 +2511,7 @@ async function startOpenCodeProviderProxy(baseUrl: string, key: string, model: s
       // Keep OpenCode's unreadable-media notice attributed to the tool result
       // instead of a synthetic user message the model mistakes for the person.
       if (attributeUnsupportedToolMedia(payload)) body = Buffer.from(JSON.stringify(payload), "utf8");
+      try { onServed?.(null); } catch { /* Recording never affects the request. */ }
       const upstream = await new Promise<IncomingMessage>((resolve, reject) => {
         const outgoing = (upstreamUrl.protocol === "https:" ? requestHttps : requestHttp)(upstreamUrl, {
           method: "POST",
@@ -2565,7 +2571,7 @@ async function startRuntime(input: {
   cwd: string;
   trace: ProviderTraceFileSink | null;
   onRejectedCall?: OpenCodeMcpBridgeOptions["onRejectedCall"];
-  onUpstreamServed?: (served: UpstreamServed) => void;
+  onUpstreamServed?: (served: UpstreamServed | null) => void;
   dispatch: (call: {
     tool: string;
     callId: string;

@@ -989,6 +989,11 @@ in `payload.usage`:
 - `providerRequestId`: that call's OpenRouter generation ID, such as
   `gen-1762981234-AbCdEfGh`.
 
+The proxy clears the recorded host when each new model request starts, and a
+session clears it when it attaches another run. A call whose host the proxy
+could not read therefore carries neither field. It never inherits an earlier
+call's or an earlier run's values.
+
 The runner's internal `usage.reported` event carries the same values, using its
 existing `providerRequestId` field and an optional `upstreamProvider` field.
 The run's `usageJson.providerRequestId` and its cost event name the first
