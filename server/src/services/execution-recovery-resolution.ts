@@ -378,8 +378,25 @@ export async function deliverReconciledExecutions(
   const readPendingPage = async () => {
     const companies = fullCompanies();
     const heldBound = new Date(Date.now() - RECOVERY_CONTINUATION_MAX_HOLD_MS).toISOString();
-    const rows = await db
-      .select({ action: issueRecoveryActions })
+    const pastBound = sql`${heldSince} <= ${heldBound}::timestamptz`;
+    const priority = [
+      sql`${pastBound} desc`,
+      sql`case when ${pastBound} then ${heldSince} end asc nulls last`,
+      sql`${sourceRun.finishedAt} desc nulls last`,
+      sql`${issueRecoveryActions.updatedAt} asc`,
+    ];
+    const candidates = db
+      .select({
+        id: issueRecoveryActions.id,
+        pastBound: sql<boolean>`${pastBound}`.as("past_bound"),
+        heldAt: sql<Date | null>`case when ${pastBound} then ${heldSince} end`.as("held_at"),
+        sourceFinishedAt: sql<Date | null>`${sourceRun.finishedAt}`.as("source_finished_at"),
+        actionUpdatedAt: sql<Date>`${issueRecoveryActions.updatedAt}`.as("action_updated_at"),
+        agentRank: sql<number>`row_number() over (
+          partition by coalesce(${issueRecoveryActions.returnOwnerAgentId}::text, ${issueRecoveryActions.id}::text)
+          order by ${issueRecoveryActions.evidence}->>'continuationDeliveryAttemptedAt' asc nulls first, ${sql.join(priority, sql`, `)})`
+          .as("agent_rank"),
+      })
       .from(issueRecoveryActions)
       .leftJoin(sourceRun, and(
         eq(sourceRun.companyId, issueRecoveryActions.companyId),
@@ -392,22 +409,37 @@ export async function deliverReconciledExecutions(
           seenActionIds.size ? not(inArray(issueRecoveryActions.id, [...seenActionIds])) : undefined,
           seenAgentIds.size ? sql`coalesce(${issueRecoveryActions.returnOwnerAgentId}::text, '') <> all(${sql.param([...seenAgentIds])}::text[])` : undefined,
           companies.length ? not(inArray(issueRecoveryActions.companyId, companies)) : undefined,
-          sql`(${heldSince} <= ${heldBound}::timestamptz or not exists (select 1 from ${heartbeatRuns} queued_recovery
+          sql`(${pastBound} or not exists (select 1 from ${heartbeatRuns} queued_recovery
             where queued_recovery.company_id = ${issueRecoveryActions.companyId}
               and queued_recovery.agent_id = ${issueRecoveryActions.returnOwnerAgentId}
               and queued_recovery.status = 'queued'
               and queued_recovery.context_snapshot->>'wakeReason' in (${sql.join(recoveryReasons.map(reason => sql`${reason}`), sql`, `)})))`,
         ),
       )
+      .as("continuation_candidates");
+    const rows = await db
+      .select({ action: issueRecoveryActions })
+      .from(candidates)
+      .innerJoin(issueRecoveryActions, eq(issueRecoveryActions.id, candidates.id))
+      .where(eq(candidates.agentRank, 1))
       .orderBy(
-        sql`${heldSince} <= ${heldBound}::timestamptz desc`,
-        sql`case when ${heldSince} <= ${heldBound}::timestamptz then ${heldSince} end asc nulls last`,
-        sql`${sourceRun.finishedAt} desc nulls last`,
-        asc(issueRecoveryActions.updatedAt),
+        sql`${candidates.pastBound} desc`,
+        sql`${candidates.heldAt} asc nulls last`,
+        sql`${candidates.sourceFinishedAt} desc nulls last`,
+        sql`${candidates.actionUpdatedAt} asc`,
       )
       .limit(25);
     return rows.map(row => row.action);
   };
+  const deferRefusedContinuation = (action: typeof issueRecoveryActions.$inferSelect) => db.update(issueRecoveryActions)
+    .set({ evidence: sql`${issueRecoveryActions.evidence} || ${JSON.stringify(
+      { continuationDeliveryAttemptedAt: new Date().toISOString() })}::jsonb` })
+    .where(and(
+      eq(issueRecoveryActions.companyId, action.companyId),
+      eq(issueRecoveryActions.id, action.id),
+      eq(issueRecoveryActions.status, "resolved"),
+      sql`${issueRecoveryActions.evidence}->>'continuationDelivery' = 'pending'`,
+    ));
   const agentHasRoom = async (action: typeof issueRecoveryActions.$inferSelect, agentId: string) => {
     if ((admittedByCompany.get(action.companyId) ?? 0) >= RECOVERY_CONTINUATIONS_PER_COMPANY_PER_PASS) return false;
     const [agent] = await db.select().from(agents).where(and(eq(agents.companyId, action.companyId), eq(agents.id, agentId)));
@@ -501,8 +533,11 @@ export async function deliverReconciledExecutions(
               ? { freshContinuationIsolation: action.id } : {}),
           },
         });
-        if (!run) continue;
         seenAgentIds.add(action.returnOwnerAgentId);
+        if (!run) {
+          await deferRefusedContinuation(action);
+          continue;
+        }
         admittedByCompany.set(action.companyId, (admittedByCompany.get(action.companyId) ?? 0) + 1);
         await db.transaction(async (tx) => {
           await tx
@@ -532,6 +567,8 @@ export async function deliverReconciledExecutions(
             delivery: "delivered", continuationRunId: run.id });
         });
       } catch {
+        if (action.returnOwnerAgentId) seenAgentIds.add(action.returnOwnerAgentId);
+        await deferRefusedContinuation(action).catch(() => undefined);
         logger.warn(
           { recoveryActionId: action.id },
           "Reconciled execution continuation remains pending for retry",

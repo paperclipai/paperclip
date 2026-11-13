@@ -335,9 +335,37 @@ suite("recovery wake herd", () => {
     const wake = vi.fn(async (wakeAgentId: string, opts: { contextSnapshot: Record<string, unknown> }) =>
       stuckIds.has(String(opts.contextSnapshot.recoveryActionId)) ? null : created(wakeAgentId, opts));
     await deliverReconciledExecutions(db, wake as never);
+    expect(created).not.toHaveBeenCalled();
+    expect(await deliveryOf(waiting.action.id)).toBe("pending");
+    await deliverReconciledExecutions(db, wake as never);
     expect(created).toHaveBeenCalledTimes(1);
     expect(await deliveryOf(waiting.action.id)).toBe("delivered");
   }, 60_000);
+
+  it("delivers another agent's continuation in one pass while one agent refuses a backlog of more than 200", async () => {
+    const refusingAgent = await seedCompany(1);
+    const heldSince = new Date(Date.now() - 3 * 60 * 60_000).toISOString();
+    const backlog = await db.insert(issues).values(Array.from({ length: 210 }, () => ({ companyId, title: "Continue the work",
+      status: "todo" as const, assigneeAgentId: refusingAgent }))).returning();
+    await db.insert(issueRecoveryActions).values(backlog.map(issue => {
+      const runId = randomUUID();
+      return { companyId, sourceIssueId: issue.id, kind: "active_run_watchdog" as const, status: "resolved" as const,
+        outcome: "handed_back" as const, resolvedAt: new Date(heldSince), ownerType: "board" as const, returnOwnerAgentId: refusingAgent,
+        cause: "legacy_execution_requires_reconciliation", fingerprint: `legacy-execution:${runId}`, nextAction: "Continue the task.",
+        attemptCount: 1, evidence: { runId, continuationDelivery: "pending",
+          freshContinuation: { schema: "paperclip.fresh-continuation.v1", reason: "exact_resumption_unavailable", recordedAt: heldSince },
+          executionReconciliation: { runId, observedOutcome: "unknown", disposition: "continue_fresh",
+            actorId: "execution-recovery", recordedAt: heldSince } } };
+    }));
+    const healthy = await pendingContinuation(await addAgent(1), 30);
+    const created = fakeWake();
+    const wake = vi.fn(async (wakeAgentId: string, opts: { contextSnapshot: Record<string, unknown> }) =>
+      wakeAgentId === refusingAgent ? null : created(wakeAgentId, opts));
+    await deliverReconciledExecutions(db, wake as never);
+    expect(wake.mock.calls.filter(call => call[0] === refusingAgent)).toHaveLength(1);
+    expect(created).toHaveBeenCalledTimes(1);
+    expect(await deliveryOf(healthy.action.id)).toBe("delivered");
+  }, 120_000);
 
   it("does not show a task as working when its continuation is pending past the delivery bound and nothing runs", async () => {
     const agentId = await seedCompany(1);
