@@ -9,6 +9,7 @@ import type * as durableControlPlane from "../control-plane/durable-prp-control-
 import type { DurablePrpControlPlane } from "../control-plane/durable-prp-control-plane.js";
 import { CodexAppServerDriver, codexSemanticToolSpecs } from "../drivers/codex/codex-app-server-driver.js";
 import { createCapabilityRunnerdCodexTransport } from "./runnerd-codex-transport.js";
+import { createCodexTaskEnvelope } from "../contracts/codex.js";
 import { defaultCapabilityRunnerdBinary, expectTurnStarted, fakeCodex, fakeCodexArgs } from "../../test/support/runnerd-transport.js";
 
 function processState(pid: number): "alive" | "gone" {
@@ -364,7 +365,10 @@ async function recoveryEndedWhileAdoptedRunnerHangs(abortReason: Error, recovery
       },
     });
     adopted.transport.setServerRequestHandler(async () => ({ success: true, contentItems: [] }));
-    const driver = new CodexAppServerDriver({ transportFactory: () => adopted!.transport });
+    const driver = new CodexAppServerDriver({
+      taskEnvelope: createCodexTaskEnvelope({ objective: "Keep this task active.", contractRevision: "1", criteria: [{ id: "objective", requirement: "Deliver the result." }], constraints: [] }),
+      transportFactory: () => adopted!.transport,
+    });
     const controller = new AbortController();
     const recovery = driver.recoverSession({
       driverKind: "codex", driverSessionId: String(thread.id), providerSessionId: String(thread.sessionId),
