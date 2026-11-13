@@ -75,8 +75,8 @@ fn a_quiet_completed_claude_turn_keeps_its_provider_for_the_next_turns() {
 }
 
 #[test]
-fn live_or_unknown_background_work_restarts_at_the_turn_end_like_today() {
-    for mode in ["live", "", "malformed"] {
+fn unknown_background_work_restarts_at_the_turn_end_like_today() {
+    for mode in ["", "malformed"] {
         let mut harness = Harness::new();
         harness.fixture.background(mode);
         let pid = harness.opened["processId"].clone();
@@ -225,5 +225,356 @@ fn a_runner_restart_after_a_kept_quiet_provider_resumes_in_a_fresh_process() {
         2,
         "the resumed quiet generation is kept for the next turn"
     );
+    harness.executor.shutdown().unwrap();
+}
+
+fn complete_turn_accepting_provider_turns(harness: &mut Harness, turn: &str) -> Vec<Value> {
+    let started = harness.execute(
+        "turn.start",
+        json!({"turnId": turn, "text": "Complete the work.", "providerStartedTurns": true}),
+    );
+    let seen = started
+        .events
+        .iter()
+        .map(|(kind, _, payload)| json!({"type":kind,"payload":payload}))
+        .collect::<Vec<_>>();
+    drain_until(harness, seen, "turn.completed")
+}
+
+fn drain_until(harness: &mut Harness, mut seen: Vec<Value>, kind: &str) -> Vec<Value> {
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while !seen.iter().any(|event| event["type"] == kind) {
+        assert!(Instant::now() < deadline, "expected {kind}: {seen:?}");
+        seen.extend(harness.drain());
+    }
+    seen
+}
+
+#[test]
+fn live_shells_at_a_completed_claude_turn_keep_the_provider_and_refuse_park() {
+    let mut harness = Harness::new();
+    harness
+        .fixture
+        .background("live provider-turn provider-turn-hold");
+    let pid = harness.opened["processId"].clone();
+    let events = complete_turn_accepting_provider_turns(&mut harness, "first");
+    let completed = events
+        .iter()
+        .find(|event| event["type"] == "turn.completed")
+        .unwrap();
+    assert_eq!(completed["payload"]["awaitingProviderTurn"], json!(true));
+    assert!(!events.iter().any(|event| event["type"] == "run.terminal"));
+    let before = harness.fixture.journal().len();
+    harness.executor.prepare_next_turn().unwrap();
+    assert_eq!(
+        commands_after(&harness.fixture.journal(), before),
+        Vec::<String>::new()
+    );
+    assert_eq!(live_providers(&harness), [pid.clone()]);
+    assert!(!harness.executor.host_park_ready().unwrap());
+
+    let (next, _) = run_turn(&mut harness, "second");
+    assert!(
+        replaced(&next),
+        "a controller turn restarts the awaited provider first"
+    );
+    assert!(!alive(&pid));
+    harness.executor.shutdown().unwrap();
+    assert_eq!(live_providers(&harness), Vec::<Value>::new());
+}
+
+#[test]
+fn the_provider_started_turn_reaches_the_controller_as_ordinary_turn_events() {
+    let mut harness = Harness::new();
+    harness.fixture.background("live provider-turn");
+    let pid = harness.opened["processId"].clone();
+    let first = complete_turn_accepting_provider_turns(&mut harness, "first");
+    let events = drain_until(&mut harness, first, "run.terminal");
+    let kinds = events
+        .iter()
+        .map(|event| event["type"].as_str().unwrap().to_owned())
+        .collect::<Vec<_>>();
+    let first_completed = kinds
+        .iter()
+        .position(|kind| kind == "turn.completed")
+        .unwrap();
+    let provider_started = events
+        .iter()
+        .position(|event| {
+            event["type"] == "turn.started" && event["payload"]["origin"] == "provider"
+        })
+        .expect("provider-started turn");
+    assert!(first_completed < provider_started);
+    assert_eq!(
+        events[provider_started]["payload"]["providerTurnId"],
+        json!("provider-1")
+    );
+    let provider_completed = events
+        .iter()
+        .rposition(|event| event["type"] == "turn.completed")
+        .unwrap();
+    assert!(provider_started < provider_completed);
+    assert_eq!(
+        events[provider_completed]["payload"]["providerTurnId"],
+        json!("provider-1")
+    );
+    assert!(events[provider_completed]["payload"]
+        .get("awaitingProviderTurn")
+        .is_none());
+    assert!(events[provider_started..provider_completed]
+        .iter()
+        .any(|event| event["type"] == "usage.reported"));
+    let run_terminal = kinds
+        .iter()
+        .position(|kind| kind == "run.terminal")
+        .unwrap();
+    assert!(run_terminal > provider_completed);
+    assert_eq!(
+        kinds.iter().filter(|kind| *kind == "run.terminal").count(),
+        1
+    );
+    harness.executor.prepare_next_turn().unwrap();
+    assert!(harness.executor.host_park_ready().unwrap());
+    assert_eq!(live_providers(&harness).len(), 1);
+    assert!(!alive(&pid) || live_providers(&harness) == [pid.clone()]);
+    harness.executor.shutdown().unwrap();
+    assert_eq!(live_providers(&harness), Vec::<Value>::new());
+}
+
+#[test]
+fn a_runner_restart_while_awaiting_resumes_like_today() {
+    let mut harness = Harness::new();
+    harness
+        .fixture
+        .background("live provider-turn provider-turn-hold");
+    let pid = harness.opened["processId"].clone();
+    complete_turn_accepting_provider_turns(&mut harness, "first");
+    harness.executor.prepare_next_turn().unwrap();
+    assert_eq!(live_providers(&harness), [pid.clone()]);
+    harness.executor.shutdown().unwrap();
+    assert!(!alive(&pid));
+    harness.executor =
+        NativeProviderCommandExecutor::with_runner_config(&harness.fixture.0, &harness.config);
+    harness.sequence = 90;
+    harness.fixture.background("quiet");
+    let resumed = harness.drain();
+    assert_eq!(
+        resumed
+            .iter()
+            .filter(|event| event["type"] == "run.terminal")
+            .count(),
+        1,
+        "{resumed:?}"
+    );
+    let (events, _) = run_turn(&mut harness, "second");
+    assert!(events.iter().any(|event| event["type"] == "turn.completed"));
+    assert_eq!(harness.fixture.process_starts().len(), 2);
+    harness.executor.shutdown().unwrap();
+    assert_eq!(live_providers(&harness), Vec::<Value>::new());
+}
+
+fn controller_view(events: &[Value]) -> Vec<Value> {
+    events
+        .iter()
+        .map(|event| {
+            let mut event = event.clone();
+            for volatile in ["processId", "previousProcessId", "providerTurnId"] {
+                if let Some(payload) = event["payload"].as_object_mut() {
+                    payload.remove(volatile);
+                }
+            }
+            event
+        })
+        .collect()
+}
+
+#[test]
+fn without_the_controller_capability_live_shells_behave_exactly_as_before() {
+    let outcome = |background: &str| {
+        let mut harness = Harness::new();
+        harness.fixture.background(background);
+        let pid = harness.opened["processId"].clone();
+        let events = harness.complete_turn("first");
+        let park_ready_before_restart = harness.executor.host_park_ready().unwrap();
+        let before = harness.fixture.journal().len();
+        harness.executor.prepare_next_turn().unwrap();
+        let commands = commands_after(&harness.fixture.journal(), before);
+        let restarted = !alive(&pid);
+        let park_ready = harness.executor.host_park_ready().unwrap();
+        harness.executor.shutdown().unwrap();
+        (
+            controller_view(&events),
+            commands,
+            restarted,
+            park_ready,
+            park_ready_before_restart,
+        )
+    };
+    let live = outcome("live provider-turn");
+    let unknown = outcome("");
+    assert_eq!(live.0, unknown.0);
+    assert_eq!(live.1, unknown.1);
+    assert!(live.2 && unknown.2);
+    assert_eq!(live.3, unknown.3);
+    assert_eq!(live.4, unknown.4);
+    assert!(live.4);
+    assert!(live.0.iter().any(|event| event["type"] == "run.terminal"));
+    assert!(!live
+        .0
+        .iter()
+        .any(|event| event["payload"].get("awaitingProviderTurn").is_some()));
+    assert!(!live
+        .1
+        .iter()
+        .any(|command| command == "session.provider_turn"));
+}
+
+#[test]
+fn a_provider_lost_while_awaiting_ends_the_wait_with_the_held_run_terminal() {
+    let mut harness = Harness::new();
+    harness
+        .fixture
+        .background("live provider-turn provider-turn-hold provider-lost-after-arm");
+    let pid = harness.opened["processId"].clone();
+    let first = complete_turn_accepting_provider_turns(&mut harness, "first");
+    let events = drain_until(&mut harness, first, "run.terminal");
+    let completed = events
+        .iter()
+        .position(|event| event["type"] == "turn.completed")
+        .unwrap();
+    assert_eq!(
+        events[completed]["payload"]["awaitingProviderTurn"],
+        json!(true)
+    );
+    let terminals = events
+        .iter()
+        .filter(|event| event["type"] == "run.terminal")
+        .collect::<Vec<_>>();
+    assert_eq!(terminals.len(), 1);
+    assert_eq!(
+        terminals[0]["payload"]["turnTerminalState"],
+        json!("completed")
+    );
+    assert!(events
+        .iter()
+        .any(|event| event["payload"]["code"] == "ACPX_PROVIDER_PROCESS_LOST"));
+    harness.executor.prepare_next_turn().unwrap();
+    assert!(
+        !alive(&pid),
+        "the lost provider is replaced at the turn end"
+    );
+    harness.executor.shutdown().unwrap();
+}
+
+#[test]
+fn a_sidecar_that_dies_while_awaiting_ends_the_wait_with_the_held_run_terminal() {
+    let mut harness = Harness::new();
+    harness
+        .fixture
+        .background("live provider-turn provider-turn-hold provider-sidecar-exit-after-arm");
+    let first = complete_turn_accepting_provider_turns(&mut harness, "first");
+    let events = drain_until(&mut harness, first, "run.terminal");
+    let terminals = events
+        .iter()
+        .filter(|event| event["type"] == "run.terminal")
+        .collect::<Vec<_>>();
+    assert_eq!(terminals.len(), 1);
+    assert_eq!(
+        terminals[0]["payload"]["turnTerminalState"],
+        json!("completed")
+    );
+    assert!(!events.iter().any(|event| event["type"] == "turn.failed"));
+    let _ = harness.executor.shutdown();
+}
+
+#[test]
+fn cancelling_or_stopping_the_run_while_awaiting_disarms_and_publishes_the_held_run_terminal() {
+    for command in ["run.cancel", "turn.interrupt", "turn.stop"] {
+        let mut harness = Harness::new();
+        harness
+            .fixture
+            .background("live provider-turn provider-turn-hold provider-turn-after-disarm");
+        let first = complete_turn_accepting_provider_turns(&mut harness, "first");
+        assert!(
+            !first.iter().any(|event| event["type"] == "run.terminal"),
+            "{command}"
+        );
+        let before = harness.fixture.journal().len();
+        let cancelled = harness.execute(
+            command,
+            json!({"turnId": "first", "reason": "Operator stop"}),
+        );
+        assert_eq!(
+            cancelled.result["status"],
+            json!("already_settled"),
+            "{command}"
+        );
+        let terminals = cancelled
+            .events
+            .iter()
+            .filter(|(kind, _, _)| kind == "run.terminal")
+            .collect::<Vec<_>>();
+        assert_eq!(terminals.len(), 1, "{command}");
+        assert_eq!(
+            terminals[0].2["turnTerminalState"],
+            json!("completed"),
+            "{command}"
+        );
+        let journal = harness.fixture.journal();
+        assert!(
+            journal[before..].iter().any(|line| {
+                line["command"] == "session.provider_turn"
+                    && line["params"]["armed"] == json!(false)
+            }),
+            "{command}"
+        );
+        let mut later = Vec::new();
+        let deadline = Instant::now() + Duration::from_millis(500);
+        while Instant::now() < deadline {
+            match harness.executor.poll_events() {
+                Ok(events) => {
+                    later.extend(
+                        events
+                            .iter()
+                            .map(|event| json!({"type":event.event_type,"payload":event.payload})),
+                    );
+                    let _ = harness.executor.acknowledge_events(events.len());
+                }
+                Err(_) => break,
+            }
+        }
+        assert!(
+            !later
+                .iter()
+                .any(|event| event["payload"]["origin"] == "provider"),
+            "{command}: {later:?}"
+        );
+        assert!(
+            !later.iter().any(|event| event["type"] == "run.terminal"),
+            "{command}: {later:?}"
+        );
+        let _ = harness.executor.shutdown();
+    }
+}
+
+#[test]
+fn an_active_goal_at_a_live_shell_turn_end_neither_marks_nor_arms_a_wait() {
+    let mut harness = Harness::new();
+    harness
+        .fixture
+        .background("live provider-turn provider-turn-hold");
+    harness.fixture.fault("goal");
+    let before = harness.fixture.journal().len();
+    let events = complete_turn_accepting_provider_turns(&mut harness, "first");
+    let events = [events, harness.drain()].concat();
+    let completed = events
+        .iter()
+        .find(|event| event["type"] == "turn.completed")
+        .unwrap();
+    assert!(completed["payload"].get("awaitingProviderTurn").is_none());
+    assert!(!events.iter().any(|event| event["type"] == "run.terminal"));
+    assert!(!commands_after(&harness.fixture.journal(), before)
+        .iter()
+        .any(|command| command == "session.provider_turn"));
     harness.executor.shutdown().unwrap();
 }

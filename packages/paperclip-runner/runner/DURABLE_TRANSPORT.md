@@ -216,6 +216,49 @@ identities. The report's shape is `$defs.backgroundTasks` in
 generated from it and tested against
 `protocol/fixtures/provider-boundary/acpx-background-tasks.json`.
 
+The Claude sidecar reports `{"live": N}` with N above zero only while N shell
+tasks are running and nothing has made the count unknown; finished tasks do
+not count. It reports `{"live": 0}` only while its provider process has never
+had a background task and Claude has not acted between prompts. Every other
+case is unknown and the field is omitted: once a background task has finished
+or a provider-started cycle has run and no shell is running, and permanently
+after a dropped, declined, failed or cancelled cycle, a task that is not a
+shell, a malformed task update, a scheduling tool, a full ledger, or idle
+activity that was not adopted. The ACP stream does not say which task a Claude
+cycle reports on, so the sidecar does not guess: after a provider-started turn,
+Runner keeps waiting only while a background command is still running, and a
+command that finishes while Claude is already reporting on an earlier one gets
+no turn of its own. An origin-tagged usage update that directly follows the
+previous one with the same context size and cost and zero usage is an empty
+result, not a cycle, and is ignored.
+
+A controller opts in per turn with `providerStartedTurns: true` on
+`turn.start`. Only then, when that completed Claude turn reported no accepted
+`paperclip_finish` or `paperclip_block` result for the run, its terminal reports
+`backgroundTasks: {"live": N}` with N above zero, and the same restart
+conditions hold, Runner sends the sidecar `session.provider_turn` with
+`armed: true` for that terminal. Only if the sidecar replies `armed: true` does
+Runner keep it and await a provider-started turn: the PRP `turn.completed`
+carries `awaitingProviderTurn: true` and no `run.terminal` follows. Without the
+opt-in, with a result, or when arming is refused, every event and the turn-end
+restart are exactly as before.
+
+The sidecar adopts Claude's own cycle only while armed. A cycle that starts
+after the terminal and before the arming command is held, with nothing lost,
+for at most 5 s; arming adopts it and anything else drops it. When armed, the
+sidecar emits `runtime.turn_started` with `{"origin": "provider"}` and a
+sidecar-minted turn id. Runner admits it only while awaiting and only for
+Claude, with the same settled-identity and receipt rules as a controller turn,
+and publishes PRP `turn.started` with `origin: "provider"`. Any other
+provider-started turn fails the session closed. A controller `turn.start` while
+awaiting disarms and replaces the sidecar first. If the provider exits while armed, the
+sidecar reports `runtime.diagnostic` with code `ACPX_PROVIDER_PROCESS_LOST`; that,
+or a failed sidecar transport, ends the wait and Runner publishes the
+`run.terminal` it held back for the completed turn. Park is refused while awaiting.
+Runner saves the wait with its held `run.terminal` in the provider state; a
+Runner restart during the wait publishes that `run.terminal` once and resumes
+in a fresh process.
+
 The check also inspects the live provider
 after that drain, so a late active-goal notification cannot be hidden by the
 older executor journal. This hook does not detach a controller, stop a process,
