@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { parseCommand } from "./config.js";
 import {
-  collectStagingMixArtifacts, completedAtAnchor, doneCommentsBeforeCompletion, doneMarker, expectedRoundHash, gradeStagingMix, planStagingMixWave, ROUND_SECONDS,
+  collectStagingMixArtifacts, completedAtAnchor, completionRunIds, doneCommentsBeforeCompletion, doneMarker, expectedRoundHash, gradeStagingMix, planStagingMixWave, ROUND_SECONDS,
   stagingMixDescription, type CompletionEvidence, type StagingMixTask,
 } from "./staging-mix.js";
 import {
@@ -350,6 +350,31 @@ describe("staging-mix completion from accepted results", () => {
     expect(gradeStagingMix(nonce, { turnMinutes: 5, rounds: 4, subtasks: 0, followUpAfterMs: null, arriveAtMs: 0, holdMs: 0 },
       { issueStatus: "done", documents: { ledger: ledger(nonce, 4) }, agentComments: [], files: {}, commands: {}, workspacePath: null,
         stagingMix: { followUp: null, followUpErrors: [], retries: [], comments: posted, completion: twice } }).checks.find(check => check.name === "completion_once")!.ok).toBe(false);
+  });
+
+  type Row = { runId: string; at: number; disposition: string | null; followUp?: boolean };
+  const first = (disposition: string | null): Row => ({ runId: "first", at: 1_000, disposition });
+  const followUp = (at: number, disposition: string | null): Row => ({ runId: `follow-up-${at}`, at, disposition, followUp: true });
+  const extra = (at: number): Row => ({ runId: `extra-${at}`, at, disposition: "done" });
+  it.each<{ name: string; rows: Row[]; ok: boolean; runs: string[] }>([
+    { name: "first completion by the first run", rows: [first("done")], ok: true, runs: ["first"] },
+    { name: "first completion by a follow-up run after a yielded first run", rows: [first("yielded"), followUp(2_000, "done")], ok: true, runs: ["follow-up-2000"] },
+    { name: "first completion by the retry of a follow-up run that failed before its turn", rows: [first("yielded"), followUp(2_000, null), followUp(3_000, "done")],
+      ok: true, runs: ["follow-up-3000"] },
+    { name: "a later completion that answers new input", rows: [first("done"), followUp(2_000, "done")], ok: true, runs: ["first"] },
+    { name: "a later completion that answers nothing", rows: [first("done"), extra(2_000)], ok: false, runs: ["first", "extra-2000"] },
+    { name: "a follow-up run completes first, then a run that answers nothing completes again", rows: [first("yielded"), followUp(2_000, "done"), extra(3_000)],
+      ok: false, runs: ["follow-up-2000", "extra-3000"] },
+    { name: "a later follow-up completion, then a run that answers nothing", rows: [first("done"), followUp(2_000, "done"), extra(3_000)],
+      ok: false, runs: ["first", "extra-3000"] },
+  ])("completion_once truth table: $name", ({ rows, ok, runs }) => {
+    const evidence = completion(rows.map(row => ({ runId: row.runId, startedAt: row.at - 500, acceptedDisposition: row.disposition,
+      acceptedAt: row.disposition ? row.at : null, answersFollowUp: row.followUp ?? false })));
+    expect(completionRunIds([], nonce, evidence)).toEqual(runs);
+    const check = gradeStagingMix(nonce, { turnMinutes: 5, rounds: 4, subtasks: 0, followUpAfterMs: null, arriveAtMs: 0, holdMs: 0 },
+      { issueStatus: "done", documents: { ledger: ledger(nonce, 4) }, agentComments: [], files: {}, commands: {}, workspacePath: null,
+        stagingMix: { followUp: null, followUpErrors: [], retries: [], comments: [], completion: evidence } }).checks.find(entry => entry.name === "completion_once")!;
+    expect(check.ok).toBe(ok);
   });
 
   it("reports a DONE comment from a run whose accepted result was not done as its own finding", () => {

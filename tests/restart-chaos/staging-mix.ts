@@ -411,9 +411,16 @@ export function completionRunIds(comments: readonly CommentEvidence[], nonce: st
   const summaries = comments.filter(comment => anchor !== null && typeof comment.createdAt === "number" && comment.createdAt >= anchor
     && comment.body.includes(doneMarker(nonce)) && comment.runId).map(comment => comment.runId!);
   if (hasDispositions(completion)) {
-    const followUps = new Set(completion.runs.filter(run => run.answersFollowUp && run.runId).map(run => run.runId!));
+    const byId = new Map(completion.runs.flatMap(run => run.runId ? [[run.runId, run] as const] : []));
+    const reportedAt = (runId: string) => {
+      const run = byId.get(runId);
+      if (run?.acceptedDisposition === "done" && run.acceptedAt !== null) return run.acceptedAt;
+      const posted = comments.filter(comment => comment.runId === runId && typeof comment.createdAt === "number").map(comment => comment.createdAt!);
+      return posted.length ? Math.min(...posted) : run?.startedAt ?? Number.POSITIVE_INFINITY;
+    };
     const accepted = completion.runs.filter(run => run.acceptedDisposition === "done" && run.runId).map(run => run.runId!);
-    return [...new Set([...accepted, ...summaries])].filter(runId => !followUps.has(runId));
+    const ordered = [...new Set([...accepted, ...summaries])].sort((a, b) => reportedAt(a) - reportedAt(b));
+    return ordered.filter((runId, index) => index === 0 || !byId.get(runId)?.answersFollowUp);
   }
   return [...new Set([...comments.filter(comment => isDoneComment(comment.body, nonce) && comment.runId).map(comment => comment.runId!), ...summaries])];
 }
