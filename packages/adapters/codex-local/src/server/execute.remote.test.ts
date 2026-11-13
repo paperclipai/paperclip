@@ -26,7 +26,7 @@ const {
     pid: 123,
     startedAt: new Date().toISOString(),
   })),
-  ensureCommandResolvable: vi.fn(async () => undefined),
+  ensureCommandResolvable: vi.fn<typeof import("@paperclipai/adapter-utils/server-utils").ensureCommandResolvable>(async () => undefined),
   resolveCommandForLogs: vi.fn(async () => "/usr/bin/codex"),
   prepareWorkspaceForSshExecution: vi.fn(async () => ({ gitBacked: false })),
   restoreWorkspaceFromSshExecution: vi.fn(async () => undefined),
@@ -113,6 +113,14 @@ describe("codex remote execution", () => {
 
   it.each([undefined, "acp"])("admits managed SSH ACP through the public execution entry (engine=%s)", async engine => {
     const ctx = managedSshAcpContext(engine);
+    const actual = await vi.importActual<typeof import("@paperclipai/adapter-utils/server-utils")>("@paperclipai/adapter-utils/server-utils");
+    const bin = await mkdtemp(path.join(os.tmpdir(), "paperclip-ssh-client-probe-"));
+    cleanupDirs.push(bin);
+    await writeFile(path.join(bin, "ssh"), "#!/bin/sh\nexit 0\n", { mode: 0o700 });
+    const originalResolve = ensureCommandResolvable.getMockImplementation()!;
+    ensureCommandResolvable.mockImplementationOnce(actual.ensureCommandResolvable);
+    const previousPath = process.env.PATH;
+    process.env.PATH = bin;
     const previous = process.env.OPENAI_API_KEY;
     process.env.OPENAI_API_KEY = "fixture-server-secret";
     try {
@@ -120,15 +128,19 @@ describe("codex remote execution", () => {
       expect(executeAcp).toHaveBeenCalledWith(ctx);
       const probe = ensureCommandResolvable.mock.calls[0] as unknown as unknown[];
       expect(probe[0]).toBe("codex-acp");
-      expect(Object.keys(probe[2] as Record<string, unknown>)).toEqual([]);
+      expect(Object.keys(probe[2] as Record<string, unknown>)).toEqual(["PATH"]);
+      expect((probe[2] as Record<string, unknown>).PATH === bin).toBe(true);
       expect(probe[3]).toMatchObject({ remoteExecution: { host: "ssh.example.test", useHostAuth: false } });
     } finally {
+      ensureCommandResolvable.mockReset().mockImplementation(originalResolve);
+      if (previousPath === undefined) delete process.env.PATH;
+      else process.env.PATH = previousPath;
       if (previous === undefined) delete process.env.OPENAI_API_KEY;
       else process.env.OPENAI_API_KEY = previous;
     }
   });
 
-  it.each(["host auth", "legacy auth", "missing account", "in-place", "confinement", "missing command"])("rejects unsupported SSH ACP at the public execution entry: %s", async reason => {
+  it.each(["host auth", "legacy auth", "missing account", "in-place", "confinement", "missing SSH client"])("rejects unsupported SSH ACP at the public execution entry: %s", async reason => {
     const ctx = managedSshAcpContext("acp");
     const originalResolve = ensureCommandResolvable.getMockImplementation()!;
     if (reason === "host auth") ctx.executionTarget.spec.useHostAuth = true;
@@ -136,11 +148,22 @@ describe("codex remote execution", () => {
     if (reason === "missing account") delete ctx.config.managedAiConnection;
     if (reason === "in-place") ctx.executionTarget.workspaceRealization.mode = "in_place";
     if (reason === "confinement") ctx.config.filesystemScope = "workspace";
-    if (reason === "missing command") ensureCommandResolvable.mockRejectedValueOnce(new Error("fixture ACP command unavailable"));
+    const previousPath = process.env.PATH;
+    if (reason === "missing SSH client") {
+      const bin = await mkdtemp(path.join(os.tmpdir(), "paperclip-no-ssh-client-"));
+      cleanupDirs.push(bin);
+      process.env.PATH = bin;
+      const actual = await vi.importActual<typeof import("@paperclipai/adapter-utils/server-utils")>("@paperclipai/adapter-utils/server-utils");
+      ensureCommandResolvable.mockImplementationOnce(actual.ensureCommandResolvable);
+    }
     try {
       expect(await execute(ctx)).toMatchObject({ exitCode: 1, errorCode: "adapter_engine_unavailable" });
       expect(executeAcp).not.toHaveBeenCalled();
-    } finally { ensureCommandResolvable.mockReset().mockImplementation(originalResolve); }
+    } finally {
+      ensureCommandResolvable.mockReset().mockImplementation(originalResolve);
+      if (previousPath === undefined) delete process.env.PATH;
+      else process.env.PATH = previousPath;
+    }
   });
 
   it.each([false, true])("retains a managed SSH Codex conversation across turns and removes credentials (second turn throws=%s)", async fails => {
