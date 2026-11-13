@@ -1512,7 +1512,6 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       latestRunId: input.runId,
       routingPolicy: "board_escalation_no_takeover_v1",
     });
-    // Changed deliberately: plain next actions, no "Board operator", "inspect" or "repair".
     if (input.cause === "execution_review_participant_recovery") {
       expect(action.nextAction).toContain("The reviewer did not finish the review");
     } else if (input.cause === "process_lost") {
@@ -6589,7 +6588,6 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       status: "active",
       ownerType: "board",
     });
-    // Changed deliberately from "the sandbox provider plugin named in the run failure is not ready".
     expect(recoveryAction?.nextAction).toContain("plugin that starts this agent's sandbox is not running");
     expect(recoveryAction?.nextAction).toContain("enable the plugin");
 
@@ -7144,7 +7142,6 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       latestRunErrorCode: "workspace_validation_failed",
       recoveryCause: "workspace_validation_failed",
     });
-    // Changed deliberately: no "repair the source task workspace link".
     expect(recoveryAction?.nextAction).toContain(
       "The task's workspace could not be used",
     );
@@ -7518,7 +7515,6 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       ownerAgentId: null,
       recoveryIssueId: null,
     });
-    // Changed deliberately from "bind the missing secret(s)".
     expect(recoveryAction?.nextAction).toContain("A secret this agent needs is not set");
 
     const configurationComment = await waitForValue(async () => {

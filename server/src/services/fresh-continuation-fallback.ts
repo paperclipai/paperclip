@@ -326,9 +326,6 @@ const blocksExecution = (hold: typeof issueRecoveryActions.$inferSelect) =>
 
 /** A reconciliation hold that blocks the task and that this decision settles. */
 function isOwnedReconciliationHold(hold: typeof issueRecoveryActions.$inferSelect) {
-  // A stranded-work board escalation is never this fallback's: the
-  // assigned-work sweep continues the recent, temporary ones by cause
-  // (recovery/stranded-hold-continuation.ts), so one task has one continuer.
   if (hold.kind === "stranded_assigned_issue") return false;
   if (!(EXECUTION_RECONCILIATION_CAUSES as readonly string[]).includes(hold.cause) || !blocksExecution(hold)) return false;
   if (isHumanGate(hold)) return false;

@@ -51,7 +51,6 @@ import {
  * durable claim two servers serialize on, and the per-task rate-limit ledger. */
 export const ASSIGNED_WORK_CONTINUED_ACTION = "issue.continued_automatically";
 export const ASSIGNED_WORK_CONTINUATION_SOURCE = "issue.assigned_work_invariant";
-/** Resolution of a recent board escalation of a temporary failure that the sweep continued. */
 export const STRANDED_TRANSIENT_CONTINUED_OUTCOME = "stranded_transient_continued";
 /** Repairs per process per minute, so a deploy with many violations does not
  * start hundreds of runs at once. The rest are deferred, newest first. */
@@ -279,8 +278,6 @@ export function assignedWorkSweep(db: Db, deps: AssignedWorkDeps) {
     ]);
 
     const rowsOf = <T>(value: unknown): T[] => Array.isArray(value) ? value as T[] : ((value as { rows?: T[] })?.rows ?? []);
-    // The failed run behind each board-owned stranded escalation, to decide
-    // by its cause whether the sweep continues the task (stranded-hold-continuation.ts).
     const strandedRunIds = [...actionMap.values()].filter(action => action.kind === STRANDED_KIND && action.ownerType === "board")
       .map(action => action.evidence?.latestRunId).filter((id): id is string => typeof id === "string" && /^[0-9a-f-]{36}$/i.test(id));
     const strandedRuns = new Map<string, StrandedHoldRun>((strandedRunIds.length ? await database.select({ id: heartbeatRuns.id,
@@ -445,7 +442,6 @@ export function assignedWorkSweep(db: Db, deps: AssignedWorkDeps) {
       sql`(${issues.monitorNextCheckAt} is null or ${issues.monitorNextCheckAt} <= ${at.toISOString()}::timestamptz)`,
       // A legacy run whose controller lease lapsed may have lost its owner;
       // the predicate judges it with the owner proof. Other active runs are live.
-      // A blocked task with a live run is let through: the block may be stale.
       sql`(${issues.status} = 'blocked' or not exists (select 1 from heartbeat_runs r where r.company_id = ${issues.companyId}
         and (r.context_snapshot->>'issueId') = ${issues.id}::text
         and r.status in ('queued', 'running', 'scheduled_retry')
@@ -505,16 +501,12 @@ export function assignedWorkSweep(db: Db, deps: AssignedWorkDeps) {
     if (verdict.kind === "not_applicable" || verdict.kind === "ok") return { verdict, outcome: "ok", retryAt: null };
     if (verdict.kind === "settling") return { verdict, outcome: "settling", retryAt: verdict.recheckAt };
     if (verdict.stale) return { verdict, outcome: "stale_reported", retryAt: null };
-    // The task's run is already queued or working: only the status is wrong.
-    // Lift the block; no run is started, so the continuation cap is not spent.
     if (verdict.reason === "blocked_with_live_run") {
       return { verdict, outcome: await liftBlockBehindLiveRun(issue, at) ? "repaired" : "changed", retryAt: null };
     }
     // A task blocked under an active recovery hold is re-continued by the
     // hold's owner (the fresh-continuation fallback, same per-task cap). The
     // sweep reports it and repairs only blocks that have no hold at all, so
-    // the two never continue one task twice. A recent board escalation of a
-    // temporary failure has no other owner: the sweep settles it and continues.
     if (issue.status === "blocked" && facts.activeRecoveryAction && !facts.activeRecoveryAction.continuedBySweep) {
       return { verdict, outcome: "left_to_hold_owner", retryAt: null };
     }
@@ -606,8 +598,6 @@ export function assignedWorkSweep(db: Db, deps: AssignedWorkDeps) {
           sql`(${activityLog.details}->>'status' = 'blocked' or ${activityLog.details}->>'toStatus' = 'blocked')`,
         )).orderBy(desc(activityLog.createdAt)).limit(1);
         restoredTo = recordedPreviousStatus(blocking?.details);
-        // A recent board escalation of a temporary failure: settle it here,
-        // so the continuation's admission sees no hold and no one is asked to act.
         const hold = fresh.activeRecoveryAction;
         if (hold?.continuedBySweep && hold.id) {
           await tx.update(issueRecoveryActions).set({ status: "resolved", outcome: "restored", resolvedAt: at, updatedAt: at,
@@ -635,8 +625,6 @@ export function assignedWorkSweep(db: Db, deps: AssignedWorkDeps) {
     });
   }
 
-  /** Under the task's row lock, re-judge it and lift a recovery block whose
-   * run is already queued or working. */
   async function liftBlockBehindLiveRun(issue: IssueRow, at: Date): Promise<boolean> {
     const publications: ActivityPublication[] = [];
     const lifted = await db.transaction(async tx => {

@@ -61,7 +61,6 @@ describe("assigned-work invariant", () => {
         .toEqual({ kind: "violation", reason: "native_run_stalled", runId: "n", stale: false });
     });
 
-    // Staging PAP-4020: Blocked, needs attention, while its Retry run was queued.
     it("calls a recovery block with a live run for the same task inconsistent, and keeps someone else's block", () => {
       const queued = [{ id: "q", status: "queued", scheduledRetryAt: null, owner: "alive" as const }];
       expect(evaluateAssignedWork(facts({ issue: { status: "blocked", blockedTransitionAt: ago(60_000) }, blockedBy: "system", activeRuns: queued }), now))

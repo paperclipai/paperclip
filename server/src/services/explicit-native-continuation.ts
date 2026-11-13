@@ -760,13 +760,6 @@ export async function admitExplicitNativeContinuation(input: {
   return continuation;
 }
 
-/**
- * The successor of an interrupted run is queued from here on, so a Blocked
- * status that the interruption itself set no longer names anything to wait
- * for: the task returns to To do and its next run picks it up. A block that
- * belongs to something else (a declared unblock action, an open blocker, a
- * later status decision) stays.
- */
 async function liftInterruptionBlock(db: Db, task: typeof issues.$inferSelect,
   actions: Array<typeof issueRecoveryActions.$inferSelect>, sources: Run[], successorRunId: string) {
   if (task.status !== "blocked" || task.unblockDescriptor) return;

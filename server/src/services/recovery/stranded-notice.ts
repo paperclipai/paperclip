@@ -14,7 +14,6 @@ export const REMOTE_WORKSPACE_RESTORE_NEXT_ACTION =
   "The saved work could not be put back into the sandbox, so no agent work started. The saved version was kept. "
   + "Press Retry to start again from it.";
 
-/** An unknown or old failure: the one thing a person can do. */
 export const RETRY_FROM_SAVED_WORK_NEXT_ACTION =
   "This attempt could not be finished. Press Retry to start it again from the saved work.";
 
@@ -56,7 +55,6 @@ const STRANDED_RECOVERY_NOTICE_TITLES_BY_RUN_ERROR_CODE: Record<string, string> 
   acpx_auth_required: "Error: agent login required",
 };
 
-/** A temporary setup failure before any agent work: the sweep continues recent ones itself. */
 const TEMPORARY_SETUP_NEXT_ACTION = "Setting up the workspace took too long, so no agent work started. "
   + "Paperclip tries again automatically.";
 

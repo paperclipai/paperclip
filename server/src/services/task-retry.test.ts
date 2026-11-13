@@ -740,8 +740,6 @@ describe("durable task Retry admission", () => {
     await expect(dispatchRun(input, queued[0])).resolves.toMatchObject({ interruptedRunId: refused.id });
   });
 
-  // Staging PAP-4020: the failed run's block stayed while its Retry run waited
-  // in the queue, so the task showed Blocked and needs attention for 24 minutes.
   it("lifts the failure's block once the Retry's run is queued, and keeps a block made for another reason", async () => {
     for (const reason of ["failure", "declared", "dependency"] as const) {
       const { input, source, refused } = await seedRefusedRetry();

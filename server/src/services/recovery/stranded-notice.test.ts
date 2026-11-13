@@ -74,7 +74,6 @@ describe("stranded recovery notice seeds", () => {
     expect(seed.title).toBe("Shared workspace still held");
     expect(seed.body).toContain("no output for more than an hour");
     expect(seed.body).not.toContain("secret/env bindings");
-    // Changed deliberately: no request to check on the other run.
     expect(seed.nextAction).toContain("Stop the other run on this task");
   });
 
@@ -86,7 +85,6 @@ describe("stranded recovery notice seeds", () => {
   });
 
   it("keeps the secret-binding copy for other configuration gaps", () => {
-    // Changed deliberately from "required secret/env bindings are missing ... so an operator can bind".
     expect(buildConfigurationIncompleteRecoveryNoticeSeed({ reason: "secret_binding_missing" }).body).toContain(
       "a secret it needs is not set",
     );
@@ -108,7 +106,6 @@ describe("stranded recovery notice seeds", () => {
       sourceRun: { id: "failed-run", status: "failed", errorCode: "configuration_incomplete" },
     });
     expect(notice.presentation.title).toBe("Workspace base ref unavailable");
-    // Changed deliberately: plain words ("starting branch") instead of "base ref", no repair request.
     expect(notice.body).toContain("did not start");
     expect(notice.body).toContain("starting branch");
     expect(notice.body).not.toContain("secret");
@@ -138,7 +135,6 @@ describe("buildStrandedRecoveryEscalationNotice", () => {
     expect(notice.presentation.title).toBe("Workspace scan timed out");
     expect(notice.body).toContain("before the agent started");
     expect(notice.body).not.toContain("retried continuation");
-    // Changed deliberately: no "check repository access and server load".
     expect(JSON.stringify(notice.metadata)).toContain("took too long, so no agent work started");
   });
   it("says a saved sandbox that timed out resuming is retried automatically, without asking anyone to inspect or repair", () => {
@@ -162,7 +158,6 @@ describe("buildStrandedRecoveryEscalationNotice", () => {
     });
     expect(notice.presentation.title).toBe("Environment plugin was not running");
     expect(notice.body).toContain("before the agent started");
-    // Changed deliberately: no "check the worker status".
     expect(JSON.stringify(notice.metadata)).toContain("Press Retry once it is running again");
   });
   it("asks for Retry, not a board decision, when the environment provider stayed unavailable", () => {
@@ -239,7 +234,6 @@ describe("buildStrandedRecoveryEscalationNotice", () => {
 
     const ownerRow = allRows(notice.metadata).find((row) => row.label === "Recovery owner");
     expect(ownerRow?.type).toBe("key_value");
-    // Changed deliberately from "Board decision required".
     expect(ownerRow?.value).toBe("Waiting for you");
   });
 

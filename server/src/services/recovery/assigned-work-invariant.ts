@@ -63,8 +63,6 @@ export const VIOLATION_REASONS = [
   "recovery_block",
   /** Blocked, and nothing recorded says why. */
   "unknown_block",
-  /** Blocked by a recovery outcome while a run for the task is queued or
-   * working. Repaired by lifting the block; no run is started. */
   "blocked_with_live_run",
 ] as const;
 export type ViolationReason = (typeof VIOLATION_REASONS)[number];
@@ -162,7 +160,6 @@ export type AssignedWorkFacts = {
   openChildren: number;
   reviewPending: boolean;
   activeRecoveryAction: { cause: string; ownerType: string; resumeAt: Date | null;
-    /** A recent, temporary stranded escalation the sweep continues itself (stranded-hold-continuation.ts). */
     continuedBySweep?: boolean; id?: string } | null;
   agent: { status: string; invokable: boolean } | null;
   companyPaused: boolean;
@@ -193,9 +190,6 @@ export function evaluateAssignedWork(facts: AssignedWorkFacts, now: Date = new D
   const live = facts.activeRuns.find(run => (run.status === "queued" || run.status === "running")
     && run.owner !== "gone" && run.owner !== "stalled");
   if (live) {
-    // Blocked says the task waits for someone while its next run is already
-    // queued or working: the two disagree, and the person sees "needs
-    // attention" for work that is moving. Someone else's block stays a wait.
     if (issue.status === "blocked" && !waitingReason(facts, now)) {
       return { kind: "violation", reason: "blocked_with_live_run", runId: live.id, stale: false };
     }

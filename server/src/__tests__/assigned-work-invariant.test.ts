@@ -183,7 +183,6 @@ describePostgres("assigned-work invariant sweep", () => {
   }, 60_000);
 
   it("a recovery block whose task already has a queued run is lifted without a second run", async () => {
-    // Staging PAP-4020: blocked at 23:51:28 by the failed run, its Retry run queued at 23:51:50, still Blocked at 00:15.
     const f = await seedCompany();
     const blockedAt = new Date(Date.now() - 20 * 60_000);
     const issueId = await f.issue({ status: "blocked", blockedTransitionAt: blockedAt });
@@ -207,9 +206,6 @@ describePostgres("assigned-work invariant sweep", () => {
   }, 60_000);
 
   it("continues a recent board escalation of a temporary setup failure itself, and leaves old or lasting ones", async () => {
-    // Staging PAP-4505 / PAP-4776: a person's Retry failed resuming the saved sandbox
-    // (cause=transport_timeout) before any provider work; stranded recovery escalated
-    // to the board, and neither the sweep nor the fallback continued the task.
     const f = await seedCompany();
     async function escalated(input: { endedAgoMs: number; cause: string }) {
       const blockedAt = new Date(Date.now() - input.endedAgoMs + 1_000);
@@ -257,7 +253,6 @@ describePostgres("assigned-work invariant sweep", () => {
   it("leaves a task blocked under an active recovery hold to the hold's owner and reports it", async () => {
     const f = await seedCompany();
     const issueId = await f.issue({ status: "blocked", blockedTransitionAt: new Date(Date.now() - 2 * HOUR) });
-    // Older than the 24-hour window: a recent restart-class escalation is the sweep's own (see above).
     const run = await f.run(issueId, { status: "failed", errorCode: "process_lost", livenessState: "failed",
       startedAt: new Date(Date.now() - 31 * HOUR), finishedAt: new Date(Date.now() - 30 * HOUR), createdAt: new Date(Date.now() - 31 * HOUR) });
     // Old-shaped row: a board-owned stranded action written by an older release.
