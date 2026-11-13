@@ -1,5 +1,5 @@
 {
-  "id": "501fa22e-3964-43c9-8519-ce18eb85b1df",
+  "id": "349cdd89-db04-4340-a5d3-3b877bf7227d",
   "prevId": "d5d69127-12de-4281-9816-c20e013bfeb7",
   "version": "7",
   "dialect": "postgresql",
@@ -61090,6 +61090,12 @@
           "type": "text",
           "primaryKey": false,
           "notNull": true
+        },
+        "sealed_caller_headers": {
+          "name": "sealed_caller_headers",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
         },
         "protocol_version": {
           "name": "protocol_version",

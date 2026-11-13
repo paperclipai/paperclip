@@ -920,6 +920,8 @@ export const toolMcpTasks = pgTable(
     /** Endpoint, tool, and full arguments; a call attaches only on an exact match. */
     requestHash: text("request_hash").notNull(),
     endpointHash: text("endpoint_hash").notNull(),
+    /** Forwarded caller headers the connection allows (such as a tenant), sealed; background polls send them too. */
+    sealedCallerHeaders: text("sealed_caller_headers"),
     protocolVersion: text("protocol_version").notNull(),
     /** The provider's task ID, sealed: it may act as a bearer token. */
     sealedProviderTaskId: text("sealed_provider_task_id").notNull(),

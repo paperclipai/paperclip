@@ -132,8 +132,8 @@ export function mcpTaskExpiresAt(task: Pick<McpTaskState, "createdAt" | "ttlMs">
  * matches. `argumentsIdentity` is the gateway's keyed request identity, so a
  * stored hash cannot be used to guess secret arguments.
  */
-export function mcpTaskRequestHash(input: { connectionId: string; endpoint: string; toolName: string; argumentsIdentity: string }): string {
-  return createHash("sha256").update(JSON.stringify(["paperclip:mcp-task-request:v1", input.connectionId, input.endpoint, input.toolName, input.argumentsIdentity])).digest("hex");
+export function mcpTaskRequestHash(input: { connectionId: string; endpoint: string; toolName: string; argumentsIdentity: string; routingIdentity?: string }): string {
+  return createHash("sha256").update(JSON.stringify(["paperclip:mcp-task-request:v1", input.connectionId, input.endpoint, input.toolName, input.argumentsIdentity, input.routingIdentity ?? ""])).digest("hex");
 }
 
 export function mcpTaskEndpointHash(endpoint: string): string {

@@ -14,6 +14,7 @@ CREATE TABLE "tool_mcp_tasks" (
 	"catalog_tool_name" text NOT NULL,
 	"request_hash" text NOT NULL,
 	"endpoint_hash" text NOT NULL,
+	"sealed_caller_headers" text,
 	"protocol_version" text NOT NULL,
 	"sealed_provider_task_id" text NOT NULL,
 	"provider_task_id_hash" text NOT NULL,

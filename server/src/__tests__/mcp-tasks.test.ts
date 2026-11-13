@@ -723,6 +723,43 @@ const support = await getEmbeddedPostgresTestSupport();
     expect(server.count("tools/call")).toBe(1);
   });
 
+  it("keeps tasks for different forwarded tenants apart and forwards the tenant in the background", async () => {
+    const server = taskServer();
+    const ctx = await setup(server);
+    const [connection] = await db.select().from(toolConnections).where(eq(toolConnections.id, ctx.connected.connectionId));
+    await db.update(toolConnections).set({ config: { ...connection!.config, headerPolicy: { passthrough: { allow: ["x-tenant-id"] } } } })
+      .where(eq(toolConnections.id, connection!.id));
+    const tool = (await ctx.gateway().listToolsForSession(ctx.session.token)).find((candidate) => candidate.name.endsWith(":build"))!;
+    const callAs = (tenant: string, timeoutMs = 400) => ctx.gateway().executeTool({ sessionToken: ctx.session.token, tool: tool.name,
+      parameters: { ref: "main" }, timeoutMs, callerHeaders: { "x-tenant-id": tenant } });
+    await expect(callAs("acme")).rejects.toMatchObject({ reasonCode: "provider_task_pending" });
+    await expect(callAs("globex")).rejects.toMatchObject({ reasonCode: "provider_task_pending" });
+    expect(server.count("tools/call")).toBe(2);
+    const rows = await ctx.rows();
+    expect(rows.every((row) => row.sealedCallerHeaders && !row.sealedCallerHeaders.includes("acme"))).toBe(true);
+    await db.update(toolMcpTasks).set({ nextPollAt: new Date(Date.now() - 1_000), leaseExpiresAt: null, leaseOwner: null }).where(eq(toolMcpTasks.companyId, ctx.org.id));
+    const before = server.requests.length;
+    await ctx.poll();
+    const background = server.requests.slice(before).filter((request) => request.method === "tasks/get");
+    expect(background.map((request) => request.headers.get("x-tenant-id")).sort()).toEqual(["acme", "globex"]);
+    for (const task of server.tasks.values()) task.status = "completed";
+    expect(await callAs("acme", 2_000)).toMatchObject({ result: { content: "build finished" } });
+    expect(server.count("tools/call")).toBe(2);
+  });
+
+  it("recreates a question card that was marked shown but never created", async () => {
+    const server = taskServer();
+    const ctx = await setup(server);
+    await expect(ctx.call("build", { timeoutMs: 400 })).rejects.toMatchObject({ reasonCode: "provider_task_pending" });
+    server.ask();
+    // A crash between marking the question shown and creating its card.
+    await db.update(toolMcpTasks).set({ surfacedInputKeys: ["who"], nextPollAt: new Date(Date.now() - 1_000), leaseExpiresAt: null, leaseOwner: null })
+      .where(eq(toolMcpTasks.companyId, ctx.org.id));
+    await ctx.poll();
+    const [card] = await db.select().from(issueThreadInteractions).where(eq(issueThreadInteractions.issueId, ctx.issue.id));
+    expect(card).toMatchObject({ kind: "ask_user_questions", status: "pending" });
+  });
+
   it("never lets another agent attach to a task", async () => {
     const server = taskServer();
     const ctx = await setup(server);

@@ -6633,6 +6633,8 @@ export function createToolGatewayService(
     request: McpElicitationRequest;
     /** One card per provider input request; defaults to one per call. */
     idempotencyKey?: string;
+    /** The name the card shows; a task's cards use one name on every path. */
+    cardToolName?: string;
   }): Promise<never> {
     if (!input.session.issueId) {
       throw new ToolGatewayHttpError(
@@ -6644,7 +6646,7 @@ export function createToolGatewayService(
     }
     const interaction = await createElicitationCard({
       companyId: input.session.companyId, issueId: input.session.issueId, agentId: input.session.agentId,
-      toolName: input.tool.name, request: input.request,
+      toolName: input.cardToolName ?? input.tool.name, request: input.request,
       idempotencyKey: input.idempotencyKey ?? `mcp-elicitation:${input.invocationId}`,
     });
     const now = new Date();
@@ -6931,6 +6933,7 @@ export function createToolGatewayService(
     requestHash: string;
     argumentsIdentity: string;
     endpointHash: string;
+    callerHeaders: Record<string, string>;
     protocolVersion: string;
     state: McpTaskState;
     owner: string;
@@ -6965,6 +6968,7 @@ export function createToolGatewayService(
         requestHash: input.requestHash,
         argumentsIdentity: input.argumentsIdentity,
         endpointHash: input.endpointHash,
+        sealedCallerHeaders: Object.keys(input.callerHeaders).length ? sealMcpTaskId(secret, scope, JSON.stringify(input.callerHeaders)) : null,
         protocolVersion: input.protocolVersion,
         sealedProviderTaskId: sealMcpTaskId(secret, scope, input.state.taskId),
         providerTaskIdHash,
@@ -7087,7 +7091,7 @@ export function createToolGatewayService(
     linkKeys: string[];
     linkMessage?: string;
     /** The first form still waiting for a person. */
-    waitingForm?: { key: string; request: McpElicitationRequest };
+    waitingForm?: { key: string; request: McpElicitationRequest; hasCard: boolean };
     unsupported: boolean;
   };
 
@@ -7125,7 +7129,7 @@ export function createToolGatewayService(
           eq(issueThreadInteractions.issueId, row.issueId),
           eq(issueThreadInteractions.idempotencyKey, mcpTaskInputKey(row, key)),
         )).limit(1);
-      if (!card || card.status === "pending") { plan.waitingForm ??= form; continue; }
+      if (!card || card.status === "pending") { plan.waitingForm ??= { ...form, hasCard: Boolean(card) }; continue; }
       const outcome = asRecord(card.result)?.outcome;
       plan.responses[key] = card.status === "answered" && outcome === undefined
         ? { action: "accept", content: elicitationContent(form.request, card.result) }
@@ -7250,6 +7254,13 @@ export function createToolGatewayService(
             // Unsent answers stay unanswered and are sent on the next poll.
             if (stop.aborted) throw mcpTaskPendingError();
           }
+          // A form counts as shown only once its card exists.
+          if (plan.waitingForm && !plan.waitingForm.hasCard && row.issueId) {
+            await createElicitationCard({
+              companyId: row.companyId, issueId: row.issueId, agentId: row.agentId, toolName: row.catalogToolName,
+              request: plan.waitingForm.request, idempotencyKey: mcpTaskInputKey(row, plan.waitingForm.key),
+            });
+          }
           const shown = [...plan.linkKeys, ...(plan.waitingForm ? [plan.waitingForm.key] : [])];
           if (shown.length) await own({ surfacedInputKeys: boundedMcpTaskKeys([...(row.surfacedInputKeys ?? []), ...shown]) });
           if (plan.links.length) {
@@ -7263,6 +7274,7 @@ export function createToolGatewayService(
             await requestElicitationForRecordedToolCall({
               session: wait.session, tool: wait.tool, invocationId: wait.invocationId,
               request: plan.waitingForm.request, idempotencyKey: mcpTaskInputKey(row, plan.waitingForm.key),
+              cardToolName: row.catalogToolName,
             });
           }
         }
@@ -7302,11 +7314,15 @@ export function createToolGatewayService(
     const workspaceTarget = connection.config.sourceTemplateKey === "google-workspace" ? googleWorkspaceToolTarget(row.catalogToolName) : null;
     const endpoint = workspaceTarget?.serverUrl ?? await resolvedRemoteEndpoint(session, connection, grant);
     if (mcpTaskEndpointHash(String(endpoint)) !== row.endpointHash) return { closed: "endpoint_changed" };
+    // The allowed forwarded headers the call was made with, so background polls route the same way.
+    const openedCallerHeaders = row.sealedCallerHeaders ? openMcpTaskId(mcpTaskSecret(), mcpTaskScope(row), row.sealedCallerHeaders) : null;
+    if (row.sealedCallerHeaders && !openedCallerHeaders) return { closed: "task_unreadable" };
+    const callerHeaders = openedCallerHeaders ? JSON.parse(openedCallerHeaders) as Record<string, string> : undefined;
     const transport = mcpTaskTransport({
       protocolVersion: row.protocolVersion,
       refreshable: connection.authKind === "oauth",
       headers: async (forceRefresh) => buildRemoteHeaders({
-        session, connection,
+        session, connection, callerHeaders,
         credentialHeaders: { ...projectedConnectionHeaders(connection), ...(await resolveCredentialHeaders(session, connection, grant, { forceRefresh })) },
       }).headers,
       send: (init) => options.remoteHttpRequest
@@ -7406,7 +7422,9 @@ export function createToolGatewayService(
       const surfaced = new Set(row.surfacedInputKeys ?? []);
       // A form question is put on a card right away, so a person sees it even
       // when no wake is left for this task; answering the card wakes the agent.
-      const cardCount = plan.waitingForm && row.issueId && !surfaced.has(plan.waitingForm.key)
+      // A missing card is (re)created even if the question was marked shown: a
+      // crash between marking and creating must not hide it.
+      const cardCount = plan.waitingForm && row.issueId && !plan.waitingForm.hasCard
         ? (await db.select({ count: sql<number>`count(*)::int` }).from(issueThreadInteractions).where(and(
             eq(issueThreadInteractions.companyId, row.companyId), eq(issueThreadInteractions.issueId, row.issueId),
             sql`${issueThreadInteractions.idempotencyKey} like ${`mcp-task-input:${row.id}:%`}`)))[0]?.count ?? 0
@@ -7676,6 +7694,15 @@ export function createToolGatewayService(
       // grant, agent, and task) attaches to an undelivered one instead of
       // sending tools/call again, so retries and recovered runs never repeat work.
       const taskArgumentsIdentity = mcpTaskArgumentsIdentity(parameters);
+      // Forwarded caller headers the connection allows (such as a tenant)
+      // route the call too, so they are part of a task's identity. Per-run
+      // metadata headers and credentials are not: they change on recovery.
+      const allowedCallerHeaders = new Set(readHeaderPolicy(connection).passthroughAllowlist.map((name) => name.toLowerCase()));
+      const taskCallerHeaders = Object.fromEntries(Object.entries(normalizeCallerHeaders(callerHeaders))
+        .filter(([name]) => allowedCallerHeaders.has(name.toLowerCase()))
+        .map(([name, value]) => [name.toLowerCase(), value] as const)
+        .sort(([a], [b]) => a.localeCompare(b)));
+      const taskRoutingIdentity = mcpTaskArgumentsIdentity(taskCallerHeaders);
       // Built from the version a request actually used: a version retry can
       // move a saved legacy connection to stateless MCP mid-call.
       const taskIdentityFor = (headersUsed: Record<string, string>) => {
@@ -7684,7 +7711,7 @@ export function createToolGatewayService(
           protocolVersion: version,
           requestHash: mcpTaskRequestHash({
             connectionId: connection.id, endpoint: String(endpoint), toolName: upstreamToolName,
-            argumentsIdentity: taskArgumentsIdentity,
+            argumentsIdentity: taskArgumentsIdentity, routingIdentity: taskRoutingIdentity,
           }),
           endpointHash: mcpTaskEndpointHash(String(endpoint)),
         } : null;
@@ -7987,6 +8014,7 @@ export function createToolGatewayService(
         const row = await createMcpTaskRecord({
           session, connection, grant, catalogToolName: entry.toolName, invocationId,
           requestHash: usedIdentity.requestHash, argumentsIdentity: taskArgumentsIdentity, endpointHash: usedIdentity.endpointHash,
+          callerHeaders: taskCallerHeaders,
           protocolVersion: usedIdentity.protocolVersion, state: created, owner: taskOwner, leaseMs: ms + 15_000,
         });
         return await completeRemoteMcpCall(await waitOnTask(row, created.taskId, created));
