@@ -572,7 +572,10 @@ export async function normalizeEnvironmentConfigForPersistence(input: {
   pluginWorkerManager?: PluginWorkerManager;
 }): Promise<Record<string, unknown>> {
   if (input.driver === "ssh") {
-    const raw = parseObject(input.config);
+    const raw = { ...parseObject(input.config) };
+    if (raw.network === "direct") {
+      for (const field of ["tailscaleConnectionId", "tailscaleDeviceId", "tailscaleAuthKeySecretRef", "tailscaleAuthKey"]) delete raw[field];
+    }
     validateTailscaleSelection(raw);
     const parsed = sshEnvironmentConfigPersistenceSchema.safeParse(raw);
     if (!parsed.success) {

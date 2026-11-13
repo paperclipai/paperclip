@@ -19,6 +19,8 @@ OpenSSH over Tailscale works with the standard Mac application.
 SSH setup hides the Network selector when Direct connection is the only
 available option. A sole connected tailnet is selected automatically and its
 connection selector is hidden; multiple connected tailnets remain selectable.
+Switching an existing environment to **Direct connection** clears its saved
+Tailscale machine and credential references and saves the direct host you enter.
 
 After selecting a machine, **Prepare machine pairing** creates an SSH key in
 Paperclip’s vault and displays a command containing only the public key. Each

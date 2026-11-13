@@ -83,6 +83,17 @@ describe("SSH environments using the Tailscale connector", () => {
     expect(fixture.connect).not.toHaveBeenCalled();
   });
 
+  it("clears a saved tailnet when Direct is explicitly merged into an SSH environment", async () => {
+    const stored = await normalizeEnvironmentConfigForPersistence({ db: {} as never, companyId, environmentName: "Workstation", driver: "ssh",
+      secretProvider: "local_encrypted", config: { ...config, network: "direct", host: "direct.example.test" } });
+    expect(stored).toMatchObject({ network: "direct", host: "direct.example.test" });
+    for (const key of ["tailscaleConnectionId", "tailscaleDeviceId", "tailscaleAuthKeySecretRef", "tailscaleAuthKey"]) {
+      expect(stored).not.toHaveProperty(key);
+    }
+    expect(fixture.binding).not.toHaveBeenCalled();
+    expect(fixture.connect).not.toHaveBeenCalled();
+  });
+
   it("requires company and environment context before opening a runtime binding", async () => {
     await expect(resolveEnvironmentDriverConfigForRuntime({} as never, null, environment)).rejects.toMatchObject({ status: 422 });
     await expect(resolveEnvironmentDriverConfigForRuntime({} as never, companyId, { ...environment, id: undefined })).rejects.toMatchObject({ status: 422 });

@@ -844,6 +844,22 @@ describe("CompanyEnvironments — test provider button", () => {
     }) }), "company-1"); });
   });
 
+  it("sends an explicit Direct selection when switching away from a saved tailnet", async () => {
+    mockEnvironmentsApi.list.mockResolvedValue([{ id: "env-tailnet", name: "My workstation", driver: "ssh", description: null, envVars: {},
+      config: { network: "tailscale", host: "100.64.0.1", port: 22, username: "developer", remoteWorkspacePath: "/workspace",
+        tailscaleConnectionId: "tailnet-connection", tailscaleDeviceId: "stable-device", strictHostKeyChecking: true } }]);
+    root = createRoot(container);
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    await act(async () => { root!.render(renderCompanyEnvironments(queryClient, `${ENVIRONMENTS_PATH}/env-tailnet/edit`)); });
+    await waitForAssertion(() => { expect(getEnvironmentFormPage()?.textContent).toContain("Home Mac"); });
+    const page = getEnvironmentFormPage()!;
+    const host = Array.from(page.querySelectorAll<HTMLInputElement>("input")).find(input => input.value === "100.64.0.1")!;
+    await act(async () => setSelectValue(page.querySelector('select[aria-label="SSH network"]')!, "direct"));
+    await act(async () => setInputValue(host, "direct.example.test"));
+    await act(async () => click(findButton(page, "Save environment")));
+    await waitForAssertion(() => { expect(mockEnvironmentsApi.update).toHaveBeenCalledWith("env-tailnet", expect.objectContaining({ driver: "ssh", config: expect.objectContaining({ network: "direct", host: "direct.example.test" }) }), "company-1"); });
+  });
+
   it("opens the edit form on a standalone page with existing values and closes after save", async () => {
     root = createRoot(container);
     const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });

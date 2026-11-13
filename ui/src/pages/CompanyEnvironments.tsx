@@ -137,7 +137,7 @@ function buildEnvironmentPayload(form: EnvironmentFormState) {
             ...(form.sshNetwork === "tailscale" ? { network: "tailscale" as const,
               ...(form.tailscaleConnectionId ? { tailscaleConnectionId: form.tailscaleConnectionId, tailscaleDeviceId: form.tailscaleDeviceId } :
                 { tailscaleAuthKeySecretRef: form.tailscaleAuthKeySecretId ? { type: "secret_ref" as const, secretId: form.tailscaleAuthKeySecretId, version: "latest" as const } : null }),
-            } : {}),
+            } : { network: "direct" as const }),
             host: form.sshHost.trim(),
             port: Number.parseInt(form.sshPort || "22", 10) || 22,
             username: form.sshUsername.trim(),
