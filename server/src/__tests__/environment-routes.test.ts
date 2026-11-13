@@ -2151,6 +2151,25 @@ describe("environment routes", () => {
     expect(mockEnvironmentService.create).not.toHaveBeenCalled();
   });
 
+  it("rejects standalone Tailscale enrollment keys before storing an environment secret", async () => {
+    const res = await request(createApp(localBoardActor())).post("/api/companies/company-1/environments").send({
+      name: "My workstation", driver: "ssh", config: { network: "tailscale", host: "workstation", username: "developer",
+        remoteWorkspacePath: "/workspace", tailscaleAuthKey: "tskey-auth-fixture" },
+    });
+    expect(res.status).toBe(422);
+    expect(mockSecretService.create).not.toHaveBeenCalled();
+    expect(mockEnvironmentService.create).not.toHaveBeenCalled();
+    expect(JSON.stringify(res.body)).not.toContain("tskey-auth-fixture");
+  });
+
+  it("rejects Tailscale environment setup from a non-admin before storing credentials", async () => {
+    const res = await request(createApp({ type: "board", userId: "member", source: "session", companyIds: ["company-1"] }))
+      .post("/api/companies/company-1/environments").send({ name: "My workstation", driver: "ssh", config: {
+        network: "tailscale", host: "workstation", username: "developer", remoteWorkspacePath: "/workspace", tailscaleAuthKey: "tskey-auth-fixture" } });
+    expect(res.status).toBe(403);
+    expect(mockSecretService.create).not.toHaveBeenCalled();
+  });
+
   it("normalizes SSH private keys into secret refs before persistence", async () => {
     const environment = createSecretBackedSshEnvironment();
     mockEnvironmentService.create.mockResolvedValue(environment);
