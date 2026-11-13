@@ -30,19 +30,21 @@ export async function diskUsageKb(directory: string): Promise<number | null> {
 }
 
 export async function startReleaseSwap(input: { options: ReleaseSwapOptions; env: EnvironmentKind; adapters: readonly AdapterId[]; lab: ChaosLab;
-  api: ChaosApi; db: Db; timeline: Timeline; temporaryRoot: string; freshHome: boolean; cancelled: () => boolean }): Promise<ReleaseSwapDriver> {
+  api: ChaosApi; db: Db; timeline: Timeline; temporaryRoot: string; freshHome: boolean; cancelled: () => boolean }): Promise<{ driver: ReleaseSwapDriver; probesReady: Promise<void> }> {
   const shape = input.env === "daytona" ? DAYTONA_PROBE_SHAPE : LOCAL_PROBE_SHAPE;
   const record = (kind: string, data: Record<string, unknown>) => { input.timeline.add(kind, data); };
   const agents = Object.fromEntries(input.adapters.flatMap(adapter => input.lab.agents[adapter] ? [[adapter, input.lab.agents[adapter]]] : []));
   const probeAgents = await hireProbeAgents(input.api, input.lab.companyId, agents, shape.concurrency);
-  await waitForAgentsReady(input.api, probeAgents, input.timeline, input.env === "daytona" ? 10 * 60_000 : undefined, 1_000, input.cancelled);
-  record("release_swap_probe_agents", { agents: Object.fromEntries(Object.entries(probeAgents).map(([adapter, agent]) => [adapter, agent!.id])),
-    maxConcurrentRuns: shape.concurrency, prepIntervalMs: shape.prepIntervalMs, prepProbeCap: shape.prepProbeCap });
+  const probesReady = waitForAgentsReady(input.api, probeAgents, input.timeline, input.env === "daytona" ? 10 * 60_000 : undefined, 1_000, input.cancelled).then(() => {
+    record("release_swap_probe_agents", { agents: Object.fromEntries(Object.entries(probeAgents).map(([adapter, agent]) => [adapter, agent!.id])),
+      maxConcurrentRuns: shape.concurrency, prepIntervalMs: shape.prepIntervalMs, prepProbeCap: shape.prepProbeCap });
+  });
+  probesReady.catch(() => undefined);
   const driver = new ReleaseSwapDriver({ options: input.options, companyId: input.lab.companyId, adapters: input.adapters, agents: input.lab.agents,
     probeAgents, prepIntervalMs: shape.prepIntervalMs, prepProbeCap: shape.prepProbeCap, reader: pgRunReader(input.db), record });
   driver.plugins.push(homeCleanupPlugin({ temporaryRoot: input.temporaryRoot, freshHome: input.freshHome,
     remove: directory => rm(directory, { recursive: true, force: true }), diskUsageKb, record }));
-  return driver;
+  return { driver, probesReady };
 }
 
 export function stormRunFor(plan: WavePlan, now: number): StormRun | ReleaseSwapRun | null {
@@ -59,9 +61,9 @@ export class ReleaseSwapWave {
     supervisor: Pick<ChaosSupervisor, "serverWindows" | "swapHook" | "paths">; cancelled: () => boolean }): Promise<ReleaseSwapWave> {
     const options = input.plan.options;
     const db = createDb(input.databaseUrl);
-    const driver = await startReleaseSwap({ options: options.releaseSwap!, env: options.env, adapters: options.adapters, lab: input.lab, api: input.api, db,
+    const { driver, probesReady } = await startReleaseSwap({ options: options.releaseSwap!, env: options.env, adapters: options.adapters, lab: input.lab, api: input.api, db,
       timeline: input.timeline, temporaryRoot: input.supervisor.paths.temporaryRoot, freshHome: options.k15FreshHome === true, cancelled: input.cancelled });
-    input.supervisor.swapHook = driver.hook;
+    input.supervisor.swapHook = async info => { await probesReady; return driver.hook(info); };
     setOverlapProbe(() => driver.launchOpen);
     const wave = new ReleaseSwapWave(driver, db, input.plan, input.lab, input.api, input.timeline, input.supervisor, input.cancelled);
     driver.plugins.push({ name: "overlap-launch-deadlines", onPhase: async (_swap, info) => { if (info.phase === "stopped") wave.extendOverlapLaunches(info.at); } });

@@ -225,7 +225,7 @@ async function main() {
         await page.getByRole('listitem').filter({hasText:entry.definition.key}).getByRole('button',{name:'Set value',exact:true}).click();
       } else await page.getByRole('button',{name:'Set my value',exact:true}).click();
       const dialog=personalSecretEntryDialog(page);await dialog.getByRole('heading',{name:/^Set your value/}).waitFor();
-      if(!await dialog.getByText('Personal publishing credential',{exact:true}).isVisible())throw new Error('Wrong personal credential form');
+      if(!await dialog.getByRole('heading',{name:'Set your value for Personal publishing credential',exact:true}).isVisible())throw new Error('Wrong personal credential form');
       await dialog.getByRole('textbox').fill(input.credential);
       const created=page.waitForResponse(response=>new URL(response.url()).pathname===`/api/companies/${input.companyId}/me/user-secrets`&&response.request().method()==='POST'&&response.status()===201);
       await dialog.getByRole('button',{name:'Save value',exact:true}).click();const secret=await(await created).json() as {id:string;ownerUserId:string;userSecretDefinitionId:string};
@@ -237,16 +237,17 @@ async function main() {
       if(!validCompanySecretMetadata(input.companyMetadata))throw new Error("Invalid requested company secret metadata");
       const requestedName=input.companyMetadata?.name??"Deployment API key",requestedKey=input.companyMetadata?.key;
       if(!input.companyId||!/^[a-f0-9-]{36}$/i.test(input.companyId)||!new URL(input.setupURL).pathname.endsWith("/company/settings/secrets"))throw new Error("Invalid finite company secret operation");
-      await page.goto(input.setupURL,{waitUntil:"domcontentloaded"});await page.getByRole("button",{name:"New secret",exact:true}).click();
-      const dialog=page.getByRole("dialog",{name:"Create secret",exact:true});await dialog.getByLabel("Name",{exact:true}).fill(requestedName);
-      if(requestedKey){await dialog.getByRole("button",{name:"Edit",exact:true}).click();await dialog.getByLabel("Key",{exact:true}).fill(requestedKey);}
-      await dialog.getByLabel("Provider",{exact:true}).selectOption("local_encrypted");
+      await page.goto(input.setupURL,{waitUntil:"domcontentloaded"});await page.getByRole("button",{name:"New secret",exact:true}).first().click();
+      const dialog=page.getByRole("dialog").filter({has:page.getByRole("radiogroup",{name:"Who provides the value",exact:true})});await dialog.getByLabel("Name",{exact:true}).fill(requestedName);
+      await dialog.getByRole("radiogroup",{name:"Who provides the value",exact:true}).getByRole("radio",{name:/^Organization\b/}).click();
+      if(requestedKey){const more=dialog.getByRole("button",{name:"More options",exact:true});if(await more.getAttribute("aria-expanded")!=="true")await more.click();await dialog.getByLabel("Key",{exact:true}).fill(requestedKey);}
+      const storedIn=dialog.getByLabel("Stored in",{exact:true});if(await storedIn.count()){const local=await storedIn.locator("option").evaluateAll(options=>options.map(option=>(option as HTMLOptionElement).value).filter(value=>value.startsWith("local_encrypted:")));if(local.length!==1)throw new Error("Paperclip-encrypted storage is not a single choice");await storedIn.selectOption(local[0]!);}
       await dialog.getByLabel("Value",{exact:true}).fill(input.credential);
       const created=page.waitForResponse(response=>new URL(response.url()).pathname===`/api/companies/${input.companyId}/secrets`&&response.request().method()==="POST"&&response.status()===201);
       await dialog.getByRole("button",{name:"Create secret",exact:true}).click();const response=await created,posted=response.request().postDataJSON() as {name?:string;key?:string};
       if(posted.name!==requestedName||requestedKey&&posted.key!==requestedKey)throw new Error("Outgoing company secret metadata differs from the actual request");
-      const submittedKey=requestedKey??posted.key??requestedName,secret=await response.json() as {id:string;companyId:string;name:string;key:string;scope:string;status:string};
-      if(secret.companyId!==input.companyId||secret.scope!=="company"||secret.status!=="active"||secret.name!==requestedName||secret.key!==canonicalCompanySecretKey(submittedKey))throw new Error("Saved company secret metadata differs from the actual request");
+      const submittedKey=requestedKey??posted.key??requestedName,secret=await response.json() as {id:string;companyId:string;name:string;key:string;scope:string;status:string;provider:string};
+      if(secret.companyId!==input.companyId||secret.provider!=="local_encrypted"||secret.scope!=="company"||secret.status!=="active"||secret.name!==requestedName||secret.key!==canonicalCompanySecretKey(submittedKey))throw new Error("Saved company secret metadata differs from the actual request");
       if(!/^[a-f0-9-]{36}$/i.test(secret.id))throw new Error("Invalid created secret identity");await dialog.waitFor({state:"hidden"});
       await page.getByText(requestedName,{exact:true}).first().waitFor();
       const storageClean=await page.evaluate(secret=>!JSON.stringify([Object.entries(localStorage),Object.entries(sessionStorage),document.body.innerText,location.href]).includes(secret),input.credential);

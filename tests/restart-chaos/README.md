@@ -557,6 +557,52 @@ node cli/node_modules/tsx/dist/cli.mjs tests/restart-chaos/main.ts --env daytona
   --daytona-warm --daytona-cpu 2 --adapters opencode,codex,claude --release-swap-short --concurrency 12 --tasks 200 --seed 7110
 ```
 
+With `--workload staging-mix`, the swaps become the mix's fault slots (`--mix-fault-spacing-minutes` and `--mix-minutes`
+come from the swap count and spacing), so the staging-mix tasks, follow-ups and hands-off results run under the swap
+driver's probes and grading. Probe agents finish their verification while the first tasks run; the first swap waits for them.
+`--server-from <dir>` also runs on Daytona: every server comes from that checkout while the sandboxes keep
+`--daytona-image`'s Runner and provider pack, as a deploy newer or older than its sandbox image does.
+
+### Staging twin cells
+
+Two local servers, volume-free, real Daytona sandboxes, two overlap swaps. `$IMG` must match the checkout's Runner
+(`--server-from`'s checkout when given). Run each through the wave queue (`~/.cache/paperclip/chaos-wave-acquire.sh`).
+
+```sh
+set -a; source ~/.secrets; set +a
+# Twin cell, variant G (graceful swaps): 6 tasks, 6 runs, 4-minute turns, 2 swaps 4 minutes apart, 120 s overlap. 18-23 minutes.
+node cli/node_modules/tsx/dist/cli.mjs tests/restart-chaos/main.ts --env daytona --daytona-image $IMG --daytona-warm --daytona-cpu 1 --storage s3 \
+  --workload staging-mix --mix-tasks 6 --mix-runs 6 --mix-queue 0 --mix-ratio opencode=34,codex=33,claude=33 --mix-turn-minutes 4 \
+  --mix-hold-minutes 2 --mix-arrival-cutoff-minutes 0 --release-swap --release-swap-count 2 --release-swap-spacing-minutes 4 \
+  --release-swap-overlap-seconds 120 --release-swap-settle-minutes 1 --seed 7105
+# Variant G2: the same command; the outgoing server is SIGKILLed 120 s into each overlap.
+RESTART_CHAOS_K15_KILL_OLD_AFTER_SECONDS=120 node cli/node_modules/tsx/dist/cli.mjs tests/restart-chaos/main.ts ...
+# Variant G3: G2, and the incoming server is also frozen (SIGSTOP) for 150 s while the outgoing one stops, so it reaches the Runners late.
+RESTART_CHAOS_K15_KILL_OLD_AFTER_SECONDS=120 RESTART_CHAOS_K15_FREEZE_NEW_SECONDS=150 node cli/node_modules/tsx/dist/cli.mjs tests/restart-chaos/main.ts ...
+# Loaded twin L1: 48 tasks, 20 runs plus 20 queued, 12-22 minute turns, 2 swaps 13 minutes apart, swap 1 graceful, swap 2 G3. About 78 minutes.
+RESTART_CHAOS_DAYTONA_VCPU_BUDGET=48 RESTART_CHAOS_K15_KILL_OLD_SWAPS=2 RESTART_CHAOS_K15_KILL_OLD_AFTER_SECONDS=120 \
+RESTART_CHAOS_K15_FREEZE_SWAPS=2 RESTART_CHAOS_K15_FREEZE_NEW_SECONDS=150 RESTART_CHAOS_MIX_BANNER_REST_SECONDS=240 \
+node cli/node_modules/tsx/dist/cli.mjs tests/restart-chaos/main.ts --env daytona --daytona-image $IMG --daytona-warm --daytona-cpu 1 --storage s3 \
+  --workload staging-mix --mix-tasks 48 --mix-runs 20 --mix-queue 20 --mix-ratio opencode=34,codex=33,claude=33 --mix-turn-minutes 12-22 \
+  --mix-hold-minutes 2 --mix-arrival-cutoff-minutes 0 --release-swap --release-swap-count 2 --release-swap-spacing-minutes 13 \
+  --release-swap-overlap-seconds 120 --release-swap-settle-minutes 1 --seed 7301
+```
+
+| Knob | Effect |
+| --- | --- |
+| `RESTART_CHAOS_K15_KILL_OLD_AFTER_SECONDS` | SIGKILL the outgoing server this many seconds into the overlap (at most the overlap) instead of a SIGTERM at its end |
+| `RESTART_CHAOS_K15_KILL_OLD_SWAPS` | comma-separated swap numbers (1-based) the kill applies to; unset means every swap |
+| `RESTART_CHAOS_K15_FREEZE_NEW_SECONDS` | SIGSTOP the incoming server for this long while the outgoing one stops, then SIGCONT |
+| `RESTART_CHAOS_K15_FREEZE_SWAPS` | swap numbers the freeze applies to; unset means every swap |
+| `RESTART_CHAOS_MIX_BANNER_REST_SECONDS` | a hands-off staging-mix task whose Retry banner has stood this long rests (it is still reported as a banner) instead of waiting out its budget |
+| `RESTART_CHAOS_MIX_FIRST_SLOT_SECONDS` | place the first staging-mix fault slot this early (at most the slot spacing); the slot count stays the same, so a release swap never gets an extra swap |
+
+A run counts as a success only when `staging-mix-summary.md` shows every started task completed hands-off
+(`completed hands-off / started` equal), `Retry banner shown: 0`, `Retry worked / Retry clicked` equal, `extra turns: 0`
+and `duplicated side effects: 0`, the release-swap headline shows every task completed without human action, and the
+Daytona cleanup left no sandbox (`left after deletion: none`). The `follow-up answered in a later run` line is not a
+failure; read its waits. In L1 the queued tasks wait for a slot by design; U1 allows that wait (see "Universal checks").
+
 `--release-swap` runs the full default (6 swaps, 40 minutes apart). `--release-swap-short` runs 3 swaps 12 minutes
 apart with the full 510 s overlap, so two servers run for most of each cycle. Either takes the `--release-swap-*`
 options below, which override the preset. Workload sizing (turn length, concurrency) comes from the workload flags.
@@ -1040,12 +1086,20 @@ disk), and `--concurrency × --daytona-cpu` must stay within 40 vCPU
 org limit with room for verification probes: a 10 vCPU org fails creates with
 HTTP 400 "Total CPU limit exceeded", so use 8 there and `--daytona-cpu 2`.
 
-**Fleet safety.** The harness never stops, archives or deletes a Daytona
-sandbox. Its Daytona client is a frozen wrapper that exposes only a
-label-filtered `list`. `assertHarnessMayMutate` refuses `paperclip-create-*`
-names (every plugin-created sandbox has one) and `fleet-sbx-*` snapshots, so a
-future mutating path cannot act on fleet sandboxes either. Cleanup goes only
-through Paperclip, by deleting the wave's own environment.
+**Fleet safety.** The Daytona org is shared with the live Cloud fleet, and
+every plugin-created sandbox, the fleet's included, is named
+`paperclip-create-*`. The name therefore says nothing about who owns a
+sandbox; the labels do. Each wave's isolated instance mints a fresh company
+and environment UUID, and the Daytona plugin labels every sandbox it creates
+with both. Cleanup first deletes the wave's own environment through Paperclip.
+Then it deletes every sandbox that still carries both of this wave's labels
+(archived setup sandboxes included, since Daytona does not delete archived
+sandboxes on its own), and nothing else: the listing is filtered by both labels
+on the server and checked again on every row, and `assertHarnessMayMutate`
+refuses any sandbox without both labels and any `fleet-sbx-*` snapshot. The
+only delete is `DELETE /sandbox/<id>` for a row that passed those checks. A
+wave sandbox still there after the settle window fails the wave
+(`undeletedSandboxes`, and the warm-shutdown verdict).
 
 **Image matching.** The controller needs the image's own Linux amd64
 `/usr/local/bin/paperclip-runnerd` (`PAPERCLIP_RUNNER_REMOTE_BINARY_PATH`) and
@@ -1090,6 +1144,14 @@ gh api -X POST repos/paperclipai/paperclip/actions/runs/<run>/pending_deployment
 
 The digest is in the "Publish verified Daytona image" job log (`pushing manifest
 for …@sha256:…`), or check out the image's `org.opencontainers.image.revision`.
+
+The harness also requires the image's provider pack to be the one a named
+commit built: the commit in the image's `io.paperclip.runner.source-revision`
+label, or, when the image has no such label, the image's own
+`org.opencontainers.image.revision`. An image that copied its Runner names
+the commit that built it in that label; an image that built its own Runner
+has none. An empty label counts as absent, because an image can empty a label
+of its base but cannot drop it.
 
 **Setup** reuses runner-e2e: the bundled Daytona plugin (`installFixtureDaytonaProvider`,
 prepared outside the root workspace as CI does), the `daytona` environment
@@ -1518,6 +1580,14 @@ tried again on the next poll with the same `clientRequestId`. The overlap window
 `staging-mix.ts`, which a swap driver registers. Without a probe, the window is any time a fault is in progress and the
 server still answers (a K15 overlap). The timeline records `staging_mix_follow_up`.
 
+To aim a follow-up at the warm session's idle close instead, set `RESTART_CHAOS_MIX_FOLLOW_UP_AFTER_END_MS=<min>-<max>`
+(for example `298000-306000` for the 300 s idle timeout). The harness then posts the follow-up that long after the
+task's last run ended, `RESTART_CHAOS_MIX_FOLLOW_UP_COUNT` times (default 2), and waits for every post before the task
+counts as finished. A failed post is tried again with the same `clientRequestId`. The task budget grows by one
+maximum delay plus one turn per post. The grade check `after_end_follow_ups_served` needs every post, an agent comment
+after each post and the `FOLLOWUP-<nonce>` ledger line. The timeline records `staging_mix_follow_up_after_end` with the
+measured delay.
+
 **Retries: hands-off first.** By default the harness never clicks Retry during the wave or the settle, so the product's
 own continuation is what gets measured. A task that shows a Retry banner is kept under watch, not rested. Every banner
 is recorded per task: when it first showed, how long it stayed, and the error code behind it, even when the task then
@@ -1536,12 +1606,16 @@ click instead, and its issue reads also update the banner record. Both paths use
 So no task gets two clicks. `--mix-retry-during-wave` restores the old behaviour: Retries
 clicked during the wave, held until an overlap window as follow-ups are (`staging_mix_retry_in_overlap`).
 
-**Results.** `staging-mix-results.json` and the first lines of `SUMMARY.md` give four lines, in this order:
+**Results.** `staging-mix-results.json` and the first lines of `SUMMARY.md` give six lines, in this order:
 
 1. `completed hands-off / started`.
 2. `duplicated side effects: N tasks`, followed by `; evidence incomplete: M tasks` when a check could not read its evidence (such a check is never counted as a duplicate).
 3. `Retry banner shown: N tasks`.
 4. `Retry worked / Retry clicked`.
+5. `extra turns`: runs that started after the task completed with no undelivered input.
+6. `follow-up answered in a later run: n`, with the answering run's queued wait (p50 / max) and the time from the comment
+   to the answering run's start (p50 / max). These runs are required, not extra turns; the waits are shown because a long
+   one is a product concern (a person waits for an answer behind a full queue).
 
 A task counts as completed hands-off when all three hold, read from fresh data at the end of the wave:
 
@@ -1558,6 +1632,18 @@ worked when the clicked task meets the same completion rule. The banner list fol
 The summary also lists, by start time, every run that started after the task completed, under "Runs started after
 the task completed" (`extraTurns`, with counts by wake reason in `extraTurnsByReason`). A run queued after completion
 that never started is listed on its own (`queuedAfterDone`).
+
+The grader takes comment delivery from the server's own record and does not decide it again. A comment that the server
+judged delivered to an earlier run never becomes a run: its wake is cancelled or coalesced. A run that the server
+started from a wake that carries a person's comment posted after the task's first run started (`wakeCommentIds`, the
+wake payload's `commentId`) is a required run. This includes the retry of a failed attempt for the same comment. OpenCode,
+for example, takes no input mid-turn, so a comment posted during its turn is answered by the next run. Such runs are
+listed under "Follow-ups the running turn did not receive, answered in a later run" (`followUpsAnsweredLater`,
+`followUpWaits`). An extra turn is a run that started after completion from a wake that carries no comment. The
+server's delivery rule (`task_history.read`, cited evidence, child-result reads) is covered by the server's own tests.
+
+`completion_once` stays the independent side-effect check. The first run that reported completion is always the
+baseline. A later completion counts as a duplicate unless its run answered a comment as above.
 
 The completion time comes from the product's own record, in this order:
 
@@ -1674,6 +1760,19 @@ its workload. They catch a stuck or misleading task that no scenario anticipated
 | U3 diagnosable | a failed run has no code or a generic one (`adapter_failed`, `unknown`, `error`, ...) and no recorded `failureCause` (a bounded code such as `40001`, `exit_code_137` or `provider_http_429`; a bare `Error` or `unknown_error` does not count), its stored error is empty or names only a bare cause (`last cause: Error`), or a recovery action's cause or next action is empty or bare | none |
 | U4 stale notice | a Retry or failed notice stays on a task after its latest run succeeded, longer than the bound or at rest | 60 s (`RESTART_CHAOS_U4_STALE_SECONDS`) |
 | U5 run budget | one task created more runs than the bound | 10 (`RESTART_CHAOS_U5_MAX_RUNS`) |
+
+When the workload declares a queue (staging-mix `--mix-queue` above 0), a run that waits queued while its agent's
+`maxConcurrentRuns` slots are all taken is a healthy queued run. U1 then allows it the declared queue bound,
+ceil(queue / runs) × (longest turn + 5 min); for L1 (20 runs, 20 queued, 12–22 minute turns) that is 27 minutes.
+Only queued time with a free slot of its agent counts toward the 5-minute queue bound, so a run left queued while
+its agent has a free slot still fails. Slot use comes from `wake-evidence/agent-slots.json` (every run's start and
+finish and each agent's effective cap as the server computes it, `maxConcurrentRunsSql`, so a configured 100 is saved
+as the server's limit of 50; captured at wave end). Without that file (older waves) only the declared bound applies.
+
+A parent whose turn ended `yielded` or `blocked` and that waits, with no run, until its subtasks complete is in a
+named wait (`waitingOnChildren`): R5 and U1 do not count it as a stall. The observer keeps watching such a parent
+while any subtask is open. When an older record rested during that wait and the parent then completed through its
+`issue_children_completed` wake, grading takes the completion from the wake evidence.
 
 U1, U2, U4 and U5 fail the task (signature `U<n>:...`). U3 is a warning: it is reported in each grade
 (`grade.universal`), the ledger (`universal`, `universalWarnings`) and the wave's `SUMMARY.md`, and

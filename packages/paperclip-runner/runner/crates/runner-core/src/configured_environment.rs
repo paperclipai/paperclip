@@ -3,6 +3,8 @@ use crate::local_runner::LocalRunnerError;
 use std::process::Command;
 
 const MARKER: &str = "PAPERCLIP_CONFIGURED_ENV_KEYS";
+/// Names (never values) of configured entries resolved from secrets.
+const SECRET_MARKER: &str = "PAPERCLIP_SECRET_ENV_KEYS";
 const RESERVED: &[&str] = &[
     "PAPERCLIP_OBSERVABILITY_CODEX_CONFIG",
     "PAPERCLIP_OBSERVABILITY_OPENCODE",
@@ -71,6 +73,7 @@ const RESERVED: &[&str] = &[
     "PAPERCLIP_APPROVAL_STATUS",
     "PAPERCLIP_COMPANY_ID",
     "PAPERCLIP_CONFIGURED_ENV_KEYS",
+    "PAPERCLIP_SECRET_ENV_KEYS",
     "PAPERCLIP_EXECUTION_MODE",
     "PAPERCLIP_EXTERNAL_CHAT_EXECUTION_BOUND_KEY",
     "PAPERCLIP_GITHUB_AUTH_MODE",
@@ -184,11 +187,37 @@ pub(crate) fn apply_configured_environment(
         }
         values.push((name, value));
     }
+    // The secret-name marker travels with the projection it describes. Only
+    // names that this projection carries may cross.
+    let secret_names = match lookup(SECRET_MARKER) {
+        None => None,
+        Some(raw) => {
+            if raw.len() > 20_000 {
+                return Err(invalid());
+            }
+            let secret: Vec<String> = serde_json::from_str(&raw).map_err(|_| invalid())?;
+            if secret.len() > 128 || secret.iter().any(|name| !eligible_key(name)) {
+                return Err(invalid());
+            }
+            Some(
+                secret
+                    .into_iter()
+                    .filter(|name| names.contains(name))
+                    .collect::<Vec<_>>(),
+            )
+        }
+    };
     command.envs(values);
     command.env(
         MARKER,
         serde_json::to_string(&names).map_err(|_| invalid())?,
     );
+    if let Some(secret) = secret_names {
+        command.env(
+            SECRET_MARKER,
+            serde_json::to_string(&secret).map_err(|_| invalid())?,
+        );
+    }
     Ok(())
 }
 
@@ -245,6 +274,45 @@ mod tests {
             }))
             .is_err()
         );
+    }
+
+    #[test]
+    fn secret_name_marker_crosses_only_with_its_projection() {
+        let source = BTreeMap::from([
+            (MARKER, "[\"CUSTOM\",\"PLAIN\"]".to_string()),
+            ("CUSTOM", "custom-secret-value".to_string()),
+            ("PLAIN", "plain".to_string()),
+            (SECRET_MARKER, "[\"CUSTOM\",\"NOT_CONFIGURED\"]".to_string()),
+        ]);
+        let mut command = Command::new("unused");
+        apply_configured_environment(&mut command, |key| source.get(key).cloned()).unwrap();
+        let envs: BTreeMap<_, _> = command
+            .get_envs()
+            .map(|(key, value)| {
+                (
+                    key.to_string_lossy().into_owned(),
+                    value.map(|v| v.to_string_lossy().into_owned()),
+                )
+            })
+            .collect();
+        assert_eq!(
+            envs.get(SECRET_MARKER),
+            Some(&Some("[\"CUSTOM\"]".to_string()))
+        );
+        for raw in ["not-json", "[\"bad=name\"]", "[\"PAPERCLIP_API_KEY\"]"] {
+            let mut source = source.clone();
+            source.insert(SECRET_MARKER, raw.into());
+            let mut command = Command::new("unused");
+            assert!(
+                apply_configured_environment(&mut command, |key| source.get(key).cloned()).is_err()
+            );
+            assert_eq!(command.get_envs().count(), 0);
+        }
+        let mut legacy = source.clone();
+        legacy.remove(SECRET_MARKER);
+        let mut command = Command::new("unused");
+        apply_configured_environment(&mut command, |key| legacy.get(key).cloned()).unwrap();
+        assert!(command.get_envs().all(|(key, _)| key != SECRET_MARKER));
     }
 
     #[test]

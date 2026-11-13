@@ -2,6 +2,7 @@ import {personalSecretMenuNavigation,type PersonalSecretMenuNavigation} from "./
 import { personalSecretConfirmationHandoff, acceptPersonalSecretConfirmation, confirmThenStartPersonalConsumer, readVisiblePersonalSecretConfirmation } from "./external-personal-secret-confirmation.js";
 import type {Page} from "@playwright/test";
 import {visibleSecretSettingsURL} from "./external-secret-route.js";
+import { followPersonalSecretReplyLink, type PersonalSecretReplyLinkProof } from "./external-personal-secret-link.js";
 import { createHash, randomBytes } from "node:crypto";
 import { expect } from "@playwright/test";
 import type { AskUserQuestionsInteraction } from "../../../packages/shared/src/types/issue.js";
@@ -245,10 +246,7 @@ export function gradePersonalSecret(value: unknown) {
     "A required definition, real separate owners, secure UI entry and independently authenticated admitted worker check are required.",
   );
   if (!o) return c.result();
-  const initial = o.phaseReplies.find(
-      (row) => row.runId === o.state.initialRunId,
-    ),
-    questionRow = o.interactions.find(row => row.id === o.state.initialQuestionId),
+  const questionRow =o.interactions.find(row => row.id === o.state.initialQuestionId),
     question = personalSecretQuestionHandoff(questionRow, { companyId: o.companyId, issueId: String(o.state.sourceIssueId),
       agentId: o.leadId, userId: String(o.state.currentPersonId), runId: String(o.state.initialRunId), definitionId: String(o.state.definitionId) }, "answered"),
     questionAnswered = !!question && question.payloadHash === o.state.initialQuestionPayloadHash
@@ -264,6 +262,11 @@ export function gradePersonalSecret(value: unknown) {
   const confirmation = personalSecretConfirmationHandoff(confirmationRow, { companyId: o.companyId, issueId: String(o.state.sourceIssueId), agentId: o.leadId, userId: String(o.state.currentPersonId), runId: String(o.state.initialRunId), definitionId: String(o.state.definitionId), canonicalCommentId: String(o.state.canonicalHumanCommentId) }, personalSecretGuidance, "accepted");
   const confirmationAccepted = o.state.confirmationVisibleBeforeEntry === true && !!confirmation && confirmation.payloadHash === o.state.initialConfirmationPayloadHash && confirmation.continuationPolicy === o.state.initialConfirmationContinuationPolicy
     && o.activity.some(event => event.action === "issue.thread_interaction_accepted" && event.companyId === o.companyId && event.entityId === o.state.sourceIssueId && event.actorType === "user" && event.actorId === o.state.currentPersonId && event.details?.interactionId === confirmation.interactionId && event.details.interactionStatus === "accepted");
+  // The reply is graded by its rendered link: clicking it reached the own-value entry for this definition.
+  const replyLink = o.state.replyLinkProof as PersonalSecretReplyLinkProof | undefined;
+  // A turn may post several messages; the graded link may be in any reply of the initial run.
+  const replyLinkReached = replyLink?.reachedOwnValueEntry === true
+    && o.phaseReplies.some(row => row.runId === o.state.initialRunId && row.commentId === replyLink.commentId);
   const secret = o.state.currentSecret as Partial<CompanySecret> | undefined;
   c.add(
     "missing-own-required-credential-and-truthful-handoff",
@@ -271,7 +274,7 @@ export function gradePersonalSecret(value: unknown) {
       o.state.requiredReferenceBefore === true &&
       o.state.otherConfiguredBefore === true &&
       o.state.currentPersonId !== o.state.otherPersonId &&
-      ((!!initial && personalSecretGuidance(initial.body)) || questionAnswered || confirmationAccepted) &&
+      (replyLinkReached || questionAnswered || confirmationAccepted) &&
       o.state.agentValueCreateStatus === 403,
     "Another person's real stored value does not satisfy the current person's required publishing definition, and chat directs secure own-value entry before claiming completion.",
   );
@@ -489,7 +492,7 @@ export const personalSecretExternalCases = [
         if (!o.state.initialQuestionId) return;
         return { interactionId: String(o.state.initialQuestionId), sourceRunId: String(o.state.initialRunId), userId: String(o.state.currentPersonId) };
       },
-      oracleVersion: "paperclip.chat-catalog.personal-secret.v20",
+      oracleVersion: "paperclip.chat-catalog.personal-secret.v21",
       setupPolicy: { readiness: "preserve-scenario", invariantCheckIds: ["current-owner-missing-required-personal-value"] },
       expectedRunCount: 3,
       minimumRunCount: 3,
@@ -499,6 +502,8 @@ export const personalSecretExternalCases = [
         "../../packages/paperclip-runner/src/protocol-actions/request-human-input.ts",
         "chat-catalog-domains/external-personal-secret.ts",
         "chat-catalog-domains/external-personal-secret-menu.ts",
+        "chat-catalog-domains/external-personal-secret-link.ts",
+        "chat-catalog-domains/external-secret-setup-link.ts",
         "../../ui/src/pages/secrets/MyUserSecretsTab.tsx",
         "chat-catalog-domains/external-personal-secret-confirmation.ts",
         "chat-catalog-contract.ts",
@@ -631,7 +636,7 @@ export const personalSecretExternalCases = [
         const commentHandoff = !!reply && reply.runId === run.id
           && comments.some(comment => comment.id === reply.commentId && comment.companyId === source.companyId
             && comment.issueId === source.id && comment.authorAgentId === run.agentId && comment.createdByRunId === run.id
-            && comment.body?.trim() === reply.body.trim()) && personalSecretGuidance(reply.body);
+            && comment.body?.trim() === reply.body.trim());
         if (initial.companyId !== source.companyId || (pendingQuestions.length ? !question && !confirmation : !commentHandoff))
           throw new Error("Personal setup must direct the current person's secure publishing value before human action");
         state.initialRunId = run.id;
@@ -643,6 +648,22 @@ export const personalSecretExternalCases = [
         }
         if (question) Object.assign(state, { initialQuestionId: question.interactionId,
           initialQuestionOptionId: question.optionId, initialQuestionPayloadHash: question.payloadHash });
+        const path = `/${ctx.input.fixtures.company.issuePrefix}/company/settings/secrets`,
+          // Graded by its rendered link, followed as a person would; wording is left to human review.
+          // A question or confirmation card already carries the handoff, so a reply link is then optional.
+          replyLink = !question && !confirmation && commentHandoff && reply?.commentId ? await followPersonalSecretReplyLink(ctx.input.page, {
+            commentId: reply.commentId, origin: initial.origin, prefix: String(ctx.input.fixtures.company.issuePrefix),
+            definitionId: String(state.definitionId), definitionKey: "PERSONAL_PUBLISHING_KEY", timeout: remaining(),
+          }) : undefined,
+          link = replyLink?.route;
+        if (replyLink) {
+          state.replyLinkProof = replyLink;
+          await ctx.input.evidence("personal-secret-reply-link.json", replyLink);
+        }
+        if (!link && !question && !confirmation)
+          throw new Error(
+            "Actual reply must link to the current person's own-value entry for this definition",
+          );
         if (
           (
             await ctx.input.api.get<OwnEntry[]>(`${root(ctx)}/me/user-secrets`)
@@ -651,22 +672,15 @@ export const personalSecretExternalCases = [
           throw new Error(
             "Current person's value was created before secure human entry",
           );
-        const path = `/${ctx.input.fixtures.company.issuePrefix}/company/settings/secrets`,
-          link = commentHandoff ? await personalSecretSetupURL(ctx.input.page,reply!,initial.origin,String(ctx.input.fixtures.company.issuePrefix),String(state.definitionId),remaining(),proof=>{state.personalMenuNavigation=proof;}) : undefined;
-        if (!link && !question && !confirmation)
-          throw new Error(
-            "Actual reply must direct the supported own-value settings path for this definition",
-          );
-        if(state.personalMenuNavigation)await ctx.input.evidence("personal-secret-menu-navigation.json",state.personalMenuNavigation);
         const url = new URL(question || confirmation ? path : link!, initial.origin);
-        if (!question && !confirmation && !state.personalMenuNavigation) url.searchParams.set("definition", String(state.definitionId));
+        if (!question && !confirmation) url.searchParams.set("definition", String(state.definitionId));
         const receipt = await privateBrowserEntry({
           mode: "personal-secret-create",
           companyId: ctx.input.fixtures.company.id,
           personal: {
             definitionId: String(state.definitionId),
             userId: String(state.currentPersonId),
-            viaMySecrets: !!question || !!confirmation || !!state.personalMenuNavigation,
+            viaMySecrets: !!question || !!confirmation,
           },
           baseURL: initial.origin,
           setupURL: url.href,
