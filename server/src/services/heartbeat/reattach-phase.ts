@@ -8,6 +8,7 @@ import {
   announceReattachPhase,
   enableReattachPhase,
   hasJoinedReattachPhase,
+  isProcessRunAdmissionClosed,
   isReattachPhaseEnabled,
   joinReattachPhase,
   onReattachPhaseEnd,
@@ -102,16 +103,19 @@ export async function notifyReattachHandOver(transaction: object, runId: string)
   await notifyDeliveryWork(transaction, DELIVERY_QUEUES.reattachPhase, runId);
 }
 
-function observeLeases(current: ReattachWatch, rows: PreviousControllerRunLease[], now = Date.now()): void {
+function observeLeases(current: ReattachWatch, rows: PreviousControllerRunLease[], now = Date.now()): string[] {
   current.leases = new Map(rows.map(row => [row.runId, row]));
   const unjoined = rows.filter(row => !hasJoinedReattachPhase(row.runId));
   const claimable = unjoined.map(row => claimableReattachRun(row, now)).filter((run): run is ClaimableReattachRun => run !== null);
   const joined = joinReattachPhase(claimable, {}, now);
   current.watching = unjoined.length > claimable.length;
-  if (joined.length > 0 && current.claim) {
-    void current.claim(joined)
-      .catch(error => logger.warn({ err: error, runIds: joined }, "reattach phase could not start the claim of handed-over runs"));
-  }
+  return joined;
+}
+
+async function claimJoinedRuns(current: ReattachWatch, joined: string[]): Promise<void> {
+  if (joined.length === 0 || !current.claim || watch !== current || isProcessRunAdmissionClosed()) return;
+  await current.claim(joined)
+    .catch(error => logger.warn({ err: error, runIds: joined }, "reattach phase could not start the claim of handed-over runs"));
 }
 
 export function nextReattachLeaseDeadline(leases: Iterable<PreviousControllerRunLease>, now = Date.now()): number | null {
@@ -140,7 +144,7 @@ async function reconcileReattachWatch(current: ReattachWatch): Promise<void> {
     current.initialized = true;
     if (rows.length === 0) reportNothingToReattach();
     else {
-      observeLeases(current, rows);
+      await claimJoinedRuns(current, observeLeases(current, rows));
       logger.info({ liveRuns: rows.length, claimableNow: rows.filter(row => hasJoinedReattachPhase(row.runId)).length },
         "reattach phase watching live runs of a previous server: new run starts are held only once they become claimable");
     }
@@ -154,7 +158,7 @@ async function reconcileReattachWatch(current: ReattachWatch): Promise<void> {
       throw error;
     }
     if (watch !== current) return;
-    observeLeases(current, rows);
+    await claimJoinedRuns(current, observeLeases(current, rows));
   }
   if (pendingReattachRunIds().length > 0) await settleFinishedReattachRuns(current.db);
 }

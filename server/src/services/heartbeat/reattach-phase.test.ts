@@ -7,6 +7,7 @@ import { resolveExternalTestDatabaseUrl } from "../../__tests__/helpers/external
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "../../__tests__/helpers/embedded-postgres.js";
 import { createHeartbeatQueue } from "./queue.js";
 import {
+  closeProcessRunAdmission,
   enableReattachPhase,
   isReattachPhaseActive,
   joinReattachPhase,
@@ -15,6 +16,7 @@ import {
   pendingReattachRunIds,
   reattachPhaseRecheckAt,
   refineReattachClaimable,
+  resetProcessRunAdmissionForTests,
   resetReattachPhaseForTests,
   settleReattachRun,
   type ClaimableReattachRun,
@@ -524,6 +526,37 @@ describe.skipIf(!support.supported)("reattach phase discovery", () => {
       expect(Math.max(...claimed.map(entry => entry.at)) - handedOverAt).toBeLessThan(1_000);
       settleReattachRun(first, "reached");
       settleReattachRun(second, "reached");
+    });
+
+    it("keeps an in-flight claim inside the worker's lifetime and starts none once shutdown closed admission", async () => {
+      await retireEarlierRuns();
+      const { run } = await seed("RPP");
+      const first = await run("running", liveLease());
+      const second = await run("running", liveLease());
+      let finishClaim!: () => void;
+      const claims: string[][] = [];
+      const coordinator = await startReattachPhase(db, { capMs: 60_000, bootId: "incoming-boot", recheckMs: 20,
+        claim: runIds => { claims.push(runIds); return new Promise<void>(resolve => { finishClaim = resolve; }); } });
+      await handOver([first]);
+      expect(claims).toEqual([[first]]);
+      let stopped = false;
+      const stopping = coordinator.stop().then(() => { stopped = true; });
+      await sleep(100);
+      expect(stopped).toBe(false);
+      finishClaim();
+      await stopping;
+      expect(stopped).toBe(true);
+      closeProcessRunAdmission();
+      try {
+        await startReattachPhase(db, { capMs: 60_000, bootId: "incoming-boot", recheckMs: 20,
+          claim: async runIds => { claims.push(runIds); } });
+        await handOver([second]);
+        expect(claims).toEqual([[first]]);
+      } finally {
+        resetProcessRunAdmissionForTests();
+        settleReattachRun(first, "reached");
+        settleReattachRun(second, "reached");
+      }
     });
 
     it("does no database work and keeps no deadline on an instance with nothing to reattach", async () => {
