@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { callTaskWorkspaceTool } from "../services/task-workspace-tools.js";
+import { apiResultMayHaveWorkspace, callTaskWorkspaceTool, withWorkspacePageHref } from "../services/task-workspace-tools.js";
 
 afterEach(() => vi.unstubAllGlobals());
 const base = { apiUrl: "https://paperclip.example/api", token: "run-token", companyId: "company", issueId: "task" };
@@ -59,5 +59,37 @@ describe("task workspace semantic transport", () => {
     expect(fetcher.mock.calls[0]).toEqual(["https://paperclip.example/api/issues/task/workspace/repositories", expect.objectContaining({ method: "POST", body: JSON.stringify(args) })]);
     await expect(callTaskWorkspaceTool({ ...base, name: "prepare_repository", arguments: { ...args, cwd: "/home" } })).rejects.toThrow();
     expect(fetcher).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("workspace page hrefs on agent API reads", () => {
+  // The chat agent read another task with get_task (GET /api/issues/{id}); its
+  // currentExecutionWorkspace had no href, so the agent told the person the
+  // workspace had no page even though the page was enabled.
+  const workspace = { id: "ws-1", companyId: "company", name: "COM-1", mode: "shared_workspace", cwd: "/srv/ws" };
+  const taskRead = { operationId: "GET /api/issues/{id}", ok: true, status: 200,
+    data: { id: "task-1", identifier: "COM-1", companyId: "company", currentExecutionWorkspace: workspace } };
+  it("links the task's bound workspace page when workspace pages are on", () => {
+    expect(apiResultMayHaveWorkspace(taskRead)).toBe(true);
+    expect(withWorkspacePageHref(taskRead, "COM", "company")).toEqual({ ...taskRead,
+      data: { ...taskRead.data, currentExecutionWorkspace: { ...workspace, href: "/COM/execution-workspaces/ws-1" } } });
+  });
+  it("links the workspace from the task workspace and workspace detail reads", () => {
+    expect(withWorkspacePageHref({ operationId: "GET /api/issues/{id}/workspace", ok: true, data: { issueId: "task-1", workspace } }, "COM", "company"))
+      .toMatchObject({ data: { workspace: { id: "ws-1", href: "/COM/execution-workspaces/ws-1" } } });
+    expect(withWorkspacePageHref({ operationId: "GET /api/execution-workspaces/{id}", ok: true, data: workspace }, "COM", "company"))
+      .toMatchObject({ data: { id: "ws-1", href: "/COM/execution-workspaces/ws-1" } });
+  });
+  it("adds no href when the page is off, the read failed, or the workspace is not this company's", () => {
+    expect(withWorkspacePageHref(taskRead, null, "company")).toBe(taskRead);
+    expect(withWorkspacePageHref({ ...taskRead, ok: false }, "COM", "company")).toEqual({ ...taskRead, ok: false });
+    expect(withWorkspacePageHref(taskRead, "COM", "other-company")).toBe(taskRead);
+    const unbound = { ...taskRead, data: { ...taskRead.data, currentExecutionWorkspace: null } };
+    expect(withWorkspacePageHref(unbound, "COM", "company")).toBe(unbound);
+  });
+  it("leaves unrelated reads untouched and skips the page setting for them", () => {
+    const other = { operationId: "GET /api/issues/{id}/runs", ok: true, data: [{ id: "ws-1", companyId: "company" }] };
+    expect(apiResultMayHaveWorkspace(other)).toBe(false);
+    expect(withWorkspacePageHref(other, "COM", "company")).toBe(other);
   });
 });

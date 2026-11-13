@@ -85,6 +85,7 @@ jobs:
     permissions:
       contents: read
       actions: write
+      checks: read # runner-loss evidence (annotations) for readiness retries
     outputs:
       verified: ${{ steps.watch.outputs.verified }}
     steps:
@@ -494,6 +495,7 @@ jobs:
     permissions:
       contents: read
       actions: write # restart only exact-source producers deferred before admission
+      checks: read # runner-loss evidence (annotations) for readiness retries
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:

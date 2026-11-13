@@ -184,6 +184,27 @@ describe.skipIf(!runControlPostgresSupport.supported)("heartbeat run-control dat
     )).toMatchObject({ status: "cancelled" });
   });
 
+  it.each(["queued", "running", "scheduled_retry"] as const)("finishes cancellation settlement for %s when the event append fails", async status => {
+    const { company, agent } = await fixture();
+    const [wake] = await db.insert(agentWakeupRequests).values({
+      companyId: company.id, agentId: agent.id, source: "assignment", status: "claimed",
+    }).returning();
+    const [run] = await db.insert(heartbeatRuns).values({
+      companyId: company.id, agentId: agent.id, status, wakeupRequestId: wake.id,
+      runtimeMode: "legacy", runtimeModeResolvedAt: new Date(),
+    }).returning();
+    const deps = callbacks(db);
+    vi.mocked(deps.appendRunEvent).mockRejectedValueOnce(new Error("event storage unavailable"));
+
+    expect(await createHeartbeatRunControl(db, deps).cancelRunInternal(run.id)).toMatchObject({ status: "cancelled" });
+    expect(await deps.getRun(run.id)).toMatchObject({ status: "cancelled", finishedAt: expect.any(Date) });
+    expect((await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, wake.id)))[0])
+      .toMatchObject({ status: "cancelled", finishedAt: expect.any(Date) });
+    expect(deps.wakeQueue.releaseIssueExecution).toHaveBeenCalledWith(expect.objectContaining({ runId: run.id, companyId: company.id }));
+    expect(deps.finalizeAgentStatus).toHaveBeenCalledWith(agent.id, "cancelled", undefined, expect.any(Object));
+    expect(deps.startNextQueuedRunForAgent).toHaveBeenCalledExactlyOnceWith(agent.id);
+  });
+
   it.each([["40P01", 3], ["XX000", 1]] as const)("bounds cancellation transaction attempts for PostgreSQL %s", async (code, attempts) => {
     const { company, agent } = await fixture();
     const run = await liveRun(company.id, agent.id);
