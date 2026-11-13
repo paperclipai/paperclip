@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import type { IssueAttachment } from "../../packages/shared/src/types/issue.js";
 import type { IssueWorkProduct } from "../../packages/shared/src/types/work-product.js";
 import type { APIRequestContext } from "@playwright/test";
+import type { RunnerApi } from "./api.js";
 
 export class RegisteredArtifactNotFoundError extends Error {
   constructor(artifactName: string) {
@@ -13,16 +14,27 @@ export class RegisteredArtifactNotFoundError extends Error {
 const REGISTERED_ARTIFACT_STATUSES = new Set(["active", "ready_for_review", "approved"]);
 
 /** Registration, attribution and downloaded bytes must agree independently. */
-export async function readRegisteredArtifacts(api: { get<T>(route: string): Promise<T>; request: Pick<APIRequestContext, "get"> }, issueId: string, runId: string, names: readonly string[]) {
+type ArtifactReader = Pick<RunnerApi, "get"> & (Pick<RunnerApi, "getAttachmentContent"> | { request: Pick<APIRequestContext, "get"> });
+async function downloadAttachment(api: ArtifactReader, name: string, attachmentId: string): Promise<Buffer> {
+  if ("getAttachmentContent" in api) return api.getAttachmentContent(attachmentId);
+  const response = await api.request.get(`/api/attachments/${encodeURIComponent(attachmentId)}/content?download=1`);
+  if (!response.ok()) throw new Error(`Registered artifact ${name} download returned ${response.status()}`);
+  return response.body();
+}
+export async function readRegisteredArtifacts(api: ArtifactReader, issueId: string, runId: string, names: readonly string[]) {
   if (names.length === 0) return [];
   const [products, attachments] = await Promise.all([
     api.get<IssueWorkProduct[]>(`/api/issues/${encodeURIComponent(issueId)}/work-products`),
     api.get<IssueAttachment[]>(`/api/issues/${encodeURIComponent(issueId)}/attachments`),
   ]);
+  // The file name identifies a deliverable; its work-product title is a
+  // human-facing label the agent may choose, so it is not part of identity.
+  const filenameOf = (product: IssueWorkProduct) =>
+    attachments.find(attachment => attachment.id === product.metadata?.attachmentId)?.originalFilename;
   return Promise.all(names.map(async name => {
     const registered = products.filter(product => product.issueId === issueId &&
       product.createdByRunId === runId && product.type === "artifact" &&
-      REGISTERED_ARTIFACT_STATUSES.has(product.status) && product.title === name);
+      REGISTERED_ARTIFACT_STATUSES.has(product.status) && (product.title === name || filenameOf(product) === name));
     if (registered.length === 0) throw new RegisteredArtifactNotFoundError(name);
     if (registered.length !== 1) throw new Error(`Expected one registered artifact ${name} from the tested run; observed ${registered.length}`);
     const product = registered[0]!;
@@ -35,9 +47,7 @@ export async function readRegisteredArtifacts(api: { get<T>(route: string): Prom
     if (!Number.isSafeInteger(attachment.byteSize) || attachment.byteSize < 0 || attachment.byteSize > 262_144) {
       throw new Error(`Registered artifact ${name} has an invalid or excessive size`);
     }
-    const response = await api.request.get(`/api/attachments/${encodeURIComponent(attachment.id)}/content?download=1`);
-    if (!response.ok()) throw new Error(`Registered artifact ${name} download returned ${response.status()}`);
-    const bytes = await response.body();
+    const bytes = await downloadAttachment(api, name, attachment.id);
     const sha256 = createHash("sha256").update(bytes).digest("hex");
     if (bytes.length !== attachment.byteSize || sha256 !== attachment.sha256) {
       throw new Error(`Downloaded registered artifact ${name} disagrees with stored bytes`);

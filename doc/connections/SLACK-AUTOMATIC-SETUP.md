@@ -102,6 +102,16 @@ subscribes to the Slack thread, and starts the agent; later replies in that thre
 continue the same task without another mention. Normal account and channel access
 rules still apply, and repeated Slack deliveries do not create duplicate tasks.
 
+A native Slack thread keeps the same task in channels and DMs, including after
+the task is Done or Cancelled. A new reply reopens that task with its saved
+comments. DM access settings and task controls still apply to threads inside DMs.
+An explicit `/new` or `/close` starts the next task generation only after its
+control response is delivered. Task completion alone does not release the binding.
+Top-level DMs keep their linear lifecycle and can start a new task after completion.
+For a thread that was split before this fix, later replies continue its latest
+saved task. Earlier tasks remain separate; this change does not merge history
+or copy messages from the surrounding DM into a new thread.
+
 Agents can ask interactive questions in Slack through Paperclip's saved
 `ask_user_questions` interactions. Native runners use `request_human_input`;
 legacy adapters use the issue-interactions API documented in the injected

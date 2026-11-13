@@ -59,7 +59,7 @@ import {
   assertAgentsReadyForEnvironmentChange,
 } from "../services/plugin-environment-driver.js";
 import { getConfiguredSecretProvider } from "../secrets/configured-provider.js";
-import { assertBoardOrgAccess, getActorInfo } from "./authz.js";
+import { assertBoard, assertBoardOrgAccess, boardAccessRequired, getActorInfo } from "./authz.js";
 import type { PluginWorkerManager } from "../services/plugin-worker-manager.js";
 import { environmentService } from "../services/environments.js";
 import { SANDBOX_PLATFORM_PROBE_METADATA_KEY } from "../services/environment-custom-image-runtime.js";
@@ -388,6 +388,7 @@ export function environmentRoutes(
   }
 
   function assertCanAccessInstanceEnvironments(req: Request) {
+    if (req.actor.type === "agent") throw boardAccessRequired(req);
     if (req.actor.type !== "board") {
       throw forbidden("Instance environment management is restricted to board operators");
     }
@@ -400,9 +401,7 @@ export function environmentRoutes(
   }
 
   function assertCustomImageCompanyAccess(req: Request, companyId: string) {
-    if (req.actor.type !== "board") {
-      throw forbidden("Board access required");
-    }
+    assertBoard(req);
     if (req.actor.source === "local_implicit" || req.actor.isInstanceAdmin) return;
     const allowedCompanies = req.actor.companyIds ?? [];
     if (!allowedCompanies.includes(companyId)) {
@@ -429,10 +428,17 @@ export function environmentRoutes(
   }
 
   function presentEnvironmentForRead<T extends {
+    driver: string;
     config: Record<string, unknown> | null;
     envVars?: Record<string, unknown> | null;
     metadata: Record<string, unknown> | null;
   }>(req: Request, environment: T): T {
+    if (environment.driver === "plugin") {
+      const { pluginKey, driverKey } = environment.config ?? {};
+      if (typeof pluginKey === "string" && typeof driverKey === "string") {
+        environment = { ...environment, pluginDriver: { pluginKey, driverKey } };
+      }
+    }
     if (environment.metadata) {
       const { [SANDBOX_PLATFORM_PROBE_METADATA_KEY]: _probe, ...metadata } = environment.metadata;
       environment = { ...environment, metadata };
@@ -634,6 +640,9 @@ export function environmentRoutes(
       return "Cannot delete this environment while a sandbox cleanup is pending. Wait for the cleanup sweep to destroy the orphan sandbox, then retry.";
     }
     if (impact.reusableSandboxLeaseCount > 0) {
+      if (impact.reusableSandboxLeaseHolders.some(holder => holder.leasePolicy === "retain_on_failure")) {
+        return "Cannot delete this environment while it keeps a failed run's workspace copy (a stopped sandbox kept for file recovery). Deleting the environment with consent destroys that sandbox and the files only it holds.";
+      }
       return "Cannot delete this environment while it has a reusable sandbox lease. Remove the associated execution workspace or issue so Paperclip can destroy the sandbox, then retry.";
     }
     return null;
@@ -769,7 +778,8 @@ export function environmentRoutes(
       workerManager: options.pluginWorkerManager,
       recoverMissingWorker: options.recoverMissingPluginWorker,
     });
-    res.json(getEnvironmentCapabilities(
+    const loginDrivers = await listReadyPluginEnvironmentDrivers({ db, workerManager: options.pluginWorkerManager, kind: "environment_driver" });
+    const capabilities = getEnvironmentCapabilities(
       AGENT_ADAPTER_TYPES,
       {
         sandboxProviders: Object.fromEntries(pluginDrivers.map((driver) => [
@@ -808,7 +818,10 @@ export function environmentRoutes(
           },
         ])),
       },
-    ));
+    );
+    res.json({ ...capabilities, loginPtyDrivers: Object.fromEntries(loginDrivers.map(driver => [
+      `${driver.pluginKey}:${driver.driverKey}`, { supportsLoginPty: driver.supportsLoginPty === true, supportsCodexLogin: driver.supportsCodexLogin === true },
+    ])) });
   });
 
   router.get("/environments/:environmentId/custom-image-template", async (req, res) => {
@@ -1340,6 +1353,18 @@ export function environmentRoutes(
     // own sandbox, already queued for teardown. Run one attempt now instead of
     // waiting out the retry cooldown. An attempt in flight elsewhere is not taken
     // over, and a failed attempt keeps the lease, so the re-check still rejects.
+    // Consent covers the environment's restore-source sandboxes too: release
+    // their restore protection first, so neither the pending-cleanup retry nor
+    // the teardown below refuses them (including ones an earlier attempt left
+    // claimed for cleanup).
+    if (
+      req.query.destroyReusableSandboxLeases === "true"
+      && impact.deleteBlockedReasons.every((reason) =>
+        reason === "pending_sandbox_cleanup" || reason === "reusable_sandbox_lease")
+    ) {
+      await environmentRuntime.releaseRestoreSourcesForEnvironmentDelete({ environmentId: existing.id,
+        consentedBy: actor.actorId });
+    }
     if (
       req.query.destroyReusableSandboxLeases === "true"
       && impact.pendingCleanupLeaseCount > 0
@@ -1362,12 +1387,15 @@ export function environmentRoutes(
       const warmSessions = await closeWarmNativeSessionsForEnvironment({
         environmentId: existing.id,
         reason: "environment deleted",
+        forceStopUnsettled: true,
+        db,
       });
       if (warmSessions.busy > 0 || warmSessions.failed > 0) {
         throw conflict(
           warmSessions.busy > 0
             ? "Cannot delete this environment while a native runner session is active. Wait for its run to finish, then retry."
-            : "Cannot delete this environment because its warm native runner did not shut down cleanly. Retry after the runner exits.",
+            : `Cannot delete this environment because its warm native runner could not be stopped (${warmSessions.failures
+              .map((failure) => `run ${failure.runId}: ${failure.reason}`).join("; ")}). Retry after the runner exits.`,
           { nativeRunnerSessions: warmSessions },
         );
       }
@@ -1375,6 +1403,7 @@ export function environmentRoutes(
         await environmentRuntime.destroyReusableSandboxLeasesForEnvironment({
           environmentId: existing.id,
           failureReason: "environment_deleted",
+          consentedBy: actor.actorId,
         });
       destroyedReusableSandboxLeaseCount = destroyResult.destroyed;
       impact = await svc.getDeleteBlastRadius(existing.id);

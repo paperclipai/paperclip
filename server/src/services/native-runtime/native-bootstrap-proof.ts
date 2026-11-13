@@ -35,6 +35,7 @@ const SESSION_OPEN_EVENT_TYPES = new Set([
   "session.updated",
   "session.capabilities.updated",
   "session.goal.snapshot",
+  "harness.diagnostic",
 ]);
 
 /**
@@ -56,8 +57,9 @@ export function runnerdStateHasNoProviderTurn(state: Record<string, unknown>): b
   if (record(state.bootstrapHistory).adopted === true) return false;
   if (!Array.isArray(state.commands) || !Array.isArray(state.committedEvents)) return false;
   const commands = state.commands.map(record);
-  if (!commands.every(command => RUNNERD_BOOTSTRAP_COMMAND_TYPES.has(String(command.type)) &&
-      (command.status === "pending" || command.status === "completed"))) return false;
+  if (!commands.every(command => RUNNER_MAINTENANCE_COMMAND_TYPES.has(String(command.type)) ||
+      (RUNNERD_BOOTSTRAP_COMMAND_TYPES.has(String(command.type)) &&
+        (command.status === "pending" || command.status === "completed")))) return false;
   const events = state.committedEvents.map(record);
   // Every event since the first must still be here, in order, so none is hidden.
   if (typeof state.ackedSourceSeq !== "number" || !Number.isSafeInteger(state.ackedSourceSeq) ||

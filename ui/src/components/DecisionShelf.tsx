@@ -58,6 +58,7 @@ export function AgingItemRow({
   onToggleExpand,
   onDismiss,
   onSnooze,
+  evidence,
 }: {
   item: AttentionItem;
   companyId: string;
@@ -69,6 +70,8 @@ export function AgingItemRow({
   onToggleExpand: (item: AttentionItem) => void;
   onDismiss: (item: AttentionItem) => void;
   onSnooze: (item: AttentionItem, snoozedUntil: string) => void;
+  /** The rest of this card's obligation (PAP-749 Rule 11). */
+  evidence?: readonly AttentionItem[];
 }) {
   const queryClient = useQueryClient();
   const { pushToast } = useToastActions();
@@ -117,6 +120,7 @@ export function AgingItemRow({
         agents={agents}
         showTriage
         currentUserId={currentUserId}
+        evidence={evidence}
       />
     </div>
   );

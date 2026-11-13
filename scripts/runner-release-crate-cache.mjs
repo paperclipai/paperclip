@@ -43,6 +43,12 @@ export const CACHED_PATHS = [
   `${RELEASE_DIR}/deps/paperclip_runnerd-*`,
   `${RELEASE_DIR}/paperclip-runnerd`,
   `${RELEASE_DIR}/paperclip-runnerd.d`,
+  // The process-table library is the crate's one workspace dependency. Cargo
+  // rebuilds a dependent whose workspace dependency is newer than it, so the
+  // library's lib unit is cached and marked current with the crate.
+  `${RELEASE_DIR}/.fingerprint/paperclip-process-table-*`,
+  `${RELEASE_DIR}/deps/libpaperclip_process_table-*`,
+  `${RELEASE_DIR}/deps/paperclip_process_table-*.d`,
 ];
 
 // Every file the release build of the crate reads, as hashFiles() patterns:
@@ -81,7 +87,19 @@ export const REQUIRED = [
   { label: "the bin fingerprint hash", glob: `${RELEASE_DIR}/.fingerprint/paperclip-runner-core-*/bin-paperclip-runnerd` },
   { label: "the bin dep-info", glob: `${RELEASE_DIR}/.fingerprint/paperclip-runner-core-*/dep-bin-paperclip-runnerd` },
   { label: "the bin under deps", glob: `${RELEASE_DIR}/deps/paperclip_runnerd-*`, exclude: /\.d$/ },
+  ...processTableRequired(RELEASE_DIR),
 ];
+
+/** The lib unit of the process-table workspace dependency, in `directory`. */
+export function processTableRequired(directory) {
+  const fingerprint = `${directory}/.fingerprint/paperclip-process-table-*`;
+  return [
+    { label: "the process-table lib fingerprint hash", glob: `${fingerprint}/lib-paperclip_process_table` },
+    { label: "the process-table lib dep-info", glob: `${fingerprint}/dep-lib-paperclip_process_table` },
+    { label: "the process-table lib rlib", glob: `${directory}/deps/libpaperclip_process_table-*.rlib` },
+    { label: "the process-table lib rmeta", glob: `${directory}/deps/libpaperclip_process_table-*.rmeta` },
+  ];
+}
 
 const SCHEMA = "paperclip.runner-release-crate.v1";
 

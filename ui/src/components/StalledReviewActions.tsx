@@ -7,6 +7,7 @@ import { useToastActions } from "../context/ToastContext";
 import { queryKeys } from "../lib/queryKeys";
 import { issueReviewPolicyBadge } from "../lib/review-policy";
 import { cn } from "../lib/utils";
+import { DecisionCardFooter } from "./DecisionCardFooter";
 import { Badge } from "./ui/badge";
 import { Button } from "./ui/button";
 import { Textarea } from "./ui/textarea";
@@ -26,6 +27,11 @@ interface StalledReviewActionsProps {
   reviewPolicy?: IssueReviewPolicy | null;
   /** Explicit task-level wording where a separate asset approval may already exist. */
   approveLabel?: string;
+  /**
+   * "card": the Needs You card footer (PAP-775) — Send back (ghost), Request
+   * changes (outline), approve (primary, last). "panel" (default): today's row.
+   */
+  presentation?: "card" | "panel";
   className?: string;
 }
 
@@ -52,6 +58,7 @@ export function StalledReviewActions({
   onResolved,
   reviewPolicy,
   approveLabel = "Approve",
+  presentation = "panel",
   className,
 }: StalledReviewActionsProps) {
   const queryClient = useQueryClient();
@@ -86,9 +93,64 @@ export function StalledReviewActions({
   const runningFor = (action: StalledReviewDecisionAction) =>
     pending && decide.variables === action;
   const policyBadge = issueReviewPolicyBadge(reviewPolicy);
+  const card = presentation === "card";
+  const sendBack = (
+    <Button
+      type="button"
+      variant={card ? "ghost" : "outline"}
+      size="sm"
+      className={card ? undefined : "w-full sm:w-auto sm:flex-1 @xl:flex-none"}
+      disabled={pending}
+      onClick={() => decide.mutate("send_back")}
+      data-testid="stalled-review-send-back"
+    >
+      {runningFor("send_back") ? (
+        <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden />
+      ) : card ? null : (
+        <Undo2 className="h-3.5 w-3.5" aria-hidden />
+      )}
+      Send back to work
+    </Button>
+  );
+  const requestChanges = (
+    <Button
+      type="button"
+      variant="outline"
+      size="sm"
+      className={card ? undefined : "w-full border-amber-400/70 text-amber-900 hover:bg-amber-100 dark:border-amber-500/50 dark:text-amber-100 dark:hover:bg-amber-500/15 sm:w-auto sm:flex-1 @xl:flex-none"}
+      disabled={pending || noteEmpty}
+      title={noteEmpty ? "Add a note to request changes" : undefined}
+      onClick={() => decide.mutate("request_changes")}
+      data-testid="stalled-review-request-changes"
+    >
+      {runningFor("request_changes") ? (
+        <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden />
+      ) : card ? null : (
+        <RotateCcw className="h-3.5 w-3.5" aria-hidden />
+      )}
+      Request changes
+    </Button>
+  );
+  const approve = (
+    <Button
+      type="button"
+      size="sm"
+      className={card ? undefined : "w-full sm:w-auto sm:flex-1 @xl:flex-none"}
+      disabled={pending}
+      onClick={() => decide.mutate("approve")}
+      data-testid="stalled-review-approve"
+    >
+      {runningFor("approve") ? (
+        <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden />
+      ) : card ? null : (
+        <CheckCircle2 className="h-3.5 w-3.5" aria-hidden />
+      )}
+      {approveLabel}
+    </Button>
+  );
 
   return (
-    <div className={cn("flex flex-col gap-3", className)}>
+    <div className={cn("flex flex-col gap-3", card && "gap-4", className)}>
       {/* Only a constrained policy gets a badge: the server refuses a verdict
           from the wrong actor, so the card has to warn before offering Approve.
           The default needs no line — anyone with write access can approve. */}
@@ -112,59 +174,18 @@ export function StalledReviewActions({
         data-testid="stalled-review-note"
         disabled={pending}
       />
-      <div className="flex flex-col gap-2 sm:flex-row sm:flex-wrap sm:items-center sm:justify-between">
-        {footerSlot ?? <span className="hidden sm:block" />}
-        <div className="flex flex-col gap-2 sm:flex-1 sm:flex-row sm:flex-wrap sm:items-center sm:justify-end @xl:flex-none">
-          <Button
-            type="button"
-            variant="outline"
-            size="sm"
-            className="w-full sm:w-auto sm:flex-1 @xl:flex-none"
-            disabled={pending}
-            onClick={() => decide.mutate("send_back")}
-            data-testid="stalled-review-send-back"
-          >
-            {runningFor("send_back") ? (
-              <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden />
-            ) : (
-              <Undo2 className="h-3.5 w-3.5" aria-hidden />
-            )}
-            Send back to work
-          </Button>
-          <Button
-            type="button"
-            variant="outline"
-            size="sm"
-            className="w-full border-amber-400/70 text-amber-900 hover:bg-amber-100 dark:border-amber-500/50 dark:text-amber-100 dark:hover:bg-amber-500/15 sm:w-auto sm:flex-1 @xl:flex-none"
-            disabled={pending || noteEmpty}
-            title={noteEmpty ? "Add a note to request changes" : undefined}
-            onClick={() => decide.mutate("request_changes")}
-            data-testid="stalled-review-request-changes"
-          >
-            {runningFor("request_changes") ? (
-              <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden />
-            ) : (
-              <RotateCcw className="h-3.5 w-3.5" aria-hidden />
-            )}
-            Request changes
-          </Button>
-          <Button
-            type="button"
-            size="sm"
-            className="w-full sm:w-auto sm:flex-1 @xl:flex-none"
-            disabled={pending}
-            onClick={() => decide.mutate("approve")}
-            data-testid="stalled-review-approve"
-          >
-            {runningFor("approve") ? (
-              <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden />
-            ) : (
-              <CheckCircle2 className="h-3.5 w-3.5" aria-hidden />
-            )}
-            {approveLabel}
-          </Button>
+      {card ? (
+        <DecisionCardFooter leading={footerSlot}>{sendBack}{requestChanges}{approve}</DecisionCardFooter>
+      ) : (
+        <div className="flex flex-col gap-2 sm:flex-row sm:flex-wrap sm:items-center sm:justify-between">
+          {footerSlot ?? <span className="hidden sm:block" />}
+          <div className="flex flex-col gap-2 sm:flex-1 sm:flex-row sm:flex-wrap sm:items-center sm:justify-end @xl:flex-none">
+            {sendBack}
+            {requestChanges}
+            {approve}
+          </div>
         </div>
-      </div>
+      )}
     </div>
   );
 }

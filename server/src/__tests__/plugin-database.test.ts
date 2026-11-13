@@ -152,8 +152,9 @@ describe("buildPluginWorkerEnv", () => {
     const env = buildPluginWorkerEnv({
       manifest: { capabilities: [] },
       instanceInfo,
+      verifiedDistribution: { workerCredentialEnv: ["TEST_PROVIDER_API_KEY"] },
       grantedEnvVars: ["PROVIDER_ORIGIN", "PROVIDER_BLANK", "PROVIDER_MISSING"],
-      processEnv: { PROVIDER_ORIGIN: "https://provider.test", PROVIDER_BLANK: " ", DATABASE_URL: "postgres://host", OPENAI_API_KEY: "openai-token" },
+      processEnv: { PROVIDER_ORIGIN: "https://provider.test", PROVIDER_BLANK: " ", DATABASE_URL: "postgres://host", OPENAI_API_KEY: "openai-token", TEST_PROVIDER_API_KEY: "fixture-provider-key" },
     });
     expect(env).toEqual({
       PAPERCLIP_DEPLOYMENT_MODE: "authenticated",
@@ -287,6 +288,22 @@ describe("buildPluginWorkerEnv", () => {
       DAYTONA_API_KEY: "daytona-token",
     });
   });
+
+  it.each([null, "/app/packages/plugins/distribution/fixture", "/operator/plugins/fixture"])(
+    "denies catalog credentials without verified image provenance for %s",
+    (packagePath) => {
+      expect(buildPluginWorkerEnv({
+        manifest: {
+          capabilities: ["environment.drivers.register"],
+          environmentDrivers: [{ driverKey: "fixture-tasks" }],
+        },
+        packageName: "@paperclipai/plugin-image-fixture",
+        packagePath,
+        instanceInfo,
+        processEnv: { TEST_PROVIDER_API_KEY: "fixture-provider-key" },
+      })).not.toHaveProperty("TEST_PROVIDER_API_KEY");
+    },
+  );
 
   it("passes the credential to a first-party plugin installed from the bundled catalog", () => {
     const env = buildPluginWorkerEnv({

@@ -25,6 +25,7 @@ import type {
   IssueRecoveryActionKind,
   IssueRecoveryActionOutcome,
   IssueRecoveryActionOwnerType,
+  IssueBlockerStallRelation,
   IssueRecoveryActionStatus,
   IssueWorkMode,
   IssueThreadInteractionContinuationPolicy,
@@ -37,6 +38,7 @@ import type {
   IssueThreadInteractionStatus,
   IssueStatus,
 } from "../constants.js";
+import type { ActivityEvent } from "./activity.js";
 import type { Goal } from "./goal.js";
 import type { Project, ProjectWorkspace } from "./project.js";
 import type { ExecutionWorkspace, IssueExecutionWorkspaceSettings } from "./workspace-runtime.js";
@@ -212,6 +214,12 @@ export interface DocumentRevision {
   /** Writer provenance; reading a revision does not grant access to the run. */
   createdByRunId?: string | null;
   createdAt: Date;
+}
+
+export interface ExactDocumentRevision extends DocumentRevision {
+  latestRevisionId: string | null;
+  latestRevisionNumber: number;
+  isLatest: boolean;
 }
 
 export interface LegacyPlanDocument {
@@ -617,6 +625,23 @@ export interface IssueUnblockDescriptor {
   action: string;
 }
 
+/** Wake context of `issue_blocker_stalled`: the stalled issue and the recovery action it waits on. */
+export interface IssueBlockerStalledWakeContext {
+  stalledIssueId: string;
+  stalledIssueIdentifier: string | null;
+  stalledIssueTitle: string;
+  stalledIssueStatus: string;
+  relation: IssueBlockerStallRelation;
+  recoveryAction: {
+    id: string;
+    kind: string;
+    cause: string;
+    status: string;
+    ownerType: string;
+    nextAction: string;
+  };
+}
+
 export interface IssueRecoveryAction {
   /** Read-only activity of the exact native run named by the wake policy. */
   nativeRunActivity?: {
@@ -968,6 +993,8 @@ export interface Issue {
   blockedTransitionAt?: Date | null;
   blockedOwnerNotifiedAt?: Date | null;
   activeRecoveryAction?: IssueRecoveryAction | null;
+  /** Children and blockers stalled on a recovery action that needs the board (issue detail only). */
+  stalledDependencies?: IssueBlockerStalledWakeContext[];
   successfulRunHandoff?: SuccessfulRunHandoffState | null;
   executionBlocker?: ExecutionBlocker | null;
   interruption?: TaskInterruptionPresentation | null;
@@ -1150,6 +1177,13 @@ export interface IssueQueuedCommentQueue {
   entries: IssueQueuedCommentEntry[];
   /** Current admission condition for a saved user continuation. */
   executionWait?: { reason: string; message: string } | null;
+  /**
+   * Messages the target run's first provider turn takes: ones it already
+   * sealed into that turn, and ones it will take while it is still starting
+   * (for example while its sandbox boots). They are sent, not waiting for
+   * Steer or Interrupt. Omitted when there are none.
+   */
+  firstTurnCommentIds?: string[];
 }
 
 interface IssueCommentMetadataRowBase {
@@ -1475,7 +1509,8 @@ export interface RequestConfirmationToolActionPayload {
   previewMarkdown: string;
   argumentsSummaryJson: string;
   argumentsHash: string;
-  expiresAt: string;
+  /** Null for ordinary human reviews; explicit action deadlines still apply. */
+  expiresAt: string | null;
 }
 
 export interface RequestConfirmationSecretProposalPayload {
@@ -1537,6 +1572,10 @@ export type ConnectionIntentPhase = "requested" | "authorizing" | "needs_retry";
  * authorization URLs are returned solely from addressed board endpoints.
  */
 export interface ConnectionIntentPayload {
+  /** Controller-created repair for a queued turn awaiting agent verification. */
+  agentSetup?: true;
+  /** Server-owned lifecycle operation whose selected account this card repairs. */
+  agentSetupOperationId?: string;
   /** Human-selected audience for this OAuth draft; applied only at completion. */
   setupAccess?: { connectionId: string; access: "all_agents" | { agentIds: string[] } };
   /** Existing chat setup; the server derives the destination from these IDs. */
@@ -1823,4 +1862,31 @@ export interface IssueRecentComments {
   oldestCommentId?: string | null;
   comments: IssueComment[];
   hasMore: boolean;
+}
+
+/**
+ * Everything the compact task chat reads before its first frame, for one task,
+ * in the same shapes as the individual endpoints:
+ * `GET /issues/:id?view=core`, `/recent-comments`, `/activity?view=recent`,
+ * `/activity?view=comment-inputs` (for the recent comments), `/runs?view=recent`,
+ * `/interactions`, `/attachments`, `/live-runs` and `/active-run`.
+ * Run payloads are typed by their consumers.
+ */
+export interface IssueChatBootstrapItem<TRun = unknown, TLiveRun = unknown, TActiveRun = unknown> {
+  /** The reference the caller asked for, normalized (UUID lowercase, identifier uppercase). */
+  ref: string;
+  issue: Issue;
+  recentComments: IssueRecentComments;
+  commentInputFacts: ActivityEvent[];
+  recentActivity: ActivityEvent[];
+  recentRuns: TRun[];
+  interactions: IssueThreadInteraction[];
+  attachments: IssueAttachment[];
+  liveRuns: TLiveRun[];
+  activeRun: TActiveRun | null;
+}
+
+/** `GET /companies/:companyId/issues/chat-bootstrap?ids=`; unreadable or missing tasks are omitted. */
+export interface IssueChatBootstrap<TRun = unknown, TLiveRun = unknown, TActiveRun = unknown> {
+  items: IssueChatBootstrapItem<TRun, TLiveRun, TActiveRun>[];
 }

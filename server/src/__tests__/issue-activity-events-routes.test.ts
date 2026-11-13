@@ -18,13 +18,19 @@ const mockIssueService = vi.hoisted(() => ({
 }));
 
 const mockLogActivity = vi.hoisted(() => vi.fn(async () => undefined));
-const mockAccessService = vi.hoisted(() => ({
-  decide: vi.fn(async ({ action }: { action: string }) => ({
+const mockAccessService = vi.hoisted(() => {
+  const decide = vi.fn(async ({ action }: { action: string; actor?: unknown; resource?: unknown }) => ({
     action, allowed: action === "issue:read", reason: "allow_default", explanation: "Fixture task is readable",
-  })),
-  canUser: vi.fn(async () => false),
-  hasPermission: vi.fn(async () => false),
-}));
+  }));
+  return {
+    decide,
+    // The batched read asks the mocked decision once per task.
+    decideReads: async (actor: unknown, resources: unknown[]) =>
+      Promise.all(resources.map((resource) => decide({ actor, action: "issue:read", resource }))),
+    canUser: vi.fn(async () => false),
+    hasPermission: vi.fn(async () => false),
+  };
+});
 const mockHeartbeatService = vi.hoisted(() => ({
   wakeup: vi.fn(async () => undefined),
   reportRunActivity: vi.fn(async () => undefined),

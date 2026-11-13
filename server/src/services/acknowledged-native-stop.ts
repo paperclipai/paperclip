@@ -7,6 +7,7 @@ import { hasRecoveredCleanupStopReceipt, hasRemoteTerminationReceipt } from "./r
 import { validatePrpEvent } from "../vendor/paperclip-runner/index.js";
 import { nativeSha256 } from "./native-runtime/canonical.js";
 import { isConfirmedCursorCloudTerminalObservation } from "./native-runtime/cursor-cloud-runtime.js";
+import { isAgentLifecycleStopRecord } from "./governance-pause-stop.js";
 
 export function hasAcknowledgedNativeRunStopRequest(run: {
   id: string; companyId: string; status: string; nativeIssueId: string | null;
@@ -31,6 +32,10 @@ export function hasAcknowledgedNativeStopIntent(run: Parameters<typeof hasAcknow
   return run.resultJson?.cancelledByActorType === "user" &&
     typeof run.resultJson.cancelledByUserId === "string" && Boolean(run.resultJson.cancelledByUserId) &&
     hasAcknowledgedNativeRunStopReceipt(run);
+}
+
+export function hasAcknowledgedNativeLifecycleStopIntent(run: Parameters<typeof hasAcknowledgedNativeRunStopReceipt>[0]): boolean {
+  return isAgentLifecycleStopRecord(run.resultJson) && hasAcknowledgedNativeRunStopReceipt(run);
 }
 
 /** An intentional handoff retains task state and deferred work for its successor. */

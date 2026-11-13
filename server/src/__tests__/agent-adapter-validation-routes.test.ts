@@ -1135,7 +1135,7 @@ describe("agent routes adapter validation", () => {
           provider: "codex",
           model: "gpt-6.1-sol",
           codexPermissionMode: "never",
-          lifecycleMode: "per_turn",
+          // No stored lifecycle: the product default applies.
           paperclipSkillSync: { desiredSkills: ["company-1/reviewer"] },
         }),
       }),
@@ -1400,7 +1400,7 @@ describe("agent routes adapter validation", () => {
           provider: "codex",
           model: "gpt-5.5",
           codexPermissionMode: "never",
-          lifecycleMode: "per_turn",
+          // No stored lifecycle: the product default applies.
           paperclipSkillSync: { desiredSkills: ["company-1/reviewer"] },
         }),
       }),

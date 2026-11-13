@@ -1,5 +1,11 @@
 export const COMPANY_STATUSES = ["active", "paused", "archived"] as const;
-export const ISSUE_SUMMARIES_MAX_IDS = 5;
+/**
+ * IDs per `/issues/summaries` request. Large enough that a typical recent-task
+ * list is one request; callers split longer lists into parallel chunks.
+ */
+export const ISSUE_SUMMARIES_MAX_IDS = 50;
+/** Tasks per chat bootstrap request. The list preloads larger sets in chunks. */
+export const ISSUE_CHAT_BOOTSTRAP_MAX_IDS = 10;
 export type CompanyStatus = (typeof COMPANY_STATUSES)[number];
 
 export const DEPLOYMENT_MODES = ["local_trusted", "authenticated"] as const;
@@ -416,6 +422,14 @@ export const ISSUE_RECOVERY_ACTION_OWNER_TYPES = [
   "system",
 ] as const;
 export type IssueRecoveryActionOwnerType = (typeof ISSUE_RECOVERY_ACTION_OWNER_TYPES)[number];
+
+/**
+ * Wake reason for an agent whose child or blocker stalled on a recovery action
+ * that needs the board. Woken once per stall (one recovery action).
+ */
+export const ISSUE_BLOCKER_STALLED_WAKE_REASON = "issue_blocker_stalled" as const;
+export const ISSUE_BLOCKER_STALL_RELATIONS = ["child", "blocker"] as const;
+export type IssueBlockerStallRelation = (typeof ISSUE_BLOCKER_STALL_RELATIONS)[number];
 
 export const ISSUE_RECOVERY_ACTION_OUTCOMES = [
   "restored",

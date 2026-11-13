@@ -729,7 +729,8 @@ export const commandV3Schema = {
         "session.goal.get",
         "session.goal.set",
         "session.goal.clear",
-        "external_provider.operation"
+        "external_provider.operation",
+        "runner.attachment.download"
       ]
     },
     "issuedAt": {
@@ -4971,6 +4972,12 @@ export const eventSchema = {
         "control_plane"
       ]
     },
+    "generation": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 9007199254740991,
+      "description": "The runner process generation that emitted the event. A consumer records an event from an earlier generation for a turn that is not active as history; it never fails the current turn."
+    },
     "runId": {
       "type": "string",
       "minLength": 1,
@@ -5754,6 +5761,12 @@ export const eventV2Schema = {
         "control_plane"
       ]
     },
+    "generation": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 9007199254740991,
+      "description": "The runner process generation that emitted the event. A consumer records an event from an earlier generation for a turn that is not active as history; it never fails the current turn."
+    },
     "runId": {
       "type": "string",
       "minLength": 1,
@@ -6089,6 +6102,12 @@ export const eventV3Schema = {
         "control_plane"
       ]
     },
+    "generation": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 9007199254740991,
+      "description": "The runner process generation that emitted the event. A consumer records an event from an earlier generation for a turn that is not active as history; it never fails the current turn."
+    },
     "runId": {
       "type": "string",
       "minLength": 1,
@@ -6222,6 +6241,7 @@ export const eventV3Schema = {
         "external_provider.dispatch_requested",
         "external_provider.operation_settled",
         "external_provider.input_available",
+        "runner.attachment.settled",
         "auth.credentials.updated",
         "runtime.activity.recorded"
       ]

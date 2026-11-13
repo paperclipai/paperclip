@@ -70,7 +70,7 @@ import {
 } from "@paperclipai/db";
 import { HttpError } from "../../errors.js";
 import { isAiConnectionIncompatible } from "../ai-connection-runtime.js";
-import type { ReviewedChatBindingDenialReason } from "../reviewed-chat-binding-diagnostics.js";
+import { ReviewedChatBindingNotReadyError, type ReviewedChatBindingDenialReason } from "../reviewed-chat-binding-diagnostics.js";
 import { filterResolvedGitHubConnectionsForRun } from "../git-credentials.js";
 import type {
   AdapterRuntimeMcpAccess,
@@ -178,6 +178,7 @@ const ISSUE_RESPONSIBLE_USER_WAKE_REASONS = new Set([
   "issue_reopened_via_comment",
   "issue_blockers_resolved",
   "issue_children_completed",
+  "issue_blocker_stalled",
   "issue_status_changed",
   "issue_tree_restored",
   "issue_recovery_action_restored",
@@ -827,6 +828,7 @@ export interface WakeupOptions {
   idempotencyKey?: string | null;
   requestedByActorType?: "user" | "agent" | "system";
   requestedByActorId?: string | null;
+  requestedByActorCompanyId?: string;
   contextSnapshot?: Record<string, unknown>;
   issueStateGuard?: {
     statuses: string[];
@@ -1768,7 +1770,12 @@ function normalizeInteractionContinuationWakeContext(
   contextSnapshot: Record<string, unknown>,
   payload: Record<string, unknown> | null | undefined,
 ) {
-  if (isInteractionResolutionWakePayload(payload)) return;
+  if (isInteractionResolutionWakePayload(payload)) {
+    if (contextSnapshot.interactionKind === "ask_user_questions") {
+      contextSnapshot.mutation = "interaction";
+    }
+    return;
+  }
   clearInteractionContinuationWakeContext(contextSnapshot);
 }
 
@@ -2239,7 +2246,7 @@ export async function attestReviewedExternalChatRun(input: {
     if (attemptNumber < 50)
       await new Promise((resolve) => setTimeout(resolve, 100));
   }
-  throw new Error("reviewed_chat_execution_binding_not_ready");
+  throw new ReviewedChatBindingNotReadyError();
 }
 
 export async function readHeartbeatWakeComments(db: Db, companyId: string, issueId: string | null, commentIds: string[]) {
@@ -2747,6 +2754,7 @@ export async function buildPaperclipWakePayload(input: {
       : [],
     childIssueSummaryTruncated:
       input.contextSnapshot.childIssueSummaryTruncated === true,
+    blockerStall: input.contextSnapshot.blockerStall ?? null,
     dispositionRepair:
       buildReviewPathRecoveryDisposition(input.contextSnapshot) ??
       (input.contextSnapshot.legacyDispositionEpisode ? {

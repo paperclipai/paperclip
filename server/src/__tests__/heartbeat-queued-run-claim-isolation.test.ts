@@ -11,6 +11,7 @@ import {
   heartbeatRuns,
   externalAgentHolds,
   issues,
+  issueThreadInteractions,
 } from "@paperclipai/db";
 import {
   getEmbeddedPostgresTestSupport,
@@ -293,6 +294,62 @@ describeEmbeddedPostgres("heartbeat queued-run claim isolation", () => {
     expect(await runStatus(runId)).toMatchObject({ status: "succeeded" });
     expect(mockAdapterExecute).toHaveBeenCalledOnce();
   });
+
+  async function insertCardAnswerInterruptRun(fault?: "other-answer" | "other-resolver") {
+    const { companyId, agentId } = await insertAgent();
+    const userId = `card-owner-${randomUUID()}`;
+    await db.insert(authUsers).values({ id: userId, name: "Card owner", email: `${userId}@paperclip.test`,
+      createdAt: new Date(), updatedAt: new Date() });
+    await db.insert(companyMemberships).values({ companyId, principalType: "user", principalId: userId,
+      status: "active", membershipRole: "owner" });
+    const issueId = randomUUID();
+    await db.insert(issues).values({ id: issueId, companyId, title: "Website", status: "in_progress",
+      assigneeAgentId: agentId, responsibleUserId: userId });
+    const [interaction] = await db.insert(issueThreadInteractions).values({ companyId, issueId,
+      kind: "request_confirmation", status: "accepted", payload: { version: 1, prompt: "Use the simpler layout?" },
+      result: { version: 1, outcome: "accepted" }, createdByUserId: userId,
+      resolvedByUserId: fault === "other-resolver" ? "another-user" : userId, resolvedAt: new Date() }).returning();
+    const queueId = randomUUID();
+    const { runId, wakeupRequestId } = await insertQueuedRun(companyId, agentId, {
+      reason: "issue_commented",
+      idempotencyKey: `queued-comment-interrupt:${queueId}`,
+      requestedByActorType: "user",
+      requestedByActorId: userId,
+      payload: { issueId, interactionId: interaction!.id, explicitUserContinuation: { queuedCommentInterruptId: queueId } },
+    }, new Date(Date.now() - 60_000));
+    await db.insert(agentWakeupRequests).values({ id: queueId, companyId, agentId, source: "automation",
+      triggerDetail: "system", reason: "issue_commented", status: "coalesced", runId,
+      requestedByActorType: "user", requestedByActorId: userId,
+      payload: { issueId, mutation: "interaction", interactionId: interaction!.id, interactionKind: "request_confirmation",
+        interactionStatus: "accepted", queuedCommentInterrupt: { actorId: userId, requestedAt: new Date().toISOString() } } });
+    await db.update(heartbeatRuns).set({ contextSnapshot: { issueId, taskId: issueId,
+      interactionId: fault === "other-answer" ? randomUUID() : interaction!.id, interactionKind: "request_confirmation",
+      interactionStatus: "accepted", queuedCommentSourceWakeIds: [queueId] } }).where(sql`${heartbeatRuns.id} = ${runId}`);
+    return { runId, wakeupRequestId, userId };
+  }
+
+  it("claims the successor of an interrupt that delivers a queued card answer", async () => {
+    const { runId, userId } = await insertCardAnswerInterruptRun();
+
+    await expect(heartbeat.resumeQueuedRuns()).resolves.toBeUndefined();
+    await heartbeat.drainActiveRunExecutions();
+
+    expect(await runStatus(runId)).toMatchObject({ status: "succeeded", errorCode: null });
+    const [run] = await db.select({ responsibleUserId: heartbeatRuns.responsibleUserId }).from(heartbeatRuns)
+      .where(sql`${heartbeatRuns.id} = ${runId}`);
+    expect(run).toMatchObject({ responsibleUserId: userId });
+  });
+
+  it.each(["other-answer", "other-resolver"] as const)(
+    "rejects a card-answer interrupt whose %s does not match the receipt", async (fault) => {
+      const { runId } = await insertCardAnswerInterruptRun(fault);
+
+      await expect(heartbeat.resumeQueuedRuns()).resolves.toBeUndefined();
+
+      expect(await runStatus(runId)).toMatchObject({ status: "cancelled", errorCode: "queued_run_claim_rejected" });
+      expect(mockAdapterExecute).not.toHaveBeenCalled();
+    },
+  );
 
   it("keeps processing other agents' queued runs after one agent's run is rejected", async () => {
     const first = await insertAgent();

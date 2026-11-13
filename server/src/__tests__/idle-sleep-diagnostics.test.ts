@@ -40,7 +40,8 @@ describe("owned idle sleep diagnostics", () => {
     expect(result.diagnostics?.complete).toBe(true);
     expect(result.diagnostics?.checks.filter(check => check.state === "present").map(check => check.reason))
       .toEqual(["agent_api_keys", "budget_evaluation_work", "chat_deliveries", "heartbeat_runs", "muse_mailbox_items"]);
-    expect(f.keys()).toHaveLength(73);
+    expect(f.keys()).toHaveLength(75);
+    expect(f.keys()).toEqual(expect.arrayContaining(["mcp_file_tickets", "mcp_authorization_handoffs"]));
     expect(new Set(f.keys()).size).toBe(f.keys().length);
     const inventory = readFileSync(new URL("../../../doc/plans/2026-11-02-sleep-blocker-inventory.md", import.meta.url), "utf8");
     const documented = [...inventory.matchAll(/^\| `([a-z0-9_.]+)` \|/gm)].map(match => match[1]);

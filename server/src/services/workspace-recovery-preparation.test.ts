@@ -46,6 +46,9 @@ vi.mock("./environment-execution-target.js", async importOriginal => {
     (input.leaseId ? targets.get(input.leaseId) : undefined) ?? actual.resolveEnvironmentExecutionTarget(input) };
 });
 
+const publishedSources = (workspace: { metadata?: Record<string, unknown> | null }) =>
+  ((workspace.metadata?.remoteWorkspaceRecoveredFiles ?? []) as Array<{ sourceRunId: string }>).map(item => item.sourceRunId);
+
 describe("automatic retained workspace recovery", () => {
   useWorkspaceRecoveryFixture(targets);
 
@@ -102,7 +105,7 @@ describe("automatic retained workspace recovery", () => {
     finally { await saved.cleanup(); }
   }, 30_000);
 
-  it.each(["retained_history", "ordinary_followup"])("restores the newest recovered tick bytes after a later workspace selection: %s", async kind => {
+  it.each(["retained_history", "ordinary_followup", "retired_followup"])("restores the newest recovered tick bytes after a later workspace selection: %s", async kind => {
     vi.stubEnv("DATABASE_URL", connectionString);
     vi.stubEnv("PAPERCLIP_SECRETS_MASTER_KEY", "62".repeat(32));
     try {
@@ -339,9 +342,11 @@ describe("automatic retained workspace recovery", () => {
               await db.update(heartbeatRuns).set({ runnerProfileJson: { legacyWorkspaceRecoveryMigration:
                 { ...marker, workspaceId: fault === "source_marker_workspace" ? randomUUID() : placeholder.id } } })
                 .where(eq(heartbeatRuns.id, related.id));
-              await expect(prepareRemoteWorkspace({ db, storage, workspace: withoutProof, runId: childRun.id,
-                lease: childLease as EnvironmentLease, target: { ...target, leaseId: childLease.id, remoteCwd: cold.remoteRoot } }))
-                .rejects.toThrow("remote_workspace_recovery_receipt_invalid");
+              // An unverifiable retained copy is not published again; the run still starts.
+              const unverified = await prepareRemoteWorkspace({ db, storage, workspace: withoutProof, runId: childRun.id,
+                lease: childLease as EnvironmentLease, target: { ...target, leaseId: childLease.id, remoteCwd: cold.remoteRoot } });
+              expect(publishedSources(unverified.workspace)).not.toContain(related.id);
+              expect(publishedSources(unverified.workspace)).toContain(source.id);
             }
             await db.update(workspaceOperations).set({ status: "succeeded", metadata: {
               legacyRecoverySources: [{ runId: related.id, issueId: earlierChild.id }] } }).where(eq(workspaceOperations.id, migration.id));
@@ -349,9 +354,9 @@ describe("automatic retained workspace recovery", () => {
               { ...marker, workspaceId: placeholder.id } } }).where(eq(heartbeatRuns.id, related.id));
             await db.update(workspaceOperations).set({ status: "failed" }).where(eq(workspaceOperations.id,
               (olderPaths.find(item => item.sourceRunId === source.id))!.operationId));
-            await expect(prepareRemoteWorkspace({ db, storage, workspace: withoutProof, runId: childRun.id,
-              lease: childLease as EnvironmentLease, target: { ...target, leaseId: childLease.id, remoteCwd: cold.remoteRoot } }))
-              .rejects.toThrow("remote_workspace_recovery_receipt_invalid");
+            const withoutReceipt = await prepareRemoteWorkspace({ db, storage, workspace: withoutProof, runId: childRun.id,
+              lease: childLease as EnvironmentLease, target: { ...target, leaseId: childLease.id, remoteCwd: cold.remoteRoot } });
+            expect(publishedSources(withoutReceipt.workspace)).not.toContain(source.id);
             expect(await readFile(path.join(inherited.remoteRoot, newest!.path, "files", "ticks.log"), "utf8")).toBe(editedLog);
             await db.update(workspaceOperations).set({ status: "succeeded" }).where(eq(workspaceOperations.id,
               (olderPaths.find(item => item.sourceRunId === source.id))!.operationId));
@@ -379,22 +384,23 @@ describe("automatic retained workspace recovery", () => {
               remoteWorkspaceRecoveredFiles: olderPaths.map(({ operationId, sourceRunId, path }) => ({ operationId, sourceRunId, path })) } };
             const authority = readRemoteWorkspaceAuthority(legacySnapshot.metadata)!;
             await db.update(executionWorkspaceSnapshots).set({ status: "uploaded" }).where(eq(executionWorkspaceSnapshots.id, authority.snapshotId!));
-            await expect(prepareRemoteWorkspace({ db, storage, workspace: legacySnapshot, runId: childRun.id,
-              lease: childLease as EnvironmentLease, target: { ...target, leaseId: childLease.id, remoteCwd: inherited.remoteRoot } }))
-              .rejects.toThrow("remote_workspace_recovery_receipt_invalid");
+            const uncommitted = await prepareRemoteWorkspace({ db, storage, workspace: legacySnapshot, runId: childRun.id,
+              lease: childLease as EnvironmentLease, target: { ...target, leaseId: childLease.id, remoteCwd: inherited.remoteRoot } });
+            expect(publishedSources(uncommitted.workspace)).not.toContain(related.id);
             await db.update(executionWorkspaceSnapshots).set({ status: "committed" }).where(eq(executionWorkspaceSnapshots.id, authority.snapshotId!));
-            await expect(prepareRemoteWorkspace({ db, storage, workspace: { ...legacySnapshot, metadata: { ...legacySnapshot.metadata,
+            const otherSnapshot = await prepareRemoteWorkspace({ db, storage, workspace: { ...legacySnapshot, metadata: { ...legacySnapshot.metadata,
               remoteWorkspace: { ...authority, snapshotId: sourceReference.snapshotId } } }, runId: childRun.id,
-              lease: childLease as EnvironmentLease, target: { ...target, leaseId: childLease.id, remoteCwd: inherited.remoteRoot } }))
-              .rejects.toThrow("remote_workspace_recovery_receipt_invalid");
+              lease: childLease as EnvironmentLease, target: { ...target, leaseId: childLease.id, remoteCwd: inherited.remoteRoot } });
+            expect(publishedSources(otherSnapshot.workspace)).not.toContain(related.id);
             const unreadable = { ...storage, getObject: vi.fn().mockRejectedValue(new Error("fixture: selected snapshot unavailable")) };
             await expect(prepareRemoteWorkspace({ db, storage: unreadable, workspace: legacySnapshot, runId: childRun.id,
               lease: childLease as EnvironmentLease, target: { ...target, leaseId: childLease.id, remoteCwd: inherited.remoteRoot } }))
               .rejects.toThrow("fixture: selected snapshot unavailable");
             expect(await readFile(path.join(snapshotRetained.remoteRoot, newest!.path, "files", "ticks.log"), "utf8")).toBe(editedLog);
           }
-          if (kind === "ordinary_followup") {
-            await rm(path.join(cold.remoteRoot, newest!.path), { recursive: true });
+          if (kind === "ordinary_followup" || kind === "retired_followup") {
+            // The agent removes the copy itself, or leaves it for Paperclip to retire.
+            if (kind === "ordinary_followup") await rm(path.join(cold.remoteRoot, newest!.path), { recursive: true });
             await saveRemoteWorkspace({ db, storage, workspace: cold.workspace, runId: successor.id,
               lease: cold.lease, target: { ...target, leaseId: coldLease.id, remoteCwd: cold.remoteRoot }, assertOwned: async () => {} });
             await db.update(heartbeatRuns).set({ status: "succeeded", finishedAt: new Date() }).where(eq(heartbeatRuns.id, successor.id));
@@ -411,7 +417,32 @@ describe("automatic retained workspace recovery", () => {
             const ordinary = await prepareRemoteWorkspace({ db, storage, workspace: ordinaryWorkspace, runId: normal.id,
               lease: ordinaryLease as EnvironmentLease, target: { ...target, leaseId: ordinaryLease.id, remoteCwd: ordinaryAllocation } });
             expect(await lstat(path.join(ordinary.remoteRoot, newest!.path)).then(() => true, () => false)).toBe(false);
-            expect(ordinary.workspace.metadata?.remoteWorkspaceRecoveredFiles ?? []).toEqual([]);
+            // The successor was shown the copy and succeeded, so this preparation retired it, whether
+            // or not the agent had already removed it. Only a record remains, never shown to an agent.
+            expect(ordinary.workspace.metadata?.remoteWorkspaceRecoveredFiles).toEqual([expect.objectContaining({
+              operationId: path.basename(newest!.path), path: newest!.path, retired: true })]);
+            expect(JSON.stringify(ordinary.workspace.metadata?.remoteWorkspaceRecoveredFiles)).not.toContain("presentedToRunId");
+            if (kind === "retired_followup") {
+              // The retired record outlives a failed run, so the copy is never attached or shown again.
+              await saveRemoteWorkspace({ db, storage, workspace: ordinary.workspace, runId: normal.id,
+                lease: ordinary.lease, target: { ...target, leaseId: ordinaryLease.id, remoteCwd: ordinary.remoteRoot }, assertOwned: async () => {} });
+              await db.update(heartbeatRuns).set({ status: "failed", finishedAt: new Date() }).where(eq(heartbeatRuns.id, normal.id));
+              await db.update(environmentLeases).set({ status: "released", releasedAt: new Date(), cleanupStatus: "success" })
+                .where(eq(environmentLeases.id, ordinaryLease.id));
+              const [later] = await db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: agent.id, issueId: f.issueId,
+                status: "running", runtimeMode: "legacy", contextSnapshot: { issueId: f.issueId } }).returning();
+              const laterWorkspace = await reserveRemoteWorkspace({ db, storage, companyId: f.companyId, issueId: f.issueId,
+                runId: later.id, agentId: agent.id, environmentId: f.lease.environmentId!, projectId: null,
+                projectWorkspaceId: null, existingWorkspaceId: placeholder.id, source: { kind: "empty" } });
+              const laterAllocation = await realpath(await mkdtemp(path.join(root, "later-")));
+              const [laterLease] = await db.insert(environmentLeases).values({ companyId: f.companyId, issueId: f.issueId,
+                heartbeatRunId: later.id, environmentId: f.lease.environmentId, provider: "daytona", providerLeaseId: randomUUID(), status: "active" }).returning();
+              const laterPrepared = await prepareRemoteWorkspace({ db, storage, workspace: laterWorkspace, runId: later.id,
+                lease: laterLease as EnvironmentLease, target: { ...target, leaseId: laterLease.id, remoteCwd: laterAllocation } });
+              expect(await lstat(path.join(laterPrepared.remoteRoot, newest!.path)).then(() => true, () => false)).toBe(false);
+              expect(laterPrepared.workspace.metadata?.remoteWorkspaceRecoveredFiles).toEqual([expect.objectContaining({
+                operationId: path.basename(newest!.path), retired: true })]);
+            }
           }
         } finally { acquire.mockRestore(); storageRead.mockRestore(); }
       expect((await run(f.runId)).error).toBe("native_remote_recovery_lease_mismatch");
@@ -433,6 +464,11 @@ describe("automatic retained workspace recovery", () => {
       expect(await readFile(path.join(attached[0].path, "files", "saved.txt"), "utf8")).toBe("finished work\n");
       expect(injected.getObject).toHaveBeenCalled();
       expect(wrongBackend).not.toHaveBeenCalled();
+      // A retired copy is never attached again, even to an empty destination.
+      const fresh = await mkdtemp(path.join(root, "retired-destination-"));
+      expect(await attachPreservedRemoteWorkspaceSnapshots({ ...scope, cwd: fresh,
+        retiredOperationIds: new Set([attached[0].operationId]) })).toEqual([]);
+      expect(await readdir(fresh)).toEqual([]);
     } finally { wrongBackend.mockRestore(); }
   }, 30_000);
 
@@ -473,7 +509,7 @@ describe("automatic retained workspace recovery", () => {
   }, 30_000);
 
   it.each(["missing_receipt", "missing_reference", "prepared_reference", "missing_snapshot_id", "uncommitted", "foreign_snapshot", "wrong_lease", "missing_object", "corrupt_object", "wrong_company", "wrong_issue"])(
-    "refuses canonical recovery attachments with %s evidence", async fault => {
+    "never attaches canonical recovery attachments with %s evidence", async fault => {
     const f = await failedRemotePreparation();
     await recoverRetainedWorkspace(f.input);
     const source = await run(f.runId), remote = source.runnerProfileJson!.remoteWorkspace as { snapshotId: string };
@@ -501,10 +537,14 @@ describe("automatic retained workspace recovery", () => {
       return { ...object, stream: Readable.from([Buffer.from("corrupt")]) };
     }) : undefined;
     try {
-      await expect(attachPreservedRemoteWorkspaceSnapshots({ db,
+      const attach = attachPreservedRemoteWorkspaceSnapshots({ db,
         companyId: fault === "wrong_company" ? randomUUID() : f.companyId,
         issueId: fault === "wrong_issue" ? randomUUID() : f.issueId,
-        runId: writer.id, workspaceId: randomUUID(), sourceRunIds: [source.id], cwd: destination })).rejects.toThrow();
+        runId: writer.id, workspaceId: randomUUID(), sourceRunIds: [source.id], cwd: destination });
+      // An unverifiable receipt falls back to the newest verified save and
+      // attaches nothing. A failed read and a foreign writer still refuse.
+      if (["missing_object", "corrupt_object", "wrong_company", "wrong_issue"].includes(fault)) await expect(attach).rejects.toThrow();
+      else await expect(attach).resolves.toEqual([]);
       expect(await readdir(destination)).toEqual(fault === "missing_object" || fault === "corrupt_object" ? [".paperclip-recovered"] : []);
       expect(await readFile(path.join(f.remote, "saved.txt"), "utf8")).toBe("finished work\n");
     } finally { failingRead?.mockRestore(); }

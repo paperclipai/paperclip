@@ -18,6 +18,7 @@ import {
   executionWorkspaces,
   heartbeatRuns,
   issues,
+  projectWorkspaces,
   projects,
 } from "@paperclipai/db";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
@@ -136,7 +137,7 @@ describe.skipIf(!support.supported)("heartbeat resume of an idle-expired workspa
       await db.update(issues).set({ checkoutRunId: runId, executionRunId: runId, executionAgentNameKey: "resumer", executionLockedAt: new Date() })
         .where(eq(issues.id, target));
     };
-    return { issueId, childId, workspaceId, runId, cwd: realized.cwd, unpushed, expiration, workspace, queueRun };
+    return { issueId, childId, companyId, projectId, author, workspaceId, runId, cwd: realized.cwd, unpushed, expiration, workspace, queueRun };
   }
 
   async function waitForRun(heartbeat: ReturnType<typeof heartbeatService>, runId: string) {
@@ -193,22 +194,37 @@ describe.skipIf(!support.supported)("heartbeat resume of an idle-expired workspa
     expect(issue.executionWorkspaceId).toBe(seeded.workspaceId);
   });
 
-  it("restores a closed parent's expired workspace when an open child binds to it", async () => {
+  it("gives an open child bound to a closed parent's expired workspace its own workspace and keeps the parent's restore point", async () => {
     const seeded = await seed({ closedParent: true });
     expect(seeded.expiration).toMatchObject({ expired: true, restorePoint: true });
     await expect(fs.access(seeded.cwd)).rejects.toMatchObject({ code: "ENOENT" });
-    await db.update(issues).set({ executionWorkspaceId: seeded.workspaceId, executionWorkspacePreference: "reuse_existing" })
-      .where(eq(issues.id, seeded.childId));
+    // The project base a fresh task in this project starts from.
+    const baseCwd = path.join(path.dirname(seeded.author), "project-checkout");
+    git(path.dirname(seeded.author), "clone", "-q", path.join(path.dirname(seeded.author), "remote.git"), baseCwd);
+    const [base] = await db.insert(projectWorkspaces).values({ companyId: seeded.companyId, projectId: seeded.projectId,
+      name: "Project checkout", sourceType: "local_path", cwd: baseCwd, isPrimary: true }).returning();
+    // The binding an older release wrote for every child.
+    await db.update(issues).set({ projectWorkspaceId: base!.id, executionWorkspaceId: seeded.workspaceId,
+      executionWorkspacePreference: "reuse_existing" }).where(eq(issues.id, seeded.childId));
+    const parentWorkspaceBefore = await seeded.workspace();
     await seeded.queueRun(seeded.childId);
     const heartbeat = heartbeatService(db);
     await heartbeat.resumeQueuedRuns();
     const run = await waitForRun(heartbeat, seeded.runId);
     await heartbeat.waitForRunExecutionDrain(seeded.runId);
     expect(run).toMatchObject({ status: "succeeded" });
-    expect(adapterExecute.mock.calls[0]?.[0]).toMatchObject({ context: { executionWorkspaceId: seeded.workspaceId,
-      paperclipWorkspace: { cwd: seeded.cwd } } });
-    expect(git(seeded.cwd, "rev-parse", "HEAD")).toBe(seeded.unpushed);
-    expect(await fs.readFile(path.join(seeded.cwd, "notes.md"), "utf8")).toBe("uncommitted notes\n");
-    expect((await seeded.workspace()).status).not.toBe("archived");
+    const context = (adapterExecute.mock.calls[0]?.[0] as { context?: Record<string, unknown> } | undefined)?.context;
+    expect(context?.executionWorkspaceId).not.toBe(seeded.workspaceId);
+    // The child starts from the project base, not the parent's unmerged changes,
+    // and the parent's saved restore point was left as it was.
+    const childCwd = (context?.paperclipWorkspace as { cwd?: string } | undefined)?.cwd;
+    expect(childCwd).toBeTruthy();
+    expect(childCwd).not.toBe(seeded.cwd);
+    expect(git(childCwd!, "rev-parse", "HEAD")).not.toBe(seeded.unpushed);
+    await expect(fs.access(path.join(childCwd!, "notes.md"))).rejects.toMatchObject({ code: "ENOENT" });
+    await expect(fs.access(seeded.cwd)).rejects.toMatchObject({ code: "ENOENT" });
+    const [child] = await db.select({ executionWorkspaceId: issues.executionWorkspaceId }).from(issues).where(eq(issues.id, seeded.childId));
+    expect(child?.executionWorkspaceId).not.toBe(seeded.workspaceId);
+    expect(await seeded.workspace()).toEqual(parentWorkspaceBefore);
   });
 });

@@ -61,7 +61,8 @@ export function retiredReusableLeasePredecessors(current: Lease, history: Lease[
           (outgoing as Record<string, unknown>)[key] !== value) ||
         !previous.environmentId || !previous.issueId || typeof previous.metadata?.agentId !== "string" ||
         previous.companyId !== current.companyId || previous.environmentId !== current.environmentId ||
-        previous.executionWorkspaceId !== current.executionWorkspaceId || previous.issueId !== current.issueId ||
+        previous.executionWorkspaceId !== current.executionWorkspaceId ||
+        (current.executionWorkspaceId === null && previous.issueId !== current.issueId) ||
         previous.metadata.agentId !== current.metadata?.agentId ||
         previous.provider !== current.provider || previous.providerLeaseId !== current.providerLeaseId ||
         previous.releasedAt?.getTime() !== successor.acquiredAt.getTime() ||

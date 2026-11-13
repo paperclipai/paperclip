@@ -651,7 +651,7 @@ describeEmbeddedPostgres("remote native retry execution admission", () => {
     expect(await f.db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.sourceIssueId, f.issueId)))
       .toMatchObject([{ ownerType: "board", wakePolicy: null,
         evidence: { automaticAdmissionExhausted: true, executorStopEvidence: "unverified", providerPid: 1386, checkpointPreserved: true },
-        nextAction: expect.stringContaining("original executor stop and state remain unverified") }]);
+        nextAction: "This run stopped before it finished. Your saved work is kept." }]);
     expect(await claimNativeRestartRecoveries({ db: f.db, controller: environment.current.successor,
       restartKind: "hard", runIds: [f.runId], now: new Date(now.getTime() + 3_600_000) })).toEqual([]);
   });

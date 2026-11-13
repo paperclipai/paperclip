@@ -27,6 +27,7 @@ const mockLogActivity = vi.hoisted(() => vi.fn());
 
 vi.mock("../services/activity-log.js", () => ({
   logActivity: mockLogActivity,
+  persistActivity: vi.fn(async () => ({ activity: null, publication: null })),
 }));
 
 // Budget behavior is exercised against PostgreSQL below and in
@@ -169,8 +170,8 @@ describeEmbeddedPostgres("budgetService release gate enforcement", () => {
         await Promise.race([lockAcquired, writer]);
         await reader.execute(sql`set lock_timeout = '500ms'`);
         if (state === "recovering run") {
-          await expect(budgetService(reader).getInvocationBlock(companyId, agentId, { projectId }))
-            .resolves.toMatchObject({ reason: "New work must wait while a native run recovers its unfinished accounting." });
+          // Invariant 3: a recovering run's accounting never gates admission.
+          await expect(budgetService(reader).getInvocationBlock(companyId, agentId, { projectId })).resolves.toBeNull();
         } else {
           const block = await budgetService(reader).getInvocationBlock(companyId, agentId, { projectId });
           if (state === "manual company pause") {
@@ -199,9 +200,7 @@ describeEmbeddedPostgres("budgetService release gate enforcement", () => {
       }
       if (state === "recovering run") {
         const cancelWorkForScope = vi.fn();
-        expect(await budgetService(db, { cancelWorkForScope }).getInvocationBlock(companyId, agentId, { projectId }))
-          .toMatchObject({ scopeType: "company", scopeId: companyId,
-            reason: "New work must wait while a native run recovers its unfinished accounting." });
+        expect(await budgetService(db, { cancelWorkForScope }).getInvocationBlock(companyId, agentId, { projectId })).toBeNull();
         expect(cancelWorkForScope).not.toHaveBeenCalled();
         expect((await db.select().from(companies).where(eq(companies.id, companyId)))[0])
           .toMatchObject({ status: "active", pauseReason: null });
@@ -222,7 +221,10 @@ describeEmbeddedPostgres("budgetService release gate enforcement", () => {
     await db.update(agents).set({ status: "paused", lifecycleState: "paused", pauseReason: "budget", pausedAt: new Date(), lifecycleHolds: ["budget"] })
       .where(eq(agents.id, agentId));
 
-    expect(await budgetService(db).getInvocationBlock(companyId, agentId)).not.toBeNull();
+    // A budget hold with no reached hard stop is stale. Budget admission does
+    // not wait for its reconciliation (invariant 3); the paused agent itself is
+    // an explicit pause that agent invokability refuses until the worker lifts it.
+    expect(await budgetService(db).getInvocationBlock(companyId, agentId)).toBeNull();
     await budgetService(db).evaluateAffectedScopes(companyId, agentId, null);
     await flushBudgetEvaluationWork(db, { companyId });
     expect(await budgetService(db).getInvocationBlock(companyId, agentId)).toBeNull();

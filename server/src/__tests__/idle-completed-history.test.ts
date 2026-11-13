@@ -147,8 +147,9 @@ const DELETE_METHOD = "DELETE" as never;
     return { ...f, ...p, ...c, endpoint, conversation, principal, authority };
   }
 
-  it("checks all 32 families on the real migrated schema and keeps an empty instance eligible", async () => {
-    expect(new Set(completedHistoryChecks.map(c => c.reason)).size).toBe(32);
+  it("checks all 34 families on the real migrated schema and keeps an empty instance eligible", async () => {
+    expect(new Set(completedHistoryChecks.map(c => c.reason)).size).toBe(34);
+    expect(completedHistoryChecks.map(c => c.reason)).toEqual(expect.arrayContaining(["mcp_file_tickets", "mcp_authorization_handoffs"]));
     for (const check of completedHistoryChecks) expect(await blocked(check.reason), check.reason).toBe(false);
     expect(await read()).toEqual({ version: 1, backgroundWork: "none" });
   });

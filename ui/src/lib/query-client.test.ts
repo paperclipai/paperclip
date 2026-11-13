@@ -278,6 +278,17 @@ describe("createAppQueryClient", () => {
     unsubscribe();
   });
 
+  it("does not report a query that was cancelled without reverting", async () => {
+    const queryFn = vi.fn(() => new Promise<string>(() => {}));
+    const observer = new QueryObserver(client, { queryKey: ["issues", "detail", "PAP-1"], queryFn });
+    const unsubscribe = observer.subscribe(() => {});
+    await vi.advanceTimersByTimeAsync(0);
+    await client.cancelQueries({ queryKey: ["issues", "detail"] }, { revert: false });
+    expect(observer.getCurrentResult().error?.message).toBe("CancelledError");
+    expect(reportError).not.toHaveBeenCalled();
+    unsubscribe();
+  });
+
   it("leaves a cache-only alias stale instead of refetching it without a queryFn", async () => {
     client.setQueryData(["issues", "detail", "issue-uuid"], { id: "issue-uuid", title: "Seeded" });
     const queryFn = vi.fn(async () => "fetched");

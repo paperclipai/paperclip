@@ -183,6 +183,52 @@ describe("live-event run read boundaries", () => {
     }
   });
 
+  it("delivers a burst of output without one permission read per event, and still stops at a revocation", async () => {
+    const companyId = randomUUID(), owner = randomUUID(), viewer = randomUUID(), issueId = randomUUID();
+    await db.insert(companies).values({ id: companyId, name: "Burst reads", issuePrefix: `BR${companyId.slice(0, 6)}` });
+    await db.insert(authUsers).values([owner, viewer].map(id => ({ id, name: "Fixture viewer", email: `${id}@example.test`, createdAt: new Date(), updatedAt: new Date() })));
+    await db.insert(companyMemberships).values([owner, viewer].map(principalId => ({ companyId, principalType: "user", principalId, membershipRole: "operator", status: "active" })));
+    const [agent] = await db.insert(agents).values({ companyId, name: "Burst agent", adapterType: "process" }).returning();
+    await db.insert(issues).values({ id: issueId, companyId, title: "Private task", visibility: "private", privacyRootIssueId: issueId, responsibleUserId: owner });
+    const [grant] = await db.insert(issueAccessGrants).values({ issueId, subjectType: "user", subjectId: viewer, source: "explicit" }).returning();
+    const [run] = await db.insert(heartbeatRuns).values({ companyId, agentId: agent.id, scopeKind: "issue", issueId, status: "running" }).returning({ id: heartbeatRuns.id });
+    const queries: string[] = [];
+    const observedDb = drizzle(db.$client, { schema, logger: { logQuery(query) { queries.push(query); } } }) as Db;
+    const server = createServer();
+    const wss = setupLiveEventsWebSocketServer(server, observedDb, { deploymentMode: "authenticated",
+      resolveCloudActor: async () => ({ userId: viewer, companyIds: [companyId] }) });
+    server.listen(0, "127.0.0.1"); await once(server, "listening");
+    const socket = new WebSocket(`ws://127.0.0.1:${(server.address() as AddressInfo).port}/api/companies/${companyId}/events/ws`);
+    const messages: Array<{ type: string; payload: Record<string, unknown> }> = [];
+    socket.on("message", bytes => messages.push(JSON.parse(bytes.toString())));
+    const burst = async (count: number) => {
+      const start = messages.length, queryStart = queries.length, barrier = randomUUID();
+      for (let seq = 1; seq <= count; seq++) {
+        publishLiveEvent({ companyId, type: "heartbeat.run.log", payload: { runId: run.id, seq, chunk: `token-${seq}` } });
+        publishLiveEvent({ companyId, type: "heartbeat.run.event", payload: { runId: run.id, seq,
+          payload: { prpEvent: { eventType: "item.delta", payload: { text: `native-${seq}` } } } } });
+      }
+      publishLiveEvent({ companyId, type: "agent.status", payload: { agentId: barrier, status: "idle" } });
+      await expect.poll(() => messages.some(message => message.payload.agentId === barrier), { timeout: 20_000 }).toBe(true);
+      return { delivered: messages.slice(start).filter(message => message.type.startsWith("heartbeat.run.")), queries: queries.slice(queryStart) };
+    };
+    try {
+      await once(socket, "open");
+      const first = await burst(100);
+      expect(first.delivered.filter(message => message.type === "heartbeat.run.log").map(message => message.payload.seq))
+        .toEqual(Array.from({ length: 100 }, (_, index) => index + 1));
+      expect(first.delivered.filter(message => message.type === "heartbeat.run.event")).toHaveLength(100);
+      expect(first.queries.length).toBeLessThanOrEqual(40);
+      await db.update(issueAccessGrants).set({ revokedAt: new Date() }).where(eq(issueAccessGrants.id, grant.id));
+      expect((await burst(20)).delivered).toEqual([]);
+    } finally {
+      socket.terminate();
+      await Promise.all([...wss.clients].map(client => { const closed = new Promise<void>(resolve => client.on("close", resolve)); client.terminate(); return closed; }));
+      await new Promise<void>((resolve, reject) => (wss as typeof wss & { close(callback: (error?: Error) => void): void }).close(error => error ? reject(error) : resolve()));
+      await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve()));
+    }
+  });
+
   it.each([false, true])("keeps transcript permissions current for agent sockets (negotiated=%s)", async negotiated => {
     const companyId = randomUUID(), viewer = randomUUID(), issueId = randomUUID();
     await db.insert(companies).values({ id: companyId, name: "Restricted live reads", issuePrefix: `RL${companyId.slice(0, 6)}` });

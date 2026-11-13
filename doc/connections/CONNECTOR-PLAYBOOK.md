@@ -789,8 +789,8 @@ This is the implementation sequence an autonomous coding agent should follow.
 
 ### Phase 0: Establish scope and preserve the worktree
 
-1. Read `AGENTS.md`, `doc/GOAL.md`, `doc/PRODUCT.md`,
-   `doc/SPEC-implementation.md`, `doc/DEVELOPING.md`, and `doc/DATABASE.md`.
+1. Read `AGENTS.md`, `doc/GOAL.md`, `doc/PRODUCT.md`, `doc/DEVELOPING.md`,
+   and `doc/DATABASE.md`.
 2. Read this runbook, [the connections overview](./README.md), and
    [the security threat model](./SECURITY-THREAT-MODEL.md).
 3. Inspect `git status --short`. Existing changes belong to the user or another

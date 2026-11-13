@@ -5,7 +5,7 @@ import path from "node:path";
 import { and, eq } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { agents, agentWakeupRequests, authUsers, budgetPolicies, companies, companyMemberships, createDb, heartbeatRuns,
-  issues } from "@paperclipai/db";
+  issues, projects } from "@paperclipai/db";
 import { registerServerAdapter, unregisterServerAdapter } from "../adapters/index.js";
 import { heartbeatService } from "../services/heartbeat.js";
 import { queueIssueAssignmentWakeup } from "../services/issue-assignment-wakeup.js";
@@ -16,8 +16,9 @@ const describePostgres = recoveryPostgresSupport.supported ? describe : describe
 if (!recoveryPostgresSupport.supported) console.warn(`Skipping refused assignment wake tests: ${recoveryPostgresSupport.reason}`);
 
 /**
- * A short company admission hold (for example accounting that is still settling
- * after a restart) can refuse a new task's assignment wake. The task must wait
+ * A temporary budget hold can refuse a new task's assignment wake. Since Phase
+ * 3 another run's accounting never holds admission (invariant 3); the hold
+ * left is a budget-owned pause that is not a reached hard stop. The task must wait
  * honestly and start once the hold clears, instead of resting `blocked` with no run.
  */
 describePostgres("refused assignment wake during a temporary admission hold", () => {
@@ -55,8 +56,10 @@ describePostgres("refused assignment wake during a temporary admission hold", ()
     if (home) await rm(home, { recursive: true, force: true });
   });
 
-  /** A company with a hard-stop budget and one completed run whose accounting
-   * has not settled yet: admission refuses new work until it settles. */
+  /** A company with a hard-stop budget whose task's project carries a
+   * budget-owned pause that no project policy justifies: admission refuses the
+   * task's work until the pause lifts. A completed run with pending
+   * accounting is present too; it must not hold anything (invariant 3). */
   async function seedHeldCompany() {
     const companyId = randomUUID(), agentId = randomUUID(), otherAgentId = randomUUID(), issueId = randomUUID();
     const userId = `hold-user-${companyId}`;
@@ -72,9 +75,15 @@ describePostgres("refused assignment wake during a temporary admission hold", ()
     const [pending] = await db.insert(heartbeatRuns).values({ companyId, agentId: otherAgentId, invocationSource: "automation",
       triggerDetail: "system", status: "succeeded", startedAt: new Date(Date.now() - 60_000), finishedAt: new Date(),
       costAccountingPending: true, contextSnapshot: {} }).returning();
-    await db.insert(issues).values({ id: issueId, companyId, title: "New task created during the hold", status: "todo",
+    const [project] = await db.insert(projects).values({ companyId, name: "Budget-paused project", status: "in_progress",
+      pauseReason: "budget", pausedAt: new Date() }).returning();
+    await db.insert(issues).values({ id: issueId, companyId, projectId: project.id, title: "New task created during the hold", status: "todo",
       assigneeAgentId: agentId, responsibleUserId: userId, issueNumber: 1 });
-    return { companyId, agentId, issueId, userId, pendingRunId: pending.id };
+    return { companyId, agentId, issueId, userId, projectId: project.id, pendingRunId: pending.id };
+  }
+
+  async function liftHold(f: { projectId: string }) {
+    await db.update(projects).set({ pauseReason: null, pausedAt: null }).where(eq(projects.id, f.projectId));
   }
 
   async function assign(f: Awaited<ReturnType<typeof seedHeldCompany>>) {
@@ -99,12 +108,13 @@ describePostgres("refused assignment wake during a temporary admission hold", ()
     const [waiting] = await db.select().from(issues).where(eq(issues.id, f.issueId));
     expect(waiting.status).toBe("todo");
     expect(await issueRuns(f)).toHaveLength(0);
-    // The task names what it waits for; it does not offer a Retry that cannot start either.
-    expect(await taskInterruptionPresentation(db, waiting)).toMatchObject({ responsibility: "system", state: "working",
-      canRetry: false, retryWait: { reason: "budget.blocked", message: expect.stringContaining("starts automatically") } });
+    // This pause needs an operator resume, so the task asks the user; it does
+    // not offer a Retry that cannot start either.
+    expect(await taskInterruptionPresentation(db, waiting)).toMatchObject({ responsibility: "user", state: "waiting_for_user",
+      canRetry: false });
 
-    // Accounting settles: the hold clears.
-    await db.update(heartbeatRuns).set({ costAccountingPending: false }).where(eq(heartbeatRuns.id, f.pendingRunId));
+    // The budget pause lifts: the hold clears.
+    await liftHold(f);
     await heartbeat.reconcileStrandedAssignedIssues({ companyId: f.companyId });
     await heartbeat.reconcileStrandedAssignedIssues({ companyId: f.companyId });
     await heartbeat.drainActiveRunExecutions();
@@ -131,7 +141,7 @@ describePostgres("refused assignment wake during a temporary admission hold", ()
     const f = await seedHeldCompany();
     await expect(assign(f)).rejects.toMatchObject({ status: 409 });
     await db.update(agents).set({ status: "terminated" }).where(eq(agents.id, f.agentId));
-    await db.update(heartbeatRuns).set({ costAccountingPending: false }).where(eq(heartbeatRuns.id, f.pendingRunId));
+    await liftHold(f);
     await heartbeat.reconcileStrandedAssignedIssues({ companyId: f.companyId });
     await heartbeat.drainActiveRunExecutions();
     expect(await issueRuns(f)).toHaveLength(0);
@@ -141,7 +151,7 @@ describePostgres("refused assignment wake during a temporary admission hold", ()
     const f = await seedHeldCompany();
     await expect(assign(f)).rejects.toMatchObject({ status: 409 });
     await db.update(issues).set({ status: "cancelled" }).where(eq(issues.id, f.issueId));
-    await db.update(heartbeatRuns).set({ costAccountingPending: false }).where(eq(heartbeatRuns.id, f.pendingRunId));
+    await liftHold(f);
     await heartbeat.reconcileStrandedAssignedIssues({ companyId: f.companyId });
     await heartbeat.drainActiveRunExecutions();
     expect(await issueRuns(f)).toHaveLength(0);

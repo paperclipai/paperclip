@@ -1,3 +1,4 @@
+import { companyProjectsQuery } from "@/lib/company-projects-query";
 import { usePrimaryAgentPresentation } from "./primary-agent/PrimaryAgentPresentation";
 import { useWorkspaceIsolationControls } from "@/hooks/useWorkspaceIsolationControls";
 import { useState, useEffect, useRef, useCallback, useMemo, type CSSProperties } from "react";
@@ -10,7 +11,6 @@ import { executionWorkspacesApi } from "../api/execution-workspaces";
 import { issuesApi } from "../api/issues";
 import { MissingUserSecretsBanner } from "../pages/secrets/MissingUserSecretsBanner";
 import { instanceSettingsApi } from "../api/instanceSettings";
-import { projectsApi } from "../api/projects";
 import { agentsApi } from "../api/agents";
 import { accessApi } from "../api/access";
 import { authApi } from "../api/auth";
@@ -509,8 +509,6 @@ function AccountNewIssueDialog({ ignoreDefaults }: { ignoreDefaults: boolean }) 
   const isSubIssueMode = Boolean(parentId);
   const parentIssueLabel =
     (newIssueDefaults.parentId === parentId ? newIssueDefaults.parentIdentifier : undefined) ?? (parentId ? parentId.slice(0, 8) : "");
-  const parentExecutionWorkspaceId = newIssueDefaults.executionWorkspaceId ?? "";
-  const parentExecutionWorkspaceLabel = newIssueDefaults.parentExecutionWorkspaceLabel ?? parentExecutionWorkspaceId;
 
   const { data: agents } = useQuery({
     queryKey: queryKeys.agents.list(effectiveCompanyId!),
@@ -519,8 +517,7 @@ function AccountNewIssueDialog({ ignoreDefaults }: { ignoreDefaults: boolean }) 
   });
 
   const { data: projects } = useQuery({
-    queryKey: queryKeys.projects.list(effectiveCompanyId!),
-    queryFn: () => projectsApi.list(effectiveCompanyId!),
+    ...companyProjectsQuery(effectiveCompanyId!),
     enabled: !!effectiveCompanyId && newIssueOpen,
   });
   const { data: mentionIssues } = useQuery({
@@ -1236,15 +1233,6 @@ function AccountNewIssueDialog({ ignoreDefaults }: { ignoreDefaults: boolean }) 
   const selectedReusableWorktree = selectableReusableWorkspaces.find((workspace) => workspace.id === selectedExecutionWorkspaceId);
   const worktreeSelectionIncomplete = canChooseWorktrees && executionWorkspaceMode === "reuse_existing"
     && (worktreesLoading || worktreesError || !selectedReusableWorktree);
-  const isUsingParentExecutionWorkspace =
-    isSubIssueMode && parentExecutionWorkspaceId
-      ? executionWorkspaceMode === "reuse_existing" && selectedExecutionWorkspaceId === parentExecutionWorkspaceId
-      : false;
-  const showParentWorkspaceWarning =
-    isSubIssueMode &&
-    currentProjectSupportsExecutionWorkspace &&
-    Boolean(parentExecutionWorkspaceId) &&
-    !isUsingParentExecutionWorkspace;
   const recentAssigneeIds = useMemo(() => getRecentAssigneeIds(), [newIssueOpen]);
   const recentProjectIds = useMemo(() => getRecentProjectIds(), [newIssueOpen]);
   const assigneeOptions = useMemo<InlineEntityOption[]>(
@@ -1478,7 +1466,7 @@ function AccountNewIssueDialog({ ignoreDefaults }: { ignoreDefaults: boolean }) 
                 runSettings: composerSettings,
                 onRunSettingsChange: setComposerSettings,
                 header:
-                  hasTitle || isSubIssueMode || durableCreate.pending || resendError ? (
+                  hasTitle || isSubIssueMode || (durableCreate.pending && durableCreate.status !== "sending") || resendError ? (
                     <div className="mb-3 flex flex-col gap-2 text-xs">
                       {durableCreate.pending && durableCreate.status !== "sending" ? (
                         <PendingSendNotice
@@ -1674,14 +1662,6 @@ function AccountNewIssueDialog({ ignoreDefaults }: { ignoreDefaults: boolean }) 
                       </div>
                     ) : null}
 
-                    {showParentWorkspaceWarning ? (
-                      <div className="mb-2">
-                        <InlineBanner tone="warning" compact>
-                          This sub-task will no longer use the parent task workspace
-                          {parentExecutionWorkspaceLabel ? ` (${parentExecutionWorkspaceLabel})` : ""}.
-                        </InlineBanner>
-                      </div>
-                    ) : null}
                     {effectiveCompanyId && neededUserSecretKeys.length > 0 ? (
                       <MissingUserSecretsBanner companyId={effectiveCompanyId} definitionKeys={neededUserSecretKeys} />
                     ) : null}
@@ -1739,7 +1719,7 @@ function AccountNewIssueDialog({ ignoreDefaults }: { ignoreDefaults: boolean }) 
                       <ComposerWorktreePicker
                         mode={executionWorkspaceMode}
                         workspaceId={selectedExecutionWorkspaceId}
-                        selectedWorkspaceLabel={selectedReusableWorktree?.name ?? (selectedExecutionWorkspaceId === parentExecutionWorkspaceId ? newIssueDefaults.parentExecutionWorkspaceLabel : undefined)}
+                        selectedWorkspaceLabel={selectedReusableWorktree?.name}
                         workspaces={selectableReusableWorkspaces}
                         onChange={(mode, workspaceId) => {
                           setExecutionWorkspaceMode(mode);

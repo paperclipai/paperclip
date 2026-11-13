@@ -12,6 +12,7 @@ import {
   partitionGeneralServerSuites,
 } from "../general-server-shard.mjs";
 
+import { assertManifestSource } from "../ci/pr-run-durations.mjs";
 import { assertSelectedTests, partitionTestLines } from "../test-line-shard.mjs";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
@@ -329,6 +330,7 @@ const pluginEvictionSuitePath = "server/src/services/native-runtime/plugin-runne
 const dotRunnerSuitePath = "server/src/__tests__/dot-runner.test.ts";
 const restartRecoverySuitePath =
   "server/src/services/native-runtime/native-runner-restart-recovery.integration.test.ts";
+const cutTurnStartRetrySuitePath = "server/src/services/native-runtime/native-cut-turn-start-retry.integration.test.ts";
 const restartWaitSuites = ["lease-renewal", "preparation", "checkpoint-cost", "diskless"]
   .map(name => `server/src/services/native-runtime/native-runner-restart-${name}.integration.test.ts`);
 
@@ -372,12 +374,13 @@ test("12 PR without-chat shards plus the dedicated chat and native-runner lanes 
   assert.ok(!files.includes(ingressRetrySuitePath));
   assert.ok(!files.includes(dotRunnerSuitePath));
   assert.ok(!files.includes(restartRecoverySuitePath));
+  assert.ok(!files.includes(cutTurnStartRetrySuitePath));
   assert.ok(!files.includes(usageDeliverySuitePath));
   assert.ok(!files.includes(warmCheckpointOwnershipSuitePath));
   assert.ok(!files.includes(pluginWarmOwnerSuitePath));
   assert.ok(!files.includes(pluginReleaseResumeSuitePath));
   assert.ok(!files.includes(pluginEvictionSuitePath));
-  assert.deepEqual([...files, chatSuitePath, nativeRunnerSuitePath, ingressRetrySuitePath, dotRunnerSuitePath, restartRecoverySuitePath, ...restartWaitSuites, usageDeliverySuitePath, warmCheckpointOwnershipSuitePath, pluginWarmOwnerSuitePath, pluginReleaseResumeSuitePath, pluginEvictionSuitePath, "server/src/services/native-runtime/plugin-runner-probe.test.ts"].sort(), full.selectedGeneralServerSuites.sort());
+  assert.deepEqual([...files, chatSuitePath, nativeRunnerSuitePath, ingressRetrySuitePath, dotRunnerSuitePath, restartRecoverySuitePath, ...restartWaitSuites, cutTurnStartRetrySuitePath, usageDeliverySuitePath, warmCheckpointOwnershipSuitePath, pluginWarmOwnerSuitePath, pluginReleaseResumeSuitePath, pluginEvictionSuitePath, "server/src/services/native-runtime/plugin-runner-probe.test.ts"].sort(), full.selectedGeneralServerSuites.sort());
   assert.equal(new Set(files).size, files.length);
   const defaultRun = dryRunJson([], prEnv);
   assert.ok(defaultRun.generalServerSuiteCount === full.generalServerSuiteCount);
@@ -432,6 +435,7 @@ test("the native-runner lane runs exactly the cargo-dependent suites", () => {
     dotRunnerSuitePath,
     restartRecoverySuitePath,
     ...restartWaitSuites,
+    cutTurnStartRetrySuitePath,
     usageDeliverySuitePath,
     warmCheckpointOwnershipSuitePath,
     pluginWarmOwnerSuitePath,
@@ -564,10 +568,10 @@ test("the package lane manifest uses the general server duration schema", () => 
   assert.ok(Object.keys(manifest).every((key) => key in general));
   assert.equal(manifest.unit, "ms");
   assert.deepEqual(Object.keys(manifest.coverage), Object.keys(general.coverage));
-  for (const source of manifest.sources) {
-    assert.deepEqual(Object.keys(source), ["run", "attempt", "sha", "url"]);
-    assert.match(source.sha, /^[a-f0-9]{40}$/);
-  }
+  // The weekly refresh samples merged-PR runs for this lane, so its sources
+  // may lead with a pull number. test-selection-pr-timings.test.mjs passes the
+  // collector's real output through the same check.
+  for (const source of manifest.sources) assertManifestSource(source);
   const entries = Object.entries(manifest.durations);
   assert.ok(entries.length > 100);
   for (const [file, ms] of entries) {

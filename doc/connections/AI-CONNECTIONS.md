@@ -4,6 +4,10 @@ AI accounts use the existing Apps/Connections substrate. Manage them at
 `/:company/apps`; select their use beside an agent's harness/model settings.
 Onboarding, new-agent setup, account creation/reconnect, and inline task requests
 reuse `AdapterLoginPanel`, its existing login controllers, and `AdapterLoginChrome`.
+For Codex and Claude subscriptions on an agent computer, Connections selects an
+eligible computer in the chosen company and sign-in environment when the user
+starts sign-in. The session keeps that computer until it ends. Connection
+ownership and permissions still come from the account setup.
 Onboarding and new-agent setup retain upstream's `SavedProviderKeySelect` and
 `useSavedProviderKeys`, including saved-key references and account-specific Codex
 homes. Managed default/shared accounts are additional choices in that same
@@ -72,6 +76,26 @@ browser sign-in presentation with a local login runner and require no sandbox.
 Environment selection does not change agent execution settings.
 API keys are validated against fixed provider endpoints; redirects
 and caller-supplied validation URLs are rejected.
+
+In **Connectors**, expand a provider's accounts. A crown beside an account's name
+marks your saved default for that provider in this company. Hover, focus, or tap
+the crown for its label. In another personal account's menu, choose **Set as
+default for OpenAI**, **Set as default for Claude**, or the matching provider.
+Subscription and API-key accounts share one provider default. The current default
+has a disabled **Default for {provider}** menu item. The list API's `canSetDefault`
+flag projects human self-service configure authority once per list request.
+Agent list responses omit this optional UI field and retain their existing
+write authorization. Shared accounts, other owners,
+routed profiles, and callers without permission do not receive this action.
+
+While saving, the previous crown stays visible and other default writes for that
+provider are disabled. After success, scoped account data and agent selectors
+refresh from the server. Failed writes retain the previous selection and offer
+an explicit Retry for the same grant, with eligibility checked again. Returning
+to the tab refreshes defaults changed elsewhere. An unavailable selected account
+keeps its crown and **Default unavailable** state until it is reconnected or
+explicitly replaced. Changing the preference grants no access and affects the
+next normal run admission; pinned selections and active runs retain their accounts.
 
 `runtimeConfig.aiConnection` contains `provider`, `mode`, and `method`. For responsible-user selections, `method` is a legacy wire hint retained for rolling upgrades; the resolver uses the selected account’s actual method:
 

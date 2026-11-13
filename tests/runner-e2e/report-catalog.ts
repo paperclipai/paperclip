@@ -119,7 +119,13 @@ export function discoverReportCatalog(input: {
       suiteDefinitionHash:
         result?.suiteDefinitionHash ??
         `selection-${createHash("sha256").update(JSON.stringify(suiteIds)).digest("hex")}`,
-      profile: knownProfile ?? {
+      profile: knownProfile ? result ? {
+        ...knownProfile,
+        generation: runtimeMode,
+        expectedRuntimeMode: runtimeMode,
+        provider: result.provider,
+        model: result.model,
+      } : knownProfile : {
         id: identity.profileId,
         label: identity.profileId,
         generation: runtimeMode,

@@ -66,6 +66,25 @@ it("keeps historical/source packs without an archive on the existing path", asyn
   expect(await readProviderPackArchive("/does-not-exist/provider-pack", digest)).toBeNull();
 });
 
+it.each(["v1", "v2"])("cancels a real %s archive hash after its first read chunk", async version => {
+  const { pack } = version === "v2" ? await layeredFixture() : await fixture();
+  const archivePath = version === "v2" ? `${pack}.archives/overlay.tar.zst` : `${pack}.tar.zst`;
+  const controller = new AbortController();
+  const handle = await fs.open(archivePath, "r");
+  const prototype = Object.getPrototypeOf(handle) as typeof handle;
+  await handle.close();
+  const originalStream = prototype.createReadStream;
+  const streaming = vi.spyOn(prototype, "createReadStream").mockImplementation(function(this: typeof handle, options) {
+    const stream = originalStream.call(this, options);
+    stream.once("data", () => controller.abort(new Error("owned archive read stopped")));
+    return stream;
+  });
+  try {
+    await expect(readProviderPackArchive(pack, digest, controller.signal)).rejects.toThrow(/abort|owned archive read stopped/i);
+    expect(controller.signal.aborted).toBe(true);
+  } finally { streaming.mockRestore(); }
+});
+
 async function layeredFixture() {
   const { root, pack } = await fixture();
   await fs.writeFile(path.join(pack, "bin", "large"), Buffer.alloc(1024 * 1024, 42), { mode: 0o755 });

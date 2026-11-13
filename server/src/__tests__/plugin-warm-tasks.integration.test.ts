@@ -7,6 +7,7 @@ import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { eq, sql } from "drizzle-orm";
 import { agents, companies, createDb, applyPendingMigrations, environmentLeases, environments, heartbeatRuns, issues, plugins, projects, sandboxCreationOperations } from "@paperclipai/db";
 import { environmentRuntimeService } from "../services/environment-runtime.js";
+import { environmentService } from "../services/environments.js";
 import { recordSandboxCreationResource } from "../services/sandbox-creation-operations.js";
 import { resolvePluginTaskResume } from "../services/environment-task-runtime.js";
 import type { PluginWorkerManager } from "../services/plugin-worker-manager.js";
@@ -20,8 +21,8 @@ const support=external ? {supported:true} : await getEmbeddedPostgresTestSupport
  afterAll(async()=>{await stop?.();});
  async function fixture(initialProjects:string[]=[],initialExpiry?:string,deadline?:Date){
   const companyId=randomUUID(),agentId=randomUUID(),issueId=randomUUID(),environmentId=randomUUID(),pluginId=randomUUID();
-  let runId=randomUUID(),allocation=0,stopped=false,outage=false,releaseFails=false;
-  const calls:string[]=[];
+  let runId=randomUUID(),allocation=0,stopped=false,outage=false,releaseFails=false,unavailable=false;
+  const calls:string[]=[],dispatched:Array<[string,string]>=[],failures=new Set<string>();
   let projectIds=[...initialProjects],providerExpiry=initialExpiry;
   const taskExpiries=new Map<string,string|undefined>(),acquireRequests:any[]=[];
   let resumeGate:Promise<void>|undefined,releaseResume:(()=>void)|undefined,resumes=0;
@@ -38,14 +39,16 @@ const support=external ? {supported:true} : await getEmbeddedPostgresTestSupport
   const workers={isRunning:()=>true,getWorker:()=>({supportedMethods:["environmentTask","environmentAcquireLease","environmentResumeLease","environmentReleaseLease"]}),
    call:async(_id:string,method:string,p:any)=>{
     calls.push(method==="environmentTask" ? p.operation.kind : method);
+    if(method==="environmentTask") dispatched.push([p.operation.kind,p.taskId]);
+    if(method==="environmentTask" && failures.delete(p.operation.kind)) throw Error(`${p.operation.kind} unavailable`);
     if(method==="environmentAcquireLease") {
      const id=`task-${++allocation}`;taskExpiries.set(id,providerExpiry);acquireRequests.push(p);
      return {providerLeaseId:id,...(providerExpiry ? {expiresAt:providerExpiry}:{}),metadata:{runId:p.runId}};
     }
     if(method==="environmentResumeLease") {if(outage) throw Error("unreachable");
-     if(resumeGate){if(++resumes===2)releaseResume!();await resumeGate;}return {providerLeaseId:stopped?null:p.providerLeaseId,expiresAt:taskExpiries.get(p.providerLeaseId),metadata:{runId:p.runId}};}
+     if(resumeGate){if(++resumes===2)releaseResume!();await resumeGate;}return {providerLeaseId:stopped||unavailable?null:p.providerLeaseId,expiresAt:taskExpiries.get(p.providerLeaseId),metadata:{runId:p.runId}};}
     if(method==="environmentReleaseLease") {if(releaseFails) throw Error("release unavailable");return {providerLeaseId:p.providerLeaseId,state:"stopped"};}
-    if(p.operation.kind==="status") return {kind:"status",taskId:p.taskId,phase:stopped?"completed":"running",executionStopped:stopped,sessionStateAvailable:stopped};
+    if(p.operation.kind==="status") return {kind:"status",taskId:p.taskId,phase:stopped?"completed":"running",executionStopped:stopped,sessionStateAvailable:stopped,preparationStopped:stopped};
     if(p.operation.kind==="read_state") return {kind:"state",taskId:p.taskId,state:{...p.operation.identity,lifecycle:"ready"}};
     if(p.operation.kind==="stop") stopped=true;
     if(p.operation.kind==="prepare") return {kind:"prepared",taskId:p.taskId,launch:{configurationId:"configuration",requirementsDigest:`sha256:${"a".repeat(64)}`,provider:{}}};
@@ -63,7 +66,8 @@ const support=external ? {supported:true} : await getEmbeddedPostgresTestSupport
    launch:{runnerVersion:"fixture",runnerDigest:`sha256:${"a".repeat(64)}`,maxOutboxBytes:262144,p0ReserveBytes:65536,lifecyclePolicy:{mode:"warm",idleTimeoutMs:300000}}}});
   await runtime().releaseRunLeases(runId,"released",undefined,"keep_running");
   await db.update(heartbeatRuns).set({status:"succeeded"}).where(eq(heartbeatRuns.id,runId));
-  return {companyId,first,identity,calls,runtime,acquire,acquireRequests,
+  return {companyId,first,identity,calls,dispatched,runtime,acquire,acquireRequests,
+   fail(kind:string){failures.add(kind);},unavailable(){unavailable=true;},
    setExpiry(next?:string){providerExpiry=next;},
    async nextRun(){runId=randomUUID();await db.insert(heartbeatRuns).values({id:runId,companyId,agentId,nativeIssueId:issueId,invocationSource:"manual",status:"running"});return runId;},
    setProjects(next:string[]){projectIds=next;},stopped(){stopped=true;},failRelease(){releaseFails=true;},outage(){outage=true;},
@@ -108,6 +112,36 @@ const support=external ? {supported:true} : await getEmbeddedPostgresTestSupport
   expect(next.lease.providerLeaseId).not.toBe(f.first.lease.providerLeaseId);
   expect(f.calls).toContain("complete");
   await expect(resolvePluginTaskResume(db,{companyId:f.companyId,leaseId:next.lease.id,priorIdentity:f.identity})).resolves.toBe(f.first.lease.providerLeaseId);
+ });
+ it.each([false,true])("retires a stopped retained task with one status and complete after warm preparation (%s)",async prepared=>{
+  const f=await fixture();f.stopped();await f.nextRun();
+  if(prepared) await db.update(environmentLeases).set({metadata:sql`${environmentLeases.metadata} || ${JSON.stringify({runnerTaskStartup:{contextId:"settled-startup",deadlineAtMs:1,runId:f.identity.runId}})}::jsonb`}).where(eq(environmentLeases.id,f.first.lease.id));
+  const calls=f.calls.length,dispatched=f.dispatched.length;
+  const next=await f.acquire();
+  expect(f.calls.slice(calls)).toEqual(["environmentResumeLease","status","complete","environmentAcquireLease"]);
+  expect(f.dispatched.slice(dispatched)).toEqual([["status",f.first.lease.providerLeaseId],["complete",f.first.lease.providerLeaseId]]);
+  expect(next.lease.providerLeaseId).not.toBe(f.first.lease.providerLeaseId);
+  const [old]=await db.select().from(environmentLeases).where(eq(environmentLeases.id,f.first.lease.id));
+  expect(old.status).toBe("released");
+  expect(old.metadata).toMatchObject({runnerTaskExecutionStopped:true,runnerTaskDispatched:false,remoteExecutionTermination:{providerLeaseId:f.first.lease.providerLeaseId,state:"stopped"}});
+ });
+ it("stops a retained task that resume could not attach but that is still running",async()=>{
+  const f=await fixture();f.unavailable();await f.nextRun();
+  const calls=f.calls.length;
+  await f.acquire();
+  expect(f.calls.slice(calls)).toEqual(["environmentResumeLease","status","stop","status","complete","environmentAcquireLease"]);
+ });
+ it.each([["status",false],["complete",false],["stop",true]] as const)("keeps a stopped retained task for cleanup retry when %s fails",async(kind,running)=>{
+  const f=await fixture();if(running) f.unavailable(); else f.stopped();await f.nextRun();
+  f.fail(kind);
+  await expect(f.acquire()).rejects.toThrow("termination is unconfirmed");
+  expect(f.calls.filter(call=>call==="environmentAcquireLease")).toHaveLength(1);
+  expect(f.calls).not.toContain("environmentReleaseLease");
+  const pending=(await environmentService(db).getLeaseById(f.first.lease.id))!;
+  expect(pending).toMatchObject({status:"pending_cleanup",cleanupStatus:"failed"});
+  const calls=f.calls.length;
+  await expect(f.runtime().retryPendingSandboxTeardown({environment:null,lease:pending})).resolves.toEqual({providerLeaseId:f.first.lease.providerLeaseId,state:"stopped"});
+  expect(f.calls.slice(calls)).toEqual(["stop","status","complete","environmentReleaseLease"]);
  });
  it("does not allocate a replacement when the retained computer cannot be inspected",async()=>{
   const f=await fixture();f.outage();await f.nextRun();

@@ -99,6 +99,13 @@ export const agentWakeupRequests = pgTable(
     chatCompletionIdempotencyUq: uniqueIndex("agent_wakeup_requests_chat_completion_uq")
       .on(table.companyId, table.idempotencyKey)
       .where(sql`${table.idempotencyKey} LIKE 'chat-completion:%'`),
+    // One delivered or pending wake per stall (issue_blocker_stalled). Refused
+    // wakes (skipped, failed, cancelled) are not covered, so a stall retries
+    // once its agent takes wakes again; concurrent sweeps cannot both deliver.
+    issueBlockerStalledIdempotencyUq: uniqueIndex("agent_wakeup_requests_issue_blocker_stalled_uq")
+      .on(table.companyId, table.idempotencyKey)
+      .concurrently()
+      .where(sql`${table.idempotencyKey} LIKE 'issue_blocker_stalled:%' AND ${table.status} IN ('queued', 'deferred_issue_execution', 'claimed', 'coalesced', 'completed')`),
     companyPayloadIssueIdx: index("agent_wakeup_requests_company_payload_issue_idx").on(
       table.companyId,
       sql`(${table.payload} ->> 'issueId')`,

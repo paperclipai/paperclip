@@ -79,11 +79,12 @@ fn checkpoints_the_sidecar_and_rebinds_consecutive_warm_runs_before_accepting_wo
         reconnect_delay: Duration::from_millis(1),
         reconnect_grace: None,
         max_runtime: Duration::from_secs(30),
+        turn_scoped: false,
     };
     let mut descriptor = json!({
         "kind": "acpx", "provider": "acpx", "driver": "acpx_runtime",
-        "providerVersion": "0.13.1", "agent": "codex", "model": "gpt-5.6-sol",
-        "acpxVersion": "0.13.1", "agentServerPackage": "@agentclientprotocol/codex-acp",
+        "providerVersion": "0.22.0", "agent": "codex", "model": "gpt-5.6-sol",
+        "acpxVersion": "0.22.0", "agentServerPackage": "@agentclientprotocol/codex-acp",
         "agentServerVersion": "1.6.2", "agentRuntimePackage": "@openai/codex",
         "agentRuntimeVersion": "0.160.0", "commandDigest": PROFILE_DIGEST,
         "sidecarCommand": sidecar, "sidecarArgs": args, "runtimeDirectory": fixture.0,
@@ -191,6 +192,124 @@ fn unused_fence_ports() -> [u16; 3] {
 /// provider lifetime is proven gone. It records a recoverable restart-loss
 /// cause instead of a terminal provider failure.
 #[test]
+fn reopens_the_conversation_for_a_turn_after_a_suspension_stop() {
+    let fixture =
+        Fixture(std::env::temp_dir().join(format!("acpx-repeat-restore-{}", uuid::Uuid::new_v4())));
+    fs::create_dir_all(&fixture.0).unwrap();
+    fs::set_permissions(&fixture.0, fs::Permissions::from_mode(0o700)).unwrap();
+    let sidecar = fixture.0.join("sidecar");
+    fs::copy(env!("CARGO_BIN_EXE_fake-acpx-sidecar"), &sidecar).unwrap();
+    fs::set_permissions(&sidecar, fs::Permissions::from_mode(0o700)).unwrap();
+    let ports = unused_fence_ports();
+    let args = vec![
+        "--mode".to_owned(),
+        "suspend".to_owned(),
+        "--profile-digest".to_owned(),
+        PROFILE_DIGEST.to_owned(),
+        "--lifetime-fence-ports".to_owned(),
+        format!("{},{},{}", ports[0], ports[1], ports[2]),
+    ];
+    let config = DurableRunnerConfig {
+        connect_url: "ws://127.0.0.1/runner".to_owned(),
+        ca_bundle_path: None,
+        state_dir: fixture.0.clone(),
+        runner_instance_id: "runner-1".to_owned(),
+        environment_lease_id: "lease-1".to_owned(),
+        run_id: "run-1".to_owned(),
+        normalized_session_id: "session-1".to_owned(),
+        turn_id: "turn-1".to_owned(),
+        item_id: "item-1".to_owned(),
+        runner_version: "0.0.0".to_owned(),
+        runner_digest: format!("sha256:{}", "a".repeat(64)),
+        acpx_launch_profile: Some(AcpxLaunchProfile {
+            candidate_admission: None,
+            authority_digest: format!("sha256:{}", "d".repeat(64)),
+            command: sidecar.clone(),
+            args: args.clone(),
+            artifacts: vec![QualifiedLaunchArtifact {
+                path: sidecar.clone(),
+                sha256: format!("sha256:{:x}", Sha256::digest(fs::read(&sidecar).unwrap())),
+            }],
+        }),
+        opencode_launch_profile: None,
+        cursor_cloud_launch_profile: None,
+        max_outbox_bytes: 1024 * 1024,
+        p0_reserve_bytes: 64 * 1024,
+        max_frame_bytes: 1024 * 1024,
+        reconnect_delay: Duration::from_millis(1),
+        reconnect_grace: None,
+        max_runtime: Duration::from_secs(30),
+        turn_scoped: false,
+    };
+    let descriptor = json!({
+        "kind": "acpx", "provider": "acpx", "driver": "acpx_runtime",
+        "providerVersion": "0.22.0", "agent": "codex", "model": "gpt-5.6-sol",
+        "acpxVersion": "0.22.0", "agentServerPackage": "@agentclientprotocol/codex-acp",
+        "agentServerVersion": "1.6.2", "agentRuntimePackage": "@openai/codex",
+        "agentRuntimeVersion": "0.160.0", "commandDigest": PROFILE_DIGEST,
+        "sidecarCommand": sidecar, "sidecarArgs": args, "runtimeDirectory": fixture.0,
+        "normalizedSessionId": "session-1", "runId": "run-1", "cwd": fixture.0,
+        "instructions": "Complete the supplied work.",
+        "permissionMode": "approve-all", "permissionModePinned": true,
+    });
+    let mut original = AcpxCommandExecutor::with_runner_config(&fixture.0, &config);
+    original
+        .execute(&command(1, "run.prepare", json!({"provider": descriptor})))
+        .unwrap();
+    original
+        .execute(&command(2, "session.open", json!({})))
+        .unwrap();
+    original
+        .execute(&command(
+            3,
+            "turn.start",
+            json!({"turnId": "provider-turn-0", "text": "Do the work."}),
+        ))
+        .unwrap();
+    original
+        .execute(&command(4, "turn.stop", json!({})))
+        .unwrap();
+    assert!(original
+        .execute(&command(
+            5,
+            "turn.start",
+            json!({"turnId": "provider-turn-1"})
+        ))
+        .is_err());
+    assert!(!original
+        .poll_events()
+        .unwrap()
+        .iter()
+        .any(|event| event.event_type == "session.resumed"));
+    let started = original
+        .execute(&command(
+            5,
+            "turn.start",
+            json!({"turnId": "provider-turn-1", "text": "Continue."}),
+        ))
+        .unwrap();
+    assert_eq!(started.result["status"], "accepted");
+    assert!(started
+        .events
+        .iter()
+        .any(|event| event.0 == "session.resumed"));
+    original
+        .execute(&command(6, "turn.stop", json!({})))
+        .unwrap();
+    original
+        .execute(&command(7, "session.close", json!({})))
+        .unwrap();
+    assert!(original
+        .execute(&command(
+            8,
+            "turn.start",
+            json!({"turnId": "provider-turn-2", "text": "Continue."})
+        ))
+        .is_err());
+    original.shutdown().unwrap();
+}
+
+#[test]
 fn restores_the_conversation_after_losing_an_active_turn_to_a_runner_restart() {
     let fixture =
         Fixture(std::env::temp_dir().join(format!("acpx-restart-{}", uuid::Uuid::new_v4())));
@@ -238,11 +357,12 @@ fn restores_the_conversation_after_losing_an_active_turn_to_a_runner_restart() {
         reconnect_delay: Duration::from_millis(1),
         reconnect_grace: None,
         max_runtime: Duration::from_secs(30),
+        turn_scoped: false,
     };
     let descriptor = json!({
         "kind": "acpx", "provider": "acpx", "driver": "acpx_runtime",
-        "providerVersion": "0.13.1", "agent": "codex", "model": "gpt-5.6-sol",
-        "acpxVersion": "0.13.1", "agentServerPackage": "@agentclientprotocol/codex-acp",
+        "providerVersion": "0.22.0", "agent": "codex", "model": "gpt-5.6-sol",
+        "acpxVersion": "0.22.0", "agentServerPackage": "@agentclientprotocol/codex-acp",
         "agentServerVersion": "1.6.2", "agentRuntimePackage": "@openai/codex",
         "agentRuntimeVersion": "0.160.0", "commandDigest": PROFILE_DIGEST,
         "sidecarCommand": sidecar, "sidecarArgs": args, "runtimeDirectory": fixture.0,
@@ -330,4 +450,243 @@ fn restores_the_conversation_after_losing_an_active_turn_to_a_runner_restart() {
         .unwrap();
     assert_eq!(continued.result["status"], "accepted");
     restored.shutdown().unwrap();
+}
+
+#[test]
+fn restores_a_turn_lost_to_a_runner_upgrade_under_the_new_launch_profile() {
+    let fixture =
+        Fixture(std::env::temp_dir().join(format!("acpx-upgrade-{}", uuid::Uuid::new_v4())));
+    fs::create_dir_all(&fixture.0).unwrap();
+    fs::set_permissions(&fixture.0, fs::Permissions::from_mode(0o700)).unwrap();
+    let sidecar = fixture.0.join("sidecar");
+    fs::copy(env!("CARGO_BIN_EXE_fake-acpx-sidecar"), &sidecar).unwrap();
+    fs::set_permissions(&sidecar, fs::Permissions::from_mode(0o700)).unwrap();
+    let ports = unused_fence_ports();
+    let args = vec![
+        "--mode".to_owned(),
+        "suspend".to_owned(),
+        "--profile-digest".to_owned(),
+        PROFILE_DIGEST.to_owned(),
+        "--lifetime-fence-ports".to_owned(),
+        format!("{},{},{}", ports[0], ports[1], ports[2]),
+    ];
+    let config = DurableRunnerConfig {
+        connect_url: "ws://127.0.0.1/runner".to_owned(),
+        ca_bundle_path: None,
+        state_dir: fixture.0.clone(),
+        runner_instance_id: "runner-1".to_owned(),
+        environment_lease_id: "lease-1".to_owned(),
+        run_id: "run-1".to_owned(),
+        normalized_session_id: "session-1".to_owned(),
+        turn_id: "turn-1".to_owned(),
+        item_id: "item-1".to_owned(),
+        runner_version: "0.0.0".to_owned(),
+        runner_digest: format!("sha256:{}", "a".repeat(64)),
+        acpx_launch_profile: Some(AcpxLaunchProfile {
+            candidate_admission: None,
+            authority_digest: format!("sha256:{}", "d".repeat(64)),
+            command: sidecar.clone(),
+            args: args.clone(),
+            artifacts: vec![QualifiedLaunchArtifact {
+                path: sidecar.clone(),
+                sha256: format!("sha256:{:x}", Sha256::digest(fs::read(&sidecar).unwrap())),
+            }],
+        }),
+        opencode_launch_profile: None,
+        cursor_cloud_launch_profile: None,
+        max_outbox_bytes: 1024 * 1024,
+        p0_reserve_bytes: 64 * 1024,
+        max_frame_bytes: 1024 * 1024,
+        reconnect_delay: Duration::from_millis(1),
+        reconnect_grace: None,
+        max_runtime: Duration::from_secs(30),
+        turn_scoped: false,
+    };
+    let descriptor = json!({
+        "kind": "acpx", "provider": "acpx", "driver": "acpx_runtime",
+        "providerVersion": "0.22.0", "agent": "codex", "model": "gpt-5.6-sol",
+        "acpxVersion": "0.22.0", "agentServerPackage": "@agentclientprotocol/codex-acp",
+        "agentServerVersion": "1.6.2", "agentRuntimePackage": "@openai/codex",
+        "agentRuntimeVersion": "0.160.0", "commandDigest": PROFILE_DIGEST,
+        "sidecarCommand": sidecar, "sidecarArgs": args, "runtimeDirectory": fixture.0,
+        "normalizedSessionId": "session-1", "runId": "run-1", "cwd": fixture.0,
+        "instructions": "Complete the supplied work.",
+        "permissionMode": "approve-all", "permissionModePinned": true,
+    });
+    let mut original = AcpxCommandExecutor::with_runner_config(&fixture.0, &config);
+    original
+        .execute(&command(1, "run.prepare", json!({"provider": descriptor})))
+        .unwrap();
+    let opened = original
+        .execute(&command(2, "session.open", json!({})))
+        .unwrap();
+    let provider_session = opened.result["providerSessionId"].clone();
+    let started = original
+        .execute(&command(
+            3,
+            "turn.start",
+            json!({"turnId": "provider-turn-1", "text": "Do the work."}),
+        ))
+        .unwrap();
+    assert_eq!(started.result["status"], "accepted");
+    drop(original);
+
+    let mut upgraded = config.clone();
+    upgraded
+        .acpx_launch_profile
+        .as_mut()
+        .unwrap()
+        .authority_digest = format!("sha256:{}", "e".repeat(64));
+    let mut restored = AcpxCommandExecutor::with_runner_config(&fixture.0, &upgraded);
+    let snapshot = restored
+        .execute(&command(4, "session.snapshot", json!({})))
+        .expect("the new build restores the conversation of the turn the upgrade lost");
+    assert_ne!(snapshot.result["status"], "closed");
+    assert_eq!(snapshot.result["providerSessionId"], provider_session);
+    let events = restored.poll_events().unwrap();
+    let failed = events
+        .iter()
+        .find(|event| event.event_type == "turn.failed")
+        .expect("the lost turn is terminated");
+    assert_eq!(failed.payload["providerTurnId"], "provider-turn-1");
+    assert_eq!(
+        failed.payload["error"]["code"],
+        "provider_turn_lost_on_restore"
+    );
+    assert_eq!(failed.payload["error"]["recoverable"], true);
+    assert!(!events
+        .iter()
+        .any(|event| event.event_type == "run.terminal"));
+    let continued = restored
+        .execute(&command(
+            5,
+            "turn.start",
+            json!({"turnId": "provider-turn-2", "text": "Continue the work."}),
+        ))
+        .unwrap();
+    assert_eq!(continued.result["status"], "accepted");
+    let saved: Value =
+        serde_json::from_slice(&fs::read(fixture.0.join("acpx-provider-state.json")).unwrap())
+            .unwrap();
+    let upgraded_digest = upgraded
+        .acpx_launch_profile
+        .as_ref()
+        .unwrap()
+        .canonical_digest()
+        .unwrap();
+    assert_eq!(saved["launchProfileDigest"], upgraded_digest);
+    restored.shutdown().unwrap();
+}
+
+#[test]
+fn a_lost_cancellation_reply_still_settles_the_turn_and_suspends_the_runner() {
+    // Restart-chaos PV2 interrupt_ack on Claude: the sidecar's reply to
+    // turn.cancel is lost. The runner must stay responsive, publish the
+    // provider's own terminal, and reach a proven suspension. Before the fix it
+    // blocked for the 30 s request bound, then failed the transport, and
+    // runner.suspend refused because provider exit was unconfirmed.
+    let fixture =
+        Fixture(std::env::temp_dir().join(format!("acpx-cancel-lost-{}", uuid::Uuid::new_v4())));
+    fs::create_dir_all(&fixture.0).unwrap();
+    fs::set_permissions(&fixture.0, fs::Permissions::from_mode(0o700)).unwrap();
+    let sidecar = fixture.0.join("sidecar");
+    fs::copy(env!("CARGO_BIN_EXE_fake-acpx-sidecar"), &sidecar).unwrap();
+    fs::set_permissions(&sidecar, fs::Permissions::from_mode(0o700)).unwrap();
+    let args = vec![
+        "--mode".to_owned(),
+        "turns".to_owned(),
+        "--profile-digest".to_owned(),
+        PROFILE_DIGEST.to_owned(),
+        "--cancel-reply".to_owned(),
+        "lost".to_owned(),
+    ];
+    let config = DurableRunnerConfig {
+        connect_url: "ws://127.0.0.1/runner".to_owned(),
+        ca_bundle_path: None,
+        state_dir: fixture.0.clone(),
+        runner_instance_id: "runner-1".to_owned(),
+        environment_lease_id: "lease-1".to_owned(),
+        run_id: "run-1".to_owned(),
+        normalized_session_id: "session-1".to_owned(),
+        turn_id: "turn-1".to_owned(),
+        item_id: "item-1".to_owned(),
+        runner_version: "0.0.0".to_owned(),
+        runner_digest: format!("sha256:{}", "a".repeat(64)),
+        acpx_launch_profile: Some(AcpxLaunchProfile {
+            candidate_admission: None,
+            authority_digest: format!("sha256:{}", "d".repeat(64)),
+            command: sidecar.clone(),
+            args: args.clone(),
+            artifacts: vec![QualifiedLaunchArtifact {
+                path: sidecar.clone(),
+                sha256: format!("sha256:{:x}", Sha256::digest(fs::read(&sidecar).unwrap())),
+            }],
+        }),
+        opencode_launch_profile: None,
+        cursor_cloud_launch_profile: None,
+        max_outbox_bytes: 1024 * 1024,
+        p0_reserve_bytes: 64 * 1024,
+        max_frame_bytes: 1024 * 1024,
+        reconnect_delay: Duration::from_millis(1),
+        reconnect_grace: None,
+        max_runtime: Duration::from_secs(60),
+        turn_scoped: false,
+    };
+    let descriptor = json!({
+        "kind": "acpx", "provider": "acpx", "driver": "acpx_runtime",
+        "providerVersion": "0.22.0", "agent": "codex", "model": "gpt-5.6-sol",
+        "acpxVersion": "0.22.0", "agentServerPackage": "@agentclientprotocol/codex-acp",
+        "agentServerVersion": "1.6.2", "agentRuntimePackage": "@openai/codex",
+        "agentRuntimeVersion": "0.160.0", "commandDigest": PROFILE_DIGEST,
+        "sidecarCommand": sidecar, "sidecarArgs": args, "runtimeDirectory": fixture.0,
+        "normalizedSessionId": "session-1", "runId": "run-1", "cwd": fixture.0,
+        "instructions": "Complete the supplied work.",
+        "permissionMode": "approve-all", "permissionModePinned": true,
+    });
+    let mut executor = AcpxCommandExecutor::with_runner_config(&fixture.0, &config);
+    executor
+        .execute(&command(1, "run.prepare", json!({"provider": descriptor})))
+        .unwrap();
+    executor
+        .execute(&command(2, "session.open", json!({})))
+        .unwrap();
+    executor
+        .execute(&command(
+            3,
+            "turn.start",
+            json!({"turnId": "provider-turn-1", "text": "Ask one question."}),
+        ))
+        .unwrap();
+    let started = std::time::Instant::now();
+    let interrupted = executor
+        .execute(&command(4, "turn.interrupt", json!({})))
+        .unwrap();
+    assert_eq!(interrupted.result["status"], "interrupt_requested");
+    assert!(started.elapsed() < Duration::from_secs(10));
+    let polled_until = std::time::Instant::now() + Duration::from_secs(5);
+    let mut events = executor.poll_events().unwrap();
+    while !events
+        .iter()
+        .any(|event| event.event_type == "run.terminal")
+    {
+        assert!(std::time::Instant::now() < polled_until, "no turn terminal");
+        events.extend(executor.poll_events().unwrap());
+    }
+    assert!(events
+        .iter()
+        .any(|event| event.event_type == "turn.interrupted"));
+    assert!(!events.iter().any(|event| event.event_type == "turn.failed"));
+    let terminal = events
+        .iter()
+        .find(|event| event.event_type == "run.terminal")
+        .unwrap();
+    assert_eq!(terminal.payload["runTerminalState"], "cancelled");
+    executor
+        .execute(&command(5, "turn.stop", json!({})))
+        .unwrap();
+    let suspended = executor
+        .execute(&command(6, "runner.suspend", json!({})))
+        .unwrap();
+    assert_eq!(suspended.result["status"], "completed");
+    executor.shutdown().unwrap();
 }

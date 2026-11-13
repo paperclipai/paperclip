@@ -817,6 +817,35 @@ describeEmbeddedPostgres("secret proposal routes", () => {
     expect(history.filter(row => row.action === "secret.proposal.approved")).toHaveLength(2);
   });
 
+  it.each([
+    ["an empty string", ""],
+    ["an empty plain value", { type: "plain", value: "" }],
+  ])("fills a target key left as %s instead of refusing the approved binding", async (_label, blank) => {
+    const fixture = await seedRun();
+    const agentApp = createAgentApp(fixture);
+    const boardApp = createBoardApp(fixture);
+    const secret = await request(agentApp).post("/api/agents/me/secret-proposals").send({
+      kind: "secret", name: "dev/blank/token", value: "blank-fixture", justification: "Needed by task",
+    });
+    const binding = await request(agentApp).post("/api/agents/me/secret-proposals").send({
+      kind: "binding", secretProposalId: secret.body.id, configPath: "env.BLANK_TOKEN", justification: "Use saved secret",
+    });
+    await db.update(agents).set({ adapterConfig: { env: { BLANK_TOKEN: blank, KEEP: "kept" } } })
+      .where(eq(agents.id, fixture.agentId));
+
+    const approved = await request(boardApp)
+      .post(`/api/companies/${fixture.companyId}/secret-proposals/${binding.body.id}/approve`).send({ cascade: true });
+
+    expect(approved.status).toBe(200);
+    const [saved] = await db.select().from(companySecrets);
+    const env = ((await db.select().from(agents))[0].adapterConfig as { env: Record<string, unknown> }).env;
+    expect(env.BLANK_TOKEN).toMatchObject({ type: "secret_ref", secretId: saved.id, version: "latest" });
+    expect(JSON.stringify(env.KEEP)).toContain("kept");
+    expect(await db.select().from(companySecretBindings)).toEqual([
+      expect.objectContaining({ secretId: saved.id, targetId: fixture.agentId, configPath: "env.BLANK_TOKEN" }),
+    ]);
+  });
+
   it("approves a binding without cascade after its secret proposal was approved separately", async () => {
     const fixture = await seedRun();
     const agentApp = createAgentApp(fixture);
@@ -863,6 +892,73 @@ describeEmbeddedPostgres("secret proposal routes", () => {
         configPath: "env.SEQUENTIAL_TOKEN",
       }),
     ]);
+  });
+
+  it.each(["rejected", "approved", "pending"] as const)("deletes a secret whose %s binding proposal referenced it", async (outcome) => {
+    const fixture = await seedRun();
+    const secret = await secretService(db).create(fixture.companyId, {
+      name: "dev/deploy/publishing",
+      key: "DEPLOY_PUBLISHING",
+      provider: "local_encrypted",
+      value: "publishing-secret",
+    });
+    const proposals = createSecretProposalsService(db);
+    const proposal = await proposals.createBinding({ companyId: fixture.companyId, heartbeatRunId: fixture.heartbeatRunId }, {
+      secretId: secret.id,
+      configPath: "env.PUBLISHING_API_KEY",
+      justification: "Publish the site",
+      bindingTargetPolicy: "self_and_reports",
+    });
+    if (outcome === "rejected") await proposals.transition(fixture.companyId, proposal.id, "rejected", { resolvedByUserId: "board-user" });
+    if (outcome === "approved") {
+      await proposals.approve(fixture.companyId, proposal.id, { resolvedByUserId: "board-user" });
+      await db.delete(companySecretBindings).where(eq(companySecretBindings.secretId, secret.id));
+    }
+
+    // The proposal's secret reference used ON DELETE SET NULL, which the binding
+    // shape check rejects, so deleting the secret failed with a 500.
+    await db.update(issues).set({ assigneeAgentId: fixture.agentId }).where(eq(issues.id, fixture.issueId));
+    const wakeup = vi.fn().mockResolvedValue(null);
+    const persistedIssues = issueService(db);
+    const addComment = vi.fn().mockResolvedValue(undefined);
+    const deleted = await request(createBoardApp(fixture, {
+      heartbeat: { wakeup },
+      issues: { getById: persistedIssues.getById, addComment },
+    })).delete(`/api/secrets/${secret.id}`);
+    expect(deleted.status).toBe(200);
+    // Only a pending proposal is rejected by the delete; it gets the normal rejection signal.
+    expect(addComment).toHaveBeenCalledTimes(outcome === "pending" ? 1 : 0);
+    if (outcome === "pending") {
+      expect(addComment.mock.calls[0]?.[1]).toContain("Status: **rejected**");
+      expect(addComment.mock.calls[0]?.[1]).toContain("The referenced secret was deleted.");
+    }
+    expect(wakeup).toHaveBeenCalledTimes(outcome === "pending" ? 1 : 0);
+    expect(await db.select().from(companySecrets).where(eq(companySecrets.id, secret.id))).toEqual([]);
+    expect(await db.select().from(companySecretProposals).where(eq(companySecretProposals.id, proposal.id))).toEqual([]);
+    // A pending review card closes as rejected instead of pointing at a deleted proposal.
+    const [card] = await db.select().from(issueThreadInteractions).where(eq(issueThreadInteractions.id, proposal.interactionId!));
+    expect(card?.status).toBe(outcome === "approved" ? "accepted" : "rejected");
+  });
+
+  it("refuses a new binding proposal for a secret that a delete already marked deleted", async () => {
+    const fixture = await seedRun();
+    const secret = await secretService(db).create(fixture.companyId, {
+      name: "dev/deploy/deleting",
+      key: "DEPLOY_DELETING",
+      provider: "local_encrypted",
+      value: "deleting-secret",
+    });
+    let proposalDuringDelete: unknown;
+    await secretService(db).remove(secret.id, {
+      beforeDelete: async () => {
+        proposalDuringDelete = await createSecretProposalsService(db).createBinding(
+          { companyId: fixture.companyId, heartbeatRunId: fixture.heartbeatRunId },
+          { secretId: secret.id, configPath: "env.LATE_KEY", justification: "Late request", bindingTargetPolicy: "self_and_reports" },
+        ).catch((error: unknown) => error);
+      },
+    });
+    expect(proposalDuringDelete).toMatchObject({ status: 404 });
+    expect(await db.select().from(companySecretProposals)).toEqual([]);
   });
 
   it("proposes and approves a binding by resolving the proposer's own sourceConfigPath", async () => {

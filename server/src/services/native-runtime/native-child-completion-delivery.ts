@@ -1,5 +1,5 @@
 import { and, eq, inArray, isNull, ne, or, sql } from "drizzle-orm";
-import { agentWakeupRequests, type Db } from "@paperclipai/db";
+import { agentWakeupRequests, heartbeatRuns, type Db } from "@paperclipai/db";
 
 export interface NativeChildCompletionRecipient {
   companyId: string;
@@ -24,6 +24,8 @@ export async function hasPendingNativeChildCompletion(db: Db, input: NativeChild
     sql`${agentWakeupRequests.payload}->>'issueId' = ${input.issueId}`,
     sql`nullif(${agentWakeupRequests.payload}->'_paperclipWakeContext'->>'nativeChildCompletionDecisionId', '') is not null`,
     or(isNull(agentWakeupRequests.runId), ne(agentWakeupRequests.runId, input.runId)),
+    sql`${agentWakeupRequests.createdAt} >= coalesce((select ${heartbeatRuns.startedAt} from ${heartbeatRuns}
+      where ${heartbeatRuns.id} = ${input.runId} and ${heartbeatRuns.companyId} = ${input.companyId}), '-infinity'::timestamptz)`,
     input.sourceIntentId ? ne(agentWakeupRequests.id, input.sourceIntentId) : undefined,
   )).limit(1);
   return Boolean(pending);

@@ -2863,6 +2863,13 @@ export async function buildEffectiveRunSessionConfigMetadata(input: {
     ...(input.managedInstructions.contentHash !== null ? { contentHash: input.managedInstructions.contentHash } : {}),
   } : await resolveInstructionsConfigFingerprintMetadata(input.effectiveAdapterConfig);
   const effectiveAdapterConfig = { ...managedAiSessionFingerprintConfig(input.effectiveAdapterConfig, input.managedAiHome) };
+  // Migration 0443 cleared the stored per_turn creation default from native
+  // agents. Fingerprint an unset lifecycle as that stored value so clearing it
+  // keeps saved task sessions and their provider history. An explicit change
+  // to warm still starts a new session.
+  if (input.adapterType === "paperclip_runner" && effectiveAdapterConfig.lifecycleMode === undefined) {
+    effectiveAdapterConfig.lifecycleMode = "per_turn";
+  }
   if (input.managedInstructions && !input.retainManagedInstructionPaths) {
     delete effectiveAdapterConfig.instructionsRootPath;
     delete effectiveAdapterConfig.instructionsFilePath;

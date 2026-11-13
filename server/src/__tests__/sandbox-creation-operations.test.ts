@@ -25,7 +25,7 @@ describe("durable sandbox creation through the runtime entry point", () => {
   let database: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | undefined;
   let db: ReturnType<typeof createDb>;
   let companyId: string, environmentId: string, pluginId: string, runId: string, spool: string;
-  let creates: number, destroys: number, loseReply: boolean, failDestroy: boolean;
+  let creates: number, destroys: number, loseReply: boolean, failDestroy: boolean, pluginLogin: boolean, generatedLoginId: boolean, foreignReceipt: boolean;
   let beforeReply: (() => Promise<void>) | undefined;
   const resources = new Map<string, string>();
   let workers: PluginWorkerManager;
@@ -36,7 +36,7 @@ describe("durable sandbox creation through the runtime entry point", () => {
   beforeEach(async () => {
     await db.execute(sql`truncate sandbox_creation_operations, companies, environments, plugins cascade`);
     companyId = randomUUID(); environmentId = randomUUID(); pluginId = randomUUID(); runId = randomUUID();
-    const agentId = randomUUID(); creates = 0; destroys = 0; loseReply = false; failDestroy = false; beforeReply = undefined; resources.clear();
+    const agentId = randomUUID(); creates = 0; destroys = 0; loseReply = false; failDestroy = false; pluginLogin = false; generatedLoginId = false; foreignReceipt = false; beforeReply = undefined; resources.clear();
     spool = await mkdtemp(join(tmpdir(), "empty-sandbox-web-"));
     await db.insert(companies).values({ id: companyId, name: "Creation fixture", issuePrefix: "CRT" });
     await db.insert(agents).values({ id: agentId, companyId, name: "Fixture", role: "engineer", adapterType: "codex_local" });
@@ -55,7 +55,7 @@ describe("durable sandbox creation through the runtime entry point", () => {
         if (method === "environmentAcquireLease") {
           expect(await db.select().from(sandboxCreationOperations)).toContainEqual(expect.objectContaining({ id: input.creationOperationId, state: "pending" }));
           creates++;
-          const resource = `provider-${input.creationOperationId}`;
+          const resource = pluginLogin && !generatedLoginId ? input.creationOperationId : `provider-${input.creationOperationId}`;
           resources.set(input.creationOperationId, resource);
           await beforeReply?.();
           if (loseReply) throw new Error("Lost provider reply");
@@ -64,12 +64,15 @@ describe("durable sandbox creation through the runtime entry point", () => {
         if (method === "environmentInspectLease") {
           const id = input.creationOperation.id;
           const resource = resources.get(id);
+          if (pluginLogin) return resource
+            ? { providerLeaseId: resource, state: "unknown", creationLease: { providerLeaseId: foreignReceipt ? "foreign-resource" : resource, metadata: { purpose: "login", loginCommandKey: "codex" } } }
+            : { providerLeaseId: id, state: "destroyed" };
           if (!resource) return { providerLeaseId: id, state: "unknown" };
           return { providerLeaseId: resource, state: "active", creationCleanup: { providerLeaseId: resource,
             observedProviderLeaseId: resource, companyId, environmentId, runId: input.creationOperation.runId, attemptId: id,
             accountFingerprint: "a".repeat(64), labels: { "paperclip-create-attempt": id } } };
         }
-        if (method === "environmentDestroyLease") {
+        if (method === "environmentDestroyLease" || (pluginLogin && method === "environmentReleaseLease")) {
           destroys++;
           if (failDestroy) throw new Error("Fixture teardown failed");
           resources.delete(input.leaseMetadata.creationOperationId);
@@ -95,6 +98,61 @@ describe("durable sandbox creation through the runtime entry point", () => {
     await db.execute(sql`create or replace function reject_fixture_write() returns trigger language plpgsql as $$ begin raise exception 'Fixture database write unavailable'; end $$`);
     await db.execute(sql.raw(`create trigger ${trigger} before insert on ${table} for each row execute function reject_fixture_write()`));
   }
+  async function acquirePluginLogin(heartbeatRunId: string | null = null) {
+    pluginLogin = true;
+    await db.update(environments).set({ driver: "plugin", config: { pluginKey: "paperclip.creation-fixture", driverKey: "creation-fixture", driverConfig: {} } }).where(eq(environments.id, environmentId));
+    const [plugin] = await db.select().from(plugins).where(eq(plugins.id, pluginId));
+    await db.update(plugins).set({ manifestJson: { ...plugin.manifestJson, environmentDrivers: [{ driverKey: "creation-fixture", kind: "environment_driver", displayName: "Computer", creationOperationVersion: 1, configSchema: { type: "object" } }] } }).where(eq(plugins.id, pluginId));
+    return runtime().acquireRunLease({ companyId, environment: (await environmentService(db).getById(environmentId))!, heartbeatRunId,
+      issueId: null, persistedExecutionWorkspace: null, purpose: "login", loginCommandKey: "codex", requestedExpiresAt: new Date(Date.now() + 300000) });
+  }
+  it.each([false, true])("recovers an interrupted login using its exact receipt (provider-generated ID: %s)", async generated => {
+    generatedLoginId = generated;
+    loseReply = true; await expect(acquirePluginLogin()).rejects.toThrow("Lost provider reply");
+    const [intent] = await db.select().from(sandboxCreationOperations);
+    expect(intent.metadata).toMatchObject({ purpose: "login", loginCommandKey: "codex", creationHeartbeatRunId: null });
+    expect(intent.runId).not.toBe(runId);
+    await due(); await runtime().flushDeferredOrphanCleanups();
+    const [lease] = await db.select().from(environmentLeases);
+    expect(lease).toMatchObject({ status: "pending_cleanup", heartbeatRunId: null, providerLeaseId: generated ? `provider-${intent.id}` : intent.id, metadata: { purpose: "login", loginCommandKey: "codex" } });
+    await runtime().retryPendingSandboxTeardown({ environment: null, lease: (await environmentService(db).getLeaseById(lease.id))! });
+    expect(resources.size).toBe(0); expect(destroys).toBe(1);
+  });
+  it.each([false, true])("preserves an actual heartbeat reference during recovery (legacy intent: %s)", async legacy => {
+    loseReply = true;
+    await expect(acquirePluginLogin(runId)).rejects.toThrow("Lost provider reply");
+    const [intent] = await db.select().from(sandboxCreationOperations);
+    expect(intent.metadata.creationHeartbeatRunId).toBe(runId);
+    if (legacy) await db.update(sandboxCreationOperations).set({ metadata: sql`metadata - 'creationHeartbeatRunId'` });
+    await due(); await runtime().flushDeferredOrphanCleanups();
+    const [lease] = await db.select().from(environmentLeases);
+    expect(lease.heartbeatRunId).toBe(runId);
+    await runtime().retryPendingSandboxTeardown({ environment: null, lease: (await environmentService(db).getLeaseById(lease.id))! });
+    expect(resources.size).toBe(0); expect(destroys).toBe(1);
+  });
+  it("retains ownership when the inspected lease and its receipt disagree", async () => {
+    generatedLoginId = true; foreignReceipt = true; loseReply = true;
+    await expect(acquirePluginLogin()).rejects.toThrow("Lost provider reply");
+    await due(); await runtime().flushDeferredOrphanCleanups();
+    expect(await db.select().from(environmentLeases)).toEqual([]);
+    expect((await db.select().from(sandboxCreationOperations))[0].state).toBe("pending");
+    expect(resources.size).toBe(1); expect(destroys).toBe(0);
+    foreignReceipt = false;
+    await due(); await runtime().flushDeferredOrphanCleanups();
+    const [lease] = await db.select().from(environmentLeases);
+    await runtime().retryPendingSandboxTeardown({ environment: null, lease: (await environmentService(db).getLeaseById(lease.id))! });
+    expect(resources.size).toBe(0); expect(destroys).toBe(1);
+  });
+  it("resolves a never-created login only after its materialization window", async () => {
+    loseReply = true; await expect(acquirePluginLogin()).rejects.toThrow("Lost provider reply"); resources.clear();
+    await due(); await runtime().flushDeferredOrphanCleanups();
+    expect((await db.select().from(sandboxCreationOperations))[0].state).toBe("pending");
+    await db.update(sandboxCreationOperations).set({ nextAttemptAt: new Date(0), metadata: sql`metadata || '{"creationSettleAt":"2000-01-01T00:00:00Z"}'::jsonb` });
+    await runtime().flushDeferredOrphanCleanups();
+    expect((await db.select().from(sandboxCreationOperations))[0].state).toBe("resolved");
+    expect(destroys).toBe(0);
+  });
+
   it("can reapply the creation migration without losing a committed intent", async () => {
     loseReply = true; await expect(acquire()).rejects.toThrow("Lost provider reply");
     const [before] = await db.select().from(sandboxCreationOperations);
@@ -367,12 +425,12 @@ describe("durable sandbox creation through the runtime entry point", () => {
       await runtime().retryPendingSandboxTeardown({ environment: null, lease: (await environmentService(db).getLeaseById(lease!.id))! });
       expect(resources.size).toBe(0); expect(destroys).toBe(1); expect(creates).toBe(1);
     });
-    it("pages past more unprovable creations than one page to find an abandoned one", async () => {
+    it("pages past more unprovable creations than one settle page (200) to find an abandoned one", async () => {
       const pid = await exitedPid();
       const operation = await interruptedCreation(async current => ({ ...current, bootId: randomUUID(), pid }));
       const { id: _id, runId: _runId, ...row } = operation;
       // Sorted ahead of the abandoned intent: creators on another host cannot be judged.
-      await db.insert(sandboxCreationOperations).values(Array.from({ length: 105 }, (_, index) => ({ ...row,
+      await db.insert(sandboxCreationOperations).values(Array.from({ length: 205 }, (_, index) => ({ ...row,
         id: `00000000-0000-4000-8000-${String(index).padStart(12, "0")}`, runId: randomUUID(),
         metadata: { ...row.metadata, creationController: { ...(row.metadata.creationController as object), bootId: randomUUID(), pid, hostHash: "f".repeat(32) } } })));
       await runtime().flushDeferredOrphanCleanups();

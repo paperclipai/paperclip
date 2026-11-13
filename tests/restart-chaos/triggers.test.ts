@@ -146,6 +146,28 @@ describe("trigger firing", () => {
     expect(observer.record.triggerMissed).toEqual(["comment"]);
   });
 
+  it("clicks Retry through the board UI when the wave drives a browser, and records what the user saw", async () => {
+    const state = { runs: [{ runId: "r1", status: "failed", finishedAt: new Date().toISOString() }] as Json[],
+      issue: { id: "i1", status: "blocked", interruption: { state: "failed", canRetry: true, observedRunId: "r1" } } };
+    const clicks: string[] = [];
+    const board = { clickRetry: async (issue: string) => { clicks.push(issue);
+      return { clicked: true, httpStatus: 202, accepted: true, error: null, bannerText: "Couldn’t finish this attempt." }; } };
+    const observer = new TaskObserver(base, scriptedApi(state), lab, new Timeline(null), ready, undefined, board);
+    await observer.launch();
+    const start = observer.record.createdAt!;
+    await observer.poll(start + 1_000);
+    await observer.poll(start + 1_000 + 12_001);
+    expect(clicks).toEqual(["CHA-1"]);
+    expect(observer.record.retry).toMatchObject({ via: "ui", accepted: true, httpStatus: 202, bannerText: "Couldn’t finish this attempt." });
+
+    const missing = { clickRetry: async () => ({ clicked: false, httpStatus: null, accepted: null, error: "ui_retry_button_missing", bannerText: "Saving files from the previous attempt" }) };
+    const blind = new TaskObserver(base, scriptedApi(state), lab, new Timeline(null), ready, undefined, missing);
+    await blind.launch();
+    await blind.poll(blind.record.createdAt! + 1_000);
+    await blind.poll(blind.record.createdAt! + 1_000 + 12_001);
+    expect(blind.record.retry).toMatchObject({ via: "ui", accepted: null, error: "ui_retry_button_missing" });
+  });
+
   it("retry: fires the extra K1 right after an accepted Retry click, and closes unfired triggers at sweep", async () => {
     const state = { runs: [{ runId: "r1", status: "failed", finishedAt: new Date().toISOString() }] as Json[],
       issue: { id: "i1", status: "blocked", interruption: { state: "needs_retry", canRetry: true, observedRunId: "r1" } } };

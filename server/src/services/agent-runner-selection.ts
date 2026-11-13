@@ -138,7 +138,8 @@ function resolveOpenCodeRunnerConfig(config: Record<string, unknown>): Record<st
     provider: "opencode",
     model: typeof config.model === "string" ? config.model.trim() : "",
     opencodePermissionMode: config.opencodePermissionMode ?? "allow",
-    lifecycleMode: config.lifecycleMode ?? "per_turn",
+    // Absent means the product default: warm on a local target (native-lifecycle.ts).
+    ...(config.lifecycleMode === undefined ? {} : { lifecycleMode: config.lifecycleMode }),
   };
 }
 
@@ -173,7 +174,7 @@ function resolveClaudeRunnerConfig(config: Record<string, unknown>): Record<stri
   }
   const model = resolveClaudeModel(config.model, modelEnv);
   if (!model) incompatible(["model"]);
-  return { ...translated, ...(effort === undefined || effort === "" ? {} : { modelReasoningEffort: effort }), provider: "acpx", acpxAgent: "claude", model, acpxPermissionMode: translated.acpxPermissionMode ?? "approve-all", lifecycleMode: config.lifecycleMode ?? "per_turn" };
+  return { ...translated, ...(effort === undefined || effort === "" ? {} : { modelReasoningEffort: effort }), provider: "acpx", acpxAgent: "claude", model, acpxPermissionMode: translated.acpxPermissionMode ?? "approve-all", ...(config.lifecycleMode === undefined ? {} : { lifecycleMode: config.lifecycleMode }) };
 }
 
 export function resolveNewAgentRunner(input: AgentRunnerSelection): { adapterType: string; adapterConfig: Record<string, unknown> } {
@@ -368,7 +369,7 @@ function resolveAgentRunner(input: AgentRunnerSelection): { adapterType: string;
   const effort = config.modelReasoningEffort ?? config.reasoningEffort ?? config.effort;
   for (const key of ["engine", "command", "extraArgs", "args", "agentCommand", "mode", "nonInteractivePermissions", "stateDir", "warmHandleIdleMs", "dangerouslyBypassApprovalsAndSandbox", "dangerouslyBypassSandbox", "fastMode", "reasoningEffort", "effort"]) delete config[key];
   if (config.model !== undefined && typeof config.model !== "string") incompatible(["model"]);
-  config = { ...config, provider: "codex", model: typeof config.model === "string" && config.model.trim() ? config.model.trim() : PAPERCLIP_RUNNER_DEFAULT_MODELS.codex, codexPermissionMode: config.codexPermissionMode ?? "never", lifecycleMode: config.lifecycleMode ?? "per_turn", ...(effort === undefined ? {} : { modelReasoningEffort: effort }) };
+  config = { ...config, provider: "codex", model: typeof config.model === "string" && config.model.trim() ? config.model.trim() : PAPERCLIP_RUNNER_DEFAULT_MODELS.codex, codexPermissionMode: config.codexPermissionMode ?? "never", ...(config.lifecycleMode === undefined ? {} : { lifecycleMode: config.lifecycleMode }), ...(effort === undefined ? {} : { modelReasoningEffort: effort }) };
   try { resolvePaperclipRunnerNativeProviderInput({ backend: "codex_app_server", adapterConfig: config }); }
   catch (error) {
     if (error instanceof PaperclipRunnerProviderProfileError) throw unprocessable(error.message, { code: error.code });

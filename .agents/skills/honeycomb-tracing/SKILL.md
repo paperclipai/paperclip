@@ -19,6 +19,7 @@ replaying tasks, changing credentials, or deploying instrumentation.
 | --- | --- |
 | Why is a task slow before, during, or after model execution? | Application workflow below; [runtime setup](references/runtime.md) if spans are absent |
 | Why does an issue page load slowly? | Request spans plus browser timing, described below |
+| What is a page's real-user load time or SLO on a hosted instance? | Browser `page.load` spans in [browser performance tracing](../../../doc/browser-performance-tracing.md) |
 | Which CI jobs or test files delay the whole suite? | [CI profiling](references/ci.md) |
 | How should a trace be organized so a person can understand it? | Human-readable waterfall guidance below and [trace design](references/trace-design.md) |
 | Where should a new span go? | Instrumentation guidance below and [Observability contract](../../../doc/observability.md) |
@@ -33,7 +34,8 @@ Keep the repository's three paths distinct:
   another OTLP destination. With no endpoint, this tracing stays off.
 - **Telemetry:** first-party events under `packages/shared/src/telemetry/`, sent
   to Paperclip by default unless opted out. Adding these requires the generated
-  contract, Telemetry README, and privacy-review workflow in `AGENTS.md`.
+  contract, Telemetry README, and privacy-review workflow in
+  `rules/data-paths.mdc`.
 - **Run log:** local `heartbeat_run_events` and measured performance events.
   Useful for correlation, but a local event is not proof of Honeycomb export.
 

@@ -1,5 +1,8 @@
 import { ROLLING_WEB_DEPLOYMENT_SUITE, ROLLING_WEB_DEPLOYMENT_WARM_SUITE } from "./controller-rolling-deployment.js";
 import { supportsManagedNativeWarmSession } from "../../server/src/services/native-runtime/native-warm-capability.js";
+import { CHAT_NATIVE_TIMEOUT_POLICY } from "./chat-native-timeout-policy.js";
+import { CHAT_SETUP_HEALTH_SUITE, chatSetupHealthTask, chatSetupHealthDigest } from "./chat-setup-health.js";
+import { CHAT_OPENCODE_MODEL, CHAT_OPENCODE_PROFILE } from "./chat-runtime-profile.js";
 import { FEEDBACK_PERSISTENCE_SUITE, feedbackPersistenceTask, feedbackPersistenceDigest } from "./feedback-persistence.js";
 import { followupStopTask, followupStopDigest } from "./followup-stop-resume.js";
 import { finalizationRecoveryTask, finalizationRecoveryDigest } from "./finalization-recovery.js";
@@ -29,9 +32,11 @@ import { hiringTemplateTasks, hiringTemplateProfile, hiringTemplateDefinitionDig
 import { copilotProviderDeathTasks } from "./copilot-active-stop-tasks.js";
 import { instructionPersistenceTask } from "./instruction-persistence.js";
 import { apiResponseReadingTask } from "./api-response-reading.js";
+import { CODEX_PLANNING_READ_ONLY_SUITE, codexPlanningReadOnlyTask } from "./codex-planning-read-only.js";
 import { apiArtifactTransferTask } from "./api-artifact-transfer.js";
 import { taskTitleTasks, taskTitleDefinitionDigest, TASK_TITLE_BUDGET_CENTS } from "./task-titles.js";
-import { CHAT_FEATURE_SUITE, CHAT_FEATURE_BUDGET_CENTS, CHAT_FEATURE_OPENCODE_MODEL, chatFeatureTasks, chatFeatureProfile, chatFeatureScenarios, chatFeatureDefinitionDigest } from "./chat-feature-cases.js";
+import { chatCatalogInventoryDigest, chatCatalogScenarios } from "./chat-catalog-inventory.js";
+import { CHAT_FEATURE_SUITE, CHAT_FEATURE_BUDGET_CENTS, CHAT_FEATURE_OPENCODE_MODEL, chatFeatureTasks, chatCatalogTasks, chatFeatureProfile, chatFeatureScenarios, chatFeatureDefinitionDigest } from "./chat-feature-cases.js";
 import { blockerTasks, blockerProfile } from "./blocker-cases.js";
 import { accountingTasks } from "./accounting-cases.js";
 import { continuationTasks, questionResumeTask } from "./continuation-cases.js";
@@ -49,6 +54,7 @@ import { firstTaskTasks, onboardingApprovalHistoryTask } from "./first-task-case
 import { APPROVAL_HISTORY_SUITE, approvalHistoryDefinitionDigest } from "./first-task-approval-history.js";
 import { chatTasks, chatHardeningTasks, chatStoryTasks, chatQualificationTasks, chatCompletionTasks } from "./chat-cases.js";
 import { createHash } from "node:crypto";
+import { neutralFixtureSuffix } from "./fixture-names.js";
 import { fileURLToPath } from "node:url";
 import { createAgentSchema } from "../../packages/shared/src/validators/agent.js";
 import { createEnvironmentSchema } from "../../packages/shared/src/validators/environment.js";
@@ -117,11 +123,11 @@ function commonAgent(
   additionalInstructions: readonly string[] = [],
 ) {
   return {
-    name: `Runner E2E ${fixtureId} ${input.executionId}`,
+    name: `Agent ${neutralFixtureSuffix(fixtureId, input.executionId)}`,
     role: "qa",
-    title: "Paid full-stack runner acceptance fixture",
+    title: "Operations agent",
     capabilities:
-      "Completes deterministic standard, planning, and ask-mode runner acceptance tasks.",
+      "Completes standard, planning, and ask-mode tasks for the company.",
     adapterType,
     ...(adapterType === "codex_local" ? { runner: "legacy" as const } : {}),
     adapterConfig,
@@ -504,8 +510,8 @@ export const runnerEnvironments: readonly EnvironmentFixture[] = [
     expectedExecutionTarget: { kind: "local" },
     buildEnvironment(input) {
       return {
-        name: `Runner E2E local ${input.executionId}`,
-        description: "Ephemeral local runner E2E environment",
+        name: `Local ${neutralFixtureSuffix(input.executionId)}`,
+        description: "Local execution environment",
         driver: "local",
         config: {},
         envVars: {},
@@ -532,8 +538,8 @@ export const runnerEnvironments: readonly EnvironmentFixture[] = [
         );
       }
       return {
-        name: `Runner E2E Daytona ${input.executionId}`,
-        description: "Ephemeral Daytona runner E2E environment",
+        name: `Daytona ${neutralFixtureSuffix(input.executionId)}`,
+        description: "Daytona sandbox environment",
         driver: "sandbox",
         config: {
           provider: "daytona",
@@ -580,8 +586,8 @@ export const daytonaWarmEnvironment: EnvironmentFixture = {
       );
     }
     return {
-      name: `Runner E2E Daytona warm ${input.executionId}`,
-      description: "Ephemeral reusable Daytona runner E2E environment",
+      name: `Daytona warm ${neutralFixtureSuffix(input.executionId)}`,
+      description: "Reusable Daytona sandbox environment",
       driver: "sandbox",
       config: {
         provider: "daytona",
@@ -1324,6 +1330,12 @@ const rollingDeploymentSuites: RunnerSuiteFixture[] = [
     grading: "same-active-execution-ordinary-reads-saves-and-second-empty-home-continuation" },
 }));
 
+const chatFeatureExecutionProfile = chatFeatureProfile(nativeProfile({
+  id: CHAT_OPENCODE_PROFILE, label: "Native OpenCode OpenRouter DeepSeek V4.1 Flash 1017",
+  provider: "opencode", model: CHAT_OPENCODE_MODEL, credential: "OPENROUTER_API_KEY", supportedEnvironments: ["local"],
+  modelQualification: { source: "candidate_runner_profile", qualificationId: "chat-catalog:opencode-1.18.34:deepseek-v4.1-flash-1017:remote-initial" },
+}));
+
 export const runnerSuites: readonly RunnerSuiteFixture[] = [
   remoteWorkspaceStorageSuite,
   ...rollingDeploymentSuites,
@@ -1669,6 +1681,14 @@ export const runnerSuites: readonly RunnerSuiteFixture[] = [
     definitionMetadata: { version: 1, grading: "hidden-evidence-exact-copy-and-api-tool-events", scheduling: "explicit-only" },
   },
   {
+    id: CODEX_PLANNING_READ_ONLY_SUITE, label: "Codex planning read-only enforcement", manualOnly: true,
+    description: "Start a native Codex planning turn, attempt one workspace write, and require the sandbox to refuse it before the Plan is approved.",
+    groups: [], environments: runnerEnvironments,
+    profiles: runnerProfiles.filter(profile => profile.id === "runner-codex"),
+    tasks: [codexPlanningReadOnlyTask], expectedMatrixSize: 2,
+    definitionMetadata: { version: 1, grading: "plan-marker-and-refused-shell-write-event", scheduling: "explicit-only", maximumAttemptsPerCell: 1 },
+  },
+  {
     id: "api-artifact-transfer", label: "Verified API artifact transfer", manualOnly: true,
     description: "Install an authorized complete API artifact in Daytona and independently verify the delivered bytes.",
     groups: [], environments: runnerEnvironments.filter(environment => environment.id === "daytona"),
@@ -1858,20 +1878,31 @@ export const runnerSuites: readonly RunnerSuiteFixture[] = [
     definitionMetadata: { version: 9, runGrading: "accepted-execution-or-explicit-plan-only", credentialPersistenceCheck: false, questionChoiceMinimum: 2, nativeSetup: "qualified-platform-wizard-saved-default", claudeDefaultTargets: ["darwin-arm64", "darwin-x64", "linux-x64", "linux-arm64"], legacySetup: "explicit-advanced-runner-choice", productionInstructions: true, qualityGrading: "informational" },
   },
   {
+    id: CHAT_SETUP_HEALTH_SUITE, label: "Chat provider setup health", manualOnly: true,
+    description: "Diagnostic only: one normal lifecycle hello, zero chat/task work; excluded from the 244 catalog scenarios.",
+    groups: [], profiles: [chatFeatureExecutionProfile], environments: [localEnvironment], tasks: [chatSetupHealthTask], expectedMatrixSize: 1,
+    definitionMetadata: { version: 1, sourceDigest: chatSetupHealthDigest, scheduling: "explicit-only", catalogScenario: false,
+      maximumAttemptsPerCell: 1, maximumAutomaticSetupHellos: 1, expectedHeartbeatRuns: 0, canonicalQueries: 0,
+      setupProbeUsage: "unavailable-outside-heartbeat-accounting" },
+  },
+  {
     id: CHAT_FEATURE_SUITE, label: "Chat feature journeys", manualOnly: true,
-    description: "Natural catalog requests create backlog work or delegate an announcement and return its saved result.",
+    description: "Executable catalog requests through Agent Chat, with independently graded persisted state.",
     groups: ["chat", "native"],
-    profiles: [chatFeatureProfile(nativeProfile({ id: "runner-codex-subscription", label: "Native Codex subscription",
-      provider: "codex", model: DEFAULT_CODEX_LOCAL_MODEL, credential: "CODEX_AUTH_JSON", supportedEnvironments: ["local"] })),
-      chatFeatureProfile(runnerProfiles.find(profile => profile.id === "runner-opencode")!),
+    profiles: [chatFeatureExecutionProfile,
+      chatFeatureProfile(nativeProfile({ id: "runner-codex-subscription", label: "Native Codex subscription",
+        provider: "codex", model: DEFAULT_CODEX_LOCAL_MODEL, credential: "CODEX_AUTH_JSON", supportedEnvironments: ["local"] })),
       chatFeatureProfile(runnerOpenCodeDeepSeek1017Profile)],
-    environments: [localEnvironment], tasks: chatFeatureTasks, expectedMatrixSize: 5,
-    excludedExecutionIds: ["chat-features.runner-opencode-deepseek-1017.local.delegate-announcement"],
-    definitionMetadata: { version: 2, definitionDigest: chatFeatureDefinitionDigest, scheduling: "explicit-only",
+    environments: [localEnvironment], tasks: [...chatFeatureTasks, ...chatCatalogTasks], expectedMatrixSize: 5 + chatCatalogTasks.length,
+    excludedExecutionIds: [
+      ...chatCatalogTasks.map(task => `chat-features.runner-codex-subscription.local.${task.id}`),
+      ...[...chatFeatureTasks, ...chatCatalogTasks].filter(task => task.id !== "create-backlog").map(task => `chat-features.runner-opencode-deepseek-1017.local.${task.id}`),
+    ],
+    definitionMetadata: { version: 3, nativeTimeoutPolicy: CHAT_NATIVE_TIMEOUT_POLICY, authoredTurnTimeouts: "legacy-declarations-retained-separately-not-effective-native-caps", definitionDigest: chatFeatureDefinitionDigest, inventoryDigest: chatCatalogInventoryDigest, frozenScenarioCount: 244, scheduling: "explicit-only",
       instructions: "production-role-defaults", companyAndAgentBudgetCents: CHAT_FEATURE_BUDGET_CENTS,
-      unpricedUsagePolicy: "allow-through-public-budget-policy", taskRunLimits: { ceo: 3, worker: 1 },
+      unpricedUsagePolicy: "allow-through-public-budget-policy", taskRunLimits: "per-case-declared; agent daily admission ceiling 3",
       maximumAttemptsPerCell: 1, setupProbeUsage: "unavailable-outside-heartbeat-accounting",
-      scenarios: chatFeatureScenarios.map(({ id, capabilities }) => ({ id, capabilities })) },
+      scenarios: [...chatFeatureScenarios, ...chatCatalogScenarios.filter(row => chatCatalogTasks.some(task => task.id === row.id))].map(({ id, capabilities }) => ({ id, capabilities })) },
   },
   {
     id: "agent-chat", label: "Persistent Agent Chat",

@@ -13,7 +13,7 @@ export type SettledControllerArchiveOwner = {
   kind: "settled_controller_archive";
   companyId: string; issueId: string; agentId: string; runId: string; sessionId: string;
   selectedSessionId: string; selectedLastRunId: string;
-  profileDigest: string; coordinatorDigest: string; controllerDigest: string; supervisorDigest: string | null;
+  profileDigest: string; coordinatorDigest: string; controllerDigest: string | null; supervisorDigest: string | null;
   filesystemIndependence?: { source: OriginalHarnessVolumeCapability; scopeDigest: string; factsDigest: string };
 };
 const fileDigest = (value: string) => createHash("sha256").update(value).digest("hex");
@@ -33,6 +33,7 @@ export function nativeControllerArchiveCoordinatorDigest(value: {
 
 export async function assertSettledControllerArchiveSource(db: Db, owner: SettledControllerArchiveOwner) {
   function fail(): never { throw new Error("native_controller_archive_source_unsettled"); }
+  if (owner.controllerDigest === null && !owner.filesystemIndependence) fail();
   if (owner.filesystemIndependence) {
     await assertOriginalHarnessVolumeSource(owner.filesystemIndependence.source);
     await (await import("./native-harness-filesystem-independence.js")).assertNativeHarnessFilesystemArchiveSource(db, owner);
@@ -68,7 +69,7 @@ export async function assertSettledControllerArchiveSource(db: Db, owner: Settle
     normalizedSessionId: owner.sessionId, beforeCreatedAt: selectedRun.createdAt, includeProgressBarrier: true });
   if (!selected || selected.id !== owner.runId || nativeControllerArchiveProfileDigest(selected.runnerProfileJson) !== owner.profileDigest) fail();
   const material = await readLegacyNativeControllerArchiveDigests(selected);
-  if (material.controllerDigest !== owner.controllerDigest
+  if ((material.controllerDigest ?? null) !== owner.controllerDigest
     || (material.supervisorDigest ?? null) !== owner.supervisorDigest) fail();
 }
 

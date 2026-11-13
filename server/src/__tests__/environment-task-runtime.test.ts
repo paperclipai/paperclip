@@ -3,7 +3,7 @@ import { PgDialect } from "drizzle-orm/pg-core";
 import { executionWorkspaces, environmentLeases, type Db } from "@paperclipai/db";
 import { environmentTaskErrorCodeData, environmentTaskOperationSchema, parseEnvironmentTaskResult, JsonRpcCallError, PluginEnvironmentTaskError,
   readEnvironmentTaskErrorCode, readEnvironmentTaskErrorDiagnostic } from "@paperclipai/plugin-sdk";
-import { executeEnvironmentTask, settleDispatchedEnvironmentTask } from "../services/environment-task-runtime.js";
+import { executeEnvironmentTask, isSettledReadyRunnerState, settleDispatchedEnvironmentTask } from "../services/environment-task-runtime.js";
 import { NativeExecutionContext } from "../services/native-runtime/native-execution-context.js";
 
 const state = vi.hoisted(() => ({ plugin: {} as any, release: vi.fn(), identity: vi.fn(), config: vi.fn() }));
@@ -44,7 +44,45 @@ beforeEach(() => {
   state.config.mockReset().mockResolvedValue({ configJson: { endpoint: "synthetic" } });
   state.plugin = { id: "original", pluginKey: "test.provider", status: "ready", manifestJson: { capabilities: ["environment.drivers.register"], environmentDrivers: [{ driverKey: "tasks", supportsTasks: true }] } };
 });
+describe("stopped Runner checkpoint settlement", () => {
+  const idle = () => ({ schema: "paperclip.runner.durable.state.v1", lifecycle: "ready", lastControllerCommandSeq: 7,
+    ackedSourceSeq: 11, nextSourceSeq: 12, outbox: [] as unknown[], processedCommands: { done: { status: "completed" } } as Record<string, unknown>,
+    pendingTerminalDelivery: null, pendingProviderCleanup: null, warmTransition: null } as Record<string, unknown>);
+  it("treats only a ready journal at a fully settled cut as suspended", () => {
+    expect(isSettledReadyRunnerState(idle())).toBe(true);
+    for (const change of [
+      { lifecycle: "suspended" }, { lifecycle: "recoverable_failure" }, { lifecycle: "backpressure" }, { schema: "unknown" },
+      { outbox: [{ sourceSeq: 12 }] }, { outbox: undefined }, { ackedSourceSeq: 10 }, { nextSourceSeq: 0 }, { nextSourceSeq: undefined },
+      { processedCommands: { turn: { status: "pending" } } }, { processedCommands: { turn: { status: "indeterminate" } } },
+      { processedCommands: { turn: {} } }, { processedCommands: undefined }, { processedCommands: [] },
+      { pendingTerminalDelivery: { commandId: "c" } }, { pendingProviderCleanup: { commandId: "c" } }, { warmTransition: { id: "t" } },
+    ]) expect(isSettledReadyRunnerState({ ...idle(), ...change }), JSON.stringify(change)).toBe(false);
+  });
+});
+
 describe("plugin-provided Runner execution", () => {
+  it("records a confirmed admission refusal so lease cleanup never looks for a Runner", async () => {
+    const value = row();
+    const fixture = database(value);
+    const refusal = { kind: "admission_rejected", taskId: "attempt-1", reason: "session_state_unavailable" };
+    const workers = worker(refusal);
+    await expect(executeEnvironmentTask(fixture.db, workers as never, {
+      companyId: "company", leaseId, operation: submit,
+    })).resolves.toEqual(refusal);
+    const update = new PgDialect().sqlToQuery(fixture.sets.at(-1)!.metadata as never);
+    expect(update.sql).toContain("- 'runnerTaskIdentity'");
+    const durable = JSON.parse(String(update.params[0]));
+    expect(durable).toEqual({
+      runnerTaskAdmissionRejection: { taskId: "attempt-1", reason: "session_state_unavailable" },
+      runnerTaskDispatched: false, runnerTaskExecutionStopped: true, runnerTaskSessionRetained: false,
+    });
+    Object.assign(value.lease.metadata, durable);
+    await expect(settleDispatchedEnvironmentTask(database(value).db, workers as never, {
+      companyId: "company", id: leaseId,
+    })).resolves.toBe("stopped");
+    expect(workers.call.mock.calls).toHaveLength(1);
+  });
+
   it.each([false, true])("retires an undispatched warm task only with required preparation proof (%s)", async preparationStopped => {
     const value = row();
     Object.assign(value.lease.metadata, { runnerTaskDispatched: false,
@@ -69,8 +107,26 @@ describe("plugin-provided Runner execution", () => {
     expect(operations).not.toContain("complete");
     release();
     const result = await checked;
-    if (preparationStopped) { expect(result).toEqual({ value: true, error: null }); expect(operations).toEqual(["stop", "status", "complete"]); }
+    if (preparationStopped) { expect(result).toEqual({ value: "completed", error: null }); expect(operations).toEqual(["stop", "status", "complete"]); }
     else { expect(result.error?.message).toContain("termination is unconfirmed"); expect(fixture.sets).toContainEqual(expect.objectContaining({ status: "pending_cleanup", cleanupStatus: "failed" })); }
+  });
+  it.each([true, false])("checks startup preparation proof after resume observed the stop (%s)", async preparationStopped => {
+    const value = row();
+    Object.assign(value.lease.metadata, { runnerTaskDispatched: false,
+      runnerTaskStartupCleanup: { contextId: "startup", requiresPreparationStop: true } });
+    const fixture = database(value), workers = worker();
+    fixture.db.select = ((...args: unknown[]) => (database(value).db.select as (...values: unknown[]) => unknown)(...args)) as Db["select"];
+    Object.assign(workers, { drainStartup: vi.fn(async () => undefined) });
+    const operations: string[] = [];
+    let stopped = false;
+    workers.call.mockImplementation(async (...args: any[]) => {
+      const operation = args[2].operation.kind; operations.push(operation);
+      if (operation === "stop") stopped = true;
+      return operation === "status" ? { kind: "status", taskId: "attempt-1", phase: "cancelled", executionStopped: true, preparationStopped: preparationStopped || stopped }
+        : { kind: "accepted", taskId: "attempt-1" };
+    });
+    await expect(settleDispatchedEnvironmentTask(fixture.db, workers as never, { companyId: "company", id: leaseId }, { executionStopObserved: true })).resolves.toBe("completed");
+    expect(operations).toEqual(preparationStopped ? ["status", "complete"] : ["status", "stop", "status", "complete"]);
   });
   it("negotiates the transient context without reading transport for an older plugin", async () => {
     const context = new NativeExecutionContext({ binding: { companyId: "company", agentId: "agent", runId: "run" } } as never, 1_000);
@@ -390,6 +446,34 @@ describe("plugin-provided Runner execution", () => {
     await executeEnvironmentTask(database(value).db, workers as never, { companyId: "company", leaseId, operation: { ...submit, projectIds: [] } });
     expect(workers.call).toHaveBeenCalledWith("original", "environmentTask", expect.objectContaining({ projectIds: [] }), 15_000);
   });
+  it.each(["release", "resume"] as const)("sends the prepared project and fresh scope with a retained %s", async kind => {
+    const identity = { runnerInstanceId: "runner", environmentLeaseId: leaseId, runId: "run", normalizedSessionId: "session", turnId: "turn", itemId: "item" };
+    const operation = kind === "release" ? { kind, identity } : { kind, identity, bootstrapTicket: "transient-test-ticket" };
+    const result = kind === "release" ? { kind: "released", taskId: "attempt-1" } : { kind: "resume", taskId: "attempt-1", outcome: "resumed" };
+    const fresh = { attemptId: leaseId, sourceRunId: secondProjectId, previousWorkspaceId: null, recoverySnapshots: [] };
+    const value = row(); value.lease.status = "retained"; value.run!.status = "succeeded";
+    Object.assign(value.lease.metadata, { runnerTaskProjectIds: [projectId, secondProjectId], freshWorkspace: fresh });
+    const { db, query } = database(value, [{ id: projectId }, { id: secondProjectId }]);
+    const workers = worker(result);
+    await expect(executeEnvironmentTask(db, workers as never, { companyId: "company", leaseId, operation })).resolves.toEqual(result);
+    expect(workers.call).toHaveBeenCalledWith("original", "environmentTask", expect.objectContaining({
+      projectIds: [projectId, secondProjectId], fresh, operation }), 15_000);
+    const scope = new PgDialect().sqlToQuery(query.where.mock.calls[1][0]);
+    expect(scope.sql).toContain('"projects"."company_id" =');
+    expect(scope.params).toEqual(["company", projectId, secondProjectId]);
+
+    const unscoped = row(); unscoped.lease.status = "retained";
+    const plain = worker(result);
+    await executeEnvironmentTask(database(unscoped, []).db, plain as never, { companyId: "company", leaseId, operation });
+    const sent = (plain.call.mock.calls[0] as unknown as any[])[2];
+    expect(sent.projectIds).toEqual([]);
+    expect(sent).not.toHaveProperty("fresh");
+
+    const rejected = worker(result);
+    await expect(executeEnvironmentTask(database(value, [{ id: projectId }]).db, rejected as never, { companyId: "company", leaseId, operation }))
+      .rejects.toThrow("project unavailable");
+    expect(rejected.call).not.toHaveBeenCalled();
+  });
   it("rejects an absent or cross-company lease before calling a worker", async () => {
     const workers = worker();
     await expect(executeEnvironmentTask(database(null).db, workers as never, { companyId: "other", leaseId, operation: submit })).rejects.toThrow("lease unavailable");
@@ -553,5 +637,10 @@ describe("plugin-provided Runner execution", () => {
     expect(environmentTaskOperationSchema.safeParse({ ...submit, runner: { ...submit.runner, unknownField: true } }).success).toBe(false);
     expect(() => parseEnvironmentTaskResult({ kind: "status" }, "attempt-1", { kind: "accepted", taskId: "attempt-1" })).toThrow();
     expect(parseEnvironmentTaskResult(submit, "attempt-1", { kind: "accepted", taskId: "attempt-1" }).kind).toBe("accepted");
+    const rejected = { kind: "admission_rejected", taskId: "attempt-1", reason: "account_binding_mismatch" };
+    expect(parseEnvironmentTaskResult(submit, "attempt-1", rejected)).toEqual(rejected);
+    expect(() => parseEnvironmentTaskResult(submit, "attempt-2", rejected)).toThrow();
+    expect(() => parseEnvironmentTaskResult(submit, "attempt-1", { ...rejected, reason: "unknown" })).toThrow();
+    expect(() => parseEnvironmentTaskResult({ kind: "stop" }, "attempt-1", rejected)).toThrow();
   });
 });
