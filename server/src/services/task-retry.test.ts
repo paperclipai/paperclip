@@ -1,10 +1,13 @@
 import { randomUUID } from "node:crypto";
+import type { AddressInfo } from "node:net";
+import express from "express";
 import { and, eq, sql } from "drizzle-orm";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { activityLog, agents, agentTaskSessions, agentWakeupRequests, chatActions, chatConversations, chatEndpoints, companies, budgetPolicies, costEvents, createDb, type Db, environmentLeases, environments, executionWorkspaces, executionWorkspaceSnapshots, workspaceOperations, heartbeatRunEvents, heartbeatRuns, issueComments, issueRelations, issues, approvals, issueApprovals, issueRecoveryActions, nativeRunFinalizations, toolApplications, toolConnections, toolInvocations, applyPendingMigrations } from "@paperclipai/db";
 import { startEmbeddedPostgresTestDatabase } from "../__tests__/helpers/embedded-postgres.js";
 import { priorRecoveryApiReceipt, unresolvedRecoveryToolInvocation } from "./recovery-effect-receipts.js";
-import { recordRunnerApiOutcome } from "../middleware/runner-call-outcome.js";
+import { recordRunnerApiOutcome, runnerCallOutcomeMiddleware } from "../middleware/runner-call-outcome.js";
+import { RUNNER_API_CALL_HEADER } from "./native-runtime/runner-api-client.js";
 import { requestTaskRetry } from "./task-retry.js";
 import { HttpError } from "../errors.js";
 import { NativeChatReviewPresentationContentionError } from "./native-runtime/native-chat-review-presentation.js";
@@ -1189,6 +1192,54 @@ describe("durable task Retry admission", () => {
         expect(await priorRecoveryApiReceipt(db, another)).toMatchObject({ state: "pending", result: { outcome: "unknown" } });
       }
     });
+
+  it("records the final status of a mutation whose client disconnected and settles its receipt without repeating it", async () => {
+    const { input, retry, automatic } = await automaticSuccessorOfTaskRetry();
+    const callKey = "e".repeat(64);
+    const receipt = { operationId: "PATCH /api/issues/{id}", digest: "late-handoff", state: "completed",
+      result: { ok: false, status: null, error: "api_transport_failure", outcome: "unknown" } };
+    await db.update(heartbeatRuns).set({ resultJson: { apiToolReceipts: { [callKey]: receipt } } }).where(eq(heartbeatRuns.id, retry.id));
+    let writes = 0;
+    let entered!: () => void;
+    const handlerEntered = new Promise<void>(resolve => { entered = resolve; });
+    let releaseHandler!: () => void;
+    const handlerReleased = new Promise<void>(resolve => { releaseHandler = resolve; });
+    const app = express();
+    app.use((req, _res, next) => {
+      req.actor = { type: "agent", source: "agent_jwt", agentId: retry.agentId, companyId: input.companyId, runId: retry.id };
+      next();
+    });
+    app.use(runnerCallOutcomeMiddleware(db));
+    app.patch("/slow", async (req, res) => {
+      const clientGone = new Promise<void>(resolve => req.once("close", () => resolve()));
+      entered();
+      await Promise.all([clientGone, handlerReleased]);
+      writes += 1;
+      res.status(200).json({ ok: true });
+    });
+    const server = app.listen(0, "127.0.0.1");
+    await new Promise<void>(resolve => server.once("listening", () => resolve()));
+    try {
+      const { port } = server.address() as AddressInfo;
+      const client = new AbortController();
+      const response = fetch(`http://127.0.0.1:${port}/slow`, { method: "PATCH", signal: client.signal,
+        headers: { [RUNNER_API_CALL_HEADER]: callKey, "content-type": "application/json" }, body: "{}" });
+      await handlerEntered;
+      client.abort();
+      await expect(response).rejects.toThrow();
+      releaseHandler();
+      const outcomes = () => db.select({ details: activityLog.details }).from(activityLog).where(and(
+        eq(activityLog.runId, retry.id), eq(activityLog.action, "runner.api_completed")));
+      await vi.waitFor(async () => expect(await outcomes()).toHaveLength(1), { timeout: 5_000 });
+      expect(await outcomes()).toEqual([{ details: { callKey, status: 200 } }]);
+      expect(writes).toBe(1);
+      expect(await priorRecoveryApiReceipt(db, { companyId: input.companyId, issueId: input.issueId, runId: automatic.id,
+        operationId: receipt.operationId, digest: receipt.digest })).toMatchObject({ state: "completed",
+        result: { ok: true, status: 200, outcome: "applied" } });
+    } finally {
+      await new Promise<void>(resolve => server.close(() => resolve()));
+    }
+  });
 
   it.each(["user", "agent", "system"] as const)("lifts an uncertain API receipt fence only after a later %s change", async actorType => {
     const { input, retry, automatic } = await automaticSuccessorOfTaskRetry();
