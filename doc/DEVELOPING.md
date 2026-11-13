@@ -4841,7 +4841,10 @@ before the composer closes. The worker sends requests in order. A request with a
 uncertain receipt retains its key; a rejection restores the submitted draft or
 offers a retry beside a newer draft. Submitted files use separate IndexedDB keys
 for the account, company, and request, so finishing an older save cannot remove
-newer files. Legacy single-request recovery records remain readable.
+newer files. Each submitted request has its own local-storage entry. A write or
+receipt in one tab cannot replace another tab's queued requests. Legacy queue
+arrays migrate to separate entries before the shared array is removed. Legacy
+single-request recovery records remain readable.
 
 New-task staged file bytes are stored in IndexedDB for the account and company.
 Writes merge the selected files with the current saved list in one read/write

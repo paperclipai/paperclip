@@ -2626,7 +2626,8 @@ describe("NewIssueDialog", () => {
       await act(async () => { container.querySelector<HTMLButtonElement>('[aria-label="Create task"]')!.click(); });
       await flush();
     }
-    const queued = JSON.parse(localStorage.getItem("paperclip:issue-draft:pending-create:queue:user-1")!);
+    const queuedKeys = Object.keys(localStorage).filter(key => key.startsWith("paperclip:issue-draft:pending-create:queue:user-1:request:"));
+    const queued = queuedKeys.map(key => JSON.parse(localStorage.getItem(key)!));
     expect(queued.map((item: { payload: { data: { description: string } } }) => item.payload.data.description)).toEqual(["First queued task", "Second queued task"]);
     act(() => first.root.unmount());
     first.queryClient.clear();
@@ -2636,7 +2637,7 @@ describe("NewIssueDialog", () => {
     await waitForAssertion(() => expect(mockIssuesApi.uploadAttachment).toHaveBeenCalledTimes(2));
     expect(mockIssuesApi.create.mock.calls.slice(1).map(call => call[1].idempotencyKey)).toEqual(queued.map((item: { idempotencyKey: string }) => item.idempotencyKey));
     expect(mockIssuesApi.uploadAttachment.mock.calls.map(call => call[2])).toEqual(files);
-    await waitForAssertion(() => expect(localStorage.getItem("paperclip:issue-draft:pending-create:queue:user-1")).toBeNull());
+    await waitForAssertion(() => expect(queuedKeys.map(key => localStorage.getItem(key))).toEqual([null, null]));
     expect(dialogState.openNewIssue).not.toHaveBeenCalled();
     expect(dialogState.closeNewIssue).toHaveBeenCalledTimes(2);
     act(() => reloaded.root.unmount());
