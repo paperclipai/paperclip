@@ -409,7 +409,7 @@
     "packages/shared/src/types/index.ts": "eb8c4d6cf32f04706d4eb539066a1cbffcebe4f7",
     "packages/shared/src/types/instance.ts": "2c40a18c05010991d93d719937faa4a43e47104f",
     "packages/shared/src/types/issue-tree-control.ts": "75489fffd491b8350b05caf57d7796419797d9df",
-    "packages/shared/src/types/issue.ts": "725bd6f677b9d461460697d1ce10dee739a66ebe",
+    "packages/shared/src/types/issue.ts": "7b40d6e8c97cd0a4945c268c3e73d01970f1baf3",
     "packages/shared/src/types/live.ts": "b90e55e4de8600c6fc17d7fa8d89079d4ae655ec",
     "packages/shared/src/types/native-finalization.ts": "c026a73003ae232fea4f7624d561493b383df358",
     "packages/shared/src/types/plugin.ts": "22e1e35307f91fdf5c210b86bae7746594669516",
