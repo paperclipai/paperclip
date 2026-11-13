@@ -175,8 +175,9 @@ describe("Application image Runner", () => {
     for (const [name, source] of [["standard", workflow], ["preview", previewWorkflow], ["merge group", mergeGroupWorkflow], ["pull request", appCheckWorkflow]]) {
       expect(source, name).toContain("PAPERCLIP_BUILD_COMMIT=");
       expect(source, name).not.toMatch(/PAPERCLIP_RUNNER_(?:SOURCE_REVISION|IMAGE_PUBLICATION)/);
-      expect(source, name).not.toMatch(/runner-artifacts|build-contexts?\b/);
+      if (name !== "standard") expect(source, name).not.toMatch(/runner-artifacts|build-contexts?\b/);
     }
+    expect(workflow.match(/runner-artifacts|build-contexts?\b/g)).toEqual(["runner-artifacts", "build-contexts"]);
   });
 });
 
