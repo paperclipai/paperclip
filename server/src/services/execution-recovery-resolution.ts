@@ -379,9 +379,11 @@ export async function deliverReconciledExecutions(
     const companies = fullCompanies();
     const heldBound = new Date(Date.now() - RECOVERY_CONTINUATION_MAX_HOLD_MS).toISOString();
     const pastBound = sql`${heldSince} <= ${heldBound}::timestamptz`;
+    const overdueTurn = sql`case when ${pastBound} then greatest(${heldSince},
+      (${issueRecoveryActions.evidence}->>'continuationDeliveryAttemptedAt')::timestamptz) end`;
     const priority = [
       sql`${pastBound} desc`,
-      sql`case when ${pastBound} then ${heldSince} end asc nulls last`,
+      sql`${overdueTurn} asc nulls last`,
       sql`${sourceRun.finishedAt} desc nulls last`,
       sql`${issueRecoveryActions.updatedAt} asc`,
     ];
@@ -389,12 +391,12 @@ export async function deliverReconciledExecutions(
       .select({
         id: issueRecoveryActions.id,
         pastBound: sql<boolean>`${pastBound}`.as("past_bound"),
-        heldAt: sql<Date | null>`case when ${pastBound} then ${heldSince} end`.as("held_at"),
+        heldAt: sql<Date | null>`${overdueTurn}`.as("held_at"),
         sourceFinishedAt: sql<Date | null>`${sourceRun.finishedAt}`.as("source_finished_at"),
         actionUpdatedAt: sql<Date>`${issueRecoveryActions.updatedAt}`.as("action_updated_at"),
         agentRank: sql<number>`row_number() over (
           partition by coalesce(${issueRecoveryActions.returnOwnerAgentId}::text, ${issueRecoveryActions.id}::text)
-          order by ${issueRecoveryActions.evidence}->>'continuationDeliveryAttemptedAt' asc nulls first, ${sql.join(priority, sql`, `)})`
+          order by ${sql.join(priority, sql`, `)})`
           .as("agent_rank"),
       })
       .from(issueRecoveryActions)

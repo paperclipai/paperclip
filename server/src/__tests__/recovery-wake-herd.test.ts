@@ -342,6 +342,28 @@ suite("recovery wake herd", () => {
     expect(await deliveryOf(waiting.action.id)).toBe("delivered");
   }, 60_000);
 
+  it("delivers an overdue continuation after a temporary refusal while new continuations keep arriving for a full queue", async () => {
+    const agentId = await seedCompany(1);
+    const busy = await task(agentId);
+    await db.insert(heartbeatRuns).values({ companyId, agentId, issueId: busy.id, invocationSource: "on_demand", status: "queued",
+      contextSnapshot: { issueId: busy.id, wakeReason: "task_retry" } });
+    const overdue = await pendingContinuation(agentId, 240);
+    await holdPastBound(overdue);
+    const created = fakeWake();
+    let refusing = true;
+    const wake = vi.fn(async (wakeAgentId: string, opts: { contextSnapshot: Record<string, unknown> }) =>
+      refusing ? null : created(wakeAgentId, opts));
+    await deliverReconciledExecutions(db, wake as never);
+    expect(await deliveryOf(overdue.action.id)).toBe("pending");
+    refusing = false;
+    for (let pass = 0; pass < 3 && await deliveryOf(overdue.action.id) === "pending"; pass += 1) {
+      await pendingContinuation(agentId, 1);
+      await deliverReconciledExecutions(db, wake as never);
+    }
+    expect(await deliveryOf(overdue.action.id)).toBe("delivered");
+    expect(created.mock.calls[0]![1].contextSnapshot.recoveryActionId).toBe(overdue.action.id);
+  }, 60_000);
+
   it("delivers another agent's continuation in one pass while one agent refuses a backlog of more than 200", async () => {
     const refusingAgent = await seedCompany(1);
     const heldSince = new Date(Date.now() - 3 * 60 * 60_000).toISOString();
