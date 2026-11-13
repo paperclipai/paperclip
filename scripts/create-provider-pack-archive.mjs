@@ -62,6 +62,14 @@ export async function createProviderPackLayers(root) {
     }
   };
   await visit();
+  // Archive N holds file N, so a file's archive name is its place in this
+  // list. The pack's `dist` is the Runner's own build output; every other
+  // large file is a dependency. The dependencies come first, so that their
+  // archive names do not change when the Runner's build gains or loses a
+  // large file. `dist` sorts before `node_modules`: in path order alone, one
+  // more large file under it renamed every dependency archive.
+  const own = file => file.path.startsWith('dist/');
+  files.splice(0, files.length, ...files.filter(file => !own(file)), ...files.filter(own));
   const archive = async (name, paths) => {
     const target = resolve(directory, name);
     // Explicit NUL-separated names and no recursion avoid options, duplicate

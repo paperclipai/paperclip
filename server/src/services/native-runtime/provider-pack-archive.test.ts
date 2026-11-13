@@ -115,6 +115,35 @@ it("writes the same archive for the same file every time, with nothing after the
   expect([...seen]).toHaveLength(1);
 });
 
+it("names the archives of dependency files without regard to the Runner's own large files", async () => {
+  // Archive N holds file N of the receipt. `dist` sorts before `node_modules`,
+  // so in path order one more large file in the Runner's build output renamed
+  // the archive of every dependency file.
+  const large = Buffer.alloc(1024 * 1024, 42);
+  const receiptOf = async (own: string[]) => {
+    const { pack } = await fixture();
+    for (const file of ["node_modules/dependency/tool", "bin/large", ...own]) {
+      await fs.mkdir(path.dirname(path.join(pack, file)), { recursive: true });
+      await fs.writeFile(path.join(pack, file), large, { mode: 0o755 });
+      await fs.utimes(path.join(pack, file), 0, 0);
+    }
+    const receipt = await createProviderPackLayers(pack);
+    const archive = (await readProviderPackArchive(pack, digest))!;
+    if (!("kind" in archive)) throw Error("Expected layered archive");
+    // What a reader pairs: file N of the receipt with N.tar.zst.
+    const paired = await Promise.all(archive.files.map(async (file: { path: string; archive: { sha256: string } }, index: number) =>
+      [file.path, `${index}.tar.zst`, createHash("sha256").update(await fs.readFile(path.join(`${pack}.archives`, `${index}.tar.zst`))).digest("hex") === file.archive.sha256]));
+    return { paths: receipt.files.map((file: { path: string }) => file.path), paired };
+  };
+  const before = await receiptOf(["dist/cli/one.js"]);
+  const after = await receiptOf(["dist/cli/one.js", "dist/a-new-large-file.js", "dist/cli/two.js"]);
+  expect(before.paths).toEqual(["bin/large", "node_modules/dependency/tool", "dist/cli/one.js"]);
+  expect(after.paths).toEqual(["bin/large", "node_modules/dependency/tool", "dist/a-new-large-file.js", "dist/cli/one.js", "dist/cli/two.js"]);
+  // The dependency files keep their archive names, and every pairing a reader makes still holds.
+  expect(after.paired.slice(0, 2)).toEqual(before.paired.slice(0, 2));
+  expect(after.paired.every(([, , matches]) => matches)).toBe(true);
+});
+
 it.skipIf(!tar || !hasZstd)("reuses only byte-matched image files, keeps modes, and never shares writable hardlinks", async () => {
   const { root, pack, archive } = await layeredFixture();
   const remote = await runner(root);
