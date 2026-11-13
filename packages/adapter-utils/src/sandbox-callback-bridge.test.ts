@@ -500,6 +500,43 @@ describe("sandbox callback bridge", () => {
     expect(forwarded).toEqual(["GET /api/openapi.json"]);
   });
 
+  it.each([
+    { method: "GET", suffix: "", query: "?scopeId=project-1", body: "" },
+    { method: "GET", suffix: "/revisions", query: "?scopeId=project-1", body: "" },
+    { method: "PUT", suffix: "", query: "", body: JSON.stringify({ markdown: "# Summary", scopeId: "project-1" }) },
+  ])("relays summary slot $method $suffix and preserves controller denials", async ({ method, suffix, query, body }) => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-bridge-summary-"));
+    cleanupDirs.push(rootDir);
+    const queueDir = path.join(rootDir, "queue");
+    const directories = sandboxCallbackBridgeDirectories(queueDir);
+    const handleRequest = vi.fn()
+      .mockResolvedValueOnce({ status: 200, body: JSON.stringify({ ok: true }) })
+      .mockResolvedValueOnce({ status: 403, body: JSON.stringify({ error: "Actor denied" }) });
+    const worker = await startSandboxCallbackBridgeWorker({
+      client: createFileSystemSandboxCallbackBridgeQueueClient(), queueDir, handleRequest,
+    });
+    cleanupFns.push(() => worker.stop());
+    const request = {
+      method, path: `/api/companies/co-1/summary-slots/project/header${suffix}`,
+      query, headers: { "content-type": "application/json" }, body,
+    };
+    for (const [index, status] of [200, 403].entries()) {
+      const id = `summary-${index}`;
+      await publishBridgeRequest(path.join(directories.requestsDir, `${id}.json`), JSON.stringify({
+        id, ...request, createdAt: new Date().toISOString(),
+      }));
+      await vi.waitFor(async () => {
+        expect(await createFileSystemSandboxCallbackBridgeQueueClient().listJsonFiles(directories.responsesDir))
+          .toContain(`${id}.json`);
+      }, { timeout: 5_000 });
+      const response = JSON.parse(await readFile(path.join(directories.responsesDir, `${id}.json`), "utf8"));
+      expect(response.status, response.body).toBe(status);
+      expect(JSON.parse(response.body)).toEqual(index === 0 ? { ok: true } : { error: "Actor denied" });
+      expect(handleRequest.mock.calls[index][0]).toMatchObject(request);
+      expect(handleRequest).toHaveBeenCalledTimes(index + 1);
+    }
+  });
+
   it("denies non-allowlisted requests by default", async () => {
     const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-bridge-default-policy-"));
     cleanupDirs.push(rootDir);
@@ -1571,6 +1608,9 @@ describe("sandbox callback bridge", () => {
       { method: "GET", path: "/api/companies/co-1/approvals" },
       { method: "GET", path: "/api/companies/co-1/routines" },
       { method: "GET", path: "/api/companies/co-1/skills" },
+      { method: "GET", path: "/api/companies/co-1/summary-slots/workspaces_overview/header" },
+      { method: "GET", path: "/api/companies/co-1/summary-slots/project/header/revisions" },
+      { method: "PUT", path: "/api/companies/co-1/summary-slots/execution_workspace/header" },
       { method: "GET", path: "/api/companies/co-1/email/inboxes" },
       { method: "GET", path: "/api/companies/co-1/email/tasks/issue-1" },
       { method: "GET", path: "/api/companies/co-1/email/deliveries/send-1" },
@@ -1633,6 +1673,17 @@ describe("sandbox callback bridge", () => {
     }
 
     const denied: Array<{ method: string; path: string }> = [
+      { method: "POST", path: "/api/companies/co-1/summary-slots/project/header" },
+      { method: "PATCH", path: "/api/companies/co-1/summary-slots/project/header" },
+      { method: "DELETE", path: "/api/companies/co-1/summary-slots/project/header" },
+      { method: "PUT", path: "/api/companies/co-1/summary-slots/project/header/revisions" },
+      { method: "POST", path: "/api/companies/co-1/summary-slots/project/header/generate" },
+      { method: "GET", path: "/api/companies/co-1/summary-slots" },
+      { method: "GET", path: "/api/companies/co-1/summary-slots/project" },
+      { method: "GET", path: "/api/companies/co-1/summary-slots/project/header/extra" },
+      { method: "GET", path: "/api/companies/co-1/summary-slots/project/header/revisions/extra" },
+      { method: "GET", path: "/api/companies/co-1/summary-slots/project/header/" },
+      { method: "GET", path: "/api/companies/co-1/summary-slots-extra/project/header" },
       { method: "POST", path: "/api/issues/issue-1/activity" },
       { method: "GET", path: "/api/issues/issue-1/activity/extra" },
       { method: "GET", path: "/api/companies/co-1/activity" },
@@ -1681,6 +1732,9 @@ describe("sandbox callback bridge", () => {
 
     // Both transports admit the full attachment workflow.
     const http2Allowed: Array<{ method: string; path: string }> = [
+      { method: "GET", path: "/api/companies/co-1/summary-slots/workspaces_overview/header" },
+      { method: "GET", path: "/api/companies/co-1/summary-slots/project/header/revisions" },
+      { method: "PUT", path: "/api/companies/co-1/summary-slots/execution_workspace/header" },
       { method: "GET", path: "/api/issues/issue-1/attachments" },
       { method: "POST", path: "/api/companies/co-1/issues/issue-1/attachments" },
       { method: "GET", path: "/api/attachments/att-1/content" },
