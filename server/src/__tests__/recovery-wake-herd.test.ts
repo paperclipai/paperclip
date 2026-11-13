@@ -733,7 +733,7 @@ suite("recovery wake herd", () => {
     const heartbeat = heartbeatService(db);
     try {
       const receipt = await requestTaskRetry({ db, companyId, issueId: waiting.issue.id, actorId: userId,
-        observedRunId: shown!.observedRunId, idempotencyKey: randomUUID() });
+        observedRunId: shown!.observedRunId, retryAction: shown!.retryAction, idempotencyKey: randomUUID() });
       expect(receipt).toMatchObject({ accepted: true, stale: false });
       await heartbeat.resumeTaskRetry(companyId, receipt.requestId!);
       expect((await runsOfTask(waiting.issue.id, waiting.source.id)).map(run => run.id)).toEqual([waiting.continuation.id]);
@@ -771,6 +771,50 @@ suite("recovery wake herd", () => {
       expect((await runsOfTask(waiting.issue.id, waiting.source.id)).map(run => run.id)).toEqual([waiting.continuation.id]);
       expect(await db.select().from(agentWakeupRequests).where(and(eq(agentWakeupRequests.reason, "task_retry"),
         sql`${agentWakeupRequests.payload}->>'issueId' = ${waiting.issue.id}`))).toEqual([]);
+    } finally {
+      await heartbeat.drainActiveRunExecutions();
+    }
+  }, 120_000);
+
+  async function endContinuationAndRunEveryPass(waiting: Awaited<ReturnType<typeof continuationWaitingInQueue>>,
+    heartbeat: ReturnType<typeof heartbeatService>, retryRequestId?: string) {
+    await heartbeat.cancelRun(waiting.continuation.id);
+    expect(await readRun(waiting.continuation.id)).toMatchObject({ status: "cancelled" });
+    for (let pass = 0; pass < 2; pass += 1) {
+      await heartbeat.resumeExecutionWaitComments({ companyId });
+      if (retryRequestId) await heartbeat.resumeTaskRetry(companyId, retryRequestId);
+      await deliverReconciledExecutions(db, heartbeat.wakeup);
+      await heartbeat.resumeQueuedRuns();
+    }
+    return (await runsOfTask(waiting.issue.id, waiting.source.id)).filter(run => run.id !== waiting.continuation.id)
+      .map(run => run.contextSnapshot?.wakeReason);
+  }
+
+  it("never turns a joined move-forward click into a new run after the continuation it joined ends", async () => {
+    let withoutClick: unknown[] = [];
+    {
+      const agentId = await seedCompany(1);
+      const control = await continuationWaitingInQueue(agentId, 16);
+      const heartbeat = heartbeatService(db);
+      try { withoutClick = await endContinuationAndRunEveryPass(control, heartbeat); }
+      finally { await heartbeat.drainActiveRunExecutions(); }
+    }
+    const agentId = await seedCompany(1);
+    const waiting = await continuationWaitingInQueue(agentId, 16);
+    const shown = await taskInterruptionPresentation(db, waiting.issueRow);
+    const heartbeat = heartbeatService(db);
+    try {
+      const receipt = await requestTaskRetry({ db, companyId, issueId: waiting.issue.id, actorId: userId,
+        observedRunId: shown!.observedRunId, retryAction: shown!.retryAction, idempotencyKey: randomUUID() });
+      expect(receipt).toMatchObject({ accepted: true });
+      await heartbeat.resumeTaskRetry(companyId, receipt.requestId!);
+      await endContinuationAndRunEveryPass(waiting, heartbeat, receipt.requestId!);
+      const [retryWake] = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, receipt.requestId!));
+      expect(retryWake).toMatchObject({ status: "coalesced", runId: waiting.continuation.id });
+      const later = (await runsOfTask(waiting.issue.id, waiting.source.id)).filter(run => run.id !== waiting.continuation.id);
+      expect(later.filter(run => run.wakeupRequestId === receipt.requestId || run.contextSnapshot?.wakeReason === "task_retry"
+        || run.contextSnapshot?.taskRetryRequestId)).toEqual([]);
+      expect(later.map(run => run.contextSnapshot?.wakeReason)).toEqual(withoutClick);
     } finally {
       await heartbeat.drainActiveRunExecutions();
     }
