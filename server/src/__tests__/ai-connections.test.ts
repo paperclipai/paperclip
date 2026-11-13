@@ -790,14 +790,10 @@ describe("managed AI connections", () => {
       // existing sign-in flow, rather than claiming the failed save succeeded.
       const receiver = aiConnectionService(db);
       const generation = createHash("sha256").update(original).digest("hex").slice(0, 16);
-      const failedUse = () => receiver.markAuthenticationFailed({ companyId, runStartedAt: new Date(), attribution: {
+      await receiver.markAuthenticationFailed({ companyId, runStartedAt: new Date(), attribution: {
         provider: "openai", method: "subscription", connectionId: row.connection.id, grantId: row.grant.id,
         mode: "responsible_user", responsibleUserId: owner, identity: `${row.grant.id}:${owner}:${generation}`,
       } });
-      // One failed use is not enough evidence to latch a connection.
-      expect(await failedUse()).toBe("below_threshold");
-      expect((await db.select().from(connectionGrants).where(eq(connectionGrants.id, row.grant.id)))[0].status).toBe("active");
-      expect(await failedUse()).toBe("latched");
       expect((await db.select().from(connectionGrants).where(eq(connectionGrants.id, row.grant.id)))[0].status).toBe("needs_reauthorization");
       const signedIn = JSON.stringify({ tokens: { access_token: "signed-in", refresh_token: "new-login" } });
       await receiver.save(companyId, owner, { connectionId: row.connection.id, provider: "openai", method: "subscription",
@@ -943,12 +939,10 @@ describe("managed AI connections", () => {
     await expect(access(quotaCredentialRecoveryPath(companyId, row.grant.id))).rejects.toMatchObject({ code: "ENOENT" });
     const receiver = aiConnectionService(db);
     const generation = createHash("sha256").update(original).digest("hex").slice(0, 16);
-    const failedUse = () => receiver.markAuthenticationFailed({ companyId, runStartedAt: new Date(), attribution: {
+    await receiver.markAuthenticationFailed({ companyId, runStartedAt: new Date(), attribution: {
       provider: "openai", method: "subscription", connectionId: row.connection.id, grantId: row.grant.id,
       mode: "responsible_user", responsibleUserId: owner, identity: `${row.grant.id}:${owner}:${generation}`,
     } });
-    expect(await failedUse()).toBe("below_threshold");
-    expect(await failedUse()).toBe("latched");
     expect((await db.select().from(connectionGrants).where(eq(connectionGrants.id, row.grant.id)))[0].status).toBe("needs_reauthorization");
     const signedIn = JSON.stringify({ tokens: { access_token: "process-sign-in", refresh_token: "process-new-login" } });
     await receiver.save(companyId, owner, { connectionId: row.connection.id, provider: "openai", method: "subscription", ownership: "personal", name: owner, loginSessionId: "fixture", agentIds: [], allAgents: true }, signedIn);
@@ -1802,6 +1796,14 @@ console.log(JSON.stringify({ type: "result", subtype: "success", result: "hello"
       const [observed] = await db.select().from(activityLog).where(and(eq(activityLog.runId, failed.runId),
         eq(activityLog.action, "ai_connection.authentication_failure_observed")));
       expect(observed?.details).toMatchObject({ observedFailures: 1, threshold: 2, source: "run" });
+    });
+
+    it("latches on one genuine rejection from an explicit Test or save probe", async () => {
+      const t = await setup("probe");
+      expect(await aiConnectionService(db).markAuthenticationFailed({ companyId, agentId: t.agentIds[0], runStartedAt: new Date(),
+        attribution: await t.attributionFor(t.agentIds[0]!) as never })).toBe("latched");
+      expect(await t.grantStatus()).toBe("needs_reauthorization");
+      expect(await t.latches()).toBe(1);
     });
 
     it("latches after repeated genuine failures of the same generation from distinct runs", async () => {
