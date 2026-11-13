@@ -6204,6 +6204,20 @@ can be accepted without a terminal acknowledgement. The selected run and its
 history refresh after either outcome. Stop does not resume the provider or change
 a manual task hold.
 
+### Provider-pack admission during restart recovery
+
+Provider-pack admission keeps a digest-bound historical proof when a controller
+claim changes its current admission to pending. If a restart or a failed recovery
+barrier interrupts that claim before its admission callback, the next same-run
+claim can reuse that proof only for the unchanged receipt. Normal session,
+company, agent, Runner and environment-lease checks still apply. Current artifact
+retention remains blocked until the new claim publishes verified admission.
+Unknown admission state discards the historical proof; a callback clears it when
+it records its decision. This adds no background work or provider replay.
+Previous-release verified receipts seed this proof on their first new claim.
+Older pending or unknown records without it remain unverified, as before. Older
+readers ignore the added profile field and retain their existing refusal behavior.
+
 ### Native session diagnostic ownership
 
 Native session diagnostics follow the current execution's recorder epoch, including
