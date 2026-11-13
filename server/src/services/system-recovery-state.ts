@@ -219,6 +219,7 @@ export function exhaustedSystemRecoveryAction(state: SystemRecoveryState, eviden
 
 export const UNVERIFIABLE_SOURCE_CODES = ["allocation_ownership_ambiguous", "source_binding_invalid", "source_unavailable", "historical_source_missing"] as const;
 export const PERMANENT_SOURCE_RETRY_CLASSES = ["service_required", "use_alternative_strategy"] as const;
+const UNRECOVERABLE_SOURCE_CODES = ["allocation_ownership_ambiguous", "source_unavailable", "historical_source_missing"] as const;
 
 export function canAdoptNativeSourceRetention(state: SystemRecoveryState) {
   return state.state === "exhausted" && state.phase === "verify_execution" && state.attempts === 1
@@ -230,7 +231,7 @@ export function canAdoptNativeSourceRetention(state: SystemRecoveryState) {
 export function unrecoverableSavedFilesFailure(state: SystemRecoveryState | null | undefined): RecoveryFailure | null {
   const failure = state?.failure;
   if (!state || !failure || state.state !== "exhausted" || state.freshAttemptRunId || canAdoptNativeSourceRetention(state)) return null;
-  return (UNVERIFIABLE_SOURCE_CODES as readonly string[]).includes(failure.code)
+  return (UNRECOVERABLE_SOURCE_CODES as readonly string[]).includes(failure.code)
     && (PERMANENT_SOURCE_RETRY_CLASSES as readonly string[]).includes(failure.retryClass) ? failure : null;
 }
 

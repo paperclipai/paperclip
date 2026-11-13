@@ -98,6 +98,7 @@ describe("durable system recovery budget", () => {
     const adoptable = failSystemRecovery(reserveSystemRecoveryAttempt(createSystemRecovery(randomUUID()), 0)!,
       new SystemRecoveryFailure("source_binding_invalid", "service_required"), { now: 0 });
     expect(savedFilesUnrecoverable(adoptable)).toBe(false);
+    expect(savedFilesUnrecoverable({ ...adoptable, attempts: 0 })).toBe(false);
     expect(savedFilesUnrecoverable({ ...refused, freshAttemptRunId: randomUUID() })).toBe(false);
   });
 
