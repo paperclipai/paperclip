@@ -43,6 +43,8 @@ compatibility includes the public key ID, so an older warm process is replaced
 before its next turn. Private values are excluded from invocation metadata and
 execution configuration; output and failure diagnostics redact known private
 material. The run-log redactor handles split stdout/stderr chunks independently.
+The run's own `PAPERCLIP_API_KEY` is registered with the same redactor when it
+is minted.
 Native output deltas also buffer potential key fragments before persistence.
 Raw provider trace contents are suppressed for identity-enabled runs; trace
 routing, timing, and interpretation metadata remain available.
