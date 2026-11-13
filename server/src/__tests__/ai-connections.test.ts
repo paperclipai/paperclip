@@ -2133,6 +2133,25 @@ console.log(JSON.stringify({ type: "result", subtype: "success", result: "hello"
       expect((await db.select().from(issues).where(eq(issues.id, card!.issueId)))[0]!.status).toBe("done");
     });
 
+    it("wakes linked tasks from the background sweep while the owner task waits on an unrelated question", async () => {
+      const f = await latchedFleet("owner-question", 3);
+      for (const task of f.tasks) await connectionIntentService(db).requestForRunAuthFailure(task.runId!);
+      const [card] = await f.cardsFor(f.tasks.map(task => task.issueId));
+      const linked = f.tasks.filter(task => task.issueId !== card!.issueId);
+      await db.insert(issueThreadInteractions).values({ companyId, issueId: card!.issueId, kind: "ask_user_questions",
+        status: "pending", continuationPolicy: "wake_assignee", payload: {} } as never);
+      await f.reconnect();
+      await sweepAll();
+      expect((await f.cardsFor([card!.issueId]))[0]!.status).toBe("expired");
+      const wakeup = vi.fn(async (wokenAgentId: string, opts: { idempotencyKey: string }) => {
+        await db.insert(agentWakeupRequests).values({ companyId, agentId: wokenAgentId, source: "automation", status: "queued", idempotencyKey: opts.idempotencyKey });
+        return null;
+      });
+      await connectionIntentDeliveryService(db, { wakeup } as never).sweepPending();
+      expect(wakeup.mock.calls.map(([agentId]) => agentId).filter(agentId => (f.agentIds as string[]).includes(agentId)).sort())
+        .toEqual(linked.map(task => task.agentId).sort());
+    });
+
     it("still resumes the owner task after its retry failed again on the same connection", async () => {
       const f = await latchedFleet("owner-retry", 2);
       for (const task of f.tasks) await connectionIntentService(db).requestForRunAuthFailure(task.runId!);

@@ -390,7 +390,11 @@ export function connectionIntentDeliveryService(db: Db, heartbeat: Pick<Heartbea
   return { deliver, hasPending, nextRunAt: () => maintenanceAt, tryDeliver: async (id: string) => { try { await deliver(id); } catch { /* Persisted delivery remains due after its lease. */ } }, sweepPending: async () => {
     await satisfiedIntents.sweepPending();
     const rows = await db.select().from(connectionIntentDeliveries).where(and(isNull(connectionIntentDeliveries.deliveredAt), lte(connectionIntentDeliveries.nextAttemptAt, new Date()),
-      sql`(${sql.raw(connectionDeliveryWaitingForResponse('connection_intent_deliveries'))}) IS NOT TRUE`))
+      sql`((${sql.raw(connectionDeliveryWaitingForResponse('connection_intent_deliveries'))}) IS NOT TRUE
+        OR EXISTS (SELECT 1 FROM issue_thread_interactions fan_out
+          WHERE fan_out.id = ${connectionIntentDeliveries.interactionId} AND fan_out.company_id = ${connectionIntentDeliveries.companyId}
+            AND fan_out.payload->>'purpose' = 'ai' AND COALESCE(fan_out.payload->>'agentSetup', 'false') <> 'true'
+            AND jsonb_typeof(fan_out.payload->'linkedIssues') = 'array' AND jsonb_array_length(fan_out.payload->'linkedIssues') > 0))`))
       .orderBy(asc(connectionIntentDeliveries.nextAttemptAt)).limit(50);
     let failed = 0;
     for (const row of rows) { try { await deliver(row.interactionId); } catch { failed += 1; } }
