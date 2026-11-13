@@ -23,6 +23,7 @@ const { spawn } = await import("node:child_process");
 const sampler = process.platform === "linux" && process.env.GITHUB_ACTIONS === "true" && !process.env.PAPERCLIP_UNIT_BOUNDARY_PROBE
   ? spawn(process.execPath, [path.join(root, "tests/runner-e2e/cpu-sampler.tmp.mjs")], { stdio: "inherit" })
   : null;
+sampler?.unref();
 process.on("exit", () => sampler?.kill());
 
 for (const [name, command] of [
