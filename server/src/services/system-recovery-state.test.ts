@@ -70,7 +70,8 @@ describe("durable system recovery budget", () => {
     expect(isDeterministicRecoveryRefusal(refused)).toBe(true);
     const text = exhaustedSystemRecoveryAction(refused);
     expect(text).toContain("Paperclip refused to recover the saved files");
-    expect(text).toContain("Paperclip cannot prove which runs used the sandbox that holds the saved files (allocation_ownership_ambiguous)");
+    expect(text).toContain("Paperclip cannot prove which runs used the sandbox that holds the saved files.");
+    expect(text).not.toContain("allocation_ownership_ambiguous");
     expect(text).toContain("Retry runs the check again. The agent's result is saved");
     // Recovery never waits on a person or a release, and never promises a
     // fallback the hold may not get.
@@ -80,9 +81,9 @@ describe("durable system recovery budget", () => {
     const once = failSystemRecovery(reserveSystemRecoveryAttempt(createSystemRecovery(randomUUID()), 0)!,
       new SystemRecoveryFailure("historical_source_missing", "use_alternative_strategy"), { now: 0 });
     expect(isDeterministicRecoveryRefusal(once)).toBe(false);
-    expect(exhaustedSystemRecoveryAction(once)).toBe("Automatic recovery of saved work failed (last failure: historical_source_missing). "
-      + "Retry to try again; the agent will not repeat its work.");
-    expect(exhaustedSystemRecoveryAction({ ...once, attempts: 6 })).toContain("stopped after 6 attempts");
+    expect(exhaustedSystemRecoveryAction(once)).toBe("Paperclip could not recover the agent's saved files. "
+      + "Press Retry to try again; the agent will not repeat its work.");
+    expect(exhaustedSystemRecoveryAction({ ...once, attempts: 6 })).toContain("after 6 tries");
   });
 
   it("promises an automatic retry for an unproven stop only while a re-arm remains", () => {
@@ -96,13 +97,15 @@ describe("durable system recovery budget", () => {
     expect(exhaustedSystemRecoveryAction(stop)).toContain("Retry to try again");
   });
 
-  it("names the last failure and its cause in the board handoff", () => {
+  it("keeps the failure code and cause in the evidence, never in the text a person reads", () => {
     const state = reserveSystemRecoveryAttempt(createSystemRecovery(randomUUID()), 0)!;
     const withCause = failSystemRecovery(state, new SystemRecoveryFailure("provider_unavailable", "retry_transient"),
       { now: 0, cause: { label: "sandbox_not_running", code: null, status: null } });
-    expect(exhaustedSystemRecoveryAction(withCause)).toContain("(last failure: provider_unavailable, cause: sandbox_not_running)");
+    expect(withCause.failure).toMatchObject({ code: "provider_unavailable", cause: { label: "sandbox_not_running" } });
+    expect(exhaustedSystemRecoveryAction(withCause)).not.toMatch(/provider_unavailable|sandbox_not_running|last failure/);
     const withoutCause = failSystemRecovery(state, new SystemRecoveryFailure("archive_unsafe", "service_required"), { now: 0 });
-    expect(exhaustedSystemRecoveryAction(withoutCause)).toContain("(archive_unsafe)");
+    expect(exhaustedSystemRecoveryAction(withoutCause)).not.toContain("archive_unsafe");
+    expect(exhaustedSystemRecoveryAction(withoutCause)).toContain("the saved file archive contains entries that are not safe to apply.");
   });
   it("reconciles a recorded attempt after restart without spending another retry", () => {
     const running = reserveSystemRecoveryAttempt(createSystemRecovery(randomUUID()), 0)!;

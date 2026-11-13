@@ -4,6 +4,7 @@ import { verifyBlockerStallWake } from "../recovery/blocker-stall-wakeups.js";
 import { CONTEXT_COMPACTION_WAKE_REASON, ContextCompactionError, isContextCompactionRun, readContextCompactionRequest } from "../context-compaction.js";
 import { isProcessRunAdmissionClosed } from "./run-admission.js";
 import { continueFreshInTransaction, hasPendingFreshContinuation, isFreshIsolatedContinuationWake, settleCoalescedFreshContinuationHolds } from "../fresh-continuation-fallback.js";
+import { foldWaitingRetriesIntoContinuation } from "../fresh-continuation-retry-fold.js";
 import { refreshRunStartYieldIfStale } from "../run-start-handover.js";
 import { deliveredQueuedCommentIds } from "../queued-comment-delivery.js";
 import { hasAutomaticInteractionDeliveryHold, INTERACTION_DELIVERY_DENIED, recheckQueuedRunInteractions, withInteractionDeliveryOrigin } from "../agent-interaction-delivery.js";
@@ -4018,8 +4019,15 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
             && !executionReconciliationWake;
           // A recorded fresh continuation that has no run yet is this task's
           // next run: another system wake is coalesced into it, never a second run.
-          if (systemWake && !executionBlocker && await hasPendingFreshContinuation(tx as unknown as Db, issue.companyId, issue.id))
+          if (systemWake && !executionBlocker && await hasPendingFreshContinuation(tx as unknown as Db, issue.companyId, issue.id)) {
+            await tx.insert(agentWakeupRequests).values({
+              ...durableReceiptFields, companyId: agent.companyId, agentId, source, triggerDetail,
+              reason: "issue_continuation_pending", payload, status: "skipped",
+              requestedByActorType: opts.requestedByActorType ?? null, requestedByActorId: opts.requestedByActorId ?? null,
+              idempotencyKey: opts.idempotencyKey ?? null, finishedAt: new Date(),
+            });
             return { kind: "skipped" as const };
+          }
           if ((executionBlocker || opts.queuedCommentInterruptId) && !ownsReconstructionContinuation && !(await admitExplicitNativeContinuation({
             db: tx as unknown as Db, companyId: issue.companyId, issueId: issue.id,
             agentId, actorType: taskRetryActorId ? "user" : opts.requestedByActorType, actorId: taskRetryActorId ?? opts.requestedByActorId,
@@ -5075,6 +5083,9 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
               eq(issueRecoveryActions.id, String(enrichedContextSnapshot.recoveryActionId)),
               sql`${issueRecoveryActions.evidence}->>'continuationDelivery' = 'pending'`));
           }
+          if (readNonEmptyString(enrichedContextSnapshot.freshContinuationIsolation))
+            await foldWaitingRetriesIntoContinuation(tx as unknown as Db, { companyId: issue.companyId, issueId: issue.id, runId: newRun.id,
+              sourceRunId: readNonEmptyString(enrichedContextSnapshot.previousRunId) });
 
           await tx
             .update(agentWakeupRequests)
@@ -5357,6 +5368,13 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
         })
         .returning()
         .then((rows) => rows[0]);
+
+      const continuedIssueId = readNonEmptyString(enrichedContextSnapshot.issueId);
+      if (continuedIssueId && readNonEmptyString(enrichedContextSnapshot.freshContinuationIsolation)) {
+        await tx.execute(sql`select id from issues where company_id = ${agent.companyId} and id = ${continuedIssueId} for update`);
+        await foldWaitingRetriesIntoContinuation(tx as unknown as Db, { companyId: agent.companyId, issueId: continuedIssueId, runId: newRun.id,
+          sourceRunId: readNonEmptyString(enrichedContextSnapshot.previousRunId) });
+      }
 
       await tx
         .update(agentWakeupRequests)
