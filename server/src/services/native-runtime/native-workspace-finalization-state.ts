@@ -80,9 +80,11 @@ function nativeWorkspaceSourcePending(run: Pick<typeof heartbeatRuns.$inferSelec
     && reference.providerLeaseId === lease.providerLeaseId;
 }
 
-export async function nativeWorkspaceExportPendingForLease(db: Db, lease: WorkspaceSourceLease): Promise<boolean> {
+export async function nativeWorkspaceExportPendingForLease(db: Db, lease: WorkspaceSourceLease,
+  options: { destructive?: boolean } = {}): Promise<boolean> {
   if (!lease.provider || lease.provider === "local" || !lease.providerLeaseId) return false;
-  if (!lease.heartbeatRunId) return await abandonedWorkspaceFilesHeldOnLease(db, lease);
+  const held = () => options.destructive === false ? Promise.resolve(false) : abandonedWorkspaceFilesHeldOnLease(db, lease);
+  if (!lease.heartbeatRunId) return await held();
   const [run] = await db.select(nativeWorkspaceRunProjection()).from(heartbeatRuns).where(and(
     eq(heartbeatRuns.id, lease.heartbeatRunId), eq(heartbeatRuns.companyId, lease.companyId),
     eq(heartbeatRuns.runtimeMode, "native"),
@@ -90,7 +92,7 @@ export async function nativeWorkspaceExportPendingForLease(db: Db, lease: Worksp
   if (run?.observedRemoteWorkspace) return true;
   if (await preparedRemoteWorkspaceSource(db, lease)) return true;
   if (run && nativeWorkspaceSourcePending(run, lease)) return true;
-  return await abandonedWorkspaceFilesHeldOnLease(db, lease);
+  return await held();
 }
 
 export async function nativeWorkspaceExportPendingForResource(db: Db, lease: WorkspaceSourceLease, resumingRunId: string | null) {

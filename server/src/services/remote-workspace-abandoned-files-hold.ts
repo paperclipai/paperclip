@@ -1,5 +1,5 @@
 import { and, eq, inArray, sql, type SQL } from "drizzle-orm";
-import { environmentLeases, executionWorkspaces, heartbeatRuns, issues, type Db } from "@paperclipai/db";
+import { companies, environmentLeases, executionWorkspaces, heartbeatRuns, issues, type Db } from "@paperclipai/db";
 import { logger } from "../middleware/logger.js";
 import { logActivity } from "./activity-log.js";
 import { writeEnvironmentCleanup } from "./environment-cleanup-notifications.js";
@@ -53,10 +53,10 @@ export function abandonedWorkspaceFilesHeldOnLeaseRowSql(): SQL {
     and ${abandonedWorkspaceFilesHeldSql(sql`${environmentLeases.companyId}`, sql`${environmentLeases.providerLeaseId}`)})`;
 }
 
-export async function abandonedWorkspaceFilesHeldOnLease(db: Pick<Db, "execute">, lease: HoldLease): Promise<boolean> {
+export async function abandonedWorkspaceFilesHeldOnLease(db: Pick<Db, "select">, lease: HoldLease): Promise<boolean> {
   if (!lease.providerLeaseId || !lease.provider || lease.provider === "local") return false;
-  const [row] = await db.execute<{ held: boolean }>(sql`select ${abandonedWorkspaceFilesHeldSql(
-    sql`${lease.companyId}::uuid`, lease.providerLeaseId)} as held`);
+  const [row] = await db.select({ held: sql<boolean>`${abandonedWorkspaceFilesHeldSql(sql`${companies.id}`, lease.providerLeaseId)}` })
+    .from(companies).where(eq(companies.id, lease.companyId)).limit(1);
   return row?.held === true;
 }
 
