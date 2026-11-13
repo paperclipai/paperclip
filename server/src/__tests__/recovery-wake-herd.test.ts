@@ -158,6 +158,106 @@ suite("recovery wake herd", () => {
     }
   }, 120_000);
 
+  async function continuationOfInterruptedPersonRetry(agentId: string, createdMinutesAgo: number) {
+    const issue = await task(agentId);
+    const finishedAt = new Date(Date.now() - (createdMinutesAgo + 2) * 60_000);
+    const [retry] = await db.insert(agentWakeupRequests).values({ companyId, agentId, source: "on_demand", triggerDetail: "manual",
+      reason: "task_retry", status: "queued", requestedByActorType: "user", requestedByActorId: userId,
+      payload: { issueId: issue.id } }).returning();
+    const [source] = await db.insert(heartbeatRuns).values({ companyId, agentId, issueId: issue.id, invocationSource: "on_demand",
+      triggerDetail: "manual", status: "interrupted", errorCode: "server_shutdown_interrupted", wakeupRequestId: retry!.id,
+      responsibleUserId: userId, startedAt: new Date(finishedAt.getTime() - 60_000), finishedAt,
+      createdAt: new Date(finishedAt.getTime() - 120_000),
+      contextSnapshot: { issueId: issue.id, wakeReason: "task_retry", taskRetryRequestId: retry!.id } }).returning();
+    await db.update(agentWakeupRequests).set({ runId: source!.id, status: "completed", finishedAt })
+      .where(eq(agentWakeupRequests.id, retry!.id));
+    const [continuation] = await db.insert(heartbeatRuns).values({ companyId, agentId, issueId: issue.id,
+      invocationSource: "automation", triggerDetail: "system", status: "queued", responsibleUserId: userId,
+      createdAt: new Date(Date.now() - createdMinutesAgo * 60_000),
+      contextSnapshot: { issueId: issue.id, taskId: issue.id, wakeReason: "issue_continuation_needed", previousRunId: source!.id,
+        source: "issue.assigned_work_invariant", assignedWorkViolation: "retry_offered" } }).returning();
+    return continuation!;
+  }
+
+  it("starts the system continuation of a person's interrupted Retry ahead of fresher system work", async () => {
+    const agentId = await seedCompany(1);
+    const continuation = await continuationOfInterruptedPersonRetry(agentId, 40);
+    const fresher: Array<typeof heartbeatRuns.$inferSelect> = [];
+    for (let index = 0; index < 3; index += 1) fresher.push(await queuedSystemRun(agentId, 30 - index, "issue_assigned"));
+    fresher.push(await queuedRecoveryRun(agentId, 2, 3));
+    const heartbeat = heartbeatService(db);
+    try {
+      await heartbeat.resumeQueuedRuns();
+      expect((await readRun(continuation.id)).startedAt).not.toBeNull();
+      for (const run of fresher) expect(await readRun(run.id)).toMatchObject({ status: "queued", startedAt: null });
+    } finally {
+      await heartbeat.drainActiveRunExecutions();
+    }
+  }, 120_000);
+
+  it("keeps a person's Retry first after its system continuation is interrupted again", async () => {
+    const agentId = await seedCompany(1);
+    const first = await continuationOfInterruptedPersonRetry(agentId, 90);
+    const firstEndedAt = new Date(Date.now() - 45 * 60_000);
+    await db.update(heartbeatRuns).set({ status: "interrupted", errorCode: "server_shutdown_interrupted",
+      startedAt: new Date(firstEndedAt.getTime() - 60_000), finishedAt: firstEndedAt }).where(eq(heartbeatRuns.id, first.id));
+    const [second] = await db.insert(heartbeatRuns).values({ companyId, agentId, issueId: first.issueId,
+      invocationSource: "automation", triggerDetail: "system", status: "queued", responsibleUserId: userId,
+      createdAt: new Date(Date.now() - 40 * 60_000),
+      contextSnapshot: { issueId: first.issueId, taskId: first.issueId, wakeReason: "issue_continuation_needed",
+        previousRunId: first.id, source: "issue.assigned_work_invariant" } }).returning();
+    const fresher: Array<typeof heartbeatRuns.$inferSelect> = [];
+    for (let index = 0; index < 3; index += 1) fresher.push(await queuedSystemRun(agentId, 30 - index, "issue_assigned"));
+    const heartbeat = heartbeatService(db);
+    try {
+      await heartbeat.resumeQueuedRuns();
+      expect((await readRun(second!.id)).startedAt).not.toBeNull();
+      for (const run of fresher) expect(await readRun(run.id)).toMatchObject({ status: "queued", startedAt: null });
+    } finally {
+      await heartbeat.drainActiveRunExecutions();
+    }
+  }, 120_000);
+
+  it("starts a system continuation that a person's Retry coalesced into ahead of fresher system work", async () => {
+    const agentId = await seedCompany(1);
+    const continuation = await queuedSystemRun(agentId, 40, "issue_continuation_needed");
+    await db.insert(agentWakeupRequests).values({ companyId, agentId, source: "on_demand", triggerDetail: "manual",
+      reason: "task_retry", status: "coalesced", coalescedCount: 1, requestedByActorType: "user", requestedByActorId: userId,
+      runId: continuation.id, finishedAt: new Date(), payload: { issueId: continuation.issueId } });
+    const fresher: Array<typeof heartbeatRuns.$inferSelect> = [];
+    for (let index = 0; index < 3; index += 1) fresher.push(await queuedSystemRun(agentId, 30 - index, "issue_assigned"));
+    const heartbeat = heartbeatService(db);
+    try {
+      await heartbeat.resumeQueuedRuns();
+      expect((await readRun(continuation.id)).startedAt).not.toBeNull();
+      for (const run of fresher) expect(await readRun(run.id)).toMatchObject({ status: "queued", startedAt: null });
+    } finally {
+      await heartbeat.drainActiveRunExecutions();
+    }
+  }, 120_000);
+
+  it("gives the longest-waiting queued run a free slot after three fresher starts passed it over", async () => {
+    const agentId = await seedCompany(1);
+    const old = await queuedRecoveryRun(agentId, 150, 152);
+    const people: Array<typeof heartbeatRuns.$inferSelect> = [];
+    for (let index = 0; index < 3; index += 1) people.push(await queuedPersonRetry(agentId));
+    const issue = await task(agentId);
+    for (let index = 0; index < 3; index += 1) {
+      const startedAt = new Date(Date.now() - (3 - index) * 60_000);
+      await db.insert(heartbeatRuns).values({ companyId, agentId, issueId: issue.id, invocationSource: "on_demand",
+        triggerDetail: "manual", status: "succeeded", createdAt: new Date(startedAt.getTime() - 1_000), startedAt,
+        finishedAt: new Date(startedAt.getTime() + 1_000), contextSnapshot: { issueId: issue.id, wakeReason: "issue_recovery_action_restored" } });
+    }
+    const heartbeat = heartbeatService(db);
+    try {
+      await heartbeat.resumeQueuedRuns();
+      expect((await readRun(old.id)).startedAt).not.toBeNull();
+      for (const run of people) expect(await readRun(run.id)).toMatchObject({ status: "queued", startedAt: null });
+    } finally {
+      await heartbeat.drainActiveRunExecutions();
+    }
+  }, 120_000);
+
   async function pendingContinuation(agentId: string, endedMinutesAgo: number) {
     const issue = await task(agentId, "todo");
     const source = await sourceRun(agentId, issue.id, endedMinutesAgo);
@@ -209,12 +309,12 @@ suite("recovery wake herd", () => {
     expect(await executionControlSchedule(db).continuation()).toBeNull();
   }, 60_000);
 
-  it("leaves a continuation pending while the agent's queue is at its concurrency limit", async () => {
+  it("leaves a backlog continuation pending while the agent's queue is at its concurrency limit", async () => {
     const agentId = await seedCompany(1);
     const busy = await task(agentId);
     await db.insert(heartbeatRuns).values({ companyId, agentId, issueId: busy.id, invocationSource: "assignment", status: "queued",
       contextSnapshot: { issueId: busy.id, wakeReason: "issue_assigned" } });
-    const record = await pendingContinuation(agentId, 5);
+    const record = await pendingContinuation(agentId, 120);
     const wake = fakeWake();
     await deliverReconciledExecutions(db, wake as never);
     expect(wake).not.toHaveBeenCalled();
@@ -255,9 +355,9 @@ suite("recovery wake herd", () => {
     const fresh = await pendingContinuation(agentId, 1);
     const wake = fakeWake();
     await deliverReconciledExecutions(db, wake as never);
-    expect(wake).toHaveBeenCalledTimes(1);
+    expect(wake).toHaveBeenCalledTimes(2);
     expect(await deliveryOf(held.action.id)).toBe("delivered");
-    expect(await deliveryOf(fresh.action.id)).toBe("pending");
+    expect(await deliveryOf(fresh.action.id)).toBe("delivered");
   }, 60_000);
 
   it("admits an older continuation within a bounded number of passes while fresh interruptions keep arriving", async () => {
@@ -281,7 +381,7 @@ suite("recovery wake herd", () => {
       }
       expect(admittedAt).toBeGreaterThan(0);
       expect(admittedAt).toBeLessThanOrEqual(bound);
-      expect(wake).toHaveBeenCalledTimes(1);
+      expect(wake.mock.calls.filter(call => call[1].contextSnapshot.recoveryActionId === old.action.id)).toHaveLength(1);
     } finally {
       vi.useRealTimers();
     }
@@ -294,7 +394,7 @@ suite("recovery wake herd", () => {
       const busy = await task(agentId);
       await db.insert(heartbeatRuns).values({ companyId, agentId, issueId: busy.id, invocationSource: "assignment", status: "queued",
         contextSnapshot: { issueId: busy.id, wakeReason: "issue_assigned" } });
-      for (let index = 0; index < 8; index += 1) await pendingContinuation(agentId, 2 + index);
+      for (let index = 0; index < 8; index += 1) await pendingContinuation(agentId, 60 + index);
     }
     const idleAgent = await addAgent(1);
     const idle = await pendingContinuation(idleAgent, 600);
@@ -374,7 +474,7 @@ suite("recovery wake herd", () => {
     }
     const sameAgentStuck = await pendingContinuation(agentId, 300);
     await holdPastBound(sameAgentStuck, 60 * 60_000);
-    const waiting = await pendingContinuation(agentId, 10);
+    const waiting = await pendingContinuation(agentId, 60);
     await holdPastBound(waiting);
     const stuckIds = new Set([...stuck, sameAgentStuck].map(record => record.action.id));
     const created = fakeWake();
@@ -407,7 +507,7 @@ suite("recovery wake herd", () => {
       await deliverReconciledExecutions(db, wake as never);
     }
     expect(await deliveryOf(overdue.action.id)).toBe("delivered");
-    expect(created.mock.calls[0]![1].contextSnapshot.recoveryActionId).toBe(overdue.action.id);
+    expect(created.mock.calls.map(call => call[1].contextSnapshot.recoveryActionId)).toContain(overdue.action.id);
   }, 60_000);
 
   it("delivers another agent's continuation in one pass while one agent refuses a backlog of more than 200", async () => {
@@ -435,13 +535,17 @@ suite("recovery wake herd", () => {
     expect(await deliveryOf(healthy.action.id)).toBe("delivered");
   }, 120_000);
 
-  it("does not show a task as working when its continuation is pending past the delivery bound and nothing runs", async () => {
+  it("shows a task as continuing, never as needing Retry, while its recorded continuation is pending past the delivery bound", async () => {
     const agentId = await seedCompany(1);
     const record = await pendingContinuation(agentId, 240);
     await holdPastBound(record, RECOVERY_CONTINUATION_DELIVERY_BOUND_MS);
     const [issueRow] = await db.select().from(issues).where(eq(issues.id, record.issue.id));
-    const presentation = await taskInterruptionPresentation(db, issueRow!);
-    expect(presentation?.state).not.toBe("working");
+    expect(await taskInterruptionPresentation(db, issueRow!)).toMatchObject({ state: "working", canRetry: false, responsibility: "system" });
+
+    const wake = fakeWake();
+    await deliverReconciledExecutions(db, wake as never);
+    expect(await deliveryOf(record.action.id)).toBe("delivered");
+    expect(wake).toHaveBeenCalledTimes(1);
 
     const fresh = await pendingContinuation(agentId, 30);
     const [freshRow] = await db.select().from(issues).where(eq(issues.id, fresh.issue.id));
@@ -487,5 +591,115 @@ suite("recovery wake herd", () => {
     await deliverReconciledExecutions(db, wake as never);
     expect(wake).toHaveBeenCalledTimes(1);
     expect(await deliveryOf(held.action.id)).toBe("delivered");
+  }, 60_000);
+  async function queueOrdinaryWork(agentId: string, count: number) {
+    for (let index = 0; index < count; index += 1) {
+      const busy = await task(agentId);
+      await db.insert(heartbeatRuns).values({ companyId, agentId, issueId: busy.id, invocationSource: "assignment", status: "queued",
+        contextSnapshot: { issueId: busy.id, wakeReason: "issue_assigned" } });
+    }
+  }
+  const deliveredIds = (wake: ReturnType<typeof fakeWake>) =>
+    wake.mock.calls.map(call => String(call[1].contextSnapshot.recoveryActionId));
+
+  it("enqueues a fresh interruption's continuation at once while the agent's queue is deeper than its concurrency limit", async () => {
+    const agentId = await seedCompany(1);
+    await queueOrdinaryWork(agentId, 3);
+    const record = await pendingContinuation(agentId, 3);
+    const wake = fakeWake();
+    await deliverReconciledExecutions(db, wake as never);
+    expect(deliveredIds(wake)).toEqual([record.action.id]);
+    expect(await deliveryOf(record.action.id)).toBe("delivered");
+  }, 60_000);
+
+  it("delivers a fresh interruption ahead of an hours-old backlog for the same agent and keeps draining the backlog", async () => {
+    const agentId = await seedCompany(2);
+    await queueOrdinaryWork(agentId, 4);
+    const backlog: Array<Awaited<ReturnType<typeof pendingContinuation>>> = [];
+    for (let index = 0; index < 4; index += 1) {
+      const record = await pendingContinuation(agentId, 300 + index);
+      await holdPastBound(record, (4 * 60 - index) * 60_000);
+      backlog.push(record);
+    }
+    const fresh = await pendingContinuation(agentId, 3);
+    const wake = fakeWake();
+    await deliverReconciledExecutions(db, wake as never);
+    expect(deliveredIds(wake)).toEqual([fresh.action.id, backlog[0]!.action.id]);
+    for (let pass = 0; pass < backlog.length; pass += 1) await deliverReconciledExecutions(db, wake as never);
+    expect(await Promise.all(backlog.map(record => deliveryOf(record.action.id)))).toEqual(backlog.map(() => "delivered"));
+    expect(wake).toHaveBeenCalledTimes(backlog.length + 1);
+  }, 60_000);
+
+  it("enqueues many fresh continuations for one agent one per pass, newest first, and leaves none behind", async () => {
+    const agentId = await seedCompany(1);
+    await queueOrdinaryWork(agentId, 2);
+    const records: Array<Awaited<ReturnType<typeof pendingContinuation>>> = [];
+    for (let index = 0; index < 5; index += 1) records.push(await pendingContinuation(agentId, 1 + index));
+    const wake = fakeWake();
+    for (let pass = 0; pass < records.length; pass += 1) {
+      await deliverReconciledExecutions(db, wake as never);
+      expect(wake).toHaveBeenCalledTimes(pass + 1);
+    }
+    expect(deliveredIds(wake)).toEqual(records.map(record => record.action.id));
+    await deliverReconciledExecutions(db, wake as never);
+    expect(wake).toHaveBeenCalledTimes(records.length);
+  }, 60_000);
+
+  it("keeps a share of each pass for backlog while fresh interruptions fill the company cap", async () => {
+    const freshAgents = [await seedCompany(1)];
+    for (let index = 1; index < RECOVERY_CONTINUATIONS_PER_COMPANY_PER_PASS + 2; index += 1) freshAgents.push(await addAgent(1));
+    for (const agentId of freshAgents) await pendingContinuation(agentId, 2);
+    const backlogAgent = await addAgent(1);
+    const backlog = await pendingContinuation(backlogAgent, 240);
+    const wake = fakeWake();
+    await deliverReconciledExecutions(db, wake as never);
+    expect(wake).toHaveBeenCalledTimes(RECOVERY_CONTINUATIONS_PER_COMPANY_PER_PASS);
+    expect(await deliveryOf(backlog.action.id)).toBe("delivered");
+    expect(wake.mock.calls.filter(call => call[0] !== backlogAgent)).toHaveLength(RECOVERY_CONTINUATIONS_PER_COMPANY_PER_PASS - 1);
+  }, 60_000);
+
+  it("delivers a fresh continuation for every agent up to the company cap in one pass when no backlog waits", async () => {
+    const agentIds = [await seedCompany(1)];
+    for (let index = 1; index < RECOVERY_CONTINUATIONS_PER_COMPANY_PER_PASS; index += 1) agentIds.push(await addAgent(1));
+    const records = [];
+    for (const agentId of agentIds) records.push(await pendingContinuation(agentId, 2));
+    const wake = fakeWake();
+    await deliverReconciledExecutions(db, wake as never);
+    expect(wake).toHaveBeenCalledTimes(RECOVERY_CONTINUATIONS_PER_COMPANY_PER_PASS);
+    expect(await Promise.all(records.map(record => deliveryOf(record.action.id)))).toEqual(records.map(() => "delivered"));
+  }, 60_000);
+
+  it("keeps a fresh continuation whose wake was refused pending and enqueues it on the next pass", async () => {
+    const agentId = await seedCompany(1);
+    await queueOrdinaryWork(agentId, 3);
+    const record = await pendingContinuation(agentId, 2);
+    const created = fakeWake();
+    let refusing = true;
+    const wake = vi.fn(async (wakeAgentId: string, opts: { contextSnapshot: Record<string, unknown> }) =>
+      refusing ? null : created(wakeAgentId, opts));
+    await deliverReconciledExecutions(db, wake as never);
+    expect(wake).toHaveBeenCalledTimes(1);
+    expect(await deliveryOf(record.action.id)).toBe("pending");
+    refusing = false;
+    await deliverReconciledExecutions(db, wake as never);
+    expect(created).toHaveBeenCalledTimes(1);
+    expect(await deliveryOf(record.action.id)).toBe("delivered");
+  }, 60_000);
+  it("records why a system wake was folded into the task's pending continuation instead of leaving no trace", async () => {
+    const agentId = await seedCompany(1);
+    const record = await pendingContinuation(agentId, 30);
+    const heartbeat = heartbeatService(db);
+    try {
+      const run = await heartbeat.wakeup(agentId, { source: "automation", triggerDetail: "system", reason: "issue_continuation_needed",
+        payload: { issueId: record.issue.id, mutation: "assigned_work_invariant" }, requestedByActorType: "system",
+        contextSnapshot: { issueId: record.issue.id, taskId: record.issue.id, wakeReason: "issue_continuation_needed" } });
+      expect(run).toBeNull();
+      const rows = await db.select().from(agentWakeupRequests).where(and(eq(agentWakeupRequests.agentId, agentId),
+        sql`${agentWakeupRequests.payload}->>'issueId' = ${record.issue.id}`));
+      expect(rows).toMatchObject([{ status: "skipped", reason: "issue_continuation_pending" }]);
+      expect(await deliveryOf(record.action.id)).toBe("pending");
+    } finally {
+      await heartbeat.drainActiveRunExecutions();
+    }
   }, 60_000);
 });

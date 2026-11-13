@@ -82,6 +82,82 @@ describe.skipIf(!support.supported)("Retry is offered only when no automatic pat
     expect(await taskInterruptionPresentation(db, issue)).toMatchObject({ state: "failed", canRetry: true });
   });
 
+  async function seedRecordedContinuation(minutesAgo: number) {
+    const recordedAt = new Date(Date.now() - minutesAgo * 60_000);
+    const task = await seedSwapEndedRun(new Date(recordedAt.getTime() - 30_000));
+    const freshContinuation = { schema: "paperclip.fresh-continuation.v1", sourceRunId: task.runId, trigger: "held_recovery",
+      failureCode: "native_restart_recovery_blocked", delivery: "recorded", recordedAt: recordedAt.toISOString(),
+      isolation: "remote_epoch", stopProof: "unproven_epoch_abandoned", unverifiedActions: [], createdObjects: [] };
+    const settlement = { schema: "paperclip.fresh-continuation.v1", actorType: "system", actorId: "fresh-continuation",
+      decision: "continue_in_fresh_run", replay: "none", sourceRunId: task.runId, reason: "exact_resumption_unavailable",
+      isolation: "remote_epoch", recordedAt: recordedAt.toISOString() };
+    const reconciliation = { runId: task.runId, providerStopped: true, providerStopProof: "isolated", actionOutcome: "mixed",
+      actorId: "fresh-continuation", recordedAt: recordedAt.toISOString() };
+    const [primary] = await db.insert(issueRecoveryActions).values({ companyId: task.companyId, sourceIssueId: task.issue.id,
+      kind: "active_run_watchdog", status: "resolved", outcome: "restored", ownerType: "system", returnOwnerAgentId: task.agentId,
+      cause: "native_continuation_requires_reconciliation", fingerprint: `native-continuation:${task.runId}`,
+      nextAction: "Paperclip continues the task in a fresh run from its saved work.", resolutionNote: "continued_fresh_from_last_saved",
+      resolvedAt: recordedAt, createdAt: recordedAt, updatedAt: recordedAt,
+      evidence: { runId: task.runId, executionReconciliation: reconciliation, freshContinuationSettlement: settlement,
+        freshContinuation, continuationDelivery: "pending" } }).returning();
+    await db.update(issueRecoveryActions).set({ status: "resolved", outcome: "restored", resolvedAt: recordedAt, updatedAt: recordedAt,
+      evidence: { ...task.hold.evidence, executionReconciliation: reconciliation, freshContinuationSettlement: settlement,
+        continuationDelivery: "coalesced", coalescedIntoRecoveryActionId: primary!.id } })
+      .where(eq(issueRecoveryActions.id, task.hold.id));
+    return { ...task, primary: primary! };
+  }
+
+  it("shows a task whose recorded continuation is still waiting to start as continuing, however long delivery takes", async () => {
+    for (const minutesAgo of [1, 30, 110]) {
+      const { issue, runId } = await seedRecordedContinuation(minutesAgo);
+      expect(await taskInterruptionPresentation(db, issue)).toMatchObject({ responsibility: "system", state: "working",
+        canRetry: false, observedRunId: runId });
+    }
+  });
+
+  it("keeps a recorded continuation as continuing after a refused delivery attempt, since delivery tries again", async () => {
+    const { issue, primary } = await seedRecordedContinuation(45);
+    await db.update(issueRecoveryActions).set({ evidence: { ...primary.evidence,
+      continuationDeliveryAttemptedAt: new Date(Date.now() - 60_000).toISOString() } }).where(eq(issueRecoveryActions.id, primary.id));
+    expect(await taskInterruptionPresentation(db, issue)).toMatchObject({ state: "working", canRetry: false });
+  });
+
+  it("offers Retry once the system gives up on a recorded continuation", async () => {
+    const { issue, primary, hold } = await seedRecordedContinuation(45);
+    await db.update(issueRecoveryActions).set({ evidence: { ...primary.evidence, continuationDelivery: "invalidated" } })
+      .where(eq(issueRecoveryActions.id, primary.id));
+    await db.update(issueRecoveryActions).set({ evidence: { ...hold.evidence, continuationDelivery: "invalidated",
+      coalescedIntoRecoveryActionId: primary.id } }).where(eq(issueRecoveryActions.id, hold.id));
+    expect(await taskInterruptionPresentation(db, issue)).toMatchObject({ responsibility: "system", state: "failed", canRetry: true });
+  });
+
+  it("follows the new run once a recorded continuation is delivered", async () => {
+    const { companyId, agentId, issue, primary } = await seedRecordedContinuation(45);
+    const nextRunId = randomUUID();
+    await db.insert(heartbeatRuns).values({ id: nextRunId, companyId, agentId, nativeIssueId: issue.id, scopeKind: "issue",
+      status: "queued", runtimeMode: "native", retryOfRunId: primary.evidence.runId as string });
+    await db.update(issueRecoveryActions).set({ evidence: { ...primary.evidence, continuationDelivery: "delivered",
+      continuationRunId: nextRunId } }).where(eq(issueRecoveryActions.id, primary.id));
+    expect(await taskInterruptionPresentation(db, issue)).toMatchObject({ state: "working", canRetry: false, observedRunId: nextRunId });
+    await db.update(heartbeatRuns).set({ status: "failed", errorCode: "adapter_failed", finishedAt: new Date(Date.now() - 10 * 60_000) })
+      .where(eq(heartbeatRuns.id, nextRunId));
+    expect(await taskInterruptionPresentation(db, issue)).toMatchObject({ state: "failed", canRetry: true, observedRunId: nextRunId });
+  });
+
+  it("still offers Retry for a resolved recovery record that recorded no continuation", async () => {
+    const { issue, hold } = await seedSwapEndedRun(new Date(Date.now() - 45 * 60_000));
+    await db.update(issueRecoveryActions).set({ status: "resolved", outcome: "restored", resolvedAt: new Date(Date.now() - 40 * 60_000),
+      evidence: { ...hold.evidence, freshContinuationSettlement: { schema: "paperclip.fresh-continuation.v1", decision: "continue_in_fresh_run" } } })
+      .where(eq(issueRecoveryActions.id, hold.id));
+    expect(await taskInterruptionPresentation(db, issue)).toMatchObject({ responsibility: "system", state: "failed", canRetry: true });
+  });
+
+  it("still offers Retry when the board owns the hold and no continuation is recorded", async () => {
+    const { issue, hold } = await seedSwapEndedRun(new Date(Date.now() - 45 * 60_000));
+    await db.update(issueRecoveryActions).set({ ownerType: "board" }).where(eq(issueRecoveryActions.id, hold.id));
+    expect(await taskInterruptionPresentation(db, issue)).toMatchObject({ state: "failed", canRetry: true });
+  });
+
   it("shows a healthy task as working while the message queued during its succeeded run is delivered", async () => {
     const { companyId, agentId, issue } = await seedTask();
     const runId = randomUUID(), finishedAt = new Date(Date.now() - 3_000);
