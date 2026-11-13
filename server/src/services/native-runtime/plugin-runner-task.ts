@@ -49,6 +49,7 @@ export function createPluginRunnerTaskOwner(input: {
   pollMs?: number;
   warmTaskVersion?: 1;
   releaseResumeVersion?: 1;
+  resumeCredentialVersion?: 1;
   releasedSource?: DurableRecoveryIdentity;
   sessionHandoff?: boolean;
   onResumed?: (identity: DurableRecoveryIdentity) => Promise<void>;
@@ -433,6 +434,7 @@ export function createPluginRunnerTaskOwner(input: {
       : undefined;
     const result = await call(environmentTaskOperationSchema.parse({ kind: "resume", identity, bootstrapTicket,
       ...(handoffCredential ? { handoffCredential } : {}),
+      ...(input.resumeCredentialVersion === 1 && input.credential ? { credential: input.credential } : {}),
       ...configuredEnvironmentFields(!!input.sessionHandoff),
     }));
     requireReleaseResume();

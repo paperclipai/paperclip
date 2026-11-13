@@ -584,6 +584,32 @@ describe("plugin Runner release/resume facade", () => {
     }, { expectedTaskId: "task" });
   });
 
+  it.each([
+    ["sends the claimant's Claude credential to a supporting provider", { type: "claude-env" as const, environment: { CLAUDE_CODE_OAUTH_TOKEN: "fixture-current-token" } }, 1 as const, true],
+    ["omits the credential when submit would omit it", undefined, 1 as const, false],
+    ["omits the credential for a provider without support", { type: "claude-env" as const, environment: { ANTHROPIC_API_KEY: "fixture-current-key" } }, undefined, false],
+  ])("%s on resume", async (_label, credential, resumeCredentialVersion, sent) => {
+    const task = lifecycleTask();
+    const owner = createPluginRunnerTaskOwner({ ...input("claude"), task, resumeCredentialVersion, ...(credential ? { credential } : {}) });
+    await expect(owner.resume(requirements.identity, "transient-ticket")).resolves.toBe("resumed");
+    expect(task).toHaveBeenCalledExactlyOnceWith({
+      kind: "resume", identity: requirements.identity, bootstrapTicket: "transient-ticket",
+      ...(sent ? { credential } : {}),
+    }, { expectedTaskId: "task" });
+  });
+
+  it("resumes with the credential resolved for the rebound claimant run", async () => {
+    const task = lifecycleTask();
+    const owner = createPluginRunnerTaskOwner({ ...input("claude"), task, resumeCredentialVersion: 1,
+      credential: { type: "claude-env", environment: { CLAUDE_CODE_OAUTH_TOKEN: "fixture-source-token" } } });
+    const claimant = { type: "claude-env" as const, environment: { CLAUDE_CODE_OAUTH_TOKEN: "fixture-claimant-token" } };
+    owner.rebind({ ...input("claude"), task, resumeCredentialVersion: 1, authorityRunId: "claimant-run", credential: claimant });
+    await expect(owner.resume(requirements.identity, "transient-ticket")).resolves.toBe("resumed");
+    expect(task).toHaveBeenCalledExactlyOnceWith({
+      kind: "resume", identity: requirements.identity, bootstrapTicket: "transient-ticket", credential: claimant,
+    }, { expectedTaskId: "task" });
+  });
+
   it.each(["codex", "claude"])("quiesces %s before release and closes only after its ACK", async harness => {
     const { task } = provider();
     const perform = task.getMockImplementation()!;

@@ -1,8 +1,10 @@
-import { useEffect, useRef, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import type { McpAppViewSummary } from "@paperclipai/shared";
+import { Maximize2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { useMcpAppIssueId, useMcpAppViewsForRun, type McpAppViewsFreshness } from "./McpAppIssueContext";
 import { McpAppView } from "./McpAppView";
+import type { McpAppDisplayMode } from "./mcp-app-host";
 
 /** "DisplayMeetings" → "Display meetings". */
 export function mcpAppToolDisplayName(toolName: string): string {
@@ -12,14 +14,29 @@ export function mcpAppToolDisplayName(toolName: string): string {
 
 function McpAppRunView({ issueId, view }: { issueId: string; view: McpAppViewSummary }) {
   const displayName = mcpAppToolDisplayName(view.upstreamToolName);
+  const [displayMode, setDisplayMode] = useState<McpAppDisplayMode>("inline");
+  const [near, setNear] = useState(() => typeof IntersectionObserver === "undefined");
+  const markNear = useCallback(() => setNear(true), []);
   return (
     <section data-testid="mcp-app-turn-view" aria-label={`${view.applicationName}: ${displayName}`} className="flex min-w-0 flex-col gap-2">
-      <div className="flex min-w-0 items-baseline gap-2 text-xs">
-        <span className="text-muted-foreground">Widget from {view.applicationName}</span>
-        <span className="truncate font-medium text-foreground">{displayName}</span>
+      <div className="flex min-w-0 items-center gap-2 text-xs">
+        <span className="shrink-0 text-muted-foreground">Widget from {view.applicationName}</span>
+        <span className="min-w-0 truncate font-medium text-foreground">{displayName}</span>
+        <Button
+          type="button"
+          variant="ghost"
+          size="sm"
+          className="ml-auto shrink-0 text-xs text-muted-foreground"
+          onClick={() => { setNear(true); setDisplayMode("fullscreen"); }}
+          disabled={displayMode === "fullscreen"}
+          aria-label={`Open ${view.applicationName} ${displayName} full screen`}
+        >
+          <Maximize2 aria-hidden="true" />
+          Open full screen
+        </Button>
       </div>
-      <NearViewport placeholderLabel={`${view.applicationName}: ${displayName}`}>
-        <McpAppView issueId={issueId} view={view} displayName={displayName} />
+      <NearViewport placeholderLabel={`${view.applicationName}: ${displayName}`} near={near} onNear={markNear}>
+        <McpAppView issueId={issueId} view={view} displayName={displayName} displayMode={displayMode} onDisplayModeChange={setDisplayMode} />
       </NearViewport>
     </section>
   );
@@ -35,17 +52,16 @@ export const MCP_APP_VIEWS_PER_RUN = 5;
  * its iframe) only once the placeholder nears the viewport. A long chat with
  * many recorded views pays only for the ones the reader reaches.
  */
-function NearViewport({ children, placeholderLabel }: { children: ReactNode; placeholderLabel: string }) {
+function NearViewport({ children, placeholderLabel, near, onNear }: { children: ReactNode; placeholderLabel: string; near: boolean; onNear: () => void }) {
   const ref = useRef<HTMLDivElement>(null);
-  const [near, setNear] = useState(() => typeof IntersectionObserver === "undefined");
   useEffect(() => {
     if (near || !ref.current) return;
     const observer = new IntersectionObserver((entries) => {
-      if (entries.some((entry) => entry.isIntersecting)) setNear(true);
+      if (entries.some((entry) => entry.isIntersecting)) onNear();
     }, { rootMargin: NEAR_VIEWPORT_MARGIN });
     observer.observe(ref.current);
     return () => observer.disconnect();
-  }, [near]);
+  }, [near, onNear]);
   if (near) return <>{children}</>;
   return <div ref={ref} role="status" aria-label={`${placeholderLabel} (not loaded yet)`} data-testid="mcp-app-view-placeholder" className="h-24 rounded-lg border border-border bg-muted/30" />;
 }

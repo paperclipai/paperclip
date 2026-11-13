@@ -4,11 +4,12 @@ import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { expect, it, vi } from "vitest";
-import { NativeSessionCloseUnrecoverableError } from "../contracts/native-session-backend.js";
+import { NativeProviderRecoveryDeadlineError, NativeSessionCloseUnrecoverableError } from "../contracts/native-session-backend.js";
 import type * as durableControlPlane from "../control-plane/durable-prp-control-plane.js";
 import type { DurablePrpControlPlane } from "../control-plane/durable-prp-control-plane.js";
-import { codexSemanticToolSpecs } from "../drivers/codex/codex-app-server-driver.js";
+import { CodexAppServerDriver, codexSemanticToolSpecs } from "../drivers/codex/codex-app-server-driver.js";
 import { createCapabilityRunnerdCodexTransport } from "./runnerd-codex-transport.js";
+import { createCodexTaskEnvelope } from "../contracts/codex.js";
 import { defaultCapabilityRunnerdBinary, expectTurnStarted, fakeCodex, fakeCodexArgs } from "../../test/support/runnerd-transport.js";
 
 function processState(pid: number): "alive" | "gone" {
@@ -296,4 +297,131 @@ it("continues the same provider thread from a fresh Runner over the journal of a
     if (server.listening) await new Promise<void>(resolveClose => server.close(() => resolveClose()));
     await rm(root, { recursive: true, force: true });
   }
+}, 60_000);
+
+async function recoveryEndedWhileAdoptedRunnerHangs(abortReason: Error, recoveryPurpose?: "stop_cleanup") {
+  const root = await mkdtemp(join(tmpdir(), "runnerd-remote-retention-deadline-"));
+  const server = createServer();
+  let authority: DurablePrpControlPlane | null = null;
+  server.on("upgrade", (request, socket, head) => {
+    if (!authority) { socket.destroy(); return; }
+    authority.handleUpgrade(request, socket, "/runner", head);
+  });
+  await new Promise<void>(resolveListen => server.listen(0, "127.0.0.1", resolveListen));
+  const address = server.address();
+  if (!address || typeof address === "string") throw new Error("Missing deadline test listener");
+  const registration = async (next: DurablePrpControlPlane) => {
+    authority = next;
+    return { connectUrl: `ws://127.0.0.1:${address.port}/runner`, release: () => { if (authority === next) authority = null; } };
+  };
+  const children: ReturnType<typeof spawn>[] = [];
+  const launch = vi.fn((spec: durableControlPlane.RunnerProcessLaunchSpec) => {
+    const child = spawn(spec.command, [...spec.args], { cwd: spec.cwd, env: spec.environment, stdio: "ignore", detached: true });
+    children.push(child);
+    return {
+      child,
+      completion: new Promise<durableControlPlane.RunnerProcessResult>((resolveExit, rejectExit) => {
+        child.once("error", rejectExit);
+        child.once("exit", (code, exitSignal) => resolveExit({ code, signal: exitSignal, stdout: "", stderr: "" }));
+      }),
+      isExitConfirmed: () => child.exitCode !== null || child.signalCode !== null,
+    };
+  });
+  const identity = {
+    runnerInstanceId: "runner-deadline", environmentLeaseId: "lease-deadline", runId: "run-deadline",
+    normalizedSessionId: "session-deadline", turnId: "turn-deadline", itemId: "item-deadline",
+  };
+  const shared = {
+    runnerBinary: defaultCapabilityRunnerdBinary(), codexCommand: fakeCodex,
+    codexArgs: fakeCodexArgs(root, "--hold-first-durable-turn"), stateDirectory: root, prpIdentity: identity,
+    runnerReconnectGraceMs: 5_000, runnerProcessReconnectGraceMs: null, controlPlaneRegistration: registration,
+  };
+  const first = createCapabilityRunnerdCodexTransport({ ...shared, runnerProcessLauncher: launch, closeGraceMs: 600 });
+  let adopted: ReturnType<typeof createCapabilityRunnerdCodexTransport> | undefined;
+  let providerPid: number | null = null;
+  try {
+    const opened = await first.transport.request("thread/start", { cwd: root, dynamicTools: codexSemanticToolSpecs() });
+    await first.transport.request("turn/start", { input: [{ type: "text", text: "Keep this task active." }] });
+    for await (const notification of first.transport.notifications()) {
+      if (notification.method === "turn/started") break;
+    }
+    const runnerPid = children[0]!.pid!;
+    providerPid = first.evidence().codexPid;
+    signal(runnerPid, "SIGSTOP");
+    await expect(first.transport.close("native session execution complete", { retainUnsettledRemoteRunner: true }))
+      .rejects.toBeInstanceOf(NativeSessionCloseUnrecoverableError);
+    signal(runnerPid, "SIGCONT");
+    const thread = opened.thread as Record<string, unknown>;
+    adopted = createCapabilityRunnerdCodexTransport({
+      ...shared,
+      ...(recoveryPurpose ? { recoveryPurpose } : {}),
+      resumeDynamicTools: codexSemanticToolSpecs(),
+      resumeProviderSession: { driverSessionId: String(thread.id), providerSessionId: String(thread.sessionId) },
+      runnerProcessLauncher: vi.fn(() => { throw new Error("Must adopt the existing runner"); }),
+      adoptExistingRunner: {
+        pid: runnerPid, processGroupId: runnerPid, startedAt: new Date().toISOString(),
+        isAlive: () => processState(runnerPid) === "alive",
+        signal: name => { try { process.kill(-runnerPid, name); return true; } catch { return false; } },
+      },
+    });
+    adopted.transport.setServerRequestHandler(async () => ({ success: true, contentItems: [] }));
+    const driver = new CodexAppServerDriver({
+      taskEnvelope: createCodexTaskEnvelope({ objective: "Keep this task active.", contractRevision: "1", criteria: [{ id: "objective", requirement: "Deliver the result." }], constraints: [] }),
+      transportFactory: () => adopted!.transport,
+    });
+    const controller = new AbortController();
+    const recovery = driver.recoverSession({
+      driverKind: "codex", driverSessionId: String(thread.id), providerSessionId: String(thread.sessionId),
+      runId: identity.runId, normalizedSessionId: identity.normalizedSessionId,
+    }, { signal: controller.signal }).then(() => null, (error: unknown) => error);
+    const diagnostics = () => adopted!.evidence().diagnostics.join("\n");
+    await vi.waitFor(() => expect(diagnostics()).toMatch(/adopted runner \d+ authenticated/), { timeout: 20_000, interval: 5 });
+    signal(runnerPid, "SIGSTOP");
+    await new Promise(resolveWait => setTimeout(resolveWait, 2_000));
+    const abortedAt = Date.now();
+    controller.abort(abortReason);
+    const outcome = await recovery;
+    const settledMs = Date.now() - abortedAt;
+    const watchUntil = Date.now() + 15_000;
+    while (processState(runnerPid) === "alive" && Date.now() < watchUntil) {
+      await new Promise(resolveWait => setTimeout(resolveWait, 250));
+    }
+    const runnerState = processState(runnerPid);
+    signal(runnerPid, "SIGCONT");
+    const pendingTerminalCommands = authority
+      ? (authority as DurablePrpControlPlane).store.state.commands
+        .filter(command => command.status === "pending" && ["turn.stop", "runner.suspend", "runner.shutdown"].includes(command.type))
+        .map(command => command.type)
+      : [];
+    const providerState = providerPid === null ? "gone" : processState(providerPid);
+    return { outcome, runnerState, providerState, settledMs, pendingTerminalCommands };
+  } finally {
+    await adopted?.transport.detachControllerForRestart?.().catch(() => undefined);
+    for (const child of children) { signal(child.pid, "SIGCONT"); signal(child.pid ? -child.pid : null, "SIGKILL"); }
+    signal(providerPid, "SIGKILL");
+    server.closeAllConnections();
+    if (server.listening) await new Promise<void>(resolveClose => server.close(() => resolveClose()));
+    await rm(root, { recursive: true, force: true });
+  }
+}
+
+it("keeps an adopted Runner and its turn alive when the provider recovery deadline ends a recovery it never answered", async () => {
+  const result = await recoveryEndedWhileAdoptedRunnerHangs(new NativeProviderRecoveryDeadlineError(900_000));
+  expect(result.outcome).toBeInstanceOf(NativeProviderRecoveryDeadlineError);
+  expect(result.runnerState).toBe("alive");
+  expect(result.pendingTerminalCommands).toEqual([]);
+  expect(result.settledMs).toBeLessThan(5_000);
+}, 60_000);
+
+it("still stops an adopted Runner when a Stop ends a recovery it never answered", async () => {
+  const result = await recoveryEndedWhileAdoptedRunnerHangs(new Error("Stop requested"));
+  expect(String(result.outcome)).toContain("Stop requested");
+  expect(result.runnerState).toBe("gone");
+}, 60_000);
+
+it("still stops the adopted Runner and its provider when the provider recovery deadline ends a Stop's cleanup recovery", async () => {
+  const result = await recoveryEndedWhileAdoptedRunnerHangs(new NativeProviderRecoveryDeadlineError(900_000), "stop_cleanup");
+  expect(result.outcome).toBeInstanceOf(NativeProviderRecoveryDeadlineError);
+  expect(result.runnerState).toBe("gone");
+  expect(result.providerState).toBe("gone");
 }, 60_000);

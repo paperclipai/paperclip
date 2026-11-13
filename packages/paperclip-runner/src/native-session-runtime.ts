@@ -26,6 +26,7 @@ import {
   type HarnessThreadGoal,
 } from "./contracts/harness-driver.js";
 import {
+  NativeProviderRecoveryDeadlineError,
   NativeProviderSideEffectPendingError,
   NativeProviderStateIncompatibleError,
   NativeProviderTerminalFailure,
@@ -328,6 +329,11 @@ export interface ExecuteNativeSessionOptions {
   /** Trusted provider resource identity: independent remote sandboxes must not
    * inherit each other's process-cleanup gates. Omit for local backends. */
   remoteCleanupScope?: string;
+  /** This execution is the same run reattaching to the remote Runner that its
+   * earlier attempt's close left alive for exactly this reattachment. It takes
+   * over that attempt's retained cleanup in `remoteCleanupScope` instead of
+   * waiting for a close that can no longer settle. Other runs stay gated. */
+  retainedRunnerReattachment?: boolean;
   /** Operation bound; explicit values also preserve the legacy turn bound. */
   timeoutMs?: number;
   /** Total turn duration. Zero or no configured bound allows long-running work. */
@@ -1015,9 +1021,42 @@ function scheduleQuarantinedSessionCleanup(
   cleanup.timer.unref?.();
 }
 
+function quarantinedCleanupRunId(cleanup: QuarantinedSessionCleanup): string | null {
+  try {
+    return cleanup.session.identity().runId;
+  } catch {
+    return null;
+  }
+}
+
+/** The same run's reattachment owns the remote Runner its earlier attempt
+ * retained, so it retires that attempt's cleanup in the same remote scope.
+ * Removal stops later close retries; an in-flight attempt stays an admission
+ * owner until it settles, so the old and new controllers never overlap. */
+function takeOverRetainedRunnerCleanups(
+  cleanupDomain: NativeSessionCleanupDomain,
+  runId: string,
+): void {
+  if (JSON.parse(cleanupDomain.key).length !== 4) return;
+  for (const cleanup of [...quarantinedSessionCleanups]) {
+    if (
+      cleanup.domain.key !== cleanupDomain.key ||
+      !nativeSessionCleanupScopeBlocks(cleanup.domain, cleanupDomain) ||
+      quarantinedCleanupRunId(cleanup) !== runId
+    )
+      continue;
+    if (cleanup.timer) clearTimeout(cleanup.timer);
+    cleanup.timer = null;
+    quarantinedSessionCleanups.delete(cleanup);
+    if (!cleanup.attempt && !cleanup.recovery)
+      announceCleanupSettled(cleanup.domain);
+  }
+}
+
 async function retryQuarantinedSessionCleanups(
   cleanupDomain: NativeSessionCleanupDomain,
   signal?: AbortSignal,
+  reattachingRunId?: string,
 ): Promise<void> {
   // A close attempt becomes admission-visible as soon as the runtime retains
   // its exact cleanup owner. It may not have rejected yet, so it may not have
@@ -1029,6 +1068,8 @@ async function retryQuarantinedSessionCleanups(
   let observedOwnerPhases = 0;
   while (true) {
     signal?.throwIfAborted();
+    if (reattachingRunId)
+      takeOverRetainedRunnerCleanups(cleanupDomain, reattachingRunId);
     if (
       [...quarantinedSessionCleanups].some(
         (cleanup) =>
@@ -2352,7 +2393,13 @@ export async function executeNativeSession(
       ]),
     ],
   };
-  await retryQuarantinedSessionCleanups(cleanupDomain, options.signal);
+  await retryQuarantinedSessionCleanups(
+    cleanupDomain,
+    options.signal,
+    options.retainedRunnerReattachment && options.remoteCleanupScope
+      ? input.binding.runId
+      : undefined,
+  );
   if ("runtimeContext" in input) {
     const capabilities = descriptor.runtimeContextCapabilities;
     const unsupported = (["instructions", "skills", "mcp"] as const).filter(
@@ -2548,6 +2595,7 @@ export async function executeNativeSession(
         ? await runAbortableOperationWithin({
             timeoutMs: recoveryTimeoutMs,
             timeoutMessage: `native session provider recovery timed out after ${recoveryTimeoutMs}ms`,
+            timeoutError: () => new NativeProviderRecoveryDeadlineError(recoveryTimeoutMs),
             operation: (signal) =>
               options.backend.recoverSession!(providerRecoveryCheckpoint, {
                 signal,
@@ -2939,6 +2987,7 @@ export async function executeNativeSession(
             (persistedTerminal) => persistedTerminal.turnId === terminal.turnId,
           ) &&
           (terminal.turnId === persistedSession?.activeTurnId ||
+            !persistedSession?.activeTurnId ||
             recoveredSnapshot.dispositionOnlyRecoveryConsumed),
       ),
     );

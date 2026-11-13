@@ -13,6 +13,7 @@ import { toolTaxonomy } from "./tool-taxonomy";
 import { useTaskChatShimmer } from "./TaskChatShimmer";
 import { TaskChatDiffCounts, TaskChatDiffView } from "./TaskChatDiffView";
 import { useTaskReferenceLabel, withTaskReference } from "./task-reference";
+import { ProviderToolIcon, useProviderToolIcons } from "@/components/ProviderToolIcon";
 
 const STATUS_ICON = {
   pending: { Icon: Loader2, spin: false, tone: "text-muted-foreground" },
@@ -51,6 +52,7 @@ export function TaskChatToolCard({ item }: { item: TaskChatToolItem }) {
   const { Icon, spin, tone } = STATUS_ICON[item.status];
   const shimmer = useTaskChatShimmer(item.id);
   const RowIcon = toolTaxonomy(item.rawName ?? item.name).icon;
+  const providerIcons = useProviderToolIcons(item.rawName ?? item.name);
   const [showDetail, setShowDetail] = useTaskChatExpansion(item.id, false);
   const expandable = Boolean(item.target || item.detail || item.diff);
 
@@ -68,10 +70,11 @@ export function TaskChatToolCard({ item }: { item: TaskChatToolItem }) {
         )}
       >
         <span className="flex w-5 shrink-0 items-center justify-center">
-          <RowIcon
+          <ProviderToolIcon
+            icons={providerIcons}
+            fallback={RowIcon}
             className="h-3.5 w-3.5 shrink-0"
-            aria-hidden
-            data-testid="task-chat-tool-icon"
+            testId="task-chat-tool-icon"
           />
         </span>
         <span data-conversation-tool-running={item.status === "in_progress" && shimmer ? "true" : undefined} className="flex min-w-0 flex-1 items-baseline gap-2 overflow-hidden">

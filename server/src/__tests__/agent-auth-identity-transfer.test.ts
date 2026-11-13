@@ -63,7 +63,7 @@ const support = await getEmbeddedPostgresTestSupport();
     } finally { capture.flush(); }
     const reads = events.filter(event => event.event === "paperclip.test_db_response_capture.entry.v1"
       && event.table === "heartbeat_runs" && (event.operation === "select" || event.operation === "execute"));
-    expect(reads.reduce((sum, event) => sum + Number(event.calls), 0)).toBeGreaterThanOrEqual(3);
+    expect(reads.reduce((sum, event) => sum + Number(event.calls), 0)).toBe(1);
     expect(reads.reduce((sum, event) => sum + Number(event.responseValueBytes), 0)).toBeLessThan(16_384);
     expect((await captureRunIdentity(db, fixture)).run).toMatchObject(fixture.payloads);
   });
