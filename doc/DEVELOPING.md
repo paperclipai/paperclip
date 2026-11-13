@@ -2579,6 +2579,11 @@ For `codex_local`, Paperclip assigns new and updated agents an isolated Codex ho
 
 Paperclip also persists an empty `OPENAI_API_KEY` override for those agents so a host-level `OPENAI_API_KEY` cannot leak into Codex runs through process inheritance. If an operator explicitly configures `adapterConfig.env.CODEX_HOME`, it must not point at the shared company `codex-home`, `$CODEX_HOME`, or `~/.codex`.
 
+Codex shell commands keep sandbox-injected certificate-trust variables (for
+example `SSL_CERT_FILE` and `GIT_SSL_CAINFO`) even though the shell environment
+allowlist is constructed before the sandbox injects them. See
+[Codex shell certificate trust](sandbox-shell-environment.md).
+
 If the `codex` CLI is not installed or not on `PATH`, `codex_local` agent runs fail at execution time with a clear adapter error. Quota polling uses a short-lived `codex app-server` subprocess: when `codex` cannot be spawned, that provider reports `ok: false` in aggregated quota results and the API server keeps running (it must not exit on a missing binary).
 
 Local adapters require their corresponding CLI/session setup on the machine running Paperclip. Self-hosted instances can install external adapters through the adapter/plugin flow without hardcoded imports in `server/` or `ui/`.
