@@ -459,6 +459,25 @@ describe("IssueChatThread", () => {
     markdownBodyRenderMock.mockClear();
   });
 
+  it("offers Stop for a run still waiting in line and calls the task's stop action", async () => {
+    const root = createRoot(container);
+    const onCancelRun = vi.fn(async () => {});
+    const waitingRun = {
+      id: "waiting-run", issueId: "issue-1", status: "queued", invocationSource: "assignment", triggerDetail: null,
+      startedAt: null, finishedAt: null, createdAt: "2026-11-13T12:00:00.000Z",
+      agentId: "agent-1", agentName: "Codie", adapterType: "codex_local",
+    };
+    act(() => renderIssueThread(root, { liveRuns: [waitingRun], issueStatus: "todo", onCancelRun }));
+    const stop = container.querySelector<HTMLButtonElement>('button[aria-label="Stop"]');
+    expect(stop).not.toBeNull();
+    await act(async () => { stop!.click(); });
+    expect(onCancelRun).toHaveBeenCalledOnce();
+
+    act(() => renderIssueThread(root, { liveRuns: [], issueStatus: "todo", onCancelRun }));
+    expect(container.querySelector('button[aria-label="Stop"]')).toBeNull();
+    act(() => root.unmount());
+  });
+
   it("drops the count heading and does not use an internal scrollbox", () => {
     const root = createRoot(container);
 

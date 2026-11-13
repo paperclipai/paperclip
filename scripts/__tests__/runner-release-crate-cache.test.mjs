@@ -294,13 +294,13 @@ test("isolated Docker Rust stages preserve the layout of embedded schema and ide
       else if (entry.name.endsWith(".rs")) sources.push(full);
     }
   })(crateRoot);
-  for (const [dockerfile, stage] of [["Dockerfile", "runner-build"], ["docker/daytona-runner/Dockerfile", "runnerd-build"]]) {
+  for (const [dockerfile, stage] of [["Dockerfile", "runner-artifacts-runnerd"], ["docker/daytona-runner/Dockerfile", "runnerd-build"]]) {
     const docker = readFileSync(path.join(repoRoot, dockerfile), "utf8");
     const body = docker.split(/^FROM .+ AS /m).find(part => part.startsWith(`${stage}\n`));
     assert.ok(body, `${dockerfile}: missing ${stage}`);
     const workdir = /^WORKDIR (.+)$/m.exec(body)?.[1];
     assert.ok(workdir?.startsWith("/"), `${dockerfile}: an absolute stage working directory is required`);
-    const copies = [...body.matchAll(/^COPY (?!-)(.+)$/gm)].flatMap(([, instruction]) => {
+    const copies = [...body.matchAll(/^COPY (?:--from=runner-artifacts-context )?(?!-)(.+)$/gm)].flatMap(([, instruction]) => {
       const args = instruction.trim().split(/\s+/);
       const destination = path.posix.resolve(workdir, args.pop());
       return args.map(source => {

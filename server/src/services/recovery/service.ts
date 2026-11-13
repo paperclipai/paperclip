@@ -2432,6 +2432,24 @@ export function recoveryService(
     return watchdog.buildRunOutputSilence(run, now);
   }
 
+  async function buildRunOutputSilences(
+    runs: ReadonlyArray<Pick<
+      typeof heartbeatRuns.$inferSelect,
+      | "id"
+      | "companyId"
+      | "status"
+      | "lastOutputAt"
+      | "lastOutputSeq"
+      | "lastOutputStream"
+      | "processStartedAt"
+      | "startedAt"
+      | "createdAt"
+    >>,
+    now = new Date(),
+  ): Promise<RunOutputSilenceSummary[]> {
+    return watchdog.buildRunOutputSilences(runs, now);
+  }
+
   async function appendRecoveryRunEvent(
     run: typeof heartbeatRuns.$inferSelect,
     event: {
@@ -4931,7 +4949,7 @@ export function recoveryService(
         agent?.status === "paused" &&
         agent.companyId === issue.companyId &&
         agent.lifecycleHolds.includes("manual") &&
-        issue.status === "todo" &&
+        (issue.status === "todo" || issue.status === "in_progress") &&
         !latestRun
       ) {
         result.skipped += 1;
@@ -4956,8 +4974,8 @@ export function recoveryService(
             previousStatus: issue.status as StrandedPreviousStatus,
             latestRun,
             comment:
-              "Paperclip cannot safely continue automatic recovery because the original assignee is not invokable. " +
-              "The source assignment is unchanged and the board must choose the next action.",
+              `${agent && agent.companyId === issue.companyId ? agent.name : "The assigned agent"} can't run right now, so Paperclip stopped this task instead of retrying it. ` +
+              "It is still assigned to them. To continue, resume or fix the agent, or assign the task to someone else.",
           });
           if (updated) {
             result.escalated += 1;
@@ -6845,6 +6863,7 @@ export function recoveryService(
   return {
     assignedWork,
     buildRunOutputSilence,
+    buildRunOutputSilences,
     escalateStrandedRecoveryIssueInPlace,
     escalateStrandedAssignedIssue,
     recordWatchdogDecision,
