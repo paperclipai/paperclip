@@ -58,7 +58,7 @@ import { readRecoverableRunLog } from "./native-runtime/native-run-log-recovery.
 import { observabilitySecretValues } from "@paperclipai/adapter-utils/agent-observability";
 import { prepareHeartbeatSession, resolveHeartbeatAdapterSession } from "./heartbeat/session-preparation.js";
 import { prepareHeartbeatTaskContext } from "./heartbeat/task-context.js";
-import { selectHeartbeatEnvironment } from "./heartbeat/environment-selection.js";
+import { selectHeartbeatEnvironment, resolveSshAuthenticationBeforeRouting } from "./heartbeat/environment-selection.js";
 import { reconcileMuseNativeTerminalRun } from "./native-runtime/muse-terminal-reconciliation.js";
 import { prepareHeartbeatWorkspace, RetryWorkspaceRefused } from "./heartbeat/workspace-preparation.js";
 import { nativeRecoveryClaimRelinquished, ownNativeExecutionLeaseLapsed, releaseLapsedNativeRestartClaim } from "./native-runtime/native-execution-lease.js";
@@ -650,6 +650,13 @@ const activeRunExecutionPromises = new Set<Promise<void>>();
 // can await a wake that is still before run registration. A caller that tears
 // down a shared database (a test afterEach) then cannot race a late wake.
 const activeWakeupPromises = new Set<Promise<unknown>>();
+// A native resume dispatch whose timer has fired reads and claims run state
+// before it registers an execution. Track that work too, so a drain cannot
+// return while it is still writing.
+const activeNativeResumeDispatches = new Set<Promise<void>>();
+// When each armed resume timer is due, so a drain can tell a dispatch that is
+// already due (pending work) from one scheduled for later.
+const nativeSessionResumeDispatchDueAt = new WeakMap<object, number>();
 const nativeSessionResumeDispatchTimers = new Map<
   string,
   ReturnType<typeof setTimeout>
@@ -1820,12 +1827,23 @@ export function heartbeatService(
       clearTimeout(timer);
     }
     nativeSessionResumeDispatchTimers.clear();
-    while (
-      activeWakeupPromises.size > 0 ||
-      activeRunExecutionPromises.size > 0
-    ) {
-      await Promise.allSettled([...activeWakeupPromises]);
-      await Promise.all([...activeRunExecutionPromises]);
+    const resumeDispatchDue = () => [...nativeSessionResumeDispatchTimers.values()]
+      .some((timer) => (nativeSessionResumeDispatchDueAt.get(timer) ?? Infinity) <= Date.now());
+    for (;;) {
+      if (
+        activeWakeupPromises.size > 0 ||
+        activeNativeResumeDispatches.size > 0 ||
+        activeRunExecutionPromises.size > 0
+      ) {
+        await Promise.allSettled([...activeWakeupPromises]);
+        await Promise.allSettled([...activeNativeResumeDispatches]);
+        await Promise.all([...activeRunExecutionPromises]);
+        continue;
+      }
+      // Work that settled during the drain can arm an immediate resume
+      // dispatch. It is pending work: let it fire, then drain what it starts.
+      if (!resumeDispatchDue()) return;
+      await new Promise<void>((resolve) => setTimeout(resolve, 0));
     }
   }
 
@@ -1844,7 +1862,7 @@ export function heartbeatService(
     const timer = setTimeout(() => {
       if (nativeSessionResumeDispatchTimers.get(runId) !== timer) return;
       nativeSessionResumeDispatchTimers.delete(runId);
-      void (async () => {
+      const dispatchWork: Promise<void> = (async () => {
         if ((await getSchedulingSuppression()).suppressed) return;
         if (nativeRecoveryDeadlines.get(runId) !== pending) return;
         nativeRecoveryDeadlines.delete(runId);
@@ -1881,8 +1899,11 @@ export function heartbeatService(
           "failed to dispatch scheduled native session resume",
         );
       });
+      activeNativeResumeDispatches.add(dispatchWork);
+      void dispatchWork.finally(() => activeNativeResumeDispatches.delete(dispatchWork));
     }, delayMs);
     timer.unref?.();
+    nativeSessionResumeDispatchDueAt.set(timer, Date.now() + delayMs);
     nativeSessionResumeDispatchTimers.set(runId, timer);
   }
 
@@ -2715,8 +2736,17 @@ export function heartbeatService(
         if ("homeMode" in homeConfig) config = { ...config, homeMode: homeConfig.homeMode };
       }
       const persistedRouterPoolId = routerHasPersistedInput ? readNonEmptyString(parseObject(context.aiRouterSelection).poolId) : null;
+      const sshAuthentication = routerHasPersistedInput ? null : await resolveSshAuthenticationBeforeRouting({
+        agentDefaultEnvironmentId: agent.defaultEnvironmentId,
+        lowTrustIssueEnvironmentId: trustPreset.kind === "low_trust_review"
+          ? parseIssueExecutionWorkspaceSettings(issueContext?.executionWorkspaceSettings, { includeEnvironmentId: true })?.environmentId ?? null : null,
+        environmentsSvc, instanceSettings,
+      });
+      if (agent.adapterType === "paperclip_runner" && sshAuthentication) {
+        config = { ...config, homeMode: sshAuthentication === "host" ? "preconfigured" : "isolated" };
+      }
       const preconfiguredHome = agent.adapterType === "paperclip_runner" && config.homeMode === "preconfigured";
-      const requestedAiBinding = preconfiguredHome ? undefined : persistedRouterPoolId ? { mode: "router" as const, connectionId: persistedRouterPoolId } : agent.runtimeConfig?.aiConnection ? aiRuntimeConnectionBindingSchema.parse(agent.runtimeConfig.aiConnection) : undefined;
+      const requestedAiBinding = preconfiguredHome || sshAuthentication === "host" ? undefined : persistedRouterPoolId ? { mode: "router" as const, connectionId: persistedRouterPoolId } : agent.runtimeConfig?.aiConnection ? aiRuntimeConnectionBindingSchema.parse(agent.runtimeConfig.aiConnection) : undefined;
       let aiBinding = requestedAiBinding?.mode === "router" ? undefined : requestedAiBinding;
       const originalAiIssueOverrides = issueAssigneeOverrides;
       if (requestedAiBinding?.mode === "router") {
@@ -4653,6 +4683,7 @@ export function heartbeatService(
     resolveSchedulingSuppression: getSchedulingSuppression,
     drainRunningRunsForShutdown,
     drainActiveRunExecutions,
+    scheduleNativeSessionResumeDispatch,
     startTaskDrain,
     stopTaskDrain,
     getTaskDrainStatus,

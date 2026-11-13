@@ -315,6 +315,7 @@ async function prepareClaudeRemoteManagedHome(
 
   await onLog("stdout", `[paperclip] Materializing Claude auth/config into ${remoteClaudeConfigDir}.\n`);
   const { toolShellPrefixInstalled } = await materializeRemoteClaudeConfig({
+      allowHostCredentials: !input.config.managedAiConnection,
     runId,
     target: executionTarget,
     remoteClaudeConfigDir,
@@ -564,7 +565,7 @@ async function commandIsResolvable(
         trimmed,
         target,
         resolveAdapterExecutionTargetCwd(target, asString(input?.config.cwd, ""), process.cwd()),
-        {},
+        target.transport === "ssh" ? { PATH: process.env.PATH } : {},
         {
           // Fresh sandboxes need the same ACP server that ships with this
           // adapter. Only bootstrap our default command; an operator's custom
@@ -617,11 +618,16 @@ async function claudeAcpUnavailableReason(
     executionTarget: input.executionTarget,
     legacyRemoteExecution: input.executionTransport?.remoteExecution,
   });
-  if (target?.kind === "remote" && !sandboxTargetHasProcessSessionBridge(target)) {
+  const managedSsh = target?.kind === "remote" && target.transport === "ssh"
+    && target.spec.useHostAuth === false && Boolean(input.config.managedAiConnection);
+  if (managedSsh && target.workspaceRealization?.mode === "in_place") {
+    return "In-place SSH workspace realization requires the Claude CLI engine; ACP archive staging is not supported.";
+  }
+  if (target?.kind === "remote" && !sandboxTargetHasProcessSessionBridge(target) && !managedSsh) {
     if (target.transport === "sandbox") {
       return "Claude ACP requires a bidirectional remote process target; this sandbox exposes only one-shot command execution.";
     }
-    return "Claude ACP supports sandbox remote targets only; this run targets a non-sandbox remote environment.";
+    return "Claude ACP requires an agent-managed SSH account; host authentication is supported by the CLI engine.";
   }
   if (!nodeVersionMeetsClaudeAcpMinimum()) {
     return `Node ${process.version} (${process.execPath}) does not satisfy Claude ACP's Node >=${MIN_ACP_NODE_VERSION} prerequisite.`;
@@ -1006,24 +1012,30 @@ export async function testClaudeAcpEnvironment(
       probeEnv.CLAUDE_CONFIG_DIR = hostConfigDir.trim();
     }
     const runId = `claude-acp-envtest-${Date.now()}-${Math.random().toString(16).slice(2)}`;
-    checks.push(
-      ...(await prepareSandboxClaudeProbeRuntime({
-      managedAiConnection: Boolean(config.managedAiConnection),
-        runId,
-        target,
-        cwd,
-        companyId: ctx.companyId,
-        env: probeEnv,
-        installCommand: SANDBOX_INSTALL_COMMAND,
-        detectCommand: "claude",
-        targetIsRemote,
-        targetIsSandbox,
-        helloProbeTimeoutSec: asNumber(config.helloProbeTimeoutSec, targetIsSandbox ? 90 : 45),
-      })),
-    );
-    const canProbe = !checks.some((check) => check.code === "claude_managed_config_dir_failed");
-    if (canProbe) {
-      checks.push(...(await probeClaudeAcpSandboxLogin({ config, target, env: probeEnv })));
+    let cleanupManagedProbe: (() => Promise<void>) | undefined;
+    try {
+      checks.push(
+        ...(await prepareSandboxClaudeProbeRuntime({
+          registerCleanup: (cleanup) => { cleanupManagedProbe = cleanup; },
+          managedAiConnection: Boolean(config.managedAiConnection),
+          runId,
+          target,
+          cwd,
+          companyId: ctx.companyId,
+          env: probeEnv,
+          installCommand: SANDBOX_INSTALL_COMMAND,
+          detectCommand: "claude",
+          targetIsRemote,
+          targetIsSandbox,
+          helloProbeTimeoutSec: asNumber(config.helloProbeTimeoutSec, targetIsSandbox ? 90 : 45),
+        })),
+      );
+      const canProbe = !checks.some((check) => check.code === "claude_managed_config_dir_failed");
+      if (canProbe) {
+        checks.push(...(await probeClaudeAcpSandboxLogin({ config, target, env: probeEnv })));
+      }
+    } finally {
+      await cleanupManagedProbe?.();
     }
   }
 

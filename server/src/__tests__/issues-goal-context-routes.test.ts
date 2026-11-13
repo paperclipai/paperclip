@@ -109,6 +109,7 @@ const mockDb = vi.hoisted(() => ({
 vi.mock("../services/task-interruption-presentation.js", () => ({
   taskInterruptionPresentation: vi.fn(async () => null),
   taskInterruptionPresentations: vi.fn(async () => new Map()),
+  taskRetryRefusal: vi.fn(async () => null),
 }));
 
 vi.mock("../services/index.js", () => ({
