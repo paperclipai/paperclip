@@ -69627,7 +69627,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
   });
 
   it.each(["slack", "telegram"] as const)(
-    "keeps a %s retry's queue, working, and selected final on its own provider identity",
+    "keeps a %s retry's queue and working progress on its own provider identity and delivers its selected final",
     async (provider) => {
       const context = await failedChatRetryFixture(provider);
       try {
@@ -69697,12 +69697,24 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
         expect(finalPublication).toMatchObject({
           state: "published",
           attempts: 1,
-          providerMessageId: queued.providerMessageId,
         });
-        expect(context.providerRuntime.posts).toHaveLength(1);
-        expect(context.providerRuntime.edits.at(-1)?.text).toContain(
-          "EXACT-RETRY-ANSWER",
-        );
+        if (provider === "slack") {
+          expect(finalPublication.providerMessageId).not.toBe(
+            queued.providerMessageId,
+          );
+          expect(context.providerRuntime.posts).toHaveLength(2);
+          expect(context.providerRuntime.posts.at(-1)?.text).toContain(
+            "EXACT-RETRY-ANSWER",
+          );
+        } else {
+          expect(finalPublication.providerMessageId).toBe(
+            queued.providerMessageId,
+          );
+          expect(context.providerRuntime.posts).toHaveLength(1);
+          expect(context.providerRuntime.edits.at(-1)?.text).toContain(
+            "EXACT-RETRY-ANSWER",
+          );
+        }
       } finally {
         await context.service.shutdown();
       }
