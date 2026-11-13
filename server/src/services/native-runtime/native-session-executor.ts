@@ -908,6 +908,16 @@ function forgetWarmNativeSession(scope: string, entry: WarmNativeSession) {
   if (warmNativeSessions.get(scope) !== entry) return;
   warmNativeSessions.delete(scope);
   entry.onReleased();
+  releaseIdleSessionToolAuthority(scope);
+}
+
+function releaseIdleSessionToolAuthority(scope: string, runId?: string) {
+  const authority = sessionToolAuthorityEpochs.get(scope);
+  if (!authority || (runId !== undefined && authority.runId !== runId) || warmNativeSessions.has(scope)
+    || executingRunnerdSessionScopes.has(scope) || initializingSessionToolAuthorities.has(scope)
+    || settlingNativeSessionScopes.has(scope)) return;
+  authority.revoke();
+  sessionToolAuthorityEpochs.delete(scope);
 }
 
 const pluginTaskSessionOwners = new WeakMap<NativeSession, ReturnType<typeof createPluginRunnerTaskOwner>>();
@@ -2249,6 +2259,9 @@ export class SessionAuthorityEpoch {
 }
 
 const sessionToolAuthorityEpochs = new Map<string, SessionAuthorityEpoch>();
+export function nativeSessionToolAuthorityCount(): number {
+  return sessionToolAuthorityEpochs.size;
+}
 const sessionHarnessBackupOwners = new WeakMap<SessionAuthorityEpoch, Awaited<ReturnType<typeof nativeHarnessBackupOwner>>>();
 const initializingSessionToolAuthorities = new Set<string>();
 const executingRunnerdSessionScopes = new Map<string, string>();
@@ -10699,6 +10712,7 @@ export async function executePaperclipNativeSession(input: {
       // Always hand the settling mark back, even if a cleanup step throws.
       const settledScope = nativeSessionScopeKey(input.execution);
       if (settlingNativeSessionScopes.get(settledScope) === runId) settlingNativeSessionScopes.delete(settledScope);
+      releaseIdleSessionToolAuthority(settledScope, runId);
     }
   }
 }

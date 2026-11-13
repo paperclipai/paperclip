@@ -512,6 +512,8 @@ import {
   verifyNativeHarnessBackupStreamed,
   shouldRestoreNativeHarnessBackupIntoSandbox,
   remoteProviderStateNeverOpened,
+  nativeSessionToolAuthorityCount,
+  prepareIdleWarmNativeSessionsForSleep,
 } from "./native-session-executor.js";
 import { onNativeRunnerEvidence } from "./native-runner-evidence-signal.js";
 
@@ -23028,5 +23030,90 @@ describe("isTransientRemoteCheckpointReadFailure", () => {
     expect(refusing).toHaveBeenCalledTimes(1);
     let drops = 2;
     await expect(retryTransientRemoteCheckpointRead(async () => { if (drops-- > 0) throw reset(); return "settled"; }, vi.fn(), 0)).resolves.toBe("settled");
+  });
+});
+
+describe("native session tool authority lifetime", () => {
+  const assignedTool = (label: string) => ({ name: `app_lifetime_${label}`, description: `Lifetime ${label}`, inputSchema: { type: "object" } });
+  const assignedTools = (label: string) => {
+    const tool = assignedTool(label);
+    return { definitions: () => [tool], has: (name: string) => name === tool.name,
+      execute: vi.fn(async (_call: unknown) => ({ content: [{ type: "text", text: label }] })) };
+  };
+  const scoped = (mode: "per_turn" | "warm", run: string, scope: string) => ({ ...execution,
+    binding: { ...execution.binding, runId: `authority-${mode}-${run}`, issueId: `authority-issue-${mode}-${scope}` },
+    session: { ...execution.session, normalizedSessionId: `authority-session-${mode}-${scope}`,
+      lifecyclePolicy: mode === "warm" ? { mode: "warm", idleTimeoutMs: 60_000 } : { mode: "per_turn", idleTimeoutMs: null } } } as NativeExecutionInputV1);
+  const run = async (current: NativeExecutionInputV1, tools = assignedTools(current.binding.runId)) => {
+    state.createAssignedMcpTools.mockResolvedValueOnce(tools);
+    state.execute.mockReset().mockImplementationOnce(async options => {
+      await options.onSession?.({ close: async () => {} });
+      return { result: { summary: "done" }, terminal: { runTerminalState: "succeeded" }, turnId: "turn",
+        normalizedSessionId: current.session.normalizedSessionId, providerSessionId: null, driverKind: "test", driverVersion: "1",
+        nativeEventCount: 0, highestContiguousSourceSeq: 0 };
+    });
+    await executePaperclipNativeSession({ db: leaseDb(current), execution: current, runnerInstanceId: "runner", useRunnerd: true,
+      runnerEnvironment: { PAPERCLIP_NATIVE_MCP_NAME: "assigned", PAPERCLIP_NATIVE_MCP_URL: "http://localhost/mcp/gateways/assigned-lifetime",
+        PAPERCLIP_NATIVE_MCP_TOKEN: "lifetime-token" } });
+    return state.createBackend.mock.calls.at(-1)![1];
+  };
+  const call = (tool: string) => ({ tool, callId: `call-${tool}`, arguments: {} }) as never;
+
+  beforeEach(() => {
+    state.toolAuthorityDefinitions.mockImplementation(async binding =>
+      ((binding.assignedMcpTools as ReturnType<typeof assignedTools> | undefined)?.definitions() ?? []) as never);
+    state.toolAuthorityExecute.mockReset().mockImplementation(async (binding: Record<string, unknown>, value: unknown) => {
+      const tools = binding.assignedMcpTools as ReturnType<typeof assignedTools>;
+      const { tool, arguments: args } = value as { tool: string; arguments: unknown };
+      if (!tools.has(tool)) throw new Error("unknown tool");
+      return tools.execute({ tool, arguments: args });
+    });
+  });
+  afterEach(() => {
+    state.toolAuthorityDefinitions.mockImplementation(async () => []);
+    state.toolAuthorityExecute.mockReset();
+  });
+
+  it("releases each finished per-turn session's tool authority", async () => {
+    const baseline = nativeSessionToolAuthorityCount();
+    for (let index = 0; index < 5; index += 1) {
+      await run(scoped("per_turn", `${index}`, `${index}`));
+      expect(nativeSessionToolAuthorityCount()).toBe(baseline);
+    }
+    expect(state.createAssignedMcpTools).toHaveBeenCalledTimes(5);
+  });
+
+  it("denies a released session's late tool calls and admits the next run of that scope with its own assignments", async () => {
+    const first = assignedTools("first"), second = assignedTools("second");
+    const released = await run(scoped("per_turn", "first", "reused"), first);
+    await expect(Promise.resolve().then(() => released.dynamicToolHandler!(call(assignedTool("first").name))))
+      .rejects.toThrow("native_session_tool_authority_unavailable");
+    await expect(released.completionFeedback!({} as never)).rejects.toThrow("native_session_tool_authority_unavailable");
+    expect(first.execute).not.toHaveBeenCalled();
+    const next = scoped("per_turn", "second", "reused");
+    state.createAssignedMcpTools.mockResolvedValueOnce(second);
+    const directory = await mkdtemp(join(tmpdir(), "native-authority-readmission-"));
+    vi.stubEnv("PAPERCLIP_RUNNER_STATE_DIR", directory);
+    try {
+      await createRunnerdBackend({ db: leaseDb(next), execution: next, runnerInstanceId: "runner",
+        runnerEnvironment: { PAPERCLIP_NATIVE_MCP_NAME: "assigned", PAPERCLIP_NATIVE_MCP_URL: "http://localhost/mcp/gateways/assigned-lifetime",
+          PAPERCLIP_NATIVE_MCP_TOKEN: "lifetime-token" } });
+    } finally {
+      vi.unstubAllEnvs();
+      await rm(directory, { recursive: true, force: true });
+    }
+    const admitted = state.createBackend.mock.calls.at(-1)![1];
+    await expect(admitted.dynamicToolHandler!(call(assignedTool("second").name))).resolves.toEqual({ content: [{ type: "text", text: "second" }] });
+    await expect(admitted.dynamicToolHandler!(call(assignedTool("first").name))).rejects.toThrow("unknown tool");
+    expect(first.execute).not.toHaveBeenCalled();
+    expect(state.createAssignedMcpTools).toHaveBeenCalledTimes(2);
+  });
+
+  it("keeps a warm session's tool authority until that session closes", async () => {
+    const baseline = nativeSessionToolAuthorityCount();
+    for (let index = 0; index < 3; index += 1) await run(scoped("warm", `${index}`, `${index}`));
+    expect(nativeSessionToolAuthorityCount()).toBe(baseline + 3);
+    await prepareIdleWarmNativeSessionsForSleep({ canRetire: () => true });
+    expect(nativeSessionToolAuthorityCount()).toBe(baseline);
   });
 });
