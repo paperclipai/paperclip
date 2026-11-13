@@ -6,11 +6,14 @@ import { createUsageCheckpointLog } from "@paperclipai/adapter-utils/usage-check
 import { createHash } from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
+import os from "node:os";
 import { fileURLToPath } from "node:url";
 import { inferOpenAiCompatibleBiller, resolveManagedOpenAiBilling, type AdapterExecutionContext, type AdapterExecutionResult } from "@paperclipai/adapter-utils";
 import { buildCodexAuthInboundProvision } from "./codex-auth-merge-scripts.js";
 import { copyBackCodexAuth } from "./codex-auth-copyback.js";
 import { prepareCodexSshSessionState } from "./ssh-session-state.js";
+import { readCodexSshHostHome, buildCodexSshHostRuntimeInstall } from "./ssh-host-runtime.js";
+import { shellQuote } from "@paperclipai/adapter-utils/ssh";
 import {
   ensureCodexAuthCacheEntryDir,
   isCodexAuthCacheEnabled,
@@ -648,7 +651,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const executionTargetIsRemote = adapterExecutionTargetIsRemote(executionTarget);
   const useSshHostAuth = executionTarget?.kind === "remote" && executionTarget.transport === "ssh" && executionTarget.spec.useHostAuth === true;
   let configuredCodexHome =
-    typeof envConfig.CODEX_HOME === "string" && envConfig.CODEX_HOME.trim().length > 0
+    !useSshHostAuth && typeof envConfig.CODEX_HOME === "string" && envConfig.CODEX_HOME.trim().length > 0
       ? path.resolve(envConfig.CODEX_HOME.trim())
       : null;
   const configuredOpenAiApiKey =
@@ -670,10 +673,10 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         .map(entry => [entry.key, entry.source]).sort((a, b) => JSON.stringify(a).localeCompare(JSON.stringify(b))),
     })).digest("hex")
     : connectorSkillDigest;
-  const runtimeCredentialHome = runtimeSkillDigest
+  const runtimeCredentialHome = runtimeSkillDigest && !useSshHostAuth
     ? skillSourceHome ?? await prepareManagedCodexHome(process.env, onLog, agent.companyId, { apiKey: configuredOpenAiApiKey })
     : null;
-  if (runtimeSkillDigest) {
+  if (runtimeSkillDigest && !useSshHostAuth) {
     const credentialHome = runtimeCredentialHome!;
     const credentialBytes = await fs.readFile(path.join(credentialHome, "auth.json")).catch(() => null);
     const selectedConfig = await fs.readFile(path.join(credentialHome, "config.toml")).catch(() => null);
@@ -778,20 +781,36 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   );
   const preparedRuntimeConfig = await prepareCodexRuntimeConfig({
     env: envConfigStrings,
-    codexHome: configuredCodexHome && !runtimeSkillDigest ? null : effectiveCodexHome,
+    codexHome: useSshHostAuth || (configuredCodexHome && !runtimeSkillDigest) ? null : effectiveCodexHome,
   });
   // Curated allowlist dir staged for the remote `home` asset (see below). Held
   // here so the outer `finally` can remove it on every exit path (teardown and
   // error), never only the happy path.
   let stagedCodexHomeDir: string | null = null;
+  let sshHostHome: Awaited<ReturnType<typeof readCodexSshHostHome>> | null = null;
+  let sshHostProfilePath: string | null = null;
   let sshSessionState: Awaited<ReturnType<typeof prepareCodexSshSessionState>> | null = null;
   let observabilityProfile: Awaited<ReturnType<typeof prepareCodexObservabilityProfile>> | null = null;
   let observabilityPreparationFailed = false;
   try {
+    if (useSshHostAuth) {
+      stagedCodexHomeDir = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-codex-host-runtime-"));
+      sshHostHome = await readCodexSshHostHome({
+        configuredHome: asString(envConfig.CODEX_HOME, "") || undefined,
+        run: async command => {
+          const result = await runAdapterExecutionTargetShellCommand(runId, executionTarget, command, { cwd: "/", env: {}, timeoutSec: 15 });
+          if (result.exitCode !== 0 || result.timedOut) throw new Error("Cannot read remote Codex configuration");
+          return result;
+        },
+      });
+      await fs.writeFile(path.join(stagedCodexHomeDir, "config.toml"), sshHostHome.config, { mode: 0o600 });
+      await fs.writeFile(path.join(stagedCodexHomeDir, ".paperclip-native-config-before"), sshHostHome.config, { mode: 0o600 });
+    }
+    const runtimeConfigurationHome = stagedCodexHomeDir ?? effectiveCodexHome;
     if (ctx.observability) {
-      if (isManagedCodexHomePath(process.env, agent.companyId, effectiveCodexHome)) {
+      if (useSshHostAuth || isManagedCodexHomePath(process.env, agent.companyId, effectiveCodexHome)) {
         try {
-          observabilityProfile = await prepareCodexObservabilityProfile({ home: effectiveCodexHome, runId,
+          observabilityProfile = await prepareCodexObservabilityProfile({ home: runtimeConfigurationHome, runId,
             launch: ctx.observability, sourceProfile: selectedCodexProfile(buildCodexExecArgs(config).args) });
         } catch {
           observabilityPreparationFailed = true;
@@ -813,7 +832,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       managedMcpGatewaysFromContext(context),
     );
     const managedMcp = await writeManagedCodexMcpConfig({
-      codexHome: effectiveCodexHome,
+      codexHome: runtimeConfigurationHome,
       apiBaseUrl: paperclipBaseEnv.PAPERCLIP_API_URL,
       gateways: managedMcpGateways,
     });
@@ -828,7 +847,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     }
     // Inject skills into the same CODEX_HOME that Codex will actually run with
     // (managed home in the default case, or an explicit override from adapter config).
-    const codexSkillsDir = resolveCodexSkillsDir(effectiveCodexHome);
+    const codexSkillsDir = resolveCodexSkillsDir(runtimeConfigurationHome);
     await ensureCodexSkillsInjected(
       onLog,
       {
@@ -860,11 +879,11 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
           // large runtime state (`sessions/`, `*.sqlite`, `plugins/`, …) that the
           // 4-name denylist missed and that a sandbox run never needs.
           if (!useSshHostAuth) stagedCodexHomeDir = await stageCodexHomeForSync(effectiveCodexHome, { runId, additionalFiles: observabilityProfile ? [observabilityProfile.filename] : [] });
-          return await prepareAdapterExecutionTargetRuntime({
+          const prepared = await prepareAdapterExecutionTargetRuntime({
             privateRuntime: Boolean(config.managedAiConnection),
             runId,
             target: executionTarget,
-            adapterKey: "codex",
+            adapterKey: useSshHostAuth ? `codex-host-${createHash("sha256").update(runId).digest("hex")}` : "codex",
             timeoutSec,
             workspaceLocalDir: cwd,
             workspaceRemoteDir:
@@ -886,7 +905,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
                 // that already carries a Codex `auth.json` keeps whichever
                 // credential is newer. The sandbox runtime core stays adapter-
                 // agnostic — it just invokes this generic `provision` seam.
-                provision: buildCodexAuthInboundProvision(),
+                provision: useSshHostAuth ? undefined : buildCodexAuthInboundProvision(),
                 // Outbound (sandbox→host) auth copy-back contribution: at
                 // teardown, read the sandbox's `auth.json` and — guarded by the
                 // same direction-agnostic decision predicate under a directory
@@ -896,7 +915,11 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
                 // generic `restore` seam per asset before destroying the sandbox.
                 // Target is the shared symlink SOURCE (what managed homes point
                 // `auth.json` at), not the in-sandbox symlink.
-                restore: async ({ assetDir, readFile }) => {
+                restore: useSshHostAuth ? async ({ assetDir }) => {
+                  const result = await runAdapterExecutionTargetShellCommand(runId, executionTarget,
+                    `rm -rf -- ${shellQuote(assetDir)}${sshHostProfilePath ? ` && rm -f -- ${shellQuote(sshHostProfilePath)}` : ""}`, { cwd: "/", env: {}, timeoutSec: 15 });
+                  if (result.exitCode !== 0 || result.timedOut) throw new Error("Cannot remove remote Codex runtime files");
+                } : async ({ assetDir, readFile }) => {
                   try { await copyBackCodexAuth({
                     readSandboxAuth: () => readFile(path.posix.join(sshSessionState?.home ?? assetDir, "auth.json")),
                     hostAuthPath: path.join(config.managedAiConnection ? effectiveCodexHome : resolveSharedCodexHomeDir(process.env), "auth.json"),
@@ -917,6 +940,20 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
               },
             ] : [],
           });
+          try {
+            if (sshHostHome) {
+              const result = await runAdapterExecutionTargetShellCommand(runId, executionTarget,
+                buildCodexSshHostRuntimeInstall({ ...sshHostHome, assetDir: prepared.assetDirs.home!, profileFilename: observabilityProfile?.filename }),
+                { cwd: "/", env: {}, timeoutSec: 15 });
+              if (result.exitCode !== 0 || result.timedOut) throw new Error("Cannot install remote Codex runtime configuration");
+              sshHostProfilePath = observabilityProfile ? path.posix.join(sshHostHome.home, observabilityProfile.filename) : null;
+            }
+          } catch (error) {
+            try { await prepared.restoreWorkspace(line => onLog("stdout", line)); }
+            catch (cleanup) { throw new AggregateError([error, cleanup], "Codex SSH setup and cleanup failed"); }
+            throw error;
+          }
+          return prepared;
         })()
       : null;
     if (preparedExecutionTargetRuntime?.workspaceRemoteDir) {
@@ -1038,8 +1075,8 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       }
       if (executionTarget?.kind === "remote" && executionTarget.transport === "ssh" && executionTarget.spec.useHostAuth === false && config.managedAiConnection && preparedExecutionTargetRuntime?.runtimeRootDir) Object.assign(env, managedRemoteHomeEnvironment(preparedExecutionTargetRuntime.runtimeRootDir));
       if (useSshHostAuth) {
-        if (typeof envConfig.CODEX_HOME === "string" && envConfig.CODEX_HOME.trim()) env.CODEX_HOME = envConfig.CODEX_HOME;
-        else delete env.CODEX_HOME;
+        if (!sshHostHome) throw new Error("Remote Codex home was not resolved");
+        env.CODEX_HOME = sshHostHome.home;
       } else env.CODEX_HOME = remoteCodexHome ?? effectiveCodexHome;
       if (ctx.observability && (observabilityProfile || observabilityPreparationFailed)) applyObservabilityEnvironment(env, ctx.observability);
       if (authToken) {

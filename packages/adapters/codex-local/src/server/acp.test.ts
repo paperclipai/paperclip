@@ -87,6 +87,7 @@ const originalPaperclipHome = process.env.PAPERCLIP_HOME;
 const originalPaperclipInstanceId = process.env.PAPERCLIP_INSTANCE_ID;
 const originalCodexHome = process.env.CODEX_HOME;
 const originalOpenAiApiKey = process.env.OPENAI_API_KEY;
+const originalCodexApiKey = process.env.CODEX_API_KEY;
 
 // Older/newer ISO timestamps for the copy-back monotonic (strictly-newer)
 // decision predicate, plus a subscription-shaped auth.json fixture matching the
@@ -139,6 +140,8 @@ afterEach(async () => {
   else process.env.CODEX_HOME = originalCodexHome;
   if (originalOpenAiApiKey === undefined) delete process.env.OPENAI_API_KEY;
   else process.env.OPENAI_API_KEY = originalOpenAiApiKey;
+  if (originalCodexApiKey === undefined) delete process.env.CODEX_API_KEY;
+  else process.env.CODEX_API_KEY = originalCodexApiKey;
   await Promise.all(tempRoots.splice(0).map((root) => fs.rm(root, { recursive: true, force: true })));
 });
 
@@ -1233,7 +1236,7 @@ describe("codex_local ACP lane", () => {
     await Promise.all(stagedDirs.map((dir) => fs.rm(dir, { recursive: true, force: true })));
   });
 
-  it("copies refreshed Codex auth to the current run home when a staged home is rebound", async () => {
+  it.each(["none", "OPENAI_API_KEY", "CODEX_API_KEY"])("copies selected subscription refreshes to the current home with controller key %s", async controllerKey => {
     const root = await makeTempRoot("paperclip-codex-acp-rebind-");
     const localCwd = path.join(root, "workspace");
     const remoteCwd = path.join(root, "remote");
@@ -1243,6 +1246,8 @@ describe("codex_local ACP lane", () => {
     const originalAuth = subscriptionAuthJson("acct-same", OLDER_REFRESH, "original");
     for (const home of [firstHome, nextHome]) await fs.writeFile(path.join(home, "auth.json"), originalAuth, { mode: 0o600 });
     process.env.OPENAI_API_KEY = "";
+    process.env.CODEX_API_KEY = "";
+    if (controllerKey !== "none") process.env[controllerKey] = "fixture-unselected-controller-key";
     const stagedRuntimes = new Map();
     const execute = createCodexAcpExecutor({
       createRuntime: options => new FakeRuntime(options) as never,

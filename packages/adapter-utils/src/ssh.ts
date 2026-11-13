@@ -26,7 +26,7 @@ import {
   type RuntimeProgressSink,
 } from "./runtime-progress.js";
 
-const SSH_STDIN_COMMAND = "IFS= read -r paperclip_ssh_command_b64 || exit 125; paperclip_ssh_command=$(printf '%s' \"$paperclip_ssh_command_b64\" | base64 --decode) || exit 125; unset paperclip_ssh_command_b64; eval \"$paperclip_ssh_command\"";
+const SSH_STDIN_COMMAND = "IFS= read -r paperclip_ssh_command_b64 || exit 125; paperclip_ssh_command=$(printf '%s' \"$paperclip_ssh_command_b64\" | base64 -d) || exit 125; unset paperclip_ssh_command_b64; eval \"$paperclip_ssh_command\"";
 
 export interface SshConnectionConfig {
   useHostAuth?: boolean;

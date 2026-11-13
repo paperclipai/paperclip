@@ -195,7 +195,7 @@ async function prepareCodexRemoteManagedHome(
   // sandbox auth out of the shared subscription copy-back path altogether.
   const apiKeyAuth = Boolean(
     env.OPENAI_API_KEY?.trim() || env.CODEX_API_KEY?.trim()
-    || process.env.OPENAI_API_KEY?.trim() || process.env.CODEX_API_KEY?.trim(),
+    || (!input.config.managedAiConnection && (process.env.OPENAI_API_KEY?.trim() || process.env.CODEX_API_KEY?.trim())),
   );
   // Curated allowlist temp dir (auth/config/skills only); caller owns cleanup.
   const stagedCodexHomeDir = await stageCodexHomeForSync(effectiveCodexHome, { runId });
