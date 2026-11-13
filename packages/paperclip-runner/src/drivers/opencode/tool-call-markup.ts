@@ -29,7 +29,7 @@ function firstSentinel(line: string): number {
 }
 
 function fenceOf(line: string): { char: string; length: number; rest: string } | null {
-  const match = /^ {0,3}(`{3,}|~{3,})(.*)$/.exec(line);
+  const match = /^[ \t]*(`{3,}|~{3,})(.*)$/.exec(line);
   return match ? { char: match[1]![0]!, length: match[1]!.length, rest: match[2]! } : null;
 }
 
