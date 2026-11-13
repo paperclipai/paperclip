@@ -1324,7 +1324,7 @@ export function heartbeatService(
         readNonEmptyString(agent.adapterConfig.externalBindingId) ?? "");
     },
     applyWakeQueuePostCommitEffects,
-    setRunStatus,
+    setRunStatusFromLive,
     setWakeupStatus,
     appendRunEvent,
     releaseIssueExecutionAndPromote,

@@ -83,9 +83,32 @@ export function readCurrentRevision(reads: Record<string, string> | undefined, c
   const read = Date.parse(String(reads?.[comment.id] ?? "")), current = Date.parse(String(comment.updatedAt ?? ""));
   return Number.isFinite(read) && Number.isFinite(current) && read >= current;
 }
+export function resultCitedCommentIds(events: ReadonlyArray<{ eventType?: unknown; payload?: unknown }>) {
+  const cited = new Set<string>();
+  for (const row of events) {
+    if (row.eventType !== "run.result.accepted") continue;
+    const result = (row.payload as { prpEvent?: { payload?: { result?: { evidence?: unknown; completionClaim?: { criteria?: unknown } } } } } | null | undefined)?.prpEvent?.payload?.result;
+    const refs = [...(Array.isArray(result?.evidence) ? result.evidence.map(entry => (entry as { ref?: unknown } | null)?.ref) : []),
+      ...(Array.isArray(result?.completionClaim?.criteria) ? result.completionClaim.criteria.flatMap(entry => (entry as { evidenceRefs?: unknown } | null)?.evidenceRefs ?? []) : [])];
+    for (const ref of refs) {
+      const match = typeof ref === "string" ? /^comment:([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})/.exec(ref) : null;
+      if (match) cited.add(match[1]!);
+    }
+  }
+  return [...cited];
+}
 export async function runHistoryReads(ctx: ChatCatalogContext, runId: string) {
+  return (await runCommentReceipts(ctx, runId)).reads;
+}
+export async function runCommentReceipts(ctx: ChatCatalogContext, runId: string) {
   const events = await collectRunEvents<{ seq?: number; eventType?: unknown; payload?: unknown }>((afterSeq, limit) => ctx.input.api.get(`/api/heartbeat-runs/${runId}/events?afterSeq=${afterSeq}&limit=${limit}`));
-  return historyReadRevisions(events);
+  return { reads: historyReadRevisions(events), cited: resultCitedCommentIds(events) };
+}
+export function handledInTurn(receipts: { reads?: Record<string, string>; cited?: string[] } | undefined, comment: { id: string; updatedAt?: unknown } | undefined) {
+  return !!comment && readCurrentRevision(receipts?.reads, comment) && !!receipts?.cited?.includes(comment.id);
+}
+export function wakeMarksEarlierRead(context: { paperclipWake?: { comments?: Array<{ id?: string; readByEarlierTurn?: boolean }> } } | undefined, commentId: string) {
+  return context?.paperclipWake?.comments?.some(row => row.id === commentId && row.readByEarlierTurn === true) === true;
 }
 export function settledQueue<T>(accept: (value: T) => boolean, quietMs: number) {
   let since: number | undefined;
