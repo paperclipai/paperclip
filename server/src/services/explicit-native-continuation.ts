@@ -23,8 +23,8 @@ import { hasRecoveredCleanupStopReceipt, hasRemoteTerminationReceipt, remoteLeas
 import { z } from "zod";
 import { and, desc, eq, gt, inArray, isNull, ne, not, or, sql, type SQL } from "drizzle-orm";
 import {
-  activityLog, agents, agentWakeupRequests, approvals, issueApprovals, issueThreadInteractions,
-  environmentLeases, heartbeatRuns, issueComments, issueRecoveryActions, issueRelations,
+  agents, agentWakeupRequests, approvals, issueApprovals, issueThreadInteractions,
+  environmentLeases, heartbeatRuns, issueComments, issueRecoveryActions,
   issues, nativeRunFinalizations, nativeRunResults, type Db,
 } from "@paperclipai/db";
 import { executionBlockerPredicate, getExecutionBlocker, hasPendingRunCleanup, nativeExecutionRecoveryActionPredicate, restoreHoldReleasedForCurrentOwnerPredicate } from "./execution-blocker.js";
@@ -39,7 +39,7 @@ import { firstTurnDeliveredCommentIds, historyReadDeliveredCommentIds } from "./
 import { canResumePreservedResultFinalization } from "./preserved-result-finalization.js";
 import { isServerReplacementInterruption } from "./server-replacement-interruption.js";
 import { normalizeAgentNameKey } from "./agent-name-key.js";
-import { holdOwnsBlockedStatus } from "./recovery-hold-blocked-status.js";
+import { liftInterruptionBlock } from "./interruption-block-release.js";
 
 type Run = Pick<typeof heartbeatRuns.$inferSelect,
   "id" | "companyId" | "agentId" | "status" | "startedAt" | "finishedAt" | "createdAt" |
@@ -758,41 +758,6 @@ export async function admitExplicitNativeContinuation(input: {
   }
   await liftInterruptionBlock(db, task, actions, sources, input.successorRunId);
   return continuation;
-}
-
-async function liftInterruptionBlock(db: Db, task: typeof issues.$inferSelect,
-  actions: Array<typeof issueRecoveryActions.$inferSelect>, sources: Run[], successorRunId: string) {
-  if (task.status !== "blocked" || task.unblockDescriptor) return;
-  const sourceFor = (action: typeof issueRecoveryActions.$inferSelect) =>
-    sources.find(run => run.id === String(action.evidence.runId ?? action.evidence.sourceRunId));
-  const blockedAt = task.blockedTransitionAt?.getTime();
-  const receiptless = actions.every(action =>
-    action.evidence.workspaceFinalizationBlock === undefined && action.evidence.nativeFailureBlock === undefined);
-  const owned = actions.some(action => { const run = sourceFor(action); return run && holdOwnsBlockedStatus(action, task, run); })
-    || (receiptless && task.lastStatusDecisionId === null && blockedAt !== undefined
-      && sources.some(run => run.finishedAt !== null && blockedAt >= run.finishedAt.getTime() - 1_000));
-  if (!owned) return;
-  const [blockEntry] = blockedAt === undefined ? [] : await db.select({ actorType: activityLog.actorType }).from(activityLog).where(and(
-    eq(activityLog.companyId, task.companyId), eq(activityLog.entityType, "issue"), eq(activityLog.entityId, task.id),
-    sql`${activityLog.createdAt} between ${new Date(blockedAt - 10_000).toISOString()}::timestamptz
-      and ${new Date(blockedAt + 10_000).toISOString()}::timestamptz`,
-    sql`(${activityLog.details}->>'status' = 'blocked' or ${activityLog.details}->>'toStatus' = 'blocked'
-      or ${activityLog.details}->'changes'->'status'->>'to' = 'blocked')`,
-  )).orderBy(desc(activityLog.createdAt)).limit(1);
-  if (blockEntry?.actorType === "user") return;
-  const [openBlocker] = await db.select({ id: issueRelations.id }).from(issueRelations)
-    .innerJoin(issues, and(eq(issues.id, issueRelations.issueId), eq(issues.companyId, issueRelations.companyId)))
-    .where(and(eq(issueRelations.companyId, task.companyId), eq(issueRelations.relatedIssueId, task.id),
-      eq(issueRelations.type, "blocks"), sql`${issues.status} not in ('done', 'cancelled')`)).limit(1);
-  if (openBlocker) return;
-  const lifted = await db.update(issues).set({ status: "todo", blockedTransitionAt: null, blockedOwnerNotifiedAt: null,
-    updatedAt: new Date() }).where(and(eq(issues.companyId, task.companyId), eq(issues.id, task.id),
-    eq(issues.status, "blocked"), eq(issues.statusVersion, task.statusVersion))).returning({ id: issues.id });
-  if (!lifted.length) return;
-  await persistActivity(db, { companyId: task.companyId, actorType: "system", actorId: "task-recovery",
-    action: "issue.updated", entityType: "issue", entityId: task.id,
-    details: { status: "todo", previousStatus: "blocked", reason: "continuation_queued", successorRunId,
-      _previous: { status: "blocked" } } });
 }
 
 type ContinuationRetryAuthority = {

@@ -30,6 +30,7 @@ import { taskInterruptionPresentations } from "../task-interruption-presentation
 import { CHAT_CONTROL_RECOVERY_STOP_CODE, CHAT_CONTROL_RECOVERY_UNRESOLVED_CODE } from "../chat-control-recovery-stop.js";
 import { onboardingFirstTaskAwaitingUserSql } from "./onboarding-first-task-wait.js";
 import { PENDING_CONTINUATION_BOUND_MS } from "../recovery-continuation-pacing.js";
+import { attributeBlock, BLOCK_ATTRIBUTION_WINDOW_MS, blockedStatusDetailsSql } from "../interruption-block-release.js";
 import { STRANDED_CONTINUATION_MAX_AGE_MS, STRANDED_KIND, strandedHoldContinuesAutomatically, type StrandedHoldRun } from "./stranded-hold-continuation.js";
 import {
   continuationActivityMessage,
@@ -65,7 +66,6 @@ export { PENDING_CONTINUATION_BOUND_MS };
 const NON_TERMINAL_RUN_STATUSES = ["queued", "running", "scheduled_retry"];
 const NATIVE_PENDING_RECOVERY_STATES = ["awaiting_evidence", "awaiting_runner_reattach", "resuming_session", "bootstrap_incomplete"];
 const PROVIDER_LIMIT_CAUSES = ["provider_quota", "native_provider_usage_limit"];
-const BLOCK_ATTRIBUTION_WINDOW_MS = 10_000;
 
 type IssueRow = Pick<typeof issues.$inferSelect, "id" | "companyId" | "status" | "assigneeAgentId" | "assigneeUserId" | "hiddenAt"
   | "blockedTransitionAt" | "updatedAt" | "unblockDescriptor" | "monitorNextCheckAt" | "conversationAgentId" | "originKind"
@@ -269,8 +269,7 @@ export function assignedWorkSweep(db: Db, deps: AssignedWorkDeps) {
           where a.company_id = ${companyId} and a.entity_type = 'issue' and a.entity_id = requested.id
             and a.created_at between requested.blocked_at - make_interval(secs => ${BLOCK_ATTRIBUTION_WINDOW_MS / 1000})
               and requested.blocked_at + make_interval(secs => ${BLOCK_ATTRIBUTION_WINDOW_MS / 1000})
-            and (a.details->>'status' = 'blocked' or a.details->>'toStatus' = 'blocked'
-              or a.details->'changes'->'status'->>'to' = 'blocked')
+            and ${blockedStatusDetailsSql(sql`a.details`)}
           order by a.created_at desc limit 1
         ) latest`) : [],
       taskInterruptionPresentations(database, companyId, issueRows.map(issue => ({ id: issue.id, companyId: issue.companyId,
@@ -753,20 +752,6 @@ export function assignedWorkSweep(db: Db, deps: AssignedWorkDeps) {
   }
 
   return { checkIssue, listSuspects, report, loadFacts, flushPassLog: passLog.flush };
-}
-
-/** Who moved a task to `blocked`, from the activity entry written with it. */
-export function attributeBlock(entry: { actorType: string; actorId: string; agentId: string | null; details: unknown } | undefined,
-  assigneeAgentId: string | null): "user" | "assignee" | "system" | "unknown" {
-  if (!entry) return "unknown";
-  const details = json(entry.details);
-  if (entry.actorType === "user") return "user";
-  if (entry.actorType === "agent") return entry.agentId && entry.agentId === assigneeAgentId ? "assignee" : "system";
-  // The agent's own turn decided to block (committed by the native status
-  // decision), except when the decision only bound a dependency.
-  if (entry.actorId === "native-status-committer" && details.source === "native_status_decision"
-    && details.reasonCode !== "durable_dependency_blocker_bound") return "assignee";
-  return "system";
 }
 
 /** A pending interaction no explicit user continuation (Retry or message)
