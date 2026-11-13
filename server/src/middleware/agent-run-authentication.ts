@@ -2,7 +2,6 @@ import { and, eq, sql } from "drizzle-orm";
 import { heartbeatRuns, type Db } from "@paperclipai/db";
 import { requestRunIdentityFields } from "../services/run-identity.js";
 
-/** The run's revocation fields and its current identity, in one statement per request. */
 export function loadAgentRunAuthentication(db: Db, input: {
   runId: string;
   companyId: string;

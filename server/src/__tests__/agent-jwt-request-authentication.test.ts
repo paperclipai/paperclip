@@ -57,7 +57,6 @@ const support = await getEmbeddedPostgresTestSupport();
     await db.insert(companies).values({ id: companyId, name: "Request authentication", issuePrefix: companyId.slice(0, 8) });
     await addUser(companyId, owner);
     await addUser(companyId, next);
-    // Large saved configuration the middleware never needs.
     await db.insert(agents).values({ id: agentId, companyId, name: "Worker", role: "engineer", adapterType: "codex_local",
       status: "running", adapterConfig: { instructions: "saved ".repeat(20_000) } });
     await db.insert(issues).values({ id: issueId, companyId, title: "Request authentication task", responsibleUserId: owner });
@@ -94,7 +93,6 @@ const support = await getEmbeddedPostgresTestSupport();
     const statements = after.statements - before.statements;
     expect({ statements, transactions: after.transactions - before.transactions, waits: after.waits - before.waits },
       log.map(entry => entry.sql).join("\n---\n")).toEqual({ statements: 3, transactions: 0, waits: 3 });
-    // The agent configuration stays in the database.
     expect(after.bytesReceived - before.bytesReceived).toBeLessThan(8_192);
   });
 
@@ -131,8 +129,7 @@ const support = await getEmbeddedPostgresTestSupport();
     let release!: () => void;
     const released = new Promise<void>(resolve => { release = resolve; });
     let ready!: () => void;
-    const holding = new Promise<void>(resolve => { ready = resolve; });
-    // Steering takes the task row lock, then the run row lock, and keeps both until it commits.
+    const locked = new Promise<void>(resolve => { ready = resolve; });
     const done = db.transaction(async tx => {
       await tx.select({ id: issues.id }).from(issues).where(eq(issues.id, f.issueId)).for("no key update");
       await tx.select({ id: heartbeatRuns.id }).from(heartbeatRuns).where(eq(heartbeatRuns.id, f.runId)).for("no key update");
@@ -140,6 +137,7 @@ const support = await getEmbeddedPostgresTestSupport();
       ready();
       await released;
     });
+    const holding = Promise.race([locked, done.then(() => undefined)]);
     return { holding, release, done };
   }
 
@@ -164,8 +162,6 @@ const support = await getEmbeddedPostgresTestSupport();
     });
     await writer.holding;
     try {
-      // The uncommitted reservation is invisible to the one statement: the
-      // request is ordered before it and keeps the committed identity.
       const during = await settledWithin(get(f), 3_000);
       expect(during).not.toBe("pending");
       expect((during as request.Response).status).toBe(200);
@@ -174,7 +170,6 @@ const support = await getEmbeddedPostgresTestSupport();
       writer.release();
       await writer.done;
     }
-    // Once committed, the pending context sends the request to the locked capture.
     expect((await get(f)).status).toBe(409);
     await acknowledge(f, messageId);
     expect((await get(f)).body).toMatchObject({ identityContextId: pendingId, onBehalfOfUserId: f.next });
@@ -188,8 +183,6 @@ const support = await getEmbeddedPostgresTestSupport();
     const pending = (await reserveSteeredIdentity(db, { ...f, messageId }))!;
     const writer = holdOpen(f, tx => acceptSteeredIdentity(tx as never, pending));
     await writer.holding;
-    // The committed pending context sends the request to the locked capture,
-    // which waits for the acceptance like before.
     const response = get(f).then(result => result);
     try {
       expect(await settledWithin(response, 500)).toBe("pending");
@@ -203,17 +196,13 @@ const support = await getEmbeddedPostgresTestSupport();
   it("keeps the identity of the run the token names, in the company and for the agent it names", async () => {
     const f = await seed();
     const other = await seed();
-    // A token for an agent signed for another company fails before any run read.
     const crossCompany = createLocalAgentJwt(other.agentId, f.companyId, "codex_local", other.runId, f.owner)!;
     expect((await get(f, crossCompany)).status).toBe(401);
-    // A token that names another agent's run gets none of that run's identity.
     const foreignRun = createLocalAgentJwt(f.agentId, f.companyId, "codex_local", other.runId, null)!;
     const foreign = await get(f, foreignRun);
     expect(foreign.status).toBe(200);
     expect(foreign.body).toMatchObject({ runId: other.runId, identityContextId: null, onBehalfOfUserId: null,
       onBehalfOfMemberships: [] });
-    // A context of another run never becomes the current identity; the
-    // request falls back to the signed claim, as the locked capture did.
     await db.update(heartbeatRuns).set({ activeIdentityContextId: other.identity.id }).where(eq(heartbeatRuns.id, f.runId));
     const mismatched = await get(f);
     expect(mismatched.body).toMatchObject({ identityContextId: null, onBehalfOfUserId: "stale-claim-user" });

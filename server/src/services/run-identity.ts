@@ -77,7 +77,6 @@ export async function explicitOperatorRunIdentity(
 
 export type RunIdentityContext = typeof runIdentityContexts.$inferSelect;
 
-/** Returns the run's bound task id, or refuses a run whose saved task ids are not ids. */
 function assertRunTaskIdentity(run: {
   nativeIssueId?: string | null;
   issueId?: string | null;
@@ -624,17 +623,10 @@ export async function captureRunIdentity<Scope extends RunIdentityReadScope | un
   });
 }
 
-/**
- * Identity columns that request authentication reads in the same statement as
- * the run's revocation fields. One statement reads one snapshot, so the
- * status, the active context and the pending-steering flag always agree.
- */
 export const requestRunIdentityFields = {
   nativeIssueId: heartbeatRuns.nativeIssueId,
   issueId: heartbeatRuns.issueId,
   taskContext: runTaskContextColumn,
-  // Drizzle leaves columns of a one-table select unqualified, so the
-  // correlated subqueries name both tables explicitly.
   pendingIdentityContext: sql<boolean>`exists (select 1 from run_identity_contexts pending_context
     where pending_context.run_id = "heartbeat_runs"."id" and pending_context.status = 'pending')`,
   identityContext: sql<{ id: string; responsibleUserId: string | null } | null>`(select
@@ -652,14 +644,6 @@ type RequestRunIdentityRow = Pick<FullIdentityRun, "status" | "activeIdentityCon
   identityContext?: { id: string; responsibleUserId: string | null } | null;
 };
 
-/**
- * The identity a request acts under, from a row read with
- * `requestRunIdentityFields`. Without pending steering, the row's context is
- * what `captureRunIdentity` returns: it is the committed active context of
- * this run, and its locks end before the route runs, so they order nothing
- * the request does. A pending context must be accepted or refused under the
- * task and run locks, so that case still takes the locked capture.
- */
 export async function resolveRequestRunIdentity(
   db: Db,
   input: { companyId: string; runId: string; agentId: string },

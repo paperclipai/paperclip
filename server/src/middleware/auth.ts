@@ -70,7 +70,6 @@ function invalidAgentTokenMessage(token: string) {
   return "Agent token did not verify; obtain fresh credentials and retry";
 }
 
-/** The agent columns authentication checks; the saved configuration stays in the database. */
 const agentAuthenticationFields = {
   companyId: agents.companyId,
   status: agents.status,
@@ -82,7 +81,6 @@ async function loadResponsibleUserMemberships(
   input: { companyId: string; userId: string | null },
 ) {
   if (!input.userId) return [];
-  // A membership counts only while its user still exists: one statement.
   return db
     .select({
       companyId: companyMemberships.companyId,
@@ -305,10 +303,6 @@ export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHa
       return;
     }
 
-    // Every stored board and agent key is `pcp_` followed by letters, `_` and
-    // hex, so its hash never equals the hash of a three-part signed JWT. A
-    // verified run JWT therefore skips both key lookups without changing the
-    // outcome; any other bearer still tries the keys first.
     const verifiedClaims = verifyLocalAgentJwt(token);
     const boardKey = verifiedClaims ? null : await boardAuth.findBoardApiKeyByToken(token);
     if (boardKey) {
@@ -439,7 +433,6 @@ export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHa
         ? identityRun.responsibleUserId
         : claims.responsible_user_id !== undefined
         ? normalizeOptionalString(claims.responsible_user_id)
-        // The run read above has the same filter as the legacy lookup.
         : isUuidLike(claims.run_id)
         ? normalizeOptionalString(identityRun?.responsibleUserId)
         : null;
