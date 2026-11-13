@@ -37,17 +37,35 @@ import { QueryErrorState, useQueryView } from "../components/QueryView";
 import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { InlineBanner } from "../components/InlineBanner";
-import type { Agent, Issue } from "@paperclipai/shared";
+import type { Agent, CompactIssue, Issue, IssueSummary } from "@paperclipai/shared";
 import { PluginSlotOutlet } from "@/plugins/slots";
 import { SmokeLabDashboardCard } from "../components/SmokeLabDashboardCard";
 import { taskStatusIconProps } from "@/lib/task-status-presentation";
 
 const DASHBOARD_ACTIVITY_LIMIT = 10;
+const DASHBOARD_RECENT_TASK_LIMIT = 10;
 
-function getRecentIssues(issues: Issue[]): Issue[] {
+export function recentTaskIndexRows(issues: readonly CompactIssue[]): CompactIssue[] {
   return [...issues]
-    .sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime());
+    .sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime())
+    .slice(0, DASHBOARD_RECENT_TASK_LIMIT);
 }
+
+export function withTaskSummaries(rows: readonly CompactIssue[], summaries: readonly IssueSummary[] | undefined): Issue[] {
+  const byId = new Map((summaries ?? []).map((summary) => [summary.id, summary]));
+  return rows.map((row) => {
+    const summary = byId.get(row.id);
+    return {
+      ...row,
+      ...(summary ? {
+        displayStatus: summary.displayStatus,
+        externalConversationState: summary.externalConversationState,
+        ...(summary.blockerAttention ? { blockerAttention: summary.blockerAttention } : {}),
+      } : {}),
+    } as Issue;
+  });
+}
+
 
 export type PausedAgentBanner =
   | { kind: "imported"; pausedImportedAgentIds: string[] }
@@ -196,9 +214,16 @@ export function Dashboard() {
   usePublishSharedQueryData(sharedActivity, activity, activityUpdatedAt);
 
   const { data: issues } = useQuery({
-    queryKey: queryKeys.issues.list(selectedCompanyId!),
-    queryFn: () => issuesApi.list(selectedCompanyId!),
+    queryKey: queryKeys.issues.listIndex(selectedCompanyId!),
+    queryFn: ({ signal }) => issuesApi.listCompact(selectedCompanyId!, { projection: "index" }, { signal }),
     enabled: !!selectedCompanyId,
+  });
+  const recentIndexRows = useMemo(() => recentTaskIndexRows(issues ?? []), [issues]);
+  const recentIds = useMemo(() => recentIndexRows.map((issue) => issue.id).sort(), [recentIndexRows]);
+  const { data: recentSummaries } = useQuery({
+    queryKey: queryKeys.issues.recentRows(selectedCompanyId!, recentIds),
+    queryFn: ({ signal }) => issuesApi.summaries(selectedCompanyId!, recentIds, { signal }),
+    enabled: !!selectedCompanyId && recentIds.length > 0,
   });
 
   const { data: projects } = useQuery({
@@ -217,7 +242,10 @@ export function Dashboard() {
     [companyMembers?.users],
   );
 
-  const recentIssues = issues ? getRecentIssues(issues) : [];
+  const recentIssues = useMemo(
+    () => withTaskSummaries(recentIndexRows, recentSummaries),
+    [recentIndexRows, recentSummaries],
+  );
   const recentActivity = useMemo(() => (activity ?? []).slice(0, 10), [activity]);
 
   useEffect(() => {

@@ -315,9 +315,8 @@ function resolveIssueQueryRefs(
   const detailIssue = queryClient.getQueryData<Issue>(
     queryKeys.issues.detail(issueId),
   );
-  const listIssues = queryClient.getQueryData<Issue[]>(
-    queryKeys.issues.list(companyId),
-  );
+  const listIssues = queryClient.getQueryData<Issue[]>(queryKeys.issues.list(companyId))
+    ?? queryClient.getQueryData<Issue[]>(queryKeys.issues.listIndex(companyId));
   const detailsIdentifier =
     readString(details?.identifier) ?? readString(details?.issueIdentifier);
 
@@ -375,8 +374,8 @@ function resolveIssueToastContext(
   const detailIssue = issueRefs
     .map((ref) => queryClient.getQueryData<Issue>(queryKeys.issues.detail(ref)))
     .find((issue): issue is Issue => !!issue);
-  const listIssue = queryClient
-    .getQueryData<Issue[]>(queryKeys.issues.list(companyId))
+  const listIssue = (queryClient.getQueryData<Issue[]>(queryKeys.issues.list(companyId))
+    ?? queryClient.getQueryData<Issue[]>(queryKeys.issues.listIndex(companyId)))
     ?.find((issue) =>
       issueRefs.some((ref) => issue.id === ref || issue.identifier === ref),
     );
@@ -1066,6 +1065,38 @@ function refreshMentionPoolForActivity(
   }, wait);
 }
 
+const TASK_INDEX_REFRESH_WINDOW_MS = 30_000;
+const taskIndexRefreshes = new WeakMap<
+  object,
+  Map<string, { lastRequestedAt: number; timer: ReturnType<typeof setTimeout> | null }>
+>();
+
+function refreshTaskIndexForActivity(queryClient: QueryClient, companyId: string) {
+  const queryKey = queryKeys.issues.listIndex(companyId);
+  if (queryClient.getQueryData(queryKey) === undefined) return;
+  const query = queryClient.getQueryCache().find({ queryKey, exact: true });
+  if (!query) return;
+  if (query.getObserversCount() === 0) {
+    queryClient.invalidateQueries({ queryKey, exact: true, refetchType: "none" });
+    return;
+  }
+  let refresh = taskIndexRefreshes.get(queryClient);
+  if (!refresh) {
+    refresh = new Map();
+    taskIndexRefreshes.set(queryClient, refresh);
+  }
+  const state = refresh.get(companyId) ?? { lastRequestedAt: 0, timer: null };
+  refresh.set(companyId, state);
+  if (state.timer !== null) return;
+  const lastRefresh = Math.max(query.state.dataUpdatedAt, state.lastRequestedAt);
+  const wait = Math.max(0, lastRefresh + TASK_INDEX_REFRESH_WINDOW_MS - Date.now());
+  state.timer = setTimeout(() => {
+    state.timer = null;
+    state.lastRequestedAt = Date.now();
+    queryClient.invalidateQueries({ queryKey, exact: true });
+  }, wait);
+}
+
 const ISSUE_DOCUMENT_ACTIVITY_ACTIONS = new Set([
   "issue.document_created",
   "issue.document_updated",
@@ -1644,8 +1675,9 @@ function invalidateActivityQueries(
     }
     queryClient.invalidateQueries({
       queryKey: queryKeys.issues.list(companyId),
-      predicate: excludingQueryKeys(queryKeys.issues.mentionPool(companyId)),
+      predicate: excludingQueryKeys(queryKeys.issues.mentionPool(companyId), queryKeys.issues.listIndex(companyId)),
     });
+    refreshTaskIndexForActivity(queryClient, companyId);
     refreshMentionPoolForActivity(
       queryClient,
       companyId,
@@ -2320,6 +2352,7 @@ export const __liveUpdatesTestUtils = {
   createLiveInvalidationBatcher,
   isAmbientCompanyQueryKey,
   MENTION_POOL_REFRESH_WINDOW_MS,
+  TASK_INDEX_REFRESH_WINDOW_MS,
   buildActivityToast,
   applyRunLifecycleToCompanyLiveRuns,
   buildAgentStatusToast,

@@ -323,6 +323,8 @@ export const queryKeys = {
       ["issues", id, "recovery-actions", actionId, runId] as const,
     allRecoveryActions: (id: string) => ["issues", id, "recovery-actions"] as const,
     list: (companyId: string) => ["issues", companyId] as const,
+    listIndex: (companyId: string) => ["issues", companyId, "list-index"] as const,
+    recentRows: (companyId: string, sortedIds: readonly string[]) => ["issues", companyId, "recent-rows", sortedIds] as const,
     onboardingFirstTask: (companyId: string) =>
       ["issues", companyId, "onboarding-first-task"] as const,
     starPromptDone: (companyId: string) =>

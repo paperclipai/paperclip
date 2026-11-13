@@ -1,6 +1,6 @@
-import type { Agent } from "@paperclipai/shared";
+import type { Agent, CompactIssue, IssueSummary } from "@paperclipai/shared";
 import { describe, expect, it } from "vitest";
-import { derivePausedAgentBanner } from "./Dashboard";
+import { derivePausedAgentBanner, recentTaskIndexRows, withTaskSummaries } from "./Dashboard";
 
 function agent(overrides: Partial<Agent>): Agent {
   return {
@@ -41,5 +41,26 @@ describe("derivePausedAgentBanner", () => {
       agent({ id: "b", status: "idle" }),
     ]);
     expect(banner).toBeNull();
+  });
+});
+
+describe("dashboard recent tasks from the task index", () => {
+  const row = (id: string, updatedAt: string): CompactIssue =>
+    ({ id, identifier: id.toUpperCase(), title: id, status: "blocked", updatedAt, assigneeAgentId: "agent-1" }) as unknown as CompactIssue;
+
+  it("keeps the ten most recently updated tasks, newest first", () => {
+    const rows = Array.from({ length: 14 }, (_, index) => row(`t${index}`, new Date(Date.UTC(2026, 10, 1 + index)).toISOString()));
+    expect(recentTaskIndexRows(rows.reverse()).map(issue => issue.id)).toEqual(
+      ["t13", "t12", "t11", "t10", "t9", "t8", "t7", "t6", "t5", "t4"]);
+  });
+
+  it("takes the status glyph fields from the task summary and the rest from the index row", () => {
+    const summary = { id: "t1", displayStatus: "in_queue", externalConversationState: "waiting",
+      blockerAttention: { state: "covered" } } as unknown as IssueSummary;
+    const [merged] = withTaskSummaries([row("t1", "2026-11-01T00:00:00.000Z")], [summary]);
+    expect(merged).toMatchObject({ id: "t1", title: "t1", assigneeAgentId: "agent-1", displayStatus: "in_queue",
+      externalConversationState: "waiting", blockerAttention: { state: "covered" } });
+    const [plain] = withTaskSummaries([row("t2", "2026-11-01T00:00:00.000Z")], undefined);
+    expect(plain).not.toHaveProperty("displayStatus");
   });
 });
