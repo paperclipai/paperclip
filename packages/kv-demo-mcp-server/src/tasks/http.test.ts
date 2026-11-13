@@ -144,6 +144,12 @@ describe("MCP Tasks demo server", () => {
     expect(await (await fetch(url)).text()).toContain("completed");
   });
 
+  it("does not record calls to tools it does not have", async () => {
+    const { url, server } = await start();
+    for (const name of ["nope-1", "nope-2"]) expect((await call(url, name)).body.error?.code).toBe(-32602);
+    expect(server.store.snapshot().toolCalls).toEqual({});
+  });
+
   it("will_fail: ends failed with a JSON-RPC error", async () => {
     const { url } = await start();
     const taskId = (await call(url, "will_fail", { seconds: 2 })).body.result!.taskId as string;

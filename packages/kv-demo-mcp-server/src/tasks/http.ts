@@ -109,9 +109,11 @@ export function handleTasksDemoRpc(store: DemoTaskStore, message: RpcRequest, he
       if (typeof name !== "string") return fail(200, id, INVALID_PARAMS, "tools/call needs a tool name.");
       const mcpName = decodeHeaderValue(headers["mcp-name"] as string | undefined);
       if (mcpName !== null && mcpName !== name) return fail(400, id, HEADER_MISMATCH, "Mcp-Name does not match the tool name.");
+      // Only known tools are counted, so made-up names cannot grow the saved state.
+      if (!DEMO_TOOLS.some((tool) => tool.name === name)) return fail(200, id, INVALID_PARAMS, `Unknown tool: ${name.slice(0, 64)}`);
       store.countToolCall(name);
       const outcome = callDemoTool(store, name, record(params.arguments) ?? {}, declaredTasks);
-      if (!outcome) return fail(200, id, INVALID_PARAMS, `Unknown tool: ${name}`);
+      if (!outcome) return fail(200, id, INVALID_PARAMS, `Unknown tool: ${name.slice(0, 64)}`);
       if (outcome.kind === "result") {
         store.log({ method, tool: name, detail: declaredTasks ? "answered without a task" : `answered without a task: ${client} did not declare ${TASKS_EXTENSION_ID}` });
         return ok(id, outcome.result);
