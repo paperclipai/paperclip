@@ -1768,6 +1768,8 @@ export interface ToolConnectionTestCallStatus {
 export interface ProviderToolIconEntry {
   /** `mcp.<app>-<connection>:<tool>`, as agents see the tool. */
   gatewayToolName: string;
+  /** `app_<name>_<digest>`, the name native runners (and so their transcripts) use. */
+  nativeToolName?: string;
   icons: McpIcon[];
 }
 

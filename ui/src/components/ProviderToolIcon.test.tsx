@@ -66,7 +66,8 @@ describe("ProviderToolIcon", () => {
 });
 
 describe("provider icons in task chat tool rows", () => {
-  const entries = [{ gatewayToolName: "mcp.circleback-1a2b3c4d:displaymeetings", icons: [PNG] }];
+  const NATIVE = "app_mcp_circleback_1a2b3c4d_displaymeetings_0123456789ab";
+  const entries = [{ gatewayToolName: "mcp.circleback-1a2b3c4d:displaymeetings", nativeToolName: NATIVE, icons: [PNG] }];
 
   it("finds the gateway tool name inside agent transcript names", () => {
     expect(gatewayToolNameIn("mcp__paperclip__mcp.circleback-1a2b3c4d:displaymeetings")).toBe("mcp.circleback-1a2b3c4d:displaymeetings");
@@ -137,5 +138,18 @@ describe("provider icons in task chat tool rows", () => {
     expect(container.querySelector("img")!.getAttribute("src")).toBe("https://cdn.example.com/light.png");
     await act(async () => setTheme("dark"));
     expect(container.querySelector("img")!.getAttribute("src")).toBe("https://cdn.example.com/dark.png");
+  });
+
+  it("finds icons for native runner tool names", async () => {
+    const lookup = providerToolIconLookup(entries);
+    expect(lookup(NATIVE)).toEqual([PNG]);
+    expect(lookup(`mcp__paperclip__${NATIVE}`)).toEqual([PNG]);
+    expect(lookup("app_mcp_circleback_1a2b3c4d_displaymeetings_ffffffffffff")).toBeNull();
+    const container = await render(
+      <ProviderToolIconsStaticProvider entries={entries}>
+        <TaskChatToolCard item={{ kind: "tool", id: "n1", name: "Display meetings", rawName: NATIVE, status: "completed" }} />
+      </ProviderToolIconsStaticProvider>,
+    );
+    expect(container.querySelector("[data-testid='task-chat-tool-icon']")!.tagName).toBe("IMG");
   });
 });

@@ -3,6 +3,7 @@ import type { Db } from "@paperclipai/db";
 import { toolApplications, toolCatalogEntries, toolConnections } from "@paperclipai/db";
 import { readMcpIcons, type ProviderToolIconEntry } from "@paperclipai/shared";
 import { shortStableId, slugSegment } from "../../tool-gateway.js";
+import { assignedToolName } from "../../native-runtime/assigned-mcp-tools.js";
 
 /** Most icon entries returned per company. The chat only needs the tools that declare icons. */
 const MAX_ICON_ENTRIES = 500;
@@ -40,6 +41,7 @@ export async function listCompanyProviderToolIcons(db: Db, companyId: string, co
     const icons = readMcpIcons(row.icons);
     if (!icons) return [];
     const namespace = `${row.transport === "rest_api" ? "app" : "mcp"}.${slugSegment(row.applicationKey ?? row.connectionName ?? row.applicationName, "mcp")}-${shortStableId(row.connectionId)}`;
-    return [{ gatewayToolName: `${namespace}:${slugSegment(row.toolName, "tool")}`, icons }];
+    const gatewayToolName = `${namespace}:${slugSegment(row.toolName, "tool")}`;
+    return [{ gatewayToolName, nativeToolName: assignedToolName(gatewayToolName), icons }];
   });
 }

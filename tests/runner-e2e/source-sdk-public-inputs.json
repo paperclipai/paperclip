@@ -429,7 +429,7 @@
     "packages/shared/src/types/summary-slot.ts": "9698bb7d628be3f2310d050037e30157d474ed48",
     "packages/shared/src/types/task-workspace.ts": "a23afa13d2cb58dc2eb72692ed28c16ed6fb84fb",
     "packages/shared/src/types/teams-catalog.ts": "632fe75f8e5a4cfc455843c2a1a2daff28a022be",
-    "packages/shared/src/types/tool-access.ts": "372a69d19b1cc43bef1c7b7463a3ea4f8f11e916",
+    "packages/shared/src/types/tool-access.ts": "9a96b4ab4fe52bd74f45a1b18ce596aeee410f82",
     "packages/shared/src/types/user-profile.ts": "1ac26e033a79fab21dc267fd983959814c8b680f",
     "packages/shared/src/types/voice-sessions.ts": "95e3b62cdd51f62290e68536728ddd7297bc0459",
     "packages/shared/src/types/work-product.ts": "26f9129f606a207ce7a218ccef40f96747283086",

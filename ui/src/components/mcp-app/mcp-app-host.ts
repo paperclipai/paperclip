@@ -57,7 +57,15 @@ export interface McpAppHostOptions {
    * Without it, the view stays inline.
    */
   setDisplayMode?: (mode: McpAppDisplayMode) => void;
+  /**
+   * Escape pressed inside the view and not handled by it. Keyboard events
+   * never leave the sandboxed frame, so the navigation guard reports it.
+   */
+  onEscape?: () => void;
 }
+
+/** Paperclip-only notification from the navigation guard; not part of the MCP Apps spec. */
+export const MCP_APP_ESCAPE_NOTIFICATION = "paperclip/escape-pressed";
 
 type JsonRpcId = string | number;
 interface JsonRpcMessage {
@@ -273,6 +281,9 @@ export function createMcpAppHost(options: McpAppHostOptions) {
       case "notifications/message":
         options.onLog?.(params);
         return;
+      case MCP_APP_ESCAPE_NOTIFICATION:
+        options.onEscape?.();
+        return;
       default:
         return;
     }
@@ -334,7 +345,8 @@ export function mcpAppNavigationGuardSupported(target: unknown = typeof window =
  * `ui/open-link` (http and https only, opened in a new tab with noopener):
  * - cross-document navigations of the frame are cancelled (Navigation API);
  * - link clicks, whatever their target, are routed to the host;
- * - `window.open` posts to the host and returns null.
+ * - `window.open` posts to the host and returns null;
+ * - an Escape the view did not handle is reported, so a full-screen dialog closes.
  * Same-document navigations (pushState, hashes) still work.
  */
 export const MCP_APP_NAVIGATION_GUARD = `(function(){
@@ -342,5 +354,6 @@ var n=0;function open(u){try{u=String(new URL(String(u),document.baseURI))}catch
 window.open=function(u){if(u!=null&&u!=="")open(u);return null;};
 var nav=window.navigation;
 if(nav&&nav.addEventListener)nav.addEventListener("navigate",function(e){var d=e.destination;if(!d||d.sameDocument||e.downloadRequest||!e.cancelable)return;e.preventDefault();open(d.url);});
+window.addEventListener("keydown",function(e){if(e.key==="Escape"&&!e.defaultPrevented)parent.postMessage({jsonrpc:"2.0",method:"paperclip/escape-pressed"},"*");});
 document.addEventListener("click",function(e){var t=e.target,a=t&&t.closest?t.closest("a[href]"):null;if(!a||e.defaultPrevented)return;if((a.getAttribute("href")||"").charAt(0)==="#")return;e.preventDefault();open(a.href);},true);
 })();`;

@@ -119,6 +119,10 @@ export function McpAppFrame({
       ...(canProposeMessages ? { proposeMessage: (text: string) => latest.current.proposeMessage!(text) } : {}),
       ...(canUpdateModelContext ? { updateModelContext: (context: McpAppModelContext | null) => latest.current.updateModelContext!(context) } : {}),
       ...(canChangeDisplayMode ? { setDisplayMode: (mode: McpAppDisplayMode) => latest.current.onRequestDisplayMode?.(mode) } : {}),
+      // Escape inside a full-screen view closes the dialog, as it does outside the frame.
+      onEscape: () => {
+        if (latest.current.displayMode === "fullscreen") latest.current.onRequestDisplayMode?.("inline");
+      },
       onSizeChanged: ({ height: next }) => {
         if (typeof next === "number" && Number.isFinite(next) && next > 0) {
           setHeight(Math.min(MAX_HEIGHT, Math.ceil(next)));

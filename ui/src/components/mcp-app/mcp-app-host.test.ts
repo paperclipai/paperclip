@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { createMcpAppHost, MCP_APP_NAVIGATION_GUARD, mcpAppDocument, safeExternalUrl, type McpAppHostContext } from "./mcp-app-host";
+import { createMcpAppHost, MCP_APP_ESCAPE_NOTIFICATION, MCP_APP_NAVIGATION_GUARD, mcpAppDocument, safeExternalUrl, type McpAppHostContext } from "./mcp-app-host";
 
 const hostContext: McpAppHostContext = {
   theme: "dark",
@@ -257,7 +257,7 @@ describe("mcpAppDocument", () => {
       { href: "javascript:alert(1)", attrs: { href: "javascript:alert(1)" } },
     ];
     let clickHandler: ((event: unknown) => void) | null = null;
-    const fakeWindow: Record<string, unknown> = { open: () => "real window" };
+    const fakeWindow: Record<string, unknown> = { open: () => "real window", addEventListener: () => undefined };
     const fakeDocument = {
       baseURI: "about:srcdoc",
       addEventListener: (type: string, handler: (event: unknown) => void) => { if (type === "click") clickHandler = handler; },
@@ -280,6 +280,24 @@ describe("mcpAppDocument", () => {
       "https://app.circleback.ai/meetings/m2",
       "https://circleback.ai/meetings/m3",
     ]);
+  });
+
+  it("reports an Escape the view did not handle, so full screen can close", () => {
+    const posted: unknown[] = [];
+    let keydown: ((event: unknown) => void) | null = null;
+    const fakeWindow = { open: () => null, addEventListener: (type: string, handler: (event: unknown) => void) => { if (type === "keydown") keydown = handler; } };
+    const fakeDocument = { baseURI: "about:srcdoc", addEventListener: () => undefined };
+    new Function("window", "document", "parent", MCP_APP_NAVIGATION_GUARD)(fakeWindow, fakeDocument, { postMessage: (message: unknown) => posted.push(message) });
+    keydown!({ key: "Escape", defaultPrevented: true });
+    keydown!({ key: "Enter", defaultPrevented: false });
+    expect(posted).toEqual([]);
+    keydown!({ key: "Escape", defaultPrevented: false });
+    expect(posted).toEqual([{ jsonrpc: "2.0", method: MCP_APP_ESCAPE_NOTIFICATION }]);
+
+    const onEscape = vi.fn();
+    const { host } = setup({ onEscape });
+    host.receive(posted[0]);
+    expect(onEscape).toHaveBeenCalledTimes(1);
   });
 
   it("allows only http(s) external urls", () => {

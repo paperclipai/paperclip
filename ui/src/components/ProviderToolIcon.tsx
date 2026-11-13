@@ -58,13 +58,25 @@ export function gatewayToolNameIn(rawName: string | null | undefined): string | 
   return rawName ? GATEWAY_TOOL_NAME.exec(rawName)?.[0]?.toLowerCase() ?? null : null;
 }
 
+/** Native runner tool name (`app_<name>_<12-hex digest>`) inside a transcript tool name. */
+const NATIVE_TOOL_NAME = /app_[A-Za-z0-9_]*_[0-9a-f]{12}(?![0-9a-f])/;
+
+export function nativeToolNameIn(rawName: string | null | undefined): string | null {
+  return rawName ? NATIVE_TOOL_NAME.exec(rawName)?.[0] ?? null : null;
+}
+
 export type ProviderToolIconLookup = (rawName: string | null | undefined) => McpIcon[] | null;
 
 export function providerToolIconLookup(entries: readonly ProviderToolIconEntry[]): ProviderToolIconLookup {
   const byName = new Map(entries.map((entry) => [entry.gatewayToolName.toLowerCase(), entry.icons]));
+  const byNativeName = new Map(entries.flatMap((entry) => entry.nativeToolName ? [[entry.nativeToolName, entry.icons] as const] : []));
   return (rawName) => {
     const name = gatewayToolNameIn(rawName);
-    if (!name) return null;
+    if (!name) {
+      // Native runners name tools `app_<name>_<digest>` in their transcripts.
+      const native = nativeToolNameIn(rawName);
+      return native ? byNativeName.get(native) ?? null : null;
+    }
     // Same-named tools on one connection get a `-<id>` suffix from the gateway.
     return byName.get(name) ?? byName.get(name.replace(/-[0-9a-f]{8}$/, "")) ?? null;
   };

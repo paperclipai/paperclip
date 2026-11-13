@@ -6,6 +6,7 @@ import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } fro
 import { toolAccessService } from "../services/tool-access.js";
 import { toolAccessPolicyService } from "../services/tool-access-policy.js";
 import { listCompanyProviderToolIcons } from "../services/tool-access/catalog/icons.js";
+import { assignedToolName } from "../services/native-runtime/assigned-mcp-tools.js";
 
 const support = await getEmbeddedPostgresTestSupport();
 const describeDatabase = support.supported ? describe : describe.skip;
@@ -85,7 +86,10 @@ describeDatabase("catalog publication", () => {
     expect(after.versionHash).toBe(before.versionHash);
     expect(after.status).toBe(before.status);
     const listed = await listCompanyProviderToolIcons(db, companyId, [connectionId]);
-    expect(listed).toEqual([{ gatewayToolName: `mcp.fixture-connection-${connectionId.replace(/-/g, "").slice(0, 8)}:displaymeetings`, icons: after.icons }]);
+    const gatewayToolName = `mcp.fixture-connection-${connectionId.replace(/-/g, "").slice(0, 8)}:displaymeetings`;
+    // Native runners name the same tool `app_<name>_<digest>`; transcripts show that name.
+    expect(listed).toEqual([{ gatewayToolName, nativeToolName: assignedToolName(gatewayToolName), icons: after.icons }]);
+    expect(listed[0]!.nativeToolName).toMatch(/^app_[A-Za-z0-9_]*_[0-9a-f]{12}$/);
     // Another company sees none of them.
     const otherCompanyId = randomUUID();
     await db.insert(companies).values({ id: otherCompanyId, name: "Other", issuePrefix: `O${otherCompanyId.slice(0, 6)}` });
