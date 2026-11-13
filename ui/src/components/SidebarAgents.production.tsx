@@ -1,3 +1,5 @@
+import { usePrimaryAgentPresentation } from "@/components/primary-agent/PrimaryAgentPresentation";
+import { AgentAvatar } from "@/components/AgentAvatar";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link, useLocation } from "@/lib/router";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
@@ -43,7 +45,6 @@ import {
   type AgentSidebarSortMode,
   writeAgentSortMode,
 } from "../lib/agent-order";
-import { AgentIcon } from "./AgentIconPicker";
 import { BudgetSidebarMarker } from "./BudgetSidebarMarker";
 import { SidebarNavItem } from "./SidebarNavItem.production";
 import { SidebarSection, type SidebarSectionRadioChoice } from "./SidebarSection";
@@ -166,7 +167,7 @@ function SidebarAgentItem({
     <SidebarNavItem
       to={href}
       label={agent.name}
-      iconNode={<AgentIcon icon={agent.icon} className="shrink-0 h-4 w-4" />}
+      iconNode={<AgentAvatar agent={agent} size={16} className="shrink-0 h-4 w-4"/>}
       active={isActive}
       liveCount={runCount}
       labelClassName={showBuiltInLifecycle ? "min-w-(--sz-4_5rem) flex-initial" : undefined}
@@ -300,6 +301,7 @@ export function SidebarAgents({ streamlined = false }: { streamlined?: boolean }
   const lastSeenLiveAtRef = useRef<Map<string, number>>(new Map());
   const queryClient = useQueryClient();
   const { selectedCompanyId } = useCompany();
+  const primary = usePrimaryAgentPresentation(selectedCompanyId);
   const { openNewAgent } = useDialogActions();
   const { isMobile, setSidebarOpen, collapsed, peeking } = useSidebar();
   const rail = collapsed && !peeking;
@@ -608,6 +610,10 @@ export function SidebarAgents({ streamlined = false }: { streamlined?: boolean }
     [displayedAgents, starredAgentIdSet],
   );
 
+  const primaryAgent = primary && !primary.loading
+    ? visibleAgents.find(agent => agent.id === primary.primaryAgentId)
+    : undefined;
+
   const renderAgentRow = (agent: Agent, isStarredRow: boolean) => (
     <SidebarAgentItem
       key={agent.id}
@@ -650,8 +656,11 @@ export function SidebarAgents({ streamlined = false }: { streamlined?: boolean }
         onRadioValueChange: persistSortMode,
       }}
     >
-      {starredAgents.map((agent: Agent) => renderAgentRow(agent, true))}
-      {dedupedDisplayedAgents.map((agent: Agent) => renderAgentRow(agent, false))}
+      {[
+        ...(primaryAgent ? [primaryAgent] : []),
+        ...starredAgents.filter(agent => agent.id !== primaryAgent?.id),
+        ...dedupedDisplayedAgents.filter(agent => agent.id !== primaryAgent?.id),
+      ].map(agent => renderAgentRow(agent, starredAgentIdSet.has(agent.id)))}
       {showSeeAllLink && (() => {
         // Deliberately NOT a SidebarNavItem: this is a quiet muted affordance
         // (plain Link) that must not adopt nav-row active-route highlighting.

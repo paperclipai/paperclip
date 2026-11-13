@@ -1,4 +1,4 @@
-import { and, eq, notInArray } from "drizzle-orm";
+import { and, eq, inArray, notInArray } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { agents, companyMemberships, principalPermissionGrants } from "@paperclipai/db";
 import type { PermissionKey, PrincipalType } from "@paperclipai/shared";
@@ -26,11 +26,34 @@ export async function insertMissingPrincipalGrants(
 ): Promise<number> {
   if (input.grants.length === 0) return 0;
 
+  // Read before writing. Cloud tenant authentication re-seeds role defaults
+  // on every sync, and the grants almost always exist already. An INSERT ...
+  // ON CONFLICT still waits on another transaction that is deleting or
+  // re-inserting a conflicting row, which stalled authentication until the
+  // statement timeout. A plain read never waits on row locks.
+  const existing = await db
+    .select({ permissionKey: principalPermissionGrants.permissionKey })
+    .from(principalPermissionGrants)
+    .where(
+      and(
+        eq(principalPermissionGrants.companyId, input.companyId),
+        eq(principalPermissionGrants.principalType, input.principalType),
+        eq(principalPermissionGrants.principalId, input.principalId),
+        inArray(
+          principalPermissionGrants.permissionKey,
+          input.grants.map((grant) => grant.permissionKey),
+        ),
+      ),
+    );
+  const existingKeys = new Set(existing.map((row) => row.permissionKey));
+  const missing = input.grants.filter((grant) => !existingKeys.has(grant.permissionKey));
+  if (missing.length === 0) return 0;
+
   const now = new Date();
   const inserted = await db
     .insert(principalPermissionGrants)
     .values(
-      input.grants.map((grant) => ({
+      missing.map((grant) => ({
         companyId: input.companyId,
         principalType: input.principalType,
         principalId: input.principalId,

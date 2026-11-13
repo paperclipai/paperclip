@@ -26,7 +26,29 @@
       ],
       "whenToUse": "Use browser sign-in for the provider-hosted MCP server.",
       "defaults": {
-        "serverUrl": "https://api.brex.com/mcp"
+        "serverUrl": "https://api.brex.com/mcp",
+        "scopesHint": [
+          "openid",
+          "offline_access",
+          "email",
+          "users.readonly",
+          "departments.readonly",
+          "locations.readonly",
+          "titles.readonly",
+          "legal_entities.readonly",
+          "cards.readonly",
+          "cards",
+          "companies.readonly",
+          "budgets.readonly",
+          "travel.trips.readonly",
+          "expenses.card.readonly",
+          "expenses.card",
+          "expenses.bill",
+          "accounts.cash.readonly",
+          "vendors.readonly",
+          "accounting.integration.read",
+          "accounting.record.read"
+        ]
       },
       "guidanceMd": "Connect Brex in the browser. Brex early access and an administrator enabling the integration; financial actions require explicit approval.",
       "riskTier": "S4",

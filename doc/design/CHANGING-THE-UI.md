@@ -50,6 +50,18 @@ Then **review the git diff and keep only the CSS-variable value changes** — th
 - **Give it a story.** New visual surface = new Storybook story = automatic screenshot coverage forever.
 - `pnpm check:token-gates` before you push. If a value genuinely can't be a token (third-party config, canvas fills, intentional one-off decoration on demo pages), it goes on the allowlist **with an inline comment saying why**.
 
+## Proposed task collections
+
+For work explicitly implementing the staged design refresh, review **Design
+proposals → Pages → Tasks** and the component stories. Compose shared UI with
+`useTaskListCollection` (`ui/src/hooks/useTaskListCollection.ts`) rather than
+reimplementing search, creator identity mapping, views, filter transitions or
+hierarchy expansion. Its `visibleItems` include parent context for the list;
+boards use `matchingItems`. Pass its namespaced `creators` into the filter menu.
+The caller supplies accessible data and handles API mutations. See `DESIGN.md`
+for the contract and trial acceptance cases; the proposed controller is not yet
+wired into production routes.
+
 ## Recipe 4 — you changed something and snapshots failed
 
 That's the system working. Two cases:
@@ -72,3 +84,9 @@ This system was built to be steered by instruction. "Make all running indicators
 - **ESLint ratchet** — will eventually enforce the token rules at lint time; until then `check:token-gates` is the gate.
 
 See `DECISION-SHEET.md` for the full ledger.
+
+### Task artifact galleries
+
+The task Artifacts tab renders images and videos with `MediaArtifactCard`, including agent attachments that have not been promoted to work products. Its container-responsive grid preserves run grouping and chronological order; documents and other outputs span the full width. `RichWorkProductCard` supports `gallery` for media and keeps `card`/`compact` rows for other outputs. Rows use a stretched native link or button so titles, thumbnails, metadata, and padding activate the same action, with keyboard focus and normal link modifiers preserved.
+
+`ArtifactPreview` is shared with the company gallery. Video previews are muted, never autoplay, and seek up to one second into the clip after metadata loads. Changing the source resets preview state. The existing task gallery handles playback and download. Storybook **Tasks → Artifact Gallery** covers eight generated video outputs, mixed images/files, full-row activation, narrow/expanded panels, empty state, unavailable previews, and light mode using small offline fixtures.

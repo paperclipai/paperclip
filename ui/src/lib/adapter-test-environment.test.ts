@@ -275,6 +275,56 @@ describe("resolveManagedSandboxEnvironmentId", () => {
   });
 });
 
+describe("managed plugin environments under managed-sandbox-only", () => {
+  const local = makeEnvironment({
+    id: "local-env",
+    driver: "local",
+    metadata: { managedByPaperclip: true, defaultForInstance: true },
+  });
+  // Listed first, so a lookup that only excluded `local` would pick it.
+  const pluginEnvironment = makeEnvironment({
+    id: "plugin-env",
+    name: "Remote Host",
+    driver: "plugin",
+    config: { pluginKey: "example.remote-host-plugin", driverKey: "tasks", driverConfig: {} },
+    metadata: {
+      managedByPaperclip: true,
+      managedPluginEnvironment: "example.remote-host-plugin:tasks",
+    },
+  });
+  const sandbox = makeEnvironment({
+    id: "sandbox-env",
+    name: "Paperclip Sandbox",
+    metadata: { managedByPaperclip: true, managedSandboxProvider: "daytona" },
+  });
+  const environments = [local, pluginEnvironment, sandbox];
+  const resolve = (agentDefaultEnvironmentId: string | null, instanceDefaultEnvironmentId: string | null) =>
+    resolveAdapterTestEnvironmentId({
+      agentDefaultEnvironmentId,
+      instanceDefaultEnvironmentId,
+      localDefaultEnvironmentId: resolveLocalDefaultEnvironmentId(environments),
+      managedSandboxOnly: true,
+      managedSandboxEnvironmentId: resolveManagedSandboxEnvironmentId(environments),
+      visibleEnvironmentIds: [pluginEnvironment.id, sandbox.id],
+    });
+
+  it("never mistakes the plugin row for the managed sandbox", () => {
+    expect(resolveManagedSandboxEnvironmentId(environments)).toBe("sandbox-env");
+    expect(resolveManagedSandboxEnvironmentId([local, pluginEnvironment])).toBeNull();
+  });
+
+  it("tests an agent without the plugin environment in the sandbox", () => {
+    expect(resolve("sandbox-env", "plugin-env")).toBe("sandbox-env");
+    // An instance that keeps local as its default: the redirect lands on the sandbox.
+    expect(resolve(null, null)).toBe("sandbox-env");
+  });
+
+  it("tests an agent on the plugin environment there", () => {
+    expect(resolve("plugin-env", null)).toBe("plugin-env");
+    expect(resolve(null, "plugin-env")).toBe("plugin-env");
+  });
+});
+
 describe("resolveLocalDefaultEnvironmentId", () => {
   it("finds the local-driver instance-default environment", () => {
     const environments = [

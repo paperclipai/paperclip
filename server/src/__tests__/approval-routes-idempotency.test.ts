@@ -34,6 +34,10 @@ const mockAccessService = vi.hoisted(() => ({
 }));
 
 function registerModuleMocks() {
+  vi.doMock("../services/authorization.js", async (importActual) => ({
+    ...await importActual<typeof import("../services/authorization.js")>(),
+    canActorReadApproval: async () => true,
+  }));
   vi.doMock("../services/index.js", () => ({
     accessService: () => mockAccessService,
     approvalService: () => mockApprovalService,

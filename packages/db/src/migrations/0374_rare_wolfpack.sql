@@ -1,0 +1,3 @@
+DROP INDEX "execution_workspace_restore_points_live_generation_uniq";--> statement-breakpoint
+ALTER TABLE "execution_workspace_restore_points" ADD COLUMN "checkout_name" text DEFAULT '' NOT NULL;--> statement-breakpoint
+CREATE UNIQUE INDEX "execution_workspace_restore_points_live_checkout_uniq" ON "execution_workspace_restore_points" USING btree ("execution_workspace_id","generation","checkout_name") WHERE "execution_workspace_restore_points"."status" <> 'deleted';

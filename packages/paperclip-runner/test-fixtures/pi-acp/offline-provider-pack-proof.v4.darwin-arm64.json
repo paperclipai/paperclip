@@ -1,0 +1,170 @@
+{
+  "schema": "paperclip.pi-v4-offline-qualification/v1",
+  "sourceRevision": "f556110d588a9de9fefe676a9a62bf09e98afb85",
+  "profileVersion": 4,
+  "model": "openrouter/deepseek/deepseek-v4-flash-0731",
+  "qualification": "pending",
+  "paidCalls": 0,
+  "credentials": false,
+  "sourceTrees": {
+    "packages/paperclip-runner/src": "51b705e493c584b5d0e952afd06011d2af023319",
+    "packages/paperclip-runner/scripts": "1f2c76baccdd0dfec0a592b711524533af33a323",
+    "packages/paperclip-runner/runner": "ebbff2a80ed8bce24df98de19cb9480c098e778e",
+    "patches": "5d9ae2a6546e13f780269e4fdbf03efa99fbafe4",
+    "server/src": "1a4c4b7000becae6021d74e7dc0f2f36180c767c",
+    "tests/runner-e2e": "6d15ec5668fda2eed3bd308e11e0fda0cf48ca19"
+  },
+  "verification": {
+    "recursiveTypecheck": "passed",
+    "fullRepositoryBuild": "passed",
+    "targetedTypeScriptTestsPassed": 49,
+    "optionalInstallationSuitePassed": 5,
+    "packageAndMaterializerTestsPassed": 24,
+    "nativeBackendRustTestsPassed": 13,
+    "independentCodeReview": "no remaining blocking finding",
+    "cleanDependencyResolutions": 2,
+    "resolvedLockSha256": "9eea60187c6c808efb4d936a234a8d8000beac45253091abd4c5348132bd1408",
+    "trackedLockUnchanged": true
+  },
+  "pack": {
+    "sourceRevision": "f556110d588a9de9fefe676a9a62bf09e98afb85",
+    "packDigest": "sha256:4df7e9fa164929c7ae7d8e8711f0bf7d587d9fa6a246d0a8340f318f57168855",
+    "manifestFileSha256": "e622e3f9aff2aa5e79888d38945de27ea71d112cb6eeefff6b2dd1f846ffc8a3",
+    "target": {
+      "platform": "darwin",
+      "architecture": "arm64"
+    },
+    "productionLock": "sha256:9eea60187c6c808efb4d936a234a8d8000beac45253091abd4c5348132bd1408",
+    "distDigest": "sha256:2819c0a8d81732e1314749b6c82c5a50bc7a5a5996452935c9dc72e38717ad20",
+    "verifiedProviders": {
+      "cursor": {
+        "version": "2026.09.26-dd393fe",
+        "profileDigest": "sha256:1157a5d071abbd57ab132f22bace75c65e84cc47a045b0023475488755e14899",
+        "closureDigest": "sha256:77394184a89b0e7384971181da19c3c82d83a399b04e7944b3f94fe3d7e62b25",
+        "qualification": "pending",
+        "path": "provider-assets/cursor/darwin-arm64",
+        "sha256": "sha256:3b6de19114d4df62f648604025a0d71937dfa7c2b15b397cce5da2c5da268994",
+        "verifiedFileCount": 446
+      },
+      "copilot": {
+        "version": "1.0.88",
+        "profileDigest": "sha256:b18c01603dd0169d233140709cfaa8bf5304a03cf5de78ca4f625f30013e8457",
+        "closureDigest": "sha256:fb3b367a45cd76122fe931521fa2a18adf234ba944fc302db9e10e005e57037e",
+        "qualification": "pending",
+        "path": "provider-assets/copilot/darwin-arm64",
+        "sha256": "sha256:49ad871973843e2bfc3ee1d1886f6a1537e887748cc6f3d5148b3ec7f3c7298f",
+        "verifiedFileCount": 1
+      },
+      "pi": {
+        "version": "0.84.2",
+        "profileDigest": "sha256:2324d9b47650c12b16f8e2c44dc33637d52f1b22ba8e914623eac4049e7e1991",
+        "closureDigest": "sha256:b0e02ed16d27fd1d90a5e91d6309f1c47d6cf55f8937a8f680baeee19646d320",
+        "qualification": "pending",
+        "path": "provider-assets/pi/darwin-arm64",
+        "sha256": "sha256:5a617823d6bfbaf5e91e1009c9eabcd6c2eeadd622b096d3fd09d366269095e4",
+        "verifiedFileCount": 13827
+      }
+    },
+    "providerInferenceCalls": 0,
+    "providerProcessesStarted": 0
+  },
+  "nativeLaunch": {
+    "schema": "paperclip.combined-provider-offline-smoke/v1",
+    "provider": "pi",
+    "target": {
+      "platform": "darwin",
+      "architecture": "arm64"
+    },
+    "sourceRevision": "f556110d588a9de9fefe676a9a62bf09e98afb85",
+    "providerPackDigest": "sha256:4df7e9fa164929c7ae7d8e8711f0bf7d587d9fa6a246d0a8340f318f57168855",
+    "candidate": {
+      "version": "0.84.2",
+      "profileDigest": "sha256:2324d9b47650c12b16f8e2c44dc33637d52f1b22ba8e914623eac4049e7e1991",
+      "closureDigest": "sha256:b0e02ed16d27fd1d90a5e91d6309f1c47d6cf55f8937a8f680baeee19646d320",
+      "qualification": "pending",
+      "path": "provider-assets/pi/darwin-arm64",
+      "sha256": "sha256:5a617823d6bfbaf5e91e1009c9eabcd6c2eeadd622b096d3fd09d366269095e4"
+    },
+    "commandDigest": "sha256:2324d9b47650c12b16f8e2c44dc33637d52f1b22ba8e914623eac4049e7e1991",
+    "registryLaunch": "verifyAcpxProfileInstallation/openCommand/spawn",
+    "initializeRequestId": 0,
+    "protocolVersion": 1,
+    "nativeInfo": {
+      "name": "pi-acp",
+      "title": "pi ACP adapter",
+      "version": "0.0.33"
+    },
+    "agentCapabilities": {
+      "loadSession": true,
+      "mcpCapabilities": {
+        "http": true,
+        "sse": false
+      },
+      "_meta": {
+        "paperclipPi": {
+          "version": 1,
+          "steering": true,
+          "queuedFollowUp": true,
+          "questions": [
+            "select",
+            "confirm",
+            "input",
+            "editor"
+          ],
+          "nativePermissions": true,
+          "promptUsage": true,
+          "nativePlan": false,
+          "pendingRequestRecovery": "live-process-only"
+        }
+      },
+      "promptCapabilities": {
+        "image": true,
+        "audio": false,
+        "embeddedContext": false
+      },
+      "sessionCapabilities": {
+        "list": {}
+      }
+    },
+    "exitCode": 0,
+    "eofSettled": true,
+    "prompts": 0,
+    "inferenceCalls": 0,
+    "network": "macOS sandbox-exec deny network*",
+    "credentials": false,
+    "explicitModelOnlyForProfileAdmission": "openrouter/deepseek/deepseek-v4-flash-0731",
+    "modelSelected": false,
+    "providerGroupCleanup": true,
+    "privateStateRemoved": true
+  },
+  "runnerBuild": {
+    "source": "f556110d588a9de9fefe676a9a62bf09e98afb85",
+    "rustTree": "ebbff2a80ed8bce24df98de19cb9480c098e778e",
+    "binary": "/tmp/paperclip-rich-acp-paid-20260928/runnerd-pi-f556110d5-373848d2d7287b2c",
+    "sha256": "373848d2d7287b2c47b2cee422cb7bd25073a594a620a9ad574f2d3d51cd1670",
+    "profileVersion": 4,
+    "profileDigest": "sha256:2324d9b47650c12b16f8e2c44dc33637d52f1b22ba8e914623eac4049e7e1991",
+    "model": "openrouter/deepseek/deepseek-v4-flash-0731",
+    "mode": "0555",
+    "build": "pnpm build (release runnerd)"
+  },
+  "runnerStartup": {
+    "schema": "paperclip.pi-session-open-diagnostic.v1",
+    "credentials": "none",
+    "promptCalls": 0,
+    "providerCalls": 0,
+    "durationMs": 11083,
+    "result": {
+      "status": "rejected_without_prompt",
+      "error": "Error: PRP command session.open failed: {\"commandId\":\"command_prp_00000002\",\"commandType\":\"session.open\",\"controllerSeq\":2,\"result\":{\"code\":\"command_execution_failed\",\"message\":\"failed to start ACPX provider: ACPX sidecar command session.open was rejected (retryable=false, classification=session_ensure_failed)\"},\"status\":\"failed\"}"
+    },
+    "interpretation": "Timely typed missing-credential rejection, not authenticated session success."
+  },
+  "limits": [
+    "macOS x64 runtime execution remains pending",
+    "Linux v4 image and Daytona qualification pending",
+    "No authenticated v4 prompt has been submitted",
+    "Native ID provenance is retained only in private ACP wire, not current canonical/UI events",
+    "Historical v3 paid proofs remain historical"
+  ]
+}

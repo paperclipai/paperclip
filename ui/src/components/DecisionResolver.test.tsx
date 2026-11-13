@@ -3,10 +3,12 @@
 import { flushSync } from "react-dom";
 import { createRoot } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import type { DecisionOutcome } from "../api/decisions";
 
 const state = vi.hoisted(() => ({ issueStatus: "todo", queriedIssueIds: [] as string[] }));
 
-vi.mock("@tanstack/react-query", () => ({
+vi.mock("@tanstack/react-query", async (importOriginal) => ({
+  ...await importOriginal<typeof import("@tanstack/react-query")>(),
   useQueryClient: () => ({ invalidateQueries: vi.fn(), setQueryData: vi.fn() }),
   useMutation: () => ({ isPending: false, error: null, mutate: vi.fn() }),
   useQuery: ({ queryKey }: { queryKey: readonly string[] }) => queryKey[1] === "detail"
@@ -58,8 +60,8 @@ vi.mock("../context/CompanyContext", () => ({
 }));
 
 vi.mock("./DecisionCard", () => ({
-  DecisionCard: ({ resolveIssue }: { resolveIssue: (id: string) => { status: string | null } | null }) => (
-    <div data-testid="resolved-status">{resolveIssue("target-1")?.status}</div>
+  DecisionCard: ({ resolveIssue, decision }: { resolveIssue: (id: string) => { status: string | null } | null; decision: DecisionOutcome }) => (
+    <><div data-testid="resolved-status">{resolveIssue("target-1")?.status}</div><div data-testid="decision-status">{decision.status}</div></>
   ),
 }));
 
@@ -96,6 +98,15 @@ describe("DecisionResolver", () => {
     flushSync(() => root.render(<DecisionResolver companyId="company-1" decisionId="decision-1" />));
     expect(container.querySelector('[data-testid="resolved-status"]')?.textContent).toBe("done");
 
+    flushSync(() => root.unmount());
+  });
+
+  it("renders a fresh terminal record instead of an older open decision in the shared cache", () => {
+    const record = { id: "decision-1", companyId: "company-1", status: "decided", options: [], targetSnapshots: {}, executions: [] } as unknown as DecisionOutcome;
+    const root = createRoot(container);
+    flushSync(() => root.render(<DecisionResolver companyId="company-1" decisionId="decision-1" recordedDecision={record} />));
+    expect(container.querySelector('[data-testid="decision-status"]')?.textContent).toBe("decided");
+    expect(state.queriedIssueIds).toEqual([]);
     flushSync(() => root.unmount());
   });
 

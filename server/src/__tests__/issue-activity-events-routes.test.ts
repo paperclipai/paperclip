@@ -18,15 +18,25 @@ const mockIssueService = vi.hoisted(() => ({
 }));
 
 const mockLogActivity = vi.hoisted(() => vi.fn(async () => undefined));
-const mockAccessService = vi.hoisted(() => ({
-  canUser: vi.fn(async () => false),
-  hasPermission: vi.fn(async () => false),
-}));
+const mockAccessService = vi.hoisted(() => {
+  const decide = vi.fn(async ({ action }: { action: string; actor?: unknown; resource?: unknown }) => ({
+    action, allowed: action === "issue:read", reason: "allow_default", explanation: "Fixture task is readable",
+  }));
+  return {
+    decide,
+    // The batched read asks the mocked decision once per task.
+    decideReads: async (actor: unknown, resources: unknown[]) =>
+      Promise.all(resources.map((resource) => decide({ actor, action: "issue:read", resource }))),
+    canUser: vi.fn(async () => false),
+    hasPermission: vi.fn(async () => false),
+  };
+});
 const mockHeartbeatService = vi.hoisted(() => ({
   wakeup: vi.fn(async () => undefined),
   reportRunActivity: vi.fn(async () => undefined),
   getRun: vi.fn(async () => null),
   getActiveRunForAgent: vi.fn(async () => null),
+  getQueuedAssignmentRunForIssue: vi.fn(async () => null),
   cancelRun: vi.fn(async () => null),
 }));
 const mockFeedbackService = vi.hoisted(() => ({
@@ -136,7 +146,17 @@ function registerModuleMocks() {
   }));
 }
 
-async function createApp(db: unknown = {}) {
+function createEmptyRelationReadDb() {
+  const query = {
+    from: vi.fn().mockReturnThis(),
+    where: vi.fn(async () => []),
+  };
+  return {
+    select: vi.fn().mockReturnValue(query),
+  };
+}
+
+async function createApp(db: unknown = createEmptyRelationReadDb()) {
   const [{ issueRoutes }, { errorHandler }] = await Promise.all([
     vi.importActual<typeof import("../routes/issues.js")>("../routes/issues.js"),
     vi.importActual<typeof import("../middleware/index.js")>("../middleware/index.js"),
@@ -168,7 +188,7 @@ function makeIssue() {
     createdByUserId: "local-board",
     identifier: "PAP-580",
     title: "Activity event issue",
-    description: null,
+    description: null as string | null,
     priority: "medium",
     executionPolicy: null,
     executionState: null,
@@ -179,7 +199,10 @@ function makeIssue() {
 function issueUpdateWithReceipt(issue: ReturnType<typeof makeIssue>, patch: Record<string, unknown>) {
   const {
     actorAgentId: _actorAgentId,
+    actorRunId: _actorRunId,
+    actorRunStopId: _actorRunStopId,
     actorUserId: _actorUserId,
+    workspaceSelectionActor: _workspaceSelectionActor,
     blockedByIssueIds: _blockedByIssueIds,
     ...issuePatch
   } = patch;

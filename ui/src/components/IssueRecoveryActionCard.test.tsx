@@ -1,17 +1,26 @@
 // @vitest-environment jsdom
 
+import { canBoardConfirmOwnerStop } from "../lib/recovery-reconcile";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { createRoot } from "react-dom/client";
 import { flushSync } from "react-dom";
 import type { AnchorHTMLAttributes, ReactElement } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Agent, IssueRecoveryAction } from "@paperclipai/shared";
-import { IssueRecoveryActionCard, deriveRecoveryCardState } from "./IssueRecoveryActionCard";
+import { IssueRecoveryActionCard, NativeControllerContainmentRecovery, deriveRecoveryCardState } from "./IssueRecoveryActionCard";
+
+const containmentApi = vi.hoisted(() => ({ resolveRecoveryAction: vi.fn() }));
+vi.mock("../api/issues", () => ({ issuesApi: containmentApi }));
 
 vi.mock("@/lib/router", () => ({
   Link: ({ children, to, ...props }: AnchorHTMLAttributes<HTMLAnchorElement> & { to: string }) => (
     <a href={to} {...props}>{children}</a>
   ),
 }));
+
+const visibility = vi.hoisted(() => ({ visible: true, loaded: true }));
+vi.mock("@/hooks/useWorkspaceIsolationControls", () => ({ useWorkspaceIsolationControls: () => visibility }));
+beforeEach(() => { visibility.visible = true; visibility.loaded = true; });
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
@@ -130,6 +139,34 @@ describe("deriveRecoveryCardState", () => {
 });
 
 describe("IssueRecoveryActionCard", () => {
+  it.each(["running", "scheduled", "missed"] as const)("describes native %s finalization without claiming another agent turn", (state) => {
+    const node = render(<IssueRecoveryActionCard action={buildAction({
+      kind: "active_run_watchdog", cause: "native_finalization_invalid",
+      nextAction: "Finish the existing run.",
+      wakePolicy: { kind: "resume_native_run", runId: "native-run", notBefore: state === "scheduled" ? "2099-01-01T00:00:00Z" : "2020-01-01T00:00:00Z" },
+      nativeRunActivity: state === "running" ? { runId: "native-run", status: "running", workspaceOperationId: "export-operation" } : null,
+    })} />);
+    expect(node.querySelector("section")?.getAttribute("data-recovery-state")).toBe(state === "missed" ? "needed" : "in_progress");
+    expect(node.textContent).toContain("existing run");
+    expect(node.textContent).not.toContain("retrying the original owner");
+    expect(node.textContent).not.toContain("retrying itself");
+    expect(node.textContent).not.toContain("repairs the next step only");
+    expect(node.textContent).not.toContain("stopped to wait");
+    expect(node.querySelector('[data-testid="recovery-retry-progress"]')?.getAttribute("data-recovery-lane")).toBe("native_run");
+  });
+
+  it("describes actual export progress after the board retries an exhausted repair", () => {
+    const node = render(<IssueRecoveryActionCard action={buildAction({
+      kind: "active_run_watchdog", cause: "native_finalization_invalid", ownerType: "board", status: "escalated", attemptCount: 3,
+      wakePolicy: { kind: "resume_native_run", runId: "native-run" },
+      nativeRunActivity: { runId: "native-run", status: "running", workspaceOperationId: "export-operation" },
+    })} />);
+    expect(node.querySelector("section")?.getAttribute("data-recovery-state")).toBe("in_progress");
+    expect(node.textContent).toContain("Paperclip is recovering the existing run");
+    expect(node.querySelector('[data-testid="recovery-recovery-owner"]')?.textContent).toContain("Paperclip");
+    expect(node.textContent).not.toContain("Automatic retries are finished");
+  });
+
   it("renders state and kind attributes with owner names and the recorded next action", () => {
     const node = render(
       <IssueRecoveryActionCard
@@ -456,6 +493,15 @@ describe("IssueRecoveryActionCard workspace_validation divergence", () => {
       />,
     );
     expect(node.querySelector("[data-testid='recovery-divergence-diagnosis']")).toBeNull();
+  });
+
+  it("hides the isolated re-issue action under operator visibility policy", () => {
+    visibility.visible = false;
+    const onReissueIsolated = vi.fn();
+    const node = render(<IssueRecoveryActionCard action={buildWorkspaceValidationAction()} onReissueIsolated={onReissueIsolated} />);
+    expect(node.querySelector("[data-testid='recovery-action-reissue-trigger']")).toBeNull();
+    expect(node.querySelector("[data-testid='recovery-divergence-diagnosis']")).not.toBeNull();
+    expect(onReissueIsolated).not.toHaveBeenCalled();
   });
 
   it("offers the re-issue action and passes the live branch as the base ref", () => {
@@ -1102,5 +1148,118 @@ describe("IssueRecoveryActionCard owner-sticky retry lineage", () => {
     expect(node.querySelector("[data-testid='recovery-retry-progress']")).toBeNull();
     expect(node.querySelector("[data-testid='recovery-source-owner']")).toBeNull();
     expect(node.textContent).toContain("→ Returns to:");
+  });
+});
+
+it.each(["active", "escalated", "resolved"] as const)("does not show a historical unsafe-export repair card: %s", status => {
+  const node = render(<IssueRecoveryActionCard action={buildAction({ status, kind: "active_run_watchdog",
+    cause: "native_workspace_sync_out_unsafe_archive", ownerType: "board", nextAction: "Repair the unsafe link manually" })} onResolve={() => {}} />);
+  expect(node.textContent).toBe("");
+});
+
+it("requires export retry for ordinary restoration while keeping explicit board overrides", () => {
+  const node = render(<IssueRecoveryActionCard action={buildAction({ kind: "active_run_watchdog", ownerType: "board",
+    cause: "native_workspace_sync_out_retry_exhausted" })} onResolve={() => {}} canFalsePositive />);
+  click(node.querySelector("[data-testid='recovery-action-resolve-trigger']"));
+  expect(document.body.textContent).not.toContain("Try again");
+  expect(document.body.textContent).not.toContain("Mark task done");
+  expect(document.body.textContent).not.toContain("Send for review");
+  expect(document.body.textContent).toContain("False positive, done");
+});
+
+it("requires owner-stop recovery even for board false-positive dispositions", () => {
+  const node = render(<IssueRecoveryActionCard action={buildAction({ kind: "active_run_watchdog", ownerType: "board",
+    cause: "native_workspace_finalization_owner_unverified" })} onResolve={() => {}} canFalsePositive />);
+  expect(node.querySelector("[data-testid='recovery-action-resolve-trigger']")).toBeNull();
+  expect(node.textContent).not.toContain("False positive");
+});
+
+
+describe("original-host controller containment in task recovery", () => {
+  let client: QueryClient;
+  const digest = "a".repeat(64);
+  const runId = "00000000-0000-4000-8000-000000000041";
+  const onRecorded = vi.fn();
+  beforeEach(() => {
+    client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
+    containmentApi.resolveRecoveryAction.mockReset().mockResolvedValue({});
+    onRecorded.mockReset();
+  });
+  afterEach(() => client.clear());
+  function mount(canManage = true, reason = "controller_process_space_unverified", authority = digest) {
+    const action = buildAction({ kind: "active_run_watchdog", ownerType: "board", cause: "native_restart_recovery_blocked",
+      evidence: { runId, reason, controllerAuthority: { schema: "paperclip.native-controller-authority.v1", digest: authority } } });
+    const issue = { id: "ordinary-task", status: "in_progress" as const, activeRecoveryAction: action };
+    const element = <QueryClientProvider client={client}><NativeControllerContainmentRecovery key={authority} issue={issue}
+      canManage={canManage} onRecorded={onRecorded} /></QueryClientProvider>;
+    if (!root) return render(element);
+    act(() => root?.render(element));
+    return container!;
+  }
+  function fillFields(node: HTMLDivElement) {
+    act(() => {
+      const area = node.querySelector("textarea")!;
+      Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!.call(area,
+        "Verified the original deployment controller and provider stopped; completed actions were reviewed.");
+      area.dispatchEvent(new Event("input", { bubbles: true }));
+      const select = node.querySelector("select")!;
+      select.value = "mixed";
+      select.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+  }
+  function recordButton(node: HTMLDivElement) {
+    return Array.from(node.querySelectorAll("button")).find(button => button.textContent === "Record containment")!;
+  }
+  it("requires separate controller and provider confirmations on an ordinary task", async () => {
+    const node = mount();
+    expect(node.textContent).toContain("original host");
+    expect(node.textContent).toContain("does not retry");
+    expect(node.textContent).not.toContain(digest);
+    fillFields(node);
+    const boxes = node.querySelectorAll('[role="checkbox"]');
+    expect(recordButton(node).disabled).toBe(true);
+    click(boxes[0]);
+    expect(recordButton(node).disabled).toBe(true);
+    click(boxes[1]);
+    expect(recordButton(node).disabled).toBe(false);
+    click(recordButton(node));
+    await new Promise(resolve => setTimeout(resolve, 0));
+    expect(containmentApi.resolveRecoveryAction).toHaveBeenCalledOnce();
+    expect(containmentApi.resolveRecoveryAction).toHaveBeenCalledWith("ordinary-task", expect.objectContaining({
+      outcome: "restored", sourceIssueStatus: "in_progress", executionReconciliation: {
+        runId, controllerStopped: true, providerStopped: true, controllerAuthorityDigest: digest,
+        actionOutcome: "mixed", outcomeEvidence: "Verified the original deployment controller and provider stopped; completed actions were reviewed.",
+      },
+    }));
+  });
+  it("does not expose a confirmation form to non-board runtime managers", () => {
+    const node = mount(false);
+    expect(node.querySelector("button")).toBeNull();
+    expect(node.textContent).toContain("company owner");
+    expect(containmentApi.resolveRecoveryAction).not.toHaveBeenCalled();
+  });
+  it.each(["owner", "admin", "operator", "viewer"] as const)("shows the containment form only for a board %s with owner-stop authority", role => {
+    const allowed = canBoardConfirmOwnerStop("company", { source: "session", user: null, userId: "board-user", keyId: null, companyIds: ["company"], isInstanceAdmin: false,
+      memberships: [{ companyId: "company", status: "active", membershipRole: role }] });
+    const node = mount(allowed);
+    expect(node.querySelectorAll('[role="checkbox"]').length).toBe(role === "owner" || role === "admin" ? 2 : 0);
+    expect(Boolean(node.querySelector("button"))).toBe(role === "owner" || role === "admin");
+    expect(containmentApi.resolveRecoveryAction).not.toHaveBeenCalled();
+  });
+  it("does not offer local containment for remote or unrelated recovery", () => {
+    const node = mount(true, "remote_controller_process_space_unverified");
+    expect(node.querySelector("section")).toBeNull();
+    mount(true, "some_other_hold");
+    expect(node.querySelector("section")).toBeNull();
+  });
+  it("clears old confirmations when the server supplies a different authority snapshot", () => {
+    const node = mount();
+    fillFields(node);
+    for (const box of node.querySelectorAll('[role="checkbox"]')) click(box);
+    expect(recordButton(node).disabled).toBe(false);
+    mount(true, "controller_process_space_unverified", "b".repeat(64));
+    expect(recordButton(node).disabled).toBe(true);
+    expect(node.querySelector("textarea")?.value).toBe("");
+    expect(containmentApi.resolveRecoveryAction).not.toHaveBeenCalled();
   });
 });

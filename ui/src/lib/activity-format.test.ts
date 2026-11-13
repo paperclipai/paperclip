@@ -8,6 +8,13 @@ describe("activity formatting", () => {
     ["agent-approver", { id: "agent-approver", name: "Approver Bot" } as Agent],
   ]);
 
+  it("labels a Slack settlement as idle while retaining actual review wording", () => {
+    const details = { status: "in_review", externalConversationState: "waiting" };
+    expect(formatActivityVerb("issue.updated", details)).toBe("changed status to idle on");
+    expect(formatIssueActivityAction("issue.updated", details)).toBe("changed the status to idle");
+    expect(formatActivityVerb("issue.updated", { status: "in_review" })).toBe("changed status to in review on");
+  });
+
   it("uses readable verbs for task read-state changes", () => {
     expect(formatActivityVerb("issue.read_marked")).toBe("read");
     expect(formatActivityVerb("issue.read_unmarked")).toBe("marked unread");

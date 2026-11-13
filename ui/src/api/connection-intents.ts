@@ -12,10 +12,11 @@ export const connectionIntentsApi = {
   setPhase: (
     interactionId: string,
     phase: ConnectionIntentInteraction["payload"]["phase"],
+    setupAccess?: ConnectionIntentInteraction["payload"]["setupAccess"],
   ) =>
     api.post<ConnectionIntentInteraction>(
       `/connection-intents/${interactionId}/phase`,
-      { phase },
+      { phase, ...(setupAccess ? { setupAccess } : {}) },
     ),
   complete: (interactionId: string, connectionId: string) =>
     api.post<ConnectionIntentInteraction>(

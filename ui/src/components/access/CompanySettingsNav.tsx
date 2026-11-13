@@ -13,6 +13,7 @@ const items = [
   { value: "secrets", label: "Secrets", href: "/company/settings/secrets" },
   { value: "instance-profile", label: "Profile", href: `${INSTANCE_SETTINGS_PATH_PREFIX}/profile` },
   { value: "instance-environments", label: "Environments", href: `${INSTANCE_SETTINGS_PATH_PREFIX}/environments` },
+  { value: "connections", label: "Connections", href: "/company/settings/connections" },
   { value: "instance-access", label: "Access", href: `${INSTANCE_SETTINGS_PATH_PREFIX}/access` },
   { value: "instance-experimental", label: "Experimental", href: `${INSTANCE_SETTINGS_PATH_PREFIX}/experimental` },
   { value: "instance-plugins", label: "Plugins", href: `${INSTANCE_SETTINGS_PATH_PREFIX}/plugins` },
@@ -36,6 +37,10 @@ const hiddenSettingKeyByTab: Partial<Record<CompanySettingsTab, string>> = {
 };
 
 export function getCompanySettingsTab(pathname: string): CompanySettingsTab {
+  if (pathname.includes("/company/settings/connections")) {
+    return "connections";
+  }
+
   if (pathname.includes(`${INSTANCE_SETTINGS_PATH_PREFIX}/profile`)) {
     return "instance-profile";
   }

@@ -1,0 +1,228 @@
+name: Runner image
+
+# Builds and checks the Runner image: the `runner-artifacts` target of the
+# Dockerfile, a plain file tree that other image builds copy the Runner from.
+# doc/runner-image-contract.md is the contract.
+#
+# This workflow builds and checks only. It has no access to a registry and
+# publishes nothing.
+on:
+  pull_request:
+    # Every input of scripts/runner-image-identity.mjs, .dockerignore (it
+    # decides which of those files the build receives), and the pipeline's
+    # own files. A test checks that every identity input is covered.
+    paths:
+      - .github/workflows/runner-image.yml
+      - Dockerfile
+      - .dockerignore
+      - .npmrc
+      - package.json
+      - pnpm-lock.yaml
+      - pnpm-workspace.yaml
+      - tsconfig.base.json
+      - patches/**
+      - packages/paperclip-runner/**
+      - packages/paperclip-eval-kernel/**
+      - packages/shared/src/provider-failure.generated.ts
+      - scripts/create-provider-pack-archive.mjs
+      - scripts/link-plugin-dev-sdk.mjs
+      - scripts/runner-image-identity.mjs
+      - scripts/runner-image-layout.mjs
+      - docker/runner-image/**
+  workflow_dispatch:
+
+# Least privilege: nothing at the workflow level, and read-only contents in
+# each job.
+permissions: {}
+
+# A newer push to a pull request replaces its older run.
+concurrency:
+  group: runner-image-${{ github.event.pull_request.number || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  identity:
+    name: Resolve the Runner image identity
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    outputs:
+      digest: ${{ steps.identity.outputs.digest }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6
+        with:
+          version: 9.15.4
+          run_install: false
+
+      # No dependency cache: a restored cache must not reach the image.
+      - name: Setup Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: 24
+          package-manager-cache: false
+
+      # A contributor cannot edit pnpm-lock.yaml, so a pull request that
+      # changes the Runner's dependencies is built against a lockfile resolved
+      # here. The image build installs from it frozen.
+      - name: Resolve the lockfile
+        run: |
+          set -euo pipefail
+          pnpm install --resolution-only --ignore-scripts --no-frozen-lockfile
+
+          changed="$(git status --porcelain)"
+          if [ -n "$changed" ] && printf '%s\n' "$changed" | grep -Fvq ' pnpm-lock.yaml'; then
+            echo "Unexpected files changed during lockfile resolution:"
+            echo "$changed"
+            exit 1
+          fi
+          echo "This run built from a \`pnpm-lock.yaml\` resolved for it${changed:+ (it differs from the committed file)}." >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4
+        with:
+          buildkitd-config-inline: |
+            [registry."docker.io"]
+              mirrors = ["mirror.gcr.io"]
+
+      # Computed inside the build, from the files the build context supplies
+      # after .dockerignore. A digest computed from the checkout would cover
+      # files the image build never receives.
+      - name: Compute the identity in the build context
+        id: identity
+        run: |
+          set -euo pipefail
+          out="$RUNNER_TEMP/runner-image-identity"
+          docker buildx build --target runner-artifacts-identity --output "type=local,dest=$out" .
+          digest="$(jq -er .digest "$out/runner-image-identity.json")"
+          [[ "$digest" =~ ^[0-9a-f]{64}$ ]]
+          echo "digest=$digest" >> "$GITHUB_OUTPUT"
+          {
+            echo "Runner image inputs digest: \`$digest\`"
+            echo
+            echo '```json'
+            cat "$out/runner-image-identity.json"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      # The legs must build from the file the identity was computed from, not
+      # from a second resolution.
+      - name: Keep the resolved lockfile for the build legs
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: runner-image-lockfile
+          path: pnpm-lock.yaml
+          if-no-files-found: error
+          retention-days: 1
+
+  # Multi-arch by native runner, not QEMU, as in docker.yml. GitHub-hosted
+  # runners: the protected release fleets admit only docker.yml on master.
+  #
+  # These legs hold no credential and use no registry build cache. The install
+  # runs dependency lifecycle scripts.
+  build:
+    name: Build and check (${{ matrix.arch }})
+    needs: identity
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux/amd64
+            runner: ubuntu-latest
+            arch: amd64
+          - platform: linux/arm64
+            runner: ubuntu-24.04-arm
+            arch: arm64
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 60
+    permissions:
+      contents: read
+    env:
+      DIGEST: ${{ needs.identity.outputs.digest }}
+      ARCH: ${{ matrix.arch }}
+      PLATFORM: ${{ matrix.platform }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - name: Setup Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: 24
+          package-manager-cache: false
+
+      - name: Download the resolved lockfile
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: runner-image-lockfile
+          path: ${{ runner.temp }}/runner-image-lockfile
+
+      - name: Use the resolved lockfile
+        run: cp "$RUNNER_TEMP/runner-image-lockfile/pnpm-lock.yaml" pnpm-lock.yaml
+
+      - name: Free runner disk
+        run: |
+          set -euo pipefail
+          sudo apt-get clean || true
+          sudo rm -rf /usr/share/dotnet /usr/share/swift /usr/local/lib/android /usr/local/share/boost \
+            /usr/local/share/powershell /opt/ghc /opt/hostedtoolcache/CodeQL /opt/hostedtoolcache/PyPy /opt/hostedtoolcache/Ruby || true
+          docker system prune -af || true
+          df -h
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4
+        with:
+          buildkitd-config-inline: |
+            [registry."docker.io"]
+              mirrors = ["mirror.gcr.io"]
+
+      # The build itself runs the frozen install, the Runner's own build, the
+      # provider pack integrity check and the layout check. The tree is
+      # exported for the checks below.
+      #
+      # This is the publication form of the build, the only one whose pack
+      # names the image (`runnerInputsDigest`), so the check below can bind
+      # the tree to the digest the identity job resolved. Nothing here
+      # publishes it: the tree stays on this runner.
+      - name: Build the Runner image
+        run: |
+          set -euo pipefail
+          docker buildx build \
+            --target runner-artifacts \
+            --platform "$PLATFORM" \
+            --build-arg "PAPERCLIP_RUNNER_SOURCE_REVISION=$GITHUB_SHA" \
+            --build-arg PAPERCLIP_RUNNER_IMAGE_PUBLICATION=1 \
+            --provenance=false --sbom=false \
+            --output "type=local,dest=$RUNNER_TEMP/runner-image/tree" \
+            .
+
+      # Against the exported tree, bound to this run: the digest the identity
+      # job resolved, this commit and this leg's architecture. Checks every
+      # documented path, the build stamp, every pack artifact and tree digest
+      # in provider-pack.json, and every transport archive. It also extracts
+      # the archives as a sandbox does and compares the result with the pack;
+      # that needs about as much free disk as the pack is large.
+      - name: Check the layout contract and pack integrity
+        run: |
+          node scripts/runner-image-layout.mjs check "$RUNNER_TEMP/runner-image/tree" \
+            --expect-inputs-digest "$DIGEST" \
+            --expect-source-revision "$GITHUB_SHA" \
+            --expect-architecture "$ARCH"
+
+      - name: Run the daemon on every consumer base image
+        run: |
+          docker buildx build \
+            --file docker/runner-image/Dockerfile.smoke \
+            --platform "$PLATFORM" \
+            --build-context "runner-artifacts=$RUNNER_TEMP/runner-image/tree" \
+            --output "type=local,dest=$RUNNER_TEMP/runner-image/smoke" \
+            docker/runner-image
+          ls -l "$RUNNER_TEMP/runner-image/smoke"

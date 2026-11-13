@@ -8,49 +8,61 @@ on:
 
 permissions: {}
 
-# Source verification must start outside the full npm release's queue.
+# Source verification stays independent of npm publication and image builds.
 concurrency:
   group: cloud-readiness-${{ github.sha }}
   cancel-in-progress: false
 
 jobs:
-  image:
-    if: github.repository == 'paperclipai/paperclip' && github.ref == 'refs/heads/master'
+  admission:
+    name: Cloud candidate admission v1
+    if: github.repository == 'paperclipai/paperclip' && github.repository_id == '1170821064' && github.ref == 'refs/heads/master'
+    runs-on: ${{ vars.AWS_POST_MERGE_CI_ENABLED == 'true' && github.run_attempt >= 1 && github.repository == 'paperclipai/paperclip' && github.repository_id == '1170821064' && github.ref == 'refs/heads/master' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && 'runs-on/fleet=paperclip-post-merge-x64/env=public-ci' || 'ubuntu-latest' }}
+    timeout-minutes: 5
     permissions:
       contents: read
-      packages: write
-    uses: ./.github/workflows/docker-cloud.yml
+      actions: read
+    outputs:
+      admitted: ${{ steps.admission.outputs.admitted }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+          sparse-checkout: scripts
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: 24
+      - id: admission
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: node scripts/cloud-release-admission.mjs
 
   verify:
-    if: github.repository == 'paperclipai/paperclip' && github.ref == 'refs/heads/master'
+    needs: admission
+    if: github.repository == 'paperclipai/paperclip' && github.ref == 'refs/heads/master' && needs.admission.outputs.admitted == 'true'
     permissions:
       contents: read
     uses: ./.github/workflows/release-verify.yml
     with:
       ref: ${{ github.sha }}
+      runner_chaos_evals: false
 
-  artifacts:
-    if: github.repository == 'paperclipai/paperclip' && github.ref == 'refs/heads/master'
-    name: Wait for exact-source cloud artifacts
-    # Bookkeeping must not wait for the AWS builders it observes.
-    runs-on: ubuntu-latest
-    timeout-minutes: 35
+  # Owner decision (2026-11-12): the Runner chaos evals are NOT a publication
+  # prerequisite. They still run on every admitted master commit and still
+  # fail their own check (and this run) when they fail, but source_verified
+  # must not need this job, and scripts/cloud-source-verification.mjs must not
+  # treat its failure as a failed source verification. They took 10-12 min and
+  # set the image gate. Do not add this job to source_verified's needs.
+  # .github/scripts/tests/cloud-readiness.test.mjs fails if it is re-added.
+  runner_chaos_evals:
+    name: Runner chaos evals (not a publication gate)
+    needs: admission
+    if: github.repository == 'paperclipai/paperclip' && github.ref == 'refs/heads/master' && needs.admission.outputs.admitted == 'true'
     permissions:
       contents: read
-      actions: read
-      attestations: read
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-        with:
-          persist-credentials: false
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
-        with:
-          node-version: 24
-      - name: Wait for verified image and exact-source migrator
-        env:
-          GH_TOKEN: ${{ github.token }}
-          SOURCE_SHA: ${{ github.sha }}
-        run: node scripts/cloud-readiness.mjs "$SOURCE_SHA"
+    uses: ./.github/workflows/runner-chaos-evals.yml
+    with:
+      ref: ${{ github.sha }}
 
   source_verified:
     # npm canary publication reuses this exact-source verification proof.
@@ -59,8 +71,9 @@ jobs:
     name: Cloud source verified v1
     needs: [verify]
     if: github.repository == 'paperclipai/paperclip' && github.ref == 'refs/heads/master'
-    # Bookkeeping must not wait for the AWS builders it observes.
-    runs-on: ubuntu-latest
+    # Keep the final proof off the shared hosted queue too. The protected
+    # fleet has a separate job ceiling and launches Spot workers on demand.
+    runs-on: ${{ vars.AWS_POST_MERGE_CI_ENABLED == 'true' && github.run_attempt >= 1 && github.repository == 'paperclipai/paperclip' && github.repository_id == '1170821064' && github.ref == 'refs/heads/master' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && 'runs-on/fleet=paperclip-post-merge-x64/env=public-ci' || 'ubuntu-latest' }}
     timeout-minutes: 5
     permissions:
       contents: read
@@ -79,23 +92,3 @@ jobs:
           SOURCE_SHA: ${{ github.sha }}
         run: |
           echo "Cloud source verified v1: $SOURCE_SHA" >> "$GITHUB_STEP_SUMMARY"
-
-  ready:
-    # Versioned consumer contract. Never add always() or continue-on-error:
-    # failed, cancelled, or skipped prerequisites must not report readiness.
-    name: Cloud deployable v1
-    needs: [verify, image, artifacts]
-    if: github.repository == 'paperclipai/paperclip' && github.ref == 'refs/heads/master'
-    # Bookkeeping must not wait for the AWS builders it observes.
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
-    steps:
-      - name: Record cloud readiness
-        env:
-          SOURCE_SHA: ${{ github.sha }}
-        run: |
-          {
-            echo "Cloud deployable v1: $SOURCE_SHA"
-            echo "Source verification passed; the full-SHA image and exact-source migrator are available."
-            echo "Deployment tooling must still resolve and pin the image and migrator and validate migration compatibility."
-          } >> "$GITHUB_STEP_SUMMARY"

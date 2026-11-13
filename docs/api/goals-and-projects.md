@@ -84,6 +84,14 @@ POST /api/companies/{companyId}/projects
 
 Notes:
 
+- `environmentId` optionally selects the project's workspace storage: the storage
+  that this environment uses. When omitted, storage follows the creator's effective
+  default environment. If that default is unavailable and only one storage owner is
+  available, the project uses that owner. The project does not save the environment,
+  and it does not change where runs execute.
+- `expectedStorageProviderPluginId` optionally guards the observed storage owner.
+  Use `GET /api/companies/{companyId}/project-environments` to discover compatible
+  groups and the creator's default. Unknown or changed storage is rejected.
 - `workspace` is optional. If present, the project is created and seeded with that workspace.
 - A workspace must include at least one of `cwd` or `repoUrl`.
 - For repo-only projects, omit `cwd` and provide `repoUrl`.
@@ -96,6 +104,10 @@ PATCH /api/projects/{projectId}
   "status": "in_progress"
 }
 ```
+
+Workspace storage is fixed at creation. A change of
+`executionWorkspacePolicy.storageProviderPluginId` returns `409`
+(`project_storage_locked`). Runs use the agent's environment, not a project setting.
 
 ## Project Workspaces
 

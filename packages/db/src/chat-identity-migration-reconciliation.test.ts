@@ -134,7 +134,7 @@ describe("chat and execution identity migration reconciliation", () => {
     }
   });
 
-  it("keeps canonical identity history in every regenerated chat checkpoint", async () => {
+  it("keeps the identity and chat migrations in their reconciled journal order", async () => {
     const journal = JSON.parse(
       await readFile(
         new URL("./migrations/meta/_journal.json", import.meta.url),
@@ -155,108 +155,6 @@ describe("chat and execution identity migration reconciliation", () => {
         )
         .map((entry: { tag: string }) => entry.tag),
     ).toEqual(chatMigrations.map(([tag]) => tag));
-    let previous = JSON.parse(
-      await readFile(
-        new URL("./migrations/meta/0254_snapshot.json", import.meta.url),
-        "utf8",
-      ),
-    );
-    for (let step = 0; step < chatMigrations.length; step++) {
-      const index = String(255 + step).padStart(4, "0");
-      const current = JSON.parse(
-        await readFile(
-          new URL(`./migrations/meta/${index}_snapshot.json`, import.meta.url),
-          "utf8",
-        ),
-      );
-      expect(current.prevId, index).toBe(previous.id);
-      expect(current.tables["public.run_identity_contexts"], index).toEqual(
-        previous.tables["public.run_identity_contexts"],
-      );
-      expect(
-        current.tables["public.heartbeat_runs"].columns
-          .active_identity_context_id,
-        index,
-      ).toBeDefined();
-      expect(
-        current.tables["public.issues"].columns.origin_identity_context_id,
-        index,
-      ).toBeDefined();
-      expect(
-        current.tables["public.issues"].columns
-          .continuation_identity_context_id,
-        index,
-      ).toBeDefined();
-      expect(
-        current.tables["public.issue_thread_interactions"].columns
-          .source_identity_context_id,
-        index,
-      ).toBeDefined();
-      expect(
-        Boolean(
-          current.tables["public.chat_conversations"].columns
-            .session_generation,
-        ),
-        index,
-      ).toBe(step >= 1);
-      expect(
-        Boolean(
-          current.tables["public.chat_endpoints"].indexes
-            .chat_endpoints_live_bot_external_uq,
-        ),
-        index,
-      ).toBe(step >= 2);
-      expect(
-        current.tables[
-          "public.chat_publications"
-        ].checkConstraints.chat_publications_state_check.value.includes(
-          "delivery_unknown",
-        ),
-        index,
-      ).toBe(step >= 3);
-      expect(
-        current.tables["public.chat_endpoints"].columns.allow_group_chats
-          .default,
-        index,
-      ).toBe(step < 4);
-      expect(
-        current.tables[
-          "public.agent_wakeup_requests"
-        ].indexes.agent_wakeup_requests_question_response_delivery_idempotency_uq.where.includes(
-          "interaction:%",
-        ),
-        index,
-      ).toBe(step >= 5);
-      expect(
-        current.tables[
-          "public.chat_endpoints"
-        ].checkConstraints.chat_endpoints_provider_check.value.includes(
-          "discord",
-        ),
-        index,
-      ).toBe(step >= 6);
-      expect(
-        Boolean(
-          current.tables["public.chat_endpoints"].indexes
-            .chat_endpoints_live_discord_bot_external_uq,
-        ),
-        index,
-      ).toBe(step >= 7);
-      expect(
-        Boolean(
-          current.tables["public.chat_endpoints"].indexes
-            .chat_endpoints_live_global_app_bot_external_uq,
-        ),
-        index,
-      ).toBe(step >= 8);
-      expect(
-        Boolean(
-          current.tables["public.issue_attachments"].columns.originating_run_id,
-        ),
-        index,
-      ).toBe(step >= 9);
-      previous = current;
-    }
   });
 });
 

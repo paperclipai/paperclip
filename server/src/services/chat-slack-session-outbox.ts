@@ -1,6 +1,8 @@
 import { sql } from "drizzle-orm";
 import { chatActions, type Db } from "@paperclipai/db";
 
+import { notifyChatActionWork } from "./chat-work-notifications.js";
+
 type DbOrTransaction = Db | Parameters<Parameters<Db["transaction"]>[0]>[0];
 
 export interface SlackSessionSyncPayload {
@@ -47,6 +49,7 @@ export async function stageSlackSessionSync(
     runtimeGeneration: input.runtimeGeneration,
     credentialFingerprint: input.credentialFingerprint,
   };
+  await notifyChatActionWork(database, "slack_session_sync");
   await database
     .insert(chatActions)
     .values({

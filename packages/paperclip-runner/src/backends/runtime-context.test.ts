@@ -11,6 +11,10 @@ import { afterEach, describe, expect, it } from "vitest";
 
 import { createCodexTaskEnvelope } from "../contracts/codex.js";
 import {
+  PRP_BLOCK_TOOL_DESCRIPTION,
+  PRP_COMPLETION_TOOL_DESCRIPTION,
+} from "../contracts/completion-result.js";
+import {
   buildNativeModelEnvelope,
   type NativeExecutionInput,
 } from "../contracts/native-execution.js";
@@ -27,6 +31,7 @@ function runtimeInput(
   entryPath: string,
 ): NativeExecutionInput {
   return {
+    provider: { kind: "codex" },
     runtimeContext: {
       prompt: { text: "Paperclip runtime." },
       instructions: { bundle: { rootPath }, entryPath },
@@ -63,17 +68,31 @@ describe("native runtime context files", () => {
     expect(constraints).toContain(
       "Obtain one accepted result from paperclip_finish or paperclip_block before writing",
     );
-    expect(constraints).toContain("do not call another tool");
+    expect(constraints).toContain("before writing the complete user-facing final response.");
+    expect(constraints).toContain("If blocked, explain why work cannot continue, name the owner and give the unblock action.");
+    for (const description of [PRP_COMPLETION_TOOL_DESCRIPTION, PRP_BLOCK_TOOL_DESCRIPTION]) {
+      expect(description).toContain("If rejected, correct the report and retry.");
+      expect(description).toContain("After acceptance, read the returned outcome");
+      expect(description).toContain("end the turn without further tool calls");
+    }
+    expect(PRP_COMPLETION_TOOL_DESCRIPTION).toContain("do not claim completion while gated");
+    expect(PRP_COMPLETION_TOOL_DESCRIPTION).toContain("supplied link and action");
+    expect(PRP_COMPLETION_TOOL_DESCRIPTION).toContain("yielded with response_wake for a response");
+    expect(PRP_COMPLETION_TOOL_DESCRIPTION).toContain("monitor after set_task_monitor confirms a schedule on this task");
+    expect(PRP_BLOCK_TOOL_DESCRIPTION).toContain("its owner, and the action needed to unblock it");
     expect(constraints).not.toContain(
       "final response exactly once before invoking",
     );
   });
 
-  it("requires requested file deliverables before completion in ordinary native tasks", () => {
+  it("distinguishes durable Paperclip documents from requested file deliverables", () => {
     const constraints = nativeTaskConstraints(runtimeInput("/bundle", "AGENTS.md")).join("\n");
+    expect(constraints).toContain("Paperclip documents directly with write_document");
+    expect(constraints).toContain("unless the user also requests a downloadable file");
     expect(constraints).toContain("register_deliverable");
     expect(constraints).toContain("deliverable:");
     expect(constraints).toContain("download link");
+    expect(constraints).toContain("returned documentHref as a clickable link in your final response");
   });
 
   it("marks only authoritative answered-question envelopes as resolved in the outer task", () => {
@@ -125,6 +144,9 @@ describe("native runtime context files", () => {
       ],
     } as unknown as NativeExecutionInput;
     const constraints = nativeTaskConstraints(answered);
+    expect(constraints.join("\n")).toContain("current user direction");
+    expect(constraints.join("\n")).toContain("clarification is not approval");
+    expect(constraints.join("\n")).not.toContain("finish the original requested result");
     expect(constraints).toContainEqual(
       expect.stringContaining(
         "message.interactionResponses[2].response.result.answers",
@@ -139,10 +161,10 @@ describe("native runtime context files", () => {
     expect(resolved).not.toContain("answered-question-1");
     expect(resolved).not.toContain("message.interactionResponses[0]");
     expect(resolved).not.toContain("message.interactionResponses[1]");
-    expect(resolved).toContain("use their supplied answers");
-    expect(resolved).toContain("do not invoke request_human_input");
+    expect(resolved).toContain("Apply each answer within its question scope");
+    expect(resolved).toContain("do not ask resolved questions again");
     expect(resolved).toContain(
-      "does not resolve any other pending or new question",
+      "Other pending or new questions remain unresolved",
     );
     expect(resolved).not.toContain("pending-question-2");
     expect(resolved).not.toContain("answered-confirmation-3");
@@ -336,6 +358,10 @@ describe("native runtime context files", () => {
     expect(answeredConstraint).toContain(
       "message.interactionResponses[0].response.result.answers",
     );
+    const preparedConstraint = nativeTaskConstraints({ ...input, schema: "paperclip.native-execution-input.v5" } as NativeExecutionInput)
+      .find((constraint) => constraint.includes("already authoritatively answered"));
+    expect(preparedConstraint).toContain("interactionResponses[0].response.result.answers");
+    expect(preparedConstraint).not.toContain("message.interactionResponses");
     expect(buildNativeModelEnvelope(input).interactionResponses).toEqual(
       input.interactionResponses,
     );

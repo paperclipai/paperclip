@@ -13,6 +13,8 @@ import type { SourceTrustMetadata } from "@paperclipai/shared";
 
 import { createRunSecretRedactionRegistry } from "../run-secret-redaction.js";
 import { sanitizeQuarantinedCommentForHigherTrust } from "../source-trust.js";
+import { getNativeReviewAssignment, readNativeReviewAssignmentContext } from "./native-review-participant.js";
+import { nativeRunHandedOffTask } from "./native-human-self-handoff.js";
 
 export const READ_CURRENT_WAKE_COMMENTS_TOOL_NAME =
   "read_current_wake_comments";
@@ -20,6 +22,8 @@ export const CURRENT_WAKE_COMMENTS_BINDING_SCHEMA =
   "paperclip.current-wake-comments-binding.v1";
 export const CURRENT_WAKE_COMMENTS_RECEIPT_SCHEMA =
   "paperclip.current-wake-comments-receipt.v1";
+export const NATIVE_CURRENT_WAKE_COMMENTS_UNREAD = "native_current_wake_comments_unread";
+export const NATIVE_CURRENT_WAKE_COMMENTS_CHANGED_AFTER_READ = "native_current_wake_comments_changed_after_read";
 
 const CURRENT_WAKE_COMMENTS_RECEIPT_KEY = "currentWakeCommentsReceipt";
 const MAX_PAGE_BODY_CHARS = 12_000;
@@ -33,6 +37,7 @@ const EXTERNAL_CHAT_PROVIDERS = new Set([
   "microsoft-teams",
   "telegram",
   "imessage-photon",
+  "speko",
 ]);
 const ATTACHMENT_OMISSION_REASONS = new Set([
   "attachment_limit",
@@ -753,7 +758,9 @@ export async function assertCurrentWakeCommentsRead(
     const locked = await tx
       .select({
         resultJson: heartbeatRuns.resultJson,
+        contextSnapshot: heartbeatRuns.contextSnapshot,
         issueAssigneeAgentId: issues.assigneeAgentId,
+        issueAssigneeUserId: issues.assigneeUserId,
         issueExecutionRunId: issues.executionRunId,
       })
       .from(heartbeatRuns)
@@ -776,14 +783,26 @@ export async function assertCurrentWakeCommentsRead(
       .for("update")
       .limit(1)
       .then((rows) => rows[0] ?? null);
-    if (
-      !locked ||
-      locked.issueAssigneeAgentId !== input.agentId ||
-      locked.issueExecutionRunId !== input.runId
-    ) {
+    if (!locked) throw new Error("native_current_wake_comments_binding_changed");
+    // The run handed its own task to a person: it finishes its turn without
+    // task authority. Its finalizer preserves the person's task.
+    const handedOff = nativeRunHandedOffTask(locked.resultJson, { id: input.issueId,
+      assigneeAgentId: locked.issueAssigneeAgentId, assigneeUserId: locked.issueAssigneeUserId });
+    if (readNativeReviewAssignmentContext(locked.contextSnapshot)) {
+      // Accepting a review can release the child's execution lock. The exact
+      // resolving run may still finish; it does not regain task write access.
+      const review = await getNativeReviewAssignment(tx as unknown as Db, {
+        ...input, contextSnapshot: locked.contextSnapshot, allowResolvedByRunId: input.runId,
+      });
+      if (!review || (review.interaction.status === "pending" && locked.issueExecutionRunId !== input.runId)) {
+        throw new Error("native_current_wake_comments_binding_changed");
+      }
+    } else if (!handedOff && (locked.issueAssigneeAgentId !== input.agentId || locked.issueExecutionRunId !== input.runId)) {
       throw new Error("native_current_wake_comments_binding_changed");
     }
-    const currentBinding = await resolveCurrentWakeCommentsBinding(
+    // After its own hand-off the run no longer resolves a current binding (it
+    // does not own the task). It still must have read the wake it started with.
+    const currentBinding = handedOff ? expectedBinding ?? null : await resolveCurrentWakeCommentsBinding(
       tx as unknown as Db,
       {
         companyId: input.companyId,
@@ -807,17 +826,17 @@ export async function assertCurrentWakeCommentsRead(
       record(locked.resultJson)[CURRENT_WAKE_COMMENTS_RECEIPT_KEY],
     );
     if (!receipt || receipt.complete !== true || receipt.nextCursor !== null) {
-      throw new Error("native_current_wake_comments_unread");
+      throw new Error(NATIVE_CURRENT_WAKE_COMMENTS_UNREAD);
     }
     if (receipt.bindingDigest !== binding.bindingDigest) {
-      throw new Error("native_current_wake_comments_changed_after_read");
+      throw new Error(NATIVE_CURRENT_WAKE_COMMENTS_CHANGED_AFTER_READ);
     }
     const snapshot = await currentWakeCommentsSnapshot(
       tx as unknown as Db,
       binding,
     );
     if (receipt.snapshotDigest !== snapshot.snapshotDigest) {
-      throw new Error("native_current_wake_comments_changed_after_read");
+      throw new Error(NATIVE_CURRENT_WAKE_COMMENTS_CHANGED_AFTER_READ);
     }
   });
 }

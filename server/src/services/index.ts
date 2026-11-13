@@ -40,8 +40,10 @@ export {
   ISSUE_LIST_MAX_LIMIT,
   issueService,
   type IssueFilters,
+  type IssueListOptions,
 } from "./issues.js";
 export { issueThreadInteractionService } from "./issue-thread-interactions.js";
+export { expirePendingInteractionsOnClosedIssues } from "./closed-issue-interaction-sweep.js";
 export { githubConnectionEventService, type GitHubConnectionEventPollResult } from "./github-connection-events.js";
 export {
   assertIssueReviewVerdictActorAllowed,
@@ -98,7 +100,6 @@ export {
   VercelConnectClientError,
   type VercelConnectClient,
 } from "./vercel-connect.js";
-export { createComposioClient, ComposioApiError, type ComposioClient } from "./composio.js";
 export { smokeLabService } from "./smoke-lab.js";
 export { backfillLegacyToolOAuthTokens } from "./tool-oauth-legacy-backfill.js";
 export { toolAccessPolicyService } from "./tool-access-policy.js";
@@ -146,7 +147,7 @@ export {
   type ManagedInstanceConfig,
 } from "./managed-config.js";
 export { bootstrapExecutionPolicyFromEnv } from "./execution-policy-bootstrap.js";
-export { applyManagedEnvironments } from "./managed-environments.js";
+export { applyManagedEnvironments, createManagedEnvironmentRecovery } from "./managed-environments.js";
 export { buildExportFidelityReport, collectExportFidelityCounts } from "./export-fidelity.js";
 export { companyPortabilityService } from "./company-portability.js";
 export { teamsCatalogService } from "./teams-catalog.js";
@@ -218,3 +219,5 @@ export {
   type RemoteAgentProfileInput,
   type RemoteAgentService,
 } from "./remote-agent-profiles.js";
+
+export { decisionModelService, defineDecisionFeature } from "./decision-models.js";

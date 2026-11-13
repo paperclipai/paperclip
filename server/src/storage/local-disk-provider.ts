@@ -30,8 +30,10 @@ function resolveWithin(baseDir: string, objectKey: string): string {
 async function statOrNull(filePath: string) {
   try {
     return await fs.stat(filePath);
-  } catch {
-    return null;
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException | null)?.code;
+    if (code === "ENOENT" || code === "ENOTDIR") return null;
+    throw error;
   }
 }
 
@@ -47,8 +49,10 @@ export function createLocalDiskStorageProvider(baseDir: string): StorageProvider
       await fs.mkdir(dir, { recursive: true });
 
       const tempPath = `${targetPath}.tmp-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-      await fs.writeFile(tempPath, input.body);
-      await fs.rename(tempPath, targetPath);
+      try {
+        await fs.writeFile(tempPath, input.body, { signal: input.signal });
+        await fs.rename(tempPath, targetPath);
+      } finally { await fs.rm(tempPath, { force: true }); }
     },
 
     async getObject(input): Promise<GetObjectResult> {
@@ -64,7 +68,7 @@ export function createLocalDiskStorageProvider(baseDir: string): StorageProvider
         ? input.range.end - input.range.start + 1
         : stat.size;
       return {
-        stream: createReadStream(filePath, streamOptions),
+        stream: createReadStream(filePath, { ...streamOptions, signal: input.signal }),
         contentLength,
         lastModified: stat.mtime,
       };
@@ -87,8 +91,9 @@ export function createLocalDiskStorageProvider(baseDir: string): StorageProvider
       const filePath = resolveWithin(root, input.objectKey);
       try {
         await fs.unlink(filePath);
-      } catch {
-        // idempotent delete
+      } catch (error) {
+        const code = (error as NodeJS.ErrnoException | null)?.code;
+        if (code !== "ENOENT" && code !== "ENOTDIR") throw error;
       }
     },
   };

@@ -1,0 +1,2 @@
+ALTER TABLE "chat_conversations" ADD COLUMN IF NOT EXISTS "communication_guidance" text;--> statement-breakpoint
+ALTER TABLE "chat_endpoints" ADD COLUMN IF NOT EXISTS "communication_instructions" text DEFAULT '' NOT NULL;

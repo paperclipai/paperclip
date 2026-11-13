@@ -3,6 +3,43 @@
 Status: Canonical deployment and auth mode model  
 Date: 2026-02-23
 
+### Paperclip Cloud sign-in
+
+Cloud-managed instances use Cloud for human sign-in. The instance `/auth`
+route waits for deployment metadata before rendering; it never renders the
+email/password form when health identifies a Cloud-managed instance. A missing
+instance session returns through Cloud's `/v1/stacks/:slug/entry-redirect`.
+Cloud renews the tenant session from the existing Cloud session, or sends the
+user through its sign-in flow. The original tenant path, query, and fragment
+travel as `returnTo` so the user returns to the same task.
+
+Both the Cloud origin and stack slug come from the server's health metadata
+(`PAPERCLIP_CLOUD_API_ORIGIN` and `PAPERCLIP_STACK_SLUG`). Do not infer the
+environment from the browser hostname or hardcode staging/production domains.
+Missing configuration shows an unavailable state. An automatic recovery attempt
+is limited per browser tab until a session is verified, with a five-minute
+expiry and an explicit retry link if recovery fails. Network/server failures
+show an error rather than treating the user as signed out.
+
+Self-hosted authenticated instances retain their instance sign-in form, and
+`local_trusted` instances retain their normal access path.
+
+The account create hook keeps `local:credential` on new email/password accounts
+so a surviving Better Auth 1.7.2 process can still sign those users in during an
+upgrade. This internal field is not client input. Better Auth 1.7.16 still owns
+account lookup and the unique `(provider_id, account_id)` key. Existing NULL
+issuer rows remain readable by the new version. Cloud workspace handoff creates
+users and sessions without account rows. No social provider is configured here;
+other providers retain their trusted internal issuer, or NULL when absent. This
+bridge does not claim old-reader compatibility for those unconfigured providers.
+
+Cloud stack Admins can change experimental settings on their dedicated instance.
+This permission comes from the current trusted Cloud stack role and does not
+grant other instance-admin powers. Members, Support users, and agents cannot
+change experiments. Operator-hidden settings and Cloud-managed feature values
+remain protected. Staging allows saved overrides for its editable experiments;
+production retains its managed feature policy.
+
 ## 1. Purpose
 
 Paperclip supports two runtime modes:
@@ -46,6 +83,7 @@ Paperclip now treats **bind** as a separate concern from auth:
 - loopback-only host binding
 - no human login flow
 - optimized for fastest local startup
+- implicit board access belongs to the operator's own local processes. On Linux and macOS, a request that comes from inside an agent run's process tree receives no implicit board access and must authenticate with the run's own credentials. On Linux, a request whose process the server cannot inspect receives implicit board access only when every same-user process that the server cannot inspect has a readable operator parent chain outside any agent run. Requests over IPv4 and IPv6 loopback are covered. If the platform has no process inspection, or `/proc/net/tcp` and `/proc/net/tcp6` cannot be read, the server keeps the previous behavior and logs a warning. Other platforms keep the previous behavior.
 
 ## `authenticated + private`
 
@@ -198,6 +236,5 @@ future public-hosted setup design explicitly changes this policy.
 ## 11. Relationship to Other Docs
 
 - implementation plan: `doc/plans/2026-02-23-deployment-auth-mode-consolidation.md`
-- V1 contract: `doc/SPEC-implementation.md`
 - operator workflows: `doc/DEVELOPING.md` and `doc/CLI.md`
 - invite/join state map: `doc/spec/invite-flow.md`

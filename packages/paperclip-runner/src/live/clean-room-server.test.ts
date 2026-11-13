@@ -15,6 +15,7 @@ import type {
 } from "../drivers/codex/app-server-transport.js";
 import type { CapabilityIssueThreadSnapshot, CapabilityThreadItem } from "../issue-thread/types.js";
 import type { CapabilityLiveTransportFactory } from "./live-session.js";
+import type { CapabilityRunnerdProcessEvidence } from "./runnerd-codex-transport.js";
 import {
   createCapabilityTurnStreamDecoder,
   readCapabilityTurnStream,
@@ -234,7 +235,7 @@ class FakeCleanRoomTransport implements CodexAppServerTransport {
         interactionKind: "questions",
         title: "Which way should I take this?",
         prompt: "Pick a direction for the clean-room issue.",
-        payload: { questions: [{ id: "path", prompt: "Which path?", options: ["a", "b"] }] },
+        payload: { version: 1, questionSet: { schema: "paperclip.question_set.v1", questions: [{ id: "path", prompt: "Which path?", required: true, answerMode: "single_select", options: [{ id: "a", label: "Path A" }, { id: "b", label: "Path B" }] }] } },
         continuationPolicy: "wake_assignee",
       });
     }
@@ -343,10 +344,25 @@ class FakeCleanRoomTransport implements CodexAppServerTransport {
 
 function fakeTransportFactory(state: FakeProviderState): CapabilityLiveTransportFactory {
   return (options) => {
-    const evidence = {
+    const evidence: CapabilityRunnerdProcessEvidence = {
       runnerPid: 7100,
       runnerProcessGroupId: 7100,
+      providerPid: null,
+      providerProcessStartedAt: null,
       codexPid: 7200,
+      codexProcessStartedAt: null,
+      sidecarPid: null,
+      sidecarProcessStartedAt: null,
+      agentPid: null,
+      agentProcessStartedAt: null,
+      providerDriver: null,
+      providerVersion: null,
+      acpxAgent: null,
+      agentServerVersion: null,
+      agentRuntimeVersion: null,
+      acpProtocolVersion: null,
+      providerExecutionKind: null,
+      providerService: null,
       runnerExited: false,
       runnerExitCode: null,
       runnerSignal: null,
@@ -359,7 +375,7 @@ function fakeTransportFactory(state: FakeProviderState): CapabilityLiveTransport
       options.onEvidence?.(evidence);
     });
     options.onEvidence?.(evidence);
-    return { transport, evidence: () => ({ ...evidence }) };
+    return { transport, evidence: () => ({ ...evidence }), detachControllerForRestart: async () => {} };
   };
 }
 
@@ -369,6 +385,8 @@ interface CleanRoomPayload {
   identity: { token: string; companyId: string; actorId: string; taskId: string; identifier: string };
   limits: { maxTurns: number; maxMessageBytes: number };
   view: CapabilityIssueThreadSnapshot;
+  toolResult?: unknown;
+  toolTurnId?: string | null;
   configuration: {
     provider: "codex" | "opencode";
     model: string | null;
@@ -605,6 +623,17 @@ afterEach(async () => {
 });
 
 describe("Capability clean-room chat server", () => {
+  it.each(["claude", "codex"])("allows an unlisted %s model in the test-drive configuration", async acpxAgent => {
+    const { capabilityIssueThreadServerInternals: internals } = await import("../../scripts/capability-issue-thread-server.mjs");
+    const model = "custom/model[reasoning=medium]";
+    expect(internals.harnessConfiguration({ provider: "acpx", acpxAgent, model }))
+      .toMatchObject({ provider: "acpx", acpxAgent, model });
+    expect(() => internals.harnessConfiguration({ provider: "acpx", acpxAgent, model: " " }))
+      .toThrow("requires an explicit model");
+    expect(() => internals.harnessConfiguration({ provider: "acpx", acpxAgent: "unknown", model }))
+      .toThrow("ACPX agent must be");
+  });
+
   it("validates the exact Claude Managed lab profile and canonical agent version", async () => {
     const module = await import("../../scripts/capability-issue-thread-server.mjs");
     const internals = module.capabilityIssueThreadServerInternals;
@@ -790,9 +819,9 @@ describe("Capability clean-room chat server", () => {
     expect(after.toolTurnId).toMatch(/^turn-/);
     const turn = after.view.turns.find((candidate: { id: string }) => candidate.id === after.toolTurnId);
     expect(turn).toBeDefined();
-    expect(turn.items.some((item: CapabilityThreadItem) => item.kind === "user_message")).toBe(true);
-    expect(turn.items.some((item: CapabilityThreadItem) => item.kind === "tool_activity" && item.operationId === "report_progress")).toBe(true);
-    expect(turn.items.some((item: CapabilityThreadItem) => item.kind === "durable_comment" && item.body === "Progress entered manually from DevTools.")).toBe(true);
+    expect(turn!.items.some((item: CapabilityThreadItem) => item.kind === "user_message")).toBe(true);
+    expect(turn!.items.some((item: CapabilityThreadItem) => item.kind === "tool_activity" && item.operationId === "report_progress")).toBe(true);
+    expect(turn!.items.some((item: CapabilityThreadItem) => item.kind === "durable_comment" && item.body === "Progress entered manually from DevTools.")).toBe(true);
     expect(after.view.evidence.state.at(-1)?.toRevision).toBeGreaterThan(0);
   });
 

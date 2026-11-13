@@ -34,14 +34,21 @@ const mockDocumentsService = vi.hoisted(() => ({
 }));
 
 const mockExecutionWorkspaceService = vi.hoisted(() => ({
-  getById: vi.fn(),
+  getById: vi.fn(() => { throw new Error("Task routes must not inspect a workspace"); }),
+  getStoredById: vi.fn(),
 }));
 
-const mockAccessService = vi.hoisted(() => ({
-  canUser: vi.fn(),
-  decide: vi.fn(),
-  hasPermission: vi.fn(),
-}));
+const mockAccessService = vi.hoisted(() => {
+  const decide = vi.fn();
+  return {
+    canUser: vi.fn(),
+    decide,
+    // The batched read asks the mocked decision once per task.
+    decideReads: async (actor: unknown, resources: unknown[]) =>
+      Promise.all(resources.map((resource) => decide({ actor, action: "issue:read", resource }))),
+    hasPermission: vi.fn(),
+  };
+});
 
 const mockAgentService = vi.hoisted(() => ({
   getById: vi.fn(),
@@ -97,6 +104,11 @@ const mockEnvironmentService = vi.hoisted(() => ({}));
 const mockDb = vi.hoisted(() => ({
   select: vi.fn(),
   execute: vi.fn(),
+}));
+
+vi.mock("../services/task-interruption-presentation.js", () => ({
+  taskInterruptionPresentation: vi.fn(async () => null),
+  taskInterruptionPresentations: vi.fn(async () => new Map()),
 }));
 
 vi.mock("../services/index.js", () => ({
@@ -190,7 +202,7 @@ const projectGoal = {
   updatedAt: new Date("2026-03-20T00:00:00Z"),
 };
 
-describe.sequential("issue goal context routes", () => {
+describe("issue goal context routes", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockAccessService.decide.mockResolvedValue({
@@ -216,7 +228,7 @@ describe.sequential("issue goal context routes", () => {
     mockIssueService.listAttachments.mockResolvedValue([]);
     mockDocumentsService.getIssueDocumentPayload.mockResolvedValue({});
     mockDocumentsService.getIssueDocumentByKey.mockResolvedValue(null);
-    mockExecutionWorkspaceService.getById.mockResolvedValue(null);
+    mockExecutionWorkspaceService.getStoredById.mockResolvedValue(null);
     const emptyQuery: any = {};
     emptyQuery.from = vi.fn(() => emptyQuery);
     emptyQuery.innerJoin = vi.fn(() => emptyQuery);
@@ -388,7 +400,7 @@ describe.sequential("issue goal context routes", () => {
         updatedAt: new Date("2026-03-20T00:00:00Z"),
       },
     });
-    mockExecutionWorkspaceService.getById.mockResolvedValueOnce({
+    mockExecutionWorkspaceService.getStoredById.mockResolvedValueOnce({
       id: workspaceId,
       companyId: "company-1",
       projectId: legacyProjectLinkedIssue.projectId,
@@ -462,6 +474,9 @@ describe.sequential("issue goal context routes", () => {
     );
     expect(mockGoalService.getDefaultCompanyGoal).not.toHaveBeenCalled();
     expect(res.body.attachments).toEqual([]);
+    expect(res.body.taskQuestionContext).toEqual({
+      questions: [], truncated: false, guidance: expect.stringContaining("Historical questions remain answerable"),
+    });
   });
 
   it("preserves direct continuation summary lookup in GET /issues/:id/heartbeat-context", async () => {
@@ -518,12 +533,12 @@ describe.sequential("issue goal context routes", () => {
     ]);
   });
 
-  it("surfaces the current execution workspace from GET /issues/:id/heartbeat-context", async () => {
+  it.each(["", "/heartbeat-context"])("reads stored workspace context without Git inspection: %s", async (suffix) => {
     mockIssueService.getById.mockResolvedValue({
       ...legacyProjectLinkedIssue,
       executionWorkspaceId: "55555555-5555-4555-8555-555555555555",
     });
-    mockExecutionWorkspaceService.getById.mockResolvedValue({
+    mockExecutionWorkspaceService.getStoredById.mockResolvedValue({
       id: "55555555-5555-4555-8555-555555555555",
       name: "PAP-581 workspace",
       mode: "isolated_workspace",
@@ -541,11 +556,12 @@ describe.sequential("issue goal context routes", () => {
     });
 
     const res = await request(createApp()).get(
-      "/api/issues/11111111-1111-4111-8111-111111111111/heartbeat-context",
+      `/api/issues/11111111-1111-4111-8111-111111111111${suffix}`,
     );
 
     expect(res.status).toBe(200);
-    expect(mockExecutionWorkspaceService.getById).toHaveBeenCalledWith("55555555-5555-4555-8555-555555555555");
+    expect(mockExecutionWorkspaceService.getById).not.toHaveBeenCalled();
+    expect(mockExecutionWorkspaceService.getStoredById).toHaveBeenCalledWith("company-1", "55555555-5555-4555-8555-555555555555", { includeRuntimeServices: true });
     expect(res.body.currentExecutionWorkspace).toEqual(expect.objectContaining({
       id: "55555555-5555-4555-8555-555555555555",
       mode: "isolated_workspace",

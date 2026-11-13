@@ -1,3 +1,5 @@
+import { resolveBundledPluginRuntimeLoader } from "./bundled-plugin-runtime.js";
+import { finishServiceShutdown } from "../shutdown.js";
 /**
  * PluginLoader — discovery, installation, and runtime activation of plugins.
  *
@@ -30,7 +32,7 @@ import { execFile } from "node:child_process";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { promisify } from "node:util";
+import { isDeepStrictEqual, promisify } from "node:util";
 import type { Db } from "@paperclipai/db";
 import { PLUGIN_RPC_ERROR_CODES } from "@paperclipai/plugin-sdk";
 import type {
@@ -50,7 +52,10 @@ import type { PluginJobStore } from "./plugin-job-store.js";
 import type { PluginToolDispatcher } from "./plugin-tool-dispatcher.js";
 import type { PluginLifecycleManager } from "./plugin-lifecycle.js";
 import { pluginDatabaseService } from "./plugin-database.js";
+import type { DistributionPlugin } from "./distribution-plugin-catalog.js";
 import { resolveBundledCatalogRoot } from "./bundled-plugins.js";
+import { managedPluginWorkerEnvGrant } from "./managed-plugin-worker-env.js";
+import { createWorkScheduler } from "./work-scheduler.js";
 
 const execFileAsync = promisify(execFile);
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -141,6 +146,7 @@ const SANDBOX_PROVIDER_CREDENTIAL_ENV_PASSTHROUGH: Record<
   string,
   { driverKey: string; envVars: readonly string[] }
 > = {
+  "@paperclipai/plugin-boxd": { driverKey: "boxd", envVars: ["BOXD_API_KEY"] },
   "@paperclipai/plugin-createos": { driverKey: "createos", envVars: ["CREATEOS_API_KEY"] },
   "@paperclipai/plugin-daytona": { driverKey: "daytona", envVars: ["DAYTONA_API_KEY"] },
   "@paperclipai/plugin-e2b": { driverKey: "e2b", envVars: ["E2B_API_KEY"] },
@@ -155,8 +161,11 @@ export function buildPluginWorkerEnv(input: {
   packageName?: string;
   /** Local install path (`PluginRecord.packagePath`); null for registry installs. */
   packagePath?: string | null;
+  /** Selected image distribution verified during managed package activation. */
+  verifiedDistribution?: Pick<DistributionPlugin, "workerCredentialEnv">;
   /** Test seam; defaults to the repo plugin tree and the bundled catalog root. */
   trustedLocalPluginRoots?: readonly string[];
+  grantedEnvVars?: readonly string[];
   instanceInfo: { deploymentMode?: string | null; deploymentExposure?: string | null };
   processEnv?: NodeJS.ProcessEnv;
 }): Record<string, string> {
@@ -165,6 +174,10 @@ export function buildPluginWorkerEnv(input: {
     PAPERCLIP_DEPLOYMENT_MODE: input.instanceInfo.deploymentMode ?? "",
     PAPERCLIP_DEPLOYMENT_EXPOSURE: input.instanceInfo.deploymentExposure ?? "",
   };
+  for (const key of input.grantedEnvVars ?? []) {
+    const value = processEnv[key];
+    if (value && value.trim().length > 0) env[key] = value;
+  }
   const canRegisterEnvironmentDrivers = Array.isArray(input.manifest.capabilities)
     && input.manifest.capabilities.includes("environment.drivers.register");
   if (!canRegisterEnvironmentDrivers) return env;
@@ -184,7 +197,12 @@ export function buildPluginWorkerEnv(input: {
       )
       ? credentialEntry.envVars
       : [];
-  for (const key of [...ADAPTER_ENV_PASSTHROUGH, ...K8S_IN_CLUSTER_ENV_PASSTHROUGH, ...credentialKeys]) {
+  for (const key of [
+    ...ADAPTER_ENV_PASSTHROUGH,
+    ...K8S_IN_CLUSTER_ENV_PASSTHROUGH,
+    ...credentialKeys,
+    ...(input.verifiedDistribution?.workerCredentialEnv ?? []),
+  ]) {
     const value = processEnv[key];
     if (value && value.trim().length > 0) {
       env[key] = value;
@@ -269,6 +287,18 @@ function getDeclaredPageRoutePaths(manifest: PaperclipPluginManifestV1): string[
  * Options for the plugin loader service.
  */
 export interface PluginLoaderOptions {
+  resolvePackageRoot?: (plugin: PluginRecord) => string;
+  prebuiltOnly?: boolean;
+  /** Check image policy and return verified distribution evidence when available. */
+  assertPackageActivation?: (input: {
+    pluginKey?: string;
+    packageRoot: string;
+    /** Persisted source path, even when package resolution used a fallback. */
+    installedPackagePath?: string | null;
+    manifest?: PaperclipPluginManifestV1;
+    /** Persisted grants, supplied before a runtime manifest refresh is saved. */
+    previousManifest?: PaperclipPluginManifestV1;
+  }) => DistributionPlugin | void;
   /**
    * Path to the local plugin directory to scan.
    * Defaults to ~/.paperclip/plugins/
@@ -297,6 +327,29 @@ export interface PluginLoaderOptions {
    * Registry support is not yet implemented; this field is reserved.
    */
   registryUrl?: string;
+
+  /** Delays between retries of an activation whose worker `initialize` timed out. */
+  activationTimeoutRetryDelaysMs?: readonly number[];
+
+  /** Shortest interval between on-demand re-activations of a plugin errored by activation timeouts. */
+  activationTimeoutOnDemandIntervalMs?: number;
+}
+
+export const PLUGIN_ACTIVATION_TIMEOUT_ERROR_PREFIX = "Activation timed out";
+const DEFAULT_ACTIVATION_TIMEOUT_RETRY_DELAYS_MS = [5_000, 15_000, 45_000, 120_000] as const;
+const DEFAULT_ACTIVATION_TIMEOUT_ON_DEMAND_INTERVAL_MS = 60_000;
+
+export function isPluginActivationTimeout(error: unknown): boolean {
+  let current: unknown = error;
+  for (let depth = 0; depth < 6 && current instanceof Error; depth++) {
+    if ((current as { code?: unknown }).code === PLUGIN_RPC_ERROR_CODES.TIMEOUT) return true;
+    current = current.cause;
+  }
+  return false;
+}
+
+export function isPluginActivationTimeoutError(plugin: { status: string; lastError: string | null }): boolean {
+  return plugin.status === "error" && plugin.lastError?.startsWith(PLUGIN_ACTIVATION_TIMEOUT_ERROR_PREFIX) === true;
 }
 
 // ---------------------------------------------------------------------------
@@ -424,6 +477,7 @@ export interface PluginLoadSingleOptions {
 
 interface PluginActivateOptions {
   markErrorOnFailure: boolean;
+  activationTimeoutRetry?: number;
 }
 
 /**
@@ -624,6 +678,16 @@ export interface PluginLoader {
    * @see PLUGIN_SPEC.md §8.5 — Uninstall Process
    */
   unloadSingle(pluginId: string, pluginKey: string): Promise<void>;
+
+  /**
+   * Re-activate a plugin that is in `error` only because its worker's
+   * `initialize` timed out, at most once per interval. Returns whether an
+   * activation is now in flight; the caller treats the plugin as starting.
+   */
+  requestActivationTimeoutRecovery(plugin: { id: string; status: string; lastError: string | null }): boolean;
+
+  /** Cancel pending activation-timeout retries and await the ones already running. */
+  stopActivationTimeoutRecovery(): Promise<void>;
 
   /**
    * Stop all managed plugin workers. Called during server shutdown.
@@ -1144,9 +1208,48 @@ export function pluginLoader(
     migrationDb = db,
     enableLocalFilesystem = true,
     enableNpmDiscovery = true,
+    assertPackageActivation,
+    resolvePackageRoot,
+    prebuiltOnly = false,
+    activationTimeoutRetryDelaysMs = DEFAULT_ACTIVATION_TIMEOUT_RETRY_DELAYS_MS,
+    activationTimeoutOnDemandIntervalMs = DEFAULT_ACTIVATION_TIMEOUT_ON_DEMAND_INTERVAL_MS,
   } = options;
 
   const registry = pluginRegistryService(db);
+  const activationRetryScheduler = createWorkScheduler();
+  const activeActivationRecoveries = new Set<Promise<unknown>>();
+  const onDemandActivations = new Map<string, { at: number; inFlight: boolean }>();
+  let shuttingDown = false;
+
+  function trackActivationRecovery(work: () => Promise<unknown>, label: string, pluginId: string) {
+    const running = work().catch((err: unknown) => {
+      log.warn({ pluginId, err: err instanceof Error ? err.message : String(err) }, label);
+    });
+    activeActivationRecoveries.add(running);
+    void running.finally(() => activeActivationRecoveries.delete(running));
+  }
+
+  async function stopActivationTimeoutRecovery() {
+    shuttingDown = true;
+    activationRetryScheduler.stop();
+    while (activeActivationRecoveries.size > 0) await Promise.allSettled([...activeActivationRecoveries]);
+  }
+
+  async function activateForRecovery(plugin: PluginRecord, activationTimeoutRetry: number) {
+    const result = await activatePlugin(plugin, { markErrorOnFailure: true, activationTimeoutRetry });
+    if (!result.success) return;
+    const latest = (await registry.getById(plugin.id)) as PluginRecord | null;
+    if (latest?.status === "ready" && !shuttingDown) return;
+    log.info({ pluginId: plugin.id, pluginKey: plugin.pluginKey, status: latest?.status ?? null },
+      "plugin-loader: stopping a recovered plugin that an operator changed during its activation");
+    await teardownPluginRuntime(plugin.id, plugin.pluginKey);
+  }
+
+  async function discardFailedWorkerHandle(pluginId: string) {
+    const handle = runtimeServices?.workerManager.getWorker(pluginId);
+    if (!handle || (handle.status !== "crashed" && handle.status !== "stopped")) return;
+    await runtimeServices!.workerManager.stopWorker(pluginId);
+  }
   const manifestValidator = pluginManifestValidator();
   const capabilityValidator = pluginCapabilityValidator();
   const log = logger.child({ service: "plugin-loader" });
@@ -1198,6 +1301,7 @@ export function pluginLoader(
     installOptions: PluginInstallOptions,
   ): Promise<DiscoveredPlugin> {
     const { packageName, localPath, version, installDir } = installOptions;
+    if (prebuiltOnly && !localPath) throw new Error("Managed plugins must come from the current image catalog");
 
     if (!packageName && !localPath) {
       throw new Error("Either packageName or localPath must be provided");
@@ -1269,10 +1373,11 @@ export function pluginLoader(
 
     // Step 3: Read and validate plugin manifest
     // Note: this.loadManifest (used via current context)
+    assertPackageActivation?.({ packageRoot: resolvedPackagePath });
     const pkgJson = await readPackageJson(resolvedPackagePath);
     if (!pkgJson) throw new Error(`Missing package.json at ${resolvedPackagePath}`);
 
-    if (localPath) {
+    if (localPath && !prebuiltOnly) {
       await ensureLocalPluginBuilt(resolvedPackagePath, pkgJson);
     }
 
@@ -1287,6 +1392,7 @@ export function pluginLoader(
     }
 
     const manifest = await loadManifestFromPath(manifestPath);
+    assertPackageActivation?.({ packageRoot: resolvedPackagePath, pluginKey: manifest.id, manifest });
 
     // Step 4: Reject incompatible plugin API versions
     if (!manifestValidator.getSupportedVersions().includes(manifest.apiVersion)) {
@@ -1382,7 +1488,8 @@ export function pluginLoader(
       );
     }
 
-    if (JSON.stringify(manifest) === JSON.stringify(plugin.manifestJson)) {
+    assertPackageActivation?.({ packageRoot, installedPackagePath: plugin.packagePath, pluginKey: plugin.pluginKey, manifest, previousManifest: plugin.manifestJson });
+    if (isDeepStrictEqual(manifest, plugin.manifestJson)) {
       return plugin;
     }
 
@@ -1409,6 +1516,7 @@ export function pluginLoader(
     packagePath: string,
     source: PluginSource,
   ): Promise<DiscoveredPlugin | null> {
+    assertPackageActivation?.({ packageRoot: packagePath });
     const pkgJson = await readPackageJson(packagePath);
     if (!pkgJson) return null;
 
@@ -1438,6 +1546,7 @@ export function pluginLoader(
 
     try {
       const manifest = await loadManifestFromPath(manifestPath);
+      assertPackageActivation?.({ packageRoot: packagePath, pluginKey: manifest.id, manifest });
       return {
         packagePath,
         packageName,
@@ -1690,6 +1799,7 @@ export function pluginLoader(
     // -----------------------------------------------------------------------
 
     async loadManifest(packagePath: string): Promise<PaperclipPluginManifestV1 | null> {
+      assertPackageActivation?.({ packageRoot: packagePath });
       const pkgJson = await readPackageJson(packagePath);
       if (!pkgJson) return null;
 
@@ -1704,7 +1814,9 @@ export function pluginLoader(
       const manifestPath = resolveManifestPath(packagePath, pkgJson);
       if (!manifestPath || !existsSync(manifestPath)) return null;
 
-      return loadManifestFromPath(manifestPath);
+      const manifest = await loadManifestFromPath(manifestPath);
+      assertPackageActivation?.({ packageRoot: packagePath, pluginKey: manifest.id, manifest });
+      return manifest;
     },
 
     // -----------------------------------------------------------------------
@@ -1728,6 +1840,7 @@ export function pluginLoader(
             packagePath: discovered.source === "local-filesystem" ? discovered.packagePath : undefined,
           },
           manifest,
+          { idempotent: prebuiltOnly },
         );
 
         if (!installed) {
@@ -1782,12 +1895,7 @@ export function pluginLoader(
       newManifest: PaperclipPluginManifestV1;
       discovered: DiscoveredPlugin;
     }> {
-      const plugin = (await registry.getById(pluginId)) as {
-        id: string;
-        packageName: string;
-        packagePath: string | null;
-        manifestJson: PaperclipPluginManifestV1;
-      } | null;
+      const plugin = await registry.getById(pluginId);
       if (!plugin) throw new Error(`Plugin not found: ${pluginId}`);
 
       const oldManifest = plugin.manifestJson;
@@ -1796,7 +1904,7 @@ export function pluginLoader(
         // For local-path installs, fall back to the stored packagePath so
         // `upgradePlugin` can re-read the manifest from disk without needing
         // the caller to re-supply the path every time.
-        localPath = plugin.packagePath ?? undefined,
+        localPath = resolvePackageRoot ? resolvePackageRoot(plugin) : plugin.packagePath ?? undefined,
         version,
       } = upgradeOptions;
 
@@ -1866,6 +1974,7 @@ export function pluginLoader(
     // -----------------------------------------------------------------------
 
     async cleanupInstallArtifacts(plugin: PluginRecord): Promise<void> {
+      if (prebuiltOnly) return;
       const managedTargets = new Set<string>();
       const managedNodeModulesDir = resolveManagedInstallPackageDir(localPluginDir, plugin.packageName);
       const directManagedDir = path.join(localPluginDir, plugin.packageName);
@@ -2113,7 +2222,31 @@ export function pluginLoader(
     // shutdownAll
     // -----------------------------------------------------------------------
 
+    requestActivationTimeoutRecovery(plugin) {
+      if (!runtimeServices || shuttingDown || !isPluginActivationTimeoutError(plugin)) return false;
+      const previous = onDemandActivations.get(plugin.id);
+      if (previous?.inFlight) return true;
+      if (previous && Date.now() - previous.at < activationTimeoutOnDemandIntervalMs) return false;
+      const attempt = { at: Date.now(), inFlight: true };
+      onDemandActivations.set(plugin.id, attempt);
+      trackActivationRecovery(async () => {
+        try {
+          const flipped = (await registry.updateStatusIf(plugin.id,
+            { status: "error", lastErrorPrefix: PLUGIN_ACTIVATION_TIMEOUT_ERROR_PREFIX }, { status: "ready" })) as PluginRecord | null;
+          if (!flipped || shuttingDown) return;
+          log.info({ pluginId: plugin.id, pluginKey: flipped.pluginKey },
+            "plugin-loader: re-activating a plugin errored by activation timeouts on demand");
+          await discardFailedWorkerHandle(plugin.id);
+          await activateForRecovery(flipped, activationTimeoutRetryDelaysMs.length);
+        } finally { attempt.inFlight = false; }
+      }, "plugin-loader: on-demand re-activation failed", plugin.id);
+      return true;
+    },
+
+    stopActivationTimeoutRecovery,
+
     async shutdownAll(): Promise<void> {
+      await stopActivationTimeoutRecovery();
       if (!runtimeServices) {
         throw new Error(
           "Cannot shutdownAll: no PluginRuntimeServices provided.",
@@ -2124,11 +2257,7 @@ export function pluginLoader(
 
       const { workerManager, jobScheduler } = runtimeServices;
 
-      // 1. Stop the job scheduler tick loop
-      jobScheduler.stop();
-
-      // 2. Stop all worker processes
-      await workerManager.stopAll();
+      await finishServiceShutdown(() => jobScheduler.stop(), () => workerManager.stopAll());
 
       log.info("plugin-loader: all plugins shut down");
     },
@@ -2245,10 +2374,14 @@ export function pluginLoader(
       // ------------------------------------------------------------------
       // 1. Resolve worker entrypoint
       // ------------------------------------------------------------------
-      const packageRoot = resolvePluginPackageRoot(activePlugin, localPluginDir);
+      const packageRoot = resolvePackageRoot ? resolvePackageRoot(activePlugin) : resolvePluginPackageRoot(activePlugin, localPluginDir);
+      assertPackageActivation?.({ pluginKey, packageRoot, installedPackagePath: activePlugin.packagePath });
       activePlugin = await refreshPluginManifestFromPackage(activePlugin, packageRoot);
       manifest = activePlugin.manifestJson;
-      const workerEntrypoint = resolveWorkerEntrypoint(activePlugin, localPluginDir);
+      const verifiedDistribution = assertPackageActivation?.({ pluginKey, packageRoot, installedPackagePath: activePlugin.packagePath, manifest });
+      const workerEntrypoint = resolvePackageRoot
+        ? path.resolve(packageRoot, manifest.entrypoints.worker)
+        : resolveWorkerEntrypoint(activePlugin, localPluginDir);
 
       // ------------------------------------------------------------------
       // 2. Apply restricted database migrations before worker startup
@@ -2315,8 +2448,10 @@ export function pluginLoader(
         env: buildPluginWorkerEnv({
           manifest,
           packageName: activePlugin.packageName,
-          packagePath: activePlugin.packagePath,
+          packagePath: resolvePackageRoot ? packageRoot : activePlugin.packagePath,
+          verifiedDistribution: resolvePackageRoot && verifiedDistribution ? verifiedDistribution : undefined,
           instanceInfo,
+          grantedEnvVars: managedPluginWorkerEnvGrant(activePlugin.pluginKey),
         }),
         // Authorize the worker to act on each configured company from its
         // proactive loops/timers (LOOA-629). Seeded here so it is in place
@@ -2326,10 +2461,9 @@ export function pluginLoader(
         proactiveCompanyScopes: configRows.map((row) => row.companyId),
       };
 
-      // Repo-local plugin installs can resolve workspace TS sources at runtime
-      // (for example @paperclipai/shared exports). Run those workers through
-      // the tsx loader so first-party example plugins work in development.
-      if (activePlugin.packagePath && existsSync(DEV_TSX_LOADER_PATH)) {
+      if (prebuiltOnly) {
+        workerOptions.execArgv = ["--import", resolveBundledPluginRuntimeLoader()];
+      } else if (activePlugin.packagePath && existsSync(DEV_TSX_LOADER_PATH)) {
         workerOptions.execArgv = ["--import", DEV_TSX_LOADER_PATH];
       }
 
@@ -2395,9 +2529,9 @@ export function pluginLoader(
       // 6. Sync job declarations and register with scheduler
       // ------------------------------------------------------------------
       const jobDeclarations = manifest.jobs ?? [];
+      await jobStore.syncJobDeclarations(pluginId, jobDeclarations);
+      await jobScheduler.registerPlugin(pluginId);
       if (jobDeclarations.length > 0) {
-        await jobStore.syncJobDeclarations(pluginId, jobDeclarations);
-        await jobScheduler.registerPlugin(pluginId);
         registered.jobs = jobDeclarations.length;
 
         log.info(
@@ -2476,6 +2610,12 @@ export function pluginLoader(
         "plugin-loader: plugin activated successfully",
       );
 
+      if (activePlugin.lastError?.startsWith(PLUGIN_ACTIVATION_TIMEOUT_ERROR_PREFIX)) {
+        activePlugin = ((await registry.updateStatusIf(pluginId,
+          { status: "ready", lastErrorPrefix: PLUGIN_ACTIVATION_TIMEOUT_ERROR_PREFIX }, { status: "ready", lastError: null })) as PluginRecord | null)
+          ?? activePlugin;
+      }
+
       return { plugin: activePlugin, success: true, registered };
     } catch (err) {
       const errorMessage = err instanceof Error ? err.message : String(err);
@@ -2485,13 +2625,39 @@ export function pluginLoader(
         "plugin-loader: failed to activate plugin",
       );
 
-      if (options.markErrorOnFailure) {
+      const timedOut = isPluginActivationTimeout(err);
+      const timeoutRetry = options.activationTimeoutRetry ?? 0;
+      if (options.markErrorOnFailure && timedOut && timeoutRetry < activationTimeoutRetryDelaysMs.length && !shuttingDown) {
+        const delayMs = activationTimeoutRetryDelaysMs[timeoutRetry]!;
+        try {
+          if (registered.worker) await teardownPluginRuntime(pluginId, pluginKey);
+          await discardFailedWorkerHandle(pluginId);
+          await registry.updateStatusIf(pluginId, { status: "ready" }, { status: "ready", lastError:
+            `${PLUGIN_ACTIVATION_TIMEOUT_ERROR_PREFIX}; retrying in ${Math.round(delayMs / 1000)}s `
+            + `(retry ${timeoutRetry + 1} of ${activationTimeoutRetryDelaysMs.length}): ${errorMessage}` });
+        } catch (retryErr) {
+          log.warn({ pluginId, pluginKey, err: retryErr instanceof Error ? retryErr.message : String(retryErr) },
+            "plugin-loader: could not record a timed-out activation before retrying it");
+        }
+        log.warn({ pluginId, pluginKey, delayMs, retry: timeoutRetry + 1 },
+          "plugin-loader: plugin activation timed out; retrying");
+        activationRetryScheduler.schedule(`plugin-activation:${pluginId}`, Date.now() + delayMs, () => {
+          trackActivationRecovery(async () => {
+            const current = (await registry.getById(pluginId)) as PluginRecord | null;
+            if (shuttingDown || !current || current.status !== "ready" || workerManager.isRunning(pluginId)) return;
+            await discardFailedWorkerHandle(pluginId);
+            await activateForRecovery(current, timeoutRetry + 1);
+          }, "plugin-loader: timed-out activation retry failed", pluginId);
+        });
+      } else if (options.markErrorOnFailure) {
         // Mark the plugin as errored in the database. The running process
         // leaves it inactive; the next boot's loadAll retries it once, and the
         // lifecycle enable() path can revive it sooner by hand.
         // markError also deactivates the plugin runtime in this process.
         try {
-          await lifecycleManager.markError(pluginId, `Activation failed: ${errorMessage}`);
+          await lifecycleManager.markError(pluginId, timedOut
+            ? `${PLUGIN_ACTIVATION_TIMEOUT_ERROR_PREFIX} after ${timeoutRetry} retries: ${errorMessage}`
+            : `Activation failed: ${errorMessage}`);
         } catch (markErr) {
           log.error(
             {

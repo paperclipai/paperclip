@@ -84,6 +84,7 @@ export type CreateRoutine = z.infer<typeof createRoutineSchema>;
 
 export const updateRoutineSchema = objectWithoutDefaults(createRoutineSchema).partial().extend({
   baseRevisionId: z.string().guid().optional().nullable(),
+  responsibleUserId: z.string().trim().min(1).optional(),
 });
 export type UpdateRoutine = z.infer<typeof updateRoutineSchema>;
 
@@ -110,6 +111,7 @@ export const routineRevisionSnapshotRoutineV1Schema = z.object({
 
 export const routineRevisionSnapshotTriggerV1Schema = z.object({
   id: z.string().guid(),
+  setupPending: z.boolean().optional(),
   kind: z.enum(ROUTINE_TRIGGER_KINDS),
   label: z.string().nullable(),
   enabled: z.boolean(),
@@ -143,6 +145,7 @@ export const createRoutineTriggerSchema = z.discriminatedUnion("kind", [
   }),
   baseTriggerSchema.extend({
     kind: z.literal("webhook"),
+    setupPending: z.boolean().optional(),
     signingMode: z.enum(ROUTINE_TRIGGER_SIGNING_MODES).optional().default("bearer"),
     replayWindowSec: z.number().int().min(30).max(86_400).optional().default(300),
   }),
@@ -154,6 +157,8 @@ export const createRoutineTriggerSchema = z.discriminatedUnion("kind", [
 export type CreateRoutineTrigger = z.infer<typeof createRoutineTriggerSchema>;
 
 export const updateRoutineTriggerSchema = z.object({
+  setupPending: z.literal(false).optional(),
+  archived: z.boolean().optional(),
   label: z.string().trim().max(120).optional().nullable(),
   enabled: z.boolean().optional(),
   cronExpression: z.string().trim().min(1).optional().nullable(),

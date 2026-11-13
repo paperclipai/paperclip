@@ -1,4 +1,6 @@
 import { createHash } from "node:crypto";
+import { constants } from "node:fs";
+import { runInNewContext } from "node:vm";
 import { fork, type ChildProcess } from "node:child_process";
 import { once } from "node:events";
 import {
@@ -16,12 +18,14 @@ import {
 } from "node:fs/promises";
 import { createServer, type Server } from "node:net";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname, isAbsolute, join } from "node:path";
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { resolveQualifiedAcpxProfile } from "./qualified-profiles.js";
 import {
+  verifyProvisionedGrokExecutable,
+  builtinGrokLauncherPath,
   awaitVerifiedAcpxProviderExit,
   awaitVerifiedAcpxProviderOwnership,
   createAcpxPackageJsonResolver,
@@ -38,6 +42,20 @@ import {
 } from "./installation-integrity.js";
 import { stageManagedCodexCredential } from "./codex-credentials.js";
 
+async function withLinuxX64TestPlatform<T>(run: () => Promise<T>): Promise<T> {
+  const platformDescriptor = Object.getOwnPropertyDescriptor(process, "platform");
+  const archDescriptor = Object.getOwnPropertyDescriptor(process, "arch");
+  if (!platformDescriptor || !archDescriptor) throw new Error("Missing process platform descriptors");
+  try {
+    Object.defineProperty(process, "platform", { ...platformDescriptor, value: "linux" });
+    Object.defineProperty(process, "arch", { ...archDescriptor, value: "x64" });
+    return await run();
+  } finally {
+    try { Object.defineProperty(process, "platform", platformDescriptor); }
+    finally { Object.defineProperty(process, "arch", archDescriptor); }
+  }
+}
+
 const temporaryDirectories: string[] = [];
 const descriptorCommandPath = "/proc/self/fd/4/server.js";
 
@@ -50,7 +68,176 @@ afterEach(async () => {
 });
 
 describe("ACPX installation integrity", () => {
-  it.each([["linux", "arm64"], ["darwin", "ia32"], ["freebsd", "x64"]] as const)(
+  it.each([["linux", "x64"], ["linux", "arm64"], ["darwin", "arm64"], ["darwin", "x64"]] as const)(
+    "retains Claude executable admission for a published bundle on %s %s", async (os, cpu) => {
+      const parent = await realpath(await mkdtemp(join(tmpdir(), "paperclip-claude-npm-admission-")));
+      temporaryDirectories.push(parent);
+      const root = join(parent, "node_modules/@paperclipai/server");
+      const bridge = join(root, "node_modules/@agentclientprotocol/claude-agent-acp");
+      const runtime = join(bridge, "node_modules/@anthropic-ai/claude-agent-sdk");
+      const name = `@anthropic-ai/claude-agent-sdk-${os}-${cpu}`;
+      const platformRoot = join(parent, "node_modules", name);
+      const optionalDependencies = { [name]: "0.3.286" };
+      const runtimeMetadata = { name: "@anthropic-ai/claude-agent-sdk", version: "0.3.286" };
+      const platformMetadata = { name, version: "0.3.286", os: [os], cpu: [cpu] };
+      await Promise.all([mkdir(runtime, { recursive: true }), mkdir(platformRoot, { recursive: true })]);
+      const command = 'process.stdout.write("unexecuted fixture");';
+      const reset = () => Promise.all([
+        writeFile(join(root, "package.json"), JSON.stringify({ name: "@paperclipai/server", optionalDependencies })),
+        writeFile(join(runtime, "package.json"), JSON.stringify(runtimeMetadata)),
+        writeFile(join(platformRoot, "package.json"), JSON.stringify(platformMetadata)),
+      ]);
+      await reset();
+      await Promise.all([
+        writeFile(join(bridge, "package.json"), JSON.stringify({ name: "@agentclientprotocol/claude-agent-acp", version: "0.73.0", bin: "server.js" })),
+        writeFile(join(bridge, "server.js"), command),
+        writeFile(join(platformRoot, "claude"), "unqualified native bytes", { mode: 0o755 }),
+      ]);
+      const profile = { ...resolveQualifiedAcpxProfile("claude", "claude-opus-5-5"), commandDigest: `sha256:${createHash("sha256").update(command).digest("hex")}` };
+      const resolver = createAcpxPackageJsonResolver(root);
+      expect(resolver(name, join(runtime, "package.json"))).toBe(join(platformRoot, "package.json"));
+      expect(() => resolver(name)).toThrow("outside the selected provider root");
+      for (const [file, metadata] of [
+        [join(root, "package.json"), { name: "@paperclipai/server", optionalDependencies: { [name]: "latest" } }],
+        [join(runtime, "package.json"), { ...runtimeMetadata, version: "0.3.285" }],
+        [join(runtime, "package.json"), { ...runtimeMetadata, optionalDependencies: {} }],
+        [join(platformRoot, "package.json"), { ...platformMetadata, name: "unqualified-provider" }],
+        [join(platformRoot, "package.json"), { ...platformMetadata, version: "0.3.285" }],
+        [join(platformRoot, "package.json"), { ...platformMetadata, cpu: ["ia32"] }],
+      ] as const) {
+        await writeFile(file, JSON.stringify(metadata));
+        expect(() => resolver(name, join(runtime, "package.json"))).toThrow("outside the selected provider root");
+        await reset();
+      }
+      const platformSpy = vi.spyOn(process, "platform", "get").mockReturnValue(os);
+      const archSpy = vi.spyOn(process, "arch", "get").mockReturnValue(cpu);
+      try {
+        await expect(verifyQualifiedAcpxInstallation(profile, (...args) => resolver(...args))).rejects.toThrow("runtime omitted its verified platform executable package");
+        await expect(verifyQualifiedAcpxInstallation(profile, resolver)).rejects.toThrow(/digest mismatch/);
+        vi.stubEnv("PAPERCLIP_ACPX_PROVIDER_PACKAGE_ROOT", root);
+        vi.stubEnv("PAPERCLIP_ACPX_PROVIDER_PACKAGE_MANIFEST", undefined);
+        await expect(verifyQualifiedAcpxInstallation(profile)).rejects.toThrow(/digest mismatch/);
+      } finally {
+        vi.unstubAllEnvs();
+        platformSpy.mockRestore();
+        archSpy.mockRestore();
+      }
+    },
+  );
+  it("explains a missing Claude ACP installation without leaking the resolver stack", async () => {
+    const missingPackage = Object.assign(new Error(
+      "Cannot find module '@agentclientprotocol/claude-agent-acp/package.json'\nRequire stack: /srv/private/server.js",
+    ), { code: "MODULE_NOT_FOUND" });
+    const error = await verifyQualifiedAcpxInstallation(
+      resolveQualifiedAcpxProfile("claude", "claude-opus-5-5"),
+      () => { throw missingPackage; },
+    ).catch(error => error);
+    expect(error).toMatchObject({ code: "ACPX_RUNTIME_PACKAGE_MISSING" });
+    expect(error.message).toContain("@agentclientprotocol/claude-agent-acp");
+    expect(error.message).toContain("Reinstall or rebuild");
+    expect(error.message).not.toContain("/srv/private");
+    expect(error.message).not.toContain("Require stack");
+  });
+
+  it.each([false, true])("admits only the declared qualified Codex platform in its npm-hoisted slot (published platform declaration: %s)", async (publishedDeclaration) => {
+    const parent = await realpath(await mkdtemp(join(tmpdir(), "paperclip-codex-npm-hoist-")));
+    temporaryDirectories.push(parent);
+    const root = join(parent, "node_modules/@paperclipai/server");
+    const runtime = join(root, "node_modules/@openai/codex/package.json");
+    const platformRoot = join(parent, "node_modules/@openai/codex-linux-x64");
+    const platform = join(platformRoot, "package.json");
+    const alias = "npm:@openai/codex@0.160.0-linux-x64";
+    const selected = { name: "@paperclipai/server", optionalDependencies: { "@openai/codex-linux-x64": alias } };
+    const runtimeMetadata = { name: "@openai/codex", version: "0.160.0", ...(!publishedDeclaration && { optionalDependencies: selected.optionalDependencies }) };
+    const platformMetadata = { name: "@openai/codex", version: "0.160.0-linux-x64", os: ["linux"], cpu: ["x64"] };
+    await mkdir(dirname(runtime), { recursive: true });
+    await mkdir(platformRoot, { recursive: true });
+    const reset = async () => Promise.all([
+      writeFile(join(root, "package.json"), JSON.stringify(selected)),
+      writeFile(runtime, JSON.stringify(runtimeMetadata)),
+      writeFile(platform, JSON.stringify(platformMetadata)),
+    ]);
+    await reset();
+    const resolver = createAcpxPackageJsonResolver(root);
+    expect(resolver("@openai/codex-linux-x64", runtime)).toBe(platform);
+    // Direct provider discovery remains closed; only the selected runtime can
+    // hand off its explicitly declared, qualified executable dependency.
+    expect(() => resolver("@openai/codex-linux-x64")).toThrow("outside the selected provider root");
+    for (const [file, metadata] of [
+      [join(root, "package.json"), { ...selected, optionalDependencies: {} }],
+      [join(root, "package.json"), { ...selected, optionalDependencies: { "@openai/codex-linux-x64": "latest" } }],
+      [runtime, { ...runtimeMetadata, version: "0.159.0" }],
+      [runtime, { ...runtimeMetadata, optionalDependencies: {} }],
+      [runtime, { ...runtimeMetadata, optionalDependencies: { "@openai/codex-linux-x64": "latest" } }],
+      [platform, { ...platformMetadata, version: "0.159.0-linux-x64" }],
+      [platform, { ...platformMetadata, name: "unqualified-provider" }],
+      [platform, { ...platformMetadata, cpu: ["arm64"] }],
+    ] as const) {
+      await writeFile(file, JSON.stringify(metadata));
+      expect(() => resolver("@openai/codex-linux-x64", runtime)).toThrow("outside the selected provider root");
+      await reset();
+    }
+    const outside = join(parent, "outside-platform");
+    await mkdir(outside);
+    await writeFile(join(outside, "package.json"), JSON.stringify(platformMetadata));
+    await rm(platformRoot, { recursive: true });
+    await symlink(outside, platformRoot);
+    expect(() => resolver("@openai/codex-linux-x64", runtime)).toThrow("outside the selected provider root");
+  });
+
+  it.each([false, true])("retains Codex executable version and byte admission for the hoisted platform (stale bundled alias: %s)", async (staleBundledAlias) => {
+    const parent = await realpath(await mkdtemp(join(tmpdir(), "paperclip-codex-npm-admission-")));
+    temporaryDirectories.push(parent);
+    const root = join(parent, "node_modules/@paperclipai/server");
+    const bridge = join(root, "node_modules/@agentclientprotocol/codex-acp");
+    const runtime = join(bridge, "node_modules/@openai/codex");
+    const platformRoot = join(parent, "node_modules/@openai/codex-linux-x64");
+    const native = join(platformRoot, "vendor/x86_64-unknown-linux-musl/bin/codex");
+    const optionalDependencies = { "@openai/codex-linux-x64": "npm:@openai/codex@0.160.0-linux-x64" };
+    await Promise.all([mkdir(runtime, { recursive: true }), mkdir(dirname(native), { recursive: true })]);
+    const command = 'process.stdout.write("unexecuted fixture");';
+    await Promise.all([
+      writeFile(join(root, "package.json"), JSON.stringify({ name: "@paperclipai/server", optionalDependencies })),
+      writeFile(join(bridge, "package.json"), JSON.stringify({ name: "@agentclientprotocol/codex-acp", version: "1.6.2", bin: "server.js" })),
+      writeFile(join(bridge, "server.js"), command),
+      writeFile(join(runtime, "package.json"), JSON.stringify({ name: "@openai/codex", version: "0.160.0" })),
+      writeFile(native, "unqualified native bytes", { mode: 0o755 }),
+    ]);
+    const profile = { ...resolveQualifiedAcpxProfile("codex", "gpt-5.6-sol"), commandDigest: `sha256:${createHash("sha256").update(command).digest("hex")}` };
+    const resolver = createAcpxPackageJsonResolver(root);
+    const platformSpy = vi.spyOn(process, "platform", "get").mockReturnValue("linux");
+    const archSpy = vi.spyOn(process, "arch", "get").mockReturnValue("x64");
+    try {
+      const metadata = { name: "@openai/codex", version: "0.160.0-linux-x64", os: ["linux"], cpu: ["x64"] };
+      await writeFile(join(platformRoot, "package.json"), JSON.stringify(metadata));
+      // A stale in-bundle package shadows the correct declared npm slot and
+      // must fail rather than falling through to the hoisted installation.
+      if (staleBundledAlias) {
+        const stale = join(runtime, "node_modules/@openai/codex-linux-x64");
+        await mkdir(stale, { recursive: true });
+        await writeFile(join(stale, "package.json"), JSON.stringify({ ...metadata, version: "0.159.0-linux-x64" }));
+      }
+      // A callback without an explicit selected package authority cannot
+      // adopt the published server's platform declaration implicitly.
+      await expect(verifyQualifiedAcpxInstallation(profile, (...args) => resolver(...args))).rejects.toThrow(
+        "runtime omitted its verified platform executable package",
+      );
+      await expect(verifyQualifiedAcpxInstallation(profile, resolver)).rejects.toThrow(staleBundledAlias
+        ? /runtime executable package version mismatch/
+        : /digest mismatch/);
+      vi.stubEnv("PAPERCLIP_ACPX_PROVIDER_PACKAGE_ROOT", root);
+      vi.stubEnv("PAPERCLIP_ACPX_PROVIDER_PACKAGE_MANIFEST", undefined);
+      await expect(verifyQualifiedAcpxInstallation(profile)).rejects.toThrow(staleBundledAlias
+        ? /runtime executable package version mismatch/
+        : /digest mismatch/);
+    } finally {
+      vi.unstubAllEnvs();
+      platformSpy.mockRestore();
+      archSpy.mockRestore();
+    }
+  });
+
+  it.each([["linux", "ia32"], ["darwin", "ia32"], ["freebsd", "x64"]] as const)(
     "rejects the actual Claude runtime probe on unsupported %s %s",
     async (platform, arch) => {
       const platformSpy = vi.spyOn(process, "platform", "get").mockReturnValue(platform);
@@ -193,7 +380,7 @@ describe("ACPX installation integrity", () => {
     await mkdir(nestedRuntimeDirectory, { recursive: true });
     await writeFile(
       join(nestedRuntimeDirectory, "package.json"),
-      JSON.stringify({ version: "0.84.2" }),
+      JSON.stringify({ version: "1.0.0" }),
     );
 
     await expect(
@@ -445,7 +632,7 @@ describe("ACPX installation integrity", () => {
       },
       {
         name: "@anthropic-ai/claude-agent-sdk",
-        version: "0.3.263",
+        version: "0.3.286",
         directory: join(dependencyRoot, "claude-agent-sdk"),
       },
       {
@@ -574,7 +761,7 @@ describe("ACPX installation integrity", () => {
     );
   });
 
-  it.runIf((process.platform === "linux" && process.arch === "x64") || (process.platform === "darwin" && ["arm64", "x64"].includes(process.arch)))(
+  it.runIf(["linux", "darwin"].includes(process.platform) && ["arm64", "x64"].includes(process.arch))(
     "resolves and pins the installed Claude ACP dependency graph",
     async () => {
       const profile = resolveQualifiedAcpxProfile("claude", "claude-sonnet-5");
@@ -604,6 +791,40 @@ describe("ACPX installation integrity", () => {
       await command.close();
     },
   );
+
+  it("resolves the shipped builtin launcher without an npm package", async () => {
+    const launcher = builtinGrokLauncherPath();
+    expect(launcher).toContain("/providers/grok/launcher.cjs");
+    expect(`sha256:${createHash("sha256").update(await readFile(launcher)).digest("hex")}`)
+      .toBe(resolveQualifiedAcpxProfile("grok", "grok-4.7").commandDigest);
+    expect(resolveQualifiedAcpxProfile("grok", "grok-4.7").agentServerPackage).toBe("builtin:grok-acp");
+  });
+
+  it("reports a missing environment prerequisite before launching Grok", () => withLinuxX64TestPlatform(async () => {
+    const fixture = await installationFixture();
+    await expect(verifyProvisionedGrokExecutable(join(fixture.commandDirectory, "missing")))
+      .rejects.toThrow(/Grok Build 1.0.13 prerequisite missing/);
+  }));
+
+  it("resolves a controller-owned builtin root for descriptor-loaded sidecars and rejects relative roots", () => {
+    vi.stubEnv("PAPERCLIP_ACPX_BUILTIN_ROOT", "/verified/dist/providers");
+    try { expect(builtinGrokLauncherPath("file:///proc/self/fd/9")).toBe("/verified/dist/providers/grok/launcher.cjs"); }
+    finally { vi.unstubAllEnvs(); }
+    vi.stubEnv("PAPERCLIP_ACPX_BUILTIN_ROOT", "../untrusted");
+    try { expect(() => builtinGrokLauncherPath()).toThrow("Invalid builtin provider root"); }
+    finally { vi.unstubAllEnvs(); }
+  });
+
+  it("rejects a tampered native Grok executable and symlink substitution", () => withLinuxX64TestPlatform(async () => {
+    const fixture = await installationFixture();
+
+    const native = join(fixture.commandDirectory, "grok");
+    await writeFile(native, "tampered native binary", { mode: 0o700 });
+    await expect(verifyProvisionedGrokExecutable(native)).rejects.toThrow(/digest mismatch/);
+    await rm(native);
+    await symlink(fixture.commandPath, native);
+    await expect(verifyProvisionedGrokExecutable(native)).rejects.toThrow(/regular file|symlink|no-follow/);
+  }));
 
   it("rejects package version and executable digest drift", async () => {
     const fixture = await installationFixture();
@@ -1271,7 +1492,7 @@ describe("ACPX installation integrity", () => {
         fixture.runtimePackageJsonPath,
         JSON.stringify({
           name: packageName,
-          version: "0.84.2",
+          version: "1.0.0",
           main: "index.js",
         }),
       ),
@@ -1888,9 +2109,15 @@ async function expectOutput(
   });
   const [exitCode] = await once(child, "exit");
   expect(exitCode, stderr).toBe(0);
-  const normalized = process.platform === "darwin"
-    ? stdout.replace(/\/private\/var\/[^"\s]*\/paperclip-acpx-[^/]+\/0/g, "/proc/self/fd/4")
-    : stdout;
+  let normalized = stdout;
+  if (process.platform === "darwin") {
+    const snapshotPrefix = join(await realpath(tmpdir()), "paperclip-acpx-")
+      .replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    normalized = stdout.replace(
+      new RegExp(`${snapshotPrefix}[^/"\\s]+/0(?=[/"])`, "g"),
+      "/proc/self/fd/4",
+    );
+  }
   expect(normalized).toBe(expected);
 }
 
@@ -2065,7 +2292,7 @@ async function installationFixture() {
       serverPackageJsonPath,
       JSON.stringify({ version: "0.0.33", bin: "bin/server.js" }),
     ),
-    writeFile(runtimePackageJsonPath, JSON.stringify({ version: "0.84.2" })),
+    writeFile(runtimePackageJsonPath, JSON.stringify({ version: "1.0.0" })),
     writeFile(commandPath, command),
   ]);
   await chmod(commandPath, 0o755);
@@ -2099,3 +2326,90 @@ async function installationFixture() {
     },
   };
 }
+
+
+describe("Grok launcher subscription refresh", () => {
+  it("binds the Grok launcher bytes to the shared release declaration", async () => {
+    const launcher = await readFile(new URL("../../providers/grok/launcher.cjs", import.meta.url));
+    const digest = `sha256:${createHash("sha256").update(launcher).digest("hex")}`;
+    const manifest = JSON.parse(await readFile(new URL("../../../acpx-profiles.json", import.meta.url), "utf8"));
+    expect(manifest.profiles.grok.commandDigest).toBe(digest);
+    expect(resolveQualifiedAcpxProfile("grok", "explicit-model").commandDigest).toBe(digest);
+  });
+
+  async function fixture(input: {
+    expiry?: number; rawExpiry?: unknown; apiKey?: string; executable?: string;
+    refresh?: { status: number | null; signal?: string | null; error?: Error };
+    mode?: number; fileError?: string; growingFile?: boolean;
+  } = {}) {
+    const script = await readFile(new URL("../../providers/grok/launcher.cjs", import.meta.url), "utf8");
+    const payload = Buffer.from(JSON.stringify({ account: {
+      key: "PRIVATE-CREDENTIAL-SENTINEL", refresh_token: "PRIVATE-REFRESH-SENTINEL",
+      expires_at: "rawExpiry" in input ? input.rawExpiry : new Date(input.expiry ?? Date.now() - 60_000).toISOString(),
+    } }));
+    const fs = {
+      constants,
+      openSync: vi.fn(() => { if (input.fileError) throw Object.assign(new Error("PRIVATE-CREDENTIAL-SENTINEL"), { code: input.fileError }); return 42; }),
+      fstatSync: vi.fn(() => ({ isFile: () => true, uid: 1000, mode: input.mode ?? 0o600, size: payload.length })),
+      readSync: vi.fn((_fd: number, buffer: Buffer, offset: number, length: number, position: number) => {
+        if (input.growingFile) { buffer.fill(65, offset, offset + length); return length; }
+        return payload.copy(buffer, offset, position, position + length);
+      }),
+      closeSync: vi.fn(),
+    };
+    const spawnSync = vi.fn((_file: string, _args: string[], _options: { env: Record<string, string>; stdio: Array<string | number>; timeout: number; killSignal: string }) => input.refresh ?? { status: 0, signal: null });
+    const execve = vi.fn();
+    const executable = input.executable ?? "/private/verified/grok";
+    return { fs, spawnSync, execve, executable, run: () => runInNewContext(script, {
+      Buffer, Date,
+      process: { env: { PAPERCLIP_GROK_VERIFIED_EXECUTABLE: executable, GROK_HOME: "/isolated/grok", ...(input.apiKey ? { XAI_API_KEY: input.apiKey } : {}) }, getuid: () => 1000, execve },
+      require: (name: string) => name === "node:path" ? { isAbsolute, join } : name === "node:fs" ? fs : name === "node:child_process" ? { spawnSync } : undefined,
+    }) };
+  }
+
+  it("refreshes an expired subscription without inference or ACP output before native startup", async () => {
+    const test = await fixture(); test.run();
+    expect(test.spawnSync).toHaveBeenCalledExactlyOnceWith(test.executable, ["models"], {
+      env: { GROK_HOME: "/isolated/grok" }, stdio: ["ignore", "ignore", "ignore"], timeout: 15_000, killSignal: "SIGKILL",
+    });
+    expect(test.execve).toHaveBeenCalledExactlyOnceWith(test.executable, [test.executable, "agent", "--no-leader", "stdio"], { GROK_HOME: "/isolated/grok" });
+    expect(test.spawnSync.mock.invocationCallOrder[0]).toBeLessThan(test.execve.mock.invocationCallOrder[0]!);
+    expect(test.fs.openSync).toHaveBeenCalledWith("/isolated/grok/auth.json", constants.O_RDONLY | constants.O_NOFOLLOW);
+    expect(test.fs.closeSync).toHaveBeenCalledWith(42);
+  });
+  it.each(["/proc/self/fd/8", "/dev/fd/8"])("retains only the verified executable descriptor for %s", async executable => {
+    const test = await fixture({ executable }); test.run();
+    expect(test.spawnSync.mock.calls[0]![2].stdio).toEqual(["ignore", "ignore", "ignore", "ignore", "ignore", "ignore", "ignore", "ignore", 8]);
+  });
+  it("does not refresh a fresh subscription", async () => {
+    const test = await fixture({ expiry: Date.now() + 600_000 }); test.run();
+    expect(test.spawnSync).not.toHaveBeenCalled(); expect(test.execve).toHaveBeenCalledOnce();
+  });
+  it.each(["seconds", "milliseconds"])("refreshes expired and near-expiry numeric %s but skips fresh credentials", async encoding => {
+    for (const [offset, expected] of [[-60_000, true], [30_000, true], [600_000, false]] as const) {
+      const ms = Date.now() + offset;
+      const test = await fixture({ rawExpiry: encoding === "seconds" ? ms / 1000 : ms });
+      test.run();
+      expect(test.spawnSync).toHaveBeenCalledTimes(expected ? 1 : 0);
+      expect(test.execve).toHaveBeenCalledOnce();
+    }
+  });
+  it.each([null, "1760000000", "2020-01-01", true, {}, []])("does not coerce unsupported expiry encodings: %j", async rawExpiry => {
+    const test = await fixture({ rawExpiry }); test.run();
+    expect(test.spawnSync).not.toHaveBeenCalled();
+    expect(test.execve).toHaveBeenCalledOnce();
+  });
+  it("never discovers subscription credentials for an explicit API key", async () => {
+    const test = await fixture({ apiKey: "explicit-api-key" }); test.run();
+    expect(test.fs.openSync).not.toHaveBeenCalled(); expect(test.spawnSync).not.toHaveBeenCalled(); expect(test.execve).toHaveBeenCalledOnce();
+  });
+  it.each([{ status: 1 }, { status: null, signal: "SIGKILL" }, { status: null, error: new Error("PRIVATE-CREDENTIAL-SENTINEL") }])("fails closed on refresh failure without exposing provider output: %j", async refresh => {
+    const test = await fixture({ refresh });
+    expect(test.run).toThrow("Grok subscription refresh failed; reconnect Grok Build");
+    expect(test.execve).not.toHaveBeenCalled();
+  });
+  it.each([{ mode: 0o644 }, { fileError: "ELOOP" }, { growingFile: true }])("rejects unsafe or growing credential files: %j", async input => {
+    const test = await fixture(input); expect(test.run).toThrow("Grok subscription credential is invalid");
+    expect(test.spawnSync).not.toHaveBeenCalled(); expect(test.execve).not.toHaveBeenCalled();
+  });
+});

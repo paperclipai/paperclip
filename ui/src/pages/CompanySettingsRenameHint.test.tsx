@@ -2,6 +2,7 @@
 
 import { flushSync } from "react-dom";
 import { createRoot } from "react-dom/client";
+import { MemoryRouter } from "react-router-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { TooltipProvider } from "@/components/ui/tooltip";
@@ -49,6 +50,10 @@ vi.mock("../context/CompanyContext", () => ({
   }),
 }));
 
+vi.mock("../components/decision-models/DecisionModelSettings", () => ({
+  DecisionModelSettingsSection: () => <div data-testid="decision-model-settings" />,
+}));
+
 // Both panels below the name field own their own queries and are not part of
 // what this test covers.
 vi.mock("../components/InteractionGovernancePanel", () => ({
@@ -92,19 +97,22 @@ describe("CompanySettings rename hint", () => {
     vi.clearAllMocks();
   });
 
-  function render(health: unknown) {
+  function render(health: unknown, enableFastResponses = true) {
     const queryClient = new QueryClient({
       defaultOptions: { queries: { retry: false } },
     });
     // CloudAccessGate owns the health fetch in the app; seeding the cache is how
     // useCloudInstance sees a managed instance under test.
     queryClient.setQueryData(queryKeys.health, health);
+    queryClient.setQueryData(queryKeys.instance.experimentalSettings, { enableFastResponses });
     const root = createRoot(container);
     flushSync(() => {
       root.render(
         <QueryClientProvider client={queryClient}>
           <TooltipProvider>
-            <CompanySettings />
+            <MemoryRouter>
+              <CompanySettings />
+            </MemoryRouter>
           </TooltipProvider>
         </QueryClientProvider>,
       );
@@ -117,6 +125,12 @@ describe("CompanySettings rename hint", () => {
       (element) => element.textContent?.trim() === RENAME_HINT,
     );
   }
+
+  it.each([false, true])("keeps decision setup out of General regardless of the fast response flag (%s)", (enabled) => {
+    const root = render(SELF_HOSTED_HEALTH, enabled);
+    expect(container.querySelector("[data-testid=decision-model-settings]")).toBeNull();
+    flushSync(() => root.unmount());
+  });
 
   it("warns that a rename re-keys task IDs on a managed instance", () => {
     const root = render(CLOUD_HEALTH);

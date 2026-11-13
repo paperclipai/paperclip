@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "slug": "vercel",
   "name": "Vercel",
-  "description": "Inspect projects, deployments, and runtime logs.",
+  "description": "Deploy websites and configure projects, environment variables, and domains in your Vercel team.",
   "categories": [
     "developer"
   ],
@@ -12,32 +12,68 @@
     "darkLogoUrl": "/brands/apps/vercel-dark.svg"
   },
   "urlPatterns": [
+    "https://vercel.com/*",
+    "https://api.vercel.com/*",
     "https://mcp.vercel.com/*"
   ],
   "methods": [
     {
-      "key": "mcp-oauth",
-      "transport": "mcp_remote",
-      "auth": "oauth",
+      "key": "rest-api-key",
+      "label": "Connect Vercel",
+      "transport": "rest_api",
+      "auth": "api_key",
       "ownershipModes": [
-        "customer",
-        "dcr"
+        "customer"
       ],
-      "whenToUse": "Use the provider-hosted connection for the quickest setup.",
+      "whenToUse": "Deploy and configure projects using a Vercel access token scoped to your team.",
       "defaults": {
-        "serverUrl": "https://mcp.vercel.com/mcp"
+        "serverUrl": "https://api.vercel.com"
       },
-      "guidanceMd": "Connect the Vercel team and projects agents should operate.",
-      "riskTier": "S3",
+      "guidanceMd": "Create a Vercel access token for the team agents should operate, then enter the team ID from Team Settings. The token needs permission to read projects and to create deployments, update project settings, manage environment variables, and attach domains. Deployment and resource usage may incur Vercel charges. Preview deployments are the default; production requires an explicit target.",
+      "riskTier": "S4",
+      "credentialFields": [
+        {
+          "key": "authorization",
+          "label": "Vercel access token",
+          "type": "password",
+          "required": true,
+          "placeholder": "Enter Vercel access token",
+          "secret": true,
+          "helperMd": "Create a Vercel access token scoped to the configured team. The token owner role must allow project/deployment reads and requested writes, environment variables and domain management; deletion requires matching provider rights. Paperclip cannot increase existing token permissions."
+        }
+      ],
+      "keyPlacement": {
+        "location": "header",
+        "name": "Authorization",
+        "prefix": "Bearer "
+      },
+      "tenantFields": [
+        {
+          "key": "teamId",
+          "label": "Vercel team ID",
+          "type": "text",
+          "required": true,
+          "placeholder": "team_…",
+          "helperMd": "Copy the Team ID from Vercel Team Settings → General. Every action stays in this team; agents cannot override it.",
+          "validation": {
+            "pattern": "^team_[A-Za-z0-9]+$",
+            "maxLength": 100
+          }
+        }
+      ],
       "requiredResourceFilters": [
         "team",
         "project",
         "environment"
-      ]
+      ],
+      "consoleLinks": {
+        "keys": "https://vercel.com/account/tokens",
+        "docs": "https://vercel.com/docs/rest-api"
+      }
     }
   ],
   "availability": {
-    "available": false,
-    "reason": "Vercel currently reviews and approves MCP clients."
-  }
+    "available": true
+  },
+  "docsUrl": "https://vercel.com/docs/rest-api"
 }

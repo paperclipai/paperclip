@@ -1,12 +1,19 @@
+import { asStringArray } from "@paperclipai/adapter-utils/server-utils";
+import { applyObservabilityEnvironment } from "@paperclipai/adapter-utils/agent-observability";
+import { prepareCodexObservabilityProfile, selectedCodexProfile, replaceCodexProfileArgs, disableCodexObservabilityArgs } from "@paperclipai/adapter-utils/codex-observability-profile";
+import { createProviderStoppedBoundary } from "@paperclipai/adapter-utils/provider-stopped-boundary";
+import { createUsageCheckpointLog } from "@paperclipai/adapter-utils/usage-checkpoint";
+import { createHash } from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { inferOpenAiCompatibleBiller, type AdapterExecutionContext, type AdapterExecutionResult } from "@paperclipai/adapter-utils";
+import { inferOpenAiCompatibleBiller, resolveManagedOpenAiBilling, type AdapterExecutionContext, type AdapterExecutionResult } from "@paperclipai/adapter-utils";
 import { buildCodexAuthInboundProvision } from "./codex-auth-merge-scripts.js";
 import { copyBackCodexAuth } from "./codex-auth-copyback.js";
 import {
   ensureCodexAuthCacheEntryDir,
   isCodexAuthCacheEnabled,
+  readSubscriptionAccountId,
   resolveCodexAuthCacheEntryPath,
   selectVendCredential,
 } from "./codex-auth-cache.js";
@@ -44,10 +51,10 @@ import {
   readPaperclipRuntimeSkillEntries,
   readPaperclipIssueWorkModeFromContext,
   renderTemplate,
-  renderPaperclipWakePrompt,
-  selectPaperclipTaskMarkdown,
+  hydrateFreshSessionHandoff,
+  selectInitialCommunicationGuidance,
+  selectPaperclipPromptSections,
   isPaperclipRecoveryWakePayload,
-  stringifyPaperclipWakePayload,
   DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE,
   DEFAULT_PAPERCLIP_CONVERSATION_PROMPT_TEMPLATE,
   joinPromptSections,
@@ -60,7 +67,7 @@ import {
   type LocalProcessSandboxOptions,
 } from "@paperclipai/adapter-utils/local-process-sandbox";
 import {
-  parseCodexJsonl,
+  parseCodexJsonl, createCodexJsonlParser,
   classifyCodexAuthRefreshFailure,
   extractCodexRetryNotBefore,
   isCodexHarnessCrash,
@@ -107,6 +114,7 @@ import {
   createCodexAcpExecutor,
   resolveCodexExecutionEngineForRun,
 } from "./acp.js";
+import { codexShellEnvironmentKeys } from "@paperclipai/adapter-utils/codex-shell-environment";
 
 const __moduleDir = path.dirname(fileURLToPath(import.meta.url));
 const executeCodexAcp = createCodexAcpExecutor();
@@ -568,6 +576,7 @@ export async function ensureCodexSkillsInjected(
 }
 
 export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExecutionResult> {
+  const providerStop = createProviderStoppedBoundary(ctx.onProviderStopped);
   const engineSelection = await resolveCodexExecutionEngineForRun(ctx);
   if (engineSelection.unavailableReason) {
     return {
@@ -639,27 +648,50 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     typeof envConfig.CODEX_HOME === "string" && envConfig.CODEX_HOME.trim().length > 0
       ? path.resolve(envConfig.CODEX_HOME.trim())
       : null;
-  const connectorSourceHome = configuredCodexHome;
-  const connectorSkillDigest = typeof config.paperclipConnectorSkillDigest === "string"
-    && /^[a-f0-9]{64}$/.test(config.paperclipConnectorSkillDigest) ? config.paperclipConnectorSkillDigest : null;
-  if (connectorSkillDigest) {
-    // Never mount assignment-specific skills into the shared company/user home.
-    // A different skill revision gets a new home, so revoked/changed resources
-    // cannot survive as stale symlinks or bleed into another agent's session.
-    configuredCodexHome = path.join(resolveManagedCodexHomeDir(process.env, agent.companyId),
-      "connector-runtimes", agent.id, connectorSkillDigest);
-  }
-  const codexSkillEntries = (await readPaperclipRuntimeSkillEntries(config, __moduleDir))
-    // A missing-source entry would become a dangling skill symlink; skip it.
-    .filter((entry) => !isPaperclipSkillSourceMissing(entry));
-  const desiredSkillNames = resolveCodexDesiredSkillNames(config, codexSkillEntries);
-  if (!executionTargetIsRemote) {
-    await ensureAbsoluteDirectory(cwd, { createIfMissing: true });
-  }
   const configuredOpenAiApiKey =
     typeof envConfig.OPENAI_API_KEY === "string" && envConfig.OPENAI_API_KEY.trim().length > 0
       ? envConfig.OPENAI_API_KEY.trim()
       : null;
+  const skillSourceHome = configuredCodexHome;
+  const connectorSkillDigest = typeof config.paperclipConnectorSkillDigest === "string"
+    && /^[a-f0-9]{64}$/.test(config.paperclipConnectorSkillDigest) ? config.paperclipConnectorSkillDigest : null;
+  const codexSkillEntries = (await readPaperclipRuntimeSkillEntries(config, __moduleDir))
+    .filter((entry) => !isPaperclipSkillSourceMissing(entry));
+  const desiredSkillNames = resolveCodexDesiredSkillNames(config, codexSkillEntries);
+  const desiredSet = new Set(desiredSkillNames);
+  // An explicit inventory is the server's authorized execution selection. Include
+  // empty inventories: revocation must not fall back to a previously populated home.
+  let runtimeSkillDigest = Array.isArray(config.paperclipRuntimeSkills)
+    ? createHash("sha256").update(JSON.stringify({ connectorSkillDigest,
+      skills: codexSkillEntries.filter(entry => desiredSet.has(entry.key))
+        .map(entry => [entry.key, entry.source]).sort((a, b) => JSON.stringify(a).localeCompare(JSON.stringify(b))),
+    })).digest("hex")
+    : connectorSkillDigest;
+  const runtimeCredentialHome = runtimeSkillDigest
+    ? skillSourceHome ?? await prepareManagedCodexHome(process.env, onLog, agent.companyId, { apiKey: configuredOpenAiApiKey })
+    : null;
+  if (runtimeSkillDigest) {
+    const credentialHome = runtimeCredentialHome!;
+    const credentialBytes = await fs.readFile(path.join(credentialHome, "auth.json")).catch(() => null);
+    const selectedConfig = await fs.readFile(path.join(credentialHome, "config.toml")).catch(() => null);
+    // Keep selected-home provider/MCP edits (and removals) in the launched home.
+    const selectedConfigDigest = selectedConfig ? createHash("sha256").update(selectedConfig).digest("hex") : null;
+    // Copy-back may retain a refreshed regular credential in a generated home.
+    // Account switches must select a different home, while token refreshes for
+    // the same subscription identity preserve its cache and session state.
+    const credentialIdentity = credentialBytes
+      ? readSubscriptionAccountId(credentialBytes) ?? createHash("sha256").update(credentialBytes).digest("hex") : null;
+    runtimeSkillDigest = createHash("sha256").update(JSON.stringify({
+      runtimeSkillDigest, credentialHome, credentialIdentity, selectedConfigDigest, apiKey: envConfig.OPENAI_API_KEY ?? null,
+    })).digest("hex");
+    // Different authorized versions/assignments get separate homes, including
+    // session state. Previously permitted private links cannot survive revocation.
+    configuredCodexHome = path.join(resolveManagedCodexHomeDir(process.env, agent.companyId),
+      connectorSkillDigest ? "connector-runtimes" : "skill-runtimes", agent.id, runtimeSkillDigest);
+  }
+  if (!executionTargetIsRemote) {
+    await ensureAbsoluteDirectory(cwd, { createIfMissing: true });
+  }
   // A configured CODEX_HOME that lives under the Paperclip-managed company tree
   // (the per-agent home set by the server isolation guard) still needs auth
   // seeded — it ships with no credentials and OPENAI_API_KEY="" by default.
@@ -694,14 +726,14 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       void error;
     });
   }
-  if (configuredCodexHome == null || (connectorSkillDigest && connectorSourceHome == null)) {
+  if (configuredCodexHome == null) {
     await prepareManagedCodexHome(process.env, onLog, agent.companyId, {
       apiKey: configuredOpenAiApiKey,
     });
   }
   if (configuredHomeIsManaged && configuredCodexHome) {
-    const seedEnv = connectorSkillDigest ? {
-      ...process.env, CODEX_HOME: connectorSourceHome ?? resolveManagedCodexHomeDir(process.env, agent.companyId),
+    const seedEnv = runtimeSkillDigest ? {
+      ...process.env, CODEX_HOME: runtimeCredentialHome ?? resolveManagedCodexHomeDir(process.env, agent.companyId),
     } : process.env;
     await seedManagedCodexHome(configuredCodexHome, seedEnv, onLog, {
       apiKey: configuredOpenAiApiKey,
@@ -734,7 +766,8 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   // Merge custom model providers (PAPERCLIP_CODEX_PROVIDERS) into the managed
   // CODEX_HOME's config.toml BEFORE the home is shipped to a remote execution
   // target, so both local and sandboxed Codex processes pick up the routing.
-  // An explicit env.CODEX_HOME override is treated as user-managed and skipped.
+  // A caller-owned home stays untouched. A generated skill home receives the
+  // configured provider routing even when it seeds credentials from that home.
   const envConfigStrings = Object.fromEntries(
     Object.entries(envConfig).filter(
       (entry): entry is [string, string] => typeof entry[1] === "string",
@@ -742,17 +775,30 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   );
   const preparedRuntimeConfig = await prepareCodexRuntimeConfig({
     env: envConfigStrings,
-    codexHome: configuredCodexHome ? null : effectiveCodexHome,
+    codexHome: configuredCodexHome && !runtimeSkillDigest ? null : effectiveCodexHome,
   });
   // Curated allowlist dir staged for the remote `home` asset (see below). Held
   // here so the outer `finally` can remove it on every exit path (teardown and
   // error), never only the happy path.
   let stagedCodexHomeDir: string | null = null;
+  let observabilityProfile: Awaited<ReturnType<typeof prepareCodexObservabilityProfile>> | null = null;
+  let observabilityPreparationFailed = false;
   try {
+    if (ctx.observability) {
+      if (isManagedCodexHomePath(process.env, agent.companyId, effectiveCodexHome)) {
+        try {
+          observabilityProfile = await prepareCodexObservabilityProfile({ home: effectiveCodexHome, runId,
+            launch: ctx.observability, sourceProfile: selectedCodexProfile(buildCodexExecArgs(config).args) });
+        } catch {
+          observabilityPreparationFailed = true;
+          await onLog("stderr", "[paperclip] Company observability configuration could not be prepared; execution continues with export disabled.\n");
+        }
+      } else await onLog("stderr", "[paperclip] Company observability is unavailable for a caller-owned Codex home.\n");
+    }
     for (const note of preparedRuntimeConfig.notes) {
       await onLog("stdout", `[paperclip] ${note}\n`);
     }
-    const paperclipBaseEnv = buildPaperclipEnv(agent);
+    const paperclipBaseEnv = buildPaperclipEnv(agent, ctx.agentIdentity);
     const runtimeMcpGateways = (ctx.runtimeMcp?.getServers() ?? []).map((server) => ({
       name: server.name,
       endpointPath: server.url,
@@ -809,7 +855,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
           // the single-use `auth.json`) are dereferenced to bytes. This drops the
           // large runtime state (`sessions/`, `*.sqlite`, `plugins/`, …) that the
           // 4-name denylist missed and that a sandbox run never needs.
-          stagedCodexHomeDir = await stageCodexHomeForSync(effectiveCodexHome, { runId });
+          stagedCodexHomeDir = await stageCodexHomeForSync(effectiveCodexHome, { runId, additionalFiles: observabilityProfile ? [observabilityProfile.filename] : [] });
           return await prepareAdapterExecutionTargetRuntime({
             runId,
             target: executionTarget,
@@ -915,7 +961,6 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     const linkedIssueIds = Array.isArray(context.issueIds)
       ? context.issueIds.filter((value): value is string => typeof value === "string" && value.trim().length > 0)
       : [];
-    const wakePayloadJson = stringifyPaperclipWakePayload(context.paperclipWake);
     const issueWorkMode = readPaperclipIssueWorkModeFromContext(context);
     if (wakeTaskId) {
       env.PAPERCLIP_TASK_ID = wakeTaskId;
@@ -937,9 +982,6 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     }
     if (linkedIssueIds.length > 0) {
       env.PAPERCLIP_LINKED_ISSUE_IDS = linkedIssueIds.join(",");
-    }
-    if (wakePayloadJson) {
-      env.PAPERCLIP_WAKE_PAYLOAD_JSON = wakePayloadJson;
     }
     refreshPaperclipWorkspaceEnvForExecution({
       env,
@@ -971,6 +1013,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       env.PAPERCLIP_RUNTIME_PRIMARY_URL = runtimePrimaryUrl;
     }
     env.CODEX_HOME = remoteCodexHome ?? effectiveCodexHome;
+    if (ctx.observability && (observabilityProfile || observabilityPreparationFailed)) applyObservabilityEnvironment(env, ctx.observability);
     if (authToken) {
       env.PAPERCLIP_API_KEY = authToken;
     }
@@ -995,7 +1038,9 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         (entry): entry is [string, string] => typeof entry[1] === "string",
       ),
     );
-    const billingType = resolveCodexBillingType(effectiveEnv);
+    const managedBilling = resolveManagedOpenAiBilling(config.managedAiRouting);
+    const billingType = managedBilling?.billingType ?? resolveCodexBillingType(effectiveEnv);
+    const biller = managedBilling?.biller ?? resolveCodexBiller(effectiveEnv, billingType);
     const networkScope = parseLocalProcessNetworkScope(config.networkScope);
     const filesystemScope = parseLocalProcessFilesystemScope(config.filesystemScope);
     const localProcessSandbox: LocalProcessSandboxOptions | null =
@@ -1046,6 +1091,20 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     });
     await ensureAdapterExecutionTargetCommandResolvable(command, executionTarget, cwd, runtimeEnv);
     const resolvedCommand = await resolveAdapterExecutionTargetCommandForLogs(command, executionTarget, cwd, runtimeEnv);
+    if (observabilityProfile) {
+      let qualified = false;
+      try {
+        const version = await runAdapterExecutionTargetProcess(`${runId}-observability-version`, executionTarget, command, ["--version"], {
+          cwd, env: runtimeEnv, timeoutSec: 5, graceSec: 1, onLog: async () => {},
+        });
+        qualified = version.exitCode === 0 && /^codex-cli 0\.160\.0\s*$/.test(version.stdout.trim());
+      } catch { /* Export qualification must not block baseline work. */ }
+      if (!qualified) {
+        await observabilityProfile.cleanup();
+        observabilityProfile = null;
+        await onLog("stderr", "[paperclip] Company observability was not applied: this Codex executable is not the qualified 0.160.0 release.\n");
+      }
+    }
     const loggedEnv = buildInvocationEnvForLogs(env, {
       runtimeEnv,
       includeRuntimeKeys: ["HOME"],
@@ -1090,7 +1149,6 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     const instructionsFilePath = asString(config.instructionsFilePath, "").trim();
     const instructionsDir = instructionsFilePath ? `${path.dirname(instructionsFilePath)}/` : "";
     let instructionsPrefix = "";
-    let instructionsChars = 0;
     if (instructionsFilePath) {
       try {
         const instructionsContents = await fs.readFile(instructionsFilePath, "utf8");
@@ -1098,7 +1156,6 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
           `${instructionsContents}\n\n` +
           `The above agent instructions were loaded from ${instructionsFilePath}. ` +
           `Resolve any relative file references from ${instructionsDir}.\n\n`;
-        instructionsChars = instructionsPrefix.length;
       } catch (err) {
         const reason = err instanceof Error ? err.message : String(err);
         await onLog(
@@ -1119,19 +1176,6 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       run: { id: runId, source: "on_demand" },
       context,
     };
-    const renderedBootstrapPrompt =
-      !sessionId && bootstrapPromptTemplate.trim().length > 0
-        ? renderTemplate(bootstrapPromptTemplate, templateData).trim()
-        : "";
-    const taskContextNote = selectPaperclipTaskMarkdown(context, { resumedSession: Boolean(sessionId) });
-    const wakePrompt = renderPaperclipWakePrompt(context.paperclipWake, {
-      resumedSession: Boolean(sessionId),
-      conversationMode: context.conversationMode === true,
-      suppressIssueDescription: taskContextNote.length > 0,
-    });
-    const shouldUseResumeDeltaPrompt = Boolean(sessionId) && wakePrompt.length > 0;
-    const promptInstructionsPrefix = shouldUseResumeDeltaPrompt ? "" : instructionsPrefix;
-    instructionsChars = promptInstructionsPrefix.length;
     const continuationSummary = parseObject(context.paperclipContinuationSummary);
     const continuationSummaryBody = asString(continuationSummary.body, "").trim() || null;
     const codexFallbackHandoffNote =
@@ -1142,22 +1186,47 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
             continuationSummaryBody,
           })
         : "";
-    const commandNotes = (() => {
-      if (!instructionsFilePath) {
-        const notes = [repoAgentsNote];
-        if (forceSaferInvocation) {
-          notes.push("Codex transient fallback requested safer invocation settings for this retry.");
+    const runAttempt = async (resumeSessionId: string | null) => {
+      await hydrateFreshSessionHandoff(ctx, { resumedSession: Boolean(resumeSessionId) });
+      const renderedBootstrapPrompt =
+        !resumeSessionId && bootstrapPromptTemplate.trim().length > 0
+          ? renderTemplate(bootstrapPromptTemplate, templateData).trim()
+          : "";
+      const { taskContextNote, wakePrompt } = selectPaperclipPromptSections(context, {
+        resumedSession: Boolean(resumeSessionId),
+        includeCommunicationGuidance: false,
+      });
+      const shouldUseResumeDeltaPrompt = Boolean(resumeSessionId) && wakePrompt.length > 0;
+      const promptInstructionsPrefix = shouldUseResumeDeltaPrompt ? "" : instructionsPrefix;
+      const commandNotes = (() => {
+        if (!instructionsFilePath) {
+          const notes = [repoAgentsNote];
+          if (forceSaferInvocation) {
+            notes.push("Codex transient fallback requested safer invocation settings for this retry.");
+          }
+          if (forceFreshSession) {
+            notes.push("Codex transient fallback forced a fresh session with a continuation handoff.");
+          }
+          return notes;
         }
-        if (forceFreshSession) {
-          notes.push("Codex transient fallback forced a fresh session with a continuation handoff.");
-        }
-        return notes;
-      }
-      if (instructionsPrefix.length > 0) {
-        if (shouldUseResumeDeltaPrompt) {
+        if (instructionsPrefix.length > 0) {
+          if (shouldUseResumeDeltaPrompt) {
+            const notes = [
+              `Loaded agent instructions from ${instructionsFilePath}`,
+              "Skipped stdin instruction reinjection because an existing Codex session is being resumed with a wake delta.",
+              repoAgentsNote,
+            ];
+            if (forceSaferInvocation) {
+              notes.push("Codex transient fallback requested safer invocation settings for this retry.");
+            }
+            if (forceFreshSession) {
+              notes.push("Codex transient fallback forced a fresh session with a continuation handoff.");
+            }
+            return notes;
+          }
           const notes = [
             `Loaded agent instructions from ${instructionsFilePath}`,
-            "Skipped stdin instruction reinjection because an existing Codex session is being resumed with a wake delta.",
+            `Prepended instructions + path directive to stdin prompt (relative references from ${instructionsDir}).`,
             repoAgentsNote,
           ];
           if (forceSaferInvocation) {
@@ -1169,8 +1238,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
           return notes;
         }
         const notes = [
-          `Loaded agent instructions from ${instructionsFilePath}`,
-          `Prepended instructions + path directive to stdin prompt (relative references from ${instructionsDir}).`,
+          `Configured instructionsFilePath ${instructionsFilePath}, but file could not be read; continuing without injected instructions.`,
           repoAgentsNote,
         ];
         if (forceSaferInvocation) {
@@ -1180,51 +1248,38 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
           notes.push("Codex transient fallback forced a fresh session with a continuation handoff.");
         }
         return notes;
+      })();
+      if (executionTargetIsSandbox) {
+        commandNotes.push(
+          "Added --skip-git-repo-check for sandbox execution because Codex requires an explicit trust bypass in headless remote workspaces.",
+        );
       }
-      const notes = [
-        `Configured instructionsFilePath ${instructionsFilePath}, but file could not be read; continuing without injected instructions.`,
-        repoAgentsNote,
-      ];
-      if (forceSaferInvocation) {
-        notes.push("Codex transient fallback requested safer invocation settings for this retry.");
+      if (preparedRuntimeConfig.notes.length > 0) {
+        commandNotes.unshift(...preparedRuntimeConfig.notes);
       }
-      if (forceFreshSession) {
-        notes.push("Codex transient fallback forced a fresh session with a continuation handoff.");
-      }
-      return notes;
-    })();
-    if (executionTargetIsSandbox) {
-      commandNotes.push(
-        "Added --skip-git-repo-check for sandbox execution because Codex requires an explicit trust bypass in headless remote workspaces.",
-      );
-    }
-    if (preparedRuntimeConfig.notes.length > 0) {
-      commandNotes.unshift(...preparedRuntimeConfig.notes);
-    }
-    const renderedPrompt = shouldUseResumeDeltaPrompt || isPaperclipRecoveryWakePayload(context.paperclipWake)
-      ? ""
-      : renderTemplate(promptTemplate, templateData);
-    const sessionHandoffNote = asString(context.paperclipSessionHandoffMarkdown, "").trim();
-    const prompt = joinPromptSections([
-      promptInstructionsPrefix,
-      renderedBootstrapPrompt,
-      wakePrompt,
-      codexFallbackHandoffNote,
-      sessionHandoffNote,
-      taskContextNote,
-      renderedPrompt,
-    ]);
-    const promptMetrics = {
-      promptChars: prompt.length,
-      instructionsChars,
-      bootstrapPromptChars: renderedBootstrapPrompt.length,
-      wakePromptChars: wakePrompt.length,
-      sessionHandoffChars: sessionHandoffNote.length,
-      taskContextChars: taskContextNote.length,
-      heartbeatPromptChars: renderedPrompt.length,
-    };
-
-    const runAttempt = async (resumeSessionId: string | null) => {
+      const renderedPrompt = shouldUseResumeDeltaPrompt || isPaperclipRecoveryWakePayload(context.paperclipWake)
+        ? ""
+        : renderTemplate(promptTemplate, templateData);
+      const sessionHandoffNote = asString(context.paperclipSessionHandoffMarkdown, "").trim();
+      const prompt = joinPromptSections([
+        promptInstructionsPrefix,
+        renderedBootstrapPrompt,
+        selectInitialCommunicationGuidance(context, { resumedSession: Boolean(resumeSessionId) }),
+        wakePrompt,
+        codexFallbackHandoffNote,
+        sessionHandoffNote,
+        taskContextNote,
+        renderedPrompt,
+      ]);
+      const promptMetrics = {
+        promptChars: prompt.length,
+        instructionsChars: promptInstructionsPrefix.length,
+        bootstrapPromptChars: renderedBootstrapPrompt.length,
+        wakePromptChars: wakePrompt.length,
+        sessionHandoffChars: sessionHandoffNote.length,
+        taskContextChars: taskContextNote.length,
+        heartbeatPromptChars: renderedPrompt.length,
+      };
       const execArgs = buildCodexExecArgs(
         forceSaferInvocation ? { ...config, fastMode: false } : config,
         {
@@ -1234,6 +1289,12 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         },
       );
       const args = execArgs.args;
+      if (observabilityProfile) replaceCodexProfileArgs(args, observabilityProfile.name);
+      else if (observabilityPreparationFailed) disableCodexObservabilityArgs(args);
+      const pricingContext = execArgs.fastModeApplied ? { serviceTier: "fast" } : undefined;
+      const shellKeys = codexShellEnvironmentKeys(env, envConfigStrings, Boolean(ctx.agentIdentity));
+      args.unshift("-c", "features.shell_snapshot=false", "-c", 'shell_environment_policy.inherit="all"', "-c", "shell_environment_policy.ignore_default_excludes=true",
+        "-c", `shell_environment_policy.include_only=${JSON.stringify(shellKeys)}`);
       const commandNotesWithFastMode =
         execArgs.fastModeIgnoredReason == null
           ? commandNotes
@@ -1324,8 +1385,14 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         }
       };
 
+      const consumeAccounting = createCodexJsonlParser();
+      const accountingLog = createUsageCheckpointLog(onLog, ctx.onUsage, stdout => {
+        const parsed = consumeAccounting(stdout);
+        return { usage: parsed.usageReported ? parsed.usage : undefined, costStatus: parsed.usageComplete ? undefined : "unpriced", usageBasis: "per_run", provider: "openai", biller, billingType, model, pricingContext, costUsd: null, complete: parsed.usageComplete };
+      });
       try {
         const proc = await runAdapterExecutionTargetProcess(runId, runtimeExecutionTarget, command, args, {
+          onProcessStopped: providerStop.beginInvocation(),
           cwd,
           env,
           stdin: prompt,
@@ -1336,7 +1403,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
           onLog: async (stream, chunk) => {
             monitor?.noteOutputChunk(stream, chunk);
             if (stream === "stdout") {
-              await onLog(stream, chunk);
+              await accountingLog(stream, chunk);
               return;
             }
             const cleaned = stripCodexRolloutNoise(chunk);
@@ -1347,6 +1414,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
           settleRunDisposition: paperclipBridge?.settleRunDisposition,
           localProcessSandbox,
         });
+        await accountingLog.flush();
         const cleanedStderr = stripCodexRolloutNoise(proc.stderr);
         return {
           proc: {
@@ -1355,6 +1423,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
           },
           rawStderr: proc.stderr,
           parsed: parseCodexJsonl(proc.stdout),
+          pricingContext,
           monitor: monitorFired
             ? {
                 fired: true as const,
@@ -1383,6 +1452,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         proc: { exitCode: number | null; signal: string | null; timedOut: boolean; stdout: string; stderr: string; errorCode?: string | null };
         rawStderr: string;
         parsed: ReturnType<typeof parseCodexJsonl>;
+        pricingContext?: AdapterExecutionResult["pricingContext"];
         monitor?:
           | { fired: false }
           | { fired: true; terminationSignal: NodeJS.Signals | null; elapsedMsSinceLastEvent: number; timeoutMs: number };
@@ -1396,19 +1466,22 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
           exitCode: null,
           signal: attempt.monitor.terminationSignal ?? attempt.proc.signal,
           timedOut: false,
+          usageComplete: attempt.parsed.usageComplete,
+          costStatus: attempt.parsed.usageComplete ? undefined : "unpriced",
           errorMessage,
           errorCode: "codex_output_inactivity_monitor",
           errorFamily: null,
-          usage: attempt.parsed.usage,
+          usage: attempt.parsed.usageReported ? attempt.parsed.usage : undefined,
           usageBasis: attempt.parsed.usageBasis,
           sessionId: null,
           sessionParams: null,
           sessionDisplayId: null,
           provider: "openai",
-          biller: resolveCodexBiller(effectiveEnv, billingType),
+          biller,
           model,
           billingType,
           costUsd: null,
+          pricingContext: attempt.pricingContext,
           resultJson: {
             stdout: attempt.proc.stdout,
             stderr: attempt.proc.stderr,
@@ -1428,6 +1501,16 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
           exitCode: attempt.proc.exitCode,
           signal: attempt.proc.signal,
           timedOut: true,
+          usageComplete: attempt.parsed.usageComplete,
+          costStatus: attempt.parsed.usageComplete ? undefined : "unpriced",
+          usage: attempt.parsed.usageReported ? attempt.parsed.usage : undefined,
+          usageBasis: "per_run",
+          provider: "openai",
+          biller,
+          model,
+          billingType,
+          costUsd: null,
+          pricingContext: attempt.pricingContext,
           errorMessage: `Timed out after ${timeoutSec}s`,
           clearSession: clearSessionOnMissingSession,
         };
@@ -1507,6 +1590,8 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         exitCode: attempt.proc.exitCode,
         signal: attempt.proc.signal,
         timedOut: false,
+        usageComplete: attempt.parsed.usageComplete,
+        costStatus: attempt.parsed.usageComplete ? undefined : "unpriced",
         errorMessage:
           (attempt.proc.exitCode ?? 0) === 0
             ? null
@@ -1528,16 +1613,17 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
             : null,
         errorFamily,
         retryNotBefore: transientRetryNotBefore ? transientRetryNotBefore.toISOString() : null,
-        usage: attempt.parsed.usage,
+        usage: attempt.parsed.usageReported ? attempt.parsed.usage : undefined,
         usageBasis: attempt.parsed.usageBasis,
         sessionId: resolvedSessionId,
         sessionParams: resolvedSessionParams,
         sessionDisplayId: resolvedSessionId,
         provider: "openai",
-        biller: resolveCodexBiller(effectiveEnv, billingType),
+        biller,
         model,
         billingType,
         costUsd: null,
+        pricingContext: attempt.pricingContext,
         resultJson: {
           stdout: attempt.proc.stdout,
           stderr: attempt.proc.stderr,
@@ -1585,29 +1671,33 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       executionError = error;
       throw error;
     } finally {
-      if (paperclipBridge) {
-        await paperclipBridge.stop();
-      }
-      if (restoreRemoteWorkspace) {
-        try {
-          await onLog(
-            "stdout",
-            `[paperclip] Restoring workspace changes from ${describeAdapterExecutionTarget(executionTarget)}.\n`,
-          );
-          await restoreRemoteWorkspace();
-        } catch (error) {
-          await Promise.resolve(
-            onLog(
-              "stderr",
-              `[paperclip] Failed to restore workspace changes from ${describeAdapterExecutionTarget(
-                executionTarget,
-              )}: ${error instanceof Error ? error.message : String(error)}\n`,
-            ),
-          ).catch(() => undefined);
-          // A provider failure remains the primary outcome. When provider work
-          // succeeded, however, silently accepting a failed copy-back can lose
-          // the only workspace edits before a replacement sandbox starts.
-          if (executionError === null) throw error;
+      try {
+        await providerStop.collectBeforeRestore();
+      } finally {
+        if (paperclipBridge) {
+          await paperclipBridge.stop();
+        }
+        if (restoreRemoteWorkspace) {
+          try {
+            await onLog(
+              "stdout",
+              `[paperclip] Restoring workspace changes from ${describeAdapterExecutionTarget(executionTarget)}.\n`,
+            );
+            await restoreRemoteWorkspace();
+          } catch (error) {
+            await Promise.resolve(
+              onLog(
+                "stderr",
+                `[paperclip] Failed to restore workspace changes from ${describeAdapterExecutionTarget(
+                  executionTarget,
+                )}: ${error instanceof Error ? error.message : String(error)}\n`,
+              ),
+            ).catch(() => undefined);
+            // A provider failure remains the primary outcome. When provider work
+            // succeeded, however, silently accepting a failed copy-back can lose
+            // the only workspace edits before a replacement sandbox starts.
+            if (executionError === null) throw error;
+          }
         }
       }
     }
@@ -1633,6 +1723,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     // If the process dies before reaching this, the next
     // prepareCodexRuntimeConfig restores the original from the pre-run backup
     // written at prepare time.
+    await observabilityProfile?.cleanup();
     await preparedRuntimeConfig.cleanup();
   }
 }

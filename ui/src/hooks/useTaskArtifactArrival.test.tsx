@@ -48,12 +48,12 @@ describe("new task artifacts", () => {
     await act(async () => root.render(<Watch {...props} />));
   }
 
-  it("baselines independently loaded history without opening the panel", async () => {
+  it("registers existing artifacts as their queries load", async () => {
     await render({ attachments: undefined, workProducts: undefined, documents: undefined });
     await render({ attachments: [attachment()] });
     await render({ documents: [document()] });
     await render({ workProducts: [product()] });
-    expect(onArrival).not.toHaveBeenCalled();
+    expect(onArrival).toHaveBeenCalledTimes(2);
   });
 
   it.each(["attachments", "workProducts", "documents"] as const)("reveals new %s after the initial load", async (source) => {
@@ -87,13 +87,13 @@ describe("new task artifacts", () => {
     expect(onArrival).toHaveBeenCalledTimes(2);
   });
 
-  it("baselines a newly navigated task and detects its subsequent additions", async () => {
+  it("registers a newly navigated task and detects its subsequent additions", async () => {
     await render();
     await render({ issueId: "task-2", attachments: undefined, documents: undefined, workProducts: undefined });
     await render({ attachments: [attachment()], documents: [], workProducts: [] });
-    expect(onArrival).not.toHaveBeenCalled();
-    await render({ documents: [document()] });
     expect(onArrival).toHaveBeenCalledOnce();
+    await render({ documents: [document()] });
+    expect(onArrival).toHaveBeenCalledTimes(2);
   });
 
   it("leaves Plan handling and user input uploads alone, but reveals a published user file", async () => {
@@ -106,6 +106,7 @@ describe("new task artifacts", () => {
 
   it("ignores document revision changes and watches non-file work products", async () => {
     await render({ documents: [document()] });
+    onArrival.mockClear();
     await render({ documents: [{ ...document(), latestRevisionNumber: 2 }] });
     expect(onArrival).not.toHaveBeenCalled();
     await render({ workProducts: [{ id: "pr-1", type: "pull_request", provider: "github" } as IssueWorkProduct] });

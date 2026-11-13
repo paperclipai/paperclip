@@ -5,7 +5,28 @@ import {
   MCP_PROTOCOL_VERSION,
   mcpHttpRequestHeaders,
   parseMcpHttpResponseBody,
+  readMcpHttpResponse,
 } from "../services/mcp-http.js";
+
+describe("MCP response progress", () => {
+  it("retains consumed SSE progress when a partial event fails and releases the reader", async () => {
+    const partial = 'data: {"jsonrpc":"2.0","method":"notifications/progress"}\n\ndata: {"jsonrpc":';
+    const failure = new Error("peer reset");
+    let reads = 0;
+    const body = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        if (reads++ === 0) controller.enqueue(new TextEncoder().encode(partial));
+        else controller.error(failure);
+      },
+    }, { highWaterMark: 0 });
+    let progress: unknown;
+    await expect(readMcpHttpResponse(new Response(body, { headers: { "content-type": "text/event-stream" } }), "request", {
+      onProgress: (value) => { progress = value; },
+    })).rejects.toBe(failure);
+    expect(progress).toEqual({ bytesReceived: Buffer.byteLength(partial), chunksReceived: 1, eventsReceived: 1, matchedResponse: false, ended: false });
+    expect(body.locked).toBe(false);
+  });
+});
 
 describe("mcpHttpRequestHeaders", () => {
   it("advertises both JSON and SSE on every request", () => {
@@ -51,13 +72,15 @@ describe("initializeMcpHttpSession", () => {
       },
     });
 
+    // A legacy server does not answer `server/discover`, so it gets the handshake.
     expect(requests.map(({ payload }) => payload.method)).toEqual([
+      "server/discover",
       "initialize",
       "notifications/initialized",
     ]);
-    expect(requests[1]!.headers.get("authorization")).toBe("Bearer token");
-    expect(requests[1]!.headers.get("mcp-session-id")).toBe("session-123");
-    expect(requests[1]!.headers.get("mcp-protocol-version")).toBe(MCP_PROTOCOL_VERSION);
+    expect(requests[2]!.headers.get("authorization")).toBe("Bearer token");
+    expect(requests[2]!.headers.get("mcp-session-id")).toBe("session-123");
+    expect(requests[2]!.headers.get("mcp-protocol-version")).toBe(MCP_PROTOCOL_VERSION);
     expect(sessionHeaders).toMatchObject({
       Authorization: "Bearer token",
       "Mcp-Session-Id": "session-123",

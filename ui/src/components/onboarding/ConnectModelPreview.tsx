@@ -1,3 +1,4 @@
+import { AgentCharacter } from "../AgentCharacter";
 import { useState } from "react";
 import { MotionConfig } from "motion/react";
 
@@ -96,7 +97,7 @@ export function ConnectModelPreview({
           {/* `relative` is load-bearing: the sleep marks anchor to this box and
               travel out past its top-right corner. */}
           <div className="relative size-(--sz-72px)">
-            <PillGuy state="dormant" className="size-full" />
+            <AgentCharacter state="sleepy" muted size={128} className="size-full" />
             <SleepingZs />
           </div>
           <AgentPreview agentName="Darnold" agentRole="" />

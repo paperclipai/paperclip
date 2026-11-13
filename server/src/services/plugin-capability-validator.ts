@@ -47,6 +47,8 @@ const OPERATION_CAPABILITIES: Record<string, readonly PluginCapability[]> = {
   "companies.get": ["companies.read"],
   "projects.list": ["projects.read"],
   "projects.get": ["projects.read"],
+  "projects.resolveGitCredential": ["projects.git-credentials"],
+  "projects.getInstanceSecrets": ["projects.instance-secrets"],
   "projects.managed.get": ["projects.managed"],
   "projects.managed.reconcile": ["projects.managed"],
   "projects.managed.reset": ["projects.managed"],
@@ -134,6 +136,7 @@ const OPERATION_CAPABILITIES: Record<string, readonly PluginCapability[]> = {
   "agent.tools.execute": ["agent.tools.register"],
 
   // Environment runtime drivers
+  "workspace.operation": ["workspaces.manage"],
   "environment.validateConfig": ["environment.drivers.register"],
   "environment.probe": ["environment.drivers.register"],
   "environment.acquireLease": ["environment.drivers.register"],
@@ -163,6 +166,8 @@ const UI_SLOT_CAPABILITIES: Record<PluginUiSlotType, PluginCapability> = {
   taskDetailView: "ui.detailTab.register",
   dashboardWidget: "ui.dashboardWidget.register",
   globalToolbarButton: "ui.action.register",
+  appShellOverlay: "ui.action.register",
+  organizationSwitcher: "ui.sidebar.register",
   toolbarButton: "ui.action.register",
   contextMenuItem: "ui.action.register",
   commentAnnotation: "ui.commentAnnotation.register",
@@ -204,6 +209,7 @@ const FEATURE_CAPABILITIES: Record<string, PluginCapability> = {
   webhooks: "webhooks.receive",
   database: "database.namespace.migrate",
   environmentDrivers: "environment.drivers.register",
+  workspaceProvider: "workspaces.manage",
   agents: "agents.managed",
   projects: "projects.managed",
   routines: "routines.managed",

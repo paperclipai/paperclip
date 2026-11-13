@@ -2,6 +2,7 @@ export { SidePanelFrame, SidePanelToggleButton, SidePanelWindowControls } from "
 export { SidePanelLauncher } from "./SidePanelLauncher";
 export { SidePanelTab } from "./SidePanelTab";
 export { SidePanelTabs } from "./SidePanelTabs";
+export { SidePanelMobileTabs } from "./SidePanelMobileTabs";
 export { useScrollbarWhileScrolling } from "./use-scrollbar-while-scrolling";
 export {
   normalizeSidePanelTabsState,

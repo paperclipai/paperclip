@@ -1,19 +1,33 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { readConfigFile } from "../config-file.js";
-import { safeChatTaskUrl } from "./chat-task-url.js";
+import { publicChatTaskUrl, safeChatTaskUrl } from "./chat-task-url.js";
 import { safeMilestoneText } from "./chat-run-publications.js";
+import { runtimeCanonicalOrigin } from "./cloud-runtime-identity.js";
 import { publicChatInteractionTaskUrl } from "./chat-interaction-publications.js";
 
 vi.mock("../config-file.js", () => ({
   readConfigFile: vi.fn(() => null),
 }));
 
+vi.mock("./cloud-runtime-identity.js", () => ({
+  runtimeCanonicalOrigin: vi.fn(() => null),
+}));
+
 afterEach(() => {
+  vi.mocked(runtimeCanonicalOrigin).mockReturnValue(null);
   vi.unstubAllEnvs();
   vi.mocked(readConfigFile).mockReturnValue(null);
 });
 
 describe("external Paperclip task links", () => {
+  it("resolves a newly claimed Cloud origin at use time ahead of pool configuration", () => {
+    vi.stubEnv("PAPERCLIP_AUTH_PUBLIC_BASE_URL", "https://pool.example");
+    expect(publicChatTaskUrl("issue-1")).toBe("https://pool.example/issues/issue-1");
+    vi.mocked(runtimeCanonicalOrigin).mockReturnValue("https://vanity.example");
+    expect(publicChatTaskUrl("issue-1")).toBe("https://vanity.example/issues/issue-1");
+    expect(publicChatInteractionTaskUrl("issue-1")).toBe("https://vanity.example/issues/issue-1");
+  });
+
   it("uses only the safe board origin and canonical issue path", () => {
     expect(
       safeChatTaskUrl(
