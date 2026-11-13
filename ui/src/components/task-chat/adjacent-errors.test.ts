@@ -47,8 +47,6 @@ describe("compactAdjacentErrors", () => {
     expect(compactAdjacentErrors([failed, legacy]).items).toEqual([legacy]);
   });
 
-  // The current server notice (buildNoRunningExecutionNoticeSeed): plain wording,
-  // recognized by its title, by its statement alone, or under a producer title.
   it.each([
     "Paperclip tried to start this task again, but it still could not start. Press Retry to start it again.",
     "Paperclip tried to continue this task again, but it still could not continue after 3 tries. Press Retry to start it again from the saved work.",
@@ -62,7 +60,6 @@ describe("compactAdjacentErrors", () => {
       metadata: { version: 1, sections: [{ title: "Recovery", rows: [
         { type: "key_value", label: "Recovery action", value: "recovery-action-1" }] }] } };
     expect(compactAdjacentErrors([failed, retitled]).items).toEqual([retitled]);
-    // A notice that only quotes the statement mid-text is still a boundary.
     const quoted = { ...recovery, presentation: null, text: `Child task report: ${text}` };
     expect(compactAdjacentErrors([failed, quoted]).items).toEqual([failed, quoted]);
   });

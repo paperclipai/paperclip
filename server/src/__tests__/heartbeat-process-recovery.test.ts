@@ -8132,7 +8132,6 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     });
     const comments = await selectRecoveryCommentsForIssue(issueId);
     expect(comments).toHaveLength(1);
-    // changed deliberately: plain wording ("Task could not continue"), no "bounded retry budget" / "no live execution path"
     expect(comments[0]?.body).toContain("Paperclip tried to continue this task again, but it still could not continue");
     expect(comments[0]?.body).toContain("Press Retry");
     expect(comments[0]?.authorType).toBe("system");
@@ -8230,7 +8229,6 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(sourceIssue?.status).toBe("blocked");
     expect(sourceIssue?.assigneeAgentId).toBe(agentId);
     const comments = await selectRecoveryCommentsForIssue(issueId);
-    // changed deliberately from "bounded retry budget": plain wording and the one thing to do
     expect(comments[0]?.body).toContain("Paperclip tried to start this task again, but it still could not start. Press Retry");
   });
 
@@ -13082,7 +13080,6 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
 
     const comments = await selectRecoveryCommentsForIssue(issueId);
     expect(comments).toHaveLength(1);
-    // changed deliberately: plain wording; the code stays in the notice details ("Failure code" row), not the body
     expect(comments[0]?.body).toContain("retrying alone would not fix");
     expect(comments[0]?.body).not.toContain("budget_blocked");
 

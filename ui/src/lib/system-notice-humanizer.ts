@@ -74,8 +74,6 @@ export function humanizeSystemNotice(input: {
       tone: presentationTone ?? "warning",
     };
   }
-  // Older recovery comments (saved without a presentation title) use the
-  // "no live execution path" wording; the current one names the task.
   if (body.includes("no live execution path")
     || /^Paperclip tried to (?:start|continue) this task again\b/.test(body.trim())) {
     const owner = recoveryOwnerName(body);

@@ -1381,18 +1381,9 @@ export function createPostgresRunDispatchAdapter(
     return { outcome: "deferred" as const, postCommitEffects: [statusEffect(waiting, run.status)] };
   }
 
-  /**
-   * A run refused at dispatch by another run's saved-work hold must not leave
-   * that hold to refuse every next run. The fresh-continuation fallback owns
-   * the decision: it settles the hold now when it may (a person's Retry, or a
-   * recent interruption past its wait), recording an isolated continuation,
-   * or starts the hold's bounded wait so the disposition pass settles it.
-   * Only runs refused this way reach it; the normal dispatch path is unchanged.
-   */
   async function settleOlderRunHold(tx: Db, run: HeartbeatRun, issueId: string,
     blocker: NonNullable<Awaited<ReturnType<typeof getExecutionBlocker>>>, now: Date) {
     if (!blocker.recoveryActionId || !blocker.runId || blocker.runId === run.id) return;
-    // Agent Chat conversations keep their own owner-bound continuation.
     const [issue] = await tx.select({ conversationAgentId: issues.conversationAgentId }).from(issues)
       .where(and(eq(issues.id, issueId), eq(issues.companyId, run.companyId)));
     if (!issue || issue.conversationAgentId) return;

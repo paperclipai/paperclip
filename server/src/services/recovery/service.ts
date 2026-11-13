@@ -243,7 +243,6 @@ const RESOLVED_DEPENDENCY_WAKE_BACKSTOP_CANDIDATE_LIMIT = 500;
 // every heartbeat and would otherwise trigger a recovery issue after just two
 // productive heartbeats. Floor the override at 60s to keep the exemption from
 // being effectively disabled by misconfiguration.
-/** Shown on recovery tasks; the origin kind (stranded_issue_recovery) stays in the task's data. */
 const RECOVERY_TASK_NOT_NESTED = "This task was created to recover another task, so Paperclip does not create another recovery task for it.";
 
 export const STRANDED_RECENT_PROGRESS_EXEMPTION_MS = Math.max(

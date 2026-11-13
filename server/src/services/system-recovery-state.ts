@@ -193,7 +193,6 @@ export function exhaustedSystemRecoveryAction(state: SystemRecoveryState, eviden
   if (evidence !== undefined && isExhaustedStopProofWait(state) && !stopProofRearmsSpent(evidence))
     return "Recovery of saved work is waiting to confirm that the previous run stopped. "
       + "Paperclip tries again automatically, and the agent will not repeat its work.";
-  // The failure code and cause stay in the hold's evidence (systemRecovery.failure), never in this text.
   if (state.failure?.cause?.label === "sandbox_disk_full")
     return "Saving the agent's files stopped because the sandbox disk is full. Paperclip deletes only inactive tool "
       + "caches it can prove safe, and that did not free enough space. Automatic recovery does not repeat a save that fails the same way. "

@@ -87,13 +87,6 @@ const SETUP_FAILURE_NOTICES: Record<string, StrandedRecoveryNoticeSeed> = {
   },
 };
 
-/**
- * The notice for a task that Paperclip tried to start or continue again and
- * that still has nothing running it. Says what happened and the one thing a
- * person can do. The UI recognizes this title and statement (and the older
- * "No live execution path" wording saved by earlier releases):
- * ui/src/components/task-chat/adjacent-errors.ts.
- */
 export const NO_RUNNING_EXECUTION_NOTICE_TITLE = "Task could not continue";
 
 export function buildNoRunningExecutionNoticeSeed(input: {

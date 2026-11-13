@@ -1,8 +1,6 @@
 import type { TaskChatItem, TaskChatMarkerItem, TaskChatMessageItem } from "./task-chat-model";
 
-/** The server's "Task could not continue" notice (buildNoRunningExecutionNoticeSeed). */
 const RECOVERY_STATEMENT = /^Paperclip tried to (?:start|continue) this task again, but it still could not (?:start|continue)\b/i;
-/** The wording earlier releases saved; those comments stay in task threads. */
 const LEGACY_RECOVERY_STATEMENT = /^Paperclip (?:automatically )?retried (?:dispatch|continuation|this issue's run)\b[^\r\n]*\bit still has no live execution path\b/i;
 const RECOVERY_TITLES = new Set(["task could not continue", "no live execution path"]);
 

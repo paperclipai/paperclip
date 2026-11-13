@@ -128,7 +128,6 @@ describe("stranded recovery notice seeds", () => {
   });
 
   it("distinguishes todo dispatch from in_progress continuation copy", () => {
-    // changed deliberately from "retried dispatch" / "retried continuation"
     expect(buildImmediateExecutionPathRecoveryNoticeSeed({ status: "todo" }).body).toContain("tried to start this task again");
     expect(buildImmediateExecutionPathRecoveryNoticeSeed({ status: "in_progress" }).body).toContain(
       "tried to continue this task again",

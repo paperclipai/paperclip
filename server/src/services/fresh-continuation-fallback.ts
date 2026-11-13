@@ -440,10 +440,6 @@ export async function continueFreshInTransaction(tx: Db, input: Input): Promise<
   // resolved history is never rewritten.
   const ownedHolds = holds.filter(isOwnedReconciliationHold);
 
-  // This run's hold refused later runs of the task at dispatch. They never ran
-  // and follow nothing, so this run is still the task's latest and its hold is
-  // settled here, never left to refuse every new run. The backlog rule decides
-  // whether it continues by itself; a person's Retry always continues it.
   const [refused] = await tx.select({ id: heartbeatRuns.id }).from(heartbeatRuns).where(and(
     eq(heartbeatRuns.companyId, companyId), sql`${heartbeatRuns.id} <> ${run.id}`,
     or(eq(heartbeatRuns.nativeIssueId, issue.id), eq(heartbeatRuns.issueId, issue.id),
@@ -484,7 +480,6 @@ export async function continueFreshInTransaction(tx: Db, input: Input): Promise<
   const savedWorkAdvancing = progressing && savedWork.some(recovery => recovery!.state === "running");
   const waitBounded = savedWorkAdvancing ? waitedMs >= FRESH_CONTINUATION_SAVED_WORK_BOUND_MS
     : waitedMs >= FRESH_CONTINUATION_PROGRESS_BOUND_MS || (waitedMs >= FRESH_CONTINUATION_PENDING_BOUND_MS && !progressing)
-      // A person's Retry does not wait for a recovery that is not under way.
       || (personAsked && !savedWork.some(recovery => EXACT_RECOVERY_STATES.includes(recovery!.state)));
   // Rechecks back off 1, 2, 3, 4 minutes, so the bound is reached on time.
   const step = Math.min(4, (typeof pendingMarker?.checks === "number" ? pendingMarker.checks : 0) + 1) * EXACT_RECOVERY_RECHECK_MS;
@@ -599,8 +594,6 @@ export async function continueFreshInTransaction(tx: Db, input: Input): Promise<
   let savedInput: { id: string } | undefined;
   for (const wake of savedWakes) {
     const commentIds = queuedCommentIdsFromWakePayload(wake.payload);
-    // Behind an older run's hold, the recorded continuation answers a waiting
-    // Retry itself (it carries the isolation); saved messages still continue.
     if (refused && !commentIds.length && object(wake.payload).taskRetry) continue;
     if (!commentIds.length || (await undeliveredLegacyUserCommentIds(tx, companyId, issue.id, run.agentId, commentIds)).length) {
       savedInput = wake;
@@ -650,11 +643,8 @@ export async function continueFreshInTransaction(tx: Db, input: Input): Promise<
   const settlement = { schema: FRESH_CONTINUATION_SCHEMA, actorType: "system", actorId: FRESH_CONTINUATION_ACTOR,
     decision: "continue_in_fresh_run", replay: "none", sourceRunId: run.id, failureCode: run.errorCode ?? null,
     reason: "exact_resumption_unavailable", isolation, unverifiedActions: unverified, recordedAt: now.toISOString(),
-    // Files a restore hold protects stay where they are, recorded, and are never applied.
     ...(owned.some(isRestoreHold) ? { heldFiles: "kept_not_applied" } : {}),
     ...(refused ? { refusedAtDispatchRunId: refused.id, requestedBy: personAsked ? "person_retry" : "system" } : {}) };
-  // The person's waiting Retry is answered by the recorded continuation, so it
-  // never starts a second run after it.
   if (refused && delivery === "recorded") {
     await tx.update(agentWakeupRequests).set({ status: "coalesced", finishedAt: now, updatedAt: now,
       payload: sql`coalesce(${agentWakeupRequests.payload}, '{}'::jsonb) || ${JSON.stringify({ coalescedIntoFreshContinuationOf: run.id })}::jsonb` })
@@ -838,31 +828,11 @@ function liveDispositionHoldSql() {
   return and(inArray(issueRecoveryActions.status, ["active", "escalated"]), eq(issueRecoveryActions.kind, "active_run_watchdog"))!;
 }
 
-/**
- * A run that a hold refused at dispatch: cancelled before it started, for
- * `execution_reconciliation_required`. It never ran, so it follows nothing:
- * it is not a successor of the run whose hold refused it, and it must not hide
- * that hold from this fallback (the task would never run again).
- */
 const cancelledAtDispatch = (alias: "newer" | "held") => sql.raw(`coalesce(${alias}.status = 'cancelled' and ${alias}.started_at is null
   and ${alias}.error_code = 'execution_reconciliation_required', false)`);
 const runOfTask = (alias: "newer" | "held", issueId: SQL) => sql`(${sql.raw(alias)}.native_issue_id::text = ${issueId}::text
   or ${sql.raw(alias)}.issue_id::text = ${issueId}::text or ${sql.raw(alias)}.context_snapshot->>'issueId' = ${issueId}::text)`;
 
-/**
- * The backlog rule, in one place: whether a held source run counts as a recent
- * interruption, and whether a person asked for the task again since it ended.
- *
- * Recent: the source ended with a restart-class code, and the task was last
- * attempted within BACKLOG_CONTINUATION_MAX_AGE_MS. The last attempt is the
- * source's end or, when the source's hold refused later runs at dispatch, the
- * newest of those refusals: an older run's hold that keeps refusing new runs
- * is judged by them, not by when its own run ended.
- *
- * A person asked: a Retry the person pressed is waiting (deferred), or a run
- * their Retry started was refused at dispatch within the same window. A
- * person's Retry is never limited by the source's code.
- */
 function interruptionEligibility(input: { now: Date; companyId: SQL; issueId: SQL; sourceRunId: SQL }) {
   const since = sql`${new Date(input.now.getTime() - BACKLOG_CONTINUATION_MAX_AGE_MS).toISOString()}::timestamptz`;
   const source = (condition: SQL) => sql`exists (select 1 from ${heartbeatRuns} source where source.company_id = ${input.companyId}
@@ -925,8 +895,6 @@ function heldExecutionWhere(options: { includeActive?: boolean } = {}) {
       sql`${issues.status} not in ('done', 'cancelled')`,
       sql`${issues.assigneeAgentId} is not null`,
       // Only the task's latest run, unfinished and still its assignee's: other
-      // holds are history, and are never touched here. Runs this hold refused
-      // at dispatch never ran, so they do not make it history.
       sql`exists (select 1 from ${heartbeatRuns} source where source.company_id = ${issueRecoveryActions.companyId}
         and source.id::text = coalesce(${issueRecoveryActions.evidence}->>'runId', ${issueRecoveryActions.evidence}->>'sourceRunId')
         and source.status in ('failed', 'timed_out', 'interrupted', 'cancelled') and source.finished_at is not null

@@ -35,13 +35,6 @@ import { hasVerifiedWorkspaceRepair } from "./workspace-recovery-receipt.js";
 import { recordLegacyShutdownBeforeDispatch, SERVER_SHUTDOWN_INTERRUPTED_CODE } from "./legacy-shutdown-before-dispatch.js";
 
 type Run = typeof heartbeatRuns.$inferSelect;
-/**
- * What a person reads while a run's unrestored files hold the task. The files
- * and the sandbox that holds them stay where they are (recorded on the hold
- * and the leases, never applied); the fresh-continuation fallback continues a
- * recent interruption in a new workspace by itself, and a person's Retry
- * continues any other.
- */
 export const UNRESTORED_FILES_NEXT_ACTION = "The task's saved files could not be put back after the run stopped. "
   + "They are kept where they were and are not applied. Press Retry to continue from the last saved version in a new workspace.";
 export const LEGACY_RECOVERY_CAUSE = "legacy_execution_requires_reconciliation";
