@@ -7674,14 +7674,19 @@ export function issueRoutes(
   }
 
   async function resolveQueuedOutgoingAssigneeRun(issue: {
+    id: string;
     companyId: string;
     assigneeAgentId: string | null;
     executionRunId?: string | null;
   }) {
-    if (!issue.executionRunId || !issue.assigneeAgentId) return null;
-    const run = await heartbeat.getRun(issue.executionRunId);
-    return run && run.status === "queued" && run.companyId === issue.companyId &&
-      run.agentId === issue.assigneeAgentId ? run : null;
+    if (!issue.assigneeAgentId) return null;
+    const run = issue.executionRunId ? await heartbeat.getRun(issue.executionRunId) : null;
+    if (run && run.status === "queued" && run.companyId === issue.companyId && run.agentId === issue.assigneeAgentId) return run;
+    if (run && ["queued", "running", "scheduled_retry"].includes(run.status)) return null;
+    const assignmentRun = await heartbeat.getQueuedAssignmentRunForIssue({
+      companyId: issue.companyId, agentId: issue.assigneeAgentId, issueId: issue.id,
+    });
+    return assignmentRun ? await heartbeat.getRun(assignmentRun.id) : null;
   }
 
   type IssueQueueDb = Db | Parameters<Parameters<Db["transaction"]>[0]>[0];
