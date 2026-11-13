@@ -713,6 +713,7 @@ export async function executeHeartbeatRuntime(db: Db, input: HeartbeatRuntimeExe
               managedAiAccountIdentity: managedAiRuntime?.sessionIdentity,
               managedAiCredentialWriteback: managedAiRuntime?.credentialWriteback,
               managedAiCredentialHome: managedAiRuntime ? String((managedAiRuntime.config.env as Record<string, unknown>).CODEX_HOME) : undefined,
+              outputSecretValues: identityRedactor.values,
               dotWorkspaceRoot: nativeExecution.provider.kind === "openai_dot" && resolvedConfig.dotWorkspaceAccess === true ? executionWorkspace.cwd : undefined,
               runnerEnvironment: {
                 ...configuredEnvironmentProjection(configuredTaskEnvironment),

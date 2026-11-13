@@ -421,6 +421,15 @@ describe.skipIf(!support.supported)("heartbeat runtime execution boundary", () =
     expect(acquired).not.toHaveBeenCalled();
   });
 
+  it("passes the run's output secret values to native dispatch", async () => {
+    const { input } = await fixture(true);
+    input.output.identityRedactor = createAgentIdentityRedactor(undefined, ["sk_test_synthetic_native_value"]);
+    await executeHeartbeatRuntime(db, input);
+    expect(executePaperclipNativeSession).toHaveBeenCalledWith(expect.objectContaining({
+      outputSecretValues: expect.arrayContaining(["sk_test_synthetic_native_value"]),
+    }));
+  });
+
   it.each([false, true])("preserves the dispatch gate's early return and cleanup (native: %s)", async native => {
     const { input, adapter } = await fixture(native);
     input.control.dispatchResolvedInteractionContinuationWithAtomicGate = async () => ({ dispatched: false });

@@ -1,14 +1,36 @@
 import { REDACTED_EVENT_VALUE } from "../redaction.js";
 import { redactRegisteredSecretValues } from "./run-secret-redaction.js";
 
+export const MIN_SECRET_OUTPUT_VALUE_LENGTH = 8;
+
+export function secretEnvironmentOutputValues(env: unknown, secretKeys: Iterable<string>): string[] {
+  if (!env || typeof env !== "object" || Array.isArray(env)) return [];
+  const record = env as Record<string, unknown>;
+  const values = new Set<string>();
+  for (const key of secretKeys) {
+    const value = record[key];
+    if (typeof value !== "string") continue;
+    const lines = /[\r\n]/.test(value) ? value.split(/\r?\n|\r/).map(line => line.trim()).filter(line => !line.startsWith("-----")) : [];
+    for (const form of [value, value.trim(), ...lines]) {
+      if (form.trim().length < MIN_SECRET_OUTPUT_VALUE_LENGTH) continue;
+      values.add(form);
+      values.add(JSON.stringify(form).slice(1, -1));
+    }
+  }
+  return [...values].sort((a, b) => b.length - a.length);
+}
+
 /** Keep private material in memory only; do not copy it into run snapshots. */
-export function createAgentIdentityRedactor(privateKeyPem?: string) {
-  const values = privateKeyPem ? [...new Set([
-    privateKeyPem,
-    privateKeyPem.trim(),
-    JSON.stringify(privateKeyPem).slice(1, -1),
-    ...privateKeyPem.split(/\r?\n/).filter(line => line && !line.startsWith("-----")),
-  ])].sort((a, b) => b.length - a.length) : [];
+export function createAgentIdentityRedactor(privateKeyPem?: string, secretValues: readonly string[] = []) {
+  const values = [...new Set([
+    ...(privateKeyPem ? [
+      privateKeyPem,
+      privateKeyPem.trim(),
+      JSON.stringify(privateKeyPem).slice(1, -1),
+      ...privateKeyPem.split(/\r?\n/).filter(line => line && !line.startsWith("-----")),
+    ] : []),
+    ...secretValues.filter(Boolean),
+  ])].sort((a, b) => b.length - a.length);
   const pending = new Map<string, string>();
   const deltaStreams = new Map<string, {
     scope: string; itemId?: string; payload: Record<string, unknown>; paths: string[];

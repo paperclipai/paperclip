@@ -110,6 +110,7 @@ export class PaperclipControlPlanePort implements ControlPlanePort {
     options: {
       /** Runtime-only secret; never part of the persisted binding. */
       privateKeyPem?: string;
+      secretValues?: readonly string[];
       /** Synchronous revocation fence for a controller handing off on restart. */
       assertControllerActive?: () => void;
       /** Read-only admission may finish an existing startup solely for restart detachment. */
@@ -126,7 +127,7 @@ export class PaperclipControlPlanePort implements ControlPlanePort {
     this.#db = db;
     this.#assertControllerActive = options.assertControllerActive;
     this.#assertRunAdmissionActive = options.assertRunAdmissionActive ?? options.assertControllerActive;
-    this.#identityRedactor = createAgentIdentityRedactor(options.privateKeyPem);
+    this.#identityRedactor = createAgentIdentityRedactor(options.privateKeyPem, options.secretValues);
     this.#binding = structuredClone(binding);
     this.#onCommittedEvent = options.onCommittedEvent;
     this.#onEventPersistence = options.onEventPersistence;
