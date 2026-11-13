@@ -1735,7 +1735,7 @@ async function stopSandboxCallbackBridgeServerProcess(input: {
         '    if [ -z "$current_start_time" ]; then echo "Unable to verify callback bridge process identity." >&2; exit 1; fi',
         '    if [ "$current_start_time" = "$expected_start_time" ] && [ "$current_state" != "Z" ]; then',
         '      command_line="$(tr \'\\000\' \' \' < "/proc/$pid/cmdline" 2>/dev/null || true)"',
-        '      if [ -z "$command_line" ]; then command_line="$(LC_ALL=C ps -o command= -p "$pid" 2>/dev/null || true)"; fi',
+        '      if [ -z "$command_line" ]; then command_line="$(LC_ALL=C ps -ww -o command= -p "$pid" 2>/dev/null || true)"; fi',
         '      if [ -z "$command_line" ]; then echo "Unable to verify callback bridge process identity." >&2; exit 1; fi',
         '      case "$command_line" in',
         '        *"$PAPERCLIP_EXPECTED_BRIDGE_ENTRYPOINT"*)',
