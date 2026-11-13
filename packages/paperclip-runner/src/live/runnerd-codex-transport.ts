@@ -9327,6 +9327,7 @@ export async function probeNativeRunnerEnvironment(options: {
   const environment = { ...options.environment };
   const remoteFilesystemRoot = options.transportOptions?.runnerFilesystemRoot;
   const ownsPreparation = options.transportOptions?.prepareLaunch !== undefined;
+  const preconfiguredHome = options.transportOptions?.homeMode === "preconfigured";
   if (options.workingDirectory !== undefined && !remoteFilesystemRoot && !ownsPreparation) throw new Error("Native setup remote working directory requires a remote runner filesystem.");
   const workingDirectory = options.workingDirectory ?? resolve(options.runtimeDirectory, "workspace");
   if (!remoteFilesystemRoot && !ownsPreparation) mkdirSync(workingDirectory, { mode: 0o700 });
@@ -9348,9 +9349,9 @@ export async function probeNativeRunnerEnvironment(options: {
   };
   let registrationCleanupConfirmed = true;
   const cleanupBudget = probeCleanupBudget(options.cleanupTimeoutMs);
-  const sourceCodexHome = ownsPreparation ? undefined : options.transportOptions?.sourceCodexHome ?? resolveSourceCodexHome(environment);
+  const sourceCodexHome = ownsPreparation || preconfiguredHome ? undefined : options.transportOptions?.sourceCodexHome ?? resolveSourceCodexHome(environment);
   delete environment.PAPERCLIP_RUNNER_EXTERNAL_SANDBOX;
-  if (!ownsPreparation) {
+  if (!ownsPreparation && !preconfiguredHome) {
     environment.HOME = resolve(remoteFilesystemRoot ?? options.runtimeDirectory, "probe-home");
     environment.CODEX_HOME = resolve(remoteFilesystemRoot ?? options.runtimeDirectory, "codex-home");
   }

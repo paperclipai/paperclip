@@ -233,6 +233,7 @@ import type { NativeRunnerAttachmentDownload, NativeRunnerAttachmentStage } from
 import { discoverRemoteExecutable, parseRemoteExecutableCandidate } from "./codex-model-fallback.js";
 export { parseRemoteExecutableCandidate } from "./codex-model-fallback.js";
 import type { CommandManagedRuntimeRunner } from "@paperclipai/adapter-utils/command-managed-runtime";
+import { readRemoteUserHome } from "./remote-user-home.js";
 import { NativeRunnerIngressAcquisitionError, prepareNativeRemoteRunner, createNativeRunnerExecutionDriver, resolveRemoteRunnerTransportMode } from "./native-runner-execution-driver.js";
 import type { Db } from "@paperclipai/db";
 import {
@@ -18048,14 +18049,7 @@ async function createRunnerdBackendWithinSessionClaim(
   delete effectiveRunnerEnvironmentBase.PAPERCLIP_RUNNER_PREPARED_HARNESS_HOME;
   if (preconfiguredHome) {
     if (remoteCommandRunner) {
-      const discovered = await remoteCommandRunner.execute({
-        command: "sh", args: ["-c", 'getent passwd "$(id -u)" | cut -d: -f6'],
-        bypassSession: true, timeoutMs: 10_000,
-      });
-      const home = discovered.stdout.trim();
-      if (discovered.exitCode !== 0 || discovered.timedOut || !home.startsWith("/") || /[\0\r\n]/.test(home)) {
-        throw new Error("runner_preconfigured_remote_home_unavailable");
-      }
+      const home = await readRemoteUserHome(remoteCommandRunner);
       // Paths from the controller's account cannot select a remote account's config.
       const hostPathKeys = new Set(["CODEX_HOME", "CLAUDE_CONFIG_DIR", "XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_CACHE_HOME"]);
       const configured = configuredEnvironment(effectiveRunnerEnvironmentBase);
