@@ -891,6 +891,82 @@ export const toolMcpSkills = pgTable(
 );
 
 /**
+ * A provider task (MCP Tasks extension) that a `tools/call` returned in place
+ * of its result. The row is the durable handle: polling resumes from it after
+ * a restart, and a repeated call with the same request identity, grant, and
+ * agent attaches to it instead of starting the work again. No provider result
+ * is stored here; the result is read from the provider when it is delivered.
+ */
+export const toolMcpTasks = pgTable(
+  "tool_mcp_tasks",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    companyId: uuid("company_id").notNull().references(() => companies.id, { onDelete: "cascade" }),
+    /** The call that created the task. */
+    invocationId: uuid("invocation_id").notNull().references(() => toolInvocations.id, { onDelete: "cascade" }),
+    connectionId: uuid("connection_id").notNull().references(() => toolConnections.id, { onDelete: "cascade" }),
+    /** The grant whose credentials created the task; only that grant may read it. */
+    grantId: uuid("grant_id").notNull(),
+    agentId: uuid("agent_id"),
+    issueId: uuid("issue_id"),
+    /** The latest run that waited on the task. */
+    runId: uuid("run_id"),
+    actorType: text("actor_type").notNull(),
+    actorId: text("actor_id"),
+    /** The person whose grant applied, and the run identity, so background checks see the same caller. */
+    responsibleUserId: text("responsible_user_id"),
+    identityContextId: uuid("identity_context_id"),
+    catalogToolName: text("catalog_tool_name").notNull(),
+    /** Endpoint, tool, and full arguments; a call attaches only on an exact match. */
+    requestHash: text("request_hash").notNull(),
+    endpointHash: text("endpoint_hash").notNull(),
+    /** Forwarded caller headers the connection allows (such as a tenant), sealed; background polls send them too. */
+    sealedCallerHeaders: text("sealed_caller_headers"),
+    protocolVersion: text("protocol_version").notNull(),
+    /** The provider's task ID, sealed: it may act as a bearer token. */
+    sealedProviderTaskId: text("sealed_provider_task_id").notNull(),
+    /** Keyed hash of the provider's task ID, for uniqueness without the ID. */
+    providerTaskIdHash: text("provider_task_id_hash").notNull(),
+    /** working | input_required | completed | failed | cancelled | expired */
+    status: text("status").notNull(),
+    pollIntervalMs: integer("poll_interval_ms"),
+    ttlMs: integer("ttl_ms"),
+    /** When Paperclip stops tracking the task (the provider's TTL, capped). */
+    expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+    /** Next background check; null when nothing is left to do. */
+    nextPollAt: timestamp("next_poll_at", { withTimezone: true }),
+    lastPolledAt: timestamp("last_polled_at", { withTimezone: true }),
+    pollFailures: integer("poll_failures").notNull().default(0),
+    /** A live call or the background worker holds the task until then. */
+    leaseExpiresAt: timestamp("lease_expires_at", { withTimezone: true }),
+    /** Who holds the lease; writes under a lease require it. */
+    leaseOwner: text("lease_owner"),
+    /** The gateway's keyed identity of the full arguments, for keyed retries. */
+    argumentsIdentity: text("arguments_identity").notNull(),
+    /** Input request keys already answered with `tasks/update`. */
+    answeredInputKeys: jsonb("answered_input_keys").$type<string[]>().notNull().default([]),
+    /** Input request keys already shown to the agent (a link or a question card). */
+    surfacedInputKeys: jsonb("surfaced_input_keys").$type<string[]>().notNull().default([]),
+    /** Wakes requested for new input requests; capped, so a provider cannot wake an agent without end. */
+    inputWakeCount: integer("input_wake_count").notNull().default(0),
+    inputWakeAt: timestamp("input_wake_at", { withTimezone: true }),
+    errorCode: text("error_code"),
+    wakeRequestedAt: timestamp("wake_requested_at", { withTimezone: true }),
+    deliveredAt: timestamp("delivered_at", { withTimezone: true }),
+    /** The latest call that waited on the task (a retry with its key attaches again). */
+    lastInvocationId: uuid("last_invocation_id"),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    uniqueIndex("tool_mcp_tasks_provider_task_uq").on(table.companyId, table.connectionId, table.providerTaskIdHash),
+    index("tool_mcp_tasks_attach_idx").on(table.companyId, table.connectionId, table.requestHash),
+    index("tool_mcp_tasks_invocation_idx").on(table.companyId, table.invocationId),
+    index("tool_mcp_tasks_next_poll_idx").on(table.nextPollAt).where(sql`${table.nextPollAt} is not null`),
+  ],
+);
+
+/**
  * Verified skill files, written only by the server after a size and SHA-256
  * check and never changed in place. Rows are keyed by connection and digest,
  * so the same URI from two servers never shares bytes. Agents cannot write
