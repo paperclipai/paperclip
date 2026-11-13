@@ -1,0 +1,125 @@
+name: TEMP typecheck lane benchmark
+
+on:
+  push:
+    branches: [perf/ci-typecheck-lane]
+    paths:
+      - .github/workflows/typecheck-lane-bench-temp.yml
+      - scripts/ci-typecheck-lane.mjs
+
+permissions:
+  contents: read
+
+concurrency:
+  group: tmp-typecheck-bench-${{ github.sha }}
+  cancel-in-progress: false
+
+jobs:
+  bench:
+    name: bench ${{ matrix.mode }} ${{ matrix.attempt }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        mode: [sequential]
+        attempt: [1, 2, 3]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: 24
+          package-manager-cache: false
+
+      - uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6
+        with:
+          version: 9.15.4
+
+      - uses: ./.github/actions/setup-ci-dependencies
+
+      - name: Pin the Runner Rust workspace path
+        id: runner_rust_workspace
+        run: |
+          set -euo pipefail
+          pinned="$HOME/paperclip-runner-rust"
+          rm -rf "$pinned"
+          ln -s "$GITHUB_WORKSPACE/packages/paperclip-runner/runner" "$pinned"
+          echo "path=$pinned" >> "$GITHUB_OUTPUT"
+
+      - name: Select the pinned Runner Rust toolchain
+        working-directory: packages/paperclip-runner
+        run: |
+          set -uo pipefail
+          if ! command -v rustup >/dev/null 2>&1; then exit 0; fi
+          rustup show
+          toolchain="$(rustup show active-toolchain | awk '{print $1}')"
+          echo "RUSTUP_TOOLCHAIN=$toolchain" >> "$GITHUB_ENV"
+          extra_toolchains="$(rustup toolchain list | awk '{print $1}' | grep -vx "$toolchain" || true)"
+          if [ -n "$extra_toolchains" ]; then
+            echo "$extra_toolchains" | xargs -n1 rustup toolchain uninstall || true
+          fi
+
+      - name: Restore Runner Rust dependencies (read only)
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          workspaces: ${{ steps.runner_rust_workspace.outputs.path }} -> target
+          shared-key: release-runner-v2-${{ hashFiles('packages/paperclip-runner/runner/Cargo.toml', '.cargo/config', '.cargo/config.toml', 'packages/.cargo/config', 'packages/.cargo/config.toml', 'packages/paperclip-runner/.cargo/config', 'packages/paperclip-runner/.cargo/config.toml', 'packages/paperclip-runner/runner/.cargo/config', 'packages/paperclip-runner/runner/.cargo/config.toml') }}
+          cache-workspace-crates: false
+          cache-bin: false
+          save-if: false
+
+      - name: Machine
+        run: |
+          [ -x /usr/bin/time ] || sudo apt-get install -y time
+          nproc; free -m; swapon --show || true; lscpu | grep -E 'Model name|^CPU\(s\)'
+
+      - name: Benchmark
+        env:
+          MODE: ${{ matrix.mode }}
+        run: |
+          set -uo pipefail
+          out="$RUNNER_TEMP/bench"; mkdir -p "$out"
+          sampler() {
+            while :; do
+              awk '/^MemTotal/{t=$2}/^MemAvailable/{a=$2}/^SwapTotal/{st=$2}/^SwapFree/{sf=$2}END{printf "%d %d\n",(t-a)/1024,(st-sf)/1024}' /proc/meminfo
+              sleep 0.25
+            done
+          }
+          summary="$out/summary.tsv"
+          printf 'step\tstatus\twall_s\tcpu_s\tmax_rss_mib\tsystem_used_peak_mib\tswap_peak_mib\n' > "$summary"
+          measure() {
+            local name="$1"; shift
+            sampler > "$out/mem-$name.log" & local sp=$!
+            echo "::group::$name"
+            /usr/bin/time -v -o "$out/time-$name.txt" "$@"
+            local status=$?
+            echo "::endgroup::"
+            kill "$sp" 2>/dev/null; wait "$sp" 2>/dev/null
+            local wall cpu rss peak swap
+            wall=$(awk -F': ' '/Elapsed \(wall clock\)/{n=split($2,p,":"); s=0; for(i=1;i<=n;i++) s=s*60+p[i]; printf "%.1f", s}' "$out/time-$name.txt")
+            cpu=$(awk -F': ' '/User time/{u=$2}/System time/{s=$2}END{printf "%.1f", u+s}' "$out/time-$name.txt")
+            rss=$(awk -F': ' '/Maximum resident set size/{printf "%d", $2/1024}' "$out/time-$name.txt")
+            peak=$(sort -n -k1 "$out/mem-$name.log" | tail -1 | awk '{print $1}')
+            swap=$(sort -n -k2 "$out/mem-$name.log" | tail -1 | awk '{print $2}')
+            printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$name" "$status" "$wall" "$cpu" "$rss" "$peak" "$swap" | tee -a "$summary"
+          }
+          if [ "$MODE" = sequential ]; then
+            measure build-gaps pnpm run typecheck:build-gaps
+            measure test-programs node scripts/typecheck-test-programs.mjs --low-memory
+            measure server-layers env PAPERCLIP_TYPECHECK_LOW_MEMORY=1 pnpm --filter @paperclipai/server typecheck
+            measure test-projects node scripts/typecheck-test-projects.mjs --low-memory --reuse-declarations
+            measure cli-guidance pnpm exec vitest run --project @paperclipai/server server/src/__tests__/cli-invocation-safety.test.ts
+            measure release-registry pnpm run test:release-registry
+            measure x-server-full-tsc bash -c 'cd server && node ../scripts/run-tsc.mjs --noEmit'
+            measure x-server-emit-only-build env PAPERCLIP_TSC_EMIT_ONLY=1 pnpm --filter @paperclipai/server build
+            measure x-runner-typecheck pnpm --filter @paperclipai/paperclip-runner typecheck
+          else
+            measure lane node scripts/ci-typecheck-lane.mjs
+          fi
+          echo "## $MODE" >> "$GITHUB_STEP_SUMMARY"
+          { echo '```'; column -t -s $'\t' "$summary"; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+          column -t -s $'\t' "$summary"
+          awk -F'\t' 'NR>1 && $2!=0 {bad=1} END {exit bad}' "$summary"
