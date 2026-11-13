@@ -84,7 +84,8 @@ be read for continuation. It also checks that a follow-up can resume while the
 predecessor's lease release is held, using the stop receipt that the task
 recorded when it settled. A receipt for another task, a second predecessor
 lease without stop proof, or a release that has started and not settled still
-refuses continuation.
+refuses continuation. The test holds a real lease release inside the provider
+call and checks that the follow-up is refused until that release settles.
 
 The executor can restore one quarantined journal in the same session scope.
 It requires a terminal prior run, completed commands, a terminal event, and an

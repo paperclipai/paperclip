@@ -47,13 +47,22 @@ export function hasRemoteTerminationReceipt(lease: ReceiptLease): boolean {
     ["released", "expired", "failed"].includes(lease.status) && hasBoundRemoteStopReceipt(lease));
 }
 
+/** Release or destroy of this lease has started: plugin release and destroy
+ * record their cleanup method first, and task settlement, startup cleanup and
+ * interrupted-creation cleanup mark the task retiring. The provider can then be
+ * releasing the task's resources while the lease row is still active. */
+function leaseReleaseStarted(lease: Pick<ReceiptLease, "metadata">): boolean {
+  return lease.metadata?.pluginLeaseCleanupMethod !== undefined || lease.metadata?.runnerTaskRetiring === true;
+}
+
 /** Execution on this lease has stopped: it was released with its termination
- * receipt, or it is still active and its plugin task recorded the provider's
- * stop when it settled. Release can be held long after that stop (for example
- * by a pending workspace export); once release starts, it owns the receipt. */
+ * receipt, or it is still active, its release has not started, and its plugin
+ * task recorded the provider's stop when it settled. Release can be held long
+ * after that stop (for example by a pending workspace export); once release
+ * starts, it owns the receipt until the lease is released. */
 function remoteLeaseExecutionStopped(lease: ReceiptLease): boolean {
   return hasRemoteTerminationReceipt(lease) ||
-    lease.status === "active" && !lease.releasedAt && hasBoundRemoteStopReceipt(lease);
+    lease.status === "active" && !lease.releasedAt && !leaseReleaseStarted(lease) && hasBoundRemoteStopReceipt(lease);
 }
 
 /** Workspace recovery saved this run's files, re-stopped its sandbox, and then
