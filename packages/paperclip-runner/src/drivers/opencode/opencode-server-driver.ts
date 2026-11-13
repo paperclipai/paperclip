@@ -96,6 +96,7 @@ import {
   type OpenCodeMcpBridgeOptions,
 } from "./mcp-bridge.js";
 import { nativeMcpLaunchBinding } from "../native-mcp.js";
+import { toolCallMarkupStart, visibleBeforeToolCallMarkup } from "./tool-call-markup.js";
 import {
   materializeNativeRuntimeSkills,
   releaseMaterializedNativeRuntimeSkills,
@@ -567,6 +568,7 @@ class OpenCodeHarnessSession implements HarnessSession {
   #semanticResultTextBoundary: number | null = null;
   #semanticResultProviderMessageId: string | null = null;
   #lastNonTerminalToolSourceSeq = 0;
+  #lastToolCallMarkupSourceSeq = 0;
   #usage: Record<string, unknown> | null = null;
   #upstreamServed: UpstreamServed | null = null;
   readonly #conversationMode: "task" | "prepared";
@@ -703,6 +705,7 @@ class OpenCodeHarnessSession implements HarnessSession {
     this.#semanticResultTextBoundary = null;
     this.#semanticResultProviderMessageId = null;
     this.#lastNonTerminalToolSourceSeq = 0;
+    this.#lastToolCallMarkupSourceSeq = 0;
     this.#completedTextPartIds.clear();
     this.#completedReasoningPartIds.clear();
     this.#reasoningTexts.clear();
@@ -870,7 +873,7 @@ class OpenCodeHarnessSession implements HarnessSession {
     // request. Keep in-flight tool work gated by the checks above.
     if (this.#interruptedTurnId === turnId) return false;
     const recovery = this.#emptyResponseRecovery;
-    const boundary = Math.max(this.#turnStartSourceSeq, this.#lastNonTerminalToolSourceSeq);
+    const boundary = Math.max(this.#turnStartSourceSeq, this.#lastNonTerminalToolSourceSeq, this.#lastToolCallMarkupSourceSeq);
     if (this.#completedTextParts.some(part => part.observedSourceSeq > boundary && !this.#isOutputLimited(part) && !this.#isReasoningEcho(part))) return false;
     // Both idle event forms can remain queued from the empty response. Wait
     // for correction evidence. A completed answer part is sufficient even
@@ -894,7 +897,9 @@ class OpenCodeHarnessSession implements HarnessSession {
     this.#armEmptyResponseAckTimer(turnId, "OpenCode did not start its requested final response.");
     const opening = this.#turnHitOutputLimit(turnId)
       ? "Your previous response reached the output limit and was discarded as incomplete."
-      : "Your response ended without a user-visible final answer or an accepted completion report.";
+      : this.#lastToolCallMarkupSourceSeq > this.#turnStartSourceSeq
+        ? "Your previous response wrote a tool call as plain text, so the tool did not run. Call tools only through the tool-calling interface, never as text."
+        : "Your response ended without a user-visible final answer or an accepted completion report.";
     void this.#submitPrompt(`${opening} Continue this same request from the work already done. Give the user a concise final answer and submit paperclip_finish (or paperclip_block when blocked) with the current completion contract. Do not repeat completed actions.`, "disabled")
       .catch(() => this.#failEmptyResponse(turnId, "OpenCode could not request a final response after an empty completion."));
     return true;
@@ -2179,11 +2184,17 @@ class OpenCodeHarnessSession implements HarnessSession {
     // the start of a completed reasoning part, and release it once it differs.
     if (partType === "reasoning" && content.trim()) this.#reasoningTexts.set(partId, content.trim());
     const reasoningEcho = partType === "text" && this.#echoesReasoning(content, completed);
-    if (!reasoningEcho) this.#partText.set(partId, content);
-    if (partType === "text" && content.length > 0 && !reasoningEcho) {
+    const markupStart = partType === "text" && completed ? toolCallMarkupStart(content) : -1;
+    const visible = partType !== "text"
+      ? content
+      : completed
+        ? markupStart < 0 ? content : content.slice(0, markupStart)
+        : visibleBeforeToolCallMarkup(content);
+    if (!reasoningEcho) this.#partText.set(partId, visible);
+    if (partType === "text" && visible.length > 0 && !reasoningEcho) {
       for (const reference of paperclipWorkspaceFileReferencesFromText(
         this.#workingDirectory,
-        content,
+        visible,
         turnId,
       )) {
         if (this.#emittedFileReferences.has(reference.referenceId)) continue;
@@ -2195,9 +2206,9 @@ class OpenCodeHarnessSession implements HarnessSession {
         );
       }
     }
-    const delta = content.startsWith(previous)
-      ? content.slice(previous.length)
-      : content;
+    const delta = visible.startsWith(previous)
+      ? visible.slice(previous.length)
+      : visible;
     if (delta && !reasoningEcho) {
       // OpenCode calls assistant prose a `text` part, but `text` is not a PRP
       // item identity and is consequently ignored by the task projection.
@@ -2284,6 +2295,15 @@ class OpenCodeHarnessSession implements HarnessSession {
         );
         return;
       }
+      if (markupStart >= 0) {
+        this.#lastToolCallMarkupSourceSeq = this.#sourceSequence;
+        this.#emit(
+          "harness.diagnostic",
+          { code: "opencode_tool_call_markup_discarded", message: "OpenCode returned a tool call as text instead of a tool call; the text was not used as a response." },
+          { turnId },
+        );
+        return;
+      }
       this.#completedTextParts.push({
         partId,
         messageId,
@@ -2309,7 +2329,7 @@ class OpenCodeHarnessSession implements HarnessSession {
     // be a final response. When no such text exists, emit no final agentMessage
     // and let the accepted semantic summary resolve the durable reply.
     const afterLastWorkTool = (part: { observedSourceSeq: number }) =>
-      part.observedSourceSeq > this.#lastNonTerminalToolSourceSeq;
+      part.observedSourceSeq > Math.max(this.#lastNonTerminalToolSourceSeq, this.#lastToolCallMarkupSourceSeq);
     const eligibleText = this.#completedTextParts.filter(part => afterLastWorkTool(part) && !this.#isOutputLimited(part) && !this.#isReasoningEcho(part));
     // OpenCode exposes no prose channel, so final selection must use provider
     // structure rather than text length or content. When OpenCode reports the
