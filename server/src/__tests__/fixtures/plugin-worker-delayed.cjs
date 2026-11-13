@@ -8,6 +8,9 @@ const rl = readline.createInterface({
   input: process.stdin,
   crlfDelay: Infinity,
 });
+const heldInspections = [];
+let inspectionCount = 0;
+let activeInspections = 0;
 
 rl.on("line", (line) => {
   if (!line.trim()) return;
@@ -20,7 +23,7 @@ rl.on("line", (line) => {
       id: message.id,
       result: {
         ok: true,
-        supportedMethods: ["environmentExecute", "configChanged"],
+        supportedMethods: ["environmentExecute", "configChanged", "environmentInspectLease", "health"],
       },
     });
     return;
@@ -45,12 +48,29 @@ rl.on("line", (line) => {
   }
 
   if (method === "configChanged") {
+    if (message.params.config.releaseInspections) {
+      for (const complete of heldInspections.splice(0)) complete();
+    }
     setTimeout(() => send({
       jsonrpc: "2.0", id: message.id,
       ...(message.params.config.fail
         ? { error: { code: -32000, message: "configuration rejected" } }
         : { result: {} }),
     }), Number(message.params.config.delayMs ?? 0));
+    return;
+  }
+
+  if (method === "environmentInspectLease") {
+    inspectionCount++;
+    activeInspections++;
+    const complete = () => { activeInspections--; send({ jsonrpc: "2.0", id: message.id,
+      result: { providerLeaseId: message.params.providerLeaseId, state: "destroyed" } }); };
+    if (message.params.leaseMetadata?.holdInspection) heldInspections.push(complete);
+    else complete();
+    return;
+  }
+  if (method === "health") {
+    send({ jsonrpc: "2.0", id: message.id, result: { status: "ok", details: { inspectionCount, activeInspections } } });
     return;
   }
 

@@ -8,6 +8,7 @@ import {
   approvals,
   companies,
   createDb,
+  applyPendingMigrations,
   heartbeatRuns,
   issueApprovals,
   issueRelations,
@@ -18,10 +19,14 @@ import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
+import type { Issue } from "@paperclipai/shared";
 import { issueService } from "../services/issues.js";
 import { buildIssueGraphLivenessIncidentKey } from "../services/recovery/origins.js";
 
-const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
+import { resolveExternalTestDatabaseUrl } from "./helpers/external-test-database.js";
+
+const externalUrl = resolveExternalTestDatabaseUrl("PAPERCLIP_BLOCKER_ATTENTION_TEST_DATABASE_URL");
+const embeddedPostgresSupport = externalUrl ? { supported: true } : await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
 
 if (!embeddedPostgresSupport.supported) {
@@ -30,14 +35,22 @@ if (!embeddedPostgresSupport.supported) {
   );
 }
 
+// The inferred list() return type drops the attention fields that its rows carry at runtime.
+type IssueServiceWithListProjection = Omit<ReturnType<typeof issueService>, "list"> & {
+  list(
+    ...args: Parameters<ReturnType<typeof issueService>["list"]>
+  ): Promise<Array<Awaited<ReturnType<ReturnType<typeof issueService>["list"]>>[number] & Pick<Issue, "blockedBy" | "blockerAttention" | "blockedInboxAttention">>>;
+};
+
 describeEmbeddedPostgres("issue blocker attention", () => {
   let db!: ReturnType<typeof createDb>;
-  let svc!: ReturnType<typeof issueService>;
+  let svc!: IssueServiceWithListProjection;
   let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
 
   beforeAll(async () => {
-    tempDb = await startEmbeddedPostgresTestDatabase("paperclip-issue-blocker-attention-");
-    db = createDb(tempDb.connectionString);
+    if (externalUrl) await applyPendingMigrations(externalUrl);
+    else tempDb = await startEmbeddedPostgresTestDatabase("paperclip-issue-blocker-attention-");
+    db = createDb(externalUrl ?? tempDb!.connectionString, { maxConnections: 6 });
     svc = issueService(db);
   }, 20_000);
 
@@ -55,6 +68,7 @@ describeEmbeddedPostgres("issue blocker attention", () => {
   });
 
   afterAll(async () => {
+    await db?.$client.end({ timeout: 1 });
     await tempDb?.cleanup();
   });
 

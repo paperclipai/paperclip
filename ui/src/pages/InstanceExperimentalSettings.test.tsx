@@ -10,6 +10,7 @@ import type {
   InstanceExperimentalSettingsWithManaged,
 } from "@paperclipai/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { ApiError } from "@/api/client";
 import { InstanceExperimentalSettings } from "./InstanceExperimentalSettings";
 import { queryKeys } from "../lib/queryKeys";
 
@@ -21,6 +22,8 @@ const mockInstanceSettingsApi = vi.hoisted(() => ({
 vi.mock("@/api/instanceSettings", () => ({
   instanceSettingsApi: mockInstanceSettingsApi,
 }));
+
+vi.mock("@/components/ClassicWorkspaceSetting", () => ({ ClassicWorkspaceSetting: () => null }));
 
 vi.mock("@/context/CompanyContext", () => ({
   useCompany: () => ({ selectedCompany: { id: "butter", issuePrefix: "BUT" } }),
@@ -77,6 +80,7 @@ function defaultExperimentalSettings(): InstanceExperimentalSettingsPayload {
   return {
     enableEnvironments: false,
     enableNativeRunner: false,
+    remoteWorkspaceStorageEnabled: false,
     enableAiConnectionRouters: false,
     enableManagedSandboxOnly: false,
     enableIsolatedWorkspaces: false,
@@ -88,15 +92,19 @@ function defaultExperimentalSettings(): InstanceExperimentalSettingsPayload {
     enablePublicMcp: false,
     enableOpenAiDot: false,
     enableGrokBot: false,
+    enableMuse: false,
     enableChatConnectors: false,
     enableGitHubReviewBots: false,
     enableMemoryConnectors: false,
-    enablePipelines: false,
+    enableGoogleWorkspaceConnector: false,
+    enablePaperclipNotebook: false,
     enableCases: false,
     enableAgentChat: false,
     enableCombinedInboxTasks: false,
+    enableArtifactsV1: false,
     enableConferenceRoomChat: false,
     enableClassicTaskInterface: false,
+    enableLegacyComposerSubmit: false,
     enableIssuePlanDecompositions: false,
     enableExperimentalFileViewer: false,
     enableExternalObjects: false,
@@ -239,6 +247,18 @@ describe("InstanceExperimentalSettings — Conference Room Chat card (PAP-11233)
     }
   });
 
+  it("defaults the Paperclip Google Workspace connector off and persists an explicit toggle in both directions", async () => {
+    await renderPage();
+    const selector = 'button[aria-label="Toggle Paperclip Google Workspace connector experimental setting"]';
+    expect(container.querySelector(selector)?.getAttribute("aria-checked")).toBe("false");
+    for (const enabled of [true, false]) {
+      await act(() => container.querySelector<HTMLButtonElement>(selector)!.click());
+      await flushReact();
+      expect(mockInstanceSettingsApi.updateExperimental).toHaveBeenLastCalledWith({ enableGoogleWorkspaceConnector: enabled });
+      expect(container.querySelector(selector)?.getAttribute("aria-checked")).toBe(String(enabled));
+    }
+  });
+
   it("defaults Combined Inbox + Task List off and persists an explicit toggle in both directions", async () => {
     await renderPage();
     const selector = 'button[aria-label="Toggle combined inbox and task list experimental setting"]';
@@ -271,6 +291,17 @@ describe("InstanceExperimentalSettings — Conference Room Chat card (PAP-11233)
       expect(container.querySelector(selector)?.getAttribute("aria-checked")).toBe(String(enabled));
       expect(Boolean(container.querySelector('a[href="/BUT/apps/assistant-connection"]'))).toBe(enabled);
     }
+  });
+
+  it("saves the personal Muse opt-in separately and names independent readiness evidence", async () => {
+    await renderPage();
+    expect(container.textContent).toContain("Muse — Personal agent");
+    expect(container.textContent).toContain("independent background reply");
+    expect(container.textContent).toContain("Provider usage and cost are unavailable");
+    const toggle = container.querySelector<HTMLButtonElement>('button[aria-label="Toggle Muse experimental setting"]')!;
+    await act(() => toggle.click());
+    await flushReact();
+    expect(mockInstanceSettingsApi.updateExperimental).toHaveBeenLastCalledWith({ enableMuse: true });
   });
 
   it("names Dot prerequisites and saves its opt-in independently in both directions", async () => {
@@ -382,7 +413,7 @@ describe("InstanceExperimentalSettings — Conference Room Chat card (PAP-11233)
     await renderPage();
 
     expect(container.textContent).toContain("Paperclip Runner");
-    expect(container.textContent).toContain("Onboarding continues to use legacy adapters");
+    expect(container.textContent).toContain("First-run setup offers qualified GitHub Copilot");
     const toggle = container.querySelector<HTMLButtonElement>(
       PAPERCLIP_RUNNER_TOGGLE_SELECTOR,
     );
@@ -445,6 +476,25 @@ describe("InstanceExperimentalSettings — Conference Room Chat card (PAP-11233)
     expect(mockInstanceSettingsApi.updateExperimental).toHaveBeenLastCalledWith({
       enableClassicTaskInterface: false,
     });
+  });
+
+  it("saves and restores the legacy composer shortcut", async () => {
+    await renderPage();
+    const selector = 'button[aria-label="Toggle Command/Ctrl+Enter to submit"]';
+    const toggle = container.querySelector<HTMLButtonElement>(selector)!;
+    expect(toggle.getAttribute("aria-checked")).toBe("false");
+    await act(async () => { toggle.click(); });
+    await flushReact();
+    expect(mockInstanceSettingsApi.updateExperimental).toHaveBeenLastCalledWith({ enableLegacyComposerSubmit: true });
+
+    flushSync(() => { root?.unmount(); });
+    root = null;
+    await renderPage();
+    const restored = container.querySelector<HTMLButtonElement>(selector)!;
+    expect(restored.getAttribute("aria-checked")).toBe("true");
+    await act(async () => { restored.click(); });
+    await flushReact();
+    expect(mockInstanceSettingsApi.updateExperimental).toHaveBeenLastCalledWith({ enableLegacyComposerSubmit: false });
   });
 
   it("renders and patches the Decisions experimental toggle", async () => {
@@ -1137,12 +1187,32 @@ describe("InstanceExperimentalSettings — operator-hidden cards", () => {
     expect(mockInstanceSettingsApi.updateExperimental).not.toHaveBeenCalled();
   });
 
+  it.each([
+    { enabled: false, developerMode: false }, { enabled: true, developerMode: false },
+    { enabled: false, developerMode: true }, { enabled: true, developerMode: true },
+  ])("never offers a Notebook control with enabled=$enabled and developerMode=$developerMode", async ({ enabled, developerMode }) => {
+    await renderPage(undefined, { ...defaultExperimentalSettings(), enablePaperclipNotebook: enabled,
+      enablePaperclipDeveloperMode: developerMode,
+      managedKeys: { enablePaperclipNotebook: { managed: true, managedBy: "paperclip-cloud" } },
+    });
+    expect(container.textContent).toContain("Experimental features");
+    expect(container.textContent).not.toContain("Paperclip Notebook");
+    expect(container.querySelector('button[aria-label="Toggle Paperclip Notebook experimental setting"]')).toBeNull();
+    expect(mockInstanceSettingsApi.updateExperimental).not.toHaveBeenCalled();
+  });
+
   it("renders nothing for an operator-hidden toggle and keeps the rest", async () => {
     await renderPage(["instance.experimental.enableEnvironments"]);
 
     expect(container.textContent).not.toContain("Enable Environments");
     expect(container.textContent).toContain("Beta skills");
     expect(container.textContent).not.toContain("Show the Apps navigation");
+  });
+
+  it("offers no Artifacts V1 toggle", async () => {
+    await renderPage([]);
+    expect(container.textContent).toContain("Beta skills");
+    expect(container.textContent).not.toContain("Artifacts V1");
   });
 
   it("keeps only permitted controls in alphabetical order, including when hidden features are enabled", async () => {
@@ -1185,5 +1255,79 @@ describe("InstanceExperimentalSettings — operator-hidden cards", () => {
 
     expect(container.textContent).toContain("Enable Environments");
     expect(container.textContent).toContain("Beta skills");
+  });
+});
+
+describe("InstanceExperimentalSettings — read resilience", () => {
+  let container: HTMLDivElement;
+  let root: Root | null = null;
+  let queryClient: QueryClient;
+
+  async function renderPage() {
+    root = createRoot(container);
+    queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    flushSync(() => {
+      root!.render(
+        <QueryClientProvider client={queryClient}>
+          <MemoryRouter initialEntries={["/BUT/company/settings/instance/experimental"]}>
+            <InstanceExperimentalSettings />
+          </MemoryRouter>
+        </QueryClientProvider>,
+      );
+    });
+    await flushReact();
+  }
+
+  beforeEach(() => {
+    container = document.createElement("div");
+    document.body.appendChild(container);
+    mockInstanceSettingsApi.getExperimental.mockResolvedValue(defaultExperimentalSettings());
+  });
+
+  afterEach(() => {
+    flushSync(() => {
+      root?.unmount();
+    });
+    root = null;
+    queryClient.clear();
+    container.remove();
+    vi.clearAllMocks();
+  });
+
+  it("keeps loaded toggles on screen when a refetch fails transiently", async () => {
+    await renderPage();
+    expect(container.textContent).toContain("Enable Environments");
+
+    mockInstanceSettingsApi.getExperimental.mockRejectedValue(
+      new ApiError("Paperclip is restarting.", 503, { error: "tenant_app_unavailable" }),
+    );
+    await queryClient.invalidateQueries({ queryKey: queryKeys.instance.experimentalSettings });
+    await flushReact();
+
+    expect(mockInstanceSettingsApi.getExperimental).toHaveBeenCalledTimes(2);
+    expect(queryClient.getQueryState(queryKeys.instance.experimentalSettings)?.status).toBe("error");
+    expect(container.textContent).toContain("Enable Environments");
+    expect(container.querySelector('[data-query-view="error"]')).toBeNull();
+    expect(container.textContent).not.toContain("Paperclip is restarting.");
+    expect(container.textContent).not.toContain("tenant_app_unavailable");
+  });
+
+  it("shows readable copy and a Retry button when settings fail to load", async () => {
+    mockInstanceSettingsApi.getExperimental.mockRejectedValueOnce(new ApiError("Boom", 500, { error: "Boom" }));
+    await renderPage();
+
+    expect(container.textContent).toContain("Couldn't load experimental settings");
+    expect(container.querySelector('[data-query-view="error"]')).not.toBeNull();
+    expect(container.textContent).not.toContain("Enable Environments");
+
+    const retryButton = [...container.querySelectorAll("button")].find(
+      (button) => button.textContent?.trim() === "Retry",
+    );
+    expect(retryButton).toBeDefined();
+    await act(() => retryButton!.click());
+    await flushReact();
+
+    expect(container.textContent).toContain("Enable Environments");
+    expect(container.querySelector('[data-query-view="error"]')).toBeNull();
   });
 });

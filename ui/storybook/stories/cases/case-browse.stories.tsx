@@ -5,7 +5,7 @@ import { installCaseFixtures } from "../../support/capability-gaps/cases";
 import type { FixtureState } from "../../support/capability-gaps/api";
 const meta = {
   id: "feature-case-browse",
-  title: "Automation and structured work/Cases/Browse and hierarchy",
+  title: "Automation and structured work/Cases/Browse",
   component: Cases,
   parameters: { layout: "padded",
     paperclip: {
@@ -15,7 +15,7 @@ const meta = {
       "status": "current",
       "implementation": "production",
       "boundary": "fixtures",
-      "notes": "Cases page with fixture parent/child records and loading/empty/error/403. Failed list queries currently use the shipped empty-case presentation. Responsive duplicate labels are accounted for; server filters and case mutations remain separate."
+      "notes": "Read-only production Cases page with fixture records and loading, empty, error and denied access states. Shared list header presents Columns, Filter, Sort and Group controls. No status or label editors are exposed. Full control interactions use the Read-only pages suite; server filtering, ordering and persistence are verified separately."
     },
   },
   beforeEach: ({ parameters }) => {

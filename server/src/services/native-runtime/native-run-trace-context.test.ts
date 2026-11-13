@@ -1,8 +1,11 @@
 import { context, trace, TraceFlags } from "@opentelemetry/api";
 import { AsyncLocalStorageContextManager } from "@opentelemetry/context-async-hooks";
 import { AlwaysOffSampler, ParentBasedSampler, TracerProvider, InMemorySpanExporter, SimpleSpanProcessor } from "@opentelemetry/sdk-trace";
-import { expect, it, vi } from "vitest";
+import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { createNativeRunTrace } from "./native-run-trace.js";
+
+beforeEach(() => vi.stubEnv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://collector.test"));
+afterEach(() => vi.unstubAllEnvs());
 
 it.each([TraceFlags.NONE, TraceFlags.SAMPLED])("exports a complete native run independently of trigger flags %i", async traceFlags => {
   const manager = new AsyncLocalStorageContextManager().enable();

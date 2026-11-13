@@ -6,6 +6,9 @@ import { assertSkillSnapshotPath, skillFileBytes } from './skill-snapshot.js';
 export const REPOSITORY_CONTENT_DIR = '.paperclip-repository';
 export const MAX_REPOSITORY_FILES = 9_990;
 export const MAX_REPOSITORY_BYTES = 61 * 1024 * 1024;
+export function repositorySkillFrontmatter(content: string): string | undefined {
+  return content.match(/^---\r?\n[\s\S]*?\r?\n---(?:\r?\n|$)/)?.[0];
+}
 const manifestSchema = z.object({
   version: z.literal(1),
   skills: z.array(z.string().min(1).max(4096)).min(1).max(1000),
@@ -38,7 +41,7 @@ export function repositorySkillProjection(files: CompanySkillVersionFileInventor
   assertSkillSnapshotPath(skillPath);
   const skill = files.find(file => file.path === skillPath);
   if (!skill || skill.encoding === 'base64') throw new Error('Repository skill entrypoint is missing or not text.');
-  const frontmatter = skill.content.match(/^---\r?\n[\s\S]*?\r?\n---(?:\r?\n|$)/)?.[0];
+  const frontmatter = repositorySkillFrontmatter(skill.content);
   if (!frontmatter) throw new Error('Repository skill entrypoint has no frontmatter.');
   const target = `${REPOSITORY_CONTENT_DIR}/${skillPath}`;
   const wrapper = `${frontmatter.trimEnd()}\n\nRead and follow the complete skill instructions in [${skillPath}](${target.split('/').map(encodeURIComponent).join('/')}). Resolve the original skill's relative file references from its directory inside \`${REPOSITORY_CONTENT_DIR}/\`. That directory contains the included pinned repository files, including supporting skills and shared files. Repository-root paths are relative to that directory.\n`;

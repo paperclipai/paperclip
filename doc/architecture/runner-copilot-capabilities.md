@@ -1,6 +1,32 @@
 # Copilot 1.0.88 rich ACP capability audit
 
-Current integration (2026-10-08): **Copilot profile v17 remains pending** with
+## Current profile identity
+
+Copilot runs as **profile 92** on `@github/copilot` 1.0.88. Its `commandDigest`
+attests the upstream release: the package version and the complete patched
+distribution closure for each qualified platform. It does not bind Paperclip
+source or the shared ACPX layer. Every ACPX harness binds the shared ACPX layer the same way: saved inputs must
+match the current ACPX version, and the provider pack's `contractDigest` binds
+the Runner's ACPX patch with the other Runner contracts. `generate:acpx-profiles` writes the digest to `acpx-profiles.json`,
+and `check:acpx-profiles` refuses drift. Launch and recovery admission require
+the exact current profile and digest. Saved inputs with an earlier profile
+version still decode, so recovery can refuse them.
+
+## Profile chronology
+
+Until 2026-10-30, these digests hashed Paperclip source files, so each change
+to a bound file advanced the profile version. The dated sections below record
+that period; their profile versions and digests are not current.
+
+Historical integration (2026-10-10): **Copilot profile v18 remained pending** with
+digest `sha256:5e79c2b1a42b98a545bafe9e93f8c6b6c423bec1c18dc1f0a3cf48477b757389`.
+Muse's external-provider protocol adds shared generated schema and validator
+sources to the execution identity. Version 18 binds those two source hashes;
+the Copilot executable, policies and receipt implementation are unchanged.
+At that point, the v17 declaration was historical and its warm sessions were
+rejected by the candidate. This identity update supplied no new paid qualification.
+
+Historical integration (2026-10-08): **Copilot profile v17 remained pending** with
 digest `sha256:481d0852ae8272a90f9912723d540518a874a0da65a9070e33b52ea1a14cbd7f`.
 It binds master's shared protocol-validation sources without changing the
 executable or supplying new paid qualification. Historical checkpoints below

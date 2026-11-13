@@ -1,0 +1,57 @@
+# yaml-language-server: $schema=./catalog.schema.json
+# Planning scenarios; not registered executions or evidence of a pass.
+schema_version: 1
+feature: teams
+status: planned
+scenarios:
+  - id: teams.find-team
+    capabilities:
+      - teams/discovery
+    context: >-
+      The team catalog contains several available packages with different intended roles.
+    query: >-
+      Do we have a ready-made team for building a website?
+    expected_outcome: >-
+      The agent reads available package descriptions and summarizes the relevant team and
+      included roles. It links the catalog entry and calls out requirements visible in its
+      metadata. It does not invent a package or promise that catalog availability means the
+      team's accounts are already configured.
+  - id: teams.preview-install
+    capabilities:
+      - teams/preview
+    context: >-
+      The selected package would add multiple agents and a project; nothing has been installed
+      yet.
+    query: >-
+      Show me what installing the website team would add.
+    expected_outcome: >-
+      A preview describes the proposed resources, options and conflicts in the current company
+      without creating them. Chat distinguishes preview from installation and identifies any
+      missing configuration needed for an eventual working team.
+  - id: teams.install-team
+    capabilities:
+      - teams/install
+      - agents/hire
+    context: >-
+      The preview is accepted, required accounts exist, and the agent has effective installation
+      and resource-creation authority.
+    query: >-
+      Install that website team in this company.
+    expected_outcome: >-
+      The supported installer creates the intended resources once in the active company and
+      reports conflicts or partial failures truthfully. Chat links to the installed agents and
+      project. Repeating an uncertain request reconciles the existing installation rather than
+      blindly duplicating the team.
+  - id: teams.configure-team
+    capabilities:
+      - teams/configuration
+      - runs-adapters/validation
+    context: >-
+      A team is installed but one member lacks an eligible account and another is ready.
+    query: >-
+      Get this team ready to start the website.
+    expected_outcome: >-
+      The agent identifies the specific incomplete member and uses the supported configuration
+      or human connection request. Readiness is verified per member; the already working member
+      keeps its configuration. Chat does not label the whole team ready until required bindings
+      and runtime checks are satisfied.

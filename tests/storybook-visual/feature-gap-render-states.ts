@@ -170,31 +170,6 @@ const states: Record<string, Record<string, State>> = {
       selector: '[data-testid="onboarding-wizard"]',
     },
   },
-  "feature-pipeline-learnings": {
-    loading: skeleton,
-    empty: { text: "No learnings yet." },
-    failed: { text: "Could not load learnings." },
-    "permission-denied": { text: "Could not load learnings." },
-  },
-  "feature-pipeline-board": {
-    loading: skeleton,
-    empty: { text: "0 total items", absent: "Ship the release notes" },
-    failed: { text: "Pipeline not found." },
-    "permission-denied": { text: "Pipeline not found." },
-  },
-  "feature-pipeline-review": {
-    loading: skeleton,
-    empty: { text: "Nothing needs you right now." },
-    failed: { text: "Some items need attention. Try again in a moment." },
-    "permission-denied": {
-      text: "Some items need attention. Try again in a moment.",
-    },
-  },
-  "feature-pipeline-stages": {
-    loading: skeleton,
-    failed,
-    "permission-denied": denied,
-  },
   "feature-plugin-configuration": {
     configured: {
       text: "Preview plugin",
@@ -223,9 +198,9 @@ const states: Record<string, Record<string, State>> = {
   },
   "feature-secret-proposal-review": {
     pending: { text: "dev/github/token" },
-    loading: { text: "Loading proposals…" },
-    empty: { text: "No pending proposals" },
-    failed: { text: "Couldn’t load proposals. Try again." },
+    loading: { text: "Loading requests…" },
+    empty: { text: "Nothing to review" },
+    failed: { text: "Couldn’t load requests. Try again." },
   },
   "feature-skill-test-runs": {
     "completed-test": { text: "succeeded" },

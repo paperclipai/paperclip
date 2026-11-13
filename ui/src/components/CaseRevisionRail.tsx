@@ -1,9 +1,12 @@
 import { useEffect, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Link } from "@/lib/router";
-import { casesApi, type CaseDocumentRevision } from "@/api/cases";
+import type { DocumentRevision } from "@paperclipai/shared";
+import { casesApi, type CaseDocumentRevision, type CaseDocumentRevisions } from "@/api/cases";
+import { issuesApi } from "@/api/issues";
 import { queryKeys } from "@/lib/queryKeys";
 import { buildLineDiff, type DiffRow } from "@/lib/line-diff";
+import { QueryErrorState, useQueryView } from "@/components/QueryView";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
@@ -14,7 +17,7 @@ import { Diff } from "lucide-react";
 
 /** Author + via-issue attribution line for a revision. */
 function RevisionByline({ revision }: { revision: CaseDocumentRevision }) {
-  const author = revision.actorAgentName ?? (revision.createdByUserId ? "User" : "System");
+  const author = revision.actorAgentName ?? (revision.createdByAgentId ? "Agent" : revision.createdByUserId ? "User" : "System");
   return (
     <span className="flex flex-wrap items-center gap-x-1 text-(length:--text-micro) text-muted-foreground">
       <span>{author}</span>
@@ -37,7 +40,7 @@ function RevisionByline({ revision }: { revision: CaseDocumentRevision }) {
 }
 
 function getRevisionLabel(revision: CaseDocumentRevision) {
-  const actor = revision.actorAgentName ?? (revision.createdByUserId ? "board" : "system");
+  const actor = revision.actorAgentName ?? (revision.createdByAgentId ? "agent" : revision.createdByUserId ? "board" : "system");
   return `rev ${revision.revisionNumber} - ${relativeTime(revision.createdAt)} - ${actor}`;
 }
 
@@ -80,18 +83,18 @@ function CaseDocumentDiffModal({
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="!max-w-(--pct-90) flex max-h-(--sz-85vh) w-full flex-col overflow-hidden">
-        <div className="flex items-center justify-between gap-4">
-          <DialogHeader className="shrink-0">
-            <DialogTitle>
+        <div className="flex min-w-0 flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
+          <DialogHeader className="min-w-0">
+            <DialogTitle className="break-words pr-6">
               Diff - <span className="font-mono text-sm">{documentKey}</span>
             </DialogTitle>
           </DialogHeader>
-          <div className="flex shrink-0 items-center gap-4">
-            <div className="flex items-center gap-2">
-              <span className="rounded-full border border-red-500/30 bg-red-500/10 px-2 py-0.5 text-(length:--text-nano) font-medium uppercase tracking-(--tracking-caps) text-red-400">Old</span>
+          <div className="grid min-w-0 gap-3 sm:grid-cols-2 lg:gap-4">
+            <div className="flex min-w-0 items-center gap-2">
+              <span className="shrink-0 rounded-full border border-red-500/30 bg-red-500/10 px-2 py-0.5 text-(length:--text-nano) font-medium uppercase tracking-(--tracking-caps) text-red-400">Old</span>
               <Select value={effectiveLeftId ?? ""} onValueChange={setLeftRevisionId}>
-                <SelectTrigger className="h-7 w-60 border-border/60 text-xs">
-                  <SelectValue placeholder="Select revision" />
+                <SelectTrigger aria-label="Old revision" className="min-w-0 w-full border-border/60 data-[size=default]:h-11 md:w-60 md:text-xs md:data-[size=default]:h-9">
+                  <SelectValue className="min-w-0 truncate" placeholder="Select revision" />
                 </SelectTrigger>
                 <SelectContent>
                   {revisions.map((revision) => (
@@ -102,11 +105,11 @@ function CaseDocumentDiffModal({
                 </SelectContent>
               </Select>
             </div>
-            <div className="flex items-center gap-2">
-              <span className="rounded-full border border-green-500/30 bg-green-500/10 px-2 py-0.5 text-(length:--text-nano) font-medium uppercase tracking-(--tracking-caps) text-green-400">New</span>
+            <div className="flex min-w-0 items-center gap-2">
+              <span className="shrink-0 rounded-full border border-green-500/30 bg-green-500/10 px-2 py-0.5 text-(length:--text-nano) font-medium uppercase tracking-(--tracking-caps) text-green-400">New</span>
               <Select value={effectiveRightId ?? ""} onValueChange={setRightRevisionId}>
-                <SelectTrigger className="h-7 w-60 border-border/60 text-xs">
-                  <SelectValue placeholder="Select revision" />
+                <SelectTrigger aria-label="New revision" className="min-w-0 w-full border-border/60 data-[size=default]:h-11 md:w-60 md:text-xs md:data-[size=default]:h-9">
+                  <SelectValue className="min-w-0 truncate" placeholder="Select revision" />
                 </SelectTrigger>
                 <SelectContent>
                   {revisions.map((revision) => (
@@ -120,7 +123,7 @@ function CaseDocumentDiffModal({
           </div>
         </div>
 
-        <div className="flex-1 overflow-auto rounded-md border border-border text-xs">
+        <div className="min-h-0 flex-1 overflow-auto rounded-md border border-border text-xs">
           {!leftRevision || !rightRevision ? (
             <div className="p-6 text-center text-sm text-muted-foreground">Select two revisions to compare.</div>
           ) : leftRevision.id === rightRevision.id ? (
@@ -168,15 +171,22 @@ function CaseDocumentDiffModal({
 export function CaseRevisionRail({
   caseIdentifier,
   documentKey = "body",
+  taskId,
 }: {
   caseIdentifier: string;
   documentKey?: string;
+  taskId?: string;
 }) {
-  const revisionsQuery = useQuery({
-    queryKey: queryKeys.cases.revisions(caseIdentifier, documentKey),
-    queryFn: () => casesApi.listRevisions(caseIdentifier, documentKey),
+  const revisionsQuery = useQuery<CaseDocumentRevisions | DocumentRevision[]>({
+    queryKey: taskId ? queryKeys.issues.documentRevisions(taskId, documentKey) : queryKeys.cases.revisions(caseIdentifier, documentKey),
+    queryFn: () => taskId ? issuesApi.listDocumentRevisions(taskId, documentKey) : casesApi.listRevisions(caseIdentifier, documentKey),
   });
-  const revisions = revisionsQuery.data?.revisions ?? [];
+  const revisionsView = useQueryView(revisionsQuery);
+  const response = revisionsQuery.data;
+  const revisions: CaseDocumentRevision[] = Array.isArray(response) ? response.map(revision => ({
+    ...revision, title: revision.title ?? documentKey, createdAt: new Date(revision.createdAt).toISOString(),
+    actorAgentName: null, createdByRunId: null, issue: null,
+  })) : response?.revisions ?? [];
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [diffOpen, setDiffOpen] = useState(false);
 
@@ -189,22 +199,32 @@ export function CaseRevisionRail({
     }
   }, [revisions, selectedId]);
 
-  if (revisionsQuery.isLoading) {
+  if (revisionsQuery.isLoading || revisionsView.kind === "reconnecting") {
     return <p className="py-6 text-center text-sm text-muted-foreground">Loading revisions…</p>;
   }
-  if (revisionsQuery.isError) {
-    return <p className="py-6 text-center text-sm text-muted-foreground">Could not load revisions.</p>;
+  if (revisionsView.kind === "error") {
+    return (
+      <div className="flex justify-center py-6">
+        <QueryErrorState
+          size="inline"
+          error={revisionsQuery.error}
+          action="load revisions"
+          onRetry={revisionsView.retry}
+          retrying={revisionsView.isFetching}
+        />
+      </div>
+    );
   }
   if (revisions.length === 0) {
     return <p className="py-6 text-center text-sm text-muted-foreground">No revisions yet.</p>;
   }
 
   const selected = revisions.find((r) => r.id === selectedId) ?? revisions[0]!;
-  const latestRevisionNumber = revisionsQuery.data?.document.latestRevisionNumber ?? selected.revisionNumber;
+  const latestRevisionNumber = (Array.isArray(response) ? response[0]?.revisionNumber : response?.document.latestRevisionNumber) ?? selected.revisionNumber;
 
   return (
     <div className="grid gap-4 md:grid-cols-(--gtc-case-revisions)">
-      <aside className="space-y-1">
+      <aside className="min-w-0 space-y-1">
         <div className="flex items-center justify-between gap-2 px-1">
           <h3 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
             Revisions

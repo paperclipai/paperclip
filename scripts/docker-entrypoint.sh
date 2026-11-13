@@ -27,16 +27,55 @@ if [ "$(id -u)" -ne 0 ]; then
     exec "$@"
 fi
 
-# Adjust the node user's UID/GID if they differ from the runtime request
-if [ "$(id -u node)" -ne "$PUID" ]; then
+# Adjust the node user's UID/GID if they differ from the runtime request.
+#
+# `usermod -u` and `usermod -g` also re-own every file under the user's home
+# directory. When that home is the app home (the data volume), the walk can
+# take minutes on a large home, and the app cannot start until it ends. In
+# that case the remap runs while the home points at a placeholder path that
+# does not exist, so usermod changes only the account, and the ownership probe
+# below repairs the app home when the IDs really changed (the home directory
+# itself then has the old owner, which the shallow probe detects on the same
+# boot). A passwd home outside the app home is not covered by that probe, so
+# it keeps the plain usermod behavior, which re-owns it.
+#
+# The placeholder embeds the original home, so a boot that stops between the
+# two usermod -d calls is repaired on the next start of the same container.
+remap_home_prefix="/nonexistent/paperclip-uid-remap"
+node_home="$(getent passwd node 2>/dev/null | cut -d: -f6 || true)"
+case "$node_home" in
+    "$remap_home_prefix"/*)
+        node_home="${node_home#"$remap_home_prefix"}"
+        echo "Restoring node home to $node_home after an interrupted remap"
+        usermod -d "$node_home" node
+        ;;
+esac
+
+remap_uid=0
+remap_gid=0
+[ "$(id -u node)" -ne "$PUID" ] && remap_uid=1
+[ "$(id -g node)" -ne "$PGID" ] && remap_gid=1
+app_home="${PAPERCLIP_HOME:-/paperclip}"
+move_home=0
+if { [ "$remap_uid" -eq 1 ] || [ "$remap_gid" -eq 1 ]; } \
+    && [ -n "$node_home" ] && [ "${node_home%/}" = "${app_home%/}" ]; then
+    move_home=1
+    usermod -d "$remap_home_prefix$node_home" node
+fi
+
+if [ "$remap_uid" -eq 1 ]; then
     echo "Updating node UID to $PUID"
     usermod -o -u "$PUID" node
 fi
 
-if [ "$(id -g node)" -ne "$PGID" ]; then
+if [ "$remap_gid" -eq 1 ]; then
     echo "Updating node GID to $PGID"
     groupmod -o -g "$PGID" node
     usermod -g "$PGID" node
+fi
+
+if [ "$move_home" -eq 1 ]; then
+    usermod -d "$node_home" node
 fi
 
 # Ensure the app home is owned by the runtime user BEFORE dropping

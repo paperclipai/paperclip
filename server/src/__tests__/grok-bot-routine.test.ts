@@ -4,15 +4,16 @@ import { grokBotRoutes } from "../routes/grok-bot.js";
 import { publicMcpIngressRoutes } from "../routes/public-mcp.js";
 import { createPublicMcpExecutor } from "../services/public-mcp/capabilities.js";
 import { createDotRunnerMcpTools } from "../services/dot-runner-broker.js";
-import { createHash, randomBytes, randomUUID } from "node:crypto";
+import { randomBytes, randomUUID } from "node:crypto";
 import { and, eq, sql } from "drizzle-orm";
 import { beforeAll, afterAll, afterEach, describe, expect, it, vi } from "vitest";
 import { agents, authUsers, companies, companyMemberships, createDb, dotAgentBindings, grokBotDispatches,
-  grokBotRoutines, mcpOauthGrants, activityLog, issues, heartbeatRuns, dotRunnerAssignments, dotRunnerOperations, dotMailboxItems, nativeRunFinalizations } from "@paperclipai/db";
+  grokBotRoutines, mcpOauthGrants, activityLog, issues, heartbeatRuns, dotRunnerAssignments, dotRunnerOperations, dotMailboxItems, nativeRunFinalizations, environmentLeases, environments, issueRecoveryActions, issueComments } from "@paperclipai/db";
 import { startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 import { accessService } from "../services/access.js";
 import { instanceSettingsService } from "../services/instance-settings.js";
-import { createPublicMcpOAuth } from "../services/public-mcp/oauth.js";
+import { grokRoutineFixture } from "./helpers/grok-routine-fixture.js";
+import { resolveExternalTestDatabaseUrl } from "./helpers/external-test-database.js";
 import { dotRunnerBroker } from "../services/dot-runner-broker.js";
 import { createGrokRoutineDispatcher } from "../services/grok-bot/dispatcher.js";
 import { grokRoutineService } from "../services/grok-bot/routine.js";
@@ -20,44 +21,28 @@ import * as secretModule from "../services/secrets.js";
 import * as externalAuthority from "../services/external-bot-authority.js";
 import { type GrokRoutineWake } from "../services/grok-bot/webhook.js";
 
-let temporary: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>>;
+import { remoteTerminationReceipt } from "../services/remote-execution-termination.js";
+import { admitExplicitNativeContinuation } from "../services/explicit-native-continuation.js";
+import { hasRequiredWorkspaceRecovery } from "../services/workspace-restore-recovery-state.js";
+import { heartbeatService } from "../services/heartbeat.js";
+import { environmentRuntimeService } from "../services/environment-runtime.js";
+
+let temporary: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | undefined;
 let db: ReturnType<typeof createDb>;
 beforeAll(async () => {
-  temporary = await startEmbeddedPostgresTestDatabase("paperclip-grok-routine-");
-  db = createDb(temporary.connectionString);
+  const externalUrl = resolveExternalTestDatabaseUrl("PAPERCLIP_GROK_ROUTINE_TEST_DATABASE_URL");
+  if (!externalUrl) temporary = await startEmbeddedPostgresTestDatabase("paperclip-grok-routine-");
+  db = createDb(externalUrl ?? temporary!.connectionString);
   vi.stubEnv("PAPERCLIP_ISSUE_PRIVACY_MODE", "enforce");
   vi.stubEnv("PAPERCLIP_SECRETS_MASTER_KEY", randomBytes(32).toString("base64"));
   await instanceSettingsService(db).updateExperimental({ enablePublicMcp: true, enableNativeRunner: true, enableGrokBot: true, enableOpenAiDot: true });
 }, 120000);
-afterAll(async () => { try { await temporary?.cleanup(); } finally { vi.unstubAllEnvs(); } });
+afterAll(async () => { try { await db?.$client.end({ timeout: 1 }); await temporary?.cleanup(); } finally { vi.unstubAllEnvs(); } });
 
 afterEach(() => vi.restoreAllMocks());
 
-async function fixture() {
-  const userId = randomUUID();
-  await db.insert(authUsers).values({ id: userId, name: "Grok operator", email: `${userId}@example.test`, createdAt: new Date(), updatedAt: new Date() });
-  const [company] = await db.insert(companies).values({ name: "Grok test", issuePrefix: "GK" + randomBytes(3).toString("hex") }).returning();
-  await db.insert(companyMemberships).values({ companyId: company!.id, principalType: "user", principalId: userId, membershipRole: "owner", status: "active" });
-  await accessService(db).setPrincipalPermission(company!.id, "user", userId, "agents:create", true, userId);
-  const [agent] = await db.insert(agents).values({ companyId: company!.id, name: "Grok test", adapterType: "paperclip_runner", status: "active", adapterConfig: { provider: "grok_bot", allowUnmeteredProvider: true, lifecycleMode: "per_turn" } }).returning();
-  const oauth = createPublicMcpOAuth(db, { origin: "https://paperclip.example", resource: "https://paperclip.example/mcp/runner" });
-  const client = await oauth.register({ client_name: "Synthetic Grok client", redirect_uris: ["https://client.example/callback"] }, randomUUID());
-  const verifier = randomBytes(32).toString("base64url");
-  const input = { client_id: client.client_id, redirect_uri: "https://client.example/callback", response_type: "code", resource: oauth.config.resource,
-    scope: "paperclip:agent offline_access", code_challenge: createHash("sha256").update(verifier).digest("base64url"), code_challenge_method: "S256" };
-  const requestId = (await oauth.authorize(input)).split("/").at(-1)!;
-  const pairing = await dotRunnerBroker(db).createPairing({ companyId: company!.id, agentId: agent!.id, operatorId: userId, provider: "grok_bot" });
-  const consent = await oauth.consentDotPairing(requestId, pairing.pairingCode);
-  const tokens = await oauth.token({ grant_type: "authorization_code", client_id: client.client_id, redirect_uri: input.redirect_uri,
-    resource: oauth.config.resource, code: new URL(consent.redirectUrl).searchParams.get("code"), code_verifier: verifier });
-  const principal = await oauth.authenticate(tokens.access_token);
-  const delivery = vi.fn().mockResolvedValue({ delivery: "accepted", httpStatus: 200 });
-  const service = grokRoutineService(db, delivery);
-  const config = { companyId: company!.id, agentId: agent!.id, bindingId: pairing.bindingId, operatorId: userId,
-    expectedRevision: 0, botName: "Synthetic Bot", webhookUrl: "https://bot.example.test/routines/synthetic", webhookKey: "synthetic-sender-key" };
-  await service.configure(config);
-  return { company: company!, agent: agent!, principal, pairing, service, delivery, config, oauth, tokens };
-}
+const fixture = () => grokRoutineFixture(db);
+
 async function verification(f: Awaited<ReturnType<typeof fixture>>, sourceEventId = randomUUID()) {
   return f.service.reserve({ companyId: f.company.id, agentId: f.agent.id, bindingId: f.pairing.bindingId, sourceEventId, kind: "verify" });
 }
@@ -98,6 +83,63 @@ async function acceptance(f: Awaited<ReturnType<typeof fixture>>, work: typeof d
 }
 
 describe("durable Grok routine qualification", () => {
+  it("preflights current connection authority without treating database failures as readiness", async () => {
+    const f = await fixture();
+    const broker = dotRunnerBroker(db);
+    const canStart = () => broker.canStartNewWork(f.company.id, f.agent.id, f.pairing.bindingId);
+    expect(await canStart()).toBe(false);
+    const row = await verification(f);
+    await f.service.send(f.company.id, f.agent.id, row.id);
+    await f.service.acknowledge(f.principal, acknowledgement(row));
+    expect(await canStart()).toBe(true);
+    expect(await broker.canStartNewWork(randomUUID(), f.agent.id, f.pairing.bindingId)).toBe(false);
+    expect(await broker.canStartNewWork(f.company.id, f.agent.id, randomUUID())).toBe(false);
+    await db.update(grokBotRoutines).set({ recoveryRequiredAt: new Date(), recoveryReason: "work_session" })
+      .where(eq(grokBotRoutines.bindingId, f.pairing.bindingId));
+    expect(await canStart()).toBe(false);
+    await db.update(grokBotRoutines).set({ recoveryRequiredAt: null, recoveryReason: null })
+      .where(eq(grokBotRoutines.bindingId, f.pairing.bindingId));
+    await db.update(mcpOauthGrants).set({ revokedAt: new Date() }).where(eq(mcpOauthGrants.id, f.principal.grant.id));
+    expect(await canStart()).toBe(false);
+    const unavailable = new Error("synthetic database unavailable");
+    vi.spyOn(broker, "snapshot").mockRejectedValueOnce(unavailable);
+    await expect(canStart()).rejects.toBe(unavailable);
+  });
+
+  it("holds public heartbeat input before claiming a Runner while Grok recovery is required", async () => {
+    const f = await fixture();
+    await db.update(agents).set({ status: "idle" }).where(eq(agents.id, f.agent.id));
+    const row = await verification(f);
+    await f.service.send(f.company.id, f.agent.id, row.id);
+    await f.service.acknowledge(f.principal, acknowledgement(row));
+    await db.update(grokBotRoutines).set({ recoveryRequiredAt: new Date(), recoveryReason: "work_session" })
+      .where(eq(grokBotRoutines.bindingId, f.pairing.bindingId));
+    const [task] = await db.insert(issues).values({ companyId: f.company.id, title: "Wait for Grok inspection",
+      status: "todo", assigneeAgentId: f.agent.id, responsibleUserId: f.principal.grant.userId }).returning();
+    const runtime = environmentRuntimeService(db);
+    const acquire = vi.spyOn(runtime, "acquireRunLease").mockRejectedValue(new Error("Unexpected provider allocation"));
+    const heartbeat = heartbeatService(db, { environmentRuntime: runtime });
+    try {
+      await heartbeat.wakeup(f.agent.id, { source: "assignment", reason: "issue_assigned",
+        requestedByActorType: "user", requestedByActorId: f.principal.grant.userId,
+        payload: { issueId: task.id }, contextSnapshot: { issueId: task.id } });
+      await heartbeat.drainActiveRunExecutions();
+      for (let poll = 0; poll < 3; poll++) await heartbeat.resumeQueuedRuns();
+      await heartbeat.drainActiveRunExecutions();
+      const runs = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.agentId, f.agent.id));
+      expect(runs).toEqual([expect.objectContaining({ status: "queued", startedAt: null })]);
+      expect(await db.select().from(environmentLeases).where(eq(environmentLeases.companyId, f.company.id))).toEqual([]);
+      expect(await db.select().from(dotRunnerAssignments).where(eq(dotRunnerAssignments.agentId, f.agent.id))).toEqual([]);
+      expect(await db.select().from(grokBotDispatches).where(eq(grokBotDispatches.bindingId, f.pairing.bindingId)))
+        .toEqual([expect.objectContaining({ id: row.id, status: "acknowledged" })]);
+      expect(acquire).not.toHaveBeenCalled();
+      expect((await db.select().from(issues).where(eq(issues.id, task.id)))[0].status).toBe("todo");
+    } finally {
+      await db.update(agents).set({ status: "paused" }).where(eq(agents.id, f.agent.id));
+      await heartbeat.drainActiveRunExecutions();
+    }
+  });
+
   it("receives an authenticated Grok acknowledgement through the actual MCP transport without exposing personal or Dot event tools", async () => {
     const f = await fixture(); const row = await verification(f);
     await f.service.send(f.company.id, f.agent.id, row.id);
@@ -289,6 +331,28 @@ describe("durable Grok routine qualification", () => {
     expect((await dotRunnerBroker(db).read(f.principal, work.id)).toolUsageInstructions).toContain("paperclip_grok_operation_status");
   });
 
+  it.each(["new offer", "prepared before restart"] as const)("does not echo delayed Bot-initiated work: %s", async scenario => {
+    const f = await fixture(); const { work, run } = await admittedWork(f, "offered");
+    await db.update(heartbeatRuns).set({ contextSnapshot: { grokProactiveRequest: {
+      requestId: randomUUID(), bindingId: f.pairing.bindingId, bindingGeneration: 1,
+    } } }).where(eq(heartbeatRuns.id, run.id));
+    await db.update(dotRunnerAssignments).set({ createdAt: new Date(Date.now() - 60_000) }).where(eq(dotRunnerAssignments.id, work.id));
+    const legacy = scenario === "prepared before restart" ? await f.service.reserve({
+      companyId: f.company.id, agentId: f.agent.id, bindingId: f.pairing.bindingId,
+      assignmentId: work.id, kind: "mailbox_updated", sourceEventId: `proactive-admission:${work.id}`,
+    }) : null;
+    f.delivery.mockClear(); const dispatcher = createGrokRoutineDispatcher(db, () => true, f.delivery);
+    await dispatcher.tick(); await dispatcher.tick();
+    expect(f.delivery).not.toHaveBeenCalled();
+    const wakes = await db.select().from(grokBotDispatches).where(eq(grokBotDispatches.assignmentId, work.id));
+    if (legacy) expect(wakes).toEqual([expect.objectContaining({ id: legacy.id, status: "cancelled" })]);
+    else expect(wakes).toEqual([]);
+    // The original conversation still owns and can accept the polled offer.
+    await expect(dotRunnerBroker(db).read(f.principal, work.id)).resolves.toBeDefined();
+    await (await acceptance(f, work))();
+    expect((await db.select().from(dotRunnerAssignments).where(eq(dotRunnerAssignments.id, work.id)))[0]?.status).toBe("accepted");
+  });
+
   it("cancels a queued wake when its assignment was already accepted", async () => {
     const f = await fixture(); const { work } = await admittedWork(f, "offered");
     const queued = await f.service.reserve({ companyId: f.company.id, agentId: f.agent.id,
@@ -422,7 +486,7 @@ describe("durable Grok routine qualification", () => {
         await vi.waitFor(async () => {
           const result = await db.execute(sql`select exists (select 1 from pg_stat_activity where datname = current_database()
             and pid <> pg_backend_pid() and wait_event_type = 'Lock' and query like '%dot_agent_bindings%') as waiting`);
-          const row = Array.isArray(result) ? result[0] : result.rows[0];
+          const row = result[0];
           expect(row?.waiting).toBe(true);
         }, { timeout: 5000 });
         await tx.execute(sql`set local lock_timeout = '2s'`);
@@ -456,4 +520,141 @@ describe("durable Grok routine qualification", () => {
     expect(await f.service.recoveryNeeded(f.company.id, f.agent.id)).toBe(false);
   });
 
+});
+
+// Exercise the public recovery service and the actual native admission boundary,
+// including a stale file obligation persisted before this fix.
+describe("Grok inspection of historical workspace-less Stop", () => {
+  async function historicalHold() {
+    const f = await fixture();
+    const { run, task, work } = await admittedWork(f, "accepted");
+    const finishedAt = new Date(Date.now() - 1000);
+    const fileHold = { workspaceRestoreFailure: "restore_failed", workspaceRestoreRecovery: {
+      schema: "paperclip.workspace-restore-recovery.v1", runId: run.id, leaseIds: [] as string[],
+    } };
+    const [environment] = await db.insert(environments).values({ name: `Grok ${run.id}`, driver: "sandbox" }).returning();
+    const [lease] = await db.insert(environmentLeases).values({ companyId: f.company.id, issueId: task.id,
+      heartbeatRunId: run.id, environmentId: environment!.id, provider: "daytona", providerLeaseId: randomUUID(),
+      status: "released", releasedAt: new Date(), cleanupStatus: "success" }).returning();
+    await db.update(environmentLeases).set({ metadata: { remoteExecutionTermination:
+      remoteTerminationReceipt(lease!, { providerLeaseId: lease!.providerLeaseId, state: "destroyed" }) } }).where(eq(environmentLeases.id, lease!.id));
+    fileHold.workspaceRestoreRecovery.leaseIds.push(lease!.id);
+    await db.update(heartbeatRuns).set({ status: "cancelled", driverKind: "grok_bot_mcp", finishedAt,
+      nativeIssueId: task.id, issueId: task.id, contextSnapshot: { issueId: task.id },
+      runnerProfileJson: { nativeExecutionInput: { schema: "paperclip.native-execution-input.v6",
+        binding: { runId: run.id, companyId: f.company.id, agentId: f.agent.id, issueId: task.id },
+        provider: { kind: "grok_bot" }, workspace: { access: "none", cwd: null } } },
+      resultJson: { ...fileHold, cancellation: { source: "user", reason: "Paperclip work stopped" } },
+    }).where(eq(heartbeatRuns.id, run.id));
+    await db.update(issues).set({ status: "blocked", executionRunId: null, checkoutRunId: null }).where(eq(issues.id, task.id));
+    await db.update(nativeRunFinalizations).set({ phase: "terminal_failure", leaseOwner: null,
+      leaseExpiresAt: null, recoveryState: "blocked" }).where(eq(nativeRunFinalizations.runId, run.id));
+    await db.update(dotRunnerAssignments).set({ status: "fenced" }).where(eq(dotRunnerAssignments.id, work.id));
+    const [action] = await db.insert(issueRecoveryActions).values({ companyId: f.company.id, sourceIssueId: task.id,
+      kind: "active_run_watchdog", cause: "native_continuation_requires_reconciliation", fingerprint: run.id,
+      status: "resolved", outcome: "blocked", nextAction: "Recover files.",
+      evidence: { ...fileHold, runId: run.id, automaticRecovery: { replay: "blocked", actionOutcome: "unknown" } },
+    }).returning();
+    const [comment] = await db.insert(issueComments).values({ companyId: f.company.id, issueId: task.id,
+      authorType: "user", authorUserId: f.principal.grant.userId, body: "Start a fresh task turn after inspection." }).returning();
+    const continueWork = (dryRun = true) => db.transaction(async tx => {
+      await tx.select().from(issues).where(eq(issues.id, task.id)).for("update");
+      return admitExplicitNativeContinuation({ db: tx as unknown as typeof db, companyId: f.company.id,
+        issueId: task.id, agentId: f.agent.id, actorType: "user", actorId: f.principal.grant.userId,
+        reason: "issue_commented", commentId: comment!.id, successorRunId: randomUUID(), dryRun });
+    });
+    return { ...f, run, task, work, lease: lease!, action: action!, continueWork };
+  }
+
+  it("offers inspection for an old task hold and admits only new explicit input after inspection and Runner cleanup", async () => {
+    const f = await historicalHold();
+    f.delivery.mockClear();
+    expect(await f.service.recoveryNeeded(f.company.id, f.agent.id)).toBe(true);
+    expect(await f.continueWork()).toBeNull();
+    expect(await f.service.recover(f.company.id, f.agent.id, f.principal.grant.userId)).toMatchObject({
+      requiresVerification: true, remoteTerminationConfirmed: false,
+    });
+    expect(await f.service.state(f.company.id, f.agent.id, f.pairing.bindingId)).toMatchObject({ verified: false, recoveryNeeded: false });
+    const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.run.id));
+    expect(hasRequiredWorkspaceRecovery(run!.resultJson)).toBe(false);
+    expect(run).toMatchObject({ status: "cancelled", resultJson: { externalWorkspaceInspection: {
+      inspectedBy: f.principal.grant.userId, remoteTerminationConfirmed: false,
+      previousWorkspaceRestoreFailure: "restore_failed", runnerLeaseIds: [f.lease.id],
+    } } });
+    const [action] = await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.id, f.action.id));
+    expect(action).toMatchObject({ status: "resolved", outcome: "blocked", evidence: {
+      automaticRecovery: { replay: "blocked", actionOutcome: "unknown" }, externalWorkspaceInspection: { workspaceAccess: "none" },
+    } });
+    expect(action!.evidence).not.toHaveProperty("workspaceRestoreRecovery");
+    expect(f.delivery).not.toHaveBeenCalled();
+    expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.companyId, f.company.id))).toHaveLength(1);
+    await expect(dotRunnerBroker(db).operation(f.principal, f.work.id, randomUUID(), "progress", { text: "late effect" })).rejects.toThrow("wake verification");
+    // Connection recovery still requires a real authenticated challenge exchange.
+    const row = await verification(f); await f.service.send(f.company.id, f.agent.id, row.id);
+    await f.service.acknowledge(f.principal, acknowledgement(row));
+    await expect(dotRunnerBroker(db).operation(f.principal, f.work.id, randomUUID(), "progress", { text: "late effect" })).rejects.toThrow("revoked");
+    expect(await f.continueWork(false)).toMatchObject({ previousRunId: f.run.id });
+    const [settled] = await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.id, f.action.id));
+    expect(settled!.evidence.automaticRecovery).toMatchObject({ replay: "explicit_user_continuation", actionOutcome: "unknown" });
+    expect((await db.select().from(dotRunnerAssignments).where(eq(dotRunnerAssignments.id, f.work.id)))[0]!.status).toBe("fenced");
+    await f.service.recover(f.company.id, f.agent.id, f.principal.grant.userId);
+    expect(await db.select().from(activityLog).where(and(eq(activityLog.companyId, f.company.id), eq(activityLog.action, "grok.workspace_obligation_inspected")))).toHaveLength(1);
+  });
+
+  it("does not retire task holds if another assignment prevents recovery", async () => {
+    const f = await historicalHold();
+    const [other] = await db.insert(heartbeatRuns).values({ companyId: f.company.id, agentId: f.agent.id,
+      status: "running", invocationSource: "assignment", triggerDetail: "system" }).returning();
+    await db.insert(dotRunnerAssignments).values({ ...f.work, id: randomUUID(), runId: other!.id,
+      normalizedSessionId: randomUUID(), turnId: randomUUID(), status: "accepted" });
+    await expect(f.service.recover(f.company.id, f.agent.id, f.principal.grant.userId)).rejects.toThrow("current Paperclip work session");
+    const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.run.id));
+    expect(hasRequiredWorkspaceRecovery(run!.resultJson)).toBe(true);
+    expect(await f.service.recoveryNeeded(f.company.id, f.agent.id)).toBe(true);
+  });
+
+  it("commits verification invalidation before waiting for historical task inspection", async () => {
+    const f = await historicalHold();
+    let recovery: Promise<unknown> | undefined;
+    try {
+      await db.transaction(async tx => {
+        await tx.select().from(issues).where(eq(issues.id, f.task.id)).for("update");
+        recovery = f.service.recover(f.company.id, f.agent.id, f.principal.grant.userId);
+        void recovery.catch(() => {});
+        await vi.waitFor(async () => {
+          expect(await f.service.state(f.company.id, f.agent.id, f.pairing.bindingId)).toMatchObject({ verified: false, recoveryNeeded: true });
+        });
+        await expect(verification(f)).rejects.toThrow("recover");
+        const [binding] = await db.select().from(dotAgentBindings).where(eq(dotAgentBindings.id, f.pairing.bindingId));
+        expect(binding).toMatchObject({ status: "connected", readyAt: null });
+        const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.run.id));
+        expect(hasRequiredWorkspaceRecovery(run!.resultJson)).toBe(true);
+      });
+    } finally { await recovery; }
+    expect(await f.service.state(f.company.id, f.agent.id, f.pairing.bindingId)).toMatchObject({ verified: false, recoveryNeeded: false });
+  });
+
+  it.each(["cleanup_pending", "receipt_mismatch", "controller_owned", "assignment_active", "running", "operator_revoked", "foreign_company"])("does not retire an old obligation when %s", async condition => {
+    const f = await historicalHold();
+    if (condition === "cleanup_pending") await db.update(environmentLeases).set({ cleanupStatus: "failed" }).where(eq(environmentLeases.id, f.lease.id));
+    if (condition === "receipt_mismatch") await db.update(environmentLeases).set({ metadata: { remoteExecutionTermination: { schema: "paperclip.remote-termination.v1", runId: randomUUID() } } }).where(eq(environmentLeases.id, f.lease.id));
+    if (condition === "controller_owned") await db.update(nativeRunFinalizations).set({ leaseOwner: "other-owner" }).where(eq(nativeRunFinalizations.runId, f.run.id));
+    if (condition === "assignment_active") await db.update(dotRunnerAssignments).set({ status: "accepted" }).where(eq(dotRunnerAssignments.id, f.work.id));
+    if (condition === "running") await db.update(heartbeatRuns).set({ status: "running" }).where(eq(heartbeatRuns.id, f.run.id));
+    if (condition === "operator_revoked") await accessService(db).setPrincipalPermission(f.company.id, "user", f.principal.grant.userId, "agents:create", false, f.principal.grant.userId);
+    if (condition === "foreign_company") {
+      const foreign = await fixture();
+      await f.service.recover(foreign.company.id, foreign.agent.id, foreign.principal.grant.userId);
+    } else if (condition === "running") {
+      // Not an eligible historical source. Its active assignment is fenced in
+      // this deliberately malformed fixture, but no file state may be removed.
+      await f.service.recover(f.company.id, f.agent.id, f.principal.grant.userId);
+    } else await expect(f.service.recover(f.company.id, f.agent.id, f.principal.grant.userId)).rejects.toThrow();
+    const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.run.id));
+    expect(hasRequiredWorkspaceRecovery(run!.resultJson)).toBe(true);
+    if (["cleanup_pending", "receipt_mismatch", "controller_owned"].includes(condition)) {
+      expect(await f.service.state(f.company.id, f.agent.id, f.pairing.bindingId)).toMatchObject({ verified: false, recoveryNeeded: true });
+    }
+    expect(await f.continueWork()).toBeNull();
+  });
 });

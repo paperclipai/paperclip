@@ -1,4 +1,4 @@
-import { EMBEDDED_POSTGRES_TEST_TIMEOUT_MS } from "@paperclipai/db";
+import { applyPendingMigrations, closeRegisteredClients, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS } from "@paperclipai/db";
 import { execFile as execFileCallback } from "node:child_process";
 import { promisify } from "node:util";
 import { randomUUID } from "node:crypto";
@@ -7,18 +7,24 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { constants as fsConstants } from "node:fs";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
-import { and, eq } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import { agents, companies, createDb, executionWorkspaces, executionWorkspaceRepositories, heartbeatRuns, issues } from "@paperclipai/db";
 import { executionWorkspaceService } from "../services/execution-workspaces.js";
 import { executionWorkspaceRepositoryService } from "../services/execution-workspace-repositories.js";
+import * as remoteWorkspaces from "../services/remote-workspaces.js";
+import type { EnvironmentLease } from "@paperclipai/shared";
 import { listLocalProjectRepositories } from "@paperclipai/adapter-utils/ssh";
 import { readManagedWorkspaceRepositories, disposeGitWorkspaceSnapshot } from "@paperclipai/adapter-utils/git-workspace-sync";
-import { captureDirectorySnapshot, disposeDirectorySnapshot } from "@paperclipai/adapter-utils/workspace-restore-merge";
+import { captureDirectorySnapshot, disposeDirectorySnapshot, withDirectoryPublicationLock } from "@paperclipai/adapter-utils/workspace-restore-merge";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 
 const catalog = vi.hoisted(() => ({ available: true }));
 vi.mock("../services/tool-access.js", () => ({ toolAccessService: () => ({ listProjectRepositories: async () => ({ repositories: catalog.available ? [{ id: "123", fullName: "team/source", url: "https://github.com/team/source", connections: [] }] : [] }) }) }));
-const support = await getEmbeddedPostgresTestSupport();
+const externalDatabaseUrl = process.env.PAPERCLIP_TASK_REPOSITORIES_TEST_DATABASE_URL;
+if (externalDatabaseUrl && new URL(externalDatabaseUrl).pathname !== "/remote_workspace_repositories_test") {
+  throw new Error("Remote repository tests require the disposable remote_workspace_repositories_test database");
+}
+const support = externalDatabaseUrl ? { supported: true } : await getEmbeddedPostgresTestSupport();
 (support.supported ? describe : describe.skip)("durable task repository receipts", () => {
   let temporary: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>>;
   let db: ReturnType<typeof createDb>;
@@ -26,8 +32,13 @@ const support = await getEmbeddedPostgresTestSupport();
   const actor = { type: "board" as const, source: "local_implicit" as const, userId: "local-board" };
   beforeAll(async () => {
     vi.stubEnv("PAPERCLIP_ISSUE_PRIVACY_MODE", "enforce");
-    temporary = await startEmbeddedPostgresTestDatabase("paperclip-task-repositories-");
+    if (externalDatabaseUrl) await applyPendingMigrations(externalDatabaseUrl);
+    temporary = externalDatabaseUrl ? { connectionString: externalDatabaseUrl,
+      cleanup: () => closeRegisteredClients(externalDatabaseUrl) }
+      : await startEmbeddedPostgresTestDatabase("paperclip-task-repositories-");
     db = createDb(temporary.connectionString);
+    await db.execute(sql`set client_min_messages = warning`);
+    if (externalDatabaseUrl) await db.execute(sql`truncate table companies restart identity cascade`);
     cwd = await mkdtemp(path.join(tmpdir(), "paperclip-task-repositories-files-"));
     [companyId] = (await db.insert(companies).values({ name: "Task repositories", issuePrefix: "TREPO" }).returning()).map(row => row.id);
     [agentId] = (await db.insert(agents).values({ companyId, name: "Repository worker", adapterType: "process", status: "idle" }).returning()).map(row => row.id);
@@ -41,6 +52,39 @@ const support = await getEmbeddedPostgresTestSupport();
     return executionWorkspaceRepositoryService(db).prepareForAdmission(input);
   };
   const request = (requestKey: string, ref?: string) => executionWorkspaceRepositoryService(db).request({ companyId, issueId, actor, request: { repository: { kind: "catalog", id: "123" }, requestKey, ...(ref ? { ref } : {}) } });
+  it("prepares a remote task repository through its current writer without opening a controller path", async () => {
+    const runId = randomUUID(), taskId = randomUUID(), remoteWorkspaceId = randomUUID(), leaseId = randomUUID(), environmentId = randomUUID();
+    const remoteCwd = `/workspaces/${remoteWorkspaceId}`;
+    await db.insert(issues).values({ id: taskId, companyId, title: "Remote repositories" });
+    await db.insert(executionWorkspaces).values({ id: remoteWorkspaceId, companyId, sourceIssueId: taskId,
+      name: "Remote task", cwd: remoteCwd, mode: "isolated_workspace", strategyType: "project_primary", providerType: "cloud_sandbox",
+      metadata: { remoteWorkspace: { schema: "paperclip.remote-workspace.v1", epoch: 1, snapshotId: null,
+        source: { kind: "empty" }, writerRunId: runId, dirty: true,
+        location: { leaseId, environmentId, providerLeaseId: "remote-allocation", remoteCwd } } } });
+    await db.update(issues).set({ executionWorkspaceId: remoteWorkspaceId }).where(eq(issues.id, taskId));
+    const intent = await executionWorkspaceRepositoryService(db).request({ companyId, issueId: taskId, actor,
+      request: { repository: { kind: "catalog", id: "123" }, requestKey: "remote-repository" } });
+    const pin = "a".repeat(40);
+    const prepare = vi.spyOn(remoteWorkspaces, "prepareRemoteWorkspaceRepository").mockResolvedValue({
+      cwd: `${remoteCwd}/${intent.repository.relativePath}`, pinnedCommit: pin, branchName: "main", requiresSave: false });
+    try {
+      const prepared = await prepareForAdmission({ companyId, issueId: taskId, workspaceId: remoteWorkspaceId,
+        cwd: remoteCwd, agentId, runId, responsibleUserId: "local-board",
+        remoteTarget: { kind: "remote", transport: "sandbox", remoteCwd } as never,
+        remoteLease: { id: leaseId, environmentId, companyId, providerLeaseId: "remote-allocation" } as EnvironmentLease });
+      expect(prepare).toHaveBeenCalledWith(expect.objectContaining({ runId,
+        repository: expect.objectContaining({ id: intent.repository.id, relativePath: intent.repository.relativePath }) }));
+      expect(prepared).toMatchObject([{ id: intent.repository.id, pinnedCommit: pin }]);
+      const [receipt] = await db.select().from(executionWorkspaceRepositories).where(eq(executionWorkspaceRepositories.id, intent.repository.id));
+      expect(receipt).toMatchObject({ state: "ready", pinnedCommit: pin, branchName: "main" });
+      expect(await lstat(remoteCwd).catch(() => null)).toBeNull();
+      await expect(prepareForAdmission({ companyId, issueId: taskId, workspaceId: remoteWorkspaceId,
+        cwd: remoteCwd, agentId, runId: randomUUID(), responsibleUserId: "local-board",
+        remoteTarget: { kind: "remote", transport: "sandbox", remoteCwd } as never,
+        remoteLease: { id: leaseId } as EnvironmentLease })).rejects.toThrow("publication binding");
+      expect(prepare).toHaveBeenCalledTimes(1);
+    } finally { prepare.mockRestore(); }
+  });
   it("publishes a requested repository from an absent path through real admission locking and cloning", async () => {
     const root = await mkdtemp(path.join(tmpdir(), "paperclip-fresh-repository-"));
     const previousPath = process.env.PATH;
@@ -108,7 +152,7 @@ const support = await getEmbeddedPostgresTestSupport();
         await exec(realGit, ["-C", taskRoot, "add", "."]);
         expect((await exec(realGit, ["-C", taskRoot, "diff", "--cached", "--name-only"])).stdout.trim()).toBe("report.txt");
         const baseline = await captureDirectorySnapshot(taskRoot, { exclude: [".paperclip-runtime"] });
-        try { expect([...baseline.entries.keys()].some(entry => entry.includes("repository-staging") || entry.includes(".clone-"))).toBe(false); }
+        try { expect([...baseline.entries].some(([entry]) => entry.includes("repository-staging") || entry.includes(".clone-"))).toBe(false); }
         finally { await disposeDirectorySnapshot(baseline); }
       } finally {
         clearTimeout(timeout);
@@ -128,6 +172,103 @@ const support = await getEmbeddedPostgresTestSupport();
       if (previousPath === undefined) delete process.env.PATH; else process.env.PATH = previousPath;
       await rm(root, { recursive: true, force: true });
     }
+  });
+  it("lets a missing requested ref be corrected before any checkout is published", async () => {
+    const root = await mkdtemp(path.join(tmpdir(), "paperclip-missing-ref-repository-"));
+    const previousPath = process.env.PATH;
+    const exec = promisify(execFileCallback);
+    try {
+      const realGit = (await exec("which", ["git"])).stdout.trim();
+      const source = path.join(root, "source"), taskRoot = path.join(root, "task"), bin = path.join(root, "bin");
+      await Promise.all([mkdir(source), mkdir(taskRoot), mkdir(bin)]);
+      const git = async (...args: string[]) => (await exec(realGit, ["-C", source, ...args])).stdout.trim();
+      // The repository's default branch is master; an agent asks for "main".
+      await git("init", "--initial-branch=master");
+      await writeFile(path.join(source, "source.txt"), "master source\n");
+      await git("add", ".");
+      await git("-c", "user.name=Fixture", "-c", "user.email=fixture@example.test", "commit", "-m", "source");
+      const pin = await git("rev-parse", "HEAD");
+      await writeFile(path.join(bin, "git"), `#!${process.execPath}\n` +
+        `const { spawnSync } = require('node:child_process'); const args = process.argv.slice(2);\n` +
+        `const remote = args.includes('clone') ? args.at(-2) : null;\n` +
+        `if (remote && remote !== 'https://github.com/team/source') process.exit(97);\n` +
+        `if (remote) args[args.length - 2] = ${JSON.stringify(source)};\n` +
+        `const result = spawnSync(${JSON.stringify(realGit)}, args, { stdio: 'inherit' });\n` +
+        `if (result.status) process.exit(result.status);\n` +
+        `if (remote) process.exit(spawnSync(${JSON.stringify(realGit)}, ['-C', args.at(-1), 'remote', 'set-url', 'origin', remote], { stdio: 'inherit' }).status ?? 98);\n` +
+        `process.exit(result.status ?? 99);\n`, { mode: 0o755 });
+      process.env.PATH = `${bin}${path.delimiter}${previousPath ?? ""}`;
+      const service = executionWorkspaceRepositoryService(db);
+      const [workspace] = await db.insert(executionWorkspaces).values({ companyId, name: "Missing ref root", cwd: taskRoot,
+        mode: "shared_workspace", strategyType: "task_directory" }).returning();
+      const [task] = await db.insert(issues).values({ companyId, title: "Missing ref", executionWorkspaceId: workspace.id }).returning();
+      const repository = { kind: "catalog" as const, id: "123" };
+      const intent = await service.request({ companyId, issueId: task.id, actor, request: { repository, ref: "main", requestKey: "missing-ref" } });
+      const checkout = path.join(taskRoot, intent.repository.relativePath);
+      const admission = () => prepareForAdmission({ companyId, issueId: task.id, workspaceId: workspace.id, cwd: taskRoot,
+        agentId, runId: randomUUID(), responsibleUserId: "local-board" });
+      const receipt = async () => (await db.select().from(executionWorkspaceRepositories)
+        .where(eq(executionWorkspaceRepositories.id, intent.operationId)))[0];
+
+      await expect(admission()).rejects.toThrow(/ref "main" does not exist/);
+      expect(await receipt()).toMatchObject({ state: "needs_repair", failureCode: "repository_ref_not_found", pinnedCommit: null });
+      expect(await lstat(checkout).catch(() => null)).toBeNull();
+
+      // Retrying with the same missing ref keeps the receipt; a corrected ref replaces it.
+      await expect(service.request({ companyId, issueId: task.id, actor, request: { repository, ref: "main", requestKey: "missing-ref" } }))
+        .resolves.toMatchObject({ operationId: intent.operationId });
+      // An admission that listed the receipt before the correction must use the corrected ref.
+      const stagingIgnore = path.join(taskRoot, ".paperclip-runtime", "repository-staging", ".gitignore");
+      await rm(stagingIgnore, { force: true });
+      let releaseLock!: () => void;
+      const lockHeld = new Promise<void>(resolve => { releaseLock = resolve; });
+      let lockAcquired!: () => void;
+      const acquired = new Promise<void>(resolve => { lockAcquired = resolve; });
+      const holder = withDirectoryPublicationLock(checkout, async () => { lockAcquired(); await lockHeld; });
+      await acquired;
+      const pending = admission();
+      try {
+        await vi.waitFor(async () => expect(await lstat(stagingIgnore).catch(() => null)).not.toBeNull());
+        const corrected = await service.request({ companyId, issueId: task.id, actor, request: { repository, ref: "master", requestKey: "corrected-ref" } });
+        expect(corrected.operationId).toBe(intent.operationId);
+        expect(await receipt()).toMatchObject({ requestedRef: "master", state: "pending", failureCode: null, pinnedCommit: null });
+        expect((await receipt()).requestKeys.sort()).toEqual(["corrected-ref", "missing-ref"]);
+      } finally { releaseLock(); await holder; }
+
+      await expect(pending).resolves.toEqual([expect.objectContaining({ id: intent.operationId, pinnedCommit: pin })]);
+      expect(await readFile(path.join(checkout, "source.txt"), "utf8")).toBe("master source\n");
+      expect(await receipt()).toMatchObject({ state: "ready", requestedRef: "master", pinnedCommit: pin, failureCode: null });
+      // Published files are never switched to another ref.
+      await expect(service.request({ companyId, issueId: task.id, actor, request: { repository, ref: "main", requestKey: "after-ready" } }))
+        .rejects.toThrow(/conflicts/);
+    } finally {
+      if (previousPath === undefined) delete process.env.PATH; else process.env.PATH = previousPath;
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+  it("keeps a missing-ref receipt immutable when files exist at its checkout path", async () => {
+    const root = await mkdtemp(path.join(tmpdir(), "paperclip-missing-ref-occupied-"));
+    try {
+      const service = executionWorkspaceRepositoryService(db);
+      const [workspace] = await db.insert(executionWorkspaces).values({ companyId, name: "Occupied checkout root", cwd: root,
+        mode: "shared_workspace", strategyType: "task_directory" }).returning();
+      const [task] = await db.insert(issues).values({ companyId, title: "Occupied checkout", executionWorkspaceId: workspace.id }).returning();
+      const repository = { kind: "catalog" as const, id: "123" };
+      const intent = await service.request({ companyId, issueId: task.id, actor, request: { repository, ref: "main", requestKey: "occupied" } });
+      await db.update(executionWorkspaceRepositories).set({ state: "needs_repair", failureCode: "repository_ref_not_found" })
+        .where(eq(executionWorkspaceRepositories.id, intent.operationId));
+      await mkdir(path.join(root, intent.repository.relativePath), { recursive: true });
+      await expect(service.request({ companyId, issueId: task.id, actor, request: { repository, ref: "master", requestKey: "occupied-fix" } }))
+        .rejects.toThrow(/conflicts/);
+      // A failure that was not a missing ref also keeps the receipt.
+      await rm(path.join(root, intent.repository.relativePath), { recursive: true, force: true });
+      await db.update(executionWorkspaceRepositories).set({ failureCode: "repository_preparation_failed" })
+        .where(eq(executionWorkspaceRepositories.id, intent.operationId));
+      await expect(service.request({ companyId, issueId: task.id, actor, request: { repository, ref: "master", requestKey: "generic-fix" } }))
+        .rejects.toThrow(/conflicts/);
+      expect((await db.select().from(executionWorkspaceRepositories).where(eq(executionWorkspaceRepositories.id, intent.operationId)))[0])
+        .toMatchObject({ requestedRef: "main" });
+    } finally { await rm(root, { recursive: true, force: true }); }
   });
   it.skipIf(process.platform === "win32").each(["parent", "ignore_file"])("rejects a symlinked runtime staging %s before cloning", async (unsafeEntry) => {
     const root = await mkdtemp(path.join(tmpdir(), "paperclip-unsafe-repository-staging-"));
@@ -195,6 +336,7 @@ const support = await getEmbeddedPostgresTestSupport();
     expect(await readFile(path.join(checkout, "source.txt"), "utf8")).toBe("uncommitted work\n");
     if (process.platform !== "win32") {
       const receiptPath = path.join(checkout, ".git", "paperclip-workspace-owner.json");
+      await rm(receiptPath, { force: true });
       await promisify(execFileCallback)("mkfifo", [receiptPath]);
       let deadline: ReturnType<typeof setTimeout> | undefined;
       try {
@@ -210,7 +352,7 @@ const support = await getEmbeddedPostgresTestSupport();
       }
     }
   });
-  it("reuses the same physical checkout across logical workspaces and rechecks retained privacy", async () => {
+  it("reuses the exact published checkout across logical workspaces without applying historical task privacy", async () => {
     const [secondAgent] = await db.insert(agents).values({ companyId, name: "Second agent", adapterType: "process" }).returning();
     const [secondWorkspace] = await db.insert(executionWorkspaces).values({ companyId, projectId: null, name: "Same configured folder", cwd, mode: "shared_workspace", strategyType: "operator_directory" }).returning();
     const [secondIssue] = await db.insert(issues).values({ companyId, title: "Second task", assigneeAgentId: secondAgent.id, executionWorkspaceId: secondWorkspace.id }).returning();
@@ -218,10 +360,13 @@ const support = await getEmbeddedPostgresTestSupport();
     const intent = await service.request({ companyId, issueId: secondIssue.id, actor, request: { repository: { kind: "catalog", id: "123" }, requestKey: "shared-second" } });
     const admission = { companyId, issueId: secondIssue.id, workspaceId: secondWorkspace.id, cwd, agentId: secondAgent.id, runId: randomUUID(), responsibleUserId: null };
     const [original] = await db.select().from(executionWorkspaceRepositories).where(eq(executionWorkspaceRepositories.executionWorkspaceId, workspaceId));
+    await writeFile(path.join(cwd, original.relativePath, ".git", "paperclip-workspace-owner.json"),
+      JSON.stringify({ version: 1, repositoryId: original.id, pinnedCommit: original.pinnedCommit }));
     const prepared = await prepareForAdmission(admission);
     expect(prepared[0]).toMatchObject({ id: intent.operationId, cwd: path.join(await realpath(cwd), original.relativePath), pinnedCommit: original.pinnedCommit });
     expect(await readFile(path.join(prepared[0].cwd, "source.txt"), "utf8")).toBe("uncommitted work\n");
-    expect(await readFile(path.join(prepared[0].cwd, ".git", "paperclip-workspace-owner.json"), "utf8").catch(() => null)).toBeNull();
+    expect(JSON.parse(await readFile(path.join(prepared[0].cwd, ".git", "paperclip-workspace-owner.json"), "utf8")))
+      .toMatchObject({ repositoryId: intent.operationId, pinnedCommit: original.pinnedCommit });
     const [differentRefWorkspace] = await db.insert(executionWorkspaces).values({ companyId, name: "Conflicting ref", cwd, mode: "shared_workspace", strategyType: "operator_directory" }).returning();
     const [differentRefIssue] = await db.insert(issues).values({ companyId, title: "Different ref", executionWorkspaceId: differentRefWorkspace.id }).returning();
     await service.request({ companyId, issueId: differentRefIssue.id, actor, request: { repository: { kind: "catalog", id: "123" }, ref: "release", requestKey: "conflicting-ref" } });
@@ -233,7 +378,7 @@ const support = await getEmbeddedPostgresTestSupport();
     await owner.bindTaskWorkspace(companyId, privateSource.id, movedWorkspace.id);
     const [retainedWorkspace] = await db.select().from(executionWorkspaces).where(eq(executionWorkspaces.id, workspaceId));
     expect(retainedWorkspace.metadata?._issuePrivacySources).toMatchObject({ [privateSource.id]: true });
-    await expect(prepareForAdmission(admission)).rejects.toThrow(/Task workspace access is no longer available/);
+    await expect(prepareForAdmission(admission)).resolves.toHaveLength(1);
     expect(await readFile(path.join(prepared[0].cwd, "source.txt"), "utf8")).toBe("uncommitted work\n");
   });
   it("stages a root change without replacing active files or adding a wake", async () => {

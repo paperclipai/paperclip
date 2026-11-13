@@ -1,3 +1,5 @@
+import { notifyChatRunMilestones } from "./chat-run-milestone-notifications.js";
+import { notifyToolReviewChange } from "./tool-review-work-notifications.js";
 import { notifyDeliveryWork, DELIVERY_QUEUES } from "./delivery-work-notifications.js";
 import { and, eq } from "drizzle-orm";
 import {
@@ -115,7 +117,7 @@ export async function commitToolActionReview(
       !invocation ||
       invocation.issueId !== current.issueId ||
       (current.requestedByAgentId &&
-        invocation.agentId !== current.requestedByAgentId)
+        (invocation.actorType === "agent" ? invocation.actorId : invocation.agentId) !== current.requestedByAgentId)
     )
       throw conflict("Tool invocation context does not match");
     if (current.expiresAt && current.expiresAt <= new Date())
@@ -140,6 +142,8 @@ export async function commitToolActionReview(
         throw conflict("This review has already been resolved");
     }
     const now = new Date();
+    if (interaction && issue) await notifyChatRunMilestones(tx, interaction);
+    await notifyToolReviewChange(tx, current.companyId);
     const [updated] = await tx
       .update(toolActionRequests)
       .set({

@@ -81,6 +81,9 @@ describe("workspace snapshot threads", () => {
     await expect(fs.stat(created[0]!)).rejects.toMatchObject({ code: "ENOENT" });
   });
 
+  // Multiple real TypeScript worker cold starts can exceed the default 5s on
+  // CI (three queued workers use two slots). These cases verify cleanup and
+  // error propagation, not a worker startup deadline. Keep completion bounded.
   it("preserves filesystem errors, cleans failed workers and releases queued jobs", async () => {
     const root = await fixture();
     const file = path.join(root, "file");
@@ -103,7 +106,7 @@ describe("workspace snapshot threads", () => {
     if (results[2].status === "fulfilled") await disposeDirectorySnapshot(results[2].value);
     expect(created).toHaveLength(3);
     for (const directory of created) await expect(fs.stat(directory)).rejects.toMatchObject({ code: "ENOENT" });
-  });
+  }, 15_000);
 
   it.each(["unchanged", "changed", "sparse"] as const)("isolates restore captures and cleans their manifests: %s", async mode => {
     const target = await fixture(), source = await fixture();
@@ -129,7 +132,7 @@ describe("workspace snapshot threads", () => {
     expect(await fs.readFile(path.join(target, "file"), "utf8")).toBe(mode === "unchanged" ? "before" : "after");
     expect(await fs.readFile(path.join(target, "concurrent"), "utf8")).toBe("host bytes");
     for (const directory of created) await expect(fs.stat(directory)).rejects.toMatchObject({ code: "ENOENT" });
-  });
+  }, 15_000);
 
   it("retains the in-memory snapshot contract when disk backing is not requested", async () => {
     const root = await fixture();

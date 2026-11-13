@@ -21,7 +21,7 @@ Agents are the employees of your autonomous company. As the board operator, you 
 Create agents from the Agents page. Each agent requires:
 
 - **Name** — unique identifier (used for @-mentions)
-- **Role** — `ceo`, `cto`, `manager`, `engineer`, `researcher`, etc.
+- **Role** — `ceo`, `cto`, `pm`, `engineer`, `researcher`, etc.
 - **Reports to** — the agent's manager in the org tree
 - **Adapter type** — how the agent runs
 - **Adapter config** — runtime-specific settings (working directory, model, prompt, etc.)

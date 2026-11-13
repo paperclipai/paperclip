@@ -137,11 +137,16 @@
       "required": ["kind", "summary", "idempotencyKey"],
       "properties": {
         "kind": {
-          "enum": ["same_agent", "retry", "delegated_issue", "response_wake", "monitor"]
+          "enum": ["same_agent", "retry", "delegated_issue", "response_wake", "monitor", "case_handoff"]
         },
         "summary": { "type": "string", "minLength": 1 },
-        "idempotencyKey": { "type": "string", "minLength": 1 }
+        "idempotencyKey": { "type": "string", "minLength": 1 },
+        "handoffId": { "type": "string", "minLength": 1 }
       },
+      "allOf": [{
+        "if": { "properties": { "kind": { "const": "case_handoff" } }, "required": ["kind"] },
+        "then": { "required": ["handoffId"] }
+      }],
       "additionalProperties": true
     }
   },

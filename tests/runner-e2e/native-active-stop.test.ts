@@ -376,7 +376,7 @@ describe("explicit active Stop discovery", () => {
     expect(cells).toHaveLength(4); expect(suite.manualOnly).toBe(true);
     expect(cells.map(e => `${e.profile.qualificationCandidate}/${e.environment.id}`).sort()).toEqual(["copilot/daytona", "copilot/local", "cursor/daytona", "cursor/local"]);
     expect(cells.every(e => e.task.expectedRunCount === 1 && e.task.flow === "native_active_stop" && e.task.expectedTerminalState?.run === "cancelled")).toBe(true);
-    expect(suite.definitionMetadata).toMatchObject({ version: 4, evidence: "paperclip.e2e.native-active-stop-settlement.v2", normalCompletionAccepted: false, providerDeath: "not-covered" });
+    expect(suite.definitionMetadata).toMatchObject({ version: 20, evidence: "paperclip.e2e.native-active-stop-settlement.v2", normalCompletionAccepted: false, providerDeath: "not-covered" });
     expect(suiteDefinitionHash(suite)).not.toBe(suiteDefinitionHash({ ...suite, definitionMetadata: { ...suite.definitionMetadata, version: 3 } }));
     expect(suiteDefinitionHash(suite)).not.toBe(suiteDefinitionHash({ ...suite, definitionMetadata: { ...suite.definitionMetadata, normalCompletionAccepted: true } }));
     expect(selectRunnerExecutions(parseRunnerSelectors(["--all"])).some(e => e.suite.id === suite.id)).toBe(false);

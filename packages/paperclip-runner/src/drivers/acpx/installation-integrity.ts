@@ -2,6 +2,7 @@ import { MAX_ACPX_RUNTIME_EXECUTABLE_BYTES, ACPX_PRIVATE_SNAPSHOT_ENV, createAcp
 import { createNativeAcpxDistributionSnapshot, NATIVE_ACPX_BOOTSTRAP_NAME, readNativeAcpxDistributionEntries, type NativeAcpxDistributionInput } from "./native-distribution-integrity.js";
 export type { NativeAcpxDistributionInput } from "./native-distribution-integrity.js";
 import { createHash } from "node:crypto";
+import { executableDigestCache, type ExecutableFileIdentity } from "../../executable-digest-cache.js";
 import {
   spawn as spawnChildProcess,
   type ChildProcess,
@@ -29,7 +30,8 @@ import {
 } from "node:path";
 import type { Readable, Writable } from "node:stream";
 
-import { resolveQualifiedAcpxProfile, type QualifiedAcpxProfile } from "./qualified-profiles.js";
+import { assertAcpxProfileReleased, resolveQualifiedAcpxProfile, type QualifiedAcpxProfile } from "./qualified-profiles.js";
+import { resolveInstalledProviderAuthority } from "./installed-provider-authority.js";
 import {
   VERIFIED_RUNTIME_EXECUTABLE_ENV,
   verifiedRuntimeExecutableHandoff,
@@ -605,13 +607,7 @@ export async function awaitVerifiedAcpxProviderExit(
   await exitProof;
 }
 
-interface VerifiedAcpxCommandIdentity {
-  device: string;
-  inode: string;
-  size: string;
-  modifiedNanoseconds: string;
-  changedNanoseconds: string;
-}
+type VerifiedAcpxCommandIdentity = ExecutableFileIdentity;
 
 interface VerifiedAcpxRuntimeExecutable {
   path: string;
@@ -650,13 +646,16 @@ export async function verifyQualifiedAcpxInstallation(
   profile: QualifiedAcpxProfile,
   resolvePackageJson: AcpxPackageJsonResolver = defaultPackageJsonResolver,
 ): Promise<VerifiedAcpxInstallation> {
+  assertAcpxProfileReleased(profile.agent);
   // Keep the selected package authority available when its bundled provider
   // wrapper delegates platform installation to the published server manifest.
-  if ((profile.agent === "codex" || profile.agent === "claude") && resolvePackageJson === defaultPackageJsonResolver && process.env.PAPERCLIP_ACPX_PROVIDER_PACKAGE_ROOT !== undefined) {
-    resolvePackageJson = createAcpxPackageJsonResolver(
-      process.env.PAPERCLIP_ACPX_PROVIDER_PACKAGE_ROOT,
-      process.env.PAPERCLIP_ACPX_PROVIDER_PACKAGE_MANIFEST,
-    );
+  if ((profile.agent === "codex" || profile.agent === "claude") && resolvePackageJson === defaultPackageJsonResolver) {
+    const boundRoot = process.env.PAPERCLIP_ACPX_PROVIDER_PACKAGE_ROOT;
+    const authority = boundRoot === undefined ? resolveInstalledProviderAuthority(import.meta.url) : {
+      root: boundRoot,
+      manifest: process.env.PAPERCLIP_ACPX_PROVIDER_PACKAGE_MANIFEST,
+    };
+    if (authority) resolvePackageJson = createAcpxPackageJsonResolver(authority.root, authority.manifest);
   }
   const builtin = profile.agent === "grok";
   if (builtin && (profile.agentServerPackage !== "builtin:grok-acp" || profile.agentServerVersion !== "1" || profile.agentRuntimePackage !== "native:grok" || profile.agentRuntimeVersion !== "1.0.13")) {
@@ -1200,7 +1199,7 @@ async function inspectCommand(
   }
 }
 
-async function openVerifiedRuntimeExecutable(
+export async function openVerifiedRuntimeExecutable(
   executablePath: string,
   expectedDigest: string,
   agent: string,
@@ -1242,23 +1241,31 @@ async function openVerifiedRuntimeExecutable(
         `ACPX ${agent} runtime executable must be a bounded executable file`,
       );
     }
-    const hash = createHash("sha256");
-    const buffer = Buffer.alloc(1024 * 1024);
+    const cachedDigest = await executableDigestCache.read(fileIdentity(before));
+    let digest = cachedDigest;
     let position = 0;
-    try {
-      while (position < Number(before.size)) {
-        const { bytesRead } = await handle.read(
-          buffer,
-          0,
-          Math.min(buffer.length, Number(before.size) - position),
-          position,
-        );
-        if (bytesRead === 0) break;
-        hash.update(buffer.subarray(0, bytesRead));
-        position += bytesRead;
+    if (digest === null) {
+      const hash = createHash("sha256");
+      const buffer = Buffer.alloc(1024 * 1024);
+      try {
+        while (position < Number(before.size)) {
+          const { bytesRead } = await handle.read(
+            buffer,
+            0,
+            Math.min(buffer.length, Number(before.size) - position),
+            position,
+          );
+          if (bytesRead === 0) break;
+          hash.update(buffer.subarray(0, bytesRead));
+          position += bytesRead;
+        }
+      } finally {
+        buffer.fill(0);
       }
-    } finally {
-      buffer.fill(0);
+      digest = `sha256:${hash.digest("hex")}`;
+    }
+    if (cachedDigest === null && position === Number(before.size) && digest === expectedDigest) {
+      await executableDigestCache.write(fileIdentity(before), digest);
     }
     const after = await handle.stat({ bigint: true });
     const lexicalAfter = await lstat(executablePath, { bigint: true }).catch(
@@ -1267,7 +1274,7 @@ async function openVerifiedRuntimeExecutable(
     const beforeIdentity = fileIdentity(before);
     const afterIdentity = fileIdentity(after);
     if (
-      position !== Number(before.size) ||
+      (cachedDigest === null && position !== Number(before.size)) ||
       lexicalAfter === null ||
       lexicalAfter.isSymbolicLink() ||
       !lexicalAfter.isFile() ||
@@ -1279,7 +1286,6 @@ async function openVerifiedRuntimeExecutable(
         `ACPX ${agent} runtime executable changed while it was verified`,
       );
     }
-    const digest = `sha256:${hash.digest("hex")}`;
     if (digest !== expectedDigest) {
       throw new Error(`ACPX ${agent} runtime executable digest mismatch`);
     }
@@ -1478,7 +1484,7 @@ function commandLease(
   privateSnapshot: AcpxPrivateSnapshot | null,
 ): VerifiedAcpxCommandLease {
   let consumed = false;
-  let directoriesReleased = false;
+  let directoriesRelease: Promise<void> | undefined;
   let spawnedChild: ChildProcess | null = null;
   let childExit: Promise<void> | null = null;
   let snapshotCleanup: Promise<void> | null = null;
@@ -1490,24 +1496,23 @@ function commandLease(
     }
     return snapshotCleanup;
   };
-  const releaseDirectories = async (): Promise<void> => {
-    if (directoriesReleased) return;
-    directoriesReleased = true;
-    await Promise.all([
+  const releaseDirectories = (): Promise<void> => {
+    return (directoriesRelease ??= Promise.all([
       commandDirectory.close(),
       ...dependencyAncestors.map((handle) => handle.close()),
       ...(providerRuntimeExecutable === null
         ? []
         : [providerRuntimeExecutable.close()]),
-    ]);
+    ]).then(() => undefined));
   };
   const releaseDirectoriesBestEffort = (): void => {
     void releaseDirectories().catch(() => undefined);
   };
   const close = async (): Promise<void> => {
-    if (consumed && privateSnapshot === null) return;
+    const wasConsumed = consumed;
     consumed = true;
-    verifiedBytes.fill(0);
+    // A spawned command owns its source buffer until its pipe write completes.
+    if (!wasConsumed) verifiedBytes.fill(0);
     await releaseDirectories();
     // A spawned provider may still read the snapshot. Runtime shutdown runs in
     // parallel and retires that child; do not remove its bytes or report command
@@ -1602,7 +1607,7 @@ function commandLease(
           environment[VERIFIED_PROVIDER_RUNTIME_TARGET_ENV] =
             providerRuntimeEnvironmentVariable;
         }
-        child = spawnChildProcess(
+        child = spawnedChild = spawnChildProcess(
           runtimeHandoff.executable,
           guarded
             ? [
@@ -2256,11 +2261,4 @@ export async function probeAcpxClaudeInstallation(model: string): Promise<void> 
 
 export async function probeAcpxGrokInstallation(model: string): Promise<void> {
   await verifyQualifiedAcpxInstallation(resolveQualifiedAcpxProfile("grok", model));
-}
-
-/** Verify the pinned Pi closure and snapshot lease without launching a provider. */
-export async function probeAcpxPiInstallation(model: string): Promise<void> {
-  const installation = await verifyQualifiedAcpxInstallation(resolveQualifiedAcpxProfile("pi", model));
-  const lease = await installation.openCommand();
-  await lease.close();
 }

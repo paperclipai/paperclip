@@ -1,0 +1,1 @@
+CREATE INDEX CONCURRENTLY IF NOT EXISTS "native_run_finalizations_unsafe_export_recovery_idx" ON "native_run_finalizations" USING btree ("company_id","issue_id","run_id") WHERE "native_run_finalizations"."phase" = 'terminal_failure' AND "native_run_finalizations"."failure_code" = 'native_workspace_sync_out_unsafe_archive';

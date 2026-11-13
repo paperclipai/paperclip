@@ -2,8 +2,14 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { prepareAdapterExecutionTargetRuntime } from "@paperclipai/adapter-utils/execution-target";
+import { runChildProcess } from "@paperclipai/adapter-utils/server-utils";
+import { execute as executeCodex } from "./execute.js";
+import { buildProviderObservabilityLaunch } from "@paperclipai/adapter-utils/agent-observability";
+import { randomUUID } from "node:crypto";
 import {
   CODEX_SYNC_ALLOWLIST,
+  buildCodexHomeRefreshProvision,
   codexHomeHasUsableAuth,
   ensureSymlink,
   evaluateCodexCredentialReadiness,
@@ -1057,6 +1063,26 @@ describe("stageCodexHomeForSync", () => {
     vi.restoreAllMocks();
   });
 
+  it("stages only the invocation-owned private observability profile", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "codex-otel-stage-"));
+    let staged: string | undefined;
+    try {
+      const home = path.join(root, "home"); await fs.mkdir(home);
+      const own = "paperclip-observability-run-1.config.toml";
+      const other = "paperclip-observability-run-2.config.toml";
+      await fs.writeFile(path.join(home, own), '[otel]\nexporter = "none"\n', { mode: 0o600 });
+      await fs.writeFile(path.join(home, other), "another-active-run", { mode: 0o600 });
+      staged = await stageCodexHomeForSync(home, { runId: "run-1", additionalFiles: [own] });
+      expect(await fs.readdir(staged)).toContain(own);
+      expect(await fs.readdir(staged)).not.toContain(other);
+      expect((await fs.stat(path.join(staged, own))).mode & 0o777).toBe(0o600);
+      expect((await fs.stat(staged)).mode & 0o777).toBe(0o700);
+      await expect(stageCodexHomeForSync(home, { additionalFiles: ["../escape.config.toml"] })).rejects.toThrow();
+      await fs.chmod(path.join(home, own), 0o644);
+      await expect(stageCodexHomeForSync(home, { additionalFiles: [own] })).rejects.toThrow("private regular file");
+    } finally { if (staged) await fs.rm(staged, { recursive: true, force: true }); await fs.rm(root, { recursive: true, force: true }); }
+  });
+
   // Builds a fake managed CODEX_HOME containing the full allowlist (with
   // `auth.json` as a symlink into a separate source-bytes file and a populated
   // `skills/` symlink, mirroring the real managed home) plus decoy runtime
@@ -1094,6 +1120,122 @@ describe("stageCodexHomeForSync", () => {
 
     return { home, authBytes, skillBytes };
   }
+
+  it.each([
+    { extraArgs: ["--profile", "selected"], args: ["--profile", "ignored"], expectedModel: "selected-model" },
+    { extraArgs: ["--full-auto"], args: ["--profile", "ignored"], expectedModel: undefined },
+    { extraArgs: [], args: ["--profile", "legacy"], expectedModel: "legacy-model" },
+  ])("uses effective CLI arguments when materializing an export profile: %j", async ({ extraArgs, args, expectedModel }) => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-codex-profile-policy-"));
+    const companyId = randomUUID();
+    const home = path.join(root, "instances", "default", "companies", companyId, "codex-home");
+    const captured = path.join(root, "captured-profile.json");
+    try {
+      vi.stubEnv("PAPERCLIP_HOME", root); vi.stubEnv("PAPERCLIP_INSTANCE_ID", "default");
+      vi.stubEnv("CODEX_HOME", path.join(root, "source-home"));
+      await fs.mkdir(home, { recursive: true });
+      for (const name of ["selected", "ignored", "legacy"]) {
+        await fs.writeFile(path.join(home, `${name}.config.toml`), `model = "${name}-model"\n`);
+      }
+      const command = path.join(root, "fake-codex");
+      await fs.writeFile(command, `#!${process.execPath}
+const fs = require("node:fs"), path = require("node:path");
+if (process.argv.includes("--version")) { console.log("codex-cli 0.160.0"); process.exit(0); }
+process.stdin.resume();
+process.stdin.on("end", () => {
+  const argv = process.argv.slice(2), index = argv.indexOf("--profile");
+  const profile = index < 0 ? null : fs.readFileSync(path.join(process.env.CODEX_HOME, argv[index + 1] + ".config.toml"), "utf8");
+  fs.writeFileSync(${JSON.stringify(captured)}, JSON.stringify({ argv, profile }));
+  console.log(JSON.stringify({ type: "thread.started", thread_id: "fixture-session" }));
+  console.log(JSON.stringify({ type: "turn.completed", usage: { input_tokens: 1, output_tokens: 1 } }));
+});
+`, { mode: 0o700 });
+      const result = await executeCodex({
+        runId: randomUUID(), agent: { id: randomUUID(), companyId, adapterType: "codex_local", name: "Profile fixture", adapterConfig: {} },
+        runtime: { sessionId: null, sessionParams: null, sessionDisplayId: null, taskKey: null }, context: {}, config: { engine: "cli", command, cwd: root, extraArgs, args,
+          env: { CODEX_HOME: home, OPENAI_API_KEY: "fake-provider-key" }, paperclipSkillSync: { desiredSkills: [] } },
+        observability: buildProviderObservabilityLaunch({ kind: "codex", companyId, agentId: "fixture-agent", revision: "revision", compatibilityKey: "fixture",
+          enabled: true, capture: { userPrompts: true, assistantResponses: true, toolDetails: true, toolContent: true },
+          logsEndpoint: "https://collector.example/v1/logs", tracesEndpoint: "https://collector.example/v1/traces", headers: {} }),
+        onLog: async () => {}, onMeta: async () => {},
+      });
+      expect(result.exitCode).toBe(0);
+      const output = JSON.parse(await fs.readFile(captured, "utf8"));
+      expect(output.argv.filter((arg: string) => arg === "--profile")).toHaveLength(1);
+      expect(output.profile.match(/^model = "([^"]+)"$/m)?.[1]).toBe(expectedModel);
+      expect(output.profile).toContain("log_user_prompt = true");
+      expect(output.profile).toContain("log_agent_responses = true");
+      expect(output.argv).not.toContain("ignored");
+    } finally { vi.unstubAllEnvs(); await fs.rm(root, { recursive: true, force: true }); }
+  });
+
+  it.each([false, true])("preserves remote conversations through real exporter restaging (subscription=%s)", async (mergeAuth) => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-codex-restage-"));
+    const stagedHomes: string[] = [];
+    try {
+      const home = path.join(root, "host-home");
+      const workspace = path.join(root, "workspace");
+      const remoteCwd = path.join(root, "remote");
+      await Promise.all([home, workspace, remoteCwd].map(dir => fs.mkdir(dir, { recursive: true })));
+      const auth = (date: string, marker: string) => JSON.stringify({
+        tokens: { account_id: "fixture-account", access_token: marker, refresh_token: marker, id_token: marker }, last_refresh: date,
+      });
+      const hostAuth = mergeAuth ? auth("2026-01-01T00:00:00Z", "host-token") : '{"OPENAI_API_KEY":"fake-api-key"}';
+      const rotatedAuth = auth("2026-10-01T00:00:00Z", "rotated-remote-token");
+      await fs.writeFile(path.join(home, "auth.json"), hostAuth);
+      const target = {
+        kind: "remote", transport: "sandbox", providerKey: "fixture", remoteCwd,
+        runner: { execute: async (input: { command: string; args?: string[]; cwd?: string; env?: Record<string, string>; stdin?: string; timeoutMs?: number }) =>
+          runChildProcess("codex-restage-fixture", input.command, input.args ?? [], {
+            cwd: input.cwd ?? root, env: input.env ?? {}, stdin: input.stdin,
+            timeoutSec: Math.max(1, Math.ceil((input.timeoutMs ?? 30_000) / 1000)), graceSec: 1, onLog: async () => {},
+          }) },
+      } as const;
+      const stage = async (revision: string) => {
+        await fs.writeFile(path.join(home, "config.toml"), `[otel.exporter.otlp-http]\nendpoint = "https://${revision}.example.test/v1/logs"\nprotocol = "binary"\n`);
+        const staged = await stageCodexHomeForSync(home);
+        stagedHomes.push(staged);
+        expect(await fs.readdir(staged)).not.toContain("sessions");
+        return prepareAdapterExecutionTargetRuntime({
+          target, runId: revision, adapterKey: "codex-observability-fixture", workspaceLocalDir: workspace,
+          syncWorkspace: false, assets: [{ key: "home", localDir: staged, provision: buildCodexHomeRefreshProvision({ mergeAuth }) }],
+        });
+      };
+      const first = await stage("first");
+      const remoteHome = first.assetDirs.home!;
+      for (const dir of ["sessions", "archived_sessions"]) {
+        await fs.mkdir(path.join(remoteHome, dir), { recursive: true });
+        await fs.writeFile(path.join(remoteHome, dir, "conversation.jsonl"), `saved-${dir}`);
+      }
+      await fs.writeFile(path.join(remoteHome, "state_5.sqlite"), "native-session-index");
+      await fs.writeFile(path.join(remoteHome, "config.json"), "stale-managed-config");
+      if (mergeAuth) await fs.writeFile(path.join(remoteHome, "auth.json"), rotatedAuth);
+      const second = await stage("second");
+      expect(second.assetDirs.home).toBe(remoteHome);
+      for (const dir of ["sessions", "archived_sessions"]) {
+        expect(await fs.readFile(path.join(remoteHome, dir, "conversation.jsonl"), "utf8")).toBe(`saved-${dir}`);
+      }
+      expect(await fs.readFile(path.join(remoteHome, "state_5.sqlite"), "utf8")).toBe("native-session-index");
+      expect(await fs.readFile(path.join(remoteHome, "config.toml"), "utf8")).toContain('https://second.example.test/v1/logs');
+      expect(await fs.readFile(path.join(remoteHome, "auth.json"), "utf8")).toBe(mergeAuth ? rotatedAuth : hostAuth);
+      await expect(fs.access(path.join(remoteHome, "config.json"))).rejects.toThrow();
+      expect((await fs.stat(remoteHome)).mode & 0o777).toBe(0o700);
+      expect((await fs.stat(path.join(remoteHome, "config.toml"))).mode & 0o777).toBe(0o600);
+      // A corrupt upload must leave the prior conversation and config intact.
+      const badTar = path.join(second.runtimeRootDir!, "bad-home-upload.tar");
+      await fs.writeFile(badTar, "invalid archive");
+      const command = buildCodexHomeRefreshProvision({ mergeAuth }).postUploadCommand!({
+        assetDir: remoteHome, assetTarPath: badTar, runtimeRootDir: second.runtimeRootDir!,
+      });
+      const failed = await target.runner.execute({ command: "sh", args: ["-c", command], cwd: remoteCwd });
+      expect(failed.exitCode).not.toBe(0);
+      expect(await fs.readFile(path.join(remoteHome, "sessions", "conversation.jsonl"), "utf8")).toBe("saved-sessions");
+      expect(await fs.readFile(path.join(remoteHome, "config.toml"), "utf8")).toContain("https://second.example.test/v1/logs");
+      expect((await fs.readdir(remoteHome)).some(name => name.startsWith(".paperclip-home-refresh."))).toBe(false);
+    } finally {
+      await Promise.all([...stagedHomes, root].map(dir => fs.rm(dir, { recursive: true, force: true })));
+    }
+  });
 
   it("stages exactly the allowlist, derefs auth.json to bytes, and excludes decoys", async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-codex-stage-"));

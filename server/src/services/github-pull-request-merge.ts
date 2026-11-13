@@ -1,5 +1,5 @@
 import type { Db } from "@paperclipai/db";
-import { createGitHubExternalObjectProvider } from "./github-external-object-provider.js";
+import { createGitHubExternalObjectProvider, type GitHubExternalObjectProviderOptions } from "./github-external-object-provider.js";
 
 export type GitHubPullRequestReference = {
   host: "github.com";
@@ -25,11 +25,13 @@ export type PullRequestMergeDetails = {
 export type PullRequestMergeStateResolver = (
   companyId: string,
   reference: GitHubPullRequestReference,
+  signal?: AbortSignal,
 ) => Promise<PullRequestMergeState>;
 
 export type PullRequestMergeDetailsResolver = (
   companyId: string,
   reference: GitHubPullRequestReference,
+  signal?: AbortSignal,
 ) => Promise<PullRequestMergeDetails>;
 
 export const PULL_REQUEST_CACHE_MAX_ENTRIES = 1_000;
@@ -86,14 +88,15 @@ function readRecord(value: unknown): Record<string, unknown> | null {
     : null;
 }
 
-export function createPullRequestMergeDetailsResolver(db: Db): PullRequestMergeDetailsResolver {
-  const resolver = createGitHubExternalObjectProvider(db).resolvers
+export function createPullRequestMergeDetailsResolver(db: Db, options?: GitHubExternalObjectProviderOptions): PullRequestMergeDetailsResolver {
+  const resolver = createGitHubExternalObjectProvider(db, options).resolvers
     .find((candidate) => candidate.objectType === "pull_request") ?? null;
 
-  return async (companyId, reference) => {
+  return async (companyId, reference, signal) => {
     if (!resolver) return { state: "unknown", headRef: null, headSha: null };
     const result = await resolver.resolve({
       companyId,
+      signal,
       object: {
         externalId: `${reference.owner}/${reference.repo}#pull/${reference.number}`,
         sanitizedCanonicalUrl: `https://github.com/${reference.owner}/${reference.repo}/pull/${reference.number}`,
@@ -123,7 +126,7 @@ export function createPullRequestMergeDetailsResolver(db: Db): PullRequestMergeD
   };
 }
 
-export function createPullRequestMergeStateResolver(db: Db): PullRequestMergeStateResolver {
-  const resolveDetails = createPullRequestMergeDetailsResolver(db);
-  return async (companyId, reference) => (await resolveDetails(companyId, reference)).state;
+export function createPullRequestMergeStateResolver(db: Db, options?: GitHubExternalObjectProviderOptions): PullRequestMergeStateResolver {
+  const resolveDetails = createPullRequestMergeDetailsResolver(db, options);
+  return async (companyId, reference, signal) => (await resolveDetails(companyId, reference, signal)).state;
 }

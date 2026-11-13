@@ -9,11 +9,13 @@ function operation(value: unknown): string {
 
 /** Provider stream IDs and MCP request IDs are separate namespaces. Never join by name or order. */
 export function createNativeToolTrace(trace: NativeRunTrace, now = Date.now) {
+  let firstCompletion = false;
   const announced = new Map<string, { startedAtMs: number; lastInputAtMs?: number; operation: string }>();
   return {
     observe(event: { eventType: string; emittedAt: string; payload: unknown }): void | Promise<void> {
       if (["turn.started", "turn.completed", "turn.failed", "turn.cancelled"].includes(event.eventType)) {
         announced.clear();
+        firstCompletion = false;
         return;
       }
       if (!event.eventType.startsWith("tool.execution.")) return;
@@ -25,6 +27,10 @@ export function createNativeToolTrace(trace: NativeRunTrace, now = Date.now) {
         if (announced.has(id)) return;
         if (announced.size >= 512) announced.delete(announced.keys().next().value!);
         announced.set(id, { startedAtMs: time, operation: operation(payload?.name) });
+        if (!firstCompletion && typeof payload?.name === "string" && /^(?:mcp__paperclip__)?paperclip_(?:finish|block)$/.test(payload.name)) {
+          firstCompletion = true;
+          return trace.record({name:"completion.request.first",parentName:"agent.turn",startedAtMs:time,endedAtMs:time});
+        }
         return;
       }
       const pending = announced.get(id);

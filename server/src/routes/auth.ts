@@ -10,6 +10,9 @@ import {
 import { unauthorized } from "../errors.js";
 import { validate } from "../middleware/validate.js";
 import { resolveSentryDsns } from "../sentry-dsn.js";
+import { resolveBrowserTracingConfig, warnOnce } from "../browser-tracing-config.js";
+import { logger } from "../middleware/logger.js";
+import { loadBoardBootstrap } from "../services/board-bootstrap.js";
 
 async function loadCurrentUserProfile(db: Db, userId: string) {
   const user = await db
@@ -35,6 +38,8 @@ async function loadCurrentUserProfile(db: Db, userId: string) {
   });
 }
 
+const warnBrowserTracing = warnOnce((message) => logger.warn(message));
+
 export function authRoutes(db: Db) {
   const router = Router();
 
@@ -43,8 +48,16 @@ export function authRoutes(db: Db) {
       throw unauthorized("Board authentication required");
     }
 
-    const user = await loadCurrentUserProfile(db, req.actor.userId);
-    res.json(authSessionSchema.parse({
+    const bootstrap = (req.actor.source === "session" || req.actor.source === "cloud_tenant")
+      && Array.isArray(req.actor.companyIds)
+      ? loadBoardBootstrap(db, { userId: req.actor.userId, companyIds: req.actor.companyIds }).catch((err) => {
+        logger.warn({ err }, "failed to load optional board bootstrap");
+        return undefined;
+      })
+      : Promise.resolve(undefined);
+    const [user, boardBootstrap] = await Promise.all([loadCurrentUserProfile(db, req.actor.userId), bootstrap]);
+    res.setHeader("Cache-Control", "private, no-store");
+    const session = authSessionSchema.parse({
       session: {
         id: `paperclip:${req.actor.source ?? "none"}:${req.actor.userId}`,
         userId: req.actor.userId,
@@ -57,7 +70,11 @@ export function authRoutes(db: Db) {
       sentryDsn: resolveSentryDsns().frontend,
       // Match the server SDK's runtime environment, including in reused images.
       sentryEnvironment: process.env.SENTRY_ENVIRONMENT || null,
-    }));
+      // Hosted Paperclip Cloud only; null everywhere else. The ingest key is
+      // ingest-only by construction — see `server/src/browser-tracing-config.ts`.
+      browserTracing: resolveBrowserTracingConfig(process.env, warnBrowserTracing),
+    });
+    res.json({ ...session, ...(boardBootstrap ? { boardBootstrap } : {}) });
   });
 
   router.get("/profile", async (req, res) => {

@@ -1,10 +1,12 @@
 import { randomUUID } from "node:crypto";
 import { eq } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
-import { agents, companies, createDb, heartbeatRunEvents, heartbeatRuns, issues } from "@paperclipai/db";
+import { agents, authUsers, companies, companyMemberships, createDb, heartbeatRunEvents, heartbeatRuns, issues } from "@paperclipai/db";
 import { registerServerAdapter, unregisterServerAdapter, type AdapterExecutionContext } from "../adapters/index.js";
 import { heartbeatService } from "../services/heartbeat.js";
 import { getRunLogStore } from "../services/run-log-store.js";
+import { withS3FailureDiagnostics } from "../storage/s3-failure.js";
+import { sendThroughStorageOutage } from "../storage/storage-unavailable.js";
 import { subscribeCompanyLiveEvents } from "../services/live-events.js";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 
@@ -22,6 +24,8 @@ describePostgres("heartbeat output through adapter dispatch and finalization", (
   beforeAll(async () => {
     temporary = await startEmbeddedPostgresTestDatabase("heartbeat-run-output-");
     db = createDb(temporary.connectionString);
+    await db.insert(authUsers).values({ id: "output-user", name: "Output fixture sponsor", email: "output-sponsor@example.test",
+      createdAt: new Date(), updatedAt: new Date() });
     heartbeat = heartbeatService(db);
     registerServerAdapter({
       type: adapterType, supportsLocalAgentJwt: false,
@@ -44,6 +48,8 @@ describePostgres("heartbeat output through adapter dispatch and finalization", (
   async function seed(execute: (input: AdapterExecutionContext) => Promise<void>) {
     const companyId = randomUUID(), agentId = randomUUID(), issueId = randomUUID();
     await db.insert(companies).values({ id: companyId, name: "Output fixture", issuePrefix: `O${companyId.slice(0, 6)}` });
+    await db.insert(companyMemberships).values({ companyId, principalType: "user", principalId: "output-user",
+      membershipRole: "operator", status: "active" });
     await db.insert(agents).values({ id: agentId, companyId, name: "Output writer", adapterType, status: "idle" });
     await db.insert(issues).values({ id: issueId, companyId, title: "Output fixture", status: "todo", assigneeAgentId: agentId, responsibleUserId: "output-user", issueNumber: 1 });
     executeByAgent.set(agentId, execute);
@@ -96,6 +102,37 @@ describePostgres("heartbeat output through adapter dispatch and finalization", (
       expect(events.some(event => event.message === "ignored blank event")).toBe(false);
     } finally { unsubscribe(); }
   });
+
+  const storeOutage = () => withS3FailureDiagnostics("put_object", async () => {
+    throw Object.assign(new Error("Injected storage outage"), { name: "ServiceUnavailable", $metadata: { httpStatusCode: 503 } });
+  });
+
+  it("claims the run log once the store is back and finishes the run (storage chaos ST1)", async () => {
+    const f = await seed(async input => { await input.onLog("stdout", "after the outage\n"); });
+    const store = getRunLogStore();
+    const begin = store.begin.bind(store);
+    let outages = 0;
+    vi.spyOn(store, "begin").mockImplementation(async input => (++outages <= 1 ? storeOutage() : begin(input)));
+    const { finished } = await execute(f);
+    expect(outages).toBeGreaterThanOrEqual(2);
+    expect(finished.status, finished.error ?? undefined).toBe("succeeded");
+    expect(finished.stdoutExcerpt).toContain("after the outage");
+  }, 30_000);
+
+  it("ends a run stopped during a storage outage as cancelled, even in a storage call made without the run's signal", async () => {
+    const f = await seed(async () => undefined);
+    const store = getRunLogStore();
+    const begin = vi.spyOn(store, "begin").mockImplementation(() => sendThroughStorageOutage(storeOutage));
+    const run = await heartbeat.wakeup(f.agentId, { source: "on_demand", triggerDetail: "manual", reason: "manual",
+      payload: { issueId: f.issueId }, contextSnapshot: { issueId: f.issueId } });
+    await vi.waitFor(() => expect(begin).toHaveBeenCalled(), { timeout: 10_000 });
+    const stoppedAt = Date.now();
+    await heartbeat.cancelRun(run!.id, "Cancelled by a board operator");
+    await heartbeat.drainActiveRunExecutions();
+    expect(Date.now() - stoppedAt).toBeLessThan(10_000);
+    const [stopped] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, run!.id));
+    expect(stopped).toMatchObject({ status: "cancelled" });
+  }, 60_000);
 
   it.each([false, true])("retains output arriving during finalization (adapter throws: %s)", async fail => {
     let onLog: AdapterExecutionContext["onLog"];

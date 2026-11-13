@@ -27,12 +27,10 @@ export function skillAccessService(db: Db, actor = currentSkillActor()) {
         ...(sourceId ? [eq(projectSkillSources.sourceId, sourceId)] : [])));
     if (!actor) return bindings;
     const access = authorizationService(db);
-    const decisions = new Map<string, boolean>();
-    for (const id of new Set(bindings.map(binding => binding.projectId))) {
-      decisions.set(id, (await access.decide({ actor, action: 'project:read',
-        resource: { type: 'project', companyId, projectId: id } })).allowed);
-    }
-    return bindings.filter(binding => decisions.get(binding.projectId));
+    const ids = [...new Set(bindings.map(binding => binding.projectId))];
+    const decisions = await access.decideReads(actor, ids.map(projectId => ({ type: 'project', companyId, projectId })));
+    const allowed = new Set(ids.filter((_, index) => decisions[index]?.allowed));
+    return bindings.filter(binding => allowed.has(binding.projectId));
   }
   async function visibleSourceIds(companyId: string) {
     if (!canReadCompany(companyId)) return [];

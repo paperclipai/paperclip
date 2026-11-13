@@ -22,6 +22,21 @@ bounded timeout diagnostics. Missing, stale, or incorrect metadata cannot grant
 or retain ownership. PID reuse, PID namespaces, and wall-clock changes do not
 decide whether a writer owns the lock.
 
+A timeout error (`ERR_WORKSPACE_RESTORE_LOCK_TIMEOUT`) carries that holder
+evidence. `directoryMergeLockTimeoutDiagnosticsFor` reduces it to the closed
+agent-directory operation label, the owner state (`alive`, `dead`, `unknown`,
+`missing`, or `invalid`), whether this process knows of a local holder, whether
+the owner is this process or predates it, the owner's age, and the contender's
+wait in milliseconds (each capped at seven days). Unknown labels and invalid
+values are omitted. The record never includes the owner's PID or file paths.
+Run-failure reports use it for their `restoreLock*` fields. When the server
+reports an uncaught timeout to Sentry, the event gets this record as an
+event-local `directory_merge_lock` context and an
+`error_code=workspace_restore_lock_timeout` tag. The error message, which names
+the lock file, and default grouping are unchanged. An owner much older than the
+contender's wait points to a stuck holder; a recent owner points to contention.
+Reporting does not change acquisition, timeouts, or retries.
+
 An unchanged returned snapshot still acquires the target writer lock and runs
 both authorization/publication hooks. If every returned path, type, file hash,
 file mode and symlink target matches the baseline, there is no incoming delta.
@@ -104,11 +119,12 @@ receipts, and recovered-file evidence. A successful result does not permit a
 normal execution retry, and a queued or running source cannot be repaired this
 way. Later saved messages can continue through ordinary admission after the
 file hold clears.
-The board shows repair guidance, an Inspect run link, and a Record file recovery
-form for operators with runtime access. The form requires recovered-file evidence
-and confirmation; the API verifies the original stop receipts. The operator API
-also supports this workflow and returns the exact action and lease IDs. Provider
-access may require an instance administrator or Cloud support.
+The task shows a compact operator-attention notice and an Inspect run link.
+Diagnostics and repair guidance stay under Recovery details. It does not ask the
+task user to certify recovered infrastructure files. Operators use the guarded
+resolution API with recovered-file evidence; the API verifies the original stop
+receipts and returns the exact action and lease IDs. Provider access may require
+an instance administrator or Cloud support.
 Then use the provider's operator console to remove that exact retained
 allocation when its files are no longer needed. Verify its immutable provider
 allocation ID against the recorded lease before removal. The ordinary reusable

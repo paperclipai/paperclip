@@ -1,3 +1,5 @@
+import { useSyncExternalStore } from "react";
+
 export const ISSUE_DETAIL_NAVIGATE_MARK = "issue-detail:navigate";
 export const ISSUE_DETAIL_HEADER_PAINT_MARK = "issue-detail:header-paint";
 export const ISSUE_DETAIL_CONTENT_PAINT_MARK = "issue-detail:content-paint";
@@ -5,10 +7,32 @@ export const ISSUE_DETAIL_HEADER_MEASURE = "issue-detail:navigate→header-paint
 export const ISSUE_DETAIL_CONTENT_MEASURE = "issue-detail:navigate→content-paint";
 
 let issueDetailNavigationGeneration = 0;
+// The paint time of the current navigation's content, for the page-load
+// measurement (`usePageContentReady`); null until it paints.
+let contentPaintedAt: number | null = null;
+const contentPaintListeners = new Set<() => void>();
+
+function notifyContentPaint(): void {
+  for (const listener of contentPaintListeners) listener();
+}
+
+function subscribeContentPaint(listener: () => void): () => void {
+  contentPaintListeners.add(listener);
+  return () => contentPaintListeners.delete(listener);
+}
+
+/** `performance.now()` when the current task's content painted, or null. */
+export function useIssueDetailContentPaintedAt(): number | null {
+  return useSyncExternalStore(subscribeContentPaint, () => contentPaintedAt, () => null);
+}
+const readinessGates = ["issue", "comments", "interactions", "attachments", "work-products", "activity", "linked-runs", "runtime", "plan", "transcripts", "history"] as const;
+type ReadinessGate = typeof readinessGates[number];
+const readinessState = new Map<ReadinessGate, boolean>();
 
 declare global {
   interface Window {
     __PAPERCLIP_ISSUE_DETAIL_NAVIGATE_START__?: number;
+    __PAPERCLIP_ISSUE_DETAIL_PROFILE__?: boolean;
   }
 }
 
@@ -18,6 +42,10 @@ function supportsPerformanceMarks(): boolean {
 
 export function beginIssueDetailNavigation(): void {
   issueDetailNavigationGeneration += 1;
+  if (contentPaintedAt !== null) {
+    contentPaintedAt = null;
+    notifyContentPaint();
+  }
   if (!supportsPerformanceMarks()) return;
 
   performance.clearMarks(ISSUE_DETAIL_NAVIGATE_MARK);
@@ -25,12 +53,24 @@ export function beginIssueDetailNavigation(): void {
   performance.clearMarks(ISSUE_DETAIL_CONTENT_PAINT_MARK);
   performance.clearMeasures(ISSUE_DETAIL_HEADER_MEASURE);
   performance.clearMeasures(ISSUE_DETAIL_CONTENT_MEASURE);
+  for (const gate of readinessState.keys()) performance.clearMarks(`issue-detail:gate:${gate}`);
+  readinessState.clear();
 
   const externallyCapturedStart = window.__PAPERCLIP_ISSUE_DETAIL_NAVIGATE_START__;
   delete window.__PAPERCLIP_ISSUE_DETAIL_NAVIGATE_START__;
   performance.mark(ISSUE_DETAIL_NAVIGATE_MARK, {
     startTime: typeof externallyCapturedStart === "number" ? externallyCapturedStart : performance.now(),
   });
+}
+
+export function recordIssueDetailReadiness(gates: Partial<Record<ReadinessGate, boolean>>): void {
+  if (!supportsPerformanceMarks() || !window.__PAPERCLIP_ISSUE_DETAIL_PROFILE__) return;
+  for (const gate of readinessGates) {
+    const ready = gates[gate];
+    if (ready === undefined || readinessState.get(gate) === ready) continue;
+    readinessState.set(gate, ready);
+    performance.mark(`issue-detail:gate:${gate}`, { detail: { ready } });
+  }
 }
 
 export function scheduleIssueDetailPaintMeasure(
@@ -50,6 +90,10 @@ export function scheduleIssueDetailPaintMeasure(
       }
       performance.mark(markName);
       performance.measure(measureName, ISSUE_DETAIL_NAVIGATE_MARK, markName);
+      if (markName === ISSUE_DETAIL_CONTENT_PAINT_MARK) {
+        contentPaintedAt = performance.now();
+        notifyContentPaint();
+      }
     });
   });
 }

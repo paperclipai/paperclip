@@ -1,3 +1,4 @@
+import { usesPreconfiguredHome } from "../preconfigured-home.js";
 import { configuredEnvironmentKeys } from "../../configured-environment.js";
 import { resolve, isAbsolute, join, dirname, delimiter, relative, sep } from "node:path";
 import { closeSync, constants, existsSync, fstatSync, openSync, realpathSync, readFileSync, statSync } from "node:fs";
@@ -177,7 +178,12 @@ function gitFilesystemRoots(source: NodeJS.ProcessEnv): { read: string[]; write:
   return { read: [...new Set(read)], write: [...new Set(write)] };
 }
 
-function usesExternalRunnerSandbox(source: NodeJS.ProcessEnv): boolean {
+export const CODEX_PROVIDER_CREDENTIAL_ENVIRONMENT_KEYS: readonly string[] = [
+  "OPENAI_API_KEY", "CODEX_API_KEY", "PAPERCLIP_AI_PROVIDER_KEY",
+  "OTEL_EXPORTER_OTLP_LOGS_HEADERS", "OTEL_EXPORTER_OTLP_TRACES_HEADERS",
+];
+
+export function usesExternalRunnerSandbox(source: NodeJS.ProcessEnv): boolean {
   return source.PAPERCLIP_RUNNER_EXTERNAL_SANDBOX === "1";
 }
 
@@ -189,7 +195,10 @@ const SKILLLESS_BASE_CONFIG = {
   "features.plugins": false,
   "features.multi_agent": false,
   "features.memories": false,
-  "features.image_generation": false,
+  // Image generation stays on: Codex's built-in tool runs in the trusted
+  // app-server with the agent's existing provider auth. Disabling it makes the
+  // agent fall back to an OPENAI_API_KEY script the sandboxed shell cannot see,
+  // so it asks the user for a second key (N-12).
 } as const;
 
 export function codexCommandEnvironment(
@@ -207,7 +216,9 @@ export function codexCommandEnvironment(
     const value = source[key];
     if (value !== undefined) environment[key] = value;
   }
-  if (source.PAPERCLIP_GITHUB_AUTH_MODE === "host" && source.PAPERCLIP_GITHUB_HOST_HOME) {
+  if (usesPreconfiguredHome(source) && source.HOME) {
+    environment.HOME = source.HOME;
+  } else if (source.PAPERCLIP_GITHUB_AUTH_MODE === "host" && source.PAPERCLIP_GITHUB_HOST_HOME) {
     environment.HOME = source.PAPERCLIP_GITHUB_HOST_HOME;
   } else if (source.PAPERCLIP_GITHUB_LAUNCHER_DIR) {
     environment.HOME = source.PAPERCLIP_GITHUB_LAUNCHER_DIR;
@@ -245,11 +256,15 @@ function tomlString(value: string): string {
   return JSON.stringify(value);
 }
 
+export const CODEX_UPDATE_PLAN_TOOL_CONFIG = "tools.update_plan.enabled=true";
+
 export function createIsolatedCodexAppServerArgs(
   source: NodeJS.ProcessEnv | undefined = undefined,
   readOnlyRoots: string[] = [],
   /** Server-registered run copy, never an environment/config-supplied root. */
   instructionWorkingCopyRoot?: string,
+  protectedPaths: string[] = [],
+  disableWebSearch = false,
 ): string[] {
   const explicitSource = source;
   source ??= process.env;
@@ -271,7 +286,7 @@ export function createIsolatedCodexAppServerArgs(
   if (instructionWorkingCopyRoot && source.AGENT_HOME === instructionWorkingCopyRoot) commandEnvironment.AGENT_HOME = instructionWorkingCopyRoot;
   const shellEnvironmentKeys = [...new Set([...inheritedGitHubKeys, ...Object.keys(commandEnvironment)])].sort();
   if (source.PAPERCLIP_GITHUB_LAUNCHER_DIR) readOnlyRoots = [...readOnlyRoots, source.PAPERCLIP_GITHUB_LAUNCHER_DIR];
-  const deniedHostRoots = [
+  const deniedHostRoots = usesPreconfiguredHome(source) ? [] : [
     ...new Set(
       [source.HOME, source.CODEX_HOME]
         .filter(
@@ -281,12 +296,25 @@ export function createIsolatedCodexAppServerArgs(
         .map((value) => resolve(value)),
     ),
   ];
+  // Codex saves built-in image results under CODEX_HOME/generated_images and
+  // tells the agent to copy them into the workspace. Expose only that folder.
+  // A preconfigured HOME is already granted, so add the rule only when the
+  // Codex home sits outside it (never narrow an existing HOME write grant).
+  const generatedImagesRoot = typeof source.CODEX_HOME === "string" && source.CODEX_HOME.trim()
+    ? join(resolve(source.CODEX_HOME), "generated_images") : undefined;
+  const preconfiguredHome = usesPreconfiguredHome(source) && source.HOME ? resolve(source.HOME) : undefined;
+  const generatedImageRoots = generatedImagesRoot
+    && !(preconfiguredHome && codexPathInside(preconfiguredHome, generatedImagesRoot))
+    ? [generatedImagesRoot] : [];
   const filesystemRules = [
     `":root"="none"`,
     `":minimal"="read"`,
     `":tmpdir"="none"`,
     ...deniedHostRoots.map((path) => `${tomlString(path)}="none"`),
+    ...protectedPaths.map((path) => `${tomlString(resolve(path))}="none"`),
+    ...(usesPreconfiguredHome(source) && source.HOME ? [`${tomlString(source.HOME)}="write"`] : []),
     ...readOnlyRoots.map((path) => `${tomlString(resolve(path))}="read"`),
+    ...generatedImageRoots.map((path) => `${tomlString(path)}="read"`),
     ...gitRoots.read.map((path) => `${tomlString(path)}="read"`),
     ...gitRoots.write.map((path) => `${tomlString(path)}="write"`),
     ...(instructionWorkingCopyRoot ? [`${tomlString(resolve(instructionWorkingCopyRoot))}="write"`] : []),
@@ -294,12 +322,19 @@ export function createIsolatedCodexAppServerArgs(
       ? [`${tomlString(resolve(source.GH_CONFIG_DIR))}="write"`] : []),
     `":workspace_roots"={"."="write"}`,
   ].join(",");
-  const planningFilesystemRules = [
+  const planningFilesystemRules = externalRunnerSandbox ? [
+    `":root"="read"`,
+    ...(source.PAPERCLIP_GITHUB_BROKER_TOKEN && source.GH_CONFIG_DIR
+      ? [`${tomlString(resolve(source.GH_CONFIG_DIR))}="write"`] : []),
+  ].join(",") : [
     `":root"="none"`,
     `":minimal"="read"`,
     `":tmpdir"="none"`,
     ...deniedHostRoots.map((path) => `${tomlString(path)}="none"`),
+    ...protectedPaths.map((path) => `${tomlString(resolve(path))}="none"`),
+    ...(usesPreconfiguredHome(source) && source.HOME ? [`${tomlString(source.HOME)}="read"`] : []),
     ...readOnlyRoots.map((path) => `${tomlString(resolve(path))}="read"`),
+    ...generatedImageRoots.map((path) => `${tomlString(path)}="read"`),
     ...[...gitRoots.read, ...gitRoots.write].map((path) => `${tomlString(path)}="read"`),
     ...(instructionWorkingCopyRoot ? [`${tomlString(resolve(instructionWorkingCopyRoot))}="read"`] : []),
     ...(source.PAPERCLIP_GITHUB_BROKER_TOKEN && source.GH_CONFIG_DIR
@@ -331,23 +366,27 @@ export function createIsolatedCodexAppServerArgs(
     `permissions.${CODEX_PLANNING_PERMISSION_PROFILE}.filesystem={${planningFilesystemRules}}`,
     "-c",
     `permissions.${CODEX_PLANNING_PERMISSION_PROFILE}.network.enabled=${networkAccess}`,
-    "-c",
-    `shell_environment_policy.inherit=${tomlString(hasProjectedEnvironment ? "all" : "none")}`,
-    "-c",
-    `shell_environment_policy.ignore_default_excludes=${hasProjectedEnvironment}`,
-    // Codex applies include_only after inheritance. Always emit the bounded
-    // allowlist: neither host mode nor a broker enables ambient secret access.
-    // Keep values in the process environment, never in argv/config diagnostics.
-    "-c",
-    `shell_environment_policy.include_only=${JSON.stringify(shellEnvironmentKeys)}`,
+    ...(externalRunnerSandbox
+      ? ["-c", 'shell_environment_policy.inherit="all"',
+          "-c", "shell_environment_policy.ignore_default_excludes=true",
+          "-c", `shell_environment_policy.exclude=${JSON.stringify(CODEX_PROVIDER_CREDENTIAL_ENVIRONMENT_KEYS)}`]
+      : ["-c", `shell_environment_policy.inherit=${tomlString(hasProjectedEnvironment ? "all" : "none")}`,
+          "-c", `shell_environment_policy.ignore_default_excludes=${hasProjectedEnvironment}`,
+          // Codex applies include_only after inheritance. Always emit the bounded
+          // allowlist: neither host mode nor a broker enables ambient secret access.
+          // Keep values in the process environment, never in argv/config diagnostics.
+          "-c", `shell_environment_policy.include_only=${JSON.stringify(shellEnvironmentKeys)}`]),
     ...(commandEnv.length > 0
       ? ["-c", `shell_environment_policy.set={${commandEnv}}`]
       : []),
-    "--disable",
-    "image_generation",
+    // Codex ships its update_plan checklist tool disabled. Paperclip renders it
+    // as the turn plan (`turn/plan/updated` -> `plan.updated`).
+    "-c",
+    CODEX_UPDATE_PLAN_TOOL_CONFIG,
     ...(externalRunnerSandbox
       ? ["--dangerously-bypass-approvals-and-sandbox"]
       : []),
+    ...(disableWebSearch ? ["-c", 'web_search="disabled"'] : []),
     "app-server",
   ];
 }
@@ -367,7 +406,7 @@ export function createSecuredCodexThreadParams(
       : CODEX_SKILLLESS_PERMISSION_PROFILE;
   return {
     cwd: workingDirectory,
-    config: collaborationThreadConfig(
+    config: usesPreconfiguredHome(source) ? { "skills.include_instructions": true, include_collaboration_mode_instructions: includeCollaborationModeInstructions } : collaborationThreadConfig(
       includeCollaborationModeInstructions,
       includeSkillInstructions,
     ),

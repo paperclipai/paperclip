@@ -1,6 +1,6 @@
 import express from "express";
 import request from "supertest";
-import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { StorageService } from "../storage/types.js";
 
 const ISSUE_ID = "11111111-1111-4111-8111-111111111111";
@@ -81,6 +81,7 @@ function registerRouteMocks() {
       reportRunActivity: vi.fn(async () => undefined),
       getRun: vi.fn(async () => null),
       getActiveRunForAgent: vi.fn(async () => null),
+      getQueuedAssignmentRunForIssue: vi.fn(async () => null),
       cancelRun: vi.fn(async () => null),
     }),
     instanceSettingsService: () => ({
@@ -136,15 +137,11 @@ function createStorageService(): StorageService {
   } as unknown as StorageService;
 }
 
-function loadAppModules() {
-  return Promise.all([
-    vi.importActual<typeof import("../middleware/index.js")>("../middleware/index.js"),
-    vi.importActual<typeof import("../routes/issues.js")>("../routes/issues.js"),
-  ]);
-}
-
 async function createApp(options?: { companyIds?: string[] }) {
-  const [{ errorHandler }, { issueRoutes }] = await loadAppModules();
+  // Both modules traverse the reset/mocked service graph; concurrent imports
+  // can wait on each other's partially evaluated modules.
+  const { errorHandler } = await vi.importActual<typeof import("../middleware/index.js")>("../middleware/index.js");
+  const { issueRoutes } = await vi.importActual<typeof import("../routes/issues.js")>("../routes/issues.js");
   const app = express();
   app.use(express.json());
   app.use((req, _res, next) => {
@@ -214,14 +211,10 @@ function makeDocument(overrides: Record<string, unknown> = {}) {
 }
 
 describe("work product review-document route", () => {
-  beforeAll(async () => {
-    vi.resetModules();
-    registerRouteMocks();
-    await loadAppModules();
-  }, 120_000);
-
   beforeEach(() => {
+    vi.resetModules();
     vi.clearAllMocks();
+    registerRouteMocks();
     mockIssueService.getById.mockResolvedValue(makeIssue());
     mockWorkProductService.getById.mockResolvedValue(makeWorkProduct());
   });

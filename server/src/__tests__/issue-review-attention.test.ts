@@ -16,6 +16,7 @@ import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
+import type { Issue } from "@paperclipai/shared";
 import { issueService } from "../services/issues.js";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
@@ -27,9 +28,16 @@ if (!embeddedPostgresSupport.supported) {
   );
 }
 
+// The inferred list() return type drops the attention fields that its rows carry at runtime.
+type IssueServiceWithListProjection = Omit<ReturnType<typeof issueService>, "list"> & {
+  list(
+    ...args: Parameters<ReturnType<typeof issueService>["list"]>
+  ): Promise<Array<Awaited<ReturnType<ReturnType<typeof issueService>["list"]>>[number] & Pick<Issue, "reviewAttention">>>;
+};
+
 describeEmbeddedPostgres("issue review attention", () => {
   let db!: ReturnType<typeof createDb>;
-  let svc!: ReturnType<typeof issueService>;
+  let svc!: IssueServiceWithListProjection;
   let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
 
   beforeAll(async () => {

@@ -68,7 +68,7 @@ const SCHEMA = "paperclip/environment-sync-error/v1";
 // Match the host's workspace restore diagnostic allowlist. Both sides validate
 // independently: plugin-supplied data must never widen the host's log surface.
 const ERROR_CODES = new Set([
-  "ENOENT", "EACCES", "EPERM", "ENOSPC", "EIO", "EXDEV", "ENOTDIR", "EISDIR",
+  "ENOENT", "EACCES", "EPERM", "ENOSPC", "EIO", "EXDEV", "ENOTDIR", "EISDIR", "ENAMETOOLONG",
   "ECONNRESET", "ECONNREFUSED", "ETIMEDOUT", "EPIPE", "ENOTFOUND", "EAI_AGAIN",
   "ABORT_ERR", "UND_ERR_CONNECT_TIMEOUT", "UND_ERR_SOCKET",
 ]);
