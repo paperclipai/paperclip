@@ -1,14 +1,12 @@
 /**
  * Server-side execution logic for the Hermes Agent adapter.
  *
- * Spawns `hermes chat -q "..."` as a child process, streams output,
- * and returns structured results to Paperclip. Quiet mode and the structured
- * result record are explicit adapter settings.
+ * Spawns `hermes chat -q "..." -Q` as a child process, streams output,
+ * and returns structured results to Paperclip.
  *
  * Verified CLI flags (hermes chat):
  *   -q/--query         single query (non-interactive)
- *   -Q/--quiet         quiet mode (no banner/spinner, only response + session metadata)
- *   --emit-result-record structured completion status for automation wrappers
+ *   -Q/--quiet         quiet mode (no banner/spinner, only response + session_id)
  *   -m/--model         model name (e.g. anthropic/claude-sonnet-4)
  *   -t/--toolsets      comma-separated toolsets to enable
  *   --provider         inference provider (auto, openrouter, nous, etc.)
@@ -315,9 +313,7 @@ export function parseHermesOutput(stdout: string, stderr: string): ParsedOutput 
           sessionId: raw.session_id,
         };
       }
-    } catch {
-      // Malformed or duplicate records fail closed in outcome classification.
-    }
+    } catch {}
   }
 
   // In quiet mode, Hermes outputs:
@@ -332,20 +328,15 @@ export function parseHermesOutput(stdout: string, stderr: string): ParsedOutput 
     terminalSessionIds.length === 1 ? terminalSessionIds[0] : undefined;
   const sessionMatch = stdout.match(SESSION_ID_REGEX);
   if (authoritativeSessionId) {
-    // Quiet Hermes writes terminal session metadata to stderr. Prefer that
-    // exact line over any session-like text produced by the assistant.
     result.sessionId = authoritativeSessionId;
     const cleaned = cleanResponse(stdout);
     if (cleaned.length > 0) result.response = cleaned;
   } else if (sessionMatch?.[1]) {
     result.sessionId = sessionMatch[1];
-    // Hermes versions have emitted the session line both before and after the
-    // response. Remove it wherever it appears, then clean the remainder.
     const withoutSessionLine = stdout.replace(/^session_id:\s*\S+\s*$/m, "");
     const cleaned = cleanResponse(withoutSessionLine);
     if (cleaned.length > 0) result.response = cleaned;
   } else {
-    // Non-quiet Hermes prints a resume command and a Session: summary.
     const legacyMatch =
       combined.match(SESSION_ID_REGEX_LEGACY) ||
       combined.match(/hermes\s+--resume\s+([a-zA-Z0-9_-]+)/i) ||
@@ -557,8 +548,6 @@ export async function execute(
   if (useQuiet) {
     args.push("-Q");
     if (emitResultRecord) {
-      // Pin classic CLI mode so a user's display.interface=tui setting cannot
-      // silently divert this machine protocol into the TUI.
       args.push("--cli", "--emit-result-record");
     }
   }
@@ -701,11 +690,7 @@ export async function execute(
   const rawExitCode = result.exitCode;
   let normalizedExitCode = result.exitCode;
   let normalizedSignal = result.signal;
-  // Hermes can finish the model turn and persist a session before a native
-  // extension aborts during interpreter teardown. Normalize only when the
-  // opt-in structured result record positively proves completion and matches
-  // terminal session metadata. Older Hermes versions fail closed.
-  if (
+  const canNormalizeAbort =
     useQuiet &&
     emitResultRecord &&
     shouldNormalizeCompletedHermesAbort({
@@ -718,8 +703,8 @@ export async function execute(
       completionRecord: parsed.completionRecord,
       stdout: result.stdout || "",
       stderr: result.stderr || "",
-    })
-  ) {
+    });
+  if (canNormalizeAbort) {
     normalizedExitCode = 0;
     normalizedSignal = null;
   }
