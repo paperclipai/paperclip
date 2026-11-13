@@ -2942,7 +2942,6 @@ impl AcpxCommandExecutor {
                 break;
             };
             let mut provider_turn_settled = false;
-            let mut armed_turns = Vec::new();
             for event in events {
                 if let crate::acpx_provider_state::AcpxProviderStateEvent::ProviderTurnStarted {
                     turn_id,
@@ -3002,21 +3001,12 @@ impl AcpxCommandExecutor {
                     crate::acpx_provider_state::AcpxProviderStateEvent::Diagnostic { code, .. }
                         if code == crate::generated_acpx_sidecar_contract::GENERATED_ACPX_PROVIDER_TURN_LOST_CODE
                 );
-                let armed_provider_turn = if terminal.is_some() && !provider_process_lost {
-                    self.arm_provider_turn()
-                } else {
-                    None
-                };
-                let awaiting_provider_turn = armed_provider_turn.is_some();
-                armed_turns.extend(armed_provider_turn.clone());
                 let state = self
                     .state
                     .as_mut()
                     .expect("ACPX state remains available while polling");
+                let mut accepted = Vec::with_capacity(normalized.len());
                 for mut event in normalized {
-                    if awaiting_provider_turn && event.event_type == "turn.completed" {
-                        event.payload["awaitingProviderTurn"] = json!(true);
-                    }
                     if matches!(
                         event.event_type.as_str(),
                         "session.goal.updated" | "session.goal.cleared"
@@ -3038,8 +3028,10 @@ impl AcpxCommandExecutor {
                     if event.event_type == "run.result.proposed" {
                         state.semantic_result = Some(event.payload.clone());
                     }
-                    state.push(event)?;
+                    accepted.push(event);
                 }
+                let turn_ended = terminal.is_some();
+                let mut run_terminal = None;
                 if let Some(event_type) = terminal {
                     state.active_turn_id = None;
                     state.provider_exit_unconfirmed |= provider_process_lost;
@@ -3057,15 +3049,12 @@ impl AcpxCommandExecutor {
                     provider_turn_settled = true;
                     // An ACP goal has session lifetime, not prompt lifetime.
                     // Out-of-prompt goal updates remain observable after quiescence.
-                    if !provider_process_lost
+                    let goal_continues = !provider_process_lost
                         && state
                             .goal_projection
                             .pointer("/goal/status")
                             .and_then(Value::as_str)
-                            == Some("active")
-                    {
-                        continue;
-                    }
+                            == Some("active");
                     let (turn_terminal_state, status) = match event_type.as_str() {
                         "turn.completed" => ("completed", "succeeded"),
                         "turn.cancelled" => ("cancelled", "cancelled"),
@@ -3084,29 +3073,18 @@ impl AcpxCommandExecutor {
                             .and_then(Value::as_str),
                         status == "succeeded",
                     );
-                    let run_terminal = NormalizedProviderEvent {
-                        event_type: "run.terminal".to_owned(),
-                        priority: EventPriority::P0,
-                        payload: json!({
+                    run_terminal = (!goal_continues).then(|| {
+                        json!({
                             "schema": "paperclip.prp.terminal.v1",
                             "status": status,
                             "turnTerminalState": turn_terminal_state,
                             "runTerminalState": status,
                             "reportedWorkDisposition": disposition,
                             "provider": "acpx",
-                        }),
-                    };
-                    match armed_provider_turn.clone() {
-                        Some(turn_id) => {
-                            state.provider_turn_wait =
-                                Some(provider_turn_wait::AcpxProviderTurnWait {
-                                    turn_id,
-                                    held_run_terminal: run_terminal.payload,
-                                });
-                        }
-                        None => state.push(run_terminal)?,
-                    }
+                        })
+                    });
                 }
+                self.settle_turn_events(accepted, turn_ended, run_terminal)?;
                 if provider_lost {
                     self.publish_ended_provider_turn_wait()?;
                 }
@@ -3114,7 +3092,6 @@ impl AcpxCommandExecutor {
             if provider_turn_settled {
                 self.context.provider_turn_id = None;
             }
-            self.disarm_unheld_provider_turn(armed_turns);
             self.save_state()?;
         }
         Ok(())

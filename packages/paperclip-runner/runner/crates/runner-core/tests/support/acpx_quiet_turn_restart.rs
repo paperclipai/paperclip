@@ -556,3 +556,25 @@ fn cancelling_or_stopping_the_run_while_awaiting_disarms_and_publishes_the_held_
         let _ = harness.executor.shutdown();
     }
 }
+
+#[test]
+fn an_active_goal_at_a_live_shell_turn_end_neither_marks_nor_arms_a_wait() {
+    let mut harness = Harness::new();
+    harness
+        .fixture
+        .background("live provider-turn provider-turn-hold");
+    harness.fixture.fault("goal");
+    let before = harness.fixture.journal().len();
+    let events = complete_turn_accepting_provider_turns(&mut harness, "first");
+    let events = [events, harness.drain()].concat();
+    let completed = events
+        .iter()
+        .find(|event| event["type"] == "turn.completed")
+        .unwrap();
+    assert!(completed["payload"].get("awaitingProviderTurn").is_none());
+    assert!(!events.iter().any(|event| event["type"] == "run.terminal"));
+    assert!(!commands_after(&harness.fixture.journal(), before)
+        .iter()
+        .any(|command| command == "session.provider_turn"));
+    harness.executor.shutdown().unwrap();
+}

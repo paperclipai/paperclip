@@ -23,11 +23,15 @@ impl AcpxProviderTurnWait {
     }
 
     pub(super) fn into_run_terminal(self) -> NormalizedProviderEvent {
-        NormalizedProviderEvent {
-            event_type: "run.terminal".to_owned(),
-            priority: EventPriority::P0,
-            payload: self.held_run_terminal,
-        }
+        run_terminal_event(self.held_run_terminal)
+    }
+}
+
+fn run_terminal_event(payload: Value) -> NormalizedProviderEvent {
+    NormalizedProviderEvent {
+        event_type: "run.terminal".to_owned(),
+        priority: EventPriority::P0,
+        payload,
     }
 }
 
@@ -58,25 +62,50 @@ impl AcpxCommandExecutor {
             .is_some_and(|state| state.provider_turn_wait.is_some())
     }
 
-    pub(super) fn arm_provider_turn(&mut self) -> Option<String> {
-        let session = self.session.as_mut()?;
-        let turn_id = session.take_provider_turn_offer()?;
-        (self.turn_accepts_provider_turns && session.arm_provider_turn(&turn_id)).then_some(turn_id)
-    }
-
-    pub(super) fn disarm_unheld_provider_turn(&mut self, armed: Vec<String>) {
-        let held = self
-            .state
-            .as_ref()
-            .and_then(|state| state.provider_turn_wait.as_ref())
-            .map(|wait| wait.turn_id.clone());
-        for turn_id in armed {
-            if held.as_deref() != Some(turn_id.as_str()) {
-                if let Some(session) = self.session.as_mut() {
-                    session.disarm_provider_turn(&turn_id);
-                }
+    pub(super) fn settle_turn_events(
+        &mut self,
+        events: Vec<NormalizedProviderEvent>,
+        turn_ended: bool,
+        run_terminal: Option<Value>,
+    ) -> Result<(), DurableRunnerError> {
+        let offer = turn_ended
+            .then(|| {
+                self.session
+                    .as_mut()
+                    .and_then(|session| session.take_provider_turn_offer())
+            })
+            .flatten();
+        let wait = match (offer, run_terminal) {
+            (Some(turn_id), Some(held_run_terminal))
+                if self.turn_accepts_provider_turns
+                    && self
+                        .session
+                        .as_mut()
+                        .is_some_and(|session| session.arm_provider_turn(&turn_id)) =>
+            {
+                Ok(AcpxProviderTurnWait {
+                    turn_id,
+                    held_run_terminal,
+                })
             }
+            (_, run_terminal) => Err(run_terminal),
+        };
+        let state = self
+            .state
+            .as_mut()
+            .expect("ACPX state remains available while polling");
+        for mut event in events {
+            if wait.is_ok() && event.event_type == "turn.completed" {
+                event.payload["awaitingProviderTurn"] = json!(true);
+            }
+            state.push(event)?;
         }
+        match wait {
+            Ok(wait) => state.provider_turn_wait = Some(wait),
+            Err(Some(payload)) => state.push(run_terminal_event(payload))?,
+            Err(None) => {}
+        }
+        Ok(())
     }
 
     pub(super) fn end_provider_turn_wait(
