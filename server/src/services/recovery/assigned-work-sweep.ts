@@ -30,7 +30,7 @@ import { taskInterruptionPresentations } from "../task-interruption-presentation
 import { CHAT_CONTROL_RECOVERY_STOP_CODE, CHAT_CONTROL_RECOVERY_UNRESOLVED_CODE } from "../chat-control-recovery-stop.js";
 import { onboardingFirstTaskAwaitingUserSql } from "./onboarding-first-task-wait.js";
 import { PENDING_CONTINUATION_BOUND_MS } from "../recovery-continuation-pacing.js";
-import { queuedRecoveryRunsOf } from "../recovery-queue-admission.js";
+import { HELD_RECOVERY_WAKE_KEYS, queuedRecoveryRunsOf } from "../recovery-queue-admission.js";
 import { attributeBlock, BLOCK_ATTRIBUTION_WINDOW_MS, blockedStatusDetailsSql } from "../interruption-block-release.js";
 import { ASSIGNED_WORK_CONTINUED_ACTION, taskAutomaticAttempts } from "./task-automatic-attempts.js";
 import { STRANDED_CONTINUATION_MAX_AGE_MS, STRANDED_KIND, strandedHoldContinuesAutomatically, type StrandedHoldRun } from "./stranded-hold-continuation.js";
@@ -309,8 +309,18 @@ export function assignedWorkSweep(db: Db, deps: AssignedWorkDeps) {
         ${issueRecoveryActions.updatedAt}::text)::timestamptz
         > ${at.toISOString()}::timestamptz - ${`${PENDING_CONTINUATION_BOUND_MS} milliseconds`}::interval
         or exists (${queuedRecoveryRunsOf(sql`${issueRecoveryActions.companyId}`, sql`${issueRecoveryActions.returnOwnerAgentId}`)}))`));
+    // A restored task's wake that is waiting its turn behind its assignee's
+    // queued recovery runs (see HELD_RECOVERY_WAKE_KEYS) is its pending path too.
+    const heldWakes = await database.select({ issueId: issueRecoveryActions.sourceIssueId, agentId: issues.assigneeAgentId })
+      .from(issueRecoveryActions)
+      .innerJoin(issues, and(eq(issues.companyId, issueRecoveryActions.companyId), eq(issues.id, issueRecoveryActions.sourceIssueId)))
+      .where(and(
+        eq(issueRecoveryActions.companyId, companyId), inArray(issueRecoveryActions.sourceIssueId, ids),
+        eq(issueRecoveryActions.status, "resolved"),
+        or(...HELD_RECOVERY_WAKE_KEYS.map(key => sql`${issueRecoveryActions.evidence} #>> array[${key}::text, 'wake'] = 'pending'`)),
+        sql`exists (${queuedRecoveryRunsOf(sql`${issues.companyId}`, sql`${issues.assigneeAgentId}`)})`));
     const wakeCounts = counts(wakes);
-    for (const continuation of pendingContinuations) {
+    for (const continuation of [...pendingContinuations, ...heldWakes]) {
       const issue = issueRows.find(row => row.id === continuation.issueId);
       if (!issue || !continuation.agentId || issue.assigneeAgentId !== continuation.agentId) continue;
       wakeCounts.set(continuation.issueId, (wakeCounts.get(continuation.issueId) ?? 0) + 1);

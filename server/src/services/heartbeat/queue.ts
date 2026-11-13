@@ -903,9 +903,9 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
   /**
    * A system recovery run waits behind people's work, so by its turn the task
    * may have moved on. It is still needed only while its agent still owns the
-   * task and no other run continues it: none started or queued after it, none
-   * running, and no queued non-recovery run (a person's or an assignment's).
-   * Of two queued recovery runs for one task, the newer one stays.
+   * task and no other run continues it: none started after it was queued,
+   * none running, and no queued non-recovery run (a person's or an
+   * assignment's). Of two queued recovery runs for one task, the newer one stays.
    */
   async function recoveryRunNoLongerNeeded(run: typeof heartbeatRuns.$inferSelect, issueId: string,
     task: { assigneeAgentId: string | null }) {
@@ -925,10 +925,12 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
       sql`${heartbeatRuns.contextSnapshot}->>'issueId' = ${issueId}`,
       notInArray(heartbeatRuns.id, notOwnRuns),
       or(
-        gt(heartbeatRuns.createdAt, run.createdAt),
+        // Ran after this one was queued: the task already continued.
+        gt(heartbeatRuns.startedAt, run.createdAt),
         eq(heartbeatRuns.status, "running"),
-        and(eq(heartbeatRuns.status, "queued"),
-          sql`coalesce(${heartbeatRuns.contextSnapshot}->>'wakeReason', '') not in (${recoveryReasons})`),
+        and(eq(heartbeatRuns.status, "queued"), or(
+          sql`coalesce(${heartbeatRuns.contextSnapshot}->>'wakeReason', '') not in (${recoveryReasons})`,
+          gt(heartbeatRuns.createdAt, run.createdAt))),
       ),
     )).limit(1);
     return Boolean(other);

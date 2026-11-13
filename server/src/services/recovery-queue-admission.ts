@@ -11,6 +11,13 @@ import { RECOVERY_WAKE_REASONS } from "./heartbeat/queued-run-dispatch-order.js"
  */
 export const QUEUED_RECOVERY_RUNS_PER_AGENT = 3;
 
+/**
+ * Evidence keys under which a restored task records the wake it is owed
+ * (legacy-workspace rehome, released workspace writer). While its assignee's
+ * recovery queue is full, that wake waits pending here.
+ */
+export const HELD_RECOVERY_WAKE_KEYS = ["legacyWorkspaceRehome", "releasedWorkspaceWriter"] as const;
+
 /** Queued recovery runs of `agentId`, as SQL on a `heartbeat_runs` alias. */
 export function queuedRecoveryRunsOf(companyId: SQL | string, agentId: SQL | string) {
   const reasons = sql.join([...RECOVERY_WAKE_REASONS].map(reason => sql`${reason}`), sql`, `);

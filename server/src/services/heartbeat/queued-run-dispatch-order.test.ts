@@ -5,9 +5,11 @@ import {
   RECOVERY_BACKLOG_AGE_MS,
   createQueuedRunDispatcher,
   dispatchCountersFromStarts,
+  queuedRunStartOf,
   RECOVERY_DISPATCH_SHARE,
   isRecoveryWakeReason,
   orderQueuedRunsForDispatch,
+  queuedRunDispatchLine,
   queuedRunDispatchClass,
   type QueuedRunDispatchFacts,
 } from "./queued-run-dispatch-order.js";
@@ -145,7 +147,7 @@ describe("queued run dispatch order", () => {
     for (let step = 0; step < steps; step += 1) {
       pending.push(run({ wakeReason: "issue_assigned", createdAt: minutesAgo(1) }),
         run({ wakeReason: "issue_continuation_needed", createdAt: minutesAgo(1), sourceEndedAt: minutesAgo(2) }));
-      const [next] = orderQueuedRunsForDispatch(pending, { now, ...dispatchCountersFromStarts(pending, [...started].reverse(), now) });
+      const [next] = orderQueuedRunsForDispatch(pending, { now, ...dispatchCountersFromStarts(pending, [...started].reverse().map(run => queuedRunStartOf(run, now)), now) });
       started.push(next!);
       pending = pending.filter(entry => entry.id !== next!.id);
     }
@@ -198,7 +200,7 @@ describe("queued run dispatch order", () => {
     for (let step = 0; step < 3 * OLDEST_DISPATCH_SHARE; step += 1) {
       pending.push(run({ wakeReason: "issue_recovery_action_restored", createdAt: minutesAgo(1), sourceEndedAt: minutesAgo(2) }),
         run({ wakeReason: "issue_assigned", readinessRank: 1, createdAt: minutesAgo(1) }));
-      const [next] = orderQueuedRunsForDispatch(pending, { now, ...dispatchCountersFromStarts(pending, [...started].reverse(), now) });
+      const [next] = orderQueuedRunsForDispatch(pending, { now, ...dispatchCountersFromStarts(pending, [...started].reverse().map(run => queuedRunStartOf(run, now)), now) });
       started.push(next!);
       pending = pending.filter(entry => entry.id !== next!.id);
     }
@@ -245,7 +247,7 @@ describe("deep per-agent queue: a recovery burst behind 20 busy slots (paperclip
         priorityRank: 1, createdAt: at }));
       pending.push(make({ wakeReason: "issue_assigned", createdAt: at }));
       const history = started.map(entry => entry.run);
-      const [next] = orderQueuedRunsForDispatch(pending, { now: at, ...dispatchCountersFromStarts(pending, [...history].reverse(), at) });
+      const [next] = orderQueuedRunsForDispatch(pending, { now: at, ...dispatchCountersFromStarts(pending, [...history].reverse().map(run => queuedRunStartOf(run, at)), at) });
       started.push({ run: next!, personWaiting: pending.some(entry => entry !== next && isPerson(entry) && entry.readinessRank < 3) });
       pending = pending.filter(entry => entry.id !== next!.id);
     }
@@ -266,12 +268,33 @@ describe("deep per-agent queue: a recovery burst behind 20 busy slots (paperclip
     expect(recoveryAheadOfPeople).toHaveLength(0);
   });
 
+  it("does not let older agent work use up the turn of a run on a task a person created", () => {
+    // No person-requested arrivals: normal order serves the older, higher-priority assignments.
+    const assignments = Array.from({ length: 60 }, (_, index) => make({ wakeReason: "issue_assigned", priorityRank: 1,
+      createdAt: addMinutes(clock("05:00"), index * 2) }));
+    const monitor = make({ wakeReason: "issue_monitor_due", personTask: true, priorityRank: 3, createdAt: clock("07:29") });
+    const started: QueuedRunDispatchFacts[] = [];
+    let pending = [...assignments, monitor];
+    for (let step = 0; step < 2 * OLDEST_DISPATCH_SHARE && pending.length; step += 1) {
+      const [next] = orderQueuedRunsForDispatch(pending, { now: at,
+        ...dispatchCountersFromStarts(pending, [...started].reverse().map(run => queuedRunStartOf(run, at)), at) });
+      started.push(next!);
+      pending = pending.filter(entry => entry.id !== next!.id);
+    }
+    const position = started.findIndex(entry => entry.id === monitor.id);
+    expect(position).toBeGreaterThanOrEqual(0);
+    expect(position).toBeLessThan(OLDEST_DISPATCH_SHARE);
+    // The place-in-line order agrees.
+    const line = queuedRunDispatchLine([...assignments, monitor], { now: at, startsSinceRecovery: 0, startsSinceOldest: 0 });
+    expect(line.findIndex(entry => entry.id === monitor.id)).toBeLessThan(OLDEST_DISPATCH_SHARE);
+  });
+
   it("keeps recovery behind agent assignments once people are served, and still drains it at its share", () => {
     const { assignments, burst } = todaysQueue();
     const started: QueuedRunDispatchFacts[] = [];
     let pending = [...burst.slice(0, 3), ...assignments];
     for (let step = 0; step < 4 * RECOVERY_DISPATCH_SHARE && pending.length; step += 1) {
-      const [next] = orderQueuedRunsForDispatch(pending, { now: at, ...dispatchCountersFromStarts(pending, [...started].reverse(), at) });
+      const [next] = orderQueuedRunsForDispatch(pending, { now: at, ...dispatchCountersFromStarts(pending, [...started].reverse().map(run => queuedRunStartOf(run, at)), at) });
       started.push(next!);
       pending = pending.filter(entry => entry.id !== next!.id);
     }

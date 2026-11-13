@@ -97,7 +97,29 @@ export function oldestShareCandidate<T extends QueuedRunDispatchFacts>(runs: rea
     ?? oldestReadyQueuedRun(runs, run => aged(run) && !isSystemRecoveryRun(run));
 }
 
-export type QueuedRunStart = { wakeReason: string | null; createdAt: Date; startedAt?: Date | null; personOrigin?: boolean };
+/**
+ * One of the agent's recent starts. `personOrigin`: a person asked for it (its
+ * wake or source chain). `personWaiting`: that, or its task was created by a
+ * person.
+ */
+export type QueuedRunStart = { wakeReason: string | null; createdAt: Date; startedAt?: Date | null; personOrigin?: boolean;
+  personWaiting?: boolean };
+
+/** A dispatched run as the start history records it. */
+export function queuedRunStartOf(run: QueuedRunDispatchFacts, now: Date): QueuedRunStart {
+  return { wakeReason: run.wakeReason, createdAt: run.createdAt, personOrigin: isPersonRun(run, now),
+    personWaiting: isPersonWaitingRun(run, now) };
+}
+
+/**
+ * Whether a start used up the oldest-run share's turn: it was at least as old
+ * as the candidate, and, while the candidate is a run people wait on, it was
+ * one too. Older agent work never uses up a person's turn.
+ */
+function servesOldestShare(started: { createdAt: Date; personWaiting: boolean }, candidate: QueuedRunDispatchFacts, now: Date) {
+  return started.createdAt.getTime() <= candidate.createdAt.getTime()
+    && (started.personWaiting || !isPersonWaitingRun(candidate, now));
+}
 
 /** Where the start history must reach back to for `dispatchCountersFromStarts`, or null when no counter needs it. */
 export function dispatchHistoryStart<T extends QueuedRunDispatchFacts>(runs: readonly T[], now: Date): Date | null {
@@ -130,7 +152,8 @@ export function dispatchCountersFromStarts<T extends QueuedRunDispatchFacts>(run
   const candidate = runs.length > 1 ? oldestShareCandidate(runs, now) : null;
   if (candidate) {
     const starts = startsSince(candidate.createdAt.getTime()).slice(0, OLDEST_DISPATCH_SHARE);
-    const last = starts.findIndex(start => start.createdAt.getTime() <= candidate.createdAt.getTime());
+    const last = starts.findIndex(start => servesOldestShare({ createdAt: start.createdAt,
+      personWaiting: Boolean(start.personWaiting) }, candidate, now));
     startsSinceOldest = last < 0 ? starts.length : last;
   }
   return { startsSinceRecovery, startsSinceOldest };
@@ -174,10 +197,10 @@ export function createQueuedRunDispatcher<T extends QueuedRunDispatchFacts>(
     },
     claimed(run: T) {
       sinceRecovery = isSystemRecoveryRun(run) ? 0 : sinceRecovery + 1;
-      // Served when the run started was at least as old as the share's candidate,
-      // the same rule dispatchCountersFromStarts reads from the start history.
+      // The same rule dispatchCountersFromStarts reads from the start history.
       const oldest = oldestShareCandidate([...remaining, run], input.now);
-      sinceOldest = !oldest || run.createdAt.getTime() <= oldest.createdAt.getTime() ? 0 : sinceOldest + 1;
+      sinceOldest = !oldest || servesOldestShare({ createdAt: run.createdAt, personWaiting: isPersonWaitingRun(run, input.now) },
+        oldest, input.now) ? 0 : sinceOldest + 1;
     },
   };
 }
@@ -248,7 +271,8 @@ export function queuedRunDispatchLine<T extends QueuedRunDispatchFacts>(
     if (isReady(run) && isPersonRun(run, now)) readyPeople -= 1;
     result.push(run);
     sinceRecovery = isSystemRecoveryRun(run) ? 0 : sinceRecovery + 1;
-    sinceOldest = candidate < 0 || run.createdAt.getTime() <= order[candidate]!.createdAt.getTime() ? 0 : sinceOldest + 1;
+    sinceOldest = candidate < 0 || servesOldestShare({ createdAt: run.createdAt, personWaiting: isPersonWaitingRun(run, now) },
+      order[candidate]!, now) ? 0 : sinceOldest + 1;
   }
   return result;
 }

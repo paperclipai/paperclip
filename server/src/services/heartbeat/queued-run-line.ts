@@ -8,7 +8,6 @@ import {
   RECOVERY_DISPATCH_SHARE,
   dispatchCountersFromStarts,
   dispatchHistoryStart,
-  isRecoveryWakeReason,
   queuedRunDispatchLine,
   type QueuedRunDispatchFacts,
   type QueuedRunDispatchInput,
@@ -139,17 +138,20 @@ export async function queuedRunDispatchFacts<R extends QueuedRunDispatchRun>(
   });
   const since = dispatchHistoryStart(facts, now);
   const startRows = since ? await db.select({ id: heartbeatRuns.id, wakeReason: sql<string | null>`${heartbeatRuns.contextSnapshot}->>'wakeReason'`,
-    startedAt: heartbeatRuns.startedAt, createdAt: heartbeatRuns.createdAt })
+    startedAt: heartbeatRuns.startedAt, createdAt: heartbeatRuns.createdAt,
+    personTask: sql<boolean>`exists (select 1 from ${issues} started_task where started_task.company_id = ${heartbeatRuns.companyId}
+      and started_task.id::text = ${heartbeatRuns.contextSnapshot}->>'issueId' and started_task.created_by_user_id is not null)` })
     .from(heartbeatRuns)
     .where(and(eq(heartbeatRuns.companyId, agent.companyId), eq(heartbeatRuns.agentId, agent.id),
       isNotNull(heartbeatRuns.startedAt), gte(heartbeatRuns.startedAt, since)))
     .orderBy(desc(heartbeatRuns.startedAt))
     .limit(Math.max(RECOVERY_DISPATCH_SHARE, OLDEST_DISPATCH_SHARE)) : [];
-  // A person's recovery restart is person work, so it does not use up system recovery's share.
-  const recoveryStartIds = startRows.flatMap(row => isRecoveryWakeReason(row.wakeReason) ? [row.id] : []);
-  const personStarts = new Set(recoveryStartIds.length
-    ? await listPersonOriginSourceRunIds(db, agent.companyId, recoveryStartIds) : []);
-  const recentStarts = startRows.map(row => ({ ...row, personOrigin: personStarts.has(row.id) }));
+  // A person's recovery restart is person work, so it does not use up system recovery's share;
+  // only a start people wait on uses up their oldest-run turn.
+  const personStarts = new Set(startRows.length
+    ? await listPersonOriginSourceRunIds(db, agent.companyId, startRows.map(row => row.id)) : []);
+  const recentStarts = startRows.map(row => ({ ...row, personOrigin: personStarts.has(row.id),
+    personWaiting: personStarts.has(row.id) || Boolean(row.personTask) }));
   const { startsSinceRecovery, startsSinceOldest } = dispatchCountersFromStarts(facts, recentStarts, now);
   return { facts, dispatchInput: { now, startsSinceRecovery, startsSinceOldest } };
 }
