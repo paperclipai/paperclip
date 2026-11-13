@@ -5330,7 +5330,9 @@ registry.registerPath({
   path: "/api/projects/{id}",
   tags: ["projects"],
   summary: "Update project properties and defaults",
-  description: "Save project properties and defaults. The description holds shared project context and guidance, including checklists; goalIds links the project to its goals. Read the project back to verify the saved fields. Updating description or goalIds does not rewrite existing tasks or the inputs already admitted to active native runs; changing existing work is a separate operation. Environment and executionWorkspacePolicy fields configure separate project settings and are not required to save description or goalIds.",
+  description: "Save project properties and defaults. The description holds shared project context and guidance, including checklists; goalIds links the project to its goals. Read the project back to verify the saved fields. Updating description or goalIds does not rewrite existing tasks or the inputs already admitted to active native runs; changing existing work is a separate operation. Environment and executionWorkspacePolicy fields configure separate project settings and are not required to save description or goalIds. "
+    + "Archiving a project (archivedAt set to the current time) hides it from the sidebar and project selectors and keeps the project, its tasks and their history; no data is removed. Restoring sets archivedAt to null. "
+    + "A person unarchives a project on that project's own Configuration page, /<prefix>/projects/<projectId>/configuration, with the Unarchive button; give them that page as a Markdown link. Archived projects are not restored from the company Status page.",
   request: {
     params: z.object({ id: z.string() }),
     body: jsonBody(updateProjectSchema),
