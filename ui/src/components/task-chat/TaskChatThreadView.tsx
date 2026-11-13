@@ -29,7 +29,7 @@ import { TaskMessageScroller, type ScrollingHistory } from "./TaskMessageScrolle
 import { TaskChatProtocolCard } from "./TaskChatProtocolCard";
 import { TaskChatProtocolActivityRow } from "./TaskChatProtocolActivityRow";
 import { TaskChatPlanPreviewCard } from "./TaskChatPlanPreviewCard";
-import { compactAdjacentErrors } from "./adjacent-errors";
+import { compactAdjacentErrors, isRetryableFailureMarker } from "./adjacent-errors";
 import { CoordinatorChatTaskHandoff } from "@/components/coordinator/CoordinatorChatTaskHandoffs";
 import { CoordinatorChatDecisionReceipt } from "@/components/coordinator/CoordinatorChatDecisionReceipts";
 import { CoordinatorChatPendingQuestion } from "@/components/coordinator/CoordinatorChatPendingQuestions";
@@ -347,8 +347,7 @@ export function TaskChatThreadView({
           .find(
             (item) => {
               const marker = item.kind === "marker" ? item : retryMarkers.get(item.id);
-              return marker?.variant === "interrupted" &&
-                (marker.label === "Run failed" || marker.label === "Usage limit reached");
+              return !!marker && isRetryableFailureMarker(marker);
             },
           )?.id
       : undefined;

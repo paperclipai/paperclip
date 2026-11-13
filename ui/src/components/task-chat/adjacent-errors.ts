@@ -54,8 +54,7 @@ export function compactAdjacentErrors(items: readonly TaskChatItem[]): {
     const latest = items[end - 1];
     if (mixed && errorKind(latest) === "recovery") {
       const marker = items.slice(start, end).reverse().find(
-        (item): item is TaskChatMarkerItem => item.kind === "marker"
-          && (item.label === "Run failed" || item.label === "Usage limit reached"),
+        (item): item is TaskChatMarkerItem => item.kind === "marker" && isRetryableFailureMarker(item),
       );
       // Preserve the retry target separately from the surviving error's text.
       // The renderer still applies the parent's permission and pending state.
@@ -65,4 +64,10 @@ export function compactAdjacentErrors(items: readonly TaskChatItem[]): {
     start = end;
   }
   return { items: result, retryMarkers };
+}
+
+const RETRYABLE_FAILURE_LABELS = new Set(["Run failed", "Usage limit reached", "Model unavailable"]);
+
+export function isRetryableFailureMarker(marker: Pick<TaskChatMarkerItem, "variant" | "label">) {
+  return marker.variant === "interrupted" && RETRYABLE_FAILURE_LABELS.has(marker.label);
 }
