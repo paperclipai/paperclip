@@ -76,7 +76,7 @@ export function agentRunnerAvailability(harness: string, target: RunnerTarget = 
     && (["claude_local", "grok_local"].includes(harness)
       ? !!target.platform && paperclipRunnerSupportsPlatform(harness, target.platform, target.architecture ?? "", target.libc, target.glibcVersion)
       : !target.platform || paperclipRunnerSupportsPlatform(harness, target.platform, target.architecture ?? "", target.libc, target.glibcVersion));
-  const automatic = supported && !(harness === "claude_local" && target.driver === "ssh" && target.platform === "darwin");
+  const automatic = supported && target.platform !== "win32" && !(harness === "claude_local" && target.driver === "ssh" && target.platform === "darwin");
   return { supportedRunners: supported ? ["paperclip", "legacy"] : ["legacy"], defaultRunner: automatic ? "paperclip" : "legacy" };
 }
 

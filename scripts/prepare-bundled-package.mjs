@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { resolveNpmInvocation } from "./npm-invocation.mjs";
 
 import { execFileSync } from "node:child_process";
 import { cpSync, existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
@@ -354,7 +355,7 @@ export function selectBundledDependencyPatches(
   return selectedPatches;
 }
 
-export function applyBundledDependencyPatches(destinationDir, bundledDependencies, sourceRoot = repoRoot) {
+export function applyBundledDependencyPatches(destinationDir, bundledDependencies, sourceRoot = repoRoot, invocation = { command: "patch", argsPrefix: [] }) {
   const rootPackage = JSON.parse(readFileSync(resolve(sourceRoot, "package.json"), "utf8"));
   const patchedDependencies = rootPackage.pnpm?.patchedDependencies ?? {};
 
@@ -364,8 +365,8 @@ export function applyBundledDependencyPatches(destinationDir, bundledDependencie
     patchedDependencies,
   )) {
     execFileSync(
-      "patch",
-      ["-p1", "--forward", "-d", resolve(destinationDir, "node_modules", packageName)],
+      invocation.command,
+      [...invocation.argsPrefix, "-p1", "--forward", "-d", resolve(destinationDir, "node_modules", packageName)],
       {
         input: readFileSync(resolve(sourceRoot, patchPath)),
         stdio: ["pipe", "inherit", "inherit"],
@@ -374,7 +375,7 @@ export function applyBundledDependencyPatches(destinationDir, bundledDependencie
   }
 }
 
-export function prepareBundledPackage(sourceDir, destinationDir, { sourceRoot = repoRoot } = {}) {
+export function prepareBundledPackage(sourceDir, destinationDir, { sourceRoot = repoRoot, npmInvocation, patchInvocation } = {}) {
   const sourcePackagePath = resolve(sourceDir, "package.json");
   const sourcePackage = JSON.parse(readFileSync(sourcePackagePath, "utf8"));
   const bundledDependencies = sourcePackage.bundleDependencies ?? sourcePackage.bundledDependencies ?? [];
@@ -403,13 +404,14 @@ export function prepareBundledPackage(sourceDir, destinationDir, { sourceRoot = 
   );
   writeFileSync(deployedPackagePath, `${JSON.stringify(installManifest, null, 2)}\n`);
 
+  const npm = npmInvocation ?? resolveNpmInvocation();
   execFileSync(
-    "npm",
-    ["install", "--omit=dev", "--ignore-scripts", "--no-audit", "--no-fund"],
+    npm.command,
+    [...npm.argsPrefix, "install", "--omit=dev", "--ignore-scripts", "--no-audit", "--no-fund"],
     { cwd: destinationDir, stdio: "inherit" },
   );
   writeFileSync(deployedPackagePath, `${JSON.stringify(publishManifest, null, 2)}\n`);
-  applyBundledDependencyPatches(destinationDir, bundledDependencies, sourceRoot);
+  applyBundledDependencyPatches(destinationDir, bundledDependencies, sourceRoot, patchInvocation);
   if (profiles.length) writeFileSync(deployedPackagePath, `${JSON.stringify(stageBundledProviderOptionalDependencies(destinationDir, publishManifest, profiles), null, 2)}\n`);
 
   if (bundledDependencies.includes("acpx")) {

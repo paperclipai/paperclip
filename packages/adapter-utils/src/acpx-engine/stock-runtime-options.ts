@@ -33,22 +33,27 @@ export function stockAcpRuntimeOptions<T extends AcpRuntimeOptions & AcpxAgentSp
   return {
     ...stock,
     spawnAgent: (input) => {
-      const child = launch({ ...input, options: {
+      const launched = launch({ ...input, options: {
         ...input.options,
         ...(spawnCwd === undefined ? {} : { cwd: spawnCwd }),
         ...(agentEnvironment ? { env: { ...agentEnvironment() } } : {}),
       } });
-      if (typeof child.pid === "number") agentPids.add(child.pid);
-      if (onAgentStderr) {
-        child.stderr?.on("data", (chunk: Buffer | string) => {
-          try {
-            onAgentStderr(String(chunk));
-          } catch {
-            // Observation never changes the agent's lifecycle.
-          }
-        });
-      }
-      return child;
+      const observe = (child: ChildProcess): ChildProcess => {
+        if (typeof child.pid === "number") agentPids.add(child.pid);
+        if (onAgentStderr) {
+          child.stderr?.on("data", (chunk: Buffer | string) => {
+            try {
+              onAgentStderr(String(chunk));
+            } catch {
+              // Observation never changes the agent's lifecycle.
+            }
+          });
+        }
+        return child;
+      };
+      // A host launcher may prepare asynchronously (the Windows process job);
+      // the patched ACPX awaits the child before it observes the spawn.
+      return launched instanceof Promise ? launched.then(observe) : observe(launched);
     },
     ...(onAgentSpawn ? {
       processLifecycle: {

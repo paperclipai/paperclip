@@ -1,3 +1,5 @@
+import { join } from "node:path";
+import { tmpdir } from "node:os";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import * as executionTargets from "@paperclipai/adapter-utils/execution-target";
 import type { AdapterEnvironmentTestContext } from "@paperclipai/adapter-utils";
@@ -43,14 +45,14 @@ describe("managed Runner connection test status", () => {
     const input = { companyId: "company-1", adapterType: "paperclip_runner", executionTarget: null,
       config: { provider: "acpx", acpxAgent: "antigravity", model: "exact-google-model", env: {}, managedAiConnection: { method: "subscription" } } };
     const binding = { provider: "google", method: "subscription", mode: "responsible_user" } as const;
-    const managed = { home: "/private/selected-google", identity: "fixture-identity",
+    const managed = { home: join(tmpdir(), "selected-google"), identity: "fixture-identity",
       attribution: { provider: "google", connectionId: "connection-1", grantId: "grant-1" } } as Parameters<typeof service.testManagedEnvironment>[3];
     runtimeProbe.mockResolvedValue({ adapterType: "paperclip_runner", status: "pass", testedAt: checkedAt,
       checks: [{ code: "antigravity_metadata_verified", level: "info", message: "Native account and model accepted." }] });
     expect((await service.testManagedEnvironment("paperclip_runner", input, binding, managed)).status).toBe("pass");
-    expect(runtimeProbe).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ managedAiCredentialHome: "/private/selected-google/provider" }));
+    expect(runtimeProbe).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ managedAiCredentialHome: join(tmpdir(), "selected-google", "provider") }));
     runtimeProbe.mockClear();
-    await expect(service.testManagedEnvironment("paperclip_runner", { ...input, managedAiCredentialHome: "/private/other-google/provider" }, binding, managed))
+    await expect(service.testManagedEnvironment("paperclip_runner", { ...input, managedAiCredentialHome: join(tmpdir(), "other-google", "provider") }, binding, managed))
       .rejects.toThrow("does not match the selected managed account");
     expect(runtimeProbe).not.toHaveBeenCalled();
     expect(claudeProbe).not.toHaveBeenCalled();
@@ -72,6 +74,18 @@ describe("managed Runner connection test status", () => {
     expect(missing.checks).toContainEqual(expect.objectContaining({ code: "ai_connection_validation_incomplete" }));
     expect(claudeProbe).not.toHaveBeenCalled();
   });
+  it("binds the Codex credential home to the prepared managed runtime", async () => {
+    const service = agentEnvironmentTestService({} as Db);
+    const home = join(tmpdir(), "selected-codex-runtime");
+    const input: AdapterEnvironmentTestContext = { companyId: "company-1", adapterType: "paperclip_runner", config: { provider: "codex", env: {} } };
+    const binding = { provider: "openai", method: "subscription", mode: "responsible_user" } as const;
+    const managed = { home, identity: "fixture-identity", attribution: { provider: "openai", connectionId: "connection-1", grantId: "grant-1" } } as Parameters<typeof service.testManagedEnvironment>[3];
+    runtimeProbe.mockResolvedValue({ adapterType: "paperclip_runner", status: "pass", testedAt: checkedAt, checks: [{ code: "codex_hello_probe_passed", level: "info", message: "Fixture account checked" }] });
+    expect((await service.testManagedEnvironment("paperclip_runner", input, binding, managed)).status).toBe("pass");
+    expect(runtimeProbe).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ managedAiCredentialHome: join(home, "provider") }));
+    await expect(service.testManagedEnvironment("paperclip_runner", { ...input, managedAiCredentialHome: join(tmpdir(), "other-account", "provider") }, binding, managed)).rejects.toThrow("does not match");
+  });
+
   it("passes a healthy Cloud Claude connection without asking the user to verify launch-time runtime preparation", async () => {
     vi.stubEnv("PAPERCLIP_CLOUD_TENANT_SERVER_TOKEN", "managed-fixture");
     verifiedClaude();

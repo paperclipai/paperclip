@@ -39,6 +39,7 @@ test("a task title survives an outage and saves after server recovery", async ({
     expect((await json(await request.get(`/api/issues/${issue.id}`))).title).toBe(issue.title);
     await expect(header).toBeVisible();
 
+    // Keep the browser online so this proves recovery after a server-only outage.
     unavailable = false;
     await expect.poll(async () => (await json(await request.get(`/api/issues/${issue.id}`))).title,
       { timeout: 30_000 }).toBe("A title retained through the outage");

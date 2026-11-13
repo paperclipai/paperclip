@@ -1,6 +1,6 @@
 import { chmod, mkdir, readFile, readlink, rename, rm, symlink, writeFile } from "node:fs/promises";
 import path from "node:path";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { parse, stringify } from "smol-toml";
 import type { ProviderObservabilityLaunch } from "./agent-observability.js";
 
@@ -12,11 +12,20 @@ export async function prepareAcpxCodexObservabilityHome(home: string, launch: Pr
   if (!/^[A-Za-z0-9_-]{1,128}$/.test(agentId) || !/^[A-Za-z0-9_-]{1,128}$/.test(launch.compatibilityKey) || launch.kind !== "codex" || !launch.otelConfig) {
     throw new Error("Invalid Codex observability launch");
   }
-  const parent = path.join(home, "paperclip-observability");
+  const nestedParent = path.join(home, "paperclip-observability");
+  const nestedOwner = path.join(nestedParent, agentId);
+  const nestedTarget = path.join(nestedOwner, launch.compatibilityKey);
+  // Leave room below MAX_PATH for SQLite database, journal and lock filenames.
+  const compact = process.platform === "win32" && path.resolve(nestedTarget).length > 220;
+  const parent = compact ? home : nestedParent;
   // Subscription agents share the company home and compatibility key, but
   // their resource attributes differ. Never let their configs share a file.
-  const owner = path.join(parent, agentId);
-  const target = path.join(owner, launch.compatibilityKey);
+  const owner = compact ? home : nestedOwner;
+  // Codex's Windows SQLite runtime cannot open the deeply nested settings home.
+  // Hash both identities into one component without changing the shared state.
+  const target = compact
+    ? path.join(home, `otel-${createHash("sha256").update(JSON.stringify([agentId, launch.compatibilityKey])).digest("hex")}`)
+    : nestedTarget;
   await mkdir(target, { recursive: true, mode: 0o700 });
   await chmod(parent, 0o700); await chmod(owner, 0o700); await chmod(target, 0o700);
   async function atomicFile(name: string, contents: string | Buffer) {

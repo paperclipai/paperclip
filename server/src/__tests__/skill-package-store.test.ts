@@ -1016,7 +1016,7 @@ describe.skipIf(!support.supported)("external skill packages", () => {
     await fs.mkdir(output);
     await extractSkillPackageArchive(archive, output, manifest);
     expect(await verifySkillPackageDirectory(output, manifest.files)).toBe(true);
-    expect((await fs.stat(path.join(output, "shared/run.sh"))).mode & 0o111).toBe(0o111);
+    if (process.platform !== "win32") expect((await fs.stat(path.join(output, "shared/run.sh"))).mode & 0o111).toBe(0o111);
     expect(() => validateSkillPackageManifest({ ...manifest, files: [{ ...manifest.files[0], path: "../escape" }] })).toThrow();
     expect(() => validateSkillPackageManifest({ ...manifest, files: [manifest.files[0], manifest.files[0]] })).toThrow();
     expect(() => validateSkillPackageManifest({ ...manifest, totalBytes: 1 })).toThrow();

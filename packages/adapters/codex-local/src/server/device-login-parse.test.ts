@@ -98,6 +98,23 @@ describe("parseDeviceLoginPrompt", () => {
     expect(result?.code).toBe("ABCD-EFGHJ");
   });
 
+  it("parse_returns_url_and_code_from_windows_conpty_output", () => {
+    // Windows ConPTY emits cursor positioning sequences (CSI H) rather than
+    // newlines when rendering terminal UI screens.
+    const text =
+      "\x1b[2;1HWelcome to Codex [v0.144.3]\r\n" +
+      "\x1b[5;1HFollow these steps to sign in with ChatGPT using device code authorization:" +
+      "\x1b[7;1H1. Open this link in your browser and sign in to your account\r\n" +
+      `\x1b[94m\x1b[3C${EXACT_URL}\x1b[m` +
+      "\x1b[10;1H2. Enter this one-time code\x1b[90m\x1b[1C(expires in 15 minutes)\x1b[m\r\n" +
+      "\x1b[94m\x1b[3CJYWK-4RT26\x1b[90m" +
+      "\x1b[13;1HContinue only if you started this login in Codex.\r\n";
+    const result = parseDeviceLoginPrompt(text);
+    expect(result).not.toBeNull();
+    expect(result?.url).toBe(EXACT_URL);
+    expect(result?.code).toBe("JYWK-4RT26");
+  });
+
   it("parse_returns_null_when_prompt_absent", () => {
     const text = "Some unrelated log line\nNothing to see here\n";
     expect(parseDeviceLoginPrompt(text)).toBeNull();

@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
 import { existsSync, lstatSync, mkdirSync, mkdtempSync, readlinkSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -54,6 +55,14 @@ test("readPluginsUnder stops descending once a package.json is found and skips n
   assert.deepEqual(readPluginsUnder(parent), [pkg]);
 });
 
+test("readPluginsUnder skips linked directories", () => {
+  const parent = join(workDir, "linked-discovery");
+  mkdirSync(parent);
+  const external = makePackage(join(workDir, "external-plugin"));
+  symlinkSync(external, join(parent, "linked-plugin"), process.platform === "win32" ? "junction" : "dir");
+  assert.deepEqual(readPluginsUnder(parent), []);
+});
+
 test("linkSdkInto creates the plugin-sdk symlink and is idempotent", () => {
   const pkg = makePackage(join(workDir, "link-target"));
 
@@ -64,6 +73,33 @@ test("linkSdkInto creates the plugin-sdk symlink and is idempotent", () => {
 
   // Second call is a no-op because the link already points at the in-repo SDK.
   assert.equal(linkSdkInto(pkg), false);
+});
+
+test("linkSdkInto works on Windows when ordinary symlink creation is denied", { skip: process.platform !== "win32" }, () => {
+  const pkg = makePackage(join(workDir, "without symlink privilege"));
+  const source = `
+    import assert from "node:assert/strict";
+    import fs from "node:fs";
+    import { syncBuiltinESMExports } from "node:module";
+    import { join, isAbsolute } from "node:path";
+    import { fileURLToPath } from "node:url";
+    const original = fs.symlinkSync;
+    fs.symlinkSync = (target, path, type) => {
+      if (type !== "junction") throw Object.assign(new Error("Symbolic link privilege is unavailable"), { code: "EPERM" });
+      assert.ok(isAbsolute(target));
+      return original(target, path, type);
+    };
+    syncBuiltinESMExports();
+    const { linkSdkInto } = await import(${JSON.stringify(new URL("./link-plugin-dev-sdk.mjs", import.meta.url).href)});
+    const pkg = ${JSON.stringify(pkg)};
+    assert.equal(linkSdkInto(pkg), true);
+    assert.equal(fs.realpathSync(join(pkg, "node_modules", "@paperclipai", "plugin-sdk")),
+      fs.realpathSync(fileURLToPath(${JSON.stringify(new URL("../packages/plugins/sdk", import.meta.url).href)})));
+    assert.equal(linkSdkInto(pkg), false);
+  `;
+  execFileSync(process.execPath, ["--input-type=module", "-e", source], {
+    encoding: "utf8", timeout: 10_000, windowsHide: true,
+  });
 });
 
 test("linkSdkInto leaves a real (non-symlink) install in place", () => {
@@ -81,9 +117,11 @@ test("linkSdkInto replaces a symlink that points somewhere else", () => {
   const pkg = makePackage(join(workDir, "stale-link"));
   const scopeDir = join(pkg, "node_modules", "@paperclipai");
   mkdirSync(scopeDir, { recursive: true });
-  symlinkSync("../somewhere-else", join(scopeDir, "plugin-sdk"), "dir");
+  const elsewhere = makePackage(join(workDir, "elsewhere"));
+  symlinkSync(elsewhere, join(scopeDir, "plugin-sdk"), process.platform === "win32" ? "junction" : "dir");
 
   assert.equal(linkSdkInto(pkg), true);
-  assert.notEqual(readlinkSync(join(scopeDir, "plugin-sdk")), "../somewhere-else");
+  assert.notEqual(readlinkSync(join(scopeDir, "plugin-sdk")), elsewhere);
+  assert.ok(existsSync(join(elsewhere, "package.json")));
   assert.ok(existsSync(scopeDir));
 });

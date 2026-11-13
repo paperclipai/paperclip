@@ -41,6 +41,18 @@ describe("stock ACPX spawn options", () => {
     expect(onSpawned).toHaveBeenCalledTimes(2);
   });
 
+  it("observes a child that the host launcher prepares asynchronously", async () => {
+    const child = fakeChild(45);
+    const onAgentSpawn = vi.fn(async () => {});
+    const stderr: string[] = [];
+    const stock = stockAcpRuntimeOptions({ ...base, spawnAgent: async (_input: unknown) => child, onAgentSpawn, onAgentStderr: chunk => { stderr.push(chunk); } });
+    await expect(stock.spawnAgent!({ command: "agent", args: [], options: {} })).resolves.toBe(child);
+    child.stderr!.emit("data", "late\n");
+    expect(stderr).toEqual(["late\n"]);
+    await stock.processLifecycle!.onSpawned!({ ...launch, pid: 45, startedAt: "t" });
+    expect(onAgentSpawn).toHaveBeenCalledExactlyOnceWith({ pid: 45, startedAt: "t" });
+  });
+
   it("propagates an admission rejection so ACPX terminates the agent", async () => {
     const stock = stockAcpRuntimeOptions({ ...base, spawnAgent: (_input: unknown) => fakeChild(43), onAgentSpawn: async () => { throw new Error("not admitted"); } });
     stock.spawnAgent!({ command: "agent", args: [], options: {} });
