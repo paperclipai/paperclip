@@ -591,9 +591,9 @@ describe("coordinateHeartbeatSchedulerShutdown", () => {
     const result = await coordinateHeartbeatSchedulerShutdown({
       signal: "SIGTERM",
       prepareHotRestartShutdown: vi.fn(async () => ({
-        mode: "acp_drain_required" as const,
+        mode: "hot_restart" as const,
         skipDrain: false,
-        drainRunIds: ["acp-run"],
+        drainRunIds: ["live-run"],
       })),
       waitForHeartbeatSchedulerIdle,
     });
@@ -601,9 +601,9 @@ describe("coordinateHeartbeatSchedulerShutdown", () => {
     expect(waitForHeartbeatSchedulerIdle).toHaveBeenCalledOnce();
     expect(result).toEqual({
       hotRestart: {
-        mode: "acp_drain_required",
+        mode: "hot_restart",
         skipDrain: false,
-        drainRunIds: ["acp-run"],
+        drainRunIds: ["live-run"],
       },
       preparationError: null,
       waitedForSchedulerIdle: true,
