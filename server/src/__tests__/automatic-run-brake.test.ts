@@ -364,17 +364,18 @@ suite("automatic-run brake", () => {
   it("allows one new automatic run a minute while open and no automatic run is starting, across servers", async () => {
     const { companyId, agentIds: [agentId] } = await seedCompany();
     await openBrake(companyId, agentId!);
+    const work = { issueId: randomUUID(), sourceRunId: randomUUID() };
     const [left, right] = [createAutomaticRunBrake(), createAutomaticRunBrake()];
-    const decisions = await Promise.all([left, right, left, right].map(brake => brake.creationHeldUntil(db, companyId)));
+    const decisions = await Promise.all([left, right, left, right].map(brake => brake.creationHeldUntil(db, companyId, work)));
     expect(decisions.filter(held => held === null)).toHaveLength(1);
     const later = decisions.find(Boolean)!;
     expect(later.getTime()).toBeGreaterThan(Date.now() + 50_000);
     await queuedAutomatic(companyId, agentId!, 3);
     await ageBrake(companyId, AUTOMATIC_RUN_BRAKE.creationIntervalMs);
-    expect(await createAutomaticRunBrake().creationHeldUntil(db, companyId)).toBeNull();
+    expect(await createAutomaticRunBrake().creationHeldUntil(db, companyId, work)).toBeNull();
     await insertRuns(companyId, agentId!, 1, () => ({ status: "running", executionStage: "preparing", startedAt: ago(20_000) }));
     await ageBrake(companyId, AUTOMATIC_RUN_BRAKE.creationIntervalMs);
-    expect(await createAutomaticRunBrake().creationHeldUntil(db, companyId)).not.toBeNull();
+    expect(await createAutomaticRunBrake().creationHeldUntil(db, companyId, work)).not.toBeNull();
   }, 60_000);
 
   it("keeps a pass over hundreds of held runs at a bounded number of queries", async () => {
