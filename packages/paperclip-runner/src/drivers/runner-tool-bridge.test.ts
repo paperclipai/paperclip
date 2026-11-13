@@ -668,3 +668,21 @@ it("returns missing-field guidance before dispatch and accepts an explicit retry
   expect(accepted.result.isError).not.toBe(true);
   expect(handler).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ arguments: { key: "sentry-case", taskId } }));
 });
+
+describe("runner bridge repeated identical input rejections", () => {
+  it("corrects the second identical rejection and stops the third", async () => {
+    const handler = vi.fn(async () => ({ ok: true }));
+    const bridge = await startRunnerToolBridge({
+      tools: [{ name: "update_case", inputSchema: { type: "object", additionalProperties: false, required: ["idempotencyKey"], properties: { idempotencyKey: { type: "string" }, title: { type: "string" } } } }],
+      handler,
+    });
+    bridges.push(bridge);
+    const text = async (id: number) => ((await (await rpc(bridge, { id, method: "tools/call", params: { name: "update_case", arguments: {} } })).json()) as {
+      result: { content: Array<{ text: string }> };
+    }).result.content[0]!.text;
+    expect(await text(1)).not.toContain("rejected");
+    expect(await text(2)).toContain("Expected properties: required idempotencyKey; optional title.");
+    expect(await text(3)).toMatch(/^This call was not accepted: update_case was already rejected 2 times/);
+    expect(handler).not.toHaveBeenCalled();
+  });
+});

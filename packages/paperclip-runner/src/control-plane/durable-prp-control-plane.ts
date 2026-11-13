@@ -65,6 +65,8 @@ const maxFrameBytes = 1024 * 1024;
 // Secure frames hex-encode ciphertext. Reserve envelope/tag space as well.
 const maxCommandBytes = Math.floor((maxFrameBytes - 4 * 1024) / 2);
 const maxCommands = 500;
+const maxCommandsAtAttach = 32;
+const maxEventsPerAck = 64;
 class CommandJournalLimitError extends Error {
   constructor(readonly code: "command_payload_too_large" | "command_journal_full") {
     super(`Durable PRP command journal bound exceeded: ${code}.`);
@@ -82,6 +84,13 @@ const stableIdPattern = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,239}$/;
 const runnerDigestPattern = /^sha256:[0-9a-f]{64}$/;
 export function isRunnerRecoveryMaintenanceCommand(type: string): boolean {
   return ["session.snapshot", "session.goal.get", "runner.drain", "runner.suspend", "runner.shutdown", "turn.stop"].includes(type);
+}
+const orderIndependentResultTypes = new Set(["session.snapshot", "session.goal.get", "runner.drain", "semantic_tool.result"]);
+function answersAheadOfEvents(command: DurableRecoveryCoreCommand | undefined, result: unknown): boolean {
+  if (command === undefined || command.status !== "pending" || !orderIndependentResultTypes.has(command.type)) return false;
+  if (command.type === "session.snapshot" && command.payload.quiesceForWarmAttach === true) return false;
+  const status = isRecord(result) ? result.status : undefined;
+  return status === "completed" || status === "rejected";
 }
 
 /** The Runner journaled this command before its effect, then died. It sends
@@ -2033,6 +2042,9 @@ class AuthorityConnection {
   warmTransitionVersion: 1 | null = null;
   identity: DurableRecoveryIdentity | null = null;
   replayOnly = false;
+  readonly deliveredAtAttach = new Set<string>();
+  queuedInboundFrames = 0;
+  unacknowledgedEvents = 0;
   activationReceipt: DurableWarmRunTransition | null = null;
   readonly wire: PrpWireConnection;
   #closed = false;
@@ -2100,6 +2112,7 @@ export class DurablePrpControlPlane {
   #semanticCallbacksRetired = false;
   #queuedCommandResults = new Map<string, { count: number; queuedAt: number }>();
   #inboundFrameSettledAt = 0;
+  #eventCommittedAt: number | null = null;
   #semanticResultPersistenceFailed = false;
   #semanticResultFailures: Array<{
     callId: string;
@@ -2131,6 +2144,7 @@ export class DurablePrpControlPlane {
   #visibleStateCache?: { working: StoredCoreState; published: StoredCoreState; revision: number; state: StoredCoreState };
   #checkpointPersistenceFailed = false;
   #persistenceTail = Promise.resolve();
+  #waitingCheckpoint: { snapshot: DurablePrpCheckpoint; published: StoredCoreState; revision: number } | null = null;
   #sendQueues = new Map<AuthorityConnection, Promise<void>>();
   #recoveredCursor: { runId: string; sourceSeq: number } | null = null;
   #readableStateListeners = new Set<() => void>();
@@ -2297,8 +2311,19 @@ export class DurablePrpControlPlane {
     const published = this.#capturePublishedState(snapshot);
     const revision = this.#store.revision;
     this.#queuedRevision = revision;
+    const waiting = this.#waitingCheckpoint;
+    if (waiting !== null && waiting.snapshot.runId === snapshot.runId) {
+      waiting.snapshot = snapshot;
+      waiting.published = published;
+      waiting.revision = revision;
+      return this.#persistenceTail;
+    }
+    const job = { snapshot, published, revision };
+    this.#waitingCheckpoint = job;
     const persist = this.#persistCheckpoint;
     const pending = this.#persistenceTail.catch(() => undefined).then(async () => {
+      if (this.#waitingCheckpoint === job) this.#waitingCheckpoint = null;
+      const { snapshot, published, revision } = job;
       // The previous write may have failed after committing. Rebuild the delta
       // at execution time, and reset after uncertainty instead of assuming it failed.
       const checkpoint = { ...snapshot, ...checkpointChanges(snapshot.records, snapshot.runId,
@@ -2694,6 +2719,10 @@ export class DurablePrpControlPlane {
   queuedCommandResultProgressAt(commandId: string): number | null {
     const queued = this.#queuedCommandResults.get(commandId);
     return queued === undefined ? null : Math.max(queued.queuedAt, this.#inboundFrameSettledAt);
+  }
+
+  committedEventProgressAt(): number | null {
+    return this.#eventCommittedAt;
   }
 
   withdrawUndeliveredTerminalCommands(): string[] {
@@ -3127,6 +3156,7 @@ export class DurablePrpControlPlane {
             }
             return;
           }
+          if (decrypted.kind === "command_result" && this.#answerOnArrival(connection, decrypted)) return;
           frame = { decrypted };
         } else {
           undecryptedFrames += 1;
@@ -3139,12 +3169,15 @@ export class DurablePrpControlPlane {
           const queued = this.#queuedCommandResults.get(queuedResult);
           this.#queuedCommandResults.set(queuedResult, { count: (queued?.count ?? 0) + 1, queuedAt: queued?.queuedAt ?? Date.now() });
         }
+        connection.queuedInboundFrames += 1;
         processing = processing
           .then(() => "raw" in frame
             ? this.#handleJson(connection, frame.raw).finally(() => { undecryptedFrames -= 1; })
             : this.#handleDecryptedFrame(connection, frame.decrypted))
+          .then(() => connection.queuedInboundFrames === 1 ? this.#acknowledgeDeferredEvents(connection) : undefined)
           .catch(() => connection.close())
           .finally(() => {
+            connection.queuedInboundFrames -= 1;
             this.#inboundFrameSettledAt = Date.now();
             if (queuedResult === null) return;
             const queued = this.#queuedCommandResults.get(queuedResult);
@@ -3223,6 +3256,31 @@ export class DurablePrpControlPlane {
     if (!this.#admitEnvelopeVersion(connection, envelope)) return;
     if (!this.#admitAuthenticatedFrame(connection)) return;
     if (envelope.kind === "lease_renew") this.#renewLease(connection, envelope);
+  }
+
+  #answerOnArrival(
+    connection: AuthorityConnection,
+    envelope: Record<string, unknown>,
+  ): boolean {
+    const result = envelope.payload;
+    const commandId = isRecord(result) ? result.commandId : undefined;
+    if (
+      typeof commandId !== "string" ||
+      connection.replayOnly ||
+      this.#store.state.warmTransition !== undefined ||
+      !answersAheadOfEvents(this.#store.state.commands.find(command => command.commandId === commandId), result)
+    ) return false;
+    try {
+      this.#store.assertWritable();
+      if (!this.#admitEnvelopeVersion(connection, envelope) || !this.#admitAuthenticatedFrame(connection)
+        || connection.lease === null) return true;
+      this.#commandResult(connection, envelope);
+    } catch {
+      connection.close();
+      return true;
+    }
+    void this.flushCheckpoint().catch(() => connection.close());
+    return true;
   }
 
   #admitEnvelopeVersion(
@@ -3970,12 +4028,13 @@ export class DurablePrpControlPlane {
     this.#store.state.lastLeaseId = lease.leaseId;
     this.#store.state.lastLeaseExpiresAt = lease.expiresAt;
 
-    const pending = connection.replayOnly ? [] : this.#nextPendingCommand();
+    const pending = connection.replayOnly ? [] : this.#pendingCommandsAtAttach();
     const [pendingCommand] = pending;
     connection.terminalLifecycleCommandId =
       pendingCommand && this.#isTerminalLifecycleCommand(pendingCommand)
         ? pendingCommand.commandId
         : null;
+    for (const command of pending.slice(1)) connection.deliveredAtAttach.add(command.commandId);
     for (const command of pending) {
       this.#store.state.commandDeliveryCounts[command.commandId] =
         (this.#store.state.commandDeliveryCounts[command.commandId] ?? 0) + 1;
@@ -4053,6 +4112,24 @@ export class DurablePrpControlPlane {
     return command === undefined ? [] : [command];
   }
 
+  #pendingCommandsAtAttach(): DurableRecoveryCoreCommand[] {
+    const [head] = this.#nextPendingCommand();
+    if (head === undefined) return [];
+    const batch = [head];
+    if (this.#isTerminalLifecycleCommand(head) || head.type === "run.attach") return batch;
+    const commands = this.#store.state.commands;
+    let bytes = Buffer.byteLength(JSON.stringify(this.#wireCommand(head)));
+    for (let index = commands.indexOf(head) + 1; index < commands.length && batch.length < maxCommandsAtAttach; index += 1) {
+      const command = commands[index]!;
+      if (command.status !== "pending" || command.controllerSeq !== batch.at(-1)!.controllerSeq + 1
+        || this.#isTerminalLifecycleCommand(command) || command.type === "run.attach") break;
+      bytes += Buffer.byteLength(JSON.stringify(this.#wireCommand(command)));
+      if (bytes > maxCommandBytes) break;
+      batch.push(command);
+    }
+    return batch;
+  }
+
   #controlEnvelope(
     connection: AuthorityConnection,
     envelopeId: string,
@@ -4090,7 +4167,7 @@ export class DurablePrpControlPlane {
     )
       return;
     const [command] = this.#nextPendingCommand();
-    if (command === undefined) return;
+    if (command === undefined || connection.deliveredAtAttach.has(command.commandId)) return;
     if (this.#isTerminalLifecycleCommand(command)) {
       connection.terminalLifecycleCommandId = command.commandId;
     }
@@ -4318,6 +4395,24 @@ export class DurablePrpControlPlane {
     );
   }
 
+  async #acknowledgeDeferredEvents(connection: AuthorityConnection): Promise<void> {
+    if (connection.unacknowledgedEvents === 0) return;
+    connection.unacknowledgedEvents = 0;
+    const identity = this.#identity;
+    if (this.#eventOwner !== connection || this.#protocolIntegrityError !== null) return;
+    try {
+      await this.flushCheckpoint();
+    } catch (error) {
+      if (this.#eventOwner === connection && this.#identity === identity) {
+        this.#eventCommitFailed(connection, `checkpoint_flush_failed:${safeErrorCauseCode(error)}`);
+      }
+      return;
+    }
+    if (this.#eventOwner !== connection || this.#identity !== identity || this.#protocolIntegrityError !== null) return;
+    this.#sendJson(connection, this.#controlEnvelope(connection, `ack_${this.#store.state.ackedSourceSeq}`, "ack",
+      { ackedSourceSeq: this.#store.state.ackedSourceSeq }));
+  }
+
   #eventCommitFailed(connection: AuthorityConnection, cause: string, sourceSeq?: number, now = Date.now()): void {
     const acked = this.#store.state.ackedSourceSeq;
     const runId = this.#identity.runId;
@@ -4534,7 +4629,8 @@ export class DurablePrpControlPlane {
     };
     const isCurrentOwner = () => this.#eventOwner === connection &&
       this.#identity === identity && this.#protocolIntegrityError === null;
-    if (priority === 0 || isSemanticInput || eventType.startsWith("turn.") || eventType.startsWith("run.")) {
+    const critical = priority === 0 || isSemanticInput || eventType.startsWith("turn.") || eventType.startsWith("run.");
+    if (critical) {
       // Critical lifecycle suffixes and tool admission must finish in this
       // turn before readers react or a replacement owner adopts their cursor.
       const candidate = buildCandidate(this.#store.state);
@@ -4563,6 +4659,12 @@ export class DurablePrpControlPlane {
       }
     }
     if (!isCurrentOwner()) return;
+    this.#eventCommittedAt = Date.now();
+    if (!critical && connection.queuedInboundFrames > 1 && connection.unacknowledgedEvents + 1 < maxEventsPerAck) {
+      connection.unacknowledgedEvents += 1;
+      return;
+    }
+    connection.unacknowledgedEvents = 0;
 
     const liveCall = !this.#retainsSourceInputs() && isSemanticInput && this.#onSemanticToolInput && semantic !== undefined
       && typeof semantic.callId === "string" && typeof semantic.operationId === "string"
