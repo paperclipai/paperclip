@@ -909,7 +909,7 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
 
   /** System continuations that only make sense for an open task. */
   const SYSTEM_CONTINUATION_WAKE_REASONS = new Set(["issue_recovery_action_restored", "issue_continuation_needed",
-    "issue_assignment_recovery", ISSUE_BLOCKER_STALLED_WAKE_REASON]);
+    "issue_assignment_recovery", ISSUE_BLOCKER_STALLED_WAKE_REASON, "issue_children_completed"]);
 
   /**
    * Cancels a system continuation whose task closed while it was queued,
@@ -985,9 +985,11 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
     // A system continuation queued while its task was open has nothing left to
     // do once another run finished or cancelled the task before this one
     // started. A person's message on a done task is not one of these reasons.
-    const systemContinuationReason = readNonEmptyString(parseObject(run.contextSnapshot).wakeReason);
-    const continuedIssueId = readNonEmptyString(parseObject(run.contextSnapshot).issueId);
-    if (systemContinuationReason && SYSTEM_CONTINUATION_WAKE_REASONS.has(systemContinuationReason) && continuedIssueId) {
+    const runContext = parseObject(run.contextSnapshot);
+    const systemContinuationReason = readNonEmptyString(runContext.wakeReason);
+    const continuedIssueId = readNonEmptyString(runContext.issueId);
+    if (systemContinuationReason && SYSTEM_CONTINUATION_WAKE_REASONS.has(systemContinuationReason) && continuedIssueId
+      && runContext.onboardingCompletion !== true) {
       const [target] = await db.select({ status: issues.status }).from(issues)
         .where(and(eq(issues.companyId, run.companyId), eq(issues.id, continuedIssueId)));
       if (target && ["done", "cancelled"].includes(target.status)) {

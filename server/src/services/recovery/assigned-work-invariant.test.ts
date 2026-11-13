@@ -61,6 +61,19 @@ describe("assigned-work invariant", () => {
         .toEqual({ kind: "violation", reason: "native_run_stalled", runId: "n", stale: false });
     });
 
+    it("calls a recovery block with a live run for the same task inconsistent, and keeps someone else's block", () => {
+      const queued = [{ id: "q", status: "queued", scheduledRetryAt: null, owner: "alive" as const }];
+      expect(evaluateAssignedWork(facts({ issue: { status: "blocked", blockedTransitionAt: ago(60_000) }, blockedBy: "system", activeRuns: queued }), now))
+        .toEqual({ kind: "violation", reason: "blocked_with_live_run", runId: "q", stale: false });
+      expect(evaluateAssignedWork(facts({ issue: { status: "blocked" }, blockedBy: "unknown", activeRuns: queued }), now))
+        .toMatchObject({ kind: "violation", reason: "blocked_with_live_run" });
+      for (const other of [{ blockedBy: "user" as const }, { openBlockers: 1 }, { pendingApprovals: 1 },
+        { blockedBy: "system" as const, issue: { status: "blocked", unblockOwner: { userId: "u" } } }]) {
+        expect(evaluateAssignedWork(facts({ issue: { status: "blocked" }, activeRuns: queued, ...other }), now))
+          .toEqual({ kind: "ok", clause: "live_run", runId: "q" });
+      }
+    });
+
     it("does not count a running run whose owner is proven gone", () => {
       expect(evaluateAssignedWork(facts({ activeRuns: [{ id: "r", status: "running", scheduledRetryAt: null, owner: "gone" }] }), now))
         .toEqual({ kind: "violation", reason: "run_owner_gone", runId: "r", stale: false });

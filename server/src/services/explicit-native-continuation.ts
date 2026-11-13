@@ -39,6 +39,7 @@ import { firstTurnDeliveredCommentIds, historyReadDeliveredCommentIds } from "./
 import { canResumePreservedResultFinalization } from "./preserved-result-finalization.js";
 import { isServerReplacementInterruption } from "./server-replacement-interruption.js";
 import { normalizeAgentNameKey } from "./agent-name-key.js";
+import { liftInterruptionBlock } from "./interruption-block-release.js";
 
 type Run = Pick<typeof heartbeatRuns.$inferSelect,
   "id" | "companyId" | "agentId" | "status" | "startedAt" | "finishedAt" | "createdAt" |
@@ -755,6 +756,7 @@ export async function admitExplicitNativeContinuation(input: {
       : sql`jsonb_set(${payload}, '{taskRetry,continuation}', ${JSON.stringify(authorization)}::jsonb)`,
     }).where(and(eq(agentWakeupRequests.companyId, companyId), eq(agentWakeupRequests.id, input.taskRetryRequestId)));
   }
+  await liftInterruptionBlock(db, task, actions, sources, input.successorRunId);
   return continuation;
 }
 
