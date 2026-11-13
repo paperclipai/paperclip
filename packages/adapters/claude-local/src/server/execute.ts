@@ -72,8 +72,12 @@ import {
   claudeModelReceipts,
   parseClaudeStreamJson, createClaudeStreamParser,
   describeClaudeFailure,
+  describeClaudeEdgeFailure,
+  detectClaudeEdgeFailure,
   detectClaudeLoginRequired,
+  extractClaudeRetryAfter,
   extractClaudeRetryNotBefore,
+  CLAUDE_EDGE_REJECTED_ERROR_CODE,
   isClaudeMaxTurnsResult,
   isClaudeProviderQuotaError,
   isClaudeRefusalResult,
@@ -1068,8 +1072,12 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       }
 
       if (!parsed) {
-        const fallbackErrorMessage = parseFallbackErrorMessage(proc);
+        const edgeFailure = !proc.errorCode && !loginMeta.requiresLogin && (proc.exitCode ?? 0) !== 0
+          ? detectClaudeEdgeFailure({ parsed: null, stdout: proc.stdout, stderr: proc.stderr })
+          : null;
+        const fallbackErrorMessage = edgeFailure ? describeClaudeEdgeFailure(edgeFailure) : parseFallbackErrorMessage(proc);
         const providerQuota =
+          !edgeFailure &&
           !loginMeta.requiresLogin &&
           (proc.exitCode ?? 0) !== 0 &&
           isClaudeProviderQuotaError({
@@ -1079,6 +1087,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
             errorMessage: fallbackErrorMessage,
           });
         const transientUpstream =
+          !edgeFailure &&
           !loginMeta.requiresLogin &&
           !providerQuota &&
           (proc.exitCode ?? 0) !== 0 &&
@@ -1088,7 +1097,9 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
             stderr: proc.stderr,
             errorMessage: fallbackErrorMessage,
           });
-        const transientRetryNotBefore = providerQuota || transientUpstream
+        const transientRetryNotBefore = edgeFailure
+          ? extractClaudeRetryAfter({ parsed: null, stdout: proc.stdout, stderr: proc.stderr })
+          : providerQuota || transientUpstream
           ? extractClaudeRetryNotBefore({
               parsed: null,
               stdout: proc.stdout,
@@ -1104,6 +1115,8 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
           ? proc.errorCode
           : loginMeta.requiresLogin
           ? "claude_auth_required"
+          : edgeFailure
+          ? CLAUDE_EDGE_REJECTED_ERROR_CODE
           : isClaudeModelNotFoundError({
             parsed: null,
             stdout: proc.stdout,
@@ -1116,7 +1129,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
           : transientUpstream
           ? "claude_transient_upstream"
           : null;
-        const errorFamily = providerQuota ? "provider_quota" : transientUpstream ? "transient_upstream" : null;
+        const errorFamily = providerQuota ? "provider_quota" : transientUpstream || edgeFailure ? "transient_upstream" : null;
         return {
           exitCode: proc.exitCode,
           signal: proc.signal,
@@ -1136,8 +1149,9 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
           retryNotBefore: transientRetryNotBefore ? transientRetryNotBefore.toISOString() : null,
           errorMeta,
           resultJson: {
-            stdout: proc.stdout,
-            stderr: proc.stderr,
+            // An edge rejection keeps only sanitised evidence: never the raw
+            // HTML body, cookies or other response content.
+            ...(edgeFailure ? { edgeFailure } : { stdout: proc.stdout, stderr: proc.stderr }),
             ...(errorFamily ? { errorFamily } : {}),
             ...(transientRetryNotBefore
               ? { retryNotBefore: transientRetryNotBefore.toISOString() }
@@ -1211,11 +1225,18 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
           ...(workspaceRepoRef ? { repoRef: workspaceRepoRef } : {}),
         } as Record<string, unknown>)
         : null;
-      const errorMessage = failed
+      const edgeFailure = failed && !proc.errorCode && !loginMeta.requiresLogin
+        && !clearSessionForMaxTurns && !poisonedPreviousMessageId
+        ? detectClaudeEdgeFailure({ parsed, stdout: proc.stdout, stderr: proc.stderr })
+        : null;
+      const errorMessage = edgeFailure
+        ? describeClaudeEdgeFailure(edgeFailure)
+        : failed
         ? describeClaudeFailure(parsed) ?? `Claude exited with code ${proc.exitCode ?? -1}`
         : null;
       const providerQuota =
         failed &&
+        !edgeFailure &&
         !loginMeta.requiresLogin &&
         !clearSessionForMaxTurns &&
         !poisonedPreviousMessageId &&
@@ -1227,6 +1248,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         });
       const transientUpstream =
         failed &&
+        !edgeFailure &&
         !loginMeta.requiresLogin &&
         !clearSessionForMaxTurns &&
         !poisonedPreviousMessageId &&
@@ -1237,7 +1259,9 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
           stderr: proc.stderr,
           errorMessage,
         });
-      const transientRetryNotBefore = providerQuota || transientUpstream
+      const transientRetryNotBefore = edgeFailure
+        ? extractClaudeRetryAfter({ parsed, stdout: proc.stdout, stderr: proc.stderr })
+        : providerQuota || transientUpstream
         ? extractClaudeRetryNotBefore({
             parsed,
             stdout: proc.stdout,
@@ -1252,6 +1276,8 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         ? proc.errorCode
         : loginMeta.requiresLogin
         ? "claude_auth_required"
+        : edgeFailure
+        ? CLAUDE_EDGE_REJECTED_ERROR_CODE
         // Structured CLI signals outrank the model-not-found detector, which
         // scans the run's full stdout for a literal "model not found" phrase.
         // An agent's own tool output (grepping runtime source, tailing logs,
@@ -1279,13 +1305,16 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         : null;
       const errorFamily = providerQuota
         ? "provider_quota"
-        : transientUpstream
+        : transientUpstream || edgeFailure
         ? "transient_upstream"
         : claudeRefusal
         ? "model_refusal"
         : null;
       const mergedResultJson: Record<string, unknown> = {
         ...parsed,
+        // Replace the provider body with sanitised evidence. A raw edge page
+        // (HTML, cookies, challenge scripts) is never persisted.
+        ...(edgeFailure ? { result: errorMessage, errors: [], edgeFailure } : {}),
         ...(sshSessionState && runtimeSessionId && !sshSessionState.canResume
           ? { sessionReset: { code: "claude_ssh_session_state_unavailable" } } : {}),
         ...(failed && clearSessionForMaxTurns ? { stopReason: "max_turns_exhausted" } : {}),
@@ -1320,7 +1349,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         billingType,
         costUsd: parsedStream.costUsd,
         resultJson: mergedResultJson,
-        summary: parsedStream.summary || asString(parsed.result, ""),
+        summary: edgeFailure ? errorMessage ?? "" : parsedStream.summary || asString(parsed.result, ""),
         clearSession:
           clearSessionForMaxTurns ||
           // Clear-on-error: a poisoned previous_message_id is a deterministic

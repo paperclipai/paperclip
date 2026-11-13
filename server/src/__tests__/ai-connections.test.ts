@@ -17,7 +17,7 @@ import { mkdtemp, realpath, rm, access, readFile, writeFile, stat } from "node:f
 import os from "node:os";
 import path from "node:path";
 import { and, eq, sql } from "drizzle-orm";
-import { createDb, type Db, companies, agents, agentTaskSessions, heartbeatRuns, companyMemberships, connectionGrants, toolApplications, connectionGrantDelegations, connectionGrantMembers, toolConnections, toolConnectionInstalls, aiConnectionDefaults, aiProviderDefaults, adapterAuthSessions, environments, plugins, issues, issueThreadInteractions, issueRecoveryActions, connectionIntentDeliveries, agentWakeupRequests, companySecrets, companySecretVersions, secretAccessEvents, userSecretDefinitions, principalPermissionGrants } from "@paperclipai/db";
+import { createDb, type Db, activityLog, companies, agents, agentTaskSessions, heartbeatRuns, companyMemberships, connectionGrants, toolApplications, connectionGrantDelegations, connectionGrantMembers, toolConnections, toolConnectionInstalls, aiConnectionDefaults, aiProviderDefaults, adapterAuthSessions, environments, plugins, issues, issueThreadInteractions, issueRecoveryActions, connectionIntentDeliveries, agentWakeupRequests, companySecrets, companySecretVersions, secretAccessEvents, userSecretDefinitions, principalPermissionGrants } from "@paperclipai/db";
 import { startEmbeddedPostgresTestDatabase } from "@paperclipai/db/test-embedded-postgres";
 import { fetchCompanyQuotaWindows } from "../services/quota-windows.js";
 import { quotaCredentialRecoveryPath, quotaCredentialRecovery, quotaCredentialHash } from "../services/quota-credential-recovery.js";
@@ -790,10 +790,14 @@ describe("managed AI connections", () => {
       // existing sign-in flow, rather than claiming the failed save succeeded.
       const receiver = aiConnectionService(db);
       const generation = createHash("sha256").update(original).digest("hex").slice(0, 16);
-      await receiver.markAuthenticationFailed({ companyId, runStartedAt: new Date(), attribution: {
+      const failedUse = () => receiver.markAuthenticationFailed({ companyId, runStartedAt: new Date(), attribution: {
         provider: "openai", method: "subscription", connectionId: row.connection.id, grantId: row.grant.id,
         mode: "responsible_user", responsibleUserId: owner, identity: `${row.grant.id}:${owner}:${generation}`,
       } });
+      // One failed use is not enough evidence to latch a connection.
+      expect(await failedUse()).toBe("below_threshold");
+      expect((await db.select().from(connectionGrants).where(eq(connectionGrants.id, row.grant.id)))[0].status).toBe("active");
+      expect(await failedUse()).toBe("latched");
       expect((await db.select().from(connectionGrants).where(eq(connectionGrants.id, row.grant.id)))[0].status).toBe("needs_reauthorization");
       const signedIn = JSON.stringify({ tokens: { access_token: "signed-in", refresh_token: "new-login" } });
       await receiver.save(companyId, owner, { connectionId: row.connection.id, provider: "openai", method: "subscription",
@@ -939,10 +943,12 @@ describe("managed AI connections", () => {
     await expect(access(quotaCredentialRecoveryPath(companyId, row.grant.id))).rejects.toMatchObject({ code: "ENOENT" });
     const receiver = aiConnectionService(db);
     const generation = createHash("sha256").update(original).digest("hex").slice(0, 16);
-    await receiver.markAuthenticationFailed({ companyId, runStartedAt: new Date(), attribution: {
+    const failedUse = () => receiver.markAuthenticationFailed({ companyId, runStartedAt: new Date(), attribution: {
       provider: "openai", method: "subscription", connectionId: row.connection.id, grantId: row.grant.id,
       mode: "responsible_user", responsibleUserId: owner, identity: `${row.grant.id}:${owner}:${generation}`,
     } });
+    expect(await failedUse()).toBe("below_threshold");
+    expect(await failedUse()).toBe("latched");
     expect((await db.select().from(connectionGrants).where(eq(connectionGrants.id, row.grant.id)))[0].status).toBe("needs_reauthorization");
     const signedIn = JSON.stringify({ tokens: { access_token: "process-sign-in", refresh_token: "process-new-login" } });
     await receiver.save(companyId, owner, { connectionId: row.connection.id, provider: "openai", method: "subscription", ownership: "personal", name: owner, loginSessionId: "fixture", agentIds: [], allAgents: true }, signedIn);
@@ -1717,6 +1723,10 @@ console.log(JSON.stringify({ type: "result", subtype: "success", result: "hello"
     await db.insert(issues).values({ id: issueId, companyId, title: "Fix provider login", status: "in_progress", assigneeAgentId: id });
     const account = await service.save(companyId, userId, { provider, method: "api_key", ownership: "personal", name: "Recovery account", apiKey: "fixture", agentIds: [id], allAgents: false }, "fixture-recovery-key");
     const runtime = await prepareManagedAiRuntime(db, { companyId, agentId: id, responsibleUserId: userId, adapterType, binding: selectedBinding, config: {} });
+    // Another task's run already failed with the same credential generation,
+    // so this second genuine failure is enough to latch the connection.
+    await db.insert(heartbeatRuns).values({ companyId, agentId: id, status: "failed", errorCode: "acpx_auth_required", responsibleUserId: userId,
+      contextSnapshot: { issueId: randomUUID(), aiConnection: { ...runtime.attribution, identity: runtime.identity } } });
     await db.insert(heartbeatRuns).values({ id: runId, companyId, agentId: id, status: "failed", errorCode: "acpx_auth_required", responsibleUserId: userId,
       contextSnapshot: { issueId, aiConnection: { ...runtime.attribution, identity: runtime.identity } } });
     await runtime.cleanup();
@@ -1753,6 +1763,113 @@ console.log(JSON.stringify({ type: "result", subtype: "success", result: "hello"
     // Reprocessing an old failure cannot invalidate the newly saved credential.
     await intents.requestForRunAuthFailure(runId);
     expect((await service.select({ companyId, agentId: id, userId, adapterType, binding: selectedBinding })).grant.status).toBe("active");
+  });
+
+  describe("repeated, generation-scoped authentication failures", () => {
+    async function setup(label: string, agentCount = 1) {
+      const userId = `auth-threshold-${label}-${randomUUID()}`;
+      const binding = { provider: "anthropic", method: "api_key", mode: "responsible_user" } as const;
+      await db.insert(companyMemberships).values({ companyId, principalId: userId, principalType: "user", status: "active", membershipRole: "member" });
+      const agentIds = Array.from({ length: agentCount }, () => randomUUID());
+      for (const id of agentIds) await db.insert(agents).values({ id, companyId, name: `Threshold ${label}`, adapterType: "claude_local", runtimeConfig: { aiConnection: binding } });
+      const account = await service.save(companyId, userId, { provider: "anthropic", method: "api_key", ownership: "personal", name: `Threshold ${label}`, apiKey: "fixture", agentIds, allAgents: false }, `fixture-threshold-${label}`);
+      const attributionFor = async (agentId: string) => {
+        const runtime = await prepareManagedAiRuntime(db, { companyId, agentId, responsibleUserId: userId, adapterType: "claude_local", binding, config: {} });
+        try { return { ...runtime.attribution, identity: runtime.identity }; } finally { await runtime.cleanup(); }
+      };
+      const run = async (agentId: string, status: "failed" | "succeeded", errorCode: string | null, aiConnection: Record<string, unknown>) => {
+        const issueId = randomUUID();
+        await db.insert(issues).values({ id: issueId, companyId, title: `Threshold ${label}`, status: "in_progress", assigneeAgentId: agentId });
+        const [row] = await db.insert(heartbeatRuns).values({ companyId, agentId, status, errorCode, responsibleUserId: userId,
+          startedAt: new Date(), finishedAt: new Date(), contextSnapshot: { issueId, aiConnection } }).returning();
+        return { runId: row!.id, issueId };
+      };
+      const grantStatus = async () => (await db.select().from(connectionGrants).where(eq(connectionGrants.id, account.grantId)))[0]!.status;
+      const latches = async () => (await db.select().from(activityLog).where(and(eq(activityLog.companyId, companyId),
+        eq(activityLog.action, "ai_connection.authentication_failed"), eq(activityLog.entityId, account.connectionId)))).length;
+      const cards = async (issueId: string) => db.select().from(issueThreadInteractions).where(and(
+        eq(issueThreadInteractions.issueId, issueId), eq(issueThreadInteractions.kind, "connection_intent")));
+      return { userId, agentIds, account, attributionFor, run, grantStatus, latches, cards };
+    }
+
+    it("does not latch the connection or raise a card for one isolated genuine failure", async () => {
+      const t = await setup("isolated");
+      const failed = await t.run(t.agentIds[0]!, "failed", "claude_auth_required", await t.attributionFor(t.agentIds[0]!));
+      expect(await connectionIntentService(db).requestForRunAuthFailure(failed.runId)).toBeNull();
+      expect(await t.grantStatus()).toBe("active");
+      expect(await t.latches()).toBe(0);
+      expect(await t.cards(failed.issueId)).toEqual([]);
+      const [observed] = await db.select().from(activityLog).where(and(eq(activityLog.runId, failed.runId),
+        eq(activityLog.action, "ai_connection.authentication_failure_observed")));
+      expect(observed?.details).toMatchObject({ observedFailures: 1, threshold: 2, source: "run" });
+    });
+
+    it("latches after repeated genuine failures of the same generation from distinct runs", async () => {
+      const t = await setup("repeated");
+      const attribution = await t.attributionFor(t.agentIds[0]!);
+      const first = await t.run(t.agentIds[0]!, "failed", "claude_auth_required", attribution);
+      expect(await connectionIntentService(db).requestForRunAuthFailure(first.runId)).toBeNull();
+      const second = await t.run(t.agentIds[0]!, "failed", "claude_auth_required", attribution);
+      const card = await connectionIntentService(db).requestForRunAuthFailure(second.runId);
+      expect(card).toMatchObject({ state: "needs_user_action", service: "anthropic" });
+      expect(await t.grantStatus()).toBe("needs_reauthorization");
+      expect(await t.latches()).toBe(1);
+    });
+
+    it("resets the count after a successful run", async () => {
+      const t = await setup("reset");
+      const attribution = await t.attributionFor(t.agentIds[0]!);
+      const first = await t.run(t.agentIds[0]!, "failed", "claude_auth_required", attribution);
+      expect(await connectionIntentService(db).requestForRunAuthFailure(first.runId)).toBeNull();
+      await new Promise(resolve => setTimeout(resolve, 5));
+      await t.run(t.agentIds[0]!, "succeeded", null, attribution);
+      await new Promise(resolve => setTimeout(resolve, 5));
+      const after = await t.run(t.agentIds[0]!, "failed", "claude_auth_required", attribution);
+      expect(await connectionIntentService(db).requestForRunAuthFailure(after.runId)).toBeNull();
+      expect(await t.grantStatus()).toBe("active");
+    });
+
+    it("never lets failures of an older credential generation invalidate a reconnected one", async () => {
+      const t = await setup("stale");
+      const old = await t.attributionFor(t.agentIds[0]!);
+      const first = await t.run(t.agentIds[0]!, "failed", "claude_auth_required", old);
+      expect(await connectionIntentService(db).requestForRunAuthFailure(first.runId)).toBeNull();
+      // The user reconnects with a new credential: a new generation.
+      await service.save(companyId, t.userId, { provider: "anthropic", method: "api_key", ownership: "personal", name: "Threshold stale",
+        connectionId: t.account.connectionId, apiKey: "fixture", agentIds: t.agentIds, allAgents: false }, "fixture-threshold-stale-reconnected");
+      const late = await t.run(t.agentIds[0]!, "failed", "claude_auth_required", old);
+      expect(await connectionIntentService(db).requestForRunAuthFailure(late.runId)).toBeNull();
+      expect(await aiConnectionService(db).markAuthenticationFailed({ companyId, runId: late.runId, runStartedAt: new Date(Date.now() + 60_000),
+        attribution: old as never })).toBe("stale_generation");
+      expect(await t.grantStatus()).toBe("active");
+      expect(await t.latches()).toBe(0);
+      // The new generation starts its own count.
+      const fresh = await t.run(t.agentIds[0]!, "failed", "claude_auth_required", await t.attributionFor(t.agentIds[0]!));
+      expect(await connectionIntentService(db).requestForRunAuthFailure(fresh.runId)).toBeNull();
+      expect(await t.grantStatus()).toBe("active");
+    });
+
+    it("does not count an edge rejection as a credential failure", async () => {
+      const t = await setup("edge");
+      const attribution = await t.attributionFor(t.agentIds[0]!);
+      const edge = await t.run(t.agentIds[0]!, "failed", "claude_edge_rejected", attribution);
+      expect(await connectionIntentService(db).requestForRunAuthFailure(edge.runId)).toBeNull();
+      const genuine = await t.run(t.agentIds[0]!, "failed", "claude_auth_required", attribution);
+      expect(await connectionIntentService(db).requestForRunAuthFailure(genuine.runId)).toBeNull();
+      expect(await t.grantStatus()).toBe("active");
+      expect(await t.cards(edge.issueId)).toEqual([]);
+    });
+
+    it("latches a shared connection exactly once when agents fail concurrently", async () => {
+      const t = await setup("concurrent", 3);
+      const attribution = await t.attributionFor(t.agentIds[0]!);
+      const runs = [];
+      for (const agentId of t.agentIds) runs.push(await t.run(agentId, "failed", "claude_auth_required", attribution));
+      const results = await Promise.all(runs.map(run => connectionIntentService(db).requestForRunAuthFailure(run.runId)));
+      expect(await t.grantStatus()).toBe("needs_reauthorization");
+      expect(await t.latches()).toBe(1);
+      expect(results.filter(result => result?.state === "needs_user_action").length).toBeGreaterThanOrEqual(1);
+    });
   });
 
   it("offers a compatible connection for legacy auth failures without silently adopting it", async () => {

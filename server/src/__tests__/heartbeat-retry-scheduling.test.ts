@@ -2284,6 +2284,48 @@ describeEmbeddedPostgres("heartbeat bounded retry scheduling", () => {
     );
   });
 
+  it("retries a Claude edge rejection on the bounded transient lane with jittered backoff and Retry-After", async () => {
+    const now = new Date("2026-07-24T13:00:00.000Z");
+    // No provider hint: the first attempt uses the jittered exponential backoff.
+    const plain = { runId: randomUUID(), companyId: randomUUID(), agentId: randomUUID() };
+    await seedRetryFixture({ ...plain, now, errorCode: "claude_edge_rejected", errorFamily: "transient_upstream", adapterType: "claude_local" });
+    const low = await heartbeat.scheduleBoundedRetry(plain.runId, { now, random: () => 0 });
+    expect(low).toMatchObject({ outcome: "scheduled", attempt: 1, maxAttempts: 2 });
+    if (low.outcome !== "scheduled") return;
+    expect(low.dueAt.getTime() - now.getTime()).toBe(24_000); // 30 s base, -20 % jitter
+    await cleanupRetryFixture();
+
+    // A provider Retry-After later than the backoff is honoured.
+    const hinted = { runId: randomUUID(), companyId: randomUUID(), agentId: randomUUID() };
+    const retryAfter = new Date(now.getTime() + 120_000);
+    await seedRetryFixture({ ...hinted, now, errorCode: "claude_edge_rejected", errorFamily: "transient_upstream",
+      adapterType: "claude_local", retryNotBefore: retryAfter.toISOString() });
+    const later = await heartbeat.scheduleBoundedRetry(hinted.runId, { now, random: () => 1 });
+    expect(later.outcome).toBe("scheduled");
+    if (later.outcome !== "scheduled") return;
+    expect(later.dueAt.getTime()).toBe(retryAfter.getTime());
+    await cleanupRetryFixture();
+
+    // The lane is bounded.
+    const spent = { runId: randomUUID(), companyId: randomUUID(), agentId: randomUUID() };
+    await seedRetryFixture({ ...spent, now, errorCode: "claude_edge_rejected", errorFamily: "transient_upstream",
+      adapterType: "claude_local", scheduledRetryAttempt: 2 });
+    expect(await heartbeat.scheduleBoundedRetry(spent.runId, { now, random: () => 0.5 })).toMatchObject({ outcome: "retry_exhausted" });
+    await cleanupRetryFixture();
+  });
+
+  it("does not automatically replay a Claude edge rejection after provider work started", async () => {
+    const now = new Date("2026-07-24T13:00:00.000Z");
+    const ids = { runId: randomUUID(), companyId: randomUUID(), agentId: randomUUID() };
+    await seedRetryFixture({ ...ids, now, errorCode: "claude_edge_rejected", adapterType: "claude_local",
+      resultJson: { errorFamily: "transient_upstream", executionRecovery: { kind: "provider", providerWorkStarted: true } } });
+
+    const scheduled = await heartbeat.scheduleBoundedRetry(ids.runId, { now, random: () => 0.5 });
+
+    expect(scheduled).toMatchObject({ outcome: "not_scheduled", errorCode: "legacy_execution_requires_reconciliation" });
+    await cleanupRetryFixture();
+  });
+
   describe("run-dispatch module transactions", () => {
     it("promotes a due scheduled retry exactly once under concurrent promotion attempts", async () => {
       const companyId = randomUUID();

@@ -753,6 +753,30 @@ initial verification. For a routed agent, repair uses the account already pinned
 to that lifecycle operation; it never allocates a task route, advances the pool
 cursor, or replaces the agent's pool. Legacy direct-account setup cards remain
 readable without an operation ID.
+
+#### Provider authentication failures and edge rejections
+
+A network edge can reject a Claude request before the provider checks the
+credential. Examples are a CDN challenge page or a 403 response without an
+authentication body. The Claude CLI can show this as "Failed to authenticate".
+Paperclip does not treat this as a credential failure. The run fails with
+`claude_edge_rejected` in the `transient_upstream` family, and the bounded
+transient retry continues it. That retry uses exponential backoff with jitter,
+honours a provider `Retry-After` hint, and does not replay a run whose provider
+work already started. The run keeps only sanitised evidence: the HTTP status,
+the content type, a challenge flag, the edge request id and a short excerpt
+without markup. The CLI lane, the ACP lane and the hello probes use the same
+classifier. A 401 response, or a structured `authentication_error` or invalid,
+expired or revoked credential message, stays a credential failure.
+
+One credential failure does not mark a shared AI connection for sign-in.
+Paperclip marks the connection `needs_reauthorization` only after two distinct
+runs, or a run and a probe, fail with the same credential generation and no
+successful run in between. A successful run resets the count. A failure of an
+older generation never marks a refreshed or reconnected connection, and it
+does not create a reconnect card. Below the threshold, Paperclip records
+`ai_connection.authentication_failure_observed` and the run keeps its ordinary
+failure recovery.
 AI account selection failures use the selector's owned configuration evidence:
 missing defaults, unavailable or incompatible connections, missing responsible
 users, and credential sharing refusals park automatic host verification until
