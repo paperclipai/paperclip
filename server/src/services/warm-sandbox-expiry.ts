@@ -15,8 +15,7 @@ import { prepareSupersededWarmSandboxStop } from "./sandbox-stop-and-retain.js";
  * it running, and billing, indefinitely.
  *
  * The warm window is the run's resolved runner idle timeout
- * (`resolveWarmRunnerIdleTimeoutMsForRun`, or the plugin task's saved
- * lifecycle policy). Acquisition saves it on the lease; the window starts when
+ * (`resolveWarmRunnerIdleTimeoutMsForRun`). Acquisition saves it on the lease; the window starts when
  * the run releases the lease (`lastUsedAt`). A lease saved before the window was
  * recorded uses the longest window a run can configure, so it is never stopped
  * early.
@@ -52,7 +51,6 @@ function positiveWindowSql(value: ReturnType<typeof sql>) {
 export function warmWindowEndsAtSql() {
   const window = sql`least(coalesce(
     ${positiveWindowSql(sql`${environmentLeases.metadata}->${WARM_SANDBOX_IDLE_TIMEOUT_KEY}`)},
-    ${positiveWindowSql(sql`${environmentLeases.metadata}#>'{runnerTaskLifecyclePolicy,idleTimeoutMs}'`)},
     ${PAPERCLIP_RUNNER_IDLE_TIMEOUT_MAX_MS}), ${PAPERCLIP_RUNNER_IDLE_TIMEOUT_MAX_MS})`;
   return sql`(extract(epoch from ${environmentLeases.lastUsedAt}) * 1000 + ${window})`;
 }
@@ -63,11 +61,15 @@ export function warmWindowEndsAtSql() {
  * run on the task that is starting now (it may be resuming this sandbox before
  * its lease is written), or an operation already in progress on the lease.
  * Superseded and replaced leases belong to the retained-orphan settle.
+ * Plugin Runner task leases (`driver: "plugin"`) are excluded: their cleanup
+ * releases through the plugin rather than the verified stop-only contract, so
+ * it cannot promise to keep the task's files.
  */
 export function warmSandboxExpiryCandidateCondition() {
   return and(
     eq(environmentLeases.status, "retained"),
     eq(environmentLeases.leasePolicy, "reuse_by_environment"),
+    sql`coalesce(${environmentLeases.metadata}->>'driver', '') <> 'plugin'`,
     sql`${environmentLeases.heartbeatRunId} is not null`,
     sql`${environmentLeases.provider} is not null and ${environmentLeases.provider} <> 'local'`,
     sql`${environmentLeases.providerLeaseId} is not null`,

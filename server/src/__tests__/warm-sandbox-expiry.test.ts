@@ -147,6 +147,19 @@ suite("warm sandbox expiry", () => {
     expect((await row(leaseId)).status).toBe("retained");
   });
 
+  it("leaves a plugin Runner task lease to its own cleanup", async () => {
+    // Its release path does not use the stop-only contract, so expiry must not
+    // hand it over: the plugin could free the allocation and the task's files.
+    const leaseId = await warmRetained({ releasedAgoMs: 6 * MINUTE });
+    await db.update(environmentLeases).set({ metadata: { driver: "plugin", pluginId: "fake-plugin",
+      runnerTaskLease: true, [WARM_SANDBOX_IDLE_TIMEOUT_KEY]: 5 * MINUTE } }).where(eq(environmentLeases.id, leaseId));
+    const before = await row(leaseId);
+
+    expect(await stopWarmSandboxesPastWindow(db)).toEqual({ stopping: 0 });
+    expect(await row(leaseId)).toEqual(before);
+    expect(await nextWarmSandboxStopAt(db)).toBeNull();
+  });
+
   it("reconciles a warm sandbox left running across a restart", async () => {
     // Retained before the warm window was recorded, 35 hours ago: past the
     // longest window any run can configure.
