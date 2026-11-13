@@ -216,6 +216,38 @@ repository and nowhere else. Other runs build and check, and publish nothing.
 - **First publication.** GitHub creates the package private. A maintainer
   must make it public once.
 
+## Build cache
+
+The build legs read a registry build cache,
+`ghcr.io/paperclipai/paperclip-runner-buildcache:<arch>`. It is a package of
+its own and holds no image. It covers the stages that do not take the commit:
+the Rust toolchain and the compiled daemon. The last stage takes the source
+revision as a build argument, so every build runs it: the frozen install, the
+Runner's build and the provider pack.
+
+- **Effect.** BuildKit reuses a cached step only when the step and the
+  content of every file it reads are the same. The cache changes how long a
+  build takes, not what it builds, and the identity does not cover it.
+- **Writer.** Only the `cache` job of the workflow writes it: on a `master`
+  push in this repository, after the publish job, for inputs that had no
+  image. That job cannot sign, builds no further than the daemon and never
+  runs the install. Every other run reads the cache without a credential
+  and cannot write it.
+- **Trust.** The daemon in a published image can come from a cached step
+  that an earlier `master` run compiled. Whoever can write the cache package
+  can decide what a later build reuses, so write access to it must stay as
+  narrow as write access to the image package.
+- **Fetches.** A cached step does not run again. A download inside one (the
+  toolchain installer, the toolchain, the crates) is not repeated until the
+  inputs of that step change.
+- **Weekly cold build.** A scheduled run builds both variants once a week
+  with no cache, runs every check and publishes nothing. It fails when a
+  download is gone or when a step only works from the cache.
+- **Missing cache.** A cache that does not exist or cannot be read is a
+  line in the build log, not a failure. The build then runs every step.
+- **First write.** GitHub creates the cache package private. A maintainer
+  must make it public once. Until then every build runs cold.
+
 ## Reading the transport archives alone
 
 The server needs the transport form of an older pack when a retained session
