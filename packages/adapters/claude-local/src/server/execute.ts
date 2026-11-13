@@ -1149,8 +1149,6 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
           retryNotBefore: transientRetryNotBefore ? transientRetryNotBefore.toISOString() : null,
           errorMeta,
           resultJson: {
-            // An edge rejection keeps only sanitised evidence: never the raw
-            // HTML body, cookies or other response content.
             ...(edgeFailure ? { edgeFailure } : { stdout: proc.stdout, stderr: proc.stderr }),
             ...(errorFamily ? { errorFamily } : {}),
             ...(transientRetryNotBefore
@@ -1312,8 +1310,6 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         : null;
       const mergedResultJson: Record<string, unknown> = {
         ...parsed,
-        // Replace the provider body with sanitised evidence. A raw edge page
-        // (HTML, cookies, challenge scripts) is never persisted.
         ...(edgeFailure ? { result: errorMessage, errors: [], edgeFailure } : {}),
         ...(sshSessionState && runtimeSessionId && !sshSessionState.canResume
           ? { sessionReset: { code: "claude_ssh_session_state_unavailable" } } : {}),

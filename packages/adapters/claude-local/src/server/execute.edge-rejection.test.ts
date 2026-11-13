@@ -24,8 +24,6 @@ vi.mock("@paperclipai/adapter-utils/execution-target", async () => {
 
 import { execute } from "./execute.js";
 
-// A representative CDN challenge page. The cookie and script values are
-// markers: the run result must never persist them.
 const COOKIE_MARKER = "CFBMCOOKIEMARKERvalue0123456789";
 const CHALLENGE_HTML = [
   "<!DOCTYPE html>",
@@ -71,7 +69,6 @@ function buildContext() {
   };
 }
 
-// The Claude CLI's terminal shape for an API failure during authentication.
 const authFailure = (status: number, result: string) => ({
   subtype: "success", is_error: true, api_error_status: status, error: "authentication_failed", result,
 });
@@ -209,7 +206,6 @@ describe("claude_local edge rejections are not credential failures", () => {
   });
 
   it("does not read login words in a successful run's transcript as an auth failure", async () => {
-    // A tool printed an application's own sign-in message. The run succeeded.
     mockExecutionResult(buildProcResult({ subtype: "success", is_error: false, result: "Done." },
       { exitCode: 0, assistantText: 'app.py:309: return "Usage meters need a login. Please log in once. 401 Unauthorized"' }));
 
