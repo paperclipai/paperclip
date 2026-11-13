@@ -895,7 +895,10 @@ describe("connection management with production default agents", () => {
     expect(started, JSON.stringify(started)).toMatchObject({ status: 200, body: {
       expiresAt: null, requiredUserAction: { userId: f.userId, resource: { id: created.body.id } },
     } });
-    expect(new URL(started.body.authorizationUrl).searchParams.get("resume")).toBe(created.body.id);
+    // The agent links this in chat, so it is a relative app route, never the server's own origin.
+    expect(started.body.authorizationUrl).toMatch(/^\/[^/]/);
+    expect(started.body.requiredUserAction.setupPath).toBe(started.body.authorizationUrl);
+    expect(new URL(started.body.authorizationUrl, "https://paperclip.example").searchParams.get("resume")).toBe(created.body.id);
     expect(await f.request("POST", path, { asCurrentUser: true })).toMatchObject({ status: 200, body: { authorizationUrl: started.body.authorizationUrl } });
     expect(await server.db.select().from(toolOauthStates).where(eq(toolOauthStates.connectionId, created.body.id))).toHaveLength(0);
   });
