@@ -7674,14 +7674,24 @@ export function issueRoutes(
   }
 
   async function resolveQueuedOutgoingAssigneeRun(issue: {
+    id: string;
     companyId: string;
     assigneeAgentId: string | null;
     executionRunId?: string | null;
   }) {
-    if (!issue.executionRunId || !issue.assigneeAgentId) return null;
-    const run = await heartbeat.getRun(issue.executionRunId);
-    return run && run.status === "queued" && run.companyId === issue.companyId &&
-      run.agentId === issue.assigneeAgentId ? run : null;
+    if (!issue.assigneeAgentId) return null;
+    const run = issue.executionRunId ? await heartbeat.getRun(issue.executionRunId) : null;
+    if (run && run.status === "queued" && run.companyId === issue.companyId && run.agentId === issue.assigneeAgentId) return run;
+    if (run && ["queued", "running", "scheduled_retry"].includes(run.status)) return null;
+    const [assignmentRun] = await db.select({ id: heartbeatRuns.id }).from(heartbeatRuns).where(and(
+      eq(heartbeatRuns.companyId, issue.companyId),
+      eq(heartbeatRuns.agentId, issue.assigneeAgentId),
+      eq(heartbeatRuns.status, "queued"),
+      isNull(heartbeatRuns.startedAt),
+      sql`${heartbeatRuns.contextSnapshot}->>'issueId' = ${issue.id}`,
+      sql`${heartbeatRuns.contextSnapshot}->>'wakeReason' = 'issue_assigned'`,
+    )).orderBy(asc(heartbeatRuns.createdAt)).limit(1);
+    return assignmentRun ? await heartbeat.getRun(assignmentRun.id) : null;
   }
 
   type IssueQueueDb = Db | Parameters<Parameters<Db["transaction"]>[0]>[0];
