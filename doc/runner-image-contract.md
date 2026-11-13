@@ -101,8 +101,11 @@ Three places ask pnpm the same question, with the same arguments
 
 - the publication workflow, which publishes nothing for a lockfile that is
   behind;
-- the `runner-lockfile` stage of the `Dockerfile`, which stops an application
-  image build before any install or compile and prints the command above;
+- the `runner-lockfile` stage of the `Dockerfile`, which fails an application
+  image build and prints the command above. The application's dependency
+  install starts from that stage, so it cannot start before the check passes.
+  The Runner's toolchain and daemon stages do not depend on it, so they can
+  already be running, and the failed check cancels them.
 - `scripts/check-release-runner-lockfile.mjs`, which `scripts/release.sh`
   runs for a beta and for a stable release. It checks the committed files of
   the release commit, so a beta or stable tag always builds with a plain

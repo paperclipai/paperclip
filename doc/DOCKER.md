@@ -111,12 +111,18 @@ contract for the rules a consumer of the application image can rely on.
 The Runner stages install with a frozen lockfile, so `docker build` fails when
 `pnpm-lock.yaml` is behind the manifests they read: the root `package.json`,
 `packages/paperclip-runner` and `packages/paperclip-eval-kernel`. The
-`runner-lockfile` stage makes that check first, from those manifests alone,
-and the `deps` stage starts from it. A stale lockfile therefore stops the
-build before any install or compile, with a message that names this command.
-The `deps` stage still resolves every other manifest change inside the image.
-Refresh the lockfile in the checkout, then build again. Do not commit the
-result (see "Dependency Lockfile Policy" in `doc/DEVELOPING.md`):
+`runner-lockfile` stage makes that check from those manifests and the lockfile
+alone, so it runs as soon as the `base` stage is built. The `deps` stage starts
+from it, so the application's dependency install cannot start before the check
+passes. A stale lockfile fails the build within seconds of the check running,
+with a message that names the command below. The Runner's own frozen install
+fails on the same lockfile, but it comes after the daemon compile. Stages that
+do not depend on the check can already be running when it fails: the Runner's
+toolchain download and daemon compile, and the tool layer of the `production`
+stage. The failed check stops the build and cancels them. The `deps` stage
+still resolves every other manifest change inside the image. Refresh the
+lockfile in the checkout, then build again. Do not commit the result (see
+"Dependency Lockfile Policy" in `doc/DEVELOPING.md`):
 
 ```sh
 pnpm install --resolution-only --ignore-scripts --no-frozen-lockfile
