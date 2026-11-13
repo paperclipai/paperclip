@@ -45,8 +45,11 @@ async function fakeAnthropicApi(): Promise<{ url: string; offered: string[][] }>
 }
 
 async function promptOnce(env: NodeJS.ProcessEnv, cwd: string): Promise<void> {
-  const agent = spawn(process.execPath, [agentEntry], { cwd, env, stdio: ["pipe", "pipe", "ignore"] });
-  cleanup.push(async () => { if (agent.exitCode === null) agent.kill("SIGKILL"); });
+  const agent = spawn(process.execPath, [agentEntry], { cwd, env, detached: true, stdio: ["pipe", "pipe", "ignore"] });
+  const closed = new Promise<void>(resolve => agent.once("close", () => resolve()));
+  let stopping: Promise<void> | undefined;
+  const stop = () => stopping ??= stopProcessGroup(agent.pid!, closed);
+  cleanup.push(stop);
   let nextId = 1;
   const pending = new Map<number, { resolve: (value: Record<string, unknown>) => void; reject: (error: unknown) => void }>();
   const send = (message: Record<string, unknown>) => agent.stdin.write(`${JSON.stringify({ jsonrpc: "2.0", ...message })}\n`);
@@ -70,7 +73,26 @@ async function promptOnce(env: NodeJS.ProcessEnv, cwd: string): Promise<void> {
   await request("initialize", { protocolVersion: 1, clientCapabilities: { fs: { readTextFile: false, writeTextFile: false }, terminal: false } });
   const session = await request("session/new", { cwd, mcpServers: [] });
   await request("session/prompt", { sessionId: session.sessionId, prompt: [{ type: "text", text: "Report this local fixture's result. Do not call tools." }] });
-  agent.kill("SIGTERM");
+  await stop();
+}
+
+function signalGroup(pid: number, signal: NodeJS.Signals | 0): boolean {
+  try { process.kill(-pid, signal); return true; } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ESRCH") return false;
+    throw error;
+  }
+}
+
+async function stopProcessGroup(pid: number, closed: Promise<void>): Promise<void> {
+  signalGroup(pid, "SIGTERM");
+  const deadline = (ms: number) => new Promise<"timeout">(resolve => setTimeout(() => resolve("timeout"), ms).unref());
+  if (await Promise.race([closed, deadline(5_000)]) === "timeout") signalGroup(pid, "SIGKILL");
+  await closed;
+  for (let attempt = 0; signalGroup(pid, 0); attempt += 1) {
+    if (attempt === 50) signalGroup(pid, "SIGKILL");
+    if (attempt > 100) throw new Error(`claude-agent-acp process group ${pid} did not exit`);
+    await deadline(50);
+  }
 }
 
 function fixtureEnvironment(apiUrl: string): NodeJS.ProcessEnv {
