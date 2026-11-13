@@ -95,6 +95,34 @@ describe("Retry of a legacy preparation that automatic recovery stopped", () => 
     expect(successor.contextSnapshot).toMatchObject({ previousRunId: f.source.id, taskRetryRequestId: receipt.requestId });
   });
 
+  // Staging shape: a setup failure during preparation. The failed preparation had restored the task's saved
+  // version into its sandbox, and workspace settlement handed the workspace on
+  // unchanged (reference `saved`, unchanged-baseline receipt for this run).
+  // No copy-back is owed, so the person's Retry must start.
+  it("starts the person's Retry when the stopped preparation handed its remote workspace on unchanged", async () => {
+    const f = await seed();
+    const workspaceId = randomUUID(), snapshotId = randomUUID();
+    const [lease] = await db.select().from(environmentLeases).where(eq(environmentLeases.id, f.leaseId));
+    await db.insert(executionWorkspaces).values({ id: workspaceId, companyId: f.companyId, sourceIssueId: f.issueId,
+      mode: "isolated_workspace", strategyType: "git_worktree", name: "Remote workspace", providerType: "git_worktree",
+      metadata: { remoteWorkspace: { schema: "paperclip.remote-workspace.v1", epoch: 4, location: null, dirty: false,
+        writerRunId: null, snapshotId, source: { kind: "git", repoUrl: "https://github.com/paperclipai/paperclip.git",
+          ref: "a".repeat(40), branchMode: "create", branchName: "L-1-change" } },
+      remoteWorkspaceUnchangedBaseline: { schema: "paperclip.remote-workspace-unchanged-baseline.v1", epoch: 4,
+        runId: f.source.id, snapshotId, releasedAt: new Date().toISOString() } } });
+    await db.update(heartbeatRuns).set({ runnerProfileJson: { ...f.source.runnerProfileJson,
+      remoteWorkspace: { schema: "paperclip.remote-workspace-run.v1", workspaceId, leaseId: f.leaseId,
+        providerLeaseId: lease!.providerLeaseId!, remoteCwd: "/fixture", epoch: 4, state: "saved", snapshotId } } })
+      .where(eq(heartbeatRuns.id, f.source.id));
+    const receipt = await requestTaskRetry({ db, companyId: f.companyId, issueId: f.issueId, actorId: f.actorId,
+      observedRunId: f.source.id, idempotencyKey: randomUUID(), actorSource: "local_implicit" });
+    expect(receipt).toMatchObject({ accepted: true });
+    await heartbeatService(db).resumeTaskRetry(f.companyId, receipt.requestId!);
+    const [wake] = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, receipt.requestId!));
+    expect(wake.payload?.executionWait).toBeUndefined();
+    expect(wake).toMatchObject({ status: "coalesced", runId: expect.any(String) });
+  });
+
   it.each(["foreign_hold", "provider_event", "unstopped_lease", "unsaved_remote_workspace"] as const)(
     "keeps the Retry held when the stopped preparation is not proven: %s", async gate => {
       const f = await seed();

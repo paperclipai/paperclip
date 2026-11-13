@@ -15,7 +15,7 @@ import type { HotRestartIntent } from "../hot-restart.js";
 import type { NativeRestartRecoveryClaim, NativeRestartRecoveryDisposition } from "../native-runtime/index.js";
 import { NATIVE_OWNERSHIP_UNVERIFIED_ERROR_CODE } from "../native-runtime/native-runner-ownership.js";
 import { claimNativeRestartRecoveries, currentNativeControllerIdentity, NATIVE_RESTART_RECOVERY_FAILED } from "../native-runtime/native-restart-recovery.js";
-import { startNativeSessionExecutionLeaseRenewal } from "../native-runtime/native-execution-lease.js";
+import { renewNativeExecutionLeasesNow, startNativeSessionExecutionLeaseRenewal } from "../native-runtime/native-execution-lease.js";
 import { createRunLogWriterAuthority } from "./run-log-authority.js";
 import { allowLegacyShutdownWorkspaceCleanup, beginLegacyShutdownWorkspaceSettlement, finishLegacyShutdownWorkspaceSettlement, maintainLegacyShutdownWorkspaceSettlement, legacyShutdownWorkspaceResourceProtected, sweepLegacyShutdownWorkspaceSettlements } from "../legacy-shutdown-workspace-settlement.js";
 import { adapterExecutionControls, createAdapterExecutionControl } from "../adapter-execution-control.js";
@@ -1367,7 +1367,6 @@ describePostgres("heartbeat recovery module ownership", () => {
     await db.insert(nativeRunFinalizations).values({ runId: run.id, companyId: run.companyId, issueId: run.issueId!, phase: "observed", attempt: 1,
       controllerBootId: controller.bootId, controllerPid: controller.pid, controllerProcessStartedAt: controller.processStartedAt,
       leaseOwner: claim.leaseOwner, leaseExpiresAt: firstLeaseEndsAt });
-    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
     native.claims.mockImplementationOnce(async input => {
       await input.onClaim?.(claim, scope);
       return [claim];
@@ -1378,7 +1377,8 @@ describePostgres("heartbeat recovery module ownership", () => {
     const outcome = new Promise<unknown>(resolve => { report = resolve; });
     const finished = new Promise<void>(resolve => { finish = resolve; });
     deps.executeRun.mockImplementationOnce(async (_runId, options) => { try {
-      await vi.advanceTimersByTimeAsync(21_000);
+      // The shared renewal timer renews the restart claim (preparation).
+      await renewNativeExecutionLeasesNow(db);
       await vi.waitFor(async () => {
         const [coordinator] = await db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, run.id));
         expect(coordinator.leaseExpiresAt!.getTime()).toBeGreaterThan(firstLeaseEndsAt.getTime() + 10_000);
@@ -1391,7 +1391,7 @@ describePostgres("heartbeat recovery module ownership", () => {
       try {
         await options?.onNativeExecutionLeaseAcquired?.();
         const [before] = await db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, run.id));
-        await vi.advanceTimersByTimeAsync(21_000);
+        await renewNativeExecutionLeasesNow(db);
         await vi.waitFor(async () => {
           const [after] = await db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, run.id));
           expect(after.leaseExpiresAt!.getTime()).toBeGreaterThan(before.leaseExpiresAt!.getTime());
@@ -1410,7 +1410,6 @@ describePostgres("heartbeat recovery module ownership", () => {
     } finally {
       finish();
       await Promise.all([...deps.activeRunExecutionPromises]);
-      vi.useRealTimers();
       await db.delete(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, run.id));
       await db.delete(heartbeatRuns).where(eq(heartbeatRuns.id, run.id));
     }

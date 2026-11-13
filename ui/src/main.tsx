@@ -30,7 +30,7 @@ import { getOrCreatePaperclipReactRoot } from "./lib/react-root";
 import { startServiceWorkerUpdates } from "./lib/service-worker-updates";
 import { connectivity } from "./lib/connectivity";
 import { bindConnectivity, createAppQueryClient } from "./lib/query-client";
-import { captureBrowserException } from "./lib/sentry";
+import { captureQueryException } from "./lib/sentry";
 import { startPersistedQueryCache } from "./lib/persisted-query-cache";
 import { hasPendingWrites, subscribePendingWrites } from "./lib/reload-safety";
 import "@mdxeditor/editor/style.css";
@@ -65,7 +65,7 @@ function MutationErrorToastBridge() {
 const queryClient = createAppQueryClient(
   {
     connectivity,
-    reportError: (error) => captureBrowserException(error),
+    reportError: (error, queryKey) => captureQueryException(error, queryKey),
     notifyMutationError: ({ title, body }) => pushMutationErrorToast?.({ title, body, tone: "error" }),
   },
   {

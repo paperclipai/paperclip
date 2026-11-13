@@ -1,3 +1,4 @@
+import { CERTIFICATE_ENVIRONMENT_KEYS } from "../../configured-environment.js";
 import { createRequire } from "node:module";
 import { execFileSync } from "node:child_process";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
@@ -336,7 +337,7 @@ describe("Codex security configuration", () => {
       SSH_AUTH_SOCK: "/agent/socket", PAPERCLIP_GIT_METADATA_ROOTS: '["/repo/.git","/repo/.git"]',
     }).join("\n");
     const allowlist = JSON.parse(args.split("\n").find((arg) => arg.startsWith("shell_environment_policy.include_only="))!.split("=", 2)[1]!);
-    expect(allowlist).toEqual(["GH_CONFIG_DIR", "HOME", "PAPERCLIP_GITHUB_AUTH_MODE", "PAPERCLIP_GITHUB_HOST_HOME", "PAPERCLIP_GIT_METADATA_ROOTS", "PATH", "SSH_AUTH_SOCK"]);
+    expect(allowlist).toEqual([...CERTIFICATE_ENVIRONMENT_KEYS, "GH_CONFIG_DIR", "HOME", "PAPERCLIP_GITHUB_AUTH_MODE", "PAPERCLIP_GITHUB_HOST_HOME", "PAPERCLIP_GIT_METADATA_ROOTS", "PATH", "SSH_AUTH_SOCK"].sort());
     expect(args).not.toContain("must-not-cross");
     expect(args).not.toContain("OPENAI_API_KEY");
     expect(args).not.toContain("DATABASE_URL");
@@ -439,7 +440,7 @@ describe("Codex security configuration", () => {
     expect(serialized).toContain('":workspace_roots"={"."="write"}');
     expect(serialized).toContain('":workspace_roots"={"."="read"}');
     expect(serialized).toContain("network.enabled=true");
-    expect(serialized).toContain('shell_environment_policy.include_only=["LANG","PAPERCLIP_RUNNER_NETWORK_ACCESS","PATH"]');
+    expect(serialized).toContain(`shell_environment_policy.include_only=${JSON.stringify([...CERTIFICATE_ENVIRONMENT_KEYS, "LANG", "PAPERCLIP_RUNNER_NETWORK_ACCESS", "PATH"].sort())}`);
     expect(serialized).toContain('PATH="/safe/bin"');
     expect(serialized).toContain('LANG="C.UTF-8"');
     expect(serialized).not.toContain("OPENAI_API_KEY");
@@ -521,7 +522,7 @@ describe("Codex security configuration", () => {
     expect(exclude).toEqual([...CODEX_PROVIDER_CREDENTIAL_ENVIRONMENT_KEYS]);
     expect(serialized).not.toContain("fixture-secret-value");
     expect(createIsolatedCodexAppServerArgs({ PAPERCLIP_CONFIGURED_ENV_KEYS: '["STRIPE_SECRET_KEY"]', STRIPE_SECRET_KEY: "fixture-secret-value" }).join("\n"))
-      .toContain('shell_environment_policy.include_only=["STRIPE_SECRET_KEY"]');
+      .toContain(`shell_environment_policy.include_only=${JSON.stringify([...CERTIFICATE_ENVIRONMENT_KEYS, "STRIPE_SECRET_KEY"].sort())}`);
   });
 
   it("excludes every credential the Runner passes to Codex", () => {
@@ -623,4 +624,13 @@ describe("Codex security configuration", () => {
     expect(planningArgs({ PAPERCLIP_RUNNER_NETWORK_ACCESS: "enabled" }).network)
       .toBe("permissions.paperclip-runner-workspace-read-only.network.enabled=true");
   });
+});
+
+it("keeps certificate-trust names in the shell allowlist before sandbox injection", () => {
+  const args = createIsolatedCodexAppServerArgs({ PATH: "/safe/bin" });
+  const setting = args.find(value => value.startsWith("shell_environment_policy.include_only="))!;
+  const allowlist = JSON.parse(setting.slice(setting.indexOf("=") + 1)) as string[];
+  expect(allowlist).toEqual(expect.arrayContaining([...CERTIFICATE_ENVIRONMENT_KEYS]));
+  expect(args).toContain('shell_environment_policy.inherit="all"');
+  expect(args).toContain("shell_environment_policy.ignore_default_excludes=true");
 });

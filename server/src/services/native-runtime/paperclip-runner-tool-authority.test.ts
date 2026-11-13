@@ -1098,9 +1098,10 @@ describe("PaperclipRunnerToolAuthority", () => {
   it("relays assigned MCP calls only while the native run still owns its task", async () => {
     const tool = { name: "app_mem0_recall", description: "Recall memory", inputSchema: { type: "object" } };
     const execute = vi.fn().mockResolvedValue({ content: "synthetic memory" });
+    const close = vi.fn();
     const authority = new PaperclipRunnerToolAuthority(db, {
       companyId, agentId, issueId, runId,
-      assignedMcpTools: { definitions: () => [tool], has: (name) => name === tool.name, execute },
+      assignedMcpTools: { definitions: () => [tool], has: (name) => name === tool.name, execute, close },
     });
     expect(authority.definitions()).toContainEqual(tool);
     const call = { tool: tool.name, callId: "assigned-mcp", arguments: { query: "compass" } };
@@ -1121,6 +1122,9 @@ describe("PaperclipRunnerToolAuthority", () => {
     } finally {
       await db.update(heartbeatRuns).set({ status: "running" }).where(eq(heartbeatRuns.id, runId));
     }
+    expect(close).not.toHaveBeenCalled();
+    authority.close();
+    expect(close).toHaveBeenCalledOnce();
   });
 
   it("does not advertise delegation tools during pre-acceptance planning", () => {
