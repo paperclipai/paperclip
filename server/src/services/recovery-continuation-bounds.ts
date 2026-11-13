@@ -1,7 +1,8 @@
 /**
  * How long a recorded recovery continuation may wait for delivery. One module
- * owns both numbers so delivery, wake admission and the assigned-work
- * invariant agree on when a pending continuation stops being the task's path.
+ * owns both numbers so delivery and the assigned-work invariant agree. Wake
+ * admission never replaces a recorded continuation (it alone carries the
+ * isolation decision); a wake coalesced into it re-drives delivery.
  */
 
 /** Delivery pacing holds a continuation back at most this long: past it the
@@ -10,8 +11,8 @@
 export const RECOVERY_CONTINUATION_MAX_HOLD_MS = 5 * 60_000;
 
 /** A continuation still pending past this bound (the hold bound plus 2 minutes
- * of 15-second delivery passes) is not going to be delivered: the invariant no
- * longer counts it as pending, and wake admission no longer coalesces a repair
- * wake into it, so that wake becomes the task's one successor. Delivery
- * re-drives first, so within the bound there is exactly one owner. */
+ * of 15-second delivery passes) is stuck: the invariant no longer counts it as
+ * pending, so the sweep sends a repair wake. Admission coalesces that wake
+ * into the record and notifies delivery, which re-drives the recorded
+ * continuation itself (same record, isolation and fresh session). */
 export const PENDING_CONTINUATION_BOUND_MS = RECOVERY_CONTINUATION_MAX_HOLD_MS + 2 * 60_000;

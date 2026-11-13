@@ -24,7 +24,6 @@ import { notifyRoutineExecutionStatus } from "./routine-execution-status-notific
 import { notifyStatusCardIssueChange } from "./status-card-notifications.js";
 import { readRunCancellation } from "./run-cancellation.js";
 import { readSystemRecovery } from "./system-recovery-state.js";
-import { PENDING_CONTINUATION_BOUND_MS } from "./recovery-continuation-bounds.js";
 
 /**
  * Fresh-continuation fallback: exact resumption of an unfinished run is an
@@ -887,21 +886,21 @@ export async function settleCoalescedFreshContinuationHolds(db: Db, input: { com
       sql`${issueRecoveryActions.evidence}->>'continuationDelivery' = 'coalesced'`));
 }
 
-/** A fresh continuation of this task is recorded, its run does not exist yet,
- * and delivery still owns it. Past PENDING_CONTINUATION_BOUND_MS delivery has
- * had its chance (it re-drives a record held past its hold bound first), so the
- * record no longer absorbs a repair wake: that wake becomes the task's one
- * successor, and delivery then settles the record as delivered by it. */
-export async function hasPendingFreshContinuation(db: Db, companyId: string, issueId: string, now = new Date()) {
+/** A fresh continuation of this task is recorded and its run does not exist
+ * yet. The recorded continuation is the task's one successor: it alone carries
+ * the isolation and fresh-session decision, so another wake never replaces it,
+ * at any age. A wake coalesced into it re-drives it instead: delivery is
+ * notified, and delivery admits a record held past
+ * RECOVERY_CONTINUATION_MAX_HOLD_MS even when the agent's queue is full. */
+export async function hasPendingFreshContinuation(db: Db, companyId: string, issueId: string) {
   const [row] = await db.select({ id: issueRecoveryActions.id }).from(issueRecoveryActions).where(and(
     eq(issueRecoveryActions.companyId, companyId), eq(issueRecoveryActions.sourceIssueId, issueId),
     eq(issueRecoveryActions.status, "resolved"),
     sql`${issueRecoveryActions.evidence}->>'continuationDelivery' = 'pending'`,
-    sql`coalesce(${issueRecoveryActions.evidence}#>>'{freshContinuation,recordedAt}', ${issueRecoveryActions.resolvedAt}::text,
-      ${issueRecoveryActions.updatedAt}::text)::timestamptz
-      > ${new Date(now.getTime() - PENDING_CONTINUATION_BOUND_MS).toISOString()}::timestamptz`,
     sql`${issueRecoveryActions.evidence}#>>'{freshContinuation,schema}' = ${FRESH_CONTINUATION_SCHEMA}`)).limit(1);
-  return Boolean(row);
+  if (!row) return false;
+  await notifyDeliveryWork(db, DELIVERY_QUEUES.executionContinuation);
+  return true;
 }
 
 /** Newest-first list of fresh continuations of one task (diagnostics and tests). */

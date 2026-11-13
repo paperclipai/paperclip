@@ -316,28 +316,40 @@ suite("fresh-continuation fallback", () => {
     expect((await pendingRecord(f.issueId))!.evidence.continuationDelivery).toBe("delivered");
   }, 60_000);
 
-  it("lets a repair wake become the one successor once a pending continuation is past the bound, and coalesces it within the bound", async () => {
-    const f = await unfinishedRun({ runtime: "native", errorCode: "native_continuation_requires_reconciliation",
-      error: "runner_remote_process_identity_unavailable", hold: "settled_blocked" });
+  it("re-drives an isolated continuation pending past the bound itself; a repair wake never replaces it", async () => {
+    // A projectless task whose old local writer may still be alive (its controller ran on the replaced server).
+    const f = await unfinishedRun({ runtime: "legacy", errorCode: "controller_lease_lost", error: "Legacy controller lease lost" });
+    await db.update(heartbeatRuns).set({ processPid: 4242, processHostHash: "replaced-server", processStartedAt: new Date(Date.now() - 600_000) })
+      .where(eq(heartbeatRuns.id, f.runId));
+    await db.update(issues).set({ projectId: null, projectWorkspaceId: null, executionWorkspaceId: null }).where(eq(issues.id, f.issueId));
+    expect(await ensureFreshContinuation(db, { companyId, runId: f.runId, trigger: "recovery_refused" }))
+      .toMatchObject({ kind: "continued", isolation: "fresh_isolated_workspace", delivery: "recorded" });
     await occupySlot();
-    expect(await sweepWake(f.issueId)).toBeNull();
-    const record = (await pendingRecord(f.issueId))!;
-    expect(record.evidence.continuationDelivery).toBe("pending");
-    const taskRuns = async () => db.select({ id: heartbeatRuns.id }).from(heartbeatRuns).where(and(
+    const taskRuns = async () => db.select().from(heartbeatRuns).where(and(
       sql`${heartbeatRuns.contextSnapshot}->>'issueId' = ${f.issueId}`, sql`${heartbeatRuns.id} <> ${f.runId}`));
     // Within the bound, the repair wake is coalesced into the pending record.
     expect(await sweepWake(f.issueId)).toBeNull();
     expect(await taskRuns()).toHaveLength(0);
-    // Delivery is stuck past the bound: the next repair wake becomes the continuation.
+    // Delivery is stuck past the bound. The repair wake still does not start a run of its own,
+    // which would carry neither the isolation nor a fresh session.
     const recordedAt = new Date(Date.now() - PENDING_CONTINUATION_BOUND_MS - 60_000).toISOString();
     await db.update(issueRecoveryActions).set({ resolvedAt: new Date(recordedAt), evidence: sql`jsonb_set(${issueRecoveryActions.evidence},
-      '{freshContinuation,recordedAt}', to_jsonb(${recordedAt}::text))` }).where(eq(issueRecoveryActions.id, record.id));
-    expect(await sweepWake(f.issueId)).not.toBeNull();
-    expect(await taskRuns()).toHaveLength(1);
-    // Delivery then settles the record as delivered by that run; still exactly one run.
+      '{freshContinuation,recordedAt}', to_jsonb(${recordedAt}::text))` }).where(eq(issueRecoveryActions.id, f.actionId!));
+    expect(await sweepWake(f.issueId)).toBeNull();
+    expect(await taskRuns()).toHaveLength(0);
+    // Delivery re-drives the recorded continuation itself, past the full queue: one successor,
+    // in a new isolated workspace, never the shared directory.
+    await deliver();
+    const runs = await taskRuns();
+    expect(runs).toHaveLength(1);
+    expect(runs[0]!.contextSnapshot).toMatchObject({ freshContinuationIsolation: f.actionId, forceFreshSession: true });
+    expect(await readFreshWorkspaceReadiness(db, runs[0]!)).toMatchObject({ mode: "fresh_isolated_workspace", retryIntentId: f.actionId });
+    const [record] = await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.id, f.actionId!));
+    expect(record!.evidence).toMatchObject({ continuationDelivery: "delivered", continuationRunId: runs[0]!.id });
+    // Later wakes add nothing.
+    await sweepWake(f.issueId);
     await deliver();
     expect(await taskRuns()).toHaveLength(1);
-    expect((await pendingRecord(f.issueId))!.evidence.continuationDelivery).toBe("delivered");
   }, 60_000);
 
   // A gate after the hook must never consume the recovery: it stays pending
