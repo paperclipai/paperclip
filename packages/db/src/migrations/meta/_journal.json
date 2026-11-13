@@ -3312,6 +3312,13 @@
       "when": 1794524253117,
       "tag": "0474_milky_wolf_cub",
       "breakpoints": true
+    },
+    {
+      "idx": 475,
+      "version": "7",
+      "when": 1794536325640,
+      "tag": "0475_smooth_may_parker",
+      "breakpoints": true
     }
   ]
 }
