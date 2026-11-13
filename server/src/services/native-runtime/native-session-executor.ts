@@ -44,7 +44,7 @@ import { notifyUnsafeWorkspaceExportRecovery } from "../unsafe-workspace-export-
 import { notifyCancelledWorkspacePreservation } from "../cancelled-workspace-preservation-notifications.js";
 import { notifyInstructionCollection } from "../instruction-collection-notifications.js";
 import { providerPackWorkspaceId, recordAdmittedRemoteProviderPack, resolveRemoteProviderPackAuthority } from "./remote-provider-pack-authority.js";
-import { nativeProviderPackAdmissionFailureCode, nativeProviderPackAdmissionPending, rememberAdmittedNativeProviderPack, rememberRecoveredNativeProviderPack, recordNativeProviderPackAdmission, type NativeProviderPackAdmissionSource } from "./native-provider-pack-admission.js";
+import { nativeProviderPackAdmissionFailureCode, prepareNativeProviderPackAdmission, rememberAdmittedNativeProviderPack, rememberRecoveredNativeProviderPack, recordNativeProviderPackAdmission, type NativeProviderPackAdmissionSource } from "./native-provider-pack-admission.js";
 import { type ProviderPackInstallation, verifyRemoteProviderPack as verifyRemoteProviderPackIdentity } from "./remote-provider-pack-verification.js";
 import { writeEnvironmentCleanup } from "../environment-cleanup-notifications.js";
 import { NATIVE_SESSION_EXECUTION_LEASE_TTL_MS, lockNativeExecutionLeaseForReacquire, nativeExecutionLeaseHeldCondition, releaseUnstartedNativeExecutionClaim, startNativeSessionExecutionLeaseRenewal, type NativeExecutionLeaseRenewal } from "./native-execution-lease.js";
@@ -11186,10 +11186,8 @@ async function executePaperclipNativeSessionAttempt(
             .returning({ runId: nativeRunFinalizations.runId })
             .then((rows) => rows[0] ?? null);
           if (!claimed) throw new Error("native_session_lease_lost");
-          providerPackAdmissionSource = { runId: coordinator.runId,
-            receipt: boundRun.runnerProfileJson?.nativeProviderPackAdmission,
-            state: boundRun.runnerProfileJson?.nativeProviderPackAdmissionState,
-            artifacts: boundRun.runnerProfileJson?.nativeProviderArtifacts };
+          const providerPackAdmission = prepareNativeProviderPackAdmission(coordinator.runId, boundRun.runnerProfileJson, providerPackAdmissionEpoch);
+          providerPackAdmissionSource = providerPackAdmission.source;
           controllerGeneration = nextControllerGeneration;
           claimedStopCleanup = stopRecovery;
           await tx
@@ -11197,7 +11195,7 @@ async function executePaperclipNativeSessionAttempt(
             .set({
               nativePhase: "observed",
               nativePhaseUpdatedAt: leaseNow,
-              runnerProfileJson: sql`coalesce(${heartbeatRuns.runnerProfileJson}, '{}'::jsonb) || ${JSON.stringify({ nativeProviderPackAdmissionState: nativeProviderPackAdmissionPending(providerPackAdmissionEpoch),
+              runnerProfileJson: sql`coalesce(${heartbeatRuns.runnerProfileJson}, '{}'::jsonb) || ${JSON.stringify({ ...providerPackAdmission.patch,
                 ...(claimedStartupContext ? { nativeStartupContext: { schema: "paperclip.native-startup-context.v1",
                   companyId: input.execution.binding.companyId, agentId: input.execution.binding.agentId, runId: input.execution.binding.runId,
                   contextId: claimedStartupContext.id, deadlineAtMs: claimedStartupContext.deadlineAtMs, leaseId: target?.kind === "remote" ? target.leaseId : null,
