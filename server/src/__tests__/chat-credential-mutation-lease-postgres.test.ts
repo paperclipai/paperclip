@@ -26,7 +26,7 @@ describePostgres("chat credential mutation lease locking", () => {
     const [company] = await db.insert(companies).values({ name: "Lease test", issuePrefix: randomUUID().slice(0, 8) }).returning();
     const companyId = company.id;
     const [agent] = await db.insert(agents).values({ companyId, name: "Lease worker", role: "engineer", adapterType: "process" }).returning();
-    const [application] = await db.insert(toolApplications).values({ companyId, name: "Lease application", type: "custom" }).returning();
+    const [application] = await db.insert(toolApplications).values({ companyId, name: "Lease application", type: "chat" }).returning();
     const [connection] = await db.insert(toolConnections).values({ companyId, applicationId: application.id, name: "Lease connection", uid: randomUUID(), transport: "rest_api" }).returning();
     const [endpoint] = await db.insert(chatEndpoints).values({ companyId, connectionId: connection.id, assignedAgentId: agent.id, provider: "slack", publicId: randomUUID() }).returning();
     return endpoint;
@@ -103,5 +103,21 @@ describePostgres("chat credential mutation lease locking", () => {
       const [renewed] = await db.select().from(chatEndpointLeases).where(eq(chatEndpointLeases.endpointId, endpoint.id));
       expect(renewed.expiresAt.getTime()).toBeGreaterThan(Date.now());
     });
+  });
+
+  it("renews ownership through a separate nontransactional database client", async () => {
+    const endpoint = await fixture();
+    const database = createDb(temporary.connectionString);
+    try {
+      await chatCredentialMutationLease(db)(endpoint, async lease => {
+        await db.update(chatEndpointLeases).set({ expiresAt: new Date(0) }).where(eq(chatEndpointLeases.endpointId, endpoint.id));
+        const before = Date.now();
+        await lease.assertOwned(database);
+        const [renewed] = await db.select().from(chatEndpointLeases).where(eq(chatEndpointLeases.endpointId, endpoint.id));
+        expect(renewed.expiresAt.getTime()).toBeGreaterThan(before);
+      });
+    } finally {
+      await database.$client.end();
+    }
   });
 });
