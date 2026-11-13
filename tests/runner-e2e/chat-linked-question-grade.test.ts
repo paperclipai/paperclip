@@ -64,4 +64,7 @@ it("accepts a saved question card that offers each candidate as its own choice, 
   expect(graded([card([{ id: "a", label: "Launch" }, { id: "b", label: "Experiments" }])])).toBe(false);
   expect(graded([card([retained[0]!, { id: "c", label: "RUN-12 (Archive)" }])])).toBe(false);
   expect(graded([card(retained, "other-run")])).toBe(false);
+  for (const withdrawn of [{ status: "cancelled" }, { status: "expired" }, { dismissedAt: "2026-10-28T12:00:45Z" }, { resolvedAt: "2026-10-28T12:00:45Z" }]) {
+    expect(graded([{ ...card(retained), ...withdrawn }]), JSON.stringify(withdrawn)).toBe(false);
+  }
 });

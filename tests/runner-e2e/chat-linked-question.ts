@@ -88,7 +88,7 @@ export function questionCardNamesCandidates(cards: readonly AskUserQuestionsInte
   const names = (text: string, task: { identifier?: string | null }) => !!task.identifier
     && new RegExp(`(?<![A-Za-z0-9-])${task.identifier.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(?![A-Za-z0-9])`, "i").test(text);
   return !!runId && tasks.length > 1 && new Set(tasks.map(task => task.identifier)).size === tasks.length && cards.some(card => card.kind === "ask_user_questions"
-    && card.createdByAgentId === leadId && card.sourceRunId === runId
+    && card.status === "pending" && !card.dismissedAt && !card.resolvedAt && card.createdByAgentId === leadId && card.sourceRunId === runId
     && (card.payload.questionSet?.questions ?? card.payload.questions ?? []).some(question => tasks.every(task => (question.options ?? []).some(option => {
       const text = `${option.label ?? ""}\n${option.description ?? ""}`;
       return names(text, task) && tasks.every(other => other.id === task.id || !names(text, other));
