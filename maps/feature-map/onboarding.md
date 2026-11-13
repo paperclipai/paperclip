@@ -18,7 +18,14 @@ Agent access: [companion](../agent-access-map/onboarding.md).
 - `company`: `onboarding/company` — create a company with its identity and initial agent.
 - `adapter`: `onboarding/adapter` — choose an available harness, model, account, and execution environment.
 - `first-task`: `onboarding/first-task` — leave setup with a task whose execution or missing prerequisite is visible.
+
 - `resume`: `onboarding/resume` — return to an incomplete wizard without losing saved state.
+
+The [Cloud Product onboarding journey](../../tests/runner-e2e/PRODUCT-JOURNEYS.md)
+defines portal workspace creation, API-key connection, native Codex creation,
+and a first downloadable artifact with an independent oracle. Its dependent
+task-properties journey reuses onboarding state. This is a scripted coverage
+recipe, not a claim of a completed Cloud run or strict browser-only discovery.
 
 ## How to get to it (user POV)
 
@@ -28,6 +35,10 @@ Open `/onboarding` or the onboarding launcher in an empty company context.
 Use `/<company-prefix>/onboarding` to resume an existing company's agent setup;
 the unprefixed route starts at organization naming on self-hosted instances.
 Cloud-managed instances reuse their existing company for agent setup.
+
+First-agent onboarding offers only Claude and Codex, subject to instance adapter
+availability. Other providers remain available through Add agent after onboarding.
+A saved draft for another provider requires a new choice.
 
 ### `cli-setup`
 
@@ -56,9 +67,9 @@ company's onboarding route, and finish; drafts save automatically. Follow the
 created first task, verify the selected agent and company, and inspect its output
 or explicit authentication gate. Reload both company and task.
 
-For Codex or Claude, choose the harness and leave runner selection automatic to prove the
-first-agent default. On a qualified target it saves Paperclip Runner; Advanced
-also permits Legacy. Do not switch runners after onboarding when claiming proof
+For Codex or Claude, choose the harness to prove automatic first-agent runner
+selection. On a qualified target it saves Paperclip Runner. The wizard has no
+runner dropdown or empty Advanced section. Do not switch runners after onboarding when claiming proof
 of that default. Test the selected runtime and account, then complete a bounded
 useful task and follow-up with an independently checked file artifact. Saved
 execution configuration and recorded run identity must match after reload.
@@ -69,6 +80,16 @@ These campaign bounds are separate from production creation defaults.
 Use [runner validation](./runs-adapters.md#adapter-setup) and
 [environment qualification](./execution-environments.md#environment-settings)
 for the prerequisites; a successful login alone is insufficient.
+
+For managed Cloud setup, an outdated default Claude CLI is prepared automatically
+in a private versioned runtime directory before its hello test. Verify that the
+selected model and account stay unchanged and that the compatible executable is
+actually used. A failed installation still blocks hiring. Cloud failures must
+not display Manual debug shell commands or legacy operator hints; self-hosted
+failures retain that help.
+[Wizard controls](../../ui/src/components/OnboardingWizard.test.tsx) and
+[runtime controls](../../packages/adapters/claude-local/src/server/sandbox-cli-version.test.ts)
+cover these boundaries. They do not establish live Cloud onboarding success.
 
 For a new Claude agent on an explicit immutable sandbox image or a Daytona
 named snapshot, use Connect to
@@ -87,7 +108,7 @@ uses the existing saved environment probe when authoritative qualification is
 absent. The board actor needs the existing instance-environment administration
 permission. Refresh company/environment-scoped discovery before testing the
 selected runtime. A denied probe, unconfirmed cleanup or setup failure must be
-visible; selecting Legacy remains an explicit choice. Creation and discovery
+visible and retryable through setup. Creation and discovery
 themselves allocate no target. A valid measured unsupported target follows the
 server's Legacy default. Named Cloud snapshots remain a separate unqualified
 boot-identity and fresh-signup gap.
@@ -120,8 +141,10 @@ self-contained description. The onboarding run must yield through the existing
 dependency/block disposition so the child's own execution can publish its file.
 Native file registration remains bound to the executing task. On completion,
 the original conversation must receive the actual child and downloadable file
-links. Document-only child work may finish inline; a plan-only request must not
-start implementation. Existing first-task asset controls check the instructions,
+links. Document-only child work may finish inline. Interview execution proposals
+must start their selected work after acceptance; a saved plan alone is not the
+requested result. Only an explicitly plan-only request stops at planning.
+Existing first-task asset controls check the instructions,
 not model compliance. Inspect the child's execution, document, downloaded file
 and source-correlated completion reply in the real journey.
 

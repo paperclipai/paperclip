@@ -1,3 +1,4 @@
+import { groupImageResources } from "./image-resources";
 import type { ReactElement } from "react";
 import { MarkdownBody } from "@/components/MarkdownBody";
 import type { TaskChatItem, TaskChatRuntimeRequestDecision, TaskChatRuntimeRequestItem } from "./task-chat-model";
@@ -38,7 +39,7 @@ export function TaskChatLiveTail({
   const visibleItems = excludeFinal
     ? items.filter((item) => item.kind !== "message" || item.interstitial)
     : items;
-  const rows = buildTurnTimelineRows(visibleItems, true)
+  const rows = groupImageResources(buildTurnTimelineRows(visibleItems, true))
     .map((item) => renderTailRow(item, onRuntimeRequestDecision))
     .filter((row): row is ReactElement => row != null);
 

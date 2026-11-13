@@ -1,7 +1,9 @@
+import { REST_CONNECTORS } from "./rest-registry.js";
 import type { ToolRiskLevel } from "@paperclipai/shared";
-import { daytonaRisk, isDaytonaConnection } from "../daytona.js";
+import { NATIVE_PROVIDER_CATALOGS } from "../native-provider-catalogs.js";
 import { classifyRailwayToolRisk, isRailwayEndpoint } from "../railway.js";
 import { braintrustRisk } from "./braintrust/risk.js";
+import { circlebackRisk } from "./circleback/risk.js";
 import { enterpretRisk } from "./enterpret/risk.js";
 
 interface ToolDescriptor {
@@ -25,6 +27,12 @@ interface ReviewedToolPolicy {
 // Provider selection belongs here; authorization, catalog transitions, and
 // operator-selected action policies remain owned by the shared tool service.
 const reviewedPolicies: ReviewedToolPolicy[] = [
+  ...REST_CONNECTORS.map(connector => ({
+    sourceTemplateKey: connector.sourceTemplateKey,
+    quarantineNewEntries: true,
+    classifyRisk: (tool: ToolDescriptor) => connector.tools.some(candidate => candidate.name === tool.name) ? connector.risk(tool.name) : null,
+    matchesConnection: connector.matches,
+  })),
   {
     sourceTemplateKey: "railway",
     quarantineNewEntries: true,
@@ -34,14 +42,18 @@ const reviewedPolicies: ReviewedToolPolicy[] = [
     // review and drift handling, without enabling the native API bridge.
     matchesEndpoint: connection => isRailwayEndpoint(connection.config.url),
   },
-  {
-    sourceTemplateKey: "daytona",
+  // Native REST providers (Daytona, Unikraft) classify from their generated contract.
+  ...NATIVE_PROVIDER_CATALOGS.map((provider): ReviewedToolPolicy => ({
+    sourceTemplateKey: provider.slug,
     quarantineNewEntries: true,
-    classifyRisk: tool => daytonaRisk(tool.name),
-    matchesConnection: isDaytonaConnection,
-  },
+    classifyRisk: tool => provider.risk(tool.name),
+    matchesConnection: provider.isConnection,
+  })),
   { sourceTemplateKey: "enterpret", quarantineNewEntries: true, classifyRisk: enterpretRisk },
   { sourceTemplateKey: "braintrust", quarantineNewEntries: true, classifyRisk: braintrustRisk },
+  // Circleback adds tools to its hosted server over time; unreviewed names are
+  // writes, but stay available like other MCP-direct catalog connections.
+  { sourceTemplateKey: "circleback", quarantineNewEntries: false, classifyRisk: circlebackRisk },
 ];
 
 const bySource = new Map(reviewedPolicies.map(policy => [policy.sourceTemplateKey, policy]));

@@ -14,6 +14,7 @@ import type { ResourceLifecycleEvent } from "@paperclipai/plugin-sdk";
 import { z } from "zod";
 import { secretService } from "./secrets.js";
 import { persistActivity, type ActivityPublication } from "./activity-log.js";
+import { managedPluginEnabledCompanies } from "./managed-plugin-worker-env.js";
 
 export type ProjectSecretSnapshot = { revision: string };
 export function validateProjectInstanceSecretChanges(
@@ -82,7 +83,7 @@ export function projectInstanceSecretService(db: Db, pluginId: string) {
         ),
       );
     const [config] = await (lock ? configQuery.for("share") : configQuery);
-    if (!config)
+    if (!config && !managedPluginEnabledCompanies(plugin.pluginKey).includes(companyId))
       throw new Error("Project instance secrets require plugin configuration");
     const projectQuery = db
       .select()

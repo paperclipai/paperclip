@@ -1,5 +1,6 @@
 import express from "express";
 import request from "supertest";
+import { getTableName } from "drizzle-orm";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const mockIssueService = vi.hoisted(() => ({
@@ -16,27 +17,7 @@ const mockAgentService = vi.hoisted(() => ({
 
 const mockTrackAgentTaskCompleted = vi.hoisted(() => vi.fn());
 const mockGetTelemetryClient = vi.hoisted(() => vi.fn());
-const mockDbSelectWhere = vi.hoisted(() => vi.fn(() => ({
-  for: () => ({
-    then: (onFulfilled: (rows: unknown[]) => unknown, onRejected?: (reason: unknown) => unknown) =>
-      Promise.resolve([{
-        id: "22222222-2222-4222-8222-222222222222",
-        companyId: "company-1",
-        agentId: "agent-1",
-        contextSnapshot: { issueId: "11111111-1111-4111-8111-111111111111" },
-        permissions: null,
-      }]).then(onFulfilled, onRejected),
-  }),
-  then: (onFulfilled: (rows: unknown[]) => unknown, onRejected?: (reason: unknown) => unknown) =>
-    Promise.resolve([{
-      id: "22222222-2222-4222-8222-222222222222",
-      companyId: "company-1",
-      agentId: "agent-1",
-      contextSnapshot: { issueId: "11111111-1111-4111-8111-111111111111" },
-      permissions: null,
-    }]).then(onFulfilled, onRejected),
-})));
-const mockDbSelectFrom = vi.hoisted(() => vi.fn(() => ({ where: mockDbSelectWhere })));
+const mockDbSelectFrom = vi.hoisted(() => vi.fn());
 const mockDbSelect = vi.hoisted(() => vi.fn(() => ({ from: mockDbSelectFrom })));
 const mockDb = vi.hoisted(() => ({
   select: mockDbSelect,
@@ -180,27 +161,25 @@ describe("issue telemetry routes", () => {
       ...patch,
     }));
     mockDbSelect.mockImplementation(() => ({ from: mockDbSelectFrom }));
-    mockDbSelectFrom.mockImplementation(() => ({ where: mockDbSelectWhere }));
-    mockDbSelectWhere.mockImplementation(() => ({
-      for: () => ({
-        then: (onFulfilled: (rows: unknown[]) => unknown, onRejected?: (reason: unknown) => unknown) =>
-          Promise.resolve([{
-            id: "22222222-2222-4222-8222-222222222222",
-            companyId: "company-1",
-            agentId: "agent-1",
-            contextSnapshot: { issueId: "11111111-1111-4111-8111-111111111111" },
-            permissions: null,
-          }]).then(onFulfilled, onRejected),
-      }),
-      then: (onFulfilled: (rows: unknown[]) => unknown, onRejected?: (reason: unknown) => unknown) =>
-        Promise.resolve([{
+    mockDbSelectFrom.mockImplementation((table: Parameters<typeof getTableName>[0]) => {
+      const rows = getTableName(table) === "issues" ? [makeIssue("todo")]
+        : getTableName(table) === "agents" ? [{ id: "agent-1", companyId: "company-1", permissions: null }]
+        : [{
           id: "22222222-2222-4222-8222-222222222222",
           companyId: "company-1",
           agentId: "agent-1",
           contextSnapshot: { issueId: "11111111-1111-4111-8111-111111111111" },
           permissions: null,
-        }]).then(onFulfilled, onRejected),
-    }));
+        }];
+      const query = {
+        where: () => query,
+        orderBy: () => query,
+        for: () => query,
+        then: (resolve: (rows: unknown[]) => unknown, reject?: (reason: unknown) => unknown) =>
+          Promise.resolve(rows).then(resolve, reject),
+      };
+      return query;
+    });
     // Keep cold route imports in setup rather than the HTTP assertion timeout.
     await loadAppModules();
   }, 60_000);

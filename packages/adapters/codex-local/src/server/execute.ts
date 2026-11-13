@@ -114,6 +114,7 @@ import {
   createCodexAcpExecutor,
   resolveCodexExecutionEngineForRun,
 } from "./acp.js";
+import { codexShellEnvironmentKeys } from "@paperclipai/adapter-utils/codex-shell-environment";
 
 const __moduleDir = path.dirname(fileURLToPath(import.meta.url));
 const executeCodexAcp = createCodexAcpExecutor();
@@ -1291,18 +1292,9 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       if (observabilityProfile) replaceCodexProfileArgs(args, observabilityProfile.name);
       else if (observabilityPreparationFailed) disableCodexObservabilityArgs(args);
       const pricingContext = execArgs.fastModeApplied ? { serviceTier: "fast" } : undefined;
-      if (ctx.agentIdentity) {
-        const identityNames = ["PAPERCLIP_AGENT_KEY_ID", "PAPERCLIP_AGENT_PUBLIC_KEY", "PAPERCLIP_AGENT_PRIVATE_KEY"];
-        const shellKeys = [...new Set([
-          "PATH", "HOME", "LANG", "LANGUAGE", "LC_ALL", "LC_CTYPE", "TZ", "TMPDIR", "TEMP", "TMP", "CODEX_HOME",
-          // Keep Codex's default secret-name exclusions except for the scoped
-          // Paperclip API token used by the agent skill. Never include host env.
-          ...Object.keys(env).filter(key => key === "PAPERCLIP_API_KEY" || !/key|secret|token/i.test(key)),
-          ...identityNames,
-        ])];
-        args.unshift("-c", "features.shell_snapshot=false", "-c", 'shell_environment_policy.inherit="all"', "-c", "shell_environment_policy.ignore_default_excludes=true",
-          "-c", `shell_environment_policy.include_only=${JSON.stringify(shellKeys)}`);
-      }
+      const shellKeys = codexShellEnvironmentKeys(env, envConfigStrings, Boolean(ctx.agentIdentity));
+      args.unshift("-c", "features.shell_snapshot=false", "-c", 'shell_environment_policy.inherit="all"', "-c", "shell_environment_policy.ignore_default_excludes=true",
+        "-c", `shell_environment_policy.include_only=${JSON.stringify(shellKeys)}`);
       const commandNotesWithFastMode =
         execArgs.fastModeIgnoredReason == null
           ? commandNotes

@@ -157,7 +157,7 @@ POST /api/routines/{routineId}/triggers
 }
 ```
 
-- `signingMode`: `bearer` (default) or `hmac_sha256`
+- `signingMode`: `bearer` (default) or `hmac_sha256`. Agents can only create authenticated webhook triggers; if a sender cannot authenticate, ask a person to set that trigger up on the board.
 - `replayWindowSec`: 30-86400 (default 300)
 - Response includes the webhook URL (`publicId`-based) and the signing secret
 - Fire externally: `POST /api/routine-triggers/public/{publicId}/fire`
@@ -229,3 +229,19 @@ GET /api/routines/{routineId}/runs?limit=50
 ```
 
 Use the generic API endpoint tables in `skills/paperclip/references/api-reference.md` when you need a full cross-domain reference. Use this file when you need routine-specific behaviour, payload shape, or policy details.
+
+**Delivering results to the human's chat**
+
+A routine execution task can call `send_chat_message({ body, idempotencyKey })`
+or `POST /api/agents/me/chat/messages` using its run credentials. The server sends
+to that agent's chat with the run's responsible human, including before the human
+has opened the chat. No recipient lookup or destination ID is needed. Retain a
+stable key across retries of the source task; changed content with that key conflicts.
+
+For a morning PR review, gather the PRs, send a concise Markdown digest with
+links, then finish the task separately. Delivery commits immediately, marks the
+chat unread and includes a source-task link. It neither wakes the chat agent nor
+suppresses ordinary handoff completion notifications. Agent Chat must be enabled,
+the run must be active in standard mode, and the source task must be suitable
+for the company-visible chat. Missing or revoked recipients and restricted tasks
+fail explicitly; never select a replacement recipient.

@@ -43,7 +43,6 @@ export function useCanInviteCompanyMembers(enabled = true): boolean {
     queryKey: queryKeys.access.currentBoardAccess,
     queryFn: () => accessApi.getCurrentBoardAccess(),
     enabled,
-    retry: false,
     staleTime: 30_000,
   });
   return enabled && canInviteCompanyMembers(company?.selectedCompanyId, boardAccess.data);

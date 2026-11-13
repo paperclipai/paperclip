@@ -3,7 +3,7 @@ import { drizzle } from "drizzle-orm/postgres-js";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { createDb, withDedicatedDbConnection } from "./client.js";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./test-embedded-postgres.js";
-import { databaseWorkPending, installDatabaseWorkSignals, reconcileDatabaseWork, signalDatabaseWork, subscribeDatabaseWork } from "./work-signals.js";
+import { databaseWorkScopeKey, databaseWorkPending, installDatabaseWorkSignals, notifyDatabaseWorkOnCommit, reconcileDatabaseWork, signalDatabaseWork, subscribeDatabaseWork } from "./work-signals.js";
 
 const support = await getEmbeddedPostgresTestSupport();
 (support.supported ? describe : describe.skip)("database work signals", () => {
@@ -34,6 +34,20 @@ const support = await getEmbeddedPostgresTestSupport();
       expect(events).toEqual(["intent", "settled"]);
       expect(databaseWorkPending(db, "nested")).toBe(false);
       expect(await db.execute(sql`select * from work_signal_test where id = 'nested'`)).toHaveLength(1);
+    } finally { unsubscribe(); }
+  });
+
+  it("sends an untracked commit-bound hint that leaves nothing to reconcile", async () => {
+    const events: string[] = [];
+    const unsubscribe = subscribeDatabaseWork(db, "untracked", event => events.push(event));
+    try {
+      await expect(db.transaction(async tx => {
+        await notifyDatabaseWorkOnCommit(tx, "untracked");
+        throw new Error("abort");
+      })).rejects.toThrow("abort");
+      await db.transaction(async tx => { await notifyDatabaseWorkOnCommit(tx, "untracked"); });
+      expect(databaseWorkPending(db, "untracked")).toBe(false);
+      expect(events).toEqual([]);
     } finally { unsubscribe(); }
   });
 
@@ -185,5 +199,25 @@ describe("work signal query boundaries", () => {
   it("rejects registration on an autocommit root", async () => {
     const connection = installDatabaseWorkSignals({ execute: vi.fn(), transaction: vi.fn() });
     await expect(signalDatabaseWork(connection, "bad")).rejects.toThrow("inside a transaction");
+  });
+});
+
+
+describe("database work scope identity", () => {
+  type TestConnection = { execute: () => Promise<unknown[]>; transaction: (callback: (tx: TestConnection) => unknown) => Promise<unknown> };
+  function connection(): TestConnection {
+    return { execute: vi.fn(async () => []), transaction: async callback => callback(connection()) };
+  }
+  it("shares owner identity through child pools and nested transactions, but isolates independent owners", async () => {
+    const first = installDatabaseWorkSignals(connection());
+    const second = installDatabaseWorkSignals(connection());
+    const child = installDatabaseWorkSignals(connection(), first);
+    const key = databaseWorkScopeKey(first);
+    expect(databaseWorkScopeKey(second)).not.toBe(key);
+    expect(databaseWorkScopeKey(child)).toBe(key);
+    await child.transaction(async tx => {
+      expect(databaseWorkScopeKey(tx)).toBe(key);
+      await tx.transaction(async nested => { expect(databaseWorkScopeKey(nested)).toBe(key); });
+    });
   });
 });

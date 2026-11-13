@@ -53,7 +53,8 @@ export type NativeRuntimeResolution =
           | "acpx_runtime"
           | "openai_dot_mcp"
           | "grok_bot_mcp"
-          | "muse_external";
+          | "muse_external"
+          | "cursor_cloud_api";
         protocolVersion: 1;
       };
       authorityDecision: NativeStatusDecision;
@@ -104,7 +105,7 @@ export function resolveNativeRuntimeMode(input: {
   grokEnabled?: boolean;
   runtimeConfig: unknown;
   adapterConfig?: unknown;
-  agent: { id?: string; status: string; adapterType: string | null };
+  agent: { id?: string; companyId?: string; status: string; adapterType: string | null };
   issue: { id: string; workMode: string; executionWorkspaceId?: string | null } | null;
   target: { kind?: string } | null | undefined;
   workspaceId: string | null;
@@ -123,7 +124,7 @@ export function resolveNativeRuntimeMode(input: {
   }
   let runnerProfile: PaperclipRunnerProviderProfile;
   try {
-    runnerProfile = resolvePaperclipRunnerProviderProfile(input.adapterConfig);
+    runnerProfile = resolvePaperclipRunnerProviderProfile(input.adapterConfig, { companyId: input.agent.companyId });
   } catch (error) {
     if (error instanceof PaperclipRunnerProviderProfileError) {
       throw ineligible(error.code, error.message);
@@ -140,7 +141,7 @@ export function resolveNativeRuntimeMode(input: {
     throw ineligible("paperclip_runner_grok_disabled", "Enable Grok Bot, Paperclip Runner, and Assistant connections (MCP) before assigning new work.");
   } else if (runnerProfile.provider !== "codex" && runnerProfile.provider !== "opencode"
     && !(runnerProfile.provider === "acpx"
-      && (["claude", "copilot", "pi"].includes(runnerProfile.acpxAgent ?? "")))
+      && (["claude", "copilot", "pi", "antigravity"].includes(runnerProfile.acpxAgent ?? "")))
     && !input.enabled) {
     throw ineligible(
       "paperclip_runner_rollout_disabled",
@@ -156,11 +157,14 @@ export function resolveNativeRuntimeMode(input: {
       "Paperclip Runner requires an active agent.",
     );
   }
-  const allowedWorkModes = ["standard", "planning", "ask"];
+  if (runnerProfile.provider === "cursor_cloud" && (input.target?.kind ?? "local") !== "local") {
+    throw ineligible("paperclip_runner_cursor_cloud_local_controller_required", "Cursor Cloud currently requires a local Paperclip controller. Cursor hosts its execution environment.");
+  }
+  const allowedWorkModes = ["standard", "planning", "ask", "skill_test"];
   if (!input.issue || !allowedWorkModes.includes(input.issue.workMode)) {
     throw ineligible(
       "paperclip_runner_issue_ineligible",
-      "Paperclip Runner requires a standard, planning, or ask task.",
+      "Paperclip Runner requires a standard, planning, ask, or skill test task.",
     );
   }
   const rollout = resolveNativeMigrationStatus({
@@ -268,6 +272,7 @@ export function resolveHeartbeatRuntimeMode(input: {
       : resolution.profile.backend === "muse_external" ? "muse"
       : resolution.profile.backend === "grok_bot_mcp" ? "grok_bot"
       : resolution.profile.backend === "openai_dot_mcp" ? "openai_dot"
+      : resolution.profile.backend === "cursor_cloud_api" ? "cursor_cloud"
       : resolution.profile.backend === "acpx_runtime"
           ? "acpx"
           : "codex",
@@ -292,7 +297,7 @@ export function resolveHeartbeatNativeRuntimeMode(input: {
   grokEnabled?: boolean;
   runtimeConfig: unknown;
   adapterConfig?: unknown;
-  agent: { id?: string; status: string; adapterType: string | null };
+  agent: { id?: string; companyId?: string; status: string; adapterType: string | null };
   issue: { id: string; workMode: string; executionWorkspaceId?: string | null } | null;
   target: { kind?: string } | null | undefined;
   workspaceId: string | null;
@@ -324,6 +329,7 @@ export function resolveHeartbeatNativeRuntimeMode(input: {
         : driverKind === "muse_external" ? "muse_external"
         : driverKind === "grok_bot_mcp" ? "grok_bot_mcp"
         : driverKind === "openai_dot_mcp" ? "openai_dot_mcp"
+        : driverKind === "cursor_cloud_api" ? "cursor_cloud_api"
         : driverKind === "acpx_runtime"
             ? "acpx_runtime"
             : driverKind === null

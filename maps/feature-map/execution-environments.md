@@ -52,7 +52,12 @@ the live lease and cleanup is confirmed. Inspect `platformQualificationRecorded`
 and its diagnostic in the probe result: connection success alone does not mean
 the image has native runtime qualification.
 
-The measured record is server-owned, company-bound and tied to the effective
+Paperclip-managed Cloud images use the current platform-selected image without
+a saved qualification prerequisite when the active Cloud configuration provisions
+the sandbox provider. Custom environments and active captured custom images
+retain qualification requirements.
+
+For other images, the measured record is server-owned, company-bound and tied to the effective
 configuration and active custom-image identity. Mutable tags, provider defaults
 and snapshots without verified provider identities do not qualify. Daytona
 qualification creates by provider ID and binds native execution to that same ID;
@@ -90,6 +95,15 @@ data transfer is outside task execution. See the
 The [fake-provider integration](../../server/src/__tests__/plugin-runner-task.integration.test.ts)
 checks acquisition, SDK dispatch, scope denial, stop proof and deletion recovery.
 Its WebSocket is mocked; it does not qualify a live provider or a real Runner handshake.
+Controller replacement reuses a surviving plugin task's active lease and Runner
+identity. Follow the [remote continuity recipe](../../doc/testing-native-remote-continuity.md#replacing-the-main-server)
+to verify recovery across main-server replacement.
+
+For a same-run retry on a replacement plugin task, verify that the retained
+checkpoint loads before provider startup. The prior execution must have a stop
+receipt, and the checkpoint must match the original session identity. Include a
+turn that ends without a completion result; a successful initial turn alone does
+not exercise this recovery path. Reject missing stop proof and changed identities.
 
 Automated: [execution target](../../server/src/__tests__/environment-execution-target.test.ts) and [custom images](../../server/src/__tests__/environment-custom-images-service.test.ts) cover contracts; [SSH live test](../../server/src/__tests__/environment-live-ssh.test.ts) requires its own external setup.
 

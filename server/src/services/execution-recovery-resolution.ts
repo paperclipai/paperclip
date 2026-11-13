@@ -1,14 +1,22 @@
+import { settleOperatorContainedNativeOwner } from "./native-runtime/native-failed-run-owner-release.js";
+import { notifyRoutineExecutionStatus } from "./routine-execution-status-notifications.js";
+import { notifyNativeStatusReassessment } from "./native-status-reassessment-notifications.js";
+import { notifyUnsafeWorkspaceExportRecovery } from "./unsafe-workspace-export-notifications.js";
+import { notifyChatResponseAvailability } from "./chat-response-availability.js";
 import { DELIVERY_QUEUES, notifyDeliveryWork } from "./delivery-work-notifications.js";
 import { notifyExecutionRunWork } from "./execution-control-notifications.js";
 import { hasWorkspaceRestoreFailure } from "@paperclipai/shared";
 import { randomUUID } from "node:crypto";
 import { canonicalExecutionUuid } from "./execution-identity.js";
-import { claimedAdapterType, conversationRecoveryActionPredicate, getConversationOwnershipBlocker } from "./conversation-continuation.js";
+import { conversationRecoveryActionPredicate, getConversationOwnershipBlocker } from "./conversation-continuation.js";
+import { isInterruptedNativePreparationCandidate } from "./cancelled-native-startup.js";
 import { persistActivity } from "./activity-log.js";
 import { appendHeartbeatRunEvent } from "./heartbeat-run-events.js";
 import { logger } from "../middleware/logger.js";
-import { and, eq, inArray, isNull, not, or, sql } from "drizzle-orm";
+import { and, asc, eq, exists, inArray, isNull, not, or, sql } from "drizzle-orm";
 import {
+  agentWakeupRequests,
+  agents,
   chatActions,
   environmentLeases,
   heartbeatRuns,
@@ -28,9 +36,44 @@ import { isSupersededConversationRun } from "./agent-conversations.js";
 import { hasRequiredWorkspaceRecovery } from "./workspace-restore-recovery-state.js";
 import { hasRemoteTerminationReceipt } from "./remote-execution-termination.js";
 import { readSystemRecovery } from "./system-recovery-state.js";
+import { provenGoneLegacyControllerBootId } from "./legacy-controller-lease.js";
+import { continueFreshInTransaction, continueHeldExecutions, freshContinuationCheckDue, recordFreshContinuationCheck,
+  settleCoalescedFreshContinuationHolds } from "./fresh-continuation-fallback.js";
+import { alias } from "drizzle-orm/pg-core";
+import { RECOVERY_WAKE_REASONS } from "./heartbeat/queued-run-dispatch-order.js";
+import { parseHeartbeatPolicy } from "./heartbeat/timer-policy.js";
+
+import { RECOVERY_CONTINUATIONS_PER_COMPANY_PER_PASS, RECOVERY_CONTINUATION_MAX_HOLD_MS,
+  recoveryContinuationHeldSince } from "./recovery-continuation-pacing.js";
+
+export { RECOVERY_CONTINUATIONS_PER_COMPANY_PER_PASS, RECOVERY_CONTINUATION_DELIVERY_BOUND_MS,
+  RECOVERY_CONTINUATION_MAX_HOLD_MS } from "./recovery-continuation-pacing.js";
+const RECOVERY_CONTINUATION_PAGES_PER_PASS = 8;
 
 /** An operator records observed outcomes; this is not permission to blindly retry. */
-export async function validateExecutionReconciliation(input: {
+/**
+ * The user-facing note for a settled recovery hold. A restart-recovery hold
+ * names its own cause: a workspace export retried after that hold does not
+ * mean the user must repair the workspace.
+ */
+export function executionRecoverySettlementNote(input: {
+  current: boolean; cause: string; workspaceRestoreFailed: boolean;
+  /** The hold's recorded trigger; a same-run retry is not a server restart. */
+  trigger?: unknown;
+}): string {
+  if (!input.current) return "Recovery closed because the task's owner, execution, or status changed. No work was replayed.";
+  if (input.cause === "native_restart_recovery_blocked" && input.trigger === "same_run_retry") {
+    return "Automatic retry of this run stopped. Saved work is preserved; actions with unverified outcomes will not be repeated.";
+  }
+  if (input.cause === "native_restart_recovery_blocked") {
+    return "Automatic recovery stopped after a server restart because the previous execution could not be verified. Saved work is preserved; actions with unverified outcomes will not be repeated.";
+  }
+  return input.workspaceRestoreFailed
+    ? "Workspace repair required. Verify safe staging or repair before continuing. Saved work and approval decisions remain in force."
+    : "Automatic recovery stopped. Recorded work is preserved; actions with unverified outcomes will not be repeated.";
+}
+
+type ExecutionReconciliationInput = {
   db: Db;
   companyId: string;
   issueId: string;
@@ -39,12 +82,36 @@ export async function validateExecutionReconciliation(input: {
   decision: ExecutionReconciliation | undefined;
   /** Board-only source repair: never authorize a continuation of this run. */
   workspaceRepairOnly?: boolean;
-}) {
+  controllerContainment?: { actionId: string; actorId: string };
+};
+
+export async function validateExecutionReconciliation(input: ExecutionReconciliationInput) {
+  if (input.controllerContainment) {
+    // Validation and contained-owner settlement must roll back together even
+    // when a caller is not already inside the board route's transaction.
+    return input.db.transaction(tx => validateExecutionReconciliationInScope({ ...input, db: tx as unknown as Db }));
+  }
+  return validateExecutionReconciliationInScope(input);
+}
+
+async function validateExecutionReconciliationInScope(input: ExecutionReconciliationInput) {
   const { db, companyId, issueId, agentId, decision } = input;
   if (!decision || decision.runId !== input.sourceRunId || (!agentId && !input.workspaceRepairOnly)) {
     throw conflict(
       "Reconcile the recorded execution and its action outcomes before continuing this task.",
     );
+  }
+  let operatorContained = false;
+  if (decision.controllerStopped !== undefined || decision.controllerAuthorityDigest !== undefined) {
+    if (!decision.controllerStopped || !decision.controllerAuthorityDigest || !input.controllerContainment
+      || input.workspaceRepairOnly) throw conflict("Original-host controller containment requires its exact board recovery action.");
+    operatorContained = await settleOperatorContainedNativeOwner(db, {
+      companyId, issueId, runId: decision.runId, actionId: input.controllerContainment.actionId,
+      actorId: input.controllerContainment.actorId, authorityDigest: decision.controllerAuthorityDigest,
+      actionOutcome: decision.actionOutcome, outcomeEvidence: decision.outcomeEvidence,
+    });
+    if (!operatorContained) throw conflict("The recorded controller authority changed, is still leased, or its cleanup is unsettled. Refresh before recording containment.",
+      { code: "native_controller_containment_stale" });
   }
   const [run] = await db
     .select()
@@ -87,7 +154,7 @@ export async function validateExecutionReconciliation(input: {
       (!decision.workspaceRepairEvidence || decision.workspaceRepairEvidence.trim().length < 20)) {
     throw conflict("Verify safe workspace staging or repair and record workspaceRepairEvidence before continuing this run.");
   }
-  let checkLocalProcesses = true;
+  let checkLocalProcesses = !operatorContained;
   if (retainedWorkspace) {
     const leases = await db.select().from(environmentLeases).where(and(
       eq(environmentLeases.companyId, companyId), eq(environmentLeases.heartbeatRunId, run.id),
@@ -105,7 +172,7 @@ export async function validateExecutionReconciliation(input: {
           : !hasRemoteTerminationReceipt(lease))) {
       throw conflict("The retained workspace environment has not confirmed that it stopped. Wait for cleanup before recording workspace repair.");
     }
-    checkLocalProcesses = leases.some(lease => lease.provider === "local");
+    checkLocalProcesses = !operatorContained && leases.some(lease => lease.provider === "local");
   }
   // A retained remote source's PIDs belong to its sandbox, not this server.
   // Its exact lease receipts above replace host-local process probes.
@@ -176,8 +243,10 @@ export async function markExecutionReconciliation(
   decision: ExecutionReconciliation,
   actorId: string,
   deliveryOwner?: { kind: "chat_failed_run_retry"; actionId: string },
-  options?: { workspaceRepairOnly?: boolean },
+  options?: { workspaceRepairOnly?: boolean; controllerContainmentOnly?: boolean },
 ) {
+  if (options?.controllerContainmentOnly && (!decision.controllerStopped || !decision.controllerAuthorityDigest || deliveryOwner))
+    throw conflict("Controller containment records no automatic continuation.");
   if (options?.workspaceRepairOnly && (deliveryOwner || !hasRequiredWorkspaceRecovery(action.evidence))) {
     throw conflict("Workspace repair must target the retained source without a continuation owner.");
   }
@@ -218,7 +287,7 @@ export async function markExecutionReconciliation(
           eq(nativeRunFinalizations.runId, decision.runId),
         ),
       );
-    await tx
+    const [source] = await tx
       .update(issueRecoveryActions)
       .set({
         evidence: {
@@ -229,7 +298,7 @@ export async function markExecutionReconciliation(
             actorId,
             recordedAt: new Date().toISOString(),
           },
-          continuationDelivery: options?.workspaceRepairOnly ? "not_requested" : deliveryOwner ? "delegated" : "pending",
+          continuationDelivery: options?.workspaceRepairOnly || options?.controllerContainmentOnly ? "not_requested" : deliveryOwner ? "delegated" : "pending",
           ...(deliveryOwner ? { continuationDeliveryOwner: deliveryOwner } : {}),
         },
       })
@@ -238,7 +307,59 @@ export async function markExecutionReconciliation(
           eq(issueRecoveryActions.companyId, action.companyId),
           eq(issueRecoveryActions.id, action.id),
         ),
-      );
+      ).returning({
+        cause: issueRecoveryActions.cause,
+        fingerprint: issueRecoveryActions.fingerprint,
+        kind: issueRecoveryActions.kind,
+        evidence: issueRecoveryActions.evidence,
+      });
+    if (options?.controllerContainmentOnly) {
+      // A Retry clicked before the operator reviewed the effects must not turn
+      // into an automatic replay after containment. Retain only that exact,
+      // unadmitted source receipt as skipped; newer/accepted intents are untouched.
+      await tx.update(agentWakeupRequests).set({ status: "skipped", finishedAt: new Date(), updatedAt: new Date(),
+        error: "controller_containment_requires_new_retry" }).where(and(
+        eq(agentWakeupRequests.companyId, action.companyId), isNull(agentWakeupRequests.runId),
+        inArray(agentWakeupRequests.status, ["queued", "deferred_issue_execution"]),
+        sql`${agentWakeupRequests.payload}->>'issueId' = ${action.sourceIssueId}`,
+        sql`${agentWakeupRequests.payload}->'taskRetry'->>'schema' = 'paperclip.task-retry.v1'`,
+        sql`${agentWakeupRequests.payload}->'taskRetry'->>'sourceRunId' = ${decision.runId}`,
+      ));
+      return;
+    }
+    if (
+      !source || options?.workspaceRepairOnly ||
+      source.cause !== "legacy_execution_requires_reconciliation" ||
+      source.fingerprint !== `legacy-execution:${decision.runId}` ||
+      ["workspaceRestoreFailure", "workspaceRestoreRecovery", "systemRecovery"].some(key => key in source.evidence)
+    ) return;
+    const now = new Date();
+    const siblings = await tx.update(issueRecoveryActions).set({
+      status: "resolved", outcome: "cancelled", resolvedAt: now, updatedAt: now,
+      wakePolicy: null, monitorPolicy: null,
+      resolutionNote: "The same source execution was reconciled through another recovery action.",
+      evidence: sql`(${issueRecoveryActions.evidence} - 'automaticRecovery') || ${JSON.stringify({
+        executionReconciliation: { ...decision, actorId, recordedAt: now.toISOString() },
+        continuationDelivery: "invalidated",
+        coalescedIntoRecoveryActionId: action.id,
+      })}::jsonb`,
+    }).where(and(
+      eq(issueRecoveryActions.companyId, action.companyId),
+      eq(issueRecoveryActions.sourceIssueId, action.sourceIssueId),
+      not(eq(issueRecoveryActions.id, action.id)),
+      eq(issueRecoveryActions.kind, source.kind),
+      eq(issueRecoveryActions.cause, source.cause),
+      eq(issueRecoveryActions.fingerprint, source.fingerprint),
+      sql`${issueRecoveryActions.evidence}->>'runId' = ${decision.runId}`,
+      sql`${issueRecoveryActions.evidence}->'automaticRecovery'->>'replay' = 'blocked'`,
+      sql`not (${issueRecoveryActions.evidence} ?| array['executionReconciliation', 'workspaceRestoreFailure', 'workspaceRestoreRecovery', 'systemRecovery'])`,
+    )).returning({ id: issueRecoveryActions.id });
+    if (siblings.length) await persistActivity(tx as unknown as Db, {
+      companyId: action.companyId, actorType: "user", actorId,
+      action: "issue.recovery_action_resolved", entityType: "issue", entityId: action.sourceIssueId,
+      details: { reason: "same_source_execution_reconciled", recoveryActionId: action.id,
+        coalescedRecoveryActionIds: siblings.map(sibling => sibling.id), runId: decision.runId },
+    });
   });
 }
 
@@ -246,70 +367,180 @@ export async function deliverReconciledExecutions(
   db: Db,
   wake: ReturnType<typeof import("./heartbeat.js").heartbeatService>["wakeup"],
 ) {
-  const pending = await db
-    .select()
-    .from(issueRecoveryActions)
-    .where(
-      and(
-        eq(issueRecoveryActions.status, "resolved"),
-        sql`${issueRecoveryActions.evidence}->>'continuationDelivery' = 'pending'`,
-      ),
-    )
-    .limit(25);
-  for (const action of pending) {
-    try {
-      const decision = action.evidence.executionReconciliation as
-        ExecutionReconciliation | undefined;
-      if (!decision || !action.returnOwnerAgentId) continue;
-      const pendingDecision = and(
-        eq(issueRecoveryActions.companyId, action.companyId),
-        eq(issueRecoveryActions.id, action.id),
-        eq(issueRecoveryActions.status, "resolved"),
-        sql`${issueRecoveryActions.evidence}->>'continuationDelivery' = 'pending'`,
-        sql`${issueRecoveryActions.evidence}->'executionReconciliation' = ${JSON.stringify(decision)}::jsonb`,
-      );
-      const [task] = await db
-        .select()
-        .from(issues)
-        .where(
-          and(
-            eq(issues.companyId, action.companyId),
-            eq(issues.id, action.sourceIssueId),
-          ),
+  const recoveryReasons = [...RECOVERY_WAKE_REASONS];
+  const sourceRun = alias(heartbeatRuns, "continuation_source_run");
+  const seenActionIds = new Set<string>();
+  const seenAgentIds = new Set<string>();
+  const admittedByCompany = new Map<string, number>();
+  const fullCompanies = () => [...admittedByCompany].flatMap(([companyId, count]) =>
+    count >= RECOVERY_CONTINUATIONS_PER_COMPANY_PER_PASS ? [companyId] : []);
+  const heldSince = sql`coalesce(${issueRecoveryActions.evidence}#>>'{freshContinuation,recordedAt}', ${issueRecoveryActions.resolvedAt}::text, ${issueRecoveryActions.updatedAt}::text)::timestamptz`;
+  const readPendingPage = async () => {
+    const companies = fullCompanies();
+    const heldBound = new Date(Date.now() - RECOVERY_CONTINUATION_MAX_HOLD_MS).toISOString();
+    const pastBound = sql`${heldSince} <= ${heldBound}::timestamptz`;
+    const overdueTurn = sql`case when ${pastBound} then greatest(${heldSince},
+      (${issueRecoveryActions.evidence}->>'continuationDeliveryAttemptedAt')::timestamptz) end`;
+    const priority = [
+      sql`${pastBound} desc`,
+      sql`${overdueTurn} asc nulls last`,
+      sql`${sourceRun.finishedAt} desc nulls last`,
+      sql`${issueRecoveryActions.updatedAt} asc`,
+    ];
+    const candidates = db
+      .select({
+        id: issueRecoveryActions.id,
+        pastBound: sql<boolean>`${pastBound}`.as("past_bound"),
+        heldAt: sql<Date | null>`${overdueTurn}`.as("held_at"),
+        sourceFinishedAt: sql<Date | null>`${sourceRun.finishedAt}`.as("source_finished_at"),
+        actionUpdatedAt: sql<Date>`${issueRecoveryActions.updatedAt}`.as("action_updated_at"),
+        agentRank: sql<number>`row_number() over (
+          partition by coalesce(${issueRecoveryActions.returnOwnerAgentId}::text, ${issueRecoveryActions.id}::text)
+          order by ${sql.join(priority, sql`, `)})`
+          .as("agent_rank"),
+      })
+      .from(issueRecoveryActions)
+      .leftJoin(sourceRun, and(
+        eq(sourceRun.companyId, issueRecoveryActions.companyId),
+        sql`${sourceRun.id}::text = ${issueRecoveryActions.evidence}#>>'{executionReconciliation,runId}'`,
+      ))
+      .where(
+        and(
+          eq(issueRecoveryActions.status, "resolved"),
+          sql`${issueRecoveryActions.evidence}->>'continuationDelivery' = 'pending'`,
+          seenActionIds.size ? not(inArray(issueRecoveryActions.id, [...seenActionIds])) : undefined,
+          seenAgentIds.size ? sql`coalesce(${issueRecoveryActions.returnOwnerAgentId}::text, '') <> all(${sql.param([...seenAgentIds])}::text[])` : undefined,
+          companies.length ? not(inArray(issueRecoveryActions.companyId, companies)) : undefined,
+          sql`(${pastBound} or not exists (select 1 from ${heartbeatRuns} queued_recovery
+            where queued_recovery.company_id = ${issueRecoveryActions.companyId}
+              and queued_recovery.agent_id = ${issueRecoveryActions.returnOwnerAgentId}
+              and queued_recovery.status = 'queued'
+              and queued_recovery.context_snapshot->>'wakeReason' in (${sql.join(recoveryReasons.map(reason => sql`${reason}`), sql`, `)})))`,
+        ),
+      )
+      .as("continuation_candidates");
+    const rows = await db
+      .select({ action: issueRecoveryActions })
+      .from(candidates)
+      .innerJoin(issueRecoveryActions, eq(issueRecoveryActions.id, candidates.id))
+      .where(eq(candidates.agentRank, 1))
+      .orderBy(
+        sql`${candidates.pastBound} desc`,
+        sql`${candidates.heldAt} asc nulls last`,
+        sql`${candidates.sourceFinishedAt} desc nulls last`,
+        sql`${candidates.actionUpdatedAt} asc`,
+      )
+      .limit(25);
+    return rows.map(row => row.action);
+  };
+  const deferRefusedContinuation = (action: typeof issueRecoveryActions.$inferSelect) => db.update(issueRecoveryActions)
+    .set({ evidence: sql`${issueRecoveryActions.evidence} || ${JSON.stringify(
+      { continuationDeliveryAttemptedAt: new Date().toISOString() })}::jsonb` })
+    .where(and(
+      eq(issueRecoveryActions.companyId, action.companyId),
+      eq(issueRecoveryActions.id, action.id),
+      eq(issueRecoveryActions.status, "resolved"),
+      sql`${issueRecoveryActions.evidence}->>'continuationDelivery' = 'pending'`,
+    ));
+  const agentHasRoom = async (action: typeof issueRecoveryActions.$inferSelect, agentId: string) => {
+    if ((admittedByCompany.get(action.companyId) ?? 0) >= RECOVERY_CONTINUATIONS_PER_COMPANY_PER_PASS) return false;
+    const [agent] = await db.select().from(agents).where(and(eq(agents.companyId, action.companyId), eq(agents.id, agentId)));
+    if (!agent) return true;
+    const [queued] = await db.select({ count: sql<number>`count(*)::int` }).from(heartbeatRuns).where(and(
+      eq(heartbeatRuns.companyId, action.companyId), eq(heartbeatRuns.agentId, agentId), eq(heartbeatRuns.status, "queued")));
+    if (Number(queued?.count ?? 0) < parseHeartbeatPolicy(agent).maxConcurrentRuns) return true;
+    return Date.now() - recoveryContinuationHeldSince(action) >= RECOVERY_CONTINUATION_MAX_HOLD_MS;
+  };
+  for (let page = 0; page < RECOVERY_CONTINUATION_PAGES_PER_PASS; page += 1) {
+    const pending = await readPendingPage();
+    if (!pending.length) break;
+    for (const action of pending) {
+      seenActionIds.add(action.id);
+      if (action.returnOwnerAgentId && seenAgentIds.has(action.returnOwnerAgentId)) continue;
+      try {
+        const decision = action.evidence.executionReconciliation as
+          ExecutionReconciliation | undefined;
+        if (!decision || !action.returnOwnerAgentId) continue;
+        const pendingDecision = and(
+          eq(issueRecoveryActions.companyId, action.companyId),
+          eq(issueRecoveryActions.id, action.id),
+          eq(issueRecoveryActions.status, "resolved"),
+          sql`${issueRecoveryActions.evidence}->>'continuationDelivery' = 'pending'`,
+          sql`${issueRecoveryActions.evidence}->'executionReconciliation' = ${JSON.stringify(decision)}::jsonb`,
         );
-      if (
-        !task ||
-        task.assigneeAgentId !== action.returnOwnerAgentId ||
-        ["done", "cancelled"].includes(task.status)
-      ) {
-        await db
-          .update(issueRecoveryActions)
-          .set({
-            evidence: sql`${issueRecoveryActions.evidence} || '{"continuationDelivery":"invalidated"}'::jsonb`,
-          })
-          .where(pendingDecision);
-        continue;
-      }
-      const run = await wake(action.returnOwnerAgentId, {
-        source: "automation",
-        triggerDetail: "system",
-        reason: "issue_recovery_action_restored",
-        idempotencyKey: `execution-reconciliation:${action.id}`,
-        payload: { issueId: task.id, recoveryActionId: action.id },
-        requestedByActorType: "system",
-        requestedByActorId: "execution-recovery",
-        contextSnapshot: {
-          issueId: task.id,
-          taskId: task.id,
-          recoveryActionId: action.id,
-          previousRunId: decision.runId,
-          retryOfRunId: decision.runId,
-          forceFreshSession: true,
-          wakeReason: "issue_recovery_action_restored",
-          source: "execution.reconciled",
-        },
-      });
-      if (run)
+        const [task] = await db
+          .select()
+          .from(issues)
+          .where(
+            and(
+              eq(issues.companyId, action.companyId),
+              eq(issues.id, action.sourceIssueId),
+            ),
+          );
+        if (
+          !task ||
+          task.assigneeAgentId !== action.returnOwnerAgentId ||
+          ["done", "cancelled"].includes(task.status)
+        ) {
+          await db
+            .update(issueRecoveryActions)
+            .set({
+              evidence: sql`${issueRecoveryActions.evidence} || '{"continuationDelivery":"invalidated"}'::jsonb`,
+            })
+            .where(pendingDecision);
+          await settleCoalescedFreshContinuationHolds(db, { companyId: action.companyId, primaryId: action.id, delivery: "invalidated" });
+          continue;
+        }
+        // A fresh continuation is the task's next run only while nothing else
+        // started one: a person's Retry or saved input that ran since it was
+        // recorded already continues the task, so it is never a second run.
+        const fresh = action.evidence.freshContinuation as { recordedAt?: unknown } | undefined;
+        if (fresh && typeof fresh.recordedAt === "string") {
+          const [newer] = await db.select({ id: heartbeatRuns.id }).from(heartbeatRuns).where(and(
+            eq(heartbeatRuns.companyId, action.companyId), sql`${heartbeatRuns.id}::text <> ${decision.runId}`,
+            or(eq(heartbeatRuns.nativeIssueId, task.id), eq(heartbeatRuns.issueId, task.id),
+              sql`${heartbeatRuns.contextSnapshot}->>'issueId' = ${task.id}::text`),
+            sql`${heartbeatRuns.createdAt} >= ${fresh.recordedAt}::timestamptz`)).limit(1);
+          if (newer) {
+            await db.update(issueRecoveryActions).set({ evidence: sql`${issueRecoveryActions.evidence} || ${JSON.stringify(
+              { continuationDelivery: "delivered", continuationRunId: newer.id, continuationSupersededByRun: true })}::jsonb` })
+              .where(pendingDecision);
+            await settleCoalescedFreshContinuationHolds(db, { companyId: action.companyId, primaryId: action.id,
+              delivery: "delivered", continuationRunId: newer.id });
+            continue;
+          }
+        }
+        if (!await agentHasRoom(action, action.returnOwnerAgentId)) {
+          seenAgentIds.add(action.returnOwnerAgentId);
+          continue;
+        }
+        const run = await wake(action.returnOwnerAgentId, {
+          source: "automation",
+          triggerDetail: "system",
+          reason: "issue_recovery_action_restored",
+          idempotencyKey: `execution-reconciliation:${action.id}`,
+          payload: { issueId: task.id, recoveryActionId: action.id },
+          requestedByActorType: "system",
+          requestedByActorId: "execution-recovery",
+          contextSnapshot: {
+            issueId: task.id,
+            taskId: task.id,
+            recoveryActionId: action.id,
+            previousRunId: decision.runId,
+            retryOfRunId: decision.runId,
+            forceFreshSession: true,
+            wakeReason: "issue_recovery_action_restored",
+            source: "execution.reconciled",
+            ...((action.evidence.freshContinuation as { isolation?: unknown } | undefined)?.isolation === "fresh_isolated_workspace"
+              ? { freshContinuationIsolation: action.id } : {}),
+          },
+        });
+        seenAgentIds.add(action.returnOwnerAgentId);
+        if (!run) {
+          await deferRefusedContinuation(action);
+          continue;
+        }
+        admittedByCompany.set(action.companyId, (admittedByCompany.get(action.companyId) ?? 0) + 1);
         await db.transaction(async (tx) => {
           await tx
             .update(heartbeatRuns)
@@ -334,14 +565,37 @@ export async function deliverReconciledExecutions(
               )}::jsonb`,
             })
             .where(pendingDecision);
+          await settleCoalescedFreshContinuationHolds(tx as unknown as Db, { companyId: action.companyId, primaryId: action.id,
+            delivery: "delivered", continuationRunId: run.id });
         });
-    } catch {
-      logger.warn(
-        { recoveryActionId: action.id },
-        "Reconciled execution continuation remains pending for retry",
-      );
+      } catch {
+        if (action.returnOwnerAgentId) seenAgentIds.add(action.returnOwnerAgentId);
+        await deferRefusedContinuation(action).catch(() => undefined);
+        logger.warn(
+          { recoveryActionId: action.id },
+          "Reconciled execution continuation remains pending for retry",
+        );
+      }
     }
   }
+}
+
+const supersedingWorkspaceHold = alias(issueRecoveryActions, "superseding_workspace_hold");
+
+function supersedingNativeWorkspaceHold(db: Db, input: {
+  companyId: string | typeof heartbeatRuns.companyId;
+  issueId: string | typeof issueRecoveryActions.sourceIssueId;
+  runId: string | typeof heartbeatRuns.id;
+}) {
+  return db.select({ id: supersedingWorkspaceHold.id }).from(supersedingWorkspaceHold).where(and(
+    eq(supersedingWorkspaceHold.companyId, input.companyId),
+    eq(supersedingWorkspaceHold.sourceIssueId, input.issueId),
+    eq(supersedingWorkspaceHold.status, "resolved"),
+    eq(supersedingWorkspaceHold.cause, "native_continuation_requires_reconciliation"),
+    sql`${supersedingWorkspaceHold.evidence}->>'runId' = ${input.runId}::text`,
+    sql`${supersedingWorkspaceHold.evidence}->'automaticRecovery'->>'replay' = 'blocked'`,
+    sql`${supersedingWorkspaceHold.evidence}->'workspaceRestoreRecovery'->>'schema' = 'paperclip.workspace-restore-recovery.v1'`,
+  ));
 }
 
 export function unresolvedExecutionDispositions(db: Db, limit: number) {
@@ -372,9 +626,16 @@ export function unresolvedExecutionDispositions(db: Db, limit: number) {
         sql`not (${issueRecoveryActions.evidence} ? 'systemRecovery')`,
         inArray(issueRecoveryActions.status, ["active", "escalated"]),
         eq(issueRecoveryActions.kind, "active_run_watchdog"),
-        inArray(issueRecoveryActions.cause, [
-          ...EXECUTION_RECONCILIATION_CAUSES,
-        ]),
+        // A fresh continuation that backed off is checked again when due.
+        freshContinuationCheckDue(new Date()),
+        or(inArray(issueRecoveryActions.cause, [...EXECUTION_RECONCILIATION_CAUSES]), and(
+          eq(heartbeatRuns.runtimeMode, "native"), eq(heartbeatRuns.nativePhase, "terminal_failure"),
+          eq(nativeRunFinalizations.phase, "terminal_failure"), isNull(nativeRunFinalizations.nextAttemptAt),
+          sql`${issueRecoveryActions.wakePolicy}->>'kind' = 'resume_native_run'`,
+          sql`${issueRecoveryActions.wakePolicy}->>'runId' = ${heartbeatRuns.id}::text`,
+          exists(supersedingNativeWorkspaceHold(db, { companyId: heartbeatRuns.companyId,
+            issueId: issueRecoveryActions.sourceIssueId, runId: heartbeatRuns.id })),
+        )),
         inArray(heartbeatRuns.status, [
           "failed",
           "timed_out",
@@ -425,6 +686,7 @@ export async function settleUnrecoverableExecutions(
       .limit(25).for("update", { skipLocked: true });
     for (const candidate of foldable) {
       if (await getConversationOwnershipBlocker(tx as unknown as Db, candidate.companyId, candidate.sourceIssueId)) continue;
+      await notifyUnsafeWorkspaceExportRecovery(tx, { companyId: candidate.companyId, issueId: candidate.sourceIssueId });
       const [action] = await tx.update(issueRecoveryActions).set({
         status: "resolved",
         outcome: "cancelled",
@@ -456,6 +718,7 @@ export async function settleUnrecoverableExecutions(
   for (const { action: candidate } of candidates) {
     const runId = candidate.evidence.runId;
     if (typeof runId !== "string") continue;
+    const goneControllerBootId = await provenGoneLegacyControllerBootId(db, candidate.companyId, runId).catch(() => null);
     try {
       await db.transaction(async (tx) => {
         await tx.execute(
@@ -502,9 +765,6 @@ export async function settleUnrecoverableExecutions(
           !run ||
           !action ||
           action.evidence.runId !== runId ||
-          !EXECUTION_RECONCILIATION_CAUSES.includes(
-            action.cause as (typeof EXECUTION_RECONCILIATION_CAUSES)[number],
-          ) ||
           !["active", "escalated"].includes(action.status) ||
           (run.nativeIssueId ?? run.contextSnapshot?.issueId) !== task.id ||
           !["failed", "timed_out", "interrupted", "cancelled"].includes(
@@ -512,6 +772,40 @@ export async function settleUnrecoverableExecutions(
           )
         )
           return;
+        if (!EXECUTION_RECONCILIATION_CAUSES.includes(action.cause as (typeof EXECUTION_RECONCILIATION_CAUSES)[number])) {
+          if (run.runtimeMode !== "native" || run.nativePhase !== "terminal_failure"
+            || coordinator?.phase !== "terminal_failure" || coordinator.leaseOwner || coordinator.resultId
+            || coordinator.nextAttemptAt || coordinator.failureDetail?.successorRunId
+            || action.wakePolicy?.kind !== "resume_native_run" || action.wakePolicy.runId !== run.id) return;
+          const [hold] = await supersedingNativeWorkspaceHold(tx as unknown as Db, {
+            companyId: run.companyId, issueId: task.id, runId: run.id,
+          }).limit(1).for("update");
+          if (!hold) return;
+          await notifyExecutionRunWork(tx, { companyId: run.companyId });
+          const note = "Exact session recovery stopped. The recorded workspace recovery holds this execution without replaying its actions.";
+          await tx.update(issueRecoveryActions).set({ status: "cancelled", outcome: "cancelled",
+            resolvedAt: now, updatedAt: now, wakePolicy: null, monitorPolicy: null,
+            nextAction: note, resolutionNote: note,
+            evidence: { ...action.evidence, supersedingRecoveryActionId: hold.id },
+          }).where(eq(issueRecoveryActions.id, action.id));
+          await persistActivity(tx as unknown as Db, { companyId: run.companyId, actorType: "system",
+            actorId: "execution-recovery", action: "issue.execution_recovery_settled", entityType: "issue",
+            entityId: task.id, runId: run.id,
+            details: { recoveryActionId: action.id, outcome: "cancelled", supersedingRecoveryActionId: hold.id },
+          });
+          return;
+        }
+        // A legacy executor still holding its controller lease may be unwinding
+        // a Stop and can prove that no adapter started. Let it settle first,
+        // unless its recorded process is proven gone (a drained server): then
+        // expire that exact lease so every later preparation check sees it.
+        if (run.runtimeMode === "legacy" && run.controllerLeaseExpiresAt && run.controllerLeaseExpiresAt > now) {
+          if (goneControllerBootId === null || run.controllerBootId !== goneControllerBootId) return;
+          await tx.update(heartbeatRuns).set({ controllerLeaseExpiresAt: now }).where(and(
+            eq(heartbeatRuns.id, run.id), eq(heartbeatRuns.companyId, run.companyId),
+            eq(heartbeatRuns.controllerBootId, goneControllerBootId)));
+          run.controllerLeaseExpiresAt = now;
+        }
         // Adoption transfers maintenance to the retained-workspace owner.
         // This compatibility resolver must not close its hold or relabel it
         // as a user repair merely because old return-owner metadata is absent.
@@ -535,14 +829,32 @@ export async function settleUnrecoverableExecutions(
           !["done", "cancelled"].includes(task.status) &&
           (!task.executionRunId || task.executionRunId === run.id) &&
           (!task.checkoutRunId || task.checkoutRunId === run.id);
-        const note = current
-          ? hasWorkspaceRestoreFailure(run.resultJson)
-            ? "Workspace repair required. Verify safe staging or repair before continuing. Saved work and approval decisions remain in force."
-            : "Automatic recovery stopped. Recorded work is preserved; actions with unverified outcomes will not be repeated."
-          : "Recovery closed because the task's owner, execution, or status changed. No work was replayed.";
+        // Exact recovery is ruled out. Unless the cause is the person's, the
+        // task continues in a fresh run from its last saved work instead of
+        // waiting for a person.
+        // A preparation that never started provider work keeps its own replay
+        // lane, which takes over the settled hold; the held sweep follows it.
+        if (current && !isInterruptedNativePreparationCandidate(run)) {
+          const fresh = await continueFreshInTransaction(tx as unknown as Db, { companyId: task.companyId, runId: run.id,
+            trigger: "recovery_refused", now });
+          if (["continued", "already_continued", "successor_exists"].includes(fresh.kind)) return;
+          if (fresh.kind === "backoff" || fresh.kind === "exact_recovery_pending") {
+            await recordFreshContinuationCheck(tx as unknown as Db, { companyId: task.companyId, actionId: action.id }, fresh, now);
+            return;
+          }
+        }
+        const note = executionRecoverySettlementNote({ current, cause: action.cause,
+          workspaceRestoreFailed: hasWorkspaceRestoreFailure(run.resultJson), trigger: action.evidence.trigger });
+        await notifyUnsafeWorkspaceExportRecovery(tx, { companyId: task.companyId, issueId: task.id });
         let nativeFailureBlock = action.evidence.nativeFailureBlock;
         let nativeBootstrapFailureBlock = action.evidence.nativeBootstrapFailureBlock;
+        let legacyCancellationBlock = action.evidence.legacyCancellationBlock;
         if (current) {
+          await notifyNativeStatusReassessment(tx, { companyId: task.companyId, issueId: task.id });
+          if (task.status !== "blocked") await notifyChatResponseAvailability(tx, { companyId: task.companyId, issueId: task.id });
+          await notifyDeliveryWork(tx, DELIVERY_QUEUES.issueMonitors);
+          await notifyDeliveryWork(tx, DELIVERY_QUEUES.agentTimers);
+          await notifyRoutineExecutionStatus(tx, task.id, task.companyId);
           const [projected] = await tx
             .update(issues)
             .set({
@@ -557,8 +869,10 @@ export async function settleUnrecoverableExecutions(
           if (task.status !== "blocked" && run.runtimeMode === "native") {
             nativeFailureBlock = { runId: run.id, statusVersion: projected!.statusVersion };
           }
-          if (task.status !== "blocked" && run.runtimeMode === "legacy" && !run.runtimeModeResolvedAt &&
-              run.errorCode === "server_shutdown_interrupted" && claimedAdapterType(run) === "paperclip_runner") {
+          if (task.status !== "blocked" && run.runtimeMode === "legacy" && run.status === "cancelled") {
+            legacyCancellationBlock = { runId: run.id, statusVersion: projected!.statusVersion, previousStatus: task.status };
+          }
+          if (task.status !== "blocked" && isInterruptedNativePreparationCandidate(run)) {
             nativeBootstrapFailureBlock = { runId: run.id, statusVersion: projected!.statusVersion, previousStatus: task.status };
           }
         }
@@ -577,6 +891,7 @@ export async function settleUnrecoverableExecutions(
               ...action.evidence,
               ...(nativeFailureBlock ? { nativeFailureBlock } : {}),
               ...(nativeBootstrapFailureBlock ? { nativeBootstrapFailureBlock } : {}),
+              ...(legacyCancellationBlock ? { legacyCancellationBlock } : {}),
               automaticRecovery: {
                 policy: "preserve_without_replay_v1",
                 runId: run.id,
@@ -601,7 +916,7 @@ export async function settleUnrecoverableExecutions(
             replay: "not_authorized",
           },
         });
-        await notifyExecutionRunWork(tx);
+        await notifyExecutionRunWork(tx, { companyId: run.companyId });
         await tx
           .update(heartbeatRuns)
           .set({ executionStatusDeliveryId: randomUUID() })
@@ -631,4 +946,7 @@ export async function settleUnrecoverableExecutions(
       );
     }
   }
+  // Tasks already held by settled records (including those older releases
+  // saved) continue from their saved work on this worker too.
+  await continueHeldExecutions(db, now);
 }

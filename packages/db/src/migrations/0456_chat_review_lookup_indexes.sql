@@ -1,0 +1,4 @@
+CREATE INDEX CONCURRENTLY IF NOT EXISTS "chat_deliveries_github_automatic_delivery_idx" ON "chat_deliveries" USING btree ("endpoint_id",("normalized_event"->'githubAutomatic'->'context'->>'deliveryId')) WHERE ("chat_deliveries"."normalized_event"->'githubAutomatic'->'context'->>'deliveryId') is not null;--> statement-breakpoint
+CREATE INDEX CONCURRENTLY IF NOT EXISTS "chat_message_links_company_comment_idx" ON "chat_message_links" USING btree ("company_id","comment_id") WHERE "chat_message_links"."comment_id" is not null;--> statement-breakpoint
+CREATE INDEX CONCURRENTLY IF NOT EXISTS "chat_message_links_delivery_idx" ON "chat_message_links" USING btree ("delivery_id") WHERE "chat_message_links"."delivery_id" is not null;--> statement-breakpoint
+CREATE INDEX CONCURRENTLY IF NOT EXISTS "heartbeat_runs_company_wake_comment_idx" ON "heartbeat_runs" USING btree ("company_id",("context_snapshot"->>'wakeCommentId'));

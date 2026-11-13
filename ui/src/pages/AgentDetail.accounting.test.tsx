@@ -5,7 +5,7 @@ import { AgentActionButtons } from "../components/AgentActionButtons";
 import type { Agent, HeartbeatRun } from "@paperclipai/shared";
 import { describe, expect, it, vi } from "vitest";
 import { RunAccountingMetrics } from "./AgentDetail";
-import { hasUnavailableProviderAccounting, supportsRawProviderTrace } from "../lib/utils";
+import { hasUnavailableProviderAccounting } from "../lib/utils";
 
 vi.mock("@/lib/router", () => ({ useNavigate: () => vi.fn() }));
 vi.mock("../context/DialogContext", () => ({ useDialogActions: () => ({ openNewIssue: vi.fn() }) }));
@@ -41,7 +41,7 @@ describe("run accounting provenance", () => {
 
 
 describe("provider trace support", () => {
-  const renderActions = (provider: string, isAdmin: boolean) => {
+  const renderActions = (provider: string) => {
     const agent: Agent = {
       id: "agent-1", companyId: "company-1", name: "Researcher", urlKey: "researcher", role: "researcher",
       title: null, icon: null, status: "active", reportsTo: null, capabilities: null,
@@ -52,22 +52,24 @@ describe("provider trace support", () => {
     };
     return renderToStaticMarkup(
       <QueryClientProvider client={new QueryClient()}>
-        <AgentActionButtons agent={agent} canRunWithProviderTrace={isAdmin && supportsRawProviderTrace(agent.adapterType, agent.adapterConfig)} />
+        <AgentActionButtons agent={agent} />
       </QueryClientProvider>,
     );
   };
 
   it("keeps normal Muse actions but removes the unsupported raw traffic promise", () => {
-    const markup = renderActions("muse", true);
+    const markup = renderActions("muse");
     expect(markup).toContain("Run now");
     expect(markup).toContain("Pause");
     expect(markup).not.toContain("Run with provider trace");
     expect(markup).not.toContain("Capture exact provider traffic");
   });
 
-  it("retains other provider tracing only for authorized administrators", () => {
-    expect(renderActions("codex", true)).toContain("Run with provider trace");
-    expect(renderActions("openai_dot", true)).toContain("Run with provider trace");
-    expect(renderActions("codex", false)).not.toContain("Run with provider trace");
+  it.each(["codex", "openai_dot"])("keeps normal %s actions without a separate trace button", provider => {
+    const markup = renderActions(provider);
+    expect(markup).toContain("Run now");
+    expect(markup).toContain("Pause");
+    expect(markup).not.toContain("Run with provider trace");
+    expect(markup).not.toContain("Capture exact provider traffic");
   });
 });

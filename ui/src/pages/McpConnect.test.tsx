@@ -339,8 +339,67 @@ it("shows the fixed Grok agent and authorizing person before granting a Cursor c
     expect(page.container.textContent).toContain("current task-bound session");
     expect(page.container.querySelector("h1")?.textContent).toBe("Connect Cursor to Paperclip");
     expect(api.post).toHaveBeenCalledTimes(1);
-    expect(api.post).toHaveBeenCalledWith("/dot-mcp/requests/request-one/dot-pairing/preview", { pairingCode: "g".repeat(32) });
+    expect(api.post).toHaveBeenCalledWith("/dot-mcp/requests/request-one/dot-pairing/preview", { pairingCode: "g".repeat(32) }, expect.objectContaining({ signal: expect.any(AbortSignal) }));
     flushSync(() => connect.click());
     await vi.waitFor(() => expect(api.post).toHaveBeenCalledWith("/dot-mcp/requests/request-one/dot-pairing", { pairingCode: "g".repeat(32) }));
+  } finally { page.cleanup(); }
+});
+
+// --- Disconnect handling ---------------------------------------------------------
+
+// The API client is mocked above, so build errors structurally; `classifyError` reads `status`.
+const apiError = (message: string, status: number) => Object.assign(new Error(message), { name: "ApiError", status, body: { error: message } });
+const unavailable = () => apiError("tenant_app_unavailable", 503);
+
+it("shows readable copy without Retry when the request is gone, and keeps the device-code escape hatch", async () => {
+  vi.mocked(api.get).mockRejectedValueOnce(apiError("Connection request not found", 404));
+  const page = setup(true);
+  try {
+    await vi.waitFor(() => expect(page.container.querySelector('[data-query-view="error"]')).not.toBeNull());
+    const alert = page.container.querySelector('[data-query-view="error"]')!;
+    expect(alert.textContent).toContain("Connection request not found");
+    expect(alert.textContent).not.toContain("tenant_app_unavailable");
+    expect(alert.querySelector("button")).toBeNull();
+    expect(page.container.textContent).toContain("Start a new connection from your assistant.");
+    expect(Array.from(page.container.querySelectorAll("button")).some(item => item.textContent === "Enter a different code")).toBe(true);
+  } finally { page.cleanup(); }
+});
+
+it("keeps the loaded request on screen when a refetch fails transiently", async () => {
+  const page = setup();
+  try {
+    await vi.waitFor(() => expect(page.container.querySelector('input[type="radio"]')).not.toBeNull());
+    vi.mocked(api.get).mockRejectedValueOnce(unavailable());
+    await page.client.refetchQueries({ queryKey: ["mcp-request", route.id] });
+    await vi.waitFor(() => expect(page.client.getQueryState(["mcp-request", route.id])?.status).toBe("error"));
+    page.render();
+    expect(page.container.querySelector('input[type="radio"]')).not.toBeNull();
+    expect(page.container.querySelector('[data-query-view="error"]')).toBeNull();
+    expect(page.container.textContent).not.toContain("tenant_app_unavailable");
+    expect(page.connect().disabled).toBe(false);
+  } finally { page.cleanup(); }
+});
+
+it("explains a rejected pairing code in readable copy and clears it when the code changes", async () => {
+  Object.assign(route, { agentConnection: true, requiresSignIn: true });
+  vi.mocked(api.post).mockImplementationOnce(async () => { throw apiError("This pairing code has expired.", 400); });
+  const page = setup();
+  try {
+    await vi.waitFor(() => expect(page.container.querySelector("#dot-pairing-code")).not.toBeNull());
+    const input = page.container.querySelector<HTMLInputElement>("#dot-pairing-code")!;
+    const connect = Array.from(page.container.querySelectorAll("button")).find(button => button.textContent === "Allow agent connection")!;
+    const enter = (value: string) => flushSync(() => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(input, value);
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    enter("x".repeat(32));
+    await vi.waitFor(() => expect(page.container.querySelector('[data-query-view="error"]')).not.toBeNull());
+    expect(page.container.querySelector('[data-query-view="error"]')?.textContent).toContain("This pairing code has expired.");
+    expect(connect.disabled).toBe(true);
+    vi.mocked(api.post).mockImplementationOnce(async () => ({ company: { id: "company-one", name: "Dot Test Drive" }, agent: { id: "agent-one", name: "Dot" }, permissions: "Assigned work only", accessDuration: "Ongoing until revoked" }) as never);
+    enter("y".repeat(32));
+    expect(page.container.querySelector('[data-query-view="error"]')).toBeNull();
+    await vi.waitFor(() => expect(page.container.textContent).toContain("Dot Test Drive"));
+    expect(connect.disabled).toBe(false);
   } finally { page.cleanup(); }
 });

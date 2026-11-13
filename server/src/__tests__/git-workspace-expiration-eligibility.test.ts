@@ -1,8 +1,9 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { eq, sql } from "drizzle-orm";
-import { agents, companies, createDb, executionWorkspaces, heartbeatRuns, issues, projects, projectWorkspaces } from "@paperclipai/db";
+import { agents, companies, createDb, executionWorkspaces, heartbeatRuns, issueRecoveryActions, issues, nativeRunFinalizations, projects, projectWorkspaces, workspaceOperations } from "@paperclipai/db";
 import { isGitWorkspaceExpirationEligible } from "../services/git-workspace-expiration.js";
+import { createSystemRecovery } from "../services/system-recovery-state.js";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 
 type Plan = { "Relation Name"?: string; "Actual Loops"?: number; Plans?: Plan[] };
@@ -32,6 +33,19 @@ describeDatabase("Git expiration eligibility", () => {
     const eligible = () => db.transaction(tx => isGitWorkspaceExpirationEligible(tx, workspace, now));
     return { companyId, agentId, issueId, workspace, now, old, eligible };
   }
+
+  it.each(["running", "failed-hold"])("keeps a saved migration consumer after its process is gone (%s)", async state => {
+    const f = await fixture();
+    expect(await f.eligible()).toBe(true);
+    const [operation] = await db.insert(workspaceOperations).values({ companyId: f.companyId,
+      executionWorkspaceId: f.workspace.id, issueId: f.issueId, phase: "remote_workspace_migration",
+      status: state === "running" ? "running" : "failed",
+      metadata: state === "running" ? { schema: "paperclip.remote-workspace-migration.v1" }
+        : { lastFailure: { code: "source_expired_during_import" } } }).returning();
+    expect(await f.eligible()).toBe(false);
+    await db.delete(workspaceOperations).where(eq(workspaceOperations.id, operation.id));
+    expect(await f.eligible()).toBe(true);
+  });
 
   async function alias(f: Awaited<ReturnType<typeof fixture>>, kind: string) {
     const companyId = randomUUID();
@@ -90,5 +104,62 @@ describeDatabase("Git expiration eligibility", () => {
     expect(await f.eligible()).toBe(false);
     await db.update(heartbeatRuns).set({ status: "succeeded", finishedAt: f.old }).where(eq(heartbeatRuns.id, runId));
     expect(await f.eligible()).toBe(true);
+  });
+
+  type StaleState = { finalization?: Partial<typeof nativeRunFinalizations.$inferInsert>; action?: Partial<typeof issueRecoveryActions.$inferInsert> };
+  async function seedStaleState(f: Awaited<ReturnType<typeof fixture>>, state: StaleState) {
+    const runId = randomUUID();
+    await db.insert(heartbeatRuns).values({ id: runId, companyId: f.companyId, agentId: f.agentId, status: "succeeded",
+      finishedAt: f.old, nativeIssueId: f.issueId });
+    if (state.finalization) {
+      await db.insert(nativeRunFinalizations).values({ runId, companyId: f.companyId, issueId: f.issueId, phase: "committed", ...state.finalization });
+    }
+    if (state.action) {
+      await db.insert(issueRecoveryActions).values({ companyId: f.companyId, sourceIssueId: f.issueId, kind: "active_run_watchdog",
+        status: "active", ownerType: "agent", ownerAgentId: f.agentId, cause: "native_finalization_error", fingerprint: randomUUID(),
+        evidence: { runId }, nextAction: "Resume the native run.", wakePolicy: { kind: "resume_native_run", runId }, ...state.action });
+    }
+  }
+
+  it.each<[string, StaleState]>([
+    ["committed resuming_session", { finalization: { recoveryState: "resuming_session", recoveryRequestId: "restart" } }],
+    ["terminal_failure blocked", { finalization: { phase: "terminal_failure", recoveryState: "blocked" } }],
+    ["active agent recovery", { action: {} }],
+    ["escalated system recovery", { action: { status: "escalated", ownerType: "system", ownerAgentId: null } }],
+  ])("expires a closed tree despite stale %s", async (_label, state) => {
+    const f = await fixture();
+    await seedStaleState(f, state);
+    expect(await f.eligible()).toBe(true);
+  });
+
+  it.each<[string, StaleState]>([
+    ["a leased finalization", { finalization: { leaseOwner: "native-finalizer:live", recoveryState: "resuming_session" } }],
+    ["an observed finalization", { finalization: { phase: "observed", recoveryState: "resuming_session" } }],
+    ["an unverified owner hold", { action: { ownerType: "board", ownerAgentId: null, cause: "native_workspace_finalization_owner_unverified", wakePolicy: null } }],
+    ["in-flight system recovery", { action: { ownerType: "system", ownerAgentId: null, evidence: { systemRecovery: createSystemRecovery(randomUUID()) } } }],
+  ])("keeps a closed tree with %s", async (_label, state) => {
+    const f = await fixture();
+    await seedStaleState(f, state);
+    expect(await f.eligible()).toBe(false);
+  });
+
+  it("keeps an open tree despite settled native state", async () => {
+    const f = await fixture();
+    await seedStaleState(f, { finalization: { recoveryState: "resuming_session" } });
+    await db.update(issues).set({ status: "in_progress", completedAt: null }).where(eq(issues.id, f.issueId));
+    expect(await f.eligible()).toBe(false);
+  });
+
+  it.each<[string, StaleState]>([
+    ["committed resuming_session", { finalization: { recoveryState: "resuming_session" } }],
+    ["terminal_failure blocked", { finalization: { phase: "terminal_failure", recoveryState: "blocked" } }],
+    ["active agent recovery", { action: {} }],
+  ])("keeps idle-mode expiration strict for %s", async (_label, state) => {
+    const f = await fixture();
+    const idleCutoff = new Date(Date.now() + 60_000);
+    const idleEligible = () => db.transaction(tx => isGitWorkspaceExpirationEligible(tx, f.workspace, f.now, idleCutoff));
+    expect(await idleEligible()).toBe(true);
+    await seedStaleState(f, state);
+    expect(await idleEligible()).toBe(false);
   });
 });

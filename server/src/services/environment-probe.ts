@@ -34,7 +34,8 @@ export function parseSandboxPlatformFacts(output: string): PlatformFacts {
     libc: libc === "glibc" || libc === "musl" ? libc : "unknown",
     ...(libc === "glibc" ? { glibcVersion: version?.trim() ?? "unknown" } : {}) };
 }
-async function sandboxBinding(db: Db, environment: Environment, companyId: string) {
+/** The immutable runner image or snapshot identity of a sandbox environment, or null. */
+export async function sandboxBinding(db: Db, environment: Environment, companyId: string) {
   const selectedTemplate: { value: SandboxTemplateIdentity } = { value: null };
   const parsed = await resolveEnvironmentDriverConfigForRuntime(db, companyId, environment, {
     applyCustomImageTemplate: true, readOnlyCustomImageTemplate: true,
@@ -76,6 +77,7 @@ export async function probeEnvironment(
     resolvedConfig?: ParsedEnvironmentConfig;
     applyCustomImageTemplate?: boolean;
     acquireSandboxRuntimeLease?: boolean;
+    assertCompanyBinding?: boolean;
   } = {},
 ): Promise<EnvironmentProbeResult> {
   const resolvedCompanyId = options.companyId ?? null;
@@ -148,6 +150,7 @@ export async function probeEnvironment(
           persistedExecutionWorkspace: null,
           adapterType: null,
           resolveSnapshotIdentity: true,
+          assertCompanyBinding: options.assertCompanyBinding,
           applyCustomImageTemplate: options.applyCustomImageTemplate === true,
         });
         const metadata = leaseRecord.lease.metadata ?? {};

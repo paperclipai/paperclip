@@ -52,6 +52,11 @@ Automated: [trigger wizard](../../ui/src/components/routine-triggers/TriggerWiza
 
 Manual: Set a near-term disposable schedule or authorized test webhook, verify one eligible execution and its source trigger, then disable it and confirm further invocations stop. Inspect a failed execution without losing its history. Remove the temporary trigger after testing.
 
+Sentry alerts use the ordinary
+`/api/routine-triggers/public/:publicId/fire` webhook and its trigger authentication.
+Configure loop-prevention filters in Sentry as described in the
+[Sentry repair tutorial](../../docs/guides/board-operator/sentry-run-failure-repairs.md).
+
 ## Gotchas
 
 - Saving a schedule does not prove the scheduler invoked it.

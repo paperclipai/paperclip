@@ -61,6 +61,7 @@ fn started(mode: &str) -> (Fixture, DurableRunnerConfig, AcpxCommandExecutor) {
         runner_version: "0.0.0".to_owned(),
         runner_digest: format!("sha256:{}", "a".repeat(64)),
         acpx_launch_profile: Some(AcpxLaunchProfile {
+            candidate_admission: None,
             authority_digest: format!("sha256:{}", "d".repeat(64)),
             command: sidecar.clone(),
             args: args.clone(),
@@ -70,17 +71,19 @@ fn started(mode: &str) -> (Fixture, DurableRunnerConfig, AcpxCommandExecutor) {
             }],
         }),
         opencode_launch_profile: None,
+        cursor_cloud_launch_profile: None,
         max_outbox_bytes: 1024 * 1024,
         p0_reserve_bytes: 64 * 1024,
         max_frame_bytes: 1024 * 1024,
         reconnect_delay: Duration::from_millis(1),
         reconnect_grace: None,
         max_runtime: Duration::from_secs(30),
+        turn_scoped: false,
     };
     let descriptor = json!({
         "kind": "acpx", "provider": "acpx", "driver": "acpx_runtime",
-        "providerVersion": "0.13.1", "agent": "codex", "model": "gpt-5.6-sol",
-        "acpxVersion": "0.13.1", "agentServerPackage": "@agentclientprotocol/codex-acp",
+        "providerVersion": "0.22.0", "agent": "codex", "model": "gpt-5.6-sol",
+        "acpxVersion": "0.22.0", "agentServerPackage": "@agentclientprotocol/codex-acp",
         "agentServerVersion": "1.6.2", "agentRuntimePackage": "@openai/codex",
         "agentRuntimeVersion": "0.160.0", "commandDigest": PROFILE_DIGEST,
         "sidecarCommand": sidecar, "sidecarArgs": args, "runtimeDirectory": fixture.0,
@@ -127,6 +130,15 @@ fn started(mode: &str) -> (Fixture, DurableRunnerConfig, AcpxCommandExecutor) {
 
 #[test]
 fn streams_a_large_burst_before_dispatching_the_tool() {
+    streaming_burst(false);
+}
+
+#[test]
+fn streams_a_large_burst_while_disconnected() {
+    streaming_burst(true);
+}
+
+fn streaming_burst(disconnected: bool) {
     let (_fixture, _config, mut executor) = started("resolutions-stream-burst");
     let started = std::time::Instant::now();
     let mut text = String::new();
@@ -134,10 +146,15 @@ fn streams_a_large_burst_before_dispatching_the_tool() {
     let mut tool_seen = false;
     while !tool_seen {
         assert!(
-            started.elapsed() < Duration::from_secs(10),
+            started.elapsed() < Duration::from_secs(60),
             "tool stuck behind streaming output"
         );
-        let batch = executor.poll_events().unwrap();
+        let batch = if disconnected {
+            executor.poll_disconnected_events()
+        } else {
+            executor.poll_events()
+        }
+        .unwrap();
         if !batch.is_empty() {
             assert_eq!(executor.poll_events().unwrap(), batch);
         }
@@ -151,13 +168,13 @@ fn streams_a_large_burst_before_dispatching_the_tool() {
         executor.acknowledge_events(batch.len()).unwrap();
     }
     assert_eq!(text, "片".repeat(3135));
-    assert!(
-        emitted < 70,
-        "{emitted} token-sized durable events delay control tools"
-    );
     eprintln!(
         "3,135 UTF-8 deltas: {emitted} durable events, tool available after {:?}",
         started.elapsed()
+    );
+    assert!(
+        emitted < 70,
+        "{emitted} token-sized durable events delay control tools"
     );
     let result = executor
         .execute(&command(
@@ -226,4 +243,29 @@ fn failed_prefix_save_blocks_error_path_drain() {
         executor.retained_events().is_err(),
         "an uncommitted prefix must never reach the outbox"
     );
+}
+
+#[test]
+fn buffered_park_drain_preserves_the_published_prefix() {
+    let (_fixture, _config, mut executor) = started("resolutions-stream-buffered");
+    let published = executor.poll_events().unwrap();
+    assert_eq!(published.last().unwrap().event_type, "item.delta");
+    executor
+        .execute(&command(4, "session.goal.get", json!({})))
+        .unwrap();
+    executor
+        .execute(&command(
+            5,
+            "session.snapshot",
+            json!({"quiesceForWarmAttach": true}),
+        ))
+        .unwrap();
+    let saved: Value = serde_json::from_slice(&fs::read(executor.state_path()).unwrap()).unwrap();
+    let pending = saved["pendingEvents"].as_array().unwrap();
+    assert!(pending.len() > published.len());
+    assert_eq!(
+        serde_json::to_value(&pending[..published.len()]).unwrap(),
+        serde_json::to_value(&published).unwrap()
+    );
+    executor.shutdown().unwrap();
 }

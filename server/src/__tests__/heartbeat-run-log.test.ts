@@ -41,3 +41,21 @@ describe("compactRunLogChunk", () => {
     expect(compacted).not.toContain("paperclip-flag-secret");
   });
 });
+
+describe("compactRunLogChunk with long base64 commands", () => {
+  it("redacts a tool call that writes base64 of source text without stalling", () => {
+    const typescriptSource = "export const limit = 65536;\nexport function keep(value: string) {\n  return value.slice(0, limit);\n}\n";
+    const blob = Buffer.from(typescriptSource.repeat(1_000)).toString("base64").slice(0, 48 * 1024);
+    expect(blob).toMatch(/^[A-Za-z0-9]+$/);
+    const command = `printf '%s' '${blob}' | base64 -d > src/keep.ts && echo '{"GITHUB_TOKEN":"tool-call-secret"}'`;
+    const chunk = `${JSON.stringify({ type: "assistant", message: { content: [{ type: "tool_use", input: { command } }] } })}\n`;
+
+    const startedAt = performance.now();
+    const compacted = compactRunLogChunk(chunk);
+
+    expect(performance.now() - startedAt).toBeLessThan(1_000);
+    expect(compacted).toContain(blob);
+    expect(compacted).not.toContain("tool-call-secret");
+    expect(compacted).toContain("***REDACTED***");
+  });
+});

@@ -4,6 +4,12 @@ Product map: [Steering and queued messages](../feature-map/steering.md).
 
 Feature ID: `steering`.
 
+Pending agent-authored input is rechecked against current
+[interaction restrictions](../../doc/agent-interaction-permissions.md) per item,
+including when a human steers it. A denied item receives a permanent refusal;
+other allowed items retain their own authority. History and already running
+execution remain intact. Restoring a setting does not replay refused input.
+
 Review date: 2026-10-12. Source commit: `58e16dbddfc9c8d0cf60867f9d9847f0feda055b`.
 Native REST transport reconciled in this change; see the
 [shared transport contract](README.md#native-rest-transport).
@@ -32,6 +38,10 @@ cancellation require a board actor/user.
 Compact task run reads retain `wakeupRequestId` and `queuedCommentSourceWakeIds`
 to identify consumed input queues, including coalesced requests. These receipt
 fields follow the existing task/run read checks and grant no queue mutation authority.
+
+The UI can place a queued turn's starting input in history without recording
+consumption. Drain release and expiry only reconsider existing queued runs under
+normal admission authority. They grant no new agent control or replay authority.
 
 Accepted deferred requests remain pending while their recipient agent is paused.
 Resume uses the normal admission checks. This grants no new pause, resume, queue
@@ -115,7 +125,7 @@ API: `present` — representative operation IDs:
 Agent access: `restricted` — Board-user interruption/cancel API.
 
 Policy: Queue inspection follows task visibility; queued user-message mutation and run
-cancellation require a board actor/user.
+cancellation require a board actor/user. The same queue endpoint accepts an explicit **Send** for a stopped native queue. It records fresh board intent, retains original comment authors, and keeps execution cleanup and admission gates. Agent Chat `/new` also retains native process, controller, workspace and lease checks before subsequent messages execute. It does not grant agents the ability to send saved user messages or interrupt live native turns.
 
 Evidence: `source-only` — [implementation](../../server/src/routes/issues.ts#L16166) at
 the reviewed commit above.

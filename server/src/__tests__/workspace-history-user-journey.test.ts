@@ -16,6 +16,8 @@ import { heartbeatService } from "../services/heartbeat.js";
 import { instanceSettingsService } from "../services/instance-settings.js";
 import { fileResourceRoutes } from "../routes/file-resources.js";
 import { issueRoutes } from "../routes/issues.js";
+import { createLocalDiskStorageProvider } from "../storage/local-disk-provider.js";
+import { createStorageService } from "../storage/service.js";
 import { errorHandler } from "../middleware/error-handler.js";
 
 const support = await getEmbeddedPostgresTestSupport();
@@ -81,7 +83,7 @@ describe.skipIf(!support.supported)("workspace history real process journey", ()
       next();
     });
     app.use("/api", fileResourceRoutes(db));
-    app.use("/api", issueRoutes(db));
+    app.use("/api", issueRoutes(db, createStorageService(createLocalDiskStorageProvider(path.join(root, "storage")))));
     app.use(errorHandler);
     const measurements: Array<{ beforeChildMs: number; childWorkMs: number }> = [];
     const runTask = async () => {

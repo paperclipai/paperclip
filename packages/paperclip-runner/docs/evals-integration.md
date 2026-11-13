@@ -63,6 +63,21 @@ Evals owns conversion of this bundle into Evalbook ledger, scores, and reports.
 The App package does not implement an Evalbook environment loader, importer,
 grid, comparison, or report renderer.
 
+## Direct eval cost provenance
+
+Codex App Server supplies token usage, not a provider USD receipt. Its direct
+`eval-session` result therefore sets `providerReportedCostNanodollars` to null
+and `providerReportedCostProvenance` to `unavailable`. The pinned token-price
+estimate remains in `estimatedCostNanodollars` with `costCoverage: estimated`.
+A missing receipt must not appear as a free request.
+
+`legacyLedgerCostNanodollars` retains the unverified ledger amount for Codex.
+This amount and the token estimate still participate in the existing budget
+stop. The ledger amount is not provider billing, and consumers must not add it
+to the estimate or treat its zero placeholder as proof of zero spend. Raw
+usage receipts remain in the snapshot. Older artifacts remain their original
+measurements; this change does not reconcile invoices or reprice history.
+
 ## Deterministic conformance
 
 `runHarnessDriverConformance` with `DeterministicHarnessDriver` covers, without

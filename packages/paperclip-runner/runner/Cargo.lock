@@ -1821,6 +1821,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "paperclip-process-table"
+version = "0.0.0"
+dependencies = [
+ "libc",
+]
+
+[[package]]
 name = "paperclip-runner-core"
 version = "0.0.0"
 dependencies = [
@@ -1838,6 +1845,7 @@ dependencies = [
  "notify",
  "num-bigint",
  "num-traits",
+ "paperclip-process-table",
  "reqwest",
  "rustix",
  "rustls",

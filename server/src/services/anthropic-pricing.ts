@@ -25,7 +25,8 @@ export function priceAnthropicReceipt(receipt: AdapterUsageCheckpoint): AdapterU
   return { ...receipt, costUsdExact: centsToUsd(unitsToCents((numerator + 500_000n) / 1_000_000n)), costStatus: "estimated",
     pricingProvenance: {
       source: "rate_card", version: card.version,
-      evidence: "https://platform.claude.com/docs/en/about-claude/pricing; standard global API pricing assumed; cache-write TTL unavailable, one-hour upper rate used; not an invoice",
+      evidence: "https://platform.claude.com/docs/en/about-claude/pricing; standard global API pricing assumed; cache-write TTL unavailable, one-hour upper rate used; not an invoice"
+        + (receipt.pricingProvenance?.evidence ? `; ${receipt.pricingProvenance.evidence}` : ""),
       inputCentsPerMillion: (usdToUnits(card.rates[0]) / 10_000_000n).toString(),
       cachedInputCentsPerMillion: (usdToUnits(card.rates[1]) / 10_000_000n).toString(),
       cacheWriteCentsPerMillion: (usdToUnits(card.rates[2]) / 10_000_000n).toString(),

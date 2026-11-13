@@ -1,11 +1,15 @@
+import { isDeepStrictEqual } from "node:util";
+import { notifyStatusCardIssueChange } from "./status-card-notifications.js";
+import { assertProjectStorageEnvironment, effectiveProjectWorkspacePolicy, requireWorkspaceProviderWorker, type WorkspaceWorkers } from "./project-workspace-provider.js";
+import { releaseProviderRecoveryTransfers } from "./provider-fresh-workspace.js";
+import { retireAbandonedPluginWorkspaceReservation } from "./plugin-workspace-reservations.js";
 import { randomUUID, createHash } from "node:crypto";
 import { and, eq, sql } from "drizzle-orm";
 import {
+  environmentLeases,
   executionWorkspaces,
   heartbeatRuns,
   issues,
-  pluginCompanySettings,
-  plugins,
   projects,
   projectWorkspaces,
   type Db,
@@ -13,14 +17,19 @@ import {
 import {
   readWorkspaceProviderBinding,
   type WorkspaceProviderBinding,
+  type ExecutionWorkspace,
 } from "@paperclipai/shared";
 import {
-  parseWorkspaceProviderResult,
+  pluginWorkspaceParamsSchema,
   workspaceProviderOperationSchema,
   type PluginWorkspaceOperation,
+  type PluginWorkspaceRecoveryPullRequest,
   type PluginWorkspaceParams,
+  type PluginFreshWorkspace,
 } from "@paperclipai/plugin-sdk";
-import type { PluginWorkerManager } from "./plugin-worker-manager.js";
+import { callWorkspaceProvider } from "./plugin-workspace-preparation.js";
+import { withPluginWorkspaceReplay } from "./plugin-workspace-replay-context.js";
+import { pluginRegistryService } from "./plugin-registry.js";
 import { notifyTerminalWorkspaceWork } from "./terminal-workspace-work.js";
 import { withExecutionWorkspaceLifecycleLock } from "./execution-workspace-lifecycle-lock.js";
 import {
@@ -29,125 +38,30 @@ import {
 } from "./task-workspace-access.js";
 import { forbidden, conflict } from "../errors.js";
 
-export type WorkspaceWorkers = Pick<PluginWorkerManager, "call" | "getWorker">;
+export { callWorkspaceProvider } from "./plugin-workspace-preparation.js";
+export type { WorkspaceWorkers } from "./project-workspace-provider.js";
 type Workspace = typeof executionWorkspaces.$inferSelect;
+type TaskPlacement = NonNullable<PluginWorkspaceParams["taskLease"]>;
+const preparationPlacementSchema = pluginWorkspaceParamsSchema.pick({
+  generation: true, runId: true, agentId: true, taskLease: true,
+});
 
-async function provider(
-  db: Db,
-  workers: WorkspaceWorkers | undefined,
-  companyId: string,
-  pluginId: string,
-) {
-  const [plugin] = await db
-    .select()
-    .from(plugins)
-    .where(eq(plugins.id, pluginId));
-  const [settings] = await db
-    .select()
-    .from(pluginCompanySettings)
-    .where(
-      and(
-        eq(pluginCompanySettings.pluginId, pluginId),
-        eq(pluginCompanySettings.companyId, companyId),
-      ),
-    );
-  if (
-    !workers ||
-    !plugin ||
-    plugin.status !== "ready" ||
-    settings?.enabled === false ||
-    !plugin.manifestJson.workspaceProvider ||
-    !plugin.manifestJson.capabilities.includes("workspaces.manage") ||
-    !plugin.manifestJson.resourceLifecycle?.includes("project") ||
-    !workers
-      .getWorker(pluginId)
-      ?.supportedMethods?.includes("workspaceOperation")
-  ) {
-    throw conflict("The workspace storage plugin is unavailable");
-  }
-  return plugin;
+function readPreparationPlacement(workspace: Workspace) {
+  const saved = workspace.metadata?.workspaceProviderPreparationPlacement;
+  if (saved === undefined) return undefined;
+  const placement = preparationPlacementSchema.parse(saved);
+  if (!placement.runId || !placement.agentId ||
+      placement.generation !== (workspace.metadata?.lifecycleGeneration ?? 0))
+    throw conflict("Workspace preparation placement changed");
+  return placement;
 }
+type EnsureTaskWorkspace = (taskId: string, assertOwned: () => void) => Promise<void> | undefined;
 
-/** No paths or provider credentials are accepted from task callers. */
-export async function callWorkspaceProvider(
-  db: Db,
-  workers: WorkspaceWorkers | undefined,
-  input: {
-    workspace: Workspace;
-    operation: PluginWorkspaceOperation;
-    pluginId?: string;
-    advanceGeneration?: boolean;
-    runId?: string | null;
-    agentId?: string | null;
-  },
-) {
-  const { workspace } = input;
-  const binding = readWorkspaceProviderBinding(workspace.metadata);
-  const pluginId = binding?.pluginId ?? input.pluginId;
-  if (!pluginId || !workspace.projectId)
-    throw conflict("Workspace storage ownership is missing");
-  await provider(db, workers, workspace.companyId, pluginId);
-  const generation =
-    typeof workspace.metadata?.lifecycleGeneration === "number"
-      ? workspace.metadata.lifecycleGeneration
-      : 0;
-  const operationGeneration = generation + (input.advanceGeneration ? 1 : 0);
-  const operation = workspaceProviderOperationSchema.parse(input.operation);
-  const params: PluginWorkspaceParams = {
-    pluginId,
-    companyId: workspace.companyId,
-    projectId: workspace.projectId,
-    executionWorkspaceId: workspace.id,
-    operationId:
-      operation.kind === "inspect"
-        ? randomUUID()
-        : createHash("sha256")
-            .update(
-              JSON.stringify([workspace.id, operationGeneration, operation]),
-            )
-            .digest("hex"),
-    generation: operationGeneration,
-    deadline: new Date(Date.now() + 300_000).toISOString(),
-    runId: input.runId ?? null,
-    agentId: input.agentId ?? null,
-    operation,
-  };
-  let value: unknown;
-  try {
-    value = await workers!.call(
-      pluginId,
-      "workspaceOperation",
-      params,
-      310_000,
-    );
-  } catch {
-    throw conflict(
-      "Workspace storage operation is incomplete; retry the same workspace",
-    );
-  }
-  // Recheck enablement and ownership after an external effect, including an ambiguous retry.
-  await provider(db, workers, workspace.companyId, pluginId);
-  const [fresh] = await db
-    .select()
-    .from(executionWorkspaces)
-    .where(
-      and(
-        eq(executionWorkspaces.id, workspace.id),
-        eq(executionWorkspaces.companyId, workspace.companyId),
-      ),
-    );
-  if (
-    !fresh ||
-    fresh.status !== workspace.status ||
-    (fresh.metadata?.lifecycleGeneration ?? 0) !== generation ||
-    fresh.providerRef !== workspace.providerRef
-  ) {
-    throw conflict("Workspace changed during storage preparation");
-  }
-  const result = parseWorkspaceProviderResult(params, value);
-  if (result.kind === "prepared" && result.binding.pluginId !== pluginId)
-    throw conflict("Workspace provider ownership changed");
-  return result;
+export async function pluginWorkspaceSupportsMergeAncestry(db: Db, workers: WorkspaceWorkers | undefined, workspace: Workspace) {
+  const pluginId = readWorkspaceProviderBinding(workspace.metadata)?.pluginId;
+  if (!pluginId) return true;
+  const selected = await requireWorkspaceProviderWorker(db, workers, workspace.companyId, pluginId);
+  return selected.manifestJson.workspaceProvider?.supportsMergeAncestry !== false;
 }
 
 export async function preparePluginWorkspace(
@@ -164,12 +78,20 @@ export async function preparePluginWorkspace(
     existingWorkspaceId: string | null;
     mode: string;
     strategy: string;
+    selectedProviderPluginId?: string | null;
+    environment?: Pick<import("@paperclipai/shared").Environment, "driver" | "config" | "name"> | null;
     branchMode?: "create" | "existing";
     branchName?: string | null;
     baseRef?: string | null;
+    fresh?: PluginFreshWorkspace;
+    expectedBindingRevision?: number;
+    verifyExisting?: true;
+    assertOwned?: () => void;
+    acquireTaskLease?: (workspace: Pick<ExecutionWorkspace, "id" | "mode">) => Promise<{ leaseId: string; taskLease: TaskPlacement }>;
+    onTaskPrepared?: (ensure: EnsureTaskWorkspace) => void;
   },
 ) {
-  const [existing] = input.existingWorkspaceId
+  const [previous] = input.existingWorkspaceId
     ? await db
         .select()
         .from(executionWorkspaces)
@@ -180,15 +102,26 @@ export async function preparePluginWorkspace(
           ),
         )
     : [];
+  const [reservation] = input.fresh ? await db.select().from(executionWorkspaces).where(and(
+    eq(executionWorkspaces.companyId, input.companyId),
+    eq(executionWorkspaces.sourceIssueId, input.issueId!),
+    sql`${executionWorkspaces.metadata}#>>'{workspaceProviderFresh,attemptId}' = ${input.fresh.attemptId}`,
+  )).limit(1) : [];
+  const existing = input.fresh ? reservation : previous;
+  if (input.verifyExisting && (!existing || existing.metadata?.workspaceProviderRemoved === true ||
+    existing.metadata?.workspaceProviderRestoration)) return null;
+  const prior = existing ?? previous;
   if (
     existing?.metadata?.workspaceProviderRetired === true ||
     existing?.metadata?.workspaceProviderRemoval
   )
     throw conflict("Workspace storage is retired or awaiting cleanup");
+  if (!existing && (!input.projectId || !input.projectWorkspaceId)) return null;
   const saved = readWorkspaceProviderBinding(existing?.metadata);
-  const mode = existing?.mode ?? input.mode,
+  const priorBinding = readWorkspaceProviderBinding(prior?.metadata);
+  const mode = input.fresh ? "isolated_workspace" : existing?.mode ?? input.mode,
     strategy = existing?.strategyType ?? input.strategy;
-  const projectId = saved?.projectId ?? input.projectId;
+  const projectId = priorBinding?.projectId ?? input.projectId;
   const [project] = projectId
     ? await db
         .select()
@@ -200,10 +133,10 @@ export async function preparePluginWorkspace(
           ),
         )
     : [];
-  const owner =
-    saved?.pluginId ??
-    existing?.metadata?.workspaceProviderOwner ??
-    project?.executionWorkspacePolicy?.storageProviderPluginId;
+  if (prior && prior.providerType !== "plugin" && !priorBinding && !prior.metadata?.workspaceProviderOwner) return null;
+  const owner = priorBinding?.pluginId ?? prior?.metadata?.workspaceProviderOwner ??
+    (!existing && input.selectedProviderPluginId !== undefined ? input.selectedProviderPluginId :
+      !existing && project ? (await effectiveProjectWorkspacePolicy(db, input.companyId, project.executionWorkspacePolicy, false))?.storageProviderPluginId : null);
   const pluginId = typeof owner === "string" ? owner : null;
   if (!pluginId) {
     if (existing?.providerType === "plugin")
@@ -230,13 +163,12 @@ export async function preparePluginWorkspace(
     throw conflict(
       "An existing local workspace cannot change storage providers",
     );
-  const selectedProvider = await provider(
-    db,
-    workers,
-    input.companyId,
-    pluginId,
-  );
+  const selectedProvider = await requireWorkspaceProviderWorker(db, workers, input.companyId, pluginId, true);
+  if (input.environment) assertProjectStorageEnvironment(selectedProvider, input.environment);
   const declaration = selectedProvider.manifestJson.workspaceProvider!;
+  if (input.verifyExisting && declaration.workspaceVerificationVersion !== 1) return null;
+  if (input.fresh && declaration.freshWorkspaceVersion !== 1)
+    throw conflict("A fresh attempt is unavailable for this workspace storage provider. The existing workspace is retained.", { reason: "fresh_workspace_storage_unsupported" });
   if (
     !declaration.modes.includes(mode as "isolated_workspace") ||
     !declaration.strategies.includes(strategy as "git_worktree")
@@ -256,11 +188,11 @@ export async function preparePluginWorkspace(
         ? null
         : input.responsibleUserId,
   };
-  const authorize = async () => {
+  const authorize = async (workspaceId = existing?.id) => {
     await assertTaskWorkspaceExecutionAccess(db, actor, input.companyId, {
       issueId: input.issueId!,
-      ...(existing
-        ? { workspaceId: existing.id }
+      ...(workspaceId
+        ? { workspaceId }
         : { projectWorkspaceId: input.projectWorkspaceId }),
     });
     await assertTaskWorkspaceSourceProjectAccess(
@@ -301,7 +233,7 @@ export async function preparePluginWorkspace(
       ),
     );
   if (!source) throw conflict("Workspace repository source is unavailable");
-  const sourceInput = (existing?.metadata?.workspaceProviderSource as
+  const sourceInput = (prior?.metadata?.workspaceProviderSource as
     | Extract<PluginWorkspaceOperation, { kind: "prepare" }>["source"]
     | undefined) ?? {
     id: source.id,
@@ -321,7 +253,7 @@ export async function preparePluginWorkspace(
     repoRef: existing?.baseRef ?? source.repoRef,
     defaultRef: source.defaultRef,
   };
-  const branchName = existing
+  const branchName = input.fresh ? null : existing
     ? existing.branchName
     : (input.branchName ??
       (strategy === "git_worktree" ? `workspace-${randomUUID()}` : null));
@@ -341,7 +273,7 @@ export async function preparePluginWorkspace(
       if (
         !currentProject ||
         currentProject.archivedAt ||
-        currentProject.executionWorkspacePolicy?.storageProviderPluginId !==
+        (await effectiveProjectWorkspacePolicy(tx, input.companyId, currentProject.executionWorkspacePolicy, false))?.storageProviderPluginId !==
           pluginId ||
         !currentSource ||
         currentSource.repoUrl !== source.repoUrl ||
@@ -362,7 +294,7 @@ export async function preparePluginWorkspace(
           ),
         )
         .for("update");
-      if (!task || task.executionWorkspaceId)
+      if (!task || (input.fresh ? task.executionWorkspaceId !== input.fresh.previousWorkspaceId || task.workspaceBindingRevision !== input.expectedBindingRevision : Boolean(task.executionWorkspaceId)))
         throw conflict("Task workspace binding changed; retry preparation");
       const id = randomUUID();
       await notifyTerminalWorkspaceWork(tx, `workspace:${id}`);
@@ -374,8 +306,8 @@ export async function preparePluginWorkspace(
           projectId: project.id,
           projectWorkspaceId: source.id,
           sourceIssueId: input.issueId,
-          mode: input.mode,
-          strategyType: input.strategy,
+          mode,
+          strategyType: strategy,
           name: branchName ?? source.name,
           providerType: "plugin",
           providerRef: null,
@@ -386,11 +318,14 @@ export async function preparePluginWorkspace(
           status: "idle",
           metadata: {
             workspaceProviderOwner: pluginId,
+            workspaceProviderReservationRunId: input.runId,
             workspaceProviderSource: sourceInput,
-            workspaceProviderBranchMode: input.branchMode ?? "create",
+            workspaceProviderBranchMode: input.fresh ? "create" : input.branchMode ?? "create",
+            ...(input.fresh ? { workspaceProviderFresh: input.fresh } : {}),
           },
         })
         .returning();
+      await notifyStatusCardIssueChange(tx, task.companyId);
       await tx
         .update(issues)
         .set({
@@ -410,7 +345,12 @@ export async function preparePluginWorkspace(
         .where(eq(issues.id, task.id));
       return row!;
     }));
-  return withExecutionWorkspaceLifecycleLock(db, workspace.id, async (tx) => {
+  const driverKey = input.environment?.driver === "plugin" ? input.environment.config?.driverKey : undefined;
+  const placement = selectedProvider.manifestJson.environmentDrivers?.some(driver =>
+    driver.driverKey === driverKey && driver.sessionHandoffVersion === 1)
+    ? await input.acquireTaskLease?.({ id: workspace.id, mode: mode as ExecutionWorkspace["mode"] }) : undefined;
+  const prepare = (workspace: Workspace, taskLease?: TaskPlacement, replacement?: { leaseId: string; assertOwned: () => void }) => withExecutionWorkspaceLifecycleLock(db, workspace.id, async (tx) => {
+    (replacement?.assertOwned ?? input.assertOwned)?.();
     const [current] = await tx
       .select()
       .from(executionWorkspaces)
@@ -426,17 +366,50 @@ export async function preparePluginWorkspace(
     ) {
       throw conflict("Workspace lifecycle changed; reopen before preparing");
     }
+    if (taskLease) await authorize(replacement ? workspace.id : undefined);
+    const replacementScope = replacement && taskLease ? and(
+      eq(environmentLeases.id, replacement.leaseId),
+      eq(environmentLeases.companyId, input.companyId),
+      eq(environmentLeases.heartbeatRunId, input.runId),
+      eq(environmentLeases.executionWorkspaceId, workspace.id),
+      eq(environmentLeases.environmentId, taskLease.environmentId),
+      eq(environmentLeases.providerLeaseId, taskLease.providerLeaseId),
+      eq(environmentLeases.status, "active"),
+      sql`${environmentLeases.metadata}->>'pluginId' = ${pluginId} and ${environmentLeases.metadata}->>'driverKey' = ${taskLease.driverKey}`,
+      sql`${environmentLeases.releasedAt} is null and (${environmentLeases.expiresAt} is null or ${environmentLeases.expiresAt} > clock_timestamp())`,
+      sql`coalesce(${environmentLeases.metadata}->>'runnerTaskRetiring', 'false') != 'true'`,
+    ) : undefined;
+    if (replacementScope && !(await tx.select({ id: environmentLeases.id }).from(environmentLeases).where(replacementScope)).length)
+      throw conflict("Workspace Launcher placement changed");
+    if (!current.providerRef && !input.verifyExisting) {
+      const generation = current.metadata?.lifecycleGeneration ?? 0;
+      const intent = { generation, runId: input.runId, agentId: input.agentId, ...(taskLease ? { taskLease } : {}) };
+      const previous = readPreparationPlacement(current);
+      if (!isDeepStrictEqual(previous, intent)) {
+        // The request must survive a lost reply or rollback of the lifecycle transaction.
+        const [recorded] = await db.update(executionWorkspaces).set({
+          metadata: sql`coalesce(${executionWorkspaces.metadata}, '{}'::jsonb) || ${JSON.stringify({ workspaceProviderPreparationPlacement: intent })}::jsonb`,
+        }).where(and(eq(executionWorkspaces.id, current.id), eq(executionWorkspaces.companyId, current.companyId),
+          sql`${executionWorkspaces.providerRef} is null
+            and coalesce((${executionWorkspaces.metadata}->>'lifecycleGeneration')::int, 0) = ${generation}
+            and coalesce(${executionWorkspaces.metadata}->'workspaceProviderPreparationPlacement', 'null'::jsonb)
+              = ${JSON.stringify(previous ?? null)}::jsonb`)).returning({ id: executionWorkspaces.id });
+        if (!recorded) throw conflict("Workspace preparation placement changed");
+      }
+    }
     const result = await callWorkspaceProvider(tx as unknown as Db, workers, {
       workspace,
       pluginId,
       runId: input.runId,
       agentId: input.agentId,
+      taskLease,
+      assertOwned: replacement?.assertOwned ?? input.assertOwned,
       operation: {
         kind: "prepare",
         source: sourceInput,
         mode: workspace.mode as "isolated_workspace",
         strategy: workspace.strategyType as "git_worktree",
-        branchName,
+        branchName: workspace.metadata?.workspaceProviderFresh ? null : workspace.branchName,
         branchMode:
           (workspace.metadata?.workspaceProviderBranchMode as
             | "create"
@@ -445,11 +418,23 @@ export async function preparePluginWorkspace(
           input.branchMode ??
           "create",
         baseRef: workspace.baseRef,
-        existing: saved,
+        existing: readWorkspaceProviderBinding(workspace.metadata),
+        ...(input.verifyExisting ? { verifyExisting: true } : {}),
+        ...(workspace.metadata?.workspaceProviderFresh ? { fresh: workspace.metadata.workspaceProviderFresh as PluginFreshWorkspace } : {}),
       },
     });
     if (result.kind !== "prepared")
       throw conflict("Workspace preparation is incomplete");
+    if (replacement && result.branchName !== workspace.branchName)
+      throw conflict("Workspace Launcher prepared a different branch");
+    const savedBase = workspace.metadata?.workspaceProviderBaseSha;
+    if (input.verifyExisting && (result.created || !result.baseSha ||
+        (saved && result.binding.workspaceRef !== saved.workspaceRef) ||
+        (workspace.branchName !== null && result.branchName !== workspace.branchName) ||
+        (typeof savedBase === "string" && result.baseSha !== savedBase))) {
+      return null;
+    }
+    (replacement?.assertOwned ?? input.assertOwned)?.();
     await authorize();
     const [currentProject] = await tx
       .select()
@@ -463,7 +448,14 @@ export async function preparePluginWorkspace(
       .where(eq(issues.id, input.issueId!));
     if (task?.executionWorkspaceId !== workspace.id)
       throw conflict("Task workspace binding changed during preparation");
+    if (replacementScope) {
+      const [currentLease] = await tx.update(environmentLeases).set({
+        metadata: sql`coalesce(${environmentLeases.metadata}, '{}'::jsonb) || ${JSON.stringify({ workspaceProvider: result.binding })}::jsonb`,
+      }).where(replacementScope).returning({ id: environmentLeases.id });
+      if (!currentLease) throw conflict("Workspace Launcher placement changed during preparation");
+    }
     await notifyTerminalWorkspaceWork(tx, `workspace:${workspace.id}`);
+    const { workspaceProviderPreparationPlacement: _placement, ...metadata } = current.metadata ?? {};
     const [updated] = await tx
       .update(executionWorkspaces)
       .set({
@@ -473,9 +465,10 @@ export async function preparePluginWorkspace(
         lastUsedAt: new Date(),
         updatedAt: new Date(),
         metadata: {
-          ...workspace.metadata,
+          ...metadata,
           workspaceProvider: result.binding,
           workspaceProviderBaseSha: result.baseSha,
+          ...(result.destinationRef !== undefined ? { workspaceProviderDestinationRef: result.destinationRef } : {}),
           workspaceProviderSource: sourceInput,
           workspaceProviderRemoved: false,
           createdByRuntime: result.branchCreatedByRuntime,
@@ -494,6 +487,20 @@ export async function preparePluginWorkspace(
       throw conflict("Workspace changed before preparation could be recorded");
     return updated!;
   });
+  const prepared = await prepare(workspace, placement?.taskLease);
+  if (prepared && placement && input.onTaskPrepared) {
+    let preparedTaskId = placement.taskLease.providerLeaseId;
+    let preparedWorkspace = prepared;
+    input.onTaskPrepared((taskId, assertOwned) => {
+      if (taskId === preparedTaskId) return;
+      return prepare(preparedWorkspace, { ...placement.taskLease, providerLeaseId: taskId }, { leaseId: placement.leaseId, assertOwned }).then(updated => {
+        if (!updated) throw conflict("Workspace preparation is incomplete");
+        preparedWorkspace = updated;
+        preparedTaskId = taskId;
+      });
+    });
+  }
+  return prepared;
 }
 
 /** Recover a lost prepare result even when the originating run has already stopped. */
@@ -512,27 +519,37 @@ async function reconcilePluginWorkspaceReservation(
       ),
     );
   if (!workspace) throw conflict("Workspace is unavailable");
-  if (readWorkspaceProviderBinding(workspace.metadata)) return workspace;
+  if (readWorkspaceProviderBinding(workspace.metadata) || workspace.metadata?.workspaceProviderRemoval ||
+    workspace.metadata?.workspaceProviderRemoved === true) return workspace;
   const owner = workspace.metadata?.workspaceProviderOwner;
-  if (typeof owner !== "string" || !workspace.metadata?.workspaceProviderSource)
+  const retired = typeof owner === "string" ? await retireAbandonedPluginWorkspaceReservation(db, workspace) : null;
+  if (retired) return retired;
+  if (typeof owner !== "string" || !workspace.projectId || !workspace.metadata?.workspaceProviderSource)
     throw conflict("Workspace storage reservation is unavailable");
   const operation = workspaceProviderOperationSchema.parse({
     kind: "prepare",
     source: workspace.metadata.workspaceProviderSource,
     mode: workspace.mode,
     strategy: workspace.strategyType,
-    branchName: workspace.branchName,
+    branchName: workspace.metadata.workspaceProviderFresh ? null : workspace.branchName,
     branchMode: workspace.metadata.workspaceProviderBranchMode ?? "create",
     baseRef: workspace.baseRef,
     existing: null,
+    ...(workspace.metadata?.workspaceProviderFresh ? { fresh: workspace.metadata.workspaceProviderFresh as PluginFreshWorkspace } : {}),
   });
-  const result = await callWorkspaceProvider(db, workers, {
+  if (operation.kind !== "prepare") throw conflict("Workspace preparation is unavailable");
+  const result = await withPluginWorkspaceReplay({
+    pluginId: owner, companyId: workspace.companyId, projectId: workspace.projectId,
+    projectWorkspaceId: operation.source.id, executionWorkspaceId: workspace.id,
+  }, () => callWorkspaceProvider(db, workers, {
     workspace,
     pluginId: owner,
+    ...readPreparationPlacement(workspace),
     operation,
-  });
+  }));
   if (result.kind !== "prepared")
     throw conflict("Workspace reconciliation is incomplete");
+  const { workspaceProviderPreparationPlacement: _placement, ...metadata } = workspace.metadata ?? {};
   const [updated] = await db.transaction(async (tx) => {
     await notifyTerminalWorkspaceWork(tx, `workspace:${workspace.id}`);
     return tx
@@ -542,9 +559,10 @@ async function reconcilePluginWorkspaceReservation(
         branchName: result.branchName,
         updatedAt: new Date(),
         metadata: {
-          ...workspace.metadata,
+          ...metadata,
           workspaceProvider: result.binding,
           workspaceProviderBaseSha: result.baseSha,
+          ...(result.destinationRef !== undefined ? { workspaceProviderDestinationRef: result.destinationRef } : {}),
           createdByRuntime: result.branchCreatedByRuntime,
         },
       })
@@ -567,37 +585,93 @@ async function inspectBinding(
   db: Db,
   workers: WorkspaceWorkers | undefined,
   workspace: Workspace,
+  recoveryPullRequest?: PluginWorkspaceRecoveryPullRequest,
 ) {
   const binding = readWorkspaceProviderBinding(workspace.metadata);
   if (!binding) throw conflict("Workspace storage binding is unavailable");
   const result = await callWorkspaceProvider(db, workers, {
     workspace,
-    operation: { kind: "inspect", binding },
+    operation: { kind: "inspect", binding, ...(recoveryPullRequest ? { recoveryPullRequest } : {}) },
   });
   if (result.kind !== "inspection")
     throw conflict("Workspace inspection is incomplete");
   return result;
 }
 
-export async function inspectPluginWorkspace(
-  db: Db,
-  workers: WorkspaceWorkers | undefined,
-  workspace: Workspace,
-) {
+/** Reconcile durable lifecycle intent under the same lock for either read path. */
+async function withRetainedWorkspace<T>(db: Db, workers: WorkspaceWorkers | undefined,
+  workspace: Workspace, operation: (workspace: Workspace) => Promise<T>) {
   return withExecutionWorkspaceLifecycleLock(db, workspace.id, async () => {
-    // Keep recovery intent/results durable across an ambiguous provider response.
-    workspace = await reconcilePluginWorkspaceReservation(
-      db,
-      workers,
-      workspace,
-    );
+    workspace = await reconcilePluginWorkspaceReservation(db, workers, workspace);
     if (workspace.metadata?.workspaceProviderRestoration)
       workspace = await finishPendingRestoration(db, workers, workspace);
     if (workspace.metadata?.workspaceProviderRemoval)
       workspace = await finishPendingRemoval(db, workers, workspace);
-    if (workspace.metadata?.workspaceProviderRemoved === true)
-      return removedInspection();
-    return inspectBinding(db, workers, workspace);
+    return operation(workspace);
+  });
+}
+
+export async function inspectPluginWorkspace(db: Db, workers: WorkspaceWorkers | undefined, workspace: Workspace, recoveryPullRequest?: PluginWorkspaceRecoveryPullRequest) {
+  return withRetainedWorkspace(db, workers, workspace, (current) =>
+    current.metadata?.workspaceProviderRemoved === true
+      ? Promise.resolve(removedInspection()) : inspectBinding(db, workers, current, recoveryPullRequest));
+}
+
+type PluginWorkspaceFinalizationPlan = { kind: "inspect" } | { kind: "finalize"; taskLease?: TaskPlacement };
+
+export async function resolvePluginWorkspaceFinalization(db: Db, workspace: Workspace,
+  context: { runId: string; agentId: string; taskLease?: TaskPlacement | null }): Promise<PluginWorkspaceFinalizationPlan | undefined> {
+  if (workspace.providerType !== "plugin") return undefined;
+  if (context.taskLease) return { kind: "finalize", taskLease: context.taskLease };
+  const binding = readWorkspaceProviderBinding(workspace.metadata);
+  if (!binding) throw conflict("Workspace storage ownership is missing");
+  const selected = await pluginRegistryService(db).getById(binding.pluginId);
+  if (!selected) throw conflict("The workspace storage plugin is unavailable");
+  // Existing providers continue to use their established inspection contract.
+  if (selected.manifestJson.workspaceProvider?.finalizationVersion !== 1) return { kind: "inspect" };
+  const portableDrivers = new Set(selected.manifestJson.environmentDrivers?.filter(driver =>
+    driver.sessionHandoffVersion === 1).map(driver => driver.driverKey));
+  let taskLease: TaskPlacement | undefined;
+  if (context.taskLease === undefined && portableDrivers.size > 0) {
+    const leases = await db.select().from(environmentLeases).where(and(
+      eq(environmentLeases.companyId, workspace.companyId),
+      eq(environmentLeases.executionWorkspaceId, workspace.id),
+      eq(environmentLeases.heartbeatRunId, context.runId),
+      eq(environmentLeases.status, "active"),
+    ));
+    const placements = leases.flatMap(lease => {
+      const driverKey = lease.metadata?.driverKey;
+      return lease.metadata?.pluginId === binding.pluginId && lease.metadata?.agentId === context.agentId &&
+        lease.metadata?.runnerTaskLease === true && lease.environmentId && lease.providerLeaseId &&
+        typeof driverKey === "string" && portableDrivers.has(driverKey)
+        ? [{ driverKey, environmentId: lease.environmentId, providerLeaseId: lease.providerLeaseId }] : [];
+    });
+    if (placements.length > 1) throw conflict("Workspace Launcher placement is ambiguous");
+    taskLease = placements[0];
+  }
+  return { kind: "finalize", taskLease };
+}
+
+/** Completion does not need the deletion-safety proof supplied by inspect. */
+export async function finalizePluginWorkspace(db: Db, workers: WorkspaceWorkers | undefined,
+  workspace: Workspace, context: { runId: string; agentId: string; taskLease?: TaskPlacement | null;
+    plan?: PluginWorkspaceFinalizationPlan }) {
+  return withRetainedWorkspace(db, workers, workspace, async (current) => {
+    if (current.metadata?.workspaceProviderRemoved === true)
+      throw conflict("Workspace was removed before finalization");
+    const binding = readWorkspaceProviderBinding(current.metadata);
+    if (!binding) throw conflict("Workspace storage ownership is missing");
+    if (context.plan && !isDeepStrictEqual(binding, readWorkspaceProviderBinding(workspace.metadata)))
+      throw conflict("Workspace storage ownership changed");
+    const plan = context.plan ?? await resolvePluginWorkspaceFinalization(db, current, context);
+    if (!plan) throw conflict("The workspace storage plugin is unavailable");
+    if (plan.kind === "inspect") return inspectBinding(db, workers, current);
+    const taskLease = plan.taskLease;
+    const result = await callWorkspaceProvider(db, workers, {
+      workspace: current, runId: context.runId, agentId: context.agentId, taskLease, operation: { kind: "finalize", binding },
+    });
+    if (result.kind !== "finalized") throw conflict("Workspace finalization is incomplete");
+    return result;
   });
 }
 
@@ -655,6 +729,7 @@ async function finishPendingRestoration(
           lifecycleGeneration: generation + 1,
           workspaceProvider: result.binding,
           workspaceProviderBaseSha: result.baseSha,
+          ...(result.destinationRef !== undefined ? { workspaceProviderDestinationRef: result.destinationRef } : {}),
           workspaceProviderRemoved: false,
           workspaceProviderRestoration: null,
         },
@@ -683,7 +758,7 @@ async function finishPendingRemoval(
 ): Promise<Workspace> {
   if (workspace.metadata?.workspaceProviderRemoved === true) return workspace;
   const pending = workspace.metadata?.workspaceProviderRemoval as
-    | { generation?: unknown; operation?: unknown }
+    | { generation?: unknown; operation?: unknown; operationId?: unknown }
     | undefined;
   const parsed = workspaceProviderOperationSchema.safeParse(pending?.operation);
   const binding = readWorkspaceProviderBinding(workspace.metadata);
@@ -694,12 +769,22 @@ async function finishPendingRemoval(
     JSON.stringify(parsed.data.binding) !== JSON.stringify(binding)
   )
     throw conflict("Workspace removal intent is unavailable or stale");
+  if (pending.operationId === undefined && parsed.data.recoveryPullRequest)
+    throw conflict("Workspace removal identity is ambiguous; reconciliation requires the original request");
+  const operationId = createHash("sha256").update(JSON.stringify([workspace.id, pending.generation, parsed.data])).digest("hex");
+  if (pending.operationId !== undefined && pending.operationId !== operationId)
+    throw conflict("Workspace removal identity does not match its recorded payload");
+  const owner = workspace.metadata?.workspaceProviderOwner;
   const result = await callWorkspaceProvider(db, workers, {
     workspace,
+    pluginId: typeof owner === "string" ? owner : undefined,
     operation: parsed.data,
+    removalOperationId: operationId,
   });
   if (result.kind !== "removed")
     throw conflict("Workspace removal is incomplete");
+  if (workspace.metadata?.workspaceProviderFresh)
+    await releaseProviderRecoveryTransfers(workspace.companyId, workspace.metadata.workspaceProviderFresh as PluginFreshWorkspace);
   const [updated] = await db.transaction(async (tx) => {
     await notifyTerminalWorkspaceWork(tx, `workspace:${workspace.id}`);
     return tx
@@ -734,18 +819,24 @@ export async function removePluginWorkspace(
   workers: WorkspaceWorkers | undefined,
   workspace: Workspace,
   expectedHeadSha: string | null,
+  recoveryPullRequest?: PluginWorkspaceRecoveryPullRequest,
+  beforeRemove?: () => Promise<void>,
 ) {
   workspace = await reconcilePluginWorkspaceReservation(db, workers, workspace);
   if (workspace.metadata?.workspaceProviderRestoration)
     throw conflict("Workspace restoration must be reconciled before removal");
-  if (workspace.metadata?.workspaceProviderRemoved === true) return;
+  if (workspace.metadata?.workspaceProviderRemoved === true) {
+    if (workspace.metadata?.workspaceProviderFresh)
+      await releaseProviderRecoveryTransfers(workspace.companyId, workspace.metadata.workspaceProviderFresh as PluginFreshWorkspace);
+    return;
+  }
   if (workspace.metadata?.workspaceProviderRemoval) {
     await finishPendingRemoval(db, workers, workspace);
     return;
   }
   const binding = readWorkspaceProviderBinding(workspace.metadata);
   if (!binding) throw conflict("Workspace storage binding is unavailable");
-  const inspection = await inspectBinding(db, workers, workspace);
+  const inspection = await inspectBinding(db, workers, workspace, recoveryPullRequest);
   if (
     inspection.hasDirtyTrackedFiles ||
     inspection.hasUntrackedFiles ||
@@ -758,8 +849,12 @@ export async function removePluginWorkspace(
       "Workspace has local changes or cannot be recovered remotely",
     );
   }
+  await beforeRemove?.();
   const generation = workspace.metadata?.lifecycleGeneration ?? 0;
-  const operation = { kind: "remove" as const, binding, expectedHeadSha };
+  const selectedProvider = await requireWorkspaceProviderWorker(db, workers, workspace.companyId, binding.pluginId);
+  const operation = workspaceProviderOperationSchema.parse({ kind: "remove", binding, expectedHeadSha,
+    ...(recoveryPullRequest && selectedProvider.manifestJson.workspaceProvider?.recoveryPullRequestVersion === 1 ? { recoveryPullRequest } : {}) });
+  const operationId = createHash("sha256").update(JSON.stringify([workspace.id, generation, operation])).digest("hex");
   const [pending] = await db.transaction(async (tx) => {
     await notifyTerminalWorkspaceWork(tx, `workspace:${workspace.id}`);
     return tx
@@ -767,7 +862,7 @@ export async function removePluginWorkspace(
       .set({
         metadata: {
           ...workspace.metadata,
-          workspaceProviderRemoval: { generation, operation },
+          workspaceProviderRemoval: { generation, operation, operationId },
         },
         updatedAt: new Date(),
       })
@@ -854,10 +949,11 @@ export async function restorePluginWorkspace(
     source,
     mode: workspace.mode,
     strategy: workspace.strategyType,
-    branchName: workspace.branchName,
-    branchMode: "existing",
+    branchName: workspace.metadata?.workspaceProviderFresh ? null : workspace.branchName,
+    branchMode: workspace.metadata?.workspaceProviderFresh ? "create" : "existing",
     baseRef: workspace.baseRef,
     existing: binding,
+    ...(workspace.metadata?.workspaceProviderFresh ? { fresh: workspace.metadata.workspaceProviderFresh as PluginFreshWorkspace } : {}),
   });
   const [pending] = await db.transaction(async (tx) => {
     await notifyTerminalWorkspaceWork(tx, `workspace:${workspace.id}`);
@@ -900,5 +996,6 @@ export async function restorePluginWorkspace(
     workspaceProviderRemoved: false,
     workspaceProviderRestoration: null,
     workspaceProviderBaseSha: result.baseSha,
+    ...(result.destinationRef !== undefined ? { workspaceProviderDestinationRef: result.destinationRef } : {}),
   };
 }

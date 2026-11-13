@@ -29,6 +29,9 @@ Open `/projects`, create a project, and enter its overview or Issues view.
 ### `repository-settings`
 
 Open `/projects/:projectId/configuration` and its repository/workspace settings.
+Storage is fixed at creation and has no control here. When a storage plugin is
+installed, or the project uses one, **Available in** lists the environments that
+can use the project's storage.
 
 ### `project-access`
 
@@ -45,6 +48,8 @@ Automated: [projects UI](../../ui/src/pages/Projects.test.tsx) and [project deta
 Manual: Create a project, add a task from its view, and reload. Verify the task belongs to that project, list counts are plausible, and links preserve company scope. Archive only the disposable project and inspect list/task behavior.
 
 ### `repository-settings`
+
+Automated: [provider defaults and API overrides](../../server/src/__tests__/project-workspace-provider.integration.test.ts) and [storage selection UI](../../ui/src/components/ProjectProperties.concurrency.test.tsx) cover saved storage, explicit overrides, and configuration errors. These offline checks do not qualify live provider storage.
 
 Automated: [repository persistence](../../server/src/__tests__/project-repositories-persistence.test.ts) and [repository browser suite](../../tests/e2e/project-repositories.spec.ts) cover configured repository workflows.
 

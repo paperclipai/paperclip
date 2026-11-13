@@ -174,6 +174,7 @@ describe("Chat landing", () => {
     state.chatsFetched = false;
     await render();
     expect(state.navigate).not.toHaveBeenCalled();
-    expect(container.querySelector('[role="alert"]')?.textContent).toContain("Couldn’t load your chats");
+    expect(container.querySelector('[role="alert"]')?.textContent).toMatch(/Couldn[’']t load your chats/);
+    expect(container.querySelector('[role="alert"]')?.textContent).toContain("Retry");
   });
 });

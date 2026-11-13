@@ -1,0 +1,50 @@
+---
+description: Every API route that reads or writes company data checks company access and actor permissions, logs mutations to the activity log, and returns consistent HTTP errors.
+globs: "server/src/routes/**"
+alwaysApply: false
+---
+
+# API route expectations
+
+## Scope and purpose
+
+This rule applies to new or changed HTTP routes under `server/src/routes/`.
+Paperclip is a multi-company control plane, so each route must keep one
+company's data away from another company's actors.
+
+## Auth model
+
+- The base path is `/api`.
+- Board access is treated as full-control operator context.
+- Agent access uses bearer API keys (`agent_api_keys`), hashed at rest.
+- Agent keys must not access other companies.
+
+## Requirements
+
+When you add or change an endpoint that reads or writes company data:
+
+- Apply company access checks. Use the helpers in `server/src/routes/authz.ts`,
+  such as `assertCompanyAccess`, instead of a new check.
+- Enforce actor permissions (board vs agent), for example with `assertBoard` or
+  `assertBoardOrAgent`.
+- Write an activity log entry for each mutation.
+- Return consistent HTTP errors. The common codes are
+  `400/401/403/404/409/422/500`. Other codes are valid when they are the correct
+  status, such as `429` for rate limits and `503` while the server starts or
+  drains.
+
+Instance-level routes such as `health.ts`, `liveness.ts`, `ready.ts`,
+`public-mcp.ts`, and `org-chart-svg.ts` have no company to check. Do not add a
+company access check to a route that serves no company data.
+
+The API reference for callers is in `docs/api/`. Update it when a public
+endpoint changes.
+
+## Review criteria
+
+Flag a route that reads or writes company data without a company access check.
+Flag a route that lets an agent key reach another company. Flag a mutation with
+no activity log entry. Flag an error response with an incorrect status code or
+an error that hides a failure behind a success status. Do not flag a correct
+status code only because it is not in the common list. Do not flag an
+instance-level route for a missing company check.

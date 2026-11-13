@@ -43,7 +43,8 @@ function conversationRunPredicate() {
 }
 
 /** Recovery must not infer the old adapter from the agent's mutable settings. */
-export async function historicalAdapterType(db: Db, run: typeof heartbeatRuns.$inferSelect): Promise<string | null> {
+export async function historicalAdapterType(db: Db, run: Pick<typeof heartbeatRuns.$inferSelect,
+  "id" | "companyId" | "runnerProfileJson">): Promise<string | null> {
   const selected = claimedAdapterType(run);
   if (selected) return selected;
   const [invocation] = await db.select({ payload: heartbeatRunEvents.payload }).from(heartbeatRunEvents)
@@ -111,7 +112,14 @@ export async function getConversationOwnershipBlocker(db: Db, companyId: string,
       and (${environmentLeases.releasedAt} is null
         or ${environmentLeases.status} = 'pending_cleanup'
         or ${environmentLeases.cleanupStatus} = 'failed'))`;
-  const candidates = await db.select({ run: heartbeatRuns, activeLease }).from(heartbeatRuns)
+  const candidates = await db.select({ run: {
+    id: heartbeatRuns.id,
+    agentId: heartbeatRuns.agentId,
+    processPid: heartbeatRuns.processPid,
+    processGroupId: heartbeatRuns.processGroupId,
+    processStartedAt: heartbeatRuns.processStartedAt,
+    resultJson: heartbeatRuns.resultJson,
+  }, activeLease }).from(heartbeatRuns)
     .where(and(
       eq(heartbeatRuns.companyId, companyId), eq(heartbeatRuns.runtimeMode, "legacy"),
       conversationRunPredicate(),

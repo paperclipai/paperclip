@@ -68,7 +68,7 @@ describe("Codex app-server Codex driver", () => {
         threadId: "thread-1", turnId: "turn-1", arguments: {} });
       expect(feedback).toHaveBeenCalledExactlyOnceWith({ ...report, continuation });
       expect((await session.snapshot()).semanticResult?.result).toEqual({ ...report, continuation });
-    } finally { await session.close(); }
+    } finally { await session.close({ reason: "fixture complete" }); }
   });
 
   it.each([
@@ -92,7 +92,7 @@ describe("Codex app-server Codex driver", () => {
       expect(response).toMatchObject({ success: false });
       expect(feedback).not.toHaveBeenCalled();
       expect((await session.snapshot()).semanticResult).toBeNull();
-    } finally { await session.close(); }
+    } finally { await session.close({ reason: "fixture complete" }); }
   });
 
   it("returns current approval feedback and permits correcting a rejected completion report", async () => {
@@ -111,7 +111,7 @@ describe("Codex app-server Codex driver", () => {
     expect(await call("corrected")).toMatchObject({ success: true,
       contentItems: [{ type: "inputText", text: expect.stringContaining("/approvals/approval-1") }] });
     expect((await session.snapshot()).semanticResult?.result).toEqual(result);
-    await session.close();
+    await session.close({ reason: "fixture complete" });
   });
 
   it("accepts an explicit response-wake yield through paperclip_finish", async () => {
@@ -194,7 +194,7 @@ describe("Codex app-server Codex driver", () => {
         },
       },
     })).toMatchObject({ success: false });
-    await otherSession.close();
+    await otherSession.close({ reason: "fixture complete" });
   });
 
   it("makes duplicate semantic completion idempotent and rejects changed payloads", async () => {
