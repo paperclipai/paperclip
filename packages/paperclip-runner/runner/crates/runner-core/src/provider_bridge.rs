@@ -909,13 +909,33 @@ impl ProviderToolBridge {
         let Some(pending) = self.pending.get(&rejected.call_id) else {
             return Ok(None);
         };
-        let settlement = runner_tool_failure(
+        let mut settlement = runner_tool_failure(
             pending,
             UNDELIVERABLE_RESULT_CODE,
             "Paperclip ran this tool, but its result could not be returned to you. The action may already have completed; do not repeat it. Check the current state with a read tool instead.",
         );
+        // Bind the settlement to the exact rejected result, so a replay of the
+        // same delivery after a crash is recognized as a duplicate.
+        settlement.result["error"]["rejectedResultDigest"] =
+            Value::String(rejected_result_digest(rejected));
         self.apply_result(settlement.clone())?;
         Ok(Some(settlement))
+    }
+
+    /// True when this exact result was already rejected and its call settled
+    /// by `settle_undeliverable_result`.
+    pub fn is_settled_undeliverable_replay(&self, result: &ToolResult) -> bool {
+        self.completed
+            .get(&result.call_id)
+            .or_else(|| self.settled_results.get(&result.call_id))
+            .is_some_and(|entry| {
+                let error = &entry.result.result["error"];
+                entry.result.is_error
+                    && entry.result.operation_id == result.operation_id
+                    && error["code"] == UNDELIVERABLE_RESULT_CODE
+                    && error["rejectedResultDigest"]
+                        == Value::String(rejected_result_digest(result))
+            })
     }
 
     /// Settle the calls a closed provider turn left pending. Their provider
@@ -1355,6 +1375,12 @@ where
 
 pub const UNDELIVERABLE_RESULT_CODE: &str = "semantic_tool_result_undeliverable";
 pub const EXPIRED_RESULT_CODE: &str = "semantic_tool_result_expired";
+
+fn rejected_result_digest(result: &ToolResult) -> String {
+    semantic_value_digest(&serde_json::json!({
+        "operationId": result.operation_id, "isError": result.is_error, "result": result.result,
+    }))
+}
 
 fn runner_tool_failure(pending: &PendingToolCall, code: &str, message: &str) -> ToolResult {
     ToolResult {
@@ -2398,7 +2424,12 @@ mod tests {
             .settle_undeliverable_result(&rejected)
             .unwrap()
             .is_none());
+        assert!(bridge.is_settled_undeliverable_replay(&rejected));
+        let mut different = rejected.clone();
+        different.result["data"] = json!(["other"]);
+        assert!(!bridge.is_settled_undeliverable_replay(&different));
         bridge.settle_turn("provider_turn_terminated").unwrap();
+        assert!(bridge.is_settled_undeliverable_replay(&rejected));
         bridge.prepare_turn().expect("the next turn starts");
     }
 

@@ -5033,6 +5033,26 @@ impl CodexCommandExecutor {
                     result.call_id, result.operation_id
                 ));
                 if was_completed {
+                    // An exact replay of a delivery whose result was already
+                    // rejected and settled (for example after a crash before
+                    // the command finished) is a duplicate, not a conflict.
+                    if next_state
+                        .tool_bridge
+                        .is_settled_undeliverable_replay(&result)
+                    {
+                        return Ok(CommandExecution {
+                            result: json!({ "status": "duplicate", "callId": result.call_id }),
+                            events: vec![(
+                                "harness.diagnostic".to_owned(),
+                                EventPriority::P0,
+                                json!({
+                                    "code": "semantic_tool_result_duplicate", "severity": "warning",
+                                    "callId": result.call_id, "operationId": result.operation_id,
+                                    "resultDigest": semantic_value_digest(&result.result),
+                                }),
+                            )],
+                        });
+                    }
                     return Err(rejected);
                 }
                 match next_state.tool_bridge.settle_undeliverable_result(&result) {

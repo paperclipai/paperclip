@@ -5896,12 +5896,18 @@ fn a_rejected_recorded_result_still_answers_the_provider_and_frees_the_session()
     }
     assert!(input_seen, "the provider requests its tool");
 
+    let rejected = json!({
+        "callId": "semantic-call-1", "operationId": "get_task_context", "isError": false,
+        "result": {"ok": true, "status": 200, "operationId": "GET /api/companies/{companyId}/workflows",
+            "contentType": "application/json; charset=utf-8", "data": []},
+    });
     let delivered = executor
-        .execute(&command("result", 4, "semantic_tool.result", json!({
-            "callId": "semantic-call-1", "operationId": "get_task_context", "isError": false,
-            "result": {"ok": true, "status": 200, "operationId": "GET /api/companies/{companyId}/workflows",
-                "contentType": "application/json; charset=utf-8", "data": []},
-        })))
+        .execute(&command(
+            "result",
+            4,
+            "semantic_tool.result",
+            rejected.clone(),
+        ))
         .expect("a recorded result must settle its call even when the bridge rejects it");
     assert_eq!(delivered.result["status"], "delivered");
     let mut observed = Vec::new();
@@ -5934,10 +5940,21 @@ fn a_rejected_recorded_result_still_answers_the_provider_and_frees_the_session()
         "the provider must receive an answer, not wait for its client timeout: {calls}"
     );
 
+    // A crash before the command finished replays the same delivery.
+    let replay = executor
+        .execute(&command(
+            "result-replay",
+            5,
+            "semantic_tool.result",
+            rejected,
+        ))
+        .expect("an exact replay of the rejected delivery is a duplicate");
+    assert_eq!(replay.result["status"], "duplicate");
+
     executor
         .execute(&command(
             "attach",
-            5,
+            6,
             "run.attach",
             json!({"authorizedTools": task_context_tool_set()}),
         ))

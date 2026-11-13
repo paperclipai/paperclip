@@ -45,7 +45,7 @@ export async function executeNativeWorkflowTool(input: {
   // must name this tool and call. A REST route there is a mismatch, so the
   // result is rejected and never reaches the agent.
   const { operationId, ...response } = raw as Record<string, unknown>;
-  const result = { ...response, apiOperationId: operationId };
+  const result: Record<string, unknown> = { ...response, apiOperationId: operationId };
   if (input.tool !== "read_workflow") return result;
   const etag = typeof result.etag === "string" ? result.etag : "";
   const snapshot = /^(?:W\/)?"([a-f0-9]{64})"$/.exec(etag)?.[1];
