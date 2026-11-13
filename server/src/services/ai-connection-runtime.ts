@@ -320,7 +320,7 @@ export async function prepareManagedAiRuntime(
       // resolution sees a concurrent rotation instead of the pre-rotation
       // version. A lock takes no new row version and aborts no admission.
       return (await db.select({ epoch: companySecrets.aiSessionEpoch, version: companySecrets.latestVersion })
-        .from(companySecrets).where(and(eq(companySecrets.companyId, input.companyId), eq(companySecrets.id, credentialRef.secretId))).limit(1).for("share"))[0];
+        .from(companySecrets).where(and(eq(companySecrets.companyId, input.companyId), eq(companySecrets.id, credentialRef.secretId))).for("share"))[0];
     };
     const { value, freshness } = await (async () => {
       if (noAuth) return { value: "", freshness: undefined };
