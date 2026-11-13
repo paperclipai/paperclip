@@ -2,7 +2,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { promises as fs } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { applyPendingMigrations, companies, companySkillSecurityApprovals, companySkillSources, companySkillVersions, createDb } from '@paperclipai/db';
 import { eq } from 'drizzle-orm';
 import { forbidden } from '../errors.js';
@@ -13,6 +13,19 @@ import { skillSourceService, type SkillSourceContext } from '../services/skill-s
 import { companySkillService } from '../services/company-skills.js';
 import { diffGitHubSkillUpdate } from '../services/skill-update-diff.js';
 import { versionApprovalGrant } from '../services/skill-security-overrides.js';
+
+// Counts the approval records a publish saves, passing every call through.
+const approvalSaves = vi.hoisted(() => ({ count: 0 }));
+vi.mock('../services/company-skills.js', async importOriginal => {
+  const original = await importOriginal<typeof import('../services/company-skills.js')>();
+  return { ...original, companySkillService: (...args: Parameters<typeof original.companySkillService>) => {
+    const service = original.companySkillService(...args);
+    return { ...service, saveSecurityApproval: async (...call: Parameters<typeof service.saveSecurityApproval>) => {
+      approvalSaves.count++;
+      return service.saveSecurityApproval(...call);
+    } };
+  } };
+});
 
 const externalUrl = resolveExternalTestDatabaseUrl('PAPERCLIP_SKILL_SOURCES_TEST_DATABASE_URL');
 const support = externalUrl ? { supported: true } : await getEmbeddedPostgresTestSupport();
@@ -331,6 +344,7 @@ echo updated`;
     const files = { 'skills/one/SKILL.md': md('one'), 'skills/two/SKILL.md': md('two'), 'hooks/install.sh': hook };
     const context: SkillSourceContext = { actor: { type: 'user', userId: 'admin-user' }, authorize: async () => {}, audit: async () => {},
       read: () => githubFixture(files, {}, first), authorizeSecurityOverride: async () => {} };
+    approvalSaves.count = 0;
     const created = await skillSourceService(db).create(companyId, {
       repositoryUrl: 'https://github.com/acme/skills', trackingRef: 'main', packageMode: 'repository', commitSha: first,
       selectedPaths: ['skills/one/SKILL.md', 'skills/two/SKILL.md'],
@@ -343,6 +357,8 @@ echo updated`;
     expect(new Set(versions.map(version => version.approvalId)).size).toBe(1);
     expect(versions[0]!.approvalId).toBeTruthy();
     expect(await db.select().from(companySkillSecurityApprovals).where(eq(companySkillSecurityApprovals.companyId, companyId))).toHaveLength(1);
+    // The repository record is built and saved once for the whole publish, not once per installed skill.
+    expect(approvalSaves.count).toBe(1);
   });
 
   it('keeps a future-trusted version accepted while a strict renewal it does not install replaces the approval', async () => {

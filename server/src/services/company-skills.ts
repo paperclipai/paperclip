@@ -448,6 +448,8 @@ type CreateVersionOptions = {
   database?: DbOrTransaction;
   /** The approval that admitted this version's flagged files, recorded with the version. */
   securityApproval?: SkillVersionSecurityApproval | null;
+  /** An approval record already saved with `saveSecurityApproval`, shared by the versions one publish installs. */
+  securityApprovalId?: string | null;
 };
 
 type DbTransaction = Parameters<Parameters<Db["transaction"]>[0]>[0];
@@ -3914,7 +3916,8 @@ export function companySkillService(db: Db, options: { actor?: AuthorizationActo
           authorAgentId: actor?.type === "agent" ? actor.agentId ?? null : null,
           authorUserId: actor?.type === "user" ? actor.userId ?? null : null,
           // A copy of the current version keeps the approval that admitted its unchanged files.
-          securityApprovalId: options.securityApproval !== undefined
+          securityApprovalId: options.securityApprovalId !== undefined ? options.securityApprovalId
+            : options.securityApproval !== undefined
             ? options.securityApproval ? await saveSecurityApproval(tx, companyId, options.securityApproval) : null
             : options.fileInventory === undefined ? previousVersion?.securityApprovalId ?? null : null,
         })
@@ -7636,6 +7639,7 @@ export function companySkillService(db: Db, options: { actor?: AuthorizationActo
     importPackageFiles,
     auditSkill,
     installedSecurityApproval,
+    saveSecurityApproval,
     installUpdate,
     resetSkill,
     listRuntimeSkillEntries,

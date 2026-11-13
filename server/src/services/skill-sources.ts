@@ -267,6 +267,14 @@ export function skillSourceService(db: Db) {
     for (const chosen of selected) {
       if (!scanned.has(chosen) && !previous.some(entry => entry.path === chosen)) throw unprocessable('A selected skill was not found in this repository scan.');
     }
+    // A repository package admits the same files for every skill it installs, so its record is built and
+    // saved once per publish and shared; a skill package's record covers only that skill's files.
+    let repositoryApprovalId: Promise<string | null> | undefined;
+    const saveApproval = async (record: ReturnType<typeof versionSecurityApproval>) =>
+      record ? skills.saveSecurityApproval(tx, source.companyId, record) : null;
+    const approvalIdFor = (candidate: ScannedSkillSource['skills'][number]) => mode === 'repository'
+      ? repositoryApprovalId ??= saveApproval(versionSecurityApproval(approval, scan, new Set(scan.repositoryFiles!.map(file => file.path))))
+      : saveApproval(versionSecurityApproval(approval, scan, candidatePackagePaths(candidate)));
     for (const candidate of scan.skills) {
       const old = previous.find(entry => entry.path === candidate.path);
       const selection = selected.has(candidate.path) ? 'selected' as const
@@ -302,8 +310,7 @@ export function skillSourceService(db: Db) {
         if (changed) {
           const version = await skills.createVersion(source.companyId, skillId!, { label: `GitHub ${scan.commitSha.slice(0, 8)}` }, context.actor, {
             database: tx, skipInventoryRefresh: true, skill: installed, fileInventory: candidate.files,
-            securityApproval: versionSecurityApproval(approval, scan, mode === 'repository'
-              ? new Set(scan.repositoryFiles!.map(file => file.path)) : candidatePackagePaths(candidate)),
+            securityApprovalId: await approvalIdFor(candidate),
             packageSnapshotId: prepared.get(candidate.path)?.id,
             packageFileMap: repositorySnapshotId && prepared.has(candidate.path) ? candidate.files.map(file => ({ path: file.path, kind: file.kind,
               sourcePath: file.path === 'SKILL.md' ? candidate.path : path.posix.join(path.posix.dirname(candidate.path), file.path) })) : null,
