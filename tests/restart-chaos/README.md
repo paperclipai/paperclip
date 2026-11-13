@@ -603,13 +603,6 @@ and `duplicated side effects: 0`, the release-swap headline shows every task com
 Daytona cleanup left no sandbox (`left after deletion: none`). The `follow-up answered in a later run` line is not a
 failure; read its waits. In L1 the queued tasks wait for a slot by design; U1 allows that wait (see "Universal checks").
 
-To regrade a saved staging-mix wave with the current graders, offline (other waves are refused, because their time
-budgets come from the workload definitions):
-
-```sh
-node cli/node_modules/tsx/dist/cli.mjs tests/restart-chaos/regrade.ts tests/restart-chaos/results/<wave>
-```
-
 `--release-swap` runs the full default (6 swaps, 40 minutes apart). `--release-swap-short` runs 3 swaps 12 minutes
 apart with the full 510 s overlap, so two servers run for most of each cycle. Either takes the `--release-swap-*`
 options below, which override the preset. Workload sizing (turn length, concurrency) comes from the workload flags.
@@ -1769,7 +1762,8 @@ When the workload declares a queue (staging-mix `--mix-queue` above 0), a run th
 ceil(queue / runs) × (longest turn + 5 min); for L1 (20 runs, 20 queued, 12–22 minute turns) that is 27 minutes.
 Only queued time with a free slot of its agent counts toward the 5-minute queue bound, so a run left queued while
 its agent has a free slot still fails. Slot use comes from `wake-evidence/agent-slots.json` (every run's start and
-finish and each agent's cap, captured at wave end). Without that file (older waves) only the declared bound applies.
+finish and each agent's effective cap as the server computes it, `maxConcurrentRunsSql`, so a configured 100 is saved
+as the server's limit of 50; captured at wave end). Without that file (older waves) only the declared bound applies.
 
 A parent whose turn ended `yielded` or `blocked` and that waits, with no run, until its subtasks complete is in a
 named wait (`waitingOnChildren`): R5 and U1 do not count it as a stall. The observer keeps watching such a parent

@@ -6,7 +6,8 @@ import { ISSUE_STATUSES } from "../../packages/shared/src/constants.js";
 import type { CompletionEvidence } from "./staging-mix.js";
 import { laterAnswers, type DeliveryRun, type DeliveryWake } from "./follow-up-delivery.js";
 import { AGENT_SLOTS_FILE, agentSlotsFromRows } from "./agent-slots.js";
-import { createDb, type Db } from "../../packages/db/src/index.js";
+import { agents, createDb, type Db } from "../../packages/db/src/index.js";
+import { maxConcurrentRunsSql } from "../../server/src/services/heartbeat/timer-policy.js";
 
 type Row = Record<string, unknown>;
 
@@ -93,7 +94,7 @@ export function wakeEvidenceForIssue(issueId: string, input: WakeEvidenceInput) 
   };
 }
 
-async function readRows(db: Pick<Db, "$client">, companyId: string, shifts: readonly AgingShift[]): Promise<Omit<WakeEvidenceInput, "windows">> {
+async function readRows(db: Pick<Db, "$client" | "select">, companyId: string, shifts: readonly AgingShift[]): Promise<Omit<WakeEvidenceInput, "windows">> {
   const client = db.$client;
   const runs = await client.unsafe(
     `select r.id::text as id, r.agent_id::text as "agentId", r.issue_id::text as "issueId", r.status, r.invocation_source as "invocationSource", r.trigger_detail as "triggerDetail",
@@ -125,8 +126,8 @@ async function readRows(db: Pick<Db, "$client">, companyId: string, shifts: read
             floor(extract(epoch from created_at) * 1000) as "createdAt"
        from activity_log where company_id::text = $1 and entity_type = 'issue' and action like 'issue.%'
         and details ? 'status' order by created_at`, [companyId]) as Row[];
-  const agents = await client.unsafe(
-    `select id::text as id, runtime_config->'heartbeat'->>'maxConcurrentRuns' as "maxConcurrentRuns" from agents where company_id::text = $1`, [companyId]) as Row[];
+  const agentRows = (await db.select({ id: agents.id, companyId: agents.companyId, maxConcurrentRuns: maxConcurrentRunsSql() }).from(agents))
+    .filter(agent => agent.companyId === companyId) as Row[];
   const controllers = (await client.unsafe(
     `select boot_id as "bootId", epoch, process_space as "processSpace", pid, floor(extract(epoch from started_at) * 1000) as "startedAt",
             floor(extract(epoch from coalesce(stopped_at, fenced_at)) * 1000) as "endedAt" from controller_instances order by epoch`) as Row[])
@@ -135,7 +136,7 @@ async function readRows(db: Pick<Db, "$client">, companyId: string, shifts: read
   return {
     runs: unshiftRows(runs, ["createdAt", "startedAt", "finishedAt", "acceptedAt"], ["contextSnapshot"], shifts),
     issues: unshiftRows(issues, ["completedAt"], [], shifts),
-    agents,
+    agents: agentRows,
     wakes: unshiftRows(wakes, ["createdAt", "requestedAt", "claimedAt", "finishedAt"], ["payload"], shifts),
     statusChanges: unshiftRows(statusChanges, ["createdAt"], [], shifts),
     controllers: controllers.map(controller => ({ ...controller, startedAt: unshiftMs(controller.startedAt, shifts),
@@ -143,7 +144,7 @@ async function readRows(db: Pick<Db, "$client">, companyId: string, shifts: read
   };
 }
 
-export async function captureWakeEvidence(input: { db: Pick<Db, "$client">; companyId: string; waveDir: string;
+export async function captureWakeEvidence(input: { db: Pick<Db, "$client" | "select">; companyId: string; waveDir: string;
   observers: ReadonlyArray<EvidenceObserver> | null; windows: readonly ServerProcessWindow[];
   shifts?: readonly AgingShift[]; redact: (text: string) => string }): Promise<number> {
   const rows = await readRows(input.db, input.companyId, input.shifts ?? []);
@@ -180,7 +181,7 @@ export function completionEvidence(evidence: { completedAt: number | null; wakes
 export function wakeEvidenceOnce(input: { databaseUrl: () => string; companyId: string; waveDir: string;
   observers: () => ReadonlyArray<EvidenceObserver>; windows: readonly ServerProcessWindow[];
   shifts: readonly AgingShift[]; redact: (text: string) => string; note: (kind: string, data: Record<string, unknown>) => void;
-  open?: (url: string) => Pick<Db, "$client"> }): () => Promise<void> {
+  open?: (url: string) => Pick<Db, "$client" | "select"> }): () => Promise<void> {
   let done: Promise<void> | null = null;
   return () => done ??= (async () => {
     let observers: ReturnType<typeof input.observers> | null = null;

@@ -131,6 +131,9 @@ describe.skipIf(!support.supported)("wake evidence against real PostgreSQL", () 
     await db.insert(companies).values({ id: companyId, name: "Wake evidence", issuePrefix: companyId.slice(0, 8) });
     await db.insert(agents).values({ id: agentId, companyId, name: "Agent", adapterType: "process", status: "active",
       runtimeConfig: { heartbeat: { enabled: false, maxConcurrentRuns: 3 } } });
+    const wideAgentId = randomUUID();
+    await db.insert(agents).values({ id: wideAgentId, companyId, name: "Wide agent", adapterType: "process", status: "active",
+      runtimeConfig: { heartbeat: { enabled: false, maxConcurrentRuns: 100 } } });
     await db.insert(issues).values({ id: issueId, companyId, title: "Task" });
     await db.insert(controllerInstances).values({ bootId, processSpace: "space-wake", pid: 4242, leaseExpiresAt: new Date(Date.now() + 60_000) });
     await db.insert(agentWakeupRequests).values({ id: wakeId, companyId, agentId, source: "on_demand", reason: "retry", triggerDetail: "manual",
@@ -149,8 +152,9 @@ describe.skipIf(!support.supported)("wake evidence against real PostgreSQL", () 
       const evidence = JSON.parse(await readFile(path.join(waveDir, "wake-evidence", "t01.json"), "utf8"));
       expect(evidence.runs[0]).toMatchObject({ runId, invocationSource: "on_demand", wakeupRequestId: wakeId, contextSnapshot: { wakeReason: "retry" },
         owner: { pid: 4242, processSpace: "space-wake" }, historyReadCommentIds: ["comment-a", "comment-b"] });
-      expect(JSON.parse(await readFile(path.join(waveDir, "wake-evidence", "agent-slots.json"), "utf8"))).toEqual({ agents: [{ agentId, maxConcurrentRuns: 3 }],
-        runs: [{ runId, agentId, startedAt: 1_800_000_000_000, finishedAt: 1_800_000_060_000 }] });
+      const slots = JSON.parse(await readFile(path.join(waveDir, "wake-evidence", "agent-slots.json"), "utf8"));
+      expect(slots.agents).toEqual(expect.arrayContaining([{ agentId, maxConcurrentRuns: 3 }, { agentId: wideAgentId, maxConcurrentRuns: 50 }]));
+      expect(slots.runs).toEqual([{ runId, agentId, startedAt: 1_800_000_000_000, finishedAt: 1_800_000_060_000 }]);
       expect(evidence.wakes[0]).toMatchObject({ id: wakeId, reason: "retry", source: "on_demand", triggerDetail: "manual", requestedByActorType: "user",
         requestedByActorId: "[REDACTED]", idempotencyKey: "idem-1", runId });
       expect(evidence.wakes[0].servingAtCreate.map((server: { pid: number }) => server.pid)).toEqual([4242]);
