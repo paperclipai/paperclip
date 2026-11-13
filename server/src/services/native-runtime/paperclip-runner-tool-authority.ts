@@ -138,6 +138,9 @@ import {
   READ_CHAT_ATTACHMENT_TOOL_NAME,
   type NativeChatAttachmentReadScope,
 } from "./chat-attachment-read.js";
+import { recordTaskHistoryRead } from "../queued-comment-delivery.js";
+import { recordChildTaskRead } from "./native-child-completion-delivery.js";
+import { logger } from "../../middleware/logger.js";
 
 const EXTERNAL_WORKSPACE_OPERATIONS = new Set(["get_workspace", "list_workspaces", "select_workspace", "prepare_repository", "register_deliverable"]);
 const IMPLEMENTED_OPERATIONS = new Set([
@@ -945,6 +948,9 @@ export class PaperclipRunnerToolAuthority {
         const readableChildren = this.binding.museRuntime
           ? await this.#readableMuseTaskIds(context.run, childTasks.map(task => task.id)) : null;
         const visibleChildTasks = readableChildren ? childTasks.filter(task => readableChildren.has(task.id)) : childTasks;
+        await recordChildTaskRead(this.db, { companyId: this.binding.companyId, agentId: this.binding.agentId,
+          runId: this.binding.runId, parentIssueId: this.binding.issueId, children: visibleChildTasks.slice(0, 100) }).catch(error =>
+          logger.warn({ err: error, runId: this.binding.runId }, "could not record the child tasks a run read"));
         return {
           company: { id: this.binding.companyId },
           actor: redactedActor(context.actor),
@@ -993,6 +999,7 @@ export class PaperclipRunnerToolAuthority {
           authorAgentId: issueComments.authorAgentId,
           authorUserId: issueComments.authorUserId,
           createdAt: issueComments.createdAt,
+          updatedAt: issueComments.updatedAt,
         }).from(issueComments)
           .where(and(
             eq(issueComments.companyId, this.binding.companyId),
@@ -1001,7 +1008,10 @@ export class PaperclipRunnerToolAuthority {
           ))
           .orderBy(desc(issueComments.createdAt))
           .limit(limit);
-        return { comments: comments.reverse().map(comment => {
+        await recordTaskHistoryRead(this.db, { companyId: this.binding.companyId, agentId: this.binding.agentId,
+          runId: this.binding.runId, comments }).catch(error =>
+          logger.warn({ err: error, runId: this.binding.runId }, "could not record the task history a run read"));
+        return { comments: comments.reverse().map(({ updatedAt: _updatedAt, ...comment }) => {
           const visible = isLowTrustQuarantined(readerSourceTrust) ? comment : sanitizeQuarantinedCommentForHigherTrust(comment);
           return { ...visible, body: fastResponseHistoryBody(visible) };
         }) };

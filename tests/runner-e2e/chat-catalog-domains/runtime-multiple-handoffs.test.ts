@@ -47,3 +47,26 @@ it("finds a delivered comment in a native continuation that embeds it as JSON", 
   expect(promptCarriesComment(prompt.replace("Launch sooner", "Launch later"), comment)).toBe(false);
   expect(promptCarriesComment(undefined, comment)).toBe(false);
 });
+function inTurn() {
+  const o = valid(); o.runs.pop();
+  Object.assign(o.state, { savedComment: { id: "headline", updatedAt: "2026-11-12T21:50:58.894Z" }, workerHistoryReads: { headline: "2026-11-12T21:50:58.894Z" },
+    nativeDeliveryBound: false, finalHeadlineRevision: false, originalWebsiteRevisionRetained: false, inTurnHeadlineRevision: true });
+  return o;
+}
+it("accepts the running Website turn reading the current headline feedback and saving it, with no continuation", () => expect(gradeMultipleHandoffs(inTurn()).passed).toBe(true));
+it("accepts the same in-turn consumption with a later read of the same revision", () => {
+  const o = inTurn(); (o.state as Record<string, unknown>).workerHistoryReads = { headline: "2026-11-12T21:51:25.000Z" }; expect(gradeMultipleHandoffs(o).passed).toBe(true);
+});
+it("rejects an in-turn read of an earlier revision with no continuation", () => {
+  const o = inTurn(); (o.state as Record<string, unknown>).workerHistoryReads = { headline: "2026-11-12T21:50:00.000Z" }; expect(gradeMultipleHandoffs(o).passed).toBe(false);
+});
+it("rejects an in-turn read whose headline was never saved", () => { const o = inTurn(); (o.state as Record<string, unknown>).inTurnHeadlineRevision = false; expect(gradeMultipleHandoffs(o).passed).toBe(false); });
+it("rejects a double application: an in-turn read and a continuation", () => {
+  const o = valid(); Object.assign(o.state, { savedComment: { id: "headline", updatedAt: "2026-11-12T21:50:58.894Z" }, workerHistoryReads: { headline: "2026-11-12T21:50:58.894Z" }, inTurnHeadlineRevision: true });
+  expect(gradeMultipleHandoffs(o).passed).toBe(false);
+});
+it("rejects two Website continuations", () => { const o = valid(); o.runs.push({ id: "again", agentId: "morgan", status: "succeeded" }); expect(gradeMultipleHandoffs(o).passed).toBe(false); });
+it("rejects an in-turn read of a different comment", () => {
+  const o = inTurn(); (o.state as Record<string, unknown>).savedComment = { id: "other", updatedAt: "2026-11-12T21:50:58.894Z" }; (o.state as Record<string, unknown>).workerHistoryReads = { other: "2026-11-12T21:50:58.894Z" };
+  expect(gradeMultipleHandoffs(o).passed).toBe(false);
+});

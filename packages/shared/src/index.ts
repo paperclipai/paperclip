@@ -2964,5 +2964,6 @@ export {
 } from "./issue-activity-identity.js";
 export { recognizeLinkPreview, type LinkPreviewTarget, type LinkPreviewState, type LinkPreview, type LinkPreviewResult } from "./link-preview.js";
 export * from "./mcp-apps.js";
+export * from "./mcp-skills.js";
 
 export { isActionableAttention, supportsAttentionRecoveryResolution } from "./types/attention.js";

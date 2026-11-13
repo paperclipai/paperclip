@@ -59,11 +59,12 @@ describe("hosted run control", () => {
     const dir = await tempDir();
     const writes: string[] = [];
     let agentStatus = "idle";
+    let lifecycleReads = 0;
     const api = {
       get: async <T>(route: string) => {
         if (route.endsWith("/environments")) return [{ id: "e1", driver: "sandbox" }] as T;
         if (route.endsWith("/agents")) return [{ id: "a1", name: "RC rc-x opencode" }] as T;
-        if (route === "/api/agents/a1") return { id: "a1", status: agentStatus } as T;
+        if (route === "/api/agents/a1") return { id: "a1", status: agentStatus, lifecycleState: agentStatus === "terminated" && lifecycleReads++ > 0 ? "terminated" : "terminating" } as T;
         if (route.endsWith("/secrets")) return [{ id: "s1", name: "restart-chaos rc-x OPENROUTER_API_KEY" }] as T;
         if (route.endsWith("/projects")) return [{ id: "p1", name: "Restart chaos rc-x" }] as T;
         return [] as T;
@@ -85,7 +86,8 @@ describe("hosted run control", () => {
     await expect(setupHosted({ api, options, companyId: "c1", dir, env: { OPENROUTER_API_KEY: "k" }, record: () => {} })).rejects.toThrow(/agent creation failed/);
     expect(JSON.parse(await readFile(statePath(dir), "utf8"))).toMatchObject({ companyId: "c1", projectId: "p1", secrets: [{ id: "s1" }] });
     writes.length = 0;
-    expect(await finalizeHosted({ api, keep: false, label: "rc-x", dir, state: null, record: () => {} })).toMatchObject({ errors: [] });
+    expect(await finalizeHosted({ api, keep: false, label: "rc-x", dir, state: null, record: () => {}, terminatePollMs: 1 })).toMatchObject({ errors: [] });
+    expect(lifecycleReads).toBeGreaterThan(1);
     expect(writes).toEqual(["PATCH /api/agents/a1", "POST /api/agents/a1/terminate", "DELETE /api/agents/a1", "DELETE /api/secrets/s1", "PATCH /api/projects/p1"]);
     expect(await finalizeHosted({ api, keep: true, label: "rc-x", dir, state: null, record: () => {} })).toBeNull();
   });
@@ -151,11 +153,13 @@ describe("hosted readers collect complete history", () => {
   });
 
   it("counts a refused request as a failure in continuity, not only server errors", async () => {
-    const statuses = [200, 401, 429, 503];
+    const statuses = [200, 401, 404, 429, 503];
     const api = new HostedApi(hostedTarget(`https://${host}`, host), "t", 1_000, (async () => new Response("{}", { status: statuses.shift()! })) as unknown as typeof fetch);
     await api.get("/api/health");
     await api.get("/api/health").catch(() => undefined);
     expect(continuity(requestSamples(api.requests)).failures).toBeGreaterThanOrEqual(1);
     expect(api.requests[1]).toMatchObject({ ok: false, reachable: true, status: 401 });
+    await api.get("/api/companies/c1/assigned-work-invariant").catch(() => undefined);
+    expect(api.requests[2]).toMatchObject({ ok: true, status: 404 });
   });
 });

@@ -1188,6 +1188,36 @@
           "field": "originalQuery",
           "previous": "Move this task to Riley now.",
           "current": "Move the Website task to Riley now."
+        },
+        {
+          "key": "recovery.explain-stall",
+          "field": "originalContext",
+          "previous": "The linked task shows a retained recovery cause, attempt count and next action.",
+          "current": "The website run lost its Runner and could not be resumed exactly; the linked task records the interruption and continues in one fresh run from its saved work."
+        },
+        {
+          "key": "recovery.explain-stall",
+          "field": "expectedOutcome",
+          "previous": "The agent reads the actual task and run evidence, explains the recorded interruption and identifies who or what can proceed. It distinguishes infrastructure recovery, user input, budget holds and deliberate stops. The person gets a concrete next step rather than a raw-log dump or an invented diagnosis.",
+          "current": "The agent reads the actual task and run evidence and explains the recorded interruption: an infrastructure fault cut the run off, and the task continues automatically in one fresh run from its saved work, so nobody needs to act. It distinguishes infrastructure recovery, user input, budget holds and deliberate stops, and gives no raw-log dump or invented diagnosis. Chat starts no second run and files no repair task, and the continuation finishes the original task."
+        },
+        {
+          "key": "recovery.retry-exhausted",
+          "field": "originalContext",
+          "previous": "Automatic infrastructure attempts are exhausted and the source task exposes ordinary Retry to its authorized human.",
+          "current": "The website run stopped for a reason only a person can resolve (its selected model was rejected), and the person has since restored the configuration. The source task exposes ordinary Retry to its authorized human; an infrastructure fault would instead continue automatically."
+        },
+        {
+          "key": "recovery.source-action",
+          "field": "originalContext",
+          "previous": "A failed task has a source-scoped recovery action; a separate repair issue exists only if independent work is genuinely required.",
+          "current": "An infrastructure fault interrupted the website run; the source task's recovery record shows the system continuing it in one fresh run from saved work. A separate repair issue exists only if independent work is genuinely required."
+        },
+        {
+          "key": "recovery.source-action",
+          "field": "expectedOutcome",
+          "previous": "The agent identifies the recovery action attached to the original task and its responsible owner. Ordinary repair stays with the harness; any independent repair work links back to the source. Chat does not spawn a chain of duplicate repair tasks or claim the original task succeeded when only a repair was filed.",
+          "current": "The agent identifies the recovery record attached to the original task and its owner: the system is already continuing the work in a fresh run from saved work, so no person must act. Any independent repair work links back to the source. Chat does not press Retry, spawn a chain of duplicate repair tasks or claim the original task succeeded before the continuation finishes it."
         }
       ],
       "candidateDescriptorSnapshot": "fixtures/chat-repair-candidate-descriptors.json",
@@ -10599,8 +10629,8 @@
       "externalInput": null,
       "installedSource": null,
       "originalQuery": "Why did work on the website stop?",
-      "expectedOutcome": "The agent reads the actual task and run evidence, explains the recorded interruption and identifies who or what can proceed. It distinguishes infrastructure recovery, user input, budget holds and deliberate stops. The person gets a concrete next step rather than a raw-log dump or an invented diagnosis.",
-      "originalContext": "The linked task shows a retained recovery cause, attempt count and next action.",
+      "expectedOutcome": "The agent reads the actual task and run evidence and explains the recorded interruption: an infrastructure fault cut the run off, and the task continues automatically in one fresh run from its saved work, so nobody needs to act. It distinguishes infrastructure recovery, user input, budget holds and deliberate stops, and gives no raw-log dump or invented diagnosis. Chat starts no second run and files no repair task, and the continuation finishes the original task.",
+      "originalContext": "The website run lost its Runner and could not be resumed exactly; the linked task records the interruption and continues in one fresh run from its saved work.",
       "capabilities": [
         "recovery/diagnosis",
         "runs-adapters/runs"
@@ -10699,7 +10729,7 @@
       "installedSource": null,
       "originalQuery": "Try the website task again.",
       "expectedOutcome": "The response directs or presents the supported human Retry action and explains the current state. One accepted retry rechecks execution gates and preserves earlier attempt evidence. The person is not asked to certify internal infrastructure facts, and failure remains visible if the new attempt cannot start.",
-      "originalContext": "Automatic infrastructure attempts are exhausted and the source task exposes ordinary Retry to its authorized human.",
+      "originalContext": "The website run stopped for a reason only a person can resolve (its selected model was rejected), and the person has since restored the configuration. The source task exposes ordinary Retry to its authorized human; an infrastructure fault would instead continue automatically.",
       "capabilities": [
         "recovery/exhaustion"
       ],
@@ -10744,8 +10774,8 @@
       "externalInput": null,
       "installedSource": null,
       "originalQuery": "Help me get this website task unstuck.",
-      "expectedOutcome": "The agent identifies the recovery action attached to the original task and its responsible owner. Ordinary repair stays with the harness; any independent repair work links back to the source. Chat does not spawn a chain of duplicate repair tasks or claim the original task succeeded when only a repair was filed.",
-      "originalContext": "A failed task has a source-scoped recovery action; a separate repair issue exists only if independent work is genuinely required.",
+      "expectedOutcome": "The agent identifies the recovery record attached to the original task and its owner: the system is already continuing the work in a fresh run from saved work, so no person must act. Any independent repair work links back to the source. Chat does not press Retry, spawn a chain of duplicate repair tasks or claim the original task succeeded before the continuation finishes it.",
+      "originalContext": "An infrastructure fault interrupted the website run; the source task's recovery record shows the system continuing it in one fresh run from saved work. A separate repair issue exists only if independent work is genuinely required.",
       "capabilities": [
         "recovery/source-action"
       ],

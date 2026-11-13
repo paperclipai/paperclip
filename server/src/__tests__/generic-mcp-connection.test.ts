@@ -49,6 +49,7 @@ import {
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
 import { toolAccessService } from "../services/tool-access.js";
+import { forgetRemoteToolListCache } from "../services/tool-access/catalog/discovery.js";
 import { instanceSettingsService } from "../services/instance-settings.js";
 import * as instanceSettingsModule from "../services/instance-settings.js";
 import { connectionIntentService } from "../services/connection-intents.js";
@@ -103,6 +104,10 @@ type FixtureOptions = {
   cimd?: boolean;
   /** Advertise a dynamic client registration endpoint. */
   dcr?: boolean;
+  /** RFC 9207: advertise that every authorization response carries `iss`. */
+  issParameterSupported?: boolean;
+  /** Serve MCP 2026-07-28 only: no handshake, per-request metadata required. */
+  modern?: boolean;
   /** Serve authorization-server metadata under the RFC 8414 insertion path only. */
   wellKnownStyle?: "rfc8414" | "oidc-suffix";
   /**
@@ -197,6 +202,7 @@ function installMcpOAuthFixture(options: FixtureOptions = {}) {
     ...(options.notebookAccount ? { revocation_endpoint: `${MCP_ORIGIN}/oauth/revoke` } : {}),
     ...(options.dcr === false ? {} : { registration_endpoint: `${ISSUER}/register` }),
     ...(options.cimd ? { client_id_metadata_document_supported: true } : {}),
+    ...(options.issParameterSupported ? { authorization_response_iss_parameter_supported: true } : {}),
     code_challenge_methods_supported: ["S256"],
     token_endpoint_auth_methods_supported: options.tokenEndpointAuthMethods ?? ["none"],
     scopes_supported: scopes ?? ["mcp:read", "mcp:write"],
@@ -223,6 +229,15 @@ function installMcpOAuthFixture(options: FixtureOptions = {}) {
         if (supplied !== options.requiredHeader.value) return unauthorizedMcpResponse(resourceMetadataUrl);
       }
       const rpc = parsedBody as Record<string, unknown>;
+      if (options.modern) {
+        if (rpc.method === "server/discover") {
+          return jsonResponse({ jsonrpc: "2.0", id: rpc.id, result: { resultType: "complete", supportedVersions: ["2026-07-28"], capabilities: { tools: {} } } });
+        }
+        const meta = ((rpc.params as Record<string, unknown> | undefined)?._meta ?? {}) as Record<string, unknown>;
+        if (meta["io.modelcontextprotocol/protocolVersion"] !== "2026-07-28" || headers["mcp-protocol-version"] !== "2026-07-28") {
+          return jsonResponse({ jsonrpc: "2.0", id: rpc.id ?? null, error: { code: -32020, message: "Missing per-request MCP metadata" } }, 400);
+        }
+      }
       if (options.notebookAccount && rpc.method === "initialize") {
         return jsonResponse({ jsonrpc: "2.0", id: rpc.id, result: { protocolVersion: "2025-06-18", capabilities: { tools: {} }, serverInfo: { name: "Notebook fixture", version: "1" } } });
       }
@@ -239,7 +254,7 @@ function installMcpOAuthFixture(options: FixtureOptions = {}) {
           structuredContent: { meeting_id: "meeting-1" },
         } });
       }
-      return jsonResponse({ jsonrpc: "2.0", id: "paperclip-catalog-refresh", result: { tools } });
+      return jsonResponse({ jsonrpc: "2.0", id: "paperclip-catalog-refresh", result: { tools, ...(options.modern ? { resultType: "complete", ttlMs: 300_000, cacheScope: "private" } : {}) } });
     }
 
     if (href === resourceMetadataUrl) {
@@ -312,6 +327,8 @@ function installMcpOAuthFixture(options: FixtureOptions = {}) {
     fetchMock,
     requests,
     tokenResponses,
+    /** The provider stops accepting the current access token; refresh still works. */
+    revokeAccessToken() { accessToken = `revoked-${randomUUID()}`; },
     /** Pretend the operator approved the consent screen and got a code back. */
     issueAuthorizationCode(authorizationUrl: string) {
       const parsed = new URL(authorizationUrl);
@@ -2213,6 +2230,97 @@ describeEmbeddedPostgres("generic remote MCP connections", () => {
 
     // The code was never exchanged.
     expect(fixture.requestsTo("/token")).toHaveLength(0);
+  });
+
+  it("refuses a callback without iss when the authorization server promised one, and accepts the matching iss", async () => {
+    const fixture = installMcpOAuthFixture({ auth: "oauth", issParameterSupported: true });
+    const company = await createCompany(db);
+    const service = toolAccessService(db);
+    const connected = await service.connectGalleryApp(company.id, { link: MCP_URL, name: "Fixture iss required" });
+    const actor = { actorType: "user" as const, actorId: "board-user" };
+
+    const first = await service.startOAuth(company.id, connected.connectionId, { redirectUri: REDIRECT_URI, actor });
+    await expect(service.completeOAuthCallback({
+      state: new URL(first.authorizationUrl).searchParams.get("state")!,
+      code: fixture.issueAuthorizationCode(first.authorizationUrl),
+      redirectUri: REDIRECT_URI,
+      actor,
+    })).rejects.toMatchObject({ status: 400, details: { code: "oauth_issuer_missing" } });
+    expect(fixture.requestsTo("/token")).toHaveLength(0);
+
+    const second = await service.startOAuth(company.id, connected.connectionId, { redirectUri: REDIRECT_URI, actor });
+    const completed = await service.completeOAuthCallback({
+      state: new URL(second.authorizationUrl).searchParams.get("state")!,
+      code: fixture.issueAuthorizationCode(second.authorizationUrl),
+      iss: ISSUER,
+      redirectUri: REDIRECT_URI,
+      actor,
+    });
+    expect(completed.connection.status).not.toBe("draft");
+    expect(fixture.requestsTo("/token")).toHaveLength(1);
+  });
+
+  it("lists a 2026-07-28 server again with the refreshed token after the provider revokes the old one", async () => {
+    const fixture = installMcpOAuthFixture({ auth: "oauth", modern: true });
+    const company = await createCompany(db);
+    const service = toolAccessService(db);
+    const connected = await service.connectGalleryApp(company.id, { link: MCP_URL, name: "Fixture modern OAuth" });
+    const actor = { actorType: "user" as const, actorId: "board-user" };
+    const start = await service.startOAuth(company.id, connected.connectionId, { redirectUri: REDIRECT_URI, actor });
+    await service.completeOAuthCallback({
+      state: new URL(start.authorizationUrl).searchParams.get("state")!,
+      code: fixture.issueAuthorizationCode(start.authorizationUrl),
+      redirectUri: REDIRECT_URI,
+      actor,
+    });
+    fixture.revokeAccessToken();
+    // The cached list expires, so this refresh reaches the provider with the revoked token.
+    forgetRemoteToolListCache(connected.connectionId);
+    const listingsBeforeRefresh = fixture.requestsTo("/mcp").filter((entry) => (entry.body as Record<string, unknown> | null)?.method === "tools/list").length;
+    const refreshed = await service.refreshCatalog(connected.connectionId, actor);
+    expect(fixture.requestsTo("/token").length).toBeGreaterThan(1);
+    expect(fixture.requestsTo("/mcp").filter((entry) => (entry.body as Record<string, unknown> | null)?.method === "tools/list").length).toBeGreaterThan(listingsBeforeRefresh);
+    expect(refreshed.catalog.length).toBeGreaterThan(0);
+    const last = fixture.requestsTo("/mcp").at(-1)!;
+    expect(last.headers["mcp-protocol-version"]).toBe("2026-07-28");
+    expect(fixture.requestsTo("/mcp").some((entry) => (entry.body as Record<string, unknown> | null)?.method === "initialize")).toBe(false);
+    // The fresh list is cached under the refreshed token, so the next refresh reuses it.
+    const listings = () => fixture.requestsTo("/mcp").filter((entry) => (entry.body as Record<string, unknown> | null)?.method === "tools/list").length;
+    const before = listings();
+    await service.refreshCatalog(connected.connectionId, actor);
+    expect(listings()).toBe(before);
+  });
+
+  it("does not act on a provider error whose iss names a different authorization server", async () => {
+    installMcpOAuthFixture({ auth: "oauth" });
+    const company = await createCompany(db);
+    const service = toolAccessService(db);
+    const connected = await service.connectGalleryApp(company.id, { link: MCP_URL, name: "Fixture iss error" });
+    const actor = { actorType: "user" as const, actorId: "board-user" };
+    const start = await service.startOAuth(company.id, connected.connectionId, { redirectUri: REDIRECT_URI, actor });
+    await expect(service.completeOAuthCallback({
+      state: new URL(start.authorizationUrl).searchParams.get("state")!,
+      error: "access_denied",
+      iss: "https://attacker.fixture.test",
+      redirectUri: REDIRECT_URI,
+      actor,
+    })).rejects.toMatchObject({ status: 400, details: { code: "oauth_issuer_mismatch" } });
+  });
+
+  it("registers a localhost callback as a native OAuth client", async () => {
+    const fixture = installMcpOAuthFixture({ auth: "oauth" });
+    const company = await createCompany(db);
+    const service = toolAccessService(db);
+    const connected = await service.connectGalleryApp(company.id, { link: MCP_URL, name: "Fixture local install" });
+    const localRedirect = "http://localhost:3100/api/tools/oauth/callback";
+    await service.startOAuth(company.id, connected.connectionId, {
+      redirectUri: localRedirect,
+      actor: { actorType: "user", actorId: "board-user" },
+    });
+    expect(fixture.requestsTo("/register")[0]!.body).toMatchObject({
+      redirect_uris: [localRedirect],
+      application_type: "native",
+    });
   });
 
   /**

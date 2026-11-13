@@ -16,6 +16,8 @@ import { connectionGrants, toolApplications, toolCatalogEntries, toolConnections
 import type { ToolCatalogRefreshResult } from "@paperclipai/shared";
 import { getConnectableAppDefinition, isGoogleWorkspaceConnectorProfileId } from "@paperclipai/shared";
 import { HttpError, unprocessable } from "../../../errors.js";
+import { logger } from "../../../middleware/logger.js";
+import { mcpSkillsService } from "../../mcp-skills.js";
 import { isRailwayEndpoint, isRailwayToolBlocked } from "../../railway.js";
 
 import type { ToolAccessAudit } from "../audit.js";
@@ -39,6 +41,7 @@ type PublicationDependencies = {
   audit: ToolAccessAudit;
   getConnectionRow(idOrUid: string, companyId?: string): Promise<typeof toolConnections.$inferSelect>;
   discoverTools: ToolCatalogDiscovery["discoverTools"];
+  discoverSkills?: ToolCatalogDiscovery["discoverSkills"];
   assertConnectorConnectionSetupEnabled: ConnectionSetupPolicy["assertConnectorConnectionSetupEnabled"];
   updateConnectionHealth: ConnectionHealth["updateConnectionHealth"];
   vaultGrantForConnection: ConnectionCredentialAccess["vaultGrantForConnection"];
@@ -46,7 +49,24 @@ type PublicationDependencies = {
   enableCatalogEntriesByDefault: CatalogDefaultAccess["enableCatalogEntriesByDefault"];
 };
 
-export function createToolCatalogPublication(db: Db, { now, audit, getConnectionRow, discoverTools, assertConnectorConnectionSetupEnabled, updateConnectionHealth, vaultGrantForConnection, ensureRuntimeSlot, enableCatalogEntriesByDefault }: PublicationDependencies) {
+export function createToolCatalogPublication(db: Db, { now, audit, getConnectionRow, discoverTools, discoverSkills, assertConnectorConnectionSetupEnabled, updateConnectionHealth, vaultGrantForConnection, ensureRuntimeSlot, enableCatalogEntriesByDefault }: PublicationDependencies) {
+  /**
+   * MCP Skills: list the skills a server publishes and reconcile them. A
+   * skill problem never fails the tool catalog refresh it rides on.
+   */
+  async function refreshSkills(connection: typeof toolConnections.$inferSelect, actor?: ActorInfo) {
+    if (!discoverSkills) return;
+    try {
+      const listed = await discoverSkills(connection, actor);
+      if (!listed?.fresh) return;
+      await mcpSkillsService(db).reconcileListing(connection, listed.entries, actor?.actorId
+        ? { actorType: actor.actorType ?? "user", actorId: actor.actorId }
+        : undefined);
+    } catch (error) {
+      logger.warn({ err: error, connectionId: connection.id }, "Could not refresh the skills this app publishes");
+    }
+  }
+
   async function refreshCatalog(
     connectionId: string,
     actor?: ActorInfo,
@@ -322,6 +342,7 @@ export function createToolCatalogPublication(db: Db, { now, audit, getConnection
         actor,
       }, tx));
     }
+    await refreshSkills(updatedConnection, actor);
     await audit({
       companyId: connection.companyId,
       connectionId: connection.id,

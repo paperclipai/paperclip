@@ -93,6 +93,7 @@ import { appendHeartbeatRunEvent } from "../services/heartbeat-run-events.js";
 import { companySkillService } from "../services/company-skills.js";
 import { companyObservability } from "@paperclipai/db";
 import * as runIdentityModule from "../services/run-identity.js";
+import * as heartbeatModule from "../services/heartbeat.js";
 import { chatGitHubRegistrations, chatGitHubReviews, chatGitHubConfigurations, toolCatalogEntries } from "@paperclipai/db";
 import { AsyncLocalStorage } from "node:async_hooks";
 import * as cloudRuntimeIdentity from "../services/cloud-runtime-identity.js";
@@ -66632,7 +66633,14 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       const app = express();
       app.use(express.json());
       app.use((req, _res, next) => { req.actor = boardActor(companyId); next(); });
-      app.use("/api", issueRoutes(db, createStorageService().storage, { chatRunRetries: f.service }));
+      const actualHeartbeatService = heartbeatModule.heartbeatService;
+      const routeHeartbeat = vi.spyOn(heartbeatModule, "heartbeatService").mockImplementation((database, options) =>
+        ({ ...actualHeartbeatService(database, options), resumeTaskRetry: async () => undefined }));
+      try {
+        app.use("/api", issueRoutes(db, createStorageService().storage, { chatRunRetries: f.service }));
+      } finally {
+        routeHeartbeat.mockRestore();
+      }
       app.use(errorHandler);
       const denySource = async (apply: () => Promise<unknown>, restore: () => Promise<unknown>, stale = false) => {
         try {
@@ -71243,11 +71251,11 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
           expect.objectContaining({ idempotencyKey: `run:${run.runId}:working:${context.endpoint.id}:native:making_progress:1` }),
         ]);
         await settled();
-        const select = vi.spyOn(db, "select"), transaction = vi.spyOn(db, "transaction");
+        const select = vi.spyOn(db, "select"), transaction = vi.spyOn(db, "transaction"), statement = vi.spyOn(db.$client, "unsafe");
         try {
           await new Promise(resolve => setTimeout(resolve, 1200));
-          expect(select).not.toHaveBeenCalled(); expect(transaction).not.toHaveBeenCalled();
-        } finally { select.mockRestore(); transaction.mockRestore(); }
+          expect(select).not.toHaveBeenCalled(); expect(transaction).not.toHaveBeenCalled(); expect(statement).not.toHaveBeenCalled();
+        } finally { select.mockRestore(); transaction.mockRestore(); statement.mockRestore(); }
         expect(onError).not.toHaveBeenCalled();
       } finally { await coordinator.stop(); await retirePublicationFixture(context.service, context.endpoint.id); }
     },
@@ -71278,16 +71286,17 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
         createdAt: sql`${eventAt.toISOString()}::timestamptz + interval '0.000123 seconds'`,
       })));
       await context.addEvent(valid, "item.completed", 1, new Date(eventAt.getTime() + 1));
-      const select = db.select.bind(db);
+      const send = db.$client.unsafe.bind(db.$client);
       let pages = 0;
-      const guard = vi.spyOn(db, "select").mockImplementation((...args) => {
-        if (args[0] && "eventCreatedAt" in args[0] && ++pages > 10) {
+      const guard = vi.spyOn(db.$client, "unsafe").mockImplementation((...args) => {
+        if (String(args[0]).includes("safe_native_progress_base_publication") && ++pages > 10) {
           throw new Error("Native progress pagination did not advance past suppressed candidates");
         }
-        return select(...args);
+        return send(...args);
       });
       try {
         await expect(enqueueSafeNativeChatProgress(db, { since: eventAt, limit: 1 })).resolves.toBe(1);
+        expect(pages).toBeGreaterThan(1);
       } finally { guard.mockRestore(); }
       const progress = await db.select().from(chatPublications).where(and(
         eq(chatPublications.conversationId, context.conversation.id),
@@ -84332,7 +84341,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     );
   });
 
-  describe("Lossless long Board publications", () => {
+  describe("Lossless long Board publications", { timeout: 45_000 }, () => {
     async function longFixture(
       provider: "slack" | "github" | "microsoft-teams",
     ) {

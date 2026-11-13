@@ -3285,7 +3285,7 @@ span.paperclip-mention-chip[data-mention-kind="external-object"] {
   --gtc-40: minmax(0,1fr) 320px; /* Extracted from ui/src/pages/IssueChatLongThreadPerf.tsx (grid-cols-[minmax(0,1fr)_320px]). */
   --gtc-52: minmax(0,1.4fr) minmax(220px,0.8fr); /* Extracted from ui/src/pages/PluginSettings.tsx (grid-cols-[minmax(0,1.4fr)_minmax(220px,0.8fr)]). */
   --gtc-53: minmax(0,1.4fr) minmax(18rem,0.9fr); /* Extracted from ui/src/pages/ProjectWorkspaceDetail.tsx (grid-cols-[minmax(0,1.4fr)_minmax(18rem,0.9fr)]). */
-  --gtc-54: minmax(12rem,2.4fr) minmax(5.25rem,0.75fr) minmax(7rem,1fr) minmax(5rem,0.7fr) 2.75rem; /* Extracted from ui/src/pages/Secrets.tsx (grid-cols-[minmax(12rem,2.4fr)_minmax(5.25rem,0.75fr)_minmax(7rem,1fr)_minmax(5rem,0.7fr)_2.75rem]). */
+  --gtc-54: minmax(12rem,2.2fr) minmax(9rem,1.1fr) minmax(7rem,1fr) minmax(4.5rem,0.6fr) 2.75rem; /* Secrets list: name, provided by, used by, updated, actions (ui/src/pages/Secrets.tsx). */
   --gtc-55: 8rem minmax(0,1fr); /* Extracted from ui/src/pages/Secrets.tsx (grid-cols-[8rem_minmax(0,1fr)]). */
   --gtc-56: minmax(0,1fr) minmax(14rem,18rem); /* Extracted from ui/src/pages/TeamCatalog.tsx (grid-cols-[minmax(0,1fr)_minmax(14rem,18rem)]). */
   --gtc-57: repeat(14,minmax(0,1fr)); /* Extracted from ui/src/pages/UserProfile.tsx (grid-cols-[repeat(14,minmax(0,1fr))]). */
@@ -5747,4 +5747,9 @@ html:has(.design-proposal-theme) .agent-markdown-name-field [data-slot="input"],
   .agents-org-toolbar [data-toolbar-search] { flex: 1; min-width: 0; }
   .agents-org-toolbar .design-toolbar-actions { width: 100%; justify-content: flex-end; gap: var(--spacing); }
   .agents-org-toolbar .org-chart-controls { gap: var(--spacing); }
+}
+
+/* Secret values stay hidden while typed; a multi-line field cannot use type="password". */
+.secret-value-masked {
+  -webkit-text-security: disc;
 }
