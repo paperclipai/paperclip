@@ -72,6 +72,7 @@ import {
   waitForAdapterStop,
 } from "../adapter-execution-control.js";
 import { AdapterStopTimeoutError } from "../adapter-stop-timeout.js";
+import { isTransientLockContention } from "../transient-lock-contention.js";
 import { pendingBudgetRunCancellationPredicate, pendingBudgetRunIdsForScopeQuery } from "./budget-cancellation.js";
 import { notifyBudgetStopsSettled } from "../budget-resume-continuation.js";
 import { withBudgetSpan } from "../budget-tracing.js";
@@ -1645,6 +1646,13 @@ export function createHeartbeatRunControl(db: Db, dependencies: HeartbeatRunCont
                 processCancellationSettlement,
               );
             }
+          }
+          // Another writer held the task row through every bounded attempt.
+          // The terminal write rolled back, so the same Stop can be sent again.
+          if (isTransientLockContention(error)) {
+            throw conflict("The task is busy, so Stop could not finish. Try Stop again.", {
+              code: "run_stop_busy", runId: run.id,
+            });
           }
           throw error;
         } finally {
