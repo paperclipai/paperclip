@@ -1,4 +1,5 @@
-import { slackAnswerNeedsFreshReply } from "../slack/public-progress.js";
+import { CONTEXTUAL_FAST_RESPONSE_ACKNOWLEDGEMENT } from "../progress-reasons.js";
+import { slackAnswerNeedsFreshReply, enqueueSlackProgressCompletion } from "../slack/public-progress.js";
 import { notifyChatNativeProgress } from "../../chat-native-progress-notifications.js";
 import type { ChatPublicationPreparationWait } from "./preparation.js";
 import { notifyChatResponseAvailability } from "../../chat-response-availability.js";
@@ -642,7 +643,7 @@ export function createChatPublicationWorker(db: Db, options: PublicationWorkerOp
         // because it now occupies the next FIFO slot.
         const progressSupersessionReason =
           (await runOwnershipMilestoneSupersessionReason(publication)) ??
-          ((await progressSupersededByFastResponse(publication)) ? "Acknowledged by contextual fast response" : null) ??
+          ((await progressSupersededByFastResponse(publication)) ? CONTEXTUAL_FAST_RESPONSE_ACKNOWLEDGEMENT : null) ??
           ((await runProgressSupersededByPublishedInteraction(publication))
             ? "Run progress was superseded by its provider interaction"
             : null);
@@ -650,7 +651,7 @@ export function createChatPublicationWorker(db: Db, options: PublicationWorkerOp
           await publicationLease.assertOwned();
           await db.transaction(async (tx) => {
             await notifyChatPublicationWork(tx, publication);
-            if (progressSupersessionReason === "Acknowledged by contextual fast response") {
+            if (progressSupersessionReason === CONTEXTUAL_FAST_RESPONSE_ACKNOWLEDGEMENT) {
               await notifyChatNativeProgress(tx, { companyId: publication.companyId, issueId: publication.issueId });
             }
             return tx
@@ -888,8 +889,6 @@ export function createChatPublicationWorker(db: Db, options: PublicationWorkerOp
                 const committedAt = new Date();
                 await notifyChatPublicationWork(tx, publication);
                 if (publication.payload.progressState === "working") {
-                  // A newer candidate can be waiting on this lane's receipt.
-                  // Wake its owner at commit; no polling during delivery/retry.
                   await notifyChatNativeProgress(tx, { companyId: publication.companyId, issueId: publication.issueId });
                 }
                 await notifyVoicePublication(tx, authorizationClaim.endpoint, publication.conversationId);
@@ -916,6 +915,7 @@ export function createChatPublicationWorker(db: Db, options: PublicationWorkerOp
                     "Chat publication ownership changed before commit",
                   );
                 }
+                if (freshSlackAnswer) await enqueueSlackProgressCompletion(tx, publication);
                 await stageSlackForm?.(tx);
                 if (telegramDraft) {
                   const completedDraft = await tx

@@ -72,6 +72,7 @@ import { companyFastResponses, fastResponseRequests } from "@paperclipai/db";
 import { toolAccessService } from "../services/tool-access.js";
 import { toolActionRequests, toolInvocations, toolPolicies } from "@paperclipai/db";
 import { GitHubPublicationLeaseLost, withGitHubPublicationLease } from "../services/chat-github-publication-lease.js";
+import { createRunSecretRedactionRegistry } from "../services/run-secret-redaction.js";
 import { secretService } from "../services/secrets.js";
 import { githubChatWizardService } from "../services/chat-github-wizard.js";
 import { dispatchGitHubBotCloudEvent, registerGitHubBotCloudSetupPoller } from "../services/chat-github-cloud-ingress.js";
@@ -36037,7 +36038,10 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
         "Maya is working…",
         "answer-final",
       ]);
-      expect(providerRuntime?.edits).toEqual([]);
+      await service.processPendingPublications();
+      expect(providerRuntime?.edits).toEqual(provider === "slack" ? [expect.objectContaining({
+        messageId: "outbound-1", text: "Response sent.",
+      })] : []);
       const commentPublications = await db
         .select()
         .from(chatPublications)
@@ -72113,13 +72117,15 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
           payload: { kind: "agentMessage", channel, text },
         } },
       });
-      await addPublic(1, "Found the retry bug. Checking recovery next.");
+      const secret = "synthetic-unprefixed-progress-secret";
+      await createRunSecretRedactionRegistry(db).register(context.fixture.companyId, run.runId, secret);
+      await addPublic(1, `Found the retry bug with ${secret}. Checking recovery next.`);
       await context.addEvent(run, "tool.execution.completed", 2);
       expect(await enqueueChatRunMilestones(db, { since: new Date(0) })).toBe(1);
       await context.service.processPendingPublications(100);
       expect(context.providerRuntime.posts).toHaveLength(1);
       expect(context.providerRuntime.edits).toEqual([expect.objectContaining({
-        messageId: "outbound-1", text: expect.stringContaining("Found the retry bug. Checking recovery next."),
+        messageId: "outbound-1", text: expect.stringContaining("Found the retry bug with ***REDACTED***. Checking recovery next."),
       })]);
       // The cooldown must retain the newest note, with no post or edit yet.
       for (let seq = 3; seq < 23; seq++) await addPublic(seq, `Checking recovery case ${seq}.`);
@@ -72135,6 +72141,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       expect(context.providerRuntime.posts[1].text).toBe("Fixed retry recovery.");
       expect(context.providerRuntime.edits).toHaveLength(1);
       expect(JSON.stringify(context.providerRuntime.edits)).not.toContain("PRIVATE");
+      expect(JSON.stringify(context.providerRuntime)).not.toContain(secret);
     } finally {
       await retirePublicationFixture(context.service, context.endpoint.id);
     }

@@ -1,4 +1,4 @@
-import { and, asc, desc, eq, gt, gte, inArray, like, lt, notExists, or, sql, type Param, type Placeholder, type SQLWrapper } from "drizzle-orm";
+import { and, asc, desc, eq, gt, gte, inArray, like, notExists, or, sql, type Param, type Placeholder } from "drizzle-orm";
 import { alias } from "drizzle-orm/pg-core";
 import type { Db } from "@paperclipai/db";
 import { agents, chatConversations, chatEndpoints, chatPublications, heartbeatRunEvents, heartbeatRuns, issueComments, issues } from "@paperclipai/db";
@@ -8,47 +8,12 @@ import { hasChatRunOwnedProviderInteraction } from "./chat-interaction-arbitrati
 import { resolveChatOriginPublicationBindings } from "./issues.js";
 import { boundRunIssueIdSql } from "./run-task-binding.js";
 import { allowsAutomaticRunPublication, chatRunProjectionWindow, type ChatRunProjectionScope } from "./chat-run-publication-policy.js";
-import { SAFE_NATIVE_CHAT_PROGRESS_EVENT_TYPES, safeNativeChatProgressForEvent, publicNativeChatProgressText } from "./safe-native-chat-progress.js";
+import { SAFE_NATIVE_CHAT_PROGRESS_EVENT_TYPES, safeNativeChatProgressForEvent } from "./safe-native-chat-progress.js";
 import { columnPlaceholder, preparedStatements } from "./prepared-statements.js";
 
+import { runSecretRedactionVersionSql } from "./run-secret-redaction.js";
+import { nativeChatProgressPolicy, nativeProgressBaseEligible, nativeProgressEventEligible } from "./chat-native-progress-policy.js";
 import { publicChatTaskUrl } from "./chat-task-url.js";
-
-// PRP progress is a normalized public channel. Provider-specific/unknown labels
-// cannot opt in by resemblance. Keep query ordering in sync with the projector.
-function publicProgressEvent(event: { eventType: SQLWrapper; payload: SQLWrapper; runId: SQLWrapper }) {
-  return sql<boolean>`coalesce((${event.eventType} = 'item.completed'
-    and ${event.payload}->'prpEvent'->>'schema' = 'paperclip.prp.event.v1'
-    and ${event.payload}->'prpEvent'->>'eventType' = 'item.completed'
-    and ${event.payload}->'prpEvent'->>'runId' = ${event.runId}::text
-    and ${event.payload}->'prpEvent'->'payload'->>'kind' = 'agentMessage'
-    and ${event.payload}->'prpEvent'->'payload'->>'channel' = 'progress'
-    and jsonb_typeof(${event.payload}->'prpEvent'->'payload'->'text') = 'string'), false)`;
-}
-
-/** SQL narrows to explicit public items; only the text projector can decide if
- * a note is usable after sanitization and bounding. Page past rejected notes
- * instead of letting them hide an older useful note or a lifecycle fallback. */
-async function latestPublicProgress(
-  db: Pick<Db, "select">,
-  scope: { companyId: string; runId: string },
-  signal?: AbortSignal,
-): Promise<{ seq: number; text: string } | null> {
-  let beforeSeq: number | undefined;
-  for (;;) {
-    signal?.throwIfAborted();
-    const events = await db.select({ seq: heartbeatRunEvents.seq, payload: heartbeatRunEvents.payload })
-      .from(heartbeatRunEvents)
-      .where(and(eq(heartbeatRunEvents.companyId, scope.companyId), eq(heartbeatRunEvents.runId, scope.runId),
-        publicProgressEvent(heartbeatRunEvents), beforeSeq === undefined ? undefined : lt(heartbeatRunEvents.seq, beforeSeq)))
-      .orderBy(desc(heartbeatRunEvents.seq)).limit(50);
-    for (const event of events) {
-      const text = publicNativeChatProgressText("item.completed", event.payload, scope.runId);
-      if (text) return { seq: event.seq, text };
-    }
-    if (events.length < 50) return null;
-    beforeSeq = events[events.length - 1].seq;
-  }
-}
 
 type SafeNativeChatProgressCandidate = {
   eventId: number;
@@ -64,8 +29,6 @@ type SafeNativeChatProgressCandidate = {
   agentName: string;
   provider: string;
 };
-
-const SAFE_NATIVE_CHAT_PROGRESS_CADENCE_MS = 20_000;
 
 type NativeProgressCursor = Pick<SafeNativeChatProgressCandidate, "eventCreatedAt" | "runId" | "conversationId">;
 type NativeProgressInput = { since?: Date; limit?: number; scope?: ChatRunProjectionScope; signal?: AbortSignal };
@@ -144,9 +107,7 @@ export function nativeProgressPageQuery(db: Db, bind: NativeProgressPageBinding)
           eq(basePublication.conversationId, chatConversations.id),
           eq(basePublication.issueId, chatConversations.issueId),
           sql`${basePublication.idempotencyKey} = 'run:' || ${heartbeatRuns.id}::text || ':working:' || ${chatConversations.endpointId}::text`,
-          or(inArray(basePublication.state, ["pending", "retry", "streaming", "published"]),
-            and(eq(chatEndpoints.provider, "slack"),
-              eq(basePublication.state, "cancelled"), eq(basePublication.redactedError, "Acknowledged by contextual fast response"))),
+          nativeProgressBaseEligible(chatEndpoints.provider, basePublication),
         ),
       )
       .where(
@@ -157,7 +118,7 @@ export function nativeProgressPageQuery(db: Db, bind: NativeProgressPageBinding)
           gte(heartbeatRunEvents.createdAt, bind.since),
           bind.companyId !== undefined ? eq(heartbeatRuns.companyId, bind.companyId) : undefined,
           bind.issueId !== undefined ? eq(chatConversations.issueId, bind.issueId) : undefined,
-          or(eq(chatEndpoints.provider, "slack"), sql`${heartbeatRunEvents.createdAt} >= ${basePublication.createdAt} + interval '20 seconds'`),
+          nativeProgressEventEligible(chatEndpoints.provider, heartbeatRunEvents.createdAt, basePublication.createdAt),
           notExists(
             db
               .select({ id: laterEvent.id })
@@ -233,10 +194,10 @@ export async function loadNativeChatProgressScopes(db: Db, scope?: ChatRunProjec
   }
 }
 
-/** A suppressed event is settled; lock contention still owes another attempt. */
 export async function reconcileNativeChatProgress(db: Db, options: NativeProgressInput = {}) {
   const input = chatRunProjectionWindow(options);
   const pages = nativeProgressPages(db, input.since, options.scope);
+  const publicNotes = new Map<string, { seq: number; text: string } | null>();
   let inserted = 0, contended = false;
   let nextDueAt: number | null = null;
   const defer = (dueAt: number) => { nextDueAt = nextDueAt === null ? dueAt : Math.min(nextDueAt, dueAt); };
@@ -283,7 +244,9 @@ export async function reconcileNativeChatProgress(db: Db, options: NativeProgres
         // short lock makes terminal status, a later event, or a final comment
         // win before this non-terminal projection can be inserted.
         const currentRun = await tx
-          .select({ id: heartbeatRuns.id })
+          .select({ id: heartbeatRuns.id,
+            redactionVersion: runSecretRedactionVersionSql(),
+          })
           .from(heartbeatRuns)
           .where(
             and(
@@ -359,7 +322,12 @@ export async function reconcileNativeChatProgress(db: Db, options: NativeProgres
         ) {
           return 0;
         }
-        const publicNote = row.provider === "slack" ? await latestPublicProgress(tx, row, options.signal) : null;
+        const policy = nativeChatProgressPolicy(row.provider);
+        const noteKey = `${row.companyId}:${row.runId}:${currentEvent.seq}:${currentRun.redactionVersion}`;
+        if (policy.latestPublicNote && !publicNotes.has(noteKey)) {
+          publicNotes.set(noteKey, await policy.latestPublicNote(tx, row, options.signal));
+        }
+        const publicNote = policy.latestPublicNote ? publicNotes.get(noteKey) ?? null : null;
         const publicText = publicNote?.text ?? null;
         const progress = publicText ? { phase: "public", text: publicText } : safeNativeChatProgressForEvent(
           currentEvent.eventType,
@@ -369,7 +337,7 @@ export async function reconcileNativeChatProgress(db: Db, options: NativeProgres
 
         const baseKey = `run:${row.runId}:working:${row.endpointId}`;
         const [currentBase] = await tx
-          .select({ createdAt: chatPublications.createdAt, state: chatPublications.state })
+          .select({ createdAt: chatPublications.createdAt, state: chatPublications.state, redactedError: chatPublications.redactedError })
           .from(chatPublications)
           .where(
             and(
@@ -378,12 +346,10 @@ export async function reconcileNativeChatProgress(db: Db, options: NativeProgres
               eq(chatPublications.conversationId, row.conversationId),
               eq(chatPublications.issueId, row.issueId),
               eq(chatPublications.idempotencyKey, baseKey),
-              or(inArray(chatPublications.state, ["pending", "retry", "streaming", "published"]),
-                publicText ? and(eq(chatPublications.state, "cancelled"), eq(chatPublications.redactedError, "Acknowledged by contextual fast response")) : undefined),
             ),
           )
           .limit(1);
-        if (!currentBase) return 0;
+        if (!currentBase || !policy.acceptsBase(currentBase, publicText !== null)) return 0;
 
         const progressKeyPrefix = `${baseKey}:native:`;
         const previousProgress = await tx
@@ -404,14 +370,9 @@ export async function reconcileNativeChatProgress(db: Db, options: NativeProgres
               like(chatPublications.idempotencyKey, `${progressKeyPrefix}%`),
             ),
           );
-        // A source event and the existing outbox are the durable pending
-        // candidate. Reconstruct its deadline after restart, without a timer row.
         if (publicText) {
           if (previousProgress.some(publication => publication.payload.text.split("\n\n")[0] === publicText)) return 0;
         } else if (previousProgress.some(publication => publication.idempotencyKey.startsWith(`${progressKeyPrefix}${progress.phase}:`))) return 0;
-        const lastProgressAt = Math.max(currentBase.createdAt.getTime(), ...previousProgress.map(publication =>
-          Math.max(publication.createdAt.getTime(), row.provider === "slack" ? publication.publishedAt?.getTime() ?? 0 : 0)));
-
         const bindings = await resolveChatOriginPublicationBindings(
           tx,
           row.companyId,
@@ -463,16 +424,10 @@ export async function reconcileNativeChatProgress(db: Db, options: NativeProgres
           .limit(1);
         if (explicitlyAuthoredFinal.length > 0) return 0;
 
-        if (row.provider === "slack") {
-          const dueAt = previousProgress.length ? lastProgressAt + 30_000 : currentBase.createdAt.getTime() + 10_000;
-          // One outstanding edit per lane. Delivery owns retries/uncertainty;
-          // progress must never turn a lost receipt into a second post.
-          if (previousProgress.some(publication => ["pending", "retry", "streaming", "delivery_unknown"].includes(publication.state))) {
-            return 0;
-          }
-          if (!["published", "cancelled"].includes(currentBase.state)) return 0;
-          if (Date.now() < dueAt) { defer(dueAt); return 0; }
-        } else if (currentEvent.createdAt.getTime() - lastProgressAt < SAFE_NATIVE_CHAT_PROGRESS_CADENCE_MS) return 0;
+        const delivery = policy.nextDelivery({ base: currentBase, previous: previousProgress,
+          eventCreatedAt: currentEvent.createdAt, now: Date.now() });
+        if (delivery.dueAt !== undefined) defer(delivery.dueAt);
+        if (!delivery.ready) return 0;
 
         const taskUrl = publicText ? publicChatTaskUrl(row.issueId) : null;
         await notifyChatPublicationWork(tx);
@@ -505,7 +460,6 @@ export async function reconcileNativeChatProgress(db: Db, options: NativeProgres
   return { inserted, contended, nextDueAt };
 }
 
-/** Explicit/manual callers retain the original count-only contract. */
 export async function enqueueSafeNativeChatProgress(db: Db, options: NativeProgressInput = {}): Promise<number> {
   return (await reconcileNativeChatProgress(db, options)).inserted;
 }

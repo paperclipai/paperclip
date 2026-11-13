@@ -430,7 +430,10 @@ Reasoning, unknown assistant channels, raw tool output, and provider diagnostics
 cannot supply progress prose. Providers without a public channel retain factual
 lifecycle fallbacks. Questions, approvals, and final answers bypass the progress
 cooldown. Slack final answers use a fresh reply, so users can see completion
-without watching message edits. Other connectors retain their delivery policy.
+without watching message edits. After the answer is sent, a generic working
+message changes to “Response sent.” A useful public note stays in place.
+Registered run secrets are redacted before progress text is saved or sent.
+Other connectors retain their delivery policy.
 
 ### Agent chat project handoff (2026-09-11)
 

@@ -84,9 +84,6 @@ export function safeNativeChatProgressForEvent(
   return { phase, text: SAFE_NATIVE_CHAT_PROGRESS_TEXT[phase](agentName) };
 }
 
-/** Only the normalized public progress channel is eligible. Unknown provider
- * commentary stays private until its driver explicitly maps that channel.
- * Never inspect the raw provider item, tool arguments, or reasoning fields. */
 export function publicNativeChatProgressText(
   eventType: string,
   payload: Record<string, unknown> | null,
@@ -97,8 +94,6 @@ export function publicNativeChatProgressText(
   if (!event || event.schema !== "paperclip.prp.event.v1" || event.eventType !== eventType || event.runId !== runId) return null;
   const item = event.payload as Record<string, unknown> | undefined;
   if (!item || item.kind !== "agentMessage" || item.channel !== "progress" || typeof item.text !== "string" || item.text.length > 16_000) return null;
-  // Sanitize the whole note before truncation, so a cut cannot break a hidden
-  // block and expose its tail. Omit oversized prose with no sentence boundary.
   const text = projectSafeChatPublicationText(item.text).replace(/\s+/g, " ").trim();
   if (!text || text === "Update available in Paperclip.") return null;
   const sentences = text.match(/.+?(?:[.!?](?=\s|$)|$)/g) ?? [];

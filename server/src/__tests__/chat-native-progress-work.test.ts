@@ -3,7 +3,7 @@ import { persistReprojectedWorkspaceDiffs, projectCodexWorkspaceDiffsFromTrace }
 import { randomUUID } from "node:crypto";
 import { eq, like, and } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
-import { chatPublications, createDb, heartbeatRunEvents, heartbeatRuns, issues, issueComments, issueThreadInteractions, subscribeDatabaseWork } from "@paperclipai/db";
+import { chatPublications, chatMessageLinks, createDb, heartbeatRunEvents, heartbeatRuns, issues, issueComments, issueThreadInteractions, subscribeDatabaseWork } from "@paperclipai/db";
 import { resolveExternalTestDatabaseUrl } from "./helpers/external-test-database.js";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 import { createChatMilestoneFixtures } from "./helpers/chat-milestone-fixtures.js";
@@ -14,6 +14,11 @@ import { appendHeartbeatRunEvent } from "../services/heartbeat-run-events.js";
 import { NativeRunCoordinatorStore } from "../services/native-runtime/native-run-coordinator-store.js";
 import { PaperclipControlPlanePort } from "../services/native-runtime/paperclip-control-plane-port.js";
 import type { PrpEvent } from "../vendor/paperclip-runner/index.js";
+import { createRunSecretRedactionRegistry } from "../services/run-secret-redaction.js";
+import { publicProgressEvent } from "../services/chat-channels/slack/native-progress.js";
+import { publicNativeChatProgressText } from "../services/safe-native-chat-progress.js";
+import { enqueueSlackProgressCompletion, slackProgressCompletionTarget } from "../services/chat-channels/slack/public-progress.js";
+import { REDACTED_EVENT_VALUE } from "../redaction.js";
 import { idleWorkSnapshot } from "../services/task-admission.js";
 
 const external = resolveExternalTestDatabaseUrl("PAPERCLIP_NATIVE_PROGRESS_TEST_DATABASE_URL");
@@ -112,6 +117,59 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
     await commentary("Found  retry case 19. Checking recovery next.");
     await settle(); expect(await publications()).toHaveLength(2); await quiet();
     expect(errors).toEqual([]);
+  });
+
+  it.each(["progress", "commentary", "final", "summary", "unknown", "wrong-run", "wrong-schema", "wrong-kind"])(
+    "keeps SQL selection and the public text boundary aligned for %s", async kind => {
+      const payload = { prpEvent: { schema: kind === "wrong-schema" ? "other" : "paperclip.prp.event.v1",
+        runId: kind === "wrong-run" ? randomUUID() : runId, eventType: "item.completed",
+        payload: { kind: kind === "wrong-kind" ? "reasoning" : "agentMessage", channel: kind, text: "Checking recovery." },
+      } };
+      if (kind.startsWith("wrong-")) payload.prpEvent.payload.channel = "progress";
+      await appendHeartbeatRunEvent(db, { ...event(), payload });
+      const selected = await db.select({ payload: heartbeatRunEvents.payload }).from(heartbeatRunEvents)
+        .where(and(eq(heartbeatRunEvents.runId, runId), publicProgressEvent(heartbeatRunEvents)));
+      const projected = publicNativeChatProgressText("item.completed", payload, runId);
+      expect(selected.length > 0).toBe(projected !== null);
+      expect(selected.length > 0).toBe(kind === "progress");
+    },
+  );
+
+  it("retires a generic progress link once and refuses a link consumed by another output", async () => {
+    await db.update(chatPublications).set({ providerMessageId: "working" }).where(eq(chatPublications.issueId, f.issueId));
+    const [base] = await db.select().from(chatPublications).where(eq(chatPublications.issueId, f.issueId));
+    await db.insert(chatMessageLinks).values({ companyId: f.companyId, endpointId: f.endpointId,
+      conversationId: f.conversationId, publicationId: base.id, providerMessageId: "working", direction: "outbound" });
+    const [comment] = await db.insert(issueComments).values({ companyId: f.companyId, issueId: f.issueId,
+      authorType: "agent", authorAgentId: f.agentId, createdByRunId: runId, body: "Answer" }).returning();
+    const [answer] = await db.insert(chatPublications).values({ companyId: f.companyId, endpointId: f.endpointId,
+      conversationId: f.conversationId, issueId: f.issueId, commentId: comment.id,
+      idempotencyKey: "answer", payload: { text: "Answer" }, state: "published", providerMessageId: "answer" }).returning();
+    await db.transaction(async tx => {
+      await enqueueSlackProgressCompletion(tx, answer);
+      await enqueueSlackProgressCompletion(tx, answer);
+    });
+    const cleanup = await db.select().from(chatPublications).where(like(chatPublications.idempotencyKey, `%:slack-progress-close:${base.id}`));
+    expect(cleanup).toHaveLength(1);
+    expect(cleanup[0].payload).toEqual({ text: "Response sent.", progressState: "completed" });
+    expect(await slackProgressCompletionTarget(db, cleanup[0])).toBe("working");
+    await db.update(chatMessageLinks).set({ publicationId: answer.id }).where(eq(chatMessageLinks.publicationId, base.id));
+    expect(await slackProgressCompletionTarget(db, cleanup[0])).toBeNull();
+  });
+
+  it("redacts registered run secrets before saving public progress", async () => {
+    const secret = "ordinary-synthetic-value-without-credential-prefix";
+    vi.stubEnv("PAPERCLIP_SECRETS_MASTER_KEY", "a".repeat(64));
+    try {
+      await createRunSecretRedactionRegistry(db).register(f.companyId, runId, secret);
+      await commentary(`Checked ${secret}. Verifying recovery.`);
+      await start(); await settle();
+      const saved = await publications();
+      expect(saved).toHaveLength(1);
+      expect(saved[0].payload.text).toContain(REDACTED_EVENT_VALUE);
+      expect(JSON.stringify(saved)).not.toContain(secret);
+      expect(errors).toEqual([]);
+    } finally { vi.unstubAllEnvs(); }
   });
 
   it("pages past unusable public notes to keep the latest useful commentary", async () => {
