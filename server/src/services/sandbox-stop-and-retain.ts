@@ -96,9 +96,13 @@ export function readStopOnlyCleanup(lease: Lease) {
  * an explicit stop into ordinary destructive release. Invalid pins stay pending.
  * `recovery` marks an ownership settle on the intent and on the lease
  * (`ORPHANED_SANDBOX_RECOVERY_KEY`); the pending-cleanup sweep dispatches such
- * a stop's first attempt without its retry backoff. */
-export async function prepareSandboxStopAndRetain(db: Db, lease: Lease, recovery?: Record<string, unknown>) {
-  return prepareStopAndRetain(db, lease, "active", recovery);
+ * a stop's first attempt without its retry backoff. `retention` sets a repair
+ * hold's policy and metadata in the same write: a second write to the row in
+ * one transaction re-runs its foreign-key checks, which wait on any run that
+ * holds the shared environment row. */
+export async function prepareSandboxStopAndRetain(db: Db, lease: Lease, recovery?: Record<string, unknown>,
+  retention?: { leasePolicy: string; metadata: Record<string, unknown> }) {
+  return prepareStopAndRetain(db, lease, "active", recovery, retention);
 }
 
 /** Historical release rows can lack a stop receipt. Re-inspect the exact
@@ -189,7 +193,8 @@ export async function prepareUnconfirmedSourceSandboxStop(db: Db, lease: typeof 
   return prepareStopAndRetain(db, lease, lease.status);
 }
 
-async function prepareStopAndRetain(db: Db, lease: Lease, fromStatus: string, recovery: Record<string, unknown> = {}) {
+async function prepareStopAndRetain(db: Db, lease: Lease, fromStatus: string, recovery: Record<string, unknown> = {},
+  retention?: { leasePolicy: string; metadata: Record<string, unknown> }) {
   const requestId = randomUUID(), now = new Date();
   const intent = { schema: "paperclip.sandbox-stop-and-retain.v1", requestId,
     companyId: lease.companyId, runId: lease.heartbeatRunId, leaseId: lease.id,
@@ -198,12 +203,14 @@ async function prepareStopAndRetain(db: Db, lease: Lease, fromStatus: string, re
       ? { builtinProvider: lease.provider } : { pluginId: lease.metadata?.pluginId }), ...recovery };
   const [updated] = await writeEnvironmentCleanup(db, tx => tx.update(environmentLeases).set({
     status: "pending_cleanup", cleanupStatus: "failed", failureReason: "sandbox_stop_pending", releasedAt: now, updatedAt: now,
+    ...(retention ? { leasePolicy: retention.leasePolicy } : {}),
     metadata: sql`(coalesce(${environmentLeases.metadata}, '{}'::jsonb) - 'remoteExecutionTermination' - 'sandboxStopAndRetainReceipt') || ${JSON.stringify({
       [SANDBOX_STOP_AND_RETAIN_KEY]: intent, pendingCleanupAttemptId: requestId,
       ...(fromStatus === "active" && Object.keys(recovery).length
         ? { [ORPHANED_SANDBOX_RECOVERY_KEY]: { ...recovery, runId: lease.heartbeatRunId, recoveredAt: now.toISOString() } } : {}),
       pendingCleanupInFlight: false, pendingCleanupLeaseExpiresAtMs: 0,
       pendingCleanupRetryAfterMs: 0, pendingCleanupRetryAttempts: 0, pendingCleanupRetryCapWarned: false,
+      ...retention?.metadata,
     })}::jsonb`,
   }).where(and(eq(environmentLeases.id, lease.id), eq(environmentLeases.companyId, lease.companyId),
     eq(environmentLeases.heartbeatRunId, lease.heartbeatRunId!), eq(environmentLeases.status, fromStatus),

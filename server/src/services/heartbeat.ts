@@ -40,7 +40,7 @@ import { promptInjectionPreventionService } from "./prompt-injection-prevention.
 import { createHeartbeatAgentStatus } from "./heartbeat/agent-status.js";
 import { heartbeatExternalProvider, nativeRuntimeHasInstructionFilesystem } from "./heartbeat/external-provider.js";
 import { pendingCaseHandoffForRun, recordCaseHandoffExecutionReleased, recordLegacyCaseHandoffCleanupIntent, recordLegacyCaseHandoffCleanupVerified } from "./heartbeat/case-handoff-lifecycle.js";
-import { recordLegacyPreparationSettlement, recordLegacyProcessSettlement } from "./heartbeat/legacy-process-settlement.js";
+import { recordLegacyPreparationSettlement, recordLegacyProcessSettlement, recoverLegacyProcessSettlement } from "./heartbeat/legacy-process-settlement.js";
 import { hasStoppedLocalProcessTree, legacyAdapterNeedsLocalProcessSettlement } from "./heartbeat/process-settlement.js";
 import { dotRunnerBroker } from "./dot-runner-broker.js";
 import { withRunExecutionTiming, measureRunPhase, measureWorkspaceSyncPhase, isWorkspaceSyncDetailPhase } from "./execution-preparation-timing.js";
@@ -58,12 +58,13 @@ import { readRecoverableRunLog } from "./native-runtime/native-run-log-recovery.
 import { observabilitySecretValues } from "@paperclipai/adapter-utils/agent-observability";
 import { prepareHeartbeatSession, resolveHeartbeatAdapterSession } from "./heartbeat/session-preparation.js";
 import { prepareHeartbeatTaskContext } from "./heartbeat/task-context.js";
-import { selectHeartbeatEnvironment } from "./heartbeat/environment-selection.js";
+import { selectHeartbeatEnvironment, resolveSshAuthenticationBeforeRouting } from "./heartbeat/environment-selection.js";
 import { reconcileMuseNativeTerminalRun } from "./native-runtime/muse-terminal-reconciliation.js";
 import { prepareHeartbeatWorkspace, RetryWorkspaceRefused } from "./heartbeat/workspace-preparation.js";
 import { nativeRecoveryClaimRelinquished, ownNativeExecutionLeaseLapsed, releaseLapsedNativeRestartClaim } from "./native-runtime/native-execution-lease.js";
 import { executeHeartbeatRuntime, NativeSessionResumeScheduledError, NativeWorkspaceFinalizeScheduledError } from "./heartbeat/runtime-execution.js";
 import { preserveNativeFailedWorkspace } from "./native-runtime/native-failed-workspace-recovery.js";
+import { startOverdueWorkspaceRecovery } from "./workspace-recovery.js";
 import { nativeRunHasNoWorkspaceAccess } from "./workspace-restore-recovery-state.js";
 import { prepareAndSelectHeartbeatRuntime } from "./heartbeat/runtime-selection.js";
 import { createHeartbeatRunCompletion } from "./heartbeat/run-completion.js";
@@ -1014,6 +1015,10 @@ export function heartbeatService(
   const budgetHooks = {
     cancelWorkForScope: cancelBudgetScopeWork,
   };
+  const recoverLegacyAccountingReceipt = (companyId: string, runId: string) =>
+    recoverLegacyProcessSettlement(db, companyId, runId, id =>
+      !activeRunExecutions.has(id) && !runningProcesses.has(id) && !adapterExecutionControls.has(id)
+      && !processRunCancellationSettlements.has(id) && !failedProcessRunCancellations.has(id));
   const reconcileCostAccounting = createCostAccountingReconciler(db, budgetHooks, async () => {
     const outcomes = await Promise.allSettled([
       decisionModelService(db, { budgetHooks }).recoverInterrupted(),
@@ -1028,6 +1033,7 @@ export function heartbeatService(
     liveRunExecutions,
     // Bound at call time: the heartbeat recovery module is created below.
     settleLostRunProcess: scope => recoverActiveExecutions(scope),
+    startSavedWorkRecovery: source => startOverdueWorkspaceRecovery(db, environmentRuntime, resumeRemoteStopComments, source),
     settleExplicitContinuationRetry: releaseIssueExecutionAndPromote,
     scheduleRecoveryRetry: async (runId, outcome) => {
       const [run] = await db
@@ -2709,8 +2715,17 @@ export function heartbeatService(
         if ("homeMode" in homeConfig) config = { ...config, homeMode: homeConfig.homeMode };
       }
       const persistedRouterPoolId = routerHasPersistedInput ? readNonEmptyString(parseObject(context.aiRouterSelection).poolId) : null;
+      const sshAuthentication = routerHasPersistedInput ? null : await resolveSshAuthenticationBeforeRouting({
+        agentDefaultEnvironmentId: agent.defaultEnvironmentId,
+        lowTrustIssueEnvironmentId: trustPreset.kind === "low_trust_review"
+          ? parseIssueExecutionWorkspaceSettings(issueContext?.executionWorkspaceSettings, { includeEnvironmentId: true })?.environmentId ?? null : null,
+        environmentsSvc, instanceSettings,
+      });
+      if (agent.adapterType === "paperclip_runner" && sshAuthentication) {
+        config = { ...config, homeMode: sshAuthentication === "host" ? "preconfigured" : "isolated" };
+      }
       const preconfiguredHome = agent.adapterType === "paperclip_runner" && config.homeMode === "preconfigured";
-      const requestedAiBinding = preconfiguredHome ? undefined : persistedRouterPoolId ? { mode: "router" as const, connectionId: persistedRouterPoolId } : agent.runtimeConfig?.aiConnection ? aiRuntimeConnectionBindingSchema.parse(agent.runtimeConfig.aiConnection) : undefined;
+      const requestedAiBinding = preconfiguredHome || sshAuthentication === "host" ? undefined : persistedRouterPoolId ? { mode: "router" as const, connectionId: persistedRouterPoolId } : agent.runtimeConfig?.aiConnection ? aiRuntimeConnectionBindingSchema.parse(agent.runtimeConfig.aiConnection) : undefined;
       let aiBinding = requestedAiBinding?.mode === "router" ? undefined : requestedAiBinding;
       const originalAiIssueOverrides = issueAssigneeOverrides;
       if (requestedAiBinding?.mode === "router") {
@@ -4422,6 +4437,7 @@ export function heartbeatService(
   }
 
   return {
+    recoverLegacyAccountingReceipt,
     stopInvocationsForAgents,
     waitForRunExecutionDrain: async (
       runId: string,

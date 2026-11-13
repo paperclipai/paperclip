@@ -565,7 +565,7 @@ function canRegisterOAuthClientDynamically(
       // 4. Dynamic client registration.
       if (!input.endpoints.registrationUrl) {
         throw unprocessable(
-          "This server needs sign-in details you create yourself. Add a client ID and secret under Advanced authentication.",
+          "This server needs sign-in details you create yourself. Register Paperclip with the provider, then add the client ID and secret it gives you.",
           { code: "oauth_manual_client_required" },
         );
       }

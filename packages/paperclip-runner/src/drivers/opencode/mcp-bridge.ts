@@ -4,6 +4,7 @@ import type { Socket } from "node:net";
 import type { ValidateFunction } from "ajv/dist/2020.js";
 import { admitToolInputSchema } from "../tool-input-schema.js";
 import { toolInputError } from "../tool-input-error.js";
+import { admitToolInput, TOOL_INPUT_COERCION_DIAGNOSTIC_SCHEMA } from "../tool-input-coercion.js";
 import { RepeatedToolInputRejectionGuard } from "../repeated-tool-input-rejection.js";
 import { toolInputVariantError } from "../../contracts/tool-input-variants.js";
 
@@ -63,6 +64,7 @@ const DEFAULT_MAX_BODY_BYTES = 1_048_576;
 const MAX_RESULT_BYTES = 1_048_576;
 const TOOL_DELIVERY_DIAGNOSTIC_SCHEMA = "paperclip.opencode.tool-delivery-diagnostic/v1";
 const MAX_TOOL_DELIVERY_DIAGNOSTICS = 256;
+const MAX_TOOL_INPUT_COERCION_DIAGNOSTICS = 64;
 
 type SocketUse = { requests: number; lastResponseAt: number | null };
 type ToolDelivery = {
@@ -106,6 +108,20 @@ export async function startOpenCodeMcpBridge(
         rootShape: inputShape(rejection.input),
         continuationShape: inputShape(isRecord(rejection.input) ? rejection.input.continuation : undefined),
       } : {}),
+    };
+    try { options.onDiagnostic(JSON.stringify(diagnostic)); } catch { /* Optional diagnostics never change admission. */ }
+  };
+  let coercionDiagnostics = 0;
+  // Records each call accepted only after an object-typed field sent as JSON
+  // text was parsed back into its object. Names fields, never their values.
+  const diagnoseInputCoercion = (tool: string, callId: string, paths: string[]) => {
+    if (!options.onDiagnostic || coercionDiagnostics++ >= MAX_TOOL_INPUT_COERCION_DIAGNOSTICS) return;
+    const diagnostic = {
+      schema: TOOL_INPUT_COERCION_DIAGNOSTIC_SCHEMA,
+      tool,
+      callIdSha256: createHash("sha256").update(callId).digest("hex"),
+      coercion: "json_string_to_object",
+      paths,
     };
     try { options.onDiagnostic(JSON.stringify(diagnostic)); } catch { /* Optional diagnostics never change admission. */ }
   };
@@ -154,6 +170,7 @@ export async function startOpenCodeMcpBridge(
       handler: options.handler,
       onRejectedCall: options.onRejectedCall,
       diagnoseFinishInput,
+      diagnoseInputCoercion,
       timeoutMs: options.timeoutMs === null ? null : options.timeoutMs ?? DEFAULT_TIMEOUT_MS,
       privateToolTimeoutMs: options.privateToolTimeoutMs ?? options.timeoutMs ?? DEFAULT_TIMEOUT_MS,
       privateToolNames: new Set(privateTools.map((tool) => tool.name)),
@@ -248,6 +265,7 @@ async function handleRequest(
     privateToolNames: ReadonlySet<string>;
     maxBodyBytes: number;
     diagnoseFinishInput: (rejection?: FinishInputRejection) => void;
+    diagnoseInputCoercion: (tool: string, callId: string, paths: string[]) => void;
   },
 ): Promise<void> {
   setSecurityHeaders(response);
@@ -342,9 +360,10 @@ async function handleRequest(
     writeRpc(response, id, { isError: true, content: [{ type: "text", text: "Unsupported tool." }] });
     return;
   }
-  const args = params.arguments ?? {};
+  const received = params.arguments ?? {};
   const validator = context.validators.get(tool);
-  const schemaValid = validator !== undefined && validator(args);
+  const admitted = admitToolInput(validator, received);
+  const { args, schemaValid } = admitted;
   // The completion tool's yielded-only continuation rule is not part of its
   // advertised schema; some hosts hide a root conditional's arguments.
   const variantError = schemaValid && tool === PRP_COMPLETION_TOOL_NAME ? toolInputVariantError(tool, args) : null;
@@ -379,6 +398,7 @@ async function handleRequest(
     context.privateToolNames.has(tool) ? context.privateToolTimeoutMs : context.timeoutMs,
   );
   if (!existing) {
+    if (admitted.coercedPaths) context.diagnoseInputCoercion(tool, callId, admitted.coercedPaths);
     if (context.calls.size >= 2_048) context.calls.delete(context.calls.keys().next().value!);
     context.calls.set(callId, { fingerprint, promise: execution, waiting: new Set() });
     context.controllers.set(callId, controller!);

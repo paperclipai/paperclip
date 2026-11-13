@@ -100,6 +100,7 @@ interface SpawnTarget {
   cwd?: string;
   env?: Record<string, string | undefined>;
   cleanup?: () => Promise<void>;
+  stdinPrefix?: string;
 }
 
 type RemoteExecutionSpec = SshRemoteExecutionSpec;
@@ -3753,6 +3754,7 @@ async function resolveSpawnTarget(
       args: spawnTarget.args,
       cwd: process.cwd(),
       cleanup: spawnTarget.cleanup,
+      stdinPrefix: spawnTarget.stdinPrefix,
     };
   }
 
@@ -4869,6 +4871,7 @@ export async function runChildProcess(
       localProcessSandbox: opts.localProcessSandbox ?? null,
     })
       .then((target) => {
+        const processStdin = target.stdinPrefix ? target.stdinPrefix + (opts.stdin ?? "") : opts.stdin;
         const childEnv = { ...mergedEnv, ...target.env };
         for (const [key, value] of Object.entries(childEnv)) {
           if (value === undefined) delete childEnv[key];
@@ -4878,7 +4881,7 @@ export async function runChildProcess(
           env: childEnv,
           detached: process.platform !== "win32",
           shell: false,
-          stdio: [opts.stdin != null ? "pipe" : "ignore", "pipe", "pipe"],
+          stdio: [processStdin != null ? "pipe" : "ignore", "pipe", "pipe"],
         }) as ChildProcessWithEvents;
         const startedAt = new Date().toISOString();
         const processGroupId = resolveProcessGroupId(child);
@@ -5032,7 +5035,7 @@ export async function runChildProcess(
         });
 
         const stdin = child.stdin;
-        if (opts.stdin != null && stdin) {
+        if (processStdin != null && stdin) {
           let stdinFailureHandled = false;
           const handleStdinFailure = (err: unknown) => {
             if (!err || stdinFailureHandled) return;
@@ -5052,7 +5055,7 @@ export async function runChildProcess(
             )
               return;
             try {
-              stdin.write(opts.stdin as string, handleStdinFailure);
+              stdin.write(processStdin, handleStdinFailure);
               stdin.end();
             } catch (err) {
               handleStdinFailure(err);

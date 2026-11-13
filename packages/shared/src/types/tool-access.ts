@@ -1209,7 +1209,7 @@ export interface ToolOAuthHandoff {
  * What an unknown remote MCP endpoint told Paperclip it needs, so the wizard can
  * branch without re-probing. `manualClientRequired` means discovery succeeded but
  * the authorization server supports neither CIMD nor DCR, so the operator has to
- * supply a preregistered client under Advanced authentication.
+ * supply a preregistered client in the sign-in options on the connect screen.
  */
 export interface ConnectToolAppAuthChallenge {
   kind: "oauth";
