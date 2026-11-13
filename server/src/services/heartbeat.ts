@@ -121,6 +121,7 @@ import {
   createHeartbeatRecovery,
 } from "./heartbeat/recovery.js";
 import {
+  failedPreparationOwnsBoundedRetry,
   failedRunRetryBudgetSpent,
   isWorkspaceBusyDeferral,
   createHeartbeatRetries,
@@ -1045,6 +1046,7 @@ export function heartbeatService(
     // or interrupted run that has already consumed every bounded transient
     // attempt cannot be retried again through this lane.
     transientRetryBudgetSpent: failedRunRetryBudgetSpent,
+    ownsPreparationRetry: failedPreparationOwnsBoundedRetry,
   });
   const runDispatch = createRunDispatch(db);
   const {

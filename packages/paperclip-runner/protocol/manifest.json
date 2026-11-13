@@ -232,6 +232,12 @@
       "compatibilityCase": "canonical"
     },
     {
+      "path": "fixtures/provider-boundary/acpx-background-tasks.json",
+      "sha256": "25a8ee4368eaded9fd8a6784900c9918bbb5c8f59fffb2c37466971e1d5be438",
+      "expectation": "accept",
+      "compatibilityCase": "canonical"
+    },
+    {
       "path": "fixtures/provider-boundary/local-integrity.json",
       "sha256": "ca3d3eaddd80320b273f48e68f7562f63b1f03152901154ace5ef26232c24f4f",
       "expectation": "accept",

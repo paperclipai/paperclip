@@ -1,6 +1,21 @@
+import { readFileSync } from "node:fs";
+
 import { describe, expect, it } from "vitest";
 
 import { ClaudeBackgroundTaskTracker } from "./claude-background-tasks.js";
+import { readGeneratedAcpxBackgroundTasks } from "./generated-sidecar-contract.js";
+
+const vectors = JSON.parse(readFileSync(
+  new URL("../../../protocol/fixtures/provider-boundary/acpx-background-tasks.json", import.meta.url), "utf8",
+)) as { accepted: Array<{ value: unknown; live: number }>; rejected: Array<{ case: string; value: unknown }> };
+
+describe("generated ACPX background task reader", () => {
+  it("accepts and rejects exactly the shared vectors", () => {
+    for (const { value, live } of vectors.accepted) expect(readGeneratedAcpxBackgroundTasks(value)).toEqual({ live });
+    for (const { value, case: name } of vectors.rejected) expect(readGeneratedAcpxBackgroundTasks(value), name).toBeNull();
+    expect(readGeneratedAcpxBackgroundTasks(undefined)).toBeNull();
+  });
+});
 
 const air = (capabilities: string[]) => ({ jetbrains: { air: { version: 1, capabilities } } });
 

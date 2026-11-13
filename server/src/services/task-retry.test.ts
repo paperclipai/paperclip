@@ -436,6 +436,61 @@ describe("durable task Retry admission", () => {
     if (retry.outcome !== "scheduled") return;
     await expect(dispatchRun(f.input, retry.run)).resolves.toMatchObject({ interruptedRunId: f.parent.id });
   });
+  // Staging shape: a person's Retry failed before provider work because the
+  // saved sandbox resume timed out. The run is already `failed`, but its
+  // executor has not scheduled the bounded retry yet: settling took longer than
+  // the controller lease that stopped renewing at the failed write, or the
+  // server running it stopped. Another server's sweep then reads the task.
+  it.each(["slow_executor", "executor_gone"] as const)(
+    "retries a failed Retry run's transient preparation failure when the sweep reaches it first: %s", async executor => {
+      const f = await seedFailedRetryAdmittedRun();
+      await db.update(heartbeatRuns).set({ errorCode: "reusable_sandbox_resume_failed", controllerBootId: randomUUID(),
+        controllerLeaseExpiresAt: sql`clock_timestamp() - interval '1 second'`,
+        resultJson: { executionRecovery: { kind: "bootstrap", providerWorkStarted: false } },
+      }).where(eq(heartbeatRuns.id, f.parent.id));
+      const heartbeat = heartbeatService(db);
+      await heartbeat.reconcileStrandedAssignedIssues({ companyId: f.input.companyId });
+      expect((await db.select().from(issues).where(eq(issues.id, f.input.issueId)))[0]).toMatchObject({ status: "in_progress" });
+      const successors = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, f.parent.id));
+      expect(successors).toHaveLength(1);
+      expect(successors[0]).toMatchObject({ status: "scheduled_retry", scheduledRetryReason: "transient_failure",
+        scheduledRetryAttempt: 1 });
+      if (executor === "slow_executor") {
+        // The executor's own scheduling adopts the sweep's successor.
+        expect(await heartbeat.scheduleBoundedRetry(f.parent.id, { now: new Date() })).toMatchObject({
+          outcome: "scheduled", run: { id: successors[0].id } });
+        expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, f.parent.id))).toHaveLength(1);
+      }
+      await expect(dispatchRun(f.input, successors[0])).resolves.toMatchObject({ interruptedRunId: f.parent.id });
+    });
+  it.each(["reusable_sandbox_resume_failed", "repository_catalog_unavailable"])(
+    "escalates a failed Retry run's transient preparation failure once when the scheduler declines it permanently: %s", async errorCode => {
+    const f = await seedFailedRetryAdmittedRun();
+    // An external Dot execution is never retried by the bounded scheduler.
+    await db.update(heartbeatRuns).set({ errorCode,
+      runnerProfileJson: { adapterDispatch: { adapterType: "paperclip_runner" },
+        nativeExecutionInput: { provider: { kind: "openai_dot" } } },
+      resultJson: { executionRecovery: { kind: "bootstrap", providerWorkStarted: false } },
+    }).where(eq(heartbeatRuns.id, f.parent.id));
+    const heartbeat = heartbeatService(db);
+    await heartbeat.reconcileStrandedAssignedIssues({ companyId: f.input.companyId });
+    expect((await db.select().from(issues).where(eq(issues.id, f.input.issueId)))[0]).toMatchObject({ status: "blocked" });
+    expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, f.parent.id))).toHaveLength(0);
+    const notices = async () => (await db.select().from(issueComments).where(eq(issueComments.issueId, f.input.issueId))).length;
+    const escalated = await notices();
+    await heartbeat.reconcileStrandedAssignedIssues({ companyId: f.input.companyId });
+    expect(await notices()).toBe(escalated);
+  });
+  it("still escalates a failed Retry run's transient preparation failure once its bounded retries are spent", async () => {
+    const f = await seedFailedRetryAdmittedRun();
+    await db.update(heartbeatRuns).set({ errorCode: "reusable_sandbox_resume_failed",
+      scheduledRetryReason: "transient_failure", scheduledRetryAttempt: 2,
+      resultJson: { executionRecovery: { kind: "bootstrap", providerWorkStarted: false } },
+    }).where(eq(heartbeatRuns.id, f.parent.id));
+    await heartbeatService(db).reconcileStrandedAssignedIssues({ companyId: f.input.companyId });
+    expect((await db.select().from(issues).where(eq(issues.id, f.input.issueId)))[0]).toMatchObject({ status: "blocked" });
+    expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, f.parent.id))).toHaveLength(0);
+  });
   async function seedRefusedRetry() {
     const input = await seed();
     const now = Date.now();
