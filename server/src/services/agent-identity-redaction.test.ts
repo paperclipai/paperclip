@@ -104,6 +104,14 @@ describe("agent output redactor with secret values", () => {
     expect(pem.chunk("item", "body-line-syn") + pem.chunk("item", "thetic-0123456789 x") + pem.finish("item")).toBe(`${REDACTED} x`);
     const fresh = createAgentIdentityRedactor(undefined, [secret], { maskResumedSuffixes: true });
     expect(fresh.chunk("item", "hello 7890") + fresh.finish("item")).toBe("hello 7890");
+    const overlapping = createAgentIdentityRedactor(undefined, ["old-prefix-XYZabcdefgh", secret], { maskResumedSuffixes: true });
+    expect(overlapping.chunk("item", "XYZabcdefgh1234567890 done") + overlapping.finish("item")).toBe(`${REDACTED} done`);
+    const heldInside = createAgentIdentityRedactor(undefined, ["old-prefix-XYZabcdefgh", secret], { maskResumedSuffixes: true });
+    expect(heldInside.chunk("item", "XYZabcdefgh123") + heldInside.chunk("item", "4567890 done") + heldInside.finish("item"))
+      .toBe(`${REDACTED}${REDACTED} done`);
+    const diverging = createAgentIdentityRedactor(undefined, ["old-prefix-XYZabcdefgh", secret], { maskResumedSuffixes: true });
+    expect(diverging.chunk("item", "XYZabcdefgh123") + diverging.chunk("item", " other") + diverging.finish("item"))
+      .not.toContain("XYZabcdefgh");
     const local = createAgentIdentityRedactor(undefined, [secret]);
     expect(local.chunk("item", "1234567890 done") + local.finish("item")).toBe("1234567890 done");
   });

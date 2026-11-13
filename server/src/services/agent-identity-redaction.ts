@@ -80,19 +80,12 @@ export function createAgentIdentityRedactor(privateKeyPem?: string, secrets: rea
     // Hold only a suffix that could begin a secret. Separate buffers prevent
     // interleaved stdout/stderr from defeating matching across output chunks.
     chunk(stream: string, chunk: string): string {
-      let text = (pending.get(stream) ?? "") + chunk;
+      const text = (pending.get(stream) ?? "") + chunk;
       const candidates = [...values, ...secretValues].sort((a, b) => b.length - a.length);
-      let output = "";
-      if (options.maskResumedSuffixes && !seenStreams.has(stream) && text.length > 0) {
-        const startsSecret = candidates.some((value) => text.startsWith(value) || value.startsWith(text));
-        const resumed = startsSecret ? 0 : resumedSuffixLength(text, candidates);
-        if (resumed < text.length) seenStreams.add(stream);
-        if (resumed > 0) {
-          output = REDACTED_EVENT_VALUE;
-          text = text.slice(resumed);
-        }
-      }
-      let start = 0;
+      const resumes = options.maskResumedSuffixes === true && !seenStreams.has(stream);
+      const resumed = resumes ? resumedSuffixLength(text, candidates) : 0;
+      const masked: Array<[number, number]> = resumed > 0 ? [[0, resumed]] : [];
+      let end = text.length;
       for (let index = 0; index < text.length;) {
         let matched = 0;
         let partial = false;
@@ -101,18 +94,29 @@ export function createAgentIdentityRedactor(privateKeyPem?: string, secrets: rea
           if (text.startsWith(value, index)) { matched = value.length; break; }
           if (text.length - index < value.length && value.startsWith(text.slice(index))) { partial = true; break; }
         }
-        if (partial) {
-          pending.set(stream, text.slice(index));
-          return output + text.slice(start, index);
-        }
+        if (partial) { end = index; break; }
         if (matched) {
-          output += text.slice(start, index) + REDACTED_EVENT_VALUE;
+          masked.push([index, index + matched]);
           index += matched;
-          start = index;
         } else index++;
       }
-      pending.delete(stream);
-      return output + text.slice(start);
+      if (end < text.length) pending.set(stream, text.slice(end));
+      else pending.delete(stream);
+      if (resumes && end > resumed) seenStreams.add(stream);
+      const merged: Array<[number, number]> = [];
+      for (const [from, to] of masked.sort((left, right) => left[0] - right[0])) {
+        const last = merged.at(-1);
+        if (last && from < last[1]) last[1] = Math.max(last[1], to);
+        else merged.push([from, to]);
+      }
+      let output = "";
+      let cursor = 0;
+      for (const [from, to] of merged) {
+        if (from >= end) break;
+        output += text.slice(cursor, from) + REDACTED_EVENT_VALUE;
+        cursor = Math.min(to, end);
+      }
+      return output + text.slice(cursor, end);
     },
     // An interrupted partial secret must not be flushed as plaintext.
     finish(stream: string): string {
