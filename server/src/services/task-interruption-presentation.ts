@@ -1,5 +1,5 @@
 import { STORAGE_UNAVAILABLE_WAIT_RETRY_REASON } from "../storage/storage-unavailable.js";
-import { AGENT_DIRECTORY_WAIT_RETRY_REASON } from "./execution-recovery-attempt.js";
+import { AGENT_DIRECTORY_WAIT_RETRY_REASON, INTERRUPTED_PREPARATION_RETRY_REASON } from "./execution-recovery-attempt.js";
 import { boundSetupCommandFailure, readSetupCommandFailure } from "./workspace-setup-command-failure.js";
 import { and, desc, eq, inArray, isNull, sql, type SQL } from "drizzle-orm";
 import { unidentifiedLocalLaunchRefusals } from "./native-local-process-stop.js";
@@ -308,6 +308,9 @@ function projectTaskInterruptionState(issue: ProjectionIssue, input: ProjectionS
     if (!pending) return { ...base, state: "failed", canRetry: retryWait.preparationStatus !== "cancelled" };
   }
   if (run.status === "scheduled_retry" && resourceWaitRetryReasons.has(run.scheduledRetryReason ?? "") && !system)
+    return { ...base, state: "working" };
+  if (run.status === "scheduled_retry" && run.scheduledRetryReason === INTERRUPTED_PREPARATION_RETRY_REASON && !system
+      && (!run.scheduledRetryAt || now - run.scheduledRetryAt.getTime() < NATIVE_RESUME_DISPATCH_GRACE_MS))
     return { ...base, state: "working" };
   // The native coordinator resumes this same run by itself. A manual Retry
   // would race it, so show the resume until it is due and briefly while its

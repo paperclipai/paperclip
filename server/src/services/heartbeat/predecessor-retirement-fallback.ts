@@ -1,4 +1,4 @@
-import { and, eq, isNotNull, sql } from "drizzle-orm";
+import { and, eq, inArray, isNotNull, sql } from "drizzle-orm";
 import { environmentLeases, executionWorkspaces, heartbeatRuns, nativeRunResults, type Db } from "@paperclipai/db";
 import { readRemoteWorkspaceAuthority, remoteWorkspaceRunReferenceSchema } from "@paperclipai/shared";
 import { persistActivity } from "../activity-log.js";
@@ -7,6 +7,7 @@ import {
   findNativePredecessorRetirementUnproven, REPLACE_BEFORE_REUSE_KEY, REPLACE_BEFORE_REUSE_SCHEMA,
   type PredecessorRetirementFallback, type ReplaceBeforeReuseMarker,
 } from "../native-runtime/predecessor-retirement.js";
+import { findNativeFailedBeforeProviderTurn } from "../native-runtime/failed-before-provider-turn.js";
 import { releaseUnchangedRemoteWorkspaceWriter } from "../remote-workspaces.js";
 
 type Run = Pick<typeof heartbeatRuns.$inferSelect, "id" | "companyId">;
@@ -26,9 +27,10 @@ type Run = Pick<typeof heartbeatRuns.$inferSelect, "id" | "companyId">;
  */
 export async function preparePredecessorRetirementFallback(db: Db, run: Run, error: unknown)
   : Promise<PredecessorRetirementFallback | null> {
-  const failure = findNativePredecessorRetirementUnproven(error);
+  const beforeProviderTurn = findNativeFailedBeforeProviderTurn(error);
+  const failure = findNativePredecessorRetirementUnproven(error) ?? beforeProviderTurn;
   if (!failure) return null;
-  if (await hasNativeExecutionStartEvidence(db, { companyId: run.companyId, id: run.id })) return null;
+  if (!beforeProviderTurn && await hasNativeExecutionStartEvidence(db, { companyId: run.companyId, id: run.id })) return null;
   const [result] = await db.select({ id: nativeRunResults.id }).from(nativeRunResults)
     .where(and(eq(nativeRunResults.companyId, run.companyId), eq(nativeRunResults.runId, run.id))).limit(1);
   if (result) return null;
@@ -39,9 +41,10 @@ export async function preparePredecessorRetirementFallback(db: Db, run: Run, err
     if (!current || !["running", "failed"].includes(current.status) || current.runnerProfileJson?.nativeWorkspaceSync != null) return null;
     const leases = (await tx.select().from(environmentLeases).where(and(
       eq(environmentLeases.companyId, run.companyId), eq(environmentLeases.heartbeatRunId, run.id),
-      eq(environmentLeases.leasePolicy, "reuse_by_environment"), isNotNull(environmentLeases.providerLeaseId),
+      beforeProviderTurn ? inArray(environmentLeases.leasePolicy, ["reuse_by_environment", "reuse_by_execution_workspace"])
+        : eq(environmentLeases.leasePolicy, "reuse_by_environment"), isNotNull(environmentLeases.providerLeaseId),
     )).for("update")).filter(lease => !failure.providerLeaseId || lease.providerLeaseId === failure.providerLeaseId);
-    if (leases.length === 0) return null;
+    if (leases.length === 0 && !beforeProviderTurn) return null;
     const marker: ReplaceBeforeReuseMarker = { schema: REPLACE_BEFORE_REUSE_SCHEMA, runId: run.id,
       predecessorRunId: failure.predecessorRunId, recordedAt: new Date().toISOString() };
     for (const lease of leases) {

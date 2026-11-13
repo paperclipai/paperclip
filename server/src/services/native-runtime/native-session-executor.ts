@@ -59,6 +59,7 @@ import { assertAttachedPortableTask, readyPortableTaskSource, unlaunchedPortable
 import { environmentTaskOperationSchema, environmentTaskResultSchema } from "@paperclipai/plugin-sdk";
 import { preparePluginRunnerCredentials } from "./plugin-runner-credentials.js";
 import { createPluginRunnerTaskOwner, verifyPluginRunnerTaskReattachment } from "./plugin-runner-task.js";
+import { findNativeFailedBeforeProviderTurn, NATIVE_FAILED_BEFORE_PROVIDER_TURN_CODE, NativeFailedBeforeProviderTurnError } from "./failed-before-provider-turn.js";
 import { findNativePredecessorRetirementUnproven, NATIVE_PREDECESSOR_RETIREMENT_UNPROVEN_CODE, NativePredecessorRetirementDirectoryBusyError, NativePredecessorRetirementUnprovenError } from "./predecessor-retirement.js";
 import { retireSandboxRunnerPortHolders } from "./sandbox-runner-port-holders.js";
 import { AgentDirectoryOperationBusyError } from "../agent-directory-working-copies.js";
@@ -2522,6 +2523,11 @@ function scrubRunnerdQuarantineLaunchState(root: string): void {
       force: true,
     });
   }
+}
+
+function retireFailedBeforeTurnSessionRoot(execution: NativeExecutionInput): void {
+  const root = scopedRunnerdStateRoot(execution);
+  if (existsSync(root)) quarantineRunnerdStateRoot(root, "identity_indeterminate");
 }
 
 function quarantineRunnerdStateRoot(
@@ -8984,8 +8990,10 @@ export function nativeSessionFailureSourceCode(
   | "runner_ingress_startup_failed"
   | "local_runtime_api_listener_unavailable"
   | typeof NATIVE_PREDECESSOR_RETIREMENT_UNPROVEN_CODE
+  | typeof NATIVE_FAILED_BEFORE_PROVIDER_TURN_CODE
   | "native_session_interrupted" {
   if (findNativePredecessorRetirementUnproven(error)) return NATIVE_PREDECESSOR_RETIREMENT_UNPROVEN_CODE;
+  if (findNativeFailedBeforeProviderTurn(error)) return NATIVE_FAILED_BEFORE_PROVIDER_TURN_CODE;
   if (error instanceof NativePermissionDeclinedError) return "native_permission_declined";
   if (error instanceof NativeGovernedWaitSettlementPendingError) return "native_governed_wait_settlement_pending";
   if (error instanceof NativeProviderStateIncompatibleError) return NATIVE_PROVIDER_STATE_INCOMPATIBLE;
@@ -12657,7 +12665,15 @@ async function executePaperclipNativeSessionAttempt(
                     ?? (error instanceof Error && /^native_[a-z_]+$/.test(error.message) ? error.message : "unknown");
                   try { await input.onLog?.("stderr", `[paperclip-runner] native provider-pack admission receipt could not be saved (cause=${cause})\n`); } catch {}
                 }
-                await runnerdBackend?.providerAdmissionPersisted?.(active.admissionAbort!.signal);
+                const admissionBackend: Pick<ManagedRunnerdBackend, "providerAdmissionPersisted" | "providerTurnNeverIssued"> | null =
+                  runnerdBackend ?? (input.backend as ManagedRunnerdBackend | undefined) ?? null;
+                try {
+                  await admissionBackend?.providerAdmissionPersisted?.(active.admissionAbort!.signal);
+                } catch (admissionError) {
+                  if (active.cancelRequested || active.admissionAbort!.signal.aborted
+                    || admissionBackend?.providerTurnNeverIssued?.() !== true) throw admissionError;
+                  throw new NativeFailedBeforeProviderTurnError(sandboxProviderLeaseId(input.runnerExecutionTarget), admissionError);
+                }
                 if (session.resolveRuntimeRequest) await liveQuestions.attach();
                 if (active.cancelRequested) {
                   await active.cancellationSettled;
@@ -12876,8 +12892,10 @@ async function executePaperclipNativeSessionAttempt(
         // An unretired predecessor failed this run before it launched a Runner.
         // It is not a provider failure: the heartbeat boundary sends the next
         // attempt to a fresh sandbox, or keeps today's preservation.
-        findNativePredecessorRetirementUnproven(error)
+        findNativePredecessorRetirementUnproven(error) ||
+        findNativeFailedBeforeProviderTurn(error)
       ) {
+        if (findNativeFailedBeforeProviderTurn(error)) retireFailedBeforeTurnSessionRoot(input.execution);
         // This is not a provider failure and must not overwrite the durable
         // result/coordinator state. The heartbeat boundary will either hand an
         // already-materialized result to the finalizer or retain the durable
@@ -16068,6 +16086,7 @@ type ManagedRunnerdBackend = NativeSessionBackend & {
   sessionCheckpointPersisted?(snapshot: PersistedNativeSession): void;
   providerAdmissionPersisted?(signal?: AbortSignal): Promise<void>;
   providerAdmissionRequired?(): boolean;
+  providerTurnNeverIssued?(): boolean;
 };
 
 async function createRunnerdBackendWithinSessionClaim(
@@ -18548,6 +18567,9 @@ async function createRunnerdBackendWithinSessionClaim(
   return {
     bindManagedSession: (session, options) => replacementBackend
       ? replacementBackend.bindManagedSession(session, options) : wrapManagedSession(session),
+    providerTurnNeverIssued: () => replacementBackend?.providerTurnNeverIssued
+      ? replacementBackend.providerTurnNeverIssued()
+      : runnerControlPlane !== undefined && runnerdStateHasNoProviderTurn(runnerControlPlane.store.state as unknown as Record<string, unknown>),
     providerAdmissionRequired: () => replacementBackend?.providerAdmissionRequired
       ? replacementBackend.providerAdmissionRequired()
       : Boolean(artifactStorage && (providerArtifacts || !legacyProviderContinuity && !liveProviderRecovery)),
