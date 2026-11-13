@@ -134,7 +134,7 @@ describe("configured environment authority", () => {
 });
 
 describe("configured secret names", () => {
-  const secretSource = { ...configuredEnvironmentProjection({ PUBLISHING_API_KEY: "delivered-secret-value", PLAIN_SETTING: "plain-value" }, ["PUBLISHING_API_KEY", "NOT_CONFIGURED"]), PATH: "/bin" };
+  const secretSource: NodeJS.ProcessEnv = { ...configuredEnvironmentProjection({ PUBLISHING_API_KEY: "delivered-secret-value", PLAIN_SETTING: "plain-value" }, ["PUBLISHING_API_KEY", "NOT_CONFIGURED"]), PATH: "/bin" };
 
   it("marks only configured entries resolved from secrets, by name", () => {
     expect(JSON.parse(secretSource[SECRET_ENVIRONMENT_KEYS]!)).toEqual(["PUBLISHING_API_KEY"]);
