@@ -7,6 +7,7 @@ on:
       - Dockerfile
       - .dockerignore
       - server/scripts/prepare-runner-vendor.mjs
+      - scripts/check-runner-image-expectation.mjs
       - packages/paperclip-runner/scripts/build-inputs.mjs
 
 permissions: {}

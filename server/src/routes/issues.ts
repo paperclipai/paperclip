@@ -25,6 +25,7 @@ import { assertNoCaseHandoffMutation } from "../services/heartbeat/case-handoff-
 import { assertHandedOffRunTaskOwnership } from "../run-task-ownership.js";
 import { recordNativeHumanSelfHandoff } from "../services/native-runtime/native-human-self-handoff.js";
 import { recordChildTaskRead } from "../services/native-runtime/native-child-completion-delivery.js";
+import { recordCompletedHandoffRead } from "../services/chat-completion-delivery.js";
 import { runRetainsIssueIdentity } from "../services/task-repository-acquisition.js";
 import { withConversationReadState } from "../services/agent-chat-read-state.js";
 import { markIssueReadSchema } from "@paperclipai/shared";
@@ -434,15 +435,14 @@ const MAX_ISSUE_COMMENT_LIMIT = 500;
 const updateIssueRouteSchema = updateIssueSchema.extend({
   interrupt: z.boolean().optional(),
 });
-/**
- * Sent only to a caller that did not write the queued comment: its author is the
- * only one who can discard it, and no board, admin or agent override exists. Say so with the task link, so an agent that tried can
- * relay the human route at once instead of searching for another endpoint.
- */
-function queuedCommentAuthorOnlyDenial(issue: { identifier?: string | null }) {
+function queuedCommentDiscardDenial(issue: { identifier?: string | null }, comment: { authorAgentId: string | null }) {
   const identifier = issue.identifier ?? null;
   const prefix = identifier && /^[A-Z][A-Z0-9]*-\d+$/.test(identifier) ? identifier.split("-")[0] : null;
   const where = identifier && prefix ? `[${identifier}](/${prefix}/issues/${identifier})` : "its task";
+  if (comment.authorAgentId) {
+    return `A board user with access to ${where} can discard this agent-authored queued message from its queue. `
+      + "The authoring agent can also cancel its own message. Do not try other agent routes.";
+  }
   return `Only the author of a queued comment can discard it, from that queued message's menu on ${where}. `
     + "This denial is final: no board, admin or agent override exists, so do not try other routes. "
     + `Tell the author to discard it there.`;
@@ -3112,6 +3112,9 @@ function toCompactIssue(issue: any): CompactIssue {
     ...(issue.liveDescendantCount !== undefined
       ? { liveDescendantCount: issue.liveDescendantCount }
       : {}),
+    ...(issue.runningDescendantCount !== undefined
+      ? { runningDescendantCount: issue.runningDescendantCount }
+      : {}),
     ...(issue.myLastTouchAt !== undefined
       ? { myLastTouchAt: issue.myLastTouchAt }
       : {}),
@@ -3613,8 +3616,11 @@ function logIssueListRequest(input: {
   });
 }
 
-async function recordAgentChildTaskRead(db: Db, req: Request, issue: { id: string; companyId: string; parentId: string | null; status: string; updatedAt: Date; lastStatusDecisionId?: string | null }) {
-  if (req.actor.type !== "agent" || !req.actor.agentId || !req.actor.runId || !issue.parentId || issue.status !== "done") return;
+async function recordAgentChildTaskRead(db: Db, req: Request, issue: { id: string; companyId: string; parentId: string | null; status: string; updatedAt: Date; lastStatusDecisionId?: string | null; statusVersion?: number | null }) {
+  if (req.actor.type !== "agent" || !req.actor.agentId || !req.actor.runId || issue.status !== "done") return;
+  await recordCompletedHandoffRead(db, { companyId: issue.companyId, agentId: req.actor.agentId, runId: req.actor.runId, task: issue })
+    .catch(error => logger.warn({ err: error, runId: req.actor.runId }, "could not record the completed handoff a run read"));
+  if (!issue.parentId) return;
   await recordChildTaskRead(db, { companyId: issue.companyId, agentId: req.actor.agentId, runId: req.actor.runId,
     parentIssueId: issue.parentId, children: [issue] })
     .catch(error => logger.warn({ err: error, runId: req.actor.runId }, "could not record the child task a run read"));
@@ -8878,7 +8884,7 @@ export function issueRoutes(
           recentComments.comments.map((comment) => comment.id).sort(),
         ),
       })),
-      activitySvc.forIssue(issue.id, 50),
+      activitySvc.forIssue(issue.id, 50).then(rows => activitySvc.withActorNames(rows)),
       activitySvc.runsForIssue(issue.companyId, issue.id, viewerUserId, 2, undefined, { skipLivenessBackfill: true }),
       issueThreadInteractionService(db).listForIssue(issue.id),
       svc.listAttachments(issue.id).then((rows) => rows.map(withContentPath)),
@@ -18262,7 +18268,7 @@ export function issueRoutes(
               + `DELETE /api/issues/${issue.id}/comments/${comment.id}?mode=cancel, not this board route.`,
           );
         }
-        throw forbidden(queuedCommentAuthorOnlyDenial(issue));
+        throw forbidden(queuedCommentDiscardDenial(issue, comment));
       }
       assertBoard(req);
       if (!req.actor.userId) throw forbidden("Board user context required");
@@ -18275,6 +18281,7 @@ export function issueRoutes(
         "Issue not found",
       );
       if (!issue) return;
+      if (!(await assertIssueReadAllowed(req, res, issue))) return;
       const actor = getActorInfo(req);
       const result = await runQueuedCommentMutation(() =>
         queuedCommentQueue.discardQueuedComment({
@@ -19540,7 +19547,7 @@ export function issueRoutes(
       if (!actorOwnsComment) {
         if (!(await assertIssueReadAllowed(req, res, issue))) return;
         res.status(403).json({
-          error: queuedCommentAuthorOnlyDenial(issue),
+          error: queuedCommentDiscardDenial(issue, comment),
         });
         return;
       }

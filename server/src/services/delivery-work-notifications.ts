@@ -133,6 +133,7 @@ export const DELIVERY_QUEUES = {
   museMaintenance: "muse-maintenance",
   mergedPullRequestConfirmations: "merged-pull-request-confirmations",
   mcpEvents: "mcp-events",
+  mcpTasks: "mcp-tasks",
   dotEvents: "dot-events",
   grokDispatch: "grok-dispatch",
   skillSourceSync: "skill-source-sync",

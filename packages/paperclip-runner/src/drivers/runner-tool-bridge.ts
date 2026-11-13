@@ -10,6 +10,8 @@ import {
 import type { ValidateFunction } from "ajv/dist/2020.js";
 import { admitToolInputSchema } from "./tool-input-schema.js";
 import { toolInputError } from "./tool-input-error.js";
+import { RepeatedToolInputRejectionGuard } from "./repeated-tool-input-rejection.js";
+import { toolInputVariantError } from "../contracts/tool-input-variants.js";
 
 import {
   PRP_BLOCK_RESULT_PROVIDER_INPUT_SCHEMA,
@@ -151,6 +153,7 @@ export async function startRunnerToolBridge(
     visibleTools,
     admittedTools: new Map(admittedTools.map((tool) => [tool.name, tool])),
     validators,
+    rejections: new RepeatedToolInputRejectionGuard(),
     calls,
     controllers,
     requestCalls: new Map<string, string>(),
@@ -242,6 +245,7 @@ async function handleRequest(
     visibleTools: RunnerToolDefinition[];
     admittedTools: Map<string, RunnerToolDefinition>;
     validators: Map<string, ValidateFunction>;
+    rejections: RepeatedToolInputRejectionGuard;
     calls: Map<string, AdmittedCall>;
     controllers: Map<string, AbortController>;
     requestCalls: Map<string, string>;
@@ -391,11 +395,16 @@ async function handleRequest(
   const cancelKey = mcpSessionKey(request) + requestKey;
   const args = params.arguments ?? {};
   const validator = context.validators.get(tool);
-  if (validator === undefined || !validator(args)) {
+  const rejection = validator === undefined || !validator(args)
+    ? toolInputError(validator, args)
+    // The completion tool's yielded-only continuation rule is not part of its
+    // advertised schema; some hosts hide a root conditional's arguments.
+    : tool === PRP_COMPLETION_TOOL_NAME ? toolInputVariantError(tool, args) : null;
+  if (rejection !== null) {
     writeToolError(
       response,
       id,
-      toolInputError(validator, args),
+      context.rejections.reject({ scope: sessionKey, tool, args, error: rejection, schema: validator?.schema }),
     );
     return;
   }

@@ -78,7 +78,8 @@ export async function resolveMcpConnectionSkillsForRun(db: Db, binding: { compan
   return gateway ? gateway.resolveConnectionSkillsForRun(binding) : null;
 }
 
-function assignedToolName(name: string): string {
+/** The name native runners give a gateway tool; transcripts show this name. */
+export function assignedToolName(name: string): string {
   const sanitize = (value: string) => value.replace(/[^a-zA-Z0-9_]+/g, "_").replace(/^_+|_+$/g, "");
   const separator = name.lastIndexOf(":");
   const readable = separator >= 0

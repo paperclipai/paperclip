@@ -1,7 +1,7 @@
 import { createDeliveryWorkCoordinator } from "../services/delivery-work-coordinator.js";
 import { subscribeDeliveryWork, DELIVERY_QUEUES } from "../services/delivery-work-notifications.js";
 import { randomUUID } from "node:crypto";
-import { and, asc, eq } from "drizzle-orm";
+import { and, asc, eq, sql } from "drizzle-orm";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { agents, agentWakeupRequests, chatCompletionDeliveries as deliveries, chatTaskHandoffs as handoffs,
   companies, createDb, documents, environmentLeases, executionWorkspaces, heartbeatRuns, issueComments, issueRecoveryActions, issueThreadInteractions, issues, workspaceOperations } from "@paperclipai/db";
@@ -13,7 +13,7 @@ import { executeIssuePostCommitActions, type IssuePostCommitAction, issueService
 import { buildLowTrustSourceTrust } from "../services/source-trust.js";
 import { documentService } from "../services/documents.js";
 import { instanceSettingsService } from "../services/instance-settings.js";
-import { chatCompletionDeliveryService, isCompletedOnboardingHandoffWake, prepareChatCompletionTurn, recordChatCompletion, recordChatHandoff } from "../services/chat-completion-delivery.js";
+import { chatCompletionAlreadyReported, chatCompletionDeliveryService, isCompletedOnboardingHandoffWake, prepareChatCompletionTurn, recordChatCompletion, recordChatHandoff, recordCompletedHandoffRead } from "../services/chat-completion-delivery.js";
 import { heartbeatService, shouldQueueFollowupForRunningIssueWake } from "../services/heartbeat.js";
 import { createHeartbeatQueue } from "../services/heartbeat/queue.js";
 import { createHeartbeatQueueTestDependencies } from "./helpers/heartbeat-queue.js";
@@ -54,6 +54,41 @@ import { createHeartbeatQueueTestDependencies } from "./helpers/heartbeat-queue.
     };
     return { companyId, agentId, sourceId, runId, task, create, finish, rows, due, wakeup, service, run };
   }
+  it("does not report a completion again when an earlier reply read the done task and linked it", async () => {
+    const f = await seed(), identifier = `CHAT-${Math.floor(Math.random() * 1e6)}`;
+    await db.update(issues).set({ identifier }).where(eq(issues.id, f.task.id));
+    // The person's own answer woke a turn that was running when the task finished.
+    const earlierRunId = randomUUID();
+    await db.insert(heartbeatRuns).values({ id: earlierRunId, companyId: f.companyId, agentId: f.agentId, status: "running",
+      contextSnapshot: { issueId: f.sourceId, conversationSessionGeneration: 0 } });
+    await f.finish();
+    // An owner change while done advances the version without a new completion.
+    await db.update(issues).set({ statusVersion: sql`${issues.statusVersion} + 1` }).where(eq(issues.id, f.task.id));
+    const [done] = await db.select().from(issues).where(eq(issues.id, f.task.id));
+    await recordCompletedHandoffRead(db, { companyId: f.companyId, agentId: f.agentId, runId: earlierRunId, task: done });
+    // Unrelated replies from other turns come first and must not hide the report.
+    await db.insert(issueComments).values(Array.from({ length: 25 }, (_, index) => ({ companyId: f.companyId, issueId: f.sourceId,
+      authorAgentId: f.agentId, createdByRunId: f.runId, body: `Other update ${index}`, createdAt: new Date(Date.now() + 500) })));
+    const [reply] = await db.insert(issueComments).values({ companyId: f.companyId, issueId: f.sourceId, authorAgentId: f.agentId,
+      createdByRunId: earlierRunId, body: `The draft is finished: [${identifier}](/CHAT/issues/${identifier}).`, createdAt: new Date(Date.now() + 1000) }).returning();
+    const prepared = await f.run();
+    expect(chatCompletionAlreadyReported(prepared)).toBe(true);
+    expect(await f.rows()).toMatchObject([{ status: "delivered", responseCommentId: reply.id }]);
+  });
+  it("still reports a completion when the earlier reply linked the task without reading it done", async () => {
+    const f = await seed(), identifier = `CHAT-${Math.floor(Math.random() * 1e6)}`;
+    await db.update(issues).set({ identifier }).where(eq(issues.id, f.task.id));
+    const earlierRunId = randomUUID();
+    await db.insert(heartbeatRuns).values({ id: earlierRunId, companyId: f.companyId, agentId: f.agentId, status: "running",
+      contextSnapshot: { issueId: f.sourceId, conversationSessionGeneration: 0 } });
+    await f.finish();
+    // A turn that read the task while it was still in progress, then replied after it finished.
+    await db.insert(issueComments).values({ companyId: f.companyId, issueId: f.sourceId, authorAgentId: f.agentId,
+      createdByRunId: earlierRunId, body: `Morgan is working on [${identifier}](/CHAT/issues/${identifier}).`, createdAt: new Date(Date.now() + 1000) });
+    const prepared = await f.run();
+    expect(chatCompletionAlreadyReported(prepared)).toBe(false);
+    expect(prepared.contextSnapshot?.chatCompletionUpdates).toEqual([expect.objectContaining({ id: f.task.id, status: "done" })]);
+  });
   it("supplies canonical human output verdicts without copying review prose or unrelated approvals", async () => {
     const f = await seed(), reviewId = randomUUID(), revisionId = randomUUID();
     await db.insert(issueThreadInteractions).values([
