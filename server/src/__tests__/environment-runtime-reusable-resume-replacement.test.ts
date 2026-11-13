@@ -451,6 +451,30 @@ describeEmbeddedPostgres("reusable sandbox resume failure replacement", () => {
     });
   });
 
+  it("destroys a sandbox kept after replacement when an operator approves the environment delete", async () => {
+    const seeded = await seed({ leaseStatus: "released", backupStamp: false });
+    const clock = rpcTimeoutClock();
+    const { runtime } = worker(seeded, async (_attempt, timeoutMs) => { throw clock.timeOut(timeoutMs); });
+    const acquired = await acquire(seeded, runtime);
+    await environmentService(db).releaseLease(acquired.lease.id, "released");
+    await db.update(heartbeatRuns).set({ status: "succeeded" }).where(eq(heartbeatRuns.id, seeded.runId));
+
+    const teardown = worker(seeded, async () => { throw new Error("no resume during delete"); });
+    teardown.call.mockImplementation(async (_pluginId: string, method: string, params: unknown) => {
+      if (method === "environmentDestroyLease") return { providerLeaseId: (params as { providerLeaseId: string }).providerLeaseId };
+      throw new Error(`Unexpected plugin method: ${method}`);
+    });
+    const result = await teardown.runtime.destroyReusableSandboxLeasesForEnvironment({
+      environmentId: seeded.environment.id, consentedBy: "operator" });
+
+    expect(result).toMatchObject({ destroyed: 2, failed: 0 });
+    expect(teardown.call.mock.calls.filter(([, method, params]) => method === "environmentDestroyLease"
+      && (params as { providerLeaseId?: string }).providerLeaseId === seeded.providerLeaseId)).toHaveLength(1);
+    const deleted = await environmentService(db).getLeaseById(seeded.lease.id);
+    expect(deleted?.status).not.toBe("pending_cleanup");
+    expect(deleted?.metadata?.reusableSandboxKeptAfterReplacement).toBeUndefined();
+  });
+
   it("keeps an idle sandbox with no harness backup when some resume calls failed for another reason", async () => {
     const seeded = await seed({ leaseStatus: "released", backupStamp: false });
     const clock = rpcTimeoutClock();

@@ -7,6 +7,7 @@ import { sandboxProviderFailureLabel } from "./remote-workspace-transport.js";
 import { NATIVE_PREDECESSOR_RETIREMENT_UNPROVEN_CODE, readReplaceBeforeReuseMarker } from "./native-runtime/predecessor-retirement.js";
 import {
   REUSABLE_SANDBOX_IDLE_RESUME_BUDGET_MS,
+  REUSABLE_SANDBOX_KEPT_AFTER_REPLACEMENT_KEY,
   REUSABLE_SANDBOX_RESUME_BUDGET_MS,
   keepReplacedReusableSandboxLease,
   retireReplacedReusableSandboxLease,
@@ -3979,7 +3980,8 @@ export function environmentRuntimeService(
       lastUsedAt: now,
       updatedAt: now,
       metadata: sql`(case when jsonb_typeof(${environmentLeases.metadata}) = 'object'
-        then ${environmentLeases.metadata} else '{}'::jsonb end - 'remoteExecutionTermination')
+        then ${environmentLeases.metadata} else '{}'::jsonb end - 'remoteExecutionTermination'
+        - ${input.releasesKeptSandbox ? REUSABLE_SANDBOX_KEPT_AFTER_REPLACEMENT_KEY : ""}::text)
         || ${JSON.stringify({ pendingCleanupAttemptId: attemptId, pendingCleanupInFlight: true,
           pendingCleanupLeaseExpiresAtMs: Date.now() + 15 * 60_000, pendingCleanupController: controller })}::jsonb`,
     }).where(and(
