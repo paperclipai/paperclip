@@ -1439,16 +1439,8 @@ export function secretService(db: Db | DbTransaction) {
       // in list(). A read must not write the secret row: admission paths
       // (decisions, fast responses, browser use, prompt-injection checks)
       // share-lock it under REPEATABLE READ to fence rotation, and a new row
-      // version would abort them with a serialization failure. The share lock
-      // here only waits behind a rotating writer, so callers that re-read the
-      // version afterwards (ai-connections credential()) see the rotation.
+      // version would abort them with a serialization failure.
       if (!readOnlyEnvironmentInspection) await Promise.all([
-        db
-          .select({ id: companySecrets.id })
-          .from(companySecrets)
-          .where(eq(companySecrets.id, secret.id))
-          .for("share")
-          .catch(() => undefined),
         recordAccessEvent({
           companyId,
           secretId: secret.id,
