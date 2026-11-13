@@ -15,7 +15,7 @@ import { PROJECT_ACCESS_DENIED, ProjectAccessDeniedError } from "../project-acce
 import { pendingCaseHandoffForRun } from "./case-handoff-lifecycle.js";
 import { NON_RETRYABLE_PREFLIGHT_FAILURE_CODES, isHeartbeatRunTerminalStatus } from "./run-lifecycle.js";
 import { ChatControlRecoveryUnresolvedError } from "./queue.js";
-import { readTransientRecoveryContractFromRun, readHeartbeatRunErrorFamily, isTransientWorkspacePreparationCode, isSpawnLikeFailureMessage } from "./retries.js";
+import { readTransientRecoveryContractFromRun, readHeartbeatRunErrorFamily, isTransientWorkspacePreparationCode, isSpawnTargetNotFoundInPathMessage } from "./retries.js";
 import { RemoteWorkspacePreparationTimeoutError, REMOTE_WORKSPACE_RESTORE_FAILED_CODE, findRemoteWorkspaceRestoreError } from "../remote-workspace-transport.js";
 import { escalateRemoteWorkspaceRestoreFailure } from "../remote-workspace-restore-recovery.js";
 import { findReusableSandboxResumeError } from "../reusable-sandbox-resume-error.js";
@@ -1341,17 +1341,23 @@ export function createHeartbeatRunCompletion(db: Db, dependencies: HeartbeatRunC
             {}),
           ...(stoppedDuringFailure ? controllerLeaseLossResultJson(signal) : {}),
           ...nativePreDispatchFailure,
-          // A spawn-like thrown error (binary missing from PATH, ENOENT,
-          // "failed to start command") proves no provider work started even
-          // when legacyAdapterEntered is already true — entering the adapter
-          // call is not the same as a child process actually launching. This
-          // lets scheduleTransientSpawnLikeFailureRetryIfEligible's
+          // resolveSpawnTarget's "Command not found in PATH" throws
+          // synchronously before any process is created, so it proves no
+          // provider work started even when legacyAdapterEntered is already
+          // true — entering the adapter call is not the same as a child
+          // process actually launching. This lets
+          // scheduleTransientSpawnLikeFailureRetryIfEligible's
           // scheduleBoundedRetryForRun call clear the legacy-reconciliation
           // gate (legacyExecutionNeedsReconciliationWithEvidence) instead of
           // falling into terminal reconciliation on the very failure class
-          // this retry lane exists for.
+          // this retry lane exists for. Deliberately narrower than
+          // isSpawnLikeFailureMessage: that function's other patterns (bare
+          // `ENOENT`, `spawn\b`) can also match an unrelated late-stage
+          // filesystem error (e.g. an adapter's post-execution cleanup write
+          // failing with its own ENOENT after real provider work already
+          // happened), which must not fabricate "no work started" evidence.
           ...(run.runtimeMode !== "native" &&
-            (!legacyAdapterEntered || isSpawnLikeFailureMessage(thrownMessage))
+            (!legacyAdapterEntered || isSpawnTargetNotFoundInPathMessage(thrownMessage))
             ? {
                 executionRecovery: {
                   kind: "bootstrap",

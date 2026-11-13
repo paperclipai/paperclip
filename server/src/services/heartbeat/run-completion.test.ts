@@ -838,6 +838,21 @@ describe.skipIf(!support.supported && !process.env.PAPERCLIP_TEST_DATABASE_URL)(
     expect(run.resultJson).not.toHaveProperty("executionRecovery");
   });
 
+  it("does not fabricate bootstrap evidence for a late, unrelated ENOENT after provider work already started", async () => {
+    // A bare ENOENT also matches isSpawnLikeFailureMessage's broader
+    // patterns, but it can come from an adapter's post-execution cleanup
+    // write (e.g. restoring config.toml) failing long after real provider
+    // work already happened — not from resolveSpawnTarget's pre-dispatch
+    // check. Only the narrower isSpawnTargetNotFoundInPathMessage text may
+    // mark providerWorkStarted: false; this must stay false for a plain
+    // ENOENT so the legacy-reconciliation guard is not cleared on an attempt
+    // that already did real work.
+    const f = await fixture();
+    await f.completion.failRun(f.failure(new Error("ENOENT: no such file or directory, open 'config.toml'")));
+    const run = await read(f.run.id);
+    expect(run.resultJson).not.toHaveProperty("executionRecovery");
+  });
+
   it("falls back to the transient spawn-like retry when completeRun's adapter result is a returned (not thrown) PATH failure", async () => {
     // native runtimeMode bypasses legacyExecutionNeedsReconciliationWithEvidence
     // entirely, isolating this test to the fallback-ordering fix (the

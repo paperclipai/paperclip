@@ -325,6 +325,19 @@ export function readTransientRecoveryContractFromRun(
     : null;
 }
 
+// Matches resolveSpawnTarget's literal, unambiguous failure message
+// (packages/adapter-utils/src/server-utils.ts) exclusively — it fires
+// synchronously while resolving the command before any process is created,
+// so it is safe proof that no provider work started. Unlike
+// isSpawnLikeFailureMessage's broader patterns (bare `ENOENT`, `spawn\b`),
+// this text cannot also come from an unrelated late-stage filesystem error
+// (e.g. an adapter's post-execution cleanup write failing with its own,
+// unrelated ENOENT after real provider work already happened).
+export function isSpawnTargetNotFoundInPathMessage(value: unknown) {
+  if (typeof value !== "string") return false;
+  return /^Command not found in PATH:/i.test(value);
+}
+
 export function isSpawnLikeFailureMessage(value: unknown) {
   if (typeof value !== "string") return false;
   return /failed to start command|spawn\b|\bENOENT\b|not found in PATH/i.test(
