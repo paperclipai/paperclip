@@ -35,7 +35,7 @@ import { activeIssueInteractionCondition } from "./issue-question-context.js";
 
 import { historicalAdapterType, isConversationAdapter } from "./conversation-continuation.js";
 import { queuedCommentIdsFromWakePayload } from "./issue-queued-comment-queue.js";
-import { firstTurnDeliveredCommentIds } from "./queued-comment-delivery.js";
+import { firstTurnDeliveredCommentIds, historyReadDeliveredCommentIds } from "./queued-comment-delivery.js";
 import { canResumePreservedResultFinalization } from "./preserved-result-finalization.js";
 import { isServerReplacementInterruption } from "./server-replacement-interruption.js";
 import { normalizeAgentNameKey } from "./agent-name-key.js";
@@ -129,7 +129,9 @@ export async function undeliveredLegacyUserCommentIds(
   }
   // An accepted first turn that took a queued message consumed it too.
   const firstTurn = await firstTurnDeliveredCommentIds(db, { companyId, issueId, agentId, commentIds: [...valid] });
-  return commentIds.filter(id => valid.has(id) && !firstTurn.has(id));
+  const historyRead = await historyReadDeliveredCommentIds(db, { companyId, issueId, agentId,
+    commentIds: [...valid].filter(id => !firstTurn.has(id)) });
+  return commentIds.filter(id => valid.has(id) && !firstTurn.has(id) && !historyRead.has(id));
 }
 
 /** Called under the issue lock, in the transaction that creates the new turn.

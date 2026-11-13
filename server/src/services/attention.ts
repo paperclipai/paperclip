@@ -185,6 +185,11 @@ type AttentionListOptions = AttentionFeedQuery & {
   excludeSources?: readonly AttentionSourceKind[];
   /** Count the canonical complete set without card bodies or presentation reads. */
   summaryOnly?: boolean;
+  /**
+   * `summaryOnly` for a caller that reads the counts and not the items: it
+   * also skips the reads that only say which task a card belongs to.
+   */
+  countsOnly?: boolean;
 };
 
 type AttentionServiceOptions = {
@@ -641,10 +646,17 @@ function parseActivityBoundary(value: string | undefined, field: "activitySince"
   return parsed;
 }
 
-async function enrichAttentionItems(db: Db, companyId: string, items: AttentionItem[], now: number, includePresentation = true) {
+async function enrichAttentionItems(
+  db: Db,
+  companyId: string,
+  items: AttentionItem[],
+  now: number,
+  includePresentation = true,
+  includeQueues = true,
+) {
   if (items.length === 0) return items;
   const sourceIds = [...new Set(items.map((item) => item.subject.id))];
-  const queueRows = await db
+  const queueRows = !includeQueues ? [] : await db
     .select({
       sourceKind: decisionQueueItems.sourceKind,
       sourceId: decisionQueueItems.sourceId,
@@ -929,9 +941,41 @@ async function issueSummaryMap(
   issueIds: Array<string | null | undefined>,
   readCondition: SQL<boolean> = sql<boolean>`true`,
   includeConversations = false,
+  /** False for a count: the same tasks, without their project and workspace. */
+  includeContext = true,
 ) {
   const ids = [...new Set(issueIds.filter((value): value is string => Boolean(value)))];
   if (ids.length === 0) return new Map<string, IssueSummaryRow>();
+  const readable = and(
+    eq(issues.companyId, companyId),
+    inArray(issues.id, ids),
+    attentionIssueCondition(includeConversations),
+    readCondition,
+  );
+  if (!includeContext) {
+    const subjectRows = await db
+      .select({
+        id: issues.id,
+        companyId: issues.companyId,
+        identifier: issues.identifier,
+        title: issues.title,
+        status: issues.status,
+        priority: issues.priority,
+        reviewPolicy: issues.reviewPolicy,
+        assigneeAgentId: issues.assigneeAgentId,
+        assigneeUserId: issues.assigneeUserId,
+        createdAt: issues.createdAt,
+        updatedAt: issues.updatedAt,
+      })
+      .from(issues)
+      .where(readable);
+    return new Map<string, IssueSummaryRow>(subjectRows.map((row) => [row.id, {
+      ...row,
+      reviewPolicy: row.reviewPolicy ?? null,
+      project: null,
+      workspace: null,
+    }]));
+  }
   const rows = await db
     .select({
       id: issues.id,
@@ -958,13 +1002,8 @@ async function issueSummaryMap(
       eq(issues.projectWorkspaceId, projectWorkspaces.id),
       eq(projectWorkspaces.companyId, companyId),
     ))
-    .where(and(
-      eq(issues.companyId, companyId),
-      inArray(issues.id, ids),
-      attentionIssueCondition(includeConversations),
-      readCondition,
-    ));
-  return new Map(rows.map((row) => [row.id, {
+    .where(readable);
+  return new Map<string, IssueSummaryRow>(rows.map((row) => [row.id, {
     id: row.id,
     companyId: row.companyId,
     identifier: row.identifier,
@@ -1688,9 +1727,14 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
       const prefix = companyConfig.prefix;
       const includeDismissed = options.includeDismissed === true;
       const now = serviceOptions.now?.() ?? Date.now();
-      const summaryOnly = options.summaryOnly === true;
+      const countsOnly = options.countsOnly === true;
+      const summaryOnly = options.summaryOnly === true || countsOnly;
       const loadImages = (...args: Parameters<typeof issueImageMap>) => summaryOnly
         ? Promise.resolve(new Map<string, AttentionDetailImage[]>()) : issueImageMap(...args);
+      // The tasks of these ids that the reader can see in the feed. A count
+      // needs the same answer, without each task's project and workspace.
+      const loadIssues = (issueIds: Array<string | null | undefined>, includeConversations = false) =>
+        issueSummaryMap(db, companyId, issueIds, readCondition, includeConversations, !summaryOnly);
       const view: AttentionFeedView = options.view ?? "all";
       const collected: AttentionItem[] = [];
       // Raw audience inputs and important-change facts captured per item during
@@ -1731,12 +1775,7 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
           .where(and(eq(approvals.companyId, companyId), eq(approvals.status, "pending"), approvalExecutionIssueCondition()))
           .orderBy(desc(approvals.updatedAt), desc(approvals.id));
 
-        const readableApprovalIssues = await issueSummaryMap(
-          db,
-          companyId,
-          pendingApprovals.map((row) => row.linkedIssueId),
-          readCondition,
-        );
+        const readableApprovalIssues = await loadIssues(pendingApprovals.map((row) => row.linkedIssueId));
 
         for (const approval of pendingApprovals) {
           const linkedIssueId = approval.linkedIssueId ?? null;
@@ -1854,7 +1893,7 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
       const [interactionIssueMap, interactionImageMap, interactionPlanDocumentMap] = await Promise.all([
         // A pending human request remains actionable in a persistent chat even
         // though its idle container is intentionally absent from work queues.
-        issueSummaryMap(db, companyId, visibleInteractionRows.map((row) => row.issueId), readCondition, true),
+        loadIssues(visibleInteractionRows.map((row) => row.issueId), true),
         loadImages(db, companyId, visibleInteractionRows.map((row) => row.issueId), readCondition),
         summaryOnly ? Promise.resolve(new Map<string, PlanDocumentSummary>())
           : planDocumentMap(db, companyId, visibleInteractionRows.map((row) => row.issueId), readCondition),
@@ -1943,8 +1982,9 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
       const bundleIds = [...new Set(openDecisions.map((decision) => decision.bundleId).filter((value): value is string => Boolean(value)))];
       const bundleTitleMap = new Map<string, string>();
       const [decisionIssueMap, bundleRows] = await Promise.all([
-        issueSummaryMap(db, companyId, openDecisions.map((decision) => decision.originIssueId), readCondition),
-        bundleIds.length > 0
+        loadIssues(openDecisions.map((decision) => decision.originIssueId)),
+        // A count does not show the title of a bundle.
+        bundleIds.length > 0 && !summaryOnly
           ? db.select({ id: decisionBundles.id, title: decisionBundles.title })
             .from(decisionBundles).where(and(eq(decisionBundles.companyId, companyId), inArray(decisionBundles.id, bundleIds)))
           : Promise.resolve([]),
@@ -2057,12 +2097,7 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
         ))
         .orderBy(desc(issueRecoveryActions.updatedAt), desc(issueRecoveryActions.id));
       const [recoveryIssueMap, recoveryImageMap] = await Promise.all([
-        issueSummaryMap(
-          db,
-          companyId,
-          recoveryRows.flatMap((row) => [row.sourceIssueId, row.recoveryIssueId]),
-          readCondition,
-        ),
+        loadIssues(recoveryRows.flatMap((row) => [row.sourceIssueId, row.recoveryIssueId])),
         loadImages(db, companyId, recoveryRows.map((row) => row.sourceIssueId), readCondition),
       ]);
 
@@ -2123,7 +2158,16 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
         });
       }
 
-      const blockedIssues = await issueService(db).list(companyId, { status: "blocked", includeBlockedBy: true, readCondition });
+      // A count needs the blocked tasks that the task list returns, in the
+      // order of the list, and the blocker attention of each one. It asks the
+      // list for those rows alone and classifies them with the function that
+      // the full list calls.
+      const blockedIssues = summaryOnly
+        ? await issueService(db).listBlockerAttentionRoots(companyId, { status: "blocked", readCondition })
+        : await issueService(db).list(companyId, { status: "blocked", includeBlockedBy: true, readCondition });
+      const countedBlockerAttention = summaryOnly
+        ? await issueService(db).listBlockerAttention(companyId, blockedIssues)
+        : null;
       type BlockedAttentionIssue = IssueSubjectRow & {
         blockerAttention?: {
           state?: string;
@@ -2136,19 +2180,30 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
         blockedTransitionAt?: Date | null;
       };
       const typedBlockedIssues = blockedIssues as BlockedAttentionIssue[];
+      const blockerAttentionOf = (issue: BlockedAttentionIssue) => countedBlockerAttention
+        ? countedBlockerAttention.get(issue.id)
+        : issue.blockerAttention;
       const terminalBlockerIssueIds = typedBlockedIssues
-        .map((issue) => issue.blockerAttention?.terminalBlockerIssueId)
+        .map((issue) => blockerAttentionOf(issue)?.terminalBlockerIssueId)
         .filter((issueId): issueId is string => Boolean(issueId));
       const [blockedIssueSummaries, terminalBlockerSummaries, blockerImageMap, blockingIssues] = await Promise.all([
-        issueSummaryMap(db, companyId, blockedIssues.map((issue) => issue.id), readCondition),
-        issueSummaryMap(db, companyId, terminalBlockerIssueIds, readCondition),
+        // Each blocked task as its card shows it, and as the task of the
+        // card of its blocker. A count reads neither.
+        countsOnly
+          ? Promise.resolve(new Map<string, IssueSummaryRow>())
+          : loadIssues(blockedIssues.map((issue) => issue.id)),
+        loadIssues(terminalBlockerIssueIds),
         loadImages(
           db,
           companyId,
           [...blockedIssues.map((issue) => issue.id), ...terminalBlockerIssueIds],
           readCondition,
         ),
-        blockingIssueMap(db, companyId, blockedIssues.map((issue) => issue.id), readCondition),
+        // The blocker a card names and, below, the number of tasks a blocker
+        // holds are card text.
+        summaryOnly
+          ? Promise.resolve(new Map<string, BlockingIssueSummary>())
+          : blockingIssueMap(db, companyId, blockedIssues.map((issue) => issue.id), readCondition),
       ]);
       const terminalCandidates = new Map<string, {
         issue: BlockedAttentionIssue;
@@ -2199,7 +2254,7 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
             since: issue.blockedTransitionAt,
           }, { key: `blocked:${issue.id}`, anchor: true });
         }
-        const blockerAttention = issue.blockerAttention;
+        const blockerAttention = blockerAttentionOf(issue);
         if (!terminalBlockerRequiresAttention(blockerAttention)) continue;
         const issueSummary = blockedIssueSummaries.get(issue.id) ?? null;
         const terminalIssueId = blockerAttention.terminalBlockerIssueId ?? issue.id;
@@ -2217,7 +2272,9 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
         }
       }
 
-      const blockedWorkCounts = await blockedWorkCountMap(db, companyId, [...terminalCandidates.keys()]);
+      const blockedWorkCounts = summaryOnly
+        ? new Map<string, number>()
+        : await blockedWorkCountMap(db, companyId, [...terminalCandidates.keys()]);
       for (const [terminalIssueId, candidate] of terminalCandidates) {
         const blockedTaskCount = blockedWorkCounts.get(terminalIssueId) ?? 0;
         const taskLabel = blockedTaskCount === 1 ? "task" : "tasks";
@@ -2276,6 +2333,9 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
           eq(issues.status, "in_review"),
           executionIssueCondition(),
           readCondition,
+          // A count does not read each review again as a card (below), so this
+          // read applies the card's task condition itself.
+          summaryOnly ? attentionIssueCondition() : undefined,
         ))
         .orderBy(desc(issues.updatedAt), desc(issues.id));
       const reviewIssueIds = reviewRows.map((row) => row.id);
@@ -2300,7 +2360,9 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
       }
       const [reviewAttentionByIssueId, reviewIssueMap, reviewImageMap] = await Promise.all([
         issueService(db).listReviewAttention(companyId, reviewRows),
-        issueSummaryMap(db, companyId, reviewIssueIds, readCondition),
+        summaryOnly
+          ? Promise.resolve(new Map<string, IssueSummaryRow | IssueSubjectRow>(reviewRows.map((row) => [row.id, row])))
+          : issueSummaryMap(db, companyId, reviewIssueIds, readCondition),
         loadImages(db, companyId, reviewIssueIds, readCondition),
       ]);
 
@@ -2380,12 +2442,7 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
       const failedRows = await listAttentionExhaustedRuns(db, companyId);
       const failedIssueIds = failedRows.map((row) => readRunIssueId(row.contextSnapshot));
       const [failedIssueMap, failedImageMap, failedRunsWithNewerRun] = await Promise.all([
-        issueSummaryMap(
-          db,
-          companyId,
-          failedIssueIds,
-          readCondition,
-        ),
+        loadIssues(failedIssueIds),
         loadImages(db, companyId, failedIssueIds, readCondition),
         listFailedRunsWithNewerRun(db, companyId, failedRows.map((row, index) => ({
           id: row.id,
@@ -2458,8 +2515,12 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
         }, issueId ? { key: `blocked:${issueId}`, anchor: false } : null);
       }
 
-      const budgetOverview = await budgetService(db).overview(companyId);
-      for (const incident of budgetOverview.activeIncidents) {
+      // A count reads the open incidents of the budget overview without the
+      // spend of every policy, which the overview also sums.
+      const openBudgetIncidents = summaryOnly
+        ? await budgetService(db).openIncidents(companyId)
+        : (await budgetService(db).overview(companyId)).activeIncidents;
+      for (const incident of openBudgetIncidents) {
         const observedPercent = budgetObservedPercent(incident.amountObserved, incident.amountLimit);
         if (incident.thresholdType !== "hard" && observedPercent < ATTENTION_BUDGET_WARNING_PERCENT) continue;
         const dedupKey = `budget:${incident.policyId}:${toIso(incident.windowStart)}:${incident.thresholdType}`;
@@ -2641,6 +2702,8 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
       // the fingerprint below reads the obligation's audience.
       assignAttentionObligations(currentItems, obligationHintByDedupKey);
       for (const item of currentItems) {
+        // A count reads a fingerprint only to compare it with a dismissal.
+        if (summaryOnly && !dismissals.has(item.dismissalKey)) continue;
         const change = changeBasisByDedupKey.get(item.dedupKey) ?? { content: null, since: item.createdAt };
         item.changeFingerprint = attentionChangeFingerprint({
           sourceKind: item.sourceKind,
@@ -2656,11 +2719,14 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
 
       // "Transferred by @x" on a card that reached its person through a
       // transfer (PAP-749 plan §6, Rule 12).
-      await attachTransferredBy(db, companyId, currentItems);
+      if (!summaryOnly) await attachTransferredBy(db, companyId, currentItems);
 
       const collectedItems = currentItems.sort(compareAttentionItems);
       await decisionQueueService(db).materializeSeededQueues(companyId, collectedItems);
-      const enrichedItems = await enrichAttentionItems(db, companyId, collectedItems, now, !summaryOnly);
+      // Queue membership filters a feed by queue and labels its cards. A
+      // count without a queue filter does not read it.
+      const enrichedItems = await enrichAttentionItems(db, companyId, collectedItems, now, !summaryOnly,
+        !summaryOnly || Boolean(options.queue?.trim()));
 
       const activitySince = parseActivityBoundary(options.activitySince, "activitySince");
       const activityUntil = parseActivityBoundary(options.activityUntil, "activityUntil");
@@ -2815,7 +2881,7 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
     },
     summary: async (companyId: string, options: Pick<AttentionListOptions, "userId" | "actor"> = {}): Promise<AttentionSummary> => {
       const { items: _items, nextCursor: _cursor, ...summary } = await list(companyId, {
-        ...options, all: true, allowUnscopedAll: true, summaryOnly: true,
+        ...options, all: true, allowUnscopedAll: true, countsOnly: true,
       });
       return summary;
     },

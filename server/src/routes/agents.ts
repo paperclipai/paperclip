@@ -55,6 +55,7 @@ import { isAiConnectionCompatible } from "@paperclipai/shared";
 import { applyConnectorSkills, resolveConnectorAssignments, annotateConnectorSkills, isConnectorSkill } from "../services/connector-runtime.js";
 import { getExecutionBlocker } from "../services/execution-blocker.js";
 import { canRetryStoppedRun } from "../services/cancelled-native-startup.js";
+import { rejectedModelRetryRefusal } from "../services/native-runtime/model-rejected-retry.js";
 import { getNativeReviewAssignment, readNativeReviewAssignmentContext, type NativeReviewAssignmentContext } from "../services/native-runtime/native-review-participant.js";
 import { paperclipRunnerTransitionConfig, normalizeLegacyRunnerProvider, isPaperclipRunnerProvider, PAPERCLIP_RUNNER_ACPX_PROFILES } from "@paperclipai/adapter-utils";
 import { applyMcpReasoningEffort } from "../services/public-mcp/agent-config.js";
@@ -6304,6 +6305,8 @@ export function agentRoutes(
         if (issue.assigneeAgentId !== agent.id && !retryNativeReviewContext) {
           throw conflict("The task is no longer assigned to this agent.");
         }
+        const modelRefusal = await rejectedModelRetryRefusal(db, { failedRun, agent, issue });
+        if (modelRefusal) throw conflict(modelRefusal.message, modelRefusal.details);
         if (issue.conversationAgentId) {
           // Agent Chat has no task description to replay. Recover the exact
           // request from the selected server-owned run, never caller markers.
@@ -7172,6 +7175,17 @@ export function agentRoutes(
     });
     res.set("Cache-Control", "no-cache, no-store");
     res.json(traces);
+  });
+
+  // Operator read of the assigned-work invariant: how many open assigned tasks
+  // have nothing running, nothing pending and no one else's move. Read-only;
+  // the sweep repairs violations by itself. Expect 0 violations after a deploy.
+  router.get("/companies/:companyId/assigned-work-invariant", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+    assertBoard(req);
+    // Only tasks this caller may read count, so private tasks stay private.
+    res.json(await heartbeat.reportAssignedWorkInvariant(companyId, { readCondition: await issueReadSqlCondition(db, req.actor) }));
   });
 
   router.get("/companies/:companyId/live-runs", async (req, res) => {

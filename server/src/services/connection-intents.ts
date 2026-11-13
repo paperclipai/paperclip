@@ -650,8 +650,11 @@ export function connectionIntentService(db: Db) {
     const previous = await providerSelections(run.companyId, issue.id, agent.id, run.responsibleUserId!, `connection-provider:${targetService}`);
     const explicitConsent = explicit && await hasExplicitProviderRequest(run.companyId, issue.id, run.responsibleUserId!, targetService, explicit.provider, previous[0]);
     if (exact.length && (!explicitConsent || exact.some(({ item }) => item.state === "unavailable"))) {
+      // An aggregator listing such as "Circleback MCP" is the same app as the
+      // built-in "Circleback"; compare its aliases too, not only its listed name.
       const otherApps = bestMatches.filter(({ service, nameScore }) => nameScore >= 200 && !exact.some(({ item }) =>
-        item.service === service.slug || scoreConnectionSearch(service.name, [item.name]).nameScore === 1000));
+        item.service === service.slug || [service.name, ...service.aliases].some(name =>
+          scoreConnectionSearch(name, [item.name]).nameScore === 1000)));
       if (otherApps.length && !exact.some(({ item }) => item.state === "unavailable")) {
         const otherRoutes = (await Promise.all(otherApps.slice(0, 10).map(({ service }) =>
           aggregatorAlternatives(service.slug, service.name, service)))).flat();

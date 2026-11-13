@@ -95,7 +95,7 @@ it.each([
   expect(result.runnerState).toBe("gone");
 }, 30_000);
 
-it("keeps a retained remote Runner for the reattaching controller, which settles it into a journal the next attempt can relaunch", async () => {
+it("keeps a retained remote Runner for the reattaching controller, which continues it without the failed close's suspend", async () => {
   const root = await mkdtemp(join(tmpdir(), "runnerd-remote-retention-adopt-"));
   const server = createServer();
   let authority: DurablePrpControlPlane | null = null;
@@ -172,9 +172,12 @@ it("keeps a retained remote Runner for the reattaching controller, which settles
       },
     });
     adopted.transport.setServerRequestHandler(async () => ({ success: true, contentItems: [] }));
-    await adopted.transport.request("thread/read", {}).catch(() => undefined);
-    await vi.waitFor(() => expect(processState(adoptedPid)).toBe("gone"), { timeout: 10_000, interval: 50 });
-    expect(await journal()).toMatchObject({ lifecycle: "suspended", outbox: [], pendingTerminalDelivery: null });
+    await expect(adopted.transport.request("thread/read", {})).resolves.toEqual(
+      expect.objectContaining({ thread: expect.objectContaining({ id: thread.id }) }));
+    expect(processState(adoptedPid)).toBe("alive");
+    expect(await journal()).toMatchObject({ lifecycle: "ready", pendingTerminalDelivery: null });
+    expect(adopted.evidence().diagnostics.join("\n")).toContain("before reattaching the live runner");
+    expect(authority!.store.state.commands.some(command => command.type === "runner.suspend" && command.status === "pending")).toBe(false);
     expect(duplicateLaunch).not.toHaveBeenCalled();
     expect(launch).toHaveBeenCalledTimes(1);
   } finally {

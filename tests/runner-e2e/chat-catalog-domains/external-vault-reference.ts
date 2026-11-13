@@ -536,6 +536,9 @@ export const vaultReferenceExternalCases = [
           .locator(`[id^="comment-"] a[href=${JSON.stringify(href)}]`)
           .first()
           .click();
+        await ctx.input.page
+          .getByRole("button", { name: "More secret actions", exact: true })
+          .click();
         await ctx.input.page.getByTestId("import-from-vault-button").click();
         const dialog = ctx.input.page.getByTestId("import-from-vault-dialog");
         await expect(dialog).toBeVisible();
@@ -553,7 +556,7 @@ export const vaultReferenceExternalCases = [
             response.request().postDataJSON()?.query === query,
         );
         await dialog
-          .getByLabel("Search remote secrets", { exact: true })
+          .getByLabel("Search the vault", { exact: true })
           .fill(query);
         const response = await previewResponse;
         state.operatorChannel = "public-vault-import-ui";
@@ -589,14 +592,15 @@ export const vaultReferenceExternalCases = [
             "Setup blocker: designated AWS vault reference is not an eligible import candidate under the selected runtime; no other reference may substitute",
           );
         await dialog
-          .getByLabel(`Select ${candidate.remoteName}`, { exact: true })
+          .getByLabel(candidate.remoteName, { exact: true })
           .check();
         await dialog
-          .getByRole("button", { name: "Continue → Review", exact: true })
+          .getByRole("button", { name: "Continue with 1", exact: true })
           .click();
         await dialog
           .getByTestId(`review-name-${f.arn}`)
           .fill("Deployment API key");
+        await dialog.getByTestId("review-details-toggle").click();
         await dialog
           .getByTestId(`review-key-${f.arn}`)
           .fill("deployment-api-key");
@@ -607,7 +611,7 @@ export const vaultReferenceExternalCases = [
             response.request().method() === "POST",
         );
         await dialog
-          .getByRole("button", { name: "Import 1", exact: true })
+          .getByRole("button", { name: "Import 1 secret", exact: true })
           .click();
         const saved = await importedResponse;
         if (!saved.ok()) {
@@ -622,7 +626,8 @@ export const vaultReferenceExternalCases = [
             f.vault.id,
           );
           await dialog
-            .getByRole("button", { name: "Cancel", exact: true })
+            .getByRole("button", { name: "Close", exact: true })
+            .first()
             .click();
           await returnToSource(ctx, state, sourceURL);
           return;
@@ -684,16 +689,20 @@ export const vaultReferenceExternalCases = [
           .click();
         await expect(
           ctx.input.page.getByRole("heading", {
-            name: "Agent access",
+            name: "Agents that can use it",
             exact: true,
           }),
         ).toBeVisible();
+        await ctx.input.page
+          .getByTestId("secret-details")
+          .getByRole("button", { name: "Add agent", exact: true })
+          .click();
         await ctx.input.page.locator("#agent-access-agent").click();
         await ctx.input.page
           .getByRole("button", { name: "Select Morgan", exact: true })
           .click();
         await ctx.input.page
-          .getByLabel("Env var", { exact: true })
+          .getByLabel("Environment variable", { exact: true })
           .fill("DEPLOYMENT_API_KEY");
         const grant = ctx.input.page.waitForResponse(
           (response) =>
@@ -702,14 +711,7 @@ export const vaultReferenceExternalCases = [
             response.ok(),
         );
         await ctx.input.page
-          .locator("section")
-          .filter({
-            has: ctx.input.page.getByRole("heading", {
-              name: "Agent access",
-              exact: true,
-            }),
-          })
-          .getByRole("button", { name: "Add", exact: true })
+          .getByRole("button", { name: "Give access", exact: true })
           .click();
         await grant;
         state.agentAccessUiCompleted = true;

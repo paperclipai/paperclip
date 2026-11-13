@@ -328,6 +328,19 @@ missing successor. The acknowledgement keeps its contiguous-prefix rule without
 returning every historical sequence number. All events stay stored. Counting the
 index entries still grows with the stream length.
 
+A native source event commits in one transaction of two statements. The first
+statement locks the run row. The second statement finds a replayed event, or
+reserves the next sequence and inserts the event, and reads the count and
+maximum for the acknowledgement. The lock stays a separate statement: a
+statement that waits for the lock keeps the snapshot it took before the wait,
+and would miss an event that the lock holder committed. An event that wakes a
+queue looks for its replay in a statement of its own first, because a wake is
+registered before its write and a replayed event registers none. An ordinary
+event without a source identity commits in one statement. Each event commits
+before its append returns; no event waits for another. Measure the cost of one
+event with
+`TSX_DISABLE_CACHE=1 pnpm --filter @paperclipai/server exec tsx scripts/benchmark-run-event-append.ts`.
+
 Conversation recovery reads only the saved run fields used to settle a turn.
 Settlement locks and reads current conversation state without loading the task
 description or comment bodies. It still checks the durable reply or pending
@@ -2105,6 +2118,26 @@ Use the same root client for in-process writers. New queue insertion paths must
 register before writing, or they can remain unseen until the next startup or
 another notification. Tests should verify both the producer and its outer
 transaction boundary.
+
+## Relational queries inside transactions
+
+Drizzle builds one relational query builder for every schema table when it
+creates a database object, and it creates one for each transaction and each
+savepoint. With the Paperclip schema that is about 100 KB per transaction.
+`createDb` therefore opens transactions through a second Drizzle client on the
+same postgres.js client, created without the schema, and builds `tx.query` the
+first time a transaction reads it (`packages/db/src/lazy-transaction-queries.ts`).
+`db.query`, `tx.query`, and `tx._` keep their contents. `BEGIN`, `SAVEPOINT`,
+commit, rollback, and connection reservation remain Drizzle's and the driver's.
+
+Measure the cost of a transaction and a savepoint with the command below. It
+needs Node.js 25 or later, because Node.js 24 has no V8 allocation counter, and
+it stops with that message on an older runtime:
+
+```sh
+cd packages/db
+TSX_DISABLE_CACHE=1 node --expose-gc --import tsx scripts/benchmark-transaction-allocation.ts
+```
 
 ### Installed skill packages
 

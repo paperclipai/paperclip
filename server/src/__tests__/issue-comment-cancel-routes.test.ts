@@ -23,6 +23,7 @@ const mockAccessService = vi.hoisted(() => ({
 const mockHeartbeatService = vi.hoisted(() => ({
   getRun: vi.fn(async (): Promise<unknown> => null),
   getActiveRunForAgent: vi.fn(async () => null),
+  getQueuedAssignmentRunForIssue: vi.fn(async () => null),
 }));
 const mockAuthoritativeQueueWakes = vi.hoisted(() => [] as Array<Record<string, unknown>>);
 
