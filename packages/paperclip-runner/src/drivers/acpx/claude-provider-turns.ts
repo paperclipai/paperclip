@@ -16,6 +16,7 @@ const startsCycle = (update: Record<string, unknown>): boolean =>
   typeof update.sessionUpdate === "string" && START_KINDS.has(update.sessionUpdate);
 const MAX_PENDING_REQUESTS = 256;
 const MAX_QUEUED_MESSAGES = 4_096;
+const MAX_TOOL_DECISIONS = 1_024;
 const EMPTY_RESULT_USAGE = ["input_tokens", "output_tokens", "cache_read_input_tokens", "cache_creation_input_tokens"];
 
 export type ClaudeProviderTurnResult =
@@ -100,6 +101,8 @@ export class ClaudeProviderCycles {
   readonly #pending = new Set<string | number>();
   readonly #queue: Queued[] = [];
   readonly #undecided: Decision[] = [];
+  readonly #toolDecisions = new Map<string, Decision>();
+  #openDecision: Decision | null = null;
   #queuedMessages = 0;
   #waiter: (() => void) | null = null;
   #open = false;
@@ -135,6 +138,11 @@ export class ClaudeProviderCycles {
 
   undecided(): Promise<boolean> | null {
     return this.#undecided[0]?.promise ?? null;
+  }
+
+  decisionFor(toolCallId: unknown): Promise<boolean> | null {
+    const bound = typeof toolCallId === "string" ? this.#toolDecisions.get(toolCallId) : undefined;
+    return (bound ?? this.#undecided.at(-1))?.promise ?? null;
   }
 
   async next(): Promise<ClaudeProviderCycleItem | null> {
@@ -219,7 +227,11 @@ export class ClaudeProviderCycles {
     }
     const params = record(envelope.params);
     const ownSession = params.sessionId === undefined || params.sessionId === this.#source.sessionId();
-    if (hasId) return this.#open && ownSession && envelope.method === "session/request_permission";
+    if (hasId) {
+      if (!this.#open || !ownSession || envelope.method !== "session/request_permission") return false;
+      this.#bindTool(record(params.toolCall).toolCallId);
+      return true;
+    }
     if (envelope.method !== "session/update" || !ownSession) return false;
     const update = record(params.update);
     if (!this.#open) {
@@ -231,6 +243,7 @@ export class ClaudeProviderCycles {
       }
       const started = decision();
       this.#undecided.push(started);
+      this.#openDecision = started;
       this.#open = true;
       this.#tasks.providerTurnStarted();
       this.#push({ type: "started", requestId: this.#source.mintTurnId?.() ?? `provider-${randomUUID()}`, decision: started });
@@ -241,6 +254,7 @@ export class ClaudeProviderCycles {
     }
     this.#queuedMessages += 1;
     this.#push({ type: "message", message });
+    this.#bindTool(update.toolCallId);
     if (claudeProviderTurnEndMarker(update)) {
       this.#open = false;
       this.#push({ type: "ended", result: { status: "completed", stopReason: "end_turn", usage: cycleUsage(update) } });
@@ -274,6 +288,14 @@ export class ClaudeProviderCycles {
   #end(result: ClaudeProviderTurnResult): ClaudeProviderCycleItem {
     this.drop();
     return { type: "ended", result };
+  }
+
+  #bindTool(toolCallId: unknown): void {
+    if (typeof toolCallId !== "string" || this.#openDecision === null) return;
+    if (!this.#toolDecisions.has(toolCallId) && this.#toolDecisions.size >= MAX_TOOL_DECISIONS) {
+      this.#toolDecisions.delete(this.#toolDecisions.keys().next().value!);
+    }
+    this.#toolDecisions.set(toolCallId, this.#openDecision);
   }
 
   #close(): void {
