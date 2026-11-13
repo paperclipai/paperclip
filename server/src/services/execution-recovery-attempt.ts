@@ -33,11 +33,25 @@ const UNCHARGED_RETRY_LANES: ReadonlySet<string> = new Set([
   INTERRUPTED_PREPARATION_RETRY_REASON, STORAGE_UNAVAILABLE_WAIT_RETRY_REASON, SERVER_RESTART_RETRY_REASON,
 ]);
 
+export const PROVIDER_QUOTA_RETRY_DELAYS_MS = [30_000, 60_000, 120_000, 60_000] as const;
+
 type RetryRun = {
   scheduledRetryAttempt?: number | null;
   scheduledRetryReason?: string | null;
   contextSnapshot?: Record<string, unknown> | null;
 };
+
+export function hasProviderQuotaRetryBudget(run: RetryRun & {
+  status?: string | null;
+  errorCode?: string | null;
+  resultJson?: Record<string, unknown> | null;
+}): boolean {
+  const currentFamily = typeof run.resultJson?.errorFamily === "string"
+    ? run.resultJson.errorFamily : run.errorCode;
+  if (currentFamily) return currentFamily === "provider_quota";
+  return ["scheduled_retry", "queued", "running"].includes(run.status ?? "") &&
+    run.contextSnapshot?.errorFamily === "provider_quota";
+}
 
 /** Server-owned counts for one automatic continuation chain. Repair slots live
  * in legacyDispositionEpisode and are never charged to either counter here. */

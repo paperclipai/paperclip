@@ -21,6 +21,8 @@ import {
 import { legacyExecutionNeedsReconciliationWithEvidence } from "../legacy-execution-recovery.js";
 import {
   executionFailureRetryCount,
+  hasProviderQuotaRetryBudget,
+  PROVIDER_QUOTA_RETRY_DELAYS_MS,
   executionRetryAttemptCount,
   accountingForScheduledRetry,
   INTERRUPTED_PREPARATION_RETRY_MAX_ATTEMPTS,
@@ -186,6 +188,13 @@ export function failedPreparationOwnsBoundedRetry(run: Pick<HeartbeatRun,
 export const BOUNDED_TRANSIENT_HEARTBEAT_RETRY_MAX_ATTEMPTS =
   BOUNDED_TRANSIENT_HEARTBEAT_RETRY_DELAYS_MS.length;
 
+/** A provider quota chain waits out its reset window, so it gets the longer
+ * quota schedule's failure budget; every other failure gets the bounded one. */
+function failureRetryMaxAttempts(run: Parameters<typeof hasProviderQuotaRetryBudget>[0]): number {
+  return hasProviderQuotaRetryBudget(run)
+    ? PROVIDER_QUOTA_RETRY_DELAYS_MS.length : BOUNDED_TRANSIENT_HEARTBEAT_RETRY_MAX_ATTEMPTS;
+}
+
 type LaneRun = Parameters<typeof executionFailureRetryCount>[0] & Partial<Parameters<typeof isServerReplacementInterruption>[0]>
   & { controllerProcess?: unknown };
 
@@ -211,7 +220,7 @@ export function usesServerRestartLane(run: LaneRun, preparationLaneTakesRun?: bo
     return false;
   const preparation = parseObject(run.resultJson?.executionRecovery);
   const bootstrap = preparation.kind === "bootstrap" && preparation.providerWorkStarted === false;
-  if (!bootstrap || executionFailureRetryCount(run) >= BOUNDED_TRANSIENT_HEARTBEAT_RETRY_MAX_ATTEMPTS) return true;
+  if (!bootstrap || executionFailureRetryCount(run) >= failureRetryMaxAttempts(run)) return true;
   if (preparationLaneTakesRun ?? run.status === "interrupted") return false;
   return isReplacedPreparation({ runtimeMode: run.runtimeMode, status: run.status, errorCode: run.errorCode ?? null,
     resultJson: run.resultJson ?? null, controllerBootId: run.controllerBootId ?? null, controllerProcess: run.controllerProcess });
@@ -226,7 +235,7 @@ export function failedRunRetryBudgetSpent(run: Parameters<typeof executionFailur
     ? executionRetryAttemptCount(run, RUNNER_REVISION_WAIT_RETRY_REASON) >= RUNNER_REVISION_MISMATCH_RETRY.maxAttempts
     : run.errorCode === STORAGE_UNAVAILABLE_CODE
       ? executionRetryAttemptCount(run, STORAGE_UNAVAILABLE_WAIT_RETRY_REASON) >= STORAGE_UNAVAILABLE_RETRY.maxAttempts
-      : executionFailureRetryCount(run) >= BOUNDED_TRANSIENT_HEARTBEAT_RETRY_MAX_ATTEMPTS
+      : executionFailureRetryCount(run) >= failureRetryMaxAttempts(run)
         || executionRetryAttemptCount(run, INTERRUPTED_PREPARATION_RETRY_REASON) >= INTERRUPTED_PREPARATION_RETRY_MAX_ATTEMPTS;
 }
 
@@ -582,8 +591,13 @@ export function createHeartbeatRetries(db: Db, dependencies: HeartbeatRetryDepen
         : interruptedPreparation ? INTERRUPTED_PREPARATION_RETRY_REASON : BOUNDED_TRANSIENT_HEARTBEAT_RETRY_REASON);
     const wakeReason =
       opts?.wakeReason ?? BOUNDED_TRANSIENT_HEARTBEAT_RETRY_WAKE_REASON;
-    // Interrupted preparation spent no provider work: its own lane, bounded
-    // like the native controller-generation cap (execution-recovery-attempt).
+    const transientRecovery =
+      (retryReason === BOUNDED_TRANSIENT_HEARTBEAT_RETRY_REASON
+        || retryReason === "execution_review_participant_recovery"
+        || retryReason === INTERACTION_CONTINUATION_INFRA_RETRY_REASON && run.errorCode === REPOSITORY_CATALOG_UNAVAILABLE_CODE)
+        ? readTransientRecoveryContractFromRun(run)
+        : null;
+    const quotaRetry = transientRecovery?.errorFamily === "provider_quota";
     const interruptedPreparationLane = retryReason === INTERRUPTED_PREPARATION_RETRY_REASON;
     const serverRestartLane = retryReason === SERVER_RESTART_RETRY_REASON;
     const maxAttempts = Math.max(
@@ -591,7 +605,8 @@ export function createHeartbeatRetries(db: Db, dependencies: HeartbeatRetryDepen
       Math.floor(
         opts?.maxAttempts ?? (interruptedPreparationLane
           ? INTERRUPTED_PREPARATION_RETRY_MAX_ATTEMPTS
-          : serverRestartLane ? SERVER_RESTART_RETRY_MAX_ATTEMPTS : BOUNDED_TRANSIENT_HEARTBEAT_RETRY_MAX_ATTEMPTS),
+          : serverRestartLane ? SERVER_RESTART_RETRY_MAX_ATTEMPTS
+          : quotaRetry ? PROVIDER_QUOTA_RETRY_DELAYS_MS.length : BOUNDED_TRANSIENT_HEARTBEAT_RETRY_MAX_ATTEMPTS),
       ),
     );
     const consumedAttempts = serverRestartLane
@@ -600,7 +615,7 @@ export function createHeartbeatRetries(db: Db, dependencies: HeartbeatRetryDepen
     // An interrupted preparation never spends failures, but it never revives
     // a chain whose real failures already spent the failure budget either.
     const failureBudgetSpent = interruptedPreparationLane && opts?.maxAttempts == null
-      && executionFailureRetryCount(run) >= BOUNDED_TRANSIENT_HEARTBEAT_RETRY_MAX_ATTEMPTS;
+      && executionFailureRetryCount(run) >= failureRetryMaxAttempts(run);
     const computedBaseSchedule = failureBudgetSpent ? null
       : opts?.delayMs != null
         ? nextAttempt <= maxAttempts
@@ -614,6 +629,13 @@ export function createHeartbeatRetries(db: Db, dependencies: HeartbeatRetryDepen
               maxAttempts,
             }
           : null
+        : nextAttempt <= maxAttempts && quotaRetry
+          ? (() => {
+              const baseDelayMs = PROVIDER_QUOTA_RETRY_DELAYS_MS[nextAttempt - 1];
+              if (baseDelayMs === undefined) return null;
+              const delayMs = nextAttempt === 3 ? baseDelayMs : Math.round(baseDelayMs * (0.8 + Math.min(1, Math.max(0, (opts?.random ?? Math.random)())) * 0.4));
+              return { attempt: nextAttempt, baseDelayMs, delayMs, dueAt: new Date(now.getTime() + delayMs), maxAttempts };
+            })()
         : nextAttempt <= maxAttempts
           // Both lanes start the first continuation at once and back off
           // after that, so a run that keeps taking the server down is slowed.
@@ -628,11 +650,7 @@ export function createHeartbeatRetries(db: Db, dependencies: HeartbeatRetryDepen
     const baseSchedule = computedBaseSchedule
       ? { ...computedBaseSchedule, maxAttempts }
       : null;
-    const transientRecovery =
-      (retryReason === BOUNDED_TRANSIENT_HEARTBEAT_RETRY_REASON
-        || retryReason === INTERACTION_CONTINUATION_INFRA_RETRY_REASON && run.errorCode === REPOSITORY_CATALOG_UNAVAILABLE_CODE)
-        ? readTransientRecoveryContractFromRun(run)
-        : null;
+
     const codexTransientFallbackMode =
       agent.adapterType === "codex_local" && run.errorCode !== REPOSITORY_CATALOG_UNAVAILABLE_CODE &&
       transientRecovery?.errorFamily === "transient_upstream"

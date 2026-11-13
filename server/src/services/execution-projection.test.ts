@@ -293,6 +293,29 @@ describe("execution truth projection", () => {
   it("includes the original legacy attempt in the displayed incident budget", () => {
     expect(projectExecution(run({ runtimeMode: "legacy", status: "scheduled_retry", scheduledRetryAttempt: 1 }), undefined, [], undefined, now)).toMatchObject({ attempt: 2, maxAttempts: 3 });
   });
+  it("shows the quota incident budget for failed and scheduled runs", () => {
+    expect(projectExecution(run({ runtimeMode: "legacy", status: "failed", errorCode: "provider_quota", scheduledRetryAttempt: 3 }), undefined, [], undefined, now)).toMatchObject({ attempt: 4, maxAttempts: 5 });
+    expect(projectExecution(run({ runtimeMode: "legacy", status: "scheduled_retry", errorCode: null, scheduledRetryAttempt: 4, contextSnapshot: { errorFamily: "provider_quota" } }), undefined, [], undefined, now)).toMatchObject({ attempt: 5, maxAttempts: 5 });
+  });
+  it.each(["queued", "running"] as const)("keeps quota context for a %s retry with continuation metadata", (status) => {
+    expect(projectExecution(run({ runtimeMode: "legacy", status, errorCode: null,
+      resultJson: { conversationContinuation: { eligible: true } },
+      contextSnapshot: { errorFamily: "provider_quota" },
+    }), undefined, [], undefined, now)).toMatchObject({ maxAttempts: 5 });
+  });
+
+  it.each([
+    { errorCode: "adapter_failed", resultJson: { errorFamily: "transient_upstream" } },
+    { errorCode: "adapter_failed", resultJson: null },
+    { errorCode: null, resultJson: { errorFamily: "transient_upstream" } },
+    { errorCode: null, resultJson: {} },
+  ])("uses the current failure budget over inherited quota context: %j", (failure) => {
+    expect(projectExecution(run({
+      runtimeMode: "legacy", status: "failed", scheduledRetryAttempt: 2,
+      contextSnapshot: { errorFamily: "provider_quota" }, ...failure,
+    }), undefined, [], undefined, now)).toMatchObject({ attempt: 3, maxAttempts: 3 });
+  });
+
   it("keeps saved governed work in shutdown reconciliation without offering a new attempt", () => {
     expect(project(
       run({ status: "failed", errorCode: "native_governed_wait_settlement_pending" }),

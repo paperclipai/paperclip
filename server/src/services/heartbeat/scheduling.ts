@@ -783,6 +783,8 @@ export function createHeartbeatScheduling(
           );
           if (scheduled.outcome === "not_scheduled")
             throw conflict(scheduled.reason);
+          if (scheduled.outcome === "retry_exhausted")
+            await terminalizeLegacyExecution({ db, run: sourceRun, status: sourceRun.status });
         }
       } else {
         let executionDeferredCause: string | null = null;

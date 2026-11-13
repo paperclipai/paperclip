@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { extractClaudeRetryNotBefore } from "../../../packages/adapters/claude-local/src/server/parse.js";
 import { and, eq, inArray, sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
@@ -29,6 +30,7 @@ import {
 } from "./helpers/embedded-postgres.js";
 import { drainHeartbeatRunsToQuiescence } from "./helpers/drain-heartbeat-runs.js";
 import { registerServerAdapter, unregisterServerAdapter } from "../adapters/index.ts";
+import { executionProjectionsForRuns } from "../services/execution-projection.js";
 import { createPostgresRunDispatchAdapter } from "../modules/run-dispatch/adapters/postgres.js";
 import { INTERRUPTED_PREPARATION_RETRY_MAX_ATTEMPTS, SERVER_RESTART_RETRY_MAX_ATTEMPTS } from "../services/execution-recovery-attempt.js";
 
@@ -127,7 +129,7 @@ describeEmbeddedPostgres("heartbeat bounded retry scheduling", () => {
         testedAt: new Date().toISOString(),
       }),
     });
-  }, 20_000);
+  }, 120_000);
 
   afterEach(async () => {
     // Await every in-flight background heartbeat run to quiescence before the
@@ -2176,6 +2178,62 @@ describeEmbeddedPostgres("heartbeat bounded retry scheduling", () => {
     expect(scheduled).toMatchObject({ outcome: "not_scheduled", errorCode: "legacy_execution_requires_reconciliation" });
 
     await cleanupRetryFixture();
+  });
+
+  it.each(["claude_local", "codex_local"])("retries %s later when quota remains unavailable after the first retry", async (adapterType) => {
+    const runId = randomUUID(), companyId = randomUUID(), agentId = randomUUID();
+    const now = new Date("2026-11-06T08:30:00.000Z");
+    await seedRetryFixture({ runId, companyId, agentId, now, adapterType,
+      errorCode: "provider_quota", errorFamily: "provider_quota", scheduledRetryAttempt: 1 });
+
+    const result = await heartbeat.scheduleBoundedRetry(runId, { now, random: () => 0.5 });
+    expect(result).toMatchObject({ outcome: "scheduled", dueAt: new Date("2026-11-06T08:31:00.000Z"),
+      run: { scheduledRetryAttempt: 2 } });
+    if (result.outcome !== "scheduled") throw new Error("Expected a retry");
+    let predecessor = result.run.id;
+    for (const [attempt, delay] of [[3, 120_000], [4, 60_000]] as const) {
+      await db.update(heartbeatRuns).set({ status: "failed", errorCode: "provider_quota",
+        resultJson: { errorFamily: "provider_quota", executionRecovery: { kind: "bootstrap", providerWorkStarted: false } },
+      }).where(eq(heartbeatRuns.id, predecessor));
+      const next = await heartbeat.scheduleBoundedRetry(predecessor, { now, random: () => 0.5 });
+      expect(next).toMatchObject({ outcome: "scheduled", dueAt: new Date(now.getTime() + delay),
+        run: { scheduledRetryAttempt: attempt } });
+      if (next.outcome !== "scheduled") throw new Error("Expected a retry");
+      predecessor = next.run.id;
+    }
+    await db.update(heartbeatRuns).set({ status: "failed", errorCode: "provider_quota",
+      resultJson: { errorFamily: "provider_quota", executionRecovery: { kind: "bootstrap", providerWorkStarted: false } },
+    }).where(eq(heartbeatRuns.id, predecessor));
+    expect(await heartbeat.scheduleBoundedRetry(predecessor, { now, random: () => 0.5 }))
+      .toMatchObject({ outcome: "retry_exhausted" });
+  });
+
+  it("uses bounded backoff when Claude repeats a just-expired reset clock", async () => {
+    const runId = randomUUID(), companyId = randomUUID(), agentId = randomUUID();
+    const now = new Date("2026-11-06T08:30:01.000Z");
+    const retryNotBefore = extractClaudeRetryNotBefore({
+      errorMessage: "You've hit your 5 hour limit · resets 9:30am (Europe/Amsterdam)",
+    }, now)?.toISOString() ?? null;
+    await seedRetryFixture({ runId, companyId, agentId, now, adapterType: "claude_local",
+      errorCode: "provider_quota", errorFamily: "provider_quota", scheduledRetryAttempt: 1,
+      retryNotBefore });
+
+    const result = await heartbeat.scheduleBoundedRetry(runId, { now, random: () => 0.5 });
+    expect(result).toMatchObject({ outcome: "scheduled", dueAt: new Date("2026-11-06T08:31:01.000Z") });
+    if (result.outcome !== "scheduled") throw new Error("Expected a retry");
+    const [persisted] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, result.run.id));
+    expect(persisted.scheduledRetryAt?.toISOString()).toBe("2026-11-06T08:31:01.000Z");
+    expect((persisted.contextSnapshot as Record<string, unknown>)?.providerQuotaRetryNotBefore ?? null).toBeNull();
+    expect((await executionProjectionsForRuns(db, companyId, [persisted.id], now)).get(persisted.id))
+      .toMatchObject({ maxAttempts: 5 });
+    await db.update(heartbeatRuns).set({ status: "queued", resultJson: { conversationContinuation: { eligible: true } } }).where(eq(heartbeatRuns.id, persisted.id));
+    expect((await executionProjectionsForRuns(db, companyId, [persisted.id], now)).get(persisted.id))
+      .toMatchObject({ maxAttempts: 5 });
+    await db.update(heartbeatRuns).set({ status: "failed", errorCode: "claude_transient_upstream",
+      resultJson: { errorFamily: "transient_upstream" },
+    }).where(eq(heartbeatRuns.id, persisted.id));
+    expect((await executionProjectionsForRuns(db, companyId, [persisted.id], now)).get(persisted.id))
+      .toMatchObject({ maxAttempts: 3 });
   });
 
   it("honors codex retry-not-before timestamps when they exceed the default bounded backoff", async () => {

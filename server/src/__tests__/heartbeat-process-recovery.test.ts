@@ -3695,6 +3695,70 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       scheduledRetryReason: "interrupted_preparation", scheduledRetryAttempt: 3 });
   });
 
+  it.each([
+    ["claude_local", 2, "preparing"], ["claude_local", 3, "preparing"],
+    ["codex_local", 2, "preparing"], ["codex_local", 3, "preparing"],
+    ["claude_local", 2, "dispatching"], ["codex_local", 2, "dispatching"],
+  ] as const)("preserves proven quota preparation through graceful shutdown: %s attempt %s %s", async (adapterType, attempt, stage) => {
+    const { companyId, runId } = await seedRunFixture({ runtimeMode: "legacy", adapterType, agentStatus: "running",
+      contextSnapshot: { errorFamily: "provider_quota" } });
+    await db.update(heartbeatRuns).set({ executionStage: stage,
+      scheduledRetryReason: "transient_failure", scheduledRetryAttempt: attempt,
+      resultJson: { conversationContinuation: "continue_conversation_v1" },
+    }).where(eq(heartbeatRuns.id, runId));
+    const outcome = await heartbeatService(db).drainRunningRunsForShutdown("SIGTERM", new Date(), [runId]);
+    expect(outcome.interruptedRunIds).toEqual([runId]);
+    const [interrupted] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
+    const retries = await db.select().from(heartbeatRuns).where(and(
+      eq(heartbeatRuns.companyId, companyId), eq(heartbeatRuns.retryOfRunId, runId)));
+    if (stage === "preparing") {
+      expect(interrupted.resultJson).toMatchObject({ errorFamily: "provider_quota",
+        executionRecovery: { kind: "bootstrap", providerWorkStarted: false } });
+      expect(retries).toEqual([expect.objectContaining({ status: "scheduled_retry",
+        contextSnapshot: expect.objectContaining({ errorFamily: "provider_quota" }) })]);
+      expect(outcome.retryRunIds).toEqual([retries[0].id]);
+    } else {
+      expect(interrupted.resultJson).not.toHaveProperty("executionRecovery");
+      expect(retries).toEqual([]);
+      expect(outcome.retryRunIds).toEqual([]);
+    }
+    expect(mockAdapterExecute).not.toHaveBeenCalled();
+  });
+
+  it.each([2, 3])("does not promise a quota retry after dispatched process loss at attempt %s", async (attempt) => {
+    const { companyId, runId } = await seedRunFixture({ agentStatus: "idle", processPid: 999_999_999,
+      contextSnapshot: { errorFamily: "provider_quota" } });
+    await db.update(heartbeatRuns).set({ scheduledRetryReason: "transient_failure", scheduledRetryAttempt: attempt,
+      resultJson: { conversationContinuation: "continue_conversation_v1" },
+    }).where(eq(heartbeatRuns.id, runId));
+    await heartbeatService(db).reapOrphanedRuns();
+    const [reaped] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
+    expect(reaped).toMatchObject({ errorCode: "process_lost", error: "Process lost -- child pid 999999999 is no longer running" });
+    expect(reaped.resultJson).toMatchObject({ processLossDiagnostic: { retryEligible: false } });
+    expect(await db.select().from(heartbeatRuns).where(and(
+      eq(heartbeatRuns.companyId, companyId), eq(heartbeatRuns.retryOfRunId, runId)))).toEqual([]);
+  });
+
+  it.each([2, 3, 4])("preserves quota retry budget across a pre-dispatch restart at attempt %s", async (attempt) => {
+    const { companyId, runId } = await seedRestartOrphanedLegacySetup("preparing");
+    const [seeded] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
+    await db.update(heartbeatRuns).set({ scheduledRetryReason: "transient_failure", scheduledRetryAttempt: attempt,
+      contextSnapshot: { ...(seeded.contextSnapshot ?? {}), errorFamily: "provider_quota" },
+      resultJson: { conversationContinuation: { eligible: true } },
+    }).where(eq(heartbeatRuns.id, runId));
+    await heartbeatService(db).reapOrphanedRuns();
+    const [reaped] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
+    expect(reaped.resultJson).toMatchObject({ errorFamily: "provider_quota",
+      executionRecovery: { kind: "bootstrap", providerWorkStarted: false },
+      processLossDiagnostic: { retryEligible: attempt < 4 } });
+    const retries = await db.select().from(heartbeatRuns).where(and(
+      eq(heartbeatRuns.companyId, companyId), eq(heartbeatRuns.retryOfRunId, runId)));
+    expect(retries).toHaveLength(attempt < 4 ? 1 : 0);
+    if (attempt < 4) expect(retries[0]).toMatchObject({ status: "scheduled_retry",
+      scheduledRetryAttempt: attempt + 1, contextSnapshot: { errorFamily: "provider_quota" } });
+    expect(mockAdapterExecute).not.toHaveBeenCalled();
+  });
+
   it("retries within the failure budget even when a legacy process-loss counter is set", async () => {
     const { companyId, runId } = await seedRestartOrphanedLegacySetup("preparing");
     // Earlier releases wrote this counter; nothing writes it now.

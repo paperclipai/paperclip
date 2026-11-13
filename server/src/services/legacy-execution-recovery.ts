@@ -25,7 +25,7 @@ import { readRunCancellation } from "./run-cancellation.js";
 import { hasRemoteTerminationReceipt } from "./remote-execution-termination.js";
 import { issueRecoveryActionService } from "./issue-recovery-actions.js";
 import { parseIssueExecutionState } from "./issue-execution-policy.js";
-import { executionFailureRetryCount } from "./execution-recovery-attempt.js";
+import { executionFailureRetryCount, PROVIDER_QUOTA_RETRY_DELAYS_MS } from "./execution-recovery-attempt.js";
 import { isReplacedPreparation } from "./server-replacement-interruption.js";
 import { logActivity } from "./activity-log.js";
 import { isSupersededConversationRun } from "./agent-conversations.js";
@@ -94,6 +94,10 @@ export function legacyExecutionNeedsReconciliation(
   // provider action happened, so there is nothing to reconcile. Its
   // continuation is bounded by the server-restart lane, not the failure count.
   if (isReplacedPreparation({ ...run, controllerBootId: run.controllerBootId ?? null })) return false;
+  if ((run.errorCode === "provider_quota" || run.resultJson?.errorFamily === "provider_quota") &&
+      evidence?.kind === "bootstrap" && evidence.providerWorkStarted === false) {
+    return executionFailureRetryCount(run) >= PROVIDER_QUOTA_RETRY_DELAYS_MS.length;
+  }
   if (executionFailureRetryCount(run) >= 2) return true;
   return !(
     evidence?.kind === "bootstrap" && evidence.providerWorkStarted === false
