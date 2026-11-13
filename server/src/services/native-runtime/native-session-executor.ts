@@ -1,6 +1,7 @@
 import { currentControllerProcess } from "../controller-process-identity.js";
 import { remoteRecoveryLeaseMismatch } from "./remote-recovery-lease-mismatch.js";
 import { isGovernancePauseStop } from "../governance-pause-stop.js";
+import { retryTransientLockContention } from "../transient-lock-contention.js";
 import { nativeLeaseHolder, notifyNativeTokenLeaseClaimed } from "./native-token-lease-settlement.js";
 import { captureRemoteNativeProviderArtifacts, shareNativeProviderArtifactCapture } from "./native-provider-artifact-capture.js";
 import { NativeSessionDiagnostics, nativeSessionDiagnostics, type NativeDiagnosticLease } from "./native-session-diagnostics.js";
@@ -109,7 +110,7 @@ import { createNativeProviderFailureObservation } from "./native-provider-failur
 import { explainNativeTurnFailure } from "./native-run-failure-explanation.js";
 import { nativeStartupRetryExhaustedAction, nativeStartupRetryWait, planNativeStartupRetry } from "./native-startup-retry.js";
 import { admitUnclaimedNativeBootstrapRetry } from "./native-bootstrap-retry.js";
-import { RUNNERD_CONTROL_PLANE_STATE_SCHEMAS, runnerdStateIsIncompleteBootstrap,
+import { attemptLaunchesFreshBootstrap, RUNNERD_CONTROL_PLANE_STATE_SCHEMAS, runnerdStateIsIncompleteBootstrap,
   runnerdStateHasNoProviderTurn, runnerdStateIsOpenedSessionBeforeTurn, runnerdStateIsUnconnectedBootstrap } from "./native-bootstrap-proof.js";
 import { createNativeDeliverableTextObservation } from "./native-deliverable-text.js";
 import { reconcileControllerJournalWithRunner, refreshRetiredWarmOwnerProjection } from "./warm-controller-journal.js";
@@ -233,6 +234,7 @@ import type { NativeRunnerAttachmentDownload, NativeRunnerAttachmentStage } from
 import { discoverRemoteExecutable, parseRemoteExecutableCandidate } from "./codex-model-fallback.js";
 export { parseRemoteExecutableCandidate } from "./codex-model-fallback.js";
 import type { CommandManagedRuntimeRunner } from "@paperclipai/adapter-utils/command-managed-runtime";
+import { readRemoteUserHome } from "./remote-user-home.js";
 import { NativeRunnerIngressAcquisitionError, prepareNativeRemoteRunner, createNativeRunnerExecutionDriver, resolveRemoteRunnerTransportMode } from "./native-runner-execution-driver.js";
 import type { Db } from "@paperclipai/db";
 import {
@@ -12994,7 +12996,7 @@ async function executePaperclipNativeSessionAttempt(
             : nativeRemoteStartupRejectionCode(classifiedFailureCode, error, input.runnerExecutionTarget?.kind === "remote",
               previousStartupSignature);
       const bootstrap = input.useRunnerd && input.runnerExecutionTarget?.kind === "remote"
-          && !input.restartRecovery && !retainedTransition && !remoteWarmRecovery
+          && attemptLaunchesFreshBootstrap(input.restartRecovery) && !retainedTransition && !remoteWarmRecovery
           ? {
               binding: input.execution.binding,
               identity: { runnerInstanceId: effectiveRunnerInstanceId,
@@ -13100,7 +13102,11 @@ async function executePaperclipNativeSessionAttempt(
       // transitions the run into "failed". Read after the transaction
       // commits, so a rolled-back write never reports a false failure.
       let terminalRunToReport: typeof heartbeatRuns.$inferSelect | null = null;
-      await input.db.transaction(async (tx) => {
+      // A lock timeout rolls this write back whole, so a fresh attempt is safe.
+      // Without it a briefly held row strands the run under its dead lease and
+      // the task needs reconciliation instead of its recorded recovery.
+      await retryTransientLockContention(() => input.db.transaction(async (tx) => {
+        terminalRunToReport = null;
         await tx.execute(
           sql`select set_config('statement_timeout', '15000', true), set_config('lock_timeout', '1000', true)`,
         );
@@ -13495,7 +13501,7 @@ async function executePaperclipNativeSessionAttempt(
           supersedeOnIdentityChange:
             recoveryProjection.supersedeOnIdentityChange,
         });
-      }).catch(async (failure: unknown) => {
+      })).catch(async (failure: unknown) => {
         // Emit after rollback so the diagnostic sink cannot deadlock on the
         // coordinator transaction. Reporting failure cannot change fencing.
         if (failure instanceof NativePostResultFailureError) {
@@ -16471,7 +16477,7 @@ async function createRunnerdBackendWithinSessionClaim(
       configuredEnvironmentVersion: description.configuredEnvironmentVersion,
       configuredEnvironment: taskConfiguredEnvironment,
       releaseResumeVersion: description.releaseResumeVersion,
-      resumeCredentialVersion: description.resumeCredentialVersion,
+      resumeLaunchInputsVersion: description.resumeLaunchInputsVersion,
       authorityRunId: description.releaseResumeVersion === 1 ? input.execution.binding.runId : undefined,
       releasedSource: input.remoteWarmRecovery?.releasedSource,
       sessionHandoff: !!input.remoteWarmRecovery?.portableSourceTaskId,
@@ -18048,14 +18054,7 @@ async function createRunnerdBackendWithinSessionClaim(
   delete effectiveRunnerEnvironmentBase.PAPERCLIP_RUNNER_PREPARED_HARNESS_HOME;
   if (preconfiguredHome) {
     if (remoteCommandRunner) {
-      const discovered = await remoteCommandRunner.execute({
-        command: "sh", args: ["-c", 'getent passwd "$(id -u)" | cut -d: -f6'],
-        bypassSession: true, timeoutMs: 10_000,
-      });
-      const home = discovered.stdout.trim();
-      if (discovered.exitCode !== 0 || discovered.timedOut || !home.startsWith("/") || /[\0\r\n]/.test(home)) {
-        throw new Error("runner_preconfigured_remote_home_unavailable");
-      }
+      const home = await readRemoteUserHome(remoteCommandRunner);
       // Paths from the controller's account cannot select a remote account's config.
       const hostPathKeys = new Set(["CODEX_HOME", "CLAUDE_CONFIG_DIR", "XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_CACHE_HOME"]);
       const configured = configuredEnvironment(effectiveRunnerEnvironmentBase);

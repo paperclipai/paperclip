@@ -12,6 +12,7 @@ export interface LocalEnvironmentConfig {
 }
 
 export interface SshEnvironmentConfig {
+  useHostAuth?: boolean;
   host: string;
   port: number;
   username: string;

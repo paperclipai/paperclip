@@ -324,13 +324,13 @@ fn preserves_only_allowlisted_stderr_categories_when_the_process_exits() {
 }
 
 #[test]
-fn assigned_gateway_binding_reaches_qualified_sidecar_without_unrelated_secrets() {
+fn previous_release_gateway_binding_and_unrelated_secrets_never_reach_the_sidecar() {
     const CHILD: &str = "PAPERCLIP_TEST_MCP_ENV_CHILD";
     if std::env::var_os(CHILD).is_none() {
         let status = std::process::Command::new(std::env::current_exe().unwrap())
             .args([
                 "--exact",
-                "assigned_gateway_binding_reaches_qualified_sidecar_without_unrelated_secrets",
+                "previous_release_gateway_binding_and_unrelated_secrets_never_reach_the_sidecar",
                 "--nocapture",
             ])
             .env(CHILD, "1")
@@ -386,11 +386,11 @@ fn assigned_gateway_binding_reaches_qualified_sidecar_without_unrelated_secrets(
         let response = sidecar
             .request(GeneratedAcpxSidecarCommand::Initialize, json!({}))
             .unwrap();
-        assert_eq!(response["name"], "paperclip-assigned");
-        assert_eq!(response["url"], "http://127.0.0.1:3100/mcp");
+        assert_eq!(response["name"], serde_json::Value::Null);
+        assert_eq!(response["url"], serde_json::Value::Null);
         assert_eq!(
-            response["hasToken"], true,
-            "assigned gateway credential was dropped"
+            response["hasToken"], false,
+            "previous-release gateway credential reached the sidecar"
         );
         assert_eq!(response["hasUnrelatedSecret"], false);
         let expected = match agent {
