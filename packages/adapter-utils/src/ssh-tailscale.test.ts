@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { buildSshSpawnTarget, parseSshRemoteExecutionSpec } from "./ssh.js";
 import { buildRemoteExecutionSessionIdentity, remoteExecutionSessionMatches } from "./remote-managed-runtime.js";
+import { normalizeAdapterExecutionTargetSessionIdentity } from "./execution-target.js";
 
 const spec = { host: "workstation.tailnet.test", port: 22, username: "developer", remoteWorkspacePath: "/workspace",
   remoteCwd: "/workspace/task", privateKey: null, knownHosts: "host ssh-ed25519 fixture", strictHostKeyChecking: true };
@@ -44,6 +45,8 @@ describe("SSH task execution through Tailscale", () => {
     const tailscale = { ...spec, tailscaleSocket: "/tmp/socket", tailscaleIdentity: "company:connection-one" };
     expect(parseSshRemoteExecutionSpec(tailscale)).toEqual(tailscale);
     const saved = buildRemoteExecutionSessionIdentity(tailscale);
+    expect(normalizeAdapterExecutionTargetSessionIdentity(saved)).toEqual(saved);
+    expect(saved).not.toHaveProperty("tailscaleSocket");
     expect(remoteExecutionSessionMatches(saved, { ...tailscale, tailscaleSocket: "/tmp/restarted/socket" })).toBe(true);
     expect(remoteExecutionSessionMatches(saved, { ...tailscale, tailscaleIdentity: "company:connection-two" })).toBe(false);
     expect(remoteExecutionSessionMatches(saved, spec)).toBe(false);
