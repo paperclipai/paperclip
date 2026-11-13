@@ -21021,7 +21021,8 @@ describeEmbeddedPostgres("tool access service", () => {
         .put(`/api/tool-connections/${connection.id}/installs`)
         .send({
           installs: [{ targetType: "company", targetId: company.id }],
-        });
+        })
+        .then((res) => res);
       await vi.waitFor(
         async () => {
           const sessions = await probeDb.execute<{
@@ -21157,7 +21158,8 @@ describeEmbeddedPostgres("tool access service", () => {
             { targetType: "agent", targetId: agent.id },
             { targetType: "agent", targetId: other.id },
           ],
-        });
+        })
+        .then((res) => res);
       await vi.waitFor(
         async () => {
           const sessions = await probeDb.execute<{
