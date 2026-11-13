@@ -452,7 +452,10 @@ cases: one of six count-balanced partitions recorded 532 s of test time against
 a 377 s mean. To refresh the weights, add the `profile-ci` label to a PR, download
 the `ci-profile-*` artifacts of its three chat jobs into one directory, and run
 `node scripts/ci/refresh-chat-shard-durations.mjs --source=<run URL> <directory>`.
-Stale weights change only the balance, never which tests run.
+Stale weights change only the balance, never which tests run. A chat job
+collects the suite once, then validates its three partitions' filters at the
+same time; each partition still checks that its filters select exactly its
+assigned tests.
 The Runner transport lease-expiry and cold-admission regressions live in their
 own file so those real-clock waits overlap other files in the existing pool.
 
