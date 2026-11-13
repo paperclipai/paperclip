@@ -4,6 +4,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { activityLog, agents, agentTaskSessions, agentWakeupRequests, chatActions, chatConversations, chatEndpoints, companies, budgetPolicies, costEvents, createDb, type Db, environmentLeases, environments, executionWorkspaces, executionWorkspaceSnapshots, workspaceOperations, heartbeatRunEvents, heartbeatRuns, issueComments, issueRelations, issues, approvals, issueApprovals, issueRecoveryActions, nativeRunFinalizations, toolApplications, toolConnections, toolInvocations, applyPendingMigrations } from "@paperclipai/db";
 import { startEmbeddedPostgresTestDatabase } from "../__tests__/helpers/embedded-postgres.js";
 import { priorRecoveryApiReceipt, unresolvedRecoveryToolInvocation } from "./recovery-effect-receipts.js";
+import { recordRunnerApiOutcome } from "../middleware/runner-call-outcome.js";
 import { requestTaskRetry } from "./task-retry.js";
 import { HttpError } from "../errors.js";
 import { NativeChatReviewPresentationContentionError } from "./native-runtime/native-chat-review-presentation.js";
@@ -1163,6 +1164,51 @@ describe("durable task Retry admission", () => {
     await db.update(heartbeatRuns).set({ retryOfRunId: null, contextSnapshot: { previousRunId: retry.id } })
       .where(eq(heartbeatRuns.id, automatic.id));
     expect(await priorRecoveryApiReceipt(db, call)).toBeNull();
+  });
+
+  it.each([[200, "applied"], [422, "rejected"], [500, "fenced"], [null, "fenced"]] as const)(
+    "settles an uncertain API receipt from the recorded server outcome %s of the same call", async (status, expected) => {
+      const { input, retry, automatic } = await automaticSuccessorOfTaskRetry();
+      const callKey = "a".repeat(64);
+      const receipt = { operationId: "PATCH /api/issues/{id}", digest: "same-update", state: "completed",
+        result: { ok: false, status: null, error: "api_transport_failure", outcome: "unknown" } };
+      await db.update(heartbeatRuns).set({ resultJson: { apiToolReceipts: { [callKey]: receipt } } }).where(eq(heartbeatRuns.id, retry.id));
+      const outcome = { companyId: input.companyId, agentId: retry.agentId, runId: retry.id };
+      if (status === null) await recordRunnerApiOutcome(db, { ...outcome, callKey: "b".repeat(64), status: 200 });
+      else await recordRunnerApiOutcome(db, { ...outcome, callKey, status });
+      const call = { companyId: input.companyId, issueId: input.issueId, runId: automatic.id,
+        operationId: receipt.operationId, digest: receipt.digest };
+      const another = { ...call, digest: "another-update" };
+      if (expected === "applied") {
+        expect(await priorRecoveryApiReceipt(db, call)).toMatchObject({ state: "completed",
+          result: { ok: true, status: 200, outcome: "applied" } });
+        expect(await priorRecoveryApiReceipt(db, another)).toBeNull();
+      } else if (expected === "rejected") {
+        expect(await priorRecoveryApiReceipt(db, call)).toBeNull();
+      } else {
+        expect(await priorRecoveryApiReceipt(db, another)).toMatchObject({ state: "pending", result: { outcome: "unknown" } });
+      }
+    });
+
+  it.each(["user", "agent", "system"] as const)("lifts an uncertain API receipt fence only after a later %s change", async actorType => {
+    const { input, retry, automatic } = await automaticSuccessorOfTaskRetry();
+    const receipt = { operationId: "PATCH /api/issues/{id}", digest: "handoff", state: "completed",
+      result: { ok: false, status: null, error: "api_transport_failure", outcome: "unknown" } };
+    const call = { companyId: input.companyId, issueId: input.issueId, runId: automatic.id,
+      operationId: receipt.operationId, digest: "reassign" };
+    const change = { companyId: input.companyId, actorType, actorId: actorType === "agent" ? retry.agentId : "board",
+      entityType: "issue", entityId: input.issueId };
+    await db.update(heartbeatRuns).set({ resultJson: { apiToolReceipts: { ["c".repeat(64)]: receipt } } })
+      .where(eq(heartbeatRuns.id, retry.id));
+    await db.insert(activityLog).values({ ...change, action: "issue.comment_added", createdAt: new Date(Date.now() + 5_000) });
+    expect(await priorRecoveryApiReceipt(db, call)).toMatchObject({ state: "pending", result: { outcome: "unknown" } });
+    const finishedAt = new Date(Date.now() + 10_000);
+    await db.update(heartbeatRuns).set({ finishedAt }).where(eq(heartbeatRuns.id, retry.id));
+    await db.insert(activityLog).values({ ...change, action: "issue.read_marked", createdAt: new Date(finishedAt.getTime() + 1_000) });
+    expect(await priorRecoveryApiReceipt(db, call)).toMatchObject({ state: "pending", result: { outcome: "unknown" } });
+    await db.insert(activityLog).values({ ...change, action: "issue.updated", createdAt: new Date(finishedAt.getTime() + 2_000) });
+    if (actorType === "user") expect(await priorRecoveryApiReceipt(db, call)).toBeNull();
+    else expect(await priorRecoveryApiReceipt(db, call)).toMatchObject({ state: "pending", result: { outcome: "unknown" } });
   });
 
   it("automatic successors retain uncertain upstream mutation fences after task Retry", async () => {
