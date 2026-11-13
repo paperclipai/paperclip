@@ -1,4 +1,5 @@
 import { projectEnvironmentOptions } from "../services/project-environments.js";
+import { listProtectedEnvironmentKeyHolders, protectedEnvironmentKeyWarnings } from "../services/protected-environment-keys.js";
 import { projectGitAuthorizationService } from "../services/project-git-authorization.js";
 import { skillAccessRequestContext } from "../services/skill-access.js";
 import { createHash } from "node:crypto";
@@ -109,6 +110,26 @@ export function projectRoutes(db: Db) {
     throw unprocessable(
       "This instance runs agents only in the platform-managed environment; local folders are not configurable.",
     );
+  }
+
+  /**
+   * PAP-749 task 1d: the project's decision owner gets this project's ownerless
+   * Needs You cards, so only a board user may choose them, and they must be an
+   * active member of the company. `null` clears it; agents cannot change it.
+   */
+  async function assertProjectDecisionOwner(
+    req: Request,
+    companyId: string,
+    decisionOwnerUserId: unknown,
+    current: string | null = null,
+  ) {
+    if (decisionOwnerUserId === undefined || decisionOwnerUserId === current) return;
+    if (req.actor.type !== "board") throw forbidden("Only board users can set a project's decision owner");
+    if (typeof decisionOwnerUserId !== "string") return;
+    const membership = await access.getMembership(companyId, "user", decisionOwnerUserId);
+    if (membership?.status !== "active") {
+      throw unprocessable("Project decision owner must be an active member of this company");
+    }
   }
 
   async function resolveCompanyIdForProjectReference(req: Request) {
@@ -383,6 +404,7 @@ export function projectRoutes(db: Db) {
     projectData.privacyOwnerUserId = req.actor.type === "board" ? req.actor.userId ?? null : req.actor.type === "agent" ? req.actor.onBehalfOfUserId ?? null : null;
     const runContext = req.actor.type === "agent" && req.actor.source === "agent_jwt" && req.actor.runId
       ? await projectToolContext(db, req.actor, true) : null;
+    await assertProjectDecisionOwner(req, companyId, projectData.decisionOwnerUserId);
     assertNoAgentHostWorkspaceCommandMutation(
       req,
       [
@@ -398,6 +420,8 @@ export function projectRoutes(db: Db) {
         { strictMode: strictSecretsMode, fieldPath: "env" },
       );
     }
+    const configurationWarnings = projectData.env !== undefined
+      ? protectedEnvironmentKeyWarnings(await listProtectedEnvironmentKeyHolders(db), projectData.env, "env") : [];
     if (workspace && (repositoryIds || repositoryUrls)) throw unprocessable("Use either workspace or repositoryIds/repositoryUrls when creating a project");
     const urlRepositories = (repositoryUrls ?? []).map(normalizeProjectRepositoryUrl);
     const repositories = repositoryIds ? await selectedRepositories(req, companyId, repositoryIds) : null;
@@ -491,7 +515,7 @@ export function projectRoutes(db: Db) {
     if (telemetryClient) {
       trackProjectCreated(telemetryClient);
     }
-    res.status(result.duplicate ? 200 : 201).json(result.project);
+    res.status(result.duplicate ? 200 : 201).json({ ...result.project, ...(configurationWarnings.length ? { configurationWarnings } : {}) });
   });
 
   router.patch("/projects/:id", validate(updateProjectSchema), async (req, res) => {
@@ -508,6 +532,7 @@ export function projectRoutes(db: Db) {
       req,
       collectProjectExecutionWorkspaceCommandPaths(body.executionWorkspacePolicy),
     );
+    await assertProjectDecisionOwner(req, existing.companyId, body.decisionOwnerUserId, existing.decisionOwnerUserId ?? null);
     if (typeof body.archivedAt === "string") {
       body.archivedAt = new Date(body.archivedAt);
     }
@@ -517,6 +542,8 @@ export function projectRoutes(db: Db) {
         fieldPath: "env",
       });
     }
+    const configurationWarnings = body.env !== undefined
+      ? protectedEnvironmentKeyWarnings(await listProtectedEnvironmentKeyHolders(db), body.env, "env") : [];
     const project = await svc.update(id, body);
     if (!project) {
       res.status(404).json({ error: "Project not found" });
@@ -548,7 +575,7 @@ export function projectRoutes(db: Db) {
       },
     });
 
-    res.json(project);
+    res.json({ ...project, ...(configurationWarnings.length ? { configurationWarnings } : {}) });
   });
 
   router.get("/projects/:id/access-members", async (req, res) => {

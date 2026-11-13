@@ -18,10 +18,11 @@ import { executionFailureRetryCount } from "./execution-recovery-attempt.js";
 import { retryIdempotentDatabaseOperation } from "../database-retry.js";
 import { workspaceRecoveryDisplay } from "./workspace-recovery-receipt.js";
 import { readTaskDrain } from "./task-admission.js";
-import { getStartupRecoveryState } from "../startup-recovery-state.js";
+import { getStartupRecoveryState, startupQueuedRunPassOutstanding } from "../startup-recovery-state.js";
 import { hasPendingRunCleanup } from "./execution-blocker.js";
 import { isAgentAwaitingSetup } from "../modules/agent-lifecycle/index.js";
 import { NATIVE_RESPONSE_WAKE_WAITING_REASON } from "./native-runtime/status-arbiter.js";
+import { agentQueueLinesForRuns } from "./heartbeat/queued-run-line.js";
 const MAX_PREDECESSOR_CLEANUP_CHECKS = 16;
 const text = (v: unknown) => (typeof v === "string" ? v : null);
 const executionRunColumns = {
@@ -203,6 +204,11 @@ export async function executionProjectionsForRuns(
       retryRequired: sql<boolean>`coalesce(${agents.lifecycleOperation}->>'retryRequired', 'false') = 'true'` })
     .from(agents).where(and(eq(agents.companyId, companyId), inArray(agents.id, setupAgentIds)))) : [];
   const setupByAgent = new Map(setupAgents.map(agent => [agent.id, agent]));
+  // Only never-started runs wait on the agent's limit; their place in line is
+  // read once per full agent, not once per run.
+  const agentQueueByRun = queuedRuns.some(run => !run.startedAt)
+    ? await read(() => agentQueueLinesForRuns(db, companyId, queuedRuns.filter(run => !run.startedAt), now))
+    : new Map<string, NonNullable<ExecutionProjection["agentQueue"]>>();
   const issueIdOf = (run: Run) => run.nativeIssueId ?? text(run.contextSnapshot?.issueId);
   const queuedIssueIds = [...new Set(queuedRuns.map(issueIdOf).filter((id): id is string => !!id))];
   if (queuedIssueIds.length) {
@@ -278,6 +284,7 @@ export async function executionProjectionsForRuns(
         settlingPredecessorKeys.has(run.id),
         setupByAgent.get(run.agentId),
         currentResponseWait(run),
+        agentQueueByRun.get(run.id),
       ),
     );
   }
@@ -305,6 +312,7 @@ export function projectExecution(
   waitingForPredecessor = false,
   setupAgent?: { lifecycleState: string; lifecycleHolds: readonly string[]; retryRequired?: boolean },
   responseWaitCurrent = false,
+  agentQueue?: ExecutionProjection["agentQueue"],
 ): ExecutionProjection {
   const detail = coordinator?.failureDetail ?? {};
   const successorRunId = text(detail.successorRunId);
@@ -339,7 +347,7 @@ export function projectExecution(
     Object.assign(projection, { phase, label });
   if (recoveryAction?.status === "resolved" && recoveryAction.evidence?.automaticRecovery) {
     projection.cause = recoveryAction.cause;
-    projection.nextAction = workspaceRecoveryDisplay(recoveryAction.evidence, run.id)?.message
+    projection.nextAction = workspaceRecoveryDisplay(recoveryAction.evidence, run.id, { status: run.status, retryOffered: false })?.message
       ?? recoveryAction.nextAction;
     const continuation = recoveryAction.evidence.explicitUserContinuation as
       { previousRunId?: unknown; runId?: unknown } | undefined;
@@ -360,9 +368,15 @@ export function projectExecution(
   ) {
     if (recoveryAction.evidence.continuationDelivery === "invalidated") {
       projection.cause = "continuation_ownership_changed";
-      projection.nextAction =
-        "The task was closed or reassigned before delivery. Inspect the current task owner and status.";
+      projection.nextAction = "The task changed before this continuation started, so it was not started.";
       return set("failed", "Continuation cancelled");
+    }
+    // A hold the fresh-continuation fallback settled together with another:
+    // the task continues through that record.
+    if (recoveryAction.evidence.continuationDelivery === "coalesced") {
+      projection.cause = null;
+      projection.nextAction = "Paperclip continues the task in a fresh run from its saved work.";
+      return set("queued", "Continuing automatically");
     }
     const reconciliation = recoveryAction.evidence.executionReconciliation;
     if (recoveryAction.cause === "native_restart_recovery_blocked"
@@ -390,10 +404,13 @@ export function projectExecution(
     projection.cause = null;
     projection.nextAction = deliveredRunId
       ? null
-      : "The previous execution is reconciled. Its continuation is queued for delivery.";
+      : recoveryAction.evidence.freshContinuationSettlement
+        ? "Paperclip continues the task in a fresh run from its saved work."
+        : "The previous execution is reconciled. Its continuation is queued for delivery.";
     return set(
       deliveredRunId ? "completed" : "queued",
-      deliveredRunId ? "Continued in another run" : "Continuation queued",
+      deliveredRunId ? "Continued in another run"
+        : recoveryAction.evidence.freshContinuationSettlement ? "Continuing automatically" : "Continuation queued",
     );
   }
   if (
@@ -532,7 +549,7 @@ export function projectExecution(
   // Process-local, like the drain: while this server starts, recovers, or
   // shuts down, its full queued-run pass has not run (or no longer runs).
   const serverPhase = getStartupRecoveryState().phase;
-  if (run.status === "queued" && serverPhase !== "ready") {
+  if (run.status === "queued" && startupQueuedRunPassOutstanding()) {
     projection.cause = "server_restarting";
     projection.nextAction = serverPhase === "draining"
       ? "The server is restarting for an update. This turn starts automatically on the replacement server."
@@ -543,6 +560,12 @@ export function projectExecution(
     projection.cause = "previous_run_settling";
     projection.nextAction = "The previous run on this task is still releasing its runner. This turn starts automatically when it settles.";
     return set("queued", "Waiting for previous run to stop");
+  }
+  if (run.status === "queued" && !run.startedAt && agentQueue) {
+    projection.cause = "agent_at_capacity";
+    projection.agentQueue = agentQueue;
+    projection.nextAction = `${agentQueue.agentName} is running ${agentQueue.runningCount} of ${agentQueue.maxConcurrentRuns} tasks at once. This task is ${agentQueue.position} of ${agentQueue.queuedCount} in line and starts automatically when a slot frees.`;
+    return set("queued", `Waiting for ${agentQueue.agentName}`);
   }
   return projection;
 }

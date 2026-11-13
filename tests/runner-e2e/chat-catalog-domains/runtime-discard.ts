@@ -9,7 +9,8 @@ import { checks, hasLink, type Entity } from "./internal-support.js";
 import { probeAgentPermission, cleanupIdentityProbes } from "./identity-support.js";
 import { releaseRuntimeWorker } from "./runtime-busy-worker.js";
 import { humanQueuedRuntime, probeConsumedHumanQueue } from "./runtime-queue-controls.js";
-import { runtimeQueueCases } from "./runtime-queue.js";
+import { handledInTurn, runCommentReceipts, runtimeQueueCases, settledQueue } from "./runtime-queue.js";
+import { continuationCarriesOwed, owedAfterTurn, type CommentReceipts, type QueuedFollowUp } from "./runtime-cited-delivery.js";
 import { runtimeDefinition, runtimeObservation, observeRuntime } from "./runtime-support.js";
 
 const contactText = "Also add a contact section to the website.";
@@ -20,6 +21,14 @@ export function promptCarries(prompt: string | undefined, body: string) {
 /** Links the reply saved in Markdown, plus links already rendered when the reply was observed. */
 export function replyLinkHrefs(reply: string, rendered: readonly string[]) {
   return [...new Set([...rendered, ...[...reply.matchAll(/\]\(([^)\s]+)\)/g)].map(match => match[1]!)])];
+}
+/**
+ * The cancelled request's setup label must be absent from the document's final revision. Whether the label
+ * was ever saved is checked separately on the consuming run's revisions; the plan's layout is not graded.
+ */
+export function documentContactRemoved(rows: ReadonlyArray<{ id: string; body?: string | null }>, latestRevisionId: unknown, label: string) {
+  const final = rows.find(row => row.id === latestRevisionId);
+  return !!final && label.length > 0 && !(final.body ?? "").includes(label);
 }
 export function gradeDiscard(value: unknown) {
   const c = checks(), o = runtimeObservation(value);
@@ -38,19 +47,26 @@ export function gradeDiscard(value: unknown) {
   c.add("chat-guides-supported-human-discard", String(s.queryReply ?? "").trim().length > 0 && s.queryLinkedTask === true
     && s.targetPendingAfterReply === true && s.agentDiscardStatus === 403,
   "The reply links the task whose queue holds the request, the request is still pending after the reply, and the agent cannot impersonate the person's discard.");
-  c.add("already-delivered-input-cannot-be-erased", s.consumedBeforeCancellation === true && s.consumedStillReadable === true
+  const followUps = Array.isArray(s.queuedFollowUps) ? s.queuedFollowUps as QueuedFollowUp[] : [], receipts = s.workerCommentReceipts as CommentReceipts | undefined;
+  const second = followUps.find(row => row.id === s.secondContactId), owed = owedAfterTurn(followUps, receipts);
+  const firstDelivery = followUps.length === 2 && !!second && !receipts?.cited?.includes(String(s.targetId)) && (owed.length
+    ? s.firstDeliveryRunCount === 3 && s.continuationConsumerCount === 1 && s.continuationInputBound === true
+    : s.firstDeliveryRunCount === 2 && s.continuationConsumerCount === 0);
+  c.add("later-input-delivered-once-before-cancellation", firstDelivery && (handledInTurn(receipts, second) ? s.consumerRunId === s.workerRunId : owed.includes(second!) && s.consumedBeforeCancellation === true),
+  "Each saved follow-up is delivered once before the cancellation: the running turn read it and cited it as handled, or one ordinary continuation receives every follow-up not handled in turn and none that was. The discarded request is never cited as handled.");
+  c.add("already-delivered-input-cannot-be-erased", s.consumedStillReadable === true
     && s.lateDiscardStatus === 409 && s.latePhaseAttributed === true && String(s.lateReply ?? "").trim().length > 0,
   "The consumed request stays readable and cannot be discarded late; the later answer is attributed to its own run.");
   c.add("new-direction-reaches-exactly-one-native-continuation", s.cancelDirectionRunBound === true && s.finalQueueEmpty === true
     && s.consumedLabelSaved === true && s.finalPlanWithoutContact === true
-    && s.initialRevisionRetained === true && o.runs.length === 5 && o.runs.every(row => row.status === "succeeded") && o.tasks.length === 1
+    && s.initialRevisionRetained === true && o.runs.length === Number(s.firstDeliveryRunCount) + 2 && o.runs.every(row => row.status === "succeeded") && o.tasks.length === 1
     && o.tasks[0]?.id === (s.task as Entity).id && o.tasks[0]?.status === "done",
   "A distinct saved instruction reaches one real later worker, updates the saved plan and preserves prior work/history without replaying the discarded request.");
   return c.result();
 }
 export const runtimeDiscardCases = [runtimeDefinition("steering.discard-queued-message", ctx => humanQueuedRuntime(ctx, contactText), gradeDiscard, {
-  authentication: "human-session", expectedHumanMessageCount: 2, expectedRunCount: 5, attemptTimeoutMs: 1_020_000, oracleVersion: "paperclip.chat-catalog.runtime-discard.v4",
-  sourceFiles: ["chat-catalog-domains/runtime-discard.ts", "chat-catalog-domains/runtime-queue-controls.ts", "chat-catalog-domains/runtime-queue.ts", "chat-catalog-domains/runtime-busy-worker.ts", "chat-catalog-domains/runtime-support.ts", "chat-catalog-domains/identity-support.ts", "chat-scenarios/steering.yaml"],
+  authentication: "human-session", expectedHumanMessageCount: 2, expectedRunCount: 5, minimumRunCount: 4, attemptTimeoutMs: 1_020_000, oracleVersion: "paperclip.chat-catalog.runtime-discard.v8",
+  sourceFiles: ["chat-catalog-domains/runtime-discard.ts", "chat-catalog-domains/runtime-queue-controls.ts", "chat-catalog-domains/runtime-queue.ts", "chat-catalog-domains/runtime-cited-delivery.ts", "chat-catalog-domains/runtime-busy-worker.ts", "chat-catalog-domains/runtime-support.ts", "chat-catalog-domains/identity-support.ts", "chat-scenarios/steering.yaml"],
   setupPolicy: runtimeQueueCases[0]!.setupPolicy, verifySetup: runtimeQueueCases[0]!.verifySetup,
   async act(ctx, state) {
     await pollUntil({ label: "Human discard guidance while Morgan is genuinely active", deadlineAt: chatCatalogNativePhaseDeadline(ctx, Date.now() + 150_000),
@@ -73,22 +89,32 @@ export const runtimeDiscardCases = [runtimeDefinition("steering.discard-queued-m
     state.discardVisible = true; state.discardedCommentStatus = (await ctx.input.page.request.get(`${root}/comments/${targetId}`)).status();
     await ctx.input.capture("actual-human-contact-discard", "Only the eligible contact request has left the real task queue", "runtime-discard.png");
     // This new, explicit human request is a distinct later instruction. It
-    // deliberately reaches normal native delivery before its cancellation.
+    // deliberately reaches delivery before its cancellation.
     const secondText = `I have changed my mind: add a contact section to the saved website plan, labelled ${ctx.input.nonce}. Keep the accessible-font requirement and finish this task.`;
     await submitTaskReply(ctx.input.page, secondText);
     const secondQueue = await pollUntil({ label: "Distinct human contact request genuinely queued", deadlineAt: Date.now() + 20_000,
       load: () => ctx.input.api.get<IssueQueuedCommentQueue>(queuePath), accept: q => q.entries.length === 2 && q.entries.some(row => row.comment.body === secondText) });
     const second = secondQueue.entries.find(row => row.comment.body === secondText)!;
     state.secondContactId = second.comment.id;
-    await writeFile((state.gate as { gate: string }).gate, "The human brief is ready: save an initial website-plan task document, retaining accessible font guidance, then finish this turn normally. Leave saved follow-ups for their ordinary continuation.", "utf8");
+    await writeFile((state.gate as { gate: string }).gate, "The human brief is ready: save an initial website-plan task document, retaining accessible font guidance, then finish this turn normally.", "utf8");
+    type Delivery = { runs: Array<{ status: string }>; task: Entity; queue: IssueQueuedCommentQueue };
+    const delivered = (v: Delivery) => v.runs.every(row => row.status === "succeeded") && v.task.status === "done" && v.queue.entries.length === 0;
+    const settledInTurn = settledQueue((v: Delivery) => delivered(v) && v.runs.length === 2, 30_000);
     const consumed = await pollUntil({ label: "Real later contact request consumed before cancellation", deadlineAt: Date.now() + 240_000,
       load: async () => ({ runs: await ctx.allRuns(), task: await ctx.input.api.get<Entity>(root), queue: await ctx.input.api.get<IssueQueuedCommentQueue>(queuePath) }),
-      accept: v => v.runs.length === 3 && v.runs.every(row => row.status === "succeeded") && v.task.status === "done" && v.queue.entries.length === 0 });
-    const consumer = consumed.runs.find(row => row.agentId === (state.worker as Entity).id && row.id !== state.workerRunId)!;
-    state.consumerRunId = consumer.id;
-    const detail = await ctx.input.api.get<{ contextSnapshot?: { wakeCommentIds?: string[] }; runnerProfileJson?: { nativeExecutionInput?: { task?: { prompt?: string } } } }>(`/api/heartbeat-runs/${consumer.id}`);
-    state.consumedBeforeCancellation = detail.contextSnapshot?.wakeCommentIds?.includes(second.comment.id) === true
-      && promptCarries(detail.runnerProfileJson?.nativeExecutionInput?.task?.prompt, secondText);
+      accept: v => settledInTurn(v) || delivered(v) && v.runs.length === 3,
+      reject: v => v.runs.length > 3 || v.runs.some(row => ["failed", "cancelled", "timed_out"].includes(row.status)) ? "The saved follow-ups failed or reached more than one continuation" : undefined });
+    const taskComments = await ctx.input.api.get<Entity[]>(`${root}/comments?order=asc`);
+    const followUps = secondQueue.entries.map(row => taskComments.find(comment => comment.id === row.comment.id)).filter((row): row is Entity => !!row)
+      .map(row => ({ id: String(row.id), updatedAt: row.updatedAt, body: String(row.body ?? "") }));
+    const receipts = await runCommentReceipts(ctx, String(state.workerRunId)); state.queuedFollowUps = followUps; state.workerCommentReceipts = receipts;
+    const successors = consumed.runs.filter(row => row.agentId === (state.worker as Entity).id && row.id !== state.workerRunId);
+    state.firstDeliveryRunCount = consumed.runs.length; state.continuationConsumerCount = successors.length;
+    const detail = successors[0] && await ctx.input.api.get<{ contextSnapshot?: { wakeCommentIds?: string[]; paperclipWake?: { comments?: Array<{ id?: string; readByEarlierTurn?: boolean }> } }; runnerProfileJson?: { nativeExecutionInput?: { task?: { prompt?: string } } } }>(`/api/heartbeat-runs/${successors[0].id}`);
+    const prompt = detail?.runnerProfileJson?.nativeExecutionInput?.task?.prompt;
+    state.continuationInputBound = !!detail && continuationCarriesOwed(followUps, receipts, { contextSnapshot: detail.contextSnapshot, prompt });
+    state.consumerRunId = handledInTurn(receipts, followUps.find(row => row.id === second.comment.id)) ? state.workerRunId : successors[0]?.id;
+    state.consumedBeforeCancellation = !!detail && detail.contextSnapshot?.wakeCommentIds?.includes(second.comment.id) === true && promptCarries(prompt, secondText);
     state.discardedNeverDelivered = consumed.runs.every(row => !((row.contextSnapshot?.wakeCommentIds as string[] | undefined) ?? []).includes(targetId));
     state.lateDiscardStatus = await probeConsumedHumanQueue(ctx, String(state.humanId), `${queuePath}/${second.comment.id}`, "DELETE", { queueId: secondQueue.queueId, revision: secondQueue.revision });
     await ctx.input.page.goto(source, { waitUntil: "domcontentloaded" });
@@ -97,8 +123,8 @@ export const runtimeDiscardCases = [runtimeDefinition("steering.discard-queued-m
     await sendChatMessage(ctx.input.page, message, chatCatalogNativePhaseRemainingBudget(ctx));
     const final = await pollUntil({ label: "One real new-direction continuation after already-delivered cancellation", deadlineAt: Date.now() + 300_000,
       load: async () => { await ctx.refreshIssue(); return { source: ctx.issue(), runs: await ctx.allRuns(), task: await ctx.input.api.get<Entity>(root), queue: await ctx.input.api.get<IssueQueuedCommentQueue>(queuePath) }; },
-      accept: v => v.source?.conversationState === "waiting" && v.runs.length === 5 && v.runs.every(row => row.status === "succeeded") && v.task.status === "done" && v.queue.entries.length === 0,
-      reject: v => v.runs.length > 5 || v.runs.some(row => ["failed", "cancelled", "timed_out"].includes(row.status)) ? "The declared later cancellation failed or duplicated execution" : undefined });
+      accept: v => v.source?.conversationState === "waiting" && v.runs.length === priorIds.length + 2 && v.runs.every(row => row.status === "succeeded") && v.task.status === "done" && v.queue.entries.length === 0,
+      reject: v => v.runs.length > priorIds.length + 2 || v.runs.some(row => ["failed", "cancelled", "timed_out"].includes(row.status)) ? "The declared later cancellation failed or duplicated execution" : undefined });
     const later = final.runs.filter(row => !priorIds.includes(row.id)), lead = later.find(row => row.agentId === ctx.input.fixtures.agent.id), worker = later.find(row => row.agentId === (state.worker as Entity).id);
     const sourceComments = await ctx.input.api.get<Entity[]>(`/api/issues/${ctx.issue()!.id}/comments?order=asc`), human = sourceComments.filter(row => !row.authorAgentId && row.body === message);
     const replies = sourceComments.filter(row => row.createdByRunId === lead?.id && row.authorAgentId === ctx.input.fixtures.agent.id);
@@ -122,8 +148,8 @@ export const runtimeDiscardCases = [runtimeDefinition("steering.discard-queued-m
     state.consumedLabelSaved = o.revisions.some(row => row.createdByRunId === state.consumerRunId && row.createdByAgentId === worker && (row.body ?? "").includes(label));
     const latest = o.revisions.filter(row => row.createdByRunId === state.finalWorkerRunId && row.createdByAgentId === worker
       && o.documents.some(doc => doc.id === row.documentId && doc.latestRevisionId === row.id));
-    state.finalPlanWithoutContact = latest.length > 0 && latest.every(row => !(row.body ?? "").includes(label))
-      && o.documents.every(doc => !(o.revisions.find(row => row.id === doc.latestRevisionId)?.body ?? "").includes(label));
+    state.finalPlanWithoutContact = latest.length > 0 && o.documents.every(doc => documentContactRemoved(
+      o.revisions.filter(row => row.documentId === doc.id), doc.latestRevisionId, label));
     return o;
   },
   async cleanup(ctx, state) { try { await cleanupIdentityProbes(ctx); } finally { await releaseRuntimeWorker(state); } },

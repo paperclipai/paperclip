@@ -118,7 +118,8 @@ export type QueuedRunStalenessErrorCode =
   | "issue_execution_lock_changed"
   | "issue_blocked"
   | "issue_review_participant_changed"
-  | "issue_continuation_waiting_on_review";
+  | "issue_continuation_waiting_on_review"
+  | "issue_in_backlog";
 
 export type StalenessDecision =
   | { stale: false }
@@ -600,6 +601,15 @@ export function decideQueuedRunStaleness(
         previousAssigneeAgentId: facts.runAgentId,
         currentAssigneeAgentId: facts.issueAssigneeAgentId,
       },
+    };
+  }
+
+  if (facts.wakeReason === "issue_assigned" && facts.issueStatus === "backlog") {
+    return {
+      stale: true,
+      errorCode: "issue_in_backlog",
+      reason: "Cancelled because the task moved to backlog before its assignment run could start",
+      details: { issueId: facts.issueId, currentStatus: facts.issueStatus },
     };
   }
 

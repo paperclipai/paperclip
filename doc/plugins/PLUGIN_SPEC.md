@@ -529,6 +529,22 @@ The host is responsible for:
 - secret resolution
 - UI route registration
 
+An activation whose worker `initialize` call times out is transient. The host
+removes the failed worker, keeps the plugin `ready`, and retries the activation
+after 5, 15, 45 and 120 seconds on the shared work scheduler. While it retries,
+the plugin's `lastError` starts with `Activation timed out` and names the next
+retry; a successful retry clears it. Status writes are conditional on the
+expected current status, so a disable or uninstall during a retry wins. Server
+shutdown cancels pending retries and waits for running ones. Runs that need the plugin see a
+worker that is not running, which setup retries within its bounded budget. After
+the last retry, the plugin becomes `error` with that same prefix. A run that
+needs the plugin then re-activates it on demand, at most once a minute. A run that resumes its exact sandbox lease after a
+restart waits up to 60 seconds for a re-activating sandbox provider's worker
+before it reports the worker unavailable. Any
+other activation failure, such as a bad manifest, a worker that exits during
+`initialize`, or a version mismatch, makes the plugin `error` at once. The next
+server boot retries it once.
+
 ## 12.3 Worker Responsibilities
 
 The plugin worker is responsible for:

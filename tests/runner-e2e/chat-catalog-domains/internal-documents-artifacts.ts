@@ -37,11 +37,14 @@ export function grade_documents_artifacts(value: unknown) {
       c.add("correct-thread-resolved", annotation?.status === "resolved" && annotation.resolvedByAgentId === o.leadId
         && unrelated?.status === "open" && annotation.documentId === plan?.id && annotation.originalRevisionId === o.state.originalRevisionId,
         "Only the anchored pricing annotation is resolved by the CEO, preserving its original document and revision relationship.");
-      const edited = o.activity.find(row => row.action === "issue.document_updated" && row.agentId === o.leadId);
+      const at = (row: Entity | undefined) => Date.parse(row?.createdAt ?? "");
       const resolved = o.activity.find(row => row.action === "issue.document_annotation_thread_resolved" && row.agentId === o.leadId && row.details?.threadId === target.id);
-      c.add("edit-before-resolution", !!edited && !!resolved && Date.parse(edited.createdAt ?? "") <= Date.parse(resolved.createdAt ?? "")
+      const fixed = o.revisions.filter(row => row.createdByAgentId === o.leadId && (!plan || row.documentId === undefined || row.documentId === plan.id)
+        && monthlyTeamPricing(row.body ?? "") && (row.body ?? "").includes(String(o.state.supportText))).sort((a, b) => at(a) - at(b))[0];
+      const audited = o.activity.some(row => row.action === "issue.document_updated" && row.agentId === o.leadId && at(row) <= at(resolved));
+      c.add("edit-before-resolution", !!fixed && !!resolved && at(fixed) <= at(resolved) && audited
         && !!plan && o.revisions.some(row => row.id === plan.latestRevisionId && row.createdByAgentId === o.leadId && row.body === plan.body),
-        "Saved revision and independent audit events establish the substantive edit before resolution.");
+        "The first CEO revision that saves the $19 team-total fix, with its audited edit, precedes the resolution; an unrelated earlier save does not count.");
       c.add("task-and-document-access", !!before && sameTask(before, current) && linkedTask(), "Chat links the changed document's task without modifying task execution.");
       break;
     }
@@ -113,7 +116,7 @@ function resolveFeedback(): ChatCatalogCase {
       document: { id: doc.id, key: "plan", latestRevisionId: doc.latestRevisionId! }, annotationId: pricingThread.id });
     return { project: p, task: t, pricingThread, siblingThread, supportText, originalRevisionId: doc.latestRevisionId, selectedSource, factualContextAttachment: selectedSource.factualContextAttachment };
   });
-  return { ...base, sourceFiles: [...base.sourceFiles, "../../packages/shared/src/document-anchors.ts"], async observe(ctx, state) {
+  return { ...base, oracleVersion: "paperclip.chat-catalog.internal.resolve-feedback.v3", sourceFiles: [...base.sourceFiles, "../../packages/shared/src/document-anchors.ts"], async observe(ctx, state) {
     const o = await observeInternal(ctx, state);
     return { ...o, annotations: await ctx.input.api.get<Entity[]>(`/api/issues/${entity(state, "task").id}/documents/plan/annotations?status=all&includeComments=true`) };
   } };

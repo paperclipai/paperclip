@@ -15,6 +15,7 @@ import { normalizedSecrets, redactText } from "../redaction.js";
 import { CREDENTIAL_NAMES } from "../types.js";
 import { checks, project, task, type Entity } from "./internal-support.js";
 import { privilegedDefinition, privilegedObservation, settlePrivilegedChat, companionPhase } from "./privileged-support.js";
+import { replyOrCardText } from "./turn-response-card.js";
 const execute = promisify(execFile);
 interface OwnedDev { root: string; checkout: string; home: string; instance: string; env: NodeJS.ProcessEnv; loader: string; entry: string; log: string; child?: ChildProcess; closed?: Promise<void>; config?: string }
 const owned = new WeakMap<ChatCatalogContext, OwnedDev>();
@@ -150,7 +151,9 @@ const dev = privilegedDefinition("cli-operations.owned-dev-instance", "privilege
       dependencySource: "explicit immutable candidate modules; source and compiled dependency provenance retained in campaign snapshot receipt" };
   },
   async act(ctx, state) {
-    const initial = await settlePrivilegedChat(ctx); state.guidance = initial.reply; const o = owned.get(ctx)!;
+    // A question card the run ended its turn on is that turn's reply (decision after full cohort 4): its text counts.
+    const initial = await settlePrivilegedChat(ctx); state.guidance = replyOrCardText(initial.reply, initial.responseCards);
+    state.guidanceCardIds = initial.responseCards.map(card => card.id); const o = owned.get(ctx)!;
     state.hostInstallationsUnchanged = sameInstallations(state.installationsBefore as Record<string, string>, await paperclipInstallations(await realpath(process.env.PAPERCLIP_RUNNER_E2E_TEMP_ROOT!)));
     const reserve = async () => { const listener = createServer(); const port = await listenOnFetchAllowedPort(listener); await new Promise<void>((resolve, reject) => listener.close(e => e ? reject(e) : resolve())); return port; };
     const serverPort = await reserve(), dbPort = await reserve();
@@ -192,7 +195,7 @@ const dev = privilegedDefinition("cli-operations.owned-dev-instance", "privilege
     await sendChatMessage(ctx.input.page, message); state.devReport = await companionPhase(ctx, initial.runs.map(r => r.id), message);
   }, grade: gradeOwnedDev, async verifyResult(ctx) { await expect(ctx.input.page.getByTestId("task-chat-composer-input")).toBeVisible(); },
 });
-dev.oracleVersion = "paperclip.chat-catalog.privileged.owned-dev-instance.v2"; dev.expectedRunCount = 2; dev.expectedHumanMessageCount = 2; dev.attemptTimeoutMs = 900000;
+dev.oracleVersion = "paperclip.chat-catalog.privileged.owned-dev-instance.v3"; dev.expectedRunCount = 2; dev.expectedHumanMessageCount = 2; dev.attemptTimeoutMs = 900000;
 dev.cleanup = async ctx => { const o = owned.get(ctx); if (!o) return; await stop(o); if (o.config) await command(o, ["worktree:cleanup", o.instance, "--instance", o.instance, "--home", o.home]);
   const root = await realpath(process.env.PAPERCLIP_RUNNER_E2E_TEMP_ROOT!), directory = await realpath(o.root);
   if (!directory.startsWith(root + path.sep) || !path.basename(directory).startsWith("operator-dev-")) throw new Error("Refusing non-owned development cleanup");

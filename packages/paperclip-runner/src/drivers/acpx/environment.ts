@@ -1,7 +1,7 @@
 import { isOpenRouterUrl, openRouterClaudeHeaders } from "../openrouter-attribution.js";
 import { sanitizeAntigravityEnvironment } from "./antigravity-environment.js";
 import { providerObservabilityEnvironment } from "../agent-observability.js";
-import { CONFIGURED_ENVIRONMENT_KEYS, configuredEnvironment, configuredEnvironmentKeys } from "../../configured-environment.js";
+import { CERTIFICATE_ENVIRONMENT_KEYS, CONFIGURED_ENVIRONMENT_KEYS, configuredEnvironment, configuredEnvironmentKeys } from "../../configured-environment.js";
 import { PI_CREDENTIAL_NAMES, PI_GENERAL_IAM_CREDENTIAL_NAMES, piCredentialNames } from "./pi-provider-config.js";
 import { PRECONFIGURED_HOME_KEYS, usesPreconfiguredHome } from "../preconfigured-home.js";
 import type { QualifiedAcpxAgent } from "./qualified-profiles.js";
@@ -19,6 +19,7 @@ export const ACPX_CREDENTIAL_NAMES: Readonly<Record<QualifiedAcpxAgent, readonly
 };
 /** Enables Claude Code's TaskCreate/TaskUpdate tools, which feed the native plan. */
 export const CLAUDE_TODO_TOOLS_ENV = "CLAUDE_CODE_ENABLE_TODO_TOOLS";
+export const CLAUDE_CRON_DISABLE_ENV = "CLAUDE_CODE_DISABLE_CRON";
 export const CLAUDE_ROUTING_ENV_KEYS =["ANTHROPIC_BASE_URL", "ANTHROPIC_CUSTOM_HEADERS", "CLAUDE_CODE_USE_BEDROCK", "AWS_REGION", "AWS_DEFAULT_REGION", "AWS_EC2_METADATA_DISABLED", "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC", "ANTHROPIC_MODEL", "ANTHROPIC_DEFAULT_OPUS_MODEL", "ANTHROPIC_DEFAULT_SONNET_MODEL", "ANTHROPIC_DEFAULT_HAIKU_MODEL", "CLAUDE_CODE_SUBAGENT_MODEL"] as const;
 
 /** Keep the task projection consistent when excluding general IAM from Pi. */
@@ -126,6 +127,7 @@ export function createSanitizedAcpxSpawnInput(
   const result: NodeJS.ProcessEnv = { ...configuredEnvironment(environment), ...providerObservabilityEnvironment(environment, agent) };
   const credentialNames = agent === "pi" ? piCredentialNames(environment) : ACPX_CREDENTIAL_NAMES[agent];
   const allowed = new Set([
+    ...CERTIFICATE_ENVIRONMENT_KEYS,
     "PATH",
     "LANG",
     "LANGUAGE",
@@ -133,9 +135,6 @@ export function createSanitizedAcpxSpawnInput(
     "TMPDIR",
     "TEMP",
     "TMP",
-    "SSL_CERT_FILE",
-    "SSL_CERT_DIR",
-    "NODE_EXTRA_CA_CERTS",
     "HTTP_PROXY",
     "HTTPS_PROXY",
     "NO_PROXY",
@@ -145,10 +144,8 @@ export function createSanitizedAcpxSpawnInput(
     "no_proxy",
     "all_proxy",
     "RUST_BACKTRACE",
-    "PAPERCLIP_NATIVE_MCP_NAME",
     "PAPERCLIP_RUNTIME_NOTIFICATION_CONTEXT",
     "PAPERCLIP_RUNTIME_NOTIFICATION_HELPER",
-    "PAPERCLIP_NATIVE_MCP_URL",
     ...(environment === undefined ? [] : ["PAPERCLIP_AGENT_KEY_ID", "PAPERCLIP_AGENT_PUBLIC_KEY", "PAPERCLIP_AGENT_PRIVATE_KEY"]),
     ...credentialNames,
     ...(agent === "claude" ? CLAUDE_ROUTING_ENV_KEYS : []),
@@ -188,6 +185,7 @@ export function createSanitizedAcpxSpawnInput(
   // Paperclip renders that list as the turn plan (ACP `plan` -> `plan.updated`),
   // so the launcher owns this value; a host setting cannot switch it off.
   if (agent === "claude") result[CLAUDE_TODO_TOOLS_ENV] = "1";
+  if (agent === "claude") result[CLAUDE_CRON_DISABLE_ENV] = "1";
   if (agent === "claude" && isOpenRouterUrl(result.ANTHROPIC_BASE_URL)) {
     result.ANTHROPIC_CUSTOM_HEADERS = openRouterClaudeHeaders(result.ANTHROPIC_CUSTOM_HEADERS);
   }

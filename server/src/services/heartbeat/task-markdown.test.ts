@@ -74,11 +74,20 @@ describe("heartbeat task markdown rendering", () => {
     expect(buildPaperclipTaskMarkdown({ issue, nativeRunner: false, coordinatorWorkspace: true }))
       .not.toContain("Coordinator task proposals:");
   });
+  it("gives a standing chat real company page paths instead of a /<prefix>/ placeholder it could copy into a link", () => {
+    const chat = { id: "chat", identifier: "COM-12", title: "Chat", conversationAgentId: "ceo" };
+    const markdown = buildPaperclipTaskMarkdown({ issue: chat, nativeRunner: true, conferenceRoomEnabled: true, statusCardsEnabled: true, casesEnabled: true, coordinatorWorkspace: true })!;
+    expect(markdown).not.toContain("/<prefix>/");
+    expect(markdown).toContain("profile settings at /COM/company/settings/instance/profile");
+    expect(markdown).toContain("/COM/issues/<identifier>");
+    // Without an identifier the prefix is unknown, so the documented placeholder stays.
+    expect(buildPaperclipTaskMarkdown({ issue: { ...chat, identifier: null } })).toContain("/<prefix>/issues/<identifier>");
+  });
   it("tells a standing chat about the Conference Room only while the experiment is enabled", () => {
     const chat = { id: "chat", identifier: "RUN-1", title: "Chat", conversationAgentId: "ceo" };
     const enabled = buildPaperclipTaskMarkdown({ issue: chat, nativeRunner: true, conferenceRoomEnabled: true });
     expect(enabled).toContain("Conference Room:");
-    expect(enabled).toContain("[Open the Conference Room](/<prefix>/board-chat)");
+    expect(enabled).toContain("[Open the Conference Room](/RUN/board-chat)");
     expect(enabled).toContain("does not carry over this conversation's history");
     expect(buildPaperclipTaskMarkdown({ issue: chat, nativeRunner: true })).not.toContain("board-chat");
     expect(buildPaperclipTaskMarkdown({ issue: { ...chat, conversationAgentId: null }, nativeRunner: true, conferenceRoomEnabled: true }))
@@ -93,10 +102,10 @@ describe("heartbeat task markdown rendering", () => {
     expect(enabled).toContain("POST /api/status-cards/{id}/refresh");
     expect(enabled).toContain("Do not sleep or poll the card. Report the outcome the response gives");
     expect(enabled).toContain("enqueued false otherwise means no run started, so say why from card.state");
-    expect(enabled).toContain("[Launch blockers](/<prefix>/status/<cardId>)");
+    expect(enabled).toContain("[Launch blockers](/RUN/status/<cardId>)");
     // The named pages are the board's real routes.
     const app = readFileSync(new URL("../../../../ui/src/App.tsx", import.meta.url), "utf8");
-    expect(enabled).toContain("Status page at /<prefix>/status (");
+    expect(enabled).toContain("Status page at /RUN/status (");
     expect(app).toMatch(/path="status"\s+element=\{<StatusCardsExperimentalGate>/);
     expect(app).toMatch(/path="status\/:cardId"\s+element=\{<StatusCardsExperimentalGate>/);
     expect(buildPaperclipTaskMarkdown({ issue: chat, nativeRunner: true })).not.toContain("Status Cards:");
@@ -107,8 +116,8 @@ describe("heartbeat task markdown rendering", () => {
     const chat = { id: "chat", identifier: "RUN-1", title: "Chat", conversationAgentId: "ceo" };
     const enabled = buildPaperclipTaskMarkdown({ issue: chat, nativeRunner: true, casesEnabled: true })!;
     expect(enabled).toContain("Cases:");
-    expect(enabled).toContain("/<prefix>/cases/<case identifier>");
-    expect(enabled).toContain("[RUN-C1](/<prefix>/cases/RUN-C1)");
+    expect(enabled).toContain("/RUN/cases/<case identifier>");
+    expect(enabled).toContain("[RUN-C1](/RUN/cases/RUN-C1)");
     // The named page is the board's real route.
     const app = readFileSync(new URL("../../../../ui/src/App.tsx", import.meta.url), "utf8");
     expect(app).toMatch(/path="cases\/:caseIdentifier"/);

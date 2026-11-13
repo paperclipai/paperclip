@@ -13,6 +13,12 @@ const handoffSchema = z.object({
 const key = "runnerTaskCredentialHandoff";
 type Scope = { companyId: string; leaseId: string; expectedTaskId?: string };
 
+export function canReadStoppedPluginTaskCredential(metadata: Record<string, unknown>, accountIdentity: string): boolean {
+  const handoff = handoffSchema.safeParse(metadata[key]);
+  return metadata.runnerTaskExecutionStopped === true && handoff.success &&
+    handoff.data.state === "pending" && handoff.data.accountIdentity === accountIdentity;
+}
+
 /** Save authority, never credential bytes or a controller-local temporary path. */
 export async function registerPluginTaskCredentialHandoff(
   db: Db,

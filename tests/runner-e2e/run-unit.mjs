@@ -1,5 +1,6 @@
 import { spawnSync } from "node:child_process";
 import { existsSync } from "node:fs";
+import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -19,6 +20,7 @@ const { invocationEnv } = await import(new URL("../../scripts/ci-profile/record.
 const env = { ...process.env };
 delete env.NODE_PATH;
 delete env.NODE_OPTIONS;
+env.NODE_COMPILE_CACHE ??= path.join(tmpdir(), "paperclip-runner-e2e-compile-cache");
 
 for (const [name, command] of [
   // Server modules under test import the built plugin SDK (and shared) package.

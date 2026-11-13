@@ -148,7 +148,9 @@ describeEmbeddedPostgres("managed warm checkpoint ownership", () => {
           sandboxLeaseAcquisition: { outcome: acquisition, providerLeaseId },
           runner: { execute: async (command: { args?: string[] }) => command.args?.[1] === "uname -s; uname -m"
             ? { exitCode: 0, timedOut: false, stdout: `${process.platform === "darwin" ? "Darwin" : "Linux"}\n${process.arch === "arm64" ? "arm64" : "x86_64"}\n`, stderr: "" }
-            : { exitCode: 1, timedOut: false, stdout: "", stderr: "" }, syncIn: async () => {} } } as never,
+            : command.args?.[2] === "paperclip-runner-port-holders"
+              ? { exitCode: 0, timedOut: false, stdout: "", stderr: "" }
+              : { exitCode: 1, timedOut: false, stdout: "", stderr: "" }, syncIn: async () => {} } } as never,
         instructionWorkingCopy: { runId: fixture.runId, root, checkpointWarm: async () => {
           if (instructionErrorWithDetach) { enteredClose(); await closeGate; throw initiatingError; }
           if (scenario === "instruction_error") throw initiatingError;

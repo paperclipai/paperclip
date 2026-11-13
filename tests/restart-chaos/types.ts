@@ -12,9 +12,11 @@ import type { TimeFaultRecord } from "./time-faults.js";
  * TM1–TM3 (time faults, time-faults.ts): freeze the server, sleep with aged rows, or an aged outage.
  * RR1–RR3 (repeated restarts, repeated-restarts.ts): a K1, then more restarts while the replacement recovers.
  * MS1–MS3 (two servers, one database, multi-server.ts): a second server beside the first.
- * CR1–CR3 (staging class R, class-r.ts): a long-held redeploy, a provider-only kill in the sandbox, a plugin RPC stall.
+ * CR1–CR6 (staging class R, class-r.ts): a long-held redeploy, a provider-only kill in the sandbox, a plugin RPC stall
+ * mid-tool (CR3), right after a K1 restart while the run reattaches (CR4), while the run launches (CR5), or while the
+ * replacement activates the plugin at boot (CR6).
  */
-export const FAULT_KINDS = ["K1", "K2", "K4", "K6", "K14", "K15", "TM1", "TM2", "TM3", "RR1", "RR2", "RR3", "MS1", "MS2", "MS3", "CR1", "CR2", "CR3"] as const;
+export const FAULT_KINDS = ["K1", "K2", "K4", "K6", "K14", "K15", "TM1", "TM2", "TM3", "RR1", "RR2", "RR3", "MS1", "MS2", "MS3", "CR1", "CR2", "CR3", "CR4", "CR5", "CR6"] as const;
 export type FaultKind = (typeof FAULT_KINDS)[number];
 /** The shortest seeded K4 outage (scheduler.ts K4_HOLD_RANGE_MS), also the K4 hold after a provider fault. */
 export const K4_MIN_HOLD_MS = 120_000;
@@ -36,7 +38,7 @@ export type TaskFaultKind = FaultKind | "K13" | "K0" | ProviderFaultKind | DiskF
  * H2: the agent's own last step hands the task to the person who created it, in review (staging class H).
  * W2, W2Q, W2C: the same task woken again 0–60 s after its run succeeded (rewake.ts), many tasks on one agent.
  */
-export const WORKLOAD_IDS = ["A1", "B1", "B5", "C1", "M1", "G1", "H1", "R1", "S1", "Q1", "L1", "Q2", "Q3", "Q4", "F1", "T1", "W2", "W2Q", "W2C", "H2"] as const;
+export const WORKLOAD_IDS = ["A1", "B1", "B5", "C1", "M1", "G1", "H1", "R1", "S1", "Q1", "L1", "Q2", "Q3", "Q4", "F1", "T1", "W2", "W2Q", "W2C", "H2", "SM"] as const;
 export type WorkloadId = (typeof WORKLOAD_IDS)[number];
 
 export const ADAPTER_IDS = ["codex", "claude", "opencode"] as const;
@@ -86,6 +88,9 @@ export interface WaveOptions {
   k15Overlap?: boolean;
   /** `--k15-fresh-home`: each deploy generation gets a new, empty instance home and no volume (redeploy.ts). */
   k15FreshHome?: boolean;
+  ephemeralServer?: boolean;
+  releaseSwap?: import("./release-swap-schedule.js").ReleaseSwapOptions;
+  runnerBindFault?: boolean;
   /** `--faults K0`: cells with no fault, for workloads whose shape is the fault (W2, W2Q, W2C). */
   baseline?: boolean;
   /**
@@ -101,7 +106,7 @@ export interface WaveOptions {
   cr1HoldMs?: [number, number];
   /** `--cr2-hold-seconds`: a K15 outage around CR2's provider kill; absent or 0 keeps the controller up. */
   cr2HoldMs?: [number, number];
-  /** `--cr3-stall-seconds`: how long CR3 stops the Daytona plugin worker; absent means 45 s. */
+  /** `--cr3-stall-seconds`: how long CR3–CR6 stop the Daytona plugin worker; absent means 45 s. */
   cr3StallMs?: [number, number];
   /** `--tm1-hold-seconds`: the seeded TM1 stall range (time-faults-config.ts); absent uses 95–150 s. */
   tm1HoldMs?: [number, number];
@@ -175,6 +180,7 @@ export interface WaveOptions {
   rrGapMs?: [number, number];
   /** RR1–RR3 (`--rr-stop-on recovering`): stop each replacement on its first `recovering` status instead of after a gap. */
   rrStopOn?: "recovering";
+  stagingMix?: import("./staging-mix.js").StagingMixOptions;
 }
 
 export interface StormFault {
@@ -216,6 +222,7 @@ export interface TaskPlan {
   restartSteps?: RestartStep[];
   /** `--long-turn-minutes`: the first turn's tool work before the workload (long-turn.ts). */
   longTurnMinutes?: number;
+  stagingMix?: import("./staging-mix.js").StagingMixTask;
 }
 
 export interface ScheduledFault {
@@ -236,6 +243,7 @@ export interface WavePlan {
   tasks: TaskPlan[];
   /** K13 only: the seeded storm fault sequence. */
   storm?: StormPlan;
+  stagingMixSlots?: import("./staging-mix.js").StagingMixSlot[];
   /** Present when this wave replays one task of an earlier wave. */
   replayOf?: { waveId: string; taskId: string };
 }
@@ -286,6 +294,7 @@ export interface TaskSample {
   recoveryOwner?: string | null;
   executionBlocker?: boolean;
   scheduledRetry?: boolean;
+  waitingOnChildren?: boolean;
   runs?: RunSample[];
 }
 
@@ -339,7 +348,7 @@ export interface FaultReceipt {
   repeatedRestart?: RepeatedRestartRecord;
   /** MS1–MS3: the second server and what happened to the first. */
   multiServer?: import("./multi-server.js").MultiServerRecord;
-  /** CR1–CR3: the provider kill or plugin stall and the sandbox captures taken around the fault (class-r.ts). */
+  /** CR1–CR6: the provider kill or plugin stall and the sandbox captures taken around the fault (class-r.ts). */
   classR?: import("./class-r.js").ClassRRecord;
   serverLogOffsetAtStart: number;
   serverLogOffsetAtReady: number | null;
@@ -377,6 +386,7 @@ export interface OracleArtifacts {
   runs?: import("./rewake.js").RewakeArtifacts["runs"];
   /** H2: who owns the task at rest, and how its runs ended. */
   handoff?: HandoffArtifacts;
+  stagingMix?: import("./staging-mix.js").StagingMixArtifacts;
 }
 
 /** H2: the task's owner and execution state at rest, and each run's terminal state. */
@@ -482,6 +492,7 @@ export interface TaskRecord {
   providerFaultAppliedAt?: number;
   /** DF1: when the fault was armed and cleared, and what the board showed at the disk-full rest. */
   diskFull?: DiskFullRecord;
+  stagingMix?: import("./staging-mix.js").StagingMixRecord;
 }
 
 export interface TaskGrade {

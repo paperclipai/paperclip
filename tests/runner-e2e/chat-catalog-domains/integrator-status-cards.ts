@@ -11,7 +11,8 @@ import { fixtureWorker } from "./internal-definition.js";
 import { collectRunEvents } from "../run-observations.js";
 import { apiReadDigests, apiReadStatuses, recordParams } from "./api-read-receipts.js";
 import { integratorDefinition, inspectResult, resultHref, observeInternal } from "./integrator-support.js";
-interface CardsObservation extends InternalObservation { cards: StatusCard[]; updates: Record<string, StatusCardUpdate[]>; summaries: Record<string, StatusCardSummaryRevision[]>; cardsEnabled: boolean; cardWork?: CardWorkEvidence; sourceReads?: SourceReads; cardOperations?: Record<string, string[]> }
+import { replyOrCardLinks, replyOrCardText, turnResponseCards, type TurnResponseCard } from "./turn-response-card.js";
+interface CardsObservation extends InternalObservation { responseCards?: TurnResponseCard[]; cards: StatusCard[]; updates: Record<string, StatusCardUpdate[]>; summaries: Record<string, StatusCardSummaryRevision[]>; cardsEnabled: boolean; cardWork?: CardWorkEvidence; sourceReads?: SourceReads; cardOperations?: Record<string, string[]> }
 /** What the responding agent actually got back when it read the source task, split by chat turn. */
 export interface SourceReads { initialLive: boolean; laterUnavailable: boolean; laterLive: boolean }
 const objectRecord = (value: unknown): Record<string, unknown> => value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
@@ -32,14 +33,32 @@ export function statusCardOperations(events: readonly Record<string, unknown>[],
   ]);
   return apiReadStatuses(events, digests).filter(read => read.ok && read.status >= 200 && read.status < 300).map(read => read.operationId);
 }
+function resultHasTask(value: unknown, sourceId: string, status: string | undefined, depth = 0): boolean {
+  if (depth > 3 || !value || typeof value !== "object") return false;
+  if (Array.isArray(value)) return value.some(row => resultHasTask(row, sourceId, status, depth + 1));
+  const record = value as Record<string, unknown>;
+  if (record.id === sourceId && typeof record.status === "string" && (status === undefined || record.status === status)) return true;
+  return Object.values(record).some(row => resultHasTask(row, sourceId, status, depth + 1));
+}
+function dedicatedToolTaskRead(events: readonly Record<string, unknown>[], sourceId: string, status: string | undefined) {
+  const tools = new Map<string, string>();
+  return events.some(row => {
+    const envelope = objectRecord(objectRecord(row.payload).prpEvent), item = objectRecord(objectRecord(envelope.payload).item);
+    const key = `${String(row.runId ?? envelope.runId ?? "")}:${String(item.type === "tool_use" ? item.id : item.tool_use_id)}`;
+    if (item.type === "tool_use" && typeof item.name === "string") { tools.set(key, item.name); return false; }
+    if (item.type !== "tool_result" || !item.result || typeof item.result !== "object") return false;
+    const tool = tools.get(key), result = objectRecord(item.result);
+    return !!tool && tool !== "call_api" && result.apiPayloadRedacted !== true && result.ok !== false && resultHasTask(result, sourceId, status);
+  });
+}
 /**
  * Classifies this run's reads of the source task. call_api reads are bound to the source by their saved
  * input digest: a successful result is a live read and a 404 is an unavailable one. An unredacted
  * dedicated-tool output naming the source also counts as live.
  */
-export function sourceTaskReads(events: readonly Record<string, unknown>[], sourceId: string, identifier?: string | null) {
+export function sourceTaskReads(events: readonly Record<string, unknown>[], sourceId: string, identifier?: string | null, liveStatus?: string) {
   const reads = apiReadStatuses(events, apiReadDigests([{ operationId: "GET /api/issues/{id}", pathParams: recordParams("id", sourceId, identifier) }]));
-  let live = reads.some(read => read.ok && read.status >= 200 && read.status < 300), unavailable = reads.some(read => read.status === 404);
+  let live = reads.some(read => read.ok && read.status >= 200 && read.status < 300) || dedicatedToolTaskRead(events, sourceId, liveStatus), unavailable = reads.some(read => read.status === 404);
   for (const row of events) {
     const envelope = objectRecord(objectRecord(row.payload).prpEvent), payload = objectRecord(envelope.payload);
     const output = typeof payload.output === "string" ? payload.output : "";
@@ -62,7 +81,11 @@ async function observeCards(ctx: ChatCatalogContext, state: Record<string, unkno
     ? await observeCardWork(ctx, state.cardRecipe as CardRecipe, state.failedGenerationIssueId) : undefined;
   const sourceReads = ctx.scenario.id === "status-cards.explain-card" && state.sourceUnavailable === true ? await observeSourceReads(ctx, base, state) : undefined;
   const cardOperations = ctx.scenario.id === "status-cards.refresh-card" && options.runEvents !== false ? await observeCardOperations(ctx, base, (state.card as StatusCard).id) : undefined;
-  return { ...base, cards, updates, summaries, cardsEnabled: settings.enableStatusCards, ...(cardWork ? { cardWork } : {}), ...(sourceReads ? { sourceReads } : {}), ...(cardOperations ? { cardOperations } : {}) };
+  // A question card the run ended its turn on is that turn's reply (decision after full cohort 4).
+  const source = ctx.issue();
+  const responseCards = ctx.scenario.id === "status-cards.other-authors-card" && source
+    ? turnResponseCards({ companyId: base.companyId, leadId: base.leadId, runs: base.runs, interactions: await api.get<unknown[]>(`/api/issues/${source.id}/interactions`) }) : undefined;
+  return { ...base, ...(responseCards ? { responseCards } : {}), cards, updates, summaries, cardsEnabled: settings.enableStatusCards, ...(cardWork ? { cardWork } : {}), ...(sourceReads ? { sourceReads } : {}), ...(cardOperations ? { cardOperations } : {}) };
 }
 async function observeCardOperations(ctx: ChatCatalogContext, base: InternalObservation, cardId: string): Promise<Record<string, string[]>> {
   return Object.fromEntries(await Promise.all(base.runs.filter(run => run.agentId === base.leadId).map(async run => [run.id,
@@ -77,7 +100,7 @@ async function observeSourceReads(ctx: ChatCatalogContext, base: InternalObserva
   const reads: SourceReads = { initialLive: false, laterUnavailable: false, laterLive: false };
   for (const run of base.runs.filter(row => row.agentId === base.leadId)) {
     const events = await collectRunEvents<Record<string, unknown>>(afterSeq => ctx.input.api.get(`/api/heartbeat-runs/${run.id}/events?afterSeq=${afterSeq}&limit=1000`));
-    const found = sourceTaskReads(events, sourceId, source?.identifier);
+    const found = sourceTaskReads(events, sourceId, source?.identifier, typeof source?.status === "string" ? source.status : undefined);
     if (initialRuns.has(run.id)) reads.initialLive ||= found.live;
     else { reads.laterUnavailable ||= found.unavailable; reads.laterLive ||= found.live; }
   }
@@ -209,9 +232,12 @@ export function gradeIntegratorCards(value: unknown) {
       && (ownerChanged || JSON.stringify(card.refreshPolicy) === JSON.stringify(before.refreshPolicy) && JSON.stringify(o.summaries[card.id]) === JSON.stringify(o.state.originalSummaries)),
       "Morgan's original card is not archived, cloned or reauthored; it changes only through Morgan's own work on a task the CEO handed to Morgan.");
     // A person reads the reply for meaning; structurally it must route the person to the card,
-    // to its author, or to the task handed to the author.
-    c.add("author-management-boundary", o.reply.trim().length > 0 && (!!card && !!cardLink(o, card.id) || authorProfileLinked(o, o.state.worker as Entity | undefined)
-      || delegated.some(row => hasLink(o, "issues", row)))
+    // to its author, or to the task handed to the author. A question card the turn ended on is its reply:
+    // its text counts as the response and the links it renders count with the reply's.
+    const responseCards = o.responseCards ?? [];
+    const answered = { ...o, links: replyOrCardLinks(o.links, responseCards) };
+    c.add("author-management-boundary", replyOrCardText(o.reply, responseCards).trim().length > 0 && (!!card && !!cardLink(answered, card.id) || authorProfileLinked(answered, o.state.worker as Entity | undefined)
+      || delegated.some(row => hasLink(answered, "issues", row)))
       && (delegated.length === 0 || o.runs.every(run => !["queued", "running"].includes(run.status))),
       "The response routes the change to the card, its author or the author's task; a handoff to the author is graded once that work settles.");
     c.add("no-agent-card-mutation", !o.activity.some(event => event.agentId === o.leadId && /^status_card\./.test(event.action ?? "")), "No responding-agent card mutation evades author-specific management.");
@@ -330,8 +356,8 @@ function define(id: string, seed: "none" | "ceo" | "morgan", extra: Partial<Chat
 export const integratorStatusCardsCases: readonly ChatCatalogCase[] = [
   define("status-cards.create-card", "none", { oracleVersion: "paperclip.chat-catalog.status-card.create.v2" }),
   define("status-cards.archive-card", "ceo", { oracleVersion: "paperclip.chat-catalog.status-card.archive.v3", authentication: "human-session", queryAttachments: factualContextQueryAttachment("selected-status-card.md"), expectedRunCount: 3, attemptTimeoutMs: 720_000 }),
-  define("status-cards.other-authors-card", "morgan", { oracleVersion: "paperclip.chat-catalog.status-card.other-authors.v2", expectedRunCount: 5, minimumRunCount: 2 }),
-  define("status-cards.explain-card", "ceo", { oracleVersion: "paperclip.chat-catalog.status-card.explain.v5", authentication: "human-session", queryAttachments: factualContextQueryAttachment("selected-status-card.md"), expectedRunCount: 5, minimumRunCount: 3, expectedHumanMessageCount: 2, attemptTimeoutMs: 720_000,
+  define("status-cards.other-authors-card", "morgan", { oracleVersion: "paperclip.chat-catalog.status-card.other-authors.v4", expectedRunCount: 5, minimumRunCount: 2 }),
+  define("status-cards.explain-card", "ceo", { oracleVersion: "paperclip.chat-catalog.status-card.explain.v6", authentication: "human-session", queryAttachments: factualContextQueryAttachment("selected-status-card.md"), expectedRunCount: 5, minimumRunCount: 3, expectedHumanMessageCount: 2, attemptTimeoutMs: 720_000,
     sourceFiles: ["chat-catalog-domains/integrator-status-cards.ts", "chat-catalog-domains/api-read-receipts.ts", "chat-catalog-domains/identity-support.ts", "chat-catalog-domains/internal-definition.ts", "chat-catalog-domains/internal-support.ts", "chat-catalog-domains/integrator-support.ts", "run-observations.ts", "chat-scenarios/status-cards.yaml"],
     async act(ctx, state) {
       // The lead may refresh its own stale card while answering; wait for that generation to settle

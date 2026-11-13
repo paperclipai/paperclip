@@ -2,7 +2,7 @@ import { chatCatalogNativePhaseDeadline, chatCatalogNativePhaseIsTimely } from "
 import type { ChatCatalogCase, ChatCatalogContext } from "../chat-catalog-contract.js";
 import { pollUntil } from "../api.js";
 import { observeInternal, observation, type Entity, type InternalObservation } from "./internal-support.js";
-import { turnResponseCards } from "./turn-response-card.js";
+import { turnResponseCards, type TurnResponseCard } from "./turn-response-card.js";
 
 /** These cases exercise only the launcher-owned instance or a rendered developer fixture. */
 export function privilegedDefinition(scenarioId: string, module: string, extra: Pick<ChatCatalogCase, "setup" | "grade" | "act" | "verifyResult">): ChatCatalogCase {
@@ -22,7 +22,7 @@ export function remainingPrivilegedObservationBudget(ctx: ChatCatalogContext): n
  * or with a pending question card the product chose as the turn's response. A card settles the
  * turn only; each case still grades whether the reply (or card) is the guidance it requires.
  */
-export async function settlePrivilegedChat(ctx: ChatCatalogContext, observationDeadlineAt?: number): Promise<InternalObservation> {
+export async function settlePrivilegedChat(ctx: ChatCatalogContext, observationDeadlineAt?: number): Promise<InternalObservation & { responseCards: TurnResponseCard[] }> {
   const settled = await pollUntil({ label: "Canonical privileged guidance settled", deadlineAt: chatCatalogNativePhaseDeadline(ctx, observationDeadlineAt ?? Date.now() + 150_000),
     load: async () => {
       const o = await observeInternal(ctx, {}), source = ctx.issue();
@@ -31,7 +31,7 @@ export async function settlePrivilegedChat(ctx: ChatCatalogContext, observationD
     },
     accept: ({ o, cards }) => chatCatalogNativePhaseIsTimely(ctx) && ((observationDeadlineAt === undefined || Date.now() < observationDeadlineAt) && o.runs.length === 1 && o.runs[0]?.status === "succeeded" && (!!o.reply || cards.length > 0) && ctx.issue()?.conversationState === "waiting"),
     reject: ({ o }) => o.runs.some(run => ["failed", "timed_out", "cancelled"].includes(run.status)) ? "Canonical guidance run failed" : undefined });
-  return settled.o;
+  return { ...settled.o, responseCards: settled.cards };
 }
 export const privilegedObservation = observation;
 
