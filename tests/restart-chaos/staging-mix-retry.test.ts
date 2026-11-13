@@ -268,14 +268,14 @@ describe("a follow-up the running turn did not receive (w-20261113T052703-s7301 
   const nonce = "bd13d3bf";
   const comment = "fd278a3a-946b-44df-b62f-0e47c982aea1";
   const first = "0d18f0d9-0550-4f97-8926-0fcf49b43d19", second = "42acaf33-4c75-4d62-8bfe-07053a78cd9f";
-  const t010 = (firstRun: { historyReadCommentIds?: string[]; contextSnapshot?: unknown } = {}): WakeEvidenceFile => ({
+  const t010 = (): WakeEvidenceFile => ({
     completedAt: 1_794_550_265_674,
     runs: [{ runId: first, createdAt: 1_794_548_287_511, startedAt: 1_794_548_287_574, invocationSource: "assignment", triggerDetail: "system",
       wakeupRequestId: "4816f3b7", acceptedDisposition: "done", acceptedAt: 1_794_549_206_395, contextSnapshot: { wakeReason: "issue_assigned", paperclipWake: { commentIds: [] } },
-      historyReadCommentIds: [], ...firstRun },
+    },
     { runId: second, createdAt: 1_794_549_207_682, startedAt: 1_794_550_224_261, invocationSource: "automation", triggerDetail: "system",
       wakeupRequestId: "452458ef", acceptedDisposition: "done", acceptedAt: 1_794_550_262_627,
-      contextSnapshot: { wakeReason: "issue_commented", wakeCommentIds: [comment], paperclipWake: { commentIds: [comment] } }, historyReadCommentIds: [] }],
+      contextSnapshot: { wakeReason: "issue_commented", wakeCommentIds: [comment], paperclipWake: { commentIds: [comment] } } }],
     wakes: [{ id: "4816f3b7", reason: "issue_assigned", source: "assignment", triggerDetail: "system", requestedByActorType: "user", requestedByActorId: "local-board", createdAt: 1_794_548_287_511 },
       { id: "452458ef", reason: "issue_execution_promoted", source: "automation", triggerDetail: "system", requestedByActorType: "user", requestedByActorId: "local-board",
         createdAt: 1_794_548_961_691, payload: { commentId: comment, _paperclipWakeContext: { wakeCommentIds: [comment] } } }],
@@ -302,34 +302,38 @@ describe("a follow-up the running turn did not receive (w-20261113T052703-s7301 
       "follow-up answered in a later run: 1, queued wait p50 1017 s / max 1017 s, posted to answered p50 1263 s / max 1263 s"]);
   });
 
-  it("carries the exemption to the retry of a follow-up run that failed before it received the comment", () => {
-    const retried = (attemptStatus: string): WakeEvidenceFile => {
-      const base = t010();
-      const [run1, run2] = base.runs!;
-      const attempt = { ...run2, status: attemptStatus, acceptedDisposition: attemptStatus === "succeeded" ? "blocked" : null, acceptedAt: null,
-        finishedAt: run2.startedAt! + 5_000 };
-      const retry = { ...run2, runId: "9e9e9e9e-retry", createdAt: run2.startedAt! + 5_100, startedAt: run2.startedAt! + 6_000, wakeupRequestId: "retry-wake" };
-      return { ...base, runs: [{ ...run1, status: "succeeded" }, attempt, { ...retry, status: "succeeded" }],
-        wakes: [...base.wakes!, { id: "retry-wake", reason: "process_lost_retry", source: "automation", triggerDetail: "system", requestedByActorType: "system",
-          requestedByActorId: null, createdAt: run2.startedAt! + 5_100, payload: { _paperclipWakeContext: { wakeCommentIds: [comment] } } }] };
-    };
-    const failedFirst = retried("failed");
-    expect(afterDone(failedFirst).started).toEqual([]);
-    expect(afterDone(failedFirst).answeredFollowUp.map(turn => turn.runId)).toEqual([second, "9e9e9e9e-retry"]);
-    expect(completionOnce(failedFirst)).toMatchObject({ ok: true, detail: "runs=1" });
-    const answeredFirst = retried("succeeded");
-    expect(afterDone(answeredFirst).started.map(turn => turn.runId)).toEqual(["9e9e9e9e-retry"]);
-    expect(completionOnce(answeredFirst).ok).toBe(false);
+  const withRun = (base: WakeEvidenceFile, runId: string, wake: { id: string; reason: string; payload?: unknown }, at: number): WakeEvidenceFile => {
+    const run2 = t010().runs![1]!;
+    return { ...base, runs: [...base.runs!, { ...run2, runId, createdAt: at, startedAt: at + 900, wakeupRequestId: wake.id, contextSnapshot: { wakeReason: wake.reason } }],
+      wakes: [...base.wakes!, { id: wake.id, reason: wake.reason, source: "automation", triggerDetail: "system", requestedByActorType: "system", requestedByActorId: null,
+        createdAt: at, payload: wake.payload ?? {} }] };
+  };
+
+  it("treats the server's re-dispatch of an owed comment after a failed attempt as required", () => {
+    const base = t010();
+    const failed = { ...base, runs: [base.runs![0]!, { ...base.runs![1]!, status: "failed", acceptedDisposition: null, acceptedAt: null }] };
+    const evidence = withRun(failed, "9e9e9e9e-retry", { id: "retry-wake", reason: "process_lost_retry", payload: { _paperclipWakeContext: { wakeCommentIds: [comment] } } },
+      1_794_550_230_000);
+    expect(afterDone(evidence).started).toEqual([]);
+    expect(afterDone(evidence).answeredFollowUp.map(turn => turn.runId)).toEqual([second, "9e9e9e9e-retry"]);
+    expect(completionOnce(evidence)).toMatchObject({ ok: true, detail: "runs=1" });
   });
 
-  it("still counts an extra turn and a duplicate completion when the first run had already received the comment", () => {
-    for (const firstRun of [{ historyReadCommentIds: [comment] }, { contextSnapshot: { wakeReason: "issue_commented", wakeCommentIds: [comment] } }]) {
-      const evidence = t010(firstRun);
-      expect(afterDone(evidence).started.map(turn => turn.runId)).toEqual([second]);
-      expect(afterDone(evidence).answeredFollowUp).toEqual([]);
-      expect(followUpsAnsweredLater("t010", evidence)).toEqual([]);
-      expect(completionOnce(evidence)).toMatchObject({ ok: false, detail: "duplicate completion: runs 0d18f0d9, 42acaf33 each reported completion" });
-    }
+  it("counts a run started after completion from a wake that carries no comment as an extra turn and a duplicate completion", () => {
+    const evidence = withRun(t010(), "7a7a7a7a-extra", { id: "recovery-wake", reason: "issue_recovery_action_restored" }, 1_794_550_300_000);
+    expect(afterDone(evidence).started.map(turn => turn.runId)).toEqual(["7a7a7a7a-extra"]);
+    expect(afterDone(evidence).answeredFollowUp.map(turn => turn.runId)).toEqual([second]);
+    expect(completionOnce(evidence)).toMatchObject({ ok: false, detail: "duplicate completion: runs 0d18f0d9, 7a7a7a7a each reported completion" });
+  });
+
+  it("lists nothing for a comment wake the server cancelled as already delivered, and an extra run for the same comment is still extra", () => {
+    const base = t010();
+    const cancelled: WakeEvidenceFile = { ...base, runs: [base.runs![0]!] };
+    expect(followUpsAnsweredLater("t010", cancelled)).toEqual([]);
+    expect(afterDone(cancelled)).toEqual({ started: [], neverStarted: [], answeredFollowUp: [] });
+    const replayed = withRun(cancelled, "5b5b5b5b-replay", { id: "replay-wake", reason: "issue_recovery_action_restored" }, 1_794_550_300_000);
+    expect(afterDone(replayed).started.map(turn => turn.runId)).toEqual(["5b5b5b5b-replay"]);
+    expect(completionOnce(replayed).ok).toBe(false);
   });
 });
 

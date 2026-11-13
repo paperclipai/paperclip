@@ -79,9 +79,7 @@ export function wakeEvidenceForIssue(issueId: string, input: WakeEvidenceInput) 
       const owner = controllerByBoot.get(String(run.controllerBootId ?? ""));
       return { runId: text(run.id), status: text(run.status), invocationSource: text(run.invocationSource), triggerDetail: text(run.triggerDetail),
         wakeupRequestId: text(run.wakeupRequestId), createdAt: ms(run.createdAt), startedAt: ms(run.startedAt), finishedAt: ms(run.finishedAt),
-        acceptedDisposition: text(run.acceptedDisposition), acceptedAt: ms(run.acceptedAt), contextSnapshot: run.contextSnapshot ?? null,
-        historyReadCommentIds: Array.isArray(run.historyReadCommentIds) ? run.historyReadCommentIds.map(String) : [],
-        owner: owner ? { pid: owner.pid, bootId: owner.bootId, epoch: owner.epoch, processSpace: owner.processSpace } : null,
+        acceptedDisposition: text(run.acceptedDisposition), acceptedAt: ms(run.acceptedAt), contextSnapshot: run.contextSnapshot ?? null,        owner: owner ? { pid: owner.pid, bootId: owner.bootId, epoch: owner.epoch, processSpace: owner.processSpace } : null,
         servingAtCreate: servingAt(ms(run.createdAt), controllers, input.windows) };
     }),
     wakes: wakes.map(wake => ({ id: text(wake.id), reason: text(wake.reason), source: text(wake.source), triggerDetail: text(wake.triggerDetail),
@@ -101,15 +99,11 @@ async function readRows(db: Pick<Db, "$client" | "select">, companyId: string, s
             r.wakeup_request_id::text as "wakeupRequestId", r.context_snapshot as "contextSnapshot", r.controller_boot_id::text as "controllerBootId",
             floor(extract(epoch from r.created_at) * 1000) as "createdAt", floor(extract(epoch from r.started_at) * 1000) as "startedAt",
             floor(extract(epoch from r.finished_at) * 1000) as "finishedAt", accepted.disposition as "acceptedDisposition",
-            floor(extract(epoch from accepted.accepted_at) * 1000) as "acceptedAt", reads.comment_ids as "historyReadCommentIds"
+            floor(extract(epoch from accepted.accepted_at) * 1000) as "acceptedAt"
        from heartbeat_runs r
        left join lateral (select coalesce(e.payload->'prpEvent'->'payload'->'result'->>'reportedWorkDisposition', e.payload->'result'->>'reportedWorkDisposition') as disposition, e.created_at as accepted_at
                             from heartbeat_run_events e where e.run_id = r.id and e.event_type = 'run.result.accepted'
                            order by e.seq desc limit 1) accepted on true
-       left join lateral (select coalesce(array_agg(distinct comment.key), '{}') as comment_ids
-                            from heartbeat_run_events e
-                            cross join lateral jsonb_each(case when jsonb_typeof(e.payload->'comments') = 'object' then e.payload->'comments' else '{}'::jsonb end) comment
-                           where e.run_id = r.id and e.event_type = 'task_history.read') reads on true
       where r.company_id::text = $1 order by r.created_at`, [companyId]) as Row[];
   const issues = await client.unsafe(
     `select id::text as id, floor(extract(epoch from completed_at) * 1000) as "completedAt" from issues where company_id::text = $1`, [companyId]) as Row[];

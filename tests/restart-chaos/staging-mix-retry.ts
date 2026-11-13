@@ -192,8 +192,7 @@ export interface ExtraTurn {
 export interface WakeEvidenceFile {
   completedAt?: number | null;
   runs?: Array<{ runId: string | null; createdAt: number | null; startedAt?: number | null; invocationSource: string | null; triggerDetail: string | null;
-    wakeupRequestId: string | null; acceptedDisposition?: string | null; acceptedAt?: number | null; finishedAt?: number | null; contextSnapshot?: unknown;
-    historyReadCommentIds?: string[] | null; status?: string | null }>;
+    wakeupRequestId: string | null; acceptedDisposition?: string | null; acceptedAt?: number | null; finishedAt?: number | null; contextSnapshot?: unknown; status?: string | null }>;
   wakes?: Array<{ id: string | null; reason: string | null; source: string | null; triggerDetail: string | null; requestedByActorType: string | null; requestedByActorId: string | null;
     createdAt?: number | null; payload?: unknown }>;
 }

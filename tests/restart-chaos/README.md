@@ -1633,13 +1633,17 @@ The summary also lists, by start time, every run that started after the task com
 the task completed" (`extraTurns`, with counts by wake reason in `extraTurnsByReason`). A run queued after completion
 that never started is listed on its own (`queuedAfterDone`).
 
-A run is not an extra turn when it started with undelivered input: a person's comment in its wake (`wakeCommentIds`,
-the wake payload's `commentId`) that no earlier run of the task received, either as its own wake input or through a
-recorded `get_task_history` read (`task_history.read` in the run log, `historyReadCommentIds` in the wake evidence).
-OpenCode, for example, takes no input mid-turn, so a comment posted during its turn is answered by the next run. Such
-runs are listed under "Follow-ups the running turn did not receive, answered in a later run"
-(`followUpsAnsweredLater`, `followUpWaits`), and `completion_once` does not count their completion as a duplicate.
-A run whose comment an earlier run already read or received is still an extra turn and still a duplicate completion.
+The grader takes comment delivery from the server's own record and does not decide it again. A comment that the server
+judged delivered to an earlier run never becomes a run: its wake is cancelled or coalesced. A run that the server
+started from a wake that carries a person's comment posted after the task's first run started (`wakeCommentIds`, the
+wake payload's `commentId`) is a required run. This includes the retry of a failed attempt for the same comment. OpenCode,
+for example, takes no input mid-turn, so a comment posted during its turn is answered by the next run. Such runs are
+listed under "Follow-ups the running turn did not receive, answered in a later run" (`followUpsAnsweredLater`,
+`followUpWaits`). An extra turn is a run that started after completion from a wake that carries no comment. The
+server's delivery rule (`task_history.read`, cited evidence, child-result reads) is covered by the server's own tests.
+
+`completion_once` stays the independent side-effect check. The first run that reported completion is always the
+baseline. A later completion counts as a duplicate unless its run answered a comment as above.
 
 The completion time comes from the product's own record, in this order:
 

@@ -3,7 +3,7 @@ import { mkdtemp, readFile, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { activityLog, agentWakeupRequests, agents, companies, controllerInstances, createDb, heartbeatRunEvents, heartbeatRuns, issues, type Db } from "../../packages/db/src/index.js";
+import { activityLog, agentWakeupRequests, agents, companies, controllerInstances, createDb, heartbeatRuns, issues, type Db } from "../../packages/db/src/index.js";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "../../server/src/__tests__/helpers/embedded-postgres.js";
 import { boundByProcessExit, captureWakeEvidence, servingAt, unshiftRows, wakeEvidenceForIssue, wakeEvidenceOnce, type ControllerRow } from "./wake-evidence.js";
 import { runEvents } from "./evidence.js";
@@ -140,8 +140,6 @@ describe.skipIf(!support.supported)("wake evidence against real PostgreSQL", () 
       requestedByActorType: "user", requestedByActorId: "u1", idempotencyKey: "idem-1", payload: { issueId }, runId });
     await db.insert(heartbeatRuns).values({ id: runId, companyId, agentId, issueId, status: "succeeded", invocationSource: "on_demand", wakeupRequestId: wakeId,
       contextSnapshot: { wakeReason: "retry", taskId: issueId }, controllerBootId: bootId, startedAt: new Date(1_800_000_000_000), finishedAt: new Date(1_800_000_060_000) });
-    await db.insert(heartbeatRunEvents).values([1, 2].map(seq => ({ companyId, runId, agentId, seq, eventType: "task_history.read", stream: "system", level: "info",
-      payload: { comments: seq === 1 ? { "comment-a": "2026-11-13T05:49:21.659Z" } : { "comment-a": "2026-11-13T05:49:21.659Z", "comment-b": "2026-11-13T05:50:00.000Z" } } })));
     await db.insert(activityLog).values({ companyId, actorType: "agent", actorId: agentId, action: "issue.updated", entityType: "issue", entityId: issueId,
       details: { status: "done", _previous: { status: "in_progress" } } });
     const waveDir = await mkdtemp(path.join(os.tmpdir(), "wake-evidence-"));
@@ -151,7 +149,7 @@ describe.skipIf(!support.supported)("wake evidence against real PostgreSQL", () 
       expect(written).toBe(1);
       const evidence = JSON.parse(await readFile(path.join(waveDir, "wake-evidence", "t01.json"), "utf8"));
       expect(evidence.runs[0]).toMatchObject({ runId, invocationSource: "on_demand", wakeupRequestId: wakeId, contextSnapshot: { wakeReason: "retry" },
-        owner: { pid: 4242, processSpace: "space-wake" }, historyReadCommentIds: ["comment-a", "comment-b"] });
+        owner: { pid: 4242, processSpace: "space-wake" } });
       const slots = JSON.parse(await readFile(path.join(waveDir, "wake-evidence", "agent-slots.json"), "utf8"));
       expect(slots.agents).toEqual(expect.arrayContaining([{ agentId, maxConcurrentRuns: 3 }, { agentId: wideAgentId, maxConcurrentRuns: 50 }]));
       expect(slots.runs).toEqual([{ runId, agentId, startedAt: 1_800_000_000_000, finishedAt: 1_800_000_060_000 }]);
