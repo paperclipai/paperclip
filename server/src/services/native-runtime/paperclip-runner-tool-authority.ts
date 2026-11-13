@@ -22,7 +22,7 @@ import { handoffCaseSchema } from "@paperclipai/shared";
 import { skillAccessService } from "../skill-access.js";
 import { SKILL_LIBRARY_SCHEMAS, SKILL_LIBRARY_TOOL_DEFINITIONS, SkillLibraryReadCache, executeSkillLibraryTool } from "./native-skill-library-tools.js";
 import { withExternalExecutionAdmission, type ExternalAdmissionTransaction } from "../../modules/external-agents/index.js";
-import { callTaskWorkspaceTool, pendingTaskRepositoryContinuation } from "../task-workspace-tools.js";
+import { apiResultMayHaveWorkspace, callTaskWorkspaceTool, pendingTaskRepositoryContinuation, withWorkspacePageHref } from "../task-workspace-tools.js";
 import { TaskAttachmentReadCache, TASK_ATTACHMENT_DEFINITIONS, TASK_ATTACHMENT_SCHEMAS, listTaskAttachments, readTaskAttachment } from "./runner-task-attachments.js";
 import { RUNNER_BRIDGE_READ_OPERATIONS, RUNNER_BRIDGE_SCHEMAS, runnerBridgeDefinitions, readAssignedSkill, executeWorkspaceTool, readWorkspaceUploadFile, settleRunnerBridgeRead, assertRunnerWorkspacePathAllowed } from "./runner-bridge-tools.js";
 import type { NativeRuntimeContextSnapshot } from "../../vendor/paperclip-runner/index.js";
@@ -727,7 +727,7 @@ export class PaperclipRunnerToolAuthority {
         // read-only options; the shared client still enforces GET-only export.
         return apiToolResult(await this.#callApi(call.callId, { ...input, saveResponse: true } as RunnerApiCall));
       }
-      return apiToolResult(await this.#callApi(call.callId, taskBridgeApiRequest(call.tool, input)));
+      return apiToolResult(await this.#withWorkspacePageHref(await this.#callApi(call.callId, taskBridgeApiRequest(call.tool, input))));
     }
     if (this.binding.firstPartyOnly && (call.tool === READ_TOOL_RESULT || this.binding.assignedMcpTools?.has(call.tool) || isConnectorTool(call.tool)
       || RUNTIME_CONNECTION_TOOL_DEFINITIONS.some(tool => tool.name === call.tool))) throw forbidden("This Grok Bot connection exposes first-party Paperclip operations. Use your own provider apps under their existing permissions.");
@@ -925,7 +925,7 @@ export class PaperclipRunnerToolAuthority {
         // PRP reserves operationId/callId for semantic result identity. The
         // HTTP operation is metadata, including in previously saved receipts;
         // exposing it as operationId makes the runner reject a valid response.
-        return apiToolResult(await this.#callApi(call.callId, call.arguments));
+        return apiToolResult(await this.#withWorkspacePageHref(await this.#callApi(call.callId, call.arguments)));
       }
       case "get_task_context": {
         if (this.#apiScope(context).kind === "skill_test") return {
@@ -1153,6 +1153,12 @@ export class PaperclipRunnerToolAuthority {
   async #workspacePagePrefix() {
     return (await instanceSettingsService(this.db).getExperimental()).enableIsolatedWorkspaces
       ? this.#companyPagePrefix() : null;
+  }
+
+  /** Gives workspace reads the same page href get_workspace returns, reading the setting only for those reads. */
+  async #withWorkspacePageHref(result: unknown) {
+    return apiResultMayHaveWorkspace(result)
+      ? withWorkspacePageHref(result, await this.#workspacePagePrefix(), this.binding.companyId) : result;
   }
 
   #apiToken(context: {
