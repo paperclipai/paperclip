@@ -1,3 +1,4 @@
+import { readInstalledAgentSkillKeys } from "../services/agent-skill-library.js";
 import { resolveLoginEnvironmentTarget } from "../services/login-environment.js";
 import { checkAgentProtectedEnvironmentKeys } from "../services/protected-environment-keys.js";
 import { assertProviderApiPlacementPolicy, managedCursorApiDefaultEnabled, resolveProviderApiPlacement } from "../services/native-runtime/provider-api-placement.js";
@@ -2774,6 +2775,10 @@ export function agentRoutes(
       .map(entry => [entry.key, entry.versionId]));
     return {
       ...snapshot,
+      installedSkills: Array.from(new Set([
+        ...readInstalledAgentSkillKeys(adapterConfig),
+        ...snapshot.desiredSkills,
+      ])),
       // A resolved runtime version is not a stored assignment pin. Returning
       // it here makes a read/save round trip silently pin Latest selections.
       desiredSkillEntries: snapshot.desiredSkills.map(key => ({ key, versionId: assignments.get(key) ?? null })),
@@ -3880,7 +3885,7 @@ export function agentRoutes(
       const desiredSkillEntries = preference.desiredSkillEntries.filter(
         (entry, index, entries) => entries.findIndex((candidate) => candidate.key === entry.key) === index,
       );
-      res.json(buildUnsupportedSkillSnapshot(agent.adapterType, desiredSkillEntries));
+      res.json(withAssignedSkillVersions(buildUnsupportedSkillSnapshot(agent.adapterType, desiredSkillEntries), agent.adapterConfig as Record<string, unknown>));
       return;
     }
 
@@ -3937,6 +3942,24 @@ export function agentRoutes(
       if (!desiredSkills || !desiredSkillEntries || !runtimeSkillEntries) {
         throw unprocessable("Skill sync requires desiredSkills.");
       }
+      // Membership is separate from execution. Resolve references in this
+      // company, but never materialize disabled installed skills.
+      const installedReferences = req.body.installedSkills
+        ?? readInstalledAgentSkillKeys(agent.adapterConfig as Record<string, unknown>);
+      const installed = await companySkills.resolveRequestedSkillEntries(
+        agent.companyId,
+        installedReferences.map((key: string) => ({ key, versionId: null })),
+        { tolerateUnknownReferences: true },
+      );
+      const installedSkills = Array.from(new Set([
+        ...installed.resolved.map((entry) => entry.key),
+        ...installed.unresolved,
+        ...desiredSkills,
+      ])).filter((key) => !isConnectorSkill(key) && (agent.adapterType !== "paperclip_runner"
+        || key.trim().toLowerCase() !== PAPERCLIP_OPERATIONAL_SKILL_KEY));
+      nextAdapterConfig.paperclipSkillSync = {
+        ...asRecord(nextAdapterConfig.paperclipSkillSync), installedSkills,
+      };
       const actor = getActorInfo(req);
       const updated = await svc.update(agent.id, {
         adapterConfig: nextAdapterConfig,
@@ -3996,6 +4019,7 @@ export function agentRoutes(
           adapterType: updated.adapterType,
           desiredSkills,
           desiredSkillEntries,
+          installedSkills,
           assignmentMode: req.body.mode,
           mode: snapshot.mode,
           supported: snapshot.supported,

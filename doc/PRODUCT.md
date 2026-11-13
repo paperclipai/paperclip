@@ -76,6 +76,19 @@ Paperclip supports several ways to run an agent's heartbeat:
 
 Agent runs can use project and execution workspaces, managed runtime services such as preview/dev servers, adapter-specific session state, and HTTP/webhook-style execution. We provide sensible defaults, but the adapter is still the boundary: if a runtime can be invoked, observed, and authorized, Paperclip can coordinate it.
 
+### Agent skill selection
+
+The Skills tab keeps installed library skills visible with on/off switches.
+Turning a skill off retains it in that agent's installed list after reload.
+The Add skills search shows uninstalled library results only after a nonempty
+query. Search does not filter installed or automatic/detected skills. Add enables
+a matching skill and moves it into the installed list.
+
+Installed membership is saved in the agent's existing `paperclipSkillSync`
+configuration. The skills snapshot and sync request expose optional
+`installedSkills` keys. Only `desiredSkills` controls runtime access. Older
+clients that omit membership retain the saved list and previous desired keys.
+
 ### Task Management
 
 Task management is hierarchical. At any moment, every piece of work must trace back to the company's top-level goal through a chain of parent tasks:
