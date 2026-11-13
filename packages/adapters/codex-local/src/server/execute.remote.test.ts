@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, readdir, readFile, rm, symlink, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readdir, readFile, rm, stat, symlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -693,6 +693,66 @@ describe("codex remote execution", () => {
     expect(retry).not.toContain("## Compact assignment");
     expect(retry.indexOf("comment-first")).toBeLessThan(retry.indexOf("comment-second"));
     expect(retry.split("Append the same ledger entry.")).toHaveLength(3);
+  });
+
+  it("stages the workspace from a host temp dir when the configured cwd is remote-only", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-codex-remote-cwd-"));
+    cleanupDirs.push(rootDir);
+    const localAgentHome = path.join(rootDir, "agent-home");
+    const codexHomeDir = path.join(rootDir, "codex-home");
+    await mkdir(localAgentHome, { recursive: true });
+    await mkdir(codexHomeDir, { recursive: true });
+    await writeFile(path.join(codexHomeDir, "auth.json"), "{}", "utf8");
+
+    await execute({
+      runId: "run-remote-cwd",
+      agent: {
+        id: "agent-1",
+        companyId: "company-1",
+        name: "CodexReviewer",
+        adapterType: "codex_local",
+        adapterConfig: {},
+      },
+      runtime: {
+        sessionId: null,
+        sessionParams: null,
+        sessionDisplayId: null,
+        taskKey: null,
+      },
+      config: {
+        engine: "cli",
+        command: "codex",
+        // A configured cwd is a path inside the remote environment, not on this host.
+        cwd: "/remote/workspace",
+        env: { CODEX_HOME: codexHomeDir },
+      },
+      context: {
+        // No project workspace: the server falls back to the agent home, so the
+        // adapter prefers the configured (remote-only) cwd.
+        paperclipWorkspace: { cwd: localAgentHome, source: "agent_home" },
+      },
+      executionTransport: {
+        remoteExecution: {
+          host: "127.0.0.1",
+          port: 2222,
+          username: "fixture",
+          remoteWorkspacePath: "/remote/workspace",
+          remoteCwd: "/remote/workspace",
+          privateKey: "PRIVATE KEY",
+          knownHosts: "[127.0.0.1]:2222 ssh-ed25519 AAAA",
+          strictHostKeyChecking: true,
+        },
+      },
+      onLog: async () => {},
+    });
+
+    expect(prepareWorkspaceForSshExecution).toHaveBeenCalledTimes(1);
+    const [syncArgs] = prepareWorkspaceForSshExecution.mock.calls[0] as unknown as [{ localDir: string }];
+    // The host tar source must never be the remote-only configured cwd.
+    expect(syncArgs.localDir).not.toBe("/remote/workspace");
+    expect(syncArgs.localDir.startsWith(os.tmpdir())).toBe(true);
+    // The staging dir is removed on every exit path.
+    await expect(stat(syncArgs.localDir)).rejects.toMatchObject({ code: "ENOENT" });
   });
 
 });
