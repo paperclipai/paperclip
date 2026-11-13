@@ -1,3 +1,4 @@
+import { supportsPaperclipRunnerPreconfiguredHome } from "../native-runtime/provider-profile.js";
 import { agentHarnessType } from "@paperclipai/shared";
 import { observabilitySecretValues } from "@paperclipai/adapter-utils/agent-observability";
 import { agentObservabilityService, unavailableAgentObservability, type ResolvedAgentObservability } from "../agent-observability.js";
@@ -119,9 +120,13 @@ export async function prepareHeartbeatExecutionConfiguration(db: Db, input: Hear
   const { issueId, context, responsibleUserId, acceptedPlanContinuationWake, acceptedPlanWakeRoutingDecision, taskProjectContext, routineEnvContext, pinnedSkillTest } = input.task;
   const { selectedEnvironmentId, selectedEnvironmentForConfig, resolvedInstanceSettings, persistedNativeExecutionInput } = input.environment;
   const useSshHostAuth = selectedEnvironmentForConfig?.driver === "ssh" && selectedEnvironmentForConfig.config.useHostAuth !== false && !persistedNativeExecutionInput;
+  let sshRunnerHomeMode: "isolated" | "preconfigured" | undefined;
+  if (agent.adapterType === "paperclip_runner" && selectedEnvironmentForConfig?.driver === "ssh" && !persistedNativeExecutionInput) {
+    sshRunnerHomeMode = useSshHostAuth && supportsPaperclipRunnerPreconfiguredHome(agent.adapterConfig, { companyId: agent.companyId }) ? "preconfigured" : "isolated";
+  }
   const sourceWorkspaceConfig = agent.adapterType === "paperclip_runner"
     ? { ...input.config.sourceWorkspaceConfig,
-        homeMode: bindHeartbeatRunnerHomeMode({ ...parseObject(agent.adapterConfig), ...(selectedEnvironmentForConfig?.driver === "ssh" && !persistedNativeExecutionInput ? { homeMode: useSshHostAuth ? "preconfigured" : "isolated" } : {}) }, persistedNativeExecutionInput).homeMode }
+        homeMode: bindHeartbeatRunnerHomeMode({ ...parseObject(agent.adapterConfig), ...(sshRunnerHomeMode ? { homeMode: sshRunnerHomeMode } : {}) }, persistedNativeExecutionInput).homeMode }
     : input.config.sourceWorkspaceConfig;
   const preconfiguredHome = agent.adapterType === "paperclip_runner" && sourceWorkspaceConfig.homeMode === "preconfigured";
   if (preconfiguredHome && pinnedSkillTest) {

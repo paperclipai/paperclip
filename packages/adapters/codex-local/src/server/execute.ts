@@ -12,7 +12,7 @@ import { inferOpenAiCompatibleBiller, resolveManagedOpenAiBilling, type AdapterE
 import { buildCodexAuthInboundProvision } from "./codex-auth-merge-scripts.js";
 import { copyBackCodexAuth } from "./codex-auth-copyback.js";
 import { prepareCodexSshSessionState } from "./ssh-session-state.js";
-import { readCodexSshHostHome, buildCodexSshHostRuntimeInstall } from "./ssh-host-runtime.js";
+import { readCodexSshHostHome, readCodexSshHostProfile, buildCodexSshHostRuntimeInstall } from "./ssh-host-runtime.js";
 import { shellQuote } from "@paperclipai/adapter-utils/ssh";
 import {
   ensureCodexAuthCacheEntryDir,
@@ -792,16 +792,17 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   let sshSessionState: Awaited<ReturnType<typeof prepareCodexSshSessionState>> | null = null;
   let observabilityProfile: Awaited<ReturnType<typeof prepareCodexObservabilityProfile>> | null = null;
   let observabilityPreparationFailed = false;
+  const runSshHostConfigurationCommand = async (command: string) => {
+    const result = await runAdapterExecutionTargetShellCommand(runId, executionTarget, command, { cwd: "/", env: {}, timeoutSec: 15 });
+    if (result.exitCode !== 0 || result.timedOut) throw new Error("Cannot read remote Codex configuration");
+    return result;
+  };
   try {
     if (useSshHostAuth) {
       stagedCodexHomeDir = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-codex-host-runtime-"));
       sshHostHome = await readCodexSshHostHome({
         configuredHome: asString(envConfig.CODEX_HOME, "") || undefined,
-        run: async command => {
-          const result = await runAdapterExecutionTargetShellCommand(runId, executionTarget, command, { cwd: "/", env: {}, timeoutSec: 15 });
-          if (result.exitCode !== 0 || result.timedOut) throw new Error("Cannot read remote Codex configuration");
-          return result;
-        },
+        run: runSshHostConfigurationCommand,
       });
       await fs.writeFile(path.join(stagedCodexHomeDir, "config.toml"), sshHostHome.config, { mode: 0o600 });
       await fs.writeFile(path.join(stagedCodexHomeDir, ".paperclip-native-config-before"), sshHostHome.config, { mode: 0o600 });
@@ -810,8 +811,13 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     if (ctx.observability) {
       if (useSshHostAuth || isManagedCodexHomePath(process.env, agent.companyId, effectiveCodexHome)) {
         try {
+          const sourceProfile = selectedCodexProfile(buildCodexExecArgs(config).args);
+          if (sshHostHome && sourceProfile) {
+            const content = await readCodexSshHostProfile({ home: sshHostHome.home, profile: sourceProfile, run: runSshHostConfigurationCommand });
+            await fs.writeFile(path.join(runtimeConfigurationHome, `${sourceProfile}.config.toml`), content, { mode: 0o600 });
+          }
           observabilityProfile = await prepareCodexObservabilityProfile({ home: runtimeConfigurationHome, runId,
-            launch: ctx.observability, sourceProfile: selectedCodexProfile(buildCodexExecArgs(config).args) });
+            launch: ctx.observability, sourceProfile });
         } catch {
           observabilityPreparationFailed = true;
           await onLog("stderr", "[paperclip] Company observability configuration could not be prepared; execution continues with export disabled.\n");
@@ -880,10 +886,10 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
           // 4-name denylist missed and that a sandbox run never needs.
           if (!useSshHostAuth) stagedCodexHomeDir = await stageCodexHomeForSync(effectiveCodexHome, { runId, additionalFiles: observabilityProfile ? [observabilityProfile.filename] : [] });
           const prepared = await prepareAdapterExecutionTargetRuntime({
-            privateRuntime: Boolean(config.managedAiConnection),
+            privateRuntime: useSshHostAuth || Boolean(config.managedAiConnection),
             runId,
             target: executionTarget,
-            adapterKey: useSshHostAuth ? `codex-host-${createHash("sha256").update(runId).digest("hex")}` : "codex",
+            adapterKey: "codex",
             timeoutSec,
             workspaceLocalDir: cwd,
             workspaceRemoteDir:

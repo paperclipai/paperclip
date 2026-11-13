@@ -389,6 +389,21 @@ describePostgres("heartbeat execution configuration through adapter dispatch", (
     }
   });
 
+  it.each([
+    { provider: "opencode", model: "openai/gpt-5" },
+    { provider: "acpx", acpxAgent: "copilot", model: "gpt-5.6-luna" },
+    { provider: "acpx", acpxAgent: "claude", model: "claude-sonnet-4-6", acpxPermissionMode: "approve-reads" },
+  ])("keeps native SSH provider home support during preparation: $provider $acpxAgent", async config => {
+    const f = await seed();
+    const environment = { ...await environmentService(db).ensureLocalEnvironment(), driver: "ssh", config: {
+      host: "fixture.invalid", username: "fixture", remoteWorkspacePath: "/workspace",
+    } } as Environment;
+    const opening = await configuration(f, config, {}, "paperclip_runner", false, "shared_workspace", environment);
+    const result = await opening.prepare();
+    if (!result.prepared) throw new Error("SSH preparation failed");
+    expect(result.runtimeConfig.homeMode).toBe("isolated");
+  });
+
   it("requires an agent AI account for a new SSH environment when remote authentication is off", async () => {
     const f = await seed();
     const environment = { ...await environmentService(db).ensureLocalEnvironment(), driver: "ssh", config: { useHostAuth: false } } as Environment;

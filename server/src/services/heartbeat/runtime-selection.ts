@@ -67,6 +67,7 @@ import {
   assertManagedProfileRecoveryBinding,
   projectPaperclipRunnerTaskConfig,
   resolvePaperclipRunnerNativeProviderInput,
+  supportsPaperclipRunnerPreconfiguredHome,
 } from "../native-runtime/provider-profile.js";
 import { readRemoteCodexModelCliVersion } from "../native-runtime/codex-model-fallback.js";
 import {
@@ -784,8 +785,11 @@ export async function selectHeartbeatRuntime(db: Db, input: HeartbeatRuntimeSele
             managedAiRuntime ? readNonEmptyString(resolvedConfig.model) ?? undefined : undefined,
           )
         : agent.adapterConfig;
-      const nativeProviderConfig = agent.adapterType === "paperclip_runner" && runtimeConfig.homeMode !== undefined
-        ? { ...parseObject(projectedNativeProviderConfig), homeMode: runtimeConfig.homeMode }
+      const runnerHomeMode = runtimeConfig.homeMode === "preconfigured" && executionTarget?.kind === "remote" && executionTarget.transport === "ssh"
+        && !supportsPaperclipRunnerPreconfiguredHome(projectedNativeProviderConfig, { companyId: agent.companyId })
+        ? "isolated" : runtimeConfig.homeMode;
+      const nativeProviderConfig = agent.adapterType === "paperclip_runner" && runnerHomeMode !== undefined
+        ? { ...parseObject(projectedNativeProviderConfig), homeMode: runnerHomeMode }
         : projectedNativeProviderConfig;
       const requestedNativeProvider = resolvePaperclipRunnerNativeProviderInput({
         companyId: agent.companyId,
