@@ -461,16 +461,17 @@ leaves its question's tool input unanswered by design. Once its Runner's
 sandbox lease has ended elsewhere, that committed park settles the input for
 retirement.
 
-Core ends a dispatched task lease with `stop`, `status`, and `complete`. When
-that sequence confirms the stop and completes the same task, Core does not also
-call `onEnvironmentReleaseLease`. Core still calls it when the release did not
-complete a dispatched task, and the cleanup retry calls it after any failure.
+Core settles a dispatched task with `stop`, `status`, and `complete`, then
+calls `onEnvironmentReleaseLease` to release the allocation. If the release
+hook fails after settlement, Core retries cleanup using the recorded settlement
+proof. The hook can use that proof to avoid repeating task operations. A
+retained lease stays available for handoff and Core calls the release hook
+when it releases the lease.
+
 When `onEnvironmentResumeLease` returns no provider lease, Core sends `status`
-first. It sends `stop` only when that `status` does not report
-`executionStopped: true` and any required `preparationStopped: true` proof.
-An old warm-start preparation marker does not force a repeated stop when both
-proofs are present. A driver must release task-scoped resources in its
-`status` or `complete` handling, not only in `onEnvironmentReleaseLease`.
+first. It sends `stop` only when that `status` lacks `executionStopped: true`
+or required `preparationStopped: true` proof. An old warm-start preparation
+marker does not force a repeated stop when both proofs are present.
 
 Termination receipts cover all run leases that owned the retired physical task.
 A stopped task gets a new provider task ID for checkpoint resumption. Inspection
