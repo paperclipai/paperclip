@@ -24,6 +24,9 @@ import { agentRunWritesRevoked, assertAgentRunWriteAllowed } from "../agent-run-
 import { loadAgentRunAuthentication } from "../middleware/agent-run-authentication.js";
 import { SERVER_RESTART_RETRY_MAX_ATTEMPTS, SERVER_RESTART_RETRY_WINDOW_MS } from "./execution-recovery-attempt.js";
 import { FRESH_CONTINUATION_WINDOW_MS } from "./fresh-continuation-fallback.js";
+import { createPostgresRunDispatchAdapter } from "../modules/run-dispatch/adapters/postgres.js";
+import { createSystemRecovery } from "./system-recovery-state.js";
+import { requestTaskRetry } from "./task-retry.js";
 
 const support = await getEmbeddedPostgresTestSupport();
 const suite = support.supported ? describe : describe.skip;
@@ -1041,5 +1044,153 @@ suite("fresh-continuation fallback", () => {
     expect(await ensureFreshContinuation(db, { companyId, runId: f.runId, trigger: "held_recovery" }))
       .toMatchObject({ kind: "already_continued" });
     expect(await db.select({ id: agentWakeupRequests.id }).from(agentWakeupRequests)).toHaveLength(0);
+  }, 60_000);
+
+  // Staging (2026-11-12): an earlier run's saved-work hold refused every new
+  // run of the task at dispatch (execution_reconciliation_required), and the
+  // fallback skipped the hold because those refused runs looked like
+  // successors. The task could never run again without a person, for a reason
+  // no person could act on.
+  /**
+   * An earlier run, ended on another host (its writer cannot be proven gone),
+   * whose automatic recovery of saved work gave up; its hold protects files in
+   * the task's local workspace.
+   */
+  async function heldByOlderRun(options: { endedAgoMs?: number; recovery?: "exhausted" | "running"; humanGate?: boolean } = {}) {
+    const f = await unfinishedRun({ runtime: "legacy", errorCode: "process_lost" });
+    const endedAt = new Date(Date.now() - (options.endedAgoMs ?? 60_000));
+    await db.update(heartbeatRuns).set({ finishedAt: endedAt, startedAt: new Date(endedAt.getTime() - 600_000),
+      createdAt: new Date(endedAt.getTime() - 660_000), processPid: 4242, processHostHash: "replaced-server",
+      processStartedAt: new Date(endedAt.getTime() - 600_000) }).where(eq(heartbeatRuns.id, f.runId));
+    const [workspace] = await db.insert(executionWorkspaces).values({ companyId, sourceIssueId: f.issueId, mode: "isolated",
+      strategyType: "git_worktree", name: "Task workspace", providerType: "local_fs", cwd: "/workspaces/old-task-dir" }).returning();
+    await db.update(issues).set({ executionWorkspaceId: workspace!.id }).where(eq(issues.id, f.issueId));
+    const recovery = { ...createSystemRecovery(f.runId), state: options.recovery ?? "exhausted", attempts: 3,
+      failure: { code: "export_interrupted", retryClass: "retry_transient", evidenceFingerprint: "export" } };
+    const [hold] = await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.id, f.actionId!));
+    await db.update(issueRecoveryActions).set({ ownerUserId: options.humanGate ? userId : null,
+      createdAt: endedAt, updatedAt: endedAt,
+      evidence: { ...hold!.evidence, workspaceRestoreFailure: "restore_unsafe_archive", systemRecovery: recovery } })
+      .where(eq(issueRecoveryActions.id, f.actionId!));
+    return { ...f, workspaceId: workspace!.id, endedAt };
+  }
+
+  /** A later run of the task, refused at dispatch by the older run's hold. */
+  async function refusedAtDispatch(f: { issueId: string }, options: { createdAt?: Date; wakeReason?: string } = {}) {
+    const [run] = await db.insert(heartbeatRuns).values({ companyId, agentId, invocationSource: "automation", issueId: f.issueId,
+      runtimeMode: "legacy", status: "queued", createdAt: options.createdAt ?? new Date(),
+      contextSnapshot: { issueId: f.issueId, wakeReason: options.wakeReason ?? "issue_continuation_needed" } }).returning();
+    const outcome = await createPostgresRunDispatchAdapter(db).cancelStaleQueuedRun({ companyId, runId: run!.id,
+      expectedStatus: "queued", now: options.createdAt ?? new Date() });
+    return { run: run!, outcome };
+  }
+
+  const holdRow = async (id: string) => (await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.id, id)))[0]!;
+  const makeDue = (id: string) => db.update(issueRecoveryActions).set({ evidence: sql`jsonb_set(${issueRecoveryActions.evidence},
+    '{freshContinuationCheck,nextCheckAt}', to_jsonb(${Date.now() - 1_000}::bigint))` }).where(eq(issueRecoveryActions.id, id));
+
+  it("continues a task held by an older run's saved-work hold in a new isolated workspace, after it refused a run at dispatch", async () => {
+    const f = await heldByOlderRun();
+    const refused = await refusedAtDispatch(f);
+    expect(refused.outcome).toMatchObject({ outcome: "cancelled", errorCode: "execution_reconciliation_required" });
+    // The refusal starts the hold's bounded wait instead of hiding the hold.
+    expect((await holdRow(f.actionId!)).evidence.freshContinuationCheck)
+      .toMatchObject({ kind: "exact_recovery_pending", firstPendingAt: expect.any(Number) });
+    expect(await heldExecutionsAwaitingFreshContinuation(db, new Date(Date.now() + 10 * 60_000), 10))
+      .toEqual([expect.objectContaining({ id: f.actionId, runId: f.runId })]);
+    // Past the bound, the disposition pass settles it: a fresh run in a new root.
+    await waitedFor(f.actionId!, FRESH_CONTINUATION_PENDING_BOUND_MS + 1_000);
+    await makeDue(f.actionId!);
+    expect(await continueHeldExecutions(db)).toMatchObject({ continued: 1 });
+    const settled = await holdRow(f.actionId!);
+    expect(settled).toMatchObject({ status: "resolved", ownerType: "system" });
+    // The held files stay where they are, recorded and never applied; the hold's history is kept.
+    expect(settled.evidence).toMatchObject({ workspaceRestoreFailure: "restore_unsafe_archive",
+      systemRecovery: { state: "exhausted" },
+      freshContinuation: { sourceRunId: f.runId, isolation: "fresh_isolated_workspace" },
+      freshContinuationSettlement: { actorType: "system", actorId: "fresh-continuation", heldFiles: "kept_not_applied",
+        refusedAtDispatchRunId: refused.run.id, requestedBy: "system" } });
+    // Two runs never write one directory: the task no longer points at the old one, which is left untouched.
+    expect((await issue(f.issueId)).executionWorkspaceId).toBeNull();
+    const [old] = await db.select().from(executionWorkspaces).where(eq(executionWorkspaces.id, f.workspaceId));
+    expect(old).toMatchObject({ status: "active", cwd: "/workspaces/old-task-dir" });
+    const [oldRun] = await loadAgentRunAuthentication(db, { runId: f.runId, companyId, agentId });
+    expect(agentRunWritesRevoked(oldRun)).toBe(true);
+    expect(await getExecutionBlocker(db, companyId, f.issueId)).toBeNull();
+    await occupySlot();
+    await deliver();
+    const [next] = await successors(f.runId);
+    expect(next!.contextSnapshot).toMatchObject({ freshContinuationIsolation: f.actionId });
+    expect(await readFreshWorkspaceReadiness(db, next!)).toMatchObject({ mode: "fresh_isolated_workspace", sourceRunId: f.runId });
+    // The next run is admitted: the dispatch gate no longer refuses it for the old hold.
+    expect(await createPostgresRunDispatchAdapter(db).cancelStaleQueuedRun({ companyId, runId: next!.id,
+      expectedStatus: "queued", now: new Date() })).not.toMatchObject({ errorCode: "execution_reconciliation_required" });
+  }, 60_000);
+
+  it("keeps the wait of a saved-work recovery that is still advancing, even behind a run it refused", async () => {
+    const f = await heldByOlderRun({ recovery: "running" });
+    await refusedAtDispatch(f);
+    await waitedFor(f.actionId!, FRESH_CONTINUATION_PROGRESS_BOUND_MS + 1_000);
+    await db.update(issueRecoveryActions).set({ updatedAt: new Date(Date.now() + 1_000),
+      evidence: sql`jsonb_set(${issueRecoveryActions.evidence}, '{systemRecovery,attempts}', '4'::jsonb)` })
+      .where(eq(issueRecoveryActions.id, f.actionId!));
+    expect(await ensureFreshContinuation(db, { companyId, runId: f.runId, trigger: "held_recovery" }))
+      .toMatchObject({ kind: "exact_recovery_pending", reason: "saved_work_recovery_running" });
+    expect((await issue(f.issueId)).executionWorkspaceId).toBe(f.workspaceId);
+    // A person's Retry does not pre-empt it either while it keeps advancing.
+    await refusedAtDispatch(f, { wakeReason: "task_retry" });
+    await db.update(issueRecoveryActions).set({ updatedAt: new Date(Date.now() + 2_000),
+      evidence: sql`jsonb_set(${issueRecoveryActions.evidence}, '{systemRecovery,attempts}', '5'::jsonb)` })
+      .where(eq(issueRecoveryActions.id, f.actionId!));
+    expect(await ensureFreshContinuation(db, { companyId, runId: f.runId, trigger: "held_recovery" }))
+      .toMatchObject({ kind: "exact_recovery_pending" });
+  }, 60_000);
+
+  it("keeps a hold a person owns blocking, behind any number of refused runs", async () => {
+    const f = await heldByOlderRun({ humanGate: true });
+    await refusedAtDispatch(f, { wakeReason: "task_retry" });
+    expect(await ensureFreshContinuation(db, { companyId, runId: f.runId, trigger: "held_recovery" }))
+      .toMatchObject({ kind: "person_owned" });
+    expect(await getExecutionBlocker(db, companyId, f.issueId)).toMatchObject({ recoveryActionId: f.actionId });
+    expect((await holdRow(f.actionId!)).status).toBe("active");
+  }, 60_000);
+
+  it("leaves an old hold for a person's Retry, and that Retry runs isolated (refused run)", async () => {
+    const f = await heldByOlderRun({ endedAgoMs: 3 * 86_400_000 });
+    // Refused 30 hours ago: older than the backlog window.
+    await refusedAtDispatch(f, { createdAt: new Date(Date.now() - 30 * 3_600_000) });
+    expect(await continueHeldExecutions(db)).toMatchObject({ continued: 0 });
+    expect(await ensureFreshContinuation(db, { companyId, runId: f.runId, trigger: "continuation_wake" }))
+      .toEqual({ kind: "person_owned", reason: "retry_needed" });
+    expect((await holdRow(f.actionId!)).status).toBe("active");
+    // The person's Retry starts a run; the hold refuses it at dispatch and is
+    // settled in the same transaction: the task continues in a new isolated workspace.
+    const retry = await refusedAtDispatch(f, { wakeReason: "task_retry" });
+    expect(retry.outcome).toMatchObject({ outcome: "cancelled" });
+    expect((await holdRow(f.actionId!)).evidence).toMatchObject({
+      freshContinuation: { isolation: "fresh_isolated_workspace" },
+      freshContinuationSettlement: { requestedBy: "person_retry", heldFiles: "kept_not_applied" } });
+    await occupySlot();
+    await deliver();
+    const [next] = await successors(f.runId);
+    expect(await readFreshWorkspaceReadiness(db, next!)).toMatchObject({ mode: "fresh_isolated_workspace" });
+  }, 60_000);
+
+  it("leaves an old hold for a person's Retry, and that Retry runs isolated (waiting Retry)", async () => {
+    const f = await heldByOlderRun({ endedAgoMs: 3 * 86_400_000 });
+    const old = await refusedAtDispatch(f, { createdAt: new Date(Date.now() - 30 * 3_600_000) });
+    expect(await continueHeldExecutions(db)).toMatchObject({ continued: 0 });
+    const receipt = await requestTaskRetry({ db, companyId, issueId: f.issueId, actorId: userId,
+      idempotencyKey: randomUUID(), observedRunId: old.run.id });
+    expect(receipt).toMatchObject({ accepted: true });
+    expect(await continueHeldExecutions(db)).toMatchObject({ continued: 1 });
+    expect((await holdRow(f.actionId!)).evidence).toMatchObject({ freshContinuation: { isolation: "fresh_isolated_workspace" },
+      freshContinuationSettlement: { requestedBy: "person_retry" } });
+    // The waiting Retry is answered by the continuation: exactly one new run.
+    await occupySlot();
+    await deliver();
+    expect(await successors(f.runId)).toHaveLength(1);
+    const [retryWake] = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, receipt.requestId!));
+    expect(retryWake!.status).toBe("coalesced");
   }, 60_000);
 });
