@@ -462,8 +462,9 @@ export class PaperclipControlPlanePort implements ControlPlanePort {
         protocolSchemaVersion: event.schemaVersion,
         canonicalPayload: event as unknown as Record<string, unknown>,
       },
-      // The append has no publication side effects. Revocation rolls back
-      // its event and sequence allocation before the append commits.
+      // The append has no publication side effects. Revocation before the
+      // append commits rolls it back; after, it rejects the receipt and the
+      // successor's resend of the event is a replay.
       assertWritable: () => this.#assertActive(options),
     };
     if (event.eventType === "item.delta" && !options?.deferPostCommitObservers) {
