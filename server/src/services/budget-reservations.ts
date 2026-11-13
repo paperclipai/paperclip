@@ -1,7 +1,7 @@
 import { and, eq, sql } from "drizzle-orm";
 import { agents, budgetReservations, heartbeatRuns, nativeRunFinalizations, type Db } from "@paperclipai/db";
 import { centsToUnits, unitsToCents } from "@paperclipai/shared";
-import { conflict, notFound } from "../errors.js";
+import { conflict, HttpError, notFound } from "../errors.js";
 import { withOperationAccountingTransaction } from "./accounting-transaction.js";
 import { queueBudgetEvaluation } from "./budget-evaluation-work.js";
 import { lockBudgetAdmissionControls } from "./budget-admission-controls.js";
@@ -10,6 +10,14 @@ import { withBudgetSpan } from "./budget-tracing.js";
 import type { ActivityPublication } from "./activity-log.js";
 import { readClaimedNativeStopRecovery } from "./native-runtime/native-cancellation-request.js";
 import { extendOwnNativeRecoveryClaimInTransaction, readOwnNativeRecoveryClaimLease } from "./native-runtime/native-execution-lease.js";
+
+/** A Stop was recorded before this run reserved budget, so no provider work
+ * started. The run's executor settles that Stop instead of failing the run. */
+export class RunCancellationRequestedError extends HttpError {
+  constructor(readonly runtimeMode: string) {
+    super(409, "Run cancellation already requested");
+  }
+}
 
 /** Native finalization takes its coordinator before issue/run locks. Recovery
  * admission uses the same order after the company accounting lock, so its
@@ -99,7 +107,8 @@ export async function reserveRunBudget(db: Db, companyId: string, runId: string,
     const [run] = await tx.select().from(heartbeatRuns).where(and(eq(heartbeatRuns.id, runId), eq(heartbeatRuns.companyId, companyId))).for("update");
     if (!run) throw notFound("Run not found");
     const stopRecovery = await readClaimedNativeStopRecovery(tx, run, recoveryLeaseOwner);
-    if ((run.resultJson?.cancellation || run.resultJson?.startupCancellation) && !stopRecovery) throw conflict("Run cancellation already requested");
+    if ((run.resultJson?.cancellation || run.resultJson?.startupCancellation) && !stopRecovery)
+      throw new RunCancellationRequestedError(run.runtimeMode);
     if (run.costAccountedAt || !["queued", "running"].includes(run.status)) throw conflict("Run can no longer start provider work");
     const [existing] = await tx.select().from(budgetReservations).where(and(eq(budgetReservations.companyId, companyId), eq(budgetReservations.runId, runId)));
     if (existing) {
