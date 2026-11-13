@@ -8,6 +8,7 @@ import {
   type SkillSecurityOverrideRequest,
   type SkillSourceSecurityOverride,
   type SkillVersionSecurityApproval,
+  type SkillSourcePackageMode,
 } from '@paperclipai/shared';
 import { conflict, unprocessable } from '../errors.js';
 import { skillFileBytes } from './skill-snapshot.js';
@@ -139,14 +140,14 @@ export function recordedSecurityOverride(request: SkillSecurityOverrideRequest, 
  */
 export function versionSecurityApproval(
   approval: SkillSourceSecurityOverride | null | undefined,
-  scan: { commitSha: string; securityFindings?: SkillSecurityFinding[] },
+  scan: { commitSha: string; packageMode?: SkillSourcePackageMode; securityFindings?: SkillSecurityFinding[] },
   packagePaths: ReadonlySet<string>,
 ): SkillVersionSecurityApproval | null {
   if (!approval) return null;
   const files = (scan.securityFindings ?? []).filter(finding => finding.accepted && finding.overridable && packagePaths.has(finding.path))
     .map(finding => ({ path: finding.path, code: finding.code, sha256: finding.sha256.toLowerCase() }));
   if (!files.length) return null;
-  return { commitSha: scan.commitSha.toLowerCase(), approvedCommitSha: approval.commitSha.toLowerCase(), approvedByUserId: approval.approvedByUserId,
+  return { commitSha: scan.commitSha.toLowerCase(), packageMode: scan.packageMode ?? 'skills', approvedCommitSha: approval.commitSha.toLowerCase(), approvedByUserId: approval.approvedByUserId,
     approvedAt: approval.approvedAt, reason: approval.reason, trustFutureUpdates: approval.trustFutureUpdates, files };
 }
 

@@ -3644,15 +3644,15 @@ export function companySkillService(db: Db, options: { actor?: AuthorizationActo
    * bytes it installed. The source's current approval plays no part, so renewing, withdrawing or narrowing it
    * later never changes how an installed version audits.
    */
-  async function installedVersionAcceptor(skill: CompanySkill, versionId: string, installedRoot: string,
-    inventory: ReadonlyArray<{ path: string }>) {
+  async function installedVersionAcceptor(skill: CompanySkill, versionId: string, installedRoot: string) {
     const layout = repositoryLayout(skill);
     const entrypoint = layout?.path ?? null;
-    // The audited version's own files show its package layout; a restored or older version may differ from the skill's latest one.
-    const packageMode = inventory.some(file => file.path.startsWith(`${REPOSITORY_CONTENT_DIR}/`)) ? "repository" : "skills";
     if (!entrypoint) return undefined;
     const record = await installedSecurityApproval(skill.companyId, skill.id, versionId);
     if (!record) return undefined;
+    // The approval record keeps the layout the version was installed with, so a restored or copied version maps its
+    // files the way they were approved, whatever the skill's latest layout is.
+    const packageMode = record.packageMode ?? layout?.packageMode ?? "skills";
     // A repository package installs the original files under REPOSITORY_CONTENT_DIR at their repository paths;
     // a skill package installs them relative to the skill directory.
     const repositoryPrefix = `${REPOSITORY_CONTENT_DIR}/`;
@@ -3698,7 +3698,7 @@ export function companySkillService(db: Db, options: { actor?: AuthorizationActo
           sourceType: "local_path",
           sourceLocator,
           fileInventory,
-        }, true, await installedVersionAcceptor(skill, versionId, sourceLocator, fileInventory));
+        }, true, await installedVersionAcceptor(skill, versionId, sourceLocator));
       });
     }
     if (skill.sourceType !== "catalog" && skill.sourceType !== "local_path") {

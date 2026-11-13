@@ -54,6 +54,8 @@ export interface SkillSourceSecurityOverride {
 export interface SkillVersionSecurityApproval {
   /** The commit this version was installed from. */
   commitSha: string;
+  /** How this version installed its files: a single skill package, or the repository package. Audits map paths with it. */
+  packageMode?: SkillSourcePackageMode;
   /** The commit the administrator reviewed; differs when future-update trust carried the approval. */
   approvedCommitSha: string;
   approvedByUserId: string | null;
