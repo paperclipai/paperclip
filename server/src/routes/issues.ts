@@ -14383,12 +14383,14 @@ export function issueRoutes(
     });
     if (result.outcome !== "triggered") {
       throw conflict(
-        result.reason === "execution_reconciliation_required"
+        result.outcome === "parked"
+          ? "The monitor wake was parked by an execution blocker. The monitor stays armed and will retry automatically."
+          : result.reason === "execution_reconciliation_required"
           ? "The previous run is still being recovered. Try again when recovery finishes."
           : result.reason === "monitor_replaced"
           ? "The monitor changed during this check. Review the task's current state before trying again."
           : "The monitor check did not start. Refresh the task to see its current state.",
-        { code: "issue_monitor_check_deferred", reason: result.reason },
+        { code: "issue_monitor_check_deferred", reason: result.outcome === "parked" ? "execution_reconciliation_required" : result.reason },
       );
     }
 
