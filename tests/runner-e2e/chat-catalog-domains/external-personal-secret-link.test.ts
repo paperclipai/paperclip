@@ -30,6 +30,9 @@ it.skipIf(process.env.PAPERCLIP_CHAT_EVAL_SECRET_ROUTE_CANARY !== "1")("grades t
     { name: "definition link whose sheet shows another key", reply: `<p>Use <a href="${secrets}?definition=${definition}">this page</a>.</p>`, sheetKey: "OTHER_KEY" },
     { name: "tab selected after the click", reply: retained, accepted: true,
       secretsPage: `<button role="tab" aria-selected="false" onclick="document.querySelector('#own').hidden=false">My secrets</button><div id="own" hidden>${ownEntry(definition)}</div>` },
+    // Like the real single-page app: the settings route renders its tabs after navigation, on the company tab.
+    { name: "tabs rendered after navigation", reply: retained, accepted: true,
+      secretsPage: `<div id="late"></div><template id="tabs"><button role="tab" aria-selected="false" onclick="document.querySelector('#own').hidden=false">My secrets</button><div id="own" hidden>${ownEntry(definition)}</div></template><script>setTimeout(()=>document.querySelector('#late').append(document.querySelector('#tabs').content.cloneNode(true)),400)</script>` },
     { name: "no link, only wording", reply: "<p>Open My secrets in Settings → Secrets and choose Set my value.</p>" },
     { name: "plain-text path, not a link", reply: `<p>Go to <code>${secrets}</code>.</p>` },
     { name: "wrong company link", reply: '<p>Open <a href="/OTHER/company/settings/secrets">My secrets</a>.</p>' },
