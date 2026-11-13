@@ -380,13 +380,21 @@ export function createAutomaticRunBrake(options: { loadRules?: () => Promise<Aut
   }
 
   async function isPersonWork(db: Db, companyId: string, work: AutomaticWork) {
-    if (work.issueId) {
-      const [waiting] = [...await db.execute<{ waiting: boolean }>(sql`select exists (select 1 from agent_wakeup_requests w
-        where w.company_id = ${companyId} and w.requested_by_actor_type = 'user' and w.run_id is null
-          and w.status in ('queued', 'deferred_issue_execution') and w.payload->>'issueId' = ${work.issueId}) as waiting`)];
-      if (waiting?.waiting) return true;
-    }
-    if (!work.sourceRunId) return false;
+    if (!work.issueId || !work.sourceRunId) return true;
+    const personReasons = sql.join([...PERSON_WAKE_REASONS].map(reason => sql`${reason}`), sql`, `);
+    const [asked] = [...await db.execute<{ asked: boolean }>(sql`
+      with source as (select max(r.finished_at) as finished_at from heartbeat_runs r
+        where r.company_id = ${companyId} and r.id = ${work.sourceRunId}::uuid)
+      select exists (select 1 from agent_wakeup_requests w, source
+          where w.company_id = ${companyId} and w.requested_by_actor_type = 'user' and w.payload->>'issueId' = ${work.issueId}
+            and ((w.run_id is null and w.status in ('queued', 'deferred_issue_execution', 'claimed'))
+              or w.requested_at > coalesce(source.finished_at, '-infinity'::timestamptz)))
+        or exists (select 1 from heartbeat_runs h, source
+          where h.company_id = ${companyId} and h.context_snapshot->>'issueId' = ${work.issueId}
+            and h.created_at > coalesce(source.finished_at, '-infinity'::timestamptz)
+            and (h.context_snapshot->>'wakeReason' in (${personReasons}) or h.context_snapshot ? 'taskRetryRequestId'
+              or jsonb_typeof(h.context_snapshot->'explicitUserContinuation') = 'object')) as asked`)];
+    if (asked?.asked) return true;
     const rules = await rulesOrNull();
     return !rules || (await rules.listPersonOriginSourceRunIds(db, companyId, [work.sourceRunId])).includes(work.sourceRunId);
   }
