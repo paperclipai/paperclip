@@ -108,10 +108,10 @@ describe.skipIf(!support.supported)("Retry is offered only when no automatic pat
   }
 
   it("shows a task whose recorded continuation is still waiting to start as continuing, however long delivery takes", async () => {
-    for (const minutesAgo of [1, 30, 110]) {
+    for (const minutesAgo of [1, 14, 30, 110]) {
       const { issue, runId } = await seedRecordedContinuation(minutesAgo);
       expect(await taskInterruptionPresentation(db, issue)).toMatchObject({ responsibility: "system", state: "working",
-        canRetry: false, observedRunId: runId });
+        canRetry: minutesAgo >= 15, observedRunId: runId });
     }
   });
 
@@ -119,7 +119,7 @@ describe.skipIf(!support.supported)("Retry is offered only when no automatic pat
     const { issue, primary } = await seedRecordedContinuation(45);
     await db.update(issueRecoveryActions).set({ evidence: { ...primary.evidence,
       continuationDeliveryAttemptedAt: new Date(Date.now() - 60_000).toISOString() } }).where(eq(issueRecoveryActions.id, primary.id));
-    expect(await taskInterruptionPresentation(db, issue)).toMatchObject({ state: "working", canRetry: false });
+    expect(await taskInterruptionPresentation(db, issue)).toMatchObject({ state: "working", canRetry: true, retryAction: "move_forward" });
   });
 
   it("offers Retry once the system gives up on a recorded continuation", async () => {
@@ -174,13 +174,46 @@ describe.skipIf(!support.supported)("Retry is offered only when no automatic pat
     expect(presentation?.retryAction).toBeUndefined();
   });
 
-  it("offers no Retry while a recorded continuation is still being delivered, however long it waits", async () => {
-    for (const minutesAgo of [16, 45, 110]) {
-      const { issue } = await seedRecordedContinuation(minutesAgo);
-      const presentation = await taskInterruptionPresentation(db, issue);
-      expect(presentation).toMatchObject({ state: "working", canRetry: false });
-      expect(presentation?.retryAction).toBeUndefined();
+  it("offers to move a recorded continuation forward once it has waited 15 minutes for delivery, without calling it failed", async () => {
+    for (const minutesAgo of [15, 45, 110]) {
+      const { issue, runId } = await seedRecordedContinuation(minutesAgo);
+      expect(await taskInterruptionPresentation(db, issue)).toMatchObject({ responsibility: "system", state: "working",
+        canRetry: true, retryAction: "move_forward", observedRunId: runId });
     }
+  });
+
+  it("offers no Retry while a recorded continuation has waited under 15 minutes for delivery", async () => {
+    const { issue } = await seedRecordedContinuation(14);
+    const presentation = await taskInterruptionPresentation(db, issue);
+    expect(presentation).toMatchObject({ state: "working", canRetry: false });
+    expect(presentation?.retryAction).toBeUndefined();
+  });
+
+  it("offers no Retry for a continuation recorded without a delivery request", async () => {
+    const { issue, primary } = await seedRecordedContinuation(45);
+    await db.update(issueRecoveryActions).set({ evidence: { ...primary.evidence, continuationDelivery: "not_requested" } })
+      .where(eq(issueRecoveryActions.id, primary.id));
+    const presentation = await taskInterruptionPresentation(db, issue);
+    expect(presentation).toMatchObject({ state: "working", canRetry: false });
+    expect(presentation?.retryAction).toBeUndefined();
+  });
+
+  it("offers no second Retry once a person already asked to move the undelivered continuation forward", async () => {
+    const { companyId, agentId, issue, runId } = await seedRecordedContinuation(45);
+    await db.insert(agentWakeupRequests).values({ companyId, agentId, source: "on_demand", triggerDetail: "manual",
+      reason: "task_retry", status: "deferred_issue_execution", requestedByActorType: "user", requestedByActorId: randomUUID(),
+      payload: { issueId: issue.id, taskRetry: { sourceRunId: runId } } });
+    const presentation = await taskInterruptionPresentation(db, issue);
+    expect(presentation).toMatchObject({ state: "working", canRetry: false });
+    expect(presentation?.retryAction).toBeUndefined();
+  });
+
+  it("offers no move-forward for an undelivered continuation once the task is reassigned", async () => {
+    const { companyId, issue } = await seedRecordedContinuation(45);
+    const otherAgentId = randomUUID();
+    await db.insert(agents).values({ id: otherAgentId, companyId, name: "Other agent", adapterType: "paperclip_runner" });
+    const [reassigned] = await db.update(issues).set({ assigneeAgentId: otherAgentId }).where(eq(issues.id, issue.id)).returning();
+    expect((await taskInterruptionPresentation(db, reassigned!))?.retryAction).toBeUndefined();
   });
 
   it("offers no Retry for a continuation that is already running", async () => {

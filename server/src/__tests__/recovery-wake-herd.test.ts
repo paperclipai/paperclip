@@ -536,12 +536,13 @@ suite("recovery wake herd", () => {
     expect(await deliveryOf(healthy.action.id)).toBe("delivered");
   }, 120_000);
 
-  it("shows a task as continuing, never as needing Retry, while its recorded continuation is pending past the delivery bound", async () => {
+  it("shows a task as continuing, never as failed, while its recorded continuation is pending past the delivery bound", async () => {
     const agentId = await seedCompany(1);
     const record = await pendingContinuation(agentId, 240);
     await holdPastBound(record, RECOVERY_CONTINUATION_DELIVERY_BOUND_MS);
     const [issueRow] = await db.select().from(issues).where(eq(issues.id, record.issue.id));
-    expect(await taskInterruptionPresentation(db, issueRow!)).toMatchObject({ state: "working", canRetry: false, responsibility: "system" });
+    expect(await taskInterruptionPresentation(db, issueRow!)).toMatchObject({ state: "working", responsibility: "system",
+      canRetry: true, retryAction: "move_forward", observedRunId: record.source.id });
 
     const wake = fakeWake();
     await deliverReconciledExecutions(db, wake as never);
