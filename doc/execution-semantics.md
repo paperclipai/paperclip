@@ -6186,6 +6186,9 @@ Queue promotion retains live, same-task message bindings for that continuation;
 deleted and self-authored messages still drop out. The new run must pass current
 chat authorization. Ordinary message-only wakes whose input was consumed remain
 cancelled and cannot start another turn.
+Retained bindings that a run already received are not fresh input: they never
+reopen a finished task. A card answer owed to a task the finishing run closed
+still continues it in progress through the owed-answer path.
 
 ### Stop a failed native retry
 

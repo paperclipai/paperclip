@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { eq } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
-import { agents, agentWakeupRequests, companies, createDb, heartbeatRuns, issueComments, issues } from "@paperclipai/db";
+import { agents, agentWakeupRequests, companies, createDb, heartbeatRuns, issueComments, issues, issueThreadInteractions } from "@paperclipai/db";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "../../../__tests__/helpers/embedded-postgres.js";
 import { createReleaseIssueExecution } from "../application/use-cases.js";
 import { createPostgresWakeQueueAdapter } from "./postgres.js";
@@ -48,9 +48,13 @@ describe.skipIf(!support.supported)("release of a saved chat wake whose message 
         chatConversationId: randomUUID(), ...(delivered ? { wakeCommentIds: [message.id] } : { wakeCommentIds: [randomUUID()] }) },
     }).returning();
     await db.update(issues).set({ executionRunId: run.id, executionLockedAt: new Date() }).where(eq(issues.id, issue.id));
+    // The person accepted the card while the run was active.
+    const card = interaction ? (await db.insert(issueThreadInteractions).values({ companyId, issueId: issue.id,
+      kind: "request_confirmation", status: "accepted", payload: { version: 1, prompt: "Proceed?" },
+      resolvedByUserId: "chat-user", resolvedAt: new Date(Date.now() - 10_000) }).returning())[0] : null;
     const context = { issueId: issue.id, taskId: issue.id, source: "chat:github", wakeReason: "External chat message received",
       wakeSource: "assignment", chatConversationId: randomUUID(), commentId: message.id, wakeCommentId: message.id,
-      wakeCommentIds: [message.id], ...(interaction ? { interactionId: randomUUID(), interactionKind: "request_confirmation", interactionStatus: "accepted" } : {}) };
+      wakeCommentIds: [message.id], ...(card ? { interactionId: card.id, interactionKind: "request_confirmation", interactionStatus: "accepted" } : {}) };
     const wakeId = randomUUID();
     const { idempotencyKey } = createDurableChatWakeupRequest({ id: wakeId, companyId, agentId, issueId: issue.id,
       commentId: message.id, requestedByActorType: "user", requestedByActorId: "chat-user", requestedAt: new Date(),
@@ -58,7 +62,8 @@ describe.skipIf(!support.supported)("release of a saved chat wake whose message 
     const [wake] = await db.insert(agentWakeupRequests).values({ id: wakeId, idempotencyKey, companyId, agentId, source: "assignment",
       triggerDetail: "system", reason: "External chat message received", status: "deferred_issue_execution",
       requestedByActorType: "user", requestedByActorId: "chat-user",
-      payload: { issueId: issue.id, mutation: interaction ? "interaction" : "chat_message_received", wakeCommentId: message.id, _paperclipWakeContext: context },
+      payload: { issueId: issue.id, mutation: interaction ? "interaction" : "chat_message_received", wakeCommentId: message.id,
+        ...(card ? { interactionId: card.id, interactionKind: card.kind, interactionStatus: "accepted" } : {}), _paperclipWakeContext: context },
     }).returning();
     return { issue, run, wake, message };
   }
@@ -104,6 +109,27 @@ describe.skipIf(!support.supported)("release of a saved chat wake whose message 
     });
     const [locked] = await db.select().from(issues).where(eq(issues.id, issue.id));
     expect(locked.executionRunId).toBe(promoted.id);
+  });
+
+  it("continues an accepted card owed to a task the finishing run closed, without reopening it to todo", async () => {
+    const { issue, run, wake, message } = await seed(true, true);
+    // The run that received the message closed the task after the person accepted the card.
+    await db.update(issues).set({ status: "done", completedAt: new Date() }).where(eq(issues.id, issue.id));
+    const result = await createReleaseIssueExecution({
+      issueLock: createPostgresWakeQueueAdapter(db, {
+        resolveResponsibleUserId: async () => "chat-user",
+        getRoutineEnv: async () => ({ routineId: null, env: null, responsibleUserId: null }),
+        resolveSessionBeforeForWakeup: async () => null,
+      } as never),
+      recovery: {} as never,
+    })({ companyId, runId: run.id, now: new Date() });
+    const [saved] = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, wake.id));
+    expect(result.outcome.kind, JSON.stringify(saved)).toBe("promoted");
+    const [task] = await db.select().from(issues).where(eq(issues.id, issue.id));
+    expect(task.status).toBe("in_progress");
+    const [promoted] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, saved.runId!));
+    expect(promoted.contextSnapshot).toMatchObject({ source: "chat:github", interactionStatus: "accepted",
+      wakeCommentIds: [message.id] });
   });
 
   it("does not report a delivered chat message as not started", async () => {
