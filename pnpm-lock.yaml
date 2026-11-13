@@ -515,9 +515,6 @@ importers:
       '@agentclientprotocol/codex-acp':
         specifier: 1.6.2
         version: 1.6.2(patch_hash=2iynuypg76nxmydiylgtffhr7e)
-      '@agentclientprotocol/sdk':
-        specifier: 1.9.0
-        version: 1.9.0(zod@4.6.7)
       '@openai/codex':
         specifier: 0.160.0
         version: 0.160.0
@@ -8155,6 +8152,7 @@ packages:
 
   opencode-ai@1.18.34:
     resolution: {integrity: sha512-9WUS2T0t4HHDVzXvuwTHF0nvhXvZ9mQ0r+ozCvKdJu0LVoQpOzqAW4qWTC3ygNc5Oedcc7j+Oct24JYlQYnySA==}
+    cpu: [arm64, x64]
     os: [darwin, linux, win32]
     hasBin: true
 
