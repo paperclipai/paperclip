@@ -24,9 +24,6 @@ vi.mock("@paperclipai/adapter-utils/execution-target", async () => {
 
 import { execute } from "./execute.js";
 
-// Tool output the agent itself printed while reading an HTTP client config.
-// It carries a phrase the login-prompt detector scans the raw stdout for, but
-// the provider never asked anybody to log in.
 const POISONED_TOOL_OUTPUT = 'read config.json: { "rejectUnauthorized": true, "timeout": 30 }';
 
 function buildProcResult(
@@ -57,6 +54,14 @@ function buildProcResult(
   };
 }
 
+function mockExecutionResult(result: Record<string, unknown>) {
+  runAdapterExecutionTargetProcess.mockImplementation(async (_runId: string, _target: unknown, _command: string, args: string[]) =>
+    args.includes("--version")
+      ? { ...result, exitCode: 0, stdout: "2.1.284 (Claude Code)" }
+      : result,
+  );
+}
+
 function buildContext() {
   return {
     runId: "run-1",
@@ -80,11 +85,7 @@ describe("claude_local auth classification precedence", () => {
   });
 
   it("does not seal claude_auth_required on a run the adapter classified as succeeded", async () => {
-    // The CLI reported `subtype: "success"` with `is_error: false`, so the run
-    // did not fail. A login marker scanned out of the agent's own stdout must
-    // not override that, because a non-null errorCode suppresses the
-    // server-side reclassification of an otherwise-clean run.
-    runAdapterExecutionTargetProcess.mockResolvedValue(
+    mockExecutionResult(
       buildProcResult(
         { subtype: "success", is_error: false, result: "done" },
         { exitCode: 0, extraStdout: "the API replied 401 Unauthorized, retrying with a fresh client" },
@@ -97,10 +98,7 @@ describe("claude_local auth classification precedence", () => {
   });
 
   it("does not seal claude_auth_required on an unrelated identifier in the transcript", async () => {
-    // `rejectUnauthorized` is an ordinary TLS option name that an agent reads
-    // out of an HTTP client config. It shares a substring with a login marker
-    // and nothing else. The gate holds whatever the detector decides.
-    runAdapterExecutionTargetProcess.mockResolvedValue(
+    mockExecutionResult(
       buildProcResult(
         { subtype: "success", is_error: false, result: "done" },
         { exitCode: 0, extraStdout: POISONED_TOOL_OUTPUT },
@@ -113,7 +111,7 @@ describe("claude_local auth classification precedence", () => {
   });
 
   it("still reports claude_auth_required when the run fails on a real auth error", async () => {
-    runAdapterExecutionTargetProcess.mockResolvedValue(
+    mockExecutionResult(
       buildProcResult(
         {
           subtype: "success",
@@ -132,10 +130,7 @@ describe("claude_local auth classification precedence", () => {
   });
 
   it("does not seal claude_auth_required on an unparsed run that exits zero", async () => {
-    // Unparsed path with a clean exit: the login marker comes from the raw
-    // stream, and nothing else says the run failed. This is the case the
-    // exit-code gate exists for, so it must fail if that gate is removed.
-    runAdapterExecutionTargetProcess.mockResolvedValue({
+    mockExecutionResult({
       exitCode: 0,
       signal: null,
       timedOut: false,
@@ -151,8 +146,7 @@ describe("claude_local auth classification precedence", () => {
   });
 
   it("still reports claude_auth_required when the CLI prints a login prompt and exits non-zero", async () => {
-    // No parsed result event at all: the unparsed path, gated on the exit code.
-    runAdapterExecutionTargetProcess.mockResolvedValue({
+    mockExecutionResult({
       exitCode: 1,
       signal: null,
       timedOut: false,
