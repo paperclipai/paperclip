@@ -21,6 +21,7 @@ import { PLUGIN_RUNNER_AI_CONNECTION_REQUIRED } from "./plugin-runner-ai-connect
 import { NATIVE_PROVIDER_OVERLOADED_CODE } from "./native-runtime/native-provider-failure.js";
 import { PROJECT_ACCESS_DENIED } from "./project-access-denial.js";
 import { REVIEWED_CHAT_BINDING_NOT_READY } from "./reviewed-chat-binding-diagnostics.js";
+import { REUSABLE_SANDBOX_RESUME_FAILED_CODE } from "./reusable-sandbox-resume-error.js";
 import { readProviderFailure } from "@paperclipai/shared";
 
 type HeartbeatRun = typeof heartbeatRuns.$inferSelect;
@@ -309,6 +310,17 @@ function isScheduledReviewedChatRetry(run: HeartbeatRun, options: RunFailureRepo
     options.reviewedChatRetry === "scheduled";
 }
 
+/**
+ * The sandbox provider answered a saved-sandbox resume with an HTTP 5xx before
+ * provider dispatch, and the setup path scheduled the bounded retry of the same
+ * lease. The retry owns recovery; an exhausted or unscheduled retry, and any
+ * other resume refusal, stays reportable.
+ */
+function isScheduledSandboxResumeRetry(run: HeartbeatRun, options: RunFailureReportOptions): boolean {
+  return run.status === "failed" && run.errorCode === REUSABLE_SANDBOX_RESUME_FAILED_CODE &&
+    options.sandboxResumeRetry === "scheduled";
+}
+
 const providerAuthErrorCodes = new Set(["claude_auth_required", "acpx_auth_required"]);
 
 /**
@@ -363,7 +375,7 @@ export function reportRunFailure(db: Db, run: HeartbeatRun, options: RunFailureR
   // The terminal write that ends the retry reports instead (`isNewTerminalRunFailure`).
   if (isPendingNativeRetry(run)) return Promise.resolve();
   // The setup path reports this run again once it has decided the retry.
-  if (options.reviewedChatRetry === "pending") return Promise.resolve();
+  if (options.reviewedChatRetry === "pending" || options.sandboxResumeRetry === "pending") return Promise.resolve();
   if (mode === "unexpected" && (
     isMissingSecretConfigurationBlocker(run, options) ||
     isAiConnectionSelectionBlocker(run, options) ||
@@ -377,6 +389,7 @@ export function reportRunFailure(db: Db, run: HeartbeatRun, options: RunFailureR
     isCodexAcpModelCapacityFailure(run, options) ||
     isAcpProviderAccessFailure(run, options) ||
     isScheduledReviewedChatRetry(run, options) ||
+    isScheduledSandboxResumeRetry(run, options) ||
     isRestartInterruptedSetup(run)
   )) return Promise.resolve();
   const runStatus = run.status;
