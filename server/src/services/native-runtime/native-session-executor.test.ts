@@ -437,6 +437,7 @@ import {
   takeRemoteBootstrapRestartProof,
   unidentifiedLocalRunnerProvenAbsent,
   executePaperclipNativeSession,
+  sessionToolAuthorityCount,
   detachNativeSessionsForRestart,
   NativeControllerDetachedForRestartError,
   NativeCancellationPendingRecoveryError,
@@ -10023,6 +10024,44 @@ describe("native session cancellation", () => {
       open(); finish();
       await outcome;
       await stopping;
+      if (previous === undefined) delete process.env.PAPERCLIP_RUNNER_STATE_DIR;
+      else process.env.PAPERCLIP_RUNNER_STATE_DIR = previous;
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it.each(["succeeded", "failed"] as const)("releases each finished session's tool authority and assigned tool catalog (%s)", async (outcome) => {
+    const root = await mkdtemp(join(tmpdir(), "native-authority-release-"));
+    const previous = process.env.PAPERCLIP_RUNNER_STATE_DIR;
+    process.env.PAPERCLIP_RUNNER_STATE_DIR = root;
+    let catalogs = 0;
+    try {
+      const before = sessionToolAuthorityCount();
+      for (let index = 0; index < 5; index += 1) {
+        const current = { ...execution, binding: { ...execution.binding, runId: `run-authority-${outcome}-${index}` },
+          session: { ...execution.session, normalizedSessionId: `session-authority-${outcome}-${index}` } } as NativeExecutionInputV1;
+        state.createAssignedMcpTools.mockImplementationOnce(async () => {
+          catalogs += 1;
+          return { definitions: () => [], has: () => false, execute: vi.fn() };
+        });
+        state.execute.mockReset().mockImplementationOnce(async (options) => {
+          await options.onSession({ cancel: state.cancel });
+          await options.onSession(null);
+          if (outcome === "failed") throw new Error("provider failed");
+          return {
+            result: { summary: "done" }, terminal: { runTerminalState: "succeeded" },
+            turnId: "turn", normalizedSessionId: current.session.normalizedSessionId, providerSessionId: null,
+            driverKind: "test", driverVersion: "1", nativeEventCount: 0, highestContiguousSourceSeq: 0,
+          };
+        });
+        await executePaperclipNativeSession({ db: leaseDb(current), execution: current, runnerInstanceId: "runner", useRunnerd: true,
+          runnerEnvironment: { ...configuredEnvironmentProjection({}), PAPERCLIP_NATIVE_MCP_NAME: "assigned-release",
+            PAPERCLIP_NATIVE_MCP_URL: "http://127.0.0.1/mcp/gateways/assigned-release", PAPERCLIP_NATIVE_MCP_TOKEN: "release-fixture" },
+        }).catch(() => undefined);
+      }
+      expect(catalogs).toBe(5);
+      expect(sessionToolAuthorityCount()).toBe(before);
+    } finally {
       if (previous === undefined) delete process.env.PAPERCLIP_RUNNER_STATE_DIR;
       else process.env.PAPERCLIP_RUNNER_STATE_DIR = previous;
       await rm(root, { recursive: true, force: true });
