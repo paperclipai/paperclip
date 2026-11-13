@@ -5,6 +5,7 @@ import { randomBytes, randomUUID } from "node:crypto";
 import { and, eq } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import type { Db } from "@paperclipai/db";
+import { createSystemRecovery } from "../../../services/system-recovery-state.js";
 import {
   activityLog,
   agentWakeupRequests,
@@ -502,6 +503,39 @@ describeEmbeddedPostgres("wake-queue postgres adapter", () => {
       expect(result.outcome.kind).toBe("released");
       expect((await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, wakeId)))[0].status).toBe("deferred_issue_execution");
     }
+  });
+
+  it.each([
+    ["fresh_isolated_workspace", "promoted"], ["remote_epoch", "promoted"], ["writer_ended", "released"],
+  ] as const)("promotes saved input behind an exhausted restart hold once a %s continuation replaced the run (%s)", async (isolation, expected) => {
+    // Restart recovery exhausted its retries (systemRecovery.state exhausted, no stop receipt), then the
+    // fallback replaced the run. An isolated continuation reuses none of the old executor's workspace,
+    // so the manual-admission hold no longer stands between the task and the person's follow-up.
+    const companyId = await seedCompany(), agentId = await seedAgent({ companyId });
+    const issueId = await seedIssue({ companyId, status: "in_progress", assigneeAgentId: agentId });
+    const runId = await seedRun({ companyId, agentId, status: "failed", contextSnapshot: { issueId } });
+    await db.update(heartbeatRuns).set({ runtimeMode: "native", nativeIssueId: issueId, finishedAt: new Date(),
+      errorCode: "native_restart_recovery_blocked", resultJson: { freshContinuationSupersededAt: new Date().toISOString() },
+    }).where(eq(heartbeatRuns.id, runId));
+    await db.insert(nativeRunFinalizations).values({ companyId, issueId, runId, phase: "terminal_failure",
+      recoveryState: "blocked", failureCode: "native_restart_recovery_blocked",
+      failureDetail: { systemRecovery: { ...createSystemRecovery(runId), state: "exhausted" }, replacementDenied: "fresh_continuation" } });
+    await db.insert(issueRecoveryActions).values({ companyId, sourceIssueId: issueId, kind: "active_run_watchdog",
+      status: "resolved", outcome: "restored", ownerType: "system", returnOwnerAgentId: agentId,
+      cause: "fresh_continuation", fingerprint: `fresh-continuation:${runId}`, nextAction: "Continuing.", resolvedAt: new Date(),
+      evidence: { runId, freshContinuation: { sourceRunId: runId, isolation, delivery: "saved_input" }, continuationDelivery: "not_requested" } });
+    const [comment] = await db.insert(issueComments).values({ companyId, issueId, authorType: "user", authorUserId: "responsible-user", body: "Follow-up during the run" }).returning();
+    const wakeId = await seedDeferredWake({ companyId, agentId, issueId, requestedByActorId: "responsible-user",
+      payload: { _paperclipWakeContext: { issueId, wakeReason: "issue_commented", wakeCommentIds: [comment.id] } },
+    });
+    const release = createReleaseIssueExecution({ issueLock: createPostgresWakeQueueAdapter(db, stubDeps),
+      recovery: { escalateStrandedAssignedIssue: async () => undefined, escalateStrandedRecoveryIssueInPlace: async () => undefined },
+    });
+    const result = await release({ companyId, runId, now: new Date(), suppressImmediateRecovery: true, resumeStrandedQueue: true });
+    expect(result.outcome.kind).toBe(expected);
+    const [wake] = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, wakeId));
+    if (expected === "promoted") expect(wake.status).not.toBe("deferred_issue_execution");
+    else expect(wake.status).toBe("deferred_issue_execution");
   });
 
   it.each([

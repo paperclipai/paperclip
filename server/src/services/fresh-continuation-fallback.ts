@@ -320,6 +320,20 @@ export async function isFreshIsolatedContinuationWake(db: Db, input: { companyId
     contextSnapshot: input.contextSnapshot ?? {} }, input.issueId)) !== null;
 }
 
+/**
+ * True when the fallback replaced this run and its continuation reuses none of
+ * the run's workspace: a new isolated workspace or an abandoned remote epoch.
+ * Holds that only protect the old executor's resources then no longer stand
+ * between the task and its next turn.
+ */
+export async function freshContinuationIsolatesRun(db: Db, input: { companyId: string; runId: string }): Promise<boolean> {
+  const [record] = await db.select({ id: issueRecoveryActions.id }).from(issueRecoveryActions).where(and(
+    eq(issueRecoveryActions.companyId, input.companyId),
+    sql`${issueRecoveryActions.evidence}#>>'{freshContinuation,sourceRunId}' = ${input.runId}`,
+    sql`${issueRecoveryActions.evidence}#>>'{freshContinuation,isolation}' in ('fresh_isolated_workspace', 'remote_epoch')`)).limit(1);
+  return Boolean(record);
+}
+
 export async function ensureFreshContinuation(db: Db, input: Input): Promise<FreshContinuationResult> {
   return db.transaction(tx => continueFreshInTransaction(tx as unknown as Db, input));
 }
@@ -518,10 +532,12 @@ export async function continueFreshInTransaction(tx: Db, input: Input): Promise<
   // Never claim a stop that was not proven: record what isolates the successor.
   const isolation: FreshContinuationIsolation = fenced || remoteSource ? "remote_epoch"
     : writer === "ended" && !waitBounded ? "writer_ended" : "fresh_isolated_workspace";
-  // With no task workspace binding to move, only a run that carries the
-  // isolation in its context can avoid the shared directory: the recorded
-  // continuation runs first, and saved input follows it.
-  if (isolation === "fresh_isolated_workspace" && !issue.executionWorkspaceId && delivery === "saved_input") delivery = "recorded";
+  // Only a run that carries the isolation in its context prepares the new
+  // workspace (create_new). Saved input carries no such marker: on a task with
+  // no project it would be refused at admission once the binding is cleared,
+  // and otherwise could resolve the old directory. So the recorded
+  // continuation runs first, binds the new workspace, and saved input follows.
+  if (isolation === "fresh_isolated_workspace" && delivery === "saved_input") delivery = "recorded";
   const unverified = await unverifiedActions(tx, run);
   const note = freshContinuationNote({ runId: run.id, unverified,
     workspace: isolation === "writer_ended" ? "kept" : "restored_last_save" });

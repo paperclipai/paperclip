@@ -19,6 +19,7 @@ import { and, asc, eq, inArray, isNull, notInArray, or, sql } from "drizzle-orm"
 import { readReleaseRun, type ReleaseRun } from "./release-run-read.js";
 import { isGovernancePauseStop } from "../../../services/governance-pause-stop.js";
 import { agentRunSupersededByFreshContinuation } from "../../../agent-run-cancellation.js";
+import { freshContinuationIsolatesRun } from "../../../services/fresh-continuation-fallback.js";
 import type { Db } from "@paperclipai/db";
 import { deliveredQueuedCommentIds, EXTERNAL_CHAT_MESSAGE_WAKE_MUTATION, EXTERNAL_CHAT_MESSAGE_WAKE_REASON } from "../../../services/queued-comment-delivery.js";
 import { extractIssueReferenceIdentifiers, isUuidLike } from "@paperclipai/shared";
@@ -1297,10 +1298,16 @@ export function createPostgresWakeQueueAdapter(db: Db, deps: WakeQueuePostgresAd
             : [];
           if (!finalized) return { outcome: { kind: "released" }, postCommitEffects: [], run: runSnapshot };
         }
-        if (await nativeManualAdmissionHoldsExecution(tx, { companyId: input.companyId, runId: run.id })) {
+        // These two holds protect the old executor's workspace and resources. A
+        // continuation in a new isolated workspace (or an abandoned remote epoch)
+        // reuses none of them, so they no longer hold the task's next turn; any
+        // other replacement still waits for them.
+        const isolatedReplacement = agentRunSupersededByFreshContinuation(run)
+          && await freshContinuationIsolatesRun(tx, { companyId: input.companyId, runId: run.id });
+        if (!isolatedReplacement && await nativeManualAdmissionHoldsExecution(tx, { companyId: input.companyId, runId: run.id })) {
           return { outcome: { kind: "released" }, postCommitEffects: [], run: runSnapshot };
         }
-        if (input.resumeStrandedQueue && await hasPendingRunCleanup(tx, input.companyId, run.id)) {
+        if (input.resumeStrandedQueue && !isolatedReplacement && await hasPendingRunCleanup(tx, input.companyId, run.id)) {
           return { outcome: { kind: "released" }, postCommitEffects: [], run: runSnapshot };
         }
 

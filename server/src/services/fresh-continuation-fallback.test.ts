@@ -883,18 +883,20 @@ suite("fresh-continuation fallback", () => {
   }, 60_000);
 
   // The isolation decision is a property of the task's next run, whatever path starts it.
-  it("moves the task off the old writer's workspace for every next run, saved input included", async () => {
+  it("moves the task off the old writer's workspace and runs the isolated continuation before saved input", async () => {
     const f = await unfinishedRun({ runtime: "legacy", errorCode: "controller_lease_lost", error: "Legacy controller lease lost" });
     const [workspace] = await db.insert(executionWorkspaces).values({ companyId, sourceIssueId: f.issueId, mode: "isolated",
       strategyType: "git_worktree", name: "Task workspace", cwd: "/tmp/old-writer" }).returning();
     await db.update(issues).set({ executionWorkspaceId: workspace!.id, workspaceBindingRevision: 2 }).where(eq(issues.id, f.issueId));
     await db.update(heartbeatRuns).set({ processPid: 4242, processHostHash: "replaced-server", processStartedAt: new Date(Date.now() - 600_000),
       contextSnapshot: { issueId: f.issueId, executionWorkspaceId: workspace!.id } }).where(eq(heartbeatRuns.id, f.runId));
-    // A person's saved message is waiting: it continues the task itself.
+    // A person's saved message is waiting. It carries no isolation marker, so it cannot prepare the
+    // new workspace (a projectless task would be refused at admission once the binding is cleared):
+    // the isolated continuation runs first and the saved message follows it.
     await db.insert(agentWakeupRequests).values({ companyId, agentId, source: "on_demand", status: "deferred_issue_execution",
       requestedByActorType: "user", requestedByActorId: userId, payload: { issueId: f.issueId } });
     expect(await ensureFreshContinuation(db, { companyId, runId: f.runId, trigger: "recovery_refused" }))
-      .toMatchObject({ kind: "continued", isolation: "fresh_isolated_workspace", delivery: "saved_input" });
+      .toMatchObject({ kind: "continued", isolation: "fresh_isolated_workspace", delivery: "recorded" });
     // No delivery path can reach the old directory: the task is no longer bound to it.
     expect(await issue(f.issueId)).toMatchObject({ executionWorkspaceId: null, workspaceBindingRevision: 3 });
     const [kept] = await db.select().from(executionWorkspaces).where(eq(executionWorkspaces.id, workspace!.id));
