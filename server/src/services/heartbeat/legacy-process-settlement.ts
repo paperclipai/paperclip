@@ -87,15 +87,11 @@ export async function recordLegacyProcessSettlement(db: Db, observed: LegacyProc
       sql`NOT COALESCE(${heartbeatRuns.resultJson} ?| ARRAY['startupCancellation','cancellation','executionCancellation','nativeCancellation'], false)`,
     )).for("update");
     if (!current || !canCommit() || await hasPendingRunCleanup(tx, current.companyId, current.id) || !canCommit()) return false;
-    // Register work intent before the producer mutation, in this same transaction.
     await notifyDeliveryWork(tx, DELIVERY_QUEUES.accounting, current.companyId);
     if (!canCommit()) return false;
     const updated = await tx.update(heartbeatRuns).set({ legacyProcessSettlement: receipt(current) })
       .where(and(eq(heartbeatRuns.id, current.id), eq(heartbeatRuns.companyId, current.companyId)))
       .returning({ id: heartbeatRuns.id });
-    // This is physical process evidence, not a usage receipt or accounting
-    // acknowledgement. Publish it even while spend is unknown; the normal
-    // accounting owner decides whether that separate obligation can settle.
     return updated.length === 1;
   });
 }
@@ -131,17 +127,12 @@ export async function recordLegacyPreparationSettlement(db: Db, observed: Legacy
   });
 }
 
-/** Explicit accounting Retry can repair a lost pre-commit physical receipt.
- * No provider is replayed or signalled. The original boot writer stays strict;
- * a prior boot instead needs both normal controller and child-owner proofs. */
 export async function recoverLegacyProcessSettlement(db: Db, companyId: string, runId: string,
   currentBootIdle?: (runId: string) => boolean): Promise<boolean> {
   const readLeases = (tx: Db, lock = false) => {
     const query = tx.select().from(environmentLeases).where(and(
       eq(environmentLeases.companyId, companyId), eq(environmentLeases.heartbeatRunId, runId),
     )).orderBy(asc(environmentLeases.id));
-    // Lease writers need not lock their parent run. Do not wait in the
-    // opposite order; an omitted locked row fails exact full-set equality.
     return lock ? query.for('update', { skipLocked: true }) : query;
   };
   const [observed] = await db.select().from(heartbeatRuns).where(and(
@@ -159,13 +150,9 @@ export async function recoverLegacyProcessSettlement(db: Db, companyId: string, 
       || observed.scheduledRetryAt && observed.scheduledRetryAt > observed.finishedAt!
       || ['startupCancellation','cancellation','executionCancellation','nativeCancellation']
         .some(key => observed.resultJson && Object.hasOwn(observed.resultJson, key))) return false;
-  // A committed exact receipt needs no re-observation. Normal accounting still
-  // rechecks its current claim/control/source identity under its own run lock.
   if (matchesReceipt(observed.legacyProcessSettlement, receipt(observed))) return true;
   if (observed.legacyProcessSettlement !== null) return false;
   const leases = await readLeases(db);
-  // A host SSH client exiting never proves its remote provider stopped.
-  // This recovery route is deliberately limited to positively local leases.
   if (leases.length === 0 || leases.some(lease => lease.provider !== 'local' || lease.providerLeaseId !== null
       || lease.metadata?.driver !== 'local' || !lease.releasedAt
       || !['released','expired','failed'].includes(lease.status))) return false;
@@ -177,8 +164,6 @@ export async function recoverLegacyProcessSettlement(db: Db, companyId: string, 
   const sameBoot = observed.controllerBootId === legacyControllerBootId;
   const locallyIdle = () => currentBootIdle ? currentBootIdle(runId) : !sameBoot;
   if (!locallyIdle()) return false;
-  // Normal bounded ownership inspection is outside the transaction. Unknown,
-  // foreign and live owners remain held, with no age/PID-only override.
   const controller = await proveOwnerGone(owner, probe);
   if (!(controller.verdict === 'gone'
       || sameBoot && controller.verdict === 'alive' && controller.reason === 'current_process'

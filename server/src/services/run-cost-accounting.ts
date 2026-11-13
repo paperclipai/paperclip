@@ -42,8 +42,6 @@ async function readAccountingClosure(db: Db, runId: string) {
     coordinatorId: nativeRunFinalizations.runId, resultId: nativeRunFinalizations.resultId, phase: nativeRunFinalizations.phase,
     providerWorkNeverStarted: sql<boolean>`(${nativeProviderWorkNeverStarted}) is true`,
     processPid: heartbeatRuns.processPid, processGroupId: heartbeatRuns.processGroupId,
-    // Bind the physical receipt and its entire compared identity across the
-    // spool read. A replacement claim/receipt must retry from a new snapshot.
     legacyClosure: sql<unknown>`case when ${heartbeatRuns.runtimeMode} = 'legacy' then
       jsonb_build_object('receipt', ${heartbeatRuns.legacyProcessSettlement},
         'runId', ${heartbeatRuns.id}, 'companyId', ${heartbeatRuns.companyId}, 'agentId', ${heartbeatRuns.agentId},
@@ -112,10 +110,6 @@ const closedNativeReceiptSource = sql`${heartbeatRuns.runtimeMode} = 'native'
       order by process_event.seq desc limit 1) = 'native.local_process_stopped')
     or (${heartbeatRuns.status} in ('failed', 'cancelled', 'timed_out', 'interrupted') and ${remoteExecutionTerminated}))`;
 
-/** Only the existing host-owner's exact positive local process receipt closes
- * a legacy receipt producer. Never admit the identity-absent/preparation branch
- * of legacySourceProcessSettled: a started provider's unknown usage is not zero.
- * Normal claims clear this receipt; accounting still arbitrates the run row. */
 const closedLegacyReceiptSource = sql`${heartbeatRuns.runtimeMode} = 'legacy'
   and ${heartbeatRuns.status} in ('failed', 'timed_out', 'interrupted')
   and ${heartbeatRuns.finishedAt} is not null
@@ -330,12 +324,6 @@ export async function accountRunCost(db: Db, runId: string, hooks: BudgetService
       const [coordinator] = await tx.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, run.id));
       if (coordinator && !coordinator.resultId && coordinator.phase !== "terminal_failure") return false;
     }
-    // A stop can mark the run terminal before the provider's shutdown receipt
-    // arrives. Keep the debt pending instead of acknowledging an invented zero.
-    // A positive native or legacy owner closure settles the known part as
-    // unpriced/lower-bound usage; it never certifies complete or free usage.
-    // Native recovery also retains its existing bounded timeout policy.
-    // Any later actual receipt posts through late-receipt reconciliation.
     const receiptUnavailable = !preProviderFailure && (captureFailed || object(run.usageJson).accountingReceiptReady === false);
     const receiptClosure = captureFailed ? "timed_out" as const
       : receiptUnavailable ? await readProviderReceiptClosure(tx, run.id) : null;

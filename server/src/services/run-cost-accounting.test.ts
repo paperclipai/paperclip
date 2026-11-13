@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { databaseWorkPending, reconcileDatabaseWork } from "@paperclipai/db/work-signals";
 import { promises as fs } from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -15,6 +16,7 @@ import { resolveExternalTestDatabaseUrl } from "../__tests__/helpers/external-te
 import { accountRunCost, createCostAccountingReconciler, readCostAccountingWork } from "./run-cost-accounting.js";
 import { createRunUsageRecorder, persistUsageReceipt, type UsageReceiptEnvelope } from "./usage-receipts.js";
 import * as usageReceipts from "./usage-receipts.js";
+import * as budgetTracing from "./budget-tracing.js";
 import { billingReconciliationService } from "./billing-reconciliation.js";
 import { accountingIntegrityService } from "./accounting-integrity.js";
 import { legacyControllerBootId } from "./legacy-controller-lease.js";
@@ -22,8 +24,6 @@ import { recordLegacyProcessSettlement } from "./heartbeat/legacy-process-settle
 import { DELIVERY_QUEUES, subscribeDeliveryWork } from "./delivery-work-notifications.js";
 
 const external = resolveExternalTestDatabaseUrl("PAPERCLIP_ACCOUNTING_TEST_DATABASE_URL");
-// An explicitly owned external fixture must not depend on embedded support.
-// Keep the normal supplied-admin SELECT1/max1/finally-join admission probe.
 if (external && process.env.PAPERCLIP_TEST_POSTGRES_ADMIN_URL?.trim()) await getEmbeddedPostgresTestSupport();
 const support = external ? { supported: true } : await getEmbeddedPostgresTestSupport();
 (support.supported ? describe : describe.skip)("run cost accounting work", () => {
@@ -89,8 +89,6 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
     expect(await readCostAccountingWork(db, Date.now(), directory)).toEqual({ pending: false, nextRunAt: null });
     const wake = vi.fn(), unsubscribe = subscribeDeliveryWork(db, DELIVERY_QUEUES.accounting, wake);
     try {
-      // Controlled normal owner port: physical absence/cleanup is supplied by
-      // the same host caller, not inferred from failed status or released lease.
       expect(await recordLegacyProcessSettlement(db, owner.run, () => true)).toBe(true);
       expect(wake).toHaveBeenCalledOnce();
       const [pending] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, owner.runId));
@@ -98,8 +96,6 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
       expect(pending.usageJson).toMatchObject({ accountingReceiptReady: false });
       expect(pending.legacyProcessSettlement).toEqual(owner.proof);
     } finally { unsubscribe(); }
-    // A new normal reconciler recovers the committed row without a callback,
-    // including a lost publication reply or server restart after that commit.
     expect((await readCostAccountingWork(db, Date.now(), directory)).pending).toBe(true);
     await createCostAccountingReconciler(db)();
     const [settled] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, owner.runId));
@@ -131,15 +127,20 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
         expect(rollbackWake).not.toHaveBeenCalled();
         throw new Error("controlled producer rollback");
       })).rejects.toThrow("controlled producer rollback");
-      expect(rollbackWake).not.toHaveBeenCalled();
+      expect(rollbackWake).toHaveBeenCalledTimes(1);
+      expect(databaseWorkPending(db, DELIVERY_QUEUES.accounting)).toBe(true);
       const [unpublished] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, rollbackOwner.runId));
       expect(unpublished.legacyProcessSettlement).toBeNull();
       expect(unpublished.costAccountingPending).toBe(true);
       expect((await readCostAccountingWork(db, Date.now(), directory)).pending).toBe(false);
+      expect(rollbackWake).toHaveBeenCalledTimes(1);
+      await reconcileDatabaseWork(db, DELIVERY_QUEUES.accounting);
+      expect(databaseWorkPending(db, DELIVERY_QUEUES.accounting)).toBe(false);
+      expect(rollbackWake).toHaveBeenCalledTimes(2);
+      const beforeCommitWakeCount = rollbackWake.mock.calls.length;
       expect(await recordLegacyProcessSettlement(db, rollbackOwner.run, () => true)).toBe(true);
-      expect(rollbackWake).toHaveBeenCalledOnce();
+      expect(rollbackWake).toHaveBeenCalledTimes(beforeCommitWakeCount + 1);
     } finally { stopWatching(); }
-    // Reconstruct using only committed work, with no live callback attached.
     expect((await readCostAccountingWork(db, Date.now(), directory)).pending).toBe(true);
     await createCostAccountingReconciler(db)();
     const [recovered] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, rollbackOwner.runId));
@@ -177,16 +178,12 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
       processPid: child.pid, processGroupId: child.groupId, processStartedAt: new Date(child.processStartedAt!),
       processHostHash: child.hostHash, legacyProcessSettlement: null })
       .where(eq(heartbeatRuns.id, owner.runId));
-    // Controlled local lease input; the actual child/controller OS observations,
-    // not these status fields, must establish physical receipt-source closure.
     await db.insert(environmentLeases).values({ companyId: owner.companyId, heartbeatRunId: owner.runId,
       provider: 'local', providerLeaseId: null, status: 'failed', leasePolicy: 'ephemeral',
       releasedAt: new Date(), metadata: { driver: 'local' } });
     const [base] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, owner.runId));
     await currentProcessStartedAtMs();
     const liveController = currentControllerProcessStamp();
-    // Classification-only controlled probe: the original child's birth is real,
-    // but no actual OS PID reuse or physical receipt is fabricated by this port.
     const reused = await proveRunProcessGone(base, 'legacy-accounting-reuse-component', {
       ...currentProcessProbe(), controllerInstance: undefined,
       pidExists: () => true, processGroupExists: () => false,
@@ -199,8 +196,6 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
       { controllerLeaseExpiresAt: new Date(Date.now() + 60_000) },
       { executionControlDeadlineAt: new Date() },
       { resultJson: { executionCancellation: { state: 'requested' } } },
-      // A genuine current live controller without the heartbeat idle-owner
-      // callback cannot certify that its run's cleanup has settled.
       { controllerBootId: liveController.bootId, controllerProcess: liveController },
     ]) {
       await db.update(heartbeatRuns).set({ ...base, ...change }).where(eq(heartbeatRuns.id, owner.runId));
@@ -228,7 +223,6 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
     });
     await locked;
     try {
-      // A skipped subset cannot certify all current leases; no waiting cycle.
       expect(await accountingIntegrityService(db).retry(owner.companyId, owner.runId, 'board')).toEqual({ accounted: false });
     } finally { releaseLease(); await holder; }
     const precommitLost = new Proxy(db, { get(target, property) {
@@ -240,14 +234,12 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
       const value = Reflect.get(target, property);
       return typeof value === 'function' ? value.bind(target) : value;
     } }) as Db;
-    // Proof inspection remains outside this publication transaction.
     await expect(accountingIntegrityService(precommitLost).retry(owner.companyId, owner.runId, 'board'))
       .rejects.toThrow('controlled closure publication rollback');
     expect(await db.select().from(costEvents).where(eq(costEvents.heartbeatRunId, owner.runId))).toEqual([]);
     const [uncommitted] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, owner.runId));
     expect(uncommitted.legacyProcessSettlement).toBeNull();
     expect(uncommitted.costAccountingPending).toBe(true);
-    // Lose the next committed transaction reply, not its durable mutation.
     let lostReply = false;
     const replyLost = new Proxy(db, { get(target, property) {
       if (property === 'transaction') return async (...args: Parameters<Db['transaction']>) => {
@@ -260,7 +252,6 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
     } }) as Db;
     await expect(accountingIntegrityService(replyLost).retry(owner.companyId, owner.runId, 'board'))
       .rejects.toThrow('controlled committed reply loss');
-    // Existing API, fresh service, no new implementation-only method or argument.
     const result = await accountingIntegrityService(db).retry(owner.companyId, owner.runId, 'board');
     expect(result.accounted).toBe(true);
     const [settled] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, owner.runId));
@@ -370,22 +361,67 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
     const owner = await seed();
     const [policy] = await db.insert(budgetPolicies).values({ companyId: owner.companyId, scopeType: "company",
       scopeId: owner.companyId, windowKind: "calendar_month_utc", amount: 100 }).returning();
+    const began = performance.now();
+    const observations: Record<string, unknown>[] = [];
+    let droppedObservations = 0;
+    const observe = (event: string, detail: Record<string, unknown> = {}) => {
+      if (observations.length < 128) observations.push({ event, elapsedMs: performance.now() - began, ...detail });
+      else droppedObservations++;
+    };
+    const previousDebug = db.$client.options.debug;
+    db.$client.options.debug = (connection, query, parameters, types) => {
+      const verb = query.trim().split(/\s+/, 1)[0]?.toLowerCase();
+      observe("driver-query-built", { connection, operation: verb && ["select", "insert", "update", "delete", "begin", "commit", "rollback", "savepoint", "release"].includes(verb) ? verb : "other" });
+      if (typeof previousDebug === "function") previousDebug(connection, query, parameters, types);
+    };
+    const originalBudgetSpan = budgetTracing.withBudgetSpan;
+    const spanObserver = vi.spyOn(budgetTracing, "withBudgetSpan").mockImplementation(
+      <T>(name: Parameters<typeof originalBudgetSpan>[0], work: () => Promise<T>, attributes?: Parameters<typeof originalBudgetSpan>[2]) => {
+        observe("operation-entered", { name });
+        const result = originalBudgetSpan(name, work, attributes);
+        void result.then(() => { observe("operation-fulfilled", { name }); }, () => { observe("operation-rejected", { name }); });
+        return result;
+      });
     let release!: () => void, locked!: () => void;
     const gate = new Promise<void>(resolve => { release = resolve; });
     const acquired = new Promise<void>(resolve => { locked = resolve; });
-    const holder = db.transaction(async tx => {
-      await tx.select({ id: companies.id }).from(companies).where(eq(companies.id, owner.companyId)).for("no key update");
-      await tx.select({ id: agents.id }).from(agents).where(eq(agents.id, owner.agentId)).for("no key update");
-      await tx.select({ id: budgetPolicies.id }).from(budgetPolicies).where(eq(budgetPolicies.id, policy.id)).for("update");
-      locked();
-      await gate;
-    });
-    await acquired;
-    const settle = accountRunCost(db, owner.runId);
     let timer: ReturnType<typeof setTimeout> | undefined;
+    let holder: Promise<unknown> | undefined;
+    let settle: Promise<unknown> | undefined;
     try {
-      expect(await Promise.race([settle, new Promise(resolve => { timer = setTimeout(() => resolve("blocked"), 1500); })])).toBe(true);
-    } finally { if (timer) clearTimeout(timer); release(); await holder; await settle; }
+      observe("holder-requested");
+      holder = db.transaction(async tx => {
+        observe("holder-transaction-entered");
+        await tx.select({ id: companies.id }).from(companies).where(eq(companies.id, owner.companyId)).for("no key update");
+        observe("holder-company-lock-acquired");
+        await tx.select({ id: agents.id }).from(agents).where(eq(agents.id, owner.agentId)).for("no key update");
+        observe("holder-agent-lock-acquired");
+        await tx.select({ id: budgetPolicies.id }).from(budgetPolicies).where(eq(budgetPolicies.id, policy.id)).for("update");
+        observe("holder-policy-lock-acquired");
+        locked();
+        await gate;
+        observe("holder-gate-released");
+      });
+      await acquired;
+      observe("settlement-requested");
+      settle = accountRunCost(db, owner.runId);
+      const raceResult = await Promise.race([settle, new Promise(resolve => { timer = setTimeout(() => resolve("blocked"), 1500); })]);
+      observe("original-race-result", { result: raceResult });
+      expect(raceResult).toBe(true);
+      observe("original-race-assertion-passed");
+    } finally {
+      if (timer) clearTimeout(timer);
+      release();
+      try {
+        if (holder) { await holder; observe("holder-transaction-fulfilled"); }
+        if (settle) { await settle; observe("settlement-promise-fulfilled"); }
+      } finally {
+        db.$client.options.debug = previousDebug;
+        spanObserver.mockRestore();
+        console.error("accounting-held-writer-observation " + JSON.stringify({ observations, droppedObservations,
+          scope: "query-build-and-operation-completion; no query-result/SQL-wait proof; no SQL or parameters logged" }));
+      }
+    }
   });
 
   it("settles another run of the same company and agent while one run is locked", async () => {
