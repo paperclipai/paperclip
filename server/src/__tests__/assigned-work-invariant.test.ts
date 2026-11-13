@@ -726,6 +726,26 @@ describePostgres("assigned-work invariant sweep", () => {
     expect(wake.every(row => !("retryOfRunId" in (row.payload ?? {})))).toBe(true);
   }, 120_000);
 
+  it("counts the scheduler's transient retries of the same task against the one continuation cap", async () => {
+    const f = await seedCompany();
+    const issueId = await f.issue();
+    for (let index = 0; index < CONTINUATION_CAP - 2; index++) {
+      await db.insert(activityLog).values({ companyId: f.companyId, actorType: "system", actorId: "system", action: ASSIGNED_WORK_CONTINUED_ACTION,
+        entityType: "issue", entityId: issueId, details: {}, createdAt: new Date(Date.now() - (50 - index * 10) * 60_000) });
+    }
+    const catalogFailure = (minutesAgo: number, attempt: number) => f.run(issueId, { status: "failed", errorCode: "repository_catalog_unavailable",
+      livenessState: null, scheduledRetryReason: "transient_failure", scheduledRetryAttempt: attempt,
+      resultJson: { errorFamily: "transient_upstream", executionRecovery: { kind: "bootstrap", providerWorkStarted: false } },
+      createdAt: new Date(Date.now() - minutesAgo * 60_000), startedAt: new Date(Date.now() - minutesAgo * 60_000),
+      finishedAt: new Date(Date.now() - (minutesAgo - 1) * 60_000) });
+    await catalogFailure(9, 1);
+    await catalogFailure(8, 2);
+    const queue = wakeQueue();
+    const sweep = assignedWorkSweep(db, { enqueueWakeup: queue.enqueueWakeup });
+    expect(await sweep.checkIssue({ companyId: f.companyId, issueId })).toMatchObject({ outcome: "deferred_cap" });
+    expect(queue.calls).toHaveLength(0);
+  }, 60_000);
+
   it("evaluates old-shaped rows: native awaiting reattach, a running run saved without its controller process, and stale blocks", async () => {
     const f = await seedCompany();
     const reattach = await f.issue();

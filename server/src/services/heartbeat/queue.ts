@@ -10,7 +10,8 @@ import { hasAutomaticInteractionDeliveryHold, INTERACTION_DELIVERY_DENIED, reche
 import { deferredWorkIntentWait } from "../work-intent-outbox.js";
 import { notifyIssueRecovery } from "../issue-recovery-notifications.js";
 import { createHeartbeatTimerPolicy } from "./timer-policy.js";
-import { RECOVERY_DISPATCH_SHARE, isRecoveryWakeReason, isSystemRecoveryRun, createQueuedRunDispatcher } from "./queued-run-dispatch-order.js";
+import { OLDEST_DISPATCH_SHARE, PERSON_WAKE_REASONS, QUEUED_RUN_AGING_MS, RECOVERY_DISPATCH_SHARE, createQueuedRunDispatcher,
+  hasQueuedRunAged, isRecoveryWakeReason, isSystemRecoveryRun, oldestReadyQueuedRun } from "./queued-run-dispatch-order.js";
 import { notifyExecutionRunWork } from "../execution-control-notifications.js";
 import { PersistedExecutionWaitRefusal, writeDeferredExecutionWait } from "../deferred-execution-wait.js";
 import { assignmentWakePayloadSql, isAssignmentWakePayload, notifyDeferredExecutionWork } from "../deferred-execution-notifications.js";
@@ -372,6 +373,8 @@ export function shouldQueueFollowupForRunningIssueWake(input: {
 
 /** Agent Chat outbox receipts. The outbox, not a skipped receipt, owns a capped message. */
 const CONVERSATION_COMMENT_KEY_PREFIX = "conversation-comment:";
+const RUN_ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const PERSON_ORIGIN_CHAIN_DEPTH = 8;
 function dailyLimitConversationRefusal(cap: { reason: string; observed: number; limit: number }) {
   // No receipt is written, so the person's message stays owed in the outbox
   // until the limit resets (agent-conversations.ts conversationDeliveryHold).
@@ -2346,6 +2349,48 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
       .catch(() => logger.warn({ agentId: agent.id }, "Could not attach queued agent setup connection request"));
   }
 
+  const declinedAgedClaimAt = new Map<string, number>();
+
+  function noteDeclinedAgedClaim(run: typeof heartbeatRuns.$inferSelect, reason: string) {
+    const now = Date.now();
+    if (!hasQueuedRunAged(run, new Date(now))) return;
+    declinedAgedClaimAt.set(run.id, now);
+    logger.warn({ runId: run.id, agentId: run.agentId, companyId: run.companyId, reason,
+      queuedForMs: now - run.createdAt.getTime() },
+    "long-queued heartbeat run was offered a free slot but could not be claimed; it stays queued and the next oldest run takes its turn");
+  }
+
+  function pruneDeclinedAgedClaims(now: Date) {
+    for (const [id, at] of declinedAgedClaimAt) {
+      if (now.getTime() - at >= QUEUED_RUN_AGING_MS) declinedAgedClaimAt.delete(id);
+    }
+  }
+
+  async function listPersonOriginSourceRunIds(companyId: string, sourceRunIds: string[]) {
+    const uuidPattern = "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$";
+    const result = await db.execute<{ root_id: string }>(sql`
+      with recursive chain(root_id, run_id, depth) as (
+        select source.id, source.id, 0 from ${heartbeatRuns} source
+        where source.company_id = ${companyId} and source.id in (${sql.join(sourceRunIds.map(id => sql`${id}::uuid`), sql`, `)})
+        union all
+        select chain.root_id, parent.id, chain.depth + 1
+        from chain
+        join ${heartbeatRuns} child on child.id = chain.run_id
+        join ${heartbeatRuns} parent on parent.company_id = ${companyId} and parent.id = coalesce(
+          case when child.context_snapshot->>'previousRunId' ~* ${uuidPattern}
+            then (child.context_snapshot->>'previousRunId')::uuid end,
+          child.retry_of_run_id)
+        where chain.depth < ${PERSON_ORIGIN_CHAIN_DEPTH}
+      )
+      select distinct chain.root_id from chain
+      join ${heartbeatRuns} run on run.id = chain.run_id
+      where run.context_snapshot->>'wakeReason' in (${sql.join([...PERSON_WAKE_REASONS].map(reason => sql`${reason}`), sql`, `)})
+        or run.context_snapshot->>'taskRetryRequestId' is not null
+        or exists (select 1 from ${agentWakeupRequests} wake where wake.company_id = ${companyId}
+          and wake.requested_by_actor_type = 'user' and (wake.run_id = run.id or wake.id = run.wakeup_request_id))`);
+    return [...result].map(row => String(row.root_id));
+  }
+
   async function queuedRunDispatcherForAgent(
     agent: typeof agents.$inferSelect,
     queuedRuns: Array<typeof heartbeatRuns.$inferSelect>,
@@ -2353,6 +2398,7 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
     issueById: Map<string, { status: string; priority: string | null }>,
   ) {
     const now = new Date();
+    pruneDeclinedAgedClaims(now);
     const wakeReasonOf = (run: typeof heartbeatRuns.$inferSelect) =>
       readNonEmptyString(parseObject(run.contextSnapshot).wakeReason);
     const requestIds = [...new Set(queuedRuns.flatMap(run => run.wakeupRequestId ? [run.wakeupRequestId] : []))];
@@ -2368,30 +2414,29 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
         eq(agentWakeupRequests.agentId, agent.id), eq(agentWakeupRequests.requestedByActorType, "user")))
       : [];
     const userRunIds = new Set(joinedUserRequests.flatMap(row => row.runId ? [row.runId] : []));
-    const requestedByUser = (run: typeof heartbeatRuns.$inferSelect) =>
+    const joinedByUser = (run: typeof heartbeatRuns.$inferSelect) =>
       userRunIds.has(run.id) || Boolean(run.wakeupRequestId && userRequestIds.has(run.wakeupRequestId));
     const sourceRunIdOf = (run: typeof heartbeatRuns.$inferSelect) =>
       readNonEmptyString(parseObject(run.contextSnapshot).previousRunId) ?? run.retryOfRunId ?? null;
-    const recoveryRuns = queuedRuns.filter(run => isSystemRecoveryRun({ wakeReason: wakeReasonOf(run),
-      requestedByUser: requestedByUser(run) }));
-    const sourceRunIds = [...new Set(recoveryRuns.flatMap(run => sourceRunIdOf(run) ?? []))];
-    const sourceRows = queuedRuns.length > 1 && sourceRunIds.length
+    const sourceRunIds = queuedRuns.length > 1
+      ? [...new Set(queuedRuns.flatMap(run => {
+        const sourceRunId = joinedByUser(run) ? null : sourceRunIdOf(run);
+        return sourceRunId && RUN_ID_PATTERN.test(sourceRunId) ? [sourceRunId] : [];
+      }))]
+      : [];
+    const sourceRows = sourceRunIds.length
       ? await db.select({ id: heartbeatRuns.id, finishedAt: heartbeatRuns.finishedAt }).from(heartbeatRuns)
         .where(and(eq(heartbeatRuns.companyId, agent.companyId), inArray(heartbeatRuns.id, sourceRunIds)))
       : [];
     const sourceEndedAt = new Map(sourceRows.map(row => [row.id, row.finishedAt]));
-    let startsSinceRecovery = 0;
-    if (recoveryRuns.length && recoveryRuns.length < queuedRuns.length) {
-      const oldestRecoveryAt = new Date(Math.min(...recoveryRuns.map(run => run.createdAt.getTime())));
-      const recentStarts = await db.select({ wakeReason: sql<string | null>`${heartbeatRuns.contextSnapshot}->>'wakeReason'` })
-        .from(heartbeatRuns)
-        .where(and(eq(heartbeatRuns.companyId, agent.companyId), eq(heartbeatRuns.agentId, agent.id),
-          isNotNull(heartbeatRuns.startedAt), gte(heartbeatRuns.startedAt, oldestRecoveryAt)))
-        .orderBy(desc(heartbeatRuns.startedAt))
-        .limit(RECOVERY_DISPATCH_SHARE);
-      const lastRecovery = recentStarts.findIndex(row => isRecoveryWakeReason(row.wakeReason));
-      startsSinceRecovery = lastRecovery < 0 ? recentStarts.length : lastRecovery;
-    }
+    const personSourceRunIds = new Set(sourceRows.length
+      ? await listPersonOriginSourceRunIds(agent.companyId, sourceRows.map(row => row.id))
+      : []);
+    const requestedByUser = (run: typeof heartbeatRuns.$inferSelect) => {
+      if (joinedByUser(run)) return true;
+      const sourceRunId = sourceRunIdOf(run);
+      return Boolean(sourceRunId && personSourceRunIds.has(sourceRunId));
+    };
     const facts = queuedRuns.map(run => {
       const issueId = readNonEmptyString(parseObject(run.contextSnapshot).issueId);
       const ready = issueId ? (dependencyReadiness.get(issueId)?.isDependencyReady ?? true) : true;
@@ -2406,9 +2451,38 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
         sourceEndedAt: sourceRunId ? sourceEndedAt.get(sourceRunId) ?? null : null,
         readinessRank: issueId ? (ready ? (issue?.status === "in_progress" ? 0 : 1) : 3) : 2,
         priorityRank: issueRunPriorityRank(issue?.priority),
+        shareDeferred: declinedAgedClaimAt.has(run.id),
       };
     });
-    const dispatcher = createQueuedRunDispatcher(facts, { now, startsSinceRecovery });
+    const recoveryRuns = facts.filter(entry => isSystemRecoveryRun(entry));
+    const oldestReady = oldestReadyQueuedRun(facts);
+    const agedOldest = oldestReady && hasQueuedRunAged(oldestReady, now) ? oldestReady : null;
+    const countsRecovery = recoveryRuns.length > 0 && recoveryRuns.length < facts.length;
+    let startsSinceRecovery = 0;
+    let startsSinceOldest = 0;
+    if (countsRecovery || (agedOldest && facts.length > 1)) {
+      const oldestRecoveryAt = countsRecovery ? Math.min(...recoveryRuns.map(entry => entry.createdAt.getTime())) : Infinity;
+      const since = new Date(Math.min(oldestRecoveryAt, agedOldest?.createdAt.getTime() ?? Infinity));
+      const recentStarts = await db.select({ wakeReason: sql<string | null>`${heartbeatRuns.contextSnapshot}->>'wakeReason'`,
+        startedAt: heartbeatRuns.startedAt, createdAt: heartbeatRuns.createdAt })
+        .from(heartbeatRuns)
+        .where(and(eq(heartbeatRuns.companyId, agent.companyId), eq(heartbeatRuns.agentId, agent.id),
+          isNotNull(heartbeatRuns.startedAt), gte(heartbeatRuns.startedAt, since)))
+        .orderBy(desc(heartbeatRuns.startedAt))
+        .limit(Math.max(RECOVERY_DISPATCH_SHARE, OLDEST_DISPATCH_SHARE));
+      const startsSince = (at: number) => recentStarts.filter(row => row.startedAt && row.startedAt.getTime() >= at);
+      if (countsRecovery) {
+        const starts = startsSince(oldestRecoveryAt).slice(0, RECOVERY_DISPATCH_SHARE);
+        const lastRecovery = starts.findIndex(row => isRecoveryWakeReason(row.wakeReason));
+        startsSinceRecovery = lastRecovery < 0 ? starts.length : lastRecovery;
+      }
+      if (agedOldest && facts.length > 1) {
+        const starts = startsSince(agedOldest.createdAt.getTime()).slice(0, OLDEST_DISPATCH_SHARE);
+        const lastOldest = starts.findIndex(row => row.createdAt.getTime() <= agedOldest.createdAt.getTime());
+        startsSinceOldest = lastOldest < 0 ? starts.length : lastOldest;
+      }
+    }
+    const dispatcher = createQueuedRunDispatcher(facts, { now, startsSinceRecovery, startsSinceOldest });
     const byRun = new Map(facts.map(entry => [entry.run, entry]));
     return {
       next: () => dispatcher.next()?.run ?? null,
@@ -2510,11 +2584,15 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
             { err, runId: queuedRun.id, agentId: queuedRun.agentId, companyId: queuedRun.companyId },
             "queued heartbeat run claim was rejected; leaving it queued for the next recovery pass",
           );
+          noteDeclinedAgedClaim(queuedRun, err.message);
           continue;
         }
         if (claimed) {
           claimedRuns.push(claimed);
           dispatcher.claimed(queuedRun);
+          declinedAgedClaimAt.delete(queuedRun.id);
+        } else {
+          noteDeclinedAgedClaim(queuedRun, "claim_declined");
         }
       }
       if (claimedRuns.length === 0) return [];

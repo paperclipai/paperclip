@@ -18,7 +18,7 @@ import {
 } from "@paperclipai/db";
 import { logger } from "../../middleware/logger.js";
 import { logActivity, publishActivity, type ActivityPublication } from "../activity-log.js";
-import { evaluateAgentInvokabilityFromDb } from "../agent-invokability.js";
+import { evaluateAgentInvokability } from "../agent-invokability.js";
 import { isAgentAwaitingSetup } from "../../modules/agent-lifecycle/index.js";
 import { unadmittedChatWakeupCondition } from "../durable-chat-wakeup.js";
 import { issueRecoveryActionService } from "../issue-recovery-actions.js";
@@ -31,6 +31,7 @@ import { CHAT_CONTROL_RECOVERY_STOP_CODE, CHAT_CONTROL_RECOVERY_UNRESOLVED_CODE 
 import { onboardingFirstTaskAwaitingUserSql } from "./onboarding-first-task-wait.js";
 import { PENDING_CONTINUATION_BOUND_MS } from "../recovery-continuation-pacing.js";
 import { attributeBlock, BLOCK_ATTRIBUTION_WINDOW_MS, blockedStatusDetailsSql } from "../interruption-block-release.js";
+import { ASSIGNED_WORK_CONTINUED_ACTION, taskAutomaticAttempts } from "./task-automatic-attempts.js";
 import { STRANDED_CONTINUATION_MAX_AGE_MS, STRANDED_KIND, strandedHoldContinuesAutomatically, type StrandedHoldRun } from "./stranded-hold-continuation.js";
 import {
   continuationActivityMessage,
@@ -39,7 +40,6 @@ import {
   CONTINUATION_REFUSED_MESSAGE,
   CONTINUATION_REVIEW_MESSAGE,
   evaluateAssignedWork,
-  CONTINUATION_CAP_WINDOW_MS,
   STALE_BLOCK_MS,
   NATIVE_STALL_MS,
   type AssignedWorkFacts,
@@ -50,7 +50,7 @@ import {
 
 /** Activity action recorded for every automatic continuation. It is also the
  * durable claim two servers serialize on, and the per-task rate-limit ledger. */
-export const ASSIGNED_WORK_CONTINUED_ACTION = "issue.continued_automatically";
+export { ASSIGNED_WORK_CONTINUED_ACTION };
 export const ASSIGNED_WORK_CONTINUATION_SOURCE = "issue.assigned_work_invariant";
 export const STRANDED_TRANSIENT_CONTINUED_OUTCOME = "stranded_transient_continued";
 /** Repairs per process per minute, so a deploy with many violations does not
@@ -286,11 +286,13 @@ export function assignedWorkSweep(db: Db, deps: AssignedWorkDeps) {
       .from(heartbeatRuns).where(and(eq(heartbeatRuns.companyId, companyId), inArray(heartbeatRuns.id, strandedRunIds))) : [])
       .map(({ id, ...run }) => [id, run]));
     const agentsById = new Map<string, typeof agents.$inferSelect & { invokable: boolean }>();
+    const companyAgents = agentRows.length ? await database.select({ id: agents.id, companyId: agents.companyId, name: agents.name,
+      reportsTo: agents.reportsTo, status: agents.status }).from(agents).where(eq(agents.companyId, companyId)) : [];
     for (const agent of agentRows as Array<typeof agents.$inferSelect>) {
       // An agent still being set up, or held by a lifecycle hold, takes no work
       // yet; its setup or release is the next move, not a continuation.
       const ready = !isAgentAwaitingSetup(agent) && (agent.lifecycleHolds ?? []).length === 0;
-      agentsById.set(agent.id, { ...agent, invokable: ready && (await evaluateAgentInvokabilityFromDb(database, agent)).invokable });
+      agentsById.set(agent.id, { ...agent, invokable: ready && evaluateAgentInvokability(agent, companyAgents).invokable });
     }
     const company = companyRows[0];
     const companyBudget = company?.pauseReason === "budget" || company?.pauseReason === "budget_exceeded";
@@ -329,13 +331,21 @@ export function assignedWorkSweep(db: Db, deps: AssignedWorkDeps) {
     const blockActivityByIssue = new Map(rowsOf<{ issueId: string; actorType: string; actorId: string; agentId: string | null; details: unknown }>(blockActivity)
       .map(row => [row.issueId, row]));
 
+    const ownedRunsByIssue = new Map<string, AssignedWorkFacts["activeRuns"]>();
     for (const issue of issueRows) {
-      const agent = issue.assigneeAgentId ? agentsById.get(issue.assigneeAgentId) ?? null : null;
-      const runs = activeRuns.filter(run => run.issueId === issue.id) as RunRow[];
-      const ownedRuns = [];
-      for (const run of runs) {
+      const ownedRuns: AssignedWorkFacts["activeRuns"] = [];
+      for (const run of activeRuns.filter(row => row.issueId === issue.id) as RunRow[]) {
         ownedRuns.push({ id: run.id, status: run.status, scheduledRetryAt: run.scheduledRetryAt, owner: stalledRunIds.has(run.id) && run.status === "running" ? "stalled" : await runOwner(run, at, proveOwners) });
       }
+      ownedRunsByIssue.set(issue.id, ownedRuns);
+    }
+    const pauseCheckIds = issueRows.filter(issue => !ownedRunsByIssue.get(issue.id)!.some(run => run.owner !== "gone")
+      && !(wakeCounts.get(issue.id) ?? 0)).map(issue => issue.id);
+    const pauseHeldIds = await treeControl.listActivePauseHeldIssueIds(companyId, pauseCheckIds);
+
+    for (const issue of issueRows) {
+      const agent = issue.assigneeAgentId ? agentsById.get(issue.assigneeAgentId) ?? null : null;
+      const ownedRuns = ownedRunsByIssue.get(issue.id)!;
       const latest = latestByIssue.get(issue.id) ?? null;
       const latestFinishedAt = latest?.finishedAt ? new Date(latest.finishedAt) : null;
       const leaseUntil = latest?.controllerLeaseExpiresAt ? new Date(latest.controllerLeaseExpiresAt) : null;
@@ -344,10 +354,7 @@ export function assignedWorkSweep(db: Db, deps: AssignedWorkDeps) {
       const interruption = interruptions.get(issue.id) ?? null;
       const executionState = json(issue.executionState);
       const blockedEntry = blockActivityByIssue.get(issue.id);
-      // The tree pause gate walks ancestors; read it only when nothing else
-      // already gives the task a path.
-      const needsPauseCheck = !ownedRuns.some(run => run.owner !== "gone") && !(wakeCounts.get(issue.id) ?? 0);
-      const pauseHold = needsPauseCheck && Boolean(await treeControl.getActivePauseHoldGate(companyId, issue.id));
+      const pauseHold = pauseHeldIds.has(issue.id);
       result.set(issue.id, {
         issue: {
           status: issue.status, assigneeAgentId: issue.assigneeAgentId, assigneeUserId: issue.assigneeUserId,
@@ -582,11 +589,9 @@ export function assignedWorkSweep(db: Db, deps: AssignedWorkDeps) {
       const verdict = evaluateAssignedWork(fresh, at);
       if (verdict.kind !== "violation" || verdict.stale || verdict.reason === "run_owner_gone" || verdict.reason === "native_run_stalled"
         || (current.status === "blocked" && fresh.activeRecoveryAction && !fresh.activeRecoveryAction.continuedBySweep)) return { kind: "changed" as const };
-      const recent = await tx.select({ createdAt: activityLog.createdAt }).from(activityLog).where(and(
-        eq(activityLog.companyId, issue.companyId), eq(activityLog.entityType, "issue"), eq(activityLog.entityId, issue.id),
-        eq(activityLog.action, ASSIGNED_WORK_CONTINUED_ACTION),
-        gte(activityLog.createdAt, new Date(at.getTime() - CONTINUATION_CAP_WINDOW_MS)))).orderBy(desc(activityLog.createdAt)).limit(64);
-      const allowance = continuationAllowance(recent.map(row => row.createdAt), at);
+      const attempts = await taskAutomaticAttempts(tx as unknown as Db, issue.companyId, issue.id, at);
+      const recent = attempts.continuations;
+      const allowance = continuationAllowance(attempts.all, at);
       if (!allowance.allowed) return { kind: allowance.capped ? "capped" as const : "spaced" as const, retryAt: allowance.retryAt };
       let restoredTo: Claimed["restoredTo"] = null;
       let restoredStatusVersion: number | null = null;
@@ -617,7 +622,7 @@ export function assignedWorkSweep(db: Db, deps: AssignedWorkDeps) {
           ...(restoredTo ? { status: restoredTo, previousStatus: "blocked" } : {}),
           attempt: recent.length + 1 },
       }, publications);
-      const next = continuationAllowance([at, ...recent.map(row => row.createdAt)], at);
+      const next = continuationAllowance([at, ...attempts.all], at);
       return { kind: "claimed" as const, activityId: activity.id, publications, verdict, reason: verdict.reason,
         restoredTo, restoredStatusVersion, blockedTransitionAt: current.blockedTransitionAt,
         unblockDescriptor: current.unblockDescriptor, blockedOwnerNotifiedAt: current.blockedOwnerNotifiedAt,

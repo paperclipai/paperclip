@@ -77,6 +77,7 @@ export const FRESH_CONTINUATION_PENDING_BOUND_MS = 10 * 60_000;
 export const FRESH_CONTINUATION_PROGRESS_BOUND_MS = 15 * 60_000;
 /** Saved-work recovery that is running and advancing keeps its own budget. */
 export const FRESH_CONTINUATION_SAVED_WORK_BOUND_MS = 30 * 60_000;
+export const NATIVE_INTERRUPTION_NO_PROGRESS_DEADLINE_MS = FRESH_CONTINUATION_PROGRESS_BOUND_MS;
 const EXACT_RECOVERY_RECHECK_MS = 60_000;
 
 /**

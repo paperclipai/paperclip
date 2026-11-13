@@ -158,6 +158,106 @@ suite("recovery wake herd", () => {
     }
   }, 120_000);
 
+  async function continuationOfInterruptedPersonRetry(agentId: string, createdMinutesAgo: number) {
+    const issue = await task(agentId);
+    const finishedAt = new Date(Date.now() - (createdMinutesAgo + 2) * 60_000);
+    const [retry] = await db.insert(agentWakeupRequests).values({ companyId, agentId, source: "on_demand", triggerDetail: "manual",
+      reason: "task_retry", status: "queued", requestedByActorType: "user", requestedByActorId: userId,
+      payload: { issueId: issue.id } }).returning();
+    const [source] = await db.insert(heartbeatRuns).values({ companyId, agentId, issueId: issue.id, invocationSource: "on_demand",
+      triggerDetail: "manual", status: "interrupted", errorCode: "server_shutdown_interrupted", wakeupRequestId: retry!.id,
+      responsibleUserId: userId, startedAt: new Date(finishedAt.getTime() - 60_000), finishedAt,
+      createdAt: new Date(finishedAt.getTime() - 120_000),
+      contextSnapshot: { issueId: issue.id, wakeReason: "task_retry", taskRetryRequestId: retry!.id } }).returning();
+    await db.update(agentWakeupRequests).set({ runId: source!.id, status: "completed", finishedAt })
+      .where(eq(agentWakeupRequests.id, retry!.id));
+    const [continuation] = await db.insert(heartbeatRuns).values({ companyId, agentId, issueId: issue.id,
+      invocationSource: "automation", triggerDetail: "system", status: "queued", responsibleUserId: userId,
+      createdAt: new Date(Date.now() - createdMinutesAgo * 60_000),
+      contextSnapshot: { issueId: issue.id, taskId: issue.id, wakeReason: "issue_continuation_needed", previousRunId: source!.id,
+        source: "issue.assigned_work_invariant", assignedWorkViolation: "retry_offered" } }).returning();
+    return continuation!;
+  }
+
+  it("starts the system continuation of a person's interrupted Retry ahead of fresher system work", async () => {
+    const agentId = await seedCompany(1);
+    const continuation = await continuationOfInterruptedPersonRetry(agentId, 40);
+    const fresher: Array<typeof heartbeatRuns.$inferSelect> = [];
+    for (let index = 0; index < 3; index += 1) fresher.push(await queuedSystemRun(agentId, 30 - index, "issue_assigned"));
+    fresher.push(await queuedRecoveryRun(agentId, 2, 3));
+    const heartbeat = heartbeatService(db);
+    try {
+      await heartbeat.resumeQueuedRuns();
+      expect((await readRun(continuation.id)).startedAt).not.toBeNull();
+      for (const run of fresher) expect(await readRun(run.id)).toMatchObject({ status: "queued", startedAt: null });
+    } finally {
+      await heartbeat.drainActiveRunExecutions();
+    }
+  }, 120_000);
+
+  it("keeps a person's Retry first after its system continuation is interrupted again", async () => {
+    const agentId = await seedCompany(1);
+    const first = await continuationOfInterruptedPersonRetry(agentId, 90);
+    const firstEndedAt = new Date(Date.now() - 45 * 60_000);
+    await db.update(heartbeatRuns).set({ status: "interrupted", errorCode: "server_shutdown_interrupted",
+      startedAt: new Date(firstEndedAt.getTime() - 60_000), finishedAt: firstEndedAt }).where(eq(heartbeatRuns.id, first.id));
+    const [second] = await db.insert(heartbeatRuns).values({ companyId, agentId, issueId: first.issueId,
+      invocationSource: "automation", triggerDetail: "system", status: "queued", responsibleUserId: userId,
+      createdAt: new Date(Date.now() - 40 * 60_000),
+      contextSnapshot: { issueId: first.issueId, taskId: first.issueId, wakeReason: "issue_continuation_needed",
+        previousRunId: first.id, source: "issue.assigned_work_invariant" } }).returning();
+    const fresher: Array<typeof heartbeatRuns.$inferSelect> = [];
+    for (let index = 0; index < 3; index += 1) fresher.push(await queuedSystemRun(agentId, 30 - index, "issue_assigned"));
+    const heartbeat = heartbeatService(db);
+    try {
+      await heartbeat.resumeQueuedRuns();
+      expect((await readRun(second!.id)).startedAt).not.toBeNull();
+      for (const run of fresher) expect(await readRun(run.id)).toMatchObject({ status: "queued", startedAt: null });
+    } finally {
+      await heartbeat.drainActiveRunExecutions();
+    }
+  }, 120_000);
+
+  it("starts a system continuation that a person's Retry coalesced into ahead of fresher system work", async () => {
+    const agentId = await seedCompany(1);
+    const continuation = await queuedSystemRun(agentId, 40, "issue_continuation_needed");
+    await db.insert(agentWakeupRequests).values({ companyId, agentId, source: "on_demand", triggerDetail: "manual",
+      reason: "task_retry", status: "coalesced", coalescedCount: 1, requestedByActorType: "user", requestedByActorId: userId,
+      runId: continuation.id, finishedAt: new Date(), payload: { issueId: continuation.issueId } });
+    const fresher: Array<typeof heartbeatRuns.$inferSelect> = [];
+    for (let index = 0; index < 3; index += 1) fresher.push(await queuedSystemRun(agentId, 30 - index, "issue_assigned"));
+    const heartbeat = heartbeatService(db);
+    try {
+      await heartbeat.resumeQueuedRuns();
+      expect((await readRun(continuation.id)).startedAt).not.toBeNull();
+      for (const run of fresher) expect(await readRun(run.id)).toMatchObject({ status: "queued", startedAt: null });
+    } finally {
+      await heartbeat.drainActiveRunExecutions();
+    }
+  }, 120_000);
+
+  it("gives the longest-waiting queued run a free slot after three fresher starts passed it over", async () => {
+    const agentId = await seedCompany(1);
+    const old = await queuedRecoveryRun(agentId, 150, 152);
+    const people: Array<typeof heartbeatRuns.$inferSelect> = [];
+    for (let index = 0; index < 3; index += 1) people.push(await queuedPersonRetry(agentId));
+    const issue = await task(agentId);
+    for (let index = 0; index < 3; index += 1) {
+      const startedAt = new Date(Date.now() - (3 - index) * 60_000);
+      await db.insert(heartbeatRuns).values({ companyId, agentId, issueId: issue.id, invocationSource: "on_demand",
+        triggerDetail: "manual", status: "succeeded", createdAt: new Date(startedAt.getTime() - 1_000), startedAt,
+        finishedAt: new Date(startedAt.getTime() + 1_000), contextSnapshot: { issueId: issue.id, wakeReason: "issue_recovery_action_restored" } });
+    }
+    const heartbeat = heartbeatService(db);
+    try {
+      await heartbeat.resumeQueuedRuns();
+      expect((await readRun(old.id)).startedAt).not.toBeNull();
+      for (const run of people) expect(await readRun(run.id)).toMatchObject({ status: "queued", startedAt: null });
+    } finally {
+      await heartbeat.drainActiveRunExecutions();
+    }
+  }, 120_000);
+
   async function pendingContinuation(agentId: string, endedMinutesAgo: number) {
     const issue = await task(agentId, "todo");
     const source = await sourceRun(agentId, issue.id, endedMinutesAgo);
@@ -435,13 +535,17 @@ suite("recovery wake herd", () => {
     expect(await deliveryOf(healthy.action.id)).toBe("delivered");
   }, 120_000);
 
-  it("does not show a task as working when its continuation is pending past the delivery bound and nothing runs", async () => {
+  it("shows a task as continuing, never as needing Retry, while its recorded continuation is pending past the delivery bound", async () => {
     const agentId = await seedCompany(1);
     const record = await pendingContinuation(agentId, 240);
     await holdPastBound(record, RECOVERY_CONTINUATION_DELIVERY_BOUND_MS);
     const [issueRow] = await db.select().from(issues).where(eq(issues.id, record.issue.id));
-    const presentation = await taskInterruptionPresentation(db, issueRow!);
-    expect(presentation?.state).not.toBe("working");
+    expect(await taskInterruptionPresentation(db, issueRow!)).toMatchObject({ state: "working", canRetry: false, responsibility: "system" });
+
+    const wake = fakeWake();
+    await deliverReconciledExecutions(db, wake as never);
+    expect(await deliveryOf(record.action.id)).toBe("delivered");
+    expect(wake).toHaveBeenCalledTimes(1);
 
     const fresh = await pendingContinuation(agentId, 30);
     const [freshRow] = await db.select().from(issues).where(eq(issues.id, fresh.issue.id));
