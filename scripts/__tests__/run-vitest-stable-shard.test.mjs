@@ -865,7 +865,7 @@ test("a failed chat child fails the job after its sibling finishes", { skip: pro
 
 for (const [group, parallelWorkers, shardArgs] of [
   ["general-server-native-runner", 4, []],
-  ["general-server-without-chat-or-native-runner", 4, ["--shard-index", "0", "--shard-count", "12"]],
+  ["general-server-without-chat-or-native-runner", 3, ["--shard-index", "0", "--shard-count", "12"]],
 ]) test(`${group} files overlap only when their database fixtures are isolated`, { skip: process.platform === "win32" }, () => {
   const directory = mkdtempSync(path.join(os.tmpdir(), "native-file-workers-"));
   const receipt = path.join(directory, "args.json");

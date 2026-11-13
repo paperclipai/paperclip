@@ -7,7 +7,6 @@ import { fileURLToPath } from "node:url";
 import { loadShardDurations, selectGeneralServerShard } from "./general-server-shard.mjs";
 import { invocationEnv } from "./ci-profile/record.mjs";
 import { vitestRetryArgs } from "./ci/vitest-retry.mjs";
-import { startResourceSampler } from "./ci/resource-sampler.mjs";
 
 import { assertSelectedTests, partitionTestLines } from "./test-line-shard.mjs";
 import { loadSelection, selectedShard } from "./ci/test-selection-manifest.mjs";
@@ -411,8 +410,6 @@ function selectSerializedSuites(routeTests, shardIndex, shardCount) {
   return shardFiles.map((file) => byRepoPath.get(file));
 }
 
-let experimentEnv = {};
-
 async function runVitest(args, label, testShard = null, exactFiles = false) {
   console.log(`\n[test:run] ${label}`);
   invocationIndex += 1;
@@ -432,7 +429,6 @@ async function runVitest(args, label, testShard = null, exactFiles = false) {
     PAPERCLIP_CONFIG: path.join(testRoot, "h", "config.json"),
     PAPERCLIP_INSTANCE_ID: `vt-${process.pid}-${invocationIndex}`,
     TMPDIR: path.join(testRoot, "t"),
-    ...experimentEnv,
   };
   // The wrapper has already validated and consumed this shard's manifest.
   // Tests may launch independent runner fixtures with a different root/inventory.
@@ -475,7 +471,6 @@ async function runVitest(args, label, testShard = null, exactFiles = false) {
     const runFilters = selected.lines.map((line) => `${chatSuite}:${chatSuiteRunLine(sourceLines, line)}`);
     args = [...args.filter((arg) => arg !== chatSuite), ...runFilters, "--allowOnly=false"];
   }
-  const stopSampler = startResourceSampler(label);
   await new Promise((resolve, reject) => {
     const command = exactFiles ? process.execPath : "pnpm";
     const prefix = exactFiles ? [path.join(scriptsDir, "ci/run-selected-vitest.mjs")] : ["exec", "vitest", "run"];
@@ -490,7 +485,7 @@ async function runVitest(args, label, testShard = null, exactFiles = false) {
       if (code === 0) resolve();
       else reject(new Error(`${label} failed (${signal ?? code})`));
     });
-  }).finally(stopSampler);
+  });
 }
 
 async function runGeneralSuites(routeTests, chatShards) {
@@ -514,10 +509,6 @@ async function runProjectGroup(projects, groupName, shardIndex = null, shardCoun
   for (const project of projects) {
     await runVitest(["--project", project, ...shardArgs], `${groupName} project ${project}${shardSuffix}`);
   }
-}
-
-function serverShardWorkers(shardIndex) {
-  return 4;
 }
 
 function chatShardWorkers(index, count) {
@@ -578,7 +569,7 @@ async function runGeneralGroup(routeTests, groupName, shardIndex = null, shardCo
           // An explicit shared test database cannot be isolated this way.
           ...(hasSharedTestDatabase
             ? serializedServerVitestArgs
-            : ["--pool=forks", "--isolate", "--fileParallelism", `--maxWorkers=${serverShardWorkers(shardIndex)}`]),
+            : ["--pool=forks", "--isolate", "--fileParallelism", "--maxWorkers=3"]),
           ...shardFiles,
         ],
         `${groupName} shard ${shardIndex + 1}/${shardCount}`,
@@ -672,11 +663,6 @@ const generalServerTestFiles = [
   .sort((a, b) => a.localeCompare(b));
 
 const options = parseCliOptions(process.argv.slice(2));
-if (generalServerGroups.includes(options.group) && options.shardIndex !== null) {
-  if (options.shardIndex % 2 === 1) experimentEnv.NODE_COMPILE_CACHE = path.join(os.tmpdir(), "paperclip-node-compile-cache");
-  if (options.shardIndex % 4 < 2) experimentEnv.PAPERCLIP_EXPERIMENT_PG_FSYNC_OFF = "1";
-  console.error(`[test:run] experiment ${JSON.stringify(experimentEnv)}`);
-}
 const selectionProjects = options.mode === serializedModeName || generalServerGroups.includes(options.group)
   ? ["@paperclipai/server"]
   : options.group === generalWorkspacesAGroupName ? generalWorkspacesAProjects
@@ -760,7 +746,7 @@ try {
       const serverArgs = project !== "@paperclipai/server" ? []
         : options.mode === serializedModeName || hasSharedTestDatabase
           ? ["--pool=forks", "--isolate", ...serializedServerVitestArgs]
-          : ["--pool=forks", "--isolate", "--fileParallelism", `--maxWorkers=${serverShardWorkers(options.shardIndex)}`];
+          : ["--pool=forks", "--isolate", "--fileParallelism", "--maxWorkers=3"];
       await runVitest(["--project", project, ...serverArgs, ...files],
         `selected ${project}: ${files.length} files`, null, true);
     }
