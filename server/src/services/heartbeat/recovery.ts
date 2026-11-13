@@ -1797,7 +1797,8 @@ export function createHeartbeatRecovery(db: Db, dependencies: HeartbeatRecoveryD
       // path uses the provider and configuration recorded on the lease first;
       // the environment is lifecycle context and only a legacy fallback.
       const isOrphanEphemeralLease = lease.leasePolicy === "ephemeral";
-      const useRecordedTeardown = isOrphanEphemeralLease || !environment || hasStopOnlyCleanup(lease);
+      const useRecordedTeardown = isOrphanEphemeralLease || !environment || hasStopOnlyCleanup(lease) ||
+        (metadata.driver === "plugin" && metadata.pluginLeaseCleanupMethod === "release");
 
       // Do not consume a finite cleanup attempt while the provider plugin is
       // briefly unavailable. A plugin worker restart, a plugin reload, or a

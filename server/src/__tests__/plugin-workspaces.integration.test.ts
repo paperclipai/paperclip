@@ -1,3 +1,4 @@
+import { JsonRpcCallError, PLUGIN_RPC_ERROR_CODES, PluginWorkspaceOperationError, workspaceOperationErrorData } from "@paperclipai/plugin-sdk";
 import { isPluginWorkspaceReplay } from "../services/plugin-workspace-replay-context.js";
 import { createPluginWorkspaceFixture } from "./helpers/plugin-workspaces.js";
 import { randomUUID } from "node:crypto";
@@ -51,7 +52,7 @@ const support = await getEmbeddedPostgresTestSupport();
     });
     const fixture = (companyId?: string) =>
       createPluginWorkspaceFixture(db, companyId);
-    it.each(["ready", "lost_reply", "unconfirmed", "live_writer", "unsupported"] as const)(
+    it.each(["ready", "lost_reply", "unconfirmed", "transport", "worker_lookup", "live_writer", "older_retained", "unsupported"] as const)(
       "verifies the same checkout before choosing a fresh retry (%s)", async (state) => {
         const f = await fixture();
         const [plugin] = await db.select().from(plugins).where(eq(plugins.id, f.pluginId));
@@ -73,31 +74,50 @@ const support = await getEmbeddedPostgresTestSupport();
           status: state === "live_writer" ? "active" : "released",
           releasedAt: state === "live_writer" ? null : new Date(),
         });
+        if (state === "older_retained") {
+          const [older] = await db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: f.input.agentId,
+            issueId: f.issueId, status: "succeeded", finishedAt: new Date() }).returning();
+          await db.insert(environmentLeases).values({
+            companyId: f.companyId, issueId: f.issueId, heartbeatRunId: older.id,
+            provider: "plugin:test:tasks", executionWorkspaceId: workspaceId, leasePolicy: "reuse_by_environment",
+            status: "retained", releasedAt: null,
+          });
+        }
         const retryIntentId = randomUUID();
         const [retry] = await db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: f.input.agentId,
           issueId: f.issueId, status: "running", contextSnapshot: { taskRetryRequestId: retryIntentId },
         }).returning();
-        const fresh = { mode: "fresh_isolated_workspace", retryIntentId, sourceRunId: f.runId, retainedSourceIds: [] } as const;
+        const fresh = { mode: "fresh_isolated_workspace" as const, retryIntentId, sourceRunId: f.runId, retainedSourceIds: [] };
         const call = vi.fn<WorkspaceWorkers["call"]>(async (...args) => {
           const result = await f.workers.call(...args) as { kind: string };
-          if (state === "unconfirmed") throw new Error("checkout incomplete");
+          if (state === "transport") throw new Error("connection closed");
+          if (state === "unconfirmed") throw new JsonRpcCallError({
+            code: PLUGIN_RPC_ERROR_CODES.WORKER_ERROR,
+            message: "checkout incomplete",
+            data: workspaceOperationErrorData(new PluginWorkspaceOperationError("binding_mismatch")),
+          });
           return { ...result, created: false };
         });
         const workers: WorkspaceWorkers = {
           getWorker: (pluginId) => {
+            if (state === "worker_lookup") throw new Error("worker lookup timed out");
             const worker = f.workers.getWorker(pluginId);
             return worker && { ...worker, supportedMethods: ["workspaceOperation", "workspacePrepare"] };
           },
           call,
         };
         const verificationStarted = Date.now();
-        const result = await verifyRetryWorkspace(db, workers, retry, f.issueId, null,
-          { ...fresh, retainedSourceIds: [] });
+        const result = verifyRetryWorkspace(db, workers, retry, f.issueId, null, fresh);
+        if (state === "transport" || state === "worker_lookup") {
+          if (state === "transport") await expect(result).rejects.toMatchObject({ kind: "transport", retryable: true });
+          else await expect(result).rejects.toThrow("worker lookup timed out");
+          return;
+        }
         const verified = state === "ready" || state === "lost_reply";
-        expect(result).toEqual(verified
+        expect(await result).toEqual(verified
           ? { mode: "reuse_issue_workspace", retryIntentId, sourceRunId: f.runId, workspaceId, cwd: null }
           : fresh);
-        expect(f.calls.slice(1)).toHaveLength(state === "live_writer" || state === "unsupported" ? 0 : 1);
+        expect(f.calls.slice(1)).toHaveLength(["live_writer", "older_retained", "unsupported"].includes(state) ? 0 : 1);
         if (f.calls.length > 1) {
           expect(call).toHaveBeenCalledExactlyOnceWith(f.pluginId, "workspaceOperation", expect.objectContaining({
             executionWorkspaceId: workspaceId, runId: retry.id, operation: expect.objectContaining({ verifyExisting: true }),
