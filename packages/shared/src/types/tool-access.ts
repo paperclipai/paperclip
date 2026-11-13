@@ -1221,6 +1221,39 @@ export interface ConnectToolAppAuthChallenge {
   manualClientRequired?: boolean;
 }
 
+/** Public half of a key Paperclip holds for machine sign-in. Safe to show and share. */
+export interface MachineSignInPublicKey {
+  keyId: string;
+  algorithm: "RS256" | "ES256";
+  /** PEM (SPKI) for providers that take a certificate-style key. */
+  pem: string;
+  /** JWK for providers that take a JSON key. */
+  jwk: Record<string, unknown>;
+  createdAt: string;
+}
+
+/** Machine sign-in settings for one organization connection. Never includes secret or private key values. */
+export interface MachineSignInStatus {
+  connectionId: string;
+  method: "paperclip_key" | "client_secret";
+  clientId: string | null;
+  /** The sign-in service this connection's credentials are bound to. */
+  issuer: string | null;
+  tokenUrl: string;
+  scopes: string[];
+  publicKey: MachineSignInPublicKey | null;
+  /** A replacement key waiting to be registered with the provider. */
+  pendingPublicKey: MachineSignInPublicKey | null;
+  hasClientSecret: boolean;
+  lastTokenAt: string | null;
+}
+
+export interface MachineSignInSetupResult {
+  connectionId: string;
+  connection: ToolConnection;
+  machineSignIn: MachineSignInStatus;
+}
+
 export interface ConnectToolAppResult {
   connectionId: string;
   application: ToolApplication;

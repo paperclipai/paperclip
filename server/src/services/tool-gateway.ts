@@ -30,6 +30,7 @@ import { isInsufficientConnectionScope, INSUFFICIENT_CONNECTION_SCOPE_MESSAGE } 
 import { githubAccessDeniedInstructions, githubAccessError } from "./tool-access/github-access-errors.js";
 import { githubDefaultOwnerApplies, githubDefaultOwnerArguments } from "./tool-access/github-default-owner.js";
 import { toolSourceTemplateKeySql } from "./tool-access/source-template-key.js";
+import { usesClientCredentials } from "./tool-access/oauth/client-credentials.js";
 import { boundedMcpToolName } from "./mcp-tool-names.js";
 import { browserUseService } from "./browser-use.js";
 import { isBrowserUseConnection } from "./browser-use-client.js";
@@ -7709,6 +7710,7 @@ export function createToolGatewayService(
           toolInputSchema: entry.inputSchema ?? undefined,
           // Paperclip can wait on a task here, durably (see waitForMcpTask).
           declareTasks: tasksOn,
+          declareClientCredentials: usesClientCredentials(connection),
         }),
         redirect: "manual",
         signal: controller.signal,
