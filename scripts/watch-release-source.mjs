@@ -1,6 +1,6 @@
 import { appendFile } from "node:fs/promises";
 import { pathToFileURL } from "node:url";
-import { createActionsReader, createJobLogReader, createRunnerLossClassifier, readSourceVerification, SourceVerificationFailed, SourceVerificationDeferred } from "./cloud-source-verification.mjs";
+import { createActionsReader, createJobEvidenceReader, createRunnerLossClassifier, readSourceVerification, SourceVerificationFailed, SourceVerificationDeferred } from "./cloud-source-verification.mjs";
 import { requestDeferredProducer, readMigratorPublication, sourceAdmissionJob, migratorAdmissionJob, createReleaseRerunner } from "./cloud-release-admission.mjs";
 
 const repository = "paperclipai/paperclip";
@@ -92,7 +92,8 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
   const requireProof = process.argv.includes("--require-proof");
   const checkProof = process.argv.includes("--check-proof");
   const api = createActionsReader({ token });
-  const runnerLost = createRunnerLossClassifier(createJobLogReader(token));
+  const deadline = Date.now() + 40 * 60_000;
+  const runnerLost = createRunnerLossClassifier({ ...createJobEvidenceReader(token), deadlineAt: () => deadline });
   const proof = checkProof ? await readSourceVerification(process.env.GITHUB_SHA, api, { failFast: true, runnerLost }) : await watchReleaseSource({ requireProof, sha: process.env.GITHUB_SHA, runId: Number(process.env.GITHUB_RUN_ID), attempt: Number(process.env.GITHUB_RUN_ATTEMPT),
     api, runnerLost,
     rerun: createReleaseRerunner(token),

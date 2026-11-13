@@ -210,10 +210,13 @@ The same workflow re-runs a first master Cloud readiness attempt once under
 the same rule. It does not check a pull request head, because Cloud readiness
 runs once per commit and a re-run cancels nothing. A failing Runner chaos eval
 does not prevent the re-run, because those evals do not gate publication.
-Docker's source watcher and the npm canary gate read the failed jobs' logs. If
+Docker's source watcher and the npm canary gate classify each failed job with
+the same evidence: the check-run annotations first, then the job log. Each job
+is classified once, and no evidence is read after the wait's deadline. If
 every failed check on attempt 1 lost its runner, they wait for the re-run's
 proof. They do not cancel the image or fail the canary. Any real failure, or a
-lost runner on attempt 2, still stops publication of that commit.
+lost runner on attempt 2, still stops publication of that commit. These jobs
+need `checks: read` for the annotations.
 
 The routing workflow also selects the CI scope. Middle PRs in a stack and PRs
 whose diff changes only release notes (`releases/v*.md` or

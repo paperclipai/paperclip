@@ -18,11 +18,7 @@ import { fileURLToPath } from "node:url";
 export const REPOSITORY = "paperclipai/paperclip";
 export const REPOSITORY_ID = 1170821064;
 export const PR_WORKFLOW_PATH = ".github/workflows/pr.yml";
-// Docker and the npm canary wait on this run's source proof for the same
-// commit, and treat a first attempt that only lost runners as still pending.
 export const CLOUD_READINESS_PATH = ".github/workflows/cloud-readiness.yml";
-// Owner decision (2026-11-12): the Runner chaos evals in Cloud readiness do not
-// gate publication, so their own failure must not stop a re-run of lost checks.
 export const NON_GATING_JOB_PREFIX = "Runner chaos evals (not a publication gate) / ";
 
 // The runner's own messages when an AWS instance disappears mid-job.
@@ -128,7 +124,6 @@ export function eligibleRun(run) {
  * PR's current head.
  */
 export async function staleReason(client, run) {
-  // Cloud readiness is grouped by commit and cancels nothing when re-run.
   if (run.path === CLOUD_READINESS_PATH) return undefined;
   const pulls = await client.paginate(`/repos/${REPOSITORY}/commits/${run.head_sha}/pulls?per_page=100`);
   const open = pulls.filter((pr) => pr.state === "open" && pr.base?.repo?.id === REPOSITORY_ID

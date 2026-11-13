@@ -2,7 +2,7 @@ import { appendFile } from "node:fs/promises";
 import { pathToFileURL } from "node:url";
 import { createActionsReader } from "./github-actions-reader.mjs";
 import { deferredProducer, requestDeferredProducer, sourceAdmissionJob, createReleaseRerunner } from "./cloud-release-admission.mjs";
-import { createGithubClient, logShowsRunnerLoss } from "../.github/scripts/runner-loss-rerun.mjs";
+import { classifyJob, createGithubClient } from "../.github/scripts/runner-loss-rerun.mjs";
 
 const repository = "paperclipai/paperclip";
 const workflowPath = ".github/workflows/cloud-readiness.yml";
@@ -24,33 +24,29 @@ export class SourceVerificationDeferred extends Error {}
 
 const failedConclusions = ["failure", "cancelled", "timed_out", "action_required", "startup_failure", "stale"];
 
-/**
- * Reads whether a failed job ended because its machine was lost (a Spot
- * reclaim), from the runner's own error in the job log. Returns undefined when
- * the log cannot be read yet, so the caller keeps waiting and asks again.
- */
-export function createRunnerLossClassifier(readLog) {
+export function createRunnerLossClassifier({ readAnnotations, readLog, deadlineAt = () => Infinity, now = Date.now }) {
   const known = new Map();
   return async (job) => {
-    if (!known.has(job.id)) {
-      try {
-        known.set(job.id, logShowsRunnerLoss(await readLog(job.id)));
-      } catch {
-        return undefined;
-      }
+    if (known.has(job.id)) return known.get(job.id);
+    if (now() >= deadlineAt()) return undefined;
+    try {
+      const { lost } = await classifyJob(job, { annotations: await readAnnotations(job.id), readLog: (entry) => readLog(entry.id) });
+      known.set(job.id, lost);
+      return lost;
+    } catch {
+      return undefined;
     }
-    return known.get(job.id);
   };
 }
 
-export function createJobLogReader(token) {
+export function createJobEvidenceReader(token) {
   const client = createGithubClient({ token });
-  return (jobId) => client.text(`/repos/${repository}/actions/jobs/${jobId}/logs`);
+  return {
+    readAnnotations: (jobId) => client.paginate(`/repos/${repository}/check-runs/${jobId}/annotations?per_page=100`),
+    readLog: (jobId) => client.text(`/repos/${repository}/actions/jobs/${jobId}/logs`),
+  };
 }
 
-// ci-runner-loss-rerun.yml re-runs a first attempt whose failed checks only
-// lost their runners, once. Until it does, the commit is pending, not failed:
-// dropping it would leave Cloud without an image and npm without a canary.
 async function awaitingRunnerLossRerun(failed, run, runnerLost) {
   if (!runnerLost || run.run_attempt !== 1 || failed.length === 0) return false;
   for (const job of failed) if (await runnerLost(job) === false) return false;
@@ -162,7 +158,7 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
     const deadline = Date.now() + timeoutMs;
     const api = createActionsReader({ token: process.env.GITHUB_TOKEN, deadlineAt: () => deadline });
     const rerun = process.env.GITHUB_REPOSITORY === repository && process.env.GITHUB_REF === "refs/heads/master" ? createReleaseRerunner(process.env.GITHUB_TOKEN) : undefined;
-    const runnerLost = createRunnerLossClassifier(createJobLogReader(process.env.GITHUB_TOKEN));
+    const runnerLost = createRunnerLossClassifier({ ...createJobEvidenceReader(process.env.GITHUB_TOKEN), deadlineAt: () => deadline });
     const proof = await waitForSourceVerification(process.argv[2], { api, timeoutMs, rerun, runnerLost });
     const message = `Source verification passed for ${proof.sha}: https://github.com/${repository}/actions/runs/${proof.runId}/attempts/${proof.attempt} (job ${proof.jobId}).`;
     console.log(message);

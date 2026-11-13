@@ -301,8 +301,6 @@ test("runs that are no longer the PR's latest CI are not re-run", async () => {
   assert.equal(skipped.rerun, true);
 });
 
-// The same AWS fleet runs master's Cloud readiness. Docker and the npm canary
-// wait for this one re-run instead of dropping the commit.
 function readiness(data, { jobs } = {}) {
   const copy = structuredClone(data);
   Object.assign(copy.run, { path: ".github/workflows/cloud-readiness.yml", event: "push", head_branch: "master",

@@ -441,14 +441,15 @@ describe("image build source monitor", () => {
     assert.equal((await watchReleaseSource({ ...fixture(), requireProof: true })).jobId, proof.id);
   });
 
-  // A Spot reclaim is not a failed check. ci-runner-loss-rerun.yml re-runs the
-  // lost jobs once, and the image keeps waiting for that attempt's proof.
   const lostJob = { ...proof, id: 120, name: "verify / General tests (server (4/10))", conclusion: "failure" };
   const realJob = { ...proof, id: 121, name: "verify / General tests (server (5/10))", conclusion: "failure" };
   const shutdown = "2026-11-13T12:00:00Z ##[error]The runner has received a shutdown signal. This can happen when the runner service is stopped, or a manually started runner is canceled.\n";
-  const lostLogs = (logs = { 120: shutdown, 121: "##[error]Process completed with exit code 1.\n" }) => {
+  const cancelled = [{ annotation_level: "failure", message: "The operation was canceled." }];
+  const lostLogs = (logs = { 120: shutdown, 121: "##[error]Process completed with exit code 1.\n" }, annotations = {}, options = {}) => {
     const reads = [];
-    return { reads, runnerLost: createRunnerLossClassifier(async (id) => { reads.push(id); if (!(id in logs)) throw new Error("log not ready"); return logs[id]; }) };
+    return { reads, runnerLost: createRunnerLossClassifier({ ...options,
+      readAnnotations: async (id) => annotations[id] ?? cancelled,
+      readLog: async (id) => { reads.push(id); if (!(id in logs)) throw new Error("log not ready"); return logs[id]; } }) };
   };
   const rerunAttempt = (f) => {
     const second = { ...sourceRun, run_attempt: 2 };
@@ -510,6 +511,22 @@ describe("image build source monitor", () => {
     assert.equal(await readSourceVerification(sha, f.api, { failFast: true, runnerLost }), undefined);
     assert.deepEqual(reads, [120, 120]);
     assert.deepEqual(f.cancellations, []);
+  });
+
+  test("a lost-communication annotation counts as runner loss even when the log has no shutdown line", async () => {
+    const f = fixture({ jobs: [lostJob, { ...proof, status: "in_progress", conclusion: null }] });
+    const { reads, runnerLost } = lostLogs({ 120: "no runner error here\n" },
+      { 120: [{ annotation_level: "failure", message: "The self-hosted runner lost communication with the server." }] });
+    assert.equal(await readSourceVerification(sha, f.api, { failFast: true, runnerLost }), undefined);
+    assert.deepEqual(reads, []);
+    assert.deepEqual(f.cancellations, []);
+  });
+
+  test("no job evidence is read after the wait's deadline", async () => {
+    const f = fixture({ jobs: [lostJob] });
+    const { reads, runnerLost } = lostLogs(undefined, {}, { deadlineAt: () => 10, now: () => 10 });
+    assert.equal(await readSourceVerification(sha, f.api, { failFast: true, runnerLost }), undefined);
+    assert.deepEqual(reads, []);
   });
 
   test("a classified job log is read once", async () => {
