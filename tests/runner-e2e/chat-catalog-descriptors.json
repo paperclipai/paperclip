@@ -5843,7 +5843,7 @@
       "chat-catalog-domains/identity-support.ts",
       "chat-rendered-links.ts"
     ],
-    "oracleVersion": "paperclip.chat-catalog.internal.ambiguous-task.v7",
+    "oracleVersion": "paperclip.chat-catalog.internal.ambiguous-task.v8",
     "coverageGaps": [],
     "expectedRunCount": 2,
     "expectedHumanMessageCount": 2,

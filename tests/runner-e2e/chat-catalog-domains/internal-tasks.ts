@@ -88,9 +88,11 @@ export const tasksCases: readonly ChatCatalogCase[] = [
 
 /** The person's answer through the clarification card's Launch choice, for the flow to verify independently. */
 export function answeredClarification(value: unknown) {
-  const answered = (value as { state?: { answeredQuestion?: { interactionId?: unknown; sourceRunId?: unknown; userId?: unknown } } } | undefined)?.state?.answeredQuestion;
-  if (!answered || typeof answered.interactionId !== "string" || typeof answered.sourceRunId !== "string" || typeof answered.userId !== "string" || !answered.userId) return;
-  return { interactionId: answered.interactionId, sourceRunId: answered.sourceRunId, userId: answered.userId };
+  const answered = (value as { state?: { answeredQuestion?: Record<string, unknown> } } | undefined)?.state?.answeredQuestion;
+  const text = (key: string) => typeof answered?.[key] === "string" && !!answered[key] ? answered[key] as string : undefined;
+  const interactionId = text("interactionId"), sourceRunId = text("sourceRunId"), userId = text("userId"), questionId = text("questionId"), optionId = text("optionId");
+  if (!interactionId || !sourceRunId || !userId || !questionId || !optionId) return;
+  return { interactionId, sourceRunId, userId, clarificationChoice: { questionId, optionId } };
 }
 function ambiguousTask(): ChatCatalogCase {
   const base = define("tasks.ambiguous-task", async ctx => {
@@ -101,7 +103,7 @@ function ambiguousTask(): ChatCatalogCase {
     await verifyDistinctTaskFixtures(ctx, [t, otherTask]);
     return { project: p, task: t, otherProject, otherTask };
   });
-  return { ...base, oracleVersion: "paperclip.chat-catalog.internal.ambiguous-task.v7", sourceFiles: [...base.sourceFiles, "chat-catalog-domains/internal-distinct-fixtures.ts", "chat-linked-question.ts", "chat-catalog-domains/identity-support.ts", "chat-rendered-links.ts"], expectedRunCount: 2, expectedHumanMessageCount: 2, attemptTimeoutMs: 420_000,
+  return { ...base, oracleVersion: "paperclip.chat-catalog.internal.ambiguous-task.v8", sourceFiles: [...base.sourceFiles, "chat-catalog-domains/internal-distinct-fixtures.ts", "chat-linked-question.ts", "chat-catalog-domains/identity-support.ts", "chat-rendered-links.ts"], expectedRunCount: 2, expectedHumanMessageCount: 2, attemptTimeoutMs: 420_000,
     expectedHumanQuestionAnswer: answeredClarification,
     async act(ctx, state) {
       await pollUntil({ label: "Task ambiguity clarification", deadlineAt: Date.now() + 150_000,
@@ -138,7 +140,7 @@ function ambiguousTask(): ChatCatalogCase {
         // A chosen option saves no comment; the flow counts it as the person's second action only after it
         // independently verifies the answered card, its audit event and the one continuation run.
         const anchor = (await ctx.input.api.get<Entity[]>(`/api/issues/${card.sourceId}/comments?order=asc`)).find(row => row.id === card.anchorCommentId);
-        state.answeredQuestion = { interactionId: card.interactionId, sourceRunId: card.sourceRunId, userId: anchor?.authorUserId ?? null, optionId: choice.optionId };
+        state.answeredQuestion = { interactionId: card.interactionId, sourceRunId: card.sourceRunId, userId: anchor?.authorUserId ?? null, questionId: card.questionId, optionId: choice.optionId };
         return;
       }
       const textInput = answerRoot.getByTestId("question-text-answer-composer").last();

@@ -56,8 +56,8 @@ it("counts a verified clarification choice as the ambiguous-task person's second
   const { verifyChatCatalogHumanQuestionAnswer } = await import("./chat-catalog-contract.js");
   const { answeredClarification } = await import("./chat-catalog-domains/internal-tasks.js");
   const implementation = chatCatalogCases.find(row => row.scenarioId === "tasks.ambiguous-task")!;
-  const expected = answeredClarification({ state: { answeredQuestion: { interactionId: "card", sourceRunId: "first", userId: "person", optionId: "com-1" } } })!;
-  expect(expected).toEqual({ interactionId: "card", sourceRunId: "first", userId: "person" });
+  const expected = answeredClarification({ state: { answeredQuestion: { interactionId: "card", sourceRunId: "first", userId: "person", questionId: "landing_page_task", optionId: "com-1" } } })!;
+  expect(expected).toEqual({ interactionId: "card", sourceRunId: "first", userId: "person", clarificationChoice: { questionId: "landing_page_task", optionId: "com-1" } });
   expect(answeredClarification({ state: { answeredQuestion: { interactionId: "card", sourceRunId: "first", userId: null } } })).toBeUndefined();
   expect(answeredClarification({ state: {} })).toBeUndefined();
   const card = { id: "card", kind: "ask_user_questions", status: "answered", companyId: "co", issueId: "chat", sourceRunId: "first", createdByAgentId: "ceo",
@@ -77,10 +77,26 @@ it("counts a verified clarification choice as the ambiguous-task person's second
   // A typed "Other" answer, an unanswered card, or no continuation run is not a verified choice.
   expect(verify({ result: { answers: [{ questionId: "landing_page_task", optionIds: [], otherText: "COM-1" }] } })).toBeUndefined();
   expect(verify({ status: "pending" })).toBeUndefined();
+  // The product lets the person answer an unaddressed card, or one any resolver but its agent creator may answer.
+  expect(verify({ addresseeUserId: null, resolverPolicy: "not_creator", effectiveResolverPolicy: "not_creator" })).toMatchObject({ continuationRunId: "second" });
+  expect(verify({ resolverPolicy: "agent_only", effectiveResolverPolicy: "agent_only" })).toBeUndefined();
+  expect(verify({ addresseeUserId: "someone-else" })).toBeUndefined();
+  // The saved choice must be the Launch option alone.
+  expect(verify({ result: { answers: [{ questionId: "landing_page_task", optionIds: ["com-2"] }] } })).toBeUndefined();
+  expect(verify({ result: { answers: [{ questionId: "landing_page_task", optionIds: ["com-1", "com-2"] }] } })).toBeUndefined();
   expect(verify({}, runs.slice(0, 1))).toBeUndefined();
   const history = { human: [{ id: "query", body: "Mark the landing-page task as high priority." }], runIds: ["first", "second"],
     boundary: { humanCommentIds: [], runIds: [] }, renderedQuery: "Mark the landing-page task as high priority." };
   expect(chatCatalogHumanHistoryMatches({ ...history, implementation, questionAnswer: answer })).toBe(true);
   expect(chatCatalogHumanHistoryMatches({ ...history, implementation })).toBe(false);
   expect(chatCatalogHumanHistoryMatches({ ...history, implementation: { ...implementation, scenarioId: "tasks.edit-properties" }, questionAnswer: answer })).toBe(false);
+});
+it("accepts a not_creator card resolved by a person other than its creator, as the server does", async () => {
+  const { chatCatalogHumanQuestionPolicies } = await import("./chat-catalog-contract.js");
+  const notCreator = { resolverPolicy: "not_creator", requestedResolverPolicy: "not_creator", effectiveResolverPolicy: "not_creator" };
+  expect(chatCatalogHumanQuestionPolicies({ ...notCreator, createdByUserId: null }, { userId: "person" })).toBe(true);
+  expect(chatCatalogHumanQuestionPolicies({ ...notCreator, createdByUserId: "person" }, { userId: "person" })).toBe(false);
+  expect(chatCatalogHumanQuestionPolicies({ ...notCreator, createdByUserId: null })).toBe(false);
+  expect(chatCatalogHumanQuestionPolicies({ resolverPolicy: "anyone", effectiveResolverPolicy: "human_only" })).toBe(true);
+  expect(chatCatalogHumanQuestionPolicies({ resolverPolicy: "agent_only" }, { userId: "person" })).toBe(false);
 });
