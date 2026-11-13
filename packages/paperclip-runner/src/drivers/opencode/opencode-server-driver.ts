@@ -33,7 +33,8 @@ import { PROVIDER_PERFORMANCE_ENV } from "../../contracts/provider-performance.j
 import { annotateOmittedProviderText, parseOpenCodeSseFrames } from "./sse-frames.js";
 import { githubCredentialEnvironment } from "../../github-credential-environment.js";
 import { configuredOpenCodeEnvironment } from "./environment.js";
-import { CONFIGURED_ENVIRONMENT_KEYS } from "../../configured-environment.js";
+import { CONFIGURED_ENVIRONMENT_KEYS, SECRET_ENVIRONMENT_KEYS, configuredSecretEnvironment } from "../../configured-environment.js";
+import { prepareOpenCodeOutputCustody, redactOpenCodeModelRequest } from "./output-custody.js";
 
 import {
   CODEX_SKILLLESS_BASE_INSTRUCTIONS,
@@ -2455,7 +2456,7 @@ class OpenCodeHarnessSession implements HarnessSession {
 }
 
 /** Retain the reusable gateway key in the runner; the harness gets a session-scoped capability. */
-async function startOpenCodeProviderProxy(baseUrl: string, key: string, model: string, environment: NodeJS.ProcessEnv, onServed?: (served: UpstreamServed | null) => void) {
+async function startOpenCodeProviderProxy(baseUrl: string, key: string, model: string, environment: NodeJS.ProcessEnv, onServed?: (served: UpstreamServed | null) => void, secretValues: readonly string[] = []) {
   const upstreamUrl = new URL(`${baseUrl.replace(/\/+$/, "")}/chat/completions`);
   const token = randomBytes(32).toString("base64url");
   // Agent-local settings keep one runtime's transport configuration out of other sessions.
@@ -2511,6 +2512,11 @@ async function startOpenCodeProviderProxy(baseUrl: string, key: string, model: s
       // Keep OpenCode's unreadable-media notice attributed to the tool result
       // instead of a synthetic user message the model mistakes for the person.
       if (attributeUnsupportedToolMedia(payload)) body = Buffer.from(JSON.stringify(payload), "utf8");
+      // Defense in depth: no configured secret value leaves for the model.
+      if (secretValues.length > 0) {
+        const redacted = redactOpenCodeModelRequest(body, secretValues, payload);
+        if (redacted) body = redacted;
+      }
       try { onServed?.(null); } catch { /* Recording never affects the request. */ }
       const upstream = await new Promise<IncomingMessage>((resolve, reject) => {
         const outgoing = (upstreamUrl.protocol === "https:" ? requestHttps : requestHttp)(upstreamUrl, {
@@ -2628,7 +2634,7 @@ async function startRuntime(input: {
   const sensitiveValues = [
     ...identityValues,
     ...Object.entries(taskEnvironment).flatMap(([key, value]) =>
-      key !== CONFIGURED_ENVIRONMENT_KEYS && value ? [value, JSON.stringify(value).slice(1, -1)] : []),
+      key !== CONFIGURED_ENVIRONMENT_KEYS && key !== SECRET_ENVIRONMENT_KEYS && value ? [value, JSON.stringify(value).slice(1, -1)] : []),
     password,
     authHeader,
     bridge.secret,
@@ -2637,6 +2643,21 @@ async function startRuntime(input: {
     providerEnvironment.PAPERCLIP_AI_PROVIDER_KEY,
   ].filter((value): value is string => Boolean(value));
   input.trace?.addSensitiveValues(sensitiveValues);
+  // Configured secrets must never reach OpenCode's captured tool output, its
+  // session store, or the model. Prepared before launch; a launch that cannot
+  // protect them does not start.
+  const outputCustody = await prepareOpenCodeOutputCustody({
+    directory: join(isolatedHome, ".paperclip-output-custody"),
+    // Shared by every session of this runtime so the wrapper is written once.
+    binDirectory: join(resolve(input.options.runtimeDirectory), "output-custody"),
+    configDirectory: join(configHome, "opencode"),
+    environment: sanitizedEnvironment(input.options.environment, {}),
+    secrets: configuredSecretEnvironment(input.options.environment),
+  }).catch(async error => {
+    await bridge.close().catch(() => {});
+    await removeIsolatedHome(isolatedHome).catch(() => {});
+    throw error;
+  });
   const instructionRoot =
     input.options.runtimeContext?.instructions.bundle.rootPath;
   // OpenCode canonicalizes tool paths (for example /var -> /private/var on
@@ -2656,7 +2677,7 @@ async function startRuntime(input: {
       ? { baseUrl: input.options.environment.PAPERCLIP_AI_PROVIDER_URL, key: input.options.environment.PAPERCLIP_AI_PROVIDER_KEY ?? "" }
       : null;
   const providerProxy = providerRoute
-    ? await startOpenCodeProviderProxy(providerRoute.baseUrl, providerRoute.key, providerModelId, providerEnvironment, input.onUpstreamServed).catch(async error => {
+    ? await startOpenCodeProviderProxy(providerRoute.baseUrl, providerRoute.key, providerModelId, providerEnvironment, input.onUpstreamServed, outputCustody?.values ?? []).catch(async error => {
         await bridge.close().catch(() => {});
         await removeIsolatedHome(isolatedHome).catch(() => {});
         throw error;
@@ -2697,7 +2718,8 @@ async function startRuntime(input: {
       // The configured entry is already composed exactly once into the session
       // system prompt; siblings remain available through the read-only root.
       instructions: [],
-      plugin: [],
+      plugin: outputCustody?.config.plugin ?? [],
+      ...(outputCustody ? { shell: outputCustody.config.shell } : {}),
       // OpenCode's bundled models.dev snapshot can lag behind OpenRouter's live
       // catalog. Bind the already-qualified exact model slug into the built-in
       // provider instead of silently falling back or rejecting a newer model.
@@ -2780,6 +2802,7 @@ async function startRuntime(input: {
         // default plugins before it can submit the first prompt.
         OPENCODE_DISABLE_MODELS_FETCH: "true",
         OPENCODE_DISABLE_DEFAULT_PLUGINS: "true",
+        ...outputCustody?.environment,
         OPENCODE_SERVER_USERNAME: username,
         OPENCODE_SERVER_PASSWORD: password,
         ...performanceDiagnostics?.environment,
