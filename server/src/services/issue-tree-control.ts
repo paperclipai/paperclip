@@ -672,12 +672,6 @@ export function issueTreeControlService(db: Db) {
     return null;
   }
 
-  /**
-   * The issues among `issueIds` that an active pause hold covers: the same
-   * answer as `getActivePauseHoldGate` per issue (the issue or an ancestor
-   * within MAX_PAUSE_HOLD_ANCESTOR_DEPTH is a hold root), in at most two
-   * statements for the whole set instead of one walk per issue.
-   */
   async function listActivePauseHeldIssueIds(companyId: string, issueIds: string[]): Promise<Set<string>> {
     if (issueIds.length === 0) return new Set();
     const [anyHold] = await db.select({ id: issueTreeHolds.id }).from(issueTreeHolds).where(and(

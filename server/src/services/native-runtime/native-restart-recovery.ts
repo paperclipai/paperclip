@@ -203,7 +203,6 @@ type RecoveryClaimProgressEntry = {
   disposition?: unknown; progressWatermarkSeq?: unknown; progressAttempt?: unknown; noProgressRestarts?: unknown;
 };
 
-/** When the current interruption began, from the most recent recovery claim (null before this release). */
 function previousInterruptionStartedAt(recoveryHistory: ReadonlyArray<RecoveryClaimProgressEntry & { interruptionStartedAt?: unknown }>): number | null {
   for (let index = recoveryHistory.length - 1; index >= 0; index -= 1) {
     const entry = recoveryHistory[index];
@@ -1800,10 +1799,6 @@ export async function claimNativeRestartRecoveries(input: {
         ? { keepsAttempt: true, noProgressRestarts: previousNoProgressRestarts(row.coordinator.recoveryHistory) }
         : await restartResumeKeepsAttempt(tx, { runId: row.run.id, coordinator: row.coordinator });
       const resumeKeepsAttempt = restartCredit.keepsAttempt;
-      // One deadline per interruption, across server generations: it starts at
-      // the first claim of this interruption and survives every later claim
-      // that finds no provider progress since the previous one. A claim saved
-      // by an older release has no start: this claim starts it, never expired.
       const interruptionProgressed = !cleanDrainSuspension && restartCredit.noProgressRestarts === 0;
       const priorInterruptionStart = previousInterruptionStartedAt(row.coordinator.recoveryHistory);
       const interruptionStartedAt = !interruptionProgressed && priorInterruptionStart !== null

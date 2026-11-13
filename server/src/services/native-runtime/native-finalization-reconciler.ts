@@ -331,8 +331,6 @@ export async function claimNativeSessionResumptions(input: {
       }).where(and(
         eq(nativeRunFinalizations.runId, row.run.id),
         eq(nativeRunFinalizations.phase, row.coordinator.phase),
-        // Another owner's lease lapses by the database clock: a server whose
-        // own clock runs fast must not take a lease that is still held.
         or(isNull(nativeRunFinalizations.leaseOwner), isNull(nativeRunFinalizations.leaseExpiresAt),
           sql`${nativeRunFinalizations.leaseExpiresAt} <= clock_timestamp()`),
       )).returning({ runId: nativeRunFinalizations.runId }).then((rows) => rows[0] ?? null);

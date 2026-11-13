@@ -727,9 +727,6 @@ describePostgres("assigned-work invariant sweep", () => {
   }, 120_000);
 
   it("counts the scheduler's transient retries of the same task against the one continuation cap", async () => {
-    // PAP-2620 shape: a repository catalog outage. Each sweep continuation
-    // started a fresh run whose failure got two more transient retries, so
-    // two mechanisms retried one failure under two separate caps.
     const f = await seedCompany();
     const issueId = await f.issue();
     for (let index = 0; index < CONTINUATION_CAP - 2; index++) {

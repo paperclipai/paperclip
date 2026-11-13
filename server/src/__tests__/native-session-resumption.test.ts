@@ -388,7 +388,6 @@ describe("P6-25 pre-result native session recovery", () => {
     await db.update(nativeRunFinalizations).set({
       leaseOwner: "other-server:resume:live", leaseExpiresAt: new Date(Date.now() + 2 * 60_000),
     }).where(eq(nativeRunFinalizations.runId, runId));
-    // This server's clock is ten minutes ahead: it believes the lease lapsed.
     await expect(claimNativeSessionResumptions({ db, runnerInstanceId: "fast-clock", runIds: [runId],
       now: new Date(Date.now() + 10 * 60_000) })).resolves.toEqual([]);
     await expect(db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, runId))).resolves.toEqual([

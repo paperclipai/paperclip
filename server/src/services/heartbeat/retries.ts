@@ -603,8 +603,6 @@ export function createHeartbeatRetries(db: Db, dependencies: HeartbeatRetryDepen
     // a chain whose real failures already spent the failure budget either.
     const failureBudgetSpent = interruptedPreparationLane && opts?.maxAttempts == null
       && executionFailureRetryCount(run) >= BOUNDED_TRANSIENT_HEARTBEAT_RETRY_MAX_ATTEMPTS;
-    // One hourly cap per task: once the assigned-work sweep has continued
-    // this task in the hour, a transient retry spends the same allowance.
     const transientIssueId = retryReason === BOUNDED_TRANSIENT_HEARTBEAT_RETRY_REASON && opts?.maxAttempts == null
       ? readNonEmptyString(run.contextSnapshot?.issueId) : null;
     const taskCapSpent = transientIssueId !== null

@@ -286,7 +286,6 @@ export function assignedWorkSweep(db: Db, deps: AssignedWorkDeps) {
       .from(heartbeatRuns).where(and(eq(heartbeatRuns.companyId, companyId), inArray(heartbeatRuns.id, strandedRunIds))) : [])
       .map(({ id, ...run }) => [id, run]));
     const agentsById = new Map<string, typeof agents.$inferSelect & { invokable: boolean }>();
-    // The org chart every assignee's invokability is judged against, read once.
     const companyAgents = agentRows.length ? await database.select({ id: agents.id, companyId: agents.companyId, name: agents.name,
       reportsTo: agents.reportsTo, status: agents.status }).from(agents).where(eq(agents.companyId, companyId)) : [];
     for (const agent of agentRows as Array<typeof agents.$inferSelect>) {
@@ -340,8 +339,6 @@ export function assignedWorkSweep(db: Db, deps: AssignedWorkDeps) {
       }
       ownedRunsByIssue.set(issue.id, ownedRuns);
     }
-    // The tree pause gate walks ancestors; read it only for tasks nothing else
-    // already gives a path, and for all of them in one read.
     const pauseCheckIds = issueRows.filter(issue => !ownedRunsByIssue.get(issue.id)!.some(run => run.owner !== "gone")
       && !(wakeCounts.get(issue.id) ?? 0)).map(issue => issue.id);
     const pauseHeldIds = await treeControl.listActivePauseHeldIssueIds(companyId, pauseCheckIds);
@@ -592,9 +589,6 @@ export function assignedWorkSweep(db: Db, deps: AssignedWorkDeps) {
       const verdict = evaluateAssignedWork(fresh, at);
       if (verdict.kind !== "violation" || verdict.stale || verdict.reason === "run_owner_gone" || verdict.reason === "native_run_stalled"
         || (current.status === "blocked" && fresh.activeRecoveryAction && !fresh.activeRecoveryAction.continuedBySweep)) return { kind: "changed" as const };
-      // One cap per task across both owners: the scheduler's bounded transient
-      // retries of this task's runs spend the same hourly allowance, so a
-      // lasting outage is not retried by the scheduler inside every sweep continuation.
       const attempts = await taskAutomaticAttempts(tx as unknown as Db, issue.companyId, issue.id, at);
       const recent = attempts.continuations;
       const allowance = continuationAllowance(attempts.all, at);

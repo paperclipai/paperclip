@@ -5,7 +5,6 @@ import { agents, agentWakeupRequests, companies, createDb, heartbeatRuns, issues
 import { assignedWorkSweep } from "../services/recovery/assigned-work-sweep.js";
 import { recoveryPostgresSupport, startRecoveryPostgres } from "./helpers/recovery-postgres.js";
 
-/** Counts every per-task tree pause gate read the sweep makes. */
 const gate = vi.hoisted(() => ({ perIssueCalls: 0 }));
 vi.mock("../services/issue-tree-control.js", async importOriginal => {
   const actual = await importOriginal<typeof import("../services/issue-tree-control.js")>();
@@ -26,13 +25,6 @@ if (!recoveryPostgresSupport.supported) console.warn(`Skipping assigned-work rou
 
 const HOUR = 60 * 60_000;
 
-/**
- * The invariant report took 60-81 s on staging (1,000+ open agent tasks)
- * because every task with nothing live or queued read the tree pause gate on
- * its own, one sequential round trip each, plus one per ancestor while any
- * pause hold existed. The report and the sweep's checks must read pause holds
- * in a constant number of statements, whatever the task count.
- */
 describePostgres("assigned-work sweep database round trips", () => {
   let temporary: Awaited<ReturnType<typeof startRecoveryPostgres>>;
   let db: ReturnType<typeof createDb>;
@@ -55,7 +47,6 @@ describePostgres("assigned-work sweep database round trips", () => {
     const agentIds = Array.from({ length: 20 }, () => randomUUID());
     await db.insert(agents).values(agentIds.map((id, index) => ({ id, companyId, name: `Agent ${index}`, adapterType: "codex_local",
       status: "idle", adapterConfig: {} })));
-    // 300 held roots, each with one child under the hold; 900 independent tasks.
     const rows: Array<typeof issues.$inferInsert> = [];
     const roots: string[] = [];
     for (let index = 0; index < 1_500; index += 1) {
@@ -71,7 +62,6 @@ describePostgres("assigned-work sweep database round trips", () => {
     for (let index = 0; index < rows.length; index += 250) await db.insert(issues).values(rows.slice(index, index + 250));
     await db.insert(issueTreeHolds).values(roots.map(rootIssueId => ({ companyId, rootIssueId, mode: "pause", status: "active",
       reason: "fixture" })));
-    // Every task ran once and stopped; 400 of the independent ones have a queued wake.
     const runs = rows.map((row, index) => ({ companyId, agentId: row.assigneeAgentId!, invocationSource: "automation",
       status: "succeeded", startedAt: new Date(Date.now() - 4 * HOUR - index), finishedAt: new Date(Date.now() - 3 * HOUR - index),
       createdAt: new Date(Date.now() - 4 * HOUR - index), contextSnapshot: { issueId: row.id, taskId: row.id } }));
@@ -91,7 +81,6 @@ describePostgres("assigned-work sweep database round trips", () => {
 
     const report = await measure(() => sweep.report(companyId));
 
-    // One sweep pass: a page of suspects, each checked.
     const pass = await measure(async () => {
       const suspects = await sweep.listSuspects({ companyId }, null, 100);
       const verdicts: Record<string, number> = {};
@@ -111,14 +100,11 @@ describePostgres("assigned-work sweep database round trips", () => {
       sweepPass: { ms: pass.ms, statements: pass.statements, perIssueGateCalls: pass.gateCalls, ...pass.value },
       oneHeldCheck: { ms: held.ms, statements: held.statements, perIssueGateCalls: held.gateCalls },
     } }));
-    // Held children wait on the hold, held roots on their open child; queued
-    // tasks are pending; the rest have no path.
     expect(report.value).toMatchObject({ checked: 1_500, violationCount: 500 });
     expect(report.value.ok).toEqual({ "waiting:agent_paused": 300, "waiting:dependency": 300, "pending:queued_wake": 400 });
     expect(report.gateCalls).toBe(0);
     expect(pass.gateCalls).toBe(0);
     expect(held.gateCalls).toBe(0);
-    // 8 batches of 200 tasks: a fixed set of reads per batch, not one per task or per agent.
     expect(report.statements).toBeLessThan(8 * 40);
   }, 300_000);
 

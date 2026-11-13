@@ -77,13 +77,6 @@ export const FRESH_CONTINUATION_PENDING_BOUND_MS = 10 * 60_000;
 export const FRESH_CONTINUATION_PROGRESS_BOUND_MS = 15 * 60_000;
 /** Saved-work recovery that is running and advancing keeps its own budget. */
 export const FRESH_CONTINUATION_SAVED_WORK_BOUND_MS = 30 * 60_000;
-/**
- * One deadline per interruption of a native run, across server generations:
- * restart-recovery claims that keep finding no provider progress since the
- * interruption began stop resuming the session after this long, and the run
- * ends for this fallback to continue in isolation. Same cap as exact recovery
- * above, so the two cannot drift (native-restart-recovery.ts).
- */
 export const NATIVE_INTERRUPTION_NO_PROGRESS_DEADLINE_MS = FRESH_CONTINUATION_PROGRESS_BOUND_MS;
 const EXACT_RECOVERY_RECHECK_MS = 60_000;
 

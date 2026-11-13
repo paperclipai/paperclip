@@ -4077,7 +4077,6 @@ process.on("SIGTERM", () => child.kill("SIGTERM"));
         db: fixture.db, controller: successor, restartKind: "hard", runIds: [fixture.runId], now: at,
       });
       if (disposition?.kind === "resume_dead_runner") {
-        // The successor's server is replaced in turn (a swap every 7 minutes).
         await fixture.db.update(nativeRunFinalizations).set({ controllerBootId: randomUUID(), controllerPid: 2_000_000_001 })
           .where(eq(nativeRunFinalizations.runId, fixture.runId));
       }
