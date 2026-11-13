@@ -998,6 +998,7 @@ export function recoveryService(
     settleLostRunProcess?: (scope: { companyId: string; runId: string; onDeferredDeadline?: (at: number) => void }) => Promise<unknown>;
     beforeOrphanedRunTerminalWrite?: (runId: string) => Promise<void>;
     beforeStaleLockClear?: (issueId: string) => Promise<void>;
+    afterStrandedLatestRunRead?: (input: { issueId: string; runId: string | null }) => Promise<void>;
   },
 ) {
   const issuesSvc = issueService(db);
@@ -4835,6 +4836,7 @@ export function recoveryService(
       }
 
       let latestRun = await getLatestIssueRun(issue.companyId, issue.id);
+      await deps.afterStrandedLatestRunRead?.({ issueId: issue.id, runId: latestRun?.id ?? null });
       // The run's own executor still settles it: it schedules the bounded retry
       // and releases the claim itself. Escalating in that window clears the
       // claim the retry needs. Re-check once its controller lease lapses.
@@ -4974,6 +4976,10 @@ export function recoveryService(
           issue.status === "in_review" ? agentId : null,
         )
       ) {
+        result.skipped += 1;
+        continue;
+      }
+      if (issue.status !== "in_review" && latestRun && !isTerminalIssueRun(latestRun)) {
         result.skipped += 1;
         continue;
       }

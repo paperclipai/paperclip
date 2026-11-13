@@ -134,6 +134,18 @@ suite("a person's Retry while a continuation waits for delivery", () => {
     expect((await taskRuns(f)).map(row => row.id)).toEqual([run.id]);
   }, 60_000);
 
+  it.each(KINDS)("moves a recorded continuation forward as the one run when delivery has not happened yet (%s)", async kind => {
+    const f = await pendingContinuation(kind);
+    await occupySlot();
+    const receipt = await requestTaskRetry({ db, companyId, issueId: f.issueId, actorId: userId, observedRunId: f.runId,
+      idempotencyKey: randomUUID(), actorSource: "local_implicit", retryAction: "move_forward" });
+    expect(receipt).toMatchObject({ accepted: true });
+    await heartbeatService(db).resumeTaskRetry(companyId, receipt.requestId!);
+    const run = await expectSingleContinuationRun(f, receipt.requestId!);
+    await deliver();
+    expect((await taskRuns(f)).map(row => row.id)).toEqual([run.id]);
+  }, 60_000);
+
   it.each(KINDS)("answers a Retry saved before delivery with the delivered continuation, never a second run (%s)", async kind => {
     const f = await pendingContinuation(kind);
     await occupySlot();
