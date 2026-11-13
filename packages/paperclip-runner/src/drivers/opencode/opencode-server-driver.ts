@@ -578,7 +578,7 @@ class OpenCodeHarnessSession implements HarnessSession {
   #completionSettlement: Promise<void> | null = null;
   #turnStartSourceSeq = 0;
   #turnReasoningMode: OpenCodeReasoningMode = "default";
-  #emptyResponseRecovery: { turnId: string; priorMessages: Set<string>; responseStarted: boolean; responseFinished: boolean } | null = null;
+  #emptyResponseRecovery: { turnId: string; attempt: 1 | 2; priorMessages: Set<string>; responseStarted: boolean; responseFinished: boolean } | null = null;
   #emptyResponseAckTimer: ReturnType<typeof setTimeout> | undefined;
   #interruptedTurnId: string | null = null;
   #pendingToolCalls = 0;
@@ -885,24 +885,45 @@ class OpenCodeHarnessSession implements HarnessSession {
         this.#armEmptyResponseAckTimer(turnId, "OpenCode became idle without completing its requested final response.");
       return true;
     }
-    if (recovery) {
-      this.#failEmptyResponse(turnId, "OpenCode ended without a final answer or accepted completion report after one correction.");
+    if (recovery?.attempt === 1 && this.#lastNonTerminalToolSourceSeq > this.#turnStartSourceSeq) {
+      // The turn already did real tool work, so the person must get an
+      // answer, not a failed run. Some hosts drop a tool-only response (the
+      // completion call) and return nothing, so the last request asks for
+      // plain text, which needs no tool call to arrive.
+      this.#requestFinalResponse(turnId, 2);
       return true;
     }
-    this.#emptyResponseRecovery = { turnId, priorMessages: new Set(this.#messageRoles.keys()), responseStarted: false, responseFinished: false };
+    if (recovery) {
+      this.#failEmptyResponse(turnId, `OpenCode ended without a final answer or accepted completion report after ${recovery.attempt === 1 ? "one correction" : "two corrections"}.`);
+      return true;
+    }
+    this.#requestFinalResponse(turnId, 1);
+    return true;
+  }
+
+  /**
+   * Ask for the final response after an empty completion. A turn makes at
+   * most two such requests, and the second only after real tool work.
+   */
+  #requestFinalResponse(turnId: string, attempt: 1 | 2): void {
+    this.#emptyResponseRecovery = { turnId, attempt, priorMessages: new Set(this.#messageRoles.keys()), responseStarted: false, responseFinished: false };
     for (const part of this.#completedTextParts)
       if (this.#echoesReasoning(part.text, true)) this.#reasoningEchoPartIds.add(part.partId);
     this.#reasoningTexts.clear();
-    this.#emit("harness.diagnostic", { code: "opencode_empty_response_correction", message: "Requesting one final response after an empty OpenCode completion." }, { turnId });
+    this.#emit("harness.diagnostic", attempt === 1
+      ? { code: "opencode_empty_response_correction", message: "Requesting one final response after an empty OpenCode completion." }
+      : { code: "opencode_empty_response_text_correction", message: "Requesting a plain-text final answer after the correction also came back empty." }, { turnId });
     this.#armEmptyResponseAckTimer(turnId, "OpenCode did not start its requested final response.");
     const opening = this.#turnHitOutputLimit(turnId)
       ? "Your previous response reached the output limit and was discarded as incomplete."
       : this.#lastToolCallMarkupSourceSeq > this.#turnStartSourceSeq
         ? "Your previous response wrote a tool call as plain text, so the tool did not run. Call tools only through the tool-calling interface, never as text."
         : "Your response ended without a user-visible final answer or an accepted completion report.";
-    void this.#submitPrompt(`${opening} Continue this same request from the work already done. Give the user a concise final answer and submit paperclip_finish (or paperclip_block when blocked) with the current completion contract. Do not repeat completed actions.`, "disabled")
+    const prompt = attempt === 1
+      ? `${opening} Continue this same request from the work already done. Give the user a concise final answer and submit paperclip_finish (or paperclip_block when blocked) with the current completion contract. Do not repeat completed actions.`
+      : "Your last response was empty again. Reply now with a short plain-text final answer for the user that says what you did and what, if anything, is left. Do not call any tools and do not repeat completed actions.";
+    void this.#submitPrompt(prompt, "disabled")
       .catch(() => this.#failEmptyResponse(turnId, "OpenCode could not request a final response after an empty completion."));
-    return true;
   }
 
   async interrupt(input: { turnId?: string; reason?: string }): Promise<void> {
