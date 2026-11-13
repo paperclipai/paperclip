@@ -114,7 +114,7 @@ describe("agent commentary browsing", () => {
     });
     await reader.setVote(companyId, id, sql`true`, "operator", true, { actorType: "user", actorId: "operator" });
     const voteHistory = async () => (await activityService(db).list({
-      companyId, entityType: "agent_commentary", entityId: id, readCondition: eq(issues.id, visibleTaskId),
+      companyId, entityType: "agent_commentary", entityId: id, readCondition: sql<boolean>`${issues.id} = ${visibleTaskId}`,
     })).map((row) => row.action);
     expect(await voteHistory()).toEqual([]);
     await db.delete(issues).where(eq(issues.id, taskId));
