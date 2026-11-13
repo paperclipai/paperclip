@@ -73,6 +73,7 @@ export interface Routine {
   id: string;
   companyId: string;
   projectId: string | null;
+  configurationWarnings?: import("../runner-configuration-warnings.js").AgentConfigurationWarning[];
   folderId?: string | null;
   goalId: string | null;
   parentIssueId: string | null;
