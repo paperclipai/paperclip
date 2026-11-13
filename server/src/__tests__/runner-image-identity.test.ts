@@ -1,4 +1,4 @@
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -181,6 +181,33 @@ describe("Runner image identity", () => {
       rmSync(path.join(root, "packages/paperclip-runner/styles.css"));
       expect(digestOf(root)).not.toBe(before);
     });
+
+    it("keeps out of the build context every directory a build script or a Vite configuration of a package among the identity's inputs writes its output into, so a tree with a local build and a clean checkout of one commit give the build the same files", () => {
+      const rules = readFileSync(path.join(repoRoot, ".dockerignore"), "utf8").split(/\r?\n/).filter((rule) => rule && !rule.startsWith("#"));
+      const lastRuleFor = (target: string) => rules.filter((rule) => target.split("/").some((_, index, segments) =>
+        path.matchesGlob(segments.slice(0, index + 1).join("/"), rule.replace(/^!/, "").replace(/^\//, "")))).at(-1);
+      const outputs = RUNNER_IMAGE_CONTEXT_INPUTS.filter((input) => existsSync(path.join(repoRoot, input, "package.json"))).flatMap((input) => {
+        const manifest = JSON.parse(readFileSync(path.join(repoRoot, input, "package.json"), "utf8"));
+        const scripts = Object.values(manifest.scripts as Record<string, string>).join("\n");
+        const emitted = [...scripts.matchAll(/\btsc -p (\S+)(?!\S| --noEmit)/g)].map((match) =>
+          JSON.parse(readFileSync(path.join(repoRoot, input, match[1]), "utf8")).compilerOptions.outDir as string);
+        const compiled = [...scripts.matchAll(/--manifest-path (\S+)\/Cargo\.toml/g)].map((match) => `${match[1]}/target`);
+        const bundled = readdirSync(path.join(repoRoot, input)).filter((name) => /^vite\..*config\.[cm]?[jt]s$/.test(name)).flatMap((name) =>
+          [...readFileSync(path.join(repoRoot, input, name), "utf8").matchAll(/\boutDir:\s*(?:resolve\(packageRoot,\s*)?"([^"]+)"/g)].map((match) => match[1]));
+        return [...emitted, ...compiled, ...bundled].map((output) => path.posix.join(input, output));
+      });
+      expect(outputs).toEqual(expect.arrayContaining([
+        "packages/paperclip-eval-kernel/dist",
+        "packages/paperclip-runner/dist",
+        "packages/paperclip-runner/dist-browser",
+        "packages/paperclip-runner/dist-issue-thread",
+        "packages/paperclip-runner/dist-scenarios",
+        "packages/paperclip-runner/dist-sdk",
+        "packages/paperclip-runner/dist-standalone",
+        "packages/paperclip-runner/runner/target",
+      ]));
+      for (const output of new Set(outputs)) expect(lastRuleFor(output)?.startsWith("!"), output).toBe(false);
+    });
   });
 });
 
@@ -189,17 +216,50 @@ describe("Runner image identity", () => {
  * the whole of what the build reads only while these three rules hold.
  */
 describe("Runner image stages", () => {
-  const stages = [...dockerfile.matchAll(/^FROM (\S+)(?: AS (\S+))?$/gm)].map((match, index, all) => ({
-    from: match[1],
-    name: match[2] ?? "",
-    lines: dockerfile.slice(match.index, all[index + 1]?.index ?? dockerfile.length).split("\n").filter((line) => !/^\s*#/.test(line)),
+  // BuildKit accepts an instruction in any case and with any indentation, and
+  // FROM with flags. A stage starts wherever BuildKit starts one; the first
+  // rule below then allows only the spelling the other rules can read.
+  const stagesOf = (text: string) => [...text.matchAll(/^[ \t]*from[ \t].*$/gim)].map((match, index, all) => ({
+    from: /^FROM (\S+)(?: AS \S+)?$/.exec(match[0])?.[1] ?? "",
+    // The name BuildKit gives the stage, however the line is spelt.
+    name: (/\sas\s+(\S+)\s*$/i.exec(match[0])?.[1] ?? "").toLowerCase(),
+    lines: text.slice(match.index, all[index + 1]?.index ?? text.length).split("\n").filter((line) => !/^\s*#/.test(line)),
   }));
+  type Stage = ReturnType<typeof stagesOf>[number];
+  /** The lines of a stage that read something and are not in the one spelling these rules read. */
+  const misspelt = (stage: Stage) => stage.lines.filter((line, index) => (index === 0
+    // No lowercase keyword, no indentation, no flag on FROM.
+    ? !/^FROM \S+ AS runner-artifacts[a-z-]*$/.test(line)
+    // No ADD or ONBUILD, no other flag, and no source on a continuation line.
+    : /^\s*(?:from|copy|add|onbuild)(?:\s|$)/i.test(line)
+      && !/^COPY (?:--link )?(?:--from=runner-artifacts[a-z-]* )?[^-\s]\S*(?: [^\s\\]+)+$/.test(line)));
+  const stages = stagesOf(dockerfile);
   const names = stages.map((stage) => stage.name);
   const runner = stages.filter((stage) => stage.name.startsWith("runner-artifacts"));
-  const copies = (stage: (typeof stages)[number]) => stage.lines.filter((line) => /^COPY\s/.test(line));
+  const copies = (stage: Stage) => stage.lines.filter((line) => /^COPY\s/.test(line));
+
+  it("spell every FROM and COPY the one way these rules read, and use no ADD or ONBUILD", () => {
+    expect(runner.length).toBeGreaterThan(3);
+    for (const stage of runner) expect(misspelt(stage), stage.name).toEqual([]);
+  });
+
+  it.each([
+    ["a lowercase stage keyword", "FROM scratch as runner-artifacts-extra\nCOPY secrets /\n"],
+    ["a lowercase from", "from scratch AS runner-artifacts-extra\n"],
+    ["a flag on FROM", "FROM --platform=linux/amd64 node:24 AS runner-artifacts-extra\n"],
+    ["a lowercase copy", "FROM scratch AS runner-artifacts-extra\ncopy secrets /\n"],
+    ["an indented COPY", "FROM scratch AS runner-artifacts-extra\n  COPY secrets /\n"],
+    ["an ADD in any case", "FROM scratch AS runner-artifacts-extra\n add secrets /\n"],
+    ["a COPY continued on the next line", "FROM scratch AS runner-artifacts-extra\nCOPY package.json \\\n  secrets /\n"],
+    ["a COPY with another flag", "FROM scratch AS runner-artifacts-extra\nCOPY --parents secrets /\n"],
+    ["an ONBUILD trigger", "FROM scratch AS runner-artifacts-extra\nONBUILD COPY secrets /\n"],
+  ])("would catch %s in a stage BuildKit reads as one of the Runner's", (_label, text) => {
+    const added = stagesOf(text).filter((stage) => stage.name.startsWith("runner-artifacts"));
+    expect(added).toHaveLength(1);
+    expect(misspelt(added[0])).not.toEqual([]);
+  });
 
   it("start only from each other, from scratch, or from an image pinned by digest", () => {
-    expect(runner.length).toBeGreaterThan(3);
     for (const stage of runner) {
       if (stage.from === "scratch" || names.includes(stage.from)) {
         expect(stage.from === "scratch" || stage.from.startsWith("runner-artifacts"), stage.name).toBe(true);
@@ -233,10 +293,23 @@ describe("Runner image stages", () => {
     expect([...sources].sort()).toEqual([...RUNNER_IMAGE_CONTEXT_INPUTS].sort());
   });
 
-  it("end in a file tree, and leave the default target and the application stages alone", () => {
-    const target = runner.find((stage) => stage.name === "runner-artifacts")!;
-    expect(target.from).toBe("scratch");
-    expect(copies(target)).toEqual(["COPY --from=runner-artifacts-build /out/ /"]);
+  it("end in two file trees, the full one being the slim one plus the transport layers", () => {
+    // Each COPY --link is one layer that does not depend on the layers under
+    // it. The slim variant is the first two; the full variant starts from it,
+    // so it has the same two layers and then the transport archives.
+    const slim = runner.find((stage) => stage.name === "runner-artifacts-slim")!;
+    const full = runner.find((stage) => stage.name === "runner-artifacts")!;
+    const instructions = (stage: typeof slim) => stage.lines.filter((line) => /^[A-Z]+\s/.test(line)).slice(1);
+    expect(slim.from).toBe("scratch");
+    expect(instructions(slim)).toEqual([
+      "COPY --link --from=runner-artifacts-build /out-large/ /",
+      "COPY --link --from=runner-artifacts-build /out/ /",
+    ]);
+    expect(full.from).toBe("runner-artifacts-slim");
+    expect(instructions(full)).toEqual([
+      "COPY --link --from=runner-artifacts-build /out-archives/ /",
+      "COPY --link --from=runner-artifacts-build /out-transport/ /",
+    ]);
     // `docker build .` builds the last stage.
     expect(names.at(-1)).toBe("cloud");
     for (const stage of stages) {

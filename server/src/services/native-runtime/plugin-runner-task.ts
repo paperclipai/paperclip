@@ -343,6 +343,8 @@ export function createPluginRunnerTaskOwner(input: {
           if (identity) await input.onRetired?.(identity);
         }
       },
+      // The Runner is about to exit (its close suspend completed), as on release.
+      quiesce: () => { outbound?.quiesce(); },
       release: async (reason?: "detach") => {
         registrationReleased = true;
         if (generation === registrationGeneration) released = true;

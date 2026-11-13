@@ -5,8 +5,8 @@ import { z } from "zod";
 import { readNativeWorkspaceSyncReference, type NativeWorkspaceSyncReference } from "./native-runtime/native-workspace-sync.js";
 import { readMigratedLegacyWorkspaceSource } from "./legacy-workspace-recovery-migration.js";
 import { readSnapshot } from "./workspace-recovery-snapshot.js";
-import { exhaustedSystemRecoveryAction, readSystemRecovery } from "./system-recovery-state.js";
-import { verifiedWorkspaceSnapshotReuse } from "./remote-workspace-snapshot-reuse-receipt.js";
+import { exhaustedSystemRecoveryAction, isCapturePolicyRearmable, readSystemRecovery } from "./system-recovery-state.js";
+import { verifiedUnchangedRestoredSnapshot, verifiedWorkspaceSnapshotReuse } from "./remote-workspace-snapshot-reuse-receipt.js";
 import { isAbandonedPreparedRemoteWorkspace } from "./remote-workspace-abandoned-preparation.js";
 
 export const workspaceRecoverySchema = z.object({
@@ -60,6 +60,17 @@ export function recoveredWorkMessage(runStatus: string | null | undefined, retry
   if (retryOffered) return RECOVERED_WORK_RETRY_MESSAGE;
   return runStatus === "failed" || runStatus === "timed_out" ? "Saved work recovered."
     : "Saved work recovered. Send a message to continue.";
+}
+
+export function savedWorkOffersRetry(state: { status: string; canRetry: boolean } | undefined,
+  runStatus: string | null | undefined, workspaceRepairRequired: boolean, evidence: Record<string, unknown>) {
+  if (!state || (runStatus !== "failed" && runStatus !== "timed_out")) return false;
+  if (state.status === "recovered") return !workspaceRepairRequired;
+  const ownerRecovery = evidence.workspaceOwnerRecovery as { state?: unknown } | undefined;
+  const recovery = readSystemRecovery(evidence);
+  return state.canRetry && !(ownerRecovery?.state === "operator_required" && evidence.workspaceOwnerStop == null)
+    && recovery?.state === "exhausted" && !recovery.freshAttemptRunId && recovery.failure?.retryClass !== "recheck_evidence"
+    && !isCapturePolicyRearmable(recovery);
 }
 
 export function workspaceRecoveryDisplay(evidence: Record<string, unknown>, runId: string | null,
@@ -175,7 +186,8 @@ export async function verifiedWorkspaceRepairReceipt(db: Db, run: Pick<typeof he
     ));
     if (!snapshot || snapshot.sha256 !== proof.sha256 || snapshot.generation !== proof.generation) return null;
     if ((snapshot.epoch !== remote.epoch || snapshot.sourceRunId !== run.id)
-      && !await verifiedWorkspaceSnapshotReuse(db, { companyId: run.companyId, issueId, runId: run.id, reference: remote, snapshot })) return null;
+      && !await verifiedWorkspaceSnapshotReuse(db, { companyId: run.companyId, issueId, runId: run.id, reference: remote, snapshot })
+      && !await verifiedUnchangedRestoredSnapshot(db, { companyId: run.companyId, issueId, runId: run.id, reference: remote, snapshot })) return null;
   }
   const [action] = await db.select({ evidence: issueRecoveryActions.evidence }).from(issueRecoveryActions).where(and(
     eq(issueRecoveryActions.companyId, run.companyId), eq(issueRecoveryActions.sourceIssueId, issueId),
