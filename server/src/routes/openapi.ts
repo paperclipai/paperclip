@@ -1612,6 +1612,12 @@ const BOARD_ONLY_OPERATIONS = new Set([
 ]);
 
 const INSTANCE_ADMIN_OPERATIONS = new Set([
+  "GET /api/companies/{companyId}/tailscale-connections",
+  "POST /api/companies/{companyId}/tailscale-connections",
+  "GET /api/companies/{companyId}/tailscale-connections/{connectionId}/devices",
+  "DELETE /api/companies/{companyId}/tailscale-connections/{connectionId}",
+  "POST /api/companies/{companyId}/tailscale-connections/{connectionId}/pairing",
+  "GET /api/tools/oauth/tailscale/callback",
   "POST /api/companies",
   "POST /api/plugins/install",
   "POST /api/instance/database-backups",
@@ -9549,6 +9555,74 @@ registry.registerPath({
     body: jsonBody(workspaceRuntimeControlTargetSchema),
   },
   responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized },
+});
+
+const tailscaleCompanyParams = z.object({ companyId: z.string().uuid() });
+const tailscaleConnectionParams = tailscaleCompanyParams.extend({ connectionId: z.string().uuid() });
+const tailscaleConnectionResponse = z.object({
+  id: z.string().uuid(), companyId: z.string().uuid(), name: z.string(),
+  status: z.enum(["pending", "connecting", "connected", "disconnected"]),
+}).strict();
+const tailscaleErrors = { 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 404: r.notFound, 422: r.unprocessable };
+
+registry.registerPath({
+  method: "get", path: "/api/companies/{companyId}/tailscale-connections", tags: ["tailscale"],
+  summary: "List company Tailscale connections",
+  description: "Requires an instance administrator with company access, or local implicit board access. Returns connection metadata without credentials or node state.",
+  request: { params: tailscaleCompanyParams },
+  responses: { 200: r.ok(z.array(tailscaleConnectionResponse)), ...tailscaleErrors },
+});
+
+registry.registerPath({
+  method: "post", path: "/api/companies/{companyId}/tailscale-connections", tags: ["tailscale"],
+  summary: "Start Tailscale network authorization",
+  description: "Requires an instance administrator with company access, or local implicit board access. Starts consent for a new connection or replaces consent for connectionId. An instance without a Cloud broker identity first returns an enrollment URL without a connection. Hosted authorization can return a signed Cloud handoff.",
+  request: { params: tailscaleCompanyParams, body: jsonBody(z.object({
+    name: z.string().trim().min(1).max(100).default("My tailnet"), connectionId: z.string().uuid().optional(),
+  }).strict()) },
+  responses: { 201: r.ok(z.object({
+    connection: tailscaleConnectionResponse.optional(), authorizationUrl: z.string().url(), expiresAt: z.string().datetime(),
+    handoff: z.object({ kind: z.literal("paperclip_cloud"), session: z.string().min(16).max(512).regex(/^[A-Za-z0-9_-]+$/) }).strict().optional(),
+  }).strict()), ...tailscaleErrors },
+});
+
+registry.registerPath({
+  method: "get", path: "/api/companies/{companyId}/tailscale-connections/{connectionId}/devices", tags: ["tailscale"],
+  summary: "List machines on a connected tailnet",
+  description: "Requires an instance administrator with company access, or local implicit board access. Resolves devices through this connection's private network client.",
+  request: { params: tailscaleConnectionParams },
+  responses: { 200: r.ok(z.array(z.object({
+    id: z.string(), name: z.string(), hostname: z.string(), address: z.string(), os: z.string(), online: z.boolean(),
+  }).strict())), ...tailscaleErrors },
+});
+
+registry.registerPath({
+  method: "delete", path: "/api/companies/{companyId}/tailscale-connections/{connectionId}", tags: ["tailscale"],
+  summary: "Disconnect a Tailscale network",
+  description: "Requires an instance administrator with company access, or local implicit board access. Invalidates pending consent and stops the private client. Keeps the saved connection record and does not remove the target machine from its tailnet.",
+  request: { params: tailscaleConnectionParams },
+  responses: { 200: r.ok(tailscaleConnectionResponse), ...tailscaleErrors },
+});
+
+registry.registerPath({
+  method: "post", path: "/api/companies/{companyId}/tailscale-connections/{connectionId}/pairing", tags: ["tailscale"],
+  summary: "Prepare an SSH machine pairing command",
+  description: "Requires an instance administrator with company access, or local implicit board access. Generates a fresh SSH key, stores its private half in the company vault, and returns its secret ID and public install command.",
+  request: { params: tailscaleConnectionParams, body: jsonBody(z.object({
+    deviceId: z.string().min(1).max(256), port: z.number().int().min(1).max(65535).default(22),
+  }).strict()) },
+  responses: { 200: r.ok(z.object({ privateKeySecretId: z.string().uuid(), publicKey: z.string(), command: z.string() }).strict()), ...tailscaleErrors },
+});
+
+registry.registerPath({
+  method: "get", path: "/api/tools/oauth/tailscale/callback", tags: ["tailscale"],
+  summary: "Complete Tailscale network authorization",
+  description: "Requires the initiating board operator to retain instance-admin and company access. Consumes user-bound consent state and an opaque broker claim. Redirects to the connector page without returning enrollment credentials.",
+  request: { query: z.object({ state: z.string().min(1).max(128), claim_id: z.string().max(256).optional(), error: z.string().max(128).optional() }) },
+  responses: { 303: { description: "Return to the company Tailscale connector", headers: {
+    Location: { schema: { type: "string" } }, "Cache-Control": { schema: { type: "string", enum: ["no-store"] } },
+    "Referrer-Policy": { schema: { type: "string", enum: ["no-referrer"] } },
+  } }, ...tailscaleErrors },
 });
 
 // ─── Environments ─────────────────────────────────────────────────────────────
