@@ -1,4 +1,4 @@
-import { safeErrorCauseCode } from "./safe-error-cause.js";
+import { safeErrorCauseCode, safeErrorReasonCode } from "./safe-error-cause.js";
 import { AGENT_OBSERVABILITY_ENV_KEYS } from "../drivers/agent-observability.js";
 import { configuredEnvironment } from "../configured-environment.js";
 import { spawn } from "node:child_process";
@@ -4469,7 +4469,7 @@ export class DurablePrpControlPlane {
       if (error instanceof NativeSessionProtocolIntegrityError) {
         this.#failProtocolIntegrity(connection, error);
       } else {
-        this.#eventCommitFailed(connection, safeErrorCauseCode(error), sourceSeq);
+        this.#eventCommitFailed(connection, safeErrorReasonCode(error), sourceSeq);
       }
       return;
     }
