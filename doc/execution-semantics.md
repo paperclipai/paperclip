@@ -6062,7 +6062,7 @@ can be accepted without a terminal acknowledgement. The selected run and its
 history refresh after either outcome. Stop does not resume the provider or change
 a manual task hold.
 
-### Native session diagnostic ownership
+### Provider-pack admission during restart recovery
 
 Provider-pack admission keeps a digest-bound historical proof when a controller
 claim changes its current admission to pending. If a restart or a failed recovery
@@ -6075,6 +6075,8 @@ it records its decision. This adds no background work or provider replay.
 Previous-release verified receipts seed this proof on their first new claim.
 Older pending or unknown records without it remain unverified, as before. Older
 readers ignore the added profile field and retain their existing refusal behavior.
+
+### Native session diagnostic ownership
 
 Native session diagnostics follow the current execution's recorder epoch, including
 warm-session reuse. Active diagnostics enter the recorder synchronously. Execution
