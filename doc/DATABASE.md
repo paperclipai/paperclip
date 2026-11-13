@@ -1101,9 +1101,10 @@ of its last read until its next read: the socket chunk, or the whole buffer of
 its largest recent message. At 340 open connections that each read a 1 MB row,
 this held about 320 MB of `external` memory. The memory is outside the
 JavaScript heap. `packages/db/src/postgres-receive-buffer.test.ts` checks that
-the buffer is released and that split, exact-boundary, and many-message results
-are reassembled correctly. Measure it with
-`node --expose-gc --import tsx packages/db/scripts/benchmark-postgres-receive-buffer.ts`
+the buffer is released. It also checks that results are reassembled correctly
+when socket chunks end exactly at message boundaries, when they split messages
+in the middle, and when the operating system chooses the chunks. Measure it with
+`pnpm --filter @paperclipai/db exec node --expose-gc --import tsx scripts/benchmark-postgres-receive-buffer.ts`
 (`CONNECTIONS` and `ROW_BYTES` are optional).
 
 Trusted-header actor synchronization retries transient connection failures,

@@ -1,6 +1,48 @@
 import assert from "node:assert/strict";
 import { createRequire } from "node:module";
+import net from "node:net";
 import { setImmediate } from "node:timers/promises";
+
+const mode = process.env.CHUNKING ?? "socket";
+const databasePort = Number(new URL(process.env.TEST_DATABASE_URL).port || 5432);
+const chunking = { exactEnds: 0, splitInside: 0 };
+const parsers = new WeakMap();
+const emit = net.Socket.prototype.emit;
+net.Socket.prototype.emit = function (event, ...args) {
+  if (event !== "data" || mode === "socket" || this.remotePort !== databasePort) return emit.call(this, event, ...args);
+  const chunk = args[0];
+  const state = parsers.get(this) ?? { header: Buffer.alloc(0), remaining: 0 };
+  parsers.set(this, state);
+  const cuts = [];
+  let offset = 0;
+  while (offset < chunk.length) {
+    if (state.remaining === 0) {
+      const take = Math.min(5 - state.header.length, chunk.length - offset);
+      state.header = Buffer.concat([state.header, chunk.subarray(offset, offset + take)]);
+      offset += take;
+      if (state.header.length < 5) break;
+      state.remaining = state.header.readUInt32BE(1) - 4;
+      state.header = Buffer.alloc(0);
+      if (mode === "straddle" && state.remaining > 1) {
+        const middle = offset + Math.min(Math.floor(state.remaining / 2), chunk.length - offset);
+        if (middle > offset && middle < chunk.length) { cuts.push(middle); chunking.splitInside += 1; }
+      }
+    }
+    const take = Math.min(state.remaining, chunk.length - offset);
+    offset += take;
+    state.remaining -= take;
+    if (state.remaining === 0 && state.header.length === 0) {
+      cuts.push(offset);
+      chunking.exactEnds += 1;
+    }
+  }
+  let start = 0;
+  for (const cut of [...new Set(cuts)].sort((a, b) => a - b).concat(chunk.length)) {
+    if (cut > start) emit.call(this, "data", chunk.subarray(start, cut));
+    start = Math.max(start, cut);
+  }
+  return true;
+};
 
 const concat = Buffer.concat;
 const received = [];
@@ -58,6 +100,8 @@ try {
 
   const [after] = await sql.unsafe("select 1 as value");
   assert.equal(after.value, 1);
+  if (mode === "message") assert.ok(chunking.exactEnds > 20_000, "chunks must end exactly at message boundaries");
+  if (mode === "straddle") assert.ok(chunking.splitInside > 20_000, "chunks must split messages in the middle");
   console.log("released");
 } finally {
   await sql.end({ timeout: 1 });

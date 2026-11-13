@@ -21,13 +21,15 @@ describe.skipIf(!support.supported)("postgres receive buffer", () => {
   afterAll(async () => { await database?.cleanup(); });
 
   for (const format of ["esm", "cjs"]) {
-    it(`${format}: reassembles split results and releases the buffer once the connection is idle`, async () => {
-      const { stdout, stderr } = await run(process.execPath, ["--expose-gc", fixture], {
-        env: { ...process.env, TEST_DATABASE_URL: database.connectionString, DRIVER_FORMAT: format },
-        timeout: 30_000,
-      });
-      expect(stdout.trim()).toBe("released");
-      expect(stderr).toBe("");
-    }, 40_000);
+    for (const chunking of ["socket", "message", "straddle"]) {
+      it(`${format}: reassembles ${chunking}-chunked results and releases the buffer once the connection is idle`, async () => {
+        const { stdout, stderr } = await run(process.execPath, ["--expose-gc", fixture], {
+          env: { ...process.env, TEST_DATABASE_URL: database.connectionString, DRIVER_FORMAT: format, CHUNKING: chunking },
+          timeout: 60_000,
+        });
+        expect(stdout.trim()).toBe("released");
+        expect(stderr).toBe("");
+      }, 70_000);
+    }
   }
 });
