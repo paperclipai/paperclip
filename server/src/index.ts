@@ -1345,7 +1345,9 @@ async function startServerWithDatabaseTeardown(
   // left `running`, or a queued retry/continuation, keep waiting for the full
   // queued-run pass registered after native restart recovery below.
   if (heartbeat && config.heartbeatSchedulerEnabled && !isWarmStandby()) {
+    const reattachHeartbeat = heartbeat;
     registerReattachPhaseWork(deliveryWork, db as any, {
+      claim: runIds => reattachHeartbeat.recoverNativeRunsAfterRestart(new Date(), runIds),
       onEnd: summary => {
         if (!summary.gatedStarts || heartbeatSchedulerStopped) return;
         trackHeartbeatSchedulerWork(accountingHeartbeat.resumeQueuedRunsAfterDrain().catch(err => {

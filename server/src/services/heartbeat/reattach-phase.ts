@@ -93,6 +93,7 @@ type ReattachWatch = {
   leases: Map<string, PreviousControllerRunLease>;
   worker: ReattachWorker | null;
   stopListening: () => void;
+  claim?: (runIds: string[]) => Promise<unknown>;
 };
 
 let watch: ReattachWatch | null = null;
@@ -105,8 +106,12 @@ function observeLeases(current: ReattachWatch, rows: PreviousControllerRunLease[
   current.leases = new Map(rows.map(row => [row.runId, row]));
   const unjoined = rows.filter(row => !hasJoinedReattachPhase(row.runId));
   const claimable = unjoined.map(row => claimableReattachRun(row, now)).filter((run): run is ClaimableReattachRun => run !== null);
-  joinReattachPhase(claimable, {}, now);
+  const joined = joinReattachPhase(claimable, {}, now);
   current.watching = unjoined.length > claimable.length;
+  if (joined.length > 0 && current.claim) {
+    void current.claim(joined)
+      .catch(error => logger.warn({ err: error, runIds: joined }, "reattach phase could not start the claim of handed-over runs"));
+  }
 }
 
 export function nextReattachLeaseDeadline(leases: Iterable<PreviousControllerRunLease>, now = Date.now()): number | null {
@@ -199,6 +204,7 @@ export function registerReattachPhaseWork(
     recheckMs?: number;
     bootId?: string;
     onEnd?: Parameters<typeof onReattachPhaseEnd>[0];
+    claim?: (runIds: string[]) => Promise<unknown>;
   } = {},
 ): ReattachWorker | null {
   const capMs = options.capMs ?? reattachPhaseCapMs();
@@ -206,7 +212,7 @@ export function registerReattachPhaseWork(
   if (watch) void stopReattachWatch();
   enableReattachPhase(capMs);
   const current: ReattachWatch = { db, bootId: options.bootId ?? currentControllerBootId(), initialized: false,
-    notified: false, watching: false, leases: new Map(), worker: null,
+    notified: false, watching: false, leases: new Map(), worker: null, claim: options.claim,
     stopListening: options.onEnd ? onReattachPhaseEnd(options.onEnd) : () => undefined };
   watch = current;
   const release = () => {

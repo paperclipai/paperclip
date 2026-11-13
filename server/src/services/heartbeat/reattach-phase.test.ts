@@ -508,6 +508,24 @@ describe.skipIf(!support.supported)("reattach phase discovery", () => {
       settleReattachRun(live, "reached");
     });
 
+    it("starts the claim of handed-over runs within a second of the hand-over notification", async () => {
+      await retireEarlierRuns();
+      const { run } = await seed("RPO");
+      const first = await run("running", liveLease());
+      const second = await run("running", liveLease());
+      const claimed: Array<{ runIds: string[]; at: number }> = [];
+      await startReattachPhase(db, { capMs: 60_000, bootId: "incoming-boot", recheckMs: 20,
+        claim: async runIds => { claimed.push({ runIds, at: Date.now() }); } });
+      await sleep(100);
+      expect(claimed).toEqual([]);
+      const handedOverAt = Date.now();
+      await handOver([first, second]);
+      expect(claimed.flatMap(entry => entry.runIds).sort()).toEqual([first, second].sort());
+      expect(Math.max(...claimed.map(entry => entry.at)) - handedOverAt).toBeLessThan(1_000);
+      settleReattachRun(first, "reached");
+      settleReattachRun(second, "reached");
+    });
+
     it("does no database work and keeps no deadline on an instance with nothing to reattach", async () => {
       await retireEarlierRuns();
       const select = vi.spyOn(db, "select");
