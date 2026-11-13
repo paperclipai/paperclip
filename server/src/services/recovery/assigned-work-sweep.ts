@@ -66,6 +66,7 @@ export { PENDING_CONTINUATION_BOUND_MS };
 const NON_TERMINAL_RUN_STATUSES = ["queued", "running", "scheduled_retry"];
 const NATIVE_PENDING_RECOVERY_STATES = ["awaiting_evidence", "awaiting_runner_reattach", "resuming_session", "bootstrap_incomplete"];
 const PROVIDER_LIMIT_CAUSES = ["provider_quota", "native_provider_usage_limit"];
+const SCHEDULER_TRANSIENT_RETRY_REASONS = ["transient_failure"];
 
 type IssueRow = Pick<typeof issues.$inferSelect, "id" | "companyId" | "status" | "assigneeAgentId" | "assigneeUserId" | "hiddenAt"
   | "blockedTransitionAt" | "updatedAt" | "unblockDescriptor" | "monitorNextCheckAt" | "conversationAgentId" | "originKind"
@@ -596,7 +597,14 @@ export function assignedWorkSweep(db: Db, deps: AssignedWorkDeps) {
         eq(activityLog.companyId, issue.companyId), eq(activityLog.entityType, "issue"), eq(activityLog.entityId, issue.id),
         eq(activityLog.action, ASSIGNED_WORK_CONTINUED_ACTION),
         gte(activityLog.createdAt, new Date(at.getTime() - CONTINUATION_CAP_WINDOW_MS)))).orderBy(desc(activityLog.createdAt)).limit(64);
-      const allowance = continuationAllowance(recent.map(row => row.createdAt), at);
+      // One cap per task across both owners: the scheduler's bounded transient
+      // retries of this task's runs spend the same hourly allowance, so a
+      // lasting outage is not retried by the scheduler inside every sweep continuation.
+      const transientRetries = await tx.select({ createdAt: heartbeatRuns.createdAt }).from(heartbeatRuns).where(and(
+        eq(heartbeatRuns.companyId, issue.companyId), sql`${heartbeatRuns.contextSnapshot}->>'issueId' = ${issue.id}`,
+        inArray(heartbeatRuns.scheduledRetryReason, SCHEDULER_TRANSIENT_RETRY_REASONS),
+        gte(heartbeatRuns.createdAt, new Date(at.getTime() - CONTINUATION_CAP_WINDOW_MS)))).orderBy(desc(heartbeatRuns.createdAt)).limit(64);
+      const allowance = continuationAllowance([...recent, ...transientRetries].map(row => row.createdAt), at);
       if (!allowance.allowed) return { kind: allowance.capped ? "capped" as const : "spaced" as const, retryAt: allowance.retryAt };
       let restoredTo: Claimed["restoredTo"] = null;
       let restoredStatusVersion: number | null = null;
@@ -627,7 +635,7 @@ export function assignedWorkSweep(db: Db, deps: AssignedWorkDeps) {
           ...(restoredTo ? { status: restoredTo, previousStatus: "blocked" } : {}),
           attempt: recent.length + 1 },
       }, publications);
-      const next = continuationAllowance([at, ...recent.map(row => row.createdAt)], at);
+      const next = continuationAllowance([at, ...[...recent, ...transientRetries].map(row => row.createdAt)], at);
       return { kind: "claimed" as const, activityId: activity.id, publications, verdict, reason: verdict.reason,
         restoredTo, restoredStatusVersion, blockedTransitionAt: current.blockedTransitionAt,
         unblockDescriptor: current.unblockDescriptor, blockedOwnerNotifiedAt: current.blockedOwnerNotifiedAt,
