@@ -497,6 +497,30 @@ describe("repeated identical tool input rejections", () => {
     expect(handler).toHaveBeenCalledOnce();
   });
 
+  it("parses object items sent as JSON text inside arrays, and never parses text items", async () => {
+    const handler = vi.fn(async () => ({ accepted: true }));
+    const diagnostics: string[] = [];
+    const bridge = await startOpenCodeMcpBridge({ handler, onDiagnostic: message => diagnostics.push(message) });
+    bridges.push(bridge);
+    const claim = { contractRevision: "r", objectiveSatisfied: true, criteria: [], remainingWork: [{ description: "Polish copy", blocksCompletion: false }] };
+    const sent = { summary: "s", reportedWorkDisposition: "done", verification: [],
+      evidence: [JSON.stringify({ ref: "doc:plan" })],
+      completionClaim: { ...claim, remainingWork: [JSON.stringify(claim.remainingWork[0])] } };
+    expect((await call(bridge, "a1", sent, "paperclip_finish")).result.isError).toBeUndefined();
+    expect(handler).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ arguments: {
+      ...sent, evidence: [{ ref: "doc:plan" }], completionClaim: claim,
+    } }));
+    const coerced = diagnostics.map(message => JSON.parse(message)).filter(entry => entry.schema === "paperclip.runner.tool-input-coerced/v1");
+    expect(coerced).toEqual([expect.objectContaining({ paths: ["/evidence/0", "/completionClaim/remainingWork/0"] })]);
+
+    const tags = await startOpenCodeMcpBridge({ tools: [{ name: "tag", inputSchema: {
+      type: "object", required: ["labels"], properties: { labels: { type: "array", items: { type: "string" } } },
+    } }], handler });
+    bridges.push(tags);
+    expect((await call(tags, "t1", { labels: ['{"a":1}'] }, "tag")).result.isError).toBeUndefined();
+    expect(handler).toHaveBeenLastCalledWith(expect.objectContaining({ arguments: { labels: ['{"a":1}'] } }));
+  });
+
   it("says that fields with the wrong type arrived instead of saying they did not arrive", async () => {
     const bridge = await startOpenCodeMcpBridge({ handler: async () => ({ accepted: true }) });
     bridges.push(bridge);

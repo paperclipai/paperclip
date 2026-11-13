@@ -711,3 +711,20 @@ describe("runner bridge input coercion", () => {
     expect(handler).toHaveBeenCalledOnce();
   });
 });
+
+describe("runner bridge receipts for coerced input", () => {
+  it("binds the receipt to the arguments as the host sent them, while the handler gets the parsed object", async () => {
+    const receipts: SemanticToolReceipt[] = [];
+    const handler = vi.fn(async () => ({ accepted: true }));
+    const bridge = await startRunnerToolBridge({ captureSemanticReceipt: () => receipt => receipts.push(receipt), handler });
+    bridges.push(bridge);
+    const continuation = { kind: "response_wake", summary: "wait", idempotencyKey: "k" };
+    const raw = { reportedWorkDisposition: "yielded", summary: "Waiting for the reply.", evidence: [], verification: [],
+      completionClaim: { contractRevision: "1", objectiveSatisfied: false, criteria: [], remainingWork: [] }, continuation: JSON.stringify(continuation) };
+    const body = await (await rpc(bridge, { id: 9, method: "tools/call", params: { name: "paperclip_finish", arguments: raw } })).json() as ToolCallBody;
+    expect(handler).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ arguments: { ...raw, continuation } }));
+    expect(receipts).toHaveLength(1);
+    expect(readNativeSemanticReceipt({ contents: body.result.content })).toEqual(receipts[0]);
+    expect(receipts[0]!.inputSha256).toBe(semanticInputSha256(raw));
+  });
+});

@@ -394,7 +394,8 @@ async function handleRequest(
   const callId = context.sessionScope ? sessionKey + rpcIdKey(id) : String(id);
   const callKey = sessionKey + rpcIdKey(id);
   const validator = context.validators.get(tool);
-  const admitted = admitToolInput(validator, params.arguments ?? {});
+  const received = params.arguments ?? {};
+  const admitted = admitToolInput(validator, received);
   const { args } = admitted;
   if (admitted.coercedPaths) context.diagnoseInputCoercion(tool, callId, admitted.coercedPaths);
   const rejection = !admitted.schemaValid
@@ -452,11 +453,13 @@ async function handleRequest(
       if (!normalizationInvalid) normalizedInputSha256 = digest;
     };
   };
+  // The receipt binds the arguments as the host sent them, which a provider
+  // compares with its own raw input; the handler gets any coerced form.
   const withReceipt = (result: RunnerToolCallResult): RunnerToolCallResult => {
     receiptSealed = true;
     if (!context.captureSemanticReceipt) return result;
     try {
-      const bound = appendSemanticToolReceipt({ tool, callId, arguments: args, normalizedInputSha256: normalizationInvalid ? null : normalizedInputSha256 }, result);
+      const bound = appendSemanticToolReceipt({ tool, callId, arguments: received, normalizedInputSha256: normalizationInvalid ? null : normalizedInputSha256 }, result);
       try { observeReceipt?.(bound.receipt); } catch { /* Evidence cannot change the tool outcome. */ }
       return bound.result;
     } catch { return result; }

@@ -392,6 +392,28 @@ describe("qualified ACPX runtime sidecar", () => {
     for (const agent of ["cursor", "codex", "pi"]) expect(create({ agent, tools: [] }, evidence, () => undefined).captureSemanticReceipt).toBeUndefined();
   });
 
+  it("records the actual sidecar bridge's input coercions as runtime diagnostics", async () => {
+    const source = readFileSync(new URL("./acpx-runtime-sidecar.ts", import.meta.url), "utf8");
+    const start = source.indexOf("        semanticTools: {");
+    const end = source.indexOf("        onGoalUpdate:", start);
+    const diagnostics: Array<[string, string]> = [];
+    const create = new Function("params", "activeCopilotEvidence", "waitForTool", "diagnostic", "RUNNER_TOOL_BRIDGE_DIAGNOSTIC_CODE",
+      `return ({ ${source.slice(start, end)} }).semanticTools;`);
+    const handler = vi.fn(async () => ({ ok: true }));
+    const bridge = await startRunnerToolBridge(create({ agent: "claude", tools: [{ name: "update_case", inputSchema: {
+      type: "object", required: ["patch"], properties: { patch: { type: "object" } } } }] }, undefined, handler,
+      (code: string, message: string) => diagnostics.push([code, message]), "runner_tool_bridge_diagnostic"));
+    try {
+      const body = await fetch(bridge.url, { method: "POST", headers: { Authorization: `Bearer ${bridge.secret}`, "Content-Type": "application/json" },
+        body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "update_case", arguments: { patch: '{"status":"done"}' } } }) }).then(response => response.json());
+      expect(body.result.isError).not.toBe(true);
+      expect(handler).toHaveBeenCalledOnce();
+      expect(diagnostics).toHaveLength(1);
+      expect(diagnostics[0]![0]).toBe("runner_tool_bridge_diagnostic");
+      expect(JSON.parse(diagnostics[0]![1])).toMatchObject({ schema: "paperclip.runner.tool-input-coerced/v1", tool: "update_case", paths: ["/patch"] });
+    } finally { await bridge.close(); }
+  });
+
   it("keeps a native tool pending through controller downtime without a duplicate side effect", async () => {
     const source = readFileSync(new URL("./acpx-runtime-sidecar.ts", import.meta.url), "utf8");
     const start = source.indexOf("        semanticTools: {");

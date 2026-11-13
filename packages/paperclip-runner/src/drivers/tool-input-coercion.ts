@@ -1,6 +1,6 @@
 import type { ValidateFunction } from "ajv/dist/2020.js";
 
-type SchemaNode = { type?: unknown; properties?: unknown };
+type SchemaNode = { type?: unknown; properties?: unknown; items?: unknown };
 
 export type JsonValueType = "object" | "array" | "string" | "number" | "integer" | "boolean" | "null";
 
@@ -60,6 +60,35 @@ function escapePointer(key: string): string {
   return key.replace(/~/g, "~0").replace(/\//g, "~1");
 }
 
+function coerceValue(schema: SchemaNode | undefined, value: unknown, path: string, paths: string[], depth: number): unknown {
+  if (depth > MAX_DEPTH) return value;
+  const types = declaredSchemaTypes(schema);
+  let next = value;
+  // Only a value that can never be a string is read as encoded JSON: a
+  // string there is invalid, so parsing it cannot replace a valid meaning.
+  if (typeof value === "string" && types?.includes("object") && !types.includes("string")) {
+    const parsed = parseObject(value);
+    if (parsed === null) return value;
+    paths.push(path);
+    next = parsed;
+  }
+  if (isPlainObject(next) && (types === null || types.includes("object"))) return coerceObject(schema, next, path, paths, depth);
+  if (Array.isArray(next) && types?.includes("array")) {
+    const items = node(schema?.items);
+    if (!items) return next;
+    let result = next;
+    next.forEach((entry, index) => {
+      const coerced = coerceValue(items, entry, `${path}/${index}`, paths, depth + 1);
+      if (coerced !== entry) {
+        if (result === next) result = [...next];
+        result[index] = coerced;
+      }
+    });
+    return result;
+  }
+  return next;
+}
+
 function coerceObject(
   schema: SchemaNode | undefined,
   value: Record<string, unknown>,
@@ -72,20 +101,7 @@ function coerceObject(
   let result = value;
   for (const [key, entry] of Object.entries(value)) {
     if (!Object.hasOwn(properties, key)) continue;
-    const child = node(properties[key]);
-    const types = declaredSchemaTypes(child);
-    if (!types?.includes("object")) continue;
-    const childPath = `${path}/${escapePointer(key)}`;
-    let next: unknown = entry;
-    // Only a field that can never be a string is read as encoded JSON: a
-    // string there is invalid, so parsing it cannot replace a valid meaning.
-    if (typeof entry === "string" && !types.includes("string")) {
-      const parsed = parseObject(entry);
-      if (parsed === null) continue;
-      paths.push(childPath);
-      next = parsed;
-    }
-    if (isPlainObject(next)) next = coerceObject(child, next, childPath, paths, depth + 1);
+    const next = coerceValue(node(properties[key]), entry, `${path}/${escapePointer(key)}`, paths, depth + 1);
     if (next !== entry) {
       if (result === value) result = { ...value };
       result[key] = next;
@@ -112,6 +128,8 @@ export function coerceJsonStringObjects(schema: unknown, input: unknown): ToolIn
 
 /** The run-event diagnostic recorded when a bridge accepts a coerced call. */
 export const TOOL_INPUT_COERCION_DIAGNOSTIC_SCHEMA = "paperclip.runner.tool-input-coerced/v1";
+/** The run-event diagnostic code a driver records a runner tool bridge diagnostic under. */
+export const RUNNER_TOOL_BRIDGE_DIAGNOSTIC_CODE = "runner_tool_bridge_diagnostic";
 
 export type AdmittedToolInput = {
   /** The arguments to dispatch: the coerced copy when coercion made them valid, otherwise what arrived. */

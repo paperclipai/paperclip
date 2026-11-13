@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import { recordSidecarShutdownThenQueue, sidecarShutdownSnapshot } from "./acpx-sidecar-shutdown.js";
+import { RUNNER_TOOL_BRIDGE_DIAGNOSTIC_CODE } from "../drivers/tool-input-coercion.js";
 import { classifyClaudeStatusBanner } from "../drivers/acpx/claude-status-banners.js";
 import { resolveGrokDisableWebSearch } from "../drivers/acpx/grok-web-search.js";
 import { toolFileChangesFromAcpContent, workspaceRootsFor, type ToolFileChange } from "../tool-file-changes.js";
@@ -372,6 +373,7 @@ async function dispatch(
           // Runner lease expiry, turn cancellation and bridge close own them.
           timeoutMs: null,
           ...(params.agent === "copilot" ? { captureSemanticReceipt: () => activeCopilotEvidence?.captureSemanticReceipt() } : {}),
+          onDiagnostic: message => diagnostic(RUNNER_TOOL_BRIDGE_DIAGNOSTIC_CODE, message),
         },
         onGoalUpdate: (goal) => {
           // Admission can emit a snapshot before the verified host is assigned.
