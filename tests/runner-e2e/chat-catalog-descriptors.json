@@ -2859,7 +2859,7 @@
       "chat-scenarios/documents-artifacts.yaml",
       "../../packages/shared/src/document-anchors.ts"
     ],
-    "oracleVersion": "paperclip.chat-catalog.internal.resolve-feedback.v2",
+    "oracleVersion": "paperclip.chat-catalog.internal.resolve-feedback.v3",
     "coverageGaps": [],
     "expectedRunCount": 1,
     "turnTimeoutMs": 120000,
