@@ -204,12 +204,16 @@ A storage provider can declare `workspaceProvider.workspaceVerificationVersion: 
 Before creating a fresh workspace for an admitted Retry, Core may send the
 original task-owned workspace's `prepare` request with `verifyExisting: true`.
 Core sends verification through `workspaceOperation` with a 10-second
-deadline and a 12-second RPC timeout.
+deadline and a 12-second RPC timeout. Drivers with task placement receive the
+selected run's `taskLease` before Core describes the Runner task. Use that lease
+to select the same execution placement for verification and later preparation.
 The provider must verify a completed checkout without creating or fetching
 one and return `prepared` with `created: false`. Core checks prior writer
 settlement and continues normal preparation on the retained workspace after
-verification. A missing or unconfirmed checkout leaves the fresh retry
-fallback in place. Local workspaces use the same ownership and writer
+verification. Return the workspace failure reason `binding_mismatch` for a
+definitively missing or invalid checkout. Core can then release the verification
+lease and use the authorized fresh retry fallback. Transport failures and
+timeouts keep the current checkout decision retryable. Local workspaces use the same ownership and writer
 checks with Core's existing local Git verification.
 
 A storage provider can declare `workspaceProvider.finalizationVersion: 1`.

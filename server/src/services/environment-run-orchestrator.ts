@@ -317,6 +317,7 @@ export function environmentRunOrchestrator(
       | { kind: "plugin_task"; leaseId: string; preparation?: true };
     /** A new controller must stop the previous plugin task before allocating a replacement. */
     recoverPluginTask?: boolean;
+    replacementWorkspaceCreation?: string;
   }): Promise<EnvironmentAcquisitionResult> {
     // Step 1: Resolve environment
     const selectedEnvironment = await resolveEnvironment({
@@ -370,6 +371,7 @@ export function environmentRunOrchestrator(
       executionWorkspaceSettings: input.executionWorkspaceSettings,
       runnerTaskProjectIds: input.runnerTaskProjectIds,
       runnerTaskResumeSessionId: input.runnerTaskResumeSessionId,
+      replacementWorkspaceCreation: input.replacementWorkspaceCreation,
       adapterType: input.adapterType ?? null,
       warmRunnerIdleTimeoutMs,
       runnerReconnectGraceMs,
