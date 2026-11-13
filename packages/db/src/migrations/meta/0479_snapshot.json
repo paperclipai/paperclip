@@ -1,5 +1,5 @@
 {
-  "id": "e2a3e3a5-5ac0-40d7-9bea-522957234449",
+  "id": "f5f852bd-0568-4b2d-bc35-0dac5d9c8c5b",
   "prevId": "349cdd89-db04-4340-a5d3-3b877bf7227d",
   "version": "7",
   "dialect": "postgresql",
@@ -35261,6 +35261,12 @@
           "notNull": true,
           "default": 1
         },
+        "native_source_cursors": {
+          "name": "native_source_cursors",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": false
+        },
         "native_phase": {
           "name": "native_phase",
           "type": "text",
@@ -59445,12 +59451,6 @@
         "completed_at": {
           "name": "completed_at",
           "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "progress": {
-          "name": "progress",
-          "type": "jsonb",
           "primaryKey": false,
           "notNull": false
         },
