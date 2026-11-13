@@ -23,6 +23,18 @@ export const REUSABLE_SANDBOX_IDLE_RESUME_BUDGET_MS = 330_000;
 /** Failure reason recorded on a preserved lease retired in favor of a replacement. */
 export const REUSABLE_SANDBOX_RESUME_REPLACED_REASON = "resume_failed";
 
+export const REUSABLE_SANDBOX_KEPT_AFTER_REPLACEMENT_KEY = "reusableSandboxKeptAfterReplacement";
+
+export type ReusableSandboxReplacementPlan = "retire" | "keep";
+
+export function reusableSandboxKeptAfterReplacement(lease: Pick<EnvironmentLease, "metadata">): boolean {
+  return isRecord(lease.metadata?.[REUSABLE_SANDBOX_KEPT_AFTER_REPLACEMENT_KEY]);
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
 /**
  * A provider refused to start a sandbox because it is still changing state,
  * for example auto-stopping or archiving after an idle period. Waiting can
@@ -55,21 +67,23 @@ export async function reusableSandboxLeaseIsIdle(input: {
 
 /**
  * Decide whether a preserved reusable sandbox that could not be resumed may be
- * replaced.
+ * replaced, and what happens to it.
  *
  * Replacement is safe only when nothing lives solely on that sandbox:
  * - its last run has ended (released or retained, and no live run holds it);
  * - the task workspace is clean and its saved version is a committed snapshot,
  *   so a new sandbox restores exactly the same files;
- * - a native runner session has a verified, lease-bound harness backup.
+ * - a native runner session has a verified, lease-bound harness backup, or the
+ *   provider proved it cannot start the sandbox, which is then kept, not retired.
  * Anything else (unsaved work, a live owner, a legacy workspace with no saved
  * version, an access refusal) keeps the strict preserve-and-retry behavior.
  *
  * This only reads. The caller creates and records the replacement first, then
- * calls `retireReplacedReusableSandboxLease`, so a failed creation or a restart
- * in between leaves the preserved lease eligible for the next attempt.
+ * calls `retireReplacedReusableSandboxLease` or `keepReplacedReusableSandboxLease`,
+ * so a failed creation or a restart in between leaves the preserved lease
+ * eligible for the next attempt.
  */
-export async function reusableSandboxReplacementIsSafe(input: {
+export async function reusableSandboxReplacementPlan(input: {
   db: Db;
   lease: EnvironmentLease;
   companyId: string;
@@ -77,17 +91,18 @@ export async function reusableSandboxReplacementIsSafe(input: {
   executionWorkspaceId: string | null;
   adapterType: string | null | undefined;
   cause: unknown;
-}): Promise<boolean> {
+  providerCannotStart?: boolean;
+}): Promise<ReusableSandboxReplacementPlan | null> {
   const { db, lease } = input;
-  if (!lease.providerLeaseId || !await reusableSandboxLeaseIsIdle(input)) return false;
-  if (!input.executionWorkspaceId || lease.executionWorkspaceId !== input.executionWorkspaceId) return false;
+  if (!lease.providerLeaseId || !await reusableSandboxLeaseIsIdle(input)) return null;
+  if (!input.executionWorkspaceId || lease.executionWorkspaceId !== input.executionWorkspaceId) return null;
   // A replacement cannot succeed where the resume was refused for access, and
   // an unavailable worker cannot create one either.
-  if (findPluginWorkerUnavailableError(input.cause)) return false;
+  if (findPluginWorkerUnavailableError(input.cause)) return null;
   const failure = sandboxProviderFailureLabel(input.cause);
   const status = failure.status ?? readEnvironmentResumeErrorDiagnostic(input.cause)?.httpStatus ?? null;
   if (failure.label === "provider_access_denied" || failure.label === "permission_denied"
-    || status === 401 || status === 403) return false;
+    || status === 401 || status === 403) return null;
 
   const [workspace] = await db.select({ metadata: executionWorkspaces.metadata }).from(executionWorkspaces)
     .where(and(eq(executionWorkspaces.companyId, input.companyId), eq(executionWorkspaces.id, input.executionWorkspaceId)));
@@ -95,25 +110,27 @@ export async function reusableSandboxReplacementIsSafe(input: {
   try {
     authority = readRemoteWorkspaceAuthority(workspace?.metadata);
   } catch {
-    return false;
+    return null;
   }
-  if (!authority || authority.dirty || !authority.snapshotId) return false;
-  if (authority.writerRunId !== null && authority.writerRunId !== input.heartbeatRunId) return false;
-  if (authority.location && authority.location.providerLeaseId !== lease.providerLeaseId) return false;
+  if (!authority || authority.dirty || !authority.snapshotId) return null;
+  if (authority.writerRunId !== null && authority.writerRunId !== input.heartbeatRunId) return null;
+  if (authority.location && authority.location.providerLeaseId !== lease.providerLeaseId) return null;
   const [snapshot] = await db.select({ id: executionWorkspaceSnapshots.id }).from(executionWorkspaceSnapshots).where(and(
     eq(executionWorkspaceSnapshots.companyId, input.companyId),
     eq(executionWorkspaceSnapshots.executionWorkspaceId, input.executionWorkspaceId),
     eq(executionWorkspaceSnapshots.id, authority.snapshotId),
     eq(executionWorkspaceSnapshots.status, "committed"),
   ));
-  if (!snapshot) return false;
+  if (!snapshot) return null;
 
   const scope = lease.metadata?.reusableSandboxLease as { adapterType?: unknown } | undefined;
   if ((input.adapterType === "paperclip_runner" || scope?.adapterType === "paperclip_runner")
     && !await verifyRecoverableNativeHarnessBackup({ db, companyId: lease.companyId,
-      stamp: lease.metadata?.nativeHarnessBackup, providerLeaseId: lease.providerLeaseId })) return false;
+      stamp: lease.metadata?.nativeHarnessBackup, providerLeaseId: lease.providerLeaseId })) {
+    return input.providerCannotStart === true ? "keep" : null;
+  }
 
-  return true;
+  return "retire";
 }
 
 /**
@@ -157,4 +174,35 @@ export async function retireReplacedReusableSandboxLease(input: {
     )`,
   )).returning({ id: environmentLeases.id }), { companyId: input.companyId, runId: lease.heartbeatRunId ?? undefined });
   return Boolean(claimed);
+}
+
+export async function keepReplacedReusableSandboxLease(input: {
+  db: Db;
+  lease: EnvironmentLease;
+  companyId: string;
+  heartbeatRunId: string;
+  replacementLeaseId: string;
+}): Promise<boolean> {
+  const { db, lease } = input;
+  if (!lease.providerLeaseId) return false;
+  const now = new Date();
+  const marker = { [REUSABLE_SANDBOX_KEPT_AFTER_REPLACEMENT_KEY]: {
+    runId: input.heartbeatRunId, replacementLeaseId: input.replacementLeaseId, recordedAt: now.toISOString(),
+  } };
+  const [kept] = await db.update(environmentLeases).set({
+    metadata: sql`coalesce(${environmentLeases.metadata}, '{}'::jsonb) || ${JSON.stringify(marker)}::jsonb`,
+    updatedAt: now,
+  }).where(and(
+    eq(environmentLeases.id, lease.id),
+    eq(environmentLeases.companyId, input.companyId),
+    eq(environmentLeases.providerLeaseId, lease.providerLeaseId),
+    inArray(environmentLeases.status, ["released", "retained"]),
+    sql`NOT EXISTS (
+      SELECT 1 FROM ${heartbeatRuns}
+      WHERE ${heartbeatRuns.id} = ${environmentLeases.heartbeatRunId}
+        AND ${heartbeatRuns.id} <> ${input.heartbeatRunId}
+        AND ${heartbeatRuns.status} IN ('queued', 'scheduled_retry', 'running')
+    )`,
+  )).returning({ id: environmentLeases.id });
+  return Boolean(kept);
 }

@@ -394,6 +394,59 @@ describeEmbeddedPostgres("reusable sandbox resume failure replacement", () => {
     });
   });
 
+  it("continues on a new sandbox and keeps the old one when an idle sandbox never starts and has no harness backup (staging shape)", async () => {
+    const seeded = await seed({ leaseStatus: "released", backupStamp: false });
+    const clock = rpcTimeoutClock();
+    const { call, runtime } = worker(seeded, async (_attempt, timeoutMs) => { throw clock.timeOut(timeoutMs); });
+
+    const acquired = await acquire(seeded, runtime);
+
+    expect(acquired.lease.providerLeaseId).toBe("replacement-sandbox");
+    expect(acquired.lease.metadata?.sandboxLeaseAcquisition).toEqual({ outcome: "replacement", reason: "resume_failed" });
+    expect(acquired.lease.metadata?.nativeHarnessBackup).toBeUndefined();
+    expect(call.mock.calls.filter(([, method]) => method === "environmentResumeLease").length).toBeGreaterThan(1);
+    expect(clock.elapsed()).toBeLessThanOrEqual(330_000);
+    expect(call).not.toHaveBeenCalledWith(seeded.pluginId, "environmentDestroyLease", expect.anything(), expect.anything());
+    const kept = await environmentService(db).getLeaseById(seeded.lease.id);
+    expect(kept).toMatchObject({ status: "released", providerLeaseId: seeded.providerLeaseId, cleanupStatus: null });
+    expect(kept?.metadata?.reusableSandboxKeptAfterReplacement).toMatchObject({
+      runId: seeded.runId, replacementLeaseId: acquired.lease.id,
+    });
+
+    const nextRunId = randomUUID();
+    await db.insert(heartbeatRuns).values({ id: nextRunId, companyId: seeded.companyId, agentId: seeded.agentId,
+      invocationSource: "assignment", status: "running" });
+    await environmentService(db).releaseLease(acquired.lease.id, "released");
+    await db.update(heartbeatRuns).set({ status: "succeeded" }).where(eq(heartbeatRuns.id, seeded.runId));
+    const next = worker(seeded, async () => ({ providerLeaseId: "replacement-sandbox",
+      metadata: { remoteCwd: "/home/daytona/paperclip-workspace" } }));
+    const resumed = await acquire(seeded, next.runtime, nextRunId);
+    expect(resumed.lease.providerLeaseId).toBe("replacement-sandbox");
+    const nextResumes = next.call.mock.calls.filter(([, method]) => method === "environmentResumeLease");
+    expect(nextResumes).toHaveLength(1);
+    expect(nextResumes[0]![2]).toMatchObject({ providerLeaseId: "replacement-sandbox" });
+    await expect(environmentService(db).getLeaseById(seeded.lease.id)).resolves.toMatchObject({
+      status: "released", providerLeaseId: seeded.providerLeaseId,
+    });
+  });
+
+  it.each([
+    ["unsaved work on the sandbox", { dirty: true }],
+    ["no saved workspace version", { snapshot: null }],
+  ] as Array<[string, Shape]>)("keeps an idle sandbox with no harness backup that never starts and fails strictly with %s", async (_label, shape) => {
+    const seeded = await seed({ leaseStatus: "released", backupStamp: false, ...shape });
+    const clock = rpcTimeoutClock();
+    const { call, runtime } = worker(seeded, async (_attempt, timeoutMs) => { throw clock.timeOut(timeoutMs); });
+
+    await expect(acquire(seeded, runtime)).rejects.toThrow(
+      /could not be resumed \(cause=transport_timeout\); the lease was preserved and no replacement was created\.$/,
+    );
+    expect(call).not.toHaveBeenCalledWith(seeded.pluginId, "environmentAcquireLease", expect.anything(), expect.anything());
+    const kept = await environmentService(db).getLeaseById(seeded.lease.id);
+    expect(kept).toMatchObject({ status: "released", providerLeaseId: seeded.providerLeaseId });
+    expect(kept?.metadata?.reusableSandboxKeptAfterReplacement).toBeUndefined();
+  });
+
   it("does not extend the wait for a sandbox that a live run still holds", async () => {
     const seeded = await seed({ previousRunStatus: "running", dirty: true });
     const clock = rpcTimeoutClock();

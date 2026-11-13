@@ -8,9 +8,12 @@ import { NATIVE_PREDECESSOR_RETIREMENT_UNPROVEN_CODE, readReplaceBeforeReuseMark
 import {
   REUSABLE_SANDBOX_IDLE_RESUME_BUDGET_MS,
   REUSABLE_SANDBOX_RESUME_BUDGET_MS,
+  keepReplacedReusableSandboxLease,
   retireReplacedReusableSandboxLease,
+  reusableSandboxKeptAfterReplacement,
   reusableSandboxLeaseIsIdle,
-  reusableSandboxReplacementIsSafe,
+  reusableSandboxReplacementPlan,
+  type ReusableSandboxReplacementPlan,
   sandboxStateTransitionFailure,
 } from "./reusable-sandbox-resume-replacement.js";
 import { PluginWorkerUnavailableError } from "./plugin-worker-unavailable-error.js";
@@ -1808,6 +1811,7 @@ function createSandboxEnvironmentDriver(
           ? (await environmentsSvc.listLeases(input.environment.id))
               .filter((lease) =>
                 lease.leasePolicy === "reuse_by_environment" &&
+                !reusableSandboxKeptAfterReplacement(lease) &&
                 reusableLeaseCanBeResumed({ lease, heartbeatRunId: input.heartbeatRunId }) &&
                 lease.executionWorkspaceId === input.executionWorkspaceId &&
                 (input.executionWorkspaceId !== null || lease.issueId === input.issueId) &&
@@ -1859,6 +1863,7 @@ function createSandboxEnvironmentDriver(
 
         let providerLease: PluginEnvironmentLease | null = null;
         let replacingUnretiredOwner = false;
+        let replacementPlan: ReusableSandboxReplacementPlan | null = null;
         let replacementReason:
           | "not_found"
           | "expired"
@@ -1888,13 +1893,16 @@ function createSandboxEnvironmentDriver(
           // sandbox asked for a fresh one. Replace it under the same safety
           // rule as a failed resume; otherwise resume it as before.
           replacingUnretiredOwner = readReplaceBeforeReuseMarker(reusableLease.metadata) !== null
-            && await reusableSandboxReplacementIsSafe({
+            && await reusableSandboxReplacementPlan({
               db, lease: reusableLease, companyId: input.companyId, heartbeatRunId: input.heartbeatRunId,
               executionWorkspaceId: input.executionWorkspaceId, adapterType: input.adapterType,
               cause: new Error(NATIVE_PREDECESSOR_RETIREMENT_UNPROVEN_CODE),
-            });
-          if (replacingUnretiredOwner) replacementReason = "resume_failed";
-          else try {
+            }) === "retire";
+          let idleStartWaitSpent = false;
+          if (replacingUnretiredOwner) {
+            replacementReason = "resume_failed";
+            replacementPlan = "retire";
+          } else try {
             // One run spends a bounded budget resuming, retries included; the
             // provider's own start deadline (five minutes on Daytona) is not it.
             const providerStartTimeoutMs = resolvePluginSandboxRpcTimeoutMs(
@@ -1909,6 +1917,7 @@ function createSandboxEnvironmentDriver(
               Math.min(providerStartTimeoutMs, REUSABLE_SANDBOX_IDLE_RESUME_BUDGET_MS),
             );
             let retryDelayMs = 250;
+            let idleStartWaitExtended = false;
             let resumed: PluginEnvironmentLease;
             while (true) {
               try {
@@ -1939,8 +1948,12 @@ function createSandboxEnvironmentDriver(
                     && await reusableSandboxLeaseIsIdle({
                       db, lease: reusableLease, companyId: input.companyId, heartbeatRunId: input.heartbeatRunId,
                     });
-                  if (!waitForIdleStart) throw error;
+                  if (!waitForIdleStart) {
+                    idleStartWaitSpent = idleStartWaitExtended;
+                    throw error;
+                  }
                   resumeDeadline = idleResumeDeadline;
+                  idleStartWaitExtended = true;
                 }
                 const jitteredDelayMs = Math.max(
                   1,
@@ -1967,10 +1980,12 @@ function createSandboxEnvironmentDriver(
           } catch (error) {
             // A refusal is not proof the sandbox is lost. Replace it only when
             // nothing lives solely on it; otherwise preserve it for the retry.
-            if (!await reusableSandboxReplacementIsSafe({
+            replacementPlan = await reusableSandboxReplacementPlan({
               db, lease: reusableLease, companyId: input.companyId, heartbeatRunId: input.heartbeatRunId,
               executionWorkspaceId: input.executionWorkspaceId, adapterType: input.adapterType, cause: error,
-            })) {
+              providerCannotStart: idleStartWaitSpent,
+            });
+            if (!replacementPlan) {
               throw new ReusableSandboxResumeError({
                 provider: parsed.config.provider,
                 providerLeaseId: reusableLease.providerLeaseId,
@@ -2142,9 +2157,16 @@ function createSandboxEnvironmentDriver(
         // carries the harness backup, is recorded. A failed creation or a
         // restart before this point leaves it eligible for the next attempt.
         if (replacementReason === "resume_failed" && reusableLease && input.heartbeatRunId) {
-          await retireReplacedReusableSandboxLease({
-            db, lease: reusableLease, companyId: input.companyId, heartbeatRunId: input.heartbeatRunId,
-          });
+          if (replacementPlan === "keep") {
+            await keepReplacedReusableSandboxLease({
+              db, lease: reusableLease, companyId: input.companyId, heartbeatRunId: input.heartbeatRunId,
+              replacementLeaseId: recordedLease.id,
+            });
+          } else {
+            await retireReplacedReusableSandboxLease({
+              db, lease: reusableLease, companyId: input.companyId, heartbeatRunId: input.heartbeatRunId,
+            });
+          }
         }
         return recordedLease;
       }
@@ -2195,6 +2217,7 @@ function createSandboxEnvironmentDriver(
           ? (await environmentsSvc.listLeases(input.environment.id))
               .filter((lease) =>
                 lease.leasePolicy === "reuse_by_environment" &&
+                !reusableSandboxKeptAfterReplacement(lease) &&
                 reusableLeaseCanBeResumed({ lease, heartbeatRunId: input.heartbeatRunId }) &&
                 lease.executionWorkspaceId === input.executionWorkspaceId &&
                 (input.executionWorkspaceId !== null || lease.issueId === input.issueId) &&
