@@ -1,4 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
+import fs from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 import * as serverUtils from "@paperclipai/adapter-utils/server-utils";
 import {
   discoverOpenCodeModels,
@@ -93,6 +96,21 @@ describe("openCode models", () => {
         env: { OPENCODE_ALLOW_ALL_MODELS: "true" },
       }),
     ).rejects.toThrow("OpenCode requires `adapterConfig.model`");
+  });
+
+  // Runs a real slow process through all three attempts, so allow for the 1s
+  // timeouts plus the 2s and 4s retry backoffs.
+  it("honours modelsProbeTimeoutSec override and reports the actual timeout", { timeout: 30_000 }, async () => {
+    const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-opencode-timeout-test-"));
+    const slowScript = path.join(tmpDir, "slow-opencode-models.sh");
+    await fs.writeFile(slowScript, "#!/bin/sh\nsleep 5\n", { mode: 0o755 });
+    try {
+      await expect(
+        discoverOpenCodeModels({ command: slowScript, modelsProbeTimeoutSec: 1 }),
+      ).rejects.toThrow("`opencode models` timed out after 1s.");
+    } finally {
+      await fs.rm(tmpDir, { recursive: true, force: true });
+    }
   });
 
   it("retries a transient `opencode models` failure with backoff before succeeding", async () => {
