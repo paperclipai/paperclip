@@ -1812,6 +1812,17 @@ by the deploy, and the task then lost its session to a fresh one. A Stop, any
 identity or authority refusal, any other recovery failure, and a protocol
 integrity fault still stop it.
 
+The failed attempt's close keeps the session quarantined in the server process,
+and later close retries only replay that failed close, so they never settle it.
+The same run's reattachment to that Runner (in the same remote sandbox) takes
+over the quarantine instead of waiting for it: it lets any close attempt still
+in flight settle, then retires the attempt's cleanup and adopts the Runner.
+Before this, the reattachment was refused with `native_session_cleanup_quarantined`
+(`prior session cleanup remains incomplete` while retries were scheduled, or
+`the previous session is still shutting down` once the close was
+operator-required), each refusal spent a same-run attempt, and the task needed
+Retry. Other runs of the task and other sandboxes stay gated as before.
+
 A kept Runner can answer its WebSocket pings but no recovery command. On
 staging, a reattached Codex Runner authenticated and restored its session, then
 left `session.snapshot` unanswered (`pending ahead 0; last runner event seq 338
