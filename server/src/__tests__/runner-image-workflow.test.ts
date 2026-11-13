@@ -1,4 +1,6 @@
-import { readFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
@@ -69,6 +71,45 @@ describe("Runner image workflow", () => {
     expect(canonical).toContain("github.event_name == 'push'");
     expect(jobs.build).toContain(`KEEP_IMAGE: \${{ ${canonical} }}`);
     expect(jobCondition(jobs.identity)).toBe(`(github.event_name != 'push' && github.event_name != 'schedule') || (${repository})`);
+  });
+
+  const imageBuild = scripts.find((script) => script.includes('--target "$target"'))!;
+  const bashExpandsEmptyArrays = spawnSync("bash", ["-uc", 'empty=(); : "${empty[@]}"']).status === 0;
+  function imageBuildCommands(event: string) {
+    const directory = mkdtempSync(path.join(os.tmpdir(), "runner-image-build-"));
+    try {
+      writeFileSync(path.join(directory, "docker"), `#!/bin/sh\nprintf '%s\\n' "$*" >> "$RUNNER_TEMP/docker.log"\n`, { mode: 0o755 });
+      const run = spawnSync("bash", ["--noprofile", "--norc", "-eo", "pipefail", "-c", imageBuild], {
+        cwd: directory,
+        encoding: "utf8",
+        env: { PATH: `${directory}${path.delimiter}${process.env.PATH}`, RUNNER_TEMP: directory, GITHUB_EVENT_NAME: event, GITHUB_SHA: "a".repeat(40),
+          BUILD_CACHE: "registry.invalid/buildcache", ARCH: "amd64", PLATFORM: "linux/amd64" },
+      });
+      expect(run.status, run.stderr).toBe(0);
+      return readFileSync(path.join(directory, "docker.log"), "utf8").trimEnd().split("\n");
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  }
+
+  it("replaces the cache read of the image build with --no-cache when the event is a schedule", () => {
+    expect(imageBuild).toContain('cache=(--cache-from "type=registry,ref=$BUILD_CACHE:$ARCH")\n          if [ "$GITHUB_EVENT_NAME" = schedule ]; then cache=(--no-cache); fi\n');
+    expect(imageBuild).toContain('"${cache[@]}"');
+  });
+
+  it.skipIf(!bashExpandsEmptyArrays)("runs the image build step: a scheduled run builds with --no-cache and no cache read, any other run reads the cache (needs bash 4.4)", () => {
+    const cacheRead = "--cache-from type=registry,ref=registry.invalid/buildcache:amd64";
+    const scheduled = imageBuildCommands("schedule");
+    expect(scheduled.map((command) => /--target (\S+)/.exec(command)?.[1])).toEqual(["runner-artifacts", "runner-artifacts-slim"]);
+    expect(scheduled[0]).toContain(" --no-cache ");
+    for (const command of scheduled) expect(command).not.toContain("--cache-from");
+    for (const event of ["pull_request", "push", "workflow_dispatch"]) {
+      const commands = imageBuildCommands(event);
+      expect(commands).toHaveLength(2);
+      expect(commands[0]).toContain(` ${cacheRead} `);
+      expect(commands[1]).not.toContain("--cache-from");
+      for (const command of commands) expect(command).not.toContain("--no-cache");
+    }
   });
 
   it("publishes, and keeps the images for publication, only for a master push in the canonical repository", () => {
