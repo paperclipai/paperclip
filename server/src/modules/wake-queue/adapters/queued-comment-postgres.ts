@@ -2,6 +2,7 @@ import { notifyStrandedAgentStatus } from "../../../services/live-run-recovery-n
 import { assertAgentInteraction } from "../../../services/agent-interaction-policy.js";
 import { notifyExecutionRunWork } from "../../../services/execution-control-notifications.js";
 import { notifyStatusCardIssueChange } from "../../../services/status-card-notifications.js";
+import { notifyTaskProjectReferences } from "../../../services/task-project-references.js";
 import { notifyExternalAgentSettlement } from "../../external-agents/index.js";
 import { notifyNativeStatusReassessment } from "../../../services/native-status-reassessment-notifications.js";
 import { notifyUnsafeWorkspaceExportRecovery } from "../../../services/unsafe-workspace-export-notifications.js";
@@ -71,6 +72,7 @@ function buildTransaction(tx: Db, companyId: string, issueId: string, deps: Queu
       await assertAgentInteraction(tx, { companyId, actorAgentId: actor.actorType === "agent" ? actor.actorId : null,
         operation: "comment", issueId, texts: body === existing.body ? [] : [body], lock: true });
       await notifyStatusCardIssueChange(tx, companyId);
+      await notifyTaskProjectReferences(tx, { companyId, issueId });
       const updated = await tx
         .update(issueComments)
         .set({ body, updatedAt })
@@ -109,6 +111,7 @@ function buildTransaction(tx: Db, companyId: string, issueId: string, deps: Queu
 
     async deleteComment({ issueId, commentId }) {
       await notifyChatRunMilestones(tx, { companyId, issueId });
+      await notifyTaskProjectReferences(tx, { companyId, issueId });
       const row = await tx
         .delete(issueComments)
         .where(and(eq(issueComments.id, commentId), eq(issueComments.issueId, issueId), eq(issueComments.companyId, companyId)))

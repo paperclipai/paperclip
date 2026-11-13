@@ -3347,6 +3347,13 @@
       "when": 1794589077537,
       "tag": "0479_short_darkstar",
       "breakpoints": true
+    },
+    {
+      "idx": 480,
+      "version": "7",
+      "when": 1794604745715,
+      "tag": "0480_task_project_references",
+      "breakpoints": true
     }
   ]
 }

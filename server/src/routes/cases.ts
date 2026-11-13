@@ -62,6 +62,7 @@ import type { IssueBlockerAttention } from "@paperclipai/shared";
 import { listCaseTaskDocuments } from "../services/case-task-documents.js";
 import { authorizeCaseCreation, authorizeCaseMutation } from "../services/case-mutation-authorization.js";
 import { assertCaseStatusWriteAuthority } from "../services/case-handoffs.js";
+import { notifyTaskProjectReferences } from "../services/task-project-references.js";
 import { logger } from "../middleware/logger.js";
 import { assertCompanyAccess, getActorInfo, hasCompanyAccess } from "./authz.js";
 
@@ -703,6 +704,7 @@ export function caseRoutes(db: Db, storage: StorageService) {
         });
         // Fall back to the locked row so a concurrent close or reopen is not undone.
         const status = body.status ?? current.status;
+        if (current.workIssueId) await notifyTaskProjectReferences(tx, { companyId, issueId: current.workIssueId });
         const [updated] = await tx.update(cases).set({
           projectId: body.projectId ?? current.projectId,
           title: body.title,
@@ -1613,6 +1615,7 @@ export function caseRoutes(db: Db, storage: StorageService) {
       if (nextLabelIds) await assertLabelsBelongToCompany(tx, caseRow.companyId, nextLabelIds);
 
       const now = new Date();
+      if (currentCase.workIssueId) await notifyTaskProjectReferences(tx, { companyId: caseRow.companyId, issueId: currentCase.workIssueId });
       const [row] = await tx.update(cases).set(buildCasePatchUpdateValues(body, currentCase, now)).where(eq(cases.id, caseRow.id)).returning();
 
       if (nextLabelIds) {

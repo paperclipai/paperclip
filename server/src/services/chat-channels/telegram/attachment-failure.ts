@@ -1,5 +1,6 @@
 import { notifyStatusCardIssueChange } from "../../status-card-notifications.js";
 import { notifyIssueRecovery } from "../../issue-recovery-notifications.js";
+import { notifyTaskProjectReferences } from "../../task-project-references.js";
 import { createProviderEffects, type ProviderEffectTarget } from "../provider-effects.js";
 
 import type { EndpointRow, RuntimeContext, InboundRuntimeContext } from "../runtime-types.js";
@@ -86,6 +87,7 @@ export function createTelegramAttachmentFailure(db: Db, options: TelegramAttachm
       // exact provider redelivery, while no agent wakeup is enqueued for an
       // empty turn that contains no usable bytes.
       await notifyStatusCardIssueChange(tx, input.endpoint.companyId);
+      await notifyTaskProjectReferences(tx, { companyId: input.endpoint.companyId });
       await tx
         .update(issueComments)
         .set({ body: visibleFailure, updatedAt: new Date() })
