@@ -55,9 +55,7 @@ export function createPluginRunnerTaskOwner(input: {
   onRetired?: (identity: DurableRecoveryIdentity) => Promise<void>;
   githubBroker?: { url: string; token: string };
   githubCredentialBrokerVersion?: 1;
-  /** The provider accepts the configured environment on submit and resume. */
   configuredEnvironmentVersion?: 1;
-  /** The run's configured environment, secrets resolved. Transient: never persisted here. */
   configuredEnvironment?: Readonly<Record<string, string>>;
   adoptIdentity?: DurableRecoveryIdentity;
 }) {
@@ -87,13 +85,8 @@ export function createPluginRunnerTaskOwner(input: {
   const running = new Promise<void>((resolve, reject) => { markReady = resolve; failReady = reject; });
   void running.catch(() => undefined);
   if (input.adoptIdentity) markReady();
-  // Value changes never reach a retained Runner: the process reuse key includes
-  // them, so Core starts a new task instead of a warm resume.
   const configuredEnvironmentFields = (launchesRunner: boolean) =>
     input.configuredEnvironmentVersion === 1 && launchesRunner ? { configuredEnvironment: { ...input.configuredEnvironment } } : {};
-  // Whether this owner's Runner started with the configured environment. Unknown
-  // for an adopted Runner. A provider that gains the capability later cannot add
-  // variables to a Runner that is already running.
   let configuredEnvironmentDelivered: boolean | undefined = input.adoptIdentity ? undefined : false;
   const call = async (operation: PluginEnvironmentTaskOperation) => {
     const phase = ({ prepare: "execution.plugin_prepare", check_project_auth: "execution.plugin_project_auth",
@@ -438,12 +431,10 @@ export function createPluginRunnerTaskOwner(input: {
       : undefined;
     const result = await call(environmentTaskOperationSchema.parse({ kind: "resume", identity, bootstrapTicket,
       ...(handoffCredential ? { handoffCredential } : {}),
-      // A handoff starts a new Runner on another computer.
       ...configuredEnvironmentFields(!!input.sessionHandoff),
     }));
     requireReleaseResume();
     if (result.kind !== "resume") throw new Error("Plugin Runner resume result unavailable");
-    // A handoff starts a new Runner with the variables it was sent.
     if (result.outcome === "resumed" && input.sessionHandoff) configuredEnvironmentDelivered = input.configuredEnvironmentVersion === 1;
     if (result.outcome === "unavailable") {
       const state = await call({ kind: "status" }).catch(() => undefined);

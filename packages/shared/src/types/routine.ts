@@ -73,7 +73,6 @@ export interface Routine {
   id: string;
   companyId: string;
   projectId: string | null;
-  /** Non-fatal notices about this write, such as a protected env key; not persisted. */
   configurationWarnings?: import("../runner-configuration-warnings.js").AgentConfigurationWarning[];
   folderId?: string | null;
   goalId: string | null;

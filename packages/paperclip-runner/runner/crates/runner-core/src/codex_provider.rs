@@ -31,9 +31,6 @@ pub(crate) fn runtime_notification_codex_args(
 ) -> Vec<String> {
     let prefix = "shell_environment_policy.include_only=";
     let mut extra = Vec::new();
-    // An allowlist must admit the notification variables. A launch without one
-    // (an externally sandboxed shell that inherits its environment) already
-    // passes them, but still needs the file grants below for read-only profiles.
     if let Some(keys) = args.iter().rev().find_map(|arg| arg.strip_prefix(prefix)) {
         let Ok(mut keys) = serde_json::from_str::<Vec<String>>(keys) else {
             return vec![];

@@ -18,7 +18,6 @@ const holders = [
   { environmentId: "computer-b", environmentName: "Computer B", keys: new Set(["DESKTOP_SESSION", "DESKTOP_DISPLAY"]) },
 ];
 
-// Each select returns the next result: environments first, then plugins.
 function fakeDb(...results: unknown[][]) {
   const selects = { count: 0 };
   const db = { select: () => ({ from: () => ({ where: async () => results[selects.count++] ?? [] }) }) };

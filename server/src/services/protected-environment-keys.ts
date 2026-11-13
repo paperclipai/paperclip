@@ -5,24 +5,17 @@ import { unprocessable } from "../errors.js";
 import { pluginEnvironmentRunnerTaskDriver } from "./plugin-runner-ai-connection.js";
 import { instanceSettingsService } from "./instance-settings.js";
 
-/** An environment whose task-execution plugin sets these variables itself. */
 export interface ProtectedEnvironmentKeyHolder {
   environmentId: string;
   environmentName: string;
   keys: ReadonlySet<string>;
 }
 
-/**
- * Active plugin environments whose driver declares `protectedEnvironmentKeys`.
- * At run time the plugin's value wins over a configured one. Saving the key
- * where it would be overridden is rejected or answered with a notice.
- */
 export async function listProtectedEnvironmentKeyHolders(db: Db): Promise<ProtectedEnvironmentKeyHolder[]> {
   const rows = await db.select({ id: environments.id, name: environments.name, config: environments.config })
     .from(environments).where(and(eq(environments.driver, "plugin"), eq(environments.status, "active")));
   const pluginKeys = [...new Set(rows.flatMap(row => typeof row.config?.pluginKey === "string" ? [row.config.pluginKey] : []))];
   if (pluginKeys.length === 0) return [];
-  // One plugin read for all environments, not one per environment.
   const plugins = new Map((await db.select({ pluginKey: pluginsTable.pluginKey, manifestJson: pluginsTable.manifestJson }).from(pluginsTable)
     .where(and(inArray(pluginsTable.pluginKey, pluginKeys), ne(pluginsTable.status, "uninstalled")))).map(plugin => [plugin.pluginKey, plugin]));
   const holders: ProtectedEnvironmentKeyHolder[] = [];
@@ -52,7 +45,6 @@ function rejectProtectedKeys(holder: { environmentId?: string; environmentName: 
   );
 }
 
-/** Reject keys that the agent's selected environment sets itself for its tasks. */
 export function assertNoProtectedEnvironmentKeys(
   holders: readonly ProtectedEnvironmentKeyHolder[],
   environmentId: string | null | undefined,
@@ -62,7 +54,6 @@ export function assertNoProtectedEnvironmentKeys(
   if (holder) rejectProtectedKeys(holder, env);
 }
 
-/** Reject an environment's own variables that its plugin driver sets itself. */
 export async function assertEnvironmentVariablesNotProtected(
   db: Db,
   environment: { id?: string; name: string; driver: string; config: unknown },
@@ -76,11 +67,6 @@ export async function assertEnvironmentVariablesNotProtected(
   if (keys.length > 0) rejectProtectedKeys({ environmentId: environment.id, environmentName: environment.name, keys: new Set(keys) }, envVars);
 }
 
-/**
- * Reject an agent's env keys that its effective environment sets itself, and
- * warn about keys that another environment protects. An agent without its own
- * environment runs in the instance default.
- */
 export async function checkAgentProtectedEnvironmentKeys(
   db: Db,
   adapterConfig: unknown,
@@ -95,7 +81,6 @@ export async function checkAgentProtectedEnvironmentKeys(
   return protectedEnvironmentKeyWarnings(holders, env, "adapterConfig.env");
 }
 
-/** A friendly notice: the value may be replaced, depending on where the agent runs. */
 export function protectedEnvironmentKeyWarnings(
   holders: readonly ProtectedEnvironmentKeyHolder[],
   env: unknown,

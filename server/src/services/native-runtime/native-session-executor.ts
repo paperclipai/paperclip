@@ -8548,7 +8548,6 @@ function needsCoreGitHubAccess(input: Pick<Parameters<typeof executePaperclipNat
   return Boolean(input.managedGitHub && !(target?.kind === "remote" && target.transport === "sandbox" && target.runnerTask));
 }
 
-/** The run's configured variables only: never provider credentials or generated runtime keys. */
 function pluginTaskConfiguredEnvironment(environment: NodeJS.ProcessEnv | undefined): Record<string, string> {
   return Object.fromEntries(Object.entries(configuredEnvironment(environment)).flatMap(([key, value]) =>
     key !== CONFIGURED_ENVIRONMENT_KEYS && typeof value === "string" ? [[key, value]] : []));
@@ -11923,7 +11922,6 @@ async function executePaperclipNativeSessionAttempt(
         entry.closeOnReleaseReason !== undefined ||
         entry.configDigest !== warmConfigDigest ||
         !canReuseNativeProcess(input, entry.processConfigDigest) ||
-        // The provider now accepts configured variables, but this Runner started without them.
         (entry.pluginTaskId !== undefined && pluginTaskDescription?.configuredEnvironmentVersion === 1
           && pluginTaskSessionOwners.get(entry.session)?.configuredEnvironmentDelivered() === false
           && Object.keys(pluginTaskConfiguredEnvironment(input.runnerEnvironment)).length > 0) ||
@@ -16340,7 +16338,6 @@ async function createRunnerdBackendWithinSessionClaim(
     }
     const taskConfiguredEnvironment = pluginTaskConfiguredEnvironment(input.runnerEnvironment);
     if (description.configuredEnvironmentVersion !== 1 && Object.keys(taskConfiguredEnvironment).length > 0) {
-      // Older providers reject unknown fields. Run without the variables, as before, and say so.
       await input.onLog?.("stderr", `[paperclip] The environment plugin does not support configured environment variables. These variables were not set: ${
         Object.keys(taskConfiguredEnvironment).sort().join(", ")}. Update the plugin to deliver them.\n`);
     }

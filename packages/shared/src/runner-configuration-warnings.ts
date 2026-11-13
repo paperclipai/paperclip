@@ -1,5 +1,4 @@
 export interface AgentConfigurationWarning {
-  /** `protected_environment_variable`: a plugin environment sets this variable itself. */
   code: "runner_option_ignored" | "protected_environment_variable";
   field: string;
   message: string;

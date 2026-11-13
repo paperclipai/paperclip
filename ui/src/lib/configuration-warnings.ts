@@ -1,6 +1,5 @@
 import type { AgentConfigurationWarning } from "@paperclipai/shared";
 
-/** The messages of a save's non-fatal notices, or null when there are none. */
 export function configurationWarningMessages(
   result: { configurationWarnings?: AgentConfigurationWarning[] } | null | undefined,
 ): string | null {

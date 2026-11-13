@@ -28,11 +28,6 @@ const githubBroker = z.object({ url: z.string().url().max(2000).refine(value => 
 const claudeCredentialEnvironment = z.object({
   CLAUDE_CODE_OAUTH_TOKEN: credentialValue.optional(), ANTHROPIC_API_KEY: credentialValue.optional(),
 }).strict().refine(env => Object.values(env).filter(Boolean).length === 1, "Select one Claude credential");
-/**
- * The agent's configured environment for one task, with secrets already
- * resolved. Bounds match the Runner's configured-environment projection.
- * Transient secret input: providers must not persist or log the values.
- */
 export const MAX_CONFIGURED_ENVIRONMENT_KEYS = 128;
 export const MAX_CONFIGURED_ENVIRONMENT_ENTRY_BYTES = 65_536;
 export const MAX_CONFIGURED_ENVIRONMENT_BYTES = 262_144;
@@ -122,12 +117,6 @@ export const environmentTaskOperationSchema = z.discriminatedUnion("kind", [
     /** Stable account selection; distinct from its current credential revision. */
     accountIdentity: z.string().min(1).max(1024).optional(),
     credential: environmentTaskCredentialSchema.optional(),
-    /**
-     * Sent only to providers that describe `configuredEnvironmentVersion: 1`.
-     * The provider sets these variables in the Runner's environment, and lets
-     * its own launch variables win on a name collision. Core starts a new task,
-     * not a warm resume, when the values change.
-     */
     configuredEnvironment: environmentTaskConfiguredEnvironmentSchema.optional(),
     /** Core supplies these protected launch inputs for native agent runs. */
     launch: z.object({
@@ -157,7 +146,6 @@ export const environmentTaskOperationSchema = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("release"), identity: durableIdentity }).strict(),
   z.object({ kind: z.literal("resume"), identity: durableIdentity, bootstrapTicket: credentialValue,
     handoffCredential: z.object({ accountIdentity: z.string().min(1).max(1024), environment: claudeCredentialEnvironment }).strict().optional(),
-    /** Only for a session handoff, which starts a new Runner. */
     configuredEnvironment: environmentTaskConfiguredEnvironmentSchema.optional(),
   }).strict(),
   z.object({
@@ -214,7 +202,6 @@ export const environmentTaskResultSchema = z.discriminatedUnion("kind", [
     projectAuthCheckVersion: z.literal(1).optional(),
     workspaceFileReadVersion: z.literal(1).optional(),
     githubCredentialBrokerVersion: z.literal(1).optional(),
-    /** Accepts `configuredEnvironment` on submit and on a session handoff resume. */
     configuredEnvironmentVersion: z.literal(1).optional(),
   }).strict(),
   z.object({

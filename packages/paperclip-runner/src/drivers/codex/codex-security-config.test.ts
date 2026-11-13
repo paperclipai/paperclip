@@ -520,7 +520,6 @@ describe("Codex security configuration", () => {
     const exclude = JSON.parse(args.find(arg => arg.startsWith("shell_environment_policy.exclude="))!.split("=").slice(1).join("="));
     expect(exclude).toEqual([...CODEX_PROVIDER_CREDENTIAL_ENVIRONMENT_KEYS]);
     expect(serialized).not.toContain("fixture-secret-value");
-    // A host launch keeps its bounded allowlist.
     expect(createIsolatedCodexAppServerArgs({ PAPERCLIP_CONFIGURED_ENV_KEYS: '["STRIPE_SECRET_KEY"]', STRIPE_SECRET_KEY: "fixture-secret-value" }).join("\n"))
       .toContain('shell_environment_policy.include_only=["STRIPE_SECRET_KEY"]');
   });
@@ -530,7 +529,6 @@ describe("Codex security configuration", () => {
     const block = /const CODEX_PROVIDER_ENVIRONMENT_KEYS: &\[&str\] = &\[([^\]]*)\];/u.exec(source)?.[1];
     expect(block).toBeDefined();
     const runnerKeys = [...block!.matchAll(/"([A-Z0-9_]+)"/gu)].map(match => match[1]);
-    // These configure Codex or identify the agent. Commands may see them.
     const commandVisible = new Set([
       "OTEL_EXPORTER_OTLP_LOGS_TIMEOUT", "OTEL_EXPORTER_OTLP_TRACES_TIMEOUT",
       "PAPERCLIP_AGENT_KEY_ID", "PAPERCLIP_AGENT_PUBLIC_KEY", "PAPERCLIP_AGENT_PRIVATE_KEY",

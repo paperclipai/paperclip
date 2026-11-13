@@ -4378,7 +4378,6 @@ export function agentRoutes(
       );
     }
 
-    // A rollback restores the revision's env and environment (null when it had none).
     const rollbackWarnings = await checkAgentProtectedEnvironmentKeys(db, rollbackAdapterConfig,
       typeof rollbackConfig.defaultEnvironmentId === "string" ? rollbackConfig.defaultEnvironmentId : null);
 
