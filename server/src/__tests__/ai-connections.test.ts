@@ -2193,6 +2193,26 @@ console.log(JSON.stringify({ type: "result", subtype: "success", result: "hello"
       for (const held of [done!, blockedByDependency!, inReview!]) expect(woken).not.toContain(held.agentId);
     });
 
+    it("resumes a linked task on the repaired connection when the person completes the card with a replacement", async () => {
+      const f = await latchedFleet("replacement", 2);
+      for (const task of f.tasks) await connectionIntentService(db).requestForRunAuthFailure(task.runId!);
+      const [card] = await f.cardsFor(f.tasks.map(task => task.issueId));
+      const owner = f.tasks.find(task => task.issueId === card!.issueId)!;
+      const linked = f.tasks.find(task => task !== owner)!;
+      // The person completes the card with replacement connection C for the
+      // owner, while the linked agent keeps the original connection A, which
+      // is healthy again.
+      const replacement = await service.save(companyId, f.userId, { provider: "anthropic", method: "api_key", ownership: "personal", name: "Repair replacement C",
+        apiKey: "fixture", agentIds: [owner.agentId], allAgents: false }, "fixture-repair-replacement-c");
+      await db.update(agents).set({ runtimeConfig: { aiConnection: { ...binding, mode: "delegated", connectionId: replacement.connectionId, grantId: replacement.grantId } } })
+        .where(eq(agents.id, owner.agentId));
+      await f.reconnect();
+      await connectionIntentService(db).complete(card!.id, replacement.connectionId, f.userId);
+      const wakeup = await f.deliverAll([card!.id]);
+      expect(wakeup).toHaveBeenCalledWith(linked.agentId, expect.objectContaining({
+        payload: expect.objectContaining({ issueId: linked.issueId }) }));
+    });
+
     it("does not restore a linked task whose newer failure is on another connection", async () => {
       const f = await latchedFleet("other-connection", 2);
       for (const task of f.tasks) await connectionIntentService(db).requestForRunAuthFailure(task.runId!);

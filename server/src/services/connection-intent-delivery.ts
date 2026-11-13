@@ -183,7 +183,10 @@ export function connectionIntentDeliveryService(db: Db, heartbeat: Pick<Heartbea
         const usable = await connectionIntentService(db).usableConnectionForAgent({ companyId: interaction.companyId,
           agentId: linked.agentId, responsibleUserId: interaction.addresseeUserId, serviceSlug: payload.serviceSlug,
           purpose: "ai", sourceRunId: linked.sourceRunId });
-        if (!usable || (resolvedConnectionId && usable.id !== resolvedConnectionId)) continue;
+        // The usable connection must be one this card repaired: the
+        // connection it was resolved against or its original repair target.
+        const repaired = [resolvedConnectionId, payload.repairConnectionId].filter(Boolean);
+        if (!usable || (repaired.length && !repaired.includes(usable.id))) continue;
       }
       let current = issue;
       if (connectionRestored && current.status === "blocked") {
