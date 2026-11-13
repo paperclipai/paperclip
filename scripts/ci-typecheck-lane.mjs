@@ -11,6 +11,7 @@ import { PROJECTS } from "./typecheck-test-projects.mjs";
 export const SERIAL_BUILD_GAPS = ["@paperclipai/paperclip-runner"];
 export const BACKGROUND_PRIORITY = 10;
 const SERVER_DECLARATIONS = "server declarations";
+export const CLI_GUIDANCE_SAFETY = "CLI guidance safety";
 const lowMemory = { [LOW_MEMORY_VARIABLE]: "1" };
 
 export function planLane({ buildGapPackages, testLayers, projects = PROJECTS }) {
@@ -37,6 +38,11 @@ export function planLane({ buildGapPackages, testLayers, projects = PROJECTS }) 
     },
     { name: "install test program dependencies", command: "node", args: ["scripts/typecheck-test-programs.mjs", "--prepare-only"] },
     ...buildGapPackages.filter((name) => SERIAL_BUILD_GAPS.includes(name)).map((name) => typecheckPackage(name, false)),
+    {
+      name: CLI_GUIDANCE_SAFETY,
+      command: "pnpm",
+      args: ["exec", "vitest", "run", "--project", "@paperclipai/server", "server/src/__tests__/cli-invocation-safety.test.ts"],
+    },
   ];
   const needsDeclarations = [SERVER_DECLARATIONS];
   const tasks = [
@@ -67,12 +73,6 @@ export function planLane({ buildGapPackages, testLayers, projects = PROJECTS }) 
       needs: needsDeclarations,
     })),
     ...buildGapPackages.filter((name) => !SERIAL_BUILD_GAPS.includes(name)).map((name) => typecheckPackage(name, true)),
-    {
-      name: "CLI guidance safety",
-      command: "pnpm",
-      args: ["exec", "vitest", "run", "--project", "@paperclipai/server", "server/src/__tests__/cli-invocation-safety.test.ts"],
-      background: true,
-    },
   ];
   return { prepare, tasks };
 }
