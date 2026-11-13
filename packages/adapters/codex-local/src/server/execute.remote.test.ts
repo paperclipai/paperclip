@@ -7,6 +7,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 const {
   runChildProcess,
+  executeAcp,
   ensureCommandResolvable,
   resolveCommandForLogs,
   prepareWorkspaceForSshExecution,
@@ -15,6 +16,7 @@ const {
   syncDirectoryToSsh,
   startAdapterExecutionTargetPaperclipBridge,
 } = vi.hoisted(() => ({
+  executeAcp: vi.fn(async (_ctx?: unknown) => ({ exitCode: 0, signal: null, timedOut: false, resultJson: { engine: "acp" } })),
   runChildProcess: vi.fn(async () => ({
     exitCode: 1,
     signal: null,
@@ -39,6 +41,11 @@ const {
     stop: async () => {},
   })),
 }));
+
+vi.mock("./acp.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("./acp.js")>();
+  return { ...actual, createCodexAcpExecutor: () => executeAcp };
+});
 
 vi.mock("@paperclipai/adapter-utils/server-utils", async () => {
   const actual = await vi.importActual<typeof import("@paperclipai/adapter-utils/server-utils")>(
@@ -89,6 +96,50 @@ describe("codex remote execution", () => {
       if (!dir) continue;
       await rm(dir, { recursive: true, force: true }).catch(() => undefined);
     }
+  });
+
+  function managedSshAcpContext(engine?: string) {
+    return {
+      runId: "managed-ssh-acp", agent: { id: "agent-1", companyId: "company-1", name: "Selected agent", adapterType: "codex_local", adapterConfig: {} },
+      runtime: { sessionId: null, sessionParams: null, sessionDisplayId: null, taskKey: "task" },
+      config: { engine, managedAiConnection: { provider: "openai", method: "subscription", identity: "selected-account" },
+        env: { OPENAI_API_KEY: "fixture-selected-token" } } as Record<string, unknown>,
+      context: {}, onLog: async () => {},
+      executionTarget: { kind: "remote" as const, transport: "ssh" as const, remoteCwd: "/remote/workspace",
+        spec: { useHostAuth: false as boolean | undefined, host: "ssh.example.test", port: 22, username: "agent", remoteCwd: "/remote/workspace", remoteWorkspacePath: "/remote/workspace", privateKey: null, knownHosts: null, strictHostKeyChecking: true },
+        workspaceRealization: { mode: "copy" as "copy" | "in_place", authoritativeRoot: "/remote/workspace", pathAliases: [], outboundRestorePaths: [] } },
+    };
+  }
+
+  it.each([undefined, "acp"])("admits managed SSH ACP through the public execution entry (engine=%s)", async engine => {
+    const ctx = managedSshAcpContext(engine);
+    const previous = process.env.OPENAI_API_KEY;
+    process.env.OPENAI_API_KEY = "fixture-server-secret";
+    try {
+      expect(await execute(ctx)).toMatchObject({ exitCode: 0, resultJson: { engine: "acp" } });
+      expect(executeAcp).toHaveBeenCalledWith(ctx);
+      expect(ensureCommandResolvable).toHaveBeenCalledWith("codex-acp", expect.any(String), {}, {
+        remoteExecution: expect.objectContaining({ host: "ssh.example.test", useHostAuth: false }),
+      });
+    } finally {
+      if (previous === undefined) delete process.env.OPENAI_API_KEY;
+      else process.env.OPENAI_API_KEY = previous;
+    }
+  });
+
+  it.each(["host auth", "legacy auth", "missing account", "in-place", "confinement", "missing command"])("rejects unsupported SSH ACP at the public execution entry: %s", async reason => {
+    const ctx = managedSshAcpContext("acp");
+    const originalResolve = ensureCommandResolvable.getMockImplementation()!;
+    if (reason === "host auth") ctx.executionTarget.spec.useHostAuth = true;
+    if (reason === "legacy auth") ctx.executionTarget.spec.useHostAuth = undefined;
+    if (reason === "missing account") delete ctx.config.managedAiConnection;
+    if (reason === "in-place") ctx.executionTarget.workspaceRealization.mode = "in_place";
+    if (reason === "confinement") ctx.config.filesystemScope = "workspace";
+    if (reason === "missing command") ensureCommandResolvable.mockRejectedValueOnce(new Error("fixture ACP command unavailable"));
+    try {
+      expect(await execute(ctx)).toMatchObject({ exitCode: 1, errorCode: "adapter_engine_unavailable" });
+      expect(executeAcp).not.toHaveBeenCalled();
+    } finally { ensureCommandResolvable.mockReset().mockImplementation(originalResolve); }
   });
 
   it.each([false, true])("retains a managed SSH Codex conversation across turns and removes credentials (second turn throws=%s)", async fails => {
