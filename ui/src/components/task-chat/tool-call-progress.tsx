@@ -99,6 +99,22 @@ export class ToolCallProgressStore {
   want() { this.#onWanted(); }
   entries() { return this.#entries.values(); }
   /** Keeps the newer of what is known; a finished call stays finished. */
+  /**
+   * Applies a fresh read started at `readStartedAt` (ISO). A call it no longer
+   * lists has finished, unless a live update newer than the read arrived since.
+   */
+  applySaved(snapshots: readonly ToolCallProgressSnapshot[], readStartedAt: string) {
+    const listed = new Set(snapshots.map((entry) => entry.invocationId));
+    let removed = false;
+    for (const [id, entry] of this.#entries) {
+      if (!listed.has(id) && !entry.done && entry.updatedAt <= readStartedAt) {
+        this.#entries.delete(id);
+        removed = true;
+      }
+    }
+    for (const entry of snapshots) this.put(entry);
+    if (removed) for (const listener of this.#listeners) listener();
+  }
   put(snapshot: ToolCallProgressSnapshot) {
     const previous = this.#entries.get(snapshot.invocationId);
     if (previous && (previous.done || (!snapshot.done && previous.updatedAt > snapshot.updatedAt))) return;
@@ -122,15 +138,19 @@ export function ToolCallProgressProvider({ issueId, children }: { issueId: strin
   const store = useMemo(() => new ToolCallProgressStore(() => setWantedFor(issueId ?? null)), [issueId]);
   const saved = useQuery({
     queryKey: queryKeys.toolCallProgress(issueId ?? ""),
-    queryFn: () => mcpAppsApi.toolCallProgress(issueId!),
+    queryFn: async () => {
+      const readStartedAt = new Date().toISOString();
+      return { readStartedAt, entries: await mcpAppsApi.toolCallProgress(issueId!) };
+    },
     enabled: Boolean(issueId) && wantedFor === issueId,
     // Read again whenever a chat with a running call mounts; live events cover the rest.
     staleTime: 0,
     refetchOnMount: "always",
-    refetchOnWindowFocus: false,
+    // Live events are not handled while the tab is hidden; read again on return.
+    refetchOnWindowFocus: true,
   });
   useEffect(() => {
-    for (const entry of saved.data ?? []) store.put(entry);
+    if (saved.data) store.applySaved(saved.data.entries, saved.data.readStartedAt);
   }, [saved.data, store]);
   useCompanyLiveEvent((event) => {
     if (event.type !== "heartbeat.run.tool_progress" || !issueId || event.payload?.issueId !== issueId) return;
