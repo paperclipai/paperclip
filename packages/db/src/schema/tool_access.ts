@@ -967,6 +967,52 @@ export const toolMcpTasks = pgTable(
 );
 
 /**
+ * A provider's form question waiting on a person (MCP elicitation). One row per
+ * question round: a stateless server's `input_required` result, or one older
+ * server's `elicitation/create`. The question cards hold the answers; this row
+ * holds what the repeated call needs to send them back, exactly once.
+ */
+export const toolMcpElicitations = pgTable(
+  "tool_mcp_elicitations",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    companyId: uuid("company_id").notNull().references(() => companies.id, { onDelete: "cascade" }),
+    issueId: uuid("issue_id").notNull(),
+    agentId: uuid("agent_id"),
+    runId: uuid("run_id"),
+    /** The call that was asked. */
+    invocationId: uuid("invocation_id").notNull().references(() => toolInvocations.id, { onDelete: "cascade" }),
+    connectionId: uuid("connection_id").notNull().references(() => toolConnections.id, { onDelete: "cascade" }),
+    /** Only the same grant's repeated call may send the answers. */
+    grantId: uuid("grant_id").notNull(),
+    catalogToolName: text("catalog_tool_name").notNull(),
+    /** Keyed identity of endpoint, tool, arguments, grant, and agent; only an identical call collects the round. */
+    callIdentity: text("call_identity").notNull(),
+    /** modern: a stateless input_required round. legacy: one server-initiated question. */
+    era: text("era").notNull(),
+    /** The server's opaque requestState, sealed (it may carry authority). */
+    sealedRequestState: text("sealed_request_state"),
+    /** One entry per form question: the server's key, its words and schema (shown on the card, never an answer), and its card. */
+    questions: jsonb("questions").$type<Array<{
+      key: string; questionHash: string; interactionId: string;
+      message: string; requestedSchema: Record<string, unknown> | null;
+    }>>().notNull(),
+    /** waiting | sent | expired */
+    status: text("status").notNull(),
+    /** A repeated call sending the answers holds the round until then. */
+    claimedUntil: timestamp("claimed_until", { withTimezone: true }),
+    expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+    sentAt: timestamp("sent_at", { withTimezone: true }),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    index("tool_mcp_elicitations_call_idx").on(table.companyId, table.issueId, table.connectionId, table.callIdentity, table.status),
+    index("tool_mcp_elicitations_invocation_idx").on(table.companyId, table.invocationId),
+  ],
+);
+
+/**
  * Verified skill files, written only by the server after a size and SHA-256
  * check and never changed in place. Rows are keyed by connection and digest,
  * so the same URI from two servers never shares bytes. Agents cannot write

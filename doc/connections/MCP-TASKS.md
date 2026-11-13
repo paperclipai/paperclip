@@ -58,7 +58,7 @@ Paperclip polls, which the specification makes the default.
 | Attach | A call with the same endpoint, tool, full arguments, grant, agent, task, and actor attaches to the undelivered task instead of sending `tools/call` again. So does a retry with the same idempotency key, including after a crash mid-wait; the same key with other arguments is refused and leaves the original retry intact. One holder at a time (a lease): a second simultaneous caller is told to call again. | `findAttachableMcpTask`, `mcpTaskForKeyedRetry`, `claimMcpTask` |
 | Deliver | A completed task counts as delivered only once its result is recorded on the call. A crash in between leaves it collectable again. | `markMcpTaskDelivered` |
 | Restart | Background work reads pending rows at startup and polls each at its next deadline, with each request bounded to 30 s. It rechecks the same access a live call needs (grant, audience, delegation). When a task settles, or asks a new question, after its run has ended, the assignee is woken once; the agent's repeated call collects the result or shows the question. | `pollDueMcpTasks`, `server/src/services/mcp-task-work.ts` |
-| Input | URL requests show the provider link, as for a direct request; Paperclip never answers them for the person. Form requests become a question card on the task; only the person's answer is sent with `tasks/update`. Other requests (sampling, roots) stop with a clear "needs input" error. | `planMcpTaskInput` |
+| Input | URL requests show the provider link, as for a direct request; Paperclip never answers them for the person. Form requests become a question card on the task, built and answered as in [MCP-ELICITATION.md](./MCP-ELICITATION.md) (human-only, typed fields; skip sends `decline`, other endings `cancel`); only the person's answer is sent with `tasks/update`. Other requests (sampling, roots) stop with a clear "needs input" error. | `planMcpTaskInput` |
 | Cancel | Stopping the run sends `tasks/cancel` and marks the row cancelled. Closing the task or stopping its run does the same for a task in the background; a later call reports the cancellation and never revives it. A caller that only disconnects keeps the task. | `cancelMcpTaskRecord`, `mcpTaskStopReason` |
 | Finish | `failed` becomes a tool error with the provider's message. An unknown task (`-32602`) or a passed TTL becomes a clear error telling the agent to run the action again. Nothing waits forever: every task stops being tracked after its TTL, and seven days after Paperclip first saw it at most. | `provider_task_failed`, `provider_task_expired` |
 
@@ -120,8 +120,6 @@ returns to approved, and its next execution attaches to the same task.
 - Sampling and roots input requests.
 - Showing a long-running provider action's progress (`statusMessage`) in the
   task chat.
-- Validating question-card answers against the provider's form schema (types,
-  required fields) and letting the person correct them before `tasks/update`.
 
 ## Tests
 
