@@ -1,5 +1,5 @@
 {
-  "id": "d7b770a3-d8a6-45c9-a592-674abfcd9d61",
+  "id": "ee1f1f66-0cbe-4b18-b364-5e96708a1f0b",
   "prevId": "a7108924-4d75-41e2-9139-f43f9396c02d",
   "version": "7",
   "dialect": "postgresql",
@@ -53942,6 +53942,7 @@
             }
           ],
           "isUnique": true,
+          "where": "\"sandbox_creation_operations\".\"state\" <> 'resolved'",
           "concurrently": false,
           "method": "btree",
           "with": {}
@@ -57541,12 +57542,6 @@
           "primaryKey": false,
           "notNull": false
         },
-        "icons": {
-          "name": "icons",
-          "type": "jsonb",
-          "primaryKey": false,
-          "notNull": false
-        },
         "risk_level": {
           "name": "risk_level",
           "type": "text",
@@ -59767,18 +59762,6 @@
           "type": "jsonb",
           "primaryKey": false,
           "notNull": true
-        },
-        "model_context": {
-          "name": "model_context",
-          "type": "jsonb",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "model_context_updated_at": {
-          "name": "model_context_updated_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": false
         },
         "created_at": {
           "name": "created_at",

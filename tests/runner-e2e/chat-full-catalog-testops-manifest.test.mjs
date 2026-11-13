@@ -464,6 +464,10 @@ test('repair source metadata binds the corrected candidate and explicit changed 
     "originalContext"
   ],
   [
+    "recovery.retry-exhausted",
+    "expectedOutcome"
+  ],
+  [
     "recovery.source-action",
     "originalContext"
   ],
