@@ -1,3 +1,4 @@
+import { COMPLETION_REVIEW_STAGE_REASON, COMPLETION_REVIEW_STAGE_REJECTED_REASON, type CompletionReviewStageEntry } from "../issue-execution-policy.js";
 import type { NativeEvidenceAssessment } from "./evidence-classifier.js";
 import { NATIVE_MODEL_REJECTION_MESSAGE, NATIVE_PROVIDER_CAPACITY_MAX_RETRIES, NATIVE_PROVIDER_OVERLOADED_CODE, NATIVE_PROVIDER_OVERLOADED_MESSAGE } from "./native-provider-failure.js";
 
@@ -95,6 +96,7 @@ export interface NativeStatusDecision {
     action: string;
   } | null;
   effects: NativeStatusEffect[];
+  blockerOwnerKind?: string;
 }
 
 /**
@@ -113,6 +115,27 @@ export function heldByAnotherRun(issue: { executionRunId?: string | null }, runI
   return Boolean(issue.executionRunId && issue.executionRunId !== runId);
 }
 
+/**
+ * The configured review policy decides a Done exactly as the issue route does:
+ * a stage that starts turns Done into its review, and a refused transition
+ * keeps the task open with a recovery note. Every Done-producing path applies it.
+ */
+export function gateDoneOnConfiguredReview(
+  decision: NativeStatusDecision,
+  stage: CompletionReviewStageEntry,
+  agentId: string,
+): NativeStatusDecision {
+  if (decision.statusAction !== "done" || stage.kind === "none") return decision;
+  if (stage.kind === "starts") {
+    return { ...decision, statusAction: "in_review", toStatus: "in_review", reasonCode: COMPLETION_REVIEW_STAGE_REASON,
+      unblockDescriptor: null, effects: [{ kind: "release_checkout" }] };
+  }
+  return { ...decision, statusAction: "in_progress", toStatus: "in_progress", reasonCode: COMPLETION_REVIEW_STAGE_REJECTED_REASON,
+    unblockDescriptor: null, effects: [{ kind: "release_checkout" }, { kind: "record_recovery", cause: COMPLETION_REVIEW_STAGE_REJECTED_REASON,
+      nextAction: `The task's configured review policy cannot start its review: ${stage.message} Correct the review stages or participants; do not mark the task done.`,
+      agentId }] };
+}
+
 export function supersedeStaleOwnerCompletion(
   decision: NativeStatusDecision,
   issue: { status: string; assigneeAgentId: string | null; assigneeUserId: string | null;
@@ -120,7 +143,7 @@ export function supersedeStaleOwnerCompletion(
   agentId: string,
   runId?: string,
 ): NativeStatusDecision {
-  if (decision.statusAction !== "done") return decision;
+  if (decision.statusAction !== "done" && decision.reasonCode !== COMPLETION_REVIEW_STAGE_REASON) return decision;
   const ownerSuperseded = !ownsNativeTaskCompletion(issue, agentId);
   if (!ownerSuperseded && !(runId && heldByAnotherRun(issue, runId))) return decision;
   return {
@@ -223,6 +246,11 @@ export function arbitrateNativeStatus(input: {
    * the completion authority for its done report, as the policy intends.
    */
   executionStageApprovedByRun?: boolean;
+  /**
+   * Done would start the task's configured review stage. That reviewer, not
+   * the worker's evidence references, accepts the work, as on the issue route.
+   */
+  executionReviewStageStarts?: boolean;
   /** Re-derived from the committed runner terminal and pinned execution identity. */
   providerModelRejected?: boolean;
   providerOverloaded?: boolean;
@@ -517,7 +545,14 @@ export function arbitrateNativeStatus(input: {
     !input.assessment.hasFailedVerification &&
     input.assessment.attentionRequests.length === 0 &&
     !input.assessment.hasBlockingRemainingWork;
-  const complete = evidenceComplete || policyClaimComplete || stageApprovalComplete;
+  const reviewStageClaim =
+    input.executionReviewStageStarts === true &&
+    input.assessment.reportedDisposition === "done" &&
+    input.assessment.objectiveClaimSatisfied &&
+    !input.assessment.hasFailedVerification &&
+    input.assessment.attentionRequests.length === 0 &&
+    !input.assessment.hasBlockingRemainingWork;
+  const complete = evidenceComplete || policyClaimComplete || stageApprovalComplete || reviewStageClaim;
   if (complete && input.hasPendingChildCompletion) {
     return {
       policyVersion: NATIVE_STATUS_ARBITER_POLICY_VERSION,
@@ -526,6 +561,16 @@ export function arbitrateNativeStatus(input: {
       reasonCode: "native_child_completion_pending",
       unblockDescriptor: null,
       // The durable outbox/deferred wake already owns exactly one continuation.
+      effects: [{ kind: "release_checkout" }],
+    };
+  }
+  if (complete && input.executionReviewStageStarts === true) {
+    return {
+      policyVersion: NATIVE_STATUS_ARBITER_POLICY_VERSION,
+      statusAction: "in_review",
+      toStatus: "in_review",
+      reasonCode: COMPLETION_REVIEW_STAGE_REASON,
+      unblockDescriptor: null,
       effects: [{ kind: "release_checkout" }],
     };
   }
@@ -575,6 +620,7 @@ export function arbitrateNativeStatus(input: {
         statusAction: "blocked",
         toStatus: "blocked",
         reasonCode: "task_wide_blocker_bound",
+        blockerOwnerKind: input.assessment.blocker.ownerKind,
         unblockDescriptor: {
           owner,
           action: input.assessment.blocker.unblockAction,
@@ -598,6 +644,7 @@ export function arbitrateNativeStatus(input: {
       statusAction: "blocked",
       toStatus: "blocked",
       reasonCode: "current_track_blocker_waiting",
+      blockerOwnerKind: input.assessment.blocker.ownerKind,
       // A provider's current_track label is not evidence that another
       // authorized, productive track exists. Bind the actual unblock request
       // without waking the same agent to repeat the blocked work or old title.

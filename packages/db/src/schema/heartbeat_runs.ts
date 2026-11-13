@@ -176,6 +176,8 @@ export const heartbeatRuns = pgTable(
     companyWakeCommentIdx: index("heartbeat_runs_company_wake_comment_idx")
       .on(table.companyId, sql`(${table.contextSnapshot}->>'wakeCommentId')`)
       .concurrently(),
+    queuedCreatedIdx: index("heartbeat_runs_queued_created_idx").on(table.companyId, table.createdAt, table.id)
+      .where(sql`${table.status} = 'queued'`).concurrently(),
     costAccountingPendingIdx: index("heartbeat_runs_cost_accounting_pending_idx").on(table.updatedAt, table.id).where(sql`${table.costAccountingPending} = true`),
     costDataQualityIdx: index("heartbeat_runs_cost_data_quality_idx")
       .on(table.companyId, sql`coalesce(${table.finishedAt}, ${table.createdAt}) desc`, table.id)

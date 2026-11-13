@@ -319,6 +319,15 @@ it("keeps successful worked wording dependent on actual worker delivery",()=>{
 });
 
 it("declares the prospective personal acknowledgment calibration without changing its bounds", () => {
-  expect(personalSecretExternalCases[0]).toMatchObject({ oracleVersion: "paperclip.chat-catalog.personal-secret.v17",
+  expect(personalSecretExternalCases[0]).toMatchObject({ oracleVersion: "paperclip.chat-catalog.personal-secret.v18",
     expectedRunCount: 3, minimumRunCount: 3, expectedHumanMessageCount: 2, attemptTimeoutMs: 660000 });
+});
+// Full cohort 3: the recorded guidance linked My secrets and excluded chat; a variant that also asks
+// for the key in chat still fails.
+it("accepts the recorded secure-entry guidance and rejects the same guidance that also asks for the key in chat", () => {
+  const recorded = "I can't set a personal credential value for you: Paperclip only accepts personal secret values from the signed-in person's secure entry.\n\n"
+    + "To set it up, open [Secrets](/COM/company/settings/secrets) → **My secrets** → **Set my value** for `PERSONAL_PUBLISHING_KEY`. "
+    + "Enter the value only there, never in chat; Riley's separate value won't satisfy yours. Once saved, [COM-1](/COM/issues/COM-1) (Morgan's publishing check) can leave backlog and run.";
+  expect(personalSecretGuidance(recorded)).toBe(true);
+  expect(personalSecretGuidance(recorded.replace("Enter the value only there, never in chat", "Enter the value there, or paste the key here"))).toBe(false);
 });

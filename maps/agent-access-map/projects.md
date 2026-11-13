@@ -26,10 +26,13 @@ API: `present` — representative operation IDs:
 Agent access: `available` — Native create_project/list_projects; REST / CLI / MCP.
 
 Policy: Company/project visibility, protected configuration/runtime policies; some
-repository/privacy management requires board.
+repository/privacy management requires board. Only a board user may set or clear a
+project's `decisionOwnerUserId` (PAP-749 escalation owner); an agent's change is 403,
+and a value that is not an active company member is 422.
 
 Evidence: `source-only` — [implementation](../../server/src/routes/projects.ts#L278) at
-the reviewed commit above.
+the reviewed commit above; the decision-owner rule is covered by
+[route tests](../../server/src/__tests__/project-decision-owner-route.test.ts).
 
 Verification: `not-run` — exercise a listed permitted operation with actual agent
 credentials/run context; inspect its result and applicable persistence/attribution.

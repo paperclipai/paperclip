@@ -745,7 +745,8 @@ export function classifyNativeRunnerRecoveryEvidence(input: {
   /** Durable evidence proves a claimed remote bootstrap reached no provider work. */
   remoteBootstrapProvenIncomplete?: boolean;
   remoteBootstrapIncompleteReason?: "remote_runner_never_launched" | "remote_session_opened_without_turn"
-    | "remote_runner_exited_before_provider_work" | "remote_runner_never_received_commands";
+    | "remote_runner_exited_before_provider_work" | "remote_runner_never_received_commands"
+    | "remote_follow_up_never_attached";
   processStartMatches: boolean;
   knownProviderProcessAlive?: boolean;
   knownProviderProcessIdentityAmbiguous?: boolean;
@@ -1592,7 +1593,22 @@ export async function claimNativeRestartRecoveries(input: {
         // Fresh evidence wins over the saved failure: any event the runner or
         // provider sent contradicts "no provider work".
         && !(await hasNativeRunnerOriginatedEvidence(tx, row.run));
-      if ((remoteRunnerNeverLaunched || remoteRunnerExitedBeforeProviderWork) && row.coordinator.phase === "retryable_failure" && !admission.exhausted
+      const remoteFollowUpNeverAttached = !unclaimedBootstrap && !remoteRunnerNeverLaunched && !remoteRunnerExitedBeforeProviderWork
+        && remoteWorkspace?.state === "prepared" && !pluginTask && !durableAuthority && stagedAttachment === null
+        && row.run.runnerProfileJson?.nativePreparationFencingVersion === NATIVE_PREPARATION_FENCING_VERSION
+        && row.coordinator.phase === "retryable_failure" && row.run.status === "failed" && !row.coordinator.leaseOwner
+        && settledFailure?.recoveryMode === "bootstrap_retry"
+        && settledFailure?.originalFailureCode === "local_runtime_api_listener_unavailable"
+        && settledFailure?.providerSessionEstablished === false && settledFailure?.providerEventsExist === false
+        && !settledFailure?.successorRunId
+        && continuedSessionOnly && inheritedCheckpointOnly && !row.run.sessionIdAfter
+        && Boolean(row.run.nativeSessionId && row.run.runnerInstanceId)
+        && (inheritedRunnerIdentity || (!row.run.processPid && !row.run.processGroupId && !row.run.processStartedAt))
+        && await carriesSettledPredecessorSession(tx, row.run, checkpointRecord.providerSessionId)
+        && !(await hasNativeRunnerOriginatedEvidence(tx, row.run))
+        && !(await hasNativeRunEvent(tx, row.run, PROCESS_IDENTITY_RECORDED));
+      if ((remoteRunnerNeverLaunched || remoteRunnerExitedBeforeProviderWork || remoteFollowUpNeverAttached)
+        && row.coordinator.phase === "retryable_failure" && !admission.exhausted
         && !await readNativeSessionResumptionAgent(tx as unknown as Db, { issue, run: row.run, coordinator: row.coordinator })) {
         const deferred = await deferRemoteRetry("native_retry_admission_ineligible", ["done", "cancelled"].includes(issue.status));
         if (deferred) return deferred;
@@ -1633,7 +1649,7 @@ export async function claimNativeRestartRecoveries(input: {
         && (!ownProviderEvidence || remoteBootstrapProof === "session_opened_without_turn");
 
       const remoteRunnerNeverReceivedCommands = !unclaimedBootstrap && !remoteRunnerNeverLaunched
-        && !remoteRunnerExitedBeforeProviderWork && !remoteBootstrapProvenIncomplete
+        && !remoteRunnerExitedBeforeProviderWork && !remoteBootstrapProvenIncomplete && !remoteFollowUpNeverAttached
         && remoteSandbox && remoteWorkspace !== null && !pluginTask && !durableAuthority && stagedAttachment === null
         && admissionCheckpointOnly && providerEvents.length === 0
         && row.run.runnerProfileJson?.nativePreparationFencingVersion === NATIVE_PREPARATION_FENCING_VERSION
@@ -1659,10 +1675,11 @@ export async function claimNativeRestartRecoveries(input: {
         remoteSandbox: remoteSandbox || Boolean(pluginTask && durableAuthority),
         unclaimedBootstrap,
         remoteBootstrapProvenIncomplete: remoteBootstrapProvenIncomplete || remoteRunnerNeverLaunched
-          || remoteRunnerExitedBeforeProviderWork || remoteRunnerNeverReceivedCommands,
+          || remoteRunnerExitedBeforeProviderWork || remoteRunnerNeverReceivedCommands || remoteFollowUpNeverAttached,
         remoteBootstrapIncompleteReason: remoteRunnerNeverLaunched ? "remote_runner_never_launched"
           : remoteRunnerExitedBeforeProviderWork ? "remote_runner_exited_before_provider_work"
           : remoteRunnerNeverReceivedCommands ? "remote_runner_never_received_commands"
+          : remoteFollowUpNeverAttached ? "remote_follow_up_never_attached"
           : remoteBootstrapProof === "session_opened_without_turn" ? "remote_session_opened_without_turn" : undefined,
         runnerPidAlive,
         runnerGroupAlive,
@@ -1671,7 +1688,7 @@ export async function claimNativeRestartRecoveries(input: {
         knownProviderProcessIdentityAmbiguous:
           providerProcesses.ambiguousLivePids.length > 0,
         hasCheckpoint: hasCheckpoint && !remoteRunnerNeverReceivedCommands && !(unclaimedBootstrap && inheritedCheckpointOnly)
-          && !remoteRunnerNeverLaunched && !(remoteBootstrapProvenIncomplete && reboundSessionOnly),
+          && !remoteRunnerNeverLaunched && !remoteFollowUpNeverAttached && !(remoteBootstrapProvenIncomplete && reboundSessionOnly),
         stagedAttachmentVerified: stagedAttachment !== null,
         checkpointIdentityMatches:
           checkpointIdentityMatches &&

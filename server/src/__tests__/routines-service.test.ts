@@ -251,6 +251,26 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
     expect(f.wakeups).toEqual([]);
   });
 
+  it("lets only a person choose an unauthenticated public webhook trigger", async () => {
+    const f = await seedFixture();
+    const webhook = { kind: "webhook", enabled: true, replayWindowSec: 300 } as const;
+    const agent = { agentId: f.agentId };
+    await expect(f.svc.createTrigger(f.routine.id, { ...webhook, signingMode: "none" }, agent))
+      .rejects.toMatchObject({ status: 403, message: expect.stringContaining("Agents can only create authenticated webhook triggers") });
+    const signed = await f.svc.createTrigger(f.routine.id, { ...webhook, signingMode: "bearer" }, agent);
+    expect(signed.trigger.signingMode).toBe("bearer");
+    await expect(f.svc.updateTrigger(signed.trigger.id, { signingMode: "none" }, agent)).rejects.toMatchObject({ status: 403 });
+    const open = await f.svc.createTrigger(f.routine.id, { ...webhook, signingMode: "none" }, { userId: "board-user" });
+    expect(open.trigger.signingMode).toBe("none");
+    await expect(f.svc.updateTrigger(open.trigger.id, { label: "Inbound", signingMode: "none" }, agent))
+      .resolves.toMatchObject({ trigger: { label: "Inbound", signingMode: "none" } });
+    await f.svc.updateTrigger(signed.trigger.id, { signingMode: "none" }, { userId: "board-user" });
+    const unsafeRevision = (await f.svc.listRevisions(f.routine.id))[0]!.id;
+    await f.svc.updateTrigger(signed.trigger.id, { signingMode: "bearer" }, { userId: "board-user" });
+    await expect(f.svc.restoreRevision(f.routine.id, unsafeRevision, agent)).rejects.toMatchObject({ status: 403 });
+    expect((await f.svc.getTrigger(signed.trigger.id))!.signingMode).toBe("bearer");
+  });
+
   it("preserves creation ancestry through regular webhooks, child tasks, and standalone follow-ups", async () => {
     vi.stubEnv("PAPERCLIP_AGENT_JWT_SECRET", randomUUID().repeat(2));
     const f = await seedFixture();

@@ -729,7 +729,8 @@ export const commandV3Schema = {
         "session.goal.get",
         "session.goal.set",
         "session.goal.clear",
-        "external_provider.operation"
+        "external_provider.operation",
+        "runner.attachment.download"
       ]
     },
     "issuedAt": {
@@ -6240,6 +6241,7 @@ export const eventV3Schema = {
         "external_provider.dispatch_requested",
         "external_provider.operation_settled",
         "external_provider.input_available",
+        "runner.attachment.settled",
         "auth.credentials.updated",
         "runtime.activity.recorded"
       ]

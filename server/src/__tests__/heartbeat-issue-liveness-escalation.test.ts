@@ -32,6 +32,8 @@ import {
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
 
+import { resolveExternalTestDatabaseUrl } from "./helpers/external-test-database.js";
+
 const mockAdapterExecute = vi.hoisted(() =>
   vi.fn(async () => ({
     exitCode: 0,
@@ -79,7 +81,10 @@ import {
   buildIssueBlockersResolvedWakeStateKeyWithoutCycle,
 } from "../services/issue-dependency-wakeups.ts";
 
-const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
+const externalUrl = resolveExternalTestDatabaseUrl("PAPERCLIP_ATTENTION_TEST_DATABASE_URL");
+const embeddedPostgresSupport = externalUrl
+  ? { supported: true, reason: undefined }
+  : await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
 
 if (!embeddedPostgresSupport.supported) {
@@ -93,8 +98,10 @@ describeEmbeddedPostgres("heartbeat resolved dependency wake reconciliation", ()
   let db: ReturnType<typeof createDb>;
 
   beforeAll(async () => {
-    tempDb = await startEmbeddedPostgresTestDatabase("paperclip-heartbeat-issue-liveness-");
-    db = createDb(tempDb.connectionString);
+    if (!externalUrl) {
+      tempDb = await startEmbeddedPostgresTestDatabase("paperclip-heartbeat-issue-liveness-");
+    }
+    db = createDb(externalUrl ?? tempDb!.connectionString);
   }, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS);
 
   afterEach(async () => {
@@ -134,6 +141,7 @@ describeEmbeddedPostgres("heartbeat resolved dependency wake reconciliation", ()
   });
 
   afterAll(async () => {
+    await db?.$client.end({ timeout: 1 });
     await tempDb?.cleanup();
   }, 30_000);
 
@@ -482,9 +490,10 @@ describeEmbeddedPostgres("heartbeat resolved dependency wake reconciliation", ()
     const feed = await attentionService(db).list(companyId, { userId: "responsible-user" });
     expect(feed.items.find((item) => item.subject.id === actions[0].id)).toMatchObject({
       sourceKind: "recovery_action",
+      inlineResolvable: false,
       relatedIssue: expect.objectContaining({ id: issueId }),
       decisionVerbs: expect.arrayContaining([
-        expect.objectContaining({ id: "resolve", label: "Resolve" }),
+        expect.objectContaining({ id: "open_recovery", label: "Open recovery" }),
       ]),
     });
   });
@@ -594,7 +603,7 @@ describeEmbeddedPostgres("heartbeat resolved dependency wake reconciliation", ()
     }
     // Only the terminal run and completed wake were persisted before the crash.
     // A new service must restore the missing action without invoking the agent.
-    const singleConnectionDb = createDb(tempDb!.connectionString, { maxConnections: 1 });
+    const singleConnectionDb = createDb(externalUrl ?? tempDb!.connectionString, { maxConnections: 1 });
     try {
       if (gap === "transaction_failure") {
         await db.execute(sql`alter table issue_comments add constraint review_repair_notice_test check (false) not valid`);

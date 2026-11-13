@@ -279,6 +279,26 @@ export function pluginRegistryService(db: Db) {
         .then((rows) => rows[0] ?? null));
     },
 
+    /**
+     * Update status and error only while the row still has the expected status
+     * (and, when given, an error with the expected prefix). Returns null when a
+     * concurrent change such as a disable or an uninstall won.
+     */
+    updateStatusIf: async (id: string, expected: { status: string; lastErrorPrefix?: string }, input: UpdatePluginStatus) => {
+      const plugin = await getById(id);
+      if (!plugin || plugin.status !== expected.status) return null;
+      const workspaceProviderActivated = Boolean(plugin.manifestJson.workspaceProvider)
+        && plugin.status !== "ready" && input.status === "ready";
+      return writeWorkspaceProviderChange(workspaceProviderActivated, database => database
+        .update(plugins)
+        .set({ status: input.status, lastError: input.lastError ?? null, updatedAt: new Date() })
+        .where(and(eq(plugins.id, id), eq(plugins.status, expected.status as typeof plugin.status),
+          expected.lastErrorPrefix === undefined ? undefined
+            : sql`starts_with(${plugins.lastError}, ${expected.lastErrorPrefix})`))
+        .returning()
+        .then((rows) => rows[0] ?? null));
+    },
+
     // ----- Uninstall / Remove --------------------------------------------
 
     /**

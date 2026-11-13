@@ -1,5 +1,5 @@
-import { expect, it } from "vitest";
-import { gradeChatCatalogRuns, chatCatalogAllowedRunStatuses, assertExpectedWorkerCancellation, chatCatalogRunStatusAllowed, createChatCatalogFinalRunVerifier, chatCatalogNeverStartedTerminalTaskRun } from "./chat-catalog-run-policy.js";
+import { describe, expect, it } from "vitest";
+import { gradeChatCatalogRuns, chatCatalogAllowedRunStatuses, assertExpectedWorkerCancellation, chatCatalogRunStatusAllowed, createChatCatalogFinalRunVerifier, chatCatalogNeverStartedTerminalTaskRun, chatCatalogReassignedQueuedRun, chatCatalogSupersededQueuedRuns, chatCatalogProviderRuns } from "./chat-catalog-run-policy.js";
 import type { ChatRun } from "./chat-flow.js";
 const succeeded: ChatRun = { id: "source-run", companyId: "company", agentId: "ceo", status: "succeeded", runtimeMode: "native", contextSnapshot: { issueId: "source" } };
 const worker: ChatRun = { id: "worker-run", companyId: "company", agentId: "worker", status: "running", runtimeMode: "native", contextSnapshot: { issueId: "task" } };
@@ -18,6 +18,16 @@ it("admits declared separate active work while rejecting active CEO, wrong scope
   for (const bad of [{ ...succeeded, status: "running" }, { ...worker, companyId: "other" }, { ...worker, contextSnapshot: {} }, { ...worker, agentId: "ceo" }])
     expect(gradeChatCatalogRuns({ ...scope, implementation, runs: [succeeded, bad] }).passed).toBe(false);
   expect(gradeChatCatalogRuns({ ...scope, implementation, runs: [succeeded, worker, { ...worker, id: "extra" }] }).passed).toBe(false);
+});
+it("admits a lead run outside the source only as a declared case handback", () => {
+  const handback: ChatRun = { id: "handback", companyId: "company", agentId: "ceo", status: "running", runtimeMode: "native", contextSnapshot: { issueId: "task", wakeReason: "case_handoff" } };
+  const done = { ...worker, status: "succeeded" };
+  const declared = { expectedRunCount: 3, runPolicy: { kind: "source-settled-with-active-work" as const, maximumActiveWorkerRuns: 1, maximumLeadCaseHandbackRuns: 1 } };
+  expect(gradeChatCatalogRuns({ ...scope, implementation: declared, runs: [succeeded, done, handback] }).passed).toBe(true);
+  // Undeclared (default 0), a lead run woken another way, and a second handback all stay rejected.
+  expect(gradeChatCatalogRuns({ ...scope, implementation: { ...declared, runPolicy: { kind: "source-settled-with-active-work" as const, maximumActiveWorkerRuns: 1 } }, runs: [succeeded, done, handback] }).passed).toBe(false);
+  expect(gradeChatCatalogRuns({ ...scope, implementation: declared, runs: [succeeded, done, { ...handback, contextSnapshot: { issueId: "task", wakeReason: "issue_commented" } }] }).passed).toBe(false);
+  expect(gradeChatCatalogRuns({ ...scope, implementation: { ...declared, expectedRunCount: 4 }, runs: [succeeded, done, handback, { ...handback, id: "again" }] }).passed).toBe(false);
 });
 
 function reassignment() {
@@ -129,4 +139,50 @@ it("admits a declared role-bound range above an exact terminal count, and nothin
   // A maximum may only widen a status the exact counts already declare.
   const undeclared = { ...implementation, runPolicy: { ...implementation.runPolicy, maximumTerminalStatusCounts: { failed: 1 } } };
   expect(gradeChatCatalogRuns({ ...scope, implementation: undeclared, runs: [cancelled, ok("a"), ok("b"), ok("c")] }).passed).toBe(false);
+});
+
+describe("queued run retired by reassignment before it started (full cohort 3)", () => {
+  // projects.project-work: the CEO created the task without an assignee (its own queued run), then
+  // reassigned it to Morgan; the reassignment stopped the run while still bootstrapping.
+  const reassigned: ChatRun = { id: "ceo-queued", companyId: "company", agentId: "ceo", status: "cancelled", runtimeMode: "legacy",
+    startedAt: null, logStore: null, logRef: null, nativeIssueId: null, errorCode: "issue_reassigned", createdAt: "2026-11-12T00:55:19.299Z",
+    contextSnapshot: { issueId: "task", wakeReason: "issue_assigned" },
+    resultJson: { stopReason: "cancelled", reassignmentStopConfirmed: true, executionRecovery: { kind: "bootstrap", providerWorkStarted: false } } };
+  // tasks.private-task: the dispatch gate found the same kind of queued wake stale after the PATCH.
+  const staleGate: ChatRun = { ...reassigned, id: "ceo-stale", errorCode: "issue_assignee_changed",
+    resultJson: { stopReason: "issue_assignee_changed", timeoutFired: false, timeoutSource: "stale_queued_run_gate" } };
+  // Paid run 43143392360 (tasks.private-task): the new assignee's wake released the lock the queued run held.
+  const lockReleased: ChatRun = { ...reassigned, id: "ceo-lock", errorCode: "lock_released_on_reassignment", resultJson: undefined };
+  const morgan: ChatRun = { ...worker, id: "morgan-run", createdAt: "2026-11-12T00:55:56.398Z" };
+  const implementation = { expectedRunCount: 2, runPolicy: { kind: "source-settled-with-active-work" as const, maximumActiveWorkerRuns: 1 } };
+  it("admits it, outside the provider-run bound, only when the new assignee ran on that task", () => {
+    for (const queued of [reassigned, staleGate, lockReleased]) {
+      expect(chatCatalogReassignedQueuedRun(queued, scope.source)).toBe(true);
+      const runs = [succeeded, queued, morgan];
+      expect(chatCatalogSupersededQueuedRuns(runs, scope.source).map(run => run.id)).toEqual([queued.id]);
+      expect(chatCatalogProviderRuns(runs, scope.source).map(run => run.id)).toEqual([succeeded.id, morgan.id]);
+      const grade = gradeChatCatalogRuns({ ...scope, implementation, runs });
+      expect(grade.passed).toBe(true);
+      expect(grade.checks.find(check => check.id === "catalog-superseded-queued-runs")?.passed).toBe(true);
+    }
+  });
+  it("still fails without a successor, for started or other cancellations, on the source, and for churn", () => {
+    // No new assignee run: the reassignment never produced work.
+    expect(gradeChatCatalogRuns({ ...scope, implementation, runs: [succeeded, reassigned] }).passed).toBe(false);
+    // A successor must be another agent's later run on the same task.
+    for (const other of [{ ...morgan, agentId: "ceo" }, { ...morgan, contextSnapshot: { issueId: "elsewhere" } }, { ...morgan, createdAt: "2026-11-12T00:55:00.000Z" }])
+      expect(gradeChatCatalogRuns({ ...scope, implementation: { ...implementation, expectedRunCount: 3 }, runs: [succeeded, reassigned, other] }).passed).toBe(false);
+    for (const run of [{ ...reassigned, startedAt: "2026-11-12T00:55:20.000Z" }, { ...reassigned, logRef: "log" }, { ...reassigned, errorCode: "cancelled" },
+      { ...reassigned, resultJson: { ...reassigned.resultJson, executionRecovery: { kind: "bootstrap", providerWorkStarted: true } } },
+      { ...reassigned, resultJson: { stopReason: "cancelled" } }, { ...staleGate, resultJson: { stopReason: "issue_assignee_changed" } },
+      { ...reassigned, contextSnapshot: { issueId: "source" } }, { ...reassigned, status: "failed" },
+      { ...lockReleased, startedAt: "2026-11-12T00:55:20.000Z" }, { ...lockReleased, nativeIssueId: "task" }]) {
+      expect(chatCatalogReassignedQueuedRun(run, scope.source)).toBe(false);
+      expect(gradeChatCatalogRuns({ ...scope, implementation: { ...implementation, expectedRunCount: 3 }, runs: [succeeded, run, morgan] }).passed).toBe(false);
+    }
+    // At most one superseded queued run per case.
+    const second = { ...staleGate, contextSnapshot: { issueId: "task-2" } }, morgan2 = { ...morgan, id: "morgan-2", status: "succeeded", contextSnapshot: { issueId: "task-2" } };
+    const churn = gradeChatCatalogRuns({ ...scope, implementation: { ...implementation, expectedRunCount: 3 }, runs: [succeeded, reassigned, morgan, second, morgan2] });
+    expect(churn.checks.find(check => check.id === "catalog-superseded-queued-runs")?.passed).toBe(false);
+  });
 });

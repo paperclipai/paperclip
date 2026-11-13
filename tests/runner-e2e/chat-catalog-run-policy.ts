@@ -1,5 +1,6 @@
 import type { ChatCatalogCase, ChatCatalogGrade } from "./chat-catalog-contract.js";
 import type { ChatIssue, ChatRun } from "./chat-flow.js";
+import { isAssigneeChangedUnstartedRun } from "./non-execution-wake.js";
 type CancellationCase = Pick<ChatCatalogCase, "runPolicy"> & Partial<Pick<ChatCatalogCase, "scenarioId" | "expectedCancelledWorkerRun">>;
 export function assertExpectedWorkerCancellation(implementation: CancellationCase) {
   const flag = implementation.runPolicy?.kind === "source-settled-with-active-work"
@@ -43,17 +44,51 @@ export function chatCatalogNeverStartedTerminalTaskRun(run: ChatRun, source?: Ch
     && record(run.resultJson).stopReason === "issue_terminal_status"
     && typeof issueId === "string" && issueId.length > 0 && issueId !== source?.id;
 }
+/**
+ * A queued run on a non-source task that the server retired because the task
+ * changed assignee before the run started. Early polling defers it to the grade
+ * instead of reporting a provider failure; it is admitted there only with a
+ * successor (see chatCatalogSupersededQueuedRuns). Other cancellations stay failures.
+ */
+export function chatCatalogReassignedQueuedRun(run: ChatRun, source?: ChatIssue): boolean {
+  const issueId = taskId(run);
+  return isAssigneeChangedUnstartedRun(run) && typeof issueId === "string" && issueId.length > 0 && issueId !== source?.id;
+}
+/**
+ * The superseded queued run did no provider work, so it is not counted toward
+ * the declared provider-run bound. It stays in the raw ledger and evidence, and
+ * a case may have at most this many, so create-then-reassign churn still fails.
+ */
+export const CHAT_CATALOG_MAX_SUPERSEDED_QUEUED_RUNS = 1;
+/** Retired queued runs whose task's new assignee actually received a later run on that task. */
+export function chatCatalogSupersededQueuedRuns(runs: ChatRun[], source?: ChatIssue): ChatRun[] {
+  return runs.filter(run => {
+    const created = Date.parse(run.createdAt ?? "");
+    return chatCatalogReassignedQueuedRun(run, source) && Number.isFinite(created) && runs.some(other => other.id !== run.id
+      && taskId(other) === taskId(run) && other.companyId === run.companyId && other.agentId !== run.agentId
+      && !chatCatalogReassignedQueuedRun(other, source) && Date.parse(other.createdAt ?? "") >= created);
+  });
+}
+/** The raw ledger without superseded queued runs: the runs that count as provider work. */
+export function chatCatalogProviderRuns(runs: ChatRun[], source?: ChatIssue): ChatRun[] {
+  const superseded = new Set(chatCatalogSupersededQueuedRuns(runs, source).map(run => run.id));
+  return runs.filter(run => !superseded.has(run.id));
+}
 export function gradeChatCatalogRuns(input: {
   implementation: Pick<ChatCatalogCase, "expectedRunCount" | "minimumRunCount" | "runPolicy"> & CancellationCase;
   companyId: string; leadId: string; source?: ChatIssue; runs: ChatRun[];
   observation?: unknown;
 }): ChatCatalogGrade {
-  const { implementation: c, runs, source } = input;
+  const { implementation: c, source } = input;
+  const superseded = chatCatalogSupersededQueuedRuns(input.runs, source);
+  const runs = chatCatalogProviderRuns(input.runs, source);
   const checks = [
     { id: "catalog-bounded-native-runs", passed: runs.length >= (c.minimumRunCount ?? c.expectedRunCount) && runs.length <= c.expectedRunCount
       && runs.every(run => run.companyId === input.companyId && run.runtimeMode === "native" && chatCatalogAllowedRunStatuses(c).includes(run.status)),
       detail: "Observed provider runs satisfy declared count, company, native runtime and allowed outcome bounds." },
   ];
+  if (superseded.length) checks.push({ id: "catalog-superseded-queued-runs", passed: superseded.length <= CHAT_CATALOG_MAX_SUPERSEDED_QUEUED_RUNS,
+    detail: "A queued run retired before it started because its task changed assignee is lifecycle, not provider work, only when the new assignee ran on that task; at most one per case." });
   if (c.expectedCancelledWorkerRun !== undefined || c.runPolicy?.kind === "source-settled-with-active-work" && c.runPolicy.expectedWorkerCancellation !== undefined) {
     let valid = true; try { assertExpectedWorkerCancellation(c); } catch { valid = false; }
     checks.push({ id: "catalog-worker-cancellation-declaration", passed: valid,
@@ -68,7 +103,8 @@ export function gradeChatCatalogRuns(input: {
       detail: "The independently observed ledger matches every declared successful/cancelled/failed terminal outcome count (or its declared role-bound range)." });
   } else if (c.runPolicy?.kind === "source-settled-with-active-work") {
     const sourceRuns = runs.filter(run => taskId(run) === source?.id);
-    const workers = runs.filter(run => taskId(run) !== source?.id);
+    const handbacks = runs.filter(run => taskId(run) !== source?.id && run.agentId === input.leadId && run.contextSnapshot?.wakeReason === "case_handoff");
+    const workers = runs.filter(run => taskId(run) !== source?.id && !handbacks.includes(run));
     const cancelled = runs.filter(run => run.status === "cancelled");
     const declared = permitsReassignment(c);
     let expected: ReturnType<NonNullable<ChatCatalogCase["expectedCancelledWorkerRun"]>>;
@@ -91,8 +127,9 @@ export function gradeChatCatalogRuns(input: {
     checks.push({ id: "catalog-settled-source-separate-work", passed: !!source && source.companyId === input.companyId
       && source.conversationState === "waiting" && sourceRuns.length > 0 && sourceRuns.every(run => run.agentId === input.leadId && run.status === "succeeded")
       && workers.every(run => typeof taskId(run) === "string" && run.agentId !== input.leadId)
-      && workers.filter(run => ["queued", "running"].includes(run.status)).length <= c.runPolicy.maximumActiveWorkerRuns,
-      detail: "The CEO source is settled; unfinished worker runs are separately task-bound and bounded. The case oracle must additionally bind their exact task and assignee." });
+      && workers.filter(run => ["queued", "running"].includes(run.status)).length <= c.runPolicy.maximumActiveWorkerRuns
+      && handbacks.length <= (c.runPolicy.maximumLeadCaseHandbackRuns ?? 0) && handbacks.every(run => typeof taskId(run) === "string"),
+      detail: "The CEO source is settled; unfinished worker runs are separately task-bound and bounded, and any CEO run outside the source is a declared case handback. The case oracle must additionally bind their exact task and assignee." });
   }
   return { passed: checks.every(check => check.passed), checks };
 }

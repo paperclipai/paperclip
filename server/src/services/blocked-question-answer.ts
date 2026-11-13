@@ -4,14 +4,18 @@ import { queuedInteractionId } from "./queued-interaction-response.js";
 import { ordinaryQuestionCondition } from "./issue-question-context.js";
 
 const AGENT_REPORTED_BLOCKER_REASON_CODES = ["current_track_blocker_waiting", "task_wide_blocker_bound"];
+const PERSON_RESOLVED_BLOCKER_OWNER_KINDS = ["user", "board", "external", "unspecified"];
 
 export type AgentBlockingQuestionState = { lastStatusDecisionId: string; statusVersion: number };
 
 export async function questionsAwaitedByAgentBlock(db: Pick<Db, "select">, input: {
   companyId: string; issueId: string; agentId: string | null | undefined; reasonCode: string | null;
-  toStatus: string; unblockOwner: unknown;
+  toStatus: string; unblockOwner: unknown; blockerOwnerKind?: string;
 }): Promise<string[]> {
-  if (!input.agentId || input.toStatus !== "blocked" || input.unblockOwner !== "board"
+  const personResolves = input.blockerOwnerKind === undefined
+    ? input.unblockOwner === "board"
+    : PERSON_RESOLVED_BLOCKER_OWNER_KINDS.includes(input.blockerOwnerKind);
+  if (!input.agentId || input.toStatus !== "blocked" || !personResolves
     || !AGENT_REPORTED_BLOCKER_REASON_CODES.includes(input.reasonCode ?? "")) return [];
   const rows = await db.select({ id: issueThreadInteractions.id }).from(issueThreadInteractions).where(and(
     eq(issueThreadInteractions.companyId, input.companyId),

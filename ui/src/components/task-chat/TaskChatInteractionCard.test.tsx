@@ -520,7 +520,7 @@ describe("TaskChatInteractionCard", () => {
       </ThemeProvider></TooltipProvider></QueryClientProvider>,
     ));
 
-    const link = container.querySelector('a[href="/issues/PAP-42#document-preview"]');
+    const link = container.querySelector('a[href="/PAP/issues/PAP-42#document-preview"]');
     expect(link?.textContent).toBe("two screenshots");
     const prompt = link?.closest(".paperclip-markdown");
     expect(prompt?.querySelector("strong")?.textContent).toBe("Accept");

@@ -1,5 +1,5 @@
 {
-  "id": "aaa7ecab-43e7-41e4-9f93-2bf7ba3c7865",
+  "id": "ac25715a-74c6-4988-8525-63ad14781c74",
   "prevId": "c06d4653-b3df-4e3e-bbf9-6de9b37cf806",
   "version": "7",
   "dialect": "postgresql",
@@ -1414,6 +1414,34 @@
           ],
           "isUnique": false,
           "where": "\"activity_log\".\"actor_type\" = 'user' AND \"activity_log\".\"entity_type\" = 'issue'",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "activity_log_company_handled_for_created_idx": {
+          "name": "activity_log_company_handled_for_created_idx",
+          "columns": [
+            {
+              "expression": "company_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "(\"details\" ->> 'handledForUserId')",
+              "asc": true,
+              "isExpression": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "created_at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "where": "(\"activity_log\".\"details\" ->> 'handledForUserId') IS NOT NULL",
           "concurrently": false,
           "method": "btree",
           "with": {}
@@ -16336,6 +16364,18 @@
         },
         "default_responsible_user_id": {
           "name": "default_responsible_user_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "default_decision_owner_user_id": {
+          "name": "default_decision_owner_user_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "budget_owner_user_id": {
+          "name": "budget_owner_user_id",
           "type": "text",
           "primaryKey": false,
           "notNull": false
@@ -36235,6 +36275,12 @@
           "primaryKey": false,
           "notNull": false
         },
+        "fingerprint": {
+          "name": "fingerprint",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
         "created_at": {
           "name": "created_at",
           "type": "timestamp with time zone",
@@ -51040,6 +51086,12 @@
           "primaryKey": false,
           "notNull": false
         },
+        "decision_owner_user_id": {
+          "name": "decision_owner_user_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
         "target_date": {
           "name": "target_date",
           "type": "date",
@@ -65169,12 +65221,6 @@
           "primaryKey": false,
           "notNull": true,
           "default": false
-        },
-        "dot_device_cutover": {
-          "name": "dot_device_cutover",
-          "type": "jsonb",
-          "primaryKey": false,
-          "notNull": false
         },
         "device_cutover_stack_id": {
           "name": "device_cutover_stack_id",

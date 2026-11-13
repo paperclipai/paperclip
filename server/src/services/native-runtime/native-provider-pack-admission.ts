@@ -4,6 +4,7 @@ import { heartbeatRuns, nativeRunFinalizations, type Db } from "@paperclipai/db"
 import type { NativeSession } from "../../vendor/paperclip-runner/index.js";
 import { canonicalProviderPackJson, type ProviderPackIdentity } from "./remote-provider-pack-verification.js";
 import { assertNativeRunnerCheckpointOwner } from "./native-runner-checkpoint.js";
+import { isTransientLockContention, postgresErrorCode } from "../transient-lock-contention.js";
 
 type Selection = {
   admittedRunId: string;
@@ -131,19 +132,10 @@ type AdmissionInput = {
   waitForClaim?: boolean;
 };
 
-/** Lock timeouts, deadlocks and serialization aborts that clear on their own. */
-const CONTENDED_ADMISSION_CODES = new Set(["55P03", "40P01", "40001"]);
 /** Attempts of one admission write while its claim is contended. */
 export const NATIVE_PROVIDER_PACK_ADMISSION_ATTEMPTS = 5;
 
-export function nativeProviderPackAdmissionFailureCode(error: unknown): string | null {
-  for (let value = error, depth = 0; value && typeof value === "object" && depth < 4; depth += 1) {
-    const code = (value as { code?: unknown }).code;
-    if (typeof code === "string" && /^[0-9A-Z]{5}$/.test(code)) return code;
-    value = (value as { cause?: unknown }).cause;
-  }
-  return null;
-}
+export const nativeProviderPackAdmissionFailureCode = postgresErrorCode;
 
 /**
  * Saves the session's verified provider-pack admission on its run row. A run
@@ -159,9 +151,8 @@ export async function recordNativeProviderPackAdmission(db: Db, input: Admission
     try {
       return await recordNativeProviderPackAdmissionOnce(db, input);
     } catch (error) {
-      const code = nativeProviderPackAdmissionFailureCode(error);
       if (!input.waitForClaim || attempt >= NATIVE_PROVIDER_PACK_ADMISSION_ATTEMPTS
-        || !code || !CONTENDED_ADMISSION_CODES.has(code)) throw error;
+        || !isTransientLockContention(error)) throw error;
       await new Promise(resolve => setTimeout(resolve, 100 * attempt));
     }
   }

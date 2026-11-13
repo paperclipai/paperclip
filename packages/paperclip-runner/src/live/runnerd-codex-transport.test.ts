@@ -163,6 +163,38 @@ it("attributes opened candidate sessions to the harness biller instead of the mo
   expect(provider("aws_agentcore", "codex", "global.anthropic.claude-sonnet-4-6")).toBe("aws");
 });
 
+it("uses one durable attachment command and an event for a settled download", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "runnerd-attachment-event-"));
+  let core!: DurablePrpControlPlane;
+  const { transport } = createCapabilityRunnerdCodexTransport({
+    runnerBinary: defaultCapabilityRunnerdBinary(),
+    codexCommand: fakeCodex,
+    codexArgs: fakeCodexArgs(directory),
+    stateDirectory: directory,
+    controlPlaneRegistration: async authority => {
+      core = authority;
+      await authority.start();
+      return { release: () => undefined };
+    },
+  });
+  try {
+    await transport.request("thread/start", { cwd: directory });
+    await expect(transport.downloadAttachment!(() => ({
+      url: "https://127.0.0.1:0/attachment", token: "a".repeat(43),
+      byteSize: 1, sha256: "0".repeat(64), contentType: "image/png",
+    }))).rejects.toThrow("runner_attachment_download_invalid_path");
+    const commands = core.store.state.commands.filter(command => command.type === "runner.attachment.download");
+    expect(commands).toHaveLength(1);
+    expect(commands[0]?.status).toBe("completed");
+    const events = core.store.state.committedEvents.filter(event => event.eventType === "runner.attachment.settled");
+    expect(events).toHaveLength(1);
+    expect(events[0]?.envelope.payload).toMatchObject({ payload: { status: "failed" } });
+  } finally {
+    await transport.close();
+    await rm(directory, { recursive: true, force: true });
+  }
+}, 30_000);
+
 it("replaces an owned v1 runner with fresh v2 authorization before warm attachment", async () => {
   const directory = await mkdtemp(join(tmpdir(), "runnerd-v1-v2-replacement-"));
   const handles: durableControlPlane.RunnerProcessHandle[] = [];

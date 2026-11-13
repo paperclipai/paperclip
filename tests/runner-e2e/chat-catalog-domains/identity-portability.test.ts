@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { gradePortability, savedAgentConfiguration } from "./identity-portability.js";
+import { agentRouteNames, gradePortability, savedAgentConfiguration } from "./identity-portability.js";
 import type { IdentityObservation } from "./identity-support.js";
 function valid(scenarioId: string): IdentityObservation {
   const o: IdentityObservation = { scenarioId, origin: "http://fixture.invalid", companyId: "acorn", leadId: "ceo", company: { id: "acorn" }, companies: [], agents: [], tasks: [], projects: [], goals: [], comments: [], interactions: [], documents: [], revisions: [], activity: [], links: [], runs: [], humanQueries: [], reply: "Secrets are excluded; supply EXPORT_FIXTURE_KEY when importing.", state: {} };
@@ -46,5 +46,18 @@ describe("actual company package download and conflict-safe import", () => {
     const before = { name: "Morgan", adapterType: "paperclip_runner", adapterConfig: { model: "m" }, configurationRevision: "a", status: "paused", updatedAt: "t1" };
     expect(savedAgentConfiguration({ ...before, status: "idle", updatedAt: "t2" })).toBe(savedAgentConfiguration(before));
     expect(savedAgentConfiguration({ ...before, adapterType: "process", configurationRevision: "b" })).not.toBe(savedAgentConfiguration(before));
+  });
+});
+// Full cohort 3 (companies.import-preview): the reply linked the imported employee by its url key.
+describe("imported employee review link", () => {
+  const origin = "http://127.0.0.1:3100", imported = { id: "6b1c2f4e-0000-4000-8000-000000000001", urlKey: "morgan-package" };
+  it("accepts the agent's id route, its url-key route and a tab of either", () => {
+    for (const href of [`/COM/agents/${imported.id}`, "/COM/agents/morgan-package", "/COM/agents/morgan-package/overview", `${origin}/com/agents/${imported.id}/runs`, "/agents/morgan-package"])
+      expect(agentRouteNames(href, origin, "COM", imported), href).toBe(true);
+  });
+  it("rejects the existing Morgan, another company, another origin and non-agent routes", () => {
+    for (const href of ["/COM/agents/morgan", "/COM/agents/00000000-0000-4000-8000-000000000002", "/OTH/agents/morgan-package", "https://example.com/COM/agents/morgan-package",
+      "/COM/issues/morgan-package", "/COM/agents", "/COM/agents/morgan-package/runs/x/y", "/COM/agents/%E0%A4%A"])
+      expect(agentRouteNames(href, origin, "COM", imported), href).toBe(false);
   });
 });

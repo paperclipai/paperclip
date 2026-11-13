@@ -16,8 +16,13 @@ export function gradeWrongResolver(value:unknown){
  c.add("all-addressed-resolution-surfaces-deny-other-person",!!denied&&["setupOptions","phase","complete","decline"].every(key=>denied[key]===403)&&o.state.waitingVisible===true&&o.state.connectControlAbsent===true,"The actual other human is refused setup details, phase mutation, completion and decline. Their visible card exposes waiting identity rather than a usable authorization control.");
  c.add("pending-work-and-identity-preserved",!!before&&!!after&&after.id===before.id&&after.kind===before.kind&&after.sourceRunId===before.sourceRunId&&after.payload?.serviceSlug===before.payload.serviceSlug&&after.addresseeUserId===before.addresseeUserId&&after.status==="pending"&&!after.result&&!after.resolvedByUserId&&!after.resolvedByAgentId&&o.state.relatedStatusUnchanged===true&&o.state.alexSourceRunCount===1&&o.connections.length===0&&o.state.canonicalSourceDifferent===true,"Unauthorized responses neither release the pending task nor create a connection, readdress the card, or schedule another Alex-source run.");
  // Reply wording is not graded: the refused resolution routes and the unchanged pending card prove the boundary held.
+ c.add("reply-links-alex-pending-request",!!related&&typeof o.state.companyPrefix==="string"&&linksRelatedRequest(o,related,o.state.companyPrefix),"The reply links Alex's actual pending request in this company, where the card shows whose action is required.");
  return c.result();
 }
+export function relatedRequestHref(o:{links:string[];origin:string},related:Entity,companyPrefix:string):string|undefined{
+ return o.links.find(link=>{try{const url=new URL(link,o.origin),parts=url.pathname.split("/").filter(Boolean);return url.origin===o.origin&&parts.length===3&&parts[0]===companyPrefix&&parts[1]==="issues"&&[related.id,related.identifier].some(value=>value===decodeURIComponent(parts[2]!));}catch{return false;}});
+}
+function linksRelatedRequest(o:{links:string[];origin:string},related:Entity,companyPrefix:string){return relatedRequestHref(o,related,companyPrefix)!==undefined;}
 export const wrongResolverExternalCases=[definition("connection-setup.wrong-person-resolves",async ctx=>{
  const browser=ctx.input.page.context().browser(),secrets=ctx.input.privateSecrets;if(!browser||!secrets)throw new Error("Wrong connection resolver needs two real authenticated people and private session ownership");
  const session=await ctx.input.api.get<{user:{id:string}}>("/api/auth/get-session");if(!session.user?.id||session.user.id==="local-board")throw new Error("Actual signed-in other member is required");
@@ -32,10 +37,10 @@ export const wrongResolverExternalCases=[definition("connection-setup.wrong-pers
   const cards=prepared.cards.filter(card=>card.kind==="connection_intent"&&card.payload.serviceSlug==="notion");if(cards.length!==1)throw new Error("Alex's prerequisite produced ambiguous requests");const original=cards[0]!;
   const before=await ctx.input.api.get<Entity>(`/api/issues/${related.id}`),chat=await openStandingChat(ctx);
   await ctx.input.api.patch(`/api/issues/${chat.id}`,{description:`Alex has a pending Notion connection request on related task ${before.identifier??before.id}. The current person can view that task as another company member.`});
-  return {original,related:before,alexId:alex.id,otherId:session.user.id};
+  return {original,related:before,alexId:alex.id,otherId:session.user.id,companyPrefix:ctx.input.fixtures.company.issuePrefix};
  }catch(error){await alex.dispose();people.delete(ctx);throw error;}
 },gradeWrongResolver,{
- oracleVersion:"paperclip.chat-catalog.external.v2",authentication:"human-session",expectedRunCount:2,minimumRunCount:2,expectedHumanMessageCount:1,attemptTimeoutMs:540000,
+ oracleVersion:"paperclip.chat-catalog.external.v3",authentication:"human-session",expectedRunCount:2,minimumRunCount:2,expectedHumanMessageCount:1,attemptTimeoutMs:540000,
  sourceFiles:["chat-catalog-domains/external-wrong-resolver.ts","chat-catalog-domains/identity-auth.ts","chat-catalog-domains/identity-private-browser.ts","chat-catalog-domains/identity-private-browser-worker.ts","chat-catalog-domains/identity-wizard.ts","chat-catalog-domains/identity-support.ts","chat-catalog-domains/external-support.ts","chat-catalog-domains/internal-support.ts","../../server/src/routes/connection-intents.ts","../../server/src/services/connection-intents.ts","chat-scenarios/connection-setup.yaml"],
  async act(ctx,state){
   await waitForReply({...ctx,allRuns:async()=>(await ctx.allRuns()).filter(run=>run.contextSnapshot?.issueId===ctx.issue()?.id)});
@@ -55,6 +60,6 @@ export const wrongResolverExternalCases=[definition("connection-setup.wrong-pers
   state.after=after;state.relatedStatusUnchanged=task.status===related.status&&task.assigneeAgentId===related.assigneeAgentId;state.alexSourceRunCount=o.runs.filter(run=>run.contextSnapshot?.issueId===related.id).length;state.canonicalSourceDifferent=ctx.issue()?.id!==related.id;
   return {...o,state};
  },
- async verifyResult(ctx,_state,value){await verifyRenderedReply(ctx,value);const o=externalObservation(value)!;const source=ctx.input.page.url();try{await ctx.input.page.goto(`/${ctx.input.fixtures.company.issuePrefix}/issues/${(o.state.related as Entity).id}`,{waitUntil:"domcontentloaded"});await expect(ctx.input.page.getByTestId(/^connection-(?:intent|authorization)-waiting$/).filter({hasText:"Waiting for Alex"})).toBeVisible();}finally{await ctx.input.page.goto(source,{waitUntil:"domcontentloaded"});}},
+ async verifyResult(ctx,_state,value){await verifyRenderedReply(ctx,value);const o=externalObservation(value)!;const href=relatedRequestHref(o,o.state.related as Entity,String(o.state.companyPrefix));if(!href)throw new Error("The reply rendered no link to Alex's pending request to follow");const source=ctx.input.page.url();try{await ctx.input.page.goto(href,{waitUntil:"domcontentloaded"});await expect(ctx.input.page.getByTestId(/^connection-(?:intent|authorization)-waiting$/).filter({hasText:"Waiting for Alex"})).toBeVisible();}finally{await ctx.input.page.goto(source,{waitUntil:"domcontentloaded"});}},
  async cleanup(ctx){try{await people.get(ctx)?.dispose();}finally{people.delete(ctx);}},
 })];

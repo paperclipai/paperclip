@@ -1,6 +1,6 @@
 {
-  "id": "38dbf2b9-da26-4c3a-b813-f37d0c19cba2",
-  "prevId": "e2a678da-05cc-4316-a40e-d85a69be01e3",
+  "id": "f0e17e47-6217-4080-b6b6-9d83b33e9ced",
+  "prevId": "ac25715a-74c6-4988-8525-63ad14781c74",
   "version": "7",
   "dialect": "postgresql",
   "tables": {
@@ -1414,6 +1414,34 @@
           ],
           "isUnique": false,
           "where": "\"activity_log\".\"actor_type\" = 'user' AND \"activity_log\".\"entity_type\" = 'issue'",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "activity_log_company_handled_for_created_idx": {
+          "name": "activity_log_company_handled_for_created_idx",
+          "columns": [
+            {
+              "expression": "company_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "(\"details\" ->> 'handledForUserId')",
+              "asc": true,
+              "isExpression": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "created_at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "where": "(\"activity_log\".\"details\" ->> 'handledForUserId') IS NOT NULL",
           "concurrently": false,
           "method": "btree",
           "with": {}
@@ -16336,6 +16364,18 @@
         },
         "default_responsible_user_id": {
           "name": "default_responsible_user_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "default_decision_owner_user_id": {
+          "name": "default_decision_owner_user_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "budget_owner_user_id": {
+          "name": "budget_owner_user_id",
           "type": "text",
           "primaryKey": false,
           "notNull": false
@@ -35606,6 +35646,34 @@
           "method": "btree",
           "with": {}
         },
+        "heartbeat_runs_queued_created_idx": {
+          "name": "heartbeat_runs_queued_created_idx",
+          "columns": [
+            {
+              "expression": "company_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "created_at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "where": "\"heartbeat_runs\".\"status\" = 'queued'",
+          "concurrently": true,
+          "method": "btree",
+          "with": {}
+        },
         "heartbeat_runs_cost_accounting_pending_idx": {
           "name": "heartbeat_runs_cost_accounting_pending_idx",
           "columns": [
@@ -36232,6 +36300,12 @@
         "snoozed_until": {
           "name": "snoozed_until",
           "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "fingerprint": {
+          "name": "fingerprint",
+          "type": "text",
           "primaryKey": false,
           "notNull": false
         },
@@ -51034,6 +51108,18 @@
           "primaryKey": false,
           "notNull": false
         },
+        "environment_id": {
+          "name": "environment_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "decision_owner_user_id": {
+          "name": "decision_owner_user_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
         "target_date": {
           "name": "target_date",
           "type": "date",
@@ -51055,12 +51141,6 @@
         "env": {
           "name": "env",
           "type": "jsonb",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "environment_id": {
-          "name": "environment_id",
-          "type": "uuid",
           "primaryKey": false,
           "notNull": false
         },
@@ -62995,6 +63075,12 @@
           "primaryKey": false,
           "notNull": true,
           "default": false
+        },
+        "time_zone": {
+          "name": "time_zone",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
         },
         "created_at": {
           "name": "created_at",

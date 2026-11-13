@@ -1050,7 +1050,7 @@ describe("chat prompt policy", () => {
     expect(AGENT_CHAT_DIRECTIVE).toContain("/<prefix>/agents/<urlKey or id>/api-keys for API keys");
     expect(AGENT_CHAT_DIRECTIVE).toContain("The API keys page is not in the profile's navigation");
     const prompt = buildPaperclipTaskMarkdown({ issue: { id: "chat", identifier: "RUN-1", title: "Chat", workMode: "ask", conversationAgentId: "agent" } });
-    expect(prompt).toContain("/<prefix>/agents/<urlKey or id>/api-keys");
+    expect(prompt).toContain("/RUN/agents/<urlKey or id>/api-keys");
   });
 
   it("says how to read the company link prefix from a task identifier so agent links are not guessed", () => {
@@ -1145,10 +1145,17 @@ describe("chat prompt policy", () => {
   });
 
   it("asks for a missing name before building or handing off work that must carry it", () => {
-    expect(AGENT_CHAT_DIRECTIVE).toContain("ask for that name before starting: use request_human_input with interactionKind: \"questions\" and one required free-text question");
+    expect(AGENT_CHAT_DIRECTIVE).toContain("ask for it before starting: use request_human_input with interactionKind: \"questions\" and one required free-text question");
     expect(AGENT_CHAT_DIRECTIVE).toContain("Do not build, delegate or brief the work with an invented or placeholder name");
     const prompt = buildPaperclipTaskMarkdown({ issue: { id: "chat", identifier: null, title: "Chat", workMode: "ask", conversationAgentId: "agent" } });
     expect(prompt).toContain("Do not build, delegate or brief the work with an invented or placeholder name");
+  });
+
+  it("asks for a name only when the request, conversation and saved brief give none", () => {
+    expect(AGENT_CHAT_DIRECTIVE).toContain("a project the person names in the request counts, so \"Start a Launch project and build its landing page\" carries the name Launch and needs no question");
+    expect(AGENT_CHAT_DIRECTIVE).toContain("Only when none of these gives a name, ask for it before starting");
+    expect(AGENT_CHAT_DIRECTIVE).toContain("Do not take the name from unrelated records such as other existing projects or the company name.");
+    expect(AGENT_CHAT_DIRECTIVE).not.toContain("must carry a name they have not given");
   });
 
   it("routes a person's own profile change to their profile settings instead of an agent write", () => {

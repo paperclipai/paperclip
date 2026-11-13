@@ -3047,7 +3047,8 @@ function unreadForUserCondition(companyId: string, userId: string) {
             OR ${issueComments.authorUserId} <> ${userId}
           )
           AND ${issueComments.createdAt} > ${myLastTouchAt}
-      ) OR ${pendingUserRequestCondition(companyId, userId, myLastRequestReadAt)})
+      ) OR ${pendingUserRequestCondition(companyId, userId, myLastRequestReadAt)}
+      OR ${withdrawnForUserCondition(companyId, userId, myLastRequestReadAt)})
     )
   `;
 }
@@ -3080,6 +3081,23 @@ function mineParticipationIssueIds(db: Db, companyId: string, userId: string) {
       .where(pendingUserRequestRowCondition(companyId, userId)),
   ).as("mine_participation_sources");
   return db.selectDistinct({ id: participationSources.id }).from(participationSources).as("mine_participants");
+}
+
+/**
+ * A different person withdrew a request on this task that was for this user
+ * after they last read it (PAP-749 plan §6, Rule 12): the task shows unread in
+ * their Mine list. Reads the receipt on the activity entry; no extra state.
+ */
+function withdrawnForUserCondition(companyId: string, userId: string, readAt: SQL) {
+  return sql<boolean>`EXISTS (
+    SELECT 1
+    FROM ${activityLog}
+    WHERE ${activityLog.companyId} = ${companyId}
+      AND (${activityLog.details} ->> 'handledForUserId') = ${userId}
+      AND ${activityLog.details} -> 'receipt' ->> 'outcome' = 'withdrawn'
+      AND ${activityLog.details} -> 'receipt' ->> 'issueId' = ${issues.id}::text
+      AND ${activityLog.createdAt} > ${readAt}
+  )`;
 }
 
 function inboxVisibleForUserCondition(companyId: string, userId: string) {

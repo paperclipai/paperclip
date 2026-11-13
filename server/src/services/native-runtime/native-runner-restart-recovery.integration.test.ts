@@ -614,7 +614,7 @@ process.on("SIGTERM", () => child.kill("SIGTERM"));
       const first = hardRestart ? await executeInController(firstOptions) : await executeFirst();
       expect(first.exitCode).toBe(0);
       if (scenario === "warm-suspended") expect(await closeIdleWarmNativeSessionsForRestart())
-        .toEqual({ closed: 1, busy: 0, failed: 0 });
+        .toEqual({ closed: 1, busy: 0, failed: 0, failures: [] });
       await finalizeNativeRun({ db: fixture.db, runId: fixture.runId, workspaceFinalizeStatus: "succeeded", projectRunStatus: true });
       const snapshot = await runner.execute({ command: "sh", args: ["-c", `cat '${remoteCwd}'/.paperclip-runtime/paperclip-runner/sessions/*/runner/runner-state.json`] });
       expect(snapshot.exitCode).toBe(0);
@@ -3103,6 +3103,55 @@ process.on("SIGTERM", () => child.kill("SIGTERM"));
     const [coordinator] = await fixture.db.select().from(nativeRunFinalizations)
       .where(eq(nativeRunFinalizations.runId, fixture.runId));
     expect(coordinator.recoveryHistory.at(-1)).toMatchObject({ reason: "remote_execution_never_claimed" });
+  });
+
+  it.each([
+    { label: "bootstraps a follow-up carrying its predecessor's Runner identity", mode: "inherited", restarts: true },
+    { label: "bootstraps a follow-up that requested its warm Runner on its predecessor's identity", mode: "inherited_requested", restarts: true },
+    { label: "bootstraps a follow-up with no Runner identity that requested a Runner", mode: "requested", restarts: true },
+    { label: "keeps a follow-up with its own recorded Runner identity held", mode: "own_identity", restarts: false },
+    { label: "keeps a follow-up with a Runner-originated event held", mode: "runner_event", restarts: false },
+    { label: "keeps a follow-up with a carried active turn held", mode: "active_turn", restarts: false },
+    { label: "keeps a follow-up whose provider session no settled run saved held", mode: "no_predecessor", restarts: false },
+    { label: "keeps a follow-up whose saved failure established a provider session held", mode: "session_established", restarts: false },
+  ] as const)("$label after its own server closed the runtime listener before it attached (s9511, s9513)", async ({ mode, restarts }) => {
+    const fixture = await seedUnlaunchedRemoteClaim(`FOLLOW-UP-LISTENER-${mode}`, { bootstrapRetry: true,
+      ...(["inherited_requested", "requested", "own_identity", "runner_event"].includes(mode)
+        ? { event: { eventType: "native.process_start_requested" } } : {}) });
+    await reboundFollowUpCheckpoint(fixture, mode === "active_turn" ? { activeTurnId: "turn-in-flight" } : {}, mode !== "no_predecessor");
+    await fixture.db.update(nativeRunFinalizations).set({ failureDetail: {
+      message: "local_runtime_api_listener_unavailable", recoverable: true, recoveryMode: "bootstrap_retry",
+      checkpointExists: true, providerEventsExist: false, providerSessionEstablished: mode === "session_established",
+      originalFailureCode: "local_runtime_api_listener_unavailable",
+    } }).where(eq(nativeRunFinalizations.runId, fixture.runId));
+    const [current] = await fixture.db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, fixture.runId));
+    if (mode !== "requested") {
+      const processStartedAt = new Date(Date.now() - 120_000);
+      await fixture.db.update(heartbeatRuns).set({ processPid: 596, processGroupId: null, processStartedAt, processHostHash: "remote" })
+        .where(eq(heartbeatRuns.id, fixture.runId));
+      if (mode !== "own_identity") await fixture.db.insert(heartbeatRuns).values({ companyId, agentId, status: "succeeded",
+        runtimeMode: "native", nativeIssueId: fixture.issueId, nativeSessionId: current.nativeSessionId,
+        runnerInstanceId: current.runnerInstanceId, createdAt: new Date(current.createdAt.getTime() - 60_000),
+        finishedAt: new Date(current.createdAt.getTime() - 5_000), processPid: 596, processGroupId: null, processStartedAt,
+        processHostHash: "remote", contextSnapshot: { issueId: fixture.issueId } });
+    }
+    if (mode === "own_identity") await fixture.db.insert(heartbeatRunEvents).values({ companyId, runId: fixture.runId, agentId,
+      seq: 901, stream: "system", level: "info", eventType: "native.process_identity_recorded" });
+    if (mode === "runner_event") await fixture.db.insert(heartbeatRunEvents).values({ companyId, runId: fixture.runId, agentId,
+      seq: 902, stream: "system", level: "info", eventType: "item.updated", sourceEventId: "runner-event-after-failure" });
+    const [claim] = await claimNativeRestartRecoveries({ db: fixture.db, controller: successor,
+      restartKind: "hard", runIds: [fixture.runId] });
+    if (!restarts) {
+      expect(claim).not.toMatchObject({ kind: "bootstrap_incomplete" });
+      return;
+    }
+    expect(claim).toMatchObject({ kind: "bootstrap_incomplete", runId: fixture.runId, controllerGeneration: 2 });
+    const [coordinator] = await fixture.db.select().from(nativeRunFinalizations)
+      .where(eq(nativeRunFinalizations.runId, fixture.runId));
+    expect(coordinator).toMatchObject({ phase: "observed", recoveryState: "bootstrap_incomplete", failureCode: null });
+    expect(coordinator.recoveryHistory.at(-1)).toMatchObject({ reason: "remote_follow_up_never_attached" });
+    const [run] = await fixture.db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, fixture.runId));
+    expect(run).toMatchObject({ status: "running", errorCode: null, finishedAt: null });
   });
 
   it("restarts a remote bootstrap retry that shutdown cut before any runner was requested", async () => {

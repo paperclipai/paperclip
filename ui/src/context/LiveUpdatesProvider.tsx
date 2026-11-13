@@ -1571,7 +1571,16 @@ function invalidateActivityQueries(
   queryClient.invalidateQueries({ queryKey: queryKeys.dashboard(companyId) });
   queryClient.invalidateQueries({ queryKey: queryKeys.sidebarBadges(companyId) });
   const decisionProjectionChanged = entityType === "decision" ||
+    // Approvals are cards too: a decision by another person must leave every open list.
+    entityType === "approval" ||
+    // So are budget stops. Signed-in sessions get no `details`, so the
+    // `handledForUserId` check below never sees a budget receipt (PAP-771).
+    entityType === "budget_incident" || entityType === "budget_policy" ||
     ["inbox.dismissed", "inbox.snoozed", "inbox.restored"].includes(action ?? "") ||
+    // A claim moves a card between people's views (PAP-749), so open pages refetch.
+    action?.startsWith("attention.") ||
+    // A receipt for the person a card was for (PAP-749 plan §6): their For you updates without a reload.
+    typeof details?.handledForUserId === "string" ||
     action?.startsWith("issue.thread_interaction_") ||
     action === "issue.status_decision_recorded" ||
     action === "issue.conversation_session_started" ||
@@ -1774,6 +1783,11 @@ function invalidateActivityQueries(
             ...invalidationOptions,
           });
         }
+        if (action === "attention.claimed" || action === "attention.transferred") {
+          // A claim or transfer stores a new addressee (PAP-749), so the
+          // audience line in task detail, chat and the card resolver changes.
+          queryClient.invalidateQueries({ queryKey: queryKeys.issues.interactions(ref) });
+        }
         if (
           action?.startsWith("issue.thread_interaction_") ||
           ((action === "issue.updated" ||
@@ -1856,6 +1870,27 @@ function invalidateActivityQueries(
     queryClient.invalidateQueries({
       queryKey: queryKeys.approvals.list(companyId),
     });
+    if (entityId) {
+      // An open approval page shows the answer given from Needs You or a task.
+      queryClient.invalidateQueries({ queryKey: queryKeys.approvals.detail(entityId) });
+      queryClient.invalidateQueries({ queryKey: queryKeys.approvals.comments(entityId) });
+      queryClient.invalidateQueries({ queryKey: queryKeys.approvals.issues(entityId) });
+    }
+    return;
+  }
+
+  if (entityType === "decision") {
+    // Detail is keyed outside the `["decisions", companyId]` prefix above.
+    if (entityId) queryClient.invalidateQueries({ queryKey: queryKeys.decisions.detail(entityId) });
+    return;
+  }
+
+  if (entityType === "budget_incident" || entityType === "budget_policy") {
+    queryClient.invalidateQueries({ queryKey: queryKeys.budgets.overview(companyId) });
+    // Raise limit and Keep paused also answer the hard stop's override
+    // approval (PAP-768). The live payload has no approval ID.
+    queryClient.invalidateQueries({ queryKey: ["approvals", companyId] });
+    queryClient.invalidateQueries({ queryKey: ["approvals", "detail"] });
     return;
   }
 

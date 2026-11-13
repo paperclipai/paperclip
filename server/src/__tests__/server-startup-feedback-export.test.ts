@@ -16,7 +16,7 @@ import * as workspaceRecovery from "../services/workspace-recovery.js";
 import * as workspaceRecoveryWork from "../services/workspace-recovery-work.js";
 import { idleBackupWakeMarker, markIdleBackupWakeRequired } from "../services/idle-database-backup.js";
 import { DELIVERY_QUEUES } from "../services/delivery-work-notifications.js";
-import { decisionService, decisionRetentionService, toolAccessService, githubConnectionEventService, reconcileBuiltInAgentsOnStartup, reconcileCodexLocalManagedHomesOnStartup, reconcilePersistedRuntimeServicesOnStartup } from "../services/index.js";
+import { decisionService, decisionRetentionService, toolAccessService, githubConnectionEventService, reconcileBuiltInAgentsOnStartup, reconcileCodexLocalManagedHomesOnStartup, reconcilePersistedRuntimeServicesOnStartup, expirePendingInteractionsOnClosedIssues } from "../services/index.js";
 
 import { companies, runDatabaseBackup, type Db } from "@paperclipai/db";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -541,6 +541,7 @@ vi.mock("../services/index.js", () => ({
     duplicates: 0,
   })),
   reconcilePersistedRuntimeServicesOnStartup: vi.fn(async () => ({ reconciled: 0 })),
+  expirePendingInteractionsOnClosedIssues: vi.fn(async () => ({ issues: 0, expired: 0, failed: 0 })),
   resolveHeartbeatSchedulingSuppression: resolveHeartbeatSchedulingSuppressionMock,
   routineService: routineServiceFactoryMock,
   statusCardService: vi.fn(() => ({})),
@@ -1247,6 +1248,7 @@ describe("startServer feedback export wiring", () => {
     ["built-in agents", reconcileBuiltInAgentsOnStartup],
     ["managed homes", reconcileCodexLocalManagedHomesOnStartup],
     ["runtime services", reconcilePersistedRuntimeServicesOnStartup],
+    ["closed-issue interactions", expirePendingInteractionsOnClosedIssues],
   ] as const).flatMap(([name, reconcile]) => [false, true].map(fail => ({ name, reconcile, fail }))))
   ("counts detached $name startup writes after readiness (failure=$fail)", async ({ reconcile, fail }) => {
     let finishStartup!: () => void;

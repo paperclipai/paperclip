@@ -7,6 +7,8 @@ import { fileURLToPath } from "node:url";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { chromium, type Cookie } from "@playwright/test";
+import { readPrivateChildFailure } from "./private-child-failure.js";
+import { PRIVATE_BROWSER_STEPS } from "./external-private-browser-steps.js";
 import type { GrokRoutinePrivateInput } from "./external-grok-private-contract.js";
 import type { SlackIdentityPrivateInput } from "./external-slack-identity-contract.js";
 import type { SlackSetupPrivateInput } from "./external-slack-setup-private-contract.js";
@@ -25,7 +27,7 @@ export async function privateBrowserEntry(input: { mode: "secure-key" | "canary"
     try {
       const result = await promisify(execFile)(process.execPath, ["--import", loader, worker, request], { timeout: 120_000, maxBuffer: 16_384,
         env: { PATH: process.env.PATH ?? "", NODE_ENV: "test", DO_NOT_TRACK: "1", HOME: directory, TMPDIR: directory } }); output = result.stdout;
-    } catch { throw new Error("Private browser entry failed; child output and credential-bearing request withheld"); }
+    } catch { throw new Error(`Private browser entry failed${await readPrivateChildFailure(directory, PRIVATE_BROWSER_STEPS)}; child output and credential-bearing request withheld`); }
     let receipt: PrivateBrowserReceipt; try { receipt = JSON.parse(output) as PrivateBrowserReceipt; } catch { throw new Error("Private browser returned invalid closed receipt"); }
     if (receipt.processIsolation !== true || receipt.testRunnerAttached !== false || receipt.tracingEnabled !== false || receipt.videoEnabled !== false || receipt.apiStepRecorder !== false
       || Object.keys(receipt).some(key => !["processIsolation", "testRunnerAttached", "tracingEnabled", "videoEnabled", "apiStepRecorder", "credentialEntered", "connectionId", "challengeVisible", "passwordInput", "autocompleteOff", "humanSubmittedSecurely", "visibleReady", "storageClean", "newTokenId", "tokenUiVisible", "newWorkedBeforeRevocation", "oldWorkedUntilRevocation", "revealedPending", "oldRevoked", "newWorksAfter", "oldStatusAfter", "otherWorksAfter", "requestedCompanyName", "requestedCompanyKey", "savedCompanyName", "savedCompanyKey", "secretId", "secretUiVisible", "bindingId", "routineConfigured", "routineUiVisible", "identityConfirmed", "identityUiVisible", "principalId", "paperclipUserId", "endpointId", "slackCredentialUiVisible", "activationUiVisible", "endpointActive", "identityWasAlreadyLinked", "credentialUiRejected", "deviceSessionVerified", "currentCodeVisible", "companyConsentVisible", "readScopeVisible", "humanApproved", "expiredPageVisible"].includes(key))) throw new Error("Private browser receipt exceeds its closed contract");

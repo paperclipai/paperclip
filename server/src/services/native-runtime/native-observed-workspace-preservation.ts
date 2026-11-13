@@ -1,3 +1,4 @@
+import { notifyQueuedRunDispatch } from "../run-dispatch-notifications.js";
 import { and, asc, eq, inArray, isNull, sql } from "drizzle-orm";
 import { companies, environmentLeases, executionWorkspaces, heartbeatRuns, issueRecoveryActions, issues, nativeRunFinalizations, nativeRunResults, workspaceOperations, type Db } from "@paperclipai/db";
 import { remoteWorkspaceAuthoritySchema, remoteWorkspaceRunReferenceSchema } from "@paperclipai/shared";
@@ -206,6 +207,7 @@ export async function settleStoppedObservedWorkspace(db: Db, companyId: string, 
       || !hasRemoteTerminationReceipt(lease) || !hasConfirmedSandboxStopAndRetain(lease)) return false;
     await notifyDeliveryWork(tx, DELIVERY_QUEUES.workspaceRecovery);
     await notifyDeliveryWork(tx, DELIVERY_QUEUES.executionFinalization);
+    await notifyQueuedRunDispatch(tx, { companyId });
     const [settled] = await tx.update(nativeRunFinalizations).set({ phase: "terminal_failure", leaseOwner: null,
       leaseExpiresAt: null, controlDeadlineAt: null, nextAttemptAt: null, recoveryState: "blocked",
       failureCode: "native_continuation_requires_reconciliation", updatedAt: new Date() }).where(and(

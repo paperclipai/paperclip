@@ -1,3 +1,4 @@
+import { extractCompanyPrefixFromPath } from "./company-routes.js";
 type MarkdownNode = {
   type: string;
   value?: string;
@@ -35,7 +36,7 @@ export function parseIssueReferenceFromHref(
     const issuePathId = decodeURIComponent(issueSchemeMatch[1]);
     return {
       issuePathId,
-      href: `/issues/${encodeURIComponent(issuePathId)}${issueSchemeMatch[2] ?? ""}`,
+      href: issueHref(issuePathId, issueSchemeMatch[2] ?? "", null, knownPrefixes),
     };
   }
 
@@ -43,7 +44,12 @@ export function parseIssueReferenceFromHref(
   if (pathId) {
     return {
       issuePathId: pathId,
-      href: `/issues/${encodeURIComponent(pathId)}${trimmed.match(/[?#].*$/)?.[0] ?? ""}`,
+      href: issueHref(
+        pathId,
+        trimmed.match(/[?#].*$/)?.[0] ?? "",
+        extractCompanyPrefixFromPath(trimmed.split(/[?#]/, 1)[0]!),
+        knownPrefixes,
+      ),
     };
   }
 
@@ -60,8 +66,24 @@ export function parseIssueReferenceFromHref(
   }
   return {
     issuePathId: normalized,
-    href: `/issues/${encodeURIComponent(normalized)}`,
+    href: issueHref(normalized, "", null, knownPrefixes),
   };
+}
+
+function issueHref(
+  issuePathId: string,
+  suffix: string,
+  pathCompanyPrefix: string | null,
+  knownPrefixes?: Set<string>,
+): string {
+  const identifierPrefix = BARE_ISSUE_IDENTIFIER_RE.test(issuePathId)
+    ? issuePathId.split("-")[0]!.toUpperCase()
+    : null;
+  const companyPrefix =
+    pathCompanyPrefix ??
+    (identifierPrefix && knownPrefixes?.has(identifierPrefix) ? identifierPrefix : null);
+  const path = `/issues/${encodeURIComponent(issuePathId)}${suffix}`;
+  return companyPrefix ? `/${companyPrefix}${path}` : path;
 }
 
 function splitTrailingPunctuation(token: string) {

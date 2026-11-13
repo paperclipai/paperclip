@@ -52,6 +52,41 @@ async function answerText(ctx: ChatCatalogContext, answer: string) {
   }
   await form.getByRole("button", { name: /^(Submit|Send) answers$/ }).click();
 }
+/** The one required question of the agent's card, when every other question on it is optional. */
+export function soleRequiredQuestion(card: Pick<Interaction, "payload"> | undefined) {
+  const questions = card?.payload.questionSet?.questions ?? [];
+  const required = questions.filter(question => question.required === true);
+  return required.length === 1 ? required[0] : undefined;
+}
+/** Answer the card as a person would: page through it, answer its one required question and Skip
+ * each optional one. A card with several questions shows Next until its last page. */
+async function answerRequiredQuestion(ctx: ChatCatalogContext, answer: string) {
+  const form = ctx.input.page.getByTestId("task-chat-composer-takeover");
+  await expect(form).toBeVisible();
+  const card = (await cards(ctx)).find(row => row.kind === "ask_user_questions" && row.status === "pending");
+  const questions = card?.payload.questionSet?.questions ?? [];
+  if (questions.length <= 1) return answerText(ctx, answer);
+  const required = soleRequiredQuestion(card);
+  if (!required) throw new Error("The agent's question card does not have exactly one required question");
+  for (const [index, question] of questions.entries()) {
+    const last = index === questions.length - 1;
+    // Pages follow the card's question order; only an optional question's page offers Skip.
+    const skip = form.getByRole("button", { name: "Skip", exact: true });
+    if (question.id !== required.id) {
+      // Skip leaves an optional question unanswered and moves on (or sends, on the last page).
+      await skip.click();
+      continue;
+    }
+    await expect(skip).toBeHidden();
+    const text = form.getByTestId("question-text-answer-composer");
+    if (await text.isVisible()) await text.locator('[contenteditable="true"],textarea').first().fill(answer);
+    else {
+      await form.getByRole("radio", { name: question.customAnswer?.label ?? "Other", exact: true }).click();
+      await form.getByTestId("question-other-answer-composer").locator('[contenteditable="true"],textarea').first().fill(answer);
+    }
+    await form.getByRole("button", last ? { name: /^(Submit|Send) answers$/ } : { name: "Next", exact: true }).click();
+  }
+}
 async function beforeAnswer(ctx: ChatCatalogContext, state: Record<string, unknown>) {
   state.beforeAnswerCommentIds = (await ctx.input.api.get<Array<{ id: string }>>(`/api/issues/${ctx.issue()!.id}/comments`)).map(row => row.id);
   state.beforeAnswerTasks = (await ctx.input.api.get<Array<{ id: string; title: string; description?: string; updatedAt: string }>>(`/api/companies/${ctx.input.fixtures.company.id}/issues?includeAgentCreatedTasks=true`)).filter(row => row.id !== ctx.issue()!.id)
@@ -184,12 +219,12 @@ export function gradeQuestions(value: unknown) {
       c.add("later-answer-resumes-once", o.runs.filter(run => run.contextSnapshot?.interactionId === original?.id).length === 1
         && String(o.state.afterAnswerReply).includes(String(o.state.answer)), "Only the later submitted answer causes one continuation and is used in its actual response.");
     } else {
+      // The card may carry optional follow-ups, which the person skips; it must require exactly the one necessary answer.
+      const necessary = soleRequiredQuestion(original);
       c.add("agent-created-essential-question", original?.createdByAgentId === o.leadId && !!original.sourceRunId
-        && o.runs.some(run => run.id === original.sourceRunId && run.agentId === o.leadId && run.companyId === o.companyId && run.status === "succeeded") && original.payload.questionSet?.questions.length === 1
-        && (original.payload.questionSet.questions[0]!.answerMode === "text" || original.payload.questionSet.questions[0]!.customAnswer?.enabled === true)
-        && original.payload.questionSet.questions[0]!.required === true
-        && /\b(?:product|name)\b/i.test(original.payload.questionSet.questions[0]!.prompt)
-        && !/model|runtime|adapter|framework|deployment|database|hosting/i.test(original.payload.questionSet.questions[0]!.prompt), "The agent itself asks exactly one necessary free-text product-name question tied to its actual completed run, excluding incidental implementation settings.");
+        && o.runs.some(run => run.id === original.sourceRunId && run.agentId === o.leadId && run.companyId === o.companyId && run.status === "succeeded") && !!necessary
+        && (necessary.answerMode === "text" || necessary.customAnswer?.enabled === true),
+        "The agent itself requires exactly one free-text answer, tied to its actual completed run; any other question on the card is optional. Whether that answer is the product name is proved by the saved brief carrying the person's answer.");
       c.add("answer-in-saved-brief", o.tasks.some(row => `${row.title}\n${row.description}`.includes(String(o.state.answer)) && row.companyId === o.companyId && hasLink(o, "issues", row)),
         "A saved, linked task brief uses the actual answer rather than merely acknowledging it in chat.");
       c.add("one-bound-continuation", o.runs.filter(run => run.contextSnapshot?.interactionId === original?.id).length === 1
@@ -249,7 +284,7 @@ export const questionIdentityCases = [
     await ctx.input.api.patch(`/api/issues/${source.id}`, { description: existingBrief });
     return { project: p, sourceId: source.id, existingBrief, answer: `Acorn ${ctx.input.nonce}` };
   }, gradeQuestions, {
-    expectedRunCount: 4, minimumRunCount: 1, attemptTimeoutMs: 540_000,
+    oracleVersion: "paperclip.chat-catalog.identity.necessary-question.v2", expectedRunCount: 4, minimumRunCount: 1, attemptTimeoutMs: 540_000,
     observe: observeQuestion,
     async verifySetup(ctx, state) {
       const visible = await readAgentResource(ctx, `/api/issues/${state.sourceId}`);
@@ -267,10 +302,10 @@ export const questionIdentityCases = [
         load: () => cards(ctx), accept: rows => chatCatalogNativePhaseIsTimely(ctx) && rows.some(row => row.kind === "ask_user_questions" && row.status === "pending") });
       const original = pending.find(row => row.kind === "ask_user_questions" && row.status === "pending")!;
       state.original = original;
-      await expect(ctx.input.page.getByTestId("task-chat-composer-takeover")).toContainText(/product|name/i);
+      await expect(ctx.input.page.getByTestId("task-chat-composer-takeover")).toBeVisible();
       await ctx.input.evidence("identity-question-before-answer.json", { original, runs: await ctx.allRuns() });
       await beforeAnswer(ctx, state);
-      await answerText(ctx, String(state.answer));
+      await answerRequiredQuestion(ctx, String(state.answer));
     },
   }),
   identityDefinition("questions-and-approvals.multi-part-question", ctx => questionFixture(ctx, true), gradeQuestions, {

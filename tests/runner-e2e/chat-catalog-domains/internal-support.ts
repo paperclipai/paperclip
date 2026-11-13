@@ -1,4 +1,4 @@
-import { collectConversationLinks, conversationLinkLocator, type RenderedConversationLink } from "../chat-rendered-links.js";
+import { collectConversationLinks, conversationLinkLocator, markdownLinkTargets, type RenderedConversationLink } from "../chat-rendered-links.js";
 import { expect } from "@playwright/test";
 import type { ChatCatalogContext } from "../chat-catalog-contract.js";
 import type { ChatRun } from "../chat-flow.js";
@@ -82,6 +82,26 @@ export function hasLink(o: InternalObservation, kind: "issues" | "projects" | "g
       const target = parts[index + 1];
       return index >= 0 && !!target && [row.id, row.identifier, row.urlKey].filter(Boolean).includes(target);
     } catch { return false; }
+  });
+}
+/**
+ * Rendered links that the saved reply itself carries: a Markdown link target in a saved reply body, or a
+ * task identifier written in that body, which the conversation links. A chat bubble can also render
+ * prose from the run stream that was never saved; links found only there are not part of the reply that
+ * history, notifications and other channels deliver. Only link structure is matched, never wording.
+ */
+export function savedReplyLinks(o: Pick<InternalObservation, "links" | "origin" | "reply">): string[] {
+  const location = (href: string) => {
+    try { const url = new URL(href, o.origin); return url.origin === new URL(o.origin).origin ? decodeURIComponent(url.pathname).replace(/\/+$/, "") + url.search : url.href; }
+    catch { return null; }
+  };
+  const targets = new Set(markdownLinkTargets(o.reply).map(location));
+  return o.links.filter(href => {
+    const at = location(href); if (!at) return false;
+    if (targets.has(at)) return true;
+    const parts = at.split("?")[0]!.split("/"); const identifier = parts[parts.indexOf("issues") + 1];
+    return parts.includes("issues") && !!identifier && /^[A-Za-z][A-Za-z0-9]*-\d+$/.test(identifier)
+      && new RegExp(`(?<![\\w-])${identifier}(?![\\w-])`, "i").test(o.reply);
   });
 }
 export function observation(value: unknown): InternalObservation | undefined {

@@ -3,10 +3,12 @@ import { approvalExecutionIssueCondition, firstApprovalIssueId } from "./approva
 import { and, asc, desc, eq, inArray, isNull, notInArray, or, sql, type SQL } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
+  activityLog,
   agents,
   approvals,
   assets,
   companies,
+  companyMemberships,
   decisionBundles,
   decisionQueueItems,
   decisionQueues,
@@ -28,31 +30,40 @@ import {
   projects,
   projectWorkspaces,
 } from "@paperclipai/db";
-import { deriveProjectUrlKey } from "@paperclipai/shared";
+import { ATTENTION_CLAIMABLE_SOURCE_KINDS, ATTENTION_PERSONAL_VIEWS, deriveProjectUrlKey } from "@paperclipai/shared";
+import { normalizedContentHash } from "@paperclipai/shared/portability-hash";
 import type {
+  AttentionAudience,
+  AttentionClaimResult,
+  AttentionCloseMode,
   AttentionDecisionVerb,
   AttentionFeed,
   AttentionSummary,
   AttentionTaskIndex,
   AttentionFeedQuery,
+  AttentionFeedView,
   AttentionDetailImage,
   AttentionItem,
   AttentionItemDetail,
+  AttentionRequestKind,
   AttentionProjectRef,
   AttentionQueueRef,
   AttentionResolverAudience,
   AttentionSeverity,
   AttentionSortMode,
   AttentionSourceKind,
+  AttentionStale,
   AttentionSubject,
+  AttentionTransferResult,
   AttentionTriageAttribution,
+  AttentionViewCounts,
   AttentionWorkspaceRef,
   IssueThreadInteractionEffectiveResolverPolicySource,
   IssueThreadInteractionResolverPolicyProvenance,
   IssueReviewPolicy,
 } from "@paperclipai/shared";
 import { withoutSqlStatementText } from "@paperclipai/shared";
-import { badRequest } from "../errors.js";
+import { badRequest, conflict, forbidden, notFound, unprocessable } from "../errors.js";
 import { listAttentionExhaustedRuns } from "./attention-exhausted-runs.js";
 import { budgetService } from "./budgets.js";
 import {
@@ -63,7 +74,13 @@ import {
 import { attentionIssueCondition, executionIssueCondition } from "./issue-visibility.js";
 import { parseIssueExecutionState } from "./issue-execution-policy.js";
 import { isProspectiveBlockedTransition } from "./routable-blocked.js";
-import { issueReadSqlCondition, type AuthorizationActor } from "./authorization.js";
+import { authorizationService, canActorReadApproval, issueReadSqlCondition, type AuthorizationActor } from "./authorization.js";
+import { humanCreatedIssueCondition } from "./issue-participation.js";
+import { attentionAlreadyClosedError } from "./attention-already-closed.js";
+import { inboxDismissalService } from "./inbox-dismissals.js";
+import { assertInteractionRoutingRecipientAllowed } from "./issue-thread-interactions.js";
+import { resolvableApprovalStatuses } from "../lib/approval-records.js";
+import { activeIssueInteractionCondition, deferrableInteractionCondition } from "./issue-question-context.js";
 import { evaluateAgentInvokability, type AgentOrgRow } from "./agent-invokability.js";
 import { canonicalizeStoredResolverPolicy } from "./issue-thread-interaction-resolution.js";
 import { decisionQueueService } from "./decision-queues.js";
@@ -145,6 +162,7 @@ type DismissalState = {
   kind: "dismiss" | "snooze";
   dismissedAt: Date;
   snoozedUntil: Date | null;
+  fingerprint: string | null;
 };
 
 type PlanDocumentSummary = {
@@ -191,18 +209,20 @@ function timestamp(value: Date | string | null | undefined): number {
 
 function activeDismissalState(
   dismissalByKey: ReadonlyMap<string, DismissalState>,
-  dismissalKey: string,
-  activityAt: string,
+  item: Pick<AttentionItem, "dismissalKey" | "activityAt" | "changeFingerprint">,
   now: number,
 ) {
-  const dismissal = dismissalByKey.get(dismissalKey);
+  const dismissal = dismissalByKey.get(item.dismissalKey);
   if (!dismissal) return null;
 
   const dismissedAt = toIso(dismissal.dismissedAt);
   const snoozedUntil = dismissal.snoozedUntil ? toIso(dismissal.snoozedUntil) : null;
+  // PAP-749 Rule 9: a hidden card returns only on an important change. Rows
+  // saved before the fingerprint existed keep the old activity-time rule.
+  const covered = dismissalCoversChange(dismissal.fingerprint, item.changeFingerprint);
   const isActive = dismissal.kind === "snooze"
-    ? dismissal.snoozedUntil != null && timestamp(dismissal.snoozedUntil) > now
-    : timestamp(dismissal.dismissedAt) >= timestamp(activityAt);
+    ? dismissal.snoozedUntil != null && timestamp(dismissal.snoozedUntil) > now && covered !== false
+    : covered ?? timestamp(dismissal.dismissedAt) >= timestamp(item.activityAt);
 
   return {
     kind: dismissal.kind,
@@ -212,14 +232,25 @@ function activeDismissalState(
   };
 }
 
-function stripMarkdown(value: string) {
+/**
+ * Plain text for a card excerpt. Removes markdown syntax only, so characters
+ * inside words and numbers stay: "(#2)", "in-review", "snake_case", an email
+ * address (PAP-767).
+ */
+export function stripMarkdown(value: string) {
   return value
     .replace(/```[\s\S]*?```/g, " ")
     .replace(/`([^`]+)`/g, "$1")
     .replace(/!\[[^\]]*\]\([^)]*\)/g, " ")
     .replace(/\[([^\]]+)\]\([^)]*\)/g, "$1")
     .replace(/^#{1,6}\s+/gm, "")
-    .replace(/[>*_~#-]+/g, " ")
+    // Block syntax at the start of a line: rules, quotes and list bullets.
+    .replace(/^\s*(?:[-*_]\s*){3,}$/gm, " ")
+    .replace(/^\s*>+\s?/gm, "")
+    .replace(/^\s*[-*+]\s+/gm, "")
+    // Emphasis and strikethrough markers around text.
+    .replace(/(\*\*|__|~~)(?=\S)([\s\S]*?\S)\1/g, "$2")
+    .replace(/(^|[^\w*])[*_](?=\S)([^*_\n]*?\S)[*_](?=[^\w*]|$)/g, "$1$2")
     .replace(/\s+/g, " ")
     .trim();
 }
@@ -337,6 +368,22 @@ function interactionDetail(input: {
   };
 }
 
+/**
+ * What a confirmation is about (PAP-775), so the Needs You feed can pick the
+ * card design before the interaction itself loads.
+ */
+function interactionRequestKind(kind: string, payload: Record<string, unknown>): AttentionRequestKind | null {
+  const has = (key: string) => Object.keys(readRecord(payload[key])).length > 0;
+  if (kind === "connection_intent") return has("accessRequest") ? "access" : "connection";
+  if (kind !== "request_confirmation") return null;
+  if (has("toolAction")) return "tool_action";
+  if (has("secretProposal")) return "secret";
+  if (has("connectionAuthorization")) return "connection";
+  const target = readRecord(payload.target);
+  if (target.type === "issue_attachment" || (target.type === "issue_document" && target.key !== "plan")) return "deliverable";
+  return null;
+}
+
 function issueHref(prefix: string, issue: Pick<IssueSubjectRow, "id" | "identifier">) {
   return `/${prefix}/issues/${issue.identifier ?? issue.id}`;
 }
@@ -369,16 +416,43 @@ function decisionVerbs(...verbs: AttentionDecisionVerb[]): AttentionDecisionVerb
   return verbs;
 }
 
+/**
+ * Which Close… verbs a card supports (PAP-749 plan §2, Rule 6). Everyone can
+ * archive or snooze a card for themselves. Withdraw needs a source with a real
+ * withdraw or cancel: interactions, decisions and approvals. A hire approval is
+ * rejected, not withdrawn, so its pending agent still gets a decision. Budget
+ * cards use Raise limit and Keep paused; reviews, blockers, recovery and
+ * operator alerts have no request to withdraw.
+ */
+export function attentionCloseModes(
+  sourceKind: AttentionSourceKind,
+  subject: Pick<AttentionSubject, "metadata">,
+): AttentionCloseMode[] {
+  if (sourceKind === "productivity_review") return [];
+  const withdrawable = sourceKind === "issue_thread_interaction"
+    || sourceKind === "decision"
+    || (sourceKind === "approval" && subject.metadata?.type !== "hire_agent");
+  return withdrawable ? ["withdraw", "archive", "snooze"] : ["archive", "snooze"];
+}
+
 type CreateAttentionItemInput = Omit<AttentionItem,
   | "id"
   | "dismissalKey"
   | "rank"
   | "dismissal"
+  | "audience"
+  | "stale"
+  | "required"
+  | "changeFingerprint"
+  | "closeModes"
+  | "obligationKey"
+  | "obligationLeadId"
   | "project"
   | "workspace"
   | "expiresAt"
   | "ruleKey"
   | "originAgentName"
+  | "requester"
   | "queues"
   | "shelf"
   | "retentionDays"
@@ -405,11 +479,24 @@ function createItem(input: CreateAttentionItemInput): AttentionItem {
     id: itemId(input.sourceKind, input.dedupKey),
     dismissalKey: `attention:${input.dedupKey}`,
     dismissal: null,
+    // Placeholder; the audience post-pass overwrites this once per item once the
+    // per-issue context is loaded (PAP-749 plan §1, Rule 2).
+    audience: { kind: "pool", userId: null, reason: "none" },
+    // Placeholders; the same post-pass sets these (PAP-749 plan §2, Rules 9-10).
+    stale: null,
+    required: false,
+    changeFingerprint: "",
+    closeModes: attentionCloseModes(input.sourceKind, input.subject),
+    // Set by the obligation pass (PAP-749 plan §2, Rule 11).
+    obligationKey: null,
+    obligationLeadId: null,
     project: input.project ?? null,
     workspace: input.workspace ?? null,
     expiresAt: input.expiresAt ?? null,
     ruleKey: input.ruleKey ?? null,
     originAgentName: input.originAgentName ?? null,
+    // Set by the enrichment pass, which loads agent names (PAP-775, UI2).
+    requester: null,
     queues: [],
     shelf: false,
     retentionDays: DEFAULT_DECISION_SHELF_DAYS,
@@ -477,6 +564,13 @@ function readMetadataAgentId(item: AttentionItem) {
   return typeof value === "string" && value.length > 0 ? value : null;
 }
 
+/** The person who asked, when a person (not an agent) created the request (PAP-775, UI2). */
+function readMetadataRequesterUserId(item: AttentionItem) {
+  const metadata = item.subject.metadata;
+  const value = metadata?.requestedByUserId ?? metadata?.createdByUserId;
+  return typeof value === "string" && value.length > 0 ? value : null;
+}
+
 function startOfUtcDay(now: number) {
   const value = new Date(now);
   return Date.UTC(value.getUTCFullYear(), value.getUTCMonth(), value.getUTCDate());
@@ -504,17 +598,6 @@ function decideOrder(item: AttentionItem, now: number): [number, number] {
   }
   if (item.decideBy === "whenever") return [1, Number.MAX_SAFE_INTEGER];
   return [2, Number.MAX_SAFE_INTEGER];
-}
-
-function isDecideNow(item: AttentionItem, now: number) {
-  const [bucket, deadline] = decideOrder(item, now);
-  return bucket === 0 && deadline <= endOfUtcDay(now);
-}
-
-/** Surfaced today (arrival). Mirrors `attentionIsNewToday` in `ui/src/lib/attention.ts`. */
-function isNewToday(item: AttentionItem, now: number) {
-  const ts = timestamp(item.createdAt);
-  return ts > 0 && ts >= startOfUtcDay(now);
 }
 
 function compareDecideItems(left: AttentionItem, right: AttentionItem, now: number) {
@@ -628,9 +711,14 @@ async function enrichAttentionItems(db: Db, companyId: string, items: AttentionI
       updatedAt: toIso(triage.updatedAt),
     } : null;
     const originAgentId = readMetadataAgentId(item);
+    const requesterUserId = readMetadataRequesterUserId(item);
+    const originAgentName = originAgentId ? agentNameById.get(originAgentId) ?? null : null;
     return {
       ...item,
-      originAgentName: originAgentId ? agentNameById.get(originAgentId) ?? null : null,
+      originAgentName,
+      requester: originAgentId && originAgentName
+        ? { kind: "agent" as const, id: originAgentId, name: originAgentName }
+        : requesterUserId ? { kind: "user" as const, id: requesterUserId, name: null } : null,
       queues: queuesBySource.get(itemSourceKey(item)) ?? [],
       decideBy,
       decideByAttribution,
@@ -658,7 +746,7 @@ function betterDuplicate(left: AttentionItem, right: AttentionItem) {
   return compareAttentionItems(left, right) <= 0 ? left : right;
 }
 
-function approvalTitle(type: string, payload: Record<string, unknown>) {
+export function approvalTitle(type: string, payload: Record<string, unknown>) {
   const title = typeof payload.title === "string" ? payload.title.trim() : "";
   if (title) return title;
   const summary = typeof payload.summary === "string" ? payload.summary.trim() : "";
@@ -666,7 +754,7 @@ function approvalTitle(type: string, payload: Record<string, unknown>) {
   return type.replaceAll("_", " ");
 }
 
-function interactionLabel(kind: string) {
+export function interactionLabel(kind: string) {
   switch (kind) {
     case "request_confirmation":
       return "Confirmation requested";
@@ -770,13 +858,49 @@ function budgetObservedPercent(amountObserved: number, amountLimit: number) {
   return amountLimit > 0 ? Math.round((amountObserved / amountLimit) * 10_000) / 100 : 0;
 }
 
-async function companyPrefix(db: Db, companyId: string) {
+/**
+ * The configured escalation owners that are still active members of the
+ * company. A removed or inactive owner sends cards on to the next step instead
+ * of hiding them on a list nobody reads (PAP-749 plan §1, special conditions).
+ */
+async function activeMemberUserIds(db: Db, companyId: string, userIds: Array<string | null | undefined>) {
+  const candidates = [...new Set(userIds.filter((value): value is string => Boolean(value)))];
+  if (candidates.length === 0) return new Set<string>();
+  const rows = await db
+    .select({ principalId: companyMemberships.principalId })
+    .from(companyMemberships)
+    .where(and(
+      eq(companyMemberships.companyId, companyId),
+      eq(companyMemberships.principalType, "user"),
+      inArray(companyMemberships.principalId, candidates),
+      eq(companyMemberships.status, "active"),
+    ));
+  return new Set(rows.map((row) => row.principalId));
+}
+
+/**
+ * Company-level facts the feed needs once per request: the issue prefix for
+ * href building and the company's escalation owners for the audience
+ * post-pass: the default decision owner (task 1d-lite) and the budget owner
+ * (task 1d).
+ */
+export async function loadCompanyAttentionConfig(db: Db, companyId: string) {
   const row = await db
-    .select({ issuePrefix: companies.issuePrefix })
+    .select({
+      issuePrefix: companies.issuePrefix,
+      defaultDecisionOwnerUserId: companies.defaultDecisionOwnerUserId,
+      budgetOwnerUserId: companies.budgetOwnerUserId,
+    })
     .from(companies)
     .where(eq(companies.id, companyId))
     .then((rows) => rows[0] ?? null);
-  return row?.issuePrefix ?? "PAP";
+  const active = await activeMemberUserIds(db, companyId, [row?.defaultDecisionOwnerUserId, row?.budgetOwnerUserId]);
+  const activeOrNull = (userId: string | null | undefined) => (userId && active.has(userId) ? userId : null);
+  return {
+    prefix: row?.issuePrefix ?? "PAP",
+    defaultDecisionOwnerUserId: activeOrNull(row?.defaultDecisionOwnerUserId),
+    budgetOwnerUserId: activeOrNull(row?.budgetOwnerUserId),
+  };
 }
 
 async function dismissalByKey(db: Db, companyId: string, userId: string | null | undefined) {
@@ -787,6 +911,7 @@ async function dismissalByKey(db: Db, companyId: string, userId: string | null |
       kind: inboxDismissals.kind,
       dismissedAt: inboxDismissals.dismissedAt,
       snoozedUntil: inboxDismissals.snoozedUntil,
+      fingerprint: inboxDismissals.fingerprint,
     })
     .from(inboxDismissals)
     .where(and(eq(inboxDismissals.companyId, companyId), eq(inboxDismissals.userId, userId)));
@@ -794,6 +919,7 @@ async function dismissalByKey(db: Db, companyId: string, userId: string | null |
     kind: row.kind,
     dismissedAt: row.dismissedAt,
     snoozedUntil: row.snoozedUntil,
+    fingerprint: row.fingerprint,
   }]));
 }
 
@@ -1075,6 +1201,474 @@ function resolveBlockingIssue(
   return null;
 }
 
+/**
+ * Raw audience inputs a single source branch already has in hand. The resolver
+ * reads these plus the per-issue context; it deliberately has no field for
+ * `responsibleUserId`, the routine creator, a connected account, the agent
+ * owner, or a manual routine starter, so it is structurally impossible to route
+ * a card by any of them (PAP-749 plan §1, Rule 2).
+ */
+export type AttentionAudienceInput = {
+  /** The issue the card hangs on, if any; keys the per-issue context lookup. */
+  issueId: string | null;
+  /** `issue_thread_interactions.addressee_user_id`. */
+  addresseeUserId?: string | null;
+  /** `approvals.requested_by_user_id`. */
+  requestedByUserId?: string | null;
+  /** A blocker/recovery owner that names a concrete user (never `"board"`). */
+  ownerUserId?: string | null;
+  /** The current execution review participant, when it is a user. */
+  reviewParticipantUserId?: string | null;
+  /** Company-operations alert (failed run, budget, agent error, join request, board-owned recovery). */
+  companyScoped?: boolean;
+  /**
+   * A company alert that the budget owner also gets as a personal card (a
+   * budget hard stop; PAP-749 plan §1, Rule 3). It still shows in Company.
+   */
+  escalatesToBudgetOwner?: boolean;
+};
+
+/**
+ * Per-issue participation facts the resolver consults for the "issue chain"
+ * steps. `instigatorUserId` is the creator of the nearest human-created
+ * ancestor (reusing {@link humanCreatedIssueCondition}); it is `null` for work
+ * that only agents or routines created.
+ */
+export type IssueAudienceContext = {
+  conversationUserId: string | null;
+  assigneeUserId: string | null;
+  instigatorUserId: string | null;
+  /** The card's own issue status; the stale rule reads it, the resolver does not. */
+  issueStatus?: string | null;
+  /**
+   * The decision owner of the card's own project (task 1d), when it is still
+   * an active member; the first escalation owner of Rule 2 step 5.
+   */
+  projectOwnerUserId?: string | null;
+};
+
+export const MAX_INSTIGATOR_CHAIN_DEPTH = 50;
+
+/**
+ * Company-level audience configuration (PAP-749 plan §1, Rule 2 step 5): the
+ * default decision owner (task 1d-lite) and the budget owner (task 1d). The
+ * project owner is per issue, on {@link IssueAudienceContext}.
+ */
+export type AttentionAudienceCompanyConfig = {
+  /** The company's default decision owner, or `null` when none is set. */
+  defaultDecisionOwnerUserId?: string | null;
+  /** The company's budget owner, or `null` when none is set. */
+  budgetOwnerUserId?: string | null;
+};
+
+/**
+ * The escalation owner for a card (Rule 2 step 5): the project's decision
+ * owner, else the company's default decision owner, else nobody.
+ */
+function escalationOwnerAudience(
+  ctx: IssueAudienceContext | null,
+  companyConfig: AttentionAudienceCompanyConfig,
+): AttentionAudience | null {
+  if (ctx?.projectOwnerUserId) return { kind: "user", userId: ctx.projectOwnerUserId, reason: "project_owner" };
+  if (companyConfig.defaultDecisionOwnerUserId) {
+    return { kind: "user", userId: companyConfig.defaultDecisionOwnerUserId, reason: "escalation_owner" };
+  }
+  return null;
+}
+
+/**
+ * Compute where a card shows (PAP-749 plan §1, Rule 2). Apply the first step in
+ * the table that yields a user; otherwise the card goes to an escalation owner
+ * (step 5: the project's decision owner, then the company's default decision
+ * owner); failing that it goes to the claimable Unassigned pool (step 6).
+ * Placement only — the resolver policy still gates who may act.
+ */
+export function resolveAttentionAudience(
+  input: AttentionAudienceInput,
+  ctx: IssueAudienceContext | null,
+  companyConfig: AttentionAudienceCompanyConfig = {},
+): AttentionAudience {
+  // Company-operations alerts belong to the operator "Company" view. A budget
+  // hard stop also goes to the budget owner, and Company still shows it (Rule 3).
+  if (input.companyScoped) {
+    if (input.escalatesToBudgetOwner && companyConfig.budgetOwnerUserId) {
+      return { kind: "user", userId: companyConfig.budgetOwnerUserId, reason: "budget_owner", alsoInCompany: true };
+    }
+    return { kind: "company", userId: null, reason: "none" };
+  }
+  // Step 1: an explicit addressee always wins, even on an automated task.
+  if (input.addresseeUserId) return { kind: "user", userId: input.addresseeUserId, reason: "addressee" };
+  // Source-specific owners that stand in for an explicit recipient.
+  if (input.requestedByUserId) return { kind: "user", userId: input.requestedByUserId, reason: "requester" };
+  if (input.ownerUserId) return { kind: "user", userId: input.ownerUserId, reason: "assignee" };
+  // Step 2: the chat user.
+  if (ctx?.conversationUserId) return { kind: "user", userId: ctx.conversationUserId, reason: "conversation" };
+  // Step 3: the current review participant, or the human assignee.
+  if (input.reviewParticipantUserId) return { kind: "user", userId: input.reviewParticipantUserId, reason: "reviewer" };
+  if (ctx?.assigneeUserId) return { kind: "user", userId: ctx.assigneeUserId, reason: "assignee" };
+  // Step 4: the instigator — the human who created the original work, up the parent chain.
+  if (ctx?.instigatorUserId) return { kind: "user", userId: ctx.instigatorUserId, reason: "instigator" };
+  // Step 5: an escalation owner, so an ownerless card lands on a real person's
+  // "For you" list instead of waiting in Unassigned.
+  const escalation = escalationOwnerAudience(ctx, companyConfig);
+  if (escalation) return escalation;
+  // Step 6: no owner — the card goes to the claimable Unassigned pool.
+  return { kind: "pool", userId: null, reason: "none" };
+}
+
+/** Whether a resolved audience belongs in the requested view (PAP-749 plan §1, Rule 3). */
+export function audienceMatchesView(
+  audience: AttentionAudience,
+  view: AttentionFeedView,
+  userId: string | null | undefined,
+): boolean {
+  switch (view) {
+    // `all` is the pre-PAP-749 superset; the existing per-source filters already
+    // shaped `collected`, so every surviving item belongs in it. `archived` is
+    // every card the person hid themselves, whatever its audience (plan §3);
+    // the caller selects it by the person's own dismissal, not by audience.
+    case "all":
+    case "archived":
+      return true;
+    case "mine":
+      return audience.kind === "user" && audience.userId != null && audience.userId === userId;
+    case "unassigned":
+      return audience.kind === "pool";
+    case "company":
+      // A critical incident with a personal owner still shows here (Rule 3).
+      return audience.kind === "company" || audience.alsoInCompany === true;
+  }
+}
+
+const DAY_MS = 86_400_000;
+/** Rule 10: a card with no important change for this long is stale. */
+export const ATTENTION_STALE_AFTER_DAYS = 30;
+/** Recommendation (e): an Unassigned card with no owner for this long moves to Company. */
+export const ATTENTION_UNOWNED_ESCALATE_AFTER_DAYS = 7;
+/** Rule 10: a decision is stale once this share of its time limit is gone. */
+const DECISION_STALE_ELAPSED_RATIO = 0.8;
+
+/**
+ * What counts as an important change for one card (PAP-749 plan §2, Rule 9).
+ * `content` names the proposal, its options, or the state a person decides on;
+ * `since` is when that content last changed. Log entries, automatic retries,
+ * unrelated comments and assignee changes are deliberately not part of it.
+ * `required` marks an approval or governed request: the gate stays closed until
+ * a person answers, so a stale one escalates instead of fading.
+ */
+export type AttentionChangeBasis = {
+  content: unknown;
+  since: Date | string;
+  required?: boolean;
+};
+
+const FINGERPRINT_FOR_VIEWER = "me";
+const FINGERPRINT_FOR_OTHER = "other";
+
+/**
+ * The opaque `AttentionItem.changeFingerprint`: a hash of the important content
+ * plus whether the card is addressed to the viewer, so "the card comes to you
+ * again" counts as a change (Rule 9) while a hand-off away from you does not.
+ */
+export function attentionChangeFingerprint(input: {
+  sourceKind: AttentionSourceKind;
+  content: unknown;
+  forViewer: boolean;
+}): string {
+  const hash = normalizedContentHash({ v: 1, sourceKind: input.sourceKind, content: input.content ?? null })
+    .slice("sha256:".length, "sha256:".length + 32);
+  return `${hash}.${input.forViewer ? FINGERPRINT_FOR_VIEWER : FINGERPRINT_FOR_OTHER}`;
+}
+
+/**
+ * Whether a stored dismissal still hides the card. `null` means the row has no
+ * fingerprint (saved before Rule 9), so the caller keeps the activity-time
+ * rule. Otherwise the card stays hidden until its content changes or it is
+ * newly addressed to the viewer.
+ */
+export function dismissalCoversChange(stored: string | null | undefined, current: string): boolean | null {
+  if (!stored) return null;
+  const [storedHash, storedTarget] = stored.split(".");
+  const [currentHash, currentTarget] = current.split(".");
+  if (storedHash !== currentHash) return false;
+  return !(currentTarget === FINGERPRINT_FOR_VIEWER && storedTarget !== FINGERPRINT_FOR_VIEWER);
+}
+
+/**
+ * Rule 10: why a card is stale, if it is. The first matching reason wins. The
+ * label only moves the card to the Stale group; nothing here withdraws it.
+ */
+export function resolveAttentionStale(input: {
+  sourceKind: AttentionSourceKind;
+  issueStatus: string | null | undefined;
+  since: Date | string;
+  createdAt: Date | string;
+  expiresAt?: Date | string | null;
+  audience: AttentionAudience;
+  now: number;
+}): AttentionStale | null {
+  if (input.issueStatus === "done" || input.issueStatus === "cancelled") return { reason: "issue_closed" };
+  if (input.sourceKind === "decision" && input.expiresAt) {
+    const created = timestamp(input.createdAt);
+    const window = timestamp(input.expiresAt) - created;
+    if (window > 0 && input.now - created >= window * DECISION_STALE_ELAPSED_RATIO) {
+      return { reason: "decision_expiring" };
+    }
+  }
+  const age = input.now - timestamp(input.since);
+  if (age >= ATTENTION_STALE_AFTER_DAYS * DAY_MS) return { reason: "aged" };
+  if (input.audience.kind === "pool" && age >= ATTENTION_UNOWNED_ESCALATE_AFTER_DAYS * DAY_MS) {
+    return { reason: "unowned" };
+  }
+  return null;
+}
+
+/**
+ * Where an old card goes so it never disappears (Rule 10 and recommendation
+ * (e)). An Unassigned card with no owner for 7 days moves to Company. A
+ * required card (approval or governed request) waiting 30 days moves to its
+ * escalation owner (the project's decision owner, else the default decision
+ * owner), or to Company when there is none. Placement only: the card stays
+ * pending and its gate stays closed.
+ */
+export function escalateStaleAudience(input: {
+  audience: AttentionAudience;
+  since: Date | string;
+  required: boolean;
+  now: number;
+  companyConfig?: AttentionAudienceCompanyConfig;
+  /** The card's issue context, for its project's decision owner. */
+  ctx?: IssueAudienceContext | null;
+}): AttentionAudience {
+  const age = input.now - timestamp(input.since);
+  if (input.audience.kind === "pool" && age >= ATTENTION_UNOWNED_ESCALATE_AFTER_DAYS * DAY_MS) {
+    return { kind: "company", userId: null, reason: "none" };
+  }
+  if (input.required && input.audience.kind === "user" && age >= ATTENTION_STALE_AFTER_DAYS * DAY_MS) {
+    return escalationOwnerAudience(input.ctx ?? null, input.companyConfig ?? {})
+      ?? { kind: "company", userId: null, reason: "none" };
+  }
+  return input.audience;
+}
+
+/**
+ * What a card says about the obligation it belongs to (PAP-749 plan §2, Rule
+ * 11), captured per card during collection. `anchor` marks the card that makes
+ * the obligation real: the approval itself, or a card for the blocked task. A
+ * key with no anchor card in the feed (only failed runs, or a review whose
+ * approval is not shown) forms no obligation.
+ */
+export type AttentionObligationHint = { key: string; anchor: boolean };
+
+/** Lower leads: the card that carries the one action for its obligation. */
+function obligationLeadRank(item: AttentionItem) {
+  switch (item.sourceKind) {
+    // A budget hard stop answers its override approval: Raise limit approves
+    // it and Keep paused rejects it (`budgets.resolveIncident`; PAP-768).
+    case "budget_alert":
+      return 0;
+    case "approval":
+      return 1;
+    // The failed run carries the working action (Retry) for the task it blocks.
+    case "failed_run":
+      return 2;
+    case "blocker_attention":
+      return item.dedupKey.startsWith("blocked-owner:") ? 3 : 4;
+    default:
+      return 5;
+  }
+}
+
+/**
+ * Join the cards that are one obligation (PAP-749 plan §2, Rule 11) and pick
+ * the lead: a budget hard stop over its override approval (PAP-768), else the
+ * approval, else the failed run that caused the block, else the blocked task.
+ * Every member keeps its own record (the server keeps all the evidence); the
+ * members share one placement, so the obligation shows in one view and counts
+ * once. A failed run, a company alert that is not a required gate, goes with
+ * the work it blocks, to that person. A hard stop keeps its own placement: the
+ * budget owner, else Company. Mutates `items`.
+ */
+export function assignAttentionObligations(
+  items: AttentionItem[],
+  hintByDedupKey: ReadonlyMap<string, AttentionObligationHint>,
+) {
+  const groups = new Map<string, { members: AttentionItem[]; anchored: boolean }>();
+  for (const item of items) {
+    const hint = hintByDedupKey.get(item.dedupKey);
+    if (!hint) continue;
+    const group = groups.get(hint.key) ?? { members: [], anchored: false };
+    group.members.push(item);
+    group.anchored ||= hint.anchor;
+    groups.set(hint.key, group);
+  }
+  for (const [key, group] of groups) {
+    if (!group.anchored || group.members.length < 2) continue;
+    const [lead, ...evidence] = [...group.members].sort((left, right) =>
+      obligationLeadRank(left) - obligationLeadRank(right) || compareAttentionItems(left, right));
+    const audience = lead!.audience.kind === "company" && !lead!.required && lead!.sourceKind !== "budget_alert"
+      ? evidence.find((member) => member.audience.kind === "user")?.audience ?? lead!.audience
+      : lead!.audience;
+    for (const member of group.members) {
+      member.obligationKey = key;
+      member.obligationLeadId = lead!.id;
+      member.audience = audience;
+    }
+  }
+}
+
+function isObligationEvidence(item: AttentionItem) {
+  return item.obligationLeadId != null && item.obligationLeadId !== item.id;
+}
+
+/**
+ * Put each obligation's evidence right after its lead, in the lead's place, so
+ * a page keeps them together. Evidence whose lead is not in `items` stays put.
+ */
+function keepObligationsTogether(items: AttentionItem[]) {
+  const evidenceByLeadId = new Map<string, AttentionItem[]>();
+  for (const item of items) {
+    if (!isObligationEvidence(item)) continue;
+    evidenceByLeadId.set(item.obligationLeadId!, [...(evidenceByLeadId.get(item.obligationLeadId!) ?? []), item]);
+  }
+  if (evidenceByLeadId.size === 0) return items;
+  const ids = new Set(items.map((item) => item.id));
+  const ordered: AttentionItem[] = [];
+  for (const item of items) {
+    if (isObligationEvidence(item) && ids.has(item.obligationLeadId!)) continue;
+    ordered.push(item, ...(evidenceByLeadId.get(item.id) ?? []));
+  }
+  return ordered;
+}
+
+/**
+ * Load the per-issue audience context for `startIssueIds`: the chat user and
+ * human assignee of each start issue, plus the instigator found by walking the
+ * parent chain to the nearest human-created ancestor. The human-created test is
+ * the shared {@link humanCreatedIssueCondition} predicate (no copy), so this
+ * never attributes agent- or routine-created work to a person.
+ */
+export async function resolveIssueAudienceContextMap(
+  db: Db,
+  companyId: string,
+  startIssueIds: Array<string | null | undefined>,
+): Promise<Map<string, IssueAudienceContext>> {
+  const starts = [...new Set(startIssueIds.filter((value): value is string => Boolean(value)))];
+  if (starts.length === 0) return new Map();
+
+  type ChainNode = { parentId: string | null; instigatorSelf: string | null };
+  const chain = new Map<string, ChainNode>();
+  const starterContext = new Map<string, {
+    conversationUserId: string | null;
+    assigneeUserId: string | null;
+    issueStatus: string;
+    projectId: string | null;
+  }>();
+
+  let frontier = starts;
+  for (let depth = 0; depth <= MAX_INSTIGATOR_CHAIN_DEPTH && frontier.length > 0; depth += 1) {
+    const need = [...new Set(frontier)].filter((id) => !chain.has(id));
+    if (need.length === 0) break;
+    const rows = await db
+      .select({
+        id: issues.id,
+        parentId: issues.parentId,
+        status: issues.status,
+        conversationUserId: issues.conversationUserId,
+        assigneeUserId: issues.assigneeUserId,
+        createdByUserId: issues.createdByUserId,
+        projectId: issues.projectId,
+        humanCreated: humanCreatedIssueCondition(),
+      })
+      .from(issues)
+      .where(and(eq(issues.companyId, companyId), inArray(issues.id, need)));
+    for (const row of rows) {
+      chain.set(row.id, {
+        parentId: row.parentId,
+        instigatorSelf: row.humanCreated ? row.createdByUserId : null,
+      });
+      if (depth === 0) {
+        starterContext.set(row.id, {
+          conversationUserId: row.conversationUserId,
+          assigneeUserId: row.assigneeUserId,
+          issueStatus: row.status,
+          projectId: row.projectId,
+        });
+      }
+    }
+    frontier = rows.map((row) => row.parentId).filter((id): id is string => Boolean(id));
+  }
+
+  // Task 1d: the decision owner of each start issue's own project, kept only
+  // while that person is an active member (one query for all projects).
+  const projectIds = [...new Set([...starterContext.values()]
+    .map((context) => context.projectId)
+    .filter((id): id is string => Boolean(id)))];
+  const projectOwnerRows = projectIds.length > 0
+    ? await db
+      .select({ id: projects.id, decisionOwnerUserId: projects.decisionOwnerUserId })
+      .from(projects)
+      .where(and(eq(projects.companyId, companyId), inArray(projects.id, projectIds)))
+    : [];
+  const activeProjectOwners = await activeMemberUserIds(
+    db,
+    companyId,
+    projectOwnerRows.map((row) => row.decisionOwnerUserId),
+  );
+  const projectOwnerById = new Map(projectOwnerRows.map((row) => [
+    row.id,
+    row.decisionOwnerUserId && activeProjectOwners.has(row.decisionOwnerUserId) ? row.decisionOwnerUserId : null,
+  ]));
+
+  const result = new Map<string, IssueAudienceContext>();
+  for (const start of starts) {
+    let cursor: string | null = start;
+    let instigatorUserId: string | null = null;
+    for (let steps = 0; cursor && steps <= MAX_INSTIGATOR_CHAIN_DEPTH; steps += 1) {
+      const node = chain.get(cursor);
+      if (!node) break;
+      if (node.instigatorSelf) {
+        instigatorUserId = node.instigatorSelf;
+        break;
+      }
+      cursor = node.parentId;
+    }
+    const context = starterContext.get(start);
+    result.set(start, {
+      conversationUserId: context?.conversationUserId ?? null,
+      assigneeUserId: context?.assigneeUserId ?? null,
+      instigatorUserId,
+      issueStatus: context?.issueStatus ?? null,
+      projectOwnerUserId: context?.projectId ? projectOwnerById.get(context.projectId) ?? null : null,
+    });
+  }
+  return result;
+}
+
+/** The task is locked first, as in resolution, before locking its interaction.
+ * Read access and mutation authority are rechecked against that task snapshot. */
+async function lockAttentionRoutingSource(db: Db, companyId: string, sourceId: string, actor: AuthorizationActor) {
+  if (actor.type !== "board" || !actor.userId) throw forbidden("A signed-in user is required to route a request.");
+  const readCondition = await issueReadSqlCondition(db, actor);
+  const [observed] = await db.select({ issueId: issues.id,
+    addresseeUserId: issueThreadInteractions.addresseeUserId, addresseeAgentId: issueThreadInteractions.addresseeAgentId,
+  }).from(issueThreadInteractions).innerJoin(issues, eq(issues.id, issueThreadInteractions.issueId)).where(and(
+    eq(issueThreadInteractions.companyId, companyId), eq(issueThreadInteractions.id, sourceId), eq(issues.companyId, companyId), readCondition,
+  )).limit(1);
+  if (!observed) throw notFound("Card not found");
+  const [issue] = await db.select().from(issues).where(and(
+    eq(issues.id, observed.issueId), eq(issues.companyId, companyId), readCondition,
+  )).for("update");
+  if (!issue) throw notFound("Card not found");
+  const write = await authorizationService(db).decide({ actor, action: "issue:mutate", resource: { ...issue, type: "issue", issueId: issue.id } });
+  if (!write.allowed) throw forbidden("Issue write access is required to route a request.");
+  const [interaction] = await db.select().from(issueThreadInteractions).where(and(
+    eq(issueThreadInteractions.companyId, companyId), eq(issueThreadInteractions.issueId, issue.id), eq(issueThreadInteractions.id, sourceId),
+  )).for("update");
+  if (!interaction) throw notFound("Card not found");
+  return { issue, interaction, observed };
+}
+
 export function attentionService(db: Db, serviceOptions: AttentionServiceOptions = {}) {
   const openDecisionLimit = Math.min(
     Math.max(Math.trunc(serviceOptions.openDecisionLimit ?? OPEN_DECISION_DEFAULT_LIMIT), 1),
@@ -1087,21 +1681,36 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
       const readCondition = options.actor
         ? await issueReadSqlCondition(db, options.actor)
         : sql<boolean>`true`;
-      const [prefix, dismissals] = await Promise.all([
-        companyPrefix(db, companyId),
+      const [companyConfig, dismissals] = await Promise.all([
+        loadCompanyAttentionConfig(db, companyId),
         dismissalByKey(db, companyId, options.userId),
       ]);
+      const prefix = companyConfig.prefix;
       const includeDismissed = options.includeDismissed === true;
       const now = serviceOptions.now?.() ?? Date.now();
       const summaryOnly = options.summaryOnly === true;
       const loadImages = (...args: Parameters<typeof issueImageMap>) => summaryOnly
         ? Promise.resolve(new Map<string, AttentionDetailImage[]>()) : issueImageMap(...args);
+      const view: AttentionFeedView = options.view ?? "all";
       const collected: AttentionItem[] = [];
+      // Raw audience inputs and important-change facts captured per item during
+      // collection, keyed by dedup key, then resolved once after dedup (PAP-749
+      // plan §1, Rule 2; §2, Rules 9-10). Personal hiding needs the resolved
+      // audience, so it is applied in the same post-pass.
+      const audienceInputByDedupKey = new Map<string, AttentionAudienceInput>();
+      const changeBasisByDedupKey = new Map<string, AttentionChangeBasis>();
+      const obligationHintByDedupKey = new Map<string, AttentionObligationHint>();
 
-      const add = (item: AttentionItem) => {
-        const dismissal = activeDismissalState(dismissals, item.dismissalKey, item.activityAt, now);
-        if (!includeDismissed && dismissal?.isActive) return;
-        collected.push({ ...item, dismissal });
+      const add = (
+        item: AttentionItem,
+        audienceInput: AttentionAudienceInput,
+        change: AttentionChangeBasis,
+        obligation?: AttentionObligationHint | null,
+      ) => {
+        audienceInputByDedupKey.set(item.dedupKey, audienceInput);
+        changeBasisByDedupKey.set(item.dedupKey, change);
+        if (obligation) obligationHintByDedupKey.set(item.dedupKey, obligation);
+        collected.push(item);
       };
 
       if (!questionIssueIds && !options.excludeSources?.includes("approval")) {
@@ -1113,6 +1722,7 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
             status: approvals.status,
             requestedByAgentId: approvals.requestedByAgentId,
             requestedByUserId: approvals.requestedByUserId,
+            changeContent: sql<string>`md5(jsonb_build_object('type', ${approvals.type}, 'payload', ${approvals.payload})::text)`,
             payload: summaryOnly ? sql<Record<string, unknown>>`'{}'::jsonb` : approvals.payload,
             createdAt: approvals.createdAt,
             updatedAt: approvals.updatedAt,
@@ -1157,7 +1767,8 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
               { id: "reject", label: "Reject", description: "Reject the request." },
               { id: "request_revision", label: "Request revision", description: "Send the request back for changes." },
             ),
-            inlineResolvable: approval.type !== "request_board_approval",
+            // Every approval, board approvals included, is answered on the card (PAP-775).
+            inlineResolvable: true,
             entryRule: "approvals.status = 'pending'",
             exitRule: "Approval leaves pending status.",
             dedupKey,
@@ -1167,7 +1778,13 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
             updatedAt: toIso(approval.updatedAt),
             relatedIssue: null,
             detail: approvalDetail(approval.type, approval.payload),
-          }));
+          }), { issueId: linkedIssueId, requestedByUserId: approval.requestedByUserId }, {
+            // `updatedAt` moves only when the request (re)enters pending, e.g. a
+            // resubmission with a revised proposal; comments do not touch it.
+            content: approval.changeContent,
+            since: approval.updatedAt,
+            required: true,
+          }, { key: `approval:${approval.id}`, anchor: true });
         }
 
       }
@@ -1180,16 +1797,24 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
           status: issueThreadInteractions.status,
           title: issueThreadInteractions.title,
           summary: issueThreadInteractions.summary,
+          changeContent: sql<string>`md5(jsonb_build_object('kind', ${issueThreadInteractions.kind}, 'payload', ${issueThreadInteractions.payload})::text)`,
           payload: summaryOnly ? sql<Record<string, unknown>>`jsonb_build_object('target', ${issueThreadInteractions.payload}->'target', 'qualityReview', ${issueThreadInteractions.payload}->'qualityReview', 'toolAction', ${issueThreadInteractions.payload}->'toolAction', 'secretProposal', ${issueThreadInteractions.payload}->'secretProposal', 'connectionAuthorization', ${issueThreadInteractions.payload}->'connectionAuthorization')` : issueThreadInteractions.payload,
           addresseeAgentId: issueThreadInteractions.addresseeAgentId,
           addresseeUserId: issueThreadInteractions.addresseeUserId,
           createdByAgentId: issueThreadInteractions.createdByAgentId,
+          createdByUserId: issueThreadInteractions.createdByUserId,
           requestedResolverPolicy: issueThreadInteractions.requestedResolverPolicy,
           effectiveResolverPolicy: issueThreadInteractions.effectiveResolverPolicy,
           resolverPolicyProvenance: issueThreadInteractions.resolverPolicyProvenance,
           effectiveResolverPolicySource: issueThreadInteractions.effectiveResolverPolicySource,
           createdAt: issueThreadInteractions.createdAt,
           updatedAt: issueThreadInteractions.updatedAt,
+          // Rule 9: the same "current request" predicate Mine and runs use. Old
+          // ordinary questions and requests a person deferred (interaction
+          // `dismissedAt`) leave the list; they stay answerable on the task.
+          active: sql<boolean>`${activeIssueInteractionCondition()}`,
+          // Governed requests keep their gate; a stale one escalates (Rule 10).
+          required: sql<boolean>`not ${deferrableInteractionCondition()}`,
         })
         .from(issueThreadInteractions)
         .where(and(
@@ -1220,13 +1845,12 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
         : [];
       const companyAgentMap = new Map(companyAgentRows.map((agent) => [agent.id, agent]));
       const boardInteractionRows = interactionRows.filter((row) =>
-        (row.addresseeAgentId === null ||
-          !evaluateAgentInvokability(companyAgentMap.get(row.addresseeAgentId), companyAgentRows).invokable)
-        && (row.addresseeUserId === null || row.addresseeUserId === options.userId)
+        row.addresseeAgentId === null ||
+          !evaluateAgentInvokability(companyAgentMap.get(row.addresseeAgentId), companyAgentRows).invokable
       );
       const visibleInteractionRows = collapsePendingConfirmationsToNewest(boardInteractionRows, await loadNewestSettledConfirmationAt(
         db, companyId, boardInteractionRows.filter((row) => row.kind === "request_confirmation").map((row) => row.issueId),
-      ));
+      )).filter(row => row.active);
       const [interactionIssueMap, interactionImageMap, interactionPlanDocumentMap] = await Promise.all([
         // A pending human request remains actionable in a persistent chat even
         // though its idle container is intentionally absent from work queues.
@@ -1264,8 +1888,10 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
               kind: interaction.kind,
               issueId: interaction.issueId,
               createdByAgentId: interaction.createdByAgentId,
+              createdByUserId: interaction.createdByUserId,
               isPlanTarget,
               targetDocumentKey: isPlanTarget ? "plan" : null,
+              requestKind: interactionRequestKind(interaction.kind, payload),
             },
           },
           whyNow: `${interactionLabel(interaction.kind)} on an issue thread.`,
@@ -1285,7 +1911,11 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
             interaction,
             (agentId) => companyAgentMap.get(agentId)?.name ?? null,
           ),
-        }));
+        }), { issueId: interaction.issueId, addresseeUserId: interaction.addresseeUserId }, {
+          content: interaction.changeContent,
+          since: interaction.createdAt,
+          required: interaction.required,
+        });
       }
 
       if (!questionIssueIds) {
@@ -1295,7 +1925,9 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
         originAgentId: decisions.originAgentId,
         ruleKey: decisions.ruleKey,
         title: decisions.title,
+        changeContent: sql<string>`md5(jsonb_build_object('title', ${decisions.title}, 'body', ${decisions.body}, 'options', ${decisions.options})::text)`,
         body: summaryOnly ? sql<string>`''` : decisions.body,
+        options: decisions.options,
         status: decisions.status,
         expiresAt: decisions.expiresAt,
         originIssueId: decisions.originIssueId,
@@ -1343,7 +1975,10 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
           relatedIssue: issue ? issueSubject(prefix, issue) : null,
           ...issueContext(issue),
           detail: { kind: "generic", summaryExcerpt: decision.body.slice(0, DETAIL_EXCERPT_LENGTH), images: [] },
-        }));
+        }), { issueId: decision.originIssueId }, {
+          content: decision.changeContent,
+          since: decision.createdAt,
+        });
       }
 
       if (!options.excludeSources?.includes("join_request")) {
@@ -1405,7 +2040,10 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
           updatedAt: toIso(join.updatedAt),
           relatedIssue: null,
           detail: genericDetail(label, []),
-        }));
+        }), { issueId: null, companyScoped: true }, {
+          content: { requestType: join.requestType },
+          since: join.createdAt,
+        });
       }
 
       }
@@ -1456,10 +2094,11 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
           whyNow: recovery.status === "escalated"
             ? "Recovery action escalated to a human owner."
             : "Recovery action is assigned to a human owner.",
+          // PAP-749 Rule 7: resolving, reassigning or cancelling a recovery
+          // also sets the task's next status, so the card links to the recovery
+          // control on the task instead of offering verbs it cannot complete.
           decisionVerbs: decisionVerbs(
-            { id: "resolve", label: "Resolve", description: "Record the recovery outcome." },
-            { id: "reassign", label: "Reassign", description: "Move the recovery to another owner." },
-            { id: "cancel", label: "Cancel", description: "Cancel the recovery action." },
+            { id: "open_recovery", label: "Open recovery", description: "Resolve, reassign or cancel this recovery on its task." },
           ),
           inlineResolvable: false,
           entryRule: "issue_recovery_actions.status in ('active','escalated') and owner_type in ('user','board')",
@@ -1472,7 +2111,16 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
           relatedIssue: sourceIssue ? issueSubject(prefix, sourceIssue) : null,
           ...issueContext(sourceIssue),
           detail: genericDetail(recovery.nextAction, issueImages(recoveryImageMap, recovery.sourceIssueId)),
-        }));
+        }), {
+          issueId: recovery.sourceIssueId,
+          ownerUserId: recovery.ownerType === "user" ? recovery.ownerUserId : null,
+          companyScoped: recovery.ownerType === "board",
+        }, {
+          // Escalation and a new next action are important; retry attempts
+          // that only move `updatedAt` are not.
+          content: { status: recovery.status, nextAction: recovery.nextAction },
+          since: recovery.createdAt,
+        });
       }
 
       const blockedIssues = await issueService(db).list(companyId, { status: "blocked", includeBlockedBy: true, readCondition });
@@ -1539,7 +2187,17 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
               blockingIssue: resolveBlockingIssue(issue, blockingIssues.get(issue.id)),
               images: issueImages(blockerImageMap, issue.id),
             },
-          }));
+          }), {
+            issueId: issue.id,
+            // A named user owner receives the card; a "board" owner falls through
+            // to the issue chain (PAP-749 plan §1, "Other sources").
+            ownerUserId: descriptor.owner && typeof descriptor.owner === "object" && "userId" in descriptor.owner
+              ? descriptor.owner.userId
+              : null,
+          }, {
+            content: { action: descriptor.action },
+            since: issue.blockedTransitionAt,
+          }, { key: `blocked:${issue.id}`, anchor: true });
         }
         const blockerAttention = issue.blockerAttention;
         if (!terminalBlockerRequiresAttention(blockerAttention)) continue;
@@ -1592,7 +2250,10 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
             blockedTaskCount,
             images: issueImages(blockerImageMap, terminalIssueId),
           },
-        }));
+        }), { issueId: terminalIssueId }, {
+          content: { state: candidate.state },
+          since: candidate.terminalSummary.updatedAt,
+        }, { key: `blocked:${terminalIssueId}`, anchor: true });
       }
 
       const reviewRows = await db
@@ -1629,8 +2290,14 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
             eq(approvals.companyId, companyId),
             inArray(issueApprovals.issueId, reviewIssueIds),
             eq(approvals.status, "pending"),
-          ));
-      const pendingApprovalByIssueId = new Map(pendingReviewApprovalRows.map((row) => [row.issueId, row.approvalId]));
+          ))
+          .orderBy(asc(approvals.createdAt), asc(approvals.id));
+      // The oldest pending approval per task, so the review joins the same
+      // approval card on every read (Rule 11).
+      const pendingApprovalByIssueId = new Map<string, string>();
+      for (const row of pendingReviewApprovalRows) {
+        if (!pendingApprovalByIssueId.has(row.issueId)) pendingApprovalByIssueId.set(row.issueId, row.approvalId);
+      }
       const [reviewAttentionByIssueId, reviewIssueMap, reviewImageMap] = await Promise.all([
         issueService(db).listReviewAttention(companyId, reviewRows),
         issueSummaryMap(db, companyId, reviewIssueIds, readCondition),
@@ -1689,7 +2356,25 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
           relatedIssue: null,
           ...issueContext(issue),
           detail: genericDetail(review.title, issueImages(reviewImageMap, review.id)),
-        }));
+        }), {
+          issueId: review.id,
+          reviewParticipantUserId: currentParticipant?.type === "user" ? currentParticipant.userId : null,
+        }, {
+          // A new review round (stage or decision) or a newly linked approval
+          // is important; the reviewer is audience, not content.
+          content: {
+            stalled,
+            pendingApprovalId,
+            stageId: state?.currentStageId ?? null,
+            lastDecisionId: state?.lastDecisionId ?? null,
+          },
+          since: review.updatedAt,
+          // Rule 11: the in-review state of a task that waits on its approval is
+          // the approval's obligation. A configured human review stage is an
+          // independent quality gate and keeps its own card.
+        }, pendingApprovalId && !hasHumanParticipant && !stalled
+          ? { key: `approval:${pendingApprovalId}`, anchor: false }
+          : null);
       }
 
       const failedRows = await listAttentionExhaustedRuns(db, companyId);
@@ -1737,12 +2422,18 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
             },
           },
           whyNow: "Run failed after automatic retries were exhausted.",
-          decisionVerbs: decisionVerbs(
-            { id: "retry", label: "Retry", description: "Retry the failed run or issue." },
-            { id: "reassign", label: "Reassign", description: "Move the work to another owner." },
-            { id: "dismiss", label: "Dismiss", description: "Dismiss this failed-run attention row." },
-          ),
-          inlineResolvable: true,
+          // PAP-749 Rule 7: offer only what works. Retry uses the task retry
+          // (POST /issues/:id/retry); reassigning happens on the task; hiding
+          // the card is "Archive for me" in the Close… menu.
+          decisionVerbs: issueId
+            ? decisionVerbs(
+                { id: "retry", label: "Retry", description: "Retry the task's failed run." },
+                { id: "inspect", label: "Open run", description: "Open the run log to see why it failed." },
+              )
+            : decisionVerbs(
+                { id: "inspect", label: "Open run", description: "Open the run log to see why it failed." },
+              ),
+          inlineResolvable: Boolean(issueId),
           entryRule: "latest failed/timed_out run has a Bounded retry exhausted lifecycle event.",
           exitRule: "A newer run exists for the same issue/agent pair or the row is dismissed.",
           dedupKey,
@@ -1759,7 +2450,12 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
             failureReasonExcerpt: excerpt((run.error ? withoutSqlStatementText(run.error) : null) ?? run.exhaustionMessage ?? run.errorCode),
             images: issueImages(failedImageMap, issueId),
           },
-        }));
+        }), { issueId, companyScoped: true }, {
+          // Each failed run is its own card; nothing about it changes later.
+          content: null,
+          since: run.finishedAt ?? run.updatedAt ?? run.createdAt,
+          // Rule 11: a failed run joins the card for the task it blocks, if any.
+        }, issueId ? { key: `blocked:${issueId}`, anchor: false } : null);
       }
 
       const budgetOverview = await budgetService(db).overview(companyId);
@@ -1794,7 +2490,7 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
             ? "Budget hard stop was reached."
             : "Budget crossed the 85% warning threshold.",
           decisionVerbs: decisionVerbs(
-            { id: "raise_budget_and_resume", label: "Raise budget", description: "Raise the budget and resume paused work." },
+            { id: "raise_budget_and_resume", label: "Raise limit", description: "Raise the budget limit and resume paused work." },
             { id: "keep_paused", label: "Keep paused", description: "Dismiss or keep the budget stop in place." },
           ),
           inlineResolvable: true,
@@ -1813,7 +2509,21 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
             amountLimit: incident.amountLimit,
             images: [],
           },
-        }));
+        }), {
+          issueId: null,
+          companyScoped: true,
+          // A hard stop pauses work, so the budget owner also gets it (task 1d).
+          escalatesToBudgetOwner: incident.thresholdType === "hard",
+        }, {
+          // Spend creeping upward inside one incident is not a new choice.
+          content: { status: incident.status },
+          since: incident.createdAt,
+          // Rule 11 (PAP-768): the hard stop and its override approval are one
+          // card. The stop leads; the approval, which has no owner of its own,
+          // is its evidence and leaves Unassigned.
+        }, incident.thresholdType === "hard" && incident.approvalId
+          ? { key: `approval:${incident.approvalId}`, anchor: true }
+          : null);
       }
 
       const erroredAgents = await db
@@ -1847,11 +2557,12 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
             metadata: { role: agent.role, errorReason: agent.errorReason },
           },
           whyNow: "Agent is in error status and needs operator action or dismissal.",
+          // PAP-749 Rule 7: the fix happens on the agent page; hiding the alert
+          // is "Archive for me" in the Close… menu.
           decisionVerbs: decisionVerbs(
             { id: "inspect", label: "Inspect", description: "Inspect the agent error." },
-            { id: "dismiss", label: "Dismiss", description: "Dismiss this alert." },
           ),
-          inlineResolvable: true,
+          inlineResolvable: false,
           entryRule: "agents.status = 'error'",
           exitRule: "Agent leaves error status or the row is dismissed.",
           dedupKey,
@@ -1866,7 +2577,10 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
             failureReasonExcerpt: excerpt(agent.errorReason),
             images: [],
           },
-        }));
+        }), { issueId: null, companyScoped: true }, {
+          content: { errorReason: agent.errorReason },
+          since: agent.updatedAt,
+        });
       }
 
       }
@@ -1877,7 +2591,74 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
         deduped.set(item.dedupKey, current ? betterDuplicate(current, item) : item);
       }
 
-      const collectedItems = [...deduped.values()].sort(compareAttentionItems);
+      // Resolve each surviving item's audience exactly once (PAP-749 plan §1,
+      // Rule 2). The instigator step walks the parent chain, so batch the
+      // per-issue context lookup across every item rather than per source.
+      const dedupedItems = [...deduped.values()];
+      const audienceContext = await resolveIssueAudienceContextMap(
+        db,
+        companyId,
+        dedupedItems.map((item) => audienceInputByDedupKey.get(item.dedupKey)?.issueId ?? null),
+      );
+      const audienceConfig: AttentionAudienceCompanyConfig = {
+        defaultDecisionOwnerUserId: companyConfig.defaultDecisionOwnerUserId,
+        budgetOwnerUserId: companyConfig.budgetOwnerUserId,
+      };
+      const currentItems: AttentionItem[] = [];
+      for (const item of dedupedItems) {
+        const input = audienceInputByDedupKey.get(item.dedupKey) ?? { issueId: null };
+        const ctx = input.issueId ? audienceContext.get(input.issueId) ?? null : null;
+        const change = changeBasisByDedupKey.get(item.dedupKey) ?? { content: null, since: item.createdAt };
+        const audience = resolveAttentionAudience(input, ctx, audienceConfig);
+        // Rule 10: label stale cards and move old ones to a person or Company.
+        // Nothing here withdraws a card or treats it as answered.
+        item.stale = resolveAttentionStale({
+          sourceKind: item.sourceKind,
+          issueStatus: ctx?.issueStatus,
+          since: change.since,
+          createdAt: item.createdAt,
+          expiresAt: item.expiresAt,
+          audience,
+          now,
+        });
+        item.required = change.required === true;
+        item.audience = escalateStaleAudience({
+          audience,
+          since: change.since,
+          required: item.required,
+          now,
+          companyConfig: audienceConfig,
+          ctx,
+        });
+        // Explicit recipients stay private to their addressee until required
+        // work escalates. Apply this after routing so the escalation owner or
+        // Company can collect the request while task read access still applies.
+        if (input.addresseeUserId && input.addresseeUserId !== options.userId
+          && item.audience.kind === "user" && item.audience.userId !== options.userId) continue;
+        currentItems.push(item);
+      }
+      // Rule 11: one card for each obligation. Members share one placement, so
+      // the fingerprint below reads the obligation's audience.
+      assignAttentionObligations(currentItems, obligationHintByDedupKey);
+      for (const item of currentItems) {
+        const change = changeBasisByDedupKey.get(item.dedupKey) ?? { content: null, since: item.createdAt };
+        item.changeFingerprint = attentionChangeFingerprint({
+          sourceKind: item.sourceKind,
+          content: change.content,
+          forViewer: item.audience.kind === "user" && item.audience.userId != null
+            && item.audience.userId === options.userId,
+        });
+        // Rule 9: a personally hidden card returns only on a fingerprint change.
+        // Hidden cards stay in the snapshot so the Archived view and its tab
+        // count can read them; the view filter below drops them elsewhere.
+        item.dismissal = activeDismissalState(dismissals, item, now);
+      }
+
+      // "Transferred by @x" on a card that reached its person through a
+      // transfer (PAP-749 plan §6, Rule 12).
+      await attachTransferredBy(db, companyId, currentItems);
+
+      const collectedItems = currentItems.sort(compareAttentionItems);
       await decisionQueueService(db).materializeSeededQueues(companyId, collectedItems);
       const enrichedItems = await enrichAttentionItems(db, companyId, collectedItems, now, !summaryOnly);
 
@@ -1887,7 +2668,24 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
         throw badRequest("activitySince must be before or equal to activityUntil");
       }
       const queueKey = options.queue?.trim() || null;
-      const visibleItems = enrichedItems.filter((item) => {
+      const hiddenForViewer = (item: AttentionItem) => item.dismissal?.isActive === true;
+      // Rule 11: evidence shows and hides with its lead, so archiving, snoozing
+      // or filtering the one card never leaves part of the obligation behind.
+      const enrichedById = new Map(enrichedItems.map((item) => [item.id, item]));
+      const obligationLeadOf = (item: AttentionItem) =>
+        isObligationEvidence(item) ? enrichedById.get(item.obligationLeadId!) ?? item : item;
+      const visibleItems = enrichedItems.filter((member) => {
+        const item = obligationLeadOf(member);
+        if (view === "archived") {
+          // The person's own Archived view (PAP-749 plan §3): open cards they
+          // archived or snoozed, and nothing else.
+          if (!hiddenForViewer(item)) return false;
+        } else {
+          // `all` (the default) keeps the pre-PAP-749 superset; the other views
+          // partition by resolved audience (PAP-749 plan §1, Rule 3).
+          if (view !== "all" && !audienceMatchesView(item.audience, view, options.userId)) return false;
+          if (!includeDismissed && hiddenForViewer(item)) return false;
+        }
         if (options.archived === true ? !item.archivedAt : Boolean(item.archivedAt)) return false;
         if (!includeDismissed && item.snoozedUntil && timestamp(item.snoozedUntil) > now) return false;
         const activity = timestamp(item.activityAt);
@@ -1899,11 +2697,28 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
 
       const countsBySourceKind = emptyCounts();
       for (const item of visibleItems) countsBySourceKind[item.sourceKind] += 1;
-      const summary: AttentionSummary = {
-        companyId, generatedAt: new Date().toISOString(), totalCount: visibleItems.length,
-        deskBadgeCount: visibleItems.filter(item => isNewToday(item, now) || isDecideNow(item, now)).length,
-        countsBySourceKind,
-      };
+      // One count per view for the switch, the Unassigned banner and the shared
+      // badge (PAP-749 plan §1, Rule 5). Counted before the view, date and queue
+      // filters and pagination, so every surface reads the same numbers. The
+      // three audience views and Everyone skip the cards this person archived
+      // or snoozed; the Archived tab counts exactly those (plan §3). Only For
+      // you is the badge. Each obligation counts once, as its lead (Rule 11).
+      const viewCounts: AttentionViewCounts = { mine: 0, unassigned: 0, company: 0, archived: 0, all: 0 };
+      for (const item of enrichedItems) {
+        if (obligationLeadOf(item) !== item) continue;
+        if (item.archivedAt) continue;
+        if (item.snoozedUntil && timestamp(item.snoozedUntil) > now) continue;
+        if (hiddenForViewer(item)) {
+          viewCounts.archived += 1;
+          continue;
+        }
+        for (const countedView of ATTENTION_PERSONAL_VIEWS) {
+          if (countedView === "archived") continue;
+          if (audienceMatchesView(item.audience, countedView, options.userId)) viewCounts[countedView] += 1;
+        }
+      }
+
+      const summary: AttentionSummary = { companyId, generatedAt: new Date().toISOString(), totalCount: visibleItems.length, deskBadgeCount: viewCounts.mine, viewCounts, countsBySourceKind };
       if (summaryOnly) return { ...summary, nextCursor: null, items: visibleItems };
 
       const sort = options.sort ?? "activity";
@@ -1911,10 +2726,10 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
       const selectedComparator = sort === "decide"
         ? (left: AttentionItem, right: AttentionItem) => compareDecideItems(left, right, now)
         : compareAttentionItems;
-      const rankedItems = orderBlockedAttentionByWeight(
+      const rankedItems = keepObligationsTogether(orderBlockedAttentionByWeight(
         visibleItems.sort(selectedComparator),
         selectedComparator,
-      )
+      ))
         .map((item, index) => ({ ...item, rank: index + 1 }));
       let items: AttentionItem[];
       let nextCursor: string | null;
@@ -1977,7 +2792,19 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
           }
         }
       }
-      return { ...summary, nextCursor, items };
+      return {
+        companyId,
+        generatedAt: new Date().toISOString(),
+        totalCount: rankedItems.length,
+        // The badge is the "For you" count. It has no day boundary: an open
+        // card stays in it until a person answers it.
+        deskBadgeCount: viewCounts.mine,
+        viewCounts,
+        nextCursor,
+        countsBySourceKind,
+        items,
+      };
+
   }
   return {
     list: (companyId: string, options: AttentionListOptions = {}) => list(companyId, options),
@@ -1999,5 +2826,441 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
       return { ...summary, taskIds: [...new Set(items.flatMap(item => item.relatedIssue
         ? [item.relatedIssue.id] : item.subject.kind === "issue" ? [item.subject.id] : []))] };
     },
+
+    /**
+     * Claim an ownerless card (PAP-749 plan §1, Rule 3). The claimer becomes the
+     * addressee, so the card leaves the Unassigned pool of every other person
+     * and moves to the claimer's "For you". This changes placement only: the
+     * resolver policy still decides who may answer. Only sources with an
+     * addressee field can store a claim; the caller writes the activity entry.
+     */
+    claim: async (
+      companyId: string,
+      input: { sourceKind: string; sourceId: string; userId: string; actor: AuthorizationActor },
+    ): Promise<AttentionClaimResult & { issueId: string; previousAddresseeAgentId: string | null }> => {
+      if (!(ATTENTION_CLAIMABLE_SOURCE_KINDS as readonly string[]).includes(input.sourceKind)) {
+        throw unprocessable("This card has no addressee to claim. Open it to act on it.");
+      }
+      if (input.userId !== input.actor.userId) throw forbidden("A claim must name the signed-in user.");
+      return db.transaction(async tx => {
+        const db = tx as unknown as Db;
+        const { issue, interaction } = await lockAttentionRoutingSource(db, companyId, input.sourceId, input.actor);
+        const row = { ...interaction, issueStatus: issue.status, executionPolicy: issue.executionPolicy,
+          assigneeAgentId: issue.assigneeAgentId, assigneeUserId: issue.assigneeUserId,
+          conversationAgentId: issue.conversationAgentId, conversationUserId: issue.conversationUserId };
+        const result = {
+          sourceKind: "issue_thread_interaction" as const,
+          sourceId: row.id,
+          issueId: row.issueId,
+          claimedByUserId: input.userId,
+        };
+        if (!(PENDING_INTERACTION_STATUSES as readonly string[]).includes(row.status)) {
+          throw attentionAlreadyClosedError({ sourceKind: "issue_thread_interaction", sourceId: row.id, ...row });
+        }
+        if (row.addresseeUserId === input.userId) {
+          return { ...result, alreadyClaimed: true, previousAddresseeAgentId: null };
+        }
+        if (row.addresseeUserId) {
+          throw conflict("This card is already for another person", { addresseeUserId: row.addresseeUserId });
+        }
+        const contexts = await resolveIssueAudienceContextMap(db, companyId, [row.issueId]);
+        const config = await loadCompanyAttentionConfig(db, companyId);
+        const audience = resolveAttentionAudience({ issueId: row.issueId, addresseeUserId: row.addresseeUserId }, contexts.get(row.issueId) ?? null, config);
+        if (audience.kind === "user") {
+          throw conflict("This card already has an owner", { addresseeUserId: audience.userId });
+        }
+        if (row.addresseeAgentId) {
+          // A request to an agent that can still run stays with that agent; only
+          // a stuck agent's request reaches the pool (plan §1, special conditions).
+          const companyAgentRows: AgentOrgRow[] = await db
+            .select({ id: agents.id, companyId: agents.companyId, name: agents.name, reportsTo: agents.reportsTo, status: agents.status })
+            .from(agents)
+            .where(eq(agents.companyId, companyId));
+          const addressee = companyAgentRows.find((agent) => agent.id === row.addresseeAgentId);
+          if (evaluateAgentInvokability(addressee, companyAgentRows).invokable) {
+            throw conflict("This request is for an agent that can still answer it");
+          }
+        }
+        await assertInteractionRoutingRecipientAllowed(db, issue, interaction, input.userId);
+        // An interaction names an agent or a user, never both, so the claim
+        // replaces a stuck agent addressee. The status and empty-addressee guard
+        // make two simultaneous claims resolve to one winner.
+        const [updated] = await db
+          .update(issueThreadInteractions)
+          .set({ addresseeUserId: input.userId, addresseeAgentId: null, updatedAt: new Date() })
+          .where(and(
+            eq(issueThreadInteractions.companyId, companyId),
+            eq(issueThreadInteractions.id, row.id),
+            inArray(issueThreadInteractions.status, [...PENDING_INTERACTION_STATUSES]),
+            isNull(issueThreadInteractions.addresseeUserId),
+          ))
+          .returning({ id: issueThreadInteractions.id });
+        if (!updated) {
+          const closed = await attentionService(db, serviceOptions).alreadyClosedError(companyId, {
+            sourceKind: "issue_thread_interaction", sourceId: row.id, actor: input.actor,
+          });
+          throw closed ?? conflict("Someone else claimed this card first");
+        }
+        return { ...result, alreadyClaimed: false, previousAddresseeAgentId: row.addresseeAgentId };
+      });
+    },
+
+    /**
+     * Archive or snooze a card for one person (PAP-749 plan §2, Rule 6). The
+     * source stays open and teammates still see the card. The card is looked up
+     * in this person's own feed, so the dismissal key and change fingerprint
+     * are the ones the list compares; a card the person cannot see is 404.
+     */
+    hideForUser: async (
+      companyId: string,
+      input: {
+        sourceKind: AttentionSourceKind;
+        sourceId: string;
+        userId: string;
+        actor: AuthorizationActor;
+        mode: "archive" | "snooze";
+        until?: string | null;
+        fingerprint?: string | null;
+      },
+    ) => {
+      const feed = await attentionService(db, serviceOptions).list(companyId, {
+        userId: input.userId,
+        actor: input.actor,
+        view: "all",
+        all: true,
+        allowUnscopedAll: true,
+        includeDismissed: true,
+      });
+      const requested = feed.items.find((entry) => entry.sourceKind === input.sourceKind && entry.subject.id === input.sourceId);
+      const item = requested?.obligationLeadId && requested.obligationLeadId !== requested.id
+        ? feed.items.find(entry => entry.id === requested.obligationLeadId) ?? requested
+        : requested;
+      if (!item) {
+        const state = await sourceCloseState(db, companyId, input.sourceKind, input.sourceId, input.actor);
+        if (state && !state.open) throw attentionAlreadyClosedError({ sourceKind: input.sourceKind, sourceId: input.sourceId, ...state });
+        throw notFound("Card not found");
+      }
+      if (!item.closeModes.includes(input.mode)) {
+        throw unprocessable("This card cannot be hidden.", { code: "attention_close_mode_unsupported", closeModes: item.closeModes });
+      }
+      // The version the person saw; the card returns when its content differs.
+      const fingerprint = item.id === requested?.id ? input.fingerprint ?? item.changeFingerprint : item.changeFingerprint;
+      const dismissals = inboxDismissalService(db);
+      const dismissal = input.mode === "snooze"
+        ? await dismissals.snooze(companyId, input.userId, item.dismissalKey, new Date(input.until!), new Date(), fingerprint)
+        : await dismissals.dismiss(companyId, input.userId, item.dismissalKey, new Date(), fingerprint);
+      return {
+        issueId: attentionItemIssueId(item),
+        itemKey: dismissal.itemKey,
+        fingerprint: dismissal.fingerprint,
+        until: dismissal.snoozedUntil ? dismissal.snoozedUntil.toISOString() : null,
+      };
+    },
+
+    /**
+     * Find and check the source that "Withdraw request" closes (PAP-749 plan §2,
+     * Rule 6): an interaction (withdraw), a decision (cancel) or an approval
+     * (cancel). The caller runs the owner's withdraw flow, which tells the
+     * agent. 422 for cards with no request to withdraw, 404 when the person
+     * cannot read the source, 409 when someone already answered it.
+     */
+    withdrawTarget: async (
+      companyId: string,
+      input: { sourceKind: AttentionSourceKind; sourceId: string; actor: AuthorizationActor },
+    ): Promise<
+      | { sourceKind: "issue_thread_interaction"; issueId: string; issue: { id: string; companyId: string; status: string; assigneeAgentId: string | null } }
+      | { sourceKind: "approval"; issueId: string | null }
+      | { sourceKind: "decision"; issueId: string }
+    > => {
+      if (!WITHDRAWABLE_SOURCE_KINDS.has(input.sourceKind)) {
+        throw unprocessable(WITHDRAW_UNSUPPORTED_TEXT[input.sourceKind] ?? "This card has no request to withdraw.", {
+          code: "attention_close_mode_unsupported",
+          closeModes: attentionCloseModes(input.sourceKind, { metadata: undefined }),
+        });
+      }
+      const state = await sourceCloseState(db, companyId, input.sourceKind, input.sourceId, input.actor);
+      if (!state) throw notFound("Card not found");
+      if (input.sourceKind === "approval" && state.approvalType === "hire_agent") {
+        throw unprocessable("Reject this hire request instead of withdrawing it.", {
+          code: "attention_close_mode_unsupported",
+          closeModes: attentionCloseModes("approval", { metadata: { type: "hire_agent" } }),
+        });
+      }
+      if (!state.open) throw attentionAlreadyClosedError({ sourceKind: input.sourceKind, sourceId: input.sourceId, ...state });
+      if (input.sourceKind === "issue_thread_interaction") {
+        return { sourceKind: "issue_thread_interaction", issueId: state.issue!.id, issue: state.issue! };
+      }
+      if (input.sourceKind === "decision") return { sourceKind: "decision", issueId: state.issueId! };
+      return { sourceKind: "approval", issueId: state.issueId };
+    },
+
+    /** The 409 for a source someone else closed first, or `null` while it is open. */
+    alreadyClosedError: async (
+      companyId: string,
+      input: { sourceKind: AttentionSourceKind; sourceId: string; actor: AuthorizationActor },
+    ) => {
+      const state = await sourceCloseState(db, companyId, input.sourceKind, input.sourceId, input.actor);
+      return state && !state.open
+        ? attentionAlreadyClosedError({ sourceKind: input.sourceKind, sourceId: input.sourceId, ...state })
+        : null;
+    },
+
+    /**
+     * Transfer a card to a different person, "Route to @x" (PAP-749 plan §2,
+     * Rule 6). Like Claim, it stores the person as the addressee, so the card
+     * moves to their "For you" and only they may answer it. Only its current
+     * addressee or a routing administrator may change an addressed request;
+     * the new owner must satisfy its own resolver and review rules. The caller
+     * writes the activity entry.
+     */
+    transfer: async (
+      companyId: string,
+      input: { sourceKind: string; sourceId: string; toUserId: string; actor: AuthorizationActor },
+    ): Promise<AttentionTransferResult & { issueId: string; previousAddresseeAgentId: string | null }> => {
+      if (!(ATTENTION_CLAIMABLE_SOURCE_KINDS as readonly string[]).includes(input.sourceKind)) {
+        throw unprocessable("This card has no addressee to transfer. Open it to act on it.");
+      }
+      return db.transaction(async tx => {
+        const db = tx as unknown as Db;
+        const { issue, interaction, observed } = await lockAttentionRoutingSource(db, companyId, input.sourceId, input.actor);
+        const row = { ...interaction, issueStatus: issue.status, executionPolicy: issue.executionPolicy,
+          assigneeAgentId: issue.assigneeAgentId, assigneeUserId: issue.assigneeUserId,
+          conversationAgentId: issue.conversationAgentId, conversationUserId: issue.conversationUserId };
+        const result = {
+          sourceKind: "issue_thread_interaction" as const,
+          sourceId: row.id,
+          issueId: row.issueId,
+          transferredToUserId: input.toUserId,
+          previousAddresseeUserId: row.addresseeUserId,
+        };
+        if (!(PENDING_INTERACTION_STATUSES as readonly string[]).includes(row.status)) {
+          throw attentionAlreadyClosedError({ sourceKind: "issue_thread_interaction", sourceId: row.id, ...row });
+        }
+        if (row.addresseeUserId === input.toUserId) {
+          return { ...result, alreadyTransferred: true, previousAddresseeAgentId: null };
+        }
+        if (row.addresseeUserId !== observed.addresseeUserId || row.addresseeAgentId !== observed.addresseeAgentId) {
+          throw conflict("Someone else routed this card first");
+        }
+        if (row.addresseeUserId && row.addresseeUserId !== input.actor.userId) {
+          const admin = await authorizationService(db).decide({ actor: input.actor, action: "attention:route", resource: { type: "company", companyId } });
+          if (!admin.allowed) throw forbidden("Only the addressed user or a routing administrator can transfer this request.");
+        }
+        if (row.kind === "ask_user_questions" && row.conversationAgentId && row.conversationUserId) {
+          // Chat ownership is server-owned: a chat question stays with its owner.
+          throw unprocessable("A chat question stays with the person in the chat.", {
+            code: "interaction_chat_addressee_mismatch",
+          });
+        }
+        if (row.addresseeAgentId) {
+          // A request to an agent that can still run stays with that agent.
+          const companyAgentRows: AgentOrgRow[] = await db
+            .select({ id: agents.id, companyId: agents.companyId, name: agents.name, reportsTo: agents.reportsTo, status: agents.status })
+            .from(agents)
+            .where(eq(agents.companyId, companyId));
+          const addressee = companyAgentRows.find((agent) => agent.id === row.addresseeAgentId);
+          if (evaluateAgentInvokability(addressee, companyAgentRows).invokable) {
+            throw conflict("This request is for an agent that can still answer it");
+          }
+        }
+        const recipientRead = await issueReadSqlCondition(db, { type: "board", userId: input.toUserId });
+        const [readableTask] = await db.select({ id: issues.id }).from(issues).where(and(
+          eq(issues.companyId, companyId), eq(issues.id, row.issueId), recipientRead,
+        )).limit(1);
+        if (!readableTask) throw unprocessable("This person cannot access the task.");
+        await assertInteractionRoutingRecipientAllowed(db, issue, interaction, input.toUserId);
+        // Compare-and-set on the addressee seen above, so two people routing the
+        // same card at once resolve to one winner instead of a silent overwrite.
+        const [updated] = await db
+          .update(issueThreadInteractions)
+          .set({ addresseeUserId: input.toUserId, addresseeAgentId: null, updatedAt: new Date() })
+          .where(and(
+            eq(issueThreadInteractions.companyId, companyId),
+            eq(issueThreadInteractions.id, row.id),
+            inArray(issueThreadInteractions.status, [...PENDING_INTERACTION_STATUSES]),
+            row.addresseeUserId === null
+              ? isNull(issueThreadInteractions.addresseeUserId)
+              : eq(issueThreadInteractions.addresseeUserId, row.addresseeUserId),
+          ))
+          .returning({ id: issueThreadInteractions.id });
+        if (!updated) {
+          const closed = await attentionService(db, serviceOptions).alreadyClosedError(companyId, {
+            sourceKind: "issue_thread_interaction", sourceId: row.id, actor: input.actor,
+          });
+          throw closed ?? conflict("Someone else routed this card first");
+        }
+        return { ...result, alreadyTransferred: false, previousAddresseeAgentId: row.addresseeAgentId };
+      });
+    },
   };
+}
+
+const WITHDRAWABLE_SOURCE_KINDS: ReadonlySet<AttentionSourceKind> = new Set<AttentionSourceKind>([
+  "issue_thread_interaction",
+  "decision",
+  "approval",
+]);
+
+/** Where to go instead, for cards with no request to withdraw (PAP-749 Rules 6-7). */
+const WITHDRAW_UNSUPPORTED_TEXT: Partial<Record<AttentionSourceKind, string>> = {
+  budget_alert: "Budget cards are not withdrawn. Raise the limit or keep it paused, or archive the card for yourself.",
+  recovery_action: "Cancel this recovery on its task, where you also choose the task's next status.",
+  failed_run: "A failed run is not a request. Retry the task, or archive the card for yourself.",
+  agent_error_alert: "Fix the agent on its page, or archive the alert for yourself.",
+  review: "Approve the review or request changes, or archive the card for yourself.",
+  blocker_attention: "Unblock the task on its page, or archive the card for yourself.",
+  join_request: "Approve or reject the join request, or archive the card for yourself.",
+};
+
+/**
+ * Mark cards whose addressee came from "Route to @x" with the person who
+ * routed them. Reads the newest `attention.transferred` entry per card; a
+ * later claim or re-address that does not match it leaves the card unmarked.
+ */
+async function attachTransferredBy(db: Db, companyId: string, items: AttentionItem[]) {
+  const addressed = items.filter((item) => item.sourceKind === "issue_thread_interaction"
+    && item.audience.kind === "user" && item.audience.reason === "addressee" && item.audience.userId);
+  if (addressed.length === 0) return;
+  const issueIds = [...new Set(addressed.map(attentionItemIssueId).filter((id): id is string => Boolean(id)))];
+  const latest = new Map<string, { toUserId: string | null; byUserId: string | null; at: number }>();
+  for (const chunk of chunkValues(issueIds, ATTENTION_GRAPH_QUERY_CHUNK_SIZE)) {
+    const rows = await db
+      .select({ actorId: activityLog.actorId, createdAt: activityLog.createdAt, details: activityLog.details })
+      .from(activityLog)
+      .where(and(
+        eq(activityLog.companyId, companyId),
+        eq(activityLog.entityType, "issue"),
+        inArray(activityLog.entityId, chunk),
+        eq(activityLog.action, "attention.transferred"),
+      ));
+    for (const row of rows) {
+      const details = readRecord(row.details);
+      const sourceId = readString(details.sourceId);
+      const at = timestamp(row.createdAt);
+      if (!sourceId || (latest.get(sourceId)?.at ?? -1) >= at) continue;
+      latest.set(sourceId, {
+        toUserId: readString(details.transferredToUserId),
+        byUserId: readString(details.transferredByUserId) ?? row.actorId,
+        at,
+      });
+    }
+  }
+  for (const item of addressed) {
+    const transfer = latest.get(item.subject.id);
+    if (!transfer?.byUserId || transfer.toUserId !== item.audience.userId || transfer.byUserId === transfer.toUserId) continue;
+    item.audience = { ...item.audience, transferredByUserId: transfer.byUserId };
+  }
+}
+
+function attentionItemIssueId(item: AttentionItem): string | null {
+  if (item.relatedIssue) return item.relatedIssue.id;
+  if (item.subject.kind === "issue") return item.subject.id;
+  const metadataIssueId = item.subject.metadata?.issueId ?? item.subject.metadata?.sourceIssueId;
+  return typeof metadataIssueId === "string" ? metadataIssueId : null;
+}
+
+type SourceCloseState = {
+  open: boolean;
+  status: string;
+  resolvedByUserId: string | null;
+  resolvedByAgentId: string | null;
+  resolvedAt: Date | null;
+  issueId: string | null;
+  issue?: { id: string; companyId: string; status: string; assigneeAgentId: string | null };
+  approvalType?: string;
+};
+
+/**
+ * Open/closed state of a withdrawable source, read under the person's read
+ * rules: `null` when it does not exist or they cannot read it. Used for the
+ * 409 "Already answered by @x" (PAP-749 plan §2, special conditions).
+ */
+async function sourceCloseState(
+  db: Db,
+  companyId: string,
+  sourceKind: AttentionSourceKind,
+  sourceId: string,
+  actor: AuthorizationActor,
+): Promise<SourceCloseState | null> {
+  if (sourceKind === "issue_thread_interaction") {
+    const readCondition = await issueReadSqlCondition(db, actor);
+    const [row] = await db
+      .select({
+        status: issueThreadInteractions.status,
+        resolvedByUserId: issueThreadInteractions.resolvedByUserId,
+        resolvedByAgentId: issueThreadInteractions.resolvedByAgentId,
+        resolvedAt: issueThreadInteractions.resolvedAt,
+        issueId: issues.id,
+        issueStatus: issues.status,
+        assigneeAgentId: issues.assigneeAgentId,
+      })
+      .from(issueThreadInteractions)
+      .innerJoin(issues, eq(issues.id, issueThreadInteractions.issueId))
+      .where(and(
+        eq(issueThreadInteractions.companyId, companyId),
+        eq(issueThreadInteractions.id, sourceId),
+        eq(issues.companyId, companyId),
+        readCondition,
+      ))
+      .limit(1);
+    if (!row) return null;
+    return {
+      open: (PENDING_INTERACTION_STATUSES as readonly string[]).includes(row.status),
+      status: row.status,
+      resolvedByUserId: row.resolvedByUserId,
+      resolvedByAgentId: row.resolvedByAgentId,
+      resolvedAt: row.resolvedAt,
+      issueId: row.issueId,
+      issue: { id: row.issueId, companyId, status: row.issueStatus, assigneeAgentId: row.assigneeAgentId },
+    };
+  }
+  if (sourceKind === "approval") {
+    const [row] = await db
+      .select({
+        id: approvals.id,
+        type: approvals.type,
+        status: approvals.status,
+        decidedByUserId: approvals.decidedByUserId,
+        decidedAt: approvals.decidedAt,
+        issueId: firstApprovalIssueId(),
+      })
+      .from(approvals)
+      .where(and(eq(approvals.companyId, companyId), eq(approvals.id, sourceId)))
+      .limit(1);
+    if (!row || !(await canActorReadApproval(db, actor, row.id))) return null;
+    return {
+      open: (resolvableApprovalStatuses as readonly string[]).includes(row.status),
+      status: row.status,
+      resolvedByUserId: row.decidedByUserId,
+      resolvedByAgentId: null,
+      resolvedAt: row.decidedAt,
+      issueId: row.issueId ?? null,
+      approvalType: row.type,
+    };
+  }
+  if (sourceKind === "decision") {
+    const readCondition = await issueReadSqlCondition(db, actor);
+    const [row] = await db
+      .select({
+        status: decisions.status,
+        decidedByUserId: decisions.decidedByUserId,
+        decidedAt: decisions.decidedAt,
+        updatedAt: decisions.updatedAt,
+        issueId: issues.id,
+      })
+      .from(decisions)
+      .innerJoin(issues, and(eq(issues.id, decisions.originIssueId), eq(issues.companyId, companyId)))
+      .where(and(eq(decisions.companyId, companyId), eq(decisions.id, sourceId), readCondition))
+      .limit(1);
+    if (!row) return null;
+    return {
+      open: row.status === "open",
+      status: row.status,
+      resolvedByUserId: row.decidedByUserId,
+      resolvedByAgentId: null,
+      resolvedAt: row.decidedAt ?? (row.status === "open" ? null : row.updatedAt),
+      issueId: row.issueId,
+    };
+  }
+  return null;
 }

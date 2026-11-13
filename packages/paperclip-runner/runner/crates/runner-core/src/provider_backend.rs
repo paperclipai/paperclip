@@ -2307,12 +2307,22 @@ impl CodexCommandExecutor {
         trigger: ProviderStartupTrigger,
         generation: u64,
     ) -> Result<CodexProvider, DurableRunnerError> {
-        let state = self
+        let mut state = self
             .state
             .clone()
             .ok_or_else(|| DurableRunnerError::invalid("provider startup state missing"))?;
         let profile = self.opencode_launch_profile.clone();
         let cursor_cloud_profile = self.cursor_cloud_launch_profile.clone();
+        if state.config.provider == "codex" {
+            let args = &mut state.config.args;
+            let attachment_args =
+                crate::attachment_download::codex_attachment_read_args(args, &self.state_dir);
+            let position = args
+                .iter()
+                .position(|arg| arg == "app-server")
+                .unwrap_or(args.len());
+            args.splice(position..position, attachment_args);
+        }
         self.begin_startup(trigger, generation)?;
         CodexProvider::start_with_tools_observed(
             &state.config,

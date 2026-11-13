@@ -1,10 +1,11 @@
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { and, eq } from "drizzle-orm";
+import { and, eq, inArray, ne } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import {
   activityLog,
   agents,
+  agentWakeupRequests,
   authUsers,
   companyMemberships,
   companies,
@@ -23,6 +24,8 @@ import { heartbeatService } from "../services/heartbeat.js";
 import { settleHeldInterruptedPreparation } from "../services/interrupted-preparation-hold-settlement.js";
 import { isAbandonedPreparedRemoteWorkspace } from "../services/remote-workspace-abandoned-preparation.js";
 import { inspectWorkspaceRecoverySource } from "../services/workspace-recovery-source.js";
+import { getExecutionBlocker } from "../services/execution-blocker.js";
+import { requestTaskRetry } from "../services/task-retry.js";
 import { legacyControllerBootId } from "../services/legacy-controller-lease.js";
 import { createOwnershipReportState, runOwnershipReconciliationPass } from "../services/recovery/ownership-invariant-report.js";
 
@@ -73,6 +76,7 @@ suite("held interrupted preparations on the shared ownership path", () => {
     await db.delete(executionWorkspaces);
     await db.delete(heartbeatRunEvents);
     await db.delete(heartbeatRuns);
+    await db.delete(agentWakeupRequests);
     await db.delete(issues);
   });
 
@@ -86,13 +90,14 @@ suite("held interrupted preparations on the shared ownership path", () => {
   }
 
   async function interruptedPreparation(options: { controller?: { bootId: string; process: Record<string, unknown> | null };
-    leaseReleased?: boolean; holdEvidence?: Record<string, unknown> } = {}) {
+    leaseReleased?: boolean; holdEvidence?: Record<string, unknown>; run?: Partial<typeof heartbeatRuns.$inferInsert>;
+    issueStatus?: string } = {}) {
     const issueId = randomUUID(), runId = randomUUID(), leaseId = randomUUID(), providerLeaseId = `sandbox-${leaseId}`;
     const finishedAt = new Date(Date.now() - 10_000);
     const controller = options.controller ?? await deadController();
     // Terminalization projected the task to blocked and kept a receipt so the
     // settle can restore exactly that projection.
-    await db.insert(issues).values({ id: issueId, companyId, title: "Warm follow-up", status: "blocked",
+    await db.insert(issues).values({ id: issueId, companyId, title: "Warm follow-up", status: options.issueStatus ?? "blocked",
       assigneeAgentId: agentId, statusVersion: 2 });
     await db.insert(heartbeatRuns).values({ id: runId, companyId, agentId, invocationSource: "automation",
       responsibleUserId: "local-board", issueId,
@@ -103,7 +108,8 @@ suite("held interrupted preparations on the shared ownership path", () => {
       contextSnapshot: { issueId },
       runnerProfileJson: { adapterDispatch: { adapterType: "paperclip_runner" } },
       resultJson: { stopReason: "interrupted", cancellation: { reason: "Server shutdown interrupted execution",
-        source: "shutdown", expected: true, initiator: { type: "system" }, recordedAt: finishedAt.toISOString() } } });
+        source: "shutdown", expected: true, initiator: { type: "system" }, recordedAt: finishedAt.toISOString() } },
+      ...options.run });
     const released = options.leaseReleased !== false;
     await db.insert(environmentLeases).values({ id: leaseId, companyId, environmentId, issueId, heartbeatRunId: runId,
       status: released ? "released" : "pending_cleanup", cleanupStatus: released ? "success" : "failed",
@@ -214,6 +220,134 @@ suite("held interrupted preparations on the shared ownership path", () => {
     expect(await pass()).toMatchObject({ inProgress: 1, settled: 1 });
     expect((await db.select().from(issues).where(eq(issues.id, f.issueId)))[0]).toMatchObject({ status: "in_progress" });
     expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, f.runId))).toHaveLength(1);
+  });
+
+  function controllerLeaseLostRun(finishedAt = new Date(Date.now() - 10_000)): Partial<typeof heartbeatRuns.$inferInsert> {
+    return { status: "failed", errorCode: "controller_lease_lost", error: "Legacy controller lease lost",
+      scheduledRetryAttempt: 0, scheduledRetryReason: null,
+      resultJson: { stopReason: "adapter_failed", timeoutFired: false,
+        cancellation: { reason: "Legacy controller lease lost (renewal_deadline)", source: "controller_lease", expected: false,
+          initiator: { type: "system" }, recordedAt: finishedAt.toISOString() },
+        executionRecovery: { kind: "bootstrap", providerWorkStarted: false },
+        controllerLeaseLoss: { cause: "renewal_deadline", renewalCount: 25, deadlineLateMs: 673, sinceRenewalMs: 36396,
+          renewalPendingMs: 29436 } } };
+  }
+
+  async function leaseLostSavedFilesHold(options: { keepStatusReceipt: boolean }) {
+    const f = await interruptedPreparation({ run: controllerLeaseLostRun() });
+    const { leaseId } = await preparedRemoteWorkspace(f.runId, f.issueId);
+    const restore = { workspaceRestoreFailure: "restore_failed",
+      workspaceRestoreRecovery: { schema: "paperclip.workspace-restore-recovery.v1", leaseIds: [leaseId] } };
+    const run = await runRow(f.runId);
+    await db.update(heartbeatRuns).set({ resultJson: { ...run.resultJson, ...restore } }).where(eq(heartbeatRuns.id, f.runId));
+    const saved = await hold(f.holdId);
+    const { nativeBootstrapFailureBlock, ...staged } = saved.evidence;
+    await db.update(issueRecoveryActions).set({ kind: "active_run_watchdog", evidence: { ...staged, ...restore,
+      ...(options.keepStatusReceipt ? { nativeBootstrapFailureBlock } : {}),
+      originalFailureCode: "controller_lease_lost", continuationDelivery: "invalidated",
+      historicalWorkspaceSource: { schema: "paperclip.historical-workspace-source.v1", runId: f.runId, leaseIds: [leaseId] },
+      workspaceRecovery: { schema: "paperclip.workspace-recovery.v1", runId: f.runId, status: "blocked", stage: "verifying_stop",
+        attempt: 1, attemptLimit: 6, retryable: true, requestIds: [],
+        message: "Automatic recovery of saved work failed (last failure: source_unavailable). Retry to try again; the agent will not repeat its work." },
+      systemRecovery: { schema: "paperclip.system-recovery.v1", policyVersion: 1, capturePolicyVersion: 2, state: "exhausted",
+        phase: "verify_execution", sourceRunId: f.runId, generationId: randomUUID(), attemptId: randomUUID(), intentId: null,
+        attempts: 1, retriesUsed: 0, revision: 2, nextAttemptAt: null, providerCooldownAt: null, freshAttemptRunId: null,
+        preservationOperationIds: [], failure: { code: "source_unavailable", retryClass: "use_alternative_strategy",
+          evidenceFingerprint: "a".repeat(64) } } } })
+      .where(eq(issueRecoveryActions.id, f.holdId));
+    return f;
+  }
+
+  it("replays a preparation that lost its controller lease before provider work instead of holding it for reconciliation", async () => {
+    heartbeatService(db);
+    const f = await leaseLostSavedFilesHold({ keepStatusReceipt: true });
+    await expect(inspectWorkspaceRecoverySource(db, { companyId, issueId: f.issueId, runId: f.runId, actionId: f.holdId }))
+      .rejects.toMatchObject({ code: "source_unavailable", retryClass: "use_alternative_strategy" });
+    expect(await pass()).toMatchObject({ inProgress: 1, settled: 1 });
+    expect(await hold(f.holdId)).toMatchObject({ status: "resolved", outcome: "false_positive" });
+    expect((await db.select().from(issues).where(eq(issues.id, f.issueId)))[0]).toMatchObject({ status: "in_progress" });
+    const successors = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, f.runId));
+    expect(successors).toHaveLength(1);
+    expect(successors[0]).toMatchObject({ scheduledRetryReason: "interrupted_preparation" });
+  });
+
+  it("clears the saved-files gate of a lost-lease preparation that an older release blocked, so one Retry continues it", async () => {
+    const heartbeat = heartbeatService(db);
+    const f = await leaseLostSavedFilesHold({ keepStatusReceipt: false });
+    expect(await getExecutionBlocker(db, companyId, f.issueId)).toMatchObject({ cause: "legacy_execution_requires_reconciliation" });
+    expect(await pass()).toMatchObject({ inProgress: 1, settled: 1 });
+    expect(await hold(f.holdId)).toMatchObject({ status: "resolved", outcome: "false_positive",
+      evidence: expect.objectContaining({ bootstrapPreparationContinuation: "deferred" }) });
+    expect(await getExecutionBlocker(db, companyId, f.issueId)).toBeNull();
+    const receipt = await requestTaskRetry({ db, companyId, issueId: f.issueId, actorId: "local-board",
+      actorSource: "local_implicit", idempotencyKey: randomUUID(), observedRunId: f.runId });
+    expect(receipt).toMatchObject({ accepted: true });
+    await heartbeat.resumeTaskRetry(companyId, receipt.requestId!);
+    const [wake] = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, receipt.requestId!));
+    expect(wake?.status).not.toBe("deferred_issue_execution");
+    expect(await db.select().from(heartbeatRuns).where(and(eq(heartbeatRuns.issueId, f.issueId),
+      inArray(heartbeatRuns.status, ["queued", "running", "scheduled_retry", "succeeded", "failed"]),
+      ne(heartbeatRuns.id, f.runId)))).not.toHaveLength(0);
+  }, 60_000);
+
+  it.each([
+    ["an in-progress continuation", "in_progress", { retryReason: "issue_continuation_needed", source: "issue.continuation_recovery" }, 2],
+    ["a todo task that never reached checkout", "todo", {}, 12],
+  ] as const)("bounds repeated lost leases before provider work for %s, then lets Retry continue", async (_label, status, firstContext, cap) => {
+    const heartbeat = heartbeatService(db);
+    const controller = await deadController();
+    const issueId = randomUUID(), firstRunId = randomUUID();
+    await db.insert(issues).values({ id: issueId, companyId, title: "Lease loop", status,
+      assigneeAgentId: agentId, statusVersion: 2 });
+    const lostLease = (runId: string, context: Record<string, unknown>, retry: Partial<typeof heartbeatRuns.$inferInsert> = {}) => {
+      const finishedAt = new Date(Date.now() - 30 * 60_000);
+      return { ...controllerLeaseLostRun(finishedAt), id: runId, companyId, agentId, invocationSource: "automation",
+        responsibleUserId: "local-board", issueId, runtimeMode: "legacy", executionStage: "preparing",
+        startedAt: new Date(finishedAt.getTime() - 2_000), finishedAt, nextEventSeq: 1,
+        controllerBootId: controller.bootId, controllerProcess: controller.process,
+        runnerProfileJson: { adapterDispatch: { adapterType: "paperclip_runner" } },
+        contextSnapshot: { issueId, ...context }, ...retry } as typeof heartbeatRuns.$inferInsert;
+    };
+    await db.insert(heartbeatRuns).values(lostLease(firstRunId, { ...firstContext }));
+    let latest: string = firstRunId;
+    let successors = 0;
+    for (let round = 0; round < 40; round += 1) {
+      await heartbeat.reconcileStrandedAssignedIssues({ companyId, issueId });
+      const [task] = await db.select().from(issues).where(eq(issues.id, issueId));
+      if (task!.status === "blocked") break;
+      expect(task!.status).toBe(status);
+      const [next] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, latest));
+      expect(next).toBeDefined();
+      expect(next!.contextSnapshot).toMatchObject({ retryReason: "interrupted_preparation",
+        executionRetryAccounting: { interruptedPreparations: successors + 1 } });
+      successors += 1;
+      const finished = lostLease(next!.id, next!.contextSnapshot ?? {}, {
+        scheduledRetryAttempt: next!.scheduledRetryAttempt, scheduledRetryReason: next!.scheduledRetryReason,
+        retryOfRunId: latest, wakeupRequestId: next!.wakeupRequestId });
+      await db.update(heartbeatRuns).set({ status: "failed", errorCode: finished.errorCode, error: finished.error,
+        resultJson: finished.resultJson, startedAt: finished.startedAt, finishedAt: finished.finishedAt,
+        executionStage: "preparing", controllerBootId: finished.controllerBootId, controllerProcess: finished.controllerProcess,
+        runnerProfileJson: finished.runnerProfileJson }).where(eq(heartbeatRuns.id, next!.id));
+      latest = next!.id;
+    }
+    expect(successors).toBe(cap);
+    expect((await db.select().from(issues).where(eq(issues.id, issueId)))[0]).toMatchObject({ status: "blocked" });
+    const receipt = await requestTaskRetry({ db, companyId, issueId, actorId: "local-board",
+      actorSource: "local_implicit", idempotencyKey: randomUUID(), observedRunId: latest });
+    expect(receipt).toMatchObject({ accepted: true });
+  }, 120_000);
+
+  it.each([
+    ["provider work started", { kind: "bootstrap", providerWorkStarted: true }],
+    ["it has no no-provider-work certificate", undefined],
+  ] as const)("keeps a lost-lease preparation held when %s", async (_label, executionRecovery) => {
+    const f = await interruptedPreparation({ run: controllerLeaseLostRun() });
+    const run = await runRow(f.runId);
+    await db.update(heartbeatRuns).set({ resultJson: { ...run.resultJson, executionRecovery } })
+      .where(eq(heartbeatRuns.id, f.runId));
+    const before = await hold(f.holdId);
+    expect((await pass())?.settled ?? 0).toBe(0);
+    expect(await hold(f.holdId)).toEqual(before);
   });
 
   it("reports a retired prepared epoch to workspace recovery as an unavailable source, not a binding failure", async () => {
