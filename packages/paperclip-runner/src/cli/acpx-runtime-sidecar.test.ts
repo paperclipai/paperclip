@@ -1231,6 +1231,21 @@ describe("qualified ACPX runtime sidecar", () => {
     } finally { await sidecar.close(); children.delete(sidecar); rmSync(root, { recursive: true, force: true }); }
   }, 20_000);
 
+  it("withholds the quiet Claude state once the tool-use ledger cannot fit another full turn", () => {
+    const source = readFileSync(new URL("./acpx-runtime-sidecar.ts", import.meta.url), "utf8");
+    const start = source.indexOf("function claudeBackgroundTasks(");
+    const end = source.indexOf("async function waitForTool(", start);
+    expect(start).toBeGreaterThan(0);
+    const load = (agent: string, room: boolean | null) => new Function("initializedAgent", "toolUseAdmission",
+      `${stripTypeScriptTypes(source.slice(start, end))}; return claudeBackgroundTasks;`)(
+      agent, room === null ? null : { hasRoomForAnotherTurn: () => room });
+    const host = { backgroundTaskState: () => ({ live: 0 }) };
+    expect(load("claude", true)(host)).toEqual({ live: 0 });
+    expect(load("claude", false)(host)).toBeNull();
+    expect(load("claude", null)(host)).toBeNull();
+    expect(load("codex", true)(host)).toBeNull();
+  });
+
   it.each(["claude", "codex"] as const)("binds %s tool calls to the turn that announced their tool use", async agent => {
     const root = mkdtempSync(join(tmpdir(), "acpx-tool-use-"));
     const loader = join(root, "loader.mjs"), fixture = join(root, "host.mjs");
