@@ -81,13 +81,13 @@ async function readRemoteFile(spec: SshRemoteExecutionSpec, remotePath: string):
   const file = shellQuote(remotePath);
   const parent = shellQuote(path.posix.dirname(remotePath));
   /* Confirm the parent is searchable so a permission error cannot masquerade as absence. */
-  const command = `if [ -d ${parent} ] && [ -x ${parent} ] && [ ! -e ${file} ]; then printf '%s\\n' '${missingMarker}' >&2; exit ${missingExitCode}; fi; base64 < ${file}`;
+  const command = `if [ -d ${parent} ] && [ -x ${parent} ] && [ ! -e ${file} ]; then printf '%s\\n' '${missingMarker}'; exit ${missingExitCode}; fi; base64 < ${file}`;
   try {
     const result = await runSshCommand(spec, command, { maxBuffer: 1024 * 1024 });
     return Buffer.from(result.stdout.replace(/\s+/g, ""), "base64");
   } catch (error) {
-    const failure = error as { code?: unknown; stderr?: unknown } | null;
-    if (failure?.code === missingExitCode && typeof failure.stderr === "string" && failure.stderr.trim() === missingMarker) {
+    const failure = error as { code?: unknown; stdout?: unknown } | null;
+    if (failure?.code === missingExitCode && typeof failure.stdout === "string" && failure.stdout.trim() === missingMarker) {
       throw Object.assign(new Error("Remote runtime file does not exist"), { code: "ENOENT" });
     }
     throw error;

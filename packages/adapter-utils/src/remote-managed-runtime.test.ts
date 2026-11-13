@@ -184,7 +184,7 @@ describe("remote managed runtime", () => {
     expect(restoredAuth).toBe('{"token":"remote"}\n');
   });
 
-  it.each(["missing", "present", "read failure", "connection failure"])(
+  it.each(["missing", "missing with SSH warning", "present", "read failure", "connection failure"])(
     "preserves SSH file-read error semantics for %s files",
     async outcome => {
       const root = await mkdtemp(path.join(os.tmpdir(), "paperclip-ssh-file-read-"));
@@ -193,13 +193,15 @@ describe("remote managed runtime", () => {
       const assetDir = path.join(remoteCwd, ".paperclip-runtime", "codex", "home");
       await mkdir(assetDir, { recursive: true });
       const content = Buffer.from([0, 255, 1, 10]);
-      if (outcome !== "missing") await writeFile(path.join(assetDir, "auth.json"), content);
+      if (!outcome.startsWith("missing")) await writeFile(path.join(assetDir, "auth.json"), content);
       const transportError = Object.assign(new Error("fixture SSH connection failed"), { code: 255 });
       runSshCommand.mockImplementationOnce(async (_spec, command) => {
         if (outcome === "connection failure") throw transportError;
         const script = outcome === "read failure"
           ? `base64() { printf '%s\\n' 'fixture read failure' >&2; return 44; }; ${command}`
-          : command!;
+          : outcome === "missing with SSH warning"
+            ? `printf '%s\\n' 'fixture SSH host-key warning' >&2; ${command}`
+            : command!;
         return promisify(execFile)("sh", ["-c", script!]);
       });
       let bytes: Buffer | undefined;
@@ -215,7 +217,7 @@ describe("remote managed runtime", () => {
       if (outcome === "present") {
         await prepared.restoreWorkspace();
         expect(bytes).toEqual(content);
-      } else if (outcome === "missing") {
+      } else if (outcome.startsWith("missing")) {
         await expect(prepared.restoreWorkspace()).rejects.toMatchObject({ code: "ENOENT" });
       } else if (outcome === "connection failure") {
         await expect(prepared.restoreWorkspace()).rejects.toBe(transportError);
