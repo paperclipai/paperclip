@@ -2364,6 +2364,91 @@ describeEmbeddedPostgres("issue recovery actions", () => {
     expect(successors[0]!.id).toBe(wakes[0]!.runId);
   });
 
+  it("delivers one continuation for duplicate holds that an older release reconciled one by one", async () => {
+    const { sourceIssueId, previousRunId, action, siblings, body, heartbeat } =
+      await seedDuplicateReconciliationHolds();
+    const records = [action, ...siblings];
+    for (const record of records) {
+      await db.update(issueRecoveryActions).set({
+        outcome: "restored",
+        evidence: {
+          runId: previousRunId,
+          continuationDelivery: "pending",
+          executionReconciliation: {
+            ...body.executionReconciliation, actorId: "board-user", recordedAt: new Date().toISOString(),
+          },
+        },
+      }).where(eq(issueRecoveryActions.id, record.id));
+    }
+    await db.update(issues).set({ status: "todo" }).where(eq(issues.id, sourceIssueId));
+
+    for (let pass = 0; pass < records.length; pass += 1) {
+      await deliverReconciledExecutions(db, heartbeat.wakeup);
+      await db.update(heartbeatRuns).set({ status: "succeeded", startedAt: new Date(), finishedAt: new Date() })
+        .where(and(eq(heartbeatRuns.retryOfRunId, previousRunId), eq(heartbeatRuns.status, "queued")));
+      await db.update(issues).set({ executionRunId: null, executionLockedAt: null, checkoutRunId: null })
+        .where(eq(issues.id, sourceIssueId));
+    }
+
+    const successors = await db.select().from(heartbeatRuns)
+      .where(eq(heartbeatRuns.retryOfRunId, previousRunId));
+    expect(successors).toHaveLength(1);
+    const rows = await db.select().from(issueRecoveryActions)
+      .where(eq(issueRecoveryActions.sourceIssueId, sourceIssueId));
+    const owners = rows.filter((row) => row.evidence.continuationDelivery === "delivered");
+    expect(owners).toHaveLength(1);
+    expect(owners[0]!.evidence).toMatchObject({ continuationRunId: successors[0]!.id });
+    for (const row of rows.filter((row) => row.id !== owners[0]!.id)) {
+      expect(row.evidence).toMatchObject({
+        continuationDelivery: "invalidated", coalescedIntoRecoveryActionId: owners[0]!.id,
+      });
+    }
+  });
+
+  it("delivers one continuation for each source run when an older release recorded duplicate decisions", async () => {
+    const { companyId, coderId, sourceIssueId, previousRunId, action, siblings, body, heartbeat } =
+      await seedDuplicateReconciliationHolds();
+    const otherRunId = randomUUID();
+    await seedHeartbeatRun({ companyId, agentId: coderId, runId: otherRunId, issueId: sourceIssueId, status: "failed" });
+    const records = [[action, previousRunId], [siblings[0]!, previousRunId], [siblings[1]!, otherRunId]] as const;
+    for (const [record, runId] of records) {
+      await db.update(issueRecoveryActions).set({
+        outcome: "restored",
+        fingerprint: `legacy-execution:${runId}`,
+        evidence: {
+          runId,
+          continuationDelivery: "pending",
+          executionReconciliation: {
+            ...body.executionReconciliation, runId, actorId: "board-user", recordedAt: new Date().toISOString(),
+          },
+        },
+      }).where(eq(issueRecoveryActions.id, record.id));
+    }
+    await db.update(issues).set({ status: "todo" }).where(eq(issues.id, sourceIssueId));
+
+    for (let pass = 0; pass < records.length + 1; pass += 1) {
+      await deliverReconciledExecutions(db, heartbeat.wakeup);
+      await db.update(heartbeatRuns).set({ status: "succeeded", startedAt: new Date(), finishedAt: new Date() })
+        .where(and(eq(heartbeatRuns.companyId, companyId), eq(heartbeatRuns.status, "queued")));
+      await db.update(issues).set({ executionRunId: null, executionLockedAt: null, checkoutRunId: null })
+        .where(eq(issues.id, sourceIssueId));
+    }
+
+    for (const runId of [previousRunId, otherRunId]) {
+      expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, runId))).toHaveLength(1);
+    }
+    const rows = await db.select().from(issueRecoveryActions)
+      .where(eq(issueRecoveryActions.sourceIssueId, sourceIssueId));
+    const delivered = rows.filter((row) => row.evidence.continuationDelivery === "delivered");
+    expect(delivered.map((row) => row.evidence.runId).sort()).toEqual([previousRunId, otherRunId].sort());
+    const owner = delivered.find((row) => row.evidence.runId === previousRunId)!;
+    expect(rows.filter((row) => row.evidence.continuationDelivery === "invalidated")).toEqual([
+      expect.objectContaining({
+        evidence: expect.objectContaining({ runId: previousRunId, coalescedIntoRecoveryActionId: owner.id }),
+      }),
+    ]);
+  });
+
   it.each(["live provider", "active checkout"] as const)(
     "preserves all duplicate holds when a %s rejects reconciliation",
     async (guard) => {
