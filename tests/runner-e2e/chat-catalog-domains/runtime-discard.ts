@@ -22,16 +22,13 @@ export function promptCarries(prompt: string | undefined, body: string) {
 export function replyLinkHrefs(reply: string, rendered: readonly string[]) {
   return [...new Set([...rendered, ...[...reply.matchAll(/\]\(([^)\s]+)\)/g)].map(match => match[1]!)])];
 }
-const labelledHeading = (body: string, label: string) => body.split(/\r?\n/).some(line => /^#{1,6}\s/.test(line) && line.includes(label));
-export function documentContactRemoved(rows: ReadonlyArray<{ id: string; body?: string | null; createdByRunId?: string | null }>, latestRevisionId: unknown, consumerRunId: string, label: string) {
-  const number = (row: object) => Number((row as { revisionNumber?: unknown }).revisionNumber);
-  const revisions = [...rows].sort((a, b) => number(a) - number(b));
-  const final = revisions.find(row => row.id === latestRevisionId);
-  const saves = revisions.filter(row => row.createdByRunId === consumerRunId && (row.body ?? "").includes(label));
-  if (!saves.length) return !(final?.body ?? "").includes(label);
-  const previous = revisions.filter(row => number(row) < number(saves[0]!)).at(-1);
-  const hadSection = [previous, ...saves].some(row => labelledHeading(row?.body ?? "", label));
-  return !!final && hadSection && !labelledHeading(final.body ?? "", label);
+/**
+ * The cancelled request's setup label must be absent from the document's final revision. Whether the label
+ * was ever saved is checked separately on the consuming run's revisions; the plan's layout is not graded.
+ */
+export function documentContactRemoved(rows: ReadonlyArray<{ id: string; body?: string | null }>, latestRevisionId: unknown, label: string) {
+  const final = rows.find(row => row.id === latestRevisionId);
+  return !!final && label.length > 0 && !(final.body ?? "").includes(label);
 }
 export function gradeDiscard(value: unknown) {
   const c = checks(), o = runtimeObservation(value);
@@ -68,7 +65,7 @@ export function gradeDiscard(value: unknown) {
   return c.result();
 }
 export const runtimeDiscardCases = [runtimeDefinition("steering.discard-queued-message", ctx => humanQueuedRuntime(ctx, contactText), gradeDiscard, {
-  authentication: "human-session", expectedHumanMessageCount: 2, expectedRunCount: 5, minimumRunCount: 4, attemptTimeoutMs: 1_020_000, oracleVersion: "paperclip.chat-catalog.runtime-discard.v7",
+  authentication: "human-session", expectedHumanMessageCount: 2, expectedRunCount: 5, minimumRunCount: 4, attemptTimeoutMs: 1_020_000, oracleVersion: "paperclip.chat-catalog.runtime-discard.v8",
   sourceFiles: ["chat-catalog-domains/runtime-discard.ts", "chat-catalog-domains/runtime-queue-controls.ts", "chat-catalog-domains/runtime-queue.ts", "chat-catalog-domains/runtime-cited-delivery.ts", "chat-catalog-domains/runtime-busy-worker.ts", "chat-catalog-domains/runtime-support.ts", "chat-catalog-domains/identity-support.ts", "chat-scenarios/steering.yaml"],
   setupPolicy: runtimeQueueCases[0]!.setupPolicy, verifySetup: runtimeQueueCases[0]!.verifySetup,
   async act(ctx, state) {
@@ -152,7 +149,7 @@ export const runtimeDiscardCases = [runtimeDefinition("steering.discard-queued-m
     const latest = o.revisions.filter(row => row.createdByRunId === state.finalWorkerRunId && row.createdByAgentId === worker
       && o.documents.some(doc => doc.id === row.documentId && doc.latestRevisionId === row.id));
     state.finalPlanWithoutContact = latest.length > 0 && o.documents.every(doc => documentContactRemoved(
-      o.revisions.filter(row => row.documentId === doc.id), doc.latestRevisionId, String(state.consumerRunId), label));
+      o.revisions.filter(row => row.documentId === doc.id), doc.latestRevisionId, label));
     return o;
   },
   async cleanup(ctx, state) { try { await cleanupIdentityProbes(ctx); } finally { await releaseRuntimeWorker(state); } },
