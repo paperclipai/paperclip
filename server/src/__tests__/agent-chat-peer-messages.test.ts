@@ -156,6 +156,24 @@ import { issueRoutes } from "../routes/issues.js";
     expect(saved).toMatchObject({ authorAgentId: f.chief.id, createdByRunId: f.chiefRun.id, onBehalfOfUserId: f.person });
   });
 
+  it("refuses content from a restricted or missing source task", async () => {
+    const f = await seed();
+    const svc = issueService(db);
+    const privateTask = await svc.create(f.company.id, {
+      title: "Private source", assigneeAgentId: f.chief.id, status: "in_progress", createdByUserId: f.person,
+    });
+    await db.update(issues).set({ visibility: "private" }).where(eq(issues.id, privateTask.id));
+    const [privateRun, unscopedRun] = await db.insert(heartbeatRuns).values([
+      { companyId: f.company.id, agentId: f.chief.id, status: "running", responsibleUserId: f.person, contextSnapshot: { issueId: privateTask.id } },
+      { companyId: f.company.id, agentId: f.chief.id, status: "running", responsibleUserId: f.person, contextSnapshot: {} },
+    ]).returning();
+    await expect(svc.addComment(f.assistantChat.id, message, { agentId: f.chief.id, runId: privateRun.id }))
+      .rejects.toThrow(/Restricted task content/);
+    await expect(svc.addComment(f.assistantChat.id, message, { agentId: f.chief.id, runId: unscopedRun.id }))
+      .rejects.toThrow(/task-bound run/);
+    expect(await db.select().from(issueComments).where(eq(issueComments.issueId, f.assistantChat.id))).toEqual([]);
+  });
+
   it("keeps the chat agent's session fence and the receiving agent's comment setting", async () => {
     const f = await seed();
     const svc = issueService(db);

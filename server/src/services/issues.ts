@@ -37,7 +37,7 @@ import { assertNoCaseHandoffMutation, cancelCaseHandoffsForIssue, completeTermin
 import { measureRunPhase } from "./execution-preparation-timing.js";
 import { automaticReadRecoveryCleanupCondition, directHumanCommentCondition, humanCreatedIssueCondition, pendingUserRequestCondition, pendingUserRequestRowCondition, touchedByUserCondition, userParticipationActivityCondition } from "./issue-participation.js";
 import { resolveProjectDefaultWorkspaceId } from "./project-default-workspace.js";
-import { type AuthorizationActor, executionWorkspaceReadSqlCondition, projectReadSqlCondition } from "./authorization.js";
+import { type AuthorizationActor, canActorReadIssuePrivacy, executionWorkspaceReadSqlCondition, projectReadSqlCondition } from "./authorization.js";
 import { assertExecutionWorkspaceRecordAccess, assertTaskWorkspaceSourceProjectAccess } from "./task-workspace-access.js";
 import { type TaskWorkspaceSelection, type TaskWorkspaceIntent } from "@paperclipai/shared";
 import { executionWorkspaceService } from "./execution-workspaces.js";
@@ -13681,6 +13681,13 @@ export function issueService(db: Db) {
           }
           if (!run.responsibleUserId || run.responsibleUserId !== current.conversationUserId) {
             throw forbidden("An agent can post in another agent's chat only while it acts for the person who owns that chat");
+          }
+          const [source] = typeof runTaskId === "string" && isUuidLike(runTaskId)
+            ? await dbOrTx.select().from(issues).where(and(eq(issues.id, runTaskId), eq(issues.companyId, issue.companyId)))
+            : [];
+          if (!source) throw forbidden("An agent can post in another agent's chat only from a task-bound run");
+          if (!(await canActorReadIssuePrivacy(dbOrTx, { type: "none" }, source))) {
+            throw forbidden("Restricted task content cannot be sent to a company-visible chat");
           }
         } else if (options?.proactiveChatMessage) {
           if (run?.status !== "running" || run.agentId !== actor.agentId || run.companyId !== issue.companyId
