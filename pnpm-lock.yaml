@@ -1165,6 +1165,9 @@ importers:
       cross-env:
         specifier: ^10.1.0
         version: 10.1.0
+      oxc-parser:
+        specifier: 0.127.0
+        version: 0.127.0
       protobufjs:
         specifier: 7.6.6
         version: 7.6.6
