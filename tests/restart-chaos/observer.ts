@@ -492,7 +492,12 @@ export class TaskObserver {
     await this.captureRemoteFilesAtDone(sample);
     this.readySince = sample.reachable && sample.serverReady ? (this.readySince ?? now) : null;
     await this.observeBenchProgress();
+    const afterEndPosts = this.record.stagingMix?.afterEndFollowUps?.length ?? 0;
     await this.governanceStep(sample, now);
+    if ((this.record.stagingMix?.afterEndFollowUps?.length ?? 0) > afterEndPosts) {
+      this.restCandidateSince = null;
+      return;
+    }
     if (this.journey && await this.journey.step({ sample, now, pendingFaults: this.pendingFaults,
       quiet: sample.reachable && sample.serverReady && !this.supervisor.faultInProgress })) this.restCandidateSince = null;
     if (await this.observeChildStalls(now)) {
