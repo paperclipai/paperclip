@@ -84,11 +84,16 @@ function readWorkflow(input: Input): string[] {
     : [];
 }
 
+/** Copyable payload shown in the correction; tests check that it is admitted. */
+export const QUESTIONS_PAYLOAD_EXAMPLE = Object.freeze({
+  questionSet: { schema: "paperclip.question_set.v1", questions: [{ id: "<id>", prompt: "<question>", required: true, answerMode: "text" }] },
+});
+
 function requestHumanInput(input: Input): string[] {
   if (input.interactionKind !== "questions") return [];
   const payload = record(input.payload);
   if (payload && (has(payload, "questionSet") || has(payload, "questions"))) return [];
-  return [`interactionKind: "questions" requires payload.questionSet: send payload: {"questionSet": {"questions": [{"id": "<id>", "prompt": "<question>", "required": true, "answerMode": "text"}]}}${payload ? ", alongside the payload fields you already sent" : ""}.`];
+  return [`interactionKind: "questions" requires payload.questionSet: send payload: ${JSON.stringify(QUESTIONS_PAYLOAD_EXAMPLE)}${payload ? ", alongside the payload fields you already sent" : ""}.`];
 }
 
 function finish(input: Input): string[] {

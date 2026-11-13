@@ -3,7 +3,7 @@ import { Ajv2020 } from "ajv/dist/2020.js";
 import { describe, expect, test } from "vitest";
 import { CAPABILITY_SEMANTIC_TOOL_CATALOG } from "../semantic-tools/catalog.js";
 import { PRP_COMPLETION_RESULT_PROVIDER_INPUT_SCHEMA } from "./completion-result.js";
-import { TOOL_INPUT_VARIANT_TOOLS, toolInputVariantError } from "./tool-input-variants.js";
+import { QUESTIONS_PAYLOAD_EXAMPLE, TOOL_INPUT_VARIANT_TOOLS, toolInputVariantError } from "./tool-input-variants.js";
 
 // The strict input schemas the previous release advertised, with their root
 // oneOf/anyOf/allOf/if-then. Calls and receipts saved under them must keep
@@ -103,4 +103,12 @@ test("rejections name what is wrong and how to send it", () => {
   expect(toolInputVariantError("update_case", { idempotencyKey: "k" })).toContain("at least one of title, summary, fields");
   expect(toolInputVariantError("connections_search", {})).toBeNull();
   expect(toolInputVariantError("handoff_case", agent)).toBeNull();
+});
+
+test("the questions correction suggests a payload that is admitted", () => {
+  const input = { ...ask, payload: structuredClone(QUESTIONS_PAYLOAD_EXAMPLE) };
+  expect(ajv.compile(current("request_human_input") as Record<string, unknown>)(input)).toBe(true);
+  expect(ajv.compile(previous.tools.request_human_input!)(input)).toBe(true);
+  expect(toolInputVariantError("request_human_input", input)).toBeNull();
+  expect(toolInputVariantError("request_human_input", { ...ask, payload: { version: 1 } })).toContain(JSON.stringify(QUESTIONS_PAYLOAD_EXAMPLE));
 });
