@@ -1,4 +1,6 @@
-import { readFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
@@ -32,16 +34,82 @@ describe("Runner image workflow", () => {
   const steps = (job: string) => job.slice(job.indexOf("\n    steps:\n")).split(/\n(?= {6}- )/).slice(1);
   const credential = /github\.token|secrets\.|GITHUB_TOKEN|REGISTRY_PASSWORD/;
 
-  it("lets only the publish job write to the registry or sign", () => {
+  it("lets only the publish job write images or sign, and only the cache job write the build cache, never the Actions cache", () => {
     expect(workflow).toMatch(/^permissions: \{\}$/m);
-    expect(Object.keys(jobs)).toEqual(["identity", "build", "publish"]);
+    expect(Object.keys(jobs)).toEqual(["identity", "build", "publish", "cache"]);
     expect(permissions(jobs.identity)).toEqual(["contents: read", "packages: read"]);
     expect(permissions(jobs.build)).toEqual(["contents: read", "packages: read"]);
     expect(permissions(jobs.publish)).toEqual(["contents: read", "packages: write", "id-token: write", "attestations: write"]);
+    expect(permissions(jobs.cache)).toEqual(["contents: read", "packages: write"]);
     for (const job of [jobs.identity, jobs.build]) {
-      expect(job).not.toMatch(/docker\/login-action|skopeo|imagetools create|actions\/attest|secrets\.|--push|push=true/);
+      expect(job).not.toMatch(/docker\/login-action|skopeo|imagetools create|actions\/attest|secrets\.|--push|push=true|cache-to/);
     }
+    expect(Object.keys(jobs).filter((name) => jobs[name].includes("cache-to"))).toEqual(["cache"]);
+    expect(jobs.cache).not.toMatch(/skopeo|imagetools|actions\/attest|--push|push=true|type=image|type=oci|upload-artifact/);
+    expect(workflow).not.toMatch(/type=gha|actions\/cache/);
     expect(workflow).not.toMatch(/pull_request_target|workflow_run/);
+  });
+
+  it("writes the build cache only for a master push in the canonical repository, never on the way to publication, with the token in the login step alone and no stage past the daemon", () => {
+    for (const job of [jobs.publish, jobs.cache]) {
+      expect(jobCondition(job).startsWith(`${canonical} && `)).toBe(true);
+      expect(jobCondition(job)).not.toContain("||");
+    }
+    expect(jobCondition(jobs.cache)).toContain("needs.identity.outputs.lock == 'current'");
+    for (const job of Object.values(jobs)) expect(/^ {4}needs: (.+)$/m.exec(job)?.[1] ?? "").not.toMatch(/\bcache\b/);
+    const withCredential = steps(jobs.cache).filter((step) => credential.test(step));
+    expect(withCredential).toHaveLength(1);
+    expect(withCredential[0]).toContain("docker/login-action@");
+    const building = steps(jobs.cache).filter((step) => step.includes("docker buildx build"));
+    expect(building).toHaveLength(1);
+    expect([...building[0].matchAll(/--target (\S+)/g)].map((match) => match[1])).toEqual(["runner-artifacts-runnerd"]);
+    expect(jobs.cache).not.toMatch(/pnpm|setup-node|node scripts/);
+  });
+
+  it("neither publishes nor writes the cache from a scheduled run, and runs nothing on a fork's schedule", () => {
+    expect(workflow).toMatch(/^ {2}schedule:\n {4}- cron: /m);
+    expect(canonical).toContain("github.event_name == 'push'");
+    expect(jobs.build).toContain(`KEEP_IMAGE: \${{ ${canonical} }}`);
+    expect(jobCondition(jobs.identity)).toBe(`(github.event_name != 'push' && github.event_name != 'schedule') || (${repository})`);
+  });
+
+  const imageBuild = scripts.find((script) => script.includes('--target "$target"'))!;
+  const bashExpandsEmptyArrays = spawnSync("bash", ["-uc", 'empty=(); : "${empty[@]}"']).status === 0;
+  function imageBuildCommands(event: string) {
+    const directory = mkdtempSync(path.join(os.tmpdir(), "runner-image-build-"));
+    try {
+      writeFileSync(path.join(directory, "docker"), `#!/bin/sh\nprintf '%s\\n' "$*" >> "$RUNNER_TEMP/docker.log"\n`, { mode: 0o755 });
+      const run = spawnSync("bash", ["--noprofile", "--norc", "-eo", "pipefail", "-c", imageBuild], {
+        cwd: directory,
+        encoding: "utf8",
+        env: { PATH: `${directory}${path.delimiter}${process.env.PATH}`, RUNNER_TEMP: directory, GITHUB_EVENT_NAME: event, GITHUB_SHA: "a".repeat(40),
+          BUILD_CACHE: "registry.invalid/buildcache", ARCH: "amd64", PLATFORM: "linux/amd64" },
+      });
+      expect(run.status, run.stderr).toBe(0);
+      return readFileSync(path.join(directory, "docker.log"), "utf8").trimEnd().split("\n");
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  }
+
+  it("replaces the cache read of the image build with --no-cache when the event is a schedule", () => {
+    expect(imageBuild).toContain('cache=(--cache-from "type=registry,ref=$BUILD_CACHE:$ARCH")\n          if [ "$GITHUB_EVENT_NAME" = schedule ]; then cache=(--no-cache); fi\n');
+    expect(imageBuild).toContain('"${cache[@]}"');
+  });
+
+  it.skipIf(!bashExpandsEmptyArrays)("runs the image build step: a scheduled run builds with --no-cache and no cache read, any other run reads the cache (needs bash 4.4)", () => {
+    const cacheRead = "--cache-from type=registry,ref=registry.invalid/buildcache:amd64";
+    const scheduled = imageBuildCommands("schedule");
+    expect(scheduled.map((command) => /--target (\S+)/.exec(command)?.[1])).toEqual(["runner-artifacts", "runner-artifacts-slim"]);
+    expect(scheduled[0]).toContain(" --no-cache ");
+    for (const command of scheduled) expect(command).not.toContain("--cache-from");
+    for (const event of ["pull_request", "push", "workflow_dispatch"]) {
+      const commands = imageBuildCommands(event);
+      expect(commands).toHaveLength(2);
+      expect(commands[0]).toContain(` ${cacheRead} `);
+      expect(commands[1]).not.toContain("--cache-from");
+      for (const command of commands) expect(command).not.toContain("--no-cache");
+    }
   });
 
   it("publishes, and keeps the images for publication, only for a master push in the canonical repository", () => {
@@ -58,11 +126,11 @@ describe("Runner image workflow", () => {
     expect(recording[0]).not.toMatch(/KEEP_IMAGE/);
     expect(recording[0]).not.toMatch(credential);
     // A fork's own pushes run nothing; no job overrides a skipped or failed dependency.
-    expect(jobCondition(jobs.identity)).toBe(`github.event_name != 'push' || (${repository})`);
+    expect(jobCondition(jobs.identity)).toContain(`github.event_name != 'push' && `);
     expect(workflow).not.toMatch(/always\(\)|!cancelled\(\)|failure\(\)|continue-on-error/);
   });
 
-  it("keeps the build legs free of credentials and of any registry build cache", () => {
+  it("keeps the build legs free of credentials, and lets them read the build cache but not write it", () => {
     // No job-level token: the block before the steps holds none, in any job.
     for (const job of Object.values(jobs)) expect(job.slice(0, job.indexOf("\n    steps:\n"))).not.toMatch(credential);
     // The steps that build, check and smoke the image never receive one.
@@ -74,7 +142,8 @@ describe("Runner image workflow", () => {
       expect(step).toContain("runner-image-publish.mjs publication-state");
       expect(step).not.toContain("--strict");
     }
-    expect(workflow).not.toMatch(/cache-to|cache-from|type=registry|type=gha/);
+    expect(jobs.build).toContain('--cache-from "type=registry,ref=$BUILD_CACHE:$ARCH"');
+    expect(jobs.build).not.toMatch(/cache-to|docker login|docker\/login-action/);
   });
 
   it("writes the full tag last, after a strict lookup and after both images are attested", () => {

@@ -50,9 +50,11 @@ on:
       - scripts/standard-image-contract.mjs
       - docker/runner-image/**
   workflow_dispatch:
+  schedule:
+    - cron: "23 6 * * 3"
 
 # Least privilege: nothing at the workflow level. Only the publish job, which
-# runs no build, can write to the registry or sign.
+# runs no build, can write images to the registry or sign.
 permissions: {}
 
 # A newer push to a pull request replaces its older run. A master run has a
@@ -64,13 +66,14 @@ concurrency:
 
 env:
   IMAGE: ghcr.io/paperclipai/paperclip-runner
+  BUILD_CACHE: ghcr.io/paperclipai/paperclip-runner-buildcache
 
 jobs:
   identity:
     name: Resolve the Runner image identity
     # A fork's own pushes do not run this workflow. Pull requests and manual
     # runs are not affected.
-    if: github.event_name != 'push' || (github.repository == 'paperclipai/paperclip' && github.repository_id == '1170821064')
+    if: (github.event_name != 'push' && github.event_name != 'schedule') || (github.repository == 'paperclipai/paperclip' && github.repository_id == '1170821064')
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:
@@ -92,7 +95,7 @@ jobs:
           version: 9.15.4
           run_install: false
 
-      # No dependency cache: a restored cache must not reach a published image.
+      # No dependency cache: the Actions cache must not reach a published image.
       - name: Setup Node.js
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
         with:
@@ -209,7 +212,7 @@ jobs:
   # Multi-arch by native runner, not QEMU, as in docker.yml. GitHub-hosted
   # runners: the protected release fleets admit only docker.yml on master.
   #
-  # These legs cannot write to the registry on any event, and they read and
+  # These legs cannot write to the registry on any event, and they
   # write no registry build cache. The install runs dependency lifecycle
   # scripts; the only token in the job can read packages, and only the lookup
   # step receives it.
@@ -317,6 +320,8 @@ jobs:
         timeout-minutes: 30
         run: |
           set -euo pipefail
+          cache=(--cache-from "type=registry,ref=$BUILD_CACHE:$ARCH")
+          if [ "$GITHUB_EVENT_NAME" = schedule ]; then cache=(--no-cache); fi
           for variant in full slim; do
             target=runner-artifacts
             if [ "$variant" = slim ]; then target=runner-artifacts-slim; fi
@@ -328,7 +333,9 @@ jobs:
               --provenance=false --sbom=false \
               --output "type=oci,dest=$RUNNER_TEMP/runner-image/$variant.oci.tar" \
               --metadata-file "$RUNNER_TEMP/runner-image/$variant.metadata.json" \
+              "${cache[@]}" \
               .
+            cache=()
           done
 
       # The trees the checks below read are the layers of those archives,
@@ -665,3 +672,59 @@ jobs:
       - name: Report images another run published first
         if: steps.early.outputs.exists == 'true' || steps.prepush.outputs.exists == 'true' || steps.gate.outputs.state == 'published'
         run: echo "\`$IMAGE:inputs-$DIGEST\` and its slim variant already exist. Another run published first; this run published nothing." >> "$GITHUB_STEP_SUMMARY"
+
+  cache:
+    name: Write the build cache (${{ matrix.arch }})
+    needs: [identity, publish]
+    if: github.repository == 'paperclipai/paperclip' && github.repository_id == '1170821064' && github.event_name == 'push' && github.ref == 'refs/heads/master' && needs.identity.outputs.lock == 'current' && needs.identity.outputs.exists != 'true'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux/amd64
+            runner: ubuntu-latest
+            arch: amd64
+          - platform: linux/arm64
+            runner: ubuntu-24.04-arm
+            arch: arm64
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      packages: write
+    concurrency:
+      group: runner-image-buildcache-${{ matrix.arch }}
+      cancel-in-progress: false
+    env:
+      ARCH: ${{ matrix.arch }}
+      PLATFORM: ${{ matrix.platform }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - name: Login to GitHub Container Registry
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4
+        with:
+          buildkitd-config-inline: |
+            [registry."docker.io"]
+              mirrors = ["mirror.gcr.io"]
+
+      - name: Build the cached stages and write the cache
+        timeout-minutes: 20
+        run: |
+          docker buildx build \
+            --target runner-artifacts-runnerd \
+            --platform "$PLATFORM" \
+            --cache-from "type=registry,ref=$BUILD_CACHE:$ARCH" \
+            --cache-to "type=registry,ref=$BUILD_CACHE:$ARCH,mode=max" \
+            --output type=cacheonly \
+            .
