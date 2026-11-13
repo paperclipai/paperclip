@@ -1,0 +1,14 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://paperclip.dev/schemas/prp/v3/provider-turn.schema.json",
+  "title": "PRP provider-started turn markers",
+  "description": "Marks a turn the provider started without a controller turn.start, and a completed turn after which the Runner keeps the provider to await one.",
+  "$defs": {
+    "origin": {
+      "const": "provider"
+    },
+    "awaitingProviderTurn": {
+      "const": true
+    }
+  }
+}

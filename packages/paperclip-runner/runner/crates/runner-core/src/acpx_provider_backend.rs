@@ -2913,6 +2913,25 @@ impl AcpxCommandExecutor {
             };
             let mut provider_turn_settled = false;
             for event in events {
+                if let crate::acpx_provider_state::AcpxProviderStateEvent::ProviderTurnStarted {
+                    turn_id,
+                } = &event
+                {
+                    let state = self
+                        .state
+                        .as_mut()
+                        .expect("ACPX state remains available while polling");
+                    if state.lifecycle != "session_open" || state.active_turn_id.is_some() {
+                        return Err(DurableRunnerError::invalid(
+                            "ACPX provider turn started outside an open idle session",
+                        ));
+                    }
+                    state.active_turn_id = Some(turn_id.clone());
+                    state.attempted_turn_controls.clear();
+                    state.semantic_result = None;
+                    state.lifecycle = "turn_active".to_owned();
+                    self.context.provider_turn_id = Some(turn_id.clone());
+                }
                 let provider_process_lost = matches!(
                     &event,
                     crate::acpx_provider_state::AcpxProviderStateEvent::TurnTerminal {
@@ -2947,11 +2966,19 @@ impl AcpxCommandExecutor {
                         })?;
                     }
                 }
+                let awaiting_provider_turn = terminal.is_some()
+                    && self
+                        .session
+                        .as_ref()
+                        .is_some_and(AcpxProviderSession::awaiting_provider_turn);
                 let state = self
                     .state
                     .as_mut()
                     .expect("ACPX state remains available while polling");
                 for mut event in normalized {
+                    if awaiting_provider_turn && event.event_type == "turn.completed" {
+                        event.payload["awaitingProviderTurn"] = json!(true);
+                    }
                     if matches!(
                         event.event_type.as_str(),
                         "session.goal.updated" | "session.goal.cleared"
@@ -2992,12 +3019,13 @@ impl AcpxCommandExecutor {
                     provider_turn_settled = true;
                     // An ACP goal has session lifetime, not prompt lifetime.
                     // Out-of-prompt goal updates remain observable after quiescence.
-                    if !provider_process_lost
-                        && state
-                            .goal_projection
-                            .pointer("/goal/status")
-                            .and_then(Value::as_str)
-                            == Some("active")
+                    if awaiting_provider_turn
+                        || (!provider_process_lost
+                            && state
+                                .goal_projection
+                                .pointer("/goal/status")
+                                .and_then(Value::as_str)
+                                == Some("active"))
                     {
                         continue;
                     }
@@ -3088,6 +3116,9 @@ impl CommandExecutor for AcpxCommandExecutor {
             || !state.pending_runtime_requests.is_empty()
             || (!state.goal_projection.is_null() && !goal_is_dormant(&state.goal_projection))
             || !state.descriptor.names_qualified_release()
+            || self.session.as_ref().is_some_and(|session| {
+                session.awaiting_provider_turn() || session.background_tasks_live()
+            })
             || self.candidate_admission().is_some()
             || !acpx_release_profile(&state.descriptor.agent)
                 .is_some_and(|profile| !profile.qualification_pending)

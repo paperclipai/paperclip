@@ -213,6 +213,20 @@ full settled-turn ledger or a full tool replay ledger replaces the sidecar as
 before. A kept sidecar keeps its tool call-ID tombstones and settled turn
 identities.
 
+When a completed Claude turn's terminal reports `backgroundTasks: {"live": N}`
+with N above zero and the same restart conditions hold, Runner keeps the
+sidecar and awaits a provider-started turn instead of replacing it. Its PRP
+`turn.completed` carries `awaitingProviderTurn: true` and no `run.terminal`
+follows. When Claude starts its own cycle with no prompt in flight, the sidecar
+emits `runtime.turn_started` with `{"origin": "provider"}` and a sidecar-minted
+turn id. Runner admits it only while awaiting and only for Claude, with the same
+settled-identity and receipt rules as a controller turn, and publishes PRP
+`turn.started` with `origin: "provider"`. Any other provider-started turn fails
+the session closed. A controller `turn.start` while awaiting replaces the
+sidecar first. Park is refused while awaiting or while live tasks are known.
+The awaiting state is in memory only: a Runner restart resumes in a fresh
+process as before.
+
 The check also inspects the live provider
 after that drain, so a late active-goal notification cannot be hidden by the
 older executor journal. This hook does not detach a controller, stop a process,

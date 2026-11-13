@@ -27,7 +27,7 @@ async function fixture(relativePath) {
 
 test("all schema IDs are unique and all external references resolve", async () => {
   const schemas = await loadSchemaCatalog(resolve(protocolRoot, "schemas"));
-  assert.equal(schemas.length, 30);
+  assert.equal(schemas.length, 31);
   assert.doesNotThrow(() => compileProtocolValidators(schemas));
 });
 
@@ -63,6 +63,19 @@ test("runtime activity is a closed Runner notification in every supported event 
       assert.equal(validate({ ...event, payload }), false);
     }
   }
+});
+
+test("PRP v3 marks a provider-started turn and a completed turn that awaits one with closed values", async () => {
+  const validators = compileProtocolValidators(await loadSchemaCatalog(resolve(protocolRoot, "schemas")));
+  const happy = await fixture("replay/happy-path.json");
+  const event = (eventType, payload) => ({ ...happy.events[0], schema: "paperclip.prp.event.v3", schemaVersion: 3, eventType, priority: 0,
+    sourceKind: "runner", payload: { provider: "acpx", providerTurnId: "provider-1", ...payload } });
+  assert.equal(validators.eventV3(event("turn.started", { status: "inProgress", origin: "provider" })), true);
+  assert.equal(validators.eventV3(event("turn.started", { status: "inProgress" })), true);
+  assert.equal(validators.eventV3(event("turn.started", { status: "inProgress", origin: "controller" })), false);
+  assert.equal(validators.eventV3(event("turn.completed", { status: "completed", awaitingProviderTurn: true })), true);
+  assert.equal(validators.eventV3(event("turn.completed", { status: "completed" })), true);
+  assert.equal(validators.eventV3(event("turn.completed", { status: "completed", awaitingProviderTurn: false })), false);
 });
 
 test("unknown additive fields remain compatible with PRP v1", async () => {

@@ -6800,6 +6800,54 @@ export const eventV3Schema = {
           }
         }
       }
+    },
+    {
+      "if": {
+        "properties": {
+          "eventType": {
+            "const": "turn.started"
+          }
+        },
+        "type": "object"
+      },
+      "then": {
+        "properties": {
+          "payload": {
+            "type": "object",
+            "properties": {
+              "origin": {
+                "$ref": "https://paperclip.dev/schemas/prp/v3/provider-turn.schema.json#/$defs/origin"
+              }
+            },
+            "additionalProperties": true
+          }
+        },
+        "type": "object"
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "eventType": {
+            "const": "turn.completed"
+          }
+        },
+        "type": "object"
+      },
+      "then": {
+        "properties": {
+          "payload": {
+            "type": "object",
+            "properties": {
+              "awaitingProviderTurn": {
+                "$ref": "https://paperclip.dev/schemas/prp/v3/provider-turn.schema.json#/$defs/awaitingProviderTurn"
+              }
+            },
+            "additionalProperties": true
+          }
+        },
+        "type": "object"
+      }
     }
   ],
   "additionalProperties": true
@@ -6968,6 +7016,21 @@ export const sessionGoalSchema = {
   }
 } as const;
 
+export const providerTurnSchema = {
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://paperclip.dev/schemas/prp/v3/provider-turn.schema.json",
+  "title": "PRP provider-started turn markers",
+  "description": "Marks a turn the provider started without a controller turn.start, and a completed turn after which the Runner keeps the provider to await one.",
+  "$defs": {
+    "origin": {
+      "const": "provider"
+    },
+    "awaitingProviderTurn": {
+      "const": true
+    }
+  }
+} as const;
+
 export const fixtureSchema = {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://paperclip.dev/schemas/prp/v1/fixture.schema.json",
@@ -7097,5 +7160,6 @@ export const prpSchemaBundle = {
   "event-v2": eventV2Schema,
   "event-v3": eventV3Schema,
   "session-goal": sessionGoalSchema,
+  "provider-turn": providerTurnSchema,
   "fixture": fixtureSchema,
 } as const;

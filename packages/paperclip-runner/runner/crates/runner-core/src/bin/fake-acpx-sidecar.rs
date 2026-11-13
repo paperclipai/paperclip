@@ -452,6 +452,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     json!({"status":status}),
                 )?;
                 next_sequence += 1;
+                next_sequence = write_provider_turn(&mut stdout, next_sequence, &source_run)?;
             }
             if command == "tool.resolve" {
                 let turn = source_pending_completion
@@ -952,6 +953,16 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     )?;
                     next_sequence += 1;
                 }
+                if command == "turn.start"
+                    && matches!(
+                        mode,
+                        "turns-tool-terminal"
+                            | "turns-reused-tool-id-terminal"
+                            | "turns-tool-result-terminal"
+                    )
+                {
+                    next_sequence = write_provider_turn(&mut stdout, next_sequence, "run-1")?;
+                }
                 if command == "turn.start" && mode == "turns-multiple-tool-results-terminal" {
                     for index in 1..=2 {
                         write_turn_event(
@@ -1424,6 +1435,94 @@ fn bootstrap_success(
         "ok": true,
         "result": result,
     })
+}
+
+fn provider_turn_tokens() -> Vec<String> {
+    BACKGROUND_TASKS
+        .get()
+        .and_then(Option::as_ref)
+        .and_then(|path| std::fs::read_to_string(path).ok())
+        .map(|modes| modes.split_whitespace().map(str::to_owned).collect())
+        .unwrap_or_default()
+}
+
+fn write_provider_turn(
+    output: &mut impl Write,
+    mut sequence: u64,
+    default_run: &str,
+) -> io::Result<u64> {
+    let tokens = provider_turn_tokens();
+    if !tokens.iter().any(|token| token == "provider-turn") {
+        return Ok(sequence);
+    }
+    let value = |prefix: &str, fallback: &str| {
+        tokens
+            .iter()
+            .find_map(|token| token.strip_prefix(prefix).map(str::to_owned))
+            .unwrap_or_else(|| fallback.to_owned())
+    };
+    let turn_id = value("provider-turn-id=", "provider-1");
+    let run_id = value("provider-run=", default_run);
+    let frame = |sequence: u64, event_type: &str, payload: Value| {
+        json!({"protocolVersion":GENERATED_ACPX_SIDECAR_PROTOCOL_VERSION,"sequence":sequence,
+            "eventType":event_type,"runId":run_id,"turnId":turn_id,"payload":payload})
+    };
+    write_json(
+        output,
+        &frame(
+            sequence,
+            "runtime.turn_started",
+            json!({"origin":"provider"}),
+        ),
+    )?;
+    sequence += 1;
+    if let Some(call_id) = tokens
+        .iter()
+        .find_map(|token| token.strip_prefix("provider-reuse-call="))
+    {
+        write_json(
+            output,
+            &frame(
+                sequence,
+                "runtime.tool_called",
+                json!({"callId":call_id,"operationId":"issues.read","input":{"id":"issue-1"}}),
+            ),
+        )?;
+        sequence += 1;
+    }
+    write_json(
+        output,
+        &frame(
+            sequence,
+            "runtime.event",
+            json!({"type":"text_delta","text":"Claude finished its own work."}),
+        ),
+    )?;
+    sequence += 1;
+    write_json(
+        output,
+        &frame(
+            sequence,
+            "runtime.event",
+            json!({"type":"status","tag":"usage_update","text":"terminal prompt usage",
+                "breakdown":{"inputTokens":6,"outputTokens":4,"cachedReadTokens":0,"cachedWriteTokens":0,"thoughtTokens":0}}),
+        ),
+    )?;
+    sequence += 1;
+    let live = if tokens.iter().any(|token| token == "provider-terminal-live") {
+        1
+    } else {
+        0
+    };
+    write_json(
+        output,
+        &frame(
+            sequence,
+            "runtime.turn_terminal",
+            json!({"status":"completed","stopReason":"end_turn","backgroundTasks":{"live":live}}),
+        ),
+    )?;
+    Ok(sequence + 1)
 }
 
 fn write_turn_event(

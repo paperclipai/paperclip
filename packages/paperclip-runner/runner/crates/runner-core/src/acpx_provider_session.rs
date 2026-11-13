@@ -24,6 +24,8 @@ use crate::stable_identity::{is_stable_id, DURABLE_STABLE_ID_CHARS, SHORT_STABLE
 
 #[path = "acpx_provider_generation.rs"]
 mod generation;
+#[path = "acpx_provider_turn.rs"]
+mod provider_turn;
 
 const MAX_ID_CHARS: usize = 240;
 const MAX_MODEL_CHARS: usize = 240;
@@ -364,6 +366,8 @@ pub struct AcpxProviderSession {
     quiet_turn_observed: bool,
     continues_in_process: bool,
     turn_start_replaced_provider: bool,
+    awaiting_provider_turn: bool,
+    background_tasks_live: bool,
     generation_has_run_turn: bool,
     restarted_after_turn_from: Option<u32>,
     prepared_generation: Option<String>,
@@ -429,6 +433,8 @@ impl AcpxProviderSession {
             quiet_turn_observed: false,
             continues_in_process: false,
             turn_start_replaced_provider: false,
+            awaiting_provider_turn: false,
+            background_tasks_live: false,
             generation_has_run_turn: false,
             restarted_after_turn_from: None,
             prepared_generation: None,
@@ -684,6 +690,7 @@ impl AcpxProviderSession {
             && self.background_work_is_quiet();
         self.continues_in_process = false;
         self.quiet_turn_observed = false;
+        self.clear_provider_turn_continuation();
         let restart_now = self.generation_has_run_turn && !continue_in_process;
         if restart_now {
             if let Err(error) = self.restart_idle_provider(None) {
@@ -921,8 +928,18 @@ impl AcpxProviderSession {
                 payload.insert("origin".to_owned(), origin);
             }
         }
+        if event.event_type == GeneratedAcpxSidecarEventType::RuntimeTurnStarted {
+            return match self.admit_provider_turn(&event) {
+                Ok(started) => Ok(Some((vec![started], terminal_goal))),
+                Err(error) => Err(self.fail_closed(error)),
+            };
+        }
         let terminal_quiet = event.event_type == GeneratedAcpxSidecarEventType::RuntimeTurnTerminal
             && generation::reports_no_live_background_tasks(&event.payload);
+        let terminal_live = (event.event_type
+            == GeneratedAcpxSidecarEventType::RuntimeTurnTerminal)
+            .then(|| provider_turn::reported_live_background_tasks(&event.payload))
+            .flatten();
         let mut next_state = self.state.clone();
         let events = match next_state.accept_event(&event) {
             Ok(events) => events,
@@ -1082,9 +1099,16 @@ impl AcpxProviderSession {
                     && self.cancelled_turn_id.as_deref() != Some(turn_id.as_str());
             }
         }
+        let terminal_completed = self.completed_turn_observed;
+        let terminal_observed = reconciled_events
+            .iter()
+            .any(|event| matches!(event, AcpxProviderStateEvent::TurnTerminal { .. }));
         self.state = next_state;
         self.tool_bridge = next_bridge;
         self.reserved_tool_bridge = next_reserved_bridge;
+        if terminal_observed {
+            self.observe_terminal_background_tasks(terminal_completed, terminal_live);
+        }
         Ok(Some((reconciled_events, terminal_goal)))
     }
 
@@ -1406,6 +1430,7 @@ impl AcpxProviderSession {
         self.generation_has_run_turn = false;
         self.quiet_turn_observed = false;
         self.continues_in_process = false;
+        self.clear_provider_turn_continuation();
         Ok(())
     }
 
@@ -2314,6 +2339,8 @@ mod mode_tests {
             quiet_turn_observed: false,
             continues_in_process: false,
             turn_start_replaced_provider: false,
+            awaiting_provider_turn: false,
+            background_tasks_live: false,
             generation_has_run_turn: false,
             restarted_after_turn_from: None,
             prepared_generation: None,

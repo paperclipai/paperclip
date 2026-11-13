@@ -225,3 +225,157 @@ fn a_full_settled_turn_ledger_still_rotates_through_a_restart() {
     assert!(session.turn_start_replaced_provider());
     session.shutdown("test complete").unwrap();
 }
+
+fn provider_session(scratch: &Scratch, background: &str, agent: &str) -> AcpxProviderSession {
+    scratch.background(background);
+    AcpxProviderSession::start(&config(&scratch.0, "turns-tool-result-terminal", agent)).unwrap()
+}
+
+fn poll_until_terminal(
+    session: &mut AcpxProviderSession,
+    turn_id: &str,
+) -> Vec<AcpxProviderStateEvent> {
+    let mut seen = Vec::new();
+    loop {
+        let events = session.poll_event(Duration::from_secs(1)).unwrap().unwrap();
+        let done = events.iter().any(|event| {
+            matches!(event, AcpxProviderStateEvent::TurnTerminal { turn_id: settled, .. } if settled == turn_id)
+        });
+        seen.extend(events);
+        if done {
+            return seen;
+        }
+    }
+}
+
+#[test]
+fn live_shell_tasks_at_a_completed_claude_terminal_await_and_admit_the_provider_started_turn() {
+    let scratch = Scratch::new();
+    let mut session = provider_session(&scratch, "live provider-turn", "claude");
+    let pid = session.process_id();
+    session
+        .start_turn("turn-1", "Start background work", &std::env::temp_dir())
+        .unwrap();
+    poll_until_terminal(&mut session, "turn-1");
+    assert!(session.awaiting_provider_turn());
+    assert!(session.background_tasks_live());
+    assert!(!session.continue_after_quiet_turn());
+
+    let started = session.poll_event(Duration::from_secs(1)).unwrap().unwrap();
+    assert!(matches!(
+        started.as_slice(),
+        [AcpxProviderStateEvent::ProviderTurnStarted { turn_id }] if turn_id == "provider-1"
+    ));
+    assert_eq!(session.state().active_turn_id(), Some("provider-1"));
+    assert!(!session.awaiting_provider_turn());
+    let provider = poll_until_terminal(&mut session, "provider-1");
+    assert!(provider.iter().any(|event| matches!(
+        event,
+        AcpxProviderStateEvent::Activity(activity) if activity.event_type == "usage.reported"
+    )));
+    assert_eq!(session.state().active_turn_id(), None);
+    assert!(!session.awaiting_provider_turn());
+    assert!(!session.background_tasks_live());
+    assert_eq!(session.process_id(), pid);
+    session.shutdown("test complete").unwrap();
+}
+
+#[test]
+fn a_provider_started_turn_that_leaves_shells_running_awaits_again() {
+    let scratch = Scratch::new();
+    let mut session = provider_session(
+        &scratch,
+        "live provider-turn provider-terminal-live",
+        "claude",
+    );
+    session
+        .start_turn("turn-1", "Start background work", &std::env::temp_dir())
+        .unwrap();
+    poll_until_terminal(&mut session, "turn-1");
+    session.poll_event(Duration::from_secs(1)).unwrap().unwrap();
+    poll_until_terminal(&mut session, "provider-1");
+    assert!(session.awaiting_provider_turn());
+    session.shutdown("test complete").unwrap();
+}
+
+#[test]
+fn an_unexpected_provider_started_turn_fails_closed_like_any_idle_event() {
+    for (background, agent, expected) in [
+        (
+            "quiet provider-turn",
+            "claude",
+            "outside an awaited continuation",
+        ),
+        ("provider-turn", "claude", "outside an awaited continuation"),
+        (
+            "live provider-turn",
+            "codex",
+            "outside an awaited continuation",
+        ),
+        (
+            "live provider-turn provider-turn-id=turn-1",
+            "claude",
+            "reused a settled turn identity",
+        ),
+        (
+            "live provider-turn provider-run=run-2",
+            "claude",
+            "bounded contract",
+        ),
+    ] {
+        let scratch = Scratch::new();
+        let mut session = provider_session(&scratch, background, agent);
+        session
+            .start_turn("turn-1", "Start background work", &std::env::temp_dir())
+            .unwrap();
+        poll_until_terminal(&mut session, "turn-1");
+        let error = session.poll_event(Duration::from_secs(1)).unwrap_err();
+        assert!(
+            error.to_string().contains(expected),
+            "{background} {agent}: {error}"
+        );
+        let _ = session.shutdown("test complete");
+    }
+}
+
+#[test]
+fn a_provider_started_turn_cannot_replay_a_settled_tool_call() {
+    let scratch = Scratch::new();
+    let mut session = provider_session(
+        &scratch,
+        "live provider-turn provider-reuse-call=call-1",
+        "claude",
+    );
+    session
+        .start_turn("turn-1", "Start background work", &std::env::temp_dir())
+        .unwrap();
+    poll_until_terminal(&mut session, "turn-1");
+    session.poll_event(Duration::from_secs(1)).unwrap().unwrap();
+    let error = session.poll_event(Duration::from_secs(1)).unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("reused a completed tool call id"),
+        "{error}"
+    );
+    let _ = session.shutdown("test complete");
+}
+
+#[test]
+fn a_controller_turn_while_awaiting_restarts_the_provider_first() {
+    let scratch = Scratch::new();
+    let mut session = provider_session(&scratch, "live", "claude");
+    let pid = session.process_id();
+    session
+        .start_turn("turn-1", "Start background work", &std::env::temp_dir())
+        .unwrap();
+    poll_until_terminal(&mut session, "turn-1");
+    assert!(session.awaiting_provider_turn());
+    session
+        .start_turn("turn-2", "Paperclip's next turn", &std::env::temp_dir())
+        .unwrap();
+    assert_ne!(session.process_id(), pid);
+    assert!(session.turn_start_replaced_provider());
+    assert!(!session.awaiting_provider_turn());
+    session.shutdown("test complete").unwrap();
+}
