@@ -55,6 +55,7 @@ import { nativeControllerAuthorityDigest, isNativeRunnerOwnershipHeld, readNativ
 import { nativeRestartContinuationInFlight, nativeRestartInterruptedTurnId, type PersistedNativeSession } from "../../vendor/paperclip-runner/index.js";
 import { retireSupersededNativeRetry } from "./native-superseded-retry.js";
 import { legacyWorkspaceRecoveryNotMigrated } from "../legacy-workspace-recovery-migration.js";
+import { NATIVE_INTERRUPTION_NO_PROGRESS_DEADLINE_MS } from "../fresh-continuation-fallback.js";
 import { requestNativeStartupCleanup, readNativeStartupContext, promoteNativeStartupCleanup } from "./native-startup-cleanup.js";
 import { createSystemRecovery, failSystemRecovery, readSystemRecovery, reserveSystemRecoveryAttempt,
   SystemRecoveryFailure, type SystemRecoveryState } from "../system-recovery-state.js";
@@ -201,6 +202,17 @@ export const NATIVE_NO_PROGRESS_RESTART_LIMIT = PROVIDER_ATTEMPT_CREDIT_GENERATI
 type RecoveryClaimProgressEntry = {
   disposition?: unknown; progressWatermarkSeq?: unknown; progressAttempt?: unknown; noProgressRestarts?: unknown;
 };
+
+/** When the current interruption began, from the most recent recovery claim (null before this release). */
+function previousInterruptionStartedAt(recoveryHistory: ReadonlyArray<RecoveryClaimProgressEntry & { interruptionStartedAt?: unknown }>): number | null {
+  for (let index = recoveryHistory.length - 1; index >= 0; index -= 1) {
+    const entry = recoveryHistory[index];
+    if (!RECOVERY_CLAIM_DISPOSITIONS.has(entry?.disposition)) continue;
+    const at = entry?.interruptionStartedAt;
+    return typeof at === "number" && Number.isFinite(at) && at > 0 ? at : null;
+  }
+  return null;
+}
 
 function previousNoProgressRestarts(recoveryHistory: ReadonlyArray<RecoveryClaimProgressEntry>): number {
   for (let index = recoveryHistory.length - 1; index >= 0; index -= 1) {
@@ -1788,6 +1800,15 @@ export async function claimNativeRestartRecoveries(input: {
         ? { keepsAttempt: true, noProgressRestarts: previousNoProgressRestarts(row.coordinator.recoveryHistory) }
         : await restartResumeKeepsAttempt(tx, { runId: row.run.id, coordinator: row.coordinator });
       const resumeKeepsAttempt = restartCredit.keepsAttempt;
+      // One deadline per interruption, across server generations: it starts at
+      // the first claim of this interruption and survives every later claim
+      // that finds no provider progress since the previous one. A claim saved
+      // by an older release has no start: this claim starts it, never expired.
+      const interruptionProgressed = !cleanDrainSuspension && restartCredit.noProgressRestarts === 0;
+      const priorInterruptionStart = previousInterruptionStartedAt(row.coordinator.recoveryHistory);
+      const interruptionStartedAt = !interruptionProgressed && priorInterruptionStart !== null
+        ? priorInterruptionStart : now.getTime();
+      const interruptionExpired = now.getTime() - interruptionStartedAt >= NATIVE_INTERRUPTION_NO_PROGRESS_DEADLINE_MS;
       const classification = classifyNativeRunnerRecoveryEvidence({
         remoteSandbox: remoteSandbox || Boolean(pluginTask && durableAuthority) || portablePreparation,
         unclaimedBootstrap: unclaimedBootstrap || portablePreparation && row.coordinator.attempt === 0,
@@ -1834,10 +1855,11 @@ export async function claimNativeRestartRecoveries(input: {
 
       const hold = admission.exhausted;
       const preserveExecutionBinding = hold !== null;
-      const claimKind = hold || ownershipChanged || exhaustedRemoteRetry ? null : classification.claimKind;
+      const claimKind = hold || ownershipChanged || exhaustedRemoteRetry || interruptionExpired ? null : classification.claimKind;
       const reason = hold?.reason ?? (ownershipChanged
         ? "task_ownership_or_status_changed"
-        : exhaustedRemoteRetry ? "execution_recovery_budget_exhausted" : classification.reason);
+        : exhaustedRemoteRetry ? "execution_recovery_budget_exhausted"
+          : interruptionExpired ? "native_interruption_deadline_exceeded" : classification.reason);
       // No person is asked to inspect or reconcile: unless the cause is the
       // person's, the fresh-continuation fallback continues the task.
       // Shown to people: plain words only. A person's Stop or pause keeps the
@@ -2028,6 +2050,7 @@ export async function claimNativeRestartRecoveries(input: {
           recoveryRequestId: input.recoveryRequestId ?? null,
           recoveryHistory: appendBoundedRecoveryHistory({
             ...event, progressWatermarkSeq, progressAttempt, noProgressRestarts: restartCredit.noProgressRestarts,
+            interruptionStartedAt,
             ...(attemptKeptForProgress ? { attemptKeptForProgress } : {}),
           }),
           failureCode: null,
