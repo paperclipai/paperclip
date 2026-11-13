@@ -230,6 +230,46 @@ suite("automatic-run brake in the recovery passes", () => {
     expect(enqueueWakeup).toHaveBeenCalledTimes(1);
   }, 120_000);
 
+  for (const createdBeforeError of [true, false]) {
+    it(`a delivery whose wake fails ${createdBeforeError ? "after creating its run keeps" : "before creating a run gives back"} the creation slot`, async () => {
+      await seedCompany();
+      const otherAgent = randomUUID();
+      await db.insert(agents).values({ id: otherAgent, companyId, name: "Reviewer", role: "engineer", status: "idle", adapterType: "codex_local",
+        adapterConfig: {}, runtimeConfig: { heartbeat: { maxConcurrentRuns: 1 } }, permissions: {} });
+      await pendingContinuation();
+      await pendingContinuation(otherAgent, 3 * MINUTE);
+      await openBrake({ startingAutomaticRun: false });
+      const wake = vi.fn(async (wakeAgentId: string, opts: { contextSnapshot: Record<string, unknown> }) => {
+        if (wakeAgentId === agentId && !createdBeforeError) throw new Error("wake refused before creating a run");
+        const [run] = await db.insert(heartbeatRuns).values({ companyId, agentId: wakeAgentId, invocationSource: "automation",
+          triggerDetail: "system", status: "queued", contextSnapshot: opts.contextSnapshot }).returning();
+        if (wakeAgentId === agentId) throw new Error("dispatch failed after the run was committed");
+        return run!;
+      });
+      await deliverReconciledExecutions(db, wake as never);
+      expect(wake.mock.calls.map(call => call[0])).toEqual(createdBeforeError ? [agentId] : [agentId, otherAgent]);
+      expect((await db.select().from(automaticRunBrakes))[0]!.nextCreationAt).not.toBeNull();
+    }, 120_000);
+
+    it(`a sweep whose wake fails ${createdBeforeError ? "after creating its run keeps" : "before creating a run gives back"} the creation slot`, async () => {
+      await seedCompany();
+      const [first, second] = [await strandedTask(), await strandedTask()];
+      await openBrake({ startingAutomaticRun: false });
+      const enqueueWakeup = vi.fn(async (wakeAgentId: string, opts?: { payload?: Record<string, unknown> | null; contextSnapshot?: Record<string, unknown> }) => {
+        const issueId = String(opts?.payload?.issueId);
+        if (issueId === first && !createdBeforeError) throw new Error("wake refused before creating a run");
+        const [run] = await db.insert(heartbeatRuns).values({ companyId, agentId: wakeAgentId, invocationSource: "automation",
+          triggerDetail: "system", status: "queued", contextSnapshot: opts?.contextSnapshot ?? { issueId } }).returning();
+        if (issueId === first) throw new Error("dispatch failed after the run was committed");
+        return { id: run!.id } as never;
+      });
+      const recovery = recoveryService(db, { enqueueWakeup, scheduleRecoveryRetry: async () => null });
+      await recovery.assignedWork.checkIssue({ companyId, issueId: first });
+      expect(await recovery.assignedWork.checkIssue({ companyId, issueId: second }))
+        .toMatchObject({ outcome: createdBeforeError ? "deferred_rate_limit" : "repaired" });
+    }, 120_000);
+  }
+
   async function pendingContinuation(ownerAgentId = agentId, endedAgoMs = 2 * MINUTE) {
     const issueId = randomUUID();
     await db.insert(issues).values({ id: issueId, companyId, title: "Continue the work", status: "todo", assigneeAgentId: ownerAgentId });

@@ -422,7 +422,10 @@ export function createAutomaticRunBrake(options: { loadRules?: () => Promise<Aut
       entry.snapshot = { ...entry.snapshot, nextCreationAt: seeded.nextCreationAt };
       return { heldUntil: null, release: async () => {
         await db.update(automaticRunBrakes).set({ nextCreationAt: null, updatedAt: sql`now()` })
-          .where(sql`${automaticRunBrakes.companyId} = ${companyId} and ${automaticRunBrakes.nextCreationAt} = ${token}::timestamptz`);
+          .where(sql`${automaticRunBrakes.companyId} = ${companyId} and ${automaticRunBrakes.nextCreationAt} = ${token}::timestamptz
+            and not exists (select 1 from heartbeat_runs r where r.company_id = ${companyId}
+              and r.context_snapshot->>'issueId' = ${work.issueId}
+              and r.created_at >= ${token}::timestamptz - ${`${AUTOMATIC_RUN_BRAKE.creationIntervalMs} milliseconds`}::interval)`);
         companies.delete(companyId);
       } };
     }
