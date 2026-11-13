@@ -139,8 +139,7 @@ export async function queuedRunDispatchFacts<R extends QueuedRunDispatchRun>(
   const since = dispatchHistoryStart(facts, now);
   const startRows = since ? await db.select({ id: heartbeatRuns.id, wakeReason: sql<string | null>`${heartbeatRuns.contextSnapshot}->>'wakeReason'`,
     startedAt: heartbeatRuns.startedAt, createdAt: heartbeatRuns.createdAt,
-    personTask: sql<boolean>`exists (select 1 from ${issues} started_task where started_task.company_id = ${heartbeatRuns.companyId}
-      and started_task.id::text = ${heartbeatRuns.contextSnapshot}->>'issueId' and started_task.created_by_user_id is not null)` })
+    issueId: sql<string | null>`${heartbeatRuns.contextSnapshot}->>'issueId'` })
     .from(heartbeatRuns)
     .where(and(eq(heartbeatRuns.companyId, agent.companyId), eq(heartbeatRuns.agentId, agent.id),
       isNotNull(heartbeatRuns.startedAt), gte(heartbeatRuns.startedAt, since)))
@@ -150,8 +149,13 @@ export async function queuedRunDispatchFacts<R extends QueuedRunDispatchRun>(
   // only a start people wait on uses up their oldest-run turn.
   const personStarts = new Set(startRows.length
     ? await listPersonOriginSourceRunIds(db, agent.companyId, startRows.map(row => row.id)) : []);
+  const startedTaskIds = [...new Set(startRows.flatMap(row => row.issueId && RUN_ID_PATTERN.test(row.issueId) ? [row.issueId] : []))];
+  const personTaskIds = new Set(startedTaskIds.length
+    ? (await db.select({ id: issues.id }).from(issues).where(and(eq(issues.companyId, agent.companyId),
+      inArray(issues.id, startedTaskIds), isNotNull(issues.createdByUserId)))).map(row => row.id)
+    : []);
   const recentStarts = startRows.map(row => ({ ...row, personOrigin: personStarts.has(row.id),
-    personWaiting: personStarts.has(row.id) || Boolean(row.personTask) }));
+    personWaiting: personStarts.has(row.id) || Boolean(row.issueId && personTaskIds.has(row.issueId)) }));
   const { startsSinceRecovery, startsSinceOldest } = dispatchCountersFromStarts(facts, recentStarts, now);
   return { facts, dispatchInput: { now, startsSinceRecovery, startsSinceOldest } };
 }
