@@ -1,6 +1,6 @@
 import { randomBytes } from "node:crypto";
 import { promises as fsPromises } from "node:fs";
-import { lstat, mkdir, mkdtemp, readFile, readdir, readlink, rm, stat, symlink, writeFile } from "node:fs/promises";
+import fs, { lstat, mkdir, mkdtemp, readFile, readdir, readlink, rm, stat, symlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { execFile as execFileCallback, spawn } from "node:child_process";
@@ -451,6 +451,113 @@ describe("sandbox managed runtime", () => {
       expect(await readFile(path.join(local, "file.txt"), "utf8")).toBe("after");
     } finally { capture.mockRestore(); merge.mockRestore(); }
   });
+
+  it("forwards the run signal from restoreWorkspace into the outbound merge (TOG-25014)", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "paperclip-sandbox-restore-signal-"));
+    cleanupDirs.push(root);
+    const local = path.join(root, "local"), remote = path.join(root, "remote");
+    await mkdir(local);
+    await writeFile(path.join(local, "file.txt"), "before");
+    const merge = vi.spyOn(restoreMerge, "mergeDirectoryWithBaseline");
+    try {
+      const prepared = await prepareCommandManagedRuntime({
+        runner: makeInlineSpawnRunner(),
+        spec: { remoteCwd: remote, timeoutMs: 30_000 },
+        adapterKey: "test",
+        workspaceLocalDir: local,
+      });
+      await writeFile(path.join(remote, "file.txt"), "after");
+      const controller = new AbortController();
+      await prepared.restoreWorkspace(() => {}, controller.signal);
+      expect(merge).toHaveBeenCalled();
+      expect(merge.mock.calls.every(([input]) => input.signal === controller.signal)).toBe(true);
+      expect(await readFile(path.join(local, "file.txt"), "utf8")).toBe("after");
+    } finally { merge.mockRestore(); }
+  });
+
+  it("does not retry a cancelled outbound merge (TOG-25014)", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "paperclip-sandbox-restore-noretry-"));
+    cleanupDirs.push(root);
+    const local = path.join(root, "local"), remote = path.join(root, "remote");
+    await mkdir(local);
+    await writeFile(path.join(local, "file.txt"), "before");
+    const merge = vi.spyOn(restoreMerge, "mergeDirectoryWithBaseline");
+    try {
+      const prepared = await prepareCommandManagedRuntime({
+        runner: makeInlineSpawnRunner(),
+        spec: { remoteCwd: remote, timeoutMs: 30_000 },
+        adapterKey: "test",
+        workspaceLocalDir: local,
+      });
+      await writeFile(path.join(remote, "file.txt"), "after");
+      const controller = new AbortController();
+      controller.abort(new Error("test stop"));
+      const started = Date.now();
+      await expect(prepared.restoreWorkspace(() => {}, controller.signal))
+        .rejects.toThrowError(restoreMerge.WORKSPACE_RESTORE_CANCELLED);
+      // Default retry delays are 2s + 5s: a retried cancellation would take
+      // 7s+ and call the merge three times. The merge count is the
+      // deterministic discriminator; the timing bound has wide margins.
+      expect(Date.now() - started).toBeLessThan(6000);
+      expect(merge).toHaveBeenCalledTimes(1);
+    } finally { merge.mockRestore(); }
+  });
+
+  it("does not wait for the restore temp-dir delete when a cancelled merge unwinds (TOG-25014)", async () => {
+    // The downloaded workspace is deleted recursively in `withTempDir`'s
+    // `finally`. Pre-fix a cancelled restore awaited that delete, so Stop on a
+    // large sandbox merge waited minutes; post-fix the delete is handed to the
+    // tracked background cleanup and the restore rejects while it is gated.
+    const root = await mkdtemp(path.join(os.tmpdir(), "paperclip-sandbox-restore-stopdel-"));
+    cleanupDirs.push(root);
+    const local = path.join(root, "local"), remote = path.join(root, "remote");
+    await mkdir(local);
+    await writeFile(path.join(local, "file.txt"), "before");
+    const gated: string[] = [];
+    let release: () => void = () => {};
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const realRm = fs.rm;
+    const rmSpy = vi.spyOn(fs, "rm").mockImplementation(
+      (async (...args: unknown[]) => {
+        const target = args[0];
+        if (typeof target === "string" && path.basename(target).startsWith("paperclip-sandbox-restore-")) {
+          gated.push(target);
+          await gate;
+        }
+        return (realRm as (...callArgs: unknown[]) => Promise<void>)(...args);
+      }) as unknown as typeof fs.rm,
+    );
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      const prepared = await prepareCommandManagedRuntime({
+        runner: makeInlineSpawnRunner(),
+        spec: { remoteCwd: remote, timeoutMs: 30_000 },
+        adapterKey: "test",
+        workspaceLocalDir: local,
+      });
+      await writeFile(path.join(remote, "file.txt"), "after");
+      const controller = new AbortController();
+      controller.abort(new Error("test stop"));
+      const outcome = await Promise.race([
+        prepared.restoreWorkspace(() => {}, controller.signal).then(() => "resolved" as const, (error: unknown) => error),
+        new Promise<"timed-out">((resolve) => { timer = setTimeout(() => resolve("timed-out"), 5000); }),
+      ]);
+      expect(outcome).not.toBe("timed-out");
+      expect(restoreMerge.isWorkspaceRestoreCancelled(outcome)).toBe(true);
+      expect(gated).toHaveLength(1);
+      expect(await readFile(path.join(local, "file.txt"), "utf8")).toBe("before");
+    } finally {
+      if (timer) clearTimeout(timer);
+      release();
+      rmSpy.mockRestore();
+    }
+    // The tracked background cleanup finishes the owed delete once unblocked.
+    for (let i = 0; i < 100; i += 1) {
+      if (!(await stat(gated[0]!).then(() => true, () => false))) break;
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+    expect(await stat(gated[0]!).then(() => true, () => false)).toBe(false);
+  }, 20000);
 
   it.each(["host_current", "adopt_remote", "durable_seed"] as const)("stages and restores both project repositories with independent Git histories (%s)", async (mode) => {
     const root = await mkdtemp(path.join(os.tmpdir(), "paperclip-multi-repo-"));

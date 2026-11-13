@@ -8,14 +8,18 @@ import { createPromptContextFixture } from "@paperclipai/adapter-utils/test-fixt
 const ensureRuntimeInstalledMock = vi.hoisted(() => vi.fn(async () => {}));
 const ensureCommandMock = vi.hoisted(() => vi.fn(async () => {}));
 const prepareRuntimeMock = vi.hoisted(() => vi.fn(async () => ({
-  workspaceRemoteDir: null,
+  workspaceRemoteDir: null as string | null,
+  runtimeRootDir: null as string | null,
+  assetDirs: {} as Record<string, string>,
   restoreWorkspace: async () => {},
 })));
 const resolveCommandForLogsMock = vi.hoisted(() => vi.fn(async () => "kimi"));
 const runProcessMock = vi.hoisted(() => vi.fn());
+// Lets a test force the remote lane on; reset in beforeEach.
+const kimiRemoteState = vi.hoisted(() => ({ isRemote: false }));
 
 vi.mock("@paperclipai/adapter-utils/execution-target", () => ({
-  adapterExecutionTargetIsRemote: () => false,
+  adapterExecutionTargetIsRemote: () => kimiRemoteState.isRemote,
   adapterExecutionTargetRemoteCwd: (_target: unknown, cwd: string) => cwd,
   overrideAdapterExecutionTargetRemoteCwd: (target: unknown, _cwd: string) => target,
   adapterExecutionTargetSessionIdentity: () => ({ kind: "local" }),
@@ -86,6 +90,7 @@ const KIMI_STDOUT = [
 
 describe("kimi_local execute", () => {
   beforeEach(() => {
+    kimiRemoteState.isRemote = false;
     ensureRuntimeInstalledMock.mockClear();
     ensureCommandMock.mockClear();
     prepareRuntimeMock.mockClear();
@@ -451,5 +456,30 @@ describe("kimi_local execute", () => {
 
     expect(seenArgs).toContain("--skills-dir");
     expect(seenArgs[seenArgs.indexOf("--skills-dir") + 1]).toContain("paperclip-kimi-skills-");
+  });
+
+  it("forwards the run cancellation signal to the remote restore (TOG-25014)", async () => {
+    kimiRemoteState.isRemote = true;
+    const restoreWorkspace = vi.fn(async () => {});
+    prepareRuntimeMock.mockImplementationOnce(async () => ({
+      workspaceRemoteDir: "/remote/workspace",
+      runtimeRootDir: null,
+      assetDirs: {},
+      restoreWorkspace,
+    }));
+    runProcessMock.mockImplementation(async () => ({
+      exitCode: 0,
+      signal: null,
+      timedOut: false,
+      stdout: KIMI_STDOUT,
+      stderr: "",
+    }));
+    const root = await makeTempRoot();
+    const controller = new AbortController();
+
+    await execute(makeContext(root, { signal: controller.signal }));
+
+    expect(restoreWorkspace).toHaveBeenCalledTimes(1);
+    expect(restoreWorkspace).toHaveBeenCalledWith(expect.any(Function), controller.signal);
   });
 });

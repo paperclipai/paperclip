@@ -644,4 +644,76 @@ describe("claude remote execution", () => {
     expect(retry.split("Append the same ledger entry.")).toHaveLength(3);
   });
 
+  it("forwards the run-scoped signal to the SSH workspace restore (TOG-25014)", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-claude-restore-signal-"));
+    cleanupDirs.push(rootDir);
+    const workspaceDir = path.join(rootDir, "workspace");
+    const instructionsPath = path.join(rootDir, "instructions.md");
+    await mkdir(workspaceDir, { recursive: true });
+    await writeFile(instructionsPath, "Use the remote workspace.\n", "utf8");
+
+    // The default mocks resolve a successful provider run and restore: this
+    // pins forwarding, not the error path. A future edit that disconnects
+    // ctx.signal (restoreSignal = null) makes the restore receive null
+    // instead of the exact run signal.
+    const controller = new AbortController();
+
+    const result = await execute({
+      runId: "run-claude-restore-signal",
+      agent: {
+        id: "agent-1",
+        companyId: "company-1",
+        name: "Claude Coder",
+        adapterType: "claude_local",
+        adapterConfig: {},
+      },
+      runtime: {
+        sessionId: null,
+        sessionParams: null,
+        sessionDisplayId: null,
+        taskKey: null,
+      },
+      config: {
+        engine: "cli",
+        command: "claude",
+        instructionsFilePath: instructionsPath,
+        env: {},
+      },
+      context: {
+        ...createPromptContextFixture(),
+        paperclipWorkspace: {
+          cwd: workspaceDir,
+          source: "project_primary",
+          strategy: "git_worktree",
+          workspaceId: "workspace-1",
+          repoUrl: "https://github.com/paperclipai/paperclip.git",
+          repoRef: "main",
+          branchName: "feature/remote-claude",
+          worktreePath: workspaceDir,
+        },
+      },
+      executionTransport: {
+        remoteExecution: {
+          host: "127.0.0.1",
+          port: 2222,
+          username: "fixture",
+          remoteWorkspacePath: "/remote/workspace",
+          remoteCwd: "/remote/workspace",
+          privateKey: "PRIVATE KEY",
+          knownHosts: "[127.0.0.1]:2222 ssh-ed25519 AAAA",
+          strictHostKeyChecking: true,
+        },
+      },
+      signal: controller.signal,
+      onLog: async () => {},
+    });
+
+    expect(result.exitCode).toBe(0);
+    expect(restoreWorkspaceFromSshExecution).toHaveBeenCalledTimes(1);
+    const restoreCalls = restoreWorkspaceFromSshExecution.mock.calls as unknown as Array<
+      [{ signal?: unknown }]
+    >;
+    expect(restoreCalls[0]?.[0]?.signal).toBe(controller.signal);
+  });
+
 });

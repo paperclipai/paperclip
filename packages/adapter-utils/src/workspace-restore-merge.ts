@@ -19,6 +19,32 @@ export interface DirectorySnapshot {
   ignoredPaths?: WorkspacePaths;
 }
 
+/**
+ * Typed cancellation for the SSH workspace restore path. The restore's
+ * transfer phase emits throttled progress ending in a terminal 100% line, but
+ * that line only covers the remote tarball stream: the silent local apply
+ * (clear + multi-GB copy/merge into the shared checkout) runs afterwards with
+ * no preemption. A run cancelled in that window used to stay `running` until
+ * the copy finished (observed 20-65 min), with the terminal write and
+ * `workspace_finalize` barrier landing late or never. Throwing this code on
+ * an aborted signal lets the adapter yield promptly so the existing heartbeat
+ * cancellation machinery terminalizes the run; live (non-aborted) restores
+ * are untouched and keep their full grace.
+ */
+export const WORKSPACE_RESTORE_CANCELLED = "workspace_restore_cancelled";
+
+export function workspaceRestoreCancelledError(): Error {
+  return new Error(WORKSPACE_RESTORE_CANCELLED);
+}
+
+export function isWorkspaceRestoreCancelled(error: unknown): boolean {
+  return error instanceof Error && error.message === WORKSPACE_RESTORE_CANCELLED;
+}
+
+export function throwIfWorkspaceRestoreAborted(signal: AbortSignal | null | undefined): void {
+  if (signal?.aborted) throw workspaceRestoreCancelledError();
+}
+
 export interface LegacySerializedDirectorySnapshot {
   version: 1;
   exclude: string[];
@@ -134,13 +160,19 @@ export function directorySnapshotSha256(snapshot: DirectorySnapshot): string {
   return digest.digest("hex");
 }
 
-async function hashFile(filePath: string): Promise<string> {
+async function hashFile(filePath: string, signal?: AbortSignal | null): Promise<string> {
+  throwIfWorkspaceRestoreAborted(signal);
   return await new Promise((resolve, reject) => {
     const hash = createHash("sha256");
     const stream = createReadStream(filePath);
+    const onAbort = () => {
+      stream.destroy(workspaceRestoreCancelledError());
+    };
+    signal?.addEventListener("abort", onAbort, { once: true });
     stream.on("data", (chunk) => hash.update(chunk));
     stream.on("error", reject);
     stream.on("end", () => resolve(hash.digest("hex")));
+    stream.on("close", () => signal?.removeEventListener("abort", onAbort));
   });
 }
 
@@ -148,14 +180,17 @@ const isVanishedEntry = (error: unknown) => (error as NodeJS.ErrnoException | nu
 
 async function* walkDirectory(
   root: string, exclude: readonly string[], ignored: ReturnType<typeof workspacePathMatcher>, relative = "",
+  signal?: AbortSignal | null,
 ): AsyncGenerator<[string, SnapshotEntry]> {
+  throwIfWorkspaceRestoreAborted(signal);
   const readEntry = async (nextRelative: string): Promise<[string, SnapshotEntry | null]> => {
+    throwIfWorkspaceRestoreAborted(signal);
     const fullPath = path.join(root, nextRelative);
     try {
       const stats = await fs.lstat(fullPath);
       if (stats.isDirectory()) return [nextRelative, { kind: "dir" }];
       if (stats.isSymbolicLink()) return [nextRelative, { kind: "symlink", target: await fs.readlink(fullPath) }];
-      if (stats.isFile()) return [nextRelative, { kind: "file", mode: stats.mode, hash: await hashFile(fullPath) }];
+      if (stats.isFile()) return [nextRelative, { kind: "file", mode: stats.mode, hash: await hashFile(fullPath, signal) }];
     } catch (error) {
       if (!isVanishedEntry(error)) throw error;
     }
@@ -169,7 +204,7 @@ async function* walkDirectory(
       const [nextRelative, entry] = result.value;
       if (!entry) continue;
       yield [nextRelative, entry];
-      if (entry.kind === "dir") yield* walkDirectory(root, exclude, ignored, nextRelative);
+      if (entry.kind === "dir") yield* walkDirectory(root, exclude, ignored, nextRelative, signal);
     }
   };
   const current = relative ? path.join(root, relative) : root;
@@ -180,6 +215,7 @@ async function* walkDirectory(
   if (!dir) return;
   let batch: string[] = [];
   for await (const entry of dir) {
+    throwIfWorkspaceRestoreAborted(signal);
     const nextRelative = relative ? path.posix.join(relative, entry.name) : entry.name;
     if (shouldExcludePath(nextRelative, exclude) || ignored.matches(nextRelative)) continue;
     batch.push(nextRelative);
@@ -381,12 +417,16 @@ export function describeWorkspaceRestoreFailure(code: WorkspaceRestoreFailureCod
   }
 }
 
-async function acquireDirectoryMergeLock(lockDir: string, operation?: DirectoryMergeLockOperation, waitMs: number = LOCK_WAIT_MS): Promise<() => Promise<void>> {
+async function acquireDirectoryMergeLock(lockDir: string, operation?: DirectoryMergeLockOperation, waitMs: number = LOCK_WAIT_MS, signal?: AbortSignal | null): Promise<() => Promise<void>> {
   const startedAt = performance.now();
   const deadline = Date.now() + waitMs;
   const databasePath = `${lockDir}.sqlite`;
   const ownerPath = `${lockDir}.owner.json`;
   async function waitForLock(diagnosticOwnerPath: string) {
+    // An operator Stop beats lock contention: yield cancellation instead of
+    // waiting out the remaining budget and misreporting the stop as a lock
+    // timeout. Checked first so a stop racing the deadline still cancels.
+    throwIfWorkspaceRestoreAborted(signal);
     if (Date.now() >= deadline) {
       const timeoutError: NodeJS.ErrnoException & { workspaceRestoreLock?: Record<string, string | number | boolean> } = new Error(
         `Timed out waiting for workspace restore lock at ${lockDir}`,
@@ -540,11 +580,14 @@ export async function withDirectoryMergeLock<T>(
   // Test seam only: overrides how long acquisition waits before it reports a
   // timeout. Production callers must omit this and keep the real budget.
   waitMs: number = LOCK_WAIT_MS,
+  // Optional run-scoped cancellation: when set, a stop waiting on a
+  // contended lock yields promptly instead of burning the wait budget.
+  signal?: AbortSignal | null,
 ): Promise<T> {
   // Canonicalize before we hash or lock: a retargeted symlink must not let the
   // lock protect one directory while the caller mutates another.
   const canonicalTargetDir = await fs.realpath(targetDir);
-  return withCanonicalDirectoryMergeLock(canonicalTargetDir, fn, env, diagnosticOperation, waitMs);
+  return withCanonicalDirectoryMergeLock(canonicalTargetDir, fn, env, diagnosticOperation, waitMs, signal);
 }
 
 export async function withDirectoryPublicationLock<T>(
@@ -587,10 +630,11 @@ async function withCanonicalDirectoryMergeLock<T>(
   env: NodeJS.ProcessEnv,
   diagnosticOperation?: DirectoryMergeLockOperation,
   waitMs: number = LOCK_WAIT_MS,
+  signal?: AbortSignal | null,
 ): Promise<T> {
   const lockRoot = await resolveDirectoryMergeLockRoot(env);
   const lockKey = createHash("sha256").update(canonicalTargetDir).digest("hex");
-  const releaseLock = await acquireDirectoryMergeLock(path.join(lockRoot, `${lockKey}.lock`), diagnosticOperation, waitMs);
+  const releaseLock = await acquireDirectoryMergeLock(path.join(lockRoot, `${lockKey}.lock`), diagnosticOperation, waitMs, signal);
   try {
     return await fn(canonicalTargetDir);
   } finally {
@@ -598,7 +642,8 @@ async function withCanonicalDirectoryMergeLock<T>(
   }
 }
 
-async function copySnapshotEntry(sourceDir: string, targetDir: string, relative: string, entry: SnapshotEntry): Promise<void> {
+async function copySnapshotEntry(sourceDir: string, targetDir: string, relative: string, entry: SnapshotEntry, signal?: AbortSignal | null): Promise<void> {
+  throwIfWorkspaceRestoreAborted(signal);
   const sourcePath = path.join(sourceDir, relative);
   const targetPath = path.join(targetDir, relative);
 
@@ -639,15 +684,16 @@ async function copySnapshotEntry(sourceDir: string, targetDir: string, relative:
 
 export async function captureDirectorySnapshot(
   rootDir: string,
-  options: { exclude?: string[]; ignoredPaths?: WorkspacePaths; diskBacked?: boolean } = {},
+  options: { exclude?: string[]; ignoredPaths?: WorkspacePaths; diskBacked?: boolean; signal?: AbortSignal | null } = {},
 ): Promise<DirectorySnapshot> {
+  throwIfWorkspaceRestoreAborted(options.signal);
   const exclude = [...new Set(options.exclude ?? [])];
   const ignored = workspacePathMatcher(options.ignoredPaths);
   let writer: WorkspaceManifestWriter | null = null;
   try {
     writer = options.diskBacked ? await createWorkspaceManifest("paperclip-workspace-baseline-") : null;
     const memory = new Map<string, SnapshotEntry>();
-    for await (const [relative, entry] of walkDirectory(rootDir, exclude, ignored)) {
+    for await (const [relative, entry] of walkDirectory(rootDir, exclude, ignored, "", options.signal)) {
       if (writer) writer.add("baseline", relative, JSON.stringify(entry));
       else memory.set(relative, entry);
     }
@@ -764,13 +810,25 @@ export async function mergeDirectoryWithBaseline(input: {
   /** Caller holds the target's writer lock and validated an immutable sparse
    * source. Unchanged entries need no payload and are never copied. */
   snapshots?: { source: DirectorySnapshot; current?: DirectorySnapshot };
+  /**
+   * Run-scoped operator cancellation. Checked during source/current snapshots,
+   * after locking and before branch integration, between deletions and copied
+   * entries, and before successful completion. A cancelled SSH restore yields
+   * instead of holding the run `running` through a silent multi-GB apply. The
+   * merge lock itself is unchanged.
+   */
+  signal?: AbortSignal | null;
 }): Promise<void> {
-  const capture = input.workspaceSnapshotIsolation === "worker" ? captureDirectorySnapshotOffThread : captureDirectorySnapshot;
-  const options = { exclude: input.baseline.exclude, ignoredPaths: input.baseline.ignoredPaths, diskBacked: true };
+  throwIfWorkspaceRestoreAborted(input.signal);
+  const capture = input.workspaceSnapshotIsolation === "worker" && !input.signal ? captureDirectorySnapshotOffThread : captureDirectorySnapshot;
+  const options = { exclude: input.baseline.exclude, ignoredPaths: input.baseline.ignoredPaths, diskBacked: true, signal: input.signal };
   const source = input.snapshots?.source ?? await capture(input.sourceDir, options);
+  throwIfWorkspaceRestoreAborted(input.signal);
   try {
     await withDirectoryMergeLock(input.targetDir, async (canonicalTargetDir) => {
+      throwIfWorkspaceRestoreAborted(input.signal);
       await input.beforeApply?.();
+      throwIfWorkspaceRestoreAborted(input.signal);
       if (!input.snapshots?.current && directorySnapshotsMatch(input.baseline, source)) {
         await input.afterApply?.();
         return;
@@ -778,30 +836,34 @@ export async function mergeDirectoryWithBaseline(input: {
       // Strict preflight must see excluded children before a directory is
       // replaced. The merge still applies only the filtered source/baseline.
       const current = input.snapshots?.current ?? await capture(canonicalTargetDir,
-        input.conflictPolicy === "reject" ? { exclude: [], diskBacked: true } : options);
+        input.conflictPolicy === "reject" ? { exclude: [], diskBacked: true, signal: input.signal } : options);
       try {
         if (input.conflictPolicy === "reject") {
           const conflicts = directoryMergeConflicts(input.baseline, source, current);
           if (conflicts.length) throw new DirectoryMergeConflict(conflicts);
         }
         for (const [relative, baselineEntry] of orderedEntries(input.baseline)) {
+          throwIfWorkspaceRestoreAborted(input.signal);
           if (baselineEntry.kind === "dir" || source.entries.has(relative)) continue;
           if (!entriesMatch(current.entries.get(relative), baselineEntry)) continue;
           await fs.rm(path.join(canonicalTargetDir, relative), { recursive: true, force: true });
         }
         // Reverse path order visits descendants before their parent directory.
         for (const [relative, entry] of orderedEntries(input.baseline, true)) {
+          throwIfWorkspaceRestoreAborted(input.signal);
           if (entry.kind === "dir" && !source.entries.has(relative)) await fs.rmdir(path.join(canonicalTargetDir, relative)).catch((error: NodeJS.ErrnoException) => {
             if (error.code !== "ENOENT" && error.code !== "ENOTEMPTY" && error.code !== "ENOTDIR") throw error;
           });
         }
         for (const [relative, entry] of orderedEntries(source)) {
+          throwIfWorkspaceRestoreAborted(input.signal);
           if (!entriesMatch(input.baseline.entries.get(relative), entry) &&
-              !(input.conflictPolicy === "reject" && entriesMatch(current.entries.get(relative), entry))) await copySnapshotEntry(input.sourceDir, canonicalTargetDir, relative, entry);
+              !(input.conflictPolicy === "reject" && entriesMatch(current.entries.get(relative), entry))) await copySnapshotEntry(input.sourceDir, canonicalTargetDir, relative, entry, input.signal);
         }
+        throwIfWorkspaceRestoreAborted(input.signal);
         await input.afterApply?.();
       } finally { await disposeDirectorySnapshot(current); }
-    });
+    }, process.env, undefined, undefined, input.signal);
   } finally { await disposeDirectorySnapshot(source); }
 }
 

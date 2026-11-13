@@ -1,5 +1,5 @@
 import { execFile, spawn } from "node:child_process";
-import { mkdir, mkdtemp, readFile, rm, stat, symlink, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, readdir, rm, stat, symlink, writeFile } from "node:fs/promises";
 import net from "node:net";
 import os from "node:os";
 import path from "node:path";
@@ -644,6 +644,57 @@ describe("ssh env-lab fixture", () => {
     await expect(readFile(path.join(restoreDir, "blob-0.bin"))).resolves.toEqual(
       Buffer.alloc(256 * 1024, 1),
     );
+  }, SSH_FIXTURE_TEST_TIMEOUT_MS);
+
+  it("restores over a stale tree with nested and read-only directories (TOG-25014)", async () => {
+    const rootDir = await createFixtureRootDir();
+    const statePath = path.join(rootDir, "state.json");
+    const restoreDir = path.join(rootDir, "restore-target");
+
+    // Stale local state the restore must clear, including a subdirectory: the
+    // pre-fix clear emptied each directory and then called fs.rm without
+    // `recursive`, which throws ERR_FS_EISDIR even on the emptied directory —
+    // failing the restore after it had already deleted the contents.
+    await mkdir(path.join(restoreDir, "stale-dir"), { recursive: true });
+    await writeFile(path.join(restoreDir, "stale-dir", "stale.txt"), "stale\n", "utf8");
+    await writeFile(path.join(restoreDir, "stale.txt"), "stale\n", "utf8");
+
+    const started = await startSshEnvLabFixtureOrSkip(statePath, "SSH restore nested/read-only test");
+    if (!started) return;
+    const config = await buildSshEnvLabFixtureConfig(started);
+    const spec = { ...config, remoteCwd: started.workspaceDir } as const;
+
+    // Seed the remote tree directly in the fixture workspace: a nested
+    // directory plus a read-only directory holding a child. The pre-fix copy
+    // created each destination directory with the source mode before copying
+    // its children, so this tree failed with EACCES on the child writes.
+    const remoteDir = path.posix.join(started.workspaceDir, "restore-nested");
+    await mkdir(path.join(started.workspaceDir, "restore-nested", "nested"), { recursive: true });
+    await writeFile(
+      path.join(started.workspaceDir, "restore-nested", "nested", "inner.txt"),
+      "from remote\n",
+      "utf8",
+    );
+    await mkdir(path.join(started.workspaceDir, "restore-nested", "readonly-dir"), { recursive: true });
+    await writeFile(
+      path.join(started.workspaceDir, "restore-nested", "readonly-dir", "child.txt"),
+      "readonly child\n",
+      "utf8",
+    );
+    await chmod(path.join(started.workspaceDir, "restore-nested", "readonly-dir"), 0o555);
+
+    await syncDirectoryFromSsh({ spec, remoteDir, localDir: restoreDir });
+
+    // Stale state is gone and the remote tree landed intact.
+    expect((await readdir(restoreDir)).sort()).toEqual(["nested", "readonly-dir"]);
+    await expect(readFile(path.join(restoreDir, "nested", "inner.txt"), "utf8")).resolves.toBe(
+      "from remote\n",
+    );
+    await expect(readFile(path.join(restoreDir, "readonly-dir", "child.txt"), "utf8")).resolves.toBe(
+      "readonly child\n",
+    );
+    // The source mode is still applied once the children are copied.
+    expect((await stat(path.join(restoreDir, "readonly-dir"))).mode & 0o777).toBe(0o555);
   }, SSH_FIXTURE_TEST_TIMEOUT_MS);
 
   it("reports exact git-history import percentage from the known bundle size", async () => {
