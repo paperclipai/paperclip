@@ -157,6 +157,18 @@ export function handleTasksDemoRpc(store: DemoTaskStore, message: RpcRequest, he
   }
 }
 
+/**
+ * State as of now: settle tasks whose time has come and forget expired ones,
+ * so the views show what finished while no client was polling.
+ */
+function refreshedSnapshot(store: DemoTaskStore) {
+  for (const { taskId } of store.snapshot().tasks) {
+    const task = store.get(taskId);
+    if (task) advanceDemoTask(store, task);
+  }
+  return store.snapshot();
+}
+
 function send(res: ServerResponse, status: number, body: unknown, type = "application/json"): void {
   const payload = typeof body === "string" ? body : JSON.stringify(body);
   res.writeHead(status, { "content-type": type, "content-length": Buffer.byteLength(payload) });
@@ -183,7 +195,7 @@ export function createTasksDemoHttpServer(options: TasksDemoHttpOptions = {}): T
       try {
         const url = new URL(req.url ?? "/", "http://localhost");
         if (req.method === "GET" && (url.pathname === "/" || url.pathname === "/index.html")) {
-          send(res, 200, renderTasksPage(token ? null : store.snapshot(), store.now()), "text/html; charset=utf-8");
+          send(res, 200, renderTasksPage(token ? null : refreshedSnapshot(store), store.now()), "text/html; charset=utf-8");
           return;
         }
         if (token && req.headers.authorization !== `Bearer ${token}`) {
@@ -191,7 +203,7 @@ export function createTasksDemoHttpServer(options: TasksDemoHttpOptions = {}): T
           return;
         }
         if (req.method === "GET" && url.pathname === "/api/state") {
-          send(res, 200, store.snapshot());
+          send(res, 200, refreshedSnapshot(store));
           return;
         }
         if (url.pathname === "/mcp") {

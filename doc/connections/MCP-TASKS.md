@@ -43,7 +43,7 @@ keys, and its "work" is a timer. The steps take about 10 minutes.
 
    ```sh
    pnpm --filter @paperclipai/kv-demo-mcp-server build
-   pnpm --filter @paperclipai/kv-demo-mcp-server start:tasks
+   node packages/kv-demo-mcp-server/dist/tasks/main.js
    ```
 
    Open `http://127.0.0.1:8849/` to watch its tasks live.

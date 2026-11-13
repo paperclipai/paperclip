@@ -232,7 +232,7 @@ Start it from the repo root:
 
 ```sh
 pnpm --filter @paperclipai/kv-demo-mcp-server build
-pnpm --filter @paperclipai/kv-demo-mcp-server start:tasks
+node packages/kv-demo-mcp-server/dist/tasks/main.js
 ```
 
 It listens on `http://127.0.0.1:8849`:

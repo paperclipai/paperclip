@@ -113,7 +113,7 @@ export function callDemoTool(store: DemoTaskStore, name: string, args: Record<st
     case "slow_report": {
       const seconds = intArg(args, "seconds", 20, 3600);
       if (!tasks) return { kind: "result", result: text(`This client does not support MCP Tasks, so the ${seconds}-second report was skipped.`, undefined, true) };
-      return { kind: "task", task: store.create({ ...base, status: "working", settlesAt: now + seconds * 1000 }) };
+      return { kind: "task", task: store.create({ ...base, status: "working", settlesAt: now + seconds * 1000, ttlMs: seconds * 1000 + HOUR_MS }) };
     }
     case "needs_approval":
       if (!tasks) return { kind: "result", result: text("This action needs a person's approval, which requires a client that supports MCP Tasks.", undefined, true) };
@@ -121,7 +121,7 @@ export function callDemoTool(store: DemoTaskStore, name: string, args: Record<st
     case "will_fail": {
       const seconds = intArg(args, "seconds", 5, 3600);
       if (!tasks) return { kind: "result", result: text("The demo failure needs a client that supports MCP Tasks.", undefined, true) };
-      return { kind: "task", task: store.create({ ...base, status: "working", settlesAt: now + seconds * 1000, outcome: "fail" }) };
+      return { kind: "task", task: store.create({ ...base, status: "working", settlesAt: now + seconds * 1000, outcome: "fail", ttlMs: seconds * 1000 + HOUR_MS }) };
     }
     case "cancellable": {
       const seconds = intArg(args, "seconds", 600, 86400);
@@ -181,7 +181,8 @@ export function statusMessageFor(store: DemoTaskStore, task: DemoTask): string |
  */
 export function answerDemoTask(store: DemoTaskStore, task: DemoTask, inputResponses: Record<string, unknown>): void {
   if (task.status !== "input_required" || !task.inputRequests) return;
-  const response = inputResponses.approval as { action?: unknown; content?: Record<string, unknown> } | undefined;
+  const key = Object.keys(task.inputRequests)[0];
+  const response = key ? inputResponses[key] as { action?: unknown; content?: Record<string, unknown> } | undefined : undefined;
   if (!response || typeof response !== "object") return;
   const content = response.content && typeof response.content === "object" ? response.content : {};
   if (response.action !== "accept" || content.decision === "reject") {
@@ -195,8 +196,9 @@ export function answerDemoTask(store: DemoTaskStore, task: DemoTask, inputRespon
     return;
   }
   if (content.decision !== "approve") {
-    // Ask again: the answer did not match the form.
-    store.update(task, { inputRequests: { approval: { ...structuredClone(APPROVAL_FORM), params: { ...structuredClone(APPROVAL_FORM.params), message: "Please choose approve or reject." } } as never } });
+    // Ask again under a new key: a client treats an answered key as done.
+    const attempt = Number(/^approval-(\d+)$/.exec(key!)?.[1] ?? 1) + 1;
+    store.update(task, { inputRequests: { [`approval-${attempt}`]: { ...structuredClone(APPROVAL_FORM), params: { ...structuredClone(APPROVAL_FORM.params), message: "Please choose approve or reject." } } as never } });
     store.log({ method: "answered", tool: task.tool, taskId: task.taskId, detail: "invalid answer; asked again" });
     return;
   }

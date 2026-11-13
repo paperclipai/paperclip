@@ -75,7 +75,7 @@ describe("MCP Tasks demo server", () => {
   it("slow_report: works, then completes with its result after the delay", async () => {
     const { url, server } = await start();
     const created = await call(url, "slow_report", { topic: "uptime", seconds: 30 });
-    expect(created.body.result).toMatchObject({ resultType: "task", status: "working", ttlMs: 3_600_000, pollIntervalMs: 2_000 });
+    expect(created.body.result).toMatchObject({ resultType: "task", status: "working", ttlMs: 30_000 + 3_600_000, pollIntervalMs: 2_000 });
     const taskId = created.body.result!.taskId as string;
     clock += 15_000;
     expect((await get(url, taskId)).body.result).toMatchObject({ resultType: "complete", status: "working", statusMessage: "50% done (15 of 30 s)" });
@@ -101,10 +101,16 @@ describe("MCP Tasks demo server", () => {
       status: "input_required",
       inputRequests: { approval: { method: "elicitation/create", params: { mode: "form", requestedSchema: { required: ["decision"] } } } },
     });
-    // An answer the form does not allow asks again.
+    // An answer the form does not allow asks again, under a new key: a client
+    // treats a key it already answered as done and would never show it again.
     await rpc(url, "tasks/update", { taskId, inputResponses: { approval: { action: "accept", content: { decision: "maybe" } } } });
-    expect((await get(url, taskId)).body.result).toMatchObject({ status: "input_required", inputRequests: { approval: { params: { message: "Please choose approve or reject." } } } });
-    await rpc(url, "tasks/update", { taskId, inputResponses: { approval: { action: "accept", content: { decision: "approve", note: "ship it" } } } });
+    const again = (await get(url, taskId)).body.result!;
+    expect(again).toMatchObject({ status: "input_required", inputRequests: { "approval-2": { params: { message: "Please choose approve or reject." } } } });
+    expect(again.inputRequests).not.toHaveProperty("approval");
+    // An answer to the old key is ignored.
+    await rpc(url, "tasks/update", { taskId, inputResponses: { approval: { action: "accept", content: { decision: "approve" } } } });
+    expect((await get(url, taskId)).body.result).toMatchObject({ status: "input_required" });
+    await rpc(url, "tasks/update", { taskId, inputResponses: { "approval-2": { action: "accept", content: { decision: "approve", note: "ship it" } } } });
     expect((await get(url, taskId)).body.result).toMatchObject({ status: "working" });
     clock += 3_000;
     expect((await get(url, taskId)).body.result).toMatchObject({ status: "completed", result: { structuredContent: { approved: true, action: "deploy", note: "ship it" } } });
@@ -117,6 +123,25 @@ describe("MCP Tasks demo server", () => {
       await rpc(url, "tasks/update", { taskId, inputResponses: { approval: response } });
       expect((await get(url, taskId)).body.result).toMatchObject({ status: "completed", result: { structuredContent: { approved: false } } });
     }
+  });
+
+  it("keeps even the longest jobs long enough to collect their result", async () => {
+    const { url } = await start();
+    const report = (await call(url, "slow_report", { seconds: 3600 })).body.result!.taskId as string;
+    const failure = (await call(url, "will_fail", { seconds: 3600 })).body.result!.taskId as string;
+    clock += 3_600_000 + 60_000;
+    expect((await get(url, report)).body.result).toMatchObject({ status: "completed" });
+    expect((await get(url, failure)).body.result).toMatchObject({ status: "failed" });
+  });
+
+  it("shows what finished or expired while no client was polling", async () => {
+    const { url } = await start();
+    await call(url, "slow_report", { seconds: 10 });
+    await call(url, "expires", { ttlSeconds: 5 });
+    clock += 10_000;
+    const state = await (await fetch(`${url}/api/state`)).json() as { tasks: Array<{ tool: string; status: string }> };
+    expect(state.tasks.map((task) => [task.tool, task.status])).toEqual([["slow_report", "completed"]]);
+    expect(await (await fetch(url)).text()).toContain("completed");
   });
 
   it("will_fail: ends failed with a JSON-RPC error", async () => {
