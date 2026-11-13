@@ -144,6 +144,78 @@ describe.skipIf(!support.supported)("Retry is offered only when no automatic pat
     expect(await taskInterruptionPresentation(db, issue)).toMatchObject({ state: "failed", canRetry: true, observedRunId: nextRunId });
   });
 
+  async function seedQueuedContinuation(queuedMinutesAgo: number, status: "queued" | "running" = "queued") {
+    const task = await seedRecordedContinuation(queuedMinutesAgo + 2);
+    await db.update(heartbeatRuns).set({ createdAt: new Date(Date.now() - (queuedMinutesAgo + 4) * 60_000) })
+      .where(eq(heartbeatRuns.id, task.runId));
+    const nextRunId = randomUUID();
+    await db.insert(heartbeatRuns).values({ id: nextRunId, companyId: task.companyId, agentId: task.agentId, nativeIssueId: task.issue.id,
+      scopeKind: "issue", status, runtimeMode: "native", retryOfRunId: task.runId,
+      createdAt: new Date(Date.now() - queuedMinutesAgo * 60_000),
+      contextSnapshot: { issueId: task.issue.id, wakeReason: "issue_recovery_action_restored", previousRunId: task.runId,
+        recoveryActionId: task.primary.id } });
+    await db.update(issueRecoveryActions).set({ evidence: { ...task.primary.evidence, continuationDelivery: "delivered",
+      continuationRunId: nextRunId } }).where(eq(issueRecoveryActions.id, task.primary.id));
+    return { ...task, nextRunId };
+  }
+
+  it("offers a person a way to move a continuation forward once it has waited 15 minutes to start, without calling it failed", async () => {
+    for (const minutesAgo of [15, 45, 110]) {
+      const { issue, nextRunId } = await seedQueuedContinuation(minutesAgo);
+      expect(await taskInterruptionPresentation(db, issue)).toMatchObject({ responsibility: "system", state: "working",
+        canRetry: true, retryAction: "move_forward", observedRunId: nextRunId });
+    }
+  });
+
+  it("keeps a continuation that has waited under 15 minutes as continuing with no Retry", async () => {
+    const { issue, nextRunId } = await seedQueuedContinuation(14);
+    const presentation = await taskInterruptionPresentation(db, issue);
+    expect(presentation).toMatchObject({ state: "working", canRetry: false, observedRunId: nextRunId });
+    expect(presentation?.retryAction).toBeUndefined();
+  });
+
+  it("offers no Retry while a recorded continuation is still being delivered, however long it waits", async () => {
+    for (const minutesAgo of [16, 45, 110]) {
+      const { issue } = await seedRecordedContinuation(minutesAgo);
+      const presentation = await taskInterruptionPresentation(db, issue);
+      expect(presentation).toMatchObject({ state: "working", canRetry: false });
+      expect(presentation?.retryAction).toBeUndefined();
+    }
+  });
+
+  it("offers no Retry for a continuation that is already running", async () => {
+    const { issue } = await seedQueuedContinuation(45, "running");
+    const presentation = await taskInterruptionPresentation(db, issue);
+    expect(presentation).toMatchObject({ state: "working", canRetry: false });
+    expect(presentation?.retryAction).toBeUndefined();
+  });
+
+  it("offers no second Retry once a person already moved the waiting continuation forward", async () => {
+    const { companyId, agentId, issue, nextRunId } = await seedQueuedContinuation(45);
+    await db.insert(agentWakeupRequests).values({ companyId, agentId, source: "on_demand", triggerDetail: "manual",
+      reason: "task_retry", status: "coalesced", requestedByActorType: "user", requestedByActorId: randomUUID(),
+      runId: nextRunId, finishedAt: new Date(), payload: { issueId: issue.id } });
+    const presentation = await taskInterruptionPresentation(db, issue);
+    expect(presentation).toMatchObject({ state: "working", canRetry: false });
+    expect(presentation?.retryAction).toBeUndefined();
+  });
+
+  it("offers no Retry for queued work that is not a recorded continuation, however long it waits", async () => {
+    const { companyId, agentId, issue } = await seedTask("todo");
+    await db.insert(heartbeatRuns).values({ companyId, agentId, nativeIssueId: issue.id, scopeKind: "issue", status: "queued",
+      runtimeMode: "native", createdAt: new Date(Date.now() - 45 * 60_000), contextSnapshot: { issueId: issue.id, wakeReason: "issue_assigned" } });
+    const presentation = await taskInterruptionPresentation(db, issue);
+    expect(presentation).toMatchObject({ state: "working", canRetry: false });
+    expect(presentation?.retryAction).toBeUndefined();
+  });
+
+  it("asks a person to resume a paused agent instead of offering to move its waiting continuation forward", async () => {
+    const { agentId, issue } = await seedQueuedContinuation(45);
+    await db.update(agents).set({ status: "paused", pauseReason: "manual" }).where(eq(agents.id, agentId));
+    expect(await taskInterruptionPresentation(db, issue)).toMatchObject({ responsibility: "user", state: "waiting_for_user",
+      userAction: "resume", canRetry: false });
+  });
+
   it("still offers Retry for a resolved recovery record that recorded no continuation", async () => {
     const { issue, hold } = await seedSwapEndedRun(new Date(Date.now() - 45 * 60_000));
     await db.update(issueRecoveryActions).set({ status: "resolved", outcome: "restored", resolvedAt: new Date(Date.now() - 40 * 60_000),

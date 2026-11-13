@@ -42,6 +42,7 @@ const NATIVE_RESUME_DISPATCH_GRACE_MS = 2 * 60_000;
 const QUEUED_INTERRUPT_HANDOFF_GRACE_MS = 5 * 60_000;
 const QUEUED_INPUT_DISPATCH_GRACE_MS = 2 * 60_000;
 const AUTOMATIC_DISPOSITION_GRACE_MS = 2 * 60_000;
+const WAITING_CONTINUATION_MOVE_FORWARD_MS = 15 * 60_000;
 
 type ProjectionIssue = Pick<typeof issues.$inferSelect, "id" | "companyId" | "status" | "assigneeAgentId" | "projectId">;
 type ProjectionRun = Pick<typeof heartbeatRuns.$inferSelect,
@@ -100,6 +101,7 @@ type ProjectionState = {
    * not yet started) or will check it again at `nextCheckAt`. */
   freshContinuation?: { state: "continuing" } | { state: "scheduled"; nextCheckAt: number };
   automaticDispositionAt?: number;
+  waitingContinuation?: { queuedAt: number; personRequested: boolean };
   recoveryHandedToPerson?: boolean;
 };
 
@@ -275,6 +277,10 @@ function projectTaskInterruptionState(issue: ProjectionIssue, input: ProjectionS
       && Number.isFinite(interruptAt) && now - interruptAt < QUEUED_INTERRUPT_HANDOFF_GRACE_MS
       && !(retryWait?.sourceRunId === run.id && retryWait.preparationStatus) && system?.state !== "exhausted")
     return { ...base, intentId: interruptWait.id, state: "working" };
+  const waiting = input.waitingContinuation;
+  if (run.status === "queued" && waiting && !waiting.personRequested && run.agentId === issue.assigneeAgentId
+      && now - waiting.queuedAt >= WAITING_CONTINUATION_MOVE_FORWARD_MS)
+    return { ...base, state: "working", canRetry: true, retryAction: "move_forward" };
   if (["running", "queued"].includes(run.status)) return { ...base, state: "working" };
   // Paperclip is continuing the task by itself: no failed attempt and no Retry.
   if (input.freshContinuation?.state === "continuing") return { ...base, state: "working", canRetry: false };
@@ -642,6 +648,23 @@ export async function taskInterruptionPresentations(db: Db, companyId: string, i
       automaticDispositionAt.set(row.issueId, Math.max(automaticDispositionAt.get(row.issueId) ?? 0, row.updatedAt.getTime()));
     }
   }
+  const queuedContinuationIds = runs.filter(run => run.status === "queued" && run.createdAt
+    && run.createdAt.getTime() <= Date.now() - WAITING_CONTINUATION_MOVE_FORWARD_MS).map(run => run.id);
+  const [continuationRows, personRows] = queuedContinuationIds.length ? await Promise.all([
+    db.select({ runId: sql<string>`${issueRecoveryActions.evidence}->>'continuationRunId'` }).from(issueRecoveryActions).where(and(
+      eq(issueRecoveryActions.companyId, companyId), inArray(issueRecoveryActions.sourceIssueId, ids),
+      sql`${issueRecoveryActions.evidence} ? 'freshContinuation'`,
+      sql`${issueRecoveryActions.evidence}->>'continuationDelivery' = 'delivered'`,
+      inArray(sql`${issueRecoveryActions.evidence}->>'continuationRunId'`, queuedContinuationIds))),
+    db.select({ runId: agentWakeupRequests.runId }).from(agentWakeupRequests).where(and(
+      eq(agentWakeupRequests.companyId, companyId), inArray(agentWakeupRequests.runId, queuedContinuationIds),
+      eq(agentWakeupRequests.requestedByActorType, "user"))),
+  ]) : [[], []];
+  const waitingContinuationRunIds = new Set(continuationRows.map(row => row.runId));
+  const personRequestedRunIds = new Set(personRows.flatMap(row => row.runId ? [row.runId] : []));
+  const waitingContinuationFor = (run: typeof runs[number] | undefined): ProjectionState["waitingContinuation"] =>
+    run?.createdAt && waitingContinuationRunIds.has(run.id)
+      ? { queuedAt: run.createdAt.getTime(), personRequested: personRequestedRunIds.has(run.id) } : undefined;
   const ownerStops = runIds.length ? await db.select({ issueId: issueRecoveryActions.sourceIssueId,
     runId: sql<string>`${issueRecoveryActions.evidence}->>'runId'` }).from(issueRecoveryActions).where(and(
     eq(issueRecoveryActions.companyId, companyId), inArray(issueRecoveryActions.sourceIssueId, ids),
@@ -755,6 +778,7 @@ export async function taskInterruptionPresentations(db: Db, companyId: string, i
     const presentation = projectTaskInterruption(issue, { ...facts,
       freshContinuation: freshContinuationFor(issue.id, facts.run?.id),
       automaticDispositionAt: automaticDispositionAt.get(issue.id),
+      waitingContinuation: waitingContinuationFor(facts.run),
       recoveryHandedToPerson: handedToPerson.has(issue.id),
       interruptWait: interruptWaitFor(issue.id),
       projectAccessAllowed: denied?.length === 0,
@@ -793,6 +817,7 @@ export async function taskInterruptionPresentations(db: Db, companyId: string, i
       const presentation = result.get(issueId);
       if (!presentation || !blocker || blocker.canRetry) continue;
       presentation.canRetry = false;
+      delete presentation.retryAction;
       if (!presentation.retryWait && blocker.workspaceRecovery && blocker.workspaceRecovery.status !== "recovered")
         presentation.retryWait = { reason: "workspace_repair_required", message: retryWaitMessages.workspace_repair_required! };
     }
