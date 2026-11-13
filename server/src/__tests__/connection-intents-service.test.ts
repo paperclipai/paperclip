@@ -218,7 +218,8 @@ describeEmbeddedPostgres("connectionIntentService", () => {
         const result = await connectionIntentService(db).search(claims, "Notion");
         expect(result.results).toEqual([expect.objectContaining({ service: "notion", state: "available" })]);
         expect(result.instruction).not.toMatch(/^The person asked you to set up/);
-        expect(result.instruction).toContain("Call connection_request with service notion");
+        expect(result.instruction).toContain("call connection_request with service notion");
+        expect(result.instruction).toMatch(/\[Connect Notion\]\(\/[A-Z0-9]+\/apps\/connect\?source=notion\)/);
         expect(result.instruction).toContain("Do not create a connection or a saved draft yourself");
       }
       said.push((await say("Connect Notion, then continue the launch summary here.")).id);
