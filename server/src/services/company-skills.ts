@@ -3651,12 +3651,21 @@ export function companySkillService(db: Db, options: { actor?: AuthorizationActo
       : (filePath: string) => filePath === "SKILL.md" ? entrypoint : fromSkillDirectory(filePath);
     const accept = securityOverrideAcceptor([versionApprovalGrant(record)], record.commitSha, toRepositoryPath);
     if (!accept || packageMode !== "repository") return accept;
-    // The generated SKILL.md repeats the original entrypoint's frontmatter. Accept its findings only
-    // when the installed original itself matches the approval.
+    // The generated SKILL.md repeats the original entrypoint's frontmatter. Accept its findings only while it is
+    // still exactly the file generated from that original, and the original itself matches the approval. An edited
+    // SKILL.md (for example in an editable copy) is judged on its own bytes.
     const original = await fs.readFile(path.join(installedRoot, REPOSITORY_CONTENT_DIR, ...entrypoint.split("/"))).catch(() => null);
     if (!original) return accept;
     const originalHash = sha256Buffer(original);
-    return (filePath: string, sha256: string, code: string) => filePath === "SKILL.md"
+    let generatedHash: string | null = null;
+    try {
+      const generated = repositorySkillProjection([{ path: entrypoint, kind: "skill", content: original.toString("utf8") }], entrypoint)
+        .find(file => file.path === "SKILL.md");
+      generatedHash = generated ? sha256Buffer(generated.content) : null;
+    } catch {
+      generatedHash = null;
+    }
+    return (filePath: string, sha256: string, code: string) => filePath === "SKILL.md" && generatedHash !== null && sha256 === generatedHash
       ? accept(`${repositoryPrefix}${entrypoint}`, originalHash, code) : accept(filePath, sha256, code);
   }
 
