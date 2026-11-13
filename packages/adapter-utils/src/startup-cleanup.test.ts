@@ -130,6 +130,11 @@ const createExecRunner = () => ({
   },
 });
 
+const withoutProcfs = (input: RunnerInput): RunnerInput => ({
+  ...input,
+  args: input.args?.map((arg) => arg.replaceAll("/proc/", "/definitely-missing-procfs/")),
+});
+
 describe("sandbox callback bridge startup cleanup", () => {
   const cleanupDirs: string[] = [];
   const cleanupProcesses: Array<ReturnType<typeof spawn>> = [];
@@ -179,6 +184,7 @@ describe("sandbox callback bridge startup cleanup", () => {
     expect(cleanupScript).toContain('ps -ww -o command= -p "$pid"');
     expect(cleanupScript).toContain('*[!0-9]*');
     expect(calls[2]?.env?.PAPERCLIP_EXPECTED_BRIDGE_ENTRYPOINT).toContain("paperclip-bridge-server.mjs");
+    expect(calls[2]?.env?.PAPERCLIP_EXPECTED_BRIDGE_LAUNCH_TOKEN).toContain("--paperclip-bridge-launch-token=");
     expect(cleanupScript).toContain("rm -f");
     expect(cleanupScript).toContain("server.pid");
     expect(cleanupScript).toContain("ready.json");
@@ -265,7 +271,7 @@ describe("sandbox callback bridge startup cleanup", () => {
     expect((await readdir(directories.rootDir)).filter((name) => name.includes(".launch-"))).toEqual([]);
   });
 
-  it("cleans a bridge spawned before an ambiguous launch result can publish back to the caller", async () => {
+  it("cleans a bridge through portable identity when procfs is unavailable", async () => {
     const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-bridge-post-spawn-"));
     cleanupDirs.push(rootDir);
     const assetRemoteDir = path.join(rootDir, "assets");
@@ -289,15 +295,16 @@ describe("sandbox callback bridge startup cleanup", () => {
       execute: async (input: RunnerInput): Promise<RunProcessResult> => {
         call += 1;
         if (call === 1) {
-          const launched = await execRunner.execute(input);
+          const launched = await execRunner.execute(withoutProcfs(input));
           expect(launched.exitCode).toBe(0);
           spawnedIdentity = await readFile(directories.pidFile, "utf8");
           spawnedPid = Number(spawnedIdentity.trim().split(/\s+/)[0]);
+          expect(spawnedIdentity).toBe(await pidIdentityRecord(spawnedPid, "/definitely-missing-procfs"));
           expect(spawnedPid).toBeGreaterThan(1);
           expect(() => process.kill(spawnedPid, 0)).not.toThrow();
           return result(255, "ambiguous transport result after remote spawn");
         }
-        return execRunner.execute(input);
+        return execRunner.execute(withoutProcfs(input));
       },
     };
 
@@ -433,16 +440,23 @@ describe("sandbox callback bridge startup cleanup", () => {
     await expect(readFile(directories.pidFile, "utf8")).rejects.toThrow();
   });
 
-  it("does not signal or discard state when the live process command identity no longer matches", async () => {
+  it("does not signal a portable identity collision when the launch token changed", async () => {
     const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-bridge-stale-pid-"));
     cleanupDirs.push(rootDir);
+    const assetRemoteDir = path.join(rootDir, "assets");
+    const remoteEntrypoint = path.join(assetRemoteDir, "paperclip-bridge-server.mjs");
     const queueDir = path.join(rootDir, "bridge");
     const directories = sandboxCallbackBridgeDirectories(queueDir);
     await mkdir(queueDir, { recursive: true });
 
-    const unrelated = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"]);
+    const unrelated = spawn(process.execPath, [
+      "-e",
+      "setInterval(() => {}, 1000)",
+      remoteEntrypoint,
+      "--paperclip-bridge-launch-token=previous-launch",
+    ]);
     cleanupProcesses.push(unrelated);
-    const identityRecord = await pidIdentityRecord(unrelated.pid!);
+    const identityRecord = await pidIdentityRecord(unrelated.pid!, "/definitely-missing-procfs");
     await writeFile(directories.pidFile, identityRecord, "utf8");
 
     const execRunner = createExecRunner();
@@ -452,14 +466,14 @@ describe("sandbox callback bridge startup cleanup", () => {
         call += 1;
         if (call === 1) return result(0);
         if (call === 2) return result(1, "readiness failed");
-        return execRunner.execute(input);
+        return execRunner.execute(withoutProcfs(input));
       },
     };
 
     await expect(startSandboxCallbackBridgeServer({
       runner,
       remoteCwd: rootDir,
-      assetRemoteDir: "/remote/assets",
+      assetRemoteDir,
       queueDir,
       bridgeToken: "bridge-token",
       timeoutMs: 10_000,
@@ -479,10 +493,12 @@ describe("sandbox callback bridge startup cleanup", () => {
     const directories = sandboxCallbackBridgeDirectories(queueDir);
     await mkdir(queueDir, { recursive: true });
 
+    const expectedLaunchToken = "--paperclip-bridge-launch-token=test-resistant";
     const resistant = spawn(process.execPath, [
       "-e",
       'process.on("SIGTERM", () => {}); console.log("ready"); setInterval(() => {}, 1000)',
       remoteEntrypoint,
+      expectedLaunchToken,
     ], { stdio: ["ignore", "pipe", "ignore"] });
     cleanupProcesses.push(resistant);
     await new Promise<void>((resolve, reject) => {
@@ -499,7 +515,10 @@ describe("sandbox callback bridge startup cleanup", () => {
         call += 1;
         if (call === 1) return result(0);
         if (call === 2) return result(1, "readiness failed");
-        return execRunner.execute(input);
+        return execRunner.execute({
+          ...input,
+          env: { ...input.env, PAPERCLIP_EXPECTED_BRIDGE_LAUNCH_TOKEN: expectedLaunchToken },
+        });
       },
     };
 
@@ -525,10 +544,12 @@ describe("sandbox callback bridge startup cleanup", () => {
     const directories = sandboxCallbackBridgeDirectories(queueDir);
     await mkdir(queueDir, { recursive: true });
 
+    const expectedLaunchToken = "--paperclip-bridge-launch-token=test-renamed";
     const renamed = spawn(process.execPath, [
       "-e",
       'process.on("SIGTERM", () => { process.title = "renamed-bridge"; }); console.log("ready"); setInterval(() => {}, 1000)',
       remoteEntrypoint,
+      expectedLaunchToken,
     ], { stdio: ["ignore", "pipe", "ignore"] });
     cleanupProcesses.push(renamed);
     await new Promise<void>((resolve, reject) => {
@@ -545,7 +566,10 @@ describe("sandbox callback bridge startup cleanup", () => {
         call += 1;
         if (call === 1) return result(0);
         if (call === 2) return result(1, "readiness failed");
-        return execRunner.execute(input);
+        return execRunner.execute({
+          ...input,
+          env: { ...input.env, PAPERCLIP_EXPECTED_BRIDGE_LAUNCH_TOKEN: expectedLaunchToken },
+        });
       },
     };
 
