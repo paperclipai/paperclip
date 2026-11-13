@@ -1070,6 +1070,7 @@ export function heartbeatService(
     getAgentInvokability,
     runDispatch,
     resolveSessionBeforeForWakeup,
+    getTaskSession,
     resolveResponsibleUserIdForRunContext,
     recordPlanApprovalResumeFailureRetry,
     setRunStatusIfRunning,
