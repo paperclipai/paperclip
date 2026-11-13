@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { and, desc, eq, inArray, isNull, like, lt, ne, notInArray, notLike, or, sql } from "drizzle-orm";
+import { and, desc, eq, inArray, like, ne, notInArray, notLike, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   agents,
@@ -86,8 +86,12 @@ import {
   withAccountHomeSecretMutationLock,
 } from "@paperclipai/adapter-codex-local/server";
 
-/** "Last used" precision for secrets; see resolveSecretValueInternal. */
-export const SECRET_LAST_RESOLVED_STAMP_INTERVAL_MS = 60_000;
+function latestDate(a: Date | null, b: Date | null): Date | null {
+  if (!a) return b;
+  if (!b) return a;
+  return a.getTime() >= b.getTime() ? a : b;
+}
+
 const ENV_KEY_RE = /^[A-Za-z_][A-Za-z0-9_]*$/;
 const AGENT_ACCESS_CONFIG_PATH_PREFIX = "access.";
 // System consumer id for a durable orphan-sandbox teardown. The cleanup sweep
@@ -1360,6 +1364,19 @@ export function secretService(db: Db | DbTransaction) {
     };
   }
 
+  /** Newest successful resolution per secret, read backwards on (secret_id, created_at). */
+  async function lastSuccessfulResolutions(secretIds: string[]): Promise<Map<string, Date>> {
+    if (secretIds.length === 0) return new Map();
+    const rows = await db.execute<{ secret_id: string; used_at: string | Date | null }>(sql`
+      select ids.secret_id, (
+        select e.created_at from ${secretAccessEvents} e
+        where e.secret_id = ids.secret_id and e.outcome = 'success'
+        order by e.created_at desc limit 1
+      ) as used_at
+      from unnest(array[${sql.join(secretIds.map((id) => sql`${id}`), sql`, `)}]::uuid[]) as ids(secret_id)`);
+    return new Map(rows.flatMap((row) => row.used_at ? [[row.secret_id, new Date(row.used_at)] as const] : []));
+  }
+
   async function resolveSecretValueInternal(
     companyId: string,
     secretId: string,
@@ -1416,22 +1433,12 @@ export function secretService(db: Db | DbTransaction) {
           version: resolvedVersion,
         },
       });
-      // "Last used" is stamped at most once per interval. Admission paths
-      // (decisions, fast responses, browser use, prompt-injection checks)
-      // share-lock this row under REPEATABLE READ to fence rotation, so a
-      // write here on every read would abort concurrent admissions with a
-      // serialization failure and re-run them against a newer budget.
-      const stampLastResolved = !readOnlyEnvironmentInspection && (!secret.lastResolvedAt
-        || Date.now() - secret.lastResolvedAt.getTime() >= SECRET_LAST_RESOLVED_STAMP_INTERVAL_MS);
+      // The access event is the usage record; "Last used" is derived from it
+      // in list(). Admission paths (decisions, fast responses, browser use,
+      // prompt-injection checks) share-lock the secret row under REPEATABLE
+      // READ to fence rotation, so a read must never write that row: the
+      // write would abort a concurrent admission with a serialization failure.
       if (!readOnlyEnvironmentInspection) await Promise.all([
-        stampLastResolved ? db
-          .update(companySecrets)
-          .set({ lastResolvedAt: new Date(), updatedAt: new Date() })
-          .where(and(eq(companySecrets.id, secret.id), or(
-            isNull(companySecrets.lastResolvedAt),
-            lt(companySecrets.lastResolvedAt, new Date(Date.now() - SECRET_LAST_RESOLVED_STAMP_INTERVAL_MS)),
-          )))
-          .catch(() => undefined) : undefined,
         recordAccessEvent({
           companyId,
           secretId: secret.id,
@@ -3867,8 +3874,10 @@ export function secretService(db: Db | DbTransaction) {
           .groupBy(companySecretBindings.secretId),
       ]);
       const countsBySecretId = new Map(referenceCounts.map((row) => [row.secretId, row.count]));
+      const lastUsedBySecretId = await lastSuccessfulResolutions(secrets.map((secret) => secret.id));
       return secrets.map((secret) => ({
         ...secret,
+        lastResolvedAt: latestDate(secret.lastResolvedAt, lastUsedBySecretId.get(secret.id) ?? null),
         referenceCount: countsBySecretId.get(secret.id) ?? 0,
       }));
     },
