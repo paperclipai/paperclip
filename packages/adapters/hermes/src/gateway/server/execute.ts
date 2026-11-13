@@ -1132,9 +1132,18 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
           // request may still have been processed by the gateway, so keep the
           // transient-upstream connect-failure class (uncertain dispatch is
           // the platform's to reconcile) but say what actually happened.
-          hermesErr.message =
+          // Build a fresh error instead of mutating hermesErr: when the
+          // response body stalls, readResponseJson throws a raw DOMException
+          // AbortError whose message is read-only. Assigning to it throws a
+          // TypeError that swallows the gateway failure and its
+          // transient_upstream family, leaving errorResult to report a
+          // protocol error with no retry family.
+          const stalledErr = new Error(
             `Hermes gateway create request stalled for over ${Math.round(CREATE_REQUEST_TIMEOUT_MS / 1000)}s ` +
-            "without a response and was aborted; the gateway may have created the run.";
+            "without a response and was aborted; the gateway may have created the run.",
+          ) as HermesHttpError;
+          stalledErr.code = "hermes_gateway_connect_failed";
+          throw stalledErr;
         }
         const delayMs = isGatewayCreateRateLimit(hermesErr)
           ? rateLimitRetryDelayForTest(rateLimitAttempt, hermesErr.retryNotBefore)

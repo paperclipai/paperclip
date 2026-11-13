@@ -1070,6 +1070,59 @@ describe("execute", () => {
     }
   });
 
+  it("surfaces a transient error when the create response body stalls past the deadline", async () => {
+    vi.useFakeTimers();
+    try {
+      const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = String(input);
+        if (url.endsWith("/v1/runs") && init?.method === "POST") {
+          // Headers arrive (fetch resolves) but the response body stalls.
+          // The deadline aborts the body stream, which rejects with a
+          // DOMException AbortError whose message is read-only, so the
+          // create-stall handler must build a fresh error instead of
+          // mutating it.
+          const signal = init?.signal;
+          const textPromise = new Promise<string>((_, reject) => {
+            if (signal?.aborted) {
+              reject(new DOMException("The operation was aborted", "AbortError"));
+              return;
+            }
+            signal?.addEventListener("abort", () =>
+              reject(new DOMException("The operation was aborted", "AbortError")));
+          });
+          return {
+            ok: true,
+            status: 200,
+            headers: new Headers(),
+            text: () => textPromise,
+          } as unknown as Response;
+        }
+        return new Response(JSON.stringify({ status: "completed" }), { status: 200 });
+      });
+      vi.stubGlobal("fetch", fetchMock);
+      const ctx = makeCtx({ apiBaseUrl: "http://127.0.0.1:8642", apiKey: "secret-key", timeoutSec: 60 });
+      ctx.onCancellationReady = vi.fn(async () => { ctx.signal = new AbortController().signal; });
+      ctx.onDispatch = vi.fn();
+
+      const runPromise = execute(ctx);
+      await vi.advanceTimersByTimeAsync(0);
+      // No operator Stop: advance past the per-attempt create deadline.
+      // The stalled body read is aborted and must surface as transient.
+      await vi.advanceTimersByTimeAsync(CREATE_REQUEST_TIMEOUT_MS + 1);
+      const result = await runPromise;
+
+      expect(result.exitCode).toBe(1);
+      expect(result.errorCode).toBe("hermes_gateway_connect_failed");
+      expect(result.errorFamily).toBe("transient_upstream");
+      expect(String(result.errorMessage)).toContain("stalled");
+      const createCalls = fetchMock.mock.calls.filter(([input, init]) =>
+        String(input).endsWith("/v1/runs") && init?.method === "POST");
+      expect(createCalls).toHaveLength(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("includes network causes in connection failure messages", async () => {
     const cause = Object.assign(new Error("getaddrinfo ENOTFOUND host.docker.internal"), { code: "ENOTFOUND" });
     vi.stubGlobal("fetch", vi.fn(async () => {
