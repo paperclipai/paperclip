@@ -1513,9 +1513,9 @@ it.each([false, true, "restart-before-bootstrap", "unknown-semantic", "accountin
       expect(retainedCore.commands.some((command: { type: string }) => command.type === "run.attach")).toBe(false);
       if (credentialsCleaned) {
         const config = await readFile(join(stateDirectory, "codex-home", "config.toml"), "utf8");
-        expect(config).toContain("https://paperclip.example/mcp/current");
-        expect(config).toContain("current-assigned-gateway-credential");
-        expect(config).not.toContain("first-assigned-gateway-credential");
+        expect(config).not.toContain("mcp_servers");
+        expect(config).not.toContain("paperclip.example/mcp");
+        expect(config).not.toContain("assigned-gateway-credential");
         expect(currentHandler).not.toHaveBeenCalled();
       }
     }

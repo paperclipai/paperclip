@@ -699,6 +699,7 @@ export async function resolveEnvironmentExecutionTarget(input: {
     leaseId: input.leaseId ?? null,
     remoteCwd,
     spec: {
+      useHostAuth: parsed.config.useHostAuth !== false,
       host: parsed.config.host,
       port: parsed.config.port,
       username: parsed.config.username,

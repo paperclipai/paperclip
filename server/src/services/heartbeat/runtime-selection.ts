@@ -67,6 +67,7 @@ import {
   assertManagedProfileRecoveryBinding,
   projectPaperclipRunnerTaskConfig,
   resolvePaperclipRunnerNativeProviderInput,
+  supportsPaperclipRunnerPreconfiguredHome,
 } from "../native-runtime/provider-profile.js";
 import { readRemoteCodexModelCliVersion } from "../native-runtime/codex-model-fallback.js";
 import {
@@ -771,7 +772,7 @@ export async function selectHeartbeatRuntime(db: Db, input: HeartbeatRuntimeSele
         instructionWorkingCopy: instructionCopy ? { rootPath: instructionCopy.executionRoot, entryPath: instructionCopy.entryFile, ...(isAgentDirectoryCopy(instructionCopy) ? { kind: "agent_files" as const } : {}) } : undefined,
       }));
       getNativeFreshSessionHandoff = nativeReviewRequest ? undefined : getFreshSessionHandoff;
-      const nativeProviderConfig = nativeRuntimeResolution.profile.backend === "cursor_cloud_api"
+      const projectedNativeProviderConfig = nativeRuntimeResolution.profile.backend === "cursor_cloud_api"
         || nativeRuntimeResolution.profile.backend === "codex_app_server"
         || (nativeRuntimeResolution.profile.backend === "acpx_runtime" && ["claude_local", "grok_local"].includes(agentHarnessType(agent.adapterType, parseObject(agent.adapterConfig))))
         || nativeRuntimeResolution.profile.backend === "opencode_server"
@@ -784,6 +785,12 @@ export async function selectHeartbeatRuntime(db: Db, input: HeartbeatRuntimeSele
             managedAiRuntime ? readNonEmptyString(resolvedConfig.model) ?? undefined : undefined,
           )
         : agent.adapterConfig;
+      const runnerHomeMode = runtimeConfig.homeMode === "preconfigured" && executionTarget?.kind === "remote" && executionTarget.transport === "ssh"
+        && !supportsPaperclipRunnerPreconfiguredHome(projectedNativeProviderConfig, { companyId: agent.companyId })
+        ? "isolated" : runtimeConfig.homeMode;
+      const nativeProviderConfig = agent.adapterType === "paperclip_runner" && runnerHomeMode !== undefined
+        ? { ...parseObject(projectedNativeProviderConfig), homeMode: runnerHomeMode }
+        : projectedNativeProviderConfig;
       const requestedNativeProvider = resolvePaperclipRunnerNativeProviderInput({
         companyId: agent.companyId,
         backend: nativeRuntimeResolution.profile.backend,
