@@ -2535,7 +2535,7 @@ async function buildRuntime(input: {
           runtimeRootDir,
           adapterKey: input.engine.adapterType,
           command: "sh",
-          args: ["-lc", `exec ${agentCommandShell}`],
+          args: [remoteTarget.transport === "ssh" ? "-c" : "-lc", `exec ${agentCommandShell}`],
           cwd: sessionCwd,
           env: launchEnv,
           timeoutSec,

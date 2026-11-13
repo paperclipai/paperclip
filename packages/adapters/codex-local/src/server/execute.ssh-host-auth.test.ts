@@ -76,6 +76,7 @@ vi.mock("@paperclipai/adapter-utils/execution-target", async () => {
 });
 
 import { execute } from "./execute.js";
+import { shellQuote } from "@paperclipai/adapter-utils/ssh";
 import { buildProviderObservabilityLaunch } from "@paperclipai/adapter-utils/agent-observability";
 
 describe("codex SSH host authentication", () => {
@@ -90,7 +91,7 @@ describe("codex SSH host authentication", () => {
     }
   });
 
-  it.each(["default", "configured", "in_place", "no_config", "observability", "unqualified_observability", "observability_profile", "observability_profile_missing", "observability_profile_symlink", "partial_upload", "partial_upload_in_place", "changed_config", "skill_conflict"])("delivers Codex tools and skills while preserving native SSH authentication (%s)", async mode => {
+  it.each(["default", "configured", "in_place", "no_config", "observability", "unqualified_observability", "observability_profile", "observability_profile_missing", "observability_profile_symlink", "partial_upload", "partial_upload_in_place", "changed_config", "skill_conflict", "failed_install_retry"])("delivers Codex tools and skills while preserving native SSH authentication (%s)", async mode => {
     const root = await mkdtemp(path.join(os.tmpdir(), "paperclip-codex-host-auth-"));
     cleanupDirs.push(root);
     const workspace = path.join(root, "workspace"), remote = path.join(root, "remote-workspace"), userHome = path.join(root, "remote-user");
@@ -114,6 +115,15 @@ describe("codex SSH host authentication", () => {
     }
     await writeFile(path.join(native, "skills", "manual", "SKILL.md"), "native skill");
     await writeFile(path.join(skill, "SKILL.md"), "---\n---\nSelected review skill.\n");
+    const bin = path.join(root, "fault-bin"), failCopy = path.join(root, "fail-config-copy");
+    if (mode === "failed_install_retry") {
+      await mkdir(bin);
+      await writeFile(failCopy, "fail once");
+      await writeFile(path.join(bin, "cp"), `#!/bin/sh
+case "$1" in */config.toml) if [ -f ${shellQuote(failCopy)} ]; then rm -f ${shellQuote(failCopy)}; echo 'fixture config copy failed' >&2; exit 71; fi ;; esac
+exec /bin/cp "$@"
+`, { mode: 0o700 });
+    }
     vi.stubEnv("CODEX_HOME", controller);
     vi.stubEnv("PAPERCLIP_HOME", path.join(root, "paperclip"));
     const originalRun = runSshCommand.getMockImplementation()!, originalSync = syncDirectoryToSsh.getMockImplementation()!, originalChild = runChildProcess.getMockImplementation()!;
@@ -121,7 +131,7 @@ describe("codex SSH host authentication", () => {
     let calls = 0;
     try {
       runSshCommand.mockImplementation(async (_spec, command) => {
-        const remoteEnv: NodeJS.ProcessEnv = { ...process.env, HOME: userHome };
+        const remoteEnv: NodeJS.ProcessEnv = { ...process.env, HOME: userHome, ...(mode === "failed_install_retry" ? { PATH: `${bin}:${process.env.PATH}` } : {}) };
         delete remoteEnv.CODEX_HOME;
         return promisify(execFile)("/bin/sh", ["-c", command!], { env: remoteEnv, timeout: 5000 });
       });
@@ -179,6 +189,13 @@ describe("codex SSH host authentication", () => {
           spec: { useHostAuth: true, host: "127.0.0.1", port: 2222, username: "fixture", remoteCwd: remote, remoteWorkspacePath: remote, privateKey: null, knownHosts: null, strictHostKeyChecking: true },
           workspaceRealization: { mode: ((mode === "in_place" || mode === "partial_upload_in_place") ? "in_place" : "copy") as "in_place" | "copy", authoritativeRoot: remote, pathAliases: [], outboundRestorePaths: [] } }, onLog: async () => {},
       };
+      if (mode === "failed_install_retry") {
+        await expect(execute(ctx)).rejects.toThrow();
+        expect(runChildProcess).not.toHaveBeenCalled();
+        expect(await readdir(path.join(native, "skills"))).toEqual(["manual"]);
+        expect(await readFile(path.join(native, "auth.json"), "utf8")).toBe("fixture-native-login");
+        expect(await readFile(path.join(native, "config.toml"), "utf8")).toContain('model = "native-model"');
+      }
       if (mode === "changed_config" || mode === "skill_conflict" || mode.startsWith("partial_upload")) {
         await expect(execute(ctx)).rejects.toThrow(mode.startsWith("partial_upload") ? "fixture partial SSH upload" : "Cannot install remote Codex runtime configuration");
         expect(runChildProcess).not.toHaveBeenCalled();

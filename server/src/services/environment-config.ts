@@ -561,6 +561,7 @@ export function normalizeEnvironmentConfigForProbe(input: {
 
 export async function normalizeEnvironmentConfigForPersistence(input: {
   db: Db;
+  operation?: "create" | "update";
   companyId: string;
   environmentName: string;
   driver: EnvironmentDriver;
@@ -609,6 +610,7 @@ export async function normalizeEnvironmentConfigForPersistence(input: {
     }
     return {
       ...stored,
+      ...(input.operation === "create" ? { useHostAuth: stored.useHostAuth ?? false } : {}),
       ...(stored.tailscaleAuthKeySecretRef ? { tailscaleAuthKey: null } : {}),
       privateKey: null,
       privateKeySecretRef: nextPrivateKeySecretRef,
