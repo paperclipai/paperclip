@@ -6619,6 +6619,9 @@ export function createToolGatewayService(
         },
       },
       { agentId: input.agentId },
+      // Each provider question is independent: a new one must never expire
+      // another that is still waiting, which would read as a decline.
+      { supersedePendingSiblingInteractions: false },
     );
   }
 
