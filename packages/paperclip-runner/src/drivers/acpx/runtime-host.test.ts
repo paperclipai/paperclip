@@ -543,7 +543,7 @@ describe("ACPX runtime host", () => {
           join(options.launchEnvironment.CLAUDE_CONFIG_DIR!, "settings.json"),
           "utf8",
         ));
-        expect(settings.permissions).toEqual(allow ? { allow } : undefined);
+        expect(settings.permissions).toEqual({ ...(allow ? { allow } : {}), deny: ["CronCreate", "CronDelete", "CronList", "ScheduleWakeup"] });
         expect(options.mcpServers).toMatchObject([
           { name: "paperclip", runnerOwned: true },
         ]);
