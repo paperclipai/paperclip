@@ -1540,6 +1540,43 @@ that file, and it fails when a referenced config does not exist yet. The
 program. That program peaks at about 15 GiB at default settings and about 8 GiB on
 one thread.
 
+#### Typecheck lane in CI
+
+The required `Typecheck + Release Registry` job runs one command:
+
+```sh
+node scripts/ci-typecheck-lane.mjs [--concurrency <n>]
+```
+
+It first runs the steps that write shared outputs, one at a time:
+
+1. Link the workspace packages and build the plugin SDK.
+2. Build the server with `PAPERCLIP_TSC_EMIT_ONLY=1`, then check that the
+   server runtime assets are in `dist`. The server build no longer checks types
+   here: the server layers check the same files, and the `Build` job runs the
+   full `pnpm build`. The full program peaked at about 13.5 GiB, which left this
+   16 GiB runner swapping.
+3. Install the sandbox providers for the test programs
+   (`typecheck-test-programs.mjs --prepare-only`).
+4. Typecheck the Runner. Its typecheck rebuilds the eval kernel, which other
+   checks read, so it cannot run beside them.
+
+Then it runs the remaining checks in parallel, as many as the machine has CPUs
+(default) or `--concurrency`. Each `tsc` uses one thread. The server
+declaration layers start first, because the test layers and the test projects
+read them. The test programs, the other build-gap workspaces and the CLI
+guidance test run at a lower CPU priority, so they use only the CPU that the
+server layers and the release registry tests leave free.
+
+A passing check prints its output in a collapsed log group. A failing check
+prints its output in full, between `=== FAILED ...` and `=== end of ...`
+lines, with an error annotation. When the server declarations fail, the test
+layers and test projects are reported as skipped. The lane ends with a table
+of each check's start time, duration and result. If a preparation step fails,
+nothing else runs.
+
+To add a check to the job, add it to `planLane` in the script.
+
 #### Typecheck test files outside the build
 
 Most package tsconfigs exclude tests, and Vitest strips types, so a type error in

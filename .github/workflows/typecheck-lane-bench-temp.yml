@@ -22,8 +22,8 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        mode: [parallel]
-        attempt: [1, 2, 3]
+        mode: [ab]
+        attempt: [1, 2, 3, 4]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
@@ -98,11 +98,13 @@ jobs:
       - name: Machine
         run: |
           [ -x /usr/bin/time ] || sudo apt-get install -y time
+          df -h / "$RUNNER_TEMP" || true; du -sh . || true
           nproc; free -m; swapon --show || true; lscpu | grep -E 'Model name|^CPU\(s\)'
 
       - name: Benchmark
         env:
           MODE: ${{ matrix.mode }}
+          ATTEMPT: ${{ matrix.attempt }}
         run: |
           set +e -uo pipefail
           out="$RUNNER_TEMP/bench"; mkdir -p "$out"
@@ -130,20 +132,28 @@ jobs:
             swap=$(sort -n -k2 "$out/mem-$name.log" | tail -1 | awk '{print $2}')
             printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$name" "$status" "$wall" "$cpu" "$rss" "$peak" "$swap" | tee -a "$summary"
           }
-          if [ "$MODE" = sequential ]; then
+          seq_run() {
             measure build-gaps pnpm run typecheck:build-gaps
             measure test-programs node scripts/typecheck-test-programs.mjs --low-memory
             measure server-layers env PAPERCLIP_TYPECHECK_LOW_MEMORY=1 pnpm --filter @paperclipai/server typecheck
             measure test-projects node scripts/typecheck-test-projects.mjs --low-memory --reuse-declarations
             measure cli-guidance pnpm exec vitest run --project @paperclipai/server server/src/__tests__/cli-invocation-safety.test.ts
             measure release-registry pnpm run test:release-registry
-            measure x-server-full-tsc bash -c 'cd server && node ../scripts/run-tsc.mjs --noEmit'
-            measure x-server-emit-only-build env PAPERCLIP_TSC_EMIT_ONLY=1 pnpm --filter @paperclipai/server build
-            measure x-runner-typecheck pnpm --filter @paperclipai/paperclip-runner typecheck
-          else
+          }
+          par_run() {
             measure lane node scripts/ci-typecheck-lane.mjs
+          }
+          copy="$RUNNER_TEMP/copy"
+          time cp -a "$GITHUB_WORKSPACE" "$copy"
+          if [ $((ATTEMPT % 2)) = 1 ]; then
+            seq_run
+            (cd "$copy" && par_run)
+          else
+            (cd "$copy" && par_run)
+            seq_run
           fi
+          awk -F'\t' 'NR>1 && $1!="lane" {w+=$3; c+=$4} END {printf "sequential-total\t-\t%.1f\t%.1f\n", w, c}' "$summary" | tee -a "$summary"
           echo "## $MODE" >> "$GITHUB_STEP_SUMMARY"
           { echo '```'; column -t -s $'\t' "$summary"; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
           column -t -s $'\t' "$summary"
-          awk -F'\t' 'NR>1 && $2!=0 {bad=1} END {exit bad}' "$summary"
+          awk -F'\t' 'NR>1 && $2!=0 && $2!="-" {bad=1} END {exit bad}' "$summary"
