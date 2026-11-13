@@ -135,6 +135,9 @@ export function connectionIntentDeliveryService(db: Db, heartbeat: Pick<Heartbea
       const recoveries = issueRecoveryActionService(db);
       const recovery = await recoveries.getActiveForIssue(issue.companyId, issue.id, tx);
       if (!recovery || recovery.cause !== "configuration_incomplete" || recovery.evidence.latestRunId !== latest.id) return null;
+      // A task with an unresolved dependency stays blocked; its dependency
+      // path resumes it. Restoring it here would be rejected by the update.
+      if (!(await issueService(db).getDependencyReadiness(issue.id, tx)).isDependencyReady) return null;
       const actorId = loaded.interaction.resolvedByUserId ?? loaded.interaction.addresseeUserId!;
       const updated = await issueService(db).update(issue.id, {
         status: "in_progress", actorUserId: options.system ? null : actorId, companyGuard: issue.companyId,

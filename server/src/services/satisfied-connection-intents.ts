@@ -154,6 +154,22 @@ export async function findSatisfiedToolConnection(db: Db, task: Task, intent: In
   return findAvailableToolConnection(db, task, intent, policyRunId);
 }
 
+/**
+ * A pending AI repair card pinned to one connection no longer holds back its
+ * owner task once the task's agent runs on another usable connection. The card
+ * itself stays pending for the tasks linked to it.
+ */
+async function obsoleteAiRepairCard(db: Db, task: Task, interaction: Intent, policyRunId?: string | null) {
+  if (interaction.status !== "pending" || !interaction.addresseeUserId) return false;
+  const payload = connectionIntentPayloadSchema.safeParse(interaction.payload).data;
+  if (payload?.purpose !== "ai" || !payload.repairConnectionId || payload.agentSetup || payload.accessRequest
+    || payload.upstreamService || payload.savedSetup || payload.requestingAgentId !== task.assigneeAgentId) return false;
+  const usable = await connectionIntentService(db).usableConnectionForAgent({ companyId: task.companyId,
+    agentId: payload.requestingAgentId, responsibleUserId: interaction.addresseeUserId, serviceSlug: payload.serviceSlug,
+    purpose: "ai", sourceRunId: policyRunId ?? interaction.sourceRunId ?? null });
+  return Boolean(usable && usable.id !== payload.repairConnectionId);
+}
+
 /** Recheck both live requests and system-retired cards against the next run. */
 export async function connectionContinuationPendingResponse(db: Db, task: Task, responsibleUserId: string | null,
   policyRunId?: string | null): Promise<"interaction" | "approval" | null> {
@@ -171,7 +187,7 @@ export async function connectionContinuationPendingResponse(db: Db, task: Task, 
     // Historical system retirements describe a service need, not a permanent
     // binding to an account the user may later replace. Delivery and native
     // response projection still validate their own exact recorded connection.
-    if (!connection) return "interaction";
+    if (!connection && !await obsoleteAiRepairCard(db, task, interaction, policyRunId)) return "interaction";
   }
   const [approval] = await db.select({ id: approvals.id }).from(issueApprovals).innerJoin(approvals, and(
     eq(approvals.id, issueApprovals.approvalId), eq(approvals.companyId, issueApprovals.companyId),

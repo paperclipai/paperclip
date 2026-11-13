@@ -2237,6 +2237,63 @@ console.log(JSON.stringify({ type: "result", subtype: "success", result: "hello"
       expect(cards.find(card => card.id === cardA!.id)).toMatchObject({ status: "pending", payload: expect.objectContaining({ repairConnectionId: f.account.connectionId }) });
     });
 
+    it("resumes the owner task on its repaired new connection while the old connection's card stays pending", async () => {
+      const f = await latchedFleet("switched-repaired", 1);
+      const [task] = f.tasks;
+      await connectionIntentService(db).requestForRunAuthFailure(task!.runId!);
+      const [cardA] = await f.cardsFor([task!.issueId]);
+      // The agent moves to connection B, which also needs sign-in, and fails.
+      const other = await service.save(companyId, f.userId, { provider: "anthropic", method: "api_key", ownership: "personal", name: "Repair switched-repaired B",
+        apiKey: "fixture", agentIds: [task!.agentId], allAgents: false }, "fixture-repair-switched-repaired-b");
+      await db.update(agents).set({ runtimeConfig: { aiConnection: { ...binding, mode: "delegated", connectionId: other.connectionId, grantId: other.grantId } } })
+        .where(eq(agents.id, task!.agentId));
+      await db.update(connectionGrants).set({ status: "needs_reauthorization" }).where(eq(connectionGrants.id, other.grantId));
+      const [onB] = await db.insert(heartbeatRuns).values({ companyId, agentId: task!.agentId, status: "failed", errorCode: "configuration_incomplete",
+        responsibleUserId: f.userId, startedAt: new Date(), finishedAt: new Date(), createdAt: new Date(Date.now() + 1000),
+        resultJson: { configurationIncomplete: { reason: "ai_connection_unavailable", connectionId: other.connectionId } },
+        contextSnapshot: { issueId: task!.issueId } }).returning();
+      const second = await connectionIntentService(db).requestForRunAuthFailure(onB!.id);
+      expect(second?.interactionId).not.toBe(cardA!.id);
+      // Only B is reconnected; A still needs sign-in.
+      await service.save(companyId, f.userId, { provider: "anthropic", method: "api_key", ownership: "personal", name: "Repair switched-repaired B",
+        connectionId: other.connectionId, apiKey: "fixture", agentIds: [task!.agentId], allAgents: false }, `fixture-repair-switched-repaired-b-${randomUUID()}`);
+      await sweepAll();
+      const cards = new Map((await f.cardsFor([task!.issueId])).map(card => [card.id, card]));
+      expect(cards.get(second!.interactionId!)?.status).toBe("expired");
+      expect(cards.get(cardA!.id)?.status).toBe("pending");
+      const wakeup = await f.deliverAll([second!.interactionId!]);
+      expect(wakeup).toHaveBeenCalledWith(task!.agentId, expect.objectContaining({
+        payload: expect.objectContaining({ issueId: task!.issueId }) }));
+    });
+
+    it("skips a dependency-blocked linked task without stopping delivery for the other tasks", async () => {
+      const f = await latchedFleet("linked-dependency", 3);
+      for (const task of f.tasks) await connectionIntentService(db).requestForRunAuthFailure(task.runId!);
+      const [card] = await f.cardsFor(f.tasks.map(task => task.issueId));
+      const linkedIds = ((card!.payload as { linkedIssues: Array<{ issueId: string }> }).linkedIssues).map(entry => entry.issueId);
+      const [held, later] = linkedIds.map(issueId => f.tasks.find(task => task.issueId === issueId)!);
+      const owner = f.tasks.find(task => task.issueId === card!.issueId)!;
+      // The first linked task was parked by recovery and also waits on an open dependency.
+      const [onA] = await db.insert(heartbeatRuns).values({ companyId, agentId: held!.agentId, status: "failed", errorCode: "configuration_incomplete",
+        responsibleUserId: f.userId, startedAt: new Date(), finishedAt: new Date(), createdAt: new Date(Date.now() + 1000),
+        resultJson: { configurationIncomplete: { reason: "ai_connection_unavailable", connectionId: f.account.connectionId } },
+        contextSnapshot: { issueId: held!.issueId } }).returning();
+      await db.update(issues).set({ status: "blocked" }).where(eq(issues.id, held!.issueId));
+      await issueRecoveryActionService(db).upsertSourceScoped({ companyId, sourceIssueId: held!.issueId, kind: "configuration_validation",
+        cause: "configuration_incomplete", fingerprint: `ai:${held!.issueId}`, nextAction: "Reconnect", ownerType: "board", evidence: { latestRunId: onA!.id } });
+      const blocker = randomUUID();
+      await db.insert(issues).values({ id: blocker, companyId, title: "Open blocker", status: "in_progress" });
+      await db.insert(issueRelations).values({ companyId, issueId: blocker, relatedIssueId: held!.issueId, type: "blocks" } as never);
+      await f.reconnect();
+      await sweepAll();
+      const wakeup = await f.deliverAll([card!.id]);
+      const woken = wakeup.mock.calls.map(([agentId]) => agentId);
+      expect(woken).toEqual(expect.arrayContaining([later!.agentId, owner.agentId]));
+      expect(woken).not.toContain(held!.agentId);
+      expect((await db.select().from(issues).where(eq(issues.id, held!.issueId)))[0]!.status).toBe("blocked");
+      expect(await issueRecoveryActionService(db).getActiveForIssue(companyId, held!.issueId)).toMatchObject({ cause: "configuration_incomplete" });
+    });
+
     it("does not restore a linked task whose newer failure is on another connection", async () => {
       const f = await latchedFleet("other-connection", 2);
       for (const task of f.tasks) await connectionIntentService(db).requestForRunAuthFailure(task.runId!);
