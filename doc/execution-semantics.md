@@ -5389,7 +5389,12 @@ receipt after actual session admission and attachment. Its `session_admitted`
 stage and `core_verified_selection` authority describe Core's verified selection,
 not an independent provider statement. It includes only the bound run, session,
 runner, lease and pack identities. Retained attachments keep the original pack
-and identify `inheritedFromRunId`. The first receipt is immutable history.
+and identify `inheritedFromRunId`. A receipt is immutable once provider artifacts
+are retained under it. Before that, a new coordinator claim's own fresh selection
+(a replacement Runner after a refused reattachment, or a new release's pack)
+supersedes the earlier claim's receipt, so artifact retention binds the pack that
+actually runs. A retained attachment, an unsupported selection, or a second
+selection in the same claim never supersedes it.
 `nativeProviderPackAdmissionState` separately describes current admission proof:
 `pending`, `verified` or `unknown`, with an opaque admission epoch. The mandatory
 coordinator claim atomically sets a new pending epoch before session admission.
@@ -6241,6 +6246,9 @@ company, agent, Runner and environment-lease checks still apply. Current artifac
 retention remains blocked until the new claim publishes verified admission.
 Unknown admission state discards the historical proof; a callback clears it when
 it records its decision. This adds no background work or provider replay.
+When the next claim instead stops the interrupted Runner and bootstraps a
+replacement, its fresh verified selection supersedes the receipt, unless provider
+artifacts are already retained under it.
 Previous-release verified receipts seed this proof on their first new claim.
 Older pending or unknown records without it remain unverified, as before. Older
 readers ignore the added profile field and retain their existing refusal behavior.
