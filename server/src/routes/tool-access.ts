@@ -1984,7 +1984,12 @@ function connectorEnrollmentPrincipal(req: Request): string {
         )];
         await assertAgentConnectionInstallAccess(db, req.actor, connection.companyId, changedAgentIds);
       }
-      const snapshot = await svc.putConnectionInstalls(connection.id, req.body, connectionRequestActor(req));
+      const snapshot = await svc.putConnectionInstalls(connection.id, req.body, connectionRequestActor(req), {
+        expectedExistingInstalls: existingInstalls.map((install) => ({
+          targetType: install.targetType,
+          targetId: install.targetId,
+        })),
+      });
       await logActivity(db, {
         companyId: connection.companyId,
         ...connectionRequestActor(req),
