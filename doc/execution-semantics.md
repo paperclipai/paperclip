@@ -6079,5 +6079,6 @@ Exact sandbox reattachment reports the current acquisition as `resumed` only
 when the recorded lease passes scope and identity checks and the provider confirms
 that same allocation. The lease's original acquisition can have been `replacement`;
 that historical label cannot describe the later reattachment. This changes the
-lease projection passed to preparation, not the Runner verification guard. Missing,
+operation receipt passed separately through preparation to the execution target,
+not persisted lease metadata or the Runner verification guard. Missing,
 expired, foreign or changed allocations retain their named recovery refusals.

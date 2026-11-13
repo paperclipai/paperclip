@@ -61,6 +61,7 @@ import {
   type AdapterExecutionTarget,
   type AdapterRemoteExecutionSpec,
   type AdapterWorkspaceRealization,
+  type SandboxLeaseAcquisition,
 } from "@paperclipai/adapter-utils/execution-target";
 import type { DuplexObservabilityRecorder } from "@paperclipai/adapter-utils/duplex-observability";
 import { buildWorkspaceRealizationRequest } from "./workspace-realization.js";
@@ -124,6 +125,7 @@ export interface EnvironmentAcquisitionResult {
   leaseContext: ReturnType<typeof buildEnvironmentLeaseContext>;
   executionTransport: Record<string, unknown> | null;
   pluginTaskDescription?: PluginTaskDescription;
+  sandboxLeaseAcquisition?: SandboxLeaseAcquisition;
 }
 
 export interface EnvironmentRealizationResult {
@@ -375,6 +377,7 @@ export function environmentRunOrchestrator(
       runnerReconnectGraceMs,
     };
     let leaseRecord: EnvironmentRuntimeLeaseRecord;
+    let sandboxLeaseAcquisition: SandboxLeaseAcquisition | undefined;
     const expected = input.reattachRemoteLease;
     if (expected) {
       // Reattachment keeps the original lease, including ephemeral leases.
@@ -406,7 +409,6 @@ export function environmentRunOrchestrator(
       if (mismatch || !lease) {
         throw remoteRecoveryLeaseMismatch("environment_acquire", mismatch ?? "lease");
       }
-      let acquiredLease = lease;
       if (expected.kind !== "plugin_task") {
         // The provider may have archived this retained sandbox while its
         // controller was offline. Ready the exact lease under its lifecycle
@@ -429,11 +431,9 @@ export function environmentRunOrchestrator(
         if (resumed.metadata?.expired === true) throw remoteRecoveryLeaseMismatch("environment_resume", "lease_expired");
         // Resume confirms allocation readiness. Its optional metadata may
         // describe the allocation root; keep the validated lease's workspace.
-        acquiredLease = { ...lease, metadata: { ...lease.metadata,
-          sandboxLeaseAcquisition: { outcome: "resumed", providerLeaseId: expected.providerLeaseId },
-        } };
+        sandboxLeaseAcquisition = { outcome: "resumed", providerLeaseId: expected.providerLeaseId };
       }
-      leaseRecord = { environment, lease: acquiredLease, leaseContext: buildEnvironmentLeaseContext(input) };
+      leaseRecord = { environment, lease, leaseContext: buildEnvironmentLeaseContext(input) };
     } else {
       leaseRecord = await acquireLease(acquisitionInput);
     }
@@ -473,6 +473,7 @@ export function environmentRunOrchestrator(
       lease: leaseRecord.lease,
       leaseContext: leaseRecord.leaseContext,
       executionTransport,
+      ...(sandboxLeaseAcquisition ? { sandboxLeaseAcquisition } : {}),
     };
   }
 
@@ -517,6 +518,7 @@ export function environmentRunOrchestrator(
   async function realizeForRun(input: {
     environment: Environment;
     lease: EnvironmentLease;
+    sandboxLeaseAcquisition?: SandboxLeaseAcquisition;
     adapterType: string;
     companyId: string;
     issueId: string | null;
@@ -544,15 +546,22 @@ export function environmentRunOrchestrator(
       effectiveExecutionWorkspaceMode,
     } = input;
     let { lease, persistedExecutionWorkspace } = input;
+    const withAcquisitionReceipt = (target: AdapterExecutionTarget | null): AdapterExecutionTarget | null => {
+      if (!input.sandboxLeaseAcquisition || target?.kind !== "remote" || target.transport !== "sandbox") return target;
+      if (lease.providerLeaseId !== input.sandboxLeaseAcquisition.providerLeaseId) {
+        throw remoteRecoveryLeaseMismatch("environment_resume", "provider_lease_id");
+      }
+      return { ...target, sandboxLeaseAcquisition: input.sandboxLeaseAcquisition };
+    };
     const remoteAuthority = readRemoteWorkspaceAuthority(persistedExecutionWorkspace?.metadata);
     if (remoteAuthority && persistedExecutionWorkspace) {
       if (adapterType !== "paperclip_runner" || environment.driver !== "sandbox") {
         throw new EnvironmentRunError("unsupported_adapter_environment", "Remote workspace storage requires a qualified native sandbox");
       }
-      const target = await resolveEnvironmentExecutionTarget({
+      const target = withAcquisitionReceipt(await resolveEnvironmentExecutionTarget({
         db, companyId, adapterType, environment, leaseId: lease.id, leaseMetadata: lease.metadata,
         lease, environmentRuntime, duplexObservabilityRecorder: input.duplexObservabilityRecorder ?? null,
-      });
+      }));
       if (!target || target.kind !== "remote" || target.transport !== "sandbox" || !target.runner || target.runnerTask) {
         throw new EnvironmentRunError("transport_resolution_failed", "Remote workspace storage requires a sandbox file transport");
       }
@@ -753,7 +762,7 @@ export function environmentRunOrchestrator(
     // Step 4: Resolve execution target for the adapter
     let executionTarget: AdapterExecutionTarget | null;
     try {
-      executionTarget = await resolveEnvironmentExecutionTarget({
+      executionTarget = withAcquisitionReceipt(await resolveEnvironmentExecutionTarget({
         db,
         companyId,
         adapterType,
@@ -764,7 +773,7 @@ export function environmentRunOrchestrator(
         environmentRuntime,
         signal: input.signal,
         duplexObservabilityRecorder: input.duplexObservabilityRecorder ?? null,
-      });
+      }));
       // The native plugin task bridge owns guest paths. Never fall back to host execution.
       if (executionWorkspace.providerBinding && (executionTarget?.kind !== "remote" ||
           !("runnerTask" in executionTarget) || typeof executionTarget.runnerTask !== "function")) {
