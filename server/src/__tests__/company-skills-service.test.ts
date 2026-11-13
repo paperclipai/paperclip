@@ -668,9 +668,6 @@ describeEmbeddedPostgres("companySkillService.list", () => {
   });
 
   it("keeps folder classification and stored content while narrowing inventory refresh reads", async () => {
-    // Every company also gets the bundled skill catalog, whose size changes whenever a skill is
-    // added under skills/. Measure a catalog-only company too, and budget only the difference,
-    // so the bound covers the fixture rows below and not the catalog.
     const companyId = randomUUID(), catalogOnlyCompanyId = randomUUID();
     await db.insert(companies).values([
       { id: companyId, name: "Inventory projections", issuePrefix: "IVP" },
@@ -698,12 +695,12 @@ describeEmbeddedPostgres("companySkillService.list", () => {
     }
     const catalogOnly = await listWithReadBytes(catalogOnlyCompanyId);
     expect(catalogOnly.listed).toEqual(catalogBefore);
-    const { listed: after, bytes } = await listWithReadBytes(companyId);
+    const { listed: after, bytes: catalogAndFixtureBytes } = await listWithReadBytes(companyId);
     expect(after).toEqual(before);
     expect(after).toHaveLength(catalogBefore.length + inserted.length);
-    // The ten fixture rows hold about 660 KB of unused metadata and 540 KB of Markdown. Reading
-    // either one again in the inventory passes or the list projection exceeds this bound.
-    expect(bytes - catalogOnly.bytes).toBeLessThan(950_000);
+    const fixtureRowReadBytes = catalogAndFixtureBytes - catalogOnly.bytes;
+    const fixtureRowBudgetWithoutUnusedMetadataOrMarkdownRereads = 950_000;
+    expect(fixtureRowReadBytes).toBeLessThan(fixtureRowBudgetWithoutUnusedMetadataOrMarkdownRereads);
     const stored = await svc.getById(companyId, inserted[0]!.id);
     expect(stored?.markdown).toBe(savedMarkdown);
     expect(stored?.metadata).toEqual({ unused, sourceKind: " paperclip_bundled " });
