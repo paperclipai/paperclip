@@ -18,7 +18,7 @@ import {
 } from "@paperclipai/db";
 import { logger } from "../../middleware/logger.js";
 import { logActivity, publishActivity, type ActivityPublication } from "../activity-log.js";
-import { evaluateAgentInvokabilityFromDb } from "../agent-invokability.js";
+import { evaluateAgentInvokability } from "../agent-invokability.js";
 import { isAgentAwaitingSetup } from "../../modules/agent-lifecycle/index.js";
 import { unadmittedChatWakeupCondition } from "../durable-chat-wakeup.js";
 import { issueRecoveryActionService } from "../issue-recovery-actions.js";
@@ -286,11 +286,14 @@ export function assignedWorkSweep(db: Db, deps: AssignedWorkDeps) {
       .from(heartbeatRuns).where(and(eq(heartbeatRuns.companyId, companyId), inArray(heartbeatRuns.id, strandedRunIds))) : [])
       .map(({ id, ...run }) => [id, run]));
     const agentsById = new Map<string, typeof agents.$inferSelect & { invokable: boolean }>();
+    // The org chart every assignee's invokability is judged against, read once.
+    const companyAgents = agentRows.length ? await database.select({ id: agents.id, companyId: agents.companyId, name: agents.name,
+      reportsTo: agents.reportsTo, status: agents.status }).from(agents).where(eq(agents.companyId, companyId)) : [];
     for (const agent of agentRows as Array<typeof agents.$inferSelect>) {
       // An agent still being set up, or held by a lifecycle hold, takes no work
       // yet; its setup or release is the next move, not a continuation.
       const ready = !isAgentAwaitingSetup(agent) && (agent.lifecycleHolds ?? []).length === 0;
-      agentsById.set(agent.id, { ...agent, invokable: ready && (await evaluateAgentInvokabilityFromDb(database, agent)).invokable });
+      agentsById.set(agent.id, { ...agent, invokable: ready && evaluateAgentInvokability(agent, companyAgents).invokable });
     }
     const company = companyRows[0];
     const companyBudget = company?.pauseReason === "budget" || company?.pauseReason === "budget_exceeded";
@@ -329,13 +332,23 @@ export function assignedWorkSweep(db: Db, deps: AssignedWorkDeps) {
     const blockActivityByIssue = new Map(rowsOf<{ issueId: string; actorType: string; actorId: string; agentId: string | null; details: unknown }>(blockActivity)
       .map(row => [row.issueId, row]));
 
+    const ownedRunsByIssue = new Map<string, AssignedWorkFacts["activeRuns"]>();
     for (const issue of issueRows) {
-      const agent = issue.assigneeAgentId ? agentsById.get(issue.assigneeAgentId) ?? null : null;
-      const runs = activeRuns.filter(run => run.issueId === issue.id) as RunRow[];
-      const ownedRuns = [];
-      for (const run of runs) {
+      const ownedRuns: AssignedWorkFacts["activeRuns"] = [];
+      for (const run of activeRuns.filter(row => row.issueId === issue.id) as RunRow[]) {
         ownedRuns.push({ id: run.id, status: run.status, scheduledRetryAt: run.scheduledRetryAt, owner: stalledRunIds.has(run.id) && run.status === "running" ? "stalled" : await runOwner(run, at, proveOwners) });
       }
+      ownedRunsByIssue.set(issue.id, ownedRuns);
+    }
+    // The tree pause gate walks ancestors; read it only for tasks nothing else
+    // already gives a path, and for all of them in one read.
+    const pauseCheckIds = issueRows.filter(issue => !ownedRunsByIssue.get(issue.id)!.some(run => run.owner !== "gone")
+      && !(wakeCounts.get(issue.id) ?? 0)).map(issue => issue.id);
+    const pauseHeldIds = await treeControl.listActivePauseHeldIssueIds(companyId, pauseCheckIds);
+
+    for (const issue of issueRows) {
+      const agent = issue.assigneeAgentId ? agentsById.get(issue.assigneeAgentId) ?? null : null;
+      const ownedRuns = ownedRunsByIssue.get(issue.id)!;
       const latest = latestByIssue.get(issue.id) ?? null;
       const latestFinishedAt = latest?.finishedAt ? new Date(latest.finishedAt) : null;
       const leaseUntil = latest?.controllerLeaseExpiresAt ? new Date(latest.controllerLeaseExpiresAt) : null;
@@ -344,10 +357,7 @@ export function assignedWorkSweep(db: Db, deps: AssignedWorkDeps) {
       const interruption = interruptions.get(issue.id) ?? null;
       const executionState = json(issue.executionState);
       const blockedEntry = blockActivityByIssue.get(issue.id);
-      // The tree pause gate walks ancestors; read it only when nothing else
-      // already gives the task a path.
-      const needsPauseCheck = !ownedRuns.some(run => run.owner !== "gone") && !(wakeCounts.get(issue.id) ?? 0);
-      const pauseHold = needsPauseCheck && Boolean(await treeControl.getActivePauseHoldGate(companyId, issue.id));
+      const pauseHold = pauseHeldIds.has(issue.id);
       result.set(issue.id, {
         issue: {
           status: issue.status, assigneeAgentId: issue.assigneeAgentId, assigneeUserId: issue.assigneeUserId,
