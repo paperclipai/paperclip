@@ -33,12 +33,17 @@ describe.skipIf(!support.supported)("promoted Retry receipt scope", () => {
       status: "in_review", priority: "medium", assigneeAgentId: agent.id }).returning();
     const [finished] = await db.insert(heartbeatRuns).values({ companyId: company.id, agentId: agent.id,
       invocationSource: "on_demand", status: "succeeded", contextSnapshot: { issueId: issue.id } }).returning();
+    const [otherIssue] = await db.insert(issues).values({ companyId: company.id, title: "Unrelated issue",
+      status: "in_review", priority: "medium", assigneeAgentId: agent.id }).returning();
+    const [foreignRun] = await db.insert(heartbeatRuns).values({ companyId: company.id, agentId: agent.id,
+      invocationSource: "on_demand", status: "succeeded", contextSnapshot: { issueId: otherIssue.id } }).returning();
     await db.update(issues).set({ executionRunId: finished.id }).where(eq(issues.id, issue.id));
     const [wake] = await db.insert(agentWakeupRequests).values({
       companyId: company.id, agentId: agent.id, source: "on_demand", triggerDetail: "manual", reason: "task_retry",
       status: "deferred_issue_execution", requestedByActorType: "user", requestedByActorId: "responsible-user",
       payload: { issueId: issue.id,
-        taskRetry: { schema: "paperclip.task-retry.v1", sourceRunId: finished.id, actorId: "responsible-user" } },
+        taskRetry: { schema: "paperclip.task-retry.v1", generationId: crypto.randomUUID(), sourceRunId: finished.id,
+          actorId: "responsible-user", strategy: "continue" } },
     }).returning();
     const release = createReleaseIssueExecution({
       issueLock: createPostgresWakeQueueAdapter(db, {
@@ -53,8 +58,21 @@ describe.skipIf(!support.supported)("promoted Retry receipt scope", () => {
 
     expect(result.outcome.kind).toBe("promoted");
     const [promoted] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.wakeupRequestId, wake.id));
-    expect(promoted).toMatchObject({ scopeKind: "issue", issueId: issue.id,
+    expect(promoted).toMatchObject({ scopeKind: "issue", issueId: issue.id, retryOfRunId: finished.id,
       contextSnapshot: { issueId: issue.id, taskId: issue.id, taskKey: issue.id, wakeReason: "task_retry" } });
     expect((await db.select().from(issues).where(eq(issues.id, issue.id)))[0].executionRunId).toBe(promoted.id);
+
+    const [otherWake] = await db.insert(agentWakeupRequests).values({
+      companyId: company.id, agentId: agent.id, source: "on_demand", triggerDetail: "manual", reason: "task_retry",
+      status: "deferred_issue_execution", requestedByActorType: "user", requestedByActorId: "responsible-user",
+      payload: { issueId: issue.id,
+        taskRetry: { schema: "paperclip.task-retry.v1", generationId: crypto.randomUUID(), sourceRunId: foreignRun.id,
+          actorId: "responsible-user", strategy: "continue" } },
+    }).returning();
+    await db.update(heartbeatRuns).set({ status: "succeeded", finishedAt: new Date() }).where(eq(heartbeatRuns.id, promoted.id));
+    const second = await release({ companyId: company.id, runId: promoted.id, now: new Date(), suppressImmediateRecovery: true });
+    expect(second.outcome.kind).toBe("promoted");
+    const [secondPromoted] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.wakeupRequestId, otherWake.id));
+    expect(secondPromoted.retryOfRunId).toBeNull();
   });
 });
