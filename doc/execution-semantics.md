@@ -1778,9 +1778,13 @@ needs an operator, still stops the Runner. A reattachment after a restart whose 
 times out or loses its transport (for example
 `PRP command session.snapshot timed out`) detaches from the Runner the same way a server restart does: it sends no turn
 stop and no suspend and does not signal the process. The Runner and its
-in-flight turn stay for the next same-run reattachment. An abort (a Stop or the
-recovery deadline), any identity or authority refusal, any other recovery
-failure, and a protocol integrity fault still stop it.
+in-flight turn stay for the next same-run reattachment. The provider recovery
+deadline (`native session provider recovery timed out after 900000ms`) detaches
+the same way. On staging, every Codex Runner that a reattachment later found
+gone (`process_not_running`) had been stopped by this deadline's cleanup, not
+by the deploy, and the task then lost its session to a fresh one. A Stop, any
+identity or authority refusal, any other recovery failure, and a protocol
+integrity fault still stop it.
 
 A kept Runner can answer its WebSocket pings but no recovery command. On
 staging, a reattached Codex Runner authenticated and restored its session, then
@@ -1788,7 +1792,8 @@ left `session.snapshot` unanswered (`pending ahead 0; last runner event seq 338
 76s ago`), and each later attempt adopted the same Runner and failed the same
 way until the attempt budget ended the run. When a same-run reattachment fails
 because its Runner left a recovery command unanswered (`PRP command <type> timed
-out`, or `runnerd exited while waiting for <type>`), and the failure is not an
+out`, `runnerd exited while waiting for <type>`, or the provider recovery
+deadline), and the failure is not an
 identity, authority or integrity refusal, the run records
 `adoptedRunnerUnanswered` on its failure and the next claim carries
 `replaceUnansweredRunner`. That attempt does not adopt the Runner again. After
