@@ -879,11 +879,16 @@ function publishPlanProposal(currentTurnId: string, activeHost: AcpxRuntimeHost,
   planProposalTurns.add(currentTurnId);
 }
 
-function emitSettledTurnTerminal(currentTurnId: string, terminal: Record<string, unknown>, activeHost: AcpxRuntimeHost): void {
+function emitSettledTurnTerminal(
+  currentTurnId: string,
+  terminal: Record<string, unknown>,
+  activeHost: AcpxRuntimeHost,
+  providerStarted = false,
+): void {
   // Declining Claude's native plan approval interrupts its turn. The captured
   // proposal is this turn's deliverable, so the turn completes normally.
   const declinedPlan = planProposalTurns.delete(currentTurnId)
-    && (terminal.status === "cancelled" || terminal.status === "completed");
+    && (terminal.status === "cancelled" || (providerStarted && terminal.status === "completed"));
   emitTurnTerminal(currentTurnId, declinedPlan ? { status: "completed", stopReason: "end_turn" } : terminal, activeHost, declinedPlan);
 }
 
@@ -999,7 +1004,7 @@ async function pumpProviderTurn(currentTurnId: string, cycles: AcpxProviderCycle
     if (turnId === currentTurnId) turnId = null;
     if (providerTurnId === currentTurnId) providerTurnId = null;
   }
-  emitSettledTurnTerminal(currentTurnId, terminal, activeHost);
+  emitSettledTurnTerminal(currentTurnId, terminal, activeHost, true);
 }
 
 function optionalBackgroundTasks(activeHost: AcpxRuntimeHost): { backgroundTasks?: GeneratedAcpxBackgroundTasks } {
