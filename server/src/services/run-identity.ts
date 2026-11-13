@@ -76,6 +76,20 @@ export async function explicitOperatorRunIdentity(
 }
 
 export type RunIdentityContext = typeof runIdentityContexts.$inferSelect;
+
+function assertRunTaskIdentity(run: {
+  nativeIssueId?: string | null;
+  issueId?: string | null;
+  contextSnapshot?: Record<string, unknown> | null;
+} | undefined) {
+  const issueId = run?.nativeIssueId ?? run?.issueId ?? run?.contextSnapshot?.issueId ?? run?.contextSnapshot?.taskId;
+  const legacyIssueId = run?.contextSnapshot?.issueId ?? run?.contextSnapshot?.taskId;
+  if ([issueId, legacyIssueId].some(id => id !== undefined && id !== null &&
+      (typeof id !== "string" || !isUuidLike(id)))) {
+    throw forbidden("Run task identity is invalid");
+  }
+  return issueId;
+}
 type Executor = Pick<Db, "select" | "insert" | "update">;
 
 /**
@@ -100,12 +114,7 @@ async function lockIdentityTask(
     .where(
       and(eq(heartbeatRuns.id, runId), eq(heartbeatRuns.companyId, companyId)),
     );
-  const issueId = run?.nativeIssueId ?? run?.issueId ?? run?.contextSnapshot?.issueId ?? run?.contextSnapshot?.taskId;
-  const legacyIssueId = run?.contextSnapshot?.issueId ?? run?.contextSnapshot?.taskId;
-  if ([issueId, legacyIssueId].some(id => id !== undefined && id !== null &&
-      (typeof id !== "string" || !isUuidLike(id)))) {
-    throw forbidden("Run task identity is invalid");
-  }
+  const issueId = assertRunTaskIdentity(run);
   if (typeof issueId === "string")
     await executor
       .select({ id: issues.id })
@@ -612,6 +621,43 @@ export async function captureRunIdentity<Scope extends RunIdentityReadScope | un
       : [];
     return { run, context: context ?? null } as RunIdentityCapture<Scope>;
   });
+}
+
+export const requestRunIdentityFields = {
+  nativeIssueId: heartbeatRuns.nativeIssueId,
+  issueId: heartbeatRuns.issueId,
+  taskContext: runTaskContextColumn,
+  pendingIdentityContext: sql<boolean>`exists (select 1 from run_identity_contexts pending_context
+    where pending_context.run_id = "heartbeat_runs"."id" and pending_context.status = 'pending')`,
+  identityContext: sql<{ id: string; responsibleUserId: string | null } | null>`(select
+    jsonb_build_object('id', active_context.id, 'responsibleUserId', active_context.responsible_user_id)
+    from run_identity_contexts active_context
+    where active_context.id = "heartbeat_runs"."active_identity_context_id"
+      and active_context.run_id = "heartbeat_runs"."id")`,
+};
+
+type RequestRunIdentityRow = Pick<FullIdentityRun, "status" | "activeIdentityContextId" | "responsibleUserId"> & {
+  nativeIssueId?: string | null;
+  issueId?: string | null;
+  taskContext?: Record<string, unknown> | null;
+  pendingIdentityContext?: boolean | null;
+  identityContext?: { id: string; responsibleUserId: string | null } | null;
+};
+
+export async function resolveRequestRunIdentity(
+  db: Db,
+  input: { companyId: string; runId: string; agentId: string },
+  run: RequestRunIdentityRow,
+): Promise<{ activeIdentityContextId: string | null; responsibleUserId: string | null }> {
+  if (!run.activeIdentityContextId || run.status !== "running") {
+    return { activeIdentityContextId: run.activeIdentityContextId, responsibleUserId: run.responsibleUserId };
+  }
+  if (run.pendingIdentityContext) {
+    const captured = await captureRunIdentity(db, input, { readScope: "request_authentication" });
+    return { activeIdentityContextId: captured.context?.id ?? null, responsibleUserId: captured.context?.responsibleUserId ?? null };
+  }
+  assertRunTaskIdentity({ nativeIssueId: run.nativeIssueId, issueId: run.issueId, contextSnapshot: run.taskContext });
+  return { activeIdentityContextId: run.identityContext?.id ?? null, responsibleUserId: run.identityContext?.responsibleUserId ?? null };
 }
 
 export async function listRunIdentityContexts(
