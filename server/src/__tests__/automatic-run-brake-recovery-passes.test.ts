@@ -47,16 +47,17 @@ suite("automatic-run brake in the recovery passes", () => {
 
   const ago = (ms: number) => new Date(Date.now() - ms);
 
-  async function openBrake(options: { waitingAutomaticRun?: boolean } = { waitingAutomaticRun: true }) {
+  async function openBrake(options: { startingAutomaticRun?: boolean } = { startingAutomaticRun: true }) {
     const failures = await db.insert(heartbeatRuns).values(Array.from({ length: 20 }, (_, index) => ({ companyId, agentId,
       invocationSource: "automation", triggerDetail: "system", runtimeMode: "legacy", status: "failed",
-      errorCode: "environment_provider_unavailable", executionStage: "preparing", createdAt: ago(3 * MINUTE + index),
-      startedAt: ago(2 * MINUTE + index), finishedAt: ago(MINUTE - index * 100),
+      errorCode: "environment_provider_unavailable", executionStage: "preparing", createdAt: ago(4 * MINUTE + index),
+      startedAt: ago(3 * MINUTE + index), finishedAt: ago(MINUTE - index * 100),
       resultJson: { executionRecovery: { kind: "bootstrap", providerWorkStarted: false } },
       contextSnapshot: { wakeReason: "transient_failure_retry", issueId: randomUUID() } }))).returning();
-    if (options.waitingAutomaticRun) {
+    if (options.startingAutomaticRun) {
       await db.insert(heartbeatRuns).values({ companyId, agentId, invocationSource: "automation", triggerDetail: "system",
-        status: "queued", contextSnapshot: { wakeReason: "issue_continuation_needed", previousRunId: failures[0]!.id, issueId: randomUUID() } });
+        status: "running", runtimeMode: "legacy", executionStage: "preparing", startedAt: ago(20_000),
+        contextSnapshot: { wakeReason: "issue_continuation_needed", previousRunId: failures[0]!.id, issueId: randomUUID() } });
     }
     expect((await automaticRunBrake.refresh(db, companyId)).state).toBe("open");
     return failures;
@@ -127,15 +128,67 @@ suite("automatic-run brake in the recovery passes", () => {
       summary: "Automatic work is running normally." });
   }, 120_000);
 
-  it("the sweep still continues one task a minute while open when nothing automatic is waiting", async () => {
+  it("the sweep still continues one task a minute while open when no automatic run is starting", async () => {
     await seedCompany();
     const [first, second] = [await strandedTask(), await strandedTask()];
-    await openBrake({ waitingAutomaticRun: false });
+    await openBrake({ startingAutomaticRun: false });
     const enqueueWakeup = wakeQueue();
     const recovery = recoveryService(db, { enqueueWakeup, scheduleRecoveryRetry: async () => null });
     expect(await recovery.assignedWork.checkIssue({ companyId, issueId: first })).toMatchObject({ outcome: "repaired" });
     expect(await recovery.assignedWork.checkIssue({ companyId, issueId: second })).toMatchObject({ outcome: "deferred_rate_limit" });
     expect(enqueueWakeup).toHaveBeenCalledTimes(1);
+  }, 120_000);
+
+  it("leaves every pass exactly as before when the company has no pause record", async () => {
+    await seedCompany();
+    const issueId = await strandedTask();
+    const action = await pendingContinuation();
+    const enqueueWakeup = wakeQueue();
+    const recovery = recoveryService(db, { enqueueWakeup, scheduleRecoveryRetry: async () => null });
+    const wake = vi.fn(async (wakeAgentId: string, opts: { contextSnapshot: Record<string, unknown> }) => {
+      const [run] = await db.insert(heartbeatRuns).values({ companyId, agentId: wakeAgentId, invocationSource: "automation",
+        triggerDetail: "system", status: "queued", contextSnapshot: opts.contextSnapshot }).returning();
+      return run!;
+    });
+    expect(await recovery.assignedWork.checkIssue({ companyId, issueId })).toMatchObject({ outcome: "repaired" });
+    await deliverReconciledExecutions(db, wake as never);
+    expect(enqueueWakeup).toHaveBeenCalledTimes(1);
+    expect(wake).toHaveBeenCalledTimes(1);
+    expect(wake.mock.calls[0]![1]).toMatchObject({ reason: "issue_recovery_action_restored", contextSnapshot: { recoveryActionId: action.id } });
+    expect(await db.select().from(automaticRunBrakes)).toHaveLength(0);
+  }, 120_000);
+
+  it("tries again on another agent when the waiting automatic run cannot start, and closes once it works", async () => {
+    await seedCompany();
+    const otherAgent = randomUUID();
+    await db.insert(agents).values({ id: otherAgent, companyId, name: "Reviewer", role: "engineer", status: "idle", adapterType: "codex_local",
+      adapterConfig: {}, runtimeConfig: { heartbeat: { maxConcurrentRuns: 1 } }, permissions: {} });
+    const failures = await openBrake({ startingAutomaticRun: false });
+    await db.insert(heartbeatRuns).values({ companyId, agentId, invocationSource: "automation", triggerDetail: "system", status: "queued",
+      createdAt: ago(10 * MINUTE), contextSnapshot: { wakeReason: "issue_continuation_needed", previousRunId: failures[0]!.id, issueId: randomUUID() } });
+    const issueId = randomUUID();
+    await db.insert(issues).values({ id: issueId, companyId, title: "Review the work", status: "in_progress", assigneeAgentId: otherAgent,
+      updatedAt: ago(3 * HOUR), createdAt: ago(5 * HOUR) });
+    await db.insert(heartbeatRuns).values({ companyId, agentId: otherAgent, invocationSource: "on_demand", status: "interrupted",
+      errorCode: "server_shutdown_interrupted", startedAt: ago(4 * HOUR), finishedAt: ago(3 * HOUR), livenessState: "needs_followup",
+      createdAt: ago(4 * HOUR), contextSnapshot: { issueId, taskId: issueId },
+      resultJson: { executionRecovery: { kind: "bootstrap", providerWorkStarted: false } } });
+    const enqueueWakeup = wakeQueue();
+    const recovery = recoveryService(db, { enqueueWakeup, scheduleRecoveryRetry: async () => null });
+    expect(await recovery.assignedWork.checkIssue({ companyId, issueId })).toMatchObject({ outcome: "repaired" });
+    expect(enqueueWakeup.mock.calls[0]![0]).toBe(otherAgent);
+
+    await db.update(heartbeatRuns).set({ finishedAt: sql`finished_at - interval '1 hour'` }).where(inArray(heartbeatRuns.id, failures.map(run => run.id)));
+    await db.insert(heartbeatRuns).values({ companyId, agentId: otherAgent, invocationSource: "automation", triggerDetail: "system",
+      status: "succeeded", runtimeMode: "legacy", executionStage: "dispatching", startedAt: ago(40_000), finishedAt: ago(1_000),
+      contextSnapshot: { wakeReason: "issue_continuation_needed", previousRunId: randomUUID(), issueId } });
+    await db.update(automaticRunBrakes).set({ stateChangedAt: sql`state_changed_at - ${`${AUTOMATIC_RUN_BRAKE.minOpenMs} milliseconds`}::interval` })
+      .where(eq(automaticRunBrakes.companyId, companyId));
+    expect((await automaticRunBrake.refresh(db, companyId)).state).toBe("half_open");
+    await db.update(automaticRunBrakes).set({ stateChangedAt: sql`state_changed_at
+      - ${`${AUTOMATIC_RUN_BRAKE.releaseSteps * AUTOMATIC_RUN_BRAKE.releaseIntervalMs} milliseconds`}::interval` })
+      .where(eq(automaticRunBrakes.companyId, companyId));
+    expect((await automaticRunBrake.refresh(db, companyId)).state).toBe("closed");
   }, 120_000);
 
   async function pendingContinuation() {
@@ -172,7 +225,7 @@ suite("automatic-run brake in the recovery passes", () => {
     expect(wake).not.toHaveBeenCalled();
     expect(await delivery()).toBe("pending");
     await recover(failures);
-    await db.delete(heartbeatRuns).where(and(eq(heartbeatRuns.companyId, companyId), eq(heartbeatRuns.status, "queued")));
+    await db.delete(heartbeatRuns).where(and(eq(heartbeatRuns.companyId, companyId), eq(heartbeatRuns.status, "running")));
     await deliverReconciledExecutions(db, wake as never);
     expect(wake).toHaveBeenCalledTimes(1);
     expect(await delivery()).toBe("delivered");

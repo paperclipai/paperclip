@@ -1,10 +1,11 @@
 import { randomUUID } from "node:crypto";
 import { eq, inArray, sql } from "drizzle-orm";
-import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { agentWakeupRequests, agents, automaticRunBrakes, companies, createDb, heartbeatRuns } from "@paperclipai/db";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 import {
-  AUTOMATIC_RUN_BRAKE, automaticWorkStatusText, classifyAutomaticRunOutcome, createAutomaticRunBrake, isAutomaticRun,
+  AUTOMATIC_RUN_BRAKE, automaticRunOutcomeRules, automaticWorkStatusText, classifyAutomaticRunOutcome, createAutomaticRunBrake,
+  isAutomaticRun,
 } from "../services/recovery/automatic-run-brake.js";
 import { taskAutomaticAttempts } from "../services/recovery/task-automatic-attempts.js";
 
@@ -54,7 +55,7 @@ suite("automatic-run brake", () => {
 
   function failedBeforeStarting(companyId: string, agentId: string, count: number, errorCode = "environment_provider_unavailable") {
     return insertRuns(companyId, agentId, count, index => ({ status: "failed", errorCode, executionStage: "preparing",
-      createdAt: ago(3 * MINUTE + index), startedAt: ago(2 * MINUTE + index), finishedAt: ago(MINUTE - index * 100),
+      createdAt: ago(4 * MINUTE + index), startedAt: ago(3 * MINUTE + index), finishedAt: ago(MINUTE - index * 100),
       resultJson: { executionRecovery: { kind: "bootstrap", providerWorkStarted: false } } }));
   }
 
@@ -117,21 +118,56 @@ suite("automatic-run brake", () => {
     return { db: proxy as typeof db, queries: () => queries };
   }
 
-  it("classifies automatic runs and outcomes with the shared person and restart rules", () => {
+  it("classifies automatic runs and outcomes with the shared person and restart rules", async () => {
+    const rules = await automaticRunOutcomeRules();
     expect(isAutomaticRun({ id: "a", companyId: "c", contextSnapshot: { wakeReason: "issue_continuation_needed" } })).toBe(true);
     expect(isAutomaticRun({ id: "a", companyId: "c", scheduledRetryReason: "transient_failure" })).toBe(true);
     expect(isAutomaticRun({ id: "a", companyId: "c", contextSnapshot: { wakeReason: "task_retry", previousRunId: "x" } })).toBe(false);
     expect(isAutomaticRun({ id: "a", companyId: "c", contextSnapshot: { wakeReason: "issue_assigned" } })).toBe(false);
     const base = { status: "failed", runtimeMode: "legacy", startedAt: new Date(), hasOutput: false, providerWorkStarted: null };
-    expect(classifyAutomaticRunOutcome({ ...base, errorCode: "environment_provider_unavailable", executionStage: "preparing" })).toBe("failed_before_starting");
-    expect(classifyAutomaticRunOutcome({ ...base, errorCode: "controller_lease_lost", executionStage: "dispatching" })).toBe("neutral");
-    expect(classifyAutomaticRunOutcome({ ...base, errorCode: "process_lost", executionStage: "preparing" })).toBe("neutral");
-    expect(classifyAutomaticRunOutcome({ ...base, errorCode: "budget_hard_stop", executionStage: "preparing" })).toBe("healthy");
-    expect(classifyAutomaticRunOutcome({ ...base, errorCode: "adapter_failed", executionStage: "dispatching" })).toBe("healthy");
-    expect(classifyAutomaticRunOutcome({ ...base, errorCode: "adapter_failed", executionStage: null, providerWorkStarted: "false" })).toBe("failed_before_starting");
-    expect(classifyAutomaticRunOutcome({ ...base, status: "running", errorCode: null, executionStage: "preparing" })).toBe("neutral");
-    expect(classifyAutomaticRunOutcome({ ...base, status: "cancelled", errorCode: "environment_provider_unavailable", executionStage: "preparing" })).toBe("neutral");
+    expect(classifyAutomaticRunOutcome({ ...base, errorCode: "environment_provider_unavailable", executionStage: "preparing" }, rules)).toBe("failed_before_starting");
+    expect(classifyAutomaticRunOutcome({ ...base, errorCode: "controller_lease_lost", executionStage: "dispatching" }, rules)).toBe("neutral");
+    expect(classifyAutomaticRunOutcome({ ...base, errorCode: "process_lost", executionStage: "preparing" }, rules)).toBe("neutral");
+    expect(classifyAutomaticRunOutcome({ ...base, errorCode: "budget_hard_stop", executionStage: "preparing" }, rules)).toBe("healthy");
+    expect(classifyAutomaticRunOutcome({ ...base, errorCode: "adapter_failed", executionStage: "dispatching" }, rules)).toBe("healthy");
+    expect(classifyAutomaticRunOutcome({ ...base, errorCode: "adapter_failed", executionStage: null, providerWorkStarted: "false" }, rules)).toBe("failed_before_starting");
+    expect(classifyAutomaticRunOutcome({ ...base, status: "running", errorCode: null, executionStage: "preparing" }, rules)).toBe("neutral");
+    expect(classifyAutomaticRunOutcome({ ...base, status: "cancelled", errorCode: "environment_provider_unavailable", executionStage: "preparing" }, rules)).toBe("neutral");
+    const preDispatch = { version: 1, providerWorkStarted: false };
+    for (const runtimeMode of ["legacy", "native"]) {
+      const shape = { ...base, runtimeMode, executionStage: runtimeMode === "legacy" ? "preparing" : null,
+        providerWorkStarted: runtimeMode === "legacy" ? "false" : null, nativePreDispatchFailure: runtimeMode === "native" ? preDispatch : undefined };
+      for (const errorCode of ["environment_provider_unavailable", "setup_failed", "adapter_failed"]) {
+        expect(classifyAutomaticRunOutcome({ ...shape, errorCode }, rules)).toBe("failed_before_starting");
+      }
+      for (const errorCode of ["controller_lease_lost", "process_lost", "native_session_interrupted", "server_shutdown_interrupted"]) {
+        expect(classifyAutomaticRunOutcome({ ...shape, errorCode }, rules)).toBe("neutral");
+      }
+      const working = { ...base, runtimeMode, executionStage: runtimeMode === "legacy" ? "dispatching" : null, hasOutput: true };
+      expect(classifyAutomaticRunOutcome({ ...working, errorCode: "adapter_failed" }, rules)).toBe("healthy");
+      expect(classifyAutomaticRunOutcome({ ...working, errorCode: "environment_provider_unavailable" }, rules)).toBe("failed_before_starting");
+    }
   });
+
+  it("opens on native runs that failed before dispatch", async () => {
+    const { companyId, agentIds: [agentId] } = await seedCompany();
+    await insertRuns(companyId, agentId!, 20, index => ({ runtimeMode: "native", status: "failed",
+      errorCode: index % 2 ? "adapter_failed" : "setup_failed", createdAt: ago(4 * MINUTE), startedAt: ago(3 * MINUTE),
+      finishedAt: ago(MINUTE - index * 100), nativePhase: "terminal_failure",
+      resultJson: { nativePreDispatchFailure: { version: 1, providerWorkStarted: false }, failureCause: index % 2 ? "40P01" : "adapter_reported_error" } }));
+    expect((await createAutomaticRunBrake().refresh(db, companyId))).toMatchObject({ state: "open",
+      reason: { recentAutomaticRuns: 20, failedBeforeStarting: 20, trigger: "failed_before_starting" } });
+  }, 60_000);
+
+  it("sees failures that finished in the window behind more than 500 newer runs", async () => {
+    const { companyId, agentIds: [agentId, otherAgent] } = await seedCompany();
+    const failures = await failedBeforeStarting(companyId, agentId!, 20, "setup_failed");
+    await db.update(heartbeatRuns).set({ createdAt: sql`now() - interval '90 minutes'`, startedAt: sql`now() - interval '3 minutes'` })
+      .where(inArray(heartbeatRuns.id, failures.map(run => run.id)));
+    await queuedAutomatic(companyId, otherAgent!, 600);
+    await insertRuns(companyId, otherAgent!, 50, () => ({ status: "succeeded", createdAt: ago(MINUTE), contextSnapshot: { wakeReason: "issue_assigned" } }));
+    expect((await createAutomaticRunBrake().refresh(db, companyId)).state).toBe("open");
+  }, 120_000);
 
   it("opens when automatic runs fail before starting, holds all but one probe, and never holds a person's work", async () => {
     const { companyId, agentIds: [agentId, otherAgent] } = await seedCompany();
@@ -291,12 +327,13 @@ suite("automatic-run brake", () => {
     expect((await brakeRow(companyId))?.probeRunId).toBeNull();
   }, 60_000);
 
-  it("closes by itself when nothing automatic happened for the quiet bound", async () => {
+  it("closes by itself when no automatic run started or finished for the quiet bound, even with runs waiting", async () => {
     const { companyId, agentIds: [agentId] } = await seedCompany();
     const failures = await openBrake(companyId, agentId!);
     await ageBrake(companyId, AUTOMATIC_RUN_BRAKE.quietCloseMs - MINUTE);
     expect((await createAutomaticRunBrake().refresh(db, companyId)).state).toBe("open");
     await forgetRuns(failures.map(run => run.id));
+    await queuedAutomatic(companyId, agentId!, 5);
     await ageBrake(companyId, 2 * MINUTE);
     expect((await createAutomaticRunBrake().refresh(db, companyId))).toMatchObject({ state: "closed", reason: { trigger: "no_automatic_work" } });
   }, 60_000);
@@ -313,7 +350,7 @@ suite("automatic-run brake", () => {
     expect(results.filter(held => !held)).toHaveLength(1);
   }, 60_000);
 
-  it("allows one new automatic run a minute while open and nothing automatic is waiting, across servers", async () => {
+  it("allows one new automatic run a minute while open and no automatic run is starting, across servers", async () => {
     const { companyId, agentIds: [agentId] } = await seedCompany();
     await openBrake(companyId, agentId!);
     const [left, right] = [createAutomaticRunBrake(), createAutomaticRunBrake()];
@@ -321,7 +358,10 @@ suite("automatic-run brake", () => {
     expect(decisions.filter(held => held === null)).toHaveLength(1);
     const later = decisions.find(Boolean)!;
     expect(later.getTime()).toBeGreaterThan(Date.now() + 50_000);
-    await queuedAutomatic(companyId, agentId!, 1);
+    await queuedAutomatic(companyId, agentId!, 3);
+    await ageBrake(companyId, AUTOMATIC_RUN_BRAKE.creationIntervalMs);
+    expect(await createAutomaticRunBrake().creationHeldUntil(db, companyId)).toBeNull();
+    await insertRuns(companyId, agentId!, 1, () => ({ status: "running", executionStage: "preparing", startedAt: ago(20_000) }));
     await ageBrake(companyId, AUTOMATIC_RUN_BRAKE.creationIntervalMs);
     expect(await createAutomaticRunBrake().creationHeldUntil(db, companyId)).not.toBeNull();
   }, 60_000);
@@ -344,6 +384,18 @@ suite("automatic-run brake", () => {
     for (let pass = 0; pass < 100; pass += 1) for (const run of queued) await second.holdAutomaticRunStart(fallback.db, run);
     expect(fallback.queries()).toBeLessThanOrEqual(queued.length + 5);
   }, 120_000);
+
+  it("reads as closed and logs once when its run rules cannot load", async () => {
+    const { companyId, agentIds: [agentId] } = await seedCompany();
+    await failedBeforeStarting(companyId, agentId!, 20);
+    const loadRules = vi.fn(async () => { throw new Error("module failed to load"); });
+    const brake = createAutomaticRunBrake({ loadRules });
+    const queued = await queuedAutomatic(companyId, agentId!, 3);
+    expect((await brake.refresh(db, companyId)).state).toBe("closed");
+    expect(await brake.creationHeldUntil(db, companyId)).toBeNull();
+    expect(await heldCount(brake, queued)).toBe(3);
+    expect(await brakeRow(companyId)).toBeUndefined();
+  }, 60_000);
 
   it("keeps its in-process memory bounded across many companies and runs", async () => {
     const brake = createAutomaticRunBrake();

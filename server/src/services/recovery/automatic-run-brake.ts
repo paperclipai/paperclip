@@ -2,14 +2,11 @@ import { eq, sql } from "drizzle-orm";
 import { automaticRunBrakes, type Db } from "@paperclipai/db";
 import { logger } from "../../middleware/logger.js";
 import { PERSON_WAKE_REASONS, RECOVERY_WAKE_REASONS } from "../heartbeat/queued-run-dispatch-order.js";
-import { listPersonOriginSourceRunIds } from "../heartbeat/queued-run-line.js";
-import { isTransientWorkspacePreparationCode } from "../heartbeat/retries.js";
-import { BACKLOG_CONTINUATION_SOURCE_CODES, isPersonOwnedFailureCode } from "../fresh-continuation-fallback.js";
 import { ENVIRONMENT_PROVIDER_UNAVAILABLE_CODE } from "../environment-provider-unavailable-error.js";
 
 export const AUTOMATIC_RUN_BRAKE = {
   windowMs: 10 * 60_000,
-  lookbackMs: 2 * 60 * 60_000,
+  startProgressMs: 2 * 60_000,
   minCounted: 12,
   failureShare: 0.8,
   consecutiveProviderRefusals: 5,
@@ -26,6 +23,7 @@ export const AUTOMATIC_RUN_BRAKE = {
   maxCompanies: 256,
   maxRuns: 1_024,
   rowLimit: 500,
+  runningLimit: 200,
 } as const;
 
 export type AutomaticRunBrakeState = "closed" | "open" | "half_open";
@@ -59,14 +57,40 @@ export type AutomaticRunOutcomeFacts = {
   startedAt: Date | null;
   hasOutput: boolean;
   providerWorkStarted: string | null;
+  nativePreDispatchFailure?: unknown;
 };
 
-export function classifyAutomaticRunOutcome(run: AutomaticRunOutcomeFacts): AutomaticRunOutcome {
+export type AutomaticRunOutcomeRules = {
+  isPersonOwnedFailureCode: (code: string | null) => boolean;
+  restartCodes: readonly string[];
+  isTransientSetupCode: (code: string | null) => boolean;
+  hasNativePreDispatchFailureRecord: (resultJson: unknown) => boolean;
+  listPersonOriginSourceRunIds: (db: Db, companyId: string, runIds: string[]) => Promise<string[]>;
+};
+
+let outcomeRules: Promise<AutomaticRunOutcomeRules> | null = null;
+
+export function automaticRunOutcomeRules(): Promise<AutomaticRunOutcomeRules> {
+  outcomeRules ??= Promise.all([import("../fresh-continuation-fallback.js"), import("../heartbeat/retries.js"),
+    import("../heartbeat/run-failure-cause.js"), import("../heartbeat/queued-run-line.js")])
+    .then(([fallback, retries, failureCause, queuedRunLine]) => ({
+      isPersonOwnedFailureCode: fallback.isPersonOwnedFailureCode,
+      restartCodes: fallback.BACKLOG_CONTINUATION_SOURCE_CODES,
+      isTransientSetupCode: retries.isTransientWorkspacePreparationCode,
+      hasNativePreDispatchFailureRecord: failureCause.hasNativePreDispatchFailureRecord,
+      listPersonOriginSourceRunIds: queuedRunLine.listPersonOriginSourceRunIds,
+    }))
+    .catch(error => { outcomeRules = null; throw error; });
+  return outcomeRules;
+}
+
+export function classifyAutomaticRunOutcome(run: AutomaticRunOutcomeFacts, rules: AutomaticRunOutcomeRules): AutomaticRunOutcome {
   if (run.status === "running") return run.executionStage === "dispatching" || run.hasOutput ? "healthy" : "neutral";
   if (!run.startedAt || run.status === "cancelled" || !["succeeded", "failed", "timed_out", "interrupted"].includes(run.status)) return "neutral";
-  if (run.status === "succeeded" || isPersonOwnedFailureCode(run.errorCode)) return "healthy";
-  if (run.errorCode && (BACKLOG_CONTINUATION_SOURCE_CODES as readonly string[]).includes(run.errorCode)) return "neutral";
-  const startPhase = run.providerWorkStarted === "false" || isTransientWorkspacePreparationCode(run.errorCode)
+  if (run.status === "succeeded" || rules.isPersonOwnedFailureCode(run.errorCode)) return "healthy";
+  if (run.errorCode && rules.restartCodes.includes(run.errorCode)) return "neutral";
+  const startPhase = run.providerWorkStarted === "false" || rules.isTransientSetupCode(run.errorCode)
+    || rules.hasNativePreDispatchFailureRecord({ nativePreDispatchFailure: run.nativePreDispatchFailure })
     || (run.runtimeMode === "legacy" && run.executionStage === "preparing");
   return startPhase ? "failed_before_starting" : "healthy";
 }
@@ -85,6 +109,7 @@ type SignalRow = {
   created_at: string | Date;
   has_output: boolean;
   provider_work_started: string | null;
+  native_pre_dispatch: unknown;
   retry_of_run_id: string | null;
   scheduled_retry_reason: string | null;
   context: Record<string, unknown> | null;
@@ -96,7 +121,7 @@ type Evidence = {
   healthy: number;
   providerRefusalStreak: boolean;
   recoveredSince: boolean;
-  liveAutomatic: number;
+  lastStartAt: number | null;
   lastActivityAt: number | null;
 };
 
@@ -139,23 +164,30 @@ function rampStep(stateChangedAt: Date, now: Date) {
   return Math.max(0, Math.floor((now.getTime() - stateChangedAt.getTime()) / AUTOMATIC_RUN_BRAKE.releaseIntervalMs));
 }
 
-function evaluate(rows: SignalRow[], state: AutomaticRunBrakeState, lower: number, now: Date): Evidence {
+const outcomeFacts = (row: SignalRow): AutomaticRunOutcomeFacts => ({ status: row.status, errorCode: row.error_code,
+  runtimeMode: row.runtime_mode, executionStage: row.execution_stage, startedAt: toDate(row.started_at), hasOutput: row.has_output,
+  providerWorkStarted: row.provider_work_started, nativePreDispatchFailure: row.native_pre_dispatch });
+
+const latest = (values: Array<number | null | undefined>) => {
+  const known = values.filter((value): value is number => typeof value === "number");
+  return known.length ? Math.max(...known) : null;
+};
+
+function evaluate(rows: SignalRow[], state: AutomaticRunBrakeState, lower: number, now: Date, rules: AutomaticRunOutcomeRules): Evidence {
   const automatic = rows.filter(row => isAutomaticRun({ id: row.id, companyId: "", retryOfRunId: row.retry_of_run_id,
     scheduledRetryReason: row.scheduled_retry_reason, contextSnapshot: row.context }));
-  const liveAutomatic = automatic.filter(row => row.status === "queued" || row.status === "scheduled_retry").length;
   const outcomes = automatic.flatMap(row => {
     const finishedAt = toDate(row.finished_at);
     if (row.status !== "running" && (!finishedAt || finishedAt.getTime() < lower)) return [];
     const startedAt = toDate(row.started_at);
     if (row.status === "running" && (!startedAt || startedAt.getTime() < lower)) return [];
-    const outcome = classifyAutomaticRunOutcome({ status: row.status, errorCode: row.error_code, runtimeMode: row.runtime_mode,
-      executionStage: row.execution_stage, startedAt, hasOutput: row.has_output, providerWorkStarted: row.provider_work_started });
+    const outcome = classifyAutomaticRunOutcome(outcomeFacts(row), rules);
     return outcome === "neutral" ? [] : [{ outcome, row, at: (finishedAt ?? now).getTime() }];
   }).sort((left, right) => right.at - left.at);
   const failedBeforeStarting = outcomes.filter(entry => entry.outcome === "failed_before_starting").length;
   const streak = outcomes.slice(0, AUTOMATIC_RUN_BRAKE.consecutiveProviderRefusals);
-  const lastActivityAt = Math.max(...automatic.map(row => Math.max(toDate(row.created_at)!.getTime(),
-    toDate(row.finished_at)?.getTime() ?? 0, row.status === "running" ? now.getTime() : 0)));
+  const lastStartAt = latest(automatic.map(row => toDate(row.started_at)?.getTime()));
+  const lastActivityAt = latest([lastStartAt, ...automatic.map(row => toDate(row.finished_at)?.getTime())]);
   return {
     counted: outcomes.length,
     failedBeforeStarting,
@@ -165,8 +197,8 @@ function evaluate(rows: SignalRow[], state: AutomaticRunBrakeState, lower: numbe
     recoveredSince: state === "open" && outcomes.length > 0 && (outcomes[0]!.row.status === "succeeded"
       || (outcomes.length >= AUTOMATIC_RUN_BRAKE.probeSuccessesToRelease
         && outcomes.slice(0, AUTOMATIC_RUN_BRAKE.probeSuccessesToRelease).every(entry => entry.outcome === "healthy"))),
-    liveAutomatic,
-    lastActivityAt: Number.isFinite(lastActivityAt) ? lastActivityAt : null,
+    lastStartAt,
+    lastActivityAt,
   };
 }
 
@@ -177,9 +209,24 @@ function trips(evidence: Evidence) {
 
 type CacheEntry = { snapshot: AutomaticRunBrakeSnapshot; readAt: number; skewMs: number; heldUntil: number };
 
-export function createAutomaticRunBrake() {
+export function createAutomaticRunBrake(options: { loadRules?: () => Promise<AutomaticRunOutcomeRules> } = {}) {
+  const loadRules = options.loadRules ?? automaticRunOutcomeRules;
   const companies = boundedMap<string, CacheEntry>(AUTOMATIC_RUN_BRAKE.maxCompanies);
   const personOrigin = boundedMap<string, boolean>(AUTOMATIC_RUN_BRAKE.maxRuns);
+  let rulesFailureLogged = false;
+
+  async function rulesOrNull() {
+    try {
+      return await loadRules();
+    } catch (error) {
+      if (!rulesFailureLogged) {
+        rulesFailureLogged = true;
+        logger.error({ err: error, event: "automatic_run_brake.rules_unavailable" },
+          "Automatic work pause could not load its run rules; automatic work is not paused");
+      }
+      return null;
+    }
+  }
 
   async function readRow(db: Db, companyId: string): Promise<BrakeRow | null> {
     const [row] = await db.select().from(automaticRunBrakes).where(eq(automaticRunBrakes.companyId, companyId));
@@ -192,25 +239,25 @@ export function createAutomaticRunBrake() {
     const lower = state === "open"
       ? sql`coalesce(${changedAt?.toISOString() ?? null}::timestamptz, now() - ${`${AUTOMATIC_RUN_BRAKE.windowMs} milliseconds`}::interval)`
       : sql`greatest(now() - ${`${AUTOMATIC_RUN_BRAKE.windowMs} milliseconds`}::interval, ${changedAt?.toISOString() ?? null}::timestamptz)`;
+    const columns = sql`r.id, r.status, r.error_code, r.runtime_mode, r.execution_stage, r.started_at, r.finished_at, r.created_at,
+      r.last_output_at is not null as has_output, r.result_json #>> '{executionRecovery,providerWorkStarted}' as provider_work_started,
+      r.result_json -> 'nativePreDispatchFailure' as native_pre_dispatch, r.retry_of_run_id, r.scheduled_retry_reason,
+      jsonb_build_object('wakeReason', r.context_snapshot->'wakeReason', 'previousRunId', r.context_snapshot->'previousRunId',
+        'retryReason', r.context_snapshot->'retryReason', 'freshContinuationIsolation', r.context_snapshot->'freshContinuationIsolation',
+        'explicitUserContinuation', r.context_snapshot->'explicitUserContinuation',
+        'taskRetryRequestId', r.context_snapshot->'taskRetryRequestId') as context`;
     const rows = [...await db.execute<SignalRow & { lower_at: string | Date }>(sql`
-      select now() as db_now, ${lower} as lower_at, r.id, r.status, r.error_code, r.runtime_mode, r.execution_stage,
-        r.started_at, r.finished_at, r.created_at, r.last_output_at is not null as has_output,
-        r.result_json #>> '{executionRecovery,providerWorkStarted}' as provider_work_started,
-        r.retry_of_run_id, r.scheduled_retry_reason,
-        jsonb_build_object('wakeReason', r.context_snapshot->'wakeReason', 'previousRunId', r.context_snapshot->'previousRunId',
-          'retryReason', r.context_snapshot->'retryReason', 'freshContinuationIsolation', r.context_snapshot->'freshContinuationIsolation',
-          'explicitUserContinuation', r.context_snapshot->'explicitUserContinuation',
-          'taskRetryRequestId', r.context_snapshot->'taskRetryRequestId') as context
-      from heartbeat_runs r
-      where r.company_id = ${companyId}
-        and r.created_at >= now() - ${`${AUTOMATIC_RUN_BRAKE.lookbackMs} milliseconds`}::interval
-        and (r.finished_at >= ${lower} or r.status in ('queued', 'scheduled_retry', 'running')
-          or r.created_at >= now() - ${`${AUTOMATIC_RUN_BRAKE.quietCloseMs} milliseconds`}::interval)
-      order by r.created_at desc
-      limit ${AUTOMATIC_RUN_BRAKE.rowLimit}`)];
-    if (rows.length) return { rows, now: toDate(rows[0]!.db_now)!, lower: toDate(rows[0]!.lower_at)!.getTime() };
-    const [clock] = [...await db.execute<{ db_now: string | Date }>(sql`select now() as db_now`)];
-    return { rows, now: toDate(clock!.db_now)!, lower: 0 };
+      with clock as (select now() as db_now, ${lower} as lower_at)
+      select clock.db_now, clock.lower_at, runs.* from clock left join lateral (
+        (select ${columns} from heartbeat_runs r
+          where r.company_id = ${companyId} and r.finished_at is not null and r.finished_at >= clock.lower_at
+          order by r.finished_at desc limit ${AUTOMATIC_RUN_BRAKE.rowLimit})
+        union all
+        (select ${columns} from heartbeat_runs r
+          where r.company_id = ${companyId} and r.status = 'running'
+          order by r.started_at desc nulls last limit ${AUTOMATIC_RUN_BRAKE.runningLimit})
+      ) runs on true`)];
+    return { rows: rows.filter(row => row.id), now: toDate(rows[0]!.db_now)!, lower: toDate(rows[0]!.lower_at)!.getTime() };
   }
 
   async function transition(db: Db, companyId: string, row: BrakeRow | null, to: AutomaticRunBrakeState,
@@ -245,17 +292,16 @@ export function createAutomaticRunBrake() {
     return updated;
   }
 
-  async function settleProbe(db: Db, row: BrakeRow, rows: SignalRow[]): Promise<BrakeRow> {
+  async function settleProbe(db: Db, row: BrakeRow, rows: SignalRow[], rules: AutomaticRunOutcomeRules): Promise<BrakeRow> {
     if (row.state !== "open" || !row.probeRunId) return row;
     const known = rows.find(candidate => candidate.id === row.probeRunId);
     const [probe] = known ? [known] : [...await db.execute<SignalRow>(sql`
       select r.id, r.status, r.error_code, r.runtime_mode, r.execution_stage, r.started_at, r.finished_at, r.created_at,
-        r.last_output_at is not null as has_output, r.result_json #>> '{executionRecovery,providerWorkStarted}' as provider_work_started
+        r.last_output_at is not null as has_output, r.result_json #>> '{executionRecovery,providerWorkStarted}' as provider_work_started,
+        r.result_json -> 'nativePreDispatchFailure' as native_pre_dispatch
       from heartbeat_runs r where r.company_id = ${row.companyId} and r.id = ${row.probeRunId}`)];
     if (probe && (probe.status === "queued" || probe.status === "scheduled_retry")) return row;
-    const outcome = probe ? classifyAutomaticRunOutcome({ status: probe.status, errorCode: probe.error_code, runtimeMode: probe.runtime_mode,
-      executionStage: probe.execution_stage, startedAt: toDate(probe.started_at), hasOutput: probe.has_output,
-      providerWorkStarted: probe.provider_work_started }) : "neutral";
+    const outcome = probe ? classifyAutomaticRunOutcome(outcomeFacts(probe), rules) : "neutral";
     if (probe?.status === "running" && outcome === "neutral") return row;
     const completed = probe?.status === "succeeded";
     const successes = outcome === "healthy" ? row.probeSuccesses + (completed ? AUTOMATIC_RUN_BRAKE.probeSuccessesToRelease : 1)
@@ -269,11 +315,21 @@ export function createAutomaticRunBrake() {
   }
 
   async function refresh(db: Db, companyId: string): Promise<CacheEntry> {
+    const rules = await rulesOrNull();
+    if (!rules) {
+      const now = new Date();
+      const entry: CacheEntry = { readAt: now.getTime(), skewMs: 0, heldUntil: 0, snapshot: { companyId, state: "closed", pausedSince: null,
+        stateChangedAt: null, reason: {}, nextProbeAt: null, nextCreationAt: null, probeRunId: null, probeSuccesses: 0, dbNow: now,
+        evidence: { counted: 0, failedBeforeStarting: 0, healthy: 0, providerRefusalStreak: false, recoveredSince: false,
+          lastStartAt: null, lastActivityAt: null } } };
+      companies.set(companyId, entry);
+      return entry;
+    }
     let row = await readRow(db, companyId);
     let signal = await readSignal(db, companyId, row);
-    if (row) row = await settleProbe(db, row, signal.rows);
+    if (row) row = await settleProbe(db, row, signal.rows, rules);
     let state: AutomaticRunBrakeState = row?.state ?? "closed";
-    let evidence = evaluate(signal.rows, state, signal.lower, signal.now);
+    let evidence = evaluate(signal.rows, state, signal.lower, signal.now, rules);
     const numbers = { windowMinutes: AUTOMATIC_RUN_BRAKE.windowMs / 60_000, recentAutomaticRuns: evidence.counted,
       failedBeforeStarting: evidence.failedBeforeStarting, healthy: evidence.healthy };
     const changedAt = row?.stateChangedAt?.getTime() ?? 0;
@@ -288,7 +344,7 @@ export function createAutomaticRunBrake() {
     } else if (state === "open" && elapsed >= AUTOMATIC_RUN_BRAKE.minOpenMs
       && (evidence.recoveredSince || (row?.probeSuccesses ?? 0) >= AUTOMATIC_RUN_BRAKE.probeSuccessesToRelease)) {
       target = { to: "half_open", reason: { ...numbers, trigger: "runs_starting_again" } };
-    } else if (state === "open" && elapsed >= AUTOMATIC_RUN_BRAKE.quietCloseMs && evidence.liveAutomatic === 0
+    } else if (state === "open" && elapsed >= AUTOMATIC_RUN_BRAKE.quietCloseMs
       && (evidence.lastActivityAt ?? 0) < signal.now.getTime() - AUTOMATIC_RUN_BRAKE.quietCloseMs) {
       target = { to: "closed", reason: { ...numbers, trigger: "no_automatic_work" } };
     }
@@ -297,7 +353,7 @@ export function createAutomaticRunBrake() {
       state = row?.state ?? "closed";
       if (state !== "closed") {
         signal = await readSignal(db, companyId, row);
-        evidence = evaluate(signal.rows, state, signal.lower, signal.now);
+        evidence = evaluate(signal.rows, state, signal.lower, signal.now, rules);
       }
     }
     const snapshot: AutomaticRunBrakeSnapshot = {
@@ -325,15 +381,15 @@ export function createAutomaticRunBrake() {
     const entry = await current(db, companyId);
     if (entry.snapshot.state !== "open") return null;
     const recheck = new Date(Date.now() + AUTOMATIC_RUN_BRAKE.creationIntervalMs);
-    if (entry.snapshot.evidence.liveAutomatic > 0) return recheck;
+    const lastStartAt = entry.snapshot.evidence.lastStartAt;
+    if (lastStartAt !== null && lastStartAt - entry.skewMs > Date.now() - AUTOMATIC_RUN_BRAKE.startProgressMs) return recheck;
     const [seeded] = await db.update(automaticRunBrakes).set({
       nextCreationAt: sql`now() + ${`${AUTOMATIC_RUN_BRAKE.creationIntervalMs} milliseconds`}::interval`, updatedAt: sql`now()`,
     }).where(sql`${automaticRunBrakes.companyId} = ${companyId} and ${automaticRunBrakes.state} = 'open'
       and (${automaticRunBrakes.nextCreationAt} is null or ${automaticRunBrakes.nextCreationAt} <= now())`)
       .returning({ nextCreationAt: automaticRunBrakes.nextCreationAt });
     if (seeded) {
-      entry.snapshot = { ...entry.snapshot, nextCreationAt: seeded.nextCreationAt,
-        evidence: { ...entry.snapshot.evidence, liveAutomatic: 1 } };
+      entry.snapshot = { ...entry.snapshot, nextCreationAt: seeded.nextCreationAt };
       return null;
     }
     const row = await readRow(db, companyId);
@@ -345,7 +401,9 @@ export function createAutomaticRunBrake() {
   async function isPersonOrigin(db: Db, run: AutomaticRunFacts) {
     const known = personOrigin.get(run.id);
     if (known !== undefined) return known;
-    const origin = (await listPersonOriginSourceRunIds(db, run.companyId, [run.id])).includes(run.id);
+    const rules = await rulesOrNull();
+    if (!rules) return true;
+    const origin = (await rules.listPersonOriginSourceRunIds(db, run.companyId, [run.id])).includes(run.id);
     personOrigin.set(run.id, origin);
     return origin;
   }

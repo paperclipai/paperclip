@@ -3347,6 +3347,13 @@
       "when": 1794589689019,
       "tag": "0479_woozy_black_queen",
       "breakpoints": true
+    },
+    {
+      "idx": 480,
+      "version": "7",
+      "when": 1794593792583,
+      "tag": "0480_heartbeat_runs_company_finished_index",
+      "breakpoints": true
     }
   ]
 }

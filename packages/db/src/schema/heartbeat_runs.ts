@@ -241,6 +241,8 @@ export const heartbeatRuns = pgTable(
       table.status,
       table.processStartedAt,
     ),
+    companyFinishedIdx: index("heartbeat_runs_company_finished_idx").on(table.companyId, table.finishedAt.desc())
+      .where(sql`${table.finishedAt} is not null`).concurrently(),
     companyCreatedAtDescIdx: index("heartbeat_runs_company_created_at_desc_idx").on(
       table.companyId,
       table.createdAt.desc(),
