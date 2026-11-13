@@ -773,7 +773,7 @@ describePostgres("heartbeat execution configuration through adapter dispatch", (
         "configuration_mentions", "configuration_github_identity", "configuration_secrets", "configuration_ai_runtime",
         "configuration_skills", "configuration_connector_assignments", "configuration_connector_skills",
         "configuration_connector_delivery", "configuration_connection_instructions", "configuration_agent_identity",
-        "configuration_mcp_skills",
+        "configuration_mcp_skills", "configuration_mcp_app_context",
       ].map(step => `heartbeat.prepare.${step}`).sort());
       for (const span of steps) {
         expect(span.status).toEqual({ code: 0 });

@@ -1773,6 +1773,68 @@ describeEmbeddedPostgres("issue queued-comment routes", () => {
     expect(discard.status).toBe(403);
   });
 
+  it.each(["running", "failed"] as const)("lets the board discard an agent message while the previous run is %s", async (status) => {
+    const seeded = await seedQueue();
+    await db.update(issueComments).set({ authorType: "agent", authorUserId: null, authorAgentId: seeded.agentId })
+      .where(eq(issueComments.id, seeded.commentIds[0]));
+    if (status === "failed") {
+      await db.update(heartbeatRuns).set({ status, finishedAt: new Date("2026-08-22T15:04:00Z") })
+        .where(eq(heartbeatRuns.id, seeded.runId));
+      await db.update(issues).set({ executionRunId: null, status: "todo" }).where(eq(issues.id, seeded.issueId));
+    }
+    const initial = await request(app(seeded.companyId)).get(`/api/issues/${seeded.issueId}/queued-comments`);
+    expect(initial.status).toBe(200);
+    expect(initial.body.entries[0]).toMatchObject({ canEdit: false, canDiscard: true });
+
+    const edit = await request(app(seeded.companyId))
+      .patch(`/api/issues/${seeded.issueId}/queued-comments/${seeded.commentIds[0]}`)
+      .send({ queueId: seeded.wakeId, revision: initial.body.revision, body: "changed author text" });
+    expect(edit.status).toBe(403);
+
+    const discarded = await request(app(seeded.companyId))
+      .delete(`/api/issues/${seeded.issueId}/queued-comments/${seeded.commentIds[0]}`)
+      .send({ queueId: seeded.wakeId, revision: initial.body.revision });
+    expect(discarded.status, JSON.stringify(discarded.body)).toBe(200);
+    expect(discarded.body.entries.map((entry: { comment: { id: string } }) => entry.comment.id)).toEqual([seeded.commentIds[1]]);
+
+    const reloaded = await request(app(seeded.companyId)).get(`/api/issues/${seeded.issueId}/queued-comments`);
+    expect(reloaded.body.entries.map((entry: { comment: { id: string } }) => entry.comment.id)).toEqual([seeded.commentIds[1]]);
+    const deleted = await db.select().from(issueComments).where(eq(issueComments.id, seeded.commentIds[0]));
+    expect(deleted).toHaveLength(0);
+    const wake = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, seeded.wakeId)).then(rows => rows[0]);
+    expect((wake?.payload as any)._paperclipWakeContext.wakeCommentIds).toEqual([seeded.commentIds[1]]);
+    const activity = await db.select().from(activityLog).where(eq(activityLog.entityId, seeded.issueId));
+    expect(activity).toEqual(expect.arrayContaining([expect.objectContaining({
+      actorType: "user", actorId: "queue-owner", action: "issue.queued_comment_discarded",
+    })]));
+  });
+
+  it.each(["private task", "other company"] as const)("hides an agent queue from a board user outside its %s access", async (boundary) => {
+    const seeded = await seedQueue();
+    await db.update(issueComments).set({ authorType: "agent", authorUserId: null, authorAgentId: seeded.agentId })
+      .where(eq(issueComments.id, seeded.commentIds[0]));
+    const initial = await request(app(seeded.companyId)).get(`/api/issues/${seeded.issueId}/queued-comments`);
+    let actorCompanyId = seeded.companyId;
+    if (boundary === "private task") {
+      await db.update(issues).set({ visibility: "private", privacyRootIssueId: seeded.issueId,
+        createdByUserId: "queue-owner", responsibleUserId: "queue-owner" }).where(eq(issues.id, seeded.issueId));
+    } else {
+      actorCompanyId = randomUUID();
+      await db.insert(companies).values({ id: actorCompanyId, name: "Other company", issuePrefix: "OTHER" });
+      await db.insert(companyMemberships).values({ companyId: actorCompanyId, principalType: "user",
+        principalId: "foreign-operator", status: "active", membershipRole: "operator" });
+    }
+
+    const response = await request(app(actorCompanyId, boundary === "private task" ? "other-operator" : "foreign-operator"))
+      .delete(`/api/issues/${seeded.issueId}/queued-comments/${seeded.commentIds[0]}`)
+      .send({ queueId: seeded.wakeId, revision: initial.body.revision });
+    expect(response.status).toBe(404);
+    expect(await db.select().from(issueComments).where(eq(issueComments.id, seeded.commentIds[0]))).toHaveLength(1);
+    const wake = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, seeded.wakeId)).then(rows => rows[0]);
+    expect((wake?.payload as any)._paperclipWakeContext.wakeCommentIds).toEqual(seeded.commentIds);
+    expect(await db.select().from(activityLog).where(eq(activityLog.entityId, seeded.issueId))).toHaveLength(0);
+  });
+
   it("leaves the selected row queued when no native steering session is attached", async () => {
     const seeded = await seedQueue();
     const initial = await request(app(seeded.companyId))
