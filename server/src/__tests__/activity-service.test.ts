@@ -146,6 +146,7 @@ describeEmbeddedPostgres("activity service", () => {
       return row!.id;
     };
     const base = { companyId, agentId, issueId, scopeKind: "issue", contextSnapshot: { issueId } } as const;
+    const memberTaskRetryId = await wake("task_retry", "user", userId), inheritedRetryId = randomUUID();
     const at = (seconds: number) => new Date(Date.UTC(2026, 10, 13, 18, 0, seconds));
     await db.insert(heartbeatRuns).values([
       { ...base, id: failedRunId, status: "failed", errorCode: "native_provider_model_rejected", invocationSource: "assignment", createdAt: at(0) },
@@ -155,10 +156,14 @@ describeEmbeddedPostgres("activity service", () => {
       // the run context with the source run as previousRunId, and retryOfRunId stays empty.
       { ...base, id: memberRetryId, status: "succeeded", invocationSource: "on_demand", triggerDetail: "manual",
         wakeupRequestId: await wake("issue_assigned", "user", userId),
-        contextSnapshot: { issueId, previousRunId: failedRunId, forceFreshSession: true, taskRetryRequestId: await wake("task_retry", "user", userId) }, createdAt: at(2) },
+        contextSnapshot: { issueId, previousRunId: failedRunId, forceFreshSession: true, taskRetryRequestId: memberTaskRetryId }, createdAt: at(2) },
       // Automatic recovery keeps the original responsible user; that is not who started it.
       { ...base, id: autoRetryId, status: "succeeded", invocationSource: "automation", triggerDetail: "system", responsibleUserId: "local-board",
         retryOfRunId: failedRunId, wakeupRequestId: await wake("transient_failure_retry", null, null, "automation"), createdAt: at(3) },
+      // Automatic recovery after that Task Retry inherits the person's request in its context.
+      { ...base, id: inheritedRetryId, status: "succeeded", invocationSource: "automation", triggerDetail: "system", retryOfRunId: memberRetryId,
+        wakeupRequestId: await wake("transient_failure_retry", null, null, "automation"),
+        contextSnapshot: { issueId, previousRunId: failedRunId, taskRetryRequestId: memberTaskRetryId }, createdAt: at(5) },
       { ...base, id: unknownRetryId, status: "succeeded", invocationSource: "on_demand", triggerDetail: "manual", retryOfRunId: failedRunId, createdAt: at(4) },
     ]);
 
@@ -171,6 +176,7 @@ describeEmbeddedPostgres("activity service", () => {
       summary: "Sam Rivera pressed Retry on the failed run. Paperclip did not retry it automatically." });
     expect(byId.get(autoRetryId)).toEqual({ kind: "automatic",
       summary: "Paperclip retried the failed run automatically; no person pressed Retry." });
+    expect(byId.get(inheritedRetryId)).toMatchObject({ kind: "automatic" });
     expect(byId.get(unknownRetryId)).toBeNull();
     expect(JSON.stringify([...byId.values()])).not.toMatch(/local-board|member-/);
     await db.delete(authUsers).where(eq(authUsers.id, userId));

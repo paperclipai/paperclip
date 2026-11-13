@@ -81,12 +81,14 @@ export function describeRunRetry(
   personName: string | null,
 ): RunRetriedBy | null {
   if (!run.retryOfRunId && !run.taskRetryRequestId) return null;
+  // The run's own start decides first: automatic recovery after a person's
+  // Task Retry inherits that Retry's request, but the person did not start it.
+  if (run.invocationSource === "automation") {
+    return { kind: "automatic", summary: "Paperclip retried the failed run automatically; no person pressed Retry." };
+  }
   if (wake?.requestedByActorType === "user" && wake.reason && PERSON_RETRY_WAKE_REASONS.has(wake.reason)) {
     const name = personName?.trim() || "A board member";
     return { kind: "person", personName: name, summary: `${name} pressed Retry on the failed run. Paperclip did not retry it automatically.` };
-  }
-  if (run.invocationSource === "automation") {
-    return { kind: "automatic", summary: "Paperclip retried the failed run automatically; no person pressed Retry." };
   }
   return null;
 }
