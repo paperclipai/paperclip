@@ -19,7 +19,7 @@ import { managedConnectorProfile, oauthGrantConfig, oauthGrantExpiresAtMs } from
 import { connectionSetupUrl, connectionReconnectUrl } from "../identifiers.js";
 import { singleFlight } from "../single-flight.js";
 import { usesClientCredentials } from "./client-credentials.js";
-import type { ClientCredentialsService } from "./client-credentials-service.js";
+import { requireClientCredentials, type ClientCredentialsService } from "./client-credentials-service.js";
 function asRecord(value: unknown): Record<string, unknown> {
   if (value && typeof value === "object" && !Array.isArray(value))
     return value as Record<string, unknown>;
@@ -33,7 +33,8 @@ type GrantRefreshDependencies = {
   currentCloudConnector: () => PaperclipCloudConnector | null;
   getConnectionRow(idOrUid: string, companyId?: string): Promise<typeof toolConnections.$inferSelect>;
   exchangeOAuthToken: ReturnType<typeof createOAuthClientProtocol>["exchangeOAuthToken"];
-  requestClientCredentialsToken: ClientCredentialsService["requestClientCredentialsToken"];
+  /** Absent only in narrow test harnesses that never use machine sign-in. */
+  requestClientCredentialsToken?: ClientCredentialsService["requestClientCredentialsToken"];
 };
 
 export function createOAuthGrantRefresh(db: Db, { now, store, leases, currentCloudConnector, getConnectionRow, exchangeOAuthToken, requestClientCredentialsToken }: GrantRefreshDependencies) {
@@ -306,7 +307,7 @@ export function createOAuthGrantRefresh(db: Db, { now, store, leases, currentClo
         let token: Awaited<ReturnType<typeof exchangeOAuthToken>>;
         try {
           if (machineSignIn) {
-            token = await requestClientCredentialsToken(connection, input.actor);
+            token = await requireClientCredentials(requestClientCredentialsToken)(connection, input.actor);
           } else {
           const client = await oauthClientForConnection(
             connection,

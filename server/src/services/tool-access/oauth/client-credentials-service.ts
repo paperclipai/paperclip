@@ -139,6 +139,13 @@ function scopesFrom(value: string | undefined): string[] | undefined {
   return value === undefined ? undefined : normalizeOauthScopes(value.split(/\s+/));
 }
 
+export function requireClientCredentials(
+  request: ClientCredentialsService["requestClientCredentialsToken"] | undefined,
+): ClientCredentialsService["requestClientCredentialsToken"] {
+  if (!request) throw new Error("Machine sign-in token requests are not configured for this service");
+  return request;
+}
+
 export function createClientCredentialsService(db: Db, deps: Dependencies) {
   const { now, secrets, store, exchangeOAuthToken, getConnectionRow, fetchRemoteHttpUrl, assertOAuthEndpointUrl } = deps;
 

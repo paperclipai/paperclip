@@ -15,7 +15,7 @@ import { oauthExpiresAtMs, oauthSecretRef } from "./client-settings.js";
 import { connectionSetupUrl, connectionReconnectUrl } from "../identifiers.js";
 import { singleFlight } from "../single-flight.js";
 import { usesClientCredentials } from "./client-credentials.js";
-import type { ClientCredentialsService } from "./client-credentials-service.js";
+import { requireClientCredentials, type ClientCredentialsService } from "./client-credentials-service.js";
 function asRecord(value: unknown): Record<string, unknown> {
   if (value && typeof value === "object" && !Array.isArray(value))
     return value as Record<string, unknown>;
@@ -29,7 +29,8 @@ type LegacyRefreshDependencies = {
   leases: Pick<OAuthRefreshLeases, "acquireOAuthRefreshLease" | "clearOAuthRefreshLease">;
   getConnectionRow(idOrUid: string, companyId?: string): Promise<typeof toolConnections.$inferSelect>;
   exchangeOAuthToken: ReturnType<typeof createOAuthClientProtocol>["exchangeOAuthToken"];
-  requestClientCredentialsToken: ClientCredentialsService["requestClientCredentialsToken"];
+  /** Absent only in narrow test harnesses that never use machine sign-in. */
+  requestClientCredentialsToken?: ClientCredentialsService["requestClientCredentialsToken"];
 };
 
 export function createLegacyOAuthRefresh(db: Db, { now, secrets, store, leases, getConnectionRow, exchangeOAuthToken, requestClientCredentialsToken }: LegacyRefreshDependencies) {
@@ -186,7 +187,7 @@ const oauthRefreshFlights = new Map<string, Promise<unknown>>();
         : null;
     let token: Awaited<ReturnType<typeof exchangeOAuthToken>>;
     try {
-      token = machineSignIn || !client ? await requestClientCredentialsToken(connection, actor) : await exchangeOAuthToken({
+      token = machineSignIn || !client ? await requireClientCredentials(requestClientCredentialsToken)(connection, actor) : await exchangeOAuthToken({
         tokenUrl: oauth.tokenUrl,
         clientId: client.clientId!,
         clientSecret: client.clientSecret,
