@@ -193,6 +193,7 @@ export function collectReachableInterfaceHosts(input: {
 }
 
 export function buildRuntimeApiCandidateUrls(input: {
+  pinnedRuntimeApiUrl?: string | null;
   preferredApiUrl?: string | null;
   authPublicBaseUrl?: string | null;
   allowedHostnames: string[];
@@ -205,6 +206,7 @@ export function buildRuntimeApiCandidateUrls(input: {
   const explicitOrigin = parsePublicOrigin(input.authPublicBaseUrl);
   const protocol = explicitOrigin ? new URL(explicitOrigin).protocol : "http:";
 
+  pushCandidate(candidates, seen, input.pinnedRuntimeApiUrl);
   pushCandidate(candidates, seen, input.preferredApiUrl);
   pushCandidate(candidates, seen, explicitOrigin);
 

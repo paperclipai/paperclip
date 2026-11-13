@@ -138,6 +138,32 @@ describe(`durable file delivery (${liveDaytona ? "Daytona" : "local processes"})
     }
   }, liveDaytona ? 240_000 : 60_000);
 
+  it.skipIf(liveDaytona)("uploads through PAPERCLIP_RUNTIME_API_URL when PAPERCLIP_API_URL is unreachable", async () => {
+    const fixture = await server.fixture({ apiToolsEnabled: false });
+    await server.db.update(agents).set({ adapterType: "codex_local" }).where(eq(agents.id, fixture.agentId));
+    await server.db.update(heartbeatRuns).set({ runtimeMode: "legacy" }).where(eq(heartbeatRuns.id, fixture.runId));
+    const token = createLocalAgentJwt(fixture.agentId, fixture.companyId, "codex_local", fixture.runId)!;
+    const remote = await execution(fixture.workspace);
+    const file = files[0];
+    const local = await remote.write(file.name, file.body);
+    const env = {
+      PAPERCLIP_RUNTIME_API_URL: server.apiUrl,
+      PAPERCLIP_API_URL: "http://127.0.0.1:9",
+      PAPERCLIP_API_KEY: token,
+      PAPERCLIP_RUN_ID: fixture.runId,
+      PAPERCLIP_COMPANY_ID: fixture.companyId,
+      PAPERCLIP_TASK_ID: fixture.issueId,
+      PAPERCLIP_HELPER_STATE_DIR: path.join(remote.workspace, ".helper-state"),
+    };
+    const receipt = JSON.parse(await remote.run(
+      "bash",
+      [helper, local, "--content-type", file.type, "--title", file.name, "--output", "json"],
+      env,
+    ));
+    expect(receipt.attachment.originatingRunId).toBe(fixture.runId);
+    expect(await server.db.select().from(issueAttachments).where(eq(issueAttachments.issueId, fixture.issueId))).toHaveLength(1);
+  });
+
   it("registers native files with API tools disabled and returns durable download receipts", async () => {
     const fixture = await server.fixture({ apiToolsEnabled: false });
     const remote = await execution(fixture.workspace);

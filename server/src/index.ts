@@ -1049,7 +1049,9 @@ async function startServerWithDatabaseTeardown(
   // Outlive reverse-proxy idle timeouts to avoid intermittent resets.
   server.keepAliveTimeout = 185000;
   server.headersTimeout = 186000;
+  const pinnedRuntimeApiUrl = process.env.PAPERCLIP_RUNTIME_API_URL?.trim() ?? "";
   const runtimeApiCandidates = buildRuntimeApiCandidateUrls({
+    pinnedRuntimeApiUrl: pinnedRuntimeApiUrl || null,
     preferredApiUrl: configuredApiUrl,
     authPublicBaseUrl: config.authPublicBaseUrl ?? null,
     allowedHostnames: config.allowedHostnames,
@@ -1058,7 +1060,7 @@ async function startServerWithDatabaseTeardown(
   });
   process.env.PAPERCLIP_LISTEN_HOST = runtimeListenHost;
   process.env.PAPERCLIP_LISTEN_PORT = String(listenPort);
-  process.env.PAPERCLIP_RUNTIME_API_URL = runtimeApiUrl;
+  process.env.PAPERCLIP_RUNTIME_API_URL = pinnedRuntimeApiUrl || configuredApiUrl;
   process.env.PAPERCLIP_RUNTIME_API_CANDIDATES_JSON = JSON.stringify(runtimeApiCandidates);
   process.env.PAPERCLIP_API_URL = configuredApiUrl;
 

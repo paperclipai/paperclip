@@ -127,6 +127,7 @@ describeEmbeddedPostgres("Cloud runtime identity", () => {
       "PAPERCLIP_CLOUD_CONNECTOR_ENVIRONMENT",
       "PAPERCLIP_CLOUD_CONNECTOR_BASE_URL",
       "PAPERCLIP_RUNTIME_API_CANDIDATES_JSON",
+      "PAPERCLIP_RUNTIME_API_URL",
     ]) {
       const original = originalEnv[key];
       if (original === undefined) delete process.env[key];
@@ -162,6 +163,23 @@ describeEmbeddedPostgres("Cloud runtime identity", () => {
       status: "active",
       origins: [CANONICAL_ORIGIN],
     });
+  });
+
+  it("moves an unpinned runtime callback origin to the claimed origin", async () => {
+    process.env.PAPERCLIP_RUNTIME_API_URL = POOL_ORIGIN;
+
+    await applyCloudRuntimeIdentityAssertion({ db, compactJws: assertion(), now: NOW });
+
+    expect(process.env.PAPERCLIP_RUNTIME_API_URL).toBe(CANONICAL_ORIGIN);
+  });
+
+  it("keeps a pinned runtime callback origin when the claim applies", async () => {
+    process.env.PAPERCLIP_RUNTIME_API_URL = "http://127.0.0.1:3100";
+
+    await applyCloudRuntimeIdentityAssertion({ db, compactJws: assertion(), now: NOW });
+
+    expect(process.env.PAPERCLIP_API_URL).toBe(CANONICAL_ORIGIN);
+    expect(process.env.PAPERCLIP_RUNTIME_API_URL).toBe("http://127.0.0.1:3100");
   });
 
   it("applies the assertion on the existing health request and acknowledges the exact origin", async () => {
