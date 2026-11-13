@@ -138,6 +138,10 @@ test("the working-tree drift guard sees uncommitted and untracked pinned inputs"
   assert.deepEqual(await staleSdkPublicInputsInWorkingTree(root), []);
   await writeFile(path.join(root, "pnpm-lock.yaml"), "synthetic unreviewed lock edit\n");
   assert.deepEqual(await staleSdkPublicInputsInWorkingTree(root), [{ file: "pnpm-lock.yaml", change: "changed" }]);
+  // Committing the reviewed output lock without a registry refresh is drift: CI's committed-tree guard reports it, so must this one.
+  await writeFile(path.join(root, "pnpm-lock.yaml"), "synthetic authenticated restored lock"); commit(root, "commit reviewed output lock");
+  assert.deepEqual(await staleSdkPublicInputs(root), [{ file: "pnpm-lock.yaml", change: "changed" }]);
+  assert.deepEqual(await staleSdkPublicInputsInWorkingTree(root), [{ file: "pnpm-lock.yaml", change: "changed" }]);
   assert.equal(isSdkPublicInput("packages/shared/src/types/heartbeat.ts"), true);
   assert.equal(isSdkPublicInput("pnpm-lock.yaml"), true);
   assert.equal(isSdkPublicInput("server/src/index.ts"), false);

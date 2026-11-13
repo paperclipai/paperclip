@@ -113,6 +113,11 @@ function compareSdkPublicInputs(registry, actual, policy) {
   return stale;
 }
 
+const committedLockBlob = root => {
+  try { return git(root, ["rev-parse", "--verify", "--quiet", "HEAD:pnpm-lock.yaml"]).trim(); }
+  catch { return null; }
+};
+
 /** True when a repository path is one of the inputs the registry pins. */
 export const isSdkPublicInput = file => sourcePath(file) || buildInputs.includes(file);
 
@@ -130,8 +135,9 @@ export async function staleSdkPublicInputsInWorkingTree(root) {
       const bytes = await readFile(path.join(root, file));
       // Preserve the authenticated restored-lock exception: prepare-report-lock.mjs may leave the
       // reviewed output lock in the working tree while the registry keeps the committed input pin.
+      // It applies only as an uncommitted overlay over a committed lock that matches its pin.
       actual[file] = file === "pnpm-lock.yaml" && hex64(registry.lockSha256) && sha256(bytes) === registry.lockSha256
-        ? registry.inputs?.[file] : blob(bytes);
+        && committedLockBlob(root) === registry.inputs?.[file] ? registry.inputs[file] : blob(bytes);
     } catch (error) { if (error.code !== "ENOENT") throw error; }
   }
   const policy = JSON.parse(await readFile(path.join(root, reportLockPath), "utf8"));
