@@ -200,11 +200,13 @@ export type McpJsonRpcRequest = { id?: string | number; method: string; params?:
 export function mcpHttpRequestInit(
   headers: Record<string, string> | undefined,
   message: McpJsonRpcRequest,
-  options: { toolInputSchema?: unknown; declareTasks?: boolean } = {},
+  options: { toolInputSchema?: unknown; declareTasks?: boolean; progressToken?: string } = {},
 ): { method: "POST"; headers: Record<string, string>; body: string } {
   const requestHeaders = mcpHttpRequestHeaders(headers);
   const protocolVersion = mcpProtocolVersionOf(headers);
   let params = message.params ?? {};
+  // Asks the server to stream `notifications/progress` for this request.
+  if (options.progressToken) params = { ...params, _meta: { ...record(params._meta), progressToken: options.progressToken } };
   if (isModernMcpProtocolVersion(protocolVersion)) {
     params = {
       ...params,
@@ -651,6 +653,15 @@ export function parseMcpHttpResponseBody(bodyText: string, contentType: string |
   throw new SyntaxError("MCP SSE response contained no data events");
 }
 
+/** A `notifications/progress` for this request's token, or null for any other message. */
+export function mcpProgressNotificationOf(message: unknown, progressToken: string | undefined): { progress: unknown; total: unknown; message: unknown } | null {
+  const payload = record(message);
+  if (!progressToken || !payload || payload.method !== "notifications/progress" || "id" in payload) return null;
+  const params = record(payload.params);
+  if (!params || params.progressToken !== progressToken) return null;
+  return { progress: params.progress, total: params.total, message: params.message };
+}
+
 export type McpHttpResponseProgress = {
   bytesReceived: number;
   chunksReceived: number;
@@ -668,6 +679,8 @@ export async function readMcpHttpResponse(
     maxBytes?: number;
     onRequest?: (message: Record<string, unknown>) => Promise<void>;
     onProgress?: (progress: McpHttpResponseProgress) => void;
+    /** Notifications sent on this request's stream before its result. Must not block. */
+    onNotification?: (message: Record<string, unknown>) => void;
   } = {},
 ): Promise<unknown> {
   const progress: McpHttpResponseProgress = { bytesReceived: 0, chunksReceived: 0, eventsReceived: 0, matchedResponse: false, ended: false };
@@ -699,6 +712,10 @@ export async function readMcpHttpResponse(
       return record;
     }
     if ("method" in record && "id" in record) await options.onRequest?.(record);
+    else if ("method" in record) {
+      // A notification observer never fails or delays the call.
+      try { options.onNotification?.(record); } catch { /* ignored */ }
+    }
     return undefined;
   };
   const event = async (value: string) => {

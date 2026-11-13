@@ -3755,6 +3755,19 @@ span.paperclip-mention-chip[data-mention-kind="external-object"] {
   .skill-import-progress::-webkit-progress-value { transition: none; }
 }
 
+/* Connected-app tool call progress: a filling bar when the total is known, a quiet sweep otherwise. */
+.tool-call-progress-fill {
+  transition: width var(--motion-line-scroll) var(--motion-ease-standard);
+}
+.tool-call-progress-sweep {
+  width: 40%;
+  animation: skill-import-sweep var(--motion-approval-pulse) var(--motion-ease-standard) infinite;
+}
+@media (prefers-reduced-motion: reduce) {
+  .tool-call-progress-fill { transition: none; }
+  .tool-call-progress-sweep { animation: none; }
+}
+
 /* Agent setup handoff: the same logo stack travels from trigger to prompt. */
 :root {
   --agent-setup-flight-duration: var(--motion-duration-deliberate);

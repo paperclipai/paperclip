@@ -166,5 +166,5 @@ Tracked as follow-ups:
   agent to retry.
 - `subscriptions/listen` change notifications (cache invalidation relies on
   `ttlMs`).
-- The Tasks extension, Skills over MCP, progress and cancellation, icons, and
-  enterprise-managed authorization.
+- Cancellation, icons, and enterprise-managed authorization. (Progress is
+  supported: see [MCP-PROGRESS.md](MCP-PROGRESS.md).)

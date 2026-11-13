@@ -16,6 +16,7 @@ import {
   uuid,
 } from "drizzle-orm/pg-core";
 import type {
+  ToolCallProgress,
   ConnectionAgentInstructions,
   ConnectionTokenIssuanceOutcome,
   ConnectionTokenIssuancePath,
@@ -804,6 +805,8 @@ export const toolInvocations = pgTable(
     errorMessage: text("error_message"),
     startedAt: timestamp("started_at", { withTimezone: true }),
     completedAt: timestamp("completed_at", { withTimezone: true }),
+    /** The provider's latest progress while the call runs (MCP `notifications/progress`), bounded. */
+    progress: jsonb("progress").$type<ToolCallProgress>(),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },
