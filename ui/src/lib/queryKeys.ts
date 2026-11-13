@@ -5,6 +5,7 @@ export const queryKeys = {
     mine: (userId: string | null) => ["workspace-preferences", userId] as const,
   },
   agentCommentary: {
+    all: (companyId: string) => ["agent-commentary", companyId] as const,
     list: (companyId: string, filters: object) => ["agent-commentary", companyId, "list", filters] as const,
     detail: (companyId: string, id: string | null) => ["agent-commentary", companyId, "detail", id] as const,
   },

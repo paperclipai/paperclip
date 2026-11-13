@@ -1,4 +1,4 @@
-import type { AgentCommentaryDetail, AgentCommentaryPage, AgentCommentaryQuery } from "@paperclipai/shared";
+import type { AgentCommentaryDetail, AgentCommentaryPage, AgentCommentaryQuery, AgentCommentaryVoteState } from "@paperclipai/shared";
 import { api } from "./client";
 
 export const agentCommentaryApi = {
@@ -11,4 +11,8 @@ export const agentCommentaryApi = {
   },
   get: (companyId: string, id: string, signal?: AbortSignal) =>
     api.get<AgentCommentaryDetail>(`/companies/${companyId}/agent-commentary/${encodeURIComponent(id)}`, { signal }),
+  vote: (companyId: string, id: string) =>
+    api.put<AgentCommentaryVoteState>(`/companies/${companyId}/agent-commentary/${encodeURIComponent(id)}/vote`, {}),
+  removeVote: (companyId: string, id: string) =>
+    api.delete<AgentCommentaryVoteState>(`/companies/${companyId}/agent-commentary/${encodeURIComponent(id)}/vote`),
 };

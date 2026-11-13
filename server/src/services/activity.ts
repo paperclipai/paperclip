@@ -6,6 +6,7 @@ import { and, asc, desc, eq, inArray, isNull, or, sql, type SQL } from "drizzle-
 import type { Db } from "@paperclipai/db";
 import {
   activityLog,
+  agentCommentary,
   agents,
   authUsers,
   documentRevisions,
@@ -385,7 +386,11 @@ export function activityService(db: Db) {
   return {
     list: async (filters: ActivityFilters) => {
       const conditions = [eq(activityLog.companyId, filters.companyId), await skillAccessService(db).activityCondition(filters.companyId),
-        filters.caseReadCondition ?? sql<boolean>`${activityLog.entityType} <> 'case'`];
+        filters.caseReadCondition ?? sql<boolean>`${activityLog.entityType} <> 'case'`,
+        sql<boolean>`(${activityLog.entityType} <> 'agent_commentary' or not exists (
+          select 1 from ${agentCommentary} inner join ${issues} on ${issues.id} = ${agentCommentary.issueId}
+          where ${agentCommentary.id}::text = ${activityLog.entityId}
+            and not coalesce(${filters.readCondition ?? sql<boolean>`true`}, false)))`];
       const limit = normalizeActivityLimit(filters.limit);
 
       if (filters.agentId) {

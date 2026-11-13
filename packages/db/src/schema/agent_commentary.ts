@@ -1,5 +1,5 @@
 import { sql } from "drizzle-orm";
-import { check, index, pgTable, text, timestamp, uniqueIndex, uuid } from "drizzle-orm/pg-core";
+import { check, index, integer, pgTable, text, timestamp, uniqueIndex, uuid } from "drizzle-orm/pg-core";
 import { agents } from "./agents.js";
 import { companies } from "./companies.js";
 import { heartbeatRuns } from "./heartbeat_runs.js";
@@ -16,9 +16,11 @@ export const agentCommentary = pgTable("agent_commentary", {
   body: text("body").notNull(),
   idempotencyKey: text("idempotency_key").notNull(),
   payloadHash: text("payload_hash").notNull(),
+  voteCount: integer("vote_count").notNull().default(0),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 }, (table) => ({
   retryUq: uniqueIndex("agent_commentary_run_key_uq").on(table.companyId, table.runId, table.idempotencyKey),
   companyKindCreatedIdx: index("agent_commentary_company_kind_created_idx").on(table.companyId, table.kind, table.createdAt),
+  companyVotesCreatedIdx: index("agent_commentary_company_votes_created_idx").on(table.companyId, table.voteCount.desc(), table.createdAt.desc()),
   kindCheck: check("agent_commentary_kind_check", sql`${table.kind} in ('complaint', 'suggestion')`),
 }));

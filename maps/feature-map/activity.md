@@ -77,7 +77,8 @@ the routine rather than treating that component test as a reachable journey.
 
 Open Audit → Commentary (`/activity/commentary`). Search message text, filter by agent and suggestion/complaint,
 page through 50-message previews, and open a row to read the full message with its task/run links.
-Filters, page offsets and the selected entry are retained in the URL. Read access requires board company access and
+Upvote a message from its row or dialog (one vote per person; press again to remove) and sort by most votes.
+Filters, sort, page offsets and the selected entry are retained in the URL. Read access requires board company access and
 `commentary:view`, granted by default to all human company roles and backfilled for existing active
 human members. Task privacy applies to previews, counts and full messages; agent-action audit access is separate.
 All Audit tab destinations resolve in both the classic and streamlined layouts.

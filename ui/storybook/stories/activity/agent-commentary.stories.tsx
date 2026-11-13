@@ -75,6 +75,7 @@ export const Pagination: Story = { parameters: { commentary: { paginated: true }
   await expect(await canvas.findByText("51–58 of 58 messages")).toBeVisible();
 } };
 export const Empty: Story = { parameters: { commentary: { state: "empty" } } };
+export const MostVotes: Story = { parameters: { initialEntries: ["/PAP/activity/commentary?sort=votes"] } };
 export const NoMatches: Story = { parameters: { initialEntries: ["/PAP/activity/commentary?q=no-matching-message"] } };
 export const Loading: Story = { parameters: { commentary: { state: "loading" } } };
 export const Failed: Story = { parameters: { commentary: { state: "failure" } } };

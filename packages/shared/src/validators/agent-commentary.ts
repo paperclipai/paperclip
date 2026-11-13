@@ -24,10 +24,14 @@ export type AgentCommentaryAcknowledgement = {
   replayed: boolean;
 };
 
+export const AGENT_COMMENTARY_SORTS = ["newest", "votes"] as const;
+export type AgentCommentarySort = typeof AGENT_COMMENTARY_SORTS[number];
+
 export const agentCommentaryQuerySchema = z.object({
   agentId: z.string().uuid().optional(),
   kind: z.enum(AGENT_COMMENTARY_KINDS).optional(),
   q: z.string().trim().max(200).optional(),
+  sort: z.enum(AGENT_COMMENTARY_SORTS).default("newest"),
   limit: z.coerce.number().int().min(1).max(100).default(50),
   offset: z.coerce.number().int().min(0).max(100_000).default(0),
 });
@@ -41,6 +45,8 @@ export interface AgentCommentaryEntry {
   agent: { id: string; name: string; icon: string | null };
   runId: string;
   task: { id: string; identifier: string | null; title: string } | null;
+  voteCount: number;
+  votedByMe: boolean;
 }
 export interface AgentCommentaryDetail extends AgentCommentaryEntry {
   body: string;
@@ -50,4 +56,9 @@ export interface AgentCommentaryPage {
   total: number;
   limit: number;
   offset: number;
+}
+export interface AgentCommentaryVoteState {
+  id: string;
+  voteCount: number;
+  votedByMe: boolean;
 }
