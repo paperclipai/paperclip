@@ -1,6 +1,5 @@
 import { notifyChatEndpointConfiguration } from "./configuration-work-notifications.js";
 import { notifyChatConnectionHealth } from "./connection-health-notifications.js";
-import { notifyChatCompanyAuthorityChange } from "../chat-run-milestone-notifications.js";
 import type { ConnectionManagementContext } from "../connection-management.js";
 import { CHAT_HUMAN_CREDENTIAL_FIELDS } from "./credentials.js";
 import { preparePhotonConfiguration, createPhotonConfiguration } from "./imessage-photon/setup.js";
@@ -9,6 +8,7 @@ import { createTelegramSetup } from "./telegram/setup.js";
 import { createGitHubSetup } from "./github/setup.js";
 import { createSpekoSetup } from "./speko/setup.js";
 import { createGitHubAppSetup } from "./github/app-setup.js";
+import { revokeGitHubEndpointIdentityLinks } from "./github/endpoint-removal.js";
 
 import type { VerifiedProviderIdentity } from "./runtime-types.js";
 
@@ -44,7 +44,6 @@ import {
   chatConversations,
   chatDeliveries,
   chatEndpoints,
-  chatIdentityLinks,
   toolApplications,
   toolConnections,
 } from "@paperclipai/db";
@@ -517,33 +516,11 @@ export function createChatConfiguration(db: Db, options: ChatConfigurationOption
           })
           .where(eq(chatEndpoints.id, endpoint.id));
         if (endpoint.provider === "github") {
-          const revokedAt = new Date();
-          const revoked = await tx
-            .update(chatIdentityLinks)
-            .set({
-              paperclipUserId: null,
-              status: "revoked",
-              confirmationTokenHash: null,
-              revokedAt,
-              updatedAt: revokedAt,
-            })
-            .where(and(
-              eq(chatIdentityLinks.companyId, endpoint.companyId),
-              eq(chatIdentityLinks.endpointId, endpoint.id),
-              eq(chatIdentityLinks.status, "linked"),
-            ))
-            .returning({ id: chatIdentityLinks.id });
-          if (revoked.length > 0) {
-            await notifyChatCompanyAuthorityChange(tx, { companyId: endpoint.companyId });
-          }
-          await logActivity(tx as unknown as Db, {
-            companyId: endpoint.companyId,
-            ...(managementContext?.audit ?? { actorType: "user" as const, actorId: actorUserId ?? "board" }),
-            action: "chat_github.removed",
-            entityType: "tool_connection",
-            entityId: endpoint.connectionId,
-            details: { endpointId: endpoint.id, revokedLinkCount: revoked.length },
-          });
+          await revokeGitHubEndpointIdentityLinks(
+            tx as unknown as Db,
+            endpoint,
+            managementContext?.audit ?? { actorType: "user", actorId: actorUserId ?? "board" },
+          );
         }
         await tx
           .update(chatConversations)
