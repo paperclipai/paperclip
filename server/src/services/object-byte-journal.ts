@@ -542,13 +542,31 @@ export function createObjectByteJournal(options: ObjectByteJournalOptions) {
     signal?: AbortSignal;
   }) {
     const deadline = Date.now() + HEAD_VISIBILITY_WAIT_MS;
+    let current = await head(input.signal);
     for (let wait = 250; ; wait = Math.min(wait * 2, 4_000)) {
-      const current = await head(input.signal);
       try {
         return await claimFrom(current, input);
       } catch (error) {
-        if (current || !(error instanceof ObjectJournalConflictError) || Date.now() + wait > deadline) throw error;
-        await delay(wait, undefined, { signal: input.signal });
+        if (!(error instanceof ObjectJournalConflictError) || Date.now() + wait > deadline) throw error;
+        if (!current) {
+          await delay(wait, undefined, { signal: input.signal });
+          current = await head(input.signal);
+          continue;
+        }
+        // The writer this claim supersedes can still commit while the claim is
+        // in flight (a server draining on shutdown flushes and closes its log).
+        // Its commit keeps the head's generation and owner, so claim again from
+        // that head and keep its bytes. Another claim or a deletion still fails.
+        const observed = await head(input.signal);
+        if (
+          !observed ||
+          observed.etag === current.etag ||
+          observed.head.deleted ||
+          observed.head.generation !== current.head.generation ||
+          observed.head.owner !== current.head.owner
+        )
+          throw error;
+        current = observed;
       }
     }
   }
