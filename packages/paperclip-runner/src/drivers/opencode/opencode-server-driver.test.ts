@@ -1252,8 +1252,6 @@ describe("OpenCodeServerDriver", () => {
   it("keeps a finished call's host on its usage while OpenCode's next model call is already in flight", async () => {
     await chmod(fixture, 0o755);
     const model = "deepseek/deepseek-v4.1-flash-1017";
-    // OpenCode reports a step's usage only a few milliseconds before it sends
-    // the next request; the first call of a turn usually lost that race.
     let releaseNext: (() => void) | undefined;
     let call = 0;
     const upstream = createHttpServer((request, response) => {
@@ -1265,9 +1263,9 @@ describe("OpenCodeServerDriver", () => {
           response.end('data: {"id":"gen-first","provider":"Novita","choices":[{"delta":{"content":"Hi"}}]}\n\ndata: [DONE]\n\n');
           return;
         }
-        response.write(": OPENROUTER PROCESSING\n\n");
+        response.write('data: {"id":"gen-next","provider":"Chutes","choices":[{"delta":{"content":"Hi"}}]}\n\n');
         await new Promise<void>(resolve => { releaseNext = resolve; });
-        response.end('data: {"id":"gen-next","provider":"Chutes","choices":[{"delta":{"content":"Hi"}}]}\n\ndata: [DONE]\n\n');
+        response.end("data: [DONE]\n\n");
       })().catch(() => response.destroy());
     });
     await new Promise<void>(resolve => upstream.listen(0, "127.0.0.1", resolve));
@@ -1290,13 +1288,14 @@ describe("OpenCodeServerDriver", () => {
       await (await send()).arrayBuffer();
       const next = await send();
       expect(next.status).toBe(200);
-      await vi.waitFor(() => expect(releaseNext).toBeTypeOf("function"));
+      const reader = next.body!.getReader();
+      expect(new TextDecoder().decode((await reader.read()).value)).toContain('"provider":"Chutes"');
       await session.startTurn({ message: { role: "user", text: "finish" } });
       const events = await collectTurnEvents(session.events());
       const usage = events.find(event => event.eventType === "item.completed" && event.payload.kind === "usage")?.payload.usage;
       expect(usage).toMatchObject({ upstreamProvider: "Novita", providerRequestId: "gen-first" });
       releaseNext?.();
-      await next.arrayBuffer();
+      while (!(await reader.read()).done);
       await session.startTurn({ message: { role: "user", text: "finish" } });
       await collectTurnEvents(session.events());
       expect(await session.usage?.()).toMatchObject({ upstreamProvider: "Chutes", providerRequestId: "gen-next" });

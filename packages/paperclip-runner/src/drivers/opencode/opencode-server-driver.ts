@@ -2517,9 +2517,6 @@ async function startOpenCodeProviderProxy(baseUrl: string, key: string, model: s
         const redacted = redactOpenCodeModelRequest(body, secretValues, payload);
         if (redacted) body = redacted;
       }
-      // Record a call's host when the call ends, not when it starts. OpenCode
-      // reports a step's usage only a few milliseconds before it sends the
-      // next request, so clearing at request start raced that report.
       let served: UpstreamServed | null = null;
       try {
         const upstream = await new Promise<IncomingMessage>((resolve, reject) => {
@@ -2549,8 +2546,6 @@ async function startOpenCodeProviderProxy(baseUrl: string, key: string, model: s
             onServed: value => { served = value; } }), response);
         } else await pipeline(upstream, response);
       } finally {
-        // A call whose host could not be read reports none, so the next usage
-        // never inherits an earlier call's host.
         try { onServed?.(served); } catch { /* Recording never affects the response. */ }
       }
     })().catch(() => {
