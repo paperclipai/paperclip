@@ -189,6 +189,7 @@ describe("opencode remote execution", () => {
           managedAiConnection: { provider: "openrouter", method: "api_key" },
         } : {}),
         env: {
+          PWD: "/stale-host-workspace",
           XDG_CONFIG_HOME: path.join(rootDir, "config"),
           ...(managed ? { HOME: "/var/folders/qa-managed", XDG_DATA_HOME: "/var/folders/qa-managed/data" } : {}),
         },
@@ -268,7 +269,12 @@ describe("opencode remote execution", () => {
       `${managedRemoteWorkspace}/.paperclip-runtime/opencode/xdgConfig`,
     );
     expect(modelProbeCall?.[3].remoteExecution?.remoteCwd).toBe("/remote/workspace");
-    expect(runCall?.[2].slice(-4)).toEqual(["--dir", managedRemoteWorkspace, "--", "--dir"]);
+    expect(runCall).toBeDefined();
+    expect(runCall![2].slice(-2)).toEqual(["--", "--dir"]);
+    expect(runCall![2].filter((arg) => arg === "--dir")).toHaveLength(1);
+    expect(runCall![3].env.PWD).toBe(managedRemoteWorkspace);
+    expect(modelProbeCall).toBeDefined();
+    expect(modelProbeCall![3].env.PWD).toBe(managedRemoteWorkspace);
     const call = runCall as
       | [string, string, string[], { env: Record<string, string>; remoteExecution?: { remoteCwd: string } | null }]
       | undefined;
