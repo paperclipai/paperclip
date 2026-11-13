@@ -13,6 +13,7 @@ import {
   issues,
   issueThreadInteractions,
   projects,
+  toolConnections,
   toolInvocations,
   toolMcpElicitations,
 } from "@paperclipai/db";
@@ -96,6 +97,24 @@ describe("MCP form elicitation mapping", () => {
     expect(elicitationResponseForCard(request, { status: "cancelled", result: { version: 1, answers: [], outcome: "skipped" } })).toEqual({ action: "decline" });
     expect(elicitationResponseForCard(request, { status: "cancelled", result: { version: 1, answers: [], outcome: "withdrawn" } })).toEqual({ action: "cancel" });
     expect(elicitationResponseForCard(request, { status: "expired", result: null })).toEqual({ action: "cancel" });
+  });
+
+  it("reads a card saved before typed fields (an MCP Task waiting across the upgrade)", () => {
+    const request = { message: "m", requestedSchema: { type: "object", properties: {
+      workspace: { enum: ["ops", "engineering"] }, page: { type: "boolean" }, count: { type: "integer" },
+    } } };
+    const payload = { version: 1, questions: [
+      { id: "workspace", prompt: "workspace", selectionMode: "single", options: [{ id: "ops", label: "ops" }, { id: "engineering", label: "engineering" }] },
+      { id: "page", prompt: "page", selectionMode: "single", options: [{ id: "answer", label: "Provide answer" }] },
+      { id: "count", prompt: "count", selectionMode: "single", options: [{ id: "answer", label: "Provide answer" }] },
+    ] };
+    const result = { version: 1, answers: [
+      { questionId: "workspace", optionIds: ["engineering"] },
+      { questionId: "page", optionIds: [], otherText: "yes" },
+      { questionId: "count", optionIds: [], otherText: "4" },
+    ] };
+    expect(elicitationResponseForCard(request, { status: "answered", result, payload }))
+      .toEqual({ action: "accept", content: { workspace: "engineering", page: true, count: 4 } });
   });
 
   it("refuses forms that ask for secrets, and shapes outside the spec", () => {
@@ -189,10 +208,13 @@ function askingServer() {
 /**
  * A 2025-06-18 server with a session that asks over the open tools/call stream
  * and waits for the client's reply before it finishes, like the SDK servers.
+ * It asks its questions in turn and stops at the first one not accepted.
  */
-function legacyAskingServer() {
+function legacyAskingServer(options: { questions?: Array<{ message: string; key: string; values: string[] }>; refuseReplies?: number } = {}) {
   const requests: Recorded[] = [];
   const replies: Array<Record<string, any>> = [];
+  const questions = options.questions ?? [{ message: "Which team?", key: "team", values: ["ops", "eng"] }];
+  let refuseReplies = options.refuseReplies ?? 0;
   let sessions = 0;
   let asks = 0;
   const waiting = new Map<string, (reply: Record<string, any>) => void>();
@@ -209,19 +231,27 @@ function legacyAskingServer() {
     if (!headers.get("mcp-session-id")) return Response.json({ jsonrpc: "2.0", id: null, error: { code: -32000, message: "Bad Request: No valid session ID provided" } }, { status: 400 });
     if (body.method === "notifications/initialized") return new Response(null, { status: 202 });
     if (!body.method && body.id) {
+      if (refuseReplies > 0) { refuseReplies -= 1; return new Response(null, { status: 500 }); }
       replies.push(body);
       waiting.get(String(body.id))?.(body);
       return new Response(null, { status: 202 });
     }
     if (body.method === "tools/list") return Response.json({ jsonrpc: "2.0", id: body.id, result: { tools: [{ name: "create_ticket", description: "x", inputSchema: { type: "object", properties: {} }, annotations: { readOnlyHint: true } }] } });
     if (body.method === "tools/call") {
-      const askId = `ask-${++asks}`;
-      const reply = new Promise<Record<string, any>>((resolve) => waiting.set(askId, resolve));
       const stream = new ReadableStream<Uint8Array>({
         async start(controller) {
-          controller.enqueue(sse({ jsonrpc: "2.0", id: askId, method: "elicitation/create", params: { message: "Which team?", requestedSchema: { type: "object", properties: { team: { type: "string", enum: ["ops", "eng"] } }, required: ["team"] } } }));
-          const answer = await reply;
-          controller.enqueue(sse({ jsonrpc: "2.0", id: body.id, result: { content: [{ type: "text", text: `answer: ${JSON.stringify(answer.result)}` }] } }));
+          const answers: unknown[] = [];
+          for (const question of questions) {
+            const askId = `ask-${++asks}`;
+            const reply = new Promise<Record<string, any>>((resolve) => waiting.set(askId, resolve));
+            controller.enqueue(sse({ jsonrpc: "2.0", id: askId, method: "elicitation/create", params: { message: question.message,
+              requestedSchema: { type: "object", properties: { [question.key]: { type: "string", enum: question.values } }, required: [question.key] } } }));
+            const answer = await reply;
+            if (answer.result?.action !== "accept") { controller.close(); return; }
+            answers.push(answer.result);
+          }
+          const text = answers.length === 1 ? `answer: ${JSON.stringify(answers[0])}` : `answers: ${JSON.stringify(answers)}`;
+          controller.enqueue(sse({ jsonrpc: "2.0", id: body.id, result: { content: [{ type: "text", text }] } }));
           controller.close();
         },
       });
@@ -229,7 +259,7 @@ function legacyAskingServer() {
     }
     return Response.json({ jsonrpc: "2.0", id: body.id, error: { code: -32601, message: "Method not found" } });
   };
-  return { requests, replies, handle, calls: () => requests.filter((request) => request.method === "tools/call") };
+  return { requests, replies, handle, calls: () => requests.filter((request) => request.method === "tools/call"), refuseNextReply: () => { refuseReplies = 1; } };
 }
 
 const support = await getEmbeddedPostgresTestSupport();
@@ -269,8 +299,9 @@ const support = await getEmbeddedPostgresTestSupport();
     let session = await gateway.createSession({ companyId: org!.id, agentId: agent!.id, runId: run!.id });
     const names = (await gateway.listToolsForSession(session.token)).map((tool) => tool.name);
     const toolName = (name: string) => names.find((candidate) => candidate.endsWith(`:${name.replace(/_/g, "-")}`))!;
-    const call = (name: string, parameters: Record<string, unknown> = { ref: "main" }) =>
-      gateway.executeTool({ sessionToken: session.token, tool: toolName(name), parameters, timeoutMs: 5_000 });
+    const call = (name: string, parameters: Record<string, unknown> = { ref: "main" }, extra: { idempotencyKey?: string; tenant?: string } = {}) =>
+      gateway.executeTool({ sessionToken: session.token, tool: toolName(name), parameters, timeoutMs: 5_000,
+        idempotencyKey: extra.idempotencyKey, ...(extra.tenant ? { callerHeaders: { "x-tenant-id": extra.tenant } } : {}) });
     const cards = () => db.select().from(issueThreadInteractions)
       .where(and(eq(issueThreadInteractions.companyId, org!.id), eq(issueThreadInteractions.issueId, issue!.id)))
       .orderBy(issueThreadInteractions.createdAt);
@@ -433,5 +464,88 @@ const support = await getEmbeddedPostgresTestSupport();
     await ctx.nextRun();
     expect(await ctx.call("create_ticket").catch((error) => error)).toMatchObject({ reasonCode: "elicitation_required" });
     expect(await ctx.cards()).toHaveLength(2);
+  });
+
+  it("never lets one forwarded tenant collect another tenant's answers", async () => {
+    const server = askingServer();
+    const ctx = await setup(server.handle);
+    const [connection] = await db.select().from(toolConnections).where(eq(toolConnections.id, ctx.connected.connectionId));
+    await db.update(toolConnections).set({ config: { ...connection!.config, headerPolicy: { passthrough: { allow: ["x-tenant-id"] } } } })
+      .where(eq(toolConnections.id, ctx.connected.connectionId));
+    await ctx.call("create_ticket", { ref: "t" }, { tenant: "acme" }).catch(() => undefined);
+    const [card] = await ctx.cards();
+    await ctx.answer(card!.id, [{ questionId: "title", optionIds: ["paperclip_text_answer"], otherText: "Acme only" }, { questionId: "priority", optionIds: ["choice_1"] }]);
+    await ctx.call("create_ticket", { ref: "t" }, { tenant: "globex" }).catch(() => undefined);
+    const globex = server.calls().at(-1)!;
+    expect(globex.headers.get("x-tenant-id")).toBe("globex");
+    expect(globex.body.params).not.toHaveProperty("inputResponses");
+    await ctx.call("create_ticket", { ref: "t" }, { tenant: "acme" });
+    const acme = server.calls().at(-1)!;
+    expect(acme.headers.get("x-tenant-id")).toBe("acme");
+    expect(acme.body.params.inputResponses).toMatchObject({ details: { action: "accept", content: { title: "Acme only" } } });
+  });
+
+  it("makes a missing card again under the same key when the process stopped before showing it", async () => {
+    const server = askingServer();
+    const ctx = await setup(server.handle);
+    await ctx.call("create_ticket", { ref: "lost" }).catch(() => undefined);
+    const [round] = await ctx.rounds();
+    // The round was saved, but its card never reached the task.
+    await db.delete(issueThreadInteractions).where(eq(issueThreadInteractions.issueId, ctx.issue.id));
+    expect(await ctx.call("create_ticket", { ref: "lost" }).catch((error) => error)).toMatchObject({ reasonCode: "elicitation_required" });
+    expect(server.calls()).toHaveLength(1);
+    const [card] = await ctx.cards();
+    expect(card).toMatchObject({ idempotencyKey: round!.questions[0]!.cardKey, status: "pending" });
+    await ctx.answer(card!.id, [{ questionId: "title", optionIds: ["paperclip_text_answer"], otherText: "Recovered" }, { questionId: "priority", optionIds: ["choice_2"] }]);
+    await ctx.call("create_ticket", { ref: "lost" });
+    expect(server.calls()[1]!.body.params.inputResponses).toMatchObject({ details: { action: "accept", content: { title: "Recovered" } } });
+  });
+
+  it("runs a keyed retry again only for the same request", async () => {
+    const server = askingServer();
+    const ctx = await setup(server.handle);
+    await ctx.call("create_ticket", { ref: "a" }, { idempotencyKey: "ticket-key" }).catch(() => undefined);
+    const other = await ctx.call("create_ticket", { ref: "b" }, { idempotencyKey: "ticket-key" }).catch((error) => error);
+    expect(other).not.toMatchObject({ status: "completed" });
+    expect(server.calls()).toHaveLength(1);
+    expect((await ctx.rounds())[0]).toMatchObject({ status: "waiting" });
+  });
+
+  it("keeps an older server's answer when the server refuses the reply", async () => {
+    const server = legacyAskingServer();
+    const ctx = await setup(server.handle);
+    await ctx.call("create_ticket").catch(() => undefined);
+    const [card] = await ctx.cards();
+    await ctx.answer(card!.id, [{ questionId: "team", optionIds: ["choice_1"] }]);
+    server.refuseNextReply();
+    await ctx.nextRun();
+    expect(await ctx.call("create_ticket").catch((error) => error)).toMatchObject({ reasonCode: "mcp_remote_status" });
+    // Not spent and not held: the next call sends it again.
+    expect((await ctx.rounds())[0]).toMatchObject({ status: "waiting", claimedUntil: null });
+    await ctx.nextRun();
+    expect(await ctx.call("create_ticket")).toMatchObject({ status: "completed", result: { content: 'answer: {"action":"accept","content":{"team":"ops"}}' } });
+    expect((await ctx.rounds())[0]).toMatchObject({ status: "sent" });
+  });
+
+  it("keeps an older server's earlier answers until the whole call finishes", async () => {
+    const server = legacyAskingServer({ questions: [
+      { message: "Which team?", key: "team", values: ["ops", "eng"] },
+      { message: "Which size?", key: "size", values: ["s", "m"] },
+    ] });
+    const ctx = await setup(server.handle);
+    await ctx.call("create_ticket").catch(() => undefined);
+    const [teamCard] = await ctx.cards();
+    await ctx.answer(teamCard!.id, [{ questionId: "team", optionIds: ["choice_2"] }]);
+    await ctx.nextRun();
+    // The team answer goes back, then the app asks its second question.
+    expect(await ctx.call("create_ticket").catch((error) => error)).toMatchObject({ reasonCode: "elicitation_required" });
+    const [, sizeCard] = await ctx.cards();
+    await ctx.answer(sizeCard!.id, [{ questionId: "size", optionIds: ["choice_1"] }]);
+    await ctx.nextRun();
+    const done = await ctx.call("create_ticket");
+    expect(done).toMatchObject({ status: "completed", result: { content: 'answers: [{"action":"accept","content":{"team":"eng"}},{"action":"accept","content":{"size":"s"}}]' } });
+    // Nobody was asked the first question twice.
+    expect(await ctx.cards()).toHaveLength(2);
+    expect((await ctx.rounds()).map((round) => round.status)).toEqual(["sent", "sent"]);
   });
 });

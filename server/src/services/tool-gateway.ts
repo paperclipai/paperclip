@@ -6704,20 +6704,23 @@ export function createToolGatewayService(
     tool: ToolGatewayDescriptor;
     connectionId: string;
     grantId: string;
-    /** Keyed identity of the call; only the same call collects its round. */
+    /** Keyed identity of the call, including forwarded routing headers; only the same call collects its round. */
     callIdentity: string;
+    /** Keyed identity of the full arguments, checked before a keyed retry runs again. */
+    argumentsIdentity: string;
     appName: string;
   };
   const mcpElicitationScope = (row: Pick<McpElicitationRow, "companyId" | "connectionId">) => ({ companyId: row.companyId, connectionId: row.connectionId });
-  const mcpElicitationCallIdentity = (continuationKey: string) =>
-    createHmac("sha256", mcpTaskSecret()).update("paperclip:mcp-elicitation-call:v1\0").update(continuationKey).digest("hex");
+  const mcpElicitationCallIdentity = (continuationKey: string, routingIdentity: string) =>
+    createHmac("sha256", mcpTaskSecret()).update("paperclip:mcp-elicitation-call:v1\0").update(continuationKey).update("\0").update(routingIdentity).digest("hex");
   const mcpElicitationCardKey = (roundId: string, key: string) =>
     `mcp-elicit:${roundId}:${createHash("sha256").update(key).digest("hex").slice(0, 32)}`;
 
   /**
-   * Save a round of form questions and put each on a card, then end the call.
-   * Everything the repeated call needs is in the database, so a restart while
-   * a person thinks loses nothing. Forms are checked before anything is shown.
+   * Save a round of form questions, then put each on a card, then end the
+   * call. The round is saved first: a crash before a card exists is repaired
+   * on the next call, which makes the missing card under the same key.
+   * Forms are checked before anything is saved or shown.
    */
   async function askElicitationRound(call: McpElicitationCall, input: {
     invocationId: string;
@@ -6751,52 +6754,74 @@ export function createToolGatewayService(
         "elicitation_limit_reached", { invocationId: input.invocationId });
     }
     const id = randomUUID();
-    const questions: McpElicitationRow["questions"] = [];
-    const interactionIds: string[] = [];
-    for (const form of input.forms) {
-      const card = await createElicitationCard({
-        companyId: session.companyId, issueId: session.issueId, agentId: session.agentId, appName: call.appName,
-        request: form.request, idempotencyKey: mcpElicitationCardKey(id, form.key),
-      });
-      questions.push({
-        key: form.key, questionHash: elicitationQuestionHash(form.request), interactionId: card.id,
-        message: form.request.message, requestedSchema: form.request.requestedSchema,
-      });
-      interactionIds.push(card.id);
-    }
-    await db.insert(toolMcpElicitations).values({
+    const questions: McpElicitationRow["questions"] = input.forms.map((form) => ({
+      key: form.key, questionHash: elicitationQuestionHash(form.request), cardKey: mcpElicitationCardKey(id, form.key),
+      message: form.request.message, requestedSchema: form.request.requestedSchema,
+    }));
+    const [row] = await db.insert(toolMcpElicitations).values({
       id, companyId: session.companyId, issueId: session.issueId, agentId: session.agentId, runId: session.runId,
       invocationId: input.invocationId, connectionId: call.connectionId, grantId: call.grantId,
-      catalogToolName: call.tool.name, callIdentity: call.callIdentity, era: input.era,
+      catalogToolName: call.tool.name, callIdentity: call.callIdentity, argumentsIdentity: call.argumentsIdentity, era: input.era,
       sealedRequestState: input.requestState === null ? null
         : sealElicitationState(mcpTaskSecret(), { companyId: session.companyId, connectionId: call.connectionId }, input.requestState),
       questions, status: "waiting", expiresAt: new Date(Date.now() + MCP_ELICITATION_TTL_MS),
-    });
+    }).returning();
+    const cards = await ensureElicitationCards(row!, call);
     return stopForElicitation({
       session, tool: call.tool, invocationId: input.invocationId, appName: call.appName,
-      interactionIds, requests: input.forms.map((form) => form.request),
+      interactionIds: cards.map((card) => card.id), requests: input.forms.map((form) => form.request),
     });
   }
 
-  /** The card's answer for each question of a round; null while any waits. */
-  async function elicitationRoundResponses(row: McpElicitationRow) {
-    const ids = row.questions.map((question) => question.interactionId);
-    const cards = ids.length ? await db.select({
-      id: issueThreadInteractions.id, status: issueThreadInteractions.status, result: issueThreadInteractions.result, payload: issueThreadInteractions.payload,
+  /**
+   * The round's cards, found by their keys. A card that is missing (the
+   * process stopped between saving the round and showing it) is made now
+   * under the same key, so a question is never lost or shown twice.
+   */
+  async function ensureElicitationCards(row: McpElicitationRow, call: McpElicitationCall) {
+    const keys = row.questions.map((question) => question.cardKey);
+    const found = keys.length ? await db.select({
+      id: issueThreadInteractions.id, idempotencyKey: issueThreadInteractions.idempotencyKey,
+      status: issueThreadInteractions.status, result: issueThreadInteractions.result, payload: issueThreadInteractions.payload,
     }).from(issueThreadInteractions).where(and(
-      eq(issueThreadInteractions.companyId, row.companyId), eq(issueThreadInteractions.issueId, row.issueId), inArray(issueThreadInteractions.id, ids),
+      eq(issueThreadInteractions.companyId, row.companyId), eq(issueThreadInteractions.issueId, row.issueId),
+      inArray(issueThreadInteractions.idempotencyKey, keys),
     )) : [];
-    const responses: Record<string, McpElicitationResponse> = {};
+    const cards: Array<{ id: string; status: string; result: unknown; payload: unknown }> = [];
+    let made = false;
     for (const question of row.questions) {
-      const card = cards.find((candidate) => candidate.id === question.interactionId);
-      // A card that is gone (its task deleted) is a dismissal, not a wait.
-      const request = { message: question.message, requestedSchema: question.requestedSchema };
-      const response = card ? elicitationResponseForCard(request, card) : { action: "cancel" as const };
+      let card: { id: string; status: string; result: unknown; payload: unknown } | undefined =
+        found.find((candidate) => candidate.idempotencyKey === question.cardKey);
+      if (!card) {
+        const created = await createElicitationCard({
+          companyId: row.companyId, issueId: row.issueId, agentId: row.agentId, appName: call.appName,
+          request: { message: question.message, requestedSchema: question.requestedSchema }, idempotencyKey: question.cardKey,
+        });
+        card = { id: created.id, status: created.status, result: created.result ?? null, payload: created.payload };
+        made = true;
+      }
+      cards.push(card);
+    }
+    if (made || row.questions.some((question, index) => question.interactionId !== cards[index]!.id)) {
+      const questions = row.questions.map((question, index) => ({ ...question, interactionId: cards[index]!.id }));
+      await db.update(toolMcpElicitations).set({ questions, updatedAt: new Date() }).where(eq(toolMcpElicitations.id, row.id));
+      row.questions = questions;
+    }
+    return cards;
+  }
+
+  /** The card's answer for each question of a round; null while any waits. */
+  async function elicitationRoundResponses(row: McpElicitationRow, call: McpElicitationCall) {
+    const cards = await ensureElicitationCards(row, call);
+    const responses: Record<string, McpElicitationResponse> = {};
+    for (const [index, question] of row.questions.entries()) {
+      const response = elicitationResponseForCard({ message: question.message, requestedSchema: question.requestedSchema }, cards[index]);
       if (!response) return null;
       responses[question.key] = response;
     }
     return responses;
   }
+
 
   /** End a round nobody answered in time; its cards are withdrawn so nobody answers a dead question. */
   async function expireElicitationRound(row: McpElicitationRow, call: McpElicitationCall) {
@@ -6804,6 +6829,7 @@ export function createToolGatewayService(
       .where(and(eq(toolMcpElicitations.id, row.id), eq(toolMcpElicitations.status, "waiting"))).returning({ id: toolMcpElicitations.id });
     if (!expired) return;
     for (const question of row.questions) {
+      if (!question.interactionId) continue;
       await interactions.withdrawInteraction({ id: row.issueId, companyId: row.companyId }, question.interactionId,
         { reason: "The app's question expired before it was answered." }, { agentId: row.agentId, runId: call.session.runId })
         .catch(() => undefined);
@@ -6834,12 +6860,12 @@ export function createToolGatewayService(
     for (const row of rows) {
       if (input.questionHash && !row.questions.some((question) => question.questionHash === input.questionHash)) continue;
       if (row.expiresAt <= now) { await expireElicitationRound(row, call); continue; }
-      const responses = await elicitationRoundResponses(row);
+      const responses = await elicitationRoundResponses(row, call);
       if (!responses) {
         await markInvocationAwaitingElicitation(input.invocationId);
         throw elicitationWaitError(call.appName, {
           invocationId: input.invocationId, interactionId: row.questions[0]?.interactionId ?? null,
-          interactionIds: row.questions.map((question) => question.interactionId), tool: call.tool.name,
+          interactionIds: row.questions.map((question) => question.interactionId).filter(Boolean), tool: call.tool.name,
         });
       }
       const [claimed] = await db.update(toolMcpElicitations)
@@ -6864,7 +6890,7 @@ export function createToolGatewayService(
     return null;
   }
 
-  /** The round's answers reached the app: it is spent. */
+  /** The round's answers reached the app and the call finished: it is spent. */
   async function settleElicitationRound(row: McpElicitationRow, call: McpElicitationCall, responses: Record<string, McpElicitationResponse>, invocationId: string) {
     await db.update(toolMcpElicitations).set({ status: "sent", sentAt: new Date(), claimedUntil: null, updatedAt: new Date() })
       .where(eq(toolMcpElicitations.id, row.id));
@@ -6879,10 +6905,22 @@ export function createToolGatewayService(
     });
   }
 
-  /** The send failed before the app answered: the next identical call may try again. */
+  /** The app did not finish with these answers: the next identical call uses them again. */
   async function releaseElicitationRound(row: McpElicitationRow) {
     await db.update(toolMcpElicitations).set({ claimedUntil: null, updatedAt: new Date() })
       .where(and(eq(toolMcpElicitations.id, row.id), eq(toolMcpElicitations.status, "waiting")));
+  }
+
+  /**
+   * A keyed retry of a call that stopped for an app's question runs again only
+   * when it is the same request: same tool and full arguments as the round.
+   */
+  async function elicitationRetryMatches(companyId: string, invocationId: string, toolName: string, parameters: unknown) {
+    const [row] = await db.select({ id: toolMcpElicitations.id }).from(toolMcpElicitations).where(and(
+      eq(toolMcpElicitations.companyId, companyId), eq(toolMcpElicitations.invocationId, invocationId),
+      eq(toolMcpElicitations.catalogToolName, toolName), eq(toolMcpElicitations.argumentsIdentity, mcpTaskArgumentsIdentity(parameters)),
+    )).limit(1);
+    return Boolean(row);
   }
 
   function normalizeMcpContent(content: unknown): string {
@@ -7292,7 +7330,7 @@ export function createToolGatewayService(
       };
       // A secret or a shape the card can't show is never put on a card.
       if (!buildElicitationQuestionSet({ appName: "app", request: form.request }).ok) return { ...plan, unsupported: true };
-      const [card] = await db.select({ status: issueThreadInteractions.status, result: issueThreadInteractions.result })
+      const [card] = await db.select({ status: issueThreadInteractions.status, result: issueThreadInteractions.result, payload: issueThreadInteractions.payload })
         .from(issueThreadInteractions).where(and(
           eq(issueThreadInteractions.companyId, row.companyId),
           eq(issueThreadInteractions.issueId, row.issueId),
@@ -7734,6 +7772,9 @@ export function createToolGatewayService(
     let mcpSession: { scope: string; headers: Record<string, string>; sessionId: string } | undefined;
     // Answers to an app's question that this call is carrying back, until the app has them.
     let elicitationClaim: Awaited<ReturnType<typeof collectElicitationRound>> = null;
+    // An older app may ask several questions in turn; each answer is spent
+    // only when the whole call finishes, so a later stop never loses one.
+    const legacyAnswered: Array<{ row: McpElicitationRow; responses: Record<string, McpElicitationResponse> }> = [];
     try {
       const dispatchRemote = async (target: string, init: RequestInit) => {
         // Refresh can reduce consent. Recheck the selected grant after refreshing
@@ -7846,7 +7887,10 @@ export function createToolGatewayService(
       const elicitationCall: McpElicitationCall | null = session.issueId ? {
         session: session as ToolGatewaySession & { issueId: string }, tool,
         connectionId: connection.id, grantId: grant.id,
-        callIdentity: mcpElicitationCallIdentity(continuationKey),
+        // Forwarded routing headers (such as a tenant) are part of the call:
+        // one tenant's answers never go out with another tenant's headers.
+        callIdentity: mcpElicitationCallIdentity(continuationKey, mcpTaskArgumentsIdentity(mcpTaskCallerHeaders(connection, callerHeaders))),
+        argumentsIdentity: mcpTaskArgumentsIdentity(parameters),
         appName: tool.applicationDisplayName?.trim() || connection.name.trim() || "The app",
       } : null;
       // A question round this exact call left for a person (stateless MCP).
@@ -7883,13 +7927,13 @@ export function createToolGatewayService(
         if (answered) {
           const key = answered.row.questions.find((question) => question.questionHash === questionHash)!.key;
           const response = answered.responses[key]!;
-          try {
-            await respond(response);
-          } catch (error) {
-            await releaseElicitationRound(answered.row).catch(() => undefined);
-            throw error;
+          legacyAnswered.push({ row: answered.row, responses: { [key]: response } });
+          const delivered = await respond(response);
+          // An app that refused the reply never got the answer: keep it for the next call.
+          if (!delivered.ok) {
+            throw new ToolGatewayHttpError(502, `${elicitationCall.appName} did not accept the answer to its question. Try the call again.`,
+              "mcp_remote_status", { status: delivered.status, connectionId: connection.id, catalogEntryId: entry.id });
           }
-          await settleElicitationRound(answered.row, elicitationCall, { [key]: response }, invocationId);
           return;
         }
         try {
@@ -8211,6 +8255,8 @@ export function createToolGatewayService(
         elicitationClaim = null;
         await settleElicitationRound(sent.row, elicitationCall!, sent.responses, invocationId);
       }
+      // The older app finished the call: the answers it used are spent.
+      for (const used of legacyAnswered.splice(0)) await settleElicitationRound(used.row, elicitationCall!, used.responses, invocationId);
       const upstreamPending = extractRemoteMcpPending(payloadRecord, String(connection.config.sourceTemplateKey ?? ""), entry.toolName);
       if (upstreamPending) {
         await retainUpstreamHandoff(invocationId, upstreamPending);
@@ -8321,6 +8367,7 @@ export function createToolGatewayService(
     } catch (error) {
       // The app never got the answers this call carried: the next identical call sends them.
       if (elicitationClaim) await releaseElicitationRound(elicitationClaim.row).catch(() => undefined);
+      for (const used of legacyAnswered.splice(0)) await releaseElicitationRound(used.row).catch(() => undefined);
       execution.error = remoteHttpErrorEvidence(error);
       execution.deadline = { timeoutMs: ms, aborted: controller.signal.aborted };
       if (execution.response && execution.stream) execution.response.bodySizeBytes = execution.stream.bytesReceived;
@@ -13117,9 +13164,12 @@ export function createToolGatewayService(
           : null;
         // The same call repeated after the app asked a person a question runs
         // again: it carries the answers back, or waits again without the app.
+        // An explicit key may name a different request: only the same tool
+        // and arguments as the saved question round run again.
         const retryingElicitation = recorded.replayed && accessDecision.allowed && !retryingSlackRateLimit && !retryingGitHubPublication
           && !retryingMcpTaskRecordId && recorded.invocation.agentId === session.agentId
-          && recorded.invocation.errorCode === "elicitation_required";
+          && recorded.invocation.errorCode === "elicitation_required"
+          && await elicitationRetryMatches(session.companyId, recorded.invocation.id, tool.name, effectiveParameters);
         const retryingMcpTask = Boolean(retryingMcpTaskRecordId) || retryingElicitation;
         if (retryingGitHubPublication) {
           // Invocation hashes describe shortened audit previews. The durable

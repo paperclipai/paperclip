@@ -994,9 +994,14 @@ export const toolMcpElicitations = pgTable(
     sealedRequestState: text("sealed_request_state"),
     /** One entry per form question: the server's key, its words and schema (shown on the card, never an answer), and its card. */
     questions: jsonb("questions").$type<Array<{
-      key: string; questionHash: string; interactionId: string;
+      key: string; questionHash: string;
+      /** The card's idempotency key: the round is saved before its cards, and a missing card is made again. */
+      cardKey: string;
+      interactionId?: string;
       message: string; requestedSchema: Record<string, unknown> | null;
     }>>().notNull(),
+    /** Keyed identity of the tool name and full arguments; a keyed retry runs again only for the same request. */
+    argumentsIdentity: text("arguments_identity").notNull(),
     /** waiting | sent | expired */
     status: text("status").notNull(),
     /** A repeated call sending the answers holds the round until then. */

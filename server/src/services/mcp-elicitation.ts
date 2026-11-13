@@ -216,7 +216,7 @@ export function buildElicitationQuestionSet(input: { appName: string; request: M
   };
 }
 
-type CardState = { status: string; result: unknown };
+type CardState = { status: string; result: unknown; payload?: unknown };
 
 /**
  * The elicitation result for a resolved card, or null while it waits.
@@ -228,7 +228,13 @@ export function elicitationResponseForCard(request: McpFormElicitation, card: Ca
   if (!card || card.status === "pending") return null;
   const result = record(card.result);
   if (card.status === "answered" && result?.outcome === undefined) {
-    return { action: "accept", content: elicitationContent(request, result) };
+    // A card saved before typed fields (an MCP Task waiting across the
+    // upgrade) keeps its own options; read it the way it was built.
+    const payload = record(card.payload);
+    const content = payload && !payload.questionSet && Array.isArray(payload.questions)
+      ? legacyCardContent(request, payload.questions, result)
+      : elicitationContent(request, result);
+    return { action: "accept", content };
   }
   if (card.status === "cancelled" && result?.outcome === "skipped") return { action: "decline" };
   return { action: "cancel" };
@@ -255,6 +261,45 @@ export function elicitationContent(request: McpFormElicitation, result: unknown)
       continue;
     }
     content[field.key] = typed;
+  }
+  return content;
+}
+
+/**
+ * Answers on a card built before typed fields: enum choices were listed in
+ * the schema's order, and everything else was a written answer.
+ */
+function legacyCardContent(request: McpFormElicitation, storedQuestions: unknown[], result: unknown): Record<string, unknown> {
+  const answers = (Array.isArray(record(result)?.answers) ? record(result)!.answers as unknown[] : [])
+    .map(record).filter((answer): answer is Record<string, unknown> => Boolean(answer));
+  const properties = record(request.requestedSchema?.properties);
+  const textOf = (answer: Record<string, unknown> | undefined) => typeof answer?.otherText === "string" ? answer.otherText.trim() : "";
+  if (!properties || !Object.keys(properties).length) {
+    const text = textOf(answers.find((answer) => answer.questionId === "response"));
+    return text ? { response: text } : {};
+  }
+  const content: Record<string, unknown> = {};
+  for (const [key, raw] of Object.entries(properties).slice(0, MCP_ELICITATION_MAX_FIELDS)) {
+    const property = record(raw) ?? {};
+    const answer = answers.find((candidate) => candidate.questionId === key.slice(0, 120));
+    if (!answer) continue;
+    const enumValues = Array.isArray(property.enum) ? property.enum : [];
+    const stored = storedQuestions.map(record).find((question) => question?.id === key.slice(0, 120));
+    const options = Array.isArray(stored?.options) ? stored!.options.map(record) : [];
+    const optionIds = Array.isArray(answer.optionIds) ? answer.optionIds : [];
+    const index = options.findIndex((option) => typeof option?.id === "string" && optionIds.includes(option.id));
+    if (index >= 0 && index < enumValues.length) { content[key] = enumValues[index]; continue; }
+    const text = textOf(answer);
+    if (!text) continue;
+    if (property.type === "number" || property.type === "integer") {
+      const value = Number(text);
+      if (Number.isFinite(value) && (property.type === "number" || Number.isInteger(value))) content[key] = value;
+    } else if (property.type === "boolean") {
+      if (/^(true|yes|y|1)$/i.test(text)) content[key] = true;
+      else if (/^(false|no|n|0)$/i.test(text)) content[key] = false;
+    } else {
+      content[key] = text;
+    }
   }
   return content;
 }

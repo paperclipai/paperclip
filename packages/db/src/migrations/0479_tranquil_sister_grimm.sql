@@ -12,6 +12,7 @@ CREATE TABLE "tool_mcp_elicitations" (
 	"era" text NOT NULL,
 	"sealed_request_state" text,
 	"questions" jsonb NOT NULL,
+	"arguments_identity" text NOT NULL,
 	"status" text NOT NULL,
 	"claimed_until" timestamp with time zone,
 	"expires_at" timestamp with time zone NOT NULL,

@@ -1,5 +1,5 @@
 {
-  "id": "f85e51b4-3ca4-410b-858c-a3b8e5df08a2",
+  "id": "4d3e95c6-fcd5-4aef-b9fc-ddf2b571096d",
   "prevId": "349cdd89-db04-4340-a5d3-3b877bf7227d",
   "version": "7",
   "dialect": "postgresql",
@@ -60034,6 +60034,12 @@
         "questions": {
           "name": "questions",
           "type": "jsonb",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "arguments_identity": {
+          "name": "arguments_identity",
+          "type": "text",
           "primaryKey": false,
           "notNull": true
         },

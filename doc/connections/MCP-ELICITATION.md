@@ -86,11 +86,14 @@ The agent never receives the person's answers from Paperclip, only the app's res
 
 - **Table.** `tool_mcp_elicitations` holds one row per question round. It is company-scoped and records:
   - The task, agent, run, connection and grant.
-  - A keyed call identity, covering endpoint, tool, arguments, grant and agent.
+  - A keyed call identity, covering endpoint, tool, arguments, grant, agent and any forwarded routing headers (such as a tenant). One tenant's answers never go out with another tenant's headers.
   - The server's `requestState`, sealed with AES-256-GCM and bound to the company and connection.
   - Each question's key, words, schema and card.
 - **Answers.** Answers live only on the cards.
+- **Saving.** The round is saved before its cards, and each card has a fixed key. If the process stops between the two, the next call makes the missing card under the same key, so no question is lost or shown twice.
 - **Who can collect a round.** Only the identical call can collect it: same company, task, connection, grant, agent and call identity.
+- **Older apps that ask several questions.** An answer is spent only when the app finishes the whole call. An app that asks Q1 and then Q2 gets Q1's answer again on the next call, without a second card. An app that refuses the reply (an HTTP error) keeps the answer for the next call.
+- **Keyed retries.** A call that stopped for a question runs again under an explicit idempotency key only if it has the same tool and arguments as the saved round.
 - **Claims.** A repeated call claims the round before sending. If the process dies mid-send, the claim lapses after the tool timeout plus a minute, and the next call sends again. A failed send releases the claim at once.
 - **Expiry.** Rounds expire after 24 hours, checked when the call is next made; no background poller is involved. Expired cards are withdrawn, so nobody answers a dead question, and the call starts over.
 - **Activity log.** The log records `tool_gateway.elicitation_requested`, `tool_gateway.elicitation_sent` (the actions only, never values), `tool_gateway.elicitation_refused` (field names only) and `tool_gateway.elicitation_expired`. Answers are logged as `issue.thread_interaction_answered`.
@@ -101,6 +104,7 @@ A tool call made from an MCP App view runs in the task's session. Its questions 
 
 ## Not supported yet
 
+- Enforcing `minItems` and `maxItems` on the card. Today they show as help text, and the app checks them when the answer arrives.
 - Sampling and roots requests.
 - Form questions from stdio apps.
 - Forms rendered inside an MCP App view.
