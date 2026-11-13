@@ -437,6 +437,7 @@ import {
   takeRemoteBootstrapRestartProof,
   unidentifiedLocalRunnerProvenAbsent,
   executePaperclipNativeSession,
+  sessionToolAuthorityCount,
   detachNativeSessionsForRestart,
   NativeControllerDetachedForRestartError,
   NativeCancellationPendingRecoveryError,
@@ -10029,6 +10030,44 @@ describe("native session cancellation", () => {
     }
   });
 
+  it.each(["succeeded", "failed"] as const)("releases each finished session's tool authority and assigned tool catalog (%s)", async (outcome) => {
+    const root = await mkdtemp(join(tmpdir(), "native-authority-release-"));
+    const previous = process.env.PAPERCLIP_RUNNER_STATE_DIR;
+    process.env.PAPERCLIP_RUNNER_STATE_DIR = root;
+    let catalogs = 0;
+    try {
+      const before = sessionToolAuthorityCount();
+      for (let index = 0; index < 5; index += 1) {
+        const current = { ...execution, binding: { ...execution.binding, runId: `run-authority-${outcome}-${index}` },
+          session: { ...execution.session, normalizedSessionId: `session-authority-${outcome}-${index}` } } as NativeExecutionInputV1;
+        state.createAssignedMcpTools.mockImplementationOnce(async () => {
+          catalogs += 1;
+          return { definitions: () => [], has: () => false, execute: vi.fn() };
+        });
+        state.execute.mockReset().mockImplementationOnce(async (options) => {
+          await options.onSession({ cancel: state.cancel });
+          await options.onSession(null);
+          if (outcome === "failed") throw new Error("provider failed");
+          return {
+            result: { summary: "done" }, terminal: { runTerminalState: "succeeded" },
+            turnId: "turn", normalizedSessionId: current.session.normalizedSessionId, providerSessionId: null,
+            driverKind: "test", driverVersion: "1", nativeEventCount: 0, highestContiguousSourceSeq: 0,
+          };
+        });
+        await executePaperclipNativeSession({ db: leaseDb(current), execution: current, runnerInstanceId: "runner", useRunnerd: true,
+          runnerEnvironment: { ...configuredEnvironmentProjection({}), PAPERCLIP_NATIVE_MCP_NAME: "assigned-release",
+            PAPERCLIP_NATIVE_MCP_URL: "http://127.0.0.1/mcp/gateways/assigned-release", PAPERCLIP_NATIVE_MCP_TOKEN: "release-fixture" },
+        }).catch(() => undefined);
+      }
+      expect(catalogs).toBe(5);
+      expect(sessionToolAuthorityCount()).toBe(before);
+    } finally {
+      if (previous === undefined) delete process.env.PAPERCLIP_RUNNER_STATE_DIR;
+      else process.env.PAPERCLIP_RUNNER_STATE_DIR = previous;
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   it.each([true, false])("fences a late startup even when Stop reaches its acknowledgement deadline (runnerd=%s)", async (useRunnerd) => {
     const root = await mkdtemp(join(tmpdir(), "native-late-startup-stop-"));
     const previous = process.env.PAPERCLIP_RUNNER_STATE_DIR;
@@ -12442,6 +12481,36 @@ describe("native warm session supervision", () => {
       await executePaperclipNativeSession({ db: leaseDb(next), execution: next, runnerInstanceId: "runner",
         runnerEnvironment: { PAPERCLIP_AGENT_KEY_ID: "sha256:identity-key" } });
       expect(state.execute).toHaveBeenCalledTimes(2);
+    });
+
+    it("releases a superseded warm session's tool authority and keeps only the retained session's", async () => {
+      const { base, next } = fixture("authority-supersede");
+      const root = await mkdtemp(join(tmpdir(), "native-authority-supersede-"));
+      const previous = process.env.PAPERCLIP_RUNNER_STATE_DIR;
+      process.env.PAPERCLIP_RUNNER_STATE_DIR = root;
+      const close = vi.fn(async () => undefined);
+      state.execute.mockReset().mockImplementationOnce(async options => {
+        await options.onSession?.({ close }); return result;
+      }).mockImplementationOnce(async options => {
+        await options.onSession?.({ close: vi.fn(async () => undefined) }); return result;
+      });
+      try {
+        const before = sessionToolAuthorityCount();
+        const run = (input: NativeExecutionInputV1) => executePaperclipNativeSession({
+          db: leaseDb(input), execution: input, runnerInstanceId: "runner", useRunnerd: true,
+        });
+        await run(base);
+        expect(sessionToolAuthorityCount()).toBe(before + 1);
+        await run(next);
+        expect(close).toHaveBeenCalledWith({ reason: "warm native session identity changed" });
+        expect(sessionToolAuthorityCount()).toBe(before + 1);
+        await closeIdleWarmNativeSessionsForRestart();
+        expect(sessionToolAuthorityCount()).toBe(before);
+      } finally {
+        if (previous === undefined) delete process.env.PAPERCLIP_RUNNER_STATE_DIR;
+        else process.env.PAPERCLIP_RUNNER_STATE_DIR = previous;
+        await rm(root, { recursive: true, force: true });
+      }
     });
 
     it("awaits prior idle ownership retirement before launching the accepted-plan session", async () => {
