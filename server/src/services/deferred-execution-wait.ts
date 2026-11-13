@@ -1,6 +1,6 @@
 import { HttpError } from "../errors.js";
 import { and, eq, inArray, sql } from "drizzle-orm";
-import { agentWakeupRequests, type Db } from "@paperclipai/db";
+import { agentWakeupRequests, issues, type Db } from "@paperclipai/db";
 import { notifyDeferredExecutionWork } from "./deferred-execution-notifications.js";
 import { persistActivity, publishActivity, type ActivityPublication } from "./activity-log.js";
 
@@ -56,6 +56,8 @@ export async function writeDeferredExecutionWait(db: Db, scope: { companyId: str
 export async function releaseDecisionHeldExecution(tx: object, scope: { companyId: string; issueId?: string | null }) {
   if (!scope.issueId) return;
   const db = tx as Pick<Db, "select" | "update">;
+  await db.select({ id: issues.id }).from(issues)
+    .where(and(eq(issues.companyId, scope.companyId), eq(issues.id, scope.issueId))).for("update");
   const held = and(eq(agentWakeupRequests.companyId, scope.companyId), eq(agentWakeupRequests.status, "deferred_issue_execution"),
     sql`${agentWakeupRequests.payload}->>'issueId' = ${scope.issueId}`,
     sql`${agentWakeupRequests.payload}#>>'{executionWait,reason}' = 'decision_pending'`);

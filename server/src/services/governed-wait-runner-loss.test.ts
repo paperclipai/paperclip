@@ -239,6 +239,20 @@ describe("a held task with a pending decision after its remote runner was lost",
       expect(successor?.contextSnapshot).toMatchObject({ previousRunId: f.runId, taskRetryRequestId: f.requestId });
     }, 60_000);
 
+    it("accepts the confirmation while the held Retry is admitted, without either aborting", async () => {
+      const f = await heldOnConfirmation();
+      const issue = await currentIssue(f.issueId);
+      const outcomes = await Promise.allSettled([
+        issueThreadInteractionService(db).acceptInteraction(issue, f.decision.id, {}, { userId: "local-board" }),
+        f.service.resumeTaskRetry(f.companyId, f.requestId),
+        f.service.resumeTaskRetry(f.companyId, f.requestId),
+      ]);
+      expect(outcomes.filter(outcome => outcome.status === "rejected")).toEqual([]);
+      await f.service.resumeTaskRetry(f.companyId, f.requestId);
+      expect({ successors: (await queuedSuccessors(f.companyId)).length, deferred: await deferredWaits(f.companyId) })
+        .toEqual({ successors: 1, deferred: [] });
+    }, 60_000);
+
     it("never shows a resolved confirmation as the Retry's wait, and both projections offer the same Retry", async () => {
       const f = await heldOnConfirmation();
       await savedResolution(f);
