@@ -6755,6 +6755,8 @@ export function createToolGatewayService(
     const [open] = await db.select({ count: sql<number>`count(*)::int` }).from(toolMcpElicitations).where(and(
       eq(toolMcpElicitations.companyId, session.companyId), eq(toolMcpElicitations.issueId, session.issueId),
       eq(toolMcpElicitations.status, "waiting"), gt(toolMcpElicitations.expiresAt, new Date()),
+      // The answered round this one replaces is not counted: it is spent as this is saved.
+      ...(input.spend ? [ne(toolMcpElicitations.id, input.spend.row.id)] : []),
     ));
     if ((open?.count ?? 0) >= MCP_ELICITATION_MAX_OPEN_ROUNDS) {
       await spendFirst();
@@ -6777,6 +6779,7 @@ export function createToolGatewayService(
       }));
       // The answered round is spent only together with saving the next one,
       // so a stop between the two never loses the way to continue.
+      // If saving fails, the answered round is released, not left held, so the next call sends it again.
       [row] = await db.transaction(async (tx) => {
         if (input.spend && attempt === 0) {
           await tx.update(toolMcpElicitations).set({ status: "sent", sentAt: new Date(), claimedUntil: null, updatedAt: new Date() })
@@ -6791,6 +6794,9 @@ export function createToolGatewayService(
           : sealElicitationState(mcpTaskSecret(), { companyId: session.companyId, connectionId: call.connectionId }, input.requestState),
         questions, status: "waiting", expiresAt: new Date(Date.now() + MCP_ELICITATION_TTL_MS),
       }).onConflictDoNothing().returning();
+      }).catch(async (error: unknown) => {
+        if (input.spend) await releaseElicitationRound(input.spend.row).catch(() => undefined);
+        throw error;
       });
       if (input.spend && attempt === 0) await writeElicitationSentAudit(input.spend.row, call, input.spend.responses, input.invocationId);
       if (row) break;

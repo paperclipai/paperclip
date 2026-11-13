@@ -638,4 +638,21 @@ const support = await getEmbeddedPostgresTestSupport();
     await ctx.nextRun();
     expect(await ctx.call("create_ticket")).toMatchObject({ status: "completed", result: { content: 'answer: {"action":"accept","content":{"team":"eng"}}' } });
   });
+
+  it("advances to a follow-up question even when the task is at its open-question limit", async () => {
+    const server = askingServer();
+    const ctx = await setup(server.handle);
+    await ctx.call("two_rounds").catch(() => undefined);
+    const [round] = await ctx.rounds();
+    // Nine other questions are waiting on the task: ten in all, the limit.
+    await db.insert(toolMcpElicitations).values(Array.from({ length: 9 }, (_, index) => ({
+      ...round!, id: randomUUID(), callIdentity: `other-call-${index}`, dedupeKey: `other-${index}`, createdAt: new Date(), updatedAt: new Date(),
+    })));
+    const [first] = await ctx.cards();
+    await ctx.answer(first!.id, [{ questionId: "team", optionIds: ["choice_1"] }]);
+    expect(await ctx.call("two_rounds").catch((error) => error)).toMatchObject({ reasonCode: "elicitation_required" });
+    // The answered round made room for its own follow-up.
+    expect(await ctx.cards()).toHaveLength(2);
+    expect((await ctx.rounds()).filter((row) => row.status === "waiting")).toHaveLength(10);
+  });
 });
