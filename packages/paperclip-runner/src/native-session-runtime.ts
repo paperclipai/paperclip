@@ -2941,6 +2941,7 @@ export async function executeNativeSession(
             (persistedTerminal) => persistedTerminal.turnId === terminal.turnId,
           ) &&
           (terminal.turnId === persistedSession?.activeTurnId ||
+            !persistedSession?.activeTurnId ||
             recoveredSnapshot.dispositionOnlyRecoveryConsumed),
       ),
     );
