@@ -2,6 +2,7 @@ import { useMutation, useQuery } from "@tanstack/react-query";
 import { aiRoutingModel, type AiConnectionBinding, type AiProviderRouting } from "@paperclipai/shared";
 import { aiConnectionsApi } from "@/api/ai-connections";
 import { agentsApi } from "@/api/agents";
+import { useQueryView } from "@/components/QueryView";
 import { queryKeys } from "@/lib/queryKeys";
 
 export function useConnectionModelsState(
@@ -30,7 +31,6 @@ export function useConnectionModelsState(
     queryFn: () => agentsApi.adapterModels(companyId!, "opencode_local", { provider: "openrouter" }),
     enabled: Boolean(companyId && discover),
     staleTime: 60_000,
-    retry: false,
   });
   // Local and gateway connections have no public catalog: the model picker's
   // refresh lists their endpoint directly, with the stored credential resolved
@@ -54,6 +54,7 @@ export function useConnectionModelsState(
     probeForCurrent?.data && probeForCurrent.data.connectionId === connection?.id
       ? probeForCurrent.data.models
       : undefined;
+  const catalogView = useQueryView(catalog);
   const effectiveRouting: AiProviderRouting | undefined = routing ?? (openRouter
     ? { kind: "openrouter", protocol: "chat", auth: "bearer", models: [] }
     : undefined);
@@ -68,8 +69,8 @@ export function useConnectionModelsState(
           id: aiRoutingModel(effectiveRouting, harness, m.id),
           label: m.label ?? m.id,
         })),
-        isLoading: discover && catalog.isLoading,
-        error: discover ? catalog.error : endpointRoute ? probeForCurrent?.error ?? null : null,
+        isLoading: discover && (catalog.isLoading || catalogView.kind === "reconnecting"),
+        error: discover && catalogView.kind === "error" ? catalog.error : endpointRoute ? probeForCurrent?.error ?? null : null,
         refreshing: (discover && catalog.isFetching) || (probeForCurrent?.isPending ?? false),
         refreshModels: discover
           ? async () => { await catalog.refetch(); }

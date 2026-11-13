@@ -29,7 +29,7 @@ vi.mock("@/components/ui/button", () => ({
 }));
 
 vi.mock("@/components/ui/checkbox", () => ({
-  Checkbox: ({ checked }: { checked?: boolean }) => <input type="checkbox" checked={checked} readOnly />,
+  Checkbox: ({ checked, onCheckedChange, ...props }: { checked?: boolean; onCheckedChange?: (checked: boolean) => void }) => <input {...props} type="checkbox" checked={checked} onChange={event => onCheckedChange?.(event.target.checked)} />,
 }));
 
 vi.mock("./StatusIcon", () => ({
@@ -50,6 +50,37 @@ describe("IssueFiltersPopover", () => {
 
   afterEach(() => {
     document.body.innerHTML = "";
+  });
+
+  it.each(["legacy", "streamlined", "refreshed"] as const)("groups the routine filter under Visibility in %s", presentation => {
+    const root = createRoot(container);
+    const onChange = vi.fn();
+    act(() => root.render(<IssueFiltersPopover enableAgentCreatedVisibilityFilter enableRoutineTasksFilter presentation={presentation} state={{ ...defaultIssueFilterState, routineTasksOnly: true }} onChange={onChange} activeFilterCount={1} />));
+    const visibility = container.querySelector('[data-filter-options="visibility"]');
+    expect(Array.from(visibility?.querySelectorAll("label") ?? []).map(label => label.textContent)).toEqual([
+      "Live runs only", "Show agent-created tasks", "Routine tasks",
+    ]);
+    expect(container.textContent).toContain("Visibility");
+    expect(container.textContent).not.toContain("Source");
+    const row = Array.from(visibility!.querySelectorAll("label")).find(label => label.textContent === "Routine tasks");
+    expect(row?.querySelector("input")?.checked).toBe(true);
+    act(() => row?.querySelector("input")?.click());
+    expect(onChange).toHaveBeenCalledWith({ routineTasksOnly: false });
+    act(() => Array.from(container.querySelectorAll("button")).find(button => button.textContent === "Clear")?.click());
+    expect(onChange).toHaveBeenCalledWith(defaultIssueFilterState);
+    act(() => root.unmount());
+  });
+
+  it.each(["legacy", "streamlined", "refreshed"] as const)("hides unsupported live filters in %s", presentation => {
+    const root = createRoot(container);
+    const props = { presentation, enableLiveRunsFilter: false, state: defaultIssueFilterState, onChange: vi.fn(), activeFilterCount: 0 };
+    act(() => root.render(<IssueFiltersPopover {...props} />));
+    expect(container.textContent).not.toContain("Live runs only");
+    expect(container.textContent).not.toContain("Visibility");
+    act(() => root.render(<IssueFiltersPopover {...props} enableRoutineTasksFilter />));
+    const visibility = container.querySelector('[data-filter-options="visibility"]');
+    expect(Array.from(visibility?.querySelectorAll("label") ?? []).map(label => label.textContent)).toEqual(["Routine tasks"]);
+    act(() => root.unmount());
   });
 
   it("uses a scrollable popover and a three-column desktop grid", () => {
@@ -86,8 +117,8 @@ describe("IssueFiltersPopover", () => {
     );
     expect(layoutGrid?.className).toContain("grid-cols-1");
     expect(popoverContent?.textContent).toContain("Live runs only");
-    const creationToggle = Array.from(popoverContent?.querySelectorAll("label") ?? []).find((label) => label.textContent?.includes("show agent-created tasks"));
-    expect(creationToggle?.textContent).toBe("show agent-created tasks");
+    const creationToggle = Array.from(popoverContent?.querySelectorAll("label") ?? []).find((label) => label.textContent?.includes("Show agent-created tasks"));
+    expect(creationToggle?.textContent).toBe("Show agent-created tasks");
     expect(creationToggle?.querySelector("input")?.checked).toBe(false);
   });
 

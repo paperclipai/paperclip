@@ -1,5 +1,5 @@
 ---
-description: Existing Paperclip pull request review requirements migrated from Greptile settings.
+description: Fill in every PR template section, keep failures visible in verification claims, do not request UI screenshots, and give a reason when a source file grows past 1,000 lines.
 alwaysApply: true
 ---
 

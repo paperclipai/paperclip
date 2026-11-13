@@ -425,7 +425,10 @@ describe("personal Muse control plane",()=>{
         expect(read.comments.find(row=>row.id===standardId)).toMatchObject({body:"Ordinary coordination",sourceTrust:null});
         expect(await db.select().from(issueComments).where(eq(issueComments.issueId,f.issue.id)).orderBy(issueComments.id)).toEqual(stored);
       }
-      expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id,f.runId)))[0]).toEqual(committed.run);
+      const {nextEventSeq:readEventSeq,updatedAt:_readAt,...readRun}=(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id,f.runId)))[0]!;
+      const {nextEventSeq:committedEventSeq,updatedAt:_committedAt,...committedRun}=committed.run;
+      expect(readRun).toEqual(committedRun);
+      expect(readEventSeq).toBe(committedEventSeq+1);
       expect(committed.run.contextSnapshot).toEqual(writerContext);
       expect(await db.select().from(externalAgentHolds).where(eq(externalAgentHolds.assignmentId,f.assignment.id))).toEqual(beforeHolds);
       expect((await db.select({status:assignments.status,acceptedResultAt:assignments.acceptedResultAt,finalizedAt:assignments.finalizedAt}).from(assignments).where(eq(assignments.id,f.assignment.id)))[0]).toEqual({status:"accepted",acceptedResultAt:null,finalizedAt:null});
@@ -964,10 +967,10 @@ describe("personal Muse control plane",()=>{
     await expect(f.identity.authenticateOAuthAccess(f.tokens!.access_token,oauthOrigin)).rejects.toThrow();
   });
   it("does not clear claimed-worker or unknown-native-effect holds when recording detector removal",async()=>{
-    const activeRun=await active(await oauthFixture(true));
+    const oauth=await oauthFixture(true),activeRun=await active(oauth);
     try {
       expect((await activeRun.broker.act(activeRun.subject,{version:1,command:"accept",assignmentId:activeRun.assignment.id,requestId:randomUUID()})).status).toBe("accepted");
-      const f=await detectorCleanupFixture(activeRun);
+      const f=await detectorCleanupFixture({...oauth,...activeRun});
       await db.update(externalAgentHolds).set({nativeEffectsUnknown:true}).where(eq(externalAgentHolds.assignmentId,activeRun.assignment.id));
       const before=await db.select().from(externalAgentHolds).where(eq(externalAgentHolds.assignmentId,activeRun.assignment.id));expect(before).toHaveLength(1);expect(before[0]).toMatchObject({workerUnknown:true,nativeEffectsUnknown:true,releasedAt:null});
       expect((await request(f.app).post(f.path).send(f.input)).status).toBe(200);
@@ -1122,7 +1125,7 @@ describe("personal Muse control plane",()=>{
       expect(logs[0]).toMatchObject({actorType:"user",actorId:operatorId,agentId:f.agent.id,responsibleUserId:operatorId,entityType:"agent",entityId:f.agent.id,details:{bindingId:f.binding.id,generation:1,revision:first.revision,authorizingUserId:f.operatorId,qualificationId,startedAt:first.startedAt,expiresAt:first.expiresAt}});
       expect(events.filter(event=>event.action==="muse.qualification_started")).toHaveLength(1);
       const serialized=JSON.stringify({logs,events});
-      for(const secret of [f.ticket,f.credentials.accessToken,f.credentials.refreshToken,f.credentials.signalToken,f.credentials.cleanupToken,f.credentials.detectorCleanupToken])expect(serialized).not.toContain(secret);
+      for(const secret of [f.ticket,f.credentials.accessToken,f.credentials.refreshToken,f.credentials.cleanupToken,f.credentials.detectorCleanupToken])expect(serialized).not.toContain(secret);
     } finally {unsubscribe();}
   });
   it("retains a mailbox batch until its prior durable cursor is acknowledged",async()=>{
@@ -1394,7 +1397,7 @@ describe("personal Muse control plane",()=>{
     await db.insert(principalPermissionGrants).values({companyId:f.company.id,principalType:"agent",principalId:f.agent.id,permissionKey:"tasks:assign_scope",scope:{projectIds:[randomUUID()]}});
     await expect(f.broker.act(f.subject,command)).rejects.toThrow();
     await db.update(principalPermissionGrants).set({scope:{projectIds:[project.id]}}).where(and(eq(principalPermissionGrants.companyId,f.company.id),eq(principalPermissionGrants.principalId,f.agent.id)));
-    await expect(f.broker.act(f.subject,command)).rejects.toThrow("Authorizing user");
+    await expect(f.broker.act(f.subject,command)).rejects.toThrow(/the person who authorized this agent/i);
     await db.insert(principalPermissionGrants).values({companyId:f.company.id,principalType:"user",principalId:f.operatorId,permissionKey:"tasks:assign_scope",scope:{projectIds:[randomUUID()]}});
     await expect(f.broker.act(f.subject,command)).rejects.toThrow();
     await db.update(principalPermissionGrants).set({scope:{projectIds:[project.id]}}).where(and(eq(principalPermissionGrants.companyId,f.company.id),eq(principalPermissionGrants.principalId,f.operatorId)));
@@ -1587,7 +1590,7 @@ describe("personal Muse control plane",()=>{
       expect(response.status).toBe(200);expect(response.body).toMatchObject({status:"worker_reported",externalStopConfirmed:false,nativeEffectsUnknown:true});
       const [after]=await db.select().from(externalAgentHolds).where(eq(externalAgentHolds.id,before.id));
       expect(after.workerReportedAt).toBeInstanceOf(Date);expect(after).toMatchObject({workerUnknown:true,nativeEffectsUnknown:true,releasedAt:null});
-      await oauth.oauth.revokeToken(oauth.tokens!.refresh_token,oauth.client.client_id);
+      await oauth.oauth.revokeToken(oauth.tokens!.refresh_token!,oauth.client.client_id);
       expect((await request(transport()).post("/api/muse/v1/cleanup").set("Authorization","Bearer "+oauth.tokens!.access_token).send(report)).status).toBe(401);
       await expect(f.broker.cleanup(f.subject,{command:"worker.quiescent",boundary:before.stopBoundary!,requestId:report.requestId})).rejects.toThrow();
     }finally{await f.detach();}
@@ -2132,6 +2135,37 @@ describe("personal Muse control plane",()=>{
       await f.port.settle({sourceEventId:randomUUID(),payload:{binding:f.ref,requestId,outcome:{status:"accepted"}}});
       const [resolved]=await db.select().from(externalAgentHolds).where(eq(externalAgentHolds.id,held.id));expect(resolved.workerUnknown).toBe(true);expect(resolved.nativeEffectsUnknown).toBe(false);expect(resolved.releasedAt).toBeNull();
     }finally{await detach();}
+  });
+
+  it("notifies maintenance when a real Muse finish receipt commits", async () => {
+    const f = await active();
+    const events: string[] = [];
+    let unsubscribe = () => {};
+    try {
+      await f.broker.act(f.subject, { version: 1, command: "accept", assignmentId: f.assignment.id, requestId: randomUUID() });
+      unsubscribe = subscribeDatabaseWork(db, DELIVERY_QUEUES.museMaintenance, event => events.push(event));
+      await f.broker.act(f.subject, { version: 1, command: "finish", assignmentId: f.assignment.id, requestId: randomUUID(), result: {} });
+      expect(events).toContain("intent");
+      expect(events.at(-1)).toBe("settled");
+      expect((await db.select().from(assignments).where(eq(assignments.id, f.assignment.id)))[0].acceptedResultAt).not.toBeNull();
+    } finally { unsubscribe(); await f.detach(); }
+  });
+
+  it("does not rewrite settled Muse terminal history", async () => {
+    const f = await active();
+    try {
+      await f.broker.act(f.subject, { version: 1, command: "accept", assignmentId: f.assignment.id, requestId: randomUUID() });
+      await f.broker.act(f.subject, { version: 1, command: "finish", assignmentId: f.assignment.id, requestId: randomUUID(), result: {} });
+      await db.update(heartbeatRuns).set({ status: "succeeded", finishedAt: new Date() }).where(eq(heartbeatRuns.id, f.runId));
+      await f.broker.reconcileTerminalAssignments(f.company.id, f.agent.id, f.binding.id);
+      const version = async () => (await db.select({ version: sql<string>`${assignments}.xmin::text` })
+        .from(assignments).where(eq(assignments.id, f.assignment.id)))[0].version;
+      const settled = await version();
+      await f.broker.reconcileTerminalAssignments(f.company.id, f.agent.id, f.binding.id);
+      expect(await version()).toBe(settled);
+      const [hold] = await db.select().from(externalAgentHolds).where(eq(externalAgentHolds.assignmentId, f.assignment.id));
+      expect(hold).toMatchObject({ workerUnknown: false, nativeEffectsUnknown: false, releasedAt: expect.any(Date) });
+    } finally { await f.detach(); }
   });
 
   it("makes identical native result replay idempotent after finish and finalization",async()=>{

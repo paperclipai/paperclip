@@ -1,3 +1,4 @@
+import { writeToolConnectionHealthChange } from "../../tool-connection-health-notifications.js";
 import type { ActorInfo } from "../types.js";
 import { createOAuthClientProtocol, storedOAuthTokenEndpointAuthMethod } from "./client.js";
 import { oauthConfig, normalizeOauthScopes } from "./metadata.js";
@@ -59,7 +60,7 @@ const oauthRefreshFlights = new Map<string, Promise<unknown>>();
         reauthorizationRequiredAt: now().toISOString(),
       },
     };
-    const [updated] = await db
+    const [updated] = await writeToolConnectionHealthChange(db, connection, tx => tx
       .update(toolConnections)
       .set({
         status: "draft",
@@ -87,7 +88,7 @@ const oauthRefreshFlights = new Map<string, Promise<unknown>>();
         )`,
         ),
       )
-      .returning();
+      .returning());
     if (updated) {
       await syncCredentialBindings(updated);
       emitConnectionUpdated(updated, connection, "credential_refresh");
@@ -366,6 +367,7 @@ const oauthRefreshFlights = new Map<string, Promise<unknown>>();
       heartbeatRunId?: string | null;
     },
   ): Promise<typeof toolConnections.$inferSelect> {
+    await actor?.managementContext?.reauthorize();
     const oauth = oauthConfig(connection);
     if (
       typeof oauth.tokenUrl !== "string" ||

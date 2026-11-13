@@ -1,7 +1,9 @@
+import { resolveExternalTestDatabaseUrl } from "./helpers/external-test-database.js";
 import { randomUUID } from "node:crypto";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { and, eq } from "drizzle-orm";
 import {
+  applyPendingMigrations,
   activityLog,
   agentConfigRevisions,
   agents,
@@ -41,7 +43,8 @@ import { deriveIssuePrefixBase } from "../services/issue-prefix.js";
 import { readBuiltInAgentMarker } from "../lib/built-in-agent-metadata.js";
 import { builtInAgentService, reconcileBuiltInAgentsOnStartup } from "../services/built-in-agents.js";
 
-const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
+const externalUrl = resolveExternalTestDatabaseUrl("PAPERCLIP_COMPANIES_TEST_DATABASE_URL");
+const embeddedPostgresSupport = externalUrl ? { supported: true, reason: undefined } : await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
 
 if (!embeddedPostgresSupport.supported) {
@@ -57,10 +60,12 @@ describeEmbeddedPostgres("companyService", () => {
     lifecycleWorker = startAgentLifecycle(db, { ...createLifecycleDriver(db, {} as never),
       requiredPluginIds: async () => [], runPlugin: async () => "complete" }, () => true);
   });
+  const lifecycleStateFor = (status: typeof agents.$inferInsert["status"]): NonNullable<typeof agents.$inferInsert["lifecycleState"]> =>
+    status === "paused" || status === "pending_approval" || status === "terminated" ? status : "ready";
   async function insertAgents(input: typeof agents.$inferInsert | Array<typeof agents.$inferInsert>) {
     const rows = Array.isArray(input) ? input : [input];
     await db.insert(agents).values(rows.map(row => ({ ...row,
-      lifecycleState: ["paused", "pending_approval", "terminated"].includes(row.status ?? "") ? row.status! : "ready",
+      lifecycleState: lifecycleStateFor(row.status),
       lifecycleHolds: row.status === "paused" ? [row.pauseReason ?? "manual"] : [],
     })));
   }
@@ -68,8 +73,9 @@ describeEmbeddedPostgres("companyService", () => {
   let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
 
   beforeAll(async () => {
-    tempDb = await startEmbeddedPostgresTestDatabase("paperclip-company-service-");
-    db = createDb(tempDb.connectionString);
+    if (externalUrl) await applyPendingMigrations(externalUrl);
+    else tempDb = await startEmbeddedPostgresTestDatabase("paperclip-company-service-");
+    db = createDb(externalUrl ?? tempDb!.connectionString);
   }, 20_000);
 
   afterEach(async () => {
@@ -93,6 +99,7 @@ describeEmbeddedPostgres("companyService", () => {
   });
 
   afterAll(async () => {
+    await db?.$client.end({ timeout: 1 });
     await tempDb?.cleanup();
   });
 

@@ -1,0 +1,4 @@
+interface:
+  display_name: "Directions Lab"
+  short_description: "Scaffold a Today-plus-directions lab page registered in the design-proposals Storybook"
+  default_prompt: "Use $directions-lab to stand up a directions lab for <feature> that shows what ships today next to 2-3 explorations."

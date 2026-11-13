@@ -80,6 +80,26 @@ it("binds the expected receipt set to admitted attempts and retains unstarted se
   await expect(collectScheduledIngestion({ ...f.input, campaignId: "foreign" })).rejects.toThrow("campaign mismatch");
 });
 
+it("keeps historical native receipts with the larger policy limits readable", async () => {
+  const f = await fixture(), file = f.files[0]!;
+  const rows = (await readFile(file, "utf8")).trim().split("\n").map(line => JSON.parse(line));
+  rows[0].limits.maxExpandedBytes = 256 * 1024 * 1024;
+  rows[0].limits.maxRecords = 16_384;
+  await writeFile(file, rows.map(row => JSON.stringify(row)).join("\n") + "\n");
+  expect(await collectScheduledIngestion(f.input)).toMatchObject({ status: "complete",
+    totalAdmittedPayloadBytes: f.expectedBytes, billedCostUsd: null });
+});
+
+it.each([8, 14, 15])("validates an experiment receipt with a %i-score policy against the supported ceiling", async maxScores => {
+  const f = await fixture(), file = `${f.input.ledgerPath}.experiment-ingestion.jsonl`;
+  const rows = (await readFile(file, "utf8")).trim().split("\n").map(line => JSON.parse(line));
+  rows[0].limits.maxScores = maxScores;
+  await writeFile(file, rows.map(row => JSON.stringify(row)).join("\n") + "\n");
+  const usage = await collectScheduledIngestion(f.input);
+  expect(usage.status).toBe(maxScores <= 14 ? "complete" : "incomplete");
+  expect(usage.receipts.at(-1)!.status).toBe(maxScores <= 14 ? "complete" : "unavailable");
+});
+
 it("keeps version 1 transport receipts readable without inventing expanded data measurements", async () => {
   const f = await fixture(), file = f.files[0]!;
   const rows = (await readFile(file, "utf8")).trim().split("\n").map(line => JSON.parse(line));

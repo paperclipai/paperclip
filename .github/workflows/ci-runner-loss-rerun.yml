@@ -1,0 +1,54 @@
+name: CI runner-loss rerun
+
+# Self-hosted AWS runners are sometimes lost mid-job. When every failed or
+# cancelled job of a first PR CI attempt lost its runner, re-run the failed
+# jobs once. A spot reclaim often concludes the run `cancelled`. This is
+# what a maintainer's "Re-run failed jobs" click does; github-actions[bot]
+# becomes attempt 2's triggering actor. See "Trusted PR Workflow" in
+# doc/DEVELOPING.md.
+on:
+  workflow_run:
+    workflows: [PR]
+    types: [completed]
+
+permissions:
+  # rerun-failed-jobs, and reading jobs and job logs.
+  actions: write
+  # Check-run annotations carry the runner-loss message.
+  checks: read
+  contents: read
+  # Confirms the run still belongs to an open PR's current head.
+  pull-requests: read
+
+concurrency:
+  group: ci-runner-loss-rerun-${{ github.event.workflow_run.id }}
+  cancel-in-progress: false
+
+jobs:
+  rerun:
+    # Attempt 1 only: this allows one automatic re-run and cannot loop.
+    if: >-
+      github.repository == 'paperclipai/paperclip' &&
+      github.repository_id == '1170821064' &&
+      github.event.workflow_run.event == 'pull_request' &&
+      github.event.workflow_run.path == '.github/workflows/pr.yml' &&
+      (github.event.workflow_run.conclusion == 'failure' ||
+      github.event.workflow_run.conclusion == 'cancelled') &&
+      github.event.workflow_run.run_attempt == 1
+    # GitHub-hosted on purpose: this job must not depend on the fleet it repairs.
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      # workflow_run is privileged. Never check out its head SHA or run code
+      # from downloaded artifacts. This checkout is the trusted default branch.
+      - name: Checkout trusted re-run script
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+          sparse-checkout: .github/scripts
+
+      - name: Re-run failed jobs if every failure was runner loss
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: node .github/scripts/runner-loss-rerun.mjs

@@ -1,7 +1,8 @@
-import { renderReportHistory, reportHistoryStyles, reportHistoryScript } from "./report-history.js";
+import { renderReportHistory, reportHistoryStyles } from "./report-history.js";
 import { renderReportShell, reportNavigationStyles, reportShellScript } from "./report-navigation.js";
 import { runnerMatrix } from "./catalog.js";
 import { campaignSuiteSummaryStyles, renderCampaignSuiteSummary } from "./campaign-summary.js";
+import { historyBrowserJson, historyBrowserScript, historySuiteCatalog } from "./history-browser.js";
 import type {
   RunnerE2EHistoryCampaign,
   RunnerE2EHistoryIndex,
@@ -73,14 +74,15 @@ function campaignRow(campaign: RunnerE2EHistoryCampaign) {
     )
     .join("");
   const billing = campaign.billing;
-  return `<tr data-index-campaign data-index-status="${status}" data-index-search="${html([campaign.campaignId, campaign.source.ref, campaign.source.sha].join(" ").toLowerCase())}">
+  return `<tr data-index-campaign data-index-id="${html(campaign.campaignId)}" data-index-status="${status}">
     <td data-label="Campaign">
       <a class="campaign-link" href="${html(campaign.publicUrl)}">${html(campaign.campaignId)}</a>
       <small>${html(date(campaign.generatedAt))} UTC</small>
     </td>
     <td data-label="Result">
-      <span class="status status-${status}">${status}</span>
-      <small>${campaign.passed}/${campaign.selected} passed · ${campaign.executed} executed</small>
+      <span class="status status-${status}" data-index-row-status>${status}</span>
+      <small data-index-row-counts>${campaign.passed}/${campaign.selected} passed · ${campaign.executed} executed</small>
+      <small data-index-row-coverage>${campaign.complete ? "Full campaign" : "Partial campaign"}</small>
     </td>
     <td data-label="Source">${sourceCell(campaign)}</td>
     <td class="open-cell" data-label="Details"><a href="${html(campaign.publicUrl)}" aria-label="Open campaign ${html(campaign.campaignId)}">Open report&nbsp;→</a>
@@ -99,9 +101,7 @@ function campaignRow(campaign: RunnerE2EHistoryCampaign) {
 export function renderRunnerHistoryIndex(
   history: RunnerE2EHistoryIndex,
 ) {
-  const campaigns = [...history.campaigns].sort((left, right) =>
-    right.generatedAt.localeCompare(left.generatedAt),
-  );
+  const campaigns = [...history.campaigns].sort((left, right) => Date.parse(right.generatedAt) - Date.parse(left.generatedAt));
   const passed = campaigns.filter(
     (campaign) => campaignStatus(campaign) === "passed",
   ).length;
@@ -119,6 +119,9 @@ export function renderRunnerHistoryIndex(
     campaigns.length > 0
       ? campaigns.map(campaignRow).join("")
       : `<tr><td class="empty" colspan="4">No campaigns have been published yet.</td></tr>`;
+  const suites = historySuiteCatalog(history, runnerMatrix);
+  const allLabels: Record<string, string> = { suite: "All suites", target: "All targets", environment: "All execution environments", provider: "All providers", model: "All models", profile: "All profiles", runtime: "All runtimes", preset: "All presets", status: "All results", coverage: "Any coverage" };
+  const filter = (name: string, label: string, choices: readonly [string, string][] = []) => `<label><span>${label}</span><select data-index-filter="${name}" aria-label="${label}"><option value="">${allLabels[name]}</option>${choices.map(([value, text]) => `<option value="${html(value)}">${html(text)}</option>`).join("")}</select></label>`;
 
   return `<!doctype html>
 <html lang="en">
@@ -129,7 +132,7 @@ export function renderRunnerHistoryIndex(
   <meta name="theme-color" content="#ffffff" media="(prefers-color-scheme: light)">
   <meta name="theme-color" content="#141413" media="(prefers-color-scheme: dark)">
   <link rel="icon" href="assets/favicon-32x32.png" type="image/png">
-  <title>Runner E2E Campaigns · Paperclip</title>
+  <title>E2E tests · Paperclip</title>
   <style>
     @font-face { font-family: "Paperclip Inter"; src: url("assets/InterVariable.woff2") format("woff2"); font-style: normal; font-weight: 100 900; font-display: swap; }
     :root { color-scheme: light dark; --background:#fff; --foreground:#0a0a0a; --muted:#60666a; --border:#e5e5e5; --raised:#fafafa; --pass:#188a3c; --pass-bg:#dcfce7; --fail:#991b1b; --fail-bg:#fee2e2; --font:"Paperclip Inter",Inter,ui-sans-serif,system-ui,-apple-system,sans-serif; --mono:ui-monospace,SFMono-Regular,Menlo,monospace; }
@@ -156,6 +159,30 @@ export function renderRunnerHistoryIndex(
     .pointers a { padding:8px 11px; border:1px solid var(--border); border-radius:7px; background:var(--raised); font-size:12px; text-decoration:none; }
     .pointers a:hover,.campaign-link:hover,.open-cell a:hover { text-decoration:underline; }
     .latest-campaign { margin-bottom:32px; }
+    .index-filter-toolbar { display:flex; align-items:center; justify-content:space-between; gap:16px; margin:24px 0 14px; }
+    .index-filter-toolbar > div { display:flex; align-items:baseline; gap:10px; }
+    .index-filter-toolbar h2 { margin:0; font-size:15px; }
+    .index-active-count { color:var(--muted); font-size:12px; }
+    .index-active-count[data-active=true],.index-more-count { color:var(--report-filter-active); }
+    .index-filters { display: grid; grid-template-columns: minmax(160px,1fr) minmax(140px,.7fr) minmax(180px,1fr) minmax(180px,1fr); gap: 12px; margin: 0 0 12px; }
+    .index-filters label,.index-more label { display: grid; gap: 6px; min-width: 0; font-size: 11px; color: var(--muted); }
+    .index-filters select,.index-filters input,.index-more select,.index-more input { width: 100%; min-width: 0; min-height: 38px; padding: 8px; background: var(--background); color: var(--foreground); border: 1px solid var(--border); border-radius: 5px; font: 12px var(--font); }
+    .index-more { margin-bottom: 20px; }
+    .index-more summary { color: var(--muted); cursor: pointer; font-size: 12px; }
+    .index-more-grid { display: grid; grid-template-columns: repeat(3,minmax(0,1fr)); gap: 12px; margin-top: 12px; }
+    .index-more-count { margin-left:8px; font-size:11px; }
+    .index-reset { min-height:36px; padding:8px 12px; border:1px solid var(--border); border-radius:5px; background:var(--raised); color:var(--foreground); font:600 12px var(--font); cursor:pointer; white-space:nowrap; }
+    .index-reset[data-active=true] { border-color:var(--report-filter-active); color:var(--report-filter-active); }
+    .index-reset:hover { background:var(--report-filter-tint); }
+    .index-reset:focus-visible { outline:2px solid var(--report-filter-active); outline-offset:3px; }
+    .suite-run-pointers { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 16px; margin: 20px 0; }
+    .suite-run-pointers > div { min-width: 0; border: 1px solid var(--border); border-radius: 7px; padding: 14px; }
+    .suite-run-pointers strong,.suite-run-pointers a,.suite-run-pointers small { display: block; }
+    .suite-run-pointers strong { font-size: 12px; margin-bottom: 8px; }
+    .suite-run-pointers a { font: 11px var(--mono); overflow-wrap: anywhere; }
+    .suite-run-pointers small { margin-top: 8px; color: var(--muted); font-size: 11px; }
+    @media(max-width:1100px) { .index-filters,.index-more-grid { grid-template-columns:repeat(2,minmax(0,1fr)); } }
+    @media(max-width:520px) { .index-filters,.index-more-grid,.suite-run-pointers { grid-template-columns:1fr; } .index-filters input,.index-filters select,.index-more input,.index-more select,.report-suite-catalog input { font-size:16px; } }
     .latest-campaign-heading { display:flex; flex-wrap:wrap; align-items:baseline; gap:12px; margin-bottom:20px; }
     .latest-campaign-heading h2 { margin:0; font-size:18px; font-weight:600; }
     .latest-metrics { display:flex; flex-wrap:wrap; gap:24px 48px; margin:0 0 16px; }
@@ -168,7 +195,7 @@ export function renderRunnerHistoryIndex(
     tr:last-child td { border-bottom:0; }
     th { background:var(--raised); color:var(--muted); font-size:10px; letter-spacing:.06em; text-transform:uppercase; white-space:nowrap; }
     td strong,.campaign-link { font-weight:650; }
-    td small { display:block; margin-top:4px; color:var(--muted); font-size:10px; }
+    td small { display:block; margin-top:4px; color:var(--muted); font-size:10px; overflow-wrap:anywhere; }
     td a.secondary-link { display:block; margin-top:3px; }
     .campaign-link { font:600 11px/1.4 var(--mono); overflow-wrap:anywhere; }
     .status { display:inline-block; padding:3px 8px; border-radius:999px; font-size:10px; font-weight:700; letter-spacing:.05em; text-transform:uppercase; }
@@ -209,16 +236,21 @@ export function renderRunnerHistoryIndex(
     .campaign-row-details .suite-list { white-space:normal; }
     ${reportNavigationStyles}
     ${reportHistoryStyles}
-    @media(max-width:860px) { .report-surface table { min-width:0; } }
+    @media(max-width:860px) {
+      .report-surface table { min-width:0; }
+      .report-surface td:not(.open-cell)::before { grid-column:1; grid-row:1 / span 4; }
+      .report-surface td:not(.open-cell) > * { grid-column:2; min-width:0; }
+      .report-surface td .status { justify-self:start; }
+    }
   </style>
 </head>
 <body>
-  ${renderReportShell({ history })}
+  ${renderReportShell({ history, historySuites: suites })}
   <main>
     <header>
       <div>
         <p class="eyebrow">Historical test reporting</p>
-        <h1 data-index-title>Runner E2E campaigns</h1>
+        <h1 data-index-title>E2E tests</h1>
         <p class="lede" data-index-description>${campaigns.length} retained campaigns. Open a report for test outcomes, per-test billing, declared screenshots, and normalized results.</p>
       </div>
       <div class="summary" aria-label="History summary">
@@ -242,7 +274,25 @@ export function renderRunnerHistoryIndex(
       ${latestGreen ? `<a href="${html(latestGreen.publicUrl)}">Latest complete green · ${html(latestGreen.campaignId)}</a>` : ""}
     </nav>
     </section>
-    <div class="index-search"><h2 data-index-list-title>Recent campaigns</h2><input type="search" data-index-query aria-label="Search campaigns" placeholder="Find a campaign, revision, or branch…"></div>
+    <section data-index-suite-summary hidden aria-label="Suite run pointers"><div class="suite-run-pointers">
+      <div data-index-latest="any"><strong>Latest matching run</strong><a hidden></a><small></small></div>
+      <div data-index-latest="full"><strong>Latest full run</strong><a hidden></a><small></small></div>
+    </div></section>
+    <div class="index-filter-toolbar"><div><h2>Filters</h2><span class="index-active-count" data-index-active-count aria-live="polite">None active</span></div><button class="index-reset" type="button" data-index-reset>Reset all filters</button></div>
+    <div class="index-filters" aria-label="Filter campaigns">
+      ${filter("suite", "Suite", suites.map(suite => [suite.id, suite.label]))}
+      ${filter("coverage", "Campaign coverage", [["full", "Full runs"], ["subset", "Subset selections"], ["unfinished", "Unfinished full selections"], ["unknown", "Coverage not established"]])}
+      ${filter("target", "Target")}
+      <label><span>Search campaigns</span><input type="search" data-index-filter="q" aria-label="Search campaigns" placeholder="Campaign, revision, branch, or case…"></label>
+    </div>
+    <details class="index-more" data-index-more><summary><span>More filters</span><span class="index-more-count" data-index-more-count hidden></span></summary><div class="index-more-grid">
+      ${filter("environment", "Agent execution")}${filter("provider", "Provider")}${filter("model", "Model")}
+      ${filter("profile", "Agent profile")}${filter("runtime", "Runtime")}${filter("preset", "Run preset")}
+      ${filter("status", "Result", [["passed", "Passed"], ["failed", "Failed"], ["incomplete", "Incomplete"]])}
+      <label><span>From</span><input type="date" data-index-filter="from" aria-label="From"></label>
+      <label><span>Through</span><input type="date" data-index-filter="through" aria-label="Through"></label>
+    </div></details>
+    <h2 data-index-list-title>Campaigns</h2>
     <p class="index-result" data-index-result aria-live="polite"></p>
     <div class="table-wrap">
       <table>
@@ -250,39 +300,12 @@ export function renderRunnerHistoryIndex(
         <tbody>${rows}</tbody>
       </table>
     </div>
-    <details data-index-trends hidden><summary>Trends and detailed history</summary>${renderReportHistory(history)}</details>
+    <div class="empty" data-index-empty hidden><p data-index-empty-message>No campaigns match these filters.</p><a data-index-empty-suite hidden></a></div>
+    <details data-index-trends hidden><summary>Campaign trends</summary>${renderReportHistory(history, { chartsOnly: true })}</details>
     <footer><span>Updated ${html(date(history.updatedAt))} UTC</span><span>Immutable campaign reports · Declared screenshots and normalized results</span></footer>
   </main></div></div>
-  <script>${reportShellScript}${reportHistoryScript}
-  (() => {
-    const shell = document.querySelector('.report-shell');
-    const rows = [...document.querySelectorAll('[data-index-campaign]')];
-    const query = document.querySelector('[data-index-query]');
-    const crumbs = document.querySelector('[data-nav-breadcrumbs]');
-    const originalDescription = document.querySelector('[data-index-description]').textContent;
-    const apply = () => {
-      const params = new URLSearchParams(location.search);
-      const view = ['history','attention'].includes(params.get('view')) ? params.get('view') : 'overview';
-      const title = {overview:'Runner E2E campaigns',history:'Campaign history',attention:'Needs attention'}[view];
-      shell.dataset.view = view;
-      document.querySelector('[data-index-title]').textContent = title;
-      document.querySelector('[data-index-overview]').hidden = view !== 'overview';
-      document.querySelector('[data-index-trends]').hidden = view !== 'history';
-      document.querySelector('[data-index-description]').textContent = view === 'attention' ? 'Campaigns with failed or incomplete executions, missing results, or cleanup failures.' : originalDescription;
-      document.querySelector('[data-index-list-title]').textContent = view === 'overview' ? 'Recent campaigns' : 'Campaigns';
-      crumbs.replaceChildren();
-      const root = document.createElement('a'); root.href = '?view=history'; root.textContent = 'Campaigns'; root.dataset.navView = 'history'; crumbs.append(root);
-      const separator = document.createElement('span');separator.setAttribute('aria-hidden','true');separator.textContent='/';crumbs.append(separator);
-      const current = document.createElement('span');current.setAttribute('aria-current','page');current.textContent = view === 'overview' ? 'Overview' : title;crumbs.append(current);
-      document.querySelectorAll('[data-nav-view]').forEach(link => { if(link.dataset.navView===view)link.setAttribute('aria-current','page');else link.removeAttribute('aria-current'); });
-      const search=query.value.trim().toLowerCase(); let visible=0,matching=0;
-      rows.forEach(row => { const match=(!search||row.dataset.indexSearch.includes(search))&&(view!=='attention'||row.dataset.indexStatus!=='passed');if(match)matching++;row.hidden=!match||(view==='overview'&&!search&&visible>=10);if(!row.hidden)visible++; });
-      document.querySelector('[data-index-result]').textContent=visible+' of '+matching+' campaigns'+(view==='overview'&&!search&&matching>10?' · Open Campaign history for all retained reports':'');
-    };
-    document.addEventListener('click',event=>{ const link=event.target.closest('[data-nav-view]');if(!link||event.defaultPrevented||event.button!==0||event.metaKey||event.ctrlKey||event.shiftKey||event.altKey)return;event.preventDefault();const url=new URL(location.href);url.searchParams.set('view',link.dataset.navView);url.searchParams.delete('q');history.pushState(null,'',url);query.value='';apply();window.scrollTo({top:0,behavior:'instant'}); });
-    query.addEventListener('input',()=>{const url=new URL(location.href);if(query.value)url.searchParams.set('q',query.value);else url.searchParams.delete('q');history.replaceState(null,'',url);apply();});
-    const read=()=>{query.value=new URLSearchParams(location.search).get('q')||'';apply();};window.addEventListener('popstate',read);read();
-  })();
+  <script type="application/json" data-index-data>${historyBrowserJson(history, runnerMatrix)}</script>
+  <script>${reportShellScript}${historyBrowserScript}
   </script>
 </body>
 </html>`;

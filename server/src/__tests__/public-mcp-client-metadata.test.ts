@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { createClientMetadataResolver, mcpRedirectMatches } from "../services/public-mcp/client-metadata.js";
+import { createClientMetadataResolver, mcpRedirectMatches, type MetadataFetch } from "../services/public-mcp/client-metadata.js";
 import { mcpInvitation, mcpSetupMarkdown } from "@paperclipai/shared";
 import { renderMcpSetup } from "../services/public-mcp/setup.js";
 
@@ -20,7 +20,7 @@ describe("public MCP client metadata", () => {
     expect(mcpRedirectMatches(["http://127.0.0.1/callback"], "http://localhost:55023/callback", true)).toBe(false);
   });
   it("validates the client identity and bounds cache reuse", async () => {
-    const fetch = vi.fn(async () => response(document, { "cache-control": "max-age=300" }));
+    const fetch = vi.fn<MetadataFetch>(async () => response(document, { "cache-control": "max-age=300" }));
     const resolve = createClientMetadataResolver(fetch);
     expect((await resolve(id)).client_name).toBe("Example");
     await resolve(id); expect(fetch).toHaveBeenCalledTimes(1);

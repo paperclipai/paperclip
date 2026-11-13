@@ -1,4 +1,5 @@
 import { sql, type SQL } from "drizzle-orm";
+import type { AnyPgColumn } from "drizzle-orm/pg-core";
 import { activityLog, chatConversations, chatMessageLinks, issueComments, issues, issueThreadInteractions } from "@paperclipai/db";
 import { HUMAN_TASK_ORIGIN_KINDS } from "@paperclipai/shared";
 import { activeIssueInteractionCondition } from "./issue-question-context.js";
@@ -71,11 +72,18 @@ export function automaticReadRecoveryCleanupCondition() {
   )`;
 }
 
-export function humanCreatedIssueCondition() {
+/**
+ * A task a person created by hand. `table` is `issues` or an alias of it, for a
+ * query that reads the same rule on another row (PAP-768: the instigator walk
+ * of the personal decision history).
+ */
+export function humanCreatedIssueCondition(
+  table: { createdByAgentId: AnyPgColumn; createdByUserId: AnyPgColumn; originKind: AnyPgColumn } = issues,
+) {
   return sql<boolean>`(
-    ${issues.createdByAgentId} IS NULL
-    AND ${issues.createdByUserId} IS NOT NULL
-    AND ${issues.originKind} IN (${sql.join(HUMAN_TASK_ORIGIN_KINDS.map((kind) => sql`${kind}`), sql`, `)})
+    ${table.createdByAgentId} IS NULL
+    AND ${table.createdByUserId} IS NOT NULL
+    AND ${table.originKind} IN (${sql.join(HUMAN_TASK_ORIGIN_KINDS.map((kind) => sql`${kind}`), sql`, `)})
   )`;
 }
 
@@ -104,10 +112,8 @@ export function directHumanCommentCondition() {
   )`;
 }
 
-export function pendingUserRequestCondition(companyId: string, userId: string, after?: SQL) {
-  return sql<boolean>`EXISTS (
-    SELECT 1 FROM ${issueThreadInteractions}
-    WHERE ${issueThreadInteractions.companyId} = ${companyId}
+export function pendingUserRequestRowCondition(companyId: string, userId: string, after?: SQL) {
+  return sql<boolean>`(${issueThreadInteractions.companyId} = ${companyId}
       AND ${issueThreadInteractions.issueId} = ${issues.id}
       AND ${issueThreadInteractions.status} = 'pending'
       AND ${issues.status} NOT IN ('done', 'cancelled')
@@ -122,6 +128,31 @@ export function pendingUserRequestCondition(companyId: string, userId: string, a
   )`;
 }
 
+export function pendingUserRequestCondition(companyId: string, userId: string, after?: SQL) {
+  return sql<boolean>`EXISTS (
+    SELECT 1 FROM ${issueThreadInteractions}
+    WHERE ${pendingUserRequestRowCondition(companyId, userId, after)}
+  )`;
+}
+
+export function userParticipationActivityCondition(companyId: string, userId: string) {
+  return sql<boolean>`(
+    ${activityLog.entityType} = 'issue'
+    AND ${activityLog.companyId} = ${companyId}
+    AND ${activityLog.actorType} = 'user'
+    AND ${activityLog.actorId} = ${userId}
+    AND NOT ${automaticReadRecoveryCleanupCondition()}
+    AND NOT (
+      ${activityLog.action} = 'issue.inbox_touched'
+      AND COALESCE(${activityLog.details}->>'source', '') = 'manual_routine_run'
+    )
+    AND ${activityLog.action} IN (${sql.join(
+      ISSUE_USER_PARTICIPATION_ACTIVITY_ACTIONS.map((action) => sql`${action}`),
+      sql`, `,
+    )})
+  )`;
+}
+
 export function touchedByUserCondition(companyId: string, userId: string) {
   return sql<boolean>`
     (
@@ -131,22 +162,8 @@ export function touchedByUserCondition(companyId: string, userId: string) {
       OR EXISTS (
         SELECT 1
         FROM ${activityLog}
-        WHERE ${activityLog.entityType} = 'issue'
-          AND ${activityLog.entityId} = ${issues.id}::text
-          AND ${activityLog.companyId} = ${companyId}
-          AND ${activityLog.actorType} = 'user'
-          AND ${activityLog.actorId} = ${userId}
-          AND NOT ${automaticReadRecoveryCleanupCondition()}
-          AND NOT (
-            ${activityLog.action} = 'issue.inbox_touched'
-            AND COALESCE(${activityLog.details}->>'source', '') = 'manual_routine_run'
-          )
-          AND ${activityLog.action} IN (${sql.join(
-            ISSUE_USER_PARTICIPATION_ACTIVITY_ACTIONS.map(
-              (action) => sql`${action}`,
-            ),
-            sql`, `,
-          )})
+        WHERE ${activityLog.entityId} = ${issues.id}::text
+          AND ${userParticipationActivityCondition(companyId, userId)}
       )
       OR EXISTS (
         SELECT 1

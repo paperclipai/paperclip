@@ -1,3 +1,5 @@
+import { formatCommandForDisplay } from "./workspace-command-display.js";
+import { notifyStatusCardIssueChange } from "./status-card-notifications.js";
 import { insertIssueComment } from "./issue-comment-writes.js";
 import { restoreGitWorkspaceContents } from "./git-workspace-contents.js";
 import { savedGitWorkspaceRestoration, ensureSavedGitCommit, GitCacheRestorationFailure } from "./git-workspace-restoration.js";
@@ -6,6 +8,8 @@ import { getStorageService } from "../storage/index.js";
 import type { StorageService } from "../storage/types.js";
 import { sanitizeRuntimeServiceBaseEnv } from "./runtime-service-env.js";
 import { verifiedRecordedIsolatedRemoteSource } from "./isolated-remote-workspace-source.js";
+import { assertCurrentWorkspaceSourceHeld, workspaceSourceIdentities, withWorkspaceSourceLocks } from "./workspace-source-lock.js";
+import { localWorkspaceSourcePaths } from "./execution-workspace-source-roots.js";
 export { sanitizeRuntimeServiceBaseEnv } from "./runtime-service-env.js";
 import { execFile, spawn, type ChildProcess } from "node:child_process";
 import { existsSync, lstatSync, readdirSync, readFileSync, realpathSync } from "node:fs";
@@ -20,6 +24,7 @@ import type { Db } from "@paperclipai/db";
 import { executionWorkspaces, issueComments, issues, projectWorkspaces, workspaceRuntimeServices } from "@paperclipai/db";
 import {
   DEFAULT_TAILSCALE_HTTPS_EXPOSURE,
+  readRemoteWorkspaceAuthority,
   deriveViteHmrPort,
   forceLoopbackBindInCommand,
   isRuntimeExposureAppPort,
@@ -44,6 +49,8 @@ import {
 import { and, desc, eq, gte, inArray, isNull, lte, ne, or, sql } from "drizzle-orm";
 import { asNumber, asString, parseObject, renderTemplate } from "../adapters/utils.js";
 import { conflict, unprocessable } from "../errors.js";
+import { registerIdleLocalWorkProbe, type IdleLocalWork } from "./idle-local-work.js";
+import { withExecutionWorkspaceLifecycleLock } from "./execution-workspace-lifecycle-lock.js";
 import { resolveHomeAwarePath } from "../home-paths.js";
 import { hasVerifiedWorktreeSeedManifest, isVerifiedWorktreeSeedManifest } from "../worktree-seed-manifest.js";
 import {
@@ -280,6 +287,23 @@ const quarantinedRuntimeExposurePorts = new Set<number>();
  * companion together or not at all.
  */
 const exposurePortPairClaims = new ExposurePortPairClaims();
+let runtimeReconstructionComplete = false;
+let runtimeStopsInFlight = 0;
+let runtimeReconstructionEpoch = 0;
+let runtimeReconciliation: ReturnType<typeof reconstructRuntimeServices> | null = null;
+
+/** Read owner memory only. Durable stopped rows do not describe a surviving
+ * registry process, an allocation being published, or unfinished exposure cleanup. */
+export function readWorkspaceRuntimeIdleWork(): IdleLocalWork {
+  if (!runtimeReconstructionComplete || runtimeReconciliation !== null) return "unknown";
+  return runtimeStopsInFlight || runtimeServicesById.size || runtimeProvisionByWorkspace.size || runtimeControlStartByOwner.size
+    || runtimeReplacementClaimsByReuseKey.size || quarantinedRuntimeExposurePorts.size
+    || exposurePortPairClaims.activePorts().size
+    || [...inFlightAllocatedPorts.values()].some(until => until > Date.now()) ? "present" : "none";
+}
+// This registry and its probe share the application process lifetime, like the
+// native-session owner. Stopping one resource must not unregister its siblings.
+registerIdleLocalWorkProbe(readWorkspaceRuntimeIdleWork);
 /**
  * Execution-workspace statuses that still hold an exclusive lease. `archived`
  * is the only terminal state; everything else — including `idle` — is a lane an
@@ -522,6 +546,8 @@ type ProcessOutputAccumulator = {
 export async function resetRuntimeServicesForTests(
   opts: { terminateProcesses?: boolean; simulateSupervisorExit?: boolean } = {},
 ) {
+  runtimeReconstructionComplete = false;
+  runtimeReconstructionEpoch += 1;
   if (opts.terminateProcesses) {
     for (const serviceId of [...runtimeServicesById.keys()]) {
       await stopRuntimeService(serviceId).catch(() => undefined);
@@ -811,12 +837,6 @@ function resolveConfiguredPath(value: string, baseDir: string): string {
   return path.resolve(baseDir, value);
 }
 
-function formatCommandForDisplay(command: string, args: string[]) {
-  return [command, ...args]
-    .map((part) => (/^[A-Za-z0-9_./:-]+$/.test(part) ? part : JSON.stringify(part)))
-    .join(" ");
-}
-
 function trimToLastBytes(value: string, limit: number) {
   const byteLength = Buffer.byteLength(value, "utf8");
   if (byteLength <= limit) return value;
@@ -867,6 +887,8 @@ async function executeProcess(input: {
   env?: NodeJS.ProcessEnv;
   maxStdoutBytes?: number;
   maxStderrBytes?: number;
+  /** Stops the child (SIGTERM, then SIGKILL 5 s later) and reports a failure after this long. */
+  timeoutMs?: number;
 }): Promise<{
   stdout: string;
   stderr: string;
@@ -881,10 +903,13 @@ async function executeProcess(input: {
     stderr: ProcessOutputAccumulator;
     code: number | null;
   }>((resolve, reject) => {
+    // A deadline-bound command runs in its own process group, so its hooks and
+    // helpers stop with it instead of holding the output pipes open.
     const child = spawn(input.command, input.args, {
       cwd: input.cwd,
       stdio: ["ignore", "pipe", "pipe"],
       env: input.env ?? process.env,
+      detached: input.timeoutMs !== undefined && process.platform !== "win32",
     });
     const stdout = createProcessOutputCapture(input.maxStdoutBytes ?? DEFAULT_EXECUTE_PROCESS_OUTPUT_BYTES);
     const stderr = createProcessOutputCapture(input.maxStderrBytes ?? DEFAULT_EXECUTE_PROCESS_OUTPUT_BYTES);
@@ -894,8 +919,42 @@ async function executeProcess(input: {
     child.stderr?.on("data", (chunk) => {
       stderr.append(String(chunk));
     });
+    let timedOut = false;
+    let killTimer: ReturnType<typeof setTimeout> | null = null;
+    const signal = (name: NodeJS.Signals) => {
+      try {
+        if (child.pid && process.platform !== "win32") process.kill(-child.pid, name);
+        else child.kill(name);
+      } catch { /* already exited */ }
+    };
+    let settled = false;
+    const finish = (code: number | null) => {
+      if (settled) return;
+      settled = true;
+      if (deadline) clearTimeout(deadline);
+      if (killTimer) clearTimeout(killTimer);
+      if (timedOut) stderr.append(`\n${input.command} timed out after ${input.timeoutMs} ms`);
+      resolve({ stdout, stderr, code: timedOut ? null : code });
+    };
+    const deadline = input.timeoutMs === undefined ? null : setTimeout(() => {
+      timedOut = true;
+      signal("SIGTERM");
+      killTimer = setTimeout(() => signal("SIGKILL"), 5_000);
+      killTimer.unref?.();
+    }, input.timeoutMs);
+    deadline?.unref?.();
     child.on("error", reject);
-    child.on("close", (code) => resolve({ stdout, stderr, code }));
+    child.on("close", finish);
+    // After a deadline the group is signalled; do not wait for pipes a straggler may hold.
+    child.on("exit", (code) => {
+      if (!timedOut) return;
+      // Git can exit while a helper that ignores SIGTERM keeps running; stop
+      // the whole group now so nothing still writes when the queue moves on.
+      signal("SIGKILL");
+      child.stdout?.destroy();
+      child.stderr?.destroy();
+      finish(code);
+    });
   });
   const stdout = proc.stdout.finish();
   const stderr = proc.stderr.finish();
@@ -1636,10 +1695,11 @@ async function writeDirtyQuarantineAuditComments(input: {
   let sourceAuditCommentId: string | null = null;
   let claimantAuditCommentId: string | null = null;
   const now = new Date();
-  if (input.evidence.sourceIssueId) {
+  const sourceIssueId = input.evidence.sourceIssueId;
+  if (sourceIssueId) {
     const [sourceComment] = await insertIssueComment(input.db, {
       companyId: input.companyId,
-      issueId: input.evidence.sourceIssueId,
+      issueId: sourceIssueId,
       authorAgentId: null,
       authorUserId: null,
       authorType: "system",
@@ -1647,10 +1707,10 @@ async function writeDirtyQuarantineAuditComments(input: {
       body,
     });
     sourceAuditCommentId = sourceComment?.id ?? null;
-    await input.db
-      .update(issues)
-      .set({ updatedAt: now })
-      .where(eq(issues.id, input.evidence.sourceIssueId));
+    await input.db.transaction(async tx => {
+      await notifyStatusCardIssueChange(tx, input.companyId);
+      await tx.update(issues).set({ updatedAt: now }).where(eq(issues.id, sourceIssueId));
+    });
   }
 
   const claimantIssueId = input.evidence.contention?.claimedByIssueId ?? null;
@@ -1665,10 +1725,10 @@ async function writeDirtyQuarantineAuditComments(input: {
       body,
     });
     claimantAuditCommentId = claimantComment?.id ?? null;
-    await input.db
-      .update(issues)
-      .set({ updatedAt: now })
-      .where(eq(issues.id, claimantIssueId));
+    await input.db.transaction(async tx => {
+      await notifyStatusCardIssueChange(tx, input.companyId);
+      await tx.update(issues).set({ updatedAt: now }).where(eq(issues.id, claimantIssueId));
+    });
   }
 
   return { sourceAuditCommentId, claimantAuditCommentId };
@@ -3056,14 +3116,24 @@ function resolveRepoManagedWorkspaceCommand(command: string, repoRoot: string) {
  */
 export class WorkspaceCommandExitError extends Error {
   readonly exitCode: number | null;
+  /** The configured setup step and command, so the task page can name the setting that broke. */
+  readonly step: WorkspaceCommandPhase | null;
+  readonly command: string | null;
+  readonly output: string | null;
 
-  constructor(message: string, exitCode: number | null) {
+  constructor(message: string, exitCode: number | null, failure?: { step: WorkspaceCommandPhase; command: string; output: string }) {
     super(message);
     this.exitCode = exitCode;
+    this.step = failure?.step ?? null;
+    this.command = failure?.command ?? null;
+    this.output = failure?.output || null;
   }
 }
 
+type WorkspaceCommandPhase = "workspace_provision" | "workspace_seed" | "workspace_runtime_provision" | "workspace_teardown";
+
 async function runWorkspaceCommand(input: {
+  phase?: WorkspaceCommandPhase;
   command: string;
   resolvedCommand?: string;
   cwd: string;
@@ -3088,7 +3158,70 @@ async function runWorkspaceCommand(input: {
       ? `${input.label} failed: ${details}`
       : `${input.label} failed with exit code ${proc.code ?? -1}`,
     proc.code,
+    input.phase ? { step: input.phase, command: input.command, output: details } : undefined,
   );
+}
+
+/**
+ * `git worktree add` writes the repository's shared `.git/config` (the new
+ * branch's upstream). Two creates on one repository at once fail with "could
+ * not lock config file". Creates in this process run one at a time per
+ * repository, keyed by its git common dir; a create that still meets another
+ * process's lock retries a few times after a short wait.
+ */
+const repositoryWorktreeLocks = new Map<string, Promise<unknown>>();
+export const WORKTREE_CONFIG_LOCK_RETRY_DELAYS_MS = [100, 250, 500, 1_000, 2_000] as const;
+/** A stuck create must not hold its repository's queue forever. Tests shorten it. */
+export const worktreeCreateLimits = { timeoutMs: 10 * 60_000 };
+
+async function withRepositoryWorktreeLock<T>(cwd: string, work: () => Promise<T>): Promise<T> {
+  const commonDir = await executeProcess({ command: "git", args: ["rev-parse", "--path-format=absolute", "--git-common-dir"], cwd })
+    .then(result => result.code === 0 && result.stdout.trim() ? result.stdout.trim() : path.resolve(cwd))
+    .catch(() => path.resolve(cwd));
+  const key = await fs.realpath(commonDir).catch(() => commonDir);
+  const previous = repositoryWorktreeLocks.get(key) ?? Promise.resolve();
+  const current = previous.catch(() => undefined).then(work);
+  const tail = current.catch(() => undefined);
+  repositoryWorktreeLocks.set(key, tail);
+  try {
+    return await current;
+  } finally {
+    if (repositoryWorktreeLocks.get(key) === tail) repositoryWorktreeLocks.delete(key);
+  }
+}
+
+function isGitConfigLockFailure(result: { code: number | null; stderr: string }) {
+  return result.code !== 0 && /could not lock config file/i.test(result.stderr);
+}
+
+async function executeGitCommand(args: string[], cwd: string) {
+  if (args[0] !== "worktree" || args[1] !== "add") return executeProcess({ command: "git", args, cwd });
+  return withRepositoryWorktreeLock(cwd, async () => {
+    const branchIndex = args.indexOf("-b");
+    const branch = branchIndex > 0 ? args[branchIndex + 1] : undefined;
+    const startPoint = branch ? args[branchIndex + 3] : undefined;
+    const baseCommit = branch && startPoint ? await executeProcess({ command: "git",
+      args: ["rev-parse", "--verify", "--quiet", `${startPoint}^{commit}`], cwd }).then(result => result.code === 0 ? result.stdout.trim() : null)
+      .catch(() => null) : null;
+    for (let attempt = 0; ; attempt += 1) {
+      const result = await executeProcess({ command: "git", args, cwd, timeoutMs: worktreeCreateLimits.timeoutMs });
+      if (!isGitConfigLockFailure(result)) return result;
+      // `worktree add -b` creates the branch, then fails writing its upstream,
+      // and adds no worktree. The branch did not exist before (otherwise git
+      // refuses with "already exists" first), so this command created it.
+      // Remove it, also after the last attempt, so a retry creates it again
+      // with its upstream. A branch that moved off the base commit belongs to
+      // someone else meanwhile (a same-issue retry elsewhere) and is kept.
+      if (branch && baseCommit) {
+        const tip = await executeProcess({ command: "git", args: ["rev-parse", "--verify", "--quiet", `refs/heads/${branch}`], cwd })
+          .then(found => found.code === 0 ? found.stdout.trim() : null).catch(() => null);
+        if (tip === baseCommit) await executeProcess({ command: "git", args: ["branch", "-D", branch], cwd }).catch(() => undefined);
+      }
+      const delayMs = WORKTREE_CONFIG_LOCK_RETRY_DELAYS_MS[attempt];
+      if (delayMs === undefined) return result;
+      await new Promise(resolve => setTimeout(resolve, delayMs));
+    }
+  });
 }
 
 async function recordGitOperation(
@@ -3103,7 +3236,9 @@ async function recordGitOperation(
   },
 ): Promise<string> {
   if (!recorder) {
-    return runGit(input.args, input.cwd);
+    const result = await executeGitCommand(input.args, input.cwd);
+    if (result.code !== 0) throw new Error(result.stderr.trim() || result.stdout.trim() || `git ${input.args.join(" ")} failed`);
+    return result.stdout.trim();
   }
 
   let stdout = "";
@@ -3115,11 +3250,7 @@ async function recordGitOperation(
     cwd: input.cwd,
     metadata: input.metadata ?? null,
     run: async () => {
-      const result = await executeProcess({
-        command: "git",
-        args: input.args,
-        cwd: input.cwd,
-      });
+      const result = await executeGitCommand(input.args, input.cwd);
       stdout = result.stdout;
       stderr = result.stderr;
       code = result.code;
@@ -3156,7 +3287,7 @@ async function recordGitOperation(
 async function recordWorkspaceCommandOperation(
   recorder: WorkspaceOperationRecorder | null | undefined,
   input: {
-    phase: "workspace_provision" | "workspace_seed" | "workspace_runtime_provision" | "workspace_teardown";
+    phase: WorkspaceCommandPhase;
     command: string;
     resolvedCommand?: string;
     cwd: string;
@@ -3225,6 +3356,7 @@ async function recordWorkspaceCommandOperation(
       ? `${input.label} failed: ${details}`
       : `${input.label} failed with exit code ${code ?? -1}`,
     code,
+    { step: input.phase, command: input.command, output: details },
   );
 }
 
@@ -4277,6 +4409,7 @@ export async function cleanupExecutionWorkspaceArtifacts(input: {
   forceWorktreeRemoval?: boolean;
 }) {
   if (input.workspace.providerType === "plugin") throw new Error("Managed workspace cleanup requires its storage plugin");
+  if (readRemoteWorkspaceAuthority(input.workspace.metadata)) throw new Error("Remote workspace cleanup requires its sandbox lifecycle");
   const warnings: string[] = [];
   const workspacePath = input.workspace.providerRef ?? input.workspace.cwd;
   const isolatedSource = await verifiedRecordedIsolatedRemoteSource(input.workspace);
@@ -4469,8 +4602,13 @@ export async function cleanupExecutionWorkspaceArtifacts(input: {
     }
   }
 
+  // A local directory the runtime did not create is never removed here (operator-owned or
+  // retained, such as an isolated task directory). Closing such a record has nothing left to
+  // clean, so its surviving directory is the intended outcome, not a failed cleanup.
+  const retainedByDesign = input.workspace.providerType === "local_fs" && !createdByRuntime;
   const cleaned =
     !workspacePath ||
+    retainedByDesign ||
     !(await directoryExists(workspacePath));
   if (cleaned) warnings.push(...await releaseNestedRepositoryWorktrees(nestedWorktrees));
 
@@ -5145,6 +5283,7 @@ function renderRuntimeServiceEnv(input: {
 function resolveRuntimeServiceReuseIdentity(input: {
   service: Record<string, unknown>;
   workspace: RealizedExecutionWorkspace;
+  executionWorkspaceId?: string | null;
   agent: ExecutionWorkspaceAgentRef;
   issue: ExecutionWorkspaceIssueRef | null;
   adapterEnv: Record<string, string>;
@@ -5189,6 +5328,8 @@ function resolveRuntimeServiceReuseIdentity(input: {
             stableStringify({
               scopeType: input.scopeType,
               scopeId: input.scopeId,
+              ...(input.scopeType === "run" && input.executionWorkspaceId
+                ? { executionWorkspaceId: input.executionWorkspaceId } : {}),
               serviceName,
               command,
               cwd: serviceCwd,
@@ -6184,6 +6325,7 @@ async function spawnLocalRuntimeService(input: StartLocalRuntimeServiceInput): P
   const identity = resolveRuntimeServiceReuseIdentity({
     service: input.service,
     workspace: input.workspace,
+    executionWorkspaceId: input.executionWorkspaceId,
     agent: input.agent,
     issue: input.issue,
     adapterEnv: input.adapterEnv,
@@ -6655,6 +6797,7 @@ async function spawnLocalRuntimeService(input: StartLocalRuntimeServiceInput): P
   }
 
   try {
+    if (input.db) await assertCurrentWorkspaceSourceHeld(serviceCwd);
     await ensureServerWorkspaceLinksCurrent(serviceCwd, {
       onLog: input.onLog,
     });
@@ -6668,6 +6811,7 @@ async function spawnLocalRuntimeService(input: StartLocalRuntimeServiceInput): P
   const shell = resolveShell();
   const serviceLog = await openLocalServiceLogFile(serviceKey);
   let child: ChildProcess;
+  let childFailure: Promise<Error>;
   try {
     child = spawn(shell, ["-lc", command], {
       cwd: serviceCwd,
@@ -6678,27 +6822,20 @@ async function spawnLocalRuntimeService(input: StartLocalRuntimeServiceInput): P
       // on an orphaned socketpair during startup reconciliation.
       stdio: ["ignore", serviceLog.handle.fd, serviceLog.handle.fd],
     });
+    childFailure = new Promise<Error>((resolve) => {
+      child.once("error", resolve);
+      child.once("close", (code, signal) => {
+        resolve(new Error(
+          `service process exited before readiness (code ${code ?? "unknown"}, signal ${signal ?? "none"})`,
+        ));
+      });
+    });
   } finally {
     await serviceLog.handle.close();
   }
   record.child = child;
   record.providerRef = child.pid ? String(child.pid) : null;
   record.processGroupId = child.pid ?? null;
-  const spawnErrorPromise = new Promise<never>((_, reject) => {
-    child.once("error", (err) => {
-      reject(err);
-    });
-  });
-  const earlyExitPromise = new Promise<never>((_, reject) => {
-    // `close` follows `exit` after the child's inherited stdout/stderr file
-    // descriptors are closed. Waiting for it makes the startup log excerpt
-    // deterministic instead of racing the final validation line.
-    child.once("close", (code, signal) => {
-      reject(new Error(
-        `service process exited before readiness (code ${code ?? "unknown"}, signal ${signal ?? "none"})`,
-      ));
-    });
-  });
   const readServiceOutputExcerpt = async () => {
     try {
       const contents = await fs.readFile(serviceLog.logPath);
@@ -6764,8 +6901,7 @@ async function spawnLocalRuntimeService(input: StartLocalRuntimeServiceInput): P
         waitForAllocatedPortBind({ service: input.service, port: ownedPort, child })
       ),
     ]).then(() => undefined),
-    spawnErrorPromise,
-    earlyExitPromise,
+    childFailure.then((error) => { throw error; }),
   ]).then(async () => {
     releasePortReservation(reservedPort);
     releasePortReservation(claimedIdentityPort);
@@ -6984,6 +7120,7 @@ async function prepareRuntimeProvisioning(
   const identity = resolveRuntimeServiceReuseIdentity({
     service: input.service,
     workspace: input.workspace,
+    executionWorkspaceId: input.executionWorkspaceId,
     agent: input.agent,
     issue: input.issue,
     adapterEnv: input.adapterEnv,
@@ -7150,7 +7287,21 @@ async function cleanupRecordExposure(
   await persistRuntimeServiceRecord(record.db, record).catch(() => undefined);
 }
 
+async function withRuntimeStopWork<T>(stop: () => Promise<T>): Promise<T> {
+  runtimeStopsInFlight += 1;
+  try { return await stop(); }
+  catch (error) {
+    runtimeReconstructionComplete = false;
+    runtimeReconstructionEpoch += 1;
+    throw error;
+  } finally { runtimeStopsInFlight -= 1; }
+}
+
 async function stopRuntimeService(serviceId: string) {
+  return withRuntimeStopWork(() => stopRuntimeServiceRecord(serviceId));
+}
+
+async function stopRuntimeServiceRecord(serviceId: string) {
   const record = runtimeServicesById.get(serviceId);
   if (!record) return;
   clearIdleTimer(record);
@@ -7536,14 +7687,14 @@ function selectRuntimeServiceEntries(input: {
   });
 }
 
-async function isPersistedIsolatedExecutionWorkspace(input: {
+async function inspectPersistedRuntimeWorkspace(input: {
   db?: Db;
   companyId: string;
   executionWorkspaceId?: string | null;
 }) {
-  if (!input.db || !input.executionWorkspaceId) return false;
+  if (!input.db || !input.executionWorkspaceId) return { isolated: false, remote: false };
   const row = await input.db
-    .select({ mode: executionWorkspaces.mode })
+    .select({ mode: executionWorkspaces.mode, metadata: executionWorkspaces.metadata })
     .from(executionWorkspaces)
     .where(
       and(
@@ -7553,7 +7704,7 @@ async function isPersistedIsolatedExecutionWorkspace(input: {
     )
     .limit(1)
     .then((rows) => rows[0] ?? null);
-  return row?.mode === "isolated_workspace";
+  return { isolated: row?.mode === "isolated_workspace", remote: Boolean(readRemoteWorkspaceAuthority(row?.metadata)) };
 }
 
 type EnsureRuntimeServicesForRunInput = {
@@ -7581,16 +7732,24 @@ async function ensureRuntimeServicesForRunInvocation(
   });
   const acquiredServiceIds: string[] = [];
   const refs: RuntimeServiceRef[] = [];
+  const persistedWorkspace = await inspectPersistedRuntimeWorkspace({
+    db: input.db,
+    companyId: input.agent.companyId,
+    executionWorkspaceId: input.executionWorkspaceId,
+  });
+  if (persistedWorkspace.remote) {
+    if (rawServices.length > 0) {
+      throw new WorkspaceRuntimeValidationFailure("Remote workspace storage does not support Core workspace services.",
+        { reason: "remote_workspace_runtime_services_unsupported" });
+    }
+    return [];
+  }
+  const allowFixedPortFallback = persistedWorkspace.isolated;
   const runtimeProvision = input.skipHostProvision
     ? { command: "", kind: null }
     : resolveRuntimeProvision(input);
   const runtimeProvisionCommand = runtimeProvision.command;
   const provisionCoordinator = createRuntimeProvisionCoordinator();
-  const allowFixedPortFallback = await isPersistedIsolatedExecutionWorkspace({
-    db: input.db,
-    companyId: input.agent.companyId,
-    executionWorkspaceId: input.executionWorkspaceId,
-  });
   runtimeServiceLeasesByRun.set(input.runId, acquiredServiceIds);
 
   try {
@@ -7606,6 +7765,7 @@ async function ensureRuntimeServicesForRunInvocation(
       const reuseKey = resolveRuntimeServiceReuseIdentity({
         service,
         workspace: input.workspace,
+        executionWorkspaceId: input.executionWorkspaceId,
         agent: input.agent,
         issue: input.issue,
         adapterEnv: input.adapterEnv,
@@ -7706,6 +7866,7 @@ function resolveRuntimeStartMutexPlan(input: {
     const reuseKey = resolveRuntimeServiceReuseIdentity({
       service,
       workspace: input.workspace,
+      executionWorkspaceId: input.executionWorkspaceId,
       agent: input.agent,
       issue: input.issue,
       adapterEnv: input.adapterEnv,
@@ -7754,6 +7915,23 @@ async function withRuntimeStartMutexes<T>(
   return await acquire(0);
 }
 
+async function withRuntimeServiceSourceLocks<T>(input: {
+  db?: Db; workspace: RealizedExecutionWorkspace; agent: ExecutionWorkspaceAgentRef;
+  issue: ExecutionWorkspaceIssueRef | null; adapterEnv: Record<string, string>; services: Record<string, unknown>[];
+}, action: () => Promise<T>): Promise<T> {
+  if (!input.db || input.services.length === 0) return action();
+  const paths = [...localWorkspaceSourcePaths({ cwd: input.workspace.cwd, providerRef: input.workspace.worktreePath }),
+    input.workspace.baseCwd, ...input.services.map(service =>
+    resolveRuntimeServiceReuseIdentity({ ...input, service, scopeType: "project_workspace", scopeId: input.workspace.workspaceId }).serviceCwd)];
+  const projectIds: string[] = [], issueIds: string[] = [];
+  for (const cwd of new Set(paths)) {
+    const identities = await workspaceSourceIdentities(input.agent.companyId, cwd);
+    projectIds.push(...identities.projectIds);
+    issueIds.push(...identities.issueIds);
+  }
+  return withWorkspaceSourceLocks(input.db, { companyId: input.agent.companyId, projectIds, issueIds }, action);
+}
+
 export async function ensureRuntimeServicesForRun(
   input: EnsureRuntimeServicesForRunInput,
 ): Promise<RuntimeServiceRef[]> {
@@ -7775,7 +7953,7 @@ export async function ensureRuntimeServicesForRun(
   try {
     return await withRuntimeStartMutexes(
       mutexPlan.ownerKeys,
-      () => ensureRuntimeServicesForRunInvocation(input),
+      () => withRuntimeServiceSourceLocks({ ...input, services }, () => ensureRuntimeServicesForRunInvocation(input)),
     );
   } finally {
     releaseRuntimeReplacementClaims(mutexPlan.replacementReuseKeys);
@@ -7840,6 +8018,7 @@ async function startRuntimeServicesForWorkspaceControlUnlocked(
     const reuseKey = resolveRuntimeServiceReuseIdentity({
       service,
       workspace: input.workspace,
+      executionWorkspaceId: input.executionWorkspaceId,
       agent: input.actor,
       issue: input.issue,
       adapterEnv: input.adapterEnv,
@@ -8039,6 +8218,7 @@ async function startRuntimeServicesForWorkspaceControlInvocation(
         const reuseKey = resolveRuntimeServiceReuseIdentity({
           service,
           workspace: input.workspace,
+          executionWorkspaceId: input.executionWorkspaceId,
           agent: input.actor,
           issue: input.issue,
           adapterEnv: input.adapterEnv,
@@ -8210,6 +8390,7 @@ export async function startRuntimeServicesForWorkspaceControl(
     defaultDesiredState: readDesiredRuntimeState(input.config.desiredState) ?? "stopped",
     serviceStates: readConfiguredServiceStates(input.config),
   });
+  if (services.length === 0) return [];
   const invocationId = input.invocationId ?? "workspace_control";
   const mutexPlan = resolveRuntimeStartMutexPlan({
     services,
@@ -8223,7 +8404,30 @@ export async function startRuntimeServicesForWorkspaceControl(
   try {
     return await withRuntimeStartMutexes(
       mutexPlan.ownerKeys,
-      () => startRuntimeServicesForWorkspaceControlInvocation(input),
+      () => withRuntimeServiceSourceLocks({ ...input, agent: input.actor, services }, async () => {
+        if (!input.db || !input.executionWorkspaceId) return startRuntimeServicesForWorkspaceControlInvocation(input);
+        // Startup and direct callers can bypass the HTTP operation recorder.
+        // Keep migration fenced through provision/bind/persistence, including the
+        // HTTPS path which intentionally commits its reservation before binding.
+        return withExecutionWorkspaceLifecycleLock(input.db, input.executionWorkspaceId, async (tx) => {
+          const [fresh] = await tx.select({ cwd: executionWorkspaces.cwd, metadata: executionWorkspaces.metadata })
+            .from(executionWorkspaces).where(and(eq(executionWorkspaces.id, input.executionWorkspaceId!),
+              eq(executionWorkspaces.companyId, input.actor.companyId)));
+          if (!fresh) throw new Error("Execution workspace not found before starting runtime services");
+          if (readRemoteWorkspaceAuthority(fresh.metadata)) {
+            throw unprocessable("Workspace commands are not supported for remote workspaces yet. Run the command through an agent task.",
+              { code: "remote_workspace_runtime_commands_unsupported" });
+          }
+          if (fresh.metadata?.remoteWorkspaceMigration) {
+            throw conflict("The workspace is being moved to remote storage. Retry after migration completes.",
+              { code: "workspace_runtime_migration_in_progress" });
+          }
+          if (fresh.cwd !== input.workspace.cwd) {
+            throw conflict("Execution workspace changed before command admission.", { code: "workspace_runtime_authority_changed" });
+          }
+          return startRuntimeServicesForWorkspaceControlInvocation(input);
+        });
+      }),
     );
   } finally {
     releaseRuntimeReplacementClaims(mutexPlan.replacementReuseKeys);
@@ -8257,7 +8461,11 @@ export async function releaseRuntimeServicesForRun(runId: string) {
   }
 }
 
-export async function stopRuntimeServicesForExecutionWorkspace(input: {
+export async function stopRuntimeServicesForExecutionWorkspace(input: Parameters<typeof stopRuntimeServicesForExecutionWorkspaceOwned>[0]) {
+  return withRuntimeStopWork(() => stopRuntimeServicesForExecutionWorkspaceOwned(input));
+}
+
+async function stopRuntimeServicesForExecutionWorkspaceOwned(input: {
   db?: Db;
   executionWorkspaceId: string;
   workspaceCwd?: string | null;
@@ -8312,7 +8520,11 @@ export async function stopRuntimeServicesForExecutionWorkspace(input: {
   }
 }
 
-export async function stopRuntimeServicesForProjectWorkspace(input: {
+export async function stopRuntimeServicesForProjectWorkspace(input: Parameters<typeof stopRuntimeServicesForProjectWorkspaceOwned>[0]) {
+  return withRuntimeStopWork(() => stopRuntimeServicesForProjectWorkspaceOwned(input));
+}
+
+async function stopRuntimeServicesForProjectWorkspaceOwned(input: {
   db?: Db;
   projectWorkspaceId: string;
   runtimeServiceId?: string | null;
@@ -8538,6 +8750,19 @@ export async function refreshPersistedRuntimeServiceHealth(input: {
 }
 
 export async function reconcilePersistedRuntimeServicesOnStartup(db: Db) {
+  if (runtimeReconciliation) return runtimeReconciliation;
+  runtimeReconstructionComplete = false;
+  const epoch = ++runtimeReconstructionEpoch;
+  runtimeReconciliation = reconstructRuntimeServices(db).then(result => {
+    if (epoch === runtimeReconstructionEpoch) {
+      runtimeReconstructionComplete = result.restartFailed === 0 && result.exposureReservationDrift.length === 0;
+    }
+    return result;
+  }).finally(() => { runtimeReconciliation = null; });
+  return runtimeReconciliation;
+}
+
+async function reconstructRuntimeServices(db: Db) {
   const rows = await db
     .select()
     .from(workspaceRuntimeServices)

@@ -1,5 +1,6 @@
 // @vitest-environment jsdom
 import { act } from "react";
+import { flushSync } from "react-dom";
 import { createRoot } from "react-dom/client";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { BoardDialogs } from "./BoardDialogs";
@@ -10,6 +11,7 @@ vi.mock("./NewIssueDialog", () => ({ NewIssueDialog: () => <input aria-label="Ta
 vi.mock("./NewProjectDialog", () => ({ NewProjectDialog: () => <div>Project dialog</div> }));
 vi.mock("./NewGoalDialog", () => ({ NewGoalDialog: () => <div>Goal dialog</div> }));
 vi.mock("./NewAgentDialog", () => ({ NewAgentDialog: () => <div>Agent dialog</div> }));
+vi.mock("./GitHubStarPrompt", () => ({ GitHubStarPrompt: () => null }));
 let container: HTMLDivElement;
 let root: ReturnType<typeof createRoot>;
 beforeEach(() => {
@@ -23,6 +25,15 @@ afterEach(async () => {
   container.remove();
 });
 async function render() { await act(async () => { root.render(<BoardDialogs />); }); }
+it("renders the task form on the first open without an asynchronous loading frame", () => {
+  act(() => flushSync(() => root.render(<BoardDialogs />)));
+  state.newIssueOpen = true;
+  act(() => {
+    flushSync(() => root.render(<BoardDialogs />));
+    expect(container.querySelector('[aria-label="Task draft"]')).not.toBeNull();
+    expect(document.body.textContent).not.toContain("Loading new task");
+  });
+});
 it("leaves unopened dialog trees unmounted", async () => {
   await render();
   expect(container.innerHTML).toBe("");

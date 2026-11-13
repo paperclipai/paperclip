@@ -1,12 +1,69 @@
 import { describe, expect, it, vi } from "vitest";
-import type { InstanceExperimentalSettings } from "@paperclipai/shared";
+import { INSTANCE_FEATURE_CATALOG, instanceExperimentalSettingsSchema, type InstanceExperimentalSettings } from "@paperclipai/shared";
 import {
   applyExperimentalSettingsPatch,
+  applyCloudCatalogDefaults,
+  applyManagedExperimentalOverlay,
   normalizeExperimentalSettings,
   resolveWorktreeRunExecutionActivationState,
 } from "../services/instance-settings.js";
+import type { ManagedInstanceConfig } from "../services/managed-config.js";
 
 describe("instance settings service", () => {
+  it("retains the legacy composer preference through saved and unrelated settings updates", () => {
+    expect(normalizeExperimentalSettings({}).enableLegacyComposerSubmit).toBe(false);
+    const enabled = applyExperimentalSettingsPatch({}, { enableLegacyComposerSubmit: true });
+    const saved = JSON.parse(JSON.stringify(enabled));
+    expect(normalizeExperimentalSettings(saved).enableLegacyComposerSubmit).toBe(true);
+    expect(applyExperimentalSettingsPatch(saved, { enableCases: true }).enableLegacyComposerSubmit).toBe(true);
+    expect(applyExperimentalSettingsPatch(saved, { enableLegacyComposerSubmit: false }).enableLegacyComposerSubmit).toBe(false);
+  });
+  it("keeps Agent Chat on for new and existing people, ignoring stored and managed off values", () => {
+    expect(instanceExperimentalSettingsSchema.parse({}).enableAgentChat).toBe(true);
+    expect(INSTANCE_FEATURE_CATALOG.enableAgentChat).toMatchObject({ cloudDefault: true, selfHostedDefault: true });
+    for (const stored of [undefined, null, {}, { enableAgentChat: false }, { enableAgentChat: false, enableCases: "invalid" }]) {
+      expect(normalizeExperimentalSettings(stored).enableAgentChat).toBe(true);
+    }
+    expect(applyExperimentalSettingsPatch({}, { enableAgentChat: false }).enableAgentChat).toBe(true);
+    const config: ManagedInstanceConfig = {
+      v: 1, mode: "cloud", catalogVersion: "test", plugins: { autoInstall: [] }, environments: [], pluginEnvironments: [],
+      features: { enableAgentChat: false },
+    };
+    const result = applyManagedExperimentalOverlay(normalizeExperimentalSettings({ enableAgentChat: false }), config);
+    expect(result.experimental.enableAgentChat).toBe(true);
+    expect(result.managedKeys.enableAgentChat).toBeUndefined();
+  });
+
+  it("defaults remote workspace enrollment on while preserving explicit operator choices", () => {
+    expect(instanceExperimentalSettingsSchema.parse({}).remoteWorkspaceStorageEnabled).toBe(true);
+    expect(INSTANCE_FEATURE_CATALOG.remoteWorkspaceStorageEnabled).toMatchObject({ cloudDefault: true, selfHostedDefault: true });
+    for (const stored of [undefined, null, {}, { enableApps: true }, { remoteWorkspaceStorageEnabled: "invalid" }]) {
+      expect(normalizeExperimentalSettings(stored).remoteWorkspaceStorageEnabled).toBe(true);
+    }
+    const disabled = applyExperimentalSettingsPatch({}, { remoteWorkspaceStorageEnabled: false });
+    expect(normalizeExperimentalSettings(JSON.parse(JSON.stringify(disabled))).remoteWorkspaceStorageEnabled).toBe(false);
+    expect(normalizeExperimentalSettings({ remoteWorkspaceStorageEnabled: false, enableCases: "invalid" }).remoteWorkspaceStorageEnabled).toBe(false);
+    expect(applyExperimentalSettingsPatch(disabled, { enableStatusCards: true }).remoteWorkspaceStorageEnabled).toBe(false);
+    expect(applyExperimentalSettingsPatch(disabled, { remoteWorkspaceStorageEnabled: true }).remoteWorkspaceStorageEnabled).toBe(true);
+  });
+
+  it.each([
+    { stored: {}, managed: undefined, expected: true },
+    { stored: { remoteWorkspaceStorageEnabled: false }, managed: undefined, expected: false },
+    { stored: { remoteWorkspaceStorageEnabled: false }, managed: true, expected: true },
+    { stored: { remoteWorkspaceStorageEnabled: true }, managed: false, expected: false },
+  ])("respects Cloud enrollment defaults and managed choices: $expected", ({ stored, managed, expected }) => {
+    const config: ManagedInstanceConfig = {
+      v: 1, mode: "cloud", catalogVersion: "test", plugins: { autoInstall: [] }, environments: [], pluginEnvironments: [],
+      features: managed === undefined ? {} : { remoteWorkspaceStorageEnabled: managed },
+    };
+    const normalized = normalizeExperimentalSettings(stored);
+    const result = applyManagedExperimentalOverlay(applyCloudCatalogDefaults(normalized, stored, config), config);
+    expect(result.experimental.remoteWorkspaceStorageEnabled).toBe(expected);
+    expect(normalized.remoteWorkspaceStorageEnabled).toBe("remoteWorkspaceStorageEnabled" in stored ? stored.remoteWorkspaceStorageEnabled : true);
+    expect(result.managedKeys.remoteWorkspaceStorageEnabled).toEqual(managed === undefined
+      ? undefined : { managed: true, managedBy: "paperclip-cloud" });
+  });
   it("keeps Notebook off for legacy or invalid settings and round-trips explicit operator choices", () => {
     for (const stored of [undefined, null, {}, { enableApps: true },
       { enablePaperclipNotebook: "true" }, { enablePaperclipNotebook: 1 },
@@ -62,6 +119,7 @@ describe("instance settings service", () => {
     })).toEqual({
       enableEnvironments: true,
       enableNativeRunner: false,
+      remoteWorkspaceStorageEnabled: true,
       enableAiConnectionRouters: false,
       enableManagedSandboxOnly: false,
       enableIsolatedWorkspaces: true,
@@ -70,19 +128,21 @@ describe("instance settings service", () => {
       enableStreamlinedUi: true,
       enableApps: true,
     enableMcpAggregators: true,
-      enableAgentChat: false,
+      enableAgentChat: true,
       enablePublicMcp: false,
       enableOpenAiDot: false,
       enableMuse: false,
       enableGrokBot: false,
       enableCombinedInboxTasks: false,
-      enableArtifactsV1: false,
+      enableArtifactsV1: true,
       enableChatConnectors: false,
       enableGitHubReviewBots: false,
       enableMemoryConnectors: false,
       enablePaperclipNotebook: false,
+      enableGoogleWorkspaceConnector: false,
       enableConferenceRoomChat: false,
       enableClassicTaskInterface: false,
+      enableLegacyComposerSubmit: false,
       enableExternalObjects: false,
       enableSmokeLab: false,
       enableCases: false,

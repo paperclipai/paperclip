@@ -4,13 +4,13 @@ FROM ${BASE_IMAGE}
 ARG SOURCE_REVISION
 USER root
 RUN rm -rf /opt/paperclip-runner/provider-pack
-ADD provider-pack.tar.gz /opt/paperclip-runner/provider-pack/
+ADD --chown=0:0 provider-pack.tar.gz /opt/paperclip-runner/provider-pack/
 COPY --chmod=0755 paperclip-runnerd /usr/local/bin/paperclip-runnerd
 RUN chmod -R a+rX /opt/paperclip-runner/provider-pack
 USER daytona
 RUN test -r /opt/paperclip-runner/provider-pack/provider-pack.json \
     && test "$(claude --version)" = "2.1.286 (Claude Code)" \
     && test "$(codex --version)" = "codex-cli 0.160.0" \
-    && test "$(acpx --version)" = "0.13.1"
+    && test "$(acpx --version)" = "0.22.0"
 LABEL io.paperclip.runner.content-id="release-${SOURCE_REVISION}" \
       org.opencontainers.image.revision="${SOURCE_REVISION}"

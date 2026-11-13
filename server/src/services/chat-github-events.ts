@@ -20,6 +20,7 @@ import {
 import {
   effectiveGitHubReviewPolicy,
   githubReviewSchedulingDecision,
+  type GitHubAutomaticPolicyContext,
 } from "./chat-github-review-policy.js";
 
 const id = z.union([
@@ -226,8 +227,8 @@ export function githubAutomaticReviewEvent(
 
 export async function githubAutomaticAdmission(
   db: Db | Parameters<Parameters<Db["transaction"]>[0]>[0],
-  endpoint: typeof chatEndpoints.$inferSelect,
-  context: GitHubAutomaticEventContext,
+  endpoint: Pick<typeof chatEndpoints.$inferSelect, "id" | "companyId">,
+  context: GitHubAutomaticPolicyContext,
 ) {
   const [saved] = await db
     .select()

@@ -17,7 +17,7 @@ import { unprocessable } from "../errors.js";
 import { parseObject } from "../adapters/utils.js";
 import { secretService } from "./secrets.js";
 import {
-  resolvePluginSandboxProviderDriverByKey,
+  resolvePluginSandboxProviderConfigSchema,
   validatePluginEnvironmentDriverConfig,
   validatePluginSandboxProviderConfig,
 } from "./plugin-environment-driver.js";
@@ -179,14 +179,10 @@ async function getSandboxProviderConfigSchema(
   db: Db,
   provider: string,
 ): Promise<Record<string, unknown> | null> {
-  const resolved = await resolvePluginSandboxProviderDriverByKey({
+  return resolvePluginSandboxProviderConfigSchema({
     db,
     driverKey: provider,
   });
-  const schema = resolved?.driver.configSchema;
-  return schema && typeof schema === "object" && !Array.isArray(schema)
-    ? schema as Record<string, unknown>
-    : null;
 }
 
 export async function resolveSandboxProviderSecretRefPaths(
@@ -298,6 +294,7 @@ async function resolveConfigSecretRefsForRuntime(input: {
   companyId: string;
   config: Record<string, unknown>;
   schema: Record<string, unknown> | null;
+  readOnlyInspection?: boolean;
   context: {
     consumerId: string;
     issueId?: string | null;
@@ -317,7 +314,10 @@ async function resolveConfigSecretRefsForRuntime(input: {
     nextConfig = writeConfigValueAtPath(
       nextConfig,
       path,
-      await secrets.resolveSecretValue(input.companyId, trimmed, "latest", {
+      input.readOnlyInspection ? await secrets.resolveSecretValueForReadOnlyEnvironmentInspection(input.companyId, trimmed, "latest", {
+        environmentId: input.context.consumerId, configPath: path,
+        issueId: input.context.issueId, heartbeatRunId: input.context.heartbeatRunId,
+      }) : await secrets.resolveSecretValue(input.companyId, trimmed, "latest", {
         consumerType: "environment",
         consumerId: input.context.consumerId,
         actorType: "system",
@@ -663,6 +663,7 @@ export async function resolveEnvironmentDriverConfigForRuntime(
     // configuration and tooling so the test reflects what real agent runs use.
     applyCustomImageTemplate?: boolean;
     readOnlyCustomImageTemplate?: boolean;
+    readOnlyInspection?: boolean;
     onResolvedCustomImageTemplate?: (identity: { id: string; capturedAt: string | null; templateKind: string; bindingField: string }) => void;
   },
 ): Promise<ParsedEnvironmentConfig> {
@@ -708,6 +709,7 @@ export async function resolveEnvironmentDriverConfigForRuntime(
         companyId,
         config: parsed.config as Record<string, unknown>,
         schema,
+        readOnlyInspection: context?.readOnlyInspection,
         context: {
           consumerId: environmentId!,
           issueId: context?.issueId ?? null,

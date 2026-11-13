@@ -7,17 +7,36 @@ on:
 
 permissions:
   actions: read
+  # Check runs and commit statuses time the outside reviews and scans.
+  checks: read
   contents: read
   pull-requests: read
+  statuses: read
 
 jobs:
   export:
+    # No runner starts, and the environment is never entered, unless all of
+    # these hold:
+    # - The run is the main PR workflow on a branch of this repository.
+    # - Its actor and rerun actor are on the maintainer roster that CI routing
+    #   already uses. The exporter then verifies them and the PR author against
+    #   master's CODEOWNERS before it reads or sends anything.
+    # - The run carries the profile-ci label, or its run number ends in 0. That
+    #   is the one-in-ten sample; scripts/ci-profile/authorize.mjs applies the
+    #   same rule.
     if: >-
       github.repository == 'paperclipai/paperclip' &&
+      github.repository_id == '1170821064' &&
       github.event.workflow_run.event == 'pull_request' &&
-      startsWith(github.event.workflow_run.display_title, 'CI profile · PR #')
+      github.event.workflow_run.path == '.github/workflows/pr.yml' &&
+      github.event.workflow_run.head_repository.full_name == 'paperclipai/paperclip' &&
+      contains(vars.AWS_CI_ROUTING_USER_IDS, format('|{0}|', github.event.workflow_run.actor.id)) &&
+      contains(vars.AWS_CI_ROUTING_USER_IDS, format('|{0}|', github.event.workflow_run.triggering_actor.id)) &&
+      (startsWith(github.event.workflow_run.display_title, 'CI profile · PR #') ||
+      endsWith(format('{0}', github.event.workflow_run.run_number), '0'))
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    # Covers the bounded wait for outside checks that outlast the workflow.
+    timeout-minutes: 30
     # This environment permits only the master branch. Do not use a repository
     # secret: an in-repository PR must not be able to request this credential.
     environment: ci-profiling

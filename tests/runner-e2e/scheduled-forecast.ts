@@ -6,7 +6,7 @@ import type { EvalOperationsManifest } from "./operations.js";
 
 type Sample = (typeof measurements.samples)[number];
 const cohortKey = (sample: Sample) => JSON.stringify([sample.definitionHash, sample.model, sample.environmentId,
-  sample.runtimeMode, sample.route, sample.priceVersion]);
+  sample.runtimeMode, sample.route, sample.priceVersion, sample.measurementHost]);
 const usd = (units: bigint) => centsToUsd(unitsToCents(units));
 const average = (values: bigint[]) => values.length
   ? (values.reduce((sum, value) => sum + value, 0n) + BigInt(Math.floor(values.length / 2))) / BigInt(values.length) : null;
@@ -34,6 +34,10 @@ function summarize(samples: Sample[]) {
   };
 }
 
+function summarizeCohort(samples: Sample[]) {
+  return summarize(new Set(samples.map(cohortKey)).size === 1 ? samples : []);
+}
+
 function total(rows: ReturnType<typeof summarize>[]) {
   return {
     modelUsd: rows.length && rows.every(row => row.modelUsd.mean !== null)
@@ -50,7 +54,8 @@ export function scheduledForecast(
   for (const sample of snapshot.samples) {
     if (seen.has(sample.attemptId)) throw new Error("Duplicate forecast attempt");
     seen.add(sample.attemptId);
-    if (!Number.isSafeInteger(sample.attemptDurationMs) || sample.attemptDurationMs < 0 || usdToUnits(sample.knownModelUsd) < 0n
+    if (typeof sample.measurementHost !== "string" || !/^[a-z0-9][a-z0-9-]{0,63}$/.test(sample.measurementHost) || !Number.isSafeInteger(sample.finalModelRequests) || sample.finalModelRequests < 1
+        || !Number.isSafeInteger(sample.attemptDurationMs) || sample.attemptDurationMs < 0 || usdToUnits(sample.knownModelUsd) < 0n
         || !/^[0-9a-f]{40}$/.test(sample.sourceRevision)
         || [sample.definitionHash, sample.resultSha256, sample.ledgerSha256, sample.ledgerFinalHash].some(hash => !/^[0-9a-f]{64}$/.test(hash))) {
       throw new Error("Invalid forecast measurement or provenance");
@@ -75,16 +80,22 @@ export function scheduledForecast(
     });
     return { executionId: execution.id, currentDefinitionHash: execution.suiteDefinitionHash,
       historicalSuccessful: summarize(cohorts.length === 1 ? retained : []), historicalCohorts: cohorts,
-      compatibleSuccessful: summarize(samples.filter(sample => sample.mismatches.length === 0)), samples };
+      compatibleSuccessful: summarizeCohort(samples.filter(sample => sample.mismatches.length === 0)),
+      historicalHosted: summarizeCohort(retained.filter(sample => sample.measurementHost === "github-hosted-ubuntu-latest")),
+      compatibleHosted: summarizeCohort(samples.filter(sample => sample.mismatches.length === 0
+        && sample.measurementHost === "github-hosted-ubuntu-latest")), samples };
   });
+  const hosted = total(cells.map(cell => cell.compatibleHosted));
   return {
     measurementSnapshotSha256: createHash("sha256").update(JSON.stringify(snapshot)).digest("hex"),
     measuredHost: snapshot.host, costStatus: snapshot.costStatus, sampleScope: snapshot.sampleScope,
     historicalSuccessfulSelection: total(cells.map(cell => cell.historicalSuccessful)),
+    historicalHostedSelection: total(cells.map(cell => cell.historicalHosted)),
     compatibleSuccessfulSelection: total(cells.map(cell => cell.compatibleSuccessful)),
-    hostedModelUsd: null, hostedAttemptMs: null, selectionP95: null,
+    hostedModelUsd: hosted.modelUsd, hostedAttemptMs: hosted.summedAttemptMs, selectionP95: null,
     cells, limitations: [...snapshot.limitations,
-      "Compatibility compares definition, model, environment, runtime, route and price version; source revisions remain explicit",
+      "Compatibility compares definition, model, environment, runtime, route and price version; measurement hosts form separate cohorts and source revisions remain explicit",
+      "Hosted totals require compatible GitHub-hosted measurements for every selected cell",
       "Per-cell P95 uses nearest rank only with at least 20 samples; it is descriptive, not a confidence bound",
       "Summed attempt time is serial attempt work, not campaign wall time, summed agent time or billed runner time",
       "Historical successful samples do not estimate failure frequency; every failure remains in campaign accounting"],

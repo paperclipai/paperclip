@@ -202,7 +202,7 @@ export const RUNNER_LIVE_CANDIDATE_SLOTS: readonly RunnerLiveCandidateSlot[] =
           slotId: "acpx-codex",
           adapter: "acpx_runtime",
           provider: "acpx",
-          model: "gpt-5.6-sol",
+          model: "gpt-6.1-sol",
           tier: "strong",
           reasoningEffort: "medium",
           qualification: {

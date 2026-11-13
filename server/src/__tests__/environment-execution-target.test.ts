@@ -31,6 +31,7 @@ function createRecordingTrace() {
     parent: unknown;
     ended: boolean;
     setAttribute(key: string, value: unknown): void;
+    setStatus(status: { code: number; message?: string }): void;
     end(): void;
   }> = [];
   const tracer = {
@@ -47,6 +48,7 @@ function createRecordingTrace() {
         setAttribute(key: string, value: unknown) {
           span.attributes[key] = value;
         },
+        setStatus(_status: { code: number; message?: string }) {},
         end() {
           span.ended = true;
         },
@@ -100,6 +102,17 @@ describe("resolveEnvironmentExecutionTarget", () => {
     mockResolveEnvironmentDriverConfigForRuntime.mockReset();
     delete process.env.PAPERCLIP_API_URL;
     delete process.env.PAPERCLIP_RUNTIME_API_URL;
+  });
+
+  it("forwards the physical task binding through the plugin task target", async () => {
+    const task = vi.fn(async () => ({ kind: "accepted" as const, taskId: "physical-task" }));
+    const target = await resolveEnvironmentExecutionTarget({ db: {} as never, companyId: "company", adapterType: "paperclip_runner",
+      environment: { id: "environment", driver: "plugin", config: {} }, leaseMetadata: {},
+      lease: { id: "lease", companyId: "company", environmentId: "environment", providerLeaseId: "physical-task", metadata: {} } as never,
+      environmentRuntime: { supportsTasks: async () => true, task } as never });
+    if (target?.kind !== "remote" || target.transport !== "sandbox" || !target.runnerTask) throw new Error("Plugin task target unavailable");
+    await target.runnerTask({ kind: "stop" }, { expectedTaskId: "physical-task" });
+    expect(task).toHaveBeenCalledWith({ companyId: "company", leaseId: "lease", operation: { kind: "stop" }, expectedTaskId: "physical-task" });
   });
 
   it("uses a bounded default cwd for sandbox targets when lease metadata omits remoteCwd", async () => {
@@ -624,7 +637,7 @@ describe("resolveEnvironmentExecutionTarget", () => {
   async function runnerWithExecute(input: {
     provider: string;
     tracer: unknown;
-    execute: (...args: unknown[]) => Promise<unknown>;
+    execute: (input: { onLog?: (s: string, c: string) => Promise<void> }) => Promise<unknown>;
   }) {
     mockResolveEnvironmentDriverConfigForRuntime.mockResolvedValue({
       driver: "sandbox",
@@ -646,7 +659,7 @@ describe("resolveEnvironmentExecutionTarget", () => {
       tracer: input.tracer as never,
     });
     return (target as { runner?: {
-      execute(input: { command: string; args?: string[] }): Promise<unknown>;
+      execute(input: { command: string; args?: string[]; env?: Record<string, string>; cwd?: string; stdin?: string }): Promise<unknown>;
     } }).runner!;
   }
 

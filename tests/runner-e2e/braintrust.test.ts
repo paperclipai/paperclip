@@ -211,3 +211,13 @@ it("retains finalization export failures without changing the recorded product r
   }, transport)).toMatchObject({ status: "failed", errorCode: "invalid_finalization_context" });
   expect(transport).not.toHaveBeenCalled();
 });
+
+
+it("binds remote OTLP to the explicitly assigned eval gateway origin", () => {
+  const origin = "https://synthetic-eval.trycloudflare.com";
+  const env = { PAPERCLIP_E2E_BRAINTRUST_PROJECT_ID: projectId, BRAINTRUST_API_KEY: "synthetic-token",
+    PAPERCLIP_E2E_REMOTE_GATEWAY_ORIGIN: origin, PAPERCLIP_E2E_OTLP_RELAY_URL: `${origin}/otel` };
+  expect(evalBraintrustConfig(env)).toMatchObject({ remoteOrigin: origin, endpointBaseUrl: `${origin}/otel` });
+  expect(() => evalBraintrustConfig({ ...env, PAPERCLIP_E2E_OTLP_RELAY_URL: "https://different-eval.trycloudflare.com/otel" })).toThrow();
+  expect(buildPaperclipServerEnvironment(env).PAPERCLIP_E2E_REMOTE_GATEWAY_ORIGIN).toBeUndefined();
+});

@@ -100,6 +100,7 @@ export async function createPluginWorkspaceFixture(
     status: "running",
   });
   const calls: any[] = [];
+  const preparedBranches = new Map<string, string | null>();
   let loseResponse = false,
     dirty = false,
     removed = false,
@@ -120,6 +121,7 @@ export async function createPluginWorkspaceFixture(
       }
       if (params.operation.kind === "prepare") {
         removed = false;
+        preparedBranches.set(params.executionWorkspaceId, params.operation.branchName ?? null);
         return {
           kind: "prepared",
           binding: {
@@ -141,7 +143,7 @@ export async function createPluginWorkspaceFixture(
         return {
           kind: "inspection",
           headSha: "a".repeat(40),
-          branchName: "work",
+          branchName: preparedBranches.get(params.executionWorkspaceId) ?? "work",
           hasDirtyTrackedFiles: dirty,
           hasUntrackedFiles: false,
           hasLocalOnlyData: false,

@@ -31,6 +31,12 @@ const ready = {
 };
 beforeEach(() => testEnvironment.mockReset());
 afterEach(() => vi.restoreAllMocks());
+it.each(["environment_agent_required", "environment_agent_preparing", "environment_agent_approval_required"])("does not start a supplementary provider probe while %s", async code => {
+  const pending = { ...ready, status: "warn", checks: [{ code, level: "warn", message: "Waiting for the agent computer" }] };
+  testEnvironment.mockResolvedValue(pending);
+  expect(await testAgentSetup(input)).toEqual(pending);
+  expect(testEnvironment).toHaveBeenCalledTimes(1);
+});
 it("does not launch an ambient provider hello test for a pool preview", async () => {
   testEnvironment.mockResolvedValue({ ...ready, status: "warn", checks: [{ code: "ai_connection_pool_task_test_required", level: "warn", message: "Run a task" }] });
   await testAgentSetup({ ...input, aiConnection: { mode: "router", connectionId: "pool-id" } });

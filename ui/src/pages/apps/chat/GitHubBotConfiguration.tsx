@@ -1,6 +1,7 @@
 import { copyTextToClipboard } from "@/lib/clipboard";
 import { useEffect, useId, useRef, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
+import { QueryErrorState, useQueryView } from "@/components/QueryView";
 import {
   GITHUB_REVIEW_EVENTS,
   type GitHubChatConfiguration,
@@ -47,6 +48,7 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
+import { describeError } from "@/api/errors";
 
 export const githubSelectClass =
   "w-full rounded-md border border-input bg-background px-3 py-2 text-sm";
@@ -594,6 +596,9 @@ export function GitHubAccessEditor({
     queryKey: ["github-linked-members", endpointId],
     queryFn: () => chatEndpointsApi.listPrincipals(endpointId),
   });
+  const membersView = useQueryView(members);
+  const linksView = useQueryView(links);
+  const linksLoaded = linksView.kind === "ready" || linksView.kind === "stale";
   const [login, setLogin] = useState("");
   const [sponsor, setSponsor] = useState(configuration.responsibleUserId);
   const [candidate, setCandidate] = useState<{
@@ -667,7 +672,7 @@ export function GitHubAccessEditor({
       await links.refetch();
     } catch (e) {
       setError(
-        e instanceof Error ? e.message : "Could not unlink this account.",
+        describeError(e).body,
       );
     } finally {
       setBusy(false);
@@ -804,12 +809,12 @@ export function GitHubAccessEditor({
           }
         />
         {peopleRows(memberRows)}
-        {links.isPending && (
+        {(links.isPending || linksView.kind === "reconnecting") && (
           <p role="status" className="py-4 text-sm text-muted-foreground">
             Loading linked accounts…
           </p>
         )}
-        {!links.isPending && !links.isError && memberRows.length === 0 && (
+        {linksLoaded && memberRows.length === 0 && (
           <p className="py-4 text-sm text-muted-foreground">
             No members linked yet. Link an account to get started.
           </p>
@@ -933,22 +938,16 @@ export function GitHubAccessEditor({
           {error}
         </p>
       )}
-      {(members.error || links.error) && (
-        <div className="flex flex-wrap items-center gap-2">
-          <p role="alert" className="text-sm text-destructive">
-            Could not load members or linked accounts.
-          </p>
-          <Button
-            variant="link"
-            size="sm"
-            onClick={() => {
-              void members.refetch();
-              void links.refetch();
-            }}
-          >
-            Try again
-          </Button>
-        </div>
+      {(membersView.kind === "error" || linksView.kind === "error") && (
+        <QueryErrorState
+          error={membersView.kind === "error" ? members.error : links.error}
+          action="load members and linked accounts"
+          onRetry={() => {
+            membersView.retry();
+            linksView.retry();
+          }}
+          retrying={members.isFetching || links.isFetching}
+        />
       )}
       <Dialog
         open={dialog !== null}
@@ -1030,7 +1029,7 @@ export function GitHubAccessEditor({
                         );
                       } catch (e) {
                         setLookupError(
-                          e instanceof Error ? e.message : "Lookup failed",
+                          describeError(e).body,
                         );
                       } finally {
                         setBusy(false);

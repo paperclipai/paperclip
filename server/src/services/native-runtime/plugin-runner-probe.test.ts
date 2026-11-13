@@ -1,6 +1,6 @@
 import { execFileSync, spawn } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
-import { chmod, mkdir, mkdtemp, readFile, rename, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, rename, rm, stat as fsStat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { createConnection, createServer } from "node:net";
@@ -40,6 +40,31 @@ describe("plugin Runner setup", () => {
     execFileSync("cargo", ["build", "--release", "--locked", "--manifest-path", "packages/paperclip-runner/runner/Cargo.toml",
       "-p", "paperclip-runner-core", "--bin", "paperclip-runnerd", "--bin", "fake-codex-app-server"], { stdio: "pipe" });
   }, 600_000);
+  it("preserves the typed cleanup owner and removes its local root only after late proof", async () => {
+    let root: string | undefined, options: Parameters<typeof runnerRuntime.probeNativeRunnerEnvironment>[0] | undefined;
+    let physical = false;
+    const retired = new Promise<void>(() => {});
+    const retry = vi.fn(async () => {
+      if (!physical) throw new Error("fixture owner is still live");
+      await options!.onCleanupConfirmed!();
+    });
+    const failure = new runnerRuntime.NativeEnvironmentProbeCleanupError(retired, new Error("private probe failure"), [], retry);
+    const probe = vi.spyOn(runnerRuntime, "probeNativeRunnerEnvironment").mockImplementation(async input => {
+      root = input.runtimeDirectory; options = input; throw failure;
+    });
+    try {
+      await expect(probePluginRunnerEnvironment({ companyId: "fixture-company", adapterType: "paperclip_runner", config: { provider: "codex", model: "fixture-model" },
+        executionTarget: { kind: "remote", transport: "sandbox", remoteCwd: ".", leaseId: "probe-lease",
+          runnerTaskProbe: { runId: "probe-run", sessionId: "probe-session" },
+          runnerTask: async () => ({ kind: "description", launchPreparationVersion: 1, projectAuthCheckVersion: 1, taskId: "probe-task", runner: { version: "fixture", digest: `sha256:${"a".repeat(64)}` } }),
+        } } as Parameters<typeof probePluginRunnerEnvironment>[0])).rejects.toBe(failure);
+      expect((await fsStat(root!)).isDirectory()).toBe(true);
+      await expect(failure.retryCleanup!()).rejects.toThrow("still live");
+      expect((await fsStat(root!)).isDirectory()).toBe(true);
+      physical = true; await failure.retryCleanup!();
+      await expect(fsStat(root!)).rejects.toMatchObject({ code: "ENOENT" });
+    } finally { probe.mockRestore(); if (root) await rm(root, { recursive: true, force: true }); }
+  });
   it.each([
     { config: { provider: "acpx", acpxAgent: "pi", model: "fixture-model", piThinkingLevel: "high" }, options: { transportOptions: { acpxAgent: "pi", piThinkingLevel: "high" } } },
     { config: { provider: "acpx", acpxAgent: "claude", model: "claude-opus-5-5", effort: "high" }, options: { transportOptions: { acpxAgent: "claude", claudeEffort: "high" } } },
@@ -204,7 +229,7 @@ describe("plugin Runner setup", () => {
         await mkdir(resources.provider_state!, { recursive: true });
         await writeFile(join(resources.provider_state!, "AGENTS.md"), "Installed persistent instructions");
         const retained = vi.fn(async () => {});
-        const owner = createPluginRunnerTaskOwner({ task, projectAuthCheckVersion: 1, projectIds: [], harness: "codex", onSessionRetained: retained, pollMs: 1 });
+        const owner = createPluginRunnerTaskOwner({ taskId: "task", task, projectAuthCheckVersion: 1, projectIds: [], harness: "codex", onSessionRetained: retained, pollMs: 1 });
         const first = createRunnerdCodexTransport({ ...owner.driver, stateDirectory, runnerArtifact: artifact,
           runtimeContext: context("first"), prpIdentity: identity, lifecyclePolicy: { mode: "per_turn", idleTimeoutMs: null } });
         let thread: Record<string, unknown>;
@@ -220,7 +245,7 @@ describe("plugin Runner setup", () => {
         for (const run of ["same", "next"]) {
           if (run !== "same") await writeFile(join(resources.provider_state!, "AGENTS.md"), `Installed persistent instructions ${run}`);
           const priorRun = "run-first";
-          const nextOwner = createPluginRunnerTaskOwner({ task, projectAuthCheckVersion: 1, projectIds: [], harness: "codex", resumeFrom: "task", pollMs: 1,
+          const nextOwner = createPluginRunnerTaskOwner({ taskId: "task", task, projectAuthCheckVersion: 1, projectIds: [], harness: "codex", resumeFrom: "task", pollMs: 1,
             priorIdentity: { ...identity, runId: priorRun, turnId: identity.turnId, itemId: identity.itemId } });
           const second = createRunnerdCodexTransport({ ...nextOwner.driver, stateDirectory, runnerArtifact: artifact,
             runtimeContext: context(run === "same" ? "first" : run),

@@ -17,7 +17,10 @@ export async function prepareHeartbeatGitHubLaunchers(
 ) {
   if (input.target?.kind === "remote" && input.target.transport === "sandbox" && input.target.runnerTask) {
     // Provider-owned tasks decide their own runtime layout and command environment.
-    return { env: input.env, cleanupLocation: null };
+    return { env: githubBrokerEnvironment(input.env, {
+      url: input.githubConfigured ? input.brokerUrl : "",
+      token: input.githubConfigured ? input.createBrokerToken() : "",
+    }), cleanupLocation: null };
   }
   // Native configured access is owned by the provider session supervisor.
   // Defer staging until it has acquired that session; never mutate a live

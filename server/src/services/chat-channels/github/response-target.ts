@@ -4,9 +4,11 @@ import { chatActions, chatConversations, chatDeliveries, chatEndpoints, type Db 
 import { forbidden, HttpError } from "../../../errors.js";
 
 export type GitHubResponseSource = {
-  endpoint: typeof chatEndpoints.$inferSelect;
-  conversation: typeof chatConversations.$inferSelect;
-  delivery: typeof chatDeliveries.$inferSelect;
+  endpoint: Pick<typeof chatEndpoints.$inferSelect,
+    "id" | "companyId" | "assignedAgentId" | "botExternalId" | "botUsername"
+  > & { setup: unknown };
+  conversation: Pick<typeof chatConversations.$inferSelect, "id" | "issueId" | "externalThreadId">;
+  delivery: Pick<typeof chatDeliveries.$inferSelect, "id" | "principalId" | "createdAt">;
   number: number;
   replyId: string | null;
   repositoryId?: string;

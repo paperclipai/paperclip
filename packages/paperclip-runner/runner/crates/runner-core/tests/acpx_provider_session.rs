@@ -30,6 +30,7 @@ fn tool_set() -> AuthorizedToolSet {
 
 fn config(mode: &str) -> AcpxProviderSessionConfig {
     AcpxProviderSessionConfig {
+        candidate_admission: None,
         transport: AcpxSidecarTransportConfig {
             command: PathBuf::from(env!("CARGO_BIN_EXE_fake-acpx-sidecar")),
             args: vec!["--mode".to_owned(), mode.to_owned()],
@@ -48,6 +49,8 @@ fn config(mode: &str) -> AcpxProviderSessionConfig {
         mode: None,
         pi_thinking_level: None,
         claude_effort: None,
+        grok_effort: None,
+        grok_disable_web_search: None,
         permission_mode_pinned: true,
         provider_policy: None,
         system_instructions: "Complete the supplied task.".to_owned(),
@@ -72,6 +75,8 @@ fn expected_identity() -> AcpxProviderSessionIdentity {
         mode: None,
         pi_thinking_level: None,
         claude_effort: None,
+        grok_effort: None,
+        grok_disable_web_search: None,
         provider_lifetime_fence_candidates: [60_001, 60_002, 60_003],
     }
 }
@@ -133,6 +138,41 @@ fn bootstraps_a_codex_session_and_confirms_run_identity() {
     assert_eq!(session.catalog_revision(), 1);
     session.shutdown("test complete").unwrap();
     session.shutdown("already closed").unwrap();
+    let closed = session.poll_event(Duration::ZERO).unwrap_err();
+    assert_eq!(closed.to_string(), "ACPX provider session is closed");
+    assert!(closed.provider_failure().is_none());
+}
+
+#[test]
+fn retains_the_first_failed_control_after_closing_the_session() {
+    let mut session =
+        AcpxProviderSession::start(&config("turns-tool-resolution-rejected")).unwrap();
+    session
+        .start_turn("turn-1", "Read the issue", &std::env::temp_dir())
+        .unwrap();
+    session.poll_event(Duration::from_secs(1)).unwrap().unwrap();
+    let result = paperclip_runner_core::provider_bridge::ToolResult {
+        call_id: "call-1".to_owned(),
+        operation_id: "issues.read".to_owned(),
+        result: json!({"id":"issue-1"}),
+        is_error: false,
+    };
+    let first = session.deliver_tool_result(&result).unwrap_err();
+    assert!(first
+        .to_string()
+        .contains("classification=provider_tool_call_retired"));
+    assert!(!first.to_string().contains("private-provider-token-canary"));
+    assert!(first.provider_failure().is_none());
+    assert!(session.state().pending_tool("call-1").is_some());
+    assert_eq!(session.poll_event(Duration::ZERO).unwrap_err(), first);
+    assert_eq!(session.deliver_tool_result(&result).unwrap_err(), first);
+    assert_eq!(
+        session
+            .start_turn("turn-2", "Continue", &std::env::temp_dir())
+            .unwrap_err(),
+        first
+    );
+    session.shutdown("closed failure cleanup").unwrap();
 }
 
 #[test]

@@ -77,9 +77,12 @@ connection vault, never process environment fallback.
 `company_prompt_injection_prevention` retains selections after connection
 removal. `prompt_injection_invocations` keeps archival attribution, policy/model,
 verdict categories, bounded errors, token usage, provider request ID, and a link
-to the cost event. It stores no scanned content. A provider request reserves
-applicable budgets under the company accounting lock before dispatch. The lock
-is released before network I/O.
+to the cost event. It stores no scanned content. A provider request records its own reservation
+from a best-effort budget observation. Shared manual-control admission fences
+are released before network I/O; settlement uses an independent invocation
+transaction without the company writer mutex. Financial changes leave durable
+work for asynchronous threshold enforcement. Late receipts correct provisional
+interrupted accounting without rerunning the classifier.
 
 Charges use `usageKind: prompt_injection`, biller `openrouter`, and idempotency
 key `prompt-injection:<invocation-id>`. Run correlation stays on the invocation;

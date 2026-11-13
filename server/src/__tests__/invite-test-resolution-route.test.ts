@@ -1,6 +1,11 @@
 import express from "express";
 import request from "supertest";
-import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { beforeAll, beforeEach, describe, expect, it, vi, type Mock } from "vitest";
+import type { accessRoutes } from "../routes/access.js";
+
+type InviteResolutionNetwork = Required<NonNullable<Parameters<typeof accessRoutes>[1]["inviteResolutionNetwork"]>>;
+type LookupFn = InviteResolutionNetwork["lookup"];
+type RequestHeadFn = InviteResolutionNetwork["requestHead"];
 
 function createSelectChain(rows: unknown[]) {
   const query = {
@@ -54,8 +59,8 @@ function loadAppModules() {
 async function createApp(
   db: Record<string, unknown>,
   network: {
-    lookup: ReturnType<typeof vi.fn>;
-    requestHead: ReturnType<typeof vi.fn>;
+    lookup: Mock<LookupFn>;
+    requestHead: Mock<RequestHeadFn>;
   },
 ) {
   const [access, middleware] = await loadAppModules();
@@ -78,7 +83,7 @@ async function createApp(
   return app;
 }
 
-describe("GET /invites/:token/test-resolution", { sequential: true }, () => {
+describe("GET /invites/:token/test-resolution", () => {
   beforeAll(async () => {
     // Route transformation is fixture setup, not part of the network assertions.
     await loadAppModules();
@@ -105,8 +110,8 @@ describe("GET /invites/:token/test-resolution", { sequential: true }, () => {
     ] as const;
 
     for (const [label, url, address] of cases) {
-      const lookup = vi.fn().mockResolvedValue([{ address, family: address.includes(":") ? 6 : 4 }]);
-      const requestHead = vi.fn();
+      const lookup = vi.fn<LookupFn>().mockResolvedValue([{ address, family: address.includes(":") ? 6 : 4 }]);
+      const requestHead = vi.fn<RequestHeadFn>();
       const app = await createApp(createDbStub([createInvite()]), { lookup, requestHead });
 
       const res = await request(app)
@@ -122,8 +127,8 @@ describe("GET /invites/:token/test-resolution", { sequential: true }, () => {
   }, 20_000);
 
   it("rejects hostnames that resolve to private addresses", async () => {
-    const lookup = vi.fn().mockResolvedValue([{ address: "10.1.2.3", family: 4 }]);
-    const requestHead = vi.fn();
+    const lookup = vi.fn<LookupFn>().mockResolvedValue([{ address: "10.1.2.3", family: 4 }]);
+    const requestHead = vi.fn<RequestHeadFn>();
     const app = await createApp(createDbStub([createInvite()]), { lookup, requestHead });
 
     const res = await request(app)
@@ -139,11 +144,11 @@ describe("GET /invites/:token/test-resolution", { sequential: true }, () => {
   });
 
   it("rejects hostnames when any resolved address is private", async () => {
-    const lookup = vi.fn().mockResolvedValue([
+    const lookup = vi.fn<LookupFn>().mockResolvedValue([
       { address: "127.0.0.1", family: 4 },
       { address: "93.184.216.34", family: 4 },
     ]);
-    const requestHead = vi.fn();
+    const requestHead = vi.fn<RequestHeadFn>();
     const app = await createApp(createDbStub([createInvite()]), { lookup, requestHead });
 
     const res = await request(app)
@@ -155,8 +160,8 @@ describe("GET /invites/:token/test-resolution", { sequential: true }, () => {
   });
 
   it("allows public HTTPS targets through the resolved and pinned probe path", async () => {
-    const lookup = vi.fn().mockResolvedValue([{ address: "93.184.216.34", family: 4 }]);
-    const requestHead = vi.fn().mockResolvedValue({ httpStatus: 204 });
+    const lookup = vi.fn<LookupFn>().mockResolvedValue([{ address: "93.184.216.34", family: 4 }]);
+    const requestHead = vi.fn<RequestHeadFn>().mockResolvedValue({ httpStatus: 204 });
     const app = await createApp(createDbStub([createInvite()]), { lookup, requestHead });
 
     const res = await request(app)
@@ -188,8 +193,8 @@ describe("GET /invites/:token/test-resolution", { sequential: true }, () => {
     ["revoked invite", [createInvite({ revokedAt: new Date("2026-03-07T00:05:00.000Z") })]],
     ["expired invite", [createInvite({ expiresAt: new Date("2020-03-07T00:10:00.000Z") })]],
   ])("returns not found for %s tokens before DNS lookup", async (_label, inviteRows) => {
-    const lookup = vi.fn();
-    const requestHead = vi.fn();
+    const lookup = vi.fn<LookupFn>();
+    const requestHead = vi.fn<RequestHeadFn>();
     const app = await createApp(createDbStub(inviteRows), { lookup, requestHead });
 
     const res = await request(app)

@@ -75,6 +75,7 @@ import type {
   PluginPerformActionActorContext,
   PluginPerformActionContext,
 } from "./protocol.js";
+import { validateProjectSnapshotRequest } from "./protocol.js";
 
 export interface TestHarnessOptions {
   /** Plugin manifest used to seed capability checks and metadata. */
@@ -1032,6 +1033,10 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
       },
     },
     projects: {
+      async resolveGitCredential() {
+        requireCapability(manifest, capabilitySet, "projects.git-credentials");
+        throw new Error("Git credentials require a matching host project operation");
+      },
       async getInstanceSecrets(projectId, companyId) {
         requireCapability(manifest, capabilitySet, "projects.instance-secrets");
         requireCapability(manifest, capabilitySet, "events.subscribe");
@@ -1039,6 +1044,21 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
         const project = projects.get(projectId);
         if (!isInCompany(project, companyId) || project.archivedAt) throw new Error("Project instance secrets unavailable");
         return structuredClone(projectInstanceSecrets.get(JSON.stringify([companyId, projectId])) ?? {});
+      },
+      async readSnapshots(projectIds, companyId, entityType) {
+        requireCapability(manifest, capabilitySet, "projects.read");
+        requireCapability(manifest, capabilitySet, "project.workspaces.read");
+        requireCapability(manifest, capabilitySet, "projects.instance-secrets");
+        requireCompanyId(companyId);
+        validateProjectSnapshotRequest(projectIds, entityType);
+        return Promise.all(projectIds.map(async projectId => {
+          const project = await ctx.projects.get(projectId, companyId);
+          if (!project || project.archivedAt) throw new Error("Project snapshot unavailable");
+          const [entity] = await ctx.entities.list({ entityType, scopeKind: "company", scopeId: companyId, externalId: projectId, limit: 1 });
+          const instanceSecrets = await ctx.projects.getInstanceSecrets(projectId, companyId);
+          const workspaces = await ctx.projects.listWorkspaces(projectId, companyId);
+          return { projectId, workspaces, entity: entity ?? null, instanceSecrets };
+        }));
       },
       async list(input) {
         requireCapability(manifest, capabilitySet, "projects.read");

@@ -15,6 +15,7 @@ const api = vi.hoisted(() => ({
   list: vi.fn(),
   hire: vi.fn(),
   testEnvironment: vi.fn(),
+  retryLifecycle: vi.fn(),
   getAdapterAuthSignal: vi.fn(),
   getClaudeOAuthTokenStatus: vi.fn(),
 }));

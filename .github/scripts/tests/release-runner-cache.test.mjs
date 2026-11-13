@@ -41,7 +41,7 @@ test("parallel lanes cover check:all exactly once and never bypass verification"
   assert.deepEqual([...runner.matchAll(/^          - lane: (.+)$/gm)].map(([, value]) => value), ["protocol", "rust", "server-integration"]);
   assert.match(runner, /fail-fast: false/);
   assert.doesNotMatch(runner, /max-parallel: 1|^    needs:|continue-on-error:/m);
-  const verify = runner.split("      - name: Verify Paperclip Runner\n")[1].split("      - name: Warm debug")[0];
+  const verify = runner.split("      - name: Verify Paperclip Runner\n")[1].split("      - name:")[0];
   assert.match(verify, /RUNNER_CHECKS: \$\{\{ matrix.checks \}\}/);
   assert.match(verify, /set -euo pipefail/);
   assert.match(verify, /for check in \$RUNNER_CHECKS; do\s+pnpm --filter @paperclipai\/paperclip-runner "\$check"\s+done/);

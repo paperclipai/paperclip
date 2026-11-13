@@ -1,3 +1,4 @@
+import { describeError } from "@/api/errors";
 import { useCallback, useEffect, useRef, useState, type RefObject } from "react";
 import { useQuery } from "@tanstack/react-query";
 import type { AgentCommentaryEntry, AgentCommentaryKind } from "@paperclipai/shared";
@@ -61,7 +62,7 @@ function CommentaryDetail({ companyId, id, onClose, triggerRef }: { companyId: s
           <DialogDescription>{entry ? `Submitted ${new Date(entry.createdAt).toLocaleString()}` : "Message details and source context."}</DialogDescription>
         </DialogHeader>
         {detail.isPending ? <p role="status" className="text-sm text-muted-foreground">Loading message…</p> : detail.error ? (
-          <div role="alert" className="flex flex-col items-start gap-3"><p className="text-sm text-destructive">{detail.error.message}</p><Button variant="outline" size="sm" onClick={() => void detail.refetch()}>Try again</Button></div>
+          <div role="alert" className="flex flex-col items-start gap-3"><p className="text-sm text-destructive">{describeError(detail.error).body}</p><Button variant="outline" size="sm" onClick={() => void detail.refetch()}>Try again</Button></div>
         ) : entry ? <>
           <div className="flex shrink-0 flex-wrap items-center gap-3"><Link to={`/agents/${entry.agent.id}`}><AgentIdentity agent={entry.agent} size="sm" /></Link><MessageKind kind={entry.kind} /></div>
           <div className="min-h-0 overflow-y-auto overscroll-contain break-words pr-2"><MarkdownBody>{entry.body}</MarkdownBody></div>
@@ -118,7 +119,7 @@ export function AgentCommentary({ companyId }: { companyId: string }) {
   return (
     <section className="flex flex-col gap-5" aria-label="Commentary">
       <div className="flex flex-col gap-1"><h2 className="text-lg font-semibold">Commentary</h2><p className="text-sm text-muted-foreground">Suggestions and complaints from your agents.</p></div>
-      <div className="flex flex-wrap items-center gap-2">
+      <div data-canonical-toolbar="audit-commentary" role="toolbar" aria-label="Commentary filters" className="flex flex-wrap items-center gap-2">
         <div className="relative min-w-48 flex-1 sm:max-w-sm"><Search className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" /><Input aria-label="Search commentary" placeholder="Search messages…" maxLength={200} value={search} onChange={(event) => setSearch(event.target.value)} className="pl-9" /></div>
         <Select value={agentId} onValueChange={(value) => updateFilters({ agentId: value })}><SelectTrigger aria-label="Filter by agent" className="min-w-40"><SelectValue placeholder="All agents" /></SelectTrigger><SelectContent><SelectItem value={ALL}>All agents</SelectItem>{agents.data?.map((agent) => <SelectItem key={agent.id} value={agent.id}><AgentIdentity agent={agent} size="xs" /></SelectItem>)}</SelectContent></Select>
         <Select value={kind ?? ALL} onValueChange={(value) => updateFilters({ kind: value })}><SelectTrigger aria-label="Filter by message type" className="min-w-36"><SelectValue /></SelectTrigger><SelectContent><SelectItem value={ALL}>All types</SelectItem><SelectItem value="suggestion">Suggestions</SelectItem><SelectItem value="complaint">Complaints</SelectItem></SelectContent></Select>
@@ -126,7 +127,7 @@ export function AgentCommentary({ companyId }: { companyId: string }) {
       </div>
       {agents.error && <p role="alert" className="text-sm text-destructive">Could not load agent filters. <button type="button" className="underline" onClick={() => void agents.refetch()}>Try again</button></p>}
       {messages.isPending ? <p role="status" className="py-12 text-center text-sm text-muted-foreground">Loading commentary…</p> : messages.error ? (
-        <div role="alert" className="flex flex-col items-center gap-3 py-12"><p className="text-sm text-destructive">{messages.error.message}</p><Button variant="outline" size="sm" onClick={() => void messages.refetch()}>Try again</Button></div>
+        <div role="alert" className="flex flex-col items-center gap-3 py-12"><p className="text-sm text-destructive">{describeError(messages.error).body}</p><Button variant="outline" size="sm" onClick={() => void messages.refetch()}>Try again</Button></div>
       ) : messages.data?.items.length === 0 ? (
         <EmptyState icon={Lightbulb} message={offset > 0 ? "No messages on this page." : hasFilters ? "No messages match these filters." : "No agent commentary yet."} description={offset > 0 ? "Return to the newest messages." : hasFilters ? "Try another agent, message type, or search." : "Suggestions and complaints will appear here when agents submit them."} action={offset > 0 ? "Back to latest" : hasFilters ? "Clear filters" : undefined} onAction={offset > 0 ? () => updateFilters({ offset: "" }) : hasFilters ? clearFilters : undefined} hideActionIcon />
       ) : messages.data ? <>

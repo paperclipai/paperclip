@@ -61,9 +61,9 @@ describe("assertReproducibleGitFiles with Paperclip-managed files", () => {
     work = path.join(root, "work");
     await execFile("git", ["clone", "-q", main.bare, work]);
     await fs.appendFile(path.join(work, ".git", "info", "exclude"), "\n/.paperclip-repositories/\n");
-    prove = (checkout, _name, signal) => assertReproducibleManagedCheckout(checkout, {
+    prove = async (checkout, _name, signal) => { await assertReproducibleManagedCheckout(checkout, {
       repoUrl: projectRemote, resolveGitAuth: async () => null, signal,
-    });
+    }); };
   });
 
   afterEach(async () => {
@@ -150,13 +150,13 @@ describe("assertReproducibleGitFiles with Paperclip-managed files", () => {
 
   it("keeps a checkout whose upstream cannot be reached or authenticated", async () => {
     await managedCheckout();
-    prove = (checkout, _name, signal) => assertReproducibleManagedCheckout(checkout, {
+    prove = async (checkout, _name, signal) => { await assertReproducibleManagedCheckout(checkout, {
       repoUrl: path.join(root, "missing.git"), resolveGitAuth: async () => null, signal,
-    });
+    }); };
     await expectRejected("managed_checkout_upstream_unavailable");
-    prove = (checkout, _name, signal) => assertReproducibleManagedCheckout(checkout, {
+    prove = async (checkout, _name, signal) => { await assertReproducibleManagedCheckout(checkout, {
       repoUrl: projectRemote, resolveGitAuth: async () => { throw new Error("credentials refused"); }, signal,
-    });
+    }); };
     await expectRejected("managed_checkout_upstream_unavailable");
   });
 
