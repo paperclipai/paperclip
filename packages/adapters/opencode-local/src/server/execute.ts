@@ -4,7 +4,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { inferOpenAiCompatibleBiller, type AdapterExecutionContext, type AdapterExecutionResult } from "@paperclipai/adapter-utils";
+import { type AdapterExecutionContext, type AdapterExecutionResult } from "@paperclipai/adapter-utils";
 import {
   adapterExecutionTargetIsRemote,
   adapterExecutionTargetRemoteCwd,
@@ -61,7 +61,7 @@ import {
   requireOpenCodeModelId,
 } from "./models.js";
 import { removeMaintainerOnlySkillSymlinks } from "@paperclipai/adapter-utils/server-utils";
-import { apiKeyBillingType } from "@paperclipai/adapter-utils/api-billing-type";
+import { resolveOpenCodeAccounting } from "./billing.js";
 import { prepareOpenCodeRuntimeConfig, prepareManagedOpenCodeRemoteHomes } from "./runtime-config.js";
 import { SANDBOX_INSTALL_COMMAND } from "../index.js";
 import { resolveOpenCodeSkillsHome } from "./skills.js";
@@ -75,17 +75,6 @@ function firstNonEmptyLine(text: string): string {
       .map((line) => line.trim())
       .find(Boolean) ?? ""
   );
-}
-
-function parseModelProvider(model: string | null): string | null {
-  if (!model) return null;
-  const trimmed = model.trim();
-  if (!trimmed.includes("/")) return null;
-  return trimmed.slice(0, trimmed.indexOf("/")).trim() || null;
-}
-
-function resolveOpenCodeBiller(env: Record<string, string>, provider: string | null): string {
-  return provider === "openai" ? inferOpenAiCompatibleBiller(env, "openai") ?? "unknown" : provider ?? "unknown";
 }
 
 const REMOTE_OPENCODE_MODELS_PROBE_DEFAULT_TIMEOUT_SEC = 20;
@@ -665,10 +654,9 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       const accountingLog = createUsageCheckpointLog(onLog, ctx.onUsage ?? (async () => {}), stdout => {
         hasAccounting = true;
         const parsed = consumeAccounting(stdout);
-        const provider = parseModelProvider(model || null);
-        return { usage: parsed.usageReported ? parsed.usage : undefined, costUsd: parsed.costUsd,
-          costStatus: parsed.usageComplete || parsed.costUsd != null ? undefined : "unpriced",
-          usageBasis: "per_run", provider, biller: resolveOpenCodeBiller(accountingEnv, provider), billingType: apiKeyBillingType(provider, accountingEnv), model, complete: false };
+        return { usage: parsed.usageReported ? parsed.usage : undefined,
+          ...resolveOpenCodeAccounting(config.managedAiRouting, accountingEnv, model || null, parsed.costUsd),
+          usageBasis: "per_run", complete: false };
       });
       const proc = await runAdapterExecutionTargetProcess(runId, runtimeExecutionTarget, command, args, {
         onProcessStopped: providerStop.beginInvocation(),
@@ -692,7 +680,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       await accountingLog.flush();
       const retainedAccounting = consumeAccounting("");
       await accountingLog.flush({ complete: proc.exitCode === 0 && !proc.timedOut && !proc.signal
-        && (retainedAccounting.usageComplete || retainedAccounting.costUsd != null) });
+        && (retainedAccounting.usageComplete || (!config.managedAiRouting && retainedAccounting.costUsd != null)) });
       // Display output is capped by the process transport. Keep accounting
       // from the full stream, including when no checkpoint callback is installed.
       const parsed = parseOpenCodeJsonl(proc.stdout);
@@ -722,12 +710,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
           usageComplete: false,
           usage: attempt.parsed.usageReported ? attempt.parsed.usage : undefined,
           usageBasis: "per_run",
-          provider: parseModelProvider(model || null),
-          biller: resolveOpenCodeBiller(accountingEnv, parseModelProvider(model || null)),
-          model,
-          billingType: apiKeyBillingType(parseModelProvider(model || null), accountingEnv),
-          costUsd: attempt.parsed.costUsd,
-          costStatus: attempt.parsed.usageComplete || attempt.parsed.costUsd != null ? undefined : "unpriced",
+          ...resolveOpenCodeAccounting(config.managedAiRouting, accountingEnv, model || null, attempt.parsed.costUsd),
           // A provider or output-observation timeout can arrive before the
           // configured execution deadline. The boolean does not prove which
           // timer fired, and provider stderr is not safe exception text.
@@ -770,7 +753,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         signal: attempt.proc.signal,
         timedOut: false,
         usageComplete: attempt.proc.exitCode === 0 && !attempt.proc.signal
-          && (attempt.parsed.usageComplete || attempt.parsed.costUsd != null),
+          && (attempt.parsed.usageComplete || (!config.managedAiRouting && attempt.parsed.costUsd != null)),
         usageBasis: "per_run",
         errorMessage: (synthesizedExitCode ?? 0) === 0 ? null : fallbackErrorMessage,
         // Forward the transport-level error code from the run-disposition seam.
@@ -781,12 +764,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         sessionId: resolvedSessionId,
         sessionParams: resolvedSessionParams,
         sessionDisplayId: resolvedSessionId,
-        provider: parseModelProvider(modelId),
-        biller: resolveOpenCodeBiller(accountingEnv, parseModelProvider(modelId)),
-        model: modelId,
-        billingType: apiKeyBillingType(parseModelProvider(modelId), accountingEnv),
-        costUsd: attempt.parsed.costUsd,
-        costStatus: attempt.parsed.usageComplete || attempt.parsed.costUsd != null ? undefined : "unpriced",
+        ...resolveOpenCodeAccounting(config.managedAiRouting, accountingEnv, modelId, attempt.parsed.costUsd),
         resultJson: {
           adapterExecutionTimeout,
           stdout: attempt.proc.stdout,

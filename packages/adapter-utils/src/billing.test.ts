@@ -45,3 +45,13 @@ describe("managed Responses routing", () => {
     expect(resolveManagedOpenAiBilling(undefined)).toBeUndefined();
   });
 });
+
+
+describe("managed direct OpenAI API billing", () => {
+  it("uses the trusted direct endpoint for Codex and OpenCode billing, without ambient credentials", () => {
+    expect(resolveManagedOpenAiBilling({ kind: "gateway", protocol: "responses", auth: "bearer", baseUrl: "https://api.openai.com/v1" })).toEqual({ provider: "openai", biller: "openai", billingType: "api" });
+  });
+  it.each(["https://proxy.example/v1", "https://api.openai.com.attacker.test/v1", "http://api.openai.com/v1", "invalid"])("does not assign direct prices to %s", baseUrl => {
+    expect(resolveManagedOpenAiBilling({ kind: "gateway", auth: "bearer", baseUrl })).toMatchObject({ biller: "unknown", billingType: "api" });
+  });
+});

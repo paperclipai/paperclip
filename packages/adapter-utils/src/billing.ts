@@ -33,9 +33,12 @@ export function inferOpenAiCompatibleBiller(
  * no-auth endpoints. Absence of OPENAI_API_KEY never makes them ChatGPT plans. */
 export function resolveManagedOpenAiBilling(routing: unknown) {
   if (!routing || typeof routing !== "object") return undefined;
+  const route = routing as { kind?: unknown; baseUrl?: unknown };
+  const baseUrl = typeof route.baseUrl === "string" ? route.baseUrl : "invalid";
   return {
     provider: "openai",
-    biller: (routing as { kind?: unknown }).kind === "openrouter" ? "openrouter" : "unknown",
+    biller: route.kind === "openrouter" ? "openrouter"
+      : inferOpenAiCompatibleBiller({ OPENAI_BASE_URL: baseUrl }, "openai") ?? "unknown",
     billingType: "api" as const,
   };
 }
