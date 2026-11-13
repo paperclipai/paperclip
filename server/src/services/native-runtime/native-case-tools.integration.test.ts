@@ -154,7 +154,16 @@ describe("native case tools through authenticated production routes", () => {
     expect(created).toMatchObject({ ok: true, status: 201, data: { name: input.name } });
     expect(created.data).not.toHaveProperty("prompt");
     expect(await f.call("create_workflow", input)).toEqual(created);
-    expect(await f.call("list_workflows")).toMatchObject({ ok: true, data: [{ id: created.data.id, name: input.name }] });
+    const listed = await f.call("list_workflows");
+    expect(listed).toMatchObject({ ok: true, data: [{ id: created.data.id, name: input.name }] });
+    // The runner reads `{ ok, operationId }` as a semantic envelope for this
+    // exact tool and call. A REST route there makes the runner reject the
+    // result, so the agent never receives it (chat-eval cohort 13).
+    for (const [result, route] of [[created, "POST /api/companies/{companyId}/workflows"],
+      [listed, "GET /api/companies/{companyId}/workflows"]] as const) {
+      expect(result).not.toHaveProperty("operationId");
+      expect(result).toMatchObject({ apiOperationId: route });
+    }
     let offsetBytes = 0, text = "", snapshot: string | undefined;
     for (let i = 0; ; i++) {
       expect(i).toBeLessThan(20);
@@ -162,6 +171,8 @@ describe("native case tools through authenticated production routes", () => {
         ok: boolean; data: string; snapshot: string; responseText: { nextOffsetBytes: number | null };
       };
       expect(page.ok).toBe(true);
+      expect(page).toMatchObject({ apiOperationId: "GET /api/workflows/{id}" });
+      expect(page).not.toHaveProperty("operationId");
       expect(page.snapshot).toMatch(/^[a-f0-9]{64}$/);
       snapshot ??= page.snapshot;
       expect(page.snapshot).toBe(snapshot);
@@ -175,7 +186,9 @@ describe("native case tools through authenticated production routes", () => {
       workflowId: created.data.id, kickoff: { toAgentId: f.agentId, phase: "custom phase", instructions: "Read workflow" } }) as { taskId: string; caseId: string };
     expect((await documentService(server.db).getIssueDocumentByKey(receipt.taskId, "workflow"))?.body).toBe(prompt);
     await expect(f.call("read_workflow", { workflowId: created.data.id, responseText: { offsetBytes: 8192 } })).rejects.toThrow("Invalid tool input for read_workflow: A nonzero responseText.offsetBytes continues an earlier read: also send the snapshot it returned");
-    expect(await f.call("update_workflow", { workflowId: created.data.id, idempotencyKey: "workflow-edit", prompt: prompt.replaceAll("Reusable", "Adjusted") })).toMatchObject({ ok: true });
+    const updated = await f.call("update_workflow", { workflowId: created.data.id, idempotencyKey: "workflow-edit", prompt: prompt.replaceAll("Reusable", "Adjusted") });
+    expect(updated).toMatchObject({ ok: true, apiOperationId: "PATCH /api/workflows/{id}" });
+    expect(updated).not.toHaveProperty("operationId");
     expect(await f.call("read_workflow", { workflowId: created.data.id, snapshot, responseText: { offsetBytes: 8192 } })).toMatchObject({ ok: false, status: 409 });
     const restarted = await f.call("read_workflow", { workflowId: created.data.id, responseText: { limitBytes: 4 } }) as { ok: boolean; data: string; snapshot: string };
     expect(restarted.ok).toBe(true);

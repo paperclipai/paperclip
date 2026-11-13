@@ -38,9 +38,16 @@ export async function executeNativeWorkflowTool(input: {
     ...(input.tool === "read_workflow" ? { responseText: responseText ?? { offsetBytes: 0 } } : {}),
   };
   const key = idempotencyKey ?? createHash("sha256").update(JSON.stringify(request)).digest("hex");
-  const result = await input.callApi(`workflow-tool:${input.tool}:${key}`, request);
-  if (input.tool !== "read_workflow" || !result || typeof result !== "object") return result;
-  const etag = "etag" in result && typeof result.etag === "string" ? result.etag : "";
+  const raw = await input.callApi(`workflow-tool:${input.tool}:${key}`, request);
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return raw;
+  // Name the REST route apiOperationId, as every other API-backed tool does.
+  // The runner reads `{ ok, operationId }` as a semantic result envelope that
+  // must name this tool and call. A REST route there is a mismatch, so the
+  // result is rejected and never reaches the agent.
+  const { operationId, ...response } = raw as Record<string, unknown>;
+  const result = { ...response, apiOperationId: operationId };
+  if (input.tool !== "read_workflow") return result;
+  const etag = typeof result.etag === "string" ? result.etag : "";
   const snapshot = /^(?:W\/)?"([a-f0-9]{64})"$/.exec(etag)?.[1];
   return { ...result, ...(snapshot ? { snapshot } : {}), guidance: "Concatenate data JSON text pages using read_workflow with the same workflowId, returned snapshot, and responseText.offsetBytes=responseText.nextOffsetBytes until null. A 409 conflict requires restarting at offset zero without snapshot. Adoption captures the latest prompt at handoff acceptance." };
 }

@@ -27,8 +27,8 @@ use crate::durable::{
 };
 use crate::provider_bridge::{
     authorized_tool_catalog_digest, semantic_value_digest, AuthorizedToolSet, DurableReplayFilter,
-    PendingToolCall, ProviderBridgeError, ProviderToolBridge, ToolResult, MAX_PENDING_CALLS,
-    TOOL_SET_SCHEMA,
+    PendingToolCall, ProviderBridgeError, ProviderToolBridge, ToolResult, EXPIRED_RESULT_CODE,
+    MAX_PENDING_CALLS, TOOL_SET_SCHEMA, UNDELIVERABLE_RESULT_CODE,
 };
 use crate::provider_events::{
     codex_context_usage, normalize_codex_notification, normalize_codex_notification_in,
@@ -3443,7 +3443,9 @@ impl CodexCommandExecutor {
         })
     }
 
-    fn attach_run(&mut self, payload: &Value) -> Result<(), DurableRunnerError> {
+    /// Returns the calls a closed turn left pending that this attachment
+    /// settled as expired.
+    fn attach_run(&mut self, payload: &Value) -> Result<Vec<ToolResult>, DurableRunnerError> {
         self.retain_completed_accounting_tail()?;
         let mut next_state = self
             .state
@@ -3473,6 +3475,23 @@ impl CodexCommandExecutor {
         if next_state.ambiguous_turn_start_pending {
             blockers.push("durable_ambiguous_turn_start");
         }
+        // A call left pending by a closed provider turn can never be answered:
+        // the provider stopped waiting when its turn ended, and the new run's
+        // controller never delivers the old run's results. Record it as an
+        // expired failure with an unknown outcome so the session continues.
+        // A call the live provider still waits on keeps blocking attachment.
+        let expired_tool_calls = if blockers.is_empty() {
+            next_state
+                .tool_bridge
+                .expire_closed_turn_calls()
+                .map_err(|error| {
+                    DurableRunnerError::invalid(format!(
+                        "run.attach could not settle tool calls left by a closed turn: {error}"
+                    ))
+                })?
+        } else {
+            Vec::new()
+        };
         if next_state.tool_bridge.pending_calls().next().is_some() {
             blockers.push("durable_pending_tool_calls");
         }
@@ -3669,7 +3688,7 @@ impl CodexCommandExecutor {
         };
         self.persist_state(&next_state)?;
         self.state = Some(next_state);
-        Ok(())
+        Ok(expired_tool_calls)
     }
 
     fn open_session(&mut self) -> Result<CommandExecution, DurableRunnerError> {
@@ -5002,15 +5021,34 @@ impl CodexCommandExecutor {
             .pending_calls()
             .find(|call| call.call_id == result.call_id)
             .map(|call| (call.operation_id.clone(), call.input.clone()));
-        next_state
-            .tool_bridge
-            .apply_result(result.clone())
-            .map_err(|error| {
-                DurableRunnerError::invalid(format!(
+        // A recorded result that this bridge rejects must still settle its
+        // pending call. Otherwise the provider waits until its own client
+        // times out, and the call blocks every later turn and run.
+        let mut undeliverable = None;
+        let result = match next_state.tool_bridge.apply_result(result.clone()) {
+            Ok(_) => result,
+            Err(error) => {
+                let rejected = DurableRunnerError::invalid(format!(
                     "semantic tool result was rejected for call {} operation {}: {error}",
                     result.call_id, result.operation_id
-                ))
-            })?;
+                ));
+                if was_completed {
+                    return Err(rejected);
+                }
+                match next_state.tool_bridge.settle_undeliverable_result(&result) {
+                    Ok(Some(settlement)) => {
+                        undeliverable = Some(json!({
+                            "code": UNDELIVERABLE_RESULT_CODE, "severity": "warning",
+                            "callId": result.call_id, "operationId": settlement.operation_id,
+                            "reason": error.to_string(),
+                            "resultDigest": semantic_value_digest(&result.result),
+                        }));
+                        settlement
+                    }
+                    _ => return Err(rejected),
+                }
+            }
+        };
         if was_completed {
             return Ok(CommandExecution {
                 result: json!({ "status": "duplicate", "callId": result.call_id }),
@@ -5041,11 +5079,24 @@ impl CodexCommandExecutor {
         next_state.push_event(semantic_result_event(&identity, &result))?;
         self.persist_state(&next_state)?;
         self.state = Some(next_state);
+        let diagnostics = undeliverable
+            .map(|diagnostic| {
+                (
+                    "harness.diagnostic".to_owned(),
+                    EventPriority::P0,
+                    diagnostic,
+                )
+            })
+            .into_iter()
+            .collect::<Vec<_>>();
         if delivery_detached {
-            return Ok(CommandExecution::result(json!({
-                "status": "settled_after_turn",
-                "callId": result.call_id,
-            })));
+            return Ok(CommandExecution {
+                result: json!({
+                    "status": "settled_after_turn",
+                    "callId": result.call_id,
+                }),
+                events: diagnostics,
+            });
         }
         let provider = self.ensure_provider()?;
         if terminal_tool_authoritative {
@@ -5062,10 +5113,13 @@ impl CodexCommandExecutor {
                 "failed to return semantic tool result to Codex: {error}"
             ))
         })?;
-        Ok(CommandExecution::result(json!({
-            "status": "delivered",
-            "callId": result.call_id,
-        })))
+        Ok(CommandExecution {
+            result: json!({
+                "status": "delivered",
+                "callId": result.call_id,
+            }),
+            events: diagnostics,
+        })
     }
 
     fn stop_owned_provider(&mut self) -> Result<(), DurableRunnerError> {
@@ -5915,12 +5969,26 @@ impl CommandExecutor for CodexCommandExecutor {
             match command.command_type.as_str() {
                 "run.prepare" => self.prepare(&command.payload),
                 "run.attach" => {
-                    if self.state.is_none() && command.payload.get("provider").is_some() {
-                        self.prepare(&command.payload)?;
-                    } else {
-                        self.attach_run(&command.payload)?;
-                    }
+                    let expired =
+                        if self.state.is_none() && command.payload.get("provider").is_some() {
+                            self.prepare(&command.payload)?;
+                            Vec::new()
+                        } else {
+                            self.attach_run(&command.payload)?
+                        };
                     let mut execution = self.open_session()?;
+                    if !expired.is_empty() {
+                        execution.events.push((
+                            "harness.diagnostic".to_owned(),
+                            EventPriority::P0,
+                            json!({
+                                "code": EXPIRED_RESULT_CODE, "severity": "warning",
+                                "calls": expired.iter().map(|call| json!({
+                                    "callId": call.call_id, "operationId": call.operation_id,
+                                })).collect::<Vec<_>>(),
+                            }),
+                        ));
+                    }
                     let provider = self
                         .state
                         .as_ref()
