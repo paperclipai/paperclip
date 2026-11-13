@@ -33,10 +33,14 @@ import {
   RUNNER_IMAGE_SCHEMA,
   canonicalJson,
   checkProviderPackArchives,
-  checkRunnerImageLayout,
+  checkRunnerImageLayout as checkLayout,
   parseLayoutArguments,
   writeRunnerImageManifest,
 } from "../../../scripts/runner-image-layout.mjs";
+
+/** The fixture is a full image, so most tests check it as one. */
+const checkRunnerImageLayout = (root: string, options: Omit<Parameters<typeof checkLayout>[1], "variant"> = {}) =>
+  checkLayout(root, { variant: "full", ...options });
 
 /**
  * The layout contract of the Runner image. Consumers copy the documented
@@ -182,6 +186,7 @@ describe("Runner image layout contract", () => {
       platform: { os: "linux", architecture: "amd64" },
       libc: { family: "glibc", baseline: "debian-bookworm", buildVersion: "2.36", runnerdRequires: "2.34" },
       paths: RUNNER_IMAGE_PATHS,
+      fullImageOnly: ["providerPackArchiveReceipt", "providerPackArchives"],
     });
     // One daemon, at the root for sandbox images and inside the build output
     // for a build that vendors the Runner.
@@ -209,6 +214,7 @@ describe("Runner image layout contract", () => {
     ["a short inputs digest", (m) => { m.inputsDigest.digest = "abc"; }, /inputsDigest must be/],
     ["another build-inputs schema", (m) => { m.buildInputsDigest.schema = "paperclip.runner-build-inputs.v1"; }, /buildInputsDigest must be/],
     ["an abbreviated source revision", (m) => { m.sourceRevision = "abc1234"; }, /sourceRevision/],
+    ["transport paths claimed for both variants", (m) => { m.fullImageOnly = []; }, /fullImageOnly does not name the paths only the full image has/],
     ["no word on whether it is a publication build", (m) => { delete m.publication; }, /publication must say/],
     ["a publication build without a source revision", (m) => { m.sourceRevision = null; }, /publication build must have a source revision/],
     ["an unsupported platform", (m) => { m.platform = { os: "linux", architecture: "riscv64" }; }, /platform must be/],
@@ -375,6 +381,59 @@ describe("Runner image layout contract", () => {
       expect(() => writeRunnerImageManifest({
         outRoot: path.join(root, "out"), workspaceRoot: path.join(root, "workspace"), identity, platform, libc, sourceRevision: null, publication: true,
       })).toThrow(/publication build needs a source revision/);
+    });
+  });
+
+  describe("variants", () => {
+    /** A slim tree: the full fixture without its transport archives and receipt. */
+    function slim(tree: string) {
+      rmSync(path.join(tree, "provider-pack.archives"), { recursive: true });
+      rmSync(path.join(tree, "provider-pack.archive.json"));
+      return tree;
+    }
+
+    it("accepts a slim tree only as slim, and a full tree only as full", () => {
+      expect(checkLayout(out, { variant: "full" })).toEqual([]);
+      expect(checkLayout(out, { variant: "slim" })).toEqual([
+        "provider-pack.archive.json (providerPackArchiveReceipt) is in a slim image; only the full image has the transport archives",
+        "provider-pack.archives (providerPackArchives) is in a slim image; only the full image has the transport archives",
+      ]);
+      slim(out);
+      expect(checkLayout(out, { variant: "slim", expectInputsDigest: INPUTS, expectSourceRevision: REVISION, expectArchitecture: "amd64" })).toEqual([]);
+      expect(checkLayout(out, { variant: "full" })).toEqual(expect.arrayContaining([
+        "documented path provider-pack.archive.json (providerPackArchiveReceipt) is missing",
+        "documented path provider-pack.archives (providerPackArchives) is missing",
+      ]));
+    });
+
+    it("refuses a slim tree that holds only one of the two transport paths", () => {
+      rmSync(path.join(out, "provider-pack.archive.json"));
+      expect(checkLayout(out, { variant: "slim" }).join("\n")).toMatch(/provider-pack\.archives \(providerPackArchives\) is in a slim image/);
+    });
+
+    it("still checks everything else in a slim tree", () => {
+      appendFileSync(path.join(slim(out), "provider-pack/dist/cli/opencode-app-server-proxy.js"), "// later edit\n");
+      expect(checkLayout(out, { variant: "slim" }).join("\n")).toMatch(/the provider pack dist tree does not match its tree digest/);
+    });
+
+    it("has no default: the variant is always given", () => {
+      // @ts-expect-error the variant is required
+      expect(() => checkLayout(out, {})).toThrow(/must be told the variant: slim or full/);
+      expect(() => checkLayout(out, { variant: "both" })).toThrow(/must be told the variant/);
+      const check = (...args: string[]) => spawnSync(process.execPath, [layoutScript, "check", out, ...args], { encoding: "utf8" });
+      expect(check().stderr).toMatch(/check needs --variant slim or --variant full/);
+      expect(check("--variant", "both").stderr).toMatch(/check needs --variant slim or --variant full/);
+      expect(check("--variant", "slim").stderr).toMatch(/is in a slim image/);
+      const passed = spawnSync(process.execPath, [layoutScript, "check", slim(out), "--variant", "slim"], { encoding: "utf8" });
+      expect(passed.status).toBe(0);
+      expect(passed.stdout).toMatch(/A slim image has no transport archives/);
+    });
+
+    it("writes one runner-image.json for both, which names the paths only the full image has", () => {
+      const manifest = manifestOf(out);
+      expect(manifest.fullImageOnly.map((name: keyof typeof RUNNER_IMAGE_PATHS) => RUNNER_IMAGE_PATHS[name]))
+        .toEqual(["provider-pack.archive.json", "provider-pack.archives"]);
+      expect(manifest.paths).toEqual(RUNNER_IMAGE_PATHS);
     });
   });
 
@@ -555,7 +614,7 @@ describe("Runner image layout contract", () => {
     });
 
     it("is part of the check command, which says which tar extracted the archives", async () => {
-      const check = (tree: string) => spawnSync(process.execPath, [layoutScript, "check", tree], { encoding: "utf8" });
+      const check = (tree: string) => spawnSync(process.execPath, [layoutScript, "check", tree, "--variant", "full"], { encoding: "utf8" });
       const passed = check(out);
       expect(passed.status).toBe(0);
       expect(passed.stdout).toMatch(/The transport archives were extracted with (GNU tar, as a sandbox extracts them,|bsdtar) and match the provider pack/);
@@ -567,7 +626,7 @@ describe("Runner image layout contract", () => {
       expect(failed.stderr).toMatch(/transport archive overlay\.tar\.zst is not a zstd archive/);
       expect(failed.stdout).not.toMatch(/passed/);
       // A tree without a pack has nothing to extract, and the command says so.
-      const unstamped = spawnSync(process.execPath, [layoutScript, "check", await image({ stamped: false }), "--allow-unstamped"], { encoding: "utf8" });
+      const unstamped = spawnSync(process.execPath, [layoutScript, "check", await image({ stamped: false }), "--variant", "full", "--allow-unstamped"], { encoding: "utf8" });
       expect(unstamped.status).toBe(0);
       expect(unstamped.stdout).toMatch(/no provider pack, so there are no transport archives to extract/);
     });
@@ -634,7 +693,7 @@ describe("Runner image layout contract", () => {
   });
 
   describe("command line", () => {
-    const check = (...args: string[]) => spawnSync(process.execPath, [layoutScript, "check", ...args], { encoding: "utf8" });
+    const check = (...args: string[]) => spawnSync(process.execPath, [layoutScript, "check", ...args, "--variant", "full"], { encoding: "utf8" });
 
     it("passes for a valid tree and fails for a wrong expectation", () => {
       expect(check(out, "--expect-inputs-digest", INPUTS, "--expect-source-revision", REVISION, "--expect-architecture", "amd64").status).toBe(0);
@@ -675,6 +734,9 @@ describe("Runner image layout contract", () => {
       expect(() => parseLayoutArguments("write", ["--out", "o", "--source-revision", ""])).toThrow(/--source-revision needs a value/);
       expect(parseLayoutArguments("write", ["--out", "o", "--publication"]).flags).toEqual({ out: "o", publication: true });
       expect(() => parseLayoutArguments("check", ["tree", "--publication"])).toThrow(/check does not take --publication/);
+      // Another script can give the same parser its own flags.
+      expect(parseLayoutArguments("unpack", ["a.tar", "--out", "d"], { out: "value" })).toEqual({ positional: ["a.tar"], flags: { out: "d" } });
+      expect(() => parseLayoutArguments("unpack", ["--variant", "slim"], { out: "value" })).toThrow(/unpack does not take --variant/);
       expect(() => parseLayoutArguments("write", ["--expect-architecture", "arm64"])).toThrow(/write does not take/);
     });
   });

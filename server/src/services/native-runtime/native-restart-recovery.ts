@@ -103,6 +103,7 @@ export type NativeRestartRecoveryClaim =
       /** Discovery evidence only; executor revalidates the encrypted header. */
       stagedAttachment?: Pick<NativeStagedAttachmentRecovery, "sourceIdentity" | "targetIdentity" | "templateDigest">;
       exitedBeforeSessionOpen?: true;
+      replaceUnansweredRunner?: true;
     }
   | {
       kind: "resume_dead_runner";
@@ -2121,6 +2122,8 @@ export async function claimNativeRestartRecoveries(input: {
           },
           ...(!pluginTask && row.coordinator.failureDetail?.runnerExitedBeforeSessionOpen === true
             ? { exitedBeforeSessionOpen: true as const } : {}),
+          ...(!pluginTask && row.coordinator.failureDetail?.adoptedRunnerUnanswered === true
+            ? { replaceUnansweredRunner: true as const } : {}),
         } satisfies NativeRestartRecoveryClaim;
       }
       if (claimKind === "reattach_existing_runner") {

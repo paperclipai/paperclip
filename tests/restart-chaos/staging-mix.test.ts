@@ -4,7 +4,7 @@ import { parseCommand } from "./config.js";
 import {
   agentRunCaps, assignAdapters, childLine, childNonce, doneMarker, expectedRoundHash, followUpMarker, gradeStagingMix, holdsRetry, planArrivals,
   arrivalEndMs, followUpRequestId, planStagingMixWave, plannedTaskCount, posixCksum, retryDue, roundCommand, ROUND_SECONDS, setOverlapProbe, stagingMixDescription,
-  stagingMixStep, SUBTASK_ROUNDS, verifyLedger, type StagingMixTask,
+  stagingMixBudgetMs, stagingMixStep, SUBTASK_ROUNDS, verifyLedger, type StagingMixTask,
 } from "./staging-mix.js";
 import { descendantsOf, parseMemInfo, parsePs, parseVmStat, StagingMixRun, stagingMixSeedOptions, type ResourceSample } from "./staging-mix-run.js";
 import type { OracleArtifacts, TaskRecord, TaskSample } from "./types.js";
@@ -301,6 +301,43 @@ describe("staging-mix board step", () => {
     expect(keys[0]).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-5[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
     expect(new Set(keys).size).toBe(1);
     expect(keys[0]).not.toBe(followUpRequestId("i2", "n1"));
+  });
+
+  it("with an after-end delay, retries a failed post with the same key, and grades every post as answered and served", async () => {
+    const previous = { ...process.env };
+    Object.assign(process.env, { RESTART_CHAOS_MIX_FOLLOW_UP_AFTER_END_MS: "300000-300000", RESTART_CHAOS_MIX_FOLLOW_UP_COUNT: "1" });
+    try {
+      const ended: TaskSample = { ...running, issueStatus: "done",
+        runs: [{ ...running.runs![0]!, status: "succeeded", finishedAt: new Date(10_000).toISOString() }] };
+      const rec = record();
+      expect((await step(rec, ended, 300_000, false)).posted).toEqual([]);
+      await step(rec, ended, 310_000, false, undefined, () => { throw new Error("HTTP 502"); });
+      expect(rec.stagingMix!.afterEndFollowUps).toEqual([]);
+      expect(rec.stagingMix!.followUpErrors).toEqual(["HTTP 502"]);
+      expect((await step(rec, ended, 313_000, false)).posted.length).toBe(1);
+      expect(rec.stagingMix!.afterEndFollowUps).toEqual([{ afterRunEndAt: 10_000, at: 313_000, delayMs: 303_000, commentId: "c1" }]);
+      expect(new Set(requests.slice(-2)).size).toBe(1);
+      expect((await step(rec, ended, 320_000, false)).posted).toEqual([]);
+
+      const nonce = "cafe0002";
+      const plan = task({ followUpAfterMs: 1 });
+      const afterEndFollowUps = [{ afterRunEndAt: 10_000, at: 313_000, delayMs: 303_000, commentId: "c1" }];
+      const served = (comments: Array<{ body: string; runId: string | null; createdAt: number }>, extra: string[]) => gradeStagingMix(nonce, plan, artifacts({
+        documents: { ledger: ledgerFor(nonce, 4, extra) }, agentComments: comments.map(comment => comment.body),
+        stagingMix: { followUp: { at: 313_000, commentId: "c1", duringRun: false, inOverlap: false, error: null }, followUpErrors: [], retries: [], comments, afterEndFollowUps } }))
+        .checks.find(check => check.name === "after_end_follow_ups_served")!;
+      expect(served([{ body: doneMarker(nonce), runId: "r1", createdAt: 9_000 }], [followUpMarker(nonce)]).ok).toBe(false);
+      expect(served([{ body: doneMarker(nonce), runId: "r2", createdAt: 400_000 }], []).ok).toBe(false);
+      expect(served([{ body: doneMarker(nonce), runId: "r2", createdAt: 400_000 }], [followUpMarker(nonce)]).ok).toBe(true);
+      const never = gradeStagingMix(nonce, plan, artifacts({ documents: { ledger: ledgerFor(nonce, 4) }, agentComments: [doneMarker(nonce)],
+        stagingMix: { followUp: null, followUpErrors: ["HTTP 502"], retries: [], comments: [] } }));
+      expect(never.checks.find(check => check.name === "after_end_follow_ups_served")).toMatchObject({ ok: false, detail: "posted=0/1; unanswered=none" });
+      expect(stagingMixBudgetMs(plan) - stagingMixBudgetMs(task())).toBe(300_000 + 4 * ROUND_SECONDS * 1_000);
+    } finally {
+      for (const key of ["RESTART_CHAOS_MIX_FOLLOW_UP_AFTER_END_MS", "RESTART_CHAOS_MIX_FOLLOW_UP_COUNT"]) {
+        if (previous[key] === undefined) delete process.env[key]; else process.env[key] = previous[key];
+      }
+    }
   });
 
   it("posts the follow-up before the turn's last rounds when no overlap comes", async () => {

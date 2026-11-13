@@ -6,9 +6,9 @@ import { RUNNER_IMAGE_CONTEXT_INPUTS } from "../../../scripts/runner-image-ident
 
 /**
  * Security properties of the Runner image workflow. The build runs dependency
- * lifecycle scripts, so what the jobs may do matters more than how their
- * steps are worded: these tests pin permissions, credentials and triggers,
- * not step names or order.
+ * lifecycle scripts and the workflow publishes a signed image, so what each
+ * job may do matters more than how its steps are worded: these tests pin
+ * permissions, credentials and gating, not step names or order.
  */
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..", "..");
@@ -25,17 +25,89 @@ const permissions = (job: string) =>
 const scripts = [...workflow.matchAll(/^( +)run: (\|\n((?:\1 {2,}.*\n|\n)+)|.+\n)/gm)].map((match) => match[3] ?? match[2]);
 
 describe("Runner image workflow", () => {
-  it("grants nothing at the workflow level and only read access to contents in each job", () => {
+  const repository = "github.repository == 'paperclipai/paperclip' && github.repository_id == '1170821064'";
+  const canonical = `${repository} && github.event_name == 'push' && github.ref == 'refs/heads/master'`;
+  const jobCondition = (job: string) => /^ {4}if: (.+)$/m.exec(job)?.[1] ?? "";
+  /** The steps of a job, without the job's own header. */
+  const steps = (job: string) => job.slice(job.indexOf("\n    steps:\n")).split(/\n(?= {6}- )/).slice(1);
+  const credential = /github\.token|secrets\.|GITHUB_TOKEN|REGISTRY_PASSWORD/;
+
+  it("lets only the publish job write to the registry or sign", () => {
     expect(workflow).toMatch(/^permissions: \{\}$/m);
-    expect(Object.keys(jobs)).toEqual(["identity", "build"]);
-    for (const job of Object.values(jobs)) expect(permissions(job)).toEqual(["contents: read"]);
+    expect(Object.keys(jobs)).toEqual(["identity", "build", "publish"]);
+    expect(permissions(jobs.identity)).toEqual(["contents: read", "packages: read"]);
+    expect(permissions(jobs.build)).toEqual(["contents: read", "packages: read"]);
+    expect(permissions(jobs.publish)).toEqual(["contents: read", "packages: write", "id-token: write", "attestations: write"]);
+    for (const job of [jobs.identity, jobs.build]) {
+      expect(job).not.toMatch(/docker\/login-action|skopeo|imagetools create|actions\/attest|secrets\.|--push|push=true/);
+    }
+    expect(workflow).not.toMatch(/pull_request_target|workflow_run/);
   });
 
-  it("has no credential, no registry access and no way to publish", () => {
-    expect(workflow).not.toMatch(/github\.token|secrets\.|GITHUB_TOKEN|docker\/login-action|packages:|id-token|attestations/);
-    expect(workflow).not.toMatch(/--push|push=true|skopeo|imagetools|type=image|type=registry|cache-to|cache-from|type=gha/);
-    const triggers = workflow.slice(workflow.indexOf("\non:\n"), workflow.indexOf("\npermissions:"));
-    expect([...triggers.matchAll(/^ {2}([a-z_]+):/gm)].map((match) => match[1])).toEqual(["pull_request", "workflow_dispatch"]);
+  it("publishes, and keeps the images for publication, only for a master push in the canonical repository", () => {
+    expect(jobCondition(jobs.publish).startsWith(`${canonical} && `)).toBe(true);
+    expect(jobs.publish).toContain("    needs: [identity, build]\n");
+    expect(jobs.build).toContain(`KEEP_IMAGE: \${{ ${canonical} }}`);
+    // The one step that hands the images to the publish job is behind that switch.
+    const uploading = steps(jobs.build).filter((step) => step.includes("upload-artifact"));
+    expect(uploading).toHaveLength(1);
+    expect(uploading[0]).toMatch(/^ {8}if: env\.KEEP_IMAGE == 'true' && /m);
+    // The record is written on every event, so a pull request exercises it. It needs no credential.
+    const recording = steps(jobs.build).filter((step) => step.includes("runner-image-publish.mjs record"));
+    expect(recording).toHaveLength(1);
+    expect(recording[0]).not.toMatch(/KEEP_IMAGE/);
+    expect(recording[0]).not.toMatch(credential);
+    // A fork's own pushes run nothing; no job overrides a skipped or failed dependency.
+    expect(jobCondition(jobs.identity)).toBe(`github.event_name != 'push' || (${repository})`);
+    expect(workflow).not.toMatch(/always\(\)|!cancelled\(\)|failure\(\)|continue-on-error/);
+  });
+
+  it("keeps the build legs free of credentials and of any registry build cache", () => {
+    // No job-level token: the block before the steps holds none, in any job.
+    for (const job of Object.values(jobs)) expect(job.slice(0, job.indexOf("\n    steps:\n"))).not.toMatch(credential);
+    // The steps that build, check and smoke the image never receive one.
+    const working = steps(jobs.build).filter((step) => /docker buildx build|runner-image-layout\.mjs|pnpm |upload-artifact/.test(step));
+    expect(working.length).toBeGreaterThanOrEqual(4);
+    for (const step of working) expect(step).not.toMatch(credential);
+    // The one token the legs can see only reads packages, and only a lookup gets it.
+    for (const step of steps(jobs.build).filter((entry) => credential.test(entry))) {
+      expect(step).toContain("runner-image-publish.mjs publication-state");
+      expect(step).not.toContain("--strict");
+    }
+    expect(workflow).not.toMatch(/cache-to|cache-from|type=registry|type=gha/);
+  });
+
+  it("writes the full tag last, after a strict lookup and after both images are attested", () => {
+    // The full tag marks a complete publication, so nothing may follow it
+    // that can fail to write a tag, and no tag is written on a guess.
+    const publish = jobs.publish;
+    const order = [
+      "publication-state --inputs-digest \"$DIGEST\" --strict\n",
+      "subject-digest: ${{ steps.slim.outputs.digest }}",
+      "subject-digest: ${{ steps.full.outputs.digest }}",
+      'imagetools create -t "$IMAGE:inputs-$DIGEST-slim" "$IMAGE@$SLIM_INDEX"',
+      'imagetools create -t "$IMAGE:inputs-$DIGEST" "$IMAGE@$FULL_INDEX"',
+    ].map((text) => publish.indexOf(text));
+    expect(order.every((position) => position >= 0)).toBe(true);
+    expect([...order].sort((a, b) => a - b)).toEqual(order);
+    // The final tags are written in one place each; every other tag is a candidate.
+    expect([...workflow.matchAll(/-t "\$IMAGE:([a-z]+)-/g)].map((match) => match[1])).toEqual(["candidate", "candidate", "inputs", "inputs"]);
+    // Every step that writes a tag or signs runs only after the strict lookup allowed it.
+    const writing = steps(publish).filter((step) => /imagetools create|actions\/attest/.test(step));
+    expect(writing).toHaveLength(5);
+    for (const step of writing) expect(step).toMatch(/^ {8}if: steps\.gate\.outputs\.publish == 'true'$/m);
+    expect(publish).toContain("group: runner-image-publish-${{ needs.identity.outputs.digest }}\n      cancel-in-progress: false");
+  });
+
+  it("never resolves the lockfile on a master push, and neither builds nor publishes when it is behind", () => {
+    const resolving = steps(jobs.identity).filter((step) => step.includes("pnpm install"));
+    expect(resolving).toHaveLength(1);
+    expect(resolving[0]).toMatch(/^ {8}if: github\.event_name != 'push'$/m);
+    expect(workflow.match(/pnpm install/g)).toHaveLength(1);
+    expect(jobCondition(jobs.build).startsWith("needs.identity.outputs.lock == 'current' && ")).toBe(true);
+    expect(jobCondition(jobs.publish)).toContain("needs.identity.outputs.lock == 'current'");
+    // Pull requests and manual runs always build; only a push skips an image that exists.
+    expect(jobCondition(jobs.build)).toContain("github.event_name != 'push' || (");
   });
 
   it("pins every action by commit and keeps expressions out of shell scripts", () => {
@@ -47,13 +119,44 @@ describe("Runner image workflow", () => {
     for (const script of scripts) expect(script).not.toContain("${{");
   });
 
+  it("gives every image build one export and a time limit", () => {
+    // A command with two exports stalled on the hosted runners until the job
+    // was cancelled. One export for each command, and a limit on each step,
+    // so a stall fails in minutes.
+    const building = workflow.split(/\n(?= {6}- name: )/).filter((step) => step.includes("docker buildx build"));
+    expect(building.length).toBeGreaterThanOrEqual(4);
+    for (const step of building) {
+      expect(step).toMatch(/^ {8}timeout-minutes: \d+$/m);
+      for (const command of step.split("docker buildx build").slice(1)) expect(command.match(/--output /g) ?? []).toHaveLength(1);
+    }
+    // The trees the checks read come from the archives, not from a second export.
+    expect(workflow).toContain("node scripts/runner-image-oci.mjs unpack");
+    expect(workflow.match(/type=local/g)).toHaveLength(3);
+  });
+
+  it("passes the image build exactly two build arguments", () => {
+    // Build arguments are not part of the image identity, so a new one would
+    // change what is published under an unchanged digest.
+    const image = steps(jobs.build).filter((step) => step.includes("--target \"$target\""));
+    expect(image).toHaveLength(1);
+    expect([...image[0].matchAll(/--build-arg (\S+)/g)].map((match) => match[1])).toEqual([
+      '"PAPERCLIP_RUNNER_SOURCE_REVISION=$GITHUB_SHA"',
+      "PAPERCLIP_RUNNER_IMAGE_PUBLICATION=1",
+    ]);
+    expect(image[0]).toContain("target=runner-artifacts\n");
+    expect(image[0]).toContain('if [ "$variant" = slim ]; then target=runner-artifacts-slim; fi');
+    // No other command passes a build argument, and the identity is computed without one.
+    expect(workflow.match(/--build-arg /g)).toHaveLength(2);
+    expect(workflow).not.toMatch(/build-args:|BUILDX_BUILD_ARG|--build-arg-file/);
+  });
+
   it("runs for a pull request that changes any input of the image identity", () => {
     const paths = [...workflow.matchAll(/^ {6}- (\S+)$/gm)].map((match) => match[1]);
     const covered = (file: string) => paths.some((pattern) => pattern === file
       || (pattern.endsWith("/**") && (file === pattern.slice(0, -3) || file.startsWith(pattern.slice(0, -2)))));
     // .dockerignore is not in the identity, but it decides which files the build receives.
     for (const input of ["Dockerfile", ".dockerignore", ".github/workflows/runner-image.yml", "docker/runner-image/Dockerfile.smoke",
-      ...RUNNER_IMAGE_CONTEXT_INPUTS]) {
+      "scripts/runner-image-oci.mjs", "scripts/runner-image-publish.mjs", "scripts/standard-image-contract.mjs", ...RUNNER_IMAGE_CONTEXT_INPUTS]) {
       expect(covered(input), input).toBe(true);
     }
   });
