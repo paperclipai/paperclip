@@ -41,7 +41,7 @@ endpoint and branches:
 | --- | --- |
 | Nothing needed | Discovered actions, straight to review. |
 | Needs authorization, and publishes discoverable OAuth metadata | **Sign in to continue** — a browser sign-in at the provider. |
-| Needs authorization, but no discoverable sign-in | A prompt to add the key or headers its docs list, under **Advanced authentication**. |
+| Needs authorization, but no discoverable sign-in | A prompt to add the key or headers its docs list, with the sign-in options open below it. |
 | Needs a client you registered yourself | A prompt for a client ID and secret. The draft connection is kept — you don't start over. |
 | Not a valid address / private network / unreachable | The specific problem and which field to change. |
 
@@ -87,15 +87,23 @@ connection. Signing in alone does not enable that app setting. Paperclip shows
 this as a setup error and keeps the connection available for retry. See
 [Slack's MCP app requirements](https://docs.slack.dev/ai/slack-mcp-server/#app-identity).
 
-### Advanced authentication
+### Choosing how the server signs in
 
-Collapsed by default. Open it when the server's docs are specific:
+The connect screen states the sign-in choice in one line, **Paperclip asks the
+server how to sign in.**, with a **Change** link, the same shape as the access
+line below it. **Change** lists five options, each with its fields directly
+beneath it when selected:
 
-- **No sign-in needed** — the server is open to anyone with the address.
+- **Let Paperclip check** — the default; Paperclip probes and walks you through it.
 - **Key or token** — sent as an `Authorization` header.
+- **Browser sign-in** — you sign in at the provider. **Use your own client ID**
+  reveals a client ID and secret, for providers that require you to register
+  Paperclip first.
 - **Custom headers** — for servers that name their own headers.
-- **Browser sign-in** — optionally with a client ID and secret you registered
-  yourself, for providers that require preregistration.
+- **No sign-in needed** — the server is open to anyone with the address.
+
+**Done** collapses the list back to a one-line summary of the choice. It stays
+open while the chosen option still needs a value.
 
 Every value you enter becomes a Paperclip secret. Values are write-only: they
 never appear in stored config JSON, logs, activity details, API responses after
@@ -130,7 +138,7 @@ Recorded here for security review and diagnostics. In preference order:
    advertises a `registration_endpoint`. Paperclip registers a public client
    (`token_endpoint_auth_method: none`, `application_type: web`, PKCE S256).
 4. **Manual preregistered client.** The client ID and secret you paste under
-   **Advanced authentication → Browser sign-in**.
+   **Change → Browser sign-in → Use your own client ID**.
 
 A generic connection may register (tiers 2 and 3) **only after** validated
 protected-resource and authorization-server discovery actually produced a

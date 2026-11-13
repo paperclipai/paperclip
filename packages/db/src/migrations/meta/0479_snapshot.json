@@ -1,5 +1,5 @@
 {
-  "id": "b38d887e-156a-45a7-8124-29101fbd2e54",
+  "id": "f5f852bd-0568-4b2d-bc35-0dac5d9c8c5b",
   "prevId": "349cdd89-db04-4340-a5d3-3b877bf7227d",
   "version": "7",
   "dialect": "postgresql",
@@ -35261,6 +35261,12 @@
           "notNull": true,
           "default": 1
         },
+        "native_source_cursors": {
+          "name": "native_source_cursors",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": false
+        },
         "native_phase": {
           "name": "native_phase",
           "type": "text",
@@ -43006,13 +43012,6 @@
           "primaryKey": false,
           "notNull": false
         },
-        "conversation_default": {
-          "name": "conversation_default",
-          "type": "boolean",
-          "primaryKey": false,
-          "notNull": true,
-          "default": true
-        },
         "conversation_state": {
           "name": "conversation_state",
           "type": "text",
@@ -43442,7 +43441,6 @@
             }
           ],
           "isUnique": true,
-          "where": "\"issues\".\"conversation_default\" = true",
           "concurrently": false,
           "method": "btree",
           "with": {}

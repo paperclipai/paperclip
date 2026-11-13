@@ -7,6 +7,15 @@ export const CONFIGURED_ENVIRONMENT_KEYS = "PAPERCLIP_CONFIGURED_ENV_KEYS";
 /** Names, never values, of configured entries the controller resolved from secrets. */
 export const SECRET_ENVIRONMENT_KEYS = "PAPERCLIP_SECRET_ENV_KEYS";
 
+/** Certificate-trust variable names preserved across environment policies.
+ * Sandboxes inject these at execution time, after controller-side policy
+ * construction, so policies allow the names even when no value exists yet.
+ * Values stay in the process environment, never in argv or configuration. */
+export const CERTIFICATE_ENVIRONMENT_KEYS = [
+  "SSL_CERT_FILE", "SSL_CERT_DIR", "GIT_SSL_CAINFO", "NODE_EXTRA_CA_CERTS",
+  "DENO_CERT", "REQUESTS_CA_BUNDLE", "CURL_CA_BUNDLE",
+] as const;
+
 export const GENERATED_RUNTIME_ENVIRONMENT_KEYS: ReadonlySet<string> = new Set([
   CONFIGURED_ENVIRONMENT_KEYS,
   SECRET_ENVIRONMENT_KEYS,

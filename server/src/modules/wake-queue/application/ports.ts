@@ -125,6 +125,8 @@ export interface WakeQueueTransaction {
     finishingRunId: string;
     finishingRunAgentId: string;
     queuedCommentIds: string[];
+    /** A resolved card still needs its live message edge for chat authorization. */
+    retainDeliveredCommentBindings?: boolean;
   }): Promise<{
     liveNonSelfCommentIds: string[];
     containedSelfAuthoredComment: boolean;
