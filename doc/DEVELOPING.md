@@ -206,6 +206,15 @@ gate's successful outputs, including its AWS admission. Attempt 2's
 triggering actor is `github-actions[bot]`, so `profile-ci` does not export
 that attempt. Later attempts are never re-run automatically.
 
+The same workflow re-runs a first master Cloud readiness attempt once under
+the same rule. It does not check a pull request head, because Cloud readiness
+runs once per commit and a re-run cancels nothing. A failing Runner chaos eval
+does not prevent the re-run, because those evals do not gate publication.
+Docker's source watcher and the npm canary gate read the failed jobs' logs. If
+every failed check on attempt 1 lost its runner, they wait for the re-run's
+proof. They do not cancel the image or fail the canary. Any real failure, or a
+lost runner on attempt 2, still stops publication of that commit.
+
 The routing workflow also selects the CI scope. Middle PRs in a stack and PRs
 whose diff changes only release notes (`releases/v*.md` or
 `releases/beta/v*.md`) skip the build, test, and e2e lanes. The `policy` job

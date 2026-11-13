@@ -2,6 +2,7 @@ import { appendFile } from "node:fs/promises";
 import { pathToFileURL } from "node:url";
 import { createActionsReader } from "./github-actions-reader.mjs";
 import { deferredProducer, requestDeferredProducer, sourceAdmissionJob, createReleaseRerunner } from "./cloud-release-admission.mjs";
+import { createGithubClient, logShowsRunnerLoss } from "../.github/scripts/runner-loss-rerun.mjs";
 
 const repository = "paperclipai/paperclip";
 const workflowPath = ".github/workflows/cloud-readiness.yml";
@@ -21,6 +22,41 @@ export class SourceVerificationFailed extends Error {
 }
 export class SourceVerificationDeferred extends Error {}
 
+const failedConclusions = ["failure", "cancelled", "timed_out", "action_required", "startup_failure", "stale"];
+
+/**
+ * Reads whether a failed job ended because its machine was lost (a Spot
+ * reclaim), from the runner's own error in the job log. Returns undefined when
+ * the log cannot be read yet, so the caller keeps waiting and asks again.
+ */
+export function createRunnerLossClassifier(readLog) {
+  const known = new Map();
+  return async (job) => {
+    if (!known.has(job.id)) {
+      try {
+        known.set(job.id, logShowsRunnerLoss(await readLog(job.id)));
+      } catch {
+        return undefined;
+      }
+    }
+    return known.get(job.id);
+  };
+}
+
+export function createJobLogReader(token) {
+  const client = createGithubClient({ token });
+  return (jobId) => client.text(`/repos/${repository}/actions/jobs/${jobId}/logs`);
+}
+
+// ci-runner-loss-rerun.yml re-runs a first attempt whose failed checks only
+// lost their runners, once. Until it does, the commit is pending, not failed:
+// dropping it would leave Cloud without an image and npm without a canary.
+async function awaitingRunnerLossRerun(failed, run, runnerLost) {
+  if (!runnerLost || run.run_attempt !== 1 || failed.length === 0) return false;
+  for (const job of failed) if (await runnerLost(job) === false) return false;
+  return true;
+}
+
 function assertSha(sha) {
   if (!/^[a-f0-9]{40}$/.test(sha ?? "")) throw new Error("A full lowercase source SHA is required.");
 }
@@ -35,7 +71,7 @@ function trustedRun(run, sha, workflowId) {
 
 // Consume one versioned job, independent of image/migrator availability. A
 // failed image build must not invalidate source checks that already passed.
-export async function readSourceVerification(sha, api, { failFast = false, onJobs } = {}) {
+export async function readSourceVerification(sha, api, { failFast = false, onJobs, runnerLost } = {}) {
   assertSha(sha);
   const workflow = await api(`/repos/${repository}/actions/workflows/cloud-readiness.yml`);
   if (workflow.path !== workflowPath || !Number.isSafeInteger(workflow.id) || workflow.id < 1) {
@@ -63,15 +99,15 @@ export async function readSourceVerification(sha, api, { failFast = false, onJob
   const matches = jobs.filter((job) => job.name === sourceVerificationJob);
   if (matches.length > 1) throw new Error("Cloud source verification job is ambiguous.");
   await onJobs?.(jobs.filter(job => job.head_sha === sha && job.run_id === run.id && job.run_attempt === run.run_attempt));
-  if (failFast) {
-    const failure = jobs.find((job) => !nonGating(job) && job.status === "completed" &&
-      ["failure", "cancelled", "timed_out", "action_required", "startup_failure", "stale"].includes(job.conclusion) &&
-      job.head_sha === sha && job.run_id === run.id && job.run_attempt === run.run_attempt);
-    if (failure) {
-      const current = await api(`/repos/${repository}/actions/runs/${run.id}`);
-      if (!trustedRun(current, sha, workflow.id) || current.run_attempt !== run.run_attempt) return undefined;
-      throw new SourceVerificationFailed(`Cloud source verification failed: ${failure.name} (${failure.conclusion}).`, run);
-    }
+  const failed = jobs.filter((job) => !nonGating(job) && job.status === "completed" &&
+    failedConclusions.includes(job.conclusion) &&
+    job.head_sha === sha && job.run_id === run.id && job.run_attempt === run.run_attempt);
+  if (failFast && failed.length > 0) {
+    if (await awaitingRunnerLossRerun(failed, run, runnerLost)) return undefined;
+    const failure = failed[0];
+    const current = await api(`/repos/${repository}/actions/runs/${run.id}`);
+    if (!trustedRun(current, sha, workflow.id) || current.run_attempt !== run.run_attempt) return undefined;
+    throw new SourceVerificationFailed(`Cloud source verification failed: ${failure.name} (${failure.conclusion}).`, run);
   }
   const job = matches[0];
   if (job?.status === "completed" && job.conclusion === "success" &&
@@ -87,6 +123,7 @@ export async function readSourceVerification(sha, api, { failFast = false, onJob
     if (!trustedRun(current, sha, workflow.id) || current.run_attempt !== run.run_attempt) return undefined;
     if (job?.conclusion === "skipped" && current.status !== "completed") return undefined;
     if (deferredProducer(jobs, current, sourceAdmissionJob)) throw new SourceVerificationDeferred("Source checks are deferred until release admission.");
+    if (await awaitingRunnerLossRerun(failed, current, runnerLost)) return undefined;
     throw new SourceVerificationFailed(`Cloud source verification did not pass for ${sha} (run ${run.id}, attempt ${run.run_attempt}). Rerun Cloud readiness before retrying the release.`, run);
   }
   return undefined;
@@ -96,7 +133,7 @@ export { createActionsReader };
 
 export async function waitForSourceVerification(sha, {
   api, now = Date.now, sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
-  timeoutMs = 60 * 60_000, intervalMs = 30_000, log = console.log, rerun,
+  timeoutMs = 60 * 60_000, intervalMs = 30_000, log = console.log, rerun, runnerLost,
 } = {}) {
   assertSha(sha);
   const deadline = now() + timeoutMs;
@@ -104,7 +141,7 @@ export async function waitForSourceVerification(sha, {
   log(`Waiting for ${sourceVerificationJob} for ${sha}.`);
   while (now() < deadline) {
     try {
-      const result = await readSourceVerification(sha, api);
+      const result = await readSourceVerification(sha, api, { runnerLost });
       if (result) return result;
     } catch (error) {
       if (!(error instanceof SourceVerificationDeferred) || !rerun) throw error;
@@ -125,7 +162,8 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
     const deadline = Date.now() + timeoutMs;
     const api = createActionsReader({ token: process.env.GITHUB_TOKEN, deadlineAt: () => deadline });
     const rerun = process.env.GITHUB_REPOSITORY === repository && process.env.GITHUB_REF === "refs/heads/master" ? createReleaseRerunner(process.env.GITHUB_TOKEN) : undefined;
-    const proof = await waitForSourceVerification(process.argv[2], { api, timeoutMs, rerun });
+    const runnerLost = createRunnerLossClassifier(createJobLogReader(process.env.GITHUB_TOKEN));
+    const proof = await waitForSourceVerification(process.argv[2], { api, timeoutMs, rerun, runnerLost });
     const message = `Source verification passed for ${proof.sha}: https://github.com/${repository}/actions/runs/${proof.runId}/attempts/${proof.attempt} (job ${proof.jobId}).`;
     console.log(message);
     if (process.env.GITHUB_STEP_SUMMARY) await appendFile(process.env.GITHUB_STEP_SUMMARY, `${message}\n`);

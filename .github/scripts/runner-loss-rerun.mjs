@@ -2,10 +2,11 @@
 /**
  * runner-loss-rerun.mjs
  *
- * Re-runs the failed jobs of a first PR CI attempt once, but only when every
- * failed or cancelled job ended because its runner was lost. Runs from
- * .github/workflows/ci-runner-loss-rerun.yml on workflow_run. It reads GitHub
- * API metadata only and never touches the PR's code or artifacts.
+ * Re-runs the failed jobs of a first PR CI or master Cloud readiness attempt
+ * once, but only when every failed or cancelled job ended because its runner
+ * was lost. Runs from .github/workflows/ci-runner-loss-rerun.yml on
+ * workflow_run. It reads GitHub API metadata only and never touches the run's
+ * code or artifacts.
  *
  * Local dry run against a real run (no rerun is requested):
  *   GITHUB_TOKEN=$(gh auth token) node .github/scripts/runner-loss-rerun.mjs --run-id <id> --dry-run
@@ -17,6 +18,12 @@ import { fileURLToPath } from "node:url";
 export const REPOSITORY = "paperclipai/paperclip";
 export const REPOSITORY_ID = 1170821064;
 export const PR_WORKFLOW_PATH = ".github/workflows/pr.yml";
+// Docker and the npm canary wait on this run's source proof for the same
+// commit, and treat a first attempt that only lost runners as still pending.
+export const CLOUD_READINESS_PATH = ".github/workflows/cloud-readiness.yml";
+// Owner decision (2026-11-12): the Runner chaos evals in Cloud readiness do not
+// gate publication, so their own failure must not stop a re-run of lost checks.
+export const NON_GATING_JOB_PREFIX = "Runner chaos evals (not a publication gate) / ";
 
 // The runner's own messages when an AWS instance disappears mid-job.
 export const RUNNER_LOSS_PATTERN = /lost communication with the server|received a shutdown signal/;
@@ -99,8 +106,14 @@ function firstLine(message) {
 
 export function eligibleRun(run) {
   if (run.repository?.full_name !== REPOSITORY || run.repository?.id !== REPOSITORY_ID) return "run is not in the canonical repository";
-  if (run.path !== PR_WORKFLOW_PATH) return `workflow is ${run.path}, not ${PR_WORKFLOW_PATH}`;
-  if (run.event !== "pull_request") return `event is ${run.event}, not pull_request`;
+  if (run.path === CLOUD_READINESS_PATH) {
+    if (run.event !== "push") return `event is ${run.event}, not push`;
+    if (run.head_branch !== "master" || run.head_repository?.id !== REPOSITORY_ID) return "Cloud readiness run is not a canonical master push";
+  } else if (run.path === PR_WORKFLOW_PATH) {
+    if (run.event !== "pull_request") return `event is ${run.event}, not pull_request`;
+  } else {
+    return `workflow is ${run.path}, not ${PR_WORKFLOW_PATH} or ${CLOUD_READINESS_PATH}`;
+  }
   if (run.status !== "completed" || !RERUN_CONCLUSIONS.has(run.conclusion)) {
     return `run is ${run.status}/${run.conclusion}, not completed/failure or completed/cancelled`;
   }
@@ -115,6 +128,8 @@ export function eligibleRun(run) {
  * PR's current head.
  */
 export async function staleReason(client, run) {
+  // Cloud readiness is grouped by commit and cancels nothing when re-run.
+  if (run.path === CLOUD_READINESS_PATH) return undefined;
   const pulls = await client.paginate(`/repos/${REPOSITORY}/commits/${run.head_sha}/pulls?per_page=100`);
   const open = pulls.filter((pr) => pr.state === "open" && pr.base?.repo?.id === REPOSITORY_ID
     && pr.head?.repo?.id === run.head_repository?.id && pr.head?.sha === run.head_sha);
@@ -134,8 +149,9 @@ export async function decide(client, run) {
   if (ineligible) return { ...decision, reason: ineligible };
 
   const jobs = await client.paginate(`/repos/${REPOSITORY}/actions/runs/${run.id}/attempts/1/jobs?per_page=100`, "jobs");
-  const failed = jobs.filter((job) => RERUN_CONCLUSIONS.has(job.conclusion) && !AGGREGATE_JOBS.has(job.name));
-  if (failed.length === 0) return { ...decision, reason: "no failed jobs other than the verify/e2e aggregates" };
+  const failed = jobs.filter((job) => RERUN_CONCLUSIONS.has(job.conclusion) && !AGGREGATE_JOBS.has(job.name)
+    && !(run.path === CLOUD_READINESS_PATH && job.name.startsWith(NON_GATING_JOB_PREFIX)));
+  if (failed.length === 0) return { ...decision, reason: "no failed jobs other than the verify/e2e aggregates or non-gating evals" };
 
   const staleBefore = await staleReason(client, run);
   if (staleBefore) return { ...decision, reason: staleBefore };

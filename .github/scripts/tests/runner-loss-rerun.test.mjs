@@ -301,11 +301,49 @@ test("runs that are no longer the PR's latest CI are not re-run", async () => {
   assert.equal(skipped.rerun, true);
 });
 
+// The same AWS fleet runs master's Cloud readiness. Docker and the npm canary
+// wait for this one re-run instead of dropping the commit.
+function readiness(data, { jobs } = {}) {
+  const copy = structuredClone(data);
+  Object.assign(copy.run, { path: ".github/workflows/cloud-readiness.yml", event: "push", head_branch: "master",
+    head_repository: { id: 1170821064, full_name: "paperclipai/paperclip" } });
+  if (jobs) copy.jobs = jobs(copy.jobs);
+  return copy;
+}
+
+test("a master Cloud readiness attempt that only lost runners is re-run once, without PR checks", async () => {
+  const data = readiness(fixture(ALL_LOST));
+  const github = fakeGithub(data, { pulls: () => { throw new Error("no PR lookup for master"); } });
+  const decision = await decide(github.client, github.run);
+  assert.equal(decision.rerun, true, decision.reason);
+  assert.equal(github.calls.some((call) => call.path.includes("/pulls") || call.path.includes("/workflows/pr.yml")), false);
+});
+
+test("a failing non-gating chaos eval does not stop a Cloud readiness re-run", async () => {
+  const data = readiness(fixture(ALL_LOST), { jobs: (jobs) => [...jobs,
+    { ...jobs[0], id: 999_001, name: "Runner chaos evals (not a publication gate) / Restart, replay, trace, and recovery faults", conclusion: "failure" }] });
+  data.total_count = data.jobs.length;
+  const github = fakeGithub(data);
+  const decision = await decide(github.client, github.run);
+  assert.equal(decision.rerun, true, decision.reason);
+  assert.equal(decision.jobs.some((job) => job.id === 999_001), false);
+});
+
+test("a real Cloud readiness failure is not re-run", async () => {
+  const github = fakeGithub(readiness(fixture(REAL)));
+  const decision = await decide(github.client, github.run);
+  assert.equal(decision.rerun, false);
+});
+
 test("ineligible runs are rejected before any job is read", async () => {
   const data = fixture(ALL_LOST);
   for (const [change, reason] of [
     [{ event: "push" }, /event is push/],
     [{ path: ".github/workflows/other.yml" }, /workflow is/],
+    [{ path: ".github/workflows/cloud-readiness.yml" }, /event is pull_request, not push/],
+    [{ path: ".github/workflows/cloud-readiness.yml", event: "push", head_branch: "feature" }, /not a canonical master push/],
+    [{ path: ".github/workflows/cloud-readiness.yml", event: "push", head_branch: "master", head_repository: { id: 1 } }, /not a canonical master push/],
+    [{ path: ".github/workflows/cloud-readiness.yml", event: "push", head_branch: "master", head_repository: { id: 1170821064 }, run_attempt: 2 }, /attempt 2/],
     [{ conclusion: "success" }, /completed\/success/],
     [{ repository: { id: 1, full_name: "someone/paperclip" } }, /canonical repository/],
   ]) {
@@ -433,18 +471,20 @@ test("summary cells cannot break the table", () => {
   assert.match(summary, /\| ci \/ a\\\|b \| no \| line one line \\\| two \|/);
 });
 
-test("workflow acts only on failed or cancelled first attempts of the canonical PR workflow", () => {
+test("workflow acts only on failed or cancelled first attempts of PR CI and master Cloud readiness", () => {
   const condition = workflow.match(/^ {4}if: >-\n((?: {6}.+\n)+)/m)?.[1].replace(/\s+/g, " ").trim();
   assert.equal(condition, [
     "github.repository == 'paperclipai/paperclip' &&",
     "github.repository_id == '1170821064' &&",
-    "github.event.workflow_run.event == 'pull_request' &&",
-    "github.event.workflow_run.path == '.github/workflows/pr.yml' &&",
+    "((github.event.workflow_run.event == 'pull_request' &&",
+    "github.event.workflow_run.path == '.github/workflows/pr.yml') ||",
+    "(github.event.workflow_run.event == 'push' &&",
+    "github.event.workflow_run.path == '.github/workflows/cloud-readiness.yml')) &&",
     "(github.event.workflow_run.conclusion == 'failure' ||",
     "github.event.workflow_run.conclusion == 'cancelled') &&",
     "github.event.workflow_run.run_attempt == 1",
   ].join(" "));
-  assert.match(workflow, /^on:\n {2}workflow_run:\n {4}workflows: \[PR\]\n {4}types: \[completed\]$/m);
+  assert.match(workflow, /^on:\n {2}workflow_run:\n {4}workflows: \[PR, Cloud readiness\]\n {4}types: \[completed\]$/m);
   assert.match(workflow, /^ {2}group: ci-runner-loss-rerun-\$\{\{ github\.event\.workflow_run\.id \}\}$/m);
   const permissions = workflow.match(/^permissions:\n((?: {2}.+\n)+)/m)[1]
     .split("\n").filter((line) => /^ {2}[a-z-]+:/.test(line)).map((line) => line.trim());

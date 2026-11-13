@@ -1,6 +1,6 @@
 import { appendFile } from "node:fs/promises";
 import { pathToFileURL } from "node:url";
-import { createActionsReader, readSourceVerification, SourceVerificationFailed, SourceVerificationDeferred } from "./cloud-source-verification.mjs";
+import { createActionsReader, createJobLogReader, createRunnerLossClassifier, readSourceVerification, SourceVerificationFailed, SourceVerificationDeferred } from "./cloud-source-verification.mjs";
 import { requestDeferredProducer, readMigratorPublication, sourceAdmissionJob, migratorAdmissionJob, createReleaseRerunner } from "./cloud-release-admission.mjs";
 
 const repository = "paperclipai/paperclip";
@@ -35,7 +35,7 @@ async function cancelFailedVerification({ api, cancel, sha }, failure) {
   if (run.status !== "completed") await cancel(`/repos/${repository}/actions/runs/${failure.runId}/cancel`);
 }
 
-export async function watchReleaseSource({ sha, runId, attempt, api, cancel, rerun, now = Date.now,
+export async function watchReleaseSource({ sha, runId, attempt, api, cancel, rerun, runnerLost, now = Date.now,
   sleep = ms => new Promise(resolve => setTimeout(resolve, ms)), log = console.log,
   timeoutMs = 40 * 60_000, intervalMs = 30_000, requireProof = false, summary = async () => {} }) {
   if (!/^[a-f0-9]{40}$/.test(sha ?? "") || !Number.isSafeInteger(runId) || runId < 1 ||
@@ -60,7 +60,7 @@ export async function watchReleaseSource({ sha, runId, attempt, api, cancel, rer
     if (!Array.isArray(batch.jobs) || batch.total_count > 100) throw new Error("Incomplete image job listing.");
     await reportWaits(batch.jobs);
     try {
-      const proof = await readSourceVerification(sha, api, { failFast: true, onJobs: reportWaits });
+      const proof = await readSourceVerification(sha, api, { failFast: true, onJobs: reportWaits, runnerLost });
       if (proof && (!rerun || await readMigratorPublication(sha, api))) {
         await summary(`Exact source verified: ${sha}; readiness run ${proof.runId}, attempt ${proof.attempt}.\n`);
         return proof;
@@ -92,8 +92,9 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
   const requireProof = process.argv.includes("--require-proof");
   const checkProof = process.argv.includes("--check-proof");
   const api = createActionsReader({ token });
-  const proof = checkProof ? await readSourceVerification(process.env.GITHUB_SHA, api, { failFast: true }) : await watchReleaseSource({ requireProof, sha: process.env.GITHUB_SHA, runId: Number(process.env.GITHUB_RUN_ID), attempt: Number(process.env.GITHUB_RUN_ATTEMPT),
-    api,
+  const runnerLost = createRunnerLossClassifier(createJobLogReader(token));
+  const proof = checkProof ? await readSourceVerification(process.env.GITHUB_SHA, api, { failFast: true, runnerLost }) : await watchReleaseSource({ requireProof, sha: process.env.GITHUB_SHA, runId: Number(process.env.GITHUB_RUN_ID), attempt: Number(process.env.GITHUB_RUN_ATTEMPT),
+    api, runnerLost,
     rerun: createReleaseRerunner(token),
     cancel: async path => {
       const response = await fetch(`https://api.github.com${path}`, { method: "POST", redirect: "error",

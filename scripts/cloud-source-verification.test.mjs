@@ -5,7 +5,7 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { createActionsReader, readSourceVerification, runnerChaosEvalsJob, sourceVerificationJob, waitForSourceVerification, SourceVerificationDeferred } from "./cloud-source-verification.mjs";
+import { createActionsReader, createRunnerLossClassifier, readSourceVerification, runnerChaosEvalsJob, sourceVerificationJob, waitForSourceVerification, SourceVerificationDeferred } from "./cloud-source-verification.mjs";
 
 import { releaseAdmitted, deferredProducer, requestDeferredProducer, readMigratorPublication, sourceAdmissionJob, migratorAdmissionJob, createReleaseRerunner } from "./cloud-release-admission.mjs";
 
@@ -439,6 +439,85 @@ describe("image build source monitor", () => {
       sleep: async ms => { time += ms; }, timeoutMs: 20 }), /before the publication deadline/);
     assert.deepEqual(f.cancellations, []);
     assert.equal((await watchReleaseSource({ ...fixture(), requireProof: true })).jobId, proof.id);
+  });
+
+  // A Spot reclaim is not a failed check. ci-runner-loss-rerun.yml re-runs the
+  // lost jobs once, and the image keeps waiting for that attempt's proof.
+  const lostJob = { ...proof, id: 120, name: "verify / General tests (server (4/10))", conclusion: "failure" };
+  const realJob = { ...proof, id: 121, name: "verify / General tests (server (5/10))", conclusion: "failure" };
+  const shutdown = "2026-11-13T12:00:00Z ##[error]The runner has received a shutdown signal. This can happen when the runner service is stopped, or a manually started runner is canceled.\n";
+  const lostLogs = (logs = { 120: shutdown, 121: "##[error]Process completed with exit code 1.\n" }) => {
+    const reads = [];
+    return { reads, runnerLost: createRunnerLossClassifier(async (id) => { reads.push(id); if (!(id in logs)) throw new Error("log not ready"); return logs[id]; }) };
+  };
+  const rerunAttempt = (f) => {
+    const second = { ...sourceRun, run_attempt: 2 };
+    return async path => {
+      if (path.includes("/workflows/123/runs?")) return { workflow_runs: [second], total_count: 1 };
+      if (path.includes("/runs/99/attempts/2/jobs?")) return { jobs: [{ ...proof, run_attempt: 2 }] };
+      if (path.endsWith("/runs/99")) return second;
+      return f.api(path);
+    };
+  };
+
+  test("a check that only lost its runner keeps the image waiting for the re-run's proof", async () => {
+    const f = fixture({ jobs: [lostJob, { ...proof, status: "in_progress", conclusion: null }] });
+    const { runnerLost } = lostLogs();
+    let time = 0;
+    const first = f.api;
+    const second = rerunAttempt(f);
+    const result = await watchReleaseSource({ ...f, runnerLost, api: path => (time > 0 ? second : first)(path),
+      now: () => time, sleep: async ms => { time += ms; } });
+    assert.equal(result.attempt, 2);
+    assert.deepEqual(f.cancellations, []);
+  });
+
+  test("a finished first attempt that only lost runners is pending, not failed", async () => {
+    const f = fixture({ jobs: [lostJob, { ...proof, status: "completed", conclusion: "skipped" }],
+      run: { ...sourceRun, status: "completed", conclusion: "failure" } });
+    assert.equal(await readSourceVerification(sha, f.api, { failFast: true, runnerLost: lostLogs().runnerLost }), undefined);
+    assert.equal(await readSourceVerification(sha, f.api, { runnerLost: lostLogs().runnerLost }), undefined);
+    assert.deepEqual(f.cancellations, []);
+  });
+
+  test("the npm canary gate waits through a runner-loss re-run", async () => {
+    const f = fixture({ jobs: [lostJob, { ...proof, status: "completed", conclusion: "skipped" }],
+      run: { ...sourceRun, status: "completed", conclusion: "failure" } });
+    let time = 0;
+    const second = rerunAttempt(f);
+    const result = await waitForSourceVerification(sha, { api: path => (time > 0 ? second : f.api)(path),
+      runnerLost: lostLogs().runnerLost, now: () => time, sleep: async ms => { time += ms; }, timeoutMs: 100, intervalMs: 30, log: () => {} });
+    assert.equal(result.attempt, 2);
+  });
+
+  test("a real failure beside a lost runner still cancels the image", async () => {
+    const f = fixture({ jobs: [lostJob, realJob] });
+    await assert.rejects(watchReleaseSource({ ...f, runnerLost: lostLogs().runnerLost }), /General tests/);
+    assert.equal(f.cancellations.length, 2);
+  });
+
+  test("runner loss on a re-run attempt fails, so recovery cannot loop", async () => {
+    const second = { ...sourceRun, run_attempt: 2 };
+    const f = fixture({ run: second, current: second });
+    const api = async path => path.includes("/runs/99/attempts/2/jobs?") ? { jobs: [{ ...lostJob, run_attempt: 2 }] } : f.api(path);
+    await assert.rejects(readSourceVerification(sha, api, { failFast: true, runnerLost: lostLogs({ 120: shutdown }).runnerLost }), /General tests/);
+  });
+
+  test("an unreadable job log keeps waiting and is asked again, never cancelling", async () => {
+    const f = fixture({ jobs: [lostJob] });
+    const { reads, runnerLost } = lostLogs({});
+    assert.equal(await readSourceVerification(sha, f.api, { failFast: true, runnerLost }), undefined);
+    assert.equal(await readSourceVerification(sha, f.api, { failFast: true, runnerLost }), undefined);
+    assert.deepEqual(reads, [120, 120]);
+    assert.deepEqual(f.cancellations, []);
+  });
+
+  test("a classified job log is read once", async () => {
+    const f = fixture({ jobs: [lostJob, { ...proof, status: "in_progress", conclusion: null }] });
+    const { reads, runnerLost } = lostLogs();
+    await readSourceVerification(sha, f.api, { failFast: true, runnerLost });
+    await readSourceVerification(sha, f.api, { failFast: true, runnerLost });
+    assert.deepEqual(reads, [120]);
   });
 
   test("cancellation rejects another SHA, repository, ref, workflow, or attempt", async () => {
