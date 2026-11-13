@@ -741,6 +741,21 @@ describe("shared assigned tool catalogs", () => {
     expect(first.definitions()).toEqual(snapshot);
   });
 
+  it("releases the hold of a session that is dropped without close, such as a failed or cancelled start", async () => {
+    const gc = collectGarbage();
+    const company = `company-${randomUUID()}`;
+    const listing = () => catalog("dropped", 2);
+    const kept = await session(listing, company);
+    schemas(await session(listing, company)).forEach((schema, index) => expect(schema).toBe(schemas(kept)[index]));
+    for (let attempt = 0; attempt < 50; attempt += 1) {
+      await new Promise(resolve => setTimeout(resolve, 10));
+      gc();
+    }
+    kept.close();
+    const fresh = await session(listing, company);
+    schemas(fresh).forEach((schema, index) => expect(schema).not.toBe(schemas(kept)[index]));
+  }, 30_000);
+
   it("releases a shared catalog when its last session closes and bounds the number of shared catalogs", async () => {
     const company = `company-${randomUUID()}`;
     const start = assignedCatalogCacheStats();

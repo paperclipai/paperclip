@@ -134,6 +134,7 @@ export const ASSIGNED_CATALOG_CACHE_BYTES = 256 * 1024 * 1024;
 const sharedCatalogs = new Map<string, SharedCatalogEntry>();
 const pendingCatalogs = new Map<string, Promise<AssignedCatalog>>();
 let sharedCatalogBytes = 0;
+const collectedSessions = new FinalizationRegistry<() => void>(release => release());
 const collectedCatalogs = new FinalizationRegistry<{ key: string; catalog: WeakRef<AssignedCatalog> }>(({ key, catalog }) => {
   if (sharedCatalogs.get(key)?.catalog === catalog) forgetSharedCatalog(key);
 });
@@ -372,7 +373,7 @@ export async function createAssignedMcpTools(input: {
     return { tools: page, nextOffset: nextOffset < matches.length ? nextOffset : null };
   }
 
-  return {
+  const assigned = {
     definitions(fits?: (definitions: ToolDefinition[]) => boolean): ToolDefinition[] {
       const direct = [...((input.workMode ?? "standard") === "standard" ? catalog.definitions : catalog.readDefinitions)] as ToolDefinition[];
       if (input.delivery !== "on_demand" && unchecked.length === 0 && (!fits || fits(direct))) return direct;
@@ -414,6 +415,11 @@ export async function createAssignedMcpTools(input: {
       }
       return result.result;
     },
-    close: release,
+    close(): void {
+      collectedSessions.unregister(assigned);
+      release();
+    },
   };
+  collectedSessions.register(assigned, release, assigned);
+  return assigned;
 }
