@@ -102,13 +102,15 @@ export function assignedSchemaAdmissionCacheSize(): number {
 async function admitAssignedToolSchema(serialized: string, schema: Record<string, unknown>): Promise<AssignedSchemaAdmission> {
   const key = createHash("sha256").update(serialized).digest("hex");
   let outcome = assignedSchemaOutcomes.get(key);
-  if (outcome) {
-    assignedSchemaOutcomes.delete(key);
-  } else {
+  if (!outcome) {
     await new Promise<void>(resolve => setImmediate(resolve));
+    outcome = assignedSchemaOutcomes.get(key);
+  }
+  if (!outcome) {
     const admission = admitToolInputSchema(schema);
     outcome = admission.ok ? { ok: true } : { ok: false, reason: admission.reason };
   }
+  assignedSchemaOutcomes.delete(key);
   assignedSchemaOutcomes.set(key, outcome);
   while (assignedSchemaOutcomes.size > ASSIGNED_SCHEMA_ADMISSION_CACHE_ENTRIES) {
     assignedSchemaOutcomes.delete(assignedSchemaOutcomes.keys().next().value!);

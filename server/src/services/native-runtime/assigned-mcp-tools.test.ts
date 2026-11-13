@@ -449,6 +449,14 @@ describe("assigned MCP runner tools", () => {
     }
   });
 
+  it("compiles a new schema one time when several runs start together", async () => {
+    const listing = [{ ...descriptor("deploy:shared"), parametersSchema: sizedSchema(400) }];
+    vi.mocked(admitToolInputSchema).mockClear();
+    const assigned = await Promise.all([1, 2, 3, 4].map(() => createAssignedMcpTools(fixture(listing))));
+    expect(admitToolInputSchema).toHaveBeenCalledTimes(1);
+    for (const tools of assigned) expect(tools.definitions().map(tool => tool.description)).toEqual(["deploy:shared: Use deploy:shared"]);
+  });
+
   it("does not compile an unchanged schema again and keeps the outcome cache bounded", async () => {
     const listing = Array.from({ length: ASSIGNED_SCHEMA_ADMISSION_CACHE_ENTRIES + 10 }, (_, index) =>
       ({ ...descriptor(`bulk:tool_${index}`), parametersSchema: sizedSchema(120) }));
