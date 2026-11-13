@@ -1932,6 +1932,61 @@ it("keeps a failed command result behind the events the Runner sent before it", 
   }
 }, 30_000);
 
+function staleToolResult(core: DurablePrpControlPlane) {
+  return core.queueCommand("semantic_tool.result", { callId: "call-earlier-generation", operationId: "get_task_context",
+    sourceEventId: "tool-input-earlier-generation", sourceEventType: "semantic_tool.input", inputDigest: "digest",
+    correlation: { ...identity }, result: { ok: true }, isError: false }, "command_tool_earlier_generation");
+}
+
+it("delivers every command pending at attach so an earlier generation's result cannot hold the recovery probe", async () => {
+  const root = mkdtempSync(resolve(tmpdir(), "runner-stale-pending-at-attach-"));
+  const { core, stop } = replayBacklogCore(root, 50);
+  try {
+    const stale = staleToolResult(core);
+    const probe = core.queueCommand("runner.drain", {}, "command_resume_probe_attach");
+    await core.start();
+    const client = (await authenticate(core, core.issueBootstrapTicket()))!;
+    const pending = (client.welcome.payload as { pendingCommands: Array<{ commandId: string }> }).pendingCommands;
+    expect(pending.map(command => command.commandId)).toEqual([stale.commandId, probe.commandId]);
+    sendSecure(client, commandResultFrame(client, stale));
+    sendSecure(client, commandResultFrame(client, probe, { status: "completed", retainedEventsDrained: false }));
+    for (let seq = 1; seq <= 1_000; seq++) sendSecure(client, ordinaryOutput(seq));
+    await vi.waitFor(() => expect(core.commandOutcome(probe.commandId)?.status).toBe("completed"), { timeout: 5_000 });
+    expect(core.commandOutcome(stale.commandId)?.status).toBe("completed");
+    expect(core.store.state.commandDeliveryCounts).toEqual({ [stale.commandId]: 1, [probe.commandId]: 1 });
+    client.socket.destroy();
+  } finally {
+    stop();
+    await core.stop();
+    await core.drainPendingConnectionProcessing();
+    rmSync(root, { recursive: true, force: true });
+  }
+}, 30_000);
+
+it("never delivers a lifecycle command ahead of its turn at attach", async () => {
+  const root = mkdtempSync(resolve(tmpdir(), "runner-attach-lifecycle-fence-"));
+  const { core, stop } = replayBacklogCore(root, 1);
+  try {
+    const stale = staleToolResult(core);
+    const drain = core.queueCommand("runner.drain", {}, "command_drain_before_suspend");
+    core.queueCommand("runner.suspend", {}, "command_suspend_after_drain");
+    core.queueCommand("session.snapshot", {}, "command_snapshot_after_suspend");
+    await core.start();
+    const client = (await authenticate(core, core.issueBootstrapTicket()))!;
+    const pending = (client.welcome.payload as { pendingCommands: Array<{ commandId: string }> }).pendingCommands;
+    expect(pending.map(command => command.commandId)).toEqual([stale.commandId, drain.commandId]);
+    sendSecure(client, commandResultFrame(client, stale));
+    sendSecure(client, commandResultFrame(client, drain, { status: "completed", retainedEventsDrained: true }));
+    expect((await receiveCommand(client)).payload).toMatchObject({ commandId: "command_suspend_after_drain" });
+    client.socket.destroy();
+  } finally {
+    stop();
+    await core.stop();
+    await core.drainPendingConnectionProcessing();
+    rmSync(root, { recursive: true, force: true });
+  }
+}, 30_000);
+
 it("keeps a staged tool-progress write when a lease renewal lands mid-write", async () => {
   const root = mkdtempSync(resolve(tmpdir(), "runner-lease-renewal-staged-write-"));
   let release!: () => void;
@@ -4688,11 +4743,6 @@ describe("DurablePrpControlPlane", () => {
         { callId: "call-1" },
         "command-tool-1",
       );
-      controlPlane.queueCommand(
-        "turn.interrupt",
-        { turnId: "turn-1" },
-        "command-interrupt-1",
-      );
       const client = await authenticate(
         controlPlane,
         controlPlane.issueBootstrapTicket(),
@@ -4702,6 +4752,11 @@ describe("DurablePrpControlPlane", () => {
           expect.objectContaining({ commandId: "command-tool-1" }),
         ],
       });
+      controlPlane.queueCommand(
+        "turn.interrupt",
+        { turnId: "turn-1" },
+        "command-interrupt-1",
+      );
 
       // Exactly what runnerd replays after it is killed between journaling a
       // command and confirming its effect. Its durable contract promotes such a

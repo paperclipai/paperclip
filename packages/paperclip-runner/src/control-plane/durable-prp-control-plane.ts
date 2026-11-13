@@ -65,6 +65,7 @@ const maxFrameBytes = 1024 * 1024;
 // Secure frames hex-encode ciphertext. Reserve envelope/tag space as well.
 const maxCommandBytes = Math.floor((maxFrameBytes - 4 * 1024) / 2);
 const maxCommands = 500;
+const maxCommandsAtAttach = 32;
 class CommandJournalLimitError extends Error {
   constructor(readonly code: "command_payload_too_large" | "command_journal_full") {
     super(`Durable PRP command journal bound exceeded: ${code}.`);
@@ -2040,6 +2041,7 @@ class AuthorityConnection {
   warmTransitionVersion: 1 | null = null;
   identity: DurableRecoveryIdentity | null = null;
   replayOnly = false;
+  readonly deliveredAtAttach = new Set<string>();
   activationReceipt: DurableWarmRunTransition | null = null;
   readonly wire: PrpWireConnection;
   #closed = false;
@@ -4020,12 +4022,13 @@ export class DurablePrpControlPlane {
     this.#store.state.lastLeaseId = lease.leaseId;
     this.#store.state.lastLeaseExpiresAt = lease.expiresAt;
 
-    const pending = connection.replayOnly ? [] : this.#nextPendingCommand();
+    const pending = connection.replayOnly ? [] : this.#pendingCommandsAtAttach();
     const [pendingCommand] = pending;
     connection.terminalLifecycleCommandId =
       pendingCommand && this.#isTerminalLifecycleCommand(pendingCommand)
         ? pendingCommand.commandId
         : null;
+    for (const command of pending.slice(1)) connection.deliveredAtAttach.add(command.commandId);
     for (const command of pending) {
       this.#store.state.commandDeliveryCounts[command.commandId] =
         (this.#store.state.commandDeliveryCounts[command.commandId] ?? 0) + 1;
@@ -4103,6 +4106,24 @@ export class DurablePrpControlPlane {
     return command === undefined ? [] : [command];
   }
 
+  #pendingCommandsAtAttach(): DurableRecoveryCoreCommand[] {
+    const [head] = this.#nextPendingCommand();
+    if (head === undefined) return [];
+    const batch = [head];
+    if (this.#isTerminalLifecycleCommand(head) || head.type === "run.attach") return batch;
+    const commands = this.#store.state.commands;
+    let bytes = Buffer.byteLength(JSON.stringify(this.#wireCommand(head)));
+    for (let index = commands.indexOf(head) + 1; index < commands.length && batch.length < maxCommandsAtAttach; index += 1) {
+      const command = commands[index]!;
+      if (command.status !== "pending" || command.controllerSeq !== batch.at(-1)!.controllerSeq + 1
+        || this.#isTerminalLifecycleCommand(command) || command.type === "run.attach") break;
+      bytes += Buffer.byteLength(JSON.stringify(this.#wireCommand(command)));
+      if (bytes > maxCommandBytes) break;
+      batch.push(command);
+    }
+    return batch;
+  }
+
   #controlEnvelope(
     connection: AuthorityConnection,
     envelopeId: string,
@@ -4140,7 +4161,7 @@ export class DurablePrpControlPlane {
     )
       return;
     const [command] = this.#nextPendingCommand();
-    if (command === undefined) return;
+    if (command === undefined || connection.deliveredAtAttach.has(command.commandId)) return;
     if (this.#isTerminalLifecycleCommand(command)) {
       connection.terminalLifecycleCommandId = command.commandId;
     }
