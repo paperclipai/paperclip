@@ -147,8 +147,12 @@ built.
 ### Choosing the Runner for an image build
 
 `scripts/runner-image-resolve.mjs` decides whether a build of a checkout can
-copy the published image. No build uses its answer yet. It has two commands,
-so that the one that builds reads no registry credential:
+copy the published image. No build uses its answer yet: on a `master` push,
+the `runner_image_report` job of `.github/workflows/docker.yml` runs it and
+writes the answer to the job summary, and nothing reads that job. The job
+runs on the committed files, holds no credential (the Runner package is
+public, so the lookup is anonymous) and cannot fail the run. The script has
+two commands, so that the one that builds reads no registry credential:
 
 ```sh
 node scripts/runner-image-resolve.mjs inputs --dir "$dir"
@@ -211,6 +215,86 @@ repository and nowhere else. Other runs build and check, and publish nothing.
   `gh attestation verify oci://ghcr.io/paperclipai/paperclip-runner@sha256:<digest> --repo paperclipai/paperclip --signer-workflow paperclipai/paperclip/.github/workflows/runner-image.yml --source-ref refs/heads/master`
 - **First publication.** GitHub creates the package private. A maintainer
   must make it public once.
+
+## Build cache
+
+The build legs read a registry build cache,
+`ghcr.io/paperclipai/paperclip-runner-buildcache:<arch>`. It is a package of
+its own and holds no image, so the image package holds only attested images.
+It covers the stages that do not take the commit: the Rust toolchain and the
+compiled daemon. The last stage takes the source revision as a build
+argument, so every build runs it: the frozen install, the Runner's build and
+the provider pack. Of the two build commands of a leg, only the first reads
+the registry cache; the second reads what the first left in the job's builder.
+
+- **Effect.** BuildKit reuses a cached step only when the step and the
+  content of every file it reads are the same. The cache changes how long a
+  build takes, not what it builds, and the identity does not cover it.
+- **Writer.** Only the `cache` job of the workflow writes it: on a `master`
+  push in this repository, after the publish job, for inputs that had no
+  image. When the image exists, nothing was built, and the run that published
+  it wrote the cache for those inputs. That job cannot sign, builds no further
+  than the daemon and never runs the install. Its token reaches the registry
+  login and no other step. It reads the cache it writes and keeps every step
+  of the cached stages (`mode=max`). Every other run reads the cache without
+  a credential and cannot write it.
+- **Not on the way to an image.** No job waits for the `cache` job. When it
+  fails, the image is published and the next build is slower.
+- **One write at a time.** The job holds one concurrency slot for each
+  architecture. GitHub keeps one waiting job in a group and cancels the one
+  that waited before it, so the newest write waits. A write from an older
+  commit that lands last costs time and nothing else.
+- **No Actions cache.** The workflow never uses it: workflows that handle
+  pull requests can write it, and what they write must not reach a published
+  image.
+- **Trust.** The daemon in a published image can come from a cached step
+  that an earlier `master` run compiled. Whoever can write the cache package
+  can decide what a later build reuses, so write access to it must stay as
+  narrow as write access to the image package.
+- **Fetches.** A cached step does not run again. A download inside one (the
+  toolchain installer, the toolchain, the crates) is not repeated until the
+  inputs of that step change.
+- **Weekly cold build.** A scheduled run builds both variants once a week
+  with no cache: it passes `--no-cache` and reads no registry cache. Like a
+  manual run, it resolves the lockfile, always builds, runs every check and
+  publishes nothing. A fork's schedule runs nothing. It fails when a download
+  is gone or when a step only works from the cache.
+- **Missing cache.** A cache that does not exist or cannot be read is a
+  line in the build log, not a failure. The build then runs every step.
+- **First write.** GitHub creates the cache package private. A maintainer
+  must make it public once. Until then every build runs cold.
+
+## Reading the transport archives alone
+
+The server needs the transport form of an older pack when a retained session
+names a pack that is not the server's own. A pack with
+`payload.runnerInputsDigest` came out of this image, so the server reads it
+from `inputs-<digest>` (`retained-provider-pack-oci.ts`). It does not count
+layers. It uses the rule of "Layers": the full image is the slim image, then
+layers that hold transport content and nothing else.
+
+- The full index must carry the annotations
+  `io.paperclip.runner.inputs-digest`, equal to the pack's digest of inputs,
+  `org.opencontainers.image.revision`, equal to the pack's
+  `runnerSourceRevision`, and `io.paperclip.runner.slim-digest`.
+- The server reads the slim index by that digest, never by the slim tag, and
+  checks the bytes against the digest.
+- For the pack's platform, the layers of the slim image must be the first
+  layers of the full image, as the same blobs in the same order. The layers
+  after them are the transport layers: at least one and at most eight.
+- The server downloads only those layers. It refuses any entry in them that
+  is not a transport archive or the receipt, and any file that is in two of
+  them.
+- The importer then checks every archive against the pack's manifest, as for
+  any other source.
+- The record the server keeps of the source names the digest of inputs and
+  every transport layer under `runnerImage`. Its `transportLayerDigest` is
+  then the last of those layers and `transportLayerBytes` their total.
+
+When the image cannot be read (a tag or the slim index does not exist, or the
+registry refuses a request), the server reads the application image tagged
+`sha-<runnerSourceRevision>`, as it does for a pack without
+`runnerInputsDigest`. An image that can be read and does not match fails.
 
 ## Known limits
 

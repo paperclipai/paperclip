@@ -109,6 +109,13 @@ Workspace storage is fixed at creation. A change of
 `executionWorkspacePolicy.storageProviderPluginId` returns `409`
 (`project_storage_locked`). Runs use the agent's environment, not a project setting.
 
+When `env` contains a variable that an active plugin environment sets on its
+own tasks (`protectedEnvironmentKeys`), create and update still save it. The
+response then includes `configurationWarnings` entries with code
+`protected_environment_variable`, a `field` such as `env.KEY`, and a `message`
+that names those environments. Agents that run there may see the environment's
+value instead.
+
 ## Project Workspaces
 
 Workspaces link a project to a repository and directory:

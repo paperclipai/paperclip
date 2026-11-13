@@ -938,15 +938,17 @@ async function waitForTool(call: RunnerToolCall): Promise<unknown> {
       if (call.signal.aborted) abort();
     });
   }
-  emit(
-    "runtime.tool_called",
-    {
-      callId,
-      operationId,
-      input: boundedSidecarValue(record(call.arguments)),
-    },
-    activeTurnId,
-  );
+  const toolCall = { callId, operationId, input: record(call.arguments) };
+  let encodedToolCall: string;
+  try { encodedToolCall = stringifyAcpxSidecarFrame(toolCall); } catch {
+    throw new Error("ACPX tool arguments cannot be encoded for the Runner");
+  }
+  if (Buffer.byteLength(encodedToolCall) > MAX_EVENT_PAYLOAD_BYTES) {
+    throw new Error(`ACPX tool arguments exceed the ${MAX_EVENT_PAYLOAD_BYTES / 1024} KiB tool-call limit`);
+  }
+  if (!emit("runtime.tool_called", toolCall, activeTurnId)) {
+    throw new Error("ACPX tool call exceeds the sidecar frame limit");
+  }
   return await new Promise((settle, reject) => {
     const abort = () => {
       const pending = tools.get(callId);

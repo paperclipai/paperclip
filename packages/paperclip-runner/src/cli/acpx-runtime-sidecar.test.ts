@@ -1116,6 +1116,60 @@ describe("qualified ACPX runtime sidecar", () => {
     } finally { await sidecar.close(); rmSync(root,{recursive:true,force:true}); }
   }, 15000);
 
+  it("forwards large app-tool arguments intact and refuses only a call over the tool-call limit", async () => {
+    const root = mkdtempSync(join(tmpdir(), "acpx-large-arguments-"));
+    const loader = join(root, "loader.mjs"), fixture = join(root, "host.mjs");
+    const base = new URL("../test-support/acpx-blocked-output-host.mjs", import.meta.url).href;
+    writeFileSync(fixture, `import { AcpxRuntimeHost as Base } from ${JSON.stringify(base)};
+      import { appendFileSync } from "node:fs";
+      import { join } from "node:path";
+      export class AcpxRuntimeHost extends Base {
+        static async open(options) { const host = await Base.open(options); Object.setPrototypeOf(host, this.prototype); return host; }
+        startTurn({ requestId }) {
+          for (const [callId, bytes] of [["inline-file", 200 * 1024], ["oversized-file", 300 * 1024]]) {
+            const content = Array.from({ length: bytes }, (_, index) => String.fromCharCode(97 + index % 26)).join("");
+            this.options.semanticTools.handler({callId, tool:"app_deploy_create_0123456789ab", arguments:{files:[{path:"site/index.html", content}]}, signal:new AbortController().signal})
+              .then(() => appendFileSync(join(process.env.PAPERCLIP_TEST_OUTPUT_ROOT,"outcomes"), callId+":resolved\\n"),
+                error => appendFileSync(join(process.env.PAPERCLIP_TEST_OUTPUT_ROOT,"outcomes"), callId+":"+error.message+"\\n"));
+          }
+          this.options.semanticTools.handler({callId:"lone-surrogate", tool:"app_deploy_create_0123456789ab", arguments:{note:"half \\ud83d emoji"}, signal:new AbortController().signal})
+            .then(() => undefined, error => appendFileSync(join(process.env.PAPERCLIP_TEST_OUTPUT_ROOT,"outcomes"), "lone-surrogate:"+error.message+"\\n"));
+          return {requestId, promptStarted:Promise.resolve(), result:this.result, events:(async function*(){})()};
+        }
+      }`);
+    writeFileSync(loader, `import { registerHooks } from "node:module"; import { pathToFileURL } from "node:url";
+      registerHooks({resolve(specifier,context,next){
+        if(context.parentURL?.includes("/acpx-runtime-sidecar.") && specifier.endsWith("/runtime-host.js"))
+          return {url:pathToFileURL(${JSON.stringify(fixture)}).href,shortCircuit:true};
+        return next(specifier,context);
+      }});`);
+    const sidecar = new SidecarProcess({loader, environment:{PAPERCLIP_TEST_OUTPUT_ROOT:root}});
+    children.add(sidecar);
+    const send = async (id:number, command:string, params:Record<string,unknown>) => {
+      sidecar.write({protocolVersion:ACPX_SIDECAR_PROTOCOL_VERSION,id,command,params});
+      expect(await sidecar.next(frame=>frame.id === id)).toMatchObject({ok:true});
+    };
+    const expected = Array.from({ length: 200 * 1024 }, (_, index) => String.fromCharCode(97 + index % 26)).join("");
+    try {
+      sidecar.write(initializeRequest(1,"codex"));
+      expect(await sidecar.next(frame=>frame.id === 1)).toMatchObject({ok:true});
+      await send(2,"session.open",{agent:"codex",model:"gpt-5.6-sol",runtimeDirectory:root,workingDirectory:root,
+        normalizedSessionId:"large-arguments-session",permissionMode:"deny-all",systemInstructions:"Test large arguments.",tools:[]});
+      await send(3,"run.attach",{runId:"large-arguments-run",catalogRevision:1,tools:[]});
+      await send(4,"turn.start",{turnId:"large-arguments-turn",message:"Deploy the site."});
+      const called = await sidecar.next(frame=>frame.eventType === "runtime.tool_called");
+      expect(called.payload).toEqual({callId:"inline-file",operationId:"app_deploy_create_0123456789ab",
+        input:{files:[{path:"site/index.html",content:expected}]}});
+      await vi.waitFor(() => expect(readFileSync(join(root,"outcomes"),"utf8"))
+        .toContain("oversized-file:ACPX tool arguments exceed the 256 KiB tool-call limit"));
+      const replaced = await sidecar.next(frame=>frame.eventType === "runtime.tool_called");
+      expect(replaced.payload).toEqual({callId:"lone-surrogate",operationId:"app_deploy_create_0123456789ab",input:{note:"half \uFFFD emoji"}});
+      expect(sidecar.pending(frame=>frame.eventType === "runtime.tool_called")).toBe(0);
+      await send(5,"tool.resolve",{turnId:"large-arguments-turn",callId:"inline-file",result:{deployed:true}});
+      await vi.waitFor(() => expect(readFileSync(join(root,"outcomes"),"utf8")).toContain("inline-file:resolved"));
+    } finally { await sidecar.close(); rmSync(root,{recursive:true,force:true}); }
+  }, 15000);
+
   it("finishes cleanup when the controller closed the output pipe before shutdown", async () => {
     const root = mkdtempSync(join(tmpdir(), "acpx-shutdown-"));
     const loader = join(root, "loader.mjs"), fixture = join(root, "host.mjs");
@@ -2023,7 +2077,7 @@ function loadWaitForTool(input: {
   const factory = new Function(
     "boundedIdentity", "tools", "turnId", "emit", "PRP_COMPLETION_TOOL_NAME",
     "PRP_BLOCK_TOOL_NAME", "validatePrpStructuredRunResult", "boundedSidecarValue", "record", "MAX_PENDING_TOOLS", "stringifyAcpxSidecarFrame",
-    "resolveCompletionContinuation", "runId", "normalizingTools", "randomUUID", "callIdNamespace",
+    "resolveCompletionContinuation", "runId", "normalizingTools", "randomUUID", "callIdNamespace", "MAX_EVENT_PAYLOAD_BYTES",
     `return (${functionSource});`,
   );
   return factory(
@@ -2046,6 +2100,7 @@ function loadWaitForTool(input: {
     new Set<string>(),
     randomUUID,
     input.callIdNamespace ?? null,
+    256 * 1024,
   );
 }
 

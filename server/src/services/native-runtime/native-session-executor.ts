@@ -79,7 +79,7 @@ import {
   isKnownNativeSessionRootEntry,
 } from "./native-session-root-entries.js";
 import { createRunPreparationTiming } from "../execution-preparation-timing.js";
-import { configuredEnvironment, PROVIDER_CREDENTIAL_ENVIRONMENT_KEYS } from "../../vendor/paperclip-runner/index.js";
+import { CONFIGURED_ENVIRONMENT_KEYS, configuredEnvironment, PROVIDER_CREDENTIAL_ENVIRONMENT_KEYS } from "../../vendor/paperclip-runner/index.js";
 import { parseProviderPerformanceSpans } from "../../vendor/paperclip-runner/index.js";
 import { apiKeyBillingType } from "@paperclipai/adapter-utils/api-billing-type";
 import { agents } from "@paperclipai/db";
@@ -8564,6 +8564,11 @@ function needsCoreGitHubAccess(input: Pick<Parameters<typeof executePaperclipNat
   return Boolean(input.managedGitHub && !(target?.kind === "remote" && target.transport === "sandbox" && target.runnerTask));
 }
 
+function pluginTaskConfiguredEnvironment(environment: NodeJS.ProcessEnv | undefined): Record<string, string> {
+  return Object.fromEntries(Object.entries(configuredEnvironment(environment)).flatMap(([key, value]) =>
+    key !== CONFIGURED_ENVIRONMENT_KEYS && typeof value === "string" ? [[key, value]] : []));
+}
+
 function nativeProcessReuseKey(input: Parameters<typeof executePaperclipNativeSession>[0]): string | undefined {
   const environment = input.runnerEnvironment;
   if (!input.managedGitHub && environment?.PAPERCLIP_GITHUB_BROKER_TOKEN) return undefined;
@@ -8802,6 +8807,21 @@ export function nativeSessionFailureDisposition(
         : ("native_session_interrupted" as const),
     nextAttemptAt: exhausted ? null : new Date(now.getTime() + 30_000),
   };
+}
+
+export function nativeAdmittedProviderAttemptLimit(claim: NativeRestartRecoveryClaim | null | undefined): number {
+  return claim?.kind === "reattach_remote_runner" && claim.replaceUnansweredRunner === true
+    ? NATIVE_PROVIDER_RECOVERY_ATTEMPT_LIMIT + 1 : NATIVE_PROVIDER_RECOVERY_ATTEMPT_LIMIT;
+}
+
+export function nativeUnansweredRunnerReplacementDisposition(
+  disposition: ReturnType<typeof nativeSessionFailureDisposition>,
+  input: { attempt: number; now: Date; adoptedRunnerUnanswered: boolean; replacing: boolean },
+): ReturnType<typeof nativeSessionFailureDisposition> {
+  if (!input.adoptedRunnerUnanswered || input.replacing || input.attempt !== NATIVE_PROVIDER_RECOVERY_ATTEMPT_LIMIT
+    || disposition.failureCode !== "native_session_retry_exhausted") return disposition;
+  return { phase: "retryable_failure", failureCode: "native_session_interrupted",
+    nextAttemptAt: new Date(input.now.getTime() + 30_000) };
 }
 
 export function nativeSessionRecoveryProjection(input: {
@@ -11143,7 +11163,7 @@ async function executePaperclipNativeSessionAttempt(
             recovering?.kind,
             !recovering || !("chargesProviderAttempt" in recovering) || recovering.chargesProviderAttempt !== false,
           );
-          if (nextAttempt > 3)
+          if (nextAttempt > nativeAdmittedProviderAttemptLimit(recovering))
             throw new Error("native_session_retry_exhausted");
           const scheduledResumeDecision = await scheduledResumeContinuationAllowed(tx as unknown as Db, {
             companyId: input.execution.binding.companyId,
@@ -11452,7 +11472,9 @@ async function executePaperclipNativeSessionAttempt(
       : "unpriced" as const;
     const billing = resolveNativeBilling(input.execution.provider, input.runnerEnvironment, input.billingIdentity);
     const costUsdExact = input.execution.provider.kind !== "cursor_cloud" && typeof usage?.accountingCostUsdExact === "string" ? usage.accountingCostUsdExact : undefined;
+    const providerRequestId = typeof usage?.providerRequestId === "string" && usage.providerRequestId ? usage.providerRequestId.slice(0, 250) : undefined;
     const checkpoint: AdapterUsageCheckpoint = { usage: accountingUsage, ...billing, complete, usageBasis: "per_run", costUsdExact,
+      ...(providerRequestId ? { providerRequestId } : {}),
       model: input.execution.provider.model ?? "unknown", costUsd: accountingCost ?? null, costStatus,
       ...(usage?.accountingUsageLost === true ? { pricingProvenance: { source: accountingCost != null || costUsdExact ? "provider_reported" as const : "unknown" as const,
         version: "accounting-receipt/v1", evidence: NATIVE_LOST_TURN_USAGE_EVIDENCE } } : {}) };
@@ -11946,6 +11968,9 @@ async function executePaperclipNativeSessionAttempt(
         entry.closeOnReleaseReason !== undefined ||
         entry.configDigest !== warmConfigDigest ||
         !canReuseNativeProcess(input, entry.processConfigDigest) ||
+        (entry.pluginTaskId !== undefined && pluginTaskDescription?.configuredEnvironmentVersion === 1
+          && pluginTaskSessionOwners.get(entry.session)?.configuredEnvironmentDelivered() === false
+          && Object.keys(pluginTaskConfiguredEnvironment(input.runnerEnvironment)).length > 0) ||
         Boolean(entry.githubAccess) !== needsCoreGitHubAccess(input) ||
         entry.githubAccess?.ready === false ||
         (entry.githubAccess !== undefined && entry.githubAccess.duplexRequested !== adapterExecutionTargetEnablesSandboxDuplexBridge(input.runnerExecutionTarget))
@@ -12960,11 +12985,17 @@ async function executePaperclipNativeSessionAttempt(
         sourceFailureCode,
         bootstrap,
       });
-      const disposition = nativeSessionFailureDisposition(
+      const adoptedRunnerUnanswered = input.runnerExecutionTarget?.kind === "remote"
+        && input.restartRecovery?.kind === "reattach_remote_runner"
+        && input.restartRecovery.remote.kind !== "plugin_task" && nativeRecoveryCommandUnanswered(error);
+      const disposition = nativeUnansweredRunnerReplacementDisposition(nativeSessionFailureDisposition(
         attempt,
         now,
         sourceFailureCode,
-      );
+      ), {
+        attempt, now, adoptedRunnerUnanswered,
+        replacing: input.restartRecovery?.kind === "reattach_remote_runner" && input.restartRecovery.replaceUnansweredRunner === true,
+      });
       const phase =
         recoveryEvidence.recoveryMode === "ambiguous_state"
           ? ("terminal_failure" as const)
@@ -13098,9 +13129,7 @@ async function executePaperclipNativeSessionAttempt(
                 ? { runnerExitConfirmed: true } : {}),
               ...(input.runnerExecutionTarget?.kind === "remote" && nativeRunnerExitedBeforeSessionOpen(error)
                 ? { runnerExitedBeforeSessionOpen: true } : {}),
-              ...(input.runnerExecutionTarget?.kind === "remote" && input.restartRecovery?.kind === "reattach_remote_runner"
-                && input.restartRecovery.remote.kind !== "plugin_task" && nativeRecoveryCommandUnanswered(error)
-                ? { adoptedRunnerUnanswered: true } : {}),
+              ...(adoptedRunnerUnanswered ? { adoptedRunnerUnanswered: true } : {}),
               ...(providerCooldownAt ? { providerCooldownAt: providerCooldownAt.toISOString() } : {}),
               ...(providerLimit?.plan.resetAt ? { providerLimitResetAt: providerLimit.plan.resetAt.toISOString() } : {}),
               recoveryOwner: recoveryProjection.recoveryOwner,
@@ -13799,6 +13828,8 @@ async function executePaperclipNativeSessionAttempt(
       : "unpriced",
     usageComplete: nativeAccountingComplete,
     usageBasis: "per_run",
+    ...(typeof native.usage?.providerRequestId === "string" && native.usage.providerRequestId
+      ? { providerRequestId: native.usage.providerRequestId.slice(0, 250) } : {}),
     nativeFinalization: finalization,
   };
   if (taskSettleScope) {
@@ -15325,7 +15356,7 @@ export async function verifyRemoteRunnerOrSettledExit(
   const stall = input.stall ?? remoteRunnerPluginStall(input.recoveryDeadline);
   const target = input.target;
   const replaceUnanswered = input.claim.replaceUnansweredRunner === true
-    && input.providerAttempt <= NATIVE_PROVIDER_RECOVERY_ATTEMPT_LIMIT
+    && input.providerAttempt <= NATIVE_PROVIDER_RECOVERY_ATTEMPT_LIMIT + 1
     && target?.kind === "remote" && target.transport === "sandbox" && Boolean(target.runner);
   let verified: Awaited<ReturnType<typeof verifyRemoteRunnerReattachment>>;
   try {
@@ -16150,23 +16181,24 @@ async function createRunnerdBackendWithinSessionClaim(
   if (nativeReview && !await getNativeReviewAssignment(input.db, {
     ...input.execution.binding, contextSnapshot: nativeReview,
   })) throw new Error("native_review_assignment_no_longer_available");
-  // Codex and OpenCode send dynamic tool calls over authenticated PRP. Keep
+  // Native harnesses send dynamic tool calls over authenticated PRP. Keep
   // the assigned gateway on the control plane instead of asking the sandbox to
   // reach the host's HTTP origin (which may be private or loopback-only).
-  const relayAssignedMcp = Boolean(pluginTask) || input.execution.provider.kind === "cursor_cloud" || input.execution.provider.kind === "opencode" || (remoteTarget !== null && input.execution.provider.kind === "codex") || input.execution.schema === "paperclip.native-execution-input.v6";
   const assignedMcpUrl = input.runnerEnvironment?.PAPERCLIP_NATIVE_MCP_URL;
   const assignedMcpToken = input.runnerEnvironment?.PAPERCLIP_NATIVE_MCP_TOKEN;
   const assignedMcpName = input.runnerEnvironment?.PAPERCLIP_NATIVE_MCP_NAME;
   const hasAssignedMcp = Boolean(assignedMcpName || assignedMcpUrl || assignedMcpToken);
-  if (relayAssignedMcp && hasAssignedMcp && (!assignedMcpName?.trim() || !assignedMcpUrl?.trim() || !assignedMcpToken?.trim())) {
+  if (hasAssignedMcp && (!assignedMcpName?.trim() || !assignedMcpUrl?.trim() || !assignedMcpToken?.trim())) {
     throw new Error("assigned native MCP launch binding is incomplete");
   }
-  const assignedGatewayPublicId = relayAssignedMcp && assignedMcpUrl
+  const assignedGatewayPublicId = assignedMcpUrl
     ? new URL(assignedMcpUrl).pathname.match(/^\/mcp\/gateways\/([a-zA-Z0-9_-]+)$/)?.[1]
     : undefined;
-  if (relayAssignedMcp && hasAssignedMcp && !assignedGatewayPublicId) {
+  if (hasAssignedMcp && !assignedGatewayPublicId) {
     throw new Error("assigned native MCP gateway path is invalid");
   }
+  const firstPartyOnly = input.execution.provider.kind === "grok_bot";
+  const museRuntime = input.execution.provider.kind === "muse";
   let durableState: ReturnType<typeof readDurableState> | undefined;
   let pluginTaskOwner: ReturnType<typeof preparePluginTaskOwner> | undefined;
   const earlyPluginTaskOwner = pluginTask && remoteTarget?.transport === "sandbox" && input.beginRetainedRunAttachment
@@ -16175,7 +16207,7 @@ async function createRunnerdBackendWithinSessionClaim(
     : undefined;
   const [preparedEnvironment, preparedAssignedMcp, preparedPluginTaskOwner] = await Promise.allSettled([
     Promise.resolve().then(() => input.prepareRunnerEnvironment?.() ?? input.runnerEnvironment),
-    Promise.resolve().then(() => relayAssignedMcp && !nativeReview && assignedMcpUrl && assignedMcpToken
+    Promise.resolve().then(() => !nativeReview && !firstPartyOnly && !museRuntime && assignedMcpUrl && assignedMcpToken
       ? timeController("assigned_mcp", () => createAssignedMcpTools({
         gateway: getAssignedMcpGateway(input.db),
         gatewayPublicId: assignedGatewayPublicId!,
@@ -16216,8 +16248,8 @@ async function createRunnerdBackendWithinSessionClaim(
     workspaceBridge: input.execution.schema === "paperclip.native-execution-input.v6" && !!input.dotWorkspaceRoot,
     taskAttachmentRead: dotAttachmentActor?.config.dotAttachmentAccess === true,
     dotRuntime: input.execution.schema === "paperclip.native-execution-input.v6",
-    firstPartyOnly: input.execution.provider.kind === "grok_bot",
-    museRuntime: input.execution.provider.kind === "muse",
+    firstPartyOnly,
+    museRuntime,
     externalAuthorizingUserId: input.execution.provider.kind === "muse"
       ? await museRunnerBroker(input.db).authorizingUserIdForBinding(input.execution.provider.binding) : undefined,
     assertBridgeAuthority: input.execution.schema === "paperclip.native-execution-input.v6" || input.execution.schema === "paperclip.native-execution-input.v8" ? (database = input.db) => assertExternalNativeRunAuthority(input.db, input.execution, database) : undefined,
@@ -16380,6 +16412,11 @@ async function createRunnerdBackendWithinSessionClaim(
       await registerPluginTaskCredentialHandoff(input.db, { companyId: input.execution.binding.companyId, leaseId: remoteTarget.leaseId },
         credentials.accountIdentity, input.managedAiCredentialWriteback);
     }
+    const taskConfiguredEnvironment = pluginTaskConfiguredEnvironment(input.runnerEnvironment);
+    if (description.configuredEnvironmentVersion !== 1 && Object.keys(taskConfiguredEnvironment).length > 0) {
+      await input.onLog?.("stderr", `[paperclip] The environment plugin does not support configured environment variables. These variables were not set: ${
+        Object.keys(taskConfiguredEnvironment).sort().join(", ")}. Update the plugin to deliver them.\n`);
+    }
     const ownerInput: Parameters<typeof createPluginRunnerTaskOwner>[0] = { ...credentials, taskId: description.taskId,
       executionContext: input.executionContext?.pluginSupported ? input.executionContext : undefined,
       // Warm retirement can outlive the run's temporary credential home; complete uses the durable handoff.
@@ -16399,6 +16436,8 @@ async function createRunnerdBackendWithinSessionClaim(
       }),
       warmTaskVersion: description.warmTaskVersion,
       githubCredentialBrokerVersion: description.githubCredentialBrokerVersion,
+      configuredEnvironmentVersion: description.configuredEnvironmentVersion,
+      configuredEnvironment: taskConfiguredEnvironment,
       releaseResumeVersion: description.releaseResumeVersion,
       authorityRunId: description.releaseResumeVersion === 1 ? input.execution.binding.runId : undefined,
       releasedSource: input.remoteWarmRecovery?.releasedSource,
@@ -17952,13 +17991,11 @@ async function createRunnerdBackendWithinSessionClaim(
     lifecycleMode: input.execution.session.lifecyclePolicy.mode,
   }) : null;
   if (antigravityCredential) effectiveRunnerEnvironmentBase = antigravityCredential.environment;
-  if (relayAssignedMcp) {
-    // The server-held tool authority owns this credential. Do not deliver a
-    // duplicate HTTP MCP server or its bearer token to the remote provider.
-    delete effectiveRunnerEnvironmentBase.PAPERCLIP_NATIVE_MCP_NAME;
-    delete effectiveRunnerEnvironmentBase.PAPERCLIP_NATIVE_MCP_URL;
-    delete effectiveRunnerEnvironmentBase.PAPERCLIP_NATIVE_MCP_TOKEN;
-  }
+  // The server-held tool authority owns this credential. Do not deliver a
+  // duplicate HTTP MCP server or its bearer token to the provider.
+  delete effectiveRunnerEnvironmentBase.PAPERCLIP_NATIVE_MCP_NAME;
+  delete effectiveRunnerEnvironmentBase.PAPERCLIP_NATIVE_MCP_URL;
+  delete effectiveRunnerEnvironmentBase.PAPERCLIP_NATIVE_MCP_TOKEN;
   // This authority bit is derived only from the selected execution target.
   // Never let an agent, environment binding, or host variable disable the
   // Codex sandbox for a local runner by supplying the same key.
