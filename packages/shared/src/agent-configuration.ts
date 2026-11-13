@@ -49,6 +49,7 @@ export function agentConfigurationSpec(agent: AgentConfigurationSource) {
     icon: agent.icon,
     appearance: resolveAgentAppearance(agent.appearance, agent.id),
     reportsTo: agent.reportsTo,
+    reportsToUserId: agent.reportsToUserId ?? null,
     capabilities: agent.capabilities,
     adapterType: agent.adapterType,
     adapterConfig: agent.adapterConfig,

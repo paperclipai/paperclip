@@ -1,7 +1,7 @@
 import { describe, expect, it, beforeAll, afterAll } from "vitest";
 import { agents, authUsers, companyMemberships, companies, createDb } from "@paperclipai/db";
 import { createAgentSchema, sendChatMessageSchema } from "@paperclipai/shared";
-import { hybridOrgForCompany } from "../services/company-org.js";
+import { assertAgentReportsToPrincipal, hybridOrgForCompany } from "../services/company-org.js";
 import { companyStaffProfileService } from "../services/company-staff-profiles.js";
 import { startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 
@@ -79,5 +79,37 @@ describe("company org and staff", () => {
       reportsTo: "11111111-1111-4111-8111-111111111111",
       reportsToUserId: "lead-user",
     }).success).toBe(false);
+  });
+
+  it("accepts non-UUID human manager ids when validating reportsToUserId", async () => {
+    const [company] = await db.insert(companies).values({ name: "Oak", issuePrefix: "OAK" }).returning();
+    const now = new Date();
+    const [humanLead] = await db.insert(authUsers).values({ id: "oak-lead", email: "lead2@example.com", name: "Lead", createdAt: now, updatedAt: now }).returning();
+    await db.insert(companyMemberships).values({ companyId: company!.id, principalType: "user", principalId: humanLead!.id, status: "active", membershipRole: "owner" });
+    const [agent] = await db.insert(agents).values({ companyId: company!.id, name: "Worker", role: "engineer", adapterType: "process" }).returning();
+    await expect(assertAgentReportsToPrincipal(db, company!.id, agent!.id, null, humanLead!.id)).resolves.toBeUndefined();
+  });
+
+  it("rejects a human-and-agent reporting cycle", async () => {
+    const [company] = await db.insert(companies).values({ name: "Maple", issuePrefix: "MAP" }).returning();
+    const now = new Date();
+    const [humanLead] = await db.insert(authUsers).values({ id: "lead-cycle", email: "cycle@example.com", name: "Lead", createdAt: now, updatedAt: now }).returning();
+    await db.insert(companyMemberships).values({ companyId: company!.id, principalType: "user", principalId: humanLead!.id, status: "active", membershipRole: "owner" });
+    const [agent] = await db.insert(agents).values({
+      companyId: company!.id, name: "Worker", role: "engineer", adapterType: "process", reportsToUserId: humanLead!.id,
+    }).returning();
+    await expect(companyStaffProfileService(db).upsertForMember(company!.id, humanLead!.id, {
+      orgRole: "ceo",
+      reportsTo: { type: "agent", id: agent!.id },
+    })).rejects.toThrow("cycle");
+  });
+
+  it("excludes suspended members from the org chart", async () => {
+    const [company] = await db.insert(companies).values({ name: "Elm", issuePrefix: "ELM" }).returning();
+    const now = new Date();
+    const [human] = await db.insert(authUsers).values({ id: "suspended-user", email: "s@example.com", name: "Suspended", createdAt: now, updatedAt: now }).returning();
+    await db.insert(companyMemberships).values({ companyId: company!.id, principalType: "user", principalId: human!.id, status: "suspended", membershipRole: "operator" });
+    const tree = await hybridOrgForCompany(db, company!.id);
+    expect(tree.some((node) => node.kind === "user" && node.id === human!.id)).toBe(false);
   });
 });

@@ -84,6 +84,7 @@ export async function sendAgentChatMessage(
     if (!input.recipientUserId && actor.onBehalfOfUserId !== undefined && actor.onBehalfOfUserId !== recipientUserId) {
       throw forbidden("The authenticated responsible human no longer matches this run");
     }
+    const authenticatedResponsibleUserId = actor.onBehalfOfUserId ?? context.run.responsibleUserId ?? recipientUserId;
     const assertCurrentKey = async (lock: boolean) => {
       if (!actor.agentApiKeyId) return;
       const query = tx.select().from(agentApiKeys).where(and(eq(agentApiKeys.id, actor.agentApiKeyId),
@@ -91,7 +92,7 @@ export async function sendAgentChatMessage(
       const [key] = lock ? await query.for("share") : await query;
       const currentScope = key && agentApiKeyScopeSchema.safeParse(key.scopeConfig ?? { kind: "standard" });
       if (!key || !currentScope?.success || JSON.stringify(currentScope.data) !== JSON.stringify(credentialScope.data)
-        || (!input.recipientUserId && (key.responsibleUserId?.trim() || null) !== (actor.onBehalfOfUserId ?? recipientUserId))) {
+        || (key.responsibleUserId?.trim() || null) !== (authenticatedResponsibleUserId ?? null)) {
         throw forbidden("The agent key was revoked or its authority changed");
       }
     };

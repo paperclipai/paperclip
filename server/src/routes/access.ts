@@ -4496,6 +4496,9 @@ export function accessRoutes(
       await assertCanManageCompanyMember(req, access, companyId, memberToUpdate);
 
       const staffProfile = req.body.staffProfile;
+      if (staffProfile && memberToUpdate.principalType === "user") {
+        await companyStaffProfileService(db).validateForMember(companyId, memberToUpdate.principalId, staffProfile);
+      }
       const updated = await access.updateMember(companyId, memberId, req.body);
       if (!updated) throw notFound("Member not found");
       if (staffProfile && memberToUpdate.principalType === "user") {

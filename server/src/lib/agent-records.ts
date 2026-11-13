@@ -267,6 +267,10 @@ export function configPatchFromSnapshot(snapshot: unknown): Partial<typeof agent
     title: typeof snapshot.title === "string" || snapshot.title === null ? snapshot.title : null,
     reportsTo:
       typeof snapshot.reportsTo === "string" || snapshot.reportsTo === null ? snapshot.reportsTo : null,
+    reportsToUserId:
+      typeof snapshot.reportsToUserId === "string" || snapshot.reportsToUserId === null
+        ? snapshot.reportsToUserId
+        : null,
     capabilities:
       typeof snapshot.capabilities === "string" || snapshot.capabilities === null
         ? snapshot.capabilities

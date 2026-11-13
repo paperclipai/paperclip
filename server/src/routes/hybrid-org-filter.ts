@@ -15,16 +15,18 @@ export async function filterHybridOrgForActor(
   if (req.actor.type !== "agent" || !req.actor.agentId) {
     return nodes;
   }
-  const filterNode = async (node: HybridOrgNode): Promise<HybridOrgNode | null> => {
-    const reports = (await Promise.all(node.reports.map(filterNode))).filter((child): child is HybridOrgNode => child !== null);
+  const filterNode = async (node: HybridOrgNode): Promise<HybridOrgNode[]> => {
+    const childLists = await Promise.all(node.reports.map(filterNode));
+    const reports = childLists.flat();
     if (node.kind === "user") {
-      return reports.length > 0 ? { ...node, reports } : null;
+      return reports.length > 0 ? [{ ...node, reports }] : [];
     }
     const decision = await decideAgentRead(req, { id: node.id, companyId });
     if (!decision.allowed) {
-      return reports.length > 0 ? { ...node, reports } : null;
+      return reports;
     }
-    return { ...node, reports };
+    return [{ ...node, reports }];
   };
-  return (await Promise.all(nodes.map(filterNode))).filter((node): node is HybridOrgNode => node !== null);
+  const lists = await Promise.all(nodes.map(filterNode));
+  return lists.flat();
 }

@@ -53,6 +53,7 @@ import {
   invites,
   principalPermissionGrants,
   companyMemberships,
+  companyStaffProfiles,
   companySkills,
   cases,
   documents,
@@ -136,6 +137,7 @@ export async function deleteCompany(db: Db, id: string) {
         await tx.delete(joinRequests).where(eq(joinRequests.companyId, id));
         await tx.delete(invites).where(eq(invites.companyId, id));
         await tx.delete(principalPermissionGrants).where(eq(principalPermissionGrants.companyId, id));
+        await tx.delete(companyStaffProfiles).where(eq(companyStaffProfiles.companyId, id));
         await tx.delete(companyMemberships).where(eq(companyMemberships.companyId, id));
         await tx.delete(companySkills).where(eq(companySkills.companyId, id));
         await tx.delete(routineRuns).where(eq(routineRuns.companyId, id));

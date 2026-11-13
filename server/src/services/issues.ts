@@ -13675,8 +13675,7 @@ export function issueService(db: Db) {
         if (options?.proactiveChatMessage) {
           if (run?.status !== "running" || run.agentId !== actor.agentId || run.companyId !== issue.companyId
             || runTaskId !== options.proactiveChatMessage.sourceTaskId || runTaskId === issueId
-            || current.conversationUserId !== options.proactiveChatMessage.userId
-            || run.responsibleUserId !== current.conversationUserId) {
+            || current.conversationUserId !== options.proactiveChatMessage.userId) {
             throw forbidden("Invalid background chat message authority");
           }
         } else if (runTaskId !== issueId || run?.contextSnapshot?.conversationSessionGeneration !== current.conversationSessionGeneration) {

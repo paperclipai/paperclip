@@ -1,8 +1,9 @@
 import { and, eq } from "drizzle-orm";
 import { agents, type Db } from "@paperclipai/db";
 import type { HybridOrgNode, OrgPrincipalRef } from "@paperclipai/shared";
-import { orgPrincipalKey } from "@paperclipai/shared";
+import { isUuidLike, orgPrincipalKey } from "@paperclipai/shared";
 import { agentRecordQueries } from "../lib/agent-records.js";
+import { assertHybridReportingAcyclic } from "./company-reporting-graph.js";
 import { loadActiveHumanMembers, loadStaffProfilesByUserId } from "./company-staff-profiles.js";
 
 function resolveManagerKey(
@@ -124,8 +125,10 @@ export async function assertAgentReportsToPrincipal(
     throw new Error("An agent cannot report to both an agent and a human");
   }
   if (reportsToUserId) {
-    const [agent] = await db.select({ id: agents.id }).from(agents).where(and(eq(agents.companyId, companyId), eq(agents.id, reportsToUserId)));
-    if (agent) throw new Error("reportsToUserId cannot reference an agent id");
+    if (isUuidLike(reportsToUserId)) {
+      const [agent] = await db.select({ id: agents.id }).from(agents).where(and(eq(agents.companyId, companyId), eq(agents.id, reportsToUserId)));
+      if (agent) throw new Error("reportsToUserId cannot reference an agent id");
+    }
     const humans = await loadActiveHumanMembers(db, companyId);
     if (!humans.some((human) => human.userId === reportsToUserId)) {
       throw new Error("reportsToUserId must reference an active company member");
@@ -140,4 +143,11 @@ export async function assertAgentReportsToPrincipal(
       throw new Error("Invalid reports-to agent");
     }
   }
+  const self: OrgPrincipalRef = { type: "agent", id: agentId };
+  const manager: OrgPrincipalRef | null = reportsToUserId
+    ? { type: "user", id: reportsToUserId }
+    : reportsTo
+      ? { type: "agent", id: reportsTo }
+      : null;
+  await assertHybridReportingAcyclic(db, companyId, self, manager);
 }
