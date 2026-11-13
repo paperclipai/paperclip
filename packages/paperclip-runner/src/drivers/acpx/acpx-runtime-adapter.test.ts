@@ -852,6 +852,36 @@ describe("Codex ACPX runtime adapter", () => {
       await port.close({ reason: "test finished" });
     }
   });
+  it.each([true, false])("hands a plan proposed in Claude's own cycle to that cycle's plan handler once adopted (%s) or cancels it", async (adopt) => {
+    const options = openOptions(fakeCommand());
+    options.profile = { ...options.profile, agent: "claude" };
+    let runtimeOptions: AcpRuntimeOptions | undefined;
+    const port = await openCodexAcpxRuntime(options, {
+      createRegistry: () => registry(), createStore: () => store(),
+      createRuntime: (created) => { runtimeOptions = created; return fakeRuntime(); },
+    });
+    const cycles = port.providerCycles!()!;
+    const toolCall = { toolCallId: "toolu_plan", kind: "switch_mode", rawInput: { plan: "# Plan\n\nShip it." } };
+    runtimeOptions!.onAcpMessage!("inbound", { jsonrpc: "2.0", method: "session/update", params: { sessionId: "backend-1",
+      update: { sessionUpdate: "tool_call", toolCallId: "toolu_plan", title: "Ready to code?", kind: "switch_mode", status: "pending" } } });
+    runtimeOptions!.onAcpMessage!("inbound", { jsonrpc: "2.0", id: 7, method: "session/request_permission",
+      params: { sessionId: "backend-1", toolCall, options: [] } });
+    const proposals: unknown[] = [];
+    const answer = vi.fn(async () => ({ outcome: "allow_once" as const }));
+    const outcome = runtimeOptions!.onPermissionRequest!(permissionRequest("backend-1", "switch_mode" as never,
+      { sessionId: "backend-1", toolCall, options: [] }), { signal: new AbortController().signal });
+    try {
+      expect(await cycles.next()).toMatchObject({ type: "started" });
+      if (adopt) {
+        expect(cycles.adopt({ onPermissionRequest: answer, onPlanProposal: (proposal) => proposals.push(proposal), busy: () => false })).toBe(true);
+      } else cycles.drop();
+      expect(await outcome).toEqual({ outcome: adopt ? "reject_once" : "cancel" });
+      expect(proposals).toEqual(adopt ? [{ toolCallId: "toolu_plan", markdown: "# Plan\n\nShip it." }] : []);
+      expect(answer).not.toHaveBeenCalled();
+    } finally {
+      await port.close({ reason: "test finished" });
+    }
+  });
   it.each([true, false])("answers a later cycle's permission request only through that cycle once it is adopted (%s) or cancels it", async (adoptLater) => {
     const options = openOptions(fakeCommand());
     options.profile = { ...options.profile, agent: "claude" };
