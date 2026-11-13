@@ -890,8 +890,9 @@ class OpenCodeHarnessSession implements HarnessSession {
     if (recovery?.attempt === 1 && this.#toolWorkTurnId === turnId) {
       // The turn already did real tool work, so the person must get an
       // answer, not a failed run. Some hosts drop a tool-only response (the
-      // completion call) and return nothing, so the last request asks for
-      // plain text, which needs no tool call to arrive.
+      // completion call) and return nothing. The last request asks for the
+      // answer as text first: a chat reply then arrives even if the call is
+      // dropped again, and an execution task still gets its completion call.
       this.#requestFinalResponse(turnId, 2);
       return true;
     }
@@ -923,7 +924,7 @@ class OpenCodeHarnessSession implements HarnessSession {
         : "Your response ended without a user-visible final answer or an accepted completion report.";
     const prompt = attempt === 1
       ? `${opening} Continue this same request from the work already done. Give the user a concise final answer and submit paperclip_finish (or paperclip_block when blocked) with the current completion contract. Do not repeat completed actions.`
-      : "Your last response was empty again. Reply now with a short plain-text final answer for the user that says what you did and what, if anything, is left. Do not call any tools and do not repeat completed actions.";
+      : "Your last response was empty again. Start this response with a short plain-text final answer for the user that says what you did and what, if anything, is left. After that text, submit paperclip_finish (or paperclip_block when blocked) with the current completion contract. Do not repeat completed actions.";
     void this.#submitPrompt(prompt, "disabled")
       .catch(() => this.#failEmptyResponse(turnId, "OpenCode could not request a final response after an empty completion."));
   }

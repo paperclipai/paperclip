@@ -155,8 +155,10 @@ it.each(["reply", "reply-no-finish", "reply-tool-finish", "two-turn-idle", "slow
     expect(prompts).toHaveLength(["normal", "foreign-idle", "queued-tool", "stale-tool-work"].includes(mode) ? 1 : mode.startsWith("tool-work") ? 3 : 2);
     if (prompts.length === 3) {
       expect(prompts[2]).toMatchObject({ providerID: prompts[0]!.providerID, modelID: prompts[0]!.modelID, system: prompts[0]!.system, variant: "paperclip-no-reasoning" });
-      expect(JSON.stringify(prompts[2]!.parts)).toContain("plain-text final answer");
-      expect(JSON.stringify(prompts[2]!.parts)).toContain("Do not call any tools");
+      // Text first, so a chat reply survives a dropped call; then the
+      // completion call that an execution task needs to settle.
+      expect(JSON.stringify(prompts[2]!.parts)).toContain("Start this response with a short plain-text final answer");
+      expect(JSON.stringify(prompts[2]!.parts)).toContain("After that text, submit paperclip_finish");
     }
     if (mode === "tool-work-empty") expect(events.at(-1)?.payload).toMatchObject({ error: { code: "opencode_empty_response",
       message: "OpenCode ended without a final answer or accepted completion report after two corrections." } });
