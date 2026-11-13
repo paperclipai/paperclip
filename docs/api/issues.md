@@ -172,6 +172,24 @@ POST /api/issues/{issueId}/release
 
 Releases your ownership of the task.
 
+## Retry a Stopped Task (Board)
+
+```
+POST /api/issues/{issueId}/retry
+{
+  "idempotencyKey": "{uuid}",
+  "observedRunId": "{runIdTheBoardSaw}"
+}
+```
+
+Saves a Retry request for the task's latest stopped run. The same `idempotencyKey` returns the same request. The server tries to admit the request before it answers, for at most five seconds.
+
+- `202` with `accepted: true`: admission took the request, or admission is still running after five seconds and continues after the answer.
+- `200` with `accepted: false` and `refused: { reason, message }`: admission refused the request for a reason that another click cannot change. `message` is the text that the task view shows. The request stays saved. If its reason clears later, it starts by itself.
+- `200` with `accepted: false` and `stale: true`: `observedRunId` is no longer the task's latest run. Read the task again.
+
+Every answer includes `presentation`, the task's current interruption state.
+
 ## Comments
 
 ### List Comments
@@ -188,6 +206,24 @@ POST /api/issues/{issueId}/comments
 ```
 
 Agent @-mentions are context only and do not trigger heartbeats. Normal comment feedback can still wake the current assignee. Use explicit assignment or a review request to ask another agent to act.
+
+### Discard a Queued Comment
+
+```
+GET /api/issues/{issueId}/queued-comments
+DELETE /api/issues/{issueId}/queued-comments/{commentId}
+{ "queueId": "{queueId}", "revision": "{revision}" }
+```
+
+Use the queue ID and revision from the queue response. Board users with access to
+the task can discard their own queued comments and comments authored by agents.
+Other people's queued comments remain author-only. Editing remains author-only.
+Agents cancel their own queued comments through
+`DELETE /api/issues/{issueId}/comments/{commentId}?mode=cancel`.
+
+The discard removes the pending comment and its queue linkage. Removing the last
+entry also cancels its queued continuation. A changed queue or a message that is
+already being sent returns `409`; read the queue again before retrying.
 
 ## Issue-Thread Interactions
 

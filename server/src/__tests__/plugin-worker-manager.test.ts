@@ -1,3 +1,4 @@
+import { withPluginWorkspaceReplay } from "../services/plugin-workspace-replay-context.js";
 import { currentPluginInteractionOrigin } from "../services/plugin-interaction-context.js";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -333,6 +334,40 @@ describe("plugin-worker-manager stderr failure context", () => {
         operation: { kind: "prepare", source: { id: "workspace-a" } } } as never)).resolves.toEqual({ companyId: "company-a", projectGit: { projectId: "project-a", workspaceId: "workspace-a", operation: "prepare" } });
       await expect(handle.call("workspaceOperation", { ...common, projectId: "project-a", runId: null, agentId: "agent-a",
         operation: { kind: "prepare", source: { id: "workspace-a" } } } as never)).resolves.toEqual({ companyId: "company-a" });
+    } finally { await handle.stop().catch(() => undefined); }
+  });
+
+  it("keeps the provider request identity while scoping reservation replay Git access to project consent", async () => {
+    const projectGit = vi.fn(async (_params: unknown, context: { invocationScope?: { projectGit?: { runId?: string } } }) => {
+      if (context.invocationScope?.projectGit?.runId) throw new Error("Active task run is unavailable");
+      return "project-consent";
+    });
+    const handle = createPluginWorkerHandle("test.plugin", {
+      entrypointPath: INVOCATION_SCOPE_WORKER_ENTRYPOINT, manifest: TEST_MANIFEST, config: {},
+      instanceInfo: { instanceId: "instance-1", hostVersion: "1.0.0" }, apiVersion: 1,
+      hostHandlers: { "projects.resolveGitCredential": projectGit as never },
+    });
+    const scope = { pluginId: "test.plugin", companyId: "company-a", projectId: "project-a",
+      projectWorkspaceId: "source-a", executionWorkspaceId: "workspace-a" };
+    const params = { companyId: scope.companyId, projectId: scope.projectId, executionWorkspaceId: scope.executionWorkspaceId,
+      params: { mode: "echo", requestedCompanyId: scope.companyId, hostMethod: "projects.resolveGitCredential" },
+      runId: "stopped-run", agentId: "agent-a", operation: { kind: "prepare", source: { id: scope.projectWorkspaceId } } };
+    try {
+      await handle.start();
+      for (const method of ["workspacePrepare", "workspaceOperation"] as const) {
+        const call = () => handle.call(method, params as never);
+        await expect(call()).rejects.toThrow("Active task run is unavailable");
+        await expect(withPluginWorkspaceReplay({ ...scope, projectId: "another-project" }, call))
+          .rejects.toThrow("Active task run is unavailable");
+        await expect(withPluginWorkspaceReplay(scope, call)).resolves.toEqual({
+          identity: { runId: "stopped-run", agentId: "agent-a" }, credential: "project-consent",
+        });
+        expect(projectGit).toHaveBeenLastCalledWith(
+          { companyId: scope.companyId, projectId: scope.projectId, workspaceId: scope.projectWorkspaceId },
+          expect.objectContaining({ invocationScope: { companyId: scope.companyId,
+            projectGit: { projectId: scope.projectId, workspaceId: scope.projectWorkspaceId, operation: "prepare" } } }),
+        );
+      }
     } finally { await handle.stop().catch(() => undefined); }
   });
 

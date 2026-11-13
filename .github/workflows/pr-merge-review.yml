@@ -6,7 +6,7 @@ on:
       - PR
       - Runner Windows
       - Sentry SDK contract
-      - Docker Runner check
+      - Runner image
       - commitperclip PR Review
       - Storybook Visual
       - Storybook Deploy
@@ -53,7 +53,11 @@ jobs:
     concurrency:
       group: pr-merge-review-${{ github.event.workflow_run.head_sha || github.event.check_run.head_sha || github.event.sha }}
       cancel-in-progress: true
-    runs-on: ubuntu-latest
+    # Community PR CI shares the GitHub-hosted queue. A CODEOWNER's own PR run
+    # is notified from the reserved AWS metadata fleet so it never waits there.
+    # This job runs only the master checkout below, never PR code. Check-run
+    # and status events carry no verifiable author and stay GitHub-hosted.
+    runs-on: ${{ vars.AWS_CI_SHORT_JOBS_ENABLED == 'true' && vars.AWS_CI_ENABLED == 'true' && vars.AWS_CI_ROUTING_USER_IDS_SOURCE != '' && vars.AWS_CI_TRUSTED_USER_IDS == vars.AWS_CI_ROUTING_USER_IDS_SOURCE && github.repository == 'paperclipai/paperclip' && github.repository_id == '1170821064' && github.event_name == 'workflow_run' && github.event.workflow_run.head_repository.id == 1170821064 && contains(vars.AWS_CI_ROUTING_USER_IDS, format('|{0}|', github.event.workflow_run.actor.id)) && contains(vars.AWS_CI_ROUTING_USER_IDS, format('|{0}|', github.event.workflow_run.triggering_actor.id)) && 'runs-on/fleet=paperclip-ci-routing-x64/env=public-ci' || 'ubuntu-latest' }}
     timeout-minutes: 5
     # Restrict this environment to master. Repository secrets would also be
     # available to workflows changed by an in-repository PR.

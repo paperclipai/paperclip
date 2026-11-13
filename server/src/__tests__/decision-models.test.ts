@@ -368,10 +368,10 @@ describe("company decision service", () => {
     await db.update(heartbeatRuns).set({ responsibleUserId: null }).where(eq(heartbeatRuns.id, runId));
     expect(await f.service.availability(context)).toMatchObject({ available: false, reason: "responsible_user_missing" });
   });
-  it("admits concurrent work from the same budget observation and records both obligations", async () => {
+  it("admits concurrent work without a company writer mutex and records both obligations", async () => {
     const f = await fixture();
     await db.insert(budgetPolicies).values({ companyId: f.companyId, scopeType: "company", scopeId: f.companyId,
-      windowKind: "calendar_month_utc", amount: 1, reservationCents: "1", notifyEnabled: false });
+      windowKind: "calendar_month_utc", amount: 2, reservationCents: "1", notifyEnabled: false });
     let unlock!: () => void, locked!: (pid: number) => void, finishProviders!: () => void;
     const lockGate = new Promise<void>(resolve => { unlock = resolve; });
     const acquired = new Promise<number>(resolve => { locked = resolve; });
@@ -382,19 +382,25 @@ describe("company decision service", () => {
       locked(row.pid); await lockGate;
     });
     const pid = await acquired;
-    f.provider.mockImplementation(async () => { await providerGate; return structuredClone(outcome); });
+    let providersEntered = 0, bothEntered!: () => void;
+    const bothProvidersEntered = new Promise<void>(resolve => { bothEntered = resolve; });
+    f.provider.mockImplementation(async () => {
+      if (++providersEntered === 2) bothEntered();
+      await providerGate; return structuredClone(outcome);
+    });
     const first = f.service.decide(f.context, DECISION_TEST_REQUEST), second = f.service.decide(f.context, DECISION_TEST_REQUEST);
     try {
-      // Both admission snapshots exist before either independent reservation commits.
       await vi.waitFor(async () => {
         const [row] = await db.execute<{ count: number }>(sql`select count(*)::int as count from pg_stat_activity where ${pid} = any(pg_blocking_pids(pid))`);
         expect(row.count).toBe(2);
       }, { timeout: 3000 });
       unlock(); await holding;
-      await vi.waitFor(() => expect(f.provider).toHaveBeenCalledTimes(2));
+      await bothProvidersEntered;
+      expect(f.provider).toHaveBeenCalledTimes(2);
       const holds = await db.select().from(budgetReservations).where(eq(budgetReservations.companyId, f.companyId));
       expect(holds).toHaveLength(2);
       expect(holds.every(row => row.state === "held" && row.amountCents === "1.0000000")).toBe(true);
+      expect(await f.service.decide(f.context, DECISION_TEST_REQUEST)).toMatchObject({ status: "unavailable", reason: "budget_blocked" });
     } finally { unlock(); finishProviders(); await holding; await Promise.allSettled([first, second]); }
     expect((await first).status).toBe("succeeded"); expect((await second).status).toBe("succeeded");
     expect(await db.select().from(costEvents).where(eq(costEvents.companyId, f.companyId))).toHaveLength(2);

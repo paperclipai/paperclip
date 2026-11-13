@@ -22,6 +22,12 @@ function sendNestedHostRequest(originalRequest, invocationId) {
         },
         configPath: params.configPath || "apiKeyRef",
       }
+    : hostMethod === "projects.resolveGitCredential"
+    ? {
+        companyId: requestedCompanyId,
+        projectId: originalRequest.params.projectId,
+        workspaceId: originalRequest.params.operation.source.id,
+      }
     : hostMethod === "state.get"
     ? {
         // Company-scoped state key — the shape a proactive gateway loop uses
@@ -57,7 +63,13 @@ function sendNestedHostRequest(originalRequest, invocationId) {
     nestedRequest.paperclipInvocationId = "unknown-invocation";
   }
 
-  pendingNested.set(nestedId, originalRequest.id);
+  pendingNested.set(nestedId, {
+    id: originalRequest.id,
+    ...(hostMethod === "projects.resolveGitCredential" ? { identity: {
+      runId: originalRequest.params.runId,
+      agentId: originalRequest.params.agentId,
+    } } : {}),
+  });
   send(nestedRequest);
 }
 
@@ -71,12 +83,12 @@ rl.on("line", (line) => {
   const message = JSON.parse(line);
 
   if (message.id && pendingNested.has(message.id)) {
-    const originalId = pendingNested.get(message.id);
+    const original = pendingNested.get(message.id);
     pendingNested.delete(message.id);
     if (message.error) {
       send({
         jsonrpc: "2.0",
-        id: originalId,
+        id: original.id,
         error: message.error,
       });
       return;
@@ -84,8 +96,8 @@ rl.on("line", (line) => {
 
     send({
       jsonrpc: "2.0",
-      id: originalId,
-      result: message.result,
+      id: original.id,
+      result: original.identity ? { identity: original.identity, credential: message.result } : message.result,
     });
     return;
   }
@@ -98,13 +110,13 @@ rl.on("line", (line) => {
       id: message.id,
       result: {
         ok: true,
-        supportedMethods: ["getData", "performAction", "resourceLifecycle", "workspaceOperation", "executeTool"],
+        supportedMethods: ["getData", "performAction", "resourceLifecycle", "workspaceOperation", "workspacePrepare", "executeTool"],
       },
     });
     return;
   }
 
-  if (["getData", "performAction", "resourceLifecycle", "workspaceOperation", "executeTool"].includes(method)) {
+  if (["getData", "performAction", "resourceLifecycle", "workspaceOperation", "workspacePrepare", "executeTool"].includes(method)) {
     sendNestedHostRequest(message, message.paperclipInvocation?.id);
     return;
   }

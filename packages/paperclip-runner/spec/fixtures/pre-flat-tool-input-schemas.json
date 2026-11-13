@@ -1,0 +1,1452 @@
+{
+ "schema": "paperclip.test.pre-flat-tool-input-schemas.v1",
+ "source": "origin/master f7ddab8e94",
+ "tools": {
+  "handoff_case": {
+   "oneOf": [
+    {
+     "additionalProperties": false,
+     "allOf": [
+      {
+       "if": {
+        "properties": {
+         "case": {
+          "properties": {
+           "create": {}
+          },
+          "required": [
+           "create"
+          ],
+          "type": "object"
+         }
+        },
+        "required": [
+         "case"
+        ]
+       },
+       "then": {
+        "oneOf": [
+         {
+          "properties": {
+           "workflowId": {
+            "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$",
+            "type": "string"
+           }
+          },
+          "required": [
+           "workflowId"
+          ]
+         },
+         {
+          "properties": {
+           "workflow_document_text": {}
+          },
+          "required": [
+           "workflow_document_text"
+          ]
+         }
+        ]
+       }
+      },
+      {
+       "not": {
+        "properties": {
+         "workflowId": {},
+         "workflow_document_text": {}
+        },
+        "required": [
+         "workflowId",
+         "workflow_document_text"
+        ]
+       }
+      }
+     ],
+     "properties": {
+      "bindIssueId": {
+       "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$",
+       "type": "string"
+      },
+      "case": {
+       "oneOf": [
+        {
+         "additionalProperties": false,
+         "properties": {
+          "id": {
+           "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$",
+           "type": "string"
+          }
+         },
+         "required": [
+          "id"
+         ],
+         "type": "object"
+        },
+        {
+         "additionalProperties": false,
+         "properties": {
+          "create": {
+           "additionalProperties": false,
+           "properties": {
+            "caseType": {
+             "maxLength": 120,
+             "minLength": 1,
+             "type": "string"
+            },
+            "fields": {
+             "additionalProperties": true,
+             "type": "object"
+            },
+            "projectId": {
+             "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$",
+             "type": [
+              "string",
+              "null"
+             ]
+            },
+            "summary": {
+             "maxLength": 8000,
+             "type": "string"
+            },
+            "title": {
+             "maxLength": 500,
+             "minLength": 1,
+             "type": "string"
+            }
+           },
+           "required": [
+            "caseType",
+            "title"
+           ],
+           "type": "object"
+          }
+         },
+         "required": [
+          "create"
+         ],
+         "type": "object"
+        }
+       ]
+      },
+      "expectedHandoffVersion": {
+       "minimum": 0,
+       "type": "integer"
+      },
+      "expectedIssueStatusVersion": {
+       "minimum": 0,
+       "type": "integer"
+      },
+      "idempotencyKey": {
+       "maxLength": 240,
+       "minLength": 1,
+       "type": "string"
+      },
+      "initialDocuments": {
+       "description": "Initial Markdown documents for a newly created primary task. Keys are trimmed and lowercased; duplicates after normalization are rejected. The workflow text and normalized optional document bodies must total at most 200000 characters. The workflow key is reserved. Never creates case-owned documents.",
+       "items": {
+        "additionalProperties": false,
+        "properties": {
+         "body": {
+          "description": "Ordinary task document input limit. The server applies ordinary task body normalization and enforces the combined 200000-character kickoff limit.",
+          "maxLength": 524288,
+          "type": "string"
+         },
+         "key": {
+          "description": "Canonical task document key; lowercase letters, numbers, underscore or hyphen.",
+          "maxLength": 64,
+          "minLength": 1,
+          "not": {
+           "const": "workflow"
+          },
+          "pattern": "^[a-z0-9][a-z0-9_-]*$",
+          "type": "string"
+         },
+         "title": {
+          "maxLength": 200,
+          "minLength": 1,
+          "type": "string"
+         }
+        },
+        "required": [
+         "key",
+         "title",
+         "body"
+        ],
+        "type": "object"
+       },
+       "maxItems": 20,
+       "type": "array"
+      },
+      "instructions": {
+       "maxLength": 20000,
+       "minLength": 1,
+       "type": "string"
+      },
+      "phase": {
+       "maxLength": 120,
+       "minLength": 1,
+       "type": "string"
+      },
+      "toAgentId": {
+       "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$",
+       "type": "string"
+      },
+      "workflowId": {
+       "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$",
+       "type": [
+        "string",
+        "null"
+       ]
+      },
+      "workflow_document_text": {
+       "description": "Workflow instructions as nonblank text. Recommend Markdown with both a fenced Mermaid stateDiagram-v2 diagram and prose for each transition. Use stable state IDs matching phase names; define each named arrow outcome in prose with its trigger or condition, required evidence or outputs, destination agent ID, human wait and resume behavior, and bounded correction, retry or escalation rules. The diagram is advisory. Required for a new case or its first workflow task unless workflowId is supplied; omit on later handoffs. Stored unchanged as the ordinary task document key workflow, title Workflow. The server does not parse the flow or enforce transitions. Combined workflow text and normalized initial document bodies must total at most 200000 characters.",
+       "maxLength": 200000,
+       "minLength": 1,
+       "pattern": "\\S",
+       "type": "string"
+      }
+     },
+     "required": [
+      "idempotencyKey",
+      "case",
+      "toAgentId",
+      "phase",
+      "instructions"
+     ],
+     "type": "object"
+    },
+    {
+     "additionalProperties": false,
+     "properties": {
+      "case": {
+       "additionalProperties": false,
+       "properties": {
+        "id": {
+         "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$",
+         "type": "string"
+        }
+       },
+       "required": [
+        "id"
+       ],
+       "type": "object"
+      },
+      "expectedHandoffVersion": {
+       "minimum": 0,
+       "type": "integer"
+      },
+      "expectedIssueStatusVersion": {
+       "minimum": 0,
+       "type": "integer"
+      },
+      "idempotencyKey": {
+       "maxLength": 240,
+       "minLength": 1,
+       "type": "string"
+      },
+      "instructions": {
+       "maxLength": 20000,
+       "minLength": 1,
+       "type": "string"
+      },
+      "phase": {
+       "const": "done",
+       "default": "done",
+       "type": "string"
+      },
+      "to": {
+       "const": "done",
+       "type": "string"
+      }
+     },
+     "required": [
+      "to",
+      "idempotencyKey",
+      "case",
+      "instructions",
+      "expectedHandoffVersion",
+      "expectedIssueStatusVersion"
+     ],
+     "type": "object"
+    }
+   ],
+   "type": "object"
+  },
+  "request_human_input": {
+   "additionalProperties": false,
+   "if": {
+    "properties": {
+     "interactionKind": {
+      "const": "questions"
+     }
+    },
+    "required": [
+     "interactionKind"
+    ]
+   },
+   "properties": {
+    "continuationPolicy": {
+     "enum": [
+      "none",
+      "wake_assignee",
+      "wake_assignee_on_accept"
+     ]
+    },
+    "idempotencyKey": {
+     "description": "Caller-stable retry key.",
+     "maxLength": 240,
+     "minLength": 1,
+     "type": "string"
+    },
+    "interactionKind": {
+     "enum": [
+      "confirmation",
+      "checkbox",
+      "questions",
+      "suggest_tasks",
+      "item_verdicts"
+     ]
+    },
+    "payload": {
+     "additionalProperties": true,
+     "description": "Kind-specific interaction data. For questions, send one complete questionSet containing every text and choice question. Paperclip generates compatibility questions. Each canonical question needs id, prompt, required, and answerMode: text, single_select, or multi_select. Text questions have no options or customAnswer. Choice questions need at least two meaningful options with id/label. Use customAnswer:{enabled:true} for an optional written answer to a choice question. Legacy questions remain supported; if both representations are supplied, they must describe the same complete form. Keep IDs stable across retries. For required output quality review, confirmation payload must contain qualityReview:{key:<required deliverable key>} and target:{type:issue_document,key:<output document key>,revisionId:<saved revision>} or target:{type:issue_attachment,attachmentId,assetId,sha256}. For item_verdicts put qualityReview and target on each reviewed item. Keep supersedeOnUserComment:false inside payload. Never discard these bindings to work around a validation error; an unbound confirmation cannot satisfy required quality review.",
+     "properties": {
+      "qualityReview": {
+       "additionalProperties": false,
+       "properties": {
+        "key": {
+         "pattern": "^[a-z][a-z0-9_-]{0,79}$",
+         "type": "string"
+        }
+       },
+       "required": [
+        "key"
+       ],
+       "type": "object"
+      },
+      "questionSet": {
+       "additionalProperties": false,
+       "properties": {
+        "description": {
+         "maxLength": 100000,
+         "type": "string"
+        },
+        "questions": {
+         "items": {
+          "additionalProperties": false,
+          "allOf": [
+           {
+            "if": {
+             "properties": {
+              "answerMode": {
+               "const": "text"
+              }
+             },
+             "required": [
+              "answerMode"
+             ]
+            },
+            "then": {
+             "not": {
+              "required": [
+               "customAnswer"
+              ]
+             },
+             "properties": {
+              "options": {
+               "maxItems": 0,
+               "type": "array"
+              }
+             }
+            }
+           },
+           {
+            "if": {
+             "properties": {
+              "answerMode": {
+               "enum": [
+                "single_select",
+                "multi_select"
+               ]
+              }
+             },
+             "required": [
+              "answerMode"
+             ]
+            },
+            "then": {
+             "not": {
+              "required": [
+               "initialText"
+              ]
+             },
+             "properties": {
+              "options": {
+               "minItems": 1,
+               "type": "array"
+              }
+             },
+             "required": [
+              "options"
+             ]
+            }
+           }
+          ],
+          "properties": {
+           "answerMode": {
+            "enum": [
+             "single_select",
+             "multi_select",
+             "text"
+            ]
+           },
+           "customAnswer": {
+            "additionalProperties": false,
+            "properties": {
+             "enabled": {
+              "const": true
+             },
+             "label": {
+              "maxLength": 1000,
+              "type": "string"
+             },
+             "placeholder": {
+              "maxLength": 1000,
+              "type": "string"
+             }
+            },
+            "required": [
+             "enabled"
+            ],
+            "type": "object"
+           },
+           "header": {
+            "maxLength": 1000,
+            "type": "string"
+           },
+           "helpText": {
+            "maxLength": 4000,
+            "type": "string"
+           },
+           "id": {
+            "maxLength": 160,
+            "minLength": 1,
+            "type": "string"
+           },
+           "initialText": {
+            "description": "Editable draft of at most 100000 Unicode code points. Never an implicit answer; submitted text still uses the existing response bounds.",
+            "maxLength": 100000,
+            "type": "string"
+           },
+           "options": {
+            "items": {
+             "additionalProperties": false,
+             "properties": {
+              "description": {
+               "maxLength": 4000,
+               "type": "string"
+              },
+              "id": {
+               "maxLength": 160,
+               "minLength": 1,
+               "type": "string"
+              },
+              "label": {
+               "maxLength": 1000,
+               "minLength": 1,
+               "type": "string"
+              },
+              "recommended": {
+               "type": "boolean"
+              }
+             },
+             "required": [
+              "id",
+              "label"
+             ],
+             "type": "object"
+            },
+            "maxItems": 128,
+            "type": "array"
+           },
+           "prompt": {
+            "maxLength": 4000,
+            "minLength": 1,
+            "type": "string"
+           },
+           "required": {
+            "type": "boolean"
+           },
+           "textValidation": {
+            "additionalProperties": false,
+            "properties": {
+             "inputType": {
+              "enum": [
+               "text",
+               "number",
+               "integer"
+              ]
+             },
+             "maxLength": {
+              "maximum": 100000,
+              "minimum": 0,
+              "type": "integer"
+             },
+             "maximum": {
+              "type": "number"
+             },
+             "minLength": {
+              "maximum": 100000,
+              "minimum": 0,
+              "type": "integer"
+             },
+             "minimum": {
+              "type": "number"
+             },
+             "pattern": {
+              "maxLength": 1000,
+              "type": "string"
+             }
+            },
+            "type": "object"
+           }
+          },
+          "required": [
+           "id",
+           "prompt",
+           "required",
+           "answerMode"
+          ],
+          "type": "object"
+         },
+         "maxItems": 64,
+         "minItems": 1,
+         "type": "array"
+        },
+        "schema": {
+         "const": "paperclip.question_set.v1"
+        },
+        "submitLabel": {
+         "maxLength": 200,
+         "type": "string"
+        },
+        "title": {
+         "maxLength": 1000,
+         "type": "string"
+        }
+       },
+       "required": [
+        "schema",
+        "questions"
+       ],
+       "type": "object"
+      },
+      "questions": {
+       "items": {
+        "additionalProperties": true,
+        "properties": {
+         "id": {
+          "maxLength": 160,
+          "minLength": 1,
+          "type": "string"
+         },
+         "options": {
+          "items": {
+           "additionalProperties": true,
+           "properties": {
+            "freeText": {
+             "type": "boolean"
+            },
+            "id": {
+             "maxLength": 160,
+             "minLength": 1,
+             "type": "string"
+            },
+            "label": {
+             "maxLength": 1000,
+             "minLength": 1,
+             "type": "string"
+            }
+           },
+           "required": [
+            "id",
+            "label"
+           ],
+           "type": "object"
+          },
+          "maxItems": 129,
+          "minItems": 1,
+          "type": "array"
+         },
+         "prompt": {
+          "maxLength": 4000,
+          "minLength": 1,
+          "type": "string"
+         },
+         "required": {
+          "type": "boolean"
+         },
+         "selectionMode": {
+          "enum": [
+           "single",
+           "multi"
+          ]
+         }
+        },
+        "required": [
+         "id",
+         "prompt",
+         "selectionMode",
+         "options"
+        ],
+        "type": "object"
+       },
+       "maxItems": 64,
+       "minItems": 1,
+       "type": "array"
+      },
+      "supersedeOnUserComment": {
+       "type": "boolean"
+      },
+      "target": {
+       "additionalProperties": true,
+       "description": "Exact registered output identity. Use an output document revision or immutable attachment for quality review; a plan does not qualify.",
+       "type": [
+        "object",
+        "null"
+       ]
+      },
+      "version": {
+       "description": "Optional. Paperclip stores version 1; you may omit it.",
+       "enum": [
+        1,
+        "1"
+       ]
+      }
+     },
+     "type": "object"
+    },
+    "prompt": {
+     "description": "Question or decision prompt.",
+     "maxLength": 10000,
+     "minLength": 1,
+     "type": "string"
+    },
+    "resolverPolicy": {
+     "const": "human_only",
+     "description": "Optionally require an authenticated human response. Required output-quality bindings also enforce this server-side."
+    },
+    "targetRevisionId": {
+     "description": "Optional bound document revision.",
+     "maxLength": 20000,
+     "type": [
+      "string",
+      "null"
+     ]
+    },
+    "title": {
+     "description": "Interaction card title.",
+     "maxLength": 300,
+     "minLength": 1,
+     "type": "string"
+    }
+   },
+   "required": [
+    "idempotencyKey",
+    "interactionKind",
+    "title",
+    "prompt",
+    "continuationPolicy"
+   ],
+   "then": {
+    "properties": {
+     "payload": {
+      "anyOf": [
+       {
+        "required": [
+         "questionSet"
+        ]
+       },
+       {
+        "required": [
+         "questions"
+        ]
+       }
+      ]
+     }
+    },
+    "required": [
+     "payload"
+    ]
+   },
+   "type": "object"
+  },
+  "read_case": {
+   "additionalProperties": false,
+   "allOf": [
+    {
+     "if": {
+      "properties": {
+       "offsetBytes": {
+        "minimum": 1,
+        "type": "integer"
+       }
+      },
+      "required": [
+       "offsetBytes"
+      ]
+     },
+     "then": {
+      "properties": {
+       "snapshot": {}
+      },
+      "required": [
+       "snapshot"
+      ]
+     }
+    },
+    {
+     "else": {
+      "properties": {
+       "documentIssueId": false,
+       "documentKey": false
+      }
+     },
+     "if": {
+      "properties": {
+       "section": {
+        "const": "document"
+       }
+      },
+      "required": [
+       "section"
+      ]
+     },
+     "then": {
+      "properties": {
+       "documentKey": {}
+      },
+      "required": [
+       "documentKey"
+      ]
+     }
+    },
+    {
+     "if": {
+      "properties": {
+       "documentIssueId": {}
+      },
+      "required": [
+       "documentIssueId"
+      ]
+     },
+     "then": {
+      "properties": {
+       "documentKey": {
+        "maxLength": 64,
+        "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]*$",
+        "type": "string"
+       }
+      }
+     }
+    }
+   ],
+   "properties": {
+    "caseId": {
+     "description": "Case ID. Omit to use the active task's primary workflow case.",
+     "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$",
+     "type": "string"
+    },
+    "documentIssueId": {
+     "description": "Only with section=document: owning primary/currently linked task ID from the case reference. Omit for a historical case-owned document; arbitrary tasks are denied.",
+     "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$",
+     "type": "string"
+    },
+    "documentKey": {
+     "description": "Required only with section=document. Historical case document keys retain their original case. Task keys use at most 64 letters, numbers, underscore or hyphen and normalize to lowercase.",
+     "maxLength": 120,
+     "minLength": 1,
+     "pattern": "^[A-Za-z0-9_.:-]+$",
+     "type": "string"
+    },
+    "limitBytes": {
+     "description": "Maximum UTF-8 bytes per JSON text page; defaults to 8192.",
+     "maximum": 8192,
+     "minimum": 4,
+     "type": "integer"
+    },
+    "offsetBytes": {
+     "description": "UTF-8 continuation offset from readPage.nextOffsetBytes. Nonzero offsets require snapshot.",
+     "maximum": 9007199254740991,
+     "minimum": 0,
+     "type": "integer"
+    },
+    "section": {
+     "description": "Select full case JSON, entire fields JSON, or exact referenced document JSON. Explicit selectors return JSON text pages.",
+     "enum": [
+      "case",
+      "fields",
+      "document"
+     ],
+     "type": "string"
+    },
+    "snapshot": {
+     "description": "Copy readPage.snapshot on continuation. If current data or routing changed, restart at offset zero after the conflict.",
+     "pattern": "^[a-f0-9]{64}$",
+     "type": "string"
+    }
+   },
+   "type": "object"
+  },
+  "update_case": {
+   "additionalProperties": false,
+   "anyOf": [
+    {
+     "properties": {
+      "title": {}
+     },
+     "required": [
+      "title"
+     ]
+    },
+    {
+     "properties": {
+      "summary": {}
+     },
+     "required": [
+      "summary"
+     ]
+    },
+    {
+     "properties": {
+      "fields": {}
+     },
+     "required": [
+      "fields"
+     ]
+    }
+   ],
+   "properties": {
+    "caseId": {
+     "description": "Case ID. Omit to use the active task's primary workflow case.",
+     "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$",
+     "type": "string"
+    },
+    "fields": {
+     "additionalProperties": true,
+     "type": "object"
+    },
+    "idempotencyKey": {
+     "description": "Retry key scoped to this admitted run. Reuse with exactly the same input after a lost response. A new run does not replay this receipt; inspect current state first.",
+     "maxLength": 240,
+     "minLength": 1,
+     "type": "string"
+    },
+    "summary": {
+     "maxLength": 8000,
+     "type": [
+      "string",
+      "null"
+     ]
+    },
+    "title": {
+     "maxLength": 500,
+     "minLength": 1,
+     "type": "string"
+    }
+   },
+   "required": [
+    "idempotencyKey"
+   ],
+   "type": "object"
+  },
+  "create_case": {
+   "additionalProperties": false,
+   "oneOf": [
+    {
+     "properties": {
+      "workflowId": {}
+     },
+     "required": [
+      "workflowId"
+     ]
+    },
+    {
+     "properties": {
+      "workflow_document_text": {}
+     },
+     "required": [
+      "workflow_document_text"
+     ]
+    }
+   ],
+   "properties": {
+    "caseType": {
+     "maxLength": 120,
+     "minLength": 1,
+     "type": "string"
+    },
+    "fields": {
+     "additionalProperties": true,
+     "type": "object"
+    },
+    "idempotencyKey": {
+     "maxLength": 240,
+     "minLength": 1,
+     "type": "string"
+    },
+    "initialDocuments": {
+     "description": "Initial Markdown documents for a newly created primary task. Keys are trimmed and lowercased; duplicates after normalization are rejected. The workflow text and normalized optional document bodies must total at most 200000 characters. The workflow key is reserved. Never creates case-owned documents.",
+     "items": {
+      "additionalProperties": false,
+      "properties": {
+       "body": {
+        "description": "Ordinary task document input limit. The server applies ordinary task body normalization and enforces the combined 200000-character kickoff limit.",
+        "maxLength": 524288,
+        "type": "string"
+       },
+       "key": {
+        "description": "Canonical task document key; lowercase letters, numbers, underscore or hyphen.",
+        "maxLength": 64,
+        "minLength": 1,
+        "not": {
+         "const": "workflow"
+        },
+        "pattern": "^[a-z0-9][a-z0-9_-]*$",
+        "type": "string"
+       },
+       "title": {
+        "maxLength": 200,
+        "minLength": 1,
+        "type": "string"
+       }
+      },
+      "required": [
+       "key",
+       "title",
+       "body"
+      ],
+      "type": "object"
+     },
+     "maxItems": 20,
+     "type": "array"
+    },
+    "kickoff": {
+     "additionalProperties": false,
+     "properties": {
+      "instructions": {
+       "maxLength": 20000,
+       "minLength": 1,
+       "type": "string"
+      },
+      "phase": {
+       "maxLength": 120,
+       "minLength": 1,
+       "type": "string"
+      },
+      "toAgentId": {
+       "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$",
+       "type": "string"
+      }
+     },
+     "required": [
+      "toAgentId",
+      "phase",
+      "instructions"
+     ],
+     "type": "object"
+    },
+    "projectId": {
+     "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$",
+     "type": [
+      "string",
+      "null"
+     ]
+    },
+    "summary": {
+     "maxLength": 8000,
+     "type": "string"
+    },
+    "title": {
+     "maxLength": 500,
+     "minLength": 1,
+     "type": "string"
+    },
+    "workflowId": {
+     "description": "Adopt this company workflow’s latest prompt.",
+     "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$",
+     "type": "string"
+    },
+    "workflow_document_text": {
+     "description": "Workflow instructions as nonblank text. Recommend Markdown with both a fenced Mermaid stateDiagram-v2 diagram and prose for each transition. Use stable state IDs matching phase names; define each named arrow outcome in prose with its trigger or condition, required evidence or outputs, destination agent ID, human wait and resume behavior, and bounded correction, retry or escalation rules. The diagram is advisory. Required for a new case or its first workflow task unless workflowId is supplied; omit on later handoffs. Stored unchanged as the ordinary task document key workflow, title Workflow. The server does not parse the flow or enforce transitions. Combined workflow text and normalized initial document bodies must total at most 200000 characters.",
+     "maxLength": 200000,
+     "minLength": 1,
+     "pattern": "\\S",
+     "type": "string"
+    }
+   },
+   "required": [
+    "idempotencyKey",
+    "caseType",
+    "title",
+    "kickoff"
+   ],
+   "type": "object"
+  },
+  "read_workflow": {
+   "additionalProperties": false,
+   "allOf": [
+    {
+     "if": {
+      "properties": {
+       "responseText": {
+        "properties": {
+         "offsetBytes": {
+          "minimum": 1,
+          "type": "integer"
+         }
+        },
+        "required": [
+         "offsetBytes"
+        ],
+        "type": "object"
+       }
+      },
+      "required": [
+       "responseText"
+      ]
+     },
+     "then": {
+      "properties": {
+       "snapshot": {}
+      },
+      "required": [
+       "snapshot"
+      ]
+     }
+    }
+   ],
+   "properties": {
+    "responseText": {
+     "additionalProperties": false,
+     "properties": {
+      "limitBytes": {
+       "maximum": 24576,
+       "minimum": 4,
+       "type": "integer"
+      },
+      "offsetBytes": {
+       "maximum": 9007199254740991,
+       "minimum": 0,
+       "type": "integer"
+      }
+     },
+     "type": "object"
+    },
+    "snapshot": {
+     "description": "Content fingerprint returned by the first page; required for continuation pages.",
+     "pattern": "^[a-f0-9]{64}$",
+     "type": "string"
+    },
+    "workflowId": {
+     "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$",
+     "type": "string"
+    }
+   },
+   "required": [
+    "workflowId"
+   ],
+   "type": "object"
+  },
+  "update_workflow": {
+   "additionalProperties": false,
+   "anyOf": [
+    {
+     "properties": {
+      "name": {}
+     },
+     "required": [
+      "name"
+     ]
+    },
+    {
+     "properties": {
+      "prompt": {}
+     },
+     "required": [
+      "prompt"
+     ]
+    }
+   ],
+   "properties": {
+    "idempotencyKey": {
+     "maxLength": 240,
+     "minLength": 1,
+     "type": "string"
+    },
+    "name": {
+     "maxLength": 200,
+     "minLength": 1,
+     "type": "string"
+    },
+    "prompt": {
+     "description": "Reusable Markdown instructions for LLM execution. Phases and routing are advisory instructions, not a state machine.",
+     "maxLength": 200000,
+     "minLength": 1,
+     "pattern": "\\S",
+     "type": "string"
+    },
+    "workflowId": {
+     "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$",
+     "type": "string"
+    }
+   },
+   "required": [
+    "workflowId",
+    "idempotencyKey"
+   ],
+   "type": "object"
+  },
+  "paperclip_finish": {
+   "type": "object",
+   "additionalProperties": true,
+   "required": [
+    "reportedWorkDisposition",
+    "summary",
+    "completionClaim",
+    "evidence",
+    "verification"
+   ],
+   "properties": {
+    "schema": {
+     "enum": [
+      "paperclip.run_result.v1",
+      "paperclip_finish",
+      "paperclip_paperclip_finish",
+      "paperclip_finish.v1"
+     ]
+    },
+    "summary": {
+     "type": "string",
+     "minLength": 1,
+     "description": "The complete user-facing answer for this turn. Do not replace the requested answer with routine work/control bookkeeping. Include the requested result and any genuine actionable failure, limitation, or required user action. Unless explicitly requested, omit routine preparation, unconfirmed-delivery, and wait/review status; put the response-wake reason in continuation.summary. Never claim delivery without a confirmed receipt."
+    },
+    "completionClaim": {
+     "type": "object",
+     "additionalProperties": false,
+     "required": [
+      "contractRevision",
+      "objectiveSatisfied",
+      "criteria",
+      "remainingWork"
+     ],
+     "properties": {
+      "contractRevision": {
+       "type": "string",
+       "minLength": 1,
+       "description": "Use the current turn completion.revision (or completionContract.revision on the first turn), never a previous turn’s revision. On stale-revision feedback, reassess the current request and correct the report without repeating completed work."
+      },
+      "objectiveSatisfied": {
+       "type": "boolean"
+      },
+      "criteria": {
+       "type": "array",
+       "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+         "criterionId",
+         "status",
+         "evidenceRefs"
+        ],
+        "properties": {
+         "criterionId": {
+          "type": "string",
+          "minLength": 1
+         },
+         "status": {
+          "enum": [
+           "satisfied",
+           "not_satisfied",
+           "unknown",
+           "pass",
+           "passed",
+           "complete",
+           "completed",
+           "fail",
+           "failed",
+           "incomplete"
+          ],
+          "description": "Use satisfied when the criterion is met, not_satisfied when it is not met, or unknown when no verdict is available. Common provider aliases are accepted and normalized."
+         },
+         "evidenceRefs": {
+          "type": "array",
+          "items": {
+           "type": "string"
+          }
+         }
+        }
+       }
+      },
+      "remainingWork": {
+       "type": "array",
+       "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+         "description",
+         "blocksCompletion"
+        ],
+        "properties": {
+         "description": {
+          "type": "string",
+          "minLength": 1
+         },
+         "blocksCompletion": {
+          "type": "boolean"
+         }
+        }
+       }
+      }
+     }
+    },
+    "evidence": {
+     "type": "array",
+     "items": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+       "ref"
+      ],
+      "properties": {
+       "ref": {
+        "type": "string",
+        "minLength": 1
+       }
+      }
+     }
+    },
+    "verification": {
+     "type": "array",
+     "description": "Checks used to verify the work. Use failed only when the check actually ran and found a defect in the work. If a check could not run or complete because the environment, tool, dependency, permission, credential, policy, external service, or budget was unavailable, use not_run with reasonCode even when the attempted command exited non-zero.",
+     "items": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": [
+       "status"
+      ],
+      "properties": {
+       "commandOrCheck": {
+        "type": "string",
+        "minLength": 1
+       },
+       "command": {
+        "type": "string",
+        "minLength": 1
+       },
+       "status": {
+        "enum": [
+         "passed",
+         "failed",
+         "not_run",
+         "blocked",
+         "skipped",
+         "pass",
+         "success",
+         "succeeded",
+         "fail"
+        ],
+        "description": "passed: the check ran and succeeded. failed: the check ran to a meaningful verdict and found the work incorrect. not_run: no meaningful verdict because the check was not attempted or could not complete. Prefer not_run over legacy blocked/skipped, and include reasonCode for any unavailable check."
+       },
+       "reasonCode": {
+        "enum": [
+         "environment_unavailable",
+         "tool_unavailable",
+         "dependency_missing",
+         "permission_denied",
+         "credential_missing",
+         "policy_restricted",
+         "external_service_unavailable",
+         "budget_exhausted",
+         "other"
+        ],
+        "description": "Required for not_run; identify why the check had no meaningful verdict."
+       },
+       "detail": {
+        "type": "string"
+       },
+       "result": {
+        "type": "string"
+       },
+       "cwd": {
+        "type": "string"
+       },
+       "artifactRef": {
+        "type": [
+         "string",
+         "null"
+        ],
+        "description": "Reference to a real verification artifact. Omit or use null when no artifact exists; empty values are normalized away."
+       }
+      }
+     }
+    },
+    "attentionRequests": {
+     "type": "array",
+     "items": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": [
+       "kind",
+       "summary"
+      ],
+      "properties": {
+       "kind": {
+        "type": "string",
+        "minLength": 1
+       },
+       "summary": {
+        "type": "string",
+        "minLength": 1
+       },
+       "ownerClass": {
+        "enum": [
+         "human",
+         "agent",
+         "external_system"
+        ]
+       },
+       "targetAgentId": {
+        "type": "string",
+        "minLength": 1
+       },
+       "requestedCapability": {
+        "type": "string",
+        "minLength": 1
+       },
+       "requiredAuthority": {
+        "type": "string",
+        "minLength": 1
+       },
+       "target": {
+        "type": "object",
+        "additionalProperties": true
+       }
+      }
+     }
+    },
+    "artifacts": {
+     "type": "array",
+     "items": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+       "kind",
+       "ref"
+      ],
+      "properties": {
+       "kind": {
+        "type": "string",
+        "minLength": 1
+       },
+       "ref": {
+        "type": "string",
+        "minLength": 1
+       }
+      }
+     }
+    },
+    "reportedWorkDisposition": {
+     "enum": [
+      "done",
+      "needs_review",
+      "yielded",
+      "completed"
+     ]
+    },
+    "continuation": {
+     "type": [
+      "object",
+      "null"
+     ],
+     "description": "For yielded, omit or use null to reuse this run's authorized published-review wait, eligible saved monitor, or repository-preparation continuation; the controller reads current task state. Otherwise provide a real response_wake or monitor with summary and idempotencyKey. Use null or omit for done, completed, or needs_review.",
+     "additionalProperties": false,
+     "required": [
+      "kind",
+      "summary",
+      "idempotencyKey"
+     ],
+     "properties": {
+      "kind": {
+       "type": "string",
+       "enum": [
+        "response_wake",
+        "monitor",
+        "case_handoff"
+       ]
+      },
+      "summary": {
+       "type": "string",
+       "minLength": 1,
+       "description": "Internal control-plane reason to wait for the next response. Keep routine waiting and continuation bookkeeping here, not in the top-level user-facing summary. This field is not the answer to the user's request."
+      },
+      "idempotencyKey": {
+       "type": "string",
+       "minLength": 1
+      },
+      "handoffId": {
+       "type": "string",
+       "minLength": 1,
+       "description": "Exact server-issued handoff ID; required for case_handoff."
+      }
+     },
+     "allOf": [
+      {
+       "if": {
+        "properties": {
+         "kind": {
+          "const": "case_handoff"
+         }
+        },
+        "required": [
+         "kind"
+        ]
+       },
+       "then": {
+        "required": [
+         "handoffId"
+        ]
+       }
+      }
+     ]
+    }
+   },
+   "if": {
+    "properties": {
+     "reportedWorkDisposition": {
+      "const": "yielded"
+     }
+    },
+    "required": [
+     "reportedWorkDisposition"
+    ]
+   },
+   "then": {
+    "properties": {
+     "continuation": {
+      "type": [
+       "object",
+       "null"
+      ]
+     }
+    }
+   },
+   "else": {
+    "properties": {
+     "continuation": {
+      "type": "null"
+     }
+    }
+   }
+  }
+ }
+}

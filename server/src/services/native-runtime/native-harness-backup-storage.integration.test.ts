@@ -19,7 +19,8 @@ import { nativeHarnessBackupExpirationService } from "./native-harness-backup-ex
 import { legacyControllerBootId } from "../legacy-controller-lease.js";
 import { DurablePrpControlPlane, captureLegacyDurablePrpCheckpoint } from "../../vendor/paperclip-runner/index.js";
 import { loadNativeRunnerCheckpoint, nativeRunnerCheckpointWriter } from "./native-runner-checkpoint.js";
-import { restoreNativeProviderArtifacts } from "./native-provider-artifacts.js";
+import { NativeProviderArtifactTransferTimeoutError, nativeProviderArtifactTransferBounds, restoreNativeProviderArtifacts,
+  readyNativeProviderArtifactCandidates, retainNativeProviderArtifacts, retainReadyNativeProviderArtifacts } from "./native-provider-artifacts.js";
 import * as backupArchive from "./native-harness-backup-archive.js";
 import { canonicalProviderPackJson } from "./remote-provider-pack-verification.js";
 
@@ -283,6 +284,79 @@ describeEmbeddedPostgres("durable native provider backups", () => {
     expect((await nativeHarnessBackupExpirationService(first.db, { storage: first.storage }).tickCheckpoints()).expiredCheckpoints).toBe(2);
     expect(await first.db.select().from(nativeProviderArtifacts).where(eq(nativeProviderArtifacts.id, artifact.id))).toHaveLength(0);
     expect(await first.db.select().from(nativeProviderArtifactReferences).where(eq(nativeProviderArtifactReferences.artifactId, artifact.id))).toHaveLength(0);
+  });
+  it("admits a later run from the company's ready launch artifact with a lookup and no transfer", async () => {
+    const version = randomUUID(), first = await artifactFixture(version), other = await artifactFixture(version);
+    const second = { ...other, storage: first.storage };
+    const stored = await retainNativeProviderArtifacts({ ...first, source: first.providerArtifacts });
+    const put = vi.spyOn(first.storage, "putFile"), get = vi.spyOn(first.storage, "getObject");
+    let receipt: Awaited<ReturnType<typeof retainReadyNativeProviderArtifacts>> = null;
+    try {
+      const startedAt = performance.now();
+      receipt = await retainReadyNativeProviderArtifacts({ db: second.db, owner: second.owner, manifest: second.manifest,
+        launchRoot: second.launchRoot, accountUid: 1000 });
+      const elapsedMs = performance.now() - startedAt;
+      console.info(`[provider-artifact-gate] ready artifact admission took ${elapsedMs.toFixed(1)} ms`);
+      expect(elapsedMs).toBeLessThan(1_000);
+      expect(receipt).toMatchObject({ artifactId: stored.artifactId, closureDigest: stored.closureDigest,
+        providerPackDigest: second.manifest.digest, launchRoot: second.launchRoot, accountUid: 1000 });
+      expect(put).not.toHaveBeenCalled();
+      expect(get).not.toHaveBeenCalled();
+    } finally { put.mockRestore(); get.mockRestore(); }
+    const [run] = await second.db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, second.runId));
+    expect(run.runnerProfileJson?.nativeProviderArtifacts).toMatchObject({ artifactId: stored.artifactId });
+    const pins = await second.db.select().from(nativeProviderArtifactReferences).where(and(
+      eq(nativeProviderArtifactReferences.artifactId, stored.artifactId), eq(nativeProviderArtifactReferences.runId, second.runId)));
+    expect(pins).toHaveLength(1);
+    const replacement = join(environment.current.runtimeRoot, randomUUID()); ownedHomes.push(replacement); await mkdir(replacement);
+    await restoreNativeProviderArtifacts({ ...second, companyId: second.companyId, receipt: receipt!, targetRoot: join(replacement, "provider-artifacts") });
+    expect(await readFile(join(replacement, "provider-artifacts/opencodeProxy"), "utf8")).toBe(second.original.opencodeProxy);
+  });
+  it("loads only the ready artifact whose launch files match, however many other versions the company keeps", async () => {
+    const version = randomUUID(), first = await artifactFixture(version), other = await artifactFixture(version);
+    const second = { ...other, storage: first.storage };
+    const stored = await retainNativeProviderArtifacts({ ...first, source: first.providerArtifacts });
+    const [kept] = await first.db.select().from(nativeProviderArtifacts).where(eq(nativeProviderArtifacts.id, stored.artifactId));
+    const descriptor = kept.descriptor as { entries: { name: string; sha256: string }[] };
+    await first.db.insert(nativeProviderArtifacts).values(Array.from({ length: 200 }, (_, index) => ({
+      companyId: second.companyId, status: "ready", reference: { decoy: index },
+      closureDigest: `sha256:${createHash("sha256").update(`decoy ${version} ${index}`).digest("hex")}`,
+      descriptor: { ...descriptor, entries: descriptor.entries.map(entry => entry.name === "opencodeProxy"
+        ? { ...entry, sha256: `sha256:${createHash("sha256").update(`older proxy ${index}`).digest("hex")}` } : entry) },
+    })));
+    const candidates = await readyNativeProviderArtifactCandidates(second.db, second.companyId, second.manifest);
+    expect(candidates.map(row => row.id)).toEqual([stored.artifactId]);
+    await expect(retainReadyNativeProviderArtifacts({ db: second.db, owner: second.owner, manifest: second.manifest,
+      launchRoot: second.launchRoot, accountUid: 1000 })).resolves.toMatchObject({ artifactId: stored.artifactId });
+  });
+  it("captures a launch artifact whose bytes differ from every ready artifact", async () => {
+    const first = await artifactFixture(randomUUID()), second = await artifactFixture(randomUUID());
+    await retainNativeProviderArtifacts({ ...first, source: first.providerArtifacts });
+    await expect(retainReadyNativeProviderArtifacts({ db: second.db, owner: second.owner, manifest: second.manifest,
+      launchRoot: second.launchRoot, accountUid: 1000 })).resolves.toBeNull();
+    const [run] = await second.db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, second.runId));
+    expect(run.runnerProfileJson?.nativeProviderArtifacts).toBeUndefined();
+  });
+  it.each(["upload", "download"] as const)("bounds a stalled %s with its own timeout and real cause", async step => {
+    const f = await artifactFixture();
+    const bounds = { ...nativeProviderArtifactTransferBounds };
+    Object.assign(nativeProviderArtifactTransferBounds, { minimumStepMs: 50, minimumBytesPerSecond: Number.MAX_SAFE_INTEGER });
+    const stalled = (signal?: AbortSignal) => new Promise<never>((_resolve, reject) => {
+      signal?.addEventListener("abort", () => reject(signal.reason), { once: true });
+    });
+    const stall = step === "upload"
+      ? vi.spyOn(f.storage, "putFile").mockImplementation(async input => stalled(input.signal))
+      : vi.spyOn(f.storage, "getObject").mockImplementation(async (_companyId, _key, options) => stalled(options?.signal));
+    try {
+      const failure = retainNativeProviderArtifacts({ ...f, source: f.providerArtifacts });
+      await expect(failure).rejects.toBeInstanceOf(NativeProviderArtifactTransferTimeoutError);
+      await expect(failure).rejects.toMatchObject({ step,
+        message: expect.stringMatching(new RegExp(`^native_provider_artifacts_transfer_timeout: the ${step} of \\d+ bytes did not finish within 1 s$`)),
+      });
+    } finally {
+      stall.mockRestore();
+      Object.assign(nativeProviderArtifactTransferBounds, bounds);
+    }
   });
   it("keeps independent overlapping uploads bounded and retains only their verified winner", async () => {
     const version = randomUUID(), first = await artifactFixture(version), other = await artifactFixture(version);

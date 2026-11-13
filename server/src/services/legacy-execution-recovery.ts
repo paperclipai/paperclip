@@ -26,6 +26,7 @@ import { hasRemoteTerminationReceipt } from "./remote-execution-termination.js";
 import { issueRecoveryActionService } from "./issue-recovery-actions.js";
 import { parseIssueExecutionState } from "./issue-execution-policy.js";
 import { executionFailureRetryCount } from "./execution-recovery-attempt.js";
+import { isReplacedPreparation } from "./server-replacement-interruption.js";
 import { logActivity } from "./activity-log.js";
 import { isSupersededConversationRun } from "./agent-conversations.js";
 import { issueService } from "./issues.js";
@@ -34,6 +35,8 @@ import { hasVerifiedWorkspaceRepair } from "./workspace-recovery-receipt.js";
 import { recordLegacyShutdownBeforeDispatch, SERVER_SHUTDOWN_INTERRUPTED_CODE } from "./legacy-shutdown-before-dispatch.js";
 
 type Run = typeof heartbeatRuns.$inferSelect;
+export const UNRESTORED_FILES_NEXT_ACTION = "The task's saved files could not be put back after the run stopped. "
+  + "They are kept where they were and are not applied. Press Retry to continue from the last saved version in a new workspace.";
 export const LEGACY_RECOVERY_CAUSE = "legacy_execution_requires_reconciliation";
 
 const unusedReconciliationContextKeys = [
@@ -56,7 +59,8 @@ export const legacyReconciliationRunFields = {
 
 /** Error families describe availability, not whether earlier actions happened. */
 export function legacyExecutionNeedsReconciliation(
-  run: Pick<Run, "runtimeMode" | "status" | "errorCode" | "resultJson"> & Partial<Pick<Run, "scheduledRetryAttempt" | "scheduledRetryReason" | "contextSnapshot">>,
+  run: Pick<Run, "runtimeMode" | "status" | "errorCode" | "resultJson">
+    & Partial<Pick<Run, "scheduledRetryAttempt" | "scheduledRetryReason" | "contextSnapshot" | "controllerBootId" | "controllerProcess">>,
 ): boolean {
   if (
     run.runtimeMode === "native" ||
@@ -88,6 +92,10 @@ export function legacyExecutionNeedsReconciliation(
       || run.errorCode === RUNNER_REVISION_MISMATCH_CODE || run.errorCode === ENVIRONMENT_PROVIDER_UNAVAILABLE_CODE
       || run.errorCode === REPOSITORY_CATALOG_UNAVAILABLE_CODE) &&
       evidence?.kind === "bootstrap" && evidence.providerWorkStarted === false) return false;
+  // A server restart or replacement stopped this setup before dispatch: no
+  // provider action happened, so there is nothing to reconcile. Its
+  // continuation is bounded by the server-restart lane, not the failure count.
+  if (isReplacedPreparation({ ...run, controllerBootId: run.controllerBootId ?? null })) return false;
   if (executionFailureRetryCount(run) >= 2) return true;
   return !(
     evidence?.kind === "bootstrap" && evidence.providerWorkStarted === false
@@ -238,7 +246,7 @@ export async function terminalizeLegacyExecution(input: {
       const values = { status: "resolved", outcome: "blocked", ownerType: "board", ownerAgentId: null,
         ownerUserId: null, returnOwnerAgentId: null, evidence, resolvedAt: now, updatedAt: now,
         wakePolicy: null, monitorPolicy: null,
-        nextAction: "The original sandbox is retained for workspace repair. Verify its exact stop receipt, recover the missing files, and record workspaceRepairEvidence without changing the current task. Repair does not replay the stopped run. Explicitly remove the retained allocation after recovery.",
+        nextAction: UNRESTORED_FILES_NEXT_ACTION,
       };
       if (existing) await tx.update(issueRecoveryActions).set(values).where(eq(issueRecoveryActions.id, existing.id));
       else await tx.insert(issueRecoveryActions).values({ ...values, companyId: run.companyId,
@@ -318,10 +326,9 @@ export async function terminalizeLegacyExecution(input: {
           attempt: executionFailureRetryCount(run) + 1,
         },
         nextAction: hasRequiredWorkspaceRecovery(updated.resultJson)
-          ? "The original sandbox is retained for workspace repair. Verify that it has stopped, recover the missing files, record workspaceRepairEvidence, and explicitly remove the retained allocation when recovery is complete. A new agent turn cannot prove file recovery."
-          : hasWorkspaceRestoreFailure(updated.resultJson)
-          ? "Verify safe workspace staging or repair, then reconcile the stopped run before continuing. Saved work and approval decisions remain in force."
-          : "Inspect the stopped provider and recorded actions, then reconcile their outcomes before continuing. This adapter has not established a safe resume checkpoint.",
+          || hasWorkspaceRestoreFailure(updated.resultJson) ? UNRESTORED_FILES_NEXT_ACTION
+          : "The run stopped before it finished, and Paperclip cannot tell which of its last actions took effect. "
+            + "Press Retry to continue the task in a fresh run; the agent checks those actions before repeating any.",
         maxAttempts: 3,
         wakePolicy: null,
         supersedeOnIdentityChange: true,
@@ -346,7 +353,10 @@ export async function settleInterruptedNativeBootstrap(
     const [run] = await tx.select().from(heartbeatRuns).where(and(eq(heartbeatRuns.id, input.run.id), eq(heartbeatRuns.companyId, input.run.companyId))).for("update");
     if (!task || !run || !isInterruptedNativePreparationCandidate(run) ||
         run.contextSnapshot?.issueId !== task.id ||
-        executionFailureRetryCount(run) >= 2) return null;
+        // A spent failure budget keeps the hold, except for a preparation that
+        // a server replacement stopped: it never failed, and its continuation
+        // uses the bounded server-restart lane (holds saved by older releases).
+        executionFailureRetryCount(run) >= 2 && !isReplacedPreparation(run)) return null;
     if (hasWorkspaceRestoreFailure(run.resultJson) && !await hasVerifiedWorkspaceRepair(tx as unknown as Db, run)) return null;
     const [native] = await tx.select({ id: nativeRunFinalizations.runId }).from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, run.id)).limit(1);
     const [lease] = await tx.select({ id: environmentLeases.id }).from(environmentLeases).where(and(

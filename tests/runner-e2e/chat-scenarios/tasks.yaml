@@ -182,7 +182,7 @@ scenarios:
       Morgan holds the current execution checkout; another actor changed assignment after the
       CEO last read the task.
     query: >-
-      Move this task to Riley now.
+      Move the Website task to Riley now.
     expected_outcome: >-
       The agent handles the stale ownership result by rereading current state and explaining the
       actual assignment boundary. It does not overwrite a newer checkout, run two owners

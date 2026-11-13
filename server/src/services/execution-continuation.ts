@@ -20,6 +20,9 @@ import { isCompletedOnboardingHandoffWake } from "./chat-completion-delivery.js"
 import { githubRecoveryReceipts } from "./chat-channels/github/recovery-receipts.js";
 import { readTaskRetryIntent } from "./task-retry.js";
 
+const retryWakeReasons = new Set(["task_retry", "retry_failed_run"]);
+const maxRequeueChain = 32;
+
 const savedRecordOperations = new Set([
   "PUT /api/issues/{id}/documents/{key}",
   "POST /api/issues/{id}/comments",
@@ -192,6 +195,35 @@ export async function currentContinuationOrigins(
 }
 
 /** Re-read task scope at dispatch, including messages already delivered to an earlier provider session. */
+function requeueSourceRunId(context: Record<string, unknown>, retryOfRunId: string | null): string | null {
+  if (retryOfRunId) return retryOfRunId;
+  const retryOf = string(context.retryOfRunId);
+  if (retryOf) return retryOf;
+  if (!retryWakeReasons.has(string(context.wakeReason) ?? "")) return null;
+  return string(object(context.explicitUserContinuation).previousRunId) ?? string(context.previousRunId);
+}
+
+async function requeuedWakeReason(db: Db, input: {
+  companyId: string; issueId: string; runId?: string; context: Record<string, unknown>;
+}): Promise<string | null> {
+  const [current] = input.runId ? await db.select({ retryOfRunId: heartbeatRuns.retryOfRunId }).from(heartbeatRuns)
+    .where(and(eq(heartbeatRuns.companyId, input.companyId), eq(heartbeatRuns.id, input.runId))) : [];
+  let next = requeueSourceRunId(input.context, current?.retryOfRunId ?? null);
+  const visited = new Set<string>();
+  while (next && !visited.has(next) && visited.size < maxRequeueChain) {
+    visited.add(next);
+    const [run] = await db.select({ context: heartbeatRuns.contextSnapshot, retryOfRunId: heartbeatRuns.retryOfRunId })
+      .from(heartbeatRuns).where(and(eq(heartbeatRuns.companyId, input.companyId), eq(heartbeatRuns.id, next)));
+    const context = object(run?.context);
+    if (!run || context.issueId !== input.issueId) return null;
+    const carried = string(object(object(context.executionContinuation).trigger).retriedReason);
+    if (carried) return carried;
+    next = requeueSourceRunId(context, run.retryOfRunId);
+    if (!next) return string(context.wakeReason);
+  }
+  return null;
+}
+
 export async function buildExecutionContinuation(input: {
   db: Db;
   companyId: string;
@@ -534,6 +566,10 @@ export async function buildExecutionContinuation(input: {
     (hasConversationContinuationPolicy(lastTerminal.result) ||
       lastTerminal.status === "interrupted" || lastTerminal.errorCode === "process_lost")
     ? lastTerminal.id : undefined);
+  const triggerReason = string(input.context.wakeReason) ?? "task_execution";
+  const retriedCandidate = await requeuedWakeReason(db, { companyId, issueId, runId: input.runId, context: input.context });
+  const retriedReason = retriedCandidate && retriedCandidate !== triggerReason && !retryWakeReasons.has(retriedCandidate)
+    ? retriedCandidate : null;
   return {
     ...(interruptedRunId ? { interruptedRunId } : {}),
     ...(resumeDelta ? { resumeDelta } : {}),
@@ -547,9 +583,10 @@ export async function buildExecutionContinuation(input: {
     companyId,
     issueId,
     trigger: {
-      reason: string(input.context.wakeReason) ?? "task_execution",
+      reason: triggerReason,
       interactionId: triggerInteraction?.id ?? null,
       sourceRunId,
+      ...(retriedReason ? { retriedReason } : {}),
     },
     originCommentIds,
     objective: latestRequest?.body ?? issue.description ?? issue.title,

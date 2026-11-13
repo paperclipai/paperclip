@@ -6,6 +6,7 @@ import { resolveGrokDisableWebSearch } from "./grok-web-search.js";
 import { resolveGrokEffort, createGrokEffortAdmission } from "./grok-effort.js";
 import { createGrokSessionOpenGuard } from "./grok-session-rules.js";
 import { resolveClaudeEffort, createClaudeEffortAdmission } from "./claude-effort.js";
+import { CLAUDE_ASYNC_TASKS_CAPABILITY, ClaudeBackgroundTaskTracker } from "./claude-background-tasks.js";
 import { acpxProviderFailure, acpxTypedSessionFailureClientCapabilities, acpxTypedTerminalSessionFailure, type AcpxTerminalSessionFailure } from "./provider-failure.js";
 import type { ProviderFailure } from "../../contracts/provider-failure.generated.js";
 import { createPiThinkingAdmission, resolvePiThinkingLevel } from "./pi-thinking.js";
@@ -368,6 +369,7 @@ export async function openQualifiedAcpxRuntime(
   const extensionNotifications = new Set(extensionProfile.extensionNotifications);
   const promptUsage = options.profile.agent === "grok" ? createGrokPromptUsageCollector() : undefined;
   const promptReceipts = createAcpxPromptReceiptCollector(options.profile.agent);
+  const backgroundTasks = options.profile.agent === "claude" ? new ClaudeBackgroundTaskTracker() : null;
   const permissionReplies = createAcpxPermissionReplyConfirmations();
   const modelGate = createAcpxEffectiveModelGate(options.profile.reportedModelId);
   // Copilot's admitted permission policy is enforced from the observed wire:
@@ -470,7 +472,10 @@ export async function openQualifiedAcpxRuntime(
       ? "approve-reads"
       : options.permissionMode,
     elicitationModes: ["form"],
-    clientCapabilities: acpxTypedSessionFailureClientCapabilities(options.clientCapabilities),
+    clientCapabilities: acpxTypedSessionFailureClientCapabilities(
+      options.clientCapabilities,
+      backgroundTasks ? [CLAUDE_ASYNC_TASKS_CAPABILITY] : [],
+    ),
     extensionMethods: [...new Set([...extensionRequests, ...extensionNotifications])],
     onExtensionRequest: async (method, params, context) => {
       const active = extensionBoundary.active;
@@ -584,6 +589,7 @@ export async function openQualifiedAcpxRuntime(
       return { outcome: disposition };
     },
     onAcpMessage: (direction, message) => {
+      backgroundTasks?.observe(direction, message);
       observeAgentInitialize(direction, message);
       copilotPolicy?.observe(direction, message);
       modelGate.observe(direction, message);
@@ -831,6 +837,7 @@ export async function openQualifiedAcpxRuntime(
       copilotPolicy,
       modelGate,
       promptReceipts,
+      backgroundTasks,
     );
   } catch (error) {
     const cleanupReason = "ACPX runtime identity validation failed";
@@ -1285,6 +1292,7 @@ function runtimePort(
   copilotPolicy?: CopilotPolicyEnforcement | null,
   modelGate?: AcpxEffectiveModelGate,
   promptReceipts?: ReturnType<typeof createAcpxPromptReceiptCollector>,
+  backgroundTasks?: ClaudeBackgroundTaskTracker | null,
 ): AcpxRuntimePort {
   extensionBoundary.sessionIds = new Set([identity.backendSessionId]);
   let extensionControls: Promise<void> = Promise.resolve();
@@ -1327,6 +1335,7 @@ function runtimePort(
     pendingExternalIntent: boolean;
   };
   let runtimeClosed = false;
+  let runtimeShutdown: Promise<unknown | null> | undefined;
   let providerProcessLost = false;
   let runtimeCloseAttempt: RuntimeCloseAttempt | undefined;
   let lateReconciliationOwner: Promise<void> | undefined;
@@ -1431,6 +1440,7 @@ function runtimePort(
             attempt.reconciliationGeneration,
           );
           runtimeClosed = !hasUnreconciledLateFailure();
+          if (runtimeClosed) void shutdownClosedRuntime();
         }
         scheduleLateFailureReconciliation();
         return;
@@ -1451,6 +1461,11 @@ function runtimePort(
     });
   };
 
+  const shutdownClosedRuntime = (): Promise<unknown | null> => {
+    runtimeShutdown ??= boundedCloseOutcome(ownedRuntimeShutdownOutcome(runtime), runtimeCloseTimeoutMs);
+    return runtimeShutdown;
+  };
+
   async function closeRuntime(input: {
     reason: string;
     reconciliation?: {
@@ -1459,7 +1474,13 @@ function runtimePort(
     };
   }): Promise<void> {
     extensionBoundary.active?.controller.abort(new Error("ACPX runtime is closing"));
-    if (runtimeClosed) return;
+    if (runtimeClosed) {
+      const shutdownError = await shutdownClosedRuntime();
+      if (shutdownError !== null) {
+        throw new AggregateError([shutdownError], "ACPX runtime and provider cleanup failed");
+      }
+      return;
+    }
     if (
       runtimeCloseAttempt?.origin.kind === "reconciliation" &&
       input.reconciliation === undefined
@@ -1526,9 +1547,10 @@ function runtimePort(
     } else {
       runtimeClosed = false;
     }
+    const shutdownError = runtimeClosed ? await shutdownClosedRuntime() : null;
     scheduleLateFailureReconciliation();
-    if (closeError !== null || processErrors.length > 0) {
-      const errors = [closeError, ...processErrors].filter(
+    if (closeError !== null || processErrors.length > 0 || shutdownError !== null) {
+      const errors = [closeError, ...processErrors, shutdownError].filter(
         (error): error is unknown => error !== null,
       );
       throw new AggregateError(
@@ -1559,6 +1581,9 @@ function runtimePort(
       return goalState.capability === null
         ? null
         : structuredClone(goalState.capability);
+    },
+    backgroundTaskState() {
+      return backgroundTasks?.state() ?? null;
     },
     goalSnapshot() {
       return goalState.snapshot === null
@@ -1938,6 +1963,17 @@ function ownedRuntimeCloseOutcome(
       (error: unknown) => error,
     );
   return retainRuntimeCleanupOwner(cleanup);
+}
+
+function ownedRuntimeShutdownOutcome(runtime: AcpRuntime): Promise<unknown | null> {
+  return retainRuntimeCleanupOwner(
+    Promise.resolve()
+      .then(() => runtime.shutdown?.())
+      .then(
+        () => null,
+        (error: unknown) => error,
+      ),
+  );
 }
 
 function retainRuntimeCleanupOwner<T>(cleanup: Promise<T>): Promise<T> {

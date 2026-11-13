@@ -423,9 +423,11 @@ export function agentDirectoryWorkingCopyService(db: Db, get: (companyId: string
         const snapshot = checkpointSnapshot(captured.manifest);
         const nextHash = directorySnapshotSha256(snapshot);
         const changed = nextHash !== row.baseHash;
+        // An unchanged run writes no agent file. Its save skips the row lock
+        // when the durable head is already current for the local projection.
         const { storageWarning } = changed
           ? await store.apply({ companyId: row.companyId, agentId: row.agentId, sourceDir: path.join(captured.directory, "files"), baseline: baseline(row), checkpoint: captured.manifest }, actor(row))
-          : await store.locked(row.companyId, row.agentId, actor(row), true, async () => ({
+          : await store.saveUnchanged(row.companyId, row.agentId, actor(row)).then(() => ({
             storageWarning: typeof row.receipt?.storageWarning === "string" ? row.receipt.storageWarning : null,
           }));
         row = await patch(row, { state: stopped ? (changed ? "saved" : "unchanged") : "warm_saved", baseHash: nextHash,
@@ -659,7 +661,7 @@ export function agentDirectoryWorkingCopyService(db: Db, get: (companyId: string
     // Different controllers have different cache roots. Serialize their active
     // collection/cleanup operations in Postgres, without holding row locks over I/O.
     // Test instrumentation only (disarmed in production): restart chaos fails the Nth attempt with the lock's own conflict.
-    crashPoint("agent_directory.operation_lock.before_acquire", { fail: () => conflict("Agent directory operation is already active") });
+    crashPoint("agent_directory.operation_lock.before_acquire", { fail: () => new AgentDirectoryOperationBusyError() });
     return withDedicatedDbConnection(db, dedicated => dedicated.transaction(async tx => {
       const [lock] = await tx.execute(sql`select pg_try_advisory_xact_lock(hashtextextended(${`agent-directory:${row.companyId}:${row.agentId}`}, 0)) as acquired,
         (select setting::bigint from pg_settings where name = 'idle_in_transaction_session_timeout') as idle_timeout_ms`);

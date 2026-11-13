@@ -122,6 +122,15 @@ describe("describeError", () => {
     });
   });
 
+  it("keeps an OAuth error description instead of generic not-found copy", () => {
+    const error = apiError(404, {
+      error: "invalid_request",
+      error_description: "This code is expired, already decided, or invalid. Start a new connection from your assistant.",
+    });
+    expect(describeError(error).body).toBe("This code is expired, already decided, or invalid. Start a new connection from your assistant.");
+    expect(error.message).toBe("This code is expired, already decided, or invalid. Start a new connection from your assistant.");
+  });
+
   it("falls back to the kind's copy when the server sent a code or nothing", () => {
     expect(describeError(apiError(404, { error: "issue_not_found" })).body).toBe("This item doesn’t exist or was moved.");
     expect(describeError(apiError(403, null))).toMatchObject({ title: "Not allowed", retryable: false });

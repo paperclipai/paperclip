@@ -41,6 +41,8 @@ const apiPrefixes: Record<string, string> = {
   "auth.ts": "/api/auth",
   "board-chat.ts": "/api",
   "browser-use.ts": "/api",
+  "mcp-apps.ts": "/api",
+  "mcp-skills.ts": "/api",
   "built-in-agents.ts": "/api",
   "chat-channels.ts": "/api",
   "slack-tools.ts": "/api",
@@ -395,6 +397,14 @@ describe("openapi routes", () => {
     expect(operation.requestBody.content).toHaveProperty("application/json");
     expect(spec.paths).not.toHaveProperty("/api/routine-triggers/public/{publicId}/sentry-run-failures");
   });
+  it("documents connected-app skill review as board only and file reads as agent-run only", () => {
+    const spec = buildOpenApiSpec() as any;
+    const files = spec.paths["/api/agents/me/mcp-skills/{skillId}/files"].get;
+    expect(files["x-paperclip-authorization"]).toEqual({ actor: "agent", heartbeatBound: true });
+    expect(files.security).not.toContainEqual({ BoardSessionAuth: [] });
+    expect(spec.paths["/api/companies/{companyId}/mcp-skills/{skillId}/approve"].post["x-paperclip-authorization"]).toEqual({ actor: "board" });
+  });
+
   it.each(["summary", "tasks"])("documents the board-only compact attention %s contract", projection => {
     const spec = buildOpenApiSpec() as any;
     const operation = spec.paths[`/api/companies/{companyId}/attention/${projection}`].get;
@@ -408,6 +418,29 @@ describe("openapi routes", () => {
     expect(response.properties.nextCursor).toBeUndefined();
     if (projection === "tasks") expect(response.properties.taskIds).toMatchObject({ type: "array", items: { type: "string", format: "uuid" } });
     for (const code of ["200", "401", "403"]) expect(operation.responses[code]).toBeDefined();
+  });
+
+  // Full chat cohort 4: search_api listed the cancel route as open to agents, so an agent tried it and got 403.
+  it("documents question cancellation as board-only and points agents to withdraw", () => {
+    const spec = buildOpenApiSpec() as any;
+    const cancel = spec.paths["/api/issues/{id}/interactions/{interactionId}/cancel"].post;
+    expect(cancel["x-paperclip-authorization"]).toEqual({ actor: "board" });
+    expect(cancel.security).toEqual([{ BoardSessionAuth: [] }, { BoardApiKeyAuth: [] }]);
+    expect(cancel.summary).toContain("POST /api/issues/{id}/interactions/{interactionId}/withdraw");
+    expect(spec.paths["/api/issues/{id}/interactions/{interactionId}/withdraw"].post["x-paperclip-authorization"]).toEqual({ actor: "board_or_agent" });
+  });
+
+  it("points agents to resolve-from-comment to record a person's decline and keeps withdraw for their own obsolete card", () => {
+    const spec = buildOpenApiSpec() as any;
+    const interaction = "/api/issues/{id}/interactions/{interactionId}";
+    for (const summary of [spec.paths[`${interaction}/cancel`].post.summary, spec.paths[`${interaction}/withdraw`].post.summary]) {
+      expect(summary).toContain("only for the agent's own obsolete card");
+      expect(summary).toContain(`POST ${interaction}/resolve-from-comment`);
+      expect(summary).toContain("when the card's resolver policy allows");
+      expect(summary).toContain("to accept or decline a confirmation card on the person's explicit instruction");
+      expect(summary).toContain("not for question forms or governed approvals");
+    }
+    expect(spec.paths[`${interaction}/resolve-from-comment`].post.summary).toContain("including a decline of a card the person created");
   });
 
   it("documents the owned pending-question read as canonical attention items without client scope overrides", () => {
@@ -806,7 +839,7 @@ describe("openapi routes", () => {
     expect(
       res.body.paths["/api/issues/{id}/interactions/{interactionId}/withdraw"]
         .post.summary,
-    ).toBe("Withdraw a pending issue thread interaction");
+    ).toMatch(/^Withdraw a pending issue thread interaction\. /);
     const createInteraction =
       res.body.paths["/api/issues/{id}/interactions"].post;
     expect(createInteraction.description).toContain(

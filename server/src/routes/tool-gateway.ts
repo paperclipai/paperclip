@@ -87,21 +87,28 @@ async function handleMcpGatewayProtocol(
     const body = (req.body ?? {}) as { jsonrpc?: string; id?: unknown; method?: string; params?: Record<string, unknown> };
     const id = body.id ?? null;
     if (body.method === "initialize") {
-      await toolGateway.initializeNamedGatewayProtocol({
+      const session = await toolGateway.initializeNamedGatewayProtocol({
         ...locator,
         bearerToken: token,
         callerHeaders: headers,
       });
+      const allowedActions = session.gatewayTokenAllowedActions;
+      const mayList = (action: "tools/list" | "resources/list" | "prompts/list") =>
+        !allowedActions || allowedActions.includes(action);
       res.json({
         jsonrpc: "2.0",
         id,
         result: {
           protocolVersion: "2025-03-26",
-          capabilities: { tools: {}, resources: {}, prompts: {} },
+          capabilities: {
+            ...(mayList("tools/list") ? { tools: {} } : {}),
+            ...(mayList("resources/list") ? { resources: {} } : {}),
+            ...(mayList("prompts/list") ? { prompts: {} } : {}),
+          },
           serverInfo: { name: "Paperclip MCP Gateway", version: "1.0.0" },
           _meta: {
-            "paperclip/mcp-app-ui": "unsupported",
-            "paperclip/mcp-app-ui-detail": "Interactive ui:// iframe hosting is not available in Paperclip Runner.",
+            "paperclip/mcp-app-ui": "host_rendered",
+            "paperclip/mcp-app-ui-detail": "Paperclip renders MCP Apps ui:// views in the task chat. The gateway does not forward them to clients.",
           },
         },
       });

@@ -1,4 +1,5 @@
 import { Router, type Request } from "express";
+import { listProtectedEnvironmentKeyHolders, protectedEnvironmentKeyWarnings } from "../services/protected-environment-keys.js";
 import type { Db } from "@paperclipai/db";
 import {
   createRoutineSchema,
@@ -200,7 +201,9 @@ export function routineRoutes(
       changeSummary: "Created routine",
       triggerCount: 0,
     });
-    res.status(201).json(created);
+    const configurationWarnings = req.body.env !== undefined
+      ? protectedEnvironmentKeyWarnings(await listProtectedEnvironmentKeyHolders(db), req.body.env, "env") : [];
+    res.status(201).json({ ...created, ...(configurationWarnings.length ? { configurationWarnings } : {}) });
   });
 
   router.get("/routines/:id", async (req, res) => {
@@ -441,7 +444,9 @@ export function routineRoutes(
     }
     if (updated) {
       const { previousResponsibleUserId: _previousResponsibleUserId, ...response } = updated;
-      res.json(response);
+      const configurationWarnings = req.body.env !== undefined
+        ? protectedEnvironmentKeyWarnings(await listProtectedEnvironmentKeyHolders(db), req.body.env, "env") : [];
+      res.json({ ...response, ...(configurationWarnings.length ? { configurationWarnings } : {}) });
     } else {
       res.json(null);
     }
@@ -662,7 +667,8 @@ export function routineRoutes(
       return;
     }
     await assertBoardCanAssignTasks(req, routine.companyId);
-    const run = await svc.runRoutine(routine.id, req.body, {
+    const input = req.actor.type === "agent" ? { ...req.body, source: "manual" as const } : req.body;
+    const run = await svc.runRoutine(routine.id, input, {
       agentId: req.actor.type === "agent" ? req.actor.agentId : null,
       userId: req.actor.type === "board" ? req.actor.userId ?? null : null,
       runId: req.actor.runId ?? null,

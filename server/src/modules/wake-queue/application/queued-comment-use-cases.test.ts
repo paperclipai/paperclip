@@ -395,7 +395,7 @@ describe("discardQueuedComment", () => {
 
   it("rejects a discard from an actor who did not author the comment", async () => {
     const locked = lockedState({ queue: queueSnapshot({ entries: [
-      entry({ comment: commentFixture({ authorUserId: "user-2", authorAgentId: null }) }),
+      entry({ canDiscard: false, comment: commentFixture({ authorUserId: "user-2", authorAgentId: null }) }),
     ] }) });
     const discardQueuedComment = createDiscardQueuedComment({ issueLock: createFakeIssueLock(locked, createFakeTransaction()) });
 
@@ -409,6 +409,46 @@ describe("discardQueuedComment", () => {
         now: new Date(),
       }),
     ).rejects.toBeInstanceOf(QueuedCommentMutationForbiddenError);
+  });
+
+  it("lets the board discard an agent message allowed by the locked queue and cancels its empty continuation", async () => {
+    const locked = lockedState({
+      state: "queued",
+      queueRun: runRow(),
+      queue: queueSnapshot({ state: "queued", entries: [entry({
+        comment: commentFixture({ authorType: "agent", authorUserId: null, authorAgentId: "agent-1" }),
+        canEdit: false,
+        canDiscard: true,
+      })] }),
+    });
+    const transaction = createFakeTransaction();
+    const discard = createDiscardQueuedComment({ issueLock: createFakeIssueLock(locked, transaction) });
+
+    const result = await discard({ issue: ISSUE, actor: USER_ACTOR, commentId: "comment-1",
+      queueId: "wake-1", revision: "rev-1", now: new Date(), logActivity: true });
+
+    expect(transaction.deleteComment).toHaveBeenCalledWith({ issueId: ISSUE.id, commentId: "comment-1" });
+    expect(transaction.cancelWake).toHaveBeenCalledOnce();
+    expect(result.cancelledRun).toEqual({ id: "run-1" });
+    expect(transaction.logActivity).toHaveBeenCalledWith(expect.objectContaining({
+      actorType: "user", actorId: USER_ACTOR.actorId, action: "issue.queued_comment_discarded",
+    }));
+  });
+
+  it.each([
+    { actor: USER_ACTOR, canDiscard: false },
+    { actor: AGENT_ACTOR, canDiscard: true },
+  ])("does not grant a non-author $actor.actorType a denied or board-only discard", async ({ actor, canDiscard }) => {
+    const locked = lockedState({ queue: queueSnapshot({ entries: [entry({
+      comment: commentFixture({ authorType: "agent", authorUserId: null, authorAgentId: "agent-2" }),
+      canDiscard,
+    })] }) });
+    const transaction = createFakeTransaction();
+    const discard = createDiscardQueuedComment({ issueLock: createFakeIssueLock(locked, transaction) });
+
+    await expect(discard({ issue: ISSUE, actor, commentId: "comment-1", queueId: "wake-1",
+      revision: "rev-1", now: new Date() })).rejects.toBeInstanceOf(QueuedCommentMutationForbiddenError);
+    expect(transaction.deleteComment).not.toHaveBeenCalled();
   });
 
   it("authorizes an agent actor discarding its own queued message", async () => {

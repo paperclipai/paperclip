@@ -10,6 +10,7 @@ import {
   agents,
   budgetPolicies,
   companies,
+  completionContracts,
   createDb,
   environmentLeases,
   environments,
@@ -19,14 +20,23 @@ import {
   issueComments,
   issues,
   nativeRunFinalizations,
+  nativeRunResults,
   sandboxCreationOperations,
+  statusDecisions,
+  workAssessments,
   workspaceOperations,
 } from "@paperclipai/db";
 import { startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 import { resolveExternalTestDatabaseUrl } from "./helpers/external-test-database.js";
 import { currentControllerBootId, currentProcessSpaceHash } from "../services/controller-process-identity.js";
 import { createDeliveryWorkCoordinator } from "../services/delivery-work-coordinator.js";
-import { registerOwnershipReconciliationWork } from "../services/native-runtime/native-finalization-reconciler.js";
+import { applyOwnershipReportBackstops, registerOwnershipReconciliationWork } from "../services/native-runtime/native-finalization-reconciler.js";
+import { DELIVERY_QUEUES } from "../services/delivery-work-notifications.js";
+import { notifyNativeFinalizationWork } from "../services/native-finalization-notifications.js";
+import { instanceSettingsService } from "../services/instance-settings.js";
+import { listUndispatchedQueuedRuns, readUndispatchedQueuedRuns, undispatchedQueuedRunPageQuery } from "../services/queued-run-dispatch-liveness.js";
+import { releaseLapsedCoordinatorOwner } from "../services/workspace-recovery-stop-proof.js";
+import { subscribeDatabaseWork } from "@paperclipai/db/work-signals";
 import {
   createOwnershipReportState,
   OWNERSHIP_INVARIANT_VIOLATION_ACTION,
@@ -151,7 +161,7 @@ describe("report-only ownership reconciliation", () => {
     expect(new Set(names).size).toBe(names.length);
     expect(names.length).toBeGreaterThanOrEqual(40);
     expect(OWNABLE_KINDS.filter(kind => kind.settle !== null).map(kind => kind.id))
-      .toEqual(["native_accepted_result_lease", "native_finalizer_lease", "native_cleanup_lease", "sandbox_creation_intent", "environment_run_lease_active", "environment_teardown_claim", "environment_retained_orphan_sandbox", "environment_login_probe_lease", "workspace_runtime_control_operation", "native_workspace_finalize_attempt", "workspace_command_operation", "remote_snapshot_save", "execution_workspace_runtime_lease", "remote_workspace_unsaved_files", "remote_snapshot_ledger", "legacy_shutdown_settlement_fence", "copyback_owner_hold", "observed_workspace_preservation_fence", "wake_request_claimed", "legacy_controller_lease", "legacy_interrupted_preparation_hold", "native_completed_turn_cleanup_hold", "issue_execution_lock", "issue_checkout_lock", "agent_lifecycle_lease"]);
+      .toEqual(["native_executor_claim", "native_restart_recovery_claim", "native_awaiting_evidence", "native_accepted_result_lease", "native_finalizer_lease", "native_cleanup_lease", "sandbox_creation_intent", "environment_run_lease_active", "environment_teardown_claim", "environment_retained_orphan_sandbox", "environment_login_probe_lease", "workspace_runtime_control_operation", "native_workspace_finalize_attempt", "workspace_command_operation", "remote_snapshot_save", "execution_workspace_runtime_lease", "remote_workspace_unsaved_files", "remote_snapshot_ledger", "legacy_shutdown_settlement_fence", "copyback_owner_hold", "observed_workspace_preservation_fence", "wake_request_claimed", "legacy_controller_lease", "legacy_interrupted_preparation_hold", "native_completed_turn_cleanup_hold", "issue_execution_lock", "issue_checkout_lock", "agent_lifecycle_lease"]);
     expect(OWNABLE_KINDS.filter(kind => !kind.listInProgress).every(kind => kind.coverageGap)).toBe(true);
   });
 
@@ -953,12 +963,231 @@ describe("report-only ownership reconciliation", () => {
     expect(report.violations.filter(violation => violation.rule === "I7_visible_next_action")).toEqual([]);
   });
 
+  it("treats a current committed response-wake wait as a next action until a user answers it", async () => {
+    const issueId = randomUUID(), runId = randomUUID(), contractId = randomUUID(), resultId = randomUUID();
+    const assessmentId = randomUUID(), decisionId = randomUUID(), startedAt = minutesAgo(40);
+    await db.insert(issues).values({ id: issueId, companyId, title: "Waiting for the board", status: "in_progress",
+      assigneeAgentId: agentId, updatedAt: minutesAgo(30) });
+    await db.insert(completionContracts).values({ id: contractId, companyId, issueId, revision: 1,
+      schemaVersion: "paperclip.completion-contract.v1", policyVersion: "test", risk: "standard",
+      completionAuthority: "server_arbiter", incompleteCriteriaPolicy: "preserve_non_terminal",
+      contractJson: { revision: "test", objective: "Wait", criteria: [{ id: "objective", requirement: "Wait" }] },
+      canonicalSha256: contractId, createdByActorType: "system", createdByActorId: "test" });
+    await db.insert(heartbeatRuns).values({ id: runId, companyId, agentId, runtimeMode: "native", status: "succeeded",
+      nativeIssueId: issueId, nativeSessionId: runId, completionContractId: contractId, completionContractSha256: contractId,
+      contextSnapshot: { issueId }, startedAt, finishedAt: minutesAgo(35) });
+    await db.insert(nativeRunResults).values({ id: resultId, companyId, issueId, runId, completionContractId: contractId,
+      serverFingerprint: "test", schemaStatus: "accepted", resultJson: {}, canonicalSha256: resultId });
+    await db.insert(workAssessments).values({ id: assessmentId, companyId, issueId, runId, contractId, resultId,
+      triggerKind: "turn_finished", triggerActorCompanyId: companyId, priorIssueStatus: "in_progress", priorStatusVersion: 1,
+      policyVersion: "test", assessmentJson: {}, inputDigest: assessmentId });
+    await db.insert(statusDecisions).values({ id: decisionId, companyId, issueId, runId, assessmentId, decisionVersion: 1,
+      policyVersion: "test", fromStatus: "in_progress", toStatus: "in_progress", reasonCode: "response_wake_waiting_for_input",
+      decisionJson: {}, decisionDigest: decisionId, applicationState: "applied", appliedAt: minutesAgo(35) });
+    await db.insert(nativeRunFinalizations).values({ companyId, issueId, runId, phase: "committed", resultId, assessmentId, decisionId });
+    await db.update(issues).set({ lastStatusDecisionId: decisionId, updatedAt: minutesAgo(30) }).where(eq(issues.id, issueId));
+    const visible = async () => (await runOwnershipReconciliationPass(db, { state: createOwnershipReportState(), record: false }))
+      .violations.filter(violation => violation.rule === "I7_visible_next_action").map(violation => violation.recordId);
+
+    expect(await visible()).toEqual([]);
+    await db.insert(issueComments).values({ companyId, issueId, authorType: "user", authorUserId: "board",
+      body: "Go ahead.", createdAt: minutesAgo(20) });
+    expect(await visible()).toEqual([issueId]);
+    await db.delete(issueComments).where(eq(issueComments.issueId, issueId));
+    await db.update(issues).set({ lastStatusDecisionId: null, updatedAt: minutesAgo(30) }).where(eq(issues.id, issueId));
+    expect(await visible()).toEqual([issueId]);
+  });
+
   it("returns the end of the next-action grace window for an issue still inside it", async () => {
     const updatedAt = minutesAgo(2);
     await db.insert(issues).values({ companyId, title: "Fresh", status: "in_progress", assigneeAgentId: agentId, updatedAt });
     const report = await runOwnershipReconciliationPass(db, { state: createOwnershipReportState(), record: false });
     expect(report.violations.filter(violation => violation.rule === "I7_visible_next_action")).toEqual([]);
     expect(report.nextDueAt?.getTime()).toBe(updatedAt.getTime() + 5 * 60_000);
+  });
+
+  it("reports and re-drives a queued run that no dispatch started while its agent had nothing running", async () => {
+    const issueId = randomUUID();
+    await db.insert(issues).values({ id: issueId, companyId, title: "Continuation", status: "in_progress", assigneeAgentId: agentId });
+    const [stranded] = await db.insert(heartbeatRuns).values({ companyId, agentId, status: "queued", invocationSource: "automation",
+      contextSnapshot: { issueId }, createdAt: minutesAgo(19) }).returning();
+    const signals: string[] = [];
+    const unsubscribe = subscribeDatabaseWork(db, DELIVERY_QUEUES.queuedRunDispatch, event => signals.push(event));
+    try {
+      const report = await runOwnershipReconciliationPass(db, { state: createOwnershipReportState(), record: false });
+      expect(report.violations.filter(violation => violation.kind === "queued_run")).toEqual([
+        expect.objectContaining({ rule: "I7_visible_next_action", recordId: stranded!.id, runId: stranded!.id,
+          issueId, companyId, reason: "queued_run_not_dispatched" })]);
+      await applyOwnershipReportBackstops(db, report);
+      expect(signals).toContain("settled");
+    } finally { unsubscribe(); }
+  });
+
+  it("finds a stranded run behind older queued rows past the first page, and re-drives it only once", async () => {
+    const otherCompany = randomUUID();
+    const otherAgent = randomUUID();
+    await db.insert(companies).values({ id: otherCompany, name: "Held queue", issuePrefix: "HLD" });
+    await db.insert(agents).values({ id: otherAgent, companyId: otherCompany, name: "Held", role: "engineer", adapterType: "codex_local" });
+    await db.insert(heartbeatRuns).values([40, 39, 38].map(minutes =>
+      ({ companyId: otherCompany, agentId: otherAgent, status: "queued", invocationSource: "automation", createdAt: minutesAgo(minutes) })));
+    const [stranded] = await db.insert(heartbeatRuns).values({ companyId, agentId, status: "queued", invocationSource: "automation",
+      createdAt: minutesAgo(19) }).returning();
+    const state = createOwnershipReportState();
+    const first = await runOwnershipReconciliationPass(db, { state, limitPerKind: 2 });
+    expect(first.violations.filter(violation => violation.kind === "queued_run").map(violation => violation.recordId))
+      .toContain(stranded!.id);
+    const signals: string[] = [];
+    const unsubscribe = subscribeDatabaseWork(db, DELIVERY_QUEUES.queuedRunDispatch, event => signals.push(event));
+    try {
+      await applyOwnershipReportBackstops(db, first);
+      expect(signals).toContain("settled");
+      signals.length = 0;
+      const second = await runOwnershipReconciliationPass(db, { state, limitPerKind: 2 });
+      expect(second.violations.filter(violation => violation.kind === "queued_run")).toHaveLength(4);
+      await applyOwnershipReportBackstops(db, second);
+      expect(signals).toEqual([]);
+    } finally { unsubscribe(); }
+  });
+
+  it("does not report queued runs a worktree runtime will never start: before its cutoff or while execution is off", async () => {
+    const copied = randomUUID();
+    await db.insert(heartbeatRuns).values({ id: copied, companyId, agentId, status: "queued", invocationSource: "automation",
+      createdAt: minutesAgo(19) });
+    const queuedRunViolations = async () => (await runOwnershipReconciliationPass(db,
+      { state: createOwnershipReportState(), record: false })).violations.filter(violation => violation.kind === "queued_run");
+    vi.stubEnv("PAPERCLIP_IN_WORKTREE", "true");
+    vi.stubEnv("PAPERCLIP_INSTANCE_ID", "ownership-worktree");
+    const settings = instanceSettingsService(db);
+    try {
+      expect(await queuedRunViolations()).toEqual([]);
+      await settings.updateExperimental({ enableWorktreeRunExecution: true });
+      expect(await queuedRunViolations()).toEqual([]);
+      expect(await listUndispatchedQueuedRuns(db, { createdAfter: minutesAgo(1) })).toEqual([]);
+      expect((await listUndispatchedQueuedRuns(db)).map(run => run.runId)).toEqual([copied]);
+    } finally {
+      await settings.updateExperimental({ enableWorktreeRunExecution: false });
+      vi.unstubAllEnvs();
+      vi.stubEnv("PAPERCLIP_HOME", home);
+      vi.stubEnv("SANDBOX_ORPHAN_CLEANUP_SPOOL_DIR", orphanSpool);
+    }
+  });
+
+  it("reads undispatched queued runs in bounded slices that resume from a cursor, and skips an agent with a scheduled retry", async () => {
+    await db.update(agents).set({ runtimeConfig: { heartbeat: { maxConcurrentRuns: 1 } } }).where(eq(agents.id, agentId));
+    const created = [30, 29, 28].map(minutesAgo);
+    const runs = await db.insert(heartbeatRuns).values(created.map(createdAt =>
+      ({ companyId, agentId, status: "queued", invocationSource: "automation", createdAt }))).returning();
+    const first = await readUndispatchedQueuedRuns(db, { pageSize: 1, maxRuns: 2 });
+    expect(first.runs.map(run => run.runId)).toEqual([runs[0]!.id, runs[1]!.id]);
+    expect(first.next).not.toBeNull();
+    const rest = await readUndispatchedQueuedRuns(db, { pageSize: 1, maxRuns: 2, after: first.next });
+    expect(rest).toEqual({ runs: [expect.objectContaining({ runId: runs[2]!.id })], next: null });
+    await db.insert(heartbeatRuns).values({ companyId, agentId, status: "scheduled_retry", invocationSource: "automation",
+      scheduledRetryAt: new Date(Date.now() + 60_000) });
+    expect(await listUndispatchedQueuedRuns(db)).toEqual([]);
+  });
+
+  it("re-drives a queued run while its agent still has a free slot, and not once every slot is running", async () => {
+    await db.update(agents).set({ runtimeConfig: { heartbeat: { maxConcurrentRuns: 3 } } }).where(eq(agents.id, agentId));
+    const tasks = await db.insert(issues).values([0, 1, 2, 3].map(index =>
+      ({ companyId, title: `Task ${index}`, status: "in_progress" as const, assigneeAgentId: agentId }))).returning();
+    const live = (index: number) => ({ companyId, agentId, issueId: tasks[index]!.id, status: "running" as const,
+      invocationSource: "automation" as const, contextSnapshot: { issueId: tasks[index]!.id }, startedAt: minutesAgo(90) });
+    await db.insert(heartbeatRuns).values([live(0), live(1)]);
+    const [waiting] = await db.insert(heartbeatRuns).values({ companyId, agentId, status: "queued", invocationSource: "automation",
+      contextSnapshot: { issueId: tasks[3]!.id }, createdAt: minutesAgo(20) }).returning();
+    await db.insert(heartbeatRuns).values({ companyId, agentId, status: "queued", invocationSource: "automation",
+      contextSnapshot: { issueId: tasks[0]!.id }, createdAt: minutesAgo(25) });
+    expect((await listUndispatchedQueuedRuns(db)).map(run => run.runId)).toEqual([waiting!.id]);
+    await db.insert(heartbeatRuns).values(live(2));
+    expect(await listUndispatchedQueuedRuns(db)).toEqual([]);
+  });
+
+  it("counts an agent's live runs in one grouped aggregate, not once per queued run", async () => {
+    await db.insert(heartbeatRuns).values(Array.from({ length: 5 }, () =>
+      ({ companyId, agentId, status: "queued" as const, invocationSource: "automation" as const, createdAt: minutesAgo(20) })));
+    await db.insert(heartbeatRuns).values({ companyId, agentId, status: "running", invocationSource: "automation" });
+    const query = undispatchedQueuedRunPageQuery(db, undefined, null, null, 500).toSQL();
+    const [row] = await db.$client.unsafe(`explain (format json) ${query.sql}`, query.params as never[]);
+    type PlanNode = { "Node Type": string; "Parent Relationship"?: string; Plans?: PlanNode[] };
+    const aggregates: PlanNode[] = [];
+    const subPlanAggregates: PlanNode[] = [];
+    const walk = (node: PlanNode, inSubPlan: boolean) => {
+      const subPlan = inSubPlan || node["Parent Relationship"] === "SubPlan";
+      if (node["Node Type"] === "Aggregate") (subPlan ? subPlanAggregates : aggregates).push(node);
+      for (const child of node.Plans ?? []) walk(child, subPlan);
+    };
+    walk((row as unknown as { "QUERY PLAN": Array<{ Plan: PlanNode }> })["QUERY PLAN"][0]!.Plan, false);
+    expect(aggregates).toHaveLength(1);
+    expect(subPlanAggregates).toEqual([]);
+  });
+
+  it("uses the agent's single-run limit for a runner provider that runs one turn at a time", async () => {
+    await db.update(agents).set({ adapterType: "paperclip_runner", adapterConfig: { provider: "openai_dot" },
+      runtimeConfig: { heartbeat: { maxConcurrentRuns: 5 } } }).where(eq(agents.id, agentId));
+    await db.insert(heartbeatRuns).values({ companyId, agentId, status: "running", invocationSource: "automation",
+      startedAt: minutesAgo(90) });
+    await db.insert(heartbeatRuns).values({ companyId, agentId, status: "queued", invocationSource: "automation",
+      createdAt: minutesAgo(20) });
+    expect(await listUndispatchedQueuedRuns(db)).toEqual([]);
+  });
+
+  it("keeps the earliest grace deadline when the queued-run check reaches its cap, and rescans once it ends", async () => {
+    const createdAt = minutesAgo(1);
+    await db.insert(heartbeatRuns).values(Array.from({ length: 2_000 }, () =>
+      ({ companyId, agentId, status: "queued", invocationSource: "automation", createdAt })));
+    const dueAt = createdAt.getTime() + 5 * 60_000;
+    const state = createOwnershipReportState();
+    const queuedRuns = (report: OwnershipReport) => report.violations.filter(violation => violation.kind === "queued_run");
+    const first = await runOwnershipReconciliationPass(db, { state, record: false });
+    expect(queuedRuns(first)).toEqual([]);
+    expect(first.retryNeeded).toBe(true);
+    expect(first.nextDueAt?.getTime()).toBeLessThanOrEqual(dueAt);
+    const tail = await runOwnershipReconciliationPass(db, { state, record: false });
+    expect(queuedRuns(tail)).toEqual([]);
+    expect(tail.nextDueAt?.getTime()).toBeLessThanOrEqual(dueAt);
+    const overdue = await runOwnershipReconciliationPass(db, { state, record: false, now: new Date(dueAt + 1) });
+    expect(queuedRuns(overdue)).toHaveLength(2_000);
+  }, 60_000);
+
+  it("signals queued-run dispatch when finalization work settles or a finished coordinator's lapsed owner is released", async () => {
+    const issueId = randomUUID();
+    const runId = randomUUID();
+    await db.insert(issues).values({ id: issueId, companyId, title: "Settling", status: "in_progress", assigneeAgentId: agentId });
+    await db.insert(heartbeatRuns).values({ id: runId, companyId, agentId, status: "succeeded", invocationSource: "automation",
+      runtimeMode: "native", nativeIssueId: issueId, finishedAt: minutesAgo(2) });
+    await db.insert(nativeRunFinalizations).values({ runId, companyId, issueId, phase: "committed",
+      leaseOwner: "native-finalizer:lapsed", leaseExpiresAt: minutesAgo(1) });
+    const signals: string[] = [];
+    const unsubscribe = subscribeDatabaseWork(db, DELIVERY_QUEUES.queuedRunDispatch, event => signals.push(event));
+    try {
+      await db.transaction(tx => notifyNativeFinalizationWork(tx, { companyId, runId, issueId }));
+      expect(signals).toContain("settled");
+      signals.length = 0;
+      const [coordinator] = await db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, runId));
+      expect(await db.transaction(tx => releaseLapsedCoordinatorOwner(tx, { companyId, runId }, coordinator, new Date()))).toBe(true);
+      expect(signals).toContain("settled");
+    } finally { unsubscribe(); }
+  });
+
+  it("does not report a queued run behind a running run, on a paused agent, or still inside its grace window", async () => {
+    const otherAgent = randomUUID();
+    const pausedAgent = randomUUID();
+    await db.insert(agents).values([
+      { id: otherAgent, companyId, name: "Busy", role: "engineer", adapterType: "codex_local",
+        runtimeConfig: { heartbeat: { maxConcurrentRuns: 1 } } },
+      { id: pausedAgent, companyId, name: "Paused", role: "engineer", adapterType: "codex_local", status: "paused" },
+    ]);
+    await db.insert(heartbeatRuns).values([
+      { companyId, agentId: otherAgent, status: "running", invocationSource: "manual" },
+      { companyId, agentId: otherAgent, status: "queued", invocationSource: "automation", createdAt: minutesAgo(30) },
+      { companyId, agentId: pausedAgent, status: "queued", invocationSource: "automation", createdAt: minutesAgo(30) },
+    ]);
+    const createdAt = minutesAgo(1);
+    await db.insert(heartbeatRuns).values({ companyId, agentId, status: "queued", invocationSource: "automation", createdAt });
+    const report = await runOwnershipReconciliationPass(db, { state: createOwnershipReportState(), record: false });
+    expect(report.violations.filter(violation => violation.kind === "queued_run")).toEqual([]);
+    expect(report.nextDueAt?.getTime()).toBeLessThanOrEqual(createdAt.getTime() + 5 * 60_000);
   });
 
   it("retries a violation whose activity row failed to save", async () => {

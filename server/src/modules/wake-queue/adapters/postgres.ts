@@ -1,6 +1,6 @@
 import { notifyStrandedAgentStatus } from "../../../services/live-run-recovery-notifications.js";
 import { notifyDeferredExecutionWork } from "../../../services/deferred-execution-notifications.js";
-import { notifyRunDispatch } from "../../../services/run-dispatch-notifications.js";
+import { notifyQueuedRunDispatch, notifyRunDispatch } from "../../../services/run-dispatch-notifications.js";
 import { notifyStatusCardIssueChange } from "../../../services/status-card-notifications.js";
 import { notifyExternalConversationSettlement } from "../../../services/external-conversation-settlement-notifications.js";
 import { notifyNativeStatusReassessment } from "../../../services/native-status-reassessment-notifications.js";
@@ -18,6 +18,8 @@ import { nativeManualAdmissionHoldsExecution } from "../../../services/native-ru
 import { and, asc, eq, inArray, isNull, notInArray, or, sql } from "drizzle-orm";
 import { readReleaseRun, type ReleaseRun } from "./release-run-read.js";
 import { isGovernancePauseStop } from "../../../services/governance-pause-stop.js";
+import { agentRunSupersededByFreshContinuation } from "../../../agent-run-cancellation.js";
+import { freshContinuationIsolatesRun } from "../../../services/fresh-continuation-fallback.js";
 import type { Db } from "@paperclipai/db";
 import { deliveredQueuedCommentIds, EXTERNAL_CHAT_MESSAGE_WAKE_MUTATION, EXTERNAL_CHAT_MESSAGE_WAKE_REASON } from "../../../services/queued-comment-delivery.js";
 import { extractIssueReferenceIdentifiers, isUuidLike } from "@paperclipai/shared";
@@ -34,6 +36,7 @@ import {
   nativeRunFinalizations,
 } from "@paperclipai/db";
 import { hasConversationContinuationPolicy } from "../../../services/conversation-continuation.js";
+import { readQueuedInteractionResponse } from "../../../services/queued-interaction-response.js";
 import { legacyExecutionNeedsReconciliationWithEvidence } from "../../../services/legacy-execution-recovery.js";
 import {
   authorizeFailedChatRunRetryWake,
@@ -45,6 +48,7 @@ import { evaluateAgentInvokabilityFromDb } from "../../../services/agent-invokab
 import { issueTreeControlService, isVerifiedIssueTreeControlInteractionWake } from "../../../services/issue-tree-control.js";
 import { isAutomaticRecoverySuppressedByPauseHold } from "../../../services/recovery/pause-hold-guard.js";
 import { classifyContinuationFailure } from "../../../services/recovery/service.js";
+import { executionRetryAccounting } from "../../../services/execution-recovery-attempt.js";
 import { issueService } from "../../../services/issues.js";
 import { issueRecoveryActionService } from "../../../services/issue-recovery-actions.js";
 import { readContinuationAttempt } from "../../../services/recovery/run-liveness-continuations.js";
@@ -115,7 +119,23 @@ function toRunSnapshot(row: ReleaseRun): RunSnapshot {
     contextSnapshot: parseObject(row.contextSnapshot),
     configurationIncompletePayload: Object.keys(configurationIncompletePayload).length > 0 ? configurationIncompletePayload : null,
     operatorStopped: isOperatorStoppedRunRow(row),
+    retryableBeforeProviderWork: isRetryableBeforeProviderWorkRunRow(row),
+    executionRetryAccounting: carriedRetryAccounting(row),
   };
+}
+
+function carriedRetryAccounting(row: ReleaseRun): Record<string, unknown> | null {
+  const accounting = executionRetryAccounting(row);
+  return accounting.failureRetries > 0 || accounting.maxTurnContinuations > 0 || (accounting.interruptedPreparations ?? 0) > 0
+    || (accounting.storageWaits ?? 0) > 0 || (accounting.agentDirectoryWaits ?? 0) > 0
+    || (accounting.serverRestarts ?? 0) > 0 ? { ...accounting } : null;
+}
+
+export function isRetryableBeforeProviderWorkRunRow(row: ReleaseRun): boolean {
+  const recovery = parseObject(parseObject(row.resultJson).executionRecovery);
+  return ["failed", "timed_out", "interrupted"].includes(row.status)
+    && recovery.kind === "bootstrap" && recovery.providerWorkStarted === false
+    && classifyContinuationFailure(row).kind === "transient_infra";
 }
 
 const OPERATOR_STOP_ERROR_CODES = new Set(["operator_interrupted", "agent_paused"]);
@@ -316,7 +336,7 @@ function buildTransaction(tx: Db, deps: WakeQueuePostgresAdapterDeps, db: Db, ru
       }
     },
 
-    async getQueuedCommentLiveness({ companyId, issueId, wakeAgentId, finishingRunId, finishingRunAgentId, queuedCommentIds }) {
+    async getQueuedCommentLiveness({ companyId, issueId, wakeAgentId, finishingRunId, finishingRunAgentId, queuedCommentIds, retainDeliveredCommentBindings }) {
       // Malformed ids (for example an 8-char short form written into a wake
       // payload) can never match a comment row, but Postgres rejects the whole
       // `inArray` statement on the first invalid uuid and blocks every queued
@@ -338,7 +358,9 @@ function buildTransaction(tx: Db, deps: WakeQueuePostgresAdapterDeps, db: Db, ru
       // received would deliver them twice and can reopen finished work.
       const delivered = await deliveredQueuedCommentIds(tx, { companyId, issueId, agentId: wakeAgentId,
         commentIds: liveAndUnauthored });
-      const liveNonSelfCommentIds = liveAndUnauthored.filter(commentId => !delivered.has(commentId));
+      const liveNonSelfCommentIds = retainDeliveredCommentBindings
+        ? liveAndUnauthored
+        : liveAndUnauthored.filter(commentId => !delivered.has(commentId));
       const containedSelfAuthoredComment = rows.some(
         (row) => targetsFinishingRunAgent && !row.deletedAt && row.createdByRunId === finishingRunId,
       );
@@ -434,12 +456,51 @@ function buildTransaction(tx: Db, deps: WakeQueuePostgresAdapterDeps, db: Db, ru
       };
     },
 
+    async owedInteractionAnswer({ companyId, issueId, payload }) {
+      const response = await readQueuedInteractionResponse(tx as unknown as Db, companyId, issueId, payload);
+      if (!response || response.toolActionOutcome || !response.comment.authorUserId) return null;
+      const [task] = await tx.select({ completedAt: issues.completedAt }).from(issues)
+        .where(and(eq(issues.companyId, companyId), eq(issues.id, issueId)));
+      const answeredAt = new Date(response.comment.createdAt);
+      if (!task || (task.completedAt && answeredAt.getTime() > task.completedAt.getTime())) return null;
+      // in_progress is refused while blockers are unresolved, and reopening would throw inside this drain.
+      const readiness = await issuesSvc.getDependencyReadiness(issueId, tx);
+      return readiness.unresolvedBlockerIssueIds.length > 0 ? "blocked" : "deliver";
+    },
+
     async getCommentSelfAuthorship({ companyId, issueId, finishingRunId, commentIds }) {
       const rows = await tx
         .select({ createdByRunId: issueComments.createdByRunId })
         .from(issueComments)
         .where(and(eq(issueComments.companyId, companyId), eq(issueComments.issueId, issueId), inArray(issueComments.id, commentIds)));
       return { allSelfAuthored: rows.length > 0 && rows.every((row) => row.createdByRunId === finishingRunId) };
+    },
+
+    async isWatcherCommentDuringFinishingRun({ companyId, issueId, finishingRunId, commentIds }) {
+      if (run.companyId !== companyId || run.id !== finishingRunId || !run.startedAt) return false;
+      const uniqueCommentIds = [...new Set(commentIds)];
+      if (uniqueCommentIds.length === 0) return false;
+      const [task] = await tx.select({ createdByAgentId: issues.createdByAgentId, parentId: issues.parentId })
+        .from(issues).where(and(eq(issues.companyId, companyId), eq(issues.id, issueId)));
+      if (!task) return false;
+      const watchers = new Set<string>(task.createdByAgentId ? [task.createdByAgentId] : []);
+      if (task.parentId) {
+        const [parent] = await tx.select({ assigneeAgentId: issues.assigneeAgentId }).from(issues)
+          .where(and(eq(issues.companyId, companyId), eq(issues.id, task.parentId)));
+        if (parent?.assigneeAgentId) watchers.add(parent.assigneeAgentId);
+      }
+      watchers.delete(run.agentId);
+      if (watchers.size === 0) return false;
+      const comments = await tx.select({ authorType: issueComments.authorType, authorAgentId: issueComments.authorAgentId,
+        authorUserId: issueComments.authorUserId, createdAt: issueComments.createdAt })
+        .from(issueComments).where(and(eq(issueComments.companyId, companyId), eq(issueComments.issueId, issueId),
+          inArray(issueComments.id, uniqueCommentIds), isNull(issueComments.deletedAt)));
+      const startedAt = run.startedAt.getTime();
+      return comments.length === uniqueCommentIds.length && comments.every((comment) =>
+        // Older rows carry no author type; an agent author and no person is the same fact.
+        (comment.authorType === "agent" || comment.authorType === null) &&
+        comment.authorUserId === null && comment.authorAgentId !== null &&
+        watchers.has(comment.authorAgentId) && comment.createdAt.getTime() >= startedAt);
     },
 
     async isCompletedDelegationMention({ companyId, issueId, finishingRunId, wakeAgentId, commentIds }) {
@@ -484,8 +545,8 @@ function buildTransaction(tx: Db, deps: WakeQueuePostgresAdapterDeps, db: Db, ru
       return isCompletedOnboardingHandoffWake(tx, input);
     },
 
-    async reopenIssue({ companyId, issueId }) {
-      const updated = await issuesSvc.updateForCompany(issueId, companyId, { status: "todo", executionState: null }, tx);
+    async reopenIssue({ companyId, issueId, status = "todo" }) {
+      const updated = await issuesSvc.updateForCompany(issueId, companyId, { status, executionState: null }, tx);
       return updated ? toIssueSnapshot(updated as unknown as IssueRow) : null;
     },
 
@@ -842,6 +903,7 @@ async function recordNativeTerminalRecoveryIfNeeded(tx: Db, run: ReleaseRun, iss
     }
   }
   if (!existing.length) {
+    await notifyQueuedRunDispatch(tx, { companyId: issue.companyId });
     await tx
       .update(nativeRunFinalizations)
       .set({
@@ -869,8 +931,9 @@ async function recordNativeTerminalRecoveryIfNeeded(tx: Db, run: ReleaseRun, iss
       cause: "native_continuation_requires_reconciliation",
       fingerprint: `native-continuation:${run.id}`,
       evidence: { runId: run.id, originalFailureCode: run.errorCode, ...(nativeFailureBlock ? { nativeFailureBlock } : {}) },
-      nextAction:
-        "Inspect the original failure and reconcile the previous execution before continuing. Automatic recovery cannot start another incident.",
+      // The fresh-continuation fallback settles this hold unless its cause is
+      // the person's; the text never asks anyone to repair the run.
+      nextAction: "The run stopped before it finished. Paperclip continues the task from its last saved work.",
       maxAttempts: 3,
       wakePolicy: null,
       supersedeOnIdentityChange: true,
@@ -1225,7 +1288,10 @@ export function createPostgresWakeQueueAdapter(db: Db, deps: WakeQueuePostgresAd
               `,
         );
 
-        if (input.resumeStrandedQueue && run.runtimeMode === "native") {
+        // A run the fresh-continuation fallback replaced is settled for good: its
+        // finalization may stay terminal_failure (restart recovery ended it), and
+        // the saved input queued behind it is now the task's next turn.
+        if (input.resumeStrandedQueue && run.runtimeMode === "native" && !agentRunSupersededByFreshContinuation(run)) {
           const [finalized] = contextIssueId && run.nativeIssueId === contextIssueId
             ? await tx.select({ runId: nativeRunFinalizations.runId }).from(nativeRunFinalizations).where(and(
                 eq(nativeRunFinalizations.companyId, input.companyId), eq(nativeRunFinalizations.runId, run.id),
@@ -1234,10 +1300,16 @@ export function createPostgresWakeQueueAdapter(db: Db, deps: WakeQueuePostgresAd
             : [];
           if (!finalized) return { outcome: { kind: "released" }, postCommitEffects: [], run: runSnapshot };
         }
-        if (await nativeManualAdmissionHoldsExecution(tx, { companyId: input.companyId, runId: run.id })) {
+        // These two holds protect the old executor's workspace and resources. A
+        // continuation in a new isolated workspace (or an abandoned remote epoch)
+        // reuses none of them, so they no longer hold the task's next turn; any
+        // other replacement still waits for them.
+        const isolatedReplacement = agentRunSupersededByFreshContinuation(run)
+          ? await freshContinuationIsolatesRun(tx, { companyId: input.companyId, runId: run.id }) : false;
+        if (!isolatedReplacement && await nativeManualAdmissionHoldsExecution(tx, { companyId: input.companyId, runId: run.id })) {
           return { outcome: { kind: "released" }, postCommitEffects: [], run: runSnapshot };
         }
-        if (input.resumeStrandedQueue && await hasPendingRunCleanup(tx, input.companyId, run.id)) {
+        if (input.resumeStrandedQueue && !isolatedReplacement && await hasPendingRunCleanup(tx, input.companyId, run.id)) {
           return { outcome: { kind: "released" }, postCommitEffects: [], run: runSnapshot };
         }
 
@@ -1389,13 +1461,25 @@ export function createPostgresWakeQueueAdapter(db: Db, deps: WakeQueuePostgresAd
           && issueRow.status === "blocked" && issueRow.assigneeAgentId === run.agentId) {
           return { outcome: { kind: "released" }, postCommitEffects: [], run: runSnapshot };
         }
-        if (!handoffAssigneeAgentId && await recordNativeTerminalRecoveryIfNeeded(tx, run, issueRow, input.now)) {
+        // The fallback already decided this run's continuation; a reconciliation
+        // incident would re-block the task it just released.
+        if (!handoffAssigneeAgentId && !agentRunSupersededByFreshContinuation(run)
+          && await recordNativeTerminalRecoveryIfNeeded(tx, run, issueRow, input.now)) {
           return { outcome: { kind: "released" }, postCommitEffects: [], run: runSnapshot };
         }
 
         // A release must leave deferred messages intact while execution is held.
         // The finishing conversation may still own its lease until finally cleanup.
         // Allow only bounded retry planning in that case; admission stays gated.
+        // The fallback's isolated continuation runs before any saved input: it
+        // alone carries the marker that prepares the new workspace and binds it.
+        // Promoting the follow-up now would make it the task's next run without
+        // that isolation (and the delivery worker would then skip the
+        // continuation). The follow-up stays deferred and is promoted behind
+        // the continuation when that run is released.
+        if (isolatedReplacement && isolatedReplacement.continuationPending) {
+          return { outcome: { kind: "released" }, postCommitEffects: [], run: runSnapshot };
+        }
         const executionBlocker = await getExecutionBlocker(tx, issueRow.companyId, issueRow.id);
         const recoveryOnly = Boolean(executionBlocker &&
           executionBlocker.cause === "execution_owner_active" && executionBlocker.runId === run.id &&
