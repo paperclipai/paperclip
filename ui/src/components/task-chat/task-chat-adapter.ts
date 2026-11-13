@@ -128,6 +128,7 @@ export function commentsToTaskChatItems(
       kind: "message",
       author: kind,
       authorName,
+      agentAuthored: Boolean(comment.authorAgentId),
       ...(humanAuthor ? {
         authorUserId: comment.authorUserId,
         authorAvatarUrl: humanAuthor.avatarUrl,
