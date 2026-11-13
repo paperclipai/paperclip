@@ -33,6 +33,9 @@ export const updateDepartmentSchema = z.object({
 
 export const setAgentDepartmentsSchema = z.object({
   departmentIds: z.array(z.string().uuid()).max(AGENT_DEPARTMENT_MAX_MEMBERSHIPS),
+  // A new label typed on the agent card. Created in this request so the card
+  // does not need a separate board-only catalog call.
+  names: z.array(z.string().min(1).max(200)).max(AGENT_DEPARTMENT_MAX_MEMBERSHIPS).optional(),
 }).strict();
 
 export type CreateDepartment = z.infer<typeof createDepartmentSchema>;

@@ -4,12 +4,13 @@ import { Filter } from "lucide-react";
 import type { Agent, Department } from "@paperclipai/shared";
 import { aiConnectionsApi } from "@/api/ai-connections";
 import { departmentsApi } from "@/api/departments";
-import { agentRosterFilterFields, AGENT_DEPARTMENT_UNASSIGNED, buildAgentRosterIndex, departmentNamesForAgent, emptyAgentRosterFilters, matchesAgentRosterFilters, matchesDepartmentFilter, type AgentRosterFilterField, type AgentRosterFilters as FilterState, type AgentRosterOption } from "@/lib/agent-roster-filters";
+import { agentRosterFilterFields, buildAgentRosterIndex, departmentNamesForAgent, emptyAgentRosterFilters, matchesAgentRosterFilters, matchesDepartmentFilter, type AgentRosterFilterField, type AgentRosterFilters as FilterState, type AgentRosterOption } from "@/lib/agent-roster-filters";
 import { queryKeys } from "@/lib/queryKeys";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { NativeSelect } from "@/components/ui/select";
+import { DepartmentFilterSelect } from "./DepartmentFilterSelect";
 import { useTx } from "@/i18n/tx";
 
 const emptyAgents: Agent[] = [];
@@ -52,12 +53,11 @@ export function useAgentRosterFilters(companyId: string | null, agents: Agent[] 
   };
 }
 
-export function AgentRosterFilters({ filters, options, departmentOptions, onChange, activeCount, count, connectionError, departmentError, retryConnections, retryDepartments, compact = false }: {
+export function AgentRosterFilters({ filters, options, departmentOptions, onChange, count, connectionError, departmentError, retryConnections, retryDepartments, compact = false }: {
   filters: RosterFilters;
   options: Record<AgentRosterFilterField, AgentRosterOption[]>;
   departmentOptions: AgentRosterOption[];
   onChange: (filters: RosterFilters) => void;
-  activeCount: number;
   count: number;
   compact?: boolean;
   connectionError?: unknown;
@@ -66,19 +66,21 @@ export function AgentRosterFilters({ filters, options, departmentOptions, onChan
   retryDepartments: () => void;
 }) {
   const tx = useTx();
+  const metadataCount = agentRosterFilterFields.filter((field) => filters[field]).length;
   return <div data-canonical-toolbar="agent-filters" role="toolbar" aria-label="Agent filters" className={cn("flex flex-wrap items-center gap-3", !compact && "justify-between")}>
+    <DepartmentFilterSelect value={filters.department} options={departmentOptions} onChange={(department) => onChange({ ...filters, department })} />
     <Popover>
       <PopoverTrigger asChild>
-        <Button variant={compact ? "outline" : "ghost"} size="icon" aria-label="Filter agents" title={activeCount ? `Filters: ${activeCount}` : "Filter agents"}
-          className={cn("relative shrink-0", compact && "design-toolbar-icon", activeCount > 0 && "text-blue-600 dark:text-blue-400")}>
+        <Button variant={compact ? "outline" : "ghost"} size="icon" aria-label="Filter agents" title={metadataCount ? `Filters: ${metadataCount}` : "Filter agents"}
+          className={cn("relative shrink-0", compact && "design-toolbar-icon", metadataCount > 0 && "text-blue-600 dark:text-blue-400")}>
           <Filter className="size-3.5" aria-hidden />
-          {activeCount > 0 && <span aria-hidden className="absolute -right-1 -top-1 flex size-3.5 items-center justify-center rounded-full bg-blue-600 text-(length:--text-nano) font-bold text-white">{activeCount}</span>}
+          {metadataCount > 0 && <span aria-hidden className="absolute -right-1 -top-1 flex size-3.5 items-center justify-center rounded-full bg-blue-600 text-(length:--text-nano) font-bold text-white">{metadataCount}</span>}
         </Button>
       </PopoverTrigger>
       <PopoverContent aria-label="Agent filter choices" align="start" className="max-h-96 w-72 space-y-3 overflow-y-auto p-3">
         <div className="flex items-center justify-between">
           <span className="text-sm font-medium">Filters</span>
-          {activeCount > 0 && <Button variant="ghost" size="sm" onClick={() => onChange(emptyRosterFilters)}>Clear filters</Button>}
+          {metadataCount > 0 && <Button variant="ghost" size="sm" onClick={() => onChange({ ...emptyAgentRosterFilters, department: filters.department })}>Clear filters</Button>}
         </div>
         {agentRosterFilterFields.map(field => <label key={field} className="block space-y-1 text-xs font-medium text-muted-foreground">
           <span>{labels[field]}</span>
@@ -89,16 +91,6 @@ export function AgentRosterFilters({ filters, options, departmentOptions, onChan
             {options[field].map(option => <option key={option.value} value={option.value}>{option.label}</option>)}
           </NativeSelect>
         </label>)}
-        <label className="block space-y-1 text-xs font-medium text-muted-foreground">
-          <span>{tx("Department")}</span>
-          <NativeSelect aria-label={tx("Department")} value={filters.department} onChange={event => onChange({ ...filters, department: event.target.value })}
-            className="h-11 text-base md:text-sm">
-            <option value="">{tx("All departments")}</option>
-            <option value={AGENT_DEPARTMENT_UNASSIGNED}>{tx("Unassigned")}</option>
-            {filters.department && filters.department !== AGENT_DEPARTMENT_UNASSIGNED && !departmentOptions.some(option => option.value === filters.department) && <option value={filters.department}>{tx("Previously selected department")}</option>}
-            {departmentOptions.map(option => <option key={option.value} value={option.value}>{option.label}</option>)}
-          </NativeSelect>
-        </label>
       </PopoverContent>
     </Popover>
     {!compact && <span className="text-xs text-muted-foreground">{count} {count === 1 ? "agent" : "agents"}</span>}

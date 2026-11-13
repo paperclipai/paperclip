@@ -23,22 +23,14 @@ export function AgentDepartmentsField({ companyId, agentId }: { companyId: strin
   const mine = rows.filter((department) => department.agentIds.includes(agentId));
   const invalidate = () => client.invalidateQueries({ queryKey: queryKeys.departments.list(companyId) });
   const replace = useMutation({
-    mutationFn: (departmentIds: string[]) => departmentsApi.setForAgent(agentId, departmentIds),
+    mutationFn: (input: { departmentIds: string[]; names?: string[] }) =>
+      departmentsApi.setForAgent(agentId, input.departmentIds, input.names),
     onSuccess: async () => {
+      setDraft("");
       setError(null);
       await invalidate();
     },
     onError: (cause: Error) => setError(tx(cause.message || "Couldn’t save departments")),
-  });
-  const create = useMutation({
-    mutationFn: (name: string) => departmentsApi.create(companyId, name),
-    onSuccess: async (department) => {
-      setDraft("");
-      const ids = new Set(mine.map((row) => row.id));
-      ids.add(department.id);
-      await replace.mutateAsync([...ids]);
-    },
-    onError: (cause: Error) => setError(tx(cause.message || "Couldn’t add department")),
   });
 
   const add = () => {
@@ -53,14 +45,15 @@ export function AgentDepartmentsField({ companyId, agentId }: { companyId: strin
         setDraft("");
         return;
       }
-      setDraft("");
-      replace.mutate([...mine.map((row) => row.id), existing.id]);
+      replace.mutate({ departmentIds: [...mine.map((row) => row.id), existing.id] });
       return;
     }
-    create.mutate(name);
+    // One request creates the label and adds this agent. The same permission
+    // as editing the card covers it.
+    replace.mutate({ departmentIds: mine.map((row) => row.id), names: [name] });
   };
 
-  const busy = replace.isPending || create.isPending;
+  const busy = replace.isPending;
   return (
     <div className="space-y-1.5">
       <div className="text-xs font-medium text-muted-foreground">{tx("Departments")}</div>
@@ -73,7 +66,7 @@ export function AgentDepartmentsField({ companyId, agentId }: { companyId: strin
             className="inline-flex items-center gap-1 rounded-full border border-border px-2 py-0.5 text-xs"
             disabled={busy}
             aria-label={`${tx("Remove")} ${department.name}`}
-            onClick={() => replace.mutate(mine.filter((row) => row.id !== department.id).map((row) => row.id))}
+            onClick={() => replace.mutate({ departmentIds: mine.filter((row) => row.id !== department.id).map((row) => row.id) })}
           >
             {department.name}
             <span aria-hidden>×</span>
