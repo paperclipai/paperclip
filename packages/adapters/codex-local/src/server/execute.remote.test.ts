@@ -118,9 +118,10 @@ describe("codex remote execution", () => {
     try {
       expect(await execute(ctx)).toMatchObject({ exitCode: 0, resultJson: { engine: "acp" } });
       expect(executeAcp).toHaveBeenCalledWith(ctx);
-      expect(ensureCommandResolvable).toHaveBeenCalledWith("codex-acp", expect.any(String), {}, {
-        remoteExecution: expect.objectContaining({ host: "ssh.example.test", useHostAuth: false }),
-      });
+      const probe = ensureCommandResolvable.mock.calls[0] as unknown as unknown[];
+      expect(probe[0]).toBe("codex-acp");
+      expect(Object.keys(probe[2] as Record<string, unknown>)).toEqual([]);
+      expect(probe[3]).toMatchObject({ remoteExecution: { host: "ssh.example.test", useHostAuth: false } });
     } finally {
       if (previous === undefined) delete process.env.OPENAI_API_KEY;
       else process.env.OPENAI_API_KEY = previous;
