@@ -31,6 +31,10 @@ files without a final newline. It prints that user’s name, home workspace path
 and SSH host public key for the
 form. You can also select an existing SSH private key secret.
 
+Pairing output is tied to the selected company, tailnet, machine, and SSH port.
+After editing the port, prepare pairing again for matching known-hosts output.
+A late response for an earlier port cannot replace the selected private key.
+
 Save the environment and test it. Select it as an agent’s environment and choose
 any harness supported by SSH environments. Select the agent's AI account in
 Paperclip. Runs use that account's subscription or API key, with private
