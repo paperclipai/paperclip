@@ -3,7 +3,7 @@ import { Ajv2020 } from "ajv/dist/2020.js";
 import { describe, expect, test } from "vitest";
 import { CAPABILITY_SEMANTIC_TOOL_CATALOG } from "../semantic-tools/catalog.js";
 import { PRP_COMPLETION_RESULT_PROVIDER_INPUT_SCHEMA } from "./completion-result.js";
-import { QUESTIONS_PAYLOAD_EXAMPLE, TOOL_INPUT_VARIANT_TOOLS, toolInputVariantError } from "./tool-input-variants.js";
+import { QUESTIONS_PAYLOAD_EXAMPLE, TOOL_INPUT_CORRECTION_EXAMPLES, TOOL_INPUT_VARIANT_TOOLS, toolInputVariantError } from "./tool-input-variants.js";
 
 // The strict input schemas the previous release advertised, with their root
 // oneOf/anyOf/allOf/if-then. Calls and receipts saved under them must keep
@@ -111,4 +111,41 @@ test("the questions correction suggests a payload that is admitted", () => {
   expect(ajv.compile(previous.tools.request_human_input!)(input)).toBe(true);
   expect(toolInputVariantError("request_human_input", input)).toBeNull();
   expect(toolInputVariantError("request_human_input", { ...ask, payload: { version: 1 } })).toContain(JSON.stringify(QUESTIONS_PAYLOAD_EXAMPLE));
+});
+
+// Every JSON object embedded in a message, found by balanced braces.
+function embeddedJson(message: string): unknown[] {
+  const found: unknown[] = [];
+  for (let start = message.indexOf("{"); start !== -1; start = message.indexOf("{", start + 1)) {
+    let depth = 0;
+    for (let end = start; end < message.length; end += 1) {
+      if (message[end] === "{") depth += 1;
+      else if (message[end] === "}" && --depth === 0) {
+        try { found.push(JSON.parse(message.slice(start, end + 1))); start = end; } catch { /* prose braces */ }
+        break;
+      }
+    }
+  }
+  return found;
+}
+
+test("every corrective example is registered and passes its tool's advertised schema", () => {
+  const bases: Record<string, Record<string, unknown>> = { request_human_input: ask };
+  for (const example of TOOL_INPUT_CORRECTION_EXAMPLES) {
+    const input = { ...bases[example.tool], [example.argument]: structuredClone(example.value) };
+    expect(ajv.compile(current(example.tool) as Record<string, unknown>)(input), example.tool).toBe(true);
+    expect(toolInputVariantError(example.tool, input), example.tool).toBeNull();
+  }
+  let shown = 0;
+  for (const tool of TOOL_INPUT_VARIANT_TOOLS) {
+    for (const input of corpus[tool]!) {
+      const message = toolInputVariantError(tool, JSON.parse(JSON.stringify(input)));
+      for (const value of message ? embeddedJson(message) : []) {
+        shown += 1;
+        expect(TOOL_INPUT_CORRECTION_EXAMPLES.some(example => example.tool === tool && JSON.stringify(example.value) === JSON.stringify(value)),
+          `${tool}: ${JSON.stringify(value)}`).toBe(true);
+      }
+    }
+  }
+  expect(shown).toBeGreaterThan(0);
 });

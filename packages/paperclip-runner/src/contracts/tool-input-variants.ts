@@ -32,7 +32,7 @@ function handoffCase(input: Input): string[] {
     const missing = ["expectedHandoffVersion", "expectedIssueStatusVersion"].filter(key => !has(input, key));
     if (missing.length) problems.push(`to: "done" requires ${list(missing)}: the case handoffVersion and task statusVersion you last read.`);
     if (has(input, "phase") && input.phase !== "done") problems.push(`With to: "done", omit phase or send phase: "done".`);
-    if (target && has(target, "create")) problems.push(`With to: "done", case must be {"id": "<existing case ID>"}; a new case cannot be finished.`);
+    if (target && has(target, "create")) problems.push(`With to: "done", case must contain only id, the existing case ID; a new case cannot be finished.`);
     return problems;
   }
   const missing = ["toAgentId", "phase"].filter(key => !has(input, key));
@@ -88,6 +88,15 @@ function readWorkflow(input: Input): string[] {
 export const QUESTIONS_PAYLOAD_EXAMPLE = Object.freeze({
   questionSet: { schema: "paperclip.question_set.v1", questions: [{ id: "<id>", prompt: "<question>", required: true, answerMode: "text" }] },
 });
+
+/**
+ * Every copyable JSON example a correction can show, with the tool and
+ * argument it belongs to. Tests require each example in a message to be
+ * listed here and to pass that tool's advertised schema and variant rules.
+ */
+export const TOOL_INPUT_CORRECTION_EXAMPLES: readonly { tool: string; argument: string; value: unknown }[] = Object.freeze([
+  { tool: "request_human_input", argument: "payload", value: QUESTIONS_PAYLOAD_EXAMPLE },
+]);
 
 function requestHumanInput(input: Input): string[] {
   if (input.interactionKind !== "questions") return [];
