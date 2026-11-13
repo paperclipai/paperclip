@@ -424,6 +424,23 @@ it("opens a confirmed new chat when the picker was dismissed while it was being 
   // The surrounding history closes with the confirmed chat, as it does for a picker that stayed open.
   expect(opened).toHaveBeenCalledOnce();
 });
+it("does not let a chat dismissed in one picker replace a newer chat from the other picker", async () => {
+  let finishAlice!: (value: ReturnType<typeof chat>) => void;
+  state.ensure.mockImplementation(async (_company, id) => id === "alice"
+    ? new Promise(resolve => { finishAlice = resolve; }) : chat(id));
+  // The Coordinator's New chat picker is a separate hook instance from the history's Add chat picker.
+  function CoordinatorNewChat() {
+    const openNewChat = useOpenAgentChat("company-a", "user-a", true);
+    return <button type="button" onClick={() => { void openNewChat(roster[1]!); }}>Coordinator new chat with bob</button>;
+  }
+  await act(async () => { root.render(<QueryClientProvider client={client}><AgentConversationsSidebar /><CoordinatorNewChat /></QueryClientProvider>); });
+  await addChat(); await choose("alice");
+  await act(async () => document.querySelector<HTMLButtonElement>('[data-slot="dialog-close"]')!.click());
+  await act(async () => [...container.querySelectorAll("button")].find(button => button.textContent === "Coordinator new chat with bob")!.click());
+  expect(state.navigate).toHaveBeenLastCalledWith("/chats/bob/chat-bob");
+  await act(async () => finishAlice(chat("alice")));
+  expect(state.navigate).toHaveBeenCalledTimes(1);
+});
 it("does not let a dismissed selection override a newer chat", async () => {
   let finishAlice!: (value: ReturnType<typeof chat>) => void;
   state.ensure.mockImplementation(async (_company, id) => id === "alice"

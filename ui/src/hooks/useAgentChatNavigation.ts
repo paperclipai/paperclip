@@ -46,13 +46,18 @@ export function useAgentChatNavigation() {
   return { companyId, userId, enabled, loaded, agents, chats, session };
 }
 
+/**
+ * The latest chat selection per company and user, shared by every chat picker (the Coordinator's
+ * New chat and the history's Add chat), so an older dismissed selection never replaces a newer one.
+ */
+const latestChatSelection = new Map<string, number>();
+
 /** Opens the default conversation or explicitly creates a new one. Resolves to whether it navigated to the chat. */
 export function useOpenAgentChat(companyId: string | null, userId: string | null, createNew = false) {
   const client = useQueryClient();
   const navigate = useNavigate();
   const { isMobile, setSidebarOpen } = useSidebar();
   const scope = useRef({ companyId, userId, mounted: true });
-  const latestOpen = useRef(0);
   useEffect(() => {
     const current = { companyId, userId, mounted: true };
     scope.current = current;
@@ -66,7 +71,9 @@ export function useOpenAgentChat(companyId: string | null, userId: string | null
       throw new Error("Your account changed or is still loading. Try again.");
     }
     const current = scope.current;
-    const open = ++latestOpen.current;
+    const selectionKey = `${companyId}:${userId ?? ""}`;
+    const open = (latestChatSelection.get(selectionKey) ?? 0) + 1;
+    latestChatSelection.set(selectionKey, open);
     const request = createNew ? pendingChatCreate(companyId, userId, agent.id) : null;
     const completeCreate = () => { if (request) clearPendingSend(request.key, request.clientRequestId, "session"); };
     const chat = await (request ? agentChatsApi.create(companyId, agent.id, request.clientRequestId) : agentChatsApi.ensure(companyId, agent.id)).catch(error => {
@@ -81,7 +88,7 @@ export function useOpenAgentChat(companyId: string | null, userId: string | null
         .sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime() || b.id.localeCompare(a.id)));
     // Dismissing the picker cannot stop a create the server may already have committed. Open a
     // confirmed new chat unless a newer selection replaced it; a dismissed default open stays closed.
-    const superseded = latestOpen.current !== open;
+    const superseded = latestChatSelection.get(selectionKey) !== open;
     if (!current.mounted || scope.current !== current || (signal?.aborted && (!createNew || superseded))) { completeCreate(); return false; }
     navigate(`/chats/${encodeURIComponent(agentRouteRef(agent))}${createNew ? `/${chat.id}` : ""}`);
     if (isMobile) setSidebarOpen(false);
