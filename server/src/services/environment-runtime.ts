@@ -12,6 +12,7 @@ import {
   retireReplacedReusableSandboxLease,
   reusableSandboxKeptAfterReplacement,
   reusableSandboxLeaseIsIdle,
+  reusableSandboxNotKeptAfterReplacementSql,
   reusableSandboxReplacementPlan,
   type ReusableSandboxReplacementPlan,
   sandboxStateTransitionFailure,
@@ -1918,6 +1919,7 @@ function createSandboxEnvironmentDriver(
             );
             let retryDelayMs = 250;
             let idleStartWaitExtended = false;
+            let everyResumeTimedOut = true;
             let resumed: PluginEnvironmentLease;
             while (true) {
               try {
@@ -1941,6 +1943,7 @@ function createSandboxEnvironmentDriver(
                 break;
               } catch (error) {
                 if (!transientSandboxResumeFailure(error)) throw error;
+                if (sandboxProviderFailureLabel(error).label !== "transport_timeout") everyResumeTimedOut = false;
                 const retryAt = Date.now() + retryDelayMs * 1.25;
                 if (retryAt >= resumeDeadline) {
                   const waitForIdleStart = resumeDeadline < idleResumeDeadline && retryAt < idleResumeDeadline
@@ -1949,7 +1952,7 @@ function createSandboxEnvironmentDriver(
                       db, lease: reusableLease, companyId: input.companyId, heartbeatRunId: input.heartbeatRunId,
                     });
                   if (!waitForIdleStart) {
-                    idleStartWaitSpent = idleStartWaitExtended;
+                    idleStartWaitSpent = idleStartWaitExtended && everyResumeTimedOut;
                     throw error;
                   }
                   resumeDeadline = idleResumeDeadline;
@@ -3239,6 +3242,7 @@ function createSandboxEnvironmentDriver(
     lease: EnvironmentLease;
     failureReason: string;
   }): Promise<EnvironmentLease | null> {
+    if (reusableSandboxKeptAfterReplacement(input.lease)) return null;
     if (await legacyShutdownWorkspaceResourceProtected(db, input.lease)) return null;
     if (await abandonedWorkspaceFilesHeldOnLease(db, input.lease)) {
       await parkAbandonedWorkspaceFilesLease(db, input.lease, ["released", "retained", "failed", "pending_cleanup"]);
@@ -3954,6 +3958,7 @@ export function environmentRuntimeService(
     runId?: string;
     failureReason: string;
     anyLeasePolicy?: boolean;
+    releasesKeptSandbox?: boolean;
   }): Promise<EnvironmentLease | null> {
     if (await nativeWorkspaceExportPendingForLease(db, input.leaseRow)) return null;
     if (!(await allowLegacyShutdownWorkspaceCleanup(db, input.leaseRow))) return null;
@@ -3985,6 +3990,7 @@ export function environmentRuntimeService(
         : input.anyLeasePolicy ? undefined : eq(environmentLeases.leasePolicy, "reuse_by_environment"),
       eq(environmentLeases.status, input.leaseRow.status),
       input.scopeCondition,
+      input.releasesKeptSandbox ? undefined : reusableSandboxNotKeptAfterReplacementSql(),
       sql`coalesce(${environmentLeases.metadata}->>'pendingCleanupInFlight', 'false') != 'true'`,
 
 
@@ -4624,6 +4630,7 @@ export function environmentRuntimeService(
           continue;
         }
         const lease = await destroyClaimedSandboxLease({ environment, leaseRow, failureReason, anyLeasePolicy: true,
+          releasesKeptSandbox: true,
           scopeCondition: inArray(environmentLeases.leasePolicy, [...KEPT_SANDBOX_LEASE_POLICIES]) });
         if (!lease) {
           // Lost to a racing resume or a concurrent terminal transition — the

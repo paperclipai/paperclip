@@ -430,6 +430,42 @@ describeEmbeddedPostgres("reusable sandbox resume failure replacement", () => {
     });
   });
 
+  it("never destroys a sandbox kept after replacement through the run or workspace teardown paths", async () => {
+    const seeded = await seed({ leaseStatus: "released", backupStamp: false });
+    const clock = rpcTimeoutClock();
+    const { call, runtime } = worker(seeded, async (_attempt, timeoutMs) => { throw clock.timeOut(timeoutMs); });
+    const acquired = await acquire(seeded, runtime);
+    await environmentService(db).releaseLease(acquired.lease.id, "released");
+    await db.update(heartbeatRuns).set({ status: "succeeded" }).where(eq(heartbeatRuns.id, seeded.runId));
+    const kept = (await environmentService(db).getLeaseById(seeded.lease.id))!;
+
+    await expect(runtime.destroyRunLease({ environment: seeded.environment, lease: kept })).resolves.toBeNull();
+    const destroyed = await runtime.destroyReusableSandboxLeases({ companyId: seeded.companyId,
+      executionWorkspaceId: seeded.executionWorkspaceId });
+
+    expect(destroyed.map(record => record.lease.id)).toEqual([acquired.lease.id]);
+    expect(call.mock.calls.filter(([, method, params]) => method === "environmentDestroyLease"
+      && (params as { providerLeaseId?: string }).providerLeaseId === seeded.providerLeaseId)).toHaveLength(0);
+    await expect(environmentService(db).getLeaseById(seeded.lease.id)).resolves.toMatchObject({
+      status: "released", providerLeaseId: seeded.providerLeaseId,
+    });
+  });
+
+  it("keeps an idle sandbox with no harness backup when some resume calls failed for another reason", async () => {
+    const seeded = await seed({ leaseStatus: "released", backupStamp: false });
+    const clock = rpcTimeoutClock();
+    const { call, runtime } = worker(seeded, async (attempt, timeoutMs) => {
+      if (attempt === 1) throw clock.timeOut(timeoutMs);
+      throw Object.assign(clock.timeOut(timeoutMs), { message: "connection reset by peer (ECONNRESET)" });
+    });
+
+    await expect(acquire(seeded, runtime)).rejects.toThrow(/the lease was preserved and no replacement was created\.$/);
+    expect(call.mock.calls.filter(([, method]) => method === "environmentResumeLease").length).toBeGreaterThan(1);
+    expect(call).not.toHaveBeenCalledWith(seeded.pluginId, "environmentAcquireLease", expect.anything(), expect.anything());
+    const kept = await environmentService(db).getLeaseById(seeded.lease.id);
+    expect(kept?.metadata?.reusableSandboxKeptAfterReplacement).toBeUndefined();
+  });
+
   it.each([
     ["unsaved work on the sandbox", { dirty: true }],
     ["no saved workspace version", { snapshot: null }],

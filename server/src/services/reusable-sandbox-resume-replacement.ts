@@ -9,6 +9,13 @@ import { verifyRecoverableNativeHarnessBackup } from "./native-runtime/native-ha
 import { findPluginWorkerUnavailableError } from "./plugin-worker-unavailable-error.js";
 import { abandonedWorkspaceFilesHeldOnLeaseRowSql, ABANDONED_WORKSPACE_FILES_PARKED_KEY, ABANDONED_WORKSPACE_FILES_PARKED_REASON } from "./remote-workspace-abandoned-files-hold.js";
 import { sandboxProviderFailureLabel } from "./remote-workspace-transport.js";
+import { REUSABLE_SANDBOX_KEPT_AFTER_REPLACEMENT_KEY } from "./reusable-sandbox-kept-marker.js";
+
+export {
+  REUSABLE_SANDBOX_KEPT_AFTER_REPLACEMENT_KEY,
+  reusableSandboxKeptAfterReplacement,
+  reusableSandboxNotKeptAfterReplacementSql,
+} from "./reusable-sandbox-kept-marker.js";
 
 /**
  * Total time one run spends resuming a preserved reusable sandbox, including
@@ -23,17 +30,9 @@ export const REUSABLE_SANDBOX_IDLE_RESUME_BUDGET_MS = 330_000;
 /** Failure reason recorded on a preserved lease retired in favor of a replacement. */
 export const REUSABLE_SANDBOX_RESUME_REPLACED_REASON = "resume_failed";
 
-export const REUSABLE_SANDBOX_KEPT_AFTER_REPLACEMENT_KEY = "reusableSandboxKeptAfterReplacement";
 
 export type ReusableSandboxReplacementPlan = "retire" | "keep";
 
-export function reusableSandboxKeptAfterReplacement(lease: Pick<EnvironmentLease, "metadata">): boolean {
-  return isRecord(lease.metadata?.[REUSABLE_SANDBOX_KEPT_AFTER_REPLACEMENT_KEY]);
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
 
 /**
  * A provider refused to start a sandbox because it is still changing state,
