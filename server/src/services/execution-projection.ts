@@ -24,6 +24,7 @@ import { isAgentAwaitingSetup } from "../modules/agent-lifecycle/index.js";
 import { NATIVE_RESPONSE_WAKE_WAITING_REASON } from "./native-runtime/status-arbiter.js";
 import { agentQueueLinesForRuns } from "./heartbeat/queued-run-line.js";
 const MAX_PREDECESSOR_CLEANUP_CHECKS = 16;
+const ANOTHER_ROUTINE_TASK = "another task in this routine";
 const text = (v: unknown) => (typeof v === "string" ? v : null);
 const executionRunColumns = {
   id: heartbeatRuns.id,
@@ -218,7 +219,8 @@ export async function executionProjectionsForRuns(
   const unstartedIssueIds = [...new Set(queuedRuns.filter(run => !run.startedAt).map(issueIdOf).filter((id): id is string => !!id))];
   if (unstartedIssueIds.length) {
     const holders = await read(async () => db.execute<{ issueId: string; holderIdentifier: string | null }>(sql`
-      select waiting.id as "issueId", holder.identifier as "holderIdentifier"
+      -- A private holder is never named: this projection has no reader to check access for.
+      select waiting.id as "issueId", case when holder.visibility = 'open' then holder.identifier end as "holderIdentifier"
       from ${issues} waiting
       join ${issues} holder on holder.company_id = waiting.company_id
         and holder.origin_kind = 'routine_execution'
@@ -233,7 +235,7 @@ export async function executionProjectionsForRuns(
         and waiting.origin_id is not null
         and waiting.id in (${sql.join(unstartedIssueIds.map(id => sql`${id}::uuid`), sql`, `)})`));
     for (const row of [...holders]) {
-      if (!routineHolderByIssue.has(row.issueId)) routineHolderByIssue.set(row.issueId, row.holderIdentifier ?? "another task");
+      if (!routineHolderByIssue.has(row.issueId)) routineHolderByIssue.set(row.issueId, row.holderIdentifier ?? ANOTHER_ROUTINE_TASK);
     }
   }
   if (queuedIssueIds.length) {
@@ -592,7 +594,7 @@ export function projectExecution(
   // Checked before the agent's limit: a free slot would not start this run.
   if (run.status === "queued" && !run.startedAt && routineHolder) {
     projection.cause = "routine_execution_in_progress";
-    projection.nextAction = `This routine runs one task at a time and ${routineHolder} is still open with its run. This task starts automatically when that one finishes.`;
+    projection.nextAction = `This routine runs one task at a time and ${routineHolder === ANOTHER_ROUTINE_TASK ? "another of its tasks" : routineHolder} is still open with its run. This task starts automatically when that one finishes.`;
     return set("queued", `Waiting for ${routineHolder} to finish`);
   }
   if (run.status === "queued" && !run.startedAt && agentQueue) {
