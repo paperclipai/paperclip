@@ -2,7 +2,7 @@ import { describe, expect, it, vi, afterEach } from "vitest";
 import type { AdapterExecutionContext } from "@paperclipai/adapter-utils";
 import { createPromptContextFixture } from "@paperclipai/adapter-utils/test-fixtures/prompt-context";
 import { execute, mapFinalResultForTest, normalizeRetryNotBeforeForTest, parseSseFramesForTest, rateLimitRetryDelayForTest, resolveSessionKey } from "./execute.js";
-import { STOP_GRACE_MS } from "../shared/constants.js";
+import { CREATE_REQUEST_TIMEOUT_MS, STOP_GRACE_MS } from "../shared/constants.js";
 import { testEnvironment } from "./test.js";
 import { parseHermesGatewayStdoutLine } from "../ui/parse-stdout.js";
 
@@ -973,6 +973,98 @@ describe("execute", () => {
       expect(result.resultJson?.status).toBe("cancelling");
       // No acknowledged cancellation — the stop did not confirm.
       expect(result.resultJson?.executionCancellation).toBeUndefined();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("returns cancelled without a bootstrap claim when stopped during a stalled create", async () => {
+    vi.useFakeTimers();
+    try {
+      const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = String(input);
+        if (url.endsWith("/v1/runs") && init?.method === "POST") {
+          // The gateway accepts the create connection but never responds;
+          // only the create request's abort signal can unblock it.
+          return new Promise<Response>((_, reject) => {
+            const signal = init?.signal;
+            if (signal?.aborted) {
+              reject(new Error("The operation was aborted"));
+              return;
+            }
+            signal?.addEventListener("abort", () => reject(new Error("The operation was aborted")));
+          });
+        }
+        return new Response(JSON.stringify({ status: "completed" }), { status: 200 });
+      });
+      vi.stubGlobal("fetch", fetchMock);
+      const controller = new AbortController();
+      const ctx = makeCtx({ apiBaseUrl: "http://127.0.0.1:8642", apiKey: "***", timeoutSec: 60 });
+      ctx.onCancellationReady = vi.fn(async () => { ctx.signal = controller.signal; });
+      ctx.onDispatch = vi.fn();
+
+      const runPromise = execute(ctx);
+      await vi.advanceTimersByTimeAsync(0);
+      expect(ctx.onCancellationReady).toHaveBeenCalledOnce();
+      // The create request is in flight and stalled. Operator Stop.
+      controller.abort();
+      await vi.advanceTimersByTimeAsync(0);
+      const result = await runPromise;
+
+      expect(result.exitCode).toBe(null);
+      expect(result.errorCode).toBe("cancelled");
+      expect(result.timedOut).toBe(false);
+      // The create outcome is unknown, so no executionRecovery claim is
+      // made: absent evidence never authorizes replay, and the host must
+      // reconcile the uncertain dispatch instead of trusting "never started".
+      expect(result.executionRecovery).toBeUndefined();
+      // Exactly one create attempt - no retry after Stop.
+      const createCalls = fetchMock.mock.calls.filter(([input, init]) =>
+        String(input).endsWith("/v1/runs") && init?.method === "POST");
+      expect(createCalls).toHaveLength(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("bounds a stalled create request with a deadline so the invocation cannot hang", async () => {
+    vi.useFakeTimers();
+    try {
+      const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = String(input);
+        if (url.endsWith("/v1/runs") && init?.method === "POST") {
+          // The gateway accepts the create connection but never responds;
+          // only the create request's abort signal can unblock it.
+          return new Promise<Response>((_, reject) => {
+            const signal = init?.signal;
+            if (signal?.aborted) {
+              reject(new Error("The operation was aborted"));
+              return;
+            }
+            signal?.addEventListener("abort", () => reject(new Error("The operation was aborted")));
+          });
+        }
+        return new Response(JSON.stringify({ status: "completed" }), { status: 200 });
+      });
+      vi.stubGlobal("fetch", fetchMock);
+      const ctx = makeCtx({ apiBaseUrl: "http://127.0.0.1:8642", apiKey: "***", timeoutSec: 60 });
+      ctx.onCancellationReady = vi.fn(async () => { ctx.signal = new AbortController().signal; });
+      ctx.onDispatch = vi.fn();
+
+      const runPromise = execute(ctx);
+      await vi.advanceTimersByTimeAsync(0);
+      // No operator Stop: advance past the per-attempt create deadline
+      // and the stalled request is aborted and surfaced as transient.
+      await vi.advanceTimersByTimeAsync(CREATE_REQUEST_TIMEOUT_MS + 1);
+      const result = await runPromise;
+
+      expect(result.exitCode).toBe(1);
+      expect(result.errorCode).toBe("hermes_gateway_connect_failed");
+      expect(result.errorFamily).toBe("transient_upstream");
+      expect(String(result.errorMessage)).toContain("stalled");
+      const createCalls = fetchMock.mock.calls.filter(([input, init]) =>
+        String(input).endsWith("/v1/runs") && init?.method === "POST");
+      expect(createCalls).toHaveLength(1);
     } finally {
       vi.useRealTimers();
     }

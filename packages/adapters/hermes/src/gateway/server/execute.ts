@@ -16,6 +16,7 @@ import {
 } from "@paperclipai/adapter-utils/server-utils";
 import {
   ADAPTER_TYPE,
+  CREATE_REQUEST_TIMEOUT_MS,
   DEFAULT_EVENT_RECONNECT_MS,
   DEFAULT_POLL_INTERVAL_MS,
   DEFAULT_TIMEOUT_SEC,
@@ -1088,16 +1089,55 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     // with jittered backoff, honoring a bounded server Retry-After, before
     // surfacing the 429 for the platform's own transient retry scheduling.
     while (true) {
+      // Bound this create attempt and tie it to the operator Stop. Once
+      // onCancellationReady has registered this adapter as the Stop owner, a
+      // gateway that accepts the create connection but stalls on the response
+      // (or its body) would otherwise wait out the host's stop-grace window
+      // and return adapter_stop_pending — and with no Stop it would hang the
+      // invocation forever, because timeoutSec only starts after create
+      // succeeds. Aborting createAbort rejects both the request and its body
+      // read, from either the host signal or the deadline timer below.
+      const createAbort = new AbortController();
+      const abortCreateOnHostStop = () => createAbort.abort();
+      ctx.signal?.addEventListener("abort", abortCreateOnHostStop, { once: true });
+      const createTimer = setTimeout(() => createAbort.abort(), CREATE_REQUEST_TIMEOUT_MS);
+      // unref so the timer does not keep the event loop alive after the
+      // create attempt settles — it is cleared in the finally block below.
+      if (typeof createTimer.unref === "function") createTimer.unref();
       try {
         created = await fetchJson(createRunUrl, {
           method: "POST",
           headers: runHeaders,
           body: JSON.stringify(body),
+          signal: createAbort.signal,
         });
         break;
       } catch (err) {
-        const delayMs = isGatewayCreateRateLimit(err as HermesHttpError)
-          ? rateLimitRetryDelayForTest(rateLimitAttempt, (err as HermesHttpError).retryNotBefore)
+        const hermesErr = err as HermesHttpError;
+        if (ctx.signal?.aborted && typeof hermesErr.status !== "number") {
+          // Operator Stop fired while the create request or its body read was
+          // in flight, so no HTTP response was received. The request may have
+          // reached the gateway and a remote run may exist, so do NOT claim a
+          // bootstrap recovery: executionRecovery is omitted (absent evidence
+          // never authorizes replay) and the host reconciles the uncertain
+          // dispatch before any re-dispatch.
+          return {
+            exitCode: null, signal: null, timedOut: false,
+            errorCode: "cancelled",
+            errorMessage: "Stopped while the run create request was in flight; remote run state unknown",
+          };
+        }
+        if (createAbort.signal.aborted && typeof hermesErr.status !== "number") {
+          // No operator Stop: the deadline above aborted a stalled create. The
+          // request may still have been processed by the gateway, so keep the
+          // transient-upstream connect-failure class (uncertain dispatch is
+          // the platform's to reconcile) but say what actually happened.
+          hermesErr.message =
+            `Hermes gateway create request stalled for over ${Math.round(CREATE_REQUEST_TIMEOUT_MS / 1000)}s ` +
+            "without a response and was aborted; the gateway may have created the run.";
+        }
+        const delayMs = isGatewayCreateRateLimit(hermesErr)
+          ? rateLimitRetryDelayForTest(rateLimitAttempt, hermesErr.retryNotBefore)
           : null;
         if (delayMs === null) throw err;
         try {
@@ -1119,6 +1159,9 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
           };
         }
         rateLimitAttempt += 1;
+      } finally {
+        clearTimeout(createTimer);
+        ctx.signal?.removeEventListener("abort", abortCreateOnHostStop);
       }
     }
     runId = extractRunId(created);
