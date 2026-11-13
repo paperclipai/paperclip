@@ -13,7 +13,7 @@ It works the same on Paperclip Cloud and self-hosted instances.
 ## Setting it up
 
 **Apps → Connect an app → Connect your own MCP server**, paste the address,
-open **Advanced authentication** and choose **Machine sign-in**. The option
+press **Change** beside the sign-in line and choose **Machine sign-in**. The option
 appears only when the connection is shared with the organization; personal
 connections sign in as the person.
 
