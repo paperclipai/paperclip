@@ -504,15 +504,22 @@ export async function deliverReconciledExecutions(
               eq(issues.id, action.sourceIssueId),
             ),
           );
+        const [delivered] = action.cause === "legacy_execution_requires_reconciliation" && action.fingerprint === `legacy-execution:${decision.runId}`
+          && !["workspaceRestoreFailure", "workspaceRestoreRecovery", "systemRecovery"].some(key => key in action.evidence) ? await db
+            .select({ id: issueRecoveryActions.id }).from(issueRecoveryActions).where(and(eq(issueRecoveryActions.companyId, action.companyId),
+              eq(issueRecoveryActions.sourceIssueId, action.sourceIssueId), eq(issueRecoveryActions.kind, action.kind), eq(issueRecoveryActions.cause, action.cause),
+              eq(issueRecoveryActions.fingerprint, action.fingerprint), eq(issueRecoveryActions.returnOwnerAgentId, action.returnOwnerAgentId),
+              sql`${issueRecoveryActions.evidence}->>'continuationDelivery' = 'delivered' and ${issueRecoveryActions.evidence}#>>'{executionReconciliation,runId}' = ${decision.runId}`,
+              sql`not (${issueRecoveryActions.evidence} ?| array['workspaceRestoreFailure', 'workspaceRestoreRecovery', 'systemRecovery'])`)).limit(1) : [];
         if (
           !task ||
           task.assigneeAgentId !== action.returnOwnerAgentId ||
-          ["done", "cancelled"].includes(task.status)
+          ["done", "cancelled"].includes(task.status) || delivered
         ) {
           await db
             .update(issueRecoveryActions)
             .set({
-              evidence: sql`${issueRecoveryActions.evidence} || '{"continuationDelivery":"invalidated"}'::jsonb`,
+              evidence: sql`${issueRecoveryActions.evidence} || ${JSON.stringify({ continuationDelivery: "invalidated", coalescedIntoRecoveryActionId: delivered?.id })}::jsonb`,
             })
             .where(pendingDecision);
           await settleCoalescedFreshContinuationHolds(db, { companyId: action.companyId, primaryId: action.id, delivery: "invalidated" });
