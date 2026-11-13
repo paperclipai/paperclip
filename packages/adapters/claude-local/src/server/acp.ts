@@ -475,6 +475,7 @@ function scrubClaudeAcpEdgeFailure(
 
 export function mapClaudeAcpAuthErrorCode(
   result: AdapterExecutionResult,
+  now = new Date(),
 ): AdapterExecutionResult {
   if (result.errorCode === CLAUDE_EDGE_REJECTED_ERROR_CODE) {
     // Classified from the typed terminal failure. Its title and details can
@@ -496,10 +497,18 @@ export function mapClaudeAcpAuthErrorCode(
     ? detectClaudeEdgeFailure({ parsed: null, stdout: "", stderr: result.errorMessage })
     : null;
   if (edgeFailure) {
+    const retryNotBefore = extractClaudeRetryAfter({ stderr: result.errorMessage ?? "" }, now)?.toISOString();
+    const scrubbed = scrubClaudeAcpEdgeFailure(result, edgeFailure);
     return {
-      ...scrubClaudeAcpEdgeFailure(result, edgeFailure),
+      ...scrubbed,
       errorCode: CLAUDE_EDGE_REJECTED_ERROR_CODE,
       errorFamily: "transient_upstream",
+      ...(retryNotBefore
+        ? {
+            retryNotBefore,
+            ...(scrubbed.resultJson ? { resultJson: { ...scrubbed.resultJson, retryNotBefore } } : {}),
+          }
+        : {}),
     };
   }
   return {
