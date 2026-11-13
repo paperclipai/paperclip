@@ -5576,6 +5576,114 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     });
   });
 
+  it("keeps one folded conversation hold when stranded-work recovery revisits a lost run", async () => {
+    const { companyId, agentId, runId, issueId } = await seedRunFixture({
+      agentStatus: "idle",
+      processPid: 999_999_999,
+      failureRetryBudgetSpent: true,
+    });
+    await db.update(agents).set({ adapterType: "process" }).where(eq(agents.id, agentId));
+    const heartbeat = heartbeatService(db);
+    await heartbeat.reapOrphanedRuns();
+    const [lost] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
+    expect(lost).toMatchObject({ status: "failed", errorCode: "process_lost" });
+    expect(lost!.resultJson?.conversationContinuation).toBeUndefined();
+
+    for (let pass = 0; pass < 4; pass += 1) {
+      await heartbeat.reconcileStrandedAssignedIssues();
+      await settleUnrecoverableExecutions(db);
+    }
+    expect(await selectRecoveryActionsForIssue(issueId)).toEqual([
+      expect.objectContaining({
+        status: "resolved",
+        outcome: "cancelled",
+        fingerprint: `legacy-execution:${runId}`,
+      }),
+    ]);
+    expect(await getExecutionBlocker(db, companyId, issueId)).toBeNull();
+    expect((await selectRecoveryIssueById(issueId))?.status).toBe("in_progress");
+  });
+
+  it("keeps one folded conversation hold across repeated terminalization while holding a new source run", async () => {
+    const { companyId, agentId, runId, issueId } = await seedRunFixture({
+      agentStatus: "idle",
+      runStatus: "failed",
+      runErrorCode: "process_lost",
+    });
+    await db.update(agents).set({ adapterType: "process" }).where(eq(agents.id, agentId));
+    const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
+    await terminalizeLegacyExecution({ db, run: run!, status: "failed" });
+    await settleUnrecoverableExecutions(db);
+    const [folded] = await selectRecoveryActionsForIssue(issueId);
+    expect(folded).toMatchObject({
+      status: "resolved",
+      outcome: "cancelled",
+      fingerprint: `legacy-execution:${runId}`,
+      evidence: { runId },
+    });
+
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      const [current] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
+      await terminalizeLegacyExecution({ db, run: current!, status: "failed" });
+      await settleUnrecoverableExecutions(db);
+    }
+    expect(await selectRecoveryActionsForIssue(issueId)).toEqual([folded]);
+    expect(await getExecutionBlocker(db, companyId, issueId)).toBeNull();
+    expect(await db.select().from(activityLog).where(and(
+      eq(activityLog.entityId, issueId),
+      eq(activityLog.action, "issue.execution_recovery_settled"),
+    ))).toHaveLength(1);
+
+    const [newSource] = await db.insert(heartbeatRuns).values({
+      companyId, agentId, status: "failed", contextSnapshot: { issueId },
+    }).returning();
+    await terminalizeLegacyExecution({ db, run: newSource!, status: "failed" });
+    const actions = await selectRecoveryActionsForIssue(issueId);
+    expect(actions).toHaveLength(2);
+    expect(actions.find((action) => action.id === folded!.id)).toEqual(folded);
+    expect(actions.find((action) => action.id !== folded!.id)).toMatchObject({
+      status: "active",
+      cause: "legacy_execution_requires_reconciliation",
+      fingerprint: `legacy-execution:${newSource!.id}`,
+      evidence: { runId: newSource!.id },
+    });
+  });
+
+  it("holds a stopped run again when its cancelled hold does not qualify for conversation continuation", async () => {
+    const { companyId, agentId, runId, issueId } = await seedRunFixture({
+      adapterType: "process",
+      agentStatus: "idle",
+      runStatus: "failed",
+      runErrorCode: "process_lost",
+    });
+    const [cancelled] = await db.insert(issueRecoveryActions).values({
+      companyId,
+      sourceIssueId: issueId,
+      kind: "active_run_watchdog",
+      status: "resolved",
+      outcome: "cancelled",
+      ownerType: "board",
+      returnOwnerAgentId: agentId,
+      cause: "legacy_execution_requires_reconciliation",
+      fingerprint: `legacy-execution:${runId}`,
+      evidence: { runId },
+      nextAction: "Automatic attempts stopped. Send a new message to continue the conversation.",
+      resolutionNote: "Conversation continuation does not replay prior tool calls.",
+      resolvedAt: new Date(),
+    }).returning();
+    const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
+    await terminalizeLegacyExecution({ db, run: run!, status: "failed" });
+    const actions = await selectRecoveryActionsForIssue(issueId);
+    expect(actions).toHaveLength(2);
+    expect(actions.find((action) => action.id === cancelled!.id)).toEqual(cancelled);
+    expect(actions.find((action) => action.id !== cancelled!.id)).toMatchObject({
+      status: "active",
+      cause: "legacy_execution_requires_reconciliation",
+      fingerprint: `legacy-execution:${runId}`,
+      evidence: { runId },
+    });
+  });
+
   it("does not reset an exhausted incident budget on server restart", async () => {
     // A restart continues a run without spending failures, so the exhausted
     // budget here is the server-restart bound of the open window.
