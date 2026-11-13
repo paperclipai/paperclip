@@ -35,7 +35,21 @@ native_codex_home=$1
 asset=$2
 mkdir -p "$native_codex_home" "$native_codex_home/skills"
 tmp=
-trap 'if [ -n "$tmp" ]; then rm -f "$tmp" "$tmp.skills"; fi' EXIT
+created_skills=
+cleanup_install() {
+  install_status=$?
+  trap - EXIT
+  if [ "$install_status" -ne 0 ]; then
+    for name in $created_skills; do
+      if [ -L "$native_codex_home/skills/$name" ] && [ "$(readlink "$native_codex_home/skills/$name")" = "$asset/skills/$name" ]; then
+        rm -f -- "$native_codex_home/skills/$name" || install_status=1
+      fi
+    done
+  fi
+  if [ -n "$tmp" ]; then rm -f "$tmp" "$tmp.skills" || install_status=1; fi
+  exit "$install_status"
+}
+trap cleanup_install EXIT
 trap 'exit 1' HUP INT TERM
 tmp=$(mktemp "$native_codex_home/.paperclip-runtime-config.XXXXXX")
 ${input.exists ? 'cmp -s "$asset/.paperclip-native-config-before" "$native_codex_home/config.toml"' : '[ ! -e "$native_codex_home/config.toml" ]'} || { echo 'Codex configuration changed; retry this task' >&2; exit 1; }
@@ -61,6 +75,7 @@ fi
 for skill in "$asset/skills"/*; do
   [ -d "$skill" ] || continue
   name=\${skill##*/}
+  created_skills="$created_skills $name"
   ln -s "$skill" "$native_codex_home/skills/$name"
   printf '%s\\n' "$name" >> "$tmp.skills"
 done

@@ -4589,7 +4589,7 @@ describe("ACPX engine remote managed-home seam (PR 2: per-adapter home seed)", (
     vi.mocked(startAdapterExecutionTargetPaperclipBridge).mockResolvedValue({ env: { PAPERCLIP_API_URL: "http://127.0.0.1:3210", PAPERCLIP_API_KEY: "bridge-fixture" }, stop: stopControl });
     vi.mocked(startAdapterExecutionTargetProcessSessionBridge).mockResolvedValue({ agentCommand: "/fixture/agent-proxy.cjs", stop: stopProcess });
     try {
-      const configForTurn = (turn: number) => ({ agent: "custom", agentCommand: "node ./fake-acp.js", stateDir, cwd: localCwd,
+      const configForTurn = (turn: number) => ({ agent: "custom", agentCommand: "fixture-acp-client", stateDir, cwd: localCwd,
         managedAiConnection: { identity: `credential-revision-${turn}`, sessionIdentity: "selected-agent-account" },
         env: { CODEX_HOME: path.join(homes[turn]!, "provider"), HOME: homes[turn]!, XDG_CONFIG_HOME: path.join(homes[turn]!, "config"),
           XDG_DATA_HOME: path.join(homes[turn]!, "data"), OPENAI_API_KEY: `fixture-token-${turn}`, USER_OPTION: "kept" }, mode: "persistent" });
@@ -4606,6 +4606,17 @@ describe("ACPX engine remote managed-home seam (PR 2: per-adapter home seed)", (
       const env = typeof bridgeInput.env === "function" ? await bridgeInput.env() : bridgeInput.env;
       expect(env.CODEX_HOME).toBe(path.posix.join(runtimeRootDir, "home"));
       expect(env.HOME).toBe(runtimeRootDir);
+      const bin = path.join(root, "remote-user-bin");
+      await fs.mkdir(bin);
+      await fs.writeFile(path.join(bin, "fixture-acp-client"), '#!/bin/sh\nprintf "%s" "$HOME"\n', { mode: 0o700 });
+      const shell = path.join(root, "remote-profile-shell");
+      await fs.writeFile(shell, '#!/bin/sh\nif [ "$1" = "-lc" ]; then PATH=/usr/bin:/bin; export PATH; fi\nexec /bin/sh -c "$2"\n', { mode: 0o700 });
+      const { execFile } = await import("node:child_process");
+      const { promisify } = await import("node:util");
+      const launched = await promisify(execFile)(shell, bridgeInput.args!, {
+        cwd: root, env: { ...env, PATH: `${bin}:/usr/bin:/bin` },
+      });
+      expect(launched.stdout).toBe(runtimeRootDir);
       expect(restore).toHaveBeenCalledOnce();
       expect(stopControl).toHaveBeenCalledOnce();
       expect(stopProcess).toHaveBeenCalledOnce();
