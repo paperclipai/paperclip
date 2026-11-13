@@ -807,6 +807,10 @@ export function createHeartbeatRetries(db: Db, dependencies: HeartbeatRetryDepen
         ? await getTaskSession(agent.companyId, agent.id, agent.adapterType, taskKey)
         : null;
     const { forceFreshSession: _forceFreshSession, ...resumedContextSnapshot } = contextSnapshot;
+    if (contextSnapshot.boardMessageRetry === true) {
+      delete resumedContextSnapshot.taskRetryRequestId;
+      delete resumedContextSnapshot.boardMessageRetry;
+    }
     const inheritedContextSnapshot =
       failedAttemptSession?.lastRunId === run.id ? resumedContextSnapshot : contextSnapshot;
     const retryContextSnapshot: Record<string, unknown> = withRecoveryContext(

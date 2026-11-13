@@ -8,6 +8,7 @@ import { HttpError } from "../../errors.js";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "../../__tests__/helpers/embedded-postgres.js";
 import { createRunDispatch, isResolvedInteractionContinuationWakeContext, type PostCommitEffect } from "../../modules/run-dispatch/index.js";
 import { evaluateAgentInvokabilityFromDb } from "../agent-invokability.js";
+import { initializeRunIdentity } from "../run-identity.js";
 import * as legacy from "../heartbeat.js";
 import { createHeartbeatRunState, shouldResetTaskSessionForWake } from "./run-state.js";
 import { pendingCaseHandoffForRun } from "./case-handoff-lifecycle.js";
@@ -477,6 +478,26 @@ describePostgres("heartbeat retry module database wiring", () => {
     expect(successor!.contextSnapshot).toMatchObject({ taskRetryRequestId });
     expect(successor!.contextSnapshot?.forceFreshSession).toBe(fresh ? true : undefined);
     expect(shouldResetTaskSessionForWake(successor!.contextSnapshot)).toBe(fresh);
+  });
+
+  it("starts the automatic retry of a board-message Retry that saved its session", async () => {
+    const { run, agent, issue, companyId } = await fixture();
+    const taskRetryRequestId = randomUUID();
+    await db.insert(agentWakeupRequests).values({ id: taskRetryRequestId, companyId, agentId: agent.id, source: "on_demand",
+      reason: "task_retry", status: "coalesced", requestedByActorType: "user", requestedByActorId: "board", runId: run.id,
+      payload: { issueId: issue.id, taskRetry: { schema: "paperclip.task-retry.v1", generationId: taskRetryRequestId,
+        sourceRunId: randomUUID(), actorId: "board", strategy: "continue",
+        boardMessageOrigin: { commentId: randomUUID(), identityContextId: randomUUID() } } } });
+    const failed = { ...run, contextSnapshot: { ...run.contextSnapshot, taskKey: "retry-task", forceFreshSession: true,
+      taskRetryRequestId, boardMessageRetry: true } };
+    await db.insert(agentTaskSessions).values({ companyId, agentId: agent.id, adapterType: agent.adapterType, taskKey: "retry-task",
+      sessionParamsJson: { sessionId: "session-1" }, sessionDisplayId: "session-1", lastRunId: run.id });
+    const result = await boundRetries().retries.scheduleBoundedRetryForRun(failed, agent, { now, random: () => 0 });
+    expect(result.outcome).toBe("scheduled");
+    const [successor] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, run.id));
+    expect(shouldResetTaskSessionForWake(successor!.contextSnapshot)).toBe(false);
+    await expect(initializeRunIdentity(db, { companyId, runId: successor!.id, responsibleUserId: "board",
+      issueId: issue.id, parentRunId: run.id, cause: "instruction" })).resolves.toMatchObject({ runId: successor!.id });
   });
 
   it("resolves current skills on a retry while retaining the failed attempt snapshot", async () => {
