@@ -35,7 +35,7 @@ import {
   companySkillTestInputs,
   companySkillTestRunTemplates,
   companySkillTestRuns,
-  companySkillVersions, withDedicatedDbConnection,
+  companySkillVersions, withDedicatedDbConnection, companySkillSecurityApprovals,
   companySkills,
   companySkillRepositorySnapshots,
   costEvents,
@@ -1965,7 +1965,7 @@ function serializeVersionFileInventory(
 }
 
 function toCompanySkillVersion(row: CompanySkillVersionRow): CompanySkillVersion {
-  const { packageSnapshotId: _package, packageFileMap: _map, migrationAt: _migration, securityApproval: _approval, ...publicRow } = row;
+  const { packageSnapshotId: _package, packageFileMap: _map, migrationAt: _migration, securityApprovalId: _approval, ...publicRow } = row;
   return {
     ...publicRow,
     label: row.label ?? null,
@@ -3606,12 +3606,22 @@ export function companySkillService(db: Db, options: { actor?: AuthorizationActo
     });
   }
 
-  /** The approval saved on a skill's GitHub source, applied to the installed files the way the source scan applies it. */
+  /** Stores an approval record once per company and content; the versions one publish installs share it. */
+  async function saveSecurityApproval(tx: DbOrTransaction, companyId: string, approval: SkillVersionSecurityApproval) {
+    const contentHash = createHash("sha256").update(JSON.stringify(approval)).digest("hex");
+    await tx.insert(companySkillSecurityApprovals).values({ companyId, contentHash, approval }).onConflictDoNothing();
+    const [row] = await tx.select({ id: companySkillSecurityApprovals.id }).from(companySkillSecurityApprovals)
+      .where(and(eq(companySkillSecurityApprovals.companyId, companyId), eq(companySkillSecurityApprovals.contentHash, contentHash)));
+    return row!.id;
+  }
+
   /** The security approval recorded on an installed version when it was installed, if it admitted flagged files. */
   async function installedSecurityApproval(companyId: string, skillId: string, versionId: string) {
-    const [row] = await db.select({ securityApproval: companySkillVersions.securityApproval }).from(companySkillVersions).where(and(
-      eq(companySkillVersions.companyId, companyId), eq(companySkillVersions.companySkillId, skillId), eq(companySkillVersions.id, versionId)));
-    return row?.securityApproval ?? null;
+    const [row] = await db.select({ approval: companySkillSecurityApprovals.approval }).from(companySkillVersions)
+      .innerJoin(companySkillSecurityApprovals, and(eq(companySkillSecurityApprovals.companyId, companySkillVersions.companyId),
+        eq(companySkillSecurityApprovals.id, companySkillVersions.securityApprovalId)))
+      .where(and(eq(companySkillVersions.companyId, companyId), eq(companySkillVersions.companySkillId, skillId), eq(companySkillVersions.id, versionId)));
+    return row?.approval ?? null;
   }
 
   /**
@@ -3903,7 +3913,10 @@ export function companySkillService(db: Db, options: { actor?: AuthorizationActo
           fileInventory: packageSnapshotId ? [] : fileInventory,
           authorAgentId: actor?.type === "agent" ? actor.agentId ?? null : null,
           authorUserId: actor?.type === "user" ? actor.userId ?? null : null,
-          securityApproval: options.securityApproval ?? null,
+          // A copy of the current version keeps the approval that admitted its unchanged files.
+          securityApprovalId: options.securityApproval !== undefined
+            ? options.securityApproval ? await saveSecurityApproval(tx, companyId, options.securityApproval) : null
+            : options.fileInventory === undefined ? previousVersion?.securityApprovalId ?? null : null,
         })
         .returning()
         .then((rows) => rows[0] ?? null);

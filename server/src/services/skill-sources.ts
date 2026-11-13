@@ -9,7 +9,7 @@ import { skillSourceRetryAt } from './skill-source-retry.js';
 import path from 'node:path';
 import { folderService } from './folders.js';
 import { and, eq, getTableColumns, inArray, isNull, lt, or, sql } from 'drizzle-orm';
-import { companySkillSources as sources, companySkillSourceEntries as entries, companySkills, companySkillVersions, companySkillRepositorySnapshots, projectSkillSources, projects, type Db, type SkillPackageRestoreRecipe, authUsers } from '@paperclipai/db';
+import { companySkillSources as sources, companySkillSourceEntries as entries, companySkills, companySkillVersions, companySkillSecurityApprovals, companySkillRepositorySnapshots, projectSkillSources, projects, type Db, type SkillPackageRestoreRecipe, authUsers } from '@paperclipai/db';
 import type { CompanySkill, SkillSource, SkillSourceCreateRequest, SkillSourceDiscoveryRequest, SkillSourceSelectionRequest, SkillSourceRefreshResult, SkillSourcePreviewRequest, SkillSourceSettingsRequest, SkillSourceDisconnectRequest, SkillSourceDisconnectResult, SkillSourceBranchesQuery } from '@paperclipai/shared';
 import { normalizeAgentUrlKey, parseGitHubSkillRepositoryUrl } from '@paperclipai/shared';
 import { conflict, forbidden, notFound, unprocessable } from '../errors.js';
@@ -206,11 +206,12 @@ export function skillSourceService(db: Db) {
     if (!ids.length) return [];
     const saved = await db.select({ securityOverride: sources.securityOverride }).from(sources)
       .where(and(eq(sources.companyId, companyId), inArray(sources.id, ids), sql`${sources.securityOverride} is not null`));
-    const installed = await db.select({ securityApproval: companySkillVersions.securityApproval }).from(companySkills)
+    const installed = await db.selectDistinct({ id: companySkillSecurityApprovals.id, approval: companySkillSecurityApprovals.approval }).from(companySkills)
       .innerJoin(companySkillVersions, and(eq(companySkillVersions.companyId, companySkills.companyId), eq(companySkillVersions.id, companySkills.currentVersionId)))
-      .where(and(eq(companySkills.companyId, companyId), inArray(sql<string>`${companySkills.metadata} ->> 'skillSourceId'`, ids),
-        sql`${companySkillVersions.securityApproval} is not null`));
-    return [...saved.map(row => row.securityOverride), ...installed.map(row => versionApprovalGrant(row.securityApproval))];
+      .innerJoin(companySkillSecurityApprovals, and(eq(companySkillSecurityApprovals.companyId, companySkillVersions.companyId),
+        eq(companySkillSecurityApprovals.id, companySkillVersions.securityApprovalId)))
+      .where(and(eq(companySkills.companyId, companyId), inArray(sql<string>`${companySkills.metadata} ->> 'skillSourceId'`, ids)));
+    return [...saved.map(row => row.securityOverride), ...installed.map(row => versionApprovalGrant(row.approval))];
   }
   async function authorizeScan(source: SourceRow, scan: ScannedSkillSource, selectedPaths: string[], context: SkillSourceContext) {
     const previous = await db.select().from(entries).where(and(eq(entries.companyId, source.companyId), eq(entries.sourceId, source.id)));

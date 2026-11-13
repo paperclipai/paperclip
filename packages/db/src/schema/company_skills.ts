@@ -155,6 +155,24 @@ export const companySkillRepositorySnapshots = pgTable("company_skill_repository
   maintenance: index("company_skill_snapshots_maintenance_idx").on(table.maintenanceAt).where(sql`${table.maintenanceAt} is not null`),
 }));
 
+/**
+ * Immutable security approval records for installed skill versions, one per distinct record. The versions
+ * one publish installs from a repository share a record instead of each embedding a copy.
+ */
+export const companySkillSecurityApprovals = pgTable(
+  "company_skill_security_approvals",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    companyId: uuid("company_id").notNull().references(() => companies.id, { onDelete: "cascade" }),
+    contentHash: text("content_hash").notNull(),
+    approval: jsonb("approval").$type<SkillVersionSecurityApproval>().notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => ({
+    companyContentIdx: uniqueIndex("company_skill_security_approvals_company_content_idx").on(table.companyId, table.contentHash),
+  }),
+);
+
 export const companySkillVersions = pgTable(
   "company_skill_versions",
   {
@@ -175,8 +193,8 @@ export const companySkillVersions = pgTable(
     authorAgentId: uuid("author_agent_id").references(() => agents.id, { onDelete: "set null" }),
     authorUserId: text("author_user_id"),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
-    /** The administrator approval that admitted this version's flagged files, if any. */
-    securityApproval: jsonb("security_approval").$type<SkillVersionSecurityApproval>(),
+    /** The administrator approval that admitted this version's flagged files, if any. Shared by the versions one publish installs. */
+    securityApprovalId: uuid("security_approval_id").references(() => companySkillSecurityApprovals.id, { onDelete: "restrict" }),
   },
   (table) => ({
     migrationIdx: index("company_skill_versions_migration_idx").on(table.migrationAt).where(sql`${table.migrationAt} is not null`),

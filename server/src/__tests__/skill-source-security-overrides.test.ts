@@ -3,7 +3,7 @@ import { promises as fs } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { applyPendingMigrations, companies, companySkillSources, createDb } from '@paperclipai/db';
+import { applyPendingMigrations, companies, companySkillSecurityApprovals, companySkillSources, companySkillVersions, createDb } from '@paperclipai/db';
 import { eq } from 'drizzle-orm';
 import { forbidden } from '../errors.js';
 import { resolveExternalTestDatabaseUrl } from './helpers/external-test-database.js';
@@ -302,6 +302,80 @@ echo updated`;
     expect(rescanned.repositoryUrl).toBe('https://github.com/acme/skills');
     expect(checked).toEqual(['skills.import', 'skills.edit']);
     await expect(service.discover({ ...input, sourceId: randomUUID() }, editOnly, undefined, companyId)).rejects.toMatchObject({ status: 404 });
+  });
+
+  it('keeps the approval when a version is saved again from the installed files', async () => {
+    const companyId = randomUUID();
+    await db.insert(companies).values({ id: companyId, name: 'Saved again', issuePrefix: `V${companyId.slice(0, 6)}` });
+    const files = { 'skills/one/SKILL.md': md('one'), 'skills/one/install.sh': hook };
+    const context: SkillSourceContext = { actor: { type: 'user', userId: 'admin-user' }, authorize: async () => {}, audit: async () => {},
+      read: () => githubFixture(files, {}, first), authorizeSecurityOverride: async () => {} };
+    const created = await skillSourceService(db).create(companyId, {
+      repositoryUrl: 'https://github.com/acme/skills', trackingRef: 'main', packageMode: 'skills', commitSha: first, selectedPaths: ['skills/one/SKILL.md'],
+      securityOverride: { commitSha: first, reason: 'Maintained by our platform team.', trustFutureUpdates: false, files: [{ path: 'skills/one/install.sh', sha256: hash(hook) }] },
+    }, context);
+    const skillId = created.source.entries.find(entry => entry.path === 'skills/one/SKILL.md')!.skillId!;
+    const skills = companySkillService(db);
+    const before = (await skills.getById(companyId, skillId))!.currentVersionId!;
+    const saved = await skills.createVersion(companyId, skillId, { label: 'Saved again' }, { type: 'user', userId: 'admin-user' });
+    expect(saved.id).not.toBe(before);
+    expect((await skills.getById(companyId, skillId))!.currentVersionId).toBe(saved.id);
+    expect(await skills.installedSecurityApproval(companyId, skillId, saved.id)).toEqual(await skills.installedSecurityApproval(companyId, skillId, before));
+    const audit = await skills.auditSkill(companyId, skillId);
+    expect(audit?.findings.filter(finding => finding.code === 'remote_fetch_exec')).toEqual([expect.objectContaining({ path: 'install.sh', severity: 'warning' })]);
+  });
+
+  it('stores one approval record for all the versions a repository import installs', async () => {
+    const companyId = randomUUID();
+    await db.insert(companies).values({ id: companyId, name: 'Shared record', issuePrefix: `H${companyId.slice(0, 6)}` });
+    const files = { 'skills/one/SKILL.md': md('one'), 'skills/two/SKILL.md': md('two'), 'hooks/install.sh': hook };
+    const context: SkillSourceContext = { actor: { type: 'user', userId: 'admin-user' }, authorize: async () => {}, audit: async () => {},
+      read: () => githubFixture(files, {}, first), authorizeSecurityOverride: async () => {} };
+    const created = await skillSourceService(db).create(companyId, {
+      repositoryUrl: 'https://github.com/acme/skills', trackingRef: 'main', packageMode: 'repository', commitSha: first,
+      selectedPaths: ['skills/one/SKILL.md', 'skills/two/SKILL.md'],
+      securityOverride: { commitSha: first, reason: 'Maintained by our platform team.', trustFutureUpdates: false, files: [{ path: 'hooks/install.sh', sha256: hash(hook) }] },
+    }, context);
+    const skillIds = created.source.entries.map(entry => entry.skillId!);
+    expect(skillIds).toHaveLength(2);
+    const versions = await db.select({ approvalId: companySkillVersions.securityApprovalId }).from(companySkillVersions).where(eq(companySkillVersions.companyId, companyId));
+    expect(versions).toHaveLength(2);
+    expect(new Set(versions.map(version => version.approvalId)).size).toBe(1);
+    expect(versions[0]!.approvalId).toBeTruthy();
+    expect(await db.select().from(companySkillSecurityApprovals).where(eq(companySkillSecurityApprovals.companyId, companyId))).toHaveLength(1);
+  });
+
+  it('keeps a future-trusted version accepted while a strict renewal it does not install replaces the approval', async () => {
+    const companyId = randomUUID();
+    await db.insert(companies).values({ id: companyId, name: 'Carried kept', issuePrefix: `F${companyId.slice(0, 6)}` });
+    let files: Record<string, string> = { 'skills/one/SKILL.md': md('one'), 'skills/one/install.sh': hook };
+    let commit = first;
+    const context: SkillSourceContext = { actor: { type: 'user', userId: 'admin-user' }, authorize: async () => {}, audit: async () => {},
+      read: () => githubFixture(files, {}, commit), authorizeSecurityOverride: async () => {} };
+    const service = skillSourceService(db);
+    const created = await service.create(companyId, {
+      repositoryUrl: 'https://github.com/acme/skills', trackingRef: 'main', packageMode: 'skills', commitSha: first, selectedPaths: ['skills/one/SKILL.md'],
+      securityOverride: { commitSha: first, reason: 'Maintained by our platform team.', trustFutureUpdates: true, files: [{ path: 'skills/one/install.sh', sha256: hash(hook) }] },
+    }, context);
+    const skillId = created.source.entries.find(entry => entry.path === 'skills/one/SKILL.md')!.skillId!;
+    // Future-update trust installs the changed hook at the second commit.
+    const carriedHook = `${hook}
+echo second`;
+    files = { 'skills/one/SKILL.md': md('one'), 'skills/one/install.sh': carriedHook }; commit = second;
+    await service.refresh(companyId, created.source.id, { ...context, authorizeSecurityOverride: undefined });
+    const skills = companySkillService(db);
+    expect((await skills.getById(companyId, skillId))!.sourceRef).toBe(second);
+    // A strict renewal at a third commit replaces the source approval, but a leak keeps the skill on the second commit.
+    const third = 'c'.repeat(40);
+    const renewedHook = `${hook}
+echo third`;
+    files = { 'skills/one/SKILL.md': md('one'), 'skills/one/install.sh': renewedHook, 'skills/one/leak.sh': leak }; commit = third;
+    const { revision } = await service.detail(companyId, created.source.id);
+    await service.refresh(companyId, created.source.id, context, { revision, selectedPaths: ['skills/one/SKILL.md'], excludedFolders: [],
+      securityOverride: { commitSha: third, reason: 'Reviewed the third commit by hand.', trustFutureUpdates: false, files: [{ path: 'skills/one/install.sh', sha256: hash(renewedHook) }] } });
+    expect((await skills.getById(companyId, skillId))!.sourceRef).toBe(second);
+    const audit = await skills.auditSkill(companyId, skillId);
+    expect(audit?.findings.filter(finding => finding.code === 'remote_fetch_exec')).toEqual([expect.objectContaining({ path: 'install.sh', severity: 'warning' })]);
   });
 
   it('keeps approved files viewable in the saved source', async () => {
