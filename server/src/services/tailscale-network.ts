@@ -25,7 +25,16 @@ export function createTailscaleNetworkManager(commands: { cli?: string; daemon?:
     if (existing?.closing) { await existing.closing; return connect(input, expectedGeneration); }
     if (existing && (existing.credential === input.credential || existing.savedCredential === input.credential)) return existing.ready;
     if (existing && !existing.savedCredential) { await existing.ready.catch(() => undefined); return connect(input, expectedGeneration); }
-    if (existing) { await existing.close(); return connect(input, expectedGeneration); }
+    if (existing) {
+      const credential = input.reload ? await input.reload() : input.credential;
+      if (expectedGeneration !== generation) throw new Error("Tailscale stopped");
+      if (connections.get(input.identity) !== existing || existing.closing) {
+        return connect({ ...input, credential }, expectedGeneration);
+      }
+      if (existing.credential === credential || existing.savedCredential === credential) return existing.ready;
+      await existing.close();
+      return connect({ ...input, credential }, expectedGeneration);
+    }
 
     const connection: Connection = {
       credential: input.credential,

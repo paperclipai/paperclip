@@ -96,6 +96,71 @@ if (args[1] === 'up') {
     await expect(manager.connect({ identity: "invalid", credential: "tskey-auth-fixed", persist })).resolves.toContain("/paperclip-ts-");
   });
 
+  it.each([false, true])("keeps the current daemon when an older credential read resumes (replacement during reload=%s)", async replaceDuringReload => {
+    const state = (name: string) => "paperclip-tailscale-state-v1:" + Buffer.from(JSON.stringify({ MachineKey: name })).toString("base64");
+    const oldCredential = state("old-fixture-state");
+    let credential = state("current-fixture-state");
+    const persist = vi.fn().mockResolvedValue(undefined);
+    const input = { identity: "stale-read", credential, persist };
+    let currentSocket = await manager.connect(input);
+    const currentPid = Number(await fs.readFile(path.join(path.dirname(currentSocket), "pid"), "utf8"));
+    const loading = deferred();
+    const release = deferred();
+    const snapshot = credential;
+    const reload = vi.fn(async () => {
+      if (reload.mock.calls.length === 1) { loading.resolve(); await release.promise; return snapshot; }
+      return credential;
+    });
+    const connecting = manager.connect({ ...input, credential: oldCredential, reload });
+    const settled = connecting.catch(() => undefined);
+    try {
+      await loading.promise;
+      expect(() => process.kill(currentPid, 0)).not.toThrow();
+      await expect(fs.stat(path.dirname(currentSocket))).resolves.toBeDefined();
+      if (replaceDuringReload) {
+        credential = state("newer-fixture-state");
+        currentSocket = await manager.connect({ ...input, credential });
+      }
+      const latestPid = Number(await fs.readFile(path.join(path.dirname(currentSocket), "pid"), "utf8"));
+      release.resolve();
+      expect(await connecting).toBe(currentSocket);
+      expect(reload).toHaveBeenCalledTimes(replaceDuringReload ? 2 : 1);
+      expect(() => process.kill(latestPid, 0)).not.toThrow();
+      await expect(fs.stat(path.dirname(currentSocket))).resolves.toBeDefined();
+      const calls = (await fs.readFile(path.join(dir, "calls"), "utf8")).trim().split("\n").map(line => JSON.parse(line));
+      expect(calls.filter(args => args[1] === "up")).toHaveLength(replaceDuringReload ? 2 : 1);
+    } finally {
+      release.resolve();
+      await settled;
+    }
+  });
+
+  it("does not let a ready-daemon reload cross manager shutdown", async () => {
+    const state = (name: string) => "paperclip-tailscale-state-v1:" + Buffer.from(JSON.stringify({ MachineKey: name })).toString("base64");
+    const input = { identity: "reload-shutdown", credential: state("current-fixture-state"), persist: async () => undefined };
+    await manager.connect(input);
+    const loading = deferred();
+    const release = deferred();
+    const connecting = manager.connect({ ...input, credential: state("stale-fixture-state"),
+      reload: async () => { loading.resolve(); await release.promise; return input.credential; } });
+    const assertion = expect(connecting).rejects.toThrow("Tailscale");
+    try {
+      await loading.promise;
+      await manager.close();
+      const socket = await manager.connect({ ...input, credential: state("new-generation-fixture-state") });
+      const pid = Number(await fs.readFile(path.join(path.dirname(socket), "pid"), "utf8"));
+      release.resolve();
+      await assertion;
+      expect(() => process.kill(pid, 0)).not.toThrow();
+      await expect(fs.stat(path.dirname(socket))).resolves.toBeDefined();
+      const calls = (await fs.readFile(path.join(dir, "calls"), "utf8")).trim().split("\n").map(line => JSON.parse(line));
+      expect(calls.filter(args => args[1] === "up")).toHaveLength(2);
+    } finally {
+      release.resolve();
+      await connecting.catch(() => undefined);
+    }
+  });
+
   it("handles a missing daemon without leaving a pending connection", async () => {
     const missing = createTailscaleNetworkManager({ daemon: path.join(dir, "missing") });
     await expect(missing.connect({ identity: "missing", credential: "tskey-auth-fixture", persist: async () => undefined })).rejects.toThrow("Tailscale could not connect");
