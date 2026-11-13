@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { and, eq } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { agents, companies, companyMemberships, completionContracts, createDb, heartbeatRuns, issueRecoveryActions, issues,
   nativeRunFinalizations } from "@paperclipai/db";
@@ -66,14 +66,26 @@ describe("native failure write under brief lock contention", () => {
 
     // Hold the agent row from another connection across the failure write.
     // The new recovery action references this agent, so its insert must wait.
+    // Release the row only after a write attempt was blocked by it and then
+    // cancelled by its lock timeout, so only a later attempt can succeed.
     let holder: Promise<void> | undefined;
+    let cancelledAttempt = false;
     provider.execute.mockReset().mockImplementation(async () => {
       let locked!: () => void;
       const acquired = new Promise<void>(resolve => { locked = resolve; });
       holder = db.transaction(async tx => {
         await tx.select({ id: agents.id }).from(agents).where(eq(agents.id, agentId)).for("update");
+        const holderPid = (await tx.execute<{ pid: number }>(sql`select pg_backend_pid() as pid`))[0]!.pid;
         locked();
-        await new Promise(resolve => setTimeout(resolve, 1_500));
+        let blocked = false;
+        for (let poll = 0; poll < 1_000 && !cancelledAttempt; poll++) {
+          const rows = (await db.execute(
+            sql`select 1 from pg_stat_activity where ${holderPid} = any(pg_blocking_pids(pid))`,
+          )) as unknown as Array<unknown>;
+          if (rows[0]) blocked = true;
+          else if (blocked) cancelledAttempt = true;
+          await new Promise(resolve => setTimeout(resolve, 10));
+        }
       });
       await acquired;
       throw new Error("PRP command turn.start indeterminate: runner connection closed");
@@ -83,6 +95,7 @@ describe("native failure write under brief lock contention", () => {
       openSession: async () => { throw new Error("Unexpected provider call"); },
     } }).catch(() => undefined);
     await holder;
+    expect(cancelledAttempt).toBe(true);
 
     const [coordinator] = await db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, runId));
     expect(coordinator).toMatchObject({ phase: "retryable_failure", failureCode: "native_session_interrupted",
