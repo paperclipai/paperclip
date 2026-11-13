@@ -40,7 +40,7 @@ import { promptInjectionPreventionService } from "./prompt-injection-prevention.
 import { createHeartbeatAgentStatus } from "./heartbeat/agent-status.js";
 import { heartbeatExternalProvider, nativeRuntimeHasInstructionFilesystem } from "./heartbeat/external-provider.js";
 import { pendingCaseHandoffForRun, recordCaseHandoffExecutionReleased, recordLegacyCaseHandoffCleanupIntent, recordLegacyCaseHandoffCleanupVerified } from "./heartbeat/case-handoff-lifecycle.js";
-import { recordLegacyPreparationSettlement, recordLegacyProcessSettlement } from "./heartbeat/legacy-process-settlement.js";
+import { recordLegacyPreparationSettlement, recordLegacyProcessSettlement, recoverLegacyProcessSettlement } from "./heartbeat/legacy-process-settlement.js";
 import { hasStoppedLocalProcessTree, legacyAdapterNeedsLocalProcessSettlement } from "./heartbeat/process-settlement.js";
 import { dotRunnerBroker } from "./dot-runner-broker.js";
 import { withRunExecutionTiming, measureRunPhase, measureWorkspaceSyncPhase, isWorkspaceSyncDetailPhase } from "./execution-preparation-timing.js";
@@ -1015,6 +1015,10 @@ export function heartbeatService(
   const budgetHooks = {
     cancelWorkForScope: cancelBudgetScopeWork,
   };
+  const recoverLegacyAccountingReceipt = (companyId: string, runId: string) =>
+    recoverLegacyProcessSettlement(db, companyId, runId, id =>
+      !activeRunExecutions.has(id) && !runningProcesses.has(id) && !adapterExecutionControls.has(id)
+      && !processRunCancellationSettlements.has(id) && !failedProcessRunCancellations.has(id));
   const reconcileCostAccounting = createCostAccountingReconciler(db, budgetHooks, async () => {
     const outcomes = await Promise.allSettled([
       decisionModelService(db, { budgetHooks }).recoverInterrupted(),
@@ -4424,6 +4428,7 @@ export function heartbeatService(
   }
 
   return {
+    recoverLegacyAccountingReceipt,
     stopInvocationsForAgents,
     waitForRunExecutionDrain: async (
       runId: string,
