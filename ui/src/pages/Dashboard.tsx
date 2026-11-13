@@ -47,9 +47,16 @@ const DASHBOARD_ACTIVITY_LIMIT = 10;
 const DASHBOARD_RECENT_TASK_LIMIT = 10;
 
 export function recentTaskIndexRows(issues: readonly CompactIssue[]): CompactIssue[] {
-  return [...issues]
-    .sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime())
-    .slice(0, DASHBOARD_RECENT_TASK_LIMIT);
+  const recent: Array<{ issue: CompactIssue; at: number }> = [];
+  for (const issue of issues) {
+    const at = new Date(issue.updatedAt).getTime();
+    if (recent.length === DASHBOARD_RECENT_TASK_LIMIT && at <= recent[recent.length - 1]!.at) continue;
+    let index = recent.length;
+    while (index > 0 && recent[index - 1]!.at < at) index -= 1;
+    recent.splice(index, 0, { issue, at });
+    if (recent.length > DASHBOARD_RECENT_TASK_LIMIT) recent.pop();
+  }
+  return recent.map(entry => entry.issue);
 }
 
 export function withTaskSummaries(rows: readonly CompactIssue[], summaries: readonly IssueSummary[] | undefined): Issue[] {

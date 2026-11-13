@@ -54,6 +54,18 @@ describe("dashboard recent tasks from the task index", () => {
       ["t13", "t12", "t11", "t10", "t9", "t8", "t7", "t6", "t5", "t4"]);
   });
 
+  it("reads each task's update time once, in one pass over a large company", () => {
+    let reads = 0;
+    const rows = Array.from({ length: 5_000 }, (_, index) => {
+      const at = new Date(Date.UTC(2026, 0, 1) + ((index * 7919) % 5_000) * 60_000).toISOString();
+      return Object.defineProperty({ id: `t${index}` }, "updatedAt", { get: () => { reads += 1; return at; } }) as unknown as CompactIssue;
+    });
+    const recent = recentTaskIndexRows(rows);
+    expect(reads).toBe(5_000);
+    const sorted = [...rows].sort((a, b) => Date.parse(String(b.updatedAt)) - Date.parse(String(a.updatedAt))).slice(0, 10);
+    expect(recent.map(issue => issue.id)).toEqual(sorted.map(issue => issue.id));
+  });
+
   it("takes the status glyph fields from the task summary and the rest from the index row", () => {
     const summary = { id: "t1", displayStatus: "in_queue", externalConversationState: "waiting",
       blockerAttention: { state: "covered" } } as unknown as IssueSummary;

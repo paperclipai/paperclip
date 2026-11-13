@@ -213,7 +213,11 @@ try {
       assert.ok(run, "wake accepted");
       for (let i = 0; i < 600; i++) {
         const [row] = await db.select({ status: heartbeatRuns.status }).from(heartbeatRuns).where(eq(heartbeatRuns.id, run.id));
-        if (row && !["queued", "running"].includes(row.status)) { if (i === 0 || row.status !== "succeeded") console.log(`legacy run ${row.status}`); break; }
+        if (row && !["queued", "running"].includes(row.status)) {
+          assert.equal(row.status, "succeeded", "a measured legacy run must succeed");
+          break;
+        }
+        assert.ok(i < 599, "a measured legacy run must finish within 60 seconds");
         await new Promise(resolve => setTimeout(resolve, 100));
       }
       await heartbeat.drainActiveRunExecutions();
