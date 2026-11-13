@@ -3,9 +3,12 @@ import { describe, expect, it } from "vitest";
 
 import { PAPERCLIP_CORE_PROTOCOL_ACTIONS } from "./core.js";
 import { requestHumanInputExamples } from "./request-human-input.js";
+import { toolInputVariantError } from "../contracts/tool-input-variants.js";
 
 describe("core Paperclip protocol action contracts", () => {
   const ajv = new Ajv2020({ allErrors: true, allowUnionTypes: true, strict: false });
+  // Advertised schemas are flat; cross-field variants are part of admission.
+  const valid = (schema: object, input: unknown) => ajv.validate(schema, input) && toolInputVariantError("request_human_input", input) === null;
 
   it("advertises a complete typed form for mixed text and choice questions", () => {
     const action = PAPERCLIP_CORE_PROTOCOL_ACTIONS.find(action => action.id === "request_human_input")!;
@@ -16,10 +19,10 @@ describe("core Paperclip protocol action contracts", () => {
     for (const schema of [action.live!.descriptor.inputSchema, action.scenario!.descriptor.inputSchema]) {
       const input = { ...action.examples.call.input, interactionKind: "questions", payload };
       if (schema === action.scenario!.descriptor.inputSchema) delete (input as { idempotencyKey?: string }).idempotencyKey;
-      expect(ajv.validate(schema, input), JSON.stringify(ajv.errors)).toBe(true);
-      expect(ajv.validate(schema, { ...input, payload: undefined })).toBe(false);
-      expect(ajv.validate(schema, { ...input, payload: { version: 1 } })).toBe(false);
-      expect(ajv.validate(schema, { ...input, payload: { version: 1, questionSet: { ...payload.questionSet, questions: [{ ...payload.questionSet.questions[0], options: [{ id: "a", label: "A" }] }] } } })).toBe(false);
+      expect(valid(schema, input), JSON.stringify(ajv.errors)).toBe(true);
+      expect(valid(schema, { ...input, payload: undefined })).toBe(false);
+      expect(valid(schema, { ...input, payload: { version: 1 } })).toBe(false);
+      expect(valid(schema, { ...input, payload: { version: 1, questionSet: { ...payload.questionSet, questions: [{ ...payload.questionSet.questions[0], options: [{ id: "a", label: "A" }] }] } } })).toBe(false);
     }
     expect(action.documentation.description).not.toContain("questions for choices");
   });
@@ -29,10 +32,10 @@ describe("core Paperclip protocol action contracts", () => {
     const schema = action.live!.descriptor.inputSchema;
     for (const input of Object.values(requestHumanInputExamples)) {
       expect(action.live!.descriptor.description).toContain(JSON.stringify(input));
-      expect(ajv.validate(schema, input), JSON.stringify(ajv.errors)).toBe(true);
+      expect(valid(schema, input), JSON.stringify(ajv.errors)).toBe(true);
     }
     const questions = requestHumanInputExamples.questions;
-    expect(ajv.validate(schema, { ...questions, payload: { version: 1 } })).toBe(false);
+    expect(valid(schema, { ...questions, payload: { version: 1 } })).toBe(false);
   });
 
   it("accepts the payload version forms models naturally send, because Paperclip stores version 1 itself", () => {
@@ -50,12 +53,12 @@ describe("core Paperclip protocol action contracts", () => {
         return rest;
       };
       for (const payload of [{ version: 1, questionSet }, { version: "1", questionSet }, { questionSet }]) {
-        expect(ajv.validate(schema, strip({ ...questions, payload })), JSON.stringify(ajv.errors)).toBe(true);
+        expect(valid(schema, strip({ ...questions, payload })), JSON.stringify(ajv.errors)).toBe(true);
       }
-      expect(ajv.validate(schema, strip({ ...confirmation, payload: { version: "1", supersedeOnUserComment: false } })), JSON.stringify(ajv.errors)).toBe(true);
+      expect(valid(schema, strip({ ...confirmation, payload: { version: "1", supersedeOnUserComment: false } })), JSON.stringify(ajv.errors)).toBe(true);
       // An unknown protocol version and a payload without any question form still fail.
-      expect(ajv.validate(schema, strip({ ...questions, payload: { version: 2, questionSet } }))).toBe(false);
-      expect(ajv.validate(schema, strip({ ...questions, payload: { version: 1 } }))).toBe(false);
+      expect(valid(schema, strip({ ...questions, payload: { version: 2, questionSet } }))).toBe(false);
+      expect(valid(schema, strip({ ...questions, payload: { version: 1 } }))).toBe(false);
     }
   });
 
