@@ -152,6 +152,23 @@ POST /api/agents/{agentId}/heartbeat/invoke
 
 Manually triggers a heartbeat for the agent.
 
+## Stop a Run
+
+```
+POST /api/heartbeat-runs/{runId}/cancel
+```
+
+Board only. Stops a run that is running or still waiting in line (`queued`). The caller must be able to read the run, or the response is 404. The run and its wake are cancelled, the task's execution lock is released, and a `heartbeat.cancelled` activity entry is logged. Paperclip does not start another run for that task by itself. The agent's next waiting task starts as usual.
+
+When the stopped run was still waiting in line, the task also returns from `in_progress` to `todo`, and an `issue.updated` activity entry is logged with the reason `stopped_while_waiting`. The task is left unchanged when any of these is true:
+
+- The run had already started.
+- The task is not `in_progress`.
+- The task is no longer assigned to that agent, or it is assigned to a person.
+- Another run holds the task's execution lock, or another run for the task is queued, running, or scheduled to retry.
+
+Send an empty body. The optional `cancellationRequestId` is only for native runs; for any other run, the response is `409`.
+
 ## Assigned-Work Invariant Report
 
 ```

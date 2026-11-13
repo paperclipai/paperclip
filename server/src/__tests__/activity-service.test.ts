@@ -5,6 +5,7 @@ import {
   activityLog,
   agentWakeupRequests,
   agents,
+  authUsers,
   companies,
   createDb,
   documentRevisions,
@@ -106,6 +107,26 @@ describeEmbeddedPostgres("activity service", () => {
     const nextMode = workMode === "planning" ? "standard" : "planning";
     await service.update(task.id, { workMode: nextMode });
     expect((await service.getById(task.id))?.workMode).toBe(nextMode);
+  });
+
+  it("names each activity actor for the person instead of showing a raw id such as local-board", async () => {
+    const companyId = randomUUID(), agentId = randomUUID(), userId = `member-${companyId}`;
+    await db.insert(companies).values({ id: companyId, name: "Names", issuePrefix: `N${companyId.slice(0, 6)}` });
+    await db.insert(agents).values({ id: agentId, companyId, name: "Morgan", role: "engineer", status: "idle", adapterType: "codex_local" });
+    await db.insert(authUsers).values({ id: userId, name: "Sam Rivera", email: `${userId}@example.test`, createdAt: new Date(), updatedAt: new Date() });
+    const base = { companyId, action: "issue.updated", entityType: "company", entityId: companyId };
+    await db.insert(activityLog).values([
+      { ...base, actorType: "user", actorId: "local-board" },
+      { ...base, actorType: "user", actorId: userId },
+      { ...base, actorType: "agent", actorId: agentId },
+      { ...base, actorType: "system", actorId: "system" },
+      { ...base, actorType: "agent", actorId: "external-agent" },
+    ]);
+    const named = await activityService(db).withActorNames(await activityService(db).list({ companyId }));
+    expect(Object.fromEntries(named.map(row => [row.actorId, row.actorName]))).toEqual({
+      "local-board": "Board", [userId]: "Sam Rivera", [agentId]: "Morgan", system: "Paperclip", "external-agent": "An agent",
+    });
+    await db.delete(authUsers).where(eq(authUsers.id, userId));
   });
 
   it("limits company activity lists", async () => {

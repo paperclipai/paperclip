@@ -13,6 +13,11 @@ async function personPrimary(person: Person, companyId: string): Promise<Primary
   if (!response.ok) { await response.body?.cancel(); throw new Error(`Secondary primary read returned ${response.status}`); }
   return response.json() as Promise<Primary>;
 }
+/** Whether a browser request is this person's primary-agent save naming the chosen agent. */
+export function isPrimarySaveRequest(request: { method: string; url: string; body: string | null }, companyId: string, agentId: string) {
+  if (request.method !== "PUT" || new URL(request.url).pathname !== endpoint(companyId)) return false;
+  try { return (JSON.parse(request.body ?? "null") as { primaryAgentId?: unknown } | null)?.primaryAgentId === agentId; } catch { return false; }
+}
 export function gradePrimary(value: unknown) {
   const c = checks(); const o = runtimeObservation(value);
   c.add("complete-human-primary-evidence", !!o, "Real user-scoped saved preferences and human replacement control are required."); if (!o) return c.result();
@@ -105,7 +110,7 @@ export const runtimePrimaryCases = [runtimeDefinition("agents.choose-primary", a
   return { worker, primaryBefore, otherCompany, otherPersonBefore: await personPrimary(person, ctx.input.fixtures.company.id),
     otherCompanyBefore: await ctx.input.api.get<Primary>(endpoint(otherCompany.id)) };
 }, gradePrimary, {
-  authentication: "human-session", oracleVersion: "paperclip.chat-catalog.runtime-primary.v5",
+  authentication: "human-session", oracleVersion: "paperclip.chat-catalog.runtime-primary.v6",
   sourceFiles: ["chat-catalog-domains/runtime-primary.ts", "chat-catalog-domains/runtime-support.ts", "chat-catalog-domains/identity-support.ts", "chat-scenarios/agents.yaml"],
   async act(ctx, state) {
     remainingIdentityObservationBudget(ctx);
@@ -125,8 +130,19 @@ export const runtimePrimaryCases = [runtimeDefinition("agents.choose-primary", a
     await ctx.input.page.getByRole("button", { name: "Set as my primary", exact: true }).click();
     const dialog = ctx.input.page.getByRole("alertdialog");
     await expect(dialog).toContainText("Change your primary agent?"); await expect(dialog).toContainText("Morgan");
+    // The crown fills optimistically, so the page alone cannot show the save
+    // finished. Wait for the browser's own save to answer for Morgan before
+    // leaving, or the next navigation would abort it.
+    const companyId = ctx.input.fixtures.company.id;
+    const saved = ctx.input.page.waitForResponse(response => isPrimarySaveRequest(
+      { method: response.request().method(), url: response.url(), body: response.request().postData() }, companyId, worker.id));
     await dialog.getByRole("button", { name: "Set as my primary", exact: true }).click();
-    await expect(ctx.input.page.getByRole("img", { name: "My primary agent", exact: true }).first()).toBeVisible();
+    const save = await saved;
+    if (!save.ok()) throw new Error(`The person's primary agent save returned ${save.status()}`);
+    await expect.poll(async () => (await ctx.input.api.get<Primary>(endpoint(companyId))).primaryAgentId).toBe(worker.id);
+    // The sidebar already shows the CEO's crown, so look only in Morgan's profile header.
+    const header = ctx.input.page.locator("header").filter({ has: ctx.input.page.getByRole("img", { name: `${worker.name} avatar`, exact: true }) });
+    await expect(header.getByRole("img", { name: "My primary agent", exact: true })).toBeVisible();
     state.replacementConfirmed = true;
     // Revisit the valid recent source before opening the normal Chat landing.
     await ctx.input.page.goto(source, { waitUntil: "domcontentloaded" });

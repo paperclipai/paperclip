@@ -3147,6 +3147,52 @@ process.on("SIGTERM", () => child.kill("SIGTERM"));
     expect(coordinator.recoveryHistory.at(-1)).toMatchObject({ reason: "remote_runner_never_received_commands" });
   });
 
+  it.each([
+    { label: "restarts it again", evidence: "none" },
+    { label: "keeps a runner process recorded during the wait held", evidence: "native.process_identity_recorded" },
+    { label: "keeps a provider event recorded during the wait held", evidence: "turn.started" },
+    { label: "keeps a checkpoint saved during the wait held", evidence: "checkpoint" },
+  ] as const)("$label when a restarted remote bootstrap waited for a busy agent directory", async ({ evidence }) => {
+    const fixture = await seedUnlaunchedRemoteClaim(`BUSY-DIRECTORY-BOOTSTRAP-${evidence}`,
+      { event: { eventType: "native.process_start_requested" } });
+    const [claim] = await claimNativeRestartRecoveries({ db: fixture.db, controller: successor,
+      restartKind: "hard", runIds: [fixture.runId] });
+    expect(claim).toMatchObject({ kind: "bootstrap_incomplete", runId: fixture.runId, controllerGeneration: 2 });
+    if (claim?.kind !== "bootstrap_incomplete") throw new Error("restart recovery did not restart the bootstrap");
+    const schedule = vi.fn();
+    const deferral = await prepareWithAgentDirectoryDeferral(async () => { throw new AgentDirectoryOperationBusyError(); })
+      .catch(error => error);
+    expect(await deferRunForBusyAgentDirectory(fixture.db, { run: { id: fixture.runId, companyId }, error: deferral,
+      restartRecovery: claim, schedule, record: async () => undefined, random: () => 0 })).toBe("deferred");
+    const [, retryAt, mode] = schedule.mock.calls[0]! as [string, Date, string | undefined];
+    expect(mode).toBe("restart");
+    if (evidence === "checkpoint") {
+      const [seeded] = await fixture.db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, fixture.runId));
+      await fixture.db.update(heartbeatRuns).set({ runnerProfileJson: { ...seeded.runnerProfileJson, sessionCheckpoint: {
+        identity: { companyId, issueId: fixture.issueId, runId: fixture.runId, agentId, sessionId: fixture.native.normalizedSessionId },
+        providerSessionId: "provider-thread", activeTurnId: "turn-1", cursor: null, terminal: null, terminalTurns: [],
+        semanticResult: null, pendingRuntimeRequests: [],
+      } } }).where(eq(heartbeatRuns.id, fixture.runId));
+    } else if (evidence !== "none") {
+      await fixture.db.insert(heartbeatRunEvents).values({ companyId, runId: fixture.runId, agentId, seq: 950,
+        stream: "system", level: "info", eventType: evidence });
+    }
+    const [resumed] = await claimNativeRestartRecoveries({ db: fixture.db, controller: successor,
+      restartKind: "hard", runIds: [fixture.runId], now: retryAt });
+    if (evidence !== "none") {
+      expect(resumed).not.toMatchObject({ kind: "bootstrap_incomplete" });
+      return;
+    }
+    expect(resumed).toMatchObject({ kind: "bootstrap_incomplete", runId: fixture.runId, controllerGeneration: 3 });
+    if (resumed?.kind !== "bootstrap_incomplete") throw new Error("deferred restart recovery did not restart the bootstrap");
+    const [coordinator] = await fixture.db.select().from(nativeRunFinalizations)
+      .where(eq(nativeRunFinalizations.runId, fixture.runId));
+    expect(coordinator).toMatchObject({ phase: "observed", leaseOwner: resumed.leaseOwner });
+    expect(coordinator.recoveryHistory.at(-1)).toMatchObject({ reason: "remote_bootstrap_restart_deferred_before_launch" });
+    const [run] = await fixture.db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, fixture.runId));
+    expect(run).toMatchObject({ status: "running", errorCode: null });
+  });
+
   // Daytona waves s9202 t02 (B1) and s9205 t04 (B2): a follow-up run on a
   // continued session was killed after native.process_start_requested but
   // before its remote runner launched. Admission rebinds the previous turn's

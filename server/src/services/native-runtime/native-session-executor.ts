@@ -265,6 +265,7 @@ import { redactRunnerApiPayloads } from "./runner-api-log-redaction.js";
 import { appendHeartbeatRunEvent } from "../heartbeat-run-events.js";
 import { createNativeCredentialUpdateOwner, appendNativeCredentialUpdate } from "./native-credential-updates.js";
 import { canonicalNativeJson, nativeSha256 } from "./canonical.js";
+import { RepeatedToolFailureGuard } from "./repeated-tool-failure-guard.js";
 import { lockSourceRecoveryCoordinators } from "./native-source-recovery-ownership.js";
 import { PaperclipRunnerToolAuthority } from "./paperclip-runner-tool-authority.js";
 import { dispatchToolCallback, recoverToolCallback, type SemanticInputAdmission } from "../../vendor/paperclip-runner/index.js";
@@ -290,7 +291,8 @@ import { reportRunFailure } from "../run-failure-report.js";
 import {
   REMOTE_RECOVERY_MARKER_READ_SCRIPT, REMOTE_RECOVERY_PROCESS_CHECK_SCRIPT,
   REMOTE_RUNNER_EXIT_EVIDENCE_SCRIPT, RemoteRunnerRecoveryError, attachRemoteRunnerRecoveryDiagnostic, boundRemoteRunnerExitEvidence,
-  describeExitedRemoteRunner, describeExitedRemoteRunnerReason, readRemoteRunnerRecoveryError, remoteRecoveryProbeReason,
+  describeExitedRemoteRunner, describeExitedRemoteRunnerReason, exitedRunnerRequestedFreshBootstrap, readRemoteRunnerRecoveryError,
+  remoteRecoveryProbeReason, runnerStateRequestsFreshBootstrap,
 } from "./remote-runner-recovery-diagnostics.js";
 import { isPluginRpcTimeout, readRemoteRunnerRecoveryProbe, REMOTE_RUNNER_PLUGIN_STALL_BUDGET_MS, REMOTE_RUNNER_RECOVERY_PROBE_BUDGET_MS, remoteRunnerPluginStall, type RemoteRunnerPluginStall } from "./remote-runner-recovery-probe.js";
 import { describeOwnFailedAttachment, inspectRemoteWarmSessionRecovery, isSettledRemoteWarmControlState, summarizePostTerminalEvents, type RemoteWarmSessionRecovery, unsettledControllerCommands } from "./remote-warm-session-recovery.js";
@@ -906,6 +908,7 @@ function forgetWarmNativeSession(scope: string, entry: WarmNativeSession) {
   if (warmNativeSessions.get(scope) !== entry) return;
   warmNativeSessions.delete(scope);
   entry.onReleased();
+  releaseIdleSessionToolAuthority(scope);
 }
 
 const pluginTaskSessionOwners = new WeakMap<NativeSession, ReturnType<typeof createPluginRunnerTaskOwner>>();
@@ -1186,6 +1189,7 @@ async function closeIdleWarmNativeSessions(input: {
       if (closingWarmNativeSessions.get(sessionId) === closing) {
         closingWarmNativeSessions.delete(sessionId);
       }
+      releaseIdleSessionToolAuthority(sessionId);
     }
     if (input.canRetire && !input.canRetire()) break;
   }
@@ -2171,9 +2175,11 @@ export async function synchronizeCompletedProviderPlan(input: {
   };
 }
 
-class SessionAuthorityEpoch {
+export class SessionAuthorityEpoch {
   readonly runId: string;
   #authority: PaperclipRunnerToolAuthority;
+  // Per run: a new run gets a new epoch and starts with no remembered failures.
+  readonly #repeatedFailures = new RepeatedToolFailureGuard();
   #revoked = false;
   readonly #drainingRun?: { runId: string; capture?: (event: PrpEvent) => Promise<void> };
 
@@ -2237,9 +2243,10 @@ class SessionAuthorityEpoch {
 
   async execute(call: Parameters<PaperclipRunnerToolAuthority["execute"]>[0]) {
     this.#assertCurrent();
+    const execute = () => this.#repeatedFailures.run(call, () => this.#authority.execute(call));
     return dispatchToolCallback(this.runId, call.callId, async () => this.toolTrace
-      ? await this.toolTrace.execute(call, () => this.#authority.execute(call))
-      : await this.#authority.execute(call));
+      ? await this.toolTrace.execute(call, execute)
+      : await execute());
   }
 }
 
@@ -2252,6 +2259,19 @@ const executingNativeIngressAllocations = new Map<string, symbol>();
 /** Session scope -> the run releasing it after its turn (warm release and
  * hand-back), which a follow-up's instruction claim may wait for. */
 const settlingNativeSessionScopes = new Map<string, string>();
+
+function releaseIdleSessionToolAuthority(scope: string): void {
+  if (executingRunnerdSessionScopes.has(scope) || initializingSessionToolAuthorities.has(scope)
+    || settlingNativeSessionScopes.has(scope) || warmNativeSessions.has(scope) || closingWarmNativeSessions.has(scope)) return;
+  const epoch = sessionToolAuthorityEpochs.get(scope);
+  if (!epoch) return;
+  sessionToolAuthorityEpochs.delete(scope);
+  epoch.revoke();
+}
+
+export function sessionToolAuthorityCount(): number {
+  return sessionToolAuthorityEpochs.size;
+}
 
 export function nativeSessionScopeDigestIsBusy(digest: string): boolean {
   const scopes = [
@@ -8745,6 +8765,7 @@ function armWarmNativeSessionIdleTimer(
       .finally(() => {
         current.busy = false;
         if (closingWarmNativeSessions.get(sessionId) === closing) closingWarmNativeSessions.delete(sessionId);
+        releaseIdleSessionToolAuthority(sessionId);
       });
     // Admission waits for this checkpoint like a restart sweep's close.
     closingWarmNativeSessions.set(sessionId, closing);
@@ -10694,6 +10715,7 @@ export async function executePaperclipNativeSession(input: {
       // Always hand the settling mark back, even if a cleanup step throws.
       const settledScope = nativeSessionScopeKey(input.execution);
       if (settlingNativeSessionScopes.get(settledScope) === runId) settlingNativeSessionScopes.delete(settledScope);
+      releaseIdleSessionToolAuthority(settledScope);
     }
   }
 }
@@ -12316,7 +12338,8 @@ async function executePaperclipNativeSessionAttempt(
         trace.activate(runnerSessionStartupScope);
         const runExecution = () =>
           executeNativeSession({
-            resumeInterruptedTurn: input.restartRecovery?.kind === "resume_dead_runner" || scheduledResumeContinuation,
+            resumeInterruptedTurn: input.restartRecovery?.kind === "resume_dead_runner"
+              || input.restartRecovery?.kind === "reattach_remote_runner" || scheduledResumeContinuation,
             getFreshSessionHandoff: input.getFreshSessionHandoff,
             // A failed seal commits nothing: the messages stay queued for the
             // turn boundary instead of failing this run before its turn.
@@ -15368,14 +15391,18 @@ export async function verifyRemoteRunnerOrSettledExit(
   } catch (error) {
     const diagnostic = readRemoteRunnerRecoveryError(error);
     const exitedBeforeSessionOpen = input.claim.exitedBeforeSessionOpen === true;
-    if (input.providerAttempt > NATIVE_PROVIDER_RECOVERY_ATTEMPT_LIMIT || diagnostic?.stage !== "process_verification" ||
+    const freshBootstrap = diagnostic !== null && exitedRunnerRequestedFreshBootstrap(diagnostic);
+    const attemptLimit = freshBootstrap && input.claim.replaceUnansweredRunner === true
+      ? NATIVE_PROVIDER_RECOVERY_ATTEMPT_LIMIT + 1 : NATIVE_PROVIDER_RECOVERY_ATTEMPT_LIMIT;
+    if (input.providerAttempt > attemptLimit || diagnostic?.stage !== "process_verification" ||
         diagnostic.reason !== "process_not_running" ||
-        (!exitedBeforeSessionOpen && (diagnostic.runnerLifecycle !== "suspended" || diagnostic.runnerSettled !== true)) ||
+        (!exitedBeforeSessionOpen && !freshBootstrap &&
+          (diagnostic.runnerLifecycle !== "suspended" || diagnostic.runnerSettled !== true)) ||
         target?.kind !== "remote" || target.transport !== "sandbox" || !target.runner) throw error;
     const state = await readRemoteRunnerState({ runner: target.runner,
       stateDirectory: remoteRunnerStateDirectory(target.remoteCwd, input.normalizedSessionId), recoveryDeadline, stall });
     if (REMOTE_RUNNER_IDENTITY_FIELDS.some(field => state[field] !== input.identity[field])) throw error;
-    if (exitedBeforeSessionOpen ? !runnerStateAllowsFreshStart(state)
+    if (freshBootstrap ? !runnerStateRequestsFreshBootstrap(state) : exitedBeforeSessionOpen ? !runnerStateAllowsFreshStart(state)
       : state.lifecycle !== "suspended" || !describeExitedRemoteRunner(state).runnerSettled) throw error;
     return undefined;
   }
@@ -17173,6 +17200,13 @@ async function createRunnerdBackendWithinSessionClaim(
     };
   };
 
+  const retainsFreshBootstrapRunnerState = async (): Promise<boolean> => {
+    if (!remoteCommandRunner || !remoteStateDirectory || !durableIdentity) return false;
+    const runnerState = await readRemoteRunnerState({ runner: remoteCommandRunner, stateDirectory: remoteStateDirectory });
+    return runnerStateRequestsFreshBootstrap(runnerState)
+      && REMOTE_RUNNER_IDENTITY_FIELDS.every(field => runnerState[field] === durableIdentity[field]);
+  };
+
   const claimUntouchedRemoteSession = async (): Promise<boolean> => {
     if (!remoteCommandRunner || !remoteRuntimeRoot || !remoteSessionRoot) return false;
     const controllerState = runnerControlPlane?.store.state;
@@ -17466,6 +17500,10 @@ async function createRunnerdBackendWithinSessionClaim(
                         throw new RemoteRunnerRecoveryError({ stage: "process_verification", reason: "process_not_running" });
                       }
                     });
+                  } else if (sandboxLeaseAcquisition?.outcome === "resumed" && !adoptedProcess && !stagedRecovery &&
+                      input.restartRecovery?.kind === "reattach_remote_runner" &&
+                      await measureNativeRunnerSpan(input.trace, "sandbox.lease.resume", retainsFreshBootstrapRunnerState)) {
+                    await input.onLog?.("stdout", "[paperclip-runner] Starting a new runner from the saved state of the runner whose connection lease ended.\n");
                   } else if (sandboxLeaseAcquisition?.outcome === "resumed") {
                     const reuseStartedAtMs = Date.now();
                     const state = await measureNativeRunnerSpan(

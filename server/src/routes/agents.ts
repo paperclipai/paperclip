@@ -62,6 +62,7 @@ import { paperclipRunnerTransitionConfig, normalizeLegacyRunnerProvider, isPaper
 import { applyMcpReasoningEffort } from "../services/public-mcp/agent-config.js";
 import { executionProjectionForRun, executionProjectionsForRuns } from "../services/execution-projection.js";
 import { issueRunPresenceService } from "../services/issue-run-presence.js";
+import { returnStoppedWaitingTaskToTodo } from "../services/heartbeat/stopped-waiting-task.js";
 import { selectDashboardRunIds } from "../services/dashboard-run-selection.js";
 import { Router, type NextFunction, type Request, type Response } from "express";
 import { generateKeyPairSync, randomUUID } from "node:crypto";
@@ -7271,7 +7272,9 @@ export function agentRoutes(
           inArray(heartbeatRuns.status, ["queued", "running"]),
         ),
       )
-      .orderBy(desc(heartbeatRuns.createdAt));
+      // Running runs first: a deep queue must not push the work actually
+      // running past the limit.
+      .orderBy(sql`case when ${heartbeatRuns.status} = 'running' then 0 else 1 end`, desc(heartbeatRuns.createdAt));
 
     const liveRuns = distinctTasks ? [] : await liveRunsQuery.limit(limit);
     let rows = liveRuns;
@@ -7376,6 +7379,11 @@ export function agentRoutes(
         entityId: run.id,
         details: { agentId: run.agentId },
       });
+      // Stop on a task still waiting in line: the run never started, so the
+      // task should not keep looking in progress.
+      if (existing.status === "queued") {
+        await returnStoppedWaitingTaskToTodo(db, run, { userId: req.actor.userId ?? null });
+      }
     }
 
     res.json(run ? await runRedactions.redactForRun(run.companyId, run.id, run,

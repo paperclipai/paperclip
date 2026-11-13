@@ -1,4 +1,4 @@
-import { and, asc, desc, eq, gt, inArray, isNull, or, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gt, inArray, isNull, or, sql, type SQL } from "drizzle-orm";
 import {
   agentWakeupRequests, agents, approvals, companies, documentRevisions, documents, executionWorkspaces, heartbeatRuns, issueApprovals,
   issueComments, issueRecoveryActions, issueThreadInteractions, issues, nativeRunFinalizations, toolInvocations, type Db,
@@ -441,6 +441,22 @@ export async function continueFreshInTransaction(tx: Db, input: Input): Promise<
   // resolved history is never rewritten.
   const ownedHolds = holds.filter(isOwnedReconciliationHold);
 
+  const [refused] = await tx.select({ id: heartbeatRuns.id }).from(heartbeatRuns).where(and(
+    eq(heartbeatRuns.companyId, companyId), sql`${heartbeatRuns.id} <> ${run.id}`,
+    or(eq(heartbeatRuns.nativeIssueId, issue.id), eq(heartbeatRuns.issueId, issue.id),
+      sql`${heartbeatRuns.contextSnapshot}->>'issueId' = ${issue.id}`),
+    sql`(${heartbeatRuns.createdAt}, ${heartbeatRuns.id}) > (${run.createdAt.toISOString()}::timestamptz, ${run.id}::uuid)`,
+    eq(heartbeatRuns.status, "cancelled"), isNull(heartbeatRuns.startedAt), eq(heartbeatRuns.errorCode, "execution_reconciliation_required")))
+    .orderBy(desc(heartbeatRuns.createdAt), desc(heartbeatRuns.id)).limit(1);
+  let personAsked = false;
+  if (refused) {
+    if (!holds.length) return { kind: "successor_exists" };
+    const rule = interruptionEligibility({ now, companyId: sql`${companyId}`, issueId: sql`${issue.id}`, sourceRunId: sql`${run.id}` });
+    const [decision] = await tx.execute<{ recent: boolean; person: boolean }>(sql`select ${rule.recent} as recent, ${rule.personAsked} as person`);
+    personAsked = decision?.person === true;
+    if (!personAsked && decision?.recent !== true) return { kind: "person_owned", reason: "retry_needed" };
+  }
+
   // Every wait is bounded in time: about 10 minutes from the first pending
   // check, or 15 while the exact-recovery owner shows progress (a new run
   // event, output or lease renewal since the last check). Then the fallback
@@ -464,7 +480,8 @@ export async function continueFreshInTransaction(tx: Db, input: Input): Promise<
   // budget: it may still rescue unsaved files. Anything idle gets the normal bound.
   const savedWorkAdvancing = progressing && savedWork.some(recovery => recovery!.state === "running");
   const waitBounded = savedWorkAdvancing ? waitedMs >= FRESH_CONTINUATION_SAVED_WORK_BOUND_MS
-    : waitedMs >= FRESH_CONTINUATION_PROGRESS_BOUND_MS || (waitedMs >= FRESH_CONTINUATION_PENDING_BOUND_MS && !progressing);
+    : waitedMs >= FRESH_CONTINUATION_PROGRESS_BOUND_MS || (waitedMs >= FRESH_CONTINUATION_PENDING_BOUND_MS && !progressing)
+      || (personAsked && !savedWork.some(recovery => EXACT_RECOVERY_STATES.includes(recovery!.state)));
   // Rechecks back off 1, 2, 3, 4 minutes, so the bound is reached on time.
   const step = Math.min(4, (typeof pendingMarker?.checks === "number" ? pendingMarker.checks : 0) + 1) * EXACT_RECOVERY_RECHECK_MS;
   const pending = (reason: string, retryAt: Date): FreshContinuationResult | null => waitBounded ? null
@@ -477,6 +494,8 @@ export async function continueFreshInTransaction(tx: Db, input: Input): Promise<
     eq(heartbeatRuns.companyId, companyId), sql`${heartbeatRuns.id} <> ${run.id}`,
     or(eq(heartbeatRuns.nativeIssueId, issue.id), eq(heartbeatRuns.issueId, issue.id),
       sql`${heartbeatRuns.contextSnapshot}->>'issueId' = ${issue.id}`),
+    sql`not coalesce(${heartbeatRuns.status} = 'cancelled' and ${heartbeatRuns.startedAt} is null
+      and ${heartbeatRuns.errorCode} = 'execution_reconciliation_required', false)`,
     or(inArray(heartbeatRuns.status, LIVE_RUN_STATUSES),
       sql`(${heartbeatRuns.createdAt}, ${heartbeatRuns.id}) > (${run.createdAt.toISOString()}::timestamptz, ${run.id}::uuid)`))).limit(1);
   if (newer || typeof object(coordinator?.failureDetail).successorRunId === "string"
@@ -576,6 +595,7 @@ export async function continueFreshInTransaction(tx: Db, input: Input): Promise<
   let savedInput: { id: string } | undefined;
   for (const wake of savedWakes) {
     const commentIds = queuedCommentIdsFromWakePayload(wake.payload);
+    if (refused && !commentIds.length && object(wake.payload).taskRetry) continue;
     if (!commentIds.length || (await undeliveredLegacyUserCommentIds(tx, companyId, issue.id, run.agentId, commentIds)).length) {
       savedInput = wake;
       break;
@@ -595,12 +615,7 @@ export async function continueFreshInTransaction(tx: Db, input: Input): Promise<
   const fenced = await fenceSourceWorkspace(tx, run);
   // Never claim a stop that was not proven: record what isolates the successor.
   const isolation: FreshContinuationIsolation = fenced || remoteSource ? "remote_epoch"
-    : writer === "ended" && !waitBounded ? "writer_ended" : "fresh_isolated_workspace";
-  // Only a run that carries the isolation in its context prepares the new
-  // workspace (create_new). Saved input carries no such marker: on a task with
-  // no project it would be refused at admission once the binding is cleared,
-  // and otherwise could resolve the old directory. So the recorded
-  // continuation runs first, binds the new workspace, and saved input follows.
+    : writer === "ended" && !waitBounded && !refused ? "writer_ended" : "fresh_isolated_workspace";
   if (isolation === "fresh_isolated_workspace" && delivery === "saved_input") delivery = "recorded";
   const unverified = await unverifiedActions(tx, run);
   const created = await createdObjects(tx, run);
@@ -628,8 +643,17 @@ export async function continueFreshInTransaction(tx: Db, input: Input): Promise<
   // action the new run wants goes through its approval gate again.
   const settlement = { schema: FRESH_CONTINUATION_SCHEMA, actorType: "system", actorId: FRESH_CONTINUATION_ACTOR,
     decision: "continue_in_fresh_run", replay: "none", sourceRunId: run.id, failureCode: run.errorCode ?? null,
-    reason: "exact_resumption_unavailable", isolation, unverifiedActions: unverified, recordedAt: now.toISOString() };
-  const ownerHold = owned.find(hold => issue.status === "blocked" && holdOwnsBlockedStatus(hold, issue, run)) ?? owned.at(-1);
+    reason: "exact_resumption_unavailable", isolation, unverifiedActions: unverified, recordedAt: now.toISOString(),
+    ...(owned.some(isRestoreHold) ? { heldFiles: "kept_not_applied" } : {}),
+    ...(refused ? { refusedAtDispatchRunId: refused.id, requestedBy: personAsked ? "person_retry" : "system" } : {}) };
+  if (refused && delivery === "recorded") {
+    await tx.update(agentWakeupRequests).set({ status: "coalesced", finishedAt: now, updatedAt: now,
+      payload: sql`coalesce(${agentWakeupRequests.payload}, '{}'::jsonb) || ${JSON.stringify({ coalescedIntoFreshContinuationOf: run.id })}::jsonb` })
+      .where(and(eq(agentWakeupRequests.companyId, companyId), eq(agentWakeupRequests.status, "deferred_issue_execution"),
+        eq(agentWakeupRequests.reason, "task_retry"), eq(agentWakeupRequests.requestedByActorType, "user"), isNull(agentWakeupRequests.runId),
+        sql`${agentWakeupRequests.payload}->>'issueId' = ${issue.id}`));
+  }
+  const ownerHold =owned.find(hold => issue.status === "blocked" && holdOwnsBlockedStatus(hold, issue, run)) ?? owned.at(-1);
 
   await notifyDeliveryWork(tx, DELIVERY_QUEUES.executionContinuation);
   await notifyDeliveryWork(tx, DELIVERY_QUEUES.executionReplacement);
@@ -805,12 +829,33 @@ function liveDispositionHoldSql() {
   return and(inArray(issueRecoveryActions.status, ["active", "escalated"]), eq(issueRecoveryActions.kind, "active_run_watchdog"))!;
 }
 
+const cancelledAtDispatch = (alias: "newer" | "held") => sql.raw(`coalesce(${alias}.status = 'cancelled' and ${alias}.started_at is null
+  and ${alias}.error_code = 'execution_reconciliation_required', false)`);
+const runOfTask = (alias: "newer" | "held", issueId: SQL) => sql`(${sql.raw(alias)}.native_issue_id::text = ${issueId}::text
+  or ${sql.raw(alias)}.issue_id::text = ${issueId}::text or ${sql.raw(alias)}.context_snapshot->>'issueId' = ${issueId}::text)`;
+
+function interruptionEligibility(input: { now: Date; companyId: SQL; issueId: SQL; sourceRunId: SQL }) {
+  const since = sql`${new Date(input.now.getTime() - BACKLOG_CONTINUATION_MAX_AGE_MS).toISOString()}::timestamptz`;
+  const source = (condition: SQL) => sql`exists (select 1 from ${heartbeatRuns} source where source.company_id = ${input.companyId}
+    and source.id::text = ${input.sourceRunId}::text and ${condition})`;
+  const refusedLater = sql`held.company_id = source.company_id and held.id <> source.id and ${runOfTask("held", input.issueId)}
+    and (held.created_at, held.id) > (source.created_at, source.id) and ${cancelledAtDispatch("held")}`;
+  const personAsked = source(sql`(exists (select 1 from ${agentWakeupRequests} retry where retry.company_id = source.company_id
+      and retry.status = 'deferred_issue_execution' and retry.reason = 'task_retry' and retry.requested_by_actor_type = 'user'
+      and retry.run_id is null and retry.payload->>'issueId' = ${input.issueId}::text and retry.requested_at > source.finished_at)
+    or exists (select 1 from ${heartbeatRuns} held where ${refusedLater}
+      and held.context_snapshot->>'wakeReason' = 'task_retry' and held.finished_at > ${since}))`);
+  const recent = source(sql`source.error_code in (${sql.join(BACKLOG_CONTINUATION_SOURCE_CODES.map(code => sql`${code}`), sql`, `)})
+    and greatest(source.finished_at, (select max(held.finished_at) from ${heartbeatRuns} held where ${refusedLater})) > ${since}`);
+  return { recent, personAsked };
+}
+
 /** The backlog pass's eligibility: the one predicate its listing and its deadline query share. */
 function recentInterruptionSourceSql(now: Date) {
-  return sql`exists (select 1 from ${heartbeatRuns} source where source.company_id = ${issueRecoveryActions.companyId}
-    and source.id::text = coalesce(${issueRecoveryActions.evidence}->>'runId', ${issueRecoveryActions.evidence}->>'sourceRunId')
-    and source.finished_at > ${new Date(now.getTime() - BACKLOG_CONTINUATION_MAX_AGE_MS).toISOString()}::timestamptz
-    and source.error_code in (${sql.join(BACKLOG_CONTINUATION_SOURCE_CODES.map(code => sql`${code}`), sql`, `)}))`;
+  const { recent, personAsked } = interruptionEligibility({ now, companyId: sql`${issueRecoveryActions.companyId}`,
+    issueId: sql`${issueRecoveryActions.sourceIssueId}`,
+    sourceRunId: sql`coalesce(${issueRecoveryActions.evidence}->>'runId', ${issueRecoveryActions.evidence}->>'sourceRunId')` });
+  return sql`(${recent} or ${personAsked})`;
 }
 
 /** Held records the backlog pass leaves for a person (older, or not an interruption). */
@@ -851,13 +896,13 @@ function heldExecutionWhere(options: { includeActive?: boolean } = {}) {
       sql`${issues.status} not in ('done', 'cancelled')`,
       sql`${issues.assigneeAgentId} is not null`,
       // Only the task's latest run, unfinished and still its assignee's: other
-      // holds are history, and are never touched here.
       sql`exists (select 1 from ${heartbeatRuns} source where source.company_id = ${issueRecoveryActions.companyId}
         and source.id::text = coalesce(${issueRecoveryActions.evidence}->>'runId', ${issueRecoveryActions.evidence}->>'sourceRunId')
         and source.status in ('failed', 'timed_out', 'interrupted', 'cancelled') and source.finished_at is not null
         and source.agent_id = ${issues.assigneeAgentId}
         and not exists (select 1 from ${heartbeatRuns} newer where newer.company_id = source.company_id and newer.id <> source.id
           and (newer.native_issue_id = ${issues.id} or newer.issue_id = ${issues.id} or newer.context_snapshot->>'issueId' = ${issues.id}::text)
+          and not ${cancelledAtDispatch("newer")}
           and (newer.status in ('queued', 'running', 'scheduled_retry') or (newer.created_at, newer.id) > (source.created_at, source.id))))`,
   )!;
 }
