@@ -158,7 +158,7 @@ const retryWaitMessages: Record<string, string> = {
   // Retry starts a new recovery generation; the agent does not repeat its work.
   saved_work_recovery_failed: "Saving the agent's files failed. Retry to try again; the agent will not repeat its work.",
   saved_work_recovery_refused: "Paperclip refused to recover the saved files because a safety check on them cannot pass. "
-    + "Your Retry is saved and continues the task from its recorded work once the recovery settles. The agent's result is saved, and the agent will not repeat its work.",
+    + "Retry checks the saved files again. The agent's result is saved, and the agent will not repeat its work.",
   workspace_owner_stop_required: "Retry is waiting until Paperclip confirms that the previous server stopped saving files. The agent's result and your Retry are saved.",
   cleanup_quarantined: NATIVE_CLEANUP_SETTLING_MESSAGE,
   cancelled_by_operator: "This attempt was stopped. Send a new message to continue from saved work.",

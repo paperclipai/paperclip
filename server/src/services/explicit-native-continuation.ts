@@ -6,7 +6,7 @@ import { canSelectFreshWorkspace, freshReadinessSchema, retainedIssueWorkspaceFo
 import { verifiedWorkspaceSnapshotReceipt } from "./workspace-recovery-snapshot.js";
 import { readTaskRetryIntent, retireTaskRetriesContinuedBy } from "./task-retry.js";
 import { isPreDispatchExecutionWaitVerified } from "./pre-dispatch-execution-wait.js";
-import { readSystemRecovery, savedFilesUnrecoverable, unrecoverableSavedFilesNotice } from "./system-recovery-state.js";
+import { readSystemRecovery, savedFilesUnrecoverable, unrecoverableSavedFilesFailure, unrecoverableSavedFilesNotice } from "./system-recovery-state.js";
 import { hasRequiredWorkspaceRecovery } from "./workspace-restore-recovery-state.js";
 import { hasVerifiedWorkspaceRepair } from "./workspace-recovery-receipt.js";
 import { readMigratedLegacyWorkspaceSource } from "./legacy-workspace-recovery-migration.js";
@@ -719,7 +719,7 @@ export async function admitExplicitNativeContinuation(input: {
     updatedAt: new Date(),
   }).where(and(eq(nativeRunFinalizations.companyId, companyId), inArray(nativeRunFinalizations.runId, nativeSources.map(run => run.id))));
   const unrecoverable = actions.map(action => freshSources.has(String(action.evidence.runId))
-    ? readSystemRecovery(action.evidence) : null).find(savedFilesUnrecoverable);
+    ? unrecoverableSavedFilesFailure(readSystemRecovery(action.evidence)) : null).find(failure => failure !== null) ?? null;
   if (actions.length) await db.transaction(async tx => {
     await notifyUnsafeWorkspaceExportRecovery(tx, { companyId, issueId });
   for (const action of actions) {

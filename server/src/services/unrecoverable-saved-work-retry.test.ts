@@ -3,7 +3,7 @@ import request from "supertest";
 import { and, eq } from "drizzle-orm";
 import { describe, expect, it, vi } from "vitest";
 import type { AdapterSandboxExecutionTarget } from "@paperclipai/adapter-utils/execution-target";
-import { activityLog, agentWakeupRequests, environmentLeases, heartbeatRuns, issueComments, issueRecoveryActions, issues } from "@paperclipai/db";
+import { activityLog, agentWakeupRequests, environmentLeases, heartbeatRuns, issueComments, issueRecoveryActions, issues, workspaceOperations } from "@paperclipai/db";
 import { getExecutionBlocker } from "./execution-blocker.js";
 import { heartbeatService } from "./heartbeat.js";
 import { remoteTerminationReceipt } from "./remote-execution-termination.js";
@@ -19,7 +19,7 @@ vi.mock("./environment-execution-target.js", async importOriginal => {
     (input.leaseId ? targets.get(input.leaseId) : undefined) ?? actual.resolveEnvironmentExecutionTarget(input) };
 });
 
-type Shape = { code: "source_unavailable" | "allocation_ownership_ambiguous"; retryClass: "use_alternative_strategy" | "service_required";
+type Shape = { code: "source_unavailable" | "allocation_ownership_ambiguous" | "archive_unsafe"; retryClass: "use_alternative_strategy" | "service_required";
   sandbox: "destroyed" | "stopped" };
 
 const shapes: Array<[string, Shape]> = [
@@ -98,5 +98,23 @@ describe("Retry of a task whose saved files cannot be recovered", () => {
       eq(activityLog.action, "issue.recovery_generation_replaced")))).toEqual([]);
     expect(await db.select({ id: heartbeatRuns.id }).from(heartbeatRuns).where(and(eq(heartbeatRuns.companyId, f.companyId),
       eq(heartbeatRuns.retryOfRunId, f.runId)))).toEqual([]);
+  }, 60_000);
+
+  it("keeps a Retry out of a fresh attempt that would import a succeeded snapshot whose archive is unsafe", async () => {
+    const f = await exhaustedExport({ code: "archive_unsafe", retryClass: "service_required", sandbox: "stopped" });
+    const [snapshot] = await db.insert(workspaceOperations).values({ companyId: f.companyId, issueId: f.issueId,
+      heartbeatRunId: f.runId, phase: "workspace_recovery_snapshot", status: "succeeded",
+      metadata: { schema: "paperclip.workspace-recovery-snapshot.v1", leaseId: f.lease.id,
+        archive: { objectKey: `${f.companyId}/workspace-recovery/${f.runId}/../../escape.tar`, sha256: "0".repeat(64), byteSize: 1 } } }).returning();
+    const wake = await pressRetry(f);
+    expect(wake.runId).toBeNull();
+    expect(wake.payload?.taskRetry).not.toMatchObject({ strategy: "fresh_isolated_workspace" });
+    expect(await db.select({ id: heartbeatRuns.id }).from(heartbeatRuns).where(and(eq(heartbeatRuns.companyId, f.companyId),
+      eq(heartbeatRuns.issueId, f.issueId), eq(heartbeatRuns.status, "queued")))).toEqual([]);
+    expect(await db.select({ id: issueComments.id }).from(issueComments).where(and(eq(issueComments.issueId, f.issueId),
+      eq(issueComments.authorType, "system")))).toEqual([]);
+    expect(readSystemRecovery((await action(f.actionId)).evidence)?.freshAttemptRunId).toBeNull();
+    const [kept] = await db.select().from(workspaceOperations).where(eq(workspaceOperations.id, snapshot.id));
+    expect(kept.status).toBe("succeeded");
   }, 60_000);
 });

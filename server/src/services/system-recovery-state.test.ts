@@ -88,6 +88,13 @@ describe("durable system recovery budget", () => {
       + "Retry to try again; the agent will not repeat its work.");
     expect(exhaustedSystemRecoveryAction({ ...transient, attempts: 6 })).toContain("stopped after 6 attempts");
 
+    for (const code of ["archive_unsafe", "snapshot_verification_failed"] as const) {
+      const unsafe = failSystemRecovery(reserveSystemRecoveryAttempt(createSystemRecovery(randomUUID()), 0)!,
+        new SystemRecoveryFailure(code, "service_required"), { now: 0 });
+      expect(savedFilesUnrecoverable(unsafe)).toBe(false);
+      expect(exhaustedSystemRecoveryAction(unsafe)).toContain("Retry runs the check again");
+    }
+
     const adoptable = failSystemRecovery(reserveSystemRecoveryAttempt(createSystemRecovery(randomUUID()), 0)!,
       new SystemRecoveryFailure("source_binding_invalid", "service_required"), { now: 0 });
     expect(savedFilesUnrecoverable(adoptable)).toBe(false);
