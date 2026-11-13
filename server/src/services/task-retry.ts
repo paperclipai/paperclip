@@ -11,7 +11,7 @@ import { and, desc, eq, inArray, isNull, or, sql } from "drizzle-orm";
 import { agentWakeupRequests, chatActions, chatConversations, chatEndpoints, heartbeatRuns, issues, issueComments, runIdentityContexts, issueRecoveryActions, type Db } from "@paperclipai/db";
 import { conflict, forbidden, notFound, HttpError } from "../errors.js";
 import { persistActivity } from "./activity-log.js";
-import { createSystemRecovery, readSystemRecovery } from "./system-recovery-state.js";
+import { createSystemRecovery, readSystemRecovery, savedFilesUnrecoverable } from "./system-recovery-state.js";
 import { adoptSystemRecovery, updateSystemRecovery } from "./system-recovery.js";
 import { instanceSettingsService } from "./instance-settings.js";
 import { notifyChatActionWork } from "./chat-work-notifications.js";
@@ -484,7 +484,7 @@ function admitTaskRetry(input: TaskRetryRequest) {
         // A completed preservation still owns its snapshot evidence. Bind the
         // new intent so sibling holds can select that same continuation, without
         // repeating recovery or renewing its attempt budget.
-        if (previous.state === "complete" || previous.state === "running" || (previous.state === "exhausted"
+        if (previous.state === "complete" || previous.state === "running" || savedFilesUnrecoverable(previous) || (previous.state === "exhausted"
             && previous.failure?.retryClass === "use_alternative_strategy" && !previous.freshAttemptRunId)) {
           await updateSystemRecovery(db, { companyId: issue.companyId, issueId: issue.id, runId: previous.sourceRunId,
             actionId: action.id }, previous, { ...previous, intentId: active?.id ?? id });
