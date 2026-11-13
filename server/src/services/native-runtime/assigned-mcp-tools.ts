@@ -145,12 +145,9 @@ export async function createAssignedMcpTools(input: {
     const raw = (descriptor.parametersSchema ?? { type: "object", properties: {} }) as Record<string, unknown>;
     const serialized = JSON.stringify(raw);
     const bytes = Buffer.byteLength(serialized, "utf8");
-    if (bytes > TOOL_INPUT_SCHEMA_MAX_BYTES) {
-      unavailable.push({ tool: descriptor.name, reason: "oversized" });
-      continue;
-    }
-    listingSchemaBytes += bytes;
-    if (listingSchemaBytes > ASSIGNED_SCHEMA_LISTING_BUDGET_BYTES) {
+    const compilable = bytes <= TOOL_INPUT_SCHEMA_MAX_BYTES
+      && (listingSchemaBytes += bytes) <= ASSIGNED_SCHEMA_LISTING_BUDGET_BYTES;
+    if (!compilable) {
       tools.set(name, descriptor);
       schemas.set(name, structuredClone(raw));
       unchecked.push(descriptor.name);
@@ -170,7 +167,7 @@ export async function createAssignedMcpTools(input: {
   }
   if (unchecked.length > 0) {
     logger.warn({ gatewayPublicId: input.gatewayPublicId, unchecked },
-      "assigned MCP tools past the listing schema budget are offered only through assigned-tool search");
+      "assigned MCP tools whose input schema is over the compile budget are offered only through assigned-tool search");
   }
   const permits = (tool: ToolGatewayDescriptor, mode: WorkMode = input.workMode ?? "standard") => mode === "standard" || tool.risk === "read";
   // OpenCode's HTTP bridge returns at most 64K JSON characters. Leave room

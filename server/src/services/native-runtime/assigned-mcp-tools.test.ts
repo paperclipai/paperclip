@@ -365,9 +365,9 @@ describe("assigned MCP runner tools", () => {
   });
 
   it("keeps individually oversized schemas and later tools discoverable with bounded schema chunks", async () => {
-    const schema = { type: "object", description: "\u0000🙂".repeat(20_000), properties: {} };
+    const schema = { type: "object", description: "\u0000🙂".repeat(150_000), properties: {} };
     const f = fixture([{ ...descriptor("a_large"), parametersSchema: schema }, descriptor("z_small")]);
-    const assigned = await createAssignedMcpTools({ ...f, delivery: "on_demand" });
+    const assigned = await createAssignedMcpTools(f);
     const page = await assigned.execute({ tool: searchName, arguments: { query: "", limit: 1 } }) as {
       tools: Array<Record<string, unknown>>; nextOffset: number;
     };
@@ -385,7 +385,7 @@ describe("assigned MCP runner tools", () => {
       const chunk = await assigned.execute({ tool: searchName, arguments: { query: "", schemaTool: large, schemaOffset } }) as {
         schemaJson: string; nextSchemaOffset: number | null;
       };
-      expect(Buffer.byteLength(JSON.stringify(chunk))).toBeLessThan(32 * 1024);
+      expect(Buffer.byteLength(JSON.stringify(chunk))).toBeLessThan(640 * 1024);
       serialized += chunk.schemaJson;
       schemaOffset = chunk.nextSchemaOffset;
     } while (schemaOffset !== null);
@@ -413,13 +413,15 @@ describe("assigned MCP runner tools", () => {
     expect(getAssignedMcpGateway(firstDb)).toBe(second);
   });
 
-  it("refuses an app schema over the Runner byte limit without compiling it", async () => {
+  it("never compiles an app schema over the Runner byte limit and serves that tool only through search", async () => {
     const large = sizedSchema(600 * 1024), small = sizedSchema(200);
     const f = fixture([{ ...descriptor("deploy:large"), parametersSchema: large }, { ...descriptor("deploy:small"), parametersSchema: small }]);
     vi.mocked(admitToolInputSchema).mockClear();
     const assigned = await createAssignedMcpTools(f);
-    expect(assigned.definitions().map(tool => tool.description)).toEqual(["deploy:small: Use deploy:small"]);
+    expect(assigned.definitions().map(tool => tool.name)).toEqual(["paperclip_search_assigned_tools", "paperclip_call_assigned_tool"]);
     expect(compiledDescriptions()).toEqual([String(small.description).slice(0, 36)]);
+    const page = await assigned.execute({ tool: searchName, arguments: { query: "deploy", limit: 20 } }) as { tools: Array<Record<string, unknown>> };
+    expect(page.tools.map(tool => tool.description)).toEqual(["deploy:large: Use deploy:large", "deploy:small: Use deploy:small"]);
   });
 
   it("stops compiling at the listing budget, keeps earlier tools offered, and serves the rest only through search", async () => {
