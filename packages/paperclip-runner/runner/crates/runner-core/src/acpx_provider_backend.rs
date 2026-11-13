@@ -1030,6 +1030,7 @@ pub struct AcpxCommandExecutor {
     failed_turn_end_restart: Option<String>,
     /// The failed turn-end restart's cause, until the Runner records it.
     unreported_turn_end_restart_failure: Option<String>,
+    held_run_terminal: Option<NormalizedProviderEvent>,
 }
 
 // The durable command's turn and the live provider callback have separate IDs.
@@ -1071,6 +1072,7 @@ impl AcpxCommandExecutor {
             recovery_pending_effects: None,
             failed_turn_end_restart: None,
             unreported_turn_end_restart_failure: None,
+            held_run_terminal: None,
             restore_error: None,
             persistence_error: None,
             #[cfg(test)]
@@ -2184,6 +2186,7 @@ impl AcpxCommandExecutor {
         payload: &Value,
     ) -> Result<CommandExecution, DurableRunnerError> {
         let (text, provider_turn_id) = turn_start_request(payload)?;
+        self.held_run_terminal = None;
         // Retain the old sidecar's read tail before its MCP receipt epoch changes.
         if self
             .session
@@ -2897,6 +2900,9 @@ impl AcpxCommandExecutor {
                     let failed_turn = state.active_turn_id.take();
                     state.lifecycle = "closed".to_owned();
                     state.provider_exit_unconfirmed = true;
+                    if let (None, Some(held)) = (&failed_turn, self.held_run_terminal.take()) {
+                        state.push(held)?;
+                    }
                     if let Some(turn_id) = failed_turn {
                         let message = crate::durable::redact_text(&error.to_string());
                         state.push(NormalizedProviderEvent { event_type: "turn.failed".to_owned(), priority: EventPriority::P0,
@@ -3025,13 +3031,12 @@ impl AcpxCommandExecutor {
                     provider_turn_settled = true;
                     // An ACP goal has session lifetime, not prompt lifetime.
                     // Out-of-prompt goal updates remain observable after quiescence.
-                    if awaiting_provider_turn
-                        || (!provider_process_lost
-                            && state
-                                .goal_projection
-                                .pointer("/goal/status")
-                                .and_then(Value::as_str)
-                                == Some("active"))
+                    if !provider_process_lost
+                        && state
+                            .goal_projection
+                            .pointer("/goal/status")
+                            .and_then(Value::as_str)
+                            == Some("active")
                     {
                         continue;
                     }
@@ -3053,7 +3058,7 @@ impl AcpxCommandExecutor {
                             .and_then(Value::as_str),
                         status == "succeeded",
                     );
-                    state.push(NormalizedProviderEvent {
+                    let run_terminal = NormalizedProviderEvent {
                         event_type: "run.terminal".to_owned(),
                         priority: EventPriority::P0,
                         payload: json!({
@@ -3064,13 +3069,45 @@ impl AcpxCommandExecutor {
                             "reportedWorkDisposition": disposition,
                             "provider": "acpx",
                         }),
-                    })?;
+                    };
+                    if awaiting_provider_turn {
+                        self.held_run_terminal = Some(run_terminal);
+                    } else {
+                        self.held_run_terminal = None;
+                        state.push(run_terminal)?;
+                    }
                 }
             }
             if provider_turn_settled {
                 self.context.provider_turn_id = None;
             }
+            self.release_held_run_terminal()?;
             self.save_state()?;
+        }
+        Ok(())
+    }
+}
+
+impl AcpxCommandExecutor {
+    fn release_held_run_terminal(&mut self) -> Result<(), DurableRunnerError> {
+        if self.held_run_terminal.is_none()
+            || self
+                .session
+                .as_ref()
+                .is_some_and(AcpxProviderSession::awaiting_provider_turn)
+        {
+            return Ok(());
+        }
+        let held = self
+            .held_run_terminal
+            .take()
+            .expect("checked held terminal");
+        let state = self
+            .state
+            .as_mut()
+            .expect("ACPX state remains available while polling");
+        if state.active_turn_id.is_none() {
+            state.push(held)?;
         }
         Ok(())
     }

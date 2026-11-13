@@ -235,7 +235,10 @@ sidecar-minted turn id. Runner admits it only while awaiting and only for
 Claude, with the same settled-identity and receipt rules as a controller turn,
 and publishes PRP `turn.started` with `origin: "provider"`. Any other
 provider-started turn fails the session closed. A controller `turn.start` while
-awaiting disarms and replaces the sidecar first. Park is refused while awaiting.
+awaiting disarms and replaces the sidecar first. If the provider exits while armed, the
+sidecar reports `runtime.diagnostic` with code `ACPX_PROVIDER_PROCESS_LOST`; that,
+or a failed sidecar transport, ends the wait and Runner publishes the
+`run.terminal` it held back for the completed turn. Park is refused while awaiting.
 The awaiting state is in memory only: a Runner
 restart resumes in a fresh process as before.
 

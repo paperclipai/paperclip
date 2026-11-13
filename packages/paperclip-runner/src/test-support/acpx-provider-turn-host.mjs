@@ -31,6 +31,8 @@ export class AcpxRuntimeHost extends Base {
     this.providerTurnListener = listener;
   }
 
+  onProviderTurnsLost(listener) { this.lostListener = listener; }
+
   cancelProviderTurn() {
     note("cancelProviderTurn", true);
     this.cancelActive?.();
@@ -51,13 +53,14 @@ export class AcpxRuntimeHost extends Base {
     const current = script().turns[++turn];
     state = current.state;
     if (current.cycle) void this.offerCycle(current.cycle);
+    if (current.lose) void gate(current.lose).then(() => this.lostListener?.());
     return { requestId, promptStarted: Promise.resolve(), result: Promise.resolve({ status: "completed", stopReason: "end_turn" }),
       events: (async function* () {})() };
   }
 
   async offerCycle(cycle) {
     if (cycle.gate) await gate(cycle.gate);
-    else await sleep(50);
+    else if (!cycle.immediate) await sleep(50);
     const queue = [];
     let wake = null, closed = false, settle;
     const push = (event) => { queue.push(event); wake?.(); };

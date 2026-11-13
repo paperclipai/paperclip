@@ -290,6 +290,16 @@
       },
       "additionalProperties": false
     },
+    "providerTurnLost": {
+      "description": "runtime.diagnostic payload the sidecar sends when the provider exits while runnerd is armed for a provider-started turn. runnerd stops awaiting and releases the run.terminal it held back.",
+      "type": "object",
+      "required": ["code", "message"],
+      "properties": {
+        "code": { "const": "ACPX_PROVIDER_PROCESS_LOST" },
+        "message": { "type": "string", "maxLength": 4000 }
+      },
+      "additionalProperties": false
+    },
     "providerTurnStarted": {
       "description": "Claude began its own cycle with no prompt in flight. runnerd admits it only while it awaits a provider-started turn.",
       "type": "object",

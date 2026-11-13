@@ -255,6 +255,29 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 &json!({"protocolVersion":GENERATED_ACPX_SIDECAR_PROTOCOL_VERSION,"id":id,"ok":true,
                     "result":{"armed":armed}}),
             )?;
+            if armed
+                && tokens
+                    .iter()
+                    .any(|token| token == "provider-sidecar-exit-after-arm")
+            {
+                std::thread::spawn(|| {
+                    std::thread::sleep(Duration::from_millis(300));
+                    std::process::exit(0);
+                });
+            }
+            if armed
+                && tokens
+                    .iter()
+                    .any(|token| token == "provider-lost-after-arm")
+            {
+                write_json(
+                    &mut stdout,
+                    &json!({"protocolVersion":GENERATED_ACPX_SIDECAR_PROTOCOL_VERSION,"sequence":next_sequence,
+                        "eventType":"runtime.diagnostic","runId":null,"turnId":null,
+                        "payload":{"code":"ACPX_PROVIDER_PROCESS_LOST","message":"The provider exited."}}),
+                )?;
+                next_sequence += 1;
+            }
             if armed && tokens.iter().any(|token| token == "provider-turn-hold") {
                 continue;
             }

@@ -391,6 +391,7 @@ export async function openQualifiedAcpxRuntime(
     sessionId: () => extensionBoundary.sessionIds.values().next().value ?? null,
     promptActive: () => extensionBoundary.active !== null,
     admit: (turn, fail) => providerTurnAdmission.admit?.(turn, fail) ?? null,
+    unadopted: () => backgroundTasks.providerTurnEnded(false),
   }) : null;
   const ownsExtensionTurn = (active: AcpxRuntimeExtensionTurn, params: Record<string, unknown>): boolean =>
     extensionBoundary.active === active && !active.signal.aborted
@@ -1310,6 +1311,7 @@ function runtimePort(
 ): AcpxRuntimePort {
   extensionBoundary.sessionIds = new Set([identity.backendSessionId]);
   let providerTurnListener: AcpxProviderTurnListener | null = null;
+  let providerTurnsLost: (() => void) | null = null;
   let extensionControls: Promise<void> = Promise.resolve();
   const controlActiveTurn = (method: "pi/steer" | "pi/follow_up", text: string, requestId: string): Promise<void> => {
     const active = extensionBoundary.active;
@@ -1603,6 +1605,9 @@ function runtimePort(
     onProviderTurn(listener) {
       providerTurnListener = listener;
     },
+    onProviderTurnsLost(listener) {
+      providerTurnsLost = listener;
+    },
     cancelProviderTurn() {
       return providerTurns?.turns.cancel() ?? false;
     },
@@ -1845,7 +1850,10 @@ function runtimePort(
     },
   };
   if (providerTurns) {
-    children.watchProviderExit(() => providerTurns.turns.retire());
+    children.watchProviderExit(() => {
+      providerTurns.turns.retire();
+      providerTurnsLost?.();
+    });
     providerTurns.admission.admit = (turn, fail) => {
       const listener = providerTurnListener;
       if (!listener || extensionBoundary.active || providerProcessLost || runtimeClosed || runtimeCloseAttempt) return null;

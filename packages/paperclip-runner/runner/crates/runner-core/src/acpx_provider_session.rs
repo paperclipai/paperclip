@@ -934,6 +934,14 @@ impl AcpxProviderSession {
                 payload.insert("origin".to_owned(), origin);
             }
         }
+        if event.event_type == GeneratedAcpxSidecarEventType::RuntimeDiagnostic
+            && event.payload.get("code").and_then(Value::as_str)
+                == Some(
+                    crate::generated_acpx_sidecar_contract::GENERATED_ACPX_PROVIDER_TURN_LOST_CODE,
+                )
+        {
+            self.clear_provider_turn_continuation();
+        }
         if event.event_type == GeneratedAcpxSidecarEventType::RuntimeTurnStarted {
             return match self.admit_provider_turn(&event) {
                 Ok(started) => Ok(Some((vec![started], terminal_goal))),

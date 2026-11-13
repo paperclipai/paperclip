@@ -419,3 +419,61 @@ fn without_the_controller_capability_live_shells_behave_exactly_as_before() {
         .iter()
         .any(|command| command == "session.provider_turn"));
 }
+
+#[test]
+fn a_provider_lost_while_awaiting_ends_the_wait_with_the_held_run_terminal() {
+    let mut harness = Harness::new();
+    harness
+        .fixture
+        .background("live provider-turn provider-turn-hold provider-lost-after-arm");
+    let pid = harness.opened["processId"].clone();
+    let first = complete_turn_accepting_provider_turns(&mut harness, "first");
+    let events = drain_until(&mut harness, first, "run.terminal");
+    let completed = events
+        .iter()
+        .position(|event| event["type"] == "turn.completed")
+        .unwrap();
+    assert_eq!(
+        events[completed]["payload"]["awaitingProviderTurn"],
+        json!(true)
+    );
+    let terminals = events
+        .iter()
+        .filter(|event| event["type"] == "run.terminal")
+        .collect::<Vec<_>>();
+    assert_eq!(terminals.len(), 1);
+    assert_eq!(
+        terminals[0]["payload"]["turnTerminalState"],
+        json!("completed")
+    );
+    assert!(events
+        .iter()
+        .any(|event| event["payload"]["code"] == "ACPX_PROVIDER_PROCESS_LOST"));
+    harness.executor.prepare_next_turn().unwrap();
+    assert!(
+        !alive(&pid),
+        "the lost provider is replaced at the turn end"
+    );
+    harness.executor.shutdown().unwrap();
+}
+
+#[test]
+fn a_sidecar_that_dies_while_awaiting_ends_the_wait_with_the_held_run_terminal() {
+    let mut harness = Harness::new();
+    harness
+        .fixture
+        .background("live provider-turn provider-turn-hold provider-sidecar-exit-after-arm");
+    let first = complete_turn_accepting_provider_turns(&mut harness, "first");
+    let events = drain_until(&mut harness, first, "run.terminal");
+    let terminals = events
+        .iter()
+        .filter(|event| event["type"] == "run.terminal")
+        .collect::<Vec<_>>();
+    assert_eq!(terminals.len(), 1);
+    assert_eq!(
+        terminals[0]["payload"]["turnTerminalState"],
+        json!("completed")
+    );
+    assert!(!events.iter().any(|event| event["type"] == "turn.failed"));
+    let _ = harness.executor.shutdown();
+}

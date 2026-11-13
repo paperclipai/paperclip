@@ -95,7 +95,7 @@ import { validatePrpStructuredRunResult } from "../protocol/replay-contract.js";
 import type { RunnerToolCall } from "../drivers/runner-tool-bridge.js";
 import { CLAUDE_TOOL_USE_META_KEY, ClaudeToolUseAdmission } from "../drivers/acpx/claude-tool-use-admission.js";
 import { parseAcpxProviderTurnArming, type ClaudeProviderTurn } from "../drivers/acpx/claude-provider-turns.js";
-import { GENERATED_ACPX_PROVIDER_TURN_ORIGIN } from "../drivers/acpx/generated-sidecar-contract.js";
+import { GENERATED_ACPX_PROVIDER_TURN_LOST_CODE, GENERATED_ACPX_PROVIDER_TURN_ORIGIN } from "../drivers/acpx/generated-sidecar-contract.js";
 import type { AcpxProviderTurnBinding } from "../drivers/acpx/runtime-host.js";
 import {
   acpxBootstrapBlockedError,
@@ -408,7 +408,10 @@ async function dispatch(
     );
     host = openedHost;
     openParams = params;
-    if (params.agent === "claude") openedHost.onProviderTurn?.((turn) => admitProviderTurn(openedHost, turn));
+    if (params.agent === "claude") {
+      openedHost.onProviderTurn?.((turn) => admitProviderTurn(openedHost, turn));
+      openedHost.onProviderTurnsLost?.(() => providerTurnsLost(openedHost));
+    }
     callIdNamespace = params.expectedIdentity === undefined
       ? null
       : `r${randomUUID().replaceAll("-", "").slice(0, 12)}`;
@@ -921,8 +924,7 @@ function admitProviderTurn(activeHost: AcpxRuntimeHost, turn: ClaudeProviderTurn
     void pumpProviderTurn(currentTurnId, turn, activeHost, null);
     return binding(null);
   }
-  const promptSettling = turnId !== null && providerTurnId === null;
-  if (!promptSettling && providerTurnOffer === null) return null;
+  if (turnId === null && providerTurnOffer === null) return null;
   let settle!: (armed: boolean) => void;
   const decided = new Promise<boolean>((resolve) => { settle = resolve; });
   const timer = setTimeout(() => settle(false), PROVIDER_TURN_ARMING_WAIT_MS);
@@ -932,6 +934,12 @@ function admitProviderTurn(activeHost: AcpxRuntimeHost, turn: ClaudeProviderTurn
   void decided.then(() => { if (pendingProviderTurn === pending) pendingProviderTurn = null; });
   void pumpProviderTurn(currentTurnId, turn, activeHost, decided);
   return binding(decided);
+}
+
+function providerTurnsLost(activeHost: AcpxRuntimeHost): void {
+  if (host !== activeHost || !providerTurnArmed || turnId !== null) return;
+  disarmProviderTurn();
+  diagnostic(GENERATED_ACPX_PROVIDER_TURN_LOST_CODE, "The provider exited while runnerd awaited Claude's own turn.");
 }
 
 function disarmProviderTurn(): void {

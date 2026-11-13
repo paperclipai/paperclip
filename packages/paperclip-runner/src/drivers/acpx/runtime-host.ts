@@ -178,6 +178,7 @@ export interface AcpxRuntimePort {
   backgroundTaskState?(): ClaudeBackgroundTaskState | null;
   onProviderTurn?(listener: AcpxProviderTurnListener | null): void;
   cancelProviderTurn?(): boolean;
+  onProviderTurnsLost?(listener: (() => void) | null): void;
   providerTurnsAvailable?(): boolean;
   controlGoal?(
     action: "set" | "pause" | "resume" | "clear",
@@ -914,6 +915,10 @@ export class AcpxRuntimeHost {
 
   cancelProviderTurn(): boolean {
     return this.#runtime.cancelProviderTurn?.() ?? false;
+  }
+
+  onProviderTurnsLost(listener: (() => void) | null): void {
+    this.#runtime.onProviderTurnsLost?.(listener);
   }
 
   providerTurnsAvailable(): boolean {
