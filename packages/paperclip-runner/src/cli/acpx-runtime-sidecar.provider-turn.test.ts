@@ -62,7 +62,7 @@ async function open(scenario: { agent?: "claude" | "codex"; turns: unknown[] }) 
   await send("run.attach", { runId: "provider-run", catalogRevision: 1, tools: [{ name: "call_api", description: "Call.", inputSchema: { type: "object" } }] });
   const observed = () => existsSync(join(root, "observed.json")) ? JSON.parse(readFileSync(join(root, "observed.json"), "utf8")) as Record<string, unknown> : {};
   const release = (name: string) => writeFileSync(join(root, name), "");
-  return { sidecar, root, request, send, observed, release, cleanup: () => rmSync(root, { recursive: true, force: true }) };
+  return { sidecar, root, request, send, observed, release, cleanup: async () => { await sidecar.close(); children.delete(sidecar); rmSync(root, { recursive: true, force: true }); } };
 }
 
 const payload = (frame: Record<string, unknown>) => frame.payload as Record<string, unknown>;
@@ -74,6 +74,9 @@ describe("ACPX sidecar provider-started Claude turns", () => {
       await send("turn.start", { turnId: "turn-1", message: "Start a background command." });
       const first = await sidecar.next(frame => frame.eventType === "runtime.turn_terminal" && frame.turnId === "turn-1");
       expect(payload(first)).toEqual({ status: "completed", stopReason: "end_turn", backgroundTasks: { live: 1 } });
+      await expect.poll(() => observed().admitted, { timeout: 5_000 }).toBe(true);
+      expect(sidecar.pending(frame => frame.eventType === "runtime.turn_started")).toBe(0);
+      expect(await send("session.provider_turn", { turnId: "turn-1", armed: true })).toEqual({ armed: true });
       expect(await sidecar.next(frame => frame.eventType === "runtime.turn_started")).toMatchObject({ runId: "provider-run", turnId: PROVIDER, payload: { origin: "provider" } });
       const tool = await sidecar.next(frame => frame.eventType === "runtime.event" && payload(frame).type === "tool_call");
       expect(tool.turnId).toBe(PROVIDER);
@@ -94,28 +97,34 @@ describe("ACPX sidecar provider-started Claude turns", () => {
       expect(observed()).toMatchObject({ listenerRegistered: true, admitted: true, "call:toolu_cycle": { ok: true },
         "permission:toolu_bash": { outcome: "allow_once" } });
       expect(await send("session.snapshot", {})).toMatchObject({ turnId: null, backgroundTasks: { live: 0 } });
-    } finally { cleanup(); }
+    } finally { await cleanup(); }
   }, 20_000);
 
   it("ends a provider-started turn cut off by provider exit as failed with the named code", async () => {
-    const cycle = { requestId: PROVIDER, steps: [{ event: { type: "status", text: "usage updated", tag: "usage_update" } }],
+    const cycle = { requestId: PROVIDER, gate: "offer", steps: [{ event: { type: "status", text: "usage updated", tag: "usage_update" } }],
       result: { status: "failed", error: { code: "ACPX_PROVIDER_PROCESS_LOST", message: "The owned ACPX provider exited during Claude's own turn", retryable: false } } };
-    const { sidecar, send, cleanup } = await open({ turns: [{ state: { live: 1 }, cycle }] });
+    const { sidecar, send, release, cleanup } = await open({ turns: [{ state: { live: 1 }, cycle }] });
     try {
       await send("turn.start", { turnId: "turn-1", message: "Start." });
+      await sidecar.next(frame => frame.eventType === "runtime.turn_terminal" && frame.turnId === "turn-1");
+      expect(await send("session.provider_turn", { turnId: "turn-1", armed: true })).toEqual({ armed: true });
+      release("offer");
       await sidecar.next(frame => frame.eventType === "runtime.turn_started");
       const terminal = await sidecar.next(frame => frame.eventType === "runtime.turn_terminal" && frame.turnId === PROVIDER);
       expect(payload(terminal)).toEqual({ status: "failed", error: { code: "ACPX_PROVIDER_PROCESS_LOST",
         message: "The owned ACPX provider exited during Claude's own turn", retryable: false } });
-    } finally { cleanup(); }
+    } finally { await cleanup(); }
   }, 20_000);
 
   it("refuses a controller turn while a provider-started turn is active and cancels that turn by closing the provider", async () => {
-    const cycle = { requestId: PROVIDER, steps: [{ event: { type: "status", text: "usage updated", tag: "usage_update" } }, { gate: "never" }],
+    const cycle = { requestId: PROVIDER, gate: "offer", steps: [{ event: { type: "status", text: "usage updated", tag: "usage_update" } }, { gate: "never" }],
       result: { status: "completed", stopReason: "end_turn", usage: null } };
-    const { sidecar, send, request, observed, cleanup } = await open({ turns: [{ state: { live: 1 }, cycle }] });
+    const { sidecar, send, request, observed, release, cleanup } = await open({ turns: [{ state: { live: 1 }, cycle }] });
     try {
       await send("turn.start", { turnId: "turn-1", message: "Start." });
+      await sidecar.next(frame => frame.eventType === "runtime.turn_terminal" && frame.turnId === "turn-1");
+      expect(await send("session.provider_turn", { turnId: "turn-1", armed: true })).toEqual({ armed: true });
+      release("offer");
       await sidecar.next(frame => frame.eventType === "runtime.turn_started");
       expect(await request("turn.start", { turnId: "turn-2", message: "Paperclip's turn." })).toMatchObject({ ok: false,
         error: { message: expect.stringContaining("already has an active turn") } });
@@ -123,29 +132,84 @@ describe("ACPX sidecar provider-started Claude turns", () => {
       const terminal = await sidecar.next(frame => frame.eventType === "runtime.turn_terminal" && frame.turnId === PROVIDER);
       expect(payload(terminal)).toEqual({ status: "cancelled", stopReason: "cancelled" });
       expect(observed()).toMatchObject({ cancelProviderTurn: true, closed: "Stop" });
-    } finally { cleanup(); }
+    } finally { await cleanup(); }
   }, 20_000);
 
-  it("does not adopt a cycle after a turn that left no known live shell, nor after a later controller turn", async () => {
-    const quiet = await open({ turns: [{ state: { live: 0 }, cycle: { ...completedCycle, gate: "offer" } }] });
+  it("adopts a second cycle after the first ends when runnerd arms again", async () => {
+    const second = { ...completedCycle, requestId: "provider-second", gate: "second", steps: [
+      { event: { type: "tool_call", text: "probe", tag: "tool_call", title: "probe", toolCallId: "toolu_second", status: "pending" } },
+      { state: { live: 0 } }] };
+    const first = { ...completedCycle, gate: "offer", steps: [
+      { event: { type: "status", text: "usage updated", tag: "usage_update" } }, { state: { live: 1 } }], next: second };
+    const { sidecar, send, release, cleanup } = await open({ turns: [{ state: { live: 1 }, cycle: first }] });
     try {
-      await quiet.send("turn.start", { turnId: "turn-1", message: "Start." });
-      await quiet.sidecar.next(frame => frame.eventType === "runtime.turn_terminal" && frame.turnId === "turn-1");
-      quiet.release("offer");
-      await expect.poll(() => quiet.observed().cancelProviderTurn, { timeout: 5_000 }).toBe(true);
-      expect(quiet.sidecar.pending(frame => frame.eventType === "runtime.turn_started")).toBe(0);
-    } finally { quiet.cleanup(); }
+      await send("turn.start", { turnId: "turn-1", message: "Start." });
+      await sidecar.next(frame => frame.eventType === "runtime.turn_terminal" && frame.turnId === "turn-1");
+      expect(await send("session.provider_turn", { turnId: "turn-1", armed: true })).toEqual({ armed: true });
+      release("offer");
+      const firstTerminal = await sidecar.next(frame => frame.eventType === "runtime.turn_terminal" && frame.turnId === PROVIDER);
+      expect(payload(firstTerminal)).toMatchObject({ status: "completed", backgroundTasks: { live: 1 } });
+      expect(await send("session.provider_turn", { turnId: PROVIDER, armed: true })).toEqual({ armed: true });
+      release("second");
+      expect(await sidecar.next(frame => frame.eventType === "runtime.turn_started" && frame.turnId === "provider-second")).toMatchObject({ payload: { origin: "provider" } });
+      const secondTerminal = await sidecar.next(frame => frame.eventType === "runtime.turn_terminal" && frame.turnId === "provider-second");
+      expect(payload(secondTerminal)).toMatchObject({ status: "completed", backgroundTasks: { live: 0 } });
+    } finally { await cleanup(); }
+  }, 20_000);
 
+  it("never surfaces a cycle runnerd did not arm, disarmed, or armed for another terminal or a dead provider", async () => {
+    const unarmed = await open({ turns: [{ state: { live: 1 }, cycle: { ...completedCycle, gate: "offer" } }] });
+    try {
+      await unarmed.send("turn.start", { turnId: "turn-1", message: "Start." });
+      await unarmed.sidecar.next(frame => frame.eventType === "runtime.turn_terminal" && frame.turnId === "turn-1");
+      unarmed.release("offer");
+      await expect.poll(() => unarmed.observed().cancelProviderTurn, { timeout: 8_000 }).toBe(true);
+      expect(await unarmed.send("session.provider_turn", { turnId: "turn-1", armed: true })).toEqual({ armed: false });
+      expect(unarmed.sidecar.pending(frame => frame.eventType === "runtime.turn_started")).toBe(0);
+    } finally { await unarmed.cleanup(); }
+
+    const disarmed = await open({ turns: [{ state: { live: 1 }, cycle: { ...completedCycle, gate: "offer" } }] });
+    try {
+      await disarmed.send("turn.start", { turnId: "turn-1", message: "Start." });
+      await disarmed.sidecar.next(frame => frame.eventType === "runtime.turn_terminal" && frame.turnId === "turn-1");
+      disarmed.release("offer");
+      await expect.poll(() => disarmed.observed().admitted, { timeout: 5_000 }).toBe(true);
+      expect(await disarmed.send("session.provider_turn", { turnId: "turn-1", armed: false })).toEqual({ armed: false });
+      await expect.poll(() => disarmed.observed().cancelProviderTurn, { timeout: 2_000 }).toBe(true);
+      expect(disarmed.sidecar.pending(frame => frame.eventType === "runtime.turn_started")).toBe(0);
+    } finally { await disarmed.cleanup(); }
+
+    for (const [name, arming, prepare] of [
+      ["another terminal", { turnId: "turn-0", armed: true }, () => undefined],
+      ["a quiet terminal", { turnId: "turn-1", armed: true }, () => undefined],
+      ["a dead provider", { turnId: "turn-1", armed: true }, (root: string) => writeFileSync(join(root, "exited"), "")],
+    ] as const) {
+      const state = name === "a quiet terminal" ? { live: 0 } : { live: 1 };
+      const session = await open({ turns: [{ state, cycle: { ...completedCycle, gate: "offer" } }] });
+      try {
+        await session.send("turn.start", { turnId: "turn-1", message: "Start." });
+        await session.sidecar.next(frame => frame.eventType === "runtime.turn_terminal" && frame.turnId === "turn-1");
+        prepare(session.root);
+        expect(await session.send("session.provider_turn", arming), name).toEqual({ armed: false });
+        session.release("offer");
+        await expect.poll(() => session.observed().admitted, { timeout: 5_000 }).toBeDefined();
+        expect(session.sidecar.pending(frame => frame.eventType === "runtime.turn_started"), name).toBe(0);
+      } finally { await session.cleanup(); }
+    }
+  }, 40_000);
+
+  it("drops a cycle offered after a later controller turn even if runnerd had armed the earlier terminal", async () => {
     const superseded = await open({ turns: [{ state: { live: 1 }, cycle: { ...completedCycle, gate: "offer" } }, { state: { live: 0 } }] });
     try {
       await superseded.send("turn.start", { turnId: "turn-1", message: "Start." });
       await superseded.sidecar.next(frame => frame.eventType === "runtime.turn_terminal" && frame.turnId === "turn-1");
+      expect(await superseded.send("session.provider_turn", { turnId: "turn-1", armed: true })).toEqual({ armed: true });
       await superseded.send("turn.start", { turnId: "turn-2", message: "Paperclip's next turn." });
       await superseded.sidecar.next(frame => frame.eventType === "runtime.turn_terminal" && frame.turnId === "turn-2");
       superseded.release("offer");
-      await expect.poll(() => superseded.observed().cancelProviderTurn, { timeout: 5_000 }).toBe(true);
+      await expect.poll(() => superseded.observed().admitted, { timeout: 5_000 }).toBe(false);
       expect(superseded.sidecar.pending(frame => frame.eventType === "runtime.turn_started")).toBe(0);
-    } finally { superseded.cleanup(); }
+    } finally { await superseded.cleanup(); }
   }, 20_000);
 
   it("leaves non-Claude agents without a provider-turn listener", async () => {
@@ -157,6 +221,6 @@ describe("ACPX sidecar provider-started Claude turns", () => {
       await expect.poll(() => observed().admitted, { timeout: 5_000 }).toBe(false);
       expect(observed().listenerRegistered).toBeUndefined();
       expect(sidecar.pending(frame => frame.eventType === "runtime.turn_started")).toBe(0);
-    } finally { cleanup(); }
+    } finally { await cleanup(); }
   }, 20_000);
 });

@@ -35,6 +35,17 @@ export interface ClaudeProviderTurnHooks {
   mintTurnId?: () => string;
 }
 
+const ARMING_TURN_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,239}$/;
+
+export function parseAcpxProviderTurnArming(params: Record<string, unknown>): { turnId: string; armed: boolean } {
+  const keys = Object.keys(params).sort();
+  if (keys.length !== 2 || keys[0] !== "armed" || keys[1] !== "turnId"
+    || typeof params.armed !== "boolean" || typeof params.turnId !== "string" || !ARMING_TURN_ID.test(params.turnId)) {
+    throw new Error("ACPX provider turn arming violates its bounded contract");
+  }
+  return { turnId: params.turnId, armed: params.armed };
+}
+
 const record = (value: unknown): Record<string, unknown> =>
   value !== null && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
 

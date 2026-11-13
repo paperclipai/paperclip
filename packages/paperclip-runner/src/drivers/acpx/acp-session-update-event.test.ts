@@ -1,6 +1,8 @@
+import { existsSync, readFileSync, realpathSync } from "node:fs";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 
 import { createAcpRuntime, createAgentRegistry, createFileSessionStore, type AcpRuntimeEvent } from "acpx/runtime";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
@@ -124,5 +126,27 @@ describe("Paperclip's copy of the ACPX session update converter", () => {
     expect(acpRuntimeEventFromValidatedSessionUpdate({ method: "session/request_permission", params: { update: {} } })).toBeNull();
     expect(acpRuntimeEventFromValidatedSessionUpdate({ method: "session/update", params: {} })).toBeNull();
     expect(acpRuntimeEventFromValidatedSessionUpdate(null)).toBeNull();
+  });
+});
+
+describe("the ACP SDK the converter validates with", () => {
+  it("is the exact package instance acpx resolves", () => {
+    const runner = createRequire(import.meta.url);
+    const acpx = createRequire(runner.resolve("acpx/runtime"));
+    const packageRoot = (entry: string) => {
+      let directory = dirname(realpathSync(entry));
+      while (!existsSync(join(directory, "package.json")) || !JSON.parse(readFileSync(join(directory, "package.json"), "utf8")).name) {
+        directory = dirname(directory);
+      }
+      return directory;
+    };
+    const ours = packageRoot(runner.resolve("@agentclientprotocol/sdk"));
+    const theirs = packageRoot(acpx.resolve("@agentclientprotocol/sdk"));
+    expect(ours).toBe(theirs);
+    const manifest = (root: string) => JSON.parse(readFileSync(join(root, "package.json"), "utf8")) as { name: string; version: string };
+    expect(manifest(ours)).toMatchObject({ name: "@agentclientprotocol/sdk", version: manifest(theirs).version });
+    const declared = (JSON.parse(readFileSync(new URL("../../../package.json", import.meta.url), "utf8")) as { dependencies: Record<string, string> })
+      .dependencies["@agentclientprotocol/sdk"];
+    expect(declared).toBe(manifest(theirs).version);
   });
 });

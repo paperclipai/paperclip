@@ -5,6 +5,7 @@ import {
   CLAUDE_PROVIDER_TURN_PROCESS_LOST,
   CLAUDE_PROVIDER_TURN_SILENT,
   ClaudeProviderTurns,
+  parseAcpxProviderTurnArming,
   type ClaudeProviderTurn,
   type ClaudeProviderTurnHooks,
 } from "./claude-provider-turns.js";
@@ -124,5 +125,14 @@ describe("Claude provider-started turns", () => {
     vi.useRealTimers();
     expect(await adopted[0]!.done).toMatchObject({ status: "failed", error: { code: CLAUDE_PROVIDER_TURN_SILENT } });
     expect(turns.retired).toBe(true);
+  });
+
+  it("parses only the closed arming contract runnerd sends", () => {
+    expect(parseAcpxProviderTurnArming({ turnId: "turn-1", armed: true })).toEqual({ turnId: "turn-1", armed: true });
+    expect(parseAcpxProviderTurnArming({ armed: false, turnId: "provider-1" })).toEqual({ turnId: "provider-1", armed: false });
+    for (const params of [{ turnId: "turn-1" }, { turnId: "turn-1", armed: "true" }, { turnId: "bad id", armed: true },
+      { turnId: "turn-1", armed: true, extra: 1 }, { turnId: "x".repeat(241), armed: true }]) {
+      expect(() => parseAcpxProviderTurnArming(params)).toThrow("bounded contract");
+    }
   });
 });

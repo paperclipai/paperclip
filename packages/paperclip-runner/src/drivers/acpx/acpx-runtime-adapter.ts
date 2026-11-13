@@ -1606,6 +1606,10 @@ function runtimePort(
     cancelProviderTurn() {
       return providerTurns?.turns.cancel() ?? false;
     },
+    providerTurnsAvailable() {
+      return providerTurns !== null && providerTurns !== undefined && !providerTurns.turns.retired
+        && !providerProcessLost && !runtimeClosed && !runtimeCloseAttempt;
+    },
     goalSnapshot() {
       return goalState.snapshot === null
         ? null
@@ -1841,6 +1845,7 @@ function runtimePort(
     },
   };
   if (providerTurns) {
+    children.watchProviderExit(() => providerTurns.turns.retire());
     providerTurns.admission.admit = (turn, fail) => {
       const listener = providerTurnListener;
       if (!listener || extensionBoundary.active || providerProcessLost || runtimeClosed || runtimeCloseAttempt) return null;

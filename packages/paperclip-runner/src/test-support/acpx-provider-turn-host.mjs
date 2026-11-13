@@ -39,6 +39,8 @@ export class AcpxRuntimeHost extends Base {
 
   isClosed() { return this.closed; }
 
+  providerTurnsAvailable() { return !existsSync(join(root(), "exited")); }
+
   async close(input) {
     if (this.closed) return;
     note("closed", input.reason);
@@ -99,5 +101,6 @@ export class AcpxRuntimeHost extends Base {
     if (closed) return;
     close();
     settle(cycle.result);
+    if (cycle.next) void this.offerCycle(cycle.next);
   }
 }

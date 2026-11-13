@@ -178,6 +178,7 @@ export interface AcpxRuntimePort {
   backgroundTaskState?(): ClaudeBackgroundTaskState | null;
   onProviderTurn?(listener: AcpxProviderTurnListener | null): void;
   cancelProviderTurn?(): boolean;
+  providerTurnsAvailable?(): boolean;
   controlGoal?(
     action: "set" | "pause" | "resume" | "clear",
     objective?: string,
@@ -913,6 +914,10 @@ export class AcpxRuntimeHost {
 
   cancelProviderTurn(): boolean {
     return this.#runtime.cancelProviderTurn?.() ?? false;
+  }
+
+  providerTurnsAvailable(): boolean {
+    return this.#runtime.providerTurnsAvailable?.() ?? false;
   }
 
   async controlGoal(
