@@ -108,7 +108,7 @@ function registerModuleMocks() {
   }));
 }
 
-async function createApp() {
+async function createApp(actor: Record<string, unknown> = {}) {
   const [{ projectRoutes }, { errorHandler }] = await Promise.all([
     vi.importActual<typeof import("../routes/projects.js")>("../routes/projects.js"),
     vi.importActual<typeof import("../middleware/index.js")>("../middleware/index.js"),
@@ -123,6 +123,7 @@ async function createApp() {
       companyIds: ["company-1"],
       source: "local_implicit",
       isInstanceAdmin: false,
+      ...actor,
     };
     next();
   });
@@ -314,5 +315,28 @@ describe("project workspace host-path floor", () => {
 
     expect([200, 201], JSON.stringify(res.body)).toContain(res.status);
     expect(mockProjectService.createWorkspace).toHaveBeenCalled();
+  });
+
+  it("refuses an agent-supplied workspace default completion requirement on project create", async () => {
+    const app = await createApp({ type: "agent", source: "agent_key", companyId: "company-1", agentId: "agent-1", userId: null });
+    const res = await request(app)
+      .post("/api/companies/company-1/projects")
+      .send({ name: "Project", workspace: { name: "Primary", repoUrl: "https://github.com/paperclipai/paperclip", defaultCompletionRequirement: "workspace_delivery" } });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(403);
+    expect(mockProjectService.create).not.toHaveBeenCalled();
+  });
+
+  it("lets a board actor supply the workspace default completion requirement", async () => {
+    const app = await createApp();
+    const res = await request(app)
+      .post("/api/companies/company-1/projects")
+      .send({ name: "Project", workspace: { name: "Primary", repoUrl: "https://github.com/paperclipai/paperclip", defaultCompletionRequirement: "workspace_delivery" } });
+
+    expect([200, 201], JSON.stringify(res.body)).toContain(res.status);
+    expect(mockProjectService.createWorkspace).toHaveBeenCalledWith(
+      "project-1",
+      expect.objectContaining({ defaultCompletionRequirement: "workspace_delivery" }),
+    );
   });
 });
