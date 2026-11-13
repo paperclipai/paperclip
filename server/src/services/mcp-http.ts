@@ -445,6 +445,12 @@ type McpInitializeInput = {
   requestId: string;
   /** Identifies the server (connection + endpoint) so its era is probed once. */
   eraKey?: string;
+  /**
+   * Declare form questions at `initialize`. Only for sessions whose every
+   * request answers a server's `elicitation/create` (tool calls); a session
+   * that only reads must not invite a question it would leave waiting.
+   */
+  elicitationForm?: boolean;
 };
 
 type DiscoverOutcome = { protocolVersion: string; capabilities?: Record<string, unknown> } | { legacy: true };
@@ -552,7 +558,7 @@ async function initializeLegacyMcpHttpSession(input: McpInitializeInput, request
       method: "initialize",
       params: {
         protocolVersion: requestedVersion,
-        capabilities: mcpClientCapabilities(requestedVersion, { elicitationForm: true }),
+        capabilities: mcpClientCapabilities(requestedVersion, { elicitationForm: input.elicitationForm }),
         clientInfo: MCP_CLIENT_INFO,
       },
     }),

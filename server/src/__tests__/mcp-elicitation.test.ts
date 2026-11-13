@@ -460,10 +460,12 @@ const support = await getEmbeddedPostgresTestSupport();
   it("answers an older server's question: cancel at once the first time, then the person's answer on the repeated call", async () => {
     const server = legacyAskingServer();
     const ctx = await setup(server.handle);
-    const initialize = server.requests.find((request) => request.method === "initialize")!;
-    // Asked for 2025-11-25, which knows form and URL questions.
-    expect(initialize.body.params.capabilities.elicitation).toEqual({ form: {}, url: {} });
+    // The listing session only reads: it declares no questions.
+    expect(server.requests.find((request) => request.method === "initialize")!.body.params.capabilities).not.toHaveProperty("elicitation");
     expect(await ctx.call("create_ticket").catch((error) => error)).toMatchObject({ reasonCode: "elicitation_required" });
+    // The tool call's own session asked for 2025-11-25, which knows form and URL questions.
+    const initialize = server.requests.filter((request) => request.method === "initialize").at(-1)!;
+    expect(initialize.body.params.capabilities.elicitation).toEqual({ form: {}, url: {} });
     // The server was never left waiting.
     expect(server.replies.map((reply) => reply.result)).toEqual([{ action: "cancel" }]);
     const [card] = await ctx.cards();

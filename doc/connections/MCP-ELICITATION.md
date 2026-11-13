@@ -29,7 +29,7 @@ The design and its alternatives are in [`doc/plans/2026-11-13-mcp-elicitation.md
 Paperclip declares `elicitation: { form: {}, url: {} }` in two places:
 
 - **2026-07-28:** per request, only on HTTP `tools/call` requests that belong to a task, because that is where a person can answer.
-- **Older HTTP sessions:** at `initialize`. A 2025-06-18 session gets `{}`, which means form only. Questions that arrive outside a task are answered `cancel` at once.
+- **Older HTTP sessions:** at `initialize`, only on the session that tool calls use, because that is the path that answers questions. Sessions that only read (resources, prompts, listing) declare none, so they are never asked a question they would leave waiting. A 2025-06-18 session gets `{}`, which means form only. Questions that arrive outside a task are answered `cancel` at once.
 
 Stdio apps keep URL only.
 

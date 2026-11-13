@@ -7887,13 +7887,17 @@ export function createToolGatewayService(
       if (isModernMcpProtocolVersion(knownVersion)) {
         requestHeaders = { ...headers, "MCP-Protocol-Version": knownVersion };
       } else if (connectionRequiresMcpSession(connection)) {
-        const scope = `${connection.id}:grant:${grant.id}:actor:${session.agentId}:${endpoint}`;
+        // Tool calls answer an older server's questions, so their session
+        // declares form questions; it is kept apart from sessions that only
+        // read (resources, prompts, listing), which declare none.
+        const scope = `${connection.id}:grant:${grant.id}:actor:${session.agentId}:elicit-form:${endpoint}`;
         requestHeaders = await getMcpHttpSession({
           scope,
           send: sendForNegotiation,
           headers,
           requestId,
           eraKey,
+          elicitationForm: true,
         });
         const sessionId = new Headers(requestHeaders).get("mcp-session-id");
         if (sessionId) mcpSession = { scope, headers, sessionId };
