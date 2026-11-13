@@ -27,6 +27,7 @@ import { FRESH_CONTINUATION_WINDOW_MS } from "./fresh-continuation-fallback.js";
 import { createPostgresRunDispatchAdapter } from "../modules/run-dispatch/adapters/postgres.js";
 import { createSystemRecovery } from "./system-recovery-state.js";
 import { requestTaskRetry } from "./task-retry.js";
+import { terminalizeLegacyExecution } from "./legacy-execution-recovery.js";
 
 const support = await getEmbeddedPostgresTestSupport();
 const suite = support.supported ? describe : describe.skip;
@@ -1192,5 +1193,74 @@ suite("fresh-continuation fallback", () => {
     expect(await successors(f.runId)).toHaveLength(1);
     const [retryWake] = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, receipt.requestId!));
     expect(retryWake!.status).toBe("coalesced");
+  }, 60_000);
+
+  // Two-server cell: a run that had prepared a remote workspace was stopped
+  // before dispatch by a restart; its files could not be restored, so the
+  // sandbox lease is retained and a resolved no-replay hold asks a person to
+  // "verify its exact stop receipt, recover the missing files". The task
+  // stayed blocked and never recovered.
+  async function preparedRemoteRunStoppedBeforeDispatch(options: { endedAgoMs?: number } = {}) {
+    const issueId = randomUUID(), runId = randomUUID();
+    const endedAt = new Date(Date.now() - (options.endedAgoMs ?? 60_000));
+    await db.insert(issues).values({ id: issueId, companyId, title: "Ship the release notes", status: "in_progress", assigneeAgentId: agentId });
+    const [workspace] = await db.insert(executionWorkspaces).values({ companyId, sourceIssueId: issueId, mode: "isolated",
+      strategyType: "git_worktree", name: "Task workspace", cwd: "/work/remote-task" }).returning();
+    await db.update(issues).set({ executionWorkspaceId: workspace!.id }).where(eq(issues.id, issueId));
+    const [run] = await db.insert(heartbeatRuns).values({ id: runId, companyId, agentId, invocationSource: "assignment", issueId,
+      runtimeMode: "legacy", status: "running", startedAt: new Date(endedAt.getTime() - 120_000),
+      createdAt: new Date(endedAt.getTime() - 180_000), responsibleUserId: userId,
+      contextSnapshot: { issueId, executionWorkspaceId: workspace!.id, wakeReason: "issue_assigned" } }).returning();
+    const [environment] = await db.insert(environments).values({ name: `sandbox-${runId}`, driver: "sandbox" }).returning();
+    const [lease] = await db.insert(environmentLeases).values({ companyId, issueId, executionWorkspaceId: workspace!.id,
+      heartbeatRunId: runId, environmentId: environment!.id, status: "active", leasePolicy: "ephemeral", provider: "daytona",
+      providerLeaseId: `sandbox-${runId}`, metadata: { remoteCwd: "/work/remote-task", driver: "sandbox",
+        workspaceRealization: { authoritativeRoot: "/work/remote-task" } } }).returning();
+    await terminalizeLegacyExecution({ db, run: run!, status: "interrupted", patch: { errorCode: "server_shutdown_interrupted",
+      error: "Interrupted by graceful server shutdown (SIGTERM)", finishedAt: endedAt,
+      resultJson: { workspaceRestoreFailure: "restore_failed" } } });
+    const [hold] = await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.sourceIssueId, issueId));
+    return { issueId, runId, actionId: hold!.id, leaseId: lease!.id, workspaceId: workspace!.id };
+  }
+
+  it("continues a recent restart-stopped run whose prepared remote workspace could not be restored, in a new isolated workspace", async () => {
+    const f = await preparedRemoteRunStoppedBeforeDispatch();
+    const held = await holdRow(f.actionId);
+    await settleUnrecoverableExecutions(db);
+    await waitedFor(f.actionId, FRESH_CONTINUATION_PENDING_BOUND_MS + 1_000).catch(() => undefined);
+    if ((await holdRow(f.actionId)).evidence.freshContinuationCheck) await makeDue(f.actionId);
+    await settleUnrecoverableExecutions(db);
+    const settled = await holdRow(f.actionId);
+    expect(settled.evidence).toMatchObject({ freshContinuation: { sourceRunId: f.runId, isolation: "fresh_isolated_workspace" },
+      workspaceRestoreRecovery: { leaseIds: [f.leaseId] }, freshContinuationSettlement: { heldFiles: "kept_not_applied" } });
+    // The retained sandbox stays where it is, never applied and never blocking the task.
+    const [lease] = await db.select().from(environmentLeases).where(eq(environmentLeases.id, f.leaseId));
+    expect(lease!.leasePolicy).toBe("retain_on_failure");
+    expect((await issue(f.issueId)).executionWorkspaceId).toBeNull();
+    expect(await getExecutionBlocker(db, companyId, f.issueId)).toBeNull();
+    await occupySlot();
+    await deliver();
+    const [next] = await successors(f.runId);
+    expect(await readFreshWorkspaceReadiness(db, next!)).toMatchObject({ mode: "fresh_isolated_workspace", sourceRunId: f.runId });
+    // What the person saw while it was held: what happened and the one thing to do.
+    expect(held.nextAction).not.toMatch(/stop receipt|recover the missing files|workspaceRepairEvidence|allocation|repair|inspect|_/i);
+    expect(held.nextAction).toContain("Retry");
+  }, 60_000);
+
+  it("leaves an older restart-stopped remote restore failure for a person's Retry, which then runs isolated", async () => {
+    const f = await preparedRemoteRunStoppedBeforeDispatch({ endedAgoMs: 30 * 3_600_000 });
+    await settleUnrecoverableExecutions(db);
+    await settleUnrecoverableExecutions(db);
+    const kept = await holdRow(f.actionId);
+    expect(kept.evidence.freshContinuation).toBeUndefined();
+    expect(await getExecutionBlocker(db, companyId, f.issueId)).toMatchObject({ recoveryActionId: f.actionId });
+    // The person's Retry run is refused by the hold at dispatch and settled with it.
+    await refusedAtDispatch(f, { wakeReason: "task_retry" });
+    expect((await holdRow(f.actionId)).evidence).toMatchObject({ freshContinuation: { isolation: "fresh_isolated_workspace" },
+      freshContinuationSettlement: { requestedBy: "person_retry" } });
+    await occupySlot();
+    await deliver();
+    const [next] = await successors(f.runId);
+    expect(await readFreshWorkspaceReadiness(db, next!)).toMatchObject({ mode: "fresh_isolated_workspace" });
   }, 60_000);
 });
