@@ -122,7 +122,12 @@ The fencing model for a second process exists (boot id, epoch, leases in
 ### Phase 1: cut the per-agent cost (target: 200 agents on one process)
 
 Each item is one PR with a red/green test and a before/after from the load
-model.
+model. Item 1h is about memory, which the load model does not measure; its
+before/after is retained heap per session. The catalog decides which tool
+schemas a session may call, so the cache key must cover everything that
+decides the admitted schemas, and nothing may be shared across companies.
+Warm sessions have no cap in number and stay five minutes after the last
+turn, so memory per session counts for idle agents too.
 
 | # | Change | Expected effect |
 | --- | --- | --- |
@@ -133,6 +138,7 @@ model.
 | 1e | Serialise only the changed journal parts for a checkpoint; skip the agent-file transaction when the tree is unchanged | checkpoint CPU stops growing with journal length |
 | 1f | Upload archives from the sandbox straight to object storage with a signed URL; the server records the digest | no archive bytes on the server |
 | 1g | Size the shared limiters (log uploads, checkpoint pool, recovery pass) from the active run count | no fixed slot count below the run count |
+| 1h | Keep one frozen, parsed tool catalog per catalog hash and company, shared by the sessions that use it, in place of two private copies per session (`assigned-mcp-tools.ts:146`) | server memory per live or warm session from about 5–11 MB (measured at 400–800 tools) to near zero; at 1,000 agents that is 5–11 GB |
 
 ### Phase 2: several controller processes (target: 1,000)
 
