@@ -1,5 +1,5 @@
 import { HttpError } from "../errors.js";
-import { and, eq, sql } from "drizzle-orm";
+import { and, eq, inArray, sql } from "drizzle-orm";
 import { agentWakeupRequests, type Db } from "@paperclipai/db";
 import { notifyDeferredExecutionWork } from "./deferred-execution-notifications.js";
 import { persistActivity, publishActivity, type ActivityPublication } from "./activity-log.js";
@@ -55,13 +55,15 @@ export async function writeDeferredExecutionWait(db: Db, scope: { companyId: str
 
 export async function releaseDecisionHeldExecution(tx: object, scope: { companyId: string; issueId?: string | null }) {
   if (!scope.issueId) return;
-  const db = tx as Pick<Db, "update">;
-  const released = await db.update(agentWakeupRequests).set({
+  const db = tx as Pick<Db, "select" | "update">;
+  const held = and(eq(agentWakeupRequests.companyId, scope.companyId), eq(agentWakeupRequests.status, "deferred_issue_execution"),
+    sql`${agentWakeupRequests.payload}->>'issueId' = ${scope.issueId}`,
+    sql`${agentWakeupRequests.payload}#>>'{executionWait,reason}' = 'decision_pending'`);
+  const receipts = await db.select({ id: agentWakeupRequests.id }).from(agentWakeupRequests).where(held).for("update");
+  if (!receipts.length) return;
+  for (const { id } of receipts) await notifyDeferredExecutionWork(tx, { companyId: scope.companyId, requestId: id });
+  await db.update(agentWakeupRequests).set({
     payload: sql`${agentWakeupRequests.payload} - 'executionWait'`,
     updatedAt: new Date(),
-  }).where(and(eq(agentWakeupRequests.companyId, scope.companyId), eq(agentWakeupRequests.status, "deferred_issue_execution"),
-    sql`${agentWakeupRequests.payload}->>'issueId' = ${scope.issueId}`,
-    sql`${agentWakeupRequests.payload}#>>'{executionWait,reason}' = 'decision_pending'`))
-    .returning({ id: agentWakeupRequests.id });
-  for (const { id } of released) await notifyDeferredExecutionWork(tx, { companyId: scope.companyId, requestId: id });
+  }).where(and(held, inArray(agentWakeupRequests.id, receipts.map(receipt => receipt.id))));
 }

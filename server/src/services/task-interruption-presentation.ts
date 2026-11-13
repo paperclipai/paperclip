@@ -605,11 +605,10 @@ export async function taskInterruptionPresentations(db: Db, companyId: string, i
   const currentWaits = waits.filter(wait => !wait.sourceRunId || wait.sourceRunId === runMap.get(wait.issueId)?.id);
   const decisionWaits = currentWaits.filter(wait => wait.executionWaitReason === "decision_pending");
   if (decisionWaits.length) {
-    const { hasPendingContinuationDecision } = await import("./explicit-native-continuation.js");
-    await Promise.all(decisionWaits.map(async wait => {
-      if (!wait.requestedByActorId || !await hasPendingContinuationDecision(db, { companyId, issueId: wait.issueId,
-        actorId: wait.requestedByActorId, taskRetrySourceRunId: wait.sourceRunId })) wait.executionWaitReason = null;
-    }));
+    const { pendingContinuationDecisionWaits } = await import("./explicit-native-continuation.js");
+    const held = await pendingContinuationDecisionWaits(db, companyId, decisionWaits.flatMap(wait => wait.requestedByActorId
+      ? [{ id: wait.id, issueId: wait.issueId, actorId: wait.requestedByActorId, taskRetrySourceRunId: wait.sourceRunId }] : []));
+    for (const wait of decisionWaits) if (!held.has(wait.id)) wait.executionWaitReason = null;
   }
   const retryWaitMap = byIssue(currentWaits.filter(wait => wait.sourceRunId));
   const retryIssueIds = [...retryWaitMap.keys()];

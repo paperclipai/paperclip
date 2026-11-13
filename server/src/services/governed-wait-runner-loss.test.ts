@@ -9,10 +9,11 @@ import { appendHeartbeatRunEvent } from "./heartbeat-run-events.js";
 import { heartbeatService } from "./heartbeat.js";
 import { requestInterruptedNativeTurnRetry } from "./heartbeat/restart-interrupted-turn.js";
 import { getExecutionBlocker } from "./execution-blocker.js";
-import { taskInterruptionPresentation } from "./task-interruption-presentation.js";
+import { taskInterruptionPresentation, taskInterruptionPresentations } from "./task-interruption-presentation.js";
+import { pendingContinuationDecisionWaits } from "./explicit-native-continuation.js";
 import { readSystemRecovery } from "./system-recovery-state.js";
 import { reconcileRetainedWorkspaces } from "./workspace-recovery.js";
-import { requestTaskRetry } from "./task-retry.js";
+import { readTaskRetryIntent, requestTaskRetry } from "./task-retry.js";
 import { buildExecutionContinuation } from "./execution-continuation.js";
 import { issueThreadInteractionService } from "./issue-thread-interactions.js";
 import { useWorkspaceRecoveryFixture, action, db, run, seed } from "./__tests__/workspace-recovery-fixture.js";
@@ -278,6 +279,38 @@ describe("a held task with a pending decision after its remote runner was lost",
       await f.service.resumeTaskRetry(f.companyId, receipt.requestId!);
       expect({ successors: (await queuedSuccessors(f.companyId)).length, deferred: await deferredWaits(f.companyId) })
         .toEqual({ successors: 1, deferred: [] });
+    }, 60_000);
+
+    it("reads every saved decision wait on a task list in one bounded query", async () => {
+      const f = await heldOnConfirmation();
+      const source = await currentIssue(f.issueId);
+      const listed = await db.insert(issues).values(Array.from({ length: 40 }, (_, index) => ({
+        ...source, id: randomUUID(), identifier: `${source.identifier}-${index}`, issueNumber: (source.issueNumber ?? 0) + 1000 + index,
+        executionRunId: null, checkoutRunId: null,
+      }))).returning();
+      await db.insert(agentWakeupRequests).values(listed.map(issue => ({ companyId: f.companyId, agentId: f.agentId,
+        source: "automation", triggerDetail: "system", reason: "issue_commented", status: "deferred_issue_execution",
+        requestedByActorType: "user", requestedByActorId: "local-board",
+        payload: { issueId: issue.id, executionWait: { reason: "decision_pending", message: "held" } } })));
+      const open = listed.slice(0, 20);
+      await db.insert(issueThreadInteractions).values(open.map(issue => ({ companyId: f.companyId, issueId: issue.id,
+        kind: "request_confirmation", status: "pending", continuationPolicy: "wake_assignee", createdByAgentId: f.agentId,
+        payload: { version: 1, prompt: "Review it?" } as never })));
+      const statements: string[] = [];
+      const client = db.$client.options;
+      const previous = client.debug;
+      client.debug = (_connection, query) => { if (query.includes("issue_thread_interactions")) statements.push(query); };
+      try {
+        await taskInterruptionPresentations(db, f.companyId, [source, ...listed]);
+      } finally { client.debug = previous; }
+      expect(statements.length).toBeLessThanOrEqual(2);
+      const waits = await db.select().from(agentWakeupRequests).where(and(eq(agentWakeupRequests.companyId, f.companyId),
+        eq(agentWakeupRequests.status, "deferred_issue_execution")));
+      const held = await pendingContinuationDecisionWaits(db, f.companyId, waits.map(wait => ({ id: wait.id,
+        issueId: String(wait.payload?.issueId), actorId: wait.requestedByActorId!,
+        taskRetrySourceRunId: readTaskRetryIntent(wait.payload)?.sourceRunId ?? null })));
+      const heldIssues = new Set(waits.filter(wait => held.has(wait.id)).map(wait => String(wait.payload?.issueId)));
+      expect(heldIssues).toEqual(new Set([f.issueId, ...open.map(issue => issue.id)]));
     }, 60_000);
   });
 });
