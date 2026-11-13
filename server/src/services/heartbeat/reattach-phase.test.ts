@@ -323,7 +323,7 @@ describe.skipIf(!support.supported)("reattach phase discovery", () => {
       await db.update(heartbeatRuns).set({ status: "failed" }).where(eq(heartbeatRuns.status, "running"));
     }
 
-    async function handOver(runIds: string[], at = new Date()) {
+    async function handOver(runIds: string[], at = new Date(), options: { awaitJoin?: boolean } = {}) {
       for (const runId of runIds) {
         await db.transaction(async tx => {
           await notifyReattachHandOver(tx, runId);
@@ -332,6 +332,9 @@ describe.skipIf(!support.supported)("reattach phase discovery", () => {
             .where(eq(nativeRunFinalizations.runId, runId));
         });
       }
+      if (options.awaitJoin === false) return;
+      await vi.waitFor(() => expect(runIds.filter(runId => !pendingReattachRunIds().includes(runId))).toEqual([]),
+        { timeout: 2_000, interval: 10 });
     }
 
     async function queuedClaimPassesGate() {
@@ -501,7 +504,7 @@ describe.skipIf(!support.supported)("reattach phase discovery", () => {
       const coordinator = await startReattachPhase(db, { capMs: 60_000, bootId: "incoming-boot", recheckMs: 20 });
       await coordinator.stop();
       expect(coordinator.nextWakeAt()).toBeNull();
-      await handOver([live]);
+      await handOver([live], new Date(), { awaitJoin: false });
       await sleep(200);
       expect(isReattachPhaseActive()).toBe(false);
       expect(pendingReattachRunIds()).toEqual([]);
