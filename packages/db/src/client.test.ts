@@ -325,7 +325,12 @@ describeEmbeddedPostgres("merged Muse migration histories", () => {
       const retainedRows = baseline === "fresh" ? null : await seedRetainedRows(sql, baseline === "muse0348");
       const beforeRows = await retainedRows?.();
       const expectedRetainedRows = beforeRows
-        ? { ...beforeRows, run: { ...beforeRows.run, legacy_process_settlement: null }, grant: { ...beforeRows.grant, revocation_index_receipt: null, revocation_revision: 0 } }
+        ? {
+            ...beforeRows,
+            run: { ...beforeRows.run, legacy_process_settlement: null },
+            grant: { ...beforeRows.grant, revocation_index_receipt: null, revocation_revision: 0 },
+            task: { ...beforeRows.task, completion_requirement: null, completion_requirement_revision: 0 },
+          }
         : beforeRows;
       const state = await inspectMigrations(connectionString);
       expect(state.status).toBe("needsMigrations");
