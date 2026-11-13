@@ -284,9 +284,12 @@ try {
     : spawnSync("git", ["diff", "--quiet", "--", "packages/paperclip-runner"], {
         cwd: workspaceRoot,
       }).status !== 0;
-  // Set only by the Runner image build (the `runner-artifacts` Dockerfile
-  // target): the identity of the inputs the image was built from, which is its
-  // `inputs-<digest>` tag. No check reads it.
+  // Set only by a publication build of the Runner image (the
+  // `runner-artifacts` Dockerfile target with
+  // PAPERCLIP_RUNNER_IMAGE_PUBLICATION=1): the identity of the inputs the image
+  // was built from, which is its `inputs-<digest>` tag.
+  // scripts/runner-image-layout.mjs checks it against the image, and refuses
+  // it in a pack from any other build.
   const runnerInputsDigest = process.env.PAPERCLIP_RUNNER_INPUTS_DIGEST?.trim();
   if (runnerInputsDigest && !/^[0-9a-f]{64}$/.test(runnerInputsDigest)) {
     throw new Error("PAPERCLIP_RUNNER_INPUTS_DIGEST must be 64 hexadecimal characters");

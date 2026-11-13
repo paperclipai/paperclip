@@ -507,6 +507,12 @@ indexes also serve the comment and delivery `on delete set null` actions. Issue
 lists share one external review-wait read per issue between the review and
 blocked-inbox attention maps.
 
+Migration 0476 builds `agent_wakeup_requests_company_run_idx` concurrently. It
+keys wake requests by company and `run_id`, partial on a non-null run. Queued-run
+dispatch finds the person wakes that joined or were adopted by each queued run
+through it, so the read is bounded by the queue size, not by the agent's wake
+history.
+
 Migration 0457 builds `heartbeat_runs_company_native_session_idx` concurrently.
 It keys runs by company and `native_session_id`, partial on a non-null session.
 Native retention, recovery, resume and archive reads find a session's runs
@@ -2422,8 +2428,13 @@ the optional live environment FK uses SET NULL. Company/run deletion must not
 erase an outstanding remote-resource obligation.
 
 The unique company/environment/run/request index fences duplicate creation and
-ambiguous successful lease commits. Normal lease attachment and operation transfer
-share a transaction. Recovery transfers one claimed cleanup lease after provider
+ambiguous successful lease commits. Since migration 0475 it covers only operations
+that are not `resolved`. A later attempt for the same run and request that meets an
+`attached` operation whose lease is closed checks the same stop proof same-run
+recovery requires (a termination receipt for that sandbox, stored or derived from a
+destroyed reusable successor); with it, one transaction resolves the operation and
+records the replacement.
+Normal lease attachment and operation transfer share a transaction. Recovery transfers one claimed cleanup lease after provider
 ownership lookup. The pending deadline index drives the existing cleanup worker.
 `needs_reconciliation` is a durable manual outcome, not an automatic retry or an
 idle blocker. See [cleanup ownership](idle-environment-cleanup.md).

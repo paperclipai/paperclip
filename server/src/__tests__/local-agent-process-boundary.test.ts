@@ -1,4 +1,5 @@
-import { execFile } from "node:child_process";
+import { execFile, spawn, type ChildProcess } from "node:child_process";
+import { readdir } from "node:fs/promises";
 import http from "node:http";
 import type { AddressInfo } from "node:net";
 import type { Server } from "node:http";
@@ -9,6 +10,7 @@ import { actorMiddleware } from "../middleware/auth.js";
 import {
   chainBelongsToAgentRun,
   createLocalAgentProcessBoundary,
+  defaultLocalProcessInspector,
   type LocalProcessInspector,
   findPeerPidInDarwinNetstat,
   findSocketInProcNet,
@@ -16,11 +18,15 @@ import {
 
 const supported = process.platform === "linux" || process.platform === "darwin";
 
-function startServer(serverEnvironment: NodeJS.ProcessEnv, host = "127.0.0.1"): Promise<{ server: Server; url: string }> {
+function startServer(
+  serverEnvironment: NodeJS.ProcessEnv,
+  host = "127.0.0.1",
+  inspector?: LocalProcessInspector,
+): Promise<{ server: Server; url: string }> {
   const app = express();
   app.use(actorMiddleware({} as Db, {
     deploymentMode: "local_trusted",
-    localAgentProcessBoundary: createLocalAgentProcessBoundary({ serverEnvironment }),
+    localAgentProcessBoundary: createLocalAgentProcessBoundary({ serverEnvironment, inspector }),
   }));
   app.get("/api/whoami", (req, res) => {
     res.json({ type: req.actor.type, source: req.actor.source ?? null });
@@ -35,12 +41,15 @@ function startServer(serverEnvironment: NodeJS.ProcessEnv, host = "127.0.0.1"): 
 
 const fetchScript = "fetch(process.argv[1]).then(r => r.text()).then(t => process.stdout.write(t))";
 
+let launchedPid: number | undefined;
+
 function runChild(command: string, args: string[], env: NodeJS.ProcessEnv): Promise<{ type: string; source: string | null }> {
   return new Promise((resolve, reject) => {
-    execFile(command, args, { env, timeout: 20_000 }, (error, stdout) => {
+    const child = execFile(command, args, { env, timeout: 20_000 }, (error, stdout) => {
       if (error) reject(error);
       else resolve(JSON.parse(stdout));
     });
+    launchedPid = child.pid;
   });
 }
 
@@ -118,18 +127,71 @@ const launchNonDumpableFetch = [
   "process.stdout.write(execFileSync('python3', ['-c', process.argv[1], process.argv[2]], { env }));",
 ].join("\n");
 
+const idleNonDumpable = [
+  "import ctypes, time",
+  "ctypes.CDLL(None).prctl(4, 0, 0, 0, 0)",
+  "time.sleep(600)",
+].join("\n");
+
+async function startIdleAgentRunProcess(): Promise<{ child: ChildProcess; uninspectable: boolean }> {
+  const child = spawn("python3", ["-c", idleNonDumpable], {
+    env: { ...operatorEnvironment(), PAPERCLIP_RUN_ID: "77777777-7777-4777-8777-777777777777" },
+    stdio: "ignore",
+  });
+  const deadline = Date.now() + 3_000;
+  while (Date.now() < deadline) {
+    const uninspectable = await readdir(`/proc/${child.pid}/fd`)
+      .then(() => false, (error: NodeJS.ErrnoException) => error.code === "EACCES" || error.code === "EPERM");
+    if (uninspectable) return { child, uninspectable };
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+  return { child, uninspectable: false };
+}
+
+function inspectorForLaunchedProcesses(): LocalProcessInspector {
+  const linux = defaultLocalProcessInspector("linux")!;
+  return {
+    ...linux,
+    async findPeerPids(sockets) {
+      const owners = await linux.findPeerPids(sockets);
+      if (owners === "unsupported") return owners;
+      const root = launchedPid;
+      return Promise.all(owners.map(async (owner) => {
+        if (owner === null || typeof owner !== "object") return owner;
+        const launched = await Promise.all(owner.candidates.map(async (pid) =>
+          root !== undefined && (await linux.ancestorPids(pid))?.includes(root) ? [pid] : []));
+        return { candidates: launched.flat() };
+      }));
+    },
+  };
+}
+
 describe.skipIf(process.platform !== "linux").each(["127.0.0.1", "::1"])(
   "implicit local board access from Linux processes over %s loopback",
   (host) => {
     let server: Server;
     let url: string;
+    let otherAgentRun: { child: ChildProcess; uninspectable: boolean };
 
     beforeAll(async () => {
-      ({ server, url } = await startServer({}, host));
+      otherAgentRun = await startIdleAgentRunProcess();
+      ({ server, url } = await startServer({}, host, inspectorForLaunchedProcesses()));
     });
 
     afterAll(async () => {
+      otherAgentRun.child.kill();
       await new Promise((resolve) => server.close(resolve));
+    });
+
+    it("refuses board access to an operator process the server cannot inspect while another agent run's process it cannot inspect is running", async (context) => {
+      if (!otherAgentRun.uninspectable) context.skip();
+      const hostWide = await startServer({}, host);
+      try {
+        await expect(runChild(process.execPath, ["-e", launchNonDumpableFetch, nonDumpableFetch, hostWide.url, "keep"], operatorEnvironment()))
+          .resolves.toEqual({ type: "none", source: "none" });
+      } finally {
+        await new Promise((resolve) => hostWide.server.close(resolve));
+      }
     });
 
     it("keeps board access for an operator process", async () => {

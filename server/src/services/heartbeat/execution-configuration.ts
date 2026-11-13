@@ -33,6 +33,7 @@ import type { selectHeartbeatEnvironment } from "./environment-selection.js";
 import type { createHeartbeatRetries } from "./retries.js";
 import type { createHeartbeatLifecycle } from "./run-lifecycle.js";
 import { createHeartbeatPreparationTiming } from "./preparation-timing.js";
+import { mcpAppViewsService, renderMcpAppRunContext } from "../mcp-app-views.js";
 import {
   ConfigurationIncompleteFailure, applyRunScopedMentionedSkillKeys, resolveExecutionRunAdapterConfig,
   resolveRunScopedMentionedSkillKeys, type createHeartbeatRunPreparation, type resolveAcceptedPlanWakeRoutingDecision,
@@ -94,6 +95,23 @@ export interface HeartbeatExecutionConfigurationInput {
   onIdentityRedactorPrepared: (redactor: ReturnType<typeof createAgentIdentityRedactor>) => void;
 }
 
+export function buildHeartbeatWorkspaceConfiguration(
+  sourceWorkspaceConfig: Record<string, unknown>,
+  { useIsolatedTaskDirectory, explicitTaskDirectory, requestedExecutionWorkspaceMode }: HeartbeatExecutionConfigurationInput["policy"],
+  selectedEnvironmentId: string | null,
+) {
+  const forceDirectoryStrategy = useIsolatedTaskDirectory || (explicitTaskDirectory && (
+    requestedExecutionWorkspaceMode === "agent_default" || Object.keys(parseObject(sourceWorkspaceConfig.workspaceStrategy)).length > 0
+  ));
+  const mergedConfig: Record<string, unknown> = {
+    ...sourceWorkspaceConfig,
+    // The base below is already task-owned. Keep directory transport while
+    // preserving isolated mode and the mandatory sandbox preflight.
+    ...(forceDirectoryStrategy ? { workspaceStrategy: { type: "project_primary" } } : {}),
+  };
+  return { mergedConfig, configSnapshot: buildExecutionWorkspaceConfigSnapshot(mergedConfig, selectedEnvironmentId) };
+}
+
 /** Assembles effective run configuration; the executor retains cleanup ownership. */
 export async function prepareHeartbeatExecutionConfiguration(db: Db, input: HeartbeatExecutionConfigurationInput) {
   const { run, agent, onFailureSecretsResolved, onManagedAiRuntimeAcquired, onIdentityRedactorPrepared } = input;
@@ -137,22 +155,10 @@ export async function prepareHeartbeatExecutionConfiguration(db: Db, input: Hear
   // preparation step can fail. Subsequent provider/identity values extend it.
   onFailureSecretsResolved(() => []);
   const aiBinding = preconfiguredHome ? undefined : input.config.aiBinding;
-  const { trustPreset, useIsolatedTaskDirectory, explicitTaskDirectory, requestedExecutionWorkspaceMode } = input.policy;
+  const { trustPreset } = input.policy;
   const { secretsSvc, companySkills, appendRunEvent, finalizeAiConnectionBusyDeferral } = input.services;
   let managedAiRuntime: ManagedAiRuntime | undefined;
-  const forceDirectoryStrategy = useIsolatedTaskDirectory || (explicitTaskDirectory && (
-    requestedExecutionWorkspaceMode === "agent_default" || Object.keys(parseObject(sourceWorkspaceConfig.workspaceStrategy)).length > 0
-  ));
-  const mergedConfig = {
-    ...sourceWorkspaceConfig,
-    // The base below is already task-owned. Keep directory transport while
-    // preserving isolated mode and the mandatory sandbox preflight.
-    ...(forceDirectoryStrategy ? { workspaceStrategy: { type: "project_primary" } } : {}),
-  };
-  const configSnapshot = buildExecutionWorkspaceConfigSnapshot(
-    mergedConfig,
-    selectedEnvironmentId,
-  );
+  const { mergedConfig, configSnapshot } = buildHeartbeatWorkspaceConfiguration(sourceWorkspaceConfig, input.policy, selectedEnvironmentId);
   const executionRunConfig =
     stripWorkspaceRuntimeFromExecutionRunConfig(mergedConfig);
   const skillActor: AuthorizationActor = { type: "agent", agentId: agent.id, companyId: agent.companyId,
@@ -372,6 +378,16 @@ export async function prepareHeartbeatExecutionConfiguration(db: Db, input: Hear
     : time(reuseAdmittedSkills ? "configuration_skills_adopted" : "configuration_skills", prepareSkills))
     .finally(() => { skillsPrepareEndedAtMs = Date.now(); });
   const assignmentsPreparation = preconfiguredHome ? Promise.resolve([]) : time("configuration_connector_assignments", () => resolveConnectorAssignments(db, { companyId: agent.companyId, agentId: agent.id, runId: run.id, issueId: typeof context.issueId === "string" ? context.issueId : undefined }));
+  // Context that MCP Apps widgets on this task reported (`ui/update-model-context`).
+  // One indexed read beside the other preparation; it never fails or delays the run on error.
+  const mcpAppContextPreparation = typeof context.issueId === "string"
+    ? time("configuration_mcp_app_context", () => mcpAppViewsService(db).runContextForIssue(agent.companyId, context.issueId as string))
+      .then(renderMcpAppRunContext)
+      .catch((error) => {
+        logger.warn({ err: error, runId: run.id }, "App context from task widgets could not be loaded; the run continues without it");
+        return null;
+      })
+    : Promise.resolve(null);
   // Approved skills from connected apps load beside company skills. A skill
   // that cannot load now is left out with a warning; it never fails the run.
   const mcpSkillsPreparation = preconfiguredHome ? Promise.resolve(null)
@@ -415,7 +431,12 @@ export async function prepareHeartbeatExecutionConfiguration(db: Db, input: Hear
   runtimeSkillEntries.splice(0, runtimeSkillEntries.length, ...connectorSkillConfig.paperclipRuntimeSkills);
   const connectorDelivery = await time("configuration_connector_delivery", () => prepareConnectorSkillDelivery(connectorSkillConfig, agent.adapterType));
   // Always replace this runtime-only field; caller wake data cannot supply skills.
-  context.paperclipWake = { ...parseObject(context.paperclipWake), connectorSkillInstructions: connectorDelivery.instructions };
+  // App context is server-owned too: a caller's wake data cannot supply it.
+  context.paperclipWake = {
+    ...parseObject(context.paperclipWake),
+    connectorSkillInstructions: connectorDelivery.instructions,
+    mcpAppContext: await mcpAppContextPreparation,
+  };
   let runtimeConfig = await prepareConnectionInstructionDelivery({
     resolve: async () => preparedInstructions.value,
     context, config: connectorDelivery.config, native: agent.adapterType === "paperclip_runner",

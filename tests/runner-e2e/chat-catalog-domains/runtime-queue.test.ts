@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { deflateRawSync } from "node:zlib";
-import { gradeQueuedFollowup, historyReadRevisions, keyboardMoveQueuedMessageUp, promptCarriesComment, readCurrentRevision, resultCitedCommentIds, zipEntryTexts } from "./runtime-queue.js";
+import { gradeQueuedFollowup, historyReadRevisions, keyboardMoveQueuedMessageUp, promptCarriesComment, queuedFollowUpBrief, readCurrentRevision, resultCitedCommentIds, zipEntryTexts } from "./runtime-queue.js";
 /** A minimal zip with one deflated and one stored entry, laid out as zip tools write it. */
 function zip(entries: Array<{ name: string; text: string; deflate: boolean }>) {
   const locals: Buffer[] = [], centrals: Buffer[] = []; let offset = 0;
@@ -126,4 +126,13 @@ it("reads comment citations only from the run's accepted result", () => {
   expect(resultCitedCommentIds([accepted({ evidence: [{ ref: `comment:${other.toUpperCase()}` }, { ref: `Comment:${other}` }] })])).toEqual([]);
   expect(resultCitedCommentIds([{ eventType: "run.result.proposed", payload: { prpEvent: { payload: { result: { evidence: [{ ref: `comment:${id}` }] } } } } }])).toEqual([]);
   expect(resultCitedCommentIds([accepted({ evidence: [{ ref: `document:comment:${id}` }, { ref: "comment:not-a-comment" }] })])).toEqual([]);
+});
+
+describe("queued follow-up brief", () => {
+  const brief = queuedFollowUpBrief("Original website brief n1");
+  it("gives the worker a complete website brief bound to its reference", () => {
+    expect(brief).toContain("reference Original website brief n1");
+    for (const part of ["Acorn Notes", "website.html", "Research notes your whole team can find", "Request early access", "Free for teams", "hello@acornnotes.example"]) expect(brief).toContain(part);
+  });
+  it("does not pre-complete the queued contact requirement", () => expect(brief).not.toMatch(/contact/i));
 });

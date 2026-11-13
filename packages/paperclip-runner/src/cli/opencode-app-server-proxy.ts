@@ -36,7 +36,7 @@ import {
   trustedOpenCodeLaunchBinding,
   withoutAmbientOpenCodeCommand,
 } from "./opencode-proxy-command.js";
-import { OpenCodeProxyUsageLedger } from "./opencode-proxy-usage.js";
+import { OpenCodeProxyUsageLedger, openCodeProxyUpstreamUsage } from "./opencode-proxy-usage.js";
 import { parseProviderPerformanceSpans, PROVIDER_PERFORMANCE_DIAGNOSTIC } from "../contracts/provider-performance.js";
 
 type RpcMessage = {
@@ -242,11 +242,14 @@ async function pumpEvents(opened: HarnessSession): Promise<void> {
         }),
       );
       if (payload.kind === "usage") {
-        const usage = usageLedger.update({
-          turnId: text(event.turnId),
-          messageId: text(payload.usageMessageId),
-          usage: payload.usage,
-        });
+        const usage = {
+          ...usageLedger.update({
+            turnId: text(event.turnId),
+            messageId: text(payload.usageMessageId),
+            usage: payload.usage,
+          }),
+          ...openCodeProxyUpstreamUsage(payload.usage),
+        };
         send({
           method: "thread/tokenUsage/updated",
           params: {

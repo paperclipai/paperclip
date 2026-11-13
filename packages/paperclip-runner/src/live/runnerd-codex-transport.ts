@@ -962,6 +962,8 @@ function terminalMayBelongToPendingTurnStart(input: {
 
 /** Part of the turn-start bound kept for the accepted-turn adoption check. */
 const TURN_START_ADOPTION_CHECK_RESERVE_MS = 5_000;
+const TURN_START_EVENT_DEFAULT_TIMEOUT_MS = 90_000;
+const TURN_START_PROGRESS_CEILING_MS = 180_000;
 
 /**
  * The runner's own final failure of a turn whose start is still pending: a
@@ -1024,6 +1026,8 @@ function turnStartCommandResultValid(input: {
   );
 }
 
+type ControlPlaneRegistration = Awaited<ReturnType<NonNullable<RunnerExecutionDriver["controlPlaneRegistration"]>>>;
+
 type CloseCheckpointRetry = {
   checkpoint: () => Promise<void> | void;
   finish: (deadline: number) => Promise<void>;
@@ -1079,10 +1083,18 @@ async function awaitRunnerSuspensionBarrier(input: {
   readRunnerState: () => Promise<Record<string, unknown>>;
   runnerHasExited: () => Promise<boolean>;
   pump: () => void;
+  /** Called once the Runner's exit is certain: its suspend command completed. */
+  onExitCommitted?: () => void;
   deadline: number;
   pollIntervalMs?: number;
 }): Promise<boolean> {
   if (Date.now() >= input.deadline) return false;
+  let exitCommitted = false;
+  const commitExit = () => {
+    if (exitCommitted) return;
+    exitCommitted = true;
+    input.onExitCommitted?.();
+  };
   const readRunnerState = async (): Promise<Record<string, unknown> | undefined> => {
     const remainingMs = input.deadline - Date.now();
     if (remainingMs <= 0) return undefined;
@@ -1112,8 +1124,10 @@ async function awaitRunnerSuspensionBarrier(input: {
     try {
       const state = await readRunnerState();
       if (state === undefined) return false;
-      if (state.lifecycle === "suspended")
+      if (state.lifecycle === "suspended") {
+        commitExit();
         return Date.now() < input.deadline;
+      }
     } catch {
       // The normal bounded barrier below handles unavailable state.
     }
@@ -1156,6 +1170,9 @@ async function awaitRunnerSuspensionBarrier(input: {
       input.queueSuspend(commandId);
       continue;
     }
+    // The Runner exits right after it reports a completed suspend, so its exit
+    // is certain before this barrier reads the durable state.
+    if (command?.status === "completed") commitExit();
     let lifecycle: unknown;
     try {
       const state = await readRunnerState();
@@ -1654,6 +1671,7 @@ export interface CapabilityRunnerdCodexTransportOptions extends RunnerExecutionD
   closeGraceMs?: number;
   /** Bounded provider turn-admission wait; defaults to 30 seconds. */
   turnStartTimeoutMs?: number;
+  turnStartProgressCeilingMs?: number;
   /** Controller-owned opt-in operation timing. No exporter lives in Runner. */
   measureOperation?<T>(phase: string, work: () => Promise<T>, attributes?: Record<string, number | boolean>): Promise<T>;
   recordTimingReceipt?(receipt: unknown): void;
@@ -2228,7 +2246,21 @@ export function rehydrateRunnerdUsageNotification(
       // durable replay cannot certify an incomplete delta as a free receipt.
       runDeltaComplete: rawParams.runDeltaAvailable === true,
       ...runnerdContextUsage(rawParams.context),
+      ...runnerdUpstreamUsage(rawParams),
     },
+  };
+}
+
+function runnerdUpstreamUsage(rawParams: Record<string, unknown>): { upstreamProvider?: string; providerRequestId?: string } {
+  const value = (name: string) => {
+    const field = rawParams[name];
+    return typeof field === "string" && field.length > 0 && field.length <= 240 ? field : undefined;
+  };
+  const upstreamProvider = value("upstreamProvider");
+  const providerRequestId = value("providerRequestId");
+  return {
+    ...(upstreamProvider ? { upstreamProvider } : {}),
+    ...(providerRequestId ? { providerRequestId } : {}),
   };
 }
 
@@ -4131,6 +4163,8 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
     ((settlement: "settled" | "unsettled") => Promise<void> | void) | null =
     null;
   #controlPlaneRelease: ((reason?: "detach") => Promise<void> | void) | null = null;
+  /** Quiesce hooks of the registered routes that have not been released yet. */
+  readonly #controlPlaneQuiesces = new Set<() => void>();
   #nextTraceDebugSequence = 1;
   #traceRehydrationSpoolOverflow = false;
   readonly #traceFrameIndex = new RunnerdTraceFrameIndex();
@@ -4340,6 +4374,10 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
    * neither is required. A remote same-run bootstrap retry may then launch a
    * new runner: the old one is gone, and its provider never opened a thread.
    */
+  recoversForStop(): boolean {
+    return this.options.recoveryPurpose === "stop_cleanup";
+  }
+
   runnerExitConfirmed(): boolean {
     return this.#closeFinished && !this.#startupComplete
       && (this.#providerIdentity === null || this.#openingCommandUnanswered())
@@ -4720,6 +4758,42 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
     );
   }
 
+  async #registerControlPlane(
+    core: DurablePrpControlPlane,
+    identity?: DurableRecoveryIdentity,
+  ): Promise<ControlPlaneRegistration> {
+    const registration = await this.options.controlPlaneRegistration!(core, identity);
+    const quiesce = registration.quiesce;
+    if (!quiesce) return registration;
+    this.#controlPlaneQuiesces.add(quiesce);
+    // Copy descriptors so a registration's getters (such as a lazily created
+    // route's failure) stay live; only release changes.
+    const release = registration.release;
+    return Object.defineProperties({}, {
+      ...Object.getOwnPropertyDescriptors(registration),
+      release: {
+        enumerable: true,
+        value: (reason?: "detach") => {
+          this.#controlPlaneQuiesces.delete(quiesce);
+          return release.call(registration, reason);
+        },
+      },
+    }) as ControlPlaneRegistration;
+  }
+
+  /** The Runner's exit is committed: its routes' drops are no longer transport loss. */
+  #quiesceControlPlaneRoutes(): void {
+    const routes = [...this.#controlPlaneQuiesces];
+    this.#controlPlaneQuiesces.clear();
+    for (const quiesce of routes) {
+      try {
+        quiesce();
+      } catch (error) {
+        this.#diagnostic(`control-plane route quiesce failed: ${String(error)}`);
+      }
+    }
+  }
+
   #quietReleasedRunner(): void {
     this.#stopPump();
     if (this.#adoptedRunnerMonitor !== null) clearInterval(this.#adoptedRunnerMonitor);
@@ -4834,7 +4908,8 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
     await this.#claimReleasedRunner(claimantRunId);
     const core = this.#core!;
     if (core.activeRunnerConnectionCount() !== 1) {
-      const registration = await this.options.controlPlaneRegistration?.(core, this.#releaseEpisode!.source);
+      const registration = this.options.controlPlaneRegistration
+        ? await this.#registerControlPlane(core, this.#releaseEpisode!.source) : undefined;
       try {
         this.#assertStartupOpen();
         if (!registration?.checkpoint) throw new Error("native_runner_released_cleanup_unavailable");
@@ -4949,7 +5024,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
       itemId: input.itemId,
     };
     const registration = this.options.controlPlaneRegistration
-      ? await this.options.controlPlaneRegistration(core, desired)
+      ? await this.#registerControlPlane(core, desired)
       : null;
     const previousRelease = this.#controlPlaneRelease;
     let previousReleased = false;
@@ -5635,21 +5710,32 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
       // the next runnerd on this root as a stale terminal command.
       const lostLocalRunner = this.#handle !== null && this.#lostRunnerHandle === this.#handle
         && !this.options.runnerProcessLauncher && !adoptedRunner;
-      runnerSuspended = !lostLocalRunner && await awaitRunnerSuspensionBarrier({
-        commands: () => this.#core?.store.state.commands ?? [],
-        queueSuspend: (commandId) => {
-          this.#core?.queueCommand("runner.suspend", {}, commandId, true);
-        },
-        readRunnerState: async () => {
-          const state = await this.#readDurableRunnerState();
-          lastSuspensionState = state;
-          assertSuspendedRunnerState(state, this.#core!.store.state.identity);
-          return state;
-        },
-        runnerHasExited: () => this.#runnerHasExited(),
-        pump: () => this.#pumpEventsSafely(),
-        deadline: closeDeadline,
-      });
+      // Quiesce before the authority acknowledges a completed suspend: the
+      // Runner exits on that acknowledgement, possibly while the barrier is
+      // still reading durable state, and a Core-dialed route would otherwise
+      // redial it. The release path quiesces its route the same way.
+      const stopObservingExit = this.#core.onRunnerExitCommitted(() => this.#quiesceControlPlaneRoutes());
+      try {
+        runnerSuspended = !lostLocalRunner && await awaitRunnerSuspensionBarrier({
+          commands: () => this.#core?.store.state.commands ?? [],
+          queueSuspend: (commandId) => {
+            this.#core?.queueCommand("runner.suspend", {}, commandId, true);
+          },
+          readRunnerState: async () => {
+            const state = await this.#readDurableRunnerState();
+            lastSuspensionState = state;
+            assertSuspendedRunnerState(state, this.#core!.store.state.identity);
+            return state;
+          },
+          runnerHasExited: () => this.#runnerHasExited(),
+          pump: () => this.#pumpEventsSafely(),
+          // Also covers a completed receipt acknowledged before this close.
+          onExitCommitted: () => this.#quiesceControlPlaneRoutes(),
+          deadline: closeDeadline,
+        });
+      } finally {
+        stopObservingExit();
+      }
       runnerLost = !runnerSuspended && this.#handle !== null && this.#lostRunnerHandle === this.#handle;
       if (!runnerSuspended) {
         const command = [...this.#core.store.state.commands].reverse().find(
@@ -6269,7 +6355,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
       this.#openingCommandId = opening?.commandId ?? null;
     }
     const registration = this.options.controlPlaneRegistration
-      ? await this.options.controlPlaneRegistration(core)
+      ? await this.#registerControlPlane(core)
       : null;
     this.#startupFailureCode =
       registration?.startupFailureCode ?? "runner_local_connect_failed";
@@ -7040,9 +7126,9 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
             && this.options.warmTransitionRegistrationMode === "routed_same_endpoint"))) {
           throw new Error("native_runner_warm_transition_requires_exact_owned_endpoint");
         }
-        oldTransitionRegistration = await this.options.controlPlaneRegistration(core, recoverySource);
+        oldTransitionRegistration = await this.#registerControlPlane(core, recoverySource);
         this.#assertStartupOpen();
-        newTransitionRegistration = await this.options.controlPlaneRegistration(core, recoveryTarget);
+        newTransitionRegistration = await this.#registerControlPlane(core, recoveryTarget);
         const connection = newTransitionRegistration.connection ?? { mode: "connect", connectUrl: newTransitionRegistration.connectUrl };
         if (durableRecoveryInternals.canonicalJson(connection) !== durableRecoveryInternals.canonicalJson(expectedRecoveryConnection)) {
           throw new Error("native_runner_warm_transition_registered_endpoint_mismatch");
@@ -7056,7 +7142,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
       ? recoveryIdentityMatches(warmRecovery?.runnerIdentity ?? queuedSourceAttachment!.sourceIdentity, recoverySource!)
         ? oldTransitionRegistration : newTransitionRegistration
       : this.options.controlPlaneRegistration
-        ? await this.options.controlPlaneRegistration(core, this.#retainsSourceInputs() ? identity : this.#sourceRecoveryIdentity ?? undefined) : null;
+        ? await this.#registerControlPlane(core, this.#retainsSourceInputs() ? identity : this.#sourceRecoveryIdentity ?? undefined) : null;
     this.#startupFailureCode =
       registration?.startupFailureCode ?? "runner_local_connect_failed";
     if (registration === null) {
@@ -7539,18 +7625,43 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
   }): boolean {
     if (input.snapshot?.activeProviderTurnId !== input.expectedProviderTurnId) return false;
     if (!Number.isSafeInteger(input.acceptingCommandSeq)) return false;
-    const relaunched = (this.#core?.store.state.committedEvents ?? []).some((event) => {
-      if (event.eventType !== "harness.diagnostic") return false;
-      const payload = record(record(event.envelope.payload).payload);
-      return payload.code === "provider_startup_ownership" &&
-        Number(record(record(payload.startup).command).controllerSeq) > input.acceptingCommandSeq;
-    });
-    if (relaunched) return false;
+    if (this.#providerRelaunchedAfter(input.acceptingCommandSeq)) return false;
     if (input.acceptingProviderPid === null || this.#evidence.providerPid !== input.acceptingProviderPid) return false;
     // A remote provider's pid names no local process; the runner's own
     // launch reports above are its replacement evidence.
     if (input.acceptingProviderStartedAt === null) return true;
     return readLocalProcessStartedAt(input.acceptingProviderPid) === input.acceptingProviderStartedAt;
+  }
+
+  #providerRelaunchedAfter(acceptingCommandSeq: number): boolean {
+    return (this.#core?.store.state.committedEvents ?? []).some((event) => {
+      if (event.eventType !== "harness.diagnostic") return false;
+      const payload = record(record(event.envelope.payload).payload);
+      return payload.code === "provider_startup_ownership" &&
+        Number(record(record(payload.startup).command).controllerSeq) > acceptingCommandSeq;
+    });
+  }
+
+  #latestCommittedSourceSeq(): number {
+    return this.#core?.store.state.committedEvents.at(-1)?.sourceSeq ?? 0;
+  }
+
+  #pendingTurnStartProgressSince(sourceSeq: number, expectedProviderTurnId: string): { progressed: boolean; latestSeq: number } {
+    const events = this.#core?.store.state.committedEvents ?? [];
+    let latestSeq = sourceSeq;
+    let progressed = false;
+    for (let index = events.length - 1; index >= 0; index -= 1) {
+      const event = events[index]!;
+      if (event.sourceSeq <= sourceSeq) break;
+      if (event.sourceSeq > latestSeq) latestSeq = event.sourceSeq;
+      if (progressed) continue;
+      if (event.eventType === "provider.notice.recorded") progressed = true;
+      else if (event.eventType === "harness.diagnostic") {
+        const payload = record(record(event.envelope.payload).payload);
+        progressed = payload.expectedTurnId === expectedProviderTurnId;
+      }
+    }
+    return { progressed, latestSeq };
   }
 
   async #startTurnWork(
@@ -7678,10 +7789,19 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
       // command's durable result so a delayed prior-turn event cannot satisfy
       // the new response fence. ACPX echoes the requested identity, while
       // Codex and OpenCode return their provider-assigned identity.
-      const deadline =
+      const quietWindowMs =
         this.options.turnStartTimeoutMs === undefined
-          ? this.#waitNow() + 30_000
-          : commandDeadline;
+          ? TURN_START_EVENT_DEFAULT_TIMEOUT_MS
+          : Math.max(0, commandDeadline - this.#waitNow());
+      let deadline = this.#waitNow() + quietWindowMs;
+      const progressCeiling = this.#waitNow() + Math.max(quietWindowMs, this.options.turnStartProgressCeilingMs ?? TURN_START_PROGRESS_CEILING_MS);
+      let progressSeq = this.#latestCommittedSourceSeq();
+      const extendOnProgress = () => {
+        const progress = this.#pendingTurnStartProgressSince(progressSeq, expectedProviderTurnId);
+        progressSeq = progress.latestSeq;
+        if (progress.progressed && !this.#providerRelaunchedAfter(acceptingCommandSeq))
+          deadline = Math.min(progressCeiling, Math.max(deadline, this.#waitNow() + quietWindowMs));
+      };
       const providerTurnStarted = () =>
         turnStartResponseReady({
           responseEpoch,
@@ -7689,14 +7809,10 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
           expectedProviderTurnId,
           boundTurnId: this.#turnId,
         });
-      // Keep the adoption check inside the configured bound: stop waiting for
-      // the start event early enough to read the runner's snapshot before it.
-      const adoptionCheckAt = deadline - Math.min(
+      const adoptionReserveMs = Math.min(
         TURN_START_ADOPTION_CHECK_RESERVE_MS,
-        Math.floor(Math.max(0, deadline - this.#waitNow()) / 4),
+        Math.floor(quietWindowMs / 4),
       );
-      // The runner can end the accepted turn before it starts. Its terminal is
-      // held for the pending start, so report that real cause at once.
       const throwIfRunnerFailedStart = () => {
         const failure = runnerdPendingTurnStartFailure([
           ...this.#deferredTurnStartEvents,
@@ -7708,59 +7824,41 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
           throw new Error(`runnerd failed the provider turn before it started: ${failure}`);
       };
       const waitForStarted = async () => {
-      while (!providerTurnStarted() && this.#waitNow() < adoptionCheckAt) {
-        this.#throwIfFailed();
-        this.#pumpEvents();
-        if (providerTurnStarted()) break;
-        throwIfRunnerFailedStart();
-        if (await this.#runnerHasExited())
-          throw new Error("runnerd exited before provider turn startup");
-        await new Promise((resolveWait) => setTimeout(resolveWait, 10));
-      }
-      if (!providerTurnStarted()) {
-        // The durable command result already carries the provider's own
-        // acceptance and turn id. A loaded provider can start that turn after
-        // this bound, and it still runs it. Failing would abandon a live turn
-        // that no controller owns, so its tools and close could never settle.
-        // Bind the exact accepted identity when the runner proves it is live;
-        // its turn/started is then accepted in order, and the turn's own
-        // terminal, timeout and Stop paths own it from here.
-        this.#throwIfFailed();
-        if (await this.#runnerHasExited())
-          throw new Error("runnerd exited before provider turn startup");
-        const snapshot = await this.#commandResult(
-          "session.snapshot", {}, deadline,
-        ).catch(() => null);
-        // Ingest any runner-reported provider launch committed before it. A
-        // pump that rejected a stale start has failed the transport; never
-        // report a successful start on it.
-        this.#pumpEventsSafely();
-        this.#throwIfFailed();
-        if (!providerTurnStarted()) throwIfRunnerFailedStart();
-        if (!providerTurnStarted() && this.#acceptedTurnProvablyLive({
-          snapshot, expectedProviderTurnId, acceptingProviderPid,
-          acceptingProviderStartedAt, acceptingCommandSeq,
-        })) {
-          this.#turnId = expectedProviderTurnId;
-          this.#observedTurnStartEpoch = responseEpoch;
-          this.#diagnostic(
-            "provider turn start outlived its bound; adopting the durably accepted active provider turn",
-          );
-        }
-        // Not provably live: keep the original contract and wait for the
-        // start event until the configured bound, then fail as before.
-        while (!providerTurnStarted() && this.#waitNow() < deadline) {
+        let adoptionCheckedFor: number | null = null;
+        while (!providerTurnStarted()) {
           this.#throwIfFailed();
           this.#pumpEvents();
           if (providerTurnStarted()) break;
           throwIfRunnerFailedStart();
+          extendOnProgress();
           if (await this.#runnerHasExited())
             throw new Error("runnerd exited before provider turn startup");
+          if (this.#waitNow() >= deadline - adoptionReserveMs && adoptionCheckedFor !== deadline) {
+            adoptionCheckedFor = deadline;
+            const snapshot = await this.#commandResult(
+              "session.snapshot", {}, deadline,
+            ).catch(() => null);
+            this.#pumpEventsSafely();
+            this.#throwIfFailed();
+            if (providerTurnStarted()) break;
+            throwIfRunnerFailedStart();
+            if (this.#acceptedTurnProvablyLive({
+              snapshot, expectedProviderTurnId, acceptingProviderPid,
+              acceptingProviderStartedAt, acceptingCommandSeq,
+            })) {
+              this.#turnId = expectedProviderTurnId;
+              this.#observedTurnStartEpoch = responseEpoch;
+              this.#diagnostic(
+                "provider turn start outlived its bound; adopting the durably accepted active provider turn",
+              );
+              break;
+            }
+            continue;
+          }
+          if (this.#waitNow() >= deadline)
+            throw new Error("runnerd did not report the provider turn identity");
           await new Promise((resolveWait) => setTimeout(resolveWait, 10));
         }
-        if (!providerTurnStarted())
-          throw new Error("runnerd did not report the provider turn identity");
-      }
       };
       if (this.options.measureOperation) await this.options.measureOperation("runner.transport.started_event", waitForStarted);
       else await waitForStarted();

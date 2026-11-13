@@ -712,7 +712,7 @@ async function expectContainedWorkspaceBranchFailure(input: {
         }),
       }),
     }),
-    nextAction: expect.stringContaining("choose a new execution workspace"),
+    nextAction: expect.stringContaining("workspace no longer matches its branch"),
     wakePolicy: expect.objectContaining({
       type: "board_escalation",
       reason: "workspace_validation_failed",
