@@ -30,6 +30,12 @@ describe("Git physical source roots", () => {
     await fs.mkdir(path.join(marker, "info"), { recursive: true });
     await fs.writeFile(path.join(marker, "info", "exclude"), "/.paperclip-repositories/\n");
     expect(await readWorkspaceGitSourceRoots(cwd)).toBeNull();
+    await fs.rm(path.join(marker, "info"), { recursive: true });
+    expect(await readWorkspaceGitSourceRoots(cwd)).toBeNull();
+    await fs.mkdir(path.join(cwd, "nested"));
+    expect(await readWorkspaceGitSourceRoots(path.join(cwd, "nested"), { ancestors: true })).toBeNull();
+    await fs.mkdir(path.join(marker, "info"));
+    await fs.writeFile(path.join(marker, "info", "exclude"), "/.paperclip-repositories/\n");
     for (const name of ["HEAD", "config", "commondir"]) {
       await fs.writeFile(path.join(marker, name), name === "commondir" ? ".\n" : "partial Git state\n");
       await expect(readWorkspaceGitSourceRoots(cwd)).rejects.toThrow("workspace_git_source_unproven");
