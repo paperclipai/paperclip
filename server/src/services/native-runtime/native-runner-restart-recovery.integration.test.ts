@@ -1665,7 +1665,7 @@ process.on("SIGTERM", () => child.kill("SIGTERM"));
         runnerInstanceId: "unanswered-runner", environmentLeaseId: "lease", turnId: "turn", itemId: "item" };
       return { claim, identity };
     }
-    function sandbox(providerLeaseId: string, identity: Record<string, unknown>, runnerState: (read: number) => Record<string, unknown>,
+    function sandbox(providerLeaseId: string, identity: Record<string, unknown>, runnerState: (read: number) => Record<string, unknown> | null,
       alive: (check: number) => boolean) {
       let reads = 0, checks = 0;
       const execute = vi.fn(async (request: { args: string[] }) => {
@@ -1674,8 +1674,10 @@ process.on("SIGTERM", () => child.kill("SIGTERM"));
           return { stdout: "", stderr: "", exitCode: alive(checks++) ? 0 : 45, timedOut: false };
         }
         if (script.includes("base64")) {
+          const state = runnerState(reads++);
+          if (state === null) return { stdout: "", stderr: "state read failed", exitCode: 1, timedOut: false };
           return { stdout: Buffer.from(JSON.stringify({ ...identity, outbox: [], pendingTerminalDelivery: null, pendingProviderCleanup: null,
-            ...runnerState(reads++) })).toString("base64"), stderr: "", exitCode: 0, timedOut: false };
+            ...state })).toString("base64"), stderr: "", exitCode: 0, timedOut: false };
         }
         if (script.includes("cat --")) {
           return { stdout: `nonce\n4242\n2026-11-13T09:00:00.000Z\n${String(identity.runnerInstanceId)}\nlinux:abcd-1234:100\n`,
@@ -1688,14 +1690,14 @@ process.on("SIGTERM", () => child.kill("SIGTERM"));
       const signalled = () => execute.mock.calls.some(([request]) => /kill -/.test(request.args.join(" ")));
       return { target, signalled };
     }
-    async function reattach(label: string, runnerState: (read: number) => Record<string, unknown>,
-      alive: (check: number) => boolean = () => true, controllerAckedSourceSeq: number | null = 338) {
+    async function reattach(label: string, runnerState: (read: number) => Record<string, unknown> | null,
+      alive: (check: number) => boolean = () => true, controllerAckedSourceSeq: number | null = 338, providerAttempt?: number) {
       const { claim, identity } = await replacementClaim(label);
       if (claim.remote.kind === "plugin_task") throw new Error("expected a sandbox claim");
       const { target, signalled } = sandbox(claim.remote.providerLeaseId, identity, runnerState, alive);
       const onReplace = vi.fn();
       const outcome = await verifyRemoteRunnerOrSettledExit({ claim, target: target as never, identity, runId: identity.runId,
-        normalizedSessionId: identity.normalizedSessionId, providerAttempt: claim.providerAttempt,
+        normalizedSessionId: identity.normalizedSessionId, providerAttempt: providerAttempt ?? claim.providerAttempt,
         unansweredRunnerProgress: { controllerAckedSourceSeq, onReplace, windowMs: 200, pollMs: 20 } }).catch(error => error as Error);
       return { outcome, onReplace, signalled };
     }
@@ -1730,6 +1732,49 @@ process.on("SIGTERM", () => child.kill("SIGTERM"));
         read => read === 0 ? { lifecycle: "turn_active", nextSourceSeq: 339, ackedSourceSeq: 338, lastControllerCommandSeq: 40 }
           : { lifecycle: "suspended", nextSourceSeq: 339, ackedSourceSeq: 339, lastControllerCommandSeq: 40 },
         check => check === 0);
+      expect(outcome).toBeUndefined();
+      expect(onReplace).not.toHaveBeenCalled();
+    });
+
+    it("adopts a live Runner whose first state read failed and whose later reads advance", async () => {
+      const { outcome, onReplace, signalled } = await reattach("first-read-failed",
+        read => read === 1 ? null : { lifecycle: "turn_active", nextSourceSeq: 339 + read, ackedSourceSeq: 338, lastControllerCommandSeq: 40 },
+        () => true, null);
+      expect(outcome).toMatchObject({ pid: 4242 });
+      expect(onReplace).not.toHaveBeenCalled();
+      expect(signalled()).toBe(false);
+    });
+
+    it("adopts a live Runner whose first readable state is already past the controller's acknowledgement", async () => {
+      const { outcome, onReplace } = await reattach("first-read-failed-emitted",
+        read => read === 0 ? { lifecycle: "turn_active", nextSourceSeq: 339, ackedSourceSeq: 338, lastControllerCommandSeq: 40 }
+          : read === 1 ? null : { lifecycle: "turn_active", nextSourceSeq: 2345, ackedSourceSeq: 338, lastControllerCommandSeq: 40 });
+      expect(outcome).toMatchObject({ pid: 4242 });
+      expect(onReplace).not.toHaveBeenCalled();
+    });
+
+    it("does not replace a live Runner whose state could not be read at all during the wait", async () => {
+      const { outcome, onReplace, signalled } = await reattach("unreadable",
+        read => read === 0 ? { lifecycle: "turn_active", nextSourceSeq: 339, ackedSourceSeq: 338, lastControllerCommandSeq: 40 } : null);
+      expect(outcome).toMatchObject({ pid: 4242 });
+      expect(onReplace).not.toHaveBeenCalled();
+      expect(signalled()).toBe(false);
+    });
+
+    it("fails closed when the Runner's identity changes during the wait", async () => {
+      const { outcome, onReplace } = await reattach("identity-changed",
+        read => read === 0 ? { lifecycle: "turn_active", nextSourceSeq: 339, ackedSourceSeq: 338, lastControllerCommandSeq: 40 }
+          : { lifecycle: "turn_active", nextSourceSeq: 339, ackedSourceSeq: 338, lastControllerCommandSeq: 40, runnerInstanceId: "another-runner" });
+      expect(outcome).toBeInstanceOf(Error);
+      expect((outcome as Error).message).toContain("runner_remote_recovery_identity_mismatch");
+      expect(onReplace).not.toHaveBeenCalled();
+    });
+
+    it("restores from the journal of a Runner that suspended and exited during the wait on the admitted fourth attempt", async () => {
+      const { outcome, onReplace } = await reattach("suspended-exit-fourth",
+        read => read === 0 ? { lifecycle: "turn_active", nextSourceSeq: 339, ackedSourceSeq: 338, lastControllerCommandSeq: 40 }
+          : { lifecycle: "suspended", nextSourceSeq: 339, ackedSourceSeq: 339, lastControllerCommandSeq: 40 },
+        check => check === 0, 338, 4);
       expect(outcome).toBeUndefined();
       expect(onReplace).not.toHaveBeenCalled();
     });

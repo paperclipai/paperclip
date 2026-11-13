@@ -1859,7 +1859,7 @@ new Runner restores its own journal. This replacement also proceeds on a resumed
 sandbox lease, where the in-place reuse check would otherwise refuse the live
 Runner's unsuspended state (`runner_harness_state_mismatch: resumed_not_suspended`)
 and leave it running. A Runner that exits during the wait follows the exited-Runner
-rules: a settled suspension restores, a mid-turn exit stays fail-closed.
+rules: a settled suspension restores, a mid-turn exit stays fail-closed. A state read that fails is no evidence either way: the first successful read sets the baseline, and a Runner whose state could not be read at all during the wait is adopted, not replaced. A Runner whose identity changes during the wait fails closed. A settled exit during the wait restores on every attempt that admitted the replacement, including the extra fourth attempt.
 
 On every `reattach_remote_runner` attempt, a turn the Runner reports as
 `provider_turn_lost_on_restore` with `recoverable: true` continues once in the same

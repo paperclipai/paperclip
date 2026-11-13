@@ -15417,24 +15417,36 @@ async function observeUnansweredRunnerProgress(input: {
     state.reconnectCount ?? null, state.nextSourceSeq ?? null, state.ackedSourceSeq ?? null,
     state.lastControllerCommandSeq ?? null, state.lifecycle ?? null]) : null;
   const settle = async () => await input.isAlive() ? "progressing" as const : "exited" as const;
-  const first = await read();
-  const emittedSourceSeq = Number(first?.nextSourceSeq) - 1;
-  if (input.probe.controllerAckedSourceSeq !== null && Number.isSafeInteger(emittedSourceSeq)
-    && emittedSourceSeq > input.probe.controllerAckedSourceSeq) return settle();
-  const baseline = progressMarker(first);
+  const emittedPastAck = (state: Record<string, unknown>) => {
+    const emittedSourceSeq = Number(state.nextSourceSeq) - 1;
+    return input.probe.controllerAckedSourceSeq !== null && Number.isSafeInteger(emittedSourceSeq)
+      && emittedSourceSeq > input.probe.controllerAckedSourceSeq;
+  };
+  let baseline: string | null = null;
+  const progressed = (state: Record<string, unknown> | null) => {
+    if (!state) return false;
+    if (emittedPastAck(state)) return true;
+    const marker = progressMarker(state);
+    if (baseline === null) {
+      baseline = marker;
+      return false;
+    }
+    return marker !== baseline;
+  };
+  if (progressed(await read())) return settle();
   const end = Math.min(Date.now() + (input.probe.windowMs ?? UNANSWERED_RUNNER_PROGRESS_WINDOW_MS), input.recoveryDeadline);
   while (Date.now() < end) {
     await new Promise(done => setTimeout(done, Math.min(input.probe.pollMs ?? UNANSWERED_RUNNER_PROGRESS_POLL_MS, end - Date.now())));
-    const current = progressMarker(await read());
-    if (baseline !== null && current !== null && current !== baseline) return settle();
+    if (progressed(await read())) return settle();
   }
+  if (baseline === null) return settle();
   return await input.isAlive() ? "wedged" : "exited";
 }
 
 export async function verifyRemoteRunnerOrSettledExit(
   input: Parameters<typeof verifyRemoteRunnerReattachment>[0] & { providerAttempt: number;
     claim: { exitedBeforeSessionOpen?: true; replaceUnansweredRunner?: true };
-    unansweredRunnerProgress?: UnansweredRunnerProgressProbe },
+    unansweredRunnerProgress?: UnansweredRunnerProgressProbe; admittedAttemptLimit?: number },
 ): Promise<Awaited<ReturnType<typeof verifyRemoteRunnerReattachment>> | undefined> {
   const recoveryDeadline = Math.min(input.recoveryDeadline ?? Number.POSITIVE_INFINITY,
     Date.now() + REMOTE_RUNNER_RECOVERY_PROBE_BUDGET_MS);
@@ -15450,8 +15462,8 @@ export async function verifyRemoteRunnerOrSettledExit(
     const diagnostic = readRemoteRunnerRecoveryError(error);
     const exitedBeforeSessionOpen = input.claim.exitedBeforeSessionOpen === true;
     const freshBootstrap = diagnostic !== null && exitedRunnerRequestedFreshBootstrap(diagnostic);
-    const attemptLimit = freshBootstrap && input.claim.replaceUnansweredRunner === true
-      ? NATIVE_PROVIDER_RECOVERY_ATTEMPT_LIMIT + 1 : NATIVE_PROVIDER_RECOVERY_ATTEMPT_LIMIT;
+    const attemptLimit = Math.max(input.admittedAttemptLimit ?? 0, freshBootstrap && input.claim.replaceUnansweredRunner === true
+      ? NATIVE_PROVIDER_RECOVERY_ATTEMPT_LIMIT + 1 : NATIVE_PROVIDER_RECOVERY_ATTEMPT_LIMIT);
     if (input.providerAttempt > attemptLimit || diagnostic?.stage !== "process_verification" ||
         diagnostic.reason !== "process_not_running" ||
         (!exitedBeforeSessionOpen && !freshBootstrap &&
@@ -15473,7 +15485,8 @@ export async function verifyRemoteRunnerOrSettledExit(
   if (progress === "progressing") return verified;
   if (progress === "exited") {
     const { replaceUnansweredRunner: _replace, ...claim } = input.claim;
-    return verifyRemoteRunnerOrSettledExit({ ...input, claim, unansweredRunnerProgress: undefined });
+    return verifyRemoteRunnerOrSettledExit({ ...input, claim, unansweredRunnerProgress: undefined,
+      admittedAttemptLimit: NATIVE_PROVIDER_RECOVERY_ATTEMPT_LIMIT + 1 });
   }
   input.unansweredRunnerProgress.onReplace();
   return undefined;
