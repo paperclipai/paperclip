@@ -401,7 +401,7 @@ RUN set -eu; \
 #      which change with layer 2.
 # Layers 3 and 4 hold the transport archives and their receipt and nothing
 # else, so a reader can fetch all of them without the pack.
-# `runner-image-layout.mjs check-layers` checks all of this on built images.
+# `runner-image-oci.mjs check-layers` checks all of this on built images.
 # Every path is where it would be in a single layer; consumers copy by path.
 FROM scratch AS runner-artifacts-slim
 COPY --link --from=runner-artifacts-build /out-large/ /

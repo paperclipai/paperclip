@@ -29,6 +29,7 @@ on:
       - scripts/link-plugin-dev-sdk.mjs
       - scripts/runner-image-identity.mjs
       - scripts/runner-image-layout.mjs
+      - scripts/runner-image-oci.mjs
       - docker/runner-image/**
   workflow_dispatch:
 
@@ -97,6 +98,7 @@ jobs:
       # files the image build never receives.
       - name: Compute the identity in the build context
         id: identity
+        timeout-minutes: 10
         run: |
           set -euo pipefail
           out="$RUNNER_TEMP/runner-image-identity"
@@ -189,14 +191,18 @@ jobs:
       # provider pack integrity check and the layout check.
       #
       # Both variants come from one build: the second command only reads the
-      # cache of the first. Each is exported as a tree, for the checks by
-      # path, and as an OCI archive, for the check of its layers.
+      # cache of the first. Each is exported once, as an OCI archive and
+      # nothing else. A command with two exports, an archive and a tree,
+      # stalled on these runners when every stage came from the cache, so a
+      # command has one export, and the step has a time limit: a cold build
+      # takes about ten minutes.
       #
       # This is the publication form of the build, the only one whose pack
       # names the image (`runnerInputsDigest`), so the check below can bind
       # the tree to the digest the identity job resolved. Nothing here
-      # publishes it: the trees and archives stay on this runner.
+      # publishes it: the archives and trees stay on this runner.
       - name: Build both variants of the Runner image
+        timeout-minutes: 30
         run: |
           set -euo pipefail
           for variant in full slim; do
@@ -208,12 +214,24 @@ jobs:
               --build-arg "PAPERCLIP_RUNNER_SOURCE_REVISION=$GITHUB_SHA" \
               --build-arg PAPERCLIP_RUNNER_IMAGE_PUBLICATION=1 \
               --provenance=false --sbom=false \
-              --output "type=local,dest=$RUNNER_TEMP/runner-image/$variant" \
               --output "type=oci,dest=$RUNNER_TEMP/runner-image/$variant.oci.tar" \
               .
           done
 
-      # Against each exported tree, bound to this run: the digest the identity
+      # The trees the checks below read are the layers of those archives,
+      # written out in order. They are the bytes of the images themselves,
+      # not a second export of the build, and each blob is checked against
+      # its digest as it is read.
+      - name: Unpack both images
+        timeout-minutes: 10
+        run: |
+          set -euo pipefail
+          for variant in full slim; do
+            node scripts/runner-image-oci.mjs unpack "$RUNNER_TEMP/runner-image/$variant.oci.tar" \
+              --out "$RUNNER_TEMP/runner-image/$variant"
+          done
+
+      # Against each unpacked tree, bound to this run: the digest the identity
       # job resolved, this commit and this leg's architecture. Checks every
       # documented path, the build stamp, and every pack artifact and tree
       # digest in provider-pack.json. A slim tree must not hold the transport
@@ -221,6 +239,7 @@ jobs:
       # them as a sandbox does and compares the result with the pack; that
       # needs about as much free disk as the pack is large.
       - name: Check the layout contract and pack integrity
+        timeout-minutes: 10
         run: |
           set -euo pipefail
           for variant in full slim; do
@@ -232,13 +251,15 @@ jobs:
           done
 
       # The full image must be the slim image's layers, as the same blobs,
-      # then the transport layers, with nothing else in them.
+      # then the transport layers, with nothing else in them. No file may be
+      # in two layers.
       - name: Check the layers of both variants
+        timeout-minutes: 10
         run: |
           set -euo pipefail
           {
             echo '```'
-            node scripts/runner-image-layout.mjs check-layers \
+            node scripts/runner-image-oci.mjs check-layers \
               --slim "$RUNNER_TEMP/runner-image/slim.oci.tar" \
               --full "$RUNNER_TEMP/runner-image/full.oci.tar"
             echo '```'
@@ -246,7 +267,9 @@ jobs:
 
       # On the slim tree: the daemon is in a layer both variants share, so
       # one run covers both, and the slim tree is the smaller one to load.
+      # This command has one export, a few small files.
       - name: Run the daemon on every consumer base image
+        timeout-minutes: 20
         run: |
           docker buildx build \
             --file docker/runner-image/Dockerfile.smoke \

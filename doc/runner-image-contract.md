@@ -65,13 +65,13 @@ blobs, then layers 3 and 4, which hold transport content and nothing else.
 Layers 1 and 3 have the same bytes in every build with the same dependency
 files, so a new image shares them with the one before it. A large file under
 the pack's `dist` is the Runner's own output: it and its archive are in
-layers 2 and 4.
+layers 2 and 4. An archive is named by its file's place in the receipt, which
+lists the dependency files first, so their names do not depend on `dist`.
 
 ## Identity
 
-The full image is named `inputs-<digest>` and the slim image
-`inputs-<digest>-slim`: one digest, of which the variant is no part.
-`scripts/runner-image-identity.mjs` computes it from:
+Both variants are named by one digest, `inputs-<digest>`: the variant is not
+part of the identity. `scripts/runner-image-identity.mjs` computes it from:
 
 - every file under the paths the build copies from the build context
   (`RUNNER_IMAGE_CONTEXT_INPUTS`, which include `pnpm-lock.yaml`): path,
@@ -97,8 +97,14 @@ pull-request runs resolve it first. For a local build, run
 
 ## Checks
 
+CI builds each variant as an OCI archive and nothing else.
+`node scripts/runner-image-oci.mjs unpack <oci archive> --out <tree>` writes
+the tree of an image from its layers, so the tree CI checks is the bytes of
+the image. It refuses a whiteout, an absolute or `..` path, a path written
+twice and an entry behind a link.
+
 `node scripts/runner-image-layout.mjs check <tree> --variant slim|full` runs
-in the build and again on each exported tree. The variant has no default: a
+in the build and again on each unpacked tree. The variant has no default: a
 slim tree with the transport paths fails, and so does a full tree without
 them. The check fails unless:
 
@@ -110,14 +116,14 @@ them. The check fails unless:
   image's revision and platform;
 - the pack names the inputs digest in a publication build and in no other.
   `--expect-inputs-digest` fails on any other build;
-- in a full image, every transport archive matches its receipt, and the archives
-  extract to the pack. The check extracts them as a sandbox does (GNU tar
+- in a full image, every transport archive matches its receipt, and the
+  archives extract to the pack. The check extracts them as a sandbox does (GNU tar
   with the options in `provider-pack-layers.ts`) and compares paths, content,
   link targets and all twelve permission bits, after the `a+rX` grant the
   build makes once the archives are written.
 
-`check-layers --slim <oci archive> --full <oci archive>` checks "Layers" on
-the two images as `docker buildx build --output type=oci` writes them.
+`node scripts/runner-image-oci.mjs check-layers --slim <oci archive> --full <oci archive>`
+checks "Layers" on the two archives, and that no file is in two layers.
 
 The build also runs `paperclip-runnerd --build-metadata` on every base image
 in `docker/runner-image/Dockerfile.smoke`. Add a base there before a consumer

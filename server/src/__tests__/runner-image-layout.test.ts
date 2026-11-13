@@ -16,7 +16,7 @@ import {
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { gzipSync, zstdCompressSync } from "node:zlib";
+import { zstdCompressSync } from "node:zlib";
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
 import {
   BUILD_INPUTS_SCHEMA,
@@ -29,12 +29,10 @@ import {
   PROVIDER_PACK_ARCHIVE_SCHEMA,
   PROVIDER_PACK_SCHEMA,
   RUNNER_IMAGE_INPUTS_SCHEMA,
-  RUNNER_IMAGE_LAYERS,
   RUNNER_IMAGE_PATHS,
   RUNNER_IMAGE_SCHEMA,
   canonicalJson,
   checkProviderPackArchives,
-  checkRunnerImageLayers,
   checkRunnerImageLayout as checkLayout,
   parseLayoutArguments,
   writeRunnerImageManifest,
@@ -439,118 +437,6 @@ describe("Runner image layout contract", () => {
     });
   });
 
-  describe("image layers", () => {
-    // What `docker buildx build --output type=oci` writes for one platform,
-    // with the given entries in each layer.
-    function ociArchive(layers: Record<string, string>[]) {
-      const root = path.join(scratch, String(sequence += 1));
-      const layout = path.join(root, "layout");
-      mkdirSync(path.join(layout, "blobs/sha256"), { recursive: true });
-      const blob = (bytes: Buffer) => {
-        const digest = sha256(bytes);
-        writeFileSync(path.join(layout, "blobs/sha256", digest), bytes);
-        return { digest: `sha256:${digest}`, size: bytes.length };
-      };
-      const descriptors = layers.map((entries, position) => {
-        const directory = path.join(root, `layer-${position}`);
-        mkdirSync(directory, { recursive: true });
-        for (const [relative, content] of Object.entries(entries)) write(directory, relative, content);
-        // Fixed timestamps: two archives with the same entries share the blob.
-        spawnSync("find", [directory, "-exec", "touch", "-h", "-t", "200001010000", "{}", "+"]);
-        const tarball = spawnSync("tar", ["-cf", "-", "-C", directory, "."], { maxBuffer: 16 * 1024 * 1024 });
-        expect(tarball.status).toBe(0);
-        return { mediaType: "application/vnd.oci.image.layer.v1.tar+gzip", ...blob(gzipSync(tarball.stdout)) };
-      });
-      const manifest = blob(Buffer.from(JSON.stringify({ schemaVersion: 2, config: blob(Buffer.from("{}")), layers: descriptors })));
-      write(layout, "index.json", JSON.stringify({ schemaVersion: 2, manifests: [{ mediaType: "application/vnd.oci.image.manifest.v1+json", ...manifest }] }));
-      write(layout, "oci-layout", '{"imageLayoutVersion":"1.0.0"}');
-      const archive = path.join(root, "image.oci.tar");
-      expect(spawnSync("tar", ["-cf", archive, "-C", layout, "."]).status).toBe(0);
-      return archive;
-    }
-    // Archive N is file N of the receipt. File 0 is the Runner's own output.
-    const receipt = JSON.stringify({ files: [{ path: "dist/cli/sidecar.cjs" }, { path: "node_modules/big/big.bin" }, { path: "node_modules/node/bin/node" }] });
-    const large = { "provider-pack/node_modules/node/bin/node": "node", "provider-pack/node_modules/big/big.bin": "big" };
-    const rest = {
-      "runner-image.json": "{}", "paperclip-runnerd": "elf", "pnpm-lock.yaml": "lock",
-      "provider-pack/provider-pack.json": "{}", "provider-pack/dist/cli/sidecar.cjs": "sidecar",
-    };
-    const stable = { "provider-pack.archives/1.tar.zst": "1", "provider-pack.archives/2.tar.zst": "2" };
-    const changing = { "provider-pack.archives/0.tar.zst": "0", "provider-pack.archives/overlay.tar.zst": "overlay", "provider-pack.archive.json": receipt };
-    const problemsOf = (archives: { slim?: Record<string, string>[]; full?: Record<string, string>[] }) => checkRunnerImageLayers({
-      slim: archives.slim ? ociArchive(archives.slim) : null, full: archives.full ? ociArchive(archives.full) : null,
-    }).problems.join("\n");
-
-    it("accepts a full image that is the slim image plus the two transport layers", () => {
-      const result = checkRunnerImageLayers({ slim: ociArchive([large, rest]), full: ociArchive([large, rest, stable, changing]) });
-      expect(result.problems).toEqual([]);
-      expect(result.layers.slim.map((layer) => layer.role)).toEqual(RUNNER_IMAGE_LAYERS.slim);
-      expect(result.layers.full.map((layer) => layer.role)).toEqual(RUNNER_IMAGE_LAYERS.full);
-      expect(RUNNER_IMAGE_LAYERS.full.slice(0, 2)).toEqual(RUNNER_IMAGE_LAYERS.slim);
-      // The same blobs, not only the same files.
-      expect(result.layers.full.slice(0, 2).map((layer) => layer.digest)).toEqual(result.layers.slim.map((layer) => layer.digest));
-    });
-
-    it("checks one variant alone, and needs at least one", () => {
-      expect(problemsOf({ slim: [large, rest] })).toBe("");
-      expect(problemsOf({ full: [large, rest, stable, changing] })).toBe("");
-      expect(() => checkRunnerImageLayers({})).toThrow(/needs --slim, --full or both/);
-    });
-
-    it.each<[string, { slim?: Record<string, string>[]; full?: Record<string, string>[] }, RegExp]>([
-      ["a full image whose shared layers are not the slim image's blobs",
-        { slim: [large, rest], full: [large, { ...rest, "paperclip-runnerd": "another build" }, stable, changing] },
-        /the full image does not start with the layers of the slim image/],
-      ["a full image with the slim layers in another order",
-        { slim: [large, rest], full: [rest, large, stable, changing] }, /the full image does not start with the layers of the slim image/],
-      ["a slim image with the transport layers", { slim: [large, rest, stable, changing] }, /the slim image has 4 layers, not 2/],
-      ["a slim image that holds a transport archive", { slim: [large, { ...rest, "provider-pack.archives/1.tar.zst": "1" }] },
-        /slim: transport content is in the layers both variants share \(2\): provider-pack\.archives, provider-pack\.archives\/1\.tar\.zst/],
-      ["a full image in a single layer", { full: [{ ...large, ...rest, ...stable, ...changing }] }, /the full image has 1 layers, not 4/],
-      ["the receipt in a shared layer", { full: [large, { ...rest, "provider-pack.archive.json": receipt }, stable, changing] },
-        /full: transport content is in the layers both variants share/],
-      ["a file outside the pack in the first layer", { full: [{ ...large, "paperclip-runnerd": "elf" }, rest, stable, changing] },
-        /full: the first layer holds entries outside the pack's dependency files/],
-      ["the Runner's own large output in the first layer", { full: [{ ...large, "provider-pack/dist/cli/sidecar.cjs": "sidecar" }, rest, stable, changing] },
-        /full: the first layer holds entries outside the pack's dependency files/],
-      ["a large dependency file left in the layer that changes with every build",
-        { full: [{ "provider-pack/node_modules/node/bin/node": "node" }, { ...rest, "provider-pack/node_modules/big/big.bin": "big" }, stable, changing] },
-        /full: the first layer lacks \(1\): provider-pack\/node_modules\/big\/big\.bin/],
-      ["the overlay archive in the stable transport layer",
-        { full: [large, rest, { ...stable, "provider-pack.archives/overlay.tar.zst": "overlay" }, changing] },
-        /full: the third layer holds something other than transport archives/],
-      ["a pack file in the last layer", { full: [large, rest, stable, { ...changing, "provider-pack/provider-pack.json": "{}" }] },
-        /full: the last layer holds something other than transport content/],
-      ["a stable archive in the layer that changes with every build",
-        { full: [large, rest, { "provider-pack.archives/1.tar.zst": "1" }, { ...changing, "provider-pack.archives/2.tar.zst": "2" }] },
-        /full: the third layer lacks \(1\): provider-pack\.archives\/2\.tar\.zst/],
-      ["the archive of the Runner's own output in the stable layer",
-        { full: [large, rest, { ...stable, "provider-pack.archives/0.tar.zst": "0" }, { "provider-pack.archives/overlay.tar.zst": "overlay", "provider-pack.archive.json": receipt }] },
-        /full: the third layer holds, against the receipt, \(1\): provider-pack\.archives\/0\.tar\.zst/],
-      ["an archive the receipt does not list", { full: [large, rest, { ...stable, "provider-pack.archives/3.tar.zst": "3" }, changing] },
-        /full: the third layer holds, against the receipt, \(1\): provider-pack\.archives\/3\.tar\.zst/],
-      ["no receipt in the last layer",
-        { full: [large, rest, stable, { "provider-pack.archives/0.tar.zst": "0", "provider-pack.archives/overlay.tar.zst": "overlay" }] },
-        /full: the last layer lacks \(1\): provider-pack\.archive\.json/],
-    ])("refuses %s", (_label, archives, expected) => {
-      expect(problemsOf(archives)).toMatch(expected);
-    });
-
-    it("is a command that prints the layer table of each variant", () => {
-      const run = (...args: string[]) => spawnSync(process.execPath, [layoutScript, "check-layers", ...args], { encoding: "utf8" });
-      const slim = ociArchive([large, rest]);
-      const passed = run("--slim", slim, "--full", ociArchive([large, rest, stable, changing]));
-      expect(passed.status).toBe(0);
-      expect(passed.stdout).toMatch(/slim layer 2: sha256:[0-9a-f]{64} +\d+ bytes +\d+ entries +everything else/);
-      expect(passed.stdout).toMatch(/full layer 4: sha256:[0-9a-f]{64} +\d+ bytes +\d+ entries +the other transport archives, the overlay archive and the receipt/);
-      const failed = run("--slim", slim, "--full", ociArchive([large, rest, stable]));
-      expect(failed.status).toBe(1);
-      expect(failed.stderr).toMatch(/the full image has 3 layers, not 4/);
-      expect(run().stderr).toMatch(/needs --slim, --full or both/);
-      expect(run(slim).stderr).toMatch(/takes no positional argument/);
-    });
-  });
-
   describe("transport archive round trip", () => {
     // The archives' bytes can match the receipt while the archives do not
     // hold the pack. Only extracting them, the way a sandbox does, shows it.
@@ -848,8 +734,9 @@ describe("Runner image layout contract", () => {
       expect(() => parseLayoutArguments("write", ["--out", "o", "--source-revision", ""])).toThrow(/--source-revision needs a value/);
       expect(parseLayoutArguments("write", ["--out", "o", "--publication"]).flags).toEqual({ out: "o", publication: true });
       expect(() => parseLayoutArguments("check", ["tree", "--publication"])).toThrow(/check does not take --publication/);
-      expect(parseLayoutArguments("check-layers", ["--slim", "a.tar", "--full", "b.tar"]).flags).toEqual({ slim: "a.tar", full: "b.tar" });
-      expect(() => parseLayoutArguments("check-layers", ["--variant", "slim"])).toThrow(/check-layers does not take --variant/);
+      // Another script can give the same parser its own flags.
+      expect(parseLayoutArguments("unpack", ["a.tar", "--out", "d"], { out: "value" })).toEqual({ positional: ["a.tar"], flags: { out: "d" } });
+      expect(() => parseLayoutArguments("unpack", ["--variant", "slim"], { out: "value" })).toThrow(/unpack does not take --variant/);
       expect(() => parseLayoutArguments("write", ["--expect-architecture", "arm64"])).toThrow(/write does not take/);
     });
   });
