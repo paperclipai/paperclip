@@ -383,8 +383,6 @@ export function classifyClaudeTerminalSessionFailure(
   // a provider signal, including its generic fallback, not a tool permission
   // error inferred from text. Keep it on the existing sign-in recovery path.
   if (failure.category === "access") {
-    // An HTML edge page or a 403 without a genuine credential body is a
-    // transient edge rejection, even when the provider labels it access.
     const text = [failure.title, failure.details].filter(Boolean).join("\n");
     if (detectClaudeEdgeFailure({ parsed: null, stdout: "", stderr: text })) {
       const retryNotBefore = extractClaudeRetryAfter({ stderr: text }, now)?.toISOString();
@@ -447,7 +445,6 @@ const CLAUDE_AUTH_REQUIRED_ERROR_CODE = "claude_auth_required";
  * prompt. Provider diagnostics stay intact; the generic terminal-access
  * fallback instead explains that Claude needs sign-in.
  */
-/** Keep only the short, sanitised edge evidence; never the provider page. */
 function scrubClaudeAcpEdgeFailure(
   result: AdapterExecutionResult,
   evidence: ClaudeEdgeFailureEvidence,
@@ -478,8 +475,6 @@ export function mapClaudeAcpAuthErrorCode(
   now = new Date(),
 ): AdapterExecutionResult {
   if (result.errorCode === CLAUDE_EDGE_REJECTED_ERROR_CODE) {
-    // Classified from the typed terminal failure. Its title and details can
-    // still carry the edge page, so replace them with the short evidence.
     const resultJson = result.resultJson ?? null;
     const terminal = resultJson && typeof resultJson.terminalSessionFailure === "object"
       ? resultJson.terminalSessionFailure as { title?: unknown; details?: unknown } | null
@@ -491,8 +486,6 @@ export function mapClaudeAcpAuthErrorCode(
     return edgeFailure ? scrubClaudeAcpEdgeFailure(result, edgeFailure) : result;
   }
   if (result.errorCode !== ACPX_AUTH_REQUIRED_ERROR_CODE) return result;
-  // The shared engine labels any thrown "auth" text as auth required. An edge
-  // rejection wrapped in "Failed to authenticate" is not a credential failure.
   const edgeFailure = result.errorMessage
     ? detectClaudeEdgeFailure({ parsed: null, stdout: "", stderr: result.errorMessage })
     : null;
