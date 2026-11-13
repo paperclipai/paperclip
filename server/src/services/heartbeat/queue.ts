@@ -15,7 +15,7 @@ import { notifyExecutionRunWork } from "../execution-control-notifications.js";
 import { PersistedExecutionWaitRefusal, writeDeferredExecutionWait } from "../deferred-execution-wait.js";
 import { assignmentWakePayloadSql, isAssignmentWakePayload, notifyDeferredExecutionWork } from "../deferred-execution-notifications.js";
 import type { DeferredReceiptRecoveryOptions } from "../deferred-execution-notifications.js";
-import { notifyRunDispatch } from "../run-dispatch-notifications.js";
+import { notifyQueuedRunDispatch, notifyRunDispatch } from "../run-dispatch-notifications.js";
 import { notifyStatusCardIssueChange } from "../status-card-notifications.js";
 import { notifyRoutineExecutionStatus } from "../routine-execution-status-notifications.js";
 import { DELIVERY_QUEUES, notifyDeliveryWork } from "../delivery-work-notifications.js";
@@ -200,6 +200,7 @@ import type { createHeartbeatRunState } from "./run-state.js";
 import type { createHeartbeatRunPreparation } from "./run-preparation.js";
 import type { HeartbeatRetryDependencies } from "./retries.js";
 import type { HeartbeatRecoveryDependencies, createHeartbeatRecovery } from "./recovery.js";
+import { HEARTBEAT_RUN_TERMINAL_STATUSES } from "./recovery.js";
 import { executeIssuePostCommitActions, type IssuePostCommitAction, type issueService } from "../issues.js";
 import type { issueTreeControlService } from "../issue-tree-control.js";
 import type { budgetService } from "../budgets.js";
@@ -417,6 +418,21 @@ class RunAdmissionClosedDuringClaim extends Error {}
 
 const unsavedWakeAdmissions = new Set<object>();
 export function unsavedWakeAdmissionCount() { return unsavedWakeAdmissions.size; }
+
+export async function notifyOtherAgentsQueuedOnSettledIssue(db: Db, run: Pick<typeof heartbeatRuns.$inferSelect,
+  "companyId" | "agentId" | "runtimeMode" | "contextSnapshot">): Promise<boolean> {
+  const issueId = readNonEmptyString(parseObject(run.contextSnapshot).issueId);
+  if (run.runtimeMode !== "native" || !issueId) return false;
+  const [waiting] = await db.select({ id: heartbeatRuns.id }).from(heartbeatRuns).where(and(
+    eq(heartbeatRuns.companyId, run.companyId),
+    eq(heartbeatRuns.status, "queued"),
+    ne(heartbeatRuns.agentId, run.agentId),
+    sql`${heartbeatRuns.contextSnapshot}->>'issueId' = ${issueId}`,
+  )).limit(1);
+  if (!waiting) return false;
+  await db.transaction(tx => notifyQueuedRunDispatch(tx, { companyId: run.companyId }));
+  return true;
+}
 
 export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDependencies) {
   const {
@@ -1171,7 +1187,7 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
         .from(heartbeatRuns)
         .where(and(
           eq(heartbeatRuns.companyId, run.companyId),
-          eq(heartbeatRuns.agentId, run.agentId),
+          or(eq(heartbeatRuns.agentId, run.agentId), inArray(heartbeatRuns.status, [...HEARTBEAT_RUN_TERMINAL_STATUSES])),
           eq(heartbeatRuns.runtimeMode, "native"),
           inArray(heartbeatRuns.id, [...activeRunExecutions]),
           sql`${heartbeatRuns.contextSnapshot}->>'issueId' = ${issueId}`,
@@ -2344,10 +2360,18 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
         eq(agentWakeupRequests.requestedByActorType, "user")))
       : [];
     const userRequestIds = new Set(userRequests.map(row => row.id));
+    const joinedUserRequests = queuedRuns.length > 1
+      ? await db.select({ runId: agentWakeupRequests.runId }).from(agentWakeupRequests).where(and(
+        eq(agentWakeupRequests.companyId, agent.companyId), inArray(agentWakeupRequests.runId, queuedRuns.map(run => run.id)),
+        eq(agentWakeupRequests.agentId, agent.id), eq(agentWakeupRequests.requestedByActorType, "user")))
+      : [];
+    const userRunIds = new Set(joinedUserRequests.flatMap(row => row.runId ? [row.runId] : []));
+    const requestedByUser = (run: typeof heartbeatRuns.$inferSelect) =>
+      userRunIds.has(run.id) || Boolean(run.wakeupRequestId && userRequestIds.has(run.wakeupRequestId));
     const sourceRunIdOf = (run: typeof heartbeatRuns.$inferSelect) =>
       readNonEmptyString(parseObject(run.contextSnapshot).previousRunId) ?? run.retryOfRunId ?? null;
     const recoveryRuns = queuedRuns.filter(run => isSystemRecoveryRun({ wakeReason: wakeReasonOf(run),
-      requestedByUser: Boolean(run.wakeupRequestId && userRequestIds.has(run.wakeupRequestId)) }));
+      requestedByUser: requestedByUser(run) }));
     const sourceRunIds = [...new Set(recoveryRuns.flatMap(run => sourceRunIdOf(run) ?? []))];
     const sourceRows = queuedRuns.length > 1 && sourceRunIds.length
       ? await db.select({ id: heartbeatRuns.id, finishedAt: heartbeatRuns.finishedAt }).from(heartbeatRuns)
@@ -2376,7 +2400,7 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
         id: run.id,
         createdAt: run.createdAt,
         wakeReason: wakeReasonOf(run),
-        requestedByUser: Boolean(run.wakeupRequestId && userRequestIds.has(run.wakeupRequestId)),
+        requestedByUser: requestedByUser(run),
         sourceEndedAt: sourceRunId ? sourceEndedAt.get(sourceRunId) ?? null : null,
         readinessRank: issueId ? (ready ? (issue?.status === "in_progress" ? 0 : 1) : 3) : 2,
         priorityRank: issueRunPriorityRank(issue?.priority),

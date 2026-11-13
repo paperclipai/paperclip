@@ -1091,6 +1091,14 @@ gh api -X POST repos/paperclipai/paperclip/actions/runs/<run>/pending_deployment
 The digest is in the "Publish verified Daytona image" job log (`pushing manifest
 for …@sha256:…`), or check out the image's `org.opencontainers.image.revision`.
 
+The harness also requires the image's provider pack to be the one a named
+commit built: the commit in the image's `io.paperclip.runner.source-revision`
+label, or, when the image has no such label, the image's own
+`org.opencontainers.image.revision`. An image that copied its Runner names
+the commit that built it in that label; an image that built its own Runner
+has none. An empty label counts as absent, because an image can empty a label
+of its base but cannot drop it.
+
 **Setup** reuses runner-e2e: the bundled Daytona plugin (`installFixtureDaytonaProvider`,
 prepared outside the root workspace as CI does), the `daytona` environment
 fixture from `catalog.ts`, and the native Codex platform-qualification probe.
@@ -1517,6 +1525,14 @@ most `--mix-hold-minutes` (default 10), and it goes out before the last 15% of t
 tried again on the next poll with the same `clientRequestId`. The overlap window comes from `setOverlapProbe` in
 `staging-mix.ts`, which a swap driver registers. Without a probe, the window is any time a fault is in progress and the
 server still answers (a K15 overlap). The timeline records `staging_mix_follow_up`.
+
+To aim a follow-up at the warm session's idle close instead, set `RESTART_CHAOS_MIX_FOLLOW_UP_AFTER_END_MS=<min>-<max>`
+(for example `298000-306000` for the 300 s idle timeout). The harness then posts the follow-up that long after the
+task's last run ended, `RESTART_CHAOS_MIX_FOLLOW_UP_COUNT` times (default 2), and waits for every post before the task
+counts as finished. A failed post is tried again with the same `clientRequestId`. The task budget grows by one
+maximum delay plus one turn per post. The grade check `after_end_follow_ups_served` needs every post, an agent comment
+after each post and the `FOLLOWUP-<nonce>` ledger line. The timeline records `staging_mix_follow_up_after_end` with the
+measured delay.
 
 **Retries: hands-off first.** By default the harness never clicks Retry during the wave or the settle, so the product's
 own continuation is what gets measured. A task that shows a Retry banner is kept under watch, not rested. Every banner

@@ -1,5 +1,5 @@
 {
-  "id": "743e83b4-a224-457c-80a2-3344438ccd29",
+  "id": "82dcdc57-0796-4162-9451-8ea08a72199e",
   "prevId": "ee1f1f66-0cbe-4b18-b364-5e96708a1f0b",
   "version": "7",
   "dialect": "postgresql",
@@ -3951,6 +3951,28 @@
           ],
           "isUnique": false,
           "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "agent_wakeup_requests_company_run_idx": {
+          "name": "agent_wakeup_requests_company_run_idx",
+          "columns": [
+            {
+              "expression": "company_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "run_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "where": "\"agent_wakeup_requests\".\"run_id\" IS NOT NULL",
+          "concurrently": true,
           "method": "btree",
           "with": {}
         },
@@ -57542,12 +57564,6 @@
           "primaryKey": false,
           "notNull": false
         },
-        "icons": {
-          "name": "icons",
-          "type": "jsonb",
-          "primaryKey": false,
-          "notNull": false
-        },
         "risk_level": {
           "name": "risk_level",
           "type": "text",
@@ -59768,18 +59784,6 @@
           "type": "jsonb",
           "primaryKey": false,
           "notNull": true
-        },
-        "model_context": {
-          "name": "model_context",
-          "type": "jsonb",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "model_context_updated_at": {
-          "name": "model_context_updated_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": false
         },
         "created_at": {
           "name": "created_at",

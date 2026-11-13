@@ -95,6 +95,23 @@ export interface HeartbeatExecutionConfigurationInput {
   onIdentityRedactorPrepared: (redactor: ReturnType<typeof createAgentIdentityRedactor>) => void;
 }
 
+export function buildHeartbeatWorkspaceConfiguration(
+  sourceWorkspaceConfig: Record<string, unknown>,
+  { useIsolatedTaskDirectory, explicitTaskDirectory, requestedExecutionWorkspaceMode }: HeartbeatExecutionConfigurationInput["policy"],
+  selectedEnvironmentId: string | null,
+) {
+  const forceDirectoryStrategy = useIsolatedTaskDirectory || (explicitTaskDirectory && (
+    requestedExecutionWorkspaceMode === "agent_default" || Object.keys(parseObject(sourceWorkspaceConfig.workspaceStrategy)).length > 0
+  ));
+  const mergedConfig: Record<string, unknown> = {
+    ...sourceWorkspaceConfig,
+    // The base below is already task-owned. Keep directory transport while
+    // preserving isolated mode and the mandatory sandbox preflight.
+    ...(forceDirectoryStrategy ? { workspaceStrategy: { type: "project_primary" } } : {}),
+  };
+  return { mergedConfig, configSnapshot: buildExecutionWorkspaceConfigSnapshot(mergedConfig, selectedEnvironmentId) };
+}
+
 /** Assembles effective run configuration; the executor retains cleanup ownership. */
 export async function prepareHeartbeatExecutionConfiguration(db: Db, input: HeartbeatExecutionConfigurationInput) {
   const { run, agent, onFailureSecretsResolved, onManagedAiRuntimeAcquired, onIdentityRedactorPrepared } = input;
@@ -138,22 +155,10 @@ export async function prepareHeartbeatExecutionConfiguration(db: Db, input: Hear
   // preparation step can fail. Subsequent provider/identity values extend it.
   onFailureSecretsResolved(() => []);
   const aiBinding = preconfiguredHome ? undefined : input.config.aiBinding;
-  const { trustPreset, useIsolatedTaskDirectory, explicitTaskDirectory, requestedExecutionWorkspaceMode } = input.policy;
+  const { trustPreset } = input.policy;
   const { secretsSvc, companySkills, appendRunEvent, finalizeAiConnectionBusyDeferral } = input.services;
   let managedAiRuntime: ManagedAiRuntime | undefined;
-  const forceDirectoryStrategy = useIsolatedTaskDirectory || (explicitTaskDirectory && (
-    requestedExecutionWorkspaceMode === "agent_default" || Object.keys(parseObject(sourceWorkspaceConfig.workspaceStrategy)).length > 0
-  ));
-  const mergedConfig = {
-    ...sourceWorkspaceConfig,
-    // The base below is already task-owned. Keep directory transport while
-    // preserving isolated mode and the mandatory sandbox preflight.
-    ...(forceDirectoryStrategy ? { workspaceStrategy: { type: "project_primary" } } : {}),
-  };
-  const configSnapshot = buildExecutionWorkspaceConfigSnapshot(
-    mergedConfig,
-    selectedEnvironmentId,
-  );
+  const { mergedConfig, configSnapshot } = buildHeartbeatWorkspaceConfiguration(sourceWorkspaceConfig, input.policy, selectedEnvironmentId);
   const executionRunConfig =
     stripWorkspaceRuntimeFromExecutionRunConfig(mergedConfig);
   const skillActor: AuthorizationActor = { type: "agent", agentId: agent.id, companyId: agent.companyId,

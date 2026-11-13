@@ -1,3 +1,7 @@
+import { JsonRpcCallError, PLUGIN_RPC_ERROR_CODES, PluginWorkspaceOperationError, workspaceOperationErrorData } from "@paperclipai/plugin-sdk";
+import * as nativeRuntimeMode from "../services/native-runtime/runtime-mode.js";
+import * as aiRuntime from "../services/ai-connection-runtime.js";
+import { aiConnectionService } from "../services/ai-connections.js";
 import { randomUUID } from "node:crypto";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -5,7 +9,7 @@ import { join } from "node:path";
 import { eq } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { agents, agentTaskSessions, authUsers, companies, companyMemberships, createDb, executionWorkspaces, environments, heartbeatRuns, issues, plugins, projects } from "@paperclipai/db";
-import { registerServerAdapter, unregisterServerAdapter, type AdapterExecutionContext } from "../adapters/index.js";
+import { getServerAdapter, registerServerAdapter, unregisterServerAdapter, type AdapterExecutionContext } from "../adapters/index.js";
 import { heartbeatService } from "../services/heartbeat.js";
 import { instanceSettingsService } from "../services/instance-settings.js";
 import { requestTaskRetry } from "../services/task-retry.js";
@@ -118,7 +122,8 @@ describePostgres("heartbeat session preparation through adapter dispatch", () =>
     { settings: { mode: "isolated_workspace" }, retry: false },
     { settings: { workspaceStrategy: { type: "git_worktree", branchTemplate: "work" } }, retry: false },
     { settings: null, retry: true },
-  ])("keeps a default-attached repository policy stable through binding ($settings, Retry: $retry)", async ({ settings, retry }) => {
+    { settings: null, retry: true, refuse: true },
+  ])("keeps a default-attached repository policy stable through binding ($settings, Retry: $retry, refusal: $refuse)", async ({ settings, retry, refuse }) => {
     const f = await seed();
     const storage = await createPluginWorkspaceFixture(db, f.companyId);
     const [plugin] = await db.select().from(plugins).where(eq(plugins.id, storage.pluginId));
@@ -126,9 +131,11 @@ describePostgres("heartbeat session preparation through adapter dispatch", () =>
       config: { pluginKey: plugin.pluginKey, driverKey: "tasks", driverConfig: {} } }).returning();
     await db.update(plugins).set({ manifestJson: { ...plugin.manifestJson,
       capabilities: [...plugin.manifestJson.capabilities, "environment.drivers.register"],
-      environmentDrivers: [{ driverKey: "tasks", displayName: "Tasks", supportsTasks: true, configSchema: { type: "object" } }],
+      environmentDrivers: [{ driverKey: "tasks", displayName: "Tasks", supportsTasks: true, configSchema: { type: "object" },
+        ...(refuse ? { freshWorkspaceVersion: 1 as const } : {}) }],
       workspaceProvider: { ...plugin.manifestJson.workspaceProvider!, defaultForProjects: { mode: "isolated_workspace", strategy: "git_worktree" },
-        ...(retry ? { workspaceVerificationVersion: 1 as const } : {}) },
+        ...(retry ? { workspaceVerificationVersion: 1 as const } : {}),
+        ...(refuse ? { freshWorkspaceVersion: 1 as const } : {}) },
     } }).where(eq(plugins.id, storage.pluginId));
     await db.update(agents).set({ defaultEnvironmentId: environment.id }).where(eq(agents.id, f.agentId));
     await db.update(projects).set({ executionWorkspacePolicy: { enabled: true, storageProviderPluginId: storage.pluginId } }).where(eq(projects.id, storage.input.projectId));
@@ -151,12 +158,37 @@ describePostgres("heartbeat session preparation through adapter dispatch", () =>
           workspaceRealization: {}, executionTarget: null, remoteExecution: null };
       },
     }));
+    const mode = refuse ? vi.spyOn(nativeRuntimeMode, "resolveHeartbeatNativeRuntimeMode").mockReturnValue({
+      kind: "legacy", reason: "persisted_legacy_selection", resolverVersion: nativeRuntimeMode.NATIVE_RUNTIME_PROFILE_RESOLVER_VERSION,
+    }) : undefined;
+    const credentialAcquisition = vi.spyOn(aiRuntime, "prepareManagedAiRuntime");
+    if (refuse) {
+      const account = await aiConnectionService(db).save(f.companyId, f.userId, {
+        provider: "openai", method: "api_key", ownership: "personal", name: "Retry fixture",
+        apiKey: "fixture-key", agentIds: [], allAgents: true,
+      }, "fixture-key");
+      await db.update(agents).set({ adapterType: "paperclip_runner",
+        adapterConfig: { provider: "codex", model: "model-a" },
+        runtimeConfig: { aiConnection: { provider: "openai", method: "api_key", mode: "delegated",
+          connectionId: account.connectionId, grantId: account.grantId } },
+      }).where(eq(agents.id, f.agentId));
+      registerServerAdapter({ ...getServerAdapter(adapterType), type: "paperclip_runner" });
+    }
     const originalHeartbeat = heartbeat;
     const storageWorkers = {
       ...storage.workers,
       call: async (...args: Parameters<typeof storage.workers.call>) => {
         const result = await storage.workers.call(...args) as Record<string, unknown>;
-        return storage.calls.at(-1)?.operation.verifyExisting ? { ...result, created: false } : result;
+        const request = storage.calls.at(-1)!;
+        if (request.operation.verifyExisting) {
+          if (refuse) throw new JsonRpcCallError({
+            code: PLUGIN_RPC_ERROR_CODES.WORKER_ERROR, message: "Checkout unavailable",
+            data: workspaceOperationErrorData(new PluginWorkspaceOperationError("binding_mismatch")),
+          });
+          return { ...result, created: false };
+        }
+        if (refuse && result.kind === "prepared" && request.operation.fresh) return { ...result, branchName: "work" };
+        return result;
       },
     };
     heartbeat = heartbeatService(db, { pluginWorkerManager: storageWorkers as PluginWorkerManager });
@@ -176,9 +208,26 @@ describePostgres("heartbeat session preparation through adapter dispatch", () =>
         const receipt = await requestTaskRetry({ db, companyId: f.companyId, issueId: f.issueId,
           actorId: f.userId, actorSource: "local_implicit", observedRunId: first.finished.id, idempotencyKey: randomUUID() });
         expect(receipt.accepted).toBe(true);
+        credentialAcquisition.mockClear();
         await heartbeat.resumeTaskRetry(f.companyId, receipt.requestId!);
         await heartbeat.drainActiveRunExecutions();
         const [resumed] = [...captured.values()].filter(input => input.context.issueId === f.issueId && input.runId !== first.finished.id);
+        if (refuse) {
+          expect(resumed?.runtime.sessionId).toBeNull();
+          const finished = await heartbeat.getRun(resumed.runId);
+          expect(finished?.status, finished?.error ?? undefined).toBe("succeeded");
+          expect(credentialAcquisition).toHaveBeenCalledTimes(1);
+          const [afterRetry] = await db.select().from(issues).where(eq(issues.id, f.issueId));
+          expect(afterRetry.executionWorkspaceId).not.toBe(workspace.id);
+          const [fresh] = await db.select().from(executionWorkspaces).where(eq(executionWorkspaces.id, afterRetry.executionWorkspaceId!));
+          expect(fresh).toMatchObject({ mode: "isolated_workspace", metadata: {
+            workspaceProviderFresh: { previousWorkspaceId: workspace.id, sourceRunId: first.finished.id },
+          } });
+          expect(storage.calls.filter(call => call.runId === resumed.runId && call.operation.kind === "prepare"))
+            .toMatchObject([{ executionWorkspaceId: workspace.id, operation: { verifyExisting: true } },
+              { executionWorkspaceId: fresh.id, operation: { fresh: { previousWorkspaceId: workspace.id } } }]);
+          return;
+        }
         expect(resumed?.context.paperclipWorkspace).toMatchObject({ branchName: workspace.branchName });
         expect(realizedBase.get(first.finished.id)).toBe("a".repeat(40));
         expect(realizedBase.get(resumed.runId)).toBe(realizedBase.get(first.finished.id));
@@ -210,6 +259,9 @@ describePostgres("heartbeat session preparation through adapter dispatch", () =>
       await heartbeat.drainActiveRunExecutions();
       heartbeat = originalHeartbeat;
       realization.mockRestore();
+      credentialAcquisition.mockRestore();
+      mode?.mockRestore();
+      if (refuse) unregisterServerAdapter("paperclip_runner");
       await rm(cwd, { recursive: true, force: true });
       await db.delete(plugins).where(eq(plugins.id, storage.pluginId));
       await instanceSettingsService(db).updateExperimental({ enableIsolatedWorkspaces: false, enableIsolatedWorkspacesByDefault: false });
