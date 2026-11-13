@@ -9,6 +9,7 @@ import {
   companies,
   heartbeatRuns,
   issueApprovals,
+  issueRecoveryActions,
   issueRelations,
   issueThreadInteractions,
   issues,
@@ -276,7 +277,17 @@ export function assignedWorkSweep(db: Db, deps: AssignedWorkDeps) {
     const companyBudget = company?.pauseReason === "budget" || company?.pauseReason === "budget_exceeded";
     const counts = (rows: Array<{ issueId: string | null; count: number }>) =>
       new Map(rows.filter(row => row.issueId).map(row => [row.issueId!, Number(row.count)]));
+    const pendingContinuations = await database.select({ issueId: issueRecoveryActions.sourceIssueId,
+      agentId: issueRecoveryActions.returnOwnerAgentId }).from(issueRecoveryActions).where(and(
+      eq(issueRecoveryActions.companyId, companyId), inArray(issueRecoveryActions.sourceIssueId, ids),
+      eq(issueRecoveryActions.status, "resolved"),
+      sql`${issueRecoveryActions.evidence}->>'continuationDelivery' = 'pending'`));
     const wakeCounts = counts(wakes);
+    for (const continuation of pendingContinuations) {
+      const issue = issueRows.find(row => row.id === continuation.issueId);
+      if (!issue || !continuation.agentId || issue.assigneeAgentId !== continuation.agentId) continue;
+      wakeCounts.set(continuation.issueId, (wakeCounts.get(continuation.issueId) ?? 0) + 1);
+    }
     const chatWakeIds = new Set(chatWakes.map(row => row.id));
     // A native restart-recovery claim that nobody renewed for NATIVE_STALL_MS
     // is not a pending path, and its still-running run is not live.

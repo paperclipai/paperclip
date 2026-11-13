@@ -11,7 +11,7 @@ import { checks, hasLink, type Entity } from "./internal-support.js";
 import { busyRuntimeWorker, releasedRetryListener, releaseRuntimeWorker, type RuntimeBriefGate } from "./runtime-busy-worker.js";
 import { faultOwnedNativeProcess, NATIVE_INFRASTRUCTURE_FAULT_CODES, type NativeFaultRun } from "./runtime-native-fault.js";
 import { runtimeDefinition, runtimeObservation, observeRuntime, type RuntimeAgent, type RuntimeObservation } from "./runtime-support.js";
-export const INFRASTRUCTURE_RECOVERY_ORACLE = "paperclip.chat-catalog.runtime.infrastructure-recovery.v6";
+export const INFRASTRUCTURE_RECOVERY_ORACLE = "paperclip.chat-catalog.runtime.infrastructure-recovery.v7";
 const objectRecord = (value: unknown): Record<string, unknown> => value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
 /**
  * The chat run read the source task's saved recovery record through a product
@@ -69,8 +69,9 @@ export function continuesFailedRun(run: Pick<HeartbeatRun, "id" | "companyId" | 
   return !!run && run.id !== failedRunId && run.companyId === companyId && run.agentId === agentId && run.retryOfRunId === failedRunId
     && [run.contextSnapshot?.issueId, run.contextSnapshot?.taskId].includes(issueId);
 }
+export const INFRASTRUCTURE_BRIEF_SOURCE = "The website brief comes from the brief export command below, which can take several minutes to return.";
 export async function nativeInfrastructureLoss(ctx: ChatCatalogContext) {
-  const state = await busyRuntimeWorker(ctx), task = state.task as Entity;
+  const state = await busyRuntimeWorker(ctx, { briefSource: INFRASTRUCTURE_BRIEF_SOURCE }), task = state.task as Entity;
   const faults: Array<{ runId: string; pid: number | null; errorCode: string | null }> = [];
   let previousPid: number | null = null;
   for (let attempt = 1; attempt <= 3; attempt++) {

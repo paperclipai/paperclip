@@ -208,6 +208,7 @@ import {
 } from "../lib/optimistic-issue-runs";
 import { useProjectOrder } from "../hooks/useProjectOrder";
 import { recordRecentTask } from "../lib/recent-tasks";
+import { modelStillUnavailableToast } from "../lib/model-retry-refusal";
 import {
   relativeTime,
   cn,
@@ -1687,8 +1688,9 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
         queryKey: queryKeys.issues.activeRun(issueQueryRef),
       });
     },
-    onError: (error) => {
-      pushToast({
+    onError: (error, runId) => {
+      const failedRun = resolvedLinkedRuns.find((run) => run.runId === runId);
+      pushToast(modelStillUnavailableToast(error, failedRun ? agentMap.get(failedRun.agentId) : undefined) ?? {
         title: "Run retry failed",
         body: error instanceof Error ? error.message : "Unable to retry run",
         tone: "error",

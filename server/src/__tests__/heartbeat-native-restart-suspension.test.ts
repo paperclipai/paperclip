@@ -37,7 +37,7 @@ import { currentControllerBootId, currentProcessSpaceHash } from "../services/co
 import { createOwnershipReportState, runOwnershipReconciliationPass, settleOwnableKind, type OwnershipReport } from "../services/recovery/ownership-invariant-report.js";
 import { createDeliveryWorkCoordinator } from "../services/delivery-work-coordinator.js";
 import { reconcileNativeFinalizations, registerOwnershipReconciliationWork } from "../services/native-runtime/native-finalization-reconciler.js";
-import { OWNABLE_KINDS } from "../services/recovery/ownership-registry.js";
+import { OWNABLE_KINDS, registerNativeRestartRecheck } from "../services/recovery/ownership-registry.js";
 import { currentProcessProbe, proveOwnerGone } from "../services/owner-proof.js";
 import { createRunLogWriterAuthority } from "../services/heartbeat/run-log-authority.js";
 import { resolveHotRestartIntentPath, writeHotRestartIntent } from "../services/hot-restart.js";
@@ -948,6 +948,82 @@ describeEmbeddedPostgres("heartbeat native recovery interrupted by graceful shut
       } finally { probe.restore(); unknown?.mockRestore(); }
     }, 60_000);
 
+    it("ends an unverifiable run on the first look once its controller's lease lapsed longer ago than the bound", async () => {
+      // A successor that boots (or first scans) minutes after the old server left
+      // must not restart the 2-minute wait from its own first observation.
+      const f = await seedClaim("CLAIM-SPACE-LAPSED-LONG-AGO", "expired", "foreign-process-space");
+      await f.db.update(nativeRunFinalizations).set({ leaseExpiresAt: new Date(Date.now() - 3 * 60_000) })
+        .where(eq(nativeRunFinalizations.runId, f.runId));
+      const probe = observeOwnerPid(), onClaim = vi.fn();
+      try {
+        const dispositions = await claimNativeRestartRecoveries({ db: f.db, restartKind: "hard", runIds: [f.runId], onClaim });
+        expect(dispositions).toEqual([{ kind: "blocked", runId: f.runId, reason: "controller_process_space_unverified" }]);
+        expect(probe.observed).toEqual([]);
+        expect(onClaim).not.toHaveBeenCalled();
+        expect((await f.db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.runId)))[0])
+          .toMatchObject({ status: "failed", errorCode: "native_restart_recovery_blocked" });
+      } finally { probe.restore(); }
+    }, 60_000);
+
+    it("ends at once a run whose controller boot is fenced, even with its 20-minute claim lease unexpired (N1)", async () => {
+      // N1 cell: old server SIGKILLed mid-overlap at 22:09:31; its boot was fenced at 22:13:02, and the
+      // run still waited a further 2 minutes from that first look. A fenced boot already outlived its lease.
+      const f = await seedClaim("CLAIM-SPACE-FENCED-BOOT", "live", "foreign-process-space");
+      const [owner] = await f.db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, f.runId));
+      await f.db.insert(controllerInstances).values({ bootId: owner!.controllerBootId!, processSpace: "foreign-process-space",
+        pid: priorPid, leaseExpiresAt: new Date(Date.now() - 3 * 60_000), fencedAt: new Date(Date.now() - 10_000) });
+      registerControllerInstanceDb(f.db);
+      const probe = observeOwnerPid();
+      try {
+        expect(await claimNativeRestartRecoveries({ db: f.db, restartKind: "hard", runIds: [f.runId], onClaim: vi.fn() }))
+          .toEqual([{ kind: "blocked", runId: f.runId, reason: "controller_process_space_unverified" }]);
+      } finally { probe.restore(); resetControllerInstanceLeaseForTests(); }
+    }, 60_000);
+
+    it("keeps waiting for a controller whose boot is still live, whatever the run's own lease says", async () => {
+      const f = await seedClaim("CLAIM-SPACE-LIVE-BOOT", "expired", "foreign-process-space");
+      const [owner] = await f.db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, f.runId));
+      await f.db.insert(controllerInstances).values({ bootId: owner!.controllerBootId!, processSpace: "foreign-process-space",
+        pid: priorPid, leaseExpiresAt: new Date(Date.now() + 60_000) });
+      registerControllerInstanceDb(f.db);
+      const probe = observeOwnerPid();
+      try {
+        expect(await claimNativeRestartRecoveries({ db: f.db, restartKind: "hard", runIds: [f.runId], onClaim: vi.fn() }))
+          .toMatchObject([{ kind: "awaiting_evidence", runId: f.runId }]);
+        expect((await f.db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.runId)))[0].status).toBe("running");
+      } finally { probe.restore(); resetControllerInstanceLeaseForTests(); }
+    }, 60_000);
+
+    it("never moves the owner's last sign of life when a successor records its wait (fence time unchanged)", async () => {
+      // N1: the successor's awaiting-evidence write bumped updated_at, which the prover reads as the dead
+      // owner's last write, and the fence slipped from about 2 minutes to 3.5 after the crash.
+      const f = await seedClaim("CLAIM-SPACE-OWNER-TOUCH", "expired", "foreign-process-space");
+      const ownerLastWrite = new Date(Date.now() - 5 * 60_000);
+      await f.db.update(nativeRunFinalizations).set({ leaseExpiresAt: new Date(Date.now() - 60_000), updatedAt: ownerLastWrite })
+        .where(eq(nativeRunFinalizations.runId, f.runId));
+      const probe = observeOwnerPid();
+      try {
+        expect(await claimNativeRestartRecoveries({ db: f.db, restartKind: "hard", runIds: [f.runId], onClaim: vi.fn() }))
+          .toMatchObject([{ kind: "awaiting_evidence", reason: "controller_process_space_unverified" }]);
+        const [after] = await f.db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, f.runId));
+        expect(after!.recoveryState).toBe("awaiting_evidence");
+        expect(after!.updatedAt.getTime()).toBe(ownerLastWrite.getTime());
+      } finally { probe.restore(); }
+    }, 60_000);
+
+    it("schedules the recheck for the end of the bound measured from the lease lapse", async () => {
+      const f = await seedClaim("CLAIM-SPACE-LAPSED-RECENTLY", "expired", "foreign-process-space");
+      const lapsedAt = Date.now() - 30_000;
+      await f.db.update(nativeRunFinalizations).set({ leaseExpiresAt: new Date(lapsedAt) }).where(eq(nativeRunFinalizations.runId, f.runId));
+      const probe = observeOwnerPid();
+      try {
+        const [disposition] = await claimNativeRestartRecoveries({ db: f.db, restartKind: "hard", runIds: [f.runId], onClaim: vi.fn() });
+        expect(disposition).toMatchObject({ kind: "awaiting_evidence", reason: "controller_process_space_unverified" });
+        const retryAt = (disposition as { retryAt: Date }).retryAt.getTime();
+        expect(Math.abs(retryAt - (lapsedAt + 2 * 60_000))).toBeLessThan(5_000);
+      } finally { probe.restore(); }
+    }, 60_000);
+
     it("keeps a real controller-only attestation from authorizing an in-flight claim", async () => {
       const f = await seedClaim("CLAIM-CONTROLLER-ONLY", "expired", "foreign-process-space");
       const [before] = await f.db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, f.runId));
@@ -1684,6 +1760,35 @@ describeEmbeddedPostgres("heartbeat native recovery interrupted by graceful shut
     // Settled records are no longer in progress, so rule I2 never fires.
     const second = await runOwnershipReconciliationPass(f.db, { kinds: acceptedRunKinds(f), state });
     expect(second.violations.filter(violation => violation.kind === "native_accepted_result_lease")).toEqual([]);
+  }, 60_000);
+
+  it("hands a run awaiting evidence to restart recovery once the reconciler proves its controller gone (crash mid-overlap)", async () => {
+    // A crashed old server's run was classified by the new server's startup pass while the
+    // old server lived, so no restart re-check was scheduled for it. Only the reconciler
+    // sees the controller die; it must hand the run to restart recovery on the live server.
+    const f = await seedRecoverableRun("AWAITING-CRASHED-CONTROLLER");
+    await f.db.update(nativeRunFinalizations).set({ recoveryState: "awaiting_evidence",
+      leaseOwner: `old-controller:${randomUUID()}`, leaseExpiresAt: new Date(Date.now() + 15 * 60_000),
+      controllerBootId: randomUUID(), controllerPid: 2_000_000_001, controllerHostHash: currentProcessSpaceHash(),
+      controllerProcessStartedAt: new Date(Date.now() - 60_000) }).where(eq(nativeRunFinalizations.runId, f.runId));
+    const kind = OWNABLE_KINDS.find(candidate => candidate.id === "native_awaiting_evidence")!;
+    const kinds = [{ ...kind, listInProgress: async (db: typeof f.db) => ({ records: await kind.listForRuns!(db, [f.runId]), truncated: false }) }];
+    const recheck = vi.fn(async () => undefined);
+    const unregister = registerNativeRestartRecheck(recheck);
+    const original = process.kill.bind(process);
+    const kill = vi.spyOn(process, "kill").mockImplementation((pid, signal) => {
+      if (pid === 2_000_000_001 && signal === 0) throw Object.assign(new Error("gone"), { code: "ESRCH" });
+      return original(pid, signal);
+    });
+    try {
+      const state = createOwnershipReportState();
+      const first = await runOwnershipReconciliationPass(f.db, { kinds, state });
+      expect(first.kinds[0]).toMatchObject({ verdicts: { gone: 1 } });
+      expect(recheck).toHaveBeenCalledWith([f.runId]);
+      // The next 30 s pass does not hand it over again; restart recovery schedules its own re-checks.
+      await runOwnershipReconciliationPass(f.db, { kinds, state });
+      expect(recheck).toHaveBeenCalledTimes(1);
+    } finally { kill.mockRestore(); unregister(); }
   }, 60_000);
 
   it("keeps a live earlier-boot controller's result lease in the reconciler pass", async () => {

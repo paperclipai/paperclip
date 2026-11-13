@@ -1844,7 +1844,7 @@ current plugin records and enforce their existing readiness and worker checks.
 
 ### Persistent agent conversations
 
-Migration `0475` (`0475_multiple_agent_chat_conversations`) keeps the existing conversation as the default for its company, agent and user and permits additional conversations. The partial unique index still protects concurrent creation of the default conversation.
+Migration `0476` (`0476_multiple_agent_chat_conversations`) keeps the existing conversation as the default for its company, agent and user and permits additional conversations. The partial unique index still protects concurrent creation of the default conversation.
 
 Migration `0274_agent_chat.sql` adds conversation identity/state and session generation/boundary columns to `issues`, plus idempotent client request IDs and processed session-boundary generations to `issue_comments`. The company/agent/user unique index resolves concurrent first writes to one issue. A check constraint preserves the assigned-agent identity and prevents terminal conversation status. Comment request IDs are unique per issue and user. There is no separate chat/message store. Provider sessions continue to use `agent_task_sessions`; `/new` removes only the matching conversation session, and session writers fence stale generations against the issue row.
 
@@ -2424,8 +2424,13 @@ the optional live environment FK uses SET NULL. Company/run deletion must not
 erase an outstanding remote-resource obligation.
 
 The unique company/environment/run/request index fences duplicate creation and
-ambiguous successful lease commits. Normal lease attachment and operation transfer
-share a transaction. Recovery transfers one claimed cleanup lease after provider
+ambiguous successful lease commits. Since migration 0475 it covers only operations
+that are not `resolved`. A later attempt for the same run and request that meets an
+`attached` operation whose lease is closed checks the same stop proof same-run
+recovery requires (a termination receipt for that sandbox, stored or derived from a
+destroyed reusable successor); with it, one transaction resolves the operation and
+records the replacement.
+Normal lease attachment and operation transfer share a transaction. Recovery transfers one claimed cleanup lease after provider
 ownership lookup. The pending deadline index drives the existing cleanup worker.
 `needs_reconciliation` is a durable manual outcome, not an automatic retry or an
 idle blocker. See [cleanup ownership](idle-environment-cleanup.md).

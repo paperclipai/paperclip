@@ -88,8 +88,22 @@ export async function historyReadDeliveredCommentIds(tx: Pick<Db, "select">, inp
   return new Set(rows.map(row => row.id));
 }
 
+export const COMMENT_EVIDENCE_REF_PREFIX = "comment:";
+
 function historyReadDeliveredSql(companyId: string, issueId: string, agentId: string) {
-  const readBy = (binding: SQL) => sql`exists (select 1 from ${heartbeatRuns} reading_run
+  const handled = sql`exists (select 1 from ${heartbeatRunEvents} handled
+        where handled.company_id = ${companyId} and handled.run_id = reading_run.id
+          and handled.event_type = 'run.result.accepted'
+          and (jsonb_path_exists(handled.payload, '$.prpEvent.payload.result.evidence[*].ref ? (@ starts with $ref)',
+              jsonb_build_object('ref', ${COMMENT_EVIDENCE_REF_PREFIX} || ${issueComments.id}::text))
+            or jsonb_path_exists(handled.payload, '$.prpEvent.payload.result.completionClaim.criteria[*].evidenceRefs[*] ? (@ starts with $ref)',
+              jsonb_build_object('ref', ${COMMENT_EVIDENCE_REF_PREFIX} || ${issueComments.id}::text))))`;
+  return sql`(${historyReadSql(companyId, agentId, sql`reading_run.native_issue_id = ${issueId}`, sql`and reading_run.status = 'succeeded' and ${handled}`)}
+    or ${historyReadSql(companyId, agentId, sql`reading_run.context_snapshot->>'issueId' = ${issueId}`, sql`and reading_run.status = 'succeeded' and ${handled}`)})`;
+}
+
+function historyReadSql(companyId: string, agentId: string, binding: SQL, condition: SQL) {
+  return sql`exists (select 1 from ${heartbeatRuns} reading_run
       cross join lateral (select 1 from ${heartbeatRunEvents} history_read
         where history_read.company_id = ${companyId} and history_read.run_id = reading_run.id
           and history_read.event_type = ${TASK_HISTORY_READ_EVENT}
@@ -97,10 +111,42 @@ function historyReadDeliveredSql(companyId: string, issueId: string, agentId: st
             >= date_trunc('milliseconds', ${issueComments.updatedAt})
         limit 1) read_revision
       where reading_run.company_id = ${companyId} and ${binding}
-        and reading_run.agent_id = ${agentId} and reading_run.status = 'succeeded'
+        and reading_run.agent_id = ${agentId} ${condition}
         and reading_run.finished_at >= date_trunc('milliseconds', ${issueComments.updatedAt}) offset 0)`;
-  return sql`(${readBy(sql`reading_run.native_issue_id = ${issueId}`)}
-    or ${readBy(sql`reading_run.context_snapshot->>'issueId' = ${issueId}`)})`;
+}
+
+export async function readByEarlierTurnCommentIds(tx: Pick<Db, "select">, input: {
+  companyId: string; issueId: string; agentId: string; commentIds: string[]; currentRunId?: string | null;
+}): Promise<Set<string>> {
+  if (input.commentIds.length === 0) return new Set();
+  const { companyId, issueId, agentId } = input;
+  const notCurrent = input.currentRunId ? sql`and reading_run.id <> ${input.currentRunId}` : sql``;
+  const rows = await tx.select({ id: issueComments.id }).from(issueComments).where(and(
+    eq(issueComments.companyId, companyId), eq(issueComments.issueId, issueId),
+    inArray(issueComments.id, input.commentIds),
+    sql`(${historyReadSql(companyId, agentId, sql`reading_run.native_issue_id = ${issueId}`, notCurrent)}
+      or ${historyReadSql(companyId, agentId, sql`reading_run.context_snapshot->>'issueId' = ${issueId}`, notCurrent)})`));
+  return new Set(rows.map(row => row.id));
+}
+
+export async function commentsArrivedDuringRun(db: Pick<Db, "select">, input: {
+  companyId: string; runId: string; agentId: string;
+  comments: ReadonlyArray<{ id: string; authorAgentId: string | null; createdAt: Date; updatedAt: Date }>;
+}): Promise<string[]> {
+  if (input.comments.length === 0) return [];
+  const [run] = await db.select({ startedAt: heartbeatRuns.startedAt }).from(heartbeatRuns)
+    .where(and(eq(heartbeatRuns.companyId, input.companyId), eq(heartbeatRuns.id, input.runId)));
+  const startedAt = run?.startedAt;
+  if (!startedAt) return [];
+  return input.comments.filter(comment => comment.authorAgentId !== input.agentId
+    && Math.max(comment.createdAt.getTime(), comment.updatedAt.getTime()) > startedAt.getTime()).map(comment => comment.id);
+}
+
+export function taskHistoryHandlingGuidance(commentIds: readonly string[]) {
+  return commentIds.length === 0 ? {} : {
+    arrivedDuringThisTurn: commentIds.map(id => `${COMMENT_EVIDENCE_REF_PREFIX}${id}`),
+    handling: "These comments arrived while this turn was running. For each one this turn applies, include its ref in the evidence of paperclip_finish or paperclip_block. Paperclip delivers any comment that is not cited to you again in a new turn after this one.",
+  };
 }
 
 /**

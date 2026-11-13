@@ -210,16 +210,24 @@ Restore re-binds a saved session to the current launch profile, and keeps the
 conversation, only when all of these are true:
 
 - The session is in one of these two states:
-  - **Suspended.** It has no active turn, pending runtime request, undelivered
-    provider event, or unconfirmed provider exit.
-  - **An interrupted turn or open session of the same heartbeat run.** The
-    deploy restarted the runner and the same run resumes. There is no accepted
-    semantic result, no pending runtime request, no unconfirmed provider exit,
-    and no active goal. Same-build recovery then runs unchanged. It reopens an
-    open session. For an active turn it uses lost-turn recovery: the
+  - **Settled.** This is the same rule `run.attach` uses to admit a session.
+    The warm-attach readiness probe reports the same guards, and also waits
+    until a restore notice is acknowledged. The session is not closed, has a provider identity, has no active turn and no
+    unconfirmed provider exit, and has no undelivered provider event except a
+    `session.resumed` restore notice. The lifecycle, the run that saved the
+    session, and an accepted semantic result do not matter. A Runner that is
+    retired or parked without `runner.suspend` leaves an open session, often
+    with the finished turn's result. The next run attaches to it on the
+    upgraded build, as it would on the same build. Same-build recovery then
+    runs unchanged.
+  - **An interrupted turn of the same heartbeat run.** The deploy restarted
+    the runner mid-turn and the same run resumes. There is no accepted
+    semantic result, no unconfirmed provider exit, and no active goal.
+    Lost-turn recovery then runs as it does after a same-build restart: the
     conversation is restored once the original provider lifetime loses its
-    fence quorum, and otherwise the lost turn is closed. An active turn or open
-    session saved by a different run stays strict.
+    fence quorum, and otherwise the lost turn is closed. An active turn saved
+    by a different run stays strict.
+- No runtime request is pending.
 - The startup has no candidate admission.
 - The saved descriptor names the same launch as this startup: the same
   executable and sidecar file names, and identical non-path arguments. The
@@ -234,7 +242,10 @@ identity. Candidate grants and run bindings keep their own checks.
 
 Any other launch-profile mismatch, and a saved descriptor that names a release
 this build does not qualify, fails restore with the closed command-result
-classification `provider_state_incompatible`. The controller reads the classification from the
+classification `provider_state_incompatible`. A launch-profile mismatch names
+each condition that prevented the re-bind, for example `ACPX durable launch
+profile digest does not match runner startup (not re-bound:
+durable_active_turn)` or `(not re-bound: launch_shape_changed)`. The controller reads the classification from the
 authenticated result, not from the message. If the run allows a replacement
 after a failed resume, it opens a fresh provider session as before. Otherwise the
 run fails with `native_provider_state_incompatible` and is not retried. A board

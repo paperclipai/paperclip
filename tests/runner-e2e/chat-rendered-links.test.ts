@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { readFileSync } from "node:fs";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { collectConversationLinks, collectConversationLinksWithDiagnostics, conversationLinkBindings, mislabeledIssueLinks, readConversationDomLinks, readLatestConversationReplyRender, waitForLatestConversationReplyRender, waitForSavedTurnReplyRender, waitForSavedTurnReplyRenderReloadingOnce, type ConversationLinkInput } from "./chat-rendered-links.js";
+import { APP_ROUTE_ROOTS, collectConversationLinks, collectConversationLinksWithDiagnostics, conversationLinkBindings, unservedLinkReason, mislabeledIssueLinks, readConversationDomLinks, readLatestConversationReplyRender, waitForLatestConversationReplyRender, waitForSavedTurnReplyRender, waitForSavedTurnReplyRenderReloadingOnce, type ConversationLinkInput } from "./chat-rendered-links.js";
 
 const card = '<div data-thread-item-kind="project_created" data-thread-anchor="project-created:project"><article aria-label="Project created: Launch"><div><p>Project created</p><a href="/RUN/projects/project">Launch</a></div></article></div>';
 const thread = (content = card) => `<div data-testid="task-chat-thread"><div data-testid="task-chat-history-content"><div data-testid="task-chat-scroller"><div id="comment-human" data-thread-item-kind="human">Create a project called Launch for the new website.</div>${content}<div id="comment-reply" data-thread-item-kind="agent">Created the Launch project. No repositories are connected yet.</div></div></div></div>`;
@@ -216,5 +216,44 @@ describe("records thread and anchor diagnostics when a saved reply yields no ren
     const value = input(); value.projects = []; value.activity = [];
     const result = await collectConversationLinksWithDiagnostics(page(), value);
     expect(result.links.map(row => row.href)).toEqual(["/RUN/issues/task"]); expect(result.diagnostics).toBeUndefined();
+  });
+});
+
+// Full cohort 9 (documents-artifacts.produce-download, agents.edit-instructions): a reply's download link was written as
+// /COM/api/attachments/.../content?download=1, which the server does not serve (its API is only at /api), and a reply's
+// Morgan link was saved as //COM/agents/..., which the board repairs but notifications and chat channels deliver as a
+// link to a host named COM. Both counted as valid links.
+describe("only links that open a served app page or API route count", () => {
+  const origin = "https://fixture.test";
+  it("accepts company pages, unprefixed board pages, global pages and served API downloads", () => {
+    for (const href of ["/RUN/issues/RUN-1", "/run/agents/morgan/overview", "/RUN/company/settings/connections", "/RUN/routines/routine", "/RUN",
+      "/issues/RUN-1", "/instance/settings", "/api/attachments/file/content?download=1", "/api/attachments/file/content", "https://github.com/owner/repository"])
+      expect(unservedLinkReason(href, origin), href).toBeUndefined();
+  });
+  it("rejects a company-prefixed API path, a doubled prefix and other paths the app does not route", () => {
+    for (const href of ["/RUN/api/attachments/file/content?download=1", "/RUN/RUN/issues/RUN-1", "/RUN/attachments/file/content", "/attachments/file/content"])
+      expect(unservedLinkReason(href, origin), href).toBe("not-a-served-route");
+  });
+  it("rejects a protocol-relative company link, rendered raw or repaired by the board, but not the same page saved correctly", () => {
+    expect(unservedLinkReason("//RUN/agents/morgan", origin)).toBe("protocol-relative");
+    expect(unservedLinkReason("/RUN/agents/morgan", origin, ["//RUN/agents/morgan"])).toBe("protocol-relative");
+    expect(unservedLinkReason("/RUN/agents/morgan", origin, ["/RUN/agents/morgan"])).toBeUndefined();
+    expect(unservedLinkReason("/RUN/agents/morgan", origin, ["//RUN/agents/morgan", "/RUN/agents/morgan"])).toBeUndefined();
+  });
+  it("lists exactly the first path segments that the board router declares", () => {
+    const app = readFileSync(`${import.meta.dirname}/../../ui/src/App.tsx`, "utf8");
+    const roots = new Set([...app.matchAll(/path="\/?([^"/]+)/g)].map(match => match[1]!).filter(root => !root.startsWith(":") && root !== "*"));
+    expect([...APP_ROUTE_ROOTS].sort()).toEqual([...roots].sort());
+    expect(APP_ROUTE_ROOTS).not.toContain("api");
+  });
+  it("drops unserved reply links from collection, keeps them as rejected evidence and keeps served ones", async () => {
+    const page = { evaluate: async <T, A>(read: (arg: A) => T, arg: A) => read(arg) } as unknown as Parameters<typeof collectConversationLinks>[0];
+    vi.spyOn(console, "info").mockImplementation(() => undefined);
+    document.querySelector('#comment-reply')!.innerHTML = '<a href="/api/attachments/file/content">website.html</a><a href="/RUN/api/attachments/file/content?download=1">Download</a><a href="/RUN/agents/morgan">Morgan</a>';
+    const value = input(); value.projects = []; value.activity = [];
+    value.comments[1]!.body = "Prepared [website.html](/api/attachments/file/content). [Download](/RUN/api/attachments/file/content?download=1) from [Morgan](//RUN/agents/morgan).";
+    const result = await collectConversationLinksWithDiagnostics(page, value);
+    expect(result.links.map(row => row.href)).toEqual(["/api/attachments/file/content"]);
+    expect(result.rejected?.map(row => [row.href, row.reason])).toEqual([["/RUN/api/attachments/file/content?download=1", "not-a-served-route"], ["/RUN/agents/morgan", "protocol-relative"]]);
   });
 });

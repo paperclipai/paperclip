@@ -1,5 +1,5 @@
 {
-  "id": "ed078c8a-ffcc-416a-a037-ebb2341612c4",
+  "id": "ee1f1f66-0cbe-4b18-b364-5e96708a1f0b",
   "prevId": "a7108924-4d75-41e2-9139-f43f9396c02d",
   "version": "7",
   "dialect": "postgresql",
@@ -42984,13 +42984,6 @@
           "primaryKey": false,
           "notNull": false
         },
-        "conversation_default": {
-          "name": "conversation_default",
-          "type": "boolean",
-          "primaryKey": false,
-          "notNull": true,
-          "default": true
-        },
         "conversation_state": {
           "name": "conversation_state",
           "type": "text",
@@ -43420,7 +43413,6 @@
             }
           ],
           "isUnique": true,
-          "where": "\"issues\".\"conversation_default\" = true",
           "concurrently": false,
           "method": "btree",
           "with": {}
@@ -53950,6 +53942,7 @@
             }
           ],
           "isUnique": true,
+          "where": "\"sandbox_creation_operations\".\"state\" <> 'resolved'",
           "concurrently": false,
           "method": "btree",
           "with": {}
