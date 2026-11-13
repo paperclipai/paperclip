@@ -8878,7 +8878,7 @@ export function issueRoutes(
           recentComments.comments.map((comment) => comment.id).sort(),
         ),
       })),
-      activitySvc.forIssue(issue.id, 50),
+      activitySvc.forIssue(issue.id, 50).then(rows => activitySvc.withActorNames(rows)),
       activitySvc.runsForIssue(issue.companyId, issue.id, viewerUserId, 2, undefined, { skipLivenessBackfill: true }),
       issueThreadInteractionService(db).listForIssue(issue.id),
       svc.listAttachments(issue.id).then((rows) => rows.map(withContentPath)),
