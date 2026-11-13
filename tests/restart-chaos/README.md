@@ -1518,6 +1518,14 @@ tried again on the next poll with the same `clientRequestId`. The overlap window
 `staging-mix.ts`, which a swap driver registers. Without a probe, the window is any time a fault is in progress and the
 server still answers (a K15 overlap). The timeline records `staging_mix_follow_up`.
 
+To aim a follow-up at the warm session's idle close instead, set `RESTART_CHAOS_MIX_FOLLOW_UP_AFTER_END_MS=<min>-<max>`
+(for example `298000-306000` for the 300 s idle timeout). The harness then posts the follow-up that long after the
+task's last run ended, `RESTART_CHAOS_MIX_FOLLOW_UP_COUNT` times (default 2), and waits for every post before the task
+counts as finished. A failed post is tried again with the same `clientRequestId`. The task budget grows by one
+maximum delay plus one turn per post. The grade check `after_end_follow_ups_served` needs every post, an agent comment
+after each post and the `FOLLOWUP-<nonce>` ledger line. The timeline records `staging_mix_follow_up_after_end` with the
+measured delay.
+
 **Retries: hands-off first.** By default the harness never clicks Retry during the wave or the settle, so the product's
 own continuation is what gets measured. A task that shows a Retry banner is kept under watch, not rested. Every banner
 is recorded per task: when it first showed, how long it stayed, and the error code behind it, even when the task then
@@ -1555,6 +1563,21 @@ worked when the clicked task meets the same completion rule. The banner list fol
 `GET /api/companies/:id/assigned-work-invariant` at the end of the wave: `violationCount`, `violations` by reason,
 `agentsWithStalledSlots` and `openTasks`.
 
+The summary also lists, by start time, every run that started after the task completed, under "Runs started after
+the task completed" (`extraTurns`, with counts by wake reason in `extraTurnsByReason`). A run queued after completion
+that never started is listed on its own (`queuedAfterDone`).
+
+The completion time comes from the product's own record, in this order:
+
+1. the earliest accepted run result whose `reportedWorkDisposition` is `done`;
+2. the issue's `completedAt`;
+3. the first bare `DONE-<nonce>` comment, only when neither exists.
+
+Each line prints the DONE comment time too when it differs, and gives the run's wake reason, source, trigger and
+requesting actor from the saved wake evidence. A bare DONE comment posted by a run whose accepted result was not `done`
+(for example `blocked` while a parent waits on its subtasks) is reported on its own, under "DONE comment posted before
+the task completed" (`doneBeforeCompletion`).
+
 **Grade.** The usual R1–R6, U1–U5 and T rules apply. A needed Retry still fails R3. The T-oracle checks the result,
 not the status:
 
@@ -1565,7 +1588,7 @@ not the status:
 | `rounds_once` | a round line appears twice (a tool ran again) |
 | `done_comment_posted` | no comment's whole body is `DONE-<nonce>`; a summary that quotes the marker does not count |
 | `done_comment_once` | that comment was posted more than once |
-| `completion_once` | more than one run posted a comment that mentions `DONE-<nonce>` (a duplicate completion), or the comments could not be read |
+| `completion_once` | more than one run completed the task (a duplicate completion), or the comments could not be read. A run completes the task when its accepted result has disposition `done`, or when it posts a comment that mentions `DONE-<nonce>` at or after the completion time. Without accepted results in the wave evidence, the bare DONE comment counts instead. A progress or blocked comment that says it will post the marker later is not a completion |
 | `follow_up_posted` | a planned follow-up was never posted (the detail lists the post errors) |
 | `follow_up_served` | a follow-up was posted during a run and the ledger lacks its line |
 | `subtask_<k>_done`, `parent_read_subtask_<k>` | a subtask is missing, not done or its ledger fails, or the parent did not report its last hash |
@@ -1978,7 +2001,8 @@ re-arms the task's own triggered faults instead of using their offsets.
   - each run's `context_snapshot`, invocation source and trigger;
   - the `agent_wakeup_requests` row behind each run and every wake for the issue: reason, source, trigger detail,
     requesting actor, idempotency key, payload and times;
-  - the issue's status changes from the activity log.
+  - the issue's status changes from the activity log: only `issue.*` entries whose status is an issue status, so a
+    `runner.api_called` entry with an HTTP status is not mistaken for one.
 
   Each wake and run also names the server generations alive when it was created (`servingAtCreate`): the pid, boot
   id, epoch and process space from `controller_instances`, and the harness's own primary or secondary role during an

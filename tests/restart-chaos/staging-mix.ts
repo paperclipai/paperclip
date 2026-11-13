@@ -50,10 +50,17 @@ export interface StagingMixTask {
 export interface StagingMixRecord {
   followUpErrors?: string[];
   followUp?: { at: number; commentId: string | null; duringRun: boolean; inOverlap: boolean; error: string | null };
+  afterEndFollowUps?: Array<{ afterRunEndAt: number; at: number; delayMs: number; commentId: string }>;
   retrySeenAt?: number | null;
   retries?: Array<{ at: number; inOverlap: boolean }>;
   retryBanner?: RetryBanner;
   retryAfterSettle?: { at: number; accepted: boolean | null; issueStatusAtClick: string | null };
+  completion?: CompletionEvidence;
+}
+
+export interface CompletionEvidence {
+  completedAt: number | null;
+  runs: Array<{ runId: string | null; startedAt: number | null; acceptedDisposition: string | null; acceptedAt: number | null }>;
 }
 
 export interface RetryBanner { firstShownAt: number; lastShownAt: number; shownMs: number; visibleSince: number | null; errorCode: string | null }
@@ -62,8 +69,10 @@ export interface StagingMixArtifacts {
   followUp: StagingMixRecord["followUp"] | null;
   followUpErrors: string[];
   retries: NonNullable<StagingMixRecord["retries"]>;
-  comments?: Array<{ body: string; runId: string | null }>;
+  comments?: Array<{ body: string; runId: string | null; createdAt?: number | null }>;
   commentsUnreadable?: boolean;
+  completion?: CompletionEvidence;
+  afterEndFollowUps?: NonNullable<StagingMixRecord["afterEndFollowUps"]>;
 }
 
 export const DUPLICATE_CHECKS: ReadonlySet<string> = new Set(["rounds_once", "done_comment_once", "completion_once", "subtasks_once", "subtask_rounds_once"]);
@@ -362,16 +371,57 @@ export function stagingMixDescription(nonce: string, task: StagingMixTask, agent
   lines.push(`${step++}. ${roundsSteps(nonce, task.rounds).join("\n   ")}`);
   lines.push(`${step++}. If the board comments while you work and asks you to include a line, keep working and include that line on its own line in the document below.`);
   if (parent) {
-    lines.push(`${step++}. Wait until both subtasks are done. If they are not done yet, end your turn without marking this task done; you will be woken when they finish.`,
+    lines.push(`${step++}. Wait until both subtasks are done. If they are not done yet, end your turn now: do not save the \`ledger\` document, do not post the`
+      + ` \`${doneMarker(nonce)}\` comment and do not mark this task done. You will be woken when they finish.`,
       `   Then read each subtask's \`ledger\` document and take the hash at the end of its last ROUND line.`);
   }
   lines.push(`${step++}. Save this issue's document with key \`ledger\` (title "Ledger"): the full contents of \`${ledgerFile(nonce)}\` exactly as the file reads,`
     + ` then every line the board asked for${parent ? `, then one line \`${childLine(1, "<hash>")}\` per subtask (CHILD-2 for subtask 2), with <hash> from that subtask's ledger` : ""}.`);
-  lines.push(`${step++}. Post exactly one comment on this task with the body \`${doneMarker(nonce)}\`. Then mark this task done.`);
+  lines.push(`${step++}. ${parent ? "Only after both subtasks are done and both CHILD lines are in the `ledger` document, post" : "Post"} exactly one comment on this task`
+    + ` with the body \`${doneMarker(nonce)}\`. Then mark this task done.`);
   return lines.join("\n");
 }
 
 export const followUpRequestId = (issueId: string, nonce: string) => stableRequestId(`followup-${issueId}-${nonce}`);
+
+type CommentEvidence = { body: string; runId: string | null; createdAt?: number | null };
+
+export function firstDoneCommentAt(comments: readonly CommentEvidence[], nonce: string): number | null {
+  const times = comments.filter(comment => isDoneComment(comment.body, nonce) && typeof comment.createdAt === "number").map(comment => comment.createdAt!);
+  return times.length ? Math.min(...times) : null;
+}
+
+export function hasDispositions(completion: CompletionEvidence | null | undefined): completion is CompletionEvidence {
+  return Boolean(completion?.runs.some(run => run.acceptedDisposition !== null));
+}
+
+export function completedAtAnchor(completion: CompletionEvidence | null | undefined, comments: readonly CommentEvidence[], nonce: string):
+  { at: number | null; source: "accepted_result" | "completed_at" | "done_comment" | null } {
+  const accepted = (completion?.runs ?? []).filter(run => run.acceptedDisposition === "done" && run.acceptedAt !== null).map(run => run.acceptedAt!);
+  if (accepted.length) return { at: Math.min(...accepted), source: "accepted_result" };
+  if (completion?.completedAt != null) return { at: completion.completedAt, source: "completed_at" };
+  const comment = firstDoneCommentAt(comments, nonce);
+  return { at: comment, source: comment === null ? null : "done_comment" };
+}
+
+export function completionRunIds(comments: readonly CommentEvidence[], nonce: string, completion?: CompletionEvidence | null): string[] {
+  const anchor = completedAtAnchor(completion, comments, nonce).at;
+  const summaries = comments.filter(comment => anchor !== null && typeof comment.createdAt === "number" && comment.createdAt >= anchor
+    && comment.body.includes(doneMarker(nonce)) && comment.runId).map(comment => comment.runId!);
+  if (hasDispositions(completion)) {
+    const accepted = completion.runs.filter(run => run.acceptedDisposition === "done" && run.runId).map(run => run.runId!);
+    return [...new Set([...accepted, ...summaries])];
+  }
+  return [...new Set([...comments.filter(comment => isDoneComment(comment.body, nonce) && comment.runId).map(comment => comment.runId!), ...summaries])];
+}
+
+export function doneCommentsBeforeCompletion(comments: readonly CommentEvidence[], nonce: string, completion?: CompletionEvidence | null):
+  Array<{ runId: string; disposition: string }> {
+  if (!hasDispositions(completion)) return [];
+  const dispositions = new Map(completion.runs.flatMap(run => run.runId ? [[run.runId, run.acceptedDisposition] as const] : []));
+  return [...new Set(comments.filter(comment => isDoneComment(comment.body, nonce) && comment.runId).map(comment => comment.runId!))]
+    .flatMap(runId => { const disposition = dispositions.get(runId); return disposition && disposition !== "done" ? [{ runId, disposition }] : []; });
+}
 
 export function isDoneComment(body: string, nonce: string): boolean {
   return body.trim().replace(/\.$/, "").replace(/^`+|`+$/g, "").trim() === doneMarker(nonce);
@@ -412,7 +462,7 @@ export function gradeStagingMix(nonce: string, task: StagingMixTask, artifacts: 
   const own = verifyLedger(nonce, task.rounds, ledger);
   const comments = artifacts.stagingMix?.comments ?? artifacts.agentComments.map(body => ({ body, runId: null }));
   const doneComments = comments.filter(comment => isDoneComment(comment.body, nonce)).length;
-  const completionRuns = [...new Set(comments.filter(comment => comment.body.includes(doneMarker(nonce)) && comment.runId).map(comment => comment.runId!))];
+  const completionRuns = completionRunIds(comments, nonce, artifacts.stagingMix?.completion);
   const followUp = artifacts.stagingMix?.followUp ?? null;
   const children = (artifacts.children ?? []).filter(child => (child.title ?? "").includes(nonce));
   const checks: OracleResult["checks"] = [
@@ -429,6 +479,15 @@ export function gradeStagingMix(nonce: string, task: StagingMixTask, artifacts: 
     const errors = artifacts.stagingMix?.followUpErrors ?? [];
     checks.push({ name: "follow_up_posted", ok: Boolean(followUp?.commentId),
       detail: followUp?.commentId ? `comment ${followUp.commentId}` : `never posted${errors.length ? `; errors: ${errors.slice(-3).join(" | ")}` : ""}` });
+  }
+  const afterEnd = artifacts.stagingMix?.afterEndFollowUps ?? [];
+  const range = task.followUpAfterMs !== null ? followUpAfterEndRange() : null;
+  if (range || afterEnd.length) {
+    const replies = artifacts.stagingMix?.comments ?? [];
+    const unanswered = afterEnd.filter(entry => !replies.some(comment => comment.createdAt != null && comment.createdAt >= entry.at));
+    checks.push({ name: "after_end_follow_ups_served",
+      ok: afterEnd.length >= (range?.count ?? 1) && unanswered.length === 0 && (ledger ?? "").includes(followUpMarker(nonce)),
+      detail: `posted=${afterEnd.length}/${range?.count ?? afterEnd.length}; unanswered=${unanswered.map(entry => entry.commentId).join(", ") || "none"}` });
   }
   if (followUp?.commentId && followUp.duringRun) {
     checks.push({ name: "follow_up_served", ok: (ledger ?? "").includes(followUpMarker(nonce)),
@@ -455,7 +514,9 @@ export function gradeStagingMix(nonce: string, task: StagingMixTask, artifacts: 
 
 export function stagingMixBudgetMs(task: StagingMixTask): number {
   const turnMs = task.rounds * ROUND_SECONDS * 1_000;
-  return Math.round(turnMs * 1.5) + 20 * 60_000 + (task.subtasks ? 20 * 60_000 : 0);
+  const afterEnd = task.followUpAfterMs !== null ? followUpAfterEndRange() : null;
+  return Math.round(turnMs * 1.5) + 20 * 60_000 + (task.subtasks ? 20 * 60_000 : 0)
+    + (afterEnd ? afterEnd.count * (afterEnd.maxMs + turnMs) : 0);
 }
 
 export function stagingMixDefinition(task: StagingMixTask): WorkloadDefinition {
@@ -511,13 +572,45 @@ export interface StagingMixStepInput {
   note: (kind: string, data: Record<string, unknown>) => void;
 }
 
+export function followUpAfterEndRange(environment: NodeJS.ProcessEnv = process.env): { minMs: number; maxMs: number; count: number } | null {
+  const raw = environment.RESTART_CHAOS_MIX_FOLLOW_UP_AFTER_END_MS;
+  if (!raw) return null;
+  const [low, high] = parseRange(raw, "RESTART_CHAOS_MIX_FOLLOW_UP_AFTER_END_MS", 0, 3_600_000);
+  const count = whole(environment.RESTART_CHAOS_MIX_FOLLOW_UP_COUNT, "RESTART_CHAOS_MIX_FOLLOW_UP_COUNT", 2, 1, 10);
+  return { minMs: low, maxMs: high, count };
+}
+
 export async function stagingMixStep(input: StagingMixStepInput): Promise<void> {
   const { record, task, sample, now } = input;
   const state = record.stagingMix ??= {};
   if (!sample.reachable || !record.issueId || record.createdAt === null) return;
   const overlap = insideOverlapWindow(now, { faultInProgress: input.faultInProgress, reachable: sample.reachable });
   const running = (sample.runs ?? []).some(run => run.status === "running");
-  if (task.followUpAfterMs !== null && !state.followUp && running) {
+  const afterEnd = followUpAfterEndRange();
+  if (afterEnd && task.followUpAfterMs !== null) {
+    const posted = state.afterEndFollowUps ??= [];
+    const runs = sample.runs ?? [];
+    const active = runs.some(run => ACTIVE.has(run.status));
+    const lastEnd = Math.max(0, ...runs.map(run => Date.parse(run.finishedAt ?? "") || 0));
+    if (!active && lastEnd > 0 && posted.length < afterEnd.count && !posted.some(entry => entry.afterRunEndAt === lastEnd)) {
+      const span = afterEnd.maxMs - afterEnd.minMs;
+      const delay = afterEnd.minMs + (span > 0 ? (Number.parseInt(input.nonce.slice(0, 6), 16) * (posted.length + 1)) % (span + 1) : 0);
+      if (now >= lastEnd + delay) {
+        const index = posted.length;
+        let commentId: string | null = null; let error: string | null = null;
+        try {
+          const comment = await input.api.post<{ id?: string }>(`/api/issues/${record.issueId}/comments`, { body: followUpComment(input.nonce),
+            clientRequestId: followUpRequestId(record.issueId, `${input.nonce}-after-end-${index}`) });
+          commentId = typeof comment?.id === "string" ? comment.id : null;
+          if (!commentId) error = "the comment response had no id";
+        } catch (caught) { error = caught instanceof Error ? caught.message : String(caught); }
+        if (commentId) posted.push({ afterRunEndAt: lastEnd, at: now, delayMs: now - lastEnd, commentId });
+        else (state.followUpErrors ??= []).push(error!);
+        input.note("staging_mix_follow_up_after_end", { index, delayMs: now - lastEnd, commentId, error });
+        if (commentId && !state.followUp) state.followUp = { at: now, commentId, duringRun: false, inOverlap: overlap, error: null };
+      }
+    }
+  } else if (task.followUpAfterMs !== null && !state.followUp && running) {
     const plannedAt = record.createdAt + task.followUpAfterMs;
     const latestAt = Math.min(plannedAt + task.holdMs, record.createdAt + Math.round(task.rounds * ROUND_SECONDS * 1_000 * 0.85));
     if (now >= plannedAt && (overlap || now >= latestAt)) {
@@ -573,8 +666,13 @@ export function bannerShownMs(banner: RetryBanner, now: number): number {
   return banner.shownMs + (banner.visibleSince === null ? 0 : now - banner.visibleSince);
 }
 
-export function collectStagingMixArtifacts(record: TaskRecord, rows: ReadonlyArray<{ body?: unknown; authorAgentId?: unknown; createdByRunId?: unknown }> | null): StagingMixArtifacts {
+export function collectStagingMixArtifacts(record: TaskRecord,
+  rows: ReadonlyArray<{ body?: unknown; authorAgentId?: unknown; createdByRunId?: unknown; createdAt?: unknown }> | null): StagingMixArtifacts {
+  const time = (value: unknown) => typeof value === "string" && Number.isFinite(Date.parse(value)) ? Date.parse(value) : null;
   return { followUp: record.stagingMix?.followUp ?? null, followUpErrors: record.stagingMix?.followUpErrors ?? [], retries: record.stagingMix?.retries ?? [],
-    ...(rows ? { comments: rows.filter(row => row.authorAgentId).map(row => ({ body: String(row.body ?? ""), runId: typeof row.createdByRunId === "string" ? row.createdByRunId : null })) }
+    ...(record.stagingMix?.completion ? { completion: record.stagingMix.completion } : {}),
+    ...(record.stagingMix?.afterEndFollowUps?.length ? { afterEndFollowUps: record.stagingMix.afterEndFollowUps } : {}),
+    ...(rows ? { comments: rows.filter(row => row.authorAgentId).map(row => ({ body: String(row.body ?? ""),
+      runId: typeof row.createdByRunId === "string" ? row.createdByRunId : null, createdAt: time(row.createdAt) })) }
       : { commentsUnreadable: true }) };
 }

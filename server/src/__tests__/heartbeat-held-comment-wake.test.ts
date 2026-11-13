@@ -4,8 +4,8 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { and, eq, sql } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { activityLog, agents, agentWakeupRequests, authUsers, budgetPolicies, companies, companyMemberships, costEvents, createDb, heartbeatRuns,
-  issueComments, issues } from "@paperclipai/db";
+import { activityLog, agents, agentWakeupRequests, authUsers, budgetPolicies, companies, companyMemberships, costEvents, createDb, heartbeatRunEvents,
+  heartbeatRuns, issueComments, issues } from "@paperclipai/db";
 import { accountRunCost } from "../services/run-cost-accounting.js";
 import { DELIVERY_QUEUES, subscribeDeliveryWork } from "../services/delivery-work-notifications.js";
 import { requestTaskRetry } from "../services/task-retry.js";
@@ -750,8 +750,17 @@ describePostgres("saved intents while another run's accounting is pending", () =
     try {
       const history = await reader.execute({ tool: "get_task_history", callId: `history-${f.sourceRunId}`, arguments: {} });
       expect((history as { comments: Array<{ id: string }> }).comments.map(comment => comment.id)).toContain(f.commentId);
+      expect((history as { arrivedDuringThisTurn?: string[] }).arrivedDuringThisTurn).toContain(`comment:${f.commentId}`);
     } finally { reader.close(); }
   }
+
+  const reportResult = (f: { companyId: string; agentId: string; commentId: string }, runId: string, cited: boolean) =>
+    db.insert(heartbeatRunEvents).values({ companyId: f.companyId, runId, agentId: f.agentId, seq: 100_000, eventType: "run.result.accepted",
+      stream: "system", level: "info", payload: { prpEvent: { payload: { result: { schema: "paperclip.run_result.v1",
+        reportedWorkDisposition: "done", summary: "Done.",
+        evidence: [{ ref: "document:plan" }, ...(cited ? [{ ref: `comment:${f.commentId} (applied)` }] : [])],
+        completionClaim: { contractRevision: "1", objectiveSatisfied: true, remainingWork: [],
+          criteria: [{ criterionId: "objective", status: "satisfied", evidenceRefs: ["document:plan"] }] } } } } } });
 
   async function closeSourceRun(f: Awaited<ReturnType<typeof seedHeldComment>>) {
     await db.update(heartbeatRuns).set({ status: "succeeded", finishedAt: new Date(Date.now() + 1_000) })
@@ -772,9 +781,10 @@ describePostgres("saved intents while another run's accounting is pending", () =
   });
 
   it.each([
-    { shape: "read unchanged", edit: false, delivered: 0 },
-    { shape: "edited after the read", edit: true, delivered: 1 },
-  ])("settles a stale queued run of a message the closing run read mid-turn ($shape)", async ({ edit, delivered }) => {
+    { shape: "read unchanged and cited as handled", edit: false, cited: true, delivered: 0 },
+    { shape: "read unchanged but not cited", edit: false, cited: false, delivered: 1 },
+    { shape: "edited after the read", edit: true, cited: true, delivered: 1 },
+  ])("settles a stale queued run of a message the closing run read mid-turn ($shape)", async ({ edit, cited, delivered }) => {
     const f = await seedHeldComment();
     await runningNativeSource(f);
     const [wake] = await db.insert(agentWakeupRequests).values({ companyId: f.companyId, agentId: f.agentId, source: "automation",
@@ -788,6 +798,7 @@ describePostgres("saved intents while another run's accounting is pending", () =
     await readHistoryDuringTurn(f);
     if (edit) await db.update(issueComments).set({ body: "Edited: also include the FOLLOWUP line twice.",
       updatedAt: new Date(Date.now() + 500) }).where(eq(issueComments.id, f.commentId));
+    await reportResult(f, f.sourceRunId, cited);
     await closeSourceRun(f);
     await db.update(issues).set({ executionRunId: null, executionLockedAt: null }).where(eq(issues.id, f.issueId));
     await settle(f); await settle(f);
@@ -805,14 +816,16 @@ describePostgres("saved intents while another run's accounting is pending", () =
   }, 180_000);
 
   it.each([
-    { outcome: "succeeded", edit: "none", consumed: true },
-    { outcome: "succeeded", edit: "during the run", consumed: false },
-    { outcome: "succeeded", edit: "after the run finished", consumed: false },
-    { outcome: "failed", edit: "none", consumed: false },
-  ])("counts a mid-turn history read as delivery only for a run that $outcome on the current revision (edited: $edit)", async ({ outcome, edit, consumed }) => {
+    { outcome: "succeeded", edit: "none", cited: true, consumed: true },
+    { outcome: "succeeded", edit: "none", cited: false, consumed: false },
+    { outcome: "succeeded", edit: "during the run", cited: true, consumed: false },
+    { outcome: "succeeded", edit: "after the run finished", cited: true, consumed: false },
+    { outcome: "failed", edit: "none", cited: true, consumed: false },
+  ])("counts a mid-turn history read as delivery only for a run that $outcome on the current revision and cited it (edited: $edit, cited: $cited)", async ({ outcome, edit, cited, consumed }) => {
     const f = await seedHeldComment();
     await runningNativeSource(f);
     await readHistoryDuringTurn(f);
+    await reportResult(f, f.sourceRunId, cited);
     const editComment = (at: number) => db.update(issueComments).set({ body: "Edited after the read.", updatedAt: new Date(at) })
       .where(eq(issueComments.id, f.commentId));
     if (edit === "during the run") await editComment(Date.now() + 500);
@@ -836,9 +849,10 @@ describePostgres("saved intents while another run's accounting is pending", () =
   }, 180_000);
 
   it.each([
-    { read: true, delivered: 0 },
-    { read: false, delivered: 1 },
-  ])("settles a held message as soon as its run closes the task (read mid-turn: $read)", async ({ read, delivered }) => {
+    { read: true, cited: true, delivered: 0 },
+    { read: true, cited: false, delivered: 1 },
+    { read: false, cited: false, delivered: 1 },
+  ])("settles a held message as soon as its run closes the task (read mid-turn: $read, cited: $cited)", async ({ read, cited, delivered }) => {
     const f = await seedHeldComment();
     await db.update(heartbeatRuns).set({ costAccountingPending: false }).where(eq(heartbeatRuns.id, f.pendingRunId));
     await db.delete(agentWakeupRequests).where(eq(agentWakeupRequests.id, f.wakeId));
@@ -846,10 +860,12 @@ describePostgres("saved intents while another run's accounting is pending", () =
     duringTurn = async runId => {
       duringTurn = null;
       closingRunId = runId;
+      await db.update(issueComments).set({ createdAt: new Date(), updatedAt: new Date() }).where(eq(issueComments.id, f.commentId));
       await postComment(f);
       if (!read) return;
       await db.update(heartbeatRuns).set({ runtimeMode: "native", nativeIssueId: f.issueId }).where(eq(heartbeatRuns.id, runId));
       await readHistoryDuringTurn({ ...f, sourceRunId: runId });
+      await reportResult(f, runId, cited);
       await db.update(heartbeatRuns).set({ runtimeMode: "legacy" }).where(eq(heartbeatRuns.id, runId));
       await closeByAgent(f);
     };
@@ -864,6 +880,8 @@ describePostgres("saved intents while another run's accounting is pending", () =
     await settle(f); await settle(f);
     expect(deliveries(f.commentId)).toHaveLength(delivered);
     expect(await issueStatus(f)).toBe("done");
+    const delivery = deliveries(f.commentId)[0]?.context.paperclipWake as { comments?: Array<{ id: string; readByEarlierTurn?: boolean }> } | undefined;
+    if (delivered) expect(delivery?.comments?.find(comment => comment.id === f.commentId)?.readByEarlierTurn ?? false).toBe(read);
   }, 180_000);
 
   it("still refuses work at a reached hard stop, which the board owns", async () => {

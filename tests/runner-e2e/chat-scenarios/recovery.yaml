@@ -52,17 +52,20 @@ scenarios:
     capabilities:
       - recovery/exhaustion
     context: >-
-      The website run stopped for a reason only a person can resolve (its selected model was
-      rejected), and the person has since restored the configuration. The source task exposes
-      ordinary Retry to its authorized human; an infrastructure fault would instead continue
-      automatically.
+      The website run stopped for a reason only a person can resolve: the provider
+      rejected its selected model, and that model is still selected. The source task
+      exposes ordinary Retry to its authorized human; an infrastructure fault would
+      instead continue automatically.
     query: >-
       Try the website task again.
     expected_outcome: >-
-      The response directs or presents the supported human Retry action and explains the current
-      state. One accepted retry rechecks execution gates and preserves earlier attempt evidence.
-      The person is not asked to certify internal infrastructure facts, and failure remains
-      visible if the new attempt cannot start.
+      The response directs or presents the supported human Retry action and explains the
+      current state. Retry rechecks the selected model before it starts anything: while
+      the rejected model is still selected, no new attempt starts, the failure stays
+      visible, and the person is told which setting to change, with a link to it. After
+      the person selects a working model, one accepted retry of the original run starts
+      with that model, preserves the earlier attempt evidence and completes the task. The
+      person is not asked to certify internal infrastructure facts.
   - id: recovery.workspace-repair
     capabilities:
       - recovery/workspace

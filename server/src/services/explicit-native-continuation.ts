@@ -4,7 +4,7 @@ import { assertDurableChatWakeupRequest, assertDurableChatWakeupReceipt, type Du
 import { notifyExecutionRunWork } from "./execution-control-notifications.js";
 import { canSelectFreshWorkspace, freshReadinessSchema, retainedIssueWorkspaceForRetry, type ContinuationReadiness } from "./fresh-workspace-continuation.js";
 import { verifiedWorkspaceSnapshotReceipt } from "./workspace-recovery-snapshot.js";
-import { readTaskRetryIntent } from "./task-retry.js";
+import { readTaskRetryIntent, retireTaskRetriesContinuedBy } from "./task-retry.js";
 import { isPreDispatchExecutionWaitVerified } from "./pre-dispatch-execution-wait.js";
 import { readSystemRecovery } from "./system-recovery-state.js";
 import { hasRequiredWorkspaceRecovery } from "./workspace-restore-recovery-state.js";
@@ -21,7 +21,7 @@ import { hasNativeLocalProcessStop, hasHistoricalSuspendedNativeSession, nativeG
 import { completeTerminatedLocalNativeSessionCleanup, completeTerminatedRemoteNativeSessionCleanup, nativeSessionCleanupBlock } from "../vendor/paperclip-runner/index.js";
 import { hasRecoveredCleanupStopReceipt, hasRemoteTerminationReceipt, remoteLeaseCleanupScope } from "./remote-execution-termination.js";
 import { z } from "zod";
-import { and, desc, eq, gt, inArray, isNull, ne, not, or, sql } from "drizzle-orm";
+import { and, desc, eq, gt, inArray, isNull, ne, not, or, sql, type SQL } from "drizzle-orm";
 import {
   agents, agentWakeupRequests, approvals, issueApprovals, issueThreadInteractions,
   environmentLeases, heartbeatRuns, issueComments, issueRecoveryActions,
@@ -132,6 +132,45 @@ export async function undeliveredLegacyUserCommentIds(
   const historyRead = await historyReadDeliveredCommentIds(db, { companyId, issueId, agentId,
     commentIds: [...valid].filter(id => !firstTurn.has(id)) });
   return commentIds.filter(id => valid.has(id) && !firstTurn.has(id) && !historyRead.has(id));
+}
+
+function continuationDecisionHolds(companyId: string, wait: { issueId: SQL; actorId: SQL; taskRetrySourceRunId: SQL }) {
+  return sql<boolean>`(exists (select 1 from ${issueThreadInteractions}
+      where ${issueThreadInteractions.companyId} = ${companyId} and ${issueThreadInteractions.issueId} = ${wait.issueId}
+        and ${issueThreadInteractions.status} = 'pending'
+        and ${activeIssueInteractionCondition({ responsibleUser: wait.actorId })}
+        and (${wait.taskRetrySourceRunId} is null or (not (${issueThreadInteractions.kind} in ('ask_user_questions', 'connection_intent')
+          and not (${issueThreadInteractions.payload} ?| array['toolAction', 'secretProposal', 'connectionAuthorization'])
+          and coalesce(${issueThreadInteractions.payload} #>> '{target,type}', '') <> 'issue_document')
+          and not exists (select 1 from ${heartbeatRuns} admitted
+            where admitted.company_id = ${companyId} and admitted.id::text = ${wait.taskRetrySourceRunId}
+              and admitted.created_at > ${issueThreadInteractions.createdAt}))))
+    or exists (select 1 from ${issueApprovals} inner join ${approvals}
+      on ${approvals.id} = ${issueApprovals.approvalId} and ${approvals.companyId} = ${companyId}
+      where ${issueApprovals.companyId} = ${companyId} and ${issueApprovals.issueId} = ${wait.issueId}
+        and ${approvals.status} in ('pending', 'revision_requested')))`;
+}
+
+export async function hasPendingContinuationDecision(db: Db, input: {
+  companyId: string; issueId: string; actorId: string; taskRetrySourceRunId?: string | null;
+}): Promise<boolean> {
+  const [row] = await db.execute<{ holds: boolean }>(sql`select ${continuationDecisionHolds(input.companyId, {
+    issueId: sql`${input.issueId}::uuid`, actorId: sql`${input.actorId}::text`,
+    taskRetrySourceRunId: sql`${input.taskRetrySourceRunId ?? null}::text`,
+  })} as holds`);
+  return row?.holds === true;
+}
+
+export async function pendingContinuationDecisionWaits(db: Db, companyId: string,
+  waits: Array<{ id: string; issueId: string; actorId: string; taskRetrySourceRunId: string | null }>): Promise<Set<string>> {
+  if (!waits.length) return new Set();
+  const rows = await db.execute<{ id: string }>(sql`select held.id from unnest(
+      ${sql.param(waits.map(wait => wait.id))}::text[], ${sql.param(waits.map(wait => wait.issueId))}::uuid[],
+      ${sql.param(waits.map(wait => wait.actorId))}::text[], ${sql.param(waits.map(wait => wait.taskRetrySourceRunId))}::text[])
+      as held(id, issue_id, actor_id, source_run_id)
+    where ${continuationDecisionHolds(companyId, { issueId: sql`held.issue_id`, actorId: sql`held.actor_id`,
+      taskRetrySourceRunId: sql`held.source_run_id` })}`);
+  return new Set(rows.map(row => row.id));
 }
 
 /** Called under the issue lock, in the transaction that creates the new turn.
@@ -315,19 +354,9 @@ export async function admitExplicitNativeContinuation(input: {
   }
   if (!sourceChecks.length && !nativeQueuedSend) return null;
   if (blocker && blocker.recoveryActionId === null) return null;
-  const [pendingInteraction] = await db.select({ id: issueThreadInteractions.id }).from(issueThreadInteractions).where(and(
-    eq(issueThreadInteractions.companyId, companyId), eq(issueThreadInteractions.issueId, issueId),
-    eq(issueThreadInteractions.status, "pending"),
-    activeIssueInteractionCondition({ responsibleUserId: actorId }),
-    taskRetry ? sql`not (${issueThreadInteractions.kind} in ('ask_user_questions', 'connection_intent')
-      and not (${issueThreadInteractions.payload} ?| array['toolAction', 'secretProposal', 'connectionAuthorization'])
-      and coalesce(${issueThreadInteractions.payload} #>> '{target,type}', '') <> 'issue_document')` : undefined,
-  )).limit(1);
-  const [pendingApproval] = await db.select({ id: approvals.id }).from(issueApprovals).innerJoin(approvals, and(
-    eq(approvals.id, issueApprovals.approvalId), eq(approvals.companyId, companyId),
-  )).where(and(eq(issueApprovals.companyId, companyId), eq(issueApprovals.issueId, issueId),
-    inArray(approvals.status, ["pending", "revision_requested"]))).limit(1);
-  if (pendingInteraction || pendingApproval) return blocked("decision_pending", "A pending approval or question must be resolved before this message can start.");
+  if (await hasPendingContinuationDecision(db, { companyId, issueId, actorId,
+    taskRetrySourceRunId: taskRetry?.sourceRunId ?? null }))
+    return blocked("decision_pending", "A pending approval or question must be resolved before this message can start.");
   if (!sourceChecks.length) return null;
 
   const sources: Run[] = [];
@@ -704,6 +733,8 @@ export async function admitExplicitNativeContinuation(input: {
     details: { continuation: retry ? "explicit_user_retry" : "explicit_user_message", ...authorization,
       recoveryActionIds: actions.map(action => action.id), previousRunIds: sources.map(run => run.id) },
   });
+  if (!input.taskRetryRequestId) await retireTaskRetriesContinuedBy(db, { companyId, issueId, agentId,
+    sourceRunIds: sources.map(run => run.id) });
   if (readiness) await persistActivity(db, { companyId, actorType: "system", actorId: "task-recovery",
     action: readiness.mode === "reuse_issue_workspace" ? "issue.retry_workspace_reused" : "issue.fresh_workspace_selected",
     entityType: "issue", entityId: issueId, details: { ...readiness, runId: input.successorRunId } });

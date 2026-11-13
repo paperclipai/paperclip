@@ -14,7 +14,10 @@ function valid(scenarioId: string): IdentityObservation {
     state: { connection: { id: "shared", name: "Shared QA", grantId: "grant", companyId: "acorn", ownership: "shared", provider: "openrouter", method: "api_key", status: "connected" }, humanId: "alex",
       saved: { companyId: "acorn", enabled: true, connectionId: "shared", grantId: "grant", model }, modelBeforeTest: model, beforeEnabled: false, afterReplyEnabled: false, agentWriteStatus: 403, agentTestStatus: 403,
       persistedAfterReload: true, testHttpStatus: 200, visibleTestReceipt: true, history: [history], testCostEvents: 2 } };
-  if (scenarioId.endsWith("configure-decision-model")) o.state.testResult = { status: "succeeded", invocationId: "test", answers: {}, usage };
+  if (scenarioId.endsWith("configure-decision-model")) {
+    o.state.testResult = { status: "succeeded", invocationId: "test", answers: {}, usage };
+    o.links = ["/acorn/company/settings/connections"]; o.state.replyLinkedControlHref = "/acorn/company/settings/connections";
+  }
   else if (scenarioId.endsWith("fast-responses")) {
     o.state.testResult = { status: "succeeded", invocationId: "test", text: "I will check that for you.", durationMs: 140, usage };
     o.links = ["/acorn/company/settings/connections"]; o.state.replyLinkedControlHref = "/acorn/company/settings/connections";
@@ -101,8 +104,23 @@ describe("company model service configuration and actual tests", () => {
     const notRendered = valid(d.scenarioId); notRendered.links = ["/acorn/company/settings"];
     expect(d.grade(notRendered).passed).toBe(false);
   });
-  it("fast response act follows only the reply's links and stops when none shows the control", async () => {
-    const definition = companyModelIdentityCases.find(row => row.scenarioId === "companies.fast-responses")!;
+  // Full cohort 9 (master b1ef1f3022): the reply said choosing and testing the decision model is board-only and linked
+  // Connections, and also "I tested it at the provider level" about a real usage read. A wording regex for "I ... tested"
+  // failed it. The service stayed off after the reply and the person reached the control from the reply's link.
+  it("grades the decision model on saved state and the reply link whose page showed the control, not reply wording", () => {
+    const d = companyModelIdentityCases.find(row => row.scenarioId === "companies.configure-decision-model")!;
+    const retained = valid(d.scenarioId); retained.links = ["/acorn/agents/ceo/overview", "/acorn/company/settings/connections"];
+    retained.reply = "I tested it at the provider level just now with a live usage probe. The company Decision model is currently not configured; choosing this account and running the decision test requires a board user. Open [connection settings](/acorn/company/settings/connections).";
+    expect(d.grade(retained).passed).toBe(true);
+    const reworded = valid(d.scenarioId); reworded.reply = "Only a board member can turn this on: [Connections](/acorn/company/settings/connections), Decision model, then Run test.";
+    expect(d.grade(reworded).passed).toBe(true);
+    const enabledByAgent = valid(d.scenarioId); enabledByAgent.state.afterReplyEnabled = true; expect(d.grade(enabledByAgent).passed).toBe(false);
+    const unlinked = valid(d.scenarioId); unlinked.state.replyLinkedControlHref = null;
+    expect(d.grade(unlinked).checks.find(check => check.id === "reply-link-opens-decision-model-control")?.passed).toBe(false);
+    const notRendered = valid(d.scenarioId); notRendered.links = ["/acorn/company/settings"]; expect(d.grade(notRendered).passed).toBe(false);
+  });
+  it.each(["companies.fast-responses", "companies.configure-decision-model"])("%s act follows only the reply's links and stops when none shows the control", async id => {
+    const definition = companyModelIdentityCases.find(row => row.scenarioId === id)!;
     const support = await import("./identity-support.js");
     const observe = vi.spyOn(support, "observeIdentity").mockResolvedValue({ links: ["/RUN/company/settings", "https://elsewhere.test/RUN/company/settings/connections"], origin: "https://fixture.test" } as never);
     const fill = vi.fn(async () => {}), save = vi.fn(async () => {}), goto = vi.fn(async () => {});
@@ -110,8 +128,8 @@ describe("company model service configuration and actual tests", () => {
     const evidence = vi.fn(async () => {});
     const ctx = { refreshIssue: async () => {}, issue: () => ({ conversationState: "waiting" }), allRuns: async () => [{ id: "source", status: "succeeded" }],
       observationDeadlineAt: Date.now() + 390_000, input: { evidence, fixtures: { company: { id: "acorn", issuePrefix: "RUN" } }, api: { get: async () => ({ settings: { enabled: false } }) },
-        page: { url: () => "https://fixture.test/RUN/issues/RUN-1", goto, getByRole: () => section } } };
-    const state = valid("companies.fast-responses").state; delete state.replyLinkedControlHref;
+        page: { url: () => "https://fixture.test/RUN/issues/RUN-1", goto, getByRole: () => section, locator: () => section } } };
+    const state = valid(id).state; delete state.replyLinkedControlHref;
     await definition.act!(ctx as never, state);
     expect(state.replyLinkedControlHref).toBeNull(); expect(fill).not.toHaveBeenCalled(); expect(save).not.toHaveBeenCalled();
     expect(goto.mock.calls.map(call => (call as unknown[])[0])).not.toContain("/RUN/company/settings/connections");
