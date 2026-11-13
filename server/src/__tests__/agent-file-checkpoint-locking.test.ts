@@ -182,7 +182,7 @@ describe("agent file checkpoint locking", () => {
     expect((await head()).generation).toBe(before.generation);
   });
 
-  it("consumes an accepted change confirmation once, in the commit of the changed checkpoint", async () => {
+  it("consumes an accepted change confirmation once, in the commit of the changed checkpoint only", async () => {
     const copy = await warmRun();
     const sourceRunId = randomUUID(), issueId = randomUUID(), interactionId = randomUUID();
     await db.insert(heartbeatRuns).values({ id: sourceRunId, companyId, agentId, status: "succeeded" });
@@ -198,6 +198,9 @@ describe("agent file checkpoint locking", () => {
       result: { version: 1, outcome: "accepted" }, resolvedByUserId: userId, resolvedAt: new Date(),
     });
     const confirmation = async () => (await db.select().from(issueThreadInteractions).where(eq(issueThreadInteractions.id, interactionId)))[0]!.result;
+    // A turn that changes no file keeps the confirmation for the change it approves.
+    expect((await copies.checkpointWarm({ companyId, runId: copy.runId }))).toMatchObject({ state: "warm_saved", errorCode: null });
+    expect(await confirmation()).not.toHaveProperty("consumedByRunId");
     objects.uploads.length = 0;
     await fs.writeFile(path.join(copy.localRoot, "approved.md"), "approved change");
     const saved = (await copies.checkpointWarm({ companyId, runId: copy.runId }))!;

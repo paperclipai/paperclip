@@ -222,11 +222,11 @@ export function agentFileStore(db: Db) {
       action: "agent.files_updated", entityType: "agent", entityId: agent.id, details });
   }
   /** The write authorization of `locked`, without the row lock or the file
-   * tree. It is enough for a save that changes no file. With `preview`, its
-   * transaction always rolls back: an accepted change confirmation is not
-   * consumed, so only the locked commit of the save consumes it. A preview
-   * stops a save that will be refused before that save uploads any bytes. */
-  async function authorizeSave(companyId: string, agentId: string, actor: AuthorizationActor, preview = false) {
+   * tree, in a transaction that always rolls back. It writes nothing: an
+   * accepted change confirmation stays unconsumed, so only the locked commit
+   * of a save consumes it. It is enough for a save that changes no file, and
+   * it stops a save that will be refused before that save uploads any bytes. */
+  async function authorizeSave(companyId: string, agentId: string, actor: AuthorizationActor) {
     const rollback = Symbol("authorization preview");
     await db.transaction(async tx => {
       await assertAgentInteraction(tx, { companyId, actorAgentId: actor.type === "agent" ? actor.agentId : null,
@@ -234,7 +234,7 @@ export function agentFileStore(db: Db) {
       const [agent] = await tx.select().from(agents).where(and(eq(agents.companyId, companyId), eq(agents.id, agentId)));
       if (!agent) throw notFound("Agent not found");
       await authorizeInstructionCommit(tx, actor, agent);
-      if (preview) throw rollback;
+      throw rollback;
     }).catch(error => { if (error !== rollback) throw error; });
   }
   return {
@@ -345,7 +345,7 @@ export function agentFileStore(db: Db) {
       // Upload the run's changed bytes before the row lock, after a preview of
       // the same write authorization. The commit below runs that authorization,
       // validates the tree and records only objects with matching digests.
-      if (input.checkpoint) await authorizeSave(input.companyId, input.agentId, actor, true);
+      if (input.checkpoint) await authorizeSave(input.companyId, input.agentId, actor);
       const prepared = input.checkpoint ? await uploadAgentFilesBeforeCommit(db, target, input.sourceDir, input.checkpoint.entries
         .filter(([name, entry]) => entry.kind === "file" && JSON.stringify(incoming.entries.get(name)) !== JSON.stringify(input.baseline.entries.get(name)))
         .map(([name, entry]) => ({ path: name, size: entry.size!, sha256: entry.hash! }))) : undefined;
