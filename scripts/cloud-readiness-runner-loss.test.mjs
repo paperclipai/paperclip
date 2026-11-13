@@ -50,8 +50,8 @@ function github({ attempts, script = [], startAttempt = 1, status = "completed" 
   state.rerunFailed = write;
   state.readAnnotations = async job => state.evidence[job.id]?.annotations ?? [];
   state.readLog = async job => state.evidence[job.id]?.log ?? "";
-  state.retry = ({ failure, api }) => retryRunnerLoss({ sha, failure, api, log: () => {}, cancel: state.cancel,
-    rerunFailed: state.rerunFailed, readAnnotations: state.readAnnotations, readLog: state.readLog });
+  state.retry = ({ failure, api }) => retryRunnerLoss({ sha, failure, api, log: () => {}, cancel: path => state.cancel(path),
+    rerunFailed: path => state.rerunFailed(path), readAnnotations: job => state.readAnnotations(job), readLog: job => state.readLog(job) });
   state.job = (attempt, id, name, conclusion, evidence) => {
     if (evidence) state.evidence[id] = evidence;
     return { id, name, run_id: 99, run_attempt: attempt, head_sha: sha, status: conclusion ? "completed" : "in_progress", conclusion: conclusion ?? null };
@@ -141,6 +141,30 @@ describe("runner-loss retry", () => {
     assert.equal(g.writes.at(-1), "/repos/paperclipai/paperclip/actions/runs/99/rerun-failed-jobs");
   });
 
+  test("a newer attempt started while evidence was read is never cancelled", async () => {
+    const g = github({ attempts: {}, startAttempt: 2, status: "in_progress" });
+    g.attempts[2] = reclaimedAttempt(g, 2);
+    const readLog = g.readLog;
+    // The other waiter ends attempt 2 and starts attempt 3 during our log read.
+    g.readLog = async job => { g.attempt = 3; g.status = "in_progress"; return readLog(job); };
+    assert.equal(await g.retry({ failure: { runId: 99, attempt: 2 }, api: g.api }), "retrying");
+    assert.deepEqual(g.writes, []);
+  });
+
+  test("a cancellation conflict after the attempt completed keeps waiting", async () => {
+    const g = github({ attempts: {}, startAttempt: 2, status: "in_progress" });
+    g.attempts[2] = reclaimedAttempt(g, 2);
+    g.cancel = async () => { g.status = "completed"; throw Object.assign(new Error("HTTP 409"), { status: 409 }); };
+    assert.equal(await g.retry({ failure: { runId: 99, attempt: 2 }, api: g.api }), "retrying");
+  });
+
+  test("an unexpected cancellation error with the attempt still running is surfaced", async () => {
+    const g = github({ attempts: {}, startAttempt: 2, status: "in_progress" });
+    g.attempts[2] = reclaimedAttempt(g, 2);
+    g.cancel = async () => { throw Object.assign(new Error("HTTP 500"), { status: 500 }); };
+    await assert.rejects(g.retry({ failure: { runId: 99, attempt: 2 }, api: g.api }), /HTTP 500/);
+  });
+
   test("a real failure is never retried", async () => {
     const g = github({ attempts: {}, startAttempt: 2 });
     g.attempts[2] = flakyAttempt(g)(2);
@@ -174,6 +198,17 @@ describe("runner-loss retry", () => {
     await assert.rejects(retryRunnerLoss({ sha: "b".repeat(40), failure: { runId: 99, attempt: 2 }, api: g.api, log: () => {},
       cancel: g.cancel, rerunFailed: g.rerunFailed, readAnnotations: g.readAnnotations, readLog: g.readLog }), /identity changed/);
     assert.deepEqual(g.writes, []);
+  });
+
+  test("every waiter job that may retry can read runner-loss evidence", async () => {
+    const { readFileSync } = await import("node:fs");
+    const read = file => readFileSync(new URL(`../.github/workflows/${file}`, import.meta.url), "utf8");
+    const job = (text, name) => text.match(new RegExp(`\\n  ${name}:\\n[\\s\\S]*?(?=\\n  [a-z_-]+:\\n)`))[0];
+    for (const [file, name] of [["release.yml", "verify_canary"], ["docker.yml", "source_verification"], ["docker.yml", "publication_verification"]]) {
+      const text = job(read(file), name);
+      assert.match(text, /\n      checks: read\b/, `${file} ${name} needs checks: read for annotations`);
+      assert.match(text, /\n      actions: write\b/, `${file} ${name} needs actions: write for logs and retries`);
+    }
   });
 
   test("the production writer only posts cancel or rerun-failed-jobs to a canonical run", async () => {

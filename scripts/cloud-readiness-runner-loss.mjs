@@ -84,8 +84,21 @@ export async function retryRunnerLoss({ sha, failure, api, readAnnotations, read
   // Re-running failed jobs needs a completed run. Healthy jobs still running
   // would be repeated anyway once they are cancelled, so end the attempt now.
   if (run.status !== "completed") {
+    // Job evidence reads take time. Another waiter may have ended this attempt
+    // and started the next one meanwhile: never cancel a newer attempt.
+    const fresh = await api(`/repos/${repository}/actions/runs/${run.id}`);
+    if (!trusted(fresh, sha, run.id)) throw new Error("Cloud readiness identity changed before a runner-loss retry.");
+    if (fresh.run_attempt !== run.run_attempt || fresh.status === "completed") return "retrying";
     log(`Cloud readiness ${run.id} attempt ${run.run_attempt} lost its runner; ending the attempt to retry its failed jobs.`);
-    await cancel(`/repos/${repository}/actions/runs/${run.id}/cancel`);
+    try {
+      await cancel(`/repos/${repository}/actions/runs/${run.id}/cancel`);
+    } catch (error) {
+      // The attempt finished or was cancelled by the other waiter first.
+      const latest = await api(`/repos/${repository}/actions/runs/${run.id}`);
+      if (!trusted(latest, sha, run.id)) throw error;
+      if (latest.run_attempt > run.run_attempt || latest.status === "completed" || [409, 422].includes(error.status)) return "retrying";
+      throw error;
+    }
     return "retrying";
   }
   try {
