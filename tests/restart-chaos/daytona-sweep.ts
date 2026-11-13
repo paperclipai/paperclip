@@ -208,10 +208,12 @@ export class DaytonaWaveSweeper {
   /**
    * Cleanup through Paperclip only: delete the wave's own environment (with its
    * reusable leases). Then list, read-only, what is still not destroyed or
-   * archived, for the report. No sandbox is changed by the harness itself.
+   * archived, for the report, and the wave's archived sandboxes left behind
+   * (Daytona deletes them later; until then they are named so an operator can
+   * delete them by the wave's labels). No sandbox is changed by the harness itself.
    */
   async cleanUp(settleMs = 90_000, deleteWindowMs = R6_SETTLE_MS): Promise<{ environmentDeleted: boolean; environmentDeleteBlocked: string | null;
-    remainingSandboxes: string[]; errors: string[] }> {
+    remainingSandboxes: string[]; archivedSandboxes: string[]; errors: string[] }> {
     const errors: string[] = [];
     let environmentDeleted = false;
     let environmentDeleteBlocked: string | null = null;
@@ -226,14 +228,16 @@ export class DaytonaWaveSweeper {
       else errors.push(`environment delete: ${message}`);
     }
     let remainingSandboxes: string[] = [];
+    let archivedSandboxes: string[] = [];
     // Provider teardown is asynchronous; give it a bounded settle before reporting.
     const deadline = Date.now() + settleMs;
     for (;;) {
       try {
-        remainingSandboxes = (await this.listWaveSandboxes())
-          .filter(sandbox => !GONE_SANDBOX_STATES.has(String(sandbox.state ?? "").toLowerCase())
-            && !ARCHIVED_SANDBOX_STATES.has(String(sandbox.state ?? "").toLowerCase()))
+        const listed = await this.listWaveSandboxes();
+        const state = (sandbox: DaytonaSandboxRow) => String(sandbox.state ?? "").toLowerCase();
+        remainingSandboxes = listed.filter(sandbox => !GONE_SANDBOX_STATES.has(state(sandbox)) && !ARCHIVED_SANDBOX_STATES.has(state(sandbox)))
           .map(sandbox => `${sandbox.id}:${sandbox.state}`);
+        archivedSandboxes = listed.filter(sandbox => ARCHIVED_SANDBOX_STATES.has(state(sandbox))).map(sandbox => `${sandbox.id}:${sandbox.state}`);
       } catch (error) {
         errors.push(`sandbox listing: ${error instanceof Error ? error.message : String(error)}`);
         break;
@@ -241,6 +245,6 @@ export class DaytonaWaveSweeper {
       if (!remainingSandboxes.length || Date.now() >= deadline) break;
       await delay(10_000);
     }
-    return { environmentDeleted, environmentDeleteBlocked, remainingSandboxes, errors };
+    return { environmentDeleted, environmentDeleteBlocked, remainingSandboxes, archivedSandboxes, errors };
   }
 }

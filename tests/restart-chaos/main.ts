@@ -921,7 +921,8 @@ async function main(): Promise<number> {
       console.info(`Daytona R6 sweep: ${sandboxSweep.liveSandboxes.length} live, ${sandboxSweep.archivedSandboxes.length} archived after release, `
         + `${sandboxSweep.orphanSandboxes.length} orphaned, `
         + `${sandboxSweep.heldLeases.length} held leases${sandboxSweep.error ? `, error ${sandboxSweep.error}` : ""}; `
-        + `environment deleted: ${cleanup.environmentDeleted}${cleanup.environmentDeleteBlocked ? " (still blocked by a pending sandbox cleanup)" : ""}; still running after cleanup: ${cleanup.remainingSandboxes.join(", ") || "none"}`);
+        + `environment deleted: ${cleanup.environmentDeleted}${cleanup.environmentDeleteBlocked ? " (still blocked by a pending sandbox cleanup)" : ""}; still running after cleanup: ${cleanup.remainingSandboxes.join(", ") || "none"}; `
+        + `archived and left for Daytona's deletion (delete by the wave's company and environment labels): ${cleanup.archivedSandboxes.join(", ") || "none"}`);
       // A sandbox neither archived nor destroyed after cleanup is a leak for a person to act on.
       if (cleanup.remainingSandboxes.length) { anyFailure = true; remoteCleanupPending = true; }
       // A delete still blocked by pending sandbox cleanup after the settle window

@@ -29,6 +29,17 @@ describe("cleanup through Paperclip", () => {
     expect(calls).toBeGreaterThan(1);
   });
 
+  it("names the wave's archived sandboxes left after cleanup without counting them as still running", async () => {
+    const rows: DaytonaSandboxRow[] = ["started", "archiving", "archived", "destroyed"].map(state =>
+      ({ id: state, state, labels: { "paperclip-company-id": COMPANY, "paperclip-environment-id": ENVIRONMENT } }));
+    const api = { delete: async () => undefined };
+    const sweeper = new DaytonaWaveSweeper({ apiKey: "unused", companyId: COMPANY, environmentId: ENVIRONMENT, api: api as never });
+    (sweeper as unknown as { client: unknown }).client = readOnlyDaytona({ list: () => (async function* () { yield* rows; })() });
+    const result = await sweeper.cleanUp(0, 1_000);
+    expect(result.remainingSandboxes).toEqual(["started:started"]);
+    expect(result.archivedSandboxes).toEqual(["archiving:archiving", "archived:archived"]);
+  });
+
   it("reports other environment delete failures as errors", async () => {
     const api = { delete: async () => { throw new Error("DELETE returned 500: boom"); } };
     const sweeper = new DaytonaWaveSweeper({ apiKey: "unused", companyId: COMPANY, environmentId: ENVIRONMENT, api: api as never });
