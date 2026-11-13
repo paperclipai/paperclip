@@ -149,7 +149,8 @@ test("retired Chat opt-outs allow sends and resets while preserving existing his
         ).status(),
       ).toBe(201);
     await page.reload();
-    await expect(page.getByText("Visible history", { exact: true }).first()).toBeVisible();
+    // The chat history also lists the chat under its first message, so read the transcript bubble.
+    await expect(page.getByTestId("task-chat-human-bubble").getByText("Visible history", { exact: true })).toBeVisible();
     expect(
       (await json(await request.get(`/api/issues/${issue.id}/comments`))).some(
         (c: any) => c.body.includes("Visible history"),
@@ -282,7 +283,8 @@ test("Coordinator agent switching preserves drafts and opens one conversation on
     const chat = await json(await request.get(f.chatPath));
     await switchTo("Beta");
     await switchTo("Alpha");
-    await expect(page.getByText("Coordinator conversation acceptance", { exact: true })).toBeVisible();
+    // The first message also names the chat in the history, so read it from the transcript bubble.
+    await expect(page.getByTestId("task-chat-human-bubble").getByText("Coordinator conversation acceptance", { exact: true })).toBeVisible();
     expect((await json(await request.get(f.chatPath))).id).toBe(chat.id);
     expect(await json(await request.get(`/api/companies/${f.company.id}/chats`))).toHaveLength(1);
   } finally {
