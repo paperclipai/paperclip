@@ -6,7 +6,6 @@ import { isProcessRunAdmissionClosed } from "./run-admission.js";
 import { continueFreshInTransaction, hasPendingFreshContinuation, settleCoalescedFreshContinuationHolds } from "../fresh-continuation-fallback.js";
 import { refreshRunStartYieldIfStale } from "../run-start-handover.js";
 import { deliveredQueuedCommentIds } from "../queued-comment-delivery.js";
-import { buildHeartbeatRunStatusLiveEventPayload } from "../heartbeat-run-status-payload.js";
 import { hasAutomaticInteractionDeliveryHold, INTERACTION_DELIVERY_DENIED, recheckQueuedRunInteractions, withInteractionDeliveryOrigin } from "../agent-interaction-delivery.js";
 import { deferredWorkIntentWait } from "../work-intent-outbox.js";
 import { notifyIssueRecovery } from "../issue-recovery-notifications.js";
@@ -901,18 +900,40 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
    * unless it carries a person's message that no run of this agent has
    * received yet (admission can attach deferred comments to a queued system
    * continuation without changing its wake reason). Its wake and run are
-   * locked in the order admission's coalescing uses, so a message attached
-   * concurrently is either seen here or saved behind the cancelled run.
+   * locked in the order admission's coalescing uses while the message check
+   * reads them. The cancel itself goes through the run lifecycle's
+   * compare-and-set, so it saves the same never-started proof as every other
+   * queued-run cancel (task release needs it to promote messages saved behind
+   * this run), and it is fenced on the row version the check saw: a message
+   * attached after the check changes the run, the cancel matches nothing, and
+   * the check runs again.
    */
   async function cancelClosedTaskContinuation(run: typeof heartbeatRuns.$inferSelect, issueId: string) {
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      const decision = await checkClosedTaskContinuation(run, issueId);
+      if (decision.kind !== "cancel") return decision;
+      const write = await setRunStatusFromLive(run.id, "cancelled", ["queued"], {
+        finishedAt: new Date(), error: "The task was closed before this continuation started.",
+        errorCode: "issue_closed_before_start",
+      }, undefined, sql`${heartbeatRuns}.xmin::text = ${decision.rowVersion}`);
+      if (write.updated && write.run) return { kind: "cancelled" as const, run: write.run };
+      if (write.run?.status !== "queued") return { kind: "not_queued" as const };
+    }
+    // Still changing under us: leave it queued; the next dispatch pass checks again.
+    return { kind: "still_queued" as const };
+  }
+
+  async function checkClosedTaskContinuation(run: typeof heartbeatRuns.$inferSelect, issueId: string) {
     return db.transaction(async (tx) => {
       if (run.wakeupRequestId) await tx.select({ id: agentWakeupRequests.id }).from(agentWakeupRequests).where(and(
         eq(agentWakeupRequests.id, run.wakeupRequestId), eq(agentWakeupRequests.companyId, run.companyId),
       )).for("update");
-      const [current] = await tx.select().from(heartbeatRuns).where(and(
-        eq(heartbeatRuns.id, run.id), eq(heartbeatRuns.companyId, run.companyId), eq(heartbeatRuns.status, "queued"),
-      )).for("update");
-      if (!current) return { kind: "not_queued" as const };
+      const [locked] = await tx.select({ run: heartbeatRuns, rowVersion: sql<string>`${heartbeatRuns}.xmin::text` })
+        .from(heartbeatRuns).where(and(
+          eq(heartbeatRuns.id, run.id), eq(heartbeatRuns.companyId, run.companyId), eq(heartbeatRuns.status, "queued"),
+        )).for("update");
+      if (!locked) return { kind: "not_queued" as const };
+      const current = locked.run;
       const context = parseObject(current.contextSnapshot);
       const commentIds = [...new Set([...extractWakeCommentIds(context), ...queuedCommentIdsFromRunContext(context),
         readNonEmptyString(context.wakeCommentId), readNonEmptyString(context.commentId)]
@@ -926,17 +947,7 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
           agentId: current.agentId, commentIds: personComments.map(comment => comment.id) });
         if (personComments.some(comment => !delivered.has(comment.id))) return { kind: "carries_person_message" as const };
       }
-      await notifyChatRunMilestones(tx, { companyId: current.companyId, runId: current.id, issueId });
-      await notifyInstructionCollection(tx, { companyId: current.companyId, runId: current.id });
-      await notifyExternalAgentSettlement(tx, { companyId: current.companyId, runId: current.id });
-      await notifyCancelledWorkspacePreservation(tx, { companyId: current.companyId, runId: current.id });
-      await notifyExecutionRunWork(tx, { companyId: current.companyId, agentId: current.agentId, runId: current.id });
-      await notifyUnsafeWorkspaceExportRunChange(tx, current);
-      const now = new Date();
-      const [cancelled] = await tx.update(heartbeatRuns).set({ status: "cancelled", finishedAt: now,
-        error: "The task was closed before this continuation started.", errorCode: "issue_closed_before_start", updatedAt: now })
-        .where(and(eq(heartbeatRuns.id, current.id), eq(heartbeatRuns.status, "queued"))).returning();
-      return cancelled ? { kind: "cancelled" as const, run: cancelled } : { kind: "not_queued" as const };
+      return { kind: "cancel" as const, rowVersion: locked.rowVersion };
     });
   }
 
@@ -968,9 +979,6 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
         if (closed.kind === "cancelled") {
           const cancelled = closed.run;
           await setWakeupStatus(run.wakeupRequestId, "skipped", { finishedAt: cancelled.finishedAt ?? new Date(), error: "issue_closed_before_start" });
-          publishLiveEvent({ companyId: cancelled.companyId, type: "heartbeat.run.status",
-            payload: buildHeartbeatRunStatusLiveEventPayload(cancelled) });
-          publishRunLifecyclePluginEvent(cancelled);
           await releaseIssueExecutionAndPromote(cancelled, { suppressImmediateRecovery: true, deferredPostCommitEffects });
         }
         // A person's undelivered message rides on this run: it runs as their
