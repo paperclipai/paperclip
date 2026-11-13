@@ -69,6 +69,20 @@ describe("agent-named chats", () => {
     expect(await chatAwaitsFirstAgentTurn(server.db, f.companyId, f.issueId)).toBe(false);
   });
 
+  it("asks for a title on the agent's first turn after the person's first message, also in a chat the agent opened", async () => {
+    const f = await chatFixture();
+    const svc = issueService(server.db);
+    expect(await chatAwaitsFirstAgentTurn(server.db, f.companyId, f.issueId)).toBe(false);
+    await svc.addComment(f.issueId, "I found a regression in the export.", { agentId: f.agentId, runId: f.runId });
+    expect(await chatAwaitsFirstAgentTurn(server.db, f.companyId, f.issueId)).toBe(false);
+    await new Promise(resolve => setTimeout(resolve, 5));
+    await svc.addComment(f.issueId, "Which export?", { userId: f.responsibleUserId! }, { authorType: "user" });
+    expect(await chatAwaitsFirstAgentTurn(server.db, f.companyId, f.issueId)).toBe(true);
+    await new Promise(resolve => setTimeout(resolve, 5));
+    await svc.addComment(f.issueId, "The CSV export.", { agentId: f.agentId, runId: f.runId });
+    expect(await chatAwaitsFirstAgentTurn(server.db, f.companyId, f.issueId)).toBe(false);
+  });
+
   it("lets the chat's agent name it once, and logs the rename", async () => {
     const f = await chatFixture();
     await name(f, "Password reset help");

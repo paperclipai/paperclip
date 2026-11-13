@@ -337,6 +337,10 @@ it("renames a chat inline from the history", async () => {
   const history = container.querySelector('nav[aria-label="Chat history"]')!;
   await act(async () => history.querySelector<HTMLButtonElement>('button[aria-label="Rename How do I reset my password?"]')!.click());
   const input = history.querySelector<HTMLInputElement>('input[aria-label="Chat title"]')!;
+  // Touch devices keep the shared 16px input size, so Safari does not zoom on focus.
+  expect(input.className.split(" ")).toContain("text-base");
+  // Touch devices keep the shared 16px input size, so Safari does not zoom on focus.
+  expect(input.className.split(/s+/)).not.toContain("text-sm");
   await act(async () => {
     Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(input, "Password help");
     input.dispatchEvent(new Event("input", { bubbles: true }));

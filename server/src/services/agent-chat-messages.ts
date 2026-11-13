@@ -115,7 +115,7 @@ export async function sendAgentChatMessage(
     if (!conversation && !options.receiptOnly) {
       conversation = await svc.create(actor.companyId, {
         title: `Chat with ${context.agent.name}`, assigneeAgentId: actor.agentId,
-        conversationAgentId: actor.agentId, conversationUserId: userId,
+        conversationAgentId: actor.agentId, conversationUserId: userId, titleIsProvisional: true,
         conversationState: "waiting", status: "in_review", createdByAgentId: actor.agentId,
         responsibleUserId: userId, trustExplicitResponsibleUserId: true,
       });

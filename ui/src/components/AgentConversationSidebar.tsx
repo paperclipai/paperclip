@@ -171,7 +171,7 @@ function ChatHistoryRow({ agent, chat, onSelect, onRename }: { agent: Agent; cha
     }
   };
   if (editing) return <form className="flex flex-col gap-1 px-2 py-1" onSubmit={event => { event.preventDefault(); void save(); }}>
-    <Input aria-label="Chat title" autoFocus value={draft} maxLength={240} disabled={saving} className="h-8 text-sm md:text-sm"
+    <Input aria-label="Chat title" autoFocus value={draft} maxLength={240} disabled={saving} className="h-8 md:text-sm"
       onChange={event => setDraft(event.target.value)} onBlur={() => { if (!error) void save(); }}
       onKeyDown={event => { if (event.key === "Escape") { event.stopPropagation(); cancel(); } }} />
     {error && <p role="alert" className="text-xs text-destructive">{error}</p>}

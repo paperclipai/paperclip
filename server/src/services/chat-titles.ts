@@ -1,4 +1,4 @@
-import { and, eq, isNotNull, ne } from "drizzle-orm";
+import { and, asc, eq, gt, isNotNull, ne } from "drizzle-orm";
 import { issueComments, issues, type Db } from "@paperclipai/db";
 import { logActivity, type ActivityPublication, type LogActivityInput } from "./activity-log.js";
 
@@ -56,10 +56,18 @@ export async function setProvisionalChatTitle(
   }, publications);
 }
 
-/** Whether a chat still waits for its first agent turn: no agent has written in it yet. */
+/**
+ * Whether a chat waits for the agent's first turn after the person's first message: the person has written,
+ * and no agent message followed it yet. A chat the agent opened with a message of its own still qualifies.
+ */
 export async function chatAwaitsFirstAgentTurn(db: Db, companyId: string, issueId: string) {
+  const [first] = await db.select({ createdAt: issueComments.createdAt }).from(issueComments).where(and(
+    eq(issueComments.companyId, companyId), eq(issueComments.issueId, issueId), isNotNull(issueComments.authorUserId),
+  )).orderBy(asc(issueComments.createdAt)).limit(1);
+  if (!first) return false;
   const [reply] = await db.select({ id: issueComments.id }).from(issueComments).where(and(
     eq(issueComments.companyId, companyId), eq(issueComments.issueId, issueId), isNotNull(issueComments.authorAgentId),
+    gt(issueComments.createdAt, first.createdAt),
   )).limit(1);
   return !reply;
 }
