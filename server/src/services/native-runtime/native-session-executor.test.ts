@@ -477,6 +477,8 @@ import {
   stopStaleRemoteRunnerBeforeBootstrap,
   verifyRemoteRunnerOrSettledExit,
   nativeRecoveryCommandUnanswered,
+  nativeUnansweredRunnerReplacementDisposition,
+  nativeAdmittedProviderAttemptLimit,
   readRemoteProviderPackManifest,
   verifyRemoteProviderPackManifest,
   prepareRemoteProviderPackOnTarget,
@@ -1171,6 +1173,35 @@ describe("remote controller restart adoption", () => {
       const { target } = fixture({ ...midTurn, runnerInstanceId: "different" });
       await expect(verifyRemoteRunnerOrSettledExit({ claim: unanswered, target: target as never, identity,
         runId: "run", normalizedSessionId: "session", providerAttempt: 2 })).rejects.toThrow("runner_remote_recovery_identity_mismatch");
+    });
+    it.each([
+      ["the last attempt's first unanswered read", { adoptedRunnerUnanswered: true, replacing: false }, 3, "retryable_failure"],
+      ["a replacement that also went unanswered", { adoptedRunnerUnanswered: true, replacing: true }, 3, "terminal_failure"],
+      ["another failure on the last attempt", { adoptedRunnerUnanswered: false, replacing: false }, 3, "terminal_failure"],
+      ["the extra replacement attempt", { adoptedRunnerUnanswered: true, replacing: false }, 4, "terminal_failure"],
+    ] as const)("bounds the replacement after %s", (_case, input, attempt, phase) => {
+      const now = new Date("2026-11-13T06:37:26.000Z");
+      const disposition = nativeUnansweredRunnerReplacementDisposition(
+        nativeSessionFailureDisposition(attempt, now, "provider_transport_failed"), { ...input, attempt, now });
+      expect(disposition.phase).toBe(phase);
+      if (phase === "retryable_failure") {
+        expect(disposition).toEqual({ phase, failureCode: "native_session_interrupted", nextAttemptAt: new Date(now.getTime() + 30_000) });
+      }
+    });
+    it("admits provider attempt 4 at execution only for the replacement claim", () => {
+      const claim = { kind: "reattach_remote_runner" as const, runId: "run", leaseOwner: "owner", controllerGeneration: 6,
+        providerAttempt: 4, restartKind: "hard" as const, recoveryRequestId: null,
+        remote: { providerLeaseId: "sandbox", remoteCwd: "/workspace" } };
+      expect(nativeAdmittedProviderAttemptLimit({ ...claim, replaceUnansweredRunner: true })).toBe(4);
+      expect(nativeAdmittedProviderAttemptLimit(claim)).toBe(3);
+      expect(nativeAdmittedProviderAttemptLimit({ kind: "resume_dead_runner", runId: "run", leaseOwner: "owner",
+        controllerGeneration: 6, providerAttempt: 4, restartKind: "hard", recoveryRequestId: null })).toBe(3);
+      expect(nativeAdmittedProviderAttemptLimit(null)).toBe(3);
+    });
+    it("replaces the live Runner on the extra replacement attempt", async () => {
+      const { target } = fixture(midTurn);
+      await expect(verifyRemoteRunnerOrSettledExit({ claim: unanswered, target: target as never, identity,
+        runId: "run", normalizedSessionId: "session", providerAttempt: 4 })).resolves.toBeUndefined();
     });
     it.each([
       "native_session_recovery_failed: HarnessReconciliationError: codex_history_read_failed: thread/turns/list requires supported paginated history; Error: provider_transport_failed: PRP command session.snapshot timed out (runner connected; pending ahead 0; last runner event seq 338 76s ago)",
