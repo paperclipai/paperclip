@@ -407,6 +407,31 @@ describePostgres("heartbeat retry module database wiring", () => {
     expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, run.id))).toHaveLength(0);
   });
 
+  it("re-checks the task's hourly cap under the task lock when the sweep records an attempt while the retry is being prepared", async () => {
+    const { run, agent, issue, companyId } = await fixture();
+    const minutesAgo = (minutes: number) => new Date(now.getTime() - minutes * 60_000);
+    const failed = { ...run, errorCode: "repository_catalog_unavailable",
+      resultJson: { errorFamily: "transient_upstream", executionRecovery: { kind: "bootstrap", providerWorkStarted: false } } };
+    for (const minutes of [50, 40, 30, 20]) await db.insert(heartbeatRuns).values({ companyId, agentId: agent.id, scopeKind: "issue",
+      issueId: issue.id, status: "failed", errorCode: "repository_catalog_unavailable", scheduledRetryReason: "transient_failure",
+      scheduledRetryAttempt: 1, contextSnapshot: { issueId: issue.id }, createdAt: minutesAgo(minutes), finishedAt: minutesAgo(minutes) });
+    const sweepContinuation = (createdAt: Date) => db.insert(activityLog).values({ companyId, actorType: "system", actorId: "system",
+      action: "issue.continued_automatically", entityType: "issue", entityId: issue.id, details: {}, createdAt });
+    await sweepContinuation(minutesAgo(55));
+    const { deps } = boundRetries();
+    const racing = extracted.createHeartbeatRetries(db, { ...deps, getAgentInvokability: async (target: Agent | null | undefined) => {
+      await db.transaction(async tx => {
+        await tx.select({ id: issues.id }).from(issues).where(eq(issues.id, issue.id)).for("update");
+        await tx.insert(activityLog).values({ companyId, actorType: "system", actorId: "system",
+          action: "issue.continued_automatically", entityType: "issue", entityId: issue.id, details: {}, createdAt: minutesAgo(1) });
+      });
+      return deps.getAgentInvokability(target);
+    } });
+    expect(await racing.scheduleBoundedRetryForRun(failed, agent, { now, random: () => 0 }))
+      .toMatchObject({ outcome: "retry_exhausted" });
+    expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, run.id))).toHaveLength(0);
+  });
+
   it("keeps the accepted interaction owner and its catalog provider deadline", async () => {
     const { run, agent } = await fixture();
     const retryAt = new Date(now.getTime() + 3600_000);

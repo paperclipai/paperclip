@@ -4128,6 +4128,33 @@ process.on("SIGTERM", () => child.kill("SIGTERM"));
       expect(await claimAt(fixture, new Date(start + 60 * MINUTE))).toBe("resume_dead_runner");
       expect(await lastClaimEntry(fixture)).toMatchObject({ interruptionStartedAt: start + 60 * MINUTE });
     });
+
+    async function suspendByGracefulDrain(fixture: Awaited<ReturnType<typeof seedRun>>, at: Date) {
+      await fixture.db.update(nativeRunFinalizations).set({
+        recoveryHistory: sql`${nativeRunFinalizations.recoveryHistory} || ${JSON.stringify([{ disposition: "restart_suspended", at: at.toISOString() }])}::jsonb`,
+      }).where(eq(nativeRunFinalizations.runId, fixture.runId));
+    }
+
+    it("resumes a run that progressed for 20 minutes before a graceful drain suspended it", async () => {
+      const fixture = await seedInterruptedCheckpoint("DEADLINE-DRAIN-PROGRESS");
+      const start = Date.now();
+      expect(await claimAt(fixture, new Date(start))).toBe("resume_dead_runner");
+      await appendRunEvents(fixture, providerProgressed(1));
+      await suspendByGracefulDrain(fixture, new Date(start + 20 * MINUTE));
+      expect(await claimAt(fixture, new Date(start + 21 * MINUTE))).toBe("resume_dead_runner");
+      expect(await lastClaimEntry(fixture)).toMatchObject({ interruptionStartedAt: start + 21 * MINUTE });
+      const [run] = await fixture.db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, fixture.runId));
+      expect(run!.errorCode).not.toBe("native_restart_recovery_blocked");
+    });
+
+    it("still ends a run with no provider progress at the deadline when a graceful drain suspended it", async () => {
+      const fixture = await seedInterruptedCheckpoint("DEADLINE-DRAIN-NO-PROGRESS");
+      const start = Date.now();
+      expect(await claimAt(fixture, new Date(start))).toBe("resume_dead_runner");
+      await appendRunEvents(fixture, providerNeverStarted);
+      await suspendByGracefulDrain(fixture, new Date(start + 15 * MINUTE));
+      expect(await claimAt(fixture, new Date(start + 16 * MINUTE))).toBe("native_interruption_deadline_exceeded");
+    });
   });
 
   it("does not charge a restart past the generation limit whose resume never started the provider", async () => {

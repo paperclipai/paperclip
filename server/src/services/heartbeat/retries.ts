@@ -651,7 +651,7 @@ export function createHeartbeatRetries(db: Db, dependencies: HeartbeatRetryDepen
     // issue binding: that could either violate the FK or misclassify history.
     const issueId = run.scopeKind === "issue" ? run.issueId : null;
 
-    if (!baseSchedule) {
+    const reportRetryExhausted = async () => {
       const exhaustion = {
         retryReason,
         scheduledRetryAttempt: consumedAttempts,
@@ -687,7 +687,8 @@ export function createHeartbeatRetries(db: Db, dependencies: HeartbeatRetryDepen
         attempt: nextAttempt,
         maxAttempts,
       };
-    }
+    };
+    if (!baseSchedule) return reportRetryExhausted();
 
     if (await legacyExecutionNeedsReconciliationWithEvidence(db, run)) {
       return {
@@ -879,6 +880,7 @@ export function createHeartbeatRetries(db: Db, dependencies: HeartbeatRetryDepen
           run: typeof heartbeatRuns.$inferSelect;
           reusedExisting: boolean;
         }
+      | { outcome: "task_cap_spent" }
       | {
           outcome: "not_scheduled";
           reason: string;
@@ -927,6 +929,14 @@ export function createHeartbeatRetries(db: Db, dependencies: HeartbeatRetryDepen
               run: existing,
               reusedExisting: true,
             };
+          if (transientIssueId !== null) {
+            if (transientIssueId !== issueId)
+              await tx.execute(
+                sql`select id from issues where company_id = ${run.companyId} and id = ${transientIssueId} for update`,
+              );
+            if (!(await transientRetryWithinTaskCap(tx as unknown as Db, run.companyId, transientIssueId, now)))
+              return { outcome: "task_cap_spent" };
+          }
         }
         if (retryReason === INTERACTION_CONTINUATION_INFRA_RETRY_REASON) {
           if (issueId) {
@@ -1415,6 +1425,7 @@ export function createHeartbeatRetries(db: Db, dependencies: HeartbeatRetryDepen
       },
     );
 
+    if (scheduleResult.outcome === "task_cap_spent") return reportRetryExhausted();
     if (scheduleResult.outcome === "not_scheduled") {
       await appendRunEvent(run, {
         eventType: "lifecycle",

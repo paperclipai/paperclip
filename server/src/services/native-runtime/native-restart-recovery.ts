@@ -1795,11 +1795,12 @@ export async function claimNativeRestartRecoveries(input: {
 
       // Read before this claim appends its own history entry.
       const cleanDrainSuspension = suspendedByCleanDrain(row.coordinator);
+      const progressCredit = await restartResumeKeepsAttempt(tx, { runId: row.run.id, coordinator: row.coordinator });
       const restartCredit = cleanDrainSuspension
         ? { keepsAttempt: true, noProgressRestarts: previousNoProgressRestarts(row.coordinator.recoveryHistory) }
-        : await restartResumeKeepsAttempt(tx, { runId: row.run.id, coordinator: row.coordinator });
+        : progressCredit;
       const resumeKeepsAttempt = restartCredit.keepsAttempt;
-      const interruptionProgressed = !cleanDrainSuspension && restartCredit.noProgressRestarts === 0;
+      const interruptionProgressed = progressCredit.noProgressRestarts === 0;
       const priorInterruptionStart = previousInterruptionStartedAt(row.coordinator.recoveryHistory);
       const interruptionStartedAt = !interruptionProgressed && priorInterruptionStart !== null
         ? priorInterruptionStart : now.getTime();

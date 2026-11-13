@@ -91,7 +91,7 @@ describePostgres("assigned-work sweep database round trips", () => {
       }
       return { suspects: suspects.length, verdicts };
     });
-    const heldChild = rows[300].id;
+    const heldChild = rows[300]!.id!;
     const held = await measure(() => sweep.checkIssue({ companyId, issueId: heldChild }));
     expect(held.value).toMatchObject({ outcome: "ok", verdict: { clause: "waiting", reason: "agent_paused" } });
 
