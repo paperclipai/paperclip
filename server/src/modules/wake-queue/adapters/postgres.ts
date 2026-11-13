@@ -1374,8 +1374,6 @@ export function createPostgresWakeQueueAdapter(db: Db, deps: WakeQueuePostgresAd
           issueStatus: issueRow?.status ?? "",
           hasAssigneeUser: Boolean(issueRow?.assigneeUserId),
           assigneeAgentMatchesRunAgent: issueRow?.assigneeAgentId === run.agentId,
-          // The fresh-continuation fallback already settled a superseded run
-          // (no replay); the saved input queued behind it is the next turn.
           legacyExecutionNeedsReconciliation: evidence.kind === "complete" && !agentRunSupersededByFreshContinuation(run) &&
             await legacyExecutionNeedsReconciliationWithEvidence(tx as unknown as Db, evidence.run),
           // An operator stop never promotes old queued work by itself. The
