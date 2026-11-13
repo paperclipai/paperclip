@@ -130,6 +130,23 @@ describe("TaskChatRunnerTurn", () => {
     }
   });
 
+  it("does not repeat the agent's waiting line in the turn body", () => {
+    // The shared header (rendered by the thread) shows the waiting line; the body adds no second line.
+    act(() => root.render(
+      <MemoryRouter><ThemeProvider><TaskChatRequestHistoryContext.Provider value="issue-1">
+        <TaskChatRunnerTurn runId="run-1" agentName="Runner" items={[]} status="queued" showHeader={false}
+          startedAtMs={Date.now() - 2_000} execution={{
+            phase: "queued", label: "Waiting for Codie", cause: "agent_at_capacity",
+            lastConfirmedActivityAt: null, retryAt: null, attempt: 1, maxAttempts: 3,
+            recoveryOwner: null, nextAction: null, permittedActions: ["inspect_run"], predecessorRunId: null, successorRunId: null,
+            agentQueue: { agentId: "agent-1", agentName: "Codie", maxConcurrentRuns: 20, runningCount: 20, position: 41, queuedCount: 295 },
+          }} />
+      </TaskChatRequestHistoryContext.Provider></ThemeProvider></MemoryRouter>,
+    ));
+    expect(container.textContent).not.toContain("Waiting for Codie");
+    expect(container.querySelector('[data-testid="task-chat-current-activity"]')).toBeNull();
+  });
+
   it("does not call a running turn waiting, however long it runs", () => {
     vi.useFakeTimers();
     try {

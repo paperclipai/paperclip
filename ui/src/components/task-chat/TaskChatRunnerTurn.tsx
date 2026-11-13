@@ -337,7 +337,9 @@ export function TaskChatRunnerTurn({
           />
         </div>
       ) : null}
-      {!final && currentActivityItems.length === 0 ? <RunnerCurrentActivityTail status={status} waitingLabel={waitingLabel} /> : null}
+      {/* The header's waiting line already names the agent's queue; no second line. */}
+      {!final && currentActivityItems.length === 0 && !agentQueueWaitFor({ status, execution })
+        ? <RunnerCurrentActivityTail status={status} waitingLabel={waitingLabel} /> : null}
     </div></TaskChatShimmerScope>
   );
 }
