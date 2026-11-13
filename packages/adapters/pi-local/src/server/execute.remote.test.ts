@@ -591,12 +591,12 @@ describe("pi remote execution", () => {
       onLog: async () => {},
     });
 
-    const call = runChildProcess.mock.calls[0] as unknown as [string, string, string[]] | undefined;
+    const call = runChildProcess.mock.calls[0] as unknown as [string, string, string[], { stdin?: string } | undefined] | undefined;
     const sessionIndex = call?.[2].indexOf("--session") ?? -1;
     expect(sessionIndex).toBeGreaterThanOrEqual(0);
     const usedSession = sessionIndex >= 0 ? call?.[2][sessionIndex + 1] : null;
     expect(usedSession).not.toBe("/remote/workspace/.paperclip-runtime/pi/sessions/session-123.jsonl");
-    const prompt = String(call?.[2].at(-1) ?? "");
+    const prompt = String(call?.[3]?.stdin ?? "");
     expect(prompt).toContain("## Owned assignment");
     expect(prompt).toContain("BOOTSTRAP run-ssh-head-failure");
     expect(prompt).toContain("comment-scope");
@@ -624,8 +624,8 @@ describe("pi remote execution", () => {
       onLog: async () => {},
     } as never);
 
-    const call = runChildProcess.mock.calls.at(-1) as unknown as [string, string, string[]] | undefined;
-    deliveredPrompt = String(call?.[2].at(-1) ?? "");
+    const call = runChildProcess.mock.calls.at(-1) as unknown as [string, string, string[], { stdin?: string } | undefined] | undefined;
+    deliveredPrompt = String(call?.[3]?.stdin ?? "");
     expect(deliveredPrompt).toContain(fixture.paperclipTaskMarkdownAssignment);
     expect(deliveredPrompt.indexOf("Append the same ledger entry.")).toBeLessThan(
       deliveredPrompt.lastIndexOf("Append the same ledger entry."),
@@ -658,12 +658,15 @@ describe("pi remote execution", () => {
       onLog: async () => {},
     } as never);
 
-    const call = runChildProcess.mock.calls.at(-1) as unknown as [string, string, string[]] | undefined;
+    const call = runChildProcess.mock.calls.at(-1) as unknown as [string, string, string[], { stdin?: string } | undefined] | undefined;
     const args = call?.[2] ?? [];
     const systemPrompt = args[args.indexOf("--append-system-prompt") + 1] ?? "";
-    const userPrompt = args.at(-1) ?? "";
+    const userPrompt = call?.[3]?.stdin ?? "";
     expect(systemPrompt).toContain("You are agent agent-1 (Pi Builder).");
     expect(userPrompt).not.toContain("You are agent agent-1 (Pi Builder).");
+    // Regression guard for HEL-2217: the prompt must not ride in argv, where a
+    // long issue thread hits MAX_ARG_STRLEN and every later wake dies E2BIG.
+    expect(args).not.toContain(userPrompt);
   });
 
   it("preserves custom prompt templates in both configured carriers", async () => {
@@ -690,10 +693,10 @@ describe("pi remote execution", () => {
       onLog: async () => {},
     } as never);
 
-    const call = runChildProcess.mock.calls.at(-1) as unknown as [string, string, string[]] | undefined;
+    const call = runChildProcess.mock.calls.at(-1) as unknown as [string, string, string[], { stdin?: string } | undefined] | undefined;
     const args = call?.[2] ?? [];
     const systemPrompt = args[args.indexOf("--append-system-prompt") + 1] ?? "";
-    const userPrompt = args.at(-1) ?? "";
+    const userPrompt = call?.[3]?.stdin ?? "";
     expect(systemPrompt).toBe("CUSTOM POLICY run-custom-policy");
     expect(userPrompt).toBe("CUSTOM POLICY run-custom-policy");
   });
@@ -724,10 +727,10 @@ describe("pi remote execution", () => {
       onLog: async () => {},
     } as never);
 
-    const call = runChildProcess.mock.calls.at(-1) as unknown as [string, string, string[]] | undefined;
+    const call = runChildProcess.mock.calls.at(-1) as unknown as [string, string, string[], { stdin?: string } | undefined] | undefined;
     const args = call?.[2] ?? [];
     const systemPrompt = args[args.indexOf("--append-system-prompt") + 1] ?? "";
-    const userPrompt = args.at(-1) ?? "";
+    const userPrompt = call?.[3]?.stdin ?? "";
     expect(systemPrompt).toContain("You are agent agent-1 (Pi Builder).");
     expect(systemPrompt).toContain("Connection tools:");
     expect(systemPrompt).not.toContain("Execution contract:");
@@ -768,10 +771,10 @@ describe("pi remote execution", () => {
       onLog: async () => {},
     } as never);
 
-    const call = runChildProcess.mock.calls.at(-1) as unknown as [string, string, string[]] | undefined;
+    const call = runChildProcess.mock.calls.at(-1) as unknown as [string, string, string[], { stdin?: string } | undefined] | undefined;
     const args = call?.[2] ?? [];
     const systemPrompt = args[args.indexOf("--append-system-prompt") + 1] ?? "";
-    const userPrompt = args.at(-1) ?? "";
+    const userPrompt = call?.[3]?.stdin ?? "";
     expect(systemPrompt).toContain("Loaded instructions for this run.");
     expect(systemPrompt).toContain("You are agent agent-1 (Pi Builder).");
     expect(systemPrompt).toContain("Connection tools:");
