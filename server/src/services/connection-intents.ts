@@ -1523,9 +1523,14 @@ export function connectionIntentService(db: Db) {
       const attribution = record(run.contextSnapshot?.aiConnection);
       if (attribution && attribution.provider !== binding.provider) return null;
       if ((saved || managed) && attribution && typeof attribution.identity === "string" && typeof attribution.connectionId === "string" && typeof attribution.grantId === "string") {
-        await aiConnectionService(db).markAuthenticationFailed({ companyId: run.companyId, runId: run.id, agentId: run.agentId,
+        const outcome = await aiConnectionService(db).markAuthenticationFailed({ companyId: run.companyId, runId: run.id, agentId: run.agentId,
           runStartedAt: run.startedAt ?? run.createdAt,
           attribution: attribution as unknown as AiConnectionAttribution & { identity: string } });
+        // The connection is still usable: an isolated failure, a failure of a
+        // credential generation that was since refreshed or reconnected, or a
+        // recovered token. Asking a person to reconnect would be wrong, and the
+        // run keeps its ordinary failure recovery.
+        if (outcome === "below_threshold" || outcome === "stale_generation" || outcome === "recovered") return null;
       }
       return requestWithContext(context, binding.provider, { purpose: "ai" });
     },

@@ -357,6 +357,7 @@ export function readHeartbeatRunErrorFamily(
   if (
     run.errorCode === "codex_transient_upstream" ||
     run.errorCode === "claude_transient_upstream" ||
+    run.errorCode === "claude_edge_rejected" ||
     run.errorCode === "codex_harness_crash"
   ) {
     return "transient_upstream";

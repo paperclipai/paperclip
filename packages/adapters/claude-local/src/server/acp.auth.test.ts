@@ -672,3 +672,39 @@ describe("Claude ACP hello probe on local and SSH targets", () => {
     expect(spawnedEnv.CLAUDE_CONFIG_DIR).toBeUndefined();
   });
 });
+
+describe("Claude ACP edge rejections", () => {
+  const cloudflareStdout = [
+    initLine,
+    '{"type":"result","subtype":"success","is_error":true,"api_error_status":403,"error":"authentication_failed","result":"Failed to authenticate. API Error: 403 <!DOCTYPE html><html><head><title>Attention Required! | Cloudflare</title></head><body>Cloudflare Ray ID: <strong>8f2a1b3c4d5e6f70</strong></body></html>","session_id":"abc"}',
+  ].join("\n");
+
+  it("does not report a Cloudflare 403 from the ACP login probe as missing auth", async () => {
+    probeResult.value = { exitCode: 1, stdout: cloudflareStdout, stderr: "", timedOut: false };
+
+    const checks = await probeClaudeAcpSandboxLogin({ config: { engine: "acp" }, target: sandboxTarget });
+
+    expect(checks.some((check) => check.code === ADAPTER_AUTH_MISSING_CHECK_CODE)).toBe(false);
+    expect(checks.some((check) => check.code === "claude_hello_probe_auth_required")).toBe(false);
+    expect(JSON.stringify(checks)).not.toContain("<html");
+  });
+
+  it("maps an engine auth label on Cloudflare text to a transient edge rejection", () => {
+    const mapped = mapClaudeAcpAuthErrorCode({
+      exitCode: 1, signal: null, timedOut: false, errorCode: "acpx_auth_required",
+      errorMessage: "Failed to authenticate. API Error: 403 Attention Required! | Cloudflare",
+    });
+
+    expect(mapped.errorCode).toBe("claude_edge_rejected");
+    expect(mapped.errorFamily).toBe("transient_upstream");
+  });
+
+  it("keeps a genuine ACP authentication failure on the login path", () => {
+    const mapped = mapClaudeAcpAuthErrorCode({
+      exitCode: 1, signal: null, timedOut: false, errorCode: "acpx_auth_required",
+      errorMessage: "Failed to authenticate. API Error: 401 Invalid bearer token",
+    });
+
+    expect(mapped.errorCode).toBe("claude_auth_required");
+  });
+});
