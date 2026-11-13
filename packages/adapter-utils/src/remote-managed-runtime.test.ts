@@ -1,3 +1,5 @@
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -176,11 +178,52 @@ describe("remote managed runtime", () => {
     expect(restoreWorkspaceFromSshExecution).not.toHaveBeenCalled();
     expect(runSshCommand).toHaveBeenCalledWith(
       expect.anything(),
-      "base64 < '/app/.paperclip-runtime/codex/home/auth.json'",
+      expect.stringContaining("base64 < '/app/.paperclip-runtime/codex/home/auth.json'"),
       { maxBuffer: 1024 * 1024 },
     );
     expect(restoredAuth).toBe('{"token":"remote"}\n');
   });
+
+  it.each(["missing", "present", "read failure", "connection failure"])(
+    "preserves SSH file-read error semantics for %s files",
+    async outcome => {
+      const root = await mkdtemp(path.join(os.tmpdir(), "paperclip-ssh-file-read-"));
+      cleanupDirs.push(root);
+      const remoteCwd = path.join(root, "remote's workspace");
+      const assetDir = path.join(remoteCwd, ".paperclip-runtime", "codex", "home");
+      await mkdir(assetDir, { recursive: true });
+      const content = Buffer.from([0, 255, 1, 10]);
+      if (outcome !== "missing") await writeFile(path.join(assetDir, "auth.json"), content);
+      const transportError = Object.assign(new Error("fixture SSH connection failed"), { code: 255 });
+      runSshCommand.mockImplementationOnce(async (_spec, command) => {
+        if (outcome === "connection failure") throw transportError;
+        const script = outcome === "read failure"
+          ? `base64() { printf '%s\\n' 'fixture read failure' >&2; return 44; }; ${command}`
+          : command!;
+        return promisify(execFile)("sh", ["-c", script!]);
+      });
+      let bytes: Buffer | undefined;
+      const prepared = await prepareRemoteManagedRuntime({
+        spec: { host: "ssh.example.test", port: 22, username: "agent", remoteWorkspacePath: remoteCwd,
+          remoteCwd, privateKey: null, knownHosts: null, strictHostKeyChecking: true },
+        runId: "read-file", adapterKey: "codex", workspaceLocalDir: root, workspaceRemoteDir: remoteCwd,
+        syncWorkspace: false,
+        assets: [{ key: "home", localDir: root, restore: async ({ assetDir, readFile }) => {
+          bytes = await readFile(path.posix.join(assetDir, "auth.json"));
+        } }],
+      });
+      if (outcome === "present") {
+        await prepared.restoreWorkspace();
+        expect(bytes).toEqual(content);
+      } else if (outcome === "missing") {
+        await expect(prepared.restoreWorkspace()).rejects.toMatchObject({ code: "ENOENT" });
+      } else if (outcome === "connection failure") {
+        await expect(prepared.restoreWorkspace()).rejects.toBe(transportError);
+      } else {
+        await expect(prepared.restoreWorkspace()).rejects.toMatchObject({ code: 44, stderr: "fixture read failure\n" });
+      }
+    },
+  );
 
   it("stages each additional project into its own isolated SSH dir, isolating one failure", async () => {
     const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-remote-runtime-additional-"));

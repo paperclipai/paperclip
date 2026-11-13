@@ -512,7 +512,7 @@ describe("codex remote environment diagnostics", () => {
       last_refresh: lastRefresh,
     });
 
-  it.each(["success", "provider failure", "foreign account", "copyback failure"])(
+  it.each(["success", "provider failure", "foreign account", "copyback failure", "routed account"])(
     "preserves managed SSH probe credentials through %s before cleanup",
     async outcome => {
       const selectedHome = await makeScratchDir("paperclip-test-selected-codex-");
@@ -520,7 +520,9 @@ describe("codex remote environment diagnostics", () => {
       const refreshed = subscriptionAuth(outcome === "foreign account" ? "acct-other" : "acct-selected", "refreshed", "2020-01-02T00:00:00Z");
       const shared = subscriptionAuth("acct-shared", "untouched", "2020-01-01T00:00:00Z");
       const authPath = path.join(selectedHome, "auth.json");
-      await fs.writeFile(authPath, original);
+      if (outcome === "routed account") {
+        await fs.writeFile(path.join(selectedHome, "config.toml"), 'model_provider = "paperclip"\n[model_providers.paperclip]\nrequires_openai_auth = false\nenv_key = "PAPERCLIP_AI_PROVIDER_KEY"\n');
+      } else await fs.writeFile(authPath, original);
       await fs.writeFile(path.join(process.env.CODEX_HOME!, "auth.json"), shared);
       const basePrepare = prepareAdapterExecutionTargetRuntime.getMockImplementation()!;
       let stagingDir = "";
@@ -537,11 +539,14 @@ describe("codex remote environment diagnostics", () => {
                 expect(remotePath).toBe(path.posix.join(prepared.assetDirs.home, "auth.json"));
                 assetRestoreCalls += 1;
                 await expect(fs.stat(stagingDir)).resolves.toBeDefined();
+                if (outcome === "routed account") throw Object.assign(new Error("fixture auth file absent"), { code: "ENOENT" });
                 if (outcome === "copyback failure") throw new Error("fixture credential read failed");
                 return Buffer.from(refreshed);
               },
             } as Parameters<NonNullable<AdapterManagedRuntimeAsset["restore"]>>[0]);
-            expect(await fs.readFile(authPath, "utf8")).toBe(outcome === "foreign account" ? original : refreshed);
+            expect(await fs.readFile(authPath, "utf8").catch(() => null)).toBe(
+              outcome === "routed account" ? null : outcome === "foreign account" ? original : refreshed,
+            );
           } finally {
             await restoreWorkspace();
           }
@@ -552,7 +557,8 @@ describe("codex remote environment diagnostics", () => {
         runAdapterExecutionTargetProcess.mockResolvedValueOnce({ ...success, exitCode: 1, stdout: "", stderr: "fixture provider unavailable" });
       }
       const probe = testEnvironment({ companyId: "company-1", adapterType: "codex_local",
-        config: { engine: "cli", command: "codex", managedAiConnection: { identity: "selected-account" }, env: { CODEX_HOME: selectedHome } },
+        config: { engine: "cli", command: "codex", managedAiConnection: { identity: "selected-account" }, env: { CODEX_HOME: selectedHome,
+          ...(outcome === "routed account" ? { PAPERCLIP_AI_PROVIDER_KEY: "fixture-route-key" } : {}) } },
         executionTarget: { kind: "remote", transport: "ssh", remoteCwd: "/remote/workspace",
           spec: { host: "ssh.example.test", port: 22, username: "agent", privateKey: null, knownHosts: null,
             strictHostKeyChecking: true, remoteCwd: "/remote/workspace", remoteWorkspacePath: "/remote/workspace", useHostAuth: false } },
@@ -567,7 +573,10 @@ describe("codex remote environment diagnostics", () => {
       expect(restoreWorkspace).toHaveBeenCalledOnce();
       await expect(fs.stat(stagingDir)).rejects.toMatchObject({ code: "ENOENT" });
       expect(await fs.readFile(path.join(process.env.CODEX_HOME!, "auth.json"), "utf8")).toBe(shared);
-      expect(await fs.readFile(authPath, "utf8")).toBe(["foreign account", "copyback failure"].includes(outcome) ? original : refreshed);
+      expect(await fs.readFile(authPath, "utf8").catch(() => null)).toBe(
+        outcome === "routed account" ? null : ["foreign account", "copyback failure"].includes(outcome) ? original : refreshed,
+      );
+      if (outcome === "routed account") expect(capturedHomeAssetFiles.value).toEqual(["config.toml"]);
     },
   );
 

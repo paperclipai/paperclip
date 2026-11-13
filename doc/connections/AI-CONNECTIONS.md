@@ -458,7 +458,9 @@ per-turn directories are removed, including after provider or setup failure.
 Environment tests use the selected account and remove their temporary homes
 after probing. Managed Codex probes copy refreshed credentials to that account's
 local home before cleanup, even when the provider request fails. The merge rejects
-credentials from another account. A copyback failure fails the probe. A disconnected target can prevent remote cleanup; the run reports
+credentials from another account. Routed accounts can omit `auth.json`; the SSH
+reader reports confirmed file absence as `ENOENT`, which needs no copyback.
+Connection and file-read failures still fail the probe. A disconnected target can prevent remote cleanup; the run reports
 the resulting failure rather than silently selecting another account.
 
 Codex CLI runs in an in-place SSH workspace keep conversation files and native
