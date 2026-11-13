@@ -657,6 +657,9 @@ jobs:
       - name: Run generated-file drift checks against the Docker build context
         run: docker buildx build --file .github/docker-context-checks.Dockerfile .
 
+      - name: Verify Tailscale runtime clients
+        run: docker buildx build --file Dockerfile --target tailscale-client .
+
       - name: Upload CI profile timings
         continue-on-error: true
         if: always() && env.PAPERCLIP_CI_PROFILE == 'true'

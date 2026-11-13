@@ -55,6 +55,8 @@ vi.mock("@/api/ai-connection-pools", () => ({ aiConnectionPoolsApi: { list: pool
 
 const assistantConnectionsMock = vi.hoisted(() => vi.fn());
 vi.mock("@/api/publicMcp", () => ({ publicMcpApi: { connections: assistantConnectionsMock } }));
+const tailscaleConnectionsMock = vi.hoisted(() => vi.fn(async () => [] as Array<{ id: string; companyId: string; name: string; status: string }>));
+vi.mock("@/api/tailscale", () => ({ tailscaleApi: { list: tailscaleConnectionsMock } }));
 
 const listGalleryMock = vi.hoisted(() => vi.fn());
 const listApplicationsMock = vi.hoisted(() => vi.fn());
@@ -302,6 +304,26 @@ describe("Connectors landing page", () => {
     await act(() => button!.click());
     expect(navigateMock).toHaveBeenCalledWith("/apps/assistant-connection");
     expect(chatSetupMock).not.toHaveBeenCalled();
+  });
+
+  it("finds Tailscale in Connectors and opens network setup without creating a tool connection", async () => {
+    await renderBrowse(false);
+    await search("Tailscale");
+    const button = container.querySelector<HTMLButtonElement>('[aria-label="Connect Tailscale"]');
+    expect(button).not.toBeNull();
+    await act(() => button!.click());
+    expect(navigateMock).toHaveBeenCalledWith("/apps/tailscale");
+    expect(container.textContent).not.toContain("No connectors match");
+  });
+
+  it("shows a connected tailnet in Installed and removes it when disconnected", async () => {
+    tailscaleConnectionsMock.mockResolvedValueOnce([{ id: "tailnet", companyId: "company-1", name: "Home tailnet", status: "connected" }]);
+    const client = await renderBrowse(false);
+    await clickButton("Installed", container);
+    expect(container.querySelector('[data-app-slug="tailscale"]')?.textContent).toContain("Home tailnet");
+    await act(async () => { await client.invalidateQueries({ queryKey: ["tailscale-connections", "company-1"] }); });
+    await flushReact();
+    expect(container.querySelector('[data-app-slug="tailscale"]')).toBeNull();
   });
 
   it("keeps assistant setup in the Paperclip catalog when filtering connection sources", async () => {
@@ -1388,6 +1410,7 @@ describe("Connectors landing page", () => {
       "notion",
       "slack",
       "speko",
+      "tailscale",
       "telegram",
       "custom-mcp",
     ]);

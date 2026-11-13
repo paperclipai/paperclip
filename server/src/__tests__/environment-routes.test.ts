@@ -2130,6 +2130,29 @@ describe("environment routes", () => {
     expect(mockEnvironmentService.create).not.toHaveBeenCalled();
   });
 
+  it("stores a Tailscale connection as a company-scoped environment secret", async () => {
+    const environment = createSecretBackedSshEnvironment();
+    mockEnvironmentService.create.mockResolvedValue(environment);
+    const res = await request(createApp(localBoardActor())).post("/api/companies/company-1/environments").send({
+      name: "My workstation", driver: "ssh", config: { network: "tailscale", host: "workstation", username: "developer",
+        remoteWorkspacePath: "/workspace", tailscaleAuthKey: "tskey-auth-fixture" },
+    });
+    expect(res.status).toBe(201);
+    expect(mockSecretService.create).toHaveBeenCalledWith("company-1", expect.objectContaining({ value: "tskey-auth-fixture", provider: "local_encrypted" }), expect.any(Object));
+    const saved = mockEnvironmentService.create.mock.calls[0][0];
+    expect(saved.config).toMatchObject({ network: "tailscale", tailscaleAuthKey: null, tailscaleAuthKeySecretRef: { type: "secret_ref", version: "latest" } });
+    expect(JSON.stringify(saved)).not.toContain("tskey-auth-fixture");
+    expect(JSON.stringify(res.body)).not.toContain("tskey-auth-fixture");
+  });
+
+  it("rejects Tailscale environment setup from a non-admin before storing credentials", async () => {
+    const res = await request(createApp({ type: "board", userId: "member", source: "session", companyIds: ["company-1"] }))
+      .post("/api/companies/company-1/environments").send({ name: "My workstation", driver: "ssh", config: {
+        network: "tailscale", host: "workstation", username: "developer", remoteWorkspacePath: "/workspace", tailscaleAuthKey: "tskey-auth-fixture" } });
+    expect(res.status).toBe(403);
+    expect(mockSecretService.create).not.toHaveBeenCalled();
+  });
+
   it("normalizes SSH private keys into secret refs before persistence", async () => {
     const environment = createSecretBackedSshEnvironment();
     mockEnvironmentService.create.mockResolvedValue(environment);

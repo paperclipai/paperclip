@@ -1,0 +1,151 @@
+# Use Tailscale machines in SSH environments
+
+The Tailscale connector gives Paperclip access to a tailnet. Paperclip joins a
+separate device to that network, then uses the existing SSH environment driver
+to run tasks on selected computers. The connector is managed from **Connectors**
+and can serve multiple SSH environments in the same company. The computer is
+not replaced or provisioned by Paperclip.
+
+In **Connectors**, find **Tailscale**, open it and click **Connect Tailscale Network**.
+After approving consent, click **Create SSH environment**, or create an SSH
+environment and select **Tailscale** under **Network**. Choose the connection
+and machine, then configure the SSH user, port, absolute workspace path, private
+key, and trusted host keys. The Tailscale network option appears once a tailnet
+is connected. On a Mac
+with the normal Tailscale application, enable macOS Remote Login. Tailscale SSH
+server support on macOS requires the open-source tailscaled variant; ordinary
+OpenSSH over Tailscale works with the standard Mac application.
+
+SSH setup hides the Network selector when Direct connection is the only
+available option. A sole connected tailnet is selected automatically and its
+connection selector is hidden; multiple connected tailnets remain selectable.
+
+After selecting a machine, **Prepare machine pairing** creates an SSH key in
+Paperclip’s vault and displays a command containing only the public key. Run it
+as the target SSH user. The command preserves existing authorized keys and
+prints that user’s name, home workspace path, and SSH host public key for the
+form. You can also select an existing SSH private key secret.
+
+Save the environment and test it. Select it as an agent’s environment and choose
+any harness supported by SSH environments. Select the agent's AI account in
+Paperclip. Runs use that account's subscription or API key, with private
+credential directories on the target computer, just as sandbox runs do. The
+computer supplies the installed harness and workspace; its SSH user's provider
+login is not used for an agent with a configured AI account. Test the chosen
+harness separately: SSH access does not prove provider authentication.
+
+SSH's **Advanced** section includes **Use authentication configured on the remote
+machine**. New environments leave it off, requiring the agent's Paperclip AI
+account. Turn it on to use the remote user's provider login instead. Existing
+SSH environments display it as on; opening or upgrading an installation does
+not rewrite their saved configuration. The same option applies to direct SSH
+and Tailscale connections.
+
+The environment keeps the `ssh` driver. Machine selection stores the connector
+ID and Tailscale’s stable device ID, and runtime
+resolution looks up its current address through that connection’s private
+socket. Offline, removed, disconnected, and wrong-company machines fail closed.
+The host’s existing Tailscale connection is never a fallback.
+
+## OAuth and credential custody
+
+The connection uses the Cloud OAuth broker profile `tailscale.tailnet`, with
+`auth_keys:create:once`. It is a network connector on the Connectors surface;
+it does not publish agent tools or enter MCP discovery. Management requires an
+instance administrator with access to the company. Existing SSH environment
+access governs which agents can execute there. Self-hosted local
+instances first complete the existing Paperclip Cloud enrollment. Cloud stacks
+use their existing broker identity and handoff.
+
+Tailscale returns a single-use device enrollment token without a refresh token.
+The broker seals it to the originating instance. The instance validates the
+user, company, state expiry and single-use callback, stores the token through the
+configured company secret provider, and immediately replaces its current value
+with the enrolled node state before permitting execution. Tokens, private node
+state and client secrets never appear in connection or environment responses.
+
+Each connection has a separate userspace daemon and private socket. It accepts
+no subnet routes or DNS changes and blocks incoming connections. Shutdown saves
+node state and removes temporary files. A restart restores the enrolled device;
+it does not reuse the OAuth token or require consent for every task. Disconnect
+invalidates pending consent and stops the connection’s local daemon. It does not
+remove the target computer from Tailscale.
+
+This implementation currently supports one serving process per instance.
+Concurrent replicas need a durable connection ownership lease before rollout.
+
+The enrollment token is consumed once; it is not the runtime credential.
+Tailscale identity belongs to the persisted machine key in the saved node state,
+not the container ID or hostname. A redeploy must retain both the database's
+encrypted node state and the same vault master key. Cloud already materializes
+the stable per-stack `PAPERCLIP_SECRETS_MASTER_KEY` across release rolls. Do not
+make the connector ephemeral or replace its node state at each start. Losing
+that state, device removal, or a tailnet reauthentication policy can require
+fresh consent. The app-owned device has the consenting user's tailnet rights.
+
+## Local development
+
+Run the Paperclip instance at `http://localhost:3100` and the local Cloud broker
+at `http://localhost:3000`. Register the OAuth app callback as
+`http://localhost:3000/v1/connector/oauth/tailscale/callback` with scope
+`auth_keys:create:once`. The OAuth app must be registered in the authorizing
+user’s tailnet under Tailscale’s currently documented restriction.
+
+Configure the local broker with:
+
+- `CLOUD_HARNESS_CONNECTOR_TAILSCALE_ENABLED=1`
+- `CLOUD_HARNESS_CONNECTOR_TAILSCALE_CLIENT_ID`
+- `CLOUD_HARNESS_CONNECTOR_TAILSCALE_CLIENT_SECRET_REF=secret://local/tailscale`
+- `CLOUD_HARNESS_CONNECTOR_TAILSCALE_LOCAL_CLIENT_SECRET_FILE`, an owner-only
+  regular file outside the checkout containing the OAuth app client secret
+- `CLOUD_HARNESS_CONNECTOR_TAILSCALE_PILOT_INSTANCE_IDS`, the exact enrolled local
+  instance ID
+
+The file credential path is accepted only for a loopback HTTP development broker
+using the local fake provider. Hosted credentials continue to use the configured
+provider secret store. Never regenerate an existing Cloud `.env` or identity
+salt to configure this test.
+
+The instance needs `tailscale` and `tailscaled`. Its OAuth return path is
+`/api/tools/oauth/tailscale/callback`, and completion returns to the Tailscale
+connector page. For a separate local userspace
+client, install the pinned programs outside the checkout:
+
+```sh
+GOBIN="$HOME/.local/share/paperclip-tailscale/bin" go install tailscale.com/cmd/tailscale@v1.104.5
+GOBIN="$HOME/.local/share/paperclip-tailscale/bin" go install tailscale.com/cmd/tailscaled@v1.104.5
+```
+
+Set `PAPERCLIP_TAILSCALE_CLI` and `PAPERCLIP_TAILSCALED` to their absolute paths.
+Set `PAPERCLIP_CLOUD_CONNECTOR_BASE_URL=http://localhost:3000` and
+`PAPERCLIP_CLOUD_CONNECTOR_ENVIRONMENT=development` for local enrollment.
+
+## Verification and rollout gates
+
+Offline tests cover broker handoff and sealed claims, company and user binding,
+expired and competing callbacks, denied authorization, device discovery, driver
+selection, private subprocess state, shutdown, and restart. These do not prove
+live consent or remote execution.
+
+Before rollout, qualify real consent, machine discovery, a Claude task that
+writes a file on the selected computer, result streaming, cancellation, server
+restart, machine sleep/reboot, and revocation. A local instance whose public URL
+is localhost also needs an API path reachable by the remote agent for tasks that
+call back to Paperclip unless the adapter uses the existing remote callback
+bridge. Production Cloud uses its public HTTPS stack URL.
+
+The connector's bundled artwork comes from the vendor's
+`https://tailscale.com/favicon.png`, copied without modification (SHA-256
+`680570c9090b604450792f68ceed10beeb33a69c9bccc2a92e398564c7075a5c`).
+
+The GA announcement describes third-party integrations, but the published OAuth
+setup guide still restricts each app to its own tailnet. This profile remains
+behind explicit instance pilot admission. A local personal-tailnet test does not
+establish that one Paperclip-owned OAuth app can authorize every customer’s
+personal tailnet. Verify that provider registration path before general rollout.
+
+Provider references:
+
+- [OAuth apps](https://tailscale.com/docs/features/oauth-apps)
+- [Device provisioning](https://tailscale.com/docs/features/oauth-apps/device-provisioning)
+- [Tailscale SSH](https://tailscale.com/docs/features/tailscale-ssh)

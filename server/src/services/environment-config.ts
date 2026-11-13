@@ -1,4 +1,6 @@
 import { z } from "zod";
+import { tailscaleNetworks } from "./tailscale-network.js";
+import { tailscaleConnectionService } from "./tailscale-connections.js";
 import { randomUUID } from "node:crypto";
 import type { Db } from "@paperclipai/db";
 import type {
@@ -39,6 +41,11 @@ const secretRefSchema = z.object({
 
 const sshEnvironmentConfigSchema = z.object({
   useHostAuth: z.boolean().optional(),
+  tailscaleConnectionId: z.string().uuid().optional(),
+  tailscaleDeviceId: z.string().trim().min(1).max(256).optional(),
+  network: z.enum(["direct", "tailscale"]).optional(),
+  tailscaleAuthKey: z.null().optional(),
+  tailscaleAuthKeySecretRef: secretRefSchema.extend({ version: z.literal("latest").optional().default("latest") }).optional().nullable(),
   host: z.string({ error: "SSH environments require a host." }).trim().min(1, "SSH environments require a host."),
   port: z.coerce.number().int().min(1).max(65535).default(22),
   username: z.string({ error: "SSH environments require a username." }).trim().min(1, "SSH environments require a username."),
@@ -59,6 +66,7 @@ const sshEnvironmentConfigSchema = z.object({
 }).strict();
 
 const sshEnvironmentConfigProbeSchema = sshEnvironmentConfigSchema.extend({
+  tailscaleAuthKey: z.string().trim().regex(/^tskey-auth-[A-Za-z0-9_-]+$/, "Enter a Tailscale device auth key.").optional().nullable(),
   privateKey: z
     .string()
     .trim()
@@ -68,6 +76,16 @@ const sshEnvironmentConfigProbeSchema = sshEnvironmentConfigSchema.extend({
 }).strict();
 
 const sshEnvironmentConfigPersistenceSchema = sshEnvironmentConfigProbeSchema;
+
+function assertTailscaleSelection(config: Record<string, unknown>) {
+  if (!config.tailscaleConnectionId || !config.tailscaleDeviceId || config.network !== "tailscale" || config.tailscaleAuthKey) {
+    throw unprocessable("Connect Tailscale and select a machine before saving this environment.");
+  }
+}
+
+function validateTailscaleSelection(config: Record<string, unknown>) {
+  if (config.tailscaleConnectionId !== undefined || config.tailscaleDeviceId !== undefined) assertTailscaleSelection(config);
+}
 
 const fakeSandboxEnvironmentConfigSchema = z.object({
   provider: z.literal("fake").default("fake"),
@@ -376,12 +394,11 @@ export async function collectEnvironmentSecretRefs(input: {
   environment: Pick<Environment, "id" | "driver" | "config">;
 }): Promise<Array<{ secretId: string; configPath: string; versionSelector?: SecretVersionSelector }>> {
   const parsed = parseEnvironmentDriverConfig(input.environment);
-  if (parsed.driver === "ssh" && parsed.config.privateKeySecretRef) {
-    return [{
-      secretId: parsed.config.privateKeySecretRef.secretId,
-      configPath: "privateKeySecretRef",
-      versionSelector: parsed.config.privateKeySecretRef.version ?? "latest",
-    }];
+  if (parsed.driver === "ssh") {
+    return (["privateKeySecretRef", "tailscaleAuthKeySecretRef"] as const).flatMap(configPath => {
+      const binding = parsed.config[configPath];
+      return binding ? [{ secretId: binding.secretId, configPath, versionSelector: binding.version ?? "latest" }] : [];
+    });
   }
   if (parsed.driver === "sandbox" && parsed.config.provider !== "fake") {
     const schema = await getSandboxProviderConfigSchema(input.db, parsed.config.provider);
@@ -445,6 +462,7 @@ export function normalizeEnvironmentConfig(input: {
   }
 
   if (input.driver === "ssh") {
+    validateTailscaleSelection(parseObject(input.config));
     const parsed = sshEnvironmentConfigSchema.safeParse(parseObject(input.config));
     if (!parsed.success) {
       throw unprocessable(toErrorMessage(parsed.error), {
@@ -491,6 +509,7 @@ export function normalizeEnvironmentConfigForProbe(input: {
   pluginWorkerManager?: PluginWorkerManager;
 }): Promise<Record<string, unknown>> | Record<string, unknown> {
   if (input.driver === "ssh") {
+    validateTailscaleSelection(parseObject(input.config));
     const parsed = sshEnvironmentConfigProbeSchema.safeParse(parseObject(input.config));
     if (!parsed.success) {
       throw unprocessable(toErrorMessage(parsed.error), {
@@ -555,14 +574,24 @@ export async function normalizeEnvironmentConfigForPersistence(input: {
   pluginWorkerManager?: PluginWorkerManager;
 }): Promise<Record<string, unknown>> {
   if (input.driver === "ssh") {
-    const parsed = sshEnvironmentConfigPersistenceSchema.safeParse(parseObject(input.config));
+    const raw = parseObject(input.config);
+    validateTailscaleSelection(raw);
+    const parsed = sshEnvironmentConfigPersistenceSchema.safeParse(raw);
     if (!parsed.success) {
       throw unprocessable(toErrorMessage(parsed.error), {
         issues: parsed.error.issues,
       });
     }
     const secrets = secretService(input.db);
-    const { privateKey, ...stored } = parsed.data;
+    const { privateKey, tailscaleAuthKey, ...stored } = parsed.data;
+    if (stored.tailscaleConnectionId) {
+      const binding = await tailscaleConnectionService(input.db).environmentBinding(input.companyId, stored.tailscaleConnectionId, stored.tailscaleDeviceId!);
+      stored.host = binding.host;
+      stored.tailscaleAuthKeySecretRef = { type: "secret_ref", secretId: binding.secretId, version: "latest" };
+    }
+    const tailscaleAuthKeySecretRef = tailscaleAuthKey
+      ? await createEnvironmentSecret({ ...input, field: "tailscale-connection", provider: input.secretProvider, value: tailscaleAuthKey })
+      : stored.tailscaleAuthKeySecretRef;
     let nextPrivateKeySecretRef = stored.privateKeySecretRef;
     if (privateKey) {
       nextPrivateKeySecretRef = await createEnvironmentSecret({
@@ -584,6 +613,7 @@ export async function normalizeEnvironmentConfigForPersistence(input: {
     }
     return {
       ...stored,
+      ...(tailscaleAuthKeySecretRef ? { tailscaleAuthKey: null, tailscaleAuthKeySecretRef } : {}),
       privateKey: null,
       privateKeySecretRef: nextPrivateKeySecretRef,
     } satisfies SshEnvironmentConfig;
@@ -671,34 +701,56 @@ export async function resolveEnvironmentDriverConfigForRuntime(
   const parsed = parseEnvironmentDriverConfig(environment);
   const secrets = secretService(db);
   const environmentId = environment.id;
-  if (parsed.driver === "ssh" && parsed.config.privateKeySecretRef && !environmentId) {
-    throw unprocessable("Runtime secret resolution requires an environment id");
-  }
-
-  if (parsed.driver === "ssh" && parsed.config.privateKeySecretRef) {
-    if (!companyId) {
-      throw unprocessable("Runtime secret resolution requires a companyId context");
+  if (parsed.driver === "ssh") {
+    const config = { ...parsed.config };
+    if (config.tailscaleConnectionId) {
+      if (!companyId) throw unprocessable("Tailscale requires a company context.");
+      const service = tailscaleConnectionService(db);
+      const connection = await service.get(companyId, config.tailscaleConnectionId!);
+      if (!connection.secretId || connection.status !== "connected" || connection.secretId !== config.tailscaleAuthKeySecretRef?.secretId) {
+        throw unprocessable("Reconnect Tailscale and save this environment again.", { code: "tailscale_reauthorization_required" });
+      }
+      if (!context?.readOnlyInspection) {
+        config.host = (await service.environmentBinding(companyId, connection.id, config.tailscaleDeviceId!)).host;
+      }
     }
-    return {
-      driver: "ssh",
-      config: {
-        ...parsed.config,
-        privateKey: await secrets.resolveSecretValue(
-          companyId,
-          parsed.config.privateKeySecretRef.secretId,
-          parsed.config.privateKeySecretRef.version ?? "latest",
-          {
-            consumerType: "environment",
-            consumerId: environmentId!,
-            actorType: "system",
-            actorId: null,
-            issueId: context?.issueId ?? null,
-            heartbeatRunId: context?.heartbeatRunId ?? null,
-            configPath: "privateKeySecretRef",
-          },
-        ),
-      },
+    const bindingContext = (configPath: string) => {
+      if (!environmentId || !companyId) throw unprocessable("Runtime secret resolution requires an environment and company context");
+      return { consumerType: "environment" as const, consumerId: environmentId,
+        actorType: "system" as const, actorId: null, issueId: context?.issueId ?? null,
+        heartbeatRunId: context?.heartbeatRunId ?? null, configPath };
     };
+    if (config.privateKeySecretRef) {
+      const binding = config.privateKeySecretRef;
+      config.privateKey = await secrets.resolveSecretValue(companyId!, binding.secretId,
+        binding.version ?? "latest", bindingContext("privateKeySecretRef"));
+    }
+    if (config.network === "tailscale" && !context?.readOnlyInspection) {
+      const binding = config.tailscaleAuthKeySecretRef;
+      if (!binding) throw unprocessable("Connect Tailscale before running tasks in this environment.");
+      const secretContext = bindingContext("tailscaleAuthKeySecretRef");
+      let version = await secrets.resolveSecretVersion(companyId!, binding.secretId, "latest", secretContext);
+      const value = await secrets.resolveSecretValue(companyId!, binding.secretId, version, secretContext);
+      config.tailscaleIdentity = `${companyId}:${binding.secretId}`;
+      try {
+        config.tailscaleSocket = await tailscaleNetworks.connect({
+          identity: config.tailscaleIdentity,
+          credential: value,
+          reload: async () => {
+            version = await secrets.resolveSecretVersion(companyId!, binding.secretId, "latest", secretContext);
+            return secrets.resolveSecretValue(companyId!, binding.secretId, version, secretContext);
+          },
+          persist: async (credential) => {
+            await secrets.rotate(binding.secretId, { value: credential, expectedLatestVersion: version });
+            version += 1;
+          },
+        });
+      } catch {
+        throw unprocessable("Tailscale could not connect. Reconnect Tailscale and check its access policy.",
+          { code: "tailscale_connection_failed" });
+      }
+    }
+    return { driver: "ssh", config };
   }
 
   if (parsed.driver === "sandbox" && parsed.config.provider !== "fake") {
@@ -805,6 +857,7 @@ export function parseEnvironmentDriverConfig(
   }
 
   if (environment.driver === "ssh") {
+    validateTailscaleSelection(parseObject(environment.config));
     const parsed = sshEnvironmentConfigSchema.parse(parseObject(environment.config));
     return {
       driver: "ssh",
