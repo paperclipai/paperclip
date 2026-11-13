@@ -5,9 +5,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
 import { isIP } from "node:net";
-import type { secretService } from "./secrets.js";
+import type { secretService } from "../../secrets.js";
 import type { SecretProvider } from "@paperclipai/shared";
-import { unprocessable } from "../errors.js";
+import { unprocessable } from "../../../errors.js";
 
 type Vault = Pick<ReturnType<typeof secretService>, "create">;
 const quote = (value: string) => "'" + value.replaceAll("'", "'\"'\"'") + "'";

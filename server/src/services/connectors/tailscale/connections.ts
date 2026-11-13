@@ -1,13 +1,13 @@
 import { createHash, randomBytes } from "node:crypto";
 import { and, eq, gt, isNull } from "drizzle-orm";
 import { tailscaleConnections, type Db } from "@paperclipai/db";
-import { badRequest, notFound, unprocessable } from "../errors.js";
-import { createPaperclipCloudConnector, paperclipCloudConnectorConfigFromEnv, type PaperclipCloudConnector } from "./paperclip-cloud-connector.js";
-import { secretService } from "./secrets.js";
-import { getConfiguredSecretProvider } from "../secrets/configured-provider.js";
-import { tailscaleNetworks } from "./tailscale-network.js";
-import { readTailscaleDevices } from "./tailscale-devices.js";
-import { createTailscalePairing } from "./tailscale-pairing.js";
+import { badRequest, notFound, unprocessable } from "../../../errors.js";
+import { createPaperclipCloudConnector, paperclipCloudConnectorConfigFromEnv, type PaperclipCloudConnector } from "../../paperclip-cloud-connector.js";
+import { secretService } from "../../secrets.js";
+import { getConfiguredSecretProvider } from "../../../secrets/configured-provider.js";
+import { tailscaleNetworks } from "./network.js";
+import { readTailscaleDevices } from "./devices.js";
+import { createTailscalePairing } from "./pairing.js";
 
 const hash = (state: string) => createHash("sha256").update(state).digest("hex");
 const projection = (row: typeof tailscaleConnections.$inferSelect) => ({ id: row.id, name: row.name, status: row.status, companyId: row.companyId });

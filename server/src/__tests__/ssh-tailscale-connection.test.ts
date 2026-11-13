@@ -6,9 +6,9 @@ const fixture = vi.hoisted(() => ({
   get: vi.fn(), binding: vi.fn(), connect: vi.fn(),
   secrets: { resolveSecretValue: vi.fn(), resolveSecretVersion: vi.fn(), rotate: vi.fn() },
 }));
-vi.mock("../services/tailscale-connections.js", () => ({ tailscaleConnectionService: () => ({ get: fixture.get, environmentBinding: fixture.binding }) }));
-vi.mock("../services/tailscale-network.js", async importOriginal => ({
-  ...await importOriginal<typeof import("../services/tailscale-network.js")>(),
+vi.mock("../services/connectors/tailscale/connections.js", () => ({ tailscaleConnectionService: () => ({ get: fixture.get, environmentBinding: fixture.binding }) }));
+vi.mock("../services/connectors/tailscale/network.js", async importOriginal => ({
+  ...await importOriginal<typeof import("../services/connectors/tailscale/network.js")>(),
   tailscaleNetworks: { connect: fixture.connect },
 }));
 vi.mock("../services/secrets.js", () => ({ secretService: () => fixture.secrets }));

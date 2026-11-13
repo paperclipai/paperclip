@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
 import { expect, it, vi } from "vitest";
-import { createTailscalePairing } from "./tailscale-pairing.js";
+import { createTailscalePairing } from "./pairing.js";
 
 it("creates a real SSH key in the vault and returns only an id and public pairing command", async () => {
   const dir = await mkdtemp(join(tmpdir(), "paperclip-pairing-test-"));

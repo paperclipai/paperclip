@@ -5,7 +5,7 @@ import { z } from "zod";
 import { loadConfig } from "../config.js";
 import { forbidden, unprocessable } from "../errors.js";
 import { validate } from "../middleware/validate.js";
-import { tailscaleConnectionService } from "../services/tailscale-connections.js";
+import { tailscaleConnectionService } from "../services/connectors/tailscale/connections.js";
 import { paperclipCloudConnectorConfigFromEnv } from "../services/paperclip-cloud-connector.js";
 import { startPaperclipCloudConnectorEnrollment } from "../services/paperclip-cloud-connector-enrollment.js";
 import { paperclipCloudEnrollmentPrincipal } from "../services/paperclip-cloud-connector-principal.js";

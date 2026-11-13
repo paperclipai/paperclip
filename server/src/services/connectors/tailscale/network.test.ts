@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { promises as fs } from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { createTailscaleNetworkManager, tailscaleNetworks } from "./tailscale-network.js";
+import { createTailscaleNetworkManager, tailscaleNetworks } from "./network.js";
 
 function deferred() {
   let resolve!: () => void;

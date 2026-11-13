@@ -1,7 +1,7 @@
 import { and, eq } from "drizzle-orm";
 import { tailscaleConnections, type Db } from "@paperclipai/db";
-import type { CompanyDeletionParticipant } from "../lib/company-deletion.js";
-import { tailscaleNetworks } from "./tailscale-network.js";
+import type { CompanyDeletionParticipant } from "../../../lib/company-deletion.js";
+import { tailscaleNetworks } from "./network.js";
 
 export function createTailscaleCompanyDeletion(): CompanyDeletionParticipant & { stopNetworks(): Promise<void> } {
   const identities = new Set<string>();

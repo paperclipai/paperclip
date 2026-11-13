@@ -66,8 +66,8 @@ import { isSecretProviderClientError } from "../secrets/types.js";
 import { authorizationDeniedDetails, authorizationService } from "./authorization.js";
 import { findActiveServerAdapter } from "../adapters/index.js";
 import { logActivity } from "./activity-log.js";
-import { retireTailscaleSecret } from "./tailscale-deletion.js";
-import { isTailscaleNodeState } from "./tailscale-network.js";
+import { retireTailscaleSecret } from "./connectors/tailscale/deletion.js";
+import { isTailscaleNodeState } from "./connectors/tailscale/network.js";
 // Only a `local_encrypted` secret can hold a literal directory path, so only a
 // `local_encrypted` secret can ever name a Codex account-home directory. A
 // create or a rotate that writes a new `local_encrypted` value runs inside

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { parseTailscaleDevices } from "./tailscale-devices.js";
+import { parseTailscaleDevices } from "./devices.js";
 
 describe("Tailscale machine discovery", () => {
   it("uses stable device IDs and preserves offline status without exposing peer metadata", () => {

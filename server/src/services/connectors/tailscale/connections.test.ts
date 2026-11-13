@@ -3,15 +3,15 @@ import { readFile } from "node:fs/promises";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { companies, companySecrets, createDb, tailscaleConnections, type Db } from "@paperclipai/db";
 import { eq, sql } from "drizzle-orm";
-import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "../__tests__/helpers/embedded-postgres.js";
-import { tailscaleConnectionService } from "./tailscale-connections.js";
-import type { PaperclipCloudConnector } from "./paperclip-cloud-connector.js";
-import { secretService } from "./secrets.js";
-import { createIsolatedTestHome } from "../__tests__/helpers/isolated-test-home.js";
-import { tailscaleNetworks } from "./tailscale-network.js";
-import { deleteCompany } from "./company-deletion.js";
-import * as tailscaleDevices from "./tailscale-devices.js";
-import { collectEnvironmentSecretRefs } from "./environment-config.js";
+import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "../../../__tests__/helpers/embedded-postgres.js";
+import { tailscaleConnectionService } from "./connections.js";
+import type { PaperclipCloudConnector } from "../../paperclip-cloud-connector.js";
+import { secretService } from "../../secrets.js";
+import { createIsolatedTestHome } from "../../../__tests__/helpers/isolated-test-home.js";
+import { tailscaleNetworks } from "./network.js";
+import { deleteCompany } from "../../company-deletion.js";
+import * as tailscaleDevices from "./devices.js";
+import { collectEnvironmentSecretRefs } from "../../environment-config.js";
 
 const support = await getEmbeddedPostgresTestSupport();
 describe.skipIf(!support.supported)("durable Tailscale consent state", () => {
@@ -206,7 +206,7 @@ describe.skipIf(!support.supported)("durable Tailscale consent state", () => {
     const row = await enroll();
     await db.update(companySecrets).set({ systemPurpose: null }).where(eq(companySecrets.id, row.secretId!));
     const ordinary = await vault.create(companyId, { name: "Tailscale connection ordinary fixture", provider: "local_encrypted", value: "fixture-ordinary-secret" });
-    const migration = await readFile(new URL("../../../packages/db/src/migrations/0481_third_genesis.sql", import.meta.url), "utf8");
+    const migration = await readFile(new URL("../../../../../packages/db/src/migrations/0481_third_genesis.sql", import.meta.url), "utf8");
     await db.execute(sql.raw(migration.split("--> statement-breakpoint")[1]!));
     expect((await vault.getById(row.secretId!))?.systemPurpose).toBe("tailscale_network");
     expect((await vault.getById(ordinary.id))?.systemPurpose).toBeNull();

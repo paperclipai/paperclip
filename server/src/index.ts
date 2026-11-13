@@ -1,4 +1,4 @@
-import { tailscaleNetworks } from "./services/tailscale-network.js";
+import { tailscaleNetworks } from "./services/connectors/tailscale/network.js";
 import type { IdleDeadlineOwners } from "./services/idle-deadline-types.js";
 import { closeProcessRunAdmission, isProcessRunAdmissionClosed } from "./services/heartbeat/run-admission.js";
 import { createRunStartHandover, registerRunStartHandover } from "./services/run-start-handover.js";

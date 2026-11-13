@@ -1,7 +1,7 @@
 import { execFile } from "node:child_process";
 import { isIP } from "node:net";
 import { promisify } from "node:util";
-import { unprocessable } from "../errors.js";
+import { unprocessable } from "../../../errors.js";
 
 export type TailscaleDevice = { id: string; name: string; hostname: string; address: string; os: string; online: boolean };
 

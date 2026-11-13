@@ -9,7 +9,7 @@ const fixture = vi.hoisted(() => ({
   service: { list: vi.fn(), start: vi.fn(), devices: vi.fn(), complete: vi.fn(), disconnect: vi.fn(), pairing: vi.fn() },
   configured: vi.fn(), enrollment: vi.fn(), activity: vi.fn(),
 }));
-vi.mock("../services/tailscale-connections.js", () => ({ tailscaleConnectionService: () => fixture.service }));
+vi.mock("../services/connectors/tailscale/connections.js", () => ({ tailscaleConnectionService: () => fixture.service }));
 vi.mock("../services/paperclip-cloud-connector.js", () => ({ paperclipCloudConnectorConfigFromEnv: fixture.configured }));
 vi.mock("../services/paperclip-cloud-connector-enrollment.js", () => ({ startPaperclipCloudConnectorEnrollment: fixture.enrollment }));
 vi.mock("../services/activity-log.js", () => ({ logActivity: fixture.activity }));

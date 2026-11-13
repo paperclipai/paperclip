@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { tailscaleConnectionService } from "./tailscale-connections.js";
+import { tailscaleConnectionService } from "./connectors/tailscale/connections.js";
 import { randomUUID } from "node:crypto";
 import type { Db } from "@paperclipai/db";
 import type {
