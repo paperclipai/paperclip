@@ -6,7 +6,7 @@ import { Readable } from "node:stream";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { and, eq, sql } from "drizzle-orm";
 import { agentFileRoots, agents, authUsers, closeFileStorageDb, companies, companyMemberships, createDb, fileStorageDb, heartbeatRuns,
-  principalPermissionGrants } from "@paperclipai/db";
+  issueThreadInteractions, issues, principalPermissionGrants } from "@paperclipai/db";
 import { startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 import { agentFileStore, fileHash } from "../services/agent-file-store.js";
 import { agentInstructionWorkingCopyService } from "../services/agent-instruction-working-copies.js";
@@ -180,6 +180,35 @@ describe("agent file checkpoint locking", () => {
     expect((await copies.checkpointWarm({ companyId, runId: copy.runId }))?.errorCode).toBe("AGENT_FILES_CHECKPOINT_UNSTABLE");
     expect(objects.uploads).toEqual([]);
     expect((await head()).generation).toBe(before.generation);
+  });
+
+  it("consumes an accepted change confirmation once, in the commit of the changed checkpoint", async () => {
+    const copy = await warmRun();
+    const sourceRunId = randomUUID(), issueId = randomUUID(), interactionId = randomUUID();
+    await db.insert(heartbeatRuns).values({ id: sourceRunId, companyId, agentId, status: "succeeded" });
+    await db.insert(issues).values({ id: issueId, companyId, title: "Review instructions" });
+    await db.delete(principalPermissionGrants).where(eq(principalPermissionGrants.companyId, companyId));
+    await db.update(companyMemberships).set({ membershipRole: "member" }).where(eq(companyMemberships.companyId, companyId));
+    await db.insert(principalPermissionGrants).values([
+      { companyId, principalType: "agent", principalId: agentId, permissionKey: "agents:suggest-changes" },
+      { companyId, principalType: "user", principalId: userId, permissionKey: "agents:suggest-changes" },
+    ]);
+    await db.insert(issueThreadInteractions).values({ id: interactionId, companyId, issueId, kind: "request_confirmation", status: "accepted", sourceRunId, createdByAgentId: agentId,
+      payload: { version: 1, prompt: "Apply the file change?", detailsMarkdown: "```diff\n+approved\n```", target: { type: "custom", key: `agent:${agentId}:instructions`, revisionId: "proposal" } },
+      result: { version: 1, outcome: "accepted" }, resolvedByUserId: userId, resolvedAt: new Date(),
+    });
+    const confirmation = async () => (await db.select().from(issueThreadInteractions).where(eq(issueThreadInteractions.id, interactionId)))[0]!.result;
+    objects.uploads.length = 0;
+    await fs.writeFile(path.join(copy.localRoot, "approved.md"), "approved change");
+    const saved = (await copies.checkpointWarm({ companyId, runId: copy.runId }))!;
+    expect(saved).toMatchObject({ state: "warm_saved", errorCode: null });
+    expect(await confirmation()).toMatchObject({ consumedByRunId: copy.runId });
+    expect((await head()).entries.find(entry => entry.path === "approved.md")).toMatchObject({ sha256: fileHash(Buffer.from("approved change")) });
+    expect(objects.uploads).toHaveLength(1);
+    // The confirmation is spent: the next change is refused before it uploads.
+    await fs.writeFile(path.join(copy.localRoot, "unapproved.md"), "second change");
+    expect((await copies.checkpointWarm({ companyId, runId: copy.runId }))?.errorCode).toBe("AGENT_FILES_CHECKPOINT_UNSTABLE");
+    expect(objects.uploads).toHaveLength(1);
   });
 
   it("commits both runs when two warm checkpoints of one agent race", async () => {
