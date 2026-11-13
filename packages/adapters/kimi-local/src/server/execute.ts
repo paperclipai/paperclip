@@ -58,12 +58,13 @@ import {
   isKimiSessionUnrecoverableError,
   isKimiTransientNetworkError,
   parseKimiJsonl,
+  selectKimiFailureLine,
 } from "./parse.js";
+import { seedKimiWorkspaceTrust } from "./workspace-trust.js";
 import {
   createKimiAcpExecutor,
   resolveKimiExecutionEngineForRun,
 } from "./acp.js";
-import { firstNonEmptyLine } from "./utils.js";
 
 const __moduleDir = path.dirname(fileURLToPath(import.meta.url));
 
@@ -186,6 +187,43 @@ async function buildKimiSkillsDir(
   return target;
 }
 
+/**
+ * COR-4191 Fix B: pre-approve Kimi workspace trust for the run's own
+ * Paperclip-provisioned root before either engine starts. Kimi's workspace-trust
+ * gate lives in the engine and applies to both the CLI and the ACP lane, so
+ * seeding only in the CLI path silently left the ACP lane (the current default)
+ * untrusted and its project `.mcp.json` servers skipped. Only a provisioned
+ * workspace root is ever trusted; a bare config.cwd is not.
+ *
+ * Best-effort by contract: the seed never aborts the run.
+ */
+async function seedWorkspaceTrustForRun(ctx: AdapterExecutionContext): Promise<void> {
+  const executionTarget = readAdapterExecutionTarget({
+    executionTarget: ctx.executionTarget,
+    legacyRemoteExecution: ctx.executionTransport?.remoteExecution,
+  });
+  if (adapterExecutionTargetIsRemote(executionTarget)) return;
+
+  const workspaceContext = parseObject(ctx.context.paperclipWorkspace);
+  const workspaceCwd = asString(workspaceContext.cwd, "");
+  const workspaceId = asString(workspaceContext.workspaceId, "");
+  const workspaceSource = asString(workspaceContext.source, "");
+  const configuredCwd = asString(ctx.config.cwd, "");
+  const useConfiguredInsteadOfAgentHome = workspaceSource === "agent_home" && configuredCwd.length > 0;
+  const cwd = (useConfiguredInsteadOfAgentHome ? "" : workspaceCwd) || configuredCwd || process.cwd();
+
+  const trustSeed = await seedKimiWorkspaceTrust({
+    cwd,
+    envConfig: parseObject(ctx.config.env),
+    provisionedWorkspace: workspaceCwd.length > 0 || workspaceId.length > 0,
+  });
+  if (trustSeed.seeded) {
+    await ctx.onLog("stderr", `[paperclip] Pre-approved Kimi workspace trust for ${cwd}.\n`);
+  } else if (trustSeed.reason && trustSeed.reason !== "already-trusted" && trustSeed.reason !== "no-workspace-context") {
+    await ctx.onLog("stderr", `[paperclip] Kimi workspace-trust seed skipped: ${trustSeed.reason}.\n`);
+  }
+}
+
 export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExecutionResult> {
   const providerStop = createProviderStoppedBoundary(ctx.onProviderStopped);
   const engineSelection = await resolveKimiExecutionEngineForRun(ctx);
@@ -202,10 +240,12 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     };
   }
   if (engineSelection.engine === "acp") {
+    await seedWorkspaceTrustForRun(ctx);
     return executeKimiAcp(ctx);
   }
 
   const { runId, agent, runtime, config, context, onLog, onMeta, onEvent, onSpawn, authToken } = ctx;
+  await seedWorkspaceTrustForRun(ctx);
   const executionTarget = readAdapterExecutionTarget({
     executionTarget: ctx.executionTarget,
     legacyRemoteExecution: ctx.executionTransport?.remoteExecution,
@@ -669,7 +709,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     }
 
     const parsedError = typeof attempt.parsed.errorMessage === "string" ? attempt.parsed.errorMessage.trim() : "";
-    const stderrLine = firstNonEmptyLine(attempt.proc.stderr);
+    const stderrLine = selectKimiFailureLine(attempt.proc.stderr);
     const structuredFailure = describeKimiFailure({
       errorMessage: attempt.parsed.errorMessage,
       stderr: attempt.proc.stderr,

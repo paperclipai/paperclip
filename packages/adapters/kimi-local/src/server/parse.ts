@@ -205,17 +205,42 @@ export function isKimiTransientNetworkError(stdout: string, stderr: string): boo
   );
 }
 
+// COR-4191: Kimi prints a benign startup warning (`Warning: this folder is not
+// trusted; skipped 1 project-level MCP server: ...`) before it hits the real
+// failure. Picking the first non-empty stderr line therefore mislabelled e.g. a
+// Moonshot 5-hour quota 403 as a trust warning (COR-4190). Skip warning/trust
+// noise and prefer a line that looks like an error.
+const KIMI_FAILURE_NOISE_RE = /^warning:|folder is not trusted|trust this folder/i;
+const KIMI_FAILURE_SIGNAL_RE = /error|failed|4\d\d|5\d\d/i;
+
+/**
+ * Choose the stderr line that best describes a Kimi failure.
+ *
+ * Order: an explicit `errorMessage` from a parsed kimi error event, then the
+ * first non-noise line that looks error-shaped, then the first non-noise line,
+ * then the first non-empty line as a last resort (so a failure is never hidden
+ * just because every line looked like noise).
+ */
+export function selectKimiFailureLine(stderr: string, errorMessage = ""): string {
+  const preferred = typeof errorMessage === "string" ? errorMessage.trim() : "";
+  if (preferred) return preferred;
+  const lines = (stderr ?? "")
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean);
+  return (
+    lines.find((line) => !KIMI_FAILURE_NOISE_RE.test(line) && KIMI_FAILURE_SIGNAL_RE.test(line)) ??
+    lines.find((line) => !KIMI_FAILURE_NOISE_RE.test(line)) ??
+    lines[0] ??
+    ""
+  );
+}
+
 export function describeKimiFailure(input: {
   errorMessage?: string | null;
   stderr?: string;
 }): string | null {
-  const detail =
-    (typeof input.errorMessage === "string" ? input.errorMessage.trim() : "") ||
-    (input.stderr ?? "")
-      .split(/\r?\n/)
-      .map((line) => line.trim())
-      .find(Boolean) ||
-    "";
+  const detail = selectKimiFailureLine(input.stderr ?? "", input.errorMessage ?? "");
   if (!detail) return null;
   const clean = detail.replace(/\s+/g, " ").trim();
   const max = 240;
