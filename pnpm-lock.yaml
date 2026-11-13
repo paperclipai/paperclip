@@ -19,7 +19,7 @@ patchedDependencies:
     hash: syoits7l7g3sthy3olttp2fv24
     path: patches/@agentclientprotocol__claude-agent-acp@0.73.0.patch
   '@agentclientprotocol/codex-acp@1.6.2':
-    hash: 2iynuypg76nxmydiylgtffhr7e
+    hash: epnbpyrfbioerrozniozyfn65y
     path: patches/@agentclientprotocol__codex-acp@1.6.2.patch
   '@chat-adapter/discord@4.39.0':
     hash: nywlhls7dd4npegrgax7jqdbxa
@@ -211,7 +211,7 @@ importers:
     dependencies:
       '@agentclientprotocol/codex-acp':
         specifier: ^1.6.2
-        version: 1.6.2(patch_hash=2iynuypg76nxmydiylgtffhr7e)
+        version: 1.6.2(patch_hash=epnbpyrfbioerrozniozyfn65y)
       '@paperclipai/adapter-utils':
         specifier: workspace:*
         version: link:../../adapter-utils
@@ -514,7 +514,7 @@ importers:
         version: 0.73.0(patch_hash=syoits7l7g3sthy3olttp2fv24)(@anthropic-ai/sdk@0.129.0(zod@4.6.7))(@modelcontextprotocol/sdk@1.31.0(zod@4.6.7))
       '@agentclientprotocol/codex-acp':
         specifier: 1.6.2
-        version: 1.6.2(patch_hash=2iynuypg76nxmydiylgtffhr7e)
+        version: 1.6.2(patch_hash=epnbpyrfbioerrozniozyfn65y)
       '@openai/codex':
         specifier: 0.160.0
         version: 0.160.0
@@ -904,7 +904,7 @@ importers:
         version: 0.73.0(patch_hash=syoits7l7g3sthy3olttp2fv24)(@anthropic-ai/sdk@0.129.0(zod@4.6.7))(@modelcontextprotocol/sdk@1.31.0(zod@4.6.7))
       '@agentclientprotocol/codex-acp':
         specifier: 1.6.2
-        version: 1.6.2(patch_hash=2iynuypg76nxmydiylgtffhr7e)
+        version: 1.6.2(patch_hash=epnbpyrfbioerrozniozyfn65y)
       '@ai-sdk/amazon-bedrock':
         specifier: 5.0.113
         version: 5.0.113(zod@4.6.7)
@@ -9551,7 +9551,7 @@ snapshots:
       - '@anthropic-ai/sdk'
       - '@modelcontextprotocol/sdk'
 
-  '@agentclientprotocol/codex-acp@1.6.2(patch_hash=2iynuypg76nxmydiylgtffhr7e)':
+  '@agentclientprotocol/codex-acp@1.6.2(patch_hash=epnbpyrfbioerrozniozyfn65y)':
     dependencies:
       '@agentclientprotocol/sdk': 1.4.0(zod@4.4.3)
       '@openai/codex': 0.160.0

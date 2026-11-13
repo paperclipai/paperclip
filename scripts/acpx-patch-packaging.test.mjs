@@ -127,6 +127,40 @@ const claudeAcpPatch = await readFile(
   new URL("../patches/@agentclientprotocol__claude-agent-acp@0.73.0.patch", import.meta.url),
   "utf8",
 );
+const codexAcpPatch = await readFile(
+  new URL("../patches/@agentclientprotocol__codex-acp@1.6.2.patch", import.meta.url),
+  "utf8",
+);
+
+function assertUnifiedHunkBodyCounts(patch, label) {
+  const lines = patch.split("\n");
+  const hunks = [];
+  for (let index = 0; index < lines.length; index += 1) {
+    const header = lines[index].match(
+      /^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@/,
+    );
+    if (!header) continue;
+    const body = [];
+    while (index + 1 < lines.length) {
+      const line = lines[index + 1];
+      if (/^(?:@@ |diff --git )/.test(line)) break;
+      if (line === "" && index + 1 === lines.length - 1 && patch.endsWith("\n")) break;
+      index += 1;
+      if (line === "\\ No newline at end of file") continue;
+      // Git accepts an empty context line with its optional space omitted.
+      const normalized = line === "" ? " " : line;
+      assert.match(normalized, /^[ +\-]/, `${label}: invalid unified hunk line: ${line}`);
+      body.push(normalized);
+    }
+    const oldLines = body.filter((line) => !line.startsWith("+")).length;
+    const newLines = body.filter((line) => !line.startsWith("-")).length;
+    assert.equal(oldLines, Number(header[2] ?? 1), `${label}: old-line count at ${header[1]}`);
+    assert.equal(newLines, Number(header[4] ?? 1), `${label}: new-line count at ${header[3]}`);
+    hunks.push({ body, header });
+  }
+  assert.ok(hunks.length > 0, `${label}: expected at least one unified hunk`);
+  return hunks;
+}
 
 for (const version of ["0.22.0"]) {
   test(`ACPX ${version} release patch uses portable generated unified hunks`, async () => {
@@ -134,37 +168,8 @@ for (const version of ["0.22.0"]) {
       new URL(`../patches/acpx@${version}.patch`, import.meta.url),
       "utf8",
     );
-    const lines = patch.split("\n");
-    let hunkCount = 0;
-    for (let index = 0; index < lines.length; index += 1) {
-      const header = lines[index].match(
-        /^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@/,
-      );
-      if (!header) continue;
-      hunkCount += 1;
-      const body = [];
-      let oldLines = 0;
-      let newLines = 0;
-      while (index + 1 < lines.length && (oldLines < Number(header[2] ?? 1) || newLines < Number(header[4] ?? 1))) {
-        const line = lines[++index];
-        // Unified diff's EOF marker is metadata, not a source/destination
-        // line, and may occur between the removed and added final lines.
-        if (line === "\\ No newline at end of file") continue;
-        // Git accepts an empty context line with its optional space omitted.
-        assert.ok(line === "" || /^[ +\-]/.test(line), `invalid unified hunk line: ${line}`);
-        const normalized = line === "" ? " " : line;
-        body.push(normalized);
-        if (!normalized.startsWith("+")) oldLines += 1;
-        if (!normalized.startsWith("-")) newLines += 1;
-      }
-      assert.equal(
-        body.filter((line) => !line.startsWith("+")).length,
-        Number(header[2] ?? 1),
-      );
-      assert.equal(
-        body.filter((line) => !line.startsWith("-")).length,
-        Number(header[4] ?? 1),
-      );
+    const hunks = assertUnifiedHunkBodyCounts(patch, `ACPX ${version}`);
+    for (const { body, header } of hunks) {
       const prefix = body.findIndex((line) => !line.startsWith(" "));
       const suffix = body
         .slice()
@@ -182,9 +187,54 @@ for (const version of ["0.22.0"]) {
         `regenerate ${version} hunk at old line ${header[1]} with pnpm patch-commit (suffix ${suffix})`,
       );
     }
-    assert.ok(hunkCount > 0);
   });
 }
+
+test("Codex ACP release patch has internally consistent unified hunks", () => {
+  assertUnifiedHunkBodyCounts(codexAcpPatch, "Codex ACP 1.6.2");
+});
+
+test("unified hunk validation accepts bare empty context and rejects surplus body lines", () => {
+  const validPatch = [
+    "diff --git a/example.txt b/example.txt",
+    "--- a/example.txt",
+    "+++ b/example.txt",
+    "@@ -1,3 +1,3 @@",
+    " before",
+    "",
+    " after",
+    "",
+  ].join("\n");
+  assertUnifiedHunkBodyCounts(validPatch, "bare empty context fixture");
+
+  assert.throws(
+    () => assertUnifiedHunkBodyCounts(
+      validPatch.replace("@@ -1,3 +1,3 @@", "@@ -1,2 +1,2 @@"),
+      "surplus body fixture",
+    ),
+    /surplus body fixture: old-line count/,
+  );
+
+  const prefixedBodyPatch = [
+    "diff --git a/example.txt b/example.txt",
+    "--- a/example.txt",
+    "+++ b/example.txt",
+    "@@ -1,2 +1,2 @@",
+    " before",
+    "--- removed prefix",
+    "+++ added prefix",
+    "",
+  ].join("\n");
+  assertUnifiedHunkBodyCounts(prefixedBodyPatch, "prefixed hunk body fixture");
+
+  assert.throws(
+    () => assertUnifiedHunkBodyCounts(
+      prefixedBodyPatch.replace("+++ added prefix", "+++ added prefix\n+surplus"),
+      "prefixed surplus fixture",
+    ),
+    /prefixed surplus fixture: new-line count/,
+  );
+});
 
 test("published packages preserve the patched ACPX runtime", () => {
   assert.equal(
