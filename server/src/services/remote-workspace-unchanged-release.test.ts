@@ -1,14 +1,14 @@
 import { execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { cp, mkdir, mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
+import { access, cp, mkdir, mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
-import { and, eq } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   agents, closeRegisteredClients, companies, createDb, environmentLeases, environments, executionWorkspaces,
-  heartbeatRunEvents, heartbeatRuns, issues, workspaceOperations,
+  heartbeatRunEvents, heartbeatRuns, issues, nativeRunnerCheckpoints, workspaceOperations,
 } from "@paperclipai/db";
 import type { AdapterSandboxExecutionTarget } from "@paperclipai/adapter-utils/execution-target";
 import type { EnvironmentLease } from "@paperclipai/shared";
@@ -20,6 +20,7 @@ import {
 } from "./remote-workspaces.js";
 import { UNCHANGED_BASELINE_KEY } from "./remote-workspace-unchanged-proof.js";
 import { releaseUnchangedFallbackWorkspace } from "./heartbeat/predecessor-retirement-fallback.js";
+import { FAILED_BEFORE_PROVIDER_TURN_KEY, FAILED_BEFORE_PROVIDER_TURN_SCHEMA } from "./native-runtime/failed-before-provider-turn.js";
 
 const exec = promisify(execFile);
 const support = await getEmbeddedPostgresTestSupport();
@@ -120,8 +121,8 @@ describe.skipIf(!support.supported)("remote workspace writer that ended without 
     };
     const event = (eventType: string) => db.insert(heartbeatRunEvents).values({ companyId, runId: runB, agentId,
       seq: 1, stream: "system", level: "info", eventType });
-    return { companyId, runA, runB, savedA, workspace, end, saveB, snapshotOperations, reserveNext, parkWaiter, event,
-      captures: () => captures };
+    return { companyId, runA, runB, issueId, savedA, workspace, end, saveB, snapshotOperations, reserveNext, parkWaiter, event,
+      remoteRoot: b.remoteRoot, captures: () => captures };
   }
 
   async function expectFullSave(f: Awaited<ReturnType<typeof preparedFollowUp>>, changed = false) {
@@ -266,5 +267,66 @@ describe.skipIf(!support.supported)("remote workspace writer that ended without 
     await db.update(executionWorkspaces).set({ metadata: next }).where(eq(executionWorkspaces.id, current.id));
     await f.end();
     await expectFullSave(f);
+  });
+
+  async function failBeforeProviderTurn(f: Awaited<ReturnType<typeof preparedFollowUp>>, options: { proof: boolean }) {
+    const agentId = (await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.runB)))[0]!.agentId;
+    await db.insert(heartbeatRunEvents).values([
+      { companyId: f.companyId, runId: f.runB, agentId, seq: 10, stream: "system", level: "info", eventType: "native.process_start_requested" },
+      { companyId: f.companyId, runId: f.runB, agentId, seq: 11, stream: "system", level: "info", eventType: "session.started",
+        sourceInstanceId: "runner-b", sourceEventId: "runner-b:1", sourceSeq: 1 },
+    ]);
+    await db.update(heartbeatRuns).set({ nativeIssueId: f.issueId }).where(eq(heartbeatRuns.id, f.runB));
+    await db.insert(nativeRunnerCheckpoints).values({ companyId: f.companyId, runId: f.runB, issueId: f.issueId,
+      part: "command:session.open", material: { type: "session.open", status: "completed" } });
+    if (options.proof) await db.update(heartbeatRuns).set({ runnerProfileJson: sql`coalesce(${heartbeatRuns.runnerProfileJson}, '{}'::jsonb) || ${JSON.stringify({
+      [FAILED_BEFORE_PROVIDER_TURN_KEY]: { schema: FAILED_BEFORE_PROVIDER_TURN_SCHEMA, cause: "native_failed_before_provider_turn",
+        proof: { source: "runner_ledger", noProviderTurn: true, provenAt: new Date().toISOString() } } })}::jsonb` })
+      .where(eq(heartbeatRuns.id, f.runB));
+    await f.end({ status: "failed", errorCode: "adapter_failed", processPid: 41_003, processStartedAt: new Date(),
+      controllerLeaseExpiresAt: new Date(Date.now() + 60_000) });
+  }
+
+  it("hands on the workspace unchanged when the Runner ledger proves the failed run sent no provider turn", async () => {
+    const f = await preparedFollowUp();
+    await failBeforeProviderTurn(f, { proof: true });
+    expect(await releaseUnchangedFallbackWorkspace(db, { id: f.runB, companyId: f.companyId })).toBe(true);
+    const workspace = await f.workspace();
+    expect(readRemoteWorkspaceAuthority(workspace.metadata)).toMatchObject({ dirty: false, writerRunId: null,
+      snapshotId: f.savedA.snapshotId, epoch: 2 });
+    expect(workspace.metadata?.[UNCHANGED_BASELINE_KEY]).toMatchObject({ runId: f.runB, releasedAt: expect.any(String) });
+    expect(workspace.metadata?.remoteWorkspaceAbandonedEpochs).toBeUndefined();
+  });
+
+  it("keeps today's preservation for the same evidence without the Runner ledger proof", async () => {
+    const f = await preparedFollowUp();
+    await failBeforeProviderTurn(f, { proof: false });
+    expect(await releaseUnchangedFallbackWorkspace(db, { id: f.runB, companyId: f.companyId })).toBe(false);
+    expect(readRemoteWorkspaceAuthority((await f.workspace()).metadata)).toMatchObject({ dirty: true, writerRunId: f.runB });
+  });
+
+  it.each([
+    { label: "a provider turn was recorded", setup: async (f: Awaited<ReturnType<typeof preparedFollowUp>>) => { await f.event("turn.started"); } },
+    { label: "a predecessor's save on this sandbox is unsettled", setup: async (f: Awaited<ReturnType<typeof preparedFollowUp>>) => {
+      await db.insert(workspaceOperations).values({ companyId: f.companyId, executionWorkspaceId: (await f.workspace()).id,
+        heartbeatRunId: f.runA, phase: "remote_workspace_snapshot", status: "running" });
+    } },
+    { label: "setup wrote into the workspace", provision: "echo provisioned > provisioned.txt",
+      setup: async () => undefined },
+  ])("never claims unchanged when $label: continues from the last committed save and keeps the files unapplied", async ({ setup, provision }) => {
+    const f = await preparedFollowUp(provision ? { runtimeProvisionCommand: provision } : {});
+    await writeFile(path.join(f.remoteRoot, "unsaved.md"), "kept\n");
+    await setup(f);
+    await failBeforeProviderTurn(f, { proof: true });
+    expect(await releaseUnchangedFallbackWorkspace(db, { id: f.runB, companyId: f.companyId })).toBe(true);
+    const workspace = await f.workspace();
+    expect(readRemoteWorkspaceAuthority(workspace.metadata)).toMatchObject({ dirty: false, writerRunId: null, location: null,
+      snapshotId: f.savedA.snapshotId, epoch: 3 });
+    expect(workspace.metadata?.[UNCHANGED_BASELINE_KEY]).not.toHaveProperty("releasedAt");
+    expect(workspace.metadata?.remoteWorkspaceAbandonedEpochs).toEqual([expect.objectContaining({ epoch: 2, runId: f.runB,
+      snapshotId: f.savedA.snapshotId, location: expect.objectContaining({ remoteCwd: f.remoteRoot }) })]);
+    await expect(access(path.join(f.remoteRoot, "unsaved.md"))).resolves.toBeUndefined();
+    const { runC } = await f.reserveNext();
+    expect(readRemoteWorkspaceAuthority((await f.workspace()).metadata)).toMatchObject({ writerRunId: runC, location: null });
   });
 });

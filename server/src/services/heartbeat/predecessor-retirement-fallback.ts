@@ -7,7 +7,9 @@ import {
   findNativePredecessorRetirementUnproven, REPLACE_BEFORE_REUSE_KEY, REPLACE_BEFORE_REUSE_SCHEMA,
   type PredecessorRetirementFallback, type ReplaceBeforeReuseMarker,
 } from "../native-runtime/predecessor-retirement.js";
-import { findNativeFailedBeforeProviderTurn } from "../native-runtime/failed-before-provider-turn.js";
+import { FAILED_BEFORE_PROVIDER_TURN_KEY, FAILED_BEFORE_PROVIDER_TURN_SCHEMA, findNativeFailedBeforeProviderTurn,
+  readFailedBeforeProviderTurnRecord } from "../native-runtime/failed-before-provider-turn.js";
+import { abandonUnverifiedRemoteWorkspaceEpoch } from "../remote-workspace-epoch-abandonment.js";
 import { releaseUnchangedRemoteWorkspaceWriter } from "../remote-workspaces.js";
 
 type Run = Pick<typeof heartbeatRuns.$inferSelect, "id" | "companyId">;
@@ -45,6 +47,9 @@ export async function preparePredecessorRetirementFallback(db: Db, run: Run, err
         : eq(environmentLeases.leasePolicy, "reuse_by_environment"), isNotNull(environmentLeases.providerLeaseId),
     )).for("update")).filter(lease => !failure.providerLeaseId || lease.providerLeaseId === failure.providerLeaseId);
     if (leases.length === 0 && !beforeProviderTurn) return null;
+    if (beforeProviderTurn) await tx.update(heartbeatRuns).set({ runnerProfileJson: sql`coalesce(${heartbeatRuns.runnerProfileJson}, '{}'::jsonb) || ${JSON.stringify({
+      [FAILED_BEFORE_PROVIDER_TURN_KEY]: { schema: FAILED_BEFORE_PROVIDER_TURN_SCHEMA, cause: beforeProviderTurn.code, proof: beforeProviderTurn.proof } })}::jsonb` })
+      .where(and(eq(heartbeatRuns.companyId, run.companyId), eq(heartbeatRuns.id, run.id)));
     const marker: ReplaceBeforeReuseMarker = { schema: REPLACE_BEFORE_REUSE_SCHEMA, runId: run.id,
       predecessorRunId: failure.predecessorRunId, recordedAt: new Date().toISOString() };
     for (const lease of leases) {
@@ -88,6 +93,13 @@ export async function releaseUnchangedFallbackWorkspace(db: Db, run: Run): Promi
     // the task. Do not queue a second attempt beside it.
     if (authority.writerRunId !== run.id) return false;
     // The heartbeat that owns this writer is the caller, and it started no runner.
-    return Boolean(await releaseUnchangedRemoteWorkspaceWriter(tx, { workspace, authority, callerOwnsWriter: true }));
+    if (await releaseUnchangedRemoteWorkspaceWriter(tx, { workspace, authority, callerOwnsWriter: true })) return true;
+    if (!readFailedBeforeProviderTurnRecord(current.profile) || !authority.location || authority.epoch !== reference.data.epoch) return false;
+    const [writer] = await tx.select({ id: heartbeatRuns.id }).from(heartbeatRuns).where(and(
+      eq(heartbeatRuns.companyId, run.companyId), eq(heartbeatRuns.id, run.id))).for("update", { skipLocked: true });
+    if (!writer) return false;
+    await tx.transaction(savepoint => abandonUnverifiedRemoteWorkspaceEpoch(savepoint, { companyId: run.companyId,
+      workspaceId: workspace.id, runId: run.id, epoch: authority.epoch, snapshotId: authority.snapshotId, location: authority.location! }));
+    return true;
   });
 }

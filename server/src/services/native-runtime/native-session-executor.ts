@@ -23,7 +23,8 @@ import { getStartupRecoveryState } from "../../startup-recovery-state.js";
 import { assertNativeHarnessBackupOwner, durableNativeHarnessStorage, NATIVE_HARNESS_DOWNLOAD_IDLE_TIMEOUT_MS, nativeHarnessBackupOwner, persistNativeHarnessBackup,
   restoreDurableNativeHarnessBackup } from "./native-harness-backup-storage.js";
 import { restoreNativeProviderArtifacts, retainNativeProviderArtifacts, retainExistingNativeProviderArtifacts,
-  retainReadyNativeProviderArtifacts, type NativeProviderArtifactReceipt } from "./native-provider-artifacts.js";
+  retainReadyNativeProviderArtifacts, NativeProviderArtifactTransferTimeoutError, nativeProviderArtifactTransferBounds,
+  type NativeProviderArtifactReceipt } from "./native-provider-artifacts.js";
 import { prepareRemoteOpenCodeArtifacts, type OpenCodeLaunchArtifacts } from "./remote-opencode-artifacts.js";
 import { prepareRuntimeContextSource, rehydratePinnedInstructionAsset } from "./runtime-context.js";
 import { createNativeUsageDelivery } from "./native-usage-delivery.js";
@@ -18588,6 +18589,8 @@ async function createRunnerdBackendWithinSessionClaim(
       const signal = providerArtifactsSignal(stop);
       if (!remoteTarget) throw new Error("native_provider_artifacts_admission_missing");
       const launch = openCodeLaunchArtifacts, manifest = expectedProviderPackManifest;
+      crashPoint("native.provider_artifacts.before_capture", { fail: () =>
+        new NativeProviderArtifactTransferTimeoutError("upload", nativeProviderArtifactTransferBounds.minimumStepMs, 0) });
       const reuse = () => retainReadyNativeProviderArtifacts({ db: input.db, owner: backupOwner, manifest,
         launchRoot: launch.root, accountUid: launch.accountUid });
       providerArtifacts = await reuse() ?? await shareNativeProviderArtifactCapture({
