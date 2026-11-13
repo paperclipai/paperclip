@@ -1987,6 +1987,78 @@ it("never delivers a lifecycle command ahead of its turn at attach", async () =>
   }
 }, 30_000);
 
+function completedItem(sourceSeq: number): Record<string, unknown> {
+  const envelope = ordinaryOutput(sourceSeq);
+  Object.assign(envelope.payload as Record<string, unknown>, {
+    sourceEventId: `completed-${sourceSeq}`, eventType: "item.completed", priority: 1,
+    payload: { item: { id: `item-${sourceSeq}` } },
+  });
+  return envelope;
+}
+
+it("acknowledges a replayed burst once per batch, never ahead of its durable checkpoint", async () => {
+  const root = mkdtempSync(resolve(tmpdir(), "runner-batched-ack-"));
+  const { core, stop } = replayBacklogCore(root, 5);
+  let persistedCursor = 0;
+  const persisted: number[] = [];
+  core.setCheckpointPersistence(async saved => {
+    await new Promise<void>(resolveWrite => setTimeout(resolveWrite, 5));
+    persistedCursor = JSON.parse(saved.records.get("cursor")!).ackedSourceSeq;
+    persisted.push(persistedCursor);
+  });
+  try {
+    await core.start();
+    const client = (await authenticate(core, core.issueBootstrapTicket()))!;
+    const before = persisted.length;
+    for (let seq = 1; seq <= 300; seq++) sendSecure(client, completedItem(seq));
+    const acks: number[] = [];
+    while (acks.at(-1) !== 300) {
+      const frame = await receiveSecure(client);
+      if (frame === null) throw new Error("connection closed before the burst was acknowledged");
+      if (frame.kind !== "ack") continue;
+      const acked = (frame.payload as { ackedSourceSeq: number }).ackedSourceSeq;
+      expect(acked).toBeLessThanOrEqual(persistedCursor);
+      acks.push(acked);
+    }
+    expect(acks).toEqual([...acks].sort((left, right) => left - right));
+    expect(acks.length).toBeLessThan(300 / 16);
+    expect(persisted.length - before).toBeLessThan(300 / 16);
+    expect(core.store.state.committedEvents.map(event => event.sourceSeq)).toEqual(Array.from({ length: 300 }, (_, index) => index + 1));
+    client.socket.destroy();
+  } finally {
+    stop();
+    await core.stop();
+    await core.drainPendingConnectionProcessing();
+    rmSync(root, { recursive: true, force: true });
+  }
+}, 60_000);
+
+it("still acknowledges a lifecycle event inside a burst before the next frame", async () => {
+  const root = mkdtempSync(resolve(tmpdir(), "runner-batched-ack-lifecycle-"));
+  const { core, stop } = replayBacklogCore(root, 5);
+  try {
+    await core.start();
+    const client = (await authenticate(core, core.issueBootstrapTicket()))!;
+    const turn = completedItem(11);
+    Object.assign(turn.payload as Record<string, unknown>, { sourceEventId: "turn-11", eventType: "turn.completed", priority: 0,
+      payload: { turnId: identity.turnId } });
+    for (let seq = 1; seq <= 20; seq++) sendSecure(client, seq === 11 ? turn : completedItem(seq));
+    const acks: number[] = [];
+    while (acks.at(-1) !== 20) {
+      const frame = await receiveSecure(client);
+      if (frame === null) throw new Error("connection closed before the burst was acknowledged");
+      if (frame.kind === "ack") acks.push((frame.payload as { ackedSourceSeq: number }).ackedSourceSeq);
+    }
+    expect(acks).toContain(11);
+    client.socket.destroy();
+  } finally {
+    stop();
+    await core.stop();
+    await core.drainPendingConnectionProcessing();
+    rmSync(root, { recursive: true, force: true });
+  }
+}, 60_000);
+
 it("keeps a staged tool-progress write when a lease renewal lands mid-write", async () => {
   const root = mkdtempSync(resolve(tmpdir(), "runner-lease-renewal-staged-write-"));
   let release!: () => void;

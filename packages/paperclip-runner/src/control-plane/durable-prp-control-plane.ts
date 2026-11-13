@@ -66,6 +66,7 @@ const maxFrameBytes = 1024 * 1024;
 const maxCommandBytes = Math.floor((maxFrameBytes - 4 * 1024) / 2);
 const maxCommands = 500;
 const maxCommandsAtAttach = 32;
+const maxEventsPerAck = 64;
 class CommandJournalLimitError extends Error {
   constructor(readonly code: "command_payload_too_large" | "command_journal_full") {
     super(`Durable PRP command journal bound exceeded: ${code}.`);
@@ -2042,6 +2043,8 @@ class AuthorityConnection {
   identity: DurableRecoveryIdentity | null = null;
   replayOnly = false;
   readonly deliveredAtAttach = new Set<string>();
+  queuedInboundFrames = 0;
+  unacknowledgedEvents = 0;
   activationReceipt: DurableWarmRunTransition | null = null;
   readonly wire: PrpWireConnection;
   #closed = false;
@@ -3166,12 +3169,15 @@ export class DurablePrpControlPlane {
           const queued = this.#queuedCommandResults.get(queuedResult);
           this.#queuedCommandResults.set(queuedResult, { count: (queued?.count ?? 0) + 1, queuedAt: queued?.queuedAt ?? Date.now() });
         }
+        connection.queuedInboundFrames += 1;
         processing = processing
           .then(() => "raw" in frame
             ? this.#handleJson(connection, frame.raw).finally(() => { undecryptedFrames -= 1; })
             : this.#handleDecryptedFrame(connection, frame.decrypted))
+          .then(() => connection.queuedInboundFrames === 1 ? this.#acknowledgeDeferredEvents(connection) : undefined)
           .catch(() => connection.close())
           .finally(() => {
+            connection.queuedInboundFrames -= 1;
             this.#inboundFrameSettledAt = Date.now();
             if (queuedResult === null) return;
             const queued = this.#queuedCommandResults.get(queuedResult);
@@ -4389,6 +4395,24 @@ export class DurablePrpControlPlane {
     );
   }
 
+  async #acknowledgeDeferredEvents(connection: AuthorityConnection): Promise<void> {
+    if (connection.unacknowledgedEvents === 0) return;
+    connection.unacknowledgedEvents = 0;
+    const identity = this.#identity;
+    if (this.#eventOwner !== connection || this.#protocolIntegrityError !== null) return;
+    try {
+      await this.flushCheckpoint();
+    } catch (error) {
+      if (this.#eventOwner === connection && this.#identity === identity) {
+        this.#eventCommitFailed(connection, `checkpoint_flush_failed:${safeErrorCauseCode(error)}`);
+      }
+      return;
+    }
+    if (this.#eventOwner !== connection || this.#identity !== identity || this.#protocolIntegrityError !== null) return;
+    this.#sendJson(connection, this.#controlEnvelope(connection, `ack_${this.#store.state.ackedSourceSeq}`, "ack",
+      { ackedSourceSeq: this.#store.state.ackedSourceSeq }));
+  }
+
   #eventCommitFailed(connection: AuthorityConnection, cause: string, sourceSeq?: number, now = Date.now()): void {
     const acked = this.#store.state.ackedSourceSeq;
     const runId = this.#identity.runId;
@@ -4605,7 +4629,8 @@ export class DurablePrpControlPlane {
     };
     const isCurrentOwner = () => this.#eventOwner === connection &&
       this.#identity === identity && this.#protocolIntegrityError === null;
-    if (priority === 0 || isSemanticInput || eventType.startsWith("turn.") || eventType.startsWith("run.")) {
+    const critical = priority === 0 || isSemanticInput || eventType.startsWith("turn.") || eventType.startsWith("run.");
+    if (critical) {
       // Critical lifecycle suffixes and tool admission must finish in this
       // turn before readers react or a replacement owner adopts their cursor.
       const candidate = buildCandidate(this.#store.state);
@@ -4635,6 +4660,11 @@ export class DurablePrpControlPlane {
     }
     if (!isCurrentOwner()) return;
     this.#eventCommittedAt = Date.now();
+    if (!critical && connection.queuedInboundFrames > 1 && connection.unacknowledgedEvents + 1 < maxEventsPerAck) {
+      connection.unacknowledgedEvents += 1;
+      return;
+    }
+    connection.unacknowledgedEvents = 0;
 
     const liveCall = !this.#retainsSourceInputs() && isSemanticInput && this.#onSemanticToolInput && semantic !== undefined
       && typeof semantic.callId === "string" && typeof semantic.operationId === "string"
