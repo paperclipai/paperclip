@@ -350,6 +350,19 @@ it("renames a chat inline from the history", async () => {
   expect(history.querySelector('input[aria-label="Chat title"]')).toBeNull();
 });
 
+it("confirms an unchanged provisional chat title with Enter, but not by leaving the field", async () => {
+  client.setQueryData(queryKeys.agentChats.list("company-a", "user-a"), [{ ...chat("alice"), id: "first", title: "Plan the Q3 offsite", titleNeedsGeneration: true, createdAt: "2026-09-01T12:00:00Z" }]);
+  await render();
+  const history = container.querySelector('nav[aria-label="Chat history"]')!;
+  const open = async () => act(async () => history.querySelector<HTMLButtonElement>('button[aria-label="Rename Plan the Q3 offsite"]')!.click());
+  await open();
+  await act(async () => history.querySelector<HTMLInputElement>('input[aria-label="Chat title"]')!.blur());
+  expect(issueUpdates).not.toHaveBeenCalled();
+  await open();
+  await act(async () => history.querySelector<HTMLInputElement>('input[aria-label="Chat title"]')!.form!.requestSubmit());
+  expect(issueUpdates).toHaveBeenCalledWith("first", { title: "Plan the Q3 offsite" });
+});
+
 it("shows accessible unread indicators only for the current company and human", async () => {
   client.setQueryData(queryKeys.agentChats.list("company-a", "user-a"), [{ ...chat("alice"), isUnreadForMe: true }, chat("bob")]);
   client.setQueryData(queryKeys.agentChats.list("company-a", "other-human"), [{ ...chat("bob"), isUnreadForMe: true }]);

@@ -157,9 +157,11 @@ function ChatHistoryRow({ agent, chat, onSelect, onRename }: { agent: Agent; cha
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const cancel = () => { setEditing(false); setError(null); };
-  const save = async () => {
+  // Pressing Enter on an unchanged provisional title confirms it, so the agent no longer renames the chat;
+  // leaving the field without a change keeps the title provisional.
+  const save = async (confirm = false) => {
     const title = draft.trim();
-    if (!title || title === chat.title) { cancel(); return; }
+    if (!title || (title === chat.title && !(confirm && chat.titleNeedsGeneration))) { cancel(); return; }
     setSaving(true);
     try {
       await onRename!(chat, title);
@@ -170,7 +172,7 @@ function ChatHistoryRow({ agent, chat, onSelect, onRename }: { agent: Agent; cha
       setSaving(false);
     }
   };
-  if (editing) return <form className="flex flex-col gap-1 px-2 py-1" onSubmit={event => { event.preventDefault(); void save(); }}>
+  if (editing) return <form className="flex flex-col gap-1 px-2 py-1" onSubmit={event => { event.preventDefault(); void save(true); }}>
     <Input aria-label="Chat title" autoFocus value={draft} maxLength={240} disabled={saving} className="h-8 md:text-sm"
       onChange={event => setDraft(event.target.value)} onBlur={() => { if (!error) void save(); }}
       onKeyDown={event => { if (event.key === "Escape") { event.stopPropagation(); cancel(); } }} />
