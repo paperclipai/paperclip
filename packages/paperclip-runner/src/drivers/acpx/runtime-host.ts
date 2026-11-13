@@ -9,6 +9,7 @@ import { resolveGrokEffort } from "./grok-effort.js";
 import { piProviderConfiguration } from "./pi-provider-config.js";
 import { withAcpxTurnCancellation } from "./turn-cancellation.js";
 import type { AcpxTerminalSessionFailure } from "./provider-failure.js";
+import type { ClaudeBackgroundTaskState } from "./claude-background-tasks.js";
 import { resolveAcpxProviderMode } from "./provider-mode.js";
 import { resolvePiThinkingLevel, type PiThinkingLevel } from "./pi-thinking.js";
 import { preparedHarnessHome, preconfiguredHomeEnvironment, usesPreconfiguredHome } from "../preconfigured-home.js";
@@ -20,7 +21,6 @@ import { stageManagedGrokCredential } from "./grok-credentials.js";
 import { stageManagedAntigravityCredential } from "./antigravity-credentials.js";
 import { claudeNativeSkillPrompt } from "./native-skill-prompt.js";
 import { prepareStdioMcpBindings } from "../stdio-mcp.js";
-import { nativeMcpLaunchBinding } from "../native-mcp.js";
 
 import type {
   AcpRuntimeOptions,
@@ -167,6 +167,7 @@ export interface AcpxRuntimePort {
   queueFollowUp?(text: string, requestId: string): Promise<void>;
   goalCapability?(): AcpxRuntimeGoalCapability | null;
   goalSnapshot?(): AcpxRuntimeGoalSnapshot | null;
+  backgroundTaskState?(): ClaudeBackgroundTaskState | null;
   controlGoal?(
     action: "set" | "pause" | "resume" | "clear",
     objective?: string,
@@ -379,11 +380,7 @@ export class AcpxRuntimeHost {
     }
     // shortcut: qualify session permissions that deny Runner state before enabling this provider.
     if (preconfigured && options.agent === "codex") throw new Error("preconfigured ACPX Codex cannot protect Runner state; use native Codex or isolated mode");
-    const nativeMcp = preconfigured ? null : nativeMcpLaunchBinding(options.environment);
-    if (nativeMcp?.name === "paperclip") {
-      throw new Error("assigned native MCP name conflicts with the task bridge");
-    }
-    if (!preconfigured && options.runtimeContext?.mcp.bindingId && !nativeMcp
+    if (!preconfigured && options.runtimeContext?.mcp.bindingId
       && !(options.assignedMcpTransport === "prp" && options.semanticTools)) {
       throw new Error("assigned native MCP launch binding is unavailable");
     }
@@ -708,10 +705,6 @@ export class AcpxRuntimeHost {
               ...(options.providerPolicy?.readOnly ? [] : prepareStdioMcpBindings(options.environment ?? {}, sandbox.root)),
               ...(toolBridge ? [{ name: preconfigured ? `paperclip_runner_${binding.profileSessionKey.slice(-16)}` : "paperclip", url: toolBridge.url,
                 bearerToken: toolBridge.secret, runnerOwned: true }] : []),
-              // This is Paperclip's authenticated gateway, not a direct upstream
-              // binding. Its existing grants and approval checks remain authoritative.
-              ...(nativeMcp ? [{ name: nativeMcp.name, url: nativeMcp.url,
-                bearerToken: nativeMcp.token, runnerOwned: true }] : []),
             ],
             ...(options.onGoalUpdate === undefined
               ? {}
@@ -898,6 +891,10 @@ export class AcpxRuntimeHost {
 
   goalSnapshot(): AcpxRuntimeGoalSnapshot | null {
     return this.#runtime.goalSnapshot?.() ?? null;
+  }
+
+  backgroundTaskState(): ClaudeBackgroundTaskState | null {
+    return this.#runtime.backgroundTaskState?.() ?? null;
   }
 
   async controlGoal(

@@ -1324,6 +1324,13 @@ describe("renderPaperclipWakePrompt", () => {
     ).toBe(false);
   });
 
+  it("asks Slack for brief public progress without adding a reporting tool", () => {
+    const prompt = renderPaperclipWakePrompt({ ...ordinaryExternalChatWake, externalChatProvider: "slack" });
+    expect(prompt).toContain("Give a brief public update when you change approach or learn something useful");
+    expect(prompt).toContain("current conversation's audience");
+    expect(renderPaperclipWakePrompt(ordinaryExternalChatWake)).not.toContain("Slack can show this public commentary");
+  });
+
   it("renders one authoritative direct-response contract for fresh and resumed external-chat turns", () => {
     for (const prompt of [
       renderPaperclipWakePrompt(ordinaryExternalChatWake),

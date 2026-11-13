@@ -95,7 +95,6 @@ import {
   type OpenCodeMcpBridge,
   type OpenCodeMcpBridgeOptions,
 } from "./mcp-bridge.js";
-import { nativeMcpLaunchBinding } from "../native-mcp.js";
 import { toolCallMarkupStart, visibleBeforeToolCallMarkup } from "./tool-call-markup.js";
 import {
   materializeNativeRuntimeSkills,
@@ -2676,9 +2675,6 @@ async function startRuntime(input: {
     await removeIsolatedHome(isolatedHome).catch(() => undefined);
     throw error;
   });
-  const assignedMcp = nativeMcpLaunchBinding(
-    input.options.environment ?? process.env,
-  );
   const identityKey = input.options.environment?.PAPERCLIP_AGENT_PRIVATE_KEY;
   const identityValues = identityKey ? [identityKey, JSON.stringify(identityKey).slice(1, -1),
     ...identityKey.split(/\r?\n/).filter(line => line && !line.startsWith("-----"))] : [];
@@ -2690,7 +2686,6 @@ async function startRuntime(input: {
     password,
     authHeader,
     bridge.secret,
-    assignedMcp?.token,
     providerEnvironment.OPENROUTER_API_KEY,
     providerEnvironment.PAPERCLIP_AI_PROVIDER_KEY,
   ].filter((value): value is string => Boolean(value));
@@ -2822,18 +2817,6 @@ async function startRuntime(input: {
           // must still remain pending and block replay after client expiry.
           timeout: input.options.durableToolRequests ? 60 * 60 * 1_000 : 30_000,
         },
-        ...(assignedMcp
-          ? {
-              [assignedMcp.name]: {
-                type: "remote",
-                url: assignedMcp.url,
-                enabled: true,
-                oauth: false,
-                headers: { Authorization: `Bearer ${assignedMcp.token}` },
-                timeout: 30_000,
-              },
-            }
-          : {}),
       },
     };
     await writeFile(
