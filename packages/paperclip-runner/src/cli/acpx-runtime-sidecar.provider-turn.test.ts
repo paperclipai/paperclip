@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 
 import { ACPX_SIDECAR_PROTOCOL_VERSION } from "../drivers/acpx/sidecar-protocol.js";
+import { claudePlanProposalEvent } from "../provider-events.js";
 import { initializeRequest, SidecarProcess } from "../test-support/acpx-sidecar-process.js";
 
 const children = new Set<SidecarProcess>();
@@ -113,6 +114,41 @@ describe("ACPX sidecar provider-started Claude turns", () => {
       const terminal = await sidecar.next(frame => frame.eventType === "runtime.turn_terminal" && frame.turnId === PROVIDER);
       expect(payload(terminal)).toEqual({ status: "failed", error: { code: "ACPX_PROVIDER_PROCESS_LOST",
         message: "The owned ACPX provider exited during Claude's own turn", retryable: false } });
+    } finally { await cleanup(); }
+  }, 20_000);
+
+  it("publishes a plan proposed in an adopted cycle and ends that turn as a controller turn with a declined plan ends", async () => {
+    const plan = { toolCallId: "toolu_plan", markdown: "# Plan\n\nShip it." };
+    const cycle = { requestId: PROVIDER, gate: "offer", steps: [{ event: { type: "status", text: "usage updated", tag: "usage_update" } }, { plan }],
+      result: { status: "completed", stopReason: "end_turn", usage: null } };
+    const { sidecar, send, observed, release, cleanup } = await open({ turns: [{ state: { live: 1 }, cycle }] });
+    try {
+      await send("turn.start", { turnId: "turn-1", message: "Start." });
+      await sidecar.next(frame => frame.eventType === "runtime.turn_terminal" && frame.turnId === "turn-1");
+      expect(await send("session.provider_turn", { turnId: "turn-1", armed: true })).toEqual({ armed: true });
+      release("offer");
+      await sidecar.next(frame => frame.eventType === "runtime.turn_started" && frame.turnId === PROVIDER);
+      const proposed = await sidecar.next(frame => frame.eventType === "runtime.rich_event" && payload(frame).eventType === "plan.proposed");
+      expect(proposed).toMatchObject({ turnId: PROVIDER, payload: { ...claudePlanProposalEvent(plan) } });
+      const terminal = await sidecar.next(frame => frame.eventType === "runtime.turn_terminal" && frame.turnId === PROVIDER);
+      expect(payload(terminal)).toEqual({ status: "completed", stopReason: "end_turn" });
+      expect(observed().planOffered).toBe(true);
+    } finally { await cleanup(); }
+  }, 20_000);
+
+  it("publishes nothing for a plan proposed in a dropped cycle", async () => {
+    const plan = { toolCallId: "toolu_plan", markdown: "# Plan\n\nShip it." };
+    const cycle = { requestId: PROVIDER, gate: "offer", steps: [{ event: { type: "status", text: "usage updated", tag: "usage_update" } }, { plan }],
+      result: { status: "completed", stopReason: "end_turn", usage: null } };
+    const { sidecar, send, observed, release, cleanup } = await open({ turns: [{ state: { live: 0 }, cycle }] });
+    try {
+      await send("turn.start", { turnId: "turn-1", message: "Start." });
+      await sidecar.next(frame => frame.eventType === "runtime.turn_terminal" && frame.turnId === "turn-1");
+      release("offer");
+      await expect.poll(() => observed().planOffered, { timeout: 5_000 }).toBe(false);
+      await send("session.snapshot", {});
+      expect(sidecar.pending(frame => frame.eventType === "runtime.rich_event" && payload(frame).eventType === "plan.proposed")).toBe(0);
+      expect(sidecar.pending(frame => frame.eventType === "runtime.turn_started")).toBe(0);
     } finally { await cleanup(); }
   }, 20_000);
 

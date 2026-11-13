@@ -96,7 +96,7 @@ import type { RunnerToolCall } from "../drivers/runner-tool-bridge.js";
 import { CLAUDE_TOOL_USE_META_KEY, ClaudeToolUseAdmission } from "../drivers/acpx/claude-tool-use-admission.js";
 import { CLAUDE_PROVIDER_TURN_CLOSED, parseAcpxProviderTurnArming } from "../drivers/acpx/claude-provider-turns.js";
 import { GENERATED_ACPX_PROVIDER_TURN_LOST_CODE, GENERATED_ACPX_PROVIDER_TURN_ORIGIN } from "../drivers/acpx/generated-sidecar-contract.js";
-import type { AcpxProviderCycleStream } from "../drivers/acpx/runtime-host.js";
+import type { AcpxPlanProposal, AcpxProviderCycleStream } from "../drivers/acpx/runtime-host.js";
 import {
   acpxBootstrapBlockedError,
   acpxSidecarErrorCode,
@@ -497,13 +497,7 @@ async function dispatch(
         text: boundedText(request.params.message, "message", 1024 * 1024),
         onExtensionRequest: extensions.onExtensionRequest,
         onExtensionNotification: extensions.onExtensionNotification,
-        onPlanProposal: (proposal) => {
-          if (turnId !== currentTurnId || host !== activeHost) return;
-          const event = claudePlanProposalEvent(proposal);
-          validateAcpxRichEvent(event);
-          emit("runtime.rich_event", { ...event }, currentTurnId);
-          planProposalTurns.add(currentTurnId);
-        },
+        onPlanProposal: (proposal) => publishPlanProposal(currentTurnId, activeHost, proposal),
         onElicitation: (providerRequest, context) =>
           waitForInput(currentTurnId, providerRequest, context),
         onPermissionRequest: (providerRequest, context) =>
@@ -874,13 +868,23 @@ async function pumpTurn(
     rejectTurnWaiters(currentTurnId, "ACPX turn became terminal");
     if (turnId === currentTurnId) turnId = null;
   }
+  emitSettledTurnTerminal(currentTurnId, terminal, activeHost);
+}
+
+function publishPlanProposal(currentTurnId: string, activeHost: AcpxRuntimeHost, proposal: AcpxPlanProposal): void {
+  if (turnId !== currentTurnId || host !== activeHost) return;
+  const event = claudePlanProposalEvent(proposal);
+  validateAcpxRichEvent(event);
+  emit("runtime.rich_event", { ...event }, currentTurnId);
+  planProposalTurns.add(currentTurnId);
+}
+
+function emitSettledTurnTerminal(currentTurnId: string, terminal: Record<string, unknown>, activeHost: AcpxRuntimeHost): void {
   // Declining Claude's native plan approval interrupts its turn. The captured
   // proposal is this turn's deliverable, so the turn completes normally.
-  const declinedPlan = planProposalTurns.delete(currentTurnId) && terminal.status === "cancelled";
-  if (declinedPlan) {
-    terminal = { status: "completed", stopReason: "end_turn" };
-  }
-  emitTurnTerminal(currentTurnId, terminal, activeHost, declinedPlan);
+  const declinedPlan = planProposalTurns.delete(currentTurnId)
+    && (terminal.status === "cancelled" || terminal.status === "completed");
+  emitTurnTerminal(currentTurnId, declinedPlan ? { status: "completed", stopReason: "end_turn" } : terminal, activeHost, declinedPlan);
 }
 
 function emitTurnTerminal(
@@ -946,6 +950,7 @@ async function adoptProviderCycle(activeHost: AcpxRuntimeHost, cycles: AcpxProvi
   toolUseAdmission?.beginTurn(currentTurnId);
   const adopted = cycles.adopt({
     onPermissionRequest: (request, context) => waitForPermission(currentTurnId, "claude", request, context),
+    onPlanProposal: (proposal) => publishPlanProposal(currentTurnId, activeHost, proposal),
     busy: () => turnId === currentTurnId && (tools.size > 0 || normalizingTools.size > 0 || permissions.size > 0 || inputs.size > 0),
   });
   if (!adopted) {
@@ -994,7 +999,7 @@ async function pumpProviderTurn(currentTurnId: string, cycles: AcpxProviderCycle
     if (turnId === currentTurnId) turnId = null;
     if (providerTurnId === currentTurnId) providerTurnId = null;
   }
-  emitTurnTerminal(currentTurnId, terminal, activeHost, false);
+  emitSettledTurnTerminal(currentTurnId, terminal, activeHost);
 }
 
 function optionalBackgroundTasks(activeHost: AcpxRuntimeHost): { backgroundTasks?: GeneratedAcpxBackgroundTasks } {

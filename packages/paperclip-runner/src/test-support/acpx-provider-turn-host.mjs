@@ -151,6 +151,11 @@ export class AcpxRuntimeHost extends Base {
           .then((decision) => note(`permission:${step.permission}`, decision));
       }
       if (step.busy !== undefined) note("busy", cycles.binding?.busy() ?? false);
+      if (step.plan) {
+        const adopted = await (cycles.decisionFor(step.plan.toolCallId) ?? true);
+        if (adopted) cycles.binding?.onPlanProposal?.(step.plan);
+        note("planOffered", adopted);
+      }
       if (step.gate) await gate(step.gate);
       if (step.sleep) await sleep(step.sleep);
       if (step.state) state = step.state;
