@@ -13926,6 +13926,25 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     },
   );
 
+  it("checks an automatic continuation that names no retry source against the task's previous run", async () => {
+    const source = await seedCommittedChatControlStop();
+    const child = await seedChatAutomaticChild(source);
+    await db
+      .update(heartbeatRuns)
+      .set({ retryOfRunId: null, createdAt: new Date(Date.now() + 1_000) })
+      .where(eq(heartbeatRuns.id, child.runId));
+    expect(
+      (await readChatControlRecoveryStop(db, chatStopScope(source, child.runId))).kind,
+    ).toBe("stopped");
+    await db
+      .update(chatPublications)
+      .set({ state: "pending" })
+      .where(eq(chatPublications.id, source.publicationId));
+    expect(
+      (await readChatControlRecoveryStop(db, chatStopScope(source, child.runId))).kind,
+    ).toBe("clear");
+  });
+
   it("defers unresolved automatic ancestry at claim and records a distinct nonretrying failure after claim", async () => {
     const source = await seedCommittedChatControlStop();
     await db
