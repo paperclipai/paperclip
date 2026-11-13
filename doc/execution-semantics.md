@@ -1761,6 +1761,18 @@ starts by itself once the gate clears. A Retry accepted during the pre-deploy
 drain stays saved and is dispatched by the deferred-receipt worker after the
 restart.
 
+After the provider accepts a turn, the transport waits for that turn's
+`turn/started` before it reports the turn identity. Codex starts its MCP
+servers before it starts the turn, so a healthy cold start in a loaded sandbox
+can take most of a minute: on staging, submit to `turn/started` measured p50
+25 s, p90 50 s and max 76 s across 68 successful starts, while a fixed 30 s wait
+hit 52 of 198 recent runs with `runnerd did not report the provider turn identity`.
+The default wait is 90 s. Each provider notice, or runner diagnostic naming the
+accepted turn, restarts that window, up to 180 s in all. A provider relaunch
+does not count as progress. A silent start with no proof that the accepted turn
+is still live fails when its window ends, and a Runner exit or a runner
+failure of the pending turn still fails at once.
+
 When a remote native run fails and its close cannot prove that the Runner
 suspended (for example, the Runner is unreachable after `provider_transport_failed`
 or a `turn.start` timeout), the controller no longer force-stops that Runner. It
