@@ -546,7 +546,7 @@ describe("automatic retained workspace recovery", () => {
     const exhausted = await action(f.actionId);
     expect(readSystemRecovery(exhausted.evidence)?.state).toBe("exhausted");
     expect(exhausted).toMatchObject({ status: "active", ownerType: "board" });
-    expect(exhausted.nextAction).toMatch(/after 6 tries/); // changed deliberately from "stopped after 6 attempts"
+    expect(exhausted.nextAction).toMatch(/after 6 tries/);
     expect(exhausted.nextAction).not.toContain("export_interrupted");
     const blocker = await getExecutionBlocker(db, f.companyId, f.issueId);
     expect(blocker?.workspaceRecovery).toMatchObject({ status: "blocked", canRetry: true });

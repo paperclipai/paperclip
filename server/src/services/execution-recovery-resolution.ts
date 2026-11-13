@@ -12,7 +12,7 @@ import { conversationRecoveryActionPredicate, getConversationOwnershipBlocker } 
 import { isInterruptedNativePreparationCandidate } from "./cancelled-native-startup.js";
 import { persistActivity } from "./activity-log.js";
 import { appendHeartbeatRunEvent } from "./heartbeat-run-events.js";
-import { queuedCommentIdsFromWakePayload } from "./issue-queued-comment-queue.js";
+import { foldWaitingRetriesIntoContinuation } from "./fresh-continuation-retry-fold.js";
 import { logger } from "../middleware/logger.js";
 import { and, asc, eq, exists, inArray, isNull, not, or, sql } from "drizzle-orm";
 import {
@@ -364,20 +364,6 @@ export async function markExecutionReconciliation(
   });
 }
 
-async function foldWaitingRetriesIntoContinuation(tx: Db, input: { companyId: string; issueId: string; runId: string }) {
-  const waiting = await tx.select({ id: agentWakeupRequests.id, payload: agentWakeupRequests.payload }).from(agentWakeupRequests).where(and(
-    eq(agentWakeupRequests.companyId, input.companyId), eq(agentWakeupRequests.status, "deferred_issue_execution"),
-    eq(agentWakeupRequests.reason, "task_retry"), eq(agentWakeupRequests.requestedByActorType, "user"),
-    isNull(agentWakeupRequests.runId), sql`${agentWakeupRequests.payload}->>'issueId' = ${input.issueId}`)).for("update");
-  const retries = waiting.filter(wake => queuedCommentIdsFromWakePayload(wake.payload).length === 0).map(wake => wake.id);
-  if (!retries.length) return;
-  const now = new Date();
-  await tx.update(agentWakeupRequests).set({ status: "coalesced", runId: input.runId, finishedAt: now, updatedAt: now,
-    payload: sql`coalesce(${agentWakeupRequests.payload}, '{}'::jsonb) || ${JSON.stringify({ coalescedIntoFreshContinuationRun: input.runId })}::jsonb` })
-    .where(and(eq(agentWakeupRequests.companyId, input.companyId), inArray(agentWakeupRequests.id, retries),
-      eq(agentWakeupRequests.status, "deferred_issue_execution")));
-}
-
 export async function deliverReconciledExecutions(
   db: Db,
   wake: ReturnType<typeof import("./heartbeat.js").heartbeatService>["wakeup"],
@@ -430,6 +416,7 @@ export async function deliverReconciledExecutions(
             where queued_recovery.company_id = ${issueRecoveryActions.companyId}
               and queued_recovery.agent_id = ${issueRecoveryActions.returnOwnerAgentId}
               and queued_recovery.status = 'queued'
+              and queued_recovery.context_snapshot->>'recoveryActionId' is distinct from ${issueRecoveryActions.id}::text
               and queued_recovery.context_snapshot->>'wakeReason' in (${sql.join(recoveryReasons.map(reason => sql`${reason}`), sql`, `)})))`,
         ),
       )
@@ -511,7 +498,7 @@ export async function deliverReconciledExecutions(
         // recorded already continues the task, so it is never a second run.
         const fresh = action.evidence.freshContinuation as { recordedAt?: unknown } | undefined;
         if (fresh && typeof fresh.recordedAt === "string") {
-          const [newer] = await db.select({ id: heartbeatRuns.id }).from(heartbeatRuns).where(and(
+          const [newer] = await db.select({ id: heartbeatRuns.id, contextSnapshot: heartbeatRuns.contextSnapshot }).from(heartbeatRuns).where(and(
             eq(heartbeatRuns.companyId, action.companyId), sql`${heartbeatRuns.id}::text <> ${decision.runId}`,
             or(eq(heartbeatRuns.nativeIssueId, task.id), eq(heartbeatRuns.issueId, task.id),
               sql`${heartbeatRuns.contextSnapshot}->>'issueId' = ${task.id}::text`),
@@ -522,6 +509,11 @@ export async function deliverReconciledExecutions(
               .where(pendingDecision);
             await settleCoalescedFreshContinuationHolds(db, { companyId: action.companyId, primaryId: action.id,
               delivery: "delivered", continuationRunId: newer.id });
+            if (newer.contextSnapshot?.freshContinuationIsolation === action.id)
+              await db.transaction(async tx => {
+                await tx.execute(sql`select id from issues where company_id = ${action.companyId} and id = ${task.id} for update`);
+                await foldWaitingRetriesIntoContinuation(tx as unknown as Db, { companyId: action.companyId, issueId: task.id, runId: newer.id });
+              });
             continue;
           }
         }

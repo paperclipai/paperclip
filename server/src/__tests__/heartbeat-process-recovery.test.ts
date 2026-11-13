@@ -12370,7 +12370,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
 
     const comments = await selectRecoveryCommentsForIssue(issueId);
     expect(comments).toHaveLength(1);
-    expect(comments[0]?.body).toContain("tried to start this task again"); // changed deliberately from "retried dispatch"
+    expect(comments[0]?.body).toContain("tried to start this task again");
     expect(comments[0]?.body).not.toContain("sk-test-recovery-secret");
     expect(JSON.stringify(comments[0]?.metadata)).not.toContain(
       "sk-test-recovery-secret",
@@ -12474,7 +12474,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     const comments = await selectRecoveryCommentsForIssue(issueId);
     expect(comments).toHaveLength(1);
     expect(comments[0]?.body).toContain(
-      "Paperclip stopped trying to recover this task automatically.", // changed deliberately: plain wording, no internal codes
+      "Paperclip stopped trying to recover this task automatically.",
     );
     expect(comments[0]?.body).toContain(
       "This task was created to recover another task, so Paperclip does not create another recovery task for it.",
@@ -12861,7 +12861,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
 
     const comments = await selectRecoveryCommentsForIssue(issueId);
     expect(comments).toHaveLength(1);
-    expect(comments[0]?.body).toContain("tried to continue this task again"); // changed deliberately from "retried continuation"
+    expect(comments[0]?.body).toContain("tried to continue this task again");
     expect(comments[0]?.presentation).toMatchObject({
       kind: "system_notice",
       tone: "danger",
@@ -13015,8 +13015,8 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
 
     const comments = await selectRecoveryCommentsForIssue(issueId);
     expect(comments).toHaveLength(1);
-    expect(comments[0]?.body).toContain("tried to continue this task again"); // changed deliberately from "retried continuation"
-    expect(comments[0]?.body).toContain("after 3 tries"); // changed deliberately from "3× attempts"
+    expect(comments[0]?.body).toContain("tried to continue this task again");
+    expect(comments[0]?.body).toContain("after 3 tries");
     expect(commentMetadataRows(comments[0])).toContainEqual({
       type: "key_value",
       label: "Failure code",
@@ -14932,7 +14932,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     const comments = await selectRecoveryCommentsForIssue(issueId);
     expect(comments).toHaveLength(1);
     expect(comments[0]?.body).toContain(
-      "Paperclip stopped trying to recover this task automatically.", // changed deliberately: plain wording, no internal codes
+      "Paperclip stopped trying to recover this task automatically.",
     );
     expect(comments[0]?.body).toContain(
       "The failure details are kept with the run",
