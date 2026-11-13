@@ -423,9 +423,11 @@ export function agentDirectoryWorkingCopyService(db: Db, get: (companyId: string
         const snapshot = checkpointSnapshot(captured.manifest);
         const nextHash = directorySnapshotSha256(snapshot);
         const changed = nextHash !== row.baseHash;
+        // An unchanged run writes no agent file, so it needs the write
+        // authorization only, not the row lock and file-tree commit of a save.
         const { storageWarning } = changed
           ? await store.apply({ companyId: row.companyId, agentId: row.agentId, sourceDir: path.join(captured.directory, "files"), baseline: baseline(row), checkpoint: captured.manifest }, actor(row))
-          : await store.locked(row.companyId, row.agentId, actor(row), true, async () => ({
+          : await store.authorizeUnchangedSave(row.companyId, row.agentId, actor(row)).then(() => ({
             storageWarning: typeof row.receipt?.storageWarning === "string" ? row.receipt.storageWarning : null,
           }));
         row = await patch(row, { state: stopped ? (changed ? "saved" : "unchanged") : "warm_saved", baseHash: nextHash,
