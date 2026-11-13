@@ -49,8 +49,9 @@ it("admits at most one in-flight product completion follow-up on a settled sourc
   // Before the turn is prepared, the queued run carries only its saved delivery IDs (actual server snapshot shape).
   const pending: ChatRun = { ...followUp, status: "queued",
     contextSnapshot: { issueId: "source", wakeReason: "chat_task_completed", wakeSource: "automation", chatCompletionDeliveryIds: ["delivery"] } };
-  expect(gradeChatCatalogRuns({ ...active, implementation, runs: [succeeded, done, pending] }).passed).toBe(true);
-  for (const bad of [{ ...pending, status: "running" }, { ...pending, contextSnapshot: { ...pending.contextSnapshot, chatCompletionDeliveryIds: [] } },
+  // The server claims the run (running) before it saves the updates, so a running run in preparation also qualifies.
+  for (const status of ["queued", "running"]) expect(gradeChatCatalogRuns({ ...active, implementation, runs: [succeeded, done, { ...pending, status }] }).passed).toBe(true);
+  for (const bad of [{ ...pending, status: "succeeded" }, { ...pending, status: "failed" }, { ...pending, contextSnapshot: { ...pending.contextSnapshot, chatCompletionDeliveryIds: [] } },
     { ...pending, contextSnapshot: { ...pending.contextSnapshot, wakeSource: "manual" } }])
     expect(gradeChatCatalogRuns({ ...active, implementation, runs: [succeeded, done, bad] }).passed).toBe(false);
   expect(gradeChatCatalogRuns({ ...active, implementation, runs: [succeeded, worker, pending] }).passed).toBe(false);

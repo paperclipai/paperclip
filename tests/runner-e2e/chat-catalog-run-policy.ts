@@ -81,8 +81,9 @@ export function chatCatalogProviderRuns(runs: ChatRun[], source?: ChatIssue): Ch
  * finishes, so a settled source can briefly show it queued or running. Only a
  * lead run on the source whose every completion update names separate work in
  * this ledger qualifies; any other source run must still have succeeded. The
- * server records the updates when the turn is prepared, so a still-queued run
- * carries only its saved delivery IDs: it qualifies only while queued, woken by
+ * server records the updates only while it prepares the already-claimed turn,
+ * so a queued run, or a running run that is still being prepared, carries only
+ * its saved delivery IDs. It qualifies only while queued or running, woken by
  * automation, after a separate worker run in this ledger succeeded.
  */
 export function chatCatalogSourceCompletionFollowUp(run: ChatRun, input: { leadId: string; source?: ChatIssue; runs: ChatRun[] }): boolean {
@@ -93,7 +94,7 @@ export function chatCatalogSourceCompletionFollowUp(run: ChatRun, input: { leadI
   if (!input.source || run.agentId !== input.leadId || taskId(run) !== input.source.id || snapshot.wakeReason !== "chat_task_completed") return false;
   if (updates === undefined || updates === null) {
     const deliveries = snapshot.chatCompletionDeliveryIds;
-    return run.status === "queued" && snapshot.wakeSource === "automation" && Array.isArray(deliveries) && deliveries.length > 0
+    return ["queued", "running"].includes(run.status) && snapshot.wakeSource === "automation" && Array.isArray(deliveries) && deliveries.length > 0
       && deliveries.every(id => typeof id === "string" && id.length > 0) && work.some(other => other.status === "succeeded");
   }
   return Array.isArray(updates) && updates.length > 0 && updates.every(update => workTasks.has(record(update).id as string));
