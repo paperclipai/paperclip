@@ -370,11 +370,6 @@ describe("company decision service", () => {
   });
   it("admits concurrent work without a company writer mutex and records both obligations", async () => {
     const f = await fixture();
-    // Room for exactly two holds. Each decision's credential read records
-    // last_resolved_at on the shared secret row, which the other admission
-    // share-locks, so PostgreSQL may legitimately retry one admission with a
-    // fresh snapshot that already sees the sibling's committed hold. Both must
-    // still be admitted; a third must hit the hard stop.
     await db.insert(budgetPolicies).values({ companyId: f.companyId, scopeType: "company", scopeId: f.companyId,
       windowKind: "calendar_month_utc", amount: 2, reservationCents: "1", notifyEnabled: false });
     let unlock!: () => void, locked!: (pid: number) => void, finishProviders!: () => void;
@@ -395,7 +390,6 @@ describe("company decision service", () => {
     });
     const first = f.service.decide(f.context, DECISION_TEST_REQUEST), second = f.service.decide(f.context, DECISION_TEST_REQUEST);
     try {
-      // Both admissions are in flight at once: neither waits behind the other.
       await vi.waitFor(async () => {
         const [row] = await db.execute<{ count: number }>(sql`select count(*)::int as count from pg_stat_activity where ${pid} = any(pg_blocking_pids(pid))`);
         expect(row.count).toBe(2);
