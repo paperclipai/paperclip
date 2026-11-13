@@ -48,6 +48,10 @@ export interface RunnerExecutionDriver {
       | "runner_ingress_unavailable";
     /** Persists only exact, independently verified suspended remote state. */
     checkpoint?: (settlement: "settled" | "unsettled") => Promise<void> | void;
+    /** Core committed the Runner's exit (its close suspend completed). Stop
+     * treating a dropped connection as transport loss, so a Core-dialed route
+     * neither redials nor fails; keep the established receive/ACK path. */
+    quiesce?: () => void;
     release: (reason?: "detach") => Promise<void> | void;
   }>;
   /** Register source and target checkpoint ownership before staging changes the stored run. */
