@@ -83,7 +83,7 @@ async function recordUnknownTurnOutcome(db: Db, run: { companyId: string; id: st
         ...(typeof runnerExit.runnerLifecycle === "string" ? { runnerLifecycle: runnerExit.runnerLifecycle } : {}) } } });
 }
 
-/** Automatic continuation is requested at most once per chain of runs, plus once per deploy that interrupts a continuation. */
+/** Automatic continuation is requested at most once per chain of runs, plus once for each deploy that interrupts a continuation. */
 export const RESTART_RETRY_KEY_PREFIX = "restart-interrupted-turn:";
 
 const MAX_RETRY_CHAIN = 32;
@@ -119,36 +119,6 @@ async function lostControllerToRestart(db: Db, run: { companyId: string; id: str
       and ${heartbeatRunEvents.payload}->>'runnerDisposition' in (${sql.join(RESTART_CLAIM_DISPOSITIONS.map(kind => sql`${kind}`), sql`, `)})))`,
   )).limit(1);
   return evidence !== undefined;
-}
-
-export const MAX_RESTART_CONTINUATIONS = 8;
-
-async function restartContinuationsInChain(db: Db, run: { companyId: string; id: string; retryOfRunId: string | null;
-  contextSnapshot: Record<string, unknown> | null }) {
-  const visited = new Set<string>();
-  let count = 0;
-  let current: typeof run | undefined = run;
-  while (current && !visited.has(current.id)) {
-    if (visited.size >= MAX_RETRY_CHAIN) return Number.POSITIVE_INFINITY;
-    visited.add(current.id);
-    const retryId = current.contextSnapshot?.taskRetryRequestId;
-    if (typeof retryId === "string") {
-      const [receipt] = await db.select({ key: agentWakeupRequests.idempotencyKey }).from(agentWakeupRequests).where(and(
-        eq(agentWakeupRequests.companyId, run.companyId), sql`${agentWakeupRequests.id}::text = ${retryId}`));
-      if (receipt?.key?.startsWith(`task-retry:${RESTART_RETRY_KEY_PREFIX}`)) count += 1;
-    }
-    const previous = current.retryOfRunId
-      ?? (typeof current.contextSnapshot?.previousRunId === "string" ? current.contextSnapshot.previousRunId : null);
-    if (!previous) break;
-    [current] = await db.select({ companyId: heartbeatRuns.companyId, id: heartbeatRuns.id, retryOfRunId: heartbeatRuns.retryOfRunId,
-      contextSnapshot: heartbeatRuns.contextSnapshot }).from(heartbeatRuns)
-      .where(and(eq(heartbeatRuns.companyId, run.companyId), sql`${heartbeatRuns.id}::text = ${previous}`));
-  }
-  return count;
-}
-
-async function restartContinuationAllowed(db: Db, run: Parameters<typeof restartContinuationsInChain>[1]) {
-  return await lostControllerToRestart(db, run) && await restartContinuationsInChain(db, run) < MAX_RESTART_CONTINUATIONS;
 }
 
 type PrepareChatRetry = NonNullable<Parameters<typeof requestTaskRetry>[0]["prepareChatRetry"]>;
@@ -231,7 +201,7 @@ export async function requestInterruptedNativeTurnRetry(db: Db, runId: string): 
     if (!wake || reason === "task_retry" || !run.responsibleUserId
       || !(owedRedelivery || await hasProvenNoProviderTurn(db, run, runnerExit)))
       return { requested: false, reason: "not_user_request" };
-    if (owedRedelivery && await chainUsedAutomaticRetry(db, run) && !await restartContinuationAllowed(db, run))
+    if (owedRedelivery && await chainUsedAutomaticRetry(db, run) && !await lostControllerToRestart(db, run))
       return { requested: false, reason: "automatic_retry_used" };
     actorId = run.responsibleUserId;
   } else if (reason === "task_retry") {
@@ -240,7 +210,7 @@ export async function requestInterruptedNativeTurnRetry(db: Db, runId: string): 
     const [receipt] = retryId ? await db.select({ key: agentWakeupRequests.idempotencyKey }).from(agentWakeupRequests).where(and(
       eq(agentWakeupRequests.companyId, run.companyId), sql`${agentWakeupRequests.id}::text = ${retryId}`)) : [];
     if (!receipt) return { requested: false, reason: "retry_source_missing" };
-    if (receipt.key?.startsWith(`task-retry:${RESTART_RETRY_KEY_PREFIX}`) && !await restartContinuationAllowed(db, run))
+    if (receipt.key?.startsWith(`task-retry:${RESTART_RETRY_KEY_PREFIX}`) && !await lostControllerToRestart(db, run))
       return { requested: false, reason: "automatic_retry_used" };
   } else if (isUserCommentContinuationReason(reason)) {
     const commentId = typeof context.wakeCommentId === "string" ? context.wakeCommentId

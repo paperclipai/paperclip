@@ -1846,8 +1846,8 @@ server requested gets no second automatic attempt, unless a server restart or
 deploy took that continuation's controller while it ran (a shutdown
 `native.recovery.transition` with `restartKind: "graceful"`, or a restart
 scan's claim that is not a same-run retry). Each such deploy earns one more
-fresh-session continuation, up to `MAX_RESTART_CONTINUATIONS` (8) in one chain of
-runs linked by `retryOfRunId` or `previousRunId`. A system wake (for example a
+fresh-session continuation and spends no budget, so a task that only deploys
+interrupt never runs out. A system wake (for example a
 monitor) continues this way only with a positive
 record that no turn was ever issued: the refused reattachment proved the Runner
 process gone, and the run's controller journal, which records each turn command

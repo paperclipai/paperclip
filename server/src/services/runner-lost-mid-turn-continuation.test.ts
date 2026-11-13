@@ -8,8 +8,8 @@ import { agentWakeupRequests, chatConversations, chatEndpoints, heartbeatRunEven
   toolApplications, toolConnections } from "@paperclipai/db";
 import { appendHeartbeatRunEvent } from "./heartbeat-run-events.js";
 import { heartbeatService } from "./heartbeat.js";
-import { MAX_RESTART_CONTINUATIONS, registerInterruptedTurnChatRetry, requestInterruptedNativeTurnRetry,
-  requestRestartInterruptedTurnRetry } from "./heartbeat/restart-interrupted-turn.js";
+import { registerInterruptedTurnChatRetry, requestInterruptedNativeTurnRetry, requestRestartInterruptedTurnRetry }
+  from "./heartbeat/restart-interrupted-turn.js";
 import { readSystemRecovery } from "./system-recovery-state.js";
 import { reconcileRetainedWorkspaces } from "./workspace-recovery.js";
 import { useWorkspaceRecoveryFixture, action, db, run, seed } from "./__tests__/workspace-recovery-fixture.js";
@@ -184,7 +184,7 @@ describe("a remote Runner that died in the middle of a provider turn", () => {
         eventType: "native.recovery.transition", stream: "system", level: "info", message, payload });
     }
 
-    async function automaticContinuation(input: { deploy: boolean; earlierContinuations?: number }) {
+    async function automaticContinuation(input: { deploy: boolean; earlierContinuations?: number; systemRetries?: boolean }) {
       const f = await runnerLostMidTurn({ wake: "user_retry", events: ["turn.submitted"], refusalPayload: {
         remoteRunnerRecovery: { stage: "process_verification", reason: "process_not_running", runnerSettled: false,
           runnerLifecycle: "ready", runnerDiagnostics: ["WebSocket peer closed the connection"],
@@ -197,12 +197,23 @@ describe("a remote Runner that died in the middle of a provider turn", () => {
           errorCode: "native_continuation_requires_reconciliation", contextSnapshot: { issueId: f.issueId,
             wakeReason: index === 0 ? "issue_assigned" : "task_retry", ...(previousRunId ? { previousRunId } : {}) } }).returning();
         if (previousRunId) {
-          const [hookIntent] = await db.insert(agentWakeupRequests).values({ companyId: f.companyId, agentId: f.agentId,
+          const [hookIntent]: Array<typeof agentWakeupRequests.$inferSelect> = await db.insert(agentWakeupRequests).values({ companyId: f.companyId, agentId: f.agentId,
             source: "on_demand", triggerDetail: "manual", reason: "task_retry", status: "completed",
             idempotencyKey: `task-retry:restart-interrupted-turn:${previousRunId}`, requestedByActorType: "user",
             requestedByActorId: "local-board", payload: { issueId: f.issueId } }).returning();
           await db.update(heartbeatRuns).set({ contextSnapshot: { ...lost.contextSnapshot, taskRetryRequestId: hookIntent.id } })
             .where(eq(heartbeatRuns.id, lost.id));
+          if (input.systemRetries) {
+            const [systemRetry]: Array<typeof heartbeatRuns.$inferSelect> = await db.insert(heartbeatRuns).values({
+              companyId: f.companyId, agentId: f.agentId, issueId: f.issueId, status: "failed", runtimeMode: "native",
+              retryOfRunId: lost.id, error: "runner_remote_process_identity_unavailable",
+              createdAt: new Date(Date.now() - (120 - index) * 60_000 + 30_000),
+              finishedAt: new Date(Date.now() - (110 - index) * 60_000 + 30_000),
+              errorCode: "native_continuation_requires_reconciliation", contextSnapshot: { issueId: f.issueId,
+                wakeReason: "transient_failure_retry", taskRetryRequestId: hookIntent.id, retryOfRunId: lost.id } }).returning();
+            previousRunId = systemRetry.id;
+            continue;
+          }
         }
         previousRunId = lost.id;
       }
@@ -247,11 +258,17 @@ describe("a remote Runner that died in the middle of a provider turn", () => {
       expect(await unknownOutcomeEvents(f.runId)).toHaveLength(1);
     }, 30_000);
 
+    it("never runs out when only deploys interrupted a long chain whose system retries inherit each continuation", async () => {
+      const f = await automaticContinuation({ deploy: true, earlierContinuations: 12, systemRetries: true });
+      expect(await requestRestartInterruptedTurnRetry(db, f.claim)).toEqual({ requested: true, requestId: expect.any(String) });
+      expect(await unknownOutcomeEvents(f.runId)).toHaveLength(1);
+    }, 30_000);
+
     it.each([
-      { title: "no deploy interrupted it", deploy: false, earlierContinuations: 0 },
-      { title: "the chain already used every deploy continuation", deploy: true, earlierContinuations: MAX_RESTART_CONTINUATIONS - 1 },
-    ])("keeps the visible Retry when $title", async ({ deploy, earlierContinuations }) => {
-      const f = await automaticContinuation({ deploy, earlierContinuations });
+      { title: "no deploy interrupted it", earlierContinuations: 0 },
+      { title: "no deploy interrupted it after earlier deploy continuations", earlierContinuations: 4 },
+    ])("keeps the visible Retry when $title", async ({ earlierContinuations }) => {
+      const f = await automaticContinuation({ deploy: false, earlierContinuations, systemRetries: true });
       expect(await requestRestartInterruptedTurnRetry(db, f.claim)).toEqual({ requested: false, reason: "automatic_retry_used" });
       expect(await unknownOutcomeEvents(f.runId)).toHaveLength(0);
       expect(await db.select().from(agentWakeupRequests).where(and(eq(agentWakeupRequests.companyId, f.companyId),
