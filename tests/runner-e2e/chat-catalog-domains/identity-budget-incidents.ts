@@ -67,9 +67,9 @@ export function gradeBudgetIncident(value: unknown) {
  * is an imported test charge; the grader proves that from saved state, so the
  * note does not say it, and the reply has no setup jargon to repeat.
  */
-export function budgetIncidentSourceDescription(input: { taskIdentifier: string; incidentId: string; manualName: string }): string {
+export function budgetIncidentSourceDescription(input: { taskIdentifier: string; incidentId: string; manualName: string | undefined }): string {
   return `Morgan's unfinished website task is ${input.taskIdentifier}. Morgan's hard budget stop is recorded as budget incident ${input.incidentId}. `
-    + `${input.manualName} was paused separately, by hand. The person must choose any new budget amount through the board's budget control; `
+    + `${input.manualName ?? "Another agent"} was paused separately, by hand. The person must choose any new budget amount through the board's budget control; `
     + "do not assume the task is done or work around a hold.";
 }
 const sources = ["chat-catalog-domains/identity-budget-incidents.ts", "chat-catalog-domains/identity-support.ts", "chat-catalog-domains/internal-support.ts", "chat-scenarios/budgets-costs.yaml"];
