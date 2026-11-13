@@ -67,7 +67,9 @@ const round = (value: number, digits = 1) => Number(value.toFixed(digits));
 const temporary = await startEmbeddedPostgresTestDatabase("agent-scaling-load-");
 const db = createDb(temporary.connectionString);
 // Checkpoint saves and lease renewals use their own pools; meter all three.
+const POOLS = ["main", "checkpoint", "lease"] as const;
 const meters = [db, checkpointDb(db), livenessDb(db)].map(client => meterDatabaseStatements(client, temporary.connectionString));
+const poolStatements = () => meters.map(one => one.read().statements);
 const meter = { read: () => meters.map(one => one.read()).reduce((sum, one) => ({ statements: sum.statements + one.statements,
   transactions: sum.transactions + one.transactions, sqlBytes: sum.sqlBytes + one.sqlBytes }), { statements: 0, transactions: 0, sqlBytes: 0 }) };
 const controller = { bootId: randomUUID(), pid: process.pid, processStartedAt: new Date() };
@@ -158,7 +160,7 @@ try {
     Record<Source, { done: number; failed: number; late: number[]; firstError: string }>;
   const delay = monitorEventLoopDelay({ resolution: 10 });
   const [commitsBefore] = await db.$client.unsafe("select xact_commit::float8 as commits from pg_stat_database where datname = current_database()");
-  const statementsBefore = { ...meter.read() }, cpuBefore = process.cpuUsage(), loopBefore = performance.eventLoopUtilization();
+  const poolsBefore = poolStatements(), statementsBefore = { ...meter.read() }, cpuBefore = process.cpuUsage(), loopBefore = performance.eventLoopUtilization();
   const heapBefore = process.memoryUsage().heapUsed;
   let allocated = 0, lastHeap = heapBefore;
   const sampler = setInterval(() => { const heap = process.memoryUsage().heapUsed; if (heap > lastHeap) allocated += heap - lastHeap; lastHeap = heap; }, 20);
@@ -182,7 +184,7 @@ try {
   const elapsedMs = performance.now() - started;
   delay.disable();
   clearInterval(sampler);
-  const loop = performance.eventLoopUtilization(loopBefore), cpu = process.cpuUsage(cpuBefore), statementsAfter = meter.read();
+  const loop = performance.eventLoopUtilization(loopBefore), cpu = process.cpuUsage(cpuBefore), statementsAfter = meter.read(), poolsAfter = poolStatements();
   await Promise.all(fleet.map(agent => agent.checkpointTail));
   const [commitsAfter] = await db.$client.unsafe("select xact_commit::float8 as commits from pg_stat_database where datname = current_database()");
   const seconds = elapsedMs / 1000;
@@ -198,6 +200,8 @@ try {
     },
     database: {
       meteredStatementsPerSecond: round((statementsAfter.statements - statementsBefore.statements) / seconds),
+      meteredStatementsPerSecondByPool: Object.fromEntries(POOLS.map((pool, index) =>
+        [pool, round((poolsAfter[index]! - poolsBefore[index]!) / seconds)])),
       meteredTransactionsPerSecond: round((statementsAfter.transactions - statementsBefore.transactions) / seconds),
       meteredSqlKBPerSecond: round((statementsAfter.sqlBytes - statementsBefore.sqlBytes) / 1024 / seconds),
       commitsPerSecondAllPools: round((Number(commitsAfter!.commits) - Number(commitsBefore!.commits)) / seconds),
