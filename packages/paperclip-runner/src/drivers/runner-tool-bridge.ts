@@ -7,7 +7,8 @@ import {
   type ServerResponse,
 } from "node:http";
 
-import { Ajv2020, type ValidateFunction } from "ajv/dist/2020.js";
+import type { ValidateFunction } from "ajv/dist/2020.js";
+import { admitToolInputSchema } from "./tool-input-schema.js";
 import { toolInputError } from "./tool-input-error.js";
 
 import {
@@ -129,7 +130,8 @@ export async function startRunnerToolBridge(
       );
     }
   }
-  const visibleTools = [...tools, ...structuredClone(RESERVED_TOOLS)];
+  const validators = compileValidators(tools, [...structuredClone(RESERVED_TOOLS), ...privateTools]);
+  const visibleTools = [...tools.filter((tool) => validators.has(tool.name)), ...structuredClone(RESERVED_TOOLS)];
   if (options.preloadClaudeTaskTools) {
     for (const tool of visibleTools) {
       if (tool.name === "set_task_title" || tool.name === PRP_COMPLETION_TOOL_NAME || tool.name === PRP_BLOCK_TOOL_NAME) {
@@ -138,7 +140,6 @@ export async function startRunnerToolBridge(
     }
   }
   const admittedTools = [...visibleTools, ...privateTools];
-  const validators = compileValidators(admittedTools);
   const calls = new Map<string, AdmittedCall>();
   const controllers = new Map<string, AbortController>();
   const context = {
@@ -502,12 +503,16 @@ function normalizeTools(
 }
 
 function compileValidators(
-  tools: readonly RunnerToolDefinition[],
+  offered: readonly RunnerToolDefinition[],
+  required: readonly RunnerToolDefinition[],
 ): Map<string, ValidateFunction> {
-  const ajv = new Ajv2020({ allErrors: true, strict: false });
-  return new Map(
-    tools.map((tool) => [tool.name, ajv.compile(tool.inputSchema)]),
-  );
+  const validators = new Map<string, ValidateFunction>();
+  for (const tool of [...offered, ...required]) {
+    const admission = admitToolInputSchema(tool.inputSchema);
+    if (admission.ok) validators.set(tool.name, admission.validate);
+    else if (required.includes(tool)) throw new Error(`Runner tool ${tool.name} has an invalid input schema`);
+  }
+  return validators;
 }
 
 function authorized(value: string | undefined, secret: string): boolean {

@@ -1472,7 +1472,21 @@ so the cleanup sweep destroys the old sandbox later and no provider delete delay
 the first turn. It creates a new sandbox, records the acquisition as
 `replacement` with reason `resume_failed`, and workspace preparation restores the
 saved snapshot into it. Leases saved by older releases have the same fields and
-follow the same rule; one without a verified backup stays strict.
+follow the same rule.
+
+A native runner session without a verified harness backup is replaced only when
+the provider has proven it cannot start the sandbox: the lease is idle and every
+resume call timed out (no rate limit, reset, or other failure in between) through
+the whole extended start deadline (for example a
+Daytona sandbox stuck in `archiving`). The other conditions above still apply, so
+the task's files come from the committed saved snapshot. The new sandbox starts a
+fresh runner session. The old lease keeps its status and its sandbox, and is never
+destroyed: one guarded write marks it `reusableSandboxKeptAfterReplacement`, and
+later runs no longer offer it for resume. Every automatic teardown path skips a
+marked lease: obsolete-lease cleanup, run and workspace teardown, expiry,
+retained-orphan settlement, recovered-workspace cleanup, and abandoned-file
+release. Only an operator-consented environment delete destroys it. Without that proof, a lease without a
+verified backup stays strict.
 
 Otherwise (unsaved work, a live owner, a workspace with no committed saved
 version, an access refusal, or an unavailable worker) the refusal keeps the strict
@@ -1761,6 +1775,18 @@ starts by itself once the gate clears. A Retry accepted during the pre-deploy
 drain stays saved and is dispatched by the deferred-receipt worker after the
 restart.
 
+After the provider accepts a turn, the transport waits for that turn's
+`turn/started` before it reports the turn identity. Codex starts its MCP
+servers before it starts the turn, so a healthy cold start in a loaded sandbox
+can take most of a minute: on staging, submit to `turn/started` measured p50
+25 s, p90 50 s and max 76 s across 68 successful starts, while a fixed 30 s wait
+hit 52 of 198 recent runs with `runnerd did not report the provider turn identity`.
+The default wait is 90 s. Each provider notice, or runner diagnostic naming the
+accepted turn, restarts that window, up to 180 s in all. A provider relaunch
+does not count as progress. A silent start with no proof that the accepted turn
+is still live fails when its window ends, and a Runner exit or a runner
+failure of the pending turn still fails at once.
+
 When a remote native run fails and its close cannot prove that the Runner
 suspended (for example, the Runner is unreachable after `provider_transport_failed`
 or a `turn.start` timeout), the controller no longer force-stops that Runner. It
@@ -1778,9 +1804,24 @@ needs an operator, still stops the Runner. A reattachment after a restart whose 
 times out or loses its transport (for example
 `PRP command session.snapshot timed out`) detaches from the Runner the same way a server restart does: it sends no turn
 stop and no suspend and does not signal the process. The Runner and its
-in-flight turn stay for the next same-run reattachment. An abort (a Stop or the
-recovery deadline), any identity or authority refusal, any other recovery
-failure, and a protocol integrity fault still stop it.
+in-flight turn stay for the next same-run reattachment. The provider recovery
+deadline (`native session provider recovery timed out after 900000ms`) detaches
+the same way. On staging, every Codex Runner that a reattachment later found
+gone (`process_not_running`) had been stopped by this deadline's cleanup, not
+by the deploy, and the task then lost its session to a fresh one. A Stop, any
+identity or authority refusal, any other recovery failure, and a protocol
+integrity fault still stop it.
+
+The failed attempt's close keeps the session quarantined in the server process,
+and later close retries only replay that failed close, so they never settle it.
+The same run's reattachment to that Runner (in the same remote sandbox) takes
+over the quarantine instead of waiting for it: it lets any close attempt still
+in flight settle, then retires the attempt's cleanup and adopts the Runner.
+Before this, the reattachment was refused with `native_session_cleanup_quarantined`
+(`prior session cleanup remains incomplete` while retries were scheduled, or
+`the previous session is still shutting down` once the close was
+operator-required), each refusal spent a same-run attempt, and the task needed
+Retry. Other runs of the task and other sandboxes stay gated as before.
 
 A kept Runner can answer its WebSocket pings but no recovery command. On
 staging, a reattached Codex Runner authenticated and restored its session, then
@@ -1788,7 +1829,8 @@ left `session.snapshot` unanswered (`pending ahead 0; last runner event seq 338
 76s ago`), and each later attempt adopted the same Runner and failed the same
 way until the attempt budget ended the run. When a same-run reattachment fails
 because its Runner left a recovery command unanswered (`PRP command <type> timed
-out`, or `runnerd exited while waiting for <type>`), and the failure is not an
+out`, `runnerd exited while waiting for <type>`, or the provider recovery
+deadline), and the failure is not an
 identity, authority or integrity refusal, the run records
 `adoptedRunnerUnanswered` on its failure and the next claim carries
 `replaceUnansweredRunner`. That attempt does not adopt the Runner again. After
@@ -1799,7 +1841,13 @@ only while the old Runner is alive: the launch fence stops that
 the launch closed when it cannot prove them gone. A Runner that already exited
 mid-turn can leave provider or tool processes that the fence cannot find, so it
 keeps the fail-closed path below, and the task continues in a fresh session from
-the saved work. The fresh Runner
+the saved work.
+
+The first unanswered read can come on the last of the three provider attempts,
+for example when a server restart used the second attempt. The run then gets one
+more attempt for the replacement only: the failure stays retryable, the claim
+admits attempt 4 with `replaceUnansweredRunner`, and a live Runner is replaced as
+above. That attempt never gets another one; any failure on it ends the run. The fresh Runner
 restores the provider thread; its in-flight turn is reconciled from history and
 never submitted again. The provider attempt budget still bounds these attempts.
 
@@ -1842,7 +1890,12 @@ first, and the Retry starts a fresh provider session over the saved work, so the
 turn is never replayed. Activity records the request
 as `restart-recovery` on behalf of that user. Admission keeps every gate: saved-work
 recovery, stop proof, approvals, pauses, budget and ownership. A Retry that the
-server requested gets no second automatic attempt. A system wake (for example a
+server requested gets no second automatic attempt, unless a server restart or
+deploy took that continuation's controller while it ran (a shutdown
+`native.recovery.transition` with `restartKind: "graceful"`, or a restart
+scan's claim that is not a same-run retry). Each such deploy earns one more
+fresh-session continuation and spends no budget, so a task that only deploys
+interrupt never runs out. A system wake (for example a
 monitor) continues this way only with a positive
 record that no turn was ever issued: the refused reattachment proved the Runner
 process gone, and the run's controller journal, which records each turn command
@@ -5601,8 +5654,22 @@ on the controller. The MCP bridge preserves exact declared operation names,
 including names that start with `paperclip_`; only a catalog-bound transport
 prefix may resolve to that declared name. Shortened or unknown names do not
 gain authority. OpenCode sessions with the former direct catalog rotate their
-provider checkpoint before reuse; other providers retain their existing tool
-contract fingerprints.
+provider checkpoint before reuse.
+
+Every native Runner harness, local or remote, receives its assigned gateway
+tools through this relay. The controller lists them with the run's gateway
+token, offers them as dynamic tools on the Runner's task bridge (the
+`paperclip` MCP server for ACPX agents), and executes each call through the
+gateway on the controller. The provider process never receives
+`PAPERCLIP_NATIVE_MCP_*` or the gateway token. Grok Bot and Muse runs, which
+cannot advertise app tools, skip the listing. Relayed names are
+`app_<connection>_<tool>_<digest>`, at most 64 characters, and follow each
+harness's existing permission rules for task-bridge tools. Local provider
+checkpoints saved with the former direct gateway rotate before reuse, so the
+next run starts a fresh provider session with full task context in the same
+workspace. Remote checkpoints, which already used the relay for Codex, keep
+their fingerprint. A run recovered after its Runner died during the cutover
+continues with the tool set it saved and has no app tools until it ends.
 
 
 ### Use real connection requests (2026-09-14)

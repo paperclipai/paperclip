@@ -1,6 +1,6 @@
 {
-  "id": "69438459-7ae9-4cba-a2ba-2bcad68f601d",
-  "prevId": "48b150e9-468d-4c08-b06f-68069960732c",
+  "id": "fc9d2917-89f8-4817-9a3d-02f6f47380f9",
+  "prevId": "82dcdc57-0796-4162-9451-8ea08a72199e",
   "version": "7",
   "dialect": "postgresql",
   "tables": {
@@ -3951,6 +3951,28 @@
           ],
           "isUnique": false,
           "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "agent_wakeup_requests_company_run_idx": {
+          "name": "agent_wakeup_requests_company_run_idx",
+          "columns": [
+            {
+              "expression": "company_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "run_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "where": "\"agent_wakeup_requests\".\"run_id\" IS NOT NULL",
+          "concurrently": true,
           "method": "btree",
           "with": {}
         },
@@ -55958,18 +55980,6 @@
         "secret_id": {
           "name": "secret_id",
           "type": "uuid",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "credential_version": {
-          "name": "credential_version",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "credential_hash": {
-          "name": "credential_hash",
-          "type": "text",
           "primaryKey": false,
           "notNull": false
         },

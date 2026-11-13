@@ -89,6 +89,15 @@ both on pull requests, for Linux AMD64 and ARM64, and publishes them from
 [`doc/runner-image-contract.md`](runner-image-contract.md) for the layout, the
 identity rules and how to consume the image.
 
+`.github/workflows/docker.yml` builds the application image on `master` and on
+tags only. `.github/workflows/docker-app-check.yml` builds the `build` and
+`runner-provider-pack` stages on a pull request that changes the `Dockerfile`,
+`.dockerignore` or the step that vendors the Runner into the server, so a
+change to how the application image gets its Runner fails before it merges.
+It refreshes the lockfile before the build, as `docker.yml` does. It holds no
+credential: it reads the build cache that `docker.yml` writes on `master`
+anonymously, never writes it, and exports and publishes nothing.
+
 ## One-liner (build + run)
 
 ```sh

@@ -1316,7 +1316,7 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
     await db.insert(issues).values({ id: issueId, companyId: seeded.companyId, title: "Portable session", status: "in_progress" });
     await db.insert(heartbeatRuns).values({ id: nextRunId, companyId: seeded.companyId, agentId: seeded.agentId, status: "running" });
     let acquisitions = 0;
-    const call = vi.fn(async (_plugin: string, method: string) => {
+    const call = vi.fn(async (_plugin: string, method: string, _params?: unknown) => {
       if (method === "environmentAcquireLease") return { providerLeaseId: `sandbox-${++acquisitions}`,
         metadata: { ownershipGeneration: `generation-${acquisitions}` } };
       if (method === "environmentResumeLease") return { providerLeaseId: "sandbox-1", metadata: {} };
@@ -1332,6 +1332,9 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
     const acquisitionInput = { ...input, selectedEnvironmentId: seeded.environment.id, localEnvironmentId: randomUUID(),
       admittedLifecycleMode: "warm" as const, executionWorkspaceSettings: null };
     const first = await orchestrator.acquireForRun({ ...acquisitionInput, heartbeatRunId: seeded.runId });
+    expect(call.mock.calls.find(([, method]) => method === "environmentAcquireLease")?.[2])
+      .toMatchObject({ runnerLifecyclePolicy: { mode: "warm", idleTimeoutMs: 300_000 } });
+    expect(first.lease.metadata?.runnerTaskLifecyclePolicy).toEqual({ mode: "warm", idleTimeoutMs: 300_000 });
     await db.update(environmentLeases).set({ status: "retained", metadata: {
       ...first.lease.metadata, runnerTaskIdentity: { sessionId },
       ...(mode === "legacy resume" ? {} : { runnerTaskAccountIdentity: "test-account" }),
@@ -6447,6 +6450,8 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
       runId,
       workspaceMode: undefined,
     }, ...(defaultAcquireTimeoutMs === undefined ? [] : [330_000]));
+    expect(vi.mocked(workerManager.call).mock.calls.find(([, method]) => method === "environmentAcquireLease")?.[2])
+      .not.toHaveProperty("runnerLifecyclePolicy");
     expect(acquired.lease.providerLeaseId).toBe("plugin-lease-1");
     expect(acquired.lease.expiresAt?.toISOString()).toBe(expiresAt);
     expect(acquired.lease.metadata).toMatchObject({

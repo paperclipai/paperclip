@@ -1255,6 +1255,14 @@ graph, exact Vitest specifications, and stable test runner are shared with CI.
 Serialized server tests retain their owner. Native server tests remain in local
 coverage. Selected chat tests retain six sequential isolated line shards.
 
+When the change touches `packages/shared/src`, `packages/plugins/sdk/src`, or an
+SDK build input such as `pnpm-lock.yaml`, the command first checks the committed
+SDK public input pins (`tests/runner-e2e/source-sdk-public-inputs.json`) against
+the working tree. If they are stale it exits 1 and prints the refresh command:
+commit the change, run
+`node tests/runner-e2e/source-sdk-public-inputs.mjs $(git rev-parse HEAD) --write`,
+and commit the updated registry. Otherwise the Runner support suite fails in CI.
+
 Successful selected checks with complete input graphs are reusable in this
 worktree. Opaque filesystem, subprocess, network, generated/untracked-module, and
 unreviewed dependency consumers continue to run fresh. A selected pass never
@@ -1628,6 +1636,13 @@ stamp is only written after a Runner build that passed every step, and both
 the Runner's first build step and the prepare step remove any existing stamp
 before a rebuild starts, so a build that stops partway never leaves a stamp
 that vouches for it.
+
+Set `PAPERCLIP_RUNNER_VENDOR_REQUIRE_CURRENT=1` when the Runner under
+`packages/paperclip-runner/dist` was built elsewhere and this build must not
+build it again, for example because it has no Rust toolchain. The step then
+reuses a current build as usual. When the build is not current it prints the
+reason and fails, without starting a rebuild and without removing the stamp.
+Setting both variables fails.
 
 ### Task search evaluation
 

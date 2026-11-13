@@ -1,4 +1,5 @@
 import { resolveLoginEnvironmentTarget } from "../services/login-environment.js";
+import { checkAgentProtectedEnvironmentKeys } from "../services/protected-environment-keys.js";
 import { assertProviderApiPlacementPolicy, managedCursorApiDefaultEnabled, resolveProviderApiPlacement } from "../services/native-runtime/provider-api-placement.js";
 import { isObjectJournalBusyError } from "../services/object-byte-journal.js";
 import { readTaskPanelActivations } from "../services/plugin-task-panels.js";
@@ -4388,6 +4389,9 @@ export function agentRoutes(
       );
     }
 
+    const rollbackWarnings = await checkAgentProtectedEnvironmentKeys(db, rollbackAdapterConfig,
+      typeof rollbackConfig.defaultEnvironmentId === "string" ? rollbackConfig.defaultEnvironmentId : null);
+
     const actor = getActorInfo(req);
     const updated = await svc.rollbackConfigRevision(id, revisionId, {
       agentId: actor.agentId,
@@ -4411,7 +4415,7 @@ export function agentRoutes(
       details: { revisionId },
     });
 
-    res.json(redactAgentRowForResponse(updated));
+    res.json({ ...redactAgentRowForResponse(updated), ...(rollbackWarnings.length ? { configurationWarnings: rollbackWarnings } : {}) });
   });
 
   router.get("/agents/:id/runtime-state", async (req, res) => {
@@ -4653,6 +4657,7 @@ export function agentRoutes(
       allowedDrivers: allowedEnvironmentDriversForAgent(hireInput.adapterType),
       allowedSandboxProviders: allowedSandboxProvidersForAgent(hireInput.adapterType),
     });
+    configurationWarnings.push(...await checkAgentProtectedEnvironmentKeys(db, normalizedAdapterConfig, hireInput.defaultEnvironmentId));
 
     // Idempotency within a run: if this run already created a hire from this
     // exact request, return that hire instead of creating a duplicate. The
@@ -4973,6 +4978,7 @@ export function agentRoutes(
       allowedDrivers: allowedEnvironmentDriversForAgent(createInput.adapterType),
       allowedSandboxProviders: allowedSandboxProvidersForAgent(createInput.adapterType),
     });
+    configurationWarnings.push(...await checkAgentProtectedEnvironmentKeys(db, normalizedAdapterConfig, createInput.defaultEnvironmentId));
 
     const managedBinding = normalizedRuntimeConfig.aiConnection ? aiRuntimeConnectionBindingSchema.parse(normalizedRuntimeConfig.aiConnection) : undefined;
     const managedConnection = managedBinding && !setupId ? await validateManagedAgentBinding(req, companyId, agentId, createInput.adapterType, normalizedAdapterConfig, managedBinding, createInput.defaultEnvironmentId, "none", true) : undefined;
@@ -5838,16 +5844,19 @@ export function agentRoutes(
     }
     if (requestedRuntimeConfig) patchData.runtimeConfig = requestedRuntimeConfig;
     if (touchesAdapterConfiguration || Object.prototype.hasOwnProperty.call(patchData, "defaultEnvironmentId")) {
+      const nextDefaultEnvironmentId = Object.prototype.hasOwnProperty.call(patchData, "defaultEnvironmentId")
+        ? (typeof patchData.defaultEnvironmentId === "string" ? patchData.defaultEnvironmentId : null)
+        : existing.defaultEnvironmentId;
       await assertAgentDefaultEnvironmentSelection(
         existing.companyId,
-        Object.prototype.hasOwnProperty.call(patchData, "defaultEnvironmentId")
-          ? (typeof patchData.defaultEnvironmentId === "string" ? patchData.defaultEnvironmentId : null)
-          : existing.defaultEnvironmentId,
+        nextDefaultEnvironmentId,
         {
           allowedDrivers: allowedEnvironmentDriversForAgent(requestedAdapterType),
           allowedSandboxProviders: allowedSandboxProvidersForAgent(requestedAdapterType),
         },
       );
+      const protectedKeyWarnings = await checkAgentProtectedEnvironmentKeys(db, patchData.adapterConfig ?? existing.adapterConfig, nextDefaultEnvironmentId);
+      configurationWarnings.push(...protectedKeyWarnings.filter(warning => !configurationWarnings.some(existing => existing.field === warning.field)));
     }
     const touchesProfileFields = touchesAgentProfileChangeConsentFields(patchData);
     const profileOnlyChange = touchesProfileFields && Object.keys(patchData).every((key) =>

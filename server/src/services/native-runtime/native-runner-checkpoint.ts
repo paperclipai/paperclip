@@ -107,7 +107,14 @@ export async function validateNativeRunnerCheckpointOwner(
           gt(heartbeatRuns.controllerLeaseExpiresAt, sql`clock_timestamp()`),
           notExists(tx.select({ runId: nativeRunFinalizations.runId }).from(nativeRunFinalizations)
             .where(eq(nativeRunFinalizations.runId, heartbeatRuns.id))))) : [];
-    if (!current.resultId || newWork || !task || (task.executionRunId && task.executionRunId !== owner.runId && !successor && !preparingSuccessor)) {
+    const [waitingSuccessor] = !successor && !preparingSuccessor && task?.executionRunId && task.executionRunId !== owner.runId
+      ? await tx.select({ runId: heartbeatRuns.id }).from(heartbeatRuns).where(and(
+          eq(heartbeatRuns.id, task.executionRunId), eq(heartbeatRuns.companyId, owner.companyId),
+          eq(heartbeatRuns.issueId, owner.issueId), inArray(heartbeatRuns.status, ["queued", "scheduled_retry"]),
+          notExists(tx.select({ runId: nativeRunFinalizations.runId }).from(nativeRunFinalizations)
+            .where(eq(nativeRunFinalizations.runId, heartbeatRuns.id))))) : [];
+    if (!current.resultId || newWork || !task
+      || (task.executionRunId && task.executionRunId !== owner.runId && !successor && !preparingSuccessor && !waitingSuccessor)) {
       throw new Error("native_runner_checkpoint_owner_lost");
     }
   }

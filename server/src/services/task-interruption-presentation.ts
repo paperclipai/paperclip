@@ -1,7 +1,7 @@
 import { STORAGE_UNAVAILABLE_WAIT_RETRY_REASON } from "../storage/storage-unavailable.js";
-import { AGENT_DIRECTORY_WAIT_RETRY_REASON } from "./execution-recovery-attempt.js";
+import { AGENT_DIRECTORY_WAIT_RETRY_REASON, INTERRUPTED_PREPARATION_RETRY_REASON } from "./execution-recovery-attempt.js";
 import { boundSetupCommandFailure, readSetupCommandFailure } from "./workspace-setup-command-failure.js";
-import { and, desc, eq, inArray, isNull, sql, type SQL } from "drizzle-orm";
+import { and, desc, eq, inArray, isNull, not, notInArray, sql, type SQL } from "drizzle-orm";
 import { unidentifiedLocalLaunchRefusals } from "./native-local-process-stop.js";
 import { nativeSessionCleanupBlock } from "../vendor/paperclip-runner/index.js";
 import { agents, agentWakeupRequests, approvals, chatActions, companies, environmentLeases, heartbeatRuns, issueApprovals, issueRecoveryActions,
@@ -23,6 +23,7 @@ import { canonicalExecutionUuid } from "./execution-identity.js";
 import { chatActionDeadline } from "./chat-action-work.js";
 import { NATIVE_CLEANUP_SETTLING_MESSAGE, NATIVE_SESSION_CLEANUP_QUARANTINED } from "./native-runtime/completed-turn-cleanup.js";
 import { isQueuedDependencyWait } from "./run-cancellation.js";
+import { heldRetryOffersRetry } from "./task-retry-eligibility.js";
 import { exhaustedNativeFinalizationCondition, savedResultRetryPendingCondition } from "./native-runtime/exhausted-finalization-retry.js";
 import { AI_CONNECTION_BUSY_RETRY_REASON, AI_CONNECTION_POOL_WAIT_RETRY_REASON, RUNNER_REVISION_WAIT_RETRY_REASON,
   WORKSPACE_BUSY_RETRY_REASON } from "../modules/run-dispatch/index.js";
@@ -63,7 +64,8 @@ type ProjectionRun = Pick<typeof heartbeatRuns.$inferSelect,
 type ProjectionWait = { id: string; requestedAt: Date; sourceRunId?: string | null; executionWaitReason?: string | null;
   preparationStatus?: string | null; preparationRetryAt?: number | string | null; preparationUpdatedAt?: Date | null;
   /** When the user pressed Interrupt to deliver this queued message now. */
-  queuedInterruptRequestedAt?: string | null };
+  queuedInterruptRequestedAt?: string | null;
+  queuedComment?: boolean };
 type ProjectionState = {
   run?: ProjectionRun;
   action?: typeof issueRecoveryActions.$inferSelect;
@@ -87,6 +89,7 @@ type ProjectionState = {
   retryDependencies?: RetryDependencies;
   /** The task waits on unresolved blocker tasks, a wait that does not depend on its last run. */
   waitingOnBlockers?: boolean;
+  waitingOnOpenSubtasks?: boolean;
   /** A live owner is settling this run's session cleanup gate: an unreleased
    * remote environment, or a scheduled close in this process. Without one,
    * nothing settles the gate by itself, so Retry is the way forward. */
@@ -161,6 +164,7 @@ const retryWaitMessages: Record<string, string> = {
   // A new click replaces a Retry declined for its requester's access with a
   // fresh attempt under the clicker's access, so Retry stays available.
   retry_authority_denied: "Retry could not start with the requesting user's access. Press Retry to start it with yours.",
+  previous_execution_unverified: "Retry can't continue because Paperclip can't confirm that the previous attempt stopped before it started work. Your message is saved.",
   // An edited saved message can never be replayed; only new input continues.
   retry_source_changed: "Retry cannot continue because its saved message changed. Send a new message to continue from saved work.",
 };
@@ -309,6 +313,9 @@ function projectTaskInterruptionState(issue: ProjectionIssue, input: ProjectionS
   }
   if (run.status === "scheduled_retry" && resourceWaitRetryReasons.has(run.scheduledRetryReason ?? "") && !system)
     return { ...base, state: "working" };
+  if (run.status === "scheduled_retry" && run.scheduledRetryReason === INTERRUPTED_PREPARATION_RETRY_REASON && !system
+      && (!run.scheduledRetryAt || now - run.scheduledRetryAt.getTime() < NATIVE_RESUME_DISPATCH_GRACE_MS))
+    return { ...base, state: "working" };
   // The native coordinator resumes this same run by itself. A manual Retry
   // would race it, so show the resume until it is due and briefly while its
   // dispatch runs. A resume that never ran falls through to one Retry.
@@ -339,11 +346,11 @@ function projectTaskInterruptionState(issue: ProjectionIssue, input: ProjectionS
     const reason = Object.hasOwn(retryWaitMessages, retryWait.executionWaitReason) ? retryWait.executionWaitReason : "execution_recovery";
     // Keep the latest input receipt so message submission can settle independently.
     return { ...base, state: "failed",
-      canRetry: !["cancelled_by_operator", "retry_source_changed", "workspace_owner_stop_required"].includes(reason)
-        && (reason !== "cleanup_quarantined" || !input.cleanupSettling), retryWait: { reason,
+      canRetry: heldRetryOffersRetry(reason, input.cleanupSettling), retryWait: { reason,
       message: retryWaitMessages[reason] ?? "Retry is waiting for execution checks. Your message is saved." } };
   }
-  const queuedDuringRun = Boolean(wait && run.status === "succeeded" && ["todo", "in_progress", "in_review"].includes(issue.status) && run.finishedAt && wait.requestedAt.getTime() <= run.finishedAt.getTime()
+  const queuedDuringRun = Boolean(wait && run.status === "succeeded" && (["todo", "in_progress", "in_review"].includes(issue.status)
+      || (issue.status === "blocked" && input.waitingOnOpenSubtasks && !wait.sourceRunId && wait.queuedComment)) && run.finishedAt && wait.requestedAt.getTime() <= run.finishedAt.getTime()
     && now - run.finishedAt.getTime() < QUEUED_INPUT_DISPATCH_GRACE_MS);
   if (wait && (wait.requestedAt.getTime() > now - 10_000 || queuedDuringRun) && system?.state !== "exhausted")
     return { ...base, state: "working" };
@@ -489,11 +496,15 @@ export async function taskInterruptionPresentations(db: Db, companyId: string, i
     // Keep at most two candidates per task: latest Retry and latest other input.
     // A new message must not hide an existing Retry's admission explanation.
     db.selectDistinctOn([wakeIssue, isRetryWait], { issueId: wakeIssue, id: agentWakeupRequests.id, requestedAt: agentWakeupRequests.requestedAt,
+      requestedByActorId: agentWakeupRequests.requestedByActorId,
       sourceRunId: boundedJsonString(sql`${agentWakeupRequests.payload}#>'{taskRetry,sourceRunId}'`, 160),
       executionWaitReason: boundedJsonString(sql`to_jsonb(${unpricedUsageWait(sql`${agentWakeupRequests.payload}#>>'{executionWait,reason}'`,
         sql`${agentWakeupRequests.payload}#>>'{executionWait,message}'`)})`, 80),
       preparationStatus: chatActions.status, preparationRetryAt: chatActionDeadline("failed_run_retry"),
-      preparationUpdatedAt: chatActions.updatedAt })
+      preparationUpdatedAt: chatActions.updatedAt,
+      queuedComment: sql<boolean>`coalesce(jsonb_typeof(${agentWakeupRequests.payload}->'commentId') = 'string'
+        or jsonb_array_length(case when jsonb_typeof(${agentWakeupRequests.payload}#>'{_paperclipWakeContext,wakeCommentIds}') = 'array'
+          then ${agentWakeupRequests.payload}#>'{_paperclipWakeContext,wakeCommentIds}' end) > 0, false)` })
       .from(agentWakeupRequests).leftJoin(chatActions, and(eq(chatActions.companyId, agentWakeupRequests.companyId),
         eq(chatActions.id, canonicalExecutionUuid(sql`${agentWakeupRequests.payload}#>>'{taskRetry,chatActionId}'`)),
         eq(chatActions.kind, "failed_run_retry"), sql`${chatActions.payload}->>'taskRetryIntentId' = ${agentWakeupRequests.id}::text`,
@@ -589,7 +600,7 @@ export async function taskInterruptionPresentations(db: Db, companyId: string, i
     const rows = freshRows.filter(row => row.issueId === issueId && row.runId === runId);
     // Only the primary record (it carries `freshContinuation`) says whether a
     // continuation is still on its way; holds coalesced into it never do.
-    if (rows.some(row => row.recorded && ["pending", "not_requested"].includes(row.delivery ?? ""))) return { state: "continuing" };
+    if (rows.some(row => row.recorded && ["not_requested", "pending"].includes(row.delivery ?? ""))) return { state: "continuing" };
     const scheduled = rows.filter(row => ["exact_recovery_pending", "backoff"].includes(row.checkKind ?? "") && row.nextCheckAt)
       .map(row => Number(row.nextCheckAt)).sort((a, b) => a - b)[0];
     return scheduled ? { state: "scheduled", nextCheckAt: scheduled } : undefined;
@@ -627,6 +638,13 @@ export async function taskInterruptionPresentations(db: Db, companyId: string, i
   // that authority, even before dispatch retires the old receipt. Retained
   // ordinary input is independent and must still be shown as waiting.
   const currentWaits = waits.filter(wait => !wait.sourceRunId || wait.sourceRunId === runMap.get(wait.issueId)?.id);
+  const decisionWaits = currentWaits.filter(wait => wait.executionWaitReason === "decision_pending");
+  if (decisionWaits.length) {
+    const { pendingContinuationDecisionWaits } = await import("./explicit-native-continuation.js");
+    const held = await pendingContinuationDecisionWaits(db, companyId, decisionWaits.flatMap(wait => wait.requestedByActorId
+      ? [{ id: wait.id, issueId: wait.issueId, actorId: wait.requestedByActorId, taskRetrySourceRunId: wait.sourceRunId }] : []));
+    for (const wait of decisionWaits) if (!held.has(wait.id)) wait.executionWaitReason = null;
+  }
   const retryWaitMap = byIssue(currentWaits.filter(wait => wait.sourceRunId));
   const retryIssueIds = [...retryWaitMap.keys()];
   const retryDependencyMap = new Map<string, RetryDependencies>();
@@ -657,6 +675,11 @@ export async function taskInterruptionPresentations(db: Db, companyId: string, i
     for (const [waitingIssueId, row] of readiness)
       if (row.unresolvedBlockerIssueIds.length) waitingOnBlockers.add(waitingIssueId);
   }
+  const parentIds = selected.filter(issue => issue.status === "blocked" && runMap.get(issue.id)?.status === "succeeded"
+    && currentWaits.some(wait => wait.issueId === issue.id && wait.queuedComment)).map(issue => issue.id);
+  const waitingOnOpenSubtasks = new Set(parentIds.length ? (await db.selectDistinct({ parentId: issues.parentId }).from(issues)
+    .where(and(eq(issues.companyId, companyId), inArray(issues.parentId, parentIds), notInArray(issues.status, ["done", "cancelled"]))))
+    .flatMap(row => row.parentId ? [row.parentId] : []) : []);
   for (const wait of currentWaits) {
     const current = waitMap.get(wait.issueId);
     if (!current || wait.requestedAt > current.requestedAt ||
@@ -723,6 +746,7 @@ export async function taskInterruptionPresentations(db: Db, companyId: string, i
       admissionWait: admissionWaitMap.get(issue.id),
       retryDependencies: retryDependencyMap.get(issue.id),
       waitingOnBlockers: waitingOnBlockers.has(issue.id),
+      waitingOnOpenSubtasks: waitingOnOpenSubtasks.has(issue.id),
       cleanupSettling: cleanupSettling.has(issue.id),
     }, now);
     result.set(issue.id, presentation);
@@ -734,6 +758,22 @@ export async function taskInterruptionPresentations(db: Db, companyId: string, i
       captureTaskInterruptionFailure({ companyId, taskId: issue.id, agentId: run.agentId,
         runId: run.id, runStatus, intentId: presentation.intentId, runErrorCode: run.errorCode ?? null,
         agentAdapter: run.agentAdapter ?? "unknown" });
+    }
+  }
+  const offered = [...result].flatMap(([issueId, presentation]) => presentation?.canRetry ? [issueId] : []);
+  if (offered.length) {
+    const { executionBlockerPredicate, getExecutionBlocker, restoreHoldPredicate, restoreHoldReleasedForCurrentOwnerPredicate } =
+      await import("./execution-blocker.js");
+    const held = await db.selectDistinct({ issueId: issueRecoveryActions.sourceIssueId }).from(issueRecoveryActions).where(and(
+      eq(issueRecoveryActions.companyId, companyId), inArray(issueRecoveryActions.sourceIssueId, offered),
+      executionBlockerPredicate(), not(restoreHoldReleasedForCurrentOwnerPredicate()), restoreHoldPredicate()));
+    for (const { issueId } of held) {
+      const blocker = await getExecutionBlocker(db, companyId, issueId);
+      const presentation = result.get(issueId);
+      if (!presentation || !blocker || blocker.canRetry) continue;
+      presentation.canRetry = false;
+      if (!presentation.retryWait && blocker.workspaceRecovery && blocker.workspaceRecovery.status !== "recovered")
+        presentation.retryWait = { reason: "workspace_repair_required", message: retryWaitMessages.workspace_repair_required! };
     }
   }
   // Redact each explanation with the registry of the run that recorded it: the
