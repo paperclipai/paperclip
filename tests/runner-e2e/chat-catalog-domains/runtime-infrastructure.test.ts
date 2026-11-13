@@ -1,7 +1,8 @@
 import { expect, it, vi } from "vitest";
-import { freshContinuationRecord, gradeInfrastructureRecovery, nativeInfrastructureLoss, readSourceRecoveryRecord } from "./runtime-infrastructure.js";
+import { freshContinuationRecord, gradeInfrastructureRecovery, INFRASTRUCTURE_BRIEF_SOURCE, nativeInfrastructureLoss, readSourceRecoveryRecord } from "./runtime-infrastructure.js";
+import { busyRuntimeWorker } from "./runtime-busy-worker.js";
 vi.mock("./runtime-busy-worker.js", async importOriginal => ({ ...await importOriginal<typeof import("./runtime-busy-worker.js")>(),
-  busyRuntimeWorker: async () => ({ worker: { id: "morgan" }, task: { id: "website" }, gate: {}, workerRunId: "run" }) }));
+  busyRuntimeWorker: vi.fn(async () => ({ worker: { id: "morgan" }, task: { id: "website" }, gate: {}, workerRunId: "run" })) }));
 vi.mock("./runtime-native-fault.js", async importOriginal => ({ ...await importOriginal<typeof import("./runtime-native-fault.js")>(),
   faultOwnedNativeProcess: async () => ({ id: "run", processPid: 7, errorCode: "native_runner_process_exited", status: "running", nativePhase: "running" }) }));
 import { savedCall } from "./api-read-receipts.test-fixtures.js";
@@ -115,4 +116,15 @@ it("rejects a replacement run before the last Runner loss", async () => {
 it("rejects a run after the last Runner loss that does not continue the interrupted run", async () => {
   await expect(nativeInfrastructureLoss(lossContext(3, { retryOfRunId: "other" }) as never)).rejects.toThrow(/undeclared replacement/);
   await expect(nativeInfrastructureLoss(lossContext(3, { agentId: "riley" }) as never)).rejects.toThrow(/undeclared replacement/);
+});
+
+// Full cohort 9 (recovery.source-action, master b1ef1f3022): the recovery mechanics passed, but the gated Website task said
+// "The website brief is being supplied by the human", so the CEO asked the chat person for the brief instead of explaining
+// that the system was already continuing the task. The brief comes from the gated export command itself.
+it("gives the interrupted Website task a brief source that does not ask the chat person to supply anything", async () => {
+  vi.mocked(busyRuntimeWorker).mockClear();
+  await nativeInfrastructureLoss(lossContext(3) as never);
+  expect(vi.mocked(busyRuntimeWorker).mock.calls[0]?.[1]).toEqual({ briefSource: INFRASTRUCTURE_BRIEF_SOURCE });
+  expect(INFRASTRUCTURE_BRIEF_SOURCE).not.toMatch(/\b(?:human|person|you|user|supplied)\b/i);
+  expect(INFRASTRUCTURE_BRIEF_SOURCE).toMatch(/command below/);
 });

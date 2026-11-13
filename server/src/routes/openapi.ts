@@ -5330,7 +5330,9 @@ registry.registerPath({
   path: "/api/projects/{id}",
   tags: ["projects"],
   summary: "Update project properties and defaults",
-  description: "Save project properties and defaults. The description holds shared project context and guidance, including checklists; goalIds links the project to its goals. Read the project back to verify the saved fields. Updating description or goalIds does not rewrite existing tasks or the inputs already admitted to active native runs; changing existing work is a separate operation. Environment and executionWorkspacePolicy fields configure separate project settings and are not required to save description or goalIds.",
+  description: "Save project properties and defaults. The description holds shared project context and guidance, including checklists; goalIds links the project to its goals. Read the project back to verify the saved fields. Updating description or goalIds does not rewrite existing tasks or the inputs already admitted to active native runs; changing existing work is a separate operation. Environment and executionWorkspacePolicy fields configure separate project settings and are not required to save description or goalIds. "
+    + "Archiving a project (archivedAt set to the current time) hides it from the sidebar and project selectors and keeps the project, its tasks and their history; no data is removed. Restoring sets archivedAt to null. "
+    + "A person unarchives a project on that project's own Configuration page, /<prefix>/projects/<projectId>/configuration, with the Unarchive button; give them that page as a Markdown link. Archived projects are not restored from the company Status page.",
   request: {
     params: z.object({ id: z.string() }),
     body: jsonBody(updateProjectSchema),
@@ -5548,11 +5550,19 @@ registry.registerPath({
   },
 });
 
+const ROUTINE_WEBHOOK_SECRET_GUIDANCE = "A webhook response includes secretMaterial.webhookUrl and secretMaterial.webhookSecret. "
+  + "The webhookSecret is a credential: never write its value, or a header containing it, in a chat reply, comment, document or task. "
+  + "For a signed or bearer trigger, the URL and signing mode may be shared in chat. With signingMode none the URL alone starts the routine, so treat that URL as a credential too and do not write it in chat. "
+  + "Instead link the person to the routine's Triggers page, /<prefix>/routines/<routineId>/triggers, as a Markdown link, where Paperclip shows a key once: "
+  + "for a trigger still awaiting setup, link /<prefix>/routines/<routineId>/triggers?triggerSetup=<triggerId> and tell them to choose Generate new key; "
+  + "otherwise tell them to choose Edit webhook, then Replace key. Replacing the key invalidates the earlier one.";
+
 registry.registerPath({
   method: "post",
   path: "/api/routines/{id}/triggers",
   tags: ["routines"],
   summary: "Create a routine trigger",
+  description: ROUTINE_WEBHOOK_SECRET_GUIDANCE,
   request: {
     params: z.object({ id: z.string() }),
     body: jsonBody(createRoutineTriggerSchema),
@@ -5586,6 +5596,7 @@ registry.registerPath({
   path: "/api/routine-triggers/{id}/rotate-secret",
   tags: ["routines"],
   summary: "Rotate a routine trigger secret",
+  description: ROUTINE_WEBHOOK_SECRET_GUIDANCE,
   request: {
     params: z.object({ id: z.string() }),
     body: jsonBody(rotateRoutineTriggerSecretSchema),

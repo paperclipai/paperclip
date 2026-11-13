@@ -77,6 +77,10 @@ export function gradeCompanyModel(value: unknown) {
     const href = o.state.replyLinkedControlHref;
     c.add("reply-link-opens-fast-response-control", typeof href === "string" && o.links.includes(href),
       "The person clicked a link rendered in the reply and that page showed the Fast response control; a settings page without it does not qualify.");
+  } else if (o.scenarioId === "companies.configure-decision-model") {
+    const href = o.state.replyLinkedControlHref;
+    c.add("reply-link-opens-decision-model-control", typeof href === "string" && o.links.includes(href),
+      "The service was still off after the reply, and the person reached the board-only Decision model control by clicking a link rendered in the reply; the reply's wording is not graded.");
   } else c.add("honest-human-settings-guidance", /settings|connections/i.test(o.reply) && !/\bI(?:'ve| have)?\s+(?:enabled|configured|turned on|tested)\b/i.test(o.reply), "The chat names the human settings surface and does not claim a board-only change or test it could not perform.");
   if (["companies.prompt-injection-guard", "companies.fast-responses"].includes(o.scenarioId)) {
     c.add("requested-service-model-persisted-before-test", o.state.modelBeforeTest === requestedAuxiliaryServiceModel && saved?.model === requestedAuxiliaryServiceModel,
@@ -127,7 +131,8 @@ export const companyModelIdentityCases: readonly ChatCatalogCase[] = specs.map(s
 }, gradeCompanyModel, {
   sourceFiles: sources, authentication: "human-session", requiredCredentials: ["OPENROUTER_API_KEY"], attemptTimeoutMs: 420_000,
   ...(spec.id === "companies.fast-responses" ? { oracleVersion: "paperclip.chat-catalog.identity.fast-responses.v4" }
-    : spec.id === "companies.prompt-injection-guard" ? { oracleVersion: "paperclip.chat-catalog.identity.prompt-injection-guard.v2" } : {}),
+    : spec.id === "companies.prompt-injection-guard" ? { oracleVersion: "paperclip.chat-catalog.identity.prompt-injection-guard.v2" }
+    : { oracleVersion: "paperclip.chat-catalog.identity.configure-decision-model.v2" }),
   async act(ctx, state) {
     await waitForCompanySettingsTurn(ctx); const root = `/api/companies/${ctx.input.fixtures.company.id}`; const source = ctx.input.page.url();
     state.afterReplyEnabled = (await ctx.input.api.get<{ settings: Settings }>(`${root}/${spec.path}`)).settings.enabled;
@@ -135,7 +140,7 @@ export const companyModelIdentityCases: readonly ChatCatalogCase[] = specs.map(s
       ...(spec.path === "decision-model" ? { allowBackground: false } : spec.path === "fast-response" ? { model: requestedAuxiliaryServiceModel, allowSponsored: false } : { model: requestedAuxiliaryServiceModel }) });
     state.agentTestStatus = await probeAgentPermission(ctx, `${root}/${spec.path}/test`, "POST", {});
     const section = spec.path === "decision-model" ? ctx.input.page.locator('section[aria-labelledby="decision-model-heading"]') : ctx.input.page.getByRole("region", { name: spec.section, exact: true });
-    if (spec.path === "fast-response") {
+    if (spec.path !== "prompt-injection-prevention") {
       // The run is recorded finished before its reply is saved and rendered; read the reply's links only once it is on the page.
       await waitForTurnReplyLinks(ctx);
       const o = await observeIdentity(ctx, state);

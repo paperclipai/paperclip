@@ -70,12 +70,12 @@ export async function prepareRuntimeWorkerGate(ctx: ChatCatalogContext, options:
     await ctx.input.api.post(`${company}/budgets/policies`, { ...scope, amount: 500, hardStopEnabled: true, isActive: true, unpricedUsagePolicy: "allow" });
   return { worker, gate, previousRuns, company };
 }
-export async function busyRuntimeWorker(ctx: ChatCatalogContext, options: { worker?: RuntimeAgent; observationDeadlineAt?: number } = {}) {
+export async function busyRuntimeWorker(ctx: ChatCatalogContext, options: { worker?: RuntimeAgent; observationDeadlineAt?: number; briefSource?: string } = {}) {
   const { worker, gate, previousRuns, company } = await prepareRuntimeWorkerGate(ctx, { ...options, taskBound: true });
   // Each busy worker owns its own task. Without allowDuplicate the product's recent-open-title
   // deduplication returns the first worker's identically titled "Website task" (HTTP 200).
   const task = await ctx.input.api.post<Entity>(`${company}/issues`, { title: "Website task", status: "todo", assigneeAgentId: worker.id, allowDuplicate: true,
-    description: `The website brief is being supplied by the human. Run ${gate.command} once and wait for its real output. Do not invent a brief, replace the script, or mark work complete before it returns. Once the brief arrives, save it as a task document and finish normally.` });
+    description: `${options.briefSource ?? "The website brief is being supplied by the human."} Run ${gate.command} once and wait for its real output. Do not invent a brief, replace the script, or mark work complete before it returns. Once the brief arrives, save it as a task document and finish normally.` });
   if (task.assigneeAgentId !== worker.id || previousRuns.some(run => run.contextSnapshot?.issueId === task.id))
     throw new Error("Busy worker fixture did not create its own task for this worker");
   const running = await pollUntil({ label: "Real Morgan process waiting for its human brief", deadlineAt: options.observationDeadlineAt ?? Date.now() + 150_000,
