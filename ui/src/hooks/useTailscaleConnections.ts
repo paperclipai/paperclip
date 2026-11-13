@@ -9,6 +9,5 @@ export function useTailscaleConnections(companyId: string | null) {
     queryFn: () => tailscaleApi.list(companyId!),
     enabled: Boolean(companyId),
     staleTime: 30_000,
-    retry: false,
   });
 }

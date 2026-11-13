@@ -162,14 +162,15 @@ if (args[1] === 'up') {
     expect(reload).toHaveBeenCalledOnce();
   });
 
-  it("cancels startup while the credential provider is still loading", async () => {
+  it.each(["disconnect", "close"] as const)("%s cancels startup while the credential provider is still loading", async operation => {
     const loading = deferred();
     const release = deferred();
     const connecting = manager.connect({ identity: "cancel-load", credential: "tskey-auth-fixture", persist: async () => undefined,
       reload: async () => { loading.resolve(); await release.promise; return "tskey-auth-fixture"; } });
     const assertion = expect(connecting).rejects.toThrow("Tailscale could not connect");
     await loading.promise;
-    await manager.close();
+    if (operation === "disconnect") await manager.disconnect("cancel-load");
+    else await manager.close();
     release.resolve();
     await assertion;
     await expect(fs.stat(path.join(dir, "calls"))).rejects.toThrow();

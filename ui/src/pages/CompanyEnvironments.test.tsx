@@ -767,6 +767,21 @@ describe("CompanyEnvironments — test provider button", () => {
     expect(findButton(getEnvironmentFormPage()!, "Connect Tailscale Network")).toBeUndefined();
   });
 
+  it("keeps cached tailnet setup available when a background refresh fails", async () => {
+    root = createRoot(container);
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const key = ["tailscale-connections", "company-1"];
+    queryClient.setQueryData(key, []);
+    await act(async () => { root!.render(renderCompanyEnvironments(queryClient, `${ENVIRONMENTS_PATH}/new`)); });
+    await waitForAssertion(() => { expect(getEnvironmentFormPage()?.querySelector('a[href="/apps/tailscale"]')).not.toBeNull(); });
+    vi.mocked(tailscaleApi.list).mockRejectedValueOnce(new ApiError("Network unavailable", 503, {}));
+    await act(async () => { await queryClient.refetchQueries({ queryKey: key }); });
+    await waitForAssertion(() => {
+      expect(getEnvironmentFormPage()?.querySelector('[role="alert"]')).not.toBeNull();
+      expect(getEnvironmentFormPage()?.querySelector('a[href="/apps/tailscale"]')).not.toBeNull();
+    });
+  });
+
   it("automatically uses the sole connected tailnet without showing a connection selector", async () => {
     vi.mocked(tailscaleApi.list).mockResolvedValueOnce([
       { id: "tailnet-connection", companyId: "company-1", name: "Home tailnet", status: "connected" },

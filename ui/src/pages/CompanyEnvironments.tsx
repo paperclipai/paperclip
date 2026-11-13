@@ -2342,7 +2342,7 @@ export function CompanyEnvironments({ mode = "list" }: CompanyEnvironmentsProps)
                       </select>
                     </Field> : null}
                     {tailscaleConnections.error ? <p role="alert" className="text-sm text-destructive">{describeError(tailscaleConnections.error, { action: "load Tailscale connections" }).body}</p> : null}
-                    {!tailscaleConnections.isPending && !tailscaleConnections.isError && !hasConnectedTailnet && environmentForm.sshNetwork === "direct" ?
+                    {tailscaleConnections.data !== undefined && !hasConnectedTailnet && environmentForm.sshNetwork === "direct" ?
                       <p className="text-sm text-muted-foreground"><Link className="underline" to="/apps/tailscale">Connect Tailscale Network</Link> to choose machines from your tailnet.</p> : null}
                   </div>
                   {environmentForm.sshNetwork === "tailscale" && selectedCompanyId ? (

@@ -21,9 +21,12 @@ available option. A sole connected tailnet is selected automatically and its
 connection selector is hidden; multiple connected tailnets remain selectable.
 
 After selecting a machine, **Prepare machine pairing** creates an SSH key in
-Paperclip’s vault and displays a command containing only the public key. Run it
-as the target SSH user. The command preserves existing authorized keys and
-prints that user’s name, home workspace path, and SSH host public key for the
+Paperclip’s vault and displays a command containing only the public key. Each
+preparation generates a fresh key pair. The command uses the public key produced
+during that request, never mutable metadata from a saved secret. Run it
+as the target SSH user. The command preserves existing authorized keys, including
+files without a final newline. It prints that user’s name, home workspace path,
+and SSH host public key for the
 form. You can also select an existing SSH private key secret.
 
 Save the environment and test it. Select it as an agent’s environment and choose
@@ -68,8 +71,14 @@ Each connection has a separate userspace daemon and private socket. It accepts
 no subnet routes or DNS changes and blocks incoming connections. Shutdown saves
 node state and removes temporary files. A restart restores the enrolled device;
 it does not reuse the OAuth token or require consent for every task. Disconnect
-invalidates pending consent and stops the connection’s local daemon. It does not
-remove the target computer from Tailscale.
+invalidates pending consent and stops the connection’s local daemon. A callback
+already exchanging or saving credentials cannot reconnect after disconnect or
+replace a newer authorization. Completion retains the consumed state's digest
+as a private attempt marker, with no expiry; disconnect replaces that marker.
+Database writes and credential reloads verify ownership without holding a database
+lock across broker or daemon startup. Cancelled attempts close their daemon and
+remove their newly created secret without touching a newer connection's state.
+Disconnect does not remove the target computer from Tailscale.
 
 This implementation currently supports one serving process per instance.
 Concurrent replicas need a durable connection ownership lease before rollout.
@@ -123,7 +132,9 @@ Set `PAPERCLIP_CLOUD_CONNECTOR_BASE_URL=http://localhost:3000` and
 ## Verification and rollout gates
 
 Offline tests cover broker handoff and sealed claims, company and user binding,
-expired and competing callbacks, denied authorization, device discovery, driver
+expired and competing callbacks, disconnect during claim exchange, secret
+creation, credential reload and daemon startup, superseding authorizations,
+failed-enrollment cleanup, denied authorization, device discovery, driver
 selection, private subprocess state, shutdown, and restart. These do not prove
 live consent or remote execution.
 
