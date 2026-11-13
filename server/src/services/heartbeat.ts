@@ -264,6 +264,7 @@ export {
   stripPaperclipSessionMetadataFromSessionParams,
   resolveTaskSessionConfigFreshness,
 } from "./heartbeat/workspaces.js";
+import { IsolatedRepositorySourceBusy } from "./workspace-source-lock.js";
 import { boundHeartbeatRunEventPayloadForStorage } from "./heartbeat/run-log.js";
 export {
   boundHeartbeatRunEventPayloadForStorage,
@@ -1060,6 +1061,7 @@ export function heartbeatService(
     findExecutionWorkspaceHolder,
     finalizeAiConnectionBusyDeferral,
     finalizeWorkspaceBusyDeferral,
+    finalizeWorkspaceSourceLockWait,
     finalizeAgentDirectoryBusyDeferral,
     promoteDueScheduledRetries,
     nextScheduledRetryAt,
@@ -2152,6 +2154,7 @@ export function heartbeatService(
     let providerTraceFinalized = false;
     let readFailureReportSecrets: () => string[] = () => [];
     let identityRedactor = createAgentIdentityRedactor();
+    let workspaceWaitWasIssueAssignee = false;
 
     try {
       const loadedAgent = await timePreparation("agent_read", () => getAgent(run.agentId));
@@ -2974,6 +2977,7 @@ export function heartbeatService(
       } = workspaceSelection;
       let nativeChatExpectedCwd = selectedNativeChatExpectedCwd;
       const { sessionConfigMetadata, configuredModel, resetTaskSession, sessionResetReason, taskSessionForRun, getFreshSessionHandoff, previousSessionParams } = preparedSession;
+      workspaceWaitWasIssueAssignee = issueContext?.assigneeAgentId === agent.id;
       const {
         resolvedWorkspace,
         hostExecutionWorkspaceConfig,
@@ -4024,6 +4028,24 @@ export function heartbeatService(
             );
           },
         );
+      } else if (outerErr instanceof IsolatedRepositorySourceBusy) {
+        // A bounded workspace source lock wait ran out while this run was
+        // preparing: resource contention, not a failure. The finally block
+        // below still releases leases, runtime services, and scratch.
+        await finalizeWorkspaceSourceLockWait(run, outerErr, {
+          wasIssueAssignee: workspaceWaitWasIssueAssignee,
+        }).catch(
+          (deferralErr) => {
+            logger.error(
+              { err: deferralErr, runId },
+              "failed to finalize source-lock wait deferral",
+            );
+          },
+        );
+        if (runOptions.nativeRestartRecovery && !legacyAdapterEntered && !nativeDispatchStarted)
+          await settleFailedNativeRecoveryPreparation(db, { companyId: run.companyId, runId: run.id,
+            claim: runOptions.nativeRestartRecovery }).catch(error =>
+            logger.warn({ err: error, runId: run.id }, "Failed native recovery preparation could not be settled"));
       } else if (!(await leaveToNextController(outerErr))) {
         await preserveNativeWorkspaceOnFailure();
         if (!nativeOwnershipHeld && !nativeStartupCleanupScheduled && !nativeStartupCleanupError) {
