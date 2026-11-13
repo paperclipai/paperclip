@@ -4825,8 +4825,19 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn next_run_attach_offers_relayed_gateway_tools_to_a_direct_gateway_checkpoint() {
-        let directory = temporary_directory("relayed-gateway-attach");
+    fn next_claude_run_attach_offers_relayed_gateway_tools_to_a_direct_gateway_checkpoint() {
+        next_run_attach_offers_relayed_gateway_tools("claude");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn next_pi_run_attach_offers_relayed_gateway_tools_to_a_direct_gateway_checkpoint() {
+        next_run_attach_offers_relayed_gateway_tools("pi");
+    }
+
+    #[cfg(unix)]
+    fn next_run_attach_offers_relayed_gateway_tools(agent: &str) {
+        let directory = temporary_directory(&format!("relayed-gateway-attach-{agent}"));
         let runtime = directory.join("runtime");
         let workspace = directory.join("workspace");
         fs::create_dir_all(&runtime).unwrap();
@@ -4847,7 +4858,7 @@ mod tests {
             args: Vec::new(),
             artifacts: vec![artifact(&command)],
         };
-        let mut descriptor_value = descriptor("claude");
+        let mut descriptor_value = descriptor(agent);
         descriptor_value["sidecarCommand"] = json!(command);
         descriptor_value["sidecarArgs"] = json!([]);
         descriptor_value["runtimeDirectory"] = json!(runtime);

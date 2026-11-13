@@ -17619,12 +17619,12 @@ describe("runnerd provider runtime wiring", () => {
       || request.args.includes("paperclip-runner-claim-unstarted-session"))).toBe(false);
   });
 
-  it("relays the assigned gateway when a deploy lands mid-run and the same ACPX Claude run reattaches its surviving runner", async () => {
-    const base = scopedNativeExecution("relay-mid-run-claude");
-    const current = { ...base, provider: { kind: "acpx", agent: "claude", model: null },
+  it.each(["claude", "pi"] as const)("relays the assigned gateway when a deploy lands mid-run and the same ACPX %s run reattaches its surviving runner", async agent => {
+    const base = scopedNativeExecution(`relay-mid-run-${agent}`);
+    const current = { ...base, provider: { kind: "acpx", agent, model: null },
       session: { ...base.session, driverKind: "acpx_runtime" } } as unknown as NativeExecutionInputV1;
     const identity = { runId: current.binding.runId, normalizedSessionId: current.session.normalizedSessionId!,
-      runnerInstanceId: "admitted-claude", environmentLeaseId: "admitted-lease",
+      runnerInstanceId: `admitted-${agent}`, environmentLeaseId: "admitted-lease",
       turnId: `turn_attachment_${randomUUID()}`, itemId: `item_attachment_${randomUUID()}` };
     const root = await initializeScopedRunnerRoot(current, identity.runnerInstanceId);
     await mkdir(join(root, "control-plane"), { recursive: true });
@@ -18735,11 +18735,12 @@ describe("runnerd provider runtime wiring", () => {
       }
     });
 
-  it.each(["codex", "opencode", "acpx-claude"] as const)("keeps assigned MCP credentials on the control plane for %s", async (providerKind) => {
+  it.each(["codex", "codex-local", "opencode", "acpx-claude", "acpx-pi", "acpx-kimi", "acpx-copilot", "acpx-cursor"] as const)("keeps assigned MCP credentials on the control plane for %s", async (providerKind) => {
+    const acpxAgent = providerKind.startsWith("acpx-") ? providerKind.slice("acpx-".length) : null;
     const selectedExecution: NativeExecutionInput = providerKind === "opencode"
       ? { ...execution, provider: { kind: "opencode", model: "openrouter/deepseek/deepseek-v4.1-flash-1017", permissionMode: "allow" } }
-      : providerKind === "acpx-claude"
-        ? { ...execution, provider: { kind: "acpx", agent: "claude", model: "claude-sonnet-5", permissionMode: "approve-all" } } as NativeExecutionInput
+      : acpxAgent
+        ? { ...execution, provider: { kind: "acpx", agent: acpxAgent, model: `${acpxAgent}-test-model`, permissionMode: "approve-reads" } } as unknown as NativeExecutionInput
         : execution;
     const endpoint = process.env.OTEL_EXPORTER_OTLP_ENDPOINT;
     vi.stubEnv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://collector.test");
@@ -18789,7 +18790,7 @@ describe("runnerd provider runtime wiring", () => {
       expect(options.environment.PAPERCLIP_NATIVE_MCP_TOKEN).toBeUndefined();
       const backendOptions = state.createBackend.mock.calls[0]![1];
       expect(backendOptions.dynamicTools).toContainEqual(assignedTool);
-      const handler = providerKind === "acpx-claude" ? backendOptions.acpxDynamicToolHandler! : backendOptions.dynamicToolHandler!;
+      const handler = acpxAgent ? backendOptions.acpxDynamicToolHandler! : backendOptions.dynamicToolHandler!;
       await expect(handler({ tool: assignedTool.name, callId: "call-assigned", arguments: { title: "Ship it" } } as never))
         .resolves.toEqual({ content: [{ type: "text", text: "created" }] });
       expect(assignedMcpTools.execute).toHaveBeenCalledWith({ tool: assignedTool.name, arguments: { title: "Ship it" } });

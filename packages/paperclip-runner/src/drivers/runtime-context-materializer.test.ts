@@ -549,4 +549,29 @@ requires_openai_auth = false
       expect((await stat(join(codexHome, "auth.json"))).mode & 0o777).toBe(0o600);
     } else await expect(stat(join(codexHome, "auth.json"))).rejects.toMatchObject({ code: "ENOENT" });
   });
+
+  it.each(["next_run", "same_run_recovery"] as const)("drops a retained direct gateway server when the relayed launch has no binding (%s)", async mode => {
+    const root = await mkdtemp(join(tmpdir(), "paperclip-relayed-codex-home-"));
+    roots.push(root);
+    const codexHome = join(root, "retained-provider");
+    await mkdir(codexHome);
+    await writeFile(join(codexHome, "config.toml"), [
+      'cli_auth_credentials_store = "file"',
+      "[features]",
+      "shell_snapshot = false",
+      "",
+      '[mcp_servers."paperclip-assigned"]',
+      'url = "http://127.0.0.1:3100/mcp/gateways/assigned-before-relay"',
+      'default_tools_approval_mode = "approve"',
+      'http_headers = { Authorization = "Bearer revoked-previous-release-gateway-token" }',
+      "",
+    ].join("\n"));
+    const nativeMcp = nativeMcpLaunchBinding({});
+    if (mode === "next_run") await prepareIsolatedCodexHome({ context: null, codexHome, nativeMcp });
+    else await prepareIsolatedCodexRecoveryHome({ codexHome, nativeMcp });
+    const config = await readFile(join(codexHome, "config.toml"), "utf8");
+    expect(parse(config).mcp_servers).toBeUndefined();
+    expect(config).not.toContain("revoked-previous-release-gateway-token");
+    expect(config).not.toContain("assigned-before-relay");
+  });
 });
