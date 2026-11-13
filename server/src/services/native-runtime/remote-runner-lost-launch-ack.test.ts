@@ -106,7 +106,8 @@ describe.skipIf(!existsSync("/proc/self/cmdline"))("remote Runner launch whose a
       expect(runnersServing(stateDirectory)).toEqual([successorPid]);
       expect((await readFile(launcherInput.processIdentityPath, "utf8")).split("\n")[1]).toBe(String(successorPid));
     } finally {
-      for (const pid of [orphanPid, ...runnersServing(stateDirectory)].filter(pid => pid > 0)) {
+      // Fresh /proc reads only: a saved PID may have been reused by now.
+      for (const pid of runnersServing(stateDirectory)) {
         try { process.kill(pid, "SIGKILL"); } catch { /* already gone */ }
       }
       // The successor's supervision settles once it observes its Runner gone.
