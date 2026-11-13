@@ -548,7 +548,7 @@ export function assignedWorkSweep(db: Db, deps: AssignedWorkDeps) {
     }
     const fresh = await continueFromSavedWork(issue, facts, at);
     if (fresh?.kind === "continued") {
-      await settleContinuationActivity(claimed, claimed.reason, "queued");
+      await settleContinuationActivity(claimed, claimed.reason, "queued", { continuedFromSavedWork: "true" });
       return { verdict: claimed.verdict, outcome: "repaired", retryAt: claimed.nextCheckAt };
     }
     if (fresh?.kind === "backoff" || fresh?.kind === "exact_recovery_pending") {
@@ -585,7 +585,7 @@ export function assignedWorkSweep(db: Db, deps: AssignedWorkDeps) {
       contextSnapshot: heartbeatRuns.contextSnapshot }).from(heartbeatRuns)
       .where(and(eq(heartbeatRuns.companyId, issue.companyId), eq(heartbeatRuns.id, source.id)));
     if (!run || !isAutomaticContinuationRun(run)) return null;
-    return ensureFreshContinuation(db, { companyId: issue.companyId, runId: source.id, trigger: "held_recovery", now: at })
+    return ensureFreshContinuation(db, { companyId: issue.companyId, runId: source.id, trigger: "assigned_work", now: at })
       .catch(error => {
         logger.warn({ err: error, companyId: issue.companyId, issueId: issue.id }, "assigned-work continuation from saved work deferred");
         return null;
@@ -710,7 +710,7 @@ export function assignedWorkSweep(db: Db, deps: AssignedWorkDeps) {
    * continuation stays a violation and is tried again under the same cap. */
   async function settleContinuationActivity(claimed: { activityId: string; publications: ActivityPublication[] },
     reason: ViolationReason, outcome: "queued" | "not_started" | "restored_to_review", extra: Record<string, string> = {}) {
-    const update = outcome === "queued" ? { outcome, message: continuationActivityMessage(reason) }
+    const update = outcome === "queued" ? { outcome, message: continuationActivityMessage(reason), ...extra }
       : outcome === "restored_to_review" ? { outcome, message: CONTINUATION_REVIEW_MESSAGE }
         : { outcome, message: CONTINUATION_REFUSED_MESSAGE, ...extra };
     await db.update(activityLog).set({ details: sql`coalesce(${activityLog.details}, '{}'::jsonb) || ${JSON.stringify(update)}::jsonb` })

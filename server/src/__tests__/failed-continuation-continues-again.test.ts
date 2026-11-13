@@ -4,7 +4,11 @@ import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { activityLog, agentWakeupRequests, agents, companies, createDb, heartbeatRuns, issueRecoveryActions, issues } from "@paperclipai/db";
 import { recoveryService } from "../services/recovery/service.js";
 import { ASSIGNED_WORK_CONTINUED_ACTION, assignedWorkSweep } from "../services/recovery/assigned-work-sweep.js";
-import { FRESH_CONTINUATION_SCHEMA, continueHeldExecutions, resetBacklogContinuationPacingForTests } from "../services/fresh-continuation-fallback.js";
+import { FRESH_CONTINUATION_SCHEMA, continueHeldExecutions, ensureFreshContinuation, resetBacklogContinuationPacingForTests } from "../services/fresh-continuation-fallback.js";
+import { PERMANENT_FAILURE_CODES, PERSON_OWNED_FAILURE_CODES } from "../services/continuation-cause.js";
+import { AUTOMATIC_RETRY_REASONS, SHARED_CONTINUATION_WINDOW_MS } from "../services/recovery/continuation-ledger.js";
+import { SERVER_RESTART_RETRY_MAX_ATTEMPTS, SERVER_RESTART_RETRY_REASON, SERVER_RESTART_RETRY_WINDOW_MS } from "../services/execution-recovery-attempt.js";
+import { FRESH_CONTINUATIONS_PER_HOUR } from "../services/fresh-continuation-fallback.js";
 import { createSystemRecovery } from "../services/system-recovery-state.js";
 import { recoveryPostgresSupport, startRecoveryPostgres } from "./helpers/recovery-postgres.js";
 
@@ -14,6 +18,14 @@ if (!recoveryPostgresSupport.supported) console.warn(`Skipping failed continuati
 const MINUTE = 60_000;
 const HOUR = 60 * MINUTE;
 const DAYTONA_TIMEOUT = "HTTP request timed out after 300000ms waiting for a response. This is a client-side deadline (DaytonaConfig.timeout)";
+
+describe("shared continuation ledger", () => {
+  it("uses the server-restart lane's window, cap and retry reason", () => {
+    expect(SHARED_CONTINUATION_WINDOW_MS).toBe(SERVER_RESTART_RETRY_WINDOW_MS);
+    expect(FRESH_CONTINUATIONS_PER_HOUR).toBe(SERVER_RESTART_RETRY_MAX_ATTEMPTS);
+    expect(AUTOMATIC_RETRY_REASONS).toContain(SERVER_RESTART_RETRY_REASON);
+  });
+});
 
 describePostgres("a continuation that fails before doing any work is continued again", () => {
   let temporary: Awaited<ReturnType<typeof startRecoveryPostgres>>;
@@ -82,6 +94,22 @@ describePostgres("a continuation that fails before doing any work is continued a
     }
     return { companyId, agentId, task, run, continued };
   }
+
+  async function heldRun(f: Awaited<ReturnType<typeof seed>>, errorCode: string, contextSnapshot: Record<string, unknown>,
+    endedAgo = 2 * HOUR) {
+    const task = await f.task({ status: "blocked", blockedTransitionAt: new Date(Date.now() - 30 * MINUTE), statusVersion: 4 });
+    const failed = await f.run(task.id, { runtimeMode: "native", nativeIssueId: task.id, issueId: task.id, errorCode, error: errorCode,
+      finishedAt: new Date(Date.now() - endedAgo), contextSnapshot });
+    const [hold] = await db.insert(issueRecoveryActions).values({ companyId: f.companyId, sourceIssueId: task.id, kind: "active_run_watchdog",
+      status: "resolved", outcome: "blocked", resolvedAt: new Date(Date.now() - endedAgo), ownerType: "board", returnOwnerAgentId: f.agentId,
+      cause: "native_continuation_requires_reconciliation", fingerprint: `native-continuation:${failed.id}`, nextAction: "Held.",
+      evidence: { runId: failed.id, originalFailureCode: errorCode, nativeFailureBlock: { runId: failed.id, statusVersion: 4 },
+        automaticRecovery: { policy: "preserve_without_replay_v1", runId: failed.id, replay: "blocked", actionOutcome: "unknown",
+          recordedAt: new Date(Date.now() - endedAgo).toISOString() } } }).returning();
+    return { task, failed, hold: hold! };
+  }
+  const recoveryContext = { wakeReason: "transient_failure_retry", retryReason: "transient_failure", previousRunId: randomUUID() };
+  const personRetryContext = { wakeReason: "task_retry", previousRunId: randomUUID(), explicitUserContinuation: { previousRunId: randomUUID() } };
 
   const taskRow = async (id: string) => (await db.select().from(issues).where(eq(issues.id, id)))[0]!;
   const activeStrandedHolds = async (issueId: string) => db.select().from(issueRecoveryActions).where(and(
@@ -257,5 +285,59 @@ describePostgres("a continuation that fails before doing any work is continued a
       expect(entry?.details).toMatchObject({ outcome: "queued" });
       expect(queue.calls).toHaveLength(1);
     }
+  }, 60_000);
+  it("the held backlog leaves a person's Retry and each permanent cause blocked", async () => {
+    resetBacklogContinuationPacingForTests(db);
+    const f = await seed();
+    const left = [await heldRun(f, "setup_failed", personRetryContext)];
+    for (const code of PERMANENT_FAILURE_CODES) left.push(await heldRun(f, code, recoveryContext));
+    for (let pass = 0; pass < 4; pass += 1) await continueHeldExecutions(db, new Date());
+    for (const entry of left) {
+      expect(await continuationsOf(entry.failed.id)).toHaveLength(0);
+      expect((await taskRow(entry.task.id)).status).toBe("blocked");
+    }
+  }, 120_000);
+
+  it("no entry point continues a person-owned or permanent cause", async () => {
+    resetBacklogContinuationPacingForTests(db);
+    const f = await seed();
+    const queue = wakeQueue();
+    const recovery = recoveryService(db, { enqueueWakeup: queue.enqueueWakeup, scheduleRecoveryRetry: async () => null });
+    for (const code of [...PERSON_OWNED_FAILURE_CODES, ...PERMANENT_FAILURE_CODES]) {
+      const held = await heldRun(f, code, recoveryContext);
+      expect(await ensureFreshContinuation(db, { companyId: f.companyId, runId: held.failed.id, trigger: "held_recovery" }))
+        .toMatchObject({ kind: "person_owned" });
+      const task = await f.task();
+      const failed = await f.continued(task.id, { errorCode: code, error: code });
+      await recovery.assignedWork.checkIssue({ companyId: f.companyId, issueId: task.id });
+      expect(await continuationsOf(failed.id)).toHaveLength(0);
+    }
+    await continueHeldExecutions(db, new Date());
+    expect(await db.select().from(issueRecoveryActions).where(and(eq(issueRecoveryActions.companyId, f.companyId),
+      sql`${issueRecoveryActions.evidence}#>>'{freshContinuation,trigger}' in ('held_recovery', 'assigned_work')`))).toHaveLength(0);
+  }, 240_000);
+
+  it("six automatic attempts of mixed kinds in the hour stop the held backlog until the next window", async () => {
+    resetBacklogContinuationPacingForTests(db);
+    const f = await seed();
+    const held = await heldRun(f, "setup_failed", recoveryContext);
+    const at = (minutesAgo: number) => new Date(Date.now() - minutesAgo * MINUTE);
+    for (const minutesAgo of [50, 40]) await f.run(held.task.id, { errorCode: "process_lost", scheduledRetryReason: "transient_failure",
+      createdAt: at(minutesAgo), finishedAt: at(minutesAgo - 1) });
+    for (const minutesAgo of [35, 30]) await db.insert(activityLog).values({ companyId: f.companyId, actorType: "system", actorId: "system",
+      action: ASSIGNED_WORK_CONTINUED_ACTION, entityType: "issue", entityId: held.task.id, details: { outcome: "queued" }, createdAt: at(minutesAgo) });
+    for (const minutesAgo of [25, 20]) await db.insert(issueRecoveryActions).values({ companyId: f.companyId, sourceIssueId: held.task.id,
+      kind: "active_run_watchdog", status: "resolved", outcome: "restored", ownerType: "system", cause: "fresh_continuation",
+      fingerprint: `fresh-continuation:${randomUUID()}`, nextAction: "Continuing.", resolvedAt: at(minutesAgo),
+      evidence: { runId: randomUUID(), continuationDelivery: "delivered", freshContinuation: { schema: FRESH_CONTINUATION_SCHEMA,
+        trigger: "held_recovery", recordedAt: at(minutesAgo).toISOString() } } });
+    await db.update(heartbeatRuns).set({ createdAt: at(10), finishedAt: at(9) }).where(eq(heartbeatRuns.id, held.failed.id));
+    expect(await continueHeldExecutions(db, new Date())).toMatchObject({ continued: 0 });
+    const [checked] = await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.id, held.hold.id));
+    const nextCheckAt = Number((checked!.evidence.freshContinuationCheck as { nextCheckAt?: number }).nextCheckAt);
+    expect(nextCheckAt).toBeGreaterThan(Date.now() + 9 * MINUTE);
+    expect(nextCheckAt).toBeLessThanOrEqual(Date.now() + 10 * MINUTE + 5_000);
+    expect(await continuationsOf(held.failed.id)).toHaveLength(0);
+    expect(await continueHeldExecutions(db, new Date(Date.now() + 11 * MINUTE))).toMatchObject({ continued: 1 });
   }, 60_000);
 });

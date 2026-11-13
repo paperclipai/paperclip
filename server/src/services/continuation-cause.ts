@@ -1,3 +1,4 @@
+import { sql, type SQL } from "drizzle-orm";
 import type { heartbeatRuns } from "@paperclipai/db";
 
 /**
@@ -53,4 +54,20 @@ export const PERMANENT_FAILURE_CODES = [
 export function isSystemOwnedFailureCode(code: string | null | undefined): boolean {
   return typeof code === "string" && code.length > 0 && !isPersonOwnedFailureCode(code)
     && !(PERMANENT_FAILURE_CODES as readonly string[]).includes(code);
+}
+
+export function systemOwnedFailureCodeSql(alias: string): SQL {
+  const column = sql.raw(`${alias}.error_code`);
+  return sql`(${column} is not null and ${column} <> '' and ${column} not in (${sql.join(
+    [...PERSON_OWNED_FAILURE_CODES, ...PERMANENT_FAILURE_CODES].map(code => sql`${code}`), sql`, `)}))`;
+}
+
+export function automaticContinuationRunSql(alias: string): SQL {
+  const run = (column: string) => sql.raw(`${alias}.${column}`);
+  const context = run("context_snapshot");
+  return sql`(not coalesce(${context} ? 'explicitUserContinuation', false)
+    and coalesce(${context}->>'wakeReason', '') <> 'task_retry'
+    and (${run("retry_of_run_id")} is not null or ${run("scheduled_retry_reason")} is not null
+      or ${context} ? 'previousRunId' or ${context} ? 'retryReason' or ${context} ? 'freshContinuationIsolation'
+      or ${context}->>'wakeReason' in (${sql.join(AUTOMATIC_CONTINUATION_WAKE_REASONS.map(reason => sql`${reason}`), sql`, `)})))`;
 }

@@ -26,7 +26,8 @@ import { notifyRoutineExecutionStatus } from "./routine-execution-status-notific
 import { notifyStatusCardIssueChange } from "./status-card-notifications.js";
 import { readRunCancellation } from "./run-cancellation.js";
 import { readSystemRecovery } from "./system-recovery-state.js";
-import { AUTOMATIC_CONTINUATION_WAKE_REASONS, PERSON_OWNED_FAILURE_CODES, isPersonOwnedFailureCode } from "./continuation-cause.js";
+import { automaticContinuationRunSql, isPersonOwnedFailureCode, isSystemOwnedFailureCode, systemOwnedFailureCodeSql } from "./continuation-cause.js";
+import { sharedContinuationAttempts } from "./recovery/continuation-ledger.js";
 
 export { AUTOMATIC_CONTINUATION_WAKE_REASONS, PERSON_OWNED_FAILURE_CODES, isAutomaticContinuationRun, isPersonOwnedFailureCode } from "./continuation-cause.js";
 
@@ -100,7 +101,7 @@ const EXACT_RECOVERY_STATES = ["scheduled", "running", "awaiting_evidence"];
  */
 export type FreshContinuationIsolation = "remote_epoch" | "writer_ended" | "fresh_isolated_workspace";
 
-export type FreshContinuationTrigger = "recovery_refused" | "held_recovery" | "continuation_wake";
+export type FreshContinuationTrigger = "recovery_refused" | "held_recovery" | "continuation_wake" | "assigned_work";
 
 export type FreshContinuationResult =
   | { kind: "continued"; recoveryActionId: string; delivery: "recorded" | "caller_owns" | "saved_input"; isolation: FreshContinuationIsolation }
@@ -452,12 +453,16 @@ export async function continueFreshInTransaction(tx: Db, input: Input): Promise<
   // Saved-work recovery that is running and advancing keeps its own 30-minute
   // budget: it may still rescue unsaved files. Anything idle gets the normal bound.
   const savedWorkAdvancing = progressing && savedWork.some(recovery => recovery!.state === "running");
-  const waitBounded = savedWorkAdvancing ? waitedMs >= FRESH_CONTINUATION_SAVED_WORK_BOUND_MS
-    : waitedMs >= FRESH_CONTINUATION_PROGRESS_BOUND_MS || (waitedMs >= FRESH_CONTINUATION_PENDING_BOUND_MS && !progressing)
+  const boundedAfter = (waited: number) => savedWorkAdvancing ? waited >= FRESH_CONTINUATION_SAVED_WORK_BOUND_MS
+    : waited >= FRESH_CONTINUATION_PROGRESS_BOUND_MS || (waited >= FRESH_CONTINUATION_PENDING_BOUND_MS && !progressing)
       || (personAsked && !savedWork.some(recovery => EXACT_RECOVERY_STATES.includes(recovery!.state)));
+  const waitBounded = boundedAfter(waitedMs);
+  const markerBounded = boundedAfter(pendingMarker ? waitedMs : 0);
   // Rechecks back off 1, 2, 3, 4 minutes, so the bound is reached on time.
   const step = Math.min(4, (typeof pendingMarker?.checks === "number" ? pendingMarker.checks : 0) + 1) * EXACT_RECOVERY_RECHECK_MS;
-  const pending = (reason: string, retryAt: Date): FreshContinuationResult | null => waitBounded ? null
+  let waitSkipped = false;
+  const pastBound = () => markerBounded || waitSkipped;
+  const pending = (reason: string, retryAt: Date): FreshContinuationResult | null => waitBounded ? (waitSkipped = true, null)
     : !pendingMarker && sourceAgeMs > BACKLOG_CONTINUATION_MAX_AGE_MS ? { kind: "person_owned", reason: "retry_needed" }
     : { kind: "exact_recovery_pending", reason, progressAt, savedWorkSignature,
       retryAt: new Date(Math.min(retryAt.getTime(), now.getTime() + step)) };
@@ -506,11 +511,12 @@ export async function continueFreshInTransaction(tx: Db, input: Input): Promise<
   if (firstWait) return firstWait;
   // Past the bound, a hold that workspace recovery still owns is settled too:
   // the continuation never uses that workspace (isolation below).
-  const owned = waitBounded ? holds.filter(hold => isOwnedReconciliationHold(hold)
+  const owned = pastBound() ? holds.filter(hold => isOwnedReconciliationHold(hold)
     || (isRestoreHold(hold) && blocksExecution(hold) && !isHumanGate(hold))) : ownedHolds;
 
   // (b) Causes that are the person's.
-  if (isPersonOwnedFailureCode(run.errorCode)) return { kind: "person_owned", reason: run.errorCode! };
+  if (isPersonOwnedFailureCode(run.errorCode) || (run.errorCode && !isSystemOwnedFailureCode(run.errorCode)))
+    return { kind: "person_owned", reason: run.errorCode! };
   // A Stop a person (or an agent acting on the task) asked for is never undone.
   const cancellation = readRunCancellation(run.resultJson);
   if ((cancellation && ["user", "agent"].includes(cancellation.initiator.type))
@@ -545,16 +551,9 @@ export async function continueFreshInTransaction(tx: Db, input: Input): Promise<
   }
 
   // (c) Bounded per task: the restart lane's hourly cap, then back off.
-  const windowStart = new Date(now.getTime() - FRESH_CONTINUATION_WINDOW_MS).toISOString();
-  const recent = await tx.select({ recordedAt: sql<string>`${issueRecoveryActions.evidence}#>>'{freshContinuation,recordedAt}'` })
-    .from(issueRecoveryActions).where(and(eq(issueRecoveryActions.companyId, companyId),
-      eq(issueRecoveryActions.sourceIssueId, issue.id),
-      sql`${issueRecoveryActions.evidence}#>>'{freshContinuation,schema}' = ${FRESH_CONTINUATION_SCHEMA}`,
-      sql`${issueRecoveryActions.evidence}#>>'{freshContinuation,recordedAt}' > ${windowStart}`))
-    .orderBy(asc(sql`${issueRecoveryActions.evidence}#>>'{freshContinuation,recordedAt}'`));
-  if (recent.length >= FRESH_CONTINUATIONS_PER_HOUR) {
-    const oldest = new Date(recent[0]!.recordedAt).getTime();
-    return { kind: "backoff", retryAt: new Date(oldest + FRESH_CONTINUATION_WINDOW_MS) };
+  const attempts = await sharedContinuationAttempts(tx, companyId, issue.id, now);
+  if (attempts.length >= FRESH_CONTINUATIONS_PER_HOUR) {
+    return { kind: "backoff", retryAt: new Date(attempts[0]!.getTime() + FRESH_CONTINUATION_WINDOW_MS) };
   }
 
   // Saved user input (a message or a Retry the person pressed) continues the
@@ -589,7 +588,7 @@ export async function continueFreshInTransaction(tx: Db, input: Input): Promise<
   const fenced = await fenceSourceWorkspace(tx, run);
   // Never claim a stop that was not proven: record what isolates the successor.
   const isolation: FreshContinuationIsolation = fenced || remoteSource ? "remote_epoch"
-    : writer === "ended" && !waitBounded && !refused ? "writer_ended" : "fresh_isolated_workspace";
+    : writer === "ended" && !pastBound() && !refused ? "writer_ended" : "fresh_isolated_workspace";
   if (isolation === "fresh_isolated_workspace" && delivery === "saved_input") delivery = "recorded";
   const unverified = await unverifiedActions(tx, run);
   const created = await createdObjects(tx, run);
@@ -819,12 +818,8 @@ function interruptionEligibility(input: { now: Date; companyId: SQL; issueId: SQ
       and retry.run_id is null and retry.payload->>'issueId' = ${input.issueId}::text and retry.requested_at > source.finished_at)
     or exists (select 1 from ${heartbeatRuns} held where ${refusedLater}
       and held.context_snapshot->>'wakeReason' = 'task_retry' and held.finished_at > ${since}))`);
-  const automaticRun = sql`(source.retry_of_run_id is not null or source.scheduled_retry_reason is not null
-    or source.context_snapshot ? 'previousRunId' or source.context_snapshot ? 'retryReason'
-    or source.context_snapshot ? 'freshContinuationIsolation'
-    or source.context_snapshot->>'wakeReason' in (${sql.join(AUTOMATIC_CONTINUATION_WAKE_REASONS.map(reason => sql`${reason}`), sql`, `)}))`;
   const recent = source(sql`(source.error_code in (${sql.join(BACKLOG_CONTINUATION_SOURCE_CODES.map(code => sql`${code}`), sql`, `)})
-      or (source.error_code not in (${sql.join(PERSON_OWNED_FAILURE_CODES.map(code => sql`${code}`), sql`, `)}) and ${automaticRun}))
+      or (${systemOwnedFailureCodeSql("source")} and ${automaticContinuationRunSql("source")}))
     and greatest(source.finished_at, (select max(held.finished_at) from ${heartbeatRuns} held where ${refusedLater})) > ${since}`);
   return { recent, personAsked };
 }

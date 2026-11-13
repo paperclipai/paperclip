@@ -1,10 +1,9 @@
 import { and, desc, eq, gte, inArray, sql } from "drizzle-orm";
 import { activityLog, heartbeatRuns, type Db } from "@paperclipai/db";
-import { SERVER_RESTART_RETRY_REASON } from "../execution-recovery-attempt.js";
+import { ASSIGNED_WORK_CONTINUED_ACTION, AUTOMATIC_RETRY_REASONS, SCHEDULER_TRANSIENT_RETRY_REASON, freshContinuationTimes } from "./continuation-ledger.js";
 import { CONTINUATION_CAP, CONTINUATION_CAP_WINDOW_MS } from "./assigned-work-invariant.js";
 
-export const ASSIGNED_WORK_CONTINUED_ACTION = "issue.continued_automatically";
-export const SCHEDULER_TRANSIENT_RETRY_REASON = "transient_failure";
+export { ASSIGNED_WORK_CONTINUED_ACTION, SCHEDULER_TRANSIENT_RETRY_REASON };
 
 export async function taskAutomaticAttempts(db: Db, companyId: string, issueId: string, at: Date) {
   const since = new Date(at.getTime() - CONTINUATION_CAP_WINDOW_MS);
@@ -15,10 +14,12 @@ export async function taskAutomaticAttempts(db: Db, companyId: string, issueId: 
       .orderBy(desc(activityLog.createdAt)).limit(64),
     db.select({ createdAt: heartbeatRuns.createdAt }).from(heartbeatRuns).where(and(
       eq(heartbeatRuns.companyId, companyId), sql`${heartbeatRuns.contextSnapshot}->>'issueId' = ${issueId}`,
-      inArray(heartbeatRuns.scheduledRetryReason, [SCHEDULER_TRANSIENT_RETRY_REASON, SERVER_RESTART_RETRY_REASON, "interrupted_preparation"]), gte(heartbeatRuns.createdAt, since)))
+      inArray(heartbeatRuns.scheduledRetryReason, AUTOMATIC_RETRY_REASONS), gte(heartbeatRuns.createdAt, since)))
       .orderBy(desc(heartbeatRuns.createdAt)).limit(64),
   ]);
-  const all = [...continuations, ...transientRetries].map(row => row.createdAt);
+  const fresh = (await freshContinuationTimes(db, companyId, issueId, since))
+    .filter(record => record.trigger !== "assigned_work").map(record => record.at);
+  const all = [...continuations.map(row => row.createdAt), ...transientRetries.map(row => row.createdAt), ...fresh];
   return { continuations: continuations.map(row => row.createdAt), all };
 }
 
