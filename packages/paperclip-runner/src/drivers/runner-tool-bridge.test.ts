@@ -686,3 +686,28 @@ describe("runner bridge repeated identical input rejections", () => {
     expect(handler).not.toHaveBeenCalled();
   });
 });
+
+describe("runner bridge input coercion", () => {
+  it("accepts an object-typed field sent as JSON text, records it, and keeps text fields as text", async () => {
+    const handler = vi.fn(async () => ({ ok: true }));
+    const diagnostics: string[] = [];
+    const bridge = await startRunnerToolBridge({
+      tools: [{ name: "update_case", inputSchema: { type: "object", additionalProperties: false, required: ["title", "patch"], properties: {
+        title: { type: "string" }, patch: { type: ["object", "null"], required: ["status"], properties: { status: { type: "string" } } },
+      } } }],
+      handler,
+      onDiagnostic: message => diagnostics.push(message),
+    });
+    bridges.push(bridge);
+    const send = async (id: number, args: unknown) => ((await (await rpc(bridge, { id, method: "tools/call", params: { name: "update_case", arguments: args } })).json()) as {
+      result: { isError?: boolean; content: Array<{ text: string }> };
+    }).result;
+    expect((await send(1, { title: '{"a":1}', patch: '{"status":"done"}' })).isError).not.toBe(true);
+    expect(handler).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ arguments: { title: '{"a":1}', patch: { status: "done" } } }));
+    expect(diagnostics.map(message => JSON.parse(message))).toEqual([
+      expect.objectContaining({ schema: "paperclip.runner.tool-input-coerced/v1", tool: "update_case", paths: ["/patch"] }),
+    ]);
+    expect((await send(2, { title: "t", patch: "done" })).isError).toBe(true);
+    expect(handler).toHaveBeenCalledOnce();
+  });
+});

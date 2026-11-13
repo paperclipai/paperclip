@@ -10,6 +10,7 @@ import {
 import type { ValidateFunction } from "ajv/dist/2020.js";
 import { admitToolInputSchema } from "./tool-input-schema.js";
 import { toolInputError } from "./tool-input-error.js";
+import { admitToolInput, TOOL_INPUT_COERCION_DIAGNOSTIC_SCHEMA } from "./tool-input-coercion.js";
 import { RepeatedToolInputRejectionGuard } from "./repeated-tool-input-rejection.js";
 import { toolInputVariantError } from "../contracts/tool-input-variants.js";
 
@@ -62,6 +63,8 @@ export interface RunnerToolBridgeOptions {
   socketPath?: string;
   sessionScope?: () => string | null;
   scopeToken?: () => string | null;
+  /** Receives one JSON diagnostic per call accepted after input coercion. */
+  onDiagnostic?: (message: string) => void;
 }
 
 export interface RunnerToolBridge {
@@ -103,6 +106,22 @@ const RESERVED_TOOLS: readonly RunnerToolDefinition[] = [
     inputSchema: PRP_BLOCK_RESULT_PROVIDER_INPUT_SCHEMA,
   },
 ];
+
+function inputCoercionDiagnostics(onDiagnostic: ((message: string) => void) | undefined) {
+  let recorded = 0;
+  // Names the coerced fields, never their values.
+  return (tool: string, callId: string, paths: string[]) => {
+    if (!onDiagnostic || recorded++ >= 64) return;
+    const diagnostic = {
+      schema: TOOL_INPUT_COERCION_DIAGNOSTIC_SCHEMA,
+      tool,
+      callIdSha256: createHash("sha256").update(callId).digest("hex"),
+      coercion: "json_string_to_object",
+      paths,
+    };
+    try { onDiagnostic(JSON.stringify(diagnostic)); } catch { /* Optional diagnostics never change admission. */ }
+  };
+}
 
 export function canonicalRunnerToolName(name: string): string {
   const trimmed = name.trim();
@@ -151,6 +170,7 @@ export async function startRunnerToolBridge(
     admittedTools: new Map(admittedTools.map((tool) => [tool.name, tool])),
     validators,
     rejections: new RepeatedToolInputRejectionGuard(),
+    diagnoseInputCoercion: inputCoercionDiagnostics(options.onDiagnostic),
     calls,
     controllers,
     sessionScope: options.sessionScope,
@@ -241,6 +261,7 @@ async function handleRequest(
     admittedTools: Map<string, RunnerToolDefinition>;
     validators: Map<string, ValidateFunction>;
     rejections: RepeatedToolInputRejectionGuard;
+    diagnoseInputCoercion: (tool: string, callId: string, paths: string[]) => void;
     calls: Map<string, AdmittedCall>;
     controllers: Map<string, AbortController>;
     handler: RunnerToolBridgeOptions["handler"];
@@ -372,9 +393,11 @@ async function handleRequest(
   }
   const callId = context.sessionScope ? sessionKey + rpcIdKey(id) : String(id);
   const callKey = sessionKey + rpcIdKey(id);
-  const args = params.arguments ?? {};
   const validator = context.validators.get(tool);
-  const rejection = validator === undefined || !validator(args)
+  const admitted = admitToolInput(validator, params.arguments ?? {});
+  const { args } = admitted;
+  if (admitted.coercedPaths) context.diagnoseInputCoercion(tool, callId, admitted.coercedPaths);
+  const rejection = !admitted.schemaValid
     ? toolInputError(validator, args)
     // The completion tool's yielded-only continuation rule is not part of its
     // advertised schema; some hosts hide a root conditional's arguments.
