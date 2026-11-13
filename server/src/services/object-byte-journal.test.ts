@@ -133,6 +133,65 @@ describe("object byte journal", () => {
     expect(isStorageUnavailableError(failure)).toBe(true);
   }, 40_000);
 
+  it("sends a read again with a fresh deadline when one GET hangs until its deadline", async () => {
+    const s = storage();
+    const journal = createObjectByteJournal({ provider: s.provider, prefix: "company/hung/log" });
+    const claimed = await journal.claim({ assertAuthority: authority });
+    const get = s.provider.getObject;
+    let headReads = 0;
+    s.provider.getObject = async (input) => {
+      if (!input.objectKey.endsWith("/head.json") || ++headReads > 1) return get(input);
+      return withS3FailureDiagnostics("get_object", () => new Promise<never>((_resolve, reject) => {
+        input.signal!.addEventListener("abort", () => {
+          const aborted = new Error("Request aborted");
+          aborted.name = "AbortError";
+          reject(aborted);
+        }, { once: true });
+      }), input.signal);
+    };
+    const current = await journal.head();
+    expect(headReads).toBe(2);
+    expect(current?.etag).toBe(claimed.etag);
+  }, 40_000);
+
+  it("does not send a hung read again after its caller aborts", async () => {
+    const s = storage();
+    const journal = createObjectByteJournal({ provider: s.provider, prefix: "company/hung-stop/log" });
+    await journal.claim({ assertAuthority: authority });
+    let headReads = 0;
+    s.provider.getObject = (input) => {
+      headReads++;
+      return new Promise<never>((_resolve, reject) => {
+        input.signal!.addEventListener("abort", () => reject(input.signal!.reason), { once: true });
+      });
+    };
+    const controller = new AbortController();
+    setTimeout(() => controller.abort(new Error("caller stopped")), 100);
+    await expect(journal.head(controller.signal)).rejects.toThrow("caller stopped");
+    await new Promise((resolve) => setTimeout(resolve, 500));
+    expect(headReads).toBe(1);
+  });
+
+  it("stops sending a read that hangs on every attempt and reports it as a storage outage", async () => {
+    const s = storage();
+    const journal = createObjectByteJournal({ provider: s.provider, prefix: "company/hung-always/log" });
+    await journal.claim({ assertAuthority: authority });
+    let headReads = 0;
+    s.provider.getObject = (input) => {
+      headReads++;
+      return withS3FailureDiagnostics("get_object", () => new Promise<never>((_resolve, reject) => {
+        input.signal!.addEventListener("abort", () => {
+          const aborted = new Error("Request aborted");
+          aborted.name = "AbortError";
+          reject(aborted);
+        }, { once: true });
+      }), input.signal);
+    };
+    const failure = await journal.head().catch((error: unknown) => error);
+    expect(headReads).toBe(3);
+    expect(isStorageUnavailableError(failure)).toBe(true);
+  }, 70_000);
+
   it("keeps a shared capability probe alive for another writer when one claim cancels", async () => {
     const s = storage();
     const put = s.provider.putObjectConditional!;
