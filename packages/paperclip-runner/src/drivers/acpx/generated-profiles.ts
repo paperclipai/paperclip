@@ -93,7 +93,7 @@ export const QUALIFIED_ACPX_PROFILE_DATA = {
     "agentServerVersion": "1.6.2",
     "agentRuntimePackage": "@openai/codex",
     "agentRuntimeVersion": "0.160.0",
-    "commandDigest": "sha256:443491f4e814501a5dc47347e4510e84faeec9c9382e2d4e53bfe69386d5aabc",
+    "commandDigest": "sha256:bfdc7d42ac38cc18514ffb6f33590b84aed85f582c556b71bb929f377b4dacac",
     "permissionPolicy": "interactive"
   },
   "kimi": {
