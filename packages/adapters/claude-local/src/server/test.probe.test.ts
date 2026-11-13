@@ -714,8 +714,6 @@ describe("claude hello probe edge rejections", () => {
       environmentName: "Daytona",
     });
 
-    // The server invalidates a tested credential only for an auth-required
-    // check. An edge rejection must not produce one.
     expect(result.checks.some((check) => /_hello_probe_auth_required$/.test(check.code))).toBe(false);
     expect(result.checks.some((check) => check.code === "adapter_auth_missing")).toBe(false);
     const edge = result.checks.find((check) => check.code === "claude_hello_probe_edge_rejected");
