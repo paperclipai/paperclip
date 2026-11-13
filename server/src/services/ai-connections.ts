@@ -615,7 +615,7 @@ export function aiConnectionService(db: Db) {
     } else {
       value = await secrets.resolveSecretValue(row.connection.companyId, secret.id, "latest", context);
     }
-    // Resolution records lastResolvedAt and can wait behind a rotating writer.
+    // Resolution waits behind a rotating writer (a share lock on the secret).
     // Re-read after that wait instead of handing a run the pre-rotation token.
     const [latest] = await db.select().from(companySecrets).where(and(
       eq(companySecrets.id, secret.id), eq(companySecrets.companyId, row.connection.companyId),
