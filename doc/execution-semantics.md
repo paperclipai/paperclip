@@ -1793,10 +1793,13 @@ identity, authority or integrity refusal, the run records
 `adoptedRunnerUnanswered` on its failure and the next claim carries
 `replaceUnansweredRunner`. That attempt does not adopt the Runner again. After
 the usual identity checks it launches a fresh Runner from the Runner's saved
-journal and resumes the provider session from the saved checkpoint, whether the
-old Runner is still alive or has exited mid-turn. The launch fence stops the old
-`paperclip-runnerd` on that state folder and its whole process lineage, and
-fails the launch closed when it cannot prove them gone. The fresh Runner
+journal and resumes the provider session from the saved checkpoint. This applies
+only while the old Runner is alive: the launch fence stops that
+`paperclip-runnerd` on the state folder and its whole process lineage, and fails
+the launch closed when it cannot prove them gone. A Runner that already exited
+mid-turn can leave provider or tool processes that the fence cannot find, so it
+keeps the fail-closed path below, and the task continues in a fresh session from
+the saved work. The fresh Runner
 restores the provider thread; its in-flight turn is reconciled from history and
 never submitted again. The provider attempt budget still bounds these attempts.
 
@@ -5921,9 +5924,9 @@ Runner's saved state is read again. If that state has the same six identity fiel
 lifecycle `suspended`, an empty outbox and no pending terminal delivery, provider
 cleanup or warm transition, the retry launches a Runner from that state instead
 of adopting one. This matches a settled staged source. Any other exit stays
-fail-closed for reconciliation, except a Runner that left the previous attempt's
-recovery read unanswered (see above), and the provider attempt budget still
-bounds the retries.
+fail-closed for reconciliation, and the provider attempt budget still bounds the
+retries. A live Runner that left the previous attempt's recovery read unanswered
+is replaced, not adopted (see above).
 The final admitted provider attempt may use this path; attempts above the limit
 cannot. Process verification and the final state read share one recovery
 deadline. A timeout, command failure, transport failure or invalid saved JSON on

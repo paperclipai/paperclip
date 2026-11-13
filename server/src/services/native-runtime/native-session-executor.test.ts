@@ -1157,15 +1157,13 @@ describe("remote controller restart adoption", () => {
         runId: "run", normalizedSessionId: "session", providerAttempt: 2 });
       expect(adopted?.pid).toBe(123);
     });
-    it("launches a fresh Runner over the saved journal of an unanswered Runner that exited mid-turn", async () => {
-      await expect(verifyRemoteRunnerOrSettledExit({ claim: unanswered, target: exitedRunner(midTurn) as never, identity,
-        runId: "run", normalizedSessionId: "session", providerAttempt: 3 })).resolves.toBeUndefined();
-    });
     it.each([
-      ["a different Runner's saved state", { ...midTurn, runnerInstanceId: "different" }, 3],
+      ["a mid-turn exit whose provider and tools may survive it", midTurn, 3],
+      ["a pending provider cleanup", { ...midTurn, pendingProviderCleanup: { pid: 7 } }, 3],
       ["an exhausted attempt budget", midTurn, 4],
-    ] as const)("keeps an exited unanswered Runner fail-closed for %s", async (_case, afterExit, providerAttempt) => {
-      const error = await verifyRemoteRunnerOrSettledExit({ claim: unanswered, target: exitedRunner(midTurn, afterExit) as never,
+    ] as const)("never resumes beside an exited unanswered Runner's lineage: %s", async (_case, state, providerAttempt) => {
+      const target = exitedRunner(state);
+      const error = await verifyRemoteRunnerOrSettledExit({ claim: unanswered, target: target as never,
         identity, runId: "run", normalizedSessionId: "session", providerAttempt }).catch(caught => caught);
       expect(readRemoteRunnerRecoveryError(error)).toMatchObject({ stage: "process_verification", reason: "process_not_running" });
     });

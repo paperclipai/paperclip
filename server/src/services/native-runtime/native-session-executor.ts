@@ -15301,13 +15301,11 @@ export async function verifyRemoteRunnerOrSettledExit(
     const exitedBeforeSessionOpen = input.claim.exitedBeforeSessionOpen === true;
     if (input.providerAttempt > NATIVE_PROVIDER_RECOVERY_ATTEMPT_LIMIT || diagnostic?.stage !== "process_verification" ||
         diagnostic.reason !== "process_not_running" ||
-        (!exitedBeforeSessionOpen && !replaceUnanswered
-          && (diagnostic.runnerLifecycle !== "suspended" || diagnostic.runnerSettled !== true)) ||
+        (!exitedBeforeSessionOpen && (diagnostic.runnerLifecycle !== "suspended" || diagnostic.runnerSettled !== true)) ||
         target?.kind !== "remote" || target.transport !== "sandbox" || !target.runner) throw error;
     const state = await readRemoteRunnerState({ runner: target.runner,
       stateDirectory: remoteRunnerStateDirectory(target.remoteCwd, input.normalizedSessionId), recoveryDeadline, stall });
     if (REMOTE_RUNNER_IDENTITY_FIELDS.some(field => state[field] !== input.identity[field])) throw error;
-    if (replaceUnanswered) return undefined;
     if (exitedBeforeSessionOpen ? !runnerStateAllowsFreshStart(state)
       : state.lifecycle !== "suspended" || !describeExitedRemoteRunner(state).runnerSettled) throw error;
     return undefined;
