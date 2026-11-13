@@ -16155,23 +16155,24 @@ async function createRunnerdBackendWithinSessionClaim(
   if (nativeReview && !await getNativeReviewAssignment(input.db, {
     ...input.execution.binding, contextSnapshot: nativeReview,
   })) throw new Error("native_review_assignment_no_longer_available");
-  // Codex and OpenCode send dynamic tool calls over authenticated PRP. Keep
+  // Native harnesses send dynamic tool calls over authenticated PRP. Keep
   // the assigned gateway on the control plane instead of asking the sandbox to
   // reach the host's HTTP origin (which may be private or loopback-only).
-  const relayAssignedMcp = Boolean(pluginTask) || input.execution.provider.kind === "cursor_cloud" || input.execution.provider.kind === "opencode" || (remoteTarget !== null && input.execution.provider.kind === "codex") || input.execution.schema === "paperclip.native-execution-input.v6";
   const assignedMcpUrl = input.runnerEnvironment?.PAPERCLIP_NATIVE_MCP_URL;
   const assignedMcpToken = input.runnerEnvironment?.PAPERCLIP_NATIVE_MCP_TOKEN;
   const assignedMcpName = input.runnerEnvironment?.PAPERCLIP_NATIVE_MCP_NAME;
   const hasAssignedMcp = Boolean(assignedMcpName || assignedMcpUrl || assignedMcpToken);
-  if (relayAssignedMcp && hasAssignedMcp && (!assignedMcpName?.trim() || !assignedMcpUrl?.trim() || !assignedMcpToken?.trim())) {
+  if (hasAssignedMcp && (!assignedMcpName?.trim() || !assignedMcpUrl?.trim() || !assignedMcpToken?.trim())) {
     throw new Error("assigned native MCP launch binding is incomplete");
   }
-  const assignedGatewayPublicId = relayAssignedMcp && assignedMcpUrl
+  const assignedGatewayPublicId = assignedMcpUrl
     ? new URL(assignedMcpUrl).pathname.match(/^\/mcp\/gateways\/([a-zA-Z0-9_-]+)$/)?.[1]
     : undefined;
-  if (relayAssignedMcp && hasAssignedMcp && !assignedGatewayPublicId) {
+  if (hasAssignedMcp && !assignedGatewayPublicId) {
     throw new Error("assigned native MCP gateway path is invalid");
   }
+  const firstPartyOnly = input.execution.provider.kind === "grok_bot";
+  const museRuntime = input.execution.provider.kind === "muse";
   let durableState: ReturnType<typeof readDurableState> | undefined;
   let pluginTaskOwner: ReturnType<typeof preparePluginTaskOwner> | undefined;
   const earlyPluginTaskOwner = pluginTask && remoteTarget?.transport === "sandbox" && input.beginRetainedRunAttachment
@@ -16180,7 +16181,7 @@ async function createRunnerdBackendWithinSessionClaim(
     : undefined;
   const [preparedEnvironment, preparedAssignedMcp, preparedPluginTaskOwner] = await Promise.allSettled([
     Promise.resolve().then(() => input.prepareRunnerEnvironment?.() ?? input.runnerEnvironment),
-    Promise.resolve().then(() => relayAssignedMcp && !nativeReview && assignedMcpUrl && assignedMcpToken
+    Promise.resolve().then(() => !nativeReview && !firstPartyOnly && !museRuntime && assignedMcpUrl && assignedMcpToken
       ? timeController("assigned_mcp", () => createAssignedMcpTools({
         gateway: getAssignedMcpGateway(input.db),
         gatewayPublicId: assignedGatewayPublicId!,
@@ -16221,8 +16222,8 @@ async function createRunnerdBackendWithinSessionClaim(
     workspaceBridge: input.execution.schema === "paperclip.native-execution-input.v6" && !!input.dotWorkspaceRoot,
     taskAttachmentRead: dotAttachmentActor?.config.dotAttachmentAccess === true,
     dotRuntime: input.execution.schema === "paperclip.native-execution-input.v6",
-    firstPartyOnly: input.execution.provider.kind === "grok_bot",
-    museRuntime: input.execution.provider.kind === "muse",
+    firstPartyOnly,
+    museRuntime,
     externalAuthorizingUserId: input.execution.provider.kind === "muse"
       ? await museRunnerBroker(input.db).authorizingUserIdForBinding(input.execution.provider.binding) : undefined,
     assertBridgeAuthority: input.execution.schema === "paperclip.native-execution-input.v6" || input.execution.schema === "paperclip.native-execution-input.v8" ? (database = input.db) => assertExternalNativeRunAuthority(input.db, input.execution, database) : undefined,
@@ -17964,13 +17965,11 @@ async function createRunnerdBackendWithinSessionClaim(
     lifecycleMode: input.execution.session.lifecyclePolicy.mode,
   }) : null;
   if (antigravityCredential) effectiveRunnerEnvironmentBase = antigravityCredential.environment;
-  if (relayAssignedMcp) {
-    // The server-held tool authority owns this credential. Do not deliver a
-    // duplicate HTTP MCP server or its bearer token to the remote provider.
-    delete effectiveRunnerEnvironmentBase.PAPERCLIP_NATIVE_MCP_NAME;
-    delete effectiveRunnerEnvironmentBase.PAPERCLIP_NATIVE_MCP_URL;
-    delete effectiveRunnerEnvironmentBase.PAPERCLIP_NATIVE_MCP_TOKEN;
-  }
+  // The server-held tool authority owns this credential. Do not deliver a
+  // duplicate HTTP MCP server or its bearer token to the provider.
+  delete effectiveRunnerEnvironmentBase.PAPERCLIP_NATIVE_MCP_NAME;
+  delete effectiveRunnerEnvironmentBase.PAPERCLIP_NATIVE_MCP_URL;
+  delete effectiveRunnerEnvironmentBase.PAPERCLIP_NATIVE_MCP_TOKEN;
   // This authority bit is derived only from the selected execution target.
   // Never let an agent, environment binding, or host variable disable the
   // Codex sandbox for a local runner by supplying the same key.

@@ -4825,6 +4825,137 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
+    fn next_claude_run_attach_offers_relayed_gateway_tools_to_a_direct_gateway_checkpoint() {
+        next_run_attach_offers_relayed_gateway_tools("claude");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn next_pi_run_attach_offers_relayed_gateway_tools_to_a_direct_gateway_checkpoint() {
+        next_run_attach_offers_relayed_gateway_tools("pi");
+    }
+
+    #[cfg(unix)]
+    fn next_run_attach_offers_relayed_gateway_tools(agent: &str) {
+        let directory = temporary_directory(&format!("relayed-gateway-attach-{agent}"));
+        let runtime = directory.join("runtime");
+        let workspace = directory.join("workspace");
+        fs::create_dir_all(&runtime).unwrap();
+        fs::create_dir_all(&workspace).unwrap();
+        fs::set_permissions(&runtime, fs::Permissions::from_mode(0o700)).unwrap();
+        fs::set_permissions(&workspace, fs::Permissions::from_mode(0o700)).unwrap();
+        let marker = directory.join("provider-started");
+        let command = directory.join("sidecar");
+        write_artifact(
+            &command,
+            format!("#!/bin/sh\ntouch '{}'\n", marker.display()).as_bytes(),
+            true,
+        );
+        let launch_profile = AcpxLaunchProfile {
+            candidate_admission: None,
+            authority_digest: format!("sha256:{}", "d".repeat(64)),
+            command: command.clone(),
+            args: Vec::new(),
+            artifacts: vec![artifact(&command)],
+        };
+        let mut descriptor_value = descriptor(agent);
+        descriptor_value["sidecarCommand"] = json!(command);
+        descriptor_value["sidecarArgs"] = json!([]);
+        descriptor_value["runtimeDirectory"] = json!(runtime);
+        descriptor_value["cwd"] = json!(workspace);
+        descriptor_value["runtimeContext"] = json!({
+            "aggregateDigest": "a".repeat(64),
+            "prompt": {"revision": "pinned", "digest": "b".repeat(64)},
+            "mcp": {"assignmentSetId": "assignment-1", "digest": "e".repeat(64), "bindingId": "old-run-binding"},
+        });
+        let saved_descriptor: AcpxProviderDescriptor =
+            serde_json::from_value(descriptor_value.clone()).unwrap();
+        let identity = AcpxProviderSessionIdentity {
+            kind: "acpx".to_owned(),
+            normalized_session_id: "session-1".to_owned(),
+            acpx_record_id: "record-1".to_owned(),
+            backend_session_id: "backend-1".to_owned(),
+            agent_session_id: "agent-1".to_owned(),
+            profile_digest: saved_descriptor.command_digest.clone(),
+            workspace_digest: format!("sha256:{}", "a".repeat(64)),
+            requested_model: saved_descriptor.model.clone(),
+            effective_model: saved_descriptor.model.clone(),
+            permission_mode: Some(saved_descriptor.permission_mode),
+            mode: saved_descriptor.mode.clone(),
+            pi_thinking_level: saved_descriptor.pi_thinking_level,
+            claude_effort: saved_descriptor.claude_effort.clone(),
+            grok_effort: saved_descriptor.grok_effort.clone(),
+            grok_disable_web_search: saved_descriptor.grok_disable_web_search.clone(),
+            provider_lifetime_fence_candidates: [60_001, 60_002, 60_003],
+        };
+        let tool = |operation_id: &str| crate::provider_bridge::AuthorizedTool {
+            operation_id: operation_id.to_owned(),
+            version: 1,
+            description: format!("{operation_id} fixture"),
+            input_schema: json!({"type": "object"}),
+            response_schema: json!({"type": "object"}),
+        };
+        let tool_set =
+            |operations: Vec<crate::provider_bridge::AuthorizedTool>| AuthorizedToolSet {
+                schema: TOOL_SET_SCHEMA.to_owned(),
+                schema_version: 1,
+                catalog_digest: authorized_tool_catalog_digest(&operations).unwrap(),
+                operations,
+            };
+        let direct_gateway_tools = tool_set(vec![tool("get_task_context")]);
+        let relayed_tools = tool_set(vec![
+            tool("app_linear_create_issue_0123456789ab"),
+            tool("get_task_context"),
+        ]);
+        let mut state = AcpxDurableState::new(
+            saved_descriptor,
+            direct_gateway_tools,
+            launch_profile.canonical_digest().unwrap(),
+        );
+        state.lifecycle = "session_open".to_owned();
+        state.identity = Some(identity);
+        let saved_config = test_config(&directory, Some(launch_profile.clone()));
+        let mut saved = AcpxCommandExecutor::with_runner_config(&directory, &saved_config);
+        saved.state = Some(state);
+        saved.save_state().unwrap();
+
+        let mut next_config = saved_config.clone();
+        next_config.run_id = "run-2".to_owned();
+        let mut next = AcpxCommandExecutor::with_runner_config(&directory, &next_config);
+        next.restore().unwrap();
+        descriptor_value["runId"] = json!("run-2");
+        descriptor_value["runtimeContext"]["mcp"]["bindingId"] = json!("new-run-binding");
+        next.attach_run(&json!({
+            "provider": descriptor_value,
+            "authorizedTools": relayed_tools,
+        }))
+        .unwrap();
+        assert!(!marker.exists());
+        let attached = next.state.as_ref().unwrap();
+        assert_eq!(attached.descriptor.run_id, "run-2");
+        assert_eq!(attached.lifecycle, "suspended");
+        assert_eq!(attached.tool_set, relayed_tools);
+        let persisted: AcpxDurableState =
+            serde_json::from_slice(&fs::read(next.state_path()).unwrap()).unwrap();
+        assert_eq!(persisted.tool_set, relayed_tools);
+        let session_config = attached
+            .descriptor
+            .session_config(
+                attached.tool_set.clone(),
+                attached.identity.clone(),
+                Some(&launch_profile),
+            )
+            .unwrap();
+        assert!(session_config
+            .tool_set
+            .operations
+            .iter()
+            .any(|operation| operation.operation_id == "app_linear_create_issue_0123456789ab"));
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
     fn cursor_attachment_rotates_only_authenticated_run_grants() {
         authenticated_run_grant_attachment("cursor");
     }
