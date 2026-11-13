@@ -57,6 +57,8 @@ import { resolveManagedOpenAiBilling } from "@paperclipai/adapter-utils";
 import { and, eq, isNull, sql } from "drizzle-orm";
 import { heartbeatRuns, nativeRunFinalizations, workspaceOperations } from "@paperclipai/db";
 import { conflict } from "../../errors.js";
+import { RunCancellationRequestedError } from "../budget-reservations.js";
+import { readRunCancellation } from "../run-cancellation.js";
 import { getStartupTraceContext } from "../../instrumentation.js";
 import { logger } from "../../middleware/logger.js";
 import {
@@ -262,7 +264,18 @@ export async function executeHeartbeatRuntime(db: Db, input: HeartbeatRuntimeExe
       return { dispatched: false };
     }
     const providerDispatch = AsyncLocalStorage.bind(dispatch);
-    return measureRunPhase("execution.dispatch_admission", () => dispatchResolvedInteractionContinuationWithAtomicGate(providerDispatch));
+    try {
+      return await measureRunPhase("execution.dispatch_admission", () => dispatchResolvedInteractionContinuationWithAtomicGate(providerDispatch));
+    } catch (error) {
+      if (!(error instanceof RunCancellationRequestedError) || error.runtimeMode !== "native") throw error;
+      // A native Stop can stay pending while no session exists to receive it.
+      // Settle the recorded Stop here so it ends cancelled, not failed. The
+      // running guard keeps its recorded cancellation and leaves a run the
+      // original Stop already settled.
+      const recorded = (await input.services.getRun(run.id))?.resultJson;
+      await input.services.cancelRunInternal(run.id, readRunCancellation(recorded)?.reason, { expectedStatus: "running" });
+      return { dispatched: false };
+    }
   };
   const { identityRedactor, appendIdentityRedactedLog, onLog, onAdapterEvent, onAdapterMeta } = input.output;
   const { executionWorkspacesSvc, instanceSettings, envOrchestrator, upsertTaskSession, getRun, cancelRunInternal, enqueueWakeup, persistRunProcessMetadata, recordCurrentHeartbeatRunRuntimeProgress, dispatchPendingNativeStatusWakeups } = input.services;
