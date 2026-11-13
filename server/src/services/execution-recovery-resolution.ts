@@ -38,6 +38,7 @@ import { hasRequiredWorkspaceRecovery } from "./workspace-restore-recovery-state
 import { hasRemoteTerminationReceipt } from "./remote-execution-termination.js";
 import { readSystemRecovery } from "./system-recovery-state.js";
 import { provenGoneLegacyControllerBootId } from "./legacy-controller-lease.js";
+import { automaticRunCreationHeldUntil } from "./recovery/automatic-run-brake.js";
 import { continueFreshInTransaction, continueHeldExecutions, freshContinuationCheckDue, recordFreshContinuationCheck,
   settleCoalescedFreshContinuationHolds } from "./fresh-continuation-fallback.js";
 import { alias } from "drizzle-orm/pg-core";
@@ -458,6 +459,7 @@ export async function deliverReconciledExecutions(
       sql`${issueRecoveryActions.evidence}->>'continuationDelivery' = 'pending'`,
     ));
   const agentHasRoom = async (action: typeof issueRecoveryActions.$inferSelect, agentId: string, kind: ContinuationClass) => {
+    if (await automaticRunCreationHeldUntil(db, action.companyId)) return false;
     if ((admittedByCompany.get(action.companyId) ?? 0) >= companyLimit) return false;
     if (kind === "fresh") return true;
     const [agent] = await db.select().from(agents).where(and(eq(agents.companyId, action.companyId), eq(agents.id, agentId)));

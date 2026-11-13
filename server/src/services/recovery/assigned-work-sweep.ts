@@ -32,6 +32,7 @@ import { onboardingFirstTaskAwaitingUserSql } from "./onboarding-first-task-wait
 import { PENDING_CONTINUATION_BOUND_MS } from "../recovery-continuation-pacing.js";
 import { attributeBlock, BLOCK_ATTRIBUTION_WINDOW_MS, blockedStatusDetailsSql } from "../interruption-block-release.js";
 import { ASSIGNED_WORK_CONTINUED_ACTION, taskAutomaticAttempts } from "./task-automatic-attempts.js";
+import { automaticRunCreationHeldUntil, readAutomaticWorkStatus } from "./automatic-run-brake.js";
 import { STRANDED_CONTINUATION_MAX_AGE_MS, STRANDED_KIND, strandedHoldContinuesAutomatically, type StrandedHoldRun } from "./stranded-hold-continuation.js";
 import {
   continuationActivityMessage,
@@ -526,6 +527,8 @@ export function assignedWorkSweep(db: Db, deps: AssignedWorkDeps) {
       await deps.settleLostRunProcess?.({ companyId: issue.companyId, runId: verdict.runId! });
       return { verdict, outcome: "settled_lost_run", retryAt: new Date(at.getTime() + 90_000) };
     }
+    const heldUntil = facts.latestRun ? await automaticRunCreationHeldUntil(db, issue.companyId) : null;
+    if (heldUntil) return { verdict, outcome: "deferred_rate_limit", retryAt: heldUntil };
     // A small process-wide budget keeps a post-deploy backlog from starting
     // hundreds of runs at once. Deferred tasks come back on their deadline.
     const minuteAgo = at.getTime() - 60_000;
@@ -753,7 +756,7 @@ export function assignedWorkSweep(db: Db, deps: AssignedWorkDeps) {
     const queuedByAgent = new Map(queuedRows.map(row => [row.agentId, Number(row.queuedRuns)]));
     const slotRows = stalledRows.map(row => ({ agentName: row.agentName, stalledRuns: Number(row.stalledRuns),
       queuedRuns: queuedByAgent.get(row.agentId) ?? 0 }));
-    return { ...summary, agentsWithStalledSlots: slotRows };
+    return { ...summary, agentsWithStalledSlots: slotRows, automaticWork: await readAutomaticWorkStatus(db, companyId) };
   }
 
   return { checkIssue, listSuspects, report, loadFacts, flushPassLog: passLog.flush };
