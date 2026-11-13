@@ -3294,7 +3294,7 @@ describeEmbeddedPostgres("tool gateway service", () => {
     const calls = provider.mock.calls.map(([, init]) => JSON.parse(String(init.body)))
       .filter((payload) => payload.method === "tools/call");
     expect(calls).toHaveLength(1);
-    expect(calls[0].params).toEqual({ name: "search_messages", arguments: parameters });
+    expect(calls[0].params).toEqual({ name: "search_messages", arguments: parameters, _meta: { progressToken: expect.stringMatching(/^paperclip-progress-/) } });
   });
 
   it("explains Google Workspace preview enrollment when a tool call is denied", async () => {

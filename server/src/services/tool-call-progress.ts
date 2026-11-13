@@ -29,7 +29,7 @@ export interface ToolCallProgressReporter {
   /** Sent as the request's `_meta.progressToken`. */
   readonly token: string;
   /** Records a provider update. Never throws, never blocks. */
-  report(update: { progress: unknown; total: unknown; message: unknown }): void;
+  report(update: { progress: unknown; total?: unknown; message?: unknown }): void;
   /** The call ended: stop timers and tell viewers to drop the progress. */
   finish(): void;
 }
