@@ -2107,6 +2107,7 @@ export class DurablePrpControlPlane {
   #semanticCallbacksRetired = false;
   #queuedCommandResults = new Map<string, { count: number; queuedAt: number }>();
   #inboundFrameSettledAt = 0;
+  #eventCommittedAt: number | null = null;
   #semanticResultPersistenceFailed = false;
   #semanticResultFailures: Array<{
     callId: string;
@@ -2713,6 +2714,10 @@ export class DurablePrpControlPlane {
   queuedCommandResultProgressAt(commandId: string): number | null {
     const queued = this.#queuedCommandResults.get(commandId);
     return queued === undefined ? null : Math.max(queued.queuedAt, this.#inboundFrameSettledAt);
+  }
+
+  committedEventProgressAt(): number | null {
+    return this.#eventCommittedAt;
   }
 
   withdrawUndeliveredTerminalCommands(): string[] {
@@ -4608,6 +4613,7 @@ export class DurablePrpControlPlane {
       }
     }
     if (!isCurrentOwner()) return;
+    this.#eventCommittedAt = Date.now();
 
     const liveCall = !this.#retainsSourceInputs() && isSemanticInput && this.#onSemanticToolInput && semantic !== undefined
       && typeof semantic.callId === "string" && typeof semantic.operationId === "string"
