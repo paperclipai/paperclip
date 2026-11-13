@@ -1,5 +1,5 @@
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -110,6 +110,89 @@ describe("Runner image workflow", () => {
       expect(commands[1]).not.toContain("--cache-from");
       for (const command of commands) expect(command).not.toContain("--no-cache");
     }
+  });
+
+  const buildSteps = steps(jobs.build);
+  function stepWith(text: string) {
+    const found = buildSteps.filter((step) => step.includes(text));
+    expect(found, text).toHaveLength(1);
+    return found[0];
+  }
+  const stepScript = (step: string) => /\n {8}run: \|\n((?: {10}.*\n|\n)+)/.exec(`${step}\n`)![1];
+  const basePull = stepWith("--target smoke-bases");
+  const smokeRun = stepWith('--build-context "runner-artifacts=');
+  const hasTimeout = spawnSync("timeout", ["5", "true"]).status === 0;
+  function runSmokeSteps({ pull, matrix }: { pull: number; matrix: number }) {
+    const directory = mkdtempSync(path.join(os.tmpdir(), "runner-image-smoke-"));
+    const shell = (script: string) => spawnSync("bash", ["--noprofile", "--norc", "-e", "-c", script], {
+      cwd: directory,
+      encoding: "utf8",
+      env: { PATH: `${directory}${path.delimiter}${process.env.PATH}`, RUNNER_TEMP: directory, PLATFORM: "linux/amd64",
+        PULL_STATUS: String(pull), MATRIX_STATUS: String(matrix) },
+    });
+    try {
+      writeFileSync(path.join(directory, "docker"), [
+        "#!/bin/sh",
+        'case " $* " in',
+        '  *" --target smoke-bases "*) i=0; while [ ! -e "$RUNNER_TEMP/release" ] && [ "$i" -lt 50 ]; do sleep 0.1; i=$((i + 1)); done',
+        '    sleep 1; echo "background pull output"',
+        '    printf \'pull %s\\n\' "$*" >> "$RUNNER_TEMP/docker.log"; exit "$PULL_STATUS" ;;',
+        '  *) mkdir -p "$RUNNER_TEMP/runner-image/smoke"; printf \'matrix %s\\n\' "$*" >> "$RUNNER_TEMP/docker.log"; exit "$MATRIX_STATUS" ;;',
+        "esac",
+        "",
+      ].join("\n"), { mode: 0o755 });
+      if (!hasTimeout) {
+        writeFileSync(path.join(directory, "timeout"), '#!/bin/sh\nwhile [ "$1" != docker ]; do shift; done\nexec "$@"\n', { mode: 0o755 });
+      }
+      const started = shell(stepScript(basePull));
+      expect(started.status, started.stderr).toBe(0);
+      expect(started.stdout).toBe("");
+      const pullWasRunning = !existsSync(path.join(directory, "docker.log"));
+      writeFileSync(path.join(directory, "release"), "");
+      const smokeStep = shell(stepScript(smokeRun));
+      return { status: smokeStep.status, output: smokeStep.stdout, pullWasRunning,
+        commands: readFileSync(path.join(directory, "docker.log"), "utf8").trimEnd().split(directory).join("RUNNER_TEMP").split("\n") };
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  }
+
+  const pullCommand = "pull buildx build --file docker/runner-image/Dockerfile.smoke --target smoke-bases --platform linux/amd64 --output type=cacheonly docker/runner-image";
+  const matrixCommand = "matrix buildx build --file docker/runner-image/Dockerfile.smoke --platform linux/amd64"
+    + " --build-context runner-artifacts=RUNNER_TEMP/runner-image/slim --output type=local,dest=RUNNER_TEMP/runner-image/smoke docker/runner-image";
+
+  it("pulls the smoke bases in the background, with a time limit, no credential, no Runner image and no registry write", () => {
+    expect(basePull).not.toMatch(credential);
+    expect(basePull).toMatch(/^ {8}if: steps\.published\.outputs\.exists != 'true'$/m);
+    const script = stepScript(basePull);
+    expect(script).toMatch(/^ +timeout --kill-after=\d+ \d+ docker buildx build \\$/m);
+    expect(script.match(/docker /g)).toHaveLength(1);
+    expect(script).toMatch(/\) > "\$RUNNER_TEMP\/smoke-bases\.log" 2>&1 < \/dev\/null &\n/);
+    const run = runSmokeSteps({ pull: 0, matrix: 0 });
+    expect(run.pullWasRunning).toBe(true);
+    expect(run.status, run.output).toBe(0);
+    expect(run.commands).toEqual([pullCommand, matrixCommand]);
+    expect(run.output).toContain("background pull output\n");
+    expect(run.output).not.toContain("::warning");
+  });
+
+  it("runs the whole smoke matrix itself, and passes on its result, when the background pull did not pass", () => {
+    const run = runSmokeSteps({ pull: 124, matrix: 0 });
+    expect(run.status, run.output).toBe(0);
+    expect(run.commands).toEqual([pullCommand, matrixCommand]);
+    expect(run.output).toContain("::warning title=Smoke base images::The background pull ended with status 124.");
+  });
+
+  it("fails the smoke step when the matrix fails, and writes the record that publication needs only after that step", () => {
+    const run = runSmokeSteps({ pull: 0, matrix: 1 });
+    expect(run.status).toBe(1);
+    expect(run.commands).toEqual([pullCommand, matrixCommand]);
+    const record = stepWith("runner-image-publish.mjs record");
+    const order = [stepWith("docker/setup-buildx-action@"), basePull, stepWith('--target "$target"'), smokeRun, record, stepWith("upload-artifact@")]
+      .map((step) => buildSteps.indexOf(step));
+    expect([...order].sort((a, b) => a - b)).toEqual(order);
+    for (const step of [smokeRun, record]) expect(step).toMatch(/^ {8}if: steps\.published\.outputs\.exists != 'true'$/m);
+    expect(jobs.publish).toContain("runner-image-publish.mjs verify-legs");
   });
 
   it("publishes, and keeps the images for publication, only for a master push in the canonical repository", () => {
