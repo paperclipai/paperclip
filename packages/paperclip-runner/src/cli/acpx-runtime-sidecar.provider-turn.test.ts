@@ -29,7 +29,7 @@ const completedCycle = {
     cost: { amount: 0.5, currency: "USD" }, breakdown: { inputTokens: 6, outputTokens: 4, cachedReadTokens: 0, cachedWriteTokens: 0 } } },
 };
 
-async function open(scenario: { agent?: "claude" | "codex"; turns: unknown[]; host?: string }) {
+async function open(scenario: { agent?: "claude" | "codex"; turns: unknown[]; host?: string; overlap?: boolean }) {
   const root = mkdtempSync(join(tmpdir(), "acpx-provider-turn-"));
   const loader = join(root, "loader.mjs");
   const fixture = new URL(`../test-support/${scenario.host ?? "acpx-provider-turn-host.mjs"}`, import.meta.url);
@@ -230,6 +230,29 @@ describe("ACPX sidecar provider-started Claude turns", () => {
       await unarmed.send("session.snapshot", {});
       expect(unarmed.sidecar.pending(frame => frame.eventType === "runtime.diagnostic" && payload(frame).code === "ACPX_PROVIDER_PROCESS_LOST")).toBe(0);
     } finally { await unarmed.cleanup(); }
+  }, 20_000);
+
+  it("binds a later cycle's tool call to that cycle, not to an earlier cycle adopted first", async () => {
+    const { sidecar, send, release, cleanup } = await open({ turns: [], host: "acpx-provider-turn-tracked-host.mjs", overlap: true });
+    try {
+      await send("turn.start", { turnId: "turn-1", message: "Start two background commands." });
+      const first = await sidecar.next(frame => frame.eventType === "runtime.turn_terminal" && frame.turnId === "turn-1");
+      expect(payload(first)).toMatchObject({ status: "completed", backgroundTasks: { live: 2 } });
+      release("cycles");
+      await new Promise(resolve => setTimeout(resolve, 200));
+      expect(sidecar.pending(frame => frame.eventType === "runtime.tool_called")).toBe(0);
+      expect(await send("session.provider_turn", { turnId: "turn-1", armed: true })).toEqual({ armed: true });
+      const cycleOne = await sidecar.next(frame => frame.eventType === "runtime.turn_terminal" && frame.turnId === "provider-1");
+      expect(payload(cycleOne)).toMatchObject({ status: "completed", backgroundTasks: { live: 1 } });
+      expect(sidecar.pending(frame => frame.eventType === "runtime.tool_called")).toBe(0);
+      expect(await send("session.provider_turn", { turnId: "provider-1", armed: true })).toEqual({ armed: true });
+      await sidecar.next(frame => frame.eventType === "runtime.turn_started" && frame.turnId === "provider-2");
+      const called = await sidecar.next(frame => frame.eventType === "runtime.tool_called");
+      expect(called).toMatchObject({ turnId: "provider-2", payload: { callId: "tool-use:toolu_01Later", operationId: "call_api" } });
+      await send("tool.resolve", { turnId: "provider-2", callId: "tool-use:toolu_01Later", result: { ok: true } });
+      release("later-end");
+      await sidecar.next(frame => frame.eventType === "runtime.turn_terminal" && frame.turnId === "provider-2");
+    } finally { await cleanup(); }
   }, 20_000);
 
   it("reports the second shell live at the first cycle's terminal and an unknown state after the second cycle", async () => {

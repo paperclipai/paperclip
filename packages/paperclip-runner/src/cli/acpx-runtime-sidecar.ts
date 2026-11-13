@@ -1012,7 +1012,7 @@ function claudeBackgroundTasks(activeHost: AcpxRuntimeHost): GeneratedAcpxBackgr
 }
 
 async function waitForTool(call: RunnerToolCall, internal = false): Promise<unknown> {
-  const cycleDecision = providerCycles?.undecided();
+  const cycleDecision = providerCycles?.decisionFor(call.providerToolUseId);
   if (cycleDecision) await cycleDecision;
   const activeTurnId = turnId;
   const activeRunId = runId;

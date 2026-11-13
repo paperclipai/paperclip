@@ -169,7 +169,6 @@ export interface AcpxProviderCycleStream {
   adopt(binding: AcpxProviderTurnBinding): boolean;
   drop(): void;
   cancel(): boolean;
-  undecided(): Promise<boolean> | null;
   decisionFor(toolCallId: unknown): Promise<boolean> | null;
 }
 

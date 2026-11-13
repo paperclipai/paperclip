@@ -79,7 +79,7 @@ class Cycles {
     return true;
   }
 
-  undecided() {
+  decisionFor() {
     return this.decision?.promise ?? null;
   }
 }
@@ -141,7 +141,7 @@ export class AcpxRuntimeHost extends Base {
           .then((value) => note(`call:${step.toolUseId}`, value), (error) => note(`call:${step.toolUseId}`, `error:${error.message}`));
       }
       if (step.permission) {
-        const decided = cycles.undecided();
+        const decided = cycles.decisionFor(step.permission);
         void Promise.resolve(decided ?? true).then((adopted) => adopted && cycles.binding
           ? cycles.binding.onPermissionRequest({ sessionId: "blocked-output-backend", inferredKind: "execute", raw: { sessionId: "blocked-output-backend",
             toolCall: { toolCallId: step.permission, title: "Run a command", kind: "execute" },
