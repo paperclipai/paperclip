@@ -1,5 +1,5 @@
 {
-  "id": "e985dd75-8ab9-430d-a45e-cdcaf208febb",
+  "id": "6f192b40-fdb9-4510-8d73-037c6209eaac",
   "prevId": "a7108924-4d75-41e2-9139-f43f9396c02d",
   "version": "7",
   "dialect": "postgresql",
@@ -61105,8 +61105,27 @@
           "primaryKey": false,
           "notNull": false
         },
+        "lease_owner": {
+          "name": "lease_owner",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "arguments_identity": {
+          "name": "arguments_identity",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
         "answered_input_keys": {
           "name": "answered_input_keys",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'[]'::jsonb"
+        },
+        "surfaced_input_keys": {
+          "name": "surfaced_input_keys",
           "type": "jsonb",
           "primaryKey": false,
           "notNull": true,

@@ -119,9 +119,11 @@ export function backgroundPollDelayMs(input: { pollIntervalMs: number | null; st
 }
 
 /** When Paperclip gives up on a task: the provider's TTL from creation, capped. */
-export function mcpTaskExpiresAt(task: Pick<McpTaskState, "createdAt" | "ttlMs">, now = Date.now()): Date {
+export function mcpTaskExpiresAt(task: Pick<McpTaskState, "createdAt" | "ttlMs">, now = Date.now(), trackedSince?: Date): Date {
   const created = task.createdAt && task.createdAt.getTime() <= now ? task.createdAt.getTime() : now;
-  const limit = now + MCP_TASK_MAX_LIFETIME_MS;
+  // The cap counts from when Paperclip first saw the task, so a provider that
+  // keeps extending its TTL cannot keep it tracked forever.
+  const limit = (trackedSince?.getTime() ?? now) + MCP_TASK_MAX_LIFETIME_MS;
   return new Date(task.ttlMs === null ? limit : Math.min(limit, created + task.ttlMs));
 }
 
@@ -227,9 +229,10 @@ export async function sendMcpTaskRequest(
   if (!response.ok) {
     // A modern server answers an unknown task with a JSON-RPC error, which
     // can arrive with an HTTP error status.
-    const text = await response.text().catch(() => "");
+    // Read at most 64 KiB of a provider-controlled error body, then stop.
+    const text = await readBoundedText(response, 64 * 1024).catch(() => "");
     let payload: Record<string, unknown> | null = null;
-    try { payload = record(JSON.parse(text.slice(0, 64 * 1024))); } catch { /* Not JSON. */ }
+    try { payload = record(JSON.parse(text)); } catch { /* Not JSON, or cut short. */ }
     const error = record(payload?.error);
     if (error && typeof error.code === "number") throw new McpTaskRequestError("rpc", "The app rejected the task request.", response.status, error.code);
     throw new McpTaskRequestError("http", "The app returned an HTTP error for the task request.", response.status);
@@ -241,6 +244,27 @@ export async function sendMcpTaskRequest(
   const result = record(payload.result);
   if (!result) throw new McpTaskRequestError("malformed", "The app returned a malformed task response.");
   return result;
+}
+
+async function readBoundedText(response: Response, maxBytes: number): Promise<string> {
+  const reader = response.body?.getReader();
+  if (!reader) return "";
+  const decoder = new TextDecoder();
+  let text = "";
+  let bytes = 0;
+  try {
+    while (bytes < maxBytes) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      const chunk = value.byteLength + bytes > maxBytes ? value.subarray(0, maxBytes - bytes) : value;
+      bytes += chunk.byteLength;
+      text += decoder.decode(chunk, { stream: true });
+    }
+  } finally {
+    void reader.cancel().catch(() => undefined);
+    reader.releaseLock();
+  }
+  return text;
 }
 
 export async function getMcpTask(transport: McpTaskTransport, taskId: string, signal?: AbortSignal): Promise<McpTaskState> {

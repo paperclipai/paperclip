@@ -43,11 +43,12 @@ Paperclip polls, which the specification makes the default.
 | Record | A returned task is stored before Paperclip waits on it: a `tool_mcp_tasks` row linked to the call, run, task, connection, and grant. | `createMcpTaskRecord` in `server/src/services/tool-gateway.ts` |
 | Wait | The live call polls `tasks/get` at the server's `pollIntervalMs` (kept between 0.2 s and 5 s) until the normal tool timeout. A completed task's `result` then goes through the same validation, redaction, and recording as a direct result. | `waitForMcpTask` |
 | Hand off | If the timeout passes or the caller disconnects, the agent is told the app is still working and to call the tool again with the same arguments. The row keeps the task and background polling takes over. | `provider_task_pending` |
-| Attach | A call with the same endpoint, tool, full arguments, grant, agent, task, and actor attaches to the undelivered task instead of sending `tools/call` again. So does a retry with the same idempotency key. | `findAttachableMcpTask`, `hasAttachableMcpTaskForInvocation` |
-| Restart | Background work reads pending rows at startup and polls each at its next deadline. When a task settles and the run that started it has ended, the assignee is woken once; the agent's repeated call collects the result. | `pollDueMcpTasks`, `server/src/services/mcp-task-work.ts` |
+| Attach | A call with the same endpoint, tool, full arguments, grant, agent, task, and actor attaches to the undelivered task instead of sending `tools/call` again. So does a retry with the same idempotency key, including after a crash mid-wait; the same key with other arguments is refused and leaves the original retry intact. One holder at a time (a lease): a second simultaneous caller is told to call again. | `findAttachableMcpTask`, `mcpTaskForKeyedRetry`, `claimMcpTask` |
+| Deliver | A completed task counts as delivered only once its result is recorded on the call. A crash in between leaves it collectable again. | `markMcpTaskDelivered` |
+| Restart | Background work reads pending rows at startup and polls each at its next deadline, with each request bounded to 30 s. It rechecks the same access a live call needs (grant, audience, delegation). When a task settles, or asks a new question, after its run has ended, the assignee is woken once; the agent's repeated call collects the result or shows the question. | `pollDueMcpTasks`, `server/src/services/mcp-task-work.ts` |
 | Input | URL requests show the provider link, as for a direct request; Paperclip never answers them for the person. Form requests become a question card on the task; only the person's answer is sent with `tasks/update`. Other requests (sampling, roots) stop with a clear "needs input" error. | `planMcpTaskInput` |
-| Cancel | Stopping the run sends `tasks/cancel` and marks the row cancelled. Closing the task or stopping its run does the same for a task in the background. A caller that only disconnects keeps the task. | `cancelMcpTaskRecord`, `mcpTaskStopReason` |
-| Finish | `failed` becomes a tool error with the provider's message. An unknown task (`-32602`) or a passed TTL becomes a clear error telling the agent to run the action again. Nothing waits forever: every task stops being tracked after its TTL, and after seven days at most. | `provider_task_failed`, `provider_task_expired` |
+| Cancel | Stopping the run sends `tasks/cancel` and marks the row cancelled. Closing the task or stopping its run does the same for a task in the background; a later call reports the cancellation and never revives it. A caller that only disconnects keeps the task. | `cancelMcpTaskRecord`, `mcpTaskStopReason` |
+| Finish | `failed` becomes a tool error with the provider's message. An unknown task (`-32602`) or a passed TTL becomes a clear error telling the agent to run the action again. Nothing waits forever: every task stops being tracked after its TTL, and seven days after Paperclip first saw it at most. | `provider_task_failed`, `provider_task_expired` |
 
 ### What is stored
 
@@ -58,9 +59,11 @@ Paperclip polls, which the specification makes the default.
 - No provider result is stored in the task row. The result stays with the
   provider until it is delivered, and the delivered result is recorded on the
   call exactly as a direct result is.
-- A task is read only with the grant that created it. If the grant is revoked,
-  the connection is disabled, or its endpoint changes, background polling stops
-  and the task is reported as no longer available.
+- A task is read only with the grant that created it, after the same access
+  check a live call makes. If that access is removed, the connection is
+  disabled, or its endpoint changes, background polling stops and the task is
+  reported as no longer available.
+- A provider's error body is read only up to 64 KiB.
 
 ### Agent-facing errors
 

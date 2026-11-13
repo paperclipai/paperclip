@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   agents,
+  connectionGrants,
   companies,
   companyMemberships,
   createDb,
@@ -26,6 +27,7 @@ import {
   openMcpTaskId,
   parseMcpTask,
   sealMcpTaskId,
+  sendMcpTaskRequest,
 } from "../services/mcp-tasks.js";
 import { createToolGatewayService } from "../services/tool-gateway.js";
 import { toolAccessService } from "../services/tool-access.js";
@@ -74,6 +76,20 @@ describe("MCP Tasks protocol", () => {
     const now = Date.parse("2026-11-12T00:00:00Z");
     expect(mcpTaskExpiresAt({ createdAt: new Date(now - 1_000), ttlMs: 10_000 }, now).getTime()).toBe(now + 9_000);
     expect(mcpTaskExpiresAt({ createdAt: null, ttlMs: null }, now).getTime()).toBe(now + 7 * 24 * 60 * 60_000);
+    // A TTL extended days later never moves the cap past seven days from when Paperclip first saw the task.
+    const firstSeen = new Date(now - 6 * 24 * 60 * 60_000);
+    expect(mcpTaskExpiresAt({ createdAt: firstSeen, ttlMs: 30 * 24 * 60 * 60_000 }, now, firstSeen).getTime()).toBe(firstSeen.getTime() + 7 * 24 * 60 * 60_000);
+  });
+
+  it("reads at most 64 KiB of a provider's error body", async () => {
+    let pulled = 0;
+    const body = new ReadableStream<Uint8Array>({
+      pull(controller) { pulled += 16 * 1024; controller.enqueue(new Uint8Array(16 * 1024).fill(32)); },
+    });
+    const transport = { headers: async () => ({ "MCP-Protocol-Version": MCP_MODERN_PROTOCOL_VERSION }), maxBytes: 1_000_000,
+      send: async () => new Response(body, { status: 500 }) };
+    await expect(sendMcpTaskRequest(transport, "tasks/get", { taskId: "t1" })).rejects.toMatchObject({ kind: "http", httpStatus: 500 });
+    expect(pulled).toBeLessThanOrEqual(128 * 1024);
   });
 
   it("seals task IDs at rest and binds them to their company and connection", () => {
@@ -183,6 +199,8 @@ function taskServer() {
     requests, tasks, handle, only,
     count: (method: string) => requests.filter((request) => request.method === method).length,
     finish: () => { only().task.status = "completed"; },
+    /** The running task now needs a person's answer. */
+    ask: () => Object.assign(only().task, { status: "input_required", awaiting: ["who"], inputRequests: { who: { method: "elicitation/create", params: { mode: "form", message: "Who is deploying?", requestedSchema: { type: "object", properties: { name: { type: "string" } } } } } } }),
     forget: () => { forgetAll = true; },
   };
 }
@@ -449,6 +467,94 @@ const support = await getEmbeddedPostgresTestSupport();
     await expect(two.call("short_lived", { timeoutMs: 5_000 })).rejects.toMatchObject({ reasonCode: "provider_task_expired" });
     expect(Date.now() - started).toBeLessThan(3_000);
     expect((await two.rows())[0]).toMatchObject({ status: "expired", errorCode: "ttl_expired" });
+  });
+
+  it("lets a keyed retry collect its task after a crash mid-wait", async () => {
+    const server = taskServer();
+    const { call, org } = await setup(server);
+    await expect(call("build", { timeoutMs: 400, idempotencyKey: "deploy-crash" })).rejects.toMatchObject({ reasonCode: "provider_task_pending" });
+    // A crash mid-wait leaves the call executing, with no error recorded.
+    await db.update(toolInvocations).set({ status: "executing", errorCode: null, errorMessage: null, completedAt: null })
+      .where(eq(toolInvocations.companyId, org.id));
+    await db.update(toolMcpTasks).set({ leaseExpiresAt: new Date(Date.now() - 1_000) }).where(eq(toolMcpTasks.companyId, org.id));
+    server.finish();
+    expect(await call("build", { timeoutMs: 2_000, idempotencyKey: "deploy-crash" })).toMatchObject({ status: "completed", result: { content: "build finished" } });
+    expect(server.count("tools/call")).toBe(1);
+  });
+
+  it("keeps a keyed retry intact when the same key is reused with other arguments", async () => {
+    const server = taskServer();
+    const { call, org } = await setup(server);
+    await expect(call("build", { timeoutMs: 400, idempotencyKey: "deploy-a" })).rejects.toMatchObject({ reasonCode: "provider_task_pending" });
+    // Separate pending work for the other arguments must not be collected under key A.
+    await expect(call("build", { timeoutMs: 400, parameters: { ref: "other" } })).rejects.toMatchObject({ reasonCode: "provider_task_pending" });
+    await expect(call("build", { timeoutMs: 400, idempotencyKey: "deploy-a", parameters: { ref: "other" } }))
+      .rejects.toMatchObject({ reasonCode: "idempotency_key_conflict" });
+    const keyed = (await db.select().from(toolInvocations).where(eq(toolInvocations.companyId, org.id)))
+      .find((invocation) => invocation.idempotencyKey === "deploy-a");
+    expect(keyed).toMatchObject({ errorCode: "provider_task_pending" });
+    for (const id of [...server.tasks.keys()]) server.tasks.get(id)!.status = "completed";
+    expect(await call("build", { timeoutMs: 2_000, idempotencyKey: "deploy-a" })).toMatchObject({ status: "completed" });
+    expect(server.count("tools/call")).toBe(2);
+  });
+
+  it("hands a task to only one of two simultaneous callers", async () => {
+    const server = taskServer();
+    const { call } = await setup(server);
+    await expect(call("build", { timeoutMs: 400 })).rejects.toMatchObject({ reasonCode: "provider_task_pending" });
+    server.finish();
+    const outcomes = await Promise.all([call("build", { timeoutMs: 1_500 }).catch((error) => error), call("build", { timeoutMs: 1_500 }).catch((error) => error)]);
+    expect(outcomes.filter((outcome) => outcome?.status === "completed")).toHaveLength(1);
+    expect(outcomes.filter((outcome) => outcome?.reasonCode === "provider_task_pending")).toHaveLength(1);
+    expect(server.count("tools/call")).toBe(1);
+  });
+
+  it("never revives a task it cancelled in the background", async () => {
+    const server = taskServer();
+    const { call, issue, gateway } = await setup(server);
+    await expect(call("build", { timeoutMs: 400 })).rejects.toMatchObject({ reasonCode: "provider_task_pending" });
+    await db.update(issues).set({ status: "cancelled" }).where(eq(issues.id, issue.id));
+    await db.update(toolMcpTasks).set({ nextPollAt: new Date(Date.now() - 1_000) }).where(eq(toolMcpTasks.companyId, issue.companyId));
+    await gateway().pollDueMcpTasks();
+    // The app had not stopped yet, and the task is reopened.
+    server.only().task.status = "working";
+    await db.update(issues).set({ status: "in_progress" }).where(eq(issues.id, issue.id));
+    const gets = server.count("tasks/get");
+    await expect(call("build", { timeoutMs: 1_000 })).rejects.toMatchObject({ reasonCode: "provider_task_cancelled" });
+    expect(server.count("tasks/get")).toBe(gets);
+  });
+
+  it("wakes the agent when a background task asks a new question, and its next call shows it", async () => {
+    const server = taskServer();
+    const ctx = await setup(server);
+    await expect(ctx.call("build", { timeoutMs: 400 })).rejects.toMatchObject({ reasonCode: "provider_task_pending" });
+    await db.update(heartbeatRuns).set({ status: "succeeded" }).where(eq(heartbeatRuns.id, ctx.run.id));
+    server.ask();
+    await db.update(toolMcpTasks).set({ nextPollAt: new Date(Date.now() - 1_000) }).where(eq(toolMcpTasks.companyId, ctx.org.id));
+    const wake = vi.fn(async () => undefined);
+    await ctx.gateway().pollDueMcpTasks({ wake });
+    expect(wake).toHaveBeenCalledWith(expect.objectContaining({ status: "input_required", wakeKey: expect.stringContaining(":input:") }));
+    // Asked once: the next background pass does not wake again.
+    await db.update(toolMcpTasks).set({ nextPollAt: new Date(Date.now() - 1_000) }).where(eq(toolMcpTasks.companyId, ctx.org.id));
+    await ctx.gateway().pollDueMcpTasks({ wake });
+    expect(wake).toHaveBeenCalledTimes(1);
+    const [woken] = await db.insert(heartbeatRuns).values({ companyId: ctx.org.id, agentId: ctx.agent.id, invocationSource: "assignment", status: "running", contextSnapshot: { issueId: ctx.issue.id } }).returning();
+    const session = await ctx.gateway().createSession({ companyId: ctx.org.id, agentId: ctx.agent.id, runId: woken!.id });
+    const tool = (await ctx.gateway().listToolsForSession(session.token)).find((candidate) => candidate.name.endsWith(":build"))!;
+    expect(await ctx.gateway().executeTool({ sessionToken: session.token, tool: tool.name, parameters: { ref: "main" }, timeoutMs: 2_000 }).catch((error) => error))
+      .toMatchObject({ reasonCode: "elicitation_required" });
+  });
+
+  it("stops background work once the grant is revoked", async () => {
+    const server = taskServer();
+    const ctx = await setup(server);
+    await expect(ctx.call("build", { timeoutMs: 400 })).rejects.toMatchObject({ reasonCode: "provider_task_pending" });
+    await db.update(connectionGrants).set({ status: "revoked" }).where(eq(connectionGrants.connectionId, ctx.connected.connectionId));
+    await db.update(toolMcpTasks).set({ nextPollAt: new Date(Date.now() - 1_000) }).where(eq(toolMcpTasks.companyId, ctx.org.id));
+    const gets = server.count("tasks/get");
+    await ctx.gateway().pollDueMcpTasks();
+    expect(server.count("tasks/get")).toBe(gets);
+    expect((await ctx.rows())[0]).toMatchObject({ status: "expired", errorCode: "access_removed", nextPollAt: null });
   });
 
   it("never lets another agent attach to a task", async () => {

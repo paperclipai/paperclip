@@ -925,10 +925,16 @@ export const toolMcpTasks = pgTable(
     nextPollAt: timestamp("next_poll_at", { withTimezone: true }),
     lastPolledAt: timestamp("last_polled_at", { withTimezone: true }),
     pollFailures: integer("poll_failures").notNull().default(0),
-    /** A live call is waiting on the task; background polling skips it until then. */
+    /** A live call or the background worker holds the task until then. */
     leaseExpiresAt: timestamp("lease_expires_at", { withTimezone: true }),
+    /** Who holds the lease; writes under a lease require it. */
+    leaseOwner: text("lease_owner"),
+    /** The gateway's keyed identity of the full arguments, for keyed retries. */
+    argumentsIdentity: text("arguments_identity").notNull(),
     /** Input request keys already answered with `tasks/update`. */
     answeredInputKeys: jsonb("answered_input_keys").$type<string[]>().notNull().default([]),
+    /** Input request keys already shown to the agent (a link or a question card). */
+    surfacedInputKeys: jsonb("surfaced_input_keys").$type<string[]>().notNull().default([]),
     errorCode: text("error_code"),
     wakeRequestedAt: timestamp("wake_requested_at", { withTimezone: true }),
     deliveredAt: timestamp("delivered_at", { withTimezone: true }),

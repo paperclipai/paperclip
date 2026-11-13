@@ -6762,19 +6762,30 @@ export function createToolGatewayService(
   // A provider may answer tools/call with a durable task. The live call waits
   // on it up to the normal tool timeout; past that the row keeps it, background
   // work keeps polling, and the same call (same request, grant, and agent)
-  // attaches to it instead of starting the work again.
+  // attaches to it instead of starting the work again. One owner at a time
+  // holds a task (a lease): a live call or the background worker.
   type McpTaskRow = typeof toolMcpTasks.$inferSelect;
-  type McpTaskWake = (task: { companyId: string; agentId: string; issueId: string; taskRecordId: string; toolName: string; status: string }) => Promise<void>;
+  type McpTaskWake = (task: {
+    companyId: string; agentId: string; issueId: string; taskRecordId: string; toolName: string; status: string;
+    /** Distinct per reason, so one wake is requested per settlement or new question. */
+    wakeKey: string;
+  }) => Promise<void>;
   /** A call that ended with one of these may attach to its task on a retry with the same key. */
   const MCP_TASK_RETRY_CODES = new Set(["provider_task_pending", "provider_interaction_required", "provider_input_required", "elicitation_required"]);
   /** How long a settled task waits for the agent's run to end before a wake is reconsidered. */
   const MCP_TASK_WAKE_RECHECK_MS = 2 * 60_000;
   /** How long a settled, undelivered task can still be collected by the same call. */
   const MCP_TASK_SETTLED_ATTACH_MS = 60 * 60_000;
+  /** A completed result is held for the call recording it; if that call dies, the task is collectable again after this. */
+  const MCP_TASK_DELIVERY_LEASE_MS = 2 * 60_000;
+  /** The background worker's hold on a task, and its bound on one provider request. */
+  const MCP_TASK_WORKER_LEASE_MS = 60_000;
+  const MCP_TASK_WORKER_REQUEST_MS = 30_000;
   const mcpTaskSecret = () => options.toolActionSigningSecret?.trim() || resolveToolActionSigningSecret();
   const mcpTaskScope = (row: Pick<McpTaskRow, "companyId" | "connectionId">) => ({ companyId: row.companyId, connectionId: row.connectionId });
   const mcpTaskInputKey = (row: McpTaskRow, key: string) =>
     `mcp-task-input:${row.id}:${createHash("sha256").update(key).digest("hex").slice(0, 32)}`;
+  const mcpTaskArgumentsIdentity = (parameters: unknown) => toolRequestIdentityHash(parameters ?? {}, options.toolActionSigningSecret);
 
   function mcpTaskPendingError() {
     return new ToolGatewayHttpError(504,
@@ -6789,7 +6800,7 @@ export function createToolGatewayService(
   function mcpTaskCancelledError(byRun = false) {
     return new ToolGatewayHttpError(409, byRun
       ? "The run was stopped, so Paperclip asked the app to cancel this action."
-      : "The app cancelled this action before it finished. Run it again if it is still needed.",
+      : "This action was cancelled before it finished. Run it again if it is still needed.",
     "provider_task_cancelled");
   }
   function mcpTaskFailedError(error: McpTaskState["error"]) {
@@ -6818,16 +6829,33 @@ export function createToolGatewayService(
     };
   }
 
-  async function updateMcpTask(row: McpTaskRow, patch: Partial<typeof toolMcpTasks.$inferInsert>, notify = false) {
+  /**
+   * Update a task row. With `owner`, the write applies only while that owner
+   * still holds the task; the result says whether it did.
+   */
+  async function updateMcpTask(row: McpTaskRow, patch: Partial<typeof toolMcpTasks.$inferInsert>, opts: { notify?: boolean; owner?: string } = {}) {
     const write = async (tx: Db) => {
-      if (notify) await notifyDeliveryWork(tx, DELIVERY_QUEUES.mcpTasks);
+      if (opts.notify) await notifyDeliveryWork(tx, DELIVERY_QUEUES.mcpTasks);
       const [updated] = await tx.update(toolMcpTasks).set({ ...patch, updatedAt: new Date() })
-        .where(and(eq(toolMcpTasks.id, row.id), eq(toolMcpTasks.companyId, row.companyId))).returning();
+        .where(and(
+          eq(toolMcpTasks.id, row.id), eq(toolMcpTasks.companyId, row.companyId),
+          ...(opts.owner ? [eq(toolMcpTasks.leaseOwner, opts.owner)] : []),
+        )).returning();
       if (updated) Object.assign(row, updated);
+      return Boolean(updated);
     };
-    if (notify) await db.transaction(async (tx) => write(tx as unknown as Db));
-    else await write(db);
-    return row;
+    return opts.notify ? db.transaction(async (tx) => write(tx as unknown as Db)) : write(db);
+  }
+
+  /** Take an undelivered task for `owner` unless someone else holds it. */
+  async function claimMcpTask(row: McpTaskRow, owner: string, leaseMs: number, patch: Partial<typeof toolMcpTasks.$inferInsert> = {}) {
+    const now = new Date();
+    const [claimed] = await db.update(toolMcpTasks).set({ ...patch, leaseOwner: owner, leaseExpiresAt: new Date(now.getTime() + leaseMs), updatedAt: now })
+      .where(and(
+        eq(toolMcpTasks.id, row.id), eq(toolMcpTasks.companyId, row.companyId), isNull(toolMcpTasks.deliveredAt),
+        or(isNull(toolMcpTasks.leaseExpiresAt), lte(toolMcpTasks.leaseExpiresAt, now), eq(toolMcpTasks.leaseOwner, owner)),
+      )).returning();
+    return claimed ?? null;
   }
 
   function mcpTaskStatePatch(row: McpTaskRow, state: McpTaskState): Partial<typeof toolMcpTasks.$inferInsert> {
@@ -6836,28 +6864,39 @@ export function createToolGatewayService(
       lastPolledAt: new Date(),
       pollFailures: 0,
       ...(state.pollIntervalMs !== null ? { pollIntervalMs: state.pollIntervalMs } : {}),
-      // The TTL may change over a task's life; it always counts from creation.
+      // The TTL may change over a task's life; it counts from creation, and
+      // the seven-day cap counts from when Paperclip first saw the task.
       ...(state.ttlMs !== null && state.ttlMs !== row.ttlMs
-        ? { ttlMs: state.ttlMs, expiresAt: mcpTaskExpiresAt({ createdAt: state.createdAt ?? row.createdAt, ttlMs: state.ttlMs }) }
+        ? { ttlMs: state.ttlMs, expiresAt: mcpTaskExpiresAt({ createdAt: state.createdAt ?? row.createdAt, ttlMs: state.ttlMs }, Date.now(), row.createdAt) }
         : {}),
     };
   }
 
-  /** Mark a task finished. `delivered` when this call reported the outcome to the caller. */
-  function settleMcpTask(row: McpTaskRow, status: McpTaskRecordStatus, input: { errorCode?: string; delivered?: boolean; invocationId?: string } = {}) {
+  /** Mark a task finished and release it. `delivered` when this call reported the outcome. */
+  function settleMcpTask(row: McpTaskRow, status: McpTaskRecordStatus, input: { errorCode?: string | null; delivered?: boolean; invocationId?: string; owner?: string } = {}) {
     return updateMcpTask(row, {
-      status, nextPollAt: null, leaseExpiresAt: null, errorCode: input.errorCode ?? null,
+      status, nextPollAt: null, leaseExpiresAt: null, leaseOwner: null, errorCode: input.errorCode ?? null,
       ...(input.delivered ? { deliveredAt: new Date() } : {}),
       ...(input.invocationId ? { lastInvocationId: input.invocationId } : {}),
-    });
+    }, { owner: input.owner });
   }
 
   /** Hand a task the live call stopped waiting on to background polling. */
-  function releaseMcpTask(row: McpTaskRow) {
+  function releaseMcpTask(row: McpTaskRow, owner: string) {
     return updateMcpTask(row, {
-      leaseExpiresAt: null,
+      leaseExpiresAt: null, leaseOwner: null,
       nextPollAt: new Date(Date.now() + backgroundPollDelayMs({ pollIntervalMs: row.pollIntervalMs, status: row.status as McpTaskRecordStatus })),
-    }, true);
+    }, { notify: true, owner });
+  }
+
+  /**
+   * Record that the call `invocationId` has recorded a task's result. Until
+   * then a completed task stays collectable, so a crash between reading the
+   * result and recording it loses nothing.
+   */
+  async function markMcpTaskDelivered(companyId: string, invocationId: string) {
+    await db.update(toolMcpTasks).set({ deliveredAt: new Date(), leaseExpiresAt: null, leaseOwner: null, updatedAt: new Date() })
+      .where(and(eq(toolMcpTasks.companyId, companyId), eq(toolMcpTasks.lastInvocationId, invocationId), isNull(toolMcpTasks.deliveredAt)));
   }
 
   async function createMcpTaskRecord(input: {
@@ -6867,9 +6906,11 @@ export function createToolGatewayService(
     catalogToolName: string;
     invocationId: string;
     requestHash: string;
+    argumentsIdentity: string;
     endpointHash: string;
     protocolVersion: string;
     state: McpTaskState;
+    owner: string;
     leaseMs: number;
   }): Promise<McpTaskRow> {
     const secret = mcpTaskSecret();
@@ -6891,6 +6932,7 @@ export function createToolGatewayService(
         actorId: input.session.actorId ?? null,
         catalogToolName: input.catalogToolName,
         requestHash: input.requestHash,
+        argumentsIdentity: input.argumentsIdentity,
         endpointHash: input.endpointHash,
         protocolVersion: input.protocolVersion,
         sealedProviderTaskId: sealMcpTaskId(secret, scope, input.state.taskId),
@@ -6900,6 +6942,7 @@ export function createToolGatewayService(
         ttlMs: input.state.ttlMs,
         expiresAt: mcpTaskExpiresAt(input.state, now),
         nextPollAt: new Date(now + backgroundPollDelayMs({ pollIntervalMs: input.state.pollIntervalMs, status: input.state.status })),
+        leaseOwner: input.owner,
         leaseExpiresAt: new Date(now + input.leaseMs),
       }).onConflictDoNothing().returning();
       return row;
@@ -6917,18 +6960,27 @@ export function createToolGatewayService(
     const [existing] = await db.select().from(toolMcpTasks).where(and(
       eq(toolMcpTasks.companyId, input.connection.companyId), eq(toolMcpTasks.connectionId, input.connection.id),
       eq(toolMcpTasks.providerTaskIdHash, providerTaskIdHash)));
-    if (!existing || existing.grantId !== input.grant.id || existing.requestHash !== input.requestHash || existing.deliveredAt) {
-      throw malformedRemoteMcpResponse();
-    }
-    return updateMcpTask(existing, { leaseExpiresAt: new Date(now + input.leaseMs), lastInvocationId: input.invocationId, runId: input.session.runId });
+    if (!existing || existing.grantId !== input.grant.id || existing.requestHash !== input.requestHash) throw malformedRemoteMcpResponse();
+    const claimed = await claimMcpTask(existing, input.owner, input.leaseMs, { lastInvocationId: input.invocationId, runId: input.session.runId });
+    if (!claimed) throw mcpTaskPendingError();
+    return claimed;
   }
+
+  /** Undelivered, and still worth collecting: active, or settled recently. */
+  const mcpTaskCollectable = () => and(
+    isNull(toolMcpTasks.deliveredAt),
+    // A settled task is collected soon after it settles; an old one is not
+    // silently handed to what may be a deliberate new run of the same call.
+    or(inArray(toolMcpTasks.status, ["working", "input_required"]), gt(toolMcpTasks.updatedAt, new Date(Date.now() - MCP_TASK_SETTLED_ATTACH_MS))),
+  );
 
   /** An undelivered task this exact call already started, for this grant, agent, and task. */
   async function findAttachableMcpTask(input: {
-    session: ToolGatewaySession; connectionId: string; grantId: string; requestHash: string;
+    session: ToolGatewaySession; connectionId: string; grantId: string; requestHash: string; rowId?: string;
   }): Promise<McpTaskRow | null> {
     const [row] = await db.select().from(toolMcpTasks).where(and(
       eq(toolMcpTasks.companyId, input.session.companyId),
+      ...(input.rowId ? [eq(toolMcpTasks.id, input.rowId)] : []),
       eq(toolMcpTasks.connectionId, input.connectionId),
       eq(toolMcpTasks.requestHash, input.requestHash),
       eq(toolMcpTasks.grantId, input.grantId),
@@ -6936,23 +6988,31 @@ export function createToolGatewayService(
       input.session.issueId ? eq(toolMcpTasks.issueId, input.session.issueId) : isNull(toolMcpTasks.issueId),
       eq(toolMcpTasks.actorType, input.session.actorType ?? "agent"),
       input.session.actorId ? eq(toolMcpTasks.actorId, input.session.actorId) : isNull(toolMcpTasks.actorId),
-      isNull(toolMcpTasks.deliveredAt),
-      // A settled task is collected soon after it settles; an old one is not
-      // silently handed to what may be a deliberate new run of the same call.
-      or(inArray(toolMcpTasks.status, ["working", "input_required"]), gt(toolMcpTasks.updatedAt, new Date(Date.now() - MCP_TASK_SETTLED_ATTACH_MS))),
+      mcpTaskCollectable(),
     )).orderBy(desc(toolMcpTasks.createdAt)).limit(1);
     return row ?? null;
   }
 
-  /** True when a retried call with this key should attach to its task rather than replay. */
-  async function hasAttachableMcpTaskForInvocation(companyId: string, invocation: typeof toolInvocations.$inferSelect) {
-    if (!invocation.errorCode || !MCP_TASK_RETRY_CODES.has(invocation.errorCode)) return false;
-    const [row] = await db.select({ id: toolMcpTasks.id }).from(toolMcpTasks).where(and(
-      eq(toolMcpTasks.companyId, companyId),
-      or(eq(toolMcpTasks.invocationId, invocation.id), eq(toolMcpTasks.lastInvocationId, invocation.id)),
-      isNull(toolMcpTasks.deliveredAt),
-    )).limit(1);
-    return Boolean(row);
+  /**
+   * The task a keyed retry should collect, checked before the call changes
+   * anything. A call interrupted mid-wait (a crash) left its invocation
+   * executing with no error; that counts too. A different request under the
+   * same key is a conflict and leaves the original retry intact.
+   */
+  async function mcpTaskForKeyedRetry(companyId: string, invocation: typeof toolInvocations.$inferSelect, current: { connectionId: string | null; argumentsIdentity: string }) {
+    const interrupted = invocation.status === "executing" && !invocation.errorCode;
+    if (!interrupted && (!invocation.errorCode || !MCP_TASK_RETRY_CODES.has(invocation.errorCode))) return null;
+    const [row] = await db.select({ id: toolMcpTasks.id, connectionId: toolMcpTasks.connectionId, argumentsIdentity: toolMcpTasks.argumentsIdentity })
+      .from(toolMcpTasks).where(and(
+        eq(toolMcpTasks.companyId, companyId),
+        or(eq(toolMcpTasks.invocationId, invocation.id), eq(toolMcpTasks.lastInvocationId, invocation.id)),
+        mcpTaskCollectable(),
+      )).orderBy(desc(toolMcpTasks.createdAt)).limit(1);
+    if (!row) return null;
+    if (row.connectionId !== current.connectionId || row.argumentsIdentity !== current.argumentsIdentity) {
+      throw new ToolGatewayHttpError(409, "This idempotency key belongs to an earlier call with different arguments. Use a new key to start new work.", "idempotency_key_conflict");
+    }
+    return row.id;
   }
 
   /** Map a person's question-card answers back onto the provider's form schema. */
@@ -6993,6 +7053,7 @@ export function createToolGatewayService(
     /** Responses ready to send with tasks/update. */
     responses: Record<string, unknown>;
     links: ToolUpstreamPending["links"];
+    linkKeys: string[];
     linkMessage?: string;
     /** The first form still waiting for a person. */
     waitingForm?: { key: string; request: McpElicitationRequest };
@@ -7006,7 +7067,7 @@ export function createToolGatewayService(
    * person's answer on that card is sent back. Anything else needs the app.
    */
   async function planMcpTaskInput(row: McpTaskRow, state: McpTaskState, answered: ReadonlySet<string>): Promise<McpTaskInputPlan> {
-    const plan: McpTaskInputPlan = { responses: {}, links: [], unsupported: false };
+    const plan: McpTaskInputPlan = { responses: {}, links: [], linkKeys: [], unsupported: false };
     for (const [key, request] of Object.entries(state.inputRequests ?? {})) {
       if (answered.has(key)) continue;
       const mode = request.params.mode;
@@ -7014,6 +7075,7 @@ export function createToolGatewayService(
         const checked = checkOAuthEndpointUrl(request.params.url);
         if (!checked.ok) return { ...plan, unsupported: true };
         if (!plan.links.some((link) => link.url === checked.url)) plan.links.push({ url: checked.url, host: checked.host });
+        plan.linkKeys.push(key);
         if (!plan.linkMessage && typeof request.params.message === "string") plan.linkMessage = redactSensitiveText(request.params.message).slice(0, 4000);
         continue;
       }
@@ -7042,12 +7104,12 @@ export function createToolGatewayService(
     return plan;
   }
 
-  async function sendMcpTaskResponses(row: McpTaskRow, session: ToolGatewaySession, transport: McpTaskTransport, taskId: string, plan: McpTaskInputPlan, answered: Set<string>, signal?: AbortSignal) {
+  async function sendMcpTaskResponses(row: McpTaskRow, owner: string, session: ToolGatewaySession, transport: McpTaskTransport, taskId: string, plan: McpTaskInputPlan, answered: Set<string>, signal?: AbortSignal) {
     const keys = Object.keys(plan.responses);
     if (!keys.length) return;
     await sendMcpTaskRequest(transport, "tasks/update", { taskId, inputResponses: plan.responses }, signal);
     for (const key of keys) answered.add(key);
-    await updateMcpTask(row, { answeredInputKeys: [...answered] });
+    await updateMcpTask(row, { answeredInputKeys: [...answered] }, { owner });
     await writeAudit({
       session, companyId: row.companyId, agentId: row.agentId, runId: row.runId, issueId: row.issueId,
       action: "tool_gateway.task_input_sent",
@@ -7059,9 +7121,9 @@ export function createToolGatewayService(
     });
   }
 
-  async function cancelMcpTaskRecord(row: McpTaskRow, transport: McpTaskTransport | null, taskId: string | null, reason: "run_cancelled" | "issue_closed", session: ToolGatewaySession, delivered: boolean) {
+  async function cancelMcpTaskRecord(row: McpTaskRow, owner: string, transport: McpTaskTransport | null, taskId: string | null, reason: "run_cancelled" | "issue_closed", session: ToolGatewaySession, delivered: boolean) {
     const acknowledged = transport && taskId ? await cancelMcpTask(transport, taskId) : false;
-    await settleMcpTask(row, "cancelled", { errorCode: reason, delivered });
+    await settleMcpTask(row, "cancelled", { errorCode: reason, delivered, owner });
     await writeAudit({
       session, companyId: row.companyId, agentId: row.agentId, runId: row.runId, issueId: row.issueId,
       action: "tool_gateway.task_cancelled",
@@ -7070,12 +7132,15 @@ export function createToolGatewayService(
   }
 
   /**
-   * Wait on a task inside a live call. Returns the provider's final tool
-   * result, exactly what a synchronous call would have returned, or throws the
-   * error the caller should see. The task stays durable when the wait ends.
+   * Wait on a task inside a live call that holds it (`owner`). Returns the
+   * provider's final tool result, exactly what a synchronous call would have
+   * returned, or throws the error the caller should see. The task stays
+   * durable when the wait ends; a completed one stays collectable until the
+   * caller records its result (markMcpTaskDelivered).
    */
   async function waitForMcpTask(wait: {
     row: McpTaskRow;
+    owner: string;
     taskId: string;
     initial?: McpTaskState;
     session: ToolGatewaySession;
@@ -7087,21 +7152,23 @@ export function createToolGatewayService(
     callerSignal?: AbortSignal;
     execution: RemoteHttpExecutionAudit;
   }): Promise<Record<string, unknown>> {
-    const { row } = wait;
+    const { row, owner } = wait;
     const stop = AbortSignal.any([wait.deadline, ...(wait.callerSignal ? [wait.callerSignal] : []), ...(wait.runSignal ? [wait.runSignal] : [])]);
     const answered = new Set(row.answeredInputKeys ?? []);
     const audit = { recordId: row.id, attached: !wait.initial, polls: 0, status: row.status };
     wait.execution.task = audit;
+    const own = (patch: Partial<typeof toolMcpTasks.$inferInsert>) => updateMcpTask(row, patch, { owner });
+    const settle = (status: McpTaskRecordStatus, errorCode?: string | null) =>
+      settleMcpTask(row, status, { errorCode, delivered: true, invocationId: wait.invocationId, owner });
     const cancelForRun = async (): Promise<never> => {
-      await cancelMcpTaskRecord(row, wait.transport, wait.taskId, "run_cancelled", wait.session, true);
+      await cancelMcpTaskRecord(row, owner, wait.transport, wait.taskId, "run_cancelled", wait.session, true);
       throw mcpTaskCancelledError(true);
     };
     try {
-      // Paperclip's own terminal state needs no provider request.
-      if (row.status === "expired") {
-        await settleMcpTask(row, "expired", { errorCode: row.errorCode ?? "ttl_expired", delivered: true, invocationId: wait.invocationId });
-        throw mcpTaskExpiredError();
-      }
+      // Paperclip's own outcomes are reported as they are: an expired task is
+      // gone, and a task Paperclip cancelled is never revived by a later poll.
+      if (row.status === "expired") { await settle("expired", row.errorCode ?? "ttl_expired"); throw mcpTaskExpiredError(); }
+      if (row.status === "cancelled") { await settle("cancelled", row.errorCode); throw mcpTaskCancelledError(row.errorCode === "run_cancelled"); }
       let delay = wait.initial?.status === "working" ? inlinePollDelayMs(row.pollIntervalMs) : 0;
       let failures = 0;
       for (;;) {
@@ -7110,10 +7177,7 @@ export function createToolGatewayService(
           throw mcpTaskPendingError();
         }
         if (wait.runSignal?.aborted) return await cancelForRun();
-        if (row.expiresAt.getTime() <= Date.now()) {
-          await settleMcpTask(row, "expired", { errorCode: "ttl_expired", delivered: true, invocationId: wait.invocationId });
-          throw mcpTaskExpiredError();
-        }
+        if (row.expiresAt.getTime() <= Date.now()) { await settle("expired", "ttl_expired"); throw mcpTaskExpiredError(); }
         let state: McpTaskState;
         try {
           state = await getMcpTask(wait.transport, wait.taskId, stop);
@@ -7122,46 +7186,38 @@ export function createToolGatewayService(
         } catch (error) {
           if (wait.runSignal?.aborted) return await cancelForRun();
           if (stop.aborted) throw mcpTaskPendingError();
-          if (error instanceof McpTaskRequestError && error.taskNotFound) {
-            await settleMcpTask(row, "expired", { errorCode: "provider_task_unknown", delivered: true, invocationId: wait.invocationId });
-            throw mcpTaskExpiredError();
-          }
+          if (error instanceof McpTaskRequestError && error.taskNotFound) { await settle("expired", "provider_task_unknown"); throw mcpTaskExpiredError(); }
           if (error instanceof ToolGatewayHttpError) throw error;
           // A transient failure: the task is still durable, so back off and
           // leave it to background polling if the app stays unreachable.
           failures += 1;
-          await updateMcpTask(row, { pollFailures: row.pollFailures + 1 });
+          await own({ pollFailures: row.pollFailures + 1 });
           if (failures >= 3) throw mcpTaskPendingError();
           delay = inlinePollDelayMs(row.pollIntervalMs) * 2 ** failures;
           continue;
         }
-        await updateMcpTask(row, mcpTaskStatePatch(row, state));
+        // Losing the task to another owner (a long stall past the lease) ends this wait.
+        if (!(await own(mcpTaskStatePatch(row, state)))) throw mcpTaskPendingError();
         audit.status = state.status;
         if (state.status === "completed") {
-          await settleMcpTask(row, "completed", { delivered: true, invocationId: wait.invocationId });
+          // Held for this call until its result is recorded; not yet delivered.
+          await own({ nextPollAt: null, errorCode: null, lastInvocationId: wait.invocationId, leaseExpiresAt: new Date(Date.now() + MCP_TASK_DELIVERY_LEASE_MS) });
           return state.result!;
         }
-        if (state.status === "failed") {
-          await settleMcpTask(row, "failed", { delivered: true, invocationId: wait.invocationId });
-          throw mcpTaskFailedError(state.error);
-        }
-        if (state.status === "cancelled") {
-          await settleMcpTask(row, "cancelled", { delivered: true, invocationId: wait.invocationId });
-          throw mcpTaskCancelledError();
-        }
+        if (state.status === "failed") { await settle("failed"); throw mcpTaskFailedError(state.error); }
+        if (state.status === "cancelled") { await settle("cancelled"); throw mcpTaskCancelledError(); }
         if (state.status === "input_required") {
           const plan = await planMcpTaskInput(row, state, answered);
           if (plan.unsupported) throw mcpTaskNeedsInputError();
           try {
-            await sendMcpTaskResponses(row, wait.session, wait.transport, wait.taskId, plan, answered, stop);
+            await sendMcpTaskResponses(row, owner, wait.session, wait.transport, wait.taskId, plan, answered, stop);
           } catch (error) {
-            if (error instanceof McpTaskRequestError && error.taskNotFound) {
-              await settleMcpTask(row, "expired", { errorCode: "provider_task_unknown", delivered: true, invocationId: wait.invocationId });
-              throw mcpTaskExpiredError();
-            }
+            if (error instanceof McpTaskRequestError && error.taskNotFound) { await settle("expired", "provider_task_unknown"); throw mcpTaskExpiredError(); }
             // Unsent answers stay unanswered and are sent on the next poll.
             if (stop.aborted) throw mcpTaskPendingError();
           }
+          const shown = [...plan.linkKeys, ...(plan.waitingForm ? [plan.waitingForm.key] : [])];
+          if (shown.length) await own({ surfacedInputKeys: [...new Set([...(row.surfacedInputKeys ?? []), ...shown])] });
           if (plan.links.length) {
             const pending: ToolUpstreamPending = { kind: "authorization", links: plan.links, ...(plan.linkMessage ? { message: plan.linkMessage } : {}) };
             await retainUpstreamHandoff(wait.invocationId, pending);
@@ -7179,11 +7235,11 @@ export function createToolGatewayService(
         delay = inlinePollDelayMs(row.pollIntervalMs);
       }
     } finally {
-      if (!isMcpTaskTerminal(row.status as McpTaskRecordStatus)) await releaseMcpTask(row);
+      if (!isMcpTaskTerminal(row.status as McpTaskRecordStatus)) await releaseMcpTask(row, owner);
     }
   }
 
-  /** The credentials, endpoint, and identity a stored task was created with, if they still hold. */
+  /** The credentials, endpoint, and identity a stored task was created with, if they all still hold. */
   async function storedMcpTaskContext(row: McpTaskRow): Promise<
     { session: ToolGatewaySession; transport: McpTaskTransport; taskId: string } | { closed: string }
   > {
@@ -7192,15 +7248,20 @@ export function createToolGatewayService(
     const [connection] = await db.select().from(toolConnections)
       .where(and(eq(toolConnections.id, row.connectionId), eq(toolConnections.companyId, row.companyId))).limit(1);
     if (!connection || !connection.enabled || connection.status !== "active" || connection.transport !== "mcp_remote") return { closed: "connection_unavailable" };
-    const [grant] = await db.select().from(connectionGrants).where(and(
-      eq(connectionGrants.id, row.grantId), eq(connectionGrants.companyId, row.companyId),
-      eq(connectionGrants.connectionId, row.connectionId), eq(connectionGrants.status, "active"))).limit(1);
-    if (!grant) return { closed: "access_removed" };
     const session: ToolGatewaySession = {
       id: `mcp-task:${row.id}`, token: "", companyId: row.companyId, agentId: row.agentId, runId: row.runId,
       issueId: row.issueId, projectId: null, actorType: row.actorType as ToolGatewaySession["actorType"], actorId: row.actorId,
       createdAt: new Date(), expiresAt: new Date(Date.now() + 5 * 60_000),
     };
+    // The same access check a live call makes: audience, delegation, and the
+    // grant itself. Removing any of them stops the background work.
+    let grant: typeof connectionGrants.$inferSelect;
+    try {
+      grant = await resolveConnectionGrant(session, connection, false);
+    } catch {
+      return { closed: "access_removed" };
+    }
+    if (grant.id !== row.grantId || grant.status !== "active") return { closed: "access_removed" };
     const workspaceTarget = connection.config.sourceTemplateKey === "google-workspace" ? googleWorkspaceToolTarget(row.catalogToolName) : null;
     const endpoint = workspaceTarget?.serverUrl ?? await resolvedRemoteEndpoint(session, connection, grant);
     if (mcpTaskEndpointHash(String(endpoint)) !== row.endpointHash) return { closed: "endpoint_changed" };
@@ -7234,63 +7295,86 @@ export function createToolGatewayService(
   }
 
   /**
-   * A task settled while nobody was waiting. Wake its agent once, after the
-   * run that started it has ended, so the agent's repeated call collects it.
+   * Wake the task's agent once its run has ended, so the agent's repeated call
+   * collects the outcome or shows a new question. "deferred" while the run is
+   * still going, "skipped" when nobody should be woken.
    */
-  async function wakeForSettledMcpTask(row: McpTaskRow, wake?: McpTaskWake) {
-    const done = () => updateMcpTask(row, { nextPollAt: null, leaseExpiresAt: null });
-    if (!wake || row.deliveredAt || row.wakeRequestedAt || !row.issueId || !row.agentId
-      || row.status === "expired" || row.status === "cancelled" || row.expiresAt.getTime() <= Date.now()
-      || row.updatedAt.getTime() < Date.now() - MCP_TASK_SETTLED_ATTACH_MS) return done();
+  async function wakeAgentForMcpTask(row: McpTaskRow, wake: McpTaskWake | undefined, wakeKey: string): Promise<"woken" | "deferred" | "skipped"> {
+    if (!wake || !row.issueId || !row.agentId || row.expiresAt.getTime() <= Date.now()) return "skipped";
     const [issue] = await db.select({ status: issues.status, assigneeAgentId: issues.assigneeAgentId }).from(issues)
       .where(and(eq(issues.id, row.issueId), eq(issues.companyId, row.companyId))).limit(1);
-    if (!issue || issue.status === "done" || issue.status === "cancelled" || issue.assigneeAgentId !== row.agentId) return done();
+    if (!issue || issue.status === "done" || issue.status === "cancelled" || issue.assigneeAgentId !== row.agentId) return "skipped";
     if (row.runId) {
       const [run] = await db.select({ status: heartbeatRuns.status }).from(heartbeatRuns)
         .where(and(eq(heartbeatRuns.id, row.runId), eq(heartbeatRuns.companyId, row.companyId))).limit(1);
-      if (run && ["queued", "running", "scheduled_retry"].includes(run.status)) {
-        return updateMcpTask(row, { leaseExpiresAt: null, nextPollAt: new Date(Date.now() + MCP_TASK_WAKE_RECHECK_MS) });
-      }
+      if (run && ["queued", "running", "scheduled_retry"].includes(run.status)) return "deferred";
     }
-    await wake({ companyId: row.companyId, agentId: row.agentId, issueId: row.issueId, taskRecordId: row.id, toolName: row.catalogToolName, status: row.status });
-    return updateMcpTask(row, { wakeRequestedAt: new Date(), nextPollAt: null, leaseExpiresAt: null });
+    await wake({ companyId: row.companyId, agentId: row.agentId, issueId: row.issueId, taskRecordId: row.id, toolName: row.catalogToolName, status: row.status, wakeKey });
+    return "woken";
   }
 
-  /** One background step for a task no live call is waiting on. */
-  async function pollStoredMcpTask(row: McpTaskRow, wake: McpTaskWake | undefined, signal?: AbortSignal) {
-    if (row.deliveredAt) return updateMcpTask(row, { nextPollAt: null, leaseExpiresAt: null });
-    if (isMcpTaskTerminal(row.status as McpTaskRecordStatus)) return wakeForSettledMcpTask(row, wake);
-    if (row.expiresAt.getTime() <= Date.now()) return settleMcpTask(row, "expired", { errorCode: "ttl_expired" });
+  /** A task settled while nobody was waiting: wake its agent once. */
+  async function wakeForSettledMcpTask(row: McpTaskRow, owner: string, wake?: McpTaskWake) {
+    const done = () => updateMcpTask(row, { nextPollAt: null, leaseExpiresAt: null, leaseOwner: null }, { owner });
+    if (row.deliveredAt || row.wakeRequestedAt || row.status === "expired" || row.status === "cancelled"
+      || row.updatedAt.getTime() < Date.now() - MCP_TASK_SETTLED_ATTACH_MS) return done();
+    const outcome = await wakeAgentForMcpTask(row, wake, `mcp-task:${row.id}:settled`);
+    if (outcome === "deferred") {
+      return updateMcpTask(row, { leaseExpiresAt: null, leaseOwner: null, nextPollAt: new Date(Date.now() + MCP_TASK_WAKE_RECHECK_MS) }, { owner });
+    }
+    return updateMcpTask(row, { ...(outcome === "woken" ? { wakeRequestedAt: new Date() } : {}), nextPollAt: null, leaseExpiresAt: null, leaseOwner: null }, { owner });
+  }
+
+  /** One background step for a task the worker holds (`owner`). */
+  async function pollStoredMcpTask(row: McpTaskRow, owner: string, wake: McpTaskWake | undefined, signal?: AbortSignal) {
+    const settle = (status: McpTaskRecordStatus, errorCode: string) => settleMcpTask(row, status, { errorCode, owner });
+    if (row.deliveredAt) return updateMcpTask(row, { nextPollAt: null, leaseExpiresAt: null, leaseOwner: null }, { owner });
+    if (isMcpTaskTerminal(row.status as McpTaskRecordStatus)) return wakeForSettledMcpTask(row, owner, wake);
+    if (row.expiresAt.getTime() <= Date.now()) return settle("expired", "ttl_expired");
     const context = await storedMcpTaskContext(row);
-    if ("closed" in context) return settleMcpTask(row, "expired", { errorCode: context.closed });
+    if ("closed" in context) return settle("expired", context.closed);
     const stopReason = await mcpTaskStopReason(row);
-    if (stopReason) return cancelMcpTaskRecord(row, context.transport, context.taskId, stopReason, context.session, false);
+    if (stopReason) return cancelMcpTaskRecord(row, owner, context.transport, context.taskId, stopReason, context.session, false);
+    // One slow or endless response must not hold the worker past its lease or the task past its TTL.
+    const bound = Math.max(1_000, Math.min(MCP_TASK_WORKER_REQUEST_MS, row.expiresAt.getTime() - Date.now()));
+    const requestSignal = AbortSignal.any([AbortSignal.timeout(bound), ...(signal ? [signal] : [])]);
     let state: McpTaskState;
     try {
-      state = await getMcpTask(context.transport, context.taskId, signal);
+      state = await getMcpTask(context.transport, context.taskId, requestSignal);
     } catch (error) {
-      if (error instanceof McpTaskRequestError && error.taskNotFound) return settleMcpTask(row, "expired", { errorCode: "provider_task_unknown" });
+      if (error instanceof McpTaskRequestError && error.taskNotFound) return settle("expired", "provider_task_unknown");
       return updateMcpTask(row, {
-        leaseExpiresAt: null, pollFailures: row.pollFailures + 1,
+        leaseExpiresAt: null, leaseOwner: null, pollFailures: row.pollFailures + 1,
         nextPollAt: new Date(Date.now() + backgroundPollDelayMs({ pollIntervalMs: row.pollIntervalMs, status: row.status as McpTaskRecordStatus, failures: row.pollFailures + 1 })),
-      });
+      }, { owner });
     }
-    await updateMcpTask(row, mcpTaskStatePatch(row, state));
-    if (isMcpTaskTerminal(state.status)) {
-      // The result stays with the provider; the agent's repeated call reads it.
-      await updateMcpTask(row, { errorCode: null });
-      return wakeForSettledMcpTask(row, wake);
-    }
+    if (!(await updateMcpTask(row, { ...mcpTaskStatePatch(row, state), errorCode: null }, { owner }))) return;
+    // The result stays with the provider; the agent's repeated call reads it.
+    if (isMcpTaskTerminal(state.status)) return wakeForSettledMcpTask(row, owner, wake);
     if (state.status === "input_required") {
-      // A person may have answered the question card since the call ended.
       const answered = new Set(row.answeredInputKeys ?? []);
       const plan = await planMcpTaskInput(row, state, answered);
-      if (!plan.unsupported) await sendMcpTaskResponses(row, context.session, context.transport, context.taskId, plan, answered, signal).catch(() => undefined);
+      // A person may have answered the question card since the call ended.
+      if (!plan.unsupported) {
+        await sendMcpTaskResponses(row, owner, context.session, context.transport, context.taskId, plan, answered, requestSignal).catch(() => undefined);
+      }
+      // A new question or link nobody has seen: wake the agent, whose call shows it.
+      const surfaced = new Set(row.surfacedInputKeys ?? []);
+      const unseen = Object.keys(state.inputRequests ?? {}).filter((key) => !answered.has(key) && !surfaced.has(key)).sort();
+      if (unseen.length) {
+        const outcome = await wakeAgentForMcpTask(row, wake, `mcp-task:${row.id}:input:${createHash("sha256").update(unseen.join("\0")).digest("hex").slice(0, 32)}`);
+        if (outcome === "woken" || outcome === "skipped") {
+          await updateMcpTask(row, { surfacedInputKeys: [...new Set([...surfaced, ...unseen])] }, { owner });
+        }
+        if (outcome === "deferred") {
+          return updateMcpTask(row, { leaseExpiresAt: null, leaseOwner: null, nextPollAt: new Date(Date.now() + MCP_TASK_WAKE_RECHECK_MS) }, { owner });
+        }
+      }
     }
     return updateMcpTask(row, {
-      leaseExpiresAt: null,
+      leaseExpiresAt: null, leaseOwner: null,
       nextPollAt: new Date(Date.now() + backgroundPollDelayMs({ pollIntervalMs: row.pollIntervalMs, status: row.status as McpTaskRecordStatus })),
-    });
+    }, { owner });
   }
 
   async function executeRemoteHttpTool(
@@ -7302,7 +7386,7 @@ export function createToolGatewayService(
     callerHeaders?: ExecuteGatewayToolInput["callerHeaders"],
     useDefaultTimeout = false,
     /** `run` aborts when the run is stopped (the task is cancelled); `caller` when the caller leaves (it is kept). */
-    taskSignals: { run?: AbortSignal; caller?: AbortSignal; attachOnly?: boolean } = {},
+    taskSignals: { run?: AbortSignal; caller?: AbortSignal; attachToTaskRecordId?: string | null } = {},
   ): Promise<RemoteHttpExecutionResult> {
     const { entry, connection, sourceTemplateKey } = await resolveConnectedRemoteTool(
       session,
@@ -7523,14 +7607,17 @@ export function createToolGatewayService(
       // grant, agent, and task) attaches to an undelivered one instead of
       // sending tools/call again, so retries and recovered runs never repeat work.
       const taskProtocolVersion = mcpProtocolVersionOf(requestHeaders);
+      const taskArgumentsIdentity = mcpTaskArgumentsIdentity(parameters);
       const taskIdentity = isModernMcpProtocolVersion(taskProtocolVersion) ? {
         protocolVersion: taskProtocolVersion,
         requestHash: mcpTaskRequestHash({
           connectionId: connection.id, endpoint: String(endpoint), toolName: upstreamToolName,
-          argumentsIdentity: toolRequestIdentityHash(parameters ?? {}, options.toolActionSigningSecret),
+          argumentsIdentity: taskArgumentsIdentity,
         }),
         endpointHash: mcpTaskEndpointHash(String(endpoint)),
       } : null;
+      // This call's hold on a task it starts or attaches to.
+      const taskOwner = `call:${invocationId}:${randomUUID()}`;
       const taskTransport = (protocolVersion: string) => mcpTaskTransport({
         protocolVersion,
         refreshable: connection.authKind === "oauth",
@@ -7541,21 +7628,27 @@ export function createToolGatewayService(
         send: (init) => dispatchRemote(endpoint, { ...init, signal: init.signal ?? controller.signal }),
       });
       const waitOnTask = (row: typeof toolMcpTasks.$inferSelect, taskId: string, initial?: McpTaskState) => waitForMcpTask({
-        row, taskId, initial, session, tool, invocationId, transport: taskTransport(row.protocolVersion),
+        row, owner: taskOwner, taskId, initial, session, tool, invocationId, transport: taskTransport(row.protocolVersion),
         deadline: controller.signal, runSignal: taskSignals.run, callerSignal: taskSignals.caller, execution,
       });
       if (taskIdentity) {
-        const attachable = await findAttachableMcpTask({ session, connectionId: connection.id, grantId: grant.id, requestHash: taskIdentity.requestHash });
+        const attachable = await findAttachableMcpTask({
+          session, connectionId: connection.id, grantId: grant.id, requestHash: taskIdentity.requestHash,
+          rowId: taskSignals.attachToTaskRecordId ?? undefined,
+        });
         const attachedTaskId = attachable ? openMcpTaskId(mcpTaskSecret(), mcpTaskScope(attachable), attachable.sealedProviderTaskId) : null;
         if (attachable && attachedTaskId) {
-          await updateMcpTask(attachable, { leaseExpiresAt: new Date(Date.now() + ms + 15_000), lastInvocationId: invocationId, runId: session.runId ?? attachable.runId });
-          const settled = await waitOnTask(attachable, attachedTaskId);
-          return await completeRemoteMcpCall(settled);
+          // Only one caller collects a task at a time; another one waiting on
+          // it means this call is told to try again, never handed a copy.
+          const claimed = await claimMcpTask(attachable, taskOwner, ms + 15_000, { lastInvocationId: invocationId, runId: session.runId ?? attachable.runId });
+          if (!claimed) throw mcpTaskPendingError();
+          return await completeRemoteMcpCall(await waitOnTask(claimed, attachedTaskId));
         }
       }
-      if (taskSignals.attachOnly) {
-        // A keyed retry only collects its task; it never starts different work under the old key.
-        throw new ToolGatewayHttpError(409, "This idempotency key belongs to an earlier call with different arguments. Use a new key to start new work.", "idempotency_key_conflict");
+      if (taskSignals.attachToTaskRecordId) {
+        // The keyed retry's task is no longer collectable here (its grant or
+        // endpoint changed): report it rather than start the work again.
+        throw mcpTaskExpiredError();
       }
       let response = await dispatchRemote(endpoint, toolCallInit());
       // A stateless server rejects a request it cannot accept before running
@@ -7819,8 +7912,8 @@ export function createToolGatewayService(
         if (!created || !isModernMcpProtocolVersion(sentVersion) || !taskIdentity) throw malformedRemoteMcpResponse();
         const row = await createMcpTaskRecord({
           session, connection, grant, catalogToolName: entry.toolName, invocationId,
-          requestHash: taskIdentity.requestHash, endpointHash: taskIdentity.endpointHash,
-          protocolVersion: sentVersion, state: created, leaseMs: ms + 15_000,
+          requestHash: taskIdentity.requestHash, argumentsIdentity: taskArgumentsIdentity, endpointHash: taskIdentity.endpointHash,
+          protocolVersion: sentVersion, state: created, owner: taskOwner, leaseMs: ms + 15_000,
         });
         return await completeRemoteMcpCall(await waitOnTask(row, created.taskId, created));
       }
@@ -9113,6 +9206,8 @@ export function createToolGatewayService(
     await persistToolTestOutcome(db, args.invocationId, {
       status: "succeeded", result: resultValidation.summary,
     }, args.approvedClaim);
+    // A provider task's result is now recorded; only now is it delivered.
+    await markMcpTaskDelivered(args.session.companyId, args.invocationId);
     await writeToolCallEvent({
       invocationId: args.invocationId,
       session: args.session,
@@ -9899,6 +9994,7 @@ export function createToolGatewayService(
           updatedAt: now,
         })
         .where(eq(toolInvocations.id, invocation.id));
+      await markMcpTaskDelivered(invocation.companyId, invocation.id);
       void emitConnectionInvoked(db, invocation.id);
       await writeToolReviewChange(db, claimed.companyId, tx => tx
         .update(toolActionRequests)
@@ -12167,8 +12263,8 @@ export function createToolGatewayService(
         promptInjectionMode: "ignore",
       });
       let recoveredGitHubPublication: { content: string; data: unknown } | undefined;
-      /** A keyed retry collecting its provider task (MCP Tasks); it may only attach. */
-      let retryingMcpTask = false;
+      /** A keyed retry collecting its provider task (MCP Tasks); it may only attach to that task. */
+      let retryingMcpTaskRecordId: string | null = null;
       let effectiveParameters: unknown = requestedParameters;
       let effectiveArgumentsSummary = argumentValidation.summary;
 
@@ -12634,9 +12730,13 @@ export function createToolGatewayService(
           recorded.invocation.approvalState === "not_required" && gitHubReplayBindingMatches;
         // A keyed retry of a call whose provider task is still undelivered
         // runs again so it attaches to the task; it never sends tools/call twice.
-        retryingMcpTask = recorded.replayed && accessDecision.allowed && !retryingSlackRateLimit && !retryingGitHubPublication
-          && recorded.invocation.agentId === session.agentId && recorded.invocation.connectionId === tool.connectionId
-          && await hasAttachableMcpTaskForInvocation(session.companyId, recorded.invocation);
+        retryingMcpTaskRecordId = recorded.replayed && accessDecision.allowed && !retryingSlackRateLimit && !retryingGitHubPublication
+          && recorded.invocation.agentId === session.agentId
+          ? await mcpTaskForKeyedRetry(session.companyId, recorded.invocation, {
+              connectionId: tool.connectionId ?? null, argumentsIdentity: mcpTaskArgumentsIdentity(effectiveParameters),
+            })
+          : null;
+        const retryingMcpTask = Boolean(retryingMcpTaskRecordId);
         if (retryingGitHubPublication) {
           // Invocation hashes describe shortened audit previews. The durable
           // publication checks the complete saved request and current authority.
@@ -12795,7 +12895,7 @@ export function createToolGatewayService(
                   run: session.runId && !input.approvedActionRequestId
                     ? adapterExecutionControls.get(session.runId)?.controller.signal : undefined,
                   caller: input.signal,
-                  attachOnly: retryingMcpTask,
+                  attachToTaskRecordId: retryingMcpTaskRecordId,
                 },
               )
             : tool.providerType === "mcp_local_stdio"
@@ -12857,6 +12957,8 @@ export function createToolGatewayService(
             updatedAt: completedAt,
           })
           .where(eq(toolInvocations.id, invocationId));
+        // A provider task's result is now recorded; only now is it delivered.
+        await markMcpTaskDelivered(session.companyId, invocationId);
         if (input.approvedActionRequestId) {
           const actionRequestId = input.approvedActionRequestId;
           const [executedRequest] = await writeToolReviewChange(db, session.companyId, tx => tx
@@ -13456,7 +13558,8 @@ export function createToolGatewayService(
       let processed = 0;
       for (const candidate of due) {
         if (input.signal?.aborted) break;
-        const [claimed] = await db.update(toolMcpTasks).set({ leaseExpiresAt: new Date(Date.now() + 60_000), updatedAt: new Date() })
+        const owner = `worker:${randomUUID()}`;
+        const [claimed] = await db.update(toolMcpTasks).set({ leaseOwner: owner, leaseExpiresAt: new Date(Date.now() + MCP_TASK_WORKER_LEASE_MS), updatedAt: new Date() })
           .where(and(
             eq(toolMcpTasks.id, candidate.id), eq(toolMcpTasks.companyId, candidate.companyId),
             eq(toolMcpTasks.nextPollAt, candidate.nextPollAt!),
@@ -13464,13 +13567,13 @@ export function createToolGatewayService(
           )).returning();
         if (!claimed) continue;
         try {
-          await pollStoredMcpTask(claimed, input.wake, input.signal);
+          await pollStoredMcpTask(claimed, owner, input.wake, input.signal);
         } catch (error) {
           logger.warn({ err: error, companyId: claimed.companyId, taskRecordId: claimed.id }, "provider task poll failed");
           await updateMcpTask(claimed, {
-            leaseExpiresAt: null, pollFailures: claimed.pollFailures + 1,
+            leaseExpiresAt: null, leaseOwner: null, pollFailures: claimed.pollFailures + 1,
             nextPollAt: new Date(Date.now() + backgroundPollDelayMs({ pollIntervalMs: claimed.pollIntervalMs, status: claimed.status as McpTaskRecordStatus, failures: claimed.pollFailures + 1 })),
-          }).catch(() => undefined);
+          }, { owner }).catch(() => undefined);
         }
         processed += 1;
       }
