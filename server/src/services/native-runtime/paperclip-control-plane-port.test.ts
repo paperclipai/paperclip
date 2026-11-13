@@ -52,7 +52,7 @@ import {
 import { startEmbeddedPostgresTestDatabase } from "../../__tests__/helpers/embedded-postgres.js";
 import { startRecoveryPostgres } from "../../__tests__/helpers/recovery-postgres.js";
 import { PaperclipControlPlanePort } from "./paperclip-control-plane-port.js";
-import { secretEnvironmentOutputValues } from "../agent-identity-redaction.js";
+import { secretEnvironmentValues } from "../agent-identity-redaction.js";
 import { nativeSha256 } from "./canonical.js";
 import { NativeRunCoordinatorStore } from "./native-run-coordinator-store.js";
 import { finalizeNativeRun, repairCommittedNativeChatResponse } from "./native-run-finalizer.js";
@@ -459,6 +459,7 @@ describe("PaperclipControlPlanePort conformance", () => {
   });
 
   async function terminalObserverFixture(options: {
+    secrets?: readonly string[];
     onCommittedEvent?: (event: PrpEvent) => Promise<void>;
     onDuplicateEvent?: (event: PrpEvent) => Promise<void>;
     assertControllerActive?: () => void;
@@ -480,6 +481,20 @@ describe("PaperclipControlPlanePort conformance", () => {
     const result = { result: CONTROL_PLANE_CONFORMANCE_RESULT, terminal: CONTROL_PLANE_CONFORMANCE_TERMINAL };
     return { identity, runnerId, binding, port, event, snapshot, result };
   }
+
+  it("completes a native run when a bound secret equals a protocol word", async () => {
+    const observed: PrpEvent[] = [];
+    const f = await terminalObserverFixture({ secrets: ["interrupted", "completed", "succeeded", "satisfied"],
+      async onCommittedEvent(event) { observed.push(event); } });
+    await f.port.appendEvent(f.event);
+    await f.port.checkpointSession(f.snapshot);
+    await f.port.completeRun(f.result);
+    expect(observed.map(event => [event.eventType, event.payload.status])).toEqual([["turn.interrupted", "interrupted"]]);
+    const [result] = await db.select().from(nativeRunResults).where(eq(nativeRunResults.runId, f.identity.runId));
+    expect(JSON.stringify(result)).toContain('"turnTerminalState":"completed"');
+    expect(JSON.stringify(result)).toContain('"runTerminalState":"succeeded"');
+    expect(JSON.stringify(result)).toContain('"status":"satisfied"');
+  });
 
   it.each(["default", "deferred"] as const)("keeps %s terminal observation owned before checkpoint and result acceptance", async mode => {
     let release!: () => void;
@@ -1096,7 +1111,7 @@ describe("PaperclipControlPlanePort conformance", () => {
       ...identity, completionContractId: contractId, completionContractSha256: contractSha,
       sourceInstanceId: runnerId, controlPlaneSourceInstanceId: `secret-env-${identity.runId}`,
     }, {
-      secretValues: secretEnvironmentOutputValues({ STRIPE_KEY: secret, SHORT_PIN: "pin42", PLAIN_URL: plain },
+      secrets: secretEnvironmentValues({ STRIPE_KEY: secret, SHORT_PIN: "pin42", PLAIN_URL: plain },
         ["STRIPE_KEY", "SHORT_PIN"]),
       onCommittedEvent: async event => { observed.push(event); },
     });

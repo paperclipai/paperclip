@@ -302,7 +302,7 @@ const state = vi.hoisted(() => ({
 
 vi.mock("../../runtime-api.js", async importOriginal => ({ ...await importOriginal<typeof import("../../runtime-api.js")>(), resolveLocalRuntimeApiUrl: state.localRuntimeApiUrl }));
 
-const accountingEvents = vi.hoisted(() => ({ committed: undefined as undefined | ((event: PrpEvent) => Promise<void>), duplicate: undefined as undefined | ((event: PrpEvent) => Promise<void>), secretValues: undefined as undefined | readonly string[] }));
+const accountingEvents = vi.hoisted(() => ({ committed: undefined as undefined | ((event: PrpEvent) => Promise<void>), duplicate: undefined as undefined | ((event: PrpEvent) => Promise<void>), secrets: undefined as undefined | readonly string[] }));
 vi.mock("./paperclip-control-plane-port.js", async importOriginal => {
   const original = await importOriginal<typeof import("./paperclip-control-plane-port.js")>();
   return { ...original, PaperclipControlPlanePort: class extends original.PaperclipControlPlanePort {
@@ -310,7 +310,7 @@ vi.mock("./paperclip-control-plane-port.js", async importOriginal => {
       super(...args);
       accountingEvents.committed = args[2]?.onCommittedEvent ? event => args[2]!.onCommittedEvent!(event, 1) : undefined;
       accountingEvents.duplicate = args[2]?.onDuplicateEvent ? event => args[2]!.onDuplicateEvent!(event, 1) : undefined;
-      accountingEvents.secretValues = args[2]?.secretValues;
+      accountingEvents.secrets = args[2]?.secrets;
     }
   } };
 });
@@ -15399,7 +15399,7 @@ describe("native session bounded recovery", () => {
     const failure = new Error(`native provider failed: ${secret}`);
     const updates: Array<{ table: unknown; values: Record<string, unknown> }> = [];
     const logs: string[] = [];
-    accountingEvents.secretValues = undefined;
+    accountingEvents.secrets = undefined;
     state.execute.mockReset().mockRejectedValueOnce(failure);
     state.upsertRecoveryAction.mockReset().mockResolvedValue({});
     const service = vi.spyOn(issueServiceModule, "issueService").mockReturnValue({
@@ -15409,10 +15409,10 @@ describe("native session bounded recovery", () => {
       await expect(executePaperclipNativeSession({
         db: leaseDb(execution, {}, {}, updates), execution, runnerInstanceId: "runner",
         runnerEnvironment: { STRIPE_KEY: secret, PLAIN_URL: "https://plain.example.test/api" },
-        outputSecretValues: [secret],
+        outputSecrets: [secret],
         onLog: async (_stream, text) => { logs.push(text); },
       })).rejects.toBe(failure);
-      expect(accountingEvents.secretValues).toEqual([secret]);
+      expect(accountingEvents.secrets).toEqual([secret]);
       for (const output of [inspect(updates.map(entry => entry.values), { depth: null }), logs.join(""), failure.message]) {
         expect(output).not.toContain(secret);
       }

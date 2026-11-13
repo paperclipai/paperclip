@@ -1,44 +1,39 @@
 import { describe, expect, it } from "vitest";
-import { createAgentIdentityRedactor, secretEnvironmentOutputValues } from "./agent-identity-redaction.js";
+import { createAgentIdentityRedactor, secretEnvironmentValues, secretOutputForms } from "./agent-identity-redaction.js";
 
 const REDACTED = "***REDACTED***";
 
-describe("secret environment output values", () => {
+function streamed(redactor: ReturnType<typeof createAgentIdentityRedactor>, chunks: string[]) {
+  return chunks.map((chunk) => redactor.chunk("stdout", chunk)).join("") + redactor.finish("stdout");
+}
+
+describe("secret environment values", () => {
   it("selects only secret-bound values and leaves plain values alone", () => {
-    const values = secretEnvironmentOutputValues({
+    expect(secretEnvironmentValues({
       STRIPE_KEY: "sk_test_synthetic_0123456789",
       PLAIN_URL: "https://plain.example.test/api",
-    }, new Set(["STRIPE_KEY"]));
-    expect(values).toEqual(["sk_test_synthetic_0123456789"]);
-  });
-
-  it("skips values shorter than the minimum length and whitespace-only values", () => {
-    expect(secretEnvironmentOutputValues({
-      SHORT: "abc1234",
-      SINGLE: "x",
       EMPTY: "",
-      BLANK: "            ",
-      PADDED: "  abc  ",
-    }, ["SHORT", "SINGLE", "EMPTY", "BLANK", "PADDED"])).toEqual([]);
-    expect(secretEnvironmentOutputValues({ EDGE: "abcd1234" }, ["EDGE"])).toEqual(["abcd1234"]);
+      NUMBER: 12345678,
+    }, new Set(["STRIPE_KEY", "EMPTY", "NUMBER", "MISSING"]))).toEqual(["sk_test_synthetic_0123456789"]);
+    expect(secretEnvironmentValues(null, ["ANY"])).toEqual([]);
   });
 
-  it("ignores a secret key that has no string value", () => {
-    expect(secretEnvironmentOutputValues({ NUMBER: 12345678 }, ["NUMBER", "MISSING"])).toEqual([]);
-    expect(secretEnvironmentOutputValues(null, ["ANY"])).toEqual([]);
+  it("skips forms shorter than the minimum length and whitespace-only values", () => {
+    expect(secretOutputForms(["abc1234", "x", "            ", "  abc  "])).toEqual([]);
+    expect(secretOutputForms(["abcd1234"])).toEqual(["abcd1234"]);
   });
 
   it("adds trimmed, JSON-escaped, and per-line forms of a multi-line value", () => {
     const value = "-----BEGIN SYNTHETIC KEY-----\nline-one-synthetic\r\nline-two \"quoted\"\n-----END SYNTHETIC KEY-----\n";
-    const values = secretEnvironmentOutputValues({ MULTI: value }, ["MULTI"]);
-    expect(values).toContain(value);
-    expect(values).toContain(value.trim());
-    expect(values).toContain(JSON.stringify(value).slice(1, -1));
-    expect(values).toContain("line-one-synthetic");
-    expect(values).toContain("line-two \"quoted\"");
-    expect(values).toContain("line-two \\\"quoted\\\"");
-    expect(values).not.toContain("-----BEGIN SYNTHETIC KEY-----");
-    expect(values).toEqual([...values].sort((a, b) => b.length - a.length));
+    const forms = secretOutputForms([value]);
+    expect(forms).toContain(value);
+    expect(forms).toContain(value.trim());
+    expect(forms).toContain(JSON.stringify(value).slice(1, -1));
+    expect(forms).toContain("line-one-synthetic");
+    expect(forms).toContain("line-two \"quoted\"");
+    expect(forms).toContain("line-two \\\"quoted\\\"");
+    expect(forms).not.toContain("-----BEGIN SYNTHETIC KEY-----");
+    expect(forms).toEqual([...forms].sort((a, b) => b.length - a.length));
   });
 });
 
@@ -46,28 +41,59 @@ describe("agent output redactor with secret values", () => {
   it("masks a value that contains another secret without leaking either", () => {
     const outer = "outer-synthetic-secret-inner-value";
     const inner = "inner-value";
-    const redactor = createAgentIdentityRedactor(undefined,
-      secretEnvironmentOutputValues({ OUTER: outer, INNER: inner }, ["OUTER", "INNER"]));
-    const text = `env: OUTER=${outer} INNER=${inner}`;
-    expect(redactor.redact(text)).toBe(`env: OUTER=${REDACTED} INNER=${REDACTED}`);
+    const redactor = createAgentIdentityRedactor(undefined, [outer, inner]);
+    expect(redactor.redact(`env: OUTER=${outer} INNER=${inner}`)).toBe(`env: OUTER=${REDACTED} INNER=${REDACTED}`);
+  });
+
+  it("holds a possible longer secret before it masks a shorter secret at the same position", () => {
+    const redactor = createAgentIdentityRedactor(undefined, ["abcdefgh", "abcdefgh1234567890"]);
+    expect(streamed(redactor, ["KEY=abcdefgh", "1234567890\n"])).toBe(`KEY=${REDACTED}\n`);
+    expect(streamed(redactor, ["KEY=abcdefgh", "-other\n"])).toBe(`KEY=${REDACTED}-other\n`);
+    expect(streamed(redactor, ["A=abcdefgh B=abcdefgh123", "4567890 C=abcdefgh"])).toBe(`A=${REDACTED} B=${REDACTED} C=${REDACTED}`);
   });
 
   it("masks a secret split across streamed chunks and keeps plain output", () => {
     const secret = "sk_test_synthetic_streamed_value";
-    const redactor = createAgentIdentityRedactor(undefined, secretEnvironmentOutputValues({ KEY: secret }, ["KEY"]));
-    const output = [
-      redactor.chunk("stdout", `PLAIN=visible KEY=${secret.slice(0, 10)}`),
-      redactor.chunk("stdout", `${secret.slice(10)}\ndone\n`),
-      redactor.finish("stdout"),
-    ].join("");
-    expect(output).toBe(`PLAIN=visible KEY=${REDACTED}\ndone\n`);
+    const redactor = createAgentIdentityRedactor(undefined, [secret]);
+    expect(streamed(redactor, [`PLAIN=visible KEY=${secret.slice(0, 10)}`, `${secret.slice(10)}\ndone\n`]))
+      .toBe(`PLAIN=visible KEY=${REDACTED}\ndone\n`);
+    for (let split = 1; split < secret.length; split++) {
+      expect(streamed(redactor, [`x${secret.slice(0, split)}`, `${secret.slice(split)}y`])).toBe(`x${REDACTED}y`);
+    }
   });
 
   it("masks each line when a multi-line value is printed without its line breaks", () => {
     const value = "first-synthetic-line\nsecond-synthetic-line";
-    const redactor = createAgentIdentityRedactor(undefined, secretEnvironmentOutputValues({ MULTI: value }, ["MULTI"]));
-    expect(redactor.redact("echo: first-synthetic-line second-synthetic-line"))
-      .toBe(`echo: ${REDACTED} ${REDACTED}`);
+    const redactor = createAgentIdentityRedactor(undefined, [value]);
+    expect(redactor.redact("echo: first-synthetic-line second-synthetic-line")).toBe(`echo: ${REDACTED} ${REDACTED}`);
     expect(redactor.redact(JSON.stringify({ output: value }))).toBe(JSON.stringify({ output: REDACTED }));
+  });
+
+  it("keeps protocol fields unchanged when a secret equals a protocol word", () => {
+    const redactor = createAgentIdentityRedactor(undefined, ["completed", "succeeded", "commandExecution", "item-secret-id"]);
+    const event = {
+      schema: "paperclip.prp.event.v1", eventType: "turn.completed", itemId: "item-secret-id",
+      payload: { kind: "commandExecution", status: "completed", text: "the command completed", output: "commandExecution done" },
+      terminal: { schema: "paperclip.prp.terminal.v1", turnTerminalState: "completed", runTerminalState: "succeeded" },
+    };
+    expect(redactor.redact(event)).toEqual({
+      ...event,
+      payload: { kind: "commandExecution", status: "completed", text: `the command ${REDACTED}`, output: `${REDACTED} done` },
+    });
+  });
+
+  it("keeps delta protocol fields while it masks streamed output", () => {
+    const redactor = createAgentIdentityRedactor(undefined, ["commandExecution"]);
+    const first = redactor.delta("turn:item", { itemId: "item", kind: "commandExecution", text: "run commandExec" }, "item");
+    expect(first).toEqual({ itemId: "item", kind: "commandExecution", text: "run " });
+    const settled = redactor.settleDeltas("turn:item", { itemId: "item" }, false);
+    expect(settled).toEqual({ itemId: "item", outputTails: [{ itemId: "item", payload: { itemId: "item", kind: "commandExecution", text: REDACTED } }] });
+  });
+
+  it("adds the secrets of a later attempt without dropping earlier ones", () => {
+    const redactor = createAgentIdentityRedactor(undefined, ["sk_test_original_value"]);
+    redactor.addSecretValues(["sk_test_rotated_value", "sk_test_original_value"]);
+    expect(redactor.secretSources).toEqual(["sk_test_original_value", "sk_test_rotated_value"]);
+    expect(redactor.redact("a=sk_test_original_value b=sk_test_rotated_value")).toBe(`a=${REDACTED} b=${REDACTED}`);
   });
 });

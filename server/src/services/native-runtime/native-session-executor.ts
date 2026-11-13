@@ -10330,7 +10330,7 @@ export async function executePaperclipNativeSession(input: {
   dotWorkspaceRoot?: string;
   observability?: ProviderObservabilityLaunch;
   runnerEnvironment?: NodeJS.ProcessEnv;
-  outputSecretValues?: readonly string[];
+  outputSecrets?: readonly string[];
   /** Private grant materialization; never a user-configured host path. */
   managedAiCredentialHome?: string;
   managedAiCredentialIdentity?: string;
@@ -10753,7 +10753,7 @@ async function executePaperclipNativeSessionAttempt(
   const canRecoverWarmOwner = !input.restartRecovery || replayPortablePreparation;
   if (input.useRunnerd) await timeController("warm_restore", () => restoreWarmRunnerdController(
     replayPortablePreparation ? { ...input, restartRecovery: undefined } : input));
-  const identityRedactor = createAgentIdentityRedactor(input.runnerEnvironment?.PAPERCLIP_AGENT_PRIVATE_KEY, input.outputSecretValues);
+  const identityRedactor = createAgentIdentityRedactor(input.runnerEnvironment?.PAPERCLIP_AGENT_PRIVATE_KEY, input.outputSecrets);
   const redactIdentityText = (text: string) => redactSensitiveText(
     identityRedactor.chunk("diagnostic", text) + identityRedactor.finish("diagnostic"),
   );
@@ -11550,7 +11550,7 @@ async function executePaperclipNativeSessionAttempt(
     },
     {
       privateKeyPem: input.runnerEnvironment?.PAPERCLIP_AGENT_PRIVATE_KEY,
-      secretValues: input.outputSecretValues,
+      secrets: input.outputSecrets,
       assertControllerActive,
       assertRunAdmissionActive,
       taskSessionPublication: input.taskSessionPublication,

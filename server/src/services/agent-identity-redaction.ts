@@ -3,55 +3,92 @@ import { redactRegisteredSecretValues } from "./run-secret-redaction.js";
 
 export const MIN_SECRET_OUTPUT_VALUE_LENGTH = 8;
 
-export function secretEnvironmentOutputValues(env: unknown, secretKeys: Iterable<string>): string[] {
+const PROTOCOL_KEY = /^(?:id|ids|ref|refs|schema|type|kind|status|state|outcome|phase|stream|channel|role|level|color|transport|operation|namespace|provider|model|biller|disposition|priority|mode|method)$|(?:Id|Ids|Ref|Refs|Type|Kind|State|Status|Code|Disposition|Revision|Version|Mode|Schema|Digest|Sha256|At)$|_(?:id|ids|type|kind|state|status|code)$/;
+
+export function secretEnvironmentValues(env: unknown, secretKeys: Iterable<string>): string[] {
   if (!env || typeof env !== "object" || Array.isArray(env)) return [];
   const record = env as Record<string, unknown>;
-  const values = new Set<string>();
-  for (const key of secretKeys) {
-    const value = record[key];
-    if (typeof value !== "string") continue;
+  return [...new Set([...secretKeys].map(key => record[key]).filter((value): value is string => typeof value === "string" && value.length > 0))];
+}
+
+export function secretOutputForms(secrets: readonly string[]): string[] {
+  const forms = new Set<string>();
+  for (const value of secrets) {
     const lines = /[\r\n]/.test(value) ? value.split(/\r?\n|\r/).map(line => line.trim()).filter(line => !line.startsWith("-----")) : [];
     for (const form of [value, value.trim(), ...lines]) {
       if (form.trim().length < MIN_SECRET_OUTPUT_VALUE_LENGTH) continue;
-      values.add(form);
-      values.add(JSON.stringify(form).slice(1, -1));
+      forms.add(form);
+      forms.add(JSON.stringify(form).slice(1, -1));
     }
   }
-  return [...values].sort((a, b) => b.length - a.length);
+  return [...forms].sort((a, b) => b.length - a.length);
+}
+
+function replaceValues(text: string, values: readonly string[]): string {
+  return values.reduce((result, value) => result.split(value).join(REDACTED_EVENT_VALUE), text);
+}
+
+function redactOutputSecretValues<T>(input: T, values: readonly string[], key?: string): T {
+  if (values.length === 0 || (key !== undefined && PROTOCOL_KEY.test(key))) return input;
+  if (typeof input === "string") return replaceValues(input, values) as T;
+  if (Array.isArray(input)) return input.map((entry) => redactOutputSecretValues(entry, values, key)) as T;
+  if (!input || typeof input !== "object" || input instanceof Date) return input;
+  return Object.fromEntries(Object.entries(input).map(([entryKey, entry]) =>
+    [entryKey, redactOutputSecretValues(entry, values, entryKey)])) as T;
 }
 
 /** Keep private material in memory only; do not copy it into run snapshots. */
-export function createAgentIdentityRedactor(privateKeyPem?: string, secretValues: readonly string[] = []) {
-  const values = [...new Set([
-    ...(privateKeyPem ? [
-      privateKeyPem,
-      privateKeyPem.trim(),
-      JSON.stringify(privateKeyPem).slice(1, -1),
-      ...privateKeyPem.split(/\r?\n/).filter(line => line && !line.startsWith("-----")),
-    ] : []),
-    ...secretValues.filter(Boolean),
-  ])].sort((a, b) => b.length - a.length);
+export function createAgentIdentityRedactor(privateKeyPem?: string, secrets: readonly string[] = []) {
+  const values = privateKeyPem ? [...new Set([
+    privateKeyPem,
+    privateKeyPem.trim(),
+    JSON.stringify(privateKeyPem).slice(1, -1),
+    ...privateKeyPem.split(/\r?\n/).filter(line => line && !line.startsWith("-----")),
+  ])].sort((a, b) => b.length - a.length) : [];
+  const secretSources: string[] = [];
+  const secretValues: string[] = [];
   const pending = new Map<string, string>();
   const deltaStreams = new Map<string, {
     scope: string; itemId?: string; payload: Record<string, unknown>; paths: string[];
   }>();
   const redactor = {
     values,
-    redact<T>(value: T): T { return redactRegisteredSecretValues(value, values); },
+    secretSources,
+    secretValues,
+    addSecretValues(secrets: readonly string[]) {
+      secretSources.splice(0, secretSources.length, ...new Set([...secretSources, ...secrets.filter(Boolean)]));
+      secretValues.splice(0, secretValues.length, ...secretOutputForms(secretSources));
+    },
+    redact<T>(value: T, key?: string): T {
+      return redactOutputSecretValues(redactRegisteredSecretValues(value, values), secretValues, key);
+    },
     // Hold only a suffix that could begin a secret. Separate buffers prevent
     // interleaved stdout/stderr from defeating matching across output chunks.
     chunk(stream: string, chunk: string): string {
-      let text = (pending.get(stream) ?? "") + chunk;
-      for (const value of values) text = text.split(value).join(REDACTED_EVENT_VALUE);
-      let held = 0;
-      for (const value of values) {
-        for (let size = Math.min(value.length - 1, text.length); size > held; size--) {
-          if (text.endsWith(value.slice(0, size))) { held = size; break; }
+      const text = (pending.get(stream) ?? "") + chunk;
+      const candidates = [...values, ...secretValues].sort((a, b) => b.length - a.length);
+      let output = "";
+      let start = 0;
+      for (let index = 0; index < text.length;) {
+        let matched = 0;
+        let partial = false;
+        for (const value of candidates) {
+          if (value.charCodeAt(0) !== text.charCodeAt(index)) continue;
+          if (text.startsWith(value, index)) { matched = value.length; break; }
+          if (text.length - index < value.length && value.startsWith(text.slice(index))) { partial = true; break; }
         }
+        if (partial) {
+          pending.set(stream, text.slice(index));
+          return output + text.slice(start, index);
+        }
+        if (matched) {
+          output += text.slice(start, index) + REDACTED_EVENT_VALUE;
+          index += matched;
+          start = index;
+        } else index++;
       }
-      if (held) pending.set(stream, text.slice(-held));
-      else pending.delete(stream);
-      return held ? text.slice(0, -held) : text;
+      pending.delete(stream);
+      return output + text.slice(start);
     },
     // An interrupted partial secret must not be flushed as plaintext.
     finish(stream: string): string {
@@ -70,7 +107,7 @@ export function createAgentIdentityRedactor(privateKeyPem?: string, secretValues
       stream = JSON.stringify([stream, payload.itemId, payload.providerItemId, payload.channel, payload.stream]);
       const visit = (entry: unknown, path: string, field: string): unknown => {
         if (typeof entry === "string") {
-          if (!/^(text|delta|output|patch)$/.test(field)) return redactor.redact(entry);
+          if (!/^(text|delta|output|patch)$/.test(field)) return redactor.redact(entry, field || undefined);
           const key = `${stream}:${path}`;
           const output = redactor.chunk(key, entry);
           if (pending.has(key)) paths.push(key);
@@ -88,7 +125,7 @@ export function createAgentIdentityRedactor(privateKeyPem?: string, secretValues
       }
       if (paths.length) deltaStreams.set(stream, { scope, itemId, paths,
         payload: Object.fromEntries(["itemId", "providerItemId", "kind", "channel", "stream"]
-          .filter(key => typeof payload[key] === "string").map(key => [key, redactor.redact(payload[key])])),
+          .filter(key => typeof payload[key] === "string").map(key => [key, redactor.redact(payload[key], key)])),
       });
       else deltaStreams.delete(stream);
       return result;
@@ -113,5 +150,6 @@ export function createAgentIdentityRedactor(privateKeyPem?: string, secretValues
       ] } : payload;
     },
   };
+  redactor.addSecretValues(secrets);
   return redactor;
 }

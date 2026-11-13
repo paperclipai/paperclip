@@ -88,6 +88,38 @@ export function createRunSecretRedactionRegistry(db: Db) {
     return values.sort((left, right) => right.length - left.length);
   }
 
+  async function registerAll(companyId: string, runId: string, values: readonly string[]) {
+    const fingerprints = new Map(values.filter(Boolean).map((value) =>
+      [createHash("sha256").update(value).digest("hex"), value] as const));
+    if (fingerprints.size === 0) return;
+    await db.transaction(async (tx) => {
+      const row = await tx.select({ contextSnapshot: heartbeatRuns.contextSnapshot })
+        .from(heartbeatRuns)
+        .where(and(eq(heartbeatRuns.companyId, companyId), eq(heartbeatRuns.id, runId)))
+        .for("update")
+        .then((rows) => rows[0] ?? null);
+      if (!row) throw new Error("Heartbeat run redaction registration failed");
+      const registered = new Set(registryEntries(row.contextSnapshot).map((entry) => entry.fingerprintSha256));
+      const added: RegistryEntry[] = [];
+      for (const [fingerprintSha256, value] of fingerprints) {
+        if (registered.has(fingerprintSha256)) continue;
+        const prepared = await provider.createSecret({ value });
+        added.push({ fingerprintSha256, material: prepared.material });
+      }
+      if (added.length === 0) return;
+      const contextSnapshot = asRecord(row.contextSnapshot) ?? {};
+      const currentEntries = Array.isArray(contextSnapshot[REGISTRY_KEY])
+        ? contextSnapshot[REGISTRY_KEY]
+        : [];
+      await tx.update(heartbeatRuns)
+        .set({
+          contextSnapshot: { ...contextSnapshot, [REGISTRY_KEY]: [...currentEntries, ...added] },
+          updatedAt: new Date(),
+        })
+        .where(and(eq(heartbeatRuns.companyId, companyId), eq(heartbeatRuns.id, runId)));
+    });
+  }
+
   async function valuesForRun(companyId: string, runId: string, viewerUserId: string | null) {
     const rows = await db.select({ contextSnapshot: registrySnapshot, credentialConnectionName: credentialAccessConnectionNameSql(viewerUserId) })
       .from(heartbeatRuns)
@@ -112,32 +144,8 @@ export function createRunSecretRedactionRegistry(db: Db) {
     redactionValuesForRun: async (companyId: string, runId: string) => valuesForRuns(await db
       .select({ contextSnapshot: registrySnapshot }).from(heartbeatRuns)
       .where(and(eq(heartbeatRuns.companyId, companyId), eq(heartbeatRuns.id, runId)))),
-    register: async (companyId: string, runId: string, value: string) => {
-      const fingerprintSha256 = createHash("sha256").update(value).digest("hex");
-      await db.transaction(async (tx) => {
-        const row = await tx.select({ contextSnapshot: heartbeatRuns.contextSnapshot })
-          .from(heartbeatRuns)
-          .where(and(eq(heartbeatRuns.companyId, companyId), eq(heartbeatRuns.id, runId)))
-          .for("update")
-          .then((rows) => rows[0] ?? null);
-        if (!row) throw new Error("Heartbeat run redaction registration failed");
-        if (registryEntries(row.contextSnapshot).some((entry) => entry.fingerprintSha256 === fingerprintSha256)) {
-          return;
-        }
-        const prepared = await provider.createSecret({ value });
-        const entry: RegistryEntry = { fingerprintSha256, material: prepared.material };
-        const contextSnapshot = asRecord(row.contextSnapshot) ?? {};
-        const currentEntries = Array.isArray(contextSnapshot[REGISTRY_KEY])
-          ? contextSnapshot[REGISTRY_KEY]
-          : [];
-        await tx.update(heartbeatRuns)
-          .set({
-            contextSnapshot: { ...contextSnapshot, [REGISTRY_KEY]: [...currentEntries, entry] },
-            updatedAt: new Date(),
-          })
-          .where(and(eq(heartbeatRuns.companyId, companyId), eq(heartbeatRuns.id, runId)));
-      });
-    },
+    register: (companyId: string, runId: string, value: string) => registerAll(companyId, runId, [value]),
+    registerAll,
     redactForRuns: async <T extends { id: string }>(companyId: string, runs: T[], viewerUserId: string | null = null): Promise<T[]> => {
       if (runs.length === 0) return [];
       const rows = await db.select({ id: heartbeatRuns.id, contextSnapshot: registrySnapshot, credentialConnectionName: credentialAccessConnectionNameSql(viewerUserId) })

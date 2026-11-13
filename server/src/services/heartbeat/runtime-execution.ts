@@ -97,6 +97,7 @@ import type { createHeartbeatLifecycle } from "./run-lifecycle.js";
 import type { createHeartbeatRunControl } from "./run-control.js";
 import type { createHeartbeatQueue } from "./queue.js";
 import type { createAgentIdentityRedactor } from "../agent-identity-redaction.js";
+import { createRunSecretRedactionRegistry } from "../run-secret-redaction.js";
 import type { createAdapterExecutionControl } from "../adapter-execution-control.js";
 import type { executionWorkspaceService } from "../execution-workspaces.js";
 import type { workspaceOperationService } from "../workspace-operations.js";
@@ -639,6 +640,9 @@ export async function executeHeartbeatRuntime(db: Db, input: HeartbeatRuntimeExe
           nativeDispatchAtMs,
         }),
       );
+      const secretRedactions = createRunSecretRedactionRegistry(db);
+      await secretRedactions.registerAll(run.companyId, run.id, identityRedactor.secretSources);
+      identityRedactor.addSecretValues(await secretRedactions.redactionValuesForRun(run.companyId, run.id));
       const stopCleanup = runOptions.nativeRestartRecovery?.kind === "reattach_remote_runner"
         && await readClaimedNativeStopRecovery(db, run, runOptions.nativeLeaseOwner);
       const guardedDispatch =
@@ -713,7 +717,7 @@ export async function executeHeartbeatRuntime(db: Db, input: HeartbeatRuntimeExe
               managedAiAccountIdentity: managedAiRuntime?.sessionIdentity,
               managedAiCredentialWriteback: managedAiRuntime?.credentialWriteback,
               managedAiCredentialHome: managedAiRuntime ? String((managedAiRuntime.config.env as Record<string, unknown>).CODEX_HOME) : undefined,
-              outputSecretValues: identityRedactor.values,
+              outputSecrets: identityRedactor.secretSources,
               dotWorkspaceRoot: nativeExecution.provider.kind === "openai_dot" && resolvedConfig.dotWorkspaceAccess === true ? executionWorkspace.cwd : undefined,
               runnerEnvironment: {
                 ...configuredEnvironmentProjection(configuredTaskEnvironment),

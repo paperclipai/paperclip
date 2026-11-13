@@ -24,6 +24,7 @@ import { createAdapterExecutionControl } from "../adapter-execution-control.js";
 import { executionWorkspaceService } from "../execution-workspaces.js";
 import { workspaceOperationService } from "../workspace-operations.js";
 import { instanceSettingsService } from "../instance-settings.js";
+import { createRunSecretRedactionRegistry } from "../run-secret-redaction.js";
 import { executePaperclipNativeSession, NativeCancellationPendingRecoveryError, NativeControllerDetachedForRestartError, nativeSessionFailureSourceCode, nativeSessionFailureDisposition } from "../native-runtime/native-session-executor.js";
 import { NativeRunnerOwnershipUnverifiedError } from "../native-runtime/native-runner-ownership.js";
 import { NativeWorkspaceFinalizationBusyError, NativeWorkspaceFinalizationOwnershipLostError } from "../native-runtime/native-workspace-finalization-ownership.js";
@@ -421,13 +422,17 @@ describe.skipIf(!support.supported)("heartbeat runtime execution boundary", () =
     expect(acquired).not.toHaveBeenCalled();
   });
 
-  it("passes the run's output secret values to native dispatch", async () => {
+  it("passes current and earlier attempts' secrets to native dispatch", async () => {
     const { input } = await fixture(true);
-    input.output.identityRedactor = createAgentIdentityRedactor(undefined, ["sk_test_synthetic_native_value"]);
+    await createRunSecretRedactionRegistry(db).registerAll(input.run.companyId, input.run.id, ["sk_test_synthetic_before_rotation"]);
+    input.output.identityRedactor = createAgentIdentityRedactor(undefined, ["sk_test_synthetic_after_rotation"]);
     await executeHeartbeatRuntime(db, input);
     expect(executePaperclipNativeSession).toHaveBeenCalledWith(expect.objectContaining({
-      outputSecretValues: expect.arrayContaining(["sk_test_synthetic_native_value"]),
+      outputSecrets: expect.arrayContaining(["sk_test_synthetic_before_rotation", "sk_test_synthetic_after_rotation"]),
     }));
+    expect(await createRunSecretRedactionRegistry(db).redactionValuesForRun(input.run.companyId, input.run.id))
+      .toEqual(expect.arrayContaining(["sk_test_synthetic_before_rotation", "sk_test_synthetic_after_rotation"]));
+    expect(input.output.identityRedactor.redact("old sk_test_synthetic_before_rotation")).toBe("old ***REDACTED***");
   });
 
   it.each([false, true])("preserves the dispatch gate's early return and cleanup (native: %s)", async native => {

@@ -10,7 +10,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createDurableRunLogStore } from "../run-log-store.js";
 import type { StorageProvider } from "../../storage/types.js";
 import { createHeartbeatRunOutput, isNewRunLog } from "./run-output.js";
-import { createAgentIdentityRedactor, secretEnvironmentOutputValues } from "../agent-identity-redaction.js";
+import { createAgentIdentityRedactor, secretEnvironmentValues } from "../agent-identity-redaction.js";
 import { formatNativeRunLogEvent } from "../native-runtime/native-run-log-export.js";
 import { generateKeyPairSync } from "node:crypto";
 import { reportStorageOutageWaitsTo, runInOwnStorageScope } from "../../storage/storage-unavailable.js";
@@ -424,7 +424,7 @@ describe("secret-bound environment values in local run output", () => {
         enqueue: undefined,
         flush: async () => undefined,
       },
-      identityRedactor: createAgentIdentityRedactor(undefined, secretEnvironmentOutputValues(env, secretKeys)),
+      identityRedactor: createAgentIdentityRedactor(undefined, secretEnvironmentValues(env, secretKeys)),
       secretKeys,
       appendRunEvent: events as never,
       getCurrentUserRedactionOptions: async () => ({ enabled: false }),
