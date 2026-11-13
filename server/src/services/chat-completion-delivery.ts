@@ -159,29 +159,27 @@ export async function recordCompletedHandoffRead(db: Db, input: {
 }
 
 /** A reply in this conversation already reported this completion when a turn of the same
- * agent read the task at this exact done status and then linked the task in its reply. */
+ * agent read the task done for this completion and then linked the task in its reply. */
 async function earlierCompletionReply(tx: Connection, row: NonNullable<Awaited<ReturnType<typeof loadAudience>>>, runId: string) {
   const { task, handoff, delivery } = row;
   if (!task.completedAt || !task.identifier) return null;
-  const replies = await tx.select({ id: issueComments.id, body: issueComments.body, runId: issueComments.createdByRunId,
-    createdAt: issueComments.createdAt }).from(issueComments).where(and(
+  // A reopen supersedes this delivery and a new completion gets a higher status
+  // version, so any done read at or after this version belongs to this completion,
+  // including after an owner change that advanced the version while still done.
+  const readThisCompletion = sql`exists (select 1 from ${heartbeatRunEvents} handoff_read
+    where handoff_read.company_id = ${handoff.companyId} and handoff_read.run_id = ${issueComments.createdByRunId}
+      and handoff_read.event_type = ${COMPLETED_HANDOFF_READ_EVENT} and handoff_read.payload->>'taskId' = ${task.id}
+      and (handoff_read.payload->>'statusVersion')::bigint >= ${delivery.statusVersion}
+      and handoff_read.created_at <= ${issueComments.createdAt})`;
+  const replies = await tx.select({ id: issueComments.id, body: issueComments.body }).from(issueComments).where(and(
     eq(issueComments.companyId, handoff.companyId), eq(issueComments.issueId, handoff.conversationId),
     eq(issueComments.authorAgentId, handoff.agentId), isNull(issueComments.deletedAt),
     isNotNull(issueComments.createdByRunId), ne(issueComments.createdByRunId, runId),
-    gte(issueComments.createdAt, task.completedAt),
+    gte(issueComments.createdAt, task.completedAt), readThisCompletion,
   )).orderBy(asc(issueComments.createdAt), asc(issueComments.id)).limit(20);
-  for (const reply of replies) {
-    if (!extractIssueReferenceMatches(reply.body).some(match => match.identifier.toUpperCase() === task.identifier!.toUpperCase())) continue;
-    const [read] = await tx.select({ id: heartbeatRunEvents.id }).from(heartbeatRunEvents).where(and(
-      eq(heartbeatRunEvents.companyId, handoff.companyId), eq(heartbeatRunEvents.runId, reply.runId!),
-      eq(heartbeatRunEvents.eventType, COMPLETED_HANDOFF_READ_EVENT),
-      sql`${heartbeatRunEvents.payload}->>'taskId' = ${task.id}`,
-      sql`(${heartbeatRunEvents.payload}->>'statusVersion')::int = ${delivery.statusVersion}`,
-      lte(heartbeatRunEvents.createdAt, reply.createdAt),
-    )).limit(1);
-    if (read) return reply.id;
-  }
-  return null;
+  const identifier = task.identifier.toUpperCase();
+  return replies.find(reply => extractIssueReferenceMatches(reply.body)
+    .some(match => match.identifier.toUpperCase() === identifier))?.id ?? null;
 }
 
 /** Freeze the input at turn start. New completions cannot be consumed by an already-running turn. */

@@ -120,10 +120,11 @@ describeEmbeddedPostgres("activity service", () => {
       { ...base, actorType: "user", actorId: userId },
       { ...base, actorType: "agent", actorId: agentId },
       { ...base, actorType: "system", actorId: "system" },
+      { ...base, actorType: "agent", actorId: "external-agent" },
     ]);
     const named = await activityService(db).withActorNames(await activityService(db).list({ companyId }));
     expect(Object.fromEntries(named.map(row => [row.actorId, row.actorName]))).toEqual({
-      "local-board": "Board", [userId]: "Sam Rivera", [agentId]: "Morgan", system: "Paperclip",
+      "local-board": "Board", [userId]: "Sam Rivera", [agentId]: "Morgan", system: "Paperclip", "external-agent": "An agent",
     });
     await db.delete(authUsers).where(eq(authUsers.id, userId));
   });

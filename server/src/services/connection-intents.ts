@@ -649,7 +649,7 @@ export function connectionIntentService(db: Db) {
       if (results.some(item => item.source === "aggregator")) return discoverySuggestions(results);
       // Only a single unconnected tool result can tell the agent to configure it.
       const setupRequested = !suggestions && results.length === 1
-        && await latestHumanMessageRequestsSetup(run.companyId, issue.id, run.responsibleUserId!);
+        && await latestHumanMessageRequestsSetup(run.companyId, issue.id, run.responsibleUserId!, results[0]!);
       return directSearchResult(query, results, company.prefix, suggestions, setupRequested);
     };
     const targetService = publicService?.slug ?? (indexedMatches.length === 1 ? indexedMatches[0]!.slug : normalizeConnectionQuery(serviceQuery).replaceAll(" ", "-"));
@@ -781,18 +781,27 @@ export function connectionIntentService(db: Db) {
       : results[0]!.state === "ready" ? "Use the installed connection. Do not create another connection request."
       : setupRequested
         ? "The person asked you to set up this connection. If method.management.allowed, use search_api/call_api with nextApiOperation to configure it. Reuse a saved draft. Use connection_request only for required human input or access. Do not ask a generic confirmation or silently change policy to bypass a failed tool call."
-        : `The person has not asked you to set up this connection: they asked about ${results[0]!.name} or need its data. Do not create a connection or a saved draft yourself. Call connection_request with service ${results[0]!.service} to show the inline setup card, which lets the person choose a setup method or decline, and answer their question from these results in plain words. Until the connection is ready, do not claim access to ${results[0]!.name} or report its data.` };
+        : `The person has not asked you to set up this connection. Do not create a connection or a saved draft yourself. If they asked how to connect ${results[0]!.name} or about its setup options, answer in plain words from these results, naming each method and any prerequisite, and link its setup page as [Connect ${results[0]!.name}](/${prefix}/apps/connect?${new URLSearchParams({ source: results[0]!.service })}); do not call connection_request for that, because its card ends your turn before your answer is shown. If they need ${results[0]!.name} data for their request, call connection_request with service ${results[0]!.service} to show the inline setup card, which lets them connect or decline. Until the connection is ready, do not claim access to ${results[0]!.name} or report its data.` };
   }
 
   /** Conservative: a false negative only shows the setup card instead of configuring. */
-  async function latestHumanMessageRequestsSetup(companyId: string, issueId: string, userId: string) {
+  async function latestHumanMessageRequestsSetup(companyId: string, issueId: string, userId: string, target: Pick<ConnectionSearchResultItem, "service" | "name">) {
     // Use a persisted human-authored message, never the agent-supplied query.
     const [message] = await db.select({ body: issueComments.body }).from(issueComments).where(and(
       eq(issueComments.companyId, companyId), eq(issueComments.issueId, issueId),
       eq(issueComments.authorUserId, userId), isNull(issueComments.authorAgentId),
       isNull(issueComments.createdByRunId), isNull(issueComments.derivedAuthorAgentId), isNull(issueComments.deletedAt),
     )).orderBy(desc(issueComments.createdAt), desc(issueComments.id)).limit(1);
-    return !!message && SETUP_REQUEST_PATTERN.test(message.body.trim());
+    if (!message) return false;
+    // The setup verb must govern this app: "Connect Slack, then read my Notion"
+    // asks to set up Slack, so a Notion result still gets the setup card.
+    const clause = message.body.trim().split(/[,.;:!?\n]|\s+(?:then|and|but)\s+/i)[0] ?? "";
+    if (!SETUP_REQUEST_PATTERN.test(clause)) return false;
+    const words = ` ${normalizeConnectionQuery(clause)} `;
+    return [target.name, target.service].some(name => {
+      const normalized = normalizeConnectionQuery(name);
+      return !!normalized && words.includes(` ${normalized} `);
+    });
   }
 
   async function providerSelections(companyId: string, issueId: string, agentId: string, userId: string, questionId: string) {

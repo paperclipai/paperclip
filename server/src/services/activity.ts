@@ -51,6 +51,8 @@ const RUN_LIVENESS_BACKFILL_BATCH = 20;
 const RUN_LIVENESS_CLEAN_TTL_MS = 10 * 60_000;
 const RUN_LIVENESS_CLEAN_MAX_ENTRIES = 10_000;
 
+const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
 /** A person-facing name for an activity actor, so readers never see a raw id such as local-board. */
 export function activityActorFallbackName(actorType: string, actorId: string) {
   if (actorType === "user") return actorId === "local-board" ? "Board" : "A board member";
@@ -438,7 +440,8 @@ export function activityService(db: Db) {
 
     /** Adds actorName to each row; agents and API readers name the actor without its raw id. */
     withActorNames: async <T extends { actorType: string; actorId: string; companyId: string }>(rows: T[]): Promise<Array<T & { actorName: string }>> => {
-      const agentIds = [...new Set(rows.filter(row => row.actorType === "agent").map(row => row.actorId))];
+      // actorId is free text; only a UUID can name a row in agents.
+      const agentIds = [...new Set(rows.filter(row => row.actorType === "agent" && UUID_PATTERN.test(row.actorId)).map(row => row.actorId))];
       const userIds = [...new Set(rows.filter(row => row.actorType === "user" && row.actorId !== "local-board").map(row => row.actorId))];
       const [agentRows, userRows] = await Promise.all([
         agentIds.length ? db.select({ id: agents.id, companyId: agents.companyId, name: agents.name }).from(agents).where(inArray(agents.id, agentIds)) : [],
