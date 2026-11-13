@@ -19913,7 +19913,8 @@ export function issueRoutes(
             details: { commentId: saved.id, identifier: issue.identifier },
           }, publications);
           if (!existing && req.body.body.trim() !== "/new") await setProvisionalChatTitle(tx as unknown as Db, { companyId: issue.companyId, issueId: issue.id,
-            commentId: saved.id, body: req.body.body, actor }, publications);
+            // The saved body, so a title keeps the comment's masking of the server's username and home path.
+            commentId: saved.id, body: saved.body, actor }, publications);
           if (!existing) await enqueueFastResponse(tx as unknown as Db, { companyId: issue.companyId, issueId: issue.id, agentId: issue.conversationAgentId,
             responsibleUserId: userId, sourceCommentId: saved.id, sourceKey: `comment:${saved.id}`, acceptedAt: new Date(saved.createdAt), sessionGeneration: issue.conversationSessionGeneration });
           return saved;

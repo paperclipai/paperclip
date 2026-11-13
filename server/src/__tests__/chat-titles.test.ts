@@ -1,4 +1,6 @@
 import { randomUUID } from "node:crypto";
+import os from "node:os";
+import { instanceSettingsService } from "../services/instance-settings.js";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { eq } from "drizzle-orm";
 import { activityLog, issues } from "@paperclipai/db";
@@ -34,7 +36,7 @@ describe("agent-named chats", () => {
   const originalSecret = process.env.PAPERCLIP_AGENT_JWT_SECRET;
   beforeAll(async () => {
     process.env.PAPERCLIP_AGENT_JWT_SECRET = randomUUID();
-    server = await startRunnerApiTestServer();
+    server = await startRunnerApiTestServer({ humanSessions: true });
   }, 60_000);
   afterAll(async () => {
     await server?.close();
@@ -93,6 +95,26 @@ describe("agent-named chats", () => {
       body: "Plan the Q3 offsite", actor: { actorType: "user", actorId: f.responsibleUserId! } }, []));
     expect(await current(f)).toEqual({ title: "Plan the Q3 offsite", titleNeedsGeneration: true });
     expect(await chatAwaitsFirstAgentTurn(server.db, f.companyId, f.issueId)).toBe(true);
+  });
+
+  it("keeps the comment's username masking in a title from the first message", async () => {
+    const f = await chatFixture();
+    const settings = instanceSettingsService(server.db);
+    const before = await settings.getGeneral();
+    await settings.updateExperimental({ enableAgentChat: true });
+    await settings.updateGeneral({ censorUsernameInLogs: true });
+    try {
+      const cookie = await server.humanSession(f.responsibleUserId!);
+      const body = `Open ${os.homedir()} for me`;
+      const response = await fetch(`${server.apiUrl}/api/issues/${f.issueId}/comments`, { method: "POST",
+        headers: { Cookie: cookie, Origin: server.apiUrl, "Content-Type": "application/json" }, body: JSON.stringify({ body, clientRequestId: randomUUID() }) });
+      expect(response.status, await response.clone().text()).toBe(201);
+      const saved = await response.json() as { body: string };
+      expect(saved.body).not.toContain(os.homedir());
+      expect((await current(f)).title).toBe(chatTitleFromMessage(saved.body));
+    } finally {
+      await settings.updateGeneral({ censorUsernameInLogs: before.censorUsernameInLogs });
+    }
   });
 
   it("lets the chat's agent name it once, and logs the rename", async () => {
