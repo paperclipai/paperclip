@@ -7,6 +7,7 @@ import {
 } from "../../contracts/completion-result.js";
 
 import { canonicalOpenCodeMcpToolName, startOpenCodeMcpBridge, type OpenCodeMcpBridge } from "./mcp-bridge.js";
+import { CAPABILITY_SEMANTIC_TOOL_CATALOG } from "../../semantic-tools/catalog.js";
 
 const bridges: OpenCodeMcpBridge[] = [];
 
@@ -416,4 +417,53 @@ it("returns missing-field guidance before dispatch and accepts an explicit retry
   const accepted = await (await rpc(bridge, { ...request, params: { ...request.params, arguments: { key: "sentry-case", taskId } } })).json() as ScopeResponse;
   expect(accepted.result.isError).not.toBe(true);
   expect(handler).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ arguments: { key: "sentry-case", taskId } }));
+});
+
+describe("repeated identical tool input rejections", () => {
+  // Recorded in chat-eval cohort 12 (cases.handoff-same-task): on some hosts
+  // handoff_case arrived with no arguments on every call, and the runner
+  // returned the same rejection each time, before the control plane could see it.
+  const handoff = CAPABILITY_SEMANTIC_TOOL_CATALOG.find(tool => tool.operationId === "handoff_case")!;
+  const call = (bridge: OpenCodeMcpBridge, id: string, args: unknown, name = "paperclip_handoff_case") =>
+    rpc(bridge, { id, method: "tools/call", params: { name, arguments: args } })
+      .then(response => response.json() as Promise<{ result: { isError?: boolean; content: Array<{ text: string }> } }>);
+
+  it("corrects the second identical rejection with the expected properties and stops the third", async () => {
+    const handler = vi.fn(async () => ({ ok: true }));
+    const bridge = await startOpenCodeMcpBridge({
+      tools: [{ name: "handoff_case", description: handoff.description, inputSchema: handoff.inputSchema }], handler,
+    });
+    bridges.push(bridge);
+    const first = (await call(bridge, "1", {})).result.content[0]!.text;
+    expect(first).toMatch(/^Invalid tool input: missing required fields: idempotencyKey, case, instructions\./);
+    expect(first).not.toContain("rejected");
+
+    const second = (await call(bridge, "2", {})).result.content[0]!.text;
+    expect(second.startsWith(first)).toBe(true);
+    expect(second).toContain("This exact call has now been rejected 2 times with the same arguments. Arguments received each time: none.");
+    expect(second).toContain("Expected properties: required idempotencyKey, case, instructions; optional to, toAgentId, phase,");
+    expect(second).toContain("send every field as a top-level argument of handoff_case in one call");
+
+    const third = (await call(bridge, "3", {})).result.content[0]!.text;
+    expect(third).toMatch(/^This call was not accepted: handoff_case was already rejected 2 times in this run with these exact arguments\./);
+    expect(third).toContain("Stop calling handoff_case with these arguments: change them, or stop and tell the user what blocked you.");
+    expect((await call(bridge, "4", {})).result.content[0]!.text).toContain("already rejected 3 times");
+
+    // Changed arguments are judged afresh, and a valid call still runs.
+    const changed = (await call(bridge, "5", { idempotencyKey: "k" })).result.content[0]!.text;
+    expect(changed).toMatch(/^Invalid tool input: missing required fields: case, instructions\./);
+    const valid = { idempotencyKey: "k", case: { id: "00000000-0000-4000-8000-000000000001" }, toAgentId: "00000000-0000-4000-8000-000000000002", phase: "build", instructions: "Go." };
+    expect((await call(bridge, "6", valid)).result.isError).toBeUndefined();
+    expect(handler).toHaveBeenCalledOnce();
+  });
+
+  it("applies the completion tool's continuation rule outside its advertised schema", async () => {
+    const bridge = await startOpenCodeMcpBridge({ handler: async () => ({ accepted: true }) });
+    bridges.push(bridge);
+    const report = { summary: "s", completionClaim: { contractRevision: "r", objectiveSatisfied: true, criteria: [], remainingWork: [] }, evidence: [], verification: [] };
+    const continuation = { kind: "response_wake", summary: "wait", idempotencyKey: "k" };
+    expect((await call(bridge, "f1", { ...report, reportedWorkDisposition: "done", continuation }, "paperclip_finish")).result.content[0]!.text)
+      .toBe('Invalid tool input for paperclip_finish: continuation is only for reportedWorkDisposition: "yielded". Use continuation: null or omit it for done, completed, or needs_review.');
+    expect((await call(bridge, "f2", { ...report, reportedWorkDisposition: "yielded", continuation }, "paperclip_finish")).result.isError).toBeUndefined();
+  });
 });

@@ -106,21 +106,31 @@ async function alignSkillRuntimeName(
       throw error;
     },
   );
-  if (markdown === null || !markdown.startsWith("---\n")) return;
-  const closing = markdown.indexOf("\n---\n", 3);
-  if (closing < 0) return;
-  const lines = markdown.slice(4, closing).split("\n");
-  const nameIndex = lines.findIndex((line) => /^name\s*:/u.test(line));
+  if (markdown === null) return;
+  const opening = /^---\r?\n/u.exec(markdown);
+  if (!opening) return;
+  const rest = markdown.slice(opening[0].length);
+  const closing = /^---(?:\r?\n|$)/mu.exec(rest);
+  if (!closing) return;
+  // Keep each original line ending. Only the name value is disposable; the
+  // rest of the admitted document must retain its original bytes.
+  const lines = rest.slice(0, closing.index).match(/[^\n]*\n|[^\n]+$/gu) ?? [];
+  const nameIndex = lines.findIndex((line) => /^name[ \t]*:/u.test(line));
   if (nameIndex < 0) return;
-  const alignedLine = `name: ${yamlNameValue(runtimeName)}`;
-  if (lines[nameIndex] === alignedLine) return;
-  lines[nameIndex] = alignedLine;
+  let nameEnd = nameIndex + 1;
+  for (let index = nameEnd; index < lines.length; index += 1) {
+    const line = lines[index]!;
+    if (/^[^\s#]/u.test(line)) break;
+    // Indented lines continue the value, including literal/folded scalars.
+    // Leave trailing blank lines and field comments outside the value intact.
+    if (/^[ \t]+\S/u.test(line)) nameEnd = index + 1;
+  }
+  const eol = lines[nameIndex]!.endsWith("\r\n") ? "\r\n" : "\n";
+  lines.splice(nameIndex, nameEnd - nameIndex, `name: ${yamlNameValue(runtimeName)}${eol}`);
+  const aligned = opening[0] + lines.join("") + rest.slice(closing.index);
+  if (aligned === markdown) return;
   await chmod(skillFile, 0o644);
-  await writeFile(
-    skillFile,
-    `---\n${lines.join("\n")}\n---\n${markdown.slice(closing + 5)}`,
-    { mode: 0o644 },
-  );
+  await writeFile(skillFile, aligned, { mode: 0o644 });
 }
 
 function portableRuntimeNameKey(runtimeName: string): string {
