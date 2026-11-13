@@ -87,7 +87,7 @@ const support = await getEmbeddedPostgresTestSupport();
         const [retry] = await db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: f.input.agentId,
           issueId: f.issueId, status: "running", contextSnapshot: { taskRetryRequestId: retryIntentId },
         }).returning();
-        const fresh = { mode: "fresh_isolated_workspace", retryIntentId, sourceRunId: f.runId, retainedSourceIds: [] } as const;
+        const fresh = { mode: "fresh_isolated_workspace" as const, retryIntentId, sourceRunId: f.runId, retainedSourceIds: [] };
         const call = vi.fn<WorkspaceWorkers["call"]>(async (...args) => {
           const result = await f.workers.call(...args) as { kind: string };
           if (state === "transport") throw new Error("connection closed");
