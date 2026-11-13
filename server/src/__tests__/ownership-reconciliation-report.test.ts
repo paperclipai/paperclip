@@ -1117,7 +1117,7 @@ describe("report-only ownership reconciliation", () => {
       if (node["Node Type"] === "Aggregate") (subPlan ? subPlanAggregates : aggregates).push(node);
       for (const child of node.Plans ?? []) walk(child, subPlan);
     };
-    walk((row as { "QUERY PLAN": Array<{ Plan: PlanNode }> })["QUERY PLAN"][0]!.Plan, false);
+    walk((row as unknown as { "QUERY PLAN": Array<{ Plan: PlanNode }> })["QUERY PLAN"][0]!.Plan, false);
     expect(aggregates).toHaveLength(1);
     expect(subPlanAggregates).toEqual([]);
   });
