@@ -40,34 +40,29 @@ function schemaIdentities(definitions: Array<Record<string, unknown>>) {
   return definitions.map(definition => definition.inputSchema);
 }
 
+async function measureSessions(baseline: number) {
+  const held: Array<Awaited<ReturnType<typeof create>>> = [];
+  for (let index = 0; index < sessions; index += 1) held.push(await create());
+  const retainedBytesPerSession = Math.round((heap() - baseline) / sessions);
+  const turnResults: Array<Array<Record<string, unknown>>> = [];
+  const beforeTurns = heap();
+  for (let index = 0; index < turns; index += 1) turnResults.push(held[0]!.definitions());
+  const retainedBytesPerTurn = Math.round((heap() - beforeTurns) / turns);
+  const first = schemaIdentities(turnResults[0]!);
+  const schemaObjectsAfterTurns = new Set(turnResults.flatMap(schemaIdentities)).size;
+  const sharedAcrossTurns = turnResults.every(result => schemaIdentities(result).every((schema, index) => schema === first[index]));
+  return { retainedBytesPerSession, retainedBytesPerTurn, schemaObjectsAfterTurns, sharedAcrossTurns };
+}
+
 async function main() {
   await create();
   const baseline = heap();
-  const held: Array<Awaited<ReturnType<typeof create>>> = [];
-  for (let index = 0; index < sessions; index += 1) held.push(await create());
-  const afterSessions = heap();
-  const perSession = (afterSessions - baseline) / sessions;
-
-  const session = held[0]!;
-  const turnResults: Array<Array<Record<string, unknown>>> = [];
-  const beforeTurns = heap();
-  for (let index = 0; index < turns; index += 1) turnResults.push(session.definitions());
-  const afterTurns = heap();
-  const first = schemaIdentities(turnResults[0]!);
-  const distinctSchemaCopies = new Set(turnResults.flatMap(schemaIdentities)).size;
-  const sharedAcrossTurns = turnResults.every(result => schemaIdentities(result).every((schema, index) => schema === first[index]));
-
-  held.length = 0;
-  turnResults.length = 0;
+  const measured = await measureSessions(baseline);
   const released = heap();
-
   console.log(JSON.stringify({
     tools: toolCount, schemaBytes, sessions, turns,
-    retainedBytesPerSession: Math.round(perSession),
-    retainedBytesPerTurn: Math.round((afterTurns - beforeTurns) / turns),
-    schemaObjectsAfterTurns: distinctSchemaCopies,
-    schemaObjectsPerTurn: distinctSchemaCopies / turns,
-    sharedAcrossTurns,
+    ...measured,
+    schemaObjectsPerTurn: measured.schemaObjectsAfterTurns / turns,
     bytesStillHeldAfterRelease: Math.max(0, released - baseline),
   }, null, 2));
 }
