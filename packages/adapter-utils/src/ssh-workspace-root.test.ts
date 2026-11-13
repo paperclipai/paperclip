@@ -33,7 +33,7 @@ afterEach(async () => {
   for (const root of roots.splice(0)) await rm(root, { recursive: true, force: true });
 });
 
-it.each(["direct", "managed"] as const)("preserves the parent repository during %s fallback workspace sync", async (mode) => {
+it.each(["direct", "managed", "restore-only"] as const)("preserves the parent repository during %s fallback workspace sync", async (mode) => {
   const root = await mkdtemp(path.join(os.tmpdir(), "ssh-workspace-root-"));
   roots.push(root);
   const parent = path.join(root, "parent");
@@ -58,7 +58,7 @@ it.each(["direct", "managed"] as const)("preserves the parent repository during 
   const managed = mode === "managed" ? await prepareRemoteManagedRuntime({
     spec, runId: "fallback-run", adapterKey: "test-adapter", workspaceLocalDir: localDir,
   }) : null;
-  const prepared = managed ? null : await prepareWorkspaceForSshExecution({ spec, localDir });
+  const prepared = managed || mode === "restore-only" ? null : await prepareWorkspaceForSshExecution({ spec, localDir });
   const workspaceRemoteDir = managed?.workspaceRemoteDir ?? remoteDir;
   await git(workspaceRemoteDir, ["init"]);
   await git(workspaceRemoteDir, ["config", "user.name", "Paperclip SSH"]);
