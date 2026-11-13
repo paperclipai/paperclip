@@ -1850,7 +1850,6 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
 
   async function prepareTaskWorkspaceUpdate(input: {
     companyId: string; issueId: string; patch: TaskWorkspaceBindingPatch;
-    /** The caller's run, when this update stopped it to hand the task over. */
     stoppedRun?: { runId: string; stopId: string };
   }, tx: DbTransaction) {
     const [task] = await measureRunPhase("workspace.row_lock", () => tx.select().from(issues).where(and(
@@ -1869,8 +1868,6 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
         sql`coalesce(${heartbeatRuns.contextSnapshot}->>'issueId', ${heartbeatRuns.contextSnapshot}->>'taskId') = ${input.issueId}`,
         task.executionRunId ? eq(heartbeatRuns.id, task.executionRunId) : undefined),
     )).limit(1);
-    // Settings and preference are read when a run is admitted; the stopped
-    // run finalizes from the binding and lease it was admitted with.
     const keepsBinding = (["executionWorkspaceId", "projectWorkspaceId"] as const)
       .every(field => input.patch[field] === undefined || input.patch[field] === task[field]);
     const [stoppedByThisUpdate] = input.stoppedRun && keepsBinding
