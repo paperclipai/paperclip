@@ -77,7 +77,7 @@ import {
   isKnownNativeSessionRootEntry,
 } from "./native-session-root-entries.js";
 import { createRunPreparationTiming } from "../execution-preparation-timing.js";
-import { configuredEnvironment, PROVIDER_CREDENTIAL_ENVIRONMENT_KEYS } from "../../vendor/paperclip-runner/index.js";
+import { CONFIGURED_ENVIRONMENT_KEYS, configuredEnvironment, PROVIDER_CREDENTIAL_ENVIRONMENT_KEYS } from "../../vendor/paperclip-runner/index.js";
 import { parseProviderPerformanceSpans } from "../../vendor/paperclip-runner/index.js";
 import { apiKeyBillingType } from "@paperclipai/adapter-utils/api-billing-type";
 import { agents } from "@paperclipai/db";
@@ -8557,6 +8557,11 @@ function needsCoreGitHubAccess(input: Pick<Parameters<typeof executePaperclipNat
   return Boolean(input.managedGitHub && !(target?.kind === "remote" && target.transport === "sandbox" && target.runnerTask));
 }
 
+function pluginTaskConfiguredEnvironment(environment: NodeJS.ProcessEnv | undefined): Record<string, string> {
+  return Object.fromEntries(Object.entries(configuredEnvironment(environment)).flatMap(([key, value]) =>
+    key !== CONFIGURED_ENVIRONMENT_KEYS && typeof value === "string" ? [[key, value]] : []));
+}
+
 function nativeProcessReuseKey(input: Parameters<typeof executePaperclipNativeSession>[0]): string | undefined {
   const environment = input.runnerEnvironment;
   if (!input.managedGitHub && environment?.PAPERCLIP_GITHUB_BROKER_TOKEN) return undefined;
@@ -8795,6 +8800,21 @@ export function nativeSessionFailureDisposition(
         : ("native_session_interrupted" as const),
     nextAttemptAt: exhausted ? null : new Date(now.getTime() + 30_000),
   };
+}
+
+export function nativeAdmittedProviderAttemptLimit(claim: NativeRestartRecoveryClaim | null | undefined): number {
+  return claim?.kind === "reattach_remote_runner" && claim.replaceUnansweredRunner === true
+    ? NATIVE_PROVIDER_RECOVERY_ATTEMPT_LIMIT + 1 : NATIVE_PROVIDER_RECOVERY_ATTEMPT_LIMIT;
+}
+
+export function nativeUnansweredRunnerReplacementDisposition(
+  disposition: ReturnType<typeof nativeSessionFailureDisposition>,
+  input: { attempt: number; now: Date; adoptedRunnerUnanswered: boolean; replacing: boolean },
+): ReturnType<typeof nativeSessionFailureDisposition> {
+  if (!input.adoptedRunnerUnanswered || input.replacing || input.attempt !== NATIVE_PROVIDER_RECOVERY_ATTEMPT_LIMIT
+    || disposition.failureCode !== "native_session_retry_exhausted") return disposition;
+  return { phase: "retryable_failure", failureCode: "native_session_interrupted",
+    nextAttemptAt: new Date(input.now.getTime() + 30_000) };
 }
 
 export function nativeSessionRecoveryProjection(input: {
@@ -11134,7 +11154,7 @@ async function executePaperclipNativeSessionAttempt(
             recovering?.kind,
             !recovering || !("chargesProviderAttempt" in recovering) || recovering.chargesProviderAttempt !== false,
           );
-          if (nextAttempt > 3)
+          if (nextAttempt > nativeAdmittedProviderAttemptLimit(recovering))
             throw new Error("native_session_retry_exhausted");
           const scheduledResumeDecision = await scheduledResumeContinuationAllowed(tx as unknown as Db, {
             companyId: input.execution.binding.companyId,
@@ -11443,7 +11463,9 @@ async function executePaperclipNativeSessionAttempt(
       : "unpriced" as const;
     const billing = resolveNativeBilling(input.execution.provider, input.runnerEnvironment, input.billingIdentity);
     const costUsdExact = input.execution.provider.kind !== "cursor_cloud" && typeof usage?.accountingCostUsdExact === "string" ? usage.accountingCostUsdExact : undefined;
+    const providerRequestId = typeof usage?.providerRequestId === "string" && usage.providerRequestId ? usage.providerRequestId.slice(0, 250) : undefined;
     const checkpoint: AdapterUsageCheckpoint = { usage: accountingUsage, ...billing, complete, usageBasis: "per_run", costUsdExact,
+      ...(providerRequestId ? { providerRequestId } : {}),
       model: input.execution.provider.model ?? "unknown", costUsd: accountingCost ?? null, costStatus,
       ...(usage?.accountingUsageLost === true ? { pricingProvenance: { source: accountingCost != null || costUsdExact ? "provider_reported" as const : "unknown" as const,
         version: "accounting-receipt/v1", evidence: NATIVE_LOST_TURN_USAGE_EVIDENCE } } : {}) };
@@ -11937,6 +11959,9 @@ async function executePaperclipNativeSessionAttempt(
         entry.closeOnReleaseReason !== undefined ||
         entry.configDigest !== warmConfigDigest ||
         !canReuseNativeProcess(input, entry.processConfigDigest) ||
+        (entry.pluginTaskId !== undefined && pluginTaskDescription?.configuredEnvironmentVersion === 1
+          && pluginTaskSessionOwners.get(entry.session)?.configuredEnvironmentDelivered() === false
+          && Object.keys(pluginTaskConfiguredEnvironment(input.runnerEnvironment)).length > 0) ||
         Boolean(entry.githubAccess) !== needsCoreGitHubAccess(input) ||
         entry.githubAccess?.ready === false ||
         (entry.githubAccess !== undefined && entry.githubAccess.duplexRequested !== adapterExecutionTargetEnablesSandboxDuplexBridge(input.runnerExecutionTarget))
@@ -12935,11 +12960,17 @@ async function executePaperclipNativeSessionAttempt(
         sourceFailureCode,
         bootstrap,
       });
-      const disposition = nativeSessionFailureDisposition(
+      const adoptedRunnerUnanswered = input.runnerExecutionTarget?.kind === "remote"
+        && input.restartRecovery?.kind === "reattach_remote_runner"
+        && input.restartRecovery.remote.kind !== "plugin_task" && nativeRecoveryCommandUnanswered(error);
+      const disposition = nativeUnansweredRunnerReplacementDisposition(nativeSessionFailureDisposition(
         attempt,
         now,
         sourceFailureCode,
-      );
+      ), {
+        attempt, now, adoptedRunnerUnanswered,
+        replacing: input.restartRecovery?.kind === "reattach_remote_runner" && input.restartRecovery.replaceUnansweredRunner === true,
+      });
       const phase =
         recoveryEvidence.recoveryMode === "ambiguous_state"
           ? ("terminal_failure" as const)
@@ -13073,9 +13104,7 @@ async function executePaperclipNativeSessionAttempt(
                 ? { runnerExitConfirmed: true } : {}),
               ...(input.runnerExecutionTarget?.kind === "remote" && nativeRunnerExitedBeforeSessionOpen(error)
                 ? { runnerExitedBeforeSessionOpen: true } : {}),
-              ...(input.runnerExecutionTarget?.kind === "remote" && input.restartRecovery?.kind === "reattach_remote_runner"
-                && input.restartRecovery.remote.kind !== "plugin_task" && nativeRecoveryCommandUnanswered(error)
-                ? { adoptedRunnerUnanswered: true } : {}),
+              ...(adoptedRunnerUnanswered ? { adoptedRunnerUnanswered: true } : {}),
               ...(providerCooldownAt ? { providerCooldownAt: providerCooldownAt.toISOString() } : {}),
               ...(providerLimit?.plan.resetAt ? { providerLimitResetAt: providerLimit.plan.resetAt.toISOString() } : {}),
               recoveryOwner: recoveryProjection.recoveryOwner,
@@ -13774,6 +13803,8 @@ async function executePaperclipNativeSessionAttempt(
       : "unpriced",
     usageComplete: nativeAccountingComplete,
     usageBasis: "per_run",
+    ...(typeof native.usage?.providerRequestId === "string" && native.usage.providerRequestId
+      ? { providerRequestId: native.usage.providerRequestId.slice(0, 250) } : {}),
     nativeFinalization: finalization,
   };
   if (taskSettleScope) {
@@ -15300,7 +15331,7 @@ export async function verifyRemoteRunnerOrSettledExit(
   const stall = input.stall ?? remoteRunnerPluginStall(input.recoveryDeadline);
   const target = input.target;
   const replaceUnanswered = input.claim.replaceUnansweredRunner === true
-    && input.providerAttempt <= NATIVE_PROVIDER_RECOVERY_ATTEMPT_LIMIT
+    && input.providerAttempt <= NATIVE_PROVIDER_RECOVERY_ATTEMPT_LIMIT + 1
     && target?.kind === "remote" && target.transport === "sandbox" && Boolean(target.runner);
   let verified: Awaited<ReturnType<typeof verifyRemoteRunnerReattachment>>;
   try {
@@ -16355,6 +16386,11 @@ async function createRunnerdBackendWithinSessionClaim(
       await registerPluginTaskCredentialHandoff(input.db, { companyId: input.execution.binding.companyId, leaseId: remoteTarget.leaseId },
         credentials.accountIdentity, input.managedAiCredentialWriteback);
     }
+    const taskConfiguredEnvironment = pluginTaskConfiguredEnvironment(input.runnerEnvironment);
+    if (description.configuredEnvironmentVersion !== 1 && Object.keys(taskConfiguredEnvironment).length > 0) {
+      await input.onLog?.("stderr", `[paperclip] The environment plugin does not support configured environment variables. These variables were not set: ${
+        Object.keys(taskConfiguredEnvironment).sort().join(", ")}. Update the plugin to deliver them.\n`);
+    }
     const ownerInput: Parameters<typeof createPluginRunnerTaskOwner>[0] = { ...credentials, taskId: description.taskId,
       executionContext: input.executionContext?.pluginSupported ? input.executionContext : undefined,
       // Warm retirement can outlive the run's temporary credential home; complete uses the durable handoff.
@@ -16374,6 +16410,8 @@ async function createRunnerdBackendWithinSessionClaim(
       }),
       warmTaskVersion: description.warmTaskVersion,
       githubCredentialBrokerVersion: description.githubCredentialBrokerVersion,
+      configuredEnvironmentVersion: description.configuredEnvironmentVersion,
+      configuredEnvironment: taskConfiguredEnvironment,
       releaseResumeVersion: description.releaseResumeVersion,
       authorityRunId: description.releaseResumeVersion === 1 ? input.execution.binding.runId : undefined,
       releasedSource: input.remoteWarmRecovery?.releasedSource,
