@@ -4,9 +4,9 @@ import os from "node:os";
 import path from "node:path";
 import { and, eq, sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
-import { agents, budgetEvaluationWork, budgetPolicies, companies, costEvents, costAdjustments, createDb, heartbeatRuns, projects, promptInjectionInvocations, runUsageReceipts, type Db } from "@paperclipai/db";
+import { agents, budgetEvaluationWork, budgetPolicies, budgetReservations, companies, costEvents, costAdjustments, createDb, heartbeatRuns, projects, promptInjectionInvocations, runUsageReceipts, type Db } from "@paperclipai/db";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "../__tests__/helpers/embedded-postgres.js";
-import { accountRunCost, createCostAccountingReconciler, readCostAccountingWork } from "./run-cost-accounting.js";
+import { ACCOUNTING_CLOSURE_TIMEOUT_MS, accountRunCost, createCostAccountingReconciler, readCostAccountingWork } from "./run-cost-accounting.js";
 import { createRunUsageRecorder, persistUsageReceipt, type UsageReceiptEnvelope } from "./usage-receipts.js";
 import * as usageReceipts from "./usage-receipts.js";
 import { billingReconciliationService } from "./billing-reconciliation.js";
@@ -460,13 +460,73 @@ const support = await getEmbeddedPostgresTestSupport();
     expect(await db.select().from(costEvents)).toHaveLength(0);
   });
 
-  it("waits for a missing final receipt without scheduling unchanged debt", async () => {
-    const { runId } = await seed({ usageJson: { accountingReceiptReady: false, inputTokens: 5 } });
-    expect(await readCostAccountingWork(db, Date.now(), directory)).toEqual({ pending: false, nextRunAt: null });
+  it("waits for a missing final receipt until the closure bound without polling unchanged debt", async () => {
+    const finishedAt = new Date();
+    const { runId } = await seed({ finishedAt, usageJson: { accountingReceiptReady: false, inputTokens: 5 } });
+    expect(await readCostAccountingWork(db, Date.now(), directory))
+      .toEqual({ pending: false, nextRunAt: finishedAt.getTime() + ACCOUNTING_CLOSURE_TIMEOUT_MS + 1 });
     const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
     expect(run.costAccountingPending).toBe(true);
     await db.update(heartbeatRuns).set({ usageJson: { accountingReceiptReady: true, costUsd: 0.01 } }).where(eq(heartbeatRuns.id, runId));
     expect((await readCostAccountingWork(db, Date.now(), directory)).pending).toBe(true);
+  });
+
+  // A legacy adapter's execute() resolves only after its child process
+  // closes. A run that timed out mid-turn keeps its last checkpoint with an
+  // incomplete receipt, and no producer is left to complete it.
+  const partialLegacyReceipt = { accountingReceiptReady: false, accountingReceiptSequence: 34, provider: "test", biller: "test",
+    model: "test", billingType: "metered_api", costUsd: 0, costStatus: "reported", inputTokens: 51234, outputTokens: 2210,
+    usageSource: "per_run", budgetExposure: { costCents: "4.5" } };
+
+  it("settles a timed-out legacy run's partial receipt past the closure bound", async () => {
+    const finishedAt = new Date(Date.now() - ACCOUNTING_CLOSURE_TIMEOUT_MS - 1_000);
+    const { companyId, agentId, runId } = await seed({ status: "timed_out", runtimeMode: "legacy", finishedAt, usageJson: partialLegacyReceipt });
+    await db.insert(budgetReservations).values({ companyId, runId, agentId, amountCents: "0", state: "held" });
+    expect((await readCostAccountingWork(db, Date.now(), directory)).pending).toBe(true);
+    await createCostAccountingReconciler(db)();
+    const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
+    expect(run).toMatchObject({ costAccountingPending: false, costAccountedAt: expect.any(Date) });
+    expect(run.usageJson).toMatchObject({ accountingReceiptUnavailable: true, accountingClosureTimedOut: true });
+    const [reservation] = await db.select().from(budgetReservations).where(eq(budgetReservations.runId, runId));
+    expect(reservation.state).toBe("settled");
+    const events = await db.select().from(costEvents).where(eq(costEvents.heartbeatRunId, runId));
+    expect(events).toHaveLength(1);
+    // The observed live price is the floor, marked as a lower-bound estimate.
+    expect(events[0]).toMatchObject({ costCents: 4.5, costStatus: "estimated", inputTokens: 51234, outputTokens: 2210 });
+    expect(JSON.stringify(events[0].pricingProvenance)).toContain("closure evidence never arrived");
+    expect(await readCostAccountingWork(db, Date.now(), directory)).toEqual({ pending: false, nextRunAt: null });
+  });
+
+  it("arms the worker timer for a legacy run before the closure bound", async () => {
+    const finishedAt = new Date(Date.now() - 10_000);
+    const { runId } = await seed({ status: "timed_out", runtimeMode: "legacy", finishedAt, usageJson: partialLegacyReceipt });
+    const nextRunAt = finishedAt.getTime() + ACCOUNTING_CLOSURE_TIMEOUT_MS + 1;
+    expect(await readCostAccountingWork(db, Date.now(), directory)).toEqual({ pending: false, nextRunAt });
+    expect(await accountRunCost(db, runId)).toBe(false);
+    expect((await readCostAccountingWork(db, nextRunAt, directory)).pending).toBe(true);
+    await db.update(heartbeatRuns).set({ finishedAt: new Date(Date.now() - ACCOUNTING_CLOSURE_TIMEOUT_MS - 1_000) }).where(eq(heartbeatRuns.id, runId));
+    expect(await accountRunCost(db, runId)).toBe(true);
+  });
+
+  it("keeps a native run without settled recovery waiting past the closure bound", async () => {
+    const finishedAt = new Date(Date.now() - ACCOUNTING_CLOSURE_TIMEOUT_MS - 1_000);
+    const { runId } = await seed({ status: "timed_out", runtimeMode: "native", finishedAt, usageJson: partialLegacyReceipt });
+    expect(await readCostAccountingWork(db, Date.now(), directory)).toEqual({ pending: false, nextRunAt: null });
+    expect(await accountRunCost(db, runId)).toBe(false);
+    const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
+    expect(run.costAccountingPending).toBe(true);
+    expect(await db.select().from(costEvents)).toHaveLength(0);
+  });
+
+  it("settles the held reservation of an already-accounted run", async () => {
+    const { companyId, agentId, runId } = await seed({ costAccountedAt: new Date(), usageJson: { accountingReceiptReady: false } });
+    await db.insert(budgetReservations).values({ companyId, runId, agentId, amountCents: "0", state: "held" });
+    expect(await accountRunCost(db, runId)).toBe(false);
+    const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
+    expect(run.costAccountingPending).toBe(false);
+    const [reservation] = await db.select().from(budgetReservations).where(eq(budgetReservations.runId, runId));
+    expect(reservation).toMatchObject({ state: "settled", settledAt: expect.any(Date) });
+    expect(await db.select().from(costEvents)).toHaveLength(0);
   });
 
   it("reconstructs the actual interrupted-service deadline and disarms after settlement", async () => {
