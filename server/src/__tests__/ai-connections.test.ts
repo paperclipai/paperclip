@@ -1831,6 +1831,23 @@ console.log(JSON.stringify({ type: "result", subtype: "success", result: "hello"
       expect(await t.grantStatus()).toBe("active");
     });
 
+    it("does not count a failure checked late after a newer success", async () => {
+      const t = await setup("late-check");
+      const attribution = await t.attributionFor(t.agentIds[0]!);
+      // Run A fails, another run succeeds, then run B fails. A's check runs last.
+      const early = await t.run(t.agentIds[0]!, "failed", "claude_auth_required", attribution);
+      await new Promise(resolve => setTimeout(resolve, 5));
+      await t.run(t.agentIds[1] ?? t.agentIds[0]!, "succeeded", null, attribution);
+      await new Promise(resolve => setTimeout(resolve, 5));
+      const after = await t.run(t.agentIds[0]!, "failed", "claude_auth_required", attribution);
+      expect(await connectionIntentService(db).requestForRunAuthFailure(after.runId)).toBeNull();
+      const [earlyRow] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, early.runId));
+      expect(await aiConnectionService(db).markAuthenticationFailed({ companyId, runId: early.runId, agentId: t.agentIds[0],
+        runStartedAt: earlyRow!.startedAt!, attribution: attribution as never })).toBe("below_threshold");
+      expect(await t.grantStatus()).toBe("active");
+      expect(await t.latches()).toBe(0);
+    });
+
     it("never lets failures of an older credential generation invalidate a reconnected one", async () => {
       const t = await setup("stale");
       const old = await t.attributionFor(t.agentIds[0]!);

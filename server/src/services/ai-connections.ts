@@ -1200,7 +1200,9 @@ export function aiConnectionService(db: Db) {
           ),
           sql`coalesce(${heartbeatRuns.finishedAt}, ${heartbeatRuns.createdAt}) >= ${since.toISOString()}::timestamptz`,
         )).limit(AI_AUTHENTICATION_FAILURE_SCAN_LIMIT);
-        const observed = new Set<string>([input.runId ?? "probe:current"]);
+        // A run counts only through the same history query: a failure whose
+        // check runs late, after a newer success, must not count again.
+        const observed = new Set<string>(input.runId ? [] : ["probe:current"]);
         for (const run of failedRuns) if (isAiAuthenticationFailure(run.errorCode)) observed.add(run.id);
         if (observed.size < threshold) {
           outcome = "below_threshold";
