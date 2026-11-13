@@ -12,6 +12,7 @@ import { conversationRecoveryActionPredicate, getConversationOwnershipBlocker } 
 import { isInterruptedNativePreparationCandidate } from "./cancelled-native-startup.js";
 import { persistActivity } from "./activity-log.js";
 import { appendHeartbeatRunEvent } from "./heartbeat-run-events.js";
+import { foldWaitingRetriesIntoContinuation } from "./fresh-continuation-retry-fold.js";
 import { logger } from "../middleware/logger.js";
 import { and, asc, eq, exists, inArray, isNull, not, or, sql } from "drizzle-orm";
 import {
@@ -424,6 +425,7 @@ export async function deliverReconciledExecutions(
             where queued_recovery.company_id = ${issueRecoveryActions.companyId}
               and queued_recovery.agent_id = ${issueRecoveryActions.returnOwnerAgentId}
               and queued_recovery.status = 'queued'
+              and queued_recovery.context_snapshot->>'recoveryActionId' is distinct from ${issueRecoveryActions.id}::text
               and queued_recovery.context_snapshot->>'wakeReason' in (${sql.join(recoveryReasons.map(reason => sql`${reason}`), sql`, `)})))`,
         ),
       )
@@ -521,7 +523,7 @@ export async function deliverReconciledExecutions(
         // recorded already continues the task, so it is never a second run.
         const fresh = action.evidence.freshContinuation as { recordedAt?: unknown } | undefined;
         if (fresh && typeof fresh.recordedAt === "string") {
-          const [newer] = await db.select({ id: heartbeatRuns.id }).from(heartbeatRuns).where(and(
+          const [newer] = await db.select({ id: heartbeatRuns.id, contextSnapshot: heartbeatRuns.contextSnapshot }).from(heartbeatRuns).where(and(
             eq(heartbeatRuns.companyId, action.companyId), sql`${heartbeatRuns.id}::text <> ${decision.runId}`,
             or(eq(heartbeatRuns.nativeIssueId, task.id), eq(heartbeatRuns.issueId, task.id),
               sql`${heartbeatRuns.contextSnapshot}->>'issueId' = ${task.id}::text`),
@@ -532,6 +534,12 @@ export async function deliverReconciledExecutions(
               .where(pendingDecision);
             await settleCoalescedFreshContinuationHolds(db, { companyId: action.companyId, primaryId: action.id,
               delivery: "delivered", continuationRunId: newer.id });
+            if (newer.contextSnapshot?.freshContinuationIsolation === action.id)
+              await db.transaction(async tx => {
+                await tx.execute(sql`select id from issues where company_id = ${action.companyId} and id = ${task.id} for update`);
+                await foldWaitingRetriesIntoContinuation(tx as unknown as Db, { companyId: action.companyId, issueId: task.id, runId: newer.id,
+                  sourceRunId: decision.runId });
+              });
             continue;
           }
         }
@@ -592,6 +600,9 @@ export async function deliverReconciledExecutions(
             .where(pendingDecision);
           await settleCoalescedFreshContinuationHolds(tx as unknown as Db, { companyId: action.companyId, primaryId: action.id,
             delivery: "delivered", continuationRunId: run.id });
+          if ((action.evidence.freshContinuation as { isolation?: unknown } | undefined)?.isolation === "fresh_isolated_workspace")
+            await foldWaitingRetriesIntoContinuation(tx as unknown as Db, { companyId: action.companyId, issueId: task.id, runId: run.id,
+              sourceRunId: decision.runId });
         });
       } catch {
         if (action.returnOwnerAgentId) seenAgents.add(action.returnOwnerAgentId);

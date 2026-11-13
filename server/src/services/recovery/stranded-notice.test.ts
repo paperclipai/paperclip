@@ -7,6 +7,7 @@ import {
   buildExecutionReviewParticipantRecoveryNoticeSeed,
   buildExecutionReviewParticipantUnavailableNoticeSeed,
   buildImmediateExecutionPathRecoveryNoticeSeed,
+  buildNoRunningExecutionNoticeSeed,
   buildStrandedRecoveryEscalationNotice,
   buildWorkspaceValidationRecoveryNoticeSeed,
 } from "./stranded-notice.js";
@@ -16,9 +17,19 @@ function allRows(metadata: { sections: Array<{ rows: unknown[] }> }) {
 }
 
 describe("stranded recovery notice seeds", () => {
+  it("says what happened and the one thing to do, with no internal words (the UI recognizes this wording)", () => {
+    for (const seed of [buildImmediateExecutionPathRecoveryNoticeSeed({ status: "todo" }),
+      buildNoRunningExecutionNoticeSeed({ status: "in_progress", attempts: 3 })]) {
+      expect(seed.body).toMatch(/^Paperclip tried to (start|continue) this task again, but it still could not (start|continue)\b/);
+      expect(seed.body).toContain("Press Retry");
+      expect(seed.body).not.toMatch(/execution path|intervention|`blocked`|`todo`|`in_progress`|issue|board operator|inspect|repair/i);
+    }
+    expect(buildNoRunningExecutionNoticeSeed({ status: "in_progress", attempts: 3 }).body).toContain("after 3 tries");
+  });
+
   it.each([
-    ["todo dispatch", buildImmediateExecutionPathRecoveryNoticeSeed({ status: "todo" }), "No live execution path"],
-    ["in_progress continuation", buildImmediateExecutionPathRecoveryNoticeSeed({ status: "in_progress" }), "No live execution path"],
+    ["todo dispatch", buildImmediateExecutionPathRecoveryNoticeSeed({ status: "todo" }), "Task could not continue"],
+    ["in_progress continuation", buildImmediateExecutionPathRecoveryNoticeSeed({ status: "in_progress" }), "Task could not continue"],
     ["workspace validation", buildWorkspaceValidationRecoveryNoticeSeed(), "Workspace validation failed"],
     ["configuration incomplete", buildConfigurationIncompleteRecoveryNoticeSeed(), "Configuration incomplete"],
     ["review participant recovery", buildExecutionReviewParticipantRecoveryNoticeSeed(), "Review recovery stalled"],
@@ -117,9 +128,9 @@ describe("stranded recovery notice seeds", () => {
   });
 
   it("distinguishes todo dispatch from in_progress continuation copy", () => {
-    expect(buildImmediateExecutionPathRecoveryNoticeSeed({ status: "todo" }).body).toContain("retried dispatch");
+    expect(buildImmediateExecutionPathRecoveryNoticeSeed({ status: "todo" }).body).toContain("tried to start this task again");
     expect(buildImmediateExecutionPathRecoveryNoticeSeed({ status: "in_progress" }).body).toContain(
-      "retried continuation",
+      "tried to continue this task again",
     );
   });
 });

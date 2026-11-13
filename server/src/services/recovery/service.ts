@@ -175,6 +175,7 @@ import {
   buildExecutionReviewParticipantRecoveryNoticeSeed,
   buildExecutionReviewParticipantUnavailableNoticeSeed,
   buildStrandedRecoveryEscalationNotice,
+  buildNoRunningExecutionNoticeSeed,
   RETRY_FROM_SAVED_WORK_NEXT_ACTION,
   type StrandedRecoveryNoticeSeed,
 } from "./stranded-notice.js";
@@ -242,6 +243,8 @@ const RESOLVED_DEPENDENCY_WAKE_BACKSTOP_CANDIDATE_LIMIT = 500;
 // every heartbeat and would otherwise trigger a recovery issue after just two
 // productive heartbeats. Floor the override at 60s to keep the exemption from
 // being effectively disabled by misconfiguration.
+const RECOVERY_TASK_NOT_NESTED = "This task was created to recover another task, so Paperclip does not create another recovery task for it.";
+
 export const STRANDED_RECENT_PROGRESS_EXEMPTION_MS = Math.max(
   60_000,
   Number(process.env.STRANDED_RECENT_PROGRESS_EXEMPTION_MS) || 30 * 60 * 1000,
@@ -895,12 +898,11 @@ function isOperatorCancelledRun(
   );
 }
 
-function nonRetryableContinuationNotice(errorCode: string | null) {
+function nonRetryableContinuationNotice() {
   return {
     body:
-      "Paperclip detected a non-retryable failure on this issue's continuation run " +
-      `(\`${errorCode}\`). Skipping automatic retries and moving it to \`blocked\` ` +
-      "so it is visible for intervention.",
+      "The agent's run stopped for a reason that retrying alone would not fix, so Paperclip did not retry it. " +
+      "Fix the reason shown in the details, then press Retry.",
     title: "Continuation failed",
     tone: "danger" as const,
   };
@@ -2508,14 +2510,12 @@ export function recoveryService(
           .then((rows) => rows[0] ?? null)
       : null;
     const sourceLine = sourceIssue
-      ? `- Original source issue: ${issueUiLink(sourceIssue, prefix)}`
-      : sourceIssueId
-        ? `- Original source issue: \`${sourceIssueId}\``
-        : "- Original source issue: unknown";
+      ? `- Original task: ${issueUiLink(sourceIssue, prefix)}`
+      : "- Original task: not found";
 
     return [
       "",
-      "- Nested recovery: suppressed because this issue is already a `stranded_issue_recovery` issue.",
+      `- ${RECOVERY_TASK_NOT_NESTED}`,
       sourceLine,
       "- Next action: press Retry on the original task to start it again from the saved work, then close this task.",
     ].join("\n");
@@ -2874,24 +2874,20 @@ export function recoveryService(
           input.prefix,
         )
       : "none";
-    const retryReason =
-      readNonEmptyString(
-        parseObject(input.latestRun?.contextSnapshot)?.retryReason,
-      ) ?? "none";
     const failureSummary = summarizeRunFailureForIssueComment(input.latestRun);
+    const plain = (value: string) => value.replaceAll("_", " ");
 
     return [
-      "Paperclip stopped automatic stranded-work recovery for this recovery issue.",
+      "Paperclip stopped trying to recover this task automatically.",
       "",
-      `- Recovery issue: ${issueUiLink({ identifier: input.issue.identifier, id: input.issue.id }, input.prefix)}`,
-      `- Previous status: \`${input.previousStatus}\``,
+      `- Recovery task: ${issueUiLink({ identifier: input.issue.identifier, id: input.issue.id }, input.prefix)}`,
+      `- Previous status: ${plain(input.previousStatus)}`,
       `- Latest run: ${runLink}`,
-      `- Latest run status: \`${input.latestRun?.status ?? "unknown"}\``,
-      `- Retry reason: \`${retryReason}\``,
+      `- Latest run status: ${plain(input.latestRun?.status ?? "unknown")}`,
       failureSummary
         ? `- Failure: ${failureSummary.trim()}`
         : "- Failure: none recorded",
-      "- Guard: recovery issues do not create nested `stranded_issue_recovery` issues.",
+      `- ${RECOVERY_TASK_NOT_NESTED}`,
       "",
       "Next action: press Retry to start this task again from the saved work.",
     ].join("\n");
@@ -5348,9 +5344,8 @@ export function recoveryService(
               previousStatus: issue.status as StrandedPreviousStatus,
               latestRun: latestPostResolutionRun,
               comment:
-                `Paperclip stopped requeueing accepted interaction \`${acceptedContinuationInteraction.id}\` after ` +
-                `${consecutive} consecutive continuation wakes were cancelled while waiting on review. ` +
-                "Moving the issue to `blocked` so the missing execution path is visible for intervention.",
+                `Paperclip stopped trying to continue this task after ${consecutive} attempts in a row were cancelled ` +
+                "while it waited for review. Press Retry to start it again.",
             });
             if (updated) {
               result.escalated += 1;
@@ -5633,14 +5628,7 @@ export function recoveryService(
             issue,
             previousStatus: "todo",
             latestRun,
-            notice: {
-              body:
-                "Paperclip automatically retried dispatch for this assigned `todo` issue after a lost wake/run, " +
-                "but it still has no live execution path. " +
-                "Moving it to `blocked` so it is visible for intervention.",
-              title: "No live execution path",
-              tone: "danger",
-            },
+            notice: buildNoRunningExecutionNoticeSeed({ status: "todo" }),
           });
           if (updated) {
             result.escalated += 1;
@@ -5682,14 +5670,7 @@ export function recoveryService(
             issue,
             previousStatus: "todo",
             latestRun,
-            notice: {
-              body:
-                "Paperclip automatically retried dispatch for this assigned `todo` issue after a lost wake/run, " +
-                "but the bounded retry budget is spent and it still has no live execution path. " +
-                "Moving it to `blocked` so it is visible for intervention.",
-              title: "No live execution path",
-              tone: "danger",
-            },
+            notice: buildNoRunningExecutionNoticeSeed({ status: "todo" }),
           });
           if (updated) {
             result.escalated += 1;
@@ -5816,9 +5797,7 @@ export function recoveryService(
               issue,
               previousStatus: "in_progress",
               latestRun: successfulRun,
-              comment:
-                "Paperclip automatically retried continuation for this assigned `in_progress` issue and the retry " +
-                "made progress, but it still has no live execution path. Moving it to `blocked` so it is visible for intervention.",
+              notice: buildNoRunningExecutionNoticeSeed({ status: "in_progress" }),
             });
             if (updated) {
               result.escalated += 1;
@@ -5895,7 +5874,7 @@ export function recoveryService(
             issue,
             previousStatus: "in_progress",
             latestRun,
-            notice: nonRetryableContinuationNotice(classification.errorCode),
+            notice: nonRetryableContinuationNotice(),
           });
           if (updated) {
             result.escalated += 1;
@@ -5915,20 +5894,11 @@ export function recoveryService(
               classification.errorCode,
             );
           if (consecutive >= classification.maxAttempts) {
-            const attemptCopy =
-              consecutive <= 1 ? "" : ` (${consecutive}× attempts)`;
             const updated = await escalateStrandedAssignedIssue({
               issue,
               previousStatus: "in_progress",
               latestRun,
-              notice: {
-                body:
-                  "Paperclip automatically retried continuation for this assigned `in_progress` issue after its live " +
-                  `execution disappeared, but it still has no live execution path${attemptCopy}. ` +
-                  "Moving it to `blocked` so it is visible for intervention.",
-                title: "No live execution path",
-                tone: "danger",
-              },
+              notice: buildNoRunningExecutionNoticeSeed({ status: "in_progress", attempts: consecutive }),
             });
             if (updated) {
               result.escalated += 1;
@@ -5985,18 +5955,9 @@ export function recoveryService(
           issue,
           previousStatus: "in_progress",
           latestRun,
-          notice: recoveryOutcome.retryExhausted ? {
-            body:
-              "Paperclip retried this issue's run after it ended without finishing, but the bounded retry budget " +
-              "is spent and it still has no live execution path. " +
-              "Moving it to `blocked` so it is visible for intervention.",
-            title: "No live execution path",
-            tone: "danger",
-          } : recoveryOutcome.continuationRefused ? CONTINUATION_REFUSED_NOTICE
-            // The scheduler declined the preparation retry for another
-            // reason (for example a durable owner or a permanent refusal):
-            // escalate it as a non-retryable failure, as before.
-            : nonRetryableContinuationNotice(latestRun?.errorCode ?? null),
+          notice: recoveryOutcome.retryExhausted ? buildNoRunningExecutionNoticeSeed({ status: "in_progress" })
+            : recoveryOutcome.continuationRefused ? CONTINUATION_REFUSED_NOTICE
+            : nonRetryableContinuationNotice(),
         });
         if (updated) {
           result.escalated += 1;
