@@ -58,6 +58,8 @@ function valid() {
     ],
     state: {
       initialRunId: "initial",
+      replyLinkProof: { commentId: "initial-reply", route: "http://paperclip.test/COM/company/settings/secrets", linkText: "My secrets",
+        reachedOwnValueEntry: true as const, definitionKey: "PERSONAL_PUBLISHING_KEY" } as Record<string, unknown> | undefined,
       currentMissingBefore: true,
       requiredReferenceBefore: true,
       requiredReferenceAfter: true,
@@ -153,9 +155,15 @@ it("rejects wrong owner/reference/consumer, premature success and missing/leakin
     (o: ReturnType<typeof valid>) => {
       o.state.secretLeaked = true;
     },
+    // The setup reply is graded by its followed link, not its wording.
     (o: ReturnType<typeof valid>) => {
-      o.phaseReplies[0]!.body =
-        "Your personal publishing credential is now ready. Use secure settings.";
+      o.state.replyLinkProof = undefined;
+    },
+    (o: ReturnType<typeof valid>) => {
+      o.state.replyLinkProof = { ...o.state.replyLinkProof, commentId: "confirmed-reply" };
+    },
+    (o: ReturnType<typeof valid>) => {
+      o.state.replyLinkProof = { ...o.state.replyLinkProof, reachedOwnValueEntry: false };
     },
     (o: ReturnType<typeof valid>) => {
       o.runs[2]!.startedAt = "2026-11-04T00:00:05.000Z";
