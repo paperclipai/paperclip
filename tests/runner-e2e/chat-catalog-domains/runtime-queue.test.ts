@@ -122,7 +122,8 @@ it("reads comment citations only from the run's accepted result", () => {
   const id = "3047528e-3c1d-41ee-94e9-122ee17f3032", other = "b9e3ab32-934e-4d07-a5cf-e06fc28d574a";
   const accepted = (result: unknown) => ({ eventType: "run.result.accepted", payload: { prpEvent: { payload: { result } } } });
   expect(resultCitedCommentIds([accepted({ evidence: [{ ref: `comment:${id} (applied)` }, { ref: "document:plan" }] })])).toEqual([id]);
-  expect(resultCitedCommentIds([accepted({ evidence: [], completionClaim: { criteria: [{ evidenceRefs: [`comment:${other.toUpperCase()}`] }] } })])).toEqual([other]);
+  expect(resultCitedCommentIds([accepted({ evidence: [], completionClaim: { criteria: [{ evidenceRefs: [`comment:${other}`] }] } })])).toEqual([other]);
+  expect(resultCitedCommentIds([accepted({ evidence: [{ ref: `comment:${other.toUpperCase()}` }, { ref: `Comment:${other}` }] })])).toEqual([]);
   expect(resultCitedCommentIds([{ eventType: "run.result.proposed", payload: { prpEvent: { payload: { result: { evidence: [{ ref: `comment:${id}` }] } } } } }])).toEqual([]);
   expect(resultCitedCommentIds([accepted({ evidence: [{ ref: `document:comment:${id}` }, { ref: "comment:not-a-comment" }] })])).toEqual([]);
 });

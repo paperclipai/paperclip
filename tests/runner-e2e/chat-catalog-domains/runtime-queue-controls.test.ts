@@ -101,7 +101,7 @@ it("accepts reads the running turn did not cite, delivered once to a continuatio
 it("rejects that continuation when it was not told the running turn already read the messages", () => {
   const o = readNotCited(); o.state.continuationWarnedEarlierReads = false; expect(gradeQueueEdit(o).passed).toBe(false);
 });
-it("rejects that continuation when the latest saved revision is not blue", () => {
+it("rejects that continuation when it saves no latest revision", () => {
   const o = readNotCited(); o.state.finalOutcomeApplied = false; expect(gradeQueueEdit(o).passed).toBe(false);
 });
 it("rejects messages the running turn read but did not cite, with no continuation", () => {

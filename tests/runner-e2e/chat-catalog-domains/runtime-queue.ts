@@ -91,8 +91,8 @@ export function resultCitedCommentIds(events: ReadonlyArray<{ eventType?: unknow
     const refs = [...(Array.isArray(result?.evidence) ? result.evidence.map(entry => (entry as { ref?: unknown } | null)?.ref) : []),
       ...(Array.isArray(result?.completionClaim?.criteria) ? result.completionClaim.criteria.flatMap(entry => (entry as { evidenceRefs?: unknown } | null)?.evidenceRefs ?? []) : [])];
     for (const ref of refs) {
-      const match = typeof ref === "string" ? /^comment:([0-9a-f-]{36})/i.exec(ref) : null;
-      if (match) cited.add(match[1]!.toLowerCase());
+      const match = typeof ref === "string" ? /^comment:([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})/.exec(ref) : null;
+      if (match) cited.add(match[1]!);
     }
   }
   return [...cited];
@@ -105,7 +105,7 @@ export async function runCommentReceipts(ctx: ChatCatalogContext, runId: string)
   return { reads: historyReadRevisions(events), cited: resultCitedCommentIds(events) };
 }
 export function handledInTurn(receipts: { reads?: Record<string, string>; cited?: string[] } | undefined, comment: { id: string; updatedAt?: unknown } | undefined) {
-  return !!comment && readCurrentRevision(receipts?.reads, comment) && !!receipts?.cited?.includes(comment.id.toLowerCase());
+  return !!comment && readCurrentRevision(receipts?.reads, comment) && !!receipts?.cited?.includes(comment.id);
 }
 export function wakeMarksEarlierRead(context: { paperclipWake?: { comments?: Array<{ id?: string; readByEarlierTurn?: boolean }> } } | undefined, commentId: string) {
   return context?.paperclipWake?.comments?.some(row => row.id === commentId && row.readByEarlierTurn === true) === true;

@@ -79,7 +79,7 @@ export function gradeQueueEdit(value: unknown) {
     && s.continuationWarnedEarlierReads === true && (targetHandled ? s.inTurnOutcomeSaved === true && s.latestOutcomeKept === true : s.finalOutcomeApplied === true);
   c.add("edited-message-consumed-once", queued.length === 2 && queued[0]?.id === s.targetId && (consumedInTurn || consumedByContinuation)
     && s.queueEmptyAfterDelivery === true && s.taskDone === true && o.runs.every(row => row.status === "succeeded") && s.initialRevisionRetained === true,
-  "The edited message is consumed exactly once: the running turn read its current revision, saved the change and cited it as handled with no continuation, or one ordinary continuation receives every message not handled in turn, in its final order, and the latest saved revision is blue.");
+  "The edited message is consumed exactly once: the running turn read its current revision, saved the change and cited it as handled with no continuation, or one ordinary continuation receives every message not handled in turn, in its final order, and that continuation saves the latest revision.");
   return c.result();
 }
 
@@ -165,7 +165,7 @@ export const runtimeQueueControlCases = [runtimeDefinition("steering.edit-queued
     const run = consumers[0] && await ctx.input.api.get<{ contextSnapshot?: { wakeCommentIds?: string[]; paperclipWake?: { comments?: Array<{ id?: string; readByEarlierTurn?: boolean }> } }; runnerProfileJson?: { nativeExecutionInput?: { task?: { prompt?: string } } } }>(`/api/heartbeat-runs/${consumers[0].id}`);
     state.continuationWarnedEarlierReads = unread.every(row => !readCurrentRevision(receipts.reads, row) || wakeMarksEarlierRead(run?.contextSnapshot, row.id));
     const ids = run?.contextSnapshot?.wakeCommentIds ?? [], prompt = run?.runnerProfileJson?.nativeExecutionInput?.task?.prompt ?? "";
-    state.consumingRunCount = consumers.length; state.nativeDeliveryBound = unread.length > 0 && JSON.stringify(ids) === JSON.stringify(unread.map(row => row.id))
+    state.consumingRunCount = consumers.length; state.consumerRunId = consumers[0]?.id ?? null; state.nativeDeliveryBound = unread.length > 0 && JSON.stringify(ids) === JSON.stringify(unread.map(row => row.id))
       && unread.every(row => prompt.includes(String(row.body)));
     state.queueEmptyAfterDelivery = delivered.queue.entries.length === 0; state.taskDone = delivered.task.status === "done";
     await ctx.input.capture("actual-queued-edit-stale-dispatch", "Consumed human direction remains history and stale editing offers a new message", "runtime-queued-edit.png");
@@ -177,7 +177,7 @@ export const runtimeQueueControlCases = [runtimeDefinition("steering.edit-queued
     const blue = o.revisions.filter(row => row.createdByRunId === state.workerRunId && row.createdByAgentId === (state.worker as Entity).id && /\bblue\b/i.test(row.body ?? ""));
     const latest = (row: Entity) => o.documents.some(doc => doc.id === row.documentId && doc.latestRevisionId === row.id);
     state.inTurnOutcomeApplied = blue.some(latest); state.inTurnOutcomeSaved = blue.length > 0;
-    state.finalOutcomeApplied = o.revisions.some(row => row.createdByAgentId === (state.worker as Entity).id && /\bblue\b/i.test(row.body ?? "") && latest(row));
+    state.finalOutcomeApplied = !!state.consumerRunId && o.revisions.some(row => row.createdByRunId === state.consumerRunId && row.createdByAgentId === (state.worker as Entity).id && latest(row));
     state.latestOutcomeKept = blue.some(saved => o.revisions.some(row => row.documentId === saved.documentId && latest(row) && /\bblue\b/i.test(row.body ?? "")));
     return o;
   },
