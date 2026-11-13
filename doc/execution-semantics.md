@@ -785,6 +785,20 @@ provider and connection. Runs on other tasks that fail on the same connection
 do not raise more cards. Paperclip adds each such task to the card's linked
 tasks, and the run waits on that card. When the person completes or declines
 the card, Paperclip wakes each linked task once, under its own idempotency key.
+
+When the connection is healthy again (a reconnect, or any later check that the
+requesting agent can use it), Paperclip completes the still-pending AI repair
+cards for that recipient, provider and connection as a system reconciliation.
+It records the card as `expired` with the restored connection. It does not
+record a human answer, and the addressed-user check on the human route does not
+change. A card that names its connection is satisfied only by that connection.
+Agent setup cards, other recipients' and other providers' cards, and answered
+cards do not change. This also clears older cards that were raised once per
+task. Paperclip then wakes each affected task at most once, and only when the
+task still waits on that card: the task is `in_progress` (or blocked by the AI
+configuration recovery, which Paperclip restores), its latest run is the failed
+source run, and its dependencies are resolved. Done, review-held and
+dependency-blocked tasks are not woken.
 AI account selection failures use the selector's owned configuration evidence:
 missing defaults, unavailable or incompatible connections, missing responsible
 users, and credential sharing refusals park automatic host verification until

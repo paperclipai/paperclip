@@ -65,8 +65,9 @@ async function findAvailableToolConnection(db: Db, task: Task, intent: Intent, p
     });
     return capability.allowed ? connection : null;
   }
-  // Additional permissions, provider authentication and inbox setup still need
-  // their governed completion paths. Aggregator cards also name an upstream app.
+  if (payload.purpose === "ai") return findRestoredAiConnection(db, task, intent, payload);
+  // Additional permissions and inbox setup still need their governed
+  // completion paths. Aggregator cards also name an upstream app.
   if (payload.purpose || payload.accessRequest || payload.upstreamService
     || payload.requestingAgentId !== task.assigneeAgentId || !intent.addresseeUserId) return null;
   if (intent.addresseeUserId !== "local-board") {
@@ -87,6 +88,43 @@ async function findAvailableToolConnection(db: Db, task: Task, intent: Intent, p
     issueId: task.id, projectId: task.projectId,
   });
   return access.allowedCount + access.askFirstCount > 0 ? connection : null;
+}
+
+/**
+ * A provider-authentication repair card is satisfied once its requesting agent
+ * can use a healthy AI connection again for the same recipient and provider:
+ * the connection is active and healthy, its grant is active for the current
+ * credential, and it is the agent's own selection. A card that names the
+ * connection it repairs is satisfied only by that connection. Agent setup
+ * cards keep their lifecycle completion path. This never answers for a
+ * person: the caller records a system reconciliation.
+ */
+async function findRestoredAiConnection(db: Db, task: Task, intent: Intent,
+  payload: ReturnType<typeof connectionIntentPayloadSchema.parse>) {
+  if (payload.purpose !== "ai" || payload.agentSetup || payload.accessRequest || payload.upstreamService || payload.savedSetup
+    || payload.requestingAgentId !== task.assigneeAgentId || !intent.addresseeUserId) return null;
+  if (intent.addresseeUserId !== "local-board") {
+    const [membership] = await db.select().from(companyMemberships).where(and(
+      eq(companyMemberships.companyId, task.companyId), eq(companyMemberships.principalType, "user"),
+      eq(companyMemberships.principalId, intent.addresseeUserId),
+    ));
+    if (membership?.status !== "active" || !membership.membershipRole || membership.membershipRole === "viewer") return null;
+  }
+  const connection = await connectionIntentService(db).usableConnectionForAgent({ companyId: task.companyId,
+    agentId: payload.requestingAgentId, responsibleUserId: intent.addresseeUserId, serviceSlug: payload.serviceSlug,
+    purpose: "ai", sourceRunId: intent.sourceRunId ?? null });
+  if (!connection || (payload.repairConnectionId && connection.id !== payload.repairConnectionId)) return null;
+  return connection;
+}
+
+/** The AI repair predicate also covers a task that recovery parked as blocked. */
+export async function findSatisfiedConnection(db: Db, task: Task, intent: Intent, policyRunId?: string | null) {
+  const payload = connectionIntentPayloadSchema.safeParse(intent.payload).data;
+  if (payload?.purpose === "ai") {
+    if (!["in_progress", "in_review", "blocked"].includes(task.status)) return null;
+    return findAvailableToolConnection(db, task, intent, policyRunId);
+  }
+  return findSatisfiedToolConnection(db, task, intent, policyRunId);
 }
 
 export async function findSatisfiedToolConnection(db: Db, task: Task, intent: Intent, policyRunId?: string | null) {
@@ -128,7 +166,7 @@ export function satisfiedConnectionIntentService(db: Db) {
         .from(issueThreadInteractions).innerJoin(issues, and(
           eq(issues.id, issueThreadInteractions.issueId), eq(issues.companyId, issueThreadInteractions.companyId),
         )).where(and(eq(issueThreadInteractions.kind, "connection_intent"), eq(issueThreadInteractions.status, "pending"),
-          inArray(issues.status, ["in_progress", "in_review"]), isNull(issues.assigneeUserId),
+          inArray(issues.status, ["in_progress", "in_review", "blocked"]), isNull(issues.assigneeUserId),
           ...(afterId ? [gt(issueThreadInteractions.id, afterId)] : [])))
         .orderBy(asc(issueThreadInteractions.id)).limit(50);
       // Rotate past unavailable cards so they cannot starve a later ready one.
@@ -154,15 +192,18 @@ export function satisfiedConnectionIntentService(db: Db) {
                 eq(companyMemberships.principalId, intent.addresseeUserId),
               )).for("share");
             }
-            const connection = await findSatisfiedToolConnection(txDb, task, intent);
+            const connection = await findSatisfiedConnection(txDb, task, intent);
             if (!connection) return false;
+            const restoredAi = connectionIntentPayloadSchema.safeParse(intent.payload).data?.purpose === "ai";
             await notifyIssueReviewState(tx, candidate);
             const now = new Date();
             // Retire the obsolete request without inventing a human approval.
             await notifyChatConfirmationResolution(tx, intent);
             const [retired] = await tx.update(issueThreadInteractions).set({ status: "expired", resolvedAt: now, updatedAt: now,
               result: { version: 1, outcome: "expired", connectionId: connection.id,
-                reason: "An already authorized connection is available to the requesting agent." },
+                reason: restoredAi
+                  ? "The AI connection is healthy again. Paperclip completed this request automatically."
+                  : "An already authorized connection is available to the requesting agent." },
             }).where(and(eq(issueThreadInteractions.id, intent.id), eq(issueThreadInteractions.status, "pending"))).returning();
             if (!retired) return false;
             const { issueThreadInteractionService } = await import("./issue-thread-interactions.js");
@@ -174,7 +215,7 @@ export function satisfiedConnectionIntentService(db: Db) {
             await logActivity(txDb, { companyId: task.companyId, actorType: "system", actorId: "connection-reconciliation",
               action: "issue.thread_interaction_resolved", entityType: "issue", entityId: task.id,
               details: { interactionId: intent.id, interactionKind: "connection_intent", status: "expired",
-                connectionId: connection.id, resolutionSource: "existing_connection" },
+                connectionId: connection.id, resolutionSource: restoredAi ? "restored_ai_connection" : "existing_connection" },
             }, publications);
             return true;
           });

@@ -2025,6 +2025,116 @@ console.log(JSON.stringify({ type: "result", subtype: "success", result: "hello"
       }
       expect(await f.deliverAll([card!.id])).not.toHaveBeenCalled();
     });
+
+    it("completes the pending card after a reconnect and wakes each affected agent once, idempotently", async () => {
+      const f = await latchedFleet("reconnect", 3);
+      for (const task of f.tasks) await connectionIntentService(db).requestForRunAuthFailure(task.runId!);
+      const [card] = await f.cardsFor(f.tasks.map(task => task.issueId));
+      // Nothing is satisfied while the connection still needs sign-in.
+      await sweepAll();
+      expect((await f.cardsFor([card!.issueId]))[0]!.status).toBe("pending");
+      await f.reconnect();
+      await sweepAll();
+      const [retired] = await f.cardsFor([card!.issueId]);
+      expect(retired).toMatchObject({ status: "expired", resolvedByUserId: null,
+        result: { outcome: "expired", connectionId: f.account.connectionId } });
+      const wakeup = await f.deliverAll([card!.id]);
+      expect(wakeup.mock.calls.map(([agentId]) => agentId).sort()).toEqual([...f.agentIds].sort());
+      for (const task of f.tasks) {
+        expect(wakeup).toHaveBeenCalledWith(task.agentId, expect.objectContaining({
+          payload: expect.objectContaining({ issueId: task.issueId }),
+          contextSnapshot: expect.objectContaining({ issueId: task.issueId, forceFreshSession: true }) }));
+      }
+      // Repeated healthy events and deliveries do nothing more.
+      await f.reconnect();
+      await sweepAll();
+      await db.update(connectionIntentDeliveries).set({ deliveredAt: null, nextAttemptAt: new Date(0) }).where(eq(connectionIntentDeliveries.interactionId, card!.id));
+      const again = await f.deliverAll([card!.id]);
+      expect(again).not.toHaveBeenCalled();
+    });
+
+    it("reconciles the legacy many-card fallout across agents", async () => {
+      const f = await fleet("legacy", 3);
+      const interactions = issueThreadInteractionService(db);
+      const cards = [];
+      for (const task of f.tasks) {
+        task.runId = await f.failedRun(task.agentId, task.issueId, null);
+        cards.push(await interactions.createConnectionIntent({ id: task.issueId, companyId }, {
+          payload: { version: 1, serviceSlug: "anthropic", purpose: "ai", serviceName: "Anthropic", requestingAgentId: task.agentId,
+            requestingAgentName: "Repair legacy", phase: "requested" },
+          sourceRunId: task.runId, addresseeUserId: f.userId, idempotencyKey: `legacy-card:${task.runId}`,
+        }));
+      }
+      await sweepAll();
+      expect((await f.cardsFor(f.tasks.map(task => task.issueId))).every(card => card.status === "expired")).toBe(true);
+      const wakeup = await f.deliverAll(cards.map(card => card.id));
+      expect(wakeup.mock.calls.map(([agentId]) => agentId).sort()).toEqual([...f.agentIds].sort());
+    });
+
+    it("leaves other recipients, other providers, agent setup and answered cards untouched", async () => {
+      const f = await fleet("scope", 1);
+      const task = f.tasks[0]!;
+      task.runId = await f.failedRun(task.agentId, task.issueId, null);
+      const interactions = issueThreadInteractionService(db);
+      const [queued] = await db.insert(heartbeatRuns).values({ companyId, agentId: task.agentId, status: "queued", responsibleUserId: f.userId,
+        contextSnapshot: { issueId: randomUUID() } }).returning();
+      // Each card waits on its own task: a newer card on one task supersedes older ones.
+      const scopeIssues: string[] = [];
+      const card = async (slug: string, addressee: string, extra: Record<string, unknown> = {}) => {
+        const issueId = randomUUID();
+        await db.insert(issues).values({ id: issueId, companyId, title: "Repair scope", status: "in_progress", assigneeAgentId: task.agentId });
+        scopeIssues.push(issueId);
+        const runId = extra.agentSetup ? queued!.id : await f.failedRun(task.agentId, issueId, null);
+        return interactions.createConnectionIntent({ id: issueId, companyId }, {
+          payload: { version: 1, serviceSlug: slug, purpose: "ai", serviceName: slug, requestingAgentId: task.agentId, requestingAgentName: "Repair scope", phase: "requested", ...extra } as never,
+          sourceRunId: runId, addresseeUserId: addressee, idempotencyKey: `scope:${slug}:${addressee}:${JSON.stringify(extra)}`,
+        });
+      };
+      const otherUser = `repair-other-${randomUUID()}`;
+      await db.insert(companyMemberships).values({ companyId, principalId: otherUser, principalType: "user", status: "active", membershipRole: "member" });
+      const otherRecipient = await card("anthropic", otherUser);
+      const otherProvider = await card("openai", f.userId);
+      const otherConnection = await card("anthropic", f.userId, { repairConnectionId: randomUUID() });
+      const setup = await card("anthropic", f.userId, { agentSetup: true });
+      // An answered card keeps its recorded human outcome.
+      const answered = await card("anthropic", f.userId, { phase: "authorizing" });
+      await interactions.resolveConnectionIntent({ id: answered.issueId, companyId }, answered.id, { version: 1, outcome: "declined" }, { userId: f.userId });
+      const [answeredBefore] = await db.select().from(issueThreadInteractions).where(eq(issueThreadInteractions.id, answered.id));
+      await sweepAll();
+      const after = new Map((await f.cardsFor(scopeIssues)).map(row => [row.id, row]));
+      expect(Object.fromEntries(Object.entries({ otherRecipient, otherProvider, otherConnection, setup }).map(([name, row]) => [name, after.get(row.id)?.status]))).toEqual({ otherRecipient: "pending", otherProvider: "pending", otherConnection: "pending", setup: "pending" });
+      expect(after.get(answered.id)).toMatchObject({ status: "rejected", result: answeredBefore!.result, resolvedByUserId: f.userId });
+    });
+
+    it("does not let a stale failure undo a newer reconnect or raise a new card", async () => {
+      const f = await latchedFleet("stale", 1);
+      await connectionIntentService(db).requestForRunAuthFailure(f.tasks[0]!.runId!);
+      await f.reconnect();
+      await sweepAll();
+      const late = await f.failedRun(f.agentIds[0]!, f.tasks[0]!.issueId, f.identity);
+      expect(await connectionIntentService(db).requestForRunAuthFailure(late)).toBeNull();
+      expect((await db.select().from(connectionGrants).where(eq(connectionGrants.id, f.account.grantId)))[0]!.status).toBe("active");
+      expect((await f.cardsFor([f.tasks[0]!.issueId])).filter(card => card.status === "pending")).toEqual([]);
+    });
+
+    it("does not rerun done, dependency-blocked or review-held tasks", async () => {
+      const f = await latchedFleet("held", 4);
+      for (const task of f.tasks) await connectionIntentService(db).requestForRunAuthFailure(task.runId!);
+      const [card] = await f.cardsFor(f.tasks.map(task => task.issueId));
+      const linked = f.tasks.filter(task => task.issueId !== card!.issueId);
+      const [done, blockedByDependency, inReview] = linked;
+      await db.update(issues).set({ status: "done" }).where(eq(issues.id, done!.issueId));
+      await db.update(issues).set({ status: "in_review" }).where(eq(issues.id, inReview!.issueId));
+      const blocker = randomUUID();
+      await db.insert(issues).values({ id: blocker, companyId, title: "Open blocker", status: "in_progress" });
+      await db.insert(issueRelations).values({ companyId, issueId: blocker, relatedIssueId: blockedByDependency!.issueId, type: "blocks" } as never);
+      await f.reconnect();
+      await sweepAll();
+      const wakeup = await f.deliverAll([card!.id]);
+      const woken = wakeup.mock.calls.map(([agentId]) => agentId);
+      expect(woken).toContain(f.tasks.find(task => task.issueId === card!.issueId)!.agentId);
+      for (const held of [done!, blockedByDependency!, inReview!]) expect(woken).not.toContain(held.agentId);
+    });
   });
 
   it("offers a compatible connection for legacy auth failures without silently adopting it", async () => {

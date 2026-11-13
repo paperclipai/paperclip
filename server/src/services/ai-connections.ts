@@ -4,6 +4,7 @@ import { WORKSPACE_RESTORE_LOCK_TIMEOUT_CODE } from "@paperclipai/adapter-utils/
 import { withAccountHomeSecretMutationLock } from "@paperclipai/adapter-codex-local/server";
 import { syncConnectionCredentialBindings } from "./connection-credential-bindings.js";
 import { AI_AUTHENTICATION_FAILURE_CODE_PATTERN, AI_AUTHENTICATION_FAILURE_CODES, isAiAuthenticationFailure } from "./ai-auth-failure.js";
+import { DELIVERY_QUEUES, notifyDeliveryWork } from "./delivery-work-notifications.js";
 import { createHash, randomUUID } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
 import { and, eq, inArray, or, sql } from "drizzle-orm";
@@ -979,6 +980,9 @@ export function aiConnectionService(db: Db) {
             eq(adapterAuthSessions.id, loginSession.id),
           );
       await loginSession?.complete?.(tx as unknown as Db);
+      // A healthy connection can satisfy pending provider-authentication
+      // cards. Let the connection delivery worker reconcile them now.
+      await notifyDeliveryWork(tx, DELIVERY_QUEUES.connection);
       await logActivity(tx as unknown as Db, {
         companyId,
         ...(managementContext?.audit ?? { actorType: "user" as const, actorId: userId }),

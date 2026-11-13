@@ -2,7 +2,7 @@ import { isAgentAwaitingSetup, requestAgentLifecycleRecheckInTransaction } from 
 import { agents, companies } from "@paperclipai/db";
 import { DELIVERY_QUEUES, notifyDeliveryWork } from "./delivery-work-notifications.js";
 import { connectionIntentService } from "./connection-intents.js";
-import { connectionContinuationPendingResponse, findSatisfiedToolConnection, satisfiedConnectionIntentService } from "./satisfied-connection-intents.js";
+import { connectionContinuationPendingResponse, findSatisfiedConnection, satisfiedConnectionIntentService } from "./satisfied-connection-intents.js";
 import { isAiAuthenticationRepairable, isAiConnectionConfigurationFailure } from "./ai-auth-failure.js";
 import { connectionIntentPayloadSchema } from "@paperclipai/shared";
 import { and, eq, isNull, lte, asc, inArray, notInArray, desc, sql } from "drizzle-orm";
@@ -225,7 +225,7 @@ export function connectionIntentDeliveryService(db: Db, heartbeat: Pick<Heartbea
       }
     }
     if (fanOut) {
-      await wakeLinkedAiRepairTasks(interaction, interaction.status === "accepted");
+      await wakeLinkedAiRepairTasks(interaction, interaction.status === "accepted" || retiredForAvailableConnection);
       if (ownerStale) {
         await settle();
         return;
@@ -275,7 +275,7 @@ export function connectionIntentDeliveryService(db: Db, heartbeat: Pick<Heartbea
           eq(issueThreadInteractions.id, interactionId), eq(issueThreadInteractions.companyId, claimed.companyId),
           eq(issueThreadInteractions.issueId, loaded.issue.id))).for("update");
         if (!task || !card || card.status !== "expired" || card.result?.outcome !== "expired") return null;
-        const ready = await findSatisfiedToolConnection(tx as unknown as Db, task, { ...card, status: "pending" });
+        const ready = await findSatisfiedConnection(tx as unknown as Db, task, { ...card, status: "pending" });
         if (!ready) return null;
         if (ready.id !== (card.result as { connectionId: string }).connectionId) {
           const previousConnectionId = (card.result as { connectionId: string }).connectionId;
@@ -297,12 +297,19 @@ export function connectionIntentDeliveryService(db: Db, heartbeat: Pick<Heartbea
       loaded.interaction = current.card;
       interaction = current.card;
     }
-    if (interaction.status === "accepted" && payload?.purpose === "ai" && loaded.issue.status === "blocked") {
-      const restored = await restoreAiBlockedTask(loaded);
+    if ((interaction.status === "accepted" || retiredForAvailableConnection) && payload?.purpose === "ai" && loaded.issue.status === "blocked") {
+      const restored = await restoreAiBlockedTask(loaded, { system: retiredForAvailableConnection });
       if (!restored) return;
       loaded.issue = restored;
     }
     if (!["in_progress", "in_review"].includes(loaded.issue.status)) return;
+    // A system reconciliation of an AI repair resumes only a task that still
+    // waits on it. Review-held, dependency-blocked and already-continued
+    // tasks keep their state; their own paths resume them.
+    if (retiredForAvailableConnection && payload?.purpose === "ai" && !await waitingOnAiRepair(loaded.issue, interaction.sourceRunId)) {
+      await settle();
+      return;
+    }
     const durableWake = () => db.select({ id: agentWakeupRequests.id }).from(agentWakeupRequests).where(and(
       eq(agentWakeupRequests.companyId, claimed.companyId),
       eq(agentWakeupRequests.idempotencyKey, `connection-intent:${interactionId}:${interaction.status}`),
