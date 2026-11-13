@@ -63,11 +63,13 @@ export async function assertProbeDestinationAllowed(
 }
 
 export function probeModelsUrl(route: AiProviderRouting): string {
-  const base =
-    route.kind === "openrouter"
-      ? "https://openrouter.ai/api/v1"
-      : (route.baseUrl ?? "").replace(/\/+$/, "");
-  return `${base}/models`;
+  if (route.kind === "openrouter") return "https://openrouter.ai/api/v1/models";
+  const base = (route.baseUrl ?? "").replace(/\/+$/, "");
+  // The Claude harness points ANTHROPIC_BASE_URL at the bare gateway and reads
+  // its model list from {base}/v1/models. OpenAI-compatible chat and responses
+  // endpoints take the operator's base URL as-is (which includes /v1) and
+  // serve {base}/models.
+  return route.protocol === "messages" ? `${base}/v1/models` : `${base}/models`;
 }
 
 function headersFor(route: AiProviderRouting, apiKey: string): Record<string, string> {

@@ -198,6 +198,7 @@ it("fills the model list from the endpoint before the local connection is saved"
     expect(aiConnectionsApi.probeRoutingModels).toHaveBeenCalledWith("company", {
       routing: expect.objectContaining({ kind: "local", protocol: "chat", auth: "bearer", baseUrl: "http://localhost:11434/v1" }),
       apiKey: "fixture-key",
+      ownership: "shared",
     });
     expect((container.querySelector('input[aria-label="Model IDs"]') as HTMLInputElement).value).toBe("qwen3-coder:30b, llama3.2:latest");
     expect(container.textContent).toContain("Found 2 models.");

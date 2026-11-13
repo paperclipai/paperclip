@@ -184,6 +184,15 @@ describe("routing model probe request", () => {
     })).toMatchObject({ apiKey: "key" });
   });
 
+  it("carries the intended ownership so self-service setup authorizes", () => {
+    expect(aiRoutingModelsProbeSchema.parse({ routing: localRouting, ownership: "personal" }))
+      .toMatchObject({ ownership: "personal" });
+    expect(aiRoutingModelsProbeSchema.safeParse({
+      connectionId: "4b3f6d52-6f38-48ae-a0f1-79a49a7bbd1c",
+      ownership: "personal",
+    }).success).toBe(false);
+  });
+
   it("accepts a saved connection without exposing or requiring a credential", () => {
     expect(aiRoutingModelsProbeSchema.parse({ connectionId: "4b3f6d52-6f38-48ae-a0f1-79a49a7bbd1c" }))
       .toEqual({ connectionId: "4b3f6d52-6f38-48ae-a0f1-79a49a7bbd1c" });

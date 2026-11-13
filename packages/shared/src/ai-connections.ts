@@ -248,19 +248,22 @@ export const createAiConnectionSchema = z
 export type CreateAiConnection = z.infer<typeof createAiConnectionSchema>;
 
 /** Pre-save model discovery for a routing endpoint. The inline form carries a
- * transient key used for the probe only; the saved-connection form resolves the
- * stored credential server-side. Neither is persisted by this operation. */
+ * transient key used for the probe only, plus the intended ownership so the
+ * connection-management guard can authorize self-service setup; the
+ * saved-connection form resolves the stored credential server-side. Neither is
+ * persisted by this operation. */
 export const aiRoutingModelsProbeSchema = z
   .object({
     routing: aiProviderRoutingSchema.optional(),
     apiKey: z.string().trim().min(1).max(32768).optional(),
     connectionId: z.string().uuid().optional(),
     grantId: z.string().uuid().optional(),
+    ownership: z.enum(["personal", "shared"]).optional(),
   })
   .strict()
   .superRefine((v, ctx) => {
     if (v.connectionId) {
-      if (v.routing || v.apiKey) ctx.addIssue({ code: "custom", message: "Provide either a saved connection or an inline routing endpoint, not both." });
+      if (v.routing || v.apiKey || v.ownership) ctx.addIssue({ code: "custom", message: "Provide either a saved connection or an inline routing endpoint, not both." });
       return;
     }
     if (!v.routing) {

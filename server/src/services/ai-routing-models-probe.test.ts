@@ -58,6 +58,12 @@ describe("probeModelsUrl", () => {
     ).toBe("http://localhost:11434/v1/models");
   });
 
+  it("reads Messages gateways from {base}/v1/models like the Claude harness", () => {
+    expect(
+      probeModelsUrl(route({ kind: "gateway", protocol: "messages", baseUrl: "https://gw.example.com", auth: "api_key" })),
+    ).toBe("https://gw.example.com/v1/models");
+  });
+
   it("uses OpenRouter's official endpoint", () => {
     expect(probeModelsUrl(route({ kind: "openrouter", protocol: "chat" }))).toBe(
       "https://openrouter.ai/api/v1/models",

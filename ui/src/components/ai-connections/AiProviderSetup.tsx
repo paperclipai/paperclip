@@ -229,6 +229,10 @@ export function AiProviderSetup({
         aiRoutingModelsProbeSchema.parse({
           routing: buildRouting(),
           ...(auth !== "none" ? { apiKey } : {}),
+          // The connection-management guard authorizes self-service setup from
+          // this field; without it a personal Fetch models is denied to
+          // ordinary members.
+          ownership,
         }),
       );
       return { result, inputs };
