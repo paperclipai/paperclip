@@ -15,7 +15,7 @@ import { REPOSITORY_CATALOG_UNAVAILABLE_CODE } from "./repository-catalog-unavai
 import { RUNNER_REVISION_MISMATCH_CODE } from "./runner-revision-mismatch.js";
 import { hasWorkspaceRestoreFailure } from "@paperclipai/shared";
 import { normalizeMaxTurnStopReason } from "./heartbeat-stop-metadata.js";
-import { claimedAdapterType, hasConversationContinuationPolicy } from "./conversation-continuation.js";
+import { claimedAdapterType, conversationRecoveryActionPredicate, hasConversationContinuationPolicy } from "./conversation-continuation.js";
 import { canonicalExecutionUuid } from "./execution-identity.js";
 import { randomUUID } from "node:crypto";
 import { and, desc, eq, getTableColumns, inArray, isNull, or, sql, type SQL } from "drizzle-orm";
@@ -303,7 +303,15 @@ export async function terminalizeLegacyExecution(input: {
               eq(issueRecoveryActions.cause, LEGACY_RECOVERY_CAUSE),
               eq(issueRecoveryActions.fingerprint, `legacy-execution:${run.id}`),
               sql`${issueRecoveryActions.evidence}->>'runId' = ${run.id}`,
-              sql`${issueRecoveryActions.evidence}->'automaticRecovery'->>'replay' = 'blocked'`,
+              or(
+                sql`${issueRecoveryActions.evidence}->'automaticRecovery'->>'replay' = 'blocked'`,
+                and(
+                  eq(issueRecoveryActions.outcome, "cancelled"),
+                  sql`not (${issueRecoveryActions.evidence} ?| array['executionReconciliation', 'explicitUserContinuation'])`,
+                  sql`coalesce(${issueRecoveryActions.evidence}->'automaticRecovery'->>'replay', 'conversation_continuation') = 'conversation_continuation'`,
+                  conversationRecoveryActionPredicate(),
+                ),
+              ),
             ),
           ),
         )).limit(1);
