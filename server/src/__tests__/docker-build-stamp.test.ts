@@ -1,7 +1,10 @@
-import { readFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
+import { runnerImageExpectationProblem } from "../../../scripts/check-runner-image-expectation.mjs";
 
 /**
  * Drift guard for the Docker build-stamp wiring.
@@ -97,6 +100,64 @@ describe("Application image Runner", () => {
     expect(required).toBeGreaterThan(Math.max(output, stamp));
     expect(check).toBeGreaterThan(required);
     expect(firstBuild).toBeGreaterThan(check);
+  });
+
+  it("checks the Runner against the inputs digest a build names, before it vendors the Runner", () => {
+    const build = stageBody(dockerfile, "build");
+    const stamp = build.search(/^COPY --from=runner-artifacts \/runner-package\/node_modules\//m);
+    const argument = build.search(/^ARG PAPERCLIP_RUNNER_EXPECT_INPUTS_DIGEST=""$/m);
+    const check = build.indexOf(
+      "RUN --mount=type=bind,from=runner-artifacts,source=/runner-image.json,target=/tmp/runner-image.json \\\n"
+        + "  node scripts/check-runner-image-expectation.mjs /tmp/runner-image.json\n",
+    );
+    const vendor = build.search(/^ENV PAPERCLIP_RUNNER_VENDOR_REQUIRE_CURRENT=1$/m);
+    expect(stamp).toBeGreaterThanOrEqual(0);
+    expect(argument).toBeGreaterThan(stamp);
+    expect(check).toBeGreaterThan(argument);
+    expect(vendor).toBeGreaterThan(check);
+    expect(dockerfile.match(/PAPERCLIP_RUNNER_EXPECT_INPUTS_DIGEST/g)).toHaveLength(1);
+    expect(dockerfile).toMatch(/^ARG PAPERCLIP_RUNNER_EXPECT_INPUTS_DIGEST(?:=.*)?$/m);
+  });
+
+  const inputs = "1".repeat(64);
+  const other = "2".repeat(64);
+  const published = { publication: true, inputsDigest: { digest: inputs } };
+  const inline = { publication: false, inputsDigest: { digest: inputs } };
+
+  it.each<[string, object | null, string, RegExp | null]>([
+    ["no expectation and an inline Runner", inline, "", null],
+    ["no expectation and a published Runner", published, "", null],
+    ["the published Runner of the expected inputs", published, inputs, null],
+    ["an inline Runner, even of the expected inputs", inline, inputs, /^PAPERCLIP_RUNNER_EXPECT_INPUTS_DIGEST is 1{64}, but the runner-artifacts of this build are not a published Runner image\. Pass /],
+    ["a published Runner of other inputs", published, other, /^PAPERCLIP_RUNNER_EXPECT_INPUTS_DIGEST is 2{64}, but the runner-artifacts of this build have the inputs 1{64}\. Pass /],
+    ["a published Runner that names no inputs", { publication: true }, inputs, /have the inputs \(none\)/],
+    ["a record that is not an object", null, inputs, /are not a published Runner image/],
+    ["an expectation that is not a digest", published, "inputs-latest", /must be the 64 hexadecimal characters of a Runner inputs digest, not "inputs-latest"/],
+  ])("answers for %s", (_label, image, expected, problem) => {
+    const answer = runnerImageExpectationProblem(image, expected);
+    if (problem === null) expect(answer).toBeNull();
+    else expect(answer).toMatch(problem);
+  });
+
+  it("runs as the build runs it: nothing is read without an expectation, and a mismatch fails with the reason", () => {
+    const directory = mkdtempSync(path.join(tmpdir(), "runner-image-expectation-"));
+    try {
+      const file = path.join(directory, "runner-image.json");
+      const run = (expected: string | null, target = file) => spawnSync(
+        process.execPath,
+        [path.join(repoRoot, "scripts", "check-runner-image-expectation.mjs"), target],
+        { encoding: "utf8", env: expected === null ? {} : { PAPERCLIP_RUNNER_EXPECT_INPUTS_DIGEST: expected } },
+      );
+      expect(run(null, path.join(directory, "absent.json")).status).toBe(0);
+      expect(run("", path.join(directory, "absent.json")).status).toBe(0);
+      writeFileSync(file, JSON.stringify(inline));
+      expect(run(inputs)).toMatchObject({ status: 1, stderr: expect.stringMatching(/^ERROR: PAPERCLIP_RUNNER_EXPECT_INPUTS_DIGEST is 1{64}, but .* are not a published Runner image/) });
+      writeFileSync(file, JSON.stringify(published));
+      expect(run(inputs)).toMatchObject({ status: 0, stderr: "" });
+      expect(run(other).status).toBe(1);
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
   });
 
   it("compiles the Runner only in the runner-artifacts stages", () => {

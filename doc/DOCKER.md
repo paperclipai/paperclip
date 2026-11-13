@@ -21,6 +21,7 @@ Build arguments:
 | `CLI_TOOLS_CACHE_EPOCH` | empty | Refresh the CLI-install layer; CI supplies the current ISO week |
 | `PAPERCLIP_BUILD_VERSION` | empty | Runtime version when Git metadata is unavailable |
 | `PAPERCLIP_BUILD_COMMIT` | empty | Source commit written into the server build stamp and runtime environment |
+| `PAPERCLIP_RUNNER_EXPECT_INPUTS_DIGEST` | empty | Inputs digest of the published Runner image a build was given as `runner-artifacts`; the build fails on any other Runner. Leave it empty for a build that makes its own Runner |
 
 Changing the build version or commit preserves the CLI-install cache. The
 tool layer refreshes when its weekly epoch, base image, installation command,

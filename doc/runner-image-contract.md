@@ -176,6 +176,15 @@ image, and an application image says so in three ways:
 
 A build without `PAPERCLIP_BUILD_COMMIT` has no pack, as before.
 
+`build` also declares the build argument
+`PAPERCLIP_RUNNER_EXPECT_INPUTS_DIGEST`, which no build sets yet. It is for
+a build that replaces the stage with a published image. When the argument is
+set, `scripts/check-runner-image-expectation.mjs` reads `/runner-image.json`
+of the `runner-artifacts` the build was given, and the build fails unless
+that file has `publication: true` and names exactly those inputs. An inline
+Runner is never a publication, so the argument without the image fails too.
+The check runs before the server build vendors the Runner.
+
 ### Choosing the Runner for an image build
 
 `scripts/runner-image-resolve.mjs` decides whether a build of a checkout can

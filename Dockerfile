@@ -284,6 +284,9 @@ COPY --from=deps /app /app
 COPY . .
 COPY --from=runner-artifacts /runner-package/dist /app/packages/paperclip-runner/dist
 COPY --from=runner-artifacts /runner-package/node_modules/.cache/paperclip-runner-build-inputs.json /app/packages/paperclip-runner/node_modules/.cache/paperclip-runner-build-inputs.json
+ARG PAPERCLIP_RUNNER_EXPECT_INPUTS_DIGEST=""
+RUN --mount=type=bind,from=runner-artifacts,source=/runner-image.json,target=/tmp/runner-image.json \
+  node scripts/check-runner-image-expectation.mjs /tmp/runner-image.json
 ENV PAPERCLIP_RUNNER_VENDOR_REQUIRE_CURRENT=1
 RUN node server/scripts/prepare-runner-vendor.mjs
 # Both the browser bundle and server stamp need the source commit. Declare it
