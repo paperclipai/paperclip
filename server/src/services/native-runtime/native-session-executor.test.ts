@@ -14822,7 +14822,8 @@ describe("native session bounded recovery", () => {
     expect(state.execute).toHaveBeenCalledTimes(1);
     } finally { service.mockRestore(); }
   });
-  it.each([["operator", "missing-result"], ["reassignment", "missing-result"], ["operator", "permission-declined"], ["reassignment", "permission-declined"]])("does not turn an acknowledged %s Stop before %s completion into a failure or a retry", async (source, failureKind) => {
+  it.each([["operator", "missing-result"], ["reassignment", "missing-result"], ["operator", "permission-declined"], ["reassignment", "permission-declined"],
+    ["operator", "provider-turn-failed"], ["reassignment", "provider-turn-failed"]])("does not turn an acknowledged %s Stop before %s completion into a failure or a retry", async (source, failureKind) => {
     const updates: Array<{ table: unknown; values: Record<string, unknown> }> = [];
     const stop: Record<string, unknown> = {};
     state.execute.mockReset().mockImplementationOnce(async () => {
@@ -14832,7 +14833,10 @@ describe("native session bounded recovery", () => {
         schema: "paperclip.native-cancellation.v1", ...execution.binding, scope: "run", reasonCode: "cancellation_run_only",
         dispatched: true, dispatchState: "acknowledged", intentAuditId: "intent", acknowledgementAuditId: "ack",
       } });
-      throw failureKind === "permission-declined" ? new NativePermissionDeclinedError() : new Error("native_finalization_missing: session returned no semantic result");
+      // The provider can answer the interrupt with a failed turn that names no error.
+      throw failureKind === "permission-declined" ? new NativePermissionDeclinedError()
+        : failureKind === "provider-turn-failed" ? new NativeProviderTerminalFailure("provider_turn_failed", false, "Provider turn failed")
+          : new Error("native_finalization_missing: session returned no semantic result");
     });
     state.upsertRecoveryAction.mockClear();
     await expect(executePaperclipNativeSession({
@@ -14841,6 +14845,70 @@ describe("native session bounded recovery", () => {
     expect(updates.some(update => update.table === heartbeatRuns && update.values.status === "failed")).toBe(false);
     expect(updates.some(update => update.table === nativeRunFinalizations && update.values.failureCode === "native_retry_cancelled")).toBe(true);
     expect(state.upsertRecoveryAction).not.toHaveBeenCalled();
+  });
+
+  it("waits for an in-flight reassignment Stop to save its acknowledgement before judging the failed turn it caused", async () => {
+    let releaseCleanup!: () => void, endTurn!: () => void, opened!: () => void;
+    const turnEnded = new Promise<void>(resolve => { endTurn = resolve; });
+    const sessionOpen = new Promise<void>(resolve => { opened = resolve; });
+    state.cancel.mockReset().mockReturnValue({ cleanup: new Promise<void>(resolve => { releaseCleanup = resolve; }) });
+    state.execute.mockReset().mockImplementationOnce(async (options) => {
+      await options.onSession({ cancel: state.cancel });
+      opened();
+      await turnEnded;
+      throw new NativeProviderTerminalFailure("provider_turn_failed", false, "Provider turn failed");
+    });
+    state.upsertRecoveryAction.mockClear();
+    const runResultJson: Record<string, unknown> = {};
+    const updates: Array<{ table: unknown; values: Record<string, unknown> }> = [];
+    const outcome = executePaperclipNativeSession({ db: leaseDb(execution, {}, runResultJson, updates), execution, runnerInstanceId: "reassignment-stop-in-flight" })
+      .catch(error => error);
+    // The reassignment's fence recorded its request before dispatch.
+    const persistence = cancellationDb({ resultJson: { reassignmentStopRequested: true } });
+    const transaction = persistence.db.transaction.bind(persistence.db);
+    // The executor reads the same durable run row the Stop writes.
+    (persistence.db as unknown as { transaction: typeof transaction }).transaction = (async (operation: Parameters<typeof transaction>[0]) => {
+      const result = await transaction(operation);
+      Object.assign(runResultJson, persistence.getResultJson());
+      return result;
+    }) as typeof transaction;
+    await sessionOpen;
+    const stopping = cancelNativeSession(execution.binding.runId, "Cancelled before issue reassignment", { db: persistence.db, scope: "run" });
+    try {
+      await vi.waitFor(() => expect(state.cancel).toHaveBeenCalledOnce());
+      // The interrupted turn fails before the Stop saves its acknowledgement.
+      endTurn();
+      await new Promise(resolve => setTimeout(resolve, 20));
+      expect(updates.some(update => update.table === heartbeatRuns && update.values.status === "failed")).toBe(false);
+      releaseCleanup();
+      await stopping;
+      expect(await outcome).toMatchObject({ name: "NativeCancellationPendingRecoveryError" });
+      expect(updates.some(update => update.table === heartbeatRuns && update.values.status === "failed")).toBe(false);
+      expect(updates.some(update => update.table === nativeRunFinalizations && update.values.failureCode === "native_retry_cancelled")).toBe(true);
+      expect(state.upsertRecoveryAction).not.toHaveBeenCalled();
+    } finally { releaseCleanup(); endTurn(); await outcome; }
+  });
+
+  it.each([["no Stop", {}], ["a Stop that was not acknowledged", { reassignmentStopRequested: true, nativeCancellation: {
+    schema: "paperclip.native-cancellation.v1", ...execution.binding, scope: "run", reasonCode: "cancellation_run_only",
+    dispatched: false, dispatchState: "pending", intentAuditId: "intent" } }]])("still records a failed provider turn after %s", async (_label, resultJson) => {
+    const updates: Array<{ table: unknown; values: Record<string, unknown> }> = [];
+    const stop: Record<string, unknown> = {};
+    const failure = new NativeProviderTerminalFailure("provider_turn_failed", false, "Provider turn failed");
+    state.execute.mockReset().mockImplementationOnce(async () => {
+      Object.assign(stop, resultJson);
+      throw failure;
+    });
+    state.upsertRecoveryAction.mockReset().mockResolvedValue({});
+    const service = vi.spyOn(issueServiceModule, "issueService").mockReturnValue({ update: vi.fn(async () => null) } as unknown as ReturnType<typeof issueServiceModule.issueService>);
+    try {
+      await expect(executePaperclipNativeSession({
+        db: leaseDb(execution, {}, stop, updates), execution, runnerInstanceId: "turn-failed-without-stop",
+      })).rejects.toBe(failure);
+      expect(updates.find(update => update.table === heartbeatRuns && update.values.status === "failed")?.values)
+        .toMatchObject({ errorCode: "native_provider_terminal_failed" });
+      expect(updates.some(update => update.table === nativeRunFinalizations && update.values.failureCode === "native_retry_cancelled")).toBe(false);
+    } finally { service.mockRestore(); }
   });
 
   // H1 (restart chaos): a budget pause's lifecycle Stop interrupted a Codex
