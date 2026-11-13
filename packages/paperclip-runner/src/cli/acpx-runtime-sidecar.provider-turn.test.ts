@@ -182,6 +182,34 @@ describe("ACPX sidecar provider-started Claude turns", () => {
     } finally { await cleanup(); }
   }, 20_000);
 
+  it("holds a cycle that starts while the prompt turn is still settling and adopts it with its tool call once runnerd arms", async () => {
+    const cycle = { ...completedCycle, immediate: true, steps: [
+      { event: { type: "tool_call", text: "probe", tag: "tool_call", title: "mcp__paperclip__probe", toolCallId: "toolu_cycle", status: "pending" } },
+      { call: "call_api", toolUseId: "toolu_cycle" },
+      { gate: "cycle-done" }, { state: { live: 0 } }] };
+    const { sidecar, send, observed, release, cleanup } = await open({ turns: [{ state: { live: 1 }, cycle, holdTerminal: "terminal" }] });
+    try {
+      await send("turn.start", { turnId: "turn-1", message: "Start a background command." });
+      await expect.poll(() => observed().offered, { timeout: 5_000 }).toBe(true);
+      await new Promise(resolve => setTimeout(resolve, 300));
+      expect(observed().dropped).toBeUndefined();
+      expect(sidecar.pending(frame => frame.eventType === "runtime.turn_terminal")).toBe(0);
+      expect(sidecar.pending(frame => frame.eventType === "runtime.tool_called")).toBe(0);
+      release("terminal");
+      const first = await sidecar.next(frame => frame.eventType === "runtime.turn_terminal" && frame.turnId === "turn-1");
+      expect(payload(first)).toMatchObject({ status: "completed", backgroundTasks: { live: 1 } });
+      expect(await send("session.provider_turn", { turnId: "turn-1", armed: true })).toEqual({ armed: true });
+      expect(await sidecar.next(frame => frame.eventType === "runtime.turn_started")).toMatchObject({ turnId: PROVIDER, payload: { origin: "provider" } });
+      const called = await sidecar.next(frame => frame.eventType === "runtime.tool_called");
+      expect(called).toMatchObject({ turnId: PROVIDER, payload: { callId: "tool-use:toolu_cycle", operationId: "call_api" } });
+      await send("tool.resolve", { turnId: PROVIDER, callId: "tool-use:toolu_cycle", result: { ok: true } });
+      release("cycle-done");
+      const terminal = await sidecar.next(frame => frame.eventType === "runtime.turn_terminal" && frame.turnId === PROVIDER);
+      expect(payload(terminal)).toMatchObject({ status: "completed", backgroundTasks: { live: 0 } });
+      expect(observed()).toMatchObject({ admitted: true, "call:toolu_cycle": { ok: true } });
+    } finally { await cleanup(); }
+  }, 20_000);
+
   it("tells runnerd the provider is gone only while armed for a provider-started turn", async () => {
     const armed = await open({ turns: [{ state: { live: 1 }, lose: "lose" }] });
     try {

@@ -101,6 +101,13 @@ export class AcpxRuntimeHost extends Base {
 
   isClosed() { return this.closed; }
 
+  async status() {
+    const held = this.terminalGate;
+    this.terminalGate = null;
+    if (held) await gate(held);
+    return {};
+  }
+
   providerTurnsAvailable() { return !existsSync(join(root(), "exited")) && !this.cycles.closed; }
 
   async close(input) {
@@ -112,6 +119,7 @@ export class AcpxRuntimeHost extends Base {
   startTurn({ requestId }) {
     const current = script().turns[++turn];
     state = current.state;
+    this.terminalGate = current.holdTerminal ?? null;
     if (current.cycle) void this.offerCycle(current.cycle);
     if (current.lose) void gate(current.lose).then(() => this.cycles.push({ type: "lost" }));
     return { requestId, promptStarted: Promise.resolve(), result: Promise.resolve({ status: "completed", stopReason: "end_turn" }),

@@ -902,6 +902,7 @@ function emitTurnTerminal(
   const backgroundTasks = terminal.status === "completed" && !declinedPlan ? claudeBackgroundTasks(activeHost) : null;
   providerTurnArmed = false;
   providerTurnOffer = initializedAgent === "claude" && (backgroundTasks?.live ?? 0) > 0 ? currentTurnId : null;
+  if (providerTurnOffer === null) providerTurnArming?.();
   if (goalAtTerminal || backgroundTasks) {
     const payload = { ...terminal, ...(goalAtTerminal ? { goalAtTerminal } : {}), ...(backgroundTasks ? { backgroundTasks } : {}) };
     // Rust admits the payload separately from the larger sidecar frame.
@@ -921,8 +922,9 @@ async function consumeProviderCycles(activeHost: AcpxRuntimeHost, cycles: AcpxPr
 }
 
 async function adoptProviderCycle(activeHost: AcpxRuntimeHost, cycles: AcpxProviderCycleStream, currentTurnId: string): Promise<boolean> {
-  const admissible = () => host === activeHost && runId !== null && !closing && turnId === null;
-  if (admissible() && !providerTurnArmed && providerTurnOffer !== null) {
+  const attached = () => host === activeHost && runId !== null && !closing;
+  const admissible = () => attached() && turnId === null;
+  if (attached() && !providerTurnArmed && (turnId !== null || providerTurnOffer !== null)) {
     await new Promise<void>((resolve) => {
       const timer = setTimeout(() => providerTurnArming?.(), PROVIDER_TURN_ARMING_WAIT_MS);
       timer.unref?.();
