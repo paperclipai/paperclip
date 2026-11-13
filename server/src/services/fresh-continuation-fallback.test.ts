@@ -7,7 +7,7 @@ import {
 } from "@paperclipai/db";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "../__tests__/helpers/embedded-postgres.js";
 import { deliverReconciledExecutions, settleUnrecoverableExecutions } from "./execution-recovery-resolution.js";
-import { PENDING_CONTINUATION_BOUND_MS } from "./recovery-continuation-bounds.js";
+import { PENDING_CONTINUATION_BOUND_MS } from "./recovery-continuation-pacing.js";
 import { getExecutionBlocker } from "./execution-blocker.js";
 import {
   FRESH_CONTINUATIONS_PER_HOUR, FRESH_CONTINUATION_SCHEMA, PERSON_OWNED_FAILURE_CODES, continueHeldExecutions, ensureFreshContinuation,

@@ -1472,7 +1472,21 @@ so the cleanup sweep destroys the old sandbox later and no provider delete delay
 the first turn. It creates a new sandbox, records the acquisition as
 `replacement` with reason `resume_failed`, and workspace preparation restores the
 saved snapshot into it. Leases saved by older releases have the same fields and
-follow the same rule; one without a verified backup stays strict.
+follow the same rule.
+
+A native runner session without a verified harness backup is replaced only when
+the provider has proven it cannot start the sandbox: the lease is idle and every
+resume call timed out (no rate limit, reset, or other failure in between) through
+the whole extended start deadline (for example a
+Daytona sandbox stuck in `archiving`). The other conditions above still apply, so
+the task's files come from the committed saved snapshot. The new sandbox starts a
+fresh runner session. The old lease keeps its status and its sandbox, and is never
+destroyed: one guarded write marks it `reusableSandboxKeptAfterReplacement`, and
+later runs no longer offer it for resume. Every automatic teardown path skips a
+marked lease: obsolete-lease cleanup, run and workspace teardown, expiry,
+retained-orphan settlement, recovered-workspace cleanup, and abandoned-file
+release. Only an operator-consented environment delete destroys it. Without that proof, a lease without a
+verified backup stays strict.
 
 Otherwise (unsaved work, a live owner, a workspace with no committed saved
 version, an access refusal, or an unavailable worker) the refusal keeps the strict
@@ -1799,7 +1813,13 @@ only while the old Runner is alive: the launch fence stops that
 the launch closed when it cannot prove them gone. A Runner that already exited
 mid-turn can leave provider or tool processes that the fence cannot find, so it
 keeps the fail-closed path below, and the task continues in a fresh session from
-the saved work. The fresh Runner
+the saved work.
+
+The first unanswered read can come on the last of the three provider attempts,
+for example when a server restart used the second attempt. The run then gets one
+more attempt for the replacement only: the failure stays retryable, the claim
+admits attempt 4 with `replaceUnansweredRunner`, and a live Runner is replaced as
+above. That attempt never gets another one; any failure on it ends the run. The fresh Runner
 restores the provider thread; its in-flight turn is reconciled from history and
 never submitted again. The provider attempt budget still bounds these attempts.
 

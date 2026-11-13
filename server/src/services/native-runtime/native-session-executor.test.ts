@@ -477,6 +477,8 @@ import {
   stopStaleRemoteRunnerBeforeBootstrap,
   verifyRemoteRunnerOrSettledExit,
   nativeRecoveryCommandUnanswered,
+  nativeUnansweredRunnerReplacementDisposition,
+  nativeAdmittedProviderAttemptLimit,
   readRemoteProviderPackManifest,
   verifyRemoteProviderPackManifest,
   prepareRemoteProviderPackOnTarget,
@@ -1171,6 +1173,35 @@ describe("remote controller restart adoption", () => {
       const { target } = fixture({ ...midTurn, runnerInstanceId: "different" });
       await expect(verifyRemoteRunnerOrSettledExit({ claim: unanswered, target: target as never, identity,
         runId: "run", normalizedSessionId: "session", providerAttempt: 2 })).rejects.toThrow("runner_remote_recovery_identity_mismatch");
+    });
+    it.each([
+      ["the last attempt's first unanswered read", { adoptedRunnerUnanswered: true, replacing: false }, 3, "retryable_failure"],
+      ["a replacement that also went unanswered", { adoptedRunnerUnanswered: true, replacing: true }, 3, "terminal_failure"],
+      ["another failure on the last attempt", { adoptedRunnerUnanswered: false, replacing: false }, 3, "terminal_failure"],
+      ["the extra replacement attempt", { adoptedRunnerUnanswered: true, replacing: false }, 4, "terminal_failure"],
+    ] as const)("bounds the replacement after %s", (_case, input, attempt, phase) => {
+      const now = new Date("2026-11-13T06:37:26.000Z");
+      const disposition = nativeUnansweredRunnerReplacementDisposition(
+        nativeSessionFailureDisposition(attempt, now, "provider_transport_failed"), { ...input, attempt, now });
+      expect(disposition.phase).toBe(phase);
+      if (phase === "retryable_failure") {
+        expect(disposition).toEqual({ phase, failureCode: "native_session_interrupted", nextAttemptAt: new Date(now.getTime() + 30_000) });
+      }
+    });
+    it("admits provider attempt 4 at execution only for the replacement claim", () => {
+      const claim = { kind: "reattach_remote_runner" as const, runId: "run", leaseOwner: "owner", controllerGeneration: 6,
+        providerAttempt: 4, restartKind: "hard" as const, recoveryRequestId: null,
+        remote: { providerLeaseId: "sandbox", remoteCwd: "/workspace" } };
+      expect(nativeAdmittedProviderAttemptLimit({ ...claim, replaceUnansweredRunner: true })).toBe(4);
+      expect(nativeAdmittedProviderAttemptLimit(claim)).toBe(3);
+      expect(nativeAdmittedProviderAttemptLimit({ kind: "resume_dead_runner", runId: "run", leaseOwner: "owner",
+        controllerGeneration: 6, providerAttempt: 4, restartKind: "hard", recoveryRequestId: null })).toBe(3);
+      expect(nativeAdmittedProviderAttemptLimit(null)).toBe(3);
+    });
+    it("replaces the live Runner on the extra replacement attempt", async () => {
+      const { target } = fixture(midTurn);
+      await expect(verifyRemoteRunnerOrSettledExit({ claim: unanswered, target: target as never, identity,
+        runId: "run", normalizedSessionId: "session", providerAttempt: 4 })).resolves.toBeUndefined();
     });
     it.each([
       "native_session_recovery_failed: HarnessReconciliationError: codex_history_read_failed: thread/turns/list requires supported paginated history; Error: provider_transport_failed: PRP command session.snapshot timed out (runner connected; pending ahead 0; last runner event seq 338 76s ago)",
@@ -16652,10 +16683,11 @@ describe("runnerd provider runtime wiring", () => {
     },
   );
 
-  it.each((["codex", "claude"] as const).flatMap(provider => (["unchanged", "external-checkpoint", "suspension-receipt", "suspension-active-owner", "changed", "changed-external-checkpoint", "runtime-context", "retirement-failed", "stale-owner", "active-owner", "missing-owner", "foreign-environment", "plugin-replaced", "plugin-managed-github"] as const).filter(scenario => provider === "codex" || scenario.startsWith("plugin-")).map(scenario => [provider, scenario] as const)))("rotates an owned warm %s remote runner before checking changed configuration: %s", async (provider, scenario) => {
-    const plugin = scenario === "plugin-replaced" || scenario === "plugin-managed-github";
+  it.each((["codex", "claude"] as const).flatMap(provider => (["unchanged", "external-checkpoint", "suspension-receipt", "suspension-active-owner", "changed", "changed-external-checkpoint", "runtime-context", "retirement-failed", "stale-owner", "active-owner", "missing-owner", "foreign-environment", "plugin-replaced", "plugin-managed-github", "plugin-environment-upgrade", "plugin-environment-delivered"] as const).filter(scenario => provider === "codex" || scenario.startsWith("plugin-")).map(scenario => [provider, scenario] as const)))("rotates an owned warm %s remote runner before checking changed configuration: %s", async (provider, scenario) => {
+    const plugin = scenario.startsWith("plugin-");
+    const configuredScenario = scenario === "plugin-environment-upgrade" || scenario === "plugin-environment-delivered";
     const suspensionReceipt = scenario.startsWith("suspension-");
-    const reusable = suspensionReceipt || ["unchanged", "external-checkpoint", "plugin-managed-github"].includes(scenario);
+    const reusable = suspensionReceipt || ["unchanged", "external-checkpoint", "plugin-managed-github", "plugin-environment-delivered"].includes(scenario);
     const { permissionPolicy: _permissionPolicy, ...claudeProfile } = QUALIFIED_ACPX_PROFILES.claude;
     const first = { ...scopedNativeExecution(`warm-admission-${provider}-${scenario}`),
       schema: "paperclip.native-execution-input.v5" as const,
@@ -16664,7 +16696,7 @@ describe("runnerd provider runtime wiring", () => {
     if (provider === "claude") first.session.driverKind = "acpx_runtime";
     first.session.lifecyclePolicy = { mode: "warm", idleTimeoutMs: 60_000 };
     const next = { ...first, binding: { ...first.binding, runId: `${first.binding.runId}-next` },
-      session: { ...first.session, lifecyclePolicy: { mode: "warm" as const, idleTimeoutMs: suspensionReceipt || ["unchanged", "external-checkpoint", "runtime-context", "stale-owner", "missing-owner", "plugin-replaced", "plugin-managed-github"].includes(scenario) ? 60_000 : 90_000 } } };
+      session: { ...first.session, lifecyclePolicy: { mode: "warm" as const, idleTimeoutMs: suspensionReceipt || ["unchanged", "external-checkpoint", "runtime-context", "stale-owner", "missing-owner", "plugin-replaced", "plugin-managed-github", "plugin-environment-upgrade", "plugin-environment-delivered"].includes(scenario) ? 60_000 : 90_000 } } };
     if (scenario === "runtime-context") {
       next.runtimeContext = { ...first.runtimeContext,
         mcp: { ...first.runtimeContext.mcp, digest: "1".repeat(64) } };
@@ -16675,11 +16707,12 @@ describe("runnerd provider runtime wiring", () => {
       remoteCwd: "/home/daytona/workspace", runner: { execute: vi.fn() } };
     const identity = { runId: first.binding.runId, normalizedSessionId: first.session.normalizedSessionId!,
       runnerInstanceId: `runner-${scenario}`, environmentLeaseId: first.binding.executionWorkspaceId };
-    let replacementPending=false;
+    let replacementPending=false, advertiseEnvironment=false;
     const acquisition={outcome:"resumed" as "resumed"|"replacement",providerLeaseId:"task-first"};
     const task=vi.fn(async()=>{
       if(replacementPending) {acquisition.outcome="replacement";acquisition.providerLeaseId="task-next";replacementPending=false;}
       return {kind:"description",taskId:acquisition.providerLeaseId,launchPreparationVersion:1,projectAuthCheckVersion:1,warmTaskVersion:1,
+        ...(advertiseEnvironment ? {configuredEnvironmentVersion:1} : {}),
         runner:{version:"fixture",digest:`sha256:${"a".repeat(64)}`}};
     });
     const pluginTarget=plugin ? {...target,remoteCwd:".",leaseId:identity.environmentLeaseId,
@@ -16688,13 +16721,15 @@ describe("runnerd provider runtime wiring", () => {
     if(plugin) {
       await mkdir(home,{recursive:true});await writeFile(join(home,"auth.json"),JSON.stringify({OPENAI_API_KEY:"synthetic-fixture"}),{mode:0o600});
     }
-    const pluginOptions=plugin ? {runnerIngressAuthorized:true,runnerEnvironment:provider === "claude" ? {ANTHROPIC_API_KEY:"synthetic-fixture"} : {},managedGitHub:scenario === "plugin-managed-github",managedAiCredentialHome:home,
+    const configuredVariables=configuredScenario ? {PAPERCLIP_CONFIGURED_ENV_KEYS:'["FEATURE_FLAG"]',FEATURE_FLAG:"on"} : {};
+    const pluginOptions=plugin ? {runnerIngressAuthorized:true,runnerEnvironment:{...(provider === "claude" ? {ANTHROPIC_API_KEY:"synthetic-fixture"} : {}),...configuredVariables},managedGitHub:scenario === "plugin-managed-github",managedAiCredentialHome:home,
       managedAiCredentialIdentity:"revision",managedAiAccountIdentity:"account"} : {};
-    const resume=scenario === "plugin-replaced" ? vi.spyOn(environmentTaskRuntime,"resolvePluginTaskResume").mockResolvedValue("task-first") : undefined;
+    const resume=scenario === "plugin-replaced" || scenario === "plugin-environment-upgrade" ? vi.spyOn(environmentTaskRuntime,"resolvePluginTaskResume").mockResolvedValue("task-first") : undefined;
     const createOwner = pluginTaskRuntime.createPluginRunnerTaskOwner;
     const owners=plugin ? vi.spyOn(pluginTaskRuntime,"createPluginRunnerTaskOwner") : undefined;
     const rebind = vi.fn();
     if (scenario === "plugin-managed-github") owners!.mockImplementation(input => ({...createOwner(input),rebind}));
+    if (scenario === "plugin-environment-delivered") owners!.mockImplementation(input => ({...createOwner(input),rebind,configuredEnvironmentDelivered:() => true}));
 
     const root = await initializeScopedRunnerRoot(first, identity.runnerInstanceId);
     await writeRunnerAuthority(root, identity, "ready");
@@ -16803,6 +16838,7 @@ describe("runnerd provider runtime wiring", () => {
         firstSession.close.mockClear();
       }
       if(scenario === "plugin-replaced") replacementPending=true;
+      if(configuredScenario) advertiseEnvironment=true;
       const continuation = executePaperclipNativeSession({ db: nextDb, execution: next,
         runnerInstanceId: `runner-next-${scenario}`, useRunnerd: true,
         runnerExecutionTarget: (scenario === "foreign-environment" ? { ...target, environmentId: `${environmentId}-other` }
@@ -16826,7 +16862,11 @@ describe("runnerd provider runtime wiring", () => {
           expect(owners!.mock.calls.at(-1)![0]).toMatchObject({resumeFrom:"task-first"});
           expect(owners!.mock.calls.at(-1)![0].adoptIdentity).toBeUndefined();
         }
-        if (scenario === "plugin-managed-github") expect(rebind).toHaveBeenCalledOnce();
+        if (scenario === "plugin-managed-github" || scenario === "plugin-environment-delivered") expect(rebind).toHaveBeenCalledOnce();
+        if (scenario === "plugin-environment-upgrade") {
+          expect(firstSession.close).toHaveBeenCalledWith({ reason: "warm native session configuration changed" });
+          expect(owners!.mock.calls.at(-1)![0]).toMatchObject({ resumeFrom: "task-first", configuredEnvironmentVersion: 1, configuredEnvironment: { FEATURE_FLAG: "on" } });
+        }
         expect(order).toEqual(reusable ? ["execute-next"] : ["retire", "execute-next"]);
         if (scenario === "changed-external-checkpoint") {
           expect(launchedJournal?.slice(-2)).toEqual(["runner.drain", "runner.suspend"]);
@@ -18314,7 +18354,7 @@ describe("runnerd provider runtime wiring", () => {
     state.toolAuthorityDefinitions.mockImplementation(async binding => binding.readRemoteTaskFile ? [{ name: "register_deliverable" }] as never : []);
     const readWorkspaceFile = vi.fn(async () => Buffer.from("proof"));
     const release = vi.fn(async () => {}), resume = vi.fn(async () => "resumed" as const);
-    const owner = vi.spyOn(pluginTaskRuntime, "createPluginRunnerTaskOwner").mockReturnValue({ launcher, registration, driver, readWorkspaceFile, release, resume, isRetired: () => false, retireSupersededTask: async () => false, retiredBeforeClaim: () => false, credentialsUpdated: vi.fn(), rebind:vi.fn() });
+    const owner = vi.spyOn(pluginTaskRuntime, "createPluginRunnerTaskOwner").mockReturnValue({ launcher, registration, driver, readWorkspaceFile, release, resume, isRetired: () => false, retireSupersededTask: async () => false, retiredBeforeClaim: () => false, configuredEnvironmentDelivered: () => false, credentialsUpdated: vi.fn(), rebind:vi.fn() });
     const description = { kind: "description" as const, launchPreparationVersion: 1 as const, projectAuthCheckVersion: 1 as const,
       releaseResumeVersion: 1 as const, ...(kind === "codex" ? { workspaceFileReadVersion: 1 as const } : {}),
       taskId: "task", runner: { version: "fixture", digest: `sha256:${"a".repeat(64)}` } };

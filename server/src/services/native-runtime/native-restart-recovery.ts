@@ -1252,7 +1252,9 @@ export async function claimNativeRestartRecoveries(input: {
       const lockLostBootstrapRetry = row.run.status === "failed" && row.coordinator.phase === "retryable_failure"
         && row.coordinator.failureDetail?.recoveryMode === "bootstrap_retry" && row.issueExecutionRunId !== row.run.id;
       const releasedRemoteRetry = failedRemoteRetry && row.issueExecutionRunId === null;
-      const exhaustedRemoteRetry = failedRemoteRetry && row.coordinator.attempt >= 3;
+      const unansweredRunnerReplacement = row.coordinator.failureDetail?.adoptedRunnerUnanswered === true
+        && row.coordinator.attempt === NATIVE_PROVIDER_RECOVERY_ATTEMPT_LIMIT;
+      const exhaustedRemoteRetry = failedRemoteRetry && row.coordinator.attempt >= 3 && !unansweredRunnerReplacement;
       const needsResumptionAdmission = releasedRemoteRetry || exhaustedRemoteRetry ||
         (failedRemoteRetry && ["done", "cancelled"].includes(issue.status));
       const admission = { exhausted: null as { reason: string; policy: SystemRecoveryState } | null };

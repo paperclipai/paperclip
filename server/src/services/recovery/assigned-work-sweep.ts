@@ -29,7 +29,7 @@ import { issueTreeControlService } from "../issue-tree-control.js";
 import { taskInterruptionPresentations } from "../task-interruption-presentation.js";
 import { CHAT_CONTROL_RECOVERY_STOP_CODE, CHAT_CONTROL_RECOVERY_UNRESOLVED_CODE } from "../chat-control-recovery-stop.js";
 import { onboardingFirstTaskAwaitingUserSql } from "./onboarding-first-task-wait.js";
-import { PENDING_CONTINUATION_BOUND_MS } from "../recovery-continuation-bounds.js";
+import { PENDING_CONTINUATION_BOUND_MS } from "../recovery-continuation-pacing.js";
 import {
   continuationActivityMessage,
   continuationAllowance,
