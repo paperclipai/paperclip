@@ -560,6 +560,7 @@ type PaperclipWakeComment = {
   createdAt: string | null;
   authorType: string | null;
   authorId: string | null;
+  readByEarlierTurn: boolean;
 };
 
 type PaperclipWakePlanReviewAuthor = {
@@ -943,6 +944,7 @@ function normalizePaperclipWakeComment(
     createdAt: asString(comment.createdAt, "").trim() || null,
     authorType: asString(author.type, "").trim() || null,
     authorId: asString(author.id, "").trim() || null,
+    readByEarlierTurn: asBoolean(comment.readByEarlierTurn, false),
   };
 }
 
@@ -3202,6 +3204,9 @@ function renderPaperclipWakePromptBody(
       );
       if (comment.bodyTruncated) {
         lines.push("[comment body truncated]");
+      }
+      if (comment.readByEarlierTurn) {
+        lines.push("[An earlier turn already read this comment and may have applied it. Check the current task state first, and do not repeat work that is already done.]");
       }
       lines.push("");
     }

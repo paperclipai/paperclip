@@ -49,24 +49,45 @@ it("finds a delivered comment in a native continuation that embeds it as JSON", 
 });
 function inTurn() {
   const o = valid(); o.runs.pop();
-  Object.assign(o.state, { savedComment: { id: "headline", updatedAt: "2026-11-12T21:50:58.894Z" }, workerHistoryReads: { headline: "2026-11-12T21:50:58.894Z" },
+  Object.assign(o.state, { savedComment: { id: "headline", updatedAt: "2026-11-12T21:50:58.894Z" }, workerCommentReceipts: { reads: { headline: "2026-11-12T21:50:58.894Z" }, cited: ["headline"] },
     nativeDeliveryBound: false, finalHeadlineRevision: false, originalWebsiteRevisionRetained: false, inTurnHeadlineRevision: true });
   return o;
 }
 it("accepts the running Website turn reading the current headline feedback and saving it, with no continuation", () => expect(gradeMultipleHandoffs(inTurn()).passed).toBe(true));
 it("accepts the same in-turn consumption with a later read of the same revision", () => {
-  const o = inTurn(); (o.state as Record<string, unknown>).workerHistoryReads = { headline: "2026-11-12T21:51:25.000Z" }; expect(gradeMultipleHandoffs(o).passed).toBe(true);
+  const o = inTurn(); (o.state as Record<string, unknown>).workerCommentReceipts = { reads: { headline: "2026-11-12T21:51:25.000Z" }, cited: ["headline"] }; expect(gradeMultipleHandoffs(o).passed).toBe(true);
 });
 it("rejects an in-turn read of an earlier revision with no continuation", () => {
-  const o = inTurn(); (o.state as Record<string, unknown>).workerHistoryReads = { headline: "2026-11-12T21:50:00.000Z" }; expect(gradeMultipleHandoffs(o).passed).toBe(false);
+  const o = inTurn(); (o.state as Record<string, unknown>).workerCommentReceipts = { reads: { headline: "2026-11-12T21:50:00.000Z" }, cited: ["headline"] }; expect(gradeMultipleHandoffs(o).passed).toBe(false);
 });
 it("rejects an in-turn read whose headline was never saved", () => { const o = inTurn(); (o.state as Record<string, unknown>).inTurnHeadlineRevision = false; expect(gradeMultipleHandoffs(o).passed).toBe(false); });
-it("rejects a double application: an in-turn read and a continuation", () => {
-  const o = valid(); Object.assign(o.state, { savedComment: { id: "headline", updatedAt: "2026-11-12T21:50:58.894Z" }, workerHistoryReads: { headline: "2026-11-12T21:50:58.894Z" }, inTurnHeadlineRevision: true });
+it("rejects a double application: an in-turn read cited as handled and a continuation", () => {
+  const o = valid(); Object.assign(o.state, { savedComment: { id: "headline", updatedAt: "2026-11-12T21:50:58.894Z" },
+    workerCommentReceipts: { reads: { headline: "2026-11-12T21:50:58.894Z" }, cited: ["headline"] }, inTurnHeadlineRevision: true, continuationWarnedEarlierRead: true });
   expect(gradeMultipleHandoffs(o).passed).toBe(false);
+});
+it("rejects an instruction the running turn read but neither cited nor received again", () => {
+  const o = inTurn(); (o.state as Record<string, unknown>).workerCommentReceipts = { reads: { headline: "2026-11-12T21:50:58.894Z" }, cited: [] };
+  (o.state as Record<string, unknown>).inTurnHeadlineRevision = false; expect(gradeMultipleHandoffs(o).passed).toBe(false);
+});
+it("rejects a saved in-turn headline that the running turn did not cite, with no continuation", () => {
+  const o = inTurn(); (o.state as Record<string, unknown>).workerCommentReceipts = { reads: { headline: "2026-11-12T21:50:58.894Z" }, cited: [] };
+  expect(gradeMultipleHandoffs(o).passed).toBe(false);
+});
+function readNotCited() {
+  const o = valid(); Object.assign(o.state, { savedComment: { id: "headline", updatedAt: "2026-11-12T21:50:58.894Z" },
+    workerCommentReceipts: { reads: { headline: "2026-11-12T21:50:58.894Z" }, cited: [] }, continuationWarnedEarlierRead: true });
+  return o;
+}
+it("accepts a read the running turn did not cite, delivered once to a continuation told about the earlier read", () => expect(gradeMultipleHandoffs(readNotCited()).passed).toBe(true));
+it("rejects that continuation when it was not told the running turn already read the instruction", () => {
+  const o = readNotCited(); (o.state as Record<string, unknown>).continuationWarnedEarlierRead = false; expect(gradeMultipleHandoffs(o).passed).toBe(false);
+});
+it("rejects that continuation when the final Website revision lacks the headline", () => {
+  const o = readNotCited(); o.state.finalHeadlineRevision = false; expect(gradeMultipleHandoffs(o).passed).toBe(false);
 });
 it("rejects two Website continuations", () => { const o = valid(); o.runs.push({ id: "again", agentId: "morgan", status: "succeeded" }); expect(gradeMultipleHandoffs(o).passed).toBe(false); });
 it("rejects an in-turn read of a different comment", () => {
-  const o = inTurn(); (o.state as Record<string, unknown>).savedComment = { id: "other", updatedAt: "2026-11-12T21:50:58.894Z" }; (o.state as Record<string, unknown>).workerHistoryReads = { other: "2026-11-12T21:50:58.894Z" };
+  const o = inTurn(); (o.state as Record<string, unknown>).savedComment = { id: "other", updatedAt: "2026-11-12T21:50:58.894Z" }; (o.state as Record<string, unknown>).workerCommentReceipts = { reads: { other: "2026-11-12T21:50:58.894Z" }, cited: ["other"] };
   expect(gradeMultipleHandoffs(o).passed).toBe(false);
 });

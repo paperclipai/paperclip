@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { deflateRawSync } from "node:zlib";
-import { gradeQueuedFollowup, historyReadRevisions, keyboardMoveQueuedMessageUp, promptCarriesComment, readCurrentRevision, zipEntryTexts } from "./runtime-queue.js";
+import { gradeQueuedFollowup, historyReadRevisions, keyboardMoveQueuedMessageUp, promptCarriesComment, readCurrentRevision, resultCitedCommentIds, zipEntryTexts } from "./runtime-queue.js";
 /** A minimal zip with one deflated and one stored entry, laid out as zip tools write it. */
 function zip(entries: Array<{ name: string; text: string; deflate: boolean }>) {
   const locals: Buffer[] = [], centrals: Buffer[] = []; let offset = 0;
@@ -117,4 +117,12 @@ describe("task history reads", () => {
     expect(readCurrentRevision(reads, { id: "b", updatedAt: "2026-11-12T21:50:00.000Z" })).toBe(false);
     expect(readCurrentRevision(reads, undefined)).toBe(false);
   });
+});
+it("reads comment citations only from the run's accepted result", () => {
+  const id = "3047528e-3c1d-41ee-94e9-122ee17f3032", other = "b9e3ab32-934e-4d07-a5cf-e06fc28d574a";
+  const accepted = (result: unknown) => ({ eventType: "run.result.accepted", payload: { prpEvent: { payload: { result } } } });
+  expect(resultCitedCommentIds([accepted({ evidence: [{ ref: `comment:${id} (applied)` }, { ref: "document:plan" }] })])).toEqual([id]);
+  expect(resultCitedCommentIds([accepted({ evidence: [], completionClaim: { criteria: [{ evidenceRefs: [`comment:${other.toUpperCase()}`] }] } })])).toEqual([other]);
+  expect(resultCitedCommentIds([{ eventType: "run.result.proposed", payload: { prpEvent: { payload: { result: { evidence: [{ ref: `comment:${id}` }] } } } } }])).toEqual([]);
+  expect(resultCitedCommentIds([accepted({ evidence: [{ ref: `document:comment:${id}` }, { ref: "comment:not-a-comment" }] })])).toEqual([]);
 });
