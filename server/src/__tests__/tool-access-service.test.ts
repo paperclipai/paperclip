@@ -19,6 +19,8 @@ import {
 import {
   applyPendingMigrations,
   activityLog,
+  chatEndpoints,
+  chatIdentityLinks,
   agents,
   authUsers,
   companies,
@@ -84,6 +86,8 @@ import {
   projectConnectionMethodToolArguments,
   toolAccessService,
 } from "../services/tool-access.js";
+import { githubChatManagementService } from "../services/chat-github-management.js";
+import { writeConnectionCredential } from "../services/connection-credentials.js";
 import { accessService } from "../services/access.js";
 import { instanceSettingsService } from "../services/instance-settings.js";
 import { createOAuthAuthorizationStart } from "../services/tool-access/oauth/authorization-start.js";
@@ -7819,6 +7823,89 @@ describeEmbeddedPostgres("tool access service", () => {
     expect(activity.lifecycleEvents.map((event) => event.type)).toEqual([
       "app_paused",
     ]);
+  });
+
+  it.each([
+    "pat", "oauth", "missing", "wrong-path", "wrong-auth", "wrong-owner",
+    "other-user", "shared", "agent", "revoked", "disabled", "wrong-company",
+    "invalid-token", "invalid-identity", "revoke-during-request",
+  ])("verifies personal GitHub bot identity (%s)", async (scenario) => {
+    const company = await createCompany(db);
+    const userId = `pat-owner-${randomUUID()}`;
+    await grantBoardUser(db, company.id, userId, [], "owner");
+    const [application] = await db.insert(toolApplications).values({
+      companyId: company.id, name: "GitHub", type: "mcp_http",
+    }).returning();
+    const [connection] = await db.insert(toolConnections).values({
+      companyId: company.id, applicationId: application.id, name: "GitHub",
+      uid: randomUUID(), transport: "mcp_remote", status: "active",
+      enabled: scenario !== "disabled", credentialPolicy: "per_user",
+      authKind: scenario === "oauth" || scenario === "wrong-auth" ? "oauth" : "api_key",
+      config: { sourceTemplateKey: "github", url: "https://api.githubcopilot.com/mcp/" },
+    }).returning();
+    const configPath = scenario === "oauth" ? "oauth.access_token"
+      : scenario === "wrong-path" ? "headers.Authorization" : "credentials.authorization";
+    const credential = await writeConnectionCredential(db, {
+      companyId: company.id, connectionName: "GitHub", configPath, label: "Test credential",
+      value: "synthetic-identity-token", ownerUserId: scenario === "wrong-owner" ? "someone-else" : userId,
+    });
+    const agent = scenario === "agent" ? await createAgent(db, company.id) : null;
+    const [grant] = await db.insert(connectionGrants).values({
+      companyId: company.id, connectionId: connection.id,
+      kind: scenario === "shared" ? "organization" : scenario === "agent" ? "agent" : "user",
+      subjectUserId: ["shared", "agent"].includes(scenario) ? null : scenario === "other-user" ? "another-user" : userId,
+      subjectAgentId: agent?.id ?? null,
+      status: scenario === "revoked" ? "revoked" : "active",
+      credentialSecretRefs: scenario === "missing" ? [] : [{
+        secretId: credential.secret.id, configPath, versionSelector: "latest",
+      }],
+    }).returning();
+    await createTestToolAccessService(db).updateConnection(connection.id, { name: "GitHub identity test" });
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation(async (url, init) => {
+      expect(String(url)).toBe("https://api.github.com/user");
+      expect(init?.method).toBe("GET");
+      expect(new Headers(init?.headers).get("authorization")).toBe("Bearer synthetic-identity-token");
+      if (scenario === "revoke-during-request") {
+        await db.update(connectionGrants).set({ status: "revoked" }).where(eq(connectionGrants.id, grant.id));
+      }
+      return new Response(JSON.stringify(scenario === "invalid-identity"
+        ? { id: 42, login: "invalid/login" } : { id: 42, login: "octocat" }),
+        { status: scenario === "invalid-token" ? 401 : 200 });
+    });
+    const service = createTestToolAccessService(db);
+    const result = service.verifyPersonalGitHubIdentity(
+      scenario === "wrong-company" ? randomUUID() : company.id, connection.id, userId,
+    );
+    if (["pat", "oauth"].includes(scenario)) {
+      await expect(result).resolves.toEqual({
+        githubUserId: "42", login: "octocat", avatarUrl: null,
+        connectionId: connection.id, grantId: grant.id,
+      });
+    } else {
+      const status = ["disabled", "wrong-company"].includes(scenario) ? 404
+        : ["other-user", "shared", "agent", "revoked", "revoke-during-request"].includes(scenario) ? 403 : 422;
+      await expect(result).rejects.toMatchObject({ status });
+    }
+    expect(fetchSpy).toHaveBeenCalledTimes(
+      ["pat", "oauth", "invalid-token", "invalid-identity", "revoke-during-request"].includes(scenario) ? 1 : 0,
+    );
+    if (scenario === "pat") {
+      const reviewer = await createAgent(db, company.id);
+      const [bot] = await db.insert(chatEndpoints).values({
+        companyId: company.id, connectionId: connection.id, provider: "github",
+        publicId: randomUUID(), assignedAgentId: reviewer.id,
+        providerAccountId: "synthetic-app-identity",
+      }).returning();
+      const management = githubChatManagementService(db);
+      await expect(management.identity(bot.id, connection.id, userId)).resolves.toMatchObject({ githubUserId: "42" });
+      expect(await db.select().from(chatIdentityLinks).where(eq(chatIdentityLinks.endpointId, bot.id))).toHaveLength(0);
+      await expect(management.identity(bot.id, connection.id, userId, "99")).rejects.toMatchObject({ status: 409 });
+      expect(await db.select().from(chatIdentityLinks).where(eq(chatIdentityLinks.endpointId, bot.id))).toHaveLength(0);
+      await management.identity(bot.id, connection.id, userId, "42");
+      expect(await db.select().from(chatIdentityLinks).where(eq(chatIdentityLinks.endpointId, bot.id))).toMatchObject([
+        { paperclipUserId: userId, status: "linked" },
+      ]);
+    }
   });
 
   it("preserves all active personal OAuth declarations through pause, resume, and metadata edits", async () => {
