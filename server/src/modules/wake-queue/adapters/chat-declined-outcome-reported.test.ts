@@ -33,9 +33,15 @@ describe.skipIf(!support.supported)("release of a decline continuation an earlie
     await database?.cleanup();
   });
 
-  async function seed(input: { read: boolean; toolAction?: boolean; status?: string }) {
+  async function seed(input: { read: boolean; toolAction?: boolean; status?: string; historical?: number }) {
     const [issue] = await db.insert(issues).values({ companyId, title: "Chat with CEO", status: "in_progress", assigneeAgentId: agentId,
       conversationAgentId: agentId, conversationUserId: `person-${randomUUID()}`, conversationState: "waiting" }).returning();
+    // Older declines come first in the agent's interaction list.
+    const history = input.historical ? await db.insert(issueThreadInteractions).values(Array.from({ length: input.historical }, (_, index) => ({
+      companyId, issueId: issue.id, kind: "request_confirmation", status: "rejected", resolvedByUserId: "person",
+      createdAt: new Date(Date.now() - 600_000 + index), resolvedAt: new Date(Date.now() - 500_000 + index),
+      payload: { version: 1, prompt: "Approve an earlier read?", toolAction: { connectionId: randomUUID() } } as never,
+    }))).returning() : [];
     const resolvedAt = new Date(Date.now() - 30_000);
     const [card] = await db.insert(issueThreadInteractions).values({ companyId, issueId: issue.id, kind: "request_confirmation",
       status: input.status ?? "rejected", resolvedAt, resolvedByUserId: "person",
@@ -46,7 +52,7 @@ describe.skipIf(!support.supported)("release of a decline continuation an earlie
       startedAt: new Date(Date.now() - 31_000), contextSnapshot: { issueId: issue.id } }).returning();
     if (input.read) {
       await recordDeclinedInteractionRead(db, { companyId, agentId, runId: run.id, issue,
-        interactions: [{ id: card.id, kind: card.kind, status: card.status, payload: card.payload }] });
+        interactions: [...history, card].map(row => ({ id: row.id, kind: row.kind, status: row.status, payload: row.payload })) });
     }
     const [reply] = await db.insert(issueComments).values({ companyId, issueId: issue.id, authorAgentId: agentId, createdByRunId: run.id,
       body: "Understood. The approval for that read was already declined, so I won't use the app." }).returning();
@@ -68,8 +74,8 @@ describe.skipIf(!support.supported)("release of a decline continuation an earlie
     });
   }
 
-  it("settles the decline continuation with no run when the earlier turn read the decline and replied after it", async () => {
-    const { issue, run, wake } = await seed({ read: true });
+  it.each([0, 20])("settles the decline continuation with no run when the earlier turn read the decline and replied after it (%s older declines)", async historical => {
+    const { issue, run, wake } = await seed({ read: true, historical });
     const promotion = vi.fn((): never => { throw new Error("promotion reached the host"); });
     const result = await release(promotion)({ companyId, runId: run.id, now: new Date() });
     expect(result.outcome.kind).not.toBe("promoted");

@@ -82,16 +82,18 @@ describe("source-bound Studio native accounting", () => {
   /** The completion turn was suppressed: the initial reply, after reading the test task done, is the report. */
   function earlierReply() {
     const o = valid(); o.runs.pop();
-    Object.assign(o, { completedReads: { initial: [{ taskId: "harness", createdAt: "2026-11-03T00:02:30Z" }] } });
+    Object.assign(o, { completedReads: { initial: [{ taskId: "harness", createdAt: "2026-11-03T00:02:30Z" }] }, completionReports: { harness: "completed-reply" } });
     Object.assign(o.sourceComments[1]!, { createdByRunId: "initial", createdAt: "2026-11-03T00:03:00Z" });
-    return o as ReturnType<typeof valid> & { completedReads: Record<string, Array<{ taskId: string; createdAt: string }>> };
+    return o as ReturnType<typeof valid> & { completedReads: Record<string, Array<{ taskId: string; createdAt: string }>>; completionReports: Record<string, string | null> };
   }
   it("accepts the earlier reply the server took as the completion report, from saved state only", () => {
     const o = earlierReply();
     expect(studioNativeRunsComplete(o)).toBe(true); expect(gradeIntegratorSkillStudio(o).passed).toBe(true);
   });
-  it.each(["no done read", "read of another task", "reply before the read", "reply from another run", "two replies", "extra completion run", "no task link"])("rejects an earlier reply with %s", fault => {
+  it.each(["no done read", "read of another task", "reply before the read", "reply from another run", "two replies", "extra completion run", "no task link", "delivery still pending", "delivery settled by another reply"])("rejects an earlier reply with %s", fault => {
     const o = earlierReply();
+    if (fault === "delivery still pending") o.completionReports = { harness: null };
+    if (fault === "delivery settled by another reply") o.completionReports = { harness: "other-reply" };
     if (fault === "no done read") o.completedReads = {};
     if (fault === "read of another task") o.completedReads.initial![0]!.taskId = "other";
     if (fault === "reply before the read") o.sourceComments[1]!.createdAt = "2026-11-03T00:02:00Z";

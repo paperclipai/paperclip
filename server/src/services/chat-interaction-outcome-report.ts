@@ -24,7 +24,8 @@ export async function recordDeclinedInteractionRead(db: Db, input: {
   interactions: InteractionRow[];
 }) {
   if (input.issue.companyId !== input.companyId || input.issue.conversationAgentId !== input.agentId) return;
-  const declined = input.interactions.filter(declinedToolAction).slice(0, MAX_INTERACTIONS);
+  // Record every decline the run was shown; a later decline must never lose its receipt.
+  const declined = input.interactions.filter(declinedToolAction);
   if (declined.length === 0) return;
   const recorded = await db.select({ interactionId: sql<string>`${heartbeatRunEvents.payload}->>'interactionId'` })
     .from(heartbeatRunEvents).where(and(eq(heartbeatRunEvents.companyId, input.companyId), eq(heartbeatRunEvents.runId, input.runId),

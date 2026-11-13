@@ -48,8 +48,9 @@ export const COMPLETED_HANDOFF_READ_EVENT = "chat_handoff.completed_read";
 const timestamp = (v: unknown) => typeof v === "string" ? Date.parse(v) : NaN;
 /** The reply that told the person the Studio test finished: either the server's completion
  * turn, or an earlier CEO reply that the server accepted as that report (no completion turn
- * ran). The second is recognized only by saved state: the replying run read the test task
- * done, and the reply was posted after that read. Reply wording is not graded here. */
+ * ran). The second is recognized only by saved state: the server settled the completion
+ * delivery with this reply, the replying run read the test task done, and the reply was
+ * posted after that read. Reply wording is not graded here. */
 function studioCompletionReply(o: StudioObservation) {
   const test = o.studioRuns[0]; if (!test) return undefined;
   const ceos = o.runs.filter(run => run.agentId === o.leadId && run.contextSnapshot?.issueId === o.sourceIssueId);
@@ -65,10 +66,12 @@ function studioCompletionReply(o: StudioObservation) {
     .flatMap(read => o.sourceComments.filter(row => row.authorAgentId === o.leadId && row.createdByRunId === run.id
       && !!row.body?.trim() && timestamp(row.createdAt) >= timestamp(read.createdAt)).map(row => ({ ...row, run, earlier: true }))));
   const unique = [...new Map(reported.map(row => [row.id, row])).values()];
-  return unique.length === 1 ? unique[0] : undefined;
+  // The server must have settled the completion delivery with this exact reply; otherwise a
+  // completion turn is still owed and this reply is not the delivery.
+  return unique.length === 1 && o.completionReports?.[test.issueId] === unique[0]!.id ? unique[0] : undefined;
 }
 const root = (ctx: ChatCatalogContext, skillId: string) => `/api/companies/${ctx.input.fixtures.company.id}/skills/${skillId}`;
-interface StudioObservation extends InternalObservation { skill: CompanySkillDetail; studioRuns: CompanySkillTestRunDetail[]; pinnedVersions: Record<string, CompanySkillVersion>; sourceIssueId: string; sourceComments: Entity[]; completedReads?: Record<string, Array<{ taskId: string; createdAt: string }>> }
+interface StudioObservation extends InternalObservation { skill: CompanySkillDetail; studioRuns: CompanySkillTestRunDetail[]; pinnedVersions: Record<string, CompanySkillVersion>; sourceIssueId: string; sourceComments: Entity[]; completedReads?: Record<string, Array<{ taskId: string; createdAt: string }>>; completionReports?: Record<string, string | null> }
 async function observeStudio(ctx: ChatCatalogContext, state: Record<string, unknown>): Promise<StudioObservation> {
   const base = await observeInternal(ctx, state); const path = root(ctx, (state.skill as CompanySkillDetail).id);
   const runs = await ctx.input.api.get<CompanySkillTestRun[]>(`${path}/test-runs`);
@@ -88,7 +91,10 @@ async function observeStudio(ctx: ChatCatalogContext, state: Record<string, unkn
     completedReads[run.id] = events.filter(event => event.eventType === COMPLETED_HANDOFF_READ_EVENT && typeof event.payload?.taskId === "string" && typeof event.createdAt === "string")
       .map(event => ({ taskId: event.payload!.taskId as string, createdAt: event.createdAt! }));
   }
-  return { ...base, skill: await ctx.input.api.get<CompanySkillDetail>(path), studioRuns, pinnedVersions, sourceIssueId, completedReads,
+  // The server's saved completion delivery outcome: which reply, if any, it accepted as the report.
+  const handoffs = await ctx.input.api.get<{ items: Array<{ issueId: string; completionReportCommentId?: string | null }> }>(`/api/issues/${sourceIssueId}/chat-handoffs?limit=100`);
+  const completionReports = Object.fromEntries(handoffs.items.map(row => [row.issueId, row.completionReportCommentId ?? null]));
+  return { ...base, skill: await ctx.input.api.get<CompanySkillDetail>(path), studioRuns, pinnedVersions, sourceIssueId, completedReads, completionReports,
     sourceComments: await ctx.input.api.get<Entity[]>(`/api/issues/${sourceIssueId}/comments?order=asc`) };
 }
 function studioObservation(value: unknown): StudioObservation | undefined {

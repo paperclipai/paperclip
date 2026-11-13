@@ -18,6 +18,7 @@ import { heartbeatService, shouldQueueFollowupForRunningIssueWake } from "../ser
 import { createHeartbeatQueue } from "../services/heartbeat/queue.js";
 import { createHeartbeatQueueTestDependencies } from "./helpers/heartbeat-queue.js";
 import { createReleaseIssueExecution } from "../modules/wake-queue/application/use-cases.js";
+import { conversationDecisionReceiptsService } from "../services/conversation-decision-receipts.js";
 import { ALREADY_REPORTED_WAKE_REASON, createPostgresWakeQueueAdapter } from "../modules/wake-queue/adapters/postgres.js";
 
 (support.supported ? describe : describe.skip)("chat completion delivery", () => {
@@ -74,7 +75,13 @@ import { ALREADY_REPORTED_WAKE_REASON, createPostgresWakeQueueAdapter } from "..
     const f = await seed();
     const { reply } = await reportedByEarlierTurn(f);
     const [delivery] = await f.rows();
+    const reports = async () => (await conversationDecisionReceiptsService(db).listCreatedTasks(f.companyId, f.sourceId, {
+      actor: { type: "board", userId: "operator", source: "session", ignoreInstanceAdmin: true }, userId: "operator",
+    })).items.map(item => ({ issueId: item.issueId, completionReportCommentId: item.completionReportCommentId }));
+    // The handoff listing shows the saved delivery outcome: still owed, then the accepted reply.
+    expect(await reports()).toEqual([{ issueId: f.task.id, completionReportCommentId: null }]);
     await f.service.deliver(delivery.id);
+    expect(await reports()).toEqual([{ issueId: f.task.id, completionReportCommentId: reply.id }]);
     expect(f.wakeup).not.toHaveBeenCalled();
     expect(await f.rows()).toMatchObject([{ status: "delivered", responseCommentId: reply.id, targetRunId: null }]);
     expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.companyId, f.companyId))).toHaveLength(2);

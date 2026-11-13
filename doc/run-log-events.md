@@ -1242,3 +1242,5 @@ for that exact outcome. A completion reply must also link the task. The
 completion delivery is then marked delivered with that reply as its response,
 and a deferred wake ends `skipped` with the reason "Already reported by an
 earlier reply in this conversation".
+The conversation's handoff listing (`GET /api/issues/{id}/chat-handoffs`) shows
+that reply as `completionReportCommentId` once the latest completion is delivered.
