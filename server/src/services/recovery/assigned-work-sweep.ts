@@ -31,6 +31,7 @@ import { CHAT_CONTROL_RECOVERY_STOP_CODE, CHAT_CONTROL_RECOVERY_UNRESOLVED_CODE 
 import { onboardingFirstTaskAwaitingUserSql } from "./onboarding-first-task-wait.js";
 import { PENDING_CONTINUATION_BOUND_MS } from "../recovery-continuation-pacing.js";
 import { attributeBlock, BLOCK_ATTRIBUTION_WINDOW_MS, blockedStatusDetailsSql } from "../interruption-block-release.js";
+import { ASSIGNED_WORK_CONTINUED_ACTION, taskAutomaticAttempts } from "./task-automatic-attempts.js";
 import { STRANDED_CONTINUATION_MAX_AGE_MS, STRANDED_KIND, strandedHoldContinuesAutomatically, type StrandedHoldRun } from "./stranded-hold-continuation.js";
 import {
   continuationActivityMessage,
@@ -39,7 +40,6 @@ import {
   CONTINUATION_REFUSED_MESSAGE,
   CONTINUATION_REVIEW_MESSAGE,
   evaluateAssignedWork,
-  CONTINUATION_CAP_WINDOW_MS,
   STALE_BLOCK_MS,
   NATIVE_STALL_MS,
   type AssignedWorkFacts,
@@ -50,7 +50,7 @@ import {
 
 /** Activity action recorded for every automatic continuation. It is also the
  * durable claim two servers serialize on, and the per-task rate-limit ledger. */
-export const ASSIGNED_WORK_CONTINUED_ACTION = "issue.continued_automatically";
+export { ASSIGNED_WORK_CONTINUED_ACTION };
 export const ASSIGNED_WORK_CONTINUATION_SOURCE = "issue.assigned_work_invariant";
 export const STRANDED_TRANSIENT_CONTINUED_OUTCOME = "stranded_transient_continued";
 /** Repairs per process per minute, so a deploy with many violations does not
@@ -66,7 +66,6 @@ export { PENDING_CONTINUATION_BOUND_MS };
 const NON_TERMINAL_RUN_STATUSES = ["queued", "running", "scheduled_retry"];
 const NATIVE_PENDING_RECOVERY_STATES = ["awaiting_evidence", "awaiting_runner_reattach", "resuming_session", "bootstrap_incomplete"];
 const PROVIDER_LIMIT_CAUSES = ["provider_quota", "native_provider_usage_limit"];
-const SCHEDULER_TRANSIENT_RETRY_REASONS = ["transient_failure"];
 
 type IssueRow = Pick<typeof issues.$inferSelect, "id" | "companyId" | "status" | "assigneeAgentId" | "assigneeUserId" | "hiddenAt"
   | "blockedTransitionAt" | "updatedAt" | "unblockDescriptor" | "monitorNextCheckAt" | "conversationAgentId" | "originKind"
@@ -593,18 +592,12 @@ export function assignedWorkSweep(db: Db, deps: AssignedWorkDeps) {
       const verdict = evaluateAssignedWork(fresh, at);
       if (verdict.kind !== "violation" || verdict.stale || verdict.reason === "run_owner_gone" || verdict.reason === "native_run_stalled"
         || (current.status === "blocked" && fresh.activeRecoveryAction && !fresh.activeRecoveryAction.continuedBySweep)) return { kind: "changed" as const };
-      const recent = await tx.select({ createdAt: activityLog.createdAt }).from(activityLog).where(and(
-        eq(activityLog.companyId, issue.companyId), eq(activityLog.entityType, "issue"), eq(activityLog.entityId, issue.id),
-        eq(activityLog.action, ASSIGNED_WORK_CONTINUED_ACTION),
-        gte(activityLog.createdAt, new Date(at.getTime() - CONTINUATION_CAP_WINDOW_MS)))).orderBy(desc(activityLog.createdAt)).limit(64);
       // One cap per task across both owners: the scheduler's bounded transient
       // retries of this task's runs spend the same hourly allowance, so a
       // lasting outage is not retried by the scheduler inside every sweep continuation.
-      const transientRetries = await tx.select({ createdAt: heartbeatRuns.createdAt }).from(heartbeatRuns).where(and(
-        eq(heartbeatRuns.companyId, issue.companyId), sql`${heartbeatRuns.contextSnapshot}->>'issueId' = ${issue.id}`,
-        inArray(heartbeatRuns.scheduledRetryReason, SCHEDULER_TRANSIENT_RETRY_REASONS),
-        gte(heartbeatRuns.createdAt, new Date(at.getTime() - CONTINUATION_CAP_WINDOW_MS)))).orderBy(desc(heartbeatRuns.createdAt)).limit(64);
-      const allowance = continuationAllowance([...recent, ...transientRetries].map(row => row.createdAt), at);
+      const attempts = await taskAutomaticAttempts(tx as unknown as Db, issue.companyId, issue.id, at);
+      const recent = attempts.continuations;
+      const allowance = continuationAllowance(attempts.all, at);
       if (!allowance.allowed) return { kind: allowance.capped ? "capped" as const : "spaced" as const, retryAt: allowance.retryAt };
       let restoredTo: Claimed["restoredTo"] = null;
       let restoredStatusVersion: number | null = null;
@@ -635,7 +628,7 @@ export function assignedWorkSweep(db: Db, deps: AssignedWorkDeps) {
           ...(restoredTo ? { status: restoredTo, previousStatus: "blocked" } : {}),
           attempt: recent.length + 1 },
       }, publications);
-      const next = continuationAllowance([at, ...[...recent, ...transientRetries].map(row => row.createdAt)], at);
+      const next = continuationAllowance([at, ...attempts.all], at);
       return { kind: "claimed" as const, activityId: activity.id, publications, verdict, reason: verdict.reason,
         restoredTo, restoredStatusVersion, blockedTransitionAt: current.blockedTransitionAt,
         unblockDescriptor: current.unblockDescriptor, blockedOwnerNotifiedAt: current.blockedOwnerNotifiedAt,

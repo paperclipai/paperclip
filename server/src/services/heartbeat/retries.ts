@@ -70,6 +70,7 @@ import { logger } from "../../middleware/logger.js";
 import { parseObject } from "../../adapters/utils.js";
 import { logActivity } from "../activity-log.js";
 import { readContinuationAttempt } from "../recovery/index.js";
+import { transientRetryWithinTaskCap } from "../recovery/task-automatic-attempts.js";
 import { withRecoveryContext } from "../recovery/status-only-context.js";
 import {
   MAX_TURN_CONTINUATION_RETRY_REASON,
@@ -602,7 +603,13 @@ export function createHeartbeatRetries(db: Db, dependencies: HeartbeatRetryDepen
     // a chain whose real failures already spent the failure budget either.
     const failureBudgetSpent = interruptedPreparationLane && opts?.maxAttempts == null
       && executionFailureRetryCount(run) >= BOUNDED_TRANSIENT_HEARTBEAT_RETRY_MAX_ATTEMPTS;
-    const computedBaseSchedule = failureBudgetSpent ? null
+    // One hourly cap per task: once the assigned-work sweep has continued
+    // this task in the hour, a transient retry spends the same allowance.
+    const transientIssueId = retryReason === BOUNDED_TRANSIENT_HEARTBEAT_RETRY_REASON && opts?.maxAttempts == null
+      ? readNonEmptyString(run.contextSnapshot?.issueId) : null;
+    const taskCapSpent = transientIssueId !== null
+      && !(await transientRetryWithinTaskCap(db, run.companyId, transientIssueId, now));
+    const computedBaseSchedule = failureBudgetSpent || taskCapSpent ? null
       : opts?.delayMs != null
         ? nextAttempt <= maxAttempts
           ? {
