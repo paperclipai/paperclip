@@ -7,6 +7,7 @@ import type { OwnerProof } from "./owner-proof.js";
 import type { InProgressRecord, SettleOutcome } from "./recovery/ownership-registry.js";
 import { hasRemoteTerminationReceipt } from "./remote-execution-termination.js";
 import { ORPHANED_SANDBOX_RECOVERY_KEY, prepareSupersededWarmSandboxStop } from "./sandbox-stop-and-retain.js";
+import { REUSABLE_SANDBOX_KEPT_AFTER_REPLACEMENT_KEY } from "./reusable-sandbox-kept-marker.js";
 
 /** Failure reason on a retained orphan sandbox released for destruction. */
 export const RETAINED_ORPHAN_RELEASED_REASON = "retained_orphan_sandbox_released";
@@ -111,7 +112,7 @@ function softlyHeldSql(now?: Date) {
 
 function alwaysHeldSql() {
   return sql`(${environmentLeases.metadata} ?| array['nativeWorkspaceExportResume', 'sandboxStopAndRetain',
-      'workspaceRestoreRecovery', 'workspaceRecoveryCleanup', 'runnerTaskSourceConsumer']
+      'workspaceRestoreRecovery', 'workspaceRecoveryCleanup', 'runnerTaskSourceConsumer', ${REUSABLE_SANDBOX_KEPT_AFTER_REPLACEMENT_KEY}]
     or ${abandonedWorkspaceFilesHeldOnLeaseRowSql()}
     or coalesce(${environmentLeases.metadata}->>'pendingCleanupInFlight', 'false') = 'true'
     or coalesce(${environmentLeases.metadata}#>>'{legacyShutdownWorkspaceSettlement,state}' = 'pending', false)
@@ -241,6 +242,7 @@ async function heldBy(tx: Db, lease: LeaseRow, runId: string, now: Date): Promis
   if (metadata.workspaceRestoreRecovery !== undefined) return "workspace_restore_recovery";
   if (metadata.workspaceRecoveryCleanup !== undefined) return "workspace_recovery_cleanup";
   if (metadata.runnerTaskSourceConsumer !== undefined) return "source_recovery_consumer";
+  if (metadata[REUSABLE_SANDBOX_KEPT_AFTER_REPLACEMENT_KEY] !== undefined) return "kept_after_replacement";
   const shutdown = metadata.legacyShutdownWorkspaceSettlement as Record<string, unknown> | undefined;
   if (shutdown?.state === "pending") return "legacy_shutdown_fence";
   const [other] = await tx.select({ id: environmentLeases.id }).from(environmentLeases).where(and(
