@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   RECOVERY_BACKLOG_AGE_MS,
+  createQueuedRunDispatcher,
   RECOVERY_DISPATCH_SHARE,
   isRecoveryWakeReason,
   orderQueuedRunsForDispatch,
@@ -74,6 +75,19 @@ describe("queued run dispatch order", () => {
     const recovery = Array.from({ length: 6 }, () => backlogRecovery());
     const batch = orderQueuedRunsForDispatch([...recovery, ...people], { now, startsSinceRecovery: 0 }).slice(0, 8);
     expect(batch.map(entry => entry.wakeReason === "task_retry" ? "P" : "R").join("")).toBe("PPPRPPPR");
+  });
+
+  it("offers the next recovery run when the reserved recovery run cannot be claimed", () => {
+    const people = Array.from({ length: 4 }, () => personRetry());
+    const stuck = backlogRecovery(59);
+    const claimable = backlogRecovery(30);
+    const dispatcher = createQueuedRunDispatcher([...people, stuck, claimable], { now, startsSinceRecovery: RECOVERY_DISPATCH_SHARE - 1 });
+    const first = dispatcher.next();
+    expect(first!.id).toBe(stuck.id);
+    const second = dispatcher.next();
+    expect(second!.id).toBe(claimable.id);
+    dispatcher.claimed(second!);
+    expect(dispatcher.next()!.wakeReason).toBe("task_retry");
   });
 
   it("does not put a fresh interruption's continuation behind old-backlog recovery wakes", () => {

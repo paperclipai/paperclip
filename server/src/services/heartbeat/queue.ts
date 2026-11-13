@@ -10,7 +10,7 @@ import { hasAutomaticInteractionDeliveryHold, INTERACTION_DELIVERY_DENIED, reche
 import { deferredWorkIntentWait } from "../work-intent-outbox.js";
 import { notifyIssueRecovery } from "../issue-recovery-notifications.js";
 import { createHeartbeatTimerPolicy } from "./timer-policy.js";
-import { RECOVERY_DISPATCH_SHARE, isRecoveryWakeReason, isSystemRecoveryRun, orderQueuedRunsForDispatch } from "./queued-run-dispatch-order.js";
+import { RECOVERY_DISPATCH_SHARE, isRecoveryWakeReason, isSystemRecoveryRun, createQueuedRunDispatcher } from "./queued-run-dispatch-order.js";
 import { notifyExecutionRunWork } from "../execution-control-notifications.js";
 import { PersistedExecutionWaitRefusal, writeDeferredExecutionWait } from "../deferred-execution-wait.js";
 import { notifyDeferredExecutionWork } from "../deferred-execution-notifications.js";
@@ -2203,7 +2203,7 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
       .catch(() => logger.warn({ agentId: agent.id }, "Could not attach queued agent setup connection request"));
   }
 
-  async function orderQueuedRunsForAgentDispatch(
+  async function queuedRunDispatcherForAgent(
     agent: typeof agents.$inferSelect,
     queuedRuns: Array<typeof heartbeatRuns.$inferSelect>,
     dependencyReadiness: Map<string, { isDependencyReady: boolean }>,
@@ -2257,7 +2257,12 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
         priorityRank: issueRunPriorityRank(issue?.priority),
       };
     });
-    return orderQueuedRunsForDispatch(facts, { now, startsSinceRecovery }).map(entry => entry.run);
+    const dispatcher = createQueuedRunDispatcher(facts, { now, startsSinceRecovery });
+    const byRun = new Map(facts.map(entry => [entry.run, entry]));
+    return {
+      next: () => dispatcher.next()?.run ?? null,
+      claimed: (run: typeof heartbeatRuns.$inferSelect) => { const entry = byRun.get(run); if (entry) dispatcher.claimed(entry); },
+    };
   }
 
   async function startNextQueuedRunForAgent(agentId: string, attachSetupRequest = false) {
@@ -2336,10 +2341,10 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
         );
       const issueById = new Map(issueRows.map((row) => [row.id, row]));
       const companyAgents = await listCompanyAgentOrgRows(agent.companyId);
-      const prioritizedRuns = await orderQueuedRunsForAgentDispatch(agent, queuedRuns, dependencyReadiness, issueById);
+      const dispatcher = await queuedRunDispatcherForAgent(agent, queuedRuns, dependencyReadiness, issueById);
 
       const claimedRuns: Array<typeof heartbeatRuns.$inferSelect> = [];
-      for (const queuedRun of prioritizedRuns) {
+      for (let queuedRun = dispatcher.next(); queuedRun; queuedRun = dispatcher.next()) {
         if (claimedRuns.length >= availableSlots || isRunAdmissionClosed()) break;
         let claimed: typeof heartbeatRuns.$inferSelect | null;
         try {
@@ -2356,7 +2361,10 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
           );
           continue;
         }
-        if (claimed) claimedRuns.push(claimed);
+        if (claimed) {
+          claimedRuns.push(claimed);
+          dispatcher.claimed(queuedRun);
+        }
       }
       if (claimedRuns.length === 0) return [];
 
