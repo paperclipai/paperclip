@@ -7,6 +7,7 @@ import { legacyWorkspaceRecoveryNotMigrated } from "../legacy-workspace-recovery
 import { pendingFailedNativeRetryCancellationCondition } from "../native-runtime/native-cancellation-request.js";
 import { notifyLiveRunRecovery } from "../live-run-recovery-notifications.js";
 import { registerLiveRecoveryWork } from "./live-recovery-work.js";
+import { noteReattachRunsClaimed } from "./reattach-phase.js";
 import { NATIVE_RETAINED_OWNER_WAIT } from "../native-runtime/native-controller-recovery.js";
 import { nativeEnvironmentSettlementDisposition, nativeEnvironmentSettlementWork } from "../native-runtime/native-environment-settlement-work.js";
 import { nativeWorkspaceFinalizationWork } from "../native-runtime/native-workspace-finalization-work.js";
@@ -1042,6 +1043,7 @@ export function createHeartbeatRecovery(db: Db, dependencies: HeartbeatRecoveryD
           disposition.kind === "resume_dead_runner" ||
           disposition.kind === "bootstrap_incomplete",
       );
+      if (options?.trigger !== "same_run_retry") noteReattachRunsClaimed(claims.map(claim => claim.runId));
       for (const disposition of dispositions) {
         if ((disposition.kind === "awaiting_evidence" || disposition.kind === "blocked") && disposition.retryAt) {
           scheduleNativeSessionResumeDispatch(disposition.runId, disposition.retryAt, "restart");

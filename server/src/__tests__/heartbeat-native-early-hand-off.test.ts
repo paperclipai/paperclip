@@ -1,11 +1,13 @@
 import { and, eq, inArray } from "drizzle-orm";
 import { heartbeatRunEvents, heartbeatRuns, nativeRunFinalizations } from "@paperclipai/db";
-import { expect, it } from "vitest";
+import { afterEach, expect, it, vi } from "vitest";
 import { heartbeatService } from "../services/heartbeat.js";
 import { currentControllerBootId } from "../services/controller-process-identity.js";
 import { evaluateNativeControllerTakeover } from "../services/native-runtime/native-restart-recovery.js";
 import { REMOTE_CONTROLLER_LEASE_MS } from "../services/native-runtime/native-runner-recovery-contract.js";
 import { describeEmbeddedPostgres, nativeRestartFixture } from "./helpers/native-restart.js";
+import { startReattachPhase, stopReattachWatch } from "../services/heartbeat/reattach-phase.js";
+import { isReattachPhaseActive, pendingReattachRunIds, resetReattachPhaseForTests, settleReattachRun, type ReattachPhaseSummary } from "../services/heartbeat/run-admission.js";
 
 describeEmbeddedPostgres("an outgoing server hands live remote runs over at shutdown start", () => {
   const fixture = nativeRestartFixture();
@@ -59,4 +61,27 @@ describeEmbeddedPostgres("an outgoing server hands live remote runs over at shut
     expect(await heartbeatService(db).handOffNativeRunsForShutdown("SIGTERM")).not.toContain(runIds[0]);
     expect(await incomingTakeoverReasons(db, runIds)).toEqual(["remote_controller_lease_live"]);
   });
+
+  afterEach(() => {
+    stopReattachWatch();
+    resetReattachPhaseForTests();
+  });
+
+  it("holds the incoming server's queued starts only from the hand-over, not while the outgoing server still drives its runs", async () => {
+    const { db, runIds } = await seedLiveRemoteRuns("PHASE", 3);
+    const ended: ReattachPhaseSummary[] = [];
+    await startReattachPhase(db, { capMs: 60_000, bootId: "incoming-boot", refreshMs: 20, onEnd: summary => ended.push(summary) });
+    await new Promise(resolve => setTimeout(resolve, 150));
+    expect(isReattachPhaseActive()).toBe(false);
+    const handedOffAt = Date.now();
+    expect((await heartbeatService(db).handOffNativeRunsForShutdown("SIGTERM")).sort()).toEqual([...runIds].sort());
+    await vi.waitFor(() => expect(pendingReattachRunIds().sort()).toEqual([...runIds].sort()), { timeout: 5_000, interval: 10 });
+    expect(isReattachPhaseActive()).toBe(true);
+    for (const runId of runIds) settleReattachRun(runId, "reached");
+    expect(isReattachPhaseActive()).toBe(false);
+    const phase = ended.find(summary => summary.reason === "all_settled")!;
+    expect(phase).toMatchObject({ startReason: "handed_over", liveRuns: 3, reached: 3, gatedStarts: true });
+    expect(phase.durationMs).toBeLessThan(Date.now() - handedOffAt + 50);
+    await db.update(heartbeatRuns).set({ status: "succeeded", finishedAt: new Date() }).where(inArray(heartbeatRuns.id, runIds));
+  }, 60_000);
 });
