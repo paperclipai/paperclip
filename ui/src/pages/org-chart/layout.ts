@@ -8,10 +8,22 @@ export interface ChartGeometry {
   sparsePadding: number; fitZoomMax: number; sparseFitZoomMax: number;
 }
 export interface LayoutNode {
-  id: string; name: string; role: string; status: string;
-  x: number; y: number; width: number; height: number;
-  depth: number; tier: 1 | 2 | 3; leader: boolean; children: LayoutNode[];
-  offsetX?: number; offsetY?: number;
+  id: string;
+  kind?: OrgNode["kind"];
+  title?: string | null;
+  name: string;
+  role: string;
+  status: string;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  depth: number;
+  tier: 1 | 2 | 3;
+  leader: boolean;
+  children: LayoutNode[];
+  offsetX?: number;
+  offsetY?: number;
 }
 interface Block { roots: LayoutNode[]; width: number; height: number }
 function shift(node: LayoutNode, x: number, y: number) {
@@ -78,7 +90,22 @@ export function layoutOrganization(roots: OrgNode[], viewport: { width: number; 
       const blockWidth = Math.max(width, children.width);
       children.roots.forEach(child => shift(child, (blockWidth - children.width) / 2, height + g.levelGap));
       return {
-        roots: [{ id: node.id, name: node.name, role: node.role, status: node.status, x: (blockWidth - width) / 2, y: 0, width, height, depth, tier, leader, children: children.roots }],
+        roots: [{
+          id: node.id,
+          kind: node.kind,
+          title: node.title,
+          name: node.name,
+          role: node.role,
+          status: node.status,
+          x: (blockWidth - width) / 2,
+          y: 0,
+          width,
+          height,
+          depth,
+          tier,
+          leader,
+          children: children.roots,
+        }],
         width: blockWidth,
         height: height + (children.roots.length ? g.levelGap + children.height : 0),
       };

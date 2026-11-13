@@ -19,6 +19,7 @@ import { agentCredentialService } from "./agent-credentials.js";
 import { agentIdentityService } from "./agent-identity.js";
 import { initializePrimaryAgent } from "./primary-agent.js";
 import { resolveAgentRunnerTaskDriverForCompany, resolveNewAgentRunnerForCompany } from "./agent-runner-selection.js";
+import { assertAgentReportsToPrincipal } from "./company-org.js";
 import { instanceSettingsService } from "./instance-settings.js";
 import { assertProviderApiPlacementPolicy, isProviderApiSetupDraft, resolveProviderApiPlacement } from "./native-runtime/provider-api-placement.js";
 
@@ -38,6 +39,7 @@ export async function prepareAgentHire(db: Db, companyId: string, input: CreateA
   const { ensureManager, assertBuiltInAgentMetadataMutationAllowed } = agentRecordQueries(db);
   if (data.appearance?.customAvatarAssetId) throw unprocessable("Create the agent before uploading its avatar");
   assertBuiltInAgentMetadataMutationAllowed(null, data.metadata, options);
+  await assertAgentReportsToPrincipal(db, companyId, options?.setupAgentId ?? "", data.reportsTo, data.reportsToUserId);
   if (data.reportsTo) {
     await ensureManager(companyId, data.reportsTo);
   }

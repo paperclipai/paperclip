@@ -114,6 +114,14 @@ export type CompanyMemberGrant = {
   updatedAt: string;
 };
 
+export type CompanyStaffProfile = {
+  jobTitle: string | null;
+  orgRole: string | null;
+  capabilities: string | null;
+  reportsToPrincipalType: "agent" | "user" | null;
+  reportsToPrincipalId: string | null;
+};
+
 export type CompanyMember = {
   id: string;
   companyId: string;
@@ -125,6 +133,7 @@ export type CompanyMember = {
   updatedAt: string;
   user: { id: string; email: string | null; name: string | null; image: string | null } | null;
   grants: CompanyMemberGrant[];
+  staffProfile: CompanyStaffProfile | null;
   removal?: {
     canArchive: boolean;
     reason: string | null;
@@ -330,6 +339,12 @@ export const accessApi = {
     input: {
       membershipRole?: HumanCompanyRole | null;
       status?: "pending" | "active" | "suspended";
+      staffProfile?: {
+        jobTitle?: string | null;
+        orgRole?: string | null;
+        capabilities?: string | null;
+        reportsTo?: { type: "agent" | "user"; id: string } | null;
+      };
     },
   ) => api.patch<CompanyMember>(`/companies/${companyId}/members/${memberId}`, input),
 

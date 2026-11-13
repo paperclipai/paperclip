@@ -2425,6 +2425,7 @@ export {
   updateCurrentUserProfileSchema,
   updateCompanyMemberSchema,
   updateCompanyMemberWithPermissionsSchema,
+  updateCompanyStaffProfileSchema,
   archiveCompanyMemberSchema,
   updateMemberPermissionsSchema,
   updateAgentPermissionGrantSchema,
@@ -2451,6 +2452,7 @@ export {
   type UpdateCurrentUserProfile,
   type UpdateCompanyMember,
   type UpdateCompanyMemberWithPermissions,
+  type UpdateCompanyStaffProfile,
   type ArchiveCompanyMember,
   type UpdateMemberPermissions,
   type SearchAdminUsersQuery,
@@ -2967,3 +2969,5 @@ export {
 export { recognizeLinkPreview, type LinkPreviewTarget, type LinkPreviewState, type LinkPreview, type LinkPreviewResult } from "./link-preview.js";
 export * from "./mcp-apps.js";
 export * from "./mcp-skills.js";
+export * from "./org-principal.js";
+export * from "./hybrid-org.js";

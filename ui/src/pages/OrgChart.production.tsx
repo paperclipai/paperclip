@@ -12,7 +12,7 @@ import { Button } from "@/components/ui/button";
 import { EmptyState } from "../components/EmptyState";
 import { PageSkeleton } from "../components/PageSkeleton";
 import { QueryErrorState, useQueryView } from "../components/QueryView";
-import { Download, Maximize2, Minus, Network, Plus, Upload } from "lucide-react";
+import { Download, Maximize2, Minus, Network, Plus, Upload, User } from "lucide-react";
 import { AGENT_ROLE_LABELS, type Agent } from "@paperclipai/shared";
 import { useCloudInstance } from "@/hooks/useCloudInstance";
 import { useHiddenSettings } from "@/hooks/useHiddenSettings";
@@ -31,6 +31,8 @@ const TOUCH_MOVE_THRESHOLD = 6;
 
 interface LayoutNode {
   id: string;
+  kind?: OrgNode["kind"];
+  title?: string | null;
   name: string;
   role: string;
   status: string;
@@ -83,6 +85,8 @@ function layoutTree(node: OrgNode, x: number, y: number): LayoutNode {
 
   return {
     id: node.id,
+    kind: node.kind,
+    title: node.title,
     name: node.name,
     role: node.role,
     status: node.status,
@@ -589,13 +593,22 @@ export function OrgChart() {
           }}
         >
           {allNodes.map((node) => {
-            const agent = agentMap.get(node.id);
-            const dotColor = statusDotColor[node.status] ?? defaultDotColor;
+            const isUser = node.kind === "user";
+            const agent = isUser ? undefined : agentMap.get(node.id);
+            const dotColor = isUser ? "var(--primary)" : (statusDotColor[node.status] ?? defaultDotColor);
+            const openNode = () => {
+              if (isUser) {
+                navigate("/company/settings/members");
+                return;
+              }
+              navigate(agent ? agentUrl(agent) : `/agents/${node.id}`);
+            };
 
             return (
               <Card
-                key={node.id}
+                key={`${node.kind ?? "agent"}:${node.id}`}
                 data-org-card
+                data-org-kind={node.kind ?? "agent"}
                 className="block absolute py-0 hover:shadow-md hover:border-foreground/20 transition-(--tp-box-shadow-border-color) duration-150 cursor-pointer select-none"
                 style={{
                   left: node.x,
@@ -603,7 +616,7 @@ export function OrgChart() {
                   width: CARD_W,
                   minHeight: CARD_H,
                 }}
-                onClick={() => navigate(agent ? agentUrl(agent) : `/agents/${node.id}`)}
+                onClick={openNode}
                 onClickCapture={(e) => {
                   if (!suppressNextCardClick.current) return;
                   suppressNextCardClick.current = false;
@@ -615,7 +628,11 @@ export function OrgChart() {
                   {/* Agent icon + status dot */}
                   <div className="relative shrink-0">
                     <div className="w-9 h-9 rounded-full bg-muted flex items-center justify-center">
-                      <AgentAvatar agent={agent} size={16} className="h-4.5 w-4.5 text-foreground/70"/>
+                      {isUser ? (
+                        <User className="h-4.5 w-4.5 text-foreground/70" aria-hidden />
+                      ) : (
+                        <AgentAvatar agent={agent} size={16} className="h-4.5 w-4.5 text-foreground/70"/>
+                      )}
                     </div>
                     <span
                       className="absolute -bottom-0.5 -right-0.5 h-3 w-3 rounded-full border-2 border-card"
@@ -628,8 +645,13 @@ export function OrgChart() {
                       {node.name}
                     </span>
                     <span className="text-(length:--text-micro) text-muted-foreground leading-tight mt-0.5">
-                      {agent?.title ?? roleLabel(node.role)}
+                      {node.title ?? agent?.title ?? roleLabel(node.role)}
                     </span>
+                    {isUser && (
+                      <span className="text-(length:--text-nano) text-muted-foreground/60 leading-tight mt-1">
+                        Human member
+                      </span>
+                    )}
                     {agent && (
                       <span className="text-(length:--text-nano) text-muted-foreground/60 font-mono leading-tight mt-1">
                         {getAdapterLabel(agent.adapterType)}

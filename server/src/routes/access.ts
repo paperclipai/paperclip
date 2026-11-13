@@ -25,6 +25,7 @@ import {
   companies,
   companyLogos,
   companyMemberships,
+  companyStaffProfiles,
   instanceUserRoles,
   invites,
   joinRequests,
@@ -96,6 +97,7 @@ import {
   normalizeHumanRole,
   resolveHumanInviteRole,
 } from "../services/company-member-roles.js";
+import { companyStaffProfileService } from "../services/company-staff-profiles.js";
 import { agentJoinGrantsFromDefaults as standardAgentJoinGrantsFromDefaults, humanJoinGrantsFromDefaults } from "../services/invite-grants.js";
 import {
   collapseDuplicatePendingHumanJoinRequests,
@@ -1256,6 +1258,14 @@ async function loadCompanyMemberRecords(
     grantsByPrincipalId.set(grant.principalId, existing);
   }
 
+  const staffProfiles = userIds.length > 0
+    ? await db.select().from(companyStaffProfiles).where(and(
+      eq(companyStaffProfiles.companyId, companyId),
+      inArray(companyStaffProfiles.userId, userIds),
+    ))
+    : [];
+  const staffByUserId = new Map(staffProfiles.map((profile) => [profile.userId, profile]));
+
   return members.map((member) => ({
     ...member,
     principalType: "user" as const,
@@ -1264,6 +1274,7 @@ async function loadCompanyMemberRecords(
       : null,
     user: userMap.get(member.principalId) ?? null,
     grants: grantsByPrincipalId.get(member.principalId) ?? [],
+    staffProfile: staffByUserId.get(member.principalId) ?? null,
   }));
 }
 
@@ -4484,8 +4495,15 @@ export function accessRoutes(
       if (!memberToUpdate) throw notFound("Member not found");
       await assertCanManageCompanyMember(req, access, companyId, memberToUpdate);
 
+      const staffProfile = req.body.staffProfile;
+      if (staffProfile && memberToUpdate.principalType === "user") {
+        await companyStaffProfileService(db).validateForMember(companyId, memberToUpdate.principalId, staffProfile);
+      }
       const updated = await access.updateMember(companyId, memberId, req.body);
       if (!updated) throw notFound("Member not found");
+      if (staffProfile && memberToUpdate.principalType === "user") {
+        await companyStaffProfileService(db).upsertForMember(companyId, memberToUpdate.principalId, staffProfile);
+      }
 
       await logActivity(db, {
         companyId,
@@ -4497,6 +4515,7 @@ export function accessRoutes(
         details: {
           membershipRole: updated.membershipRole,
           status: updated.status,
+          ...(staffProfile ? { staffProfileUpdated: true } : {}),
         },
       });
 

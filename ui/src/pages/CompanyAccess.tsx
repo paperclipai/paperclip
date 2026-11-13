@@ -85,6 +85,9 @@ export function CompanyAccess() {
   const [reassignmentTarget, setReassignmentTarget] = useState<string>("__unassigned");
   const [draftRole, setDraftRole] = useState<CompanyMember["membershipRole"]>(null);
   const [draftStatus, setDraftStatus] = useState<EditableMemberStatus>("active");
+  const [draftJobTitle, setDraftJobTitle] = useState("");
+  const [draftOrgRole, setDraftOrgRole] = useState("");
+  const [draftReportsTo, setDraftReportsTo] = useState("");
 
   useEffect(() => {
     setBreadcrumbs([
@@ -121,15 +124,38 @@ export function CompanyAccess() {
   };
 
   const updateMemberMutation = useMutation({
-    mutationFn: async (input: { memberId: string; membershipRole: CompanyMember["membershipRole"]; status: EditableMemberStatus }) => {
+    mutationFn: async (input: {
+      memberId: string;
+      membershipRole: CompanyMember["membershipRole"];
+      status: EditableMemberStatus;
+      jobTitle: string;
+      orgRole: string;
+      reportsTo: string;
+    }) => {
+      const reportsTo = input.reportsTo
+        ? (() => {
+          const [type, id] = input.reportsTo.split(":");
+          if (type !== "agent" && type !== "user") return null;
+          if (!id) return null;
+          return { type, id } as const;
+        })()
+        : null;
       return accessApi.updateMember(selectedCompanyId!, input.memberId, {
         membershipRole: input.membershipRole,
         status: input.status,
+        staffProfile: {
+          jobTitle: input.jobTitle.trim() || null,
+          orgRole: input.orgRole.trim() || null,
+          reportsTo,
+        },
       });
     },
     onSuccess: async () => {
       setEditingMemberId(null);
       await refreshAccessData();
+      if (selectedCompanyId) {
+        await queryClient.invalidateQueries({ queryKey: queryKeys.org(selectedCompanyId) });
+      }
       pushToast({
         title: "Member updated",
         tone: "success",
@@ -240,7 +266,28 @@ export function CompanyAccess() {
     if (!editingMember) return;
     setDraftRole(editingMember.membershipRole);
     setDraftStatus(isEditableMemberStatus(editingMember.status) ? editingMember.status : "suspended");
+    const profile = editingMember.staffProfile;
+    setDraftJobTitle(profile?.jobTitle ?? "");
+    setDraftOrgRole(profile?.orgRole ?? "");
+    const reportsTo = profile?.reportsToPrincipalType && profile.reportsToPrincipalId
+      ? `${profile.reportsToPrincipalType}:${profile.reportsToPrincipalId}`
+      : "";
+    setDraftReportsTo(reportsTo);
   }, [editingMember]);
+
+  const staffReportsToOptions = useMemo(() => {
+    const options: Array<{ value: string; label: string }> = [];
+    for (const agent of agentsQuery.data ?? []) {
+      if (agent.status === "terminated") continue;
+      options.push({ value: `agent:${agent.id}`, label: `${agent.name} (agent)` });
+    }
+    for (const member of membersQuery.data?.members ?? []) {
+      if (member.status !== "active" || member.id === editingMember?.id) continue;
+      const name = member.user?.name || member.user?.email || member.principalId;
+      options.push({ value: `user:${member.principalId}`, label: `${name} (member)` });
+    }
+    return options.sort((left, right) => left.label.localeCompare(right.label));
+  }, [agentsQuery.data, editingMember?.id, membersQuery.data?.members]);
 
   useEffect(() => {
     if (!removingMember) return;
@@ -483,6 +530,41 @@ export function CompanyAccess() {
                   </select>
                 </label>
               </div>
+              <div className="grid gap-4 md:grid-cols-2">
+                <label className="space-y-2 text-sm md:col-span-2">
+                  <span className="font-medium">Job title</span>
+                  <input
+                    className="w-full rounded-md border border-border bg-background px-3 py-2"
+                    value={draftJobTitle}
+                    onChange={(event) => setDraftJobTitle(event.target.value)}
+                    placeholder="Chief Executive Officer"
+                  />
+                </label>
+                <label className="space-y-2 text-sm">
+                  <span className="font-medium">Org chart role</span>
+                  <input
+                    className="w-full rounded-md border border-border bg-background px-3 py-2"
+                    value={draftOrgRole}
+                    onChange={(event) => setDraftOrgRole(event.target.value)}
+                    placeholder="ceo"
+                  />
+                </label>
+                <label className="space-y-2 text-sm">
+                  <span className="font-medium">Reports to</span>
+                  <select
+                    className="w-full rounded-md border border-border bg-background px-3 py-2"
+                    value={draftReportsTo}
+                    onChange={(event) => setDraftReportsTo(event.target.value)}
+                  >
+                    <option value="">None</option>
+                    {staffReportsToOptions.map((option) => (
+                      <option key={option.value} value={option.value}>
+                        {option.label}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+              </div>
             </div>
           )}
           <DialogFooter>
@@ -496,6 +578,9 @@ export function CompanyAccess() {
                   memberId: editingMember.id,
                   membershipRole: draftRole,
                   status: draftStatus,
+                  jobTitle: draftJobTitle,
+                  orgRole: draftOrgRole,
+                  reportsTo: draftReportsTo,
                 });
               }}
               disabled={updateMemberMutation.isPending}

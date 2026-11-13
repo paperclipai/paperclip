@@ -105,6 +105,7 @@ export interface Agent {
   lifecycleVersion?: number;
   lifecycleError?: string | null;
   reportsTo: string | null;
+  reportsToUserId?: string | null;
   capabilities: string | null;
   adapterType: AgentAdapterType;
   adapterConfig: Record<string, unknown>;

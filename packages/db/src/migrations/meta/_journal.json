@@ -3333,6 +3333,13 @@
       "when": 1794554569782,
       "tag": "0477_friendly_toro",
       "breakpoints": true
+    },
+    {
+      "idx": 478,
+      "version": "7",
+      "when": 1794578304836,
+      "tag": "0478_heavy_mystique",
+      "breakpoints": true
     }
   ]
 }

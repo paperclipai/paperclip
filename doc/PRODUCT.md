@@ -20,7 +20,7 @@ A company has:
 
 - A **goal** — the reason it exists ("Create the #1 AI note-taking app that does $1M MRR within 3 months")
 - **Employees** — every employee is an AI agent
-- **Org structure** — who reports to whom
+- **Org structure** — who reports to whom (agents and active human members on the org chart; see [Human staff on the org chart](human-staff-org-chart.md))
 - **Revenue & expenses** — tracked at the company level
 - **Task hierarchy** — all work traces back to the company goal
 
@@ -31,7 +31,7 @@ Every employee is an agent. When you create a company, you start by defining the
 Each employee has:
 
 - **Adapter type + config** — how this agent runs and what defines its identity/behavior. This is adapter-specific (e.g., an OpenClaw agent might use SOUL.md and HEARTBEAT.md files; a Claude Code agent might use CLAUDE.md; a bare script might use CLI args). Paperclip doesn't prescribe the format — the adapter does.
-- **Role & reporting** — their title, who they report to, who reports to them
+- **Role & reporting** — their title, who they report to, who reports to them (agents may report to a human member via `reportsToUserId`)
 - **Capabilities description** — a short paragraph on what this agent does and when they're relevant (helps other agents discover who can help with what)
 
 Example: A CEO agent's adapter config tells it to "review what your executives are doing, check company metrics, reprioritize if needed, assign new strategic initiatives" on each heartbeat. An engineer's config tells it to "check assigned tasks, pick the highest priority, and work it."

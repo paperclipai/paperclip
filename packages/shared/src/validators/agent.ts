@@ -87,7 +87,7 @@ export const agentRuntimeConfigSchema = z.object({
   }
 });
 
-export const createAgentSchema = z.object({
+export const createAgentBodySchema = z.object({
   setupId: z.string().guid().optional(),
   name: z.string().min(1),
   role: z.enum(AGENT_ROLES).optional().default("general"),
@@ -95,6 +95,7 @@ export const createAgentSchema = z.object({
   icon: z.enum(AGENT_ICON_NAMES).optional().nullable(),
   appearance: agentAppearanceSchema.optional(),
   reportsTo: z.string().guid().optional().nullable(),
+  reportsToUserId: z.string().trim().min(1).max(256).optional().nullable(),
   capabilities: z.string().optional().nullable(),
   desiredSkills: z.array(agentDesiredSkillSelectionSchema).optional(),
   adapterType: agentAdapterTypeSchema,
@@ -106,22 +107,26 @@ export const createAgentSchema = z.object({
   budgetMonthlyCents: z.number().int().nonnegative().optional().default(0),
   permissions: agentPermissionsSchema.optional(),
   metadata: z.record(z.string(), z.unknown()).optional().nullable(),
-  // The optional stored-session claim from a completed Claude login session. It
-  // is the non-secret `storedSessionId`; it carries no token. The agent-create
-  // transaction consumes it as the one-time stored-session claim.
   storedSessionId: z.string().min(1).max(256).optional(),
-  // The optional apply-existing flag. When true, the caller binds the fixed
-  // Claude OAuth token reference to the owner stored value with no new login
-  // round trip. The server permits the no-claim bind only for a user actor and
-  // only when that owner already has a stored value. It carries no token.
   applyStoredClaudeLogin: z.boolean().optional(),
-  // Narrow intent flag set by the onboarding wizard when it hires the very first
-  // agent (the chief of staff). It is not an agent column: the server consumes
-  // it to seed the server-owned chief-of-staff persona over the agent's entry
-  // instruction file instead of the generic default, and honors it only for
-  // board-authored requests. Mirrors onboardingFirstTask on issue create.
   onboardingFirstAgent: z.boolean().optional(),
 });
+
+function refineAgentReportsToPrincipal<
+  T extends z.ZodType<{ reportsTo?: string | null; reportsToUserId?: string | null }>,
+>(schema: T) {
+  return schema.superRefine((value, ctx) => {
+    if (value.reportsTo && value.reportsToUserId) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "An agent can report to either another agent or a human member, not both",
+        path: ["reportsTo"],
+      });
+    }
+  });
+}
+
+export const createAgentSchema = refineAgentReportsToPrincipal(createAgentBodySchema);
 
 export type CreateAgent = z.infer<typeof createAgentSchema>;
 
@@ -144,14 +149,12 @@ export const builtInAgentResetSchema = z.object({
 
 export type BuiltInAgentReset = z.infer<typeof builtInAgentResetSchema>;
 
-export const createAgentHireSchema = createAgentSchema.omit({ setupId: true }).extend({
+export const createAgentHireSchema = refineAgentReportsToPrincipal(createAgentBodySchema.omit({ setupId: true }).extend({
   setupAgentId: z.string().guid().optional(),
   sourceIssueId: z.string().guid().optional().nullable(),
   sourceIssueIds: z.array(z.string().guid()).optional(),
-  // Agent-authored hires may explicitly request the caller's native runner
-  // settings. The server consumes this intent; it is never an agent column.
   inheritRuntimeFrom: z.literal("caller").optional(),
-});
+}));
 
 export type CreateAgentHire = z.infer<typeof createAgentHireSchema>;
 
@@ -170,18 +173,20 @@ export const agentRuntimeSettingsPatchSchema = z.object({
 });
 export type AgentRuntimeSettingsPatch = z.infer<typeof agentRuntimeSettingsPatchSchema>;
 
-export const updateAgentSchema = objectWithoutDefaults(
-  createAgentSchema.omit({ permissions: true, onboardingFirstAgent: true, setupId: true }),
-)
-  .partial()
-  .extend({
-    permissions: z.never().optional(),
-    runtimeSettings: agentRuntimeSettingsPatchSchema.optional(),
-    replaceAdapterConfig: z.boolean().optional(),
-    expectedConfigurationRevision: z.string().regex(/^[a-f0-9]{64}$/).optional(),
-    status: z.enum(["paused", "idle", "terminated"]).optional(),
-    spentMonthlyCents: z.never().optional(),
-  });
+export const updateAgentSchema = refineAgentReportsToPrincipal(
+  objectWithoutDefaults(
+    createAgentBodySchema.omit({ permissions: true, onboardingFirstAgent: true, setupId: true }),
+  )
+    .partial()
+    .extend({
+      permissions: z.never().optional(),
+      runtimeSettings: agentRuntimeSettingsPatchSchema.optional(),
+      replaceAdapterConfig: z.boolean().optional(),
+      expectedConfigurationRevision: z.string().regex(/^[a-f0-9]{64}$/).optional(),
+      status: z.enum(["paused", "idle", "terminated"]).optional(),
+      spentMonthlyCents: z.never().optional(),
+    }),
+);
 
 export type UpdateAgent = z.infer<typeof updateAgentSchema>;
 

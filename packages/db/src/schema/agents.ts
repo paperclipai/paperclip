@@ -35,6 +35,7 @@ export const agents = pgTable(
     harnessVerifiedDigest: text("harness_verified_digest"),
     harnessVerifiedAt: timestamp("harness_verified_at", { withTimezone: true }),
     reportsTo: uuid("reports_to").references((): AnyPgColumn => agents.id),
+    reportsToUserId: text("reports_to_user_id"),
     capabilities: text("capabilities"),
     adapterType: text("adapter_type").notNull().default("process"),
     adapterConfig: jsonb("adapter_config").$type<Record<string, unknown>>().notNull().default({}),

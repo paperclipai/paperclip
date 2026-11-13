@@ -26,6 +26,7 @@ const CONFIG_REVISION_FIELDS = [
   "icon",
   "appearance",
   "reportsTo",
+  "reportsToUserId",
   "capabilities",
   "adapterType",
   "adapterConfig",
@@ -145,6 +146,7 @@ export function buildConfigSnapshot(
     icon: row.icon,
     appearance: row.appearance,
     reportsTo: row.reportsTo,
+    reportsToUserId: row.reportsToUserId,
     capabilities: row.capabilities,
     adapterType: row.adapterType,
     adapterConfig,
@@ -265,6 +267,10 @@ export function configPatchFromSnapshot(snapshot: unknown): Partial<typeof agent
     title: typeof snapshot.title === "string" || snapshot.title === null ? snapshot.title : null,
     reportsTo:
       typeof snapshot.reportsTo === "string" || snapshot.reportsTo === null ? snapshot.reportsTo : null,
+    reportsToUserId:
+      typeof snapshot.reportsToUserId === "string" || snapshot.reportsToUserId === null
+        ? snapshot.reportsToUserId
+        : null,
     capabilities:
       typeof snapshot.capabilities === "string" || snapshot.capabilities === null
         ? snapshot.capabilities

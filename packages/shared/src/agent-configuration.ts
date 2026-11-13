@@ -1,17 +1,18 @@
 import { z } from "zod";
 import { resolveAgentAppearance } from "./agent-appearance.js";
 import type { Agent } from "./types/agent.js";
-import { createAgentSchema } from "./validators/agent.js";
+import { createAgentBodySchema } from "./validators/agent.js";
 import { objectWithoutDefaults } from "./validators/partial.js";
 import { agentConfigurationInputResourceShape, agentConfigurationResourceShape } from "./agent-configuration-resources.js";
 
-export const agentConfigurationSpecSchema = objectWithoutDefaults(createAgentSchema.pick({
+export const agentConfigurationSpecSchema = objectWithoutDefaults(createAgentBodySchema.pick({
   name: true,
   role: true,
   title: true,
   icon: true,
   appearance: true,
   reportsTo: true,
+  reportsToUserId: true,
   capabilities: true,
   adapterType: true,
   adapterConfig: true,
@@ -48,6 +49,7 @@ export function agentConfigurationSpec(agent: AgentConfigurationSource) {
     icon: agent.icon,
     appearance: resolveAgentAppearance(agent.appearance, agent.id),
     reportsTo: agent.reportsTo,
+    reportsToUserId: agent.reportsToUserId ?? null,
     capabilities: agent.capabilities,
     adapterType: agent.adapterType,
     adapterConfig: agent.adapterConfig,

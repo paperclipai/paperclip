@@ -5589,6 +5589,12 @@ html:has(.design-proposal-theme) .agent-markdown-name-field [data-slot="input"],
 
 :root { --org-card-filtered-opacity: 0.12; }
 .org-chart-agent-card { transition: opacity var(--motion-duration-fast), border-color var(--motion-duration-fast), box-shadow var(--motion-duration-fast); }
+.org-chart-agent-card[data-org-kind="user"],
+[data-org-card][data-org-kind="user"] {
+  background: var(--card);
+  border-color: color-mix(in oklab, var(--primary) 40%, var(--border));
+  box-shadow: inset 0 0 0 1px color-mix(in oklab, var(--primary) 18%, transparent);
+}
 .org-chart-agent-card[data-filter-match="false"], .org-reporting-edge[data-filter-match="false"] { opacity: var(--org-card-filtered-opacity); }
 .org-reporting-edge { transition: opacity var(--motion-duration-fast); }
 @media (prefers-reduced-motion: reduce) { .org-chart-agent-card, .org-reporting-edge { transition: none; } }

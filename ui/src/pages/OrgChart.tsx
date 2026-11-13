@@ -27,7 +27,7 @@ import { Button } from "@/components/ui/button";
 import { EmptyState } from "../components/EmptyState";
 import { PageSkeleton } from "../components/PageSkeleton";
 import { QueryErrorState, useQueryView } from "../components/QueryView";
-import { Download, Network, Upload, Layers, Paperclip } from "lucide-react";
+import { Download, Network, Upload, Layers, Paperclip, User } from "lucide-react";
 import { AGENT_ROLE_LABELS, type Agent } from "@paperclipai/shared";
 import { useCloudInstance } from "@/hooks/useCloudInstance";
 import { useHiddenSettings } from "@/hooks/useHiddenSettings";
@@ -584,7 +584,8 @@ export function OrgChart({ orgTree: providedOrgTree, agents: providedAgents, mat
           }}
         >
           {allNodes.map((node) => {
-            const agent = agentMap.get(node.id);
+            const isUser = node.kind === "user";
+            const agent = isUser ? undefined : agentMap.get(node.id);
             const adapterType = agent ? agentDisplayAdapterType(agent) : undefined;
             const model = composerDefaultModel(agent);
             const modelLabel = (modelLabels.get(model) ?? model.split("/").pop() ?? model)
@@ -593,12 +594,20 @@ export function OrgChart({ orgTree: providedOrgTree, agents: providedAgents, mat
             const status = (agent?.status ?? node.status).replace(/_/g, " ");
             const statusLabel = status === "active" ? "Idle" : status.charAt(0).toUpperCase() + status.slice(1);
             const starPending = membershipMutation.isPending && membershipMutation.variables?.resourceId === node.id;
-            const openAgent = () => navigate(agent ? agentUrl(agent) : `/agents/${node.id}`);
+            const openAgent = () => {
+              if (isUser) {
+                navigate("/company/settings/members");
+                return;
+              }
+              navigate(agent ? agentUrl(agent) : `/agents/${node.id}`);
+            };
+            const subtitle = node.title ?? agent?.title ?? roleLabel(node.role);
 
             return (
               <Card
-                key={node.id}
+                key={`${node.kind ?? "agent"}:${node.id}`}
                 data-org-card
+                data-org-kind={node.kind ?? "agent"}
                 data-leader={node.leader}
                 data-tier={node.tier}
                 data-depth={node.depth}
@@ -622,9 +631,9 @@ export function OrgChart({ orgTree: providedOrgTree, agents: providedAgents, mat
                   e.stopPropagation();
                 }}
               >
-                {node.leader && <div className="org-card-badge-slot" aria-hidden />}
+                {node.leader && !isUser && <div className="org-card-badge-slot" aria-hidden />}
                 <div className="org-card-heading min-w-0 text-left">
-                  {node.leader && (
+                  {node.leader && !isUser && (
                     <StarToggle
                       size="button"
                       className="org-card-star"
@@ -638,13 +647,18 @@ export function OrgChart({ orgTree: providedOrgTree, agents: providedAgents, mat
                     />
                   )}
                   <div className="org-card-name truncate font-medium text-foreground" title={node.name}>{node.name}</div>
-                  <div className="org-card-title line-clamp-2 text-muted-foreground" title={agent?.title || roleLabel(node.role)}>
-                    {agent?.title || roleLabel(node.role)}
+                  <div className="org-card-title line-clamp-2 text-muted-foreground" title={subtitle}>
+                    {subtitle}
                   </div>
-                  {node.leader && <div className="org-card-status truncate text-muted-foreground">{statusLabel}</div>}
+                  {isUser && <div className="org-card-status truncate text-muted-foreground">Human member</div>}
+                  {node.leader && !isUser && <div className="org-card-status truncate text-muted-foreground">{statusLabel}</div>}
                 </div>
                 <div className="org-card-character flex min-h-0 items-center justify-center">
-                  {node.leader ? (
+                  {isUser ? (
+                    <div className="org-card-avatar flex items-center justify-center rounded-full bg-muted">
+                      <User className="size-16 text-foreground/70" aria-hidden />
+                    </div>
+                  ) : node.leader ? (
                     <AgentCharacter agent={agent ?? { id: node.id, name: node.name }} size={256} state="idle" trackingScope="page" followCursor animationGroup="org-chart" className="org-card-live-character" />
                   ) : (
                     <AgentAvatar agent={agent ?? { id: node.id, name: node.name }} size={128} pose="rest" view="portrait" className="org-card-avatar" />

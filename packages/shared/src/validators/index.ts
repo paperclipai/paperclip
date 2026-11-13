@@ -807,6 +807,11 @@ export {
 } from "./access.js";
 
 export {
+  updateCompanyStaffProfileSchema,
+  type UpdateCompanyStaffProfile,
+} from "./staff-profile.js";
+
+export {
   jsonSchemaSchema,
   pluginJobDeclarationSchema,
   pluginWebhookDeclarationSchema,
