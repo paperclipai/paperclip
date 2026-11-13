@@ -87,9 +87,8 @@ export function CoordinatorNeedsYou() {
     setToolbarState(current => current.key === toolbarKey ? current : { key: toolbarKey, toolbar: loadNeedsYouToolbar(toolbarKey) });
   }, [toolbarKey]);
   const keepToolbar = (patch: Partial<NeedsYouToolbar>) => {
-    const next = { ...toolbar, ...patch };
-    setToolbarState({ key: toolbarKey, toolbar: next });
-    saveNeedsYouToolbar(toolbarKey, next);
+    setToolbarState({ key: toolbarKey, toolbar: { ...toolbar, ...patch } });
+    saveNeedsYouToolbar(toolbarKey, { ...loadNeedsYouToolbar(toolbarKey), ...patch });
   };
   const clearToolbarFilters = useCallback(() => setToolbarState(current => ({ key: toolbarKey,
     toolbar: { ...(current.key === toolbarKey ? current.toolbar : loadNeedsYouToolbar(toolbarKey)), agentId: "", project: null } })), [toolbarKey]);
@@ -165,7 +164,7 @@ export function CoordinatorNeedsYou() {
   const recent = useQuery({ queryKey: [...queryKeys.attention(selectedCompanyId!), "history", "recent", DEFAULT_DECISION_HISTORY_SCOPE],
     queryFn: () => attentionApi.history(selectedCompanyId!, { limit: 100, scope: DEFAULT_DECISION_HISTORY_SCOPE, since: new Date(Date.now() - COORDINATOR_RECENT_DECISION_MS).toISOString() }), enabled: !!selectedCompanyId, refetchOnWindowFocus: true });
   const agentMap = useMemo(() => new Map((agentQuery.data ?? []).map((agent) => [agent.id, agent])), [agentQuery.data]);
-  const agentFilter = toolbar.agentId && agentQuery.isSuccess && !agentMap.has(toolbar.agentId) ? "" : toolbar.agentId;
+  const agentFilter = agentMap.has(toolbar.agentId) ? toolbar.agentId : "";
   const projectFilter = toolbar.project?.id ?? "";
   const groupBy = toolbar.groupBy;
   const recentItems = useMemo(() => recentDecisionReceipts(recent.data?.items ?? [], now), [recent.data, now]);
@@ -218,7 +217,7 @@ export function CoordinatorNeedsYou() {
     }
     // A saved decision link takes precedence over local toolbar filters and the
     // rendering window. Consume it only after its actual card has mounted.
-    if (query || agentFilter || projectFilter) { setQuery(""); clearToolbarFilters(); return; }
+    if (query || toolbar.agentId || projectFilter) { setQuery(""); clearToolbarFilters(); return; }
     if (forUserId) { setView("all"); return; }
     if (staleItems.some(item => item.sourceKind === "decision" && item.subject.id === deepLinkDecisionId)) setStaleOpen(true);
     const index = currentItems.findIndex(item => item.sourceKind === "decision" && item.subject.id === deepLinkDecisionId);
@@ -228,7 +227,7 @@ export function CoordinatorNeedsYou() {
     card.focus({ preventScroll: true });
     card.scrollIntoView({ block: "center", behavior: reducedMotion ? "auto" : "smooth" });
     setSearchParams(current => { const next = new URLSearchParams(current); next.delete("decisionId"); return next; }, { replace: true });
-  }, [deepLinkDecisionId, selectedCompanyId, pendingItems, currentItems, staleItems, feedWaiting, everyone, view, query, agentFilter, projectFilter, forUserId, setView, clearToolbarFilters, renderLimit, reducedMotion, setSearchParams]);
+  }, [deepLinkDecisionId, selectedCompanyId, pendingItems, currentItems, staleItems, feedWaiting, everyone, view, query, toolbar.agentId, projectFilter, forUserId, setView, clearToolbarFilters, renderLimit, reducedMotion, setSearchParams]);
   const keptProjectId = toolbar.project?.id;
   const keptProjectName = toolbar.project?.name;
   const projects = useMemo(() => {

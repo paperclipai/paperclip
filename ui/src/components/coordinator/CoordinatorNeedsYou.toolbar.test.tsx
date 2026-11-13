@@ -11,7 +11,8 @@ import { CoordinatorNeedsYou } from "./CoordinatorNeedsYou";
 const fixture = vi.hoisted(() => ({
   byView: {} as Record<string, AttentionItem[]>,
   listCalls: [] as Array<{ view?: string }>,
-  agents: [] as Agent[],
+  agents: [] as Agent[] | null,
+  agentsGate: null as null | Promise<void>,
   boardAccess: null as null | Record<string, unknown>,
   boardAccessGate: null as null | Promise<void>,
   navigate: vi.fn(), breadcrumbs: vi.fn(), openPanel: vi.fn(), closePanel: vi.fn(), setPanelVisible: vi.fn(),
@@ -23,7 +24,11 @@ vi.mock("@/context/PanelContext", () => ({ usePanel: () => ({ openPanel: fixture
 vi.mock("@/context/SidebarContext", () => ({ useSidebar: () => ({ isMobile: false }) }));
 vi.mock("@/hooks/useCoordinatorWorkspaceEnabled", () => ({ useCoordinatorWorkspaceEnabled: () => ({ userId: "reviewer" }) }));
 vi.mock("@/lib/router", async importOriginal => ({ ...await importOriginal<typeof import("@/lib/router")>(), useNavigate: () => fixture.navigate }));
-vi.mock("@/api/agents", () => ({ agentsApi: { list: async () => fixture.agents } }));
+vi.mock("@/api/agents", () => ({ agentsApi: { list: async () => {
+  if (fixture.agentsGate) await fixture.agentsGate;
+  if (!fixture.agents) throw new Error("Agents unavailable");
+  return fixture.agents;
+} } }));
 vi.mock("@/api/projects", () => ({ projectsApi: { list: async () => [] } }));
 vi.mock("@/api/access", () => ({ accessApi: {
   listUserDirectory: async () => ({ users: [{ principalId: "dotta", status: "active", user: { name: "Dotta" } }] }),
@@ -59,7 +64,7 @@ const card = (id: string, minutesAgo: number, extra: { userId?: string; agentId?
   id, sourceKind: "issue_thread_interaction", inlineResolvable: true,
   subject: { id, kind: "interaction", title: `Card ${id}`, metadata: { issueId: `task-${id}`, ...(extra.agentId ? { createdByAgentId: extra.agentId } : {}) } },
   relatedIssue: { id: `task-${id}`, identifier: `PAP-${id}`, title: `Task ${id}`, href: `/PAP/issues/PAP-${id}` },
-  project: extra.project ?? null, activityAt: new Date(Date.now() - minutesAgo * 60_000).toISOString(),
+  project: extra.project ?? null, originAgentName: null, activityAt: new Date(Date.now() - minutesAgo * 60_000).toISOString(),
   audience: { kind: "user", userId: extra.userId ?? "reviewer", reason: "addressee" },
 }) as unknown as AttentionItem;
 const website = { id: "project-web", name: "Website" };
@@ -68,7 +73,7 @@ let root: Root;
 let container: HTMLDivElement;
 let client: QueryClient | null = null;
 beforeEach(() => {
-  fixture.byView = {}; fixture.listCalls = []; fixture.boardAccess = null; fixture.boardAccessGate = null;
+  fixture.byView = {}; fixture.listCalls = []; fixture.boardAccess = null; fixture.boardAccessGate = null; fixture.agentsGate = null;
   fixture.agents = [{ id: "agent-cos", name: "Chief of Staff" }] as Agent[];
   localStorage.clear();
   container = document.createElement("div"); document.body.appendChild(container); root = createRoot(container);
@@ -225,25 +230,70 @@ describe("Needs You keeps its toolbar between visits", () => {
     expect(select("Filter decisions by agent").value).toBe("");
   });
 
+  it("shows every agent's cards while the agent list cannot be read, then filters by the kept agent again", async () => {
+    fixture.boardAccess = member("admin");
+    fixture.byView = { all: [card("ours", 1, { agentId: "agent-cos" }), card("other", 2)] };
+    await visit("/decisions");
+    await vi.waitFor(() => expect(cards()).toEqual(["ours", "other"]));
+    await choose("Filter decisions by agent", "agent-cos");
+    expect(cards()).toEqual(["ours"]);
+
+    fixture.agents = null;
+    await visit("/decisions");
+    await vi.waitFor(() => expect(cards()).toEqual(["ours", "other"]));
+    expect(select("Filter decisions by agent").value).toBe("");
+    expect(select("Filter decisions by agent").selectedOptions[0]?.textContent).toBe("All agents");
+
+    fixture.agents = [{ id: "agent-cos", name: "Chief of Staff" }] as Agent[];
+    await visit("/decisions");
+    await vi.waitFor(() => expect(cards()).toEqual(["ours"]));
+    expect(select("Filter decisions by agent").value).toBe("agent-cos");
+  });
+
   it("lets a decision link clear kept filters for that visit only", async () => {
     Object.defineProperty(HTMLElement.prototype, "scrollIntoView", { configurable: true, writable: true, value: vi.fn() });
     fixture.boardAccess = member("admin");
     const linked = { ...card("linked", 3), sourceKind: "decision", subject: { id: "target", kind: "decision", title: "Linked decision" } } as unknown as AttentionItem;
-    fixture.byView = { all: [card("ours", 1, { project: website }), linked] };
+    fixture.byView = { all: [card("ours", 1, { agentId: "agent-cos", project: website }), linked] };
     await visit("/decisions");
     await vi.waitFor(() => expect(cards()).toEqual(["ours", "linked"]));
+    await choose("Filter decisions by agent", "agent-cos");
     await choose("Filter decisions by project", "project-web");
     expect(cards()).toEqual(["ours"]);
 
     await visit("/decisions?decisionId=target");
     for (let tick = 0; tick < 5; tick++) await flush();
     expect(container.querySelector("#coordinator-decision-target")).not.toBeNull();
+    expect(select("Filter decisions by agent").value).toBe("");
     expect(select("Filter decisions by project").value).toBe("");
     expect(location()).not.toContain("decisionId");
+    await choose("Group decisions", "task");
 
     await visit("/decisions");
     await vi.waitFor(() => expect(cards()).toEqual(["ours"]));
+    expect(select("Filter decisions by agent").value).toBe("agent-cos");
     expect(select("Filter decisions by project").value).toBe("project-web");
+    expect(select("Group decisions").value).toBe("task");
+  });
+
+  it("keeps a decision link's card in view when the agent list loads after it", async () => {
+    Object.defineProperty(HTMLElement.prototype, "scrollIntoView", { configurable: true, writable: true, value: vi.fn() });
+    fixture.boardAccess = member("admin");
+    const linked = { ...card("linked", 3), sourceKind: "decision", subject: { id: "target", kind: "decision", title: "Linked decision" } } as unknown as AttentionItem;
+    fixture.byView = { all: [card("ours", 1, { agentId: "agent-cos" }), linked] };
+    await visit("/decisions");
+    await vi.waitFor(() => expect(cards()).toEqual(["ours", "linked"]));
+    await choose("Filter decisions by agent", "agent-cos");
+    expect(cards()).toEqual(["ours"]);
+
+    let release!: () => void;
+    fixture.agentsGate = new Promise<void>((resolve) => { release = resolve; });
+    await visit("/decisions?decisionId=target");
+    for (let tick = 0; tick < 5; tick++) await flush();
+    expect(location()).not.toContain("decisionId");
+    await act(async () => release()); await flush(); await flush();
+    expect(cards()).toEqual(["ours", "linked"]);
+    expect(select("Filter decisions by agent").value).toBe("");
   });
 
   it("returns from Archived to the kept assignee", async () => {
