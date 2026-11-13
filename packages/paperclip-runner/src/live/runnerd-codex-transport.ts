@@ -1086,15 +1086,15 @@ async function awaitRunnerSuspensionBarrier(input: {
   /** Called once the Runner's exit is certain: its suspend command completed. */
   onExitCommitted?: () => void;
   deadline: number;
-  proofDeadline?: number;
+  proofWindowMs?: number;
   pollIntervalMs?: number;
 }): Promise<boolean> {
-  let exitCommitted = false;
-  const deadline = () => exitCommitted ? Math.max(input.deadline, input.proofDeadline ?? input.deadline) : input.deadline;
+  let proofDeadline: number | null = null;
+  const deadline = () => proofDeadline === null ? input.deadline : Math.max(input.deadline, proofDeadline);
   if (Date.now() >= deadline()) return false;
   const commitExit = () => {
-    if (exitCommitted) return;
-    exitCommitted = true;
+    if (proofDeadline !== null) return;
+    proofDeadline = Date.now() + (input.proofWindowMs ?? 0);
     input.onExitCommitted?.();
   };
   const readRunnerState = async (): Promise<Record<string, unknown> | undefined> => {
@@ -5800,7 +5800,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
           // Also covers a completed receipt acknowledged before this close.
           onExitCommitted: () => this.#quiesceControlPlaneRoutes(),
           deadline: closeDeadline,
-          proofDeadline: Math.max(closeDeadline, suspendStartedAt + (this.options.closeProofReadMs ?? RUNNER_SUSPENSION_PROOF_READ_MS)),
+          proofWindowMs: this.options.closeProofReadMs ?? RUNNER_SUSPENSION_PROOF_READ_MS,
         });
       } finally {
         stopObservingExit();

@@ -1204,6 +1204,16 @@ export function createHeartbeatRunCompletion(db: Db, dependencies: HeartbeatRunC
    */
   async function schedulePredecessorRetirementFallbackRetry(run: Run, agent: Agent, fallback: PredecessorRetirementFallback | null | undefined) {
     if (!fallback || run.status !== "failed") return null;
+    const scheduled = await schedulePredecessorRetirementContinuation(run, agent, fallback);
+    if (scheduled?.outcome !== "scheduled") {
+      await db.update(heartbeatRuns).set({ resultJson: sql`coalesce(${heartbeatRuns.resultJson}, '{}'::jsonb) || '{"continuationScheduling":"refused"}'::jsonb` })
+        .where(and(eq(heartbeatRuns.companyId, run.companyId), eq(heartbeatRuns.id, run.id), eq(heartbeatRuns.status, "failed")))
+        .catch(error => logger.warn({ err: error, runId: run.id }, "could not record that a run's continuation was not scheduled"));
+    }
+    return scheduled;
+  }
+
+  async function schedulePredecessorRetirementContinuation(run: Run, agent: Agent, fallback: PredecessorRetirementFallback) {
     // Files this run's setup may have written are never dropped: without the
     // shared unchanged-files proof the workspace stays dirty and preserved.
     const released = await releaseUnchangedFallbackWorkspace(db, run).catch((error) => {

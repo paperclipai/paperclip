@@ -2450,6 +2450,52 @@ it("waits for the exact durable suspension command behind prior close work", asy
   expect(pumpCount).toBeGreaterThanOrEqual(2);
 });
 
+it("gives a suspend that completes near the close deadline its whole proof window from the completion", async () => {
+  const commands: Array<{ commandId: string; type: string; status: string }> = [];
+  const startedAt = Date.now();
+  const closeDeadline = startedAt + 300;
+  let completedAt = 0;
+  const result = await runnerdRecoveryInternals.awaitRunnerSuspensionBarrier({
+    commands: () => commands,
+    queueSuspend: commandId => { commands.push({ commandId, type: "runner.suspend", status: "pending" }); },
+    readRunnerState: async () => {
+      await new Promise(resolve => setTimeout(resolve, 200));
+      return { lifecycle: "suspended" };
+    },
+    runnerHasExited: async () => true,
+    pump: () => {
+      if (Date.now() - startedAt >= 250 && commands[0]?.status === "pending") {
+        commands[0].status = "completed";
+        completedAt = Date.now();
+      }
+    },
+    deadline: closeDeadline,
+    proofWindowMs: 400,
+    pollIntervalMs: 10,
+  });
+  expect(result).toBe(true);
+  expect(completedAt).toBeGreaterThan(0);
+  expect(Date.now()).toBeGreaterThan(closeDeadline);
+  expect(Date.now()).toBeLessThanOrEqual(completedAt + 400 + 50);
+});
+
+it("bounds the proof window from the observed completion, so a proof read that never answers still ends", async () => {
+  const commands: Array<{ commandId: string; type: string; status: string }> = [];
+  const startedAt = Date.now();
+  const result = await runnerdRecoveryInternals.awaitRunnerSuspensionBarrier({
+    commands: () => commands,
+    queueSuspend: commandId => { commands.push({ commandId, type: "runner.suspend", status: "pending" }); },
+    readRunnerState: () => new Promise(() => undefined),
+    runnerHasExited: async () => true,
+    pump: () => { if (commands[0]) commands[0].status = "completed"; },
+    deadline: startedAt + 100,
+    proofWindowMs: 200,
+    pollIntervalMs: 10,
+  });
+  expect(result).toBe(false);
+  expect(Date.now() - startedAt).toBeLessThan(100 + 200 + 150);
+});
+
 it("retries a rejected suspension within the close deadline instead of failing a settled session", async () => {
   // An ACPX sidecar can reject session.suspend while the just-completed turn
   // is still settling. One rejected command must not leave a successful run's

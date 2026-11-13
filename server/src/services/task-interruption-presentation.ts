@@ -298,7 +298,7 @@ function projectTaskInterruptionState(issue: ProjectionIssue, input: ProjectionS
       && now - Math.max(input.automaticDispositionAt, run.finishedAt?.getTime() ?? 0) < AUTOMATIC_DISPOSITION_GRACE_MS)
     return { ...base, state: "working", canRetry: false };
   if (run.status === "failed" && NO_WORK_CONTINUATION_CAUSES.has(String(run.resultJson?.failureCause))
-      && run.resultJson?.predecessorRetirementFallback == null && run.finishedAt
+      && run.resultJson?.continuationScheduling !== "refused" && run.finishedAt
       && now - run.finishedAt.getTime() < NO_WORK_CONTINUATION_HANDOFF_GRACE_MS)
     return { ...base, state: "working", canRetry: false };
   const deniedProject = deniedProjectId(issue, run);

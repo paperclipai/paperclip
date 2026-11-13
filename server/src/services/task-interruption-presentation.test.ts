@@ -580,8 +580,15 @@ describe("hand-off of a run that failed before any provider work", () => {
     }
   });
 
+  it("keeps the task working after the fallback is recorded while its continuation is still being scheduled", () => {
+    const recorded = { ...failed, resultJson: { ...failed.resultJson, predecessorRetirementFallback: { version: 1, providerWorkStarted: false } } };
+    expect(projectTaskInterruption(inProgress, { run: recorded, agent, paused: false, approval: false }, now))
+      .toMatchObject({ state: "working", canRetry: false });
+  });
+
   it("offers Retry when the continuation was refused or never queued", () => {
-    const refused = { ...failed, resultJson: { ...failed.resultJson, predecessorRetirementFallback: { version: 1, providerWorkStarted: false } } };
+    const refused = { ...failed, resultJson: { ...failed.resultJson, predecessorRetirementFallback: { version: 1, providerWorkStarted: false },
+      continuationScheduling: "refused" } };
     expect(projectTaskInterruption(inProgress, { run: refused, agent, paused: false, approval: false }, now))
       .toMatchObject({ state: "failed", canRetry: true });
     expect(projectTaskInterruption(inProgress, { run: { ...failed, finishedAt: new Date(now - 31_000) }, agent, paused: false, approval: false }, now))
