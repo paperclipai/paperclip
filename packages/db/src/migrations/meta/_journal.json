@@ -3333,6 +3333,13 @@
       "when": 1794554569782,
       "tag": "0477_friendly_toro",
       "breakpoints": true
+    },
+    {
+      "idx": 478,
+      "version": "7",
+      "when": 1794577652781,
+      "tag": "0478_jazzy_vertigo",
+      "breakpoints": true
     }
   ]
 }

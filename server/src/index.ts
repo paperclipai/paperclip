@@ -34,6 +34,7 @@ import { registerToolReviewInterruptionWork } from "./services/tool-review-inter
 import { registerToolReviewRecoveryWork } from "./services/tool-review-recovery-work.js";
 import { registerToolReviewExpiryWork } from "./services/tool-review-expiry-work.js";
 import { registerGatewayCredentialExpiryWork } from "./services/gateway-credential-expiry-work.js";
+import { registerMcpTaskWork } from "./services/mcp-task-work.js";
 import { registerSecretProposalExpiryWork } from "./services/secret-proposal-expiry-work.js";
 import { registerCustomImageCleanupWork } from "./services/custom-image-cleanup-work.js";
 import { registerWorkspaceRecoveryWork } from "./services/workspace-recovery-work.js";
@@ -1600,6 +1601,13 @@ async function startServerWithDatabaseTeardown(
     ? registerGatewayCredentialExpiryWork(deliveryWork, app.locals.toolGateway,
       () => !isIdleTaskDrainActive() && !heartbeatSchedulerStopped && !isWarmStandby()).ready
     : app.locals.toolGateway.cleanupExpiredSessions()).catch((err: unknown) => logger.error({ err }, "startup gateway token cleanup failed"))));
+  // Provider tasks outlive calls, restarts, and deploys; polling resumes from
+  // the rows. Tool calls create tasks whether or not heartbeats are scheduled,
+  // so recovery always runs; only waking an agent needs the scheduler.
+  trackHeartbeatSchedulerWork(startupTimeline.background("mcp_tasks", () => timeStartupRecovery("mcp_tasks", () =>
+    registerMcpTaskWork(deliveryWork, app.locals.toolGateway, heartbeat,
+      () => !isIdleTaskDrainActive() && !heartbeatSchedulerStopped && !isWarmStandby()).ready)
+    .catch((err: unknown) => logger.error({ err }, "startup provider task recovery failed"))));
   trackHeartbeatSchedulerWork(startupTimeline.background("delivery_workers", () => timeStartupRecovery("delivery_workers",
     () => Promise.all([budgetEnforcementWorker, accountingWorker, fastResponseWorker, ...deliveryWorkers].map(worker => worker.ready)))));
   trackHeartbeatSchedulerWork(startupTimeline.background("github_connections",
