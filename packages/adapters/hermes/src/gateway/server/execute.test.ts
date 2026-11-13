@@ -2,6 +2,7 @@ import { describe, expect, it, vi, afterEach } from "vitest";
 import type { AdapterExecutionContext } from "@paperclipai/adapter-utils";
 import { createPromptContextFixture } from "@paperclipai/adapter-utils/test-fixtures/prompt-context";
 import { execute, mapFinalResultForTest, normalizeRetryNotBeforeForTest, parseSseFramesForTest, rateLimitRetryDelayForTest, resolveSessionKey } from "./execute.js";
+import { STOP_GRACE_MS } from "../shared/constants.js";
 import { testEnvironment } from "./test.js";
 import { parseHermesGatewayStdoutLine } from "../ui/parse-stdout.js";
 
@@ -869,7 +870,12 @@ describe("execute", () => {
         }
         // GET /v1/runs/{id}: the remote run reports cancelled once the stop
         // request has been accepted, matching the gateway's stop lifecycle.
-        return new Response(JSON.stringify({ status: stopCalled ? "cancelled" : "running" }), { status: 200 });
+        // Include usage/cost so the cancelled path can preserve reported spend.
+        return new Response(JSON.stringify(
+          stopCalled
+            ? { status: "cancelled", usage: { input_tokens: 120, output_tokens: 30 }, cost_usd: 0.0021 }
+            : { status: "running" },
+        ), { status: 200 });
       });
       vi.stubGlobal("fetch", fetchMock);
       const controller = new AbortController();
@@ -896,6 +902,11 @@ describe("execute", () => {
       expect(result.resultJson?.run_id).toBe("run-hermes-1");
       expect(result.resultJson?.status).toBe("cancelled");
       expect(result.resultJson?.executionCancellation).toMatchObject({ state: "acknowledged" });
+      // Usage and cost from the cancelled run's final status are preserved.
+      expect(result.usage).toEqual({ inputTokens: 120, outputTokens: 30 });
+      expect(result.costUsd).toBe(0.0021);
+      expect(result.resultJson?.usage).toEqual({ inputTokens: 120, outputTokens: 30 });
+      expect(result.resultJson?.cost_usd).toBe(0.0021);
       expect(result.sessionParams).toEqual({ hermesRunId: "run-hermes-1", strategy: "issue" });
       // The stop request was sent and the final status was fetched.
       expect(stopCalled).toBe(true);
@@ -905,6 +916,63 @@ describe("execute", () => {
       const createCalls = fetchMock.mock.calls.filter(([input, init]) =>
         String(input).endsWith("/v1/runs") && init?.method === "POST");
       expect(createCalls).toHaveLength(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("bounds the stop request with a timeout so a hanging gateway cannot stall cancellation", async () => {
+    vi.useFakeTimers();
+    try {
+      const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = String(input);
+        if (url.endsWith("/v1/runs") && init?.method === "POST") {
+          return new Response(JSON.stringify({ run_id: "run-hermes-1", status: "started" }), { status: 200 });
+        }
+        if (url.endsWith("/events")) {
+          return new Promise<Response>(() => {});
+        }
+        if (url.endsWith("/stop")) {
+          // Simulate a gateway that accepts the connection but never responds.
+          // The AbortController in stopRun fires after STOP_GRACE_MS and
+          // rejects this promise so the cancellation path is not stalled.
+          return new Promise<Response>((_, reject) => {
+            const signal = init?.signal;
+            if (signal?.aborted) {
+              reject(new Error("The operation was aborted"));
+              return;
+            }
+            signal?.addEventListener("abort", () => reject(new Error("The operation was aborted")));
+          });
+        }
+        return new Response(JSON.stringify({ status: "running" }), { status: 200 });
+      });
+      vi.stubGlobal("fetch", fetchMock);
+      const controller = new AbortController();
+      const ctx = makeCtx({ apiBaseUrl: "http://127.0.0.1:8642", apiKey: "***", timeoutSec: 60 });
+      ctx.onCancellationReady = vi.fn(async () => { ctx.signal = controller.signal; });
+      ctx.onDispatch = vi.fn();
+
+      const runPromise = execute(ctx);
+      await vi.advanceTimersByTimeAsync(0);
+      expect(ctx.onCancellationReady).toHaveBeenCalledOnce();
+      controller.abort();
+      await vi.advanceTimersByTimeAsync(0);
+      // The stop request is in-flight with AbortSignal.timeout(STOP_GRACE_MS).
+      // Advance past STOP_GRACE_MS so the signal aborts and stopRun returns
+      // null, then past fetchFinalStatus's own STOP_GRACE_MS deadline so it
+      // completes without finding a terminal status (the run stays "running").
+      await vi.advanceTimersByTimeAsync(STOP_GRACE_MS * 2 + 1);
+      const result = await runPromise;
+
+      // Even with a hanging stop, cancellation completes — the stop timed
+      // out (stopRun returned null), fetchFinalStatus ran its own deadline,
+      // and the cancelled result is returned without acknowledged.
+      expect(result.errorCode).toBe("cancelled");
+      expect(result.resultJson?.run_id).toBe("run-hermes-1");
+      expect(result.resultJson?.status).toBe("cancelling");
+      // No acknowledged cancellation — the stop did not confirm.
+      expect(result.resultJson?.executionCancellation).toBeUndefined();
     } finally {
       vi.useRealTimers();
     }

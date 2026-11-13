@@ -865,16 +865,24 @@ async function stopRun(input: {
   runId: string;
   redactText?: TextRedactor;
 }): Promise<Record<string, unknown> | null> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), STOP_GRACE_MS);
+  // unref so the timer does not keep the event loop alive after the fetch
+  // settles — the timer is cleared in the finally block below.
+  if (typeof timer.unref === "function") timer.unref();
   try {
     const stopped = await fetchJson(apiUrl(input.baseUrl, `/v1/runs/${encodeURIComponent(input.runId)}/stop`), {
       method: "POST",
       headers: input.headers,
+      signal: controller.signal,
     });
     await input.ctx.onLog("stdout", `[hermes-gateway] stop requested for run ${input.runId}\n`);
     return asRecord(stopped);
   } catch (err) {
     await input.ctx.onLog("stderr", `[hermes-gateway] stop request failed: ${redactErrorMessage(err, input.redactText)}\n`);
     return null;
+  } finally {
+    clearTimeout(timer);
   }
 }
 
@@ -1220,6 +1228,8 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     const finalStatus = await fetchFinalStatus({ baseUrl, headers: eventHeaders, runId, deadlineMs: STOP_GRACE_MS });
     const finalState = extractStatus(finalStatus);
     const acknowledged = finalState !== null && TERMINAL_STATUSES.has(finalState);
+    const cancelledUsage = finalStatus ? parseUsage(finalStatus) : undefined;
+    const cancelledCostUsd = finalStatus ? parseCostUsd(finalStatus) : null;
     return {
       exitCode: null,
       signal: null,
@@ -1227,11 +1237,15 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       errorCode: "cancelled",
       errorMessage: "Stopped during active Hermes gateway run",
       provider: "hermes_gateway",
+      ...(cancelledUsage ? { usage: cancelledUsage } : {}),
+      ...(cancelledCostUsd !== null ? { costUsd: cancelledCostUsd } : {}),
       resultJson: {
         run_id: runId,
         status: finalState ?? "cancelling",
         last_event: state.lastEventName,
         final_status: finalStatus ? redactForLog(finalStatus, [], 0, redactText) : null,
+        usage: cancelledUsage ?? null,
+        cost_usd: cancelledCostUsd,
         ...(acknowledged
           ? { executionCancellation: { state: "acknowledged", acknowledgedAt: new Date().toISOString(), forced: false } }
           : {}),
