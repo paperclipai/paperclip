@@ -2107,7 +2107,7 @@ describe("OpenCodeServerDriver", () => {
     await session.close({ reason: "test" });
   });
 
-  it.each([false, true])("uses the native system channel, selected skill tree, instruction root, and assigned MCP gateway after startup retry=%s", async (retryStartup) => {
+  it.each([false, true])("uses the native system channel, selected skill tree, instruction root, and only the task bridge after startup retry=%s", async (retryStartup) => {
     await chmod(fixture, 0o755);
     const root = await mkdtemp(join(tmpdir(), "paperclip-opencode-context-"));
     const workspace = await mkdtemp(
@@ -2209,12 +2209,10 @@ describe("OpenCodeServerDriver", () => {
       },
       mcp: {
         paperclip: { enabled: true },
-        "paperclip-assigned": {
-          url: "https://paperclip.example/mcp",
-          enabled: true,
-        },
       },
     });
+    expect(Object.keys(config.mcp)).toEqual(["paperclip"]);
+    expect(JSON.stringify(config)).not.toContain("x".repeat(40));
     await expect(
       readFile(join(instructionRoot, "sibling.md"), "utf8"),
     ).resolves.toBe("instruction sibling\n");
