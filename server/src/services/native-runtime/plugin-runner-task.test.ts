@@ -438,6 +438,25 @@ describe("plugin native Runner ownership", () => {
     expect(task.mock.calls.find(([op]) => op.kind === "stop")).toBeUndefined();
     await registration.release(); await registration.checkpoint("settled"); await handle.completion;
   });
+  it("quiesces the Runner's ingress when its exit is committed, before release closes it", async () => {
+    const { task } = provider();
+    const quiesce = vi.fn();
+    const close = vi.fn(async () => {});
+    ingress.connect.mockReset().mockReturnValue({ ready: Promise.resolve(), failure: new Promise<never>(() => {}), quiesce, close });
+    const owner = createPluginRunnerTaskOwner({ taskId: "task", projectAuthCheckVersion: 1, task, projectIds: [], harness: "codex", pollMs: 1 });
+    await prepare(owner);
+    const registration = await owner.registration({} as never, "run");
+    registration.quiesce();
+    const handle = owner.launcher(launchSpec());
+    registration.activate(); await registration.ready();
+    registration.quiesce();
+    expect(quiesce).toHaveBeenCalledOnce();
+    expect(close).not.toHaveBeenCalled();
+    expect(task.mock.calls.find(([op]) => op.kind === "stop")).toBeUndefined();
+    await registration.release(); await registration.checkpoint("settled"); await handle.completion;
+    expect(close).toHaveBeenCalledOnce();
+  });
+
   it("surfaces a proven admission rejection without polling or stopping the task", async () => {
     const { task } = provider();
     const perform = task.getMockImplementation()!;

@@ -44,7 +44,8 @@ export async function prepareReviewedSdkReference(original:string,directory:stri
   if(![policy.inputSha256,policy.outputSha256].includes(sha(committed)))throw new Error("Committed SDK reference lock is not reviewed");
   for(const [file,expected]of Object.entries(pins.inputs)){
     const bytes=file==="pnpm-lock.yaml"?committed:await readFile(path.join(original,file));
-    if(file!=="pnpm-lock.yaml"&&blob(bytes)!==expected)throw new Error("Reviewed SDK reference source changed");
+    if(file!=="pnpm-lock.yaml"&&blob(bytes)!==expected)throw new Error(`Reviewed SDK reference source changed: ${file} does not match its pin in tests/runner-e2e/source-sdk-public-inputs.json. `
+      +"Commit your change, run `node tests/runner-e2e/source-sdk-public-inputs.mjs $(git rev-parse HEAD) --write`, and commit the updated registry.");
     const target=path.join(directory,file);await mkdir(path.dirname(target),{recursive:true});
     if(file==="pnpm-lock.yaml")await writeFile(target,bytes);else await copyFile(path.join(original,file),target);
   }

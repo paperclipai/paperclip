@@ -2,7 +2,7 @@ import { currentControllerProcess } from "../controller-process-identity.js";
 import { remoteRecoveryLeaseMismatch } from "./remote-recovery-lease-mismatch.js";
 import { isGovernancePauseStop } from "../governance-pause-stop.js";
 import { nativeLeaseHolder, notifyNativeTokenLeaseClaimed } from "./native-token-lease-settlement.js";
-import { captureRemoteNativeProviderArtifacts } from "./native-provider-artifact-capture.js";
+import { captureRemoteNativeProviderArtifacts, shareNativeProviderArtifactCapture } from "./native-provider-artifact-capture.js";
 import { NativeSessionDiagnostics, nativeSessionDiagnostics, type NativeDiagnosticLease } from "./native-session-diagnostics.js";
 import { recordAgentProviderRateLimits } from "../agent-provider-rate-limits.js";
 import { nativePostResultFailureCategory, type NativePostResultFailureCategory } from "./native-post-result-failure.js";
@@ -23,7 +23,7 @@ import { getStartupRecoveryState } from "../../startup-recovery-state.js";
 import { assertNativeHarnessBackupOwner, durableNativeHarnessStorage, NATIVE_HARNESS_DOWNLOAD_IDLE_TIMEOUT_MS, nativeHarnessBackupOwner, persistNativeHarnessBackup,
   restoreDurableNativeHarnessBackup } from "./native-harness-backup-storage.js";
 import { restoreNativeProviderArtifacts, retainNativeProviderArtifacts, retainExistingNativeProviderArtifacts,
-  type NativeProviderArtifactReceipt } from "./native-provider-artifacts.js";
+  retainReadyNativeProviderArtifacts, type NativeProviderArtifactReceipt } from "./native-provider-artifacts.js";
 import { prepareRemoteOpenCodeArtifacts, type OpenCodeLaunchArtifacts } from "./remote-opencode-artifacts.js";
 import { prepareRuntimeContextSource, rehydratePinnedInstructionAsset } from "./runtime-context.js";
 import { createNativeUsageDelivery } from "./native-usage-delivery.js";
@@ -364,6 +364,7 @@ import {
 type ActiveNativeSession = {
   session: NativeSession;
   cancelRequested: boolean;
+  admissionAbort?: AbortController;
   cancellationSettled?: Promise<void>;
   restartDetach?: Promise<void>;
 };
@@ -935,6 +936,13 @@ async function waitForWarmNativeSessionSettled(scope: string): Promise<void> {
   while (settlingNativeSessionScopes.has(scope) && Date.now() < deadline) {
     await new Promise(resolve => setTimeout(resolve, warmSessionReleaseWait.pollMs));
   }
+  const closing = closingWarmNativeSessions.get(scope);
+  if (!closing) return;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  await Promise.race([
+    closing.catch(() => undefined),
+    new Promise<void>(resolve => { timer = setTimeout(resolve, Math.max(0, deadline - Date.now())); }),
+  ]).finally(() => clearTimeout(timer));
 }
 
 /** Reserve the existing physical copy before heartbeat composes AGENT_HOME and
@@ -961,7 +969,7 @@ export async function claimWarmNativeInstructionCopy(input: {
     })) || prior.workspace.cwd !== input.workspace.cwd) return null;
   const scope = nativeSessionScopeKey(prior);
   const busyEntry = warmNativeSessions.get(scope);
-  if (busyEntry?.busy || settlingNativeSessionScopes.has(scope)) await waitForWarmNativeSessionSettled(scope);
+  if (busyEntry?.busy || settlingNativeSessionScopes.has(scope) || closingWarmNativeSessions.has(scope)) await waitForWarmNativeSessionSettled(scope);
   // Re-read after the wait: the release may have retired or replaced the session.
   const entry = warmNativeSessions.get(scope);
   if (!entry || !entry.instructionWorkingCopy?.runId || entry.environmentId !== input.environmentId) return null;
@@ -9992,6 +10000,7 @@ async function performNativeCancellation(
       dispatched = true;
       if (!active.cancelRequested) {
         active.cancelRequested = true;
+        active.admissionAbort?.abort(new NativeCancellationPendingRecoveryError());
         active.cancellationSettled = new Promise<void>(resolve => { settleActiveCancellation = resolve; });
         try {
           if (active.session.cancel) {
@@ -11434,7 +11443,9 @@ async function executePaperclipNativeSessionAttempt(
       : "unpriced" as const;
     const billing = resolveNativeBilling(input.execution.provider, input.runnerEnvironment, input.billingIdentity);
     const costUsdExact = input.execution.provider.kind !== "cursor_cloud" && typeof usage?.accountingCostUsdExact === "string" ? usage.accountingCostUsdExact : undefined;
+    const providerRequestId = typeof usage?.providerRequestId === "string" && usage.providerRequestId ? usage.providerRequestId.slice(0, 250) : undefined;
     const checkpoint: AdapterUsageCheckpoint = { usage: accountingUsage, ...billing, complete, usageBasis: "per_run", costUsdExact,
+      ...(providerRequestId ? { providerRequestId } : {}),
       model: input.execution.provider.model ?? "unknown", costUsd: accountingCost ?? null, costStatus,
       ...(usage?.accountingUsageLost === true ? { pricingProvenance: { source: accountingCost != null || costUsdExact ? "provider_reported" as const : "unknown" as const,
         version: "accounting-receipt/v1", evidence: NATIVE_LOST_TURN_USAGE_EVIDENCE } } : {}) };
@@ -12550,7 +12561,7 @@ async function executePaperclipNativeSessionAttempt(
                 }
               }
               if (session) {
-                const active: ActiveNativeSession = { session, cancelRequested: false };
+                const active: ActiveNativeSession = { session, cancelRequested: false, admissionAbort: new AbortController() };
                 activeNativeSessions.set(input.execution.binding.runId, active);
                 const startup = nativeSessionStartups.get(input.execution.binding.runId);
                 const stopBeforeProviderTurn = startup?.stopRequested === true && startup.sessionPublished !== true
@@ -12648,7 +12659,7 @@ async function executePaperclipNativeSessionAttempt(
                     ?? (error instanceof Error && /^native_[a-z_]+$/.test(error.message) ? error.message : "unknown");
                   try { await input.onLog?.("stderr", `[paperclip-runner] native provider-pack admission receipt could not be saved (cause=${cause})\n`); } catch {}
                 }
-                await runnerdBackend?.providerAdmissionPersisted?.();
+                await runnerdBackend?.providerAdmissionPersisted?.(active.admissionAbort!.signal);
                 if (session.resolveRuntimeRequest) await liveQuestions.attach();
                 if (active.cancelRequested) {
                   await active.cancellationSettled;
@@ -13765,6 +13776,8 @@ async function executePaperclipNativeSessionAttempt(
       : "unpriced",
     usageComplete: nativeAccountingComplete,
     usageBasis: "per_run",
+    ...(typeof native.usage?.providerRequestId === "string" && native.usage.providerRequestId
+      ? { providerRequestId: native.usage.providerRequestId.slice(0, 250) } : {}),
     nativeFinalization: finalization,
   };
   if (taskSettleScope) {
@@ -16057,7 +16070,7 @@ type ManagedRunnerdBackend = NativeSessionBackend & {
   bindManagedSession(session: NativeSession, options?: { releaseResumeOnly: true }): NativeSession;
   bindDiagnosticSession?(session: NativeSession): void;
   sessionCheckpointPersisted?(snapshot: PersistedNativeSession): void;
-  providerAdmissionPersisted?(): Promise<void>;
+  providerAdmissionPersisted?(signal?: AbortSignal): Promise<void>;
   providerAdmissionRequired?(): boolean;
 };
 
@@ -16548,8 +16561,10 @@ async function createRunnerdBackendWithinSessionClaim(
       input.execution.provider.kind === "acpx");
   const artifactStorage = remoteTarget?.transport === "sandbox" && input.controllerPersistence
     && input.execution.provider.kind === "opencode" ? durableNativeHarnessStorage() : null;
-  const providerArtifactsSignal = () => input.executionContext?.signal
-    ? AbortSignal.any([input.executionContext.signal, AbortSignal.timeout(300_000)]) : AbortSignal.timeout(300_000);
+  const providerArtifactsSignal = (stop?: AbortSignal) => {
+    const signals = [input.executionContext?.signal, stop].filter((signal): signal is AbortSignal => signal !== undefined);
+    return signals.length ? AbortSignal.any(signals) : new AbortController().signal;
+  };
   const liveProviderRecovery = input.restartRecovery?.kind === "reattach_remote_runner" || input.remoteWarmRecovery !== undefined;
   const artifactBackup = artifactStorage ? await verifyNativeHarnessBackupStreamed({ root, execution: input.execution,
     runnerInstanceId: input.runnerInstanceId }) : null;
@@ -18540,8 +18555,8 @@ async function createRunnerdBackendWithinSessionClaim(
     providerAdmissionRequired: () => replacementBackend?.providerAdmissionRequired
       ? replacementBackend.providerAdmissionRequired()
       : Boolean(artifactStorage && (providerArtifacts || !legacyProviderContinuity && !liveProviderRecovery)),
-    providerAdmissionPersisted: artifactStorage ? async () => {
-      if (replacementBackend) return replacementBackend.providerAdmissionPersisted?.();
+    providerAdmissionPersisted: artifactStorage ? async (stop?: AbortSignal) => {
+      if (replacementBackend) return replacementBackend.providerAdmissionPersisted?.(stop);
       const backupOwner = sessionHarnessBackupOwners.get(authorityEpoch);
       if ((liveProviderRecovery || legacyProviderContinuity) && !providerArtifacts) return;
       if (!backupOwner || !expectedProviderPackManifest || !remoteCommandRunner) {
@@ -18552,11 +18567,17 @@ async function createRunnerdBackendWithinSessionClaim(
         return;
       }
       if (!openCodeLaunchArtifacts) throw new Error("native_provider_artifacts_admission_missing");
-      const signal = providerArtifactsSignal();
+      const signal = providerArtifactsSignal(stop);
       if (!remoteTarget) throw new Error("native_provider_artifacts_admission_missing");
-      providerArtifacts = await captureRemoteNativeProviderArtifacts({ runner: remoteCommandRunner,
-        remoteCwd: remoteTarget.remoteCwd, launch: openCodeLaunchArtifacts, manifest: expectedProviderPackManifest, signal, context: input.executionContext },
-        source => retainNativeProviderArtifacts({ db: input.db, storage: artifactStorage, owner: backupOwner, source, signal }));
+      const launch = openCodeLaunchArtifacts, manifest = expectedProviderPackManifest;
+      const reuse = () => retainReadyNativeProviderArtifacts({ db: input.db, owner: backupOwner, manifest,
+        launchRoot: launch.root, accountUid: launch.accountUid });
+      providerArtifacts = await reuse() ?? await shareNativeProviderArtifactCapture({
+        key: `${input.execution.binding.companyId}:${manifest.digest}`, signal, reuse,
+        capture: () => captureRemoteNativeProviderArtifacts({ runner: remoteCommandRunner,
+          remoteCwd: remoteTarget.remoteCwd, launch, manifest, signal, context: input.executionContext },
+          source => retainNativeProviderArtifacts({ db: input.db, storage: artifactStorage, owner: backupOwner, source, signal })),
+      });
     } : undefined,
     bindDiagnosticSession: session => {
       if (replacementBackend) return replacementBackend.bindDiagnosticSession?.(session);

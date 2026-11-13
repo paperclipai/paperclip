@@ -34,7 +34,7 @@ import { applyOwnershipReportBackstops, registerOwnershipReconciliationWork } fr
 import { DELIVERY_QUEUES } from "../services/delivery-work-notifications.js";
 import { notifyNativeFinalizationWork } from "../services/native-finalization-notifications.js";
 import { instanceSettingsService } from "../services/instance-settings.js";
-import { listUndispatchedQueuedRuns, readUndispatchedQueuedRuns } from "../services/queued-run-dispatch-liveness.js";
+import { listUndispatchedQueuedRuns, readUndispatchedQueuedRuns, undispatchedQueuedRunPageQuery } from "../services/queued-run-dispatch-liveness.js";
 import { releaseLapsedCoordinatorOwner } from "../services/workspace-recovery-stop-proof.js";
 import { subscribeDatabaseWork } from "@paperclipai/db/work-signals";
 import {
@@ -1073,6 +1073,7 @@ describe("report-only ownership reconciliation", () => {
   });
 
   it("reads undispatched queued runs in bounded slices that resume from a cursor, and skips an agent with a scheduled retry", async () => {
+    await db.update(agents).set({ runtimeConfig: { heartbeat: { maxConcurrentRuns: 1 } } }).where(eq(agents.id, agentId));
     const created = [30, 29, 28].map(minutesAgo);
     const runs = await db.insert(heartbeatRuns).values(created.map(createdAt =>
       ({ companyId, agentId, status: "queued", invocationSource: "automation", createdAt }))).returning();
@@ -1083,6 +1084,51 @@ describe("report-only ownership reconciliation", () => {
     expect(rest).toEqual({ runs: [expect.objectContaining({ runId: runs[2]!.id })], next: null });
     await db.insert(heartbeatRuns).values({ companyId, agentId, status: "scheduled_retry", invocationSource: "automation",
       scheduledRetryAt: new Date(Date.now() + 60_000) });
+    expect(await listUndispatchedQueuedRuns(db)).toEqual([]);
+  });
+
+  it("re-drives a queued run while its agent still has a free slot, and not once every slot is running", async () => {
+    await db.update(agents).set({ runtimeConfig: { heartbeat: { maxConcurrentRuns: 3 } } }).where(eq(agents.id, agentId));
+    const tasks = await db.insert(issues).values([0, 1, 2, 3].map(index =>
+      ({ companyId, title: `Task ${index}`, status: "in_progress" as const, assigneeAgentId: agentId }))).returning();
+    const live = (index: number) => ({ companyId, agentId, issueId: tasks[index]!.id, status: "running" as const,
+      invocationSource: "automation" as const, contextSnapshot: { issueId: tasks[index]!.id }, startedAt: minutesAgo(90) });
+    await db.insert(heartbeatRuns).values([live(0), live(1)]);
+    const [waiting] = await db.insert(heartbeatRuns).values({ companyId, agentId, status: "queued", invocationSource: "automation",
+      contextSnapshot: { issueId: tasks[3]!.id }, createdAt: minutesAgo(20) }).returning();
+    await db.insert(heartbeatRuns).values({ companyId, agentId, status: "queued", invocationSource: "automation",
+      contextSnapshot: { issueId: tasks[0]!.id }, createdAt: minutesAgo(25) });
+    expect((await listUndispatchedQueuedRuns(db)).map(run => run.runId)).toEqual([waiting!.id]);
+    await db.insert(heartbeatRuns).values(live(2));
+    expect(await listUndispatchedQueuedRuns(db)).toEqual([]);
+  });
+
+  it("counts an agent's live runs in one grouped aggregate, not once per queued run", async () => {
+    await db.insert(heartbeatRuns).values(Array.from({ length: 5 }, () =>
+      ({ companyId, agentId, status: "queued" as const, invocationSource: "automation" as const, createdAt: minutesAgo(20) })));
+    await db.insert(heartbeatRuns).values({ companyId, agentId, status: "running", invocationSource: "automation" });
+    const query = undispatchedQueuedRunPageQuery(db, undefined, null, null, 500).toSQL();
+    const [row] = await db.$client.unsafe(`explain (format json) ${query.sql}`, query.params as never[]);
+    type PlanNode = { "Node Type": string; "Parent Relationship"?: string; Plans?: PlanNode[] };
+    const aggregates: PlanNode[] = [];
+    const subPlanAggregates: PlanNode[] = [];
+    const walk = (node: PlanNode, inSubPlan: boolean) => {
+      const subPlan = inSubPlan || node["Parent Relationship"] === "SubPlan";
+      if (node["Node Type"] === "Aggregate") (subPlan ? subPlanAggregates : aggregates).push(node);
+      for (const child of node.Plans ?? []) walk(child, subPlan);
+    };
+    walk((row as unknown as { "QUERY PLAN": Array<{ Plan: PlanNode }> })["QUERY PLAN"][0]!.Plan, false);
+    expect(aggregates).toHaveLength(1);
+    expect(subPlanAggregates).toEqual([]);
+  });
+
+  it("uses the agent's single-run limit for a runner provider that runs one turn at a time", async () => {
+    await db.update(agents).set({ adapterType: "paperclip_runner", adapterConfig: { provider: "openai_dot" },
+      runtimeConfig: { heartbeat: { maxConcurrentRuns: 5 } } }).where(eq(agents.id, agentId));
+    await db.insert(heartbeatRuns).values({ companyId, agentId, status: "running", invocationSource: "automation",
+      startedAt: minutesAgo(90) });
+    await db.insert(heartbeatRuns).values({ companyId, agentId, status: "queued", invocationSource: "automation",
+      createdAt: minutesAgo(20) });
     expect(await listUndispatchedQueuedRuns(db)).toEqual([]);
   });
 
@@ -1128,7 +1174,8 @@ describe("report-only ownership reconciliation", () => {
     const otherAgent = randomUUID();
     const pausedAgent = randomUUID();
     await db.insert(agents).values([
-      { id: otherAgent, companyId, name: "Busy", role: "engineer", adapterType: "codex_local" },
+      { id: otherAgent, companyId, name: "Busy", role: "engineer", adapterType: "codex_local",
+        runtimeConfig: { heartbeat: { maxConcurrentRuns: 1 } } },
       { id: pausedAgent, companyId, name: "Paused", role: "engineer", adapterType: "codex_local", status: "paused" },
     ]);
     await db.insert(heartbeatRuns).values([

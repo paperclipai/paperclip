@@ -29,6 +29,38 @@ it("admits a lead run outside the source only as a declared case handback", () =
   expect(gradeChatCatalogRuns({ ...scope, implementation: declared, runs: [succeeded, done, { ...handback, contextSnapshot: { issueId: "task", wakeReason: "issue_commented" } }] }).passed).toBe(false);
   expect(gradeChatCatalogRuns({ ...scope, implementation: { ...declared, expectedRunCount: 4 }, runs: [succeeded, done, handback, { ...handback, id: "again" }] }).passed).toBe(false);
 });
+it("admits at most one in-flight product completion follow-up on a settled source, and nothing else active there", () => {
+  const implementation = { expectedRunCount: 3, minimumRunCount: 2, runPolicy: { kind: "source-settled-with-active-work" as const, maximumActiveWorkerRuns: 1 } };
+  const done = { ...worker, status: "succeeded" };
+  const followUp: ChatRun = { id: "follow-up", companyId: "company", agentId: "ceo", status: "running", runtimeMode: "native",
+    contextSnapshot: { issueId: "source", wakeReason: "chat_task_completed", chatCompletionUpdates: [{ id: "task", status: "done" }] } };
+  const active = { ...scope, source: { ...scope.source, conversationState: "active" as const } };
+  // The private-task race: Morgan finished, and the product's follow-up started on the answered source.
+  expect(gradeChatCatalogRuns({ ...active, implementation, runs: [succeeded, done, followUp] }).passed).toBe(true);
+  expect(gradeChatCatalogRuns({ ...active, implementation, runs: [succeeded, done, { ...followUp, status: "queued" }] }).passed).toBe(true);
+  expect(gradeChatCatalogRuns({ ...scope, implementation, runs: [succeeded, done, { ...followUp, status: "succeeded" }] }).passed).toBe(true);
+  for (const bad of [
+    { ...followUp, status: "failed" },
+    { ...followUp, contextSnapshot: { ...followUp.contextSnapshot, chatCompletionUpdates: [{ id: "unrelated" }] } },
+    { ...followUp, contextSnapshot: { ...followUp.contextSnapshot, chatCompletionUpdates: [] } },
+    { ...followUp, contextSnapshot: { ...followUp.contextSnapshot, wakeReason: "issue_commented" } },
+    { ...followUp, agentId: "worker" },
+  ]) expect(gradeChatCatalogRuns({ ...active, implementation, runs: [succeeded, done, bad] }).passed).toBe(false);
+  // Before the turn is prepared, the queued run carries only its saved delivery IDs (actual server snapshot shape).
+  const pending: ChatRun = { ...followUp, status: "queued",
+    contextSnapshot: { issueId: "source", wakeReason: "chat_task_completed", wakeSource: "automation", chatCompletionDeliveryIds: ["delivery"] } };
+  // The server claims the run (running) before it saves the updates, so a running run in preparation also qualifies.
+  for (const status of ["queued", "running"]) expect(gradeChatCatalogRuns({ ...active, implementation, runs: [succeeded, done, { ...pending, status }] }).passed).toBe(true);
+  for (const bad of [{ ...pending, status: "succeeded" }, { ...pending, status: "failed" }, { ...pending, contextSnapshot: { ...pending.contextSnapshot, chatCompletionDeliveryIds: [] } },
+    { ...pending, contextSnapshot: { ...pending.contextSnapshot, wakeSource: "manual" } }])
+    expect(gradeChatCatalogRuns({ ...active, implementation, runs: [succeeded, done, bad] }).passed).toBe(false);
+  expect(gradeChatCatalogRuns({ ...active, implementation, runs: [succeeded, worker, pending] }).passed).toBe(false);
+  // The original answer must exist and have succeeded; a second follow-up and an unexplained active source stay rejected.
+  expect(gradeChatCatalogRuns({ ...active, implementation, runs: [done, followUp] }).passed).toBe(false);
+  expect(gradeChatCatalogRuns({ ...active, implementation, runs: [{ ...succeeded, status: "running" }, done, followUp] }).passed).toBe(false);
+  expect(gradeChatCatalogRuns({ ...active, implementation: { ...implementation, expectedRunCount: 4 }, runs: [succeeded, done, followUp, { ...followUp, id: "again" }] }).passed).toBe(false);
+  expect(gradeChatCatalogRuns({ ...active, implementation, runs: [succeeded, done, { ...followUp, status: "succeeded" }] }).passed).toBe(false);
+});
 
 function reassignment() {
   const receipt = { runId: "worker-run", taskId: "task", workerId: "worker", sourceRunId: "final-source" };

@@ -19,6 +19,11 @@
 // output, or an edit that landed while the build ran always rebuilds. Set
 // PAPERCLIP_RUNNER_VENDOR_REBUILD=1 to rebuild regardless of the stamp.
 //
+// PAPERCLIP_RUNNER_VENDOR_REQUIRE_CURRENT=1 is for a build that was handed a
+// Runner built elsewhere and has no Runner toolchain of its own: the step
+// then never rebuilds. It reuses a current build as usual and fails, with the
+// reason, when the build is not current. It leaves the stamp in place.
+//
 // Usage: node scripts/prepare-runner-vendor.mjs [--repo-root <dir>]
 // The repo root defaults to this checkout; the flag exists for tests that
 // build a throwaway workspace layout.
@@ -35,16 +40,20 @@ import {
 /** The command the server build has always run here; the rebuild path is unchanged. */
 export const RUNNER_VENDOR_BUILD_COMMAND = "pnpm --filter @paperclipai/paperclip-runner build";
 export const FORCE_REBUILD_VARIABLE = "PAPERCLIP_RUNNER_VENDOR_REBUILD";
+export const REQUIRE_CURRENT_VARIABLE = "PAPERCLIP_RUNNER_VENDOR_REQUIRE_CURRENT";
 export const TIMING_SCHEMA = "paperclip.runner-vendor.timing.v1";
 
 export function decideRunnerVendorAction({ env, assessment }) {
+  const requireCurrent = env[REQUIRE_CURRENT_VARIABLE] === "1";
   if (env[FORCE_REBUILD_VARIABLE] === "1") {
-    return { action: "rebuild", code: "forced", detail: `${FORCE_REBUILD_VARIABLE}=1` };
+    return requireCurrent
+      ? { action: "fail", code: "conflict", detail: `${FORCE_REBUILD_VARIABLE}=1` }
+      : { action: "rebuild", code: "forced", detail: `${FORCE_REBUILD_VARIABLE}=1` };
   }
   if (assessment.current) {
     return { action: "reuse", code: assessment.code, detail: assessment.detail };
   }
-  return { action: "rebuild", code: assessment.code, detail: assessment.detail };
+  return { action: requireCurrent ? "fail" : "rebuild", code: assessment.code, detail: assessment.detail };
 }
 
 /**
@@ -102,6 +111,16 @@ export function prepareRunnerVendor({
     log(`prepare:runner-vendor: reusing the current Runner build (${decision.detail})`);
     log(`${TIMING_SCHEMA},action:reuse,reason:${decision.code},check_ms:${checkMs},build_ms:0`);
     return 0;
+  }
+
+  if (decision.action === "fail") {
+    log(
+      `prepare:runner-vendor: ${REQUIRE_CURRENT_VARIABLE}=1 forbids the Runner rebuild this step needs (${decision.detail}). `
+        + "packages/paperclip-runner/dist and its build stamp must come from a Runner build of exactly this tree's Runner inputs, "
+        + "pnpm-lock.yaml included. Supply that build, or unset the variable to rebuild the Runner in this step.",
+    );
+    log(`${TIMING_SCHEMA},action:fail,reason:${decision.code},check_ms:${checkMs},build_ms:0,status:1`);
+    return 1;
   }
 
   log(`prepare:runner-vendor: rebuilding the Runner (${decision.detail})`);
