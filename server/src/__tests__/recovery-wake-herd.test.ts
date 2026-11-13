@@ -14,6 +14,7 @@ import { PENDING_CONTINUATION_BOUND_MS, assignedWorkSweep } from "../services/re
 import { evaluateAssignedWork } from "../services/recovery/assigned-work-invariant.js";
 import { taskInterruptionPresentation } from "../services/task-interruption-presentation.js";
 import { executionControlSchedule } from "../services/execution-control-work.js";
+import { requestTaskRetry } from "../services/task-retry.js";
 
 const support = await getEmbeddedPostgresTestSupport();
 const suite = support.supported ? describe : describe.skip;
@@ -702,4 +703,71 @@ suite("recovery wake herd", () => {
       await heartbeat.drainActiveRunExecutions();
     }
   }, 60_000);
+
+  async function continuationWaitingInQueue(agentId: string, queuedMinutesAgo: number) {
+    const record = await pendingContinuation(agentId, queuedMinutesAgo + 2);
+    const wake = fakeWake();
+    await deliverReconciledExecutions(db, wake as never);
+    expect(wake).toHaveBeenCalledTimes(1);
+    const delivered = await wake.mock.results[0]!.value as typeof heartbeatRuns.$inferSelect;
+    const [continuation] = await db.update(heartbeatRuns).set({ createdAt: new Date(Date.now() - queuedMinutesAgo * 60_000) })
+      .where(eq(heartbeatRuns.id, delivered.id)).returning();
+    const busy = await task(agentId);
+    const [olderWork] = await db.insert(heartbeatRuns).values({ companyId, agentId, issueId: busy.id, invocationSource: "assignment",
+      status: "queued", createdAt: new Date(Date.now() - (queuedMinutesAgo + 4) * 60_000),
+      contextSnapshot: { issueId: busy.id, wakeReason: "issue_assigned" } }).returning();
+    const [issueRow] = await db.select().from(issues).where(eq(issues.id, record.issue.id));
+    return { ...record, continuation: continuation!, olderWork: olderWork!, issueRow: issueRow! };
+  }
+
+  const runsOfTask = async (issueId: string, sourceRunId: string) => db.select().from(heartbeatRuns)
+    .where(and(eq(heartbeatRuns.issueId, issueId), sql`${heartbeatRuns.id} <> ${sourceRunId}`));
+
+  it("moves a continuation that waited 15 minutes forward on a person's Retry, which joins it and starts no second run", async () => {
+    const agentId = await seedCompany(1);
+    const waiting = await continuationWaitingInQueue(agentId, 16);
+    expect(await deliveryOf(waiting.action.id)).toBe("delivered");
+    const shown = await taskInterruptionPresentation(db, waiting.issueRow);
+    expect(shown).toMatchObject({ responsibility: "system", state: "working", canRetry: true, retryAction: "move_forward",
+      observedRunId: waiting.continuation.id });
+    const heartbeat = heartbeatService(db);
+    try {
+      const receipt = await requestTaskRetry({ db, companyId, issueId: waiting.issue.id, actorId: userId,
+        observedRunId: shown!.observedRunId, idempotencyKey: randomUUID() });
+      expect(receipt).toMatchObject({ accepted: true, stale: false });
+      await heartbeat.resumeTaskRetry(companyId, receipt.requestId!);
+      expect((await runsOfTask(waiting.issue.id, waiting.source.id)).map(run => run.id)).toEqual([waiting.continuation.id]);
+      const [retryWake] = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, receipt.requestId!));
+      expect(retryWake).toMatchObject({ status: "coalesced", runId: waiting.continuation.id, requestedByActorType: "user" });
+      const after = await taskInterruptionPresentation(db, waiting.issueRow);
+      expect(after).toMatchObject({ state: "working", canRetry: false });
+      expect(after?.retryAction).toBeUndefined();
+
+      await deliverReconciledExecutions(db, fakeWake() as never);
+      await heartbeat.resumeQueuedRuns();
+      expect((await readRun(waiting.continuation.id)).startedAt).not.toBeNull();
+      expect(await readRun(waiting.olderWork.id)).toMatchObject({ status: "queued", startedAt: null });
+    } finally {
+      await heartbeat.drainActiveRunExecutions();
+    }
+    await heartbeat.resumeQueuedRuns();
+    await heartbeat.drainActiveRunExecutions();
+    expect((await runsOfTask(waiting.issue.id, waiting.source.id)).map(run => run.id)).toEqual([waiting.continuation.id]);
+  }, 120_000);
+
+  it("leaves a continuation that waited under 15 minutes in its place, with no Retry", async () => {
+    const agentId = await seedCompany(1);
+    const waiting = await continuationWaitingInQueue(agentId, 14);
+    const shown = await taskInterruptionPresentation(db, waiting.issueRow);
+    expect(shown).toMatchObject({ state: "working", canRetry: false });
+    expect(shown?.retryAction).toBeUndefined();
+    const heartbeat = heartbeatService(db);
+    try {
+      await heartbeat.resumeQueuedRuns();
+      expect((await readRun(waiting.olderWork.id)).startedAt).not.toBeNull();
+      expect(await readRun(waiting.continuation.id)).toMatchObject({ status: "queued", startedAt: null });
+    } finally {
+      await heartbeat.drainActiveRunExecutions();
+    }
+  }, 120_000);
 });

@@ -145,6 +145,7 @@ export interface TaskInterruptionPresentation {
   state: "working" | "retry_scheduled" | "failed" | "waiting_for_user" | "resolved";
   nextRetryAt: string | null;
   canRetry: boolean;
+  retryAction?: "move_forward";
   userAction: "approval" | "reconnect" | "assign_agent" | "choose_model" | "resume" | "budget" | "project_access"
     /** Board confirms that a previous server, which can no longer report, stopped its workspace copyback. */
     | "confirm_owner_stop"
