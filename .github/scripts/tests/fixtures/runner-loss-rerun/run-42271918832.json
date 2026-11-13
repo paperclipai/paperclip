@@ -1042,7 +1042,7 @@
         "end_line": 123,
         "annotation_level": "failure",
         "title": "[paperclipai] src/__tests__/company-import-transfer.test.ts > resolveChunkedImportZip > takes the chunked path for a small zip whose entries inflate past the threshold",
-        "message": "Error: Test timed out in 5000ms.\nIf this is a long-running test, pass a timeout value as the last argument or configure it globally with \"testTimeout\".\n ❯ src/__tests__/company-import-transfer.test.ts:123:3\n\n",
+        "message": "Error: Test timed out in 5000ms.\nIf this is a long-running test, pass a timeout value as the last argument or configure it globally with \"testTimeout\".\n \u276f src/__tests__/company-import-transfer.test.ts:123:3\n\n",
         "raw_details": ""
       },
       {
@@ -1051,7 +1051,7 @@
         "end_line": 280,
         "annotation_level": "failure",
         "title": "[paperclipai] src/__tests__/company-import-export-e2e.test.ts > paperclipai company import/export e2e",
-        "message": "Error: Timed out waiting for the child server recorded in /tmp/pv-KMcoQP/t/paperclip-company-cli-e2e-8VX8vL/paperclip-home/instances/company-cli-e2e/runtime-info.json.\nstdout:\nUpdate available: 2026.1023.0 — run `paperclipai update`\n┌   paperclipai run \n│\n│  Home: /tmp/pv-KMcoQP/t/paperclip-company-cli-e2e-8VX8vL/paperclip-home\n│\n│  Instance: company-cli-e2e\n│\n│  Config: /tmp/pv-KMcoQP/t/paperclip-company-cli-e2e-8VX8vL/config/config.json\n│\n◇  Running doctor checks...\nUpdate available: 2026.1023.0 — run `paperclipai update`\n\n██████╗  █████╗ ██████╗ ███████╗██████╗  ██████╗██╗     ██╗██████╗ \n██╔══██╗██╔══██╗██╔══██╗██╔════╝██╔══██╗██╔════╝██║     ██║██╔══██╗\n██████╔╝███████║██████╔╝█████╗  ██████╔╝██║     ██║     ██║██████╔╝\n██╔═══╝ ██╔══██║██╔═══╝ ██╔══╝  ██╔══██╗██║     ██║     ██║██╔═══╝ \n██║     ██║  ██║██║     ███████╗██║  ██║╚██████╗███████╗██║██║     \n╚═╝     ╚═╝  ╚═╝╚═╝     ╚══════╝╚═╝  ╚═╝ ╚═════╝╚══════╝╚═╝╚═╝     \n  ───────────────────────────────────────────────────────\n  The app people use to manage AI agents for work\n\n┌   paperclip doctor \n│\n│  ✓ Config file: Valid config at /tmp/pv-KMcoQP/t/paperclip-company-cli-e2e-8VX8vL/config/config.json\n│\n│  ✓ Deployment/auth mode: local_trusted mode is configured for loopback-only access\n│\n│  ✗ Agent JWT secret: PAPERCLIP_AGENT_JWT_SECRET missing from environment and /tmp/pv-KMcoQP/t/paperclip-company-cli-e2e-8VX8vL/config/.env\n│\n│    Run with --repair to create /tmp/pv-KMcoQP/t/paperclip-company-cli-e2e-8VX8vL/config/.env containing PAPERCLIP_AGENT_JWT_SECRET\n│\n◆  Repaired: Agent JWT secret\n│\n│  ✓ Agent JWT secret: PAPERCLIP_AGENT_JWT_SECRET is set in environment\n│\n│  ! Secrets adapter: Secrets key file does not exist yet: /tmp/pv-KMcoQP/t/paperclip-company-cli-e2e-8VX8vL/secrets/master.key; strict secret mode is disabled for postgres deployment\n│\n│    Run with --repair to create a local encrypted secrets key file. Consider enabling secrets.strictMode\n│\n◆  Repaired: Secrets adapter\n│\n│  ! Secrets adapter: Local encrypted provider configured with key file /tmp/pv-KMcoQP/t/paperclip-company-cli-e2e-8VX8vL/secrets/master.key; strict secret mode is disabled for postgres deployment\n│\n│    Consider enabling secrets.strictMode\n│\n│  ✓ Storage: Local disk storage is writable: /tmp/pv-KMcoQP/t/paperclip-company-cli-e2e-8VX8vL/storage\n│\n│  ✓ Database: PostgreSQL connection successful\n│\n│  ✓ LLM provider: No LLM provider configured (optional)\n│\n│  ✓ Log directory: Log directory is writable: /tmp/pv-KMcoQP/t/paperclip-company-cli-e2e-8VX8vL/logs\n│\n│  ! Server port: Port 37925 is already in use\n│\n│    Check what's using port 37925 with: lsof -i :37925\n│\n│  ✓ Node.js runtime: Node.js 24.22.2\n│\n│  ✓ Managed install: Not present (optional for npx, global npm, and source-checkout usage)\n│\n│  ✓ Background service: No usable systemd user manager was detected (common in containers and WSL1). Use paperclipai run instead.\n│\n◇  Summary ───────────────╮\n│                         │\n│  10 passed, 2 warnings  │\n│                         │\n├─────────────────────────╯\n│\n└  All critical checks passed with some warnings.\n\n│\n◇  Start",
+        "message": "Error: Timed out waiting for the child server recorded in /tmp/pv-KMcoQP/t/paperclip-company-cli-e2e-8VX8vL/paperclip-home/instances/company-cli-e2e/runtime-info.json.\nstdout:\nUpdate available: 2026.1023.0 \u2014 run `paperclipai update`\n\u250c   paperclipai run \n\u2502\n\u2502  Home: /tmp/pv-KMcoQP/t/paperclip-company-cli-e2e-8VX8vL/paperclip-home\n\u2502\n\u2502  Instance: company-cli-e2e\n\u2502\n\u2502  Config: /tmp/pv-KMcoQP/t/paperclip-company-cli-e2e-8VX8vL/config/config.json\n\u2502\n\u25c7  Running doctor checks...\nUpdate available: 2026.1023.0 \u2014 run `paperclipai update`\n\n\u2588\u2588\u2588\u2588\u2588\u2588\u2557  \u2588\u2588\u2588\u2588\u2588\u2557 \u2588\u2588\u2588\u2588\u2588\u2588\u2557 \u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2557\u2588\u2588\u2588\u2588\u2588\u2588\u2557  \u2588\u2588\u2588\u2588\u2588\u2588\u2557\u2588\u2588\u2557     \u2588\u2588\u2557\u2588\u2588\u2588\u2588\u2588\u2588\u2557 \n\u2588\u2588\u2554\u2550\u2550\u2588\u2588\u2557\u2588\u2588\u2554\u2550\u2550\u2588\u2588\u2557\u2588\u2588\u2554\u2550\u2550\u2588\u2588\u2557\u2588\u2588\u2554\u2550\u2550\u2550\u2550\u255d\u2588\u2588\u2554\u2550\u2550\u2588\u2588\u2557\u2588\u2588\u2554\u2550\u2550\u2550\u2550\u255d\u2588\u2588\u2551     \u2588\u2588\u2551\u2588\u2588\u2554\u2550\u2550\u2588\u2588\u2557\n\u2588\u2588\u2588\u2588\u2588\u2588\u2554\u255d\u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2551\u2588\u2588\u2588\u2588\u2588\u2588\u2554\u255d\u2588\u2588\u2588\u2588\u2588\u2557  \u2588\u2588\u2588\u2588\u2588\u2588\u2554\u255d\u2588\u2588\u2551     \u2588\u2588\u2551     \u2588\u2588\u2551\u2588\u2588\u2588\u2588\u2588\u2588\u2554\u255d\n\u2588\u2588\u2554\u2550\u2550\u2550\u255d \u2588\u2588\u2554\u2550\u2550\u2588\u2588\u2551\u2588\u2588\u2554\u2550\u2550\u2550\u255d \u2588\u2588\u2554\u2550\u2550\u255d  \u2588\u2588\u2554\u2550\u2550\u2588\u2588\u2557\u2588\u2588\u2551     \u2588\u2588\u2551     \u2588\u2588\u2551\u2588\u2588\u2554\u2550\u2550\u2550\u255d \n\u2588\u2588\u2551     \u2588\u2588\u2551  \u2588\u2588\u2551\u2588\u2588\u2551     \u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2557\u2588\u2588\u2551  \u2588\u2588\u2551\u255a\u2588\u2588\u2588\u2588\u2588\u2588\u2557\u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2557\u2588\u2588\u2551\u2588\u2588\u2551     \n\u255a\u2550\u255d     \u255a\u2550\u255d  \u255a\u2550\u255d\u255a\u2550\u255d     \u255a\u2550\u2550\u2550\u2550\u2550\u2550\u255d\u255a\u2550\u255d  \u255a\u2550\u255d \u255a\u2550\u2550\u2550\u2550\u2550\u255d\u255a\u2550\u2550\u2550\u2550\u2550\u2550\u255d\u255a\u2550\u255d\u255a\u2550\u255d     \n  \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n  The app people use to manage AI agents for work\n\n\u250c   paperclip doctor \n\u2502\n\u2502  \u2713 Config file: Valid config at /tmp/pv-KMcoQP/t/paperclip-company-cli-e2e-8VX8vL/config/config.json\n\u2502\n\u2502  \u2713 Deployment/auth mode: local_trusted mode is configured for loopback-only access\n\u2502\n\u2502  \u2717 Agent JWT secret: PAPERCLIP_AGENT_JWT_SECRET missing from environment and /tmp/pv-KMcoQP/t/paperclip-company-cli-e2e-8VX8vL/config/.env\n\u2502\n\u2502    Run with --repair to create /tmp/pv-KMcoQP/t/paperclip-company-cli-e2e-8VX8vL/config/.env containing PAPERCLIP_AGENT_JWT_SECRET\n\u2502\n\u25c6  Repaired: Agent JWT secret\n\u2502\n\u2502  \u2713 Agent JWT secret: PAPERCLIP_AGENT_JWT_SECRET is set in environment\n\u2502\n\u2502  ! Secrets adapter: Secrets key file does not exist yet: /tmp/pv-KMcoQP/t/paperclip-company-cli-e2e-8VX8vL/secrets/master.key; strict secret mode is disabled for postgres deployment\n\u2502\n\u2502    Run with --repair to create a local encrypted secrets key file. Consider enabling secrets.strictMode\n\u2502\n\u25c6  Repaired: Secrets adapter\n\u2502\n\u2502  ! Secrets adapter: Local encrypted provider configured with key file /tmp/pv-KMcoQP/t/paperclip-company-cli-e2e-8VX8vL/secrets/master.key; strict secret mode is disabled for postgres deployment\n\u2502\n\u2502    Consider enabling secrets.strictMode\n\u2502\n\u2502  \u2713 Storage: Local disk storage is writable: /tmp/pv-KMcoQP/t/paperclip-company-cli-e2e-8VX8vL/storage\n\u2502\n\u2502  \u2713 Database: PostgreSQL connection successful\n\u2502\n\u2502  \u2713 LLM provider: No LLM provider configured (optional)\n\u2502\n\u2502  \u2713 Log directory: Log directory is writable: /tmp/pv-KMcoQP/t/paperclip-company-cli-e2e-8VX8vL/logs\n\u2502\n\u2502  ! Server port: Port 37925 is already in use\n\u2502\n\u2502    Check what's using port 37925 with: lsof -i :37925\n\u2502\n\u2502  \u2713 Node.js runtime: Node.js 24.22.2\n\u2502\n\u2502  \u2713 Managed install: Not present (optional for npx, global npm, and source-checkout usage)\n\u2502\n\u2502  \u2713 Background service: No usable systemd user manager was detected (common in containers and WSL1). Use paperclipai run instead.\n\u2502\n\u25c7  Summary \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u256e\n\u2502                         \u2502\n\u2502  10 passed, 2 warnings  \u2502\n\u2502                         \u2502\n\u251c\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u256f\n\u2502\n\u2514  All critical checks passed with some warnings.\n\n\u2502\n\u25c7  Start",
         "raw_details": ""
       },
       {
@@ -1085,10 +1085,46 @@
         "message": "Process completed with exit code 1.",
         "raw_details": ""
       }
+    ],
+    "128079212951": [
+      {
+        "path": ".github",
+        "start_line": 130,
+        "end_line": 130,
+        "annotation_level": "failure",
+        "title": "",
+        "message": "The operation was canceled.",
+        "raw_details": ""
+      }
+    ],
+    "128079213109": [
+      {
+        "path": ".github",
+        "start_line": 130,
+        "end_line": 130,
+        "annotation_level": "failure",
+        "title": "",
+        "message": "The operation was canceled.",
+        "raw_details": ""
+      }
+    ],
+    "128079213211": [
+      {
+        "path": ".github",
+        "start_line": 133,
+        "end_line": 133,
+        "annotation_level": "failure",
+        "title": "",
+        "message": "The operation was canceled.",
+        "raw_details": ""
+      }
     ]
   },
   "logs": {
-    "128078674151": "2026-11-06T18:42:31.0413375Z ##[error]The runner has received a shutdown signal. This can happen when the runner service is stopped, or a manually started runner is canceled.\n2026-11-06T18:42:43.5529901Z ##[error]The operation was canceled.\n2026-11-06T18:42:43.5656287Z Cleaning up orphan processes\n"
+    "128078674151": "2026-11-06T18:42:31.0413375Z ##[error]The runner has received a shutdown signal. This can happen when the runner service is stopped, or a manually started runner is canceled.\n2026-11-06T18:42:43.5529901Z ##[error]The operation was canceled.\n2026-11-06T18:42:43.5656287Z Cleaning up orphan processes\n",
+    "128079212951": "2026-11-06T18:42:41.1643719Z ##[error]The runner has received a shutdown signal. This can happen when the runner service is stopped, or a manually started runner is canceled.\n2026-11-06T18:42:53.6869870Z ##[error]The operation was canceled.\n",
+    "128079213109": "2026-11-06T18:42:35.0486149Z ##[error]The runner has received a shutdown signal. This can happen when the runner service is stopped, or a manually started runner is canceled.\n2026-11-06T18:42:47.5624672Z ##[error]The operation was canceled.\n",
+    "128079213211": "2026-11-06T18:42:38.0453932Z ##[error]The runner has received a shutdown signal. This can happen when the runner service is stopped, or a manually started runner is canceled.\n2026-11-06T18:42:50.5615051Z ##[error]The operation was canceled.\n"
   },
   "total_count": 48
 }

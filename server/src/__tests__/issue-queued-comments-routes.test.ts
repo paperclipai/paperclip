@@ -692,6 +692,39 @@ describeEmbeddedPostgres("issue queued-comment routes", () => {
     expect(steerNativeSessionMock.mock.calls).toHaveLength(calls);
   });
 
+  it("keeps a fresh-session approval and its Interrupt in view when another agent's comment queues after it", async () => {
+    const seeded = await seedResponseQueue(true);
+    const [receipt] = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, seeded.wakeId));
+    await db.update(agentWakeupRequests).set({ payload: { ...receipt.payload,
+      _paperclipWakeContext: { ...seeded.context, forceFreshSession: true } } }).where(eq(agentWakeupRequests.id, seeded.wakeId));
+    const [ceo] = await db.insert(agents).values({ companyId: seeded.companyId, name: "CEO", role: "ceo", status: "idle",
+      adapterType: "paperclip_runner", adapterConfig: {}, runtimeConfig: {}, permissions: {} }).returning();
+    const directionId = randomUUID(), later = new Date(Date.now() + 60_000);
+    await db.insert(issueComments).values({ id: directionId, companyId: seeded.companyId, issueId: seeded.issueId,
+      authorType: "agent", authorAgentId: ceo.id, body: "CEO direction: restart with the approved layout",
+      createdAt: later, updatedAt: later });
+    const [agentWake] = await db.insert(agentWakeupRequests).values({ companyId: seeded.companyId, agentId: seeded.agentId,
+      source: "issue_comment", reason: "issue_commented", status: "deferred_issue_execution",
+      requestedByActorType: "agent", requestedByActorId: ceo.id, requestedAt: later,
+      payload: { issueId: seeded.issueId, commentId: directionId,
+        _paperclipWakeContext: { commentId: directionId, wakeCommentId: directionId, wakeCommentIds: [directionId] } } }).returning();
+    const client = app(seeded.companyId);
+
+    const queue = await request(client).get(`/api/issues/${seeded.issueId}/queued-comments`).expect(200);
+    expect(queue.body.queueId).toBe(seeded.wakeId);
+    expect(queue.body.entries).toEqual([expect.objectContaining({
+      source: expect.objectContaining({ interactionId: seeded.interactionId, requiresFreshSession: true }) })]);
+
+    const personId = randomUUID(), latest = new Date(Date.now() + 120_000);
+    await db.insert(issueComments).values({ id: personId, companyId: seeded.companyId, issueId: seeded.issueId,
+      authorType: "user", authorUserId: "queue-owner", body: "Also keep the signup button", createdAt: latest, updatedAt: latest });
+    await db.update(agentWakeupRequests).set({ payload: { issueId: seeded.issueId, commentId: personId,
+      _paperclipWakeContext: { commentId: personId, wakeCommentId: personId, wakeCommentIds: [directionId, personId] } } })
+      .where(eq(agentWakeupRequests.id, agentWake.id));
+    const withPersonMessage = await request(client).get(`/api/issues/${seeded.issueId}/queued-comments`).expect(200);
+    expect(withPersonMessage.body.queueId).toBe(agentWake.id);
+  });
+
   it("does not steer a plan approval that requires a fresh execution session", async () => {
     const seeded = await seedResponseQueue(true);
     const [wake] = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, seeded.wakeId));

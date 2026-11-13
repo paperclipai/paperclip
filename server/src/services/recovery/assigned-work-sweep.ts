@@ -9,6 +9,7 @@ import {
   companies,
   heartbeatRuns,
   issueApprovals,
+  issueRecoveryActions,
   issueRelations,
   issueThreadInteractions,
   issues,
@@ -28,6 +29,7 @@ import { issueTreeControlService } from "../issue-tree-control.js";
 import { taskInterruptionPresentations } from "../task-interruption-presentation.js";
 import { CHAT_CONTROL_RECOVERY_STOP_CODE, CHAT_CONTROL_RECOVERY_UNRESOLVED_CODE } from "../chat-control-recovery-stop.js";
 import { onboardingFirstTaskAwaitingUserSql } from "./onboarding-first-task-wait.js";
+import { PENDING_CONTINUATION_BOUND_MS } from "../recovery-continuation-pacing.js";
 import {
   continuationActivityMessage,
   continuationAllowance,
@@ -56,6 +58,8 @@ export const ASSIGNED_WORK_REPORT_LIMIT = 2_000;
 
 const OPEN_STATUSES = ["todo", "in_progress", "blocked"] as const;
 const PENDING_WAKE_STATUSES = ["queued", "deferred_issue_execution", "claimed"];
+const DEFERRED_WAKE_PENDING_BOUND_MS = 5 * 60_000;
+export { PENDING_CONTINUATION_BOUND_MS };
 const NON_TERMINAL_RUN_STATUSES = ["queued", "running", "scheduled_retry"];
 const NATIVE_PENDING_RECOVERY_STATES = ["awaiting_evidence", "awaiting_runner_reattach", "resuming_session", "bootstrap_incomplete"];
 const PROVIDER_LIMIT_CAUSES = ["provider_quota", "native_provider_usage_limit"];
@@ -194,6 +198,13 @@ export function assignedWorkSweep(db: Db, deps: AssignedWorkDeps) {
       database.select({ issueId: sql<string>`${agentWakeupRequests.payload}->>'issueId'`, count: sql<number>`count(*)::int` })
         .from(agentWakeupRequests).where(and(eq(agentWakeupRequests.companyId, companyId),
           inArray(agentWakeupRequests.status, PENDING_WAKE_STATUSES),
+          sql`(${agentWakeupRequests.status} = 'queued'
+            or (${agentWakeupRequests.status} = 'deferred_issue_execution'
+              and ${agentWakeupRequests.createdAt} > ${at.toISOString()}::timestamptz - ${`${DEFERRED_WAKE_PENDING_BOUND_MS} milliseconds`}::interval)
+            -- A claimed wake becomes a run within seconds; one claimed long ago with no run never will.
+            or (${agentWakeupRequests.status} = 'claimed' and (${agentWakeupRequests.runId} is not null
+              or coalesce(${agentWakeupRequests.claimedAt}, ${agentWakeupRequests.createdAt})
+                > ${at.toISOString()}::timestamptz - ${`${DEFERRED_WAKE_PENDING_BOUND_MS} milliseconds`}::interval)))`,
           sql`${agentWakeupRequests.payload}->>'issueId' = any(${idParam})`))
         .groupBy(sql`${agentWakeupRequests.payload}->>'issueId'`),
       database.select({ id: issues.id }).from(issues).where(and(eq(issues.companyId, companyId), inArray(issues.id, ids),
@@ -276,7 +287,20 @@ export function assignedWorkSweep(db: Db, deps: AssignedWorkDeps) {
     const companyBudget = company?.pauseReason === "budget" || company?.pauseReason === "budget_exceeded";
     const counts = (rows: Array<{ issueId: string | null; count: number }>) =>
       new Map(rows.filter(row => row.issueId).map(row => [row.issueId!, Number(row.count)]));
+    const pendingContinuations = await database.select({ issueId: issueRecoveryActions.sourceIssueId,
+      agentId: issueRecoveryActions.returnOwnerAgentId }).from(issueRecoveryActions).where(and(
+      eq(issueRecoveryActions.companyId, companyId), inArray(issueRecoveryActions.sourceIssueId, ids),
+      eq(issueRecoveryActions.status, "resolved"),
+      sql`${issueRecoveryActions.evidence}->>'continuationDelivery' = 'pending'`,
+      sql`coalesce(${issueRecoveryActions.evidence}#>>'{freshContinuation,recordedAt}', ${issueRecoveryActions.resolvedAt}::text,
+        ${issueRecoveryActions.updatedAt}::text)::timestamptz
+        > ${at.toISOString()}::timestamptz - ${`${PENDING_CONTINUATION_BOUND_MS} milliseconds`}::interval`));
     const wakeCounts = counts(wakes);
+    for (const continuation of pendingContinuations) {
+      const issue = issueRows.find(row => row.id === continuation.issueId);
+      if (!issue || !continuation.agentId || issue.assigneeAgentId !== continuation.agentId) continue;
+      wakeCounts.set(continuation.issueId, (wakeCounts.get(continuation.issueId) ?? 0) + 1);
+    }
     const chatWakeIds = new Set(chatWakes.map(row => row.id));
     // A native restart-recovery claim that nobody renewed for NATIVE_STALL_MS
     // is not a pending path, and its still-running run is not live.
@@ -413,7 +437,10 @@ export function assignedWorkSweep(db: Db, deps: AssignedWorkDeps) {
           and r.controller_lease_expires_at < ${at.toISOString()}::timestamptz))`,
       sql`not exists (select 1 from agent_wakeup_requests w where w.company_id = ${issues.companyId}
         and (w.payload->>'issueId') = ${issues.id}::text
-        and w.status in ('queued', 'deferred_issue_execution', 'claimed'))`,
+        and (w.status = 'queued'
+          or (w.status = 'deferred_issue_execution' and w.created_at > ${new Date(at.getTime() - DEFERRED_WAKE_PENDING_BOUND_MS).toISOString()}::timestamptz)
+          or (w.status = 'claimed' and (w.run_id is not null
+            or coalesce(w.claimed_at, w.created_at) > ${new Date(at.getTime() - DEFERRED_WAKE_PENDING_BOUND_MS).toISOString()}::timestamptz))))`,
       sql`not exists (select 1 from issue_thread_interactions t where t.company_id = ${issues.companyId}
         and t.issue_id = ${issues.id} and t.status = 'pending'
         and ${interactionNotSupersededSql(sql`t.company_id`, sql`t.issue_id::text`, sql`t.created_at`)})`,

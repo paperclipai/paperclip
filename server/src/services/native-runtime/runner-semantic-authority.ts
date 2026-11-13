@@ -7,7 +7,7 @@ import {
   sanitizeQuarantinedCommentForHigherTrust,
 } from "../source-trust.js";
 import { and, desc, eq, isNull } from "drizzle-orm";
-import { recordTaskHistoryRead } from "../queued-comment-delivery.js";
+import { commentsArrivedDuringRun, recordTaskHistoryRead, taskHistoryHandlingGuidance } from "../queued-comment-delivery.js";
 import { logger } from "../../middleware/logger.js";
 
 import type { Db } from "@paperclipai/db";
@@ -194,8 +194,10 @@ export class PaperclipRunnerSemanticAuthority {
                 : sanitizeQuarantinedCommentForHigherTrust(row);
               return { ...comment, body: fastResponseHistoryBody(comment) };
             });
+            const arrived = await commentsArrivedDuringRun(this.#db, { companyId: this.#binding.companyId,
+              runId: this.#binding.runId, agentId: this.#binding.agentId, comments: rows }).catch(() => [] as string[]);
             return {
-              value: jsonValue({ comments }),
+              value: jsonValue({ comments, ...taskHistoryHandlingGuidance(arrived) }),
               references: [{ kind: "task", id: context.issue.id }],
             };
           }

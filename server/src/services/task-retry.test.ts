@@ -322,6 +322,14 @@ describe("durable task Retry admission", () => {
   it.each(["admission", "preparation"] as const)(
     "continues a fresh-workspace Retry that a shutdown stopped before provider work (selected at %s)", async selectedAt => {
       const f = await seedFreshAttemptStoppedByShutdown(selectedAt);
+      const refusal = { intentId: f.retryRequestId, workspaceId: randomUUID(), leaseId: randomUUID() };
+      if (selectedAt === "preparation") {
+        await db.insert(environmentLeases).values({ id: refusal.leaseId, companyId: f.input.companyId,
+          heartbeatRunId: f.parent.id, issueId: f.input.issueId, status: "released",
+          releasedAt: new Date(), cleanupStatus: "success", provider: "plugin:test:tasks" });
+        await db.update(heartbeatRuns).set({ contextSnapshot: { ...f.parent.contextSnapshot, retryWorkspaceRefusal: refusal } })
+          .where(eq(heartbeatRuns.id, f.parent.id));
+      }
       const scope = { companyId: f.input.companyId };
       await Promise.all([heartbeatService(db).reconcileStrandedAssignedIssues(scope),
         heartbeatService(db).reconcileStrandedAssignedIssues(scope)]);
@@ -334,6 +342,11 @@ describe("durable task Retry admission", () => {
       await expect(dispatchRun(f.input, successor)).resolves.toMatchObject({ interruptedRunId: f.parent.id });
       // Preparation of the successor selects the same fresh attempt.
       expect(await readFreshWorkspaceReadiness(db, successor)).toEqual(f.readiness);
+      if (selectedAt === "preparation") {
+        expect(successor.contextSnapshot?.retryWorkspaceRefusal).toEqual({ ...refusal, leaseId: null });
+        const [parent] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.parent.id));
+        expect(parent.contextSnapshot?.retryWorkspaceRefusal).toEqual(refusal);
+      }
       // A second upgrade stops the continuation too: it carries the same attempt on.
       const finishedAt = new Date(Date.now() - 30_000);
       const [stopped] = await db.update(heartbeatRuns).set({ status: "interrupted", errorCode: "server_shutdown_interrupted",
@@ -347,6 +360,28 @@ describe("durable task Retry admission", () => {
       await expect(dispatchRun(f.input, next[0]!)).resolves.toMatchObject({ interruptedRunId: stopped.id });
       expect(await readFreshWorkspaceReadiness(db, next[0]!)).toEqual(f.readiness);
     });
+  it("leaves the parent verification lease with cleanup before scheduling a shutdown successor", async () => {
+    const f = await seedFreshAttemptStoppedByShutdown("preparation");
+    const refusal = { intentId: f.retryRequestId, workspaceId: randomUUID(), leaseId: randomUUID() };
+    await db.insert(environmentLeases).values({ id: refusal.leaseId, companyId: f.input.companyId,
+      heartbeatRunId: f.parent.id, issueId: f.input.issueId, status: "pending_cleanup",
+      releasedAt: new Date(), cleanupStatus: "failed", provider: "plugin:test:tasks" });
+    const [parent] = await db.update(heartbeatRuns).set({ contextSnapshot: { ...f.parent.contextSnapshot, retryWorkspaceRefusal: refusal } })
+      .where(eq(heartbeatRuns.id, f.parent.id)).returning();
+    expect(await heartbeatService(db).scheduleBoundedRetry(parent.id, { now: new Date() }))
+      .toMatchObject({ outcome: "not_scheduled", errorCode: "workspace_verification_cleanup_pending" });
+    expect(await successorsOf(parent.id)).toHaveLength(0);
+    const [lease] = await db.select().from(environmentLeases).where(eq(environmentLeases.id, refusal.leaseId));
+    expect(lease).toMatchObject({ status: "pending_cleanup", heartbeatRunId: parent.id });
+    await db.update(environmentLeases).set({ status: "released", cleanupStatus: "success" })
+      .where(eq(environmentLeases.id, refusal.leaseId));
+    await heartbeatService(db).reconcileStrandedAssignedIssues({ companyId: f.input.companyId });
+    const successors = await successorsOf(parent.id);
+    expect(successors).toHaveLength(1);
+    expect(successors[0].contextSnapshot?.retryWorkspaceRefusal).toEqual({ ...refusal, leaseId: null });
+    await expect(dispatchRun(f.input, successors[0])).resolves.toMatchObject({ interruptedRunId: parent.id });
+    expect(await readFreshWorkspaceReadiness(db, successors[0])).toEqual(f.readiness);
+  });
   it.each(["other_retry", "other_source", "failed_not_stopped"] as const)(
     "keeps a fresh-workspace Retry's own contract when it does not match: %s", async kind => {
       const f = await seedFreshAttemptStoppedByShutdown("admission");
@@ -435,6 +470,61 @@ describe("durable task Retry admission", () => {
     expect(retry.outcome).toBe("scheduled");
     if (retry.outcome !== "scheduled") return;
     await expect(dispatchRun(f.input, retry.run)).resolves.toMatchObject({ interruptedRunId: f.parent.id });
+  });
+  // Staging shape: a person's Retry failed before provider work because the
+  // saved sandbox resume timed out. The run is already `failed`, but its
+  // executor has not scheduled the bounded retry yet: settling took longer than
+  // the controller lease that stopped renewing at the failed write, or the
+  // server running it stopped. Another server's sweep then reads the task.
+  it.each(["slow_executor", "executor_gone"] as const)(
+    "retries a failed Retry run's transient preparation failure when the sweep reaches it first: %s", async executor => {
+      const f = await seedFailedRetryAdmittedRun();
+      await db.update(heartbeatRuns).set({ errorCode: "reusable_sandbox_resume_failed", controllerBootId: randomUUID(),
+        controllerLeaseExpiresAt: sql`clock_timestamp() - interval '1 second'`,
+        resultJson: { executionRecovery: { kind: "bootstrap", providerWorkStarted: false } },
+      }).where(eq(heartbeatRuns.id, f.parent.id));
+      const heartbeat = heartbeatService(db);
+      await heartbeat.reconcileStrandedAssignedIssues({ companyId: f.input.companyId });
+      expect((await db.select().from(issues).where(eq(issues.id, f.input.issueId)))[0]).toMatchObject({ status: "in_progress" });
+      const successors = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, f.parent.id));
+      expect(successors).toHaveLength(1);
+      expect(successors[0]).toMatchObject({ status: "scheduled_retry", scheduledRetryReason: "transient_failure",
+        scheduledRetryAttempt: 1 });
+      if (executor === "slow_executor") {
+        // The executor's own scheduling adopts the sweep's successor.
+        expect(await heartbeat.scheduleBoundedRetry(f.parent.id, { now: new Date() })).toMatchObject({
+          outcome: "scheduled", run: { id: successors[0].id } });
+        expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, f.parent.id))).toHaveLength(1);
+      }
+      await expect(dispatchRun(f.input, successors[0])).resolves.toMatchObject({ interruptedRunId: f.parent.id });
+    });
+  it.each(["reusable_sandbox_resume_failed", "repository_catalog_unavailable"])(
+    "escalates a failed Retry run's transient preparation failure once when the scheduler declines it permanently: %s", async errorCode => {
+    const f = await seedFailedRetryAdmittedRun();
+    // An external Dot execution is never retried by the bounded scheduler.
+    await db.update(heartbeatRuns).set({ errorCode,
+      runnerProfileJson: { adapterDispatch: { adapterType: "paperclip_runner" },
+        nativeExecutionInput: { provider: { kind: "openai_dot" } } },
+      resultJson: { executionRecovery: { kind: "bootstrap", providerWorkStarted: false } },
+    }).where(eq(heartbeatRuns.id, f.parent.id));
+    const heartbeat = heartbeatService(db);
+    await heartbeat.reconcileStrandedAssignedIssues({ companyId: f.input.companyId });
+    expect((await db.select().from(issues).where(eq(issues.id, f.input.issueId)))[0]).toMatchObject({ status: "blocked" });
+    expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, f.parent.id))).toHaveLength(0);
+    const notices = async () => (await db.select().from(issueComments).where(eq(issueComments.issueId, f.input.issueId))).length;
+    const escalated = await notices();
+    await heartbeat.reconcileStrandedAssignedIssues({ companyId: f.input.companyId });
+    expect(await notices()).toBe(escalated);
+  });
+  it("still escalates a failed Retry run's transient preparation failure once its bounded retries are spent", async () => {
+    const f = await seedFailedRetryAdmittedRun();
+    await db.update(heartbeatRuns).set({ errorCode: "reusable_sandbox_resume_failed",
+      scheduledRetryReason: "transient_failure", scheduledRetryAttempt: 2,
+      resultJson: { executionRecovery: { kind: "bootstrap", providerWorkStarted: false } },
+    }).where(eq(heartbeatRuns.id, f.parent.id));
+    await heartbeatService(db).reconcileStrandedAssignedIssues({ companyId: f.input.companyId });
+    expect((await db.select().from(issues).where(eq(issues.id, f.input.issueId)))[0]).toMatchObject({ status: "blocked" });
+    expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, f.parent.id))).toHaveLength(0);
   });
   async function seedRefusedRetry() {
     const input = await seed();

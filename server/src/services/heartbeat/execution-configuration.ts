@@ -23,7 +23,8 @@ import { PLUGIN_RUNNER_AI_CONNECTION_REQUIRED, pluginEnvironmentRunnerTaskDriver
 import { prepareConnectionInstructionDelivery } from "../connection-instructions.js";
 import { applyConnectorSkills, prepareConnectorSkillDelivery, resolveConnectorAssignments } from "../connector-runtime.js";
 import { resolveManagedGitHubIdentitySelection } from "../git-credentials.js";
-import { resolveAssignedConnectionInstructionsForRun } from "../native-runtime/assigned-mcp-tools.js";
+import { resolveAssignedConnectionInstructionsForRun, resolveMcpConnectionSkillsForRun } from "../native-runtime/assigned-mcp-tools.js";
+import { applyMcpConnectionSkills } from "../mcp-skill-runtime.js";
 import { recordFailedSkillPreparation, type NativeRunHistoricalSpan } from "../native-runtime/native-run-trace.js";
 import { collectRunFailureSecretValues } from "../run-failure-diagnostics.js";
 import { skillVersionSelectionMap } from "../runtime-skill-selections.js";
@@ -93,6 +94,23 @@ export interface HeartbeatExecutionConfigurationInput {
   onIdentityRedactorPrepared: (redactor: ReturnType<typeof createAgentIdentityRedactor>) => void;
 }
 
+export function buildHeartbeatWorkspaceConfiguration(
+  sourceWorkspaceConfig: Record<string, unknown>,
+  { useIsolatedTaskDirectory, explicitTaskDirectory, requestedExecutionWorkspaceMode }: HeartbeatExecutionConfigurationInput["policy"],
+  selectedEnvironmentId: string | null,
+) {
+  const forceDirectoryStrategy = useIsolatedTaskDirectory || (explicitTaskDirectory && (
+    requestedExecutionWorkspaceMode === "agent_default" || Object.keys(parseObject(sourceWorkspaceConfig.workspaceStrategy)).length > 0
+  ));
+  const mergedConfig: Record<string, unknown> = {
+    ...sourceWorkspaceConfig,
+    // The base below is already task-owned. Keep directory transport while
+    // preserving isolated mode and the mandatory sandbox preflight.
+    ...(forceDirectoryStrategy ? { workspaceStrategy: { type: "project_primary" } } : {}),
+  };
+  return { mergedConfig, configSnapshot: buildExecutionWorkspaceConfigSnapshot(mergedConfig, selectedEnvironmentId) };
+}
+
 /** Assembles effective run configuration; the executor retains cleanup ownership. */
 export async function prepareHeartbeatExecutionConfiguration(db: Db, input: HeartbeatExecutionConfigurationInput) {
   const { run, agent, onFailureSecretsResolved, onManagedAiRuntimeAcquired, onIdentityRedactorPrepared } = input;
@@ -136,22 +154,10 @@ export async function prepareHeartbeatExecutionConfiguration(db: Db, input: Hear
   // preparation step can fail. Subsequent provider/identity values extend it.
   onFailureSecretsResolved(() => []);
   const aiBinding = preconfiguredHome ? undefined : input.config.aiBinding;
-  const { trustPreset, useIsolatedTaskDirectory, explicitTaskDirectory, requestedExecutionWorkspaceMode } = input.policy;
+  const { trustPreset } = input.policy;
   const { secretsSvc, companySkills, appendRunEvent, finalizeAiConnectionBusyDeferral } = input.services;
   let managedAiRuntime: ManagedAiRuntime | undefined;
-  const forceDirectoryStrategy = useIsolatedTaskDirectory || (explicitTaskDirectory && (
-    requestedExecutionWorkspaceMode === "agent_default" || Object.keys(parseObject(sourceWorkspaceConfig.workspaceStrategy)).length > 0
-  ));
-  const mergedConfig = {
-    ...sourceWorkspaceConfig,
-    // The base below is already task-owned. Keep directory transport while
-    // preserving isolated mode and the mandatory sandbox preflight.
-    ...(forceDirectoryStrategy ? { workspaceStrategy: { type: "project_primary" } } : {}),
-  };
-  const configSnapshot = buildExecutionWorkspaceConfigSnapshot(
-    mergedConfig,
-    selectedEnvironmentId,
-  );
+  const { mergedConfig, configSnapshot } = buildHeartbeatWorkspaceConfiguration(sourceWorkspaceConfig, input.policy, selectedEnvironmentId);
   const executionRunConfig =
     stripWorkspaceRuntimeFromExecutionRunConfig(mergedConfig);
   const skillActor: AuthorizationActor = { type: "agent", agentId: agent.id, companyId: agent.companyId,
@@ -371,6 +377,14 @@ export async function prepareHeartbeatExecutionConfiguration(db: Db, input: Hear
     : time(reuseAdmittedSkills ? "configuration_skills_adopted" : "configuration_skills", prepareSkills))
     .finally(() => { skillsPrepareEndedAtMs = Date.now(); });
   const assignmentsPreparation = preconfiguredHome ? Promise.resolve([]) : time("configuration_connector_assignments", () => resolveConnectorAssignments(db, { companyId: agent.companyId, agentId: agent.id, runId: run.id, issueId: typeof context.issueId === "string" ? context.issueId : undefined }));
+  // Approved skills from connected apps load beside company skills. A skill
+  // that cannot load now is left out with a warning; it never fails the run.
+  const mcpSkillsPreparation = preconfiguredHome ? Promise.resolve(null)
+    : time("configuration_mcp_skills", () => resolveMcpConnectionSkillsForRun(db, { companyId: agent.companyId, agentId: agent.id, runId: run.id }))
+      .catch((error) => {
+        logger.warn({ err: error, runId: run.id }, "Skills from connected apps could not be prepared; the run continues without them");
+        return null;
+      });
   const [preparedSkills, preparedAssignments, preparedInstructions] = await Promise.allSettled([
     skillsPreparation,
     assignmentsPreparation,
@@ -392,7 +406,16 @@ export async function prepareHeartbeatExecutionConfiguration(db: Db, input: Hear
     endedAtMs: skillsPrepareEndedAtMs,
   });
   const connectorAssignments = preparedAssignments.value;
-  const connectorSkillConfig = await time("configuration_connector_skills", () => applyConnectorSkills(skillDeliveryConfig, runtimeSkillEntries, connectorAssignments));
+  const appliedConnectorSkills = await time("configuration_connector_skills", () => applyConnectorSkills(skillDeliveryConfig, runtimeSkillEntries, connectorAssignments));
+  const mcpSkills = await mcpSkillsPreparation;
+  if (mcpSkills?.skipped.length) {
+    await appendRunEvent(run, { eventType: "skills.mcp_unavailable", stream: "system", level: "warn",
+      message: mcpSkills.skipped.map(({ skillName, appName, reason }) => skillName ? `Skill "${skillName}" from ${appName} was not loaded: ${reason}` : reason).join("\n"),
+      payload: { skipped: mcpSkills.skipped } });
+  }
+  const connectorSkillConfig = mcpSkills?.loaded.length
+    ? await time("configuration_mcp_skill_bundles", () => applyMcpConnectionSkills(appliedConnectorSkills, mcpSkills.loaded))
+    : appliedConnectorSkills;
   // Both CLI adapters and native context materialization use the same resolved set.
   runtimeSkillEntries.splice(0, runtimeSkillEntries.length, ...connectorSkillConfig.paperclipRuntimeSkills);
   const connectorDelivery = await time("configuration_connector_delivery", () => prepareConnectorSkillDelivery(connectorSkillConfig, agent.adapterType));

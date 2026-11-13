@@ -33,6 +33,50 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  runner_image_report:
+    name: Report the Runner image of this commit
+    if: github.repository == 'paperclipai/paperclip' && github.repository_id == '1170821064' && github.event_name == 'push' && github.ref == 'refs/heads/master'
+    continue-on-error: true
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6
+        with:
+          version: 9.15.4
+          run_install: false
+
+      - name: Setup Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: 24
+          package-manager-cache: false
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4
+        with:
+          buildkitd-config-inline: |
+            [registry."docker.io"]
+              mirrors = ["mirror.gcr.io"]
+
+      - name: Compute the Runner inputs of this commit
+        timeout-minutes: 5
+        run: node scripts/runner-image-resolve.mjs inputs --dir "$RUNNER_TEMP/runner-image-resolve"
+
+      - name: Report the Runner an image build would use
+        timeout-minutes: 2
+        run: |
+          set -euo pipefail
+          node scripts/runner-image-resolve.mjs resolve --dir "$RUNNER_TEMP/runner-image-resolve"
+          echo "Report only: no build read this result." >> "$GITHUB_STEP_SUMMARY"
+
   source_verification:
     name: Watch exact-source verification
     if: github.repository == 'paperclipai/paperclip' && github.repository_id == '1170821064' && github.ref == 'refs/heads/master'

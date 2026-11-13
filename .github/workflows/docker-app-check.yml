@@ -1,0 +1,82 @@
+name: Docker app image check
+
+on:
+  pull_request:
+    paths:
+      - .github/workflows/docker-app-check.yml
+      - Dockerfile
+      - .dockerignore
+      - server/scripts/prepare-runner-vendor.mjs
+      - packages/paperclip-runner/scripts/build-inputs.mjs
+
+permissions: {}
+
+concurrency:
+  group: docker-app-check-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  runner_path:
+    name: Build the Runner path of the application image
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6
+        with:
+          version: 9.15.4
+          run_install: false
+
+      - name: Setup Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: 24
+          package-manager-cache: false
+
+      - name: Refresh lockfile for Docker build context
+        run: |
+          set -euo pipefail
+          pnpm install --resolution-only --ignore-scripts --no-frozen-lockfile
+
+          changed="$(git status --porcelain)"
+          if [ -n "$changed" ] && printf '%s\n' "$changed" | grep -Fvq ' pnpm-lock.yaml'; then
+            echo "Unexpected files changed during lockfile refresh:"
+            echo "$changed"
+            exit 1
+          fi
+
+      - name: Free runner disk
+        run: |
+          set -euo pipefail
+          sudo apt-get clean || true
+          sudo rm -rf /usr/share/dotnet /usr/share/swift /usr/local/lib/android /usr/local/share/boost \
+            /usr/local/share/powershell /opt/ghc /opt/hostedtoolcache/CodeQL /opt/hostedtoolcache/PyPy /opt/hostedtoolcache/Ruby || true
+          docker system prune -af || true
+          df -h
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4
+        with:
+          buildkitd-config-inline: |
+            [registry."docker.io"]
+              mirrors = ["mirror.gcr.io"]
+
+      - name: Build the stages that make and package the Runner
+        timeout-minutes: 45
+        run: |
+          set -euo pipefail
+          for target in build runner-provider-pack; do
+            docker buildx build \
+              --target "$target" \
+              --build-arg "PAPERCLIP_BUILD_COMMIT=$GITHUB_SHA" \
+              --cache-from type=registry,ref=ghcr.io/paperclipai/paperclip:buildcache-amd64 \
+              --output type=cacheonly \
+              .
+          done

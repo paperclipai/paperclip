@@ -1,5 +1,5 @@
 import { notifyExecutionRunWork } from "../../../services/execution-control-notifications.js";
-import { notifyDeferredExecutionWork } from "../../../services/deferred-execution-notifications.js";
+import { notifyDeferredExecutionWork, notifyDeferredWakesForIssue } from "../../../services/deferred-execution-notifications.js";
 import { hasRequiredWorkspaceRecovery } from "../../../services/workspace-restore-recovery-state.js";
 import { readNativeWorkspaceSyncReference } from "../../../services/native-runtime/native-workspace-sync.js";
 import { isPreDispatchExecutionWaitVerified } from "../../../services/pre-dispatch-execution-wait.js";
@@ -1247,6 +1247,9 @@ export function createPostgresRunDispatchAdapter(
             eq(issues.executionRunId, row.id),
           ),
         );
+      if (decision.errorCode === "issue_assignee_changed") {
+        await notifyDeferredWakesForIssue(tx, { companyId: row.companyId, issueId });
+      }
 
       await appendHeartbeatRunEvent(tx as unknown as Db, {
         companyId: row.companyId,

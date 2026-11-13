@@ -100,6 +100,7 @@ const PROVIDER_LIMIT_CAUSES = new Set(["provider_quota", "native_provider_usage_
 export const SETTLING_GRACE_MS = 90_000;
 /** Upper bound on how long another server's lease can keep a finished run settling. */
 export const SETTLING_MAX_MS = 5 * 60_000;
+export const SYSTEM_RECOVERY_WORKING_BOUND_MS = 17 * 60_000;
 /** Blocked tasks older than this are reported, never continued automatically. */
 export const STALE_BLOCK_MS = 7 * 24 * 60 * 60_000;
 /** Automatic continuations per task, shared with the server-restart lane. */
@@ -231,7 +232,8 @@ function pendingIntent(facts: AssignedWorkFacts, now: Date): PendingIntent | nul
   if (facts.issue.monitorNextCheckAt && facts.issue.monitorNextCheckAt.getTime() > now.getTime()) return "scheduled_monitor";
   const interruption = facts.interruption;
   if (interruption?.responsibility === "system") {
-    if (interruption.state === "working") return "system_recovery_working";
+    if (interruption.state === "working" && !(facts.latestRun?.finishedAt
+      && now.getTime() - facts.latestRun.finishedAt.getTime() > SYSTEM_RECOVERY_WORKING_BOUND_MS)) return "system_recovery_working";
     if (interruption.state === "retry_scheduled" && interruption.nextRetryAt
       && Date.parse(interruption.nextRetryAt) > now.getTime()) return "scheduled_retry";
   }

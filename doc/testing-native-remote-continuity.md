@@ -80,7 +80,13 @@ The executor tests cover Claude and Codex, including reopening blocked work.
 The lease-authority integration test uses PostgreSQL to check that checkpoint
 discovery cannot launch work or bypass a termination receipt. A stale negative
 availability flag requires a fresh provider status before the checkpoint can
-be read for continuation.
+be read for continuation. It also checks that a follow-up can resume while the
+predecessor's lease release is held, using the stop receipt that the task
+recorded when it settled. A receipt for another task, a second predecessor
+lease without stop proof, or a release that has started and not settled still
+refuses continuation. The test holds a real lease release inside the provider
+call and checks that the follow-up is refused until that release settles.
+Each refusal is checked by the reason that it names.
 
 The executor can restore one quarantined journal in the same session scope.
 It requires a terminal prior run, completed commands, a terminal event, and an

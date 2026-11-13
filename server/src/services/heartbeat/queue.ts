@@ -3,18 +3,19 @@ import { connectionIntentService } from "../connection-intents.js";
 import { verifyBlockerStallWake } from "../recovery/blocker-stall-wakeups.js";
 import { CONTEXT_COMPACTION_WAKE_REASON, ContextCompactionError, isContextCompactionRun, readContextCompactionRequest } from "../context-compaction.js";
 import { isProcessRunAdmissionClosed } from "./run-admission.js";
-import { continueFreshInTransaction, hasPendingFreshContinuation, settleCoalescedFreshContinuationHolds } from "../fresh-continuation-fallback.js";
+import { continueFreshInTransaction, hasPendingFreshContinuation, isFreshIsolatedContinuationWake, settleCoalescedFreshContinuationHolds } from "../fresh-continuation-fallback.js";
 import { refreshRunStartYieldIfStale } from "../run-start-handover.js";
 import { deliveredQueuedCommentIds } from "../queued-comment-delivery.js";
 import { hasAutomaticInteractionDeliveryHold, INTERACTION_DELIVERY_DENIED, recheckQueuedRunInteractions, withInteractionDeliveryOrigin } from "../agent-interaction-delivery.js";
 import { deferredWorkIntentWait } from "../work-intent-outbox.js";
 import { notifyIssueRecovery } from "../issue-recovery-notifications.js";
 import { createHeartbeatTimerPolicy } from "./timer-policy.js";
+import { RECOVERY_DISPATCH_SHARE, isRecoveryWakeReason, isSystemRecoveryRun, createQueuedRunDispatcher } from "./queued-run-dispatch-order.js";
 import { notifyExecutionRunWork } from "../execution-control-notifications.js";
 import { PersistedExecutionWaitRefusal, writeDeferredExecutionWait } from "../deferred-execution-wait.js";
-import { notifyDeferredExecutionWork } from "../deferred-execution-notifications.js";
+import { assignmentWakePayloadSql, isAssignmentWakePayload, notifyDeferredExecutionWork } from "../deferred-execution-notifications.js";
 import type { DeferredReceiptRecoveryOptions } from "../deferred-execution-notifications.js";
-import { notifyRunDispatch } from "../run-dispatch-notifications.js";
+import { notifyQueuedRunDispatch, notifyRunDispatch } from "../run-dispatch-notifications.js";
 import { notifyStatusCardIssueChange } from "../status-card-notifications.js";
 import { notifyRoutineExecutionStatus } from "../routine-execution-status-notifications.js";
 import { DELIVERY_QUEUES, notifyDeliveryWork } from "../delivery-work-notifications.js";
@@ -96,6 +97,7 @@ import {
   gt,
   gte,
   inArray,
+  isNotNull,
   isNull,
   lte,
   ne,
@@ -182,7 +184,7 @@ import {
   WORKSPACE_WORKTREE_REQUIRES_PROJECT_REMEDIATION,
 } from "../execution-workspace-policy.js";
 import { readContinuationAttempt } from "../recovery/index.js";
-import { allowsDependencyBlockedWake, wakeChatConversationsConflict } from "../../modules/run-dispatch/index.js";
+import { allowsDependencyBlockedWake, extractWakeCommentIds, wakeChatConversationsConflict } from "../../modules/run-dispatch/index.js";
 import { withAgentStartLock } from "../agent-start-lock.js";
 import {
   evaluateAgentInvokability,
@@ -190,7 +192,7 @@ import {
   type AgentOrgRow,
 } from "../agent-invokability.js";
 import { supportsUnscopedTimerHeartbeat } from "../heartbeat-policy.js";
-import { isUuidLike } from "@paperclipai/shared";
+import { ISSUE_BLOCKER_STALLED_WAKE_REASON, isUuidLike } from "@paperclipai/shared";
 import { retryChatControlAdmission } from "../chat-control-admission-retry.js";
 
 import type { HeartbeatServiceOptions } from "../heartbeat.js";
@@ -198,6 +200,7 @@ import type { createHeartbeatRunState } from "./run-state.js";
 import type { createHeartbeatRunPreparation } from "./run-preparation.js";
 import type { HeartbeatRetryDependencies } from "./retries.js";
 import type { HeartbeatRecoveryDependencies, createHeartbeatRecovery } from "./recovery.js";
+import { HEARTBEAT_RUN_TERMINAL_STATUSES } from "./recovery.js";
 import { executeIssuePostCommitActions, type IssuePostCommitAction, type issueService } from "../issues.js";
 import type { issueTreeControlService } from "../issue-tree-control.js";
 import type { budgetService } from "../budgets.js";
@@ -220,7 +223,7 @@ export interface HeartbeatQueueDependencies extends Pick<HeartbeatRetryDependenc
     "getRoutineEnvForExecutionIssue" | "resolveResponsibleUserIdForRunSeed">,
   Pick<HeartbeatRunState, "getAgent" | "getRun" | "resolveExplicitResumeSessionOverride" |
     "resolveSessionBeforeForWakeup" | "hasResolvablePriorSessionWorkspaceForWake">,
-  Pick<HeartbeatRecoveryDependencies, "setRunStatus"> {
+  Pick<HeartbeatRecoveryDependencies, "setRunStatusFromLive"> {
   sweepPendingCleanupLeases: ReturnType<typeof createHeartbeatRecovery>["sweepPendingCleanupLeases"];
   options: Pick<HeartbeatServiceOptions, "beforeChatControlRecoveryCheck">;
   issuesSvc: Pick<ReturnType<typeof issueService>, "getDependencyReadiness" | "listDependencyReadiness" | "updateForCompany">;
@@ -410,12 +413,30 @@ export async function claimDueTimerHeartbeatForAgent(
 /** Queue admission and dispatch share the service lifecycle callbacks and execution ownership. */
 // Wake admissions that have not committed their wake and run yet. Process-wide, like
 // the pending-wake set: a server replacement loses these, and only these, pending wakes.
+/** Rolls back a claim whose server closed run admission while it was being taken. */
+class RunAdmissionClosedDuringClaim extends Error {}
+
 const unsavedWakeAdmissions = new Set<object>();
 export function unsavedWakeAdmissionCount() { return unsavedWakeAdmissions.size; }
 
+export async function notifyOtherAgentsQueuedOnSettledIssue(db: Db, run: Pick<typeof heartbeatRuns.$inferSelect,
+  "companyId" | "agentId" | "runtimeMode" | "contextSnapshot">): Promise<boolean> {
+  const issueId = readNonEmptyString(parseObject(run.contextSnapshot).issueId);
+  if (run.runtimeMode !== "native" || !issueId) return false;
+  const [waiting] = await db.select({ id: heartbeatRuns.id }).from(heartbeatRuns).where(and(
+    eq(heartbeatRuns.companyId, run.companyId),
+    eq(heartbeatRuns.status, "queued"),
+    ne(heartbeatRuns.agentId, run.agentId),
+    sql`${heartbeatRuns.contextSnapshot}->>'issueId' = ${issueId}`,
+  )).limit(1);
+  if (!waiting) return false;
+  await db.transaction(tx => notifyQueuedRunDispatch(tx, { companyId: run.companyId }));
+  return true;
+}
+
 export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDependencies) {
   const {
-    setRunStatus,
+    setRunStatusFromLive,
     setWakeupStatus,
     appendRunEvent,
     releaseIssueExecutionAndPromote,
@@ -467,6 +488,15 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
 
   const { parseHeartbeatPolicy, getHeartbeatDailyCapBlock, hasActionableTimerWork, nextTimerHeartbeatAt } = createHeartbeatTimerPolicy(db);
 
+  // claimQueuedRun works from the caller's copy of a queued run. Another
+  // dispatcher (an overlapping server during a swap) may have started and even
+  // finished that run since, so every cancellation it makes is a
+  // compare-and-set from "queued": it never overwrites a newer outcome.
+  async function cancelRunIfStillQueued(runId: string, patch: Partial<typeof heartbeatRuns.$inferInsert>) {
+    const write = await setRunStatusFromLive(runId, "cancelled", ["queued"], patch);
+    return write.updated ? write.run : null;
+  }
+
   async function cancelQueuedRunForHeartbeatDailyCap(
     run: typeof heartbeatRuns.$inferSelect,
     dailyCapBlock: NonNullable<
@@ -476,7 +506,7 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
     const now = new Date();
     const reason =
       "Cancelled because the agent reached a per-day heartbeat budget cap before adapter invocation";
-    const cancelled = await setRunStatus(run.id, "cancelled", {
+    const cancelled = await cancelRunIfStillQueued(run.id, {
       finishedAt: now,
       error: reason,
       errorCode: dailyCapBlock.reason,
@@ -867,6 +897,76 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
     }
   }
 
+  // Run admission can close (SIGTERM drain, or the hand-over yield) while
+  // claimQueuedRun awaits its checks, after its first admission check passed.
+  // Checked again inside the claim's transaction, right after the write that
+  // moves the run to running: throwing rolls the whole claim back, so the run,
+  // its wake and the task's execution lock stay exactly as they were, queued
+  // for the serving server.
+  function confirmRunAdmissionStillOpen(claimedRun: unknown) {
+    if (claimedRun && isRunAdmissionClosed()) throw new RunAdmissionClosedDuringClaim();
+  }
+
+  /** System continuations that only make sense for an open task. */
+  const SYSTEM_CONTINUATION_WAKE_REASONS = new Set(["issue_recovery_action_restored", "issue_continuation_needed",
+    "issue_assignment_recovery", ISSUE_BLOCKER_STALLED_WAKE_REASON]);
+
+  /**
+   * Cancels a system continuation whose task closed while it was queued,
+   * unless it carries a person's message that no run of this agent has
+   * received yet (admission can attach deferred comments to a queued system
+   * continuation without changing its wake reason). Its wake and run are
+   * locked in the order admission's coalescing uses while the message check
+   * reads them. The cancel itself goes through the run lifecycle's
+   * compare-and-set, so it saves the same never-started proof as every other
+   * queued-run cancel (task release needs it to promote messages saved behind
+   * this run), and it is fenced on the row version the check saw: a message
+   * attached after the check changes the run, the cancel matches nothing, and
+   * the check runs again.
+   */
+  async function cancelClosedTaskContinuation(run: typeof heartbeatRuns.$inferSelect, issueId: string) {
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      const decision = await checkClosedTaskContinuation(run, issueId);
+      if (decision.kind !== "cancel") return decision;
+      const write = await setRunStatusFromLive(run.id, "cancelled", ["queued"], {
+        finishedAt: new Date(), error: "The task was closed before this continuation started.",
+        errorCode: "issue_closed_before_start",
+      }, undefined, sql`${heartbeatRuns}.xmin::text = ${decision.rowVersion}`);
+      if (write.updated && write.run) return { kind: "cancelled" as const, run: write.run };
+      if (write.run?.status !== "queued") return { kind: "not_queued" as const };
+    }
+    // Still changing under us: leave it queued; the next dispatch pass checks again.
+    return { kind: "still_queued" as const };
+  }
+
+  async function checkClosedTaskContinuation(run: typeof heartbeatRuns.$inferSelect, issueId: string) {
+    return db.transaction(async (tx) => {
+      if (run.wakeupRequestId) await tx.select({ id: agentWakeupRequests.id }).from(agentWakeupRequests).where(and(
+        eq(agentWakeupRequests.id, run.wakeupRequestId), eq(agentWakeupRequests.companyId, run.companyId),
+      )).for("update");
+      const [locked] = await tx.select({ run: heartbeatRuns, rowVersion: sql<string>`${heartbeatRuns}.xmin::text` })
+        .from(heartbeatRuns).where(and(
+          eq(heartbeatRuns.id, run.id), eq(heartbeatRuns.companyId, run.companyId), eq(heartbeatRuns.status, "queued"),
+        )).for("update");
+      if (!locked) return { kind: "not_queued" as const };
+      const current = locked.run;
+      const context = parseObject(current.contextSnapshot);
+      const commentIds = [...new Set([...extractWakeCommentIds(context), ...queuedCommentIdsFromRunContext(context),
+        readNonEmptyString(context.wakeCommentId), readNonEmptyString(context.commentId)]
+        .filter((id): id is string => Boolean(id)))];
+      if (commentIds.length > 0) {
+        const personComments = await tx.select({ id: issueComments.id }).from(issueComments).where(and(
+          eq(issueComments.companyId, current.companyId), eq(issueComments.issueId, issueId),
+          inArray(issueComments.id, commentIds), eq(issueComments.authorType, "user"),
+          isNull(issueComments.createdByRunId), isNull(issueComments.deletedAt)));
+        const delivered = await deliveredQueuedCommentIds(tx as unknown as Db, { companyId: current.companyId, issueId,
+          agentId: current.agentId, commentIds: personComments.map(comment => comment.id) });
+        if (personComments.some(comment => !delivered.has(comment.id))) return { kind: "carries_person_message" as const };
+      }
+      return { kind: "cancel" as const, rowVersion: locked.rowVersion };
+    });
+  }
+
   async function claimQueuedRun(
     run: typeof heartbeatRuns.$inferSelect,
     companyAgents?: AgentOrgRow[],
@@ -874,12 +974,40 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
     deferredCancellations?: Array<() => Promise<void>>,
   ) {
     if (run.status !== "queued") return run;
+    // Every start path ends here (dispatch passes, executeRun of a queued run,
+    // a delivered continuation). A server whose run admission is closed (it
+    // received SIGTERM and is draining) or that yields new starts to a
+    // replacement already dispatching leaves the run queued for that server:
+    // anything it started now would be cut off by its own exit.
+    const refreshing = refreshRunAdmission();
+    if (refreshing) await refreshing;
+    if (isRunAdmissionClosed()) return null;
+    // A system continuation queued while its task was open has nothing left to
+    // do once another run finished or cancelled the task before this one
+    // started. A person's message on a done task is not one of these reasons.
+    const systemContinuationReason = readNonEmptyString(parseObject(run.contextSnapshot).wakeReason);
+    const continuedIssueId = readNonEmptyString(parseObject(run.contextSnapshot).issueId);
+    if (systemContinuationReason && SYSTEM_CONTINUATION_WAKE_REASONS.has(systemContinuationReason) && continuedIssueId) {
+      const [target] = await db.select({ status: issues.status }).from(issues)
+        .where(and(eq(issues.companyId, run.companyId), eq(issues.id, continuedIssueId)));
+      if (target && ["done", "cancelled"].includes(target.status)) {
+        const closed = await cancelClosedTaskContinuation(run, continuedIssueId);
+        if (closed.kind === "cancelled") {
+          const cancelled = closed.run;
+          await setWakeupStatus(run.wakeupRequestId, "skipped", { finishedAt: cancelled.finishedAt ?? new Date(), error: "issue_closed_before_start" });
+          await releaseIssueExecutionAndPromote(cancelled, { suppressImmediateRecovery: true, deferredPostCommitEffects });
+        }
+        // A person's undelivered message rides on this run: it runs as their
+        // follow-up, which may reopen the task through the normal path.
+        if (closed.kind !== "carries_person_message") return null;
+      }
+    }
     const interactionDelivery = await recheckQueuedRunInteractions(db, run);
     if (interactionDelivery.run.status !== "queued") return null;
     run = { ...run, contextSnapshot: interactionDelivery.run.contextSnapshot,
       resultJson: interactionDelivery.run.resultJson, updatedAt: interactionDelivery.run.updatedAt };
     if (interactionDelivery.denied) {
-      const cancelled = await setRunStatus(run.id, "cancelled", {
+      const cancelled = await cancelRunIfStillQueued(run.id, {
         finishedAt: new Date(), error: "Queued agent input is no longer permitted.",
         errorCode: INTERACTION_DELIVERY_DENIED,
       });
@@ -938,7 +1066,7 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
       const reason = "Message did not @mention the bot";
       // This runs under the agent start lock. Do not use cancelRunInternal,
       // which recursively starts the next run and reacquires that lock.
-      const cancelled = await setRunStatus(run.id, "cancelled", {
+      const cancelled = await cancelRunIfStillQueued(run.id, {
         finishedAt: now,
         error: reason,
         errorCode: "chat_mention_required",
@@ -1059,7 +1187,7 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
         .from(heartbeatRuns)
         .where(and(
           eq(heartbeatRuns.companyId, run.companyId),
-          eq(heartbeatRuns.agentId, run.agentId),
+          or(eq(heartbeatRuns.agentId, run.agentId), inArray(heartbeatRuns.status, [...HEARTBEAT_RUN_TERMINAL_STATUSES])),
           eq(heartbeatRuns.runtimeMode, "native"),
           inArray(heartbeatRuns.id, [...activeRunExecutions]),
           sql`${heartbeatRuns.contextSnapshot}->>'issueId' = ${issueId}`,
@@ -1180,6 +1308,11 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
       });
       if (staleness.outcome === "cancelled" || staleness.outcome === "deferred") {
         applyRunDispatchPostCommitEffects(staleness.postCommitEffects);
+        if (staleness.outcome === "cancelled" && staleness.errorCode === "issue_assignee_changed") {
+          await releaseIssueExecutionAndPromote(run, { suppressImmediateRecovery: true, deferredPostCommitEffects }).catch((err) => {
+            logger.warn({ err, runId: run.id, issueId }, "claimQueuedRun: new owner's wake will be promoted by recovery");
+          });
+        }
         logger.info(
           {
             runId: run.id,
@@ -1480,6 +1613,7 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
                   )
                   .returning();
                 await bindClaimedIssueExecution(tx as unknown as Db, issueClaim.ownsIssue, claimedRun);
+                confirmRunAdmissionStillOpen(claimedRun);
                 return claimedRun
                   ? { kind: "claimed" as const, run: claimedRun }
                   : { kind: "stale" as const, run: null };
@@ -1591,12 +1725,13 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
                 )
                 .returning();
               await bindClaimedIssueExecution(tx as unknown as Db, issueClaim.ownsIssue, claimedRun);
+              confirmRunAdmissionStillOpen(claimedRun);
               return claimedRun
                 ? { kind: "claimed" as const, run: claimedRun }
                 : { kind: "stale" as const, run: null };
             })
             .catch((error) => {
-              if (isExternalChatWaitAuthorizationContention(error))
+              if (isExternalChatWaitAuthorizationContention(error) || error instanceof RunAdmissionClosedDuringClaim)
                 return { kind: "stale" as const, run: null };
               throw error;
             })
@@ -1651,9 +1786,13 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
               const predecessor = await lockIssueExecutionClaim(tx);
               if (predecessor.blocked) return null;
             }
-            return claimQueuedNativeReviewRun(tx, {
-              run, claimedAt, claimValues,
-              agentNameKey: normalizeAgentNameKey(agent.name),
+            return tx.transaction(async (reviewTx) => {
+              const reviewClaim = await claimQueuedNativeReviewRun(reviewTx as unknown as Db, {
+                run, claimedAt, claimValues,
+                agentNameKey: normalizeAgentNameKey(agent.name),
+              });
+              confirmRunAdmissionStillOpen(reviewClaim);
+              return reviewClaim;
             });
           }
           return tx.transaction(async (claimTx) => {
@@ -1672,8 +1811,12 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
               eq(heartbeatRuns.id, run.id), eq(heartbeatRuns.status, "queued"),
             )).returning().then((rows) => rows[0] ?? null);
             await bindClaimedIssueExecution(claimTx as unknown as Db, issueClaim.ownsIssue, claimedRun);
+            confirmRunAdmissionStillOpen(claimedRun);
             return claimedRun;
           });
+        }).catch((error: unknown) => {
+          if (error instanceof RunAdmissionClosedDuringClaim) return null;
+          throw error;
         });
     if (!claimed) return null;
 
@@ -1824,7 +1967,7 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
     const now = new Date();
     const reason =
       "Cancelled because issue dependencies are still blocked; Paperclip will wake the assignee when blockers resolve";
-    const cancelled = await setRunStatus(run.id, "cancelled", {
+    const cancelled = await cancelRunIfStillQueued(run.id, {
       finishedAt: now,
       error: reason,
       errorCode: "issue_dependencies_blocked",
@@ -2000,7 +2143,7 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
           sql`jsonb_typeof(${agentWakeupRequests.payload} #> '{_paperclipWakeContext,wakeCommentIds}') = 'array'`,
           sql`${agentWakeupRequests.payload} #> '{_paperclipWakeContext,wakeCommentIds}' <> '[]'::jsonb`,
         ), sql`${agentWakeupRequests.payload}->>'mutation' = 'interaction'`,
-        dependencyResolvedWakePayloadSql),
+        dependencyResolvedWakePayloadSql, assignmentWakePayloadSql),
         sql`${agentWakeupRequests.payload}->'queuedCommentInterrupt' is null`,
         sql`NOT EXISTS (SELECT 1 FROM heartbeat_runs live_issue_run
           WHERE live_issue_run.company_id = ${issues.companyId}
@@ -2011,8 +2154,8 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
       .orderBy(asc(agentWakeupRequests.updatedAt)).limit(50);
     const releasedNativeSources = new Set<string>();
     for (const { wake } of strandedQueues) {
-      const dependencyWake = isDependencyResolvedWakePayload(wake.payload);
-      if (!dependencyWake && !queuedCommentIdsFromWakePayload(wake.payload).length &&
+      const ownerWake = isDependencyResolvedWakePayload(wake.payload) || isAssignmentWakePayload(wake.payload);
+      if (!ownerWake && !queuedCommentIdsFromWakePayload(wake.payload).length &&
           !await readQueuedInteractionResponse(db, wake.companyId, String(wake.payload?.issueId), wake.payload)) continue;
       const [latest] = await db.select({
         id: heartbeatRuns.id,
@@ -2201,6 +2344,76 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
       .catch(() => logger.warn({ agentId: agent.id }, "Could not attach queued agent setup connection request"));
   }
 
+  async function queuedRunDispatcherForAgent(
+    agent: typeof agents.$inferSelect,
+    queuedRuns: Array<typeof heartbeatRuns.$inferSelect>,
+    dependencyReadiness: Map<string, { isDependencyReady: boolean }>,
+    issueById: Map<string, { status: string; priority: string | null }>,
+  ) {
+    const now = new Date();
+    const wakeReasonOf = (run: typeof heartbeatRuns.$inferSelect) =>
+      readNonEmptyString(parseObject(run.contextSnapshot).wakeReason);
+    const requestIds = [...new Set(queuedRuns.flatMap(run => run.wakeupRequestId ? [run.wakeupRequestId] : []))];
+    const userRequests = queuedRuns.length > 1 && requestIds.length
+      ? await db.select({ id: agentWakeupRequests.id }).from(agentWakeupRequests).where(and(
+        eq(agentWakeupRequests.companyId, agent.companyId), inArray(agentWakeupRequests.id, requestIds),
+        eq(agentWakeupRequests.requestedByActorType, "user")))
+      : [];
+    const userRequestIds = new Set(userRequests.map(row => row.id));
+    const joinedUserRequests = queuedRuns.length > 1
+      ? await db.select({ runId: agentWakeupRequests.runId }).from(agentWakeupRequests).where(and(
+        eq(agentWakeupRequests.companyId, agent.companyId), inArray(agentWakeupRequests.runId, queuedRuns.map(run => run.id)),
+        eq(agentWakeupRequests.agentId, agent.id), eq(agentWakeupRequests.requestedByActorType, "user")))
+      : [];
+    const userRunIds = new Set(joinedUserRequests.flatMap(row => row.runId ? [row.runId] : []));
+    const requestedByUser = (run: typeof heartbeatRuns.$inferSelect) =>
+      userRunIds.has(run.id) || Boolean(run.wakeupRequestId && userRequestIds.has(run.wakeupRequestId));
+    const sourceRunIdOf = (run: typeof heartbeatRuns.$inferSelect) =>
+      readNonEmptyString(parseObject(run.contextSnapshot).previousRunId) ?? run.retryOfRunId ?? null;
+    const recoveryRuns = queuedRuns.filter(run => isSystemRecoveryRun({ wakeReason: wakeReasonOf(run),
+      requestedByUser: requestedByUser(run) }));
+    const sourceRunIds = [...new Set(recoveryRuns.flatMap(run => sourceRunIdOf(run) ?? []))];
+    const sourceRows = queuedRuns.length > 1 && sourceRunIds.length
+      ? await db.select({ id: heartbeatRuns.id, finishedAt: heartbeatRuns.finishedAt }).from(heartbeatRuns)
+        .where(and(eq(heartbeatRuns.companyId, agent.companyId), inArray(heartbeatRuns.id, sourceRunIds)))
+      : [];
+    const sourceEndedAt = new Map(sourceRows.map(row => [row.id, row.finishedAt]));
+    let startsSinceRecovery = 0;
+    if (recoveryRuns.length && recoveryRuns.length < queuedRuns.length) {
+      const oldestRecoveryAt = new Date(Math.min(...recoveryRuns.map(run => run.createdAt.getTime())));
+      const recentStarts = await db.select({ wakeReason: sql<string | null>`${heartbeatRuns.contextSnapshot}->>'wakeReason'` })
+        .from(heartbeatRuns)
+        .where(and(eq(heartbeatRuns.companyId, agent.companyId), eq(heartbeatRuns.agentId, agent.id),
+          isNotNull(heartbeatRuns.startedAt), gte(heartbeatRuns.startedAt, oldestRecoveryAt)))
+        .orderBy(desc(heartbeatRuns.startedAt))
+        .limit(RECOVERY_DISPATCH_SHARE);
+      const lastRecovery = recentStarts.findIndex(row => isRecoveryWakeReason(row.wakeReason));
+      startsSinceRecovery = lastRecovery < 0 ? recentStarts.length : lastRecovery;
+    }
+    const facts = queuedRuns.map(run => {
+      const issueId = readNonEmptyString(parseObject(run.contextSnapshot).issueId);
+      const ready = issueId ? (dependencyReadiness.get(issueId)?.isDependencyReady ?? true) : true;
+      const issue = issueId ? issueById.get(issueId) : null;
+      const sourceRunId = sourceRunIdOf(run);
+      return {
+        run,
+        id: run.id,
+        createdAt: run.createdAt,
+        wakeReason: wakeReasonOf(run),
+        requestedByUser: requestedByUser(run),
+        sourceEndedAt: sourceRunId ? sourceEndedAt.get(sourceRunId) ?? null : null,
+        readinessRank: issueId ? (ready ? (issue?.status === "in_progress" ? 0 : 1) : 3) : 2,
+        priorityRank: issueRunPriorityRank(issue?.priority),
+      };
+    });
+    const dispatcher = createQueuedRunDispatcher(facts, { now, startsSinceRecovery });
+    const byRun = new Map(facts.map(entry => [entry.run, entry]));
+    return {
+      next: () => dispatcher.next()?.run ?? null,
+      claimed: (run: typeof heartbeatRuns.$inferSelect) => { const entry = byRun.get(run); if (entry) dispatcher.claimed(entry); },
+    };
+  }
+
   async function startNextQueuedRunForAgent(agentId: string, attachSetupRequest = false) {
     // Null unless this server has not read the run-start hand-over recently.
     const refreshing = refreshRunAdmission();
@@ -2277,51 +2490,10 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
         );
       const issueById = new Map(issueRows.map((row) => [row.id, row]));
       const companyAgents = await listCompanyAgentOrgRows(agent.companyId);
-      const prioritizedRuns = [...queuedRuns].sort((left, right) => {
-        const leftIssueId = readNonEmptyString(
-          parseObject(left.contextSnapshot).issueId,
-        );
-        const rightIssueId = readNonEmptyString(
-          parseObject(right.contextSnapshot).issueId,
-        );
-        const leftReadiness = leftIssueId
-          ? dependencyReadiness.get(leftIssueId)
-          : null;
-        const rightReadiness = rightIssueId
-          ? dependencyReadiness.get(rightIssueId)
-          : null;
-        const leftReady = leftIssueId
-          ? (leftReadiness?.isDependencyReady ?? true)
-          : true;
-        const rightReady = rightIssueId
-          ? (rightReadiness?.isDependencyReady ?? true)
-          : true;
-        const leftIssue = leftIssueId ? issueById.get(leftIssueId) : null;
-        const rightIssue = rightIssueId ? issueById.get(rightIssueId) : null;
-        const leftRank = leftIssueId
-          ? leftReady
-            ? leftIssue?.status === "in_progress"
-              ? 0
-              : 1
-            : 3
-          : 2;
-        const rightRank = rightIssueId
-          ? rightReady
-            ? rightIssue?.status === "in_progress"
-              ? 0
-              : 1
-            : 3
-          : 2;
-        if (leftRank !== rightRank) return leftRank - rightRank;
-        const leftPriorityRank = issueRunPriorityRank(leftIssue?.priority);
-        const rightPriorityRank = issueRunPriorityRank(rightIssue?.priority);
-        if (leftPriorityRank !== rightPriorityRank)
-          return leftPriorityRank - rightPriorityRank;
-        return left.createdAt.getTime() - right.createdAt.getTime();
-      });
+      const dispatcher = await queuedRunDispatcherForAgent(agent, queuedRuns, dependencyReadiness, issueById);
 
       const claimedRuns: Array<typeof heartbeatRuns.$inferSelect> = [];
-      for (const queuedRun of prioritizedRuns) {
+      for (let queuedRun = dispatcher.next(); queuedRun; queuedRun = dispatcher.next()) {
         if (claimedRuns.length >= availableSlots || isRunAdmissionClosed()) break;
         let claimed: typeof heartbeatRuns.$inferSelect | null;
         try {
@@ -2338,7 +2510,10 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
           );
           continue;
         }
-        if (claimed) claimedRuns.push(claimed);
+        if (claimed) {
+          claimedRuns.push(claimed);
+          dispatcher.claimed(queuedRun);
+        }
       }
       if (claimedRuns.length === 0) return [];
 
@@ -4247,6 +4422,8 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
                 reusableExecutionWorkspaceAvailable:
                   reuseRequest.existingExecutionWorkspaceAvailable,
                 hasResolvablePriorSessionWorkspace,
+                freshIsolatedContinuation: await isFreshIsolatedContinuationWake(tx as unknown as Db, {
+                  companyId: issue.companyId, issueId: issue.id, contextSnapshot: enrichedContextSnapshot }),
               })
             ) {
               if (caseRequest) waitForCaseAdmission(WORKSPACE_WORKTREE_REQUIRES_PROJECT_CODE, WORKSPACE_WORKTREE_REQUIRES_PROJECT_MESSAGE);

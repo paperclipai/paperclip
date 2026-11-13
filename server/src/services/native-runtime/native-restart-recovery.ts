@@ -103,6 +103,7 @@ export type NativeRestartRecoveryClaim =
       /** Discovery evidence only; executor revalidates the encrypted header. */
       stagedAttachment?: Pick<NativeStagedAttachmentRecovery, "sourceIdentity" | "targetIdentity" | "templateDigest">;
       exitedBeforeSessionOpen?: true;
+      replaceUnansweredRunner?: true;
     }
   | {
       kind: "resume_dead_runner";
@@ -1251,7 +1252,9 @@ export async function claimNativeRestartRecoveries(input: {
       const lockLostBootstrapRetry = row.run.status === "failed" && row.coordinator.phase === "retryable_failure"
         && row.coordinator.failureDetail?.recoveryMode === "bootstrap_retry" && row.issueExecutionRunId !== row.run.id;
       const releasedRemoteRetry = failedRemoteRetry && row.issueExecutionRunId === null;
-      const exhaustedRemoteRetry = failedRemoteRetry && row.coordinator.attempt >= 3;
+      const unansweredRunnerReplacement = row.coordinator.failureDetail?.adoptedRunnerUnanswered === true
+        && row.coordinator.attempt === NATIVE_PROVIDER_RECOVERY_ATTEMPT_LIMIT;
+      const exhaustedRemoteRetry = failedRemoteRetry && row.coordinator.attempt >= 3 && !unansweredRunnerReplacement;
       const needsResumptionAdmission = releasedRemoteRetry || exhaustedRemoteRetry ||
         (failedRemoteRetry && ["done", "cancelled"].includes(issue.status));
       const admission = { exhausted: null as { reason: string; policy: SystemRecoveryState } | null };
@@ -1433,11 +1436,29 @@ export async function claimNativeRestartRecoveries(input: {
       // old run's writes revoked and a new workspace root.
       // The same holds when the previous controller's host was never recorded
       // or cannot be proven from here: confirming its stop is optional.
+      // The run's own server boot is proven stopped or fenced (controller
+      // instance record): its lease is no sign of life, however long it was
+      // granted. The claim lease is 20 minutes for a local controller.
+      const ownerControllerStopped = evaluatedTakeover.allowed
+        && ["controller_stopped", "controller_fenced"].includes(evaluatedTakeover.reason);
+      const leaseLapsedAt = row.coordinator.leaseExpiresAt === null ? null
+        : row.coordinator.leaseExpiresAt <= now ? row.coordinator.leaseExpiresAt.getTime() : null;
       const unverifiableLapsedController = !takeover.allowed && !nonExecutionOwner
-        && (row.coordinator.leaseExpiresAt === null || row.coordinator.leaseExpiresAt <= now)
+        && (row.coordinator.leaseExpiresAt === null || leaseLapsedAt !== null || ownerControllerStopped)
         && (namespaceAttentionNeeded || ["controller_host_unrecorded", "controller_host_unprovable"].includes(takeover.reason));
+      let unverifiedWaitEndsAt: number | null = null;
       if (unverifiableLapsedController) {
-        const waitingSince = namespaceWaitStartedAt(row.coordinator.recoveryHistory, takeover.reason);
+        // The bounded wait starts when the run's controller went away (its lease
+        // lapsed), not when a later server first looked: a successor that boots
+        // minutes later, or re-records the wait, must not restart the clock.
+        const observedSince = namespaceWaitStartedAt(row.coordinator.recoveryHistory, takeover.reason);
+        const starts = [observedSince, leaseLapsedAt].filter((at): at is number => at !== null);
+        // A controller boot proven stopped or fenced already outlived its lease
+        // (90 s) and the fence grace (30 s): waiting longer proves nothing more
+        // about a Runner in another process space, so the run ends now.
+        const waitingSince = ownerControllerStopped ? now.getTime() - NATIVE_NAMESPACE_UNVERIFIED_WAIT_MS
+          : starts.length ? Math.min(...starts) : null;
+        unverifiedWaitEndsAt = (waitingSince ?? now.getTime()) + NATIVE_NAMESPACE_UNVERIFIED_WAIT_MS;
         if (waitingSince !== null && now.getTime() - waitingSince >= NATIVE_NAMESPACE_UNVERIFIED_WAIT_MS) {
           await endNamespaceUnverifiedRun(tx as unknown as Db, row, now, takeover.reason, historyEntry({
             now, restartKind: input.restartKind, controller, generation: row.coordinator.controllerGeneration,
@@ -1480,8 +1501,12 @@ export async function claimNativeRestartRecoveries(input: {
             // Repeated scans of one ownership wait record it once, so the
             // bounded history keeps the drain record the next claim reads.
             ...(waitAlreadyRecorded ? {} : { recoveryHistory: appendBoundedRecoveryHistory(event) }),
-            updatedAt: waitAlreadyRecorded && row.coordinator.recoveryState === "awaiting_evidence"
-              && row.coordinator.recoveryRequestId === (input.recoveryRequestId ?? null) ? row.coordinator.updatedAt : now,
+            // updated_at is the owner's last sign of life: the ownership prover
+            // fences a dead boot only once it has been quiet past that write plus
+            // the lease and grace, and the fallback reads it as the owner's
+            // progress. A successor recording its own wait never moves it.
+            updatedAt: !ownControllerProcess || (waitAlreadyRecorded && row.coordinator.recoveryState === "awaiting_evidence"
+              && row.coordinator.recoveryRequestId === (input.recoveryRequestId ?? null)) ? row.coordinator.updatedAt : now,
           })
           .where(
             and(
@@ -1502,7 +1527,8 @@ export async function claimNativeRestartRecoveries(input: {
             : ["controller_lease_held", "controller_lease_grace"].includes(takeover.reason)
               ? { retryAt: new Date(now.getTime() + CONTROLLER_LEASE_RENEW_MS) }
             // The bounded wait for an unverifiable controller is checked again when it ends.
-            : unverifiableLapsedController ? { retryAt: new Date(now.getTime() + NATIVE_NAMESPACE_UNVERIFIED_WAIT_MS) } : {}),
+            : unverifiableLapsedController ? { retryAt: new Date(Math.max(now.getTime() + 1_000,
+              unverifiedWaitEndsAt ?? now.getTime() + NATIVE_NAMESPACE_UNVERIFIED_WAIT_MS)) } : {}),
         } as const;
       }
 
@@ -2098,6 +2124,8 @@ export async function claimNativeRestartRecoveries(input: {
           },
           ...(!pluginTask && row.coordinator.failureDetail?.runnerExitedBeforeSessionOpen === true
             ? { exitedBeforeSessionOpen: true as const } : {}),
+          ...(!pluginTask && row.coordinator.failureDetail?.adoptedRunnerUnanswered === true
+            ? { replaceUnansweredRunner: true as const } : {}),
         } satisfies NativeRestartRecoveryClaim;
       }
       if (claimKind === "reattach_existing_runner") {
