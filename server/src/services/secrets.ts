@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { and, desc, eq, inArray, like, ne, notInArray, notLike, or, sql } from "drizzle-orm";
+import { and, desc, eq, inArray, isNull, like, lt, ne, notInArray, notLike, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   agents,
@@ -86,6 +86,8 @@ import {
   withAccountHomeSecretMutationLock,
 } from "@paperclipai/adapter-codex-local/server";
 
+/** "Last used" precision for secrets; see resolveSecretValueInternal. */
+export const SECRET_LAST_RESOLVED_STAMP_INTERVAL_MS = 60_000;
 const ENV_KEY_RE = /^[A-Za-z_][A-Za-z0-9_]*$/;
 const AGENT_ACCESS_CONFIG_PATH_PREFIX = "access.";
 // System consumer id for a durable orphan-sandbox teardown. The cleanup sweep
@@ -1414,12 +1416,22 @@ export function secretService(db: Db | DbTransaction) {
           version: resolvedVersion,
         },
       });
+      // "Last used" is stamped at most once per interval. Admission paths
+      // (decisions, fast responses, browser use, prompt-injection checks)
+      // share-lock this row under REPEATABLE READ to fence rotation, so a
+      // write here on every read would abort concurrent admissions with a
+      // serialization failure and re-run them against a newer budget.
+      const stampLastResolved = !readOnlyEnvironmentInspection && (!secret.lastResolvedAt
+        || Date.now() - secret.lastResolvedAt.getTime() >= SECRET_LAST_RESOLVED_STAMP_INTERVAL_MS);
       if (!readOnlyEnvironmentInspection) await Promise.all([
-        db
+        stampLastResolved ? db
           .update(companySecrets)
           .set({ lastResolvedAt: new Date(), updatedAt: new Date() })
-          .where(eq(companySecrets.id, secret.id))
-          .catch(() => undefined),
+          .where(and(eq(companySecrets.id, secret.id), or(
+            isNull(companySecrets.lastResolvedAt),
+            lt(companySecrets.lastResolvedAt, new Date(Date.now() - SECRET_LAST_RESOLVED_STAMP_INTERVAL_MS)),
+          )))
+          .catch(() => undefined) : undefined,
         recordAccessEvent({
           companyId,
           secretId: secret.id,
