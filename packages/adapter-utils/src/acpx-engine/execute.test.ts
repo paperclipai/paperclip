@@ -181,6 +181,10 @@ function buildRuntime(
 async function runExecutor(
   config: Record<string, unknown>,
   options: {
+    runId?: string;
+    expectedExitCode?: number;
+    onStartTurn?: () => void;
+    stagedRuntimes?: AcpxEngineExecutorOptions["stagedRuntimes"];
     context?: Record<string, unknown>;
     runtime?: Record<string, unknown>;
     executionTransport?: Record<string, unknown>;
@@ -209,21 +213,25 @@ async function runExecutor(
   const events: Array<{ eventType: string; payload?: Record<string, unknown> }> = [];
   const receipts: unknown[] = [];
   const execute = createAcpxEngineExecutor({
+    ...(options.stagedRuntimes ? { stagedRuntimes: options.stagedRuntimes } : {}),
     ...(options.prepareRemoteManagedHome
       ? { prepareRemoteManagedHome: options.prepareRemoteManagedHome }
       : {}),
-    createRuntime: (options) => {
-      runtimeOptions.push(options as unknown as Record<string, unknown>);
+    createRuntime: (runtimeInput) => {
+      runtimeOptions.push(runtimeInput as unknown as Record<string, unknown>);
       return buildRuntime(
         ({ key, value }) => configOptions.push({ key, value }),
         (input) => sessionInputs.push(input),
-        (input) => turnInputs.push(input),
+        (input) => {
+          turnInputs.push(input);
+          options.onStartTurn?.();
+        },
       ) as never;
     },
   });
 
   const result = await execute({
-    runId: "run-1",
+    runId: options.runId ?? "run-1",
     agent: {
       id: "agent-1",
       companyId: "company-1",
@@ -250,7 +258,7 @@ async function runExecutor(
     onUsage: async (receipt: unknown) => { receipts.push(receipt); },
   } as never);
 
-  expect(result.exitCode).toBe(0);
+  expect(result.exitCode).toBe(options.expectedExitCode ?? 0);
   return { logs, meta, events, receipts, runtimeOptions, configOptions, sessionInputs, turnInputs, result };
 }
 
@@ -4550,6 +4558,69 @@ describe("ACPX engine remote managed-home seam (PR 2: per-adapter home seed)", (
     };
     return { root, stateDir, localCwd, remoteCwd, executionTarget };
   }
+
+  it.each(["turn", "bridge"])("stages the configured agent account for SSH, resumes it, and copies back before disposal after a %s failure", async failure => {
+    const { root, stateDir, localCwd, remoteCwd } = await setupRemoteSandbox();
+    const home = path.join(root, "selected-account");await fs.mkdir(home);
+    const workspace = path.posix.join(remoteCwd, ".paperclip-runtime/runs/run-1/workspace");
+    const runtimeRootDir = path.posix.join(workspace, ".paperclip-runtime/custom");
+    const executionTarget = { kind: "remote", transport: "ssh", remoteCwd, spec: { useHostAuth: false, host: "ssh.example.test", port: 22, username: "agent", remoteCwd, remoteWorkspacePath: remoteCwd, privateKey: null, knownHosts: null, strictHostKeyChecking: true } };
+    const restore = vi.fn(async () => {}), dispose = vi.fn(async () => {});
+    const stopControl = vi.fn(async () => {}), stopProcess = vi.fn(async () => {});
+    const stagedRuntimes: NonNullable<AcpxEngineExecutorOptions["stagedRuntimes"]> = new Map();
+    const seam = vi.fn(async (input: Parameters<NonNullable<AcpxEngineExecutorOptions["prepareRemoteManagedHome"]>>[0]) => {
+      const stagedRuntime = await input.stage([{ key: "home", localDir: home }]);
+      input.env.CODEX_HOME = stagedRuntime.assetDirs.home!;
+      return { stagedRuntime };
+    });
+    const actual = await vi.importActual<typeof import("@paperclipai/adapter-utils/execution-target")>("@paperclipai/adapter-utils/execution-target");
+    vi.mocked(prepareAdapterExecutionTargetRuntime).mockResolvedValueOnce({ target: executionTarget as never, workspaceRemoteDir: workspace, runtimeRootDir,
+      assetDirs: { home: path.posix.join(runtimeRootDir, "home") }, additionalSourceDirs: {}, additionalSourceFailures: [], workspaceSyncSnapshot: null, restoreWorkspace: restore, disposeRuntime: dispose });
+    vi.mocked(startAdapterExecutionTargetPaperclipBridge).mockResolvedValue({ env: { PAPERCLIP_API_URL: "http://127.0.0.1:3210", PAPERCLIP_API_KEY: "bridge-fixture" }, stop: stopControl });
+    vi.mocked(startAdapterExecutionTargetProcessSessionBridge).mockResolvedValue({ agentCommand: "/fixture/agent-proxy.cjs", stop: stopProcess });
+    try {
+      const config = { agent: "custom", agentCommand: "node ./fake-acp.js", stateDir, cwd: localCwd,
+        managedAiConnection: { identity: "selected-agent-account" }, env: { CODEX_HOME: home, HOME: home }, mode: "persistent" };
+      let failTurn = false;
+      const options = { authToken: "run-fixture", executionTarget, prepareRemoteManagedHome: seam, stagedRuntimes,
+        onStartTurn: () => { if (failTurn) throw new Error("fixture SSH turn failed"); } };
+      const result = await runExecutor(config, options);
+      expect(seam).toHaveBeenCalledOnce();
+      expect(seam.mock.calls[0]![0].executionTarget).toMatchObject({ kind: "remote", transport: "ssh" });
+      expect(prepareAdapterExecutionTargetRuntime).toHaveBeenCalledWith(expect.objectContaining({ assets: [{ key: "home", localDir: home }] }));
+      expect(result.sessionInputs[0]?.cwd).toMatch(new RegExp(`${remoteCwd}/\\.paperclip-runtime/runs/[a-f0-9]+/workspace$`));
+      const bridgeInput = vi.mocked(startAdapterExecutionTargetProcessSessionBridge).mock.calls[0]![0];
+      const env = typeof bridgeInput.env === "function" ? await bridgeInput.env() : bridgeInput.env;
+      expect(env.CODEX_HOME).toBe(path.posix.join(runtimeRootDir, "home"));
+      expect(env.HOME).toBe(runtimeRootDir);
+      expect(restore).toHaveBeenCalledOnce();
+      expect(stopControl).toHaveBeenCalledOnce();
+      expect(stopProcess).toHaveBeenCalledOnce();
+      expect(dispose).not.toHaveBeenCalled();
+      const resumed = await runExecutor(config, { ...options, runId: "run-2", runtime: { sessionParams: result.result.sessionParams } });
+      expect(resumed.sessionInputs[0]?.cwd).toBe(result.sessionInputs[0]?.cwd);
+      expect(seam).toHaveBeenCalledOnce();
+      expect(restore).toHaveBeenCalledTimes(2);
+      if (failure === "bridge") {
+        vi.mocked(startAdapterExecutionTargetProcessSessionBridge).mockRejectedValueOnce(new Error("fixture SSH bridge unavailable"));
+        await expect(runExecutor(config, { ...options, runId: "run-3", runtime: { sessionParams: resumed.result.sessionParams } })).rejects.toThrow("fixture SSH bridge unavailable");
+      } else {
+        failTurn = true;
+        await runExecutor(config, { ...options, runId: "run-3", expectedExitCode: 1, runtime: { sessionParams: resumed.result.sessionParams } });
+      }
+      expect(restore).toHaveBeenCalledTimes(3);
+      expect(stopControl.mock.invocationCallOrder[2]).toBeLessThan(restore.mock.invocationCallOrder[2]!);
+      expect(restore.mock.invocationCallOrder[2]).toBeLessThan(dispose.mock.invocationCallOrder[0]!);
+      expect(dispose).toHaveBeenCalledOnce();
+      expect(stopControl).toHaveBeenCalledTimes(3);
+      expect(stopProcess).toHaveBeenCalledTimes(failure === "bridge" ? 2 : 3);
+      expect(stagedRuntimes.size).toBe(0);
+    } finally {
+      vi.mocked(prepareAdapterExecutionTargetRuntime).mockReset().mockImplementation(actual.prepareAdapterExecutionTargetRuntime);
+      vi.mocked(startAdapterExecutionTargetPaperclipBridge).mockReset().mockImplementation(actual.startAdapterExecutionTargetPaperclipBridge);
+      vi.mocked(startAdapterExecutionTargetProcessSessionBridge).mockReset().mockImplementation(actual.startAdapterExecutionTargetProcessSessionBridge);
+    }
+  });
 
   it("test_remote_seam_receives_adapter_agnostic_context", async () => {
     const { stateDir, localCwd, remoteCwd, executionTarget } = await setupRemoteSandbox();

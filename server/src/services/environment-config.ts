@@ -38,6 +38,7 @@ const secretRefSchema = z.object({
 }).strict();
 
 const sshEnvironmentConfigSchema = z.object({
+  useHostAuth: z.boolean().optional(),
   host: z.string({ error: "SSH environments require a host." }).trim().min(1, "SSH environments require a host."),
   port: z.coerce.number().int().min(1).max(65535).default(22),
   username: z.string({ error: "SSH environments require a username." }).trim().min(1, "SSH environments require a username."),

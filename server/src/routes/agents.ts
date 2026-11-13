@@ -3262,6 +3262,7 @@ export function agentRoutes(
         return { connectionId: selection.connection.id };
       }
       const testEnvironment = testEnvironmentId ? await environmentsSvc.getById(testEnvironmentId) : null;
+      if (testEnvironment?.driver === "ssh" && testEnvironment.config.useHostAuth !== false) return { connectionId: selection.connection.id };
       if (adapterType === "paperclip_runner" && config.homeMode === "preconfigured" && testEnvironment
         && await pluginEnvironmentRunnerTaskDriver(db, testEnvironment)) {
         throw unprocessable(pluginRunnerAiConnectionRequiredMessage(true), { code: PLUGIN_RUNNER_AI_CONNECTION_REQUIRED });
@@ -3299,7 +3300,7 @@ export function agentRoutes(
       await assertCanCreateAgentsForCompany(req, companyId);
 
       const requestedBinding = req.body.aiConnection ? aiRuntimeConnectionBindingSchema.parse(req.body.aiConnection) : undefined;
-      const aiBinding = requestedBinding?.mode === "router" ? undefined : requestedBinding;
+      let aiBinding = requestedBinding?.mode === "router" ? undefined : requestedBinding;
       if (aiBinding && req.body.testCredentials && Object.keys(req.body.testCredentials).length) throw unprocessable("A managed connection test cannot override its credentials");
       const inputAdapterConfig = aiBinding ? { ...req.body.adapterConfig, env: stripAiAuthBindings(req.body.adapterConfig?.env) } : (req.body?.adapterConfig ?? {}) as Record<string, unknown>;
       const savedAgentId = typeof req.body.agentId === "string" ? req.body.agentId : null;
@@ -3312,7 +3313,7 @@ export function agentRoutes(
         await assertCanConfigureAgentSetup(req, savedAgent);
       }
       const testingSetup = savedAgent ? isAgentSetupDraft(savedAgent) : false;
-      const poolBinding = requestedBinding ?? (savedAgent?.runtimeConfig?.aiConnection ? aiRuntimeConnectionBindingSchema.parse(savedAgent.runtimeConfig.aiConnection) : undefined);
+      let poolBinding = requestedBinding ?? (savedAgent?.runtimeConfig?.aiConnection ? aiRuntimeConnectionBindingSchema.parse(savedAgent.runtimeConfig.aiConnection) : undefined);
       const prospectiveCursorDefault = type === "cursor_cloud" && !savedAgent
         && (req.body.runner === undefined || req.body.runner === "auto")
         && managedCursorApiDefaultEnabled((await instanceSettings.get()).experimental);
@@ -3347,6 +3348,14 @@ export function agentRoutes(
       const requestedEnvironment = requestedEnvironmentId
         ? await assertAdapterTestEnvironmentBinding(companyId, requestedEnvironmentId)
         : null;
+      if (requestedEnvironment?.driver === "ssh" && requestedEnvironment.config.useHostAuth !== false) {
+        aiBinding = undefined;
+        poolBinding = undefined;
+      }
+      if (requestedEnvironment?.driver === "ssh" && requestedEnvironment.config.useHostAuth === false) {
+        if (!aiBinding && poolBinding?.mode !== "router") aiBinding = poolBinding;
+        if (!aiBinding && !poolBinding) throw unprocessable("Select an AI account for this agent or enable authentication configured on the remote machine in the SSH environment's advanced settings.", { code: "ssh_ai_connection_required" });
+      }
       // Agent reads redact every plain environment value. When this is a saved
       // agent test, restore those display-only placeholders from the
       // server-side config before validating or resolving secrets; otherwise
@@ -3381,7 +3390,8 @@ export function agentRoutes(
           defaultEnvironmentId: requestedEnvironmentId,
         });
       type = selection.adapterType;
-      adapterConfigForTest = selection.adapterConfig;
+      adapterConfigForTest = { ...selection.adapterConfig,
+        ...(type === "paperclip_runner" && requestedEnvironment?.driver === "ssh" && requestedEnvironment.config.useHostAuth !== false ? { homeMode: "preconfigured" } : {}) };
       if (requestedEnvironment) await assertAdapterTestEnvironmentForCompany(companyId, requestedEnvironment.id, type);
       const adapter = requireServerAdapter(type);
       if (!retainsSavedExecution) await assertSelectableAdapterType(type, adapterConfigForTest, companyId);

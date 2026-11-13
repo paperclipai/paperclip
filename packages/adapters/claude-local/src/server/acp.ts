@@ -310,6 +310,7 @@ async function prepareClaudeRemoteManagedHome(
 
   await onLog("stdout", `[paperclip] Materializing Claude auth/config into ${remoteClaudeConfigDir}.\n`);
   const { toolShellPrefixInstalled } = await materializeRemoteClaudeConfig({
+      allowHostCredentials: !input.config.managedAiConnection,
     runId,
     target: executionTarget,
     remoteClaudeConfigDir,
@@ -958,24 +959,30 @@ export async function testClaudeAcpEnvironment(
       probeEnv.CLAUDE_CONFIG_DIR = hostConfigDir.trim();
     }
     const runId = `claude-acp-envtest-${Date.now()}-${Math.random().toString(16).slice(2)}`;
-    checks.push(
-      ...(await prepareSandboxClaudeProbeRuntime({
-      managedAiConnection: Boolean(config.managedAiConnection),
-        runId,
-        target,
-        cwd,
-        companyId: ctx.companyId,
-        env: probeEnv,
-        installCommand: SANDBOX_INSTALL_COMMAND,
-        detectCommand: "claude",
-        targetIsRemote,
-        targetIsSandbox,
-        helloProbeTimeoutSec: asNumber(config.helloProbeTimeoutSec, targetIsSandbox ? 90 : 45),
-      })),
-    );
-    const canProbe = !checks.some((check) => check.code === "claude_managed_config_dir_failed");
-    if (canProbe) {
-      checks.push(...(await probeClaudeAcpSandboxLogin({ config, target, env: probeEnv })));
+    let cleanupManagedProbe: (() => Promise<void>) | undefined;
+    try {
+      checks.push(
+        ...(await prepareSandboxClaudeProbeRuntime({
+          registerCleanup: (cleanup) => { cleanupManagedProbe = cleanup; },
+          managedAiConnection: Boolean(config.managedAiConnection),
+          runId,
+          target,
+          cwd,
+          companyId: ctx.companyId,
+          env: probeEnv,
+          installCommand: SANDBOX_INSTALL_COMMAND,
+          detectCommand: "claude",
+          targetIsRemote,
+          targetIsSandbox,
+          helloProbeTimeoutSec: asNumber(config.helloProbeTimeoutSec, targetIsSandbox ? 90 : 45),
+        })),
+      );
+      const canProbe = !checks.some((check) => check.code === "claude_managed_config_dir_failed");
+      if (canProbe) {
+        checks.push(...(await probeClaudeAcpSandboxLogin({ config, target, env: probeEnv })));
+      }
+    } finally {
+      await cleanupManagedProbe?.();
     }
   }
 

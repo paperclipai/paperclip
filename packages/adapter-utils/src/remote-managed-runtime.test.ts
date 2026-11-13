@@ -11,7 +11,7 @@ const {
 } = vi.hoisted(() => ({
   prepareWorkspaceForSshExecution: vi.fn(async () => ({ gitBacked: false })),
   restoreWorkspaceFromSshExecution: vi.fn(async () => undefined),
-  runSshCommand: vi.fn(async () => ({
+  runSshCommand: vi.fn(async (_spec?: unknown, _command?: string, _options?: unknown) => ({
     stdout: Buffer.from('{"token":"remote"}\n').toString("base64"),
     stderr: "",
   })),
@@ -61,11 +61,71 @@ describe("remote managed runtime", () => {
 
   afterEach(async () => {
     vi.clearAllMocks();
+    runSshCommand.mockReset().mockResolvedValue({ stdout: Buffer.from('{"token":"remote"}\n').toString("base64"), stderr: "" });
     while (cleanupDirs.length > 0) {
       const dir = cleanupDirs.pop();
       if (!dir) continue;
       await rm(dir, { recursive: true, force: true }).catch(() => undefined);
     }
+  });
+
+  it("isolates managed credentials for overlapping in-place SSH runs and removes each private runtime after copy-back", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-ssh-credentials-"));
+    cleanupDirs.push(rootDir);
+    const homeDir = path.join(rootDir, "selected-account");
+    await mkdir(homeDir);
+    await writeFile(path.join(homeDir, "auth.json"), '{"account":"selected-agent"}');
+    runSshCommand.mockResolvedValueOnce({ stdout: "/tmp/paperclip-ssh-runtime.first\n", stderr: "" })
+      .mockResolvedValueOnce({ stdout: "/tmp/paperclip-ssh-runtime.second\n", stderr: "" });
+    const restore = vi.fn(async () => {});
+    const input = {
+      spec: { host: "127.0.0.1", port: 2222, username: "fixture", remoteWorkspacePath: "/app", remoteCwd: "/app", privateKey: null, knownHosts: null, strictHostKeyChecking: true },
+      runId: "first", adapterKey: "codex", workspaceLocalDir: rootDir, syncWorkspace: false, privateRuntime: true,
+      assets: [{ key: "home", localDir: homeDir, restore }],
+    };
+    const first = await prepareRemoteManagedRuntime(input);
+    const second = await prepareRemoteManagedRuntime({ ...input, runId: "second" });
+    expect(first.runtimeRootDir).toBe("/tmp/paperclip-ssh-runtime.first");
+    expect(second.runtimeRootDir).toBe("/tmp/paperclip-ssh-runtime.second");
+    expect(first.assetDirs.home).not.toBe(second.assetDirs.home);
+    await Promise.all([first.restoreWorkspace(), first.restoreWorkspace()]);
+    await first.restoreWorkspace();
+    expect(restore).toHaveBeenCalledTimes(1);
+    expect(restore).toHaveBeenCalledWith(expect.objectContaining({ assetDir: "/tmp/paperclip-ssh-runtime.first/home" }));
+    expect(runSshCommand).toHaveBeenCalledWith(expect.anything(), "rm -rf -- '/tmp/paperclip-ssh-runtime.first'", expect.anything());
+    expect(runSshCommand.mock.calls.some(call => call[1] === "rm -rf -- '/tmp/paperclip-ssh-runtime.second'")).toBe(false);
+    expect(prepareWorkspaceForSshExecution).not.toHaveBeenCalled();
+    await second.restoreWorkspace();
+  });
+
+  it("retains an ACP credential home across turns until its session owner disposes it", async () => {
+    runSshCommand.mockResolvedValueOnce({ stdout: "/tmp/paperclip-ssh-runtime.retained\n", stderr: "" });
+    const restore = vi.fn(async () => {});
+    const runtime = await prepareRemoteManagedRuntime({
+      spec: { host: "127.0.0.1", port: 2222, username: "fixture", remoteWorkspacePath: "/app", remoteCwd: "/app", privateKey: null, knownHosts: null, strictHostKeyChecking: true },
+      runId: "retained", adapterKey: "codex", workspaceLocalDir: "/unused", syncWorkspace: false,
+      privateRuntime: true, retainRuntime: true, assets: [{ key: "home", localDir: "/fixture", restore }],
+    });
+    await runtime.restoreWorkspace();
+    await runtime.restoreWorkspace();
+    expect(restore).toHaveBeenCalledTimes(2);
+    expect(runSshCommand).not.toHaveBeenCalledWith(expect.anything(), expect.stringContaining("rm -rf"), expect.anything());
+    await runtime.disposeRuntime();
+    await runtime.disposeRuntime();
+    expect(runSshCommand.mock.calls.filter(call => call[1]?.includes("rm -rf"))).toHaveLength(1);
+  });
+
+  it.each(["staging", "refresh"])("removes a private credential home after a %s failure", async phase => {
+    runSshCommand.mockResolvedValueOnce({ stdout: "/tmp/paperclip-ssh-runtime.failed\n", stderr: "" });
+    if (phase === "staging") syncDirectoryToSsh.mockRejectedValueOnce(new Error("staging failed"));
+    const prepare = prepareRemoteManagedRuntime({
+      spec: { host: "127.0.0.1", port: 2222, username: "fixture", remoteWorkspacePath: "/app", remoteCwd: "/app", privateKey: null, knownHosts: null, strictHostKeyChecking: true },
+      runId: "failed", adapterKey: "codex", workspaceLocalDir: "/unused", syncWorkspace: false, privateRuntime: true,
+      assets: [{ key: "home", localDir: "/fixture", restore: async () => { throw new Error("refresh failed"); } }],
+    });
+    if (phase === "staging") await expect(prepare).rejects.toThrow("staging failed");
+    else await expect((await prepare).restoreWorkspace()).rejects.toThrow("refresh failed");
+    expect(runSshCommand).toHaveBeenCalledWith(expect.anything(), "rm -rf -- '/tmp/paperclip-ssh-runtime.failed'", expect.anything());
   });
 
   it("restores runtime assets without restoring an in-place SSH workspace", async () => {

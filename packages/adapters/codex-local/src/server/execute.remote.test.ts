@@ -26,7 +26,7 @@ const {
   resolveCommandForLogs: vi.fn(async () => "/usr/bin/codex"),
   prepareWorkspaceForSshExecution: vi.fn(async () => ({ gitBacked: false })),
   restoreWorkspaceFromSshExecution: vi.fn(async () => undefined),
-  runSshCommand: vi.fn(async () => ({ stdout: Buffer.from("{}").toString("base64"), stderr: "" })),
+  runSshCommand: vi.fn(async (_spec?: unknown, _command?: string) => ({ stdout: Buffer.from("{}").toString("base64"), stderr: "" })),
   syncDirectoryToSsh: vi.fn(async () => undefined),
   startAdapterExecutionTargetPaperclipBridge: vi.fn(async () => ({
     env: {
@@ -86,6 +86,56 @@ describe("codex remote execution", () => {
       if (!dir) continue;
       await rm(dir, { recursive: true, force: true }).catch(() => undefined);
     }
+  });
+
+  it("stages only the selected agent subscription and returns SSH refreshes to that account", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "paperclip-codex-selected-ssh-"));
+    cleanupDirs.push(root);
+    const workspace = path.join(root, "workspace"), home = path.join(root, "selected-account");
+    await mkdir(workspace); await mkdir(home);
+    const auth = (marker: string, last_refresh: string) => JSON.stringify({
+      tokens: { account_id: "selected-account", access_token: `fixture-access-${marker}`, refresh_token: `fixture-refresh-${marker}`, id_token: `fixture-id-${marker}` }, last_refresh,
+    });
+    await writeFile(path.join(home, "auth.json"), auth("before", "2000-01-01T00:00:00Z"), { mode: 0o600 });
+    const refreshed = auth("after", new Date().toISOString());
+    runSshCommand.mockImplementation(async (_spec, command) => ({ stdout: command?.includes("mktemp -d")
+      ? "/tmp/paperclip-ssh-runtime.selected\n" : Buffer.from(refreshed).toString("base64"), stderr: "" }));
+    try {
+      await execute({ runId: "selected", agent: { id: "agent-1", companyId: "company-1", name: "Selected agent", adapterType: "codex_local", adapterConfig: {} },
+        runtime: { sessionId: null, sessionParams: null, sessionDisplayId: null, taskKey: null },
+        config: { engine: "cli", command: "codex", managedAiConnection: { identity: "selected-account", provider: "openai", method: "subscription" }, env: { CODEX_HOME: home, OPENAI_API_KEY: "" } },
+        context: { paperclipWorkspace: { cwd: workspace, source: "project_primary" } },
+        executionTransport: { remoteExecution: { useHostAuth: false, host: "127.0.0.1", port: 2222, username: "fixture", remoteCwd: "/workspace", remoteWorkspacePath: "/workspace", privateKey: null, knownHosts: null, strictHostKeyChecking: true } }, onLog: async () => {},
+      });
+      const invocation = runChildProcess.mock.calls[0] as unknown as [string, string, string[], { env: Record<string, string> }];
+      expect(invocation[3].env).toMatchObject({ CODEX_HOME: "/tmp/paperclip-ssh-runtime.selected/home", HOME: "/tmp/paperclip-ssh-runtime.selected", OPENAI_API_KEY: "" });
+      expect(await readFile(path.join(home, "auth.json"), "utf8")).toBe(refreshed);
+      expect(runSshCommand).toHaveBeenCalledWith(expect.anything(), "rm -rf -- '/tmp/paperclip-ssh-runtime.selected'", expect.anything());
+    } finally {
+      runSshCommand.mockReset().mockResolvedValue({ stdout: Buffer.from("{}").toString("base64"), stderr: "" });
+    }
+  });
+
+  it("uses the remote Codex login without uploading the controller's home when host authentication is enabled", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "paperclip-codex-host-auth-"));
+    cleanupDirs.push(root);
+    const home = path.join(root, "controller-home");
+    await mkdir(home);
+    await writeFile(path.join(home, "auth.json"), '{"tokens":{"account_id":"controller-only","refresh_token":"fixture-controller-token"}}');
+    vi.stubEnv("CODEX_HOME", home);
+    vi.stubEnv("PAPERCLIP_HOME", path.join(root, "paperclip"));
+    try {
+      await execute({ runId: "remote-auth", agent: { id: "agent-1", companyId: "company-1", name: "Remote auth", adapterType: "codex_local", adapterConfig: {} },
+        runtime: { sessionId: null, sessionParams: null, sessionDisplayId: null, taskKey: null },
+        config: { engine: "cli", command: "codex" }, context: { paperclipWorkspace: { cwd: root, source: "project_primary" } },
+        executionTransport: { remoteExecution: { useHostAuth: true, host: "127.0.0.1", port: 2222, username: "fixture", remoteCwd: "/workspace", remoteWorkspacePath: "/workspace", privateKey: null, knownHosts: null, strictHostKeyChecking: true } }, onLog: async () => {},
+      });
+      expect(syncDirectoryToSsh).not.toHaveBeenCalled();
+      const invocation = runChildProcess.mock.calls[0] as unknown as [string, string, string[], { env: Record<string, string> }];
+      expect(invocation[3].env.CODEX_HOME).toBeUndefined();
+      expect(invocation[3].env.HOME).toBeUndefined();
+      expect(await readFile(path.join(home, "auth.json"), "utf8")).toContain("controller-only");
+    } finally { vi.unstubAllEnvs(); }
   });
 
   it("prepares the workspace, syncs CODEX_HOME, and restores workspace changes for remote SSH execution", async () => {

@@ -11,6 +11,7 @@ const {
   prepareWorkspaceForSshExecution,
   restoreWorkspaceFromSshExecution,
   syncDirectoryToSsh,
+  runSshCommand,
   startAdapterExecutionTargetPaperclipBridge,
 } = vi.hoisted(() => ({
   runChildProcess: vi.fn(async (_runId: string, _command: string, args: string[]): Promise<RunProcessResult> => ({
@@ -33,6 +34,7 @@ const {
   prepareWorkspaceForSshExecution: vi.fn(async () => ({ gitBacked: false })),
   restoreWorkspaceFromSshExecution: vi.fn(async () => undefined),
   syncDirectoryToSsh: vi.fn(async () => undefined),
+  runSshCommand: vi.fn(async (_spec: unknown, command: string) => ({ stdout: command.includes("mktemp -d") ? "/tmp/paperclip-ssh-runtime.claude\n" : "", stderr: "" })),
   startAdapterExecutionTargetPaperclipBridge: vi.fn(async () => ({
     env: {
       PAPERCLIP_API_URL: "http://127.0.0.1:4310",
@@ -64,6 +66,7 @@ vi.mock("@paperclipai/adapter-utils/ssh", async () => {
     prepareWorkspaceForSshExecution,
     restoreWorkspaceFromSshExecution,
     syncDirectoryToSsh,
+    runSshCommand,
   };
 });
 
@@ -93,6 +96,48 @@ describe("claude remote execution", () => {
       if (!dir) continue;
       await rm(dir, { recursive: true, force: true }).catch(() => undefined);
     }
+  });
+
+  it("uses the agent's subscription in a private SSH home without reading the SSH user's Claude login", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-claude-selected-ssh-"));
+    cleanupDirs.push(rootDir);
+    const workspaceDir = path.join(rootDir, "workspace");
+    const providerHome = path.join(rootDir, "selected-provider");
+    await mkdir(workspaceDir);await mkdir(providerHome);
+    const logs: string[] = [];
+    await execute({
+      runId: "selected-subscription", agent: { id: "agent-1", companyId: "company-1", name: "Configured agent", adapterType: "claude_local", adapterConfig: {} },
+      runtime: { sessionId: null, sessionParams: null, sessionDisplayId: null, taskKey: null },
+      config: { engine: "cli", command: "claude", managedAiConnection: { provider: "anthropic", method: "subscription", identity: "selected-account" },
+        env: { HOME: rootDir, CLAUDE_CONFIG_DIR: providerHome, CLAUDE_CODE_OAUTH_TOKEN: "selected-agent-token", ANTHROPIC_API_KEY: "" } },
+      context: { paperclipWorkspace: { cwd: workspaceDir, source: "project_primary" } },
+      executionTransport: { remoteExecution: { useHostAuth: false, host: "127.0.0.1", port: 2222, username: "fixture", remoteWorkspacePath: "/remote/workspace", remoteCwd: "/remote/workspace", privateKey: null, knownHosts: null, strictHostKeyChecking: false } },
+      onLog: async (_stream, chunk) => { logs.push(chunk); },
+    });
+    expect(syncDirectoryToSsh).toHaveBeenCalledWith(expect.objectContaining({ localDir: providerHome, remoteDir: "/tmp/paperclip-ssh-runtime.claude/config-seed" }));
+    const providerCall = runChildProcess.mock.calls.find(call => call[2].includes("--print")) as unknown as [string, string, string[], { env: Record<string, string> }];
+    expect(providerCall[3].env).toMatchObject({ CLAUDE_CODE_OAUTH_TOKEN: "selected-agent-token", CLAUDE_CONFIG_DIR: "/tmp/paperclip-ssh-runtime.claude/config", HOME: "/tmp/paperclip-ssh-runtime.claude", ANTHROPIC_API_KEY: "" });
+    const materialize = runSshCommand.mock.calls.find(call => call[1].includes("config-seed"));
+    expect(materialize?.[1]).not.toContain(".claude/\u0024{file}");
+    expect(runSshCommand).toHaveBeenCalledWith(expect.anything(), "rm -rf -- '/tmp/paperclip-ssh-runtime.claude'", expect.anything());
+    expect(logs.join("")).not.toContain("selected-agent-token");
+  });
+
+  it("removes the selected account's SSH home when Claude setup fails before launch", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "paperclip-claude-ssh-failure-"));
+    cleanupDirs.push(root);
+    const workspace = path.join(root, "workspace"), home = path.join(root, "selected");
+    await mkdir(workspace); await mkdir(home);
+    runSshCommand.mockImplementationOnce(async () => ({ stdout: "/tmp/paperclip-ssh-runtime.failed\n", stderr: "" }))
+      .mockRejectedValueOnce(new Error("fixture materialization failure"));
+    await expect(execute({ runId: "failed", agent: { id: "agent-1", companyId: "company-1", name: "Selected", adapterType: "claude_local", adapterConfig: {} },
+      runtime: { sessionId: null, sessionParams: null, sessionDisplayId: null, taskKey: null },
+      config: { engine: "cli", command: "claude", managedAiConnection: { provider: "anthropic", identity: "selected" }, env: { CLAUDE_CONFIG_DIR: home, CLAUDE_CODE_OAUTH_TOKEN: "fixture-selected" } },
+      context: { paperclipWorkspace: { cwd: workspace, source: "project_primary" } },
+      executionTransport: { remoteExecution: { useHostAuth: false, host: "127.0.0.1", port: 2222, username: "fixture", remoteCwd: "/workspace", remoteWorkspacePath: "/workspace", privateKey: null, knownHosts: null, strictHostKeyChecking: true } }, onLog: async () => {},
+    })).rejects.toThrow("fixture materialization failure");
+    expect(runChildProcess).not.toHaveBeenCalled();
+    expect(runSshCommand).toHaveBeenCalledWith(expect.anything(), "rm -rf -- '/tmp/paperclip-ssh-runtime.failed'", expect.anything());
   });
 
   it("prepares the workspace, syncs Claude runtime assets, and restores workspace changes for remote SSH execution", async () => {

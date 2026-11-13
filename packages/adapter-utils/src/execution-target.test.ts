@@ -237,6 +237,14 @@ describe("runAdapterExecutionTargetShellCommand", () => {
       },
     })).toBe(false);
   });
+
+  it("uses a managed home on SSH when the agent has a configured AI connection", () => {
+    const target = sshExecutionTarget();
+    expect(adapterExecutionTargetUsesManagedHome(target, true)).toBe(false);
+    expect(adapterExecutionTargetUsesManagedHome({ ...target, spec: { ...target.spec, useHostAuth: false } }, true)).toBe(true);
+    expect(adapterExecutionTargetUsesManagedHome({ ...target, spec: { ...target.spec, useHostAuth: true } }, true)).toBe(false);
+    expect(adapterExecutionTargetUsesManagedHome(null, true)).toBe(false);
+  });
 });
 
 describe("runAdapterExecutionTargetProcess", () => {

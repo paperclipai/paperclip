@@ -433,6 +433,40 @@ identity before reusing the session; changing identity retires the previous owne
 Other managed harnesses retain per-turn cleanup. A suspended native execution
 whose credential identity changed must restart as a new execution.
 
+New SSH environments use the agent's configured AI account, including
+subscriptions. Account selection and
+authorization remain in Paperclip. The remote computer supplies the harness
+executable and workspace. In this mode, the SSH user's provider login is not a
+fallback, and Paperclip does not replace that user's saved credentials. A
+missing or unavailable agent account prevents execution and provider probes.
+
+The **Use authentication configured on the remote machine** option under
+**Advanced** selects the remote user's provider login instead. New environments
+save `useHostAuth: false`; enabling it saves `true`, skips the agent's managed AI
+credential projection, and uses the preconfigured home for native Runner.
+Existing environments without the field default to the remote machine's
+configured authentication and display the option as enabled when edited. No
+migration rewrites existing SSH records. Changing an explicit authentication source invalidates the saved
+SSH provider session identity for future runs; already admitted native recovery
+retains its original home contract.
+
+Managed SSH runs stage the selected account into a randomly allocated directory
+with owner-only access and set the harness's home/configuration paths there.
+Credential-bearing launch commands travel through SSH stdin instead of SSH
+process arguments. The existing account-specific refresh merge runs before
+per-turn directories are removed, including after provider or setup failure.
+Environment tests use the selected account and remove their temporary homes
+after probing. A disconnected target can prevent remote cleanup; the run reports
+the resulting failure rather than silently selecting another account.
+
+ACP SSH sessions use the existing remote process bridge and session reuse
+lifecycle. A compatible session can retain its private remote home; workspace
+sync and credential refresh run at turn teardown, and the session disposal hook
+removes the home on retirement. Workspace identity includes the company, agent,
+task and execution fingerprint. Older managed SSH ACP sessions used a different
+working-directory identity and start fresh after this change. Native runner
+session identities and sandbox staging are unchanged.
+
 After a verified provider resume, plain-text Slack follow-ups send the new
 authorized message delta instead of repeating the full task framing. The saved
 run and current message identities and bodies must match. Actual brief edits

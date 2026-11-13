@@ -18,6 +18,7 @@ import {
   selectVendCredential,
 } from "./codex-auth-cache.js";
 import {
+  managedRemoteHomeEnvironment,
   adapterExecutionTargetIsRemote,
   adapterExecutionTargetRemoteCwd,
   overrideAdapterExecutionTargetRemoteCwd,
@@ -644,6 +645,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const cwd = effectiveWorkspaceCwd || configuredCwd || process.cwd();
   const envConfig = parseObject(config.env);
   const executionTargetIsRemote = adapterExecutionTargetIsRemote(executionTarget);
+  const useSshHostAuth = executionTarget?.kind === "remote" && executionTarget.transport === "ssh" && executionTarget.spec.useHostAuth === true;
   let configuredCodexHome =
     typeof envConfig.CODEX_HOME === "string" && envConfig.CODEX_HOME.trim().length > 0
       ? path.resolve(envConfig.CODEX_HOME.trim())
@@ -707,7 +709,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   // holds no credential it does nothing (no random pick). This keeps the change
   // additive: the managed home still symlinks the shared `auth.json`, now at its
   // freshest same-identity copy. The off-switch (default on) skips the vend.
-  if (!config.managedAiConnection && isCodexAuthCacheEnabled(process.env)) {
+  if (!useSshHostAuth && !config.managedAiConnection && isCodexAuthCacheEnabled(process.env)) {
     const sharedHomeAuthPath = path.join(resolveSharedCodexHomeDir(process.env), "auth.json");
     // This caller reads `process.env` directly and holds no separate `env`
     // object, so `selectVendCredential` falls back to its own `process.env`
@@ -726,12 +728,12 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       void error;
     });
   }
-  if (configuredCodexHome == null) {
+  if (!useSshHostAuth && configuredCodexHome == null) {
     await prepareManagedCodexHome(process.env, onLog, agent.companyId, {
       apiKey: configuredOpenAiApiKey,
     });
   }
-  if (configuredHomeIsManaged && configuredCodexHome) {
+  if (!useSshHostAuth && configuredHomeIsManaged && configuredCodexHome) {
     const seedEnv = runtimeSkillDigest ? {
       ...process.env, CODEX_HOME: runtimeCredentialHome ?? resolveManagedCodexHomeDir(process.env, agent.companyId),
     } : process.env;
@@ -753,7 +755,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   // and sandbox targets are additionally allowed to supply their own login
   // (the pre-dispatch gate defers sandbox-destined runs here for exactly that
   // probe).
-  await assertCodexCredentialsLaunchable({
+  if (!useSshHostAuth) await assertCodexCredentialsLaunchable({
     runId,
     companyId: agent.companyId,
     configuredCodexHome,
@@ -855,8 +857,9 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
           // the single-use `auth.json`) are dereferenced to bytes. This drops the
           // large runtime state (`sessions/`, `*.sqlite`, `plugins/`, …) that the
           // 4-name denylist missed and that a sandbox run never needs.
-          stagedCodexHomeDir = await stageCodexHomeForSync(effectiveCodexHome, { runId, additionalFiles: observabilityProfile ? [observabilityProfile.filename] : [] });
+          if (!useSshHostAuth) stagedCodexHomeDir = await stageCodexHomeForSync(effectiveCodexHome, { runId, additionalFiles: observabilityProfile ? [observabilityProfile.filename] : [] });
           return await prepareAdapterExecutionTargetRuntime({
+            privateRuntime: Boolean(config.managedAiConnection),
             runId,
             target: executionTarget,
             adapterKey: "codex",
@@ -871,7 +874,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
             detectCommand: command,
             onProgress: (line) => onLog("stdout", line),
             onRuntimeProgress: ctx.onRuntimeProgress,
-            assets: [
+            assets: stagedCodexHomeDir ? [
               {
                 key: "home",
                 localDir: stagedCodexHomeDir,
@@ -909,7 +912,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
                 // ONLY the allowlisted files (auth/config/skills), so there is
                 // nothing to filter out.
               },
-            ],
+            ] : [],
           });
         })()
       : null;
@@ -923,297 +926,316 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       ? () => preparedExecutionTargetRuntime.restoreWorkspace((line) => onLog("stdout", line))
       : null;
     let paperclipBridge: Awaited<ReturnType<typeof startAdapterExecutionTargetPaperclipBridge>> = null;
-    const remoteCodexHome = executionTargetIsRemote
-      ? preparedExecutionTargetRuntime?.assetDirs.home ??
-        path.posix.join(effectiveExecutionCwd, ".paperclip-runtime", "codex", "home")
-      : null;
-    await emitSandboxAuthPrecedenceWarningIfNeeded({
-      runId,
-      target: runtimeExecutionTarget,
-      cwd: effectiveExecutionCwd,
-      configuredApiKey: Boolean(configuredOpenAiApiKey),
-      hostAuthJson: await codexHomeHasUsableAuth(effectiveCodexHome),
-      onLog,
-      onEvent,
-    });
-    const env: Record<string, string> = { ...paperclipBaseEnv };
-    env.PAPERCLIP_RUN_ID = runId;
-    const wakeTaskId =
-      (typeof context.taskId === "string" && context.taskId.trim().length > 0 && context.taskId.trim()) ||
-      (typeof context.issueId === "string" && context.issueId.trim().length > 0 && context.issueId.trim()) ||
-      null;
-    const wakeReason =
-      typeof context.wakeReason === "string" && context.wakeReason.trim().length > 0
-        ? context.wakeReason.trim()
+    let executionError: unknown = null;
+    try {
+      const remoteCodexHome = executionTargetIsRemote && !useSshHostAuth
+        ? preparedExecutionTargetRuntime?.assetDirs.home ??
+          path.posix.join(effectiveExecutionCwd, ".paperclip-runtime", "codex", "home")
         : null;
-    const wakeCommentId =
-      (typeof context.wakeCommentId === "string" && context.wakeCommentId.trim().length > 0 && context.wakeCommentId.trim()) ||
-      (typeof context.commentId === "string" && context.commentId.trim().length > 0 && context.commentId.trim()) ||
-      null;
-    const approvalId =
-      typeof context.approvalId === "string" && context.approvalId.trim().length > 0
-        ? context.approvalId.trim()
-        : null;
-    const approvalStatus =
-      typeof context.approvalStatus === "string" && context.approvalStatus.trim().length > 0
-        ? context.approvalStatus.trim()
-        : null;
-    const linkedIssueIds = Array.isArray(context.issueIds)
-      ? context.issueIds.filter((value): value is string => typeof value === "string" && value.trim().length > 0)
-      : [];
-    const issueWorkMode = readPaperclipIssueWorkModeFromContext(context);
-    if (wakeTaskId) {
-      env.PAPERCLIP_TASK_ID = wakeTaskId;
-    }
-    if (issueWorkMode) {
-      env.PAPERCLIP_ISSUE_WORK_MODE = issueWorkMode;
-    }
-    if (wakeReason) {
-      env.PAPERCLIP_WAKE_REASON = wakeReason;
-    }
-    if (wakeCommentId) {
-      env.PAPERCLIP_WAKE_COMMENT_ID = wakeCommentId;
-    }
-    if (approvalId) {
-      env.PAPERCLIP_APPROVAL_ID = approvalId;
-    }
-    if (approvalStatus) {
-      env.PAPERCLIP_APPROVAL_STATUS = approvalStatus;
-    }
-    if (linkedIssueIds.length > 0) {
-      env.PAPERCLIP_LINKED_ISSUE_IDS = linkedIssueIds.join(",");
-    }
-    refreshPaperclipWorkspaceEnvForExecution({
-      env,
-      envConfig,
-      workspaceCwd: effectiveWorkspaceCwd,
-      workspaceSource,
-      workspaceStrategy,
-      workspaceId,
-      workspaceRepoUrl,
-      workspaceRepoRef,
-      workspaceBranch,
-      workspaceWorktreePath,
-      workspaceHints,
-      agentHome,
-      executionTargetIsRemote,
-      executionCwd: effectiveExecutionCwd,
-    });
-    if (targetWorkspaceRealization) {
-      env.PAPERCLIP_WORKSPACE_REALIZATION_MODE = targetWorkspaceRealization.mode;
-      env.PAPERCLIP_WORKSPACE_AUTHORITATIVE_ROOT = targetWorkspaceRealization.authoritativeRoot;
-    }
-    if (runtimeServiceIntents.length > 0) {
-      env.PAPERCLIP_RUNTIME_SERVICE_INTENTS_JSON = JSON.stringify(runtimeServiceIntents);
-    }
-    if (runtimeServices.length > 0) {
-      env.PAPERCLIP_RUNTIME_SERVICES_JSON = JSON.stringify(runtimeServices);
-    }
-    if (runtimePrimaryUrl) {
-      env.PAPERCLIP_RUNTIME_PRIMARY_URL = runtimePrimaryUrl;
-    }
-    env.CODEX_HOME = remoteCodexHome ?? effectiveCodexHome;
-    if (ctx.observability && (observabilityProfile || observabilityPreparationFailed)) applyObservabilityEnvironment(env, ctx.observability);
-    if (authToken) {
-      env.PAPERCLIP_API_KEY = authToken;
-    }
-    if (executionTargetIsRemote && adapterExecutionTargetUsesPaperclipBridge(runtimeExecutionTarget)) {
-      paperclipBridge = await startAdapterExecutionTargetPaperclipBridge({
+      await emitSandboxAuthPrecedenceWarningIfNeeded({
         runId,
         target: runtimeExecutionTarget,
-        enableSandboxDuplexBridge: adapterExecutionTargetEnablesSandboxDuplexBridge(runtimeExecutionTarget),
-        duplexObservabilityRecorder: adapterExecutionTargetDuplexObservabilityRecorder(runtimeExecutionTarget),
-        runtimeRootDir: preparedExecutionTargetRuntime?.runtimeRootDir,
-        adapterKey: "codex",
-        timeoutSec,
-        hostApiToken: env.PAPERCLIP_API_KEY,
+        cwd: effectiveExecutionCwd,
+        configuredApiKey: Boolean(configuredOpenAiApiKey),
+        hostAuthJson: await codexHomeHasUsableAuth(effectiveCodexHome),
         onLog,
+        onEvent,
       });
-      if (paperclipBridge) {
-        Object.assign(env, paperclipBridge.env);
+      const env: Record<string, string> = { ...paperclipBaseEnv };
+      env.PAPERCLIP_RUN_ID = runId;
+      const wakeTaskId =
+        (typeof context.taskId === "string" && context.taskId.trim().length > 0 && context.taskId.trim()) ||
+        (typeof context.issueId === "string" && context.issueId.trim().length > 0 && context.issueId.trim()) ||
+        null;
+      const wakeReason =
+        typeof context.wakeReason === "string" && context.wakeReason.trim().length > 0
+          ? context.wakeReason.trim()
+          : null;
+      const wakeCommentId =
+        (typeof context.wakeCommentId === "string" && context.wakeCommentId.trim().length > 0 && context.wakeCommentId.trim()) ||
+        (typeof context.commentId === "string" && context.commentId.trim().length > 0 && context.commentId.trim()) ||
+        null;
+      const approvalId =
+        typeof context.approvalId === "string" && context.approvalId.trim().length > 0
+          ? context.approvalId.trim()
+          : null;
+      const approvalStatus =
+        typeof context.approvalStatus === "string" && context.approvalStatus.trim().length > 0
+          ? context.approvalStatus.trim()
+          : null;
+      const linkedIssueIds = Array.isArray(context.issueIds)
+        ? context.issueIds.filter((value): value is string => typeof value === "string" && value.trim().length > 0)
+        : [];
+      const issueWorkMode = readPaperclipIssueWorkModeFromContext(context);
+      if (wakeTaskId) {
+        env.PAPERCLIP_TASK_ID = wakeTaskId;
       }
-    }
-    const effectiveEnv = Object.fromEntries(
-      Object.entries({ ...process.env, ...env }).filter(
-        (entry): entry is [string, string] => typeof entry[1] === "string",
-      ),
-    );
-    const managedBilling = resolveManagedOpenAiBilling(config.managedAiRouting);
-    const billingType = managedBilling?.billingType ?? resolveCodexBillingType(effectiveEnv);
-    const biller = managedBilling?.biller ?? resolveCodexBiller(effectiveEnv, billingType);
-    const networkScope = parseLocalProcessNetworkScope(config.networkScope);
-    const filesystemScope = parseLocalProcessFilesystemScope(config.filesystemScope);
-    const localProcessSandbox: LocalProcessSandboxOptions | null =
-      (filesystemScope || networkScope) && !executionTargetIsRemote
-        ? {
-            workspaceDir: effectiveExecutionCwd,
-            filesystemScope,
-            managedPaths: [{ path: effectiveCodexHome, access: "rw" }],
-            extraPaths: parseLocalProcessSandboxExtraPaths(config.filesystemExtraPaths),
-            pathAliases: targetWorkspaceRealization?.mode === "copy"
-              ? targetWorkspaceRealization.pathAliases
-              : [],
-            outboundRestorePaths: targetWorkspaceRealization?.outboundRestorePaths ?? [],
-            homeDir: filesystemScope ? effectiveCodexHome : null,
-            networkScope,
-            networkAllowlist: parseLocalProcessNetworkAllowlist(config.networkAllowlist),
-            networkTrustedUrls: [
-              paperclipBaseEnv.PAPERCLIP_API_URL,
-              ...runtimeMcpGateways.map((gateway) => gateway.endpointPath),
-            ],
-            command: asString(config.filesystemSandboxCommand, "bwrap"),
-          }
-        : null;
-    if (localProcessSandbox) {
-      const scopes = [filesystemScope ? "workspace filesystem" : null, networkScope ? `${networkScope} network` : null]
-        .filter(Boolean)
-        .join(" and ");
-      await onLog(
-        "stdout",
-        `[paperclip] Confining Codex with ${scopes} scope.\n`,
-      );
-    }
-    const runtimeEnv = Object.fromEntries(
-      Object.entries(ensurePathInEnv(effectiveEnv)).filter(
-        (entry): entry is [string, string] => typeof entry[1] === "string",
-      ),
-    );
-    await ensureAdapterExecutionTargetRuntimeCommandInstalled({
-      runId,
-      target: executionTarget,
-      installCommand: ctx.runtimeCommandSpec?.installCommand,
-      detectCommand: ctx.runtimeCommandSpec?.detectCommand,
-      cwd,
-      env: runtimeEnv,
-      timeoutSec,
-      graceSec,
-      onLog,
-    });
-    await ensureAdapterExecutionTargetCommandResolvable(command, executionTarget, cwd, runtimeEnv);
-    const resolvedCommand = await resolveAdapterExecutionTargetCommandForLogs(command, executionTarget, cwd, runtimeEnv);
-    if (observabilityProfile) {
-      let qualified = false;
-      try {
-        const version = await runAdapterExecutionTargetProcess(`${runId}-observability-version`, executionTarget, command, ["--version"], {
-          cwd, env: runtimeEnv, timeoutSec: 5, graceSec: 1, onLog: async () => {},
+      if (issueWorkMode) {
+        env.PAPERCLIP_ISSUE_WORK_MODE = issueWorkMode;
+      }
+      if (wakeReason) {
+        env.PAPERCLIP_WAKE_REASON = wakeReason;
+      }
+      if (wakeCommentId) {
+        env.PAPERCLIP_WAKE_COMMENT_ID = wakeCommentId;
+      }
+      if (approvalId) {
+        env.PAPERCLIP_APPROVAL_ID = approvalId;
+      }
+      if (approvalStatus) {
+        env.PAPERCLIP_APPROVAL_STATUS = approvalStatus;
+      }
+      if (linkedIssueIds.length > 0) {
+        env.PAPERCLIP_LINKED_ISSUE_IDS = linkedIssueIds.join(",");
+      }
+      refreshPaperclipWorkspaceEnvForExecution({
+        env,
+        envConfig,
+        workspaceCwd: effectiveWorkspaceCwd,
+        workspaceSource,
+        workspaceStrategy,
+        workspaceId,
+        workspaceRepoUrl,
+        workspaceRepoRef,
+        workspaceBranch,
+        workspaceWorktreePath,
+        workspaceHints,
+        agentHome,
+        executionTargetIsRemote,
+        executionCwd: effectiveExecutionCwd,
+      });
+      if (targetWorkspaceRealization) {
+        env.PAPERCLIP_WORKSPACE_REALIZATION_MODE = targetWorkspaceRealization.mode;
+        env.PAPERCLIP_WORKSPACE_AUTHORITATIVE_ROOT = targetWorkspaceRealization.authoritativeRoot;
+      }
+      if (runtimeServiceIntents.length > 0) {
+        env.PAPERCLIP_RUNTIME_SERVICE_INTENTS_JSON = JSON.stringify(runtimeServiceIntents);
+      }
+      if (runtimeServices.length > 0) {
+        env.PAPERCLIP_RUNTIME_SERVICES_JSON = JSON.stringify(runtimeServices);
+      }
+      if (runtimePrimaryUrl) {
+        env.PAPERCLIP_RUNTIME_PRIMARY_URL = runtimePrimaryUrl;
+      }
+      if (executionTarget?.kind === "remote" && executionTarget.transport === "ssh" && executionTarget.spec.useHostAuth === false && config.managedAiConnection && preparedExecutionTargetRuntime?.runtimeRootDir) Object.assign(env, managedRemoteHomeEnvironment(preparedExecutionTargetRuntime.runtimeRootDir));
+      if (useSshHostAuth) {
+        if (typeof envConfig.CODEX_HOME === "string" && envConfig.CODEX_HOME.trim()) env.CODEX_HOME = envConfig.CODEX_HOME;
+        else delete env.CODEX_HOME;
+      } else env.CODEX_HOME = remoteCodexHome ?? effectiveCodexHome;
+      if (ctx.observability && (observabilityProfile || observabilityPreparationFailed)) applyObservabilityEnvironment(env, ctx.observability);
+      if (authToken) {
+        env.PAPERCLIP_API_KEY = authToken;
+      }
+      if (executionTargetIsRemote && adapterExecutionTargetUsesPaperclipBridge(runtimeExecutionTarget)) {
+        paperclipBridge = await startAdapterExecutionTargetPaperclipBridge({
+          runId,
+          target: runtimeExecutionTarget,
+          enableSandboxDuplexBridge: adapterExecutionTargetEnablesSandboxDuplexBridge(runtimeExecutionTarget),
+          duplexObservabilityRecorder: adapterExecutionTargetDuplexObservabilityRecorder(runtimeExecutionTarget),
+          runtimeRootDir: preparedExecutionTargetRuntime?.runtimeRootDir,
+          adapterKey: "codex",
+          timeoutSec,
+          hostApiToken: env.PAPERCLIP_API_KEY,
+          onLog,
         });
-        qualified = version.exitCode === 0 && /^codex-cli 0\.160\.0\s*$/.test(version.stdout.trim());
-      } catch { /* Export qualification must not block baseline work. */ }
-      if (!qualified) {
-        await observabilityProfile.cleanup();
-        observabilityProfile = null;
-        await onLog("stderr", "[paperclip] Company observability was not applied: this Codex executable is not the qualified 0.160.0 release.\n");
+        if (paperclipBridge) {
+          Object.assign(env, paperclipBridge.env);
+        }
       }
-    }
-    const loggedEnv = buildInvocationEnvForLogs(env, {
-      runtimeEnv,
-      includeRuntimeKeys: ["HOME"],
-      resolvedCommand,
-    });
-
-    const monitorResolution = resolveCodexInactivityTimeout(config.outputInactivityTimeoutMs);
-    if (monitorResolution.mode === "disabled") {
-      await onLog(
-        "stdout",
-        `[paperclip] Codex output inactivity monitor is DISABLED via adapterConfig.outputInactivityTimeoutMs=null. Hung codex runs will only be detected by the platform-level silent-run safety net.\n`,
+      const effectiveEnv = Object.fromEntries(
+        Object.entries({ ...process.env, ...env }).filter(
+          (entry): entry is [string, string] => typeof entry[1] === "string",
+        ),
       );
-    } else if (monitorResolution.mode === "default" && "reason" in monitorResolution) {
-      await onLog(
-        "stdout",
-        `[paperclip] Ignoring non-positive adapterConfig.outputInactivityTimeoutMs; falling back to default ${monitorResolution.timeoutMs}ms.\n`,
-      );
-    }
-    const runtimeSessionParams = parseObject(runtime.sessionParams);
-    const runtimeSessionId = asString(runtimeSessionParams.sessionId, runtime.sessionId ?? "");
-    const runtimeSessionCwd = asString(runtimeSessionParams.cwd, "");
-    const runtimeRemoteExecution = parseObject(runtimeSessionParams.remoteExecution);
-    const canResumeSession =
-      runtimeSessionId.length > 0 &&
-      (runtimeSessionCwd.length === 0 || path.resolve(runtimeSessionCwd) === path.resolve(effectiveExecutionCwd)) &&
-      adapterExecutionTargetSessionMatches(runtimeRemoteExecution, runtimeExecutionTarget);
-    const codexTransientFallbackMode = readCodexTransientFallbackMode(context);
-    const forceSaferInvocation = fallbackModeUsesSaferInvocation(codexTransientFallbackMode);
-    const forceFreshSession = fallbackModeUsesFreshSession(codexTransientFallbackMode);
-    const sessionId = canResumeSession && !forceFreshSession ? runtimeSessionId : null;
-    if (executionTargetIsRemote && runtimeSessionId && !canResumeSession) {
-      await onLog(
-        "stdout",
-        `[paperclip] Codex session "${runtimeSessionId}" does not match the current remote execution identity and will not be resumed in "${effectiveExecutionCwd}". Starting a fresh remote session.\n`,
-      );
-    } else if (runtimeSessionId && !canResumeSession) {
-      await onLog(
-        "stdout",
-        `[paperclip] Codex session "${runtimeSessionId}" was saved for cwd "${runtimeSessionCwd}" and will not be resumed in "${effectiveExecutionCwd}".\n`,
-      );
-    }
-    const instructionsFilePath = asString(config.instructionsFilePath, "").trim();
-    const instructionsDir = instructionsFilePath ? `${path.dirname(instructionsFilePath)}/` : "";
-    let instructionsPrefix = "";
-    if (instructionsFilePath) {
-      try {
-        const instructionsContents = await fs.readFile(instructionsFilePath, "utf8");
-        instructionsPrefix =
-          `${instructionsContents}\n\n` +
-          `The above agent instructions were loaded from ${instructionsFilePath}. ` +
-          `Resolve any relative file references from ${instructionsDir}.\n\n`;
-      } catch (err) {
-        const reason = err instanceof Error ? err.message : String(err);
+      const managedBilling = resolveManagedOpenAiBilling(config.managedAiRouting);
+      const billingType = managedBilling?.billingType ?? resolveCodexBillingType(effectiveEnv);
+      const biller = managedBilling?.biller ?? resolveCodexBiller(effectiveEnv, billingType);
+      const networkScope = parseLocalProcessNetworkScope(config.networkScope);
+      const filesystemScope = parseLocalProcessFilesystemScope(config.filesystemScope);
+      const localProcessSandbox: LocalProcessSandboxOptions | null =
+        (filesystemScope || networkScope) && !executionTargetIsRemote
+          ? {
+              workspaceDir: effectiveExecutionCwd,
+              filesystemScope,
+              managedPaths: [{ path: effectiveCodexHome, access: "rw" }],
+              extraPaths: parseLocalProcessSandboxExtraPaths(config.filesystemExtraPaths),
+              pathAliases: targetWorkspaceRealization?.mode === "copy"
+                ? targetWorkspaceRealization.pathAliases
+                : [],
+              outboundRestorePaths: targetWorkspaceRealization?.outboundRestorePaths ?? [],
+              homeDir: filesystemScope ? effectiveCodexHome : null,
+              networkScope,
+              networkAllowlist: parseLocalProcessNetworkAllowlist(config.networkAllowlist),
+              networkTrustedUrls: [
+                paperclipBaseEnv.PAPERCLIP_API_URL,
+                ...runtimeMcpGateways.map((gateway) => gateway.endpointPath),
+              ],
+              command: asString(config.filesystemSandboxCommand, "bwrap"),
+            }
+          : null;
+      if (localProcessSandbox) {
+        const scopes = [filesystemScope ? "workspace filesystem" : null, networkScope ? `${networkScope} network` : null]
+          .filter(Boolean)
+          .join(" and ");
         await onLog(
           "stdout",
-          `[paperclip] Warning: could not read agent instructions file "${instructionsFilePath}": ${reason}\n`,
+          `[paperclip] Confining Codex with ${scopes} scope.\n`,
         );
       }
-    }
-    const repoAgentsNote =
-      "Codex exec automatically applies repo-scoped AGENTS.md instructions from the current workspace; Paperclip does not currently suppress that discovery.";
-    const bootstrapPromptTemplate = asString(config.bootstrapPromptTemplate, "");
-    const templateData = {
-      agentId: agent.id,
-      companyId: agent.companyId,
-      runId,
-      company: { id: agent.companyId },
-      agent,
-      run: { id: runId, source: "on_demand" },
-      context,
-    };
-    const continuationSummary = parseObject(context.paperclipContinuationSummary);
-    const continuationSummaryBody = asString(continuationSummary.body, "").trim() || null;
-    const codexFallbackHandoffNote =
-      forceFreshSession
-        ? buildCodexTransientHandoffNote({
-            previousSessionId: runtimeSessionId || runtime.sessionId || null,
-            fallbackMode: codexTransientFallbackMode ?? "fresh_session",
-            continuationSummaryBody,
-          })
-        : "";
-    const runAttempt = async (resumeSessionId: string | null) => {
-      await hydrateFreshSessionHandoff(ctx, { resumedSession: Boolean(resumeSessionId) });
-      const renderedBootstrapPrompt =
-        !resumeSessionId && bootstrapPromptTemplate.trim().length > 0
-          ? renderTemplate(bootstrapPromptTemplate, templateData).trim()
-          : "";
-      const { taskContextNote, wakePrompt } = selectPaperclipPromptSections(context, {
-        resumedSession: Boolean(resumeSessionId),
-        includeCommunicationGuidance: false,
+      const runtimeEnv = Object.fromEntries(
+        Object.entries(ensurePathInEnv(effectiveEnv)).filter(
+          (entry): entry is [string, string] => typeof entry[1] === "string",
+        ),
+      );
+      await ensureAdapterExecutionTargetRuntimeCommandInstalled({
+        runId,
+        target: executionTarget,
+        installCommand: ctx.runtimeCommandSpec?.installCommand,
+        detectCommand: ctx.runtimeCommandSpec?.detectCommand,
+        cwd,
+        env: runtimeEnv,
+        timeoutSec,
+        graceSec,
+        onLog,
       });
-      const shouldUseResumeDeltaPrompt = Boolean(resumeSessionId) && wakePrompt.length > 0;
-      const promptInstructionsPrefix = shouldUseResumeDeltaPrompt ? "" : instructionsPrefix;
-      const commandNotes = (() => {
-        if (!instructionsFilePath) {
-          const notes = [repoAgentsNote];
-          if (forceSaferInvocation) {
-            notes.push("Codex transient fallback requested safer invocation settings for this retry.");
-          }
-          if (forceFreshSession) {
-            notes.push("Codex transient fallback forced a fresh session with a continuation handoff.");
-          }
-          return notes;
+      await ensureAdapterExecutionTargetCommandResolvable(command, executionTarget, cwd, runtimeEnv);
+      const resolvedCommand = await resolveAdapterExecutionTargetCommandForLogs(command, executionTarget, cwd, runtimeEnv);
+      if (observabilityProfile) {
+        let qualified = false;
+        try {
+          const version = await runAdapterExecutionTargetProcess(`${runId}-observability-version`, executionTarget, command, ["--version"], {
+            cwd, env: runtimeEnv, timeoutSec: 5, graceSec: 1, onLog: async () => {},
+          });
+          qualified = version.exitCode === 0 && /^codex-cli 0\.160\.0\s*$/.test(version.stdout.trim());
+        } catch { /* Export qualification must not block baseline work. */ }
+        if (!qualified) {
+          await observabilityProfile.cleanup();
+          observabilityProfile = null;
+          await onLog("stderr", "[paperclip] Company observability was not applied: this Codex executable is not the qualified 0.160.0 release.\n");
         }
-        if (instructionsPrefix.length > 0) {
-          if (shouldUseResumeDeltaPrompt) {
+      }
+      const loggedEnv = buildInvocationEnvForLogs(env, {
+        runtimeEnv,
+        includeRuntimeKeys: ["HOME"],
+        resolvedCommand,
+      });
+
+      const monitorResolution = resolveCodexInactivityTimeout(config.outputInactivityTimeoutMs);
+      if (monitorResolution.mode === "disabled") {
+        await onLog(
+          "stdout",
+          `[paperclip] Codex output inactivity monitor is DISABLED via adapterConfig.outputInactivityTimeoutMs=null. Hung codex runs will only be detected by the platform-level silent-run safety net.\n`,
+        );
+      } else if (monitorResolution.mode === "default" && "reason" in monitorResolution) {
+        await onLog(
+          "stdout",
+          `[paperclip] Ignoring non-positive adapterConfig.outputInactivityTimeoutMs; falling back to default ${monitorResolution.timeoutMs}ms.\n`,
+        );
+      }
+      const runtimeSessionParams = parseObject(runtime.sessionParams);
+      const runtimeSessionId = asString(runtimeSessionParams.sessionId, runtime.sessionId ?? "");
+      const runtimeSessionCwd = asString(runtimeSessionParams.cwd, "");
+      const runtimeRemoteExecution = parseObject(runtimeSessionParams.remoteExecution);
+      const canResumeSession =
+        runtimeSessionId.length > 0 &&
+        (runtimeSessionCwd.length === 0 || path.resolve(runtimeSessionCwd) === path.resolve(effectiveExecutionCwd)) &&
+        adapterExecutionTargetSessionMatches(runtimeRemoteExecution, runtimeExecutionTarget);
+      const codexTransientFallbackMode = readCodexTransientFallbackMode(context);
+      const forceSaferInvocation = fallbackModeUsesSaferInvocation(codexTransientFallbackMode);
+      const forceFreshSession = fallbackModeUsesFreshSession(codexTransientFallbackMode);
+      const sessionId = canResumeSession && !forceFreshSession ? runtimeSessionId : null;
+      if (executionTargetIsRemote && runtimeSessionId && !canResumeSession) {
+        await onLog(
+          "stdout",
+          `[paperclip] Codex session "${runtimeSessionId}" does not match the current remote execution identity and will not be resumed in "${effectiveExecutionCwd}". Starting a fresh remote session.\n`,
+        );
+      } else if (runtimeSessionId && !canResumeSession) {
+        await onLog(
+          "stdout",
+          `[paperclip] Codex session "${runtimeSessionId}" was saved for cwd "${runtimeSessionCwd}" and will not be resumed in "${effectiveExecutionCwd}".\n`,
+        );
+      }
+      const instructionsFilePath = asString(config.instructionsFilePath, "").trim();
+      const instructionsDir = instructionsFilePath ? `${path.dirname(instructionsFilePath)}/` : "";
+      let instructionsPrefix = "";
+      if (instructionsFilePath) {
+        try {
+          const instructionsContents = await fs.readFile(instructionsFilePath, "utf8");
+          instructionsPrefix =
+            `${instructionsContents}\n\n` +
+            `The above agent instructions were loaded from ${instructionsFilePath}. ` +
+            `Resolve any relative file references from ${instructionsDir}.\n\n`;
+        } catch (err) {
+          const reason = err instanceof Error ? err.message : String(err);
+          await onLog(
+            "stdout",
+            `[paperclip] Warning: could not read agent instructions file "${instructionsFilePath}": ${reason}\n`,
+          );
+        }
+      }
+      const repoAgentsNote =
+        "Codex exec automatically applies repo-scoped AGENTS.md instructions from the current workspace; Paperclip does not currently suppress that discovery.";
+      const bootstrapPromptTemplate = asString(config.bootstrapPromptTemplate, "");
+      const templateData = {
+        agentId: agent.id,
+        companyId: agent.companyId,
+        runId,
+        company: { id: agent.companyId },
+        agent,
+        run: { id: runId, source: "on_demand" },
+        context,
+      };
+      const continuationSummary = parseObject(context.paperclipContinuationSummary);
+      const continuationSummaryBody = asString(continuationSummary.body, "").trim() || null;
+      const codexFallbackHandoffNote =
+        forceFreshSession
+          ? buildCodexTransientHandoffNote({
+              previousSessionId: runtimeSessionId || runtime.sessionId || null,
+              fallbackMode: codexTransientFallbackMode ?? "fresh_session",
+              continuationSummaryBody,
+            })
+          : "";
+      const runAttempt = async (resumeSessionId: string | null) => {
+        await hydrateFreshSessionHandoff(ctx, { resumedSession: Boolean(resumeSessionId) });
+        const renderedBootstrapPrompt =
+          !resumeSessionId && bootstrapPromptTemplate.trim().length > 0
+            ? renderTemplate(bootstrapPromptTemplate, templateData).trim()
+            : "";
+        const { taskContextNote, wakePrompt } = selectPaperclipPromptSections(context, {
+          resumedSession: Boolean(resumeSessionId),
+          includeCommunicationGuidance: false,
+        });
+        const shouldUseResumeDeltaPrompt = Boolean(resumeSessionId) && wakePrompt.length > 0;
+        const promptInstructionsPrefix = shouldUseResumeDeltaPrompt ? "" : instructionsPrefix;
+        const commandNotes = (() => {
+          if (!instructionsFilePath) {
+            const notes = [repoAgentsNote];
+            if (forceSaferInvocation) {
+              notes.push("Codex transient fallback requested safer invocation settings for this retry.");
+            }
+            if (forceFreshSession) {
+              notes.push("Codex transient fallback forced a fresh session with a continuation handoff.");
+            }
+            return notes;
+          }
+          if (instructionsPrefix.length > 0) {
+            if (shouldUseResumeDeltaPrompt) {
+              const notes = [
+                `Loaded agent instructions from ${instructionsFilePath}`,
+                "Skipped stdin instruction reinjection because an existing Codex session is being resumed with a wake delta.",
+                repoAgentsNote,
+              ];
+              if (forceSaferInvocation) {
+                notes.push("Codex transient fallback requested safer invocation settings for this retry.");
+              }
+              if (forceFreshSession) {
+                notes.push("Codex transient fallback forced a fresh session with a continuation handoff.");
+              }
+              return notes;
+            }
             const notes = [
               `Loaded agent instructions from ${instructionsFilePath}`,
-              "Skipped stdin instruction reinjection because an existing Codex session is being resumed with a wake delta.",
+              `Prepended instructions + path directive to stdin prompt (relative references from ${instructionsDir}).`,
               repoAgentsNote,
             ];
             if (forceSaferInvocation) {
@@ -1225,8 +1247,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
             return notes;
           }
           const notes = [
-            `Loaded agent instructions from ${instructionsFilePath}`,
-            `Prepended instructions + path directive to stdin prompt (relative references from ${instructionsDir}).`,
+            `Configured instructionsFilePath ${instructionsFilePath}, but file could not be read; continuing without injected instructions.`,
             repoAgentsNote,
           ];
           if (forceSaferInvocation) {
@@ -1236,246 +1257,376 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
             notes.push("Codex transient fallback forced a fresh session with a continuation handoff.");
           }
           return notes;
+        })();
+        if (executionTargetIsSandbox) {
+          commandNotes.push(
+            "Added --skip-git-repo-check for sandbox execution because Codex requires an explicit trust bypass in headless remote workspaces.",
+          );
         }
-        const notes = [
-          `Configured instructionsFilePath ${instructionsFilePath}, but file could not be read; continuing without injected instructions.`,
-          repoAgentsNote,
-        ];
-        if (forceSaferInvocation) {
-          notes.push("Codex transient fallback requested safer invocation settings for this retry.");
+        if (preparedRuntimeConfig.notes.length > 0) {
+          commandNotes.unshift(...preparedRuntimeConfig.notes);
         }
-        if (forceFreshSession) {
-          notes.push("Codex transient fallback forced a fresh session with a continuation handoff.");
-        }
-        return notes;
-      })();
-      if (executionTargetIsSandbox) {
-        commandNotes.push(
-          "Added --skip-git-repo-check for sandbox execution because Codex requires an explicit trust bypass in headless remote workspaces.",
+        const renderedPrompt = shouldUseResumeDeltaPrompt || isPaperclipRecoveryWakePayload(context.paperclipWake)
+          ? ""
+          : renderTemplate(promptTemplate, templateData);
+        const sessionHandoffNote = asString(context.paperclipSessionHandoffMarkdown, "").trim();
+        const prompt = joinPromptSections([
+          promptInstructionsPrefix,
+          renderedBootstrapPrompt,
+          selectInitialCommunicationGuidance(context, { resumedSession: Boolean(resumeSessionId) }),
+          wakePrompt,
+          codexFallbackHandoffNote,
+          sessionHandoffNote,
+          taskContextNote,
+          renderedPrompt,
+        ]);
+        const promptMetrics = {
+          promptChars: prompt.length,
+          instructionsChars: promptInstructionsPrefix.length,
+          bootstrapPromptChars: renderedBootstrapPrompt.length,
+          wakePromptChars: wakePrompt.length,
+          sessionHandoffChars: sessionHandoffNote.length,
+          taskContextChars: taskContextNote.length,
+          heartbeatPromptChars: renderedPrompt.length,
+        };
+        const execArgs = buildCodexExecArgs(
+          forceSaferInvocation ? { ...config, fastMode: false } : config,
+          {
+            resumeSessionId,
+            skipGitRepoCheck: executionTargetIsSandbox,
+            networkAccess: env.PAPERCLIP_RUNNER_NETWORK_ACCESS !== "disabled",
+          },
         );
-      }
-      if (preparedRuntimeConfig.notes.length > 0) {
-        commandNotes.unshift(...preparedRuntimeConfig.notes);
-      }
-      const renderedPrompt = shouldUseResumeDeltaPrompt || isPaperclipRecoveryWakePayload(context.paperclipWake)
-        ? ""
-        : renderTemplate(promptTemplate, templateData);
-      const sessionHandoffNote = asString(context.paperclipSessionHandoffMarkdown, "").trim();
-      const prompt = joinPromptSections([
-        promptInstructionsPrefix,
-        renderedBootstrapPrompt,
-        selectInitialCommunicationGuidance(context, { resumedSession: Boolean(resumeSessionId) }),
-        wakePrompt,
-        codexFallbackHandoffNote,
-        sessionHandoffNote,
-        taskContextNote,
-        renderedPrompt,
-      ]);
-      const promptMetrics = {
-        promptChars: prompt.length,
-        instructionsChars: promptInstructionsPrefix.length,
-        bootstrapPromptChars: renderedBootstrapPrompt.length,
-        wakePromptChars: wakePrompt.length,
-        sessionHandoffChars: sessionHandoffNote.length,
-        taskContextChars: taskContextNote.length,
-        heartbeatPromptChars: renderedPrompt.length,
-      };
-      const execArgs = buildCodexExecArgs(
-        forceSaferInvocation ? { ...config, fastMode: false } : config,
-        {
-          resumeSessionId,
-          skipGitRepoCheck: executionTargetIsSandbox,
-          networkAccess: env.PAPERCLIP_RUNNER_NETWORK_ACCESS !== "disabled",
-        },
-      );
-      const args = execArgs.args;
-      if (observabilityProfile) replaceCodexProfileArgs(args, observabilityProfile.name);
-      else if (observabilityPreparationFailed) disableCodexObservabilityArgs(args);
-      const pricingContext = execArgs.fastModeApplied ? { serviceTier: "fast" } : undefined;
-      const shellKeys = codexShellEnvironmentKeys(env, envConfigStrings, Boolean(ctx.agentIdentity));
-      args.unshift("-c", "features.shell_snapshot=false", "-c", 'shell_environment_policy.inherit="all"', "-c", "shell_environment_policy.ignore_default_excludes=true",
-        "-c", `shell_environment_policy.include_only=${JSON.stringify(shellKeys)}`);
-      const commandNotesWithFastMode =
-        execArgs.fastModeIgnoredReason == null
-          ? commandNotes
-          : [...commandNotes, execArgs.fastModeIgnoredReason];
-      if (onMeta) {
-        await onMeta({
-          adapterType: "codex_local",
-          command: resolvedCommand,
-          cwd: effectiveExecutionCwd,
-          commandNotes: commandNotesWithFastMode,
-          commandArgs: args.map((value, idx) => {
-            if (idx === args.length - 1 && value !== "-") return `<prompt ${prompt.length} chars>`;
-            return value;
-          }),
-          env: loggedEnv,
-          prompt,
-          promptMetrics,
-          context,
-        });
-      }
-
-      let monitorFired = false;
-      let monitorTerminationSignal: NodeJS.Signals | null = null;
-      let monitorElapsedMs = 0;
-      let monitorTimeoutMs = 0;
-      let killTarget: { pid: number | null; processGroupId: number | null } | null = null;
-      let sigkillTimer: ReturnType<typeof setTimeout> | null = null;
-      let monitorLogPromise: Promise<unknown> | null = null;
-      const processActivityMonitor: { current: CodexProcessActivityMonitorHandle | null } = { current: null };
-      const resolvedMonitorTimeoutMs = monitorResolution.mode === "disabled" ? null : monitorResolution.timeoutMs;
-
-      const monitor =
-        monitorResolution.mode === "disabled"
-          ? null
-          : createCodexOutputInactivityMonitor({
-              timeoutMs: monitorResolution.timeoutMs,
-              onFire: (state) => {
-                monitorFired = true;
-                monitorElapsedMs = (state.firedAt ?? Date.now()) - state.lastEventAt;
-                monitorTimeoutMs = monitorResolution.timeoutMs;
-                const message = formatOutputInactivityMonitorErrorMessage(monitorElapsedMs);
-                const elapsedSec = Math.round(monitorElapsedMs / 1000);
-                const timeoutSecLabel = Math.round(monitorResolution.timeoutMs / 1000);
-                const logLine =
-                  `[paperclip] adapter.invoke ${message}; ` +
-                  `timeoutMs=${monitorResolution.timeoutMs} elapsedSinceLastEventMs=${monitorElapsedMs} ` +
-                  `outputChunkCount=${state.outputChunkCount} outputBytes=${state.outputBytes} ` +
-                  `parsedEvents=${state.parsedEventCount} processActivityCount=${state.processActivityCount} ` +
-                  `(timeout=${timeoutSecLabel}s elapsed=${elapsedSec}s); ` +
-                  `terminating codex child via SIGTERM (5s grace, then SIGKILL).\n`;
-                // Issue the log without awaiting on the kill hot path, but capture
-                // the promise so the surrounding try/finally can await flush before
-                // the run resolves. Without this the diagnostic that explains the
-                // kill could be dropped if the child exits faster than onLog flushes.
-                monitorLogPromise = Promise.resolve(onLog("stderr", logLine)).catch(() => {});
-                const target = killTarget;
-                if (!target || (target.pid == null && target.processGroupId == null)) {
-                  return;
-                }
-                const sentSig = signalCodexChild(target, "SIGTERM");
-                if (sentSig) monitorTerminationSignal = "SIGTERM";
-                sigkillTimer = setTimeout(() => {
-                  sigkillTimer = null;
-                  const stillSent = signalCodexChild(target, "SIGKILL");
-                  if (stillSent) monitorTerminationSignal = "SIGKILL";
-                }, CODEX_OUTPUT_INACTIVITY_MONITOR_SIGTERM_GRACE_MS);
-                if (typeof (sigkillTimer as { unref?: () => void }).unref === "function") {
-                  (sigkillTimer as { unref: () => void }).unref();
-                }
-              },
-            });
-
-      const wrappedOnSpawn = async (meta: { pid: number; processGroupId: number | null; startedAt: string }) => {
-        killTarget = { pid: meta.pid ?? null, processGroupId: meta.processGroupId };
-        if (monitor && resolvedMonitorTimeoutMs !== null && !executionTargetIsRemote) {
-          processActivityMonitor.current = createCodexProcessActivityMonitor({
-            pid: meta.pid,
-            processGroupId: meta.processGroupId,
-            intervalMs: Math.min(
-              CODEX_PROCESS_ACTIVITY_POLL_INTERVAL_MS,
-              Math.max(1_000, Math.floor(resolvedMonitorTimeoutMs / 4)),
-            ),
-            onActivity: () => monitor.noteProcessActivity(),
+        const args = execArgs.args;
+        if (observabilityProfile) replaceCodexProfileArgs(args, observabilityProfile.name);
+        else if (observabilityPreparationFailed) disableCodexObservabilityArgs(args);
+        const pricingContext = execArgs.fastModeApplied ? { serviceTier: "fast" } : undefined;
+        const shellKeys = codexShellEnvironmentKeys(env, envConfigStrings, Boolean(ctx.agentIdentity));
+        args.unshift("-c", "features.shell_snapshot=false", "-c", 'shell_environment_policy.inherit="all"', "-c", "shell_environment_policy.ignore_default_excludes=true",
+          "-c", `shell_environment_policy.include_only=${JSON.stringify(shellKeys)}`);
+        const commandNotesWithFastMode =
+          execArgs.fastModeIgnoredReason == null
+            ? commandNotes
+            : [...commandNotes, execArgs.fastModeIgnoredReason];
+        if (onMeta) {
+          await onMeta({
+            adapterType: "codex_local",
+            command: resolvedCommand,
+            cwd: effectiveExecutionCwd,
+            commandNotes: commandNotesWithFastMode,
+            commandArgs: args.map((value, idx) => {
+              if (idx === args.length - 1 && value !== "-") return `<prompt ${prompt.length} chars>`;
+              return value;
+            }),
+            env: loggedEnv,
+            prompt,
+            promptMetrics,
+            context,
           });
         }
-        if (onSpawn) {
-          await onSpawn(meta);
+
+        let monitorFired = false;
+        let monitorTerminationSignal: NodeJS.Signals | null = null;
+        let monitorElapsedMs = 0;
+        let monitorTimeoutMs = 0;
+        let killTarget: { pid: number | null; processGroupId: number | null } | null = null;
+        let sigkillTimer: ReturnType<typeof setTimeout> | null = null;
+        let monitorLogPromise: Promise<unknown> | null = null;
+        const processActivityMonitor: { current: CodexProcessActivityMonitorHandle | null } = { current: null };
+        const resolvedMonitorTimeoutMs = monitorResolution.mode === "disabled" ? null : monitorResolution.timeoutMs;
+
+        const monitor =
+          monitorResolution.mode === "disabled"
+            ? null
+            : createCodexOutputInactivityMonitor({
+                timeoutMs: monitorResolution.timeoutMs,
+                onFire: (state) => {
+                  monitorFired = true;
+                  monitorElapsedMs = (state.firedAt ?? Date.now()) - state.lastEventAt;
+                  monitorTimeoutMs = monitorResolution.timeoutMs;
+                  const message = formatOutputInactivityMonitorErrorMessage(monitorElapsedMs);
+                  const elapsedSec = Math.round(monitorElapsedMs / 1000);
+                  const timeoutSecLabel = Math.round(monitorResolution.timeoutMs / 1000);
+                  const logLine =
+                    `[paperclip] adapter.invoke ${message}; ` +
+                    `timeoutMs=${monitorResolution.timeoutMs} elapsedSinceLastEventMs=${monitorElapsedMs} ` +
+                    `outputChunkCount=${state.outputChunkCount} outputBytes=${state.outputBytes} ` +
+                    `parsedEvents=${state.parsedEventCount} processActivityCount=${state.processActivityCount} ` +
+                    `(timeout=${timeoutSecLabel}s elapsed=${elapsedSec}s); ` +
+                    `terminating codex child via SIGTERM (5s grace, then SIGKILL).\n`;
+                  // Issue the log without awaiting on the kill hot path, but capture
+                  // the promise so the surrounding try/finally can await flush before
+                  // the run resolves. Without this the diagnostic that explains the
+                  // kill could be dropped if the child exits faster than onLog flushes.
+                  monitorLogPromise = Promise.resolve(onLog("stderr", logLine)).catch(() => {});
+                  const target = killTarget;
+                  if (!target || (target.pid == null && target.processGroupId == null)) {
+                    return;
+                  }
+                  const sentSig = signalCodexChild(target, "SIGTERM");
+                  if (sentSig) monitorTerminationSignal = "SIGTERM";
+                  sigkillTimer = setTimeout(() => {
+                    sigkillTimer = null;
+                    const stillSent = signalCodexChild(target, "SIGKILL");
+                    if (stillSent) monitorTerminationSignal = "SIGKILL";
+                  }, CODEX_OUTPUT_INACTIVITY_MONITOR_SIGTERM_GRACE_MS);
+                  if (typeof (sigkillTimer as { unref?: () => void }).unref === "function") {
+                    (sigkillTimer as { unref: () => void }).unref();
+                  }
+                },
+              });
+
+        const wrappedOnSpawn = async (meta: { pid: number; processGroupId: number | null; startedAt: string }) => {
+          killTarget = { pid: meta.pid ?? null, processGroupId: meta.processGroupId };
+          if (monitor && resolvedMonitorTimeoutMs !== null && !executionTargetIsRemote) {
+            processActivityMonitor.current = createCodexProcessActivityMonitor({
+              pid: meta.pid,
+              processGroupId: meta.processGroupId,
+              intervalMs: Math.min(
+                CODEX_PROCESS_ACTIVITY_POLL_INTERVAL_MS,
+                Math.max(1_000, Math.floor(resolvedMonitorTimeoutMs / 4)),
+              ),
+              onActivity: () => monitor.noteProcessActivity(),
+            });
+          }
+          if (onSpawn) {
+            await onSpawn(meta);
+          }
+        };
+
+        const consumeAccounting = createCodexJsonlParser();
+        const accountingLog = createUsageCheckpointLog(onLog, ctx.onUsage, stdout => {
+          const parsed = consumeAccounting(stdout);
+          return { usage: parsed.usageReported ? parsed.usage : undefined, costStatus: parsed.usageComplete ? undefined : "unpriced", usageBasis: "per_run", provider: "openai", biller, billingType, model, pricingContext, costUsd: null, complete: parsed.usageComplete };
+        });
+        try {
+          const proc = await runAdapterExecutionTargetProcess(runId, runtimeExecutionTarget, command, args, {
+            onProcessStopped: providerStop.beginInvocation(),
+            cwd,
+            env,
+            stdin: prompt,
+            timeoutSec,
+            graceSec,
+            onSpawn: wrappedOnSpawn,
+            onRuntimeProgress: ctx.onRuntimeProgress,
+            onLog: async (stream, chunk) => {
+              monitor?.noteOutputChunk(stream, chunk);
+              if (stream === "stdout") {
+                await accountingLog(stream, chunk);
+                return;
+              }
+              const cleaned = stripCodexRolloutNoise(chunk);
+              if (!cleaned.trim()) return;
+              await onLog(stream, cleaned);
+            },
+            runLogTail: paperclipBridge?.runLogTail,
+            settleRunDisposition: paperclipBridge?.settleRunDisposition,
+            localProcessSandbox,
+          });
+          await accountingLog.flush();
+          const cleanedStderr = stripCodexRolloutNoise(proc.stderr);
+          return {
+            proc: {
+              ...proc,
+              stderr: cleanedStderr,
+            },
+            rawStderr: proc.stderr,
+            parsed: parseCodexJsonl(proc.stdout),
+            pricingContext,
+            monitor: monitorFired
+              ? {
+                  fired: true as const,
+                  terminationSignal: monitorTerminationSignal,
+                  elapsedMsSinceLastEvent: monitorElapsedMs,
+                  timeoutMs: monitorTimeoutMs,
+                }
+              : { fired: false as const },
+          };
+        } finally {
+          processActivityMonitor.current?.stop();
+          monitor?.stop();
+          if (sigkillTimer) {
+            clearTimeout(sigkillTimer);
+            sigkillTimer = null;
+          }
+          if (monitorLogPromise) {
+            await monitorLogPromise;
+            monitorLogPromise = null;
+          }
         }
       };
 
-      const consumeAccounting = createCodexJsonlParser();
-      const accountingLog = createUsageCheckpointLog(onLog, ctx.onUsage, stdout => {
-        const parsed = consumeAccounting(stdout);
-        return { usage: parsed.usageReported ? parsed.usage : undefined, costStatus: parsed.usageComplete ? undefined : "unpriced", usageBasis: "per_run", provider: "openai", biller, billingType, model, pricingContext, costUsd: null, complete: parsed.usageComplete };
-      });
-      try {
-        const proc = await runAdapterExecutionTargetProcess(runId, runtimeExecutionTarget, command, args, {
-          onProcessStopped: providerStop.beginInvocation(),
-          cwd,
-          env,
-          stdin: prompt,
-          timeoutSec,
-          graceSec,
-          onSpawn: wrappedOnSpawn,
-          onRuntimeProgress: ctx.onRuntimeProgress,
-          onLog: async (stream, chunk) => {
-            monitor?.noteOutputChunk(stream, chunk);
-            if (stream === "stdout") {
-              await accountingLog(stream, chunk);
-              return;
-            }
-            const cleaned = stripCodexRolloutNoise(chunk);
-            if (!cleaned.trim()) return;
-            await onLog(stream, cleaned);
-          },
-          runLogTail: paperclipBridge?.runLogTail,
-          settleRunDisposition: paperclipBridge?.settleRunDisposition,
-          localProcessSandbox,
-        });
-        await accountingLog.flush();
-        const cleanedStderr = stripCodexRolloutNoise(proc.stderr);
-        return {
-          proc: {
-            ...proc,
-            stderr: cleanedStderr,
-          },
-          rawStderr: proc.stderr,
-          parsed: parseCodexJsonl(proc.stdout),
-          pricingContext,
-          monitor: monitorFired
-            ? {
-                fired: true as const,
-                terminationSignal: monitorTerminationSignal,
-                elapsedMsSinceLastEvent: monitorElapsedMs,
-                timeoutMs: monitorTimeoutMs,
-              }
-            : { fired: false as const },
-        };
-      } finally {
-        processActivityMonitor.current?.stop();
-        monitor?.stop();
-        if (sigkillTimer) {
-          clearTimeout(sigkillTimer);
-          sigkillTimer = null;
+      const toResult = (
+        attempt: {
+          proc: { exitCode: number | null; signal: string | null; timedOut: boolean; stdout: string; stderr: string; errorCode?: string | null };
+          rawStderr: string;
+          parsed: ReturnType<typeof parseCodexJsonl>;
+          pricingContext?: AdapterExecutionResult["pricingContext"];
+          monitor?:
+            | { fired: false }
+            | { fired: true; terminationSignal: NodeJS.Signals | null; elapsedMsSinceLastEvent: number; timeoutMs: number };
+        },
+        clearSessionOnMissingSession = false,
+        isRetry = false,
+      ): AdapterExecutionResult => {
+        if (attempt.monitor?.fired) {
+          const errorMessage = formatOutputInactivityMonitorErrorMessage(attempt.monitor.elapsedMsSinceLastEvent);
+          return {
+            exitCode: null,
+            signal: attempt.monitor.terminationSignal ?? attempt.proc.signal,
+            timedOut: false,
+            usageComplete: attempt.parsed.usageComplete,
+            costStatus: attempt.parsed.usageComplete ? undefined : "unpriced",
+            errorMessage,
+            errorCode: "codex_output_inactivity_monitor",
+            errorFamily: null,
+            usage: attempt.parsed.usageReported ? attempt.parsed.usage : undefined,
+            usageBasis: attempt.parsed.usageBasis,
+            sessionId: null,
+            sessionParams: null,
+            sessionDisplayId: null,
+            provider: "openai",
+            biller,
+            model,
+            billingType,
+            costUsd: null,
+            pricingContext: attempt.pricingContext,
+            resultJson: {
+              stdout: attempt.proc.stdout,
+              stderr: attempt.proc.stderr,
+              outputInactivityMonitor: {
+                kind: "output_inactivity",
+                timeoutMs: attempt.monitor.timeoutMs,
+                elapsedMsSinceLastEvent: attempt.monitor.elapsedMsSinceLastEvent,
+                terminationSignal: attempt.monitor.terminationSignal,
+              },
+            },
+            summary: attempt.parsed.summary,
+            clearSession: clearSessionOnMissingSession,
+          };
         }
-        if (monitorLogPromise) {
-          await monitorLogPromise;
-          monitorLogPromise = null;
+        if (attempt.proc.timedOut) {
+          return {
+            exitCode: attempt.proc.exitCode,
+            signal: attempt.proc.signal,
+            timedOut: true,
+            usageComplete: attempt.parsed.usageComplete,
+            costStatus: attempt.parsed.usageComplete ? undefined : "unpriced",
+            usage: attempt.parsed.usageReported ? attempt.parsed.usage : undefined,
+            usageBasis: "per_run",
+            provider: "openai",
+            biller,
+            model,
+            billingType,
+            costUsd: null,
+            pricingContext: attempt.pricingContext,
+            errorMessage: `Timed out after ${timeoutSec}s`,
+            clearSession: clearSessionOnMissingSession,
+          };
         }
-      }
-    };
 
-    const toResult = (
-      attempt: {
-        proc: { exitCode: number | null; signal: string | null; timedOut: boolean; stdout: string; stderr: string; errorCode?: string | null };
-        rawStderr: string;
-        parsed: ReturnType<typeof parseCodexJsonl>;
-        pricingContext?: AdapterExecutionResult["pricingContext"];
-        monitor?:
-          | { fired: false }
-          | { fired: true; terminationSignal: NodeJS.Signals | null; elapsedMsSinceLastEvent: number; timeoutMs: number };
-      },
-      clearSessionOnMissingSession = false,
-      isRetry = false,
-    ): AdapterExecutionResult => {
-      if (attempt.monitor?.fired) {
-        const errorMessage = formatOutputInactivityMonitorErrorMessage(attempt.monitor.elapsedMsSinceLastEvent);
+        const canFallbackToRuntimeSession = !isRetry && !forceFreshSession;
+        const resolvedSessionId =
+          attempt.parsed.sessionId ??
+          (canFallbackToRuntimeSession ? (runtimeSessionId ?? runtime.sessionId ?? null) : null);
+        const resolvedSessionParams = resolvedSessionId
+          ? ({
+            sessionId: resolvedSessionId,
+            cwd: effectiveExecutionCwd,
+            ...(executionTargetIsRemote
+              ? {
+                  remoteExecution: adapterExecutionTargetSessionIdentity(runtimeExecutionTarget),
+                }
+              : {}),
+            ...(workspaceId ? { workspaceId } : {}),
+            ...(workspaceRepoUrl ? { repoUrl: workspaceRepoUrl } : {}),
+            ...(workspaceRepoRef ? { repoRef: workspaceRepoRef } : {}),
+          } as Record<string, unknown>)
+          : null;
+        const parsedError = typeof attempt.parsed.errorMessage === "string" ? attempt.parsed.errorMessage.trim() : "";
+        const stderrLine = firstMeaningfulStderrLine(attempt.proc.stderr);
+        const fallbackErrorMessage =
+          parsedError ||
+          stderrLine ||
+          `Codex exited with code ${attempt.proc.exitCode ?? -1}`;
+        const transientRetryNotBefore =
+          (attempt.proc.exitCode ?? 0) !== 0
+            ? extractCodexRetryNotBefore({
+                stdout: attempt.proc.stdout,
+                stderr: attempt.proc.stderr,
+                errorMessage: fallbackErrorMessage,
+              })
+            : null;
+        const authRefreshFailure =
+          (attempt.proc.exitCode ?? 0) !== 0
+            ? classifyCodexAuthRefreshFailure({
+                stdout: attempt.proc.stdout,
+                stderr: attempt.proc.stderr,
+                errorMessage: fallbackErrorMessage,
+              })
+            : null;
+        const providerQuota =
+          (attempt.proc.exitCode ?? 0) !== 0 &&
+          !authRefreshFailure &&
+          isCodexProviderQuotaError({
+            stdout: attempt.proc.stdout,
+            stderr: attempt.proc.stderr,
+            errorMessage: fallbackErrorMessage,
+          });
+        const transientUpstream =
+          (attempt.proc.exitCode ?? 0) !== 0 &&
+          !authRefreshFailure &&
+          !providerQuota &&
+          isCodexTransientUpstreamError({
+            stdout: attempt.proc.stdout,
+            stderr: attempt.proc.stderr,
+            errorMessage: fallbackErrorMessage,
+          });
+        const harnessCrash =
+          !authRefreshFailure &&
+          !providerQuota &&
+          !transientUpstream &&
+          isCodexHarnessCrash({
+            exitCode: attempt.proc.exitCode,
+            sawProtocolEvent: attempt.parsed.sawProtocolEvent,
+            sawProtocolTerminalEvent: attempt.parsed.sawProtocolTerminalEvent,
+          });
+        const errorFamily =
+          authRefreshFailure ??
+          (providerQuota ? "provider_quota" : transientUpstream || harnessCrash ? "transient_upstream" : null);
+
         return {
-          exitCode: null,
-          signal: attempt.monitor.terminationSignal ?? attempt.proc.signal,
+          exitCode: attempt.proc.exitCode,
+          signal: attempt.proc.signal,
           timedOut: false,
           usageComplete: attempt.parsed.usageComplete,
           costStatus: attempt.parsed.usageComplete ? undefined : "unpriced",
-          errorMessage,
-          errorCode: "codex_output_inactivity_monitor",
-          errorFamily: null,
+          errorMessage:
+            (attempt.proc.exitCode ?? 0) === 0
+              ? null
+              : fallbackErrorMessage,
+          errorCode:
+            // Forward the transport-level error code from the run-disposition
+            // seam first. A lost duplex control channel surfaces the typed
+            // `duplex_channel_lost` code before any provider classification.
+            attempt.proc.errorCode
+              ? attempt.proc.errorCode
+              : authRefreshFailure
+              ? authRefreshFailure
+              : providerQuota
+              ? "provider_quota"
+              : transientUpstream
+              ? "codex_transient_upstream"
+              : harnessCrash
+              ? "codex_harness_crash"
+              : null,
+          errorFamily,
+          retryNotBefore: transientRetryNotBefore ? transientRetryNotBefore.toISOString() : null,
           usage: attempt.parsed.usageReported ? attempt.parsed.usage : undefined,
           usageBasis: attempt.parsed.usageBasis,
-          sessionId: null,
-          sessionParams: null,
-          sessionDisplayId: null,
+          sessionId: resolvedSessionId,
+          sessionParams: resolvedSessionParams,
+          sessionDisplayId: resolvedSessionId,
           provider: "openai",
           biller,
           model,
@@ -1485,160 +1636,16 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
           resultJson: {
             stdout: attempt.proc.stdout,
             stderr: attempt.proc.stderr,
-            outputInactivityMonitor: {
-              kind: "output_inactivity",
-              timeoutMs: attempt.monitor.timeoutMs,
-              elapsedMsSinceLastEvent: attempt.monitor.elapsedMsSinceLastEvent,
-              terminationSignal: attempt.monitor.terminationSignal,
-            },
+            ...(errorFamily ? { errorFamily } : {}),
+            ...(transientRetryNotBefore ? { retryNotBefore: transientRetryNotBefore.toISOString() } : {}),
+            ...(transientRetryNotBefore ? { transientRetryNotBefore: transientRetryNotBefore.toISOString() } : {}),
+            ...(providerQuota && transientRetryNotBefore ? { providerQuotaRetryNotBefore: transientRetryNotBefore.toISOString() } : {}),
           },
           summary: attempt.parsed.summary,
-          clearSession: clearSessionOnMissingSession,
+          clearSession: Boolean((clearSessionOnMissingSession || forceFreshSession) && !resolvedSessionId),
         };
-      }
-      if (attempt.proc.timedOut) {
-        return {
-          exitCode: attempt.proc.exitCode,
-          signal: attempt.proc.signal,
-          timedOut: true,
-          usageComplete: attempt.parsed.usageComplete,
-          costStatus: attempt.parsed.usageComplete ? undefined : "unpriced",
-          usage: attempt.parsed.usageReported ? attempt.parsed.usage : undefined,
-          usageBasis: "per_run",
-          provider: "openai",
-          biller,
-          model,
-          billingType,
-          costUsd: null,
-          pricingContext: attempt.pricingContext,
-          errorMessage: `Timed out after ${timeoutSec}s`,
-          clearSession: clearSessionOnMissingSession,
-        };
-      }
-
-      const canFallbackToRuntimeSession = !isRetry && !forceFreshSession;
-      const resolvedSessionId =
-        attempt.parsed.sessionId ??
-        (canFallbackToRuntimeSession ? (runtimeSessionId ?? runtime.sessionId ?? null) : null);
-      const resolvedSessionParams = resolvedSessionId
-        ? ({
-          sessionId: resolvedSessionId,
-          cwd: effectiveExecutionCwd,
-          ...(executionTargetIsRemote
-            ? {
-                remoteExecution: adapterExecutionTargetSessionIdentity(runtimeExecutionTarget),
-              }
-            : {}),
-          ...(workspaceId ? { workspaceId } : {}),
-          ...(workspaceRepoUrl ? { repoUrl: workspaceRepoUrl } : {}),
-          ...(workspaceRepoRef ? { repoRef: workspaceRepoRef } : {}),
-        } as Record<string, unknown>)
-        : null;
-      const parsedError = typeof attempt.parsed.errorMessage === "string" ? attempt.parsed.errorMessage.trim() : "";
-      const stderrLine = firstMeaningfulStderrLine(attempt.proc.stderr);
-      const fallbackErrorMessage =
-        parsedError ||
-        stderrLine ||
-        `Codex exited with code ${attempt.proc.exitCode ?? -1}`;
-      const transientRetryNotBefore =
-        (attempt.proc.exitCode ?? 0) !== 0
-          ? extractCodexRetryNotBefore({
-              stdout: attempt.proc.stdout,
-              stderr: attempt.proc.stderr,
-              errorMessage: fallbackErrorMessage,
-            })
-          : null;
-      const authRefreshFailure =
-        (attempt.proc.exitCode ?? 0) !== 0
-          ? classifyCodexAuthRefreshFailure({
-              stdout: attempt.proc.stdout,
-              stderr: attempt.proc.stderr,
-              errorMessage: fallbackErrorMessage,
-            })
-          : null;
-      const providerQuota =
-        (attempt.proc.exitCode ?? 0) !== 0 &&
-        !authRefreshFailure &&
-        isCodexProviderQuotaError({
-          stdout: attempt.proc.stdout,
-          stderr: attempt.proc.stderr,
-          errorMessage: fallbackErrorMessage,
-        });
-      const transientUpstream =
-        (attempt.proc.exitCode ?? 0) !== 0 &&
-        !authRefreshFailure &&
-        !providerQuota &&
-        isCodexTransientUpstreamError({
-          stdout: attempt.proc.stdout,
-          stderr: attempt.proc.stderr,
-          errorMessage: fallbackErrorMessage,
-        });
-      const harnessCrash =
-        !authRefreshFailure &&
-        !providerQuota &&
-        !transientUpstream &&
-        isCodexHarnessCrash({
-          exitCode: attempt.proc.exitCode,
-          sawProtocolEvent: attempt.parsed.sawProtocolEvent,
-          sawProtocolTerminalEvent: attempt.parsed.sawProtocolTerminalEvent,
-        });
-      const errorFamily =
-        authRefreshFailure ??
-        (providerQuota ? "provider_quota" : transientUpstream || harnessCrash ? "transient_upstream" : null);
-
-      return {
-        exitCode: attempt.proc.exitCode,
-        signal: attempt.proc.signal,
-        timedOut: false,
-        usageComplete: attempt.parsed.usageComplete,
-        costStatus: attempt.parsed.usageComplete ? undefined : "unpriced",
-        errorMessage:
-          (attempt.proc.exitCode ?? 0) === 0
-            ? null
-            : fallbackErrorMessage,
-        errorCode:
-          // Forward the transport-level error code from the run-disposition
-          // seam first. A lost duplex control channel surfaces the typed
-          // `duplex_channel_lost` code before any provider classification.
-          attempt.proc.errorCode
-            ? attempt.proc.errorCode
-            : authRefreshFailure
-            ? authRefreshFailure
-            : providerQuota
-            ? "provider_quota"
-            : transientUpstream
-            ? "codex_transient_upstream"
-            : harnessCrash
-            ? "codex_harness_crash"
-            : null,
-        errorFamily,
-        retryNotBefore: transientRetryNotBefore ? transientRetryNotBefore.toISOString() : null,
-        usage: attempt.parsed.usageReported ? attempt.parsed.usage : undefined,
-        usageBasis: attempt.parsed.usageBasis,
-        sessionId: resolvedSessionId,
-        sessionParams: resolvedSessionParams,
-        sessionDisplayId: resolvedSessionId,
-        provider: "openai",
-        biller,
-        model,
-        billingType,
-        costUsd: null,
-        pricingContext: attempt.pricingContext,
-        resultJson: {
-          stdout: attempt.proc.stdout,
-          stderr: attempt.proc.stderr,
-          ...(errorFamily ? { errorFamily } : {}),
-          ...(transientRetryNotBefore ? { retryNotBefore: transientRetryNotBefore.toISOString() } : {}),
-          ...(transientRetryNotBefore ? { transientRetryNotBefore: transientRetryNotBefore.toISOString() } : {}),
-          ...(providerQuota && transientRetryNotBefore ? { providerQuotaRetryNotBefore: transientRetryNotBefore.toISOString() } : {}),
-        },
-        summary: attempt.parsed.summary,
-        clearSession: Boolean((clearSessionOnMissingSession || forceFreshSession) && !resolvedSessionId),
       };
-    };
 
-    let executionError: unknown = null;
-    try {
       const initial = await runAttempt(sessionId);
       if (
         sessionId &&
@@ -1674,29 +1681,32 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       try {
         await providerStop.collectBeforeRestore();
       } finally {
-        if (paperclipBridge) {
-          await paperclipBridge.stop();
-        }
-        if (restoreRemoteWorkspace) {
-          try {
-            await onLog(
-              "stdout",
-              `[paperclip] Restoring workspace changes from ${describeAdapterExecutionTarget(executionTarget)}.\n`,
-            );
-            await restoreRemoteWorkspace();
-          } catch (error) {
-            await Promise.resolve(
-              onLog(
-                "stderr",
-                `[paperclip] Failed to restore workspace changes from ${describeAdapterExecutionTarget(
-                  executionTarget,
-                )}: ${error instanceof Error ? error.message : String(error)}\n`,
-              ),
-            ).catch(() => undefined);
-            // A provider failure remains the primary outcome. When provider work
-            // succeeded, however, silently accepting a failed copy-back can lose
-            // the only workspace edits before a replacement sandbox starts.
-            if (executionError === null) throw error;
+        try {
+          if (paperclipBridge) {
+            await paperclipBridge.stop();
+          }
+        } finally {
+          if (restoreRemoteWorkspace) {
+            try {
+              await onLog(
+                "stdout",
+                `[paperclip] Restoring workspace changes from ${describeAdapterExecutionTarget(executionTarget)}.\n`,
+              ).catch(() => undefined);
+              await restoreRemoteWorkspace();
+            } catch (error) {
+              await Promise.resolve(
+                onLog(
+                  "stderr",
+                  `[paperclip] Failed to restore workspace changes from ${describeAdapterExecutionTarget(
+                    executionTarget,
+                  )}: ${error instanceof Error ? error.message : String(error)}\n`,
+                ),
+              ).catch(() => undefined);
+              // A provider failure remains the primary outcome. When provider work
+              // succeeded, however, silently accepting a failed copy-back can lose
+              // the only workspace edits before a replacement sandbox starts.
+              if (executionError === null) throw error;
+            }
           }
         }
       }
