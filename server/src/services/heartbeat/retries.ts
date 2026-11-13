@@ -8,6 +8,11 @@ import { normalizeAgentNameKey } from "../agent-name-key.js";
 import { notifyStatusCardIssueChange } from "../status-card-notifications.js";
 import { notifyScheduledRetryDispatch } from "../run-dispatch-notifications.js";
 import { deriveTaskKeyWithHeartbeatFallback } from "./run-state.js";
+import {
+  PROVIDER_NETWORK_UNREACHABLE_CODE,
+  createProviderHostReachabilityProbe,
+  isHostNetworkUnreachableFailure,
+} from "./provider-network-reachability.js";
 import { infrastructureRetryDelayMs } from "../system-recovery-state.js";
 import {
   WORKSPACE_VALIDATION_FAILURE_CODE,
@@ -143,6 +148,13 @@ export interface HeartbeatRetryDependencies {
   ) => Promise<void>;
   getWorktreeExecutionCutoff: () => Promise<Date | null>;
   applyRunDispatchPostCommitEffects: (effects: PostCommitEffect[]) => void;
+  /**
+   * Confirms the host can still reach the provider before a retry is spent on a
+   * run that already failed because it could not. Optional: defaults to a cached
+   * DNS probe, and anything unexpected inside it reports reachable, so the gate
+   * can only ever fall back to today's behaviour.
+   */
+  isProviderHostReachable?: () => Promise<boolean>;
 }
 
 export const BOUNDED_TRANSIENT_HEARTBEAT_RETRY_DELAYS_MS = [
@@ -526,6 +538,8 @@ export function createHeartbeatRetries(db: Db, dependencies: HeartbeatRetryDepen
     getWorktreeExecutionCutoff,
     applyRunDispatchPostCommitEffects,
   } = dependencies;
+  const isProviderHostReachable =
+    dependencies.isProviderHostReachable ?? createProviderHostReachabilityProbe();
 
   async function scheduleBoundedRetryForRun(
     run: typeof heartbeatRuns.$inferSelect,
@@ -571,6 +585,26 @@ export function createHeartbeatRetries(db: Db, dependencies: HeartbeatRetryDepen
         run.contextSnapshot.chatCompletionDeliveryIds.some(id => typeof id === "string")) {
       return { outcome: "not_scheduled" as const, reason: "The completion outbox owns this reply's retry budget and publication identity.",
         errorCode: "chat_completion_outbox_owns_retry" as const, issueId: readNonEmptyString(run.contextSnapshot.issueId) };
+    }
+    // The previous run already proved the host could not reach the provider. If
+    // that is still true, a retry is a full adapter spawn that cannot succeed, so
+    // hold it instead of spending it. Holding here costs NO attempt: the budget is
+    // consumed when the retry run row is written further down, not at this gate,
+    // so the issue is not parked for attempts that were never made. Whatever
+    // called this (recovery sweeps, run completion) calls again on its own
+    // cadence, and that is the re-probe loop.
+    //
+    // Ordered last among the pure guards on purpose: the classifier is cheap but
+    // the probe is I/O, and it only runs once a failure has already named a
+    // host-level network error.
+    if (isHostNetworkUnreachableFailure(run) && !(await isProviderHostReachable())) {
+      return {
+        outcome: "not_scheduled" as const,
+        reason:
+          "The host cannot reach the provider; holding the retry instead of spending an attempt on a spawn that cannot succeed.",
+        errorCode: PROVIDER_NETWORK_UNREACHABLE_CODE,
+        issueId: readNonEmptyString(run.contextSnapshot?.issueId),
+      };
     }
     const now = opts?.now ?? new Date();
     const preparationRecovery = parseObject(run.resultJson?.executionRecovery);
