@@ -96,7 +96,7 @@ export type AssignedWorkDeps = {
   /** Starts a saved-work recovery the recovery queue has not reached in time. */
   startSavedWorkRecovery?: (source: { companyId: string; issueId: string; runId: string; actionId: string }) =>
     Promise<"started" | "in_flight" | "busy" | "not_eligible">;
-  cancelStalledQueuedRun?: (scope: { companyId: string; runId: string }) => Promise<boolean>;
+  cancelStalledQueuedRun?: (scope: { companyId: string; runId: string; version: string; attachedWakes: number }) => Promise<boolean>;
   /** Shared owner proof, injectable for tests. */
   proveOwner?: (stamp: LocalOwnerStamp) => Promise<OwnerProof>;
   now?: () => Date;
@@ -109,6 +109,8 @@ export type AssignedWorkCheck = {
     | "replaced_stalled_run" | "left_person_work" | "left_stalled_replacement";
   retryAt: Date | null;
 };
+
+const rowsOf = <T>(value: unknown): T[] => Array.isArray(value) ? value as T[] : ((value as { rows?: T[] })?.rows ?? []);
 
 const json = (value: unknown): Record<string, unknown> =>
   value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
@@ -313,7 +315,6 @@ export function assignedWorkSweep(db: Db, deps: AssignedWorkDeps) {
         .orderBy(desc(issueRecoveryActions.createdAt)),
     ]);
 
-    const rowsOf = <T>(value: unknown): T[] => Array.isArray(value) ? value as T[] : ((value as { rows?: T[] })?.rows ?? []);
     const strandedRunIds = [...actionMap.values()].filter(action => action.kind === STRANDED_KIND && action.ownerType === "board")
       .map(action => action.evidence?.latestRunId).filter((id): id is string => typeof id === "string" && /^[0-9a-f-]{36}$/i.test(id));
     const strandedRuns = new Map<string, StrandedHoldRun>((strandedRunIds.length ? await database.select({ id: heartbeatRuns.id,
@@ -667,7 +668,8 @@ export function assignedWorkSweep(db: Db, deps: AssignedWorkDeps) {
   }
 
   async function replaceStalledRun(issue: IssueRow, claimed: Claimed, runId: string): Promise<AssignedWorkCheck> {
-    const cancelled = await deps.cancelStalledQueuedRun!({ companyId: issue.companyId, runId }).catch(error => {
+    const cancelled = !claimed.stalledFence ? false : await deps.cancelStalledQueuedRun!({ companyId: issue.companyId, runId,
+      ...claimed.stalledFence }).catch(error => {
       logger.warn({ err: error, companyId: issue.companyId, issueId: issue.id, runId }, "assigned-work sweep could not cancel a stalled queued run");
       return false;
     });
@@ -728,7 +730,8 @@ export function assignedWorkSweep(db: Db, deps: AssignedWorkDeps) {
   type Claimed = { kind: "claimed"; nextCheckAt: Date; activityId: string; publications: ActivityPublication[];
     verdict: Extract<AssignedWorkVerdict, { kind: "violation" }>; reason: ViolationReason;
     restoredTo: "todo" | "in_progress" | "in_review" | null; restoredStatusVersion: number | null;
-    blockedTransitionAt: Date | null; unblockDescriptor: IssueRow["unblockDescriptor"]; blockedOwnerNotifiedAt: Date | null };
+    blockedTransitionAt: Date | null; unblockDescriptor: IssueRow["unblockDescriptor"]; blockedOwnerNotifiedAt: Date | null;
+    stalledFence: { version: string; attachedWakes: number } | null };
 
   /**
    * The durable, serialized claim. Under the task's row lock it loads the
@@ -747,13 +750,21 @@ export function assignedWorkSweep(db: Db, deps: AssignedWorkDeps) {
         .where(and(eq(issues.companyId, issue.companyId), eq(issues.id, issue.id))).for("update");
       if (!current || current.status !== issue.status || current.statusVersion !== issue.statusVersion
         || current.assigneeAgentId !== issue.assigneeAgentId || current.assigneeUserId || current.hiddenAt) return { kind: "changed" as const };
+      const fences = rowsOf<{ id: string; version: string; attachedWakes: number }>(await tx.execute(sql`
+        select r.id, r.xmin::text as version, (select count(*)::int from agent_wakeup_requests w
+          where w.company_id = r.company_id and (w.run_id = r.id or w.id = r.wakeup_request_id)) as "attachedWakes"
+        from heartbeat_runs r where r.company_id = ${issue.companyId} and r.status = 'queued'
+          and (r.context_snapshot->>'issueId') = ${issue.id}`));
       const fresh = (await loadFacts(issue.companyId, [current], { database: tx as unknown as Db, proveOwners: false })).get(current.id)!;
       const verdict = evaluateAssignedWork(fresh, at);
+      let stalledFence: Claimed["stalledFence"] = null;
       if (verdict.kind !== "violation" || verdict.stale || verdict.reason === "run_owner_gone" || verdict.reason === "native_run_stalled"
         || (current.status === "blocked" && fresh.activeRecoveryAction && !fresh.activeRecoveryAction.continuedBySweep)) return { kind: "changed" as const };
       if (verdict.reason === "queued_run_stalled") {
         const stall = fresh.activeRuns.find(run => run.id === verdict.runId)?.queuedStall;
-        if (!stall || stall.personWork || stall.replacement || !deps.cancelStalledQueuedRun) return { kind: "changed" as const };
+        const fence = fences.find(row => row.id === verdict.runId);
+        if (!stall || stall.personWork || stall.replacement || !deps.cancelStalledQueuedRun || !fence) return { kind: "changed" as const };
+        stalledFence = { version: fence.version, attachedWakes: Number(fence.attachedWakes) };
       }
       const attempts = await taskAutomaticAttempts(tx as unknown as Db, issue.companyId, issue.id, at);
       const recent = attempts.continuations;
@@ -789,7 +800,7 @@ export function assignedWorkSweep(db: Db, deps: AssignedWorkDeps) {
           attempt: recent.length + 1 },
       }, publications);
       const next = continuationAllowance([at, ...attempts.started], at, [at, ...attempts.all]);
-      return { kind: "claimed" as const, activityId: activity.id, publications, verdict, reason: verdict.reason,
+      return { kind: "claimed" as const, activityId: activity.id, publications, verdict, reason: verdict.reason, stalledFence,
         restoredTo, restoredStatusVersion, blockedTransitionAt: current.blockedTransitionAt,
         unblockDescriptor: current.unblockDescriptor, blockedOwnerNotifiedAt: current.blockedOwnerNotifiedAt,
         nextCheckAt: next.allowed ? new Date(at.getTime() + 90_000) : next.retryAt };
@@ -943,7 +954,10 @@ function queuedRunStalledSql(run: StalledRunColumns, at: Date) {
       and older.agent_id = ${run.agentId} and older.status = 'queued' and older.created_at < ${run.createdAt})
     and (select count(*) from (select 1 from heartbeat_runs started where started.company_id = ${run.companyId}
       and started.agent_id = ${run.agentId} and started.id <> ${run.id}
-      and started.started_at >= ${run.createdAt} + ${`${QUEUED_RUN_AGING_MS} milliseconds`}::interval
+      and started.started_at > greatest(${run.createdAt} + ${`${QUEUED_RUN_AGING_MS} milliseconds`}::interval,
+        (select max(coalesce(prior.started_at, prior.finished_at)) from heartbeat_runs prior
+          where prior.company_id = ${run.companyId} and prior.agent_id = ${run.agentId} and prior.created_at < ${run.createdAt}
+            and (prior.started_at >= ${run.createdAt} or (prior.started_at is null and prior.finished_at >= ${run.createdAt}))))
       limit ${OLDEST_DISPATCH_SHARE + 1}) passed_over) > ${OLDEST_DISPATCH_SHARE})`;
 }
 

@@ -4,7 +4,9 @@ import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest
 import { activityLog, agents, agentWakeupRequests, companies, createDb, heartbeatRuns, issues, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS } from "@paperclipai/db";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 import { createHeartbeatQueueTestDependencies } from "./helpers/heartbeat-queue.js";
-import { createHeartbeatQueue } from "../services/heartbeat/queue.js";
+import { createHeartbeatQueue, shouldDeferFollowupWakeForSameIssue, shouldQueueFollowupForRunningIssueWake } from "../services/heartbeat/queue.js";
+import { mergeCoalescedContextSnapshot } from "../services/heartbeat/run-preparation.js";
+import { createWakeQueue } from "../modules/wake-queue/index.js";
 import { OLDEST_DISPATCH_SHARE, QUEUED_RUN_AGING_MS } from "../services/heartbeat/queued-run-dispatch-order.js";
 import { createStalledQueuedRunCancel } from "../services/heartbeat/stalled-queued-run.js";
 import { CHAT_CONTROL_RECOVERY_ADMISSION_KEY } from "../services/chat-control-recovery-stop.js";
@@ -75,17 +77,34 @@ describe.skipIf(!support.supported)("a queued run the dispatcher keeps passing o
     callbacks.setWakeupStatus.mockImplementation(async (id, status, values) => {
       if (id) await db.update(agentWakeupRequests).set({ ...values, status }).where(eq(agentWakeupRequests.id, id));
     });
-    const queue = createHeartbeatQueue(db, callbacks);
-    const sweep = () => assignedWorkSweep(db, {
-      enqueueWakeup: (id, opts) => queue.enqueueWakeup(id, opts) as Promise<{ id: string } | null>,
-      cancelStalledQueuedRun: createStalledQueuedRunCancel(callbacks),
+    const admission = createWakeQueue(db, {
+      resolveResponsibleUserId: async () => "person-1",
+      getRoutineEnv: async () => ({ routineId: null, env: null, responsibleUserId: null }),
+      resolveSessionBeforeForWakeup: async () => null,
+      wakeAdmissionHelpers: { filterZombieCoalesceTarget: callbacks.filterZombieCoalesceTarget,
+        mergeCoalescedContextSnapshot, shouldDeferFollowupWakeForSameIssue, shouldQueueFollowupForRunningIssueWake },
+      recovery: { escalateStrandedAssignedIssue: async () => undefined, escalateStrandedRecoveryIssueInPlace: async () => undefined },
     });
+    callbacks.wakeQueue.createAdmissionTransactionScope.mockImplementation(admission.createAdmissionTransactionScope);
+    callbacks.wakeQueue.admitWakeBehindIssueExecution.mockImplementation(admission.admitWakeBehindIssueExecution);
+    const queue = createHeartbeatQueue(db, callbacks);
+    const cancel = createStalledQueuedRunCancel(callbacks);
+    const sweep = (beforeCancel?: () => Promise<void>) => assignedWorkSweep(db, {
+      enqueueWakeup: (id, opts) => queue.enqueueWakeup(id, opts) as Promise<{ id: string } | null>,
+      cancelStalledQueuedRun: async scope => { await beforeCancel?.(); return cancel(scope); },
+    });
+    async function olderRun(createdAgoMs: number, startedAgoMs: number) {
+      const startedAt = new Date(Date.now() - startedAgoMs);
+      await db.insert(heartbeatRuns).values({ companyId, agentId, invocationSource: "automation", triggerDetail: "system", status: "succeeded",
+        createdAt: new Date(Date.now() - createdAgoMs), startedAt, finishedAt: new Date(startedAt.getTime() + 500),
+        contextSnapshot: { issueId: other.id, taskId: other.id, wakeReason: "issue_continuation_needed" } });
+    }
     const runsOfTask = async () => db.select().from(heartbeatRuns).where(and(eq(heartbeatRuns.companyId, companyId),
       sql`${heartbeatRuns.contextSnapshot}->>'issueId' = ${issue.id}`)).orderBy(heartbeatRuns.createdAt);
     const readRun = async (id: string) => (await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, id)))[0]!;
     const continuations = async () => db.select().from(activityLog).where(and(eq(activityLog.entityId, issue.id),
       eq(activityLog.action, ASSIGNED_WORK_CONTINUED_ACTION)));
-    return { companyId, agentId, issue, queuedRun, otherStarts, queue, sweep, runsOfTask, readRun, continuations };
+    return { companyId, agentId, issue, queuedRun, otherStarts, olderRun, queue, sweep, runsOfTask, readRun, continuations };
   }
 
   async function replacementOf(f: Awaited<ReturnType<typeof seed>>, stalledId: string) {
@@ -121,6 +140,55 @@ describe.skipIf(!support.supported)("a queued run the dispatcher keeps passing o
     expect((await f.readRun(replacement.id)).status).toBe("running");
     expect(await sweep.checkIssue({ companyId: f.companyId, issueId: f.issue.id }))
       .toMatchObject({ verdict: { kind: "ok", clause: "live_run", runId: replacement.id } });
+  }, 60_000);
+
+  it("counts only the starts that passed the run over after it became its agent's oldest queued run", async () => {
+    const f = await seed();
+    const waiting = await f.queuedRun();
+    await f.olderRun(4 * 60 * MINUTE, 50 * MINUTE);
+    await f.otherStarts(OLDEST_DISPATCH_SHARE + 2, 55 * MINUTE);
+    await f.olderRun(3 * 60 * MINUTE, 20 * MINUTE);
+    const sweep = f.sweep();
+    expect(await sweep.checkIssue({ companyId: f.companyId, issueId: f.issue.id }))
+      .toMatchObject({ verdict: { kind: "ok", clause: "live_run", runId: waiting.id } });
+    await f.otherStarts(OLDEST_DISPATCH_SHARE, 10 * MINUTE);
+    expect(await sweep.checkIssue({ companyId: f.companyId, issueId: f.issue.id }))
+      .toMatchObject({ verdict: { kind: "ok", clause: "live_run", runId: waiting.id } });
+    expect((await f.readRun(waiting.id)).status).toBe("queued");
+    await f.otherStarts(1, 5 * MINUTE);
+    expect(await sweep.checkIssue({ companyId: f.companyId, issueId: f.issue.id }))
+      .toMatchObject({ verdict: { reason: "queued_run_stalled", runId: waiting.id }, outcome: "replaced_stalled_run" });
+  }, 60_000);
+
+  it("keeps the run when a person's message joins it after the check", async () => {
+    const f = await seed();
+    const stalled = await f.queuedRun();
+    await f.otherStarts(OLDEST_DISPATCH_SHARE + 1, QUEUED_RUN_AGING_MS / 2);
+    const joined = await f.sweep(async () => {
+      await f.queue.enqueueWakeup(f.agentId, { source: "on_demand", triggerDetail: "manual", reason: "issue_commented",
+        payload: { issueId: f.issue.id }, requestedByActorType: "user", requestedByActorId: "person-1",
+        contextSnapshot: { issueId: f.issue.id, taskId: f.issue.id, wakeReason: "issue_commented" } });
+    }).checkIssue({ companyId: f.companyId, issueId: f.issue.id });
+    expect(joined).toMatchObject({ verdict: { reason: "queued_run_stalled" }, outcome: "changed" });
+    expect((await f.readRun(stalled.id)).status).toBe("queued");
+    expect(await f.runsOfTask()).toHaveLength(1);
+    expect(await f.continuations()).toHaveLength(0);
+    const personWakes = await db.select().from(agentWakeupRequests).where(and(eq(agentWakeupRequests.runId, stalled.id),
+      eq(agentWakeupRequests.requestedByActorType, "user")));
+    expect(personWakes).toHaveLength(1);
+  }, 60_000);
+
+  it("does nothing when the run starts after the check", async () => {
+    const f = await seed();
+    const stalled = await f.queuedRun();
+    await f.otherStarts(OLDEST_DISPATCH_SHARE + 1, QUEUED_RUN_AGING_MS / 2);
+    const started = await f.sweep(async () => {
+      await db.update(heartbeatRuns).set({ status: "running", startedAt: new Date() }).where(eq(heartbeatRuns.id, stalled.id));
+    }).checkIssue({ companyId: f.companyId, issueId: f.issue.id });
+    expect(started).toMatchObject({ outcome: "changed" });
+    expect((await f.readRun(stalled.id)).status).toBe("running");
+    expect(await f.runsOfTask()).toHaveLength(1);
+    expect(await f.continuations()).toHaveLength(0);
   }, 60_000);
 
   it("leaves a run that waits behind a full agent", async () => {
