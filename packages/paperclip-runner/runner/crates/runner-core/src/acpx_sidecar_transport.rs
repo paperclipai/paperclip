@@ -295,11 +295,6 @@ impl AcpxSidecarTransport {
             "no_proxy",
             "all_proxy",
             "RUST_BACKTRACE",
-            "PAPERCLIP_NATIVE_MCP_NAME",
-            "PAPERCLIP_NATIVE_MCP_URL",
-            // The qualified sidecar configures the runner-owned gateway. Keep
-            // its credential with the name/URL; unrelated secrets stay excluded.
-            "PAPERCLIP_NATIVE_MCP_TOKEN",
             "PAPERCLIP_NATIVE_MCP_STDIO",
             "PAPERCLIP_NATIVE_MCP_PROXY",
             "PAPERCLIP_ACPX_BUILTIN_ROOT",
