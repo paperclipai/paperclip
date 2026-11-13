@@ -200,6 +200,11 @@ words.
 
 Afterwards no task row had a next poll, so background polling stopped.
 
+The run found one bug, fixed with the demo: every task stop (still working,
+expired, failed, cancelled) returned the call's audit record to the agent,
+including the server-side stack trace and request IDs. The agent pasted it into
+the task. Agent-facing errors now leave that record out; the audit keeps it.
+
 What the run also showed, outside Tasks itself:
 
 - Only Paperclip runner and Codex agents receive app tools. A plain local
