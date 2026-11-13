@@ -15,18 +15,22 @@ export function resetProcessRunAdmissionForTests(): void {
 }
 
 export type ReattachOutcome = "reached" | "given_up";
+export const REATTACH_FAILURE_THRESHOLD_MS = 150_000;
 export type ReattachPhaseEndReason = "nothing_to_reattach" | "all_settled" | "cap_reached" | "discovery_failed";
 
 export type ReattachPhaseSummary = {
   reason: ReattachPhaseEndReason;
   liveRuns: number;
+  authenticated: number;
   reached: number;
+  reachedAfterThreshold: number;
   givenUp: number;
   outstanding: number;
+  maxReachLatencyMs: number | null;
   durationMs: number;
   capMs: number;
   gatedStarts: boolean;
-  runs: Array<{ runId: string; outcome: ReattachOutcome | "outstanding"; latencyMs: number }>;
+  runs: Array<{ runId: string; outcome: ReattachOutcome | "outstanding"; latencyMs: number; authenticatedMs: number | null }>;
 };
 
 type ReattachPhase = {
@@ -36,6 +40,7 @@ type ReattachPhase = {
   discovering: boolean;
   pending: Set<string>;
   settled: Array<{ runId: string; outcome: ReattachOutcome; latencyMs: number }>;
+  authenticated: Map<string, number>;
   liveRuns: number;
   gatedStarts: boolean;
   capTimer: ReturnType<typeof setTimeout> | null;
@@ -63,7 +68,7 @@ export function reattachPhaseRecheckAt(now = Date.now()): Date {
 export function openReattachPhase(capMs: number, now = Date.now()): void {
   if (reattachPhase) return;
   const phase: ReattachPhase = {
-    startedAt: now, capMs, deadline: now + capMs, discovering: true, pending: new Set(), settled: [],
+    startedAt: now, capMs, deadline: now + capMs, discovering: true, pending: new Set(), settled: [], authenticated: new Map(),
     liveRuns: 0, gatedStarts: false, capTimer: null,
   };
   phase.capTimer = setTimeout(() => { if (reattachPhase === phase) endReattachPhase("cap_reached"); }, capMs);
@@ -93,12 +98,20 @@ export function pendingReattachRunIds(): string[] {
   return reattachPhase ? [...reattachPhase.pending] : [];
 }
 
+export function markReattachAuthenticated(runId: string, now = Date.now()): void {
+  const phase = reattachPhase;
+  if (!phase || !phase.pending.has(runId) || phase.authenticated.has(runId)) return;
+  phase.authenticated.set(runId, now - phase.startedAt);
+  logger.info({ runId, authenticatedMs: now - phase.startedAt }, "reattach phase run authenticated");
+}
+
 export function settleReattachRun(runId: string, outcome: ReattachOutcome, now = Date.now()): void {
   const phase = reattachPhase;
   if (!phase || !phase.pending.delete(runId)) return;
   const latencyMs = now - phase.startedAt;
   phase.settled.push({ runId, outcome, latencyMs });
-  logger.info({ runId, outcome, latencyMs, remaining: phase.pending.size }, "reattach phase run settled");
+  logger.info({ runId, outcome, latencyMs, authenticatedMs: phase.authenticated.get(runId) ?? null,
+    remaining: phase.pending.size }, "reattach phase run settled");
   if (phase.pending.size === 0 && !phase.discovering) endReattachPhase("all_settled", now);
 }
 
@@ -112,16 +125,21 @@ function endReattachPhase(reason: ReattachPhaseEndReason, now = Date.now()): voi
   if (!phase) return;
   reattachPhase = null;
   if (phase.capTimer) clearTimeout(phase.capTimer);
+  const reached = phase.settled.filter(run => run.outcome === "reached");
   const summary: ReattachPhaseSummary = {
     reason,
     liveRuns: phase.liveRuns,
-    reached: phase.settled.filter(run => run.outcome === "reached").length,
+    authenticated: phase.authenticated.size,
+    reached: reached.length,
+    reachedAfterThreshold: reached.filter(run => run.latencyMs > REATTACH_FAILURE_THRESHOLD_MS).length,
     givenUp: phase.settled.filter(run => run.outcome === "given_up").length,
     outstanding: phase.pending.size,
+    maxReachLatencyMs: reached.length ? Math.max(...reached.map(run => run.latencyMs)) : null,
     durationMs: now - phase.startedAt,
     capMs: phase.capMs,
     gatedStarts: phase.gatedStarts,
-    runs: [...phase.settled, ...[...phase.pending].map(runId => ({ runId, outcome: "outstanding" as const, latencyMs: now - phase.startedAt }))],
+    runs: [...phase.settled, ...[...phase.pending].map(runId => ({ runId, outcome: "outstanding" as const, latencyMs: now - phase.startedAt }))]
+      .map(run => ({ ...run, authenticatedMs: phase.authenticated.get(run.runId) ?? null })),
   };
   if (reason === "cap_reached" || reason === "discovery_failed") logger.warn(summary, "reattach phase ended");
   else logger.info(summary, "reattach phase ended");

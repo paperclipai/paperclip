@@ -8,6 +8,7 @@ import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } fro
 import { createHeartbeatQueue } from "./queue.js";
 import {
   isReattachPhaseActive,
+  markReattachAuthenticated,
   onReattachPhaseEnd,
   openReattachPhase,
   reattachPhaseRecheckAt,
@@ -66,10 +67,24 @@ describe("reattach phase signal", () => {
     expect(ended).toHaveLength(1);
     expect(ended[0]).toMatchObject({ reason: "all_settled", liveRuns: 3, reached: 2, givenUp: 1, outstanding: 0, durationMs: 9_000 });
     expect(ended[0].runs).toEqual([
-      { runId: "run-a", outcome: "reached", latencyMs: 4_000 },
-      { runId: "run-b", outcome: "given_up", latencyMs: 6_000 },
-      { runId: "run-c", outcome: "reached", latencyMs: 9_000 },
+      { runId: "run-a", outcome: "reached", latencyMs: 4_000, authenticatedMs: null },
+      { runId: "run-b", outcome: "given_up", latencyMs: 6_000, authenticatedMs: null },
+      { runId: "run-c", outcome: "reached", latencyMs: 9_000, authenticatedMs: null },
     ]);
+  });
+
+  it("records authentication as a mark, not as reached, and counts runs reached after the 150 s failure threshold", () => {
+    const ended: ReattachPhaseSummary[] = [];
+    onReattachPhaseEnd(summary => ended.push(summary));
+    openReattachPhase(300_000, 0);
+    trackReattachRuns(["fast", "slow"], 0);
+    markReattachAuthenticated("fast", 2_000);
+    markReattachAuthenticated("slow", 3_000);
+    expect(isReattachPhaseActive(3_001)).toBe(true);
+    settleReattachRun("fast", "reached", 20_000);
+    settleReattachRun("slow", "reached", 200_000);
+    expect(ended[0]).toMatchObject({ authenticated: 2, reached: 2, reachedAfterThreshold: 1, maxReachLatencyMs: 200_000 });
+    expect(ended[0].runs.map(run => run.authenticatedMs)).toEqual([2_000, 3_000]);
   });
 
   it("ends at the cap so one wedged Runner cannot hold run starts", () => {

@@ -896,7 +896,7 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
   // its wake and the task's execution lock stay exactly as they were, queued
   // for the serving server.
   function confirmRunAdmissionStillOpen(claimedRun: unknown) {
-    if (claimedRun && isRunAdmissionClosed()) throw new RunAdmissionClosedDuringClaim();
+    if (claimedRun && isStartAdmissionClosed()) throw new RunAdmissionClosedDuringClaim();
   }
 
   /** System continuations that only make sense for an open task. */
@@ -2266,7 +2266,7 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
   // the full queued-run pass. Every run still passes the ordinary per-agent
   // claim and dispatch gates, exactly as a new wakeup during startup would.
   async function resumeFreshQueuedRunsAtStartup() {
-    if ((await getSchedulingSuppression()).suppressed) return { agents: 0 };
+    if (isRunAdmissionClosed() || (await getSchedulingSuppression()).suppressed) return { agents: 0 };
     const cutoff = await getWorktreeExecutionCutoff();
     const rows = await db
       .selectDistinct({ agentId: heartbeatRuns.agentId })
