@@ -1,6 +1,6 @@
 {
-  "id": "4d872c2e-4254-4f10-ab86-a9f0d0c50c82",
-  "prevId": "8a7d7f13-11c6-49da-bc05-b752ebcc6f92",
+  "id": "46963151-3864-4886-9de9-3924718d04a7",
+  "prevId": "f5f852bd-0568-4b2d-bc35-0dac5d9c8c5b",
   "version": "7",
   "dialect": "postgresql",
   "tables": {
@@ -35366,6 +35366,12 @@
           "notNull": true,
           "default": 1
         },
+        "native_source_cursors": {
+          "name": "native_source_cursors",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": false
+        },
         "native_phase": {
           "name": "native_phase",
           "type": "text",
@@ -36119,28 +36125,6 @@
           ],
           "isUnique": false,
           "concurrently": false,
-          "method": "btree",
-          "with": {}
-        },
-        "heartbeat_runs_company_finished_idx": {
-          "name": "heartbeat_runs_company_finished_idx",
-          "columns": [
-            {
-              "expression": "company_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "finished_at",
-              "isExpression": false,
-              "asc": false,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "where": "\"heartbeat_runs\".\"finished_at\" is not null",
-          "concurrently": true,
           "method": "btree",
           "with": {}
         },

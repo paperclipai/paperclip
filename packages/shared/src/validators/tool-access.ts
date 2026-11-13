@@ -352,7 +352,7 @@ export type DisableToolStdioCommandTemplate = z.infer<typeof disableToolStdioCom
  *
  * `auto` is the default and the only value the simple path sends: Paperclip
  * probes the endpoint and branches on what it finds. The rest are the explicit
- * choices behind "Advanced authentication", where the operator already knows.
+ * choices behind the sign-in Change control, where the operator already knows.
  */
 export const GENERIC_MCP_AUTH_MODES = ["auto", "none", "bearer", "custom_headers", "oauth"] as const;
 
