@@ -36,6 +36,7 @@ import {
 } from "./workspaces.js";
 import { recordLegacyWorkspaceRestoreFailure } from "../legacy-execution-recovery.js";
 import { configuredEnvironmentProjection } from "../../vendor/paperclip-runner/index.js";
+import { observabilitySecretValues } from "@paperclipai/adapter-utils/agent-observability";
 import { buildAgentIdentityEnv } from "@paperclipai/adapter-utils/server-utils";
 import { externalObjectService } from "../external-objects.js";
 import { isAgentDirectoryCopy } from "../agent-directory-working-copies.js";
@@ -96,8 +97,8 @@ import type { createHeartbeatRunState } from "./run-state.js";
 import type { createHeartbeatLifecycle } from "./run-lifecycle.js";
 import type { createHeartbeatRunControl } from "./run-control.js";
 import type { createHeartbeatQueue } from "./queue.js";
-import type { createAgentIdentityRedactor } from "../agent-identity-redaction.js";
-import { createRunSecretRedactionRegistry } from "../run-secret-redaction.js";
+import { secretOutputForms, type createAgentIdentityRedactor } from "../agent-identity-redaction.js";
+import { createRunOutputSecretStore } from "../run-secret-redaction.js";
 import type { createAdapterExecutionControl } from "../adapter-execution-control.js";
 import type { executionWorkspaceService } from "../execution-workspaces.js";
 import type { workspaceOperationService } from "../workspace-operations.js";
@@ -640,9 +641,10 @@ export async function executeHeartbeatRuntime(db: Db, input: HeartbeatRuntimeExe
           nativeDispatchAtMs,
         }),
       );
-      const secretRedactions = createRunSecretRedactionRegistry(db);
-      await secretRedactions.registerAll(run.companyId, run.id, identityRedactor.secretSources);
-      identityRedactor.addSecretValues(await secretRedactions.redactionValuesForRun(run.companyId, run.id));
+      const outputSecretStore = createRunOutputSecretStore(db);
+      await outputSecretStore.registerAll(run.companyId, run.id,
+        identityRedactor.secretSources.filter((value) => secretOutputForms([value]).length > 0));
+      identityRedactor.addSecretValues(await outputSecretStore.valuesForRun(run.companyId, run.id));
       const stopCleanup = runOptions.nativeRestartRecovery?.kind === "reattach_remote_runner"
         && await readClaimedNativeStopRecovery(db, run, runOptions.nativeLeaseOwner);
       const guardedDispatch =
@@ -717,7 +719,7 @@ export async function executeHeartbeatRuntime(db: Db, input: HeartbeatRuntimeExe
               managedAiAccountIdentity: managedAiRuntime?.sessionIdentity,
               managedAiCredentialWriteback: managedAiRuntime?.credentialWriteback,
               managedAiCredentialHome: managedAiRuntime ? String((managedAiRuntime.config.env as Record<string, unknown>).CODEX_HOME) : undefined,
-              outputSecrets: identityRedactor.secretSources,
+              outputSecrets: [...identityRedactor.secretSources, ...observabilitySecretValues(observability)],
               dotWorkspaceRoot: nativeExecution.provider.kind === "openai_dot" && resolvedConfig.dotWorkspaceAccess === true ? executionWorkspace.cwd : undefined,
               runnerEnvironment: {
                 ...configuredEnvironmentProjection(configuredTaskEnvironment),
