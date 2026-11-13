@@ -5555,8 +5555,22 @@ on the controller. The MCP bridge preserves exact declared operation names,
 including names that start with `paperclip_`; only a catalog-bound transport
 prefix may resolve to that declared name. Shortened or unknown names do not
 gain authority. OpenCode sessions with the former direct catalog rotate their
-provider checkpoint before reuse; other providers retain their existing tool
-contract fingerprints.
+provider checkpoint before reuse.
+
+Every native Runner harness, local or remote, receives its assigned gateway
+tools through this relay. The controller lists them with the run's gateway
+token, offers them as dynamic tools on the Runner's task bridge (the
+`paperclip` MCP server for ACPX agents), and executes each call through the
+gateway on the controller. The provider process never receives
+`PAPERCLIP_NATIVE_MCP_*` or the gateway token. Grok Bot and Muse runs, which
+cannot advertise app tools, skip the listing. Relayed names are
+`app_<connection>_<tool>_<digest>`, at most 64 characters, and follow each
+harness's existing permission rules for task-bridge tools. Local provider
+checkpoints saved with the former direct gateway rotate before reuse, so the
+next run starts a fresh provider session with full task context in the same
+workspace. Remote checkpoints, which already used the relay for Codex, keep
+their fingerprint. A run recovered after its Runner died during the cutover
+continues with the tool set it saved and has no app tools until it ends.
 
 
 ### Use real connection requests (2026-09-14)
