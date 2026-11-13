@@ -236,6 +236,9 @@ describeEmbeddedPostgres("hidden runner PRP coordinator", () => {
   it("registers only an exact Codex native binding and exposes read-only tools", async () => {
     const seed = await seedNativeRun();
     const server = createServer();
+    await new Promise<void>(resolve => server.listen(0, "127.0.0.1", resolve));
+    const address = server.address();
+    if (!address || typeof address === "string") throw new Error("Expected a bound TCP controller");
     setupRunnerPrpWebSocketServer(server, { apiUrl: "http://127.0.0.1:3213" });
     const stateRoot = mkdtempSync(resolve(tmpdir(), "paperclip-runner-state-"));
     scratchDirectories.push(stateRoot);
@@ -263,7 +266,7 @@ describeEmbeddedPostgres("hidden runner PRP coordinator", () => {
     });
 
     expect(prepared.connectUrl).toBe(
-      `ws://127.0.0.1:3213/api/runner/v1/connect/${seed.runId}`,
+      `ws://127.0.0.1:${address.port}/api/runner/v1/connect/${seed.runId}`,
     );
     expect(prepared.bootstrapTicket).toMatch(/^bootstrap_/);
     expect(prepared.semanticTools.map((tool) => tool.name)).toEqual([
@@ -297,7 +300,7 @@ describeEmbeddedPostgres("hidden runner PRP coordinator", () => {
         runId: seed.runId,
       }),
     ).toBe(false);
-    server.close();
+    await new Promise<void>(resolve => server.close(() => resolve()));
   });
 
   it("rechecks task ownership and returns semantic receipts", async () => {

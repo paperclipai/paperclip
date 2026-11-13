@@ -15,9 +15,6 @@ import {
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
 
-// The pass records its candidate count on its timing object, then starts the
-// per-row loop with phase("candidates"). The mock captures the count and stops
-// the pass there, so these tests check candidate selection only.
 const captured = vi.hoisted(() => ({ counts: [] as number[] }));
 class StopAfterCandidateScan extends Error {}
 vi.mock("../services/native-runtime/native-reconciliation-timing.js", () => ({
@@ -96,9 +93,6 @@ describeEmbeddedPostgres("native finalization candidate selection", () => {
       finishedAt: finishedAgoMs === null ? null : new Date(Date.now() - finishedAgoMs),
       contextSnapshot: { issueId },
     });
-    // Result, assessment and decision rows need full contract chains. These
-    // tests check candidate selection only, so foreign-key triggers are off
-    // for this insert; check constraints still apply.
     await db.transaction(async (tx) => {
       await tx.execute(sql`set local session_replication_role = replica`);
       await tx.insert(nativeRunFinalizations).values({
@@ -117,7 +111,6 @@ describeEmbeddedPostgres("native finalization candidate selection", () => {
     const counts = [];
     for (let pass = 0; pass < 4; pass++) counts.push(await candidateCount(reconcileNativeFinalizations(db)));
 
-    // Two full upkeep pages, the remainder, then the rotation wraps.
     expect(counts).toEqual([
       NATIVE_SETTLED_COMMITTED_UPKEEP_PER_PASS,
       NATIVE_SETTLED_COMMITTED_UPKEEP_PER_PASS,
@@ -126,8 +119,6 @@ describeEmbeddedPostgres("native finalization candidate selection", () => {
     ]);
   });
 
-  // More settled rows than one upkeep page, so the page is full and a
-  // protected row can only be a candidate through its own protection.
   async function fillUpkeepPage() {
     for (let index = 0; index < NATIVE_SETTLED_COMMITTED_UPKEEP_PER_PASS + 2; index++) await committedRun();
   }
@@ -152,7 +143,6 @@ describeEmbeddedPostgres("native finalization candidate selection", () => {
     for (let index = 0; index < protectedRows; index++) {
       const decisionId = randomUUID();
       await committedRun({ decisionId });
-      // As above, the decision row is not created; foreign-key triggers are off.
       await db.transaction(async (tx) => {
         await tx.execute(sql`set local session_replication_role = replica`);
         await tx.insert(statusDecisionEffects).values({

@@ -32,6 +32,7 @@ const mockGoalsApi = vi.hoisted(() => ({
 const mockAdaptersApi = vi.hoisted(() => ({ list: vi.fn() }));
 const mockAgentsApi = vi.hoisted(() => ({
   create: vi.fn(),
+  update: vi.fn(),
   adapterModels: vi.fn(),
   list: vi.fn(),
   hire: vi.fn(),
@@ -178,12 +179,18 @@ describe("OnboardingWizard — which step it lands on", () => {
     dialogState.onboardingOpen = false;
     dialogState.onboardingOptions = {};
     dialogState.onboardingRouteDismissed = false;
-    mockAdaptersApi.list.mockResolvedValue([]);
+    mockAdaptersApi.list.mockResolvedValue(["claude_local", "codex_local"].map(type => ({
+      type, loaded: true, disabled: false, defaultRunner: "legacy", supportedRunners: ["legacy"],
+    })));
     mockGoalsApi.list.mockResolvedValue([]);
     mockAgentsApi.adapterModels.mockResolvedValue([]);
     // The hire step lists the company's agents first so it can adopt one that
     // already carries the typed name instead of hiring a duplicate.
     mockAgentsApi.list.mockResolvedValue([]);
+    mockAgentsApi.create.mockImplementation(async (companyId, input) => ({
+      ...input, id: input.setupId, companyId, status: "paused", pauseReason: "setup",
+    }));
+    mockAgentsApi.update.mockResolvedValue({});
     mockAgentsApi.hire.mockResolvedValue({ agent: { id: "agent-1" }, approval: null });
     mockAgentsApi.instructionsBundle.mockResolvedValue({ entryFile: "AGENTS.md" });
     mockAgentsApi.saveInstructionsFile.mockResolvedValue({});
@@ -594,6 +601,7 @@ describe("OnboardingWizard — which step it lands on", () => {
       const [, payload] = mockAgentsApi.hire.mock.calls.at(-1)!;
       expect(payload.role).toBe("general");
       expect(payload.name).toBe("Ada");
+      expect(payload.setupAgentId).toBe(mockAgentsApi.create.mock.calls[0]?.[1].setupId);
     });
 
     it("does not offer a way back behind the step it entered on", async () => {

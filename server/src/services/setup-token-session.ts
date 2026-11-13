@@ -1,3 +1,6 @@
+import { writeLoginCleanup } from "./login-cleanup-notifications.js";
+import { DELIVERY_QUEUES } from "./delivery-work-notifications.js";
+import type { ConnectionManagementContext } from "./connection-management.js";
 // The Claude setup-token login session service. It owns a company-scoped,
 // owner-bound login session that holds one live setup-token process and one
 // sandbox lease for the whole login. The login is a two-way round-trip: the
@@ -34,6 +37,7 @@
 import { randomBytes } from "node:crypto";
 import { and, eq, gt, inArray, isNotNull, isNull, lte, notInArray, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
+import { environmentService } from "./environments.js";
 import { adapterAuthSessions } from "@paperclipai/db";
 import type { AgentAdapterType } from "@paperclipai/shared";
 
@@ -109,6 +113,8 @@ export const SETUP_TOKEN_CANCELLABLE_STATES: readonly SetupTokenSessionState[] =
  * per environment.
  */
 export interface SetupTokenSessionScope {
+  agentId?: string;
+  managementContext?: ConnectionManagementContext;
   aiConnection?: import("@paperclipai/shared").AiConnectionLoginIntent;
   companyId: string;
   ownerUserId: string;
@@ -251,6 +257,7 @@ export interface SetupTokenCleanupIdentity {
  * already consumed. The store persists no secret.
  */
 export interface SetupTokenCleanupStore {
+  getLoginAgentId?(leaseId: string, companyId: string): Promise<string | undefined>;
   record(record: SetupTokenCleanupRecord): Promise<void>;
   /**
    * Marks the state only when the full owner scope and the session id match. The
@@ -686,6 +693,7 @@ export interface SetupTokenPromptView {
  * response returns the login URL through the confidential transport guard.
  */
 export interface SetupTokenSessionDescriptor {
+  agentId?: string;
   aiConnection?: import("@paperclipai/shared").AiConnectionLoginIntent;
   sessionId: string;
   state: SetupTokenSessionState;
@@ -1120,6 +1128,7 @@ export class SetupTokenSessionService {
       sessionId: session.id,
       state: session.state,
       environmentId: session.scope.environmentId,
+      ...(session.scope.agentId ? { agentId: session.scope.agentId } : {}),
       deadline: session.deadline,
       loginUrl: session.loginUrl,
       ...(session.scope.aiConnection ? { aiConnection: session.scope.aiConnection } : {}),
@@ -1195,7 +1204,9 @@ export class SetupTokenSessionService {
     }
     const durable = await this.store.findActiveDurable(key, this.now());
     if (!durable) return null;
+    const agentId = await this.store.getLoginAgentId?.(durable.leaseId, key.companyId);
     return {
+      ...(agentId ? { agentId } : {}),
       sessionId: durable.sessionId,
       ...(durable.aiConnection ? { aiConnection: durable.aiConnection } : {}),
       state: durable.state,
@@ -1515,7 +1526,7 @@ export async function transitionSetupTokenSessionToStored(
   executor: Db,
   identity: SetupTokenCleanupIdentity,
 ): Promise<boolean> {
-  const changed = await executor
+  const changed = await writeLoginCleanup(executor, DELIVERY_QUEUES.setupTokenCleanup, tx => tx
     .update(adapterAuthSessions)
     .set({ status: "stored", updatedAt: sql`clock_timestamp()` })
     .where(
@@ -1526,7 +1537,7 @@ export async function transitionSetupTokenSessionToStored(
         isNull(adapterAuthSessions.boundAt),
       ),
     )
-    .returning();
+    .returning());
   return changed.length === 1;
 }
 
@@ -1542,10 +1553,14 @@ export function createDbSetupTokenCleanupStore(db: Db): SetupTokenCleanupStore {
   const scopeMatch = setupTokenScopeMatch;
 
   return {
+    async getLoginAgentId(leaseId, companyId) {
+      const lease = await environmentService(db).getLeaseById(leaseId);
+      return lease?.companyId === companyId && lease.metadata?.purpose === "login" ? (typeof lease.metadata.agentId === "string" ? lease.metadata.agentId : undefined) : undefined;
+    },
     async record(record): Promise<void> {
       // The database generates `id`. The store fills `public_session_id` with the
       // service session id, which the service builds from a CSPRNG at start.
-      await db.insert(adapterAuthSessions).values({
+      await writeLoginCleanup(db, DELIVERY_QUEUES.setupTokenCleanup, tx => tx.insert(adapterAuthSessions).values({
         companyId: record.companyId,
         aiConnection: record.aiConnection,
         environmentId: record.environmentId,
@@ -1556,22 +1571,22 @@ export function createDbSetupTokenCleanupStore(db: Db): SetupTokenCleanupStore {
         status: record.state,
         expiresAt: new Date(record.deadline),
         boundAt: record.boundAt === null ? null : new Date(record.boundAt),
-      });
+      }));
     },
 
     async markState(identity, state): Promise<void> {
       // The compare-and-set predicate matches the company, the owner, and the
       // adapter, so a write never updates a row by the session id alone.
-      await db
+      await writeLoginCleanup(db, DELIVERY_QUEUES.setupTokenCleanup, tx => tx
         .update(adapterAuthSessions)
         .set({ status: state, updatedAt: sql`clock_timestamp()` })
-        .where(scopeMatch(identity));
+        .where(scopeMatch(identity)));
     },
 
     async remove(identity): Promise<void> {
       // The delete matches the company, the owner, and the adapter, so it never
       // removes a row by the session id alone.
-      await db.delete(adapterAuthSessions).where(scopeMatch(identity));
+      await writeLoginCleanup(db, DELIVERY_QUEUES.setupTokenCleanup, tx => tx.delete(adapterAuthSessions).where(scopeMatch(identity)));
     },
 
     async listReapable(now): Promise<SetupTokenCleanupRecord[]> {
@@ -1585,6 +1600,7 @@ export function createDbSetupTokenCleanupStore(db: Db): SetupTokenCleanupStore {
         .where(
           and(
             eq(adapterAuthSessions.adapterType, SETUP_TOKEN_ADAPTER_TYPE),
+            sql`${adapterAuthSessions.connectionMethod} is distinct from 'local_subscription'`,
             or(
               inArray(adapterAuthSessions.status, [...SETUP_TOKEN_TERMINAL_STATES]),
               lte(adapterAuthSessions.expiresAt, new Date(now)),
@@ -1602,7 +1618,7 @@ export function createDbSetupTokenCleanupStore(db: Db): SetupTokenCleanupStore {
       // database evaluates the current time after any row-lock wait. An expired
       // claim cannot pass the deadline condition. The write sets `bound_at` one
       // time and returns the row only on a valid consume.
-      const changed = await db
+      const changed = await writeLoginCleanup(db, DELIVERY_QUEUES.setupTokenCleanup, tx => tx
         .update(adapterAuthSessions)
         .set({ boundAt: sql`clock_timestamp()`, updatedAt: sql`clock_timestamp()` })
         .where(
@@ -1613,7 +1629,7 @@ export function createDbSetupTokenCleanupStore(db: Db): SetupTokenCleanupStore {
             isNull(adapterAuthSessions.boundAt),
           ),
         )
-        .returning();
+        .returning());
       const row = changed[0];
       return row ? toCleanupRecord(row) : null;
     },
@@ -1622,7 +1638,7 @@ export function createDbSetupTokenCleanupStore(db: Db): SetupTokenCleanupStore {
       // One conditional write. The predicate carries the company, the owner, the
       // adapter, the session id, and one of `cancellableStates`. It never
       // interrupts a `submitting` write, a `stored` claim, or a terminal row.
-      const changed = await db
+      const changed = await writeLoginCleanup(db, DELIVERY_QUEUES.setupTokenCleanup, tx => tx
         .update(adapterAuthSessions)
         .set({
           status: "cancelled",
@@ -1630,7 +1646,7 @@ export function createDbSetupTokenCleanupStore(db: Db): SetupTokenCleanupStore {
           updatedAt: sql`clock_timestamp()`,
         })
         .where(and(scopeMatch(identity), inArray(adapterAuthSessions.status, [...cancellableStates])))
-        .returning();
+        .returning());
       const row = changed[0];
       return row ? toCleanupRecord(row) : null;
     },

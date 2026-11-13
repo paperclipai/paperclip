@@ -3,6 +3,7 @@ import { createServer } from "node:http";
 import {
   cleanupGitHubOperationLaunchers,
   adapterExecutionTargetEnablesSandboxDuplexBridge,
+  adapterExecutionTargetDuplexObservabilityRecorder,
   githubOperationLauncherDirectory,
   prepareGitHubOperationLaunchers,
   startAdapterExecutionTargetPaperclipBridge,
@@ -107,6 +108,7 @@ export async function createNativeGitHubAccess(input: {
         hostApiToken: token,
         hostApiUrl: url,
         enableSandboxDuplexBridge: duplexRequested,
+        duplexObservabilityRecorder: adapterExecutionTargetDuplexObservabilityRecorder(input.target),
         onLog: input.onLog,
       });
       if (input.target?.kind === "remote" && !bridge) {

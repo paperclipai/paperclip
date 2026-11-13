@@ -1,4 +1,5 @@
 import type { EndpointRow, DbOrTransaction } from "../runtime-types.js";
+import { boundRunIssueId } from "../../run-task-binding.js";
 import type { createChatCredentials } from "../credentials.js";
 
 import { slackSearchActionToken } from "../../connectors/slack-search-context.js";
@@ -58,7 +59,7 @@ export function createSlackTaskAuthorityRegistration(db: Db, options: SlackTaskA
       throw forbidden("Chat connectors are disabled");
     const identity = await measureRunPhase("connectors.slack.identity", () => slackRunOrigin(db, binding));
     const run = identity.run;
-    if ((run.contextSnapshot?.issueId ?? run.contextSnapshot?.taskId) !== binding.issueId || !run.responsibleUserId)
+    if (boundRunIssueId(run) !== binding.issueId || !run.responsibleUserId)
       throw forbidden("Slack tools require the bound task and an accepted linked user");
     const resolved = await measureRunTransaction(db, "connectors.slack.authority", async (tx) => {
       const [action] = await tx.select().from(chatActions).where(and(

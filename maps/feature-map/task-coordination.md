@@ -6,16 +6,18 @@ navigation: {"section":"Tasks and conversations","sectionOrder":20,"order":20}
 
 A larger task can coordinate child work, dependencies, reviewers, and execution controls while preserving a clear owner and a traceable completion decision.
 
+Feature ID: `task-coordination`.
+
 Implementation: [task thread](../../ui/src/pages/IssueDetail.tsx), [execution policy](../../server/src/services/issues.ts).
 
 Agent access: [companion](../agent-access-map/task-coordination.md).
 
 ## Sub-features
 
-- `delegation`: inspect parent/child tasks and the original request behind delegated work.
-- `dependencies`: show blocking tasks and wake eligible work when prerequisites resolve.
-- `signoff`: apply the configured implementation/review completion policy.
-- `tree-control`: pause or resume a task tree without bypassing its gates.
+- `delegation`: `task-coordination/delegation` — inspect parent/child tasks and the original request behind delegated work.
+- `dependencies`: `task-coordination/dependencies` — show blocking tasks and wake eligible work when prerequisites resolve.
+- `signoff`: `task-coordination/signoff` — apply the configured implementation/review completion policy.
+- `tree-control`: `task-coordination/tree-control` — pause or resume a task tree without bypassing its gates.
 
 ## How to get to it (user POV)
 
@@ -46,6 +48,28 @@ Manual: Block one task on another, finish the prerequisite, and observe the depe
 Automated: [execution policy](../../server/src/__tests__/issue-execution-policy.test.ts), [tree control](../../server/src/__tests__/issue-tree-control-service.test.ts), and [signoff browser suite](../../tests/e2e/signoff-policy.spec.ts) target these layers. A linked suite is not a claim that its current run is green.
 
 Manual: Complete implementation under a review-required policy and confirm it waits for the required review outcome. Exercise rejection and later approval. Pause the parent while child work is pending, then verify resumption respects budget and ownership gates.
+
+Resume removes the pause without changing task status. Its wake count includes only
+current agent assignees on todo, in-progress, or in-review tasks. The dialog explains
+that blocked, backlog, and unassigned tasks remain idle. Verify this in both task
+interfaces with [the paused composer browser suite](../../tests/e2e/paused-composer.spec.ts).
+Release rechecks tasks reopened after the pause; another active pause still prevents
+their execution, and uncertain prior executions must be reconciled before waking.
+
+### Plugin task panels
+
+An installed plugin can offer an agent detail tab in the task side panel through
+its optional `taskSidePanel` declaration. Open the view from the task side-panel
+launcher for the running agent, or the assigned agent when idle. The plugin owns
+its label, viewer, and access checks. Missing or disabled plugins add no view.
+A closed panel can be reopened from the launcher.
+
+Implementation: [panel discovery](../../ui/src/hooks/useTaskPluginPanels.ts) and
+[task panel](../../ui/src/components/task-side-panel/TaskSidePanel.tsx).
+Automated: [discovery tests](../../ui/src/hooks/useTaskPluginPanels.test.tsx) and
+[task panel tests](../../ui/src/components/task-side-panel/TaskSidePanel.test.tsx)
+cover availability, task/agent changes, failures, inactivity and dismissal.
+These mocks do not establish a particular plugin's live transport behavior.
 
 ## Gotchas
 

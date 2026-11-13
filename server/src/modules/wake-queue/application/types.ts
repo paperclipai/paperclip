@@ -29,6 +29,8 @@ export type RunSnapshot = {
    * or an agent pause. Release must not immediately re-queue such a run.
    */
   operatorStopped?: boolean;
+  retryableBeforeProviderWork?: boolean;
+  executionRetryAccounting?: Record<string, unknown> | null;
 };
 
 export type IssueSnapshot = {
@@ -58,6 +60,7 @@ export type InvokableAgentSnapshot = {
   companyId: string;
   name: string | null;
   invokable: boolean;
+  paused?: boolean;
 };
 
 /** A new heartbeat run reached the queued state and should be published and dispatched. */

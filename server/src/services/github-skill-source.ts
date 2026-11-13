@@ -3,7 +3,7 @@ import { MAX_REPOSITORY_BYTES, MAX_REPOSITORY_FILES, repositoryPackageInspection
 import type { CompanySkillVersionFileInventoryEntry, SkillSourceCandidate, SkillSourceDiscovery, SkillSourcePreviewRequest, SkillSourceFilePreview, SkillSourceScanUpdate, SkillSourceScanProgress } from '@paperclipai/shared';
 import { parseFrontmatterMarkdown, parseGitHubSkillRepositoryUrl } from '@paperclipai/shared';
 import { notFound, unprocessable } from '../errors.js';
-import { assertSkillSnapshotPath, snapshotFile, skillFileBytes } from './skill-snapshot.js';
+import { assertSkillSnapshotPath, snapshotFile, skillFileBytes, MAX_SKILL_SNAPSHOT_BYTES, MAX_SKILL_SNAPSHOT_FILES } from './skill-snapshot.js';
 import { indexSkillPackagePaths, inspectSkillPackage } from './skill-package-inspection.js';
 import { auditSkillSnapshot, classifyInventoryKind } from './company-skills.js';
 import { skillRepositoryDependencies } from './skill-repository-dependencies.js';
@@ -20,9 +20,9 @@ export interface GitHubRead {
 export type DiscoveredSkill = SkillSourceCandidate & { files: CompanySkillVersionFileInventoryEntry[] };
 export type ScannedSkillSource = SkillSourceDiscovery & { skills: DiscoveredSkill[]; defaultBranch: string; treeSha?: string; downloadBytes?: number; scanBytes?: number; repositoryFiles?: CompanySkillVersionFileInventoryEntry[]; repositorySubset?: boolean };
 const MAX_FILE_BYTES = 1024 * 1024;
-const MAX_SCAN_BYTES = 100 * 1024 * 1024;
+const MAX_SCAN_BYTES = MAX_SKILL_SNAPSHOT_BYTES;
 const MAX_SCAN_PACKAGES = 1_000;
-const MAX_SCAN_FILES = 10_000;
+const MAX_SCAN_FILES = MAX_SKILL_SNAPSHOT_FILES;
 
 export function parseSkillRepository(url: string) {
   const parsed = parseGitHubSkillRepositoryUrl(url);
@@ -105,6 +105,12 @@ async function scanRepository(input: SkillScanInput, providerRead: GitHubRead, o
     }
     const repositoryPaths = indexSkillPackagePaths(entries.map(entry => entry.path));
     const roots = entries.filter(e => e.type === 'blob' && /(^|\/)skill\.md$/i.test(e.path) && ['100644', '100755'].includes(e.mode));
+    if (!roots.length) {
+      return { treeSha: snapshot.treeSha, downloadBytes: snapshot.downloadBytes, scanBytes: 0,
+        packageMode: input.packageMode, connectionId: providerRead.connectionId ?? null,
+        repositoryId: String(repo.id), repositoryUrl: canonical.repositoryUrl, fullName: repo.full_name,
+        trackingRef, commitSha: commit.sha, defaultBranch: repo.default_branch, candidates: [], warnings: [], skills: [] };
+    }
     const rootsByDirectory = new Map<string, TreeEntry[]>();
     for (const root of roots) {
       const dir = path.posix.dirname(root.path);

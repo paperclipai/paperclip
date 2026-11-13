@@ -110,10 +110,10 @@ describe("CompanySettingsNav", () => {
     );
   }
 
-  it("hides Connections while fast responses are disabled", async () => {
+  it("shows Connections while fast responses are disabled", async () => {
     const root = createRoot(container);
     await act(async () => { renderNav(root, undefined, undefined, false); });
-    expect(pageTabBarMock.mock.calls.at(-1)?.[0]?.items).not.toContainEqual({ value: "connections", label: "Connections" });
+    expect(pageTabBarMock.mock.calls.at(-1)?.[0]?.items).toContainEqual({ value: "connections", label: "Connections" });
     await act(async () => { root.unmount(); });
   });
 

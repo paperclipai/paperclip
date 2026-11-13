@@ -26,9 +26,9 @@ function TaskContextNotices() {
         <div className="w-full space-y-3">
           <h1 className={`${shellSectionClass} text-xl font-semibold`}>Chat connection and recovery</h1>
           <ExternallyConnectedTaskBanner className={`${shellSectionClass} mt-3`} companyId="demo" issueId="context-notices" />
-          <ExecutionBlockerNotice className={shellSectionClass} companyId="demo" issueId="context-notices" onRetried={() => {}}
-            blocker={{ recoveryActionId: "demo-recovery", runId: null, agentId: null, cause: "action_outcome_unknown",
-              nextAction: "Inspect the run before continuing. Recorded work is preserved." }} />
+          <ExecutionBlockerNotice className={shellSectionClass} canRetry onRetry={() => {}}
+            presentation={{ intentId: "intent", responsibility: "system", state: "failed", nextRetryAt: null,
+              canRetry: true, userAction: null, sourceRunIds: [], observedRunId: null }} />
           <div className={shellSectionClass}>
           <EmailMessageCard contextNotice issueId="context-notices" message={{
             id: "email-demo", providerMessageId: "email-demo", direction: "inbound",
@@ -55,7 +55,7 @@ const meta = {
       ],
       "implementation": "production",
       "boundary": "fixtures",
-      "notes": "The filter uses one lowercase label without helper text. All chat-channel tasks count as bot-created; the focused visibility stories cover human-initiated channel work."
+      "notes": "Production external-connection and email notices alongside compact task Retry. Query fixtures isolate the connection boundary; they do not verify remote chat permissions."
     },
   },
 } satisfies Meta<typeof TaskContextNotices>;
@@ -66,9 +66,10 @@ export const ConnectionAndRecovery: Story = {
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     const connection = await canvas.findByRole("region", { name: "External conversation" });
-    const recovery = canvas.getByRole("status", { name: "Task recovery" });
+    const recovery = canvas.getByRole("status", { name: "Task status" });
     const email = canvas.getByRole("article", { name: "Email received" });
-    for (const card of [recovery, email]) {
+    await expect(recovery.getBoundingClientRect().width).toBe(connection.getBoundingClientRect().width);
+    for (const card of [email]) {
       await expect(card.getBoundingClientRect().width).toBe(connection.getBoundingClientRect().width);
       await expect(getComputedStyle(card).backgroundColor).toBe(getComputedStyle(connection).backgroundColor);
       await expect(getComputedStyle(card).padding).toBe(getComputedStyle(connection).padding);

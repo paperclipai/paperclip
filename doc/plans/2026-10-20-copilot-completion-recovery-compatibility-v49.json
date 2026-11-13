@@ -1,0 +1,294 @@
+{
+  "schema": "paperclip.copilot.compatibility-revalidation.v1",
+  "recordedAt": "2026-10-20",
+  "status": "compatibility_revalidated",
+  "profile": 49,
+  "profileDigest": "sha256:37a8f6a540a7417bb12becbf283158df8cca925c5136ecc0db14597441fff702",
+  "runtimeVersion": "1.0.88",
+  "model": "gpt-5.6-luna",
+  "runtimeSource": "808d895af2ac830cd1efcd03db768210fae64134",
+  "baseline": {
+    "profile": 48,
+    "profileDigest": "sha256:49171cb881c43270e101a790a109752642870daedc38cd6e91aef08fd7aab038",
+    "record": "2026-10-20-copilot-case-compatibility-v48.json",
+    "identityFixturePreserved": true,
+    "originalResultsAndFailuresPreserved": true,
+    "resultsRegraded": false
+  },
+  "scope": {
+    "kind": "native-completion-proposal-recovery-compatibility",
+    "change": "Recover an already journaled completion proposal into the checkpoint only after validating its run, session, source and conflict bindings.",
+    "changedBindings": [
+      "nativeSessionRuntimeSourceSha256",
+      "profileCompatibilitySourceSha256"
+    ],
+    "unchanged": [
+      "Copilot executable and patched distribution",
+      "ACPX patch, transport and permission-policy implementation",
+      "Configured model and credentials contract",
+      "Protocol fixtures and grader"
+    ],
+    "historicalProfile48": "Decodable for retained runs; not the current launch identity.",
+    "fullProductCampaignRepeated": false,
+    "daytonaRevalidation": "Not measured; historical results retain their original identity.",
+    "releaseOrDeploymentPerformed": false,
+    "doesNotClaim": "A new 20-cell Product campaign, cloud image qualification, installed-package Product admission, or shipped-release canary."
+  },
+  "offline": {
+    "sourceIdentity": "passed",
+    "typescriptRustGeneratedProfiles": "passed",
+    "standardRunnerBuild": "passed",
+    "focusedProfileTests": {
+      "status": "passed",
+      "files": 3,
+      "tests": 74,
+      "log": "/private/tmp/case-copilot-v49-focused-green.log"
+    },
+    "imageInputContract": {
+      "status": "passed",
+      "files": 1,
+      "tests": 10,
+      "log": "/private/tmp/case-copilot-v49-image-green.log"
+    },
+    "completionRecoveryTests": {
+      "status": "passed",
+      "files": 1,
+      "tests": 174,
+      "log": "/private/tmp/case-master-completion-recovery-local.log",
+      "source": "Merged runtime bytes are identical between 3afbfa717be6da33ed0f0f381de032d0533c4259 and the frozen identity commit."
+    },
+    "preflightFailurePreserved": {
+      "log": "/private/tmp/case-copilot-v49-focused.log",
+      "reason": "Initial repository-root Vitest invocation selected no Runner tests; corrected package/config invocations above passed. This is not behavioral evidence."
+    },
+    "archiveContent": {
+      "path": "tests/runner-e2e/results/copilot-v49-protocol-20261020/archive-content-proof.json",
+      "sha256": "sha256:66b69ea2651c7f61de345db2be348202111658d9dabbc9a7bbc90cf934d0fa42",
+      "filesVerified": 5
+    },
+    "boundSourceProof": {
+      "sourcesVerified": 60,
+      "before": {
+        "path": "tests/runner-e2e/results/copilot-v49-protocol-20261020/bound-source-before.json",
+        "sha256": "sha256:4736120d5ede85ed18798a3c801acea8580d76fbd6f811d4f180828d59139df3"
+      },
+      "after": {
+        "path": "tests/runner-e2e/results/copilot-v49-protocol-20261020/bound-source-after.json",
+        "sha256": "sha256:62cbc28bbcb475c600dfb80fc93f41b1898a1418a793dfc323617b56d6010319"
+      },
+      "scope": "Identity-bound source hashes matched before and after live measurement. Unrelated UI edits may occur outside that bound scope; this does not assert a continuously clean whole checkout."
+    },
+    "finalAdmissionChecks": {
+      "sourceIdentity": "passed; digest unchanged after qualification marker removal",
+      "generatedProfiles": "passed",
+      "profileTests": {
+        "status": "passed",
+        "files": 3,
+        "tests": 74,
+        "log": "/private/tmp/case-copilot-v49-final-focused.log"
+      },
+      "runnerTypecheck": "passed; /private/tmp/case-copilot-v49-final-tsc.log"
+    }
+  },
+  "liveProtocol": {
+    "status": "passed",
+    "automaticRetries": 0,
+    "casesRequired": [
+      "context-before-action",
+      "get-task-context",
+      "create-task-document",
+      "finish-task",
+      "request-human-confirmation",
+      "workflow-context-document-progress",
+      "workflow-governed-wait"
+    ],
+    "results": [
+      {
+        "caseId": "context-before-action",
+        "attemptId": "copilot-v49-selected-protocol-context-before-action-01",
+        "exitCode": 0,
+        "disposition": "passed",
+        "passed": true,
+        "checksPassed": 7,
+        "checksTotal": 7,
+        "elapsedSeconds": 25.0,
+        "estimatedCostNanodollars": 9835780,
+        "scoreSha256": "sha256:13913d769c85e38dd3d0c001f7516ccf5a9764fae9314ba76b98b16167efc8d1",
+        "artifactSha256": "sha256:b8b56171052a6660573f117df24707d20c0fcf1a2d6fc068566b176b720e780e",
+        "requestSha256": "sha256:a92619f0bb2bd4dceba9fa3dfc9b4a9355fc9b684f5288252edc65a8b156a5e9"
+      },
+      {
+        "caseId": "get-task-context",
+        "attemptId": "copilot-v49-selected-protocol-get-task-context-01",
+        "exitCode": 0,
+        "disposition": "passed",
+        "passed": true,
+        "checksPassed": 4,
+        "checksTotal": 4,
+        "elapsedSeconds": 17.534,
+        "estimatedCostNanodollars": 8893660,
+        "scoreSha256": "sha256:faa53f4f05253c6027dd7fe389d91bb9ccd63873337131f55b82ca3b30532388",
+        "artifactSha256": "sha256:19eeb9de363cf3d5c65328884e9ff7d9cb4828223dfc691edcc3a349bc3161b4",
+        "requestSha256": "sha256:a06b72976648926821a5d4885b7ab5ebefd8440189fb741bf472176556237622"
+      },
+      {
+        "caseId": "create-task-document",
+        "attemptId": "copilot-v49-selected-protocol-create-task-document-01",
+        "exitCode": 0,
+        "disposition": "passed",
+        "passed": true,
+        "checksPassed": 7,
+        "checksTotal": 7,
+        "elapsedSeconds": 27.14,
+        "estimatedCostNanodollars": 10870860,
+        "scoreSha256": "sha256:19cad0c015bfe56b7f14cb4e1a83d715dab174b606c5b65f54d2c2a972cdc343",
+        "artifactSha256": "sha256:f5d4e9a4ab935efb616c299c1593118f1183c6f8dd560494dde1aaa8ab75832c",
+        "requestSha256": "sha256:1a85de867c3cc9a45459912266ce12df0765fcbc2d1ca7fd67e1086708fc7c0d"
+      },
+      {
+        "caseId": "finish-task",
+        "attemptId": "copilot-v49-selected-protocol-finish-task-01",
+        "exitCode": 0,
+        "disposition": "passed",
+        "passed": true,
+        "checksPassed": 5,
+        "checksTotal": 5,
+        "elapsedSeconds": 18.86,
+        "estimatedCostNanodollars": 5297800,
+        "scoreSha256": "sha256:065cc976f2554a5ce6c51c1c4f58f9f5e9f2f80bac797604293fee131fc9d09e",
+        "artifactSha256": "sha256:c36b1f31e6a478b6789068b28de98351acbbd4762d5095c0dfddd7c76cebfab9",
+        "requestSha256": "sha256:f91c20efdb5924cc3ed78a9400f8b5ce3df1b835e618263827c99f67fb4f6240"
+      },
+      {
+        "caseId": "request-human-confirmation",
+        "attemptId": "copilot-v49-selected-protocol-request-human-confirmation-01",
+        "exitCode": 0,
+        "disposition": "passed",
+        "passed": true,
+        "checksPassed": 5,
+        "checksTotal": 5,
+        "elapsedSeconds": 19.276,
+        "estimatedCostNanodollars": 9954260,
+        "scoreSha256": "sha256:b7dc39e464c23b55a3993b9bbb9dc7af4af025990459e267f41235b211a8fd44",
+        "artifactSha256": "sha256:084ef6bfff36436cab12a45b6a1340b45d8dfd0d8270a125668347af4ff4af6f",
+        "requestSha256": "sha256:dd347827b7b7ec4a670a5d751053b813b02718fd82abbf42054bed23135841ed"
+      },
+      {
+        "caseId": "workflow-context-document-progress",
+        "attemptId": "copilot-v49-selected-protocol-workflow-context-document-progress-01",
+        "exitCode": 0,
+        "disposition": "passed",
+        "passed": true,
+        "checksPassed": 9,
+        "checksTotal": 9,
+        "elapsedSeconds": 37.009,
+        "estimatedCostNanodollars": 12222660,
+        "scoreSha256": "sha256:fbcebc5ac6056d345179d9f3c37ce89f6e0281a4789b0073f34e7ab9e28a59cd",
+        "artifactSha256": "sha256:3319fe4b3a72b2d759b7f2bcc371439b19544d593e399e0782a899732311e310",
+        "requestSha256": "sha256:ef310c6971066ca6215c97dea4421b1e88169f8e1d6e591c856cdbab8bbb29d6"
+      },
+      {
+        "caseId": "workflow-governed-wait",
+        "attemptId": "copilot-v49-selected-protocol-workflow-governed-wait-01",
+        "exitCode": 0,
+        "disposition": "passed",
+        "passed": true,
+        "checksPassed": 9,
+        "checksTotal": 9,
+        "elapsedSeconds": 30.268,
+        "estimatedCostNanodollars": 6282160,
+        "scoreSha256": "sha256:c4b90a8e247d1970bdf084bea03d2f5e7c160c37965e8fe9d619645c8f791811",
+        "artifactSha256": "sha256:9fafd28993da1f7a6166cc7c48d3598fe96484f86955f411fe73208162d65152",
+        "requestSha256": "sha256:719772e573fadc0214ee6c6fed45512b25a6cf826b467ed7d6eab39dcb11fb33"
+      }
+    ],
+    "casesPassed": 7,
+    "checksPassed": 46,
+    "checksTotal": 46,
+    "environment": "local",
+    "execution": "Built candidate CLI against the seeded mock control plane; not Product or installed-package validation.",
+    "evalsSource": "0bae4e0947dc7959cae25b73d27533c096f23a14",
+    "graderSha256": "sha256:a505dadb9d03146a49855eb60eecc0bf0f3dfc7f6c35ca20a9930df788ce92a0",
+    "candidateWrapperSha256": "sha256:3d0fcb8cdf29c8e43f2f528297956daa69abcb9772ea227e5648fa5c6f2a8752",
+    "runnerCliSha256": "sha256:df7933f328e8fa14b67a18ca3172e84dee2b673c75f46c3edaa2618385965d92",
+    "runnerPackageSha256": "sha256:5d8d3c58ebadfb9313da784a69e26d7001c75c1f8c9a6715ca6816386e87aeb0",
+    "runnerdSha256": "sha256:d2bfde9a8f168b3a57dc10a4409b9436545d140765a3d1a48d68b428440500e7",
+    "qualificationStatusAtMeasurement": "pending; explicit candidate-profile and exact expected-profile admission",
+    "elapsedSeconds": 175.087,
+    "report": "tests/runner-e2e/results/copilot-v49-protocol-20261020/report/index.html",
+    "measurement": {
+      "path": "tests/runner-e2e/results/copilot-v49-protocol-20261020/measurement.json",
+      "sha256": "sha256:52e8c18b878236f2ab143950a6a5d2f5945adbbe46d8d6c00eb9161ad67ad652"
+    },
+    "limits": {
+      "turnTimeoutMs": 180000,
+      "maxAgentTurnsPerCell": 1,
+      "maxEstimatedCellNanodollars": 500000000,
+      "maxEstimatedAggregateNanodollars": 5000000000
+    },
+    "orchestration": "Original seven-fixture wrapper with identity replacements and an early halt for a first-cell infrastructure failure; no scorer, limits, timeouts or retry changes.",
+    "presentation": {
+      "canonicalReport": "passed",
+      "viewerAcceptance": "passed",
+      "secretExclusion": {
+        "status": "passed",
+        "filesChecked": 330
+      },
+      "reportSha256": "sha256:369414d0e6da89b2c1b9e8859d512c099a72b97833c6cdd4328d699f3898ef05",
+      "finalEvidenceCheck": {
+        "path": "tests/runner-e2e/results/copilot-v49-protocol-20261020/final-evidence-check.json",
+        "sha256": "sha256:2f66999a3d0749c8f74fb55547e4e72ecc280ede52698619ec46e1656337d126"
+      },
+      "additionalProviderCalls": 0
+    }
+  },
+  "localProductCanary": {
+    "status": "passed",
+    "executionId": "extended-harnesses.runner-acpx-copilot.local.file-edit-validate",
+    "automaticRetries": 0,
+    "cellsPassed": 1,
+    "cellsRequired": 1,
+    "admission": "Existing explicit extended-harnesses local candidate suite; not installed-package production admission.",
+    "result": {
+      "path": "tests/runner-e2e/results/copilot-v49-local-canary-20261020/extended-harnesses/runner-acpx-copilot/local/file-edit-validate/attempt-1/result.json",
+      "sha256": "sha256:fe9e06718860e3e8371f3298eb2aa0a58045b9d80f5e60c84eef8fd9fc1e9311",
+      "status": "passed",
+      "attempt": 1,
+      "cleanup": "passed",
+      "checksPassed": 8,
+      "checksTotal": 8,
+      "suiteDefinitionHash": "d5bcf5de0ade3a54e4e1560e76feb5d8a787039d56d2379cd501626d85ed7418",
+      "durationMs": 66916,
+      "reportedSource": {
+        "sha": "808d895af2ac830cd1efcd03db768210fae64134",
+        "ref": "codex/persistent-case-handoffs",
+        "workflowRunUrl": null
+      },
+      "launchSource": "808d895af2ac830cd1efcd03db768210fae64134",
+      "persistedRuntimeProfile": {
+        "agent": "copilot",
+        "agentProfileVersion": 49,
+        "commandDigest": "sha256:37a8f6a540a7417bb12becbf283158df8cca925c5136ecc0db14597441fff702",
+        "agentServerVersion": "1.0.88"
+      },
+      "apiState": {
+        "path": "tests/runner-e2e/results/copilot-v49-local-canary-20261020/extended-harnesses/runner-acpx-copilot/local/file-edit-validate/attempt-1/snapshots/api-state.json",
+        "sha256": "sha256:2d8aee044758e6e106cfff6ed021eed7c83ab12a206f04f21c26d7402282d55d"
+      },
+      "nativeUsd": null,
+      "nativeUsdCoverage": "Unpriced; no provider-reported cost receipt."
+    }
+  },
+  "billing": {
+    "provider": "github",
+    "nativeUsd": null,
+    "nativeUsdCoverage": "Unavailable; null is not measured zero.",
+    "protocolEstimatedUsd": 0.06335718,
+    "protocolEstimatePricingVersion": "provider-list-prices-2026-09-07-openrouter",
+    "localProductNativeUsd": null,
+    "localProductCostStatus": "unpriced",
+    "combinedActualUsd": null,
+    "automaticRetries": 0
+  },
+  "admission": "Current profile49 launch admission is enabled only after seven selected protocol cases and one local Product canary passed on the frozen completion-recovery runtime. Profile48 history and original failures retain their identities. This is bounded compatibility revalidation, not a repeated full campaign, deployment or cloud qualification."
+}

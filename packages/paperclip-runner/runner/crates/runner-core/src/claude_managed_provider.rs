@@ -2491,7 +2491,7 @@ fn extract_event_list(value: Value) -> Vec<Value> {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use std::io::{ErrorKind, Read, Write};
     use std::net::{TcpListener, TcpStream};
@@ -2998,6 +2998,33 @@ mod tests {
             move |key, beta| NetworkWorker::start_at(key, beta, &origin, false),
         )
         .map_err(|error| error.cause)
+    }
+
+    pub(crate) fn disconnected_executor_fixture(
+        config: ClaudeManagedProviderConfig,
+    ) -> (Box<dyn Provider>, impl Fn() -> Vec<String>) {
+        let service = FakeAnthropicService::start(Vec::new(), Vec::new());
+        let origin = service.origin.clone();
+        let provider = ClaudeManagedProvider::start_with_worker(
+            &config,
+            Vec::new(),
+            "test-scope",
+            None,
+            None,
+            0,
+            Vec::new(),
+            SensitiveApiKey("anthropic-test-secret".to_owned()),
+            move |key, beta| NetworkWorker::start_at(key, beta, &origin, false),
+        )
+        .map_err(|error| error.cause)
+        .unwrap();
+        (Box::new(provider), move || {
+            service
+                .captured()
+                .iter()
+                .map(|request| format!("{} {}", request.method, request.path))
+                .collect()
+        })
     }
 
     #[test]

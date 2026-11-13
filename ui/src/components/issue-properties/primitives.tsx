@@ -21,6 +21,8 @@ export function PropertySection({
     <div className={className} data-property-section="true">
       {title ? (
         <div
+          data-slot="property-section-label"
+          data-streamlined={streamlined || undefined}
           className={cn(
             streamlined
               ? "pb-1 font-mono text-(length:--text-nano) font-normal uppercase tracking-wide text-muted-foreground/70"

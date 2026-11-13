@@ -90,7 +90,7 @@ describe("Copilot display extension adapter", () => {
     const normalize = vi.spyOn(copilotEvents, "normalizeCopilotSessionEvent").mockReturnValueOnce({
       kind: "usage", sourceMethod: COPILOT_ACP_EVENT_METHOD, sourceType: "assistant.usage",
       sessionId: context.sessionId, turnId: null,
-      data: { connectionString: "plain-credential-value", credentials: { endpoint: "opaque-value" }, inputTokens: 42 },
+      data: { connectionString: "plain-credential-value", credentials: { endpoint: "opaque-value" }, nested: { apiKey: { endpoint: "nested-secret" } }, inputTokens: 42 },
     });
     try {
       const events = await createCopilotProfileExtensionAdapter(context).notification(COPILOT_ACP_EVENT_METHOD, params("assistant.usage", {}));
@@ -98,9 +98,10 @@ describe("Copilot display extension adapter", () => {
       expect(events[0].payload.details).toEqual(expect.arrayContaining([
         { name: "connectionString", value: "[REDACTED]" },
         { name: "credentials.endpoint", value: "[REDACTED]" },
+        { name: "nested.apiKey.endpoint", value: "[REDACTED]" },
         { name: "inputTokens", value: "42" },
       ]));
-      expect(JSON.stringify(events)).not.toMatch(/plain-credential-value|opaque-value/);
+      expect(JSON.stringify(events)).not.toMatch(/plain-credential-value|opaque-value|nested-secret/);
     } finally { normalize.mockRestore(); }
   });
 

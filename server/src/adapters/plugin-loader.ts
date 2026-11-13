@@ -15,6 +15,8 @@ import { pathToFileURL } from "node:url";
 import type { ServerAdapterModule } from "./types.js";
 import { validateAdapterLoginCapability } from "@paperclipai/adapter-utils";
 import { logger } from "../middleware/logger.js";
+import { isCloudManagedInstance } from "../services/cloud-instance.js";
+import { assertExternalAdapterCodeAllowed } from "../services/adapter-code-policy.js";
 
 import {
   listAdapterPlugins,
@@ -30,6 +32,7 @@ import type { AdapterPluginRecord } from "../services/adapter-plugin-store.js";
 const uiParserCache = new Map<string, string>();
 
 export function getUiParserSource(adapterType: string): string | undefined {
+  if (isCloudManagedInstance()) return undefined;
   return uiParserCache.get(adapterType);
 }
 
@@ -38,6 +41,7 @@ export function getUiParserSource(adapterType: string): string | undefined {
  * Makes the ui-parser.js endpoint self-healing.
  */
 export function getOrExtractUiParserSource(adapterType: string): string | undefined {
+  if (isCloudManagedInstance()) return undefined;
   const cached = uiParserCache.get(adapterType);
   if (cached) return cached;
 
@@ -182,6 +186,7 @@ export async function loadExternalAdapterPackage(
   packageName: string,
   localPath?: string,
 ): Promise<ServerAdapterModule> {
+  assertExternalAdapterCodeAllowed();
   const packageDir = localPath
     ? path.resolve(localPath)
     : path.resolve(getAdapterPluginsDir(), "node_modules", packageName);
@@ -221,6 +226,7 @@ async function loadFromRecord(record: AdapterPluginRecord): Promise<ServerAdapte
 export async function reloadExternalAdapter(
   type: string,
 ): Promise<ServerAdapterModule | null> {
+  assertExternalAdapterCodeAllowed();
   const record = getAdapterPluginByType(type);
   if (!record) return null;
 
@@ -271,6 +277,7 @@ export async function reloadExternalAdapter(
  * Build all external adapter modules from the plugin store.
  */
 export async function buildExternalAdapters(): Promise<ServerAdapterModule[]> {
+  if (isCloudManagedInstance()) return [];
   const results: ServerAdapterModule[] = [];
 
   const storeRecords = listAdapterPlugins();

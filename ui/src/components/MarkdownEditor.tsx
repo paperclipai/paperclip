@@ -1,8 +1,10 @@
+import { FILE_DROP_TARGET_ATTRIBUTE } from "../lib/file-drop-target";
 import { AgentAvatar } from "./AgentAvatar";
 import {
   Component,
   type ClipboardEvent,
   type ErrorInfo,
+  type KeyboardEvent,
   forwardRef,
   useCallback,
   useEffect,
@@ -56,6 +58,9 @@ import {
   unescapeAngleBracketEscapes,
 } from "../lib/angle-bracket-markdown";
 import { unescapeBlockquoteMarkers } from "../lib/blockquote-markdown";
+import { unescapeIntrawordUnderscores } from "../lib/underscore-markdown";
+import { unescapeEqualsSigns } from "../lib/equals-markdown";
+import { restoreTrailingMarkdownSpaces } from "../lib/trailing-markdown-spaces";
 import { pasteNormalizationPlugin } from "../lib/paste-normalization";
 import { cn } from "../lib/utils";
 import { useEditorAutocomplete, type SlashCommandOption } from "../context/EditorAutocompleteContext";
@@ -97,8 +102,10 @@ interface MarkdownEditorProps {
   mentions?: MentionOption[];
   /** Capability-aware action commands supplied by the owning composer. */
   actionCommands?: SlashCommandOption[];
-  /** Called on Cmd/Ctrl+Enter */
+  /** Called on the configured submit shortcut. */
   onSubmit?: () => void;
+  /** Task composers use Enter; document editors retain Cmd/Ctrl+Enter by default. */
+  submitKey?: "enter" | "mod-enter";
   /** Render the rich editor without allowing edits. */
   readOnly?: boolean;
 }
@@ -184,7 +191,10 @@ function prepareMarkdownForEditor(value: string): string {
  * feed agent prompts and must stay in the clean, human-authored form.
  */
 function toStoredMarkdown(markdown: string): string {
-  return unescapeAngleBracketEscapes(unescapeBlockquoteMarkers(markdown));
+  const withTrailingSpaces = restoreTrailingMarkdownSpaces(markdown);
+  // Unescape underscores and `=` first, on the exporter's exact text: removing `\<`
+  // or `\>` can turn following lines into HTML or blockquotes and move code ranges.
+  return unescapeAngleBracketEscapes(unescapeBlockquoteMarkers(unescapeEqualsSigns(unescapeIntrawordUnderscores(withTrailingSpaces))));
 }
 
 function escapeRegExp(value: string): string {
@@ -499,15 +509,32 @@ export function computeMentionMenuPosition(
   return { top, left, maxWidth };
 }
 
-function getMentionMenuSize(optionCount: number): MentionMenuSize {
-  const visibleRows = Math.max(1, Math.min(optionCount, 8));
+function getMentionMenuSize(options: AutocompleteOption[]): MentionMenuSize {
+  const rowHeight = Math.min(options.length, 8) * MENTION_MENU_ROW_HEIGHT;
   return {
     width: MENTION_MENU_WIDTH,
     height: Math.min(
       MENTION_MENU_HEIGHT,
-      visibleRows * MENTION_MENU_ROW_HEIGHT + MENTION_MENU_CHROME_HEIGHT,
+      Math.max(MENTION_MENU_ROW_HEIGHT, rowHeight) + MENTION_MENU_CHROME_HEIGHT,
     ),
   };
+}
+
+function computeSlashMenuPosition(
+  composer: DOMRect,
+  viewport: MentionMenuViewport,
+  menuSize: MentionMenuSize,
+) {
+  const minLeft = viewport.offsetLeft + MENTION_MENU_PADDING;
+  const minTop = viewport.offsetTop + MENTION_MENU_PADDING;
+  const width = Math.min(composer.width, Math.max(0, viewport.width - MENTION_MENU_PADDING * 2));
+  const maxLeft = viewport.offsetLeft + viewport.width - MENTION_MENU_PADDING - width;
+  const left = Math.max(minLeft, Math.min(viewport.offsetLeft + composer.left, maxLeft));
+  const above = viewport.offsetTop + composer.top - menuSize.height - MENTION_MENU_PADDING;
+  const below = viewport.offsetTop + composer.bottom + MENTION_MENU_PADDING;
+  const maxTop = viewport.offsetTop + viewport.height - menuSize.height - MENTION_MENU_PADDING;
+  const top = Math.max(minTop, Math.min(above >= minTop ? above : below, maxTop));
+  return { top, left, width, maxWidth: width };
 }
 
 // CodeMirror's editable surface is `.cm-content`, not a `pre` or `code` node.
@@ -742,9 +769,19 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
   mentions,
   actionCommands = [],
   onSubmit,
+  submitKey = "mod-enter",
   readOnly = false,
 }: MarkdownEditorProps, forwardedRef) {
   const editorValue = useMemo(() => prepareMarkdownForEditor(value), [value]);
+  function isSubmitShortcut(event: KeyboardEvent<HTMLElement>): boolean {
+    return !readOnly
+      && event.key === "Enter"
+      && !event.nativeEvent.isComposing
+      && event.keyCode !== 229
+      && !event.shiftKey
+      && !event.altKey
+      && (submitKey === "enter" || event.metaKey || event.ctrlKey);
+  }
   const { slashCommands: sharedSlashCommands } = useEditorAutocomplete();
   const slashCommands = useMemo(
     () => [...actionCommands, ...sharedSlashCommands],
@@ -945,8 +982,6 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
     };
   }, [editorValue, placeholder, richEditorError]);
 
-  // Whether the image plugin should be included (boolean is stable across renders
-  // as long as the handler presence doesn't toggle)
   const hasImageUpload = Boolean(imageUploadHandler);
 
   const plugins = useMemo<RealmPlugin[]>(() => {
@@ -1003,11 +1038,7 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
       codeMirrorPlugin({ codeBlockLanguages: CODE_BLOCK_LANGUAGES }),
       markdownShortcutPlugin(),
     ];
-    if (imageHandler) {
-      // The inline image chip keeps only its remove affordance — no settings
-      // dialog, and the X glyph instead of MDXEditor's default trash can.
-      all.push(imagePlugin({ imageUploadHandler: imageHandler, disableImageSettingsButton: true }));
-    }
+    all.push(imagePlugin({ imageUploadHandler: imageHandler, disableImageSettingsButton: true }));
     return all;
   }, [hasImageUpload]);
 
@@ -1126,12 +1157,16 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
     viewport?.addEventListener("scroll", updatePosition);
     window.addEventListener("resize", updatePosition);
     window.addEventListener("scroll", updatePosition, true);
+    const anchor = containerRef.current?.closest("[data-editor-autocomplete-anchor]") ?? containerRef.current;
+    const observer = typeof ResizeObserver !== "undefined" ? new ResizeObserver(updatePosition) : null;
+    if (anchor) observer?.observe(anchor);
 
     return () => {
       viewport?.removeEventListener("resize", updatePosition);
       viewport?.removeEventListener("scroll", updatePosition);
       window.removeEventListener("resize", updatePosition);
       window.removeEventListener("scroll", updatePosition, true);
+      observer?.disconnect();
     };
   }, [checkMention, mentionActive]);
 
@@ -1321,12 +1356,11 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
     setRichEditorError({ code: "MDE-PARSE", message: richEditorErrorMessage(error) });
   }, []);
 
-  const mentionMenuPosition = mentionState
-    ? computeMentionMenuPosition(
-        mentionState,
-        getMentionMenuViewport(),
-        getMentionMenuSize(filteredMentions.length),
-      )
+  const autocompleteAnchor = containerRef.current?.closest("[data-editor-autocomplete-anchor]") ?? containerRef.current;
+  const mentionMenuPosition: { top: number; left: number; maxWidth: number; width?: number } | null = mentionState && autocompleteAnchor
+    ? mentionState.trigger === "skill"
+      ? computeSlashMenuPosition(autocompleteAnchor.getBoundingClientRect(), getMentionMenuViewport(), getMentionMenuSize(filteredMentions))
+      : computeMentionMenuPosition(mentionState, getMentionMenuViewport(), getMentionMenuSize(filteredMentions))
     : null;
 
   if (richEditorError) {
@@ -1373,8 +1407,9 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
           }}
           onBlur={() => onBlur?.()}
           onKeyDown={(event) => {
-            if (onSubmit && event.key === "Enter" && (event.metaKey || event.ctrlKey)) {
+            if (onSubmit && isSubmitShortcut(event)) {
               event.preventDefault();
+              event.stopPropagation();
               onSubmit();
             }
           }}
@@ -1390,6 +1425,7 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
   return (
     <div
       ref={containerRef}
+      {...(canDropFile && !readOnly ? { [FILE_DROP_TARGET_ATTRIBUTE]: "" } : {})}
       className={cn(
         "relative paperclip-mdxeditor-scope",
         bordered ? "rounded-md border border-border bg-transparent" : "bg-transparent",
@@ -1408,7 +1444,8 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
         }
       }}
       onKeyDownCapture={(e) => {
-        if (readOnly) return;
+        if (readOnly || e.nativeEvent.isComposing || e.keyCode === 229) return;
+        if (e.key === "Enter" && (e.shiftKey || e.altKey)) return;
         if (
           (e.key === "Backspace" || e.key === "Delete")
           && e.target instanceof HTMLElement
@@ -1417,8 +1454,8 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
           // Lexical handles deletion on keydown and may suppress DOM input.
           initialChildOnChangeRef.current = false;
         }
-        // Cmd/Ctrl+Enter to submit
-        if (onSubmit && e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
+        // An explicit Cmd/Ctrl+Enter sends even while autocomplete is open.
+        if (onSubmit && isSubmitShortcut(e) && (e.metaKey || e.ctrlKey)) {
           e.preventDefault();
           e.stopPropagation();
           onSubmit();
@@ -1471,6 +1508,18 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
               return;
             }
           }
+        }
+
+        // Leave an unselected slash menu's Enter with the editor.
+        if (
+          onSubmit && isSubmitShortcut(e)
+          && !(mentionActive && filteredMentions.length > 0)
+          && e.target instanceof HTMLElement
+          && e.target.closest('[contenteditable="true"]')
+        ) {
+          e.preventDefault();
+          e.stopPropagation();
+          onSubmit();
         }
       }}
       onDragEnter={(evt) => {
@@ -1594,8 +1643,12 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
           <div
             data-paperclip-floating-ui=""
             data-testid="mention-autocomplete-menu"
-            className="pointer-events-auto fixed z-(--z-9999) min-w-(--sz-180px) max-w-(--sz-calc-15) max-h-(--sz-208px) overflow-y-auto overscroll-contain rounded-md border border-border bg-popover shadow-md"
+            className={cn(
+              "pointer-events-auto fixed z-(--z-9999) max-w-(--sz-calc-15) max-h-(--sz-208px) overflow-y-auto overscroll-contain rounded-md border border-border bg-popover shadow-md",
+              mentionState?.trigger === "skill" ? "min-w-0" : "min-w-(--sz-180px)",
+            )}
             style={{
+              width: mentionMenuPosition.width,
               top: mentionMenuPosition.top,
               left: mentionMenuPosition.left,
               maxWidth: mentionMenuPosition.maxWidth,
@@ -1651,7 +1704,7 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
                 ) : option.kind === "action" ? (
                   <Flag className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
                 ) : option.kind === "skill" ? (
-                  <Boxes className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+                  <Boxes className="h-3.5 w-3.5 shrink-0 text-(--skill-mention-foreground)" />
                 ) : option.kind === "issue" ? (
                   <Hash className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
                 ) : option.kind === "project" && option.projectId ? (
@@ -1671,9 +1724,18 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
                     </span>
                     <span className="truncate">{issueMentionTitle(option)}</span>
                   </span>
+                ) : option.kind === "skill" ? (
+                  <span className="flex min-w-0 flex-1 items-center gap-2">
+                    <span className={cn("shrink-0 truncate", option.description ? "max-w-1/2" : "max-w-full")}>{slashCommandLabel(option)}</span>
+                    {option.description && (
+                      <span className="min-w-0 flex-1 truncate text-xs text-popover-foreground/70" title={option.description}>
+                        {option.description}
+                      </span>
+                    )}
+                  </span>
                 ) : (
                   <span className="truncate">
-                    {option.kind === "skill" || option.kind === "routine" || option.kind === "action"
+                    {option.kind === "routine" || option.kind === "action"
                       ? slashCommandLabel(option)
                       : option.name}
                   </span>
@@ -1694,7 +1756,7 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
                   </span>
                 )}
                 {option.kind === "skill" && (
-                  <span className="ml-auto text-(length:--text-nano) uppercase tracking-wide text-muted-foreground">
+                  <span className="ml-auto shrink-0 text-(length:--text-nano) uppercase tracking-wide text-popover-foreground/70">
                     Skill
                   </span>
                 )}
@@ -1704,7 +1766,7 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
                   </span>
                 )}
                 {option.kind === "action" && (
-                  <span className="ml-auto max-w-28 truncate text-(length:--text-nano) text-muted-foreground">
+                  <span className="ml-auto max-w-28 truncate text-(length:--text-nano) text-popover-foreground/70">
                     {option.disabled ? option.disabledReason : option.description}
                   </span>
                 )}

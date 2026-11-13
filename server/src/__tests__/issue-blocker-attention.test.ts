@@ -8,6 +8,7 @@ import {
   approvals,
   companies,
   createDb,
+  applyPendingMigrations,
   heartbeatRuns,
   issueApprovals,
   issueRelations,
@@ -18,10 +19,14 @@ import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
+import type { Issue } from "@paperclipai/shared";
 import { issueService } from "../services/issues.js";
 import { buildIssueGraphLivenessIncidentKey } from "../services/recovery/origins.js";
 
-const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
+import { resolveExternalTestDatabaseUrl } from "./helpers/external-test-database.js";
+
+const externalUrl = resolveExternalTestDatabaseUrl("PAPERCLIP_BLOCKER_ATTENTION_TEST_DATABASE_URL");
+const embeddedPostgresSupport = externalUrl ? { supported: true } : await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
 
 if (!embeddedPostgresSupport.supported) {
@@ -30,14 +35,22 @@ if (!embeddedPostgresSupport.supported) {
   );
 }
 
+// The inferred list() return type drops the attention fields that its rows carry at runtime.
+type IssueServiceWithListProjection = Omit<ReturnType<typeof issueService>, "list"> & {
+  list(
+    ...args: Parameters<ReturnType<typeof issueService>["list"]>
+  ): Promise<Array<Awaited<ReturnType<ReturnType<typeof issueService>["list"]>>[number] & Pick<Issue, "blockedBy" | "blockerAttention" | "blockedInboxAttention">>>;
+};
+
 describeEmbeddedPostgres("issue blocker attention", () => {
   let db!: ReturnType<typeof createDb>;
-  let svc!: ReturnType<typeof issueService>;
+  let svc!: IssueServiceWithListProjection;
   let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
 
   beforeAll(async () => {
-    tempDb = await startEmbeddedPostgresTestDatabase("paperclip-issue-blocker-attention-");
-    db = createDb(tempDb.connectionString);
+    if (externalUrl) await applyPendingMigrations(externalUrl);
+    else tempDb = await startEmbeddedPostgresTestDatabase("paperclip-issue-blocker-attention-");
+    db = createDb(externalUrl ?? tempDb!.connectionString, { maxConnections: 6 });
     svc = issueService(db);
   }, 20_000);
 
@@ -55,6 +68,7 @@ describeEmbeddedPostgres("issue blocker attention", () => {
   });
 
   afterAll(async () => {
+    await db?.$client.end({ timeout: 1 });
     await tempDb?.cleanup();
   });
 
@@ -508,6 +522,37 @@ describeEmbeddedPostgres("issue blocker attention", () => {
         }),
       }),
     ]);
+  });
+
+  it.each([
+    { relation: "explicit", future: true },
+    { relation: "child", future: true },
+    { relation: "explicit", future: false },
+    { relation: "child", future: false },
+  ] as const)("uses a future monitor, not an expired one, for a $relation review blocker (future=$future)", async ({ relation, future }) => {
+    const { companyId, agentId } = await createCompany("MON");
+    const parentId = await insertIssue({ companyId, identifier: "MON-1", title: "Parent", status: "blocked" });
+    const blockerId = await insertIssue({
+      companyId,
+      identifier: "MON-2",
+      title: "Review blocker",
+      status: "in_review",
+      parentId: relation === "child" ? parentId : null,
+      assigneeAgentId: agentId,
+      monitorNextCheckAt: new Date(Date.now() + (future ? 1 : -1) * 60 * 60 * 1000),
+    });
+    if (relation === "explicit") await block({ companyId, blockerIssueId: blockerId, blockedIssueId: parentId });
+
+    const parent = (await svc.list(companyId, { status: "blocked" })).find((issue) => issue.id === parentId);
+
+    expect(parent?.blockerAttention).toMatchObject({
+      state: future ? "covered" : "stalled",
+      unresolvedBlockerCount: 1,
+      coveredBlockerCount: future ? 1 : 0,
+      stalledBlockerCount: future ? 0 : 1,
+      attentionBlockerCount: 0,
+      sampleBlockerIdentifier: "MON-2",
+    });
   });
 
   it("flags a deep chain whose leaf is stalled in_review through multiple layers", async () => {

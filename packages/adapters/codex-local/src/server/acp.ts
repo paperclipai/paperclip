@@ -42,8 +42,8 @@ import { createWorkspaceRestoreTeardown } from "@paperclipai/adapter-utils/works
 import { normalizeCodexModel } from "../index.js";
 import { classifyCodexAuthRefreshFailure, extractCodexRetryNotBefore } from "./parse.js";
 import { copyBackCodexAuth } from "./codex-auth-copyback.js";
-import { buildCodexAuthInboundProvision } from "./codex-auth-merge-scripts.js";
 import {
+  buildCodexHomeRefreshProvision,
   evaluateCodexCredentialReadiness,
   resolveSharedCodexHomeDir,
   stageCodexHomeForSync,
@@ -204,8 +204,8 @@ async function prepareCodexRemoteManagedHome(
         key: "home",
         localDir: stagedCodexHomeDir,
         followSymlinks: true,
-        // Subscription-only inbound auth merge keeps the newer credential.
-        provision: apiKeyAuth ? undefined : buildCodexAuthInboundProvision(),
+        // Refresh managed config/auth while retaining remote conversation files.
+        provision: buildCodexHomeRefreshProvision({ mergeAuth: !apiKeyAuth }),
         // Subscription-only outbound copy-back at teardown, under the same
         // direction-agnostic decision predicate + directory merge-lock +
         // atomic-rename + 0600 guard. Target is the SHARED host auth.json
@@ -269,10 +269,17 @@ async function prepareCodexRemoteManagedHome(
 const CODEX_MODEL_CAPACITY_RE =
   /\b(?:selected model is at capacity|model is at capacity|at capacity for this model|serverOverloaded|server overloaded)\b/i;
 
+const CODEX_PROVIDER_AUTH_RE =
+  /\b(?:401 unauthorized|invalid_api_key|(?:incorrect|invalid) api key)\b/i;
+
 export function classifyCodexTerminalSessionFailure(
   failure: AcpxTerminalSessionFailure,
   now: Date,
 ): AcpxTerminalFailureClassification | null {
+  if (failure.category === "access") {
+    const text = [failure.title, failure.details].filter(Boolean).join("\n");
+    return CODEX_PROVIDER_AUTH_RE.test(text) ? { errorCode: "acpx_auth_required" } : null;
+  }
   if (failure.category === "service") {
     const text = [failure.title, failure.details].filter(Boolean).join("\n");
     return CODEX_MODEL_CAPACITY_RE.test(text)

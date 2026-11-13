@@ -4,6 +4,12 @@ import { isUuidLike, type IssueRecoveryAction } from "@paperclipai/shared";
 import { nativeSha256 } from "./canonical.js";
 
 export const NATIVE_WORKSPACE_OWNER_UNVERIFIED = "native_workspace_finalization_owner_unverified";
+/** Describes the wait. It never asks a person to inspect a server or sandbox. */
+export const NATIVE_WORKSPACE_OWNER_WAIT_NEXT_ACTION = "Paperclip is holding this saved result until it can confirm that the previous server stopped, so the work is not saved twice. Saving then resumes without repeating the agent's work. If this platform cannot confirm it, an owner or administrator can resume the save from this task (Resume saved result).";
+
+export function hasNativeWorkspaceFinalizationOwner(profile: Record<string, unknown> | null | undefined): boolean {
+  return profile?.nativeWorkspaceFinalizationOwner != null;
+}
 
 /** A terminal task does not prove that an older controller's copyback stopped. */
 export async function hasUnverifiedNativeWorkspaceFinalizationOwner(
@@ -20,5 +26,5 @@ export async function hasUnverifiedNativeWorkspaceFinalizationOwner(
     eq(heartbeatRuns.runtimeMode, "native"),
   )).limit(1);
   const owner = run?.profile?.nativeWorkspaceFinalizationOwner;
-  return owner != null && action.fingerprint === nativeSha256({ runId, owner });
+  return hasNativeWorkspaceFinalizationOwner(run?.profile) && action.fingerprint === nativeSha256({ runId, owner });
 }

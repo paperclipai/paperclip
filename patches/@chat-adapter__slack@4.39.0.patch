@@ -1,5 +1,4 @@
 diff --git a/dist/index.js b/dist/index.js
-index b80888b6d87e8ad429d18cc955c4c5048a55722a..081e3b1664d3e65d1decf82bbf314909a36c143d 100644
 --- a/dist/index.js
 +++ b/dist/index.js
 @@ -2154,6 +2154,7 @@
@@ -117,7 +116,37 @@ index b80888b6d87e8ad429d18cc955c4c5048a55722a..081e3b1664d3e65d1decf82bbf314909
        };
      } catch (error) {
        this.handleSlackError(error);
-@@ -4183,7 +4203,7 @@
+@@ -4157,8 +4177,10 @@
+       this.handleSlackError(error);
+     }
+   }
+-  async updateModal(viewId, modal) {
+-    const view = modalToSlackView(modal);
++  async updateModal(viewId, modal, options) {
++    const metadata = options?.contextId ? encodeModalMetadata({ contextId: options.contextId, privateMetadata: modal.privateMetadata }) : void 0;
++    const view = modalToSlackView(modal, metadata);
++    if (options) view.external_id = options.externalId;
+     this.logger.debug("Slack API: views.update", {
+       viewId,
+       callbackId: modal.callbackId
+@@ -4167,6 +4189,7 @@
+       const result = await this._client.views.update(
+         await this.withToken({
+           view_id: viewId,
++          ...(options ? { hash: options.hash } : {}),
+           view
+         })
+       );
+@@ -4174,7 +4197,7 @@
+         viewId: result.view?.id,
+         ok: result.ok
+       });
+-      return { viewId: result.view?.id };
++      return options ? { viewId: result.view?.id, viewHash: result.view?.hash } : { viewId: result.view?.id };
+     } catch (error) {
+       this.handleSlackError(error);
+     }
+@@ -4183,7 +4206,7 @@
     * Upload files to Slack and share them to a channel.
     * Returns the file IDs of uploaded files.
     */
@@ -126,7 +155,7 @@ index b80888b6d87e8ad429d18cc955c4c5048a55722a..081e3b1664d3e65d1decf82bbf314909
      const bufferResults = await Promise.all(
        files.map(async (file) => {
          try {
-@@ -4205,7 +4225,9 @@
+@@ -4205,7 +4228,9 @@
        (result2) => result2 !== null
      );
      if (fileUploads.length === 0) {
@@ -137,7 +166,7 @@ index b80888b6d87e8ad429d18cc955c4c5048a55722a..081e3b1664d3e65d1decf82bbf314909
      }
      this.logger.debug("Slack API: files.uploadV2 (batch)", {
        fileCount: fileUploads.length,
-@@ -4219,15 +4241,158 @@
+@@ -4219,14 +4244,157 @@
      const result = await this._client.files.uploadV2(uploadArgs);
      this.logger.debug("Slack API: files.uploadV2 response", { ok: result.ok });
      const fileIds = [];
@@ -191,7 +220,7 @@ index b80888b6d87e8ad429d18cc955c4c5048a55722a..081e3b1664d3e65d1decf82bbf314909
 +      );
 +    }
 +    return { fileIds, messageId };
-   }
++  }
 +  async paperclipResolveFileUploadReceipt(fileIds, threadId) {
 +    if (!Array.isArray(fileIds) || fileIds.length === 0 || fileIds.length > 20 || new Set(fileIds).size !== fileIds.length || fileIds.some((fileId) => typeof fileId !== "string" || !/^F[A-Z0-9]{1,254}$/.test(fileId))) {
 +      const error = new Error("Slack file upload receipt is invalid");
@@ -296,11 +325,10 @@ index b80888b6d87e8ad429d18cc955c4c5048a55722a..081e3b1664d3e65d1decf82bbf314909
 +      (messageId) => rest.every((messageIds) => messageIds.has(messageId))
 +    );
 +    return sharedMessageIds.length === 1 ? sharedMessageIds[0] : null;
-+  }
+   }
    async editMessage(threadId, messageId, _message) {
      const message = await this.resolveMessageMentions(_message, threadId);
-     const ephemeral = this.decodeEphemeralMessageId(messageId);
-@@ -4622,6 +4787,8 @@
+@@ -4622,6 +4790,8 @@
      this.logger.debug("Slack: starting stream", { channel, threadTs });
      const token = await this.getToken();
      const streamer = this._client.chatStream({
@@ -309,7 +337,7 @@ index b80888b6d87e8ad429d18cc955c4c5048a55722a..081e3b1664d3e65d1decf82bbf314909
        channel,
        thread_ts: threadTs,
        ...options?.recipientUserId && {
-@@ -4667,6 +4834,72 @@
+@@ -4667,6 +4837,72 @@
        }
      };
      const fallback = { message: null, mode: "native", nativeRendered: false };
@@ -382,7 +410,7 @@ index b80888b6d87e8ad429d18cc955c4c5048a55722a..081e3b1664d3e65d1decf82bbf314909
      const updateIntervalMs = options?.updateIntervalMs ?? 1e3;
      let fallbackSent = "";
      let lastFallbackEditAt = 0;
-@@ -4709,17 +4942,11 @@
+@@ -4709,17 +4945,11 @@
          return;
        }
        try {
@@ -403,7 +431,7 @@ index b80888b6d87e8ad429d18cc955c4c5048a55722a..081e3b1664d3e65d1decf82bbf314909
          }
          switchToFallback(error);
          await flushFallback(force);
-@@ -4736,12 +4963,15 @@
+@@ -4736,12 +4966,15 @@
          return;
        }
        try {
@@ -424,13 +452,26 @@ index b80888b6d87e8ad429d18cc955c4c5048a55722a..081e3b1664d3e65d1decf82bbf314909
          structuredChunksSupported = false;
          this.logger.warn(
            "Structured streaming chunk failed, falling back to text-only streaming. Ensure your Slack app manifest includes the agent/assistant feature and the assistant:write scope",
-@@ -4749,22 +4979,28 @@
+@@ -4749,22 +4982,28 @@
          );
        }
      };
 -    for await (const chunk of textStream) {
 -      if (options?.signal?.aborted) {
 -        break;
+-      }
+-      if (typeof chunk === "string") {
+-        renderer.push(chunk);
+-        await flushCommitted();
+-      } else if (chunk.type === "markdown_text") {
+-        renderer.push(chunk.text);
+-        await flushCommitted();
+-      } else {
+-        await sendStructuredChunk(chunk);
+-      }
+-    }
+-    renderer.finish();
+-    await flushCommitted(true);
 +    try {
 +      for await (const chunk of textStream) {
 +        if (options?.signal?.aborted) {
@@ -445,29 +486,18 @@ index b80888b6d87e8ad429d18cc955c4c5048a55722a..081e3b1664d3e65d1decf82bbf314909
 +        } else {
 +          await sendStructuredChunk(chunk);
 +        }
-       }
--      if (typeof chunk === "string") {
--        renderer.push(chunk);
--        await flushCommitted();
--      } else if (chunk.type === "markdown_text") {
--        renderer.push(chunk.text);
--        await flushCommitted();
--      } else {
--        await sendStructuredChunk(chunk);
--      }
++      }
 +      renderer.finish();
 +      await flushCommitted(true);
 +    } catch (error) {
 +      // Iterator/renderer/mention lookup failures also follow an irreversible
 +      // accepted native prefix; never classify them as safe whole-send retry.
 +      rethrowNativeFailure(error);
-     }
--    renderer.finish();
--    await flushCommitted(true);
++    }
      if (fallback.mode === "fallback") {
        if (options?.stopBlocks || this.feedbackButtons) {
          this.logger.warn(
-@@ -4775,7 +5011,7 @@
+@@ -4775,7 +5014,7 @@
        this.logger.debug("Slack: fallback stream complete", {
          messageId: fallback.message?.id
        });
@@ -476,7 +506,7 @@ index b80888b6d87e8ad429d18cc955c4c5048a55722a..081e3b1664d3e65d1decf82bbf314909
        return fallback.message;
      }
      const stopBlocks = [
-@@ -4784,21 +5020,27 @@
+@@ -4784,21 +5023,27 @@
      ];
      let result;
      try {
@@ -507,7 +537,7 @@ index b80888b6d87e8ad429d18cc955c4c5048a55722a..081e3b1664d3e65d1decf82bbf314909
        return fallback.message;
      }
      const messageTs = result.message?.ts ?? result.ts;
-@@ -5636,7 +5878,8 @@
+@@ -5636,7 +5881,8 @@
      const response = await fetch(responseUrl, {
        method: "POST",
        headers: { "Content-Type": "application/json" },
@@ -517,3 +547,17 @@ index b80888b6d87e8ad429d18cc955c4c5048a55722a..081e3b1664d3e65d1decf82bbf314909
      });
      if (!response.ok) {
        const errorText = await response.text();
+diff --git a/dist/index.d.ts b/dist/index.d.ts
+--- a/dist/index.d.ts
++++ b/dist/index.d.ts
+@@ -1179,8 +1179,9 @@
+     openModal(triggerId: string, modal: ModalElement, contextId?: string): Promise<{
+         viewId: string;
+     }>;
+-    updateModal(viewId: string, modal: ModalElement): Promise<{
++    updateModal(viewId: string, modal: ModalElement, options?: { hash: string; externalId: string; contextId?: string }): Promise<{
+         viewId: string;
++        viewHash?: string;
+     }>;
+     /**
+      * Upload files to Slack and share them to a channel.

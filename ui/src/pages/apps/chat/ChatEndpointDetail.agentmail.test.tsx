@@ -78,7 +78,7 @@ describe("AgentMail connection management tabs", () => {
   });
   it("shows an access failure rather than editable controls when the credential cannot load", async () => {
     mocks.getConnection.mockRejectedValue(new Error("Offline")); await render("access");
-    expect(container.querySelector('[role="alert"]')?.textContent).toContain("could not be loaded");
+    expect(container.querySelector('[role="alert"]')?.textContent).toContain("Couldn't load connection access");
     expect(container.querySelector('[role="radiogroup"]')).toBeNull(); expect(mocks.grants).not.toHaveBeenCalled();
   });
   it("uses inbox-local access for a legacy inbox with no saved account", async () => {
@@ -95,9 +95,9 @@ describe("AgentMail connection management tabs", () => {
     await render("conversations"); expect(container.textContent).toContain("Send an email");
     client.removeQueries({ queryKey: queryKeys.chatEndpoints.conversations("inbox") });
     mocks.conversations.mockRejectedValue(new Error("Offline")); await render("conversations");
-    expect(container.querySelector('[role="alert"]')?.textContent).toContain("Conversations could not be loaded");
+    expect(container.querySelector('[role="alert"]')?.textContent).toContain("Couldn't load the conversations");
     expect(container.textContent).not.toContain("No email conversations yet");
-    mocks.conversations.mockResolvedValue([]); await click("Try again"); expect(container.textContent).toContain("Send an email");
+    mocks.conversations.mockResolvedValue([]); await click("Retry"); expect(container.textContent).toContain("Send an email");
   });
   it("loads activity and routes pause through the email API without replacing cached chat detail with an email summary", async () => {
     mocks.activity.mockImplementation(async () => {

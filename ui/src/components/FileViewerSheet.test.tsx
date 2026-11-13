@@ -77,6 +77,19 @@ describe("FileContentViewer", () => {
     expect(markup).toContain("break-words");
   });
 
+  it("highlights patch changes while retaining source line numbers and the selected line", () => {
+    const base = content();
+    const markup = renderToStaticMarkup(<FileContentViewer content={content({
+      resource: { ...base.resource, title: "fix.patch", displayPath: "fix.patch", contentType: "text/x-patch" },
+      content: { encoding: "utf8", data: "--- a/file\n+++ b/file\n@@ -1 +1 @@\n-old\n+new" },
+    })} highlightedLine={5} />);
+    expect(markup).toContain('data-line-number="4" data-patch-line="remove"');
+    expect(markup).toContain('data-line-number="5" data-patch-line="add"');
+    expect(markup).toContain("bg-(--code-highlight-bg-resolved)");
+    expect(markup).toContain("-old");
+    expect(markup).toContain("+new");
+  });
+
   it("reserves code gutter space for at least four digit line numbers", () => {
     const markup = renderToStaticMarkup(
       <FileContentViewer

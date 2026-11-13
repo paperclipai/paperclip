@@ -2,6 +2,8 @@
 
 Product map: [Status cards and refreshed summaries](../feature-map/status-cards.md).
 
+Feature ID: `status-cards`.
+
 Review date: 2026-10-12. Source commit: `f981fa3cc10cb8663a87dec60345fbff46d54d0a`.
 
 This is a source-reviewed baseline of representative operations and known gaps.
@@ -10,6 +12,8 @@ qualified. No live agent execution is claimed. Follow the [map contract](../READ
 for format, permission checks, evidence and maintenance.
 
 ## `authoring`
+
+Capability ID: `status-cards/authoring`.
 
 Review: `baseline`.
 
@@ -36,6 +40,8 @@ feature.
 
 ## `generation`
 
+Capability ID: `status-cards/generation`.
+
 Review: `baseline`.
 
 API: `present` — representative operation IDs:
@@ -60,6 +66,8 @@ Gaps: Execution result must be checked. Agent-authored prompt length and tasks:a
 limits apply.
 
 ## `inspection`
+
+Capability ID: `status-cards/inspection`.
 
 Review: `baseline`.
 
@@ -86,6 +94,8 @@ Gaps: Read/history/debug APIs exist; a rendered compiling state is not evidence 
 successful generation.
 
 ## `archive`
+
+Capability ID: `status-cards/archive`.
 
 Review: `baseline`.
 

@@ -3,6 +3,7 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Agent } from "@paperclipai/shared";
+import { appearanceForPalette } from "@paperclipai/shared";
 import { AgentChatPicker, type AgentChatPickerProps } from "./AgentChatPicker";
 
 const agents = [
@@ -41,6 +42,58 @@ afterEach(async () => {
 });
 
 describe("AgentChatPicker", () => {
+  it("shows unread per agent through search and clears it when read state updates", async () => {
+    await render({ existingChatAgentIds: ["first", "second"], unreadMessageCounts: new Map([["first", 0], ["second", 12]]) });
+    expect(options()[0].querySelector('[aria-label*="unread message"]')).toBeNull();
+    expect(options()[1].querySelector('[aria-label="12 unread messages from Alex"]')?.textContent).toBe("12");
+    await search("designer");
+    expect(options()).toHaveLength(1);
+    expect(options()[0].textContent).toContain("12");
+    await render({ unreadMessageCounts: new Map([["second", 0]]) });
+    expect(options()[0].textContent).not.toContain("12");
+    expect(options()[0].textContent).toContain("Open chat");
+  });
+
+  it("uses indexed counts and memoized chat membership for a large team", async () => {
+    const roster = Array.from({ length: 500 }, (_, index) => ({ ...agents[index % 2], id: `agent-${index}`, name: `Agent ${index}` }));
+    let visits = 0;
+    const ids = roster.map(agent => agent.id);
+    const boundedIds = new Proxy(ids, { get(target, key, receiver) {
+      if (typeof key === "string" && /^\d+$/.test(key) && ++visits > ids.length * 2) throw new Error("Repeated chat membership scan");
+      return Reflect.get(target, key, receiver);
+    } });
+    const counts = new Map(ids.map(id => [id, 7]));
+    const getCount = vi.spyOn(counts, "get");
+    await render({ agents: roster, existingChatAgentIds: boundedIds, unreadMessageCounts: counts });
+    expect(options()).toHaveLength(500);
+    expect(document.querySelectorAll('[aria-label^="7 unread messages from"]')).toHaveLength(500);
+    expect(visits).toBe(500);
+    expect(getCount).toHaveBeenCalledTimes(500);
+    await search("Agent 499");
+    expect(options().length).toBeLessThan(500);
+    expect(options().some(option => option.textContent?.includes("Agent 499"))).toBe(true);
+    expect(visits).toBe(500);
+    expect(getCount).toHaveBeenCalledTimes(1000);
+  });
+
+  it("shows saved custom avatars and default avatars in agent choices", async () => {
+    await render({ agents: [
+      { ...agents[0], appearance: { ...appearanceForPalette("deep-tide"), customAvatarAssetId: "22222222-2222-4222-8222-222222222222" } },
+      agents[1],
+    ] });
+    const customImage = options()[0].querySelector("img");
+    expect(customImage?.getAttribute("src")).toBe("/api/assets/22222222-2222-4222-8222-222222222222/content");
+    expect(customImage?.getAttribute("width")).toBe("32");
+    expect(options()[1].querySelector("img")?.getAttribute("src")).toMatch(/^\/api\/agent-avatars\/cap-v1\//);
+  });
+
+  it("lets a custom renderer replace the default avatar", async () => {
+    await render({ renderAgentIcon: agent => <span>{agent.title} marker</span> });
+    expect(options()[0].textContent).toContain("Engineering Lead marker");
+    expect(options()[1].textContent).toContain("Product Designer marker");
+    expect(options().flatMap(option => [...option.querySelectorAll("img")])).toHaveLength(0);
+  });
+
   it("does not close a reopened picker when an earlier selection finishes", async () => {
     let finish!: () => void;
     await render({ onSelect: () => new Promise<void>(resolve => { finish = resolve; }) });

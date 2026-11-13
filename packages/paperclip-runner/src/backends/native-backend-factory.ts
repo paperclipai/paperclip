@@ -68,12 +68,14 @@ export function createNativeSessionBackend(
   }
   if (options.codexTransportFactory) {
     return createRunnerdNativeSessionBackend(input, {
+      retainedSystemInstructions: options.retainedSystemInstructions,
       completionFeedback: options.completionFeedback,
       runnerInstanceId: options.runnerInstanceId,
       onSpawn: options.onSpawn,
       dynamicTools: options.dynamicTools,
       dynamicToolHandler: options.dynamicToolHandler,
       environment: options.environment,
+      observability: options.observability,
       workingDirectoryAuthority: options.workingDirectoryAuthority,
       transportFactory: options.codexTransportFactory,
     });
@@ -126,6 +128,7 @@ export function createNativeSessionBackend(
     dynamicTools: options.dynamicTools,
     dynamicToolHandler: options.dynamicToolHandler,
     environment: options.environment,
+      observability: options.observability,
     workingDirectoryAuthority: options.workingDirectoryAuthority,
     transportFactory: options.codexTransportFactory,
   });

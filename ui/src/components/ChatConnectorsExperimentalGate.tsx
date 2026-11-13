@@ -2,7 +2,7 @@ import type { ReactNode } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { chatEndpointsApi } from "@/api/chatEndpoints";
 import { queryKeys } from "@/lib/queryKeys";
-import { Button } from "@/components/ui/button";
+import { QueryErrorState, useQueryView } from "@/components/QueryView";
 import {
   useChatConnectorsEnabled,
   chatProviderVisible,
@@ -20,17 +20,20 @@ function ProviderEndpointGate({
     queryKey: queryKeys.chatEndpoints.detail(endpointId),
     queryFn: () => chatEndpointsApi.get(endpointId),
   });
+  const endpointView = useQueryView(endpoint);
   const { enabled, githubEnabled } = useChatConnectorsEnabled();
-  if (endpoint.isError)
+  // A cached endpoint keeps gating the page through an outage; only a real
+  // failure with nothing loaded shows the error.
+  if (endpointView.kind === "error")
     return (
-      <div className="space-y-3 p-6">
-        <p role="alert" className="text-sm text-destructive">
-          {endpoint.error.message}
-        </p>
-        <Button variant="outline" onClick={() => void endpoint.refetch()}>
-          Retry
-        </Button>
-      </div>
+      <QueryErrorState
+        size="page"
+        className="p-6"
+        error={endpoint.error}
+        action="load this endpoint"
+        onRetry={endpointView.retry}
+        retrying={endpointView.isFetching}
+      />
     );
   if (!endpoint.data) return null;
   return chatProviderVisible(endpoint.data.provider, enabled, githubEnabled) ? (

@@ -20,6 +20,7 @@ import {
 } from "../commands/test-drive.js";
 import type { RunOptions, StartedServer } from "../commands/run.js";
 import type { PaperclipConfig } from "../config/schema.js";
+import { PaperclipApiClient } from "../client/http.js";
 
 const ORIGINAL_ENV = { ...process.env };
 const cleanupDirectories: string[] = [];
@@ -477,11 +478,40 @@ describe("test-drive worktree setting reconciliation", () => {
 
 describe("test-drive foreground lifecycle", () => {
   const server: StartedServer = {
-    apiUrl: "http://127.0.0.1:3100/api",
+    apiUrl: "http://127.0.0.1:3100",
     databaseUrl: "postgres://embedded",
     host: "127.0.0.1",
     listenPort: 3100,
   };
+
+  it.each([
+    { host: "127.0.0.1", listenPort: 3107, origin: "http://127.0.0.1:3107" },
+    { host: "::1", listenPort: 43210, origin: "http://[::1]:43210" },
+  ])("bootstraps and opens the selected local listener when $host advertises a public callback URL", async ({ host, listenPort, origin }) => {
+    process.env.PAPERCLIP_HOME = "/tmp/test-drive-public-callback";
+    process.env.PAPERCLIP_INSTANCE_ID = "default";
+    process.env.PAPERCLIP_IN_WORKTREE = "false";
+    const publicServer = { ...server, host, listenPort, apiUrl: "https://callbacks.example.test" };
+    const requests: string[] = [];
+    vi.spyOn(globalThis, "fetch").mockImplementation(async input => {
+      const url = String(input);
+      requests.push(url);
+      return url === `${origin}/api/companies`
+        ? new Response(JSON.stringify([company("existing", "Existing")]), { status: 200 })
+        : new Response(JSON.stringify({ error: "Unexpected bootstrap URL" }), { status: 404 });
+    });
+    const openBrowser = vi.fn(async () => true);
+
+    await testDriveCommand({ dataDir: "/tmp/test-drive-public-callback" }, {
+      run: async options => options.afterStart?.(publicServer),
+      createApi: apiBase => new PaperclipApiClient({ apiBase }),
+      openBrowser,
+    });
+
+    expect(requests).toEqual([`${origin}/api/companies`]);
+    expect(openBrowser).toHaveBeenCalledExactlyOnceWith(origin);
+    expect(publicServer.apiUrl).toBe("https://callbacks.example.test");
+  });
 
   it("skips service-manager integration for an auto-created directory and opens after initialization", async () => {
     process.env.PAPERCLIP_HOME = "/tmp/test-drive-lifecycle";

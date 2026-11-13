@@ -146,6 +146,22 @@ describe("TriggersSection", () => {
     expect(button("Continue").disabled).toBe(true);
   });
 
+  it("reveals schedule enable and pause actions only after opening the editor", async () => {
+    routine.triggers = [{ id: "schedule-1", kind: "schedule", enabled: false, cronExpression: "* * * * *", timezone: "America/Chicago" }] as RoutineTrigger[];
+    await render();
+    expect(container.querySelector('section[aria-label="Schedule trigger"]')).not.toBeNull();
+    expect(() => button("Enable trigger")).toThrow("Button not found");
+    await click("Edit schedule");
+    expect(button("Close").getAttribute("aria-expanded")).toBe("true");
+    await click("Enable trigger");
+    expect(api.updateTrigger).toHaveBeenNthCalledWith(1, "schedule-1", { enabled: true });
+    expect(button("Pause trigger")).toBeTruthy();
+    await click("Pause trigger");
+    expect(api.updateTrigger).toHaveBeenNthCalledWith(2, "schedule-1", { enabled: false });
+    expect(api.updateTrigger).toHaveBeenCalledTimes(2);
+    expect(button("Enable trigger")).toBeTruthy();
+  });
+
   it("blocks saving an invalid custom cron in the inline schedule editor", async () => {
     routine.triggers = [{ id: "schedule-1", kind: "schedule", enabled: true, cronExpression: "0 8-18/2 * * 1-5", timezone: "UTC" }] as RoutineTrigger[];
     await render();
