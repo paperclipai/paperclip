@@ -36,8 +36,14 @@ export function tailscaleConnectionService(db: Db, dependencies: {
 
   const cancelled = () => unprocessable("Tailscale authorization was cancelled or replaced. Connect again.", { code: "tailscale_authorization_cancelled" });
 
-  async function open(companyId: string, id: string, attempt?: { secretId: string; stateHash: string }) {
+  async function open(companyId: string, id: string, attempt?: { secretId: string; stateHash: string }, expectedSecretId?: string) {
+    const assertExpected = (row: typeof tailscaleConnections.$inferSelect) => {
+      if (expectedSecretId !== undefined && (row.secretId !== expectedSecretId || row.status !== "connected")) {
+        throw unprocessable("Reconnect Tailscale and save this environment again.", { code: "tailscale_reauthorization_required" });
+      }
+    };
     const row = await get(companyId, id);
+    assertExpected(row);
     if (!row.secretId || (row.status !== "connected" && row.status !== "connecting")) {
       if (attempt) throw cancelled();
       throw unprocessable("Connect Tailscale before using this environment.", { code: "tailscale_reauthorization_required" });
@@ -45,6 +51,7 @@ export function tailscaleConnectionService(db: Db, dependencies: {
     const secretId = row.secretId;
     const current = async () => {
       const latest = await get(companyId, id);
+      assertExpected(latest);
       if (latest.secretId !== secretId || (latest.status !== "connected" && latest.status !== "connecting")
         || (attempt && (attempt.secretId !== secretId || latest.oauthStateHash !== attempt.stateHash || latest.oauthExpiresAt !== null))) throw cancelled();
       return latest;
@@ -61,7 +68,7 @@ export function tailscaleConnectionService(db: Db, dependencies: {
         identity: `${companyId}:${secretId}`, credential, reload: read,
         persist: async value => { await secrets.rotate(secretId, { value }); },
       });
-      return { row: await current(), socket };
+      return { row: await current(), socket, assertCurrent: current };
     } catch (error) {
       try { await networks.disconnect(`${companyId}:${secretId}`); }
       catch (failure) { throw new AggregateError([error, failure], "Tailscale connection cleanup failed"); }
@@ -151,9 +158,10 @@ export function tailscaleConnectionService(db: Db, dependencies: {
       if (!device) throw unprocessable("Choose a machine on this tailnet before pairing.");
       return createTailscalePairing({ vault: secrets, provider: getConfiguredSecretProvider(), companyId, connectionId: id, deviceId, address: device.address, port, userId });
     },
-    async environmentBinding(companyId: string, id: string, deviceId: string) {
-      const { row, socket } = await open(companyId, id);
+    async environmentBinding(companyId: string, id: string, deviceId: string, expectedSecretId?: string) {
+      const { row, socket, assertCurrent } = await open(companyId, id, undefined, expectedSecretId);
       const device = (await readTailscaleDevices(socket)).find(device => device.id === deviceId);
+      await assertCurrent();
       if (!device) throw unprocessable("This machine is no longer available on the connected tailnet.", { code: "tailscale_machine_unavailable" });
       if (!device.online) throw unprocessable("Your machine is offline. Wake it and retry the task.", { code: "tailscale_machine_offline" });
       return { host: device.address, secretId: row.secretId!, socket };

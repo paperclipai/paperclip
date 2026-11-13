@@ -80,6 +80,15 @@ lock across broker or daemon startup. Cancelled attempts close their daemon and
 remove their newly created secret without touching a newer connection's state.
 Disconnect does not remove the target computer from Tailscale.
 
+Task runtime resolution obtains its socket from this same guarded connection
+service after loading the SSH key. It requires the connection to remain connected
+with the environment's saved credential identity during credential reload,
+daemon startup, and device discovery. A disconnect or replacement rejects the
+run before returning a socket; runtime resolution cannot restart the connection
+from a stale saved secret.
+Saved network credentials without a connector and machine selection are rejected;
+all Tailscale environments use the connector's lifecycle.
+
 This implementation currently supports one serving process per instance.
 Concurrent replicas need a durable connection ownership lease before rollout.
 

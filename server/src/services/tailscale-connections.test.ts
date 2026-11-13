@@ -8,6 +8,7 @@ import type { PaperclipCloudConnector } from "./paperclip-cloud-connector.js";
 import { secretService } from "./secrets.js";
 import { createIsolatedTestHome } from "../__tests__/helpers/isolated-test-home.js";
 import type { tailscaleNetworks } from "./tailscale-network.js";
+import * as tailscaleDevices from "./tailscale-devices.js";
 
 const support = await getEmbeddedPostgresTestSupport();
 describe.skipIf(!support.supported)("durable Tailscale consent state", () => {
@@ -171,6 +172,47 @@ describe.skipIf(!support.supported)("durable Tailscale consent state", () => {
     expect([...running]).toEqual([`${companyId}:${current.secretId}`]);
     await service.disconnect(companyId, current.id);
     expect(running.size).toBe(0);
+  });
+
+  it.each([
+    ["disconnected", "credential read"], ["replaced", "credential read"],
+    ["disconnected", "device discovery"], ["replaced", "device discovery"],
+  ] as const)("rejects runtime access %s during %s", async (state, phase) => {
+    const { result, state: consentState } = await start();
+    claim.mockResolvedValue({ accessToken: "fixture-enrollment-token", accessTokenExpiresAt: new Date(clock.getTime() + 60_000).toISOString() });
+    await service.complete({ state: consentState, userId: "fixture-owner", claimId: "first-claim", authorizeCompany });
+    const original = await service.get(companyId, result.connection.id);
+    const entered = deferred(), release = deferred();
+    const inventory = [{ id: "fixture-device", name: "Fixture", hostname: "fixture.example.test", address: "100.64.0.2", os: "linux", online: true }];
+    const devices = vi.spyOn(tailscaleDevices, "readTailscaleDevices").mockResolvedValue(inventory);
+    expect(await service.environmentBinding(companyId, original.id, "fixture-device", original.secretId!)).toEqual({
+      host: "100.64.0.2", secretId: original.secretId, socket: "/private/tailscale-fixture/socket",
+    });
+    const read = vault.resolveSecretValue;
+    const credential = vi.spyOn(vault, "resolveSecretValue");
+    if (phase === "credential read") credential.mockImplementationOnce(async (...args) => {
+      const value = await read(...args); entered.resolve(); await release.promise; return value;
+    });
+    else devices.mockImplementationOnce(async () => { entered.resolve(); await release.promise; return inventory; });
+    const resolving = service.environmentBinding(companyId, original.id, "fixture-device", original.secretId!);
+    const outcome = resolving.then(value => ({ value, error: null }), error => ({ value: null, error }));
+    let activeSecretId: string | null = null;
+    try {
+      await Promise.race([entered.promise, resolving.then(() => { throw new Error("Runtime resolved before device discovery"); })]);
+      if (state === "disconnected") await service.disconnect(companyId, original.id);
+      else {
+        const newer = await start(original.id);
+        await service.complete({ state: newer.state, userId: "fixture-owner", claimId: "newer-claim", authorizeCompany });
+        activeSecretId = (await service.get(companyId, original.id)).secretId;
+      }
+    } finally { release.resolve(); }
+    try {
+      expect((await outcome).error).toMatchObject({ status: 422, details: { code: "tailscale_reauthorization_required" } });
+      expect([...running]).toEqual(activeSecretId ? [`${companyId}:${activeSecretId}`] : []);
+      const calls = connectNetwork.mock.calls.length;
+      await expect(service.environmentBinding(companyId, original.id, "fixture-device", original.secretId!)).rejects.toMatchObject({ status: 422 });
+      expect(connectNetwork).toHaveBeenCalledTimes(calls);
+    } finally { devices.mockRestore(); credential.mockRestore(); }
   });
 
   it("removes failed enrollment credentials even when daemon cleanup reports an error", async () => {

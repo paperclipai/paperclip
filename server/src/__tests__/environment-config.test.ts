@@ -59,8 +59,10 @@ describe("environment config helpers", () => {
 
   it("accepts a secret-backed Tailscale machine and rejects runtime socket injection", () => {
     const config = { host: "workstation", username: "developer", remoteWorkspacePath: "/workspace", network: "tailscale",
+      tailscaleConnectionId: "22222222-2222-4222-8222-222222222222", tailscaleDeviceId: "fixture-device",
       tailscaleAuthKeySecretRef: { type: "secret_ref", secretId: "11111111-1111-1111-1111-111111111111", version: "latest" } };
     expect(normalizeEnvironmentConfig({ driver: "ssh", config })).toMatchObject(config);
+    expect(() => normalizeEnvironmentConfig({ driver: "ssh", config: { ...config, tailscaleConnectionId: undefined, tailscaleDeviceId: undefined } })).toThrow(HttpError);
     expect(() => normalizeEnvironmentConfig({ driver: "ssh", config: { ...config, tailscaleAuthKey: "tskey-auth-fixture" } })).toThrow(HttpError);
     expect(() => normalizeEnvironmentConfig({ driver: "ssh", config: { ...config, tailscaleSocket: "/tmp/other-company" } })).toThrow(HttpError);
     expect(() => normalizeEnvironmentConfig({ driver: "ssh", config: { ...config, tailscaleAuthKeySecretRef: { ...config.tailscaleAuthKeySecretRef, version: 1 } } })).toThrow(HttpError);

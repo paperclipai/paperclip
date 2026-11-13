@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { normalizeEnvironmentConfigForPersistence, resolveEnvironmentDriverConfigForRuntime } from "../services/environment-config.js";
+import { unprocessable } from "../errors.js";
 
 const fixture = vi.hoisted(() => ({
   get: vi.fn(), binding: vi.fn(), connect: vi.fn(),
@@ -21,7 +22,7 @@ const environment = { id: "44444444-4444-4444-8444-444444444444", driver: "ssh" 
 
 describe("SSH environments using the Tailscale connector", () => {
   beforeEach(() => {
-    vi.clearAllMocks();
+    vi.resetAllMocks();
     fixture.get.mockResolvedValue({ id: connectionId, companyId, secretId, status: "connected" });
     fixture.binding.mockResolvedValue({ host: "100.64.0.2", secretId, socket: "/tmp/private-tailscale/socket" });
     fixture.connect.mockResolvedValue("/tmp/private-tailscale/socket");
@@ -39,14 +40,53 @@ describe("SSH environments using the Tailscale connector", () => {
   it("refreshes the selected machine address at execution and uses only the connector's private socket", async () => {
     const resolved = await resolveEnvironmentDriverConfigForRuntime({} as never, companyId, environment);
     expect(fixture.get).toHaveBeenCalledWith(companyId, connectionId);
-    expect(fixture.binding).toHaveBeenCalledWith(companyId, connectionId, "stable-machine-id");
+    expect(fixture.binding).toHaveBeenCalledWith(companyId, connectionId, "stable-machine-id", secretId);
     expect(resolved).toMatchObject({ driver: "ssh", config: { host: "100.64.0.2", tailscaleSocket: "/tmp/private-tailscale/socket", tailscaleIdentity: `${companyId}:${secretId}` } });
+    expect(fixture.connect).not.toHaveBeenCalled();
+    expect(fixture.secrets.resolveSecretValue).not.toHaveBeenCalled();
+  });
+
+  it.each(["disconnected", "replaced"])("rejects a connector %s while the SSH key is loading", async state => {
+    let entered!: () => void, release!: () => void;
+    const loading = new Promise<void>(resolve => { entered = resolve; });
+    const paused = new Promise<void>(resolve => { release = resolve; });
+    fixture.secrets.resolveSecretValue.mockImplementationOnce(async () => { entered(); await paused; return "fixture-ssh-key"; });
+    const resolving = resolveEnvironmentDriverConfigForRuntime({} as never, companyId, { ...environment, config: { ...config,
+      privateKeySecretRef: { type: "secret_ref", secretId: "55555555-5555-4555-8555-555555555555", version: "latest" },
+    } });
+    const outcome = resolving.then(value => ({ value, error: null }), error => ({ value: null, error }));
+    try {
+      await Promise.race([loading, resolving.then(() => { throw new Error("Runtime resolved before loading the SSH key"); })]);
+      fixture.get.mockResolvedValue({ id: connectionId, companyId, secretId: state === "replaced" ? "new-secret" : secretId, status: state === "replaced" ? "connected" : state });
+      fixture.binding.mockRejectedValue(unprocessable("Reconnect Tailscale and save this environment again.", { code: "tailscale_reauthorization_required" }));
+    } finally { release(); }
+    expect((await outcome).error).toMatchObject({ status: 422, details: { code: "tailscale_reauthorization_required" } });
+    expect(fixture.connect).not.toHaveBeenCalled();
+    expect(fixture.binding).toHaveBeenCalledWith(companyId, connectionId, "stable-machine-id", secretId);
+    expect(fixture.binding.mock.invocationCallOrder[0]).toBeGreaterThan(fixture.secrets.resolveSecretValue.mock.invocationCallOrder[0]!);
   });
 
   it.each(["pending", "connecting", "disconnected"])("rejects a %s connector before reading any runtime credentials", async status => {
     fixture.get.mockResolvedValue({ id: connectionId, companyId, secretId, status });
     await expect(resolveEnvironmentDriverConfigForRuntime({} as never, companyId, environment)).rejects.toMatchObject({ status: 422 });
     expect(fixture.secrets.resolveSecretValue).not.toHaveBeenCalled();
+    expect(fixture.connect).not.toHaveBeenCalled();
+  });
+
+  it("rejects a saved network credential without its connector instead of starting a standalone daemon", async () => {
+    const configWithoutConnection = { ...config, tailscaleConnectionId: undefined, tailscaleDeviceId: undefined };
+    await expect(resolveEnvironmentDriverConfigForRuntime({} as never, companyId, { ...environment, config: configWithoutConnection })).rejects.toMatchObject({ status: 422 });
+    await expect(normalizeEnvironmentConfigForPersistence({ db: {} as never, companyId, environmentName: "Workstation", driver: "ssh",
+      secretProvider: "local_encrypted", config: configWithoutConnection })).rejects.toMatchObject({ status: 422 });
+    expect(fixture.get).not.toHaveBeenCalled();
+    expect(fixture.secrets.resolveSecretValue).not.toHaveBeenCalled();
+    expect(fixture.connect).not.toHaveBeenCalled();
+  });
+
+  it("requires company and environment context before opening a runtime binding", async () => {
+    await expect(resolveEnvironmentDriverConfigForRuntime({} as never, null, environment)).rejects.toMatchObject({ status: 422 });
+    await expect(resolveEnvironmentDriverConfigForRuntime({} as never, companyId, { ...environment, id: undefined })).rejects.toMatchObject({ status: 422 });
+    expect(fixture.binding).not.toHaveBeenCalled();
     expect(fixture.connect).not.toHaveBeenCalled();
   });
 

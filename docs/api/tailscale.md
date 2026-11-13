@@ -31,6 +31,12 @@ Machine discovery returns `id`, `name`, `hostname`, `address`, `os`, and `online
 for each peer. Use the stable `id` when configuring a Tailscale-backed SSH
 environment. The current address is resolved again for execution.
 
+An SSH environment with `network: "tailscale"` requires `tailscaleConnectionId`
+and `tailscaleDeviceId`. Saving binds the connector's current credential identity.
+Raw enrollment keys and credential-only configurations are rejected. Runtime
+access checks the connection again after loading the SSH key and after device
+discovery; a disconnected or replaced connection requires fresh setup.
+
 To prepare pairing, POST `{ "deviceId": "<stable-device-id>", "port": 22 }`.
 The port defaults to 22. The response contains `privateKeySecretId`, `publicKey`,
 and `command`. Each preparation generates a fresh key pair. Run the command as

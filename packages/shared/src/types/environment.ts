@@ -16,7 +16,7 @@ export interface SshEnvironmentConfig {
   tailscaleConnectionId?: string;
   tailscaleDeviceId?: string;
   network?: "direct" | "tailscale";
-  tailscaleAuthKey?: string | null;
+  tailscaleAuthKey?: null;
   tailscaleAuthKeySecretRef?: EnvSecretRefBinding | null;
   tailscaleSocket?: string;
   tailscaleIdentity?: string;

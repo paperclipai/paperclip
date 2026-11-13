@@ -1,5 +1,4 @@
 import { z } from "zod";
-import { tailscaleNetworks } from "./tailscale-network.js";
 import { tailscaleConnectionService } from "./tailscale-connections.js";
 import { randomUUID } from "node:crypto";
 import type { Db } from "@paperclipai/db";
@@ -66,7 +65,6 @@ const sshEnvironmentConfigSchema = z.object({
 }).strict();
 
 const sshEnvironmentConfigProbeSchema = sshEnvironmentConfigSchema.extend({
-  tailscaleAuthKey: z.string().trim().regex(/^tskey-auth-[A-Za-z0-9_-]+$/, "Enter a Tailscale device auth key.").optional().nullable(),
   privateKey: z
     .string()
     .trim()
@@ -84,7 +82,7 @@ function assertTailscaleSelection(config: Record<string, unknown>) {
 }
 
 function validateTailscaleSelection(config: Record<string, unknown>) {
-  if (config.tailscaleConnectionId !== undefined || config.tailscaleDeviceId !== undefined) assertTailscaleSelection(config);
+  if (config.network === "tailscale" || config.tailscaleConnectionId !== undefined || config.tailscaleDeviceId !== undefined) assertTailscaleSelection(config);
 }
 
 const fakeSandboxEnvironmentConfigSchema = z.object({
@@ -583,15 +581,12 @@ export async function normalizeEnvironmentConfigForPersistence(input: {
       });
     }
     const secrets = secretService(input.db);
-    const { privateKey, tailscaleAuthKey, ...stored } = parsed.data;
+    const { privateKey, ...stored } = parsed.data;
     if (stored.tailscaleConnectionId) {
       const binding = await tailscaleConnectionService(input.db).environmentBinding(input.companyId, stored.tailscaleConnectionId, stored.tailscaleDeviceId!);
       stored.host = binding.host;
       stored.tailscaleAuthKeySecretRef = { type: "secret_ref", secretId: binding.secretId, version: "latest" };
     }
-    const tailscaleAuthKeySecretRef = tailscaleAuthKey
-      ? await createEnvironmentSecret({ ...input, field: "tailscale-connection", provider: input.secretProvider, value: tailscaleAuthKey })
-      : stored.tailscaleAuthKeySecretRef;
     let nextPrivateKeySecretRef = stored.privateKeySecretRef;
     if (privateKey) {
       nextPrivateKeySecretRef = await createEnvironmentSecret({
@@ -613,7 +608,7 @@ export async function normalizeEnvironmentConfigForPersistence(input: {
     }
     return {
       ...stored,
-      ...(tailscaleAuthKeySecretRef ? { tailscaleAuthKey: null, tailscaleAuthKeySecretRef } : {}),
+      ...(stored.tailscaleAuthKeySecretRef ? { tailscaleAuthKey: null } : {}),
       privateKey: null,
       privateKeySecretRef: nextPrivateKeySecretRef,
     } satisfies SshEnvironmentConfig;
@@ -703,15 +698,12 @@ export async function resolveEnvironmentDriverConfigForRuntime(
   const environmentId = environment.id;
   if (parsed.driver === "ssh") {
     const config = { ...parsed.config };
-    if (config.tailscaleConnectionId) {
+    const connectionService = config.tailscaleConnectionId ? tailscaleConnectionService(db) : null;
+    if (connectionService) {
       if (!companyId) throw unprocessable("Tailscale requires a company context.");
-      const service = tailscaleConnectionService(db);
-      const connection = await service.get(companyId, config.tailscaleConnectionId!);
+      const connection = await connectionService.get(companyId, config.tailscaleConnectionId!);
       if (!connection.secretId || connection.status !== "connected" || connection.secretId !== config.tailscaleAuthKeySecretRef?.secretId) {
         throw unprocessable("Reconnect Tailscale and save this environment again.", { code: "tailscale_reauthorization_required" });
-      }
-      if (!context?.readOnlyInspection) {
-        config.host = (await service.environmentBinding(companyId, connection.id, config.tailscaleDeviceId!)).host;
       }
     }
     const bindingContext = (configPath: string) => {
@@ -728,27 +720,12 @@ export async function resolveEnvironmentDriverConfigForRuntime(
     if (config.network === "tailscale" && !context?.readOnlyInspection) {
       const binding = config.tailscaleAuthKeySecretRef;
       if (!binding) throw unprocessable("Connect Tailscale before running tasks in this environment.");
-      const secretContext = bindingContext("tailscaleAuthKeySecretRef");
-      let version = await secrets.resolveSecretVersion(companyId!, binding.secretId, "latest", secretContext);
-      const value = await secrets.resolveSecretValue(companyId!, binding.secretId, version, secretContext);
-      config.tailscaleIdentity = `${companyId}:${binding.secretId}`;
-      try {
-        config.tailscaleSocket = await tailscaleNetworks.connect({
-          identity: config.tailscaleIdentity,
-          credential: value,
-          reload: async () => {
-            version = await secrets.resolveSecretVersion(companyId!, binding.secretId, "latest", secretContext);
-            return secrets.resolveSecretValue(companyId!, binding.secretId, version, secretContext);
-          },
-          persist: async (credential) => {
-            await secrets.rotate(binding.secretId, { value: credential, expectedLatestVersion: version });
-            version += 1;
-          },
-        });
-      } catch {
-        throw unprocessable("Tailscale could not connect. Reconnect Tailscale and check its access policy.",
-          { code: "tailscale_connection_failed" });
-      }
+      bindingContext("tailscaleAuthKeySecretRef");
+      if (!connectionService) throw unprocessable("Connect Tailscale and select a machine before running tasks.");
+      const connection = await connectionService.environmentBinding(companyId!, config.tailscaleConnectionId!, config.tailscaleDeviceId!, binding.secretId);
+      config.host = connection.host;
+      config.tailscaleIdentity = `${companyId}:${connection.secretId}`;
+      config.tailscaleSocket = connection.socket;
     }
     return { driver: "ssh", config };
   }
