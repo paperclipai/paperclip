@@ -10,7 +10,8 @@ export async function taskAutomaticAttempts(db: Db, companyId: string, issueId: 
   const [continuations, transientRetries] = await Promise.all([
     db.select({ createdAt: activityLog.createdAt, outcome: sql<string | null>`${activityLog.details}->>'outcome'` }).from(activityLog).where(and(
       eq(activityLog.companyId, companyId), eq(activityLog.entityType, "issue"), eq(activityLog.entityId, issueId),
-      eq(activityLog.action, ASSIGNED_WORK_CONTINUED_ACTION), gte(activityLog.createdAt, since)))
+      eq(activityLog.action, ASSIGNED_WORK_CONTINUED_ACTION), gte(activityLog.createdAt, since),
+      sql`coalesce(${activityLog.details}->>'continuedFromSavedWork', '') <> 'true'`))
       .orderBy(desc(activityLog.createdAt)).limit(64),
     db.select({ createdAt: heartbeatRuns.createdAt }).from(heartbeatRuns).where(and(
       eq(heartbeatRuns.companyId, companyId), sql`${heartbeatRuns.contextSnapshot}->>'issueId' = ${issueId}`,
@@ -18,12 +19,14 @@ export async function taskAutomaticAttempts(db: Db, companyId: string, issueId: 
       startedOrPendingAutomaticRetry()))
       .orderBy(desc(heartbeatRuns.createdAt)).limit(64),
   ]);
-  const fresh = (await freshContinuationTimes(db, companyId, issueId, since))
-    .filter(record => record.trigger !== "assigned_work").map(record => record.at);
+  const freshRecords = await freshContinuationTimes(db, companyId, issueId, since);
+  const sweepFresh = freshRecords.filter(record => record.trigger === "assigned_work").map(record => record.at);
+  const fresh = freshRecords.filter(record => record.trigger !== "assigned_work").map(record => record.at);
+  const sweep = [...continuations.map(row => row.createdAt), ...sweepFresh];
   const others = [...transientRetries.map(row => row.createdAt), ...fresh];
-  const all = [...continuations.map(row => row.createdAt), ...others];
-  const started = [...continuations.filter(row => row.outcome !== "not_started").map(row => row.createdAt), ...others];
-  return { continuations: continuations.map(row => row.createdAt), all, started };
+  const all = [...sweep, ...others];
+  const started = [...continuations.filter(row => row.outcome !== "not_started").map(row => row.createdAt), ...sweepFresh, ...others];
+  return { continuations: sweep, all, started };
 }
 
 export async function transientRetryWithinTaskCap(db: Db, companyId: string, issueId: string, at: Date) {

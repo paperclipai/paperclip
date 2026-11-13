@@ -572,8 +572,11 @@ export function assignedWorkSweep(db: Db, deps: AssignedWorkDeps) {
     // hold's owner (the fresh-continuation fallback, same per-task cap). The
     // sweep reports it and repairs only blocks that have no hold at all, so
     if (issue.status === "blocked" && facts.activeRecoveryAction && !facts.activeRecoveryAction.continuedBySweep) {
-      const refused = facts.latestRun?.status === "cancelled" && facts.latestRun.errorCode === "execution_reconciliation_required"
-        ? await continueFromSavedWork(issue, facts, at) : null;
+      const behindRefusedRun = facts.latestRun?.status === "cancelled" && facts.latestRun.errorCode === "execution_reconciliation_required";
+      const deferred = behindRefusedRun ? repairBudgetDeferral(at) : null;
+      if (deferred) return { verdict, outcome: "deferred_rate_limit", retryAt: deferred };
+      const refused = behindRefusedRun ? await continueFromSavedWork(issue, facts, at) : null;
+      if (refused?.kind === "continued") repairTimes.push(at.getTime());
       if (refused?.kind === "continued" || refused?.kind === "already_continued") return { verdict, outcome: "repaired", retryAt: null };
       if (refused?.kind === "backoff" || refused?.kind === "exact_recovery_pending")
         return { verdict, outcome: refused.kind === "backoff" ? "deferred_cap" : "waiting_on_recovery", retryAt: refused.retryAt };
@@ -590,11 +593,8 @@ export function assignedWorkSweep(db: Db, deps: AssignedWorkDeps) {
     }
     // A small process-wide budget keeps a post-deploy backlog from starting
     // hundreds of runs at once. Deferred tasks come back on their deadline.
-    const minuteAgo = at.getTime() - 60_000;
-    while (repairTimes.length && repairTimes[0] <= minuteAgo) repairTimes.shift();
-    if (repairTimes.length >= ASSIGNED_WORK_REPAIRS_PER_MINUTE) {
-      return { verdict, outcome: "deferred_rate_limit", retryAt: new Date(repairTimes[0] + 60_000 + Math.floor(Math.random() * 5_000)) };
-    }
+    const budgetDeferral = repairBudgetDeferral(at);
+    if (budgetDeferral) return { verdict, outcome: "deferred_rate_limit", retryAt: budgetDeferral };
     const claimed = await claimContinuation(issue, at);
     if (claimed.kind !== "claimed") return { verdict, outcome: claimed.kind === "capped" ? "deferred_cap" : claimed.kind === "changed" ? "changed" : "deferred_rate_limit",
       retryAt: claimed.kind === "changed" ? null : claimed.retryAt };
@@ -634,6 +634,13 @@ export function assignedWorkSweep(db: Db, deps: AssignedWorkDeps) {
     await settleContinuationActivity(claimed, claimed.reason, run ? "queued" : "not_started",
       fresh?.kind === "person_owned" ? { waitingFor: fresh.reason } : {});
     return { verdict: claimed.verdict, outcome: run ? "repaired" : "enqueue_refused", retryAt: claimed.nextCheckAt };
+  }
+
+  function repairBudgetDeferral(at: Date): Date | null {
+    const minuteAgo = at.getTime() - 60_000;
+    while (repairTimes.length && repairTimes[0] <= minuteAgo) repairTimes.shift();
+    return repairTimes.length >= ASSIGNED_WORK_REPAIRS_PER_MINUTE
+      ? new Date(repairTimes[0] + 60_000 + Math.floor(Math.random() * 5_000)) : null;
   }
 
   async function continueFromSavedWork(issue: IssueRow, facts: AssignedWorkFacts, at: Date): Promise<FreshContinuationResult | null> {
