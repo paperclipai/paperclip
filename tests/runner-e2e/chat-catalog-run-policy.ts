@@ -80,15 +80,23 @@ export function chatCatalogProviderRuns(runs: ChatRun[], source?: ChatIssue): Ch
  * already answered; this later turn may start at any moment after the worker
  * finishes, so a settled source can briefly show it queued or running. Only a
  * lead run on the source whose every completion update names separate work in
- * this ledger qualifies; any other source run must still have succeeded.
+ * this ledger qualifies; any other source run must still have succeeded. The
+ * server records the updates when the turn is prepared, so a still-queued run
+ * carries only its saved delivery IDs: it qualifies only while queued, woken by
+ * automation, after a separate worker run in this ledger succeeded.
  */
 export function chatCatalogSourceCompletionFollowUp(run: ChatRun, input: { leadId: string; source?: ChatIssue; runs: ChatRun[] }): boolean {
   const snapshot = record(run.contextSnapshot);
   const updates = Array.isArray(snapshot.chatCompletionUpdates) ? snapshot.chatCompletionUpdates : record(snapshot.paperclipWake).chatCompletionUpdates;
-  const workTasks = new Set(input.runs.map(taskId).filter(id => typeof id === "string" && id !== input.source?.id));
-  return !!input.source && run.agentId === input.leadId && taskId(run) === input.source.id
-    && snapshot.wakeReason === "chat_task_completed" && Array.isArray(updates) && updates.length > 0
-    && updates.every(update => workTasks.has(record(update).id as string));
+  const work = input.runs.filter(other => other.agentId !== input.leadId && typeof taskId(other) === "string" && taskId(other) !== input.source?.id);
+  const workTasks = new Set(work.map(taskId));
+  if (!input.source || run.agentId !== input.leadId || taskId(run) !== input.source.id || snapshot.wakeReason !== "chat_task_completed") return false;
+  if (updates === undefined || updates === null) {
+    const deliveries = snapshot.chatCompletionDeliveryIds;
+    return run.status === "queued" && snapshot.wakeSource === "automation" && Array.isArray(deliveries) && deliveries.length > 0
+      && deliveries.every(id => typeof id === "string" && id.length > 0) && work.some(other => other.status === "succeeded");
+  }
+  return Array.isArray(updates) && updates.length > 0 && updates.every(update => workTasks.has(record(update).id as string));
 }
 export function gradeChatCatalogRuns(input: {
   implementation: Pick<ChatCatalogCase, "expectedRunCount" | "minimumRunCount" | "runPolicy"> & CancellationCase;

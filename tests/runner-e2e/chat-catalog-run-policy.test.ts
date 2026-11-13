@@ -46,6 +46,14 @@ it("admits at most one in-flight product completion follow-up on a settled sourc
     { ...followUp, contextSnapshot: { ...followUp.contextSnapshot, wakeReason: "issue_commented" } },
     { ...followUp, agentId: "worker" },
   ]) expect(gradeChatCatalogRuns({ ...active, implementation, runs: [succeeded, done, bad] }).passed).toBe(false);
+  // Before the turn is prepared, the queued run carries only its saved delivery IDs (actual server snapshot shape).
+  const pending: ChatRun = { ...followUp, status: "queued",
+    contextSnapshot: { issueId: "source", wakeReason: "chat_task_completed", wakeSource: "automation", chatCompletionDeliveryIds: ["delivery"] } };
+  expect(gradeChatCatalogRuns({ ...active, implementation, runs: [succeeded, done, pending] }).passed).toBe(true);
+  for (const bad of [{ ...pending, status: "running" }, { ...pending, contextSnapshot: { ...pending.contextSnapshot, chatCompletionDeliveryIds: [] } },
+    { ...pending, contextSnapshot: { ...pending.contextSnapshot, wakeSource: "manual" } }])
+    expect(gradeChatCatalogRuns({ ...active, implementation, runs: [succeeded, done, bad] }).passed).toBe(false);
+  expect(gradeChatCatalogRuns({ ...active, implementation, runs: [succeeded, worker, pending] }).passed).toBe(false);
   // The original answer must exist and have succeeded; a second follow-up and an unexplained active source stay rejected.
   expect(gradeChatCatalogRuns({ ...active, implementation, runs: [done, followUp] }).passed).toBe(false);
   expect(gradeChatCatalogRuns({ ...active, implementation, runs: [{ ...succeeded, status: "running" }, done, followUp] }).passed).toBe(false);
