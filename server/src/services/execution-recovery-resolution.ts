@@ -512,7 +512,8 @@ export async function deliverReconciledExecutions(
             if (newer.contextSnapshot?.freshContinuationIsolation === action.id)
               await db.transaction(async tx => {
                 await tx.execute(sql`select id from issues where company_id = ${action.companyId} and id = ${task.id} for update`);
-                await foldWaitingRetriesIntoContinuation(tx as unknown as Db, { companyId: action.companyId, issueId: task.id, runId: newer.id });
+                await foldWaitingRetriesIntoContinuation(tx as unknown as Db, { companyId: action.companyId, issueId: task.id, runId: newer.id,
+                  sourceRunId: decision.runId });
               });
             continue;
           }
@@ -575,7 +576,8 @@ export async function deliverReconciledExecutions(
           await settleCoalescedFreshContinuationHolds(tx as unknown as Db, { companyId: action.companyId, primaryId: action.id,
             delivery: "delivered", continuationRunId: run.id });
           if ((action.evidence.freshContinuation as { isolation?: unknown } | undefined)?.isolation === "fresh_isolated_workspace")
-            await foldWaitingRetriesIntoContinuation(tx as unknown as Db, { companyId: action.companyId, issueId: task.id, runId: run.id });
+            await foldWaitingRetriesIntoContinuation(tx as unknown as Db, { companyId: action.companyId, issueId: task.id, runId: run.id,
+              sourceRunId: decision.runId });
         });
       } catch {
         if (action.returnOwnerAgentId) seenAgentIds.add(action.returnOwnerAgentId);

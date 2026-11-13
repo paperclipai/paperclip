@@ -382,6 +382,31 @@ suite("fresh-continuation fallback", () => {
     expect((await pendingRecord(f.issueId))!.evidence).toMatchObject({ continuationDelivery: "delivered", continuationRunId: admitted!.id });
   }, 60_000);
 
+  it("never folds a Retry for the admitted continuation's own failure into that ended continuation", async () => {
+    const f = await unfinishedRun({ runtime: "legacy", errorCode: "controller_lease_lost", error: "Legacy controller lease lost" });
+    await db.update(heartbeatRuns).set({ processPid: 4242, processHostHash: "replaced-server", processStartedAt: new Date(Date.now() - 600_000) })
+      .where(eq(heartbeatRuns.id, f.runId));
+    await db.update(issues).set({ projectId: null, projectWorkspaceId: null, executionWorkspaceId: null }).where(eq(issues.id, f.issueId));
+    expect(await ensureFreshContinuation(db, { companyId, runId: f.runId, trigger: "recovery_refused" }))
+      .toMatchObject({ kind: "continued", isolation: "fresh_isolated_workspace", delivery: "recorded" });
+    const admitted = await heartbeatService(db).wakeup(agentId, { source: "automation", triggerDetail: "system",
+      reason: "issue_recovery_action_restored", idempotencyKey: `execution-reconciliation:${f.actionId}`,
+      payload: { issueId: f.issueId, recoveryActionId: f.actionId }, requestedByActorType: "system", requestedByActorId: "execution-recovery",
+      contextSnapshot: { issueId: f.issueId, taskId: f.issueId, recoveryActionId: f.actionId, previousRunId: f.runId, retryOfRunId: f.runId,
+        forceFreshSession: true, wakeReason: "issue_recovery_action_restored", source: "execution.reconciled",
+        freshContinuationIsolation: f.actionId } });
+    await heartbeatService(db).cancelRun(admitted!.id);
+    const retry = await requestTaskRetry({ db, companyId, issueId: f.issueId, actorId: userId, observedRunId: admitted!.id, idempotencyKey: randomUUID() });
+    expect(retry).toMatchObject({ accepted: true });
+    await deliver();
+    await heartbeatService(db).resumeQueuedRuns();
+    await vi.waitFor(async () => {
+      const [retryWake] = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, retry.requestId!));
+      expect(retryWake!.runId, JSON.stringify(retryWake)).toBeTruthy();
+      expect(retryWake!.runId).not.toBe(admitted!.id);
+    }, { timeout: 20_000, interval: 200 });
+  }, 60_000);
+
   it("re-drives an isolated continuation pending past the bound itself; a repair wake never replaces it", async () => {
     const f = await unfinishedRun({ runtime: "legacy", errorCode: "controller_lease_lost", error: "Legacy controller lease lost" });
     await db.update(heartbeatRuns).set({ processPid: 4242, processHostHash: "replaced-server", processStartedAt: new Date(Date.now() - 600_000) })

@@ -4999,7 +4999,8 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
               sql`${issueRecoveryActions.evidence}->>'continuationDelivery' = 'pending'`));
           }
           if (readNonEmptyString(enrichedContextSnapshot.freshContinuationIsolation))
-            await foldWaitingRetriesIntoContinuation(tx as unknown as Db, { companyId: issue.companyId, issueId: issue.id, runId: newRun.id });
+            await foldWaitingRetriesIntoContinuation(tx as unknown as Db, { companyId: issue.companyId, issueId: issue.id, runId: newRun.id,
+              sourceRunId: readNonEmptyString(enrichedContextSnapshot.previousRunId) });
 
           await tx
             .update(agentWakeupRequests)
@@ -5286,7 +5287,8 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
       const continuedIssueId = readNonEmptyString(enrichedContextSnapshot.issueId);
       if (continuedIssueId && readNonEmptyString(enrichedContextSnapshot.freshContinuationIsolation)) {
         await tx.execute(sql`select id from issues where company_id = ${agent.companyId} and id = ${continuedIssueId} for update`);
-        await foldWaitingRetriesIntoContinuation(tx as unknown as Db, { companyId: agent.companyId, issueId: continuedIssueId, runId: newRun.id });
+        await foldWaitingRetriesIntoContinuation(tx as unknown as Db, { companyId: agent.companyId, issueId: continuedIssueId, runId: newRun.id,
+          sourceRunId: readNonEmptyString(enrichedContextSnapshot.previousRunId) });
       }
 
       await tx
