@@ -11,7 +11,6 @@ import { EXECUTION_RECONCILIATION_CAUSES, HEARTBEAT_RUN_STATUSES, readProviderFa
 import { captureTaskInterruptionFailure } from "../sentry.js";
 import { isAiAuthenticationBlocked } from "./ai-auth-failure.js";
 import { readSystemRecovery } from "./system-recovery-state.js";
-import { RECOVERY_CONTINUATION_DELIVERY_BOUND_MS, recoveryContinuationHeldSince } from "./recovery-continuation-pacing.js";
 import { PROJECT_ACCESS_DENIED } from "./project-access-denial.js";
 import { authorizationService } from "./authorization.js";
 import { taskWorkspaceProjectRequirements } from "./task-workspace-access.js";
@@ -592,8 +591,6 @@ export async function taskInterruptionPresentations(db: Db, companyId: string, i
     runId: sql<string>`${issueRecoveryActions.evidence}->>'runId'`,
     delivery: sql<string | null>`${issueRecoveryActions.evidence}->>'continuationDelivery'`,
     recorded: sql<boolean>`${issueRecoveryActions.evidence} ? 'freshContinuation'`,
-    evidence: sql<Record<string, unknown>>`jsonb_build_object('freshContinuation', ${issueRecoveryActions.evidence}->'freshContinuation')`,
-    resolvedAt: issueRecoveryActions.resolvedAt, updatedAt: issueRecoveryActions.updatedAt,
     checkKind: sql<string | null>`${issueRecoveryActions.evidence}#>>'{freshContinuationCheck,kind}'`,
     nextCheckAt: sql<string | null>`${issueRecoveryActions.evidence}#>>'{freshContinuationCheck,nextCheckAt}'` })
     .from(issueRecoveryActions).where(and(eq(issueRecoveryActions.companyId, companyId), inArray(issueRecoveryActions.sourceIssueId, ids),
@@ -603,8 +600,7 @@ export async function taskInterruptionPresentations(db: Db, companyId: string, i
     const rows = freshRows.filter(row => row.issueId === issueId && row.runId === runId);
     // Only the primary record (it carries `freshContinuation`) says whether a
     // continuation is still on its way; holds coalesced into it never do.
-    if (rows.some(row => row.recorded && (row.delivery === "not_requested" || (row.delivery === "pending"
-      && Date.now() - recoveryContinuationHeldSince(row) < RECOVERY_CONTINUATION_DELIVERY_BOUND_MS)))) return { state: "continuing" };
+    if (rows.some(row => row.recorded && ["not_requested", "pending"].includes(row.delivery ?? ""))) return { state: "continuing" };
     const scheduled = rows.filter(row => ["exact_recovery_pending", "backoff"].includes(row.checkKind ?? "") && row.nextCheckAt)
       .map(row => Number(row.nextCheckAt)).sort((a, b) => a - b)[0];
     return scheduled ? { state: "scheduled", nextCheckAt: scheduled } : undefined;
