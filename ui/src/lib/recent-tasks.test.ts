@@ -1,8 +1,9 @@
+import { clearIssueExecutionRun } from "./optimistic-issue-runs";
+import type { Issue } from "@paperclipai/shared";
 // @vitest-environment jsdom
 
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
-  RECENT_TASKS_LIMIT,
   RECENT_TASKS_UPDATED_EVENT,
   getRecentTasksStorageKey,
   migrateRecentTasks,
@@ -36,21 +37,72 @@ describe("recent task persistence", () => {
     );
   });
 
-  it("deduplicates, only promotes newer activity, and stays bounded", () => {
-    for (let index = 0; index < RECENT_TASKS_LIMIT + 2; index += 1) {
+  it("retains the full history, deduplicates, and only promotes newer activity", () => {
+    for (let index = 0; index < 20; index += 1) {
       recordRecentTask(issue(String(index)), "user-1", index);
     }
     recordRecentTask(issue("4"), "user-1", 4);
 
     let entries = readRecentTasks(getRecentTasksStorageKey("company-1", "user-1"), "company-1");
-    expect(entries[0]?.id).toBe("6");
+    expect(entries[0]?.id).toBe("19");
 
     recordRecentTask(issue("4"), "user-1", 99);
 
     entries = readRecentTasks(getRecentTasksStorageKey("company-1", "user-1"), "company-1");
-    expect(entries).toHaveLength(RECENT_TASKS_LIMIT);
+    expect(entries).toHaveLength(20);
     expect(entries[0]?.id).toBe("4");
     expect(entries.filter((entry) => entry.id === "4")).toHaveLength(1);
+  });
+
+  it("refreshes conversation readiness when review or delivery changes without a task edit", () => {
+    const task = { ...issue("1"), status: "in_review" as const, externalConversationState: "waiting" as const };
+    recordRecentTask(task, "user-1");
+    const storageKey = getRecentTasksStorageKey("company-1", "user-1");
+    updateRecentTaskSnapshots(storageKey, "company-1", [{ ...task, externalConversationState: "active" }]);
+    expect(readRecentTasks(storageKey, "company-1")[0]?.externalConversationState).toBe("active");
+  });
+
+  it("keeps the covered-blocker state so the sidebar shows the same queued glyph as the task pane (BUG-07)", () => {
+    const covered = {
+      state: "covered" as const, reason: "active_child" as const, unresolvedBlockerCount: 1, coveredBlockerCount: 1,
+      attentionBlockerCount: 0, stalledBlockerCount: 0, sampleBlockerIdentifier: "ONB-3", sampleStalledBlockerIdentifier: null,
+    };
+    const blocked = { ...issue("1"), status: "blocked" as const, updatedAt: new Date(10) };
+    recordRecentTask({ ...blocked, blockerAttention: covered }, "user-1");
+    const storageKey = getRecentTasksStorageKey("company-1", "user-1");
+    expect(readRecentTasks(storageKey, "company-1")[0]?.blockerAttention).toEqual(covered);
+    // A same-version summary refresh can change only the derived blocker state.
+    const attention = { ...covered, state: "needs_attention" as const, reason: "attention_required" as const, coveredBlockerCount: 0, attentionBlockerCount: 1 };
+    updateRecentTaskSnapshots(storageKey, "company-1", [{ ...blocked, externalConversationState: null, blockerAttention: attention }]);
+    expect(readRecentTasks(storageKey, "company-1")[0]?.blockerAttention).toEqual(attention);
+  });
+
+  it("accepts server settlement after an optimistic run-lock clear", () => {
+    const running = { ...issue("1"), status: "in_progress" as const, externalConversationState: "active" as const, executionRunId: "run-1", updatedAt: new Date(10) } as Issue;
+    recordRecentTask(running, "user-1");
+    recordRecentTask(clearIssueExecutionRun(running, "run-1")!, "user-1");
+    const storageKey = getRecentTasksStorageKey("company-1", "user-1");
+    updateRecentTaskSnapshots(storageKey, "company-1", [{ ...running, status: "in_review", externalConversationState: "waiting", updatedAt: new Date(20) }]);
+    expect(readRecentTasks(storageKey, "company-1")[0]).toMatchObject({ status: "in_review", externalConversationState: "waiting", snapshotUpdatedAt: 20 });
+    updateRecentTaskSnapshots(storageKey, "company-1", [{ ...running, updatedAt: new Date(30) }]);
+    updateRecentTaskSnapshots(storageKey, "company-1", [{ ...running, status: "in_review", externalConversationState: "waiting", updatedAt: new Date(20) }]);
+    expect(readRecentTasks(storageKey, "company-1")[0]).toMatchObject({ status: "in_progress", externalConversationState: "active", snapshotUpdatedAt: 30 });
+  });
+
+  it("keeps readiness and task status together when a turn settles at the same timestamp", () => {
+    const task = { ...issue("1"), status: "in_progress" as const, externalConversationState: "active" as const };
+    recordRecentTask(task, "user-1");
+    const storageKey = getRecentTasksStorageKey("company-1", "user-1");
+    updateRecentTaskSnapshots(storageKey, "company-1", [{ ...task, status: "in_review", externalConversationState: "waiting" }]);
+    expect(readRecentTasks(storageKey, "company-1")[0]).toMatchObject({ status: "in_review", externalConversationState: "waiting" });
+  });
+
+  it("refreshes Monitoring when a run starts without a new task version", () => {
+    const task = { ...issue("1"), status: "in_progress" as const, displayStatus: "monitoring" as const, externalConversationState: null };
+    recordRecentTask(task, "user-1");
+    const storageKey = getRecentTasksStorageKey("company-1", "user-1");
+    updateRecentTaskSnapshots(storageKey, "company-1", [{ ...task, displayStatus: "in_progress" }]);
+    expect(readRecentTasks(storageKey, "company-1")[0]?.displayStatus).toBe("in_progress");
   });
 
   it("publishes same-tab updates", () => {
@@ -62,6 +114,14 @@ describe("recent task persistence", () => {
     recordRecentTask(issue("1"), "user-1");
     expect(listener).not.toHaveBeenCalled();
     window.removeEventListener(RECENT_TASKS_UPDATED_EVENT, listener);
+  });
+
+  it("records a new display status without a task edit or newer activity", () => {
+    const task = { ...issue("1"), status: "in_progress" as const, displayStatus: "monitoring" as const };
+    recordRecentTask(task, "user-1");
+    recordRecentTask({ ...task, displayStatus: "in_progress" }, "user-1");
+    const storageKey = getRecentTasksStorageKey("company-1", "user-1");
+    expect(readRecentTasks(storageKey, "company-1")[0]?.displayStatus).toBe("in_progress");
   });
 
   it("prunes unavailable tasks and refreshes stored snapshots", () => {

@@ -16,8 +16,23 @@ const SENSITIVE_KEYS = new Set<string>([
   // material under `credentials`. Redact the whole subtree instead of trying
   // to keep an ever-changing allowlist of provider-specific field names in
   // sync with every connector.
+  "sealed",
+  "handoff",
+  "claim",
+  "claimid",
+  "claim_id",
+  "managertoken",
+  "manager_token",
+  "configurationtoken",
+  "configuration_token",
   "credential",
   "credentials",
+  // The app-connect/reconnect envelope. Its keys are caller-chosen provider
+  // config paths (`credentials.authorization`, `headers.X-Api-Key`), so they
+  // never match a leaf name in this set; redact the envelope by name. This is
+  // the durable half: the path list in http-log-redaction.ts only ever covers
+  // shapes someone has already seen leak.
+  "credentialvalues",
   "password",
   "currentpassword",
   "newpassword",
@@ -67,12 +82,16 @@ const SENSITIVE_KEYS = new Set<string>([
   "signingsecret",
   "webhook_secret",
   "webhooksecret",
+  "webhookkey",
+  "webhookurl",
   "paperclip_capability",
   // The Claude setup-token login fields. `browserCode` carries the one-time
   // sign-in code and `authorization_code` carries the OAuth code; neither may
   // reach a log line.
   "browsercode",
   "authorization_code",
+  "code_verifier",
+  "codeverifier",
   "authorizationcode",
   // The workspace login handoff ticket (PAP-17572). It is a signed bearer
   // credential carried as a query parameter, so it must never reach a log line
@@ -119,11 +138,14 @@ function isUrlishKey(key: string): boolean {
 export function stripSecretBearingUrlParts(value: string): string {
   const suffixStart = value.search(/[?#]/);
   const withoutQueryOrFragment =
-    suffixStart === -1 ? value : value.slice(0, suffixStart);
+    (suffixStart === -1 ? value : value.slice(0, suffixStart)).replace(
+      /(^|^[a-z][a-z\d+.-]*:\/\/[^/]*)(\/(?:(?:api\/)?invites\/(?![^/]+\/revoke(?:\/|$))|invite\/))[^/]+/i,
+      "$1$2[REDACTED]",
+    );
 
   try {
     const url = new URL(withoutQueryOrFragment);
-    if (!url.username && !url.password && suffixStart === -1) return value;
+    if (!url.username && !url.password) return withoutQueryOrFragment;
     url.username = "";
     url.password = "";
     return url.toString();

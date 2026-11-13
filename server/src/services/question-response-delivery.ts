@@ -1,3 +1,4 @@
+import { notifyChatRunMilestones } from "./chat-run-milestone-notifications.js";
 import { and, asc, desc, eq, inArray, isNull, lte, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
@@ -22,10 +23,25 @@ import { logger } from "../middleware/logger.js";
 import { logActivity } from "./activity-log.js";
 import type { heartbeatService } from "./heartbeat.js";
 import { nativeSha256 } from "./native-runtime/canonical.js";
+import { DELIVERY_QUEUES } from "./delivery-work-notifications.js";
+import type { createDeliveryWorkCoordinator } from "./delivery-work-coordinator.js";
 
 const DELIVERY_CLAIM_STALE_MS = 30_000;
 const DELIVERY_CLAIM_REFRESH_MS = 10_000;
 const MAX_DELIVERY_ATTEMPTS = 5;
+
+/** A non-owning controller can release a claim just after the owner observes
+ * it. Retry that durable obligation promptly during handoff. hasPending keeps
+ * the worker quiet once all answers settle; retained history is not work. */
+export function registerQuestionResponseDeliveryWork(
+  coordinator: ReturnType<typeof createDeliveryWorkCoordinator>,
+  service: Pick<ReturnType<typeof questionResponseDeliveryService>, "sweepPending" | "hasPending">,
+  retryMs = 1_000,
+) {
+  return coordinator.register(DELIVERY_QUEUES.question, {
+    retryMs, run: () => service.sweepPending(), hasPending: () => service.hasPending(),
+  });
+}
 const DELIVERY_CORRELATION_PREFIX = "question-response:";
 const QUESTION_RESPONSE_WAKE_IDEMPOTENCY_CONSTRAINT =
   "agent_wakeup_requests_question_response_delivery_idempotency_uq";
@@ -82,7 +98,7 @@ export interface QuestionResponseDeliveryOutcome {
 
 export interface QuestionResponseDeliveryServiceOptions {
   heartbeat: Heartbeat;
-  /** Optional native steering seam. Direct adapters use the durable wake fallback. */
+  /** Kept for caller compatibility. Answers never implicitly steer an active turn. */
   steer?: QuestionResponseSteer;
   /** Resolve the original in-flight native input request before considering a continuation run. */
   resolveNativeQuestion?: NativeQuestionResponseResolver;
@@ -90,18 +106,6 @@ export interface QuestionResponseDeliveryServiceOptions {
   /** Test-only lease timings. Production callers use the bounded defaults. */
   claimStaleMs?: number;
   claimRefreshMs?: number;
-}
-
-function readSteeringErrorCode(error: unknown): string {
-  if (
-    error &&
-    typeof error === "object" &&
-    "code" in error &&
-    typeof error.code === "string"
-  ) {
-    return error.code;
-  }
-  return "steering_rejected";
 }
 
 function record(value: unknown): Record<string, unknown> {
@@ -431,7 +435,6 @@ export function questionResponseDeliveryService(
   db: Db,
   options: QuestionResponseDeliveryServiceOptions,
 ) {
-  const steer = options.steer;
   const resolveNativeQuestion = options.resolveNativeQuestion;
   const now = options.now ?? (() => new Date());
   const claimStaleMs = Math.max(
@@ -467,6 +470,9 @@ export function questionResponseDeliveryService(
         current.lastAttemptAt.getTime() > claimAt.getTime() - claimStaleMs
       )
         return null;
+      if (current.status !== "delivering") {
+        await notifyChatRunMilestones(tx, { companyId: current.companyId, issueId: current.issueId });
+      }
       return tx
         .update(issueQuestionResponseDeliveries)
         .set({
@@ -517,6 +523,7 @@ export function questionResponseDeliveryService(
   }): Promise<QuestionResponseDeliveryOutcome> {
     const at = now();
     const updated = await db.transaction(async (tx) => {
+      await notifyChatRunMilestones(tx, { companyId: input.delivery.companyId, issueId: input.delivery.issueId });
       const row = await tx
         .update(issueQuestionResponseDeliveries)
         .set({
@@ -604,25 +611,28 @@ export function questionResponseDeliveryService(
     const nextErrorCount = delivery.errorCount + (options.bounded ? 1 : 0);
     const exhausted =
       options.bounded && nextErrorCount >= MAX_DELIVERY_ATTEMPTS;
-    await db
-      .update(issueQuestionResponseDeliveries)
-      .set({
-        // Keep an exhausted claim owned until recordTerminal commits its outcome.
-        status: exhausted ? "delivering" : "pending",
-        ...(options.bounded ? { errorCount: nextErrorCount } : {}),
-        lastErrorCode: errorCode,
-        updatedAt: at,
-      })
-      .where(
-        and(
-          eq(issueQuestionResponseDeliveries.id, delivery.id),
-          eq(issueQuestionResponseDeliveries.status, "delivering"),
-          eq(
-            issueQuestionResponseDeliveries.attemptCount,
-            delivery.attemptCount,
-          ),
-        ),
+    await db.transaction(async (tx) => {
+      const ownedClaim = and(
+        eq(issueQuestionResponseDeliveries.id, delivery.id),
+        eq(issueQuestionResponseDeliveries.status, "delivering"),
+        eq(issueQuestionResponseDeliveries.attemptCount, delivery.attemptCount),
       );
+      const [current] = await tx.select({ id: issueQuestionResponseDeliveries.id })
+        .from(issueQuestionResponseDeliveries).where(ownedClaim).for("update");
+      if (!current) return;
+      if (!exhausted) {
+        await notifyChatRunMilestones(tx, { companyId: delivery.companyId, issueId: delivery.issueId });
+      }
+      await tx.update(issueQuestionResponseDeliveries)
+        .set({
+          // Keep an exhausted claim owned until recordTerminal commits its outcome.
+          status: exhausted ? "delivering" : "pending",
+          ...(options.bounded ? { errorCount: nextErrorCount } : {}),
+          lastErrorCode: errorCode,
+          updatedAt: at,
+        })
+        .where(ownedClaim);
+    });
     return exhausted;
   }
 
@@ -1152,39 +1162,10 @@ export function questionResponseDeliveryService(
       }
     }
 
-    let steeringErrorCode: string | null = null;
-    if (
-      !externalChatBoundary &&
-      successorRunning?.runtimeMode === "native" &&
-      steer
-    ) {
-      try {
-        const acknowledgement = await withClaimLease(claimed, () =>
-          steer({
-            runId: successorRunning.id,
-            message: formatQuestionResponseSteeringMessage(envelope),
-            correlationId: claimed.correlationId,
-          }),
-        );
-        return recordTerminal({
-          delivery: claimed,
-          interaction,
-          status: "delivered",
-          mode: "steered",
-          targetRunId: successorRunning.id,
-          targetTurnId: acknowledgement.turnId,
-          adapter: successorRunning.driverKind ?? adapter,
-        });
-      } catch (error) {
-        if (error instanceof DeliveryClaimUnavailableError)
-          return terminalOutcome(interactionId);
-        steeringErrorCode = readSteeringErrorCode(error);
-      }
-    } else if (successorRunning) {
-      steeringErrorCode = externalChatBoundary
-        ? "steering_external_chat_context_incompatible"
-        : "steering_unsupported";
-    }
+    // An answer to an older question is new input, not implicit permission to
+    // steer another active turn. Only the queue's explicit Steer action delivers it.
+    const steeringErrorCode = successorRunning && externalChatBoundary
+      ? "steering_external_chat_context_incompatible" : null;
 
     const actor = actorForInteraction(interaction);
     // This is a new, migration-fenced namespace. The partial unique index on
@@ -1231,6 +1212,7 @@ export function questionResponseDeliveryService(
                   interactionId: interaction.id,
                   interactionKind: interaction.kind,
                   interactionStatus: interaction.status,
+                  mutation: "interaction",
                   sourceCommentId: continuationSourceCommentId,
                   sourceRunId: interaction.sourceRunId,
                   externalChatContinuation: externalChatBoundary,
@@ -1343,21 +1325,32 @@ export function questionResponseDeliveryService(
   async function sweepPending(limit = 50) {
     const sweepAt = now();
     const staleAt = new Date(sweepAt.getTime() - claimStaleMs);
-    await db
-      .update(issueQuestionResponseDeliveries)
-      .set({
-        status: "pending",
-        updatedAt: sweepAt,
-      })
-      .where(
-        and(
-          eq(issueQuestionResponseDeliveries.status, "delivering"),
-          or(
-            isNull(issueQuestionResponseDeliveries.lastAttemptAt),
-            lte(issueQuestionResponseDeliveries.lastAttemptAt, staleAt),
-          ),
+    await db.transaction(async (tx) => {
+      const staleClaims = await tx.select({
+        id: issueQuestionResponseDeliveries.id,
+        companyId: issueQuestionResponseDeliveries.companyId,
+        issueId: issueQuestionResponseDeliveries.issueId,
+      }).from(issueQuestionResponseDeliveries).where(and(
+        eq(issueQuestionResponseDeliveries.status, "delivering"),
+        or(
+          isNull(issueQuestionResponseDeliveries.lastAttemptAt),
+          lte(issueQuestionResponseDeliveries.lastAttemptAt, staleAt),
         ),
-      );
+      )).orderBy(asc(issueQuestionResponseDeliveries.id)).for("update");
+      if (staleClaims.length === 0) return;
+      const notified = new Set<string>();
+      for (const claim of staleClaims) {
+        const scope = `${claim.companyId}:${claim.issueId}`;
+        if (notified.has(scope)) continue;
+        await notifyChatRunMilestones(tx, claim);
+        notified.add(scope);
+      }
+      for (let offset = 0; offset < staleClaims.length; offset += 500) {
+        await tx.update(issueQuestionResponseDeliveries)
+          .set({ status: "pending", updatedAt: sweepAt })
+          .where(inArray(issueQuestionResponseDeliveries.id, staleClaims.slice(offset, offset + 500).map(claim => claim.id)));
+      }
+    });
     const ids = await db
       .select({ interactionId: issueQuestionResponseDeliveries.interactionId })
       .from(issueQuestionResponseDeliveries)
@@ -1382,5 +1375,9 @@ export function questionResponseDeliveryService(
     return counts;
   }
 
-  return { deliver, sweepPending };
+  async function hasPending() {
+    return (await db.select({ id: issueQuestionResponseDeliveries.id }).from(issueQuestionResponseDeliveries)
+      .where(inArray(issueQuestionResponseDeliveries.status, ["pending", "delivering"])).limit(1)).length > 0;
+  }
+  return { deliver, sweepPending, hasPending };
 }

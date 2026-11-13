@@ -26,16 +26,19 @@
       ],
       "whenToUse": "Use browser sign-in for the provider-hosted MCP server.",
       "defaults": {
-        "serverUrl": "https://mcp.resend.com/mcp"
+        "serverUrl": "https://mcp.resend.com/mcp",
+        "scopesHint": [
+          "full_access"
+        ]
       },
-      "guidanceMd": "Connect Resend in the browser. A Resend account with access to the relevant domains.",
-      "riskTier": "S3",
+      "guidanceMd": "Sign in to the intended Resend team. The full_access grant covers reading and managing account resources, including sending email and deletion. Review the discovered actions in Paperclip before using them.",
+      "riskTier": "S4",
       "label": "Sign in with Resend",
       "consoleLinks": {
         "docs": "https://resend.com/changelog/remote-mcp-server"
       },
       "warnings": [
-        "A Resend account with access to the relevant domains."
+        "Resend full_access grants broad account read/write/delete access; Paperclip action policies govern execution separately."
       ]
     }
   ]

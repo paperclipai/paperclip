@@ -4,7 +4,7 @@ export function parseOpenCodeProxyPermissionMode(
   value: string | undefined,
 ): OpenCodeProxyPermissionMode {
   const configured = value?.trim();
-  if (!configured) return "ask";
+  if (!configured) return "allow";
   if (
     configured === "allow"
     || configured === "ask"

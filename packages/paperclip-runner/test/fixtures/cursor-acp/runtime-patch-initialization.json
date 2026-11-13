@@ -1,0 +1,31 @@
+{
+  "schema": "paperclip.cursor.patch-initialize-proof.v1",
+  "observedAt": "2026-09-29",
+  "patchVersion": "paperclip-cursor-isolation-v1",
+  "hostPlatform": "darwin-arm64",
+  "providerCalls": 0,
+  "authenticated": false,
+  "scope": "Direct patched vendor process initialization only; not a rebuilt Runner pack qualification. macOS x64 used host compatibility execution. Processes received SIGTERM after initialization.",
+  "results": [
+    {
+      "platform": "darwin-arm64",
+      "providerCalls": 0,
+      "initialize": "passed",
+      "protocolVersion": 1,
+      "exitCode": 143,
+      "signal": null,
+      "error": "",
+      "closureSha256": "8a22016ca832ef8c8e6a83b955208d74c63f2c8dbe1dd688cbf27b81ad01886a"
+    },
+    {
+      "platform": "darwin-x64",
+      "providerCalls": 0,
+      "initialize": "passed",
+      "protocolVersion": 1,
+      "exitCode": 143,
+      "signal": null,
+      "error": "",
+      "closureSha256": "2c461f48feb274f8e7aabd6da67d1e9aefbe6e0b232fc0a111dce874378afcc8"
+    }
+  ]
+}

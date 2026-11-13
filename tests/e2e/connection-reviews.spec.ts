@@ -69,6 +69,10 @@ const review = interactions.find(i => i.payload?.toolAction);
 if (review?.status === "pending") { console.log("Still waiting for the existing review; no retry."); process.exit(0); }
 if (review && review.status !== "pending") {
   const result = review.result?.toolAction;
+  if (review.status === "accepted" && (!result || ["approved", "executing"].includes(result.status))) {
+    console.log("Review accepted; waiting for the stored execution result. No retry.");
+    process.exit(0);
+  }
   const message = review.status === "rejected" ? "Review declined. No pages were read." : result?.status === "failed" ? "Read failed: " + result.errorMessage : ["expired", "cancelled"].includes(review.status) ? "The review expired or was cancelled. No pages were read." : describePages(result?.resultSummary);
   await api("/issues/" + issueId + "/comments", "POST", { body: message });
   await api("/issues/" + issueId, "PATCH", { status: "done" });
@@ -149,7 +153,6 @@ for (const journey of [
         .getByPlaceholder("https://example.com/actions")
         .fill(provider.url);
       await page.getByRole("button", { name: "Continue", exact: true }).click();
-      await page.getByRole("button", { name: "Save and continue" }).click();
       await page.getByRole("button", { name: /Check link/i }).click();
       await expect(
         page.getByRole("heading", { name: /is ready/i }),
@@ -213,6 +216,11 @@ for (const journey of [
       await expect(
         page.getByRole("button", { name: "Approve & run", exact: true }),
       ).not.toBeVisible();
+      await page.reload();
+      await expect(page.getByRole("button", { name: "Review request", exact: true })).toBeVisible({ timeout: 30_000 });
+      await expect(
+        page.getByRole("button", { name: "Approve & run", exact: true }),
+      ).not.toBeVisible();
       await json(
         await request.post(`/api/issues/${issue.id}/comments`, {
           data: { body: "Keeping this review pending while I check." },
@@ -252,6 +260,10 @@ for (const journey of [
         await queue.reload();
         await expect(
           page.getByRole("button", { name: "Approve & run", exact: true }),
+        ).not.toBeVisible();
+        await page.getByRole("button", { name: "Review request", exact: true }).click();
+        await expect(
+          page.getByRole("button", { name: "Approve & run", exact: true }),
         ).toBeVisible();
         expect(calls()).toBe(0);
       }
@@ -288,7 +300,7 @@ for (const journey of [
               ? "Read failed"
               : "Roadmap",
         );
-      const replies = await json<Array<{ body: string; authorAgentId: string | null; createdByRunId: string | null }>>(await request.get(`/api/issues/${issue.id}/comments`));
+      const replies = await json<Array<{ id: string; body: string; authorAgentId: string | null; createdByRunId: string | null }>>(await request.get(`/api/issues/${issue.id}/comments`));
       const reply = replies.find(comment => comment.authorAgentId === agent.id)!;
       expect(reply.createdByRunId).toBeTruthy();
       expect(originatingReview.sourceRunId).toBeTruthy();
@@ -308,19 +320,24 @@ for (const journey of [
       await expect(
         queue.getByRole("button", { name: "Decline", exact: true }),
       ).not.toBeVisible({ timeout: 20_000 });
+      await page.bringToFront();
+      expect(await page.evaluate(() => document.visibilityState)).toBe("visible");
       await page.reload();
-      await expect(
-        page
-          .getByText(
-            journey === "decline"
-              ? "Declined"
-              : journey === "failure"
-                ? "Execution failed"
-                : "Succeeded",
-            { exact: false },
-          )
-          .first(),
-      ).toBeVisible();
+      const resolvedReview = page.locator(`[id=${JSON.stringify(`interaction-${originatingReview.id}`)}]`);
+      if (!["decline", "failure"].includes(journey)) {
+        await expect(resolvedReview.getByRole("button", { name: "Show result details", exact: true }).filter({ hasText: "Succeeded" })).toBeVisible();
+      } else {
+        await expect(resolvedReview.getByText(journey === "decline" ? "Declined" : "Execution failed", { exact: false })).toBeVisible();
+      }
+      await expect(resolvedReview).toContainText("List fixture pages");
+      const persistedReply = page.locator(`[id=${JSON.stringify(`comment-${reply.id}`)}]`);
+      await expect(persistedReply).toBeVisible();
+      await expect(persistedReply).toContainText(
+        journey === "decline" ? "Review declined" : journey === "failure" ? "Read failed" : "Roadmap",
+      );
+      await expect(page.getByTestId("task-chat-history-content")).toBeVisible({
+        timeout: 30_000,
+      });
       await page.screenshot({
         path: testInfo.outputPath("resolved-review.png"),
       });

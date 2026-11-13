@@ -53,7 +53,6 @@
       "defaults": {
         "serverUrl": "https://sheetsmcp.googleapis.com/mcp/v1",
         "scopesHint": [
-          "https://www.googleapis.com/auth/drive.readonly",
           "https://www.googleapis.com/auth/spreadsheets.readonly"
         ]
       },
@@ -87,7 +86,6 @@
         "tokenEndpoint": "https://oauth2.googleapis.com/token",
         "metadataUrl": "https://accounts.google.com/.well-known/openid-configuration",
         "scopesHint": [
-          "https://www.googleapis.com/auth/drive.readonly",
           "https://www.googleapis.com/auth/spreadsheets.readonly"
         ],
         "oauthAuthorizationParams": {
@@ -128,8 +126,6 @@
       "defaults": {
         "serverUrl": "https://sheetsmcp.googleapis.com/mcp/v1",
         "scopesHint": [
-          "https://www.googleapis.com/auth/drive.readonly",
-          "https://www.googleapis.com/auth/drive.file",
           "https://www.googleapis.com/auth/spreadsheets"
         ]
       },
@@ -164,8 +160,6 @@
         "tokenEndpoint": "https://oauth2.googleapis.com/token",
         "metadataUrl": "https://accounts.google.com/.well-known/openid-configuration",
         "scopesHint": [
-          "https://www.googleapis.com/auth/drive.readonly",
-          "https://www.googleapis.com/auth/drive.file",
           "https://www.googleapis.com/auth/spreadsheets"
         ],
         "oauthAuthorizationParams": {

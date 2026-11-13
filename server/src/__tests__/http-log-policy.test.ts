@@ -1,11 +1,12 @@
 import { describe, expect, it } from "vitest";
 import {
-  isPrivateChatWebhookHttpRequest,
+  isPrivateWebhookHttpRequest,
+  isPrivateMuseHttpRequest,
   isSecretSensitiveHttpRequest,
   shouldSilenceHttpSuccessLog,
 } from "../middleware/http-log-policy.js";
 
-describe("isPrivateChatWebhookHttpRequest", () => {
+describe("isPrivateWebhookHttpRequest", () => {
   it("protects the native webhook namespace, including rejected methods and query data", () => {
     for (const provider of [
       "slack",
@@ -17,15 +18,21 @@ describe("isPrivateChatWebhookHttpRequest", () => {
       for (const method of ["POST", "GET", "PUT", "DELETE"]) {
         for (const suffix of ["", "/", "?ignored=private"]) {
           const path = `/api/chat-webhooks/endpoint-1/${provider}${suffix}`;
-          expect(isPrivateChatWebhookHttpRequest(method, path)).toBe(true);
+          expect(isPrivateWebhookHttpRequest(method, path)).toBe(true);
           expect(isSecretSensitiveHttpRequest(method, path)).toBe(true);
         }
       }
     }
     expect(
-      isPrivateChatWebhookHttpRequest("POST", "/API/CHAT-WEBHOOKS/id/SLACK"),
+      isPrivateWebhookHttpRequest("POST", "/API/CHAT-WEBHOOKS/id/SLACK"),
     ).toBe(true);
     for (const path of [
+      "/api/voice-webhooks",
+      "/api/voice-webhooks/id/tools",
+      "http://host.invalid/api/voice-webhooks/../private-component",
+      "/api/routine-triggers/public",
+      "/api/routine-triggers/public/private-id/fire",
+      "https://host.invalid/api/routine-triggers/public/../private-id",
       "/api/chat-webhooks",
       "/api/chat-webhooks/id",
       "/api/chat-webhooks/id/slack/history",
@@ -35,26 +42,41 @@ describe("isPrivateChatWebhookHttpRequest", () => {
       "http://host.invalid/api/chat-webhooks/../private-component",
       "HTTPS://user:private@host.invalid/API/CHAT-WEBHOOKS/id/SLACK/",
     ])
-      expect(isPrivateChatWebhookHttpRequest("POST", path)).toBe(true);
+      expect(isPrivateWebhookHttpRequest("POST", path)).toBe(true);
   });
 
   it("does not change adjacent non-webhook routes", () => {
     for (const path of [
+      "/api/routine-triggers/id/rotate-secret",
+      "/api/routine-triggers/public-extra/id/fire",
       "/api/chat-webhooks-extra/id/slack",
       "https://host.invalid/api/chat-webhooks-extra/id/slack",
       "/api/other/chat-webhooks/id/slack",
       "/api/chat-endpoints/id/test",
       "/chat-webhooks/id/slack",
     ])
-      expect(isPrivateChatWebhookHttpRequest("POST", path)).toBe(false);
+      expect(isPrivateWebhookHttpRequest("POST", path)).toBe(false);
     expect(
-      isPrivateChatWebhookHttpRequest(undefined, "/api/chat-webhooks/id/slack"),
+      isPrivateWebhookHttpRequest(undefined, "/api/chat-webhooks/id/slack"),
     ).toBe(false);
-    expect(isPrivateChatWebhookHttpRequest("POST", undefined)).toBe(false);
+    expect(isPrivateWebhookHttpRequest("POST", undefined)).toBe(false);
   });
 });
 
 describe("isSecretSensitiveHttpRequest", () => {
+  it("protects company observability credentials on accepted and rejected paths", () => {
+    for (const method of ["GET", "PUT", "POST", "DELETE", "PATCH"]) {
+      for (const url of ["/api/companies/company/observability", "/api/companies/company/observability/test", "/api/companies/company/observability/unknown", "https://paperclip.test/API/COMPANIES/company/OBSERVABILITY?ignored=private"]) {
+        expect(isSecretSensitiveHttpRequest(method, url)).toBe(true);
+      }
+    }
+    expect(isSecretSensitiveHttpRequest("PUT", "/api/companies/company/observability-extra")).toBe(false);
+  });
+  it("protects Slack registration, installation, recovery, and all callback methods", () => {
+    for (const suffix of ["registration", "install", "resume"]) expect(isSecretSensitiveHttpRequest("POST", `/api/chat-endpoints/id/slack/${suffix}`)).toBe(true);
+    for (const method of ["GET", "POST", "DELETE"]) for (const path of ["/api/chat-slack/oauth/callback?code=canary", "/api/chat-slack/managed/oauth/callback?claim=canary", "/api/chat-slack/managed/oauth/callback?code=canary", "/api/chat-endpoints/endpoint/slack/managed/authorize", "/api/chat-endpoints/endpoint/slack/managed/provision", "https://paperclip.test/API/CHAT-SLACK/OAUTH/callback?code=canary"])
+      expect(isSecretSensitiveHttpRequest(method, path)).toBe(true);
+  });
   it("identifies credential-bearing chat setup mutations", () => {
     expect(
       isSecretSensitiveHttpRequest(
@@ -173,5 +195,17 @@ describe("shouldSilenceHttpSuccessLog", () => {
         404,
       ),
     ).toBe(false);
+  });
+});
+
+
+describe("Muse HTTP privacy",()=>{
+  it("protects OAuth, worker bodies and rejected namespace variants",()=>{
+    for(const path of ["/api/muse/v1/oauth/authorize?pairing_ticket=private", "/api/muse/v1/commands", "/api/muse/unknown/private", "/API/MUSE/v1/token", "http://host.invalid/api/%6duse/v1/commands", "/api/%256duse/v1/queries", "/api/companies/company/agents/agent/muse-binding", "/api/companies/company/muse-invitations"])
+      for(const method of ["GET","POST","DELETE"]){expect(isPrivateMuseHttpRequest(path)).toBe(true);expect(isSecretSensitiveHttpRequest(method,path)).toBe(true);}
+    expect(isPrivateMuseHttpRequest("/api/muse-extra")).toBe(false);
+    expect(isPrivateMuseHttpRequest("/api/issues/task")).toBe(false);
+    expect(shouldSilenceHttpSuccessLog("GET","/api/muse/v1/signal",200)).toBe(true);
+    expect(shouldSilenceHttpSuccessLog("GET","/api/muse/v1/signal",503)).toBe(false);
   });
 });

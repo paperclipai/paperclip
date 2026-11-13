@@ -99,9 +99,9 @@ describe(`durable file delivery (${liveDaytona ? "Daytona" : "local processes"})
       enableSandboxDuplexBridge: duplex,
     });
     expect(bridge?.env.PAPERCLIP_API_BRIDGE_MODE).toBe(duplex ? "http2_v1" : "queue_v1");
-    const env = { ...bridge!.env, PAPERCLIP_RUN_ID: fixture.runId,
+    const env = { ...bridge!.env, TMPDIR: path.join(remote.workspace, ".unavailable-controller-temp"), PAPERCLIP_RUN_ID: fixture.runId,
       PAPERCLIP_COMPANY_ID: fixture.companyId, PAPERCLIP_TASK_ID: fixture.issueId,
-      PAPERCLIP_HELPER_STATE_DIR: path.join(remote.workspace, ".helper-state") };
+      PAPERCLIP_WORKSPACE_CWD: remote.workspace };
     const headers = { authorization: `Bearer ${bridge!.env.PAPERCLIP_API_KEY}` };
     const receipts: Array<{ attachment: { id: string; contentPath: string; downloadPath: string } }> = [];
     try {

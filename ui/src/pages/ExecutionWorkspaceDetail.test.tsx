@@ -5,6 +5,7 @@ import type { ExecutionWorkspace, Project } from "@paperclipai/shared";
 import { act, type ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { queryKeys } from "../lib/queryKeys";
 import { ExecutionWorkspaceDetail } from "./ExecutionWorkspaceDetail";
 
 (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
@@ -240,8 +241,9 @@ describe("ExecutionWorkspaceDetail plugin slots", () => {
     mockRouteLocation.search = "";
   });
 
-  async function render() {
+  async function render(hiddenSettings: string[] = []) {
     const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    queryClient.setQueryData(queryKeys.health, { hiddenSettings });
     await act(async () => {
       root = createRoot(container);
       root.render(
@@ -254,6 +256,19 @@ describe("ExecutionWorkspaceDetail plugin slots", () => {
       await flush();
     });
   }
+
+  it("redirects a hidden configuration deep link to the workspace", async () => {
+    mockRouteLocation.pathname = "/execution-workspaces/workspace-1/configuration";
+    await render(["workspaces.isolation"]);
+    expect(container.querySelector('[data-testid="navigate"]')?.textContent).toBe("/execution-workspaces/workspace-1/issues");
+    expect(container.textContent).not.toContain("Workspace settings");
+  });
+
+  it("hides configuration while keeping workspace access", async () => {
+    await render(["workspaces.isolation"]);
+    expect(container.textContent).not.toContain("Configuration");
+    expect(container.textContent).toContain("Services");
+  });
 
   it("scopes the plugin detail-tab discovery to execution_workspace and the workspace's company", async () => {
     await render();

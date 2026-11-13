@@ -44,6 +44,68 @@
   </head>
   <body>
     <div id="root"></div>
+    <!-- Keep recovery outside #root so it cannot be mistaken for a mounted app.
+         It must work even when the app's JavaScript or stylesheet cannot load. -->
+    <section id="paperclip-startup" role="status" aria-live="polite" hidden>
+      <div class="mx-auto flex min-h-screen max-w-2xl flex-col justify-center space-y-4 px-4 py-10">
+        <div>
+          <h1 id="paperclip-startup-title" class="text-lg font-semibold">Paperclip couldn’t start</h1>
+          <p id="paperclip-startup-message" class="mt-1 text-sm text-muted-foreground">
+            Part of the app failed to load. Check your connection and reload this page to try again.
+          </p>
+        </div>
+        <div>
+          <button id="paperclip-startup-reload" type="button" class="inline-flex items-center rounded-md border border-input bg-background px-3 py-1.5 text-sm font-medium shadow-sm hover:bg-accent hover:text-accent-foreground">
+            Reload page
+          </button>
+        </div>
+      </div>
+    </section>
+    <script>
+      // This guard is deliberately inline and independent of the module graph:
+      // React's error boundary cannot catch an import that prevents React loading.
+      (() => {
+        const root = document.getElementById("root");
+        const notice = document.getElementById("paperclip-startup");
+        const title = document.getElementById("paperclip-startup-title");
+        const message = document.getElementById("paperclip-startup-message");
+        const reload = document.getElementById("paperclip-startup-reload");
+        const retry = () => window.location.reload();
+        const finished = () => root.childElementCount > 0;
+        const cleanup = () => {
+          clearTimeout(timer);
+          observer.disconnect();
+          window.removeEventListener("error", onError, true);
+          window.removeEventListener("unhandledrejection", onFailure);
+          reload.removeEventListener("click", retry);
+          notice.remove();
+        };
+        const onFailure = () => {
+          if (finished()) return cleanup();
+          title.textContent = "Paperclip couldn’t start";
+          message.textContent = "Part of the app failed to load. Check your connection and reload this page to try again.";
+          notice.hidden = false;
+        };
+        const onError = (event) => {
+          // Ignore images and other incidental resources. Preserve the original
+          // error for the browser console; never display raw errors or URLs here.
+          if (event instanceof ErrorEvent || event.target instanceof HTMLScriptElement ||
+              (event.target instanceof HTMLLinkElement && event.target.rel === "stylesheet")) onFailure();
+        };
+        const observer = new MutationObserver(() => { if (finished()) cleanup(); });
+        observer.observe(root, { childList: true });
+        const timer = setTimeout(() => {
+          if (finished()) return cleanup();
+          if (!notice.hidden) return;
+          title.textContent = "Paperclip is taking longer to load";
+          message.textContent = "You can keep waiting, or reload this page to try again.";
+          notice.hidden = false;
+        }, 30_000);
+        window.addEventListener("error", onError, true);
+        window.addEventListener("unhandledrejection", onFailure);
+        reload.addEventListener("click", retry);
+      })();
+    </script>
     <script type="module" src="/src/main.tsx"></script>
   </body>
 </html>

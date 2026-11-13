@@ -1,6 +1,5 @@
-import type { Issue, IssueStatus } from "@paperclipai/shared";
+import type { Issue, IssueStatus, IssueSummary } from "@paperclipai/shared";
 
-export const RECENT_TASKS_LIMIT = 5;
 export const RECENT_TASKS_UPDATED_EVENT = "paperclip:recent-tasks-updated";
 const STORAGE_PREFIX = "paperclip.recentTasks.v2:";
 const LEGACY_STORAGE_PREFIX = "paperclip.recentTasks:";
@@ -11,6 +10,10 @@ export interface RecentTaskEntry {
   title: string;
   identifier: string | null;
   status: IssueStatus;
+  displayStatus?: Issue["displayStatus"];
+  externalConversationState?: Issue["externalConversationState"];
+  /** Blocked tasks covered by active work render the "in queue" glyph everywhere. */
+  blockerAttention?: Issue["blockerAttention"];
   recordedAt: number;
   // Server version of the title/status snapshot, independent of comment activity.
   // Legacy entries have no version until a detail query refreshes them.
@@ -79,8 +82,7 @@ function normalizeRecentTasks(entries: RecentTaskEntry[]) {
       if (seen.has(entry.id)) return false;
       seen.add(entry.id);
       return true;
-    })
-    .slice(0, RECENT_TASKS_LIMIT);
+    });
 }
 
 function publishRecentTasks(storageKey: string, entries: RecentTaskEntry[]) {
@@ -92,37 +94,52 @@ function publishRecentTasks(storageKey: string, entries: RecentTaskEntry[]) {
 
 export function writeRecentTasks(storageKey: string, entries: RecentTaskEntry[]) {
   if (typeof window === "undefined") return;
-  const bounded = normalizeRecentTasks(entries);
+  const normalized = normalizeRecentTasks(entries);
   try {
-    const serialized = JSON.stringify(bounded);
+    const serialized = JSON.stringify(normalized);
     if (window.localStorage.getItem(storageKey) === serialized) return;
     window.localStorage.setItem(storageKey, serialized);
   } catch {
     // The in-tab event still keeps mounted navigation current for this session.
   }
-  publishRecentTasks(storageKey, bounded);
+  publishRecentTasks(storageKey, normalized);
 }
 
-type TaskSnapshot = Pick<Issue, "id" | "companyId" | "title" | "identifier" | "status" | "updatedAt">;
+type TaskSnapshot = Omit<IssueSummary, "externalConversationState"> & Pick<Issue, "externalConversationState">;
+
+function sameBlockerAttention(a: RecentTaskEntry["blockerAttention"], b: RecentTaskEntry["blockerAttention"]) {
+  return JSON.stringify(a ?? null) === JSON.stringify(b ?? null);
+}
 
 export function mergeRecentTaskSnapshot(entry: RecentTaskEntry, issue: TaskSnapshot): RecentTaskEntry {
   if (entry.id !== issue.id || entry.companyId !== issue.companyId) return entry;
   const snapshotUpdatedAt = new Date(issue.updatedAt).getTime();
   if (!Number.isFinite(snapshotUpdatedAt)) return entry;
-  // Equal versions retain the persisted snapshot, so conflicting caches settle.
-  if (entry.snapshotUpdatedAt !== undefined && snapshotUpdatedAt <= entry.snapshotUpdatedAt) return entry;
+  if (entry.snapshotUpdatedAt !== undefined && snapshotUpdatedAt < entry.snapshotUpdatedAt) return entry;
+  // Conversation readiness also depends on deliveries and decisions, which
+  // can change without changing the task's title/status version.
+  if (snapshotUpdatedAt === entry.snapshotUpdatedAt) {
+    return (issue.externalConversationState !== undefined
+      && issue.externalConversationState !== entry.externalConversationState) || issue.displayStatus !== entry.displayStatus
+      || !sameBlockerAttention(issue.blockerAttention, entry.blockerAttention)
+      ? { ...entry, status: issue.status, displayStatus: issue.displayStatus, externalConversationState: issue.externalConversationState, blockerAttention: issue.blockerAttention }
+      : entry;
+  }
   return {
     ...entry,
     title: issue.title,
     identifier: issue.identifier,
     status: issue.status,
+    displayStatus: issue.displayStatus,
+    externalConversationState: issue.externalConversationState,
+    blockerAttention: issue.blockerAttention,
     snapshotUpdatedAt,
     recordedAt: Math.max(entry.recordedAt, snapshotUpdatedAt),
   };
 }
 
 export function recordRecentTask(
-  issue: Pick<Issue, "id" | "companyId" | "title" | "identifier" | "status" | "updatedAt" | "conversationAgentId">,
+  issue: Pick<Issue, "id" | "companyId" | "title" | "identifier" | "status" | "displayStatus" | "externalConversationState" | "blockerAttention" | "updatedAt" | "conversationAgentId">,
   userId: string | null | undefined,
   recordedAt = new Date(issue.updatedAt).getTime(),
 ) {
@@ -140,6 +157,9 @@ export function recordRecentTask(
     title: issue.title,
     identifier: issue.identifier,
     status: issue.status,
+    displayStatus: issue.displayStatus,
+    externalConversationState: issue.externalConversationState,
+    blockerAttention: issue.blockerAttention,
     recordedAt: activityAt,
     ...(Number.isFinite(snapshotUpdatedAt) ? { snapshotUpdatedAt } : {}),
   };
@@ -153,6 +173,9 @@ export function recordRecentTask(
     && existing.title === entry.title
     && existing.identifier === entry.identifier
     && existing.status === entry.status
+    && existing.displayStatus === entry.displayStatus
+    && existing.externalConversationState === entry.externalConversationState
+    && sameBlockerAttention(existing.blockerAttention, entry.blockerAttention)
     && existing.recordedAt === entry.recordedAt
     && existing.snapshotUpdatedAt === entry.snapshotUpdatedAt
   ) return;

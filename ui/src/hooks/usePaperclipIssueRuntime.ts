@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef } from "react";
+import { useMemo, useRef } from "react";
 import {
   useExternalStoreRuntime,
   type ThreadMessage,
@@ -52,14 +52,8 @@ export function usePaperclipIssueRuntime({
 }: UsePaperclipIssueRuntimeOptions) {
   const onSendRef = useRef(onSend);
   const onCancelRef = useRef(onCancel);
-
-  useEffect(() => {
-    onSendRef.current = onSend;
-  }, [onSend]);
-
-  useEffect(() => {
-    onCancelRef.current = onCancel;
-  }, [onCancel]);
+  onSendRef.current = onSend;
+  onCancelRef.current = onCancel;
 
   const adapter = useMemo<ExternalStoreAdapter<ThreadMessage>>(
     () => ({

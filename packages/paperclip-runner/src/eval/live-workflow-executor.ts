@@ -339,8 +339,9 @@ async function restoreAfterDelegatedChild(input: {
 
 function acpxAgent(
   candidate: RunnerLiveEvalCandidate,
-): "claude" | "codex" | undefined {
+): "claude" | "codex" | "grok" | undefined {
   if (candidate.adapter !== "acpx_runtime") return undefined;
+  if (candidate.qualification.profile === "grok") return "grok";
   if (candidate.qualification.profile === "claude") return "claude";
   if (candidate.qualification.profile === "codex") return "codex";
   return undefined;

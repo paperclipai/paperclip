@@ -1,6 +1,6 @@
 import { Readable } from "node:stream";
 import express from "express";
-import { eq } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 import request from "supertest";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
@@ -405,6 +405,42 @@ describeEmbeddedPostgres("companyArtifactsService", () => {
     expect(incompatibleKind.body).toEqual({ artifacts: [], nextCursor: null });
   });
 
+  it("lists only artifacts on tasks the caller can read", async () => {
+    const previousMode = process.env.PAPERCLIP_ISSUE_PRIVACY_MODE;
+    process.env.PAPERCLIP_ISSUE_PRIVACY_MODE = "enforce";
+    try {
+      const { companyId, issueId } = await seedArtifacts();
+      await db.update(issues).set({ visibility: "private", privacyRootIssueId: sql`${issues.id}`, responsibleUserId: "owner-user" })
+        .where(eq(issues.companyId, companyId));
+      const list = async (userId: string, search = "limit=50") => {
+        const app = express();
+        app.use((req, _res, next) => {
+          req.actor = { type: "board", userId, source: "session", companyIds: [companyId],
+            memberships: [{ companyId, membershipRole: "viewer", status: "active" }] };
+          next();
+        });
+        app.use("/api/companies", companyRoutes(db, createStorageService()));
+        app.use(errorHandler);
+        return request(app).get(`/api/companies/${companyId}/artifacts?${search}`);
+      };
+      const outsider = await list("user-1");
+      expect(outsider.status).toBe(200);
+      expect(outsider.body.artifacts).toEqual([]);
+      expect((await list("owner-user")).body.artifacts.length).toBeGreaterThan(0);
+      // A task id in the group selector reveals nothing about an unreadable task.
+      for (const groupBy of ["task", "parent_task"]) {
+        const grouped = await list("user-1", `groupBy=${groupBy}&groupIssueId=${issueId}`);
+        expect(grouped.status).toBe(200);
+        expect(grouped.body).toEqual({ artifacts: [], selectedGroup: null, nextCursor: null });
+        expect((await list("user-1", `groupBy=${groupBy}`)).body.artifacts).toEqual([]);
+      }
+      expect((await list("owner-user", `groupBy=task&groupIssueId=${issueId}`)).body.selectedGroup).toMatchObject({ issue: { id: issueId } });
+    } finally {
+      if (previousMode === undefined) delete process.env.PAPERCLIP_ISSUE_PRIVACY_MODE;
+      else process.env.PAPERCLIP_ISSUE_PRIVACY_MODE = previousMode;
+    }
+  });
+
   it("returns an empty starred view for agent callers", async () => {
     const { companyId, otherRunId } = await seedArtifacts();
     await db.insert(documentMemberships).values({
@@ -498,6 +534,32 @@ describeEmbeddedPostgres("companyArtifactsService", () => {
       cursor: pageAfterPrimaryWorkProduct.nextCursor ?? undefined,
     });
     expect(afterPrimaryCursor.artifacts.map((artifact) => artifact.title)).toEqual(["notes.txt"]);
+  });
+
+  it("filters every artifact source by the agent it is attributed to", async () => {
+    const { companyId } = await seedArtifacts();
+    const writerId = "21212121-2121-4121-8121-212121212121";
+    await db.insert(agents).values({ id: writerId, companyId, name: "Writer", role: "engineer" });
+    await db.update(documents).set({ createdByAgentId: writerId })
+      .where(eq(documents.id, "cccccccc-cccc-4ccc-8ccc-cccccccccccc"));
+    const storage = createStorageService({ "notes.txt": Buffer.from("notes") });
+
+    const writer = await companyArtifactsService(db, storage).list(companyId, { agentId: writerId, limit: 20 });
+    expect(writer.artifacts.map((artifact) => artifact.title)).toEqual(["Review Notes"]);
+
+    const original = await companyArtifactsService(db, storage).list(companyId, {
+      agentId: "33333333-3333-4333-8333-333333333333",
+      limit: 20,
+    });
+    expect(original.artifacts.map((artifact) => artifact.title)).toEqual(["direct-video.mp4", "Primary Cut", "notes.txt"]);
+    expect(new Set(original.artifacts.map((artifact) => artifact.createdByAgent?.id)))
+      .toEqual(new Set(["33333333-3333-4333-8333-333333333333"]));
+
+    const foreign = await companyArtifactsService(db, storage).list(companyId, {
+      agentId: "44444444-4444-4444-8444-444444444444",
+      limit: 20,
+    });
+    expect(foreign.artifacts).toEqual([]);
   });
 
   it("deduplicates work product attachments beyond the work product fetch window", async () => {

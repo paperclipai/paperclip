@@ -5,7 +5,7 @@
 // report `service.version`, so the value tracks the true built commit.
 //
 // The build resolves the commit in two steps:
-//   1. `git rev-parse --short HEAD` in the server directory.
+//   1. `git rev-parse HEAD` in the server directory.
 //   2. The `PAPERCLIP_BUILD_COMMIT` environment variable.
 // A Docker image build excludes `.git`, so the git lookup fails there. The
 // image build passes the commit in `PAPERCLIP_BUILD_COMMIT` instead, so the
@@ -44,14 +44,14 @@ export function resolveBuildCommit(gitCommit, suppliedCommit) {
 }
 
 /**
- * Read the short commit SHA with `git rev-parse --short HEAD` in the server
+ * Read the full commit SHA with `git rev-parse HEAD` in the server
  * directory. Return the SHA, or null on any failure.
  *
  * @returns {string | null}
  */
 function readGitCommit() {
   try {
-    const out = execFileSync("git", ["rev-parse", "--short", "HEAD"], {
+    const out = execFileSync("git", ["rev-parse", "HEAD"], {
       cwd: serverDir,
       stdio: ["ignore", "pipe", "ignore"],
     })

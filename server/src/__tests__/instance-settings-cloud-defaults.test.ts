@@ -17,8 +17,17 @@ function managedConfig(features: ManagedInstanceConfig["features"] = {}): Manage
     features,
     plugins: { autoInstall: [] },
     environments: [],
+    pluginEnvironments: [],
   };
 }
+
+describe("Artifacts V1 defaults", () => {
+  it("is on for self-hosted and Cloud instances that never stored it", () => {
+    expect(INSTANCE_FEATURE_CATALOG.enableArtifactsV1).toMatchObject({ cloudDefault: true, selfHostedDefault: true });
+    expect(applyCloudCatalogDefaults(normalizeExperimentalSettings({}), {}, null).enableArtifactsV1).toBe(true);
+    expect(applyCloudCatalogDefaults(normalizeExperimentalSettings({}), {}, managedConfig()).enableArtifactsV1).toBe(true);
+  });
+});
 
 describe("applyCloudCatalogDefaults", () => {
   it("pins the catalog so this rule has something to guard", () => {
@@ -98,8 +107,8 @@ describe("stripCloudCatalogDefaultEchoes", () => {
 
   it("does not persist the self-hosted default on Cloud during an unrelated write", () => {
     const config = managedConfig();
-    const stored = persisted({}, { enablePipelines: true }, config);
-    expect(stored.enablePipelines).toBe(true);
+    const stored = persisted({}, { enableStatusCards: true }, config);
+    expect(stored.enableStatusCards).toBe(true);
     expect("enableNativeRunner" in stored).toBe(false);
     // The Cloud default still applies on the next read.
     expect(readBack(stored, config).enableNativeRunner).toBe(false);
@@ -107,7 +116,7 @@ describe("stripCloudCatalogDefaultEchoes", () => {
 
   it("treats a full-GET echo of the Cloud default as no choice", () => {
     const config = managedConfig();
-    const stored = persisted({}, { enableNativeRunner: false, enablePipelines: true }, config);
+    const stored = persisted({}, { enableNativeRunner: false, enableStatusCards: true }, config);
     expect("enableNativeRunner" in stored).toBe(false);
     expect(readBack(stored, config).enableNativeRunner).toBe(false);
   });
@@ -121,14 +130,14 @@ describe("stripCloudCatalogDefaultEchoes", () => {
 
   it("keeps a stored tenant value across unrelated writes", () => {
     const config = managedConfig();
-    const stored = persisted({ enableNativeRunner: true }, { enablePipelines: true }, config);
+    const stored = persisted({ enableNativeRunner: true }, { enableStatusCards: true }, config);
     expect(stored.enableNativeRunner).toBe(true);
     expect(readBack(stored, config).enableNativeRunner).toBe(true);
   });
 
   it("leaves the whole normalized object in place for self-hosted rows", () => {
-    const stored = persisted({}, { enablePipelines: true }, null);
+    const stored = persisted({}, { enableStatusCards: true }, null);
     expect(stored.enableNativeRunner).toBe(true);
-    expect(stored).toEqual(applyExperimentalSettingsPatch({}, { enablePipelines: true }));
+    expect(stored).toEqual(applyExperimentalSettingsPatch({}, { enableStatusCards: true }));
   });
 });

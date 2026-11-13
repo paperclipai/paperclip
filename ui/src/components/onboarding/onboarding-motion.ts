@@ -1,18 +1,20 @@
+import { motionEase, motionMilliseconds, motionNumber, motionSeconds } from "@/lib/onboarding-motion-tokens";
+
 // Shared motion constants for the onboarding wizard's agent arc (steps 3–5).
 // Ported from the onboarding prototype so the capsule choreography reads the
-// same here as it does there. Reduced motion is honoured at the token layer
-// (ui/src/index.css collapses --motion-duration-* under the media query) and
-// by <MotionConfig reducedMotion="user"> where these are consumed.
+// same here as it does there. Values come from the index.css token layer;
+// the reader collapses durations for reduced motion and MotionConfig handles
+// the spring transforms where these are consumed.
 
 /** Step crossfade easing — the house signature curve, also used for in-step reveals. */
-export const STEP_EASE = [0.16, 1, 0.3, 1] as const;
+export const STEP_EASE = motionEase("--motion-ease-out-expo");
 
 /** Per-step enter/exit crossfade for the keyed step container. */
 export const stepMotion = {
-  initial: { opacity: 0, y: 8 },
+  initial: { opacity: 0, y: motionNumber("--onboarding-motion-step-travel") },
   animate: { opacity: 1, y: 0 },
-  exit: { opacity: 0, y: -8 },
-  transition: { duration: 0.28, ease: STEP_EASE },
+  exit: { opacity: 0, y: -motionNumber("--onboarding-motion-step-travel") },
+  transition: { duration: motionSeconds("--onboarding-motion-step"), ease: STEP_EASE },
 };
 
 /**
@@ -20,19 +22,19 @@ export const stepMotion = {
  * about its own centre. Deliberately no y offset — that would bias the growth
  * upward and read as a drop-in rather than something forming in place.
  */
-export const CAPSULE_ENTER_DURATION = 1.0;
+export const CAPSULE_ENTER_DURATION = motionSeconds("--onboarding-motion-capsule");
 export const capsuleMotion = {
-  initial: { opacity: 0, scale: 0.5 },
+  initial: { opacity: 0, scale: motionNumber("--onboarding-motion-capsule-scale") },
   animate: { opacity: 1, scale: 1 },
   transition: {
     type: "spring" as const,
     duration: CAPSULE_ENTER_DURATION,
-    bounce: 0.4,
+    bounce: motionNumber("--onboarding-motion-capsule-bounce"),
   },
 };
 
 /** The name/role reveal: the label fade is staggered by 25% of this. */
-export const PREVIEW_REVEAL_DURATION = 0.45;
+export const PREVIEW_REVEAL_DURATION = motionSeconds("--onboarding-motion-preview");
 
 /**
  * The hand-off that makes the capsule read as one object across all three
@@ -42,18 +44,18 @@ export const PREVIEW_REVEAL_DURATION = 0.45;
  * the two travel together.
  */
 export const capsuleHandoffExit = {
-  scale: 0.5,
+  scale: motionNumber("--onboarding-motion-capsule-scale"),
   opacity: 0,
-  transition: { duration: 0.28, ease: STEP_EASE },
+  transition: { duration: motionSeconds("--onboarding-motion-step"), ease: STEP_EASE },
 };
 export const capsuleHeroMotion = {
-  initial: { scale: 0.5, opacity: 0 },
+  initial: { scale: motionNumber("--onboarding-motion-capsule-scale"), opacity: 0 },
   animate: { scale: 1, opacity: 1 },
   transition: {
     // A soft spring: slow enough that the scale-up is noticeable, damped
     // enough that it still settles. The fade is lengthened to travel with it.
-    scale: { type: "spring" as const, stiffness: 150, damping: 16 },
-    opacity: { duration: 0.55, ease: STEP_EASE },
+    scale: { type: "spring" as const, stiffness: motionNumber("--onboarding-motion-hero-stiffness"), damping: motionNumber("--onboarding-motion-hero-damping") },
+    opacity: { duration: motionSeconds("--onboarding-motion-hero-fade"), ease: STEP_EASE },
   },
 };
 
@@ -80,10 +82,10 @@ export const capsuleHeroMotion = {
  * offscreen; over 7px it just looked like the label snapped and then settled.
  * Easing into the movement gives the swap a beginning.
  */
-export const TAG_SWAP_TRAVEL = 7;
-export const TAG_SWAP_EASE = [0.4, 0, 0.2, 1] as const;
-export const TAG_SWAP_ENTER = { duration: 0.34, ease: TAG_SWAP_EASE } as const;
-export const TAG_SWAP_EXIT = { duration: 0.26, ease: TAG_SWAP_EASE } as const;
+export const TAG_SWAP_TRAVEL = motionNumber("--onboarding-motion-tag-travel");
+export const TAG_SWAP_EASE = motionEase("--motion-ease-standard");
+export const TAG_SWAP_ENTER = { duration: motionSeconds("--onboarding-motion-tag-enter"), ease: TAG_SWAP_EASE } as const;
+export const TAG_SWAP_EXIT = { duration: motionSeconds("--onboarding-motion-tag-exit"), ease: TAG_SWAP_EASE } as const;
 
 /**
  * The credential-mode link's own label swap, when that control is a line of
@@ -102,12 +104,12 @@ export const TAG_SWAP_EXIT = { duration: 0.26, ease: TAG_SWAP_EASE } as const;
  * finish together.
  */
 export const LINK_LABEL_FADE_OUT = {
-  duration: 0.12,
+  duration: motionSeconds("--onboarding-motion-label-exit"),
   ease: TAG_SWAP_EASE,
 } as const;
 export const LINK_LABEL_FADE_IN = {
-  duration: 0.22,
-  delay: 0.08,
+  duration: motionSeconds("--onboarding-motion-label-enter"),
+  delay: motionSeconds("--motion-duration-instant"),
   ease: TAG_SWAP_EASE,
 } as const;
 
@@ -156,7 +158,7 @@ export const CANVAS_EASE = TAG_SWAP_EASE;
  * is a surface arriving where there was none, and it comes down from above so
  * the movement reads as the tile above it opening out.
  */
-export const CANVAS_ENTER_TRAVEL = 10;
+export const CANVAS_ENTER_TRAVEL = motionNumber("--onboarding-motion-canvas-travel");
 
 export const CANVAS_CONTENT_ENTER = TAG_SWAP_ENTER;
 export const CANVAS_CONTENT_EXIT = TAG_SWAP_EXIT;
@@ -185,7 +187,7 @@ export const CANVAS_CONTENT_TRAVEL = TAG_SWAP_TRAVEL;
  * on which tile was picked, and hard-coding it would send the right-hand tile
  * the wrong way.
  */
-export const SOURCE_COLLAPSE_MOVE = { duration: 0.42, ease: TAG_SWAP_EASE } as const;
+export const SOURCE_COLLAPSE_MOVE = { duration: motionSeconds("--onboarding-motion-source-collapse"), ease: TAG_SWAP_EASE } as const;
 export const SOURCE_COLLAPSE_FADE = TAG_SWAP_EXIT;
 
 /**
@@ -196,7 +198,7 @@ export const SOURCE_COLLAPSE_FADE = TAG_SWAP_EXIT;
  * switching to keys without cancelling — so it should be gone before the eye
  * follows the tile, rather than travelling alongside it and inviting a press.
  */
-export const SOURCE_LINK_EXIT = { duration: 0.16, ease: TAG_SWAP_EASE } as const;
+export const SOURCE_LINK_EXIT = { duration: motionSeconds("--motion-duration-fast"), ease: TAG_SWAP_EASE } as const;
 
 /**
  * The card's staged reveal once the sign-in has something to show.
@@ -209,9 +211,9 @@ export const SOURCE_LINK_EXIT = { duration: 0.16, ease: TAG_SWAP_EASE } as const
  * Both rise slightly, on the canvas's own travel, so the reveal belongs to the
  * surface that opened rather than being a separate entrance inside it.
  */
-export const CARD_REVEAL_TRAVEL = 6;
-export const CARD_REVEAL_INSTRUCTION = { duration: 0.3, ease: STEP_EASE } as const;
-export const CARD_REVEAL_FIELD = { duration: 0.3, delay: 0.12, ease: STEP_EASE } as const;
+export const CARD_REVEAL_TRAVEL = motionNumber("--onboarding-motion-reveal-travel");
+export const CARD_REVEAL_INSTRUCTION = { duration: motionSeconds("--onboarding-motion-card-enter"), ease: STEP_EASE } as const;
+export const CARD_REVEAL_FIELD = { duration: motionSeconds("--onboarding-motion-card-enter"), delay: motionSeconds("--onboarding-motion-label-exit"), ease: STEP_EASE } as const;
 
 /**
  * The primary button changing label.
@@ -227,7 +229,7 @@ export const CARD_REVEAL_FIELD = { duration: 0.3, delay: 0.12, ease: STEP_EASE }
  * word does. Reversing that reads as the button resizing and then, separately,
  * changing its mind about what it says.
  */
-export const CTA_WIDTH = { duration: 0.34, ease: TAG_SWAP_EASE } as const;
+export const CTA_WIDTH = { duration: motionSeconds("--onboarding-motion-tag-enter"), ease: TAG_SWAP_EASE } as const;
 export const CTA_LABEL_OUT = LINK_LABEL_FADE_OUT;
 export const CTA_LABEL_IN = LINK_LABEL_FADE_IN;
 
@@ -241,7 +243,7 @@ export const CTA_LABEL_IN = LINK_LABEL_FADE_IN;
  * wrong, because nothing acknowledged it. Two seconds is long enough to be read
  * and short enough not to feel stalled.
  */
-export const CONNECTED_HOLD_MS = 2000;
+export const CONNECTED_HOLD_MS = motionMilliseconds("--onboarding-motion-connected-hold");
 
 /**
  * The sign-in card arriving and leaving, and the footer moving because of it.
@@ -257,9 +259,9 @@ export const CONNECTED_HOLD_MS = 2000;
  * it. That is why the exit is quick and the settle that follows is separate:
  * "card goes, then the bar comes back up" is two beats, not one.
  */
-export const CARD_ENTER = { duration: 0.3, ease: STEP_EASE } as const;
-export const CARD_EXIT = { duration: 0.18, ease: TAG_SWAP_EASE } as const;
-export const FOOTER_SETTLE = { duration: 0.34, ease: TAG_SWAP_EASE } as const;
+export const CARD_ENTER = { duration: motionSeconds("--onboarding-motion-card-enter"), ease: STEP_EASE } as const;
+export const CARD_EXIT = { duration: motionSeconds("--onboarding-motion-card-exit"), ease: TAG_SWAP_EASE } as const;
+export const FOOTER_SETTLE = { duration: motionSeconds("--onboarding-motion-tag-enter"), ease: TAG_SWAP_EASE } as const;
 
 /**
  * Milliseconds, for the timers that drive the sequence from one beat to the
@@ -284,7 +286,7 @@ export const FOOTER_SETTLE_MS = FOOTER_SETTLE.duration * 1000;
  * layout the column can settle into, and the whole step slides. The card only
  * fades in once the room exists.
  */
-export const MAKE_ROOM = { duration: 0.34, ease: TAG_SWAP_EASE } as const;
+export const MAKE_ROOM = { duration: motionSeconds("--onboarding-motion-tag-enter"), ease: TAG_SWAP_EASE } as const;
 export const MAKE_ROOM_MS = MAKE_ROOM.duration * 1000;
 
 /**
@@ -295,7 +297,7 @@ export const MAKE_ROOM_MS = MAKE_ROOM.duration * 1000;
  * overlap was long enough to read as two tiles briefly occupying one another;
  * at 180 the survivor is clear before it arrives.
  */
-export const SOURCE_EXIT_FADE = { duration: 0.18, ease: TAG_SWAP_EASE } as const;
+export const SOURCE_EXIT_FADE = { duration: motionSeconds("--onboarding-motion-card-exit"), ease: TAG_SWAP_EASE } as const;
 
 /**
  * "Copied!" arriving beside a code that was put on the clipboard for you.
@@ -306,8 +308,8 @@ export const SOURCE_EXIT_FADE = { duration: 0.18, ease: TAG_SWAP_EASE } as const
  * statement about the clipboard's contents, and those are still true a second
  * later.
  */
-export const COPIED_REVEAL_TRAVEL = 6;
-export const COPIED_REVEAL = { duration: 0.26, ease: STEP_EASE } as const;
+export const COPIED_REVEAL_TRAVEL = motionNumber("--onboarding-motion-reveal-travel");
+export const COPIED_REVEAL = { duration: motionSeconds("--onboarding-motion-tag-exit"), ease: STEP_EASE } as const;
 
 /**
  * How long "Copied!" waits before it appears.
@@ -323,7 +325,7 @@ export const COPIED_REVEAL = { duration: 0.26, ease: STEP_EASE } as const;
  * noticeable at all.
  */
 export const COPIED_REVEAL_DELAY_MS =
-  (CARD_REVEAL_FIELD.delay + CARD_REVEAL_FIELD.duration) * 1000 + 120;
+  (CARD_REVEAL_FIELD.delay + CARD_REVEAL_FIELD.duration) * 1000 + motionSeconds("--onboarding-motion-copied-gap") * 1000;
 
 /**
  * How long to wait before the next beat of the connect sequence.
@@ -343,3 +345,89 @@ export function beatDelay(ms: number): number {
   if (typeof window === "undefined" || typeof window.matchMedia !== "function") return 0;
   return window.matchMedia("(prefers-reduced-motion: reduce)").matches ? 0 : ms;
 }
+
+/**
+ * The step hand-off inside the agent arc (3 → 4, and back).
+ *
+ * The hero, heading and footer carry over; only the step's own content
+ * changes. So rather than crossfading the whole screen, the departing
+ * content fades where it stands and then gives its room back, the footer
+ * sliding up behind it, and the arriving content opens its room first and
+ * fills it second — the connect card's own rhythm ("room first, card second;
+ * reversed on the way out"), so the arc keeps one vocabulary for space
+ * changing hands. `overflow` is discrete: clipped while the room is moving,
+ * released once it has settled so focus rings and the tiles' strokes are
+ * not shaved at rest.
+ */
+export const stepContentMotion = {
+  initial: { height: 0, opacity: 0, overflow: "hidden" },
+  animate: {
+    height: "auto",
+    opacity: 1,
+    transition: { height: MAKE_ROOM, opacity: { ...CARD_ENTER, delay: MAKE_ROOM.duration } },
+    transitionEnd: { overflow: "visible" },
+  },
+  exit: {
+    height: 0,
+    opacity: 0,
+    overflow: "hidden",
+    transition: { opacity: CARD_EXIT, height: { ...MAKE_ROOM, delay: CARD_EXIT.duration } },
+  },
+} as const;
+
+/**
+ * The heading's lede opens on the connect step. It waits out the departing
+ * content's fade and collapse and opens with the arriving content's room, so
+ * the footer makes one sweep up and one sweep down rather than dipping,
+ * rising and dipping again. Closing needs no wait: it collapses with the
+ * content below it.
+ */
+const HANDOFF_EXIT_SECONDS = CARD_EXIT.duration + MAKE_ROOM.duration;
+export const ledeMotion = {
+  open: {
+    height: "auto",
+    opacity: 1,
+    transition: { height: { ...MAKE_ROOM, delay: HANDOFF_EXIT_SECONDS }, opacity: { ...CARD_ENTER, delay: HANDOFF_EXIT_SECONDS + MAKE_ROOM.duration } },
+  },
+  closed: { height: 0, opacity: 0, transition: { opacity: CARD_EXIT, height: { ...MAKE_ROOM, delay: CARD_EXIT.duration } } },
+} as const;
+
+/** The title's text swap: the new words fade in over the old ones' place; no travel. */
+export const titleSwapMotion = {
+  initial: { opacity: 0 },
+  animate: { opacity: 1 },
+  transition: LINK_LABEL_FADE_IN,
+} as const;
+
+/**
+ * The hero's room: closed on the naming step (no agent exists to show), open
+ * from the agent step on. It opens on the arriving beat of the hand-off, with
+ * the capsule springing up inside it, and closes after the departing fade
+ * when the customer walks back — the same room-first/room-last timing as the
+ * step content and the lede, so the footer's travel stays one movement.
+ */
+export const heroRoomMotion = {
+  open: { height: "auto", transition: { height: { ...MAKE_ROOM, delay: HANDOFF_EXIT_SECONDS } } },
+  closed: { height: 0, transition: { height: { ...MAKE_ROOM, delay: CARD_EXIT.duration } } },
+} as const;
+
+/** The capsule's spring, held until its room starts opening; on the way out it fades with the departing content. */
+export const capsuleRoomEnter = {
+  ...capsuleHeroMotion.animate,
+  transition: {
+    scale: { ...capsuleHeroMotion.transition.scale, delay: HANDOFF_EXIT_SECONDS },
+    opacity: { ...capsuleHeroMotion.transition.opacity, delay: HANDOFF_EXIT_SECONDS },
+  },
+} as const;
+export const capsuleRoomExit = { ...capsuleHeroMotion.initial, transition: CARD_EXIT } as const;
+
+/**
+ * Arriving at the agent step directly — a cloud-managed workspace, whose
+ * organization was named in Cloud, lands here on a fresh page — plays the
+ * hand-off's second half with nothing to wait for: the hero's room and the
+ * step's content open together, the capsule springs up as its room grows,
+ * and the content fills once its room is open. What was on the other side
+ * of the page load is Cloud's naming screen, drawn to the same layout, so
+ * the arrival reads as that screen becoming this one.
+ */
+export const heroRoomArrival = { height: "auto", transition: { height: MAKE_ROOM } } as const;

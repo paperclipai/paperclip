@@ -1,0 +1,46 @@
+.composer-effort-range {
+  display: block;
+  appearance: none;
+  height: calc(var(--spacing) * 2);
+  border-radius: var(--radius-lg);
+  background: linear-gradient(to right, var(--tc-mode-ask) var(--fill), var(--muted) var(--fill));
+  cursor: pointer;
+}
+
+.composer-effort-range::-webkit-slider-thumb {
+  appearance: none;
+  width: calc(var(--spacing) * 5);
+  height: calc(var(--spacing) * 5);
+  border: calc(var(--spacing) * 0.5) solid var(--popover);
+  border-radius: 50%;
+  background: var(--tc-mode-ask);
+  box-shadow: var(--shadow-sm);
+}
+
+.composer-effort-range::-moz-range-thumb {
+  width: calc(var(--spacing) * 5);
+  height: calc(var(--spacing) * 5);
+  border: calc(var(--spacing) * 0.5) solid var(--popover);
+  border-radius: 50%;
+  background: var(--tc-mode-ask);
+  box-shadow: var(--shadow-sm);
+}
+
+.composer-effort-range:focus-visible { outline: calc(var(--spacing) * 0.5) solid var(--ring); outline-offset: calc(var(--spacing) * 0.5); }
+
+.composer-picker-accent { color: var(--tc-mode-ask); }
+
+.composer-picker-auto-height {
+  overflow: hidden;
+  transition: height var(--motion-duration-base) var(--motion-ease-out);
+}
+
+.composer-picker-mobile-dialog {
+  width: calc(100vw - var(--spacing) * 4);
+  max-width: calc(var(--spacing) * 96);
+  max-height: calc(100dvh - var(--spacing) * 8);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .composer-picker-auto-height { transition: none; }
+}

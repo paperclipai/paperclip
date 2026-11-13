@@ -1,3 +1,4 @@
+import { isAcpxCanonicalInputMethod } from "../acpx/profile-extensions.js";
 import type {
   HarnessRuntimeRequest,
   HarnessRuntimeRequestKind,
@@ -57,7 +58,11 @@ function boundedText(
     : `${candidate.slice(0, maxCharacters)}...[truncated]`;
 }
 
-export function runtimeRequestKind(method: string): HarnessRuntimeRequestKind | null {
+export function runtimeRequestKind(method: string, params?: Record<string, unknown>): HarnessRuntimeRequestKind | null {
+  if (method === "mcpServer/elicitation/request" && record(params?._meta).codex_approval_kind === "mcp_tool_call"
+    && params?.mode === "form" && record(params.requestedSchema).type === "object"
+    && Object.keys(record(record(params.requestedSchema).properties)).length === 0
+    && Object.keys(record(params.requestedSchema)).sort().join(",") === "properties,type") return "permission_approval";
   if (
     method === "item/commandExecution/requestApproval" ||
     method === "execCommandApproval"
@@ -70,7 +75,7 @@ export function runtimeRequestKind(method: string): HarnessRuntimeRequestKind | 
   ) {
     return "file_approval";
   }
-  if (method === "item/permissions/requestApproval")
+  if (method === "item/permissions/requestApproval" || method === "session/request_permission")
     return "permission_approval";
   if (
     method === "item/tool/requestUserInput" ||
@@ -78,7 +83,7 @@ export function runtimeRequestKind(method: string): HarnessRuntimeRequestKind | 
   ) {
     return "user_input";
   }
-  if (method === "mcpServer/elicitation/request") return "elicitation";
+  if (method === "mcpServer/elicitation/request" || isAcpxCanonicalInputMethod(method)) return "elicitation";
   return null;
 }
 
@@ -89,6 +94,7 @@ export function runtimeRequestKind(method: string): HarnessRuntimeRequestKind | 
  * degrading back to the legacy textarea presentation.
  */
 export function hasCodexQuestionForm(method: string, params: Record<string, unknown>): boolean {
+  if (isAcpxCanonicalInputMethod(method)) return "questionSet" in params;
   if (method === "item/tool/requestUserInput" || method === "tool/requestUserInput") {
     return "questions" in params;
   }
@@ -266,6 +272,7 @@ export function normalizeCodexQuestionSet(
   params: Record<string, unknown>,
   responseContext: CodexQuestionResponseContext,
 ): PaperclipQuestionSet | null {
+  if (isAcpxCanonicalInputMethod(method)) return parsePaperclipQuestionSet(params.questionSet);
   if (method === "item/tool/requestUserInput" || method === "tool/requestUserInput") {
     if (!Array.isArray(params.questions) || params.questions.length === 0) return null;
     if (params.questions.length > 64) throw new Error("Codex question form exceeds 64 questions");
@@ -445,6 +452,14 @@ export function normalizeCodexQuestionSet(
 }
 
 export function runtimeRequestProtocolPayload(request: HarnessRuntimeRequest): Record<string, unknown> {
+  if (request.method === "session/request_permission") {
+    return { ...request, schema: PAPERCLIP_RUNTIME_REQUEST_SCHEMA_V2, type: "permission", choices: request.details.choices };
+  }
+  if (request.requestKind === "permission_approval" && request.method === "mcpServer/elicitation/request") {
+    return { schema: PAPERCLIP_RUNTIME_REQUEST_SCHEMA_V2, requestKind: "permission_approval", requestId: request.requestId,
+      type: "permission", status: request.status, prompt: request.prompt, choices: request.details.choices,
+      details: request.details, origin: request.origin, turnId: request.turnId, itemId: request.itemId };
+  }
   if (request.input !== undefined) {
     return {
       schema: PAPERCLIP_RUNTIME_REQUEST_SCHEMA_V2,
@@ -550,6 +565,9 @@ export function runtimeRequestResponse(
   resolution: HarnessRuntimeRequestResolution,
   responseContext: CodexQuestionResponseContext,
 ): Record<string, unknown> {
+  // The durable transport sends this canonical resolution to the ACPX sidecar,
+  // which owns conversion back to the original provider form values.
+  if (isAcpxCanonicalInputMethod(request.method) || request.method === "session/request_permission") return structuredClone(resolution);
   if (
     request.requestKind === "command_approval" ||
     request.requestKind === "file_approval"
@@ -566,6 +584,10 @@ export function runtimeRequestResponse(
       cancel: "cancel",
     } as const;
     return { decision: decisions[resolution.action] };
+  }
+  if (request.requestKind === "permission_approval" && request.method === "mcpServer/elicitation/request") {
+    if (!["accept", "decline", "cancel"].includes(resolution.action)) throw new Error("MCP tool approval requires a one-time decision");
+    return { action: resolution.action, content: null, _meta: null };
   }
   if (request.requestKind === "permission_approval") {
     if (resolution.action === "submit") {

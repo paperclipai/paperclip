@@ -1,3 +1,4 @@
+import { AgentAvatar } from "@/components/AgentAvatar";
 import { useEffect, useMemo, useState } from "react";
 import { useInfiniteQuery, useQuery } from "@tanstack/react-query";
 import { Download, ScrollText, ShieldAlert } from "lucide-react";
@@ -15,7 +16,6 @@ import {
 } from "@/components/ui/select";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Identity } from "@/components/Identity";
-import { AgentIcon } from "@/components/AgentIconPicker";
 import { cn, relativeTime } from "@/lib/utils";
 import { queryKeys } from "@/lib/queryKeys";
 import { formatActivityVerb } from "@/lib/activity-format";
@@ -24,6 +24,8 @@ import { auditApi, type AuditActionRecord, type AuditActionFilters } from "@/api
 import { agentsApi } from "@/api/agents";
 import { accessApi } from "@/api/access";
 import { ApiError } from "@/api/client";
+import { describeError } from "@/api/errors";
+import { QueryErrorState, useQueryView } from "@/components/QueryView";
 import { useToastActions } from "@/context/ToastContext";
 
 const PAGE_SIZE = 50;
@@ -112,7 +114,7 @@ function AuditActor({
     return (
       <span className="inline-flex min-w-0 items-center gap-1.5" title={agent.name}>
         <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-muted text-muted-foreground">
-          <AgentIcon icon={agent.icon} className="h-3 w-3" />
+          <AgentAvatar agent={agent} size={16} className="h-3 w-3"/>
         </span>
         <span className="truncate font-medium text-foreground">{agent.name}</span>
       </span>
@@ -281,7 +283,6 @@ export function AuditFeed({
   const userDirectory = useQuery({
     queryKey: queryKeys.access.companyUserDirectory(companyId),
     queryFn: () => accessApi.listUserDirectory(companyId),
-    retry: false,
   });
 
   const agentMap = useMemo(
@@ -331,9 +332,11 @@ export function AuditFeed({
       auditApi.listAgentActions(companyId, { ...filters, limit: PAGE_SIZE, cursor: pageParam ?? undefined }),
     initialPageParam: null as string | null,
     getNextPageParam: (lastPage) => lastPage.nextCursor ?? undefined,
-    retry: (count, error) => !(error instanceof ApiError && error.status === 403) && count < 2,
+    // The shared retry policy already covers this: a 403 never retries, a
+    // transient failure pauses across an outage and retries with backoff.
   });
 
+  const feedView = useQueryView(feed);
   const permissionDenied = feed.error instanceof ApiError && feed.error.status === 403;
   const hasBasicPage = feed.data?.pages.some((page) => page.accessTier === "basic") ?? false;
   const hasFullPage = feed.data?.pages.some((page) => page.accessTier === "full") ?? false;
@@ -448,7 +451,7 @@ export function AuditFeed({
     } catch (error) {
       pushToast({
         title: "Export failed",
-        body: error instanceof Error ? error.message : "Could not export the audit log.",
+        body: describeError(error, { action: "export the audit log" }).body,
         tone: "error",
       });
     } finally {
@@ -579,21 +582,17 @@ export function AuditFeed({
             Refreshing audit access…
           </CardContent>
         </Card>
-      ) : feed.isLoading ? (
+      ) : feedView.kind === "loading" || feedView.kind === "reconnecting" ? (
         <Card>
           <CardContent className="py-14 text-center text-sm text-muted-foreground">Loading…</CardContent>
         </Card>
-      ) : feed.error ? (
-        <Card>
-          <CardContent className="flex flex-col items-center gap-3 py-14 text-center">
-            <p className="text-sm text-muted-foreground">
-              {feed.error instanceof Error ? feed.error.message : "Failed to load the audit log."}
-            </p>
-            <Button variant="outline" size="sm" onClick={() => feed.refetch()}>
-              Try again
-            </Button>
-          </CardContent>
-        </Card>
+      ) : feedView.kind === "error" ? (
+        <QueryErrorState
+          error={feedView.error}
+          action="load the audit log"
+          onRetry={feedView.retry}
+          retrying={feedView.isFetching}
+        />
       ) : items.length === 0 ? (
         <Card>
           <CardContent className="flex flex-col items-center gap-3 py-14 text-center">

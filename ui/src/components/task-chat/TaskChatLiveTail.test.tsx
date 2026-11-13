@@ -67,13 +67,13 @@ describe("TaskChatLiveTail", () => {
       "Looking into the failing test.",
     );
     expect(toggle().getAttribute("aria-expanded")).toBe("false");
-    expect(viewport().textContent).toContain("Read a file");
+    expect(viewport().textContent).toContain("Read");
     expect(viewport().textContent).toContain("src/app.ts");
     expect(container.querySelector('[data-testid="task-chat-tool-card"]')).toBeNull();
     expect(container.querySelector('[data-testid="task-chat-phase-child-rail"]')).toBeNull();
   });
 
-  it("keeps tool diff bodies out of the activity feed", () => {
+  it("shows an edit's diff only when its row is opened", () => {
     const items = parse([
       { kind: "tool_call", ts: TS, name: "Edit", toolUseId: "t1", input: { file_path: "a.ts" } },
       { kind: "diff", ts: TS, changeType: "add", text: "const x = 1;" },
@@ -83,12 +83,11 @@ describe("TaskChatLiveTail", () => {
 
     expect(toggle().getAttribute("aria-expanded")).toBe("false");
     expect(container.textContent).not.toContain("const x = 1;");
-    expect(container.textContent).not.toContain("+1 −1");
 
     expandFirstDetail();
 
-    expect(container.textContent).toContain("+1 −1");
-    expect(container.textContent).not.toContain("const x = 1;");
+    expect(container.querySelector('[data-testid="task-chat-diff-counts"]')?.textContent).toBe("+1−1");
+    expect(container.querySelector('[data-testid="task-chat-diff-view"]')?.textContent).toContain("const x = 1;");
     expect(container.querySelector('[data-testid="task-chat-runner-activity-detail"]')).not.toBeNull();
   });
 
@@ -171,12 +170,12 @@ describe("TaskChatLiveTail", () => {
     entries.push({ kind: "tool_result", ts: TS, toolUseId: "t1", content: "clean", isError: false });
     render(parse(entries));
     expect(viewport().querySelector("[data-activity-row]")).toBe(first);
-    expect(viewport().textContent).toContain("Ran a command");
+    expect(viewport().textContent).toContain("$ git status");
     expect(container.querySelector(".runner-activity-roll-in")).toBeNull();
 
     entries.push({ kind: "tool_call", ts: TS, name: "Bash", toolUseId: "t2", input: { command: "pnpm test" } });
     render(parse(entries));
-    expect(container.querySelector(".runner-activity-roll-in")?.textContent).toContain("Running a command");
+    expect(container.querySelector(".runner-activity-roll-in")?.textContent).toContain("Running$ pnpm test");
     const outgoing = container.querySelector(".runner-activity-roll-out")!;
     expect(outgoing.getAttribute("aria-hidden")).toBe("true");
     flushSync(() => outgoing.dispatchEvent(new Event("webkitAnimationEnd", { bubbles: true })));

@@ -1,11 +1,13 @@
 import { createContext, useContext, type ReactNode } from "react";
 import { NavLink } from "@/lib/router";
+import type { IssueNavigationPrefetchHandlers } from "@/hooks/useIssueNavigationPrefetch";
 import { SIDEBAR_SCROLL_RESET_STATE } from "../lib/navigation-scroll";
 import { cn, SIDEBAR_RAIL_HIDDEN_LABEL } from "../lib/utils";
 import { useSidebar } from "../context/SidebarContext";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import type { LucideIcon } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
+import { TruncatedText } from "./TruncatedText";
 
 /**
  * Forces the full-label (non-rail) presentation for any `SidebarNavItem`
@@ -37,7 +39,7 @@ interface SidebarNavItemProps {
   /**
    * Pre-rendered icon element for rows whose icon isn't a plain Lucide
    * component (e.g. the agent rows' `AgentIcon`). Takes precedence over `icon`;
-   * the caller owns its sizing/color classes.
+   * the caller supplies a 16px icon to fit the shared navigation slot.
    */
   iconNode?: ReactNode;
   end?: boolean;
@@ -65,6 +67,8 @@ interface SidebarNavItemProps {
   trailingLabel?: string;
   /** Rendered inside the right-aligned status cluster, before the live dot. */
   liveAccessory?: ReactNode;
+  /** Extra link handlers, such as a task's open-intent prefetch. */
+  linkHandlers?: Partial<IssueNavigationPrefetchHandlers>;
 }
 
 export function SidebarNavItem({
@@ -86,6 +90,7 @@ export function SidebarNavItem({
   trailing,
   trailingLabel,
   liveAccessory,
+  linkHandlers,
 }: SidebarNavItemProps) {
   const { isMobile, setSidebarOpen, collapsed, peeking } = useSidebar();
   // A contextual takeover forces full labels even when the saved global app
@@ -119,6 +124,7 @@ export function SidebarNavItem({
       state={SIDEBAR_SCROLL_RESET_STATE}
       end={end}
       aria-label={railAriaLabel}
+      {...linkHandlers}
       onClick={() => { if (isMobile) setSidebarOpen(false); }}
       className={({ isActive }) =>
         cn(
@@ -126,7 +132,7 @@ export function SidebarNavItem({
           // the sidebar edges, rounded-lg matches the card anchor, px-2 gives
           // the icon breathing room inside the pill. Rows with hover menus
           // (agents/projects) reserve extra right padding via className.
-          "flex items-center gap-2.5 mx-2 rounded-lg px-2 py-1.5 pointer-coarse:py-1 text-(length:--text-compact) font-medium transition-colors",
+          "flex items-center gap-2.5 mx-2 rounded-lg px-2 py-1.5 pointer-coarse:py-1 text-left text-(length:--text-compact) font-medium transition-colors",
           (active ?? isActive)
             ? "bg-sidebar-accent text-sidebar-accent-foreground"
             : "text-foreground/80 hover:bg-sidebar-accent hover:text-sidebar-accent-foreground",
@@ -135,7 +141,7 @@ export function SidebarNavItem({
       }
     >
       {showIconSlot ? (
-        <span data-slot="sidebar-nav-icon" className="relative shrink-0">
+        <span data-slot="sidebar-nav-icon" className="relative flex size-4 shrink-0 items-center justify-center">
           {iconNode ?? (Icon ? <Icon className="h-4 w-4" /> : null)}
           {alert && (
             <span
@@ -167,7 +173,7 @@ export function SidebarNavItem({
           )}
         </span>
       ) : null}
-      <span className={rail ? SIDEBAR_RAIL_HIDDEN_LABEL : cn("min-w-0 flex-1 truncate", labelClassName)}>{label}</span>
+      <TruncatedText className={rail ? SIDEBAR_RAIL_HIDDEN_LABEL : cn("min-w-0 flex-1 truncate", labelClassName)}>{label}</TruncatedText>
       {!rail && trailing}
       {!rail && textBadge && (
         <Badge variant="ghost"
@@ -197,6 +203,7 @@ export function SidebarNavItem({
       )}
       {!rail && hasBadge && (
         <Badge variant="ghost"
+          aria-label={badgeLabel ? `${badge} ${badgeLabel}` : undefined}
           className={cn(
             "ml-auto px-1.5 leading-none",
             badgeTone === "danger"

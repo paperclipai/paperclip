@@ -9,11 +9,13 @@ import { AppsSidebar as ProductionAppsSidebar } from "./AppsSidebar.production";
 import { contextualSidebarStyles } from "./contextual-sidebar-styles";
 
 const sidebarNavItemMock = vi.hoisted(() => vi.fn());
+const route = vi.hoisted(() => ({ pathname: "/SLA/apps" }));
 const mockToolsApi = vi.hoisted(() => ({
   listActionRequests: vi.fn(),
 }));
 
 vi.mock("@/lib/router", () => ({
+  useLocation: () => route,
   Link: ({
     children,
     to,
@@ -101,6 +103,7 @@ describe("AppsSidebar", () => {
   let container: HTMLDivElement;
 
   beforeEach(() => {
+    route.pathname = "/SLA/apps";
     container = document.createElement("div");
     document.body.appendChild(container);
     mockToolsApi.listActionRequests.mockResolvedValue({ actionRequests: [] });
@@ -110,6 +113,20 @@ describe("AppsSidebar", () => {
     container.remove();
     document.body.innerHTML = "";
     vi.clearAllMocks();
+  });
+
+  it.each([AppsSidebar, ProductionAppsSidebar])("shows chat navigation in place of browse and review", async (Sidebar) => {
+    route.pathname = "/SLA/apps/chat/endpoint-a/conversations";
+    const root = createRoot(container);
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    await act(async () => root.render(<QueryClientProvider client={queryClient}><Sidebar /></QueryClientProvider>));
+    await flushReact();
+    expect(container.textContent).not.toMatch(/Browse|Review/);
+    for (const tab of ["settings", "access", "conversations", "activity"]) {
+      expect(container.querySelector(`[data-to="/apps/chat/endpoint-a/${tab}"]`)).not.toBeNull();
+    }
+    await act(async () => root.unmount());
+    queryClient.clear();
   });
 
   it("renders the consolidated connector and review doors without a redundant contextual heading", async () => {

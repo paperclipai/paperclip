@@ -17,7 +17,7 @@ const repoRoot = path.resolve(scriptDir, "..");
 const workspacePath = path.join(repoRoot, "pnpm-workspace.yaml");
 const releasePackageMapPath = path.join(repoRoot, "scripts", "release-package-map.mjs");
 
-function parseWorkspaceEntries(workspaceText) {
+export function parseWorkspaceEntries(workspaceText) {
   // Keep this aligned with the repo's block-sequence `packages:` format in
   // pnpm-workspace.yaml. If that file moves to a more complex YAML shape,
   // switch this parser to a real YAML parser instead of line matching.
@@ -61,7 +61,7 @@ function globToRegExp(pattern) {
   return new RegExp(`^${regex}$`);
 }
 
-function isWorkspacePackage(pkgDir, workspaceEntries) {
+export function isWorkspacePackage(pkgDir, workspaceEntries) {
   let included = false;
 
   for (const entry of workspaceEntries) {
@@ -115,6 +115,31 @@ async function runCaptured(command, args, cwd, log) {
   }
 }
 
+const FROZEN_INSTALL_ARGS = ["install", "--ignore-workspace", "--frozen-lockfile"];
+export const RESOLVE_LOCKFILE_ARGS = ["install", "--ignore-workspace", "--resolution-only", "--ignore-scripts", "--no-frozen-lockfile"];
+
+/**
+ * Install a standalone package. A package with a committed lockfile installs it frozen. Contributors
+ * do not commit that lockfile: the lockfile refresh workflow regenerates it after a manifest change
+ * merges. Until then it can be stale, so resolve it in place and install frozen again, like the
+ * root install. release.sh restores tracked files when it exits.
+ */
+export async function installStandalonePackage({ hasLockfile, lockfile, run, log }) {
+  if (!hasLockfile) {
+    // Standalone packages intentionally avoid committed lockfile churn in the repo.
+    await run(["install", "--ignore-workspace", "--no-lockfile"]);
+    return;
+  }
+  try {
+    await run(FROZEN_INSTALL_ARGS);
+    return;
+  } catch {
+    log(`    i ${lockfile} does not match its package.json; resolving it in place`);
+  }
+  await run(RESOLVE_LOCKFILE_ARGS);
+  await run(FROZEN_INSTALL_ARGS);
+}
+
 // Each standalone package installs into its own directory (`--ignore-workspace`)
 // and builds into its own `dist`, so there is no shared mutable state between
 // packages beyond pnpm's content-addressable global store, which is safe for
@@ -135,16 +160,12 @@ async function prepareAndBuildPackage(pkg) {
       rmSync(nodeModulesDir, { force: true, recursive: true });
     }
 
-    const installArgs = existsSync(packageLockfilePath)
-      ? ["install", "--ignore-workspace", "--frozen-lockfile"]
-      : [
-        "install",
-        "--ignore-workspace",
-        "--no-lockfile",
-        // Standalone packages intentionally avoid committed lockfile churn in the repo.
-      ];
-
-    await runCaptured("pnpm", installArgs, pkgDir, log);
+    await installStandalonePackage({
+      hasLockfile: existsSync(packageLockfilePath),
+      lockfile: path.join(pkg.dir, "pnpm-lock.yaml"),
+      run: (args) => runCaptured("pnpm", args, pkgDir, log),
+      log,
+    });
 
     // The fresh install above wipes node_modules and no longer fires a
     // per-plugin postinstall (removed for supply-chain safety), so link the

@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   getCloudStackContext,
   isCloudManagedInstance,
+  isCloudStagingInstance,
   type CloudInstanceEnv,
 } from "../services/cloud-instance.js";
 
@@ -31,6 +32,31 @@ describe("isCloudManagedInstance", () => {
   it("does not treat a blank tenant token alone as a managed signal", () => {
     expect(isCloudManagedInstance({ PAPERCLIP_CLOUD_TENANT_SERVER_TOKEN: "   " })).toBe(false);
   });
+});
+
+describe("isCloudStagingInstance", () => {
+  it("requires both a managed instance and a provisioner-owned staging hostname", () => {
+    expect(isCloudStagingInstance({
+      PAPERCLIP_CLOUD_TENANT_SERVER_TOKEN: "tenant-token",
+      PAPERCLIP_PRIMARY_HOST: " team.staging.paperclip.app ",
+    })).toBe(true);
+    expect(isCloudStagingInstance({
+      PAPERCLIP_MANAGED_CONFIG: "managed-document",
+      PAPERCLIP_PRIMARY_HOST: "team.staging.paperclip.app",
+    })).toBe(true);
+    expect(isCloudStagingInstance({ PAPERCLIP_PRIMARY_HOST: "team.staging.paperclip.app" })).toBe(false);
+  });
+
+  it.each([undefined, "", "team.paperclip.app", "localhost", "staging.example.com", "team.staging.paperclip.app.evil.com"])(
+    "keeps production restrictions with primary host %s",
+    (primaryHost) => {
+      expect(isCloudStagingInstance({
+        PAPERCLIP_CLOUD_TENANT_SERVER_TOKEN: "tenant-token",
+        PAPERCLIP_PRIMARY_HOST: primaryHost,
+        NODE_ENV: "development",
+      })).toBe(false);
+    },
+  );
 });
 
 describe("getCloudStackContext", () => {

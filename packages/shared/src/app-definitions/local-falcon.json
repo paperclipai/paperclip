@@ -25,7 +25,11 @@
       ],
       "whenToUse": "Use browser sign-in for the provider-hosted MCP server.",
       "defaults": {
-        "serverUrl": "https://mcp.localfalcon.com"
+        "serverUrl": "https://mcp.localfalcon.com",
+        "scopesHint": [
+          "api",
+          "offline_access"
+        ]
       },
       "guidanceMd": "Connect Local Falcon in the browser. A Local Falcon account with MCP access.",
       "riskTier": "S2",

@@ -37,8 +37,8 @@ A minimal design team built around a single Principal Product Designer. Install 
 
 - `wireframe` (bundled) — structured low-fidelity wireframing for new flows.
 - `design-critique` (optional skill catalog) — structured visual/UX critique format. Installs from the skill catalog as a prerequisite at team install time.
-- `task-planning` — breaks larger design asks into reviewable child issues.
+- `task-planning` — defines scope and review steps for larger design asks.
 
 ## Migration notes
 
-Derived from the `UXDesigner` template in `skills/paperclip-create-agent/references/agents/uxdesigner.md`. The full visual-quality and design-lens documentation lives in the template's `AGENTS.md` body rather than as `references/` files so the catalog manifest stays at trust level `markdown_only`. Adapter type is intentionally omitted from frontmatter; the import preview lets operators pick `claude_local`, `codex_local`, or another adapter at install time.
+Derived from the `UXDesigner` template in `skills/paperclip-create-agent/references/agents/uxdesigner.md`. The agent has a short role description; installed design skills carry its work procedures. The catalog remains at trust level `markdown_only`. Adapter type is intentionally omitted from frontmatter; the import preview lets operators pick `claude_local`, `codex_local`, or another adapter at install time.

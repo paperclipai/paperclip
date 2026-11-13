@@ -7,6 +7,8 @@ export const AI_PROVIDERS: Record<
   AiProvider,
   { name: string; subscriptionName?: string; logo?: string }
 > = {
+  github: { name: "GitHub Copilot", logo: "/brands/apps/github.svg" },
+  google: { name: "Google", subscriptionName: "Google Antigravity account", logo: "/brands/apps/google.svg" },
   anthropic: {
     name: "Claude",
     subscriptionName: "Claude subscription",
@@ -40,10 +42,29 @@ export const AI_CONNECTION_STATUS: Record<AiConnectionStatus, string> = {
   revoked: "Revoked",
 };
 
+export function defaultAiConnectionName(ownerName: string | undefined, provider: AiProvider, method: AiAuthMethod) {
+  const owner = ownerName?.trim();
+  const prefix = owner && owner !== "You" ? `${owner}'s` : "My";
+  const providerName = method === "subscription"
+    ? AI_PROVIDERS[provider].subscriptionName ?? AI_PROVIDERS[provider].name
+    : `${AI_PROVIDERS[provider].name} API`;
+  return `${prefix} ${providerName} account`;
+}
+
 export function aiMethodLabel(provider: AiProvider, method: AiAuthMethod) {
   return method === "subscription"
     ? (AI_PROVIDERS[provider].subscriptionName ?? "Subscription unavailable")
-    : "API key";
+    : provider === "github" ? "Personal access token" : "API key";
+}
+
+export function aiConnectionDisplayLabel(connection: AiConnectionSummary) {
+  const personal = connection.ownership === "personal";
+  return [
+    connection.name,
+    aiMethodLabel(connection.provider, connection.method),
+    personal ? "Personal" : "Company shared",
+    connection.accountLabel || connection.ownerName,
+  ].filter(Boolean).join(" · ");
 }
 
 export function matchesAiRequirement(

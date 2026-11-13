@@ -28,7 +28,7 @@ export const searchApiAction = {
   },
   "documentation": {
     "title": "Search the Paperclip API",
-    "description": "Fallback only: discover Paperclip API operations when the available dedicated tools cannot express the task. Prefer dedicated tools for common operations; do not search before using them.",
+    "description": "Fallback only: discover Paperclip API operations when the available dedicated tools cannot express the task. Prefer dedicated tools for common operations; do not search before using them. For a persistent hire, first list_agents to reuse a suitable teammate. Search agent-hires for the hiring schema and agent-configurations for compatible adapter/runtime settings, then use call_api with the returned operationId. Supply role-specific instructionsBundle.files as a filename-to-content record. Use the returned agent.id for delegation and obey any pending approval. Provider helper threads are temporary workers, not Paperclip hires. If a hire response is uncertain, reconcile with list_agents before retrying.",
     "note": "Production HTTP fallback; does not grant privileges or replace dedicated tools."
   },
   "examples": {
@@ -51,7 +51,7 @@ export const searchApiAction = {
       "operationId": "search_api",
       "version": 1,
       "title": "Search the Paperclip API",
-      "description": "Fallback only: discover Paperclip API operations when the available dedicated tools cannot express the task. Prefer dedicated tools for common operations; do not search before using them.",
+      "description": "Fallback only: discover Paperclip API operations when the available dedicated tools cannot express the task. Prefer dedicated tools for common operations; do not search before using them. For a persistent hire, first list_agents to reuse a suitable teammate. Search agent-hires for the hiring schema and agent-configurations for compatible adapter/runtime settings, then use call_api with the returned operationId. Supply role-specific instructionsBundle.files as a filename-to-content record. Use the returned agent.id for delegation and obey any pending approval. Provider helper threads are temporary workers, not Paperclip hires. If a hire response is uncertain, reconcile with list_agents before retrying.",
       "exposure": "optional",
       "requiredClaims": [
         "api:discover"

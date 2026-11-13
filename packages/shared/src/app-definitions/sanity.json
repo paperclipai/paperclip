@@ -26,7 +26,10 @@
       ],
       "whenToUse": "Use browser sign-in for the provider-hosted MCP server.",
       "defaults": {
-        "serverUrl": "https://mcp.sanity.io"
+        "serverUrl": "https://mcp.sanity.io",
+        "scopesHint": [
+          "global"
+        ]
       },
       "guidanceMd": "Connect Sanity in the browser. A Sanity account with access to the relevant projects and datasets.",
       "riskTier": "S3",
@@ -59,7 +62,8 @@
           "type": "password",
           "required": true,
           "placeholder": "sk...",
-          "secret": true
+          "secret": true,
+          "helperMd": "Edit content permitted by project role; global is MCP authorization, not a bypass of project ACLs. Create a key with read and write permissions for these actions; Paperclip cannot increase an existing key’s permissions."
         }
       ],
       "keyPlacement": {

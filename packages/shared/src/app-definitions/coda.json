@@ -25,7 +25,10 @@
       ],
       "whenToUse": "Use browser sign-in for the provider-hosted MCP server.",
       "defaults": {
-        "serverUrl": "https://coda.io/apis/mcp"
+        "serverUrl": "https://coda.io/apis/mcp",
+        "scopesHint": [
+          "mcp:all"
+        ]
       },
       "guidanceMd": "Connect Coda in the browser. A Coda account; the hosted MCP service is currently beta.",
       "riskTier": "S3",
@@ -59,7 +62,8 @@
           "type": "password",
           "required": true,
           "placeholder": "Paste your Coda API token",
-          "secret": true
+          "secret": true,
+          "helperMd": "Modify documents/tables permitted by the account. Create a key with read and write permissions for these actions; Paperclip cannot increase an existing key’s permissions."
         }
       ],
       "keyPlacement": {

@@ -69,4 +69,34 @@ describe("ToastContext", () => {
       root.unmount();
     });
   });
+
+  it("shows one toast when distinct events render the same text", () => {
+    const root = createRoot(container);
+    let pushToastRef: ((input: { title: string; body?: string; dedupeKey?: string }) => string | null) | null = null;
+
+    function Consumer() {
+      pushToastRef = useToastActions().pushToast;
+      const toasts = useToastState();
+      return <div data-testid="toast-count">{String(toasts.length)}</div>;
+    }
+
+    act(() => {
+      root.render(<ToastProvider><Consumer /></ToastProvider>);
+    });
+
+    const results: Array<string | null> = [];
+    act(() => {
+      results.push(pushToastRef!({ title: "Ada run succeeded", dedupeKey: "run-status:one:succeeded" }));
+      results.push(pushToastRef!({ title: "Ada run succeeded", dedupeKey: "run-status:two:succeeded" }));
+      results.push(pushToastRef!({ title: "Ada run succeeded", body: "Trigger: comment", dedupeKey: "run-status:three:succeeded" }));
+    });
+
+    expect(results[1]).toBeNull();
+    expect(results[2]).not.toBeNull();
+    expect(container.querySelector('[data-testid="toast-count"]')?.textContent).toBe("2");
+
+    act(() => {
+      root.unmount();
+    });
+  });
 });

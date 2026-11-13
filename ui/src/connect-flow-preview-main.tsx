@@ -27,7 +27,7 @@ import {
   type ModelSource,
 } from "./components/onboarding/ModelSourceTiles";
 import { OnboardingHeading } from "./components/onboarding/OnboardingPrimitives";
-import { PillGuy } from "./components/onboarding/PillGuy";
+import { AgentCharacter } from "./components/AgentCharacter";
 import { SleepingZs } from "./components/onboarding/SleepingZs";
 import { Stepper } from "./components/onboarding/Stepper";
 import "./index.css";
@@ -285,7 +285,7 @@ function ConnectFlowPreview({
         : phase === "ready"
         ? { label: signInLabel, icon: "none" as const, disabled: false }
         : phase === "waiting"
-          ? { label: "Waiting for code", icon: "spinner" as const, disabled: true }
+          ? { label: selectedId === "codex_local" ? "Waiting for auth…" : "Waiting for code", icon: "spinner" as const, disabled: true }
           : phase === "connecting"
             ? { label: "Connecting", icon: "spinner" as const, disabled: true }
             : { label: "Next", icon: "arrow" as const, disabled: true };
@@ -299,7 +299,7 @@ function ConnectFlowPreview({
 
         <div className="flex flex-col items-center">
           <div className="relative size-(--sz-72px)">
-            <PillGuy state={done ? "alive" : "dormant"} className="size-full" />
+            <AgentCharacter muted={!done} state={done ? "success" : "sleepy"} size={128} className="size-full" />
             {!done && <SleepingZs />}
           </div>
           <AgentPreview agentName="Ron" agentRole="" />

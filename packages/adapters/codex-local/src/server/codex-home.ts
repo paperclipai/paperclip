@@ -2,6 +2,9 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import type { AdapterExecutionContext } from "@paperclipai/adapter-utils";
+import type { SandboxManagedRuntimeAssetProvision } from "@paperclipai/adapter-utils/sandbox-managed-runtime";
+import { shellQuote } from "@paperclipai/adapter-utils/ssh";
+import { buildCodexAuthInboundProvision, CODEX_AUTH_MERGE_EXTRACT_SCRIPT_NAME } from "./codex-auth-merge-scripts.js";
 import { resolvePaperclipInstanceRootForAdapter } from "@paperclipai/adapter-utils/server-utils";
 import { isCodexAuthCachePath, readSubscriptionAccountId } from "./codex-auth-cache.js";
 
@@ -26,6 +29,43 @@ export const CODEX_SYNC_ALLOWLIST = [
   ...SYMLINKED_SHARED_FILES,
   "skills",
 ] as const;
+
+/** Refresh only managed entries; remote conversation files never leave their home.
+ * The staging lease and provider retirement precede this provisioning command. */
+export function buildCodexHomeRefreshProvision(options: { mergeAuth: boolean }): SandboxManagedRuntimeAssetProvision {
+  const auth = options.mergeAuth ? buildCodexAuthInboundProvision() : undefined;
+  return {
+    stageFiles: auth?.stageFiles,
+    postUploadCommand: ({ assetDir, assetTarPath, runtimeRootDir }) => {
+      const prepare = options.mergeAuth
+        ? `if [ -f "$home/auth.json" ]; then cp "$home/auth.json" "$incoming/auth.json"; fi
+sh "$runtime_root/${CODEX_AUTH_MERGE_EXTRACT_SCRIPT_NAME}" "$incoming" "$asset_tar"`
+        : 'tar -xf "$asset_tar" -C "$incoming"\nrm -f "$asset_tar"';
+      // Paths arrive confined by the runtime staging layer. Only fixed managed
+      // names are replaced; sessions, archived sessions and native indexes stay.
+      const script = `set -eu
+umask 077
+home=$1
+asset_tar=$2
+runtime_root=$3
+mkdir -p "$home"
+chmod 700 "$home"
+incoming=$(mktemp -d "$home/.paperclip-home-refresh.XXXXXX")
+trap 'rm -rf -- "$incoming"' EXIT
+trap 'exit 1' HUP INT TERM
+${prepare}
+for name in ${CODEX_SYNC_ALLOWLIST.map(shellQuote).join(" ")}; do
+  if [ -e "$incoming/$name" ] || [ -L "$incoming/$name" ]; then
+    if [ -d "$home/$name" ] || [ -L "$home/$name" ]; then rm -rf -- "$home/$name"; fi
+    mv -f -- "$incoming/$name" "$home/$name"
+  else
+    rm -rf -- "$home/$name"
+  fi
+done`;
+      return `sh -c ${shellQuote(script)} -- ${shellQuote(assetDir)} ${shellQuote(assetTarPath)} ${shellQuote(runtimeRootDir)}`;
+    },
+  };
+}
 
 export type ManagedCodexMcpGateway = {
   name: string;
@@ -316,7 +356,7 @@ function buildManagedMcpBlock(input: {
       "",
       `[mcp_servers.${tomlString(managedName)}]`,
       `url = ${tomlString(url)}`,
-      `headers = { Authorization = ${tomlString(`Bearer ${gateway.bearerToken}`)} }`,
+      `http_headers = { Authorization = ${tomlString(`Bearer ${gateway.bearerToken}`)} }`,
     );
   });
   lines.push(MANAGED_MCP_BLOCK_END);
@@ -362,6 +402,7 @@ export async function writeApiKeyAuthJson(home: string, apiKey: string): Promise
 }
 
 export interface StageCodexHomeForSyncOptions {
+  additionalFiles?: readonly string[];
   /** Run id, used only to make the staged temp-dir name traceable in logs. */
   runId?: string;
 }
@@ -383,7 +424,8 @@ function isResolvedPathInside(candidate: string, root: string): boolean {
  * Recursively copies one skill subtree — rooted at its real directory
  * `containmentRoot` — into `targetDir`, dereferencing symlinks to bytes (so the
  * sandbox receives real file content, not host-relative links) and normalizing
- * every copied regular file to mode `0600`. Created directories get mode `0700`.
+ * regular files to owner-only access (`0700` for executables, `0600` otherwise).
+ * Created directories get mode `0700`.
  *
  * Two containment guards protect the staged upload:
  *
@@ -438,8 +480,9 @@ async function stageContainedSubtree(
       activePath.delete(resolved);
     } else if (entryStat.isFile()) {
       const bytes = await fs.readFile(resolved);
-      await fs.writeFile(entryTarget, bytes, { mode: 0o600 });
-      await fs.chmod(entryTarget, 0o600);
+      const mode = entryStat.mode & 0o111 ? 0o700 : 0o600;
+      await fs.writeFile(entryTarget, bytes, { mode });
+      await fs.chmod(entryTarget, mode);
     }
     // Other types (sockets, devices) are silently skipped.
   }
@@ -448,11 +491,12 @@ async function stageContainedSubtree(
 /**
  * Recursively copies `sourceDir` (a directory allowlist entry — currently only
  * `skills/`) into `targetDir`, dereferencing symlinks to bytes and normalizing
- * every copied regular file to mode `0600`. Created directories get mode `0700`.
+ * regular files to owner-only access (`0700` for executables, `0600` otherwise).
+ * Created directories get mode `0700`.
  *
  * This replaces `fs.cp({ dereference: true })` which preserves source file modes,
  * leaving `0644` documents and `0755` scripts group/other-readable in the staged
- * asset; here all regular files are normalized to `0600` regardless of source mode.
+ * asset; here skill files retain only their executable flag, with owner-only access.
  *
  * `sourceDir`'s *direct* children are the Paperclip-injected skill symlinks that
  * intentionally point into a shared skill store *outside* `CODEX_HOME/skills/`,
@@ -463,7 +507,7 @@ async function stageContainedSubtree(
  * cycles (finding 1). A direct child that resolves to `sourceDir` itself or to
  * an ancestor of it (a degenerate `-> .` / `-> ..` link at the top level) is
  * skipped rather than used as a root, so it can never drag the wider home into
- * the staged skills asset. The `0700` staged directory and per-file `0600` mode
+ * the staged skills asset. The `0700` staged directory and per-file owner-only mode
  * together ensure even externally-sourced skill content is not group/world-readable.
  */
 async function stageDirectorySecure(
@@ -498,8 +542,9 @@ async function stageDirectorySecure(
       await stageContainedSubtree(resolved, entryTarget, resolved, new Set([resolved]));
     } else if (entryStat.isFile()) {
       const bytes = await fs.readFile(resolved);
-      await fs.writeFile(entryTarget, bytes, { mode: 0o600 });
-      await fs.chmod(entryTarget, 0o600);
+      const mode = entryStat.mode & 0o111 ? 0o700 : 0o600;
+      await fs.writeFile(entryTarget, bytes, { mode });
+      await fs.chmod(entryTarget, mode);
     }
     // Other types (sockets, devices) are silently skipped.
   }
@@ -579,6 +624,13 @@ export async function stageCodexHomeForSync(
     path.join(os.tmpdir(), `paperclip-codex-home-sync-${runIdPart ? `${runIdPart}-` : ""}`),
   );
   try {
+    for (const filename of options.additionalFiles ?? []) {
+      if (!/^paperclip-observability-[A-Za-z0-9_-]+\.config\.toml$/.test(filename)) throw new Error("Invalid managed observability profile");
+      const source = path.join(effectiveCodexHome, filename);
+      const stat = await fs.lstat(source);
+      if (!stat.isFile() || stat.isSymbolicLink() || stat.nlink !== 1 || (typeof process.getuid === "function" && stat.uid !== process.getuid()) || (stat.mode & 0o077) !== 0) throw new Error("Managed observability profile must be an owned private regular file");
+      await fs.writeFile(path.join(stagedHome, filename), await fs.readFile(source), { mode: 0o600, flag: "wx" });
+    }
     for (const entry of CODEX_SYNC_ALLOWLIST) {
       await stageCodexHomeEntry(effectiveCodexHome, stagedHome, entry);
     }

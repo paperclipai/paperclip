@@ -9,7 +9,7 @@ import {
   writeEnvFileAtomicallyIfChanged,
 } from "@paperclipai/shared/env-file";
 import { resourceStatus, stockHash } from "../services/managed-resource-drift.js";
-import { agentInstructionsService } from "../services/agent-instructions.js";
+import { agentInstructionsService, resolveManagedInstructionsRoot } from "../services/agent-instructions.js";
 
 /**
  * Cross-cutting setup/sync rerun survival test.
@@ -23,7 +23,7 @@ import { agentInstructionsService } from "../services/agent-instructions.js";
  *   - .env                 -> updateEnvFileContents + writeEnvFileAtomicallyIfChanged
  *   - managed sandbox env  -> resourceStatus/stockHash drift gate (the `shouldWrite`
  *                             classifier the boot reconciler and built-in sync share)
- *   - managed instructions -> agentInstructionsService materialize + the drift gate that
+ *   - managed instructions -> agentInstructionsService export + the drift gate that
  *                             makes built-in/plugin/portability rebuilds skip operator edits
  *
  * The DB-backed end-to-end variants of the sandbox-row, skills-assignment, and
@@ -31,7 +31,7 @@ import { agentInstructionsService } from "../services/agent-instructions.js";
  *   server/src/__tests__/company-skills-service.test.ts        (skills add/remove/replace)
  *   server/src/services/managed-environments.test.ts           (sandbox row boot reconcile)
  *   server/src/__tests__/environment-service.test.ts           (sandbox skip + stock update)
- *   server/src/__tests__/agent-instructions-service.test.ts    (managed instruction drift)
+ *   server/src/__tests__/agent-instruction-revisions.test.ts   (guarded bundle materialization)
  */
 
 const cleanupDirs = new Set<string>();
@@ -147,7 +147,7 @@ describe("setup/sync rerun survival — cross-cutting", () => {
     ).toBe("stock_current");
   });
 
-  it("keeps operator edits and additions in a managed instructions tree across a re-materialize", async () => {
+  it("keeps operator edits and additions when managed instructions reconciliation detects drift", async () => {
     const home = await tmp("pap16587-instr-home-");
     process.env.PAPERCLIP_HOME = home;
     process.env.PAPERCLIP_INSTANCE_ID = "test-instance";
@@ -156,18 +156,25 @@ describe("setup/sync rerun survival — cross-cutting", () => {
     const agent = { id: "agent-1", companyId: "company-1", name: "Agent 1", adapterConfig: {} };
     const stockFiles = { "AGENTS.md": "# stock\n", "docs/TOOLS.md": "## stock tools\n" };
 
-    const first = await svc.materializeManagedBundle(agent, stockFiles, { entryFile: "AGENTS.md" });
-    const root = first.bundle.managedRootPath!;
+    // Initial files are fixture setup. Bundle materialization now requires a
+    // real database so that it cannot bypass a canonical instruction revision.
+    const root = resolveManagedInstructionsRoot(agent);
+    for (const [name, content] of Object.entries(stockFiles)) {
+      await fs.mkdir(path.dirname(path.join(root, name)), { recursive: true });
+      await fs.writeFile(path.join(root, name), content, "utf8");
+    }
+    const managedAgent = { ...agent, adapterConfig: {
+      instructionsBundleMode: "managed", instructionsRootPath: root,
+      instructionsEntryFile: "AGENTS.md", instructionsFilePath: path.join(root, "AGENTS.md"),
+    } };
 
     // Operator hand-edits a managed file and adds a brand-new operator-only file.
     await fs.writeFile(path.join(root, "AGENTS.md"), "# stock\n\noperator note\n", "utf8");
     await fs.writeFile(path.join(root, "OPERATOR.md"), "operator-added\n", "utf8");
 
     // The drift gate the built-in/plugin/portability rebuilds share: classify the tree.
-    const currentFiles = {
-      "AGENTS.md": await fs.readFile(path.join(root, "AGENTS.md"), "utf8"),
-      "docs/TOOLS.md": await fs.readFile(path.join(root, "docs", "TOOLS.md"), "utf8"),
-    };
+    const currentFiles = (await svc.exportFiles(managedAgent)).files;
+    expect(currentFiles["OPERATOR.md"]).toBe("operator-added\n");
     const status = resourceStatus({
       resourceId: agent.id,
       currentHash: stockHash(currentFiles),

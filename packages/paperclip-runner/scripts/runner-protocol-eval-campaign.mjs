@@ -11,6 +11,7 @@ import {
   writeFile,
 } from "node:fs/promises";
 import { basename, dirname, join, relative, resolve, sep } from "node:path";
+import { pathToFileURL } from "node:url";
 import { sumAttemptCosts } from "./runner-protocol-eval-metrics.mjs";
 import {
   publicChatView,
@@ -26,6 +27,7 @@ const ATTEMPT_FILES = new Set([
   "compiled-fixture.json",
   "case.json",
   "config.json",
+  "controller-evidence.json",
 ]);
 
 function json(value) {
@@ -54,7 +56,14 @@ function inside(root, candidate, label) {
   return resolve(candidate);
 }
 
-export function credentialForConfig(config) {
+function validateGrokAuthenticationMode(mode) {
+  if (mode !== "api_key" && mode !== "subscription") {
+    throw new Error("Grok authentication mode must be api_key or subscription");
+  }
+  return mode;
+}
+
+export function credentialForConfig(config, grokAuthenticationMode = "api_key") {
   if (config.provider === "opencode") return "OPENROUTER_API_KEY";
   if (config.provider === "claude_managed") return "ANTHROPIC_API_KEY";
   if (config.provider === "aws_agentcore") return "AWS_AGENTCORE_OIDC";
@@ -64,6 +73,12 @@ export function credentialForConfig(config) {
   if (config.provider === "acpx") {
     if (config.acpxAgent === "pi") return "OPENROUTER_API_KEY";
     if (config.acpxAgent === "claude") return "ANTHROPIC_API_KEY";
+    if (config.acpxAgent === "copilot") return "COPILOT_GITHUB_TOKEN";
+    if (config.acpxAgent === "grok") {
+      return validateGrokAuthenticationMode(grokAuthenticationMode) === "subscription"
+        ? "PAPERCLIP_ACPX_GROK_AUTH_JSON_SECRET"
+        : "XAI_API_KEY";
+    }
     if (config.acpxAgent === "codex") return "OPENAI_API_KEY";
   }
   throw new Error(
@@ -116,8 +131,10 @@ export async function buildProtocolEvalCatalog({
   campaignId,
   source = {},
   maxParallel = 100,
+  grokAuthenticationMode = "api_key",
 }) {
   safeId(campaignId, "campaign ID");
+  validateGrokAuthenticationMode(grokAuthenticationMode);
   if (
     !Number.isSafeInteger(maxParallel) ||
     maxParallel < 2 ||
@@ -158,7 +175,7 @@ export async function buildProtocolEvalCatalog({
       `Config for ${rosterId}`,
     );
     const config = await loadObject(configPath);
-    const credentialName = credentialForConfig(config);
+    const credentialName = credentialForConfig(config, grokAuthenticationMode);
     const cases = roster.cases.map((caseId) => safeId(caseId, "case ID"));
     if (new Set(cases).size !== cases.length) {
       throw new Error(`Live roster ${rosterId} repeats a case`);
@@ -169,8 +186,12 @@ export async function buildProtocolEvalCatalog({
       configFile: relative(programRoot, configPath).split(sep).join("/"),
       model: String(roster.model ?? config.model ?? "unknown"),
       provider: String(config.provider ?? "codex"),
+      ...(config.provider === "acpx" ? { acpxAgent: config.acpxAgent } : {}),
       driver: String(config.driver ?? "codex_app_server"),
       credentialName,
+      ...(config.provider === "acpx" && config.acpxAgent === "grok"
+        ? { authenticationMode: grokAuthenticationMode }
+        : {}),
       cases,
     });
   }
@@ -184,6 +205,9 @@ export async function buildProtocolEvalCatalog({
     }
   }
   if (rosters.length === 0) throw new Error("No live rosters were selected");
+  if (grokAuthenticationMode === "subscription" && !rosters.some((roster) => roster.authenticationMode === "subscription")) {
+    throw new Error("Subscription selection requires an explicit Grok roster");
+  }
 
   const cells = rosters.flatMap((roster) =>
     roster.cases.map((caseId) => ({
@@ -193,8 +217,10 @@ export async function buildProtocolEvalCatalog({
       caseId,
       model: roster.model,
       provider: roster.provider,
+      ...(roster.acpxAgent ? { acpxAgent: roster.acpxAgent } : {}),
       driver: roster.driver,
       credentialName: roster.credentialName,
+      ...(roster.authenticationMode ? { authenticationMode: roster.authenticationMode } : {}),
     })),
   );
   const shards = [[], []];
@@ -208,7 +234,7 @@ export async function buildProtocolEvalCatalog({
     schema: "paperclip.runner-protocol-eval.catalog/v1",
     campaignId,
     source,
-    selection: { kind: requested === null ? "maintained_full" : "subset", rosters: rosterSelection },
+    selection: { kind: requested === null ? "maintained_full" : "subset", rosters: rosterSelection, grokAuthenticationMode },
     rosters,
     cells,
     matrices: shards.map((include) => ({ include })),
@@ -372,7 +398,9 @@ export async function aggregateProtocolEvalCampaign({
   runsOut,
   campaignOut,
   source,
+  controllerArchiveCli = process.env.PAPERCLIP_RUNNER_EVAL_ARCHIVE_CLI,
 }) {
+  const controllerArchive = () => import(controllerArchiveCli ? pathToFileURL(resolve(controllerArchiveCli)).href : "./controlled-evals/archive.mjs");
   const catalog = await loadObject(catalogPath);
   if (catalog.schema !== "paperclip.runner-protocol-eval.catalog/v1") {
     throw new Error("Unsupported protocol eval catalog");
@@ -384,6 +412,7 @@ export async function aggregateProtocolEvalCampaign({
     catalog.cells.map((cell) => [cell.cellId, cell]),
   );
   const copiedAttemptIds = new Set();
+  const controllerBundles = [];
   for (const statusPath of await findFiles(downloadsRoot, "cell.json")) {
     const status = await loadObject(statusPath);
     const cellId = safeId(status.cellId, "recorded cell ID");
@@ -397,6 +426,10 @@ export async function aggregateProtocolEvalCampaign({
       status.rosterFile !== expected.rosterFile
     ) {
       throw new Error(`Downloaded cell metadata drifted for ${cellId}`);
+    }
+    if (expected.authenticationMode !== undefined &&
+        (status.authenticationMode !== expected.authenticationMode || status.authenticationEvidenceFailure !== undefined)) {
+      throw new Error(`Invalid Grok authentication evidence for ${cellId}; retained cell metadata and attempts require inspection`);
     }
     const attemptRoot = resolve(dirname(statusPath), "runs");
     const attemptIds = [];
@@ -427,6 +460,31 @@ export async function aggregateProtocolEvalCampaign({
           (config.driver ?? "codex_app_server") !== expected.driver
         ) {
           throw new Error(`Downloaded attempt identity drifted for ${cellId}`);
+        }
+        const bundlePath = join(attemptRoot, entry.name, "controller-evidence.json");
+        const bundleStat = await lstat(bundlePath).catch(error => {
+          if (error.code === "ENOENT") return null;
+          throw error;
+        });
+        if (bundleStat) {
+          const { readAttemptControlledEvidence } = await controllerArchive();
+          const bundle = await readAttemptControlledEvidence(join(attemptRoot, entry.name));
+          const allocation = bundle.manifest.attempts.find(item => item.attemptId === attemptId);
+          const selectedExecutions = new Set(bundle.manifest.attempts.map(item => item.executionId));
+          const allocationsMatchCatalog = bundle.manifest.attempts.every(item => {
+            const cell = expectedByCell.get(item.executionId);
+            return cell && item.model === cell.model && item.provider === cell.provider
+              && item.acpxAgent === cell.acpxAgent
+              && cell.driver === (item.provider === "codex" ? "codex_app_server" : "acpx_runtime");
+          });
+          if (!allocationsMatchCatalog || bundle.manifest.campaignId !== catalog.campaignId || allocation.executionId !== cellId ||
+              selectedExecutions.size !== expectedByCell.size || [...expectedByCell.keys()].some(id => !selectedExecutions.has(id)) ||
+              bundle.manifest.sourceRevision !== source.paperclip.sha || bundle.manifest.definitionsRevision !== source.evals.sha) {
+            throw new Error(`Controller archive identity drifted for ${cellId}`);
+          }
+          controllerBundles.push(bundle);
+        } else if ("controllerAccounting" in artifact || "controllerEvidenceError" in artifact) {
+          throw new Error(`Missing private controller evidence for ${attemptId}; cost metadata alone is insufficient`);
         }
         await copyAttempt(
           join(attemptRoot, entry.name),
@@ -472,6 +530,7 @@ export async function aggregateProtocolEvalCampaign({
       model: cell.model,
       provider: cell.provider,
       driver: cell.driver,
+      ...(cell.authenticationMode ? { authenticationMode: cell.authenticationMode } : {}),
       attemptIds,
       finalAttemptId,
       disposition: score.disposition,
@@ -492,6 +551,15 @@ export async function aggregateProtocolEvalCampaign({
       (result) => result.disposition === "infrastructure_failure",
     ).length,
   };
+  let controlledCosts;
+  if (controllerBundles.length) {
+    const { summarizeControlledEvidence } = await controllerArchive();
+    controlledCosts = await summarizeControlledEvidence(controllerBundles);
+    const allocatedAttempts = new Set(controlledCosts.campaigns.flatMap(campaign => campaign.attempts.map(attempt => attempt.attemptId)));
+    if ([...copiedAttemptIds].some(id => !allocatedAttempts.has(id))) {
+      throw new Error("Retained attempt is outside the controlled campaign allocation");
+    }
+  }
   const generatedAt = new Date().toISOString();
   const campaign = {
     schema: "paperclip.runner-protocol-eval.campaign/v1",
@@ -499,6 +567,7 @@ export async function aggregateProtocolEvalCampaign({
     generatedAt,
     selection: catalog.selection,
     costs: sumAttemptCosts(attemptUsages),
+    ...(controlledCosts ? { controlledCosts } : {}),
     source: {
       paperclip: source.paperclip,
       evals: source.evals,
@@ -512,6 +581,7 @@ export async function aggregateProtocolEvalCampaign({
       model: roster.model,
       provider: roster.provider,
       driver: roster.driver,
+      ...(roster.authenticationMode ? { authenticationMode: roster.authenticationMode } : {}),
       selected: roster.cases.length,
       passed: results.filter(
         (result) => result.rosterId === roster.rosterId && result.passed,
@@ -698,6 +768,7 @@ async function main() {
       rosterSelection: argument(args, "--rosters", "all"),
       campaignId: argument(args, "--campaign-id", `local-${Date.now()}`),
       maxParallel: Number(argument(args, "--max-parallel", "100")),
+      grokAuthenticationMode: argument(args, "--grok-authentication", "api_key"),
       source: {
         paperclipSha: process.env.PAPERCLIP_PROTOCOL_EVAL_SOURCE_SHA ?? null,
         evalsSha: process.env.PAPERCLIP_PROTOCOL_EVALS_SHA ?? null,

@@ -1,3 +1,4 @@
+import { AgentAvatar } from "@/components/AgentAvatar";
 import {
   useEffect,
   useLayoutEffect,
@@ -29,7 +30,6 @@ import {
   AgentBubbleActionRow,
   agentBubbleDateLabel,
 } from "../components/AgentBubbleActionRow";
-import { AgentIcon } from "../components/AgentIconPicker";
 import { cn, formatDateTime } from "../lib/utils";
 import type { FeedbackVoteValue } from "@paperclipai/shared";
 import { Sheet, SheetContent, SheetTrigger } from "@/components/ui/sheet";
@@ -63,21 +63,8 @@ function agentInitials(name: string): string {
  * Icon-adjacent-to-name header rendered directly above an agent bubble —
  * the shared `[agent icon][agent name]` convention (PAP-105 / PAP-97).
  */
-function AgentBubbleHeader({ name, icon }: { name: string; icon: string | null }) {
-  return (
-    <div className="mb-1 flex items-center gap-1.5 pl-1">
-      <Avatar size="sm" className="shrink-0">
-        <AvatarFallback>
-          {icon ? (
-            <AgentIcon icon={icon} className="h-3.5 w-3.5" />
-          ) : (
-            agentInitials(name)
-          )}
-        </AvatarFallback>
-      </Avatar>
-      <span className="text-sm font-medium text-foreground">{name}</span>
-    </div>
-  );
+function AgentBubbleHeader({ agent }: { agent: import("../components/AgentAvatar").AvatarAgent }) {
+  return <div className="mb-1 flex items-center gap-1.5 pl-1"><AgentAvatar agent={agent} size={24} /><span className="text-sm font-medium text-foreground">{agent.name}</span></div>;
 }
 
 /** Agent-styled chat bubble containing the three-dot typing indicator. */
@@ -776,7 +763,7 @@ export function BoardChat() {
                 return (
                   <>
                     <div className="flex flex-col items-start">
-                      <AgentBubbleHeader name={ceoName} icon={ceoAgent.icon} />
+                      <AgentBubbleHeader agent={{ ...ceoAgent, name: ceoName }} />
                       <div
                         className={cn(
                           boardChatBubbleShell,
@@ -833,7 +820,7 @@ export function BoardChat() {
                 const agentIconValue = agent?.icon ?? null;
                 return (
                   <div key={comment.id} className="flex flex-col items-start">
-                    <AgentBubbleHeader name={agentName} icon={agentIconValue} />
+                    <AgentBubbleHeader agent={agent ?? { id: comment.authorAgentId ?? undefined, name: agentName }} />
                     <div
                       className={cn(
                         boardChatBubbleShell,
@@ -883,7 +870,7 @@ export function BoardChat() {
               {streamingText && (
                 <div className="flex flex-col items-start">
                   {ceoAgent && (
-                    <AgentBubbleHeader name={ceoAgent.name} icon={ceoAgent.icon} />
+                    <AgentBubbleHeader agent={ceoAgent} />
                   )}
                   <div
                     className={cn(

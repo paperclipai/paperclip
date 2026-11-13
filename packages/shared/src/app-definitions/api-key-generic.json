@@ -30,7 +30,8 @@
           "type": "password",
           "required": true,
           "placeholder": "Paste the API key",
-          "secret": true
+          "secret": true,
+          "helperMd": "Actions depend on the operator-supplied API and key; grant read/write on the required resources at the provider. Create a key with read and write permissions for these actions; Paperclip cannot increase an existing key’s permissions."
         }
       ],
       "keyPlacement": {
