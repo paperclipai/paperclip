@@ -74,7 +74,8 @@ describe("stranded recovery notice seeds", () => {
     expect(seed.title).toBe("Shared workspace still held");
     expect(seed.body).toContain("no output for more than an hour");
     expect(seed.body).not.toContain("secret/env bindings");
-    expect(seed.nextAction).toContain("stop it if it is stuck");
+    // Changed deliberately: no request to check on the other run.
+    expect(seed.nextAction).toContain("Stop the other run on this task");
   });
 
   it("offers retry without a workspace repair checklist", () => {
@@ -85,10 +86,11 @@ describe("stranded recovery notice seeds", () => {
   });
 
   it("keeps the secret-binding copy for other configuration gaps", () => {
+    // Changed deliberately from "required secret/env bindings are missing ... so an operator can bind".
     expect(buildConfigurationIncompleteRecoveryNoticeSeed({ reason: "secret_binding_missing" }).body).toContain(
-      "secret/env bindings",
+      "a secret it needs is not set",
     );
-    expect(buildConfigurationIncompleteRecoveryNoticeSeed(null).body).toContain("secret/env bindings");
+    expect(buildConfigurationIncompleteRecoveryNoticeSeed(null).body).toContain("a secret it needs is not set");
   });
 
   it("explains an unresolved workspace base ref and carries its remedy into the recovery card", () => {
@@ -106,13 +108,14 @@ describe("stranded recovery notice seeds", () => {
       sourceRun: { id: "failed-run", status: "failed", errorCode: "configuration_incomplete" },
     });
     expect(notice.presentation.title).toBe("Workspace base ref unavailable");
-    expect(notice.body).toContain("before the agent started");
-    expect(notice.body).toContain("base ref");
-    expect(notice.body).not.toContain("secret/env bindings");
+    // Changed deliberately: plain words ("starting branch") instead of "base ref", no repair request.
+    expect(notice.body).toContain("did not start");
+    expect(notice.body).toContain("starting branch");
+    expect(notice.body).not.toContain("secret");
     expect(allRows(notice.metadata)).toContainEqual({
       type: "key_value",
       label: "Next action",
-      value: "Check that the configured base ref exists and the repository is accessible. Correct the task or project workspace settings, then retry the task.",
+      value: "Set a starting branch that exists in the repository, then press Retry.",
     });
   });
 
@@ -135,7 +138,8 @@ describe("buildStrandedRecoveryEscalationNotice", () => {
     expect(notice.presentation.title).toBe("Workspace scan timed out");
     expect(notice.body).toContain("before the agent started");
     expect(notice.body).not.toContain("retried continuation");
-    expect(JSON.stringify(notice.metadata)).toContain("repository access and server load");
+    // Changed deliberately: no "check repository access and server load".
+    expect(JSON.stringify(notice.metadata)).toContain("took too long, so no agent work started");
   });
   it("says a saved sandbox that timed out resuming is retried automatically, without asking anyone to inspect or repair", () => {
     for (const errorCode of ["reusable_sandbox_resume_failed", "remote_workspace_prepare_timeout"]) {
@@ -158,7 +162,8 @@ describe("buildStrandedRecoveryEscalationNotice", () => {
     });
     expect(notice.presentation.title).toBe("Environment plugin was not running");
     expect(notice.body).toContain("before the agent started");
-    expect(JSON.stringify(notice.metadata)).toContain("worker status");
+    // Changed deliberately: no "check the worker status".
+    expect(JSON.stringify(notice.metadata)).toContain("Press Retry once it is running again");
   });
   it("asks for Retry, not a board decision, when the environment provider stayed unavailable", () => {
     const notice = buildStrandedRecoveryEscalationNotice({
@@ -171,7 +176,7 @@ describe("buildStrandedRecoveryEscalationNotice", () => {
     const metadata = JSON.stringify(notice.metadata);
     expect(notice.presentation.title).toBe("Environment provider was temporarily unavailable");
     expect(metadata).toContain("Retry when ready");
-    expect(metadata).not.toContain("Board decision required");
+    expect(metadata).not.toContain("Waiting for you");
   });
   const actionId = "6a2f8e64-6f5e-4b58-b7fd-111111111111";
   const owner = { id: "9b1c2d3e-4f50-4a61-8b72-222222222222", name: "CTO" };
@@ -234,7 +239,8 @@ describe("buildStrandedRecoveryEscalationNotice", () => {
 
     const ownerRow = allRows(notice.metadata).find((row) => row.label === "Recovery owner");
     expect(ownerRow?.type).toBe("key_value");
-    expect(ownerRow?.value).toBe("Board decision required");
+    // Changed deliberately from "Board decision required".
+    expect(ownerRow?.value).toBe("Waiting for you");
   });
 
   it("derives title from the recovery cause and body from the plain-comment fallback", () => {
