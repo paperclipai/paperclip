@@ -7061,8 +7061,9 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
         const before = await db.select().from(chatIdentityLinks).where(eq(chatIdentityLinks.endpointId, f.endpoint.id));
         const logActivity = activityLogModule.logActivity;
         const audit = vi.spyOn(activityLogModule, "logActivity").mockImplementation(async (database, input) => {
-          await logActivity(database, input);
+          const row = await logActivity(database, input);
           if (input.action === "chat_github.removed") throw new Error("rollback GitHub removal");
+          return row;
         });
         try {
           await expect(f.service.configure(f.endpoint.id, { action: "remove" }, "owner-user"))
