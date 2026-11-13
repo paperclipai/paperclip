@@ -20,7 +20,7 @@
     "packages/plugins/sdk/src/index.ts": "4e573c181198ea98442321cc136341741e856ff7",
     "packages/plugins/sdk/src/invocation-tracer.ts": "b28ac4aa4bc3e82658abac4a8081ed4508008696",
     "packages/plugins/sdk/src/protocol.duplex-channel.test.ts": "18255eb3d63038dc459240c111cbcb29fcba25cc",
-    "packages/plugins/sdk/src/protocol.ts": "97ee5337227e3a1ede6801fe5b7586cc6785edad",
+    "packages/plugins/sdk/src/protocol.ts": "6cbc642412650a511c60b23f5625ac018d189f9d",
     "packages/plugins/sdk/src/testing.ts": "fa99065efa867d8f8a9372cb4a448b8f9d687883",
     "packages/plugins/sdk/src/types.ts": "80375e46504f96c7c0c1f156319dfb81275d16cc",
     "packages/plugins/sdk/src/ui/clipboard.ts": "1f42069c97d731e636a6ad5481dad22d20c0ed63",

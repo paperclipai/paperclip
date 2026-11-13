@@ -3617,6 +3617,7 @@ function createPluginEnvironmentDriver(
         executionWorkspaceId: input.executionWorkspaceId ?? undefined,
         adapterType: input.adapterType ?? undefined,
         executionWorkspaceSettings: input.executionWorkspaceSettings,
+        ...(lifecyclePolicy.mode === "warm" ? { runnerLifecyclePolicy: lifecyclePolicy } : {}),
         // Forward a caller deadline so the provider configures a provider-side
         // expiry at or before it and returns the real provider expiry.
         ...(requestedExpiresAtParam(input.requestedExpiresAt) !== undefined

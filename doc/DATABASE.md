@@ -507,6 +507,12 @@ indexes also serve the comment and delivery `on delete set null` actions. Issue
 lists share one external review-wait read per issue between the review and
 blocked-inbox attention maps.
 
+Migration 0476 builds `agent_wakeup_requests_company_run_idx` concurrently. It
+keys wake requests by company and `run_id`, partial on a non-null run. Queued-run
+dispatch finds the person wakes that joined or were adopted by each queued run
+through it, so the read is bounded by the queue size, not by the agent's wake
+history.
+
 Migration 0457 builds `heartbeat_runs_company_native_session_idx` concurrently.
 It keys runs by company and `native_session_id`, partial on a non-null session.
 Native retention, recovery, resume and archive reads find a session's runs
@@ -1844,7 +1850,7 @@ current plugin records and enforce their existing readiness and worker checks.
 
 ### Persistent agent conversations
 
-Migration `0476` (`0476_multiple_agent_chat_conversations`) keeps the existing conversation as the default for its company, agent and user and permits additional conversations. The partial unique index still protects concurrent creation of the default conversation.
+Migration `0477` (`0477_multiple_agent_chat_conversations`) keeps the existing conversation as the default for its company, agent and user and permits additional conversations. The partial unique index still protects concurrent creation of the default conversation.
 
 Rolling deploys: the previous release looks up a person's chat with an agent by company, agent and user only. While servers of both releases run against the new schema, a previous-release server can therefore open or deliver into any one of that person's chats with the agent once a secondary chat exists, instead of the default one. Single-server and local installs are not affected, because they never run two releases at once. The window ends when no previous-release server remains.
 

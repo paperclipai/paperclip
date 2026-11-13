@@ -370,6 +370,11 @@ a Core-managed credential identity before lease acquisition. The saved warm
 preference does not bypass account ownership checks. Drivers without warm
 capability and setup probes remain ephemeral.
 
+For a warm lease, `onEnvironmentAcquireLease` receives `runnerLifecyclePolicy`
+with the idle window that Core records for the Runner. A provider with its own
+idle shutdown can use it to stop only after that window. Core does not send
+the field for other lifecycle modes.
+
 Plugin task execution uses the public, run-scoped GitHub credential broker
 when the provider advertises its versioned contract. Warm preparation updates
 the command capability before admitting the new run. Restart recovery retains
