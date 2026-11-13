@@ -2220,7 +2220,7 @@ export function toolAccessService(
 
     const credentialValues = input.credentialValues ?? {};
     // A curated method declares its auth kind. A pasted URL declares one only
-    // under Advanced authentication; on the simple path it starts from what the
+    // when the operator picks a sign-in option; on the simple path it starts from what the
     // operator supplied and is upgraded to `oauth` when discovery proves the
     // endpoint needs sign-in (see `remoteTools` and `startOAuth`).
     const genericAuthKind: ToolConnectionAuthKind =

@@ -16245,6 +16245,7 @@ async function createRunnerdBackendWithinSessionClaim(
         gateway: getAssignedMcpGateway(input.db),
         gatewayPublicId: assignedGatewayPublicId!,
         bearerToken: assignedMcpToken,
+        companyId: input.execution.binding.companyId,
         workMode: input.execution.task.workMode,
         ...(input.execution.provider.kind === "opencode" ? { delivery: "on_demand" as const } : {}),
       }))

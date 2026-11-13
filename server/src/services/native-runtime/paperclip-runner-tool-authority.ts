@@ -349,7 +349,7 @@ function hireAgentResult(value: unknown, provider: unknown) {
 export class PaperclipRunnerToolAuthority {
   #taskAttachmentCache = new TaskAttachmentReadCache();
   #skillLibraryCache = new SkillLibraryReadCache();
-  close() { this.#taskAttachmentCache.close(); this.#skillLibraryCache.close(); }
+  close() { this.#taskAttachmentCache.close(); this.#skillLibraryCache.close(); this.binding.assignedMcpTools?.close?.(); }
   constructor(readonly db: Db, readonly binding: Binding) {}
 
   definitions(): Array<Record<string, unknown>> {
