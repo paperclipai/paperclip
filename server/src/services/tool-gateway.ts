@@ -6727,11 +6727,16 @@ export function createToolGatewayService(
     era: "modern" | "legacy";
     requestState: string | null;
     forms: Array<{ key: string; request: McpFormElicitation }>;
+    /** An answered round this call just sent: spent in the same transaction that saves the next one. */
+    spend?: { row: McpElicitationRow; responses: Record<string, McpElicitationResponse> };
   }): Promise<never> {
     const { session } = call;
+    // The app already has the answered round's answers, even if this next one is refused.
+    const spendFirst = async () => { if (input.spend) await settleElicitationRound(input.spend.row, call, input.spend.responses, input.invocationId); };
     for (const form of input.forms) {
       const built = buildElicitationQuestionSet({ appName: call.appName, request: form.request });
       if (!built.ok) {
+        await spendFirst();
         await writeAudit({
           session, companyId: session.companyId, agentId: session.agentId, runId: session.runId, issueId: session.issueId,
           action: "tool_gateway.elicitation_refused",
@@ -6743,12 +6748,16 @@ export function createToolGatewayService(
         throw elicitationRefusedError(call.appName, built, input.invocationId);
       }
     }
-    if (input.forms.length > MCP_ELICITATION_MAX_FORMS_PER_ROUND) throw elicitationRefusedError(call.appName, { reason: "unsupported" }, input.invocationId);
+    if (input.forms.length > MCP_ELICITATION_MAX_FORMS_PER_ROUND) {
+      await spendFirst();
+      throw elicitationRefusedError(call.appName, { reason: "unsupported" }, input.invocationId);
+    }
     const [open] = await db.select({ count: sql<number>`count(*)::int` }).from(toolMcpElicitations).where(and(
       eq(toolMcpElicitations.companyId, session.companyId), eq(toolMcpElicitations.issueId, session.issueId),
       eq(toolMcpElicitations.status, "waiting"), gt(toolMcpElicitations.expiresAt, new Date()),
     ));
     if ((open?.count ?? 0) >= MCP_ELICITATION_MAX_OPEN_ROUNDS) {
+      await spendFirst();
       throw new ToolGatewayHttpError(409,
         `This task already has ${MCP_ELICITATION_MAX_OPEN_ROUNDS} app questions waiting for a person. Wait for those to be answered before trying again.`,
         "elicitation_limit_reached", { invocationId: input.invocationId });
@@ -6766,7 +6775,14 @@ export function createToolGatewayService(
         key: form.key, questionHash: elicitationQuestionHash(form.request), cardKey: mcpElicitationCardKey(id, form.key),
         message: form.request.message, requestedSchema: form.request.requestedSchema,
       }));
-      [row] = await db.insert(toolMcpElicitations).values({
+      // The answered round is spent only together with saving the next one,
+      // so a stop between the two never loses the way to continue.
+      [row] = await db.transaction(async (tx) => {
+        if (input.spend && attempt === 0) {
+          await tx.update(toolMcpElicitations).set({ status: "sent", sentAt: new Date(), claimedUntil: null, updatedAt: new Date() })
+            .where(eq(toolMcpElicitations.id, input.spend.row.id));
+        }
+        return tx.insert(toolMcpElicitations).values({
         id, companyId: session.companyId, issueId: session.issueId, agentId: session.agentId, runId: session.runId,
         invocationId: input.invocationId, connectionId: call.connectionId, grantId: call.grantId,
         catalogToolName: call.tool.name, callIdentity: call.callIdentity, argumentsIdentity: call.argumentsIdentity,
@@ -6775,6 +6791,8 @@ export function createToolGatewayService(
           : sealElicitationState(mcpTaskSecret(), { companyId: session.companyId, connectionId: call.connectionId }, input.requestState),
         questions, status: "waiting", expiresAt: new Date(Date.now() + MCP_ELICITATION_TTL_MS),
       }).onConflictDoNothing().returning();
+      });
+      if (input.spend && attempt === 0) await writeElicitationSentAudit(input.spend.row, call, input.spend.responses, input.invocationId);
       if (row) break;
       // Another matching call saved the round first: show its cards. An
       // expired one is ended so this call can save a fresh round.
@@ -6914,6 +6932,10 @@ export function createToolGatewayService(
   async function settleElicitationRound(row: McpElicitationRow, call: McpElicitationCall, responses: Record<string, McpElicitationResponse>, invocationId: string) {
     await db.update(toolMcpElicitations).set({ status: "sent", sentAt: new Date(), claimedUntil: null, updatedAt: new Date() })
       .where(eq(toolMcpElicitations.id, row.id));
+    await writeElicitationSentAudit(row, call, responses, invocationId);
+  }
+
+  async function writeElicitationSentAudit(row: McpElicitationRow, call: McpElicitationCall, responses: Record<string, McpElicitationResponse>, invocationId: string) {
     await writeAudit({
       session: call.session, companyId: row.companyId, agentId: call.session.agentId, runId: call.session.runId, issueId: row.issueId,
       action: "tool_gateway.elicitation_sent",
@@ -7942,6 +7964,18 @@ export function createToolGatewayService(
             "elicitation_not_supported", { invocationId, tool: tool.name });
         }
         const questionHash = elicitationQuestionHash(form);
+        // The app asks a question it already had an answer to in this call
+        // (to have it corrected, or a second time): that answer is spent and
+        // the person is asked again on a fresh card.
+        const earlier = legacyAnswered.findIndex((used) => used.row.questions.some((question) => question.questionHash === questionHash));
+        if (earlier >= 0) {
+          const [used] = legacyAnswered.splice(earlier, 1);
+          try {
+            await askElicitationRound(elicitationCall, { invocationId, era: "legacy", requestState: null, forms: [{ key: "question", request: form }], spend: used });
+          } finally {
+            await cancel();
+          }
+        }
         let answered: Awaited<ReturnType<typeof collectElicitationRound>>;
         try {
           answered = await collectElicitationRound(elicitationCall, { invocationId, era: "legacy", questionHash, claimMs: ms + 60_000 });
@@ -8276,7 +8310,12 @@ export function createToolGatewayService(
       // spent (a new input request saves its own below). A rejected attempt,
       // such as a 401 before an OAuth refresh, keeps it for the explicit retry.
       if (continuation) mcpContinuations.delete(continuationKey);
-      if (elicitationClaim) {
+      // The app answered this call. If it asks a new form round, the answered
+      // round is spent together with saving that one (askElicitationRound).
+      const nextInput = mcpInputRequired(asRecord(payloadRecord.result));
+      const asksNextForms = Boolean(nextInput && Object.values(nextInput.inputRequests).length
+        && Object.values(nextInput.inputRequests).every((request) => request.method === "elicitation/create" && formElicitationOf(request.params)));
+      if (elicitationClaim && !asksNextForms) {
         const sent = elicitationClaim;
         elicitationClaim = null;
         await settleElicitationRound(sent.row, elicitationCall!, sent.responses, invocationId);
@@ -8340,7 +8379,10 @@ export function createToolGatewayService(
           return form ? [{ key, request: form }] : [];
         });
         if (elicitationCall && forms.length && forms.length === Object.keys(inputRequired.inputRequests).length) {
-          await askElicitationRound(elicitationCall, { invocationId, era: "modern", requestState: inputRequired.requestState, forms });
+          const spend = elicitationClaim ?? undefined;
+          // From here the answered round is spent with the next one saved; never released.
+          elicitationClaim = null;
+          await askElicitationRound(elicitationCall, { invocationId, era: "modern", requestState: inputRequired.requestState, forms, spend });
         }
         const pending = mcpInputRequiredPending(inputRequired);
         if (!pending.answerable) {

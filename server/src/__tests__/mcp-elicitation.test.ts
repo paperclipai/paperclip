@@ -191,11 +191,17 @@ function askingServer() {
     if (body.params?._meta?.[META_VERSION] !== MCP_MODERN_PROTOCOL_VERSION) return Response.json({ jsonrpc: "2.0", id: body.id, error: { code: -32020, message: "metadata" } }, { status: 400 });
     if (body.method === "server/discover") return respond(body.id, { supportedVersions: [MCP_MODERN_PROTOCOL_VERSION], capabilities: { tools: {} } });
     if (body.method === "tools/list") {
-      return respond(body.id, { tools: ["create_ticket", "two_questions", "ask_secret"].map((name) => ({ name, description: name, inputSchema: { type: "object", properties: {} }, annotations: { readOnlyHint: true } })) });
+      return respond(body.id, { tools: ["create_ticket", "two_questions", "ask_secret", "two_rounds"].map((name) => ({ name, description: name, inputSchema: { type: "object", properties: {} }, annotations: { readOnlyHint: true } })) });
     }
     if (body.method !== "tools/call") return Response.json({ jsonrpc: "2.0", id: body.id, error: { code: -32601, message: "nope" } });
     const { name, inputResponses, requestState } = body.params;
     if (inputResponses && refuseAnswers > 0) { refuseAnswers -= 1; return new Response(null, { status: 503 }); }
+    if (name === "two_rounds" && inputResponses?.first) {
+      return respond(body.id, { resultType: "input_required", requestState: "round-2", inputRequests: { second: form("And the due date?", { type: "object", properties: { due: { type: "string", format: "date" } }, required: ["due"] }) } });
+    }
+    if (name === "two_rounds" && !inputResponses) {
+      return respond(body.id, { resultType: "input_required", requestState: "round-1", inputRequests: { first: form("Which team?", { type: "object", properties: { team: { type: "string", enum: ["ops", "eng"] } }, required: ["team"] }) } });
+    }
     if (inputResponses) return respond(body.id, { content: [{ type: "text", text: JSON.stringify({ inputResponses, requestState: requestState ?? null }) }] });
     if (name === "create_ticket") {
       return respond(body.id, { resultType: "input_required", requestState: `state-for-${body.params.arguments?.ref ?? "none"}`, inputRequests: { details: form("Tell us about the ticket", TICKET_SCHEMA) } });
@@ -216,7 +222,7 @@ function askingServer() {
  * and waits for the client's reply before it finishes, like the SDK servers.
  * It asks its questions in turn and stops at the first one not accepted.
  */
-function legacyAskingServer(options: { questions?: Array<{ message: string; key: string; values: string[] }>; refuseReplies?: number } = {}) {
+function legacyAskingServer(options: { questions?: Array<{ message: string; key: string; values: string[]; askAgainIf?: string }>; refuseReplies?: number } = {}) {
   const requests: Recorded[] = [];
   const replies: Array<Record<string, any>> = [];
   const questions = options.questions ?? [{ message: "Which team?", key: "team", values: ["ops", "eng"] }];
@@ -252,8 +258,17 @@ function legacyAskingServer(options: { questions?: Array<{ message: string; key:
             const reply = new Promise<Record<string, any>>((resolve) => waiting.set(askId, resolve));
             controller.enqueue(sse({ jsonrpc: "2.0", id: askId, method: "elicitation/create", params: { message: question.message,
               requestedSchema: { type: "object", properties: { [question.key]: { type: "string", enum: question.values } }, required: [question.key] } } }));
-            const answer = await reply;
+            let answer = await reply;
             if (answer.result?.action !== "accept") { controller.close(); return; }
+            // The app asks the same question again to have the answer corrected.
+            if (question.askAgainIf !== undefined && answer.result.content?.[question.key] === question.askAgainIf) {
+              const againId = `ask-${++asks}`;
+              const again = new Promise<Record<string, any>>((resolve) => waiting.set(againId, resolve));
+              controller.enqueue(sse({ jsonrpc: "2.0", id: againId, method: "elicitation/create", params: { message: question.message,
+                requestedSchema: { type: "object", properties: { [question.key]: { type: "string", enum: question.values } }, required: [question.key] } } }));
+              answer = await again;
+              if (answer.result?.action !== "accept") { controller.close(); return; }
+            }
             answers.push(answer.result);
           }
           const text = answers.length === 1 ? `answer: ${JSON.stringify(answers[0])}` : `answers: ${JSON.stringify(answers)}`;
@@ -591,5 +606,36 @@ const support = await getEmbeddedPostgresTestSupport();
     for (const result of results) expect(result).toMatchObject({ reasonCode: "elicitation_required" });
     expect(await ctx.cards()).toHaveLength(1);
     expect((await ctx.rounds()).filter((round) => round.status === "waiting")).toHaveLength(1);
+  });
+
+  it("continues a stateless app's follow-up question after the first answer", async () => {
+    const server = askingServer();
+    const ctx = await setup(server.handle);
+    await ctx.call("two_rounds").catch(() => undefined);
+    const [first] = await ctx.cards();
+    await ctx.answer(first!.id, [{ questionId: "team", optionIds: ["choice_2"] }]);
+    expect(await ctx.call("two_rounds").catch((error) => error)).toMatchObject({ reasonCode: "elicitation_required" });
+    // The first round is spent and the follow-up is saved; nothing is lost between them.
+    expect((await ctx.rounds()).map((round) => round.status).sort()).toEqual(["sent", "waiting"]);
+    const [, second] = await ctx.cards();
+    await ctx.answer(second!.id, [{ questionId: "due", optionIds: ["paperclip_text_answer"], otherText: "2026-12-01" }]);
+    await ctx.call("two_rounds");
+    expect(server.calls().at(-1)!.body.params).toMatchObject({ requestState: "round-2", inputResponses: { second: { action: "accept", content: { due: "2026-12-01" } } } });
+  });
+
+  it("asks again on a fresh card when an older app repeats a question to correct the answer", async () => {
+    const server = legacyAskingServer({ questions: [{ message: "Which team?", key: "team", values: ["ops", "eng"], askAgainIf: "ops" }] });
+    const ctx = await setup(server.handle);
+    await ctx.call("create_ticket").catch(() => undefined);
+    const [first] = await ctx.cards();
+    await ctx.answer(first!.id, [{ questionId: "team", optionIds: ["choice_1"] }]);
+    await ctx.nextRun();
+    // The app takes "ops", then asks again: a second card, not a stall.
+    expect(await ctx.call("create_ticket").catch((error) => error)).toMatchObject({ reasonCode: "elicitation_required" });
+    const cards = await ctx.cards();
+    expect(cards).toHaveLength(2);
+    await ctx.answer(cards[1]!.id, [{ questionId: "team", optionIds: ["choice_2"] }]);
+    await ctx.nextRun();
+    expect(await ctx.call("create_ticket")).toMatchObject({ status: "completed", result: { content: 'answer: {"action":"accept","content":{"team":"eng"}}' } });
   });
 });
