@@ -1,5 +1,5 @@
 import { execFile, spawn, type ChildProcess } from "node:child_process";
-import { readdir, readFile } from "node:fs/promises";
+import { readdir } from "node:fs/promises";
 import http from "node:http";
 import type { AddressInfo } from "node:net";
 import type { Server } from "node:http";
@@ -151,10 +151,9 @@ async function startUninspectableAgentRunProcess(): Promise<ChildProcess> {
 }
 
 // When the server cannot inspect a connection's owner, it refuses implicit board access unless every
-// same-user process it cannot inspect belongs to the operator. Other test files run their own processes
-// on the same host, so the real-process cases below judge only the processes each case starts.
-// "refuses board access ... while another agent run's process it cannot inspect is running" covers the
-// host-wide rule.
+// same-user process it cannot inspect belongs to the operator. CI hosts run other processes of the same
+// user, so the real-process cases below judge only the processes each case starts. The case "refuses
+// board access ... while another agent run's process it cannot inspect is running" covers the host-wide rule.
 function inspectorForLaunchedProcesses(): LocalProcessInspector {
   const linux = defaultLocalProcessInspector("linux")!;
   return {
@@ -173,34 +172,6 @@ function inspectorForLaunchedProcesses(): LocalProcessInspector {
   };
 }
 
-// TEMPORARY CI diagnostic: lists same-user processes the server cannot inspect, other than this file's own.
-async function uninspectableProcessesOnHost(exclude: ReadonlySet<number>): Promise<string[]> {
-  const found: string[] = [];
-  for (const pid of await readdir("/proc").catch(() => [] as string[])) {
-    if (!/^\d+$/.test(pid) || exclude.has(Number(pid))) continue;
-    const error = await readdir(`/proc/${pid}/fd`).then(() => null, (err: NodeJS.ErrnoException) => err.code);
-    if (error !== "EACCES" && error !== "EPERM") continue;
-    const status = await readFile(`/proc/${pid}/status`, "utf8").catch(() => "");
-    if (Number(/^Uid:\s+(\d+)/m.exec(status)?.[1]) !== process.getuid?.()) continue;
-    const chain: string[] = [];
-    let current = Number(pid);
-    for (let depth = 0; depth < 12 && current > 1; depth += 1) {
-      const stat = await readFile(`/proc/${current}/stat`, "utf8").catch(() => null);
-      if (!stat) { chain.push(`${current}:gone`); break; }
-      const cmdline = (await readFile(`/proc/${current}/cmdline`, "utf8").catch(() => "")).split("\0").join(" ").slice(0, 120);
-      const environ = await readFile(`/proc/${current}/environ`, "utf8").then(
-        (text) => text.split("\0").filter((entry) => entry.startsWith("PAPERCLIP_")).map((entry) => entry.split("=")[0]).join(","),
-        () => "unreadable",
-      );
-      chain.push(`${current}:${stat.slice(stat.indexOf("(") + 1, stat.lastIndexOf(")"))}[${cmdline}]{${environ}}`);
-      current = Number(stat.slice(stat.lastIndexOf(")") + 2).split(" ")[1]);
-    }
-    const gids = /^Gid:\s+(.*)$/m.exec(status)?.[1];
-    found.push(`gid=${gids} ${chain.join(" <- ")}`);
-  }
-  return found;
-}
-
 describe.skipIf(process.platform !== "linux").each(["127.0.0.1", "::1"])(
   "implicit local board access from Linux processes over %s loopback",
   (host) => {
@@ -208,17 +179,12 @@ describe.skipIf(process.platform !== "linux").each(["127.0.0.1", "::1"])(
     let url: string;
     let otherAgentRun: ChildProcess;
 
-    let othersBefore: string[] = [];
-
     beforeAll(async () => {
-      othersBefore = await uninspectableProcessesOnHost(new Set());
       otherAgentRun = await startUninspectableAgentRunProcess();
       ({ server, url } = await startServer({}, host, inspectorForLaunchedProcesses()));
     });
 
     afterAll(async () => {
-      const others = await uninspectableProcessesOnHost(new Set([otherAgentRun.pid!]));
-      console.log(`[boundary-diagnostic] ${host}: my pid=${process.pid} gid=${process.getgid?.()}\nbefore (${othersBefore.length}):\n${othersBefore.join("\n")}\nafter (${others.length}):\n${others.join("\n")}`);
       otherAgentRun.kill();
       await new Promise((resolve) => server.close(resolve));
     });
