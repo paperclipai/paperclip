@@ -53,7 +53,7 @@ beforeEach(() => {
   vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
   vi.stubGlobal("ResizeObserver", class { observe() {} unobserve() {} disconnect() {} });
   state.companyId = "company-a";
-  state.navigate.mockReset(); state.closeSidebar.mockReset(); state.ensure.mockReset(); state.getAgent.mockReset(); state.newAgent.mockReset(); localStorage.clear(); sessionStorage.clear();
+  state.navigate.mockReset(); state.closeSidebar.mockReset(); state.ensure.mockReset(); state.getAgent.mockReset(); state.newAgent.mockReset(); issueUpdates.mockClear(); localStorage.clear(); sessionStorage.clear();
   sidebarInputs.length = 0;
   state.ensure.mockImplementation(async (_company, id) => chat(id));
   memberships.agentMemberships = {};
