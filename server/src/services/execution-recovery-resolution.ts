@@ -371,8 +371,10 @@ export async function deliverReconciledExecutions(
   const admittedByCompany = new Map<string, number>();
   const fullCompanies = () => [...admittedByCompany].flatMap(([companyId, count]) =>
     count >= RECOVERY_CONTINUATIONS_PER_COMPANY_PER_PASS ? [companyId] : []);
+  const heldSince = sql`coalesce(${issueRecoveryActions.evidence}#>>'{freshContinuation,recordedAt}', ${issueRecoveryActions.resolvedAt}::text, ${issueRecoveryActions.updatedAt}::text)::timestamptz`;
   const readPendingPage = async () => {
     const companies = fullCompanies();
+    const heldBound = new Date(Date.now() - RECOVERY_CONTINUATION_MAX_HOLD_MS).toISOString();
     const rows = await db
       .select({ action: issueRecoveryActions })
       .from(issueRecoveryActions)
@@ -394,7 +396,12 @@ export async function deliverReconciledExecutions(
               and queued_recovery.context_snapshot->>'wakeReason' in (${sql.join(recoveryReasons.map(reason => sql`${reason}`), sql`, `)}))`,
         ),
       )
-      .orderBy(sql`${sourceRun.finishedAt} desc nulls last`, asc(issueRecoveryActions.updatedAt))
+      .orderBy(
+        sql`${heldSince} <= ${heldBound}::timestamptz desc`,
+        sql`case when ${heldSince} <= ${heldBound}::timestamptz then ${heldSince} end asc nulls last`,
+        sql`${sourceRun.finishedAt} desc nulls last`,
+        asc(issueRecoveryActions.updatedAt),
+      )
       .limit(25);
     return rows.map(row => row.action);
   };

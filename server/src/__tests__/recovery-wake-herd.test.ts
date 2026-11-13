@@ -93,7 +93,7 @@ suite("recovery wake herd", () => {
 
   it("starts a person's request ahead of a burst of recovery wakes, then runs every recovery wake", async () => {
     const agentId = await seedCompany(1);
-    const burst = [];
+    const burst: Array<typeof heartbeatRuns.$inferSelect> = [];
     for (let index = 0; index < 6; index += 1) burst.push(await queuedRecoveryRun(agentId, 60 - index));
     const person = await queuedPersonRetry(agentId);
     const heartbeat = heartbeatService(db);
@@ -142,7 +142,7 @@ suite("recovery wake herd", () => {
 
   it("delivers one recovery continuation per agent at a time and drains the rest on later passes", async () => {
     const agentId = await seedCompany(1);
-    const records = [];
+    const records: Array<Awaited<ReturnType<typeof pendingContinuation>>> = [];
     for (let index = 0; index < 4; index += 1) records.push(await pendingContinuation(agentId, 120 + index));
     const wake = fakeWake();
 
@@ -195,6 +195,51 @@ suite("recovery wake herd", () => {
     expect(await deliveryOf(record.action.id)).toBe("delivered");
   }, 60_000);
 
+  it("does not let a fresh interruption keep an older held continuation out of a full queue", async () => {
+    const agentId = await seedCompany(1);
+    const busy = await task(agentId);
+    await db.insert(heartbeatRuns).values({ companyId, agentId, issueId: busy.id, invocationSource: "on_demand", status: "queued",
+      contextSnapshot: { issueId: busy.id, wakeReason: "task_retry" } });
+    const held = await pendingContinuation(agentId, 90);
+    const heldSince = new Date(Date.now() - RECOVERY_CONTINUATION_MAX_HOLD_MS - 1_000).toISOString();
+    await db.update(issueRecoveryActions).set({ evidence: { ...held.action.evidence,
+      freshContinuation: { ...(held.action.evidence.freshContinuation as object), recordedAt: heldSince } } })
+      .where(eq(issueRecoveryActions.id, held.action.id));
+    const fresh = await pendingContinuation(agentId, 1);
+    const wake = fakeWake();
+    await deliverReconciledExecutions(db, wake as never);
+    expect(wake).toHaveBeenCalledTimes(1);
+    expect(await deliveryOf(held.action.id)).toBe("delivered");
+    expect(await deliveryOf(fresh.action.id)).toBe("pending");
+  }, 60_000);
+
+  it("admits an older continuation within a bounded number of passes while fresh interruptions keep arriving", async () => {
+    const agentId = await seedCompany(1);
+    const busy = await task(agentId);
+    await db.insert(heartbeatRuns).values({ companyId, agentId, issueId: busy.id, invocationSource: "on_demand", status: "queued",
+      contextSnapshot: { issueId: busy.id, wakeReason: "task_retry" } });
+    const start = Date.now();
+    vi.useFakeTimers({ toFake: ["Date"], now: start - 1_000 });
+    try {
+      const old = await pendingContinuation(agentId, 120);
+      const wake = fakeWake();
+      const passInterval = 15_000;
+      const bound = Math.ceil(RECOVERY_CONTINUATION_MAX_HOLD_MS / passInterval) + 1;
+      let admittedAt = -1;
+      for (let pass = 0; pass <= bound && admittedAt < 0; pass += 1) {
+        vi.setSystemTime(start + pass * passInterval);
+        await pendingContinuation(agentId, 1);
+        await deliverReconciledExecutions(db, wake as never);
+        if (await deliveryOf(old.action.id) === "delivered") admittedAt = pass;
+      }
+      expect(admittedAt).toBeGreaterThan(0);
+      expect(admittedAt).toBeLessThanOrEqual(bound);
+      expect(wake).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  }, 120_000);
+
   it("does not let continuations for busy agents hide other agents' continuations", async () => {
     const busyAgents = [await seedCompany(1)];
     for (let index = 1; index < 4; index += 1) busyAgents.push(await addAgent(1));
@@ -215,7 +260,7 @@ suite("recovery wake herd", () => {
   it("caps the continuations one pass delivers per company and delivers the freshest interruption first", async () => {
     const agentIds = [await seedCompany(1)];
     for (let index = 1; index < RECOVERY_CONTINUATIONS_PER_COMPANY_PER_PASS + 3; index += 1) agentIds.push(await addAgent(1));
-    const old = [];
+    const old: Array<Awaited<ReturnType<typeof pendingContinuation>>> = [];
     for (const agentId of agentIds.slice(1)) old.push(await pendingContinuation(agentId, 240));
     const fresh = await pendingContinuation(agentIds[0]!, 2);
     const wake = fakeWake();
