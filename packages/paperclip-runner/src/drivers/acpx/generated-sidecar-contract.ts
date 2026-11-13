@@ -3,6 +3,7 @@
 export const GENERATED_ACPX_SIDECAR_PROTOCOL_VERSION = 2 as const;
 export const GENERATED_ACPX_TURN_DISPATCH_JOURNAL_FILE = "paperclip-turn-dispatch.jsonl";
 export const GENERATED_ACPX_TURN_DISPATCH_SCHEMA = "paperclip.acpx-turn-dispatch.v1";
+export const GENERATED_ACPX_PROVIDER_TURN_ORIGIN = "provider";
 export const GENERATED_ACPX_SIDECAR_COMMANDS = [
   "initialize",
   "session.open",
@@ -30,6 +31,7 @@ export const GENERATED_ACPX_SIDECAR_EVENT_TYPES = [
   "runtime.permission_requested",
   "runtime.input_requested",
   "runtime.tool_called",
+  "runtime.turn_started",
   "runtime.turn_terminal",
   "runtime.process",
   "runtime.diagnostic",

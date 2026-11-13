@@ -51,6 +51,7 @@
         "runtime.permission_requested",
         "runtime.input_requested",
         "runtime.tool_called",
+        "runtime.turn_started",
         "runtime.turn_terminal",
         "runtime.process",
         "runtime.diagnostic",
@@ -257,8 +258,25 @@
               "payload": { "$ref": "#/$defs/richEvent" }
             }
           }
+        },
+        {
+          "if": { "properties": { "eventType": { "const": "runtime.turn_started" } } },
+          "then": {
+            "properties": {
+              "runId": { "type": "string" },
+              "turnId": { "type": "string" },
+              "payload": { "$ref": "#/$defs/providerTurnStarted" }
+            }
+          }
         }
       ]
+    },
+    "providerTurnStarted": {
+      "description": "Claude began its own cycle with no prompt in flight. runnerd admits it only while it awaits a provider-started turn.",
+      "type": "object",
+      "required": ["origin"],
+      "properties": { "origin": { "const": "provider" } },
+      "additionalProperties": false
     },
     "usageCost": {
       "description": "Provider cost is session-cumulative unless basis explicitly identifies a complete turn total. A turn total is never a session counter.",

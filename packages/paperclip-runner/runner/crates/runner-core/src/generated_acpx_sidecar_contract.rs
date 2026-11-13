@@ -3,6 +3,7 @@
 pub const GENERATED_ACPX_SIDECAR_PROTOCOL_VERSION: u64 = 2;
 pub const GENERATED_ACPX_TURN_DISPATCH_JOURNAL_FILE: &str = "paperclip-turn-dispatch.jsonl";
 pub const GENERATED_ACPX_TURN_DISPATCH_SCHEMA: &str = "paperclip.acpx-turn-dispatch.v1";
+pub const GENERATED_ACPX_PROVIDER_TURN_ORIGIN: &str = "provider";
 
 pub const GENERATED_ACPX_TOOL_OPERATION_PRECEDENCE: &[(&str, &[&str])] = &[
     ("edit", &["edit", "write", "patch"]),
@@ -82,6 +83,8 @@ pub enum GeneratedAcpxSidecarEventType {
     RuntimeInputRequested,
     #[serde(rename = "runtime.tool_called")]
     RuntimeToolCalled,
+    #[serde(rename = "runtime.turn_started")]
+    RuntimeTurnStarted,
     #[serde(rename = "runtime.turn_terminal")]
     RuntimeTurnTerminal,
     #[serde(rename = "runtime.process")]

@@ -94,6 +94,9 @@ import {
 import { validatePrpStructuredRunResult } from "../protocol/replay-contract.js";
 import type { RunnerToolCall } from "../drivers/runner-tool-bridge.js";
 import { CLAUDE_TOOL_USE_META_KEY, ClaudeToolUseAdmission } from "../drivers/acpx/claude-tool-use-admission.js";
+import type { ClaudeProviderTurn } from "../drivers/acpx/claude-provider-turns.js";
+import { GENERATED_ACPX_PROVIDER_TURN_ORIGIN } from "../drivers/acpx/generated-sidecar-contract.js";
+import type { AcpxProviderTurnBinding } from "../drivers/acpx/runtime-host.js";
 import {
   acpxBootstrapBlockedError,
   acpxSidecarErrorCode,
@@ -193,6 +196,9 @@ let turnStartedInProcess = false;
  */
 let callIdNamespace: string | null = null;
 let toolUseAdmission: ClaudeToolUseAdmission | null = null;
+let providerTurnId: string | null = null;
+let providerTurnArmed = false;
+let promptTurnSettled: Promise<void> = Promise.resolve();
 let activeCopilotEvidence: CopilotToolEvidence | undefined;
 let sequence = 0;
 let requestSequence = 0;
@@ -400,6 +406,7 @@ async function dispatch(
     );
     host = openedHost;
     openParams = params;
+    if (params.agent === "claude") openedHost.onProviderTurn?.((turn) => admitProviderTurn(openedHost, turn));
     callIdNamespace = params.expectedIdentity === undefined
       ? null
       : `r${randomUUID().replaceAll("-", "").slice(0, 12)}`;
@@ -446,6 +453,7 @@ async function dispatch(
     const activeAgent = openParams!.agent;
     turnId = currentTurnId;
     turnStartedInProcess = true;
+    providerTurnArmed = false;
     toolUseAdmission?.beginTurn(currentTurnId);
     turnControls.begin(currentTurnId);
     let runtimeTurn: AcpxRuntimeTurn;
@@ -502,7 +510,7 @@ async function dispatch(
       toolUseAdmission?.endTurn(currentTurnId);
       throw error;
     }
-    void pumpTurn(currentTurnId, runtimeTurn, activeHost, usageBefore, extensions.drain, activity, toolEvidence, sessionFailure);
+    promptTurnSettled = pumpTurn(currentTurnId, runtimeTurn, activeHost, usageBefore, extensions.drain, activity, toolEvidence, sessionFailure);
     // Warm sessions may defer initialize until their first prompt. Publish only
     // the capabilities of that live initialized connection, never old disk state.
     const promptStart = timed ? performance.now() : 0;
@@ -523,6 +531,12 @@ async function dispatch(
     else await activeHost.queueFollowUp(control.message, runtimeRequestId);
     if (host !== activeHost || turnId !== control.turnId) throw new Error("ACP turn settled before control acknowledgement");
     return { accepted: true, turnId: control.turnId, controlId: control.controlId, mode: control.mode };
+  }
+  if (request.command === "turn.cancel" && providerTurnId !== null && request.params.turnId === providerTurnId) {
+    const activeHost = requireHost();
+    activeHost.cancelProviderTurn();
+    await activeHost.close({ reason: boundedOptionalText(request.params.reason, "Paperclip cancellation", 4_000) });
+    return { cancelled: true, sessionClosed: activeHost.isClosed() };
   }
   if (request.command === "turn.cancel") {
     const expected = boundedIdentity(request.params.turnId, "turnId");
@@ -712,6 +726,68 @@ async function dispatch(
   throw new Error("unreachable ACPX sidecar command");
 }
 
+function createRuntimeEventStep(
+  currentTurnId: string,
+  toolEvidence?: AcpxToolEvidence,
+): { accept(event: AcpRuntimeEvent): void; settle(): void } {
+  // ACP tool updates are deltas. Preserve the opening event's identity and
+  // display metadata for later progress/completion frames before they cross
+  // the sidecar boundary, matching the in-process ACPX driver path.
+  const normalizeToolEvent = createAcpxToolEventNormalizer<AcpRuntimeEvent>();
+  const piMessages = initializedAgent === "pi" ? createPiMessageProjection<AcpRuntimeEvent>() : null;
+  const kimiMessages = initializedAgent === "kimi" ? createKimiMessageProjection<AcpRuntimeEvent>() : null;
+  const normalizeMessage = kimiMessages ? kimiMessages.normalize : piMessages ? piMessages.normalize : initializedAgent === "grok"
+    ? createGrokMessageNormalizer<AcpRuntimeEvent>() : (event: AcpRuntimeEvent) => event;
+  // Claude subagent lineage reads the bounded `_meta` and `rawInput` before
+  // they are dropped at this boundary. Only display data leaves: a
+  // schema-checked delegation rich event and a child tool's parent id.
+  const trackSubagents = initializedAgent === "claude"
+    ? createClaudeSubagentLineageTracker<AcpRuntimeEventShape>((id) => stableProviderIdentity(id, "tool"))
+    : null;
+  const accept = (event: AcpRuntimeEvent): void => {
+    toolUseAdmission?.observe(currentTurnId, event);
+    toolEvidence?.tool(event);
+    // Claude hook lifecycle rides on session_info_update `_meta`; publish it
+    // as schema-validated display activity rather than a raw status event.
+    const hook = claudeHookCanonicalEvent(event);
+    if (hook) {
+      try { validateAcpxRichEvent(hook); emit("runtime.rich_event", { ...hook }, currentTurnId); } catch { /* display only */ }
+      return;
+    }
+    const sanitized = sanitizeRuntimeEvent(
+      normalizeMessage(normalizeToolEvent(withSidecarToolDetail(event, boundRuntimeEventForNormalization(event)))),
+    );
+    const lineage = trackSubagents && event.type === "tool_call" && typeof sanitized.toolCallId === "string"
+      ? trackSubagents({
+          type: "tool_call",
+          toolCallId: sanitized.toolCallId,
+          tag: event.tag,
+          status: event.status,
+          rawInput: event.rawInput,
+          rawOutput: event.rawOutput,
+          _meta: boundedAcpMeta((event as { _meta?: unknown })._meta),
+        })
+      : null;
+    if (lineage?.paperclipParentToolCallId) sanitized.parentToolCallId = lineage.paperclipParentToolCallId;
+    emit("runtime.event", sanitized, currentTurnId);
+    if (lineage?.paperclipSubagent) {
+      // Rust names the tool call (and each child's parentItemId) with
+      // acpx_opaque_item_id; the delegation must use the same identity.
+      const delegationId = acpxOpaqueToolItemId(String(sanitized.toolCallId));
+      for (const mapped of canonicalProviderEventsFromAcpxRuntimeEvent(lineage, `${currentTurnId}:subagent`, currentTurnId)) {
+        const rich = withDelegationIdentity(mapped, delegationId);
+        try {
+          validateAcpxRichEvent(rich);
+          emit("runtime.rich_event", { ...rich }, currentTurnId);
+        } catch {
+          // Display-only lineage must never fail the provider turn.
+        }
+      }
+    }
+  };
+  return { accept, settle: () => { piMessages?.settle(); kimiMessages?.settle(); } };
+}
+
 /** Turns whose native plan approval was declined after capturing the proposal. */
 const planProposalTurns = new Set<string>();
 
@@ -727,63 +803,10 @@ async function pumpTurn(
 ): Promise<void> {
   let terminal: Record<string, unknown>;
   try {
-    // ACP tool updates are deltas. Preserve the opening event's identity and
-    // display metadata for later progress/completion frames before they cross
-    // the sidecar boundary, matching the in-process ACPX driver path.
-    const normalizeToolEvent = createAcpxToolEventNormalizer<AcpRuntimeEvent>();
-    const piMessages = initializedAgent === "pi" ? createPiMessageProjection<AcpRuntimeEvent>() : null;
-    const kimiMessages = initializedAgent === "kimi" ? createKimiMessageProjection<AcpRuntimeEvent>() : null;
-    const normalizeMessage = kimiMessages ? kimiMessages.normalize : piMessages ? piMessages.normalize : initializedAgent === "grok"
-      ? createGrokMessageNormalizer<AcpRuntimeEvent>() : (event: AcpRuntimeEvent) => event;
-    // Claude subagent lineage reads the bounded `_meta` and `rawInput` before
-    // they are dropped at this boundary. Only display data leaves: a
-    // schema-checked delegation rich event and a child tool's parent id.
-    const trackSubagents = initializedAgent === "claude"
-      ? createClaudeSubagentLineageTracker<AcpRuntimeEventShape>((id) => stableProviderIdentity(id, "tool"))
-      : null;
-    for await (const event of runtimeTurn.events) {
-      toolUseAdmission?.observe(currentTurnId, event);
-      toolEvidence?.tool(event);
-      // Claude hook lifecycle rides on session_info_update `_meta`; publish it
-      // as schema-validated display activity rather than a raw status event.
-      const hook = claudeHookCanonicalEvent(event);
-      if (hook) {
-        try { validateAcpxRichEvent(hook); emit("runtime.rich_event", { ...hook }, currentTurnId); } catch { /* display only */ }
-        continue;
-      }
-      const sanitized = sanitizeRuntimeEvent(
-        normalizeMessage(normalizeToolEvent(withSidecarToolDetail(event, boundRuntimeEventForNormalization(event)))),
-      );
-      const lineage = trackSubagents && event.type === "tool_call" && typeof sanitized.toolCallId === "string"
-        ? trackSubagents({
-            type: "tool_call",
-            toolCallId: sanitized.toolCallId,
-            tag: event.tag,
-            status: event.status,
-            rawInput: event.rawInput,
-            rawOutput: event.rawOutput,
-            _meta: boundedAcpMeta((event as { _meta?: unknown })._meta),
-          })
-        : null;
-      if (lineage?.paperclipParentToolCallId) sanitized.parentToolCallId = lineage.paperclipParentToolCallId;
-      emit("runtime.event", sanitized, currentTurnId);
-      if (lineage?.paperclipSubagent) {
-        // Rust names the tool call (and each child's parentItemId) with
-        // acpx_opaque_item_id; the delegation must use the same identity.
-        const delegationId = acpxOpaqueToolItemId(String(sanitized.toolCallId));
-        for (const mapped of canonicalProviderEventsFromAcpxRuntimeEvent(lineage, `${currentTurnId}:subagent`, currentTurnId)) {
-          const rich = withDelegationIdentity(mapped, delegationId);
-          try {
-            validateAcpxRichEvent(rich);
-            emit("runtime.rich_event", { ...rich }, currentTurnId);
-          } catch {
-            // Display-only lineage must never fail the provider turn.
-          }
-        }
-      }
-    }
+    const step = createRuntimeEventStep(currentTurnId, toolEvidence);
+    for await (const event of runtimeTurn.events) step.accept(event);
     const result = await runtimeTurn.result;
-    if (result.status === "completed") { piMessages?.settle(); kimiMessages?.settle(); }
+    if (result.status === "completed") step.settle();
     await drainExtensions();
     try {
       const usageAfter = await readSidecarHostStatusWithin(activeHost);
@@ -834,6 +857,15 @@ async function pumpTurn(
   if (declinedPlan) {
     terminal = { status: "completed", stopReason: "end_turn" };
   }
+  emitTurnTerminal(currentTurnId, terminal, activeHost, declinedPlan);
+}
+
+function emitTurnTerminal(
+  currentTurnId: string,
+  terminal: Record<string, unknown>,
+  activeHost: AcpxRuntimeHost,
+  declinedPlan: boolean,
+): void {
   // A terminal frame is also runnerd's permission to recycle this provider.
   // Publish it only after no callback can inherit this turn's mutable binding.
   // runnerd can settle this turn offline using the same observation as session.goal.get.
@@ -845,6 +877,7 @@ async function pumpTurn(
     // The terminal stays authoritative even if the optional observation fails.
   }
   const backgroundTasks = terminal.status === "completed" && !declinedPlan ? claudeBackgroundTasks(activeHost) : null;
+  providerTurnArmed = (backgroundTasks?.live ?? 0) > 0;
   if (goalAtTerminal || backgroundTasks) {
     const payload = { ...terminal, ...(goalAtTerminal ? { goalAtTerminal } : {}), ...(backgroundTasks ? { backgroundTasks } : {}) };
     // Rust admits the payload separately from the larger sidecar frame.
@@ -852,6 +885,66 @@ async function pumpTurn(
       && emit("runtime.turn_terminal", payload, currentTurnId)) return;
   }
   emit("runtime.turn_terminal", terminal, currentTurnId);
+}
+
+function admitProviderTurn(activeHost: AcpxRuntimeHost, turn: ClaudeProviderTurn): AcpxProviderTurnBinding | null {
+  if (host !== activeHost || !runId || closing) return null;
+  const currentTurnId = boundedIdentity(turn.requestId, "turnId");
+  const previousTurn = promptTurnSettled;
+  const ready = turnId === null && providerTurnArmed;
+  if (ready) beginProviderTurn(currentTurnId);
+  void pumpProviderTurn(currentTurnId, turn, activeHost, ready ? null : previousTurn);
+  return {
+    onPermissionRequest: (request, context) => waitForPermission(currentTurnId, "claude", request, context),
+    busy: () => turnId === currentTurnId && (tools.size > 0 || normalizingTools.size > 0 || permissions.size > 0 || inputs.size > 0),
+  };
+}
+
+function beginProviderTurn(currentTurnId: string): void {
+  providerTurnArmed = false;
+  turnId = currentTurnId;
+  providerTurnId = currentTurnId;
+  toolUseAdmission?.beginTurn(currentTurnId);
+  emit("runtime.turn_started", { origin: GENERATED_ACPX_PROVIDER_TURN_ORIGIN }, currentTurnId);
+}
+
+async function pumpProviderTurn(
+  currentTurnId: string,
+  turn: ClaudeProviderTurn,
+  activeHost: AcpxRuntimeHost,
+  previousTurn: Promise<void> | null,
+): Promise<void> {
+  if (previousTurn) {
+    await previousTurn.catch(() => undefined);
+    if (host !== activeHost || !runId || turnId !== null || !providerTurnArmed) {
+      activeHost.cancelProviderTurn();
+      for await (const _event of turn.events) void _event;
+      return;
+    }
+    beginProviderTurn(currentTurnId);
+  }
+  let terminal: Record<string, unknown>;
+  try {
+    const step = createRuntimeEventStep(currentTurnId);
+    for await (const event of turn.events) step.accept(event);
+    const result = await turn.result;
+    if (result.status === "completed") {
+      step.settle();
+      if (result.usage) emit("runtime.event", sanitizeRuntimeEvent(result.usage as unknown as AcpRuntimeEvent), currentTurnId);
+      terminal = { status: "completed", stopReason: result.stopReason };
+    } else if (result.status === "cancelled") {
+      terminal = { status: "cancelled", stopReason: result.stopReason };
+    } else {
+      terminal = { status: "failed", error: result.error };
+    }
+  } catch (error) {
+    terminal = { status: "failed", error: { message: safeMessage(error), retryable: false } };
+  } finally {
+    rejectTurnWaiters(currentTurnId, "ACPX turn became terminal");
+    if (turnId === currentTurnId) turnId = null;
+    if (providerTurnId === currentTurnId) providerTurnId = null;
+  }
+  emitTurnTerminal(currentTurnId, terminal, activeHost, false);
 }
 
 function optionalBackgroundTasks(activeHost: AcpxRuntimeHost): { backgroundTasks?: { live: number } } {
