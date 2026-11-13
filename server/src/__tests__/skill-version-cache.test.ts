@@ -304,6 +304,21 @@ describePostgres("immutable skill version cache", () => {
     expect(await f.resolve(f.versions[0]!.id)).toMatchObject({ source: old.source });
   });
 
+  it.each([
+    { snapshot: null, unknown: false },
+    { snapshot: {}, unknown: false },
+    { snapshot: { skillVersions: null }, unknown: true },
+    { snapshot: { skillVersions: [] }, unknown: true },
+    { snapshot: { skillVersions: {} }, unknown: false },
+  ])("preserves native pin presence semantics for $snapshot", async ({ snapshot, unknown }) => {
+    const f = await fixture();
+    const { run } = await legacyNativeRun(f.companyId);
+    await db.update(heartbeatRuns).set({ contextSnapshot: snapshot }).where(eq(heartbeatRuns.id, run.id));
+    const deletion = companySkillService(db).deleteSkill(f.companyId, f.skillId);
+    if (unknown) await expect(deletion).rejects.toThrow("active or recovering run");
+    else await expect(deletion).resolves.toMatchObject({ id: f.skillId });
+  });
+
   it("deletes a later skill while keeping unknown legacy recovery versions protected", async () => {
     const f = await fixture();
     const { run } = await legacyNativeRun(f.companyId, [{ key: "paperclipai/paperclip/slack", versionId: null }]);
