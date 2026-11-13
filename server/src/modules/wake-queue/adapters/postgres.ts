@@ -1303,7 +1303,7 @@ export function createPostgresWakeQueueAdapter(db: Db, deps: WakeQueuePostgresAd
         // reuses none of them, so they no longer hold the task's next turn; any
         // other replacement still waits for them.
         const isolatedReplacement = agentRunSupersededByFreshContinuation(run)
-          && await freshContinuationIsolatesRun(tx, { companyId: input.companyId, runId: run.id });
+          ? await freshContinuationIsolatesRun(tx, { companyId: input.companyId, runId: run.id }) : false;
         if (!isolatedReplacement && await nativeManualAdmissionHoldsExecution(tx, { companyId: input.companyId, runId: run.id })) {
           return { outcome: { kind: "released" }, postCommitEffects: [], run: runSnapshot };
         }
@@ -1469,6 +1469,15 @@ export function createPostgresWakeQueueAdapter(db: Db, deps: WakeQueuePostgresAd
         // A release must leave deferred messages intact while execution is held.
         // The finishing conversation may still own its lease until finally cleanup.
         // Allow only bounded retry planning in that case; admission stays gated.
+        // The fallback's isolated continuation runs before any saved input: it
+        // alone carries the marker that prepares the new workspace and binds it.
+        // Promoting the follow-up now would make it the task's next run without
+        // that isolation (and the delivery worker would then skip the
+        // continuation). The follow-up stays deferred and is promoted behind
+        // the continuation when that run is released.
+        if (isolatedReplacement && isolatedReplacement.continuationPending) {
+          return { outcome: { kind: "released" }, postCommitEffects: [], run: runSnapshot };
+        }
         const executionBlocker = await getExecutionBlocker(tx, issueRow.companyId, issueRow.id);
         const recoveryOnly = Boolean(executionBlocker &&
           executionBlocker.cause === "execution_owner_active" && executionBlocker.runId === run.id &&

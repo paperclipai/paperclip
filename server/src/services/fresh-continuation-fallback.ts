@@ -326,12 +326,19 @@ export async function isFreshIsolatedContinuationWake(db: Db, input: { companyId
  * Holds that only protect the old executor's resources then no longer stand
  * between the task and its next turn.
  */
-export async function freshContinuationIsolatesRun(db: Db, input: { companyId: string; runId: string }): Promise<boolean> {
-  const [record] = await db.select({ id: issueRecoveryActions.id }).from(issueRecoveryActions).where(and(
+export async function freshContinuationIsolatesRun(db: Db, input: { companyId: string; runId: string }): Promise<false | {
+  /** The isolated continuation is recorded but not yet delivered as a run. */
+  continuationPending: boolean;
+}> {
+  const [record] = await db.select({ isolation: sql<string>`${issueRecoveryActions.evidence}#>>'{freshContinuation,isolation}'`,
+    delivery: sql<string | null>`${issueRecoveryActions.evidence}->>'continuationDelivery'` }).from(issueRecoveryActions).where(and(
     eq(issueRecoveryActions.companyId, input.companyId),
     sql`${issueRecoveryActions.evidence}#>>'{freshContinuation,sourceRunId}' = ${input.runId}`,
     sql`${issueRecoveryActions.evidence}#>>'{freshContinuation,isolation}' in ('fresh_isolated_workspace', 'remote_epoch')`)).limit(1);
-  return Boolean(record);
+  if (!record) return false;
+  // Only the recorded continuation carries the isolation marker that prepares
+  // the new workspace, so while it is pending it must be the task's next run.
+  return { continuationPending: record.isolation === "fresh_isolated_workspace" && record.delivery === "pending" };
 }
 
 export async function ensureFreshContinuation(db: Db, input: Input): Promise<FreshContinuationResult> {

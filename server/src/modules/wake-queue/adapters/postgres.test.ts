@@ -2,7 +2,7 @@ import { resolveExternalTestDatabaseUrl } from "../../../__tests__/helpers/exter
 import { DELIVERY_QUEUES } from "../../../services/delivery-work-notifications.js";
 import { instanceSettingsService } from "../../../services/instance-settings.js";
 import { randomBytes, randomUUID } from "node:crypto";
-import { and, eq } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import type { Db } from "@paperclipai/db";
 import { createSystemRecovery } from "../../../services/system-recovery-state.js";
@@ -506,8 +506,12 @@ describeEmbeddedPostgres("wake-queue postgres adapter", () => {
   });
 
   it.each([
-    ["fresh_isolated_workspace", "promoted"], ["remote_epoch", "promoted"], ["writer_ended", "released"],
-  ] as const)("promotes saved input behind an exhausted restart hold once a %s continuation replaced the run (%s)", async (isolation, expected) => {
+    ["fresh_isolated_workspace", "promoted", "not_requested"], ["remote_epoch", "promoted", "not_requested"],
+    ["writer_ended", "released", "not_requested"],
+    // The isolated continuation is still to be delivered: it runs first and binds the new workspace;
+    // promoting the follow-up now would make it the task's next run, without the isolation.
+    ["fresh_isolated_workspace", "released", "pending"],
+  ] as const)("promotes saved input behind an exhausted restart hold once a %s continuation replaced the run (%s, continuation %s)", async (isolation, expected, continuationDelivery) => {
     // Restart recovery exhausted its retries (systemRecovery.state exhausted, no stop receipt), then the
     // fallback replaced the run. An isolated continuation reuses none of the old executor's workspace,
     // so the manual-admission hold no longer stands between the task and the person's follow-up.
@@ -523,7 +527,8 @@ describeEmbeddedPostgres("wake-queue postgres adapter", () => {
     await db.insert(issueRecoveryActions).values({ companyId, sourceIssueId: issueId, kind: "active_run_watchdog",
       status: "resolved", outcome: "restored", ownerType: "system", returnOwnerAgentId: agentId,
       cause: "fresh_continuation", fingerprint: `fresh-continuation:${runId}`, nextAction: "Continuing.", resolvedAt: new Date(),
-      evidence: { runId, freshContinuation: { sourceRunId: runId, isolation, delivery: "saved_input" }, continuationDelivery: "not_requested" } });
+      evidence: { runId, freshContinuation: { sourceRunId: runId, isolation,
+        delivery: continuationDelivery === "pending" ? "recorded" : "saved_input" }, continuationDelivery } });
     const [comment] = await db.insert(issueComments).values({ companyId, issueId, authorType: "user", authorUserId: "responsible-user", body: "Follow-up during the run" }).returning();
     const wakeId = await seedDeferredWake({ companyId, agentId, issueId, requestedByActorId: "responsible-user",
       payload: { _paperclipWakeContext: { issueId, wakeReason: "issue_commented", wakeCommentIds: [comment.id] } },
@@ -536,6 +541,17 @@ describeEmbeddedPostgres("wake-queue postgres adapter", () => {
     const [wake] = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, wakeId));
     if (expected === "promoted") expect(wake.status).not.toBe("deferred_issue_execution");
     else expect(wake.status).toBe("deferred_issue_execution");
+    if (continuationDelivery !== "pending") return;
+    // The isolated continuation is delivered and runs; its release promotes the follow-up behind it.
+    const continuationRunId = await seedRun({ companyId, agentId, status: "succeeded", contextSnapshot: { issueId } });
+    await db.update(heartbeatRuns).set({ finishedAt: new Date() }).where(eq(heartbeatRuns.id, continuationRunId));
+    await db.update(issueRecoveryActions).set({ evidence: sql`${issueRecoveryActions.evidence}
+      || ${JSON.stringify({ continuationDelivery: "delivered", continuationRunId })}::jsonb` })
+      .where(eq(issueRecoveryActions.sourceIssueId, issueId));
+    expect((await release({ companyId, runId: continuationRunId, now: new Date(), suppressImmediateRecovery: true })).outcome.kind)
+      .toBe("promoted");
+    expect((await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, wakeId)))[0].status)
+      .not.toBe("deferred_issue_execution");
   });
 
   it.each([
