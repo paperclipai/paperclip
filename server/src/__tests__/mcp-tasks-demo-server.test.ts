@@ -145,7 +145,7 @@ const support = await getEmbeddedPostgresTestSupport();
     const [card] = await db.select().from(issueThreadInteractions).where(and(eq(issueThreadInteractions.companyId, org.id), eq(issueThreadInteractions.issueId, issue.id)));
     expect(card).toMatchObject({ kind: "ask_user_questions", status: "pending" });
     await db.update(issueThreadInteractions).set({ status: "answered", result: { version: 1, answers: [
-      { questionId: "decision", optionIds: ["approve"] },
+      { questionId: "decision", optionIds: ["choice_1"] },
       { questionId: "note", optionIds: [], otherText: "go ahead" },
     ] } }).where(eq(issueThreadInteractions.id, card!.id));
     const pending = call("needs_approval", { action: "rotate the demo key" });
