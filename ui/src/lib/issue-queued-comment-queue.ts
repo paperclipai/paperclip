@@ -188,3 +188,11 @@ export function mergePendingIssueQueuedComments(params: {
     ...(params.authoritativeQueue?.firstTurnCommentIds ? { firstTurnCommentIds: params.authoritativeQueue.firstTurnCommentIds } : {}),
   };
 }
+
+/**
+ * The user's Interrupt is delivering this deferred queue while the turn it
+ * stopped settles. Its messages count as sent, not as waiting.
+ */
+export function isQueuedInterruptHandoff(queue: Pick<IssueQueuedCommentQueue, "state" | "executionWait"> | null | undefined) {
+  return queue?.state === "deferred" && queue.executionWait?.reason === "interrupt_handoff";
+}
