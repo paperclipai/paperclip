@@ -3721,6 +3721,7 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
         compacted: 0,
         compactionFailed: 0,
       };
+      if (targets) for (const id of [...targets.workspaceIds, ...candidates.map(candidate => candidate.workspace.id)]) terminalWorkspaceDeadlines.delete(id);
       const readinessByWorkingTree = new Map<string, ReturnType<typeof inspectWorkspace>>();
       const pageWorkspaces = candidates.map(candidate => candidate.workspace);
       const [pageIssueTrees, pageActiveRunWorkspaces] = await Promise.all([
@@ -3979,6 +3980,7 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
         if (pageActiveRunWorkspaces.has(workspace.id)) {
           if (reopenPending) result.skippedReopened += 1;
           else result.skippedActiveRun += 1;
+          terminalWorkspaceDeadlines.delete(workspace.id);
           continue;
         }
         if (remoteWorkspace && isClosedExecutionWorkspaceStatus(workspace.status)) {
@@ -4219,6 +4221,7 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
         }
         if (pageActiveRunWorkspaces.has(workspace.id)) {
           result.skippedActiveRun += 1;
+          terminalWorkspaceDeadlines.delete(workspace.id);
           continue;
         }
         result.eligible += 1;
@@ -4427,6 +4430,13 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
           terminalInspections.delete(id);
         }
       }
+    },
+
+    takeDueTerminalWorkspaceTargets: (): { workspaceIds: string[]; rotation: boolean } => {
+      const at = now().getTime();
+      const due = (deadlines: Map<string, number>) => [...deadlines].filter(([, deadline]) => deadline <= at).map(([id]) => id);
+      const rotation = due(isolatedRehomeDeadlines).length + due(nestedCloneMigrationDeadlines).length + due(taskDirectoryDeadlines).length > 0;
+      return { workspaceIds: due(terminalWorkspaceDeadlines), rotation };
     },
 
     nextTerminalWorkspaceSweepAt: async () => {
