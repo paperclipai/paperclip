@@ -12,6 +12,7 @@ import {
 } from "lucide-react";
 import { useCompany } from "../context/CompanyContext";
 import { useDialogActions } from "../context/DialogContext";
+import { useSidebar } from "../context/SidebarContext";
 import { SIDEBAR_SCROLL_RESET_STATE } from "../lib/navigation-scroll";
 import { cn } from "../lib/utils";
 import { useInboxBadge } from "../hooks/useInboxBadge";
@@ -21,6 +22,7 @@ import { Badge } from "@/components/ui/badge";
 
 interface MobileBottomNavProps {
   visible: boolean;
+  chatListInDrawer?: boolean;
 }
 
 interface MobileNavLinkItem {
@@ -40,8 +42,9 @@ interface MobileNavActionItem {
 
 type MobileNavItem = MobileNavLinkItem | MobileNavActionItem;
 
-export function MobileBottomNav({ visible }: MobileBottomNavProps) {
+export function MobileBottomNav({ visible, chatListInDrawer = false }: MobileBottomNavProps) {
   const location = useLocation();
+  const { setSidebarOpen } = useSidebar();
   const { selectedCompanyId } = useCompany();
   const { openNewIssue } = useDialogActions();
   const { enabled: agentChatEnabled } = useAgentChatEnabled();
@@ -135,6 +138,10 @@ export function MobileBottomNav({ visible }: MobileBottomNavProps) {
               key={item.label}
               to={item.to}
               state={SIDEBAR_SCROLL_RESET_STATE}
+              onClick={item.to === "/chats" && chatListInDrawer ? (event) => {
+                event.preventDefault();
+                setSidebarOpen(true);
+              } : undefined}
               className={({ isActive }) =>
                 cn(
                   "relative flex min-w-0 flex-col items-center justify-center gap-1 rounded-md text-(length:--text-nano) font-medium transition-colors",
