@@ -700,6 +700,82 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
     expect(await agentExecutionsHaveStopped(db, [agent.id])).toBe(true);
   });
 
+  it("does not fetch historical run payloads during stop checks", async () => {
+    const agent = await hire();
+    await db.insert(heartbeatRuns).values(["succeeded", "failed", "timed_out"].map(status => ({
+      companyId, agentId: agent.id, status, invocationSource: "on_demand",
+      runtimeMode: "legacy", startedAt: new Date(), finishedAt: new Date(),
+      resultJson: { stdout: "x".repeat(65_536) },
+      contextSnapshot: { transcript: "y".repeat(65_536) },
+    })));
+    const selected: Array<Record<string, unknown> | undefined> = [];
+    const select = db.select.bind(db);
+    const spy = vi.spyOn(db, "select").mockImplementation(((fields?: Record<string, unknown>) => {
+      const builder = fields ? select(fields as never) : select();
+      const from = builder.from.bind(builder);
+      (builder as { from: unknown }).from = (table: unknown) => {
+        if (table === heartbeatRuns) selected.push(fields);
+        return from(table as never);
+      };
+      return builder;
+    }) as typeof db.select);
+    try {
+      const { heartbeatService } = await import("../../../services/heartbeat.js");
+      expect(await heartbeatService(db).stopInvocationsForAgents(
+        [agent.id], "Agent lifecycle stop requested",
+      )).toBe(true);
+    } finally {
+      spy.mockRestore();
+    }
+    expect(selected.length).toBeGreaterThan(0);
+    expect(selected.filter(fields => !fields ||
+      Object.values(fields).some(value => value === heartbeatRuns.resultJson ||
+        value === heartbeatRuns.contextSnapshot))).toEqual([]);
+  });
+
+  it("checks historical cancellation proofs without trusting unrelated settled runs", async () => {
+    const agent = await hire();
+    for (let i = 0; i < 12; i++) {
+      await db.insert(heartbeatRuns).values({
+        companyId, agentId: agent.id, status: "succeeded",
+        invocationSource: "on_demand", runtimeMode: "legacy",
+        startedAt: new Date(), finishedAt: new Date(),
+        resultJson: { transcript: "a".repeat(16_384), index: i },
+      });
+    }
+    const [cancelled] = await db.insert(heartbeatRuns).values({
+      companyId, agentId: agent.id, status: "cancelled",
+      invocationSource: "on_demand", runtimeMode: "legacy",
+      startedAt: new Date(), finishedAt: new Date(),
+      runnerProfileJson: { adapterDispatch: { adapterType: "claude_local" } },
+      executionStage: "settled",
+    }).returning();
+    expect(await agentExecutionsHaveStopped(db, [agent.id])).toBe(false);
+    await db.update(heartbeatRuns).set({
+      resultJson: { executionCancellation: { state: "acknowledged" } },
+    }).where(eq(heartbeatRuns.id, cancelled.id));
+    expect(await agentExecutionsHaveStopped(db, [agent.id])).toBe(true);
+
+    const [remote] = await db.insert(heartbeatRuns).values({
+      companyId, agentId: agent.id, status: "cancelled",
+      invocationSource: "on_demand", runtimeMode: "legacy",
+      startedAt: new Date(), finishedAt: new Date(),
+    }).returning();
+    const [lease] = await db.insert(environmentLeases).values({
+      companyId, heartbeatRunId: remote.id, provider: "ssh",
+      providerLeaseId: "ssh://agent@test:22/work", status: "expired",
+      releasedAt: new Date(),
+    }).returning();
+    expect(await agentExecutionsHaveStopped(db, [agent.id])).toBe(false);
+    await db.update(environmentLeases).set({
+      cleanupStatus: "success",
+      metadata: { remoteExecutionTermination: remoteTerminationReceipt(
+        lease, { providerLeaseId: lease.providerLeaseId, state: "stopped" },
+      ) },
+    }).where(eq(environmentLeases.id, lease.id));
+    expect(await agentExecutionsHaveStopped(db, [agent.id])).toBe(true);
+  });
+
   it("does not prepare a proposed hire until approval", async () => {
     const observed: string[] = [];
     const work = worker(async agent => { observed.push(agent.lifecycleState); return "complete"; });
