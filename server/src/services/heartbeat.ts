@@ -2,6 +2,7 @@ import { registerHeldPreparationResumer } from "./interrupted-preparation-hold-s
 import { registerCompletedTurnCleanupResumer } from "./native-runtime/completed-turn-cleanup-hold-settlement.js";
 import { endStorageOutageWaitOn, reportStorageOutageWaitsTo, runInOwnStorageScope } from "../storage/storage-unavailable.js";
 import { createStorageWaitNotice } from "./heartbeat/storage-wait-notice.js";
+import { createStalledQueuedRunCancel } from "./heartbeat/stalled-queued-run.js";
 import { resolveProviderApiPlacement } from "./native-runtime/provider-api-placement.js";
 import { isProcessRunAdmissionClosed } from "./heartbeat/run-admission.js";
 import { isYieldingRunStarts, refreshRunStartYieldIfStale, type RunStartHandover } from "./run-start-handover.js";
@@ -1041,6 +1042,7 @@ export function heartbeatService(
     // Bound at call time: the heartbeat recovery module is created below.
     settleLostRunProcess: scope => recoverActiveExecutions(scope),
     startSavedWorkRecovery: source => startOverdueWorkspaceRecovery(db, environmentRuntime, resumeRemoteStopComments, source),
+    cancelStalledQueuedRun: createStalledQueuedRunCancel({ setRunStatusFromLive, setWakeupStatus, appendRunEvent, releaseIssueExecutionAndPromote }),
     settleExplicitContinuationRetry: releaseIssueExecutionAndPromote,
     scheduleRecoveryRetry: async (runId, outcome) => {
       const [run] = await db
