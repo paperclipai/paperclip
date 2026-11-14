@@ -816,11 +816,14 @@ export class CodexHarnessSession
     const unexpectedActive = activeTurns.find(
       (turn) => text(turn.id) !== expectedTurnId,
     );
-    if (unexpectedActive !== undefined) {
-      throw new HarnessReconciliationError(
-        `thread/read exposed active turn ${text(unexpectedActive.id)} instead of persisted active turn ${expectedTurnId ?? "none"}`,
-      );
-    }
+    const expectedIndex = turns.findIndex((turn) => text(turn.id) === expectedTurnId);
+    const awaitedProviderTurn = unexpectedActive !== undefined && activeTurns.length === 1 && expectedIndex >= 0
+      && turns.indexOf(unexpectedActive) > expectedIndex && text(turns[expectedIndex]!.status) === "completed"
+      && turns[expectedIndex]!.awaitingProviderTurn === true;
+    const unexpectedActiveTurn = () => new HarnessReconciliationError(
+      `thread/read exposed active turn ${text(unexpectedActive?.id)} instead of persisted active turn ${expectedTurnId ?? "none"}`,
+    );
+    if (unexpectedActive !== undefined && !awaitedProviderTurn) throw unexpectedActiveTurn();
 
     let reconciledTerminalTurnId: string | null = null;
     if (expectedTurnId !== null) {
@@ -857,6 +860,7 @@ export class CodexHarnessSession
         }
       }
     }
+    if (awaitedProviderTurn && !this.awaitingProviderTurn) throw unexpectedActiveTurn();
 
     for (const [turnId, fingerprint] of this.terminalTurns) {
       const reported = turns.find((turn) => text(turn.id) === turnId);

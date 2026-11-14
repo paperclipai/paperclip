@@ -633,7 +633,7 @@ class HarnessNativeSession implements NativeSession {
           const disposition =
             snapshot.semanticResult?.result.reportedWorkDisposition ??
             "yielded";
-          this.#terminal = {
+          if (event.payload.awaitingProviderTurn !== true) this.#terminal = {
             schema: "paperclip.prp.terminal.v1",
             turnTerminalState:
               event.eventType === "turn.completed"

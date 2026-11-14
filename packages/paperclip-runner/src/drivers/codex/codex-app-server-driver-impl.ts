@@ -604,6 +604,8 @@ export class CodexAppServerDriver implements HarnessDriver {
         }
         recoveredActiveTurnId = active.length === 1 ? text(active[0]?.id) : recoveredActiveTurnId;
       }
+      const awaitingProviderTurn = snapshot.awaitingProviderTurn === true && snapshot.semanticResult == null
+        && recoveredActiveTurnId === null && (snapshot.terminalTurns?.length ?? 0) > 0;
       if (
         !recoveringAutonomousGoal &&
         !this.#direct() &&
@@ -639,7 +641,7 @@ export class CodexAppServerDriver implements HarnessDriver {
           );
         }
         const laterTurns =
-          lastKnownTerminalIndex < 0
+          lastKnownTerminalIndex < 0 || awaitingProviderTurn
             ? []
             : turns.slice(lastKnownTerminalIndex + 1);
         if (laterTurns.length > 1) {
@@ -716,6 +718,7 @@ export class CodexAppServerDriver implements HarnessDriver {
       let lostAcceptedTurnId: string | null = null;
       if (
         !recoveringAutonomousGoal &&
+        !awaitingProviderTurn &&
         recoveredActiveTurnId === null &&
         !reconcileUncheckpointedDispositionTurn &&
         snapshot.semanticResult == null

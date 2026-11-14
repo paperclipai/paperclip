@@ -14,3 +14,22 @@ export function providerTurnToolCallSourceSeq(
   }
   return null;
 }
+
+const terminalEventTypes = new Set(["turn.completed", "turn.failed", "turn.cancelled", "turn.interrupted"]);
+
+export function providerTurnStartBefore(
+  events: readonly Pick<DurableRecoveryCommittedEvent, "sourceSeq" | "eventType" | "envelope">[],
+  sourceSeq: number,
+): { turnId: string; payload: Record<string, unknown> } | null {
+  let expected = sourceSeq - 1;
+  for (let at = events.length - 1; at >= 0; at -= 1) {
+    const event = events[at]!;
+    if (event.sourceSeq >= sourceSeq) continue;
+    if (event.sourceSeq !== expected-- || terminalEventTypes.has(event.eventType)) return null;
+    if (event.eventType !== "turn.started") continue;
+    const payload = record(record(event.envelope.payload).payload);
+    return payload.origin === "provider" && typeof payload.providerTurnId === "string" && payload.providerTurnId.length > 0
+      ? { turnId: payload.providerTurnId, payload } : null;
+  }
+  return null;
+}

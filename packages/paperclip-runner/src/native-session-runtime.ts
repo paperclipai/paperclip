@@ -1193,6 +1193,7 @@ async function consumeTurn(
   supersededTerminal?: (event: PrpEvent, signal: AbortSignal) => Promise<boolean>,
   providerTurnWaitOptions?: ProviderTurnWaitOptions,
   resumedProviderTurnWait?: PrpEvent,
+  checkpointProviderTurn?: (signal: AbortSignal) => Promise<unknown>,
 ) {
   let timer: ReturnType<typeof setTimeout> | undefined;
   const providerTurnWait = createProviderTurnWait({
@@ -1475,6 +1476,10 @@ async function consumeTurn(
         if (ended !== null) return ended;
       }
       providerTurnWait.observe(event);
+      if (event.eventType === "turn.started" && payload.origin === "provider") {
+        await checkpointProviderTurn?.(appendAbort.signal);
+        appendAbort.signal.throwIfAborted();
+      }
       const eventGoal = goalFromEvent(event);
       const goalChanged = eventGoal !== undefined &&
         goalLifecycleFingerprint(eventGoal) !== goalLifecycleFingerprint(previousGoal);
@@ -1696,7 +1701,11 @@ async function consumeTurn(
           };
         }
         if (semanticResultProposal === null && governedResult === null && inputTimers.size === 0 &&
-            awaitsProviderTurn(event) && providerTurnWait.begin(event)) continue;
+            awaitsProviderTurn(event) && providerTurnWait.begin(event)) {
+          await checkpointProviderTurn?.(appendAbort.signal);
+          appendAbort.signal.throwIfAborted();
+          continue;
+        }
         if (semanticResultProposal === null && governedResult === null &&
             inputTimers.size === 0 && await resumeInterruptedTurn?.(event, appendAbort.signal)) continue;
         await settlePendingDeltas();
@@ -3251,6 +3260,7 @@ export async function executeNativeSession(
               supersededByRestartContinuation,
               options.providerTurnWait,
               resumedProviderTurnWait,
+              checkpoint,
             )
           : Promise.resolve({
               event: recoveryTerminal,
