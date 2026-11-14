@@ -52,5 +52,6 @@ export default defineConfig({
       hooks: "list",
     },
     setupFiles: ["./src/__tests__/setup-supertest.ts"],
+    globalSetup: ["./src/__tests__/warm-transforms.global-setup.ts"],
   },
 });
