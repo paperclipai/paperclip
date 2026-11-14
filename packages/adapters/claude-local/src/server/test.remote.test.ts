@@ -47,6 +47,13 @@ vi.mock("@paperclipai/adapter-utils/execution-target", async () => {
   };
 });
 
+vi.mock("./probe-env.js", () => ({
+  buildLocalAdapterTestProbeEnv: vi.fn(async () => ({
+    command: "/trusted/bin/claude",
+    env: {},
+  })),
+}));
+
 import { testEnvironment } from "./test.js";
 import { ADAPTER_AUTH_MISSING_CHECK_CODE } from "./auth-check.js";
 import { resetClaudeCliCapabilitiesCacheForTests } from "./cli-capabilities.js";
@@ -220,5 +227,72 @@ describe("claude CLI model compatibility check", () => {
       string[],
     ];
     expect(versionCall[3]).toEqual(["--version"]);
+  });
+});
+
+describe("claude local confinement probe", () => {
+  const successStream = [
+    initLine,
+    '{"type":"result","subtype":"success","is_error":false,"result":"hello","session_id":"abc"}',
+  ].join("\n");
+
+  it("runs the local hello probe inside the configured process sandbox", async () => {
+    probeResult.value = { exitCode: 0, stdout: successStream, stderr: "" };
+
+    const result = await testEnvironment({
+      companyId: "company-1",
+      adapterType: "claude_local",
+      config: { model: "claude-opus-5", engine: "cli", command: "claude", filesystemScope: "workspace" },
+    });
+
+    expect(result.checks).toContainEqual(expect.objectContaining({ code: "claude_hello_probe_confined" }));
+    const hello = runAdapterExecutionTargetProcess.mock.calls.find(
+      (call) => (call as unknown as [string, unknown, string, string[]])[3]?.includes("--print"),
+    ) as unknown as [string, unknown, string, string[], { localProcessSandbox?: Record<string, unknown> }];
+    expect(hello[4]?.localProcessSandbox).toMatchObject({
+      workspaceDir: "/home/daytona/paperclip-workspace",
+      filesystemScope: "workspace",
+      command: "bwrap",
+    });
+    expect((hello[4]?.localProcessSandbox?.managedPaths as { path: string; access: string }[]).every(
+      (entry) => entry.access === "rw" && entry.path.length > 0,
+    )).toBe(true);
+  });
+
+  it("skips the hello probe with an error when the confinement tool is unavailable", async () => {
+    ensureAdapterExecutionTargetCommandResolvable
+      .mockResolvedValueOnce(undefined)
+      .mockRejectedValueOnce(new Error("Command not found in PATH: \"bwrap\""));
+
+    const result = await testEnvironment({
+      companyId: "company-1",
+      adapterType: "claude_local",
+      config: { model: "claude-opus-5", engine: "cli", command: "claude", filesystemScope: "workspace" },
+    });
+
+    expect(result.status).toBe("fail");
+    expect(result.checks).toContainEqual(expect.objectContaining({
+      code: "claude_hello_probe_sandbox_unavailable",
+      level: "error",
+    }));
+    const hello = runAdapterExecutionTargetProcess.mock.calls.find(
+      (call) => (call as unknown as [string, unknown, string, string[]])[3]?.includes("--print"),
+    );
+    expect(hello).toBeUndefined();
+  });
+
+  it("leaves remote and unconfined local probes outside the process sandbox", async () => {
+    probeResult.value = { exitCode: 0, stdout: successStream, stderr: "" };
+
+    const local = await testEnvironment({
+      companyId: "company-1",
+      adapterType: "claude_local",
+      config: { model: "claude-opus-5", engine: "cli", command: "claude" },
+    });
+    expect(local.checks.some((check) => check.code === "claude_hello_probe_confined")).toBe(false);
+    const localHello = runAdapterExecutionTargetProcess.mock.calls.find(
+      (call) => (call as unknown as [string, unknown, string, string[]])[3]?.includes("--print"),
+    ) as unknown as [string, unknown, string, string[], { localProcessSandbox?: unknown }];
+    expect(localHello[4]?.localProcessSandbox ?? null).toBeNull();
   });
 });
