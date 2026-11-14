@@ -148,6 +148,7 @@ export abstract class CodexSessionState {
    * the turn/start response arrives.
    */
   turnStartSettled: Promise<void> = Promise.resolve();
+  recoveryReconciled: Promise<void> = Promise.resolve();
   protocolFailed = false;
   protocolFailureCode: string | null = null;
   protocolFailureMessage: string | null = null;

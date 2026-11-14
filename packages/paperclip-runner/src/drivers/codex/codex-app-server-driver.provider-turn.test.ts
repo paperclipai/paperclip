@@ -253,7 +253,7 @@ async function restartedDuringWait(history: Array<Record<string, unknown>>, awai
   return { recovery: await driver.recoverSession!(checkpoint), transport: second };
 }
 
-async function restartedDuringActiveTurn(turns: Array<Record<string, unknown>>) {
+async function restartedDuringActiveTurn(turns: Array<Record<string, unknown>>, beforeRecovery?: (transport: FakeCodexTransport) => void) {
   const first = new FakeCodexTransport();
   const second = new FakeCodexTransport();
   const driver = makeDriver([first, second]);
@@ -265,6 +265,7 @@ async function restartedDuringActiveTurn(turns: Array<Record<string, unknown>>) 
   expect(checkpoint.activeTurnId).toBe("turn-1");
   await original.close({ reason: "controller restarted" });
   second.readResponse = { thread: { id: "thread-1", sessionId: "provider-session-1", cwd: WORKSPACE, turns } };
+  beforeRecovery?.(second);
   return { recovery: await driver.recoverSession!(checkpoint).catch((error: unknown): HarnessSessionRecoveryResult => ({ recovered: false, reason: String(error) })), transport: second };
 }
 
@@ -385,6 +386,83 @@ describe("Codex app-server driver after a controller restart during a wait for t
     expect(adopted.find(startedTurn("provider-1"))).toMatchObject({ payload: { origin: "provider" } });
     expect((await session.snapshot()).semanticResult).toMatchObject({ result, turnId: "provider-1" });
     await session.close({ reason: "fixture complete" });
+  });
+
+  it("reconciles the persisted turn before admitting a provider start queued before the recovery", async () => {
+    const closeReasons: unknown[] = [];
+    const { recovery } = await restartedDuringActiveTurn([
+      { id: "turn-1", status: "completed", items: [], awaitingProviderTurn: true },
+      { id: "provider-1", status: "inProgress", items: [] },
+    ], transport => {
+      const close = transport.close.bind(transport);
+      transport.close = async (reason?: string) => { closeReasons.push(reason); await close(); };
+      releaseProviderTurn(transport, "provider-1", { complete: true, withResult: true });
+    });
+    expect(closeReasons).toEqual([]);
+    expect(recovery).toMatchObject({ recovered: true });
+    const session = recovery.session!;
+    const events = session.events()[Symbol.asyncIterator]() as AsyncIterator<StreamEvent>;
+    const seen = await streamUntil(events, completedTurn("provider-1"));
+    expect(seen.filter(event => event.eventType === "session.failed")).toEqual([]);
+    expect(seen.find(completedTurn("turn-1"))).toMatchObject({ payload: { awaitingProviderTurn: true } });
+    expect(seen.findIndex(completedTurn("turn-1"))).toBeLessThan(seen.findIndex(startedTurn("provider-1")));
+    expect(startedTurns(seen)).toEqual([{ turnId: "provider-1", origin: "provider" }]);
+    expect(itemTurns(seen)).toEqual(["provider-1"]);
+    expect((await session.snapshot()).semanticResult).toMatchObject({ result, turnId: "provider-1" });
+    await session.close({ reason: "fixture complete" });
+  });
+
+  it("accepts the provider's turn in progress when the stream already settled the persisted turn into a wait before the reconciliation judged it", async () => {
+    const { recovery, transport } = await restartedDuringActiveTurn([
+      { id: "turn-1", status: "completed", items: [], awaitingProviderTurn: true },
+      { id: "provider-1", status: "inProgress", items: [] },
+    ], second => second.push("turn/completed", { threadId: "thread-1", turn: { id: "turn-1", status: "completed", items: [] }, awaitingProviderTurn: true }));
+    expect(recovery.reason).toBeUndefined();
+    const session = recovery.session!;
+    expect(await session.snapshot()).toMatchObject({ activeTurnId: null, awaitingProviderTurn: true });
+    const events = session.events()[Symbol.asyncIterator]() as AsyncIterator<StreamEvent>;
+    releaseProviderTurn(transport, "provider-1", { complete: true, withResult: true });
+    const seen = await streamUntil(events, completedTurn("provider-1"));
+    expect(seen.filter(event => event.eventType === "session.failed")).toEqual([]);
+    expect(seen.filter(completedTurn("turn-1"))).toHaveLength(1);
+    expect(seen.find(completedTurn("turn-1"))).toMatchObject({ payload: { awaitingProviderTurn: true } });
+    expect(startedTurns(seen)).toEqual([{ turnId: "provider-1", origin: "provider" }]);
+    expect((await session.snapshot()).semanticResult).toMatchObject({ result, turnId: "provider-1" });
+    await session.close({ reason: "fixture complete" });
+  });
+
+  it("admits at once a provider start that arrives after the stream settled the persisted turn into a wait, while the reconciliation is still reading", async () => {
+    const { recovery, transport } = await restartedDuringActiveTurn([
+      { id: "turn-1", status: "completed", items: [], awaitingProviderTurn: true },
+      { id: "provider-1", status: "inProgress", items: [] },
+    ], second => {
+      second.push("turn/completed", { threadId: "thread-1", turn: { id: "turn-1", status: "completed", items: [] }, awaitingProviderTurn: true });
+      second.push("turn/started", { threadId: "thread-1", turn: { id: "provider-1", status: "inProgress" }, origin: "provider" });
+    });
+    expect(recovery.reason).toBeUndefined();
+    const session = recovery.session!;
+    const events = session.events()[Symbol.asyncIterator]() as AsyncIterator<StreamEvent>;
+    const seen = await streamUntil(events, event => event.eventType === "session.reconciled");
+    expect(seen.filter(event => event.eventType === "session.failed")).toEqual([]);
+    expect(startedTurns(seen)).toEqual([{ turnId: "provider-1", origin: "provider" }]);
+    expect(seen.at(-1)).toMatchObject({ eventType: "session.reconciled", payload: { activeTurnId: "provider-1" } });
+    transport.push("paperclip/runResult", { threadId: "thread-1", turnId: "provider-1", result });
+    transport.push("turn/completed", { threadId: "thread-1", turn: { id: "provider-1", status: "completed", items: [] } });
+    await streamUntil(events, completedTurn("provider-1"));
+    expect((await session.snapshot()).semanticResult).toMatchObject({ result, turnId: "provider-1" });
+    await session.close({ reason: "fixture complete" });
+  });
+
+  it.each([
+    ["two turns are in progress", [
+      { id: "turn-1", status: "completed", items: [], awaitingProviderTurn: true },
+      { id: "provider-1", status: "inProgress", items: [] }, { id: "provider-2", status: "inProgress", items: [] }]],
+    ["the turn in progress is listed before the settled turn", [
+      { id: "provider-1", status: "inProgress", items: [] }, { id: "turn-1", status: "completed", items: [], awaitingProviderTurn: true }]],
+  ])("still refuses another active turn after the stream settled the persisted turn into a wait when %s", async (_case, turns) => {
+    const { recovery } = await restartedDuringActiveTurn(turns,
+      second => second.push("turn/completed", { threadId: "thread-1", turn: { id: "turn-1", status: "completed", items: [] }, awaitingProviderTurn: true }));
+    expect(recovery).toMatchObject({ recovered: false, reason: expect.stringContaining("thread/read exposed active turn provider-1 instead of persisted active turn none") });
   });
 
   it.each([

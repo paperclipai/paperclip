@@ -387,7 +387,7 @@ const replyResult: PrpStructuredRunResult = { schema: "paperclip.run_result.v1",
   evidence: [], verification: [], attentionRequests: [], artifacts: [] };
 
 async function runConsumerRestartScenario(tokens: string, options: { at: "wait" | "provider-turn" | "turn"; waitMs: number; replyResult?: boolean; holdFirstToolCall?: boolean; sidecarArgs?: string; optIn?: boolean;
-  slowAppend?: (event: PrpEvent) => boolean }) {
+  slowAppend?: (event: PrpEvent) => boolean; holdWaitCheckpoint?: boolean }) {
   const fixture = await restartFixture(tokens, options.sidecarArgs, options.optIn ?? true);
   const { identity, execution } = fixture;
   const appended: PrpEvent[] = [], committed: PrpEvent[] = [], appendedAt: number[] = [], checkpoints: PersistedNativeSession[] = [];
@@ -396,11 +396,16 @@ async function runConsumerRestartScenario(tokens: string, options: { at: "wait" 
   let releaseQueued = () => {};
   const fence = new Promise<void>(done => { releaseQueued = done; });
   const queuedAtRestart: PrpEvent[] = [];
+  let heldCheckpoint: PersistedNativeSession | null = null;
   const controlPlane = (fencedController: boolean) => {
     const guard = () => { if (fencedController && fenced) throw new Error("controller fenced for restart"); };
     return {
       async openRun() { guard(); },
-      async checkpointSession(value: PersistedNativeSession) { guard(); checkpoints.push(structuredClone(value)); },
+      async checkpointSession(value: PersistedNativeSession) {
+        guard();
+        if (fencedController && options.holdWaitCheckpoint && value.awaitingProviderTurn === true) { heldCheckpoint = structuredClone(value); await fence; guard(); }
+        checkpoints.push(structuredClone(value));
+      },
       async appendEvent(value: PrpEvent) {
         guard();
         if (fencedController && options.slowAppend) {
@@ -437,6 +442,7 @@ async function runConsumerRestartScenario(tokens: string, options: { at: "wait" 
     await vi.waitFor(() => expect(appended.some(reached) && (!options.holdFirstToolCall || held)).toBe(true), { timeout: 20_000, interval: 20 });
     await vi.waitFor(() => expect(checkpoints.some(shaped)).toBe(true), { timeout: options.slowAppend ? 10_000 : 1_000, interval: 20 }).catch(() => undefined);
     if (options.slowAppend) await vi.waitFor(() => expect(queuedAtRestart.length).toBeGreaterThan(0), { timeout: 5_000, interval: 20 });
+    if (options.holdWaitCheckpoint) await vi.waitFor(() => expect(heldCheckpoint).not.toBeNull(), { timeout: 5_000, interval: 20 });
     fenced = true;
     releaseQueued();
     const committedAtRestart = structuredClone(committed);
@@ -456,7 +462,7 @@ async function runConsumerRestartScenario(tokens: string, options: { at: "wait" 
     const closeOutcome = await second.transport.close().then(() => "closed", (error: unknown) => String(error instanceof Error ? error.message : error));
     const final = await fixture.atRestart();
     return { runnerInstanceId: identity.runnerInstanceId, checkpoint, pid, recoveredPid, atRestart, serverRequests, appended, appendedAfterRestart: appended.slice(firstAppended), checkpoints, outcome, completeRun, closeOutcome,
-      diagnostics: fixture.diagnostics, journalled: final.journalled, durable: final.durable, committed, committedAtRestart, queuedAtRestart };
+      diagnostics: fixture.diagnostics, journalled: final.journalled, durable: final.durable, committed, committedAtRestart, queuedAtRestart, heldCheckpoint };
   } catch (error) {
     throw await fixture.fail(error);
   } finally {
@@ -755,6 +761,24 @@ it.skipIf(process.platform === "win32")("R8 characterization: after the old cont
   expect(resolvedCalls(run.journalled)).toEqual([["provider-1", "call-provider-finish", null]]);
   expect(run.completeRun).not.toHaveBeenCalled();
   expect(run.durable).not.toContain("conflicting duplicate");
+}, 60_000);
+
+it.skipIf(process.platform === "win32")("R10 recovers from the checkpoint saved at the controller turn's start when the wait checkpoint was not saved, and admits the provider turn's start only after reconciling that turn", async () => {
+  const run = await runConsumerRestartScenario("live provider-turn provider-result-resolved provider-goal-at-terminal provider-turn-delay-ms=300",
+    { at: "wait", waitMs: 1_000, holdFirstToolCall: true, holdWaitCheckpoint: true });
+  const controllerTurn = run.checkpoint.activeTurnId!;
+  expect(controllerTurn).toEqual(expect.any(String));
+  expect(run.checkpoint).toMatchObject({ semanticResult: null });
+  expect(run.heldCheckpoint).toMatchObject({ activeTurnId: null, awaitingProviderTurn: true });
+  expect(run.committedAtRestart.filter(awaitingTerminal).map(event => event.turnId)).toEqual([controllerTurn]);
+  expect(acked(run as unknown as RestartRun, "turn.completed").filter(payload => payload.awaitingProviderTurn === true)).toHaveLength(1);
+  expect(run.atRestart.durable).toContain("call-provider-finish");
+  expect(run.appended.filter(event => event.eventType === "session.failed")).toEqual([]);
+  expectSettledOnce(run);
+  expect(run.completeRun.mock.calls[0]![0]).toMatchObject({ turnId: "provider-1", result: { reportedWorkDisposition: "done" } });
+  expect(providerTurnStarts(run)).toEqual(["provider-1"]);
+  expect(answeredCalls(run)).toEqual([["provider-1", "paperclip_finish", true]]);
+  expect(resolvedCalls(run.journalled)).toEqual([["provider-1", "call-provider-finish", null]]);
 }, 60_000);
 
 it.skipIf(process.platform === "win32")("R9 characterization: an ordinary turn whose start checkpoint is ahead of Core settles after a restart, and Core lacks only the event the old controller did not store", async () => {

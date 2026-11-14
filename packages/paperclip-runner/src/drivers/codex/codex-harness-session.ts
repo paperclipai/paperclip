@@ -760,7 +760,13 @@ export class CodexHarnessSession
     }
   }
 
-  async reconcile(): Promise<Record<string, unknown>> {
+  reconcile(): Promise<Record<string, unknown>> {
+    const reconciled = this.#reconcile();
+    this.recoveryReconciled = reconciled.then(() => undefined, () => undefined);
+    return reconciled;
+  }
+
+  async #reconcile(): Promise<Record<string, unknown>> {
     this.assertProtocolIntegrity();
     this.requireCapability("reconciliation");
     const snapshot = await this.read();
@@ -823,7 +829,10 @@ export class CodexHarnessSession
     const unexpectedActiveTurn = () => new HarnessReconciliationError(
       `thread/read exposed active turn ${text(unexpectedActive?.id)} instead of persisted active turn ${expectedTurnId ?? "none"}`,
     );
-    if (unexpectedActive !== undefined && !awaitedProviderTurn) throw unexpectedActiveTurn();
+    const lastTerminalIndex = turns.findLastIndex((turn) => this.terminalTurns.has(text(turn.id)));
+    const awaitedWhileWaiting = unexpectedActive !== undefined && activeTurns.length === 1 && expectedTurnId === null
+      && this.awaitingProviderTurn && lastTerminalIndex >= 0 && turns.indexOf(unexpectedActive) > lastTerminalIndex;
+    if (unexpectedActive !== undefined && !awaitedProviderTurn && !awaitedWhileWaiting) throw unexpectedActiveTurn();
 
     let reconciledTerminalTurnId: string | null = null;
     if (expectedTurnId !== null) {
