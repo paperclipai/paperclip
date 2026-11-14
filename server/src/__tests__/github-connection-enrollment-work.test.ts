@@ -1,7 +1,7 @@
 import { mkdtemp, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { createServer, type Server } from "node:http";
+import { createServer, type Server, type ServerResponse } from "node:http";
 import { once } from "node:events";
 import { setImmediate as yieldForIo } from "node:timers/promises";
 import { createCipheriv, createPublicKey, diffieHellman, generateKeyPairSync, hkdfSync, randomBytes, randomUUID, verify } from "node:crypto";
@@ -40,6 +40,7 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
     let worker: ReturnType<typeof registerGitHubConnectionEventWork> | undefined;
     let coordinator: ReturnType<typeof createDeliveryWorkCoordinator> | undefined;
     let metadata: ReturnType<typeof startMcpClientMirrorSync> | undefined;
+    let firstLeaseResponse: ServerResponse | undefined;
     let releaseFirstEnrollment!: () => void;
     const firstEnrollmentResponse = new Promise<void>(resolve => { releaseFirstEnrollment = resolve; });
     const errors: unknown[] = [], httpErrors: unknown[] = [];
@@ -76,7 +77,7 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
             res.end(JSON.stringify({ acknowledged: 1 })); return;
           }
           expect(req.url).toBe("/v1/connector/events/lease"); leases++;
-          if (leases === 1) await firstEnrollmentResponse;
+          if (leases === 1) { firstLeaseResponse = res; await firstEnrollmentResponse; }
           if (delivered.has(eventId)) { res.end(JSON.stringify({ events: [], eventWakeVersion: 1 })); return; }
           const ephemeral = generateKeyPairSync("x25519"), epk = ephemeral.publicKey.export({ format: "jwk" }).x!;
           const recipient = createPublicKey({ key: { kty: "OKP", crv: "X25519", x: enrollment!.sealPublicKey }, format: "jwk" });
@@ -154,14 +155,18 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
       const firstIdentity = await enroll();
       expect(wakeConnectionEvents(db)).toBe(true);
       const firstPass = vi.advanceTimersByTimeAsync(6_000);
+      await firstPass;
       await observe(() => expect(leases).toBe(1));
+      expect(acknowledged).toBe(0);
+      expect(firstLeaseResponse).toBeDefined();
+      expect(firstLeaseResponse!.writableEnded).toBe(false);
+      expect(firstLeaseResponse!.destroyed).toBe(false);
       // Registration runs through BOTH real production owners and the normal coordinator.
       // This narrow check proves metadata registration coexistence, not a metadata publication ACK.
       metadata = startMcpClientMirrorSync(db, coordinator, "https://self-hosted.example.test", { instanceId: firstIdentity });
       expect(hasConnectionEventWakeReceiver(db)).toBe(true);
       expect(hasConnectionEventWakeReceiver(db, { importsClientMetadata: true })).toBe(true);
       releaseFirstEnrollment();
-      await firstPass;
       await metadata.worker.stop(); metadata = undefined;
       expect(hasConnectionEventWakeReceiver(db, { importsClientMetadata: true })).toBe(false);
       expect(hasConnectionEventWakeReceiver(db)).toBe(true);
