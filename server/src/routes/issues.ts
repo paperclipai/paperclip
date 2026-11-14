@@ -1,4 +1,5 @@
 import { assertAgentInteraction } from "../services/agent-interaction-policy.js";
+import { isAppQuestionCardKey } from "../services/mcp-elicitation.js";
 import { assertQueuedCommentInteractionDelivery, recheckQueuedCommentInteractionDelivery } from "../services/agent-interaction-delivery.js";
 import { listStalledDependencies } from "../services/recovery/blocker-stall-wakeups.js";
 import { confirmMcpAttachmentCleanup, recordMcpAttachmentCleanup, type McpAttachmentCleanup } from "../services/public-mcp/upload-cleanup.js";
@@ -19366,6 +19367,18 @@ export function issueRoutes(
 
       // Skip intentionally does not enqueue an interaction continuation. A
       // subsequent ordinary message uses the existing comment steering path.
+      // An app's question is the exception: skipping is the person's "no",
+      // which only reaches the app on the agent's next call, so wake it.
+      if (isAppQuestionCardKey(interaction.idempotencyKey)) {
+        await queueResolvedInteractionContinuationWakeup({
+          db,
+          heartbeat,
+          issue,
+          interaction,
+          actor,
+          source: "issue.interaction.skip",
+        });
+      }
       res.json(interaction);
     },
   );
