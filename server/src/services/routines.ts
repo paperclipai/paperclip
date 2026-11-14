@@ -461,8 +461,6 @@ function resolveRoutineVariableValues(
   for (const variable of variables) {
     // Workspace-derived automatic values are authoritative for variables that
     // Paperclip manages from execution context, so callers cannot override them.
-    // Own-property lookups keep names like `toString` from resolving to
-    // Object.prototype members.
     const automaticValue = ownRecordValue(automaticVariables, variable.name);
     const providedValue = ownRecordValue(provided, variable.name);
     const candidate = automaticValue !== undefined
