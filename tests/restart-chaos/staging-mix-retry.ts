@@ -6,7 +6,7 @@ import {
   bannerShownMs, completedAtAnchor, doneCommentsBeforeCompletion, DUPLICATE_CHECKS, firstDoneCommentAt, noteRetryBanner, type CompletionEvidence,
 } from "./staging-mix.js";
 import type { InterruptionSample, OracleResult, TaskPlan, TaskRecord, TaskSample } from "./types.js";
-import { laterAnswers, laterAnswerWaits, type LaterAnswer } from "./follow-up-delivery.js";
+import { laterAnswers, laterAnswerWaits, rejectedDoneRuns, type LaterAnswer } from "./follow-up-delivery.js";
 
 type Json = Record<string, any>;
 
@@ -212,8 +212,10 @@ export function evidenceCompletion(evidence: WakeEvidenceFile | null, issueCompl
   const fromIssue = typeof issueCompletedAt === "string" && Number.isFinite(Date.parse(issueCompletedAt)) ? Date.parse(issueCompletedAt) : null;
   if (!evidence && fromIssue === null) return null;
   const answers = laterAnswers(evidence);
+  const rejected = rejectedDoneRuns(evidence);
   return { completedAt: evidence?.completedAt ?? fromIssue, runs: (evidence?.runs ?? []).map(run => ({ runId: run.runId, startedAt: run.startedAt ?? null,
-    acceptedDisposition: run.acceptedDisposition ?? null, acceptedAt: run.acceptedAt ?? null, answersFollowUp: Boolean(run.runId && answers.has(run.runId)) })) };
+    acceptedDisposition: run.acceptedDisposition ?? null, acceptedAt: run.acceptedAt ?? null, answersFollowUp: Boolean(run.runId && answers.has(run.runId)),
+    doneRejected: Boolean(run.runId && rejected.has(run.runId)) })) };
 }
 
 export function runsAfterDone(taskId: string, evidence: WakeEvidenceFile | null, anchor: { at: number | null; source: string | null }, doneCommentAt: number | null = null):

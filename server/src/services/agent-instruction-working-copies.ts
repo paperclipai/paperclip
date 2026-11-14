@@ -483,13 +483,14 @@ export function agentInstructionWorkingCopyService(db: Db, options: { environmen
       : { nextAttemptAt: evidence === "directory_unavailable" ? retryAt : new Date(Date.now() + INSTRUCTION_COPY_RETRY_MS) }, true,
       sql`EXISTS (SELECT 1 FROM ${heartbeatRuns} WHERE ${heartbeatRuns.id} = ${copies.runId}
         AND ${heartbeatRuns.companyId} = ${copies.companyId}
-        AND ${heartbeatRuns.status} IN ('succeeded', 'failed', 'cancelled', 'timed_out', 'interrupted'))`);
+        AND ${heartbeatRuns.status} IN ('succeeded', 'failed', 'cancelled', 'timed_out', 'interrupted'))
+        AND date_trunc('milliseconds', ${copies.updatedAt}) = ${current.copy.updatedAt.toISOString()}::timestamptz`);
     const settled = claimed && evidence !== null ? await collectRecovered(claimed, evidence, retryAt) : claimed;
     const remaining = settled === undefined || settled === null ? (await readCollection(entry))?.copy
       : collectionCandidate(settled) ? settled : null;
     if (!remaining) return null;
     const next = { ...entry, dueAt: remaining.nextAttemptAt?.getTime() ?? 0 };
-    if (next.dueAt <= Date.now()) throw new Error("Instruction collection remains unresolved without a future retry");
+    if (next.dueAt <= Date.now() && claimed) throw new Error("Instruction collection remains unresolved without a future retry");
     return next;
   }
   async function recoverStopped() {
