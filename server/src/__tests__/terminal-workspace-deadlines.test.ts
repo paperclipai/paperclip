@@ -61,17 +61,22 @@ const realSleep = (ms: number) => new Promise(resolve => realSetTimeout(resolve,
     const service = executionWorkspaceService(db, { workspaceReaperCooldownDays: 1, workspaceCompactionDelayMs: HOUR,
       terminalWorkspaceInspectionBackoffMs: TERMINAL_WORKSPACE_RETRY_MS });
     const sweeps: Array<{ targets: string[] | null; checked: number; skippedCooldown: number; skippedActiveRun: number }> = [];
+    let inFlight = 0;
     const coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => true, onError: () => {} });
     const worker = registerTerminalWorkspaceWork(coordinator, { ...service,
       sweepTerminalWorkspaces: async (limit, signal, options) => {
-        const result = await service.sweepTerminalWorkspaces(limit, signal, options);
+        inFlight += 1;
+        const result = await service.sweepTerminalWorkspaces(limit, signal, options).finally(() => { inFlight -= 1; });
         sweeps.push({ targets: options?.targets ? [...options.targets.workspaceIds, ...options.targets.issueIds] : null,
           checked: result.checked, skippedCooldown: (result as { skippedCooldown: number }).skippedCooldown,
           skippedActiveRun: (result as { skippedActiveRun: number }).skippedActiveRun });
         return result;
       } }, () => true);
     const advance = async (ms: number) => {
-      for (let elapsed = 0; elapsed < ms; elapsed += 10_000) { await vi.advanceTimersByTimeAsync(10_000); await realSleep(20); }
+      for (let elapsed = 0; elapsed < ms; elapsed += 10_000) {
+        await vi.advanceTimersByTimeAsync(10_000);
+        do { await realSleep(10); await vi.advanceTimersByTimeAsync(1); } while (inFlight > 0);
+      }
     };
     return { sweeps, coordinator, worker, advance, stop: async () => { vi.useRealTimers(); await worker.stop(); await coordinator.stop(); } };
   }
