@@ -322,6 +322,38 @@ describe("GitHub score validation", () => {
     expect(() => validateGitHubReviewAssessment(invalid, context.headSha, defaultGitHubReviewPolicy()))
       .toThrow(expect.objectContaining({ status: 400, message: expect.stringContaining("coverage.limitations.0") }));
   });
+  it("reads a score or finding line sent as a string of digits as that number, and refuses any other text", () => {
+    const policy = defaultGitHubReviewPolicy();
+    const finding = {
+      key: "k",
+      path: "src/a.ts",
+      side: "RIGHT",
+      severity: "warning",
+      category: "correctness",
+      body: "Off by one",
+    };
+    const parsed = validateGitHubReviewAssessment(
+      { ...assessment(), score: " 4 ", findings: [{ ...finding, line: "12" }] },
+      context.headSha,
+      policy,
+    );
+    expect(parsed.score).toBe(4);
+    expect(parsed.findings[0]?.line).toBe(12);
+    for (const score of ["7", "5.0", "five", "-1", "1e2", ""]) {
+      expect(() =>
+        validateGitHubReviewAssessment({ ...assessment(), score }, context.headSha, policy),
+      ).toThrow(expect.objectContaining({ status: 400 }));
+    }
+    for (const line of ["0", "1.5", "x", ""]) {
+      expect(() =>
+        validateGitHubReviewAssessment(
+          { ...assessment(), findings: [{ ...finding, line }] },
+          context.headSha,
+          policy,
+        ),
+      ).toThrow(expect.objectContaining({ status: 400 }));
+    }
+  });
   it("keeps report-only conclusions neutral while incomplete gated reviews require action", () => {
     expect(
       githubReviewConclusion({ ...assessment(), complete: false }, 5),
