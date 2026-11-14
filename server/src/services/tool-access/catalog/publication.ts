@@ -29,7 +29,7 @@ import { isAgentMailConnection, type ToolCatalogDiscovery } from "./discovery.js
 import { classifyRisk, shouldQuarantineNewEntries, isGoogleWorkspaceToolAllowed, type McpToolDescriptor } from "./descriptors.js";
 import { toConnection } from "../connections/projection.js";
 import { toCatalogEntry } from "./projection.js";
-import { healthFailureHttpStatus, sanitizeHttpFailure, unreachableServerRemediation } from "./failures.js";
+import { healthFailureHttpStatus, isCallerAuthorizationFailure, sanitizeHttpFailure, unreachableServerRemediation } from "./failures.js";
 function asRecord(value: unknown): Record<string, unknown> {
   if (value && typeof value === "object" && !Array.isArray(value))
     return value as Record<string, unknown>;
@@ -94,6 +94,7 @@ export function createToolCatalogPublication(db: Db, { now, audit, getConnection
         unavailableServices,
       );
     } catch (error) {
+      if (isCallerAuthorizationFailure(error, actor)) throw error;
       if (
         error instanceof HttpError &&
         asRecord(error.details).code === "github_access_changed"

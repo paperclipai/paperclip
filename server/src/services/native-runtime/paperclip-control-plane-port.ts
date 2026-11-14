@@ -128,6 +128,7 @@ export class PaperclipControlPlanePort implements ControlPlanePort {
   #streamingBatch: PendingStreamingEvent[] = [];
   #streamingTimer: ReturnType<typeof setTimeout> | null = null;
   #streamingTail: Promise<void> = Promise.resolve();
+  #streamingFlushQueued = false;
   /** Deltas queued or committing. Other operations wait only when some are; otherwise they start at once. */
   #streamingEventsPending = 0;
   /**
@@ -143,6 +144,7 @@ export class PaperclipControlPlanePort implements ControlPlanePort {
     options: {
       /** Runtime-only secret; never part of the persisted binding. */
       privateKeyPem?: string;
+      secrets?: readonly string[];
       /** Synchronous revocation fence for a controller handing off on restart. */
       assertControllerActive?: () => void;
       /** Read-only admission may finish an existing startup solely for restart detachment. */
@@ -162,7 +164,7 @@ export class PaperclipControlPlanePort implements ControlPlanePort {
     this.#db = db;
     this.#assertControllerActive = options.assertControllerActive;
     this.#assertRunAdmissionActive = options.assertRunAdmissionActive ?? options.assertControllerActive;
-    this.#identityRedactor = createAgentIdentityRedactor(options.privateKeyPem);
+    this.#identityRedactor = createAgentIdentityRedactor(options.privateKeyPem, options.secrets, { maskResumedSuffixes: true });
     this.#binding = structuredClone(binding);
     this.#onCommittedEvent = options.onCommittedEvent;
     this.#onEventPersistence = options.onEventPersistence;
@@ -416,7 +418,7 @@ export class PaperclipControlPlanePort implements ControlPlanePort {
     )) throw new Error("native_deferred_observer_terminal_required");
     const terminalItem = /^item\.(completed|failed|cancelled)$/.test(event.eventType);
     const terminalTurn = /^(turn|session)\.(completed|failed|cancelled|interrupted|closed)$/.test(event.eventType);
-    if ((event.eventType === "item.delta" || terminalItem || terminalTurn) && this.#identityRedactor.values.length > 0) {
+    if ((event.eventType === "item.delta" || terminalItem || terminalTurn) && (this.#identityRedactor.values.length > 0 || this.#identityRedactor.secretValues.length > 0)) {
       const key = `${event.sourceInstanceId}:${event.sourceEventId}`;
       const cached = this.#redactedDeltas.get(key);
       const originalSha = nativeSha256(validated.event);
@@ -462,8 +464,6 @@ export class PaperclipControlPlanePort implements ControlPlanePort {
         protocolSchemaVersion: event.schemaVersion,
         canonicalPayload: event as unknown as Record<string, unknown>,
       },
-      // The append has no publication side effects. Revocation rolls back
-      // its event and sequence allocation before the append commits.
       assertWritable: () => this.#assertActive(options),
     };
     if (event.eventType === "item.delta" && !options?.deferPostCommitObservers) {
@@ -559,14 +559,18 @@ export class PaperclipControlPlanePort implements ControlPlanePort {
   #flushStreamingEvents(): Promise<void> {
     if (this.#streamingTimer !== null) clearTimeout(this.#streamingTimer);
     this.#streamingTimer = null;
-    const batch = this.#streamingBatch;
-    if (batch.length > 0) {
-      this.#streamingBatch = [];
-      if (batch.some(pending => typeof pending.event.payload.text === "string" && pending.event.payload.text.length > 0)) {
-        this.#streamedSinceBoundary = true;
-      }
-      this.#streamingTail = this.#streamingTail.then(() => this.#commitStreamingEvents(batch))
-        .finally(() => { this.#streamingEventsPending -= batch.length; });
+    if (this.#streamingBatch.length > 0 && !this.#streamingFlushQueued) {
+      this.#streamingFlushQueued = true;
+      this.#streamingTail = this.#streamingTail.then(async () => {
+        this.#streamingFlushQueued = false;
+        const batch = this.#streamingBatch;
+        this.#streamingBatch = [];
+        if (batch.some(pending => typeof pending.event.payload.text === "string" && pending.event.payload.text.length > 0)) {
+          this.#streamedSinceBoundary = true;
+        }
+        try { await this.#commitStreamingEvents(batch); }
+        finally { this.#streamingEventsPending -= batch.length; }
+      });
     }
     return this.#streamingTail;
   }

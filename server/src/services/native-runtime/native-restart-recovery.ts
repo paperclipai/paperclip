@@ -1116,6 +1116,7 @@ export async function claimNativeRestartRecoveries(input: {
   liveRunExecutions?: Pick<ReadonlySet<string>, "has">;
   /** Runs this process handed to the next server (graceful drain or hot restart). */
   handedOffForShutdown?: (runId: string) => boolean;
+  handedOffByThisController?: (runId: string) => boolean;
   now?: Date;
   limit?: number;
   /** Called after each committed claim, before scanning the next candidate. */
@@ -1412,6 +1413,9 @@ export async function claimNativeRestartRecoveries(input: {
       // A run this process handed to the next server (graceful drain or hot
       // restart) stays with that server: this process is about to exit.
       const ownControllerProcess = !nonExecutionOwner && isCurrentNativeControllerProcess(row.coordinator);
+      if (ownControllerProcess && input.handedOffByThisController?.(row.run.id)) {
+        return { kind: "blocked", runId: row.run.id, reason: "handed_off_to_next_controller", transitionUnchanged: true } as const;
+      }
       if (ownControllerProcess && activeNativeExecutionRunIds.has(row.run.id)) {
         return { kind: "awaiting_evidence", runId: row.run.id, reason: "current_controller_preparing" } as const;
       }

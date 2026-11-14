@@ -56,6 +56,16 @@ function callerHeaders(req: { headers: Record<string, string | string[] | undefi
   return headers;
 }
 
+/**
+ * Error details an HTTP caller may see. `execution` is the call's audit record
+ * (request IDs, timings, the server-side stack of an error); the audit keeps
+ * it, and callers never need it. Agents paste errors into task comments.
+ */
+function callerErrorDetails(details: Record<string, unknown>): Record<string, unknown> {
+  const { execution: _auditOnly, ...rest } = details;
+  return rest;
+}
+
 async function cancellableRequest<T>(req: Request, res: Response, work: (signal: AbortSignal) => Promise<T>) {
   const controller = new AbortController();
   const aborted = () => controller.abort();
@@ -244,7 +254,7 @@ async function handleMcpGatewayProtocol(
       res.status(err.status).json({
         jsonrpc: "2.0",
         id,
-        error: { code: err.status >= 500 ? -32603 : -32000, message: err.message, data: { reasonCode: err.reasonCode, ...err.details } },
+        error: { code: err.status >= 500 ? -32603 : -32000, message: err.message, data: { reasonCode: err.reasonCode, ...callerErrorDetails(err.details) } },
       });
       return;
     }
@@ -340,7 +350,7 @@ function sendGatewayError(res: import("express").Response, err: unknown) {
     res.status(err.status).json({
       error: err.message,
       reasonCode: err.reasonCode,
-      ...err.details,
+      ...callerErrorDetails(err.details),
     });
     return;
   }

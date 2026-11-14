@@ -373,6 +373,45 @@ export const genericMcpOAuthClientSchema = z.object({
 export type GenericMcpOAuthClient = z.infer<typeof genericMcpOAuthClientSchema>;
 
 /**
+ * Machine sign-in (MCP OAuth client credentials) for organization-owned
+ * connections. "paperclip_key" means Paperclip holds a signing key and the admin
+ * registers its public half with the provider; "client_secret" stores a secret
+ * the provider issued. Secret values are write-only.
+ */
+export const MACHINE_SIGN_IN_METHODS = ["paperclip_key", "client_secret"] as const;
+export const machineSignInMethodSchema = z.enum(MACHINE_SIGN_IN_METHODS);
+export type MachineSignInMethod = z.infer<typeof machineSignInMethodSchema>;
+
+const machineSignInScopesSchema = z.string().trim().max(2048)
+  .refine((value) => !/[\u0000-\u001f"\\]/.test(value), "Scopes can only contain letters, numbers and punctuation, separated by spaces.");
+
+export const createMachineSignInSchema = z.object({
+  link: z.string().trim().url("Enter the server's full address, starting with https://").max(4096),
+  name: z.string().trim().min(1).max(160).optional(),
+  /** The sign-in service's address, or its token URL. Omitted means "find it from the server". */
+  authorizationServer: z.string().trim().url("Enter the sign-in service's full address, starting with https://").max(4096).optional(),
+  method: machineSignInMethodSchema,
+  clientId: z.string().trim().min(1).max(4096).optional(),
+  clientSecret: z.string().min(1).max(16384).optional(),
+  scopes: machineSignInScopesSchema.optional(),
+  applicationId: z.string().uuid().optional(),
+}).strict();
+export type CreateMachineSignIn = z.infer<typeof createMachineSignInSchema>;
+
+export const testMachineSignInSchema = z.object({
+  clientId: z.string().trim().min(1).max(4096).optional(),
+  clientSecret: z.string().min(1).max(16384).optional(),
+  scopes: machineSignInScopesSchema.optional(),
+}).strict();
+export type TestMachineSignIn = z.infer<typeof testMachineSignInSchema>;
+
+export const rotateMachineSignInSchema = z.discriminatedUnion("method", [
+  z.object({ method: z.literal("paperclip_key") }).strict(),
+  z.object({ method: z.literal("client_secret"), clientSecret: z.string().min(1).max(16384) }).strict(),
+]);
+export type RotateMachineSignIn = z.infer<typeof rotateMachineSignInSchema>;
+
+/**
  * Reject `headers.*` credential paths whose header name Paperclip refuses to
  * send, and any value that could split the outbound request. This runs at the
  * API boundary so both the guided wizard and normalized paste-config go through

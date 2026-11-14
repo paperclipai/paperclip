@@ -67,6 +67,7 @@ export type {
   PrpTerminalState,
   PrpVerificationReasonCode,
   PrpWireConnection,
+  ProviderTurnWaitOptions,
   ReplayControlPlaneEventsInput,
   RunnerExecutionDriver,
   RunnerLaunchPreparer,

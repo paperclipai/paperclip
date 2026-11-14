@@ -6,6 +6,7 @@ import { releaseAncestorWorkspaceBinding } from "../execution-workspaces.js";
 import { issueService } from "../issues.js";
 import { REMOTE_WORKSPACE_WRITER_PENDING_MESSAGE } from "../remote-workspace-writer-hold.js";
 import { notifyStatusCardIssueChange } from "../status-card-notifications.js";
+import { agentRecoveryQueueIsFull } from "../recovery-queue-admission.js";
 
 export const LEGACY_WORKSPACE_REHOME_SCHEMA = "paperclip.legacy-workspace-rehome.v1";
 export const LEGACY_WORKSPACE_REHOME_OUTCOME = "legacy_shared_workspace_rehomed";
@@ -14,6 +15,7 @@ const BOARD_ESCALATION_POLICY = "board_escalation_no_takeover_v1";
 const PAGE_SIZE = 25;
 const REHOME_WAKE_RETRY_BASE_MS = 5 * 60_000;
 const REHOME_WAKE_RETRY_MAX_MS = 60 * 60_000;
+const RECOVERY_QUEUE_TURN_MS = 60_000;
 // A block set by the stranded escalation lands right after its failed run.
 const BLOCK_OWNERSHIP_SLACK_MS = 60_000;
 
@@ -123,6 +125,15 @@ export async function deliverPendingRecoveryWakes(db: Db, wake: RehomeWakeup, sc
       eq(agentWakeupRequests.companyId, row.companyId), sql`${agentWakeupRequests.payload}->>'issueId' = ${row.issueId}`,
       sql`${agentWakeupRequests.payload}->>'recoveryActionId' = ${row.actionId}`, isNotNull(agentWakeupRequests.runId))).limit(1) : [];
     let accepted = !owed || Boolean(delivered);
+    // A few recovery runs per agent at a time: this one waits its turn, without
+    // counting as a refusal, and is offered again on the next pass.
+    if (!accepted && await agentRecoveryQueueIsFull(db, row.companyId, row.agentId!)) {
+      await db.update(issueRecoveryActions).set({ evidence: sql`jsonb_set(${issueRecoveryActions.evidence},
+        array[${kind.key}::text, 'wakeRetryAt'], ${JSON.stringify(Date.now() + RECOVERY_QUEUE_TURN_MS)}::jsonb)` })
+        .where(and(eq(issueRecoveryActions.companyId, row.companyId), eq(issueRecoveryActions.id, row.actionId),
+          sql`${wakeField(kind.key, "wake")} = 'pending'`));
+      continue;
+    }
     try {
       // Only a created run settles the wake; a refusal (for example a paused
       // company or disabled on-demand wakes) returns null and is retried.

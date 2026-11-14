@@ -43,6 +43,8 @@ const QUEUED_INTERRUPT_HANDOFF_GRACE_MS = 5 * 60_000;
 const QUEUED_INPUT_DISPATCH_GRACE_MS = 2 * 60_000;
 const AUTOMATIC_DISPOSITION_GRACE_MS = 2 * 60_000;
 const WAITING_CONTINUATION_MOVE_FORWARD_MS = 15 * 60_000;
+const NO_WORK_CONTINUATION_HANDOFF_GRACE_MS = 30_000;
+const NO_WORK_CONTINUATION_CAUSES = new Set(["native_predecessor_retirement_unproven", "native_failed_before_provider_turn"]);
 
 type ProjectionIssue = Pick<typeof issues.$inferSelect, "id" | "companyId" | "status" | "assigneeAgentId" | "projectId">;
 type ProjectionRun = Pick<typeof heartbeatRuns.$inferSelect,
@@ -299,6 +301,10 @@ function projectTaskInterruptionState(issue: ProjectionIssue, input: ProjectionS
     return { ...base, state: "retry_scheduled", nextRetryAt: new Date(input.freshContinuation.nextCheckAt).toISOString(), canRetry: false };
   if (input.automaticDispositionAt !== undefined && ["failed", "timed_out", "interrupted", "cancelled"].includes(run.status)
       && now - Math.max(input.automaticDispositionAt, run.finishedAt?.getTime() ?? 0) < AUTOMATIC_DISPOSITION_GRACE_MS)
+    return { ...base, state: "working", canRetry: false };
+  if (run.status === "failed" && NO_WORK_CONTINUATION_CAUSES.has(String(run.resultJson?.failureCause))
+      && run.resultJson?.continuationScheduling !== "refused" && run.finishedAt
+      && now - run.finishedAt.getTime() < NO_WORK_CONTINUATION_HANDOFF_GRACE_MS)
     return { ...base, state: "working", canRetry: false };
   const deniedProject = deniedProjectId(issue, run);
   let projectAccess: TaskInterruptionPresentation["projectAccess"];

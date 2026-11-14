@@ -623,6 +623,28 @@ describe.skipIf(!support.supported)("heartbeat queue database wiring", () => {
     expect(deps.executeRun).not.toHaveBeenCalled();
   });
 
+  it("returns the claim to the queue when a reattach phase begins while the claim is being checked", async () => {
+    const f = await fixture("queued");
+    const [queued] = await db.update(heartbeatRuns).set({ responsibleUserId: "queue-test-user",
+      contextSnapshot: { issueId: f.issue.id, wakeReason: "issue_commented" } })
+      .where(eq(heartbeatRuns.id, f.run.id)).returning();
+    const [issueBefore] = await db.select().from(issues).where(eq(issues.id, f.issue.id));
+    let reattachPhaseActive = false;
+    const deps = callbacks(db);
+    deps.getAgent.mockResolvedValue(f.agent);
+    deps.isRunAdmissionClosed = () => false;
+    deps.isReattachPhaseActive = () => reattachPhaseActive;
+    deps.budgets.getInvocationBlock.mockImplementation(async () => { reattachPhaseActive = true; return null; });
+    expect(await createHeartbeatQueue(db, deps).claimQueuedRun(queued)).toBeNull();
+    const [stored] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, queued.id));
+    expect(stored).toMatchObject({ status: "queued", startedAt: null, finishedAt: null, errorCode: null,
+      responsibleUserId: queued.responsibleUserId, runnerProfileJson: queued.runnerProfileJson });
+    expect((await db.select().from(issues).where(eq(issues.id, f.issue.id)))[0]).toMatchObject({
+      executionRunId: issueBefore.executionRunId, executionLockedAt: issueBefore.executionLockedAt });
+    expect(deps.setWakeupStatus).not.toHaveBeenCalled();
+    expect(deps.executeRun).not.toHaveBeenCalled();
+  });
+
   it("keeps an automatic continuation queued while its legacy predecessor still owns cleanup", async () => {
     const { successor, lease, queue, deps, ...f } = await pendingPredecessorFixture();
     expect(await queue.claimQueuedRun(successor)).toBeNull();

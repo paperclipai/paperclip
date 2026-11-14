@@ -17,7 +17,7 @@ import { notifyQueuedRunDispatch } from "./run-dispatch-notifications.js";
 export type NativeFinalizationWorkScope = { companyId: string; runId?: string; issueId?: string };
 
 export async function notifyNativeFinalizationWork(transaction: object, scope: NativeFinalizationWorkScope) {
-  await notifyAttentionRetentionWork(transaction, { companyId: scope.companyId });
+  if (!scope.issueId && !scope.runId) await notifyAttentionRetentionWork(transaction, { companyId: scope.companyId });
   if (scope.issueId || scope.runId) {
     await notifyLiveRunRecovery(transaction, scope);
     await notifyNativeEnvironmentSettlement(transaction, scope);

@@ -239,6 +239,60 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
     }
   });
 
+  const progressEvent = (sourceSeq: number) => ({ companyId: f.companyId, agentId: f.agentId, runId,
+    eventType: "tool.execution.progressed", message: "PRIVATE event text", payload: { token: "PRIVATE token" },
+    nativeSource: { sourceInstanceId: runId, sourceEventId: `event-${sourceSeq}`, sourceSeq, protocolSchemaVersion: 1,
+      canonicalPayload: { eventType: "tool.execution.progressed", sourceSeq } } });
+  const progressPublished = async () => {
+    await vi.waitFor(async () => {
+      await vi.advanceTimersByTimeAsync(1000);
+      expect(await publications()).toHaveLength(1);
+    }, { timeout: 5000 });
+  };
+  const appendWithoutWake = async (sourceSeq: number) => {
+    const [run] = await db.select({ nextEventSeq: heartbeatRuns.nextEventSeq }).from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
+    await db.insert(heartbeatRunEvents).values({ companyId: f.companyId, agentId: f.agentId, runId, seq: run!.nextEventSeq,
+      eventType: "tool.execution.progressed", message: "PRIVATE event text", payload: { token: "PRIVATE token" },
+      sourceInstanceId: runId, sourceEventId: `event-${sourceSeq}`, sourceSeq, protocolSchemaVersion: 1, sourcePayloadSha256: "no-wake" });
+    await db.update(heartbeatRuns).set({ nextEventSeq: run!.nextEventSeq + 1, nativeSourceCursors: { [runId]: sourceSeq } })
+      .where(eq(heartbeatRuns.id, runId));
+  };
+
+  it("wakes the projection from a one-statement progress event after the statement commits", async () => {
+    await start(); await settle(); await quiet(); expect(await publications()).toEqual([]);
+    const signals: string[] = [];
+    const unsubscribe = subscribeDatabaseWork(db, DELIVERY_QUEUES.chatNativeProgress, kind => signals.push(kind));
+    const statements: string[] = [];
+    const options = db.$client.options as { debug?: unknown };
+    options.debug = (_connection: number, text: string) => { statements.push(text.trim().replace(/\s+/g, " ")); };
+    try {
+      expect((await appendHeartbeatRunEvent(db, progressEvent(1))).disposition).toBe("committed");
+    } finally { options.debug = undefined; unsubscribe(); }
+    expect(statements).toHaveLength(1);
+    expect(statements[0]).toMatch(/^with snapshot_run as .* pg_notify/);
+    expect(signals).toEqual(["settled"]);
+    await progressPublished();
+    await settle(); await quiet(); expect(errors).toEqual([]);
+  });
+
+  it("repairs a lost progress wake with the run's next progress event", async () => {
+    await start(); await settle(); await quiet();
+    await appendWithoutWake(1);
+    await settle(); await quiet();
+    expect(await publications()).toEqual([]);
+    await appendHeartbeatRunEvent(db, progressEvent(2));
+    await progressPublished();
+    await settle(); await quiet(); expect(errors).toEqual([]);
+  });
+
+  it("repairs a lost progress wake with the startup reconcile", async () => {
+    await appendWithoutWake(1);
+    expect(await publications()).toEqual([]);
+    await start();
+    await progressPublished();
+    await settle(); await quiet(); expect(errors).toEqual([]);
+  });
+
   it("wakes a saved event when its first working publication commits after event selection", async () => {
     await db.delete(chatPublications).where(eq(chatPublications.issueId, f.issueId));
     await appendHeartbeatRunEvent(db, event(true));

@@ -79,7 +79,7 @@ export async function preparePluginWorkspace(
     mode: string;
     strategy: string;
     selectedProviderPluginId?: string | null;
-    environment?: Pick<import("@paperclipai/shared").Environment, "driver" | "config" | "name"> | null;
+    environment?: Pick<import("@paperclipai/shared").Environment, "id" | "driver" | "config" | "name"> | null;
     branchMode?: "create" | "existing";
     branchName?: string | null;
     baseRef?: string | null;
@@ -403,6 +403,7 @@ export async function preparePluginWorkspace(
       runId: input.runId,
       agentId: input.agentId,
       taskLease,
+      environment: input.environment,
       assertOwned: replacement?.assertOwned ?? input.assertOwned,
       operation: {
         kind: "prepare",

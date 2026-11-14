@@ -1,4 +1,5 @@
-import { and, asc, eq, inArray, isNotNull, isNull, lte, ne, or, sql } from "drizzle-orm";
+import { and, asc, eq, exists, inArray, isNotNull, isNull, lte, ne, or, sql, type SQL } from "drizzle-orm";
+import { alias } from "drizzle-orm/pg-core";
 import { executionWorkspaceSnapshots, executionWorkspaces, heartbeatRuns, issueRecoveryActions, workspaceOperations, type Db } from "@paperclipai/db";
 import { readRemoteWorkspaceAuthority, type EnvironmentLease } from "@paperclipai/shared";
 import { hasRemoteTerminationReceipt } from "./remote-execution-termination.js";
@@ -10,6 +11,7 @@ import { logger } from "../middleware/logger.js";
 
 export const REMOTE_WORKSPACE_SNAPSHOT_GRACE_MS = 7 * 86400_000;
 export const REMOTE_WORKSPACE_SNAPSHOT_RETRY_MS = 15 * 60_000;
+export const REMOTE_WORKSPACE_SNAPSHOT_COALESCE_MS = 1_000;
 const SNAPSHOT_ABORT_CONCURRENCY = 8;
 type Snapshot = typeof executionWorkspaceSnapshots.$inferSelect;
 type Tx = Parameters<Parameters<Db["transaction"]>[0]>[0];
@@ -58,56 +60,112 @@ function abandonedUploadOperationId(row: Snapshot) {
   return typeof abandoned?.operationId === "string" && abandoned.operationId === row.sourceOperationId ? abandoned.operationId : null;
 }
 
-async function pinned(db: ReadDb, row: Snapshot) {
-  const [workspace] = await db.select({ id: executionWorkspaces.id, sourceIssueId: executionWorkspaces.sourceIssueId,
-    metadata: executionWorkspaces.metadata }).from(executionWorkspaces).where(and(
-    eq(executionWorkspaces.companyId, row.companyId), eq(executionWorkspaces.id, row.executionWorkspaceId),
-  ));
-  if ((workspace?.metadata?.remoteWorkspace as { snapshotId?: unknown } | undefined)?.snapshotId === row.id) return true;
-  const [importedBy] = await db.select({ id: executionWorkspaceSnapshots.id }).from(executionWorkspaceSnapshots).where(and(
-    eq(executionWorkspaceSnapshots.companyId, row.companyId), ne(executionWorkspaceSnapshots.status, "deleted"),
-    sql`${executionWorkspaceSnapshots.metadata} ? 'importedWorkspaceChildren'`,
-    sql`${executionWorkspaceSnapshots.metadata}->'importedWorkspaceChildren' @> ${JSON.stringify([
-      { workspaceId: row.executionWorkspaceId, snapshotId: row.id },
-    ])}::jsonb`,
-  )).limit(1);
-  if (importedBy) return true;
-  const [operation] = await db.select({ id: workspaceOperations.id }).from(workspaceOperations).where(and(
-    eq(workspaceOperations.companyId, row.companyId), eq(workspaceOperations.executionWorkspaceId, row.executionWorkspaceId),
-    or(inArray(workspaceOperations.status, ["running", "pending"]),
-      // A failed save keeps its snapshot pinned for its retry, as while it ran,
-      // until the final save retires it.
-      sql`(${workspaceOperations.status} = 'failed' and ${workspaceOperations.metadata} ? 'lastFailure'
-        and ${workspaceOperations.metadata}->'retiredSave' is null
-        and ${workspaceOperations.id}::text is distinct from ${abandonedUploadOperationId(row)})`,
-      sql`(${workspaceOperations.metadata}->'saveWork'->>'schema' = 'paperclip.remote-workspace-save-work.v1'
-        and (${workspaceOperations.metadata}#>'{saveWork,unknown}' is distinct from 'false'::jsonb
-          or case when jsonb_typeof(${workspaceOperations.metadata}#>'{saveWork,activeIds}') = 'array'
-            then jsonb_array_length(${workspaceOperations.metadata}#>'{saveWork,activeIds}') <> 0 else true end))`),
-    sql`(${workspaceOperations.id} = ${row.sourceOperationId}::uuid
-      or ${workspaceOperations.metadata}->>'snapshotId' = ${row.id}
-      or ${workspaceOperations.metadata}->>'parentSnapshotId' = ${row.id})`,
-  )).limit(1);
-  if (operation) return true;
-  const [child] = await db.select({ id: executionWorkspaceSnapshots.id }).from(executionWorkspaceSnapshots).where(and(
-    eq(executionWorkspaceSnapshots.companyId, row.companyId), eq(executionWorkspaceSnapshots.executionWorkspaceId, row.executionWorkspaceId),
-    eq(executionWorkspaceSnapshots.parentSnapshotId, row.id), inArray(executionWorkspaceSnapshots.status, ["pending", "uploaded"]),
-  )).limit(1);
-  if (child) return true;
-  const [run] = await db.select({ id: heartbeatRuns.id }).from(heartbeatRuns).where(and(eq(heartbeatRuns.companyId, row.companyId),
-    inArray(heartbeatRuns.status, ["queued", "running"]),
-    sql`${heartbeatRuns.runnerProfileJson}->'remoteWorkspace'->>'workspaceId' = ${row.executionWorkspaceId}`,
-    sql`${heartbeatRuns.runnerProfileJson}->'remoteWorkspace'->>'snapshotId' = ${row.id}`,
-  )).limit(1);
-  if (run) return true;
-  const [recovery] = await db.select({ id: issueRecoveryActions.id }).from(issueRecoveryActions).where(and(
-    eq(issueRecoveryActions.companyId, row.companyId), inArray(issueRecoveryActions.status, ["active", "escalated"]),
-    sql`(${workspace?.sourceIssueId ? sql`${issueRecoveryActions.sourceIssueId} = ${workspace.sourceIssueId}::uuid` : sql`false`}
-      or ${issueRecoveryActions.evidence}->>'snapshotId' = ${row.id}
-      or ${issueRecoveryActions.evidence}->>'workspaceId' = ${row.executionWorkspaceId}
-      or ${issueRecoveryActions.evidence}->'remoteWorkspace'->>'snapshotId' = ${row.id})`,
-  )).limit(1);
-  return Boolean(recovery);
+type Pin = { kind: "workspace" } | { kind: "import" | "child"; snapshotId: string } | { kind: "operation"; operationId: string }
+  | { kind: "run"; runId: string } | { kind: "recovery"; actionId: string };
+type PinRow = { companyId: SQL; id: SQL; workspaceId: SQL; sourceOperationId: SQL; abandonedOperationId: SQL; sourceIssueId: SQL; importedChild: SQL };
+const RETENTION_PIN = "retentionPin";
+const UUID_PATTERN = "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$";
+const pinSource = alias(executionWorkspaceSnapshots, "retention_pin_source");
+const snapshot = executionWorkspaceSnapshots;
+
+function literalPinRow(row: Snapshot, sourceIssueId: string | null | undefined): PinRow {
+  return { companyId: sql`${row.companyId}::uuid`, id: sql`${row.id}::uuid`, workspaceId: sql`${row.executionWorkspaceId}::uuid`,
+    sourceOperationId: sql`${row.sourceOperationId}::uuid`, abandonedOperationId: sql`${abandonedUploadOperationId(row)}::text`,
+    sourceIssueId: sourceIssueId ? sql`${sourceIssueId}::uuid` : sql`null::uuid`,
+    importedChild: sql`${JSON.stringify([{ workspaceId: row.executionWorkspaceId, snapshotId: row.id }])}::jsonb` };
+}
+
+const correlatedPinRow: PinRow = {
+  companyId: sql`${snapshot.companyId}`, id: sql`${snapshot.id}`, workspaceId: sql`${snapshot.executionWorkspaceId}`,
+  sourceOperationId: sql`${snapshot.sourceOperationId}`,
+  abandonedOperationId: sql`(case when ${snapshot.status} = 'delete_requested'
+    and ${snapshot.metadata}->'abandonedUpload'->>'operationId' = ${snapshot.sourceOperationId}::text
+    then ${snapshot.sourceOperationId}::text end)`,
+  sourceIssueId: sql`(select w.source_issue_id from ${executionWorkspaces} w
+    where w.company_id = ${snapshot.companyId} and w.id = ${snapshot.executionWorkspaceId})`,
+  importedChild: sql`jsonb_build_array(jsonb_build_object('workspaceId', ${snapshot.executionWorkspaceId}::text, 'snapshotId', ${snapshot.id}::text))`,
+};
+
+const importPin = (row: PinRow) => and(sql`${pinSource.companyId} = ${row.companyId}`, ne(pinSource.status, "deleted"),
+  sql`${pinSource.metadata} ? 'importedWorkspaceChildren'`,
+  sql`${pinSource.metadata}->'importedWorkspaceChildren' @> ${row.importedChild}`);
+
+const operationPin = (row: PinRow) => and(sql`${workspaceOperations.companyId} = ${row.companyId}`,
+  sql`${workspaceOperations.executionWorkspaceId} = ${row.workspaceId}`,
+  or(inArray(workspaceOperations.status, ["running", "pending"]),
+    sql`(${workspaceOperations.status} = 'failed' and ${workspaceOperations.metadata} ? 'lastFailure'
+      and ${workspaceOperations.metadata}->'retiredSave' is null
+      and ${workspaceOperations.id}::text is distinct from ${row.abandonedOperationId})`,
+    sql`(${workspaceOperations.metadata}->'saveWork'->>'schema' = 'paperclip.remote-workspace-save-work.v1'
+      and (${workspaceOperations.metadata}#>'{saveWork,unknown}' is distinct from 'false'::jsonb
+        or case when jsonb_typeof(${workspaceOperations.metadata}#>'{saveWork,activeIds}') = 'array'
+          then jsonb_array_length(${workspaceOperations.metadata}#>'{saveWork,activeIds}') <> 0 else true end))`),
+  sql`(${workspaceOperations.id} = ${row.sourceOperationId}
+    or ${workspaceOperations.metadata}->>'snapshotId' = ${row.id}::text
+    or ${workspaceOperations.metadata}->>'parentSnapshotId' = ${row.id}::text)`);
+
+const childPin = (row: PinRow) => and(sql`${pinSource.companyId} = ${row.companyId}`,
+  sql`${pinSource.executionWorkspaceId} = ${row.workspaceId}`, sql`${pinSource.parentSnapshotId} = ${row.id}`,
+  inArray(pinSource.status, ["pending", "uploaded"]));
+
+const runPin = (row: PinRow) => and(sql`${heartbeatRuns.companyId} = ${row.companyId}`, inArray(heartbeatRuns.status, ["queued", "running"]),
+  sql`${heartbeatRuns.runnerProfileJson}->'remoteWorkspace'->>'workspaceId' = ${row.workspaceId}::text`,
+  sql`${heartbeatRuns.runnerProfileJson}->'remoteWorkspace'->>'snapshotId' = ${row.id}::text`);
+
+const recoveryPin = (row: PinRow) => and(sql`${issueRecoveryActions.companyId} = ${row.companyId}`,
+  inArray(issueRecoveryActions.status, ["active", "escalated"]),
+  sql`(${issueRecoveryActions.sourceIssueId} = ${row.sourceIssueId}
+    or ${issueRecoveryActions.evidence}->>'snapshotId' = ${row.id}::text
+    or ${issueRecoveryActions.evidence}->>'workspaceId' = ${row.workspaceId}::text
+    or ${issueRecoveryActions.evidence}->'remoteWorkspace'->>'snapshotId' = ${row.id}::text)`);
+
+async function pinned(db: ReadDb, row: Snapshot): Promise<Pin | null> {
+  const [workspace] = await db.select({ sourceIssueId: executionWorkspaces.sourceIssueId, metadata: executionWorkspaces.metadata })
+    .from(executionWorkspaces).where(and(eq(executionWorkspaces.companyId, row.companyId), eq(executionWorkspaces.id, row.executionWorkspaceId)));
+  if ((workspace?.metadata?.remoteWorkspace as { snapshotId?: unknown } | undefined)?.snapshotId === row.id) return { kind: "workspace" };
+  const ref = literalPinRow(row, workspace?.sourceIssueId);
+  const [importedBy] = await db.select({ id: pinSource.id }).from(pinSource).where(importPin(ref)).limit(1);
+  if (importedBy) return { kind: "import", snapshotId: importedBy.id };
+  const [operation] = await db.select({ id: workspaceOperations.id }).from(workspaceOperations).where(operationPin(ref)).limit(1);
+  if (operation) return { kind: "operation", operationId: operation.id };
+  const [child] = await db.select({ id: pinSource.id }).from(pinSource).where(childPin(ref)).limit(1);
+  if (child) return { kind: "child", snapshotId: child.id };
+  const [run] = await db.select({ id: heartbeatRuns.id }).from(heartbeatRuns).where(runPin(ref)).limit(1);
+  if (run) return { kind: "run", runId: run.id };
+  const [recovery] = await db.select({ id: issueRecoveryActions.id }).from(issueRecoveryActions).where(recoveryPin(ref)).limit(1);
+  return recovery ? { kind: "recovery", actionId: recovery.id } : null;
+}
+
+function recordedPinId(key: "snapshotId" | "operationId" | "runId" | "actionId") {
+  const value = sql`${snapshot.metadata}->${sql.raw(`'${RETENTION_PIN}'`)}->>${sql.raw(`'${key}'`)}`;
+  return sql`(case when ${value} ~* ${UUID_PATTERN} then (${value})::uuid end)`;
+}
+
+function recordedPinHolds(db: Db) {
+  const row = correlatedPinRow;
+  return sql`(case ${snapshot.metadata}->${sql.raw(`'${RETENTION_PIN}'`)}->>'kind'
+    when 'workspace' then exists (select 1 from ${executionWorkspaces} w where w.company_id = ${row.companyId}
+      and w.id = ${row.workspaceId} and w.metadata->'remoteWorkspace'->>'snapshotId' = ${row.id}::text)
+    when 'import' then ${exists(db.select({ id: pinSource.id }).from(pinSource).where(and(eq(pinSource.id, recordedPinId("snapshotId")), importPin(row))))}
+    when 'operation' then ${exists(db.select({ id: workspaceOperations.id }).from(workspaceOperations)
+      .where(and(eq(workspaceOperations.id, recordedPinId("operationId")), operationPin(row))))}
+    when 'child' then ${exists(db.select({ id: pinSource.id }).from(pinSource).where(and(eq(pinSource.id, recordedPinId("snapshotId")), childPin(row))))}
+    when 'run' then ${exists(db.select({ id: heartbeatRuns.id }).from(heartbeatRuns).where(and(eq(heartbeatRuns.id, recordedPinId("runId")), runPin(row))))}
+    when 'recovery' then ${exists(db.select({ id: issueRecoveryActions.id }).from(issueRecoveryActions)
+      .where(and(eq(issueRecoveryActions.id, recordedPinId("actionId")), recoveryPin(row))))}
+    else false end)`;
+}
+
+function samePin(value: unknown, pin: Pin) {
+  if (!value || typeof value !== "object") return false;
+  const recorded = value as Record<string, unknown>, entries = Object.entries(pin);
+  return Object.keys(recorded).length === entries.length && entries.every(([key, item]) => recorded[key] === item);
+}
+
+function withoutPin(metadata: Snapshot["metadata"]) {
+  if (!metadata || !Object.hasOwn(metadata, RETENTION_PIN)) return {};
+  const { [RETENTION_PIN]: _released, ...rest } = metadata;
+  return { metadata: rest };
 }
 
 /** Producers wake this owner; pinned history carries no speculative retry. */
@@ -135,6 +193,7 @@ export function remoteWorkspaceSnapshotRetentionService(db: Db, options: {
       or(isNull(executionWorkspaceSnapshots.deleteAfter),
         lte(executionWorkspaceSnapshots.deleteAfter, at),
         eq(executionWorkspaceSnapshots.status, "committed")),
+      sql`not (${executionWorkspaceSnapshots.deleteAfter} is null and ${recordedPinHolds(db)})`,
       after ? sql`${executionWorkspaceSnapshots.id} > ${after}::uuid` : undefined,
     )).orderBy(asc(executionWorkspaceSnapshots.id)).limit(batch + 1);
     result.truncated = rows.length > batch;
@@ -144,32 +203,38 @@ export function remoteWorkspaceSnapshotRetentionService(db: Db, options: {
         const claimed = await db.transaction(async tx => {
           const [row] = await tx.select().from(executionWorkspaceSnapshots).where(eq(executionWorkspaceSnapshots.id, candidate.id)).for("update");
           if (!row || row.status === "deleted") return null;
-          if (await pinned(tx, row)) {
+          const pin = await pinned(tx, row);
+          if (pin) {
             result.pinned++;
-            const metadata = { ...row.metadata };
+            const metadata: Record<string, unknown> = { ...row.metadata, [RETENTION_PIN]: pin };
             if (row.status === "superseded" && row.deleteAfter) metadata.retentionDueAt = row.deleteAfter.toISOString();
             if (row.status === "committed") delete metadata.retentionDueAt;
-            if (row.deleteAfter) await tx.update(executionWorkspaceSnapshots).set({ deleteAfter: null, metadata }).where(eq(executionWorkspaceSnapshots.id, row.id));
+            if (row.deleteAfter || !samePin(row.metadata?.[RETENTION_PIN], pin)) {
+              await tx.update(executionWorkspaceSnapshots).set({ deleteAfter: null, metadata }).where(eq(executionWorkspaceSnapshots.id, row.id));
+            }
             return null;
           }
           const deadline = row.deleteAfter ?? (row.status === "superseded" ? date(row.metadata?.retentionDueAt) : null)
             ?? new Date((row.status === "pending" || row.status === "uploaded" ? row.createdAt.getTime() : at.getTime()) + REMOTE_WORKSPACE_SNAPSHOT_GRACE_MS);
           if (row.status !== "delete_requested" && deadline > at) {
             result.scheduled++;
-            await tx.update(executionWorkspaceSnapshots).set({ deleteAfter: deadline,
+            await tx.update(executionWorkspaceSnapshots).set({ deleteAfter: deadline, ...withoutPin(row.metadata),
               ...(row.status === "committed" ? { status: "superseded" as const } : {}) }).where(eq(executionWorkspaceSnapshots.id, row.id));
             return null;
           }
           if (row.status === "delete_requested" && row.deleteAfter && row.deleteAfter > at) return null;
-          const [saved] = await tx.update(executionWorkspaceSnapshots).set({ status: "delete_requested", deleteAfter: at, lastError: null })
+          const [saved] = await tx.update(executionWorkspaceSnapshots).set({ status: "delete_requested", deleteAfter: at, lastError: null, ...withoutPin(row.metadata) })
             .where(eq(executionWorkspaceSnapshots.id, row.id)).returning();
           return saved!;
         });
         if (!claimed) continue;
         // New readers cannot adopt a delete_requested record. Recheck all
         // durable references immediately before any irreversible object I/O.
-        if (await pinned(db, claimed)) {
-          await db.update(executionWorkspaceSnapshots).set({ deleteAfter: null }).where(eq(executionWorkspaceSnapshots.id, claimed.id));
+        const pin = await pinned(db, claimed);
+        if (pin) {
+          await db.update(executionWorkspaceSnapshots).set({ deleteAfter: null,
+            metadata: sql`coalesce(${executionWorkspaceSnapshots.metadata}, '{}'::jsonb) || ${JSON.stringify({ [RETENTION_PIN]: pin })}::jsonb` })
+            .where(eq(executionWorkspaceSnapshots.id, claimed.id));
           result.pinned++; continue;
         }
         const uploads = Array.isArray(claimed.metadata?.uploads) ? claimed.metadata.uploads : [];
@@ -226,7 +291,7 @@ export function registerRemoteWorkspaceSnapshotRetentionWork(
 ) {
   let next: number | null = null;
   return coordinator.register(DELIVERY_QUEUES.remoteWorkspaceSnapshots, {
-    retryMs: REMOTE_WORKSPACE_SNAPSHOT_RETRY_MS, pausePassiveMaintenance: true,
+    retryMs: REMOTE_WORKSPACE_SNAPSHOT_RETRY_MS, coalesceMs: REMOTE_WORKSPACE_SNAPSHOT_COALESCE_MS, pausePassiveMaintenance: true,
     onSettled: () => service.resetCursor(),
     run: async signal => { next = null; const result = await service.tick(signal); onResult(result);
       next = result.truncated ? Date.now() + 1000 : await service.nextDeadlineAt(); },

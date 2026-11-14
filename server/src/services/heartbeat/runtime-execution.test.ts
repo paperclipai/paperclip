@@ -24,6 +24,7 @@ import { createAdapterExecutionControl } from "../adapter-execution-control.js";
 import { executionWorkspaceService } from "../execution-workspaces.js";
 import { workspaceOperationService } from "../workspace-operations.js";
 import { instanceSettingsService } from "../instance-settings.js";
+import { createRunOutputSecretStore, createRunSecretRedactionRegistry } from "../run-secret-redaction.js";
 import { executePaperclipNativeSession, NativeCancellationPendingRecoveryError, NativeControllerDetachedForRestartError, nativeSessionFailureSourceCode, nativeSessionFailureDisposition } from "../native-runtime/native-session-executor.js";
 import { NativeRunnerOwnershipUnverifiedError } from "../native-runtime/native-runner-ownership.js";
 import { NativeWorkspaceFinalizationBusyError, NativeWorkspaceFinalizationOwnershipLostError } from "../native-runtime/native-workspace-finalization-ownership.js";
@@ -421,6 +422,26 @@ describe.skipIf(!support.supported)("heartbeat runtime execution boundary", () =
     expect(acquired).not.toHaveBeenCalled();
   });
 
+  it("passes current and earlier attempts' secrets and observability values to native dispatch", async () => {
+    const { input } = await fixture(true);
+    const store = createRunOutputSecretStore(db);
+    await store.registerAll(input.run.companyId, input.run.id, ["sk_test_synthetic_before_rotation"]);
+    input.output.identityRedactor = createAgentIdentityRedactor(undefined, ["sk_test_synthetic_after_rotation", "1", "completed"]);
+    input.config.observability = { environment: { OTEL_EXPORTER_OTLP_LOGS_HEADERS: "authorization=synthetic-observability-token" } } as never;
+    await executeHeartbeatRuntime(db, input);
+    expect(executePaperclipNativeSession).toHaveBeenCalledWith(expect.objectContaining({
+      outputSecrets: expect.arrayContaining(["sk_test_synthetic_before_rotation", "sk_test_synthetic_after_rotation",
+        "synthetic-observability-token"]),
+    }));
+    expect((await store.valuesForRun(input.run.companyId, input.run.id)).sort())
+      .toEqual(["completed", "sk_test_synthetic_after_rotation", "sk_test_synthetic_before_rotation"]);
+    expect(await createRunSecretRedactionRegistry(db).redactionValuesForRun(input.run.companyId, input.run.id)).toEqual([]);
+    const response = { id: input.run.id, eventType: "turn.completed", contextSnapshot: (await read(input.run.id)).contextSnapshot };
+    expect(await createRunSecretRedactionRegistry(db).redactForRun(input.run.companyId, input.run.id, response))
+      .toEqual({ ...response, contextSnapshot: expect.not.objectContaining({ paperclipOutputSecretRedactions: expect.anything() }) });
+    expect(input.output.identityRedactor.redact("old sk_test_synthetic_before_rotation")).toBe("old ***REDACTED***");
+  });
+
   it.each([false, true])("preserves the dispatch gate's early return and cleanup (native: %s)", async native => {
     const { input, adapter } = await fixture(native);
     input.control.dispatchResolvedInteractionContinuationWithAtomicGate = async () => ({ dispatched: false });
@@ -479,6 +500,17 @@ describe.skipIf(!support.supported)("heartbeat runtime execution boundary", () =
     expect(await finalizations()).toMatchObject([{ status: "failed", metadata: { errorMessage: "provider failed" } }]);
     expect(input.effects.onLegacyAdapterEntered).toHaveBeenCalledOnce();
     expectCleanup(input);
+  });
+
+  it.each([false, true])("masks a bound secret in the failed workspace record and keeps the original error (native: %s)", async native => {
+    const { input, adapter } = await fixture(native);
+    input.output.identityRedactor = createAgentIdentityRedactor(undefined, ["sk_test_synthetic_failure_value"]);
+    const error = new Error("provider failed near sk_test_synthetic_failure_value");
+    if (native) vi.mocked(executePaperclipNativeSession).mockRejectedValueOnce(error);
+    else adapter.execute.mockRejectedValueOnce(error);
+    await expect(executeHeartbeatRuntime(db, input)).rejects.toBe(error);
+    expect(error.message).toBe("provider failed near sk_test_synthetic_failure_value");
+    expect(await finalizations()).toMatchObject([{ status: "failed", metadata: { errorMessage: "provider failed near ***REDACTED***" } }]);
   });
 
   it.each([

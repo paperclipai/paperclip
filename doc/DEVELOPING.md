@@ -195,8 +195,8 @@ failed jobs of a PR's first CI attempt once when every failed or cancelled job
 lost its runner. A spot reclaim often ends the job, and the run, as
 `cancelled`. A lost runner is recognized by the check-run annotation "lost
 communication with the server" or "received a shutdown signal". When a job has
-the annotation "The operation was canceled.", the job log is checked for the
-same messages. This evidence counts even if the job also has other error
+the annotation "The operation was canceled." or "A task was canceled.", the job
+log is checked for the same messages. This evidence counts even if the job also has other error
 annotations, so a test that really failed just before a reclaim gets one
 wasted re-run. A cancelled job without this evidence, such as a job a person
 cancelled, counts as a real failure. The `verify` and `e2e` aggregates are not

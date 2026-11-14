@@ -518,6 +518,30 @@
         },
         "type": "object"
       }
+    },
+    {
+      "if": {
+        "properties": {
+          "type": {
+            "const": "turn.start"
+          }
+        },
+        "type": "object"
+      },
+      "then": {
+        "properties": {
+          "payload": {
+            "type": "object",
+            "properties": {
+              "providerStartedTurns": {
+                "$ref": "https://paperclip.dev/schemas/prp/v3/provider-turn.schema.json#/$defs/controllerOptIn"
+              }
+            },
+            "additionalProperties": true
+          }
+        },
+        "type": "object"
+      }
     }
   ],
   "additionalProperties": true

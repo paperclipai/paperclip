@@ -4,7 +4,7 @@ import type { ServerProcessWindow } from "./multi-server.js";
 import { unshiftJson, unshiftMs, type AgingShift } from "./time-faults.js";
 import { ISSUE_STATUSES } from "../../packages/shared/src/constants.js";
 import type { CompletionEvidence } from "./staging-mix.js";
-import { laterAnswers, type DeliveryRun, type DeliveryWake } from "./follow-up-delivery.js";
+import { laterAnswers, rejectedDoneRuns, type DeliveryRun, type DeliveryWake } from "./follow-up-delivery.js";
 import { AGENT_SLOTS_FILE, agentSlotsFromRows } from "./agent-slots.js";
 import { agents, createDb, type Db } from "../../packages/db/src/index.js";
 import { maxConcurrentRunsSql } from "../../server/src/services/heartbeat/timer-policy.js";
@@ -168,8 +168,10 @@ export interface EvidenceObserver {
 export function completionEvidence(evidence: { completedAt: number | null; wakes?: readonly DeliveryWake[];
   runs: ReadonlyArray<DeliveryRun & { acceptedDisposition: string | null; acceptedAt: number | null }> }): CompletionEvidence {
   const answers = laterAnswers(evidence);
+  const rejected = rejectedDoneRuns(evidence);
   return { completedAt: evidence.completedAt, runs: evidence.runs.map(run => ({ runId: run.runId, startedAt: run.startedAt ?? null,
-    acceptedDisposition: run.acceptedDisposition, acceptedAt: run.acceptedAt, answersFollowUp: Boolean(run.runId && answers.has(run.runId)) })) };
+    acceptedDisposition: run.acceptedDisposition, acceptedAt: run.acceptedAt, answersFollowUp: Boolean(run.runId && answers.has(run.runId)),
+    doneRejected: Boolean(run.runId && rejected.has(run.runId)) })) };
 }
 
 export function wakeEvidenceOnce(input: { databaseUrl: () => string; companyId: string; waveDir: string;
