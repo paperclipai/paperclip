@@ -1,0 +1,61 @@
+{
+  "ServiceName": "paperclip-server",
+  "SourceConfiguration": {
+    "AuthenticationConfiguration": {
+      "AccessRoleArn": "arn:aws:iam::<ACCOUNT_ID>:role/paperclip-apprunner-access"
+    },
+    "AutoDeploymentsEnabled": false,
+    "ImageRepository": {
+      "ImageIdentifier": "<ACCOUNT_ID>.dkr.ecr.<REGION>.amazonaws.com/paperclip-server:latest",
+      "ImageRepositoryType": "ECR",
+      "ImageConfiguration": {
+        "Port": "3100",
+        "RuntimeEnvironmentVariables": {
+          "NODE_ENV": "production",
+          "HOST": "0.0.0.0",
+          "PORT": "3100",
+          "SERVE_UI": "true",
+          "PAPERCLIP_HOME": "/paperclip",
+          "PAPERCLIP_INSTANCE_ID": "default",
+          "PAPERCLIP_CONFIG": "/paperclip/instances/default/config.json",
+          "PAPERCLIP_DEPLOYMENT_MODE": "authenticated",
+          "PAPERCLIP_DEPLOYMENT_EXPOSURE": "public",
+          "PAPERCLIP_PUBLIC_URL": "https://<DOMAIN>",
+          "PAPERCLIP_MIGRATION_AUTO_APPLY": "true",
+          "HEARTBEAT_SCHEDULER_ENABLED": "true",
+          "PAPERCLIP_STORAGE_PROVIDER": "s3",
+          "PAPERCLIP_STORAGE_S3_BUCKET": "<BUCKET_NAME>",
+          "PAPERCLIP_STORAGE_S3_REGION": "<REGION>"
+        },
+        "RuntimeEnvironmentSecrets": {
+          "DATABASE_URL": "<DATABASE_URL_SECRET_ARN>",
+          "BETTER_AUTH_SECRET": "<BETTER_AUTH_SECRET_ARN>",
+          "PAPERCLIP_SECRETS_MASTER_KEY": "<SECRETS_MASTER_KEY_ARN>",
+          "ANTHROPIC_API_KEY": "<ANTHROPIC_API_KEY_SECRET_ARN>",
+          "OPENAI_API_KEY": "<OPENAI_API_KEY_SECRET_ARN>",
+          "GITHUB_TOKEN": "<GITHUB_TOKEN_SECRET_ARN>"
+        }
+      }
+    }
+  },
+  "InstanceConfiguration": {
+    "Cpu": "2 vCPU",
+    "Memory": "4 GB",
+    "InstanceRoleArn": "arn:aws:iam::<ACCOUNT_ID>:role/paperclip-apprunner-instance"
+  },
+  "NetworkConfiguration": {
+    "EgressConfiguration": {
+      "EgressType": "VPC",
+      "VpcConnectorArn": "<VPC_CONNECTOR_ARN>"
+    }
+  },
+  "HealthCheckConfiguration": {
+    "Protocol": "HTTP",
+    "Path": "/api/health",
+    "Interval": 10,
+    "Timeout": 5,
+    "HealthyThreshold": 1,
+    "UnhealthyThreshold": 5
+  },
+  "AutoScalingConfigurationArn": "<ASC_ARN>"
+}
