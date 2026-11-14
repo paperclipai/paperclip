@@ -130,8 +130,18 @@ export function cancellationResultJson(run: Run, status: string, patch?: Run["re
  */
 export function canContinueCancelledRun(run: Run): boolean {
   const cancellation = readRunCancellation(run.resultJson);
+  // Older ACP transport failures can be persisted as a cancelled run with an
+  // unknown source when the host forces teardown after a failed provider turn.
+  // Admit only the exact observed connection-close receipt, never arbitrary
+  // unknown cancellations or incomplete/active tool executions.
+  const stop = run.resultJson?.executionCancellation as Record<string, unknown> | undefined;
+  const verifiedAcpDisconnect = cancellation?.source === "unknown" &&
+    run.errorCode === "cancelled" &&
+    run.error === "ACP agent disconnected during request (connection_close, exit=null, signal=null)" &&
+    run.resultJson?.status === "failed" && stop?.state === "acknowledged" && stop.forced === true;
   return run.status === "cancelled" && run.runtimeMode === "legacy" && Boolean(run.startedAt && run.finishedAt) &&
-    cancellation?.expected === false && ["provider", "transport"].includes(cancellation.source) &&
+    cancellation?.expected === false &&
+    (["provider", "transport"].includes(cancellation.source) || verifiedAcpDisconnect) &&
     run.resultJson?.acpToolInventoryComplete === true && run.resultJson?.acpPendingToolCount === 0;
 }
 
