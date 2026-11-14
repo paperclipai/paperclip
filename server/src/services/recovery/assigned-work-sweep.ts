@@ -37,6 +37,13 @@ import { aliasedRun, queuedRunStalledSql } from "./stalled-queued-run-sql.js";
 import { attributeBlock, BLOCK_ATTRIBUTION_WINDOW_MS, blockedStatusDetailsSql } from "../interruption-block-release.js";
 import { ASSIGNED_WORK_CONTINUED_ACTION, taskAutomaticAttempts } from "./task-automatic-attempts.js";
 import { isReattachPhaseActive, reattachPhaseRecheckAt } from "../heartbeat/run-admission.js";
+import {
+  createProviderHostReachabilityProbe,
+  isHostNetworkUnreachableFailure,
+  isProbeHostRelevantToAdapter,
+  PROVIDER_NETWORK_UNREACHABLE_CODE,
+  PROVIDER_NETWORK_UNREACHABLE_RECHECK_MS,
+} from "../heartbeat/provider-network-reachability.js";
 import { ensureFreshContinuation, type FreshContinuationResult } from "../fresh-continuation-fallback.js";
 import { canContinueRecoveryRunAutomatically } from "../continuation-cause.js";
 import { STRANDED_CONTINUATION_MAX_AGE_MS, STRANDED_KIND, strandedHoldContinuesAutomatically, type StrandedHoldRun } from "./stranded-hold-continuation.js";
@@ -99,6 +106,15 @@ export type AssignedWorkDeps = {
   startSavedWorkRecovery?: (source: { companyId: string; issueId: string; runId: string; actionId: string }) =>
     Promise<"started" | "in_flight" | "busy" | "not_eligible">;
   cancelStalledQueuedRun?: (scope: { companyId: string; runId: string; version: string; attachedWakes: number }) => Promise<boolean>;
+  /**
+   * LAC-6885: true when a replacement run for `runId` would be spawned into a
+   * network that cannot reach that run's provider. Injectable for tests; the
+   * default reads the run and probes.
+   */
+  holdForUnreachableProvider?: (source: { companyId: string; runId: string }) => Promise<boolean>;
+  /** LAC-6885: the reachability probe itself, injectable so a test can exercise
+   * the real classifier and adapter check without a DNS syscall. */
+  isProviderHostReachable?: () => Promise<boolean>;
   /** Shared owner proof, injectable for tests. */
   proveOwner?: (stamp: LocalOwnerStamp) => Promise<OwnerProof>;
   now?: () => Date;
@@ -108,7 +124,7 @@ export type AssignedWorkCheck = {
   verdict: AssignedWorkVerdict;
   outcome: "ok" | "settling" | "repaired" | "settled_lost_run" | "deferred_rate_limit" | "deferred_cap" | "deferred_reattach_phase" | "stale_reported" | "left_to_hold_owner" | "left_to_native_recovery" | "changed" | "enqueue_refused"
     | "waiting_on_recovery" | "started_saved_work_recovery" | "saved_work_recovery_busy"
-    | "replaced_stalled_run" | "left_person_work" | "left_stalled_replacement";
+    | "replaced_stalled_run" | "left_person_work" | "left_stalled_replacement" | "deferred_provider_unreachable";
   retryAt: Date | null;
 };
 
@@ -143,7 +159,8 @@ function createPassLog() {
       }
       if (check.outcome === "repaired" || check.outcome === "settled_lost_run" || check.outcome === "started_saved_work_recovery"
         || check.outcome === "replaced_stalled_run") pass.repaired += 1;
-      if (check.outcome === "deferred_rate_limit" || check.outcome === "deferred_cap") pass.deferred += 1;
+      if (check.outcome === "deferred_rate_limit" || check.outcome === "deferred_cap"
+        || check.outcome === "deferred_provider_unreachable") pass.deferred += 1;
       if (check.outcome === "stale_reported") pass.stale += 1;
       if (!timer) { timer = setTimeout(flush, 5_000); timer.unref?.(); }
     },
@@ -154,6 +171,30 @@ function createPassLog() {
 export function assignedWorkSweep(db: Db, deps: AssignedWorkDeps) {
   const now = () => deps.now?.() ?? new Date();
   const proveOwner = deps.proveOwner ?? ((stamp: LocalOwnerStamp) => proveOwnerGone(stamp, { ...currentProcessProbe(), readOnly: true }));
+  const isProviderHostReachable = deps.isProviderHostReachable ?? createProviderHostReachabilityProbe();
+  /**
+   * LAC-6885 default: read the run the replacement would succeed, and hold only
+   * when a PRIOR run already proved the host could not reach the provider AND a
+   * fresh probe still agrees. Ordered so the probe is never the sole evidence,
+   * and so the cheap classifier rejects the common case before any syscall.
+   *
+   * The probe fails OPEN inside `createProviderHostReachabilityProbe`, so any
+   * unexpected probe error repairs exactly as it does today.
+   */
+  const holdForUnreachableProvider = deps.holdForUnreachableProvider ?? (async ({ companyId, runId }) => {
+    const [row] = await db.select({
+      error: heartbeatRuns.error,
+      resultJson: heartbeatRuns.resultJson,
+      adapterType: agents.adapterType,
+    }).from(heartbeatRuns)
+      .leftJoin(agents, eq(agents.id, heartbeatRuns.agentId))
+      .where(and(eq(heartbeatRuns.companyId, companyId), eq(heartbeatRuns.id, runId)))
+      .limit(1);
+    if (!row) return false;
+    if (!isHostNetworkUnreachableFailure(row)) return false;
+    if (!isProbeHostRelevantToAdapter(row.adapterType)) return false;
+    return !(await isProviderHostReachable());
+  });
   const passLog = createPassLog();
   const repairTimes: number[] = [];
   const reportedStalledRuns = new Set<string>();
@@ -619,6 +660,29 @@ export function assignedWorkSweep(db: Db, deps: AssignedWorkDeps) {
         return { verdict, outcome: stall?.personWork ? "left_person_work" : "left_stalled_replacement",
           retryAt: new Date(at.getTime() + CONTINUATION_CAP_WINDOW_MS) };
       }
+    }
+    // LAC-6885: the retry engine already holds a bounded retry while the host
+    // cannot reach the provider. That hold removes the `scheduled_retry` run row
+    // which, until now, was this sweep's `pending_intent` and the only reason it
+    // left these tasks alone. Without this gate the hold does not stop the storm,
+    // it relocates it: after SETTLING_GRACE_MS the task reads `no_pending_path`
+    // and the repair below spawns a replacement that never passes the retry gate
+    // and spends no bounded attempt, so it is capped only by CONTINUATION_CAP
+    // (6 per task per hour) instead of being suppressed.
+    //
+    // Gating here rather than at the enqueue keeps the hold free: no continuation
+    // claim, no activity row, no process-wide repair slot. The returned deadline
+    // is carried by `checkIssue`'s existing `onDeferredDeadline`, so the task is
+    // re-examined once the probe clears rather than being dropped (the same
+    // stall the LAC-8130 fix closed on the retry side).
+    if (facts.latestRun && await holdForUnreachableProvider({ companyId: issue.companyId, runId: facts.latestRun.id })) {
+      logger.info({ event: "assigned_work_invariant.provider_network_unreachable", companyId: issue.companyId,
+        issueId: issue.id, runId: facts.latestRun.id, agentId: issue.assigneeAgentId,
+        errorCode: PROVIDER_NETWORK_UNREACHABLE_CODE, violation: verdict.reason,
+        recheckInMs: PROVIDER_NETWORK_UNREACHABLE_RECHECK_MS },
+      "held an assigned-work replacement: host cannot reach the provider");
+      return { verdict, outcome: "deferred_provider_unreachable",
+        retryAt: new Date(at.getTime() + PROVIDER_NETWORK_UNREACHABLE_RECHECK_MS) };
     }
     // A small process-wide budget keeps a post-deploy backlog from starting
     // hundreds of runs at once. Deferred tasks come back on their deadline.

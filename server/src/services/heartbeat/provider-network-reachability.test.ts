@@ -172,7 +172,11 @@ describe("createProviderHostReachabilityProbe", () => {
   });
 
   it("shares one in-flight probe between concurrent callers", async () => {
-    let release: ((value: boolean) => void) | null = null;
+    // Definite assignment, not `| null`: the Promise executor runs synchronously,
+    // so `release` is set before `probe()` returns. Typing it nullable makes
+    // TypeScript narrow it to `null` at the call below (TS2349), since it cannot
+    // see that the callback already ran.
+    let release!: (value: boolean) => void;
     const resolveHost = vi.fn(
       () => new Promise<boolean>((resolve) => {
         release = resolve;
@@ -182,7 +186,7 @@ describe("createProviderHostReachabilityProbe", () => {
     const first = probe();
     const second = probe();
     expect(resolveHost).toHaveBeenCalledTimes(1);
-    release?.(false);
+    release(false);
     await expect(first).resolves.toBe(false);
     await expect(second).resolves.toBe(false);
   });
