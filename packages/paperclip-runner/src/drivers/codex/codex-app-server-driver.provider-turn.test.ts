@@ -11,6 +11,7 @@ import {
   result,
 } from "./codex-app-server-driver.test-support.js";
 import { RUNNERD_RUN_TERMINAL } from "./codex-driver-values.js";
+import type { HarnessSessionRecoveryResult } from "../../contracts/harness-driver.js";
 
 async function completedFirstTurn(awaiting: boolean) {
   const transport = new FakeCodexTransport();
@@ -228,5 +229,177 @@ describe("Codex app-server driver with provider-started turns", () => {
     const { session } = await completedFirstTurn(false);
     await expect(session.interrupt!({ reason: "Stop" })).rejects.toBeInstanceOf(HarnessOperationAlreadyTerminalError);
     await session.close({ reason: "fixture complete" });
+  });
+});
+
+type StreamEvent = { eventType: string; payload: Record<string, unknown>; turnId?: string };
+
+async function restartedDuringWait(history: Array<Record<string, unknown>>, awaiting = true) {
+  const first = new FakeCodexTransport();
+  const second = new FakeCodexTransport();
+  const driver = makeDriver([first, second]);
+  const original = await driver.openSession({
+    runId: "provider-turn", normalizedSessionId: "provider-turn-session", workingDirectory: WORKSPACE,
+  });
+  await original.startTurn({ message: { role: "user", text: "Start a background install." } });
+  first.push("turn/started", { threadId: "thread-1", turn: { id: "turn-1", status: "inProgress" } });
+  first.push("turn/completed", { threadId: "thread-1", turn: { id: "turn-1", status: "completed", items: [] },
+    ...(awaiting ? { awaitingProviderTurn: true } : {}) });
+  await collectUntilTerminal(original.events());
+  const checkpoint = await original.snapshot();
+  await original.close({ reason: "controller restarted" });
+  second.readResponse = { thread: { id: "thread-1", sessionId: "provider-session-1", cwd: WORKSPACE,
+    turns: [{ id: "turn-1", status: "completed", items: [], ...(awaiting ? { awaitingProviderTurn: true } : {}) }, ...history] } };
+  return { recovery: await driver.recoverSession!(checkpoint), transport: second };
+}
+
+async function restartedDuringActiveTurn(turns: Array<Record<string, unknown>>) {
+  const first = new FakeCodexTransport();
+  const second = new FakeCodexTransport();
+  const driver = makeDriver([first, second]);
+  const original = await driver.openSession({
+    runId: "provider-turn", normalizedSessionId: "provider-turn-session", workingDirectory: WORKSPACE,
+  });
+  await original.startTurn({ message: { role: "user", text: "Start a background install." } });
+  const checkpoint = await original.snapshot();
+  expect(checkpoint.activeTurnId).toBe("turn-1");
+  await original.close({ reason: "controller restarted" });
+  second.readResponse = { thread: { id: "thread-1", sessionId: "provider-session-1", cwd: WORKSPACE, turns } };
+  return { recovery: await driver.recoverSession!(checkpoint).catch((error: unknown): HarnessSessionRecoveryResult => ({ recovered: false, reason: String(error) })), transport: second };
+}
+
+const agentMessage = (turnId: string) => ({ id: `msg-${turnId}`, type: "agentMessage", text: `work in ${turnId}` });
+
+function releaseProviderTurn(transport: FakeCodexTransport, turnId: string, options: { complete: boolean; awaiting?: boolean; withResult?: boolean }) {
+  transport.push("turn/started", { threadId: "thread-1", turn: { id: turnId, status: "inProgress" }, origin: "provider" });
+  transport.push("item/completed", { threadId: "thread-1", turnId, item: agentMessage(turnId) });
+  transport.push("thread/tokenUsage/updated", { threadId: "thread-1", turnId,
+    tokenUsage: { total: { inputTokens: turnId === "provider-1" ? 100 : 200, outputTokens: 10 } } });
+  if (options.withResult) transport.push("paperclip/runResult", { threadId: "thread-1", turnId, result });
+  if (options.complete) {
+    transport.push("turn/completed", { threadId: "thread-1", turn: { id: turnId, status: "completed", items: [] },
+      ...(options.awaiting ? { awaitingProviderTurn: true } : {}) });
+  }
+}
+
+async function streamUntil(events: AsyncIterator<StreamEvent>, done: (event: StreamEvent) => boolean) {
+  const collected: StreamEvent[] = [];
+  for (;;) {
+    const next = await events.next();
+    if (next.done) return collected;
+    collected.push(next.value);
+    if (next.value.eventType === "session.failed" || done(next.value)) return collected;
+  }
+}
+
+const startedTurns = (events: StreamEvent[]) => events.filter(event => event.eventType === "turn.started").map(event => ({ turnId: event.turnId, origin: event.payload.origin }));
+const itemTurns = (events: StreamEvent[]) => events.filter(event => event.eventType === "item.completed" && event.payload.kind === "agentMessage").map(event => event.turnId);
+const usageTurns = (events: StreamEvent[]) => events.filter(event => event.payload.kind === "usage").map(event => event.turnId);
+const completedTurn = (turnId: string) => (event: StreamEvent) => event.eventType === "turn.completed" && event.turnId === turnId;
+const startedTurn = (turnId: string) => (event: StreamEvent) => event.eventType === "turn.started" && event.turnId === turnId;
+
+describe("Codex app-server driver after a controller restart during a wait for the provider's turn", () => {
+  it("lets the stream deliver one later provider-started turn that is still in progress", async () => {
+    const { recovery, transport } = await restartedDuringWait([{ id: "provider-1", status: "inProgress", items: [agentMessage("provider-1")] }]);
+    expect(recovery).toMatchObject({ recovered: true });
+    const session = recovery.session!;
+    expect(await session.snapshot()).toMatchObject({ activeTurnId: null, awaitingProviderTurn: true, dispositionOnlyRecoveryConsumed: false });
+    const events = session.events()[Symbol.asyncIterator]() as AsyncIterator<StreamEvent>;
+    releaseProviderTurn(transport, "provider-1", { complete: true, withResult: true });
+    const seen = await streamUntil(events, completedTurn("provider-1"));
+    expect(seen.filter(event => event.eventType === "session.failed")).toEqual([]);
+    expect(startedTurns(seen)).toEqual([{ turnId: "provider-1", origin: "provider" }]);
+    expect(itemTurns(seen)).toEqual(["provider-1"]);
+    expect(usageTurns(seen)).toEqual(["provider-1"]);
+    const snapshot = await session.snapshot();
+    expect(snapshot.semanticResult).toMatchObject({ result, turnId: "provider-1" });
+    expect(snapshot).toMatchObject({ dispositionOnlyRecoveryConsumed: false, dispositionOnlyRecoveryTurnId: null });
+    await session.close({ reason: "fixture complete" });
+  });
+
+  it("lets the stream deliver a finished provider-started turn and the next one in progress", async () => {
+    const { recovery, transport } = await restartedDuringWait([
+      { id: "provider-1", status: "completed", items: [agentMessage("provider-1")], awaitingProviderTurn: true },
+      { id: "provider-2", status: "inProgress", items: [agentMessage("provider-2")] },
+    ]);
+    expect(recovery).toMatchObject({ recovered: true });
+    const session = recovery.session!;
+    const events = session.events()[Symbol.asyncIterator]() as AsyncIterator<StreamEvent>;
+    releaseProviderTurn(transport, "provider-1", { complete: true, awaiting: true });
+    releaseProviderTurn(transport, "provider-2", { complete: false });
+    const seen = await streamUntil(events, event => event.payload.kind === "usage" && event.turnId === "provider-2");
+    expect(seen.filter(event => event.eventType === "session.failed")).toEqual([]);
+    expect(startedTurns(seen)).toEqual([{ turnId: "provider-1", origin: "provider" }, { turnId: "provider-2", origin: "provider" }]);
+    expect(itemTurns(seen)).toEqual(["provider-1", "provider-2"]);
+    expect(usageTurns(seen)).toEqual(["provider-1", "provider-2"]);
+    expect(seen.find(completedTurn("provider-1"))).toMatchObject({ payload: { awaitingProviderTurn: true } });
+    expect(await session.snapshot()).toMatchObject({ activeTurnId: "provider-2", dispositionOnlyRecoveryConsumed: false });
+    await session.close({ reason: "fixture complete" });
+  });
+
+  it("lets the stream deliver two finished provider-started turns and settles the last one's result", async () => {
+    const { recovery, transport } = await restartedDuringWait([
+      { id: "provider-1", status: "completed", items: [agentMessage("provider-1")], awaitingProviderTurn: true },
+      { id: "provider-2", status: "completed", items: [agentMessage("provider-2")] },
+    ]);
+    expect(recovery).toMatchObject({ recovered: true });
+    const session = recovery.session!;
+    const events = session.events()[Symbol.asyncIterator]() as AsyncIterator<StreamEvent>;
+    releaseProviderTurn(transport, "provider-1", { complete: true, awaiting: true });
+    releaseProviderTurn(transport, "provider-2", { complete: true, withResult: true });
+    const seen = await streamUntil(events, completedTurn("provider-2"));
+    expect(seen.filter(event => event.eventType === "session.failed")).toEqual([]);
+    expect(startedTurns(seen)).toEqual([{ turnId: "provider-1", origin: "provider" }, { turnId: "provider-2", origin: "provider" }]);
+    expect(itemTurns(seen)).toEqual(["provider-1", "provider-2"]);
+    expect(usageTurns(seen)).toEqual(["provider-1", "provider-2"]);
+    expect(seen.find(completedTurn("provider-1"))).toMatchObject({ payload: { awaitingProviderTurn: true } });
+    expect(seen.find(completedTurn("provider-2"))!.payload).not.toHaveProperty("awaitingProviderTurn");
+    const snapshot = await session.snapshot();
+    expect(snapshot.semanticResult).toMatchObject({ result, turnId: "provider-2" });
+    expect(snapshot).toMatchObject({ dispositionOnlyRecoveryConsumed: false });
+    await session.close({ reason: "fixture complete" });
+  });
+
+  it("still refuses two later turns after a checkpoint that was not waiting", async () => {
+    const { recovery } = await restartedDuringWait([
+      { id: "turn-2", status: "completed", items: [] },
+      { id: "turn-3", status: "inProgress", items: [] },
+    ], false);
+    expect(recovery).toEqual({ recovered: false, reason: "provider exposed multiple uncheckpointed disposition recovery turns" });
+  });
+
+  it("settles a persisted active turn the read reports awaited and lets the stream deliver the provider's turn after it", async () => {
+    const { recovery, transport } = await restartedDuringActiveTurn([
+      { id: "turn-1", status: "completed", items: [], awaitingProviderTurn: true },
+      { id: "provider-1", status: "inProgress", items: [] },
+    ]);
+    expect(recovery).toMatchObject({ recovered: true });
+    const session = recovery.session!;
+    const events = session.events()[Symbol.asyncIterator]() as AsyncIterator<StreamEvent>;
+    const reconciled = await streamUntil(events, completedTurn("turn-1"));
+    expect(reconciled.at(-1)).toMatchObject({ eventType: "turn.completed", turnId: "turn-1", payload: { awaitingProviderTurn: true } });
+    expect(await session.snapshot()).toMatchObject({ activeTurnId: null, awaitingProviderTurn: true });
+    releaseProviderTurn(transport, "provider-1", { complete: true, withResult: true });
+    const adopted = await streamUntil(events, completedTurn("provider-1"));
+    expect(adopted.filter(event => event.eventType === "session.failed")).toEqual([]);
+    expect(adopted.find(startedTurn("provider-1"))).toMatchObject({ payload: { origin: "provider" } });
+    expect((await session.snapshot()).semanticResult).toMatchObject({ result, turnId: "provider-1" });
+    await session.close({ reason: "fixture complete" });
+  });
+
+  it.each([
+    ["the persisted turn finished without the wait marker", [
+      { id: "turn-1", status: "completed", items: [] }, { id: "provider-1", status: "inProgress", items: [] }]],
+    ["the persisted turn is still in progress", [
+      { id: "turn-1", status: "inProgress", items: [] }, { id: "provider-1", status: "inProgress", items: [] }]],
+    ["the other active turn is listed before the persisted turn", [
+      { id: "provider-1", status: "inProgress", items: [] }, { id: "turn-1", status: "completed", items: [], awaitingProviderTurn: true }]],
+    ["the reconciled persisted turn settles a result", [
+      { id: "turn-1", status: "completed", awaitingProviderTurn: true,
+        items: [{ id: "result-1", type: "agentMessage", text: JSON.stringify(result) }] },
+      { id: "provider-1", status: "inProgress", items: [] }]],
+  ])("still refuses another active turn when %s", async (_case, turns) => {
+    const { recovery } = await restartedDuringActiveTurn(turns);
+    expect(recovery).toMatchObject({ recovered: false, reason: expect.stringContaining("thread/read exposed active turn provider-1 instead of persisted active turn turn-1") });
   });
 });

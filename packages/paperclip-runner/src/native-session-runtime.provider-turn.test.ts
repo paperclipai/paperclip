@@ -107,6 +107,7 @@ function harness(options: { withoutInterrupt?: boolean; restart?: RestartContinu
   const queue: Array<PrpEvent | "end"> = [];
   let wake: (() => void) | null = null;
   let activeProviderTurn: string | null = null;
+  const observed = { activeTurnId: null as string | null, awaiting: false };
   const push = (...values: Array<PrpEvent | "end">) => {
     for (const value of values) {
       if (value !== "end" && value.eventType === "turn.started") activeProviderTurn = value.turnId ?? null;
@@ -138,7 +139,12 @@ function harness(options: { withoutInterrupt?: boolean; restart?: RestartContinu
       for (;;) {
         const next = queue.shift();
         if (next === "end") return;
-        if (next) { yield structuredClone(next); continue; }
+        if (next) {
+          if (next.eventType === "turn.started") Object.assign(observed, { activeTurnId: next.turnId ?? null, awaiting: false });
+          else if (next.eventType.startsWith("turn.")) Object.assign(observed, { activeTurnId: null, awaiting: next.payload.awaitingProviderTurn === true });
+          yield structuredClone(next);
+          continue;
+        }
         await new Promise<void>(resolve => { wake = resolve; });
         wake = null;
       }
@@ -149,7 +155,7 @@ function harness(options: { withoutInterrupt?: boolean; restart?: RestartContinu
     async snapshot() {
       const base: PersistedNativeSession = { backendKind: "mock", sessionId: identity.sessionId, identity,
         providerSessionId: "provider-session", cursor: String(sequence), activeTurnId: null, pendingRuntimeRequests: [], lineage: [] };
-      if (!options.restart) return base;
+      if (!options.restart) return { ...base, activeTurnId: observed.activeTurnId, ...(observed.awaiting ? { awaitingProviderTurn: true } : {}) };
       if (options.restart.recovery) return { ...base, ...options.restart.recovery.snapshot };
       const starts = startTurn.mock.calls.length;
       return { ...base, semanticResult: null,
@@ -175,6 +181,7 @@ async function run(options: {
   const control = harness({ withoutInterrupt: options.withoutInterrupt, restart: options.restart });
   const appended: PrpEvent[] = [];
   const checkpoints: PersistedNativeSession[] = [];
+  const checkpointedAfter: number[] = [];
   let queued: Array<() => void> = [];
   const flushStreamingEvents = vi.fn(() => {
     const flushed = queued;
@@ -194,7 +201,7 @@ async function run(options: {
       ...(options.restart ? { async recoverSession() { return { recovered: true, session: control.session }; } } : {}) },
     controlPlane: {
       ...(options.pipelinesDeltas ? { pipelinesStreamingEvents: true, flushStreamingEvents } : {}),
-      async openRun() {}, async checkpointSession(value: PersistedNativeSession) { checkpoints.push(structuredClone(value)); },
+      async openRun() {}, async checkpointSession(value: PersistedNativeSession) { checkpoints.push(structuredClone(value)); checkpointedAfter.push(appended.length); },
       async appendEvent(value: PrpEvent) {
         appended.push(structuredClone(value));
         if (options.pipelinesDeltas && value.eventType === "item.delta") await new Promise<void>(resolve => queued.push(resolve));
@@ -216,7 +223,7 @@ async function run(options: {
   await options.after?.(control, appended);
   const outcome = await execution;
   return { outcome, returned, appended, completeRun, resolveMissingResult, interrupt: control.interrupt, flushStreamingEvents,
-    startTurn: control.startTurn, checkpoints, elapsedMs: Date.now() - started };
+    startTurn: control.startTurn, checkpoints, checkpointedAfter, elapsedMs: Date.now() - started };
 }
 
 const types = (events: PrpEvent[]) => events.map(value => value.eventType);
@@ -229,6 +236,40 @@ describe("the controller consumer with provider-started turn sequences", () => {
     expect(outcome.completeRun).not.toHaveBeenCalled();
     expect(types(outcome.appended)).toEqual(["turn.started", "item.completed", "turn.completed"]);
     expect(outcome.interrupt).not.toHaveBeenCalled();
+  });
+
+  const ordinaryTurn = () => [
+    event("turn-1", "turn.started", { status: "inProgress" }),
+    event("turn-1", "item.completed", usage),
+    event("turn-1", "run.result.proposed", result as unknown as Record<string, unknown>),
+    event("turn-1", "turn.completed", { status: "completed", error: null }),
+  ];
+  const checkpointsAfter = (outcome: Awaited<ReturnType<typeof run>>, matches: (value: PrpEvent) => boolean) => {
+    const index = outcome.appended.findIndex(matches);
+    return outcome.checkpoints.filter((_value, at) => outcome.checkpointedAfter[at] === index + 1);
+  };
+
+  it("persists a checkpoint with the waiting shape right after the awaiting terminal", async () => {
+    const outcome = await run({ stream: turnOne(true), providerTurnWait: { capMs: 100 } });
+    expect(checkpointsAfter(outcome, value => value.payload.awaitingProviderTurn === true))
+      .toEqual([expect.objectContaining({ activeTurnId: null, awaitingProviderTurn: true })]);
+  });
+
+  it("persists a checkpoint naming a provider-started turn active right after its start", async () => {
+    const outcome = await run({ stream: [...turnOne(true), ...providerTurn("provider-1", { awaiting: true }), ...providerTurn("provider-2", { result: true })] });
+    expect(outcome.outcome).toBe("finalized");
+    for (const turnId of ["provider-1", "provider-2"]) {
+      expect(checkpointsAfter(outcome, value => value.turnId === turnId && value.eventType === "turn.started"))
+        .toEqual([expect.objectContaining({ activeTurnId: turnId })]);
+    }
+  });
+
+  it("persists no checkpoint of either kind for a turn that does not await", async () => {
+    const outcome = await run({ stream: ordinaryTurn() });
+    expect(outcome.outcome).toBe("finalized");
+    const checkpointsWithoutProviderTurns = 4;
+    expect(outcome.checkpoints).toHaveLength(checkpointsWithoutProviderTurns);
+    expect(outcome.checkpoints.filter(value => value.awaitingProviderTurn || value.activeTurnId?.startsWith("provider-"))).toEqual([]);
   });
 
   it("consumes the provider-started turn as the next turn of the same run and settles its result normally", async () => {
