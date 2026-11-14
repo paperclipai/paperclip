@@ -2204,6 +2204,10 @@ function escapeLikePattern(value: string): string {
   return value.replace(/[\\%_]/g, "\\$&");
 }
 
+function originKindPrefixCondition(prefix: string) {
+  return like(issues.originKind, `${escapeLikePattern(String(prefix))}%`);
+}
+
 export function clampIssueListLimit(limit: number): number {
   return Math.min(ISSUE_LIST_MAX_LIMIT, Math.max(1, Math.floor(limit)));
 }
@@ -6753,7 +6757,7 @@ async function blockedInboxIssueConditions(
   if (filters?.originKind)
     conditions.push(eq(issues.originKind, filters.originKind));
   if (filters?.originKindPrefix)
-    conditions.push(like(issues.originKind, `${filters.originKindPrefix}%`));
+    conditions.push(originKindPrefixCondition(filters.originKindPrefix));
   if (filters?.originId) conditions.push(eq(issues.originId, filters.originId));
   if (filters?.hasPlanDocument !== undefined) {
     conditions.push(
@@ -8666,9 +8670,7 @@ export function issueService(db: Db) {
       if (filters?.originKind)
         conditions.push(eq(issues.originKind, filters.originKind));
       if (filters?.originKindPrefix)
-        conditions.push(
-          like(issues.originKind, `${filters.originKindPrefix}%`),
-        );
+        conditions.push(originKindPrefixCondition(filters.originKindPrefix));
       if (filters?.originId)
         conditions.push(eq(issues.originId, filters.originId));
       if (filters?.hasPlanDocument !== undefined) {
@@ -8978,9 +8980,7 @@ export function issueService(db: Db) {
       if (filters?.originKind)
         conditions.push(eq(issues.originKind, filters.originKind));
       if (filters?.originKindPrefix)
-        conditions.push(
-          like(issues.originKind, `${filters.originKindPrefix}%`),
-        );
+        conditions.push(originKindPrefixCondition(filters.originKindPrefix));
       if (filters?.originId)
         conditions.push(eq(issues.originId, filters.originId));
       if (filters?.hasPlanDocument !== undefined) {
