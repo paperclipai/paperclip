@@ -244,6 +244,7 @@ import type {
 } from "./import-write-types.js";
 import {
   summarizeIssueWatchdog,
+  taskWatchdogService,
   upsertIssueWatchdogForIssue,
 } from "./task-watchdogs.js";
 import {
@@ -12600,6 +12601,24 @@ export function issueService(db: Db) {
       const result = await (dbOrTx === db
         ? db.transaction(runUpdate)
         : runUpdate(dbOrTx));
+      if (dbOrTx === db) {
+        const committed = result as { id?: string; companyId?: string; status?: string } | null;
+        const committedStatus = committed?.status;
+        if (committed?.id && committed.companyId && committedStatus === "done") {
+          try {
+            await taskWatchdogService(db).recordTerminalReviewDisposition(
+              committed.companyId,
+              committed.id,
+              { runId: data.actorRunId ?? null },
+            );
+          } catch (err) {
+            logger.warn(
+              { err, issueId: committed.id, status: committedStatus },
+              "terminal watchdog review disposition deferred to next round",
+            );
+          }
+        }
+      }
       if (dbOrTx === db && !postCommitActivityPublications) {
         for (const publication of ownedActivityPublications)
           publishActivity(publication);

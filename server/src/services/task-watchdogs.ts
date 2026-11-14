@@ -1954,6 +1954,23 @@ export function taskWatchdogService(db: Db, deps: TaskWatchdogServiceDeps = {}) 
       return result;
     },
 
+    recordTerminalReviewDisposition: async (
+      companyId: string,
+      watchdogIssueId: string,
+      opts: { runId?: string | null } = {},
+    ) => {
+      const row = await db
+        .select()
+        .from(issueWatchdogs)
+        .where(and(
+          eq(issueWatchdogs.companyId, companyId),
+          eq(issueWatchdogs.watchdogIssueId, watchdogIssueId),
+        ))
+        .then((rows: IssueWatchdogRow[]) => rows[0] ?? null);
+      if (!row) return null;
+      return markTerminalWatchdogIssueReviewed(row, { runId: opts.runId ?? null });
+    },
+
     revalidateMutationScope,
   };
 }
