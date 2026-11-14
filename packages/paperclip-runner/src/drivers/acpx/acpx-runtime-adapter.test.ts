@@ -501,7 +501,9 @@ describe("Codex ACPX runtime adapter", () => {
     });
     else expect(spawnedAgentEnvironment(created, options.command)!.ANTHROPIC_CUSTOM_MODEL_OPTION).toBeUndefined();
     const environment = spawnedAgentEnvironment(created, options.command)!;
-    const headers = created.mcpServers!.map(server => (server as { headers: Array<{ value: string }> }).headers[0]!.value);
+    const mcpServers = created.mcpServers;
+    if (!Array.isArray(mcpServers)) throw new Error("Expected static MCP server configuration");
+    const headers = mcpServers.map(server => (server as { headers: Array<{ value: string }> }).headers[0]!.value);
     expect(new Set(headers).size).toBe(2);
     expect(headers.map(header => environment[header.slice(2, -1)])).toEqual(["Bearer runner-fixture", "Bearer external-fixture"]);
     expect(JSON.stringify(created.mcpServers)).not.toContain("runner-fixture");
@@ -1130,7 +1132,9 @@ describe("Codex ACPX runtime adapter", () => {
         expect(Object.keys(environment)).toHaveLength(2);
         expect(runtimeOptions?.mcpServers).toEqual([]);
       } else {
-        const header = (runtimeOptions!.mcpServers![0] as { headers: Array<{ value: string }> }).headers[0]!.value;
+        const mcpServers = runtimeOptions?.mcpServers;
+        if (!Array.isArray(mcpServers)) throw new Error("Expected static MCP server configuration");
+        const header = (mcpServers[0] as { headers: Array<{ value: string }> }).headers[0]!.value;
         expect(header).toMatch(/^\$\{PAPERCLIP_CLAUDE_MCP_[A-Za-z0-9_]+\}$/);
         expect(environment[header.slice(2, -1)]).toBe("Bearer bridge-secret");
         expect(JSON.stringify(runtimeOptions?.mcpServers)).not.toContain("bridge-secret");
