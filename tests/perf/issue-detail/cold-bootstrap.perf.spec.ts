@@ -26,7 +26,7 @@ const LAST_COMMENT = `Cold bootstrap comment ${COMMENT_COUNT}: the latest saved 
 
 type Seed = { companyId: string; prefix: string; issueId: string; identifier: string };
 type RequestRecord = { path: string; method: string; startMs: number; endMs: number | null };
-type Sample = { run: number; revealMs: number; socketMs: number | null; apiRequestsBeforeReveal: number; requests: RequestRecord[]; releasedBy: string[] };
+type Sample = { run: number; revealMs: number; jsTransferBytes: number; socketMs: number | null; apiRequestsBeforeReveal: number; requests: RequestRecord[]; releasedBy: string[] };
 
 test.use({ serviceWorkers: "block", viewport: { width: 1440, height: 900 } });
 
@@ -76,10 +76,13 @@ async function measure(browser: Browser, baseURL: string, seedData: Seed, run: n
     await warm.close();
   }
   const page = await context.newPage();
-  await context.route("**/api/**", async (route) => {
-    await new Promise((resolve) => setTimeout(resolve, API_DELAY_MS));
-    await route.continue().catch(() => {});
+  // Delay API requests through CDP request interception. Playwright routing
+  // would disable the HTTP cache and download the warmed JavaScript again.
+  const cdp = await context.newCDPSession(page);
+  cdp.on("Fetch.requestPaused", (event: { requestId: string }) => {
+    setTimeout(() => { void cdp.send("Fetch.continueRequest", { requestId: event.requestId }).catch(() => {}); }, API_DELAY_MS);
   });
+  await cdp.send("Fetch.enable", { patterns: [{ urlPattern: "*/api/*", requestStage: "Request" }] });
   const records = new Map<object, RequestRecord>();
   let origin = 0;
   page.on("request", (req) => {
@@ -113,7 +116,11 @@ async function measure(browser: Browser, baseURL: string, seedData: Seed, run: n
   origin = Date.now();
   await page.goto(`/${seedData.prefix}/issues/${seedData.identifier}`);
   await page.waitForFunction(() => (window as Window & { __coldReveal?: number }).__coldReveal, null, { timeout: 60_000, polling: 50 });
-  const { revealMs, navStartEpoch } = await page.evaluate(() => ({
+  const { revealMs, navStartEpoch, jsTransferBytes } = await page.evaluate(() => ({
+    // Bytes of JavaScript fetched over the network; near zero when the HTTP cache served it.
+    jsTransferBytes: (performance.getEntriesByType("resource") as PerformanceResourceTiming[])
+      .filter((entry) => entry.initiatorType === "script" || /\.m?js(\?|$)/.test(entry.name))
+      .reduce((sum, entry) => sum + entry.transferSize, 0),
     revealMs: (window as Window & { __coldReveal?: number }).__coldReveal!,
     navStartEpoch: performance.timeOrigin,
   }));
@@ -128,7 +135,7 @@ async function measure(browser: Browser, baseURL: string, seedData: Seed, run: n
   const finishedBefore = before.filter((record) => record.endMs !== null && record.endMs <= revealMs);
   const lastEnd = Math.max(...finishedBefore.map((record) => record.endMs!));
   const releasedBy = finishedBefore.filter((record) => record.endMs! >= lastEnd - 50).map((record) => record.path);
-  return { run, revealMs, socketMs: socketMs === null ? null : socketMs - shift, apiRequestsBeforeReveal: before.length, requests, releasedBy };
+  return { run, revealMs, jsTransferBytes, socketMs: socketMs === null ? null : socketMs - shift, apiRequestsBeforeReveal: before.length, requests, releasedBy };
 }
 
 function median(values: number[]) {
@@ -184,6 +191,7 @@ test("cold direct task load benchmark", async ({ browser, baseURL, request }) =>
     "",
     `- First readable frame: median ${Math.round(median(reveals))} ms, min ${Math.round(Math.min(...reveals))}, max ${Math.round(Math.max(...reveals))}`,
     `- API requests started before the frame: median ${median(counts)}, min ${Math.min(...counts)}, max ${Math.max(...counts)}`,
+    `- JavaScript transferred over the network: median ${Math.round(median(samples.map((sample) => sample.jsTransferBytes)) / 1024)} KiB`,
     `- Released by (run 1): ${samples[0]!.releasedBy.join(", ")}`,
     "",
     "## Run 1 requests (ms from navigation start)",
