@@ -1,3 +1,4 @@
+import { stoppedLegacyNativeBootstrapRunIds } from "./native-runtime/native-workspace-startup-evidence.js";
 import { notifyStatusCardIssueChange } from "./status-card-notifications.js";
 import { effectiveProjectWorkspacePolicy } from "./project-workspace-provider.js";
 import { readRemoteWorkspaceAuthority, readWorkspaceProviderBinding } from "@paperclipai/shared";
@@ -1513,6 +1514,8 @@ async function hasPendingTaskWorkspaceRecovery(tx: DbTransaction, input: {
   }).map(({ run }) => run.id);
   const providerEvidence = await nativeSessionProviderEvidence(tx, bootstrapRunIds);
   const noWorkFailures = new Set(bootstrapRunIds.filter(id => !providerEvidence.has(id)));
+  const legacyIds = rows.filter(({ run }) => latest.get(run.id) === "failed").map(({ run }) => run.id);
+  for (const id of await stoppedLegacyNativeBootstrapRunIds(tx, { ...input, runIds: legacyIds })) noWorkFailures.add(id);
   return rows.some(({ finalization, run }) => {
     const status = latest.get(run.id);
     if (status !== undefined) return status !== "succeeded" && !noWorkFailures.has(run.id);
