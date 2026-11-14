@@ -874,6 +874,38 @@ impl AcpxDurableState {
         Ok(())
     }
 
+    fn push_streaming(&mut self, event: NormalizedProviderEvent) -> Result<(), DurableRunnerError> {
+        if event.event_type == "item.delta"
+            && event.priority == EventPriority::P2
+            && matches!(
+                event.payload.get("kind").and_then(Value::as_str),
+                Some("agentMessage" | "reasoning")
+            )
+        {
+            if let Some(previous) = self.pending_events.back_mut() {
+                if previous.event_type == event.event_type && previous.priority == event.priority {
+                    if let (Some(left), Some(right)) = (
+                        previous.payload.get("text").and_then(Value::as_str),
+                        event.payload.get("text").and_then(Value::as_str),
+                    ) {
+                        if !left.is_empty()
+                            && !right.is_empty()
+                            && left.len() + right.len() <= 4_000
+                        {
+                            let mut metadata = previous.payload.clone();
+                            metadata["text"] = event.payload["text"].clone();
+                            if metadata == event.payload {
+                                previous.payload["text"] = json!(format!("{left}{right}"));
+                                return Ok(());
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        self.push(event)
+    }
+
     fn push(&mut self, event: NormalizedProviderEvent) -> Result<(), DurableRunnerError> {
         if self.pending_events.len() >= MAX_PENDING_EVENTS {
             return Err(DurableRunnerError::invalid(
@@ -2689,7 +2721,8 @@ impl AcpxCommandExecutor {
                 })));
             }
         }
-        self.session
+        let delivery = self
+            .session
             .as_mut()
             .ok_or_else(|| DurableRunnerError::invalid("ACPX session is unavailable"))?
             .deliver_tool_result(&result)
@@ -2699,7 +2732,11 @@ impl AcpxCommandExecutor {
                 ))
             })?;
         Ok(CommandExecution::result(json!({
-            "status": "delivered",
+            "status": match delivery {
+                crate::acpx_provider_session::AcpxToolDelivery::Delivered => "delivered",
+                crate::acpx_provider_session::AcpxToolDelivery::Expired => "expired",
+                crate::acpx_provider_session::AcpxToolDelivery::AlreadyRecorded => "already_recorded",
+            },
             "callId": result.call_id,
         })))
     }
@@ -2897,55 +2934,62 @@ impl AcpxCommandExecutor {
         count: usize,
         disconnected: bool,
     ) -> Result<(), DurableRunnerError> {
-        for _ in 0..count {
-            let events = self
-                .session
-                .as_mut()
-                .expect("ACPX session remains available while polling")
-                .poll_output(
-                    Duration::from_millis(1),
-                    disconnected,
-                    self.state
-                        .as_ref()
-                        .and_then(|state| state.goal_source_revision),
-                    self.state
-                        .as_ref()
-                        .is_some_and(|state| state.provider_turn_wait.is_some()),
-                );
-            let events = match events {
-                Ok(events) => events,
-                Err(error) => {
-                    let state = self
-                        .state
-                        .as_mut()
-                        .expect("ACPX failed provider has durable state");
-                    state.expire_runtime_requests("provider_process_lost", false)?;
-                    let failed_turn = state.active_turn_id.take();
-                    state.lifecycle = "closed".to_owned();
-                    state.provider_exit_unconfirmed = true;
-                    if let Some(turn_id) = failed_turn {
-                        let message = crate::durable::redact_text(&error.to_string());
-                        state.push(NormalizedProviderEvent { event_type: "turn.failed".to_owned(), priority: EventPriority::P0,
+        let batch_start = self
+            .state
+            .as_ref()
+            .map_or(0, |state| state.pending_events.len());
+        let mut received = false;
+        let result = (|| {
+            for _ in 0..count {
+                let events = self
+                    .session
+                    .as_mut()
+                    .expect("ACPX session remains available while polling")
+                    .poll_output(
+                        Duration::from_millis(1),
+                        disconnected,
+                        self.state
+                            .as_ref()
+                            .and_then(|state| state.goal_source_revision),
+                        self.state
+                            .as_ref()
+                            .is_some_and(|state| state.provider_turn_wait.is_some()),
+                    );
+                let events = match events {
+                    Ok(events) => events,
+                    Err(error) => {
+                        received = true;
+                        let state = self
+                            .state
+                            .as_mut()
+                            .expect("ACPX failed provider has durable state");
+                        state.expire_runtime_requests("provider_process_lost", false)?;
+                        let failed_turn = state.active_turn_id.take();
+                        state.lifecycle = "closed".to_owned();
+                        state.provider_exit_unconfirmed = true;
+                        if let Some(turn_id) = failed_turn {
+                            let message = crate::durable::redact_text(&error.to_string());
+                            state.push(NormalizedProviderEvent { event_type: "turn.failed".to_owned(), priority: EventPriority::P0,
                             payload: json!({"provider":"acpx","providerTurnId":turn_id,"status":"failed","providerTerminalObserved":false,
                                 "code":"acpx_provider_transport_failed","message":message,
                                 "error":{"code":"acpx_provider_transport_failed","message":message,"recoverable":false}}) })?;
-                        state.push(NormalizedProviderEvent { event_type: "run.terminal".to_owned(), priority: EventPriority::P0,
+                            state.push(NormalizedProviderEvent { event_type: "run.terminal".to_owned(), priority: EventPriority::P0,
                             payload: json!({"schema":"paperclip.prp.terminal.v1","status":"failed","turnTerminalState":"failed","runTerminalState":"failed","reportedWorkDisposition":"needs_review","provider":"acpx"}) })?;
+                        }
+                        self.context.provider_turn_id = None;
+                        // A failed transport cannot attest escaped provider cleanup.
+                        // Drop the closed process owner; later cleanup must prove the lifetime fence.
+                        self.session = None;
+                        return Ok(());
                     }
-                    self.context.provider_turn_id = None;
-                    // A failed transport cannot attest escaped provider cleanup.
-                    // Drop the closed process owner; later cleanup must prove the lifetime fence.
-                    self.session = None;
-                    self.save_state()?;
-                    return Ok(());
-                }
-            };
-            let Some((events, mut terminal_goal)) = events else {
-                break;
-            };
-            let mut provider_turn_settled = false;
-            for event in events {
-                if let crate::acpx_provider_state::AcpxProviderStateEvent::ProviderTurnStarted {
+                };
+                let Some((events, mut terminal_goal)) = events else {
+                    break;
+                };
+                received = true;
+                let mut provider_turn_settled = false;
+                for event in events {
+                    if let crate::acpx_provider_state::AcpxProviderStateEvent::ProviderTurnStarted {
                     turn_id,
                 } = &event
                 {
@@ -2964,139 +3008,146 @@ impl AcpxCommandExecutor {
                     state.lifecycle = "turn_active".to_owned();
                     self.context.provider_turn_id = Some(turn_id.clone());
                 }
-                let provider_process_lost = matches!(
-                    &event,
-                    crate::acpx_provider_state::AcpxProviderStateEvent::TurnTerminal {
-                        error: Some(error), ..
-                    } if error.get("code").and_then(Value::as_str) == Some("ACPX_PROVIDER_PROCESS_LOST")
-                );
-                let normalized = project_acpx_state_event(&self.context, &event)
-                    .map_err(|error| DurableRunnerError::invalid(error.to_string()))?;
-                let terminal = normalized.iter().find_map(|event| {
-                    matches!(
-                        event.event_type.as_str(),
-                        "turn.completed" | "turn.failed" | "turn.cancelled" | "turn.interrupted"
-                    )
-                    .then(|| event.event_type.clone())
-                });
-                // A failed provider cannot answer session controls. Its
-                // terminal receipt must remain publishable without another
-                // protocol request, and must revoke future warm admission.
-                if terminal.is_some() && !provider_process_lost {
-                    let snapshot = match terminal_goal.take() {
-                        Some(goal) => {
-                            self.accept_goal_projection("session.goal.get", &Value::Null, goal)?
-                        }
-                        None => self.goal_control("session.goal.get", &json!({}))?,
-                    };
-                    let state = self.state.as_mut().expect("ACPX session has durable state");
-                    for (event_type, priority, payload) in snapshot.events {
-                        state.push(NormalizedProviderEvent {
-                            event_type,
-                            priority,
-                            payload,
-                        })?;
-                    }
-                }
-                let provider_lost = matches!(
-                    &event,
-                    crate::acpx_provider_state::AcpxProviderStateEvent::Diagnostic { code, .. }
-                        if code == crate::generated_acpx_sidecar_contract::GENERATED_ACPX_PROVIDER_TURN_LOST_CODE
-                );
-                let state = self
-                    .state
-                    .as_mut()
-                    .expect("ACPX state remains available while polling");
-                let mut accepted = Vec::with_capacity(normalized.len());
-                for mut event in normalized {
-                    if matches!(
-                        event.event_type.as_str(),
-                        "session.goal.updated" | "session.goal.cleared"
-                    ) {
-                        let revision = event
-                            .payload
-                            .get("providerRevision")
-                            .and_then(Value::as_u64);
-                        // Requests consume a newer authoritative snapshot while
-                        // older notifications may still be queued in the transport.
-                        if !goal_notification_is_newer(revision, state.goal_source_revision) {
-                            continue;
-                        }
-                        state.goal_source_revision = revision;
-                        state.goal_revision += 1;
-                        event.payload["revision"] = json!(state.goal_revision);
-                        state.goal_projection = event.payload.clone();
-                    }
-                    if event.event_type == "run.result.proposed" {
-                        state.semantic_result = Some(event.payload.clone());
-                    }
-                    accepted.push(event);
-                }
-                let turn_ended = terminal.is_some();
-                let mut run_terminal = None;
-                if let Some(event_type) = terminal {
-                    state.active_turn_id = None;
-                    state.provider_exit_unconfirmed |= provider_process_lost;
-                    state.lifecycle = if provider_process_lost
-                        || self
-                            .session
-                            .as_ref()
-                            .is_some_and(|session| session.runtime_retired())
-                    {
-                        "closed"
-                    } else {
-                        "session_open"
-                    }
-                    .to_owned();
-                    provider_turn_settled = true;
-                    // An ACP goal has session lifetime, not prompt lifetime.
-                    // Out-of-prompt goal updates remain observable after quiescence.
-                    let goal_continues = !provider_process_lost
-                        && state
-                            .goal_projection
-                            .pointer("/goal/status")
-                            .and_then(Value::as_str)
-                            == Some("active");
-                    let (turn_terminal_state, status) = match event_type.as_str() {
-                        "turn.completed" => ("completed", "succeeded"),
-                        "turn.cancelled" => ("cancelled", "cancelled"),
-                        "turn.interrupted" => ("interrupted", "cancelled"),
-                        _ => ("failed", "failed"),
-                    };
-                    let disposition = goal_terminal_disposition(
-                        state
-                            .goal_projection
-                            .pointer("/goal/status")
-                            .and_then(Value::as_str),
-                        state
-                            .semantic_result
-                            .as_ref()
-                            .and_then(|result| result.get("reportedWorkDisposition"))
-                            .and_then(Value::as_str),
-                        status == "succeeded",
+                    let provider_process_lost = matches!(
+                        &event,
+                        crate::acpx_provider_state::AcpxProviderStateEvent::TurnTerminal {
+                            error: Some(error), ..
+                        } if error.get("code").and_then(Value::as_str) == Some("ACPX_PROVIDER_PROCESS_LOST")
                     );
-                    run_terminal = (!goal_continues).then(|| {
-                        json!({
-                            "schema": "paperclip.prp.terminal.v1",
-                            "status": status,
-                            "turnTerminalState": turn_terminal_state,
-                            "runTerminalState": status,
-                            "reportedWorkDisposition": disposition,
-                            "provider": "acpx",
-                        })
+                    let normalized = project_acpx_state_event(&self.context, &event)
+                        .map_err(|error| DurableRunnerError::invalid(error.to_string()))?;
+                    let terminal = normalized.iter().find_map(|event| {
+                        matches!(
+                            event.event_type.as_str(),
+                            "turn.completed"
+                                | "turn.failed"
+                                | "turn.cancelled"
+                                | "turn.interrupted"
+                        )
+                        .then(|| event.event_type.clone())
                     });
+                    // A failed provider cannot answer session controls. Its
+                    // terminal receipt must remain publishable without another
+                    // protocol request, and must revoke future warm admission.
+                    if terminal.is_some() && !provider_process_lost {
+                        let snapshot = match terminal_goal.take() {
+                            Some(goal) => {
+                                self.accept_goal_projection("session.goal.get", &Value::Null, goal)?
+                            }
+                            None => self.goal_control("session.goal.get", &json!({}))?,
+                        };
+                        let state = self.state.as_mut().expect("ACPX session has durable state");
+                        for (event_type, priority, payload) in snapshot.events {
+                            state.push(NormalizedProviderEvent {
+                                event_type,
+                                priority,
+                                payload,
+                            })?;
+                        }
+                    }
+                    let provider_lost = matches!(
+                        &event,
+                        crate::acpx_provider_state::AcpxProviderStateEvent::Diagnostic { code, .. }
+                            if code == crate::generated_acpx_sidecar_contract::GENERATED_ACPX_PROVIDER_TURN_LOST_CODE
+                    );
+                    let state = self
+                        .state
+                        .as_mut()
+                        .expect("ACPX state remains available while polling");
+                    let mut accepted = Vec::with_capacity(normalized.len());
+                    for mut event in normalized {
+                        if matches!(
+                            event.event_type.as_str(),
+                            "session.goal.updated" | "session.goal.cleared"
+                        ) {
+                            let revision = event
+                                .payload
+                                .get("providerRevision")
+                                .and_then(Value::as_u64);
+                            // Requests consume a newer authoritative snapshot while
+                            // older notifications may still be queued in the transport.
+                            if !goal_notification_is_newer(revision, state.goal_source_revision) {
+                                continue;
+                            }
+                            state.goal_source_revision = revision;
+                            state.goal_revision += 1;
+                            event.payload["revision"] = json!(state.goal_revision);
+                            state.goal_projection = event.payload.clone();
+                        }
+                        if event.event_type == "run.result.proposed" {
+                            state.semantic_result = Some(event.payload.clone());
+                        }
+                        accepted.push(event);
+                    }
+                    let turn_ended = terminal.is_some();
+                    let mut run_terminal = None;
+                    if let Some(event_type) = terminal {
+                        state.active_turn_id = None;
+                        state.provider_exit_unconfirmed |= provider_process_lost;
+                        state.lifecycle = if provider_process_lost
+                            || self
+                                .session
+                                .as_ref()
+                                .is_some_and(|session| session.runtime_retired())
+                        {
+                            "closed"
+                        } else {
+                            "session_open"
+                        }
+                        .to_owned();
+                        provider_turn_settled = true;
+                        // An ACP goal has session lifetime, not prompt lifetime.
+                        // Out-of-prompt goal updates remain observable after quiescence.
+                        let goal_continues = !provider_process_lost
+                            && state
+                                .goal_projection
+                                .pointer("/goal/status")
+                                .and_then(Value::as_str)
+                                == Some("active");
+                        let (turn_terminal_state, status) = match event_type.as_str() {
+                            "turn.completed" => ("completed", "succeeded"),
+                            "turn.cancelled" => ("cancelled", "cancelled"),
+                            "turn.interrupted" => ("interrupted", "cancelled"),
+                            _ => ("failed", "failed"),
+                        };
+                        let disposition = goal_terminal_disposition(
+                            state
+                                .goal_projection
+                                .pointer("/goal/status")
+                                .and_then(Value::as_str),
+                            state
+                                .semantic_result
+                                .as_ref()
+                                .and_then(|result| result.get("reportedWorkDisposition"))
+                                .and_then(Value::as_str),
+                            status == "succeeded",
+                        );
+                        run_terminal = (!goal_continues).then(|| {
+                            json!({
+                                "schema": "paperclip.prp.terminal.v1",
+                                "status": status,
+                                "turnTerminalState": turn_terminal_state,
+                                "runTerminalState": status,
+                                "reportedWorkDisposition": disposition,
+                                "provider": "acpx",
+                            })
+                        });
+                    }
+                    self.settle_turn_events(accepted, turn_ended, run_terminal, batch_start)?;
+                    if provider_lost {
+                        self.end_provider_turn_wait(true)?;
+                    }
                 }
-                self.settle_turn_events(accepted, turn_ended, run_terminal)?;
-                if provider_lost {
-                    self.end_provider_turn_wait(true)?;
+                if provider_turn_settled {
+                    self.context.provider_turn_id = None;
                 }
             }
-            if provider_turn_settled {
-                self.context.provider_turn_id = None;
-            }
+            Ok(())
+        })();
+        if received {
             self.save_state()?;
         }
-        Ok(())
+        result
     }
 }
 
@@ -3723,6 +3774,112 @@ mod tests {
             attested_pending_runtime_requests(&pending, &provider, &live, "durable-turn-1")
                 .is_empty()
         );
+    }
+
+    #[test]
+    fn streaming_burst_preserves_text_and_tools_without_token_sized_journal_entries() {
+        let operations = Vec::new();
+        let mut state = AcpxDurableState::new(
+            serde_json::from_value(descriptor("codex")).unwrap(),
+            AuthorizedToolSet {
+                schema: TOOL_SET_SCHEMA.into(),
+                schema_version: 1,
+                catalog_digest: authorized_tool_catalog_digest(&operations).unwrap(),
+                operations,
+            },
+            "test".into(),
+        );
+        for _ in 0..128 {
+            state.push_streaming(NormalizedProviderEvent {
+                event_type: "item.delta".into(), priority: EventPriority::P2,
+                payload: json!({"itemId":"message-1","kind":"reasoning","channel":"summary","text":"片"}),
+            }).unwrap();
+        }
+        state.push_streaming(NormalizedProviderEvent {
+            event_type: "semantic_tool.input".into(), priority: EventPriority::P0,
+            payload: json!({"semantic_tool":{"callId":"write-plan","operationId":"write_document"}}),
+        }).unwrap();
+        assert_eq!(state.pending_events.len(), 2);
+        assert_eq!(state.pending_events[0].payload["text"], "片".repeat(128));
+        assert_eq!(state.pending_events[1].event_type, "semantic_tool.input");
+    }
+
+    #[test]
+    fn streaming_merge_respects_utf8_byte_limit_and_metadata_boundaries() {
+        let operations = Vec::new();
+        let empty = AcpxDurableState::new(
+            serde_json::from_value(descriptor("codex")).unwrap(),
+            AuthorizedToolSet {
+                schema: TOOL_SET_SCHEMA.into(),
+                schema_version: 1,
+                catalog_digest: authorized_tool_catalog_digest(&operations).unwrap(),
+                operations,
+            },
+            "test".into(),
+        );
+        for (name, left, right, changed, merged) in [
+            ("ASCII at limit", "a".repeat(3_999), "b", None, true),
+            ("ASCII above limit", "a".repeat(4_000), "b", None, false),
+            ("UTF-8 at limit", "片".repeat(1_333), "a", None, true),
+            ("UTF-8 above limit", "片".repeat(1_333), "片", None, false),
+            (
+                "item identity",
+                "first".into(),
+                "second",
+                Some(("itemId", "message-2")),
+                false,
+            ),
+            (
+                "item kind",
+                "first".into(),
+                "second",
+                Some(("kind", "agentMessage")),
+                false,
+            ),
+            (
+                "output channel",
+                "first".into(),
+                "second",
+                Some(("channel", "final")),
+                false,
+            ),
+        ] {
+            let mut state = empty.clone();
+            let first =
+                json!({"itemId":"message-1","kind":"reasoning","channel":"summary","text":left});
+            let mut second = first.clone();
+            second["text"] = json!(right);
+            if let Some((field, value)) = changed {
+                second[field] = json!(value);
+            }
+            for payload in [&first, &second] {
+                state
+                    .push_streaming(NormalizedProviderEvent {
+                        event_type: "item.delta".into(),
+                        priority: EventPriority::P2,
+                        payload: payload.clone(),
+                    })
+                    .unwrap();
+            }
+            if merged {
+                let mut expected = first.clone();
+                expected["text"] = json!(format!("{left}{right}"));
+                assert_eq!(state.pending_events.len(), 1, "{name}");
+                assert_eq!(state.pending_events[0].payload, expected, "{name}");
+                assert_eq!(
+                    state.pending_events[0].payload["text"]
+                        .as_str()
+                        .unwrap()
+                        .len(),
+                    4_000,
+                    "{name}"
+                );
+            } else {
+                assert_eq!(state.pending_events.len(), 2, "{name}");
+                assert_eq!(state.pending_events[0].payload, first, "{name}");
+                assert_eq!(state.pending_events[1].payload, second, "{name}");
+            }
+        }
     }
 
     #[test]

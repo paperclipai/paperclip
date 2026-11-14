@@ -186,6 +186,23 @@
         "expectedIdentity": { "type": ["object", "null"], "properties": { "claudeEffort": false } }
       } }
     },
+    "toolResolveResult": {
+      "description": "tool.resolve acknowledges delivery or a known call that expired before delivery. An expired receipt records the result without replaying the operation or claiming provider delivery.",
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": { "resolved": { "const": true } },
+          "required": ["resolved"],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": { "resolved": { "const": false }, "expired": { "const": true } },
+          "required": ["resolved", "expired"],
+          "additionalProperties": false
+        }
+      ]
+    },
     "response": {
       "type": "object",
       "required": ["protocolVersion", "id", "ok"],

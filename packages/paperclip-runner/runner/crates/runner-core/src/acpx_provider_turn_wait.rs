@@ -67,6 +67,7 @@ impl AcpxCommandExecutor {
         events: Vec<NormalizedProviderEvent>,
         turn_ended: bool,
         run_terminal: Option<Value>,
+        batch_start: usize,
     ) -> Result<(), DurableRunnerError> {
         let offer = turn_ended
             .then(|| {
@@ -98,7 +99,11 @@ impl AcpxCommandExecutor {
             if wait.is_ok() && event.event_type == "turn.completed" {
                 event.payload["awaitingProviderTurn"] = json!(true);
             }
-            state.push(event)?;
+            if state.pending_events.len() > batch_start {
+                state.push_streaming(event)?;
+            } else {
+                state.push(event)?;
+            }
         }
         match wait {
             Ok(wait) => state.provider_turn_wait = Some(wait),

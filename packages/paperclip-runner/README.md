@@ -1174,3 +1174,34 @@ hosted failure. Real Claude/ACPX acceptance, server/Postgres recovery, and
 Daytona deployment continuity need their own evidence. See the
 [remote continuity guide](../../doc/testing-native-remote-continuity.md) and the
 [Daytona Product E2E suite](../../tests/runner-e2e/README.md).
+
+## ACPX polling and late tool results
+
+The ACPX provider saves each bounded poll batch before it returns events. It
+combines adjacent unpublished text or reasoning deltas only when their metadata
+matches and their combined text is at most 4,000 UTF-8 bytes. Tool events keep
+their position. Events already returned to the runner keep their identity and
+payload until acknowledgement. If a poll fails after accepting events, the
+provider saves that prefix before the runner can drain it. A failed save blocks
+publication until recovery from disk. The same boundary applies while disconnected
+and while draining buffered output for a warm-attachment probe.
+
+A cancelled tool keeps a record of its call and turn until its result arrives.
+A known late result returns `{ resolved: false, expired: true }`. The runner
+records it without claiming delivery to the provider or repeating the operation.
+Unknown calls and calls from a different turn still fail. Admission counts active
+calls, calls being normalized, and unacknowledged expirations against a limit of
+4,096. Only acknowledged receipts can leave the 512-entry replay window.
+
+The sidecar schema declares the delivery and expiry replies in `toolResolveResult`.
+The pack contract digest changes with that schema; provider release identities
+and the persisted state shape remain unchanged.
+
+Focused regression checks:
+
+```sh
+cd packages/paperclip-runner
+pnpm exec vitest run src/cli/acpx-runtime-sidecar.test.ts src/drivers/runner-tool-bridge.test.ts src/drivers/acpx/copilot-installation.test.ts src/drivers/acpx/profile-compatibility.test.ts
+node --test test/acpx-sidecar-contract.test.mjs
+cargo test --manifest-path runner/Cargo.toml --locked -p paperclip-runner-core --lib --test acpx_streaming_burst --test acpx_provider_resolutions --test acpx_event_projection
+```

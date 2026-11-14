@@ -138,6 +138,29 @@ fn live_callback_snapshot_checks_the_surviving_sidecar_and_upstream_input_id() {
 }
 
 #[test]
+fn retains_late_tool_results_without_claiming_delivery_or_closing_the_provider() {
+    use paperclip_runner_core::acpx_provider_session::AcpxToolDelivery;
+    let mut session = started("resolutions-expired");
+    assert_eq!(
+        session
+            .deliver_tool_result(&tool_result("issues.read"))
+            .unwrap(),
+        AcpxToolDelivery::Expired
+    );
+    assert!(session.state().pending_tool("call-1").is_none());
+    assert_eq!(
+        session
+            .deliver_tool_result(&tool_result("issues.read"))
+            .unwrap(),
+        AcpxToolDelivery::AlreadyRecorded
+    );
+    session
+        .resolve_input("input-1", "turn-1", &input_resolution("first"))
+        .unwrap();
+    session.shutdown("test complete").unwrap();
+}
+
+#[test]
 fn projected_request_id_resolves_the_exact_upstream_sidecar_request() {
     let mut session = AcpxProviderSession::start(&config("resolutions-projected-id")).unwrap();
     session

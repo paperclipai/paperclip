@@ -434,7 +434,8 @@ it("durably drains noisy active output and one offline terminal before its contr
     const pid = run.launches()[0].pid;
     await run.stopController();
     writeFileSync(resolve(run.root, "offline-action"), "burst");
-    await vi.waitFor(() => expect(runnerState().outbox.some((event: any) => event.envelope.payload.payload.text?.startsWith("offline-287:"))).toBe(true), { timeout: 20_000 });
+    const expectedText = Array.from({ length: 288 }, (_, index) => `offline-${index}:${"x".repeat(512)}`).join("");
+    await vi.waitFor(() => expect(runnerState().outbox.filter((event: any) => event.eventType === "item.delta").map((event: any) => event.envelope.payload.payload.text ?? "").join("")).toContain(expectedText), { timeout: 20_000 });
     writeFileSync(resolve(run.root, "action"), "complete");
     await vi.waitFor(() => expect(runnerState().outbox.filter((event: any) => event.eventType === "turn.completed")).toHaveLength(1), { timeout: 5000 });
     const offline = runnerState();
@@ -442,6 +443,9 @@ it("durably drains noisy active output and one offline terminal before its contr
     expect(() => process.kill(pid, 0)).not.toThrow();
     await run.replaceController();
     await vi.waitFor(() => expect(run.controller().store.state.committedEvents.some(event => event.sourceSeq === offline.nextSourceSeq - 1)).toBe(true), { timeout: 10_000 });
+    const replayedText = run.controller().store.state.committedEvents.filter(event => event.eventType === "item.delta").map((event: any) => event.envelope.payload.payload.text ?? "").join("");
+    expect(replayedText).toContain(expectedText);
+    expect(replayedText.match(/offline-\d+:/g)).toEqual(Array.from({ length: 288 }, (_, index) => `offline-${index}:`));
     const replay = new Map(run.controller().store.state.committedEvents.map(event => [event.sourceSeq, event.sourceEventId]));
     for (const event of offline.outbox) expect(replay.get(event.sourceSeq)).toBe(event.envelope.payload.sourceEventId);
     expect(run.controller().store.state.committedEvents.filter(event => event.eventType === "turn.completed")).toHaveLength(1);

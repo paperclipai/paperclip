@@ -27,6 +27,7 @@ import { acpxGoalProjection } from "../drivers/acpx/session-goals.js";
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { initializeRequest, SidecarProcess } from "../test-support/acpx-sidecar-process.js";
+import { ExpiredAcpxTools } from "./acpx-expired-tools.js";
 
 describe("live sidecar pending request snapshots", () => {
   it("preserves explicit turn cost through the sidecar's closed usage projection", () => {
@@ -1106,6 +1107,132 @@ describe("qualified ACPX runtime sidecar", () => {
       expect(tools.size).toBe(511);
     },
   );
+
+  it("retains a turn-bound tombstone when a tool times out before its result", async () => {
+    const expiredTools = new ExpiredAcpxTools();
+    const tools = new Map<string, unknown>();
+    const waitForTool = loadWaitForTool({ tools, emitted: [], expiredTools });
+    const controller = new AbortController();
+    const pending = waitForTool({ callId: "late-plan-write", tool: "write_document", arguments: {}, signal: controller.signal });
+    controller.abort();
+    await expect(pending).rejects.toThrow("ACPX tool call was cancelled");
+    expect(tools.size).toBe(0);
+    const resolve = loadToolResolution(tools, expiredTools);
+    expect(resolve("late-plan-write", "test-turn")).toEqual({ resolved: false, expired: true });
+    expect(resolve("late-plan-write", "test-turn")).toEqual({ resolved: false, expired: true });
+    expect(() => resolve("late-plan-write", "other-turn")).toThrow("stale or unknown");
+    expect(() => resolve("unknown", "test-turn")).toThrow("stale or unknown");
+  });
+
+  it.each(["timeout", "terminal"])("survives a real bridge %s and late result, then completes the next tool", async (failure) => {
+    const tools = new Map<string, unknown>();
+    const expiredTools = new ExpiredAcpxTools();
+    const waitForTool = loadWaitForTool({ tools, emitted: [], expiredTools });
+    const resolve = loadToolResolution(tools, expiredTools);
+    const bridge = await startRunnerToolBridge({
+      tools: [{ name: "write_document", description: "Save plan", inputSchema: { type: "object" } }],
+      timeoutMs: 50,
+      handler: call => {
+        const pending = waitForTool(call);
+        if (call.callId === "next") queueMicrotask(() => resolve("next", "test-turn"));
+        else if (failure === "terminal") queueMicrotask(() => loadRejectTurnWaiters(tools, expiredTools)("test-turn", "ACPX turn became terminal"));
+        return pending as Promise<Record<string, unknown>>;
+      },
+    });
+    const call = async (id: string) => (await fetch(bridge.url, {
+      method: "POST", headers: { Authorization: `Bearer ${bridge.secret}`, "Content-Type": "application/json" },
+      body: JSON.stringify({ jsonrpc: "2.0", id, method: "tools/call", params: { name: "write_document", arguments: {} } }),
+    })).json();
+    try {
+      expect(JSON.stringify(await call("late"))).toContain(failure === "timeout" ? "Paperclip tool call timed out" : "ACPX turn became terminal");
+      expect(resolve("late", "test-turn")).toEqual({ resolved: false, expired: true });
+      expect(JSON.stringify(await call("next"))).toContain('saved');
+      expect(tools.size).toBe(0);
+    } finally { await bridge.close(); }
+  });
+
+  it("keeps outstanding expirations after settled receipts and later expirations overflow the replay window", () => {
+    const expiredTools = new ExpiredAcpxTools();
+    const resolve = loadToolResolution(new Map(), expiredTools);
+    expiredTools.remember("slow-first", "test-turn");
+    expiredTools.remember("slow-first", "another-turn");
+    for (let index = 0; index < 600; index++) {
+      const callId = `settled-${index}`;
+      expiredTools.remember(callId, "test-turn");
+      expect(resolve(callId, "test-turn")).toEqual({ resolved: false, expired: true });
+      expiredTools.remember(`outstanding-${index}`, "test-turn");
+    }
+    expect(resolve("slow-first", "test-turn")).toEqual({ resolved: false, expired: true });
+    expect(resolve("slow-first", "another-turn")).toEqual({ resolved: false, expired: true });
+    expect(resolve("outstanding-0", "test-turn")).toEqual({ resolved: false, expired: true });
+    expect(() => resolve("settled-0", "test-turn")).toThrow("stale or unknown");
+    expect(resolve("settled-599", "test-turn")).toEqual({ resolved: false, expired: true });
+  });
+
+  it.each(["write_document", "paperclip_finish", "paperclip_block"])(
+    "reserves expiry capacity before dispatching %s and resumes when a result arrives",
+    async (operationId) => {
+      const expiredTools = new ExpiredAcpxTools();
+      for (let index = 0; index < 4_095; index++) expiredTools.remember(`expired-${index}`, "test-turn");
+      const tools = new Map<string, unknown>();
+      const emitted: unknown[] = [];
+      const waitForTool = loadWaitForTool({ tools, emitted, expiredTools });
+      const first = new AbortController();
+      const lastAdmitted = waitForTool({ callId: "last-admitted", tool: "write_document", arguments: {}, signal: first.signal });
+      const next = { callId: "at-capacity", tool: operationId, arguments: { reportedWorkDisposition: operationId === "paperclip_block" ? "blocked" : "done" }, signal: new AbortController().signal };
+      const atCapacity = waitForTool(next);
+      expect(emitted).toHaveLength(1);
+      await expect(atCapacity).rejects.toThrow("ACPX unsettled tool limit reached");
+      expect(tools.size).toBe(1);
+      first.abort();
+      await expect(lastAdmitted).rejects.toThrow("ACPX tool call was cancelled");
+      const resolve = loadToolResolution(tools, expiredTools);
+      expect(resolve("expired-0", "test-turn")).toEqual({ resolved: false, expired: true });
+      const resumed = new AbortController();
+      const admitted = waitForTool({ ...next, signal: resumed.signal });
+      await Promise.resolve();
+      expect(emitted).toHaveLength(2);
+      resumed.abort();
+      await expect(admitted).rejects.toThrow("ACPX tool call was cancelled");
+      expect(resolve("last-admitted", "test-turn")).toEqual({ resolved: false, expired: true });
+    },
+  );
+
+  it("reserves expiry capacity while a completion input is still being normalized", async () => {
+    const expiredTools = new ExpiredAcpxTools();
+    for (let index = 0; index < 4_095; index++) expiredTools.remember(`expired-${index}`, "test-turn");
+    const tools = new Map<string, unknown>();
+    const normalizingTools = new Set<string>();
+    const emitted: unknown[] = [];
+    const wait = loadWaitForTool({ tools, normalizingTools, emitted, expiredTools });
+    const controller = new AbortController();
+    const completion = wait({ callId: "normalizing", tool: "paperclip_finish", arguments: { reportedWorkDisposition: "done" }, signal: controller.signal });
+    expect(normalizingTools.size).toBe(1);
+    await expect(wait({ callId: "overflow", tool: "write_document", arguments: {}, signal: new AbortController().signal })).rejects.toThrow("ACPX unsettled tool limit reached");
+    expect(emitted).toHaveLength(1);
+    expect(normalizingTools.size).toBe(0);
+    controller.abort();
+    await expect(completion).rejects.toThrow("ACPX tool call was cancelled");
+  });
+
+  it("accounts for a late result after terminal cleanup before the runner consumes the terminal event", async () => {
+    const tools = new Map<string, unknown>();
+    const expiredTools = new ExpiredAcpxTools();
+    const waitForTool = loadWaitForTool({ tools, emitted: [], expiredTools });
+    const controller = new AbortController();
+    const pending = waitForTool({ callId: "terminal-write", tool: "write_document", arguments: {}, signal: controller.signal });
+    const otherCleanup = vi.fn();
+    tools.set("other-turn-call", { turnId: "other-turn", cleanup: otherCleanup });
+    loadRejectTurnWaiters(tools, expiredTools)("test-turn", "ACPX turn became terminal");
+    await expect(pending).rejects.toThrow("ACPX turn became terminal");
+    expect(otherCleanup).not.toHaveBeenCalled();
+    expect(tools.has("other-turn-call")).toBe(true);
+    controller.abort();
+    const resolve = loadToolResolution(tools, expiredTools);
+    expect(resolve("terminal-write", "test-turn")).toEqual({ resolved: false, expired: true });
+    expect(resolve("terminal-write", "test-turn")).toEqual({ resolved: false, expired: true });
+    expect(() => resolve("terminal-write", "other-turn")).toThrow("stale or unknown");
+  });
 
   it("shuts down without using readline after stdin closes", async () => {
     const sidecar = startSidecar();
@@ -2187,6 +2314,8 @@ type ToolCallResponseBody = { result: { content: Array<{ text: string }>; isErro
 function loadWaitForTool(input: {
   tools: Map<string, unknown>;
   emitted: unknown[];
+  expiredTools?: ExpiredAcpxTools;
+  normalizingTools?: Set<string>;
   validate?: typeof validatePrpStructuredRunResult;
   emit?: (eventType: string, payload: unknown) => boolean;
   callIdNamespace?: string | null;
@@ -2205,6 +2334,7 @@ function loadWaitForTool(input: {
     "PRP_BLOCK_TOOL_NAME", "validatePrpStructuredRunResult", "boundedSidecarValue", "record", "MAX_PENDING_TOOLS", "stringifyAcpxSidecarFrame",
     "resolveCompletionContinuation", "runId", "normalizingTools", "randomUUID", "callIdNamespace", "toolUseAdmission", "MAX_EVENT_PAYLOAD_BYTES",
     "providerCycles",
+    "expiredTools",
     `return (${functionSource});`,
   );
   return factory(
@@ -2224,12 +2354,13 @@ function loadWaitForTool(input: {
     stringifyAcpxSidecarFrame,
     resolveCompletionContinuation,
     "test-run",
-    new Set<string>(),
+    input.normalizingTools ?? new Set<string>(),
     randomUUID,
     input.callIdNamespace ?? null,
     input.toolUseAdmission ?? null,
     256 * 1024,
     null,
+    input.expiredTools ?? new ExpiredAcpxTools(),
   );
 }
 
@@ -2263,7 +2394,7 @@ function loadActualToolCommands(tools: Map<string, unknown>): {
   const start = source.indexOf("async function dispatch("), end = source.indexOf("\nasync function pumpTurn(", start);
   const safeStart = source.indexOf("function safeText("), safeEnd = source.indexOf("\nfunction safeMessage(", safeStart);
   if (start < 0 || end < 0 || safeStart < 0 || safeEnd < 0) throw new Error("Actual sidecar command dispatcher not found");
-  const dispatcher = new Function("tools", "boundedIdentity", "record", "text", "parseAcpxSidecarRequest", "ACPX_SIDECAR_PROTOCOL_VERSION", "redactObservabilityDiagnostic", `
+  const dispatcher = new Function("tools", "expiredTools", "boundedIdentity", "record", "text", "parseAcpxSidecarRequest", "ACPX_SIDECAR_PROTOCOL_VERSION", "redactObservabilityDiagnostic", `
     let turnId="test-turn", requestId=0;
     ${stripTypeScriptTypes(source.slice(safeStart, safeEnd))}
     ${stripTypeScriptTypes(source.slice(start, end))}
@@ -2271,6 +2402,27 @@ function loadActualToolCommands(tools: Map<string, unknown>): {
       resolve: params => dispatch(parseAcpxSidecarRequest({ protocolVersion: ACPX_SIDECAR_PROTOCOL_VERSION, id: ++requestId, command: "tool.resolve", params })),
       setTurn: value => { turnId=value; }
     };
-  `)(tools, boundedIdentity, record, text, parseAcpxSidecarRequest, ACPX_SIDECAR_PROTOCOL_VERSION, redactObservabilityDiagnostic);
+  `)(tools, new ExpiredAcpxTools(), boundedIdentity, record, text, parseAcpxSidecarRequest, ACPX_SIDECAR_PROTOCOL_VERSION, redactObservabilityDiagnostic);
   return dispatcher;
+}
+
+function loadToolResolution(tools: Map<string, unknown>, expiredTools: ExpiredAcpxTools) {
+  const source = readFileSync(fileURLToPath(new URL("./acpx-runtime-sidecar.ts", import.meta.url)), "utf8");
+  const start = source.indexOf('  if (request.command === "tool.resolve")');
+  const end = source.indexOf('  if (request.command === "session.read")', start);
+  if (start < 0 || end < 0) throw new Error("tool.resolve source not found");
+  const dispatch = new Function("request", "tools", "expiredTools", "turnId", "boundedIdentity", `${stripTypeScriptTypes(`function resolveTool() { ${source.slice(start, end)} }`)}; return resolveTool();`);
+  return (callId: string, turnId: string) => dispatch(
+    { command: "tool.resolve", params: { callId, turnId, result: { saved: true } } },
+    tools, expiredTools, "test-turn", (value: string) => value,
+  );
+}
+
+function loadRejectTurnWaiters(tools: Map<string, unknown>, expiredTools: ExpiredAcpxTools): (turnId: string, message: string) => void {
+  const source = readFileSync(fileURLToPath(new URL("./acpx-runtime-sidecar.ts", import.meta.url)), "utf8");
+  const start = source.indexOf("function rejectTurnWaiters(");
+  const end = source.indexOf("\ntype BoundedRuntimeToolEvent", start);
+  if (start < 0 || end < 0) throw new Error("rejectTurnWaiters source not found");
+  const functionSource = source.slice(start, end).replace("(terminalTurnId: string, message: string): void", "(terminalTurnId, message)");
+  return new Function("permissions", "tools", "inputs", "expiredTools", "toolUseAdmission", `return (${functionSource});`)(new Map(), tools, new Map(), expiredTools, null);
 }

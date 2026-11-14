@@ -320,3 +320,14 @@ test("provider-started turn frames are closed and the provider-lost diagnostic i
   assert.equal(validate(command({ turnId: "turn-1" })), false);
   assert.equal(validate(command({ turnId: "turn-1", armed: true, extra: 1 })), false);
 });
+
+test("tool resolution distinguishes delivered results from known expired receipts", () => {
+  const validateResult = compileSidecarSchema(schema.$defs.toolResolveResult);
+  for (const result of [{ resolved: true }, { resolved: false, expired: true }]) {
+    assert.equal(validateResult(result), true, JSON.stringify(validateResult.errors));
+  }
+  for (const result of [{}, { resolved: false }, { resolved: true, expired: true },
+    { resolved: false, expired: false }, { resolved: false, expired: true, result: {} }]) {
+    assert.equal(validateResult(result), false);
+  }
+});

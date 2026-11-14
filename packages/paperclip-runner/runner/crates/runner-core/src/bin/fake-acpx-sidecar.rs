@@ -616,6 +616,17 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             }
             continue;
         }
+        if mode == "stream-terminal-goal-error"
+            && command == "session.goal.get"
+            && next_sequence > 1
+        {
+            write_json(
+                &mut stdout,
+                &json!({"protocolVersion":GENERATED_ACPX_SIDECAR_PROTOCOL_VERSION,
+                    "id":id,"ok":false,"error":{"message":"injected terminal goal query failure"}}),
+            )?;
+            continue;
+        }
         if mode == "goals" && command.starts_with("session.goal.") {
             let params = request.get("params").cloned().unwrap_or_else(|| json!({}));
             match command {
@@ -862,6 +873,10 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             | "resolutions-snapshot-wrong-session"
             | "resolutions-snapshot-wrong-turn"
             | "resolutions-snapshot-missing-callbacks"
+            | "resolutions-expired"
+            | "resolutions-stream-burst"
+            | "resolutions-stream-buffered"
+            | "stream-terminal-goal-error"
             | "suspend"
             | "suspend-wrong-ack"
             | "suspend-wrong-identity"
@@ -894,6 +909,29 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                         json!({"status":"interrupted"}),
                     )?;
                     next_sequence += 1;
+                }
+                if command == "turn.start" && mode == "stream-terminal-goal-error" {
+                    for (event_type, payload) in [
+                        (
+                            "runtime.event",
+                            json!({"type":"text_delta","text":"prefix"}),
+                        ),
+                        (
+                            "runtime.tool_called",
+                            json!({"callId":"call-1","operationId":"issues.read","input":{"id":"issue-1"}}),
+                        ),
+                        ("runtime.turn_terminal", json!({"status":"completed"})),
+                    ] {
+                        write_turn_event(
+                            &mut stdout,
+                            next_sequence,
+                            event_type,
+                            "run-1",
+                            "turn-1",
+                            payload,
+                        )?;
+                        next_sequence += 1;
+                    }
                 }
                 let mut response = bootstrap_success(
                     id,
@@ -1349,6 +1387,29 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     )?;
                     next_sequence += 1;
                 }
+                if command == "turn.start"
+                    && matches!(
+                        mode,
+                        "resolutions-stream-burst" | "resolutions-stream-buffered"
+                    )
+                {
+                    let count = if mode == "resolutions-stream-buffered" {
+                        256
+                    } else {
+                        3135
+                    };
+                    for _ in 0..count {
+                        write_turn_event(
+                            &mut stdout,
+                            next_sequence,
+                            "runtime.event",
+                            "run-1",
+                            turn_id,
+                            json!({"type":"text_delta","text":"片","messageId":"burst-message"}),
+                        )?;
+                        next_sequence += 1;
+                    }
+                }
                 if command == "turn.start" && mode.starts_with("resolutions") {
                     for (event_type, payload) in [
                         (
@@ -1528,6 +1589,7 @@ fn bootstrap_success(
             })
         }
         "tool.resolve" => json!({
+            "expired": mode == "resolutions-expired",
             "resolved":if mode == "resolutions-error-redaction" {
                 params.get("callId").and_then(Value::as_str) == Some("call-1")
                     && params.get("turnId").and_then(Value::as_str) == Some("turn-1")
@@ -1536,7 +1598,7 @@ fn bootstrap_success(
                         == Some("Paperclip semantic operation failed")
                     && !params.to_string().contains("violet-internal-diagnostic-4821")
             } else {
-                mode != "resolutions-wrong-ack"
+                mode != "resolutions-wrong-ack" && mode != "resolutions-expired"
             }
         }),
         "input.resolve" => json!({
