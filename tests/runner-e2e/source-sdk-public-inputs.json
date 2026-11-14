@@ -283,6 +283,7 @@
     "packages/shared/src/issue-write-denial.ts": "e6b4d72a83f6e4e76e85e34a80f88d1d69b7dfe4",
     "packages/shared/src/link-preview.test.ts": "136041c928343ad6272f43701b39cf95be255f3e",
     "packages/shared/src/link-preview.ts": "ffa5eb960a7e4bcfa914b4d6029c9fc50f17e027",
+    "packages/shared/src/local-operator-credential.ts": "48586ad1d908c3417e51593a81b0ebcd0fa8fbd3",
     "packages/shared/src/markdown-work-products.test.ts": "7293d14ad45ec2b11b5deaab4ce070c36f7c9010",
     "packages/shared/src/markdown-work-products.ts": "16a88cfb717f325c247a516e78b47d53871b52ed",
     "packages/shared/src/mcp-apps.test.ts": "848f3247bdc98af398daa144b0e44991a3f352b3",
