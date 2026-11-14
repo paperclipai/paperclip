@@ -69,6 +69,7 @@ export const VIOLATION_REASONS = [
    * recovery queue has not started that recovery within its bound. Repaired
    * by starting the recovery, never by a wake its hold would refuse. */
   "saved_work_recovery_overdue",
+  "queued_run_stalled",
 ] as const;
 export type ViolationReason = (typeof VIOLATION_REASONS)[number];
 
@@ -141,7 +142,8 @@ export type AssignedWorkFacts = {
     awaitingFirstMessage: boolean;
   };
   /** Non-terminal runs (queued, running, scheduled_retry) for this task. */
-  activeRuns: Array<{ id: string; status: string; scheduledRetryAt: Date | null; owner: RunOwnerVerdict }>;
+  activeRuns: Array<{ id: string; status: string; scheduledRetryAt: Date | null; owner: RunOwnerVerdict;
+    queuedStall?: { personWork: boolean; replacement: boolean; queuedSince: Date } | null }>;
   latestRun: {
     id: string;
     status: string;
@@ -228,8 +230,10 @@ export function evaluateAssignedWork(facts: AssignedWorkFacts, now: Date = new D
 
   // 1. A live run with an owner that is not proven gone. An unprovable owner
   // fails closed: during a deploy overlap another server may still own it.
+  const stalledQueued = issue.status === "blocked" ? undefined
+    : facts.activeRuns.find(run => run.status === "queued" && run.queuedStall);
   const live = facts.activeRuns.find(run => (run.status === "queued" || run.status === "running")
-    && run.owner !== "gone" && run.owner !== "stalled");
+    && run.owner !== "gone" && run.owner !== "stalled" && !(stalledQueued && run.queuedStall));
   if (live) {
     if (issue.status === "blocked" && !waitingReason(facts, now)) {
       return { kind: "violation", reason: "blocked_with_live_run", runId: live.id, stale: false };
@@ -245,7 +249,7 @@ export function evaluateAssignedWork(facts: AssignedWorkFacts, now: Date = new D
   if (stalled) return { kind: "violation", reason: "native_run_stalled", runId: stalled.id, stale: false };
 
   // 2. A durable intent that starts a run without anyone acting.
-  const intent = pendingIntent(facts, now);
+  const intent = pendingIntent(facts, now, Boolean(stalledQueued));
   if (intent) return { kind: "ok", clause: "pending_intent", intent };
 
   // A run that ended moments ago is still settling: its own failure path may
@@ -261,6 +265,8 @@ export function evaluateAssignedWork(facts: AssignedWorkFacts, now: Date = new D
   // them in time. A continuation wake would only wait behind the same hold.
   if (facts.savedWorkRecovery) return { kind: "violation", reason: "saved_work_recovery_overdue", stale: false };
 
+  if (stalledQueued) return { kind: "violation", reason: "queued_run_stalled", runId: stalledQueued.id, stale: false };
+
   if (issue.status === "blocked") {
     const blockedAt = issue.blockedTransitionAt ?? issue.updatedAt;
     const stale = now.getTime() - blockedAt.getTime() > STALE_BLOCK_MS;
@@ -275,7 +281,7 @@ export function evaluateAssignedWork(facts: AssignedWorkFacts, now: Date = new D
   return { kind: "violation", reason: "no_pending_path", stale: false };
 }
 
-function pendingIntent(facts: AssignedWorkFacts, now: Date): PendingIntent | null {
+function pendingIntent(facts: AssignedWorkFacts, now: Date, queuedRunStalled = false): PendingIntent | null {
   if (facts.pendingWakes > 0) return "queued_wake";
   if (facts.activeRuns.some(run => run.status === "scheduled_retry")) return "scheduled_retry";
   if (facts.nativeRecoveryPending) return "native_recovery";
@@ -285,7 +291,7 @@ function pendingIntent(facts: AssignedWorkFacts, now: Date): PendingIntent | nul
   if (facts.savedWorkRecovery && savedWorkRecoveryPending(facts.savedWorkRecovery, now)) return "saved_work_recovery";
   const interruption = facts.interruption;
   if (interruption?.responsibility === "system") {
-    if (interruption.state === "working" && !(facts.latestRun?.finishedAt
+    if (interruption.state === "working" && !queuedRunStalled && !(facts.latestRun?.finishedAt
       && now.getTime() - facts.latestRun.finishedAt.getTime() > SYSTEM_RECOVERY_WORKING_BOUND_MS)) return "system_recovery_working";
     if (interruption.state === "retry_scheduled" && interruption.nextRetryAt
       && Date.parse(interruption.nextRetryAt) > now.getTime()) return "scheduled_retry";
@@ -395,6 +401,8 @@ export function continuationActivityMessage(reason: ViolationReason): string {
       return "No longer blocked: this task is already queued to continue, so nothing needs you.";
     case "saved_work_recovery_overdue":
       return "Paperclip started recovering this task's saved files. The task continues once they are recovered.";
+    case "queued_run_stalled":
+      return "Continued automatically: this task had waited over an hour to start while its agent started other work, so Paperclip queued it again.";
     default:
       return "Continued automatically after an interruption. Nothing was running or scheduled, so Paperclip queued the task again.";
   }
