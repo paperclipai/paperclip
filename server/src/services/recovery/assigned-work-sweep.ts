@@ -681,12 +681,19 @@ export function assignedWorkSweep(db: Db, deps: AssignedWorkDeps) {
   }
 
   async function replaceStalledRun(issue: IssueRow, claimed: Claimed, runId: string): Promise<AssignedWorkCheck> {
+    const slot = await reserveAutomaticRunCreation(db, issue.companyId, { issueId: issue.id, sourceRunId: runId });
+    if (slot.heldUntil) {
+      await settleContinuationActivity(claimed, claimed.reason, "not_started",
+        { waitingUntil: slot.heldUntil.toISOString(), [PAUSED_FOR_AUTOMATIC_WORK]: "true" });
+      return { verdict: claimed.verdict, outcome: "deferred_rate_limit", retryAt: slot.heldUntil };
+    }
     const cancelled = !claimed.stalledFence ? false : await deps.cancelStalledQueuedRun!({ companyId: issue.companyId, runId,
       ...claimed.stalledFence }).catch(error => {
       logger.warn({ err: error, companyId: issue.companyId, issueId: issue.id, runId }, "assigned-work sweep could not cancel a stalled queued run");
       return false;
     });
     if (!cancelled) {
+      await slot.release();
       await db.delete(activityLog).where(eq(activityLog.id, claimed.activityId));
       return { verdict: claimed.verdict, outcome: "changed", retryAt: null };
     }
@@ -700,6 +707,7 @@ export function assignedWorkSweep(db: Db, deps: AssignedWorkDeps) {
       logger.warn({ err: error, companyId: issue.companyId, issueId: issue.id }, "assigned-work replacement for a stalled run was not admitted");
       return null;
     });
+    if (!run) await slot.release();
     await settleContinuationActivity(claimed, claimed.reason, run ? "queued" : "not_started");
     return { verdict: claimed.verdict, outcome: run ? "replaced_stalled_run" : "enqueue_refused", retryAt: claimed.nextCheckAt };
   }
