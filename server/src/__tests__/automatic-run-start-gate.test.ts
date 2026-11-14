@@ -265,6 +265,26 @@ suite("automatic-run start gate in the dispatch pass", () => {
     }
   }, 300_000);
 
+  it("still wakes every held company at its next try when more companies are held than the wake list keeps", async () => {
+    const companyIds: string[] = [];
+    for (let index = 0; index < AUTOMATIC_RUN_BRAKE.maxCompanies + 20; index += 1) {
+      const { companyId, agentIds: [agentId] } = await seedCompany(1, 1);
+      await openBrake(companyId, agentId!, { probeAllowed: false });
+      companyIds.push(companyId);
+    }
+    for (const companyId of companyIds) {
+      expect(await automaticRunBrake.holdAutomaticRunStart(db, { id: randomUUID(), companyId, contextSnapshot: automatic() },
+        { personOrigin: false })).toBe(true);
+    }
+    expect(automaticRunBrake.cacheSizes().wakes).toBeLessThanOrEqual(AUTOMATIC_RUN_BRAKE.maxCompanies);
+    const nextAt = automaticRunBrake.takeDueWakes(Number.NEGATIVE_INFINITY).nextAt;
+    expect(nextAt).not.toBeNull();
+    expect(nextAt!).toBeLessThanOrEqual(Date.now() + 11 * MINUTE);
+    const due = takeDueAutomaticRunWakes(Date.now() + 20 * MINUTE);
+    expect(due.all || companyIds.every(companyId => due.companyIds.includes(companyId))).toBe(true);
+    expect(due.all).toBe(true);
+  }, 600_000);
+
   it("keeps a held automatic run queued while paused and starts it on its own at the next try", async () => {
     const { companyId, agentIds: [agentId] } = await seedCompany(1, 1);
     await openBrake(companyId, agentId!, { probeAllowed: false });

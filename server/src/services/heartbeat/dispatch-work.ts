@@ -37,7 +37,9 @@ export function registerRunDispatchWork(
     canRun,
     onSettled: hints => { for (const hint of hints ?? ["*"]) scopes.add(hint); },
     run: async signal => {
-      for (const companyId of takeDueAutomaticRunWakes().companyIds) scopes.add(JSON.stringify({ companyId }));
+      const dueWakes = takeDueAutomaticRunWakes();
+      if (dueWakes.all) scopes.add("*");
+      for (const companyId of dueWakes.companyIds) scopes.add(JSON.stringify({ companyId }));
       const requested = scopes.has("*") ? ["*"] : [...scopes];
       if (requested[0] === "*") scopes.clear();
       else for (const hint of requested) scopes.delete(hint);

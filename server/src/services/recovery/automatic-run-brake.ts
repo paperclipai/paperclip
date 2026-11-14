@@ -220,6 +220,7 @@ export function createAutomaticRunBrake(options: { loadRules?: () => Promise<Aut
   const companies = boundedMap<string, CacheEntry>(AUTOMATIC_RUN_BRAKE.maxCompanies);
   const personOrigin = boundedMap<string, boolean>(AUTOMATIC_RUN_BRAKE.maxRuns);
   const wakes = boundedMap<string, number>(AUTOMATIC_RUN_BRAKE.maxCompanies);
+  let evictedWakeAt: number | null = null;
   let rulesFailureLogged = false;
 
   async function rulesOrNull() {
@@ -547,6 +548,13 @@ export function createAutomaticRunBrake(options: { loadRules?: () => Promise<Aut
     const due = entry.snapshot.state === "open" ? Math.max(entry.heldUntil, nextProbeAt) : entry.heldUntil;
     const at = due - now < 1_000 ? now + AUTOMATIC_RUN_BRAKE.probeIntervalMs : due;
     const known = wakes.get(entry.snapshot.companyId);
+    if (known === undefined && wakes.size >= AUTOMATIC_RUN_BRAKE.maxCompanies) {
+      const [oldest] = wakes.entries();
+      if (oldest) {
+        evictedWakeAt = evictedWakeAt === null ? oldest[1] : Math.min(evictedWakeAt, oldest[1]);
+        wakes.delete(oldest[0]);
+      }
+    }
     if (known === undefined || known <= now || at < known) wakes.set(entry.snapshot.companyId, at);
     return { held: true };
   }
@@ -559,7 +567,10 @@ export function createAutomaticRunBrake(options: { loadRules?: () => Promise<Aut
       else nextAt = nextAt === null ? at : Math.min(nextAt, at);
     }
     for (const companyId of due) wakes.delete(companyId);
-    return { companyIds: due, nextAt };
+    const all = evictedWakeAt !== null && evictedWakeAt <= now;
+    if (all) evictedWakeAt = null;
+    else if (evictedWakeAt !== null) nextAt = nextAt === null ? evictedWakeAt : Math.min(nextAt, evictedWakeAt);
+    return { companyIds: due, all, nextAt };
   }
 
   return {
@@ -571,7 +582,7 @@ export function createAutomaticRunBrake(options: { loadRules?: () => Promise<Aut
     reserveStart,
     takeDueWakes,
     cacheSizes: () => ({ companies: companies.size, runs: personOrigin.size, wakes: wakes.size }),
-    reset: () => { companies.clear(); personOrigin.clear(); wakes.clear(); },
+    reset: () => { companies.clear(); personOrigin.clear(); wakes.clear(); evictedWakeAt = null; },
   };
 }
 
