@@ -1,3 +1,4 @@
+import { subscribeTaskDrainChanges, subscribeTaskDrainExpiry } from "../task-admission.js";
 import type { RunDispatchScope } from "../run-dispatch-notifications.js";
 import type { createDeliveryWorkCoordinator } from "../delivery-work-coordinator.js";
 import { registerDeadlineWork } from "../deadline-work.js";
@@ -30,11 +31,13 @@ export function registerRunDispatchWork(
   const scopes = new Set<string>(["*"]);
   const redrive = createQueuedRunRedriveSchedule();
   let dispatched: "all" | Set<string> = new Set();
+  let unsubscribeRefresh: (() => void) | undefined;
   const queue = registerDeadlineWork(coordinator, DELIVERY_QUEUES.queuedRunDispatch, {
     retryMs: 30_000,
     notificationCoalesceMs: 1_000,
     canRun,
     onSettled: hints => { for (const hint of hints ?? ["*"]) scopes.add(hint); },
+    onStop: () => { unsubscribeRefresh?.(); unsubscribeRefresh = undefined; },
     run: async signal => {
       const requested = scopes.has("*") ? ["*"] : [...scopes];
       if (requested[0] === "*") scopes.clear();
@@ -78,6 +81,11 @@ export function registerRunDispatchWork(
       return plan.nextAt;
     },
   });
+  const refresh = () => {
+    if (canRun() && !queue.reconciliationSnapshot().reconciled) queue.wake();
+  };
+  const unsubscribe = [subscribeTaskDrainChanges(refresh), subscribeTaskDrainExpiry(refresh)];
+  unsubscribeRefresh = () => { for (const stop of unsubscribe) stop(); };
   return {
     retries,
     ready: Promise.all([retries.ready, queue.ready]),

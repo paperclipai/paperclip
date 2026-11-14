@@ -14,6 +14,7 @@ export function registerDeadlineWork(
     onSettled?: (hints?: ReadonlySet<string>) => void;
     /** SQL-free cancellation of pending joins while this owner cannot dispatch. */
     onBlocked?: () => void;
+    onStop?: () => void;
     continuationMs?: number;
     // Optional batching latency for notifications; already-known deadlines still preempt it.
     notificationCoalesceMs?: number;
@@ -35,7 +36,7 @@ export function registerDeadlineWork(
   const worker = coordinator.register(queue, {
     retryMs: task.retryMs,
     pausePassiveMaintenance: true,
-    onStop: () => { stopped = true; revision++; },
+    onStop: () => { stopped = true; revision++; task.onStop?.(); },
     onDispatchBlocked: task.onBlocked,
     onSettled: hints => { revision++; requested++; task.onSettled?.(hints); },
     run: async signal => {
