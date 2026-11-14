@@ -592,9 +592,15 @@ export function createHeartbeatRetries(db: Db, dependencies: HeartbeatRetryDepen
     // that is still true, a retry is a full adapter spawn that cannot succeed, so
     // hold it instead of spending it. Holding here costs NO attempt: the budget is
     // consumed when the retry run row is written further down, not at this gate,
-    // so the issue is not parked for attempts that were never made. Whatever
-    // called this (recovery sweeps, run completion) calls again on its own
-    // cadence, and that is the re-probe loop.
+    // so the issue is not parked for attempts that were never made.
+    //
+    // The caller is NOT automatically the re-probe loop, which is the mistake an
+    // earlier draft of this comment made. The doomed retry run was itself the
+    // clock: it spawned, failed, and its terminal state re-dirtied the scope that
+    // brought the sweeper back. Suppressing the spawn stops that clock, and
+    // `scoped-deadline-work` deletes any entry whose check reports no deadline.
+    // That is why the hold returns `retryAt` below and every caller must carry it
+    // through `onDeferredDeadline`; it is not optional bookkeeping.
     //
     // Ordered last among the pure guards on purpose: the classifier and the
     // adapter-relevance check are cheap but the probe is I/O, and it only runs
