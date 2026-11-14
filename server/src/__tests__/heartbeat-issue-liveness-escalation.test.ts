@@ -1,6 +1,6 @@
 import { EMBEDDED_POSTGRES_TEST_TIMEOUT_MS } from "@paperclipai/db";
 import { randomUUID } from "node:crypto";
-import { and, eq, sql } from "drizzle-orm";
+import { and, asc, eq, isNull, notInArray, sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   activityLog,
@@ -76,6 +76,7 @@ vi.mock("../adapters/index.ts", async () => {
 });
 
 import { heartbeatService } from "../services/heartbeat.ts";
+import { closeProcessRunAdmission, resetProcessRunAdmissionForTests } from "../services/heartbeat/run-admission.ts";
 import { attentionService } from "../services/attention.ts";
 import { issueService } from "../services/issues.ts";
 import { toolActionDeliveryService } from "../services/tool-action-delivery.ts";
@@ -1549,5 +1550,336 @@ describeEmbeddedPostgres("heartbeat resolved dependency wake reconciliation", ()
       reason: "heartbeat.wakeOnDemand.disabled",
     });
   });
+
+  it("wakes non-blocked dependents on the blocker-scoped re-check after finalize", async () => {
+    const { companyId, agentId, blockedIssueId, blockerIssueId, executionWorkspaceId } =
+      await seedResolvedDependencyBackstopFixture({ workspaceState: "not_finalized" });
+    const issuePrefix = `R${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
+    const inReviewAgentId = randomUUID();
+    const inProgressAgentId = randomUUID();
+    const todoAgentId = randomUUID();
+    await db.insert(agents).values([
+      {
+        id: inReviewAgentId,
+        companyId,
+        name: "Review owner",
+        role: "engineer",
+        status: "idle",
+        adapterType: "test_adapter",
+        adapterConfig: {},
+        runtimeConfig: { heartbeat: { wakeOnDemand: true, maxConcurrentRuns: 1 } },
+        permissions: {},
+      },
+      {
+        id: inProgressAgentId,
+        companyId,
+        name: "Progress owner",
+        role: "engineer",
+        status: "idle",
+        adapterType: "test_adapter",
+        adapterConfig: {},
+        runtimeConfig: { heartbeat: { wakeOnDemand: true, maxConcurrentRuns: 1 } },
+        permissions: {},
+      },
+      {
+        id: todoAgentId,
+        companyId,
+        name: "Todo owner",
+        role: "engineer",
+        status: "idle",
+        adapterType: "test_adapter",
+        adapterConfig: {},
+        runtimeConfig: { heartbeat: { wakeOnDemand: true, maxConcurrentRuns: 1 } },
+        permissions: {},
+      },
+    ]);
+    const inReviewId = randomUUID();
+    const inProgressId = randomUUID();
+    const todoId = randomUUID();
+    const backlogId = randomUUID();
+    const doneId = randomUUID();
+    const cancelledId = randomUUID();
+    const nullAssigneeId = randomUUID();
+    await db.insert(issues).values([
+      {
+        id: inReviewId,
+        companyId,
+        title: "In review dependent",
+        status: "in_review",
+        priority: "medium",
+        assigneeAgentId: inReviewAgentId,
+        issueNumber: 3,
+        identifier: `${issuePrefix}-3`,
+        executionPolicy: { stages: [{ type: "review", participants: [{ type: "agent", agentId: inReviewAgentId }] }] },
+      },
+      {
+        id: inProgressId,
+        companyId,
+        title: "In progress dependent",
+        status: "in_progress",
+        priority: "medium",
+        assigneeAgentId: inProgressAgentId,
+        issueNumber: 4,
+        identifier: `${issuePrefix}-4`,
+      },
+      {
+        id: todoId,
+        companyId,
+        title: "Todo dependent",
+        status: "todo",
+        priority: "medium",
+        assigneeAgentId: todoAgentId,
+        issueNumber: 5,
+        identifier: `${issuePrefix}-5`,
+      },
+      {
+        id: backlogId,
+        companyId,
+        title: "Backlog dependent",
+        status: "backlog",
+        priority: "medium",
+        assigneeAgentId: agentId,
+        issueNumber: 6,
+        identifier: `${issuePrefix}-6`,
+      },
+      {
+        id: doneId,
+        companyId,
+        title: "Done dependent",
+        status: "done",
+        priority: "medium",
+        assigneeAgentId: agentId,
+        issueNumber: 7,
+        identifier: `${issuePrefix}-7`,
+      },
+      {
+        id: cancelledId,
+        companyId,
+        title: "Cancelled dependent",
+        status: "cancelled",
+        priority: "medium",
+        assigneeAgentId: agentId,
+        issueNumber: 8,
+        identifier: `${issuePrefix}-8`,
+      },
+      {
+        id: nullAssigneeId,
+        companyId,
+        title: "Unassigned dependent",
+        status: "todo",
+        priority: "medium",
+        assigneeAgentId: null,
+        issueNumber: 9,
+        identifier: `${issuePrefix}-9`,
+      },
+    ]);
+    await db.insert(issueRelations).values(
+      [inReviewId, inProgressId, todoId, backlogId, doneId, cancelledId, nullAssigneeId].map((relatedIssueId) => ({
+        companyId,
+        issueId: blockerIssueId,
+        relatedIssueId,
+        type: "blocks" as const,
+      })),
+    );
+
+    const statusById = new Map(
+      (await db.select({ id: issues.id, status: issues.status }).from(issues).where(eq(issues.companyId, companyId)))
+        .map((row) => [row.id, row.status] as const),
+    );
+    const heartbeat = heartbeatService(db);
+
+    const beforeFinalize = await heartbeat.reconcileResolvedDependencyWakes({
+      companyId,
+      blockerIssueId,
+      source: "workspace.finalize",
+    });
+    expect(beforeFinalize.healed).toBe(0);
+    expect(beforeFinalize.checked).toBe(4);
+    expect(beforeFinalize.notReadySkipped).toBe(4);
+
+    await db.insert(workspaceOperations).values({
+      companyId,
+      executionWorkspaceId,
+      issueId: blockerIssueId,
+      phase: "workspace_finalize",
+      status: "succeeded",
+      startedAt: new Date(),
+    });
+
+    const globalResult = await heartbeat.reconcileResolvedDependencyWakes({ companyId });
+    expect(globalResult.healed).toBe(1);
+    expect(globalResult.issueIds).toEqual([blockedIssueId]);
+    expect(globalResult.checked).toBe(1);
+
+    const scopedResult = await heartbeat.reconcileResolvedDependencyWakes({
+      companyId,
+      blockerIssueId,
+      source: "workspace.finalize",
+    });
+    expect(scopedResult.healed).toBe(3);
+    expect([...scopedResult.issueIds].sort()).toEqual([inReviewId, inProgressId, todoId].sort());
+
+    const secondScopedResult = await heartbeat.reconcileResolvedDependencyWakes({
+      companyId,
+      blockerIssueId,
+      source: "workspace.finalize",
+    });
+    expect(secondScopedResult.healed).toBe(0);
+
+    const afterStatuses = await db
+      .select({ id: issues.id, status: issues.status })
+      .from(issues)
+      .where(eq(issues.companyId, companyId));
+    // A woken blocked/todo dependent may checkout to in_progress from the
+    // wake's fire-and-forget executeRun (checkout in executeRunAttempt,
+    // not awaited by reconcile), so its status at this point is timing
+    // dependent and intentionally not asserted. in_review never auto-
+    // checkouts and in_progress conflicts on checkout, and the blocker and
+    // negative controls issue no wake at all, so their statuses are
+    // synchronous guarantees.
+    const afterStatusById = new Map(afterStatuses.map((row) => [row.id, row.status]));
+    for (const id of [inReviewId, inProgressId, blockerIssueId, backlogId, doneId, cancelledId, nullAssigneeId]) {
+      expect(afterStatusById.get(id)).toBe(statusById.get(id));
+    }
+
+    const wakes = await db
+      .select({ payload: agentWakeupRequests.payload })
+      .from(agentWakeupRequests)
+      .where(and(eq(agentWakeupRequests.companyId, companyId), eq(agentWakeupRequests.reason, "issue_blockers_resolved")));
+    const wokenIssueIds = wakes
+      .map((row) => (row.payload as { issueId?: string } | null)?.issueId)
+      .filter((value): value is string => typeof value === "string")
+      .sort();
+    expect(wokenIssueIds).toEqual([blockedIssueId, inReviewId, inProgressId, todoId].sort());
+    const negativeIds = new Set<string>([backlogId, doneId, cancelledId, nullAssigneeId]);
+    expect(wokenIssueIds.some((id) => negativeIds.has(id))).toBe(false);
+
+    const events = await db
+      .select({ entityId: activityLog.entityId })
+      .from(activityLog)
+      .where(and(eq(activityLog.companyId, companyId), eq(activityLog.action, "issue.blockers_resolved_wake_emitted")));
+    expect(events.map((row) => row.entityId).sort()).toEqual([blockedIssueId, inReviewId, inProgressId, todoId].sort());
+  });
+
+  it("wakes every eligible dependent beyond the first page on one blocker-scoped call", async () => {
+    const { companyId, blockedIssueId, blockerIssueId } =
+      await seedResolvedDependencyBackstopFixture({ workspaceState: "none" });
+    const issuePrefix = `R${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
+
+    // The blocker-scoped paging loop pages candidates with the fixed service
+    // page size (RESOLVED_DEPENDENCY_WAKE_BACKSTOP_CANDIDATE_LIMIT = 500 in
+    // server/src/services/recovery/service.ts) and has no limit override, so
+    // the four-dependent case above never enters the loop and a regression
+    // stranding dependents after the first page would still pass. Seed more
+    // eligible dependents than one page holds, each with its own invokable
+    // owner agent (one owner per dependent, wakeOnDemand enabled, the same
+    // shape as the fixture agents): a shared owner would run into the
+    // per-agent concurrency/coalescing guards, turning heals into deferred
+    // or skipped wakes and breaking the count this test asserts.
+    const bulkDependentCount = 501;
+    const bulkDependents = Array.from({ length: bulkDependentCount }, (_, index) => ({
+      agentId: randomUUID(),
+      issueId: randomUUID(),
+      n: index + 1,
+    }));
+    const bulkIssueIds = bulkDependents.map((dependent) => dependent.issueId);
+    await db.insert(agents).values(bulkDependents.map((dependent) => ({
+      id: dependent.agentId,
+      companyId,
+      name: `Bulk owner ${dependent.n}`,
+      role: "engineer",
+      status: "idle",
+      adapterType: "test_adapter",
+      adapterConfig: {},
+      runtimeConfig: { heartbeat: { wakeOnDemand: true, maxConcurrentRuns: 1 } },
+      permissions: {},
+    })));
+    await db.insert(issues).values(bulkDependents.map((dependent) => ({
+      id: dependent.issueId,
+      companyId,
+      title: `Bulk dependent ${dependent.n}`,
+      status: "todo",
+      priority: "medium",
+      assigneeAgentId: dependent.agentId,
+      issueNumber: 1000 + dependent.n,
+      identifier: `${issuePrefix}-${1000 + dependent.n}`,
+    })));
+    await db.insert(issueRelations).values(bulkDependents.map((dependent) => ({
+      companyId,
+      issueId: blockerIssueId,
+      relatedIssueId: dependent.issueId,
+      type: "blocks" as const,
+    })));
+
+    // The fixture's own dependent is eligible too, so the candidate set is
+    // one larger than the bulk seed.
+    const eligibleIds = [blockedIssueId, ...bulkIssueIds];
+    const expectedEligible = eligibleIds.length;
+    expect(expectedEligible).toBe(bulkDependentCount + 1);
+    expect(expectedEligible).toBeGreaterThan(500);
+
+    // Replicate the service's first-page query (id-ordered, page-sized via
+    // the same 500 cap) so "beyond the first page" is measured in the order
+    // the loop pages in, rather than in test bookkeeping order.
+    const firstPageRows = await db
+      .select({ id: issues.id })
+      .from(issueRelations)
+      .innerJoin(issues, eq(issueRelations.relatedIssueId, issues.id))
+      .where(and(
+        eq(issueRelations.companyId, companyId),
+        eq(issueRelations.type, "blocks"),
+        eq(issueRelations.issueId, blockerIssueId),
+        notInArray(issues.status, ["backlog", "done", "cancelled"]),
+        isNull(issues.conversationAgentId),
+        sql`${issues.assigneeAgentId} is not null`,
+      ))
+      .orderBy(asc(issues.id))
+      .limit(500);
+    const firstPageIds = new Set(firstPageRows.map((row) => row.id));
+    const beyondFirstPageIds = eligibleIds.filter((id) => !firstPageIds.has(id));
+    expect(firstPageRows).toHaveLength(500);
+    expect(beyondFirstPageIds).toHaveLength(expectedEligible - 500);
+
+    const heartbeat = heartbeatService(db);
+    // Healing 502 dependents enqueues one wake each, and every wake dispatches
+    // a real heartbeat run execution fire-and-forget (enqueueWakeup →
+    // startNextQueuedRunForAgent → executeRun). That fan-out, not the
+    // reconcile loop or the bulk seeding (already three bulk inserts), is
+    // where the 90s went in CI: 502 concurrent executions contend on the
+    // embedded database, and the afterEach drain then awaits all of them.
+    // Asserting paging/healing semantics is the point of this case, not run
+    // execution, so close process run admission around the reconcile calls:
+    // enqueueWakeup still persists the wake and the queued run, returns it,
+    // and counts the heal, but startNextQueuedRunForAgent returns before
+    // dispatching any execution.
+    closeProcessRunAdmission();
+    try {
+      const result = await heartbeat.reconcileResolvedDependencyWakes({ companyId, blockerIssueId });
+      expect(result.checked).toBe(expectedEligible);
+      expect(result.candidateLimitSkipped).toBe(0);
+      expect(result.healed).toBe(expectedEligible);
+      expect([...result.issueIds].sort()).toEqual([...eligibleIds].sort());
+      const healedIds = new Set(result.issueIds);
+      expect(beyondFirstPageIds.every((id) => healedIds.has(id))).toBe(true);
+
+      const wokenIssueIds = async () =>
+        (await db
+          .select({ payload: agentWakeupRequests.payload })
+          .from(agentWakeupRequests)
+          .where(and(eq(agentWakeupRequests.companyId, companyId), eq(agentWakeupRequests.reason, "issue_blockers_resolved")))
+        ).map((row) => (row.payload as { issueId?: string } | null)?.issueId)
+         .filter((value): value is string => typeof value === "string")
+         .sort();
+      expect(await wokenIssueIds()).toEqual([...eligibleIds].sort());
+
+      // A second blocker-scoped call over the same candidate set heals
+      // nothing and creates no duplicate wakes.
+      const secondResult = await heartbeat.reconcileResolvedDependencyWakes({ companyId, blockerIssueId });
+      expect(secondResult.healed).toBe(0);
+      expect(await wokenIssueIds()).toEqual([...eligibleIds].sort());
+    } finally {
+      resetProcessRunAdmissionForTests();
+    }
+  }, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS);
 
 });
