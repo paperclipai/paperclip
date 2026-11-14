@@ -52,6 +52,7 @@ import {
 } from "../chat-completion-delivery.js";
 import { hasWorkspaceRestoreFailure } from "@paperclipai/shared";
 import { isVerifiedDependencyInteractionResponse, readQueuedInteractionResponse } from "../queued-interaction-response.js";
+import { isVerifiedPendingAddresseeInteraction } from "../pending-addressee-interaction.js";
 import {
   isConversation,
   isConversationReset,
@@ -1337,7 +1338,9 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
           ISSUE_TREE_CONTROL_INTERACTION_WAKE_REASONS,
           blockerStallVerified,
           await isVerifiedDependencyInteractionResponse(db, { companyId: run.companyId,
-            issueId, agentId: run.agentId, context }),
+            issueId, agentId: run.agentId, context })
+            || await isVerifiedPendingAddresseeInteraction(db, { companyId: run.companyId,
+              issueId, agentId: run.agentId, context }),
         )
       ) {
         await cancelQueuedRunForBlockedDependencies(
@@ -4457,7 +4460,9 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
               await verifyBlockerStallWake(tx as unknown as Db, { companyId: issue.companyId, issueId: issue.id,
                 contextSnapshot: enrichedContextSnapshot, requestedByActorType: opts.requestedByActorType }),
               await isVerifiedDependencyInteractionResponse(tx, { companyId: issue.companyId,
-                issueId: issue.id, agentId, context: enrichedContextSnapshot }),
+                issueId: issue.id, agentId, context: enrichedContextSnapshot })
+                || await isVerifiedPendingAddresseeInteraction(tx, { companyId: issue.companyId,
+                  issueId: issue.id, agentId, context: enrichedContextSnapshot }),
             );
 
           if (blockedInteractionWake) {
