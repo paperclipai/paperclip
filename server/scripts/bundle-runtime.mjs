@@ -66,7 +66,8 @@ function externalizeThirdParty(isBundled, runtimeDir) {
           pluginData: { externalizeThirdParty: true },
         });
         if (fromServer.errors.length === 0 && fromServer.path === resolved.path) return { path: args.path, external: true };
-        return { path: pathToFileURL(resolved.path).href, external: true };
+        const isEsmImport = args.kind === "import-statement" || args.kind === "dynamic-import";
+        return { path: isEsmImport ? pathToFileURL(resolved.path).href : resolved.path, external: true };
       });
     },
   };
