@@ -390,24 +390,44 @@ export function createClientCredentialsService(db: Db, deps: Dependencies) {
     return { secretId: secret.id, versionSelector: "latest", configPath, required: false, label };
   }
 
+  type ConnectionPatch = Partial<typeof toolConnections.$inferInsert>;
+
+  /**
+   * One locked commit: the connection must still sign in the way `previous`
+   * did (same method, key and credential references) and not be removed. Any
+   * new credential is written in the same transaction, so a client ID and its
+   * secret always land together or not at all.
+   */
   async function saveConnection(
     previous: typeof toolConnections.$inferSelect,
-    patch: Partial<typeof toolConnections.$inferInsert>,
+    patch: ConnectionPatch | ((written: ToolCredentialSecretRef | null) => ConnectionPatch),
+    credential?: { configPath: string; label: string; value: string; actor?: ActorInfo },
   ) {
-    // Commit only if nothing that decides how this connection signs in changed
-    // since it was read (a rotation or another test), and it was not removed.
-    const clientAuth = asRecord(oauthConfig(previous).clientAuth);
-    const [updated] = await db.update(toolConnections)
-      .set({ ...patch, ...(patch.config ? { transportConfig: patch.config } : {}), updatedAt: now() })
-      .where(and(
-        eq(toolConnections.id, previous.id),
-        eq(toolConnections.companyId, previous.companyId),
-        ne(toolConnections.status, "archived"),
-        sql`coalesce(${toolConnections.config} -> 'oauth' -> 'clientAuth', '{}'::jsonb) = ${JSON.stringify(clientAuth)}::jsonb`,
-        sql`${toolConnections.credentialSecretRefs} = ${JSON.stringify(previous.credentialSecretRefs)}::jsonb`,
-      ))
-      .returning();
-    if (!updated) throw machineSignInChangedError();
+    const signInState = (row: typeof toolConnections.$inferSelect) =>
+      JSON.stringify([asRecord(oauthConfig(row).clientAuth), row.credentialSecretRefs]);
+    const updated = await db.transaction(async (tx) => {
+      const [locked] = await tx.select().from(toolConnections)
+        .where(and(eq(toolConnections.id, previous.id), eq(toolConnections.companyId, previous.companyId)))
+        .for("update");
+      if (!locked || locked.status === "archived" || signInState(locked) !== signInState(previous)) {
+        throw machineSignInChangedError();
+      }
+      let written: ToolCredentialSecretRef | null = null;
+      if (credential) {
+        const existing = locked.credentialSecretRefs.find((ref) => ref.configPath === credential.configPath);
+        const { secret } = await writeConnectionCredential(tx, {
+          companyId: locked.companyId, connectionName: locked.name, configPath: credential.configPath,
+          label: credential.label, value: credential.value, existingRef: existing, actor: actorForSecret(credential.actor),
+        });
+        written = { secretId: secret.id, versionSelector: "latest", configPath: credential.configPath, required: false, label: credential.label };
+      }
+      const resolved = typeof patch === "function" ? patch(written) : patch;
+      const [row] = await tx.update(toolConnections)
+        .set({ ...resolved, ...(resolved.config ? { transportConfig: resolved.config } : {}), updatedAt: now() })
+        .where(eq(toolConnections.id, locked.id))
+        .returning();
+      return row!;
+    });
     await store.syncCredentialBindings(updated);
     if (updated.status === "active") await deps.ensureDefaultOrganizationGrant(updated);
     emitConnectionUpdated(updated, previous, "gallery");
@@ -452,6 +472,7 @@ export function createClientCredentialsService(db: Db, deps: Dependencies) {
       scopes: scopesFrom(input.scopes) ?? [],
       clientId: input.clientId ?? null,
       tokenEndpointAuthMethodsSupported: service.authMethods,
+      tokenEndpointAuthSigningAlgValuesSupported: service.signingAlgorithms,
       clientAuth: { method: authMethod, ...(generated ? { key: generated.publicKey } : {}), configuredAt: createdAt.toISOString() },
     };
 
@@ -546,12 +567,6 @@ export function createClientCredentialsService(db: Db, deps: Dependencies) {
     // failed retest must leave a working connection's credentials untouched.
     await deps.probeServerWithToken(connection, `Bearer ${token.accessToken}`, actor);
     // The settings worked: keep them.
-    const credentialSecretRefs = [...connection.credentialSecretRefs];
-    if (input.clientSecret) {
-      const existing = credentialSecretRefs.find((ref) => ref.configPath === CLIENT_SECRET_PATH);
-      const ref = await writeVaultCredential(connection, CLIENT_SECRET_PATH, "Machine sign-in client secret", input.clientSecret, actor, existing);
-      if (!existing) credentialSecretRefs.push(ref);
-    }
     const accessRef = await store.createOrRotateOAuthSecret({
       companyId,
       connection,
@@ -576,14 +591,21 @@ export function createClientCredentialsService(db: Db, deps: Dependencies) {
         refreshedAt: at.toISOString(),
       },
     };
-    connection = await saveConnection(connection, {
+    connection = await saveConnection(connection, (written) => ({
       config: nextConfig,
-      credentialSecretRefs: [...credentialSecretRefs.filter((ref) => ref.configPath !== "oauth.access_token"), accessRef],
+      credentialSecretRefs: [
+        ...connection.credentialSecretRefs.filter((ref) =>
+          ref.configPath !== "oauth.access_token" && (!written || ref.configPath !== CLIENT_SECRET_PATH)),
+        ...(written ? [written] : []),
+        accessRef,
+      ],
       credentialRefs: [
         ...connection.credentialRefs.filter((ref) => ref.name !== "oauth.access_token"),
         { name: "oauth.access_token", secretId: accessRef.secretId, version: "latest", placement: "header", key: "Authorization", prefix: "Bearer " },
       ],
-    });
+    }), input.clientSecret
+      ? { configPath: CLIENT_SECRET_PATH, label: "Machine sign-in client secret", value: input.clientSecret, actor }
+      : undefined);
     // The organization grant is what tool calls run on; give it the token now,
     // with this token's expiry (the grant's own expiry wins over the connection's).
     await deps.ensureDefaultOrganizationGrant(connection);
@@ -647,27 +669,26 @@ export function createClientCredentialsService(db: Db, deps: Dependencies) {
         : settings.authMethod;
       await assertPinnedSignInService(connection, settings);
       await requestClientCredentialsToken(connection, actor, { clientSecret: input.clientSecret, authMethod });
-      const existing = connection.credentialSecretRefs.find((ref) => ref.configPath === CLIENT_SECRET_PATH);
-      const ref = await writeVaultCredential(connection, CLIENT_SECRET_PATH, "Machine sign-in client secret", input.clientSecret, actor, existing);
       const retired = connection.credentialSecretRefs.filter((candidate) =>
         candidate.configPath === CLIENT_PRIVATE_KEY_PATH || candidate.configPath === CLIENT_PRIVATE_KEY_NEXT_PATH);
-      const updated = await saveConnection(connection, {
+      const updated = await saveConnection(connection, (written) => ({
         config: { ...connection.config, oauth: { ...oauth, clientAuth: { method: authMethod, configuredAt: now().toISOString() } } },
         credentialSecretRefs: [
           ...connection.credentialSecretRefs.filter((candidate) => candidate.configPath !== CLIENT_SECRET_PATH && !retired.includes(candidate)),
-          ref,
+          written!,
         ],
-      });
+      }), { configPath: CLIENT_SECRET_PATH, label: "Machine sign-in client secret", value: input.clientSecret, actor });
       for (const old of retired) await secrets.remove(old.secretId).catch(() => undefined);
       return { connectionId, connection: toConnection(updated), machineSignIn: machineSignInStatus(updated), completed: true };
     }
-    const generated = await generateClientKeyPair(settings.key?.algorithm ?? "RS256", now());
-    const existing = connection.credentialSecretRefs.find((ref) => ref.configPath === CLIENT_PRIVATE_KEY_NEXT_PATH);
-    const ref = await writeVaultCredential(connection, CLIENT_PRIVATE_KEY_NEXT_PATH, "Machine sign-in replacement key", generated.privateKeyPem, actor, existing);
-    const updated = await saveConnection(connection, {
+    // Keep the current key's algorithm; switching from a secret uses what the sign-in service accepts.
+    const algorithm = settings.key?.algorithm
+      ?? chooseAssertionAlgorithm(normalizeOauthScopes(oauth.tokenEndpointAuthSigningAlgValuesSupported));
+    const generated = await generateClientKeyPair(algorithm, now());
+    const updated = await saveConnection(connection, (written) => ({
       config: { ...connection.config, oauth: { ...oauth, clientAuth: { ...clientAuth, pendingKey: generated.publicKey } } },
-      credentialSecretRefs: [...connection.credentialSecretRefs.filter((candidate) => candidate.configPath !== CLIENT_PRIVATE_KEY_NEXT_PATH), ref],
-    });
+      credentialSecretRefs: [...connection.credentialSecretRefs.filter((candidate) => candidate.configPath !== CLIENT_PRIVATE_KEY_NEXT_PATH), written!],
+    }), { configPath: CLIENT_PRIVATE_KEY_NEXT_PATH, label: "Machine sign-in replacement key", value: generated.privateKeyPem, actor });
     return { connectionId, connection: toConnection(updated), machineSignIn: machineSignInStatus(updated), completed: false };
   }
 

@@ -86,13 +86,13 @@ describe("Machine sign-in setup", () => {
       status: vi.fn(),
     };
     await act(async () => {
-      root.render(<MachineSignInSetup companyId="company-1" link="https://mcp.example/mcp" client={client} initialMethod="client_secret" onBack={() => undefined} onConnected={() => undefined} />);
+      root.render(<MachineSignInSetup companyId="company-1" link="https://mcp.example/mcp" client={client} initialMethod="client_secret" applicationId="app-1" onBack={() => undefined} onConnected={() => undefined} />);
     });
     expect(button("Test connection")?.disabled).toBe(true);
     await type("machine-sign-in-client-id", "id-1");
     await type("machine-sign-in-client-secret", "secret-1");
     await click("Test connection");
-    expect(client.create).toHaveBeenCalledWith("company-1", expect.objectContaining({ method: "client_secret", clientId: "id-1", clientSecret: "secret-1" }));
+    expect(client.create).toHaveBeenCalledWith("company-1", expect.objectContaining({ method: "client_secret", clientId: "id-1", clientSecret: "secret-1", applicationId: "app-1" }));
     expect(client.test).toHaveBeenCalledWith("connection-1", { clientId: "id-1", scopes: "" });
   });
 
