@@ -194,6 +194,17 @@ describe.skipIf(process.platform === "win32")("local browser subscription login"
     expect(login.code).toBe("ABCD-EFGHJ");
   });
 
+  it("reports a missing Claude CLI instead of an abandoned sign-in", async () => {
+    const home = await fakeCli("claude", "exit 0");
+    process.env.PATH = "/usr/bin:/bin";
+    const login = startLocalBrowserLogin("anthropic", home);
+    await vi.waitFor(() => expect(login.outcome).toBe("failure"), { timeout: 5000 });
+    expect(login.error).toMatch(/requires the Claude CLI.*Install Claude.*Paperclip's PATH/);
+    expect(login.error).not.toMatch(/Sign-in ended/);
+    expect(JSON.stringify(login)).not.toContain(process.env.PATH);
+    expect(login.authorizationUrl).toBeUndefined();
+  });
+
   it("accepts a Claude browser code and stores its token only in the attempt home", async () => {
     const url = "https://claude.com/cai/oauth/authorize?client_id=cid&code=abcdefgh&code_challenge=E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM&code_challenge_method=S256&redirect_uri=https%3A%2F%2Fplatform.claude.com%2Foauth%2Fcode%2Fcallback&response_type=code&scope=user&state=0123456789abcdef";
     const home = await fakeCli("claude", [
