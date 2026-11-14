@@ -35,9 +35,9 @@ import { claimCancellationRequest } from "./native-cancellation-request.js";
 describeEmbeddedPostgres("remote native retry execution admission", () => {
   const environment = nativeRestartFixture();
 
-  async function failedRemoteRun(storage: "classic" | "remote" | "plugin") {
+  async function failedRemoteRun(storage: "classic" | "remote" | "plugin", issueId?: string) {
     const { companyId, agentId, runtimeRoot } = environment.current;
-    const fixture = await environment.seedRun(`REMOTE-RETRY-${storage}-${randomUUID()}`);
+    const fixture = await environment.seedRun(`REMOTE-RETRY-${storage}-${randomUUID()}`, undefined, { issueId });
     await fixture.db.update(agents).set({ status: "active" }).where(eq(agents.id, agentId));
     const controller = { bootId: randomUUID(), generation: 1, leaseOwner: randomUUID() };
     await fixture.db.update(nativeRunFinalizations).set({
@@ -607,7 +607,7 @@ describeEmbeddedPostgres("remote native retry execution admission", () => {
     }
   });
 
-  it.each(["superseded", "released"] as const)("settles a %s bootstrap retry that lost its task lock instead of re-checking forever", async lock => {
+  it.each(["superseded", "released", "unassigned"] as const)("settles a %s bootstrap retry that lost its task lock instead of re-checking forever", async lock => {
     const f = await failedRemoteRun("remote");
     // A bootstrap retry follows a pre-provider failure: no checkpoint, provider session or provider events.
     const [run] = await f.db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.runId));
@@ -624,6 +624,7 @@ describeEmbeddedPostgres("remote native retry execution admission", () => {
         status: "running", createdAt: new Date(Date.now() + 1_000) }).returning({ id: heartbeatRuns.id });
       await f.db.update(issues).set({ executionRunId: newer.id }).where(eq(issues.id, f.issueId));
     }
+    if (lock === "unassigned") await f.db.update(issues).set({ assigneeAgentId: null }).where(eq(issues.id, f.issueId));
     const onClaim = vi.fn();
     const attempt = (now: Date) => claimNativeRestartRecoveries({ db: f.db, controller: environment.current.successor,
       restartKind: "hard", runIds: [f.runId], now, onClaim });
@@ -638,7 +639,10 @@ describeEmbeddedPostgres("remote native retry execution admission", () => {
       expect(coordinator.nextAttemptAt).toEqual(disposition.retryAt);
       now = disposition.retryAt;
     }
-    expect(passes).toBe(lock === "superseded" ? 0 : SYSTEM_RECOVERY_MAX_RETRIES);
+    // A free lock on a task still assigned to the agent is taken back, so the
+    // retry is judged on its own evidence at once; only a lock it may not take
+    // back waits out the bounded admission.
+    expect(passes).toBe(lock === "unassigned" ? SYSTEM_RECOVERY_MAX_RETRIES : 0);
     expect(onClaim).not.toHaveBeenCalled();
     expect((await f.db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, f.runId)))[0])
       .toMatchObject({ phase: "terminal_failure", nextAttemptAt: null, attempt: 1, failureCode: "native_restart_recovery_blocked" });
@@ -865,5 +869,42 @@ describeEmbeddedPostgres("remote native retry execution admission", () => {
       status: "queued", contextSnapshot: { issueId: f.issueId }, createdAt: new Date(Date.now() + 1_000) });
     expect(await claimNativeRestartRecoveries({ db: f.db, controller: environment.current.successor,
       restartKind: "hard", runIds: [f.runId] })).toMatchObject([{ kind: "reattach_remote_runner" }]);
+  });
+  it.each(["newest first", "oldest first"] as const)
+  ("resumes only the newest of several held chat bootstrap retries whose stale task lock was cleared (%s)", async order => {
+    const held: Awaited<ReturnType<typeof failedRemoteRun>>[] = [];
+    for (let index = 0; index < 3; index += 1) {
+      const run = await failedRemoteRun("remote", held[0]?.issueId);
+      const [row] = await run.db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, run.runId));
+      const { sessionCheckpoint: _checkpoint, ...profile } = row.runnerProfileJson ?? {};
+      await run.db.update(heartbeatRuns).set({ errorCode: "provider_session_open_rejected",
+        runnerProfileJson: { ...profile, nativePreparationFencingVersion: 1 }, processPid: null, processStartedAt: null,
+        createdAt: new Date(Date.now() - (3 - index) * 60_000) }).where(eq(heartbeatRuns.id, run.runId));
+      await run.db.delete(nativeRunnerCheckpoints)
+        .where(and(eq(nativeRunnerCheckpoints.companyId, run.companyId), eq(nativeRunnerCheckpoints.runId, run.runId)));
+      await run.db.update(nativeRunFinalizations).set({ failureCode: "provider_session_open_rejected", failureDetail: {
+        recoveryMode: "bootstrap_retry", originalFailureCode: "provider_session_open_rejected", runnerExitConfirmed: true,
+        providerSessionEstablished: false, checkpointExists: false, providerEventsExist: false,
+        providerCooldownAt: new Date().toISOString(),
+      } }).where(eq(nativeRunFinalizations.runId, run.runId));
+      held.push(run);
+    }
+    const chat = held[0]!;
+    const newest = held[2]!;
+    // Each new message moved the lock to its run; a later wake then cleared it as stale.
+    await chat.db.update(issues).set({ executionRunId: null, checkoutRunId: null }).where(eq(issues.id, chat.issueId));
+    const onClaim = vi.fn();
+    const dispositions = [];
+    for (const run of order === "newest first" ? [...held].reverse() : held) {
+      dispositions.push(...await claimNativeRestartRecoveries({ db: chat.db, controller: environment.current.successor,
+        restartKind: "hard", runIds: [run.runId], onClaim }));
+    }
+    const resumed = dispositions.filter(value => value.kind !== "blocked");
+    expect(resumed).toMatchObject([{ runId: newest.runId }]);
+    expect(dispositions.filter(value => value.kind === "blocked"))
+      .toMatchObject(held.slice(0, 2).map(() => ({ reason: "native_retry_source_superseded" })));
+    expect((await chat.db.select().from(issues).where(eq(issues.id, chat.issueId)))[0]).toMatchObject({ executionRunId: newest.runId });
+    for (const run of held.slice(0, 2)) expect((await chat.db.select().from(nativeRunFinalizations)
+      .where(eq(nativeRunFinalizations.runId, run.runId)))[0]).toMatchObject({ phase: "terminal_failure" });
   });
 });

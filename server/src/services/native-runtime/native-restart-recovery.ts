@@ -1267,7 +1267,7 @@ export async function claimNativeRestartRecoveries(input: {
       // A same-run bootstrap retry cannot take back an issue lock that moved
       // off it. Without a bounded admission it would re-check forever, never
       // settle, and keep its sandbox lease from the orphan-lease sweep.
-      const lockLostBootstrapRetry = row.run.status === "failed" && row.coordinator.phase === "retryable_failure"
+      let lockLostBootstrapRetry = row.run.status === "failed" && row.coordinator.phase === "retryable_failure"
         && row.coordinator.failureDetail?.recoveryMode === "bootstrap_retry" && row.issueExecutionRunId !== row.run.id;
       const releasedRemoteRetry = failedRemoteRetry && row.issueExecutionRunId === null;
       const unansweredRunnerReplacement = row.coordinator.failureDetail?.adoptedRunnerUnanswered === true
@@ -1334,6 +1334,16 @@ export async function claimNativeRestartRecoveries(input: {
         if (newer) {
           const deferred = await deferRemoteRetry("native_retry_source_superseded", true);
           if (deferred) return deferred;
+        } else if (lockLostBootstrapRetry && row.issueExecutionRunId === null && issue.assigneeAgentId === row.run.agentId
+          && !["done", "cancelled"].includes(issue.status) && (issue.checkoutRunId === null || issue.checkoutRunId === row.run.id)) {
+          // A wake clears a lock left on a failed run as stale. The newest
+          // held retry for a task still assigned to its agent is the task's
+          // only execution, so it takes the free lock back instead of
+          // leaving every waiting message unanswered.
+          await tx.update(issues).set({ executionRunId: row.run.id, updatedAt: now }).where(and(
+            eq(issues.id, issue.id), eq(issues.companyId, row.run.companyId), isNull(issues.executionRunId)));
+          row.issueExecutionRunId = row.run.id;
+          lockLostBootstrapRetry = false;
         }
       }
       const resumptionAgent = needsResumptionAdmission

@@ -157,13 +157,13 @@ export function nativeRestartFixture(options: { dedicatedDatabaseUrl?: string } 
   async function seedRun(
     label: string,
     existingDb?: ReturnType<typeof createDb>,
-    seedOptions: { agentId?: string } = {},
+    seedOptions: { agentId?: string; issueId?: string } = {},
   ) {
     const db = existingDb ?? createDb(temporary.connectionString);
     const runAgentId = seedOptions.agentId ?? agentId;
-    const issueId = randomUUID();
+    const issueId = seedOptions.issueId ?? randomUUID();
     const runId = randomUUID();
-    await db.insert(issues).values({
+    if (!seedOptions.issueId) await db.insert(issues).values({
       id: issueId,
       companyId,
       identifier: `NRR-${label}`,
