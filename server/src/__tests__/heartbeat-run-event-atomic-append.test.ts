@@ -323,12 +323,12 @@ describeEmbeddedPostgres("atomic ordinary run events", () => {
       await tx.delete(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
     });
     const late = appendHeartbeatRunEventBatch(db, [4, 5].map(sourceSeq => nativeEvent(runId, sourceSeq)));
-    const lateSingle = appendHeartbeatRunEvent(db, nativeEvent(runId, 4));
+    const lateSingle = appendHeartbeatRunEvent(db, nativeEvent(runId, 4)).then(() => "appended", (error: Error) => error.message);
     const lateSettledWhileHeld = await settlesWhileHeld(late);
     await deletion.release();
     expect(lateSettledWhileHeld).toBe(false);
     await expect(late).rejects.toThrow("heartbeat_run_event_binding_mismatch");
-    await expect(lateSingle).rejects.toThrow("heartbeat_run_event_binding_mismatch");
+    expect(await lateSingle).toBe("heartbeat_run_event_binding_mismatch");
     expect(await readEvents(runId)).toEqual([]);
   });
 
