@@ -33,6 +33,8 @@ export function issueRecoveryFixture() {
   const extraStops: Array<() => Promise<void>> = [];
   const extraDeadlines: Array<() => number | null> = [];
   beforeAll(async () => {
+    // These fixtures boot heartbeat directly, without server credential bootstrap.
+    vi.stubEnv("PAPERCLIP_AGENT_JWT_SECRET", "test-issue-recovery-work-secret");
     if (!external) database = await startEmbeddedPostgresTestDatabase("issue-recovery-work-");
     db = createDb(external ?? database!.connectionString, { maxConnections: 6, idleTimeoutSeconds: 0, maxLifetimeSeconds: 0 });
     await Promise.all(Array.from({ length: 6 }, () => db.execute(sql`select pg_sleep(0.01)`)));
@@ -49,7 +51,7 @@ export function issueRecoveryFixture() {
     vi.useRealTimers(); vi.restoreAllMocks();
     expect(errors).toEqual([]);
   });
-  afterAll(async () => { await db?.$client.end({ timeout: 1 }); await database?.cleanup(); });
+  afterAll(async () => { await db?.$client.end({ timeout: 1 }); await database?.cleanup(); vi.unstubAllEnvs(); });
   async function start(options: { backstopMs?: number } = { backstopMs: 0 }) {
     coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => !draining, canReconcile: () => true,
       onError: error => errors.push(error) });

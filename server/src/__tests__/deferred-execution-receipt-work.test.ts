@@ -60,6 +60,8 @@ describe("deferred receipt durable dispatch", () => {
   const extraStops: Array<() => Promise<void>> = [];
   const lifecycleWorkers = new Set<ReturnType<typeof configureAgentLifecycle>>();
   beforeAll(async () => {
+    // This fixture boots heartbeat directly, without server credential bootstrap.
+    vi.stubEnv("PAPERCLIP_AGENT_JWT_SECRET", "test-deferred-execution-receipt-secret");
     const external = resolveExternalTestDatabaseUrl("PAPERCLIP_DEFERRED_RECEIPT_TEST_DATABASE_URL");
     if (!external) temporary = await startEmbeddedPostgresTestDatabase("deferred-receipts-");
     db = createDb(external ?? temporary!.connectionString, { maxConnections: 6, idleTimeoutSeconds: 0, maxLifetimeSeconds: 0 });
@@ -91,7 +93,7 @@ describe("deferred receipt durable dispatch", () => {
     await Promise.all([...lifecycleWorkers].map(worker => worker.stop())); lifecycleWorkers.clear();
     vi.useRealTimers(); vi.restoreAllMocks(); expect(errors).toEqual([]);
   });
-  afterAll(async () => { await db?.$client.end({ timeout: 1 }); await temporary?.cleanup(); });
+  afterAll(async () => { await db?.$client.end({ timeout: 1 }); await temporary?.cleanup(); vi.unstubAllEnvs(); });
   async function fixture() {
     const companyId = randomUUID(), actorId = "deferred-receipt-user";
     await db.insert(authUsers).values({ id: actorId, name: "Receipt operator", email: `${actorId}@example.test`,

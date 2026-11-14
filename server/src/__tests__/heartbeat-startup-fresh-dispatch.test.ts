@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { eq, inArray } from "drizzle-orm";
-import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   activityLog,
   agentRuntimeState,
@@ -40,6 +40,8 @@ describeEmbeddedPostgres("heartbeat startup dispatch of queued runs without prio
   let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
 
   beforeAll(async () => {
+    // This fixture boots heartbeat directly, without server credential bootstrap.
+    vi.stubEnv("PAPERCLIP_AGENT_JWT_SECRET", "test-startup-fresh-dispatch-secret");
     tempDb = await startEmbeddedPostgresTestDatabase("heartbeat-startup-fresh-dispatch-");
     db = createDb(tempDb.connectionString);
     await db.insert(authUsers).values({ id: "responsible-user", name: "Startup fixture sponsor",
@@ -64,6 +66,7 @@ describeEmbeddedPostgres("heartbeat startup dispatch of queued runs without prio
 
   afterAll(async () => {
     await tempDb?.cleanup();
+    vi.unstubAllEnvs();
   });
 
   async function seedCompany() {

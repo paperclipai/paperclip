@@ -19,6 +19,7 @@ describe("secret-bound environment values in a local run", () => {
   beforeAll(async () => {
     directory = await mkdtemp(join(tmpdir(), "paperclip-secret-env-output-"));
     vi.stubEnv("PAPERCLIP_HOME", directory);
+    vi.stubEnv("PAPERCLIP_AGENT_JWT_SECRET", "test-secret-env-output-run-secret");
     vi.stubEnv("PAPERCLIP_SECRETS_MASTER_KEY", "");
     vi.stubEnv("PAPERCLIP_SECRETS_MASTER_KEY_FILE", join(directory, "master.key"));
     database = await startEmbeddedPostgresTestDatabase("paperclip-secret-env-output-");

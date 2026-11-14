@@ -64,6 +64,8 @@ describeEmbeddedPostgres("issue monitor scheduler", () => {
   const seededAgentIds = new Set<string>();
 
   beforeAll(async () => {
+    // This fixture boots heartbeat directly, without server credential bootstrap.
+    vi.stubEnv("PAPERCLIP_AGENT_JWT_SECRET", "test-issue-monitor-secret");
     if (!external) tempDb = await startEmbeddedPostgresTestDatabase("paperclip-issue-monitor-");
     db = createDb(external ?? tempDb!.connectionString);
   }, 20_000);
@@ -167,6 +169,7 @@ describeEmbeddedPostgres("issue monitor scheduler", () => {
 
   afterAll(async () => {
     await tempDb?.cleanup();
+    vi.unstubAllEnvs();
   });
 
   async function seedFixture(input?: {

@@ -28,6 +28,8 @@ describe.skipIf(!support.supported)("run dispatch production wiring (controlled 
   const errors: unknown[] = [];
   const retryQueries: string[] = [];
   beforeAll(async () => {
+    // This fixture boots heartbeat directly, without server credential bootstrap.
+    vi.stubEnv("PAPERCLIP_AGENT_JWT_SECRET", "test-run-dispatch-work-secret");
     if (!external) database = await startEmbeddedPostgresTestDatabase("run-dispatch-work-");
     db = createDb(external ?? database!.connectionString, { maxConnections: 6, idleTimeoutSeconds: 0, maxLifetimeSeconds: 0 });
     db.$client.options.debug = (_connection, query) => {
@@ -48,7 +50,7 @@ describe.skipIf(!support.supported)("run dispatch production wiring (controlled 
     vi.useRealTimers(); vi.restoreAllMocks();
     expect(errors).toEqual([]);
   });
-  afterAll(async () => { await db?.$client.end({ timeout: 1 }); await database?.cleanup(); });
+  afterAll(async () => { await db?.$client.end({ timeout: 1 }); await database?.cleanup(); vi.unstubAllEnvs(); });
 
   async function start() {
     coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => !draining,
