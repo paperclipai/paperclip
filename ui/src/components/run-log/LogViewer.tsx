@@ -1,3 +1,7 @@
+import { useResilientFetch } from "@/hooks/useResilientFetch";
+import { QueryErrorState } from "@/components/QueryView";
+import { isTransientError } from "@/api/errors";
+import { useConnectivityStore } from "@/lib/connectivity";
 import { TranscriptSequence } from "../../lib/transcript-sequence";
 import { readTranscriptRequest } from "../transcript/read-transcript-request";
 import { useTranscriptLiveStream } from "../../context/LiveUpdatesProvider";
@@ -38,6 +42,7 @@ import {
 
 export function LogViewer({ run, adapterType }: { run: HeartbeatRun; adapterType: string }) {
   const { visible } = usePageVisibility();
+  const connection = useConnectivityStore();
   const [events, setEvents] = useState<HeartbeatRunEvent[]>([]);
   const [hasMoreEvents, setHasMoreEvents] = useState(false);
   const [eventsError, setEventsError] = useState<string | null>(null);
@@ -46,8 +51,6 @@ export function LogViewer({ run, adapterType }: { run: HeartbeatRun; adapterType
   const loadMoreEventsRef = useRef<(() => void) | null>(null);
   const [logLines, setLogLines] = useState<RunLogChunk[]>([]);
   const [loading, setLoading] = useState(true);
-  const [logLoading, setLogLoading] = useState(!!run.logRef);
-  const [logError, setLogError] = useState<string | null>(null);
   const [logOffset, setLogOffsetState] = useState(0);
   const logOffsetRef = useRef(0);
   const setLogOffset = useCallback((next: number | ((previous: number) => number)) => {
@@ -56,7 +59,6 @@ export function LogViewer({ run, adapterType }: { run: HeartbeatRun; adapterType
   }, []);
   const logMergeRefs = useRef({ seenChunkKeys: new Set<string>(), trimmedSeqFloorByRun: new Map<string, number>() });
   const [hasMoreLog, setHasMoreLog] = useState(false);
-  const [loadingMoreLog, setLoadingMoreLog] = useState(false);
   const [isFollowing, setIsFollowing] = useState(false);
   const [transcriptMode, setTranscriptMode] = useState<TranscriptMode>("nice");
   const logEndRef = useRef<HTMLDivElement>(null);
@@ -229,6 +231,7 @@ export function LogViewer({ run, adapterType }: { run: HeartbeatRun; adapterType
         const rows = await readTranscriptRequest(signal => heartbeatsApi.events(run.id, cursor, 1000, { signal }), abort.signal);
         if (cancelled) return;
         appendEvents(rows, !catchup || initializesHistory);
+        setLoading(false);
         const next = Math.max(cursor, rows.at(-1)?.seq ?? cursor);
         eventsCatchupCursorRef.current = Math.max(eventsCatchupCursorRef.current, next);
         eventSequenceRef.current.confirm(next);
@@ -242,12 +245,13 @@ export function LogViewer({ run, adapterType }: { run: HeartbeatRun; adapterType
         }
         failed = eventSequenceRef.current.needsCatchup;
         failedRead = null;
-      } catch {
+      } catch (error) {
         failed = true; failedRead = { requested, catchup };
-        if (!cancelled) setEventsError("Could not load events. Try again.");
+        connection.reportError(error);
+        if (!cancelled && !isTransientError(error)) setEventsError("Could not load events. Try again.");
       }
       if (cancelled) return;
-      reading = false; setLoadingMoreEvents(false); setLoading(false);
+      reading = false; setLoadingMoreEvents(false);
       if (pendingRefresh) void read(false, true);
       else if (failed || (isLive && !stream.healthy && !hasMoreEventsRef.current)) {
         timer = window.setTimeout(() => void read(requested, catchup || eventSequenceRef.current.needsCatchup), 2000);
@@ -351,71 +355,59 @@ export function LogViewer({ run, adapterType }: { run: HeartbeatRun; adapterType
     setLogLines([]);
     setLogOffset(0);
     setHasMoreLog(false);
-    setLoadingMoreLog(false);
-    setLogError(null);
   }, [run.id, run.logRef, setLogOffset]);
 
-  useEffect(() => {
-    if (!visible) return;
-    if (!run.logRef && !shouldPollShellLog) { setLogLoading(false); return; }
-    let cancelled = false;
-    let timer: number | undefined;
-    const abort = new AbortController();
-    setLogLoading(true);
-    let reading = false;
-    let pendingRefresh = false;
-    const load = async () => {
-      if (cancelled || reading) return;
-      reading = true; pendingRefresh = false;
-      window.clearTimeout(timer); timer = undefined;
-      let failed = false;
+  const pendingLogRefresh = useRef(false);
+  const logSourceEnabled = Boolean(run.logRef) || shouldPollShellLog;
+  const persistedLog = useResilientFetch({
+    key: ["run-log", run.companyId, run.id, run.logRef ?? null, isLive ? null : run.logBytes, shouldPollShellLog],
+    enabled: visible && logSourceEnabled,
+    refetchInterval: logSequenceRef.current.needsCatchup || (shouldPollShellLog && !stream.healthy) ? 2000 : false,
+    fetcher: async (signal) => {
+      const offset = logOffsetRef.current;
       try {
-        for (;;) {
-          const offset = logOffsetRef.current;
-          const result = await readTranscriptRequest(signal => heartbeatsApi.log(run.id, offset, RUN_LOG_PAGE_BYTES, { signal }), abort.signal);
-          if (cancelled) return;
-          const binding = bindLog(result.logRef);
-          if (binding === "stale") { failed = true; break; }
-          if (binding === "changed" && offset !== 0) continue;
-          appendLogContent(result.content, result.nextOffset === undefined);
-          const next = result.nextOffset ?? offset + new TextEncoder().encode(result.content).byteLength;
-          setLogOffset(next); setLogError(null);
-          setHasMoreLog(!wasLiveRef.current && result.nextOffset !== undefined && !!result.content);
-          if (!wasLiveRef.current || result.nextOffset === undefined || !result.content || next <= offset) break;
-        }
-        failed ||= logSequenceRef.current.needsCatchup;
-      } catch (err) {
-        if (cancelled) return;
-        failed = shouldPollShellLog || !isRunLogUnavailable(err);
-        if (!isRunLogUnavailable(err)) setLogError(err instanceof Error ? err.message : "Failed to load run log");
+        const result = await readTranscriptRequest(signal => heartbeatsApi.log(run.id, offset, RUN_LOG_PAGE_BYTES, { signal }), signal);
+        return { offset, result };
+      } catch (error) {
+        if (shouldPollShellLog && isRunLogUnavailable(error)) return { offset, result: null };
+        throw error;
       }
-      if (cancelled) return;
-      reading = false;
-      setLogLoading(false);
-      if (pendingRefresh) void load();
-      else if (failed || (shouldPollShellLog && !stream.healthy)) timer = window.setTimeout(() => void load(), 2000);
-    };
-    refreshLogRef.current = (force = false) => { if (force) pendingRefresh = true; void load(); };
-    void load();
-    return () => { cancelled = true; refreshLogRef.current = null; abort.abort(); if (timer !== undefined) window.clearTimeout(timer); };
-  }, [visible, run.id, run.companyId, run.logRef, isLive ? null : run.logBytes, shouldPollShellLog, stream.healthy, stream.epoch]);
-
-  async function loadMorePersistedLog() {
-    if (loadingMoreLog || !hasMoreLog) return;
-    setLoadingMoreLog(true);
-    setLogError(null);
-    try {
-      const result = await heartbeatsApi.log(run.id, logOffset, RUN_LOG_PAGE_BYTES);
+    },
+    onSuccess: ({ offset, result }) => {
+      if (!result) return;
+      const binding = bindLog(result.logRef);
+      if (binding === "stale") return;
+      if (binding === "changed" && offset !== 0) {
+        queueMicrotask(() => persistedLog.refetch());
+        return;
+      }
       appendLogContent(result.content, result.nextOffset === undefined);
-      const next = result.nextOffset ?? logOffset + new TextEncoder().encode(result.content).byteLength;
+      const next = result.nextOffset ?? offset + new TextEncoder().encode(result.content).byteLength;
       setLogOffset(next);
-      setHasMoreLog(result.nextOffset !== undefined);
-    } catch (err) {
-      setLogError(err instanceof Error ? err.message : "Failed to load more run log");
-    } finally {
-      setLoadingMoreLog(false);
-    }
-  }
+      setHasMoreLog(!wasLiveRef.current && result.nextOffset !== undefined && !!result.content);
+      if (pendingLogRefresh.current || (wasLiveRef.current && result.nextOffset !== undefined && !!result.content && next > offset)) {
+        pendingLogRefresh.current = false;
+        queueMicrotask(() => persistedLog.refetch());
+      }
+    },
+  });
+  const logLoading = logSourceEnabled && ["loading", "reconnecting"].includes(persistedLog.view.kind);
+  const logError = persistedLog.view.kind === "error" ? persistedLog.error : null;
+  const loadingMoreLog = persistedLog.isFetching;
+  useEffect(() => {
+    refreshLogRef.current = () => {
+      if (persistedLog.isFetching) pendingLogRefresh.current = true;
+      else persistedLog.refetch();
+    };
+    return () => { refreshLogRef.current = null; };
+  }, [persistedLog.refetch, persistedLog.isFetching]);
+  const previousStream = useRef({ runId: run.id, epoch: stream.epoch });
+  useEffect(() => {
+    const previous = previousStream.current;
+    previousStream.current = { runId: run.id, epoch: stream.epoch };
+    if (visible && logSourceEnabled && previous.runId === run.id && previous.epoch !== stream.epoch) refreshLogRef.current?.();
+  }, [run.id, stream.epoch, visible, logSourceEnabled]);
+  useEffect(() => connection.onRecover(() => refreshEventsRef.current?.(true)), [connection]);
 
   const censorUsernameInLogs = useQuery({
     queryKey: queryKeys.instance.generalSettings,
@@ -454,12 +446,12 @@ export function LogViewer({ run, adapterType }: { run: HeartbeatRun; adapterType
     setTranscriptMode("nice");
   }, [run.id]);
 
-  if (loading && logLoading) {
+  if (loading && logLoading && !eventsError && !logError) {
     return <p className="text-xs text-muted-foreground">Loading run logs...</p>;
   }
 
   if (events.length === 0 && logLines.length === 0 && !logError && !eventsError) {
-    return <p className="text-xs text-muted-foreground">No log events.</p>;
+    return <p className="text-xs text-muted-foreground">{loading || logLoading ? "Loading run logs..." : "No log events."}</p>;
   }
 
   const levelColors: Record<string, string> = {
@@ -547,7 +539,7 @@ export function LogViewer({ run, adapterType }: { run: HeartbeatRun; adapterType
               type="button"
               variant="outline"
               size="xs"
-              onClick={loadMorePersistedLog}
+              onClick={persistedLog.view.retry}
               disabled={loadingMoreLog}
             >
               {loadingMoreLog ? "Loading..." : "Load more log"}
@@ -560,11 +552,7 @@ export function LogViewer({ run, adapterType }: { run: HeartbeatRun; adapterType
             </span>
           </div>
         )}
-        {logError && (
-          <div className="mt-3 rounded-xl border border-red-500/20 bg-red-500/[0.06] px-3 py-2 text-xs text-red-700 dark:text-red-300">
-            {logError}
-          </div>
-        )}
+        {logError != null && <QueryErrorState className="mt-3" error={logError} action="load the run log" onRetry={persistedLog.view.retry} retrying={loadingMoreLog} />}
         <div ref={logEndRef} />
       </div>
 

@@ -40,6 +40,8 @@ export type AcpxProcessIdentitySink = {
   onLaunch?: () => void;
   latest: AcpxAgentProcessIdentity | null;
   localProcess?: ChildProcess;
+  /** The current run's agent environment; a warm runtime respawns with this run's values. */
+  launchEnvironment?: Readonly<Record<string, string>>;
 };
 
 /** The live-line buffer and log path a warm runtime's child stderr carries. */

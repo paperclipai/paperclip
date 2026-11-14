@@ -56,3 +56,25 @@ export const TaskQuestion: Story = {
 };
 export const TaskQuestionDark: Story = { ...TaskQuestion, play: undefined, globals: { theme: "dark" } };
 export const TaskQuestionPhone: Story = { ...TaskQuestion, play: undefined, globals: { viewport: { value: "mobile1" } } };
+
+const inlineDocumentLinkText = "Yes—we completed the onboarding interview here in chat. Your [plan is saved](#document-plan), approved, and handed off to execution task PIX-3.\n\nPIX-3 is now waiting for your bakery name, products/prices, contact details, and visual preferences.";
+function InlineDocumentLinkConversation() {
+  return <CoordinatorPresentation.Provider value><div className="coordinator-workspace min-h-dvh bg-background p-6 text-foreground"><div className="mx-auto max-w-3xl space-y-8">
+    <TaskChatBubble animateEntry={false} item={{ id: "inline-document-link-agent", kind: "message", author: "agent", authorName: "Head baker", text: inlineDocumentLinkText, createdAtIso: new Date(Date.now() - 60_000).toISOString() }} />
+  </div></div></CoordinatorPresentation.Provider>;
+}
+/** A document link inside a sentence must stay in the text line: no taller box that overlaps the lines around it. */
+export const InlineDocumentLink: Story = {
+  render: () => <InlineDocumentLinkConversation />,
+  parameters: { paperclip: { capabilities: ["agent-chat/history"], status: "current", implementation: "production", boundary: "fixtures", notes: "Production task chat bubble and markdown document link inside running text. Sample content only; proves layout, not document storage or navigation." } },
+  play: async ({ canvasElement }) => {
+    const link = await within(canvasElement).findByRole("link", { name: /plan is saved/ });
+    const paragraph = link.closest("p")!;
+    const lineHeight = Number.parseFloat(getComputedStyle(paragraph).lineHeight);
+    const box = link.getBoundingClientRect();
+    const textBox = paragraph.getBoundingClientRect();
+    await expect(box.height).toBeLessThanOrEqual(lineHeight);
+    await expect(box.top).toBeGreaterThanOrEqual(textBox.top);
+  },
+};
+export const InlineDocumentLinkDark: Story = { ...InlineDocumentLink, play: undefined, globals: { theme: "dark" } };

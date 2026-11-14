@@ -53,7 +53,7 @@ function registerModuleMocks() {
 
 let appImportCounter = 0;
 
-async function createApp(actor: any, db: any = {} as any, options: { cliAuthCreateRateLimiter?: InviteRateLimiter; cliAuthPollRateLimiter?: InviteRateLimiter } = {}) {
+async function createApp(actor: any, db: any = {} as any, options: { authPublicBaseUrl?: string; cliAuthCreateRateLimiter?: InviteRateLimiter; cliAuthPollRateLimiter?: InviteRateLimiter } = {}) {
   appImportCounter += 1;
   const routeModulePath = `../routes/access.js?cli-auth-routes-${appImportCounter}`;
   const middlewareModulePath = `../middleware/index.js?cli-auth-routes-${appImportCounter}`;
@@ -135,6 +135,31 @@ describe("cli auth routes", () => {
     });
     expect(res.body.boardApiToken).toBe("pcp_board_token");
     expect(res.body.approvalUrl).toContain("/cli-auth/12345678-1234-4123-8123-123456789abc?token=pcp_cli_auth_secret");
+  });
+
+  it("uses the configured public origin for CLI approval behind an upstream proxy", async () => {
+    mockBoardAuthService.createCliAuthChallenge.mockResolvedValue({
+      challenge: {
+        id: "12345678-1234-4123-8123-123456789abc",
+        expiresAt: new Date(Date.now() + 60_000),
+      },
+      challengeSecret: "pcp_cli_auth_secret",
+      pendingBoardToken: "pcp_board_token",
+    });
+    const app = await createApp({ type: "none", source: "none" }, {}, {
+      authPublicBaseUrl: "https://workspace.example.com/",
+    });
+    const res = await request(app)
+      .post("/api/cli-auth/challenges")
+      .set("Host", "upstream.example.net")
+      .set("X-Forwarded-Host", "upstream.example.net")
+      .set("X-Forwarded-Proto", "https")
+      .send({ command: "paperclipai auth login", requestedAccess: "board" });
+
+    expect(res.status).toBe(201);
+    expect(res.body.approvalUrl).toBe(
+      `https://workspace.example.com${res.body.approvalPath}`,
+    );
   });
 
   it("bounds anonymous create and poll independently without trusting spoofed forwarding headers", async () => {

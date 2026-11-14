@@ -76,7 +76,7 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
     await db.insert(companies).values({ id: companyId, name: "Slack", issuePrefix: companyId.slice(0, 8) });
     await db.insert(agents).values({ id: agentId, companyId, name: "Carl", role: "general", adapterType: "codex_local" });
     await db.insert(issues).values({ id: issueId, companyId, title: "you there?", status: "in_progress", assigneeAgentId: agentId, originKind: "chat_channel" });
-    await db.insert(toolApplications).values({ id: applicationId, companyId, name: "Slack", type: "native" });
+    await db.insert(toolApplications).values({ id: applicationId, companyId, name: "Slack", type: "chat" });
     await db.insert(toolConnections).values({ id: connectionId, companyId, applicationId, name: "Slack", uid: connectionId, transport: "chat_sdk", connectionPurpose: "channel" });
     await db.insert(chatEndpoints).values({ id: endpointId, companyId, connectionId, provider: "slack", publicId: endpointId, assignedAgentId: agentId, status: "active" });
     await db.insert(chatConversations).values({ id: conversationId, companyId, endpointId, issueId, externalConversationId: "channel", externalThreadId: runId, externalLabel: "#test" });
@@ -206,7 +206,7 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
     await db.update(heartbeatRuns).set({ status: "running", finishedAt: null }).where(eq(heartbeatRuns.id, f.runId));
     await db.transaction(async tx => {
       await createWakeAdmissionWriter().coalesceIntoActiveExecutionRun(createAdmissionTransactionScope(f.companyId, tx as unknown as typeof db), {
-        companyId: f.companyId, agentId: f.agentId, activeExecutionRunId: f.runId,
+        companyId: f.companyId, agentId: f.agentId, activeExecutionRunId: f.runId, activeExecutionRunStatus: "running",
         mergedContextSnapshot: { issueId: f.issueId }, source: "automation", triggerDetail: "system",
         payload: { issueId: f.issueId }, requestedByActorType: "system", requestedByActorId: null,
         idempotencyKey: key,
@@ -410,8 +410,8 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
         withCredentialMutationLease: chatCredentialMutationLease(db),
         teamsTransferProtocol: vi.fn(() => { throw new Error("Slack does not use Teams file resolution"); }),
         commitTaskControlCompletion: createChatPublicationTaskControl(db).commitTaskControlCompletion,
-        processPendingPublications: vi.fn(async () => ({ attempted: 0 })),
-        processProviderEffect: vi.fn(async () => undefined),
+        processPendingPublications: vi.fn(async () => 0),
+        processProviderEffect: vi.fn(async () => "processed" as const),
       });
       const lifecycle = createHeartbeatLifecycle(db, { emitTerminalAgentTaskRun: vi.fn() } as unknown as HeartbeatLifecycleDependencies);
       const finishRun = () => lifecycle.setRunStatus(f.runId, "succeeded", { finishedAt: new Date() });
@@ -451,8 +451,8 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
       let entered = false;
       await adapter.withIssueExecutionLock({ companyId: f.companyId, runId: f.runId, now: new Date() }, async (_locked, ports) => {
         entered = true;
-        if (operation === "cancel_wake") await ports.transaction.cancelDeferredWake({ companyId: f.companyId, wakeId, reason: "cancelled", now: new Date() });
-        if (operation === "fail_wake") await ports.transaction.failDeferredWake({ companyId: f.companyId, wakeId, now: new Date() });
+        if (operation === "cancel_wake") await ports.transaction.cancelDeferredWake({ companyId: f.companyId, wakeId, agentId: f.agentId, reason: "cancelled", now: new Date() });
+        if (operation === "fail_wake") await ports.transaction.failDeferredWake({ companyId: f.companyId, wakeId, agentId: f.agentId, now: new Date() });
         return { outcome: { kind: "released" as const }, postCommitEffects: [] };
       });
       expect(entered).toBe(true);
@@ -555,7 +555,7 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
     expect((await issueService(db).getById(f.issueId))?.externalConversationState).toBe("waiting");
     expect(await issueService(db).list(f.companyId)).toHaveLength(0);
     expect((await dashboardService(db).summary(f.companyId)).tasks.open).toBe(0);
-    expect((await attentionService(db).list(f.companyId)).items.filter((item) => item.issueId === f.issueId)).toHaveLength(0);
+    expect((await attentionService(db).list(f.companyId)).items.filter((item) => item.subject.id === f.issueId || item.relatedIssue?.id === f.issueId)).toHaveLength(0);
     const results = await companySearchService(db).search(f.companyId, companySearchQuerySchema.parse({ q: "you there" }));
     expect(results.results.find((result) => result.issue?.id === f.issueId)?.issue?.externalConversationState).toBe("waiting");
     expect((await issueService(db).list(f.companyId, { q: "you there" }))[0]?.externalConversationState).toBe("waiting");

@@ -53,7 +53,8 @@ export type NativeRuntimeResolution =
           | "acpx_runtime"
           | "openai_dot_mcp"
           | "grok_bot_mcp"
-          | "muse_external";
+          | "muse_external"
+          | "cursor_cloud_api";
         protocolVersion: 1;
       };
       authorityDecision: NativeStatusDecision;
@@ -155,6 +156,9 @@ export function resolveNativeRuntimeMode(input: {
       "paperclip_runner_agent_ineligible",
       "Paperclip Runner requires an active agent.",
     );
+  }
+  if (runnerProfile.provider === "cursor_cloud" && (input.target?.kind ?? "local") !== "local") {
+    throw ineligible("paperclip_runner_cursor_cloud_local_controller_required", "Cursor Cloud currently requires a local Paperclip controller. Cursor hosts its execution environment.");
   }
   const allowedWorkModes = ["standard", "planning", "ask", "skill_test"];
   if (!input.issue || !allowedWorkModes.includes(input.issue.workMode)) {
@@ -268,6 +272,7 @@ export function resolveHeartbeatRuntimeMode(input: {
       : resolution.profile.backend === "muse_external" ? "muse"
       : resolution.profile.backend === "grok_bot_mcp" ? "grok_bot"
       : resolution.profile.backend === "openai_dot_mcp" ? "openai_dot"
+      : resolution.profile.backend === "cursor_cloud_api" ? "cursor_cloud"
       : resolution.profile.backend === "acpx_runtime"
           ? "acpx"
           : "codex",
@@ -324,6 +329,7 @@ export function resolveHeartbeatNativeRuntimeMode(input: {
         : driverKind === "muse_external" ? "muse_external"
         : driverKind === "grok_bot_mcp" ? "grok_bot_mcp"
         : driverKind === "openai_dot_mcp" ? "openai_dot_mcp"
+        : driverKind === "cursor_cloud_api" ? "cursor_cloud_api"
         : driverKind === "acpx_runtime"
             ? "acpx_runtime"
             : driverKind === null

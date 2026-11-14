@@ -19,7 +19,6 @@ import {
   inArray,
   lte,
   ne,
-  notInArray,
   or,
   sql,
 } from "drizzle-orm";
@@ -173,8 +172,6 @@ export function createSlackTaskStart(db: Db, options: SlackTaskStartOptions) {
           eq(chatConversations.endpointId, endpointId),
           inArray(chatConversations.externalConversationId, conversationIds),
           eq(chatConversations.isDirectMessage, true),
-          inArray(chatConversations.state, ["active", "waiting"]),
-          notInArray(issues.status, ["done", "cancelled"]),
         ),
       )
       .orderBy(

@@ -63,6 +63,10 @@ never persisted or published on the shared company event bus.
 Authorized events still reach cache handling and component subscribers when
 eligibility is false. Lookup failure is logged but does not discard the authorized
 event. Existing task/run privacy checks and payload redaction remain in force.
+Task activity titles, fallback text, and links use the authorized task identifier.
+If the optional identifier lookup fails, the event still arrives and uses `Task`
+unless the browser already has the identifier. Permission-check failures do not
+use this fallback.
 When an authenticated comment event omits the comment ID, the visible task thread
 refreshes through its authorized HTTP read instead of trying to hydrate the comment.
 Closed sockets cannot deliver stale notifications after account/company changes.

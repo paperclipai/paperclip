@@ -1,6 +1,6 @@
 import { randomBytes, randomUUID } from "node:crypto";
 import { agents, companies, createDb, heartbeatRuns } from "@paperclipai/db";
-import { createDatabaseResponseCapture, installDatabaseResponseCapture } from "@paperclipai/db/response-capture";
+import { createFullDatabaseResponseCapture, installDatabaseResponseCapture } from "../../__tests__/helpers/full-database-response-capture.js";
 import { eq } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "../../__tests__/helpers/embedded-postgres.js";
@@ -49,7 +49,7 @@ describe.skipIf(!support.supported)("chat authorization run reads", () => {
     const [before] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, scope.failedRunId));
     const events: Array<Record<string, unknown>> = [];
     const now = Date.now();
-    const capture = createDatabaseResponseCapture({ start: now - 100, end: now + 59_000 }, event => events.push(event));
+    const capture = createFullDatabaseResponseCapture({ start: now - 100, end: now + 59_000 }, event => events.push(event));
     installDatabaseResponseCapture(db, { heartbeatRuns }, capture);
     try {
       const selected = await db.transaction(tx => readChatAuthorizationRun(tx, scope, true));
@@ -58,7 +58,7 @@ describe.skipIf(!support.supported)("chat authorization run reads", () => {
       expect(selected.run).not.toHaveProperty("runnerProfileJson");
       expect(selected.run).not.toHaveProperty("stdoutExcerpt");
     } finally { capture.flush(); }
-    const summary = events.find(event => event.event === "paperclip.db_response_capture.summary.v1")!;
+    const summary = events.find(event => event.event === "paperclip.test_db_response_capture.summary.v1")!;
     expect(summary.completedQueries).toBeGreaterThan(0);
     expect(summary.responseValueBytes).toBeLessThan(4096);
     const retry = await db.transaction(tx => readChatAuthorizationRun(tx, scope, false));

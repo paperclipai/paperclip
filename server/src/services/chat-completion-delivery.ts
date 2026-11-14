@@ -1,11 +1,17 @@
 import { notifyDeliveryWork, DELIVERY_QUEUES } from "./delivery-work-notifications.js";
-import { and, asc, desc, eq, inArray, lte, sql } from "drizzle-orm";
+import { notifyNativeResponsePresentation } from "./native-response-presentation-notifications.js";
+import { nativeResponsePresentationCandidates } from "./native-runtime/native-response-presentation-query.js";
+import { and, asc, desc, eq, gte, inArray, isNotNull, isNull, lte, ne, sql } from "drizzle-orm";
 import { agents, agentWakeupRequests, chatCompletionDeliveries as deliveries, chatTaskHandoffs as handoffs,
-  heartbeatRuns, issueComments, issueDocuments, issueThreadInteractions, issues, type Db } from "@paperclipai/db";
+  heartbeatRunEvents, heartbeatRuns, issueComments, issueDocuments, issueThreadInteractions, issues, type Db } from "@paperclipai/db";
+import { extractIssueReferenceMatches } from "@paperclipai/shared";
+import { appendHeartbeatRunEvent } from "./heartbeat-run-events.js";
 import { instanceSettingsService } from "./instance-settings.js";
 import { conflict, forbidden, notFound } from "../errors.js";
 
 export const CHAT_COMPLETION_WAKE_REASON = "chat_task_completed";
+/** Run event: the conversation agent read its handed-off task after it was done. */
+export const COMPLETED_HANDOFF_READ_EVENT = "chat_handoff.completed_read";
 const MAX_ATTEMPTS = 5;
 const LEASE_MS = 60_000;
 type Issue = typeof issues.$inferSelect;
@@ -137,6 +143,45 @@ export async function isCompletedOnboardingHandoffWake(db: Connection, input: {
     children.every(child => ["done", "cancelled"].includes(child.status));
 }
 
+/** Records that the conversation agent read a handed-off task in its done state. The
+ * completion turn uses this to recognize a completion that an earlier reply reported. */
+export async function recordCompletedHandoffRead(db: Db, input: {
+  companyId: string; agentId: string; runId: string;
+  task: { id: string; status: string; statusVersion?: number | null };
+}) {
+  if (input.task.status !== "done" || typeof input.task.statusVersion !== "number") return;
+  const [handoff] = await db.select({ agentId: handoffs.agentId }).from(handoffs)
+    .where(and(eq(handoffs.taskId, input.task.id), eq(handoffs.companyId, input.companyId)));
+  if (handoff?.agentId !== input.agentId) return;
+  await appendHeartbeatRunEvent(db, { companyId: input.companyId, runId: input.runId, agentId: input.agentId,
+    eventType: COMPLETED_HANDOFF_READ_EVENT, stream: "system", level: "info",
+    payload: { taskId: input.task.id, statusVersion: input.task.statusVersion } });
+}
+
+/** A reply in this conversation already reported this completion when a turn of the same
+ * agent read the task done for this completion and then linked the task in its reply. */
+async function earlierCompletionReply(tx: Connection, row: NonNullable<Awaited<ReturnType<typeof loadAudience>>>, runId: string) {
+  const { task, handoff, delivery } = row;
+  if (!task.completedAt || !task.identifier) return null;
+  // A reopen supersedes this delivery and a new completion gets a higher status
+  // version, so any done read at or after this version belongs to this completion,
+  // including after an owner change that advanced the version while still done.
+  const readThisCompletion = sql`exists (select 1 from ${heartbeatRunEvents} handoff_read
+    where handoff_read.company_id = ${handoff.companyId} and handoff_read.run_id = ${issueComments.createdByRunId}
+      and handoff_read.event_type = ${COMPLETED_HANDOFF_READ_EVENT} and handoff_read.payload->>'taskId' = ${task.id}
+      and (handoff_read.payload->>'statusVersion')::bigint >= ${delivery.statusVersion}
+      and handoff_read.created_at <= ${issueComments.createdAt})`;
+  const replies = await tx.select({ id: issueComments.id, body: issueComments.body }).from(issueComments).where(and(
+    eq(issueComments.companyId, handoff.companyId), eq(issueComments.issueId, handoff.conversationId),
+    eq(issueComments.authorAgentId, handoff.agentId), isNull(issueComments.deletedAt),
+    isNotNull(issueComments.createdByRunId), ne(issueComments.createdByRunId, runId),
+    gte(issueComments.createdAt, task.completedAt), readThisCompletion,
+  )).orderBy(asc(issueComments.createdAt), asc(issueComments.id)).limit(20);
+  const identifier = task.identifier.toUpperCase();
+  return replies.find(reply => extractIssueReferenceMatches(reply.body)
+    .some(match => match.identifier.toUpperCase() === identifier))?.id ?? null;
+}
+
 /** Freeze the input at turn start. New completions cannot be consumed by an already-running turn. */
 export async function prepareChatCompletionTurn(db: Db, run: Run): Promise<Run> {
   const issueId = run.contextSnapshot?.issueId;
@@ -163,20 +208,39 @@ export async function prepareChatCompletionTurn(db: Db, run: Run): Promise<Run> 
       .orderBy(asc(deliveries.createdAt)).limit(20);
     const updates: Awaited<ReturnType<typeof taskResult>>[] = [];
     const accepted: string[] = [];
+    const reported: string[] = [];
     for (const { delivery } of rows) {
       const row = await loadAudience(tx, delivery.id);
       if (!row || !current(row)) {
         await tx.update(deliveries).set({ status: "superseded" }).where(eq(deliveries.id, delivery.id));
         continue;
       }
+      const reportedBy = await earlierCompletionReply(tx, row, run.id);
+      if (reportedBy) {
+        // An earlier turn already told the person; repeating it would post the same news twice.
+        await tx.update(deliveries).set({ status: "delivered", responseCommentId: reportedBy, error: null }).where(eq(deliveries.id, delivery.id));
+        reported.push(delivery.id);
+        continue;
+      }
       accepted.push(delivery.id); updates.push(await taskResult(tx, row.task));
       await tx.update(deliveries).set({ status: "queued", targetRunId: run.id }).where(eq(deliveries.id, delivery.id));
+    }
+    if (accepted.length === 0 && reported.length > 0) {
+      const contextSnapshot = { ...run.contextSnapshot, chatCompletionDeliveryIds: [], chatCompletionAlreadyReported: reported };
+      await tx.update(heartbeatRuns).set({ contextSnapshot }).where(eq(heartbeatRuns.id, run.id));
+      return { ...run, contextSnapshot };
     }
     if (accepted.length === 0) throw new Error("chat_completion_superseded");
     const contextSnapshot = { ...run.contextSnapshot, chatCompletionDeliveryIds: accepted, chatCompletionUpdates: updates };
     await tx.update(heartbeatRuns).set({ contextSnapshot }).where(eq(heartbeatRuns.id, run.id));
     return { ...run, contextSnapshot };
   });
+}
+
+/** True when every completion this turn was woken for had already been reported. */
+export function chatCompletionAlreadyReported(run: Run) {
+  const reported = run.contextSnapshot?.chatCompletionAlreadyReported;
+  return Array.isArray(reported) && reported.length > 0 && ids(run).length === 0;
 }
 
 export function chatCompletionInstruction(context: Record<string, unknown>) {
@@ -195,11 +259,11 @@ export async function existingChatCompletionReply(tx: Connection, runId: string,
     await tx.select({ id: issues.id }).from(issues).where(and(eq(issues.id, delivery.taskId), eq(issues.companyId, run.companyId))).for("update");
     const row = await loadAudience(tx, delivery.id);
     if (!row || row.source?.id !== issueId || row.handoff.agentId !== run.agentId || !current(row)) throw new Error("chat_completion_superseded");
-    if (delivery.responseCommentId) {
-      const [comment] = await tx.select().from(issueComments).where(and(eq(issueComments.id, delivery.responseCommentId), eq(issueComments.issueId, issueId)));
+    if (row.delivery.responseCommentId) {
+      const [comment] = await tx.select().from(issueComments).where(and(eq(issueComments.id, row.delivery.responseCommentId), eq(issueComments.issueId, issueId)));
       if (comment) return comment;
     }
-    if (delivery.status !== "queued" || delivery.targetRunId !== runId) throw new Error("chat_completion_superseded");
+    if (row.delivery.status !== "queued" || row.delivery.targetRunId !== runId) throw new Error("chat_completion_superseded");
   }
   if (rows.length !== ids(run).length) throw new Error("chat_completion_superseded");
   return null;
@@ -233,17 +297,51 @@ export function chatCompletionDeliveryService(db: Db, heartbeat: { wakeup(agentI
       if (runId) {
         const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
         if (run && activeRuns.includes(run.status)) return;
-        // A published reply is acknowledged in its own transaction, independent of run outcome.
-        const [latest] = await db.select().from(deliveries).where(eq(deliveries.id, id));
-        if (!latest || !pending.includes(latest.status as typeof pending[number])) return;
-        await db.update(deliveries).set({ status: claimed.attempts + 1 >= MAX_ATTEMPTS ? "exhausted" : "pending",
-          attempts: claimed.attempts + 1, targetRunId: null, nextAttemptAt: new Date(),
-          error: run?.error ?? "Completion turn ended without a reply" })
-          .where(and(eq(deliveries.id, id), inArray(deliveries.status, [...pending])));
-        // The failed run is already terminal. Reclaim the advanced attempt now;
-        // a second lease interval would only delay restart recovery. The atomic
-        // claim and fresh wake key still serialize competing sweepers.
-        if (claimed.attempts + 1 < MAX_ATTEMPTS) await deliver(id);
+
+        const presentationDeadline = run?.runtimeMode === "native" && run.status === "succeeded" && run.finishedAt
+          ? run.finishedAt.getTime() + MAX_ATTEMPTS * LEASE_MS : null;
+        if (run && presentationDeadline !== null && Date.now() < presentationDeadline) {
+          const scope = { companyId: claimed.companyId, issueId: row.handoff.conversationId,
+            runId: run.id, agentId: row.handoff.agentId };
+          const deferred = await db.transaction(async tx => {
+
+
+            const candidates = nativeResponsePresentationCandidates(scope).as("pending_native_completion_reply");
+            const [response] = await tx.select().from(candidates);
+            if (!response || Date.now() >= presentationDeadline) return false;
+            await notifyNativeResponsePresentation(tx, scope);
+            const updated = await tx.update(deliveries).set({ nextAttemptAt: new Date(Math.min(presentationDeadline, Math.max(
+              claimed.nextAttemptAt.getTime(), response.nextAttemptAt?.getTime() ?? 0,
+            ))) }).where(and(eq(deliveries.id, id), eq(deliveries.companyId, claimed.companyId),
+              eq(deliveries.status, "queued"), eq(deliveries.targetRunId, run.id),
+              eq(deliveries.statusVersion, claimed.statusVersion), eq(deliveries.attempts, claimed.attempts),
+              eq(deliveries.nextAttemptAt, claimed.nextAttemptAt))).returning({ id: deliveries.id });
+            return updated.length > 0;
+          });
+          if (deferred) return;
+        }
+        const advanced = await db.transaction(async tx => {
+
+
+          const [task] = await tx.select({ status: issues.status }).from(issues)
+            .where(and(eq(issues.id, claimed.taskId), eq(issues.companyId, claimed.companyId))).for("update");
+          if (task?.status !== "done") return false;
+          const sameClaim = and(eq(deliveries.id, id), eq(deliveries.companyId, claimed.companyId),
+            inArray(deliveries.status, [...pending]), eq(deliveries.statusVersion, claimed.statusVersion),
+            eq(deliveries.attempts, claimed.attempts),
+            eq(deliveries.nextAttemptAt, claimed.nextAttemptAt),
+            claimed.targetRunId ? eq(deliveries.targetRunId, claimed.targetRunId) : isNull(deliveries.targetRunId));
+          const [latest] = await tx.select({ id: deliveries.id }).from(deliveries).where(sameClaim).for("update");
+          if (!latest) return false;
+          await notifyDeliveryWork(tx, DELIVERY_QUEUES.chatCompletion);
+          const updated = await tx.update(deliveries).set({ status: claimed.attempts + 1 >= MAX_ATTEMPTS ? "exhausted" : "pending",
+            attempts: claimed.attempts + 1, targetRunId: null, nextAttemptAt: new Date(),
+            error: run?.error ?? "Completion turn ended without a reply" }).where(sameClaim).returning({ id: deliveries.id });
+          return updated.length > 0;
+        });
+
+
+        if (advanced && claimed.attempts + 1 < MAX_ATTEMPTS) await deliver(id);
         return;
       }
       if (wakes.some(w => ["queued", "claimed", "deferred_issue_execution", "coalesced"].includes(w.status))) return;

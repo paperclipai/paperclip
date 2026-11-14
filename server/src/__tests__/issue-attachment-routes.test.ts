@@ -1,9 +1,8 @@
-import { Readable } from "node:stream";
-import type { IncomingMessage } from "node:http";
+import { Readable, type Stream } from "node:stream";
 import express from "express";
 import request from "supertest";
 import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
-import type { StorageService } from "../storage/types.js";
+import type { PutFileInput, StorageService } from "../storage/types.js";
 
 const mockIssueService = vi.hoisted(() => ({
   getById: vi.fn(),
@@ -68,6 +67,7 @@ function registerRouteMocks() {
       reportRunActivity: vi.fn(async () => undefined),
       getRun: vi.fn(async () => null),
       getActiveRunForAgent: vi.fn(async () => null),
+      getQueuedAssignmentRunForIssue: vi.fn(async () => null),
       cancelRun: vi.fn(async () => null),
     }),
     instanceSettingsService: () => ({
@@ -115,13 +115,7 @@ function registerRouteMocks() {
 
 type TestStorageService = StorageService & {
   __calls: {
-    putFile?: {
-      companyId: string;
-      namespace: string;
-      originalFilename?: string;
-      contentType: string;
-      body: Buffer;
-    };
+    putFile?: PutFileInput;
   };
 };
 
@@ -136,7 +130,7 @@ function createStorageService(body = Buffer.from("test")): TestStorageService {
       provider: "local_disk",
       objectKey: `${input.namespace}/${input.originalFilename ?? "upload"}`,
       contentType: input.contentType,
-      byteSize: input.body.length,
+      byteSize: "byteSize" in input ? input.byteSize : input.body.length,
       sha256: "sha256-sample",
       originalFilename: input.originalFilename,
       };
@@ -197,7 +191,7 @@ function makeAttachment(contentType: string, originalFilename: string) {
   };
 }
 
-function parseBinaryResponse(res: IncomingMessage, callback: (error: Error | null, body?: Buffer) => void) {
+function parseBinaryResponse(res: Stream, callback: (error: Error | null, body?: Buffer) => void) {
   const chunks: Buffer[] = [];
   res.on("data", (chunk) => chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)));
   res.on("end", () => callback(null, Buffer.concat(chunks)));
@@ -792,6 +786,7 @@ describe("issue attachment routes", () => {
           originalFilename: "clip.mp4",
         },
       }),
+      null,
     );
   });
 
@@ -885,6 +880,7 @@ describe("issue attachment routes", () => {
           originalFilename: "clip.webm",
         },
       }),
+      null,
     );
   });
 });

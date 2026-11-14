@@ -1,11 +1,12 @@
 import { measureRunPhase } from "../execution-preparation-timing.js";
 import { createHash } from "node:crypto";
 import { setTimeout as delay } from "node:timers/promises";
-import { environmentTaskOperationSchema, environmentTaskResultSchema, type PluginEnvironmentTaskOperation, type PluginEnvironmentTaskResult, type PluginEnvironmentTaskCredential } from "@paperclipai/plugin-sdk";
+import { environmentTaskOperationSchema, environmentTaskResultSchema, parseEnvironmentTaskResult, type PluginEnvironmentTaskOperation, type PluginEnvironmentTaskResult, type PluginEnvironmentTaskCredential } from "@paperclipai/plugin-sdk";
 import type { RunnerIngressEndpoint } from "@paperclipai/adapter-utils/runner-connectivity";
 import { RUNNER_PRP_PROTOCOL_MIN, RUNNER_PRP_PROTOCOL_MAX, type RunnerProcessHandle, type RunnerProcessLaunchSpec,
-  type DurablePrpControlPlane, type RunnerExecutionDriver, type RunnerLaunchPreparer, type DurableRecoveryIdentity } from "../../vendor/paperclip-runner/index.js";
+  type DurablePrpControlPlane, type RunnerExecutionDriver, type RunnerLaunchPreparer, type DurableRecoveryIdentity, type PrpEvent } from "../../vendor/paperclip-runner/index.js";
 import { connectRunnerPrpIngress } from "../../realtime/runner-prp-outbound.js";
+import type { NativeExecutionContext } from "./native-execution-context.js";
 
 export async function verifyPluginRunnerTaskReattachment(
   task: (operation: unknown) => Promise<unknown>, identity: unknown,
@@ -27,29 +28,47 @@ export async function verifyPluginRunnerTaskReattachment(
  * No provider pid is treated as a local pid. Only executionStopped settles it.
  */
 export function createPluginRunnerTaskOwner(input: {
-  task: (operation: unknown) => Promise<unknown>;
+  executionContext?: NativeExecutionContext;
+  taskId: string;
+  task: (operation: unknown, options?: { expectedTaskId?: string }) => Promise<unknown>;
   projectIds: readonly string[];
   harness: string;
   projectAuthCheckVersion?: 1;
   resumeFrom?: string;
   priorIdentity?: DurableRecoveryIdentity;
+  /** Current authenticated lease owner; the restored PRP identity may belong to its predecessor. */
+  authorityRunId?: string;
+  codexSourceRecoveryVersion?: 1;
   credentialIdentity?: string;
   accountIdentity?: string;
   credential?: PluginEnvironmentTaskCredential;
   onCredentials?: (credential: PluginEnvironmentTaskCredential) => Promise<void>;
+  onCredentialsUpdated?: (event: PrpEvent) => Promise<void>;
   onSessionRetained?: (state: Record<string, unknown>) => Promise<void>;
   onDispatched?: () => Promise<void> | void;
   pollMs?: number;
   warmTaskVersion?: 1;
+  releaseResumeVersion?: 1;
+  resumeLaunchInputsVersion?: 1;
+  releasedSource?: DurableRecoveryIdentity;
+  sessionHandoff?: boolean;
+  onResumed?: (identity: DurableRecoveryIdentity) => Promise<void>;
+  onRetired?: (identity: DurableRecoveryIdentity) => Promise<void>;
   githubBroker?: { url: string; token: string };
+  githubCredentialBrokerVersion?: 1;
+  configuredEnvironmentVersion?: 1;
+  configuredEnvironment?: Readonly<Record<string, string>>;
   adoptIdentity?: DurableRecoveryIdentity;
 }) {
+  const taskId = input.taskId;
+  if (!taskId) throw new Error("Plugin Runner physical task unavailable");
   const pollMs = input.pollMs ?? 500;
   let registrationGeneration = 0;
   let activeOutbound: ReturnType<typeof connectRunnerPrpIngress> | null = null;
   let preparedLaunchId: string | undefined;
   let preparedIdentity: DurableRecoveryIdentity | undefined = input.adoptIdentity;
   let launched = !!input.adoptIdentity;
+  let launchIdentity = input.adoptIdentity;
   let stopRequested = false;
   let released = false;
   let submitted = !!input.adoptIdentity;
@@ -57,25 +76,40 @@ export function createPluginRunnerTaskOwner(input: {
   let adoptionVerified = false;
   let markReady!: () => void;
   let failReady!: (error: unknown) => void;
-  let confirmStopped: (code: number) => void = () => {};
+  let confirmStopped: (code: number, error?: Error) => void = () => {};
   let stoppedState: Extract<PluginEnvironmentTaskResult, { kind: "status" }> | undefined;
   let completed = false;
+  let retiredBeforeClaim = false;
   let rejectFailure!: (error: unknown) => void;
   const failure = new Promise<never>((_resolve, reject) => { rejectFailure = reject; });
   void failure.catch(() => undefined);
   const running = new Promise<void>((resolve, reject) => { markReady = resolve; failReady = reject; });
   void running.catch(() => undefined);
   if (input.adoptIdentity) markReady();
+  const configuredEnvironmentFields = (launchesRunner: boolean) =>
+    input.configuredEnvironmentVersion === 1 && launchesRunner ? { configuredEnvironment: { ...input.configuredEnvironment } } : {};
+  let configuredEnvironmentDelivered: boolean | undefined = input.adoptIdentity ? undefined : false;
   const call = async (operation: PluginEnvironmentTaskOperation) => {
     const phase = ({ prepare: "execution.plugin_prepare", check_project_auth: "execution.plugin_project_auth",
       submit: "execution.plugin_submit", connection: "execution.plugin_connection" } as const)[operation.kind as "prepare" | "check_project_auth" | "submit" | "connection"];
-    const result = environmentTaskResultSchema.parse(await (phase
-      ? measureRunPhase(phase, () => input.task(operation)) : input.task(operation)));
-    if (result.kind !== (operation.kind === "read_file" ? "file" : operation.kind === "describe" ? "description" : operation.kind === "prepare" ? "prepared" : operation.kind === "check_project_auth" ? "project_auth" : ["read_state", "archive_state"].includes(operation.kind) ? "state" : ["status", "connection", "credentials"].includes(operation.kind) ? operation.kind : "accepted")) {
-      throw new Error("Plugin Runner returned an invalid operation result");
-    }
-    return result;
+    return parseEnvironmentTaskResult(operation, taskId, await (phase
+      ? measureRunPhase(phase, () => input.task(operation, { expectedTaskId: taskId })) : input.task(operation, { expectedTaskId: taskId })));
   };
+  let removeStartupAbort = () => {};
+  const bindStartupAbort = () => {
+    removeStartupAbort();
+    const context = input.executionContext;
+    if (!context) return;
+    const abort = () => {
+      if (input.executionContext !== context || !context.active) return;
+      stopRequested = true;
+      void call({ kind: "stop" }).catch(rejectFailure);
+    };
+    context.signal.addEventListener("abort", abort, { once: true });
+    removeStartupAbort = () => context.signal.removeEventListener("abort", abort);
+    if (context.signal.aborted) abort();
+  };
+  bindStartupAbort();
   const checkProjectAuth = async (configurationId:string) => {
     if (input.projectAuthCheckVersion !== 1) throw new Error("Plugin Runner managed project authentication validation unavailable");
     const provider = input.harness === "codex" ? "openai" : input.harness === "claude" ? "anthropic" : input.harness;
@@ -99,16 +133,21 @@ export function createPluginRunnerTaskOwner(input: {
       await authorizeRunnerAdoption(recovery.configurationId, requirements.identity);
       return recovery;
     }
-    if (input.githubBroker) {
-      const description = await call({ kind: "describe" });
-      if (description.kind !== "description" || description.githubCredentialBrokerVersion !== 1) {
-        throw new Error("Update the environment plugin to support the GitHub credential broker v1");
-      }
+    const authorityRunId = input.authorityRunId ?? input.executionContext?.execution.binding.runId;
+    const sourceRecovery = !!authorityRunId && requirements.identity.runId !== authorityRunId;
+    if (sourceRecovery && (input.codexSourceRecoveryVersion !== 1 || !input.resumeFrom || !input.priorIdentity || !input.accountIdentity ||
+        input.harness !== "codex" || input.adoptIdentity || Object.entries(input.priorIdentity).some(([key, value]) =>
+          requirements.identity[key as keyof DurableRecoveryIdentity] !== value))) {
+      throw new Error("Plugin Runner source reconciliation unavailable");
+    }
+    if (input.githubBroker && input.githubCredentialBrokerVersion !== 1) {
+      throw new Error("Update the environment plugin to support the GitHub credential broker v1");
     }
     const result = await call(environmentTaskOperationSchema.parse({ kind: "prepare", requirements,
       ...(input.githubBroker ? { githubBroker: input.githubBroker } : {}),
       projectIds: [...input.projectIds], ...(recovery ? { recovery } : {}),
-      ...(input.resumeFrom ? { resumeFrom: input.resumeFrom } : {}),
+      ...(input.resumeFrom && (!authorityRunId || !launchIdentity || launchIdentity.runId === authorityRunId || sourceRecovery)
+        ? { resumeFrom: input.resumeFrom } : {}),
       ...(input.accountIdentity ? { accountIdentity: input.accountIdentity } : {}),
       ...(launched && preparedIdentity && requirements.identity.runId !== preparedIdentity.runId
         ? { priorIdentity: preparedIdentity } : {}),
@@ -171,6 +210,7 @@ export function createPluginRunnerTaskOwner(input: {
       ...(input.credentialIdentity ? { credentialIdentity: input.credentialIdentity } : {}),
       ...(input.accountIdentity ? { accountIdentity: input.accountIdentity } : {}),
       ...(input.credential ? { credential: input.credential } : {}),
+      ...configuredEnvironmentFields(true),
       runner: { protocolMin: RUNNER_PRP_PROTOCOL_MIN, protocolMax: RUNNER_PRP_PROTOCOL_MAX,
         harness: input.harness,
         runnerId: native.identity.runnerInstanceId, leaseId: native.identity.environmentLeaseId,
@@ -182,7 +222,9 @@ export function createPluginRunnerTaskOwner(input: {
         reconnectGraceMs: native.reconnectGraceMs, lifecyclePolicy: native.lifecyclePolicy,
       },
     });
+    launchIdentity = native.identity;
     launched = true;
+    configuredEnvironmentDelivered = "configuredEnvironment" in operation;
     const child: RunnerProcessHandle["child"] = { exitCode: null, signalCode: null,
       kill: () => {
         stopRequested = true;
@@ -190,11 +232,11 @@ export function createPluginRunnerTaskOwner(input: {
         return true;
       } };
     const completion = new Promise<Awaited<RunnerProcessHandle["completion"]>>(resolve => {
-      confirmStopped = code => {
+      confirmStopped = (code, error) => {
         if (child.exitCode !== null) return;
         child.exitCode = code;
-        failReady(new Error("Plugin Runner stopped before connection"));
-        resolve({ code, signal: null, stdout: "", stderr: "" });
+        failReady(error ?? new Error("Plugin Runner stopped before connection"));
+        resolve({ code, signal: null, stdout: "", stderr: error?.message ?? "" });
       };
     });
     void (async () => {
@@ -213,9 +255,17 @@ export function createPluginRunnerTaskOwner(input: {
         return;
       }
       submitted = true;
-      try { await call(operation); } catch {
+      const result = await call(operation).catch(async () => {
         // Submission can have succeeded remotely. Inspect the same saved task.
         await readStatus();
+      });
+      if (result?.kind === "admission_rejected") {
+        submitted = false;
+        removeStartupAbort();
+        const error = new Error(`runner_task_admission_rejected: ${result.reason}`);
+        rejectFailure(error);
+        confirmStopped(1, error);
+        return;
       }
       let stopSent = false;
       while (child.exitCode === null) {
@@ -238,7 +288,8 @@ export function createPluginRunnerTaskOwner(input: {
     });
     return { child, completion, restart: null };
   };
-  const registration = async (authority: DurablePrpControlPlane, runId: string, signal?: AbortSignal) => {
+  const registration = async (authority: DurablePrpControlPlane, runId: string, signal?: AbortSignal, expectedIdentity?: DurableRecoveryIdentity) => {
+    const desired = expectedIdentity ? structuredClone(expectedIdentity) : undefined;
     const generation = ++registrationGeneration;
     let registrationReleased = false;
     let outbound: ReturnType<typeof connectRunnerPrpIngress> | null = null;
@@ -254,7 +305,15 @@ export function createPluginRunnerTaskOwner(input: {
       activate: () => {
         activation = (async () => {
           if (input.adoptIdentity) {
-            await verifyPluginRunnerTaskReattachment(input.task, input.adoptIdentity);
+            if (!desired || runId === input.adoptIdentity.runId) {
+              if (desired && Object.entries(input.adoptIdentity).some(([key, value]) => desired[key as keyof DurableRecoveryIdentity] !== value)) {
+                throw new Error("Plugin Runner adoption identity mismatch");
+              }
+              await verifyPluginRunnerTaskReattachment(input.task, input.adoptIdentity);
+            } else if (!preparedIdentity || Object.entries(preparedIdentity).some(([key, value]) => desired[key as keyof DurableRecoveryIdentity] !== value)
+              || ["runnerInstanceId", "environmentLeaseId", "normalizedSessionId"].some(key => desired[key as keyof DurableRecoveryIdentity] !== input.adoptIdentity![key as keyof DurableRecoveryIdentity])) {
+              throw new Error("Plugin Runner adoption identity mismatch");
+            }
           } else await running;
           if (registrationReleased || signal?.aborted) throw new Error("Plugin Runner startup cancelled");
           const ingress = await endpoint();
@@ -288,8 +347,12 @@ export function createPluginRunnerTaskOwner(input: {
         if (submitted) {
           await call({ kind: "complete" });
           completed = true;
+          const identity = preparedIdentity ?? launchIdentity ?? input.priorIdentity;
+          if (identity) await input.onRetired?.(identity);
         }
       },
+      // The Runner is about to exit (its close suspend completed), as on release.
+      quiesce: () => { outbound?.quiesce(); },
       release: async (reason?: "detach") => {
         registrationReleased = true;
         if (generation === registrationGeneration) released = true;
@@ -300,6 +363,27 @@ export function createPluginRunnerTaskOwner(input: {
     };
   };
   const driver: RunnerExecutionDriver = {
+    get releaseResume() {
+      if (input.releaseResumeVersion !== 1 || input.warmTaskVersion !== 1 || !input.accountIdentity) return undefined;
+      return {
+        releasedSource: input.releasedSource,
+        release: async (identity: DurableRecoveryIdentity) => {
+          requireReleaseResume();
+          const outbound = activeOutbound;
+          outbound?.quiesce();
+          await release(identity);
+          await outbound?.close();
+          if (activeOutbound === outbound) activeOutbound = null;
+        },
+        resume: async (identity: DurableRecoveryIdentity, ticket: string) => {
+          const outcome = await resume(identity, ticket);
+          if (outcome === "resumed") await input.onResumed?.(identity);
+          return outcome;
+        },
+      };
+    },
+    get authorityRunId() { return input.authorityRunId ?? input.executionContext?.execution.binding.runId; },
+    get codexSourceRecoveryVersion() { return input.codexSourceRecoveryVersion; },
     prepareLaunch, authorizeRunnerAdoption, readRunnerState, runnerProcessLauncher: launcher,
     // The provider resolves the authorized retained task before each state operation.
     prepareExternalRunnerState: async () => {},
@@ -309,7 +393,7 @@ export function createPluginRunnerTaskOwner(input: {
       if (result.kind !== "state") throw new Error("Plugin Runner archived state unavailable");
       return result.state;
     },
-    controlPlaneRegistration: (authority, identity, signal) => registration(authority, identity?.runId ?? "", signal),
+    controlPlaneRegistration: (authority, identity, signal) => registration(authority, identity?.runId ?? "", signal, identity),
     ...(input.adoptIdentity ? { adoptExistingRunner: {
       // Provider ownership is attested by Launcher, never by a controller-local PID.
       pid: null, processGroupId: null, startedAt: null,
@@ -331,16 +415,73 @@ export function createPluginRunnerTaskOwner(input: {
         createHash("sha256").update(bytes).digest("hex") !== result.sha256) throw new Error("Plugin Runner file integrity check failed");
     return bytes;
   };
-  return { launcher, registration, driver, readWorkspaceFile,
+  const requireReleaseResume = () => {
+    if (released || stopRequested || detached) throw new Error("Plugin Runner lifecycle operation cancelled");
+    if (input.releaseResumeVersion !== 1 || input.warmTaskVersion !== 1 || !input.accountIdentity) {
+      throw new Error("Plugin Runner release/resume unavailable");
+    }
+  };
+  // The caller owns settlement, connection quieting and exact-ticket retries.
+  const release = async (identity: DurableRecoveryIdentity): Promise<void> => {
+    requireReleaseResume();
+    await call(environmentTaskOperationSchema.parse({ kind: "release", identity }));
+    requireReleaseResume();
+  };
+  const resume = async (identity: DurableRecoveryIdentity, bootstrapTicket: string): Promise<"resumed" | "unavailable"> => {
+    requireReleaseResume();
+    const handoffCredential = input.sessionHandoff && input.credential?.type === "claude-env"
+      ? { accountIdentity: input.accountIdentity, environment: input.credential.environment }
+      : undefined;
+    const launchInputs = input.resumeLaunchInputsVersion === 1;
+    const result = await call(environmentTaskOperationSchema.parse({ kind: "resume", identity, bootstrapTicket,
+      ...(handoffCredential ? { handoffCredential } : {}),
+      ...(launchInputs && input.credential ? { credential: input.credential } : {}),
+      ...configuredEnvironmentFields(!!input.sessionHandoff || launchInputs),
+    }));
+    requireReleaseResume();
+    if (result.kind !== "resume") throw new Error("Plugin Runner resume result unavailable");
+    if (result.outcome === "resumed" && input.sessionHandoff) configuredEnvironmentDelivered = input.configuredEnvironmentVersion === 1;
+    if (result.outcome === "unavailable") {
+      const state = await call({ kind: "status" }).catch(() => undefined);
+      retiredBeforeClaim = state?.kind === "status" && state.executionStopped === true && state.sessionStateAvailable === true;
+    }
+    return result.outcome;
+  };
+  // A successor that discards this owner's session must not inherit its
+  // failed close. Repeat the unsettled checkpoint's task obligations: confirmed
+  // stop (sent once), credential handoff, then completion. Never reads state.
+  const retireSupersededTask = async () => {
+    if (!submitted || detached) return false;
+    if (!completed) {
+      stopRequested = true;
+      if (stoppedState?.executionStopped !== true) await stopAndConfirm();
+      if (input.accountIdentity && input.onCredentials) {
+        const snapshot = await call({ kind: "credentials", accountIdentity: input.accountIdentity });
+        if (snapshot.kind !== "credentials") throw new Error("Plugin Runner credential snapshot unavailable");
+        if (snapshot.credential !== null) await input.onCredentials(snapshot.credential);
+      }
+      await call({ kind: "complete" });
+      completed = true;
+      const identity = preparedIdentity ?? launchIdentity ?? input.priorIdentity;
+      if (identity) await input.onRetired?.(identity);
+    }
+    return stoppedState?.executionStopped === true && completed && !detached;
+  };
+  return { launcher, registration, driver, readWorkspaceFile, release, resume, retireSupersededTask,
+    // A warm transport outlives its first lease and invocation's private home.
+    credentialsUpdated: async (event: PrpEvent) => { await input.onCredentialsUpdated?.(event); },
     // This is a lease-bound Launcher receipt, not a terminal phase or a sent
     // stop request. Completion also proves credential/writeback obligations ran.
     isRetired: () => stoppedState?.executionStopped === true && completed && !detached,
+    retiredBeforeClaim: () => retiredBeforeClaim,
+    configuredEnvironmentDelivered: () => configuredEnvironmentDelivered,
     rebind(next: typeof input) {
-      if (!launched || stopRequested || stoppedState || detached || next.harness !== input.harness ||
+      if (!launched || stopRequested || stoppedState || detached || next.taskId !== taskId || next.harness !== input.harness ||
           input.accountIdentity !== next.accountIdentity || input.credentialIdentity !== next.credentialIdentity ||
           JSON.stringify(input.projectIds) !== JSON.stringify(next.projectIds)) throw new Error("Plugin warm task cannot be rebound");
       input = next;
       released = false;
+      bindStartupAbort();
     },
   };
 

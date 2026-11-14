@@ -116,6 +116,7 @@ export const costAdjustments = pgTable("cost_adjustments", {
   correctedCents: numeric("corrected_cents", { precision: 24, scale: 7 }).notNull(),
   previousStatus: text("previous_status").notNull(),
   previousPricing: jsonb("previous_pricing").$type<Record<string, unknown>>().notNull().default({}),
+  previousUsageJson: jsonb("previous_usage_json").$type<Record<string, unknown>>(),
   reason: text("reason").notNull(),
   actorId: text("actor_id").notNull(),
   pricing: jsonb("pricing").$type<Record<string, unknown>>().notNull().default({}),

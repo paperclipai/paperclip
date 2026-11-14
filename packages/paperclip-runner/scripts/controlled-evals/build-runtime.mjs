@@ -10,7 +10,7 @@ const source = dirname(fileURLToPath(import.meta.url));
 const repository = resolve(source, '../../../..');
 const require = createRequire(join(repository, 'server/package.json'));
 const sha256 = bytes => createHash('sha256').update(bytes).digest('hex');
-const scripts = ['hosted.mjs', 'entrypoint.mjs', 'evidence-files.mjs', 'archive.mjs', 'manifest.mjs', 'observability.mjs', 'report.mjs', 'run.mjs', 'verify-runtime.mjs'];
+const scripts = ['hosted.mjs', 'hosted-defaults.json', 'entrypoint.mjs', 'evidence-files.mjs', 'archive.mjs', 'manifest.mjs', 'observability.mjs', 'report.mjs', 'run.mjs', 'verify-runtime.mjs'];
 
 export async function buildControllerRuntime({ outputDirectory, sourceRevision }) {
   if (!/^[a-f0-9]{40}$/.test(sourceRevision)) throw new Error('Controller runtime requires an exact source revision');

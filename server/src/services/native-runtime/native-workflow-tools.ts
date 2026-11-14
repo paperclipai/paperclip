@@ -2,7 +2,8 @@ import { createHash } from "node:crypto";
 import { z } from "zod";
 import { createWorkflowSchema, updateWorkflowSchema, listWorkflowsSchema, readWorkflowQuerySchema } from "@paperclipai/shared";
 import type { Db } from "@paperclipai/db";
-import { forbidden, badRequest } from "../../errors.js";
+import { badRequest } from "../../errors.js";
+import { casesDisabledError } from "../cases-disabled.js";
 import { requireCasesEnabled } from "../workflows.js";
 import { runnerApiCallSchema, type RunnerApiCall } from "./runner-api-client.js";
 
@@ -20,7 +21,7 @@ export async function executeNativeWorkflowTool(input: {
   db: Db; binding: { companyId: string; casesEnabled?: boolean }; tool: string; arguments: unknown;
   callApi: (receiptKey: string, request: RunnerApiCall) => Promise<unknown>;
 }) {
-  if (input.binding.casesEnabled !== true) throw forbidden("Cases are disabled");
+  if (input.binding.casesEnabled !== true) throw casesDisabledError({ inlineRemediation: true });
   await requireCasesEnabled(input.db);
   const schema = schemas[input.tool as keyof typeof schemas];
   if (!schema) throw badRequest("Unknown workflow operation");

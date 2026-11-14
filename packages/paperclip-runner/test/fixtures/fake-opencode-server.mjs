@@ -160,17 +160,23 @@ function emitFrame(value) {
   for (const response of clients) response.write(frame);
 }
 
+let retainedCompletionContract;
 function parsedPromptText(promptBody) {
   const text = promptBody.parts?.[0]?.text ?? "";
   try {
-    return JSON.parse(text);
+    const prompt = JSON.parse(text);
+    retainedCompletionContract = prompt.completionContract ?? prompt.task?.completionContract ?? retainedCompletionContract;
+    return prompt;
   } catch {
-    return { message: text };
+    // Ordinary follow-ups contain only the new message. The real provider
+    // retains its task contract in conversation history across these turns.
+    return { message: text, completionContract: retainedCompletionContract };
   }
 }
 
-async function mcpRequest(method, params) {
+async function mcpRequest(method, params, signal) {
   const response = await fetch(mcp.url, {
+    signal: signal ?? AbortSignal.timeout(mcp.timeout),
     method: "POST",
     headers: {
       ...mcp.headers,
@@ -185,6 +191,31 @@ async function mcpRequest(method, params) {
     }),
   });
   return response.json();
+}
+
+let mcpStatus = null;
+async function connectPaperclipMcp() {
+  const failuresPath = join(process.env.XDG_DATA_HOME, "fake-mcp-connect-failures");
+  const failures = (await readFile(failuresPath, "utf8").catch(() => "")).trim();
+  await appendFile(join(process.env.XDG_DATA_HOME, "fake-mcp-connects.log"), "connect\n");
+  if (failures === "always" || Number(failures) > 0) {
+    if (failures !== "always") await writeFile(failuresPath, String(Number(failures) - 1));
+    mcpStatus = { status: "failed", error: "Failed to get tools" };
+    return;
+  }
+  try {
+    await mcpRequest("initialize", {
+      protocolVersion: "2025-03-26",
+      capabilities: {},
+      clientInfo: { name: "fake-opencode", version: "1" },
+    });
+    const listed = await mcpRequest("tools/list");
+    mcpStatus = Array.isArray(listed.result?.tools)
+      ? { status: "connected" }
+      : { status: "failed", error: "Failed to get tools" };
+  } catch (error) {
+    mcpStatus = { status: "failed", error: String(error) };
+  }
 }
 
 async function callFirstPaperclipTool() {
@@ -214,7 +245,7 @@ async function callFirstPaperclipTool() {
   );
 }
 
-async function callTerminalTool(promptBody) {
+async function callTerminalTool(promptBody, signal) {
   const prompt = parsedPromptText(promptBody);
   const blocked = String(prompt.message ?? "").includes("block-result");
   const monitored = String(prompt.message ?? "").includes("monitor-default");
@@ -269,13 +300,31 @@ async function callTerminalTool(promptBody) {
     const rejected = await mcpRequest("tools/call", { name: "paperclip_finish", arguments: bad });
     await writeFile(join(process.env.XDG_DATA_HOME, "fake-criteria-repair.json"), JSON.stringify(rejected));
   }
+  if (String(prompt.message ?? "").includes("repair-revision")) {
+    const stale = structuredClone(result);
+    stale.completionClaim.contractRevision = "stale-revision";
+    const rejected = await mcpRequest("tools/call", { name: "paperclip_finish", arguments: stale });
+    await writeFile(join(process.env.XDG_DATA_HOME, "fake-revision-repair.json"), JSON.stringify(rejected));
+  }
   const call = () => mcpRequest("tools/call", {
     name: blocked ? "paperclip_block" : "paperclip_finish",
     arguments: result,
-  });
+  }, signal);
   const first = await call();
   if (String(prompt.message ?? prompt.task?.prompt ?? "").includes("completion-feedback")) {
     const outcomes = [first];
+    if (first.result?.isError && String(prompt.message ?? prompt.task?.prompt ?? "").includes("current-wake-completion-feedback")) {
+      let cursor;
+      for (let pageIndex = 0; pageIndex < 8; pageIndex++) {
+        const response = await mcpRequest("tools/call", {
+          name: "paperclip_read_current_wake_comments", arguments: { cursor },
+        });
+        if (response.result?.isError) throw new Error("Current-wake fixture reader was rejected");
+        const page = JSON.parse(response.result.content[0].text);
+        if (page.complete) break;
+        cursor = page.nextCursor;
+      }
+    }
     if (first.result?.isError) outcomes.push(await call());
     await writeFile(join(process.env.XDG_DATA_HOME, "fake-completion-feedback.json"), JSON.stringify(outcomes));
     return outcomes.at(-1);
@@ -304,6 +353,15 @@ const server = createServer(async (request, response) => {
     clients.add(response);
     request.on("close", () => clients.delete(response));
     return;
+  }
+  if (request.method === "GET" && request.url === "/mcp") {
+    if (mcp?.url && mcpStatus === null) await connectPaperclipMcp();
+    return json(response, 200, mcp?.url ? { paperclip: mcpStatus } : {});
+  }
+  if (request.method === "POST" && request.url === "/mcp/paperclip/connect") {
+    if (!mcp?.url) return json(response, 404, { error: "not found" });
+    await connectPaperclipMcp();
+    return json(response, 200, true);
   }
   if (request.method === "POST" && request.url === "/session")
     return json(response, 200, session);
@@ -476,8 +534,78 @@ const server = createServer(async (request, response) => {
         }
       }
       setTimeout(async () => {
-        await callFirstPaperclipTool();
         const parsedPrompt = parsedPromptText(promptPayload);
+        if (String(parsedPrompt.message ?? parsedPrompt.task?.prompt ?? "").includes("configured-environment-output")) {
+          const output = await new Promise((resolve, reject) => {
+            execFile("/bin/sh", ["-c", 'printf "%s" "$PROBE_SECRET"'], { timeout: 5000 }, (error, stdout) => {
+              if (error) reject(error); else resolve(stdout);
+            });
+          });
+          const messageID = "message-configured-binding-output";
+          emit({ type: "message.updated", properties: { sessionID: session.id, info: { id: messageID, role: "assistant" } } });
+          emit({ type: "message.part.updated", properties: { sessionID: session.id, part: {
+            id: "part-configured-binding-output", messageID, type: "tool", tool: "bash",
+            state: { status: "completed", output },
+          } } });
+          await callTerminalTool(promptPayload);
+          emit({ type: "session.idle", properties: { sessionID: session.id } });
+          return;
+        }
+        const backlogTool = String(parsedPrompt.message ?? parsedPrompt.task?.prompt ?? "").match(/stream-backlog-(discovery|completion|durable)/)?.[1];
+        if (backlogTool) {
+          const messageID = "message-stream-backlog";
+          const partID = "part-stream-backlog";
+          emit({ type: "message.updated", properties: { sessionID: session.id, info: { id: messageID, sessionID: session.id, role: "assistant" } } });
+          emit({ type: "message.part.updated", properties: { sessionID: session.id, part: { id: partID, messageID, sessionID: session.id, type: "text", text: "" } } });
+          for (let i = 0; i < 800; i++) emit({ type: "message.part.delta", properties: {
+            sessionID: session.id, messageID, partID, field: "text", delta: "Streaming progress. ",
+          } });
+          let receipt;
+          try {
+            const result = backlogTool === "completion"
+              ? await callTerminalTool(promptPayload, AbortSignal.timeout(5000))
+              : await mcpRequest("tools/call", { name: "paperclip_search_assigned_tools", arguments: {} },
+                backlogTool === "durable" ? undefined : AbortSignal.timeout(5000));
+            receipt = { acknowledged: result.result?.isError !== true && !!result.result, result };
+          } catch (error) {
+            receipt = { acknowledged: false, timedOut: error.name === "TimeoutError" };
+          }
+          await writeFile(join(process.cwd(), "fake-stream-backlog-receipt.json"), JSON.stringify(receipt));
+          if (backlogTool !== "completion" && receipt.acknowledged) await callTerminalTool(promptPayload);
+          emit({ type: "session.idle", properties: { sessionID: session.id } });
+          return;
+        }
+        if (String(parsedPrompt.message ?? "").includes("oversized-schema-rejection")) {
+          const receipt = await mcpRequest("tools/call", {
+            name: "paperclip_large_call", arguments: Array(12_000).fill(0),
+          });
+          await writeFile(join(process.cwd(), "fake-large-rejection-receipt.json"), JSON.stringify(receipt));
+          await callTerminalTool(promptPayload);
+          emit({ type: "session.idle", properties: { sessionID: session.id } });
+          return;
+        }
+        if (String(parsedPrompt.message ?? parsedPrompt.task?.prompt ?? "").includes("argument-diagnostics")) {
+          const receipts = [await mcpRequest("tools/call", {
+            name: "paperclip_paperclip_call_assigned_tool", arguments: [],
+          })];
+          for (const name of [42, "benign-operation"]) {
+            receipts.push(await mcpRequest("tools/call", {
+              name: "paperclip_paperclip_call_assigned_tool",
+              arguments: { name, arguments: { token: "private-argument-canary" }, "private-key-canary": "private-value-canary" },
+            }));
+          }
+          emit({ type: "message.updated", id: "diagnostic-message-event", properties: { sessionID: session.id,
+            info: { id: "diagnostic-message", sessionID: session.id, role: "assistant" } } });
+          emit({ type: "message.part.updated", id: "diagnostic-part-event", properties: { sessionID: session.id,
+            part: { id: "diagnostic-provider-row", messageID: "diagnostic-message", sessionID: session.id,
+              type: "tool", tool: "paperclip_paperclip_call_assigned_tool",
+              callID: "unrelated-provider-call", state: { status: "completed", output: "provider-receipt" } } } });
+          await writeFile(join(process.cwd(), "fake-diagnostic-receipts.json"), JSON.stringify(receipts));
+          await callTerminalTool(promptPayload);
+          emit({ type: "session.idle", properties: { sessionID: session.id } });
+          return;
+        }
+        if (!String(parsedPrompt.message ?? parsedPrompt.task?.prompt ?? "").includes("current-wake-completion-feedback")) await callFirstPaperclipTool();
         if (String(parsedPrompt.message ?? "").includes("managed-github-operation")) {
           const result = await new Promise(resolve => {
             execFile("gh", ["api", "user"], { timeout: 5000 }, (error, stdout, stderr) => {
@@ -669,9 +797,55 @@ const server = createServer(async (request, response) => {
         const correlatedFinal = String(parsedPrompt.message ?? "").includes(
           "correlated-final-message",
         );
+        const answerBeforeFinishThenReference = String(
+          parsedPrompt.message ?? "",
+        ).includes("answer-before-finish-then-reference");
+        const answerBeforeFinishThenRestatement = String(
+          parsedPrompt.message ?? "",
+        ).includes("answer-before-finish-then-restatement");
+        // Recorded in chat-eval cohort 5: a rewritten answer after the call
+        // (recovery.explain-stall) and a status note before it
+        // (status-cards.refresh-card).
+        const answerBeforeFinishThenRewrite = String(parsedPrompt.message ?? "").includes("answer-before-finish-then-rewrite");
+        const statusBeforeFinishThenAnswer = String(parsedPrompt.message ?? "").includes("status-before-finish-then-answer");
+        const shortAnswerBeforeFinishThenReference = String(parsedPrompt.message ?? "").includes("short-answer-before-finish-then-reference");
+        const shortStatusBeforeFinishThenShortAnswer = String(parsedPrompt.message ?? "").includes("short-status-before-finish-then-short-answer");
+        const shortAnswerRepeatedAfterFinish = String(parsedPrompt.message ?? "").includes("short-answer-repeated-after-finish");
+        const longAnswerBeforeFinishThenDone = String(parsedPrompt.message ?? "").includes("long-answer-before-finish-then-done");
+        const answerBeforeFinishText = longAnswerBeforeFinishThenDone
+          ? "Morgan's run on [COM-1](/COM/issues/COM-1) finished: the landing page is saved as `index.html` on the task, with the hero, features and signup sections from the brief."
+          : shortAnswerBeforeFinishThenReference || shortAnswerRepeatedAfterFinish
+          ? "The result is 42."
+          : shortStatusBeforeFinishThenShortAnswer
+          ? "STATUS: Status card summary written successfully (revision 2)."
+          : answerBeforeFinishThenRewrite
+          ? "Work on [COM-1 Website task](/COM/issues/COM-1) stopped at 06:57 UTC, about 90 seconds after starting: its run's local runner process exited unexpectedly (`runnerd exited unexpectedly`), all 3 automatic recovery attempts were exhausted, and Paperclip marked the task **blocked** with cause `native_session_retry_exhausted`. The human-supplied website brief had also not arrived, so no brief document was saved.\n\nThe assignee, [Morgan the frontend engineer](/COM/agents/agent-morgan), is showing an error status. To resume, open COM-1 and use **Retry** on that task; it will recheck gates and preserve the failed attempt's evidence. Agents cannot retry it for you."
+          : statusBeforeFinishThenAnswer
+          ? "STATUS: Status card summary written successfully (revision 2)."
+          : answerBeforeFinishThenRestatement
+          ? "I can't set this from chat — changing an agent's monthly budget is a board-only action (agent credentials get 403). There are also two matching agents, so pick the intended one in the web app and set its monthly limit to $50 on the budget tab: [Morgan budgets](/COM/agents/agent-morgan/budgets) or [Morgan Research budgets](/COM/agents/agent-morgan-research/budgets). Tell me which Morgan you meant and I'll track the right one."
+          : "Two inbox items need you: [COM-2](/COM/issues/COM-2) is blocked and [COM-1](/COM/issues/COM-1) is waiting for review.";
+        const answerAfterFinishText = longAnswerBeforeFinishThenDone
+          ? "Done."
+          : shortAnswerBeforeFinishThenReference
+          ? "Answered above."
+          : shortAnswerRepeatedAfterFinish
+          ? "The result is 42."
+          : shortStatusBeforeFinishThenShortAnswer
+          ? "Updated the Launch blockers status card."
+          : answerBeforeFinishThenRewrite
+          ? "Work on [COM-1 Website task](/COM/issues/COM-1) stopped at 06:57 UTC, about 90 seconds after starting: its run's local runner process exited unexpectedly (`runnerd exited unexpectedly`), all 3 automatic recovery attempts were exhausted, and Paperclip marked the task **blocked** with cause `native_session_retry_exhausted`. The human-supplied website brief had also not arrived, so no brief was saved.\n\n[The assigned agent, Morgan,](https://example.invalid) is in an error state. To resume, open COM-1 and use **Retry** on that task; it rechecks gates and preserves the failed attempt's evidence. Agents cannot retry it for you."
+          : statusBeforeFinishThenAnswer
+          ? "Updated the [Launch blockers status card](/COM/status/status-card-launch) with current Synthetic Launch Notes verification.\n\n- **COM-1 \u2014 Mobile Safari checkout regression blocks launch** \u2014 `blocked`\n- Payment approval is now recorded as received; the mobile Safari checkout regression remains the blocker.\n- Only COM-1 appears in the bounded changed-issue set; no other Launch blockers were added."
+          : answerBeforeFinishThenRestatement
+          ? "I can't change agent budgets from chat — that's board-only, and agent credentials get 403. Two agents also match \"Morgan,\" so choose the intended one and set $50/month on its budget tab: [Morgan budgets](/COM/agents/agent-morgan/budgets) or [Morgan Research budgets](/COM/agents/agent-morgan-research/budgets)."
+          : "Answered above: two inbox items need your attention.";
         const finalAfterToolCommentary = String(
           parsedPrompt.message ?? "",
         ).includes("final-after-tool-commentary");
+        const outputLimitAfterTool = String(
+          parsedPrompt.message ?? "",
+        ).includes("output-limit-after-tool");
         const commentaryOnlyBeforeWork = String(
           parsedPrompt.message ?? "",
         ).includes("commentary-only-before-work");
@@ -764,6 +938,53 @@ const server = createServer(async (request, response) => {
             },
           });
           await callTerminalTool(promptPayload);
+        } else if (outputLimitAfterTool) {
+          await callTerminalTool(promptPayload);
+          emit({
+            type: "message.part.updated",
+            id: "event-limit-tool-part",
+            properties: {
+              sessionID: session.id,
+              part: {
+                id: "part-limit-tool",
+                messageID: "message-assistant",
+                type: "tool",
+                tool: "paperclip_paperclip_finish",
+                state: { status: "completed", output: "accepted" },
+              },
+            },
+          });
+          emit({
+            type: "message.updated",
+            id: "event-limit-message",
+            properties: {
+              sessionID: session.id,
+              info: { id: "message-limit", sessionID: session.id, role: "assistant" },
+            },
+          });
+          emit({
+            type: "message.part.updated",
+            id: "event-limit-text",
+            properties: {
+              sessionID: session.id,
+              part: {
+                id: "part-limit-text",
+                messageID: "message-limit",
+                type: "text",
+                text: `E2E_${"QUIP_".repeat(400)}`,
+                time: { start: 3, end: 4 },
+              },
+            },
+          });
+          emit({
+            type: "message.updated",
+            id: "event-limit-message-finished",
+            properties: {
+              sessionID: session.id,
+              info: { id: "message-limit", sessionID: session.id, role: "assistant",
+                finish: "length", time: { completed: 5 } },
+            },
+          });
         } else if (finalAfterToolCommentary) {
           emit({
             type: "message.part.updated",
@@ -816,6 +1037,62 @@ const server = createServer(async (request, response) => {
                 messageID: "message-post-tool-final",
                 type: "text",
                 text: "This is the complete substantive answer emitted after the accepted completion tool call.",
+                time: { start: 3, end: 4 },
+              },
+            },
+          });
+        } else if (answerBeforeFinishThenReference || answerBeforeFinishThenRestatement || answerBeforeFinishThenRewrite || statusBeforeFinishThenAnswer || shortStatusBeforeFinishThenShortAnswer || shortAnswerRepeatedAfterFinish || longAnswerBeforeFinishThenDone) {
+          emit({
+            type: "message.part.updated",
+            id: "event-answer-before-finish",
+            properties: {
+              sessionID: session.id,
+              part: {
+                id: "part-answer-before-finish",
+                messageID: "message-assistant",
+                type: "text",
+                text: answerBeforeFinishText,
+                time: { start: 1, end: 2 },
+              },
+            },
+          });
+          await callTerminalTool(promptPayload);
+          emit({
+            type: "message.part.updated",
+            id: "event-answer-finish-part",
+            properties: {
+              sessionID: session.id,
+              part: {
+                id: "part-answer-finish",
+                messageID: "message-assistant",
+                type: "tool",
+                tool: "paperclip_paperclip_finish",
+                state: { status: "completed", output: "accepted" },
+              },
+            },
+          });
+          emit({
+            type: "message.updated",
+            id: "event-reference-message",
+            properties: {
+              sessionID: session.id,
+              info: {
+                id: "message-reference",
+                sessionID: session.id,
+                role: "assistant",
+              },
+            },
+          });
+          emit({
+            type: "message.part.updated",
+            id: "event-reference",
+            properties: {
+              sessionID: session.id,
+              part: {
+                id: "part-reference",
+                messageID: "message-reference",
+                type: "text",
+                text: answerAfterFinishText,
                 time: { start: 3, end: 4 },
               },
             },
@@ -1008,4 +1285,4 @@ const server = createServer(async (request, response) => {
 
 server.listen(port, "127.0.0.1");
 for (const signal of ["SIGTERM", "SIGINT"])
-  process.on(signal, () => server.close(() => process.exit(0)));
+  process.on(signal, () => { server.close(() => process.exit(0)); server.closeAllConnections(); });

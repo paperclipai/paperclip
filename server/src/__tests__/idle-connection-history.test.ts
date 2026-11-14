@@ -33,7 +33,7 @@ if (!support.supported) console.warn(`Skipping connection-history database tests
   async function delivery(f: Awaited<ReturnType<typeof seed>>, deliveredAt: Date | null = new Date(now)) {
     const [card] = await db.insert(issueThreadInteractions).values({ companyId: f.companyId, issueId: f.issueId,
       kind: "connection_intent", status: "expired", resolvedAt: new Date(now), sourceRunId: f.runId,
-      payload: { requestingAgentId: f.agentId }, result: { version: 1, outcome: "expired", connectionId: randomUUID() } }).returning();
+      payload: { version: 1, serviceSlug: "fixture-service", serviceName: "Fixture service", requestingAgentId: f.agentId, requestingAgentName: "Idle owner", phase: "requested" }, result: { version: 1, outcome: "expired", connectionId: randomUUID() } }).returning();
     const [outbox] = await db.insert(connectionIntentDeliveries).values({ companyId: f.companyId, interactionId: card!.id, deliveredAt }).returning();
     return { card: card!, outbox: outbox! };
   }
@@ -72,7 +72,7 @@ if (!support.supported) console.warn(`Skipping connection-history database tests
   it("parks an undelivered system retirement behind its still-pending response without marking delivery complete", async () => {
     const f = await seed("in_review"); const d = await delivery(f, null);
     const [question] = await db.insert(issueThreadInteractions).values({ companyId: f.companyId, issueId: f.issueId, kind: "ask_user_questions", status: "pending",
-      effectiveResolverPolicy: "human_only", sourceRunId: f.runId, payload: {} }).returning();
+      effectiveResolverPolicy: "human_only", sourceRunId: f.runId, payload: { version: 1, questions: [] } }).returning();
     expect(await read()).toEqual(none);
     const worker = connectionIntentDeliveryService(db, { wakeup: async () => null });
     expect(await worker.hasPending()).toBe(false);

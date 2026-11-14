@@ -65,6 +65,7 @@ function githubConnectionHealth() {
     discovery: {} as never,
     setupPolicy: { assertConnectorConnectionSetupEnabled: async () => undefined } as never,
     resolveCredentialHeaders: vi.fn() as never,
+    vaultGrantForConnection: vi.fn() as never,
     refreshManagedGitHubGrantAccess: (async () => {
       await loadGitHubGrantMetadata("ghu_secret", suspendedGitHub);
     }) as never,

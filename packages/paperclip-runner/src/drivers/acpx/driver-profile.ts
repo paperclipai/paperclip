@@ -51,6 +51,8 @@ export function acpxCapabilities(
     typedEventFamilies: providerFamilyCapabilities({
       plan: profile.plans === "semantic-only" ? "unsupported" : "available",
       tool_execution: "available",
+      // Claude Agent/Task calls map to delegation with nested child tools.
+      ...(agent === "claude" ? { delegation: "available" as const } : {}),
       model_identity: "available",
       review: agent === "grok" ? "unsupported" : "available",
       provider_notice: agent === "grok" ? "unsupported" : "available",

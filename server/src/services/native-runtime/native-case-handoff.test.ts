@@ -84,7 +84,7 @@ describe("native persisted case handoff runtime", () => {
     expect(await isCaseHandoffSourceReleased(db, f.input)).toBe(false);
     const exited = once(child, "exit"); child.kill("SIGTERM"); await exited;
     const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.runId));
-    expect(await recordNativeLocalProcessStop(db, run!)).toBe(true);
+    expect(await db.transaction(tx => recordNativeLocalProcessStop(tx as unknown as typeof db, run!))).toBe(true);
     // A new worker has no process-local state and reconstructs the release.
     expect(await isCaseHandoffSourceReleased(db, f.input)).toBe(true);
     expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.runId)))[0]?.resultJson).toHaveProperty("caseHandoffExecutionReleased");

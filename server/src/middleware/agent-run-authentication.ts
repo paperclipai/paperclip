@@ -1,5 +1,6 @@
 import { and, eq, sql } from "drizzle-orm";
 import { heartbeatRuns, type Db } from "@paperclipai/db";
+import { requestRunIdentityFields } from "../services/run-identity.js";
 
 export function loadAgentRunAuthentication(db: Db, input: {
   runId: string;
@@ -13,11 +14,13 @@ export function loadAgentRunAuthentication(db: Db, input: {
     resultJson: sql<Record<string, unknown>>`jsonb_build_object(
       'executionCancellation', jsonb_build_object(
         'state', ${heartbeatRuns.resultJson}->'executionCancellation'->'state'
-      )
+      ),
+      'freshContinuationSupersededAt', ${heartbeatRuns.resultJson}->'freshContinuationSupersededAt'
     )`,
     contextSnapshot: sql<Record<string, unknown>>`jsonb_build_object(
       'conversationMode', ${heartbeatRuns.contextSnapshot}->'conversationMode'
     )`,
+    ...requestRunIdentityFields,
   }).from(heartbeatRuns).where(and(
     eq(heartbeatRuns.id, input.runId),
     eq(heartbeatRuns.companyId, input.companyId),

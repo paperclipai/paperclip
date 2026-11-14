@@ -213,13 +213,13 @@ export function createOAuthAuthorizationStart(db: Db, dependencies: Dependencies
       }
       const [company] = await db.select({ prefix: companies.issuePrefix }).from(companies).where(eq(companies.id, companyId));
       if (!company) throw notFound("Company not found");
-      const destination = new URL(input.redirectUri);
-      destination.pathname = `/${encodeURIComponent(company.prefix)}/apps/${connection.credentialSource === "vercel_connect" ? "vercel-connect" : "connect"}`;
-      destination.search = new URLSearchParams({ [connection.status === "draft" ? "resume" : "reconnect"]: connection.id,
-        ...(sourceTemplateKey ? { source: sourceTemplateKey } : {}), ...(intentLink ? { intent: intentLink.id } : {}) }).toString();
-      destination.hash = "";
+      // A relative app route: the agent links it in chat, where it opens on
+      // whichever host the person uses, never the server's own listen address.
+      const destination = `/${encodeURIComponent(company.prefix)}/apps/${connection.credentialSource === "vercel_connect" ? "vercel-connect" : "connect"}?${new URLSearchParams({
+        [connection.status === "draft" ? "resume" : "reconnect"]: connection.id,
+        ...(sourceTemplateKey ? { source: sourceTemplateKey } : {}), ...(intentLink ? { intent: intentLink.id } : {}) })}`;
       return { connectionId: connection.id, provider: sourceTemplateKey ?? "oauth",
-        authorizationUrl: destination.toString(), expiresAt: null };
+        authorizationUrl: destination, expiresAt: null };
     }
     if (sourceTemplateKey === "google-workspace" && connection.status === "draft") {
       const workspaceSetup = { version: 1, ...workspaceDraftBinding, requestedScopes };
@@ -703,10 +703,13 @@ export function createOAuthAuthorizationStart(db: Db, dependencies: Dependencies
         // refresh/reconnect/revoke reuse the same pair rather than re-deriving it.
         issuer: endpoints.issuer ?? oauthConfig(saved).issuer ?? null,
         expectedIssuer: endpoints.issuer ?? null,
+        // RFC 9207: when the server promises `iss`, a callback without it is refused.
+        expectIssParameter: Boolean(endpoints.issuer) && endpoints.issParameterSupported === true,
         resource:
           endpoints.resource ?? oauthConfig(saved).resource ?? null,
         clientIdMetadataDocumentSupported:
           endpoints.clientIdMetadataDocumentSupported === true,
+        issParameterSupported: endpoints.issParameterSupported === true,
       };
       const nextConfig = { ...saved.config, oauth: { ...oauthConfig(saved), ...oauth } };
       const nextTransportConfig = { ...saved.transportConfig, oauth: { ...asRecord(saved.transportConfig.oauth), ...oauth } };

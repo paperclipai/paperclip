@@ -47,7 +47,7 @@ for (const { unfinishedWrite, stopResponse, sendSavedQueue = false } of [
         .toContain("List my recent Drive files.");
 
       // Both actions stop the response; composer Stop must not create a task hold.
-      let stopped;
+      let stopped!: { status: string; resultJson?: { executionCancellation?: { state?: string } } | null };
       if (stopResponse) {
         await page.getByRole("button", { name: "Stop", exact: true }).click();
       } else {
@@ -58,7 +58,7 @@ for (const { unfinishedWrite, stopResponse, sendSavedQueue = false } of [
         return stopped.resultJson?.executionCancellation?.state;
       }, { timeout: 30_000 }).toBe("acknowledged");
       expect(stopped.status).toBe("cancelled");
-      expect(stopped.resultJson.executionCancellation.state).toBe("acknowledged");
+      expect(stopped.resultJson?.executionCancellation?.state).toBe("acknowledged");
       const writesAtStop = unfinishedWrite ? await readFile(path.join(root, "writes"), "utf8") : null;
       await page.reload();
       if (stopResponse) {

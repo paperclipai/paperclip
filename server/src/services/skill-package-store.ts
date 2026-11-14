@@ -14,7 +14,7 @@ import { resolvePaperclipInstanceRoot } from "../home-paths.js";
 import { conflict, notFound } from "../errors.js";
 import { assertSkillSnapshotPath, skillFileBytes } from "./skill-snapshot.js";
 import { ensureSkillCacheDirectory, SkillCacheBusy, withSkillVersionCacheLock } from "./skill-version-cache.js";
-import { boundedHashStream, extractSkillPackageArchive, MAX_SKILL_MANIFEST_BYTES, packageSha256,
+import { assertSkillPackageFileSize, boundedHashStream, extractSkillPackageArchive, MAX_SKILL_MANIFEST_BYTES, packageSha256,
   skillPackageManifest, skillPackageManifestBytes, validateSkillPackageManifest, verifySkillPackageDirectory, relocateSkillPackageVerification, writeSkillPackageArchive,
   type SkillPackageManifest } from "./skill-package-files.js";
 
@@ -642,15 +642,27 @@ export function skillPackageStore(db: Db, suppliedStorage?: StorageService, cach
     };
     return cancellation ? acquire() : flight(db, `version-read:${version.companyId}:${version.id}:${allowRecovery}`, acquire);
   }
-  async function readVersionFile(version: StoredSkillVersion, relativePath: string, allowRecovery = true) {
+  async function readVersionFile(version: StoredSkillVersion, relativePath: string, allowRecovery = true, maxBytes = Number.MAX_SAFE_INTEGER) {
     assertSkillSnapshotPath(relativePath);
-    if (!version.packageSnapshotId) return (await versionFiles(version, allowRecovery)).find(file => file.path === relativePath);
+    if (!version.packageSnapshotId) {
+      const [row] = await db.select({ ...skillVersionMetadataColumns,
+        file: sql<(CompanySkillVersionFileInventoryEntry & { tooLarge?: boolean }) | null>`(
+          select case when octet_length(f->>'content')::bigint > ${maxBytes}::bigint
+            then jsonb_build_object('tooLarge', true) else f end
+          from jsonb_array_elements(${companySkillVersions.fileInventory}) f
+          where f->>'path' = ${relativePath} limit 1)` })
+        .from(companySkillVersions).where(and(eq(companySkillVersions.companyId, version.companyId), eq(companySkillVersions.id, version.id)));
+      if (row?.packageSnapshotId) return readVersionFile(row, relativePath, allowRecovery, maxBytes);
+      if (row?.file?.tooLarge) assertSkillPackageFileSize(maxBytes + 1, maxBytes);
+      return row?.file ?? undefined;
+    }
     const id = version.packageSnapshotId;
     const manifest = await manifestFor(await descriptor(version.companyId, id));
     const mapping = version.packageFileMap?.find(file => file.path === relativePath);
     if (version.packageFileMap && !mapping) return undefined;
     const entry = manifest.files.find(file => file.path === (mapping?.sourcePath ?? relativePath));
     if (!entry) return undefined;
+    assertSkillPackageFileSize(entry.size, maxBytes);
     const signal = AbortSignal.timeout(180_000);
     const read = async (root: string) => {
       const bytes = await readPackageFile(root, entry, signal);

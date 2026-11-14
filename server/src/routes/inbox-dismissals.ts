@@ -11,7 +11,13 @@ const inboxDismissalSchema = z.object({
   itemKey: z.string().trim().min(1).regex(ITEM_KEY_RE, "Unsupported inbox item key"),
   kind: z.enum(["dismiss", "snooze"]).default("dismiss"),
   snoozedUntil: z.string().trim().optional(),
+  // The attention card's `changeFingerprint` (PAP-749 Rule 9). Personal
+  // presentation state only: a wrong value just lets the card return.
+  fingerprint: z.string().trim().min(1).max(200).optional(),
 }).superRefine((value, ctx) => {
+  if (value.fingerprint != null && !value.itemKey.startsWith("attention:")) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["fingerprint"], message: "Only attention items carry a fingerprint" });
+  }
   if (value.kind === "dismiss") {
     if (value.snoozedUntil != null) {
       ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["snoozedUntil"], message: "Dismissals must not include snoozedUntil" });
@@ -68,9 +74,10 @@ export function inboxDismissalRoutes(db: Db) {
       const userId = requireBoardUser(req, res);
       if (!userId) return;
 
+      const fingerprint = req.body.fingerprint ?? null;
       const dismissal = req.body.kind === "snooze"
-        ? await svc.snooze(companyId, userId, req.body.itemKey, new Date(req.body.snoozedUntil))
-        : await svc.dismiss(companyId, userId, req.body.itemKey, new Date());
+        ? await svc.snooze(companyId, userId, req.body.itemKey, new Date(req.body.snoozedUntil), new Date(), fingerprint)
+        : await svc.dismiss(companyId, userId, req.body.itemKey, new Date(), fingerprint);
       const actor = getActorInfo(req);
       await logActivity(db, {
         companyId,
@@ -88,6 +95,7 @@ export function inboxDismissalRoutes(db: Db) {
           kind: dismissal.kind,
           dismissedAt: dismissal.dismissedAt,
           snoozedUntil: dismissal.snoozedUntil,
+          fingerprint: dismissal.fingerprint,
         },
       });
 

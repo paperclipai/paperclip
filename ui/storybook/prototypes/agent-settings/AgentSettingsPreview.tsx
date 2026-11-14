@@ -60,6 +60,10 @@ const descriptions: Record<AgentLocalDetailView, string> = {
   "api-keys": "Manage the keys this agent uses to authenticate with Paperclip.",
   revisions:
     "Review past configuration changes and restore an earlier version.",
+  activity: "Everything this agent did and everything done to it.",
+  runs: "Every execution of this agent, newest first.",
+  costs: "What this agent spent, by model.",
+  budgets: "This agent’s monthly budget and how much of it is used.",
 };
 type Feedback = Parameters<
   NonNullable<ComponentProps<typeof AgentConfigForm>["onTestFeedbackChange"]>
@@ -82,7 +86,7 @@ export function AgentSettingsPreview({
   const [fixtures] = useState(() => {
     const fixtures = createSettingsFixtures(adapterType, testOutcome, saveFails);
     if (adapterType === "codex_local" || adapterType === "paperclip_runner") {
-      fixtures.agent.adapterConfig = { ...fixtures.agent.adapterConfig, model: "gpt-5.6-sol", modelReasoningEffort: "high", ...(adapterType === "paperclip_runner" ? { provider: "codex" } : {}) };
+      fixtures.agent.adapterConfig = { ...fixtures.agent.adapterConfig, model: "gpt-6.1-sol", modelReasoningEffort: "high", ...(adapterType === "paperclip_runner" ? { provider: "codex" } : {}) };
     }
     return fixtures;
   });

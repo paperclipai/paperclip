@@ -3,6 +3,7 @@ import { authApi } from "@/api/auth";
 import { navigateTopLevel } from "@/lib/browserNavigation";
 import { queryKeys } from "@/lib/queryKeys";
 import { invalidateAccountScope } from "@/lib/account-scope";
+import { clearPersistedQueryCache } from "@/lib/persisted-query-cache";
 import { useCloudInstance } from "./useCloudInstance";
 
 const CLOUD_SIGN_OUT_PATH = "/cloud/logout";
@@ -48,6 +49,7 @@ export function useSignOut({ onSignedOut }: UseSignOutOptions = {}) {
   return useMutation({
     mutationFn: async () => {
       if (cloud) {
+        clearPersistedQueryCache(queryClient);
         invalidateAccountScope(queryClient);
         onSignedOut?.();
         navigateTopLevel(CLOUD_SIGN_OUT_PATH);
@@ -60,6 +62,7 @@ export function useSignOut({ onSignedOut }: UseSignOutOptions = {}) {
     onSuccess: async (target) => {
       if (target === "cloud") return;
 
+      clearPersistedQueryCache(queryClient);
       invalidateAccountScope(queryClient);
       onSignedOut?.();
 

@@ -1,0 +1,23 @@
+{
+  "schemaVersion": 1,
+  "kind": "offline-synthetic-private-browser-control",
+  "canonicalScenarioMeasurement": false,
+  "sourceCheckpoint": "1ef868b0ac",
+  "optInCommand": "PAPERCLIP_CHAT_EVAL_PRIVATE_BROWSER_CANARY=1 node node_modules/vitest/vitest.mjs run --config tests/runner-e2e/vitest.config.ts tests/runner-e2e/chat-catalog-domains/runtime-private-key.test.ts tests/runner-e2e/chat-catalog-domains/runtime-agent-keys.test.ts",
+  "focusedControls": {
+    "passed": 17,
+    "failed": 0
+  },
+  "actualPlaywrightTestCanary": {
+    "passed": true,
+    "rawApiDebug": true,
+    "traceVideoScreenshotRequested": true,
+    "scannedReportAndArtifactFiles": 3,
+    "scanMethod": "raw emitted file bytes plus raw stdout and stderr streams",
+    "syntheticCanaryFound": false
+  },
+  "realProviderCalls": 0,
+  "backendStarted": false,
+  "realCredentialsUsed": false,
+  "browserControlDefault": "skipped unless PAPERCLIP_CHAT_EVAL_PRIVATE_BROWSER_CANARY=1"
+}

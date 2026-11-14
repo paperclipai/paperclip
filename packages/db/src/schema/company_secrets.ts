@@ -13,6 +13,7 @@ export const companySecrets = pgTable(
     id: uuid("id").primaryKey().defaultRandom(),
     companyId: uuid("company_id").notNull().references(() => companies.id),
     scope: text("scope").notNull().default("company"),
+    systemPurpose: text("system_purpose"),
     ownerUserId: text("owner_user_id"),
     ownerAgentId: uuid("owner_agent_id"),
     ownerProjectId: uuid("owner_project_id"),

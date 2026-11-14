@@ -11,7 +11,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { copyOwnedNodeRuntime } from "../../test-support/owned-node-runtime.js";
 import { awaitVerifiedAcpxProviderExit, awaitVerifiedAcpxProviderOwnership, verifyNativeAcpxInstallation } from "./installation-integrity.js";
 import { createNativeAcpxDistributionSnapshot, readNativeAcpxDistributionEntries, parseNativeAcpxDistributionEntries, type NativeAcpxDistributionInput, type NativeAcpxDistributionEntry } from "./native-distribution-integrity.js";
-import { openCodexAcpxRuntime } from "./codex-runtime-adapter.js";
+import { openCodexAcpxRuntime } from "./acpx-runtime-adapter.js";
 import { createAcpxCommandLeaseOwner } from "./command-lease-owner.js";
 import { resolveQualifiedAcpxProfile } from "./qualified-profiles.js";
 
@@ -686,7 +686,7 @@ describe("native ACPX execution closure", () => {
     const fences = await Promise.all([listen(), listen()]);
     const fds = fences.map(server => (server as Server & { _handle?: { fd?: number } })._handle!.fd!);
     const installation = await verifyNativeAcpxInstallation(declaration);
-    const owner = createAcpxCommandLeaseOwner(await installation.openCommand(), installation.openCommand);
+    const owner = createAcpxCommandLeaseOwner(await installation.openCommand(), signal => installation.openCommand({ signal }));
     const pidFile = join(declaration.distributionRoot, "native-pid");
     let port: Awaited<ReturnType<typeof openCodexAcpxRuntime>> | undefined;
     let deadline: ReturnType<typeof setTimeout> | undefined;

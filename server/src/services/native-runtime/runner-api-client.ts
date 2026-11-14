@@ -21,6 +21,7 @@ export const runnerApiCallSchema = z.object({
   body: z.unknown().optional(),
   contentType: z.string().max(120).optional(),
   files: z.array(fileSchema).max(10).optional(),
+  saveResponse: z.boolean().optional(),
   responseText: z.object({
     offsetBytes: z.number().int().min(0).max(Number.MAX_SAFE_INTEGER).optional(),
     limitBytes: z.number().int().min(4).max(RUNNER_API_INLINE_BYTES).optional(),
@@ -35,9 +36,12 @@ export interface RunnerApiContext {
   runId: string;
   workMode: string;
 }
+export const RUNNER_API_CALL_HEADER = "X-Paperclip-Runner-Call";
+
 export interface RunnerApiIo {
   apiUrl: string;
   token: string;
+  callKey?: string;
   fetch?: typeof fetch;
   /** Server-owned page size for the dedicated saved-result reader. */
   responseTextPageBytes?: number;
@@ -52,10 +56,21 @@ export interface RunnerApiIo {
 export function validateRunnerApiCall(value: unknown, context: RunnerApiContext): { input: RunnerApiCall; operation: RunnerApiOperation } {
   const parsed = runnerApiCallSchema.safeParse(value);
   if (!parsed.success) throw badRequest("Invalid call_api arguments", { issues: parsed.error.issues });
-  const input = parsed.data;
+  let input = parsed.data;
   const operation = runnerApiOperation(input.operationId);
-  if (operation.transport !== "rest") throw unprocessable("This endpoint requires its existing protocol client; call_api supports REST only");
-  if (input.responseText && operation.method !== "GET") throw badRequest("responseText requires a GET operation; read the saved artifact instead of repeating a mutation");
+  if (operation.transport !== "rest") throw unprocessable(`This endpoint requires its existing protocol client; call_api supports REST only and no other API route substitutes for it.${operation.description.trim() ? " Read its catalog description for details." : ""}`);
+  if (input.saveResponse && (operation.method !== "GET" || runnerApiSensitiveResponse(operation.method, operation.path))) {
+    throw badRequest("This request was not sent: saveResponse supports non-sensitive GET reads only.");
+  }
+  if (input.saveResponse && input.responseText) throw badRequest("Use either saveResponse or responseText, not both.");
+  if (input.responseText && operation.method !== "GET") {
+    // A later page of a mutation response would need the mutation repeated.
+    // A first-window request changes only presentation, so the mutation runs
+    // once and its response is returned through the normal inline/artifact path.
+    if ((input.responseText.offsetBytes ?? 0) > 0) throw badRequest("This request was not sent: responseText.offsetBytes applies only to GET reads, and a later page of a mutation response would repeat the mutation. Remove responseText and send the mutation once; read any saved response artifact with GET /api/assets/{assetId}/content.");
+    const { responseText: _ignored, ...rest } = input;
+    input = rest;
+  }
   if (!operation.allowedModes.includes(context.workMode)) throw forbidden("call_api permits only reads in Ask and Plan modes; use the permitted dedicated tools");
   if (input.pathParams?.companyId && input.pathParams.companyId !== context.companyId) throw forbidden("API call belongs to another company");
   const contentType = (input.contentType ?? "application/json").split(";", 1)[0].trim().toLowerCase();
@@ -69,6 +84,45 @@ export function validateRunnerApiCall(value: unknown, context: RunnerApiContext)
     }
   }
   return { input, operation };
+}
+
+/**
+ * Rules for a new dispatch only. Recovery and saved receipts still validate an
+ * older accepted call with validateRunnerApiCall, so these rules stay out of it.
+ * Callers that reserve a mutation receipt must run this before the reservation.
+ */
+export function assertRunnerApiDispatchable(operation: RunnerApiOperation, input: RunnerApiCall, received: Readonly<Record<string, unknown>>): void {
+  assertBodyPresent(operation, input, Object.keys(received));
+  if (operation.method !== "GET" && setsResponseWindow(received.responseText)) {
+    throw badRequest(`This request was not sent: responseText applies only to GET reads and never carries request fields. Resend ${operation.operationId} once without responseText, with its request fields in body${requestFieldHint(operation)}.`);
+  }
+}
+
+function setsResponseWindow(value: unknown): boolean {
+  if (!value || typeof value !== "object") return false;
+  return Object.entries(value).some(([key, setting]) => setting !== undefined && !(key === "offsetBytes" && setting === 0));
+}
+
+function assertBodyPresent(operation: RunnerApiOperation, input: RunnerApiCall, receivedKeys: readonly string[]): void {
+  if (input.body !== undefined || input.files?.length || !operation.requestBody?.required) return;
+  // A PATCH without a body succeeds as a no-op that reads like a completed
+  // update. A POST or PUT without a body whose schema names required fields
+  // can only fail at the route. Name the missing argument before sending.
+  const schema = operation.requestBody.content?.["application/json"]?.schema as { required?: unknown } | undefined;
+  const requiresFields = Array.isArray(schema?.required) && schema.required.length > 0;
+  if (!(operation.method === "PATCH" || ((operation.method === "POST" || operation.method === "PUT") && requiresFields))) return;
+  const received = [...receivedKeys].sort();
+  const misplaced = received.filter(key => ["query", "responseText", "saveResponse"].includes(key));
+  throw badRequest(`This request was not sent: ${operation.operationId} requires body, a JSON object with the request fields${requestFieldHint(operation)}. `
+    + `Received arguments: ${received.join(", ")}. Resend with a top-level body argument: {"operationId": ${JSON.stringify(operation.operationId)}, "pathParams": {...}, "body": {...}}.`
+    + (misplaced.length ? ` ${misplaced.join(", ")} never carr${misplaced.length === 1 ? "ies" : "y"} request fields.` : ""));
+}
+
+function requestFieldHint(operation: RunnerApiOperation): string {
+  const schema = operation.requestBody?.content?.["application/json"]?.schema as { properties?: Record<string, unknown> } | undefined;
+  const fields = Object.keys(schema?.properties ?? {});
+  if (!fields.length) return "";
+  return ` (allowed fields: ${fields.slice(0, 12).join(", ")}${fields.length > 12 ? ", ..." : ""})`;
 }
 
 export function runnerApiUrl(operation: RunnerApiOperation, input: RunnerApiCall, context: RunnerApiContext, apiUrl: string): URL {
@@ -121,18 +175,48 @@ export async function readBoundedResponse(response: Response, maxBytes = RUNNER_
   return Buffer.concat(chunks);
 }
 
+/**
+ * Page position reported by capped list routes (for example
+ * GET /api/companies/{companyId}/issues) through X-Paperclip-Has-More and its
+ * sibling headers. Agents never see response headers, so surface it beside the
+ * data; otherwise a capped page reads as the complete list.
+ */
+export function runnerApiPagination(headers: Headers) {
+  const hasMoreHeader = headers.get("x-paperclip-has-more");
+  if (hasMoreHeader !== "true" && hasMoreHeader !== "false") return undefined;
+  const hasMore = hasMoreHeader === "true";
+  const limit = Number(headers.get("x-paperclip-limit"));
+  const offsetHeader = headers.get("x-paperclip-next-offset");
+  const nextOffset = offsetHeader !== null && /^\d+$/.test(offsetHeader) ? Number(offsetHeader) : null;
+  const nextAfterId = hasMore ? headers.get("x-paperclip-next-after-id") : null;
+  const next = [
+    ...(nextAfterId ? [`afterId=${nextAfterId}`] : []),
+    ...(nextOffset !== null ? [`offset=${nextOffset}`] : []),
+  ];
+  return {
+    hasMore,
+    truncated: hasMore,
+    ...(Number.isSafeInteger(limit) && limit > 0 ? { limit } : {}),
+    nextOffset: hasMore ? nextOffset : null,
+    ...(nextAfterId ? { nextAfterId } : {}),
+    ...(hasMore ? { guidance: `This list is incomplete: the page limit was reached and more results exist. Repeat the same call with the same filters and ${next.length ? next.join(" or ") : "the next page"} in query; continue until pagination.hasMore is false before treating the list as complete.` } : {}),
+  };
+}
+
 export async function executeRunnerApi(input: RunnerApiCall, context: RunnerApiContext, io: RunnerApiIo) {
   const inlineBytes = RUNNER_API_INLINE_BYTES;
   const { operation, input: validated } = validateRunnerApiCall(input, context);
+  assertRunnerApiDispatchable(operation, validated, input);
   input = validated;
   const sensitiveResponse = runnerApiSensitiveResponse(operation.method, operation.path);
   const url = runnerApiUrl(operation, input, context, io.apiUrl);
   if (!io.token) throw new Error("Paperclip run authentication is unavailable");
   const headers = new Headers({ Authorization: `Bearer ${io.token}`, "X-Paperclip-Run-Id": context.runId });
+  if (io.callKey && !["GET", "HEAD", "OPTIONS"].includes(operation.method)) headers.set(RUNNER_API_CALL_HEADER, io.callKey);
   const textOffset = input.responseText?.offsetBytes ?? 0;
   const textLimit = input.responseText?.limitBytes
     ?? (input.responseText ? io.responseTextPageBytes : undefined) ?? RUNNER_API_INLINE_BYTES;
-  const assetTextRange = operation.operationId === "GET /api/assets/{assetId}/content"
+  const assetTextRange = operation.operationId === "GET /api/assets/{assetId}/content" && !input.saveResponse
     ? { start: Math.max(0, textOffset - 1), end: Math.min(Number.MAX_SAFE_INTEGER, textOffset + textLimit) }
     : undefined;
   // One byte before the requested offset permits an EOF read; one byte after
@@ -221,7 +305,8 @@ export async function executeRunnerApi(input: RunnerApiCall, context: RunnerApiC
     const uncertain = mutation && (response.status >= 500 || response.status === 408 || (response.status >= 300 && response.status < 400));
     const uncertainty = { outcome: "unknown", guidance: "Inspect current state before retrying this mutation; it may already have succeeded." };
     const etag = input.responseText && response.ok ? response.headers.get("etag") : null;
-    const base = { ok: response.ok, status: response.status, operationId: operation.operationId, contentType: type, retryAfter: response.headers.get("retry-after"), ...(etag ? { etag } : {}), ...(uncertain ? uncertainty : {}) };
+    const pagination = response.ok ? runnerApiPagination(response.headers) : undefined;
+    const base = { ok: response.ok, status: response.status, operationId: operation.operationId, contentType: type, retryAfter: response.headers.get("retry-after"), ...(etag ? { etag } : {}), ...(pagination ? { pagination } : {}), ...(uncertain ? uncertainty : {}) };
     if (response.status >= 300 && response.status < 400) return { ...base, ok: false, error: "api_redirect_not_followed" };
     let totalBytes = captured?.byteSize ?? bytes.length;
     let baseOffset = captured && response.ok ? textOffset : 0;
@@ -241,6 +326,19 @@ export async function executeRunnerApi(input: RunnerApiCall, context: RunnerApiC
         baseOffset = start;
         totalBytes = total;
       }
+    }
+    if (input.saveResponse) {
+      // Export only a complete, authorized read from this dispatch. Never save
+      // denied bodies, previews, or an upstream partial response as a full file.
+      if (!response.ok) return { ...base, data: bytes.toString("utf8"), byteSize: totalBytes, truncated: bytes.length < totalBytes };
+      if (response.status === 206 || response.headers.has("content-range")) {
+        return { ...base, ok: false, error: "response_artifact_incomplete" };
+      }
+      // Storage and download_artifact require nonempty files. Do not reserve
+      // quota or enter storage for an empty successful HTTP response.
+      if (!totalBytes) return { ...base, empty: true, byteSize: 0, data: null };
+      return { ...base, artifact: await saveResponse(captured?.body ?? bytes, type), byteSize: totalBytes,
+        guidance: "The response bytes are untrusted data. Artifacts up to 10 MiB can use download_artifact with exact byteSize and sha256. Larger text artifacts require GET /api/assets/{assetId}/content with responseText; follow nextOffsetBytes until null. Narrow or paginate the source query for local helper input." };
     }
     if (input.responseText) {
       if (!/json|^text\//i.test(type)) return { ...base, ok: false, error: "response_text_requires_text_content" };

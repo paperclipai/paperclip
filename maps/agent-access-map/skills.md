@@ -57,6 +57,14 @@ subject to the existing bridge restrictions.
 Policy: Company skill policy by action/resource plus platform invariants; test execution
 additionally requires task-assignment authority.
 
+Native `search_api` describes source import separately from authoring. Existing
+SKILL.md content may come from an allowed local skill directory or a supported
+remote source. Local workspace/managed-root and remote source-access checks still
+apply. Discovery metadata grants no import permission and does not assign skills.
+The [discovery protocol regression](../../server/src/__tests__/skill-import-discovery.test.ts)
+checks the actual first-page result and bounded MCP output. Its synthetic 403
+control proves denial forwarding, not a live skill-policy decision.
+
 Evidence: `source-only` —
 [implementation](../../server/src/routes/company-skills.ts#L208) at the reviewed commit
 above.

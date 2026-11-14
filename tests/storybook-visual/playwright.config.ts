@@ -49,7 +49,7 @@ export default defineConfig({
     deviceScaleFactor: 1,
     // JS-driven tickers/timers key off prefers-reduced-motion for
     // deterministic captures (CSS animations are already disabled).
-    reducedMotion: "reduce",
+    contextOptions: { reducedMotion: "reduce" },
     baseURL: process.env.STORYBOOK_TEST_BASE_URL ?? `http://localhost:${storybookPort}`,
   },
   webServer: process.env.STORYBOOK_TEST_BASE_URL ? undefined : {

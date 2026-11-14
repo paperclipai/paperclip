@@ -252,6 +252,17 @@ export async function selectProjectTests({ root = process.cwd(), project, change
             && !coveredBuiltins.some(source => source.replace(/^node:/, "") === dependencyId.replace(/^node:/, ""))) reasons.push(`builtin ${dependencyId}`);
           continue;
         }
+        // Vite's exact ?raw form reads a file as text, not executable code.
+        // Record that input explicitly; do not treat arbitrary query loaders,
+        // generated files, or paths outside the checkout as independent.
+        if (dependencyId.endsWith("?raw") && dependencyId.indexOf("?") === dependencyId.length - 4) {
+          const input = dependencyPath(dependencyId.slice(0, -4));
+          if (input && inside(root, input) && statSync(input).isFile()
+            && tracked.has(path.relative(root, input).split(path.sep).join("/"))) {
+            fileInputs.set(id, [...(fileInputs.get(id) ?? []), { path: input, directory: false }]);
+            continue;
+          }
+        }
         const dependency = dependencyPath(dependencyId);
         if (dependency && inside(root, dependency)) {
           local.push(dependency);
@@ -302,6 +313,7 @@ export async function selectProjectTests({ root = process.cwd(), project, change
     const selected = [...new Set([...raw, ...inputRelated, ...retained].map(relative))].sort();
     return {
       project,
+      isolated: owner.config.isolate !== false,
       inventory: inventory.map(relative).sort(),
       selected,
       related: raw.map(relative).sort(),
