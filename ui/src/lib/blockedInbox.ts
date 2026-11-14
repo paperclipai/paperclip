@@ -4,6 +4,7 @@ import type {
   IssueBlockedInboxReason,
   IssueBlockedInboxSeverity,
 } from "@paperclipai/shared";
+import { ISSUE_SOURCE_GROUP_LABELS, ISSUE_SOURCE_GROUP_ORDER, issueSourceGroup, type IssueSourceGroup } from "./issue-source";
 
 export type BlockedReasonVariant =
   | "needs_decision"
@@ -106,11 +107,12 @@ export interface BlockedInboxIssueRow {
   stoppedAtMs: number | null;
 }
 
-export type BlockedInboxGroupBy = "blocker_type" | "none";
+export type BlockedInboxGroupBy = "blocker_type" | "source" | "none";
 export type BlockedInboxSort = "urgency" | "most_recent" | "longest_stopped";
 
 export const BLOCKED_GROUP_OPTIONS: readonly [BlockedInboxGroupBy, string][] = [
   ["blocker_type", "Blocker type"],
+  ["source", "Source"],
   ["none", "None"],
 ];
 
@@ -121,7 +123,9 @@ export const BLOCKED_SORT_OPTIONS: readonly [BlockedInboxSort, string][] = [
 ];
 
 export interface BlockedInboxGroup {
-  variant: BlockedReasonVariant;
+  key: string;
+  /** Set when the rows are grouped by blocker type. */
+  variant?: BlockedReasonVariant;
   label: string;
   rows: BlockedInboxIssueRow[];
 }
@@ -198,7 +202,29 @@ export function sortBlockedInboxRows(
 export function groupBlockedInboxRows(
   rows: readonly BlockedInboxIssueRow[],
   sort: BlockedInboxSort = "urgency",
+  groupBy: Exclude<BlockedInboxGroupBy, "none"> = "blocker_type",
 ): BlockedInboxGroup[] {
+  if (groupBy === "source") {
+    const bySource = new Map<IssueSourceGroup, BlockedInboxIssueRow[]>();
+    for (const row of rows) {
+      const source = issueSourceGroup(row.issue.originKind);
+      const list = bySource.get(source) ?? [];
+      list.push(row);
+      bySource.set(source, list);
+    }
+    const sourceGroups: BlockedInboxGroup[] = [];
+    for (const source of ISSUE_SOURCE_GROUP_ORDER) {
+      const list = bySource.get(source);
+      if (!list || list.length === 0) continue;
+      sourceGroups.push({
+        key: `source:${source}`,
+        label: ISSUE_SOURCE_GROUP_LABELS[source],
+        rows: sortBlockedInboxRows(list, sort),
+      });
+    }
+    return sourceGroups;
+  }
+
   const buckets = new Map<BlockedReasonVariant, BlockedInboxIssueRow[]>();
   for (const row of rows) {
     const list = buckets.get(row.variant) ?? [];
@@ -210,7 +236,7 @@ export function groupBlockedInboxRows(
     const list = buckets.get(variant);
     if (!list || list.length === 0) continue;
     const sorted = sortBlockedInboxRows(list, sort);
-    groups.push({ variant, label: BLOCKED_VARIANT_LABELS[variant], rows: sorted });
+    groups.push({ key: variant, variant, label: BLOCKED_VARIANT_LABELS[variant], rows: sorted });
   }
   return groups;
 }
