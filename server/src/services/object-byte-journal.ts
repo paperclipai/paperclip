@@ -67,10 +67,14 @@ export function isObjectPreconditionFailure(error: unknown) {
   const e = error as { name?: string; $metadata?: { httpStatusCode?: number } };
   return e?.name === "PreconditionFailed" || e?.$metadata?.httpStatusCode === 412;
 }
+// Reads abandoned by their own attempt deadline, not by their caller. A GET is
+// safe to send again.
+const expiredReads = new WeakSet<object>();
 function isRetryable(error: unknown) {
   const e = error as { name?: string; code?: string; $metadata?: { httpStatusCode?: number } };
   const status = e?.$metadata?.httpStatusCode;
   return (
+    (typeof error === "object" && error !== null && expiredReads.has(error)) ||
     e?.name === "ConditionalRequestConflict" ||
     status === 409 ||
     status === 429 ||
@@ -393,30 +397,34 @@ export function createObjectByteJournal(options: ObjectByteJournalOptions) {
   async function getBytes(key: string, limit: number, signal?: AbortSignal) {
     return objectIO(async () => {
       signal?.throwIfAborted();
-      signal = signal
-        ? AbortSignal.any([signal, AbortSignal.timeout(15_000)])
-        : AbortSignal.timeout(15_000);
-      const read = signal;
-      return sendThroughStorageOutage(async () => {
-        const result = await retryObjectOperation(
-          () => provider.getObject({ objectKey: key, signal: read }),
-          read,
-        );
-        const chunks: Buffer[] = [];
-        let size = 0;
+      const caller = signal;
+      return sendThroughStorageOutage(() => retryObjectOperation(async () => {
+        // Each attempt has its own deadline. One deadline shared by every
+        // attempt made a single hung GET final: once it expired, nothing
+        // could send the read again.
+        const deadline = AbortSignal.timeout(15_000);
+        const read = caller ? AbortSignal.any([caller, deadline]) : deadline;
         try {
-          for await (const chunk of result.stream) {
-            const bytes = Buffer.from(chunk);
-            size += bytes.length;
-            if (size > limit) throw new Error("object_journal_object_too_large");
-            chunks.push(bytes);
+          const result = await provider.getObject({ objectKey: key, signal: read });
+          const chunks: Buffer[] = [];
+          let size = 0;
+          try {
+            for await (const chunk of result.stream) {
+              const bytes = Buffer.from(chunk);
+              size += bytes.length;
+              if (size > limit) throw new Error("object_journal_object_too_large");
+              chunks.push(bytes);
+            }
+          } finally {
+            result.stream.destroy();
           }
-        } finally {
-          result.stream.destroy();
+          read.throwIfAborted();
+          return { bytes: Buffer.concat(chunks), etag: result.etag };
+        } catch (error) {
+          if (deadline.aborted && !caller?.aborted && error && typeof error === "object") expiredReads.add(error);
+          throw error;
         }
-        read?.throwIfAborted();
-        return { bytes: Buffer.concat(chunks), etag: result.etag };
-      }, read);
+      }, caller), caller);
     }, readPriority, signal);
   }
   async function head(signal?: AbortSignal): Promise<ObjectJournalWriter | null> {
