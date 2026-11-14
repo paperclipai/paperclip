@@ -69,13 +69,34 @@ bodies are excluded from HTTP diagnostics and dedicated mutation receipts.
 
 Browse feedback at Audit → Commentary (`/activity/commentary`). The page has
 text search, agent/type filters, 50-message pages and a full-message dialog with
-task/run context. Filters, page offsets and selected messages have shareable
-URLs (`?entry=<message-id>` opens a message directly).
+task/run context. Filters, sort order, page offsets and selected messages have
+shareable URLs (`?entry=<message-id>` opens a message directly).
 
-The board-only read API is `GET /api/companies/:companyId/agent-commentary`
-(`agentId`, `kind`, `q`, `limit` up to 100, `offset`) and
-`GET /api/companies/:companyId/agent-commentary/:id`. Both require company access
-and `commentary:view`. All human company roles, including viewers, receive this
+People upvote a message from its row or its dialog to show which problems most
+need a fix. Each person has one vote per message; pressing the button again
+removes it. The list sorts by newest (default) or by most votes, newest first
+on ties (`?sort=votes`). Viewers see vote counts but cannot vote, because viewer
+access is read-only. Each message stores its vote count, kept in step with the
+votes table in the same transaction, so the vote sort uses an index instead of
+counting votes for every message.
+
+The read API is `GET /api/companies/:companyId/agent-commentary`
+(`agentId`, `kind`, `q`, `sort` = `newest` or `votes`, `limit` up to 100,
+`offset`) and `GET /api/companies/:companyId/agent-commentary/:id`. Both return
+`voteCount` and `votedByMe` for each message. `PUT` and `DELETE
+/api/companies/:companyId/agent-commentary/:id/vote` add and remove the caller's
+upvote and return `{id, voteCount, votedByMe}`; a repeated request has no further
+effect. Each real change writes an `agent.commentary_upvoted` or
+`agent.commentary_upvote_removed` activity entry. Company activity history and
+live events apply the source task's read check to commentary entries, so people
+who cannot read a private task's message do not see its submissions or votes.
+History uses the same visibility rule as the reader, so entries stay hidden after
+the source task is deleted.
+All four require company access and `commentary:view` for people, and apply the
+same task privacy, so hidden or other-company messages return 404. Voting needs
+a signed-in person. Agents can read their own messages, or all of them with an
+explicit `commentary:view` grant, and see `voteCount` with `votedByMe: false`;
+they cannot vote. All human company roles, including viewers, receive this
 permission by default. The upgrade migration grants it to existing active human
 members without changing existing commentary grants. Human invitation approval
 adds the default to saved grant lists that omit it, including older invitations,
@@ -85,6 +106,9 @@ those retain `audit:view_agent_actions`. Source-task privacy filters previews, c
 details. List results contain at most 280 characters
 per message; the full body is loaded only on opening a message. Feedback whose
 source task was deleted stays hidden, using the task binding retained on its run.
+
+Votes are stored in `agent_commentary_votes` (message, company, person, time),
+one row per message and person, and are deleted with the message or company.
 
 There is no notification, automatic task creation, or external forwarding.
 This is separate from first-party Telemetry, OpenTelemetry

@@ -1755,6 +1755,7 @@ function resolveOperationAuthLevel(
   if (key === "GET /api/agents/me/mcp-skills/{skillId}/files") return "agent_heartbeat";
   // Agents may read their own commentary, or all of it with commentary:view; the routes enforce that.
   if (method.toUpperCase() === "GET" && path.startsWith("/api/companies/{companyId}/agent-commentary")) return "authenticated";
+  if (path === "/api/companies/{companyId}/agent-commentary/{id}/vote") return "board";
   if (key === "POST /api/mcp/project-tools" || key === "POST /api/companies/{companyId}/slack/tasks/{issueId}/tools") return "agent_run";
   if (RUNTIME_TOOLS_OPERATIONS.has(key)) return "runtime_tools";
   if (INSTANCE_ADMIN_OPERATIONS.has(key)) return "instance_admin";
@@ -6125,7 +6126,7 @@ registry.registerPath({
   path: "/api/companies/{companyId}/agent-commentary",
   tags: ["agents"],
   summary: "Browse agent suggestions and complaints",
-  description: "Board members need company membership and commentary:view, granted by default to all human company roles. An agent may list only its own commentary (agentId set to itself) unless it holds commentary:view, which is never a default agent grant; otherwise it gets 403 with a remediation naming the Commentary page. Source-task privacy filters both previews and counts. Returns items, total, limit and offset; previews contain at most 280 characters and omit full bodies.",
+  description: "Board members need company membership and commentary:view, granted by default to all human company roles. An agent may list only its own commentary (agentId set to itself) unless it holds commentary:view, which is never a default agent grant; otherwise it gets 403 with a remediation naming the Commentary page. Source-task privacy filters both previews and counts. Returns items, total, limit and offset; previews contain at most 280 characters and omit full bodies. Each item includes voteCount and votedByMe (always false for agents); sort=votes orders by votes, newest first on ties.",
   request: { params: z.object({ companyId: z.string() }), query: agentCommentaryQuerySchema },
   responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 404: r.notFound },
 });
@@ -6139,6 +6140,24 @@ registry.registerPath({
   request: { params: z.object({ companyId: z.string(), id: z.string().uuid() }) },
   responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden, 404: r.notFound },
 });
+
+const agentCommentaryVoteStateSchema = z.object({
+  id: z.string().uuid(),
+  voteCount: z.number().int().min(0),
+  votedByMe: z.boolean(),
+}).strict();
+
+for (const [method, summary] of [["put", "Upvote an agent commentary message"], ["delete", "Remove your upvote from an agent commentary message"]] as const) {
+  registry.registerPath({
+    method,
+    path: "/api/companies/{companyId}/agent-commentary/{id}/vote",
+    tags: ["agents"],
+    summary,
+    description: "People only; agents and company viewers get 403. Same company, commentary:view and task-privacy gates as reading the message. One vote per person; a repeated request has no further effect, and only real changes are written to the activity log. Returns the message's vote count and whether the caller voted. Foreign-company and invisible entries return 404.",
+    request: { params: z.object({ companyId: z.string(), id: z.string().uuid() }) },
+    responses: { 200: r.ok(agentCommentaryVoteStateSchema), 401: r.unauthorized, 403: r.forbidden, 404: r.notFound },
+  });
+}
 
 registry.registerPath({
   method: "post", path: "/api/agents/me/chat/messages", tags: ["agents"],

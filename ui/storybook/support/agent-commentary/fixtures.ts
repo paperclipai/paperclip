@@ -26,11 +26,20 @@ export const commentaryEntries: AgentCommentaryDetail[] = messages.map((message,
   agent: commentaryAgents[message.agent],
   runId: `30000000-0000-4000-8000-00000000000${index + 1}`,
   task: { id: `40000000-0000-4000-8000-00000000000${index + 1}`, identifier: `PAP-${241 + index}`, title: message.task },
+  voteCount: [3, 5, 0, 1, 2, 0][index] ?? 0,
+  votedByMe: index === 1,
 }));
 
 export function prepareCommentaryFixtures(options: { state?: FixtureState; paginated?: boolean; longMessage?: boolean } = {}) {
   const entries = options.paginated ? Array.from({ length: 58 }, (_, index) => ({ ...commentaryEntries[index % commentaryEntries.length], id: `20000000-0000-4000-8000-${String(index + 1).padStart(12, "0")}` })) : commentaryEntries.map((entry) => ({ ...entry }));
   if (options.longMessage) entries[0].body += "\n\n" + Array.from({ length: 18 }, (_, index) => `### Observation ${index + 1}\n\nThe run retained its task and branch references, but the tool catalog did not recover. A useful error should explain which operation failed, whether it is safe to retry, and which context will survive the retry.`).join("\n\n");
+  function setVote(url: URL, voted: boolean) {
+    const entry = entries.find((candidate) => candidate.id === url.pathname.split("/").at(-2));
+    if (!entry) return Response.json({ error: "Commentary not found" }, { status: 404 });
+    if (entry.votedByMe !== voted) entry.voteCount += voted ? 1 : -1;
+    entry.votedByMe = voted;
+    return { id: entry.id, voteCount: entry.voteCount, votedByMe: entry.votedByMe };
+  }
   return prepareFixtureApi([
     { path: "/api/companies/company-storybook/agents", read: () => commentaryAgents },
     { path: "/api/companies/company-storybook/agent-commentary", state: options.state, read: ({ url }) => {
@@ -40,8 +49,11 @@ export function prepareCommentaryFixtures(options: { state?: FixtureState; pagin
       const offset = Number(url.searchParams.get("offset") ?? 0);
       const limit = Number(url.searchParams.get("limit") ?? 50);
       const matches = options.state === "empty" ? [] : entries.filter((entry) => (!agent || entry.agent.id === agent) && (!kind || entry.kind === kind) && (!query || entry.body.toLowerCase().includes(query)));
+      if (url.searchParams.get("sort") === "votes") matches.sort((a, b) => b.voteCount - a.voteCount || b.createdAt.localeCompare(a.createdAt));
       return { items: matches.slice(offset, offset + limit).map(({ body: _body, ...entry }) => entry), total: matches.length, offset, limit };
     } },
+    { path: /^\/api\/companies\/company-storybook\/agent-commentary\/[^/]+\/vote$/, method: "PUT", read: ({ url }) => setVote(url, true) },
+    { path: /^\/api\/companies\/company-storybook\/agent-commentary\/[^/]+\/vote$/, method: "DELETE", read: ({ url }) => setVote(url, false) },
     { path: /^\/api\/companies\/company-storybook\/agent-commentary\//, read: ({ url }) => entries.find((entry) => entry.id === url.pathname.split("/").at(-1)) ?? Response.json({ error: "Commentary not found" }, { status: 404 }) },
   ]);
 }

@@ -8,7 +8,7 @@ import { canonicalProviderEventsFromOpenCodePart } from "../../packages/papercli
 
 function entry(id: string, body = "Please preserve the original tool error."): AgentCommentaryDetail {
   return { id, kind: "complaint", preview: body.slice(0, 280), body,
-    createdAt: "2026-10-20T00:00:00.000Z", agent: { id: "agent", name: "Fixture", icon: null }, runId: "run", task: null };
+    createdAt: "2026-10-20T00:00:00.000Z", agent: { id: "agent", name: "Fixture", icon: null }, runId: "run", task: null, voteCount: 0, votedByMe: false };
 }
 const api = (read: (path: string) => unknown | Promise<unknown>) => ({ get: async <T>(path: string) => await read(path) as T }) as Pick<RunnerApi, "get">;
 const event = (seq: number, eventType: string, payload: unknown, runId = "run") => ({ seq, eventType,

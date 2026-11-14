@@ -447,7 +447,7 @@
     "packages/shared/src/validators/adapter-registry.test.ts": "567c113e50dd0c0d259b095375f8f8f403ffa893",
     "packages/shared/src/validators/adapter-registry.ts": "6fb9f655d49f774ef7f082bf842f388f1187e545",
     "packages/shared/src/validators/adapter-skills.ts": "ae43f7b180f632d5f54dfa821b8dc5ef6c6aa53d",
-    "packages/shared/src/validators/agent-commentary.ts": "8242c5b28a77131aefdc00c873ad84c6c6736e4b",
+    "packages/shared/src/validators/agent-commentary.ts": "cde73552f0127e419aaf1fb84a5ea2bbb1503f8a",
     "packages/shared/src/validators/agent.test.ts": "d38767b0c1fc1439871855ed55dca3c8c7b645c6",
     "packages/shared/src/validators/agent.ts": "13ba04317b11c4281b7a2133a34630b4ad446dfd",
     "packages/shared/src/validators/app-definition.ts": "9fb660249eaf49a71adeab222cdb29a6db41ce28",

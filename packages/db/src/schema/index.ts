@@ -258,6 +258,7 @@ export * from "./ai_connection_routing.js";
 export { toolConnectionAppSnapshots } from "./tool_connection_app_snapshots.js";
 export { toolConnectionAppSyncs } from "./tool_connection_app_syncs.js";
 export { agentCommentary } from "./agent_commentary.js";
+export { agentCommentaryVotes } from "./agent_commentary_votes.js";
 
 
 export { agentIdentityKeys } from "./agent_identity_keys.js";

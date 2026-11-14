@@ -621,8 +621,15 @@ describe("openapi routes", () => {
       expect(read.responses["404"]).toBeDefined();
     }
     expect(path.get.parameters.map((parameter: { name: string }) => parameter.name)).toEqual(
-      expect.arrayContaining(["agentId", "kind", "q", "limit", "offset"]),
+      expect.arrayContaining(["agentId", "kind", "q", "sort", "limit", "offset"]),
     );
+    const vote = spec.paths["/api/companies/{companyId}/agent-commentary/{id}/vote"];
+    expect(Object.keys(vote).sort()).toEqual(["delete", "put"]);
+    for (const operation of [vote.put, vote.delete]) {
+      expect(operation.security).toEqual([{ BoardSessionAuth: [] }, { BoardApiKeyAuth: [] }]);
+      expect(operation.responses["403"]).toBeDefined();
+      expect(operation.responses["404"]).toBeDefined();
+    }
     const operation = path.post;
     expect(operation.security).toEqual([{ AgentBearerAuth: [] }]);
     expect(operation["x-paperclip-authorization"]).toEqual({ actor: "agent", heartbeatBound: true });

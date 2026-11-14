@@ -1,5 +1,6 @@
 import { DELIVERY_QUEUES, notifyDeliveryWork } from "./delivery-work-notifications.js";
 import { skillAccessService } from "./skill-access.js";
+import { agentCommentaryActivityVisible } from "./agent-commentary-reader.js";
 import { credentialAccessConnectionNameSql } from "./credential-access-visibility.js";
 import { executionProjectionsForRuns } from "./execution-projection.js";
 import { and, asc, desc, eq, inArray, isNull, or, sql, type SQL } from "drizzle-orm";
@@ -385,7 +386,9 @@ export function activityService(db: Db) {
   return {
     list: async (filters: ActivityFilters) => {
       const conditions = [eq(activityLog.companyId, filters.companyId), await skillAccessService(db).activityCondition(filters.companyId),
-        filters.caseReadCondition ?? sql<boolean>`${activityLog.entityType} <> 'case'`];
+        filters.caseReadCondition ?? sql<boolean>`${activityLog.entityType} <> 'case'`,
+        sql<boolean>`(${activityLog.entityType} <> 'agent_commentary' or ${agentCommentaryActivityVisible(
+          activityLog.entityId, filters.companyId, filters.readCondition ?? sql<boolean>`true`)})`];
       const limit = normalizeActivityLimit(filters.limit);
 
       if (filters.agentId) {

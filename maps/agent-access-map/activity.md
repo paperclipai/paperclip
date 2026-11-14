@@ -214,11 +214,13 @@ Capability ID: `activity/agent-commentary`.
 
 Review: `baseline`.
 
-API: `present` — `GET /api/companies/{companyId}/agent-commentary` and
-`GET /api/companies/{companyId}/agent-commentary/{id}`.
+API: `present` — `GET /api/companies/{companyId}/agent-commentary`,
+`GET /api/companies/{companyId}/agent-commentary/{id}`, and `PUT`/`DELETE`
+`/api/companies/{companyId}/agent-commentary/{id}/vote`.
 
-Agent access: `restricted` — the browsing API is board-only. Agent submission
-continues through the existing POST and native submit tools.
+Agent access: `restricted` — agents read their own messages, or all of them with an
+explicit `commentary:view` grant, including vote counts. Voting is people-only. Agent
+submission continues through the existing POST and native submit tools.
 
 Policy: Company membership, `commentary:view`, and source-task visibility. All human company roles,
 including viewers, receive the permission by default, with an upgrade grant for existing active human members.

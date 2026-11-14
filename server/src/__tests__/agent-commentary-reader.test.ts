@@ -1,15 +1,17 @@
 import { randomUUID } from "node:crypto";
-import { sql, eq } from "drizzle-orm";
+import { and, sql, eq } from "drizzle-orm";
 import express from "express";
 import request from "supertest";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
-import { agentCommentary, agents, authUsers, companies, companyMemberships, createDb, heartbeatRuns, issueAccessGrants, issues, principalPermissionGrants } from "@paperclipai/db";
+import { activityLog, agentCommentary, agentCommentaryVotes, agents, authUsers, companies, companyMemberships, createDb, heartbeatRuns, issueAccessGrants, issues, principalPermissionGrants } from "@paperclipai/db";
 import { agentCommentaryQuerySchema } from "@paperclipai/shared";
 import { startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 import { agentCommentaryReader } from "../services/agent-commentary-reader.js";
 import { agentCommentaryRoutes } from "../routes/agent-commentary.js";
 import { errorHandler } from "../middleware/error-handler.js";
 import { accessService } from "../services/access.js";
+import { activityService } from "../services/activity.js";
+import { issueReadSqlCondition } from "../services/authorization.js";
 import { grantsForHumanRole } from "../services/company-member-roles.js";
 
 describe("agent commentary browsing", () => {
@@ -19,7 +21,7 @@ describe("agent commentary browsing", () => {
   const companyId = randomUUID(), foreignCompanyId = randomUUID();
   const firstAgentId = randomUUID(), secondAgentId = randomUUID();
   const visibleTaskId = randomUUID(), privateTaskId = randomUUID();
-  const firstId = randomUUID(), privateId = randomUUID(), foreignId = randomUUID();
+  const firstId = randomUUID(), secondId = randomUUID(), privateId = randomUUID(), foreignId = randomUUID();
   const longBody = "Preserve evidence history. " + "A useful observation. ".repeat(100);
   const query = (values: object = {}) => agentCommentaryQuerySchema.parse(values);
 
@@ -47,7 +49,7 @@ describe("agent commentary browsing", () => {
     ]);
     await db.insert(agentCommentary).values([
       { id: firstId, companyId, agentId: firstAgentId, runId, issueId: visibleTaskId, kind: "suggestion", body: longBody, idempotencyKey: "first", payloadHash: "hash", createdAt: new Date("2026-01-03T12:00:00Z") },
-      { id: randomUUID(), companyId, agentId: secondAgentId, runId, issueId: visibleTaskId, kind: "complaint", body: "Installer failed at 100% completion with literal_under_score.", idempotencyKey: "second", payloadHash: "hash", createdAt: new Date("2026-01-02T12:00:00Z") },
+      { id: secondId, companyId, agentId: secondAgentId, runId, issueId: visibleTaskId, kind: "complaint", body: "Installer failed at 100% completion with literal_under_score.", idempotencyKey: "second", payloadHash: "hash", createdAt: new Date("2026-01-02T12:00:00Z") },
       { id: privateId, companyId, agentId: firstAgentId, runId, issueId: privateTaskId, kind: "suggestion", body: "Private task feedback", idempotencyKey: "private", payloadHash: "hash", createdAt: new Date("2026-01-01T12:00:00Z") },
       { id: foreignId, companyId: foreignCompanyId, agentId: foreignCompanyId, runId: foreignRunId, kind: "complaint", body: "Other company feedback", idempotencyKey: "foreign", payloadHash: "hash" },
     ]);
@@ -110,9 +112,27 @@ describe("agent commentary browsing", () => {
       id, companyId, agentId: firstAgentId, runId, issueId: taskId, kind: "complaint",
       body: "Deleted private task feedback", idempotencyKey: "deleted", payloadHash: "hash",
     });
+    await reader.setVote(companyId, id, sql`true`, "operator", true, { actorType: "user", actorId: "operator" });
+    const voteHistory = async () => (await activityService(db).list({
+      companyId, entityType: "agent_commentary", entityId: id, readCondition: sql<boolean>`${issues.id} = ${visibleTaskId}`,
+    })).map((row) => row.action);
+    expect(await voteHistory()).toEqual([]);
     await db.delete(issues).where(eq(issues.id, taskId));
+    expect(await voteHistory()).toEqual([]);
     expect(await reader.get(companyId, id, eq(issues.id, visibleTaskId))).toBeNull();
     expect((await reader.list(companyId, query({ q: "Deleted private task feedback" }), eq(issues.id, visibleTaskId))).total).toBe(0);
+  });
+
+  it("lists company activity whose entity ids are not UUIDs", async () => {
+    await db.insert(activityLog).values([
+      { companyId, actorId: "operator", action: "plugin.updated", entityType: "plugin", entityId: "example.plugin" },
+      { companyId, actorId: "operator", action: "agent_commentary.voted", entityType: "agent_commentary", entityId: "not-a-uuid" },
+      { companyId, actorId: "operator", action: "agent_commentary.voted", entityType: "agent_commentary", entityId: firstId },
+    ]);
+    const entityIds = (await activityService(db).list({ companyId, readCondition: sql<boolean>`true` }))
+      .map((row) => row.entityId);
+    expect(entityIds).toEqual(expect.arrayContaining(["example.plugin", firstId]));
+    expect(entityIds).not.toContain("not-a-uuid");
   });
 
   it("enforces board membership, commentary permission and filter bounds at the HTTP boundary", async () => {
@@ -203,6 +223,8 @@ describe("agent commentary browsing", () => {
     expect(deniedPage.body.items.map((entry: { id: string }) => entry.id)).not.toContain(privateId);
     expect((await request(app).get(url).query({ q: "Private task feedback" }).expect(200)).body).toMatchObject({ total: 0, items: [] });
     await request(app).get(`${url}/${privateId}`).expect(404);
+    await request(app).put(`${url}/${privateId}/vote`).expect(404);
+    await request(app).delete(`${url}/${privateId}/vote`).expect(404);
 
     const [grant] = await db.insert(issueAccessGrants).values({
       issueId: privateTaskId, subjectType: "user", subjectId: userId, source: "explicit", grantedByUserId: ownerId,
@@ -211,10 +233,89 @@ describe("agent commentary browsing", () => {
     expect(grantedPage.body.total).toBe(3);
     expect(grantedPage.body.items.map((entry: { id: string }) => entry.id)).toContain(privateId);
     expect((await request(app).get(`${url}/${privateId}`).expect(200)).body.body).toBe("Private task feedback");
+    expect((await request(app).put(`${url}/${privateId}/vote`).expect(200)).body).toEqual({ id: privateId, voteCount: 1, votedByMe: true });
+
+    const voteHistory = async () => (await activityService(db).list({
+      companyId, entityType: "agent_commentary", entityId: privateId,
+      readCondition: await issueReadSqlCondition(db, { type: "board", source: "session", userId, companyIds: [companyId] }),
+    })).map((row) => row.action);
+    expect(await voteHistory()).toContain("agent.commentary_upvoted");
 
     await db.update(issueAccessGrants).set({ revokedAt: new Date() }).where(eq(issueAccessGrants.id, grant.id));
+    expect(await voteHistory()).toEqual([]);
     expect((await request(app).get(url).expect(200)).body.total).toBe(2);
     await request(app).get(`${url}/${privateId}`).expect(404);
+    await request(app).delete(`${url}/${privateId}/vote`).expect(404);
+    await db.delete(agentCommentaryVotes).where(eq(agentCommentaryVotes.commentaryId, privateId));
+    await db.update(agentCommentary).set({ voteCount: 0 }).where(eq(agentCommentary.id, privateId));
   });
 
+  it("counts one upvote per person, removes it, repeats safely and sorts by votes", async () => {
+    let actor: Record<string, unknown> = { type: "board", source: "local_implicit", userId: "operator" };
+    const app = express();
+    app.use((req, _res, next) => { req.actor = actor as typeof req.actor; next(); });
+    app.use("/api", agentCommentaryRoutes(db));
+    app.use(errorHandler);
+    const url = `/api/companies/${companyId}/agent-commentary`;
+    const ids = async (path: string) => (await request(app).get(path).expect(200)).body.items.map((entry: { id: string }) => entry.id);
+    const newest = await ids(url);
+    expect(newest[0]).toBe(firstId);
+    expect((await request(app).get(url).expect(200)).body.items.every((entry: { voteCount: number; votedByMe: boolean }) => entry.voteCount === 0 && !entry.votedByMe)).toBe(true);
+
+    for (let attempt = 0; attempt < 2; attempt++) {
+      expect((await request(app).put(`${url}/${secondId}/vote`).expect(200)).body).toEqual({ id: secondId, voteCount: 1, votedByMe: true });
+    }
+    actor = { type: "board", source: "local_implicit", userId: "second-person" };
+    expect((await request(app).put(`${url}/${secondId}/vote`).expect(200)).body).toEqual({ id: secondId, voteCount: 2, votedByMe: true });
+    expect((await request(app).put(`${url}/${privateId}/vote`).expect(200)).body).toEqual({ id: privateId, voteCount: 1, votedByMe: true });
+    expect(await ids(`${url}?sort=votes`)).toEqual([secondId, privateId, firstId]);
+    expect(await ids(url)).toEqual(newest);
+    expect((await request(app).get(`${url}?sort=other`)).status).toBe(400);
+
+    actor = { type: "board", source: "local_implicit", userId: "operator" };
+    expect((await request(app).get(`${url}/${secondId}`).expect(200)).body).toMatchObject({ voteCount: 2, votedByMe: true });
+    expect((await request(app).get(`${url}/${privateId}`).expect(200)).body).toMatchObject({ voteCount: 1, votedByMe: false });
+    for (let attempt = 0; attempt < 2; attempt++) {
+      expect((await request(app).delete(`${url}/${secondId}/vote`).expect(200)).body).toEqual({ id: secondId, voteCount: 1, votedByMe: false });
+    }
+    expect((await request(app).get(url).expect(200)).body.items.find((entry: { id: string }) => entry.id === secondId)).toMatchObject({ voteCount: 1, votedByMe: false });
+
+    await request(app).put(`${url}/${foreignId}/vote`).expect(404);
+    await request(app).put(`${url}/not-a-uuid/vote`).expect(404);
+    actor = { type: "agent", companyId, agentId: secondAgentId };
+    expect((await request(app).get(`${url}?agentId=${secondAgentId}`).expect(200)).body.items[0]).toMatchObject({ id: secondId, voteCount: 1, votedByMe: false });
+    expect((await request(app).get(`${url}/${secondId}`).expect(200)).body).toMatchObject({ voteCount: 1, votedByMe: false });
+    await request(app).put(`${url}/${secondId}/vote`).expect(403);
+    actor = { type: "agent", companyId, agentId: firstAgentId };
+    await request(app).put(`${url}/${secondId}/vote`).expect(403);
+    actor = { type: "board", source: "session", userId: "viewer", companyIds: [companyId] };
+    expect((await request(app).put(`${url}/${secondId}/vote`).expect(403)).body.error).toContain("commentary:view");
+    await request(app).delete(`${url}/${secondId}/vote`).expect(403);
+    actor = {
+      type: "board", source: "session", userId: "company-viewer", companyIds: [companyId],
+      memberships: [{ companyId, membershipRole: "viewer", status: "active" }],
+    };
+    expect((await request(app).put(`${url}/${secondId}/vote`).expect(403)).body.error).toBe("Viewer access is read-only");
+    await request(app).delete(`${url}/${secondId}/vote`).expect(403);
+    actor = { type: "board", source: "session", userId: "operator", isInstanceAdmin: true, companyIds: [foreignCompanyId] };
+    await request(app).put(`${url}/${secondId}/vote`).expect(403);
+    expect(await db.select().from(agentCommentaryVotes).where(eq(agentCommentaryVotes.commentaryId, secondId))).toHaveLength(1);
+    const voteActivity = async (action: string) => (await db.select().from(activityLog)
+      .where(and(eq(activityLog.entityId, secondId), eq(activityLog.action, action))));
+    expect((await voteActivity("agent.commentary_upvoted")).map((row) => row.actorId).sort()).toEqual(["operator", "second-person"]);
+    expect((await voteActivity("agent.commentary_upvote_removed")).map((row) => row.details)).toEqual([{ userId: "operator" }]);
+
+    await db.delete(agentCommentaryVotes);
+    await db.update(agentCommentary).set({ voteCount: 0 });
+  });
+
+  it("deletes votes with their message", async () => {
+    const [run] = await db.select({ id: heartbeatRuns.id }).from(heartbeatRuns).where(eq(heartbeatRuns.companyId, companyId)).limit(1);
+    const id = randomUUID();
+    await db.insert(agentCommentary).values({ id, companyId, agentId: firstAgentId, runId: run.id, kind: "suggestion", body: "Short-lived", idempotencyKey: "short-lived", payloadHash: "hash" });
+    await reader.setVote(companyId, id, sql`true`, "operator", true, { actorType: "user", actorId: "operator" });
+    expect(await db.select().from(agentCommentaryVotes).where(eq(agentCommentaryVotes.commentaryId, id))).toHaveLength(1);
+    await db.delete(agentCommentary).where(eq(agentCommentary.id, id));
+    expect(await db.select().from(agentCommentaryVotes).where(eq(agentCommentaryVotes.commentaryId, id))).toHaveLength(0);
+  });
 });
