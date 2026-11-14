@@ -379,7 +379,7 @@
     "packages/shared/src/types/approval.ts": "4554d36f804cb74b825b29711ed4c622df07ff6d",
     "packages/shared/src/types/artifact.ts": "6d022d34a718196df5c109a6164e7a70ede287e8",
     "packages/shared/src/types/asset.ts": "d148d6cba0e9a8d2e3aa6cb9182df6f59f909fba",
-    "packages/shared/src/types/attention.ts": "bd6fdf6938c23f6f6e86c496a7f17d376647d9f9",
+    "packages/shared/src/types/attention.ts": "84ba104aa7df016e446af1f212786ab025289e4f",
     "packages/shared/src/types/board-bootstrap.ts": "8eb0e0ec4c91369d12b268b9411ed512c8d1e8b1",
     "packages/shared/src/types/budget.ts": "7b3fe924d571008d67093c051a13d2c7e67f3ebe",
     "packages/shared/src/types/chat-channels.ts": "103eb76c5c517102e999b49b4bb726e0ea228902",
