@@ -9,7 +9,7 @@ export const PATH_BLOCK_START = "# >>> paperclipai managed PATH >>>";
 export const PATH_BLOCK_END = "# <<< paperclipai managed PATH <<<";
 
 export type InstallSource = "npm" | "git";
-export type InstallChannel = "latest" | "canary" | "pinned";
+export type InstallChannel = "latest" | "beta" | "nightly" | "canary" | "pinned";
 
 export type InstallRecord = {
   source: InstallSource;
