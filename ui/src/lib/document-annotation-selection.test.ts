@@ -74,6 +74,66 @@ describe("buildAnchorFromContainerSelection", () => {
     expect(verified.anchor?.selectedText).toBe("current markdown stack");
   });
 
+  it("anchors a selection that spans several list items, a rule and a task list", () => {
+    const markdown = [
+      "## Inbox",
+      "",
+      "- Vendor invoice arrived",
+      "    - Due on Friday",
+      "",
+      "---",
+      "",
+      "- [ ] Reply to the landlord",
+      "- [x] Pay the water bill",
+    ].join("\n");
+    const div = document.createElement("div");
+    div.innerHTML = [
+      "<h2>Inbox</h2>",
+      "<ul>",
+      "<li>Vendor invoice arrived",
+      "<ul>",
+      "<li>Due on Friday</li>",
+      "</ul>",
+      "</li>",
+      "</ul>",
+      "<hr>",
+      "<ul class=\"contains-task-list\">",
+      "<li class=\"task-list-item\"><input type=\"checkbox\" disabled> Reply to the landlord</li>",
+      "<li class=\"task-list-item\"><input type=\"checkbox\" checked disabled> Pay the water bill</li>",
+      "</ul>",
+    ].join("\n");
+    document.body.appendChild(div);
+
+    const start = selectText(div, "invoice arrived");
+    const end = selectText(div, "Pay the water");
+    const range = document.createRange();
+    range.setStart(start.startContainer, start.startOffset);
+    range.setEnd(end.endContainer, end.endOffset);
+
+    const offset = getContainerTextOffset(div, range);
+    expect(offset).not.toBeNull();
+    const anchor = buildAnchorFromContainerSelection({ markdown, containerOffset: offset! });
+    expect(anchor).not.toBeNull();
+
+    const verified = verifyDocumentAnchorSelector({ markdown, selector: anchor!.selector });
+    expect(verified.ok).toBe(true);
+    expect(verified.anchor?.selectedText).toBe(
+      "invoice arrived Due on Friday Reply to the landlord Pay the water",
+    );
+
+    const highlightRanges = rangesForNormalizedSpan({
+      container: div,
+      selectedText: verified.anchor!.selectedText,
+    });
+    const highlighted = highlightRanges.map((item) => item.toString().trim()).filter(Boolean);
+    expect(highlighted).toEqual([
+      "invoice arrived",
+      "Due on Friday",
+      "Reply to the landlord",
+      "Pay the water",
+    ]);
+  });
+
   it("returns null for empty selections", () => {
     const container = makeContainer();
     const range = document.createRange();
