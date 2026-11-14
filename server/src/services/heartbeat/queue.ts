@@ -1360,7 +1360,7 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
       });
       if (staleness.outcome === "cancelled" || staleness.outcome === "deferred") {
         applyRunDispatchPostCommitEffects(staleness.postCommitEffects);
-        if (staleness.outcome === "cancelled" && staleness.errorCode === "issue_assignee_changed") {
+        if (staleness.outcome === "cancelled" && staleness.errorCode !== "execution_reconciliation_required") {
           await releaseIssueExecutionAndPromote(run, { suppressImmediateRecovery: true, deferredPostCommitEffects }).catch((err) => {
             logger.warn({ err, runId: run.id, issueId }, "claimQueuedRun: new owner's wake will be promoted by recovery");
           });
