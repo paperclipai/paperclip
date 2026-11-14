@@ -3243,6 +3243,38 @@ describe("P6-31 Section 18.13 executable status-authority corpus", () => {
     expect((await issueThreadInteractionService(db).getById(seeded.interaction.id))!.status).toBe("cancelled");
   }, 30_000);
 
+  it.each([
+    { template: "current-track-blocker-without-alternative", owner: { kind: "agent", name: "ESCD" }, saved: () => ({ agentId: delegateAgentId }) },
+    { template: "real-task-wide-blocker", owner: { kind: "agent", name: "Eligible status corpus delegate" }, saved: () => ({ agentId: delegateAgentId }) },
+    { template: "real-task-wide-blocker", owner: { kind: "user", name: "Avery Example" }, saved: () => "board" },
+  ])("saves the unblock owner a $template report names ($owner.kind $owner.name) and wakes an agent owner", async ({ template, owner, saved }) => {
+    const seeded = await seedFixture({ ...corpus.fixtures.find((fixture) => fixture.id === template)!, id: `named-blocker-owner-${randomUUID()}` });
+    const [stored] = await db.select().from(nativeRunResults).where(eq(nativeRunResults.id, seeded.resultId!));
+    const result = stored!.resultJson.result as { blocker: Record<string, unknown> };
+    const named = { ...result, blocker: { ...result.blocker, reasonCode: "review_required", owner } };
+    await db.update(nativeRunResults).set({ resultJson: { ...stored!.resultJson, result: named } })
+      .where(eq(nativeRunResults.id, seeded.resultId!));
+    await expect(nativeCompletionFeedback(db, seeded.runId, named as never)).resolves.toContain("Blocker report accepted");
+
+    await finalizeNativeRun({ db, runId: seeded.runId, workspaceFinalizeStatus: "succeeded" });
+    const issue = (await issueService(db).getById(seeded.issueId))!;
+    expect(issue.status).toBe("blocked");
+    expect(issue.unblockDescriptor).toEqual(expect.objectContaining({ owner: saved() }));
+    const wakes = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.companyId, companyId));
+    const ownerWakes = wakes.filter((wake) => (wake.payload as Record<string, unknown> | null)?.issueId === seeded.issueId && wake.agentId === delegateAgentId);
+    expect(ownerWakes).toHaveLength(owner.kind === "agent" ? 1 : 0);
+  }, 30_000);
+
+  it("rejects a blocker owner agent name that matches no agent, before saving the block", async () => {
+    const seeded = await seedFixture({ ...corpus.fixtures.find((fixture) => fixture.id === "real-task-wide-blocker")!, id: `unknown-blocker-owner-${randomUUID()}` });
+    const [stored] = await db.select().from(nativeRunResults).where(eq(nativeRunResults.id, seeded.resultId!));
+    const result = stored!.resultJson.result as { blocker: Record<string, unknown> };
+    await expect(nativeCompletionFeedback(db, seeded.runId, {
+      ...result, blocker: { ...result.blocker, reasonCode: "review_required", owner: { kind: "agent", name: "Nonexistent Reviewer" } },
+    } as never)).rejects.toThrow("matches no agent in this company");
+    expect(await db.select().from(statusDecisions).where(eq(statusDecisions.runId, seeded.runId))).toHaveLength(0);
+  }, 30_000);
+
   it("withdraws obsolete policy reviews, restores the prior status, and is idempotent", async () => {
     const seeded = await seedPolicyReview();
     await reconcileNativeFinalizations(db, [seeded.runId]);

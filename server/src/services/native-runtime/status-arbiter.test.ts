@@ -617,6 +617,26 @@ describe("native status authority", () => {
     );
   });
 
+  it.each(["current_track", "task_wide"] as const)("saves and wakes the agent a %s blocker names as its owner", (scope) => {
+    const action = "Review the release notes draft.";
+    expect(
+      arbitrate({
+        assessment: assessment({
+          reportedDisposition: "blocked",
+          hasBlockingRemainingWork: true,
+          blocker: { boardOwned: false, ownerAgentId: "reviewer", scope, unblockAction: action },
+        }),
+      }),
+    ).toEqual(
+      expect.objectContaining({
+        toStatus: "blocked",
+        unblockDescriptor: { owner: { agentId: "reviewer" }, action },
+        // bind_blocker wakes a non-board owner; the reporting agent is not re-woken.
+        effects: [{ kind: "bind_blocker", owner: { agentId: "reviewer" }, action }],
+      }),
+    );
+  });
+
   it("blocks a current-track result when a durable dependency already gates the issue", () => {
     expect(
       arbitrate({
