@@ -121,6 +121,7 @@ describe.skipIf(!url||!cloudDatabaseUrl)("current normal hosted Dot OAuth/device
   const knownChildProcesses:Array<{child:import("node:child_process").ChildProcess;owner:ReturnType<typeof import("../../../tests/runner-e2e/process-tree-owner.js")["createProcessTreeOwner"]>}>=[];
   let physicalFollowon:Awaited<ReturnType<typeof usefulAfterPhysicalRestart>>|undefined;
   let activeCaseDeadline:number|undefined,setupDeadline=0;
+  let continuePreparedJourney:((caseStarted:number)=>Promise<void>)|undefined;
   const childDeadline=()=>Math.min(activeCaseDeadline??Infinity,performance.now()+15_000);
   const syncChildObservation=async(deadline=childDeadline())=>{
     if(!childControl)throw new Error("Missing actual child owner");
@@ -463,38 +464,7 @@ describe.skipIf(!url||!cloudDatabaseUrl)("current normal hosted Dot OAuth/device
       await syncChildObservation();
     };
     await makeAppOwner();makePhysicalSecond=makeAppOwner;
-
-
-
-  },90_000);
-  afterAll(async()=>{activeCaseDeadline=undefined;
-    const errors:unknown[]=[];
-    releaseDeviceAckControl();deviceStage=undefined;observingPhase=undefined;
-    try{
-      for(const physical of physicalOwners)await physical.stop(childDeadline());
-      for(const known of knownChildProcesses){await known.owner.observe();
-        if(known.child.exitCode!==0||known.child.signalCode!==null||known.owner.liveGroups().length)
-          errors.push(new Error("Known child startup/execution ownership remains unknown; retain evidence"));}
-    }catch(error){errors.push(error);}
-    try{await cloudService?.stopBackgroundTasks();await close(cloudServer);await close(callback);await registry?.close();}catch(error){errors.push(error);}
-    try{if(db)await db.$client.end({timeout:1});if(url)await closeRegisteredClients(url,{scope:"database"});}catch(error){errors.push(error);}
-    try{await storageProxy?.close();}catch(error){errors.push(error);}
-    try{await objectStore?.stop();}catch(error){errors.push(error);}
-    try{restoreLinuxCA?.();}catch(error){errors.push(error);}
-    restoreGateObservation?.();restoreOAuth?.();restoreEventFactory?.();setCloudRuntimeConfigSnapshot(null);resetCloudRuntimeIdentityForTests();resetCloudControlReplayFenceForTests();vi.unstubAllEnvs();vi.unstubAllGlobals();
-    process.stdout.write(JSON.stringify({scope:"credential-free actual principal fixture transport",records:transportRecords,overflow:transportOverflow})+"\n");
-    expect(unexpectedDecisionWakes).toBe(0);expect(physicalOwners.every(owner=>owner.child.exitCode===0)).toBe(true);expect(databaseObservation.listenersOpen).toBe(0);expect(databaseObservation.dedicatedOpen).toBe(0);
-    const tokenDiagnostic=process.env.PAPERCLIP_DOT_ACCEPTANCE_RECEIPT;
-    if(tokenDiagnostic){
-      if(!path.isAbsolute(tokenDiagnostic))errors.push(new Error("Private token diagnostic needs absolute receipt path"));
-      else try{await writeFile(tokenDiagnostic+".token-frontier.json",JSON.stringify({scope:"passive existing current-custody owner",callbackHttp,tokenHttp,tokenRetry,actualDeviceRegistrationCalls,deviceAckTargetRevision,heldDeviceAck,deviceWire,eventTransportCounts,subscriptionWitness,deviceAckChecks,pendingDeviceAckCheckObservers,deviceWireOverflow,deviceObserverFailures,pendingDeviceObservers,pendingDeviceAckResponses,deviceRetryEvidence,reads:tokenOwnerReads,overflow:tokenObservationOverflow,gateReads,gateObservationOverflow,gateObserverFailures,pendingGateObservers,writeFailures:0,noPassiveDiagnosticQueries:true,deviceValidationReadsOutsideQuiet:true,originalCodeRetryOnlyAfterDurableUnconsumedProof:true},null,2)+"\n",{mode:0o600,flag:"wx"});}catch(error){errors.push(error);}
-    }
-    if(!errors.length&&casePassed&&home)removeTestHome(home);
-    if(errors.length)throw new AggregateError(errors,"Principal normal App owned cleanup failed");
-  },30_000);
-
-  it("uses real hosted code/device OAuth, reverse subscription and genuine failed-task recovery before strict quiet/revoke",async()=>{
-    const caseStarted=performance.now();activeCaseDeadline=caseStarted+90_000;
+    const caseStarted=setupDeadline-90_000;
     if(!physicalApp)throw new Error("Missing normal physical App");
     const claim=signer.signClaim({stackId,claimId:randomUUID(),previousOrigin:origin,canonicalOrigin:origin,stackSlug:slug});
     expect((await request(appLoopback).get("/api/health").set("Host",host).set(CLOUD_RUNTIME_IDENTITY_HEADER,claim)).status).toBe(200);
@@ -798,6 +768,7 @@ describe.skipIf(!url||!cloudDatabaseUrl)("current normal hosted Dot OAuth/device
       .parse((await childControl.request({command:"stop-checkpointed",runId:failedRunId,environmentId:environment.body.id},childDeadline())).result);
     expect(fault.termination).toEqual({providerLeaseId:fault.providerLeaseId,state:"stopped"});
     let failureEpisode:Record<string,unknown>|undefined;
+    let originalRecoveryDueAt:number|undefined;
     const historyObservationStartedAt=Date.now();
     let lastHistoryObservation:{observedAt:number;historyCount:number;retryableCount:number}|undefined;
     try {
@@ -806,6 +777,8 @@ describe.skipIf(!url||!cloudDatabaseUrl)("current normal hosted Dot OAuth/device
       const episodes=owner?.recoveryHistory.filter(row=>row.disposition==="retryable_failure")??[];
       lastHistoryObservation={observedAt:Date.now(),historyCount:Math.min(owner?.recoveryHistory.length??0,21),retryableCount:Math.min(episodes.length,21)};
       expect(episodes).toHaveLength(1);failureEpisode=episodes[0];
+      originalRecoveryDueAt=owner?.nextAttemptAt?.getTime();
+      expect(Number.isFinite(originalRecoveryDueAt)).toBe(true);
       expect(failureEpisode).toMatchObject({checkpointExists:true,providerSessionEstablished:true});
       // Observe the actual native settlement category; never substitute the
       // old local-adapter code or accept an arbitrary failure as this fault.
@@ -828,6 +801,8 @@ describe.skipIf(!url||!cloudDatabaseUrl)("current normal hosted Dot OAuth/device
     expect(await documentService(db).getIssueDocumentByKey(task.id,"report")).toBeNull();
     const failedAssignments=await db.select().from(dotRunnerAssignments).where(eq(dotRunnerAssignments.runId,failedRunId));
     expect(failedAssignments).toHaveLength(1);
+    continuePreparedJourney=async(caseStarted:number)=>{
+    const retryUsefulDeadline=Math.min(caseStarted+90_000,performance.now()+originalRecoveryDueAt!-Date.now()+30_000);
     let actualSuccessor:typeof heartbeatRuns.$inferSelect|undefined;
     const retryKey=randomUUID(),retryBody={idempotencyKey:retryKey,observedRunId:failedRunId};
     const unauthorizedRetry=await boardPost(`/api/issues/${task.id}/retry`).send(retryBody);expect(unauthorizedRetry.status).toBe(403);
@@ -836,6 +811,7 @@ describe.skipIf(!url||!cloudDatabaseUrl)("current normal hosted Dot OAuth/device
     expect(retry.body).toMatchObject({accepted:true,stale:false,observedRunId:failedRunId});expect(retry.body.requestId).toBeTruthy();
     const repeatedRetry=await boardPost(`/api/issues/${task.id}/retry`).set("x-selected-operator",operatorId).send(retryBody);
     expect(repeatedRetry.status).toBe(202);expect(repeatedRetry.body.requestId).toBe(retry.body.requestId);
+    const retryUsefulRemaining=retryUsefulDeadline-performance.now();expect(retryUsefulRemaining).toBeGreaterThan(0);
     await vi.waitFor(async()=>{
       const [retryWake]=await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id,retry.body.requestId));
       expect(retryWake).toMatchObject({companyId,agentId,requestedByActorId:operatorId});
@@ -848,7 +824,7 @@ describe.skipIf(!url||!cloudDatabaseUrl)("current normal hosted Dot OAuth/device
       const [current]=await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id,runId));actualSuccessor=current;
       expect(current).toMatchObject({companyId,agentId});
       expect(current.status).toBe("running");
-    },{timeout:30_000,interval:50});
+    },{timeout:retryUsefulRemaining,interval:50});
     await vi.waitFor(async()=>{
       expect(await db.select().from(dotRunnerAssignments).where(eq(dotRunnerAssignments.runId,runId))).toHaveLength(1);
     },{timeout:30_000,interval:50});
@@ -1028,5 +1004,37 @@ describe.skipIf(!url||!cloudDatabaseUrl)("current normal hosted Dot OAuth/device
       controlledNormalAppCloud:true,hostedCredentialWake:wakeEvidence,originalGrantId:originalGrant.id,codeAndDeviceVerified:true,deviceSelectionRetry:deviceRetryEvidence,eventTransport:{...eventTransportCounts,scope:"controlled exact-owned virtual HTTP; production DNS/peer/SSRF NOT qualified"},subscriptionWitness,fullDotMirrorVerified:true,
     }),{mode:0o600});
     casePassed=true;
+    };
+  },90_000);
+  afterAll(async()=>{activeCaseDeadline=undefined;
+    const errors:unknown[]=[];
+    releaseDeviceAckControl();deviceStage=undefined;observingPhase=undefined;
+    try{
+      for(const physical of physicalOwners)await physical.stop(childDeadline());
+      for(const known of knownChildProcesses){await known.owner.observe();
+        if(known.child.exitCode!==0||known.child.signalCode!==null||known.owner.liveGroups().length)
+          errors.push(new Error("Known child startup/execution ownership remains unknown; retain evidence"));}
+    }catch(error){errors.push(error);}
+    try{await cloudService?.stopBackgroundTasks();await close(cloudServer);await close(callback);await registry?.close();}catch(error){errors.push(error);}
+    try{if(db)await db.$client.end({timeout:1});if(url)await closeRegisteredClients(url,{scope:"database"});}catch(error){errors.push(error);}
+    try{await storageProxy?.close();}catch(error){errors.push(error);}
+    try{await objectStore?.stop();}catch(error){errors.push(error);}
+    try{restoreLinuxCA?.();}catch(error){errors.push(error);}
+    restoreGateObservation?.();restoreOAuth?.();restoreEventFactory?.();setCloudRuntimeConfigSnapshot(null);resetCloudRuntimeIdentityForTests();resetCloudControlReplayFenceForTests();vi.unstubAllEnvs();vi.unstubAllGlobals();
+    process.stdout.write(JSON.stringify({scope:"credential-free actual principal fixture transport",records:transportRecords,overflow:transportOverflow})+"\n");
+    expect(unexpectedDecisionWakes).toBe(0);expect(physicalOwners.every(owner=>owner.child.exitCode===0)).toBe(true);expect(databaseObservation.listenersOpen).toBe(0);expect(databaseObservation.dedicatedOpen).toBe(0);
+    const tokenDiagnostic=process.env.PAPERCLIP_DOT_ACCEPTANCE_RECEIPT;
+    if(tokenDiagnostic){
+      if(!path.isAbsolute(tokenDiagnostic))errors.push(new Error("Private token diagnostic needs absolute receipt path"));
+      else try{await writeFile(tokenDiagnostic+".token-frontier.json",JSON.stringify({scope:"passive existing current-custody owner",callbackHttp,tokenHttp,tokenRetry,actualDeviceRegistrationCalls,deviceAckTargetRevision,heldDeviceAck,deviceWire,eventTransportCounts,subscriptionWitness,deviceAckChecks,pendingDeviceAckCheckObservers,deviceWireOverflow,deviceObserverFailures,pendingDeviceObservers,pendingDeviceAckResponses,deviceRetryEvidence,reads:tokenOwnerReads,overflow:tokenObservationOverflow,gateReads,gateObservationOverflow,gateObserverFailures,pendingGateObservers,writeFailures:0,noPassiveDiagnosticQueries:true,deviceValidationReadsOutsideQuiet:true,originalCodeRetryOnlyAfterDurableUnconsumedProof:true},null,2)+"\n",{mode:0o600,flag:"wx"});}catch(error){errors.push(error);}
+    }
+    if(!errors.length&&casePassed&&home)removeTestHome(home);
+    if(errors.length)throw new AggregateError(errors,"Principal normal App owned cleanup failed");
+  },30_000);
+
+  it("uses real hosted code/device OAuth, reverse subscription and genuine failed-task recovery before strict quiet/revoke",async()=>{
+    const caseStarted=performance.now();activeCaseDeadline=caseStarted+90_000;
+    expect(continuePreparedJourney).toBeTypeOf("function");
+    await continuePreparedJourney!(caseStarted);
   },90_000);
 });

@@ -5,6 +5,7 @@ import path from "node:path";
 import { createServer } from "node:http";
 import { once } from "node:events";
 import { eq } from "drizzle-orm";
+import { DELIVERY_QUEUES } from "../../../services/delivery-work-notifications.js";
 import { createDb, closeRegisteredClients, authUsers, agents } from "@paperclipai/db";
 import { prepareOwnedLinuxDistribution } from "./normal-distribution-bootstrap.js";
 import { heartbeatService } from "../../../services/heartbeat.js";
@@ -30,6 +31,13 @@ export async function startNormalDotAppGeneration(input: {
   consumedWakeHealth: () => void;
 }) {
   const errors: unknown[]=[]; let unexpectedDecisionWakes=0,sessionCalls=0;
+  const nativeTrace:Array<{at:number;event:string;value?:number|boolean|null}>=[];let nativeTraceDropped=0;
+  const nativeEventCounts={registered:0,run_enter:0,run_fulfilled:0,run_rejected:0,has_pending:0,settled:0,next_run_at:0};
+  let nativeGate:{at:number;allowed:boolean;taskDrain:boolean;warmStandby:boolean|null}|undefined;
+  const recordNative=(event:keyof typeof nativeEventCounts,value?:number|boolean|null)=>{
+    nativeEventCounts[event]++;nativeTrace.push({at:Date.now(),event,...(value===undefined?{}:{value})});
+    if(nativeTrace.length>32){nativeTrace.shift();nativeTraceDropped++;}
+  };
   const healthStatuses:number[]=[];let healthOverflow=0;
   const linuxBootstrap=await prepareOwnedLinuxDistribution(input.linuxInput);
   const db=createDb(input.databaseUrl,{maxConnections:2,applicationName:"dot-principal-normal-app"});
@@ -93,8 +101,23 @@ export async function startNormalDotAppGeneration(input: {
     Object.assign(process.env,{PAPERCLIP_API_URL:origin,PAPERCLIP_RUNTIME_API_URL:origin,PAPERCLIP_LISTEN_HOST:"127.0.0.1",PAPERCLIP_LISTEN_PORT:String(address.port)});
     const coordinator=app.locals.deliveryWork;assert(coordinator&&typeof coordinator.register==="function");
     const normalOwner=heartbeatService(db,{pluginWorkerManager:linuxBootstrap.workerManager});owner=normalOwner;
-    const canRun=()=>!isIdleTaskDrainActive()&&!standby();
-      await normalOwner.registerResidualRecoveryWork(coordinator,canRun).ready;
+    const canRun=()=>{
+      const taskDrain=isIdleTaskDrainActive(),warmStandby=taskDrain?null:standby();
+      const allowed=!taskDrain&&!warmStandby;nativeGate={at:Date.now(),allowed,taskDrain,warmStandby};return allowed;
+    };
+    const observedResidualCoordinator={...coordinator,register(...args:Parameters<typeof coordinator.register>){
+      const [queue,task]=args;
+      if(queue!==DELIVERY_QUEUES.nativeProcessSessions)return coordinator.register(queue,task);
+      recordNative("registered");
+      return coordinator.register(queue,{...task,
+        run:async signal=>{recordNative("run_enter");try{const value=await task.run(signal);recordNative("run_fulfilled");return value;}
+          catch(error){recordNative("run_rejected");throw error;}},
+        hasPending:async allowed=>{const pending=await task.hasPending(allowed);recordNative("has_pending",pending);return pending;},
+        ...(task.onSettled?{onSettled:(hints?:ReadonlySet<string>)=>{recordNative("settled",hints?.size??0);task.onSettled!(hints);}}:{}),
+        ...(task.nextRunAt?{nextRunAt:()=>{const at=task.nextRunAt!();recordNative("next_run_at",at);return at;}}:{}),
+      });
+    }};
+      await normalOwner.registerResidualRecoveryWork(observedResidualCoordinator,canRun).ready;
       await normalOwner.registerActiveRunSilenceWork(coordinator,canRun).ready;
       await normalOwner.registerIssueStateRecoveryWork(coordinator,canRun).ready;
       dispatchWork=normalOwner.registerRunDispatchWork(coordinator,canRun);await dispatchWork.ready;
@@ -127,7 +150,7 @@ export async function startNormalDotAppGeneration(input: {
       await enforcement.ready;await accounting.ready;
 
     return {origin,db,heartbeat:owner,workerManager:linuxBootstrap.workerManager,stop,
-      snapshot:()=>({pid:process.pid,worker:idleWorkSnapshot(),taskDrain:owner!.getTaskDrainStatus(),nativeSockets:nativeSockets.size,
+      snapshot:()=>({pid:process.pid,nativeRecovery:{gate:nativeGate,counts:{...nativeEventCounts},last32:[...nativeTrace],droppedEarlier:nativeTraceDropped},worker:idleWorkSnapshot(),taskDrain:owner!.getTaskDrainStatus(),nativeSockets:nativeSockets.size,
         unexpectedDecisionWakes,errorCount:errors.length,sessionCalls,healthStatuses:[...healthStatuses],healthOverflow,
         runtimeIdentity:{stackId:getCloudRuntimeIdentity()?.stackId,canonicalOrigin:getCloudRuntimeIdentity()?.canonicalOrigin}})};
   }catch(primary){try{await stop();}catch(cleanup){throw new AggregateError([primary,cleanup],"normal_dot_child_start_cleanup_failed");}throw primary;}

@@ -1,5 +1,6 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { expect, it } from "vitest";
+import { EventEmitter } from "node:events";
 import { createProcessTreeOwner, stopOwnedProcessTree } from "./process-tree-owner.js";
 import { readProcessTable, type ProcessObservation } from "./process-tree.js";
 
@@ -352,4 +353,37 @@ it.skipIf(process.platform === "win32")("does not re-read a failed process listi
     await expect(stopOwnedProcessTree(child as unknown as ChildProcess, owner, 50, 500)).rejects.toThrow("Owned tree cleanup incomplete");
     expect(reads).toBe(1);
   } finally { owner.stopObserving(); }
+});
+
+it.skipIf(process.platform === "win32")("joining an in-flight pre-close observation does not prove a post-close empty tree", async () => {
+  const root = Object.assign(new EventEmitter(), { pid: 100, exitCode: null as number | null, signalCode: null });
+  const caller = row(process.pid, 1, 10);
+  let table = [caller, row(100, process.pid, 100), row(200, 100, 200)];
+  let blocked = false;
+  let release: (() => void) | undefined;
+  const gate = new Promise<void>(resolve => { release = resolve; });
+  const signals: number[] = [];
+  const owner = createProcessTreeOwner(root as unknown as ChildProcess, {
+    readTable: async () => { const captured = table; if (blocked) await gate; return captured; },
+    signalGroup: pid => { signals.push(pid); },
+  });
+  try {
+    await owner.observe();
+    blocked = true;
+    const preClose = owner.observe();
+    const closed = new Promise<void>(resolve => { root.once("close", () => resolve()); });
+    root.exitCode = 0; root.emit("close", 0, null); await closed;
+    table = [caller, row(200, 1, 200)];
+    const joinedAfterClose = owner.observe();
+    expect(joinedAfterClose).toBe(preClose);
+    release!(); await joinedAfterClose;
+    expect(owner.liveGroups().map(group => group.processGroupId).sort()).toEqual([100, 200]);
+    blocked = false;
+    await owner.observe();
+    expect(owner.liveGroups().map(group => group.processGroupId)).toEqual([200]);
+    table = [caller];
+    await owner.observe();
+    expect(owner.liveGroups()).toEqual([]);
+    expect(signals).toEqual([]);
+  } finally { release?.(); owner.stopObserving(); }
 });

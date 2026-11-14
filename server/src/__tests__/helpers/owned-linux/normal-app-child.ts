@@ -25,7 +25,9 @@ catch(primary){try{restoreCA();}catch(cleanup){throw new AggregateError([primary
 let owner:Awaited<ReturnType<typeof import("./normal-app-generation.js")["startNormalDotAppGeneration"]>>|undefined;
 let shutting:Promise<void>|undefined;
 const shutdown=()=>shutting??=(async()=>{
-  try{await owner?.stop();const snapshot=ports.snapshot();assert.equal(snapshot.connections,0);assert.equal(snapshot.dedicated,0);assert.equal(snapshot.listeners,0);
+  try{const nativeRecovery=owner?.snapshot().nativeRecovery;
+    if(nativeRecovery)process.stdout.write(JSON.stringify({kind:"owned_normal_native_recovery_frontier",pid:process.pid,...nativeRecovery})+"\n");
+    await owner?.stop();const snapshot=ports.snapshot();assert.equal(snapshot.connections,0);assert.equal(snapshot.dedicated,0);assert.equal(snapshot.listeners,0);
     assert.equal(snapshot.observerPending,0);assert.equal(snapshot.observerFailures,0);assert.equal(snapshot.overflow,0);
     send({kind:"stopped",pid:process.pid,owner:owner?.snapshot(),snapshot});
   }finally{try{ports.restore();}finally{restoreCA();}}

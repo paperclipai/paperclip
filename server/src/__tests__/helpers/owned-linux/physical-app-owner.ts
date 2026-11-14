@@ -56,8 +56,17 @@ export async function forkNormalDotApp(input: {
         }
         await bounded(closed, originalJoinDeadline, "owned_app_original15s_join_exhausted_retained");
         if (child.exitCode !== 0 || child.signalCode !== null) throw new Error("owned_app_unclean_exit_retained");
-        await owner.observe();
-        if (owner.liveGroups().length) throw new Error("owned_app_descendants_remain_retained");
+        if(performance.now()>=originalJoinDeadline)throw new Error("owned_app_original15s_join_exhausted_retained");
+        await bounded(owner.observe(),originalJoinDeadline,"owned_app_original15s_join_exhausted_retained");
+        if(performance.now()>=originalJoinDeadline)throw new Error("owned_app_original15s_join_exhausted_retained");
+        await bounded(owner.observe(),originalJoinDeadline,"owned_app_original15s_join_exhausted_retained");
+        const retained=owner.liveGroups();
+        if(retained.length){
+          process.stderr.write(JSON.stringify({kind:"owned_app_retained_group_frontier",pid:child.pid,
+            exitCode:child.exitCode,signalCode:child.signalCode,
+            groups:retained.map(group=>({processGroupId:group.processGroupId,members:group.members.map(member=>({pid:member.pid,started:member.started}))}))})+"\n");
+          throw new Error("owned_app_descendants_remain_retained");
+        }
         const after = await readProcessTable();
         if (!after || after.some(row => row.pid === child.pid)) throw new Error("owned_app_old_pid_not_absent");
       })();
