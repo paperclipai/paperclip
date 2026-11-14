@@ -403,6 +403,7 @@ export function boardChatRoutes(
     });
 
     // Feed the prompt to the CLI via stdin.
+    proc.stdin.on("error", () => {});
     proc.stdin.write(prompt);
     proc.stdin.end();
   });
