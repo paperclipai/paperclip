@@ -545,6 +545,13 @@ export async function execute(
   } catch {
     // Non-fatal
   }
+  if (
+    cfgBoolean(config.startInWorkspace) !== false &&
+    path.isAbsolute(cwd) &&
+    !args.includes("--in")
+  ) {
+    args.splice(3, 0, "--in", cwd);
+  }
 
   // ── Log start ──────────────────────────────────────────────────────────
   await ctx.onLog(
