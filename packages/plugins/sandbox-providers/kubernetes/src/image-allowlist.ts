@@ -26,6 +26,7 @@ export interface ResolveImageDefaults {
 export interface ResolveImageConfig {
   imageAllowList: string[];
   imageRegistry?: string;
+  runtimeImage?: string;
 }
 
 export function resolveImage(
@@ -38,6 +39,9 @@ export function resolveImage(
       throw new Error(`Image override "${target.imageOverride}" is not in allowlist`);
     }
     return target.imageOverride;
+  }
+  if (config.runtimeImage && config.runtimeImage.trim().length > 0) {
+    return config.runtimeImage.trim();
   }
   if (config.imageRegistry) {
     return rewriteRegistry(defaults.runtimeImage, config.imageRegistry);
