@@ -2,6 +2,7 @@ import type { ActorInfo } from "../types.js";
 import { createOAuthClientProtocol } from "./client.js";
 import { asRecord, oauthConfig, sameOAuthIssuer } from "./metadata.js";
 import { resolveOAuthClientIdMetadataDocumentUrl } from "./client-metadata.js";
+import { hasOAuthRedirectOverride } from "./redirect-overrides.js";
 import type { OAuthProviderEndpoints, OAuthClientRegistrationSource } from "./types.js";
 import { connectionMethodForConnection } from "../connection-methods.js";
 import { and, eq } from "drizzle-orm";
@@ -436,8 +437,11 @@ function canRegisterOAuthClientDynamically(
     // A reviewed provider compatibility choice may require DCR even when the
     // server also advertises CIMD. Do not resolve/adopt a metadata URL for that
     // method; the default for every other method remains CIMD-first.
-    const metadataDocumentUrl = !dcrRequired && input.endpoints
-      .clientIdMetadataDocumentSupported
+    // The metadata document advertises only the default callback, so a
+    // connection with a redirect override always uses DCR instead.
+    const metadataDocumentUrl = !dcrRequired &&
+      !hasOAuthRedirectOverride(input.connection.config.url) &&
+      input.endpoints.clientIdMetadataDocumentSupported
       ? await resolveOAuthClientIdMetadataDocumentUrl(
           input.redirectUri,
           options.oauthClientMetadataLookup,
