@@ -1597,7 +1597,7 @@ describePostgres("heartbeat recovery module ownership", () => {
     const firstEvent = new Promise<undefined>(resolve => { finishFirstEvent = () => resolve(undefined); });
     deps.appendRunEvent.mockImplementationOnce(() => firstEvent);
     const hotRestartEvents = () => deps.appendRunEvent.mock.calls
-      .filter(([, event]) => event.message.startsWith("Hot restart requested")).length;
+      .filter(([, event]) => event.message?.startsWith("Hot restart requested") === true).length;
     let preparation: ReturnType<typeof recovery.prepareHotRestartShutdown> | undefined;
     try {
       const step = await runBoundedShutdownStep({ step: "hot_restart_prepare", signal: "SIGTERM", timeoutMs: 2_000,
