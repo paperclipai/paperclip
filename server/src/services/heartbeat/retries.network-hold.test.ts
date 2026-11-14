@@ -1,6 +1,7 @@
 import type { Db } from "@paperclipai/db";
 import { describe, expect, it, vi } from "vitest";
 import { createHeartbeatRetries, type HeartbeatRetryDependencies } from "./retries.js";
+import { logger } from "../../middleware/logger.js";
 
 /**
  * The retry-engine side of the host-network hold (LAC-6885).
@@ -88,6 +89,33 @@ describe("scheduleBoundedRetryForRun host-network hold", () => {
     // spent budget, it is a budget that was never touched.
     expect(appendRunEvent).not.toHaveBeenCalled();
     expect(applyRunDispatchPostCommitEffects).not.toHaveBeenCalled();
+  });
+
+  it("logs the hold, so an outage is distinguishable from an idle fleet", async () => {
+    // The hold writes no run row and no run event on purpose -- writing either
+    // would be the spawn it is suppressing -- so this log line is the ONLY
+    // trace it leaves. Asserted rather than eyeballed because an unasserted
+    // log line is one refactor away from silently disappearing, and then
+    // "holding correctly" and "wedged" look identical from the outside.
+    const info = vi.spyOn(logger, "info").mockImplementation(() => logger);
+    try {
+      const { dependencies } = deps(async () => false);
+      const retries = createHeartbeatRetries(unusableDb, dependencies);
+
+      await retries.scheduleBoundedRetryForRun(fakeRun(), fakeAgent);
+
+      const held = info.mock.calls.find(
+        ([fields]) => (fields as { errorCode?: string })?.errorCode === "provider_network_unreachable",
+      );
+      expect(held).toBeDefined();
+      expect(held![0]).toMatchObject({
+        runId: "00000000-0000-4000-8000-00000000r001",
+        issueId: "00000000-0000-4000-8000-00000000i001",
+        errorCode: "provider_network_unreachable",
+      });
+    } finally {
+      info.mockRestore();
+    }
   });
 
   it("reports the issue so the hold is attributable", async () => {

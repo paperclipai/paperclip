@@ -6034,6 +6034,36 @@ export function recoveryService(
         result.issueIds.push(issue.id);
       } else if (
         (recoveryOutcome.retryExhausted || recoveryOutcome.continuationRefused || preparationRetry) &&
+        // A HELD retry is not a reason to escalate: `outcome.retryAt` is set
+        // ONLY by the network hold (service.ts ~2163, from the gate's own
+        // return), and it means a recheck deadline is already out through
+        // `onDeferredDeadline`. The issue is coming back on its own, so parking
+        // it `blocked` here would be the exact LAC-6342 harm the hold exists to
+        // prevent, and redundant besides.
+        //
+        // This guard covers all three arms, not just `preparationRetry`:
+        //
+        //   `retryExhausted` CAN be true alongside a hold. The gate sits ahead
+        //   of the attempt-count logic in `scheduleBoundedRetryForRun`, so a run
+        //   whose budget was already spent is held before it ever reaches the
+        //   exhaustion branch, while line ~2172 re-derives exhaustion
+        //   independently via `transientRetryBudgetSpent(predecessor)`. That
+        //   combination is real and this guard is what makes it safe: the
+        //   escalation is deferred, not lost. On the next pass the probe
+        //   succeeds, the gate falls through, the exhaustion branch returns with
+        //   NO `retryAt`, and the issue escalates exactly as it does today, one
+        //   recheck late. A host that never recovers holds indefinitely instead;
+        //   that gap is tracked separately (cap or visible card).
+        //
+        //   `preparationRetry` is independent of why no successor was queued, so
+        //   it would escalate a held run on its own. Measured on this deployment
+        //   over 21 days: of 168 runs whose error carries a host-level network
+        //   code, ALL 168 are `adapter_failed` and NONE carry a transient
+        //   workspace-preparation code, so the two have not in fact co-occurred
+        //   here. It is reachable in principle (a prep step failing its own
+        //   network call would carry both), but it is unmeasured, so this arm is
+        //   defensive rather than a fix for an observed park.
+        recoveryOutcome.retryAt === undefined &&
         !assignedWorkSweepOwnsFailedRun(issue, latestRun, agentId) &&
         !(await hasActiveExecutionPath(issue.companyId, issue.id, null))
       ) {

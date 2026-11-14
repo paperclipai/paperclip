@@ -609,6 +609,17 @@ export function createHeartbeatRetries(db: Db, dependencies: HeartbeatRetryDepen
     if (isHostNetworkUnreachableFailure(run)
         && isProbeHostRelevantToAdapter(agent.adapterType)
         && !(await isProviderHostReachable())) {
+      // The hold is otherwise SILENT: it writes no run row and no run event,
+      // because writing either would be the spawn it is suppressing. Without
+      // this line an outage is indistinguishable from an idle fleet in the log.
+      logger.info({
+        runId: run.id,
+        issueId: readNonEmptyString(run.contextSnapshot?.issueId),
+        agentId: run.agentId,
+        adapterType: agent.adapterType,
+        errorCode: PROVIDER_NETWORK_UNREACHABLE_CODE,
+        recheckInMs: PROVIDER_NETWORK_UNREACHABLE_RECHECK_MS,
+      }, "held a bounded retry: host cannot reach the provider");
       return {
         outcome: "not_scheduled" as const,
         reason:
