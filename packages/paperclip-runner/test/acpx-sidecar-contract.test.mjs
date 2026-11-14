@@ -277,3 +277,15 @@ test("Pi native empty message boundaries and replay history fit the strict sidec
     assert.equal(validate({ ...messages[2], payload, piMessageBoundary: { phase: "start" } }), false);
   }
 });
+
+test("a terminal's background task report matches the shared accepted and rejected vectors", async () => {
+  const vectors = JSON.parse(await readFile(new URL("../protocol/fixtures/provider-boundary/acpx-background-tasks.json", import.meta.url), "utf8"));
+  const terminal = (payload) => ({ ...messages[2], eventType: "runtime.turn_terminal", payload });
+  assert.equal(validate(terminal({ status: "completed" })), true, JSON.stringify(validate.errors));
+  for (const { value } of vectors.accepted) {
+    assert.equal(validate(terminal({ status: "completed", backgroundTasks: value })), true, JSON.stringify(value));
+  }
+  for (const { value, case: name } of vectors.rejected) {
+    assert.equal(validate(terminal({ status: "completed", backgroundTasks: value })), false, name);
+  }
+});

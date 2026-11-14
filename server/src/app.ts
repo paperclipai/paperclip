@@ -135,6 +135,7 @@ import { createSavedWorkspaceLoader } from "./services/remote-workspaces.js";
 import { createSavedWorkspaceArchiveOpener } from "./services/saved-workspace-archive.js";
 import { routineRoutes } from "./routes/routines.js";
 import { environmentRoutes } from "./routes/environments.js";
+import { tailscaleConnectionRoutes } from "./routes/tailscale-connections.js";
 import { executionWorkspaceRoutes } from "./routes/execution-workspaces.js";
 import { goalRoutes } from "./routes/goals.js";
 import { onboardingSeedRoutes } from "./routes/onboarding-seed.js";
@@ -824,6 +825,7 @@ export async function createApp(
     openSavedWorkspaceArchive: createSavedWorkspaceArchiveOpener(db, opts.storageService),
   }) }));
   api.use(routineRoutes(db, { pluginWorkerManager: workerManager }));
+  api.use(tailscaleConnectionRoutes(db));
   api.use(
     environmentRoutes(db, {
       pluginWorkerManager: workerManager,

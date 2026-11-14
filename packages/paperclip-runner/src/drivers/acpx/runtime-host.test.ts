@@ -374,17 +374,6 @@ describe("ACPX runtime host", () => {
     expect(await readFile(auth, "utf8")).toBe('{"user_owned":true}');
   });
 
-  it.each([
-    { PAPERCLIP_NATIVE_MCP_NAME: "paperclip-assigned" },
-    { PAPERCLIP_NATIVE_MCP_NAME: "paperclip", PAPERCLIP_NATIVE_MCP_URL: "http://127.0.0.1:3211/mcp", PAPERCLIP_NATIVE_MCP_TOKEN: "x".repeat(40) },
-    { PAPERCLIP_NATIVE_MCP_NAME: "paperclip-assigned", PAPERCLIP_NATIVE_MCP_URL: "http://external.example/mcp", PAPERCLIP_NATIVE_MCP_TOKEN: "x".repeat(40) },
-  ])("rejects invalid assigned connection bindings before runtime launch", async (environment) => {
-    const fixture = await hostFixture();
-    const openRuntime = vi.fn();
-    await expect(AcpxRuntimeHost.open({ ...fixture.options, agent: "claude", model: "claude-sonnet-5", permissionMode: "approve-reads", environment }, fixture.dependencies({ openRuntime }))).rejects.toThrow(/assigned native MCP/);
-    expect(openRuntime).not.toHaveBeenCalled();
-  });
-
   it("leaves an active Claude owner's effort settings unchanged when a second opener loses the lifetime lease", async () => {
     const fixture = await hostFixture();
     let settingsPath = "";
@@ -487,28 +476,34 @@ describe("ACPX runtime host", () => {
     expect(openRuntime).toHaveBeenCalledTimes(1);
   });
 
-  it("registers the assigned connection gateway alongside the Claude task bridge", async () => {
+  it.each([
+    { agent: "claude" as const, model: "claude-sonnet-5", environment: {} },
+    { agent: "codex" as const, model: "gpt-5.6-sol", environment: { OPENAI_API_KEY: "synthetic-test-key" } },
+    { agent: "cursor" as const, model: "explicit-test-model", environment: { CURSOR_API_KEY: "test" } },
+  ])("admits a relayed $agent run with a binding id and ignores a previous-release gateway binding", async ({ agent, model, environment }) => {
     const fixture = await hostFixture();
-    let servers: AcpxRuntimePortOpenOptions["mcpServers"] = [];
+    const retiredGateway = {
+      PAPERCLIP_NATIVE_MCP_NAME: "paperclip-assigned",
+      PAPERCLIP_NATIVE_MCP_URL: "http://127.0.0.1:3211/mcp/gateways/previous-release",
+      PAPERCLIP_NATIVE_MCP_TOKEN: "previous-release-gateway-token-".repeat(2),
+    };
+    let launch: AcpxRuntimePortOpenOptions | undefined;
     const host = await AcpxRuntimeHost.open({
-      ...fixture.options,
-      agent: "claude", model: "claude-sonnet-5",
-      permissionMode: "approve-reads",
-      environment: {
-        PAPERCLIP_NATIVE_MCP_NAME: "paperclip-assigned",
-        PAPERCLIP_NATIVE_MCP_URL: "http://127.0.0.1:3211/mcp/gateway",
-        PAPERCLIP_NATIVE_MCP_TOKEN: "fixture-gateway-token-".repeat(3),
-      },
+      ...fixture.options, agent, model, permissionMode: "approve-all",
+      runtimeContext: { skills: [], instructions: {}, mcp: { bindingId: "assigned-run" } } as unknown as NativeRuntimeContextSnapshot,
+      environment: { ...environment, ...retiredGateway },
+      assignedMcpTransport: "prp",
       semanticTools: { tools: [], handler: async () => ({}) },
-    }, fixture.dependencies({ openRuntime: async (options) => {
-      servers = options.mcpServers;
-      return runtimePort({ getStatus: async () => ({ models: { currentModelId: "claude-sonnet-5" } }) });
+    }, fixture.dependencies({ openRuntime: async options => {
+      launch = options;
+      return runtimePort({ getStatus: async () => ({ models: { currentModelId: model } }),
+        ...(agent === "cursor" ? { identity: async () => ({ acpxRecordId: "record-1", backendSessionId: "backend-1", agentSessionId: "agent-1", mode: "agent" }) } : {}) });
     } }));
     try {
-      expect(servers.map(server => server.name)).toEqual(["paperclip", "paperclip-assigned"]);
-      expect(servers[1]).toEqual({ name: "paperclip-assigned", url: "http://127.0.0.1:3211/mcp/gateway",
-        bearerToken: "fixture-gateway-token-".repeat(3), runnerOwned: true });
-    } finally { await host.close({ reason: "gateway test complete" }); }
+      expect(launch!.mcpServers.map(server => server.name)).toEqual(["paperclip"]);
+      for (const name of Object.keys(retiredGateway)) expect(launch!.launchEnvironment).not.toHaveProperty(name);
+      expect(JSON.stringify(launch!.launchEnvironment)).not.toContain("previous-release");
+    } finally { await host.close({ reason: "relayed admission verified" }); }
   });
 
   it.each([false, true])("keeps stdio registration session-local and omits it for readOnly=%s", async readOnly => {

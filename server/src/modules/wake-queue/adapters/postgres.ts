@@ -10,6 +10,7 @@ import { notifyChatRunMilestones } from "../../../services/chat-run-milestone-no
 import { DELIVERY_QUEUES, notifyDeliveryWork } from "../../../services/delivery-work-notifications.js";
 import { isAcknowledgedNativeReassignmentStop, isAcknowledgedNativeStop } from "../../../services/acknowledged-native-stop.js";
 import { readRunCancellation } from "../../../services/run-cancellation.js";
+import { withRunRedactionHistory } from "../../../services/run-secret-redaction.js";
 import { CHAT_COMPLETION_WAKE_REASON, isCompletedOnboardingHandoffWake, settleReportedChatCompletions } from "../../../services/chat-completion-delivery.js";
 import { earlierDeclinedOutcomeReply } from "../../../services/chat-interaction-outcome-report.js";
 import { instanceSettingsService } from "../../../services/instance-settings.js";
@@ -339,7 +340,7 @@ function buildTransaction(tx: Db, deps: WakeQueuePostgresAdapterDeps, db: Db, ru
       }
     },
 
-    async getQueuedCommentLiveness({ companyId, issueId, wakeAgentId, finishingRunId, finishingRunAgentId, queuedCommentIds }) {
+    async getQueuedCommentLiveness({ companyId, issueId, wakeAgentId, finishingRunId, finishingRunAgentId, queuedCommentIds, retainDeliveredCommentBindings }) {
       // Malformed ids (for example an 8-char short form written into a wake
       // payload) can never match a comment row, but Postgres rejects the whole
       // `inArray` statement on the first invalid uuid and blocks every queued
@@ -361,7 +362,9 @@ function buildTransaction(tx: Db, deps: WakeQueuePostgresAdapterDeps, db: Db, ru
       // received would deliver them twice and can reopen finished work.
       const delivered = await deliveredQueuedCommentIds(tx, { companyId, issueId, agentId: wakeAgentId,
         commentIds: liveAndUnauthored });
-      const liveNonSelfCommentIds = liveAndUnauthored.filter(commentId => !delivered.has(commentId));
+      const liveNonSelfCommentIds = retainDeliveredCommentBindings
+        ? liveAndUnauthored
+        : liveAndUnauthored.filter(commentId => !delivered.has(commentId));
       const containedSelfAuthoredComment = rows.some(
         (row) => targetsFinishingRunAgent && !row.deletedAt && row.createdByRunId === finishingRunId,
       );
@@ -1125,7 +1128,7 @@ export function createWakeAdmissionWriter(): WakeAdmissionWriter {
         eq(agentWakeupRequests.agentId, input.agentId), eq(agentWakeupRequests.runId, current.id), eq(agentWakeupRequests.status, primary.status)));
       const mergedRun = await tx
         .update(heartbeatRuns)
-        .set({ contextSnapshot: input.mergedContextSnapshot, updatedAt: now })
+        .set({ contextSnapshot: withRunRedactionHistory(input.mergedContextSnapshot, current.contextSnapshot), updatedAt: now })
         .where(
           and(
             eq(heartbeatRuns.id, input.activeExecutionRunId),

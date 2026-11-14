@@ -204,7 +204,7 @@ export const environmentTaskResultSchema = z.discriminatedUnion("kind", [
     workspaceFileReadVersion: z.literal(1).optional(),
     githubCredentialBrokerVersion: z.literal(1).optional(),
     configuredEnvironmentVersion: z.literal(1).optional(),
-    resumeCredentialVersion: z.literal(1).optional(),
+    resumeLaunchInputsVersion: z.literal(1).optional(),
   }).strict(),
   z.object({
     kind: z.literal("status"), taskId: providerId,

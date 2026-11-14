@@ -583,23 +583,27 @@ describe("plugin-provided Runner execution", () => {
     await expect(executeEnvironmentTask(database().db, workers as never, { companyId: "company", leaseId, operation: submit })).rejects.toThrow("provider unavailable");
     expect(workers.call).not.toHaveBeenCalled();
   });
-  it("forwards a resume credential without persisting it or exposing it in worker errors", async () => {
+  it("forwards resume launch inputs without persisting them or exposing them in worker errors", async () => {
     const identity = { runnerInstanceId: "runner", environmentLeaseId: leaseId, runId: "run", normalizedSessionId: "session", turnId: "turn", itemId: "item" };
     const operation = { kind: "resume" as const, identity, bootstrapTicket: "transient-test-ticket",
-      credential: { type: "claude-env" as const, environment: { CLAUDE_CODE_OAUTH_TOKEN: "never-leak-token" } } };
+      credential: { type: "claude-env" as const, environment: { CLAUDE_CODE_OAUTH_TOKEN: "never-leak-token" } },
+      configuredEnvironment: { STRIPE_SECRET_KEY: "never-leak-variable" } };
     const result = { kind: "resume", taskId: "attempt-1", outcome: "resumed" };
     const retained = () => { const value = row(); value.lease.status = "retained"; value.run!.status = "succeeded"; return value; };
     const store = database(retained());
     const workers = worker(result);
     await expect(executeEnvironmentTask(store.db, workers as never, { companyId: "company", leaseId, operation })).resolves.toEqual(result);
     expect(workers.call).toHaveBeenCalledWith("original", "environmentTask", expect.objectContaining({ operation }), 15_000);
-    expect(JSON.stringify(store.sets.map(set => new PgDialect().sqlToQuery(set.metadata as never).params))).not.toContain("never-leak-token");
+    const persisted = JSON.stringify(store.sets.map(set => new PgDialect().sqlToQuery(set.metadata as never).params));
+    expect(persisted).not.toContain("never-leak-token");
+    expect(persisted).not.toContain("never-leak-variable");
 
     const failing = worker();
-    failing.call.mockRejectedValue(Object.assign(new Error("resume failed for never-leak-token"), { data: operation }));
+    failing.call.mockRejectedValue(Object.assign(new Error("resume failed for never-leak-token and never-leak-variable"), { data: operation }));
     const error = await executeEnvironmentTask(database(retained()).db, failing as never, { companyId: "company", leaseId, operation }).catch(caught => caught);
     expect(error.message).toBe("Plugin-provided Runner execution operation unavailable; reconcile the same task before retrying");
     expect(JSON.stringify({ ...error, message: error.message })).not.toContain("never-leak-token");
+    expect(JSON.stringify({ ...error, message: error.message })).not.toContain("never-leak-variable");
     expect(error.cause).toBeUndefined();
   });
   it("rejects wrong task receipts and sanitizes worker errors", async () => {
