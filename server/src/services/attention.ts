@@ -83,6 +83,7 @@ import { resolvableApprovalStatuses } from "../lib/approval-records.js";
 import { activeIssueInteractionCondition, deferrableInteractionCondition } from "./issue-question-context.js";
 import { evaluateAgentInvokability, type AgentOrgRow } from "./agent-invokability.js";
 import { canonicalizeStoredResolverPolicy } from "./issue-thread-interaction-resolution.js";
+import { historicalQuestionCondition } from "./issue-question-context.js";
 import { decisionQueueService } from "./decision-queues.js";
 import {
   decisionRetentionService,
@@ -1856,9 +1857,17 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
           required: sql<boolean>`not ${deferrableInteractionCondition()}`,
         })
         .from(issueThreadInteractions)
+        .innerJoin(issues, and(
+          eq(issueThreadInteractions.issueId, issues.id),
+          eq(issues.companyId, companyId),
+        ))
         .where(and(
           eq(issueThreadInteractions.companyId, companyId),
           inArray(issueThreadInteractions.status, [...PENDING_INTERACTION_STATUSES]),
+          or(
+            notInArray(issues.status, ["done", "cancelled"]),
+            and(eq(issues.status, "done"), historicalQuestionCondition()),
+          ),
           questionIssueIds ? inArray(issueThreadInteractions.issueId, [...questionIssueIds]) : undefined,
           questionIssueIds ? eq(issueThreadInteractions.kind, "ask_user_questions") : undefined,
         ))
