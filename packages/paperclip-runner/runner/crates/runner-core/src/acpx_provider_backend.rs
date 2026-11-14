@@ -2205,12 +2205,13 @@ impl AcpxCommandExecutor {
                 error
             });
         }
-        let (provider_process_will_be_replaced, previous_process_id) = self
+        let previous_process_id = self
             .session
             .as_ref()
-            .map(|session| match session.restarted_after_turn_from() {
-                Some(process_id) => (true, process_id),
-                None => (session.generation_has_run_turn(), session.process_id()),
+            .map(|session| {
+                session
+                    .restarted_after_turn_from()
+                    .unwrap_or_else(|| session.process_id())
             })
             .expect("ACPX session exists after availability check");
         {
@@ -2338,12 +2339,12 @@ impl AcpxCommandExecutor {
             json!({"sessionGoals": state.goal_projection["sessionGoals"], "turnControls":state.turn_controls})
         });
         self.save_state()?;
-        let mut events = Vec::with_capacity(if provider_process_will_be_replaced {
-            2
-        } else {
-            1
-        });
-        if provider_process_will_be_replaced {
+        let provider_process_was_replaced = self
+            .session
+            .as_ref()
+            .is_some_and(AcpxProviderSession::turn_start_replaced_provider);
+        let mut events = Vec::with_capacity(if provider_process_was_replaced { 2 } else { 1 });
+        if provider_process_was_replaced {
             let session = self
                 .session
                 .as_ref()
@@ -3241,6 +3242,21 @@ impl CommandExecutor for AcpxCommandExecutor {
         }
         self.poll_provider(false)?;
         self.retained_events()
+    }
+
+    fn provider_poll_is_live(&self) -> bool {
+        self.restore_checked
+            && self.persistence_error.is_none()
+            && self
+                .session
+                .as_ref()
+                .is_some_and(|session| !session.awaits_next_turn())
+            && self.state.as_ref().is_some_and(|state| {
+                matches!(state.lifecycle.as_str(), "turn_starting" | "turn_active")
+                    && state.active_turn_id.is_some()
+                    && !state.provider_exit_unconfirmed
+                    && state.descriptor.run_id == self.context.run_id
+            })
     }
 
     fn poll_disconnected_events(&mut self) -> Result<Vec<PolledEvent>, DurableRunnerError> {

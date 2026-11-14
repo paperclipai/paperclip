@@ -39,7 +39,7 @@ import { authorizationService, executionWorkspaceReadSqlCondition, projectReadSq
 import type { SQL } from "drizzle-orm";
 import { nativeSessionProviderEvidence } from "./native-runtime/native-session-resume.js";
 import { hasWorkspaceRestoreFailure } from "@paperclipai/shared";
-import { notifyTerminalWorkspaceWork } from "./terminal-workspace-work.js";
+import { notifyTerminalWorkspaceWork, terminalWorkspaceTargetsFromHints, type TerminalWorkspaceTargets } from "./terminal-workspace-work.js";
 import {
   clearTerminalWorkspaceRetry, readTerminalWorkspaceRetry, recordTerminalWorkspaceFailure, terminalWorkspaceFailure,
   TERMINAL_WORKSPACE_RETRY_KEY, type TerminalWorkspaceFailure,
@@ -267,6 +267,20 @@ export function clearMetadataReopenPendingConsumption(
   delete next[EXECUTION_WORKSPACE_REOPEN_PENDING_METADATA_KEY];
   delete next[EXECUTION_WORKSPACE_REOPEN_PENDING_SINCE_METADATA_KEY];
   return next;
+}
+
+function terminalWorkspaceTargetFilter(targets: TerminalWorkspaceTargets) {
+  const ids = (values: string[]) => sql.join(values.map(id => sql`${id}::uuid`), sql`, `);
+  const byWorkspace = targets.workspaceIds.length ? sql`${executionWorkspaces.id} in (${ids(targets.workspaceIds)})` : undefined;
+  const byIssue = targets.issueIds.length ? sql`(${executionWorkspaces.sourceIssueId} in (
+      with recursive ancestry(id, parent_id) as (
+        select id, parent_id from ${issues} where id in (${ids(targets.issueIds)})
+        union
+        select parent.id, parent.parent_id from ${issues} parent inner join ancestry on parent.id = ancestry.parent_id
+      ) select id from ancestry)
+    or ${executionWorkspaces.id} in (select execution_workspace_id from ${issues}
+      where id in (${ids(targets.issueIds)}) and execution_workspace_id is not null))` : undefined;
+  return or(byWorkspace, byIssue) ?? sql`false`;
 }
 
 const workspaceSourceKeys = ["providerType", "cwd", "providerRef", "projectId", "projectWorkspaceId", "sourceIssueId", "mode", "strategyType", "branchName", "repoUrl", "baseRef"] as const;
@@ -3518,7 +3532,7 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
     // `compact: false` skips workspace compaction and compaction-trash deletion
     // for this sweep only. Pending compactions keep their deadlines, so a later
     // sweep runs them.
-    sweepTerminalWorkspaces: async (limit = 50, signal?: AbortSignal, options: { compact?: boolean; allowRemoteDeliveryChecks?: boolean } = {}) => {
+    sweepTerminalWorkspaces: async (limit = 50, signal?: AbortSignal, options: { compact?: boolean; allowRemoteDeliveryChecks?: boolean; targets?: TerminalWorkspaceTargets } = {}) => {
       // Skip this sweep while another sweep runs. A concurrent sweep would share
       // the cursor and the boundary and could corrupt the rotation state. A
       // skipped tick is safe: the next tick runs the sweep with intact state.
@@ -3567,13 +3581,14 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
       // predicate uses the same (updatedAt, id) order as the query, so each
       // sweep advances past the rows it already inspected instead of re-reading
       // the oldest ineligible candidates.
-      const cursor = terminalSweepCursor;
+      const targets = options.targets;
+      const cursor = targets ? null : terminalSweepCursor;
       // Freeze an upper bound on updatedAt at the start of each rotation. Without
       // a bound, a steady stream of newer candidates keeps every page full, so
       // the cursor never reaches the end and never resets, and older candidates
       // that became eligible are never revisited. The frozen bound makes the
       // rotation cover a finite set, so the cursor always reaches a short page.
-      if (!cursor) {
+      if (!targets && !cursor) {
         terminalSweepBoundary = now();
         terminalWorkspaceDeadlines.clear();
         isolatedRehomeDeadlines.clear();
@@ -3606,7 +3621,8 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
       const cursorFilter = cursor
         ? sql`(${executionWorkspaces.updatedAt}, ${executionWorkspaces.id}) > (${cursor.updatedAt}::timestamptz, ${cursor.id}::uuid)`
         : undefined;
-      const scanFilter = and(baseCandidateFilter, boundaryFilter, cursorFilter);
+      const scanFilter = targets ? and(baseCandidateFilter, terminalWorkspaceTargetFilter(targets))
+        : and(baseCandidateFilter, boundaryFilter, cursorFilter);
       const candidates = await db
         .select({ workspace: executionWorkspaces, cursorAt: sql<string>`${executionWorkspaces.updatedAt}::text` })
         .from(executionWorkspaces)
@@ -3616,10 +3632,11 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
       // Advance the cursor to this page's last row. A short page means the scan
       // reached the end of the bounded candidate set, so reset the cursor and
       // the bound to start a new rotation on the next sweep.
-      if (candidates.length < limit) {
+      if (targets && candidates.length >= limit) terminalSweepRescanRequested = true;
+      if (!targets && candidates.length < limit) {
         terminalSweepCursor = null;
         terminalSweepBoundary = null;
-      } else {
+      } else if (!targets) {
         const lastCandidate = candidates[candidates.length - 1]!;
         terminalSweepCursor = { updatedAt: lastCandidate.cursorAt, id: lastCandidate.workspace.id };
       }
@@ -4306,8 +4323,10 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
       }
       return result;
       } catch (error) {
-        terminalSweepCursor = previousCursor;
-        terminalSweepBoundary = previousBoundary;
+        if (!options.targets) {
+          terminalSweepCursor = previousCursor;
+          terminalSweepBoundary = previousBoundary;
+        }
         terminalSweepRescanRequested = true;
         throw error;
       } finally {
@@ -4317,8 +4336,10 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
 
     hasTerminalWorkspaceSweepContinuation: () => terminalSweepCursor !== null || terminalSweepRescanRequested,
 
-    terminalWorkspaceWorkSettled: (hints?: ReadonlySet<string>) => {
-      if (terminalSweepInProgress || terminalSweepCursor !== null) terminalSweepRescanRequested = true;
+    terminalWorkspaceWorkSettled: (hints?: ReadonlySet<string>, options: { targeted?: boolean } = {}) => {
+      if ((terminalSweepInProgress || terminalSweepCursor !== null) && !(options.targeted && terminalWorkspaceTargetsFromHints(hints))) {
+        terminalSweepRescanRequested = true;
+      }
       pullRequestStateCache.clear();
       if (opts.taskDirectoryRetention) {
         if (!hints) taskDirectoryRowSkips.clear();

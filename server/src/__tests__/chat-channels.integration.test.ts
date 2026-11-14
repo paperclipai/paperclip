@@ -72,6 +72,7 @@ import { companyFastResponses, fastResponseRequests } from "@paperclipai/db";
 import { toolAccessService } from "../services/tool-access.js";
 import { toolActionRequests, toolInvocations, toolPolicies } from "@paperclipai/db";
 import { GitHubPublicationLeaseLost, withGitHubPublicationLease } from "../services/chat-github-publication-lease.js";
+import { createRunSecretRedactionRegistry } from "../services/run-secret-redaction.js";
 import { secretService } from "../services/secrets.js";
 import { githubChatWizardService } from "../services/chat-github-wizard.js";
 import { dispatchGitHubBotCloudEvent, registerGitHubBotCloudSetupPoller } from "../services/chat-github-cloud-ingress.js";
@@ -11007,6 +11008,35 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     expect(receipt).toMatchObject({ authorAgentId: fixture.assignedAgentId, createdByRunId: null });
     expect((await readIssuesById(job.issueId!))[0].status).not.toBe("done");
     expect(provider).toHaveBeenCalledTimes(1);
+    if (channelProvider === "slack") {
+      await db.update(heartbeatRuns).set({ runtimeMode: "native", status: "running",
+        contextSnapshot: await chatWakeContext({ endpointId: endpoint.id, issueId: job.issueId!, provider: "slack", providerMessageId: "9000.1" }),
+      }).where(eq(heartbeatRuns.id, queuedRun.id));
+      await db.insert(chatPublications).values({ companyId: fixture.companyId, endpointId: endpoint.id,
+        conversationId: job.conversationId!, issueId: job.issueId!, idempotencyKey: `run:${queuedRun.id}:working:${endpoint.id}`,
+        payload: { text: "Maya is working…", progressState: "working" }, createdAt: new Date(Date.now() - 60_000),
+      });
+      await service.processPendingPublications();
+      const [working] = await db.select().from(chatPublications).where(eq(chatPublications.idempotencyKey, `run:${queuedRun.id}:working:${endpoint.id}`));
+      expect(working).toMatchObject({ state: "cancelled", redactedError: "Acknowledged by contextual fast response" });
+      await db.insert(heartbeatRunEvents).values({ companyId: fixture.companyId, agentId: fixture.assignedAgentId, runId: queuedRun.id,
+        seq: 1, eventType: "item.completed", payload: { prpEvent: { schema: "paperclip.prp.event.v1", eventType: "item.completed", runId: queuedRun.id,
+          payload: { kind: "agentMessage", channel: "progress", text: "Found the border rule. Checking the fix." } } },
+      });
+      await db.insert(heartbeatRunEvents).values({ companyId: fixture.companyId, agentId: fixture.assignedAgentId, runId: queuedRun.id,
+        seq: 2, eventType: "tool.execution.completed", payload: { result: "PRIVATE tool output" },
+      });
+      expect(await enqueueSafeNativeChatProgress(db, { scope: { companyId: fixture.companyId, issueId: job.issueId! } })).toBe(1);
+      await service.processPendingPublications();
+      const slack = runtime.endpoints.get(endpoint.id)!;
+      expect(slack.posts).toHaveLength(1);
+      expect(slack.edits).toEqual([expect.objectContaining({ text: expect.stringContaining("Found the border rule. Checking the fix.") })]);
+      await addSelectedChatFinal({ companyId: fixture.companyId, agentId: fixture.assignedAgentId, issueId: job.issueId!, runId: queuedRun.id, body: "Fixed the border." });
+      await service.processPendingPublications();
+      expect(slack.posts).toHaveLength(2);
+      expect(slack.posts[1].text).toBe("Fixed the border.");
+      await db.update(heartbeatRuns).set({ status: "succeeded", finishedAt: new Date() }).where(eq(heartbeatRuns.id, queuedRun.id));
+    }
   });
 
   it("mirrors Paperclip messages with user attribution and returns only the selected Slack reply", async () => {
@@ -36006,14 +36036,12 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       const providerRuntime = runtime.endpoints.get(endpoint.id);
       expect(providerRuntime?.posts.map((post) => post.text)).toEqual(provider === "github" ? [] : [
         "Maya is working…",
+        "answer-final",
       ]);
-      expect(providerRuntime?.edits).toEqual(provider === "github" ? [] : [
-        {
-          threadId: thread.thread.id,
-          messageId: "outbound-1",
-          text: "answer-final",
-        },
-      ]);
+      await service.processPendingPublications();
+      expect(providerRuntime?.edits).toEqual(provider === "slack" ? [expect.objectContaining({
+        messageId: "outbound-1", text: "Response sent.",
+      })] : []);
       const commentPublications = await db
         .select()
         .from(chatPublications)
@@ -36028,7 +36056,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
         expect.objectContaining({
           commentId: comments[2].id,
           state: "published",
-          providerMessageId: "outbound-1",
+          providerMessageId: "outbound-2",
         }),
       ]);
       expect(
@@ -36052,7 +36080,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
               eq(chatMessageLinks.direction, "outbound"),
             ),
           ),
-      ).toHaveLength(provider === "github" ? 0 : 1);
+      ).toHaveLength(provider === "github" ? 0 : 2);
       await service.shutdown();
     },
   );
@@ -36355,7 +36383,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       result: { sessionStatus: "active" },
     });
 
-    // A final response produces one edit, then a fresh revision of the status
+    // A final response produces one new reply, then a fresh revision of the status
     // lane. Neither a retry nor restart posts another copy of that response.
     await addSelectedChatFinal({
       agentId: fixture.assignedAgentId,
@@ -36369,11 +36397,11 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     await resumed.service.processPendingSlackSessionSyncs(25, action.id);
     expect(statusCalls).toEqual(["processing", "active", "active"]);
     expect(firstProviderRuntime.posts.length).toBe(providerPosts);
-    expect(runtime.endpoints.get(endpoint.id)?.posts.length ?? 0).toBe(0);
+    expect(runtime.endpoints.get(endpoint.id)?.posts.length ?? 0).toBe(1);
     expect(
       runtime.endpoints
         .get(endpoint.id)
-        ?.edits.filter((edit) => edit.text === "SLACK-SESSION-DONE"),
+        ?.posts.filter((post) => post.text === "SLACK-SESSION-DONE"),
     ).toHaveLength(1);
 
     // A worker can select a due status row, then lose to another worker before
@@ -36510,7 +36538,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     }
   });
 
-  it("coalesces one Slack run's lifecycle and final response despite an interleaved task control", async () => {
+  it("keeps one Slack progress message and a separate final response despite an interleaved task control", async () => {
     const fixture = await seedCompany();
     const { callbacks, endpoint, runtime, service } =
       await configuredSlackEndpoint(fixture);
@@ -36607,6 +36635,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     const providerRuntime = runtime.endpoints.get(endpoint.id);
     expect(providerRuntime?.posts).toEqual([
       { threadId: thread.thread.id, text: "Maya is queued." },
+      { threadId: thread.thread.id, text: finalText, chunks: [finalText] },
     ]);
     expect(providerRuntime?.edits).toEqual([
       {
@@ -36619,11 +36648,6 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
         messageId: "outbound-1",
         text: expect.stringMatching(/ — /),
       },
-      {
-        threadId: thread.thread.id,
-        messageId: "outbound-1",
-        text: finalText,
-      },
     ]);
     const renderedSlackMessages = new Map(
       providerRuntime!.posts.map((post, index) => [
@@ -36633,7 +36657,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     );
     for (const edit of providerRuntime!.edits)
       renderedSlackMessages.set(edit.messageId, edit.text);
-    expect([...renderedSlackMessages.values()]).toEqual([finalText]);
+    expect([...renderedSlackMessages.values()]).toEqual([expect.stringMatching(/ — /), finalText]);
     const publications = await db
       .select()
       .from(chatPublications)
@@ -36659,10 +36683,14 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
             eq(chatMessageLinks.conversationId, conversation.id),
             eq(chatMessageLinks.direction, "outbound"),
           ),
-        ),
+        ).orderBy(asc(chatMessageLinks.providerMessageId)),
     ).toEqual([
       expect.objectContaining({
         providerMessageId: "outbound-1",
+        commentId: null,
+      }),
+      expect.objectContaining({
+        providerMessageId: "outbound-2",
         commentId: finalComment.id,
       }),
     ]);
@@ -36673,6 +36701,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     await service.processPendingPublications();
     expect(providerRuntime?.posts).toEqual([
       { threadId: thread.thread.id, text: "Maya is queued." },
+      { threadId: thread.thread.id, text: finalText, chunks: [finalText] },
       { threadId: thread.thread.id, text: expect.stringMatching(/ — /) },
     ]);
   });
@@ -66884,6 +66913,9 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       app.use((req, _res, next) => { req.actor = boardActor(companyId); next(); });
       app.use("/api", issueRoutes(db, createStorageService().storage, { chatRunRetries: f.service }));
       app.use(errorHandler);
+      // The route admits a plain Retry before it answers. This test checks
+      // the saved intent, not dispatch: a paused agent keeps it unstarted.
+      await db.update(agents).set({ status: "paused" }).where(eq(agents.id, agentId));
       const continued = await request(app).post(`/api/issues/${issueId}/retry`).send({
         idempotencyKey: input.idempotencyKey, observedRunId: input.observedRunId,
       }).expect(202);
@@ -69907,7 +69939,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
   });
 
   it.each(["slack", "telegram"] as const)(
-    "keeps a %s retry's queue, working, and selected final on its own provider identity",
+    "keeps a %s retry's queue and working progress on its own provider identity and delivers its selected final",
     async (provider) => {
       const context = await failedChatRetryFixture(provider);
       try {
@@ -69977,12 +70009,24 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
         expect(finalPublication).toMatchObject({
           state: "published",
           attempts: 1,
-          providerMessageId: queued.providerMessageId,
         });
-        expect(context.providerRuntime.posts).toHaveLength(1);
-        expect(context.providerRuntime.edits.at(-1)?.text).toContain(
-          "EXACT-RETRY-ANSWER",
-        );
+        if (provider === "slack") {
+          expect(finalPublication.providerMessageId).not.toBe(
+            queued.providerMessageId,
+          );
+          expect(context.providerRuntime.posts).toHaveLength(2);
+          expect(context.providerRuntime.posts.at(-1)?.text).toContain(
+            "EXACT-RETRY-ANSWER",
+          );
+        } else {
+          expect(finalPublication.providerMessageId).toBe(
+            queued.providerMessageId,
+          );
+          expect(context.providerRuntime.posts).toHaveLength(1);
+          expect(context.providerRuntime.edits.at(-1)?.text).toContain(
+            "EXACT-RETRY-ANSWER",
+          );
+        }
       } finally {
         await context.service.shutdown();
       }
@@ -71807,18 +71851,24 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
           failurePublication?.providerMessageId,
         );
         expect(
-          order === "failure_first"
+          provider === "slack" || order === "failure_first"
             ? failurePublication?.providerMessageId
             : answerPublication?.providerMessageId,
         ).toBe(originalWorking!.providerMessageId);
         expect(context.providerRuntime.posts).toHaveLength(3);
-        expect(context.providerRuntime.edits).toHaveLength(1);
-        expect(context.providerRuntime.edits[0]?.messageId).toBe(
-          originalWorking!.providerMessageId,
-        );
-        expect(context.providerRuntime.edits[0]?.messageId).not.toBe(
-          successorWorking!.providerMessageId,
-        );
+        const expectedEdits = [
+          ...(provider === "slack" && order === "published_final"
+            ? ["Response sent."]
+            : []),
+          provider === "slack" || order === "failure_first"
+            ? failurePublication!.payload.text
+            : answerPublication!.payload.text,
+        ].map((text) => ({
+          threadId: context.thread.thread.id,
+          messageId: originalWorking!.providerMessageId,
+          text,
+        }));
+        expect(context.providerRuntime.edits).toEqual(expectedEdits);
         const links = await db
           .select({
             providerMessageId: chatMessageLinks.providerMessageId,
@@ -71858,7 +71908,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
         await enqueueChatRunMilestones(db);
         await context.service.processPendingPublications(100);
         expect(context.providerRuntime.posts).toHaveLength(3);
-        expect(context.providerRuntime.edits).toHaveLength(1);
+        expect(context.providerRuntime.edits).toEqual(expectedEdits);
         await expect(
           db
             .select({ status: heartbeatRuns.status })
@@ -72064,6 +72114,47 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       }
     },
   );
+
+  it("edits Slack public progress and posts the final as a fresh reply, cancelling an older queued edit", async () => {
+    const context = await safeNativeProgressFixture("slack", "109");
+    try {
+      const run = await context.createRun("public progress");
+      const addPublic = (seq: number, text: string, channel = "progress") => db.insert(heartbeatRunEvents).values({
+        companyId: context.fixture.companyId, runId: run.runId, agentId: context.fixture.assignedAgentId,
+        seq, eventType: "item.completed", message: "PRIVATE event metadata", payload: { prpEvent: {
+          schema: "paperclip.prp.event.v1", runId: run.runId, eventType: "item.completed",
+          payload: { kind: "agentMessage", channel, text },
+        } },
+      });
+      const secret = "synthetic-unprefixed-progress-secret";
+      await createRunSecretRedactionRegistry(db).register(context.fixture.companyId, run.runId, secret);
+      await addPublic(1, `Found the retry bug with ${secret}. Checking recovery next.`);
+      await context.addEvent(run, "tool.execution.completed", 2);
+      expect(await enqueueChatRunMilestones(db, { since: new Date(0) })).toBe(1);
+      await context.service.processPendingPublications(100);
+      expect(context.providerRuntime.posts).toHaveLength(1);
+      expect(context.providerRuntime.edits).toEqual([expect.objectContaining({
+        messageId: "outbound-1", text: expect.stringContaining("Found the retry bug with ***REDACTED***. Checking recovery next."),
+      })]);
+      // The cooldown must retain the newest note, with no post or edit yet.
+      for (let seq = 3; seq < 23; seq++) await addPublic(seq, `Checking recovery case ${seq}.`);
+      expect(await enqueueChatRunMilestones(db, { since: new Date(0) })).toBe(0);
+      await db.update(chatPublications).set({ createdAt: new Date(Date.now() - 31_000), publishedAt: new Date(Date.now() - 31_000) })
+        .where(like(chatPublications.idempotencyKey, `run:${run.runId}:working:${context.endpoint.id}:native:%`));
+      expect(await enqueueChatRunMilestones(db, { since: new Date(0) })).toBe(1);
+      await addSelectedChatFinal({ agentId: context.fixture.assignedAgentId, body: "Fixed retry recovery.",
+        companyId: context.fixture.companyId, issueId: context.conversation.issueId, runId: run.runId });
+      // Final authority wins even while the run still says running.
+      await context.service.processPendingPublications(100);
+      expect(context.providerRuntime.posts).toHaveLength(2);
+      expect(context.providerRuntime.posts[1].text).toBe("Fixed retry recovery.");
+      expect(context.providerRuntime.edits).toHaveLength(1);
+      expect(JSON.stringify(context.providerRuntime.edits)).not.toContain("PRIVATE");
+      expect(JSON.stringify(context.providerRuntime)).not.toContain(secret);
+    } finally {
+      await retirePublicationFixture(context.service, context.endpoint.id);
+    }
+  });
 
   it("enforces the native progress cadence boundary and one publication per phase", async () => {
     const context = await safeNativeProgressFixture("telegram", "8");
@@ -77702,21 +77793,22 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
   }
 
   it.each(["slack", "telegram"] as const)(
-    "updates only the linked same-run %s failure notice when recovering an accepted response",
+    "delivers a recovered %s answer without editing another run's failure notice",
     async (provider) => {
       const context = await committedChatResponseRecoveryFixture(provider);
       try {
         const unrelatedRunId = randomUUID();
+        const failures = [];
         for (const [runId, messageId] of [
           [context.runId, "same-run-message"],
           [unrelatedRunId, "later-turn-message"],
         ]) {
-          await linkedCommittedResponseFailure(context, runId, messageId);
+          failures.push(await linkedCommittedResponseFailure(context, runId, messageId));
         }
         await expect(context.repair()).resolves.toBe(true);
         await context.service.processPendingPublications(100);
-        expect(context.providerRuntime.posts).toEqual([]);
-        expect(context.providerRuntime.edits).toEqual([
+        expect(context.providerRuntime.posts).toEqual(provider === "slack" ? [{ threadId: context.thread.thread.id, text: context.result.summary }] : []);
+        expect(context.providerRuntime.edits).toEqual(provider === "slack" ? [] : [
           {
             threadId: context.thread.thread.id,
             messageId: "same-run-message",
@@ -77724,8 +77816,8 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
           },
         ]);
         await context.service.processPendingPublications(100);
-        expect(context.providerRuntime.edits).toHaveLength(1);
-        expect(context.providerRuntime.posts).toEqual([]);
+        expect(context.providerRuntime.edits).toHaveLength(provider === "slack" ? 0 : 1);
+        expect(context.providerRuntime.posts).toEqual(provider === "slack" ? [{ threadId: context.thread.thread.id, text: context.result.summary }] : []);
         const [answer] = await db
           .select()
           .from(chatPublications)
@@ -77737,7 +77829,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
           );
         expect(answer).toMatchObject({
           state: "published",
-          providerMessageId: "same-run-message",
+          providerMessageId: provider === "slack" ? "outbound-1" : "same-run-message",
           attempts: 1,
         });
         await expect(
@@ -77750,7 +77842,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
                 eq(chatMessageLinks.providerMessageId, "same-run-message"),
               ),
             ),
-        ).resolves.toEqual([{ publicationId: answer.id }]);
+        ).resolves.toEqual([{ publicationId: provider === "slack" ? failures[0].id : answer.id }]);
         await expect(
           db
             .select({ id: heartbeatRuns.id })
@@ -80206,9 +80298,12 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
         runId,
       });
       await restarted.processPendingPublications();
-      expect(runtime.edits.at(-1)).toMatchObject({
+      expect(runtime.posts.at(-1)?.text).toBe("The exact successor answer");
+      expect(runtime.edits).toHaveLength(2);
+      expect(runtime.edits.at(-1)).toEqual({
+        threadId: context.thread.thread.id,
         messageId: queued.providerMessageId,
-        text: "The exact successor answer",
+        text: "Response sent.",
       });
       await addSelectedChatFinal({
         agentId: fixture.assignedAgentId,
@@ -80220,6 +80315,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       await restarted.processPendingPublications();
       expect(runtime.posts.at(-1)?.text).toBe("A separate second answer");
       expect(runtime.edits).toHaveLength(2);
+      expect(runtime.posts).toHaveLength(3);
       await expect(restarted.processPendingPublications()).resolves.toBe(0);
     } finally {
       await restarted?.shutdown();
@@ -80276,9 +80372,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
         expect(failure?.state).toBe("published");
         expect(answer?.providerMessageId).not.toBe(failure?.providerMessageId);
         expect(
-          order === "answer_first"
-            ? answer?.providerMessageId
-            : failure?.providerMessageId,
+          failure?.providerMessageId,
         ).toBe(queued!.providerMessageId);
         const runtime = context.runtime.endpoints.get(context.endpoint.id)!;
         expect(runtime.posts).toHaveLength(2);
@@ -80663,7 +80757,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     }
   });
 
-  it("does not let removed-input cleanup overwrite a pre-run FIFO lane already replaced by its answer", async () => {
+  it("keeps a separate FIFO answer visible while removed-input cleanup edits its queued notice", async () => {
     const context = await deferredChatQueueFixture();
     try {
       await context.service.processPendingPublications();
@@ -80689,9 +80783,10 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
         0,
       );
       const runtime = context.runtime.endpoints.get(context.endpoint.id)!;
-      expect(runtime.posts).toHaveLength(1);
+      expect(runtime.posts).toHaveLength(2);
+      expect(runtime.posts.at(-1)?.text).toBe("Already answered");
       expect(runtime.edits).toHaveLength(1);
-      expect(runtime.edits[0]?.text).toBe("Already answered");
+      expect(runtime.edits[0]?.text).toBe("This queued message was removed.");
       await expect(
         db
           .select({ state: chatPublications.state })
@@ -80702,7 +80797,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
               like(chatPublications.idempotencyKey, "wake:%:removed:%"),
             ),
           ),
-      ).resolves.toEqual([{ state: "cancelled" }]);
+      ).resolves.toEqual([{ state: "published" }]);
     } finally {
       await context.service.shutdown();
     }

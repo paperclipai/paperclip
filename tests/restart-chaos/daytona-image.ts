@@ -465,7 +465,14 @@ export async function prepareDaytonaImageArtifacts(input: { image: string; cache
 export async function assertControllerMatchesImage(artifacts: Pick<DaytonaImageArtifacts, "image" | "contentId" | "sourceRevision">,
   repositoryRoot: string, localContentId?: string): Promise<{ localContentId: string }> {
   const computed = localContentId ?? await (await import("../runner-e2e/daytona-image-content.js")).computeDaytonaImageContentId({ repositoryRoot });
-  if (computed !== artifacts.contentId) {
+  if (computed !== artifacts.contentId && process.env.PAPERCLIP_CHAOS_TEST_ACCEPT_IMAGE_CONTENT_ID === artifacts.contentId) {
+    console.warn([
+      "TEST OVERRIDE: running a controller whose runner source differs from the Daytona image.",
+      `  image ${artifacts.image}`,
+      `  image content ID ${artifacts.contentId} (source revision ${artifacts.sourceRevision})`,
+      `  this checkout's content ID ${computed}`,
+    ].join("\n"));
+  } else if (computed !== artifacts.contentId) {
     throw new Error([
       "Controller runner source does not match the Daytona image.",
       `  image ${artifacts.image}`,

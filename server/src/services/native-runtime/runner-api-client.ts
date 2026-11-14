@@ -36,9 +36,12 @@ export interface RunnerApiContext {
   runId: string;
   workMode: string;
 }
+export const RUNNER_API_CALL_HEADER = "X-Paperclip-Runner-Call";
+
 export interface RunnerApiIo {
   apiUrl: string;
   token: string;
+  callKey?: string;
   fetch?: typeof fetch;
   /** Server-owned page size for the dedicated saved-result reader. */
   responseTextPageBytes?: number;
@@ -209,6 +212,7 @@ export async function executeRunnerApi(input: RunnerApiCall, context: RunnerApiC
   const url = runnerApiUrl(operation, input, context, io.apiUrl);
   if (!io.token) throw new Error("Paperclip run authentication is unavailable");
   const headers = new Headers({ Authorization: `Bearer ${io.token}`, "X-Paperclip-Run-Id": context.runId });
+  if (io.callKey && !["GET", "HEAD", "OPTIONS"].includes(operation.method)) headers.set(RUNNER_API_CALL_HEADER, io.callKey);
   const textOffset = input.responseText?.offsetBytes ?? 0;
   const textLimit = input.responseText?.limitBytes
     ?? (input.responseText ? io.responseTextPageBytes : undefined) ?? RUNNER_API_INLINE_BYTES;

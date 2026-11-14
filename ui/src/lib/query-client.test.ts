@@ -73,14 +73,14 @@ describe("createAppQueryClient", () => {
   let client: QueryClient;
   let unbind: () => void;
   let notifyMutationError: ReturnType<typeof vi.fn<(toast: MutationErrorToast) => void>>;
-  let reportError: ReturnType<typeof vi.fn<(error: unknown) => void>>;
+  let reportError: ReturnType<typeof vi.fn<(error: unknown, queryKey: readonly unknown[]) => void>>;
 
   beforeEach(() => {
     vi.useFakeTimers();
     probe = vi.fn<() => Promise<ProbeResult>>().mockResolvedValue({ reachable: false, retryAfterMs: null });
     store = createConnectivityStore({ probe, browserOnline: true });
     notifyMutationError = vi.fn<(toast: MutationErrorToast) => void>();
-    reportError = vi.fn<(error: unknown) => void>();
+    reportError = vi.fn<(error: unknown, queryKey: readonly unknown[]) => void>();
     client = createAppQueryClient({ connectivity: store, notifyMutationError, reportError });
     client.mount();
     unbind = bindConnectivity(client, store);
@@ -275,6 +275,7 @@ describe("createAppQueryClient", () => {
     await observer.refetch();
     expect(queryFn).toHaveBeenCalledTimes(2);
     expect(reportError).toHaveBeenCalledTimes(1);
+    expect(reportError).toHaveBeenCalledWith(expect.any(ApiError), ["broken"]);
     unsubscribe();
   });
 

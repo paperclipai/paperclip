@@ -11,13 +11,27 @@
 // Emitted spans (see doc/browser-performance-tracing.md):
 //   page.load            one per hard load or client-side navigation
 //   web_vital.lcp|inp|cls Core Web Vitals
-//   GET|POST|…           same-origin `/api/` fetches, with W3C trace context
-//                        so the server's request span joins the trace
+//   GET|POST|…           same-origin `/api/` fetches that start while a
+//                        page.load is open, as its children, with W3C trace
+//                        context so the server's request span joins the
+//                        trace; no network timing events
 //   HTTP                 same-origin `/api/` requests made before this chunk
 //                        loaded, rebuilt from Resource Timing under the
 //                        page.load they belong to (no method, no server join)
 
-import { context, propagation, trace, ROOT_CONTEXT, SpanKind, type Attributes, type Context, type Span } from "@opentelemetry/api";
+import {
+  context,
+  propagation,
+  trace,
+  INVALID_SPAN_CONTEXT,
+  ROOT_CONTEXT,
+  SpanKind,
+  type Attributes,
+  type Context,
+  type Span,
+  type Tracer,
+  type TracerProvider,
+} from "@opentelemetry/api";
 import {
   AlwaysOnSampler,
   BatchSpanProcessor,
@@ -53,6 +67,34 @@ class PageLoadContextManager extends StackContextManager {
     const span = this.openPageSpan();
     return span ? trace.setSpan(active, span) : active;
   }
+}
+
+/**
+ * The tracer provider given to the fetch instrumentation. A request that
+ * starts while no page load is being measured (background polling, a refetch
+ * in an idle tab) gets a non-recording span with an invalid context: nothing
+ * is recorded or exported, and the trace context propagator sends no
+ * `traceparent` for an invalid context, so the server traces that request on
+ * its own exactly as for an unsampled tab. A request that starts while a page
+ * load is open is a normal child of it.
+ */
+export function measuredRequestsOnly(provider: TracerProvider, isMeasuring: () => boolean): TracerProvider {
+  return {
+    getTracer(name, version, options) {
+      const tracer = provider.getTracer(name, version, options);
+      const unrecorded = () => trace.wrapSpanContext(INVALID_SPAN_CONTEXT);
+      const gated: Tracer = {
+        startSpan: (spanName, spanOptions, spanContext) =>
+          isMeasuring() ? tracer.startSpan(spanName, spanOptions, spanContext) : unrecorded(),
+        startActiveSpan: ((...args: unknown[]) => {
+          if (isMeasuring()) return (tracer.startActiveSpan as (...a: unknown[]) => unknown)(...args);
+          const fn = args[args.length - 1] as (span: Span) => unknown;
+          return fn(unrecorded());
+        }) as Tracer["startActiveSpan"],
+      };
+      return gated;
+    },
+  };
 }
 
 /** Escapes a string for use inside a regular expression. */
@@ -198,9 +240,13 @@ export function startTracingSdk(
     ignoreUrls: [nonApiUrlPattern(window.location.origin)],
     propagateTraceHeaderCorsUrls: [],
     clearTimingResources: false,
+    // The nine per-request timing events (fetchStart, responseEnd, …) are
+    // each stored as a separate event by Honeycomb, about 10x the volume of
+    // the request span, and its duration already covers them.
+    ignoreNetworkEvents: true,
     enabled: false,
   });
-  fetchInstrumentation.setTracerProvider(provider);
+  fetchInstrumentation.setTracerProvider(measuredRequestsOnly(provider, () => openPageSpan !== null));
   // Requests from here on get live fetch spans; earlier ones are backfilled.
   const liveFetchSince = performance.now();
   fetchInstrumentation.enable();
