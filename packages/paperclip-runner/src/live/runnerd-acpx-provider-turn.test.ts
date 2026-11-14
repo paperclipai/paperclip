@@ -695,15 +695,20 @@ it.skipIf(process.platform === "win32")("R5 appends both provider turns after a 
 }, 60_000);
 
 const providerTurnStarts = (run: ConsumerRun) => run.committed.filter(event => event.eventType === "turn.started" && event.payload.origin === "provider").map(event => event.turnId);
-const expectBoundaryRecovery = (run: ConsumerRun) => {
-  expect(run.outcome, run.diagnostics.slice(-12).join("\n")).toBe("finalized");
+const storedSequence = (run: ConsumerRun, events: PrpEvent[]) => events.filter(event => event.sourceInstanceId === run.runnerInstanceId)
+  .map(event => event.sourceSeq).sort((left, right) => left - right);
+const expectCheckpointAtStoredEvent = (run: ConsumerRun) => {
   expect(run.queuedAtRestart.length).toBeGreaterThan(0);
-  expect(run.checkpoint.cursor).toBe(String(run.committedAtRestart.filter(event => event.sourceInstanceId === run.runnerInstanceId).at(-1)!.sourceSeq));
-  expect(providerTurnStarts(run)).toEqual(["provider-1"]);
-  expect(run.committed.filter(event => event.eventType === "turn.completed" && event.turnId === "provider-1")).toHaveLength(1);
-  const sequence = run.committed.filter(event => event.sourceInstanceId === run.runnerInstanceId).map(event => event.sourceSeq);
+  expect(run.checkpoint.cursor).toBe(String(storedSequence(run, run.committedAtRestart).at(-1)));
+};
+const expectNoHoleInCore = (run: ConsumerRun) => {
+  const sequence = storedSequence(run, run.committed);
   expect(sequence).toEqual(sequence.map((_value, index) => index + 1));
+};
+const expectSettledOnce = (run: ConsumerRun) => {
+  expect(run.outcome, run.diagnostics.slice(-12).join("\n")).toBe("finalized");
   expect(run.completeRun).toHaveBeenCalledOnce();
+  expect(run.committed.filter(event => event.eventType === "turn.completed" && event.turnId === "provider-1")).toHaveLength(1);
   expect(run.closeOutcome).toBe("closed");
   expect(unsettled(run.diagnostics)).toEqual([]);
   expect(run.durable).not.toContain("conflicting duplicate");
@@ -711,36 +716,41 @@ const expectBoundaryRecovery = (run: ConsumerRun) => {
 const providerStart = (event: PrpEvent) => event.eventType === "turn.started" && event.payload.origin === "provider";
 const awaitingTerminal = (event: PrpEvent) => event.eventType === "turn.completed" && event.payload.awaitingProviderTurn === true;
 
-it.skipIf(process.platform === "win32")("R6 saves the provider-start checkpoint as of the start Core stored while later output is still queued", async () => {
+it.skipIf(process.platform === "win32")("R6 saves the provider-start checkpoint at the start Core stored, so the recovered controller continues Core's sequence without a hole", async () => {
   const run = await runConsumerRestartScenario("live provider-turn provider-goal-at-terminal provider-turn-delay-ms=300 provider-turn-until-snapshot",
     { at: "provider-turn", waitMs: 1_000, replyResult: true, slowAppend: providerStart });
-  expect(run.checkpoint).toMatchObject({ activeTurnId: "provider-1", semanticResult: null });
   expect(run.queuedAtRestart.map(event => [event.eventType, event.turnId])).toEqual([["item.delta", "provider-1"]]);
-  expectBoundaryRecovery(run);
+  expectNoHoleInCore(run);
+  expectSettledOnce(run);
+  expect(run.checkpoint).toMatchObject({ activeTurnId: "provider-1", semanticResult: null });
+  expectCheckpointAtStoredEvent(run);
+  expect(providerTurnStarts(run)).toEqual(["provider-1"]);
 }, 60_000);
 
-it.skipIf(process.platform === "win32")("R7 saves the waiting checkpoint as of the awaited terminal Core stored while the provider turn is already queued", async () => {
+it.skipIf(process.platform === "win32")("R7 saves the waiting checkpoint at the awaited terminal Core stored, so the provider turn's start reaches Core exactly once", async () => {
   const run = await runConsumerRestartScenario("live provider-turn provider-result-resolved provider-goal-at-terminal",
     { at: "wait", waitMs: 500, holdFirstToolCall: true, slowAppend: awaitingTerminal });
+  expect(providerTurnStarts(run)).toEqual(["provider-1"]);
   expect(run.checkpoint).toMatchObject({ activeTurnId: null, awaitingProviderTurn: true, semanticResult: null });
-  expectBoundaryRecovery(run);
+  expectCheckpointAtStoredEvent(run);
   expect(run.committed.filter(event => event.eventType === "run.result.proposed").map(event => event.turnId)).toEqual(["provider-1"]);
+  expectNoHoleInCore(run);
+  expectSettledOnce(run);
   expect(answeredCalls(run)).toEqual([["provider-1", "paperclip_finish", true]]);
   expect(resolvedCalls(run.journalled)).toEqual([["provider-1", "call-provider-finish", null]]);
 }, 60_000);
 
-it.skipIf(process.platform === "win32")("R8 characterization: after the old controller answered the provider turn's finish, the boundary checkpoint has no result and the run ends on the missing-result path", async () => {
+it.skipIf(process.platform === "win32")("R8 characterization: after the old controller answered the provider turn's finish, recovery resumes at the stored start without a result, closes the turn in Core and ends on the missing-result path", async () => {
   const run = await runConsumerRestartScenario("live provider-turn provider-result-resolved provider-goal-at-terminal provider-turn-delay-ms=300",
     { at: "provider-turn", waitMs: 500, slowAppend: providerStart });
+  expect(run.queuedAtRestart.map(event => event.eventType)).toEqual(["run.result.proposed"]);
   expect(run.outcome).toContain("native_finalization_missing");
   expect(run.checkpoint).toMatchObject({ activeTurnId: "provider-1", semanticResult: null });
-  expect(run.checkpoint.cursor).toBe(String(run.committedAtRestart.filter(event => event.sourceInstanceId === run.runnerInstanceId).at(-1)!.sourceSeq));
-  expect(run.queuedAtRestart.map(event => event.eventType)).toEqual(["run.result.proposed"]);
+  expectCheckpointAtStoredEvent(run);
   expect(providerTurnStarts(run)).toEqual(["provider-1"]);
   expect(run.committed.filter(event => event.eventType === "run.result.proposed")).toEqual([]);
   expect(run.committed.filter(event => event.eventType === "turn.completed" && event.turnId === "provider-1")).toHaveLength(1);
-  const sequence = run.committed.filter(event => event.sourceInstanceId === run.runnerInstanceId).map(event => event.sourceSeq);
-  expect(sequence).toEqual(sequence.map((_value, index) => index + 1));
+  expectNoHoleInCore(run);
   expect(answeredCalls(run)).toEqual([]);
   expect(resolvedCalls(run.journalled)).toEqual([["provider-1", "call-provider-finish", null]]);
   expect(run.completeRun).not.toHaveBeenCalled();
