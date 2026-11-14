@@ -1075,6 +1075,45 @@ describe("PaperclipControlPlanePort conformance", () => {
     expect(await f.stored()).toEqual([1, 2, 3, 4].map(seq => ({ seq, sourceSeq: seq })));
   });
 
+  it("collects the deltas that arrive while a batch commits into one next batch, before the next other event", async () => {
+    const f = await streamingFixture({ streamingBatchMs: 5 });
+    await f.port.appendEvent(f.event(1), f.streamed);
+    let release!: () => void, locked!: () => void;
+    const released = new Promise<void>(resolve => { release = resolve; });
+    const lockedRun = new Promise<void>(resolve => { locked = resolve; });
+    const holder = db.transaction(async tx => {
+      await tx.execute(sql`select id from heartbeat_runs where id = ${f.identity.runId} for update`);
+      locked();
+      await released;
+    });
+    await lockedRun;
+    const options = db.$client.options as { debug?: unknown };
+    const statements: string[] = [];
+    options.debug = (_connection: number, text: string) => { statements.push(text.trim().replace(/\s+/g, " ")); };
+    const pause = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
+    let boundary: Promise<unknown> | undefined;
+    const deltas: Promise<unknown>[] = [];
+    try {
+      deltas.push(f.port.appendEvent(f.event(2), f.streamed));
+      await pause(30);
+      for (const sourceSeq of [3, 4, 5, 6, 7, 8]) {
+        deltas.push(f.port.appendEvent(f.event(sourceSeq), f.streamed));
+        await pause(15);
+      }
+      boundary = f.port.appendEvent(f.event(9, "tool.execution.started"));
+      await pause(20);
+    } finally {
+      release();
+      await holder;
+    }
+    try {
+      expect((await Promise.all(deltas)).map(receipt => (receipt as { cursor: number }).cursor)).toEqual([2, 3, 4, 5, 6, 7, 8]);
+      await expect(boundary).resolves.toMatchObject({ cursor: 9, disposition: "committed" });
+      expect(statements.filter(text => text.includes("insert into heartbeat_run_events"))).toHaveLength(3);
+    } finally { options.debug = undefined; }
+    expect(await f.stored()).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9].map(seq => ({ seq, sourceSeq: seq })));
+  });
+
   it("flushes queued deltas on the timer and before a replay read, and rejects every delta of a failed batch", async () => {
     let active = true;
     const f = await streamingFixture({ streamingBatchMs: 20, assertControllerActive: () => { if (!active) throw new Error("controller_revoked"); } });
