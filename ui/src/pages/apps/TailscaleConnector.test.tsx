@@ -5,12 +5,10 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { TailscaleConnector, TailscaleConnectorCard } from "./TailscaleConnector";
 import { ApiError } from "@/api/client";
-import { readPendingCloudHandoff } from "@/lib/oauthHandoff";
-import { PaperclipCloudOAuthHandoffPage } from "./PaperclipCloudOAuthHandoff";
 
-const fixture = vi.hoisted(() => ({ companyId: "company-1", search: "", navigate: vi.fn(), access: vi.fn(), list: vi.fn(), connect: vi.fn(), disconnect: vi.fn(), breadcrumbs: vi.fn() }));
+const fixture = vi.hoisted(() => ({ companyId: "company-1", search: "", navigate: vi.fn(), access: vi.fn(), list: vi.fn(), connect: vi.fn(), deviceLogin: vi.fn(), disconnect: vi.fn(), breadcrumbs: vi.fn() }));
 vi.mock("@/api/access", () => ({ accessApi: { getCurrentBoardAccess: fixture.access } }));
-vi.mock("@/api/tailscale", () => ({ tailscaleApi: { list: fixture.list, connect: fixture.connect, disconnect: fixture.disconnect } }));
+vi.mock("@/api/tailscale", () => ({ tailscaleApi: { list: fixture.list, connect: fixture.connect, deviceLogin: fixture.deviceLogin, disconnect: fixture.disconnect } }));
 vi.mock("@/context/CompanyContext", () => ({ useCompany: () => ({ selectedCompanyId: fixture.companyId }) }));
 vi.mock("@/context/BreadcrumbContext", () => ({ useBreadcrumbs: () => ({ setBreadcrumbs: fixture.breadcrumbs }) }));
 vi.mock("./AppLogo", () => ({ AppLogo: () => null }));
@@ -33,6 +31,8 @@ function button(label: string) {
 describe("Tailscale network connector", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    vi.spyOn(window, "open").mockReturnValue(null);
+    fixture.deviceLogin.mockResolvedValue({ connection: { ...connected, status: "authorizing" }, authorizationUrl: "https://login.tailscale.com/a/fixture", expiresAt: new Date(Date.now() + 600_000).toISOString() });
     fixture.companyId = "company-1";
     fixture.search = "";
     window.sessionStorage.clear();
@@ -83,7 +83,7 @@ describe("Tailscale network connector", () => {
     expect(fixture.connect).not.toHaveBeenCalled();
   });
 
-  it("starts OAuth from Connectors only when the user clicks Connect", async () => {
+  it("starts device sign-in from Connectors only when the user clicks Connect", async () => {
     render();await settle();
     flushSync(() => button("Connect Tailscale Network").click());await settle();
     expect(fixture.connect).toHaveBeenCalledWith("company-1", undefined);
@@ -97,24 +97,57 @@ describe("Tailscale network connector", () => {
     expect(fixture.connect).toHaveBeenCalledWith("company-1", "tailnet-1");
   });
 
-  it("preserves the current tab's Cloud handoff through reauthentication and resumes consent", async () => {
-    const session = "tailscale_handoff_session_abcdefghijklmnop";
-    const reauthenticationUrl = new URL(`/cloud/connections/reauth?session=${session}`, window.location.origin).toString();
-    fixture.connect.mockResolvedValue({ authorizationUrl: "", handoff: { kind: "paperclip_cloud", session } });
-    vi.stubGlobal("fetch", vi.fn()
-      .mockResolvedValueOnce(Response.json({ error: "RECENT_LOGIN_REQUIRED", reauthenticationUrl }, { status: 401 }))
-      .mockResolvedValueOnce(Response.json({ authorizationUrl: "https://login.tailscale.com/a/oauth_authorize" })));
-    fixture.navigate.mockImplementationOnce(() => {
-      expect(readPendingCloudHandoff()).toEqual({ kind: "paperclip_cloud", session });
-    });
+  it("keeps the connector open and offers a sign-in link when popups are blocked", async () => {
+    fixture.connect.mockResolvedValue({ connection: { ...connected, status: "authorizing" }, authorizationUrl: "https://login.tailscale.com/a/fixture", expiresAt: new Date(Date.now() + 600_000).toISOString() });
     render();await settle();
     flushSync(() => button("Connect Tailscale Network").click());await settle();
-    expect(readPendingCloudHandoff()).toEqual({ kind: "paperclip_cloud", session });
-    expect(fixture.navigate).toHaveBeenCalledWith(reauthenticationUrl);
-    flushSync(() => root.render(<PaperclipCloudOAuthHandoffPage />));await settle();
-    expect(fixture.navigate).toHaveBeenLastCalledWith("https://login.tailscale.com/a/oauth_authorize");
-    expect(readPendingCloudHandoff()).toBeNull();
-    expect(container.textContent).not.toContain("expired");
+    expect(window.open).toHaveBeenCalledWith("about:blank", "_blank");
+    expect(fixture.navigate).not.toHaveBeenCalled();
+    expect(fixture.deviceLogin).toHaveBeenCalledWith("company-1", "tailnet-1");
+    expect(container.querySelector('a[href="https://login.tailscale.com/a/fixture"]')?.textContent).toBe("Continue to Tailscale");
+    expect(button("Cancel sign-in")).toBeDefined();
+  });
+
+  it("shows administrator approval separately from sign-in", async () => {
+    fixture.list.mockResolvedValue([{ ...connected, status: "authorizing" }]);
+    fixture.deviceLogin.mockResolvedValue({ connection: { ...connected, status: "authorizing" }, needsApproval: true, expiresAt: new Date(Date.now() + 600_000).toISOString() });
+    render();await settle();
+    expect(container.textContent).toContain("Tailscale administrator");
+    expect(container.querySelector('a[href="https://login.tailscale.com/admin/machines"]')).not.toBeNull();
+  });
+
+  it("shows the connected network when the server confirms enrollment", async () => {
+    fixture.list.mockResolvedValue([{ ...connected, status: "authorizing" }]);
+    fixture.deviceLogin.mockResolvedValue({ connection: connected, expiresAt: null });
+    render();await settle();
+    expect(container.textContent).toContain("Create SSH environment");
+    expect(container.textContent).not.toContain("Cancel sign-in");
+  });
+
+  it("does not open a late sign-in response after changing companies", async () => {
+    let complete!: (value: unknown) => void;
+    fixture.connect.mockImplementation(() => new Promise(resolve => { complete = resolve; }));
+    const assign = vi.fn();
+    vi.spyOn(window, "open").mockReturnValue({ opener: null, closed: false, location: { assign }, focus: vi.fn(), close: vi.fn() } as unknown as Window);
+    fixture.list.mockImplementation(async id => id === "company-1" ? [connected] : []);
+    render();await settle();
+    flushSync(() => button("Connect Tailscale Network").click());await settle();
+    fixture.companyId = "company-2";render();await settle();
+    complete({ connection: { ...connected, status: "authorizing" }, authorizationUrl: "https://login.tailscale.com/a/fixture", expiresAt: new Date(Date.now() + 600_000).toISOString() });
+    await settle();
+    expect(assign).not.toHaveBeenCalled();
+    expect(container.textContent).not.toContain("Home tailnet");
+  });
+
+  it("stops polling and gives a recovery action when the sign-in deadline passes", async () => {
+    fixture.list.mockResolvedValue([{ ...connected, status: "authorizing" }]);
+    fixture.deviceLogin.mockResolvedValue({ connection: { ...connected, status: "authorizing" }, authorizationUrl: "https://login.tailscale.com/a/fixture", expiresAt: new Date(Date.now() - 1).toISOString() });
+    render();await settle();
+    expect(container.textContent).toContain("Sign-in expired");
+    expect(container.querySelector('a[href="https://login.tailscale.com/a/fixture"]')).toBeNull();
+    await new Promise(resolve => setTimeout(resolve, 2100));
+    expect(fixture.deviceLogin).toHaveBeenCalledOnce();
+    expect(button("Cancel sign-in")).toBeDefined();
   });
 
   it.each(["cancelled", "failed"])("explains %s consent and retries the same saved connection", async outcome => {
@@ -149,7 +182,7 @@ describe("Tailscale network connector", () => {
     expect(container.textContent).not.toContain("Create SSH environment");
   });
 
-  it("reports access failure without presenting a usable connection or starting OAuth", async () => {
+  it("reports access failure without presenting a usable connection or starting sign-in", async () => {
     fixture.list.mockRejectedValue(new ApiError("Instance admin access required", 403, { error: "forbidden" }));
     render();await settle();
     expect(container.querySelector('[role="alert"]')).not.toBeNull();
