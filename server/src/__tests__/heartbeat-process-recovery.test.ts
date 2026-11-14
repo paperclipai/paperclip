@@ -277,7 +277,11 @@ import {
   CONTROL_PLANE_CONFORMANCE_RESULT,
   CONTROL_PLANE_CONFORMANCE_TERMINAL,
 } from "../vendor/paperclip-runner/testing.js";
-import { recoveryService } from "../services/recovery/service.ts";
+import {
+  recoveryService,
+  resolveStrandedExemptionStreakCap,
+  STRANDED_RECENT_PROGRESS_EXEMPTION_MAX_STREAK,
+} from "../services/recovery/service.ts";
 import {
   readHotRestartIntent,
   readProcessStartedAt,
@@ -1126,6 +1130,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     runError?: string | null;
     resultJson?: Record<string, unknown> | null;
     monitorNextCheckAt?: Date | null;
+    runtimeMode?: "legacy" | "native";
   }) {
     const companyId = randomUUID();
     const agentId = randomUUID();
@@ -1171,6 +1176,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       triggerDetail: "system",
       status: input.runStatus,
       wakeupRequestId,
+      ...(input.runtimeMode ? { runtimeMode: input.runtimeMode } : {}),
       contextSnapshot: {
         issueId,
         taskId: issueId,
@@ -17365,6 +17371,242 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
 
     const issue = await selectRecoveryIssueById(issueId);
     expect(issue?.status).toBe("blocked");
+  });
+
+  async function seedPriorAutomaticContinuationRuns(input: {
+    companyId: string;
+    agentId: string;
+    issueId: string;
+    count: number;
+  }) {
+    for (let index = 0; index < input.count; index += 1) {
+      const at = new Date(Date.parse("2026-03-18T00:00:00.000Z") + index * 60_000);
+      await db.insert(heartbeatRuns).values({
+        id: randomUUID(),
+        companyId: input.companyId,
+        agentId: input.agentId,
+        invocationSource: "assignment",
+        triggerDetail: "system",
+        status: "succeeded",
+        runtimeMode: "native",
+        contextSnapshot: {
+          issueId: input.issueId,
+          taskId: input.issueId,
+          wakeReason: "issue_continuation_needed",
+          retryReason: "issue_continuation_needed",
+          source: "issue.productive_terminal_continuation_recovery",
+        },
+        livenessState: "advanced",
+        createdAt: at,
+        startedAt: at,
+        finishedAt: at,
+        updatedAt: at,
+      });
+    }
+  }
+
+  it("still exempts a productive continuation while the automatic-continuation streak is under the cap", async () => {
+    const { companyId, agentId, issueId } = await seedStrandedIssueFixture({
+      status: "in_progress",
+      runStatus: "succeeded",
+      retryReason: "issue_continuation_needed",
+      runSource: "issue.productive_terminal_continuation_recovery",
+      livenessState: "advanced",
+      runtimeMode: "native",
+    });
+    await db.insert(issueComments).values({
+      companyId,
+      issueId,
+      authorAgentId: agentId,
+      body: "frame 02/08 generated, attaching shortly",
+    });
+    const heartbeat = heartbeatService(db);
+
+    const result = await heartbeat.reconcileStrandedAssignedIssues();
+    expect(result.recentProgressExempted).toBe(1);
+    expect(result.recentProgressExemptionCapped).toBe(0);
+    expect(result.continuationRequeued).toBe(1);
+    expect(result.escalated).toBe(0);
+
+    const issue = await db
+      .select()
+      .from(issues)
+      .where(eq(issues.id, issueId))
+      .then((rows) => rows[0] ?? null);
+    expect(issue?.status).toBe("in_progress");
+  });
+
+  it("escalates instead of re-enqueueing once the automatic-continuation streak reaches the cap", async () => {
+    const { companyId, agentId, issueId } = await seedStrandedIssueFixture({
+      status: "in_progress",
+      runStatus: "succeeded",
+      retryReason: "issue_continuation_needed",
+      runSource: "issue.productive_terminal_continuation_recovery",
+      livenessState: "advanced",
+      runtimeMode: "native",
+    });
+    await db.insert(issueComments).values({
+      companyId,
+      issueId,
+      authorAgentId: agentId,
+      body: "nothing left to do here, still waiting",
+    });
+    await seedPriorAutomaticContinuationRuns({
+      companyId,
+      agentId,
+      issueId,
+      count: STRANDED_RECENT_PROGRESS_EXEMPTION_MAX_STREAK - 1,
+    });
+    const heartbeat = heartbeatService(db);
+
+    const result = await heartbeat.reconcileStrandedAssignedIssues();
+    expect(result.recentProgressExemptionCapped).toBe(1);
+    expect(result.escalated).toBe(1);
+    expect(result.recentProgressExempted).toBe(0);
+    expect(result.continuationRequeued).toBe(0);
+    expect(result.issueIds).toEqual([issueId]);
+
+    const issue = await db
+      .select()
+      .from(issues)
+      .where(eq(issues.id, issueId))
+      .then((rows) => rows[0] ?? null);
+    expect(issue?.status).toBe("blocked");
+    expect(issue?.assigneeAgentId).toBe(agentId);
+
+    const comments = await db
+      .select()
+      .from(issueComments)
+      .where(eq(issueComments.issueId, issueId));
+    const escalation = comments.find((row) => row.authorAgentId === null);
+    expect(escalation?.body).toContain(
+      `after ${STRANDED_RECENT_PROGRESS_EXEMPTION_MAX_STREAK} tries`,
+    );
+  });
+
+  it("does not block a capped issue that a person completed after the sweep read it", async () => {
+    const { companyId, agentId, issueId } = await seedStrandedIssueFixture({
+      status: "in_progress",
+      runStatus: "succeeded",
+      retryReason: "issue_continuation_needed",
+      runSource: "issue.productive_terminal_continuation_recovery",
+      livenessState: "advanced",
+      runtimeMode: "native",
+    });
+    await db.insert(issueComments).values({
+      companyId,
+      issueId,
+      authorAgentId: agentId,
+      body: "nothing left to do here, still waiting",
+    });
+    await seedPriorAutomaticContinuationRuns({
+      companyId,
+      agentId,
+      issueId,
+      count: STRANDED_RECENT_PROGRESS_EXEMPTION_MAX_STREAK - 1,
+    });
+    const originalTransaction = db.transaction.bind(db);
+    let completed = false;
+    const transactionSpy = vi
+      .spyOn(db, "transaction")
+      .mockImplementation(async (...args: Parameters<typeof db.transaction>) => {
+        if (
+          !completed &&
+          new Error().stack?.includes("escalateStrandedAssignedIssue")
+        ) {
+          completed = true;
+          await db
+            .update(issues)
+            .set({ status: "done" })
+            .where(eq(issues.id, issueId));
+        }
+        return originalTransaction(...args);
+      });
+    try {
+      const heartbeat = heartbeatService(db);
+      const result = await heartbeat.reconcileStrandedAssignedIssues();
+      expect(completed).toBe(true);
+      expect(result.escalated).toBe(0);
+      expect(result.recentProgressExemptionCapped).toBe(0);
+      expect(result.continuationRequeued).toBe(0);
+    } finally {
+      transactionSpy.mockRestore();
+    }
+
+    const issue = await db
+      .select()
+      .from(issues)
+      .where(eq(issues.id, issueId))
+      .then((rows) => rows[0] ?? null);
+    expect(issue?.status).toBe("done");
+  });
+
+  it("does not count an interrupted automatic-continuation streak from older history", async () => {
+    const { companyId, agentId, issueId } = await seedStrandedIssueFixture({
+      status: "in_progress",
+      runStatus: "succeeded",
+      retryReason: "issue_continuation_needed",
+      runSource: "issue.productive_terminal_continuation_recovery",
+      livenessState: "advanced",
+      runtimeMode: "native",
+    });
+    await db.insert(issueComments).values({
+      companyId,
+      issueId,
+      authorAgentId: agentId,
+      body: "frame 05/08 generated",
+    });
+    await seedPriorAutomaticContinuationRuns({
+      companyId,
+      agentId,
+      issueId,
+      count: STRANDED_RECENT_PROGRESS_EXEMPTION_MAX_STREAK + 3,
+    });
+    const breakAt = new Date("2026-03-18T12:00:00.000Z");
+    await db.insert(heartbeatRuns).values({
+      id: randomUUID(),
+      companyId,
+      agentId,
+      invocationSource: "assignment",
+      triggerDetail: "system",
+      status: "succeeded",
+      runtimeMode: "native",
+      contextSnapshot: {
+        issueId,
+        taskId: issueId,
+        wakeReason: "issue_commented",
+      },
+      livenessState: "advanced",
+      createdAt: breakAt,
+      startedAt: breakAt,
+      finishedAt: breakAt,
+      updatedAt: breakAt,
+    });
+    const heartbeat = heartbeatService(db);
+
+    const result = await heartbeat.reconcileStrandedAssignedIssues();
+    expect(result.recentProgressExemptionCapped).toBe(0);
+    expect(result.recentProgressExempted).toBe(1);
+    expect(result.continuationRequeued).toBe(1);
+    expect(result.escalated).toBe(0);
+  });
+
+  it("normalizes the automatic-continuation cap setting to a usable integer", () => {
+    expect(resolveStrandedExemptionStreakCap(undefined)).toBe(8);
+    expect(resolveStrandedExemptionStreakCap("")).toBe(8);
+    expect(resolveStrandedExemptionStreakCap("   ")).toBe(8);
+    expect(resolveStrandedExemptionStreakCap("not-a-number")).toBe(8);
+    expect(resolveStrandedExemptionStreakCap("Infinity")).toBe(8);
+    expect(resolveStrandedExemptionStreakCap("0")).toBe(1);
+    expect(resolveStrandedExemptionStreakCap("-5")).toBe(1);
+    expect(resolveStrandedExemptionStreakCap("2.9")).toBe(2);
+    expect(resolveStrandedExemptionStreakCap("3")).toBe(3);
+    expect(Number.isInteger(STRANDED_RECENT_PROGRESS_EXEMPTION_MAX_STREAK)).toBe(
+      true,
+    );
+    expect(STRANDED_RECENT_PROGRESS_EXEMPTION_MAX_STREAK).toBeGreaterThanOrEqual(
+      1,
+    );
   });
 
   it("does not reconcile user-assigned work through the agent stranded-work recovery path", async () => {
