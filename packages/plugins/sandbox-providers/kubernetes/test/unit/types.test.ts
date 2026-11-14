@@ -36,4 +36,26 @@ describe("kubernetesProviderConfigSchema", () => {
       parseKubernetesProviderConfig({ inCluster: true, egressAllowCidrs: ["not-a-cidr"] }),
     ).toThrow(/CIDR/i);
   });
+
+  it.each([
+    [{ app: "paperclip" }],
+    [{ "app.kubernetes.io/name": "paperclip-server" }],
+    [{ tier: "" }],
+  ])("accepts a valid paperclipServerPodSelector %j", (selector) => {
+    const result = kubernetesProviderConfigSchema.safeParse({ inCluster: true, paperclipServerPodSelector: selector });
+    expect(result.success).toBe(true);
+  });
+
+  it.each([
+    [{}],
+    [{ "bad key": "paperclip" }],
+    [{ "k8s:io.kubernetes.pod.namespace": "other" }],
+    [{ "-app": "paperclip" }],
+    [{ "Example.com/app": "paperclip" }],
+    [{ app: "has space" }],
+    [{ app: "a".repeat(64) }],
+  ])("rejects an invalid paperclipServerPodSelector %j", (selector) => {
+    const result = kubernetesProviderConfigSchema.safeParse({ inCluster: true, paperclipServerPodSelector: selector });
+    expect(result.success).toBe(false);
+  });
 });
