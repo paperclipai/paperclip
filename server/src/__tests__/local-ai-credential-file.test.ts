@@ -12,13 +12,14 @@ describe("isolated credential file safety", () => {
     await writeFile(filename, "fixture", { mode: 0o600 });
     await expect(readLocalAiCredentialFile(filename)).resolves.toBe("fixture");
     await chmod(filename, 0o644);
-    await expect(readLocalAiCredentialFile(filename)).rejects.toThrow();
+    if (process.platform === "win32") await expect(readLocalAiCredentialFile(filename)).resolves.toBe("fixture");
+    else await expect(readLocalAiCredentialFile(filename)).rejects.toThrow();
     await chmod(filename, 0o600);
     await writeFile(filename, Buffer.alloc(64 * 1024 + 1));
     await expect(readLocalAiCredentialFile(filename)).rejects.toThrow();
     await expect(readLocalAiCredentialFile(home)).rejects.toThrow();
   });
-  it("rejects file and ancestor symlinks", async () => {
+  it.skipIf(process.platform === "win32")("rejects file and ancestor symlinks", async () => {
     const filename = path.join(home, "credentials.json");
     await writeFile(filename, "fixture", { mode: 0o600 });
     await symlink(filename, path.join(home, "linked.json"));

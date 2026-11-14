@@ -83,7 +83,14 @@ test("release selection includes every chat runtime patch and the existing ACPX 
     join(tmpdir(), "paperclip-chat-release-contract-"),
   );
   t.after(() => rmSync(destination, { recursive: true, force: true }));
-  for (const [name, version] of [...required, ["acpx", "0.13.1"]]) {
+  const releaseRuntimes = [
+    ...required,
+    ["acpx", "0.13.1"],
+    ["@agentclientprotocol/claude-agent-acp", "0.73.0"],
+    ["@agentclientprotocol/codex-acp", "1.6.2"],
+    ["node-pty", "1.1.0"],
+  ];
+  for (const [name, version] of releaseRuntimes) {
     const directory = join(destination, "node_modules", name);
     mkdirSync(directory, { recursive: true });
     writeFileSync(
@@ -98,10 +105,7 @@ test("release selection includes every chat runtime patch and the existing ACPX 
   );
   assert.deepEqual(
     selected.map(({ specifier }) => specifier).sort(),
-    [
-      ...required.map(([name, version]) => `${name}@${version}`),
-      "acpx@0.13.1",
-    ].sort(),
+    releaseRuntimes.map(([name, version]) => `${name}@${version}`).sort(),
   );
   writeFileSync(
     join(destination, "node_modules", "@discordjs/ws", "package.json"),
