@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { readFile, readdir } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
-import postgres from "postgres";
+import { connectPostgres as postgres } from "./postgres-connection.js";
 import { installDatabaseWorkSignals } from "./work-signals.js";
 import { installDatabaseResponseCapture } from "./response-capture.js";
 import { installPreparedQueries } from "./prepared-queries.js";
@@ -30,7 +30,8 @@ type RegisteredPostgresClient = ReturnType<typeof postgres>;
  */
 function hostPortKey(url: string): string {
   const parsed = new URL(url);
-  return `${parsed.hostname}:${parsed.port || "5432"}`;
+  const host = parsed.searchParams.get("host") || parsed.hostname;
+  return `${host}:${parsed.port || "5432"}`;
 }
 
 /**
