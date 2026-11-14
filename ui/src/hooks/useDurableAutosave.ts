@@ -7,6 +7,8 @@ import { useConnectivityStore } from "@/lib/connectivity";
 import { classifySendFailure, MAX_ONLINE_RESENDS, resendDelayFor, type SendOutcome } from "@/lib/pending-send";
 import { useAutoResend } from "./useDurableSubmit";
 import { useDraftOwner, useDraftOwnerReader } from "./useDraftOwner";
+import { trackPendingWrite } from "@/lib/reload-safety";
+import { hasUnverifiedSession } from "@/lib/cached-session";
 
 export type DurableAutosaveStatus =
   | "idle"
@@ -60,6 +62,8 @@ export interface DurableAutosaveOptions<T> {
 
 /** Per-save overrides: a caller can bind the request and the 409 check to one draft. */
 export interface DurableAutosaveJob<T> {
+  /** Revalidate a restored draft against fresh data before every write attempt. */
+  beforeSave?: (draft: T) => Promise<void>;
   save?: (draft: T) => Promise<unknown>;
   matchesServer?: (error: unknown, draft: T) => Promise<boolean> | boolean;
   /**
@@ -77,6 +81,8 @@ export interface DurableAutosave<T> {
   run: (draft: T, job?: DurableAutosaveJob<T>) => Promise<DurableAutosaveResult>;
   /** The draft changed; drop a stale "Saved" or error. */
   markDirty: () => void;
+  /** Release an unchanged draft without dismissing the last successful save. */
+  clearDirty: () => void;
   /** Forget pending work and go back to idle (the user cancelled or reverted). */
   reset: () => void;
   /** Write the current draft to storage so a reload or crash keeps it. */
@@ -123,7 +129,18 @@ export function useDurableAutosave<T>(options: DurableAutosaveOptions<T>): Durab
   const targetKey = options.targetKey ?? options.sourceId;
   const targetRef = useRef(targetKey);
   targetRef.current = targetKey;
-  type Job = { token: symbol; registryKey: string; resends: number; saving?: boolean; id: number; target: string; owner: string | undefined; account: ReturnType<typeof bindAccount> | null; draft: T;
+  const dirtyWrites = useRef(new Map<string, { version: symbol; release: () => void }>());
+  const releaseDirty = (target: string, version: symbol | undefined) => {
+    const dirty = dirtyWrites.current.get(target);
+    if (dirty && dirty.version === version) { dirtyWrites.current.delete(target); dirty.release(); }
+  };
+  useEffect(() => () => {
+    // A target change cancels its unused editor debounce. Admitted jobs keep
+    // their independent pending-write tracking until they settle.
+    releaseDirty(targetKey, dirtyWrites.current.get(targetKey)?.version);
+  }, [targetKey]);
+  type Job = { token: symbol; dirtyVersion?: symbol; registryKey: string; resends: number; saving?: boolean; id: number; target: string; owner: string | undefined; account: ReturnType<typeof bindAccount> | null; draft: T;
+    beforeSave?: (draft: T) => Promise<void>;
     save: (draft: T) => Promise<unknown>; matchesServer?: DurableAutosaveOptions<T>["matchesServer"];
     onRetryFailed?: DurableAutosaveJob<T>["onRetryFailed"]; storageKey: string | null; action: string };
   const jobs = useRef(new Map<string, Job>());
@@ -139,6 +156,11 @@ export function useDurableAutosave<T>(options: DurableAutosaveOptions<T>): Durab
     });
   }, []);
   const store = useConnectivityStore();
+  // Waiting work must remain visible to reload safety before React renders
+  // the next retry state, including the interval between network attempts.
+  const reportPendingJobs = () => {
+    if (mounted.current) store.setPendingWrites(optionsRef.current.sourceId, jobs.current.size);
+  };
   const registry = autosaveRegistry(store);
   const releaseJob = (job: Job) => {
     const entry = registry.get(job.registryKey);
@@ -170,7 +192,11 @@ export function useDurableAutosave<T>(options: DurableAutosaveOptions<T>): Durab
     savingTimer.current = null;
     savedTimer.current = null;
   }, []);
-  useEffect(() => { mounted.current = true; return () => { mounted.current = false; clearTimers(); detachedWork.current(); }; }, [clearTimers]);
+  useEffect(() => { mounted.current = true; return () => {
+    mounted.current = false; clearTimers(); detachedWork.current();
+    for (const dirty of dirtyWrites.current.values()) dirty.release();
+    dirtyWrites.current.clear();
+  }; }, [clearTimers]);
   const previousOwner = useRef(owner);
   useEffect(() => {
     const previous = previousOwner.current;
@@ -186,10 +212,14 @@ export function useDurableAutosave<T>(options: DurableAutosaveOptions<T>): Durab
         }
       }
       refresh(value => value + 1);
+      reportPendingJobs();
       return;
     }
     for (const job of jobs.current.values()) releaseJob(job);
     jobs.current.clear(); generations.current.clear(); clearTimers();
+    reportPendingJobs();
+    for (const dirty of dirtyWrites.current.values()) dirty.release();
+    dirtyWrites.current.clear();
     setView({ target: targetRef.current, status: "idle", error: null });
     refresh(value => value + 1);
   }, [owner, clearTimers]);
@@ -214,7 +244,9 @@ export function useDurableAutosave<T>(options: DurableAutosaveOptions<T>): Durab
     };
     if (!stillOwned()) {
       if (jobs.current.get(job.target) === job) jobs.current.delete(job.target);
+      reportPendingJobs();
       releaseJob(job);
+      releaseDirty(job.target, job.dirtyVersion);
       if (mounted.current) refresh(value => value + 1);
       return { kind: "waiting" };
     }
@@ -223,11 +255,14 @@ export function useDurableAutosave<T>(options: DurableAutosaveOptions<T>): Durab
     if (store.getSnapshot().status !== "online") { publish("waiting"); return { kind: "waiting" }; }
     if (retry) job.resends += 1;
     job.saving = true;
+    const finishWrite = trackPendingWrite();
     if (visible()) savingTimer.current = setTimeout(() => publish("saving"), SAVING_DELAY_MS);
     refresh(value => value + 1);
     const remove = () => {
       releaseJob(job);
       if (jobs.current.get(job.target) === job) jobs.current.delete(job.target);
+      reportPendingJobs();
+      releaseDirty(job.target, job.dirtyVersion);
       if (mounted.current) refresh(value => value + 1);
     };
     const done = (): DurableAutosaveResult => {
@@ -248,16 +283,22 @@ export function useDurableAutosave<T>(options: DurableAutosaveOptions<T>): Durab
       return { kind: "saved" };
     };
     try {
-      if (!mounted.current && job.account && !job.account.isCurrentAccount()) {
+      if (job.account && (!mounted.current || (client && hasUnverifiedSession(client))) && !job.account.isCurrentAccount()) {
         try { await job.account.whenAccountReady(); }
         catch {
           // Session discovery has not attempted the write. Keep its draft within
           // the existing retry budget unless an account transition invalidated it.
           if (!stillOwned()) remove();
+          else { if (visible()) clearTimers(); publish("waiting"); }
           return { kind: "waiting" };
         }
       }
+      if (client && hasUnverifiedSession(client)) { if (visible()) clearTimers(); publish("waiting"); return { kind: "waiting" }; }
       if (!stillOwned()) { remove(); return { kind: "waiting" }; }
+      if (job.beforeSave) {
+        await job.beforeSave(job.draft);
+        if (!stillOwned()) { remove(); return { kind: "waiting" }; }
+      }
       await job.save(job.draft);
       return done();
     }
@@ -275,8 +316,8 @@ export function useDurableAutosave<T>(options: DurableAutosaveOptions<T>): Durab
       publish("error", describeError(cause, { action: job.action }));
       remove();
       return { kind: "failed", error: cause };
-    } finally { job.saving = false; if (mounted.current) refresh(value => value + 1); else detachedWake.current?.(); }
-  }, [clearTimers, store, readOwner]);
+    } finally { job.saving = false; finishWrite(); if (mounted.current) refresh(value => value + 1); else detachedWake.current?.(); }
+  }, [clearTimers, store, readOwner, client]);
   const run = useCallback(async (draft: T, overrides: DurableAutosaveJob<T> = {}) => {
     const current = optionsRef.current;
     const target = current.targetKey ?? current.sourceId;
@@ -284,8 +325,8 @@ export function useDurableAutosave<T>(options: DurableAutosaveOptions<T>): Durab
     // A newer known-account edit supersedes an older startup job even if this
     // save finishes before that job can adopt the account's registry key.
     if (admittedOwner !== undefined) registry.delete(JSON.stringify([undefined, target]));
-    const job: Job = { token: Symbol(), registryKey: JSON.stringify([admittedOwner, target]), resends: 0, id: ++sequence.current, target, owner: admittedOwner, account: client ? bindAccount(client) : null, draft,
-      save: overrides.save ?? current.save, matchesServer: overrides.matchesServer ?? current.matchesServer,
+    const job: Job = { token: Symbol(), dirtyVersion: dirtyWrites.current.get(target)?.version, registryKey: JSON.stringify([admittedOwner, target]), resends: 0, id: ++sequence.current, target, owner: admittedOwner, account: client ? bindAccount(client) : null, draft,
+      beforeSave: overrides.beforeSave, save: overrides.save ?? current.save, matchesServer: overrides.matchesServer ?? current.matchesServer,
       onRetryFailed: overrides.onRetryFailed, storageKey: current.storageKey ?? null, action: current.action ?? "save" };
     const previous = jobs.current.get(target);
     if (previous) releaseJob(previous);
@@ -293,11 +334,12 @@ export function useDurableAutosave<T>(options: DurableAutosaveOptions<T>): Durab
     if (!revision) { revision = { latest: job.token, active: new Set() }; registry.set(job.registryKey, revision); }
     revision.latest = job.token; revision.active.add(job.token);
     generations.current.set(target, job.id); jobs.current.set(target, job);
+    reportPendingJobs();
     refresh(value => value + 1);
     return execute(job);
   }, [client, execute, readOwner]);
   const waitingJobs = [...jobs.current.values()].filter(job => !job.saving).length;
-  const auto = useAutoResend({ sourceId: options.sourceId, active: waitingJobs > 0, pendingCount: waitingJobs,
+  const auto = useAutoResend({ sourceId: options.sourceId, active: waitingJobs > 0, pendingCount: jobs.current.size,
     resend: async (): Promise<SendOutcome> => {
       for (const job of [...jobs.current.values()]) {
         if (jobs.current.get(job.target) !== job) continue;
@@ -360,10 +402,16 @@ export function useDurableAutosave<T>(options: DurableAutosaveOptions<T>): Durab
   };
 
   const markDirty = useCallback(() => {
+    const dirty = dirtyWrites.current.get(targetRef.current);
+    dirtyWrites.current.set(targetRef.current, { version: Symbol(), release: dirty?.release ?? trackPendingWrite() });
     clearTimers();
     setView(current => ({ target: targetRef.current, status: jobs.current.has(targetRef.current) ? "waiting" : "idle", error: null }));
   }, [clearTimers]);
+  const clearDirty = useCallback(() => {
+    releaseDirty(targetRef.current, dirtyWrites.current.get(targetRef.current)?.version);
+  }, []);
   const reset = useCallback(() => {
+    releaseDirty(targetRef.current, dirtyWrites.current.get(targetRef.current)?.version);
     const job = jobs.current.get(targetRef.current);
     if (job) {
       const revision = registry.get(job.registryKey);
@@ -371,11 +419,12 @@ export function useDurableAutosave<T>(options: DurableAutosaveOptions<T>): Durab
       releaseJob(job);
     }
     generations.current.delete(targetRef.current); const removed = jobs.current.delete(targetRef.current); clearTimers();
+    reportPendingJobs();
     setView({ target: targetRef.current, status: "idle", error: null }); if (removed) refresh(value => value + 1);
   }, [clearTimers]);
   const baseStatus = view.target === targetKey ? view.status : jobs.current.has(targetKey) ? "waiting" : "idle";
   const status = baseStatus === "waiting" && auto.stalled ? "stalled" : baseStatus;
   const error = view.target === targetKey ? view.error : null;
-  return { status, error, label: autosaveLabel(status, error), run, markDirty, reset,
+  return { status, error, label: autosaveLabel(status, error), run, markDirty, clearDirty, reset,
     persistDraft, readStoredDraft, clearStoredDraft, resendNow: auto.resendNow };
 }

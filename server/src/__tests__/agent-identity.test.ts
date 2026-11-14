@@ -129,7 +129,7 @@ describe("agent cryptographic identity", () => {
       await execute({
         runId: randomUUID(), agent, agentIdentity: identity,
         config: { command: process.execPath, cwd: directory, args: ["-e", `const {sign}=require('node:crypto'); process.stdout.write(sign(null,Buffer.from(process.env.CHALLENGE,'base64'),process.env.PAPERCLIP_AGENT_PRIVATE_KEY).toString('base64'));`], env: { CHALLENGE: challenge, PAPERCLIP_AGENT_PRIVATE_KEY: "configured override" } },
-        context: {}, runtime: { sessionId: null, sessionParams: null, taskKey: null },
+        context: {}, runtime: { sessionId: null, sessionParams: null, sessionDisplayId: null, taskKey: null },
         onLog: async (_stream, chunk) => { logs.push(chunk); }, onMeta: async meta => { metas.push(meta); },
       });
       expect(verify(null, Buffer.from(challenge, "base64"), publicPem, Buffer.from(logs.join(""), "base64"))).toBe(true);

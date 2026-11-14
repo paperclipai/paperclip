@@ -43,6 +43,13 @@ function isLocalGit(args) {
   }
   return false;
 }
+// With a Paperclip GitHub connection, repositories are created and forked
+// through its tools so access rules, approvals, owner defaults and audit apply.
+const connectorRepositoryTools = new Map([['create', 'create_repository'], ['new', 'create_repository'], ['fork', 'fork_repository']]);
+function connectorRepositoryTool(args) {
+  if (program !== 'gh' || args[0] !== 'repo' || args.includes('--help') || args.includes('-h')) return null;
+  return connectorRepositoryTools.get(args[1]) || null;
+}
 async function main() {
   let env = { ...process.env };
 ${options.brokerFile ? String.raw`
@@ -60,6 +67,7 @@ ${options.brokerFile ? String.raw`
   } catch {}
 ` : ''}
   const diagnostic = (code) => process.stderr.write('Paperclip: GitHub ' + code + '; continuing without managed credentials.\n');
+  let connected = false;
   const configRoot = env.GH_CONFIG_DIR || os.tmpdir();
   // A missing/unwritable scratch directory must not break local Git. The
   // fallback deliberately cannot load the host's gh authentication files.
@@ -131,6 +139,7 @@ ${options.brokerFile ? String.raw`
           : 'Check the GitHub connection in Paperclip';
         process.stderr.write('Paperclip: GitHub access unavailable: ' + reason + '. Continuing without GitHub credentials.\n');
       }
+      connected = result.status === 'available';
       if (result.status === 'available' && configReady) {
         for (const [key, value] of Object.entries(result.env || {})) {
           if (/^(GH_TOKEN|GITHUB_TOKEN|PAPERCLIP_GIT_TOKEN|GIT_TERMINAL_PROMPT|GIT_AUTHOR_(NAME|EMAIL)|GIT_COMMITTER_(NAME|EMAIL)|GIT_CONFIG_COUNT|GIT_CONFIG_(KEY|VALUE)_\d+)$/.test(key) && typeof value === 'string') env[key] = value;
@@ -139,6 +148,14 @@ ${options.brokerFile ? String.raw`
       }
     } else if (askBroker) { diagnostic('capability_missing'); }
     } catch { diagnostic('broker_transport_unavailable'); }
+  }
+  const connectorTool = connected ? connectorRepositoryTool(process.argv.slice(2)) : null;
+  if (connectorTool) {
+    process.stderr.write("Paperclip: use the GitHub connection's " + connectorTool + " tool instead of gh repo " + process.argv[3] +
+      ", so the connection's access rules apply. " + (connectorTool === 'fork_repository'
+        ? 'Then clone the fork or add it as a git remote.' : 'Then add the repository as a git remote and push.') + '\n');
+    process.exitCode = 1;
+    return;
   }
   // Only this invocation and its children inherit the captured credential.
   env.PAPERCLIP_GITHUB_OPERATION_ACTIVE = '1';

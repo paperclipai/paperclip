@@ -1,11 +1,59 @@
 import { describe, expect, it } from "vitest";
+import { once } from "node:events";
 import {
   buildRuntimeApiCandidateUrls,
+  chooseLocalRuntimeApiUrl,
   choosePrimaryRuntimeApiUrl,
   collectReachableInterfaceHosts,
+  resolveLocalRuntimeApiUrl,
 } from "../runtime-api.js";
+import { createPaperclipHttpServer } from "../http/server.js";
+import { registerRunnerPrpAuthority, runnerPrpWebSocketInternals } from "../realtime/runner-prp-ws.js";
+import type { DurablePrpControlPlane } from "../vendor/paperclip-runner/index.js";
 
 describe("runtime API discovery", () => {
+  it.each([
+    ["127.0.0.1", "http://127.0.0.1:3218"],
+    ["0.0.0.0", "http://127.0.0.1:3218"],
+    ["::", "http://[::1]:3218"],
+    ["::1", "http://[::1]:3218"],
+    ["2001:db8::123", "http://[2001:db8::123]:3218"],
+    ["[::1]", "http://[::1]:3218"],
+    ["192.0.2.12", "http://192.0.2.12:3218"],
+  ])("uses listener host %s and its selected port for local runtime transport", (bindHost, expected) => {
+    expect(chooseLocalRuntimeApiUrl({ bindHost, port: 3218 })).toBe(expected);
+  });
+
+  it("registers private runner WebSocket transport alongside a public HTTPS callback origin", async () => {
+    const input = {
+      authPublicBaseUrl: "https://callbacks.example.test",
+      allowedHostnames: ["callbacks.example.test"],
+      bindHost: "127.0.0.1",
+      port: 3218,
+    };
+    expect(choosePrimaryRuntimeApiUrl(input)).toBe("https://callbacks.example.test");
+    const server = createPaperclipHttpServer((_req, response) => response.end("ready"), {
+      apiUrl: chooseLocalRuntimeApiUrl(input),
+    });
+    const runId = "00000000-0000-4000-8000-000000000887";
+    try {
+      server.listen(0, "127.0.0.1");
+      await once(server, "listening");
+      const registration = await registerRunnerPrpAuthority({
+        companyId: "company-1", runId,
+        authority: {} as DurablePrpControlPlane,
+      });
+      try {
+        expect(registration.connectUrl).toBe(`${resolveLocalRuntimeApiUrl().replace("http:", "ws:")}/api/runner/v1/connect/${runId}`);
+      } finally {
+        await registration.release();
+      }
+    } finally {
+      await new Promise<void>(resolve => server.close(() => resolve()));
+      runnerPrpWebSocketInternals.resetForTests();
+    }
+  });
+
   it("prefers the explicit public base URL for the primary runtime URL", () => {
     expect(
       choosePrimaryRuntimeApiUrl({

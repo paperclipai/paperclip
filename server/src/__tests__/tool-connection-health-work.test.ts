@@ -301,23 +301,26 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
       const body = JSON.parse(String(init.body));
       return Response.json({ jsonrpc: "2.0", id: body.id, result: { tools: [] } });
     });
+    // One health check is one tools/list; the first check also probes the MCP version once.
+    const listings = () => requests.mock.calls.filter(([, init]) => JSON.parse(String(init.body)).method === "tools/list").length;
     const tools = toolAccessService(db, {
       remoteHttpEndpointLookup: async () => [{ address: "8.8.8.8", family: 4 }], remoteHttpRequest: requests,
     });
     await start(tools.scheduledHealth); await quiet();
-    const row = await tools.createConnection(companyId, { applicationId, name: "Real producer", transport: "mcp_remote", status: "active", enabled: true,
-      config: { url: "https://health.example.test/mcp" } });
+    const row = await tools.createConnection(companyId, { applicationId, name: "Real producer", connectionPurpose: "tool", transport: "mcp_remote", authKind: "none", ownership: "customer",
+      status: "active", connectionKind: "managed", enabled: true, credentialSecretRefs: [],
+      config: { url: "https://health.example.test/mcp" }, transportConfig: { url: "https://health.example.test/mcp" } });
     await vi.waitFor(async () => {
       await vi.advanceTimersByTimeAsync(1000);
       const [stored] = await db.select().from(toolConnections).where(eq(toolConnections.id, row.id));
       expect(stored.healthStatus).toBe("ok"); expect(stored.healthCheckedAt).not.toBeNull();
     }, { timeout: 5000 });
-    expect(requests).toHaveBeenCalledOnce();
+    expect(listings()).toBe(1);
     await tools.updateConnection(row.id, { enabled: false }); await quiet();
     await tools.updateConnection(row.id, { enabled: true });
     const [stored] = await db.select().from(toolConnections).where(eq(toolConnections.id, row.id));
     await idleAt(stored.healthCheckedAt!.getTime() + 900_000);
-    expect(requests).toHaveBeenCalledOnce();
+    expect(listings()).toBe(1);
     await tools.archiveConnection(row.id, companyId); await quiet();
   });
 

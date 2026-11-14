@@ -25,7 +25,7 @@ API: `present` — representative operation IDs:
 Agent access: `restricted` — Board-user REST; the responding agent gets its assigned
 conversation context.
 
-Policy: Conversation discovery/creation requires a board user and the Agent Chat gate;
+Policy: Conversation discovery/creation requires a board user;
 task access follows task visibility.
 
 Evidence: `source-only` — [implementation](../../server/src/routes/issues.ts#L18077) at
@@ -80,7 +80,7 @@ API: `present` — representative operation IDs:
 Agent access: `partial` — Assigned conversation task tools / REST for eligible task
 history and replies.
 
-Policy: Conversation discovery/creation requires a board user and the Agent Chat gate;
+Policy: Conversation discovery/creation requires a board user;
 task access follows task visibility.
 
 Evidence: `source-only` — [implementation](../../server/src/routes/issues.ts#L18077) at
@@ -122,7 +122,7 @@ API: `present` — representative operation IDs:
 Agent access: `available` — Native list_projects/create_project/create_task; project MCP
 tools; REST.
 
-Policy: Conversation discovery/creation requires a board user and the Agent Chat gate;
+Policy: Conversation discovery/creation requires a board user;
 task access follows task visibility.
 
 Evidence: `source-only` — [implementation](../../server/src/routes/issues.ts#L18077) at
@@ -164,7 +164,7 @@ API: `present` — representative operation IDs:
 Agent access: `partial` — Existing SSE client in local_trusted mode with the
 experimental gate.
 
-Policy: Conversation discovery/creation requires a board user and the Agent Chat gate;
+Policy: Conversation discovery/creation requires a board user;
 task access follows task visibility.
 
 Evidence: `source-only` — [implementation](../../server/src/routes/issues.ts#L18077) at

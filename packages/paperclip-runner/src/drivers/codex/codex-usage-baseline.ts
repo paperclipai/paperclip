@@ -2,6 +2,9 @@
 export interface CodexUsageBaseline {
   baseline: Record<string, number>;
   latest: Record<string, number>;
+  /** Totals the current run has accounted for. Usage above this at attachment
+   * was never charged, so it stays in the next run's delta and is not lost. */
+  accounted?: Record<string, number>;
 }
 
 export function codexUsageMeasurement(value: unknown): Record<string, number> {
@@ -27,7 +30,15 @@ export function observeCodexUsage(
   for (const [key, value] of Object.entries(measurement)) {
     latest[key] = Math.max(latest[key] ?? 0, value);
   }
-  return { baseline, latest };
+  return { baseline, latest, ...(state?.accounted ? { accounted: state.accounted } : {}) };
+}
+
+export function codexUsageBaselineForNextRun(state: CodexUsageBaseline): CodexUsageBaseline {
+  return {
+    baseline: { ...(state.accounted ?? state.latest) },
+    latest: { ...state.latest },
+    ...(state.accounted ? { accounted: { ...state.accounted } } : {}),
+  };
 }
 
 export function codexRunUsage(

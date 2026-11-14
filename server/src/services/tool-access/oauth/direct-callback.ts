@@ -76,6 +76,11 @@ export function createDirectOAuthCallback(db: Db, dependencies: Dependencies) {
     // a refused request must not stay completable by a later code (PAP-17109).
     const stateRow = await consumeOAuthState(input.state, input.actor);
     if (input.error) {
+      // RFC 9207: an error from a server other than the one we sent the user to
+      // is neither acted on nor shown.
+      const errorConnection = await getConnectionRow(stateRow.connectionId, stateRow.companyId);
+      const savedIssuer = oauthConfig(errorConnection).issuer;
+      assertOAuthCallbackIssuer(errorConnection, { issuer: typeof savedIssuer === "string" ? savedIssuer : null }, input.iss);
       await rejectPendingOAuthInteraction(stateRow, input.actor);
       const providerError = normalizeOAuthProviderError(input.error);
       throw new HttpError(

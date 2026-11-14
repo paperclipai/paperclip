@@ -43,6 +43,25 @@ describe("TaskChatComposerDock", () => {
     return { dock, scroller, scrollBy, onTranscriptWheel };
   }
 
+  it("keeps a loading placeholder from replacing the measured composer height", () => {
+    vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (this: HTMLElement) {
+      return { height: this.getAttribute("data-testid") === "task-chat-composer-dock" ? 140 : 72 } as DOMRect;
+    });
+    flushSync(() => root.render(
+      <div className="coordinator-workspace">
+        <div data-testid="task-chat-thread">
+          <TaskChatComposerDock mobile={false} streamlined><textarea /></TaskChatComposerDock>
+          <TaskChatComposerDock mobile={false} streamlined placeholder><div>Loading</div></TaskChatComposerDock>
+        </div>
+      </div>,
+    ));
+    const thread = container.querySelector<HTMLElement>('[data-testid="task-chat-thread"]')!;
+    const placeholder = container.querySelector('[data-testid="task-chat-loading-composer"]')!;
+    expect(thread.style.getPropertyValue("--task-composer-dock-height")).toBe("140px");
+    expect(placeholder.getAttribute("aria-hidden")).toBe("true");
+    expect(placeholder.hasAttribute("inert")).toBe(true);
+  });
+
   it.each([
     [WheelEvent.DOM_DELTA_PIXEL, 30],
     [WheelEvent.DOM_DELTA_LINE, 720],

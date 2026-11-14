@@ -174,6 +174,36 @@ fn rejects_unclassified_and_malformed_runtime_payloads() {
 }
 
 #[test]
+fn admits_app_tool_arguments_intact_up_to_the_tool_call_limit() {
+    let scope = active_scope();
+    let content = "abcdefghijklmnopqrstuvwxyz".repeat(200 * 1024 / 26);
+    let input = json!({"files": [{"path": "site/index.html", "content": content}]});
+    let decoded = decode_acpx_event(
+        &scope,
+        &event(
+            GeneratedAcpxSidecarEventType::RuntimeToolCalled,
+            json!({"callId": "inline-file", "operationId": "app_deploy_create_0123456789ab", "input": input}),
+        ),
+    )
+    .unwrap();
+    assert!(
+        matches!(&decoded, AcpxEventPayload::ToolCalled {input: decoded, ..} if decoded == &input)
+    );
+
+    let oversized =
+        json!({"files": [{"path": "site/index.html", "content": "x".repeat(300 * 1024)}]});
+    let error = decode_acpx_event(
+        &scope,
+        &event(
+            GeneratedAcpxSidecarEventType::RuntimeToolCalled,
+            json!({"callId": "oversized-file", "operationId": "app_deploy_create_0123456789ab", "input": oversized}),
+        ),
+    )
+    .unwrap_err();
+    assert!(error.to_string().contains("256 KiB"));
+}
+
+#[test]
 fn decodes_tool_and_permission_requests_after_scope_validation() {
     let scope = active_scope();
     let decoded = decode_acpx_event(

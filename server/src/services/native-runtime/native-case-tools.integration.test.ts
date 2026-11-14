@@ -174,7 +174,7 @@ describe("native case tools through authenticated production routes", () => {
     const receipt = await f.call("create_case", { idempotencyKey: "reusable-kickoff", title: "Reusable receipt", caseType: "loose",
       workflowId: created.data.id, kickoff: { toAgentId: f.agentId, phase: "custom phase", instructions: "Read workflow" } }) as { taskId: string; caseId: string };
     expect((await documentService(server.db).getIssueDocumentByKey(receipt.taskId, "workflow"))?.body).toBe(prompt);
-    await expect(f.call("read_workflow", { workflowId: created.data.id, responseText: { offsetBytes: 8192 } })).rejects.toThrow("Invalid workflow arguments");
+    await expect(f.call("read_workflow", { workflowId: created.data.id, responseText: { offsetBytes: 8192 } })).rejects.toThrow("Invalid tool input for read_workflow: A nonzero responseText.offsetBytes continues an earlier read: also send the snapshot it returned");
     expect(await f.call("update_workflow", { workflowId: created.data.id, idempotencyKey: "workflow-edit", prompt: prompt.replaceAll("Reusable", "Adjusted") })).toMatchObject({ ok: true });
     expect(await f.call("read_workflow", { workflowId: created.data.id, snapshot, responseText: { offsetBytes: 8192 } })).toMatchObject({ ok: false, status: 409 });
     const restarted = await f.call("read_workflow", { workflowId: created.data.id, responseText: { limitBytes: 4 } }) as { ok: boolean; data: string; snapshot: string };
@@ -293,7 +293,7 @@ describe("native case tools through authenticated production routes", () => {
     for (const extra of [{ status: "done" }, { phase: "done" }, { workIssueId: f.blockerId }, { responsibleUserId: randomUUID() }]) {
       await expect(f.call("update_case", { idempotencyKey: randomUUID(), title: "No", ...extra })).rejects.toThrow("Invalid case tool arguments");
     }
-    await expect(f.call("update_case", { idempotencyKey: "empty" })).rejects.toThrow("Invalid case tool arguments");
+    await expect(f.call("update_case", { idempotencyKey: "empty" })).rejects.toThrow("Invalid tool input for update_case: update_case changes nothing without at least one of title, summary, fields.");
     await expect(f.call("write_case_document", { key: "receipt", body: "No" })).rejects.toThrow();
     const [foreign] = await server.db.insert(cases).values({ companyId: f.foreignCompanyId, caseNumber: 1,
       identifier: `C-${randomUUID()}`, caseType: "private", title: "foreign-data-must-not-leak" }).returning();
@@ -511,6 +511,9 @@ describe("native case tools through authenticated production routes", () => {
     const disabled = new PaperclipRunnerToolAuthority(server.db, { ...f, casesEnabled: false });
     expect(disabled.definitions().map(tool => tool.name)).not.toContain("read_case");
     await expect(disabled.execute({ tool: "read_case", callId: randomUUID(), arguments: {} })).rejects.toThrow("Cases are disabled");
+    // Native tool results carry only the message, so it must hold the final, actionable remediation.
+    await expect(disabled.execute({ tool: "list_workflows", callId: randomUUID(), arguments: {} })).rejects.toThrow(
+      /^Cases are disabled\. .*this denial is final.*\[Experimental settings\]\(\/<prefix>\/company\/settings\/instance\/experimental\).*offer to track the request as an ordinary task instead\.$/);
     const review = new PaperclipRunnerToolAuthority(server.db, { ...f, casesEnabled: true,
       nativeReview: { nativeReviewInteractionId: randomUUID(), nativeReviewDecisionId: randomUUID() } });
     expect(review.definitions().map(tool => tool.name)).not.toContain("read_case");

@@ -44,7 +44,7 @@
   },
   "dependencies": {
     "@paperclipai/shared": "workspace:*",
-    "acpx": "0.12.0",
+    "acpx": "0.22.0",
     "picocolors": "^1.1.1",
     "smol-toml": "^1.9.1"
   },

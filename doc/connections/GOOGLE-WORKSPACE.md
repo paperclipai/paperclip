@@ -6,6 +6,14 @@ Docs, Sheets, and Slides), and Calendar. All three start enabled with read and
 write access. Users can disable a group or choose read-only access. New setup
 does not offer Chat, Contacts/directory, or cross-service Search.
 
+The built-in connector is behind the default-off `enableGoogleWorkspaceConnector`
+experimental setting while Paperclip's Google app verification is pending. When
+the setting is off, the Apps page hides the built-in connector, and the server
+blocks its setup, discovery, and execution. Google apps from MCP aggregators
+(for example Composio Gmail, Google Calendar, and Google Drive) then appear in
+the catalog instead. Saved per-service Google connections stay visible and usable.
+Turn the setting on in **Settings → Experimental** to test the built-in connector.
+
 The combined connection has one credential grant, capability catalog, policy
 profile, audit trail and reconnect lifecycle. It requests only the selected
 groups' scopes (nine scopes for the default selection), not the legacy full

@@ -6,12 +6,16 @@ import { exportCompletionPilot } from "./chat-completion-testops-export.js";
 import { exportPilotAllure } from "./chat-completion-testops-results.mjs";
 import { cases, targetSha, evidencePolicy, hash } from "./chat-completion-testops-contract.mjs";
 import { authorizeManualPrivateEvidence } from "./manual-private-retention.js";
+import { fullCatalogCases, catalogTargetSha } from "./chat-full-catalog-testops-manifest.mjs";
+import { mergeCatalogProjections } from "./chat-full-catalog-testops-merge.js";
+import type { CatalogCase, PilotContext } from "./chat-completion-testops-contract.mjs";
 
 const roots: string[] = [];
 afterEach(async () => { await Promise.all(roots.splice(0).map(root => rm(root, { recursive: true, force: true }))); });
 const png = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/l9sAAAAASUVORK5CYII=", "base64");
 const binding = { runId: "123456", attempt: "1", workflowSha: "a".repeat(40), targetSha };
-async function fixture() {
+async function fixture(descriptors: readonly CatalogCase[] = cases, context: PilotContext = binding) {
+  const cases = descriptors, binding = context, targetSha = context.targetSha;
   const root = await realpath(await mkdtemp(path.join(os.tmpdir(), "chat-completion-export-"))); roots.push(root);
   const report = path.join(root, "report"), output = path.join(root, "projection"), allure = path.join(root, "allure");
   const results = cases.map(row => ({
@@ -22,7 +26,7 @@ async function fixture() {
     profileId: "runner-opencode", environmentId: "local", caseId: row.scenario, provider: "opencode",
     model: "openrouter/deepseek/deepseek-v4.1-flash-1017", runtimeMode: "native",
     startedAt: "2026-11-01T00:00:00Z", finishedAt: "2026-11-01T00:00:01Z", durationMs: 1000,
-    matcherResults: Array.from({ length: row.checks }, (_, i) => ({ matcher: { kind: "json_path", path: `fixture.check-${i}`, expected: true }, passed: true, detail: "OPAQUE_PROVIDER_BODY" })),
+    matcherResults: Array.from({ length: row.checks ?? 2 }, (_, i) => ({ matcher: { kind: "json_path", path: `fixture.check-${i}`, expected: true }, passed: true, detail: "OPAQUE_PROVIDER_BODY" })),
     screenshots: [], usage: { hiddenReasoning: "PRIVATE_REASONING_MUST_NOT_EXPORT" }, unknownField: "PRIVATE_PROVIDER_EXTRA",
   }));
   for (const row of cases) {
@@ -36,6 +40,47 @@ async function fixture() {
   const save = () => writeFile(path.join(report, "normalized-results.json"), JSON.stringify(campaign));
   await save(); return { root, report, output, allure, campaign, results, selected, save };
 }
+
+it("exports the complete244 fixture selection without treating registration as a live qualification", async () => {
+  const context = { ...binding, catalog: "full" as const, targetSha: catalogTargetSha };
+  const f = await fixture(fullCatalogCases, context);
+  for (const row of f.selected.cases) {
+    const identity = { ...context, executionIds: [row.executionId] };
+    expect(authorizeManualPrivateEvidence(identity, JSON.stringify(evidencePolicy({ ...f.selected, cases: [row] }, context, "77"))).executionIds).toEqual([row.executionId]);
+  }
+  await exportCompletionPilot(f.report, f.output, context, f.campaign.expected);
+  const exported = await exportPilotAllure(f.output, f.allure, context, f.selected);
+  expect(exported).toHaveLength(244);
+  const serialized = (await readdir(f.allure)).filter(name => name.endsWith("-result.json"));
+  expect(serialized).toHaveLength(244);
+  const rendered = await Promise.all(serialized.map(async name => JSON.parse(await readFile(path.join(f.allure, name), "utf8"))));
+  expect(rendered.find(row => row.fullName === "paperclip.Product E2E.chat-features.tasks.create-backlog").parameters)
+    .toContainEqual({ name: "canonicalScenario", value: "tasks.create-backlog" });
+  expect(await readFile(path.join(f.output, "normalized-results.json"), "utf8")).not.toMatch(/PRIVATE_|OPAQUE_PROVIDER_BODY/);
+});
+
+it("merges distinct source-bound singleton projections and retains a failed original beside passed originals", async () => {
+  const context = { ...binding, catalog: "full" as const, targetSha: catalogTargetSha };
+  const descriptors = fullCatalogCases.filter(row => ["tasks.create-backlog", "projects.project-work", "tasks.edit-properties"].includes(row.key));
+  expect(descriptors).toHaveLength(3);
+  const f = await fixture(descriptors, context);
+  const inputs = path.join(f.root, "projections"); await mkdir(inputs);
+  const results = [...f.results];
+  Object.assign(results[1]!, { status: "failed", cleanup: "failed", evidenceValid: false, runIds: [] });
+  for (const [index, result] of results.entries()) {
+    f.campaign.expected = [result.executionId]; f.campaign.results = [result]; await f.save();
+    await exportCompletionPilot(f.report, path.join(inputs, `cell-${index}`), context, [result.executionId]);
+  }
+  const merged = path.join(f.root, "merged");
+  await mergeCatalogProjections(inputs, merged, f.selected, context);
+  const exported = await exportPilotAllure(merged, f.allure, context, f.selected);
+  expect(exported.map(row => row.status).sort()).toEqual(["failed", "passed", "passed"]);
+  const missing = path.join(f.root, "missing"); await mkdir(missing);
+  await expect(mergeCatalogProjections(missing, path.join(f.root, "invalid"), f.selected, context)).rejects.toThrow("Incomplete projection set");
+  const bindingFile = path.join(inputs, "cell-0", "binding.json");
+  const record = JSON.parse(await readFile(bindingFile, "utf8")); record.targetSha = "f".repeat(40); await writeFile(bindingFile, JSON.stringify(record));
+  await expect(mergeCatalogProjections(inputs, path.join(f.root, "foreign"), f.selected, context)).rejects.toThrow();
+});
 
 it("converts three original cases into three exact TestOps outcomes with all 35 checks and private-evidence receipts", async () => {
   const f = await fixture(); await writeFile(path.join(f.report, "private-provider.log"), "PRIVATE_LOG_MUST_NOT_EXPORT");

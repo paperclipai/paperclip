@@ -14,7 +14,7 @@ function createService(db: Db) {
   const runtimeShutdown = vi.fn().mockResolvedValue(undefined);
   const service = chatChannelService(db, {
     heartbeat: { wakeup },
-    runtime: { shutdown: runtimeShutdown } as unknown as ChatChannelServiceOptions["runtime"],
+    runtime: { shutdown: runtimeShutdown, hasUnsettledLifecycle: () => false } as unknown as ChatChannelServiceOptions["runtime"],
   });
   services.add(service);
   return { service, wakeup, runtimeShutdown };

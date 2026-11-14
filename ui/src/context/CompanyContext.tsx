@@ -144,6 +144,8 @@ export function CompanyProvider({ children }: { children: ReactNode }) {
   // cannot inherit it.
   const { userId: sessionUserId, settled: isSessionSettled } = useAccountIdentity();
   const observedUserIdRef = useRef<string | null | undefined>(undefined);
+  const selectionBelongsToPreviousAccount = isSessionSettled
+    && observedUserIdRef.current !== undefined && observedUserIdRef.current !== sessionUserId;
 
   useEffect(() => {
     // Until the session settles the account is unknown, not changed.
@@ -259,14 +261,14 @@ export function CompanyProvider({ children }: { children: ReactNode }) {
   );
 
   const selectedCompany = useMemo(
-    () => companies.find((company) => company.id === selectedCompanyId) ?? null,
-    [companies, selectedCompanyId],
+    () => selectionBelongsToPreviousAccount ? null : companies.find((company) => company.id === selectedCompanyId) ?? null,
+    [companies, selectedCompanyId, selectionBelongsToPreviousAccount],
   );
 
   const value = useMemo(
     () => ({
       companies,
-      selectedCompanyId,
+      selectedCompanyId: selectionBelongsToPreviousAccount ? null : selectedCompanyId,
       selectedCompany,
       selectionSource,
       loading: isLoading,
@@ -280,6 +282,7 @@ export function CompanyProvider({ children }: { children: ReactNode }) {
     [
       companies,
       selectedCompanyId,
+      selectionBelongsToPreviousAccount,
       selectedCompany,
       selectionSource,
       isLoading,

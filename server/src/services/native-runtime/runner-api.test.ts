@@ -7,12 +7,16 @@ import {
 import {
   executeRunnerApi,
   readBoundedResponse,
+  RUNNER_API_CALL_HEADER,
   runnerApiUrl,
   validateRunnerApiCall,
+  type RunnerApiCall,
   type RunnerApiIo,
 } from "./runner-api-client.js";
 import { runnerApiSensitiveResponse } from "./runner-api-sensitive-response.js";
 import { RUNNER_API_RESPONSE_MAX_BYTES } from "./runner-api-response-limits.js";
+import { runnerBridgeDefinitions } from "./runner-bridge-tools.js";
+import { CAPABILITY_SEMANTIC_TOOL_CATALOG } from "../../vendor/paperclip-runner/index.js";
 
 const context = {
   companyId: "company-a",
@@ -22,6 +26,8 @@ const context = {
   workMode: "standard",
 };
 const projects = "GET /api/companies/{companyId}/projects";
+const emptyRequestBody = (operation: { requestBody?: unknown }) =>
+  (operation.requestBody as { content?: Record<string, { schema?: { type?: string } }> } | undefined)?.content?.["application/json"]?.schema?.type === "array" ? [] : {};
 const createProject = "POST /api/companies/{companyId}/projects";
 const io = (fetcher: typeof fetch): RunnerApiIo => ({
   apiUrl: "http://127.0.0.1:3100",
@@ -39,10 +45,54 @@ const io = (fetcher: typeof fetch): RunnerApiIo => ({
   }),
 });
 
+describe("capped list pagination", () => {
+  const listIssues = "GET /api/companies/{companyId}/issues";
+  const page = (headers: Record<string, string>, rows = [{ id: "a" }, { id: "b" }]) =>
+    vi.fn(async () => new Response(JSON.stringify(rows), { headers: { "content-type": "application/json", ...headers } }));
+
+  it("tells the agent a capped list is incomplete and how to fetch the next page", async () => {
+    const fetcher = page({ "x-paperclip-has-more": "true", "x-paperclip-limit": "2", "x-paperclip-next-offset": "2" });
+    const result = await executeRunnerApi({ operationId: listIssues, query: { limit: 2 } }, context, io(fetcher));
+    expect(result).toMatchObject({
+      ok: true,
+      data: [{ id: "a" }, { id: "b" }],
+      pagination: { hasMore: true, truncated: true, limit: 2, nextOffset: 2 },
+    });
+    expect((result as unknown as { pagination: { guidance: string } }).pagination.guidance).toContain("offset=2");
+  });
+
+  it("carries the cursor and the signal when the capped body is saved as an artifact", async () => {
+    const rows = Array.from({ length: 600 }, (_, index) => ({ id: `row-${index}`, title: "x".repeat(80) }));
+    const fetcher = page({ "x-paperclip-has-more": "true", "x-paperclip-limit": "600", "x-paperclip-next-offset": "600", "x-paperclip-next-after-id": "row-599" }, rows);
+    const result = await executeRunnerApi({ operationId: listIssues }, context, io(fetcher));
+    expect(result).toMatchObject({ ok: true, artifact: { artifactId: "artifact-a" }, pagination: { hasMore: true, nextOffset: 600, nextAfterId: "row-599" } });
+  });
+
+  it("reports a complete list as complete", async () => {
+    const result = await executeRunnerApi({ operationId: listIssues }, context, io(page({ "x-paperclip-has-more": "false", "x-paperclip-limit": "500" })));
+    expect(result).toMatchObject({ ok: true, pagination: { hasMore: false, truncated: false, nextOffset: null } });
+    expect((result as unknown as { pagination: object }).pagination).not.toHaveProperty("guidance");
+  });
+
+  it("adds nothing for routes that do not page", async () => {
+    const result = await executeRunnerApi({ operationId: projects }, context, io(page({})));
+    expect(result).not.toHaveProperty("pagination");
+  });
+});
+
+describe("runner call identity", () => {
+  it.each([[createProject, "call-key-a"], [projects, null]] as const)("sends the call key only with mutations: %s", async (operationId, expected) => {
+    const fetcher = vi.fn(async (_url: string | URL | Request, _init?: RequestInit) => new Response("{}", { headers: { "content-type": "application/json" } }));
+    await executeRunnerApi({ operationId, ...(operationId === createProject ? { body: { name: "Keyed" } } : {}) }, context,
+      { ...io(fetcher as unknown as typeof fetch), callKey: "call-key-a" });
+    expect(new Headers(fetcher.mock.calls[0]![1]!.headers).get(RUNNER_API_CALL_HEADER)).toBe(expected);
+  });
+});
+
 describe("bounded response capture receipts", () => {
   it.each([projects, createProject])("reports oversize evidence without retrying %s", async operationId => {
     const fetcher = vi.fn(async () => new Response("", { headers: { "content-length": String(RUNNER_API_RESPONSE_MAX_BYTES + 1) } }));
-    const result = await executeRunnerApi({ operationId }, context, io(fetcher));
+    const result = await executeRunnerApi({ operationId, ...(operationId === createProject ? { body: { name: "Oversize" } } : {}) }, context, io(fetcher));
     expect(result).toMatchObject({ ok: false, error: "api_response_too_large", maxResponseBytes: RUNNER_API_RESPONSE_MAX_BYTES,
       outcome: operationId === projects ? "read_failed" : "unknown" });
     expect(fetcher).toHaveBeenCalledTimes(1);
@@ -143,6 +193,9 @@ describe("runner API catalog", () => {
     expect(JSON.stringify(catalog)).not.toContain('"$ref"');
     expect(runnerApiOperation("GET /api/companies/{companyId}/decisions").authorization.actor).toBe("board");
     expect(runnerApiOperation("DELETE /api/issues/{id}/documents/{key}").authorization.actor).toBe("board");
+    // Agents read their own commentary (or all with commentary:view), so the catalog must not say board-only.
+    expect(runnerApiOperation("GET /api/companies/{companyId}/agent-commentary").authorization.actor).toBe("board_or_agent");
+    expect(runnerApiOperation("GET /api/companies/{companyId}/agent-commentary/{id}").authorization.actor).toBe("board_or_agent");
     expect(runnerApiOperation("DELETE /api/issues/{id}/documents/{key}").dedicatedTools).toEqual([]);
     expect(runnerApiOperation(createProject).requestBody?.content["application/json"].schema.required).toContain("name");
     expect(runnerApiOperation(createProject).dedicatedTools).toEqual(["create_project"]);
@@ -164,6 +217,49 @@ describe("runner API catalog", () => {
     expect(operation.authorization.actor).toBeTruthy();
   });
 
+  it("exposes team preview and install bodies through the actual adapter override search", () => {
+    const results = searchRunnerApi({ query: "adapterOverrides install team under manager parentAgentId", limit: 10 }).results;
+    const preview = results.find(row => row.operationId === "POST /api/companies/{companyId}/teams/catalog/{catalogId}/preview")!;
+    const install = results.find(row => row.operationId === "POST /api/companies/{companyId}/teams/catalog/{catalogId}/install")!;
+    const previewBody = preview.requestBody?.content["application/json"].schema;
+    const installBody = install.requestBody?.content["application/json"].schema;
+    expect(previewBody).toMatchObject({ additionalProperties: false, properties: { targetManagerAgentId: expect.any(Object), nameOverrides: expect.any(Object) } });
+    expect(installBody).toMatchObject({ additionalProperties: false, properties: { targetManagerAgentId: expect.any(Object), adapterOverrides: expect.any(Object), secretValues: expect.any(Object) } });
+    expect(previewBody.properties).not.toHaveProperty("adapterOverrides");
+  });
+
+  it("discovers proposal revision without confusing it with hiring, approval decisions, or reads", () => {
+    const resubmit = "POST /api/approvals/{id}/resubmit";
+    for (const query of [
+      "revise changes-requested hire proposal",
+      "resubmit approval after changes",
+      "Change the proposed hire to the cheaper model and send it back for approval.",
+    ]) expect(searchRunnerApi({ query }).results.map(row => row.operationId), query).toContain(resubmit);
+    for (const [query, expected] of [
+      ["GET /api/approvals/{id}", "GET /api/approvals/{id}"],
+      ["get approval", "GET /api/approvals/{id}"],
+      ["hire agent", "POST /api/companies/{companyId}/agent-hires"],
+      ["approve approval", "POST /api/approvals/{id}/approve"],
+      ["reject approval", "POST /api/approvals/{id}/reject"],
+      [resubmit, resubmit],
+    ]) expect(searchRunnerApi({ query }).results[0]?.operationId, query).toBe(expected);
+    const operation = runnerApiOperation(resubmit);
+    expect(operation.requestBody?.content?.["application/json"]?.schema.properties).toHaveProperty("payload");
+    expect(operation.description).toContain("returns to pending");
+  });
+
+  it("keeps natural-language function words from hiding the requested API resource", () => {
+    expect(searchRunnerApi({ query: "list comments for an issue" }).results[0]?.operationId)
+      .toBe("GET /api/issues/{id}/comments");
+    for (const [query, operation] of [
+      ["queued comments for an issue", "GET /api/issues/{id}/queued-comments"],
+      ["activity for an issue", "GET /api/issues/{id}/activity"],
+      ["runs for an issue", "GET /api/issues/{id}/runs"],
+      ["case for task", "GET /api/issues/{issueId}/cases"],
+    ]) expect(searchRunnerApi({ query }).results.map(row => row.operationId)).toContain(operation);
+    expect(searchRunnerApi({ query: "for an the" }).results).toEqual([]);
+  });
+
   it("ranks natural language, explains dedicated alternatives, and supports exact lookup", () => {
     expect(
       searchRunnerApi({ query: "create project" }).results.map(
@@ -183,6 +279,22 @@ describe("runner API catalog", () => {
     expect(operation.description).toMatch(/authenticated.*board/i);
     expect(operation.description).toMatch(/agent credential/i);
     expect(operation.description).toMatch(/supervisor/i);
+  });
+  it("finds the teams catalog when asked for a ready-made team", () => {
+    const operation = searchRunnerApi({ query: "ready-made team", limit: 1 }).results[0]!;
+    expect(operation.operationId).toBe("GET /api/teams/catalog");
+    expect(operation.description).toMatch(/only source of ready-made teams/i);
+    expect(operation.description).toContain("no teams catalog page");
+    expect(operation.parameters.map(parameter => parameter.name)).toContain("q");
+    const preview = runnerApiOperation("POST /api/companies/{companyId}/teams/catalog/{catalogId}/preview")!;
+    expect(preview.description).toMatch(/creates no resources/i);
+    expect(preview.allowedModes).toEqual(expect.arrayContaining(["standard", "ask", "planning"]));
+    expect(runnerApiOperation("POST /api/companies/{companyId}/teams/catalog/{catalogId}/install")!.allowedModes).not.toContain("ask");
+    const askContext = { ...context, workMode: "ask" };
+    expect(validateRunnerApiCall({ operationId: preview.operationId, pathParams: { catalogId: "team" }, body: {} }, askContext).operation.operationId).toBe(preview.operationId);
+    expect(() => validateRunnerApiCall({ operationId: "POST /api/companies/{companyId}/teams/catalog/{catalogId}/install", pathParams: { catalogId: "team" }, body: {} }, askContext)).toThrow();
+    const install = runnerApiOperation("POST /api/companies/{companyId}/teams/catalog/{catalogId}/install")!;
+    expect(install.description).toMatch(/permission to create agents/i);
   });
   it("discovers where to save project defaults without rewriting existing tasks", () => {
     const operation = searchRunnerApi({ query: "save project defaults", limit: 1 }).results[0]!;
@@ -221,7 +333,8 @@ describe("runner API request boundary", () => {
           [name, name === "companyId" ? context.companyId : "fixture"]),
       );
       const result = await executeRunnerApi(
-        { operationId: operation.operationId, pathParams }, context, io(request),
+        // A write missing its required body is rejected before dispatch; send an empty one.
+        { operationId: operation.operationId, pathParams, ...(operation.method !== "GET" && operation.requestBody?.required ? { body: emptyRequestBody(operation) } : {}) }, context, io(request),
       );
       expect(operation.callPolicy).toBe("rest");
       expect(result).toMatchObject({ ok: false, status: 403, data: { error: "Route permission required" } });
@@ -272,7 +385,7 @@ describe("runner API request boundary", () => {
     );
     await expect(
       executeRunnerApi(
-        { operationId: operation.operationId, pathParams },
+        { operationId: operation.operationId, pathParams, body: operation.method === "PATCH" ? { status: "resolved" } : { body: "Note" } },
         context,
         io(request),
       ),
@@ -705,8 +818,86 @@ describe("runner API request boundary", () => {
   });
   it("does not page mutation responses by repeating the mutation", async () => {
     const request = vi.fn<typeof fetch>();
-    await expect(executeRunnerApi({ operationId: createProject, body: { name: "Once" }, responseText: {} }, context, io(request))).rejects.toThrow("GET");
+    await expect(executeRunnerApi({ operationId: createProject, body: { name: "Once" }, responseText: { offsetBytes: 4 } }, context, io(request))).rejects.toThrow("This request was not sent");
     expect(request).not.toHaveBeenCalled();
+  });
+  it.each([{ limitBytes: 8192 }, { offsetBytes: 0, limitBytes: 4096 }])("refuses a new write whose responseText sets a window before sending: %j", async responseText => {
+    const request = vi.fn<typeof fetch>(async () => Response.json({ id: "company-a", name: "Acorn Studio" }));
+    const call = { operationId: "PATCH /api/companies/{companyId}", pathParams: { companyId: "company-a" }, body: { name: "Acorn Studio" }, responseText };
+    const error = await executeRunnerApi(call, context, io(request)).then(() => null, (caught: Error) => caught);
+    expect(request).not.toHaveBeenCalled();
+    expect(error?.message).toContain("This request was not sent: responseText applies only to GET reads and never carries request fields.");
+    expect(error?.message).toContain("Resend PATCH /api/companies/{companyId} once without responseText, with its request fields in body");
+    expect(validateRunnerApiCall(call, context).input).not.toHaveProperty("responseText");
+  });
+  it.each([
+    { responseText: {} },
+    { responseText: { offsetBytes: 0 } },
+    { saveResponse: false },
+    { responseText: {}, saveResponse: false },
+  ])("sends a write once when its read options are empty or default: %j", async options => {
+    const request = vi.fn<typeof fetch>(async () => Response.json({ ok: true }));
+    const result = await executeRunnerApi({ operationId: "POST /api/issues/{id}/inbox-archive", pathParams: { id: "issue-a" }, body: {}, ...options }, context, io(request));
+    expect(request).toHaveBeenCalledTimes(1);
+    const [url, init] = request.mock.calls[0]!;
+    expect(String(url)).toMatch(/\/api\/issues\/issue-a\/inbox-archive$/);
+    expect(init?.method).toBe("POST");
+    expect(JSON.parse(String(init?.body))).toEqual({});
+    expect(result).toMatchObject({ ok: true, status: 200 });
+    expect(result).not.toHaveProperty("responseText");
+  });
+  it("still sends the same write once without responseText", async () => {
+    const request = vi.fn<typeof fetch>(async () => Response.json({ id: "company-a", name: "Acorn Studio" }));
+    const result = await executeRunnerApi({ operationId: "PATCH /api/companies/{companyId}", pathParams: { companyId: "company-a" }, body: { name: "Acorn Studio" } }, context, io(request));
+    expect(request).toHaveBeenCalledTimes(1);
+    expect(JSON.parse(String(request.mock.calls[0]![1]?.body))).toEqual({ name: "Acorn Studio" });
+    expect(result).toMatchObject({ ok: true, status: 200, data: { name: "Acorn Studio" } });
+  });
+  it("rejects a PATCH with no body instead of sending a no-op update", async () => {
+    const request = vi.fn<typeof fetch>();
+    const call = { operationId: "PATCH /api/companies/{companyId}", pathParams: { companyId: "company-a" }, query: {}, responseText: { limitBytes: 8192 } };
+    await expect(executeRunnerApi(call, context, io(request))).rejects.toThrow(/not sent.*requires body.*name.*Received arguments: operationId, pathParams, query, responseText\./);
+    expect(() => validateRunnerApiCall({ operationId: "PATCH /api/companies/{companyId}", pathParams: { companyId: "company-a" }, body: {} }, context)).not.toThrow();
+    // Recovery validates saved calls without dispatch: an older accepted body-less PATCH stays readable.
+    expect(() => validateRunnerApiCall({ operationId: "PATCH /api/companies/{companyId}", pathParams: { companyId: "company-a" } }, context)).not.toThrow();
+    expect(request).not.toHaveBeenCalled();
+  });
+  // Recorded cohort writes: the model sent read-only options and no body.
+  it.each([
+    { operationId: "POST /api/issues/{id}/interactions/{interactionId}/resolve-from-comment", pathParams: { id: "issue-a", interactionId: "interaction-a" }, query: {}, saveResponse: false },
+    { operationId: "PATCH /api/issues/{id}", pathParams: { id: "issue-a" }, query: {}, saveResponse: false },
+    { operationId: "POST /api/issues/{id}/comments", pathParams: { id: "issue-a" }, query: {}, responseText: { limitBytes: 8192 }, saveResponse: false },
+  ] as RunnerApiCall[])("refuses a write with no body before sending and names the shape to resend: $operationId", async call => {
+    const request = vi.fn<typeof fetch>();
+    const error = await executeRunnerApi(call, context, io(request)).then(() => null, (caught: Error) => caught);
+    expect(request).not.toHaveBeenCalled();
+    expect(error?.message).toContain(`This request was not sent: ${call.operationId} requires body`);
+    expect(error?.message).toContain(`Received arguments: ${Object.keys(call).sort().join(", ")}.`);
+    expect(error?.message).toContain('Resend with a top-level body argument');
+    expect(error?.message).toMatch(/saveResponse never carr(y|ies) request fields/);
+  });
+  it("still sends writes whose body is present or optional", async () => {
+    const request = vi.fn<typeof fetch>(async () => Response.json({ ok: true }));
+    await executeRunnerApi({ operationId: "POST /api/issues/{id}/comments", pathParams: { id: "issue-a" }, body: { body: "Done" } }, context, io(request));
+    expect(request).toHaveBeenCalledTimes(1);
+    const optional = runnerApiCatalog().find(operation => operation.method === "POST" && operation.requestBody
+      && !((operation.requestBody as any).content?.["application/json"]?.schema?.required?.length) && operation.allowedModes.includes("standard")
+      && !operation.path.includes("{") && operation.transport === "rest");
+    if (optional) {
+      request.mockClear();
+      await executeRunnerApi({ operationId: optional.operationId }, context, io(request)).catch(() => undefined);
+      expect(request).toHaveBeenCalledTimes(1);
+    }
+  });
+  it("keeps read-only save options off the call_api schema the model sees", () => {
+    const callApi = CAPABILITY_SEMANTIC_TOOL_CATALOG.find(descriptor => descriptor.operationId === "call_api")!;
+    const properties = Object.keys(callApi.inputSchema.properties ?? {});
+    expect(properties).toContain("body");
+    expect(properties).not.toContain("saveResponse");
+    expect(callApi.description).toContain("save_api_response");
+    const save = runnerBridgeDefinitions({ workspace: false, skills: false, api: true, mode: "standard" }).find(tool => tool.name === "save_api_response");
+    expect(Object.keys((save?.inputSchema as any).properties).sort()).toEqual(["operationId", "pathParams", "query"]);
+    expect(runnerBridgeDefinitions({ workspace: false, skills: false, api: false, mode: "standard" }).some(tool => tool.name === "save_api_response")).toBe(false);
   });
   it("rejects binary, invalid UTF-8 and offsets that split text", async () => {
     for (const [body, type, offsetBytes] of [

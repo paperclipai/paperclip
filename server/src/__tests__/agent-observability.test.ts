@@ -230,6 +230,8 @@ describe("company agent observability", () => {
     app.use((req, _res, next) => { req.actor = actor as typeof req.actor; next(); });
     app.use("/api", agentObservabilityRoutes(db)); app.use(errorHandler);
     const url = `/api/companies/${f.companyId}/observability`;
+    expect((await request(app).get(`${url}/status`)).body).toEqual({ configured: false, enabled: false, provider: null,
+      credentialsConfigured: false, updatedAt: null, lastTest: null });
     const created = await request(app).put(url).send(braintrust()); expect(created.status).toBe(200);
     expect(JSON.stringify(created.body)).not.toContain("canary");
     expect((await request(app).get(`/api/companies/${other.companyId}/observability`)).status).toBe(403);
@@ -238,6 +240,13 @@ describe("company agent observability", () => {
     expect((await request(app).post(`${url}/test`).send({})).status).toBe(403);
     actor = { type: "agent", agentId: randomUUID(), companyId: f.companyId, source: "agent_key" };
     expect((await request(app).get(url)).status).toBe(403);
+    // The agent can read whether export is saved and enabled, but never the destination or credentials.
+    const status = await request(app).get(`${url}/status`);
+    expect(status.status).toBe(200);
+    expect(status.body).toEqual({ configured: true, enabled: true, provider: "braintrust", credentialsConfigured: true,
+      updatedAt: created.body.settings.updatedAt, lastTest: null });
+    expect(JSON.stringify(status.body)).not.toContain(created.body.settings.destination.projectId);
+    expect((await request(app).get(`/api/companies/${other.companyId}/observability/status`)).status).toBe(403);
     expect((await request(app).delete(url).send({ expectedRevision: created.body.settings.revision })).status).toBe(403);
   });
 });

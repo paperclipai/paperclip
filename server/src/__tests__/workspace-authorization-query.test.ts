@@ -118,7 +118,7 @@ const support = await getEmbeddedPostgresTestSupport();
     await db.insert(heartbeatRuns).values(runIds.map((id, i) => ({ id, companyId, agentId, responsibleUserId: userId,
       status: "succeeded", contextSnapshot: { issueId: taskIds[i] } })));
     await db.insert(executionWorkspaceRepositoryAccess).values(runIds.map((scopeId, i) => ({ companyId, rootKey,
-      canonicalCwd: cwd, kind: "reader", scopeId, issueId: taskIds[i], agentId, responsibleUserId: userId })));
+      canonicalCwd: cwd, kind: "reader" as const, scopeId, issueId: taskIds[i], agentId, responsibleUserId: userId })));
     try {
       const statements: string[] = [];
       const recorded = drizzle(db.$client, { schema: db._.fullSchema,

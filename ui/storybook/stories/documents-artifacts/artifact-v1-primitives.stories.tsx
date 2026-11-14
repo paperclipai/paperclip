@@ -1,5 +1,10 @@
 import type { Meta, StoryObj } from "@storybook/react-vite";
-import type { ReactNode } from "react";
+import { useState, type ReactNode } from "react";
+import { Hexagon, Package } from "lucide-react";
+import { EmptyState } from "@/components/EmptyState";
+import { ArtifactEmptyGraphic } from "@/components/artifacts/v1/ArtifactEmptyGraphic";
+import { ArtifactsV1Filters, type ArtifactsV1View } from "@/components/artifacts/v1/ArtifactsV1Filters";
+import { ProjectsToolbar } from "@/components/ProjectsToolbar";
 import capBlack from "@/artifact-directions/assets/cap-shot-black.svg";
 import capForest from "@/artifact-directions/assets/cap-shot-forest.svg";
 import contactSheet from "@/artifact-directions/assets/contact-sheet-interface-craft.svg";
@@ -52,11 +57,11 @@ const meta = {
       },
     },
     paperclip: {
-      capabilities: ["documents-artifacts/library", "documents-artifacts/work-products", "documents-artifacts/attachments"],
+      capabilities: ["documents-artifacts/library", "documents-artifacts/work-products", "documents-artifacts/attachments", "projects/lifecycle"],
       status: "proposed",
       implementation: "production",
       boundary: "fixtures",
-      notes: "Mounts the production ArtifactStackTile, ArtifactSingleTile, ArtifactRow and ArtifactRowGroup from ui/src/components/artifacts/v1 on fixture subjects with the lab's drawings as pictures. Hover a tile to see the page fan and the artwork rise (not under reduced motion). No API requests; links go nowhere.",
+      notes: "Mounts the production ArtifactStackTile, ArtifactSingleTile, ArtifactRow and ArtifactRowGroup from ui/src/components/artifacts/v1 on fixture subjects with the lab's drawings as pictures. Hover a tile to see the page fan and the artwork rise (not under reduced motion). EmptyProjects and EmptyArtifactViews mount the shared production empty state with the large brand stack or matching file face. The project CTA reports intent locally. No API requests; links go nowhere.",
     },
   },
 } satisfies Meta;
@@ -124,4 +129,25 @@ export const GroupedRows: Story = {
       </ArtifactRowGroup>
     </Stage>
   ),
+};
+
+export const EmptyProjects: Story = {
+  render: function Render() {
+    const [created, setCreated] = useState(false);
+    const [query, setQuery] = useState("");
+    return <div className="bg-background p-6 text-foreground">
+      <ProjectsToolbar query={query} onQueryChange={setQuery} sortField="name" sortDir="asc" onSortChange={() => {}} onNewProject={() => setCreated(true)} />
+      <EmptyState icon={Hexagon} graphic={<ArtifactEmptyGraphic stack />} message="No projects yet." action="Create project" hideActionIcon onAction={() => setCreated(true)} />
+      {created && <p role="status">Create project requested (story fixture).</p>}
+    </div>;
+  },
+};
+export const EmptyArtifactViews: Story = {
+  render: function Render() {
+    const [view, setView] = useState<ArtifactsV1View>("tasks");
+    return <div className="bg-background p-6 text-foreground">
+      <ArtifactsV1Filters view={view} onViewChange={setView} />
+      <EmptyState icon={Package} graphic={<ArtifactEmptyGraphic stack={view === "tasks"} kind={view === "tasks" || view === "all" ? "file" : view === "text" ? "code" : view} />} message={view === "tasks" ? "No artifact stacks yet." : "No artifacts of this type yet."} />
+    </div>;
+  },
 };

@@ -1,8 +1,9 @@
+import { readNativeCheckpointRetirement, nativeCheckpointRetirement, MAX_NATIVE_CHECKPOINT_RETIREMENT_RUNS } from "./native-runner-checkpoint-retirement.js";
 import { notifyExternalConversationSettlement } from "../external-conversation-settlement-notifications.js";
 import { randomUUID } from "node:crypto";
 import { promises as fs } from "node:fs";
 import path from "node:path";
-import { and, asc, eq, gt, inArray, isNull, lt, or, sql } from "drizzle-orm";
+import { and, asc, eq, gt, gte, inArray, isNull, lt, or, sql } from "drizzle-orm";
 import {
   agentTaskSessions,
   environmentLeases,
@@ -10,6 +11,8 @@ import {
   issues,
   nativeRunFinalizations,
   nativeRunnerCheckpoints,
+  nativeHarnessBackups,
+  nativeProviderArtifactReferences,
   type Db,
 } from "@paperclipai/db";
 import { logger } from "../../middleware/logger.js";
@@ -18,6 +21,10 @@ import { nativeSessionScopeDigestIsBusy } from "./native-session-executor.js";
 import type { createDeliveryWorkCoordinator } from "../delivery-work-coordinator.js";
 import { DELIVERY_QUEUES } from "../delivery-work-notifications.js";
 import type { NativeHarnessBackupExpirationScope } from "../native-harness-backup-expiration-notifications.js";
+import { deleteRetiredNativeHarnessBackup, durableNativeHarnessStorage } from "./native-harness-backup-storage.js";
+import { retireObsoleteNativeHarnessBackup } from "./native-harness-backup-retention.js";
+import type { StorageService } from "../../storage/types.js";
+import { releaseExpiredNativeProviderArtifactRun } from "./native-provider-artifacts.js";
 
 export const NATIVE_HARNESS_BACKUP_EXPIRATION_INTERVAL_MS = 60 * 60 * 1000;
 export const NATIVE_HARNESS_BACKUP_EXPIRATION_STARTUP_DELAY_MS = 2 * 60 * 1000;
@@ -51,6 +58,7 @@ export type NativeHarnessBackupExpirationOptions = {
   stateBase?: string;
   shouldContinue?: () => boolean;
   isSessionBusy?: (scopeDigest: string) => boolean;
+  storage?: StorageService;
 };
 
 export type NativeHarnessBackupExpirationResult = {
@@ -291,13 +299,81 @@ export function nativeHarnessBackupExpirationService(
   let evidenceDueAt = 0;
   let passDueAt = Number.POSITIVE_INFINITY;
   let checkpointCursor: string | null = null;
+  let durableBackupCursor: string | null = null;
+  let checkpointsEnumerated = false;
+
+  async function expireDurableBackups(options: {
+    closedBefore: Date; dryRun: boolean; maxEntries: number; maxRemovals: number; shouldContinue: () => boolean;
+  }, result: NativeHarnessBackupExpirationResult) {
+    const storage = defaults.storage ?? durableNativeHarnessStorage();
+    if (!storage) return;
+    const candidates = await db.select({ id: nativeHarnessBackups.id, scopeDigest: nativeHarnessBackups.scopeDigest,
+      companyId: nativeHarnessBackups.companyId, runId: nativeHarnessBackups.runId, survivingRunId: heartbeatRuns.id,
+      sessionId: heartbeatRuns.nativeSessionId, status: nativeHarnessBackups.status })
+      .from(nativeHarnessBackups).leftJoin(heartbeatRuns, eq(heartbeatRuns.id, nativeHarnessBackups.runId))
+      .where(and(durableBackupCursor ? gt(nativeHarnessBackups.id, durableBackupCursor) : undefined,
+        or(eq(nativeHarnessBackups.status, "retired"), lt(nativeHarnessBackups.createdAt, options.closedBefore))))
+      .orderBy(asc(nativeHarnessBackups.id)).limit(options.maxEntries + 1);
+    let processed = 0;
+    for (const candidate of candidates) {
+      if (!options.shouldContinue() || processed++ >= options.maxEntries || result.expired >= options.maxRemovals) {
+        result.truncated = true; return;
+      }
+      durableBackupCursor = candidate.id;
+      if (candidate.survivingRunId && !candidate.sessionId) continue;
+      try {
+        const retired = candidate.status === "retired" || await db.transaction(async tx => {
+          if (["pending", "superseded"].includes(candidate.status)) {
+            const obsolete = await retireObsoleteNativeHarnessBackup(tx, { ...candidate,
+              closedBefore: options.closedBefore, dryRun: options.dryRun });
+            if (obsolete) result.candidates++;
+            return obsolete && !options.dryRun;
+          }
+          if (!candidate.survivingRunId) {
+            result.candidates++;
+            if (options.dryRun) return false;
+            await tx.update(nativeHarnessBackups).set({ status: "retired", updatedAt: new Date() })
+              .where(eq(nativeHarnessBackups.id, candidate.id));
+            return true;
+          }
+          const blocker = await sessionRetentionBlocker(tx, { scopeDigest: candidate.scopeDigest, checkpoint: true,
+            closedBefore: options.closedBefore,
+            identity: { runId: candidate.runId, normalizedSessionId: candidate.sessionId!, environmentLeaseId: null } });
+          if ("reason" in blocker) return false;
+          const [recent] = await tx.select({ id: nativeHarnessBackups.id }).from(nativeHarnessBackups).where(and(
+            eq(nativeHarnessBackups.companyId, blocker.companyId), eq(nativeHarnessBackups.scopeDigest, candidate.scopeDigest),
+            gte(nativeHarnessBackups.createdAt, options.closedBefore))).limit(1);
+          if (recent) return false;
+          result.candidates++;
+          if (options.dryRun) return false;
+          await notifyExternalConversationSettlement(tx, { companyId: blocker.companyId });
+          await tx.update(nativeRunFinalizations).set({ controllerGeneration: sql`${nativeRunFinalizations.controllerGeneration} + 1` })
+            .where(inArray(nativeRunFinalizations.runId, blocker.runIds));
+          await tx.execute(sql`select pg_advisory_xact_lock(hashtextextended(${`${blocker.companyId}:${candidate.scopeDigest}`}, 0))`);
+          const cleared = await tx.delete(agentTaskSessions).where(and(eq(agentTaskSessions.companyId, blocker.companyId),
+            eq(agentTaskSessions.agentId, blocker.agentId), or(inArray(agentTaskSessions.lastRunId, blocker.runIds),
+              sql`${agentTaskSessions.sessionParamsJson}->>'sessionId' = ${candidate.sessionId}`))).returning({ id: agentTaskSessions.id });
+          result.clearedTaskSessions += cleared.length;
+          await tx.update(nativeHarnessBackups).set({ status: "retired", updatedAt: new Date() }).where(and(
+            eq(nativeHarnessBackups.companyId, blocker.companyId), eq(nativeHarnessBackups.scopeDigest, candidate.scopeDigest)));
+          return true;
+        });
+        if (retired && !options.dryRun && await deleteRetiredNativeHarnessBackup(db, storage, candidate.id, AbortSignal.timeout(60_000))) result.expired++;
+      } catch (err) {
+        result.failed++;
+        logger.warn({ err, backupId: candidate.id }, "durable native harness backup expiration skipped an object");
+      }
+    }
+    durableBackupCursor = null;
+  }
 
   async function expireCheckpoints(options: {
     closedBefore: Date; dryRun: boolean; maxEntries: number; maxRemovals: number; shouldContinue: () => boolean;
   }, result: NativeHarnessBackupExpirationResult) {
     // The partial header index enumerates retained checkpoints without reading
     // event payloads or scanning runs that have no checkpoint left to expire.
-    const candidates = await db.select({ runId: heartbeatRuns.id, sessionId: heartbeatRuns.nativeSessionId })
+    const candidates = await db.select({ runId: heartbeatRuns.id, companyId: heartbeatRuns.companyId, sessionId: heartbeatRuns.nativeSessionId,
+      retirement: sql<Record<string, unknown> | null>`case when ${nativeRunnerCheckpoints.material}->>'schema' like 'paperclip.native-runner-checkpoint-retirement.%' then ${nativeRunnerCheckpoints.material} else null end` })
       .from(nativeRunnerCheckpoints)
       .innerJoin(nativeRunFinalizations, eq(nativeRunFinalizations.runId, nativeRunnerCheckpoints.runId))
       .innerJoin(heartbeatRuns, eq(heartbeatRuns.id, nativeRunFinalizations.runId))
@@ -320,12 +396,14 @@ export function nativeHarnessBackupExpirationService(
       checkpointCursor = candidate.runId;
       if (!candidate.sessionId) continue; // Unknown identity is never expiration evidence.
       try {
-        const expired = await db.transaction(async tx => {
+        const previousRetirement = readNativeCheckpointRetirement(candidate.retirement, candidate);
+        if (previousRetirement && previousRetirement.sessionId !== candidate.sessionId) throw new Error("native_runner_checkpoint_retirement_invalid");
+        const retirement = previousRetirement ?? await db.transaction(async tx => {
           const blocker = await sessionRetentionBlocker(tx, {
             scopeDigest: null, checkpoint: true, closedBefore: options.closedBefore,
             identity: { runId: candidate.runId, normalizedSessionId: candidate.sessionId!, environmentLeaseId: null },
           });
-          if ("reason" in blocker) return false;
+          if ("reason" in blocker || blocker.runIds.length > MAX_NATIVE_CHECKPOINT_RETIREMENT_RUNS) return false;
           const [resume] = await tx.select({ id: agentTaskSessions.id }).from(agentTaskSessions).where(and(
             eq(agentTaskSessions.companyId, blocker.companyId), eq(agentTaskSessions.agentId, blocker.agentId),
             or(inArray(agentTaskSessions.lastRunId, blocker.runIds),
@@ -339,11 +417,36 @@ export function nativeHarnessBackupExpirationService(
           await tx.update(nativeRunFinalizations).set({
             controllerGeneration: sql`${nativeRunFinalizations.controllerGeneration} + 1`,
           }).where(inArray(nativeRunFinalizations.runId, blocker.runIds));
-          const rows = await tx.delete(nativeRunnerCheckpoints).where(and(
-            eq(nativeRunnerCheckpoints.companyId, blocker.companyId), eq(nativeRunnerCheckpoints.runId, candidate.runId),
-          )).returning({ part: nativeRunnerCheckpoints.part });
-          return rows.length > 0;
+          const retired = nativeCheckpointRetirement({ companyId: blocker.companyId, agentId: blocker.agentId,
+            sessionId: candidate.sessionId!, runIds: blocker.runIds });
+          await tx.update(nativeRunnerCheckpoints).set({ material: retired, updatedAt: new Date() }).where(and(
+            eq(nativeRunnerCheckpoints.companyId, blocker.companyId), inArray(nativeRunnerCheckpoints.runId, blocker.runIds),
+            eq(nativeRunnerCheckpoints.part, "header")));
+          return retired;
         });
+        let expired = false;
+        if (retirement && !options.dryRun) {
+          const storage = defaults.storage ?? durableNativeHarnessStorage();
+          if (!storage) {
+            const [pending] = await db.select({ id: nativeProviderArtifactReferences.id }).from(nativeProviderArtifactReferences).where(and(
+              eq(nativeProviderArtifactReferences.companyId, retirement.companyId), inArray(nativeProviderArtifactReferences.runId, retirement.runIds),
+              isNull(nativeProviderArtifactReferences.backupId))).limit(1);
+            if (pending) throw new Error("native_provider_artifacts_storage_unavailable");
+          }
+          if (storage) for (const runId of retirement.runIds) await releaseExpiredNativeProviderArtifactRun({ db, storage,
+            companyId: retirement.companyId, runId, signal: AbortSignal.timeout(60_000) });
+          expired = !options.dryRun && await db.transaction(async tx => {
+            const [header] = await tx.select().from(nativeRunnerCheckpoints).where(and(
+              eq(nativeRunnerCheckpoints.companyId, retirement.companyId), eq(nativeRunnerCheckpoints.runId, candidate.runId),
+              eq(nativeRunnerCheckpoints.part, "header"))).for("update");
+            const current = header && readNativeCheckpointRetirement(header.material, candidate);
+            if (!current || current.retiredAt !== retirement.retiredAt || current.agentId !== retirement.agentId
+              || current.sessionId !== retirement.sessionId || current.runIds.join(",") !== retirement.runIds.join(",")) return false;
+            const rows = await tx.delete(nativeRunnerCheckpoints).where(and(eq(nativeRunnerCheckpoints.companyId, retirement.companyId),
+              eq(nativeRunnerCheckpoints.runId, candidate.runId))).returning({ part: nativeRunnerCheckpoints.part });
+            return rows.length > 0;
+          });
+        }
         if (expired) { removed++; result.expiredCheckpoints++; }
       } catch (err) {
         result.failed++;
@@ -704,13 +807,20 @@ export function nativeHarnessBackupExpirationService(
     const result = emptyResult();
     const shouldContinue = options.shouldContinue ?? defaults.shouldContinue ?? (() => true);
     if (!shouldContinue()) return { ...result, truncated: true };
-    await expireCheckpoints({
+    const pass = {
       closedBefore: new Date((options.now ?? defaults.now ?? new Date()).getTime() - closedForDays * DAY_MS),
       dryRun: options.dryRun ?? defaults.dryRun ?? false,
       maxEntries: Math.max(1, options.maxEntries ?? defaults.maxEntries ?? 200),
       maxRemovals: Math.max(1, options.maxRemovals ?? defaults.maxRemovals ?? 50),
       shouldContinue,
-    }, result);
+    };
+    if (!checkpointsEnumerated) {
+      await expireCheckpoints(pass, result);
+      if (result.truncated) return result;
+      checkpointsEnumerated = true;
+    }
+    await expireDurableBackups(pass, result);
+    if (!result.truncated) checkpointsEnumerated = false;
     return result;
   }
 

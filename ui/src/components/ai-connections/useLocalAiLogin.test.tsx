@@ -22,7 +22,7 @@ beforeEach(() => {
 afterEach(() => { flushSync(() => root.unmount()); host.remove(); });
 function Harness({ name = "Account", provider = "openai", enabled = true }: { name?: string; provider?: "anthropic" | "openai"; enabled?: boolean }) {
   const login = useLocalAiLogin("company", { provider, method: "subscription", name, ownership: "personal", agentIds: [], allAgents: true }, enabled);
-  return <><LocalProviderLoginInstructions adapterType={provider === "anthropic" ? "claude_local" : "codex_local"} login={login} /><button onClick={() => void login.connect()}>Connect</button></>;
+  return <><LocalProviderLoginInstructions adapterType={provider === "anthropic" ? "claude_local" : "codex_local"} login={login} /><button onClick={() => void login.connect()}>Connect</button><button onClick={login.cancel}>Back</button></>;
 }
 it("checks once under StrictMode, preserves renaming and navigation, and cancels only on explicit retry", async () => {
   flushSync(() => root.render(<StrictMode><Harness name="First name" /></StrictMode>));
@@ -105,4 +105,22 @@ it("hides a failed device prompt and lets the user restart sign-in", async () =>
   flushSync(() => Array.from(host.querySelectorAll("button")).find(b => b.textContent === "Start sign-in again")!.click());
   await vi.waitFor(() => expect(host.textContent).toContain("NEW-CODE"));
   expect(host.querySelector('[role="alert"]')).toBeNull();
+});
+
+it.each(["start", "check"])("cancels a local subscription with a pending %s and ignores its late result", async stage => {
+  let finish!: (result: unknown) => void;
+  const pending = new Promise(resolve => { finish = resolve; });
+  const held = stage === "start" ? api.startLocalLogin : api.checkLocalLogin;
+  held.mockReturnValueOnce(pending);
+  flushSync(() => root.render(<Harness />));
+  await vi.waitFor(() => expect(held).toHaveBeenCalledTimes(1));
+  flushSync(() => Array.from(host.querySelectorAll("button")).find(button => button.textContent === "Back")!.click());
+  finish(stage === "start" ? { sessionId: "attempt-1", expiresAt: "2099-01-01T00:00:00Z" }
+    : { status: "sign_in_required", authorizationUrl: "https://auth.openai.com/codex/device", code: "CANCELLED-CODE" });
+  await vi.waitFor(() => expect(api.cancelLocalLogin).toHaveBeenCalledWith("company", "attempt-1"));
+  window.dispatchEvent(new Event("focus"));
+  await new Promise(resolve => setTimeout(resolve, 10));
+  expect(host.textContent).not.toContain("CANCELLED-CODE");
+  expect(api.checkLocalLogin).toHaveBeenCalledTimes(stage === "start" ? 0 : 1);
+  expect(api.connectLocal).not.toHaveBeenCalled();
 });

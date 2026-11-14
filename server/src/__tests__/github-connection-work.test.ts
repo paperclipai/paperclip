@@ -6,8 +6,8 @@ import { randomUUID, generateKeyPairSync, verify, createHash, diffieHellman, hkd
 import { createServer, type Server } from "node:http";
 import { once } from "node:events";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
-import { eq, sql } from "drizzle-orm";
-import { applyPendingMigrations, companies, activityLog, companySecrets, connectionEventDeliveries, connectionGrants, createDb, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS, toolApplications, toolConnections } from "@paperclipai/db";
+import { and, eq, sql } from "drizzle-orm";
+import { applyPendingMigrations, agents, companies, activityLog, companySecrets, connectionEventDeliveries, connectionGrants, createDb, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS, resourceLifecycleEvents, toolApplications, toolConnections } from "@paperclipai/db";
 import { resolveExternalTestDatabaseUrl } from "./helpers/external-test-database.js";
 import { createGitHubGrantContinuity, githubGrantContinuityDeadline, githubContinuityRevision } from "../services/tool-access/github-grant-continuity.js";
 import { createPaperclipCloudConnector } from "../services/paperclip-cloud-connector.js";
@@ -120,11 +120,11 @@ describeDatabase("GitHub coordinator with PostgreSQL and controlled Cloud HTTP (
     bindings = []; leases = 0; leaseTimes = []; failBindings = false; githubRequests = 0;
     const companyId = randomUUID(); companyIds.push(companyId);
     const [company] = await db.insert(companies).values({ id: companyId, name: "GitHub work test", issuePrefix: `GW${companyId.replaceAll("-", "").slice(0, 6).toUpperCase()}` }).returning();
-    const [app] = await db.insert(toolApplications).values({ companyId, applicationKey: randomUUID(), name: "GitHub", type: "mcp_server", status: "active" }).returning();
+    const [app] = await db.insert(toolApplications).values({ companyId, applicationKey: randomUUID(), name: "GitHub", type: "mcp_http", status: "active" }).returning();
     const [connection] = await db.insert(toolConnections).values({ companyId, applicationId: app!.id, uid: randomUUID(), name: "GitHub", status: "active", enabled: true,
       transport: "mcp_remote", authKind: "oauth", credentialPolicy: "per_user", config: { sourceTemplateKey: "github", oauth: { connectorProfile: "github.code" } }, transportConfig: {} }).returning();
     const [grant] = await db.insert(connectionGrants).values({ companyId, connectionId: connection!.id, kind: "user", subjectUserId: "owner", status: "active",
-      credentialSecretRefs: [{ configPath: "oauth.access_token", secretId: randomUUID(), label: "Access", provider: "local_encrypted" }],
+      credentialSecretRefs: [{ configPath: "oauth.access_token", secretId: randomUUID(), label: "Access" }],
       providerTenant: { oauth: { accessTokenExpiresAt: new Date(Date.now() + 8 * 3600_000).toISOString(), refreshedAt: new Date().toISOString() }, github: {
         userId: "42", login: "octocat", installationCount: ids.length, repositoryCount: 1, repositorySelection: "all", installationIds: ids,
         installationOwnerLogins: ["octocat"], accessRevision: randomUUID(), lastAccessRefreshAt: new Date().toISOString(), webhookHealth: "healthy",
@@ -135,7 +135,7 @@ describeDatabase("GitHub coordinator with PostgreSQL and controlled Cloud HTTP (
     const dependencies: Dependencies = {
       now: () => new Date(), currentCloudConnector: () => connector,
       refreshOAuthGrantCredentials: async input => (await db.select().from(connectionGrants).where(eq(connectionGrants.id, input.grantId)))[0]!,
-      resolveOAuthGrantSecret: (async () => ({ value: "controlled-token" })) as Dependencies["resolveOAuthGrantSecret"],
+      resolveOAuthGrantSecret: (async () => ({ value: "controlled-token", latestVersion: 1 })) as Dependencies["resolveOAuthGrantSecret"],
     };
     const service = createGitHubGrantContinuity(db, dependencies);
     return { company: company!, connection: connection!, grant: grant!, connector, service, dependencies };
@@ -174,6 +174,32 @@ describeDatabase("GitHub coordinator with PostgreSQL and controlled Cloud HTTP (
     } finally { await ew.stop(); await cw.stop(); await coordinator.stop(); }
   });
 
+  it("rereads unchanged access on a scheduled refresh without advancing agent runtime revisions", async () => {
+    const f = await fixture(["101"]);
+    const agentId = randomUUID();
+    await db.insert(agents).values({ id: agentId, companyId: f.company.id, name: "Runtime fixture", adapterType: "paperclip_runner" });
+    vi.spyOn(globalThis, "fetch").mockImplementation((url, init) => String(url).startsWith("https://api.github.com")
+      ? realFetch(`${origin}${new URL(String(url)).pathname}${new URL(String(url)).search}`, init) : realFetch(url, init));
+    const actor = { actorType: "system", actorId: "tool_health_sweep" } as const;
+    const runtimeEvents = () => db.select().from(resourceLifecycleEvents).where(and(
+      eq(resourceLifecycleEvents.companyId, f.company.id), eq(resourceLifecycleEvents.resourceType, "agent_runtime")));
+    const grant = async () => (await db.select().from(connectionGrants).where(eq(connectionGrants.id, f.grant.id)))[0]!;
+    try {
+      // The first refresh records the repository list the fixture lacked.
+      await f.service.refreshManagedGitHubGrantAccess(f.connection, f.grant, actor);
+      const first = await grant();
+      const before = await runtimeEvents();
+      expect(before.length).toBeGreaterThan(0);
+      await f.service.refreshManagedGitHubGrantAccess(f.connection, first, actor);
+      const second = await grant();
+      expect(second.providerTenant!.github!.accessRevision).not.toBe(first.providerTenant!.github!.accessRevision);
+      expect(second.providerTenant!.github!.bindingSync).toBeUndefined();
+      expect(bindings.filter(binding => binding.active === true)).toHaveLength(2);
+      expect(await runtimeEvents()).toEqual(before);
+    } finally {
+      await db.delete(agents).where(eq(agents.id, agentId));
+    }
+  });
   it("failed binding removal persists retry/debt through restart, uses current lease deadline and settles without refetching GitHub metadata", async () => {
     const f = await fixture(["101"]); fakeClock();
     await db.update(connectionGrants).set({ providerTenant: { ...f.grant.providerTenant, github: { ...f.grant.providerTenant!.github!,
@@ -574,7 +600,7 @@ describeDatabase("GitHub coordinator with PostgreSQL and controlled Cloud HTTP (
     await db.update(connectionGrants).set({ providerTenant: metadata }).where(eq(connectionGrants.id, installation.id));
     await expect(db.transaction(async tx => {
       const read = async () => (await tx.select().from(connectionGrants).where(eq(connectionGrants.id, installation.id)))[0]!;
-      const transactional = createOAuthRefreshLeases(tx as typeof db, () => new Date(), async () => f.connection, read);
+      const transactional = createOAuthRefreshLeases(tx as unknown as typeof db, () => new Date(), async () => f.connection, read);
       const lease = await transactional.acquireOAuthGrantRefreshLease(f.connection, await read(), true);
       expect(lease.leaseId).toBeTruthy();
       throw new Error("rollback lease");

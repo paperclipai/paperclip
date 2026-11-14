@@ -16,6 +16,7 @@ const resolveRecoveryMock = vi.hoisted(() => vi.fn());
 const reconcileMock = vi.hoisted(() => vi.fn());
 const boardAccessMock = vi.hoisted(() => vi.fn());
 const recoveryActionsMock = vi.hoisted(() => vi.fn());
+const recoverWorkspaceMock = vi.hoisted(() => vi.fn());
 
 vi.mock("@/lib/router", () => ({
   useNavigate: () => navigateMock,
@@ -30,6 +31,7 @@ vi.mock("../api/issues", () => ({
     create: issueCreateMock,
     resolveRecoveryAction: resolveRecoveryMock,
     recoveryActions: recoveryActionsMock,
+    recoverWorkspace: recoverWorkspaceMock,
   },
 }));
 
@@ -151,10 +153,11 @@ function buildIssue(action: IssueRecoveryAction | null): Issue {
   } as unknown as Issue;
 }
 
-async function renderSurface(run: HeartbeatRun) {
+async function renderSurface(run: HeartbeatRun, viewerId?: string) {
   const client = new QueryClient({
     defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
   });
+  if (viewerId) client.setQueryData(["auth", "session"], { user: { id: viewerId } });
   container = document.createElement("div");
   document.body.appendChild(container);
   root = createRoot(container);
@@ -276,6 +279,34 @@ describe("RunWorkspaceRecoverySurface", () => {
     expect(node.textContent).toContain("Action action-2");
     expect(node.textContent).toContain("Recorded-source identity verified.");
     expect(choices()).toHaveLength(2);
+  });
+
+  it("offers the same governed file preservation from the exact failed run without resolving its hold", async () => {
+    const run = buildRun({ errorCode: "native_workspace_sync_out_retry_exhausted" });
+    const action = { ...buildRecoveryAction(), kind: "active_run_watchdog", ownerType: "system",
+      cause: "native_workspace_sync_out_retry_exhausted", evidence: { runId: run.id, workspaceRecovery: {
+        schema: "paperclip.workspace-recovery.v1", runId: run.id, status: "blocked",
+        stage: "restoring_files", retryable: true, requestIds: [],
+      }, systemRecovery: { state: "exhausted", preservationOperationIds: [] } } } as IssueRecoveryAction;
+    boardAccessMock.mockResolvedValue({ source: "session", companyIds: ["company-1"], userId: "run-operator",
+      memberships: [{ companyId: "company-1", membershipRole: "operator", status: "active" }] });
+    recoveryActionsMock.mockResolvedValue({ active: action, actions: [action], sourceInspection: {
+      actionId: action.id, runId: run.id, scope: "recorded_source_identity", status: "verified",
+      observedAt: "2026-11-03T12:00:00Z",
+    } });
+    recoverWorkspaceMock.mockResolvedValue({ actionId: action.id, status: "queued" });
+    const node = await renderSurface(run, "run-operator");
+    click([...node.querySelectorAll("button")].find(button => button.textContent === "Inspect recovery")!);
+    await flush();
+    const preserve = [...node.querySelectorAll("button")].find(button => button.textContent === "Recover saved files");
+    expect(preserve).toBeDefined();
+    click(preserve!); await flush();
+    expect(recoverWorkspaceMock).toHaveBeenCalledExactlyOnceWith("issue-1", {
+      actionId: action.id, runId: run.id, idempotencyKey: expect.any(String),
+    });
+    expect(resolveRecoveryMock).not.toHaveBeenCalled();
+    expect(issueCreateMock).not.toHaveBeenCalled();
+    expect(node.textContent).not.toContain("Saved files recovered");
   });
 
   it("renders nothing for a run that is not a workspace-validation failure", async () => {

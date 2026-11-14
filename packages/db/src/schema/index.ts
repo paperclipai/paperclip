@@ -5,6 +5,7 @@ export { companyTransferRuns } from "./company_transfer_runs.js";
 export { companyOnboardingSeeds } from "./company_onboarding_seeds.js";
 export { authUsers, authSessions, authAccounts, authVerifications } from "./auth.js";
 export { instanceSettings } from "./instance_settings.js";
+export { controllerInstances } from "./controller_instances.js";
 export { instanceUserRoles } from "./instance_user_roles.js";
 export { chatVoiceCallbacks } from "./chat_voice_callbacks.js";
 export { userSidebarPreferences } from "./user_sidebar_preferences.js";
@@ -21,9 +22,11 @@ export { invites } from "./invites.js";
 export { joinRequests } from "./join_requests.js";
 export { budgetPolicies } from "./budget_policies.js";
 export { budgetIncidents } from "./budget_incidents.js";
+export { budgetResumeClaims } from "./budget_resume_claims.js";
 export { agentConfigRevisions } from "./agent_config_revisions.js";
 export { agentApiKeys } from "./agent_api_keys.js";
 export { agentRuntimeState } from "./agent_runtime_state.js";
+export { automaticRunBrakes } from "./automatic_run_brakes.js";
 export { agentTaskSessions, agentSessionGoalActions } from "./agent_task_sessions.js";
 export { agentWakeupRequests } from "./agent_wakeup_requests.js";
 export { projects } from "./projects.js";
@@ -146,6 +149,7 @@ export { completionContracts } from "./completion_contracts.js";
 export { nativeRunResults } from "./native_run_results.js";
 export { nativeRunFinalizations } from "./native_run_finalizations.js";
 export { nativeRunnerCheckpoints } from "./native_runner_checkpoints.js";
+export { nativeHarnessBackups } from "./native_harness_backups.js";
 export { workAssessments } from "./work_assessments.js";
 export { statusDecisions } from "./status_decisions.js";
 export { statusDecisionEffects } from "./status_decision_effects.js";
@@ -187,6 +191,11 @@ export {
   toolGatewaySessions,
   connectionTokenIssuances,
   toolInvocations,
+  toolMcpAppViews,
+  toolMcpSkills,
+  toolMcpSkillFiles,
+  toolMcpTasks,
+  toolMcpElicitations,
   toolActionRequests,
   toolCallEvents,
   toolRateLimitCounters,
@@ -218,6 +227,7 @@ export { runIdentityContexts } from "./run_identity_contexts.js";
 export { connectionIntentDeliveries } from "./connection_intent_deliveries.js";
 export { resourceLifecycleEvents } from "./resource_lifecycle_events.js";
 export { pluginLifecycleAcknowledgments } from "./plugin_lifecycle_acknowledgments.js";
+export { pluginLifecycleResourceCursors } from "./plugin_lifecycle_resource_cursors.js";
 
 export { toolActionDeliveries } from "./tool_action_deliveries.js";
 export { chatTeamsFileTransfers } from "./chat_teams_file_transfers.js";
@@ -274,3 +284,8 @@ export { workflows } from "./workflows.js";
 export { userWorkspacePreferences } from "./user_workspace_preferences.js";
 
 export { issueThreadInteractionIdempotencyKeys } from "./issue_thread_interaction_idempotency_keys.js";
+
+export { projectTaskExecutionPolicies, executionAdmissions, executionAdmissionProjectCharges } from "./execution_admissions.js";
+export { budgetEvaluationWork } from "./budget_evaluation_work.js";
+export { tailscaleConnections } from "./tailscale_connections.js";
+export { nativeProviderArtifacts, nativeProviderArtifactReferences } from "./native_provider_artifacts.js";

@@ -85,6 +85,17 @@ export function readControllerLeaseLoss(value: unknown): LegacyControllerLeaseLo
   return loss;
 }
 
+/** A queue admission wait has no provider attempt to retry. Historical rows can
+ * carry unknown cancellation provenance, so use the queue's original receipt. */
+export function isQueuedDependencyWait(run: Pick<Run, "status" | "errorCode" | "resultJson"> & Partial<Pick<Run, "runtimeMode" | "startedAt">>): boolean {
+  const source = run.resultJson?.timeoutSource;
+  const queueReceipt = (source === "dependency_gate" && run.runtimeMode === "legacy") ||
+    (source === "stale_queued_run_gate" && (run.runtimeMode === "legacy" || run.runtimeMode === "native"));
+  return run.status === "cancelled" && queueReceipt && run.startedAt === null &&
+    run.errorCode === "issue_dependencies_blocked" && run.resultJson?.stopReason === run.errorCode &&
+    run.resultJson?.timeoutFired !== true;
+}
+
 /** Preserve recorded stop intent when adapter completion replaces resultJson. */
 export function cancellationResultJson(run: Run, status: string, patch?: Run["resultJson"], errorCode?: string | null, error?: string | null): Run["resultJson"] {
   if (status !== "cancelled" && status !== "interrupted") return patch ?? run.resultJson;
@@ -93,7 +104,9 @@ export function cancellationResultJson(run: Run, status: string, patch?: Run["re
   let cancellation = previous?.expected ? previous : readRunCancellation(patch) ?? previous;
   const code = errorCode ?? run.errorCode;
   if (!cancellation) {
-    if (code === "server_shutdown_interrupted") {
+    if (isQueuedDependencyWait({ ...run, status, errorCode: code, resultJson: result })) {
+      cancellation = requestedRunCancellation(result, "Waiting for task dependencies to resolve");
+    } else if (code === "server_shutdown_interrupted") {
       cancellation = { source: "shutdown", expected: true, initiator: { type: "system" },
         reason: "Server shutdown interrupted execution", recordedAt: new Date().toISOString() };
     } else if (result.cancelledByActorType || result.cancelledByUserId || result.interruptedByActorType || result.queuedCommentInterruptQueueId) {
@@ -120,6 +133,30 @@ export function canContinueCancelledRun(run: Run): boolean {
   return run.status === "cancelled" && run.runtimeMode === "legacy" && Boolean(run.startedAt && run.finishedAt) &&
     cancellation?.expected === false && ["provider", "transport"].includes(cancellation.source) &&
     run.resultJson?.acpToolInventoryComplete === true && run.resultJson?.acpPendingToolCount === 0;
+}
+
+/** The user's recorded Stop or interrupt on a settled run. A stopped native
+ * run whose runner was unreachable can settle as `failed` once its transport
+ * fails closed; the user's Stop request still bounds which messages are new. */
+export function recordedUserStop(run: Pick<Run, "status" | "resultJson">) {
+  if (run.status !== "cancelled" && run.status !== "failed") return null;
+  const cancellation = readRunCancellation(run.resultJson);
+  return cancellation && cancellation.initiator.type === "user" &&
+    ["operator", "queued_message"].includes(cancellation.source) ? cancellation : null;
+}
+
+/** When a user's Stop or interrupt took effect for message ordering. A native
+ * run finishes only after its provider stop and workspace save settle, which
+ * can take many seconds. A message written after the Stop request is a new
+ * direction even when that settlement finished later, so compare against the
+ * recorded request rather than `finishedAt`. Other cancellations keep
+ * `finishedAt`. */
+export function userStopBoundaryAt(run: Pick<Run, "status" | "finishedAt" | "resultJson">): Date | null {
+  if (!run.finishedAt) return null;
+  const cancellation = recordedUserStop(run);
+  if (!cancellation) return run.finishedAt;
+  const requestedAt = new Date(cancellation.recordedAt);
+  return Number.isFinite(requestedAt.getTime()) && requestedAt < run.finishedAt ? requestedAt : run.finishedAt;
 }
 
 export function isUnexpectedRunCancellation(run: Run): boolean {

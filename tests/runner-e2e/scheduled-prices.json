@@ -10,6 +10,33 @@
       "timeoutMs": 180000,
       "price": {
         "provider": "openai",
+        "model": "gpt-6.1-sol",
+        "version": "openai-standard-2026-11-06",
+        "sourceUrl": "https://developers.openai.com/api/docs/pricing",
+        "inputUsdPerMillion": "2",
+        "cachedReadUsdPerMillion": "0.1",
+        "outputUsdPerMillion": "10",
+        "cacheWrite30mUsdPerMillion": "2.5",
+        "cacheWrite12hUsdPerMillion": "5",
+        "longContext": {
+          "aboveInputTokens": 272000,
+          "rates": {
+            "inputUsdPerMillion": "4",
+            "cachedReadUsdPerMillion": "0.2",
+            "outputUsdPerMillion": "15",
+            "cacheWrite30mUsdPerMillion": "5",
+            "cacheWrite12hUsdPerMillion": "10"
+          }
+        }
+      }
+    },
+    {
+      "provider": "openai",
+      "maximumInputTokens": 1050000,
+      "maximumOutputTokens": 16384,
+      "timeoutMs": 180000,
+      "price": {
+        "provider": "openai",
         "model": "gpt-5.6-sol",
         "version": "openai-standard-2026-10-20",
         "sourceUrl": "https://developers.openai.com/api/docs/pricing",

@@ -8,7 +8,7 @@ import os from "node:os";
 import path from "node:path";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "../__tests__/helpers/embedded-postgres.js";
 
-const legacy = vi.hoisted(() => ({ get: vi.fn(() => [] as string[]), set: vi.fn() }));
+const legacy = vi.hoisted(() => ({ extraTypes: [] as string[], get: vi.fn(() => [] as string[]), set: vi.fn() }));
 vi.mock("./adapter-plugin-store.js", () => ({
   getDisabledAdapterTypes: legacy.get,
   setAdapterDisabled: legacy.set,
@@ -16,7 +16,7 @@ vi.mock("./adapter-plugin-store.js", () => ({
   getAdapterPluginByType: () => undefined,
 }));
 vi.mock("../adapters/registry.js", () => ({
-  listServerAdapters: () => [{ type: "codex_local" }, { type: "claude_local" }, { type: "paperclip_runner" }],
+  listServerAdapters: () => [{ type: "codex_local" }, { type: "claude_local" }, { type: "paperclip_runner" }, ...legacy.extraTypes.map(type => ({ type }))],
   findServerAdapter: (type: string) => ({ type }),
   findActiveServerAdapter: (type: string) => ({ type }),
   isOverridePaused: () => false,
@@ -56,6 +56,7 @@ const support = externalDatabaseUrl ? { supported: true } : await getEmbeddedPos
   beforeEach(async () => {
     directory = await fs.mkdtemp(path.join(os.tmpdir(), "adapter-settings-import-"));
     await db.delete(instanceSettings).where(eq(instanceSettings.singletonKey, "adapter-settings:v1"));
+    legacy.extraTypes = [];
     legacy.get.mockClear();
     legacy.set.mockClear();
     vi.stubEnv("PAPERCLIP_CLOUD_TENANT_SERVER_TOKEN", "synthetic-test-token");
@@ -186,6 +187,58 @@ const support = externalDatabaseUrl ? { supported: true } : await getEmbeddedPos
     await expect(resolveNewAgentRunnerForCompany(db, "company", input)).rejects.toMatchObject({ status: 422, details: { code: "agent_runner_unavailable" } });
     await adapterSettingsService(peer, managed).setDisabled("codex_local", false);
     expect((await resolveNewAgentRunnerForCompany(db, "company", input)).adapterType).toBe("codex_local");
+  });
+
+  it("refreshes API-only Cursor policy from PostgreSQL and authoritative operator declarations", async () => {
+    legacy.extraTypes = ["cursor_cloud"];
+    await service().seedIfAbsent({ disabledTypes: [] });
+    await db.insert(instanceSettings).values({ singletonKey: "default", general: {},
+      experimental: { enableManagedSandboxOnly: true, enableNativeRunner: true } })
+      .onConflictDoUpdate({ target: instanceSettings.singletonKey, set: { general: {},
+        experimental: { enableManagedSandboxOnly: true, enableNativeRunner: true } } });
+    const draft = { adapterType: "cursor_cloud", runner: "auto" as const, setupOnly: true, adapterConfig: {}, disabledTypes: [] };
+    const saved = { adapterType: "paperclip_runner", adapterConfig: { provider: "cursor_cloud", model: "caller-model", repoUrl: "https://github.com/acme/repo", lifecycleMode: "per_turn" } };
+    const admitted = async (input = draft as typeof draft | typeof saved) => {
+      expect(await resolveNewAgentRunnerForCompany(db, "company", input))
+        .toMatchObject({ adapterType: "paperclip_runner", defaultEnvironmentId: null, adapterConfig: { provider: "cursor_cloud" } });
+    };
+    const denied = async (input = draft as typeof draft | typeof saved) => {
+      await expect(resolveNewAgentRunnerForCompany(db, "company", input))
+        .rejects.toMatchObject({ status: 422, details: { code: "agent_runner_unavailable" } });
+    };
+    await admitted(); // The default managed tenant has no Computer or CLI probe.
+    for (const type of ["cursor_cloud", "paperclip_runner"]) {
+      await adapterSettingsService(peer, managed).setDisabled(type, true);
+      await denied();
+      await denied(saved);
+      await adapterSettingsService(peer, managed).setDisabled(type, false);
+      await admitted();
+    }
+    await adapterSettingsService(peer, managed).setDisabled("cursor_cloud", true);
+    const stored = await service().inspectStored();
+    vi.stubEnv("PAPERCLIP_ADAPTERS", JSON.stringify([
+      { adapterType: "cursor_cloud", enabled: true }, { adapterType: "paperclip_runner", enabled: true },
+    ]));
+    await admitted(); // Operator allowlist supersedes, rather than unions, saved disables.
+    await admitted(saved);
+    expect(await service().inspectStored()).toEqual(stored);
+    for (const declaration of [
+      [{ adapterType: "cursor_cloud", enabled: true }],
+      [{ adapterType: "paperclip_runner", enabled: true }],
+      [{ adapterType: "cursor_cloud", enabled: false }, { adapterType: "paperclip_runner", enabled: true }],
+      [{ adapterType: "cursor_cloud", enabled: true }, { adapterType: "paperclip_runner", enabled: false }],
+    ]) {
+      vi.stubEnv("PAPERCLIP_ADAPTERS", JSON.stringify(declaration));
+      await denied();
+      await denied(saved);
+    }
+    vi.stubEnv("PAPERCLIP_ADAPTERS", "invalid operator declaration");
+    await expect(resolveNewAgentRunnerForCompany(db, "company", draft)).rejects.toThrow();
+    vi.stubEnv("PAPERCLIP_ADAPTERS", undefined);
+    await denied(); // Removing the overlay restores the saved choice.
+    expect(await service().inspectStored()).toEqual(stored);
+    expect(legacy.get).not.toHaveBeenCalled();
+    expect(legacy.set).not.toHaveBeenCalled();
   });
 
   it("rolls back the setting when its audit write fails", async () => {

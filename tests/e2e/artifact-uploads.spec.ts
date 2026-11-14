@@ -24,10 +24,11 @@ async function setup(page: Page, request: APIRequestContext, mobile = false) {
   if (mobile) {
     await page.getByRole("button", { name: "More actions", exact: true }).click();
     await page.getByRole("button", { name: "Properties", exact: true }).click();
+  } else {
+    await page.getByRole("button", { name: "Show properties", exact: true }).click();
   }
   const panel = mobile ? page.getByTestId("mobile-task-side-panel") : page.locator("aside").filter({ has: page.getByRole("button", { name: "Open a new tab", exact: true }) });
-  await panel.getByRole("button", { name: "Open a new tab", exact: true }).click();
-  await page.getByRole("option", { name: "Artifacts", exact: true }).click();
+  await panel.getByRole("option", { name: "Artifacts", exact: true }).click();
   await expectTaskPanelTab(panel, mobile, "Artifacts");
   await expect(panel.getByRole("button", { name: "Upload files", exact: true })).toBeVisible();
   return { company, issue, panel };
@@ -62,10 +63,10 @@ for (const mobile of [false, true]) {
     const document = panel.locator("#document-core-handoff");
     await expect(document.getByRole("heading", { name: "Engineering handoff", exact: true })).toBeVisible();
     await expect(document.getByText("Start with the loop inventory and preserve current task ownership.", { exact: true })).toBeVisible();
-    await expect(panel.getByRole("link", { name: "Download file", exact: true })).toBeVisible();
+    await expect(panel.getByRole("link", { name: "Download loop-inventory.csv", exact: true })).toBeVisible();
     await expectTaskPanelTab(panel, mobile, "Artifacts");
     const download = page.waitForEvent("download");
-    await panel.getByRole("link", { name: "Download file", exact: true }).click();
+    await panel.getByRole("link", { name: "Download loop-inventory.csv", exact: true }).click();
     const downloaded = await download;
     expect(downloaded.suggestedFilename()).toBe("loop-inventory.csv");
     expect(await readFile((await downloaded.path())!, "utf8")).toBe(csv);
@@ -86,6 +87,8 @@ for (const mobile of [false, true]) {
     if (mobile) {
       await page.getByRole("button", { name: "More actions", exact: true }).click();
       await page.getByRole("button", { name: "Properties", exact: true }).click();
+    } else {
+      await page.getByRole("button", { name: "Show properties", exact: true }).click();
     }
     await expect(document.getByRole("heading", { name: "Engineering handoff", exact: true })).toBeVisible();
     await expect(document.getByText("Start with the loop inventory and preserve current task ownership.", { exact: true })).toBeVisible();

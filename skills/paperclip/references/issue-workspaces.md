@@ -18,7 +18,7 @@ Read `currentExecutionWorkspace`:
 - `status` / `closedAt` — whether the workspace is usable
 - `runtimeServices[]` — current services, including `serviceName`, `status`, `healthStatus`, `url`, `port`, and `runtimeServiceId`
 
-If `currentExecutionWorkspace` is `null`, the issue does not currently have a realized execution workspace. For child/follow-up work, create the child with `parentId` or use `inheritExecutionWorkspaceFromIssueId` so Paperclip preserves workspace continuity.
+If `currentExecutionWorkspace` is `null`, the issue does not currently have a realized execution workspace. Child and follow-up tasks always get their own workspace from the project base on their first run; they never reuse the parent's or source task's workspace, and the server refuses to bind a task to an ancestor's workspace.
 
 ## Choose Files and Repositories
 

@@ -2,8 +2,9 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import postgres from "postgres";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterAll, afterEach, describe, expect, it } from "vitest";
 import { inspectMigrations } from "./client.js";
+import { drainTestPostgresOwners, TestPostgresShutdownError } from "./test-postgres-owner.js";
 import {
   __embeddedPostgresStartMaxAttemptsForTests as MAX_ATTEMPTS,
   __embeddedPostgresTemplateRootDirForTests as templateRootDir,
@@ -17,6 +18,12 @@ import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
 } from "./test-embedded-postgres.js";
+
+const originalAdminUrl = process.env.PAPERCLIP_TEST_POSTGRES_ADMIN_URL;
+delete process.env.PAPERCLIP_TEST_POSTGRES_ADMIN_URL;
+afterAll(() => {
+  if (originalAdminUrl !== undefined) process.env.PAPERCLIP_TEST_POSTGRES_ADMIN_URL = originalAdminUrl;
+});
 
 // A fake embedded-postgres constructor. It records every constructed instance so
 // the test can assert the retry uses a fresh port and a fresh data directory each
@@ -266,6 +273,29 @@ describeWithPostgres("startEmbeddedPostgresTestDatabase template path", () => {
     else process.env.PAPERCLIP_TEST_POSTGRES_TEMPLATE = originalTemplateSetting;
   });
 
+  it("does not start a replacement when a copied cluster cannot stop", { timeout: EMBEDDED_POSTGRES_TEST_TIMEOUT_MS }, async () => {
+    delete process.env.PAPERCLIP_TEST_POSTGRES_TEMPLATE;
+    const ready = await startEmbeddedPostgresTestDatabase("paperclip-template-stop-ready-");
+    await ready.cleanup();
+    const { ctor, constructed } = makeFakeCtor(Number.POSITIVE_INFINITY);
+    let stops = 0;
+    class FailedStopPostgres extends ctor {
+      async stop(): Promise<void> {
+        if (++stops === 1) throw new Error("owned stop failed");
+      }
+    }
+    __setEmbeddedPostgresCtorProviderForTests(async () => FailedStopPostgres);
+    try {
+      await expect(startEmbeddedPostgresTestDatabase("paperclip-template-stop-fail-")).rejects.toBeInstanceOf(TestPostgresShutdownError);
+      expect(constructed).toHaveLength(1);
+      expect(fs.existsSync(constructed[0].databaseDir)).toBe(true);
+    } finally {
+      await drainTestPostgresOwners();
+      __setEmbeddedPostgresCtorProviderForTests(null);
+      for (const options of constructed) fs.rmSync(path.dirname(options.databaseDir), { recursive: true, force: true });
+    }
+  });
+
   it("publishes a complete template and starts suites from a copy of it", { timeout: EMBEDDED_POSTGRES_TEST_TIMEOUT_MS }, async () => {
     // This test covers the template path, so it enables the cache even when
     // the suite runs under PAPERCLIP_TEST_POSTGRES_TEMPLATE=0. The first
@@ -450,6 +480,44 @@ describe("support probe when the template cannot be built", () => {
   afterEach(() => {
     __setEmbeddedPostgresCtorProviderForTests(null);
     resetTemplateState();
+  });
+
+  it("fails the suite when PostgreSQL cannot allocate semaphores", async () => {
+    const original = process.env.PAPERCLIP_TEST_POSTGRES_TEMPLATE;
+    process.env.PAPERCLIP_TEST_POSTGRES_TEMPLATE = "0";
+    const { ctor, constructed } = makeFakeCtor(Number.POSITIVE_INFINITY);
+    class ExhaustedPostgres extends ctor {
+      async start(): Promise<void> {
+        throw new Error("could not create semaphores: No space left on device (semget)");
+      }
+    }
+    __setEmbeddedPostgresCtorProviderForTests(async () => ExhaustedPostgres);
+    resetTemplateState();
+    try {
+      await expect(getEmbeddedPostgresTestSupport()).rejects.toThrow("could not create semaphores");
+      expect(constructed).toHaveLength(1);
+    } finally {
+      if (original === undefined) delete process.env.PAPERCLIP_TEST_POSTGRES_TEMPLATE;
+      else process.env.PAPERCLIP_TEST_POSTGRES_TEMPLATE = original;
+    }
+  });
+
+  it("still reports an explicitly unsupported platform as unsupported", async () => {
+    const original = process.env.PAPERCLIP_TEST_POSTGRES_TEMPLATE;
+    process.env.PAPERCLIP_TEST_POSTGRES_TEMPLATE = "0";
+    __setEmbeddedPostgresCtorProviderForTests(async () => {
+      throw new Error('Unsupported arch "test-cpu" for platform "test-os"');
+    });
+    resetTemplateState();
+    try {
+      expect(await getEmbeddedPostgresTestSupport()).toMatchObject({
+        supported: false,
+        reason: expect.stringContaining('Unsupported arch "test-cpu"'),
+      });
+    } finally {
+      if (original === undefined) delete process.env.PAPERCLIP_TEST_POSTGRES_TEMPLATE;
+      else process.env.PAPERCLIP_TEST_POSTGRES_TEMPLATE = original;
+    }
   });
 
   it("falls through to the fresh probe instead of reporting the host as unsupported", { timeout: EMBEDDED_POSTGRES_TEST_TIMEOUT_MS }, async () => {

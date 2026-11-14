@@ -1,5 +1,240 @@
 # Database
 
+### Better Auth 1.7.16 upgrade
+
+Better Auth 1.7.3 and later identify accounts by `provider_id` and `account_id`.
+They no longer write the `issuer` column that 1.7.0–1.7.2 required. Apply the
+schema migration before starting the updated server. It makes `issuer` nullable,
+keeps its existing values, removes the old issuer index, and adds a unique index
+on the provider/account pair. This permits new credential signups and preserves
+existing accounts.
+
+Before the upgrade, check for duplicate provider/account pairs:
+
+```sql
+SELECT provider_id, account_id, count(*)
+FROM account
+GROUP BY provider_id, account_id
+HAVING count(*) > 1;
+```
+
+Resolve any duplicates before migration. Keep different users separate. A duplicate
+causes index creation to fail rather than leaving an ambiguous login identity.
+Do not restore the issuer `NOT NULL` constraint on rollback while new rows have
+null issuers. See the [Better Auth upgrade guide](https://better-auth.com/docs/guides/1-7-upgrade-guide).
+
+### Durable native provider backups
+
+`native_harness_backups` journals encrypted provider-session archives in object
+storage. One current row per company and session scope selects the published
+backup. Pending uploads remain recorded after failure; a controller must still
+own the native run when it publishes. Superseded controllers cannot replace the
+selected backup. Archive bytes never enter the database.
+
+The dedicated volume migration imports verified surviving backups without
+removing their source files or changing task-session pointers. Replacement
+readiness rejects retained session pointers whose backups remain local. The
+existing bounded startup retention pass retires current backups only after its
+task, run, lease and age checks pass. Old superseded objects have a separate
+retention path that preserves the current backup and exact backups referenced
+by live leases. Abandoned pending uploads also require a settled run without an
+owner. Object deletion is acknowledged before removing the ledger row. This
+adds no idle polling.
+
+Archives stream up to 4 GiB of file data and 100,000 entries, with a separate
+4.75 GiB encoded-object bound. Contained relative symbolic links are preserved
+verbatim; absolute or escaping targets, link chains, writes beneath links, and
+special files are rejected. Offline verification streams file hashes and honors
+cancellation. A changed local manifest cannot be silently skipped just because
+a previous migration published an object. Backups whose source run was deleted
+remain untouched on the original volume and do not block enrollment.
+
+The same offline maintenance process imports surviving legacy controller state
+into `native_runner_checkpoints` and binds its existing session snapshot through
+`nativeControllerRecovery` metadata. Runner validates the original protocol
+state and recorded artifact; Core requires a finished run with no live owner.
+Blocked or pending recovery records remain unchanged while their surviving
+state is preserved; migration does not mark their work completed.
+The normal bounded continuation selector handles inherited, unstarted follow-ups.
+Never-started queued turns keep their task pointers and remain queued. Original
+files stay intact, canonical database checkpoints take precedence, and missing
+source files are reported separately rather than fabricated. This migration
+does not recover provider state that was already lost before enrollment.
+
+For an already-failed run, a valid legacy controller can lack proof of the
+original Runner artifact after its old bootstrap tickets were pruned. The
+migration preserves those exact controller and supervisor bytes as an encrypted
+`paperclip.legacy-controller-archive.v1` object through the same backup ledger.
+Its scope is the hash of its manifest and is separate from the provider session
+scope. Publication requires a terminal-failure coordinator with no live owner.
+The archive does not become an executable Runner checkpoint. Task pointers,
+failed results and recovery blockers stay unchanged. A successful retained
+session without artifact proof still blocks migration. The migration receipt
+reports failed-session archives separately from imported recovery authorities.
+
+An internal maintenance owner can separately record
+`runnerProfileJson.nativeHarnessFilesystemIndependence` when an original-volume
+inspection finds no uncovered provider or Runner payload. This is not a backup
+or a successful recovery. It requires a fresh, independently reviewed provider
+attachment witness and a private nonce anchor on that original volume. The
+anchor survives normal releases; current deployment and mount identities are
+verified afresh. Replacement hosts cannot create the receipt from missing files.
+
+Publication binds the retained session, canonical newest resume source, frozen
+inputs and checkpoints, every associated lease and destroyed-provider receipt,
+released controller/finalizer ownership, and existing immutable skill references.
+Any surviving skill files must match their admitted package bytes and modes.
+Surviving controller and supervisor files require separate authenticated raw-byte
+archives through the existing encrypted backup ledger. This evidence-only path
+also accepts a settled successful source whose controller records match its
+durable checkpoint. Its `original_volume_source_evidence` manifest reason does
+not grant provider recovery or Runner execution authority. Publication checks
+the source bytes again and retains the first authenticated archive during a
+concurrent capture. The receipt binds the exact archive row and checkpoint parts.
+Retired authority epochs can use the same evidence archive with a closed
+inventory of their original controller and suspended Runner files, bytes and
+modes. Each epoch must match a retained same-session run and its canonical
+checkpoint identity when a header exists. A genuinely absent historical header
+instead requires the exact admitted authority binding and remains explicitly
+absent. Malformed, retired, or foreign headers cannot use this path. Current
+source checkpoint and artifact requirements remain unchanged. Source fences
+recheck the complete inventory before archive and receipt publication. Unknown
+children and other nonempty history directories remain blockers. The inventory
+and historical headers or their explicit absence stay bound in replacement
+validation. History-free manifests and receipts keep their exact
+existing shape; current-controller-only evidence remains retained when a later
+archive adds historical files. These archives do not become executable backups.
+This maintenance inventory is limited to 128 entries, 16 MiB per file and 64 MiB
+total. These bounds are intentionally smaller than the Runner control-plane
+state's 256 MiB maximum. A larger otherwise valid epoch remains on the original
+volume and blocks filesystem independence; it is never truncated or waived.
+Source locks and a final comparison fence publication; original files, stamps,
+warnings, failed statuses and session pointers remain unchanged. Startup can
+validate the published receipt using only database bindings, without the old
+volume, a fresh source witness, or storage reads. Changed or missing bindings
+invalidate it. Existing resume and replacement policies remain authoritative,
+including governed-wait failures and warm-session refusals. No provider history
+is reconstructed or declared recovered.
+
+The same original-volume maintenance owner has a separate `web_evidence` mode.
+It stores a `paperclip.native-harness-web-evidence.v1` receipt. This mode proves
+that the web server's retained files have durable byte coverage. It does not
+require an external VM's termination receipt and does not settle that VM's
+recovery obligation. It requires the same settled web controller, finalizer,
+task and physical-writer fences. The encrypted `original_volume_source_evidence`
+archive includes a closed inventory of all nonexcluded files under the canonical
+session root, the separate warm supervisor, and each admitted skill manifest.
+Files retain their bytes and modes, including local edits and a skill whose
+version row was deleted. Such a skill remains forensic evidence: the owner does
+not recreate its version or make it executable. Canonical credential exclusions
+stay excluded. Unknown directories, symlinks, incomplete manifests, active web
+writers and changed source facts fail closed. This WEB inventory permits at most
+10,000 entries, 4 MiB of manifest metadata, and 4,096 bytes per path. The 16-MiB
+per-file and 64-MiB total payload limits remain unchanged. Authority history keeps
+its separate 128-entry and 32-epoch bounds.
+
+A genuinely absent raw controller stays absent. A supervisor-only archive still
+requires the exact durable controller checkpoint and source identity. Old
+terminated-provider receipts and history-free manifests keep their existing
+shape. External lease status and cleanup observations can change without
+creating a new web filesystem dependency. Allocation, stamp, selected source,
+checkpoint and admitted-input changes invalidate coverage. VM references,
+recovery actions, warnings and continuation policies stay unchanged. Replacement
+validation uses only the published archive and database bindings; it needs no
+original-volume anchor or filesystem read. These validations add bounded
+per-retained-scope database reads during startup. They do not add a worker or a
+poll. Missing or invalid byte evidence remains an enrollment blocker.
+
+The original-volume owner can refresh a WEB or full native receipt whose database
+facts digest has become stale only when fresh source inspection, current-key checkpoint
+validation and ciphertext hash/size readback prove the preserved bindings unchanged.
+It reuses the same archive and takes the existing finalizer, task and run fences before
+comparing the prior receipt digest and replacing it. The company activity log
+retains the prior database and local facts digests, source witness fingerprint,
+observation time and receipt digest. Those four changed fields must reconstruct
+the exact prior proof from the unchanged current bindings before publication. No source paths
+enter the audit delta; normal activity redaction remains enabled. Changed
+evidence, concurrent invalid receipts and active sources remain blocked; remote
+recovery obligations are unchanged.
+Full native reproof still requires canonical destroyed-provider receipts. A
+database-only legacy workspace migration marker can stale the facts digest while
+the preserved controller, skill assets and local byte proof remain unchanged;
+refresh authenticates that same object and does not upload a replacement archive.
+
+Local inode and timestamp observations may change between preservation attempts
+without changing byte coverage. Valid receipts remain idempotent after those
+changes; stale database facts can refresh with the same archive and fresh local
+observations. During one attempt, the local metadata digest must remain stable
+from capture through the locked publication check. Changed bytes, paths or modes
+still invalidate preservation evidence.
+
+Receipt validation adds bounded per-scope database reads to startup eligibility.
+It does not add a recurring scan or network work. Qualification must measure the
+selected cohort's startup latency on the serving revision before enrollment.
+
+### Workspace cohort admission proofs
+
+A saved cohort keeps its exact members, operations and snapshots on resume.
+Independent companion imports can change the current source-scope proof without
+changing those members. When every member has a running journal and its current
+fingerprint matches both saved fingerprints, the importer can reprove the current
+scope under fresh source, lifecycle and finalizer locks. After current source and
+recovery checks, one transaction compares every journal and refreshes only the
+cohort proof for all members. Cancellation or a changed journal rolls back the
+whole refresh. Partial reservations still require the original aggregate proof.
+Archives, recovery obligations and publication checks retain their existing owners.
+
+Git cache expiration treats a saved migration marker or unfinished migration
+journal as a durable consumer. It checks this under the lifecycle lock. A failed
+migration with `lastFailure` and no `retiredSave` also keeps its source and
+snapshot retention hold after process loss.
+
+If an older server already expired members of an unpublished cohort,
+`supersedeExpiredRemoteWorkspaceMigrationCohort` accepts the exact saved cohort
+and the exact expired member IDs. This is an internal service API for a privileged
+operator with a real database handle and reviewed company/cohort inputs. It does
+not add a CLI mode or an HTTP route. An operator calls the exported owner directly;
+its test and the reviewed one-time administrative qualification use that path.
+It requires completed Git expiration and an
+unexpired restore-point recipe for each missing member. Other members must retain
+their saved source fingerprints. Fresh source, lifecycle, finalizer and row locks
+protect one transaction that fails every old journal and removes only its matched
+active marker. It does not report migration success or change task state. The
+old cohort proof, operations, snapshots and object references remain unchanged.
+The failure receipt retains those objects through the existing failed-save hold.
+The optional `sourceLockWaitMs` uses the existing bounded source-lock queue.
+The default still refuses a busy source immediately. Cancellation targets this
+waiter only. All source and recovery checks run again after lock admission.
+
+New canonical imports use the current archived recipe or current online source.
+They record the old operation and supersession IDs and reserve a snapshot
+generation above the existing ledger maximum. A successful new import does not
+retire the old hold. Release of those historical objects requires separate review.
+
+### Original local Git sources for archived workspaces
+
+When an archived runtime branch has an exact successful deletion receipt, its
+saved commit can be imported from the recorded original file-URL repository if
+the canonical private/project cache is definitively absent. A present, corrupt,
+foreign or unreadable primary source never falls through to this path.
+
+This fallback requires the matching company/project source record, a real bare
+repository under the same instance root, and the exact full saved base SHA matching
+the deleted tip (`baseRefSnapshot.resolvedSha`, with the legacy `baseRefSha` form
+accepted when no canonical snapshot exists). Conflicting records fail closed. It accepts self-contained SHA-1 storage with a bounded standard
+configuration and at most 10,000 metadata entries. Aliases, special files,
+alternates, replacement/graft/shallow state and execution hooks fail closed.
+Every retained branch or lightweight tag must still name that full base commit.
+Saved retries and final publication recheck that all recorded private and generated
+primary sources remain absent. Returned or unreadable primary files block the
+original-source path. Git reads use a restricted environment and local-file transport only.
+
+Materialization uses private migration scratch. Existing encrypted snapshot
+readback, journal identity, source reinspection and publication fences still
+apply. Original repository bytes and cleanup history remain unchanged. This
+imports the retained workspace tree; it does not turn a configured local file
+URL into a portable source for future fresh project work.
+
 ### Proactive agent chat messages
 
 Migration `0419_slippery_impossible_man.sql` adds an agent-scoped unique constraint
@@ -93,6 +328,19 @@ missing successor. The acknowledgement keeps its contiguous-prefix rule without
 returning every historical sequence number. All events stay stored. Counting the
 index entries still grows with the stream length.
 
+A native source event commits in one transaction of two statements. The first
+statement locks the run row. The second statement finds a replayed event, or
+reserves the next sequence and inserts the event, and reads the count and
+maximum for the acknowledgement. The lock stays a separate statement: a
+statement that waits for the lock keeps the snapshot it took before the wait,
+and would miss an event that the lock holder committed. An event that wakes a
+queue looks for its replay in a statement of its own first, because a wake is
+registered before its write and a replayed event registers none. An ordinary
+event without a source identity commits in one statement. Each event commits
+before its append returns; no event waits for another. Measure the cost of one
+event with
+`TSX_DISABLE_CACHE=1 pnpm --filter @paperclipai/server exec tsx scripts/benchmark-run-event-append.ts`.
+
 Conversation recovery reads only the saved run fields used to settle a turn.
 Settlement locks and reads current conversation state without loading the task
 description or comment bodies. It still checks the durable reply or pending
@@ -176,6 +424,133 @@ indexes concurrently and can resume an interrupted build without blocking run
 writes for the full build. The indexes add storage and run-write overhead; they
 do not change task visibility or secret redaction.
 
+The task Context row reads the agent's latest context-window reading through
+two small partial indexes on `heartbeat_run_events`. One index covers only usage
+items, by run and time. The other index covers only `context.compacted` events,
+by company and normalized session. Migration 0432 builds both indexes
+concurrently. A poll therefore reads a few index entries, not a run's full event
+history.
+
+The attention feed finds retry-exhausted runs through the partial index
+`heartbeat_run_events_retry_exhausted_idx`. The index covers only `lifecycle`
+events whose message starts with `Bounded retry exhausted`, keyed by company,
+run, and newest event first. The query predicate must stay textually equal to
+the index predicate, or the scan reads every company event again. Migration
+0454 builds the index concurrently.
+
+A subtree pause release finds the runs that a dispatch gate refused for that pause
+through the partial index `heartbeat_runs_tree_hold_suppression_idx`. The index
+covers only cancelled runs with a `treeHoldSuppression` marker, keyed by company and
+hold. Migration 0436 builds it concurrently.
+
+The budget worker finds committed budget Stops that are not delivered yet
+through the partial index `heartbeat_runs_pending_budget_cancellation_idx`. The
+index covers only runs whose `result_json.startupCancellation.budgetEnforcement`
+is an object without `deliveredAt`, keyed by company. Its predicate must stay
+identical to `pendingBudgetRunCancellationPredicate` in
+`server/src/services/heartbeat/budget-cancellation.ts`; a regression test checks
+that the planner uses it. The worker check, run control, and the idle-sleep
+check therefore read a few index entries, not every run's result JSON. The
+migration builds the index concurrently. To compare both plans on a disposable
+local fixture:
+
+```sh
+pnpm --filter @paperclipai/server exec tsx ../scripts/benchmark-budget-cancellation-scan.ts --runs=20000 --payload-kib=16
+```
+
+Workspace activity and cleanup checks (`expirationScope` in
+`server/src/services/git-workspace-expiration.ts`) find a workspace's runs with
+one index probe per binding: `issue_id`, `native_issue_id`, the bound issues'
+checkout and execution runs, and the legacy context keys `issueId`, `taskId`
+and `executionWorkspaceId`. Migration 0460 builds
+`heartbeat_runs_company_ctx_execution_workspace_idx` concurrently for the last
+key. The index is partial (`context_snapshot ? 'executionWorkspaceId'`), so it
+serves only queries that repeat that predicate and does not compete with other
+company-scoped indexes. The context expressions and the predicate must stay
+textually equal to the index definitions; a regression test checks that no
+binding scans `heartbeat_runs`.
+To compare both plans on a disposable local fixture:
+
+```sh
+pnpm --filter @paperclipai/server exec tsx ../scripts/benchmark-workspace-activity.ts --baseline-ref=<pre-fix commit> --runs-per-workspace=3000
+```
+
+The task page's created-from list (`createdFromIssueCondition` in
+`server/src/services/issue-creation-origin.ts`) reads created tasks through
+three index probes: the recorded origin task (`issues_company_origin_issue_idx`),
+the source task's runs (`heartbeat_runs_company_origin_issue_idx`) and then the
+tasks whose only origin is one of those runs, and the creation activity of those
+runs (`activity_log_run_id_idx`). Migration 0461 builds the partial index
+`issues_company_legacy_origin_run_idx` concurrently for the run step. It keys
+tasks by company and `origin_run_id`, only where `origin_issue_id` is null and
+`origin_run_id` is not null. The run branch must repeat that predicate textually.
+A recorded origin task still wins over a run, and a run over activity. To compare
+both plans on a disposable local fixture:
+
+```sh
+pnpm --filter @paperclipai/server exec tsx ../scripts/benchmark-created-from-issues.ts --baseline-ref=<pre-fix commit>
+```
+
+GitHub review lookups use four indexes from migration 0456, which builds them
+concurrently. `chat_message_links_company_comment_idx` finds a source comment's
+link for inherited review waits and run-origin checks.
+`chat_message_links_delivery_idx` finds a delivery's links.
+`chat_deliveries_github_automatic_delivery_idx` finds a delivery by its GitHub
+webhook delivery ID on one endpoint. These three are partial.
+`heartbeat_runs_company_wake_comment_idx` keys runs by company and
+`context_snapshot.wakeCommentId`. It is not partial, because the planner does not
+use expression statistics from a partial index; without them it estimates many
+matches and walks the run history by creation time instead. The review check
+reads the delivery's comment IDs first and then the newest same-agent run woken
+by one of them, so it no longer walks the agent's run history. The two link
+indexes also serve the comment and delivery `on delete set null` actions. Issue
+lists share one external review-wait read per issue between the review and
+blocked-inbox attention maps.
+
+Migration 0476 builds `agent_wakeup_requests_company_run_idx` concurrently. It
+keys wake requests by company and `run_id`, partial on a non-null run. Queued-run
+dispatch finds the person wakes that joined or were adopted by each queued run
+through it, so the read is bounded by the queue size, not by the agent's wake
+history.
+
+Migration 0457 builds `heartbeat_runs_company_native_session_idx` concurrently.
+It keys runs by company and `native_session_id`, partial on a non-null session.
+Native retention, recovery, resume and archive reads find a session's runs
+through it instead of reading the agent's whole run history. To measure it:
+
+```sh
+pnpm --filter @paperclipai/server exec tsx ../scripts/benchmark-native-session-run-index.ts
+```
+
+Chat-admission checks use `chat_actions_company_issue_kind_idx` from migration
+0458, which builds it concurrently. The check decides whether an issue holds
+external chat input that was never admitted: recovery skips such an issue and
+manual task start refuses it. The index keys `inbound_wakeup` and
+`failed_run_retry` actions by company, `payload->>'issueId'`, kind and status.
+It serves the outer input lookup and the nested retry and later-input lookups,
+which all match on the same company and payload issue ID. Without it, each check
+reads the full `chat_actions` table. The check SQL is unchanged. Local proof:
+
+```sh
+pnpm --filter @paperclipai/server exec tsx ../scripts/benchmark-chat-admission-index.ts
+pnpm --filter @paperclipai/server exec tsx ../scripts/benchmark-chat-admission-index-migration.ts
+```
+
+Native harness backup expiration finds the leases that reference one backup root
+by run, by `metadata.nativeHarnessBackup.sessionScopeSha256`, and by the
+identity's own lease ID, in one `OR` query. The partial expression index
+`environment_leases_native_backup_scope_idx` from migration 0459 keys leases by
+that scope digest. With it, every arm of the `OR` has an index, so PostgreSQL
+combines three index probes instead of reading every lease of the company and its
+metadata. The expression must stay identical to the one in
+`server/src/services/native-runtime/native-harness-backup-expiration.ts`; a
+regression test checks that the planner uses the index. The migration builds the
+index concurrently. To compare both plans on a disposable local fixture:
+
+```sh
+pnpm --filter @paperclipai/server exec tsx ../scripts/benchmark-environment-lease-backup-lookup.ts
+```
+
 The chat wake-notice sweep compares UUID columns directly against guarded,
 canonical lowercase UUID payload values. Malformed and noncanonical payloads
 still match nothing. The query can use existing primary keys without adding a
@@ -191,6 +566,18 @@ Use a revision before these fixes for `--baseline-ref` after they merge. The
 benchmark loads that revision's chat query, uses synthetic data only, compares
 complete returned rows, and prints timings and `EXPLAIN (ANALYZE, BUFFERS)` plans.
 Local results measure query execution, not staging request latency.
+
+The inbound conversation head reads one endpoint's open delivery IDs first. These
+are received, retry and processing deliveries (from `chat_deliveries_work_idx`)
+and processed deliveries that the endpoint's issued or processing `inbound_wakeup`
+actions still own. Only those rows are fetched, filtered by thread and sorted. The
+query does not scan the endpoint's processed history or read its
+`normalized_event` values. To compare it with a pre-change revision on a busy
+endpoint fixture:
+
+```sh
+pnpm --filter @paperclipai/server exec tsx ../scripts/benchmark-inbound-queue-discovery.ts --baseline-ref=<commit> --endpoint-history=20000 --only=endpoint-history --require-work-budget
+```
 
 Run history defaults to 200 rows and permits at most 1,000 rows, including
 direct service calls. The UI client requests 200 rows when its caller omits a
@@ -229,14 +616,26 @@ authority once. Different task bindings must both pass. The batch is discarded
 after that delivery; later events still recheck grants, membership, task
 existence, and company boundaries.
 
+Task routes that filter several rows for one actor (summaries, lists, blockers,
+relation edges, and the chat bootstrap) use one fresh authorization batch per
+call. The batch reads the task rows and applies the task-privacy predicate to
+all of them in one statement. It reads membership, agent, and run policy once.
+The number of statements does not grow with the number of tasks. The boundary
+checks of a low-trust agent (ancestry and mention grants) stay per task and run
+at most eight at a time. The batch is discarded after the call; the next
+request reads current grants, membership, and privacy again.
+
 Browser progress events update cached live run status directly. A successful
 patch does not refetch task details, activity, or run history. Unknown runs
 retain the existing refresh fallback. Run transitions, activity events, and
 reconnect recovery still refresh their affected data.
 
 Task run queries stop interval polling only after a successful empty response
-and an open shared live connection for the current company and session. Initial
-reads, active work, errors, connection setup, and disconnections retain their
+and an open shared live connection for the current company and session. With
+that connection open, a successful active response (a run list or one run)
+polls only every 15 seconds. Lifecycle and progress events keep it current; the
+slow read only bounds drift in fields that have no event. Initial reads,
+unrecognized data, errors, connection setup, and disconnections retain their
 existing polling cadence. Company or session changes require a new connection.
 Views without an assigned agent retain polling. Matching run lifecycle events
 refresh the displayed task's run queries independently of route and window
@@ -248,6 +647,18 @@ request settles. Connection readiness also reconciles the displayed run
 queries after any older request. Follow-up reads belong to the current mounted
 scope and stop when it changes or unmounts. The first open and reconnect still
 reconcile missed events.
+
+Live events refresh company-wide lists and projections through a slower
+invalidation lane. These are task lists and summaries, the agent list, run
+lists, badges, the dashboard, costs and the company activity feed. The lane
+flushes at most once every 5 seconds. After 5 quiet seconds, an event refreshes
+them after the normal batch interval. An event inside the 5-second window waits
+until the window ends. Task detail, comments, runs, browsers and other
+per-entity queries keep the fast lane. A task's browser list stops interval
+polling while the live connection is open and no browser can still change
+state. Browser lifecycle activity on that task refreshes it. If a browser read
+is in flight, one shared follow-up read runs after it settles. A list that no
+view observes becomes stale, so the next view reads it.
 
 Bundled skill release checks read the current stored version ID and a SHA-256
 fingerprint of its file inventory. A per-database memo keeps at most 64 verified
@@ -505,6 +916,20 @@ DATABASE_MAX_LIFETIME_SECONDS=1800   # recycle a pooled connection after this lo
 DATABASE_APPLICATION_NAME=paperclip  # application_name in pg_stat_activity; default: paperclip
 ```
 
+`withDedicatedDbConnection` gives an action exclusive use of one session outside
+the main pool (application name `paperclip-workspace-finalization-lock`). Each
+`createDb` owner keeps at most `DEDICATED_CONNECTION_IDLE_MAX` (4) of these
+single-connection clients idle for reuse; they follow the same idle timeout and
+max lifetime as the main pool. This is not an admission limit: callers hold
+advisory locks and nest dedicated actions, so an action that finds no idle
+client opens one and closes it on release when four are already retained. A
+connection whose action throws is closed, never reused. Actions must keep
+session state transaction-scoped (`pg_advisory_xact_lock`,
+`set_config(..., true)`). Like the main pool, a retained session sees an
+`ALTER DATABASE` or `ALTER ROLE ... SET` change only after it reconnects; a test
+that changes such a setting calls `closeDedicatedDbConnections` first. Shutdown
+and ending the owner client close the idle set.
+
 An explicit `DATABASE_PREPARED_STATEMENTS=true` enables named prepared statements
 for parameterized ORM queries, transactions, reserved connections, and dedicated
 clients. Postgres.js manages the statement cache. This does not cache query
@@ -522,23 +947,74 @@ leave database construction unchanged. An expired window stays inactive after a
 restart; remove the setting after the investigation.
 
 The diagnostic measures awaited Postgres.js `unsafe` responses before Drizzle
-column decoding. It retains the Drizzle builder caller for normal, prepared,
-transaction, and dedicated-pool execution. It issues no queries.
-It logs the public server caller locations, static schema table, operation,
-query/row counts, and response value sizes. It emits at most 2,048 aggregate
-groups and a summary. Measurement stops at the deadline. Environment-enabled
+column decoding. It issues no queries. Configuration is read when each database
+client is created; setting the environment on an already-running process does
+not install the capture on existing clients. Prepare the deployment artifact
+before choosing the UTC window, then start the window after rollout and warm-up.
+
+Server entry points use `withDatabaseOperation(owner, action)` to name the work
+that executes queries. Owners are fixed semantic labels, never request paths,
+company or run IDs, user input, or SQL. The execution owner is captured for each
+query and retained through completion, including transactions and dedicated
+pools. A prepared query reused by different operations keeps the owner of each
+execution. The builder caller is separate from that execution owner.
+Owner context is active while a valid future window is armed, up to 30 minutes
+before its start, so work that crosses the start boundary keeps its owner. Query
+accounting starts only at the window start. With no armed window, or after
+expiry, the owner helper calls the action directly without a context scope.
+
+The capture aggregates owner, static schema table, operation, calls, returned
+rows, query errors, and total/maximum completion wall time. `totalWallMs` and
+`maxWallMs` include pool, database, network, and event-loop waits; they are not
+CPU measurements, and concurrent query durations overlap. Timing excludes the
+capture's response sizing. Rank calls and returned rows both per second and per
+completed service operation; a busy owner is not necessarily wasteful.
+
+Response sizing samples successful results 1, 17, 33, and so on per aggregate
+group (`sampleEvery: 16`). It examines at most
+256 cells, 65,536 string code units, and 65,536 value bytes per sampled result;
+an individual string over 16,384 code units is not measured. Parsed objects and
+other complex values are not serialized. Oversized, complex, or unexamined
+values leave an incomplete sample. `sampledValueBytes` is a lower bound over
+sampled primitive values, not a total response-size estimate or network bytes.
+Do not extrapolate it as the total bytes returned by the database. Inspect
+`sampledResults`, `sampledRows`, `measuredValues`, `unmeasuredValues`, and
+`incompleteSamples` alongside it. `sizingWallMs` records the diagnostic's sizing
+work separately. Use a separate capture-disabled CPU profile to measure normal
+processing cost.
+
+The diagnostic emits at most 2,048 aggregate groups and a summary. Measurement
+stops at the deadline. Environment-enabled
 captures emit at most 64 records per second and can take another 33 seconds to
 finish writing the bounded output. Wait for the summary before collecting it.
 It never logs SQL, parameters, result
 values, connection strings, or query errors. In-flight queries continue normally.
 
-For a bundled server, keep the linked source maps and enable Node's
-`--enable-source-maps` option so the diagnostic can resolve public caller
-locations. Restore the prior Node options after capture. Sizes still count when
-caller locations are unavailable.
+Semantic owners work in a bundled server without source maps. Specific owners
+avoid stack capture. The generic `http.request` owner keeps its exact name but,
+like an unowned query, also captures a bounded caller location during the window.
+For wrapped query builders, a map-free hosted bundle retains one static generated
+construction-site anchor (`dist-runtime/server.mjs`, `index.mjs`, or
+`chunk-<build hash>.mjs`, with line and column). Correlate it with the exact serving
+revision and bundle; it is not a TypeScript location or an execution-time CPU
+owner. Capture wrapper frames are excluded before reading the stack, and deeper
+frames in the same bundle are omitted.
 
-Look for `paperclip.db_response_capture.entry.v1` and
-`paperclip.db_response_capture.summary.v1` in the process logs. A log provider
+Unscoped driver calls, including relational queries, do not accept generated
+anchors: a bundled ORM helper could otherwise be mistaken for an application
+caller. They can still retain existing public source/dist locations; linked
+source maps and Node's `--enable-source-maps` may help resolve those locations.
+Restore prior Node options after capture. Missing callers remain unknown and
+still contribute to totals. Disabled, future and expired windows do not capture
+stacks; wrappers installed for an armed window remain after expiry. Active census
+stack capture, grouping and bounded sizing add measurement overhead. More caller
+groups still share the existing group, page and output-rate caps. This diagnostic
+is not a production performance improvement.
+
+Look for `paperclip.db_response_capture.entry.v2` and
+`paperclip.db_response_capture.summary.v2` in the process logs. Version 2 uses
+sampled, bounded primitive-value sizing; do not interpret it as the version 1
+all-result byte estimate. A log provider
 can store `event` as a structured field instead of message text. Filter by that
 field or read the bounded window from the exact deployment. Check the summary
 and group totals, including the unattributed overflow group.
@@ -552,22 +1028,26 @@ Fetch a complete capture as follows:
    from zero through `groupPages - 1`, filtering on the entry event, `captureId`,
    and `groupPage`. Request at least `groupPageSize` matching records per page.
    A structured query can use
-   `@event:paperclip.db_response_capture.entry.v1 AND @captureId:<id> AND @groupPage:0`.
+   `@event:paperclip.db_response_capture.entry.v2 AND @captureId:<id> AND @groupPage:0`.
 3. If the provider's record limit is smaller than a page, fetch each
    `groupIndex` separately with the same capture ID. Each index matches one
    entry. Do not split by timestamp: entries can share a timestamp.
 4. Deduplicate by `(captureId, groupIndex)`. Require every index from zero
    through `groups - 1`, with no gaps. Entry count must equal `groups`, summed
-   `calls` must equal `completedQueries`, and summed `responseValueBytes` must
-   equal the summary total. A missing page is an incomplete measurement.
+   `calls` must equal `completedQueries`, and summed `rows`, `sampledResults`,
+   and `sampledValueBytes` must equal their summary totals. A missing page is an
+   incomplete measurement. Keep overflow and unattributed groups visible.
 
 Tagged raw-driver calls, streams, unawaited raw-driver
 dispatch, and protocol overhead are not measured. Relational queries use a driver-level caller fallback.
-Queries still in flight at the deadline are reported separately. Sizes describe
-driver values before column decoding, not billed network bytes. Complex parsed
-values use JSON size estimates, counted in `estimatedValues`. Reconcile them with
-provider metering and socket measurements. Serialization adds temporary CPU and memory work;
-measure the final transfer rate after the window expires.
+Queries still in flight at the deadline are reported separately. The census does
+not include every PostgreSQL statement or internal transaction command, so its
+calls are not interchangeable with database-wide commit counters. It does not
+measure SQL compilation, driver parsing CPU, or Drizzle row-mapping CPU. Use the
+ranked owners to choose a narrow follow-up profile or synchronous-stage
+measurement; do not attribute CPU by subtracting process CPU usage across an
+asynchronous query. Remove the capture setting after collecting its final
+summary; the absolute deadline already prevents further measurement.
 
 ### Push the schema
 
@@ -586,6 +1066,13 @@ DATABASE_URL=postgres://postgres.[PROJECT-REF]:[PASSWORD]@...5432/postgres \
 See [Supabase pricing](https://supabase.com/pricing) for current details.
 
 ## Connection loss and retries
+
+HTTP access logs distinguish a completed response from a connection that closes
+before or during the response. An aborted request has no success status in the
+log message. The structured response status is null when headers were not sent;
+after headers, it retains the status sent before the abort. These logs describe
+HTTP delivery, not database settlement. A disconnected issue PATCH may continue
+running, so an aborted response does not prove that its writes rolled back.
 
 The database client does not replay arbitrary statements after a disconnect.
 PostgreSQL may have committed a statement before the connection loses its
@@ -621,6 +1108,18 @@ connection. This can help interactive requests that share a prepared-query pool
 with slow background work. It does not make the SQL itself faster. The default
 pipeline limit remains unchanged. Test transaction behavior before using this
 setting with a driver build that does not include the patch.
+
+The patch also releases a connection's receive buffer when the connection has
+read every message in it. Without this fix, an idle connection keeps the buffer
+of its last read until its next read: the socket chunk, or the whole buffer of
+its largest recent message. At 340 open connections that each read a 1 MB row,
+this held about 320 MB of `external` memory. The memory is outside the
+JavaScript heap. `packages/db/src/postgres-receive-buffer.test.ts` checks that
+the buffer is released. It also checks that results are reassembled correctly
+when socket chunks end exactly at message boundaries, when they split messages
+in the middle, and when the operating system chooses the chunks. Measure it with
+`pnpm --filter @paperclipai/db exec node --expose-gc --import tsx scripts/benchmark-postgres-receive-buffer.ts`
+(`CONNECTIONS` and `ROW_BYTES` are optional).
 
 Trusted-header actor synchronization retries transient connection failures,
 including `CONNECT_TIMEOUT`, at most twice. This retry applies only to the
@@ -684,6 +1183,150 @@ blocks concurrent task or run updates. It allows audit inserts to retain their
 foreign-key `KEY SHARE` locks without waiting on identity acquisition. The audit
 foreign keys and their deletion behavior remain enforced.
 
+## Remote workspace row locks
+
+The runtime workspace service takes company `KEY SHARE`, current task `UPDATE`,
+run `UPDATE`, then workspace `UPDATE` locks. It rechecks the run's task binding
+under the run lock. A shared workspace can retain a different original source
+task; new provisioning and snapshot operations belong to the current run's task.
+Existing operation receipts keep their recorded attribution.
+
+| Owning transaction | Locks after company, current task and run |
+| --- | --- |
+| Workspace reservation | Shared-selection advisory lock when needed, workspace |
+| Preparation publication | Workspace, source lease, existing restore receipt |
+| Snapshot reservation and publication | Workspace, operation and snapshot rows |
+| Provisioning reservation | Workspace, existing operation or new receipt |
+
+`workspace_operations` has ordinary company, task, run and workspace foreign
+keys. An insert takes `KEY SHARE` locks on those parents even when the service
+does not explicitly select them. Locking the parents first prevents their
+foreign-key checks, or a later run-reference write, from reversing the order.
+File preservation already takes task, run, workspace and lease locks in that
+order. Confirmed lease destruction locks matching workspaces before the lease;
+its workspace-location update takes no task or run lock afterward.
+
+Provisioning settlement and save-invocation settlement lock the workspace and
+update existing receipt metadata. They neither add a parent foreign-key
+reference nor lock a task or run afterward. Snapshot upload and retention own
+snapshot rows; the snapshot ledger has no parent foreign keys. These paths do
+not need an otherwise unused parent lock.
+
+Administrative import reservation takes company `KEY SHARE`, original source
+task `UPDATE`, then workspace `UPDATE`, and rechecks that source binding. This
+also applies to an already-imported no-op, which can overlap runtime saves.
+Import publication takes the same company and recorded source-task locks before
+its legacy coordinator and run locks, then the workspace and saved allocation
+leases. Native claim, status and cancellation owners do not share one row-lock
+order. Import therefore requests those legacy coordinator, run and lease locks
+with `NOWAIT`. A real `55P03` aborts the publication transaction and reports
+`remote_workspace_migration_blocked:execution_rows_busy`. The journal, uploaded
+archive and local files remain available for a later administrative retry. Other
+database errors propagate. No automatic retry or lock-strength reduction occurs.
+
+Offline import can preserve an active task recovery hold after its exact native
+workspace reference is finalized. It checks the terminal run, released controller
+and coordinator ownership, task relationship, and any recorded file allocations.
+An accepted result with a retrying coordinator also needs the successful
+company/run/task `workspace_finalize` receipt consumed by the normal finalizer.
+Historical receipts can have no workspace foreign key. Import retains recovery
+rows, task pointers, results and coordinator phases. It does not establish provider
+termination or resolve the hold. It locks and rechecks the saved evidence before
+publication. An unrelated historical folder keeps the obligation on its real
+source workspace.
+
+Finalized file sources receive a separate `finalizedWorkspaceRecoveryMigration`
+run marker and an exact migration-operation receipt. They do not receive the
+legacy execution-replay suppression marker. Future recovery exports an immutable
+snapshot of the recorded allocation instead of merging into the retired local
+folder. The existing source, provider-stop and archive checks still apply.
+Completed copyback recovery receipts remain valid. Unknown or unverified recovery
+sources continue to block import.
+
+Online import can preserve an established provider session's prepared source
+after a terminal provider-artifact failure. It requires the exact board-owned
+native failure block and the task's current blocked status version, released
+controller and coordinator ownership, and all declared allocation bindings.
+Source locks and the finalizer lock protect the full action, task and source
+fingerprints through publication. Import saves only the current local files. It
+retains the prepared reference, provider checkpoint, remote allocations and
+recovery hold. The existing migration recipe routes later file recovery away
+from the retired local destination. This neither declares preexecution nor
+proves remote export, provider termination or permission to resume execution.
+
+An exhausted prepared-export hold can also retain the canonical historical-source
+marker added by recovery backfill. Its schema and run must match, and every unique
+recorded lease must already belong to the proven prepared source or its declared
+recovery allocations. The existing historical-source inspector verifies those
+same allocation bindings. Unknown fields, malformed markers and foreign, duplicate
+or uncovered lease references still block import.
+
+The full historical marker stays in the action fingerprint. Existing source,
+task, lifecycle and finalizer locks and publication reinspection remain required.
+This permits preservation of the current local files only. It neither clears the
+hold nor claims that remote files were copied or a provider stopped. Marked holds
+add bounded database reads during maintenance inspection; they add no provider
+calls or recurring background work.
+
+The workspace fingerprint pins the recorded source. An arriving reservation can
+reach a legacy workspace before refusing it, so publication must follow this
+order too. The lifecycle advisory lock alone does not fence runtime operations.
+Publication still rechecks current writers and unresolved work. Offline imports
+also require the deployment-stopped maintenance fence. Ordinary save requires an
+existing prepared remote location and refuses the unpublished legacy authority.
+
+The workspace lock still serializes generations and publication. Foreign keys,
+ownership and epoch checks, and transaction-aware work notifications remain in
+place. Remote preparation, command execution, archive capture and object upload
+run outside these transactions. No workspace or parent row lock spans that I/O.
+
+## Execution admission accounting
+
+The execution-admission module (`server/src/modules/execution-admission/`) owns
+three tables. Nothing writes admissions or caps in production yet, and no claim
+path enforces a project maximum.
+
+- `project_task_execution_policies` stores a project's maximum concurrent tasks
+  apart from `projects`, so project readers never return an unenforced cap. No
+  row means never configured. A row with a null maximum means an explicit "no
+  limit", which a later legacy migration must not overwrite. Maximums are
+  positive. The row is deleted with its project.
+- `execution_admissions` stores one admission attempt of a run. A run can be
+  released before dispatch and admitted again, so `(run_id, attempt)` is unique
+  and a partial unique index allows one unsettled attempt per run. The row keeps
+  the context revision, the nullable primary project as provenance (no foreign
+  key) and the settlement identity, which is set together with `settled_at`.
+  `admitted_project_ids` is the complete admitted project set, sorted, kept
+  after settlement and immutable (a trigger rejects any change). It has no
+  project foreign key, so settled history never blocks project deletion and
+  keeps the deleted project's ID. `{}` is a known empty set. Null means
+  unknown and is allowed only on settled rows: migration `0428` filled it from
+  the charges of unsettled rows, but settled `0426` rows had already lost
+  their set. A retained provider session resumes with the previous set ∪ the
+  current references; an unknown previous set requires a fresh context, never
+  an empty or primary-only guess.
+- `execution_admission_project_charges` stores one row per distinct admitted
+  project, including unlimited projects. An admission without projects has no
+  rows. Composite `(company_id, …)` foreign keys keep admissions and projects in
+  one company. Rows are the only active capacity and exist only while the
+  admission is unsettled: settlement deletes the whole set in one transaction,
+  and `(company_id, project_id)` is indexed for active counts, so lookups
+  scale with active work, not history.
+
+Archiving a project changes no charge. Deleting a project with a charge returns
+`409 project_execution_admission_pending`; the foreign key is the backstop.
+Deleting an agent refuses unsettled admissions on its runs and removes settled
+ones, with their sets, together with the runs. Company deletion removes the company's admissions before its runs and
+projects.
+
+The proposed global lock order for the admission transaction is: company row
+(`FOR NO KEY UPDATE`), native finalization recovery owner, the whole project set
+in ascending ID order (`FOR NO KEY UPDATE`, one statement), issues, wake
+requests, the run, the external-admission advisory lock, the admission row and
+its charges, then budget reservations. Policy updates take the same project
+lock. Settlement takes no project lock. Only the project-set step is implemented
+so far; claim paths keep their current locks until they are integrated.
+
 ## Switching between modes
 
 The database mode is controlled by `DATABASE_URL`:
@@ -695,6 +1338,100 @@ The database mode is controlled by `DATABASE_URL`:
 | `postgres://...supabase.com...` | Hosted Supabase |
 
 Your Drizzle schema (`packages/db/src/schema/`) stays the same regardless of mode.
+
+## Schema change workflow
+
+When you change the data model:
+
+1. Edit `packages/db/src/schema/*.ts`.
+2. Export each new table from `packages/db/src/schema/index.ts`.
+3. Generate the migration from the repository root:
+
+   ```sh
+   pnpm db:generate
+   ```
+
+4. Validate that everything compiles:
+
+   ```sh
+   pnpm -r typecheck
+   ```
+
+`pnpm db:generate` compiles `packages/db` first, because
+`packages/db/drizzle.config.ts` reads the compiled schema from `dist/schema/*.js`.
+Then update every layer that the change affects: `packages/shared` types and
+validators, `server` routes and services, and `ui` API clients and pages.
+
+### Migration compatibility with the running release
+
+Paperclip Cloud starts a new release while the previous one is still serving
+against the same database. Every migration is therefore classified by
+`packages/db/src/migration-compatibility.ts` as one of:
+
+| Class | Meaning | Examples |
+| --- | --- | --- |
+| `online_compatible` | The previous release keeps working and no lock is held for long. A deployer applies it without a pause. | `CREATE TABLE` and anything on a table created in the same migration, `CREATE INDEX CONCURRENTLY`, `ADD COLUMN` that is nullable or has a constant default, `ADD CONSTRAINT ... NOT VALID`, `CREATE TYPE`, `ALTER TYPE ... ADD VALUE` |
+| `requires_staging` | The previous release breaks or its writes are rejected. Ship it in two releases: expand first, contract later. | `DROP TABLE`/`DROP COLUMN`, renames, `ALTER COLUMN ... TYPE`, `SET NOT NULL`, `DROP DEFAULT`, a `NOT NULL` column without a default, a validated `CHECK`, a `UNIQUE` constraint or unique index on an existing table, `TRUNCATE`, `DELETE` |
+| `unknown` | The classifier cannot prove either. This includes every statement it does not recognize and every lock or duration hazard (reason codes starting with `lock_hazard_`). | plain `CREATE INDEX` on an existing table, a validated foreign key on an existing table, `VALIDATE CONSTRAINT`, `UPDATE` backfills, procedural `DO` blocks, `CREATE OR REPLACE FUNCTION`, triggers on existing tables, `DROP INDEX`, `DROP CONSTRAINT` |
+
+A migration takes the worst class of its statements. Lock and duration hazards
+are `unknown`, not compatible with a warning.
+
+A table counts as created in the migration when the statement is a plain
+`CREATE TABLE`, or a `CREATE TABLE IF NOT EXISTS` for a table that no earlier
+migration created. `IF NOT EXISTS` on a table from an earlier migration proves
+nothing, so later statements on that table are judged as changes to an existing
+table.
+
+`drizzle-kit` emits validated foreign keys and plain indexes. For an existing
+table, edit the generated SQL: append `NOT VALID` to the foreign key, and use
+`CREATE INDEX CONCURRENTLY IF NOT EXISTS`.
+
+PostgreSQL rejects `CONCURRENTLY` inside a transaction, and the migrator runs
+each migration file in one transaction. A migration that uses `CONCURRENTLY`
+must therefore be listed in `MIGRATIONS_WITH_TOP_LEVEL_STATEMENTS` in
+`packages/db/src/client.ts`, and every statement in it must be idempotent,
+because a failed run starts again from the first statement. The pull-request
+guard fails a new `CONCURRENTLY` migration that is not in that list.
+
+**The rule for a new migration.** A pull request fails when a migration it adds
+is `unknown`. Rewrite the migration, split it into expand and contract
+migrations, or, when you have verified the migration yourself, state the class
+in the first lines of the migration file:
+
+```sql
+-- paperclip:migration-compat online_compatible: <why the previous release keeps working and no lock is held long>
+```
+
+Use `requires_staging` in place of `online_compatible` when the previous
+release cannot run against the migration. The justification is mandatory. The
+override is read only from the migration file, so it is reviewed with the SQL
+and travels with it. A contract migration (for example the `DROP COLUMN` that
+follows an expand release) always classifies as `requires_staging`; mark it
+`online_compatible` this way once no running release uses the column.
+`requires_staging` does not fail the pull request yet; it prints a notice.
+
+Check a migration locally:
+
+```sh
+cd packages/db
+pnpm exec tsx scripts/migration-compatibility.ts src/migrations/0468_busy_wendell_rand.sql
+pnpm exec tsx scripts/migration-compatibility.ts            # distribution over all migrations
+pnpm exec tsx scripts/migration-compatibility.ts --check    # the pull-request guard
+```
+
+The guard runs in `check:migrations` (so in the `@paperclipai/db` typecheck and
+build) against the merge base with `origin/master`, and in the pull-request
+policy job through `.github/scripts/check-pr-migration-order.mjs`. Migrations
+that were already on `master` when the classifier shipped are not annotated.
+
+Deployers read the result from the cloud migrator manifest
+(`cloud-migrators/v1/<sha>/manifest.json`, built by
+`scripts/cloud-migrator-artifacts.mjs`). Its `migrationCompatibility.migrations`
+array lists every packed migration in journal order with `idx`, `tag`,
+`sqlSha256` (the hash the migrator records in the migration history),
+`compatibility`, `classified` (the classifier's verdict before an override),
+`override`, `overrideJustification`, and `reasons`.
 
 ## Migration authoring checklist
 
@@ -961,6 +1698,13 @@ objects can be reclaimed. Object existence alone is not a committed save.
 remote allocation/path, writer run, and dirty flag. Paths in this record belong
 to the remote allocation. Save publication checks the current writer/epoch and
 atomically commits the ledger row, authority pointer, and operation receipt.
+`execution_workspaces.metadata.remoteWorkspaceSnapshotRepositories` records the
+committed snapshot ID and the repository descriptors covered by that archive.
+Reservation retains this coverage when it adds requested repositories to the
+current source. Successful save publication advances coverage and the snapshot
+pointer together. Older saved workspaces capture their previous source inventory
+at the next reservation. Newly attached repositories use normal acquisition;
+they cannot claim coverage from an older archive. No schema migration is needed.
 `workspace_operations` journals preparation, save, restore, and local import;
 large file bodies stay outside the database. Ledger identities deliberately
 survive source-record deletion so object cleanup can finish.
@@ -978,6 +1722,17 @@ grace. Retention uses committed producer notifications and actual deadlines;
 pinned history and an empty queue do not cause recurring scans. Deletion fences
 new adoption, rechecks references, and removes every recorded upload candidate
 and winning object within the company/workspace prefix.
+
+When retention finds a pinned version, it records the first reference that holds
+it in `metadata.retentionPin`: the current pointer, an importing parent, an
+operation, an unfinished child, a run, or a recovery action. The candidate query
+leaves that version out while the recorded reference still holds, so execution
+notifications do not re-examine unchanged history. When the recorded reference
+releases, the next pass checks every reference again. It records the next
+reference that holds, or schedules or retires the version. The record is durable,
+so a restarted server keeps the exclusion. A version without a record, such as
+one saved before this change, is examined once. Wakes coalesce for up to one
+second.
 
 Database backups contain snapshot receipts, not S3 payloads or encryption keys.
 Disaster recovery requires the database, object store, and original master key.
@@ -1202,6 +1957,38 @@ Lifecycle polls can page past failed resources using the last returned event id 
 cursor, never a persisted high-water mark. This retries failures and includes
 transactions that commit later with lower ids.
 
+`plugin_lifecycle_resource_cursors` keeps one row for each plugin and resource
+stream. Its `acknowledged_through_id` says that every event of that resource at
+or below the value is acknowledged. Acknowledgments above the cursor use
+`plugin_lifecycle_acknowledgments`. Acknowledgment writes both records, so an
+earlier release reads the same progress after a rollback. The cursor moves only
+over a contiguous acknowledged prefix. A creation recorded after transitions
+that are still pending does not move it. Writers record a resource's events
+while they hold that resource's row lock. Thus an event that commits later for
+the same resource always has a higher id than the cursor. A lower id from a
+different resource still stays deliverable.
+
+A lifecycle page visits each resource stream of the requested types once with a
+backward loose index scan, which also gives the stream's latest event id. A
+stream whose latest event is at or below its cursor is settled and is not read
+again. For each other stream the page reads one head: the unacknowledged
+creation, else the first unacknowledged transition above the cursor. Then it
+applies `afterId`, id order and the limit. Cost grows with the number of
+resource streams and pending events, not with the journal size. Acknowledgment
+reads only the events between the cursor and the acknowledged event. The
+idle-sleep check asks whether any stream has a head.
+
+Migration `0462` creates the cursor table and carries existing acknowledgments
+forward. For each plugin and resource it stores the end of the contiguous
+acknowledged prefix of events. A cursor never passes an unacknowledged event, so
+a gap is still delivered. Acknowledged events after the gap are still skipped
+through their acknowledgment rows. An earlier release that runs during
+a rolling deploy writes only acknowledgment rows, and the new reads honor them.
+
+```sh
+pnpm --filter @paperclipai/server exec tsx ../scripts/benchmark-plugin-lifecycle-inbox.ts --baseline-ref=8d2bf78323 --agents=400 --per-agent=2500 --acked=2000
+```
+
 ## Legacy controller ownership
 
 Legacy run claims atomically record `controller_boot_id`, a database-clock
@@ -1375,6 +2162,26 @@ register before writing, or they can remain unseen until the next startup or
 another notification. Tests should verify both the producer and its outer
 transaction boundary.
 
+## Relational queries inside transactions
+
+Drizzle builds one relational query builder for every schema table when it
+creates a database object, and it creates one for each transaction and each
+savepoint. With the Paperclip schema that is about 100 KB per transaction.
+`createDb` therefore opens transactions through a second Drizzle client on the
+same postgres.js client, created without the schema, and builds `tx.query` the
+first time a transaction reads it (`packages/db/src/lazy-transaction-queries.ts`).
+`db.query`, `tx.query`, and `tx._` keep their contents. `BEGIN`, `SAVEPOINT`,
+commit, rollback, and connection reservation remain Drizzle's and the driver's.
+
+Measure the cost of a transaction and a savepoint with the command below. It
+needs Node.js 25 or later, because Node.js 24 has no V8 allocation counter, and
+it stops with that message on an older runtime:
+
+```sh
+cd packages/db
+TSX_DISABLE_CACHE=1 node --expose-gc --import tsx scripts/benchmark-transaction-allocation.ts
+```
+
 ### Installed skill packages
 
 `company_skill_repository_snapshots` retains its identity and company/content-hash
@@ -1516,6 +2323,42 @@ delivery queries, including complete positional results and database plans.
 All data is synthetic. Query timings exclude process liveness probes, HTTP and
 provider work.
 
+The reconciler's lost-wake check for user comments reads in three stages.
+The first stage keeps recent user comments that no wake request carries. The
+second stage removes comments with a live or later run, and it requires an
+earlier run. Each stage probes native and legacy run bindings separately with
+existing indexes. Only the remaining comments reach the steer check, which
+reads run event payloads. An OR across both bindings let PostgreSQL hash the
+runs by company only and test each comment against every run of its company.
+No new index or migration is needed.
+
+```sh
+pnpm --filter @paperclipai/server exec tsx ../scripts/benchmark-comment-wake-check.ts --baseline-ref=02bfe71a6b
+```
+
+This disposable fixture compares the complete check result, the complete
+positional SQL rows, plans, and timings with and without nested-loop joins.
+
+The stale-continuation check for dropped user comments uses the same per-binding
+run probes. It first keeps the comments that a stale-continuation cancellation
+dropped and that no open wake carries, and only those comments reach the run
+probes.
+
+The workspace recovery worker's next deadline (`nextWorkspaceRecoveryAt`) and
+its discovery conditions find the source run, its finalizer and its leases by
+`id = canonical uuid of evidence->>'runId'`. The value is null unless the saved
+text is the canonical lowercase form, so the probe matches exactly the rows the
+former `id::text = evidence->>'runId'` comparison matched. The text comparison
+could not use a key, so each exhausted hold read every run, finalizer and lease
+of its company.
+
+```sh
+pnpm --filter @paperclipai/server exec tsx ../scripts/benchmark-recovery-status-checks.ts --baseline-ref=8d2bf78323
+```
+
+This fixture compares every changed discovery condition for every recovery
+action, the complete check results and the positional SQL rows before timing.
+
 ### Agent runtime synchronization journal
 
 Migration 0347 adds the opt-in `agent_runtime` resource stream. Database triggers
@@ -1598,6 +2441,19 @@ named `review_wait_benchmark...` can be supplied through
 `PAPERCLIP_TEST_DATABASE_URL` to compare another PostgreSQL major version.
 DataRow bytes exclude response metadata and transport overhead.
 
+An issue list or inbox request reads the waits of all its tasks in one pass.
+That pass checks the requester provenance of every waiting run with
+`chatRunSourceMessageIds`. The runs that need the same kind of provenance read
+share one statement, so the statement count follows the longest requester
+lineage, not the number of waits. Each run gets the decision of a separate
+`chatRunSourceMessageId` call: both use the same walk and the same reads. The
+benchmark counts the statements of one request and measures its wall and CPU
+time against a pre-fix commit:
+
+```sh
+pnpm --filter @paperclipai/server exec tsx scripts/benchmark-review-wait-provenance.ts --baseline-ref=<pre-fix commit>
+```
+
 
 ### Sandbox creation ownership
 
@@ -1609,8 +2465,13 @@ the optional live environment FK uses SET NULL. Company/run deletion must not
 erase an outstanding remote-resource obligation.
 
 The unique company/environment/run/request index fences duplicate creation and
-ambiguous successful lease commits. Normal lease attachment and operation transfer
-share a transaction. Recovery transfers one claimed cleanup lease after provider
+ambiguous successful lease commits. Since migration 0475 it covers only operations
+that are not `resolved`. A later attempt for the same run and request that meets an
+`attached` operation whose lease is closed checks the same stop proof same-run
+recovery requires (a termination receipt for that sandbox, stored or derived from a
+destroyed reusable successor); with it, one transaction resolves the operation and
+records the replacement.
+Normal lease attachment and operation transfer share a transaction. Recovery transfers one claimed cleanup lease after provider
 ownership lookup. The pending deadline index drives the existing cleanup worker.
 `needs_reconciliation` is a durable manual outcome, not an automatic retry or an
 idle blocker. See [cleanup ownership](idle-environment-cleanup.md).
@@ -1632,3 +2493,94 @@ the ordinary instance settings API. Seed inserts preserve an existing winner;
 replacements lock the row and reject stale revisions. Database/transaction
 handles permit atomic migration receipts. Connection URLs, API keys and unknown
 fields are excluded. See [field ownership and startup order](cloud-runtime-configuration.md).
+
+## Independent accounting and budget evaluation
+
+`budget_evaluation_work` holds independent pending inputs for committed exposure
+changes, with company and captured agent/project attribution. Producers append
+in their financial transaction after registering transaction-aware notification.
+The worker evaluates a consistent snapshot, fences policy publication through
+`budget_policies.evaluation_version`, and deletes only its selected committed
+input IDs in the publication transaction. A later commit with an older allocated
+ID remains pending. Policy creation/edits also append inputs, so a previously
+consumed no-policy batch cannot hide a newly applicable threshold.
+
+No financial commit increments a company/agent spend counter or company dirty
+version. Monthly API totals aggregate `cost_events`; runtime totals use existing
+`accounting_runtime_baselines` plus acknowledged v2 run ledger. Retained counter
+columns are non-authoritative. Invoice and verified late-receipt corrections
+retain append-only `cost_adjustments` evidence and immutable reported amounts.
+`cost_events.reported_usage_json` retains original placeholder usage before a
+verified late receipt updates effective token/request fields; each adjustment
+retains its previous usage in `previous_usage_json`.
+Unknown late run receipts remain durable per-receipt debt; resolving one receipt
+cannot clear another unresolved receipt.
+
+Live usage receipt writes use READ COMMITTED and the existing run-row lock. All
+mutable receipt and accounting reads occur under that lock. A streamed run-log
+append between company validation and lock acquisition therefore cannot exhaust
+serialization retries. A concurrent finalization is read under the lock and
+keeps the normal late-receipt reconciliation path. Other independent accounting
+operations retain their repeatable-read snapshot. Receipt identity, replay
+conflicts, company scoping and budget-work publication remain transactional.
+
+Run budget admission (`reserveRunBudget`), the final dispatch gate's accounting
+phase (resolved-interaction dispatch only), the usage recorder's receipt-source handoff and its capture-failure fence
+use the same pattern. The dispatch gate's ownership phase already ran at READ
+COMMITTED under the same issue and run locks. Retry promotion and stale-run
+cancellation keep their repeatable-read snapshot because they combine many facts
+in one decision. Admission reads all
+mutable state after the shared admission fences, the agent share lock and the
+run-row lock. Its exposure is one statement, and the per-run reservation index
+plus the run lock prevent a second hold. Run-log appends and output progress that
+update a preparing run therefore cannot exhaust admission retries. Concurrent
+admissions of different runs remain best-effort, as before. When any operation
+transaction still exhausts its retries, it raises `AccountingContentionError`. The
+error carries a bounded message, keeps the SQLSTATE in `code` and the database
+error in `cause`, and is logged with both. A run that fails this way keeps the
+generic `adapter_failed` code, so existing retry paths apply, and records that
+bounded message with the SQLSTATE as its failure cause.
+
+Prompt-injection classifier admission also uses READ COMMITTED. Its company,
+project, configuration, agent, run and secret share locks retain the admission
+fences. Run status and execution identity are read under the run lock, so a
+concurrent run-event append cannot invalidate an earlier snapshot and discard
+a connector result before classification. The budget check, invocation and
+reservation still commit together. Classifier settlement keeps its separate
+repeatable-read transaction and receipt replay rules.
+
+Upgrade all controllers/workers to this accounting contract and drain incompatible
+pre-upgrade database transactions before enabling independent writers. Do not run
+pre-upgrade synchronous counter/evaluation writers beside unlocked writers.
+Rollback must use a compatible version that reads the ledger and retains the
+durable evaluation feed; a pre-contract binary is not a safe rollback target.
+
+## Standard workspace and Classic opt-in
+
+Migration `0433_workspace_defaults.sql` adds `classic_workspace_enabled`, default
+false, to personal workspace preferences and sets the legacy Coordinator column's
+default to true. Existing rows retain their old Coordinator experiment values,
+but those values no longer select the active workspace. API reads derive
+`coordinatorWorkspaceEnabled` from the inverse of the Classic choice. Saves
+retain the existing account and company-audit checks. Replaying the migration
+preserves explicit Classic choices. Agent Chat ignores its retired stored flag
+without rewriting instance settings. No task, agent, or execution state changes.
+
+## Project environment rolling compatibility
+
+New projects select repository storage rather than a persistent run environment.
+The nullable `projects.environment_id` column remains a database compatibility
+field for older servers; the current project API omits it and does not use it
+for placement.
+
+When migrations `0466_drop_project_environment.sql` and
+`0467_fair_human_torch.sql` are both pending, the canonical migration runner
+qualifies their exact SQL hashes and applies them in one transaction. It locks
+`projects`, saves every nonnull legacy environment value, executes both published
+migrations and records both genuine ledger entries, then restores those values
+before commit. Old readers and writers wait for the table lock and continue
+against the retained column. Any failure rolls back the DDL, values and receipts.
+If `0466` was already committed, `0467` adds the nullable column and its original
+`ON DELETE SET NULL` foreign key normally; it cannot recover values previously
+removed by that committed migration. Deployments that pre-stage this pair must
+use this migration runner rather than execute the SQL files independently.

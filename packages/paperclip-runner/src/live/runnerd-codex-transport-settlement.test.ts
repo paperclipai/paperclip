@@ -286,7 +286,7 @@ it.each([
       // output plus another full provider-owned prefix behind the old suspend.
       const runnerFile = join(original, "runner/runner-state.json");
       const runnerBefore = JSON.parse(await readFile(runnerFile, "utf8"));
-      const template = builder.store.state.committedEvents[0]!.envelope.payload;
+      const template = builder.store.state.committedEvents[0]!.envelope.payload as Record<string, unknown>;
       for (let index = 0; index < 90; index++) {
         const sourceSeq = runnerBefore.nextSourceSeq++;
         const event = {
@@ -388,7 +388,7 @@ it.each([
           sessionId: identity.normalizedSessionId,
         },
         backend: {
-          kind: "codex",
+          kind: "runner" as const,
           name: maintenanceFixtureBackendName(fixtureId),
         },
         identity,
@@ -406,7 +406,7 @@ it.each([
         recordEpoch,
         signal: maintenanceAbort.signal,
       };
-      const close = vi.fn(async () => {
+      const close = vi.fn(async (): Promise<void> => {
         throw new NativeSessionCloseUnrecoverableError();
       });
       const start = vi.fn(async () => {
@@ -424,9 +424,10 @@ it.each([
         capabilities: async () => capabilities,
         events: async function* () {},
         startTurn: start,
+        result: async () => { throw new Error("fixture never produces a result"); },
         close,
         snapshot: async () => ({
-          backendKind: "codex",
+          backendKind: "runner",
           sessionId: input.binding.sessionId,
           identity: input.binding,
           providerSessionId: thread.thread.id,
@@ -471,6 +472,7 @@ it.each([
           normalizedSessionId: input.binding.sessionId,
           driverKind: "codex_app_server",
           protocolVersion: 1,
+          lifecyclePolicy: { mode: "per_turn", idleTimeoutMs: null },
         },
         completionContract: {
           id: "contract-maintenance",
@@ -732,6 +734,8 @@ it.each([
               command.result?.result?.message?.includes("no rollout found"),
           ),
         ).toBe(true);
+        expect(failed.commands.find((command: { type: string }) => command.type === "turn.stop")?.result?.result?.providerFailure)
+          .toMatchObject({ provider: "openai", phase: "startup", category: "unknown", message: "no rollout found for thread id" });
         expect(await readFile(fakeState)).toEqual(originalProviderHome);
         expect(
           await Promise.all(files.map((file) => readFile(join(original, file)))),
@@ -761,11 +765,13 @@ it.each([
           const failedStop = failed.commands.find((command: { type: string; status: string }) =>
             command.type === "turn.stop" && command.status === "failed");
           for (const fact of facts) {
+            // Only an intent that has not reached the spawn carries beforeSpawn.
             expect(Object.keys(fact).sort()).toEqual([
               "schema", "launchId", "phase", "trigger", "attemptedProcessGeneration",
               "origin", "command", "configurationFingerprint", "requestedThreadId",
               "authenticatedThreadId", "processId", "processGroupId", "failedStage",
               "directChildExitObserved", "exitCode", "signal", "processTreeRetired",
+              ...(fact === intent ? ["beforeSpawn"] : []),
             ].sort());
             expect(fact).toMatchObject({
               schema: "paperclip.provider_startup.v1",
@@ -791,7 +797,7 @@ it.each([
             });
           }
           expect(intent).toMatchObject({
-            phase: "intent", processId: null, processGroupId: null,
+            phase: "intent", beforeSpawn: true, processId: null, processGroupId: null,
             directChildExitObserved: false, failedStage: null, exitCode: null, signal: null,
           });
           expect(spawned!.processId).toBeGreaterThan(0);

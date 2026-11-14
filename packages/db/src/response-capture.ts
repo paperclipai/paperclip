@@ -3,11 +3,27 @@ import { randomUUID } from "node:crypto";
 import { getTableName, is, Table } from "drizzle-orm";
 
 type Metadata = { operation: string; table: string; callers: string[] };
-type Entry = Metadata & { calls: number; rows: number; bytes: number; maxBytes: number; queryErrors: number; serializationErrors: number; estimatedValues: number };
+type Entry = Metadata & { owner: string; calls: number; rows: number; queryErrors: number; totalWallMs: number; maxWallMs: number;
+  sampledResults: number; sampledRows: number; sampledValueBytes: number; maxSampledValueBytes: number;
+  measuredValues: number; unmeasuredValues: number; incompleteSamples: number; sizingWallMs: number };
 type Event = Record<string, unknown>;
 type Method = (this: unknown, ...args: unknown[]) => unknown;
 export type ResponseCaptureWindow = { start: number; end: number };
 const GROUP_PAGE_SIZE = 128;
+const SAMPLE_EVERY = 16;
+const MAX_SAMPLE_CELLS = 256;
+const MAX_SAMPLE_STRING_LENGTH = 16_384;
+const MAX_SAMPLE_STRING_UNITS = 65_536;
+const MAX_SAMPLE_BYTES = 65_536;
+let operationScope = new AsyncLocalStorage<string>();
+const captureWindows = new Set<() => boolean>();
+
+export function withDatabaseOperation<T>(owner: string, action: () => T): T {
+  for (const armed of captureWindows) {
+    if (armed()) return operationScope.run(owner, action);
+  }
+  return action();
+}
 
 export function responseCaptureWindow(value: string | undefined, now = Date.now()): ResponseCaptureWindow | undefined {
   if (!value) return;
@@ -18,11 +34,18 @@ export function responseCaptureWindow(value: string | undefined, now = Date.now(
   return { start, end };
 }
 
-export function publicDatabaseCallers(stack: string | undefined): string[] {
+export function publicDatabaseCallers(stack: string | undefined, bundled = false): string[] {
   const callers: string[] = [];
   for (const line of (stack ?? "").split("\n")) {
     const match = line.match(/[/\\]server[/\\](?:src|dist)[/\\]((?:services|routes|modules|middleware)[/\\][A-Za-z0-9_./\\-]+\.[cm]?[jt]s):(\d+):(\d+)/);
-    if (!match) continue;
+    if (!match) {
+      const bundledMatch = line.match(/[/\\]server[/\\]dist-runtime[/\\]((?:server|index|chunk-[A-Z0-9]{8})\.mjs):([1-9]\d{0,8}):([1-9]\d{0,8})\)?$/);
+      // The wrapper boundary makes the first generated frame the application
+      // call site. Deeper frames may be capture/transaction helpers in this same
+      // chunk, so retain only this build-specific anchor without source maps.
+      if (bundledMatch && bundled) { callers.push(`dist-runtime/${bundledMatch[1]}:${bundledMatch[2]}:${bundledMatch[3]}`); break; }
+      continue;
+    }
     const relative = match[1]!.replaceAll("\\", "/");
     if (relative.split("/").includes("..")) continue;
     const caller = `${relative}:${match[2]}:${match[3]}`;
@@ -32,28 +55,37 @@ export function publicDatabaseCallers(stack: string | undefined): string[] {
   return callers;
 }
 
-function responseValueSize(value: unknown): { bytes: number; estimatedValues: number } {
+function responseValueSize(value: unknown): { bytes: number; measuredValues: number; unmeasuredValues: number } {
   const columns = value && typeof value === "object" ? (value as { columns?: unknown }).columns : undefined;
   if (!Array.isArray(value) || !Array.isArray(columns)) {
-    const serialized = JSON.stringify(value, (_, item: unknown) => typeof item === "bigint" ? item.toString() : item);
-    return { bytes: serialized === undefined ? 0 : Buffer.byteLength(serialized), estimatedValues: 1 };
+    return { bytes: 0, measuredValues: 0, unmeasuredValues: 1 };
   }
-  let bytes = 0, estimatedValues = 0;
+  let bytes = 0, measuredValues = 0, visitedValues = 0, stringUnits = 0;
+  const totalValues = value.length * columns.length;
+  if (columns.length === 0) return { bytes: 0, measuredValues: 0, unmeasuredValues: 0 };
   for (const row of value) {
-    const cells = Array.isArray(row) ? row : columns.map(column => row[column.name]);
-    for (const cell of cells) {
-      if (cell === null || cell === undefined) continue;
-      if (typeof cell === "string") bytes += Buffer.byteLength(cell);
-      else if (typeof cell === "boolean") bytes += 1;
-      else if (typeof cell === "number" || typeof cell === "bigint") bytes += Buffer.byteLength(String(cell));
-      else {
-        estimatedValues += 1;
-        const serialized = JSON.stringify(cell, (_, item: unknown) => typeof item === "bigint" ? item.toString() : item);
-        if (serialized !== undefined) bytes += Buffer.byteLength(serialized);
+    for (let index = 0; index < columns.length; index += 1) {
+      if (visitedValues >= MAX_SAMPLE_CELLS || bytes >= MAX_SAMPLE_BYTES) {
+        return { bytes, measuredValues, unmeasuredValues: totalValues - measuredValues };
       }
+      visitedValues += 1;
+      const cell = Array.isArray(row) ? row[index] : row[columns[index].name];
+      let size: number;
+      if (cell === null || cell === undefined) size = 0;
+      else if (typeof cell === "string") {
+        if (cell.length > MAX_SAMPLE_STRING_LENGTH || stringUnits + cell.length > MAX_SAMPLE_STRING_UNITS) continue;
+        stringUnits += cell.length;
+        size = Buffer.byteLength(cell);
+      } else if (typeof cell === "boolean") size = 1;
+      else if (typeof cell === "number") size = Buffer.byteLength(String(cell));
+      else if (typeof cell === "bigint" && cell >= -9_223_372_036_854_775_808n && cell <= 9_223_372_036_854_775_807n) size = Buffer.byteLength(String(cell));
+      else continue;
+      if (bytes + size > MAX_SAMPLE_BYTES) continue;
+      measuredValues += 1;
+      bytes += size;
     }
   }
-  return { bytes, estimatedValues };
+  return { bytes, measuredValues, unmeasuredValues: totalValues - measuredValues };
 }
 
 export function createDatabaseResponseCapture(
@@ -71,32 +103,45 @@ export function createDatabaseResponseCapture(
   const send = (event: Event) => { try { emit(event); } catch {} };
   const expired = () => closed || now() >= window.end;
   const active = () => !expired() && now() >= window.start;
+  const armed = () => !expired();
+  captureWindows.add(armed);
   const flush = () => {
     if (closed) return;
     closed = true;
     clearTimeout(timer);
+    captureWindows.delete(armed);
+    if (captureWindows.size === 0) {
+      operationScope.disable();
+      operationScope = new AsyncLocalStorage<string>();
+    }
     scope.disable();
-    const ordered = [...entries.values()].sort((a, b) => b.bytes - a.bytes);
-    for (const [groupIndex, entry] of ordered.entries()) send({ event: "paperclip.db_response_capture.entry.v1", captureId: id,
+    const ordered = [...entries.values()].sort((a, b) => b.calls - a.calls);
+    for (const [groupIndex, entry] of ordered.entries()) send({ event: "paperclip.db_response_capture.entry.v2", captureId: id,
       groupIndex, groupPage: Math.floor(groupIndex / GROUP_PAGE_SIZE),
-      operation: entry.operation, table: entry.table, callers: entry.callers, calls: entry.calls, rows: entry.rows,
-      responseValueBytes: entry.bytes, maxResponseValueBytes: entry.maxBytes, estimatedValues: entry.estimatedValues,
-      queryErrors: entry.queryErrors, serializationErrors: entry.serializationErrors });
-    send({ event: "paperclip.db_response_capture.summary.v1", captureId: id,
+      ...entry });
+    send({ event: "paperclip.db_response_capture.summary.v2", captureId: id,
       windowStart: new Date(window.start).toISOString(), windowEnd: new Date(window.end).toISOString(),
       closedAt: new Date(now()).toISOString(),
       startedQueries: started, completedQueries: completed, inFlightAtEnd: inFlight, groups: entries.size,
       groupPageSize: GROUP_PAGE_SIZE, groupPages: Math.ceil(ordered.length / GROUP_PAGE_SIZE),
-      overflowCalls, responseValueBytes: ordered.reduce((sum, entry) => sum + entry.bytes, 0),
+      overflowCalls, rows: ordered.reduce((sum, entry) => sum + entry.rows, 0),
+      sampledResults: ordered.reduce((sum, entry) => sum + entry.sampledResults, 0),
+      sampledValueBytes: ordered.reduce((sum, entry) => sum + entry.sampledValueBytes, 0),
+      sizingWallMs: ordered.reduce((sum, entry) => sum + entry.sizingWallMs, 0),
+      sampleEvery: SAMPLE_EVERY, sampling: "first-and-every-16th-successful-result-per-group",
+      maxSampleCells: MAX_SAMPLE_CELLS, maxSampleStringLength: MAX_SAMPLE_STRING_LENGTH,
+      maxSampleStringUnits: MAX_SAMPLE_STRING_UNITS, maxSampleBytes: MAX_SAMPLE_BYTES,
       rowValuesLogged: false, sqlOrParametersLogged: false, wireBytesMeasured: false,
       measurementBoundary: "postgres-js results before Drizzle column decoding",
+      wallTimeBoundary: "first query consumption to driver result; includes queue, database, network and event-loop waits; not CPU",
+      byteMeasurement: "sampled primitive values only; complex/oversized/budget-exceeding values unmeasured; no extrapolation",
       relationalQueriesMeasured: true, unsafeDriverQueriesMeasured: true,
       taggedDriverQueriesMeasured: false, streamingQueriesMeasured: false });
     entries.clear();
   };
   const timer = setTimeout(flush, Math.max(0, window.end - now()));
   timer.unref();
-  function finish(metadata: Metadata, value: unknown, failed: boolean) {
+  function finish(metadata: Metadata & { owner: string }, value: unknown, failed: boolean, startedAt: number) {
     if (!active()) return;
     inFlight -= 1;
     completed += 1;
@@ -104,38 +149,52 @@ export function createDatabaseResponseCapture(
       let key = JSON.stringify(metadata);
       if (!entries.has(key) && entries.size >= 2047) {
         overflowCalls += 1;
-        metadata = { operation: "other", table: "other", callers: [] };
+        metadata = { owner: "other", operation: "other", table: "other", callers: [] };
         key = "overflow";
       }
       let entry = entries.get(key);
       if (!entry) {
-        entry = { ...metadata, calls: 0, rows: 0, bytes: 0, maxBytes: 0, queryErrors: 0, serializationErrors: 0, estimatedValues: 0 };
+        entry = { ...metadata, calls: 0, rows: 0, queryErrors: 0, totalWallMs: 0, maxWallMs: 0,
+          sampledResults: 0, sampledRows: 0, sampledValueBytes: 0, maxSampledValueBytes: 0,
+          measuredValues: 0, unmeasuredValues: 0, incompleteSamples: 0, sizingWallMs: 0 };
         entries.set(key, entry);
       }
       entry.calls += 1;
+      const wallMs = performance.now() - startedAt;
+      entry.totalWallMs += wallMs;
+      entry.maxWallMs = Math.max(entry.maxWallMs, wallMs);
       if (failed) { entry.queryErrors += 1; return; }
       entry.rows += Array.isArray(value) ? value.length : 0;
+      if ((entry.calls - entry.queryErrors - 1) % SAMPLE_EVERY !== 0) return;
+      entry.sampledResults += 1;
+      entry.sampledRows += Array.isArray(value) ? value.length : 0;
+      const sizingStartedAt = performance.now();
       try {
         const size = responseValueSize(value);
-        entry.bytes += size.bytes;
-        entry.maxBytes = Math.max(entry.maxBytes, size.bytes);
-        entry.estimatedValues += size.estimatedValues;
-      } catch { entry.serializationErrors += 1; }
+        entry.sampledValueBytes += size.bytes;
+        entry.maxSampledValueBytes = Math.max(entry.maxSampledValueBytes, size.bytes);
+        entry.measuredValues += size.measuredValues;
+        entry.unmeasuredValues += size.unmeasuredValues;
+        if (size.unmeasuredValues) entry.incompleteSamples += 1;
+      } catch { entry.incompleteSamples += 1; }
+      finally { entry.sizingWallMs += performance.now() - sizingStartedAt; }
     } catch {}
   }
   function execute(action: () => unknown, metadata: Metadata) {
     if (!active()) return action();
     inFlight += 1; started += 1;
+    const owned = { ...metadata, owner: operationScope.getStore() ?? "unattributed" };
+    const startedAt = performance.now();
     let result: unknown;
     try { result = action(); }
-    catch (error) { finish(metadata, undefined, true); throw error; }
+    catch (error) { finish(owned, undefined, true, startedAt); throw error; }
     let asynchronous = false;
     try { asynchronous = Boolean(result && typeof (result as { then?: unknown }).then === "function"); } catch {}
     if (asynchronous) {
-      return Promise.resolve(result).then(value => { finish(metadata, value, false); return value; },
-        error => { finish(metadata, undefined, true); throw error; });
+      return Promise.resolve(result).then(value => { finish(owned, value, false, startedAt); return value; },
+        error => { finish(owned, undefined, true, startedAt); throw error; });
     }
-    finish(metadata, result, false);
+    finish(owned, result, false, startedAt);
     return result;
   }
   return { window, roots, queries, factories, clients, driverQueries, scope, active, expired, execute, flush };
@@ -231,7 +290,15 @@ export function installDatabaseResponseCapture<T extends object>(db: T, schema: 
       });
     }
   }
-  function sqlMetadata(value: unknown): Metadata {
+  function callers(boundary: Function, bundled: boolean): string[] {
+    if (!capture!.active()) return [];
+    const owner = operationScope.getStore();
+    if (owner && owner !== "http.request") return [];
+    const error: { stack?: string } = {};
+    Error.captureStackTrace(error, boundary);
+    return publicDatabaseCallers(error.stack, bundled);
+  }
+  function sqlMetadata(value: unknown, boundary: Function): Metadata {
     const scoped = capture!.scope.getStore();
     const text = typeof value === "string" ? value : "";
     let table = "other";
@@ -240,15 +307,17 @@ export function installDatabaseResponseCapture<T extends object>(db: T, schema: 
     }
     return scoped ? { ...scoped, table: scoped.table === "other" ? table : scoped.table }
       : { operation: text.match(/^\s*(select|insert|update|delete)\b/i)?.[1]?.toLowerCase() ?? "execute",
-        table, callers: publicDatabaseCallers(new Error().stack) };
+        // Unscoped driver calls can come through bundled ORM helpers. Their
+        // generated locations are not trustworthy application construction sites.
+        table, callers: callers(boundary, false) };
   }
   function client(value: unknown) {
     if ((!object(value) && typeof value !== "function") || capture!.clients.has(value)) return;
     capture!.clients.add(value);
     const target = value as Record<string, unknown>;
-    replace(target, "unsafe", original => function (this: unknown, ...args: unknown[]) {
+    replace(target, "unsafe", original => function capturedUnsafe(this: unknown, ...args: unknown[]) {
       const result = Reflect.apply(original, this, args);
-      if (!capture!.expired()) { try { driverQuery(result, sqlMetadata(args[0])); } catch {} }
+      if (!capture!.expired()) { try { driverQuery(result, sqlMetadata(args[0], capturedUnsafe)); } catch {} }
       return result;
     });
     for (const method of ["begin", "savepoint"]) {
@@ -271,13 +340,14 @@ export function installDatabaseResponseCapture<T extends object>(db: T, schema: 
     if (!object(value) || capture!.roots.has(value)) return;
     capture!.roots.add(value);
     for (const method of ["select", "selectDistinct", "selectDistinctOn", "insert", "update", "delete", "execute", "with"] as const) {
-      replace(value, method, original => function (this: unknown, ...args: unknown[]) {
+      replace(value, method, original => function capturedRoot(this: unknown, ...args: unknown[]) {
         const result = Reflect.apply(original, this, args);
         if (capture!.expired()) return result;
         try {
           if (method === "with") { root(result); return result; }
           const operation = method.startsWith("select") ? "select" : method;
-          const metadata = { operation, table: operation === "select" || method === "execute" ? "other" : tableName(args[0]), callers: publicDatabaseCallers(new Error().stack) };
+          const metadata = { operation, table: operation === "select" || method === "execute" ? "other" : tableName(args[0]),
+            callers: callers(capturedRoot, true) };
           if (operation === "select") factory(result, "from", metadata, true);
           else if (method === "insert") factory(result, "values", metadata);
           else if (method === "update") factory(result, "set", metadata);

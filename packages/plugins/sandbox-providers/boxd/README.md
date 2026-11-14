@@ -3,10 +3,31 @@
 boxd sandbox provider for Paperclip. [boxd](https://boxd.sh) runs each sandbox
 as an isolated KVM microVM. This package lives alongside E2B, Daytona and the
 other sandbox providers, outside the root pnpm workspace. It uses the
-[`@boxd-sh/sdk`](https://www.npmjs.com/package/@boxd-sh/sdk) package. The
-package is not published yet; use a local-path install. Its release manifest
-entry has `publishFromCi: false` until a maintainer bootstraps the first npm
-publish.
+[`@boxd-sh/sdk`](https://www.npmjs.com/package/@boxd-sh/sdk) package. Paperclip's
+CI release pipeline publishes this plugin to npm.
+
+## Install from npm
+
+Once a stable release is available, install the package from the Plugins page
+by name, or use the CLI:
+
+```sh
+paperclipai plugin install @paperclipai/plugin-boxd
+```
+
+Before the first stable release, the `latest` tag can still point to the
+`0.0.0` bootstrap placeholder. That version reserves the package name and has
+no plugin functionality. Check the published tags and choose a real release:
+
+```sh
+npm view @paperclipai/plugin-boxd dist-tags --json
+paperclipai plugin install @paperclipai/plugin-boxd --version <published-version>
+```
+
+Replace `<published-version>` with the version shown for the desired tag, such
+as `canary`. If no real release is available yet, use the local-path install
+below. See the [publishing guide](../../../../doc/PUBLISHING.md) for the release
+and bootstrap process.
 
 ## Build and install locally
 

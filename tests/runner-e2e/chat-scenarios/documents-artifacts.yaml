@@ -63,8 +63,9 @@ scenarios:
     query: >-
       Shorten the headline and give me a new version, but keep the old one available.
     expected_outcome: >-
-      The updated deliverable is linked to the same work with clear revision context, and the
-      original remains retrievable. The library opens the intended stack or work product. The
+      The updated deliverable is a new, separately titled registered version, filed on the
+      source work or in the conversation that requested it, and the reply links it beside a route
+      to the original, which remains retrievable. The library opens both versions' stacks. The
       agent does not overwrite the only retained copy or label stale bytes as the new revision.
   - id: documents-artifacts.find-artifact
     capabilities:

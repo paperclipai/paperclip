@@ -23,7 +23,7 @@ vi.mock("../telemetry.ts", () => ({ getTelemetryClient: () => mockTelemetryClien
 
 vi.mock("../middleware/logger.js", () => ({
   logger: {
-    child: vi.fn(function child() {
+    child: vi.fn(function child(this: unknown) {
       return this;
     }),
     trace: vi.fn(),
@@ -102,7 +102,6 @@ describeEmbeddedPostgres("heartbeat sweepOrphanedActiveLeases", () => {
     });
     await db.insert(environments).values({
       id: environmentId,
-      companyId,
       name: "Fake Sandbox",
       driver: "sandbox",
       status: "active",
@@ -192,7 +191,9 @@ describeEmbeddedPostgres("heartbeat sweepOrphanedActiveLeases", () => {
       return (await db.update(environmentLeases).set({ status: "expired", cleanupStatus: "success" })
         .where(eq(environmentLeases.id, leaseId)).returning())[0];
     });
-    const runtime = { destroyRunLease } as unknown as HeartbeatEnvironmentRuntime;
+    const retryPendingSandboxTeardown = vi.fn(async ({ lease }: { lease: { providerLeaseId: string | null } }) =>
+      ({ providerLeaseId: lease.providerLeaseId, state: "stopped" }));
+    const runtime = { destroyRunLease, retryPendingSandboxTeardown } as unknown as HeartbeatEnvironmentRuntime;
     try {
       const restarted = heartbeatService(db, { environmentRuntime: runtime });
       await restarted.sweepOrphanedActiveLeases({ backoffMs: 0 });
@@ -207,8 +208,17 @@ describeEmbeddedPostgres("heartbeat sweepOrphanedActiveLeases", () => {
       const afterExport = heartbeatService(db, { environmentRuntime: runtime });
       await afterExport.sweepOrphanedActiveLeases({ backoffMs: 0 });
       await afterExport.sweepPendingCleanupLeases({ backoffMs: 0 });
-      expect(destroyRunLease).toHaveBeenCalledOnce();
-      await expect(readFile(output)).rejects.toMatchObject({ code: "ENOENT" });
+      if (status === "active") {
+        // The ownership settle stops the orphaned sandbox and keeps it; it
+        // never destroys it (workspace preservation decides that).
+        expect(destroyRunLease).not.toHaveBeenCalled();
+        expect(retryPendingSandboxTeardown).toHaveBeenCalledOnce();
+        expect(await readFile(output, "utf8")).toBe(nonce);
+        expect(await leaseRow(leaseId)).toMatchObject({ status: "released", cleanupStatus: "success" });
+      } else {
+        expect(destroyRunLease).toHaveBeenCalledOnce();
+        await expect(readFile(output)).rejects.toMatchObject({ code: "ENOENT" });
+      }
     } finally {
       await rm(sandbox, { recursive: true, force: true });
     }
@@ -401,13 +411,13 @@ describeEmbeddedPostgres("heartbeat sweepOrphanedActiveLeases", () => {
   });
 
   it("test_defers_a_guarded_lease_instead_of_leaving_it_at_the_front_of_the_page", async () => {
-    const { companyId, agentId, environmentId } = await seedCompanyAgentAndEnvironment();
-    const runId = await insertHeartbeatRun({ companyId, agentId, status: "failed" });
+    const { companyId, environmentId } = await seedCompanyAgentAndEnvironment();
     const sharedProviderLeaseId = "sandbox://fake/shared-resource";
+    // A run-less (login/probe) lease still pages by idle age.
     const orphanedLeaseId = await insertActiveLease({
       companyId,
       environmentId,
-      heartbeatRunId: runId,
+      heartbeatRunId: null,
       updatedAt: oldEnough(),
       providerLeaseId: sharedProviderLeaseId,
     });
@@ -521,9 +531,12 @@ describeEmbeddedPostgres("heartbeat sweepOrphanedActiveLeases", () => {
         .then((rows) => rows[0] ?? null);
       return row ? { ...row, status: "expired" as const } : null;
     });
+    const retryPendingSandboxTeardown = vi.fn(async ({ lease }: { lease: { providerLeaseId: string | null } }) =>
+      ({ providerLeaseId: lease.providerLeaseId, state: "stopped" }));
     const heartbeat = heartbeatService(db, {
       environmentRuntime: {
         destroyRunLease,
+        retryPendingSandboxTeardown,
       } as unknown as HeartbeatEnvironmentRuntime,
     });
 
@@ -532,9 +545,12 @@ describeEmbeddedPostgres("heartbeat sweepOrphanedActiveLeases", () => {
     // pending_cleanup teardown both run in this one call.
     await heartbeat.reapOrphanedRuns({ staleThresholdMs: 5 * 60 * 1000 });
 
-    expect(destroyRunLease).toHaveBeenCalledTimes(1);
+    // The orphaned run's sandbox is stopped and kept, never destroyed.
+    expect(destroyRunLease).not.toHaveBeenCalled();
+    expect(retryPendingSandboxTeardown).toHaveBeenCalledTimes(1);
     const row = await leaseRow(leaseId);
-    expect(row?.status).toBe("expired");
+    expect(row?.status).toBe("released");
+    expect(row?.metadata?.sandboxStopAndRetainReceipt).toMatchObject({ leaseId, method: "builtin.stopLease" });
   });
 
   it("test_stops_the_recovered_sandbox_on_the_startup_call", async () => {
@@ -557,9 +573,12 @@ describeEmbeddedPostgres("heartbeat sweepOrphanedActiveLeases", () => {
         .then((rows) => rows[0] ?? null);
       return row ? { ...row, status: "expired" as const } : null;
     });
+    const retryPendingSandboxTeardown = vi.fn(async ({ lease }: { lease: { providerLeaseId: string | null } }) =>
+      ({ providerLeaseId: lease.providerLeaseId, state: "stopped" }));
     const heartbeat = heartbeatService(db, {
       environmentRuntime: {
         destroyRunLease,
+        retryPendingSandboxTeardown,
       } as unknown as HeartbeatEnvironmentRuntime,
     });
 
@@ -568,9 +587,12 @@ describeEmbeddedPostgres("heartbeat sweepOrphanedActiveLeases", () => {
     // and the recovered lease reaches the provider teardown in this one call.
     await heartbeat.reapOrphanedRuns({ staleThresholdMs: 0 });
 
-    expect(destroyRunLease).toHaveBeenCalledTimes(1);
+    // The orphaned run's sandbox is stopped and kept, never destroyed.
+    expect(destroyRunLease).not.toHaveBeenCalled();
+    expect(retryPendingSandboxTeardown).toHaveBeenCalledTimes(1);
     const row = await leaseRow(leaseId);
-    expect(row?.status).toBe("expired");
+    expect(row?.status).toBe("released");
+    expect(row?.metadata?.sandboxStopAndRetainReceipt).toMatchObject({ leaseId, method: "builtin.stopLease" });
   });
 
   it("test_logs_a_distinct_error_kind_and_no_exception_field_when_the_sweep_fails", async () => {

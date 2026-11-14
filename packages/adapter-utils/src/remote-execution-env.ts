@@ -47,3 +47,14 @@ export function sanitizeRemoteExecutionEnv(
   }
   return sanitized;
 }
+import path from "node:path";
+
+export function managedRemoteHomeEnvironment(home: string): Record<string, string> {
+  return {
+    HOME: home,
+    XDG_CONFIG_HOME: path.posix.join(home, ".config"),
+    XDG_DATA_HOME: path.posix.join(home, ".local", "share"),
+    XDG_CACHE_HOME: path.posix.join(home, ".cache"),
+    XDG_STATE_HOME: path.posix.join(home, ".local", "state"),
+  };
+}

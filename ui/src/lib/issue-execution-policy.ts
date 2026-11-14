@@ -1,7 +1,7 @@
 import type { IssueExecutionPolicy, IssueExecutionStageParticipant, IssueExecutionStagePrincipal } from "@paperclipai/shared";
 import { issueExecutionPolicySchema } from "@paperclipai/shared";
-import { parseAssigneeValue } from "./assignees";
-import { createUuid as newId } from "./uuid";
+import { parseAssigneeValue } from "./assignees.js";
+import { createUuid as newId } from "./uuid.js";
 
 type StageType = "review" | "approval";
 const nullablePolicySchema = issueExecutionPolicySchema.nullable();
