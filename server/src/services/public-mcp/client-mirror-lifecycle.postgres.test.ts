@@ -19,6 +19,9 @@ import {deleteCompany} from "../company-deletion.js";
 import {createPublicMcpOAuth,DEVICE_GRANT} from "./oauth.js";
 import {startMcpRevocationIndexSync} from "./revocation-index-sync.js";
 import {startMcpClientMirrorSync} from "./client-mirror-sync.js";
+import {githubConnectionEventService} from "../github-connection-events.js";
+import {registerGitHubConnectionEventWork} from "../github-connection-work.js";
+import {hasConnectionEventWakeReceiver} from "../connection-event-wake.js";
 import {mcpClientMirrorGeneration,type McpClientMirrorRequest,type McpClientMirrorReceipt} from "./client-mirror-contract.js";
 import {readIdleMcpClientMirror} from "./idle-client-mirror.js";
 import {readIdleMcpDeviceStatus} from "./idle-device-status.js";
@@ -106,10 +109,44 @@ describe.skipIf(!configured)("MCP mirror actual transaction lifecycle",()=>{
     expect(published).toHaveLength(1);expect(await db.select().from(grants)).toHaveLength(1);
   });
   it("refreshes old partial capability exactly once at owner startup and waits for the current ACK after an outage",async()=>{
+    // Supported managed-connector fixture configuration; no private registry/ready state.
+    const sign=generateKeyPairSync("ed25519"),seal=generateKeyPairSync("x25519");
+    vi.stubEnv("PAPERCLIP_CLOUD_CONNECTOR_INSTANCE_ID",instanceId);
+    vi.stubEnv("PAPERCLIP_CLOUD_CONNECTOR_SIGN_PRIVATE_KEY",JSON.stringify(sign.privateKey.export({format:"jwk"})));
+    vi.stubEnv("PAPERCLIP_CLOUD_CONNECTOR_SEAL_PRIVATE_KEY",JSON.stringify(seal.privateKey.export({format:"jwk"})));
+    vi.stubEnv("PAPERCLIP_CLOUD_CONNECTOR_ENVIRONMENT","test");
+    vi.stubEnv("PAPERCLIP_CLOUD_CONNECTOR_BASE_URL","https://cloud.example.test");
+    let mirror:ReturnType<typeof startMcpClientMirrorSync>["worker"]|undefined;
+    let ordinary:ReturnType<typeof registerGitHubConnectionEventWork>|undefined;
+    let primary:unknown;
+    try {
     await device();const [originalClient]=await db.select().from(clients),[originalDevice]=await db.select().from(devices);
-    await start();const old=await acknowledged();expect(old.receipt?.frontDoor).toBeUndefined();expect((await inspect()).blocked).toBe(true);
+    mirror=await start();
+    // Real production registration and service lifecycle, with its normal no-consumer
+    // disposition. The separate signed-loopback caller control owns pending HTTP enrollment.
+    ordinary=registerGitHubConnectionEventWork(db,coordinator!,githubConnectionEventService(db),()=>true);
+    await ordinary.ready;
+    expect(hasConnectionEventWakeReceiver(db)).toBe(true);
+    expect(hasConnectionEventWakeReceiver(db,{importsClientMetadata:true})).toBe(true);
+    const old=await acknowledged();expect(old.receipt?.frontDoor).toBeUndefined();expect((await inspect()).blocked).toBe(true);
     const outageStart=sent.length;
-    remoteAvailable=true;failures=100;const worker=await start();const pending=(await current())!;
+    remoteAvailable=true;failures=100;
+    // First stop the actual metadata owner. Its cleanup must not dispose the
+    // ordinary owner sharing this same coordinator/connection-event registry.
+    await mirror.stop();
+    expect(hasConnectionEventWakeReceiver(db,{importsClientMetadata:true})).toBe(false);
+    expect(hasConnectionEventWakeReceiver(db)).toBe(true);
+    // The normal coordinator keeps stopped queue identities; replacement uses
+    // its existing whole-owner startup path, never duplicate register/private deletion.
+    await ordinary.stop();ordinary=undefined;
+    expect(hasConnectionEventWakeReceiver(db)).toBe(false);
+    mirror=await start();const worker=mirror;
+    ordinary=registerGitHubConnectionEventWork(db,coordinator!,githubConnectionEventService(db),()=>true);
+    await ordinary.ready;const pending=(await current())!;
+    expect(hasConnectionEventWakeReceiver(db)).toBe(true);
+    expect(hasConnectionEventWakeReceiver(db,{importsClientMetadata:true})).toBe(true);
+    const metadataError=errors.find(error=>error instanceof Error&&error.message==="controlled mirror outage");
+    expect(metadataError,"normal metadata publication error must remain observable").toBeInstanceOf(Error);
     expect(pending.revision).toBe(old.revision+1);expect(pending.receipt?.revision).toBe(old.revision);expect(pending.deviceCutoverAt).toBeNull();expect((await inspect()).blocked).toBe(true);
     expect(sent.slice(outageStart).map(value=>({operation:value.operation,revision:value.revision}))).toEqual([{operation:"begin",revision:pending.revision}]);
     const recoveryStart=sent.length;
@@ -124,6 +161,20 @@ describe.skipIf(!configured)("MCP mirror actual transaction lifecycle",()=>{
     const key=deriveLocalEncryptedInstanceSecret(`mcp-device-status:v1:${instanceId}`);
     expect(devicePage.sequence).toBe(0);expect(devicePage.entries).toEqual([{requestId:originalDevice.id,clientId:originalDevice.clientId,resource:originalDevice.resource,ingressOwner:originalDevice.ingressOwner,status:originalDevice.status,expiresAt:originalDevice.expiresAt.getTime(),fingerprint:mcpDeviceStatusFingerprint(key,originalDevice.deviceCodeHash,originalDevice.clientId,originalDevice.resource)}]);
     expect((await db.select().from(devices))[0].expiresAt).toEqual(originalDevice.expiresAt);expect(await db.select().from(changes)).toEqual([]);expect(errors.length).toBeGreaterThanOrEqual(1);
+    expect(errors).toContain(metadataError);
+    expect(hasConnectionEventWakeReceiver(db)).toBe(true);
+    expect(hasConnectionEventWakeReceiver(db,{importsClientMetadata:true})).toBe(true);
+    await mirror.stop();mirror=undefined;
+    expect(hasConnectionEventWakeReceiver(db,{importsClientMetadata:true})).toBe(false);
+    expect(hasConnectionEventWakeReceiver(db)).toBe(true);
+    await ordinary.stop();ordinary=undefined;
+    expect(hasConnectionEventWakeReceiver(db)).toBe(false);
+    } catch(error) { primary=error;throw error; }
+    finally {
+      const joined=await Promise.allSettled([mirror?.stop(),ordinary?.stop()]);
+      const cleanup=joined.flatMap(result=>result.status==="rejected"?[result.reason]:[]);
+      if(cleanup.length)throw new AggregateError(primary===undefined?cleanup:[primary,...cleanup],"Metadata/ordinary caller cleanup remains incomplete");
+    }
   });
   it("a normal client mutation supersedes an in-flight page without acknowledging or logging the old revision",async()=>{
     const oauth=createPublicMcpOAuth(db,{origin,resource:origin+"/mcp/paperclip"});

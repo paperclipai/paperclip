@@ -6,34 +6,42 @@ import { once } from "node:events";
 import { setImmediate as yieldForIo } from "node:timers/promises";
 import { createCipheriv, createPublicKey, diffieHellman, generateKeyPairSync, hkdfSync, randomBytes, randomUUID, verify } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
-import { companies, connectionEventDeliveries, connectionGrants, createDb, toolApplications, toolConnections } from "@paperclipai/db";
+import { companies, connectionEventDeliveries, connectionGrants, applyPendingMigrations, createDb, toolApplications, toolConnections } from "@paperclipai/db";
 import { eq } from "drizzle-orm";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 import { githubConnectionEventService } from "../services/github-connection-events.js";
 import { registerGitHubConnectionEventWork } from "../services/github-connection-work.js";
 import { createDeliveryWorkCoordinator } from "../services/delivery-work-coordinator.js";
 import { idleWorkSnapshot } from "../services/task-admission.js";
-import { wakeConnectionEvents } from "../services/connection-event-wake.js";
+import { wakeConnectionEvents, hasConnectionEventWakeReceiver } from "../services/connection-event-wake.js";
+import { startMcpClientMirrorSync } from "../services/public-mcp/client-mirror-sync.js";
+import { resolveExternalTestDatabaseUrl } from "./helpers/external-test-database.js";
 import { completePaperclipCloudConnectorEnrollment, loadPaperclipCloudConnectorIdentity, startPaperclipCloudConnectorEnrollment } from "../services/paperclip-cloud-connector-enrollment.js";
 import { paperclipCloudConnectorIdentityPath } from "../services/paperclip-cloud-connector-enrollment.js";
 
-const support = await getEmbeddedPostgresTestSupport();
+const external = resolveExternalTestDatabaseUrl("PAPERCLIP_TEST_DATABASE_URL");
+const support = external ? { supported: true } : await getEmbeddedPostgresTestSupport();
 (support.supported ? describe : describe.skip)("GitHub enrollment on a live event worker (real PostgreSQL and signed loopback Cloud)", () => {
   let temporary: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>>;
   let db: ReturnType<typeof createDb>;
   beforeAll(async () => {
-    temporary = await startEmbeddedPostgresTestDatabase("github-live-enrollment-");
-    db = createDb(temporary.connectionString, { maxConnections: 4, idleTimeoutSeconds: 0, connectTimeoutSeconds: 0, maxLifetimeSeconds: 0 });
+    if (external) await applyPendingMigrations(external);
+    else temporary = await startEmbeddedPostgresTestDatabase("github-live-enrollment-");
+    db = createDb(external ?? temporary.connectionString, { maxConnections: 4, idleTimeoutSeconds: 0, connectTimeoutSeconds: 0, maxLifetimeSeconds: 0 });
   }, 90_000);
   afterAll(async () => { await db?.$client.end({ timeout: 1 }); await temporary?.cleanup(); });
 
   it("enrolls without recreation, drains an authenticated event, forgets removed identity and re-enrolls from quiet", async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), "github-live-enrollment-"));
-    const previous = { home: process.env.PAPERCLIP_HOME, instance: process.env.PAPERCLIP_INSTANCE_ID };
+    const previous = { home: process.env.PAPERCLIP_HOME, instance: process.env.PAPERCLIP_INSTANCE_ID,
+      baseUrl: process.env.PAPERCLIP_CLOUD_CONNECTOR_BASE_URL, environment: process.env.PAPERCLIP_CLOUD_CONNECTOR_ENVIRONMENT };
     process.env.PAPERCLIP_HOME = root; process.env.PAPERCLIP_INSTANCE_ID = "enrollment-worker";
     let server: Server | undefined;
     let worker: ReturnType<typeof registerGitHubConnectionEventWork> | undefined;
     let coordinator: ReturnType<typeof createDeliveryWorkCoordinator> | undefined;
+    let metadata: ReturnType<typeof startMcpClientMirrorSync> | undefined;
+    let releaseFirstEnrollment!: () => void;
+    const firstEnrollmentResponse = new Promise<void>(resolve => { releaseFirstEnrollment = resolve; });
     const errors: unknown[] = [], httpErrors: unknown[] = [];
     let requests = 0, acknowledged = 0, leases = 0, enrollment: Record<string, string> | undefined;
     let origin = "", eventId = randomUUID(), grantId = "", companyId = "";
@@ -68,6 +76,7 @@ const support = await getEmbeddedPostgresTestSupport();
             res.end(JSON.stringify({ acknowledged: 1 })); return;
           }
           expect(req.url).toBe("/v1/connector/events/lease"); leases++;
+          if (leases === 1) await firstEnrollmentResponse;
           if (delivered.has(eventId)) { res.end(JSON.stringify({ events: [], eventWakeVersion: 1 })); return; }
           const ephemeral = generateKeyPairSync("x25519"), epk = ephemeral.publicKey.export({ format: "jwk" }).x!;
           const recipient = createPublicKey({ key: { kty: "OKP", crv: "X25519", x: enrollment!.sealPublicKey }, format: "jwk" });
@@ -89,6 +98,9 @@ const support = await getEmbeddedPostgresTestSupport();
       const [grant] = await db.insert(connectionGrants).values({ companyId, connectionId: connection!.id, kind: "user", subjectUserId: "owner", status: "active", providerTenant: { github: { userId: "42", login: "octocat", installationIds: ["101"], installationCount: 1, repositoryCount: 0, repositorySelection: "all", installationOwnerLogins: [], webhookHealth: "unhealthy" } } }).returning();
       grantId = grant!.id;
       const env = { PAPERCLIP_CLOUD_CONNECTOR_BASE_URL: origin, PAPERCLIP_CLOUD_CONNECTOR_ENVIRONMENT: "test" };
+      // SAME normally enrolled identity/config is read by the actual metadata registration owner.
+      process.env.PAPERCLIP_CLOUD_CONNECTOR_BASE_URL = origin;
+      process.env.PAPERCLIP_CLOUD_CONNECTOR_ENVIRONMENT = "test";
       const service = githubConnectionEventService(db, { env });
       const reserved: Awaited<ReturnType<typeof db.$client.reserve>>[] = [];
       try {
@@ -141,7 +153,18 @@ const support = await getEmbeddedPostgresTestSupport();
       }
       const firstIdentity = await enroll();
       expect(wakeConnectionEvents(db)).toBe(true);
-      await vi.advanceTimersByTimeAsync(6_000);
+      const firstPass = vi.advanceTimersByTimeAsync(6_000);
+      await observe(() => expect(leases).toBe(1));
+      // Registration runs through BOTH real production owners and the normal coordinator.
+      // This narrow check proves metadata registration coexistence, not a metadata publication ACK.
+      metadata = startMcpClientMirrorSync(db, coordinator, "https://self-hosted.example.test", { instanceId: firstIdentity });
+      expect(hasConnectionEventWakeReceiver(db)).toBe(true);
+      expect(hasConnectionEventWakeReceiver(db, { importsClientMetadata: true })).toBe(true);
+      releaseFirstEnrollment();
+      await firstPass;
+      await metadata.worker.stop(); metadata = undefined;
+      expect(hasConnectionEventWakeReceiver(db, { importsClientMetadata: true })).toBe(false);
+      expect(hasConnectionEventWakeReceiver(db)).toBe(true);
       await observe(() => expect(acknowledged).toBe(1));
       expect(await db.select().from(connectionEventDeliveries).where(eq(connectionEventDeliveries.providerDeliveryId, eventId))).toMatchObject([{ status: "processed" }]);
       expect((await db.select().from(connectionGrants).where(eq(connectionGrants.id, grantId)))[0]!.providerTenant!.github!.webhookHealth).toBe("healthy");
@@ -164,11 +187,14 @@ const support = await getEmbeddedPostgresTestSupport();
       await drainFollowup(oldLeases + 2);
       await quiet("replacement event plus its one empty follow-up"); expect(errors).toEqual([]); expect(httpErrors).toEqual([]);
     } finally {
-      releaseReplacementAck();
+      releaseFirstEnrollment(); releaseReplacementAck();
+      await metadata?.worker.stop();
       await worker?.stop(); await coordinator?.stop(); vi.restoreAllMocks(); vi.useRealTimers();
       if (server) { const closed = once(server, "close"); server.close(); server.closeAllConnections(); await closed; }
       if (previous.home === undefined) delete process.env.PAPERCLIP_HOME; else process.env.PAPERCLIP_HOME = previous.home;
       if (previous.instance === undefined) delete process.env.PAPERCLIP_INSTANCE_ID; else process.env.PAPERCLIP_INSTANCE_ID = previous.instance;
+      if (previous.baseUrl === undefined) delete process.env.PAPERCLIP_CLOUD_CONNECTOR_BASE_URL; else process.env.PAPERCLIP_CLOUD_CONNECTOR_BASE_URL = previous.baseUrl;
+      if (previous.environment === undefined) delete process.env.PAPERCLIP_CLOUD_CONNECTOR_ENVIRONMENT; else process.env.PAPERCLIP_CLOUD_CONNECTOR_ENVIRONMENT = previous.environment;
       await rm(root, { recursive: true, force: true });
     }
   }, 30_000);
