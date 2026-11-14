@@ -10,7 +10,7 @@ import { randomUUID } from "node:crypto";
 import { canonicalExecutionUuid } from "./execution-identity.js";
 import { conversationRecoveryActionPredicate, getConversationOwnershipBlocker } from "./conversation-continuation.js";
 import { isInterruptedNativePreparationCandidate } from "./cancelled-native-startup.js";
-import { persistActivity } from "./activity-log.js";
+import { persistActivity, type ActivityPublication } from "./activity-log.js";
 import { appendHeartbeatRunEvent } from "./heartbeat-run-events.js";
 import { foldWaitingRetriesIntoContinuation } from "./fresh-continuation-retry-fold.js";
 import { logger } from "../middleware/logger.js";
@@ -992,4 +992,85 @@ export async function settleUnrecoverableExecutions(
   // Tasks already held by settled records (including those older releases
   // saved) continue from their saved work on this worker too.
   await continueHeldExecutions(db, now);
+}
+
+/**
+ * A user-driven status change is the operator's decision that this task's
+ * recorded execution state is the intended one. Resolved recovery actions
+ * that still hold `evidence.automaticRecovery.replay = "blocked"` otherwise
+ * keep parking every wake on the issue forever: the issue looks alive, but
+ * execution-blocker admission silently swallows each wake, so nothing —
+ * monitors, comment wakes, retry loops — ever runs again. Fold that hold
+ * into a reconciled marker so the issue accepts work again. The original
+ * evidence is preserved and an audit activity row is recorded.
+ *
+ * Scope guards:
+ * - Only the resolved no-replay marker folds. Active/escalated recovery
+ *   actions keep their own resolution flow.
+ * - Unsafe-workspace holds (`workspaceRestoreFailure = "restore_unsafe_archive"`)
+ *   are never retired here: a status change cannot make an unsafe workspace
+ *   safe, and that hold deliberately survives until repair or reconciliation.
+ * - Conversation recovery actions are owned by the conversation fold in
+ *   settleUnrecoverableExecutions.
+ */
+export async function retireExecutionReplayHoldOnStatusRestore(
+  db: Db,
+  input: {
+    companyId: string;
+    issueId: string;
+    fromStatus: string;
+    toStatus: string;
+    actorId: string;
+    now?: Date;
+  },
+): Promise<{ retiredRecoveryActionIds: string[]; publication: ActivityPublication | null }> {
+  const now = input.now ?? new Date();
+  const foldableHold = and(
+    eq(issueRecoveryActions.companyId, input.companyId),
+    eq(issueRecoveryActions.sourceIssueId, input.issueId),
+    not(conversationRecoveryActionPredicate()!),
+    eq(issueRecoveryActions.status, "resolved"),
+    inArray(issueRecoveryActions.cause, [...EXECUTION_RECONCILIATION_CAUSES]),
+    sql`${issueRecoveryActions.evidence}->'automaticRecovery'->>'replay' = 'blocked'`,
+    sql`coalesce(${issueRecoveryActions.evidence}->>'workspaceRestoreFailure', '') <> 'restore_unsafe_archive'`,
+  );
+  return db.transaction(async (tx) => {
+    const folded = await tx
+      .update(issueRecoveryActions)
+      .set({
+        evidence: sql`jsonb_set(
+          ${issueRecoveryActions.evidence},
+          '{automaticRecovery}',
+          (${issueRecoveryActions.evidence}->'automaticRecovery') || ${JSON.stringify(
+            {
+              replay: "user_status_restore",
+              clearedAt: now.toISOString(),
+              clearedBy: input.actorId,
+              fromStatus: input.fromStatus,
+              toStatus: input.toStatus,
+            },
+          )}::jsonb
+        )`,
+        updatedAt: now,
+      })
+      .where(foldableHold)
+      .returning({ id: issueRecoveryActions.id });
+    if (folded.length === 0) return { retiredRecoveryActionIds: [], publication: null };
+    const { publication } = await persistActivity(tx as unknown as Db, {
+      companyId: input.companyId,
+      actorType: "user",
+      actorId: input.actorId,
+      action: "issue.execution_recovery_settled",
+      entityType: "issue",
+      entityId: input.issueId,
+      details: {
+        continuation: "user_status_restore",
+        fromStatus: input.fromStatus,
+        toStatus: input.toStatus,
+        recoveryActionIds: folded.map((row) => row.id),
+        replayHoldRetired: true,
+      },
+    });
+    return { retiredRecoveryActionIds: folded.map((row) => row.id), publication };
+  });
 }

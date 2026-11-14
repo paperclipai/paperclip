@@ -69,6 +69,7 @@ import { EXECUTION_RECONCILIATION_CAUSES, requiresExecutionReconciliation } from
 import {
   validateExecutionReconciliation,
   markExecutionReconciliation,
+  retireExecutionReplayHoldOnStatusRestore,
 } from "../services/execution-recovery-resolution.js";
 import {
   storedSteeringAcknowledgement,
@@ -14416,12 +14417,14 @@ export function issueRoutes(
     });
     if (result.outcome !== "triggered") {
       throw conflict(
-        result.reason === "execution_reconciliation_required"
+        result.outcome === "parked"
+          ? "The monitor wake was parked by an execution blocker. The monitor stays armed and will retry automatically."
+          : result.reason === "execution_reconciliation_required"
           ? "The previous run is still being recovered. Try again when recovery finishes."
           : result.reason === "monitor_replaced"
           ? "The monitor changed during this check. Review the task's current state before trying again."
           : "The monitor check did not start. Refresh the task to see its current state.",
-        { code: "issue_monitor_check_deferred", reason: result.reason },
+        { code: "issue_monitor_check_deferred", reason: result.outcome === "parked" ? "execution_reconciliation_required" : result.reason },
       );
     }
 
@@ -16194,6 +16197,42 @@ export function issueRoutes(
       for (const publication of postCommitActivityPublications)
         publishActivity(publication);
       await flushIssuePostCommitActions(postCommitIssueActions);
+
+      // A user-driven status change to a workable state is the operator's
+      // decision that the task's recorded execution stands. Retire the
+      // resolved no-replay execution hold here: without this fold the issue
+      // looks restored but execution-blocker admission keeps parking every
+      // wake on it — the silent zombie state after storm scrambles. The
+      // status change is already committed; a fold failure must not
+      // misreport the update, so it warns and leaves the hold for the next
+      // visible parked-monitor activity to surface.
+      if (
+        actor.actorType === "user" &&
+        typeof updateFields.status === "string" &&
+        updateFields.status !== existing.status &&
+        ["todo", "in_progress"].includes(issue.status)
+      ) {
+        try {
+          const { publication } = await retireExecutionReplayHoldOnStatusRestore(db, {
+            companyId: issue.companyId,
+            issueId: issue.id,
+            fromStatus: existing.status,
+            toStatus: issue.status,
+            actorId: actor.actorId,
+          });
+          if (publication) publishActivity(publication);
+        } catch (err) {
+          logger.warn(
+            {
+              err,
+              issueId: issue.id,
+              companyId: issue.companyId,
+              actorId: actor.actorId,
+            },
+            "failed to retire the no-replay execution hold on status restore",
+          );
+        }
+      }
 
       if (enteringBlocked) {
         const blockedIssue = issue;
