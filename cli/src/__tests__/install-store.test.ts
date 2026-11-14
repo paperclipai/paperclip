@@ -122,6 +122,42 @@ describe("managed install store", () => {
     expect(fs.statSync(rcPath).mode & 0o777).toBe(0o640);
   });
 
+  it.skipIf(process.platform === "win32").each([0o027, 0o077])(
+    "preserves the declared shim mode under umask %i",
+    (mask) => {
+      const entrypoint = path.join(paths.currentPath, "node_modules", "paperclipai", "dist", "index.js");
+      fs.mkdirSync(path.dirname(entrypoint), { recursive: true });
+      fs.writeFileSync(entrypoint, 'console.log("managed-shim-ok")');
+      const previousMask = process.umask(mask);
+      try {
+        writeManagedShim(paths);
+        expect(fs.statSync(paths.shimPath).mode & 0o777).toBe(0o755);
+        expect(execFileSync(paths.shimPath, [], { encoding: "utf8" }).trim()).toBe("managed-shim-ok");
+      } finally {
+        process.umask(previousMask);
+      }
+    },
+  );
+
+  it.skipIf(process.platform === "win32").each([0o027, 0o077])(
+    "preserves existing shell permissions when adding and removing PATH under umask %i",
+    (mask) => {
+      const rcPath = path.join(root, ".bashrc");
+      fs.writeFileSync(rcPath, "export EXISTING=1\n");
+      fs.chmodSync(rcPath, 0o640);
+      const previousMask = process.umask(mask);
+      try {
+        expect(addManagedPathBlock(rcPath)).toBe(true);
+        expect(fs.statSync(rcPath).mode & 0o777).toBe(0o640);
+        expect(removeManagedPathBlock(rcPath)).toBe(true);
+        expect(fs.statSync(rcPath).mode & 0o777).toBe(0o640);
+        expect(fs.readFileSync(rcPath, "utf8")).toBe("export EXISTING=1\n");
+      } finally {
+        process.umask(previousMask);
+      }
+    },
+  );
+
   it("uses the pinned Node for child tools even with an older node first on the service PATH", () => {
     const entrypoint = path.join(paths.currentPath, "node_modules", "paperclipai", "dist", "index.js");
     fs.mkdirSync(path.dirname(entrypoint), { recursive: true });

@@ -60,7 +60,13 @@ function writeFileAtomic(filePath: string, contents: string, mode: number): void
     `.${path.basename(filePath)}.tmp-${process.pid}-${Date.now()}-${Math.random().toString(16).slice(2)}`,
   );
   try {
-    fs.writeFileSync(temporaryPath, contents, { mode, flag: "wx" });
+    const descriptor = fs.openSync(temporaryPath, "wx", mode);
+    try {
+      fs.writeFileSync(descriptor, contents);
+      fs.fchmodSync(descriptor, mode);
+    } finally {
+      fs.closeSync(descriptor);
+    }
     fs.renameSync(temporaryPath, filePath);
   } finally {
     fs.rmSync(temporaryPath, { force: true });
