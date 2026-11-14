@@ -37,7 +37,8 @@ import { aliasedRun, queuedRunStalledSql } from "./stalled-queued-run-sql.js";
 import { attributeBlock, BLOCK_ATTRIBUTION_WINDOW_MS, blockedStatusDetailsSql } from "../interruption-block-release.js";
 import { ASSIGNED_WORK_CONTINUED_ACTION, taskAutomaticAttempts } from "./task-automatic-attempts.js";
 import { isReattachPhaseActive, reattachPhaseRecheckAt } from "../heartbeat/run-admission.js";
-import { ensureFreshContinuation, hasPendingFreshContinuation, type FreshContinuationResult } from "../fresh-continuation-fallback.js";
+import { ensureFreshContinuation, type FreshContinuationResult } from "../fresh-continuation-fallback.js";
+import { wakeBecameFreshContinuation } from "./wake-became-fresh-continuation.js";
 import { canContinueRecoveryRunAutomatically } from "../continuation-cause.js";
 import { STRANDED_CONTINUATION_MAX_AGE_MS, STRANDED_KIND, strandedHoldContinuesAutomatically, type StrandedHoldRun } from "./stranded-hold-continuation.js";
 import {
@@ -663,7 +664,10 @@ export function assignedWorkSweep(db: Db, deps: AssignedWorkDeps) {
     // Admission may settle the task's hold and coalesce this wake into a
     // fresh continuation from saved work, which the continuation worker
     // starts. That is a continuation, not a refusal.
-    if (!run && await continuedFromSavedWorkByWake(issue)) {
+    if (!run && await wakeBecameFreshContinuation(db, issue.companyId, issue.id).catch(error => {
+      logger.warn({ err: error, companyId: issue.companyId, issueId: issue.id }, "assigned-work sweep could not read the task's continuation");
+      return false;
+    })) {
       await settleContinuationActivity(claimed, claimed.reason, "queued", { continuedFromSavedWork: "true" });
       return { verdict: claimed.verdict, outcome: "repaired", retryAt: claimed.nextCheckAt };
     }
@@ -674,29 +678,6 @@ export function assignedWorkSweep(db: Db, deps: AssignedWorkDeps) {
     await settleContinuationActivity(claimed, claimed.reason, run ? "queued" : "not_started",
       fresh?.kind === "person_owned" ? { waitingFor: fresh.reason } : {});
     return { verdict: claimed.verdict, outcome: run ? "repaired" : "enqueue_refused", retryAt: claimed.nextCheckAt };
-  }
-
-  /**
-   * True when admission coalesced the sweep's wake into a fresh continuation.
-   * It is still pending, or the continuation worker already delivered it as a
-   * run before this read. The claim proved no run was live, so a live
-   * delivered continuation run is this wake's work.
-   */
-  async function continuedFromSavedWorkByWake(issue: IssueRow): Promise<boolean> {
-    return db.transaction(async tx => {
-      if (await hasPendingFreshContinuation(tx as unknown as Db, issue.companyId, issue.id)) return true;
-      const [delivered] = await tx.select({ id: issueRecoveryActions.id }).from(issueRecoveryActions)
-        .innerJoin(heartbeatRuns, and(eq(heartbeatRuns.companyId, issueRecoveryActions.companyId),
-          sql`${heartbeatRuns.id}::text = ${issueRecoveryActions.evidence}->>'continuationRunId'`))
-        .where(and(eq(issueRecoveryActions.companyId, issue.companyId), eq(issueRecoveryActions.sourceIssueId, issue.id),
-          sql`${issueRecoveryActions.evidence}#>>'{freshContinuation,schema}' is not null`,
-          sql`${issueRecoveryActions.evidence}->>'continuationDelivery' = 'delivered'`,
-          inArray(heartbeatRuns.status, ["queued", "running"]))).limit(1);
-      return Boolean(delivered);
-    }).catch(error => {
-      logger.warn({ err: error, companyId: issue.companyId, issueId: issue.id }, "assigned-work sweep could not read the task's continuation");
-      return false;
-    });
   }
 
   function reportStalledRun(issue: IssueRow, runId: string, stall: NonNullable<AssignedWorkFacts["activeRuns"][number]["queuedStall"]> | null, at: Date) {
