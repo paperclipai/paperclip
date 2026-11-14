@@ -44,6 +44,21 @@ it("checks only on demand and replaces a successful observation with a failed pr
   expect(host.textContent).not.toContain("100% used");
   expect(host.querySelectorAll('[role="progressbar"]')).toHaveLength(0);
 });
+it("labels a throttled check with its retry time and its last good reading as stale, without showing old limits", async () => {
+  api.probeUsage.mockResolvedValue({ ...account, connectionId: account.id, status: "error", errorCode: "rate_limited", checkedAt: "2026-10-02T12:05:00Z",
+    source: null, planType: null, limits: [], overage: null, retryAt: "2026-10-02T12:10:00Z",
+    lastGood: { stale: true, checkedAt: "2026-10-02T12:00:00Z", source: "anthropic_oauth", planType: null, overage: null,
+      limits: [{ id: "five_hour", label: "5 hour limit", scope: null, windowDurationSeconds: 18000, resetsAt: null,
+        usedPercent: 40, remainingPercent: 60, used: null, limit: null, remaining: null, unit: "percent", limitReached: false, allowed: null }] },
+  } satisfies AiConnectionUsage);
+  render(); click();
+  await vi.waitFor(() => expect(host.querySelector('[role="alert"]')?.textContent).toContain("throttled"));
+  const text = host.querySelector('[role="alert"]')!.textContent!;
+  expect(text).toContain("not a usage limit");
+  expect(text).toContain("Next check after");
+  expect(text).toContain("Last good reading (stale)");
+  expect(host.textContent).not.toContain("40% used");
+});
 it("clears the prior account's snapshot when changing accounts", async () => {
   api.probeUsage.mockResolvedValue({ status: "error", message: "Old account failure" });
   render(); click();

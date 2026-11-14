@@ -61,10 +61,17 @@ function overageSummary(usage: AiConnectionUsage) {
 }
 
 function usageError(usage: AiConnectionUsage) {
+  const text = usageErrorText(usage);
+  const retry = usage.retryAt ? ` Next check after ${formatDateTime(usage.retryAt, { includeYear: false })}.` : "";
+  const stale = usage.lastGood ? ` Last good reading (stale) from ${formatDateTime(usage.lastGood.checkedAt, { includeYear: false })}.` : "";
+  return `${text}${retry}${stale}`;
+}
+
+function usageErrorText(usage: AiConnectionUsage) {
   switch (usage.errorCode) {
     case "authentication_required": return "Sign in again to check usage.";
     case "permission_denied": return "Usage access denied.";
-    case "rate_limited": return "Too many checks. Try again later.";
+    case "rate_limited": return "Usage checks are throttled by the provider. This is not a usage limit.";
     case "provider_unavailable": return "Provider unavailable. Try again.";
     case "invalid_response": return "Couldn’t read usage. Try again.";
     case "connection_unavailable": return "Reconnect to check usage.";
