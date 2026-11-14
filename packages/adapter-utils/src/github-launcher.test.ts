@@ -12,6 +12,20 @@ afterEach(async () => { for (const cleanup of cleanups.splice(0).reverse()) awai
 
 describe("managed GitHub launchers", () => {
 
+  it("clears inherited Git configuration with a count every config reader accepts", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "paperclip-github-config-count-"));
+    cleanups.push(() => rm(root, { recursive: true, force: true }));
+    await exec("git", ["init", "-q", root]);
+    const env = githubBrokerEnvironment({
+      GIT_CONFIG_COUNT: "1", GIT_CONFIG_KEY_0: "core.askPass", GIT_CONFIG_VALUE_0: "/host/askpass",
+    }, { url: "", token: "" });
+    expect(env.GIT_CONFIG_COUNT).toBe("0");
+    expect(env.GIT_CONFIG_COUNT).toMatch(/^\d+$/);
+    const config = await exec("git", ["-C", root, "config", "--list"],
+      { env: { ...env, PATH: process.env.PATH! } });
+    expect(config.stdout).not.toContain("/host/askpass");
+  });
+
   it("uses a private interpreter without selecting Node from PATH", async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), "paperclip-github-interpreter-"));
     cleanups.push(() => rm(root, { recursive: true, force: true }));
