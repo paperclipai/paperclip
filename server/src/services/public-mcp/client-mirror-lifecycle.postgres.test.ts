@@ -112,8 +112,8 @@ describe.skipIf(!configured)("MCP mirror actual transaction lifecycle",()=>{
     // Supported managed-connector fixture configuration; no private registry/ready state.
     const sign=generateKeyPairSync("ed25519"),seal=generateKeyPairSync("x25519");
     vi.stubEnv("PAPERCLIP_CLOUD_CONNECTOR_INSTANCE_ID",instanceId);
-    vi.stubEnv("PAPERCLIP_CLOUD_CONNECTOR_SIGN_PRIVATE_KEY",JSON.stringify(sign.privateKey.export({format:"jwk"})));
-    vi.stubEnv("PAPERCLIP_CLOUD_CONNECTOR_SEAL_PRIVATE_KEY",JSON.stringify(seal.privateKey.export({format:"jwk"})));
+    vi.stubEnv("PAPERCLIP_CLOUD_CONNECTOR_SIGN_PRIVATE_KEY",sign.privateKey.export({format:"pem",type:"pkcs8"}).toString());
+    vi.stubEnv("PAPERCLIP_CLOUD_CONNECTOR_SEAL_PRIVATE_KEY",seal.privateKey.export({format:"pem",type:"pkcs8"}).toString());
     vi.stubEnv("PAPERCLIP_CLOUD_CONNECTOR_ENVIRONMENT","test");
     vi.stubEnv("PAPERCLIP_CLOUD_CONNECTOR_BASE_URL","https://cloud.example.test");
     let mirror:ReturnType<typeof startMcpClientMirrorSync>["worker"]|undefined;
