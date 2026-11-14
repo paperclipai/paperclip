@@ -1,8 +1,8 @@
 import { and, asc, eq, lt, sql } from "drizzle-orm";
 import { z } from "zod";
 import type { Db } from "@paperclipai/db";
-import { cloudProductEvents, issues } from "@paperclipai/db";
-import { isUuidLike } from "@paperclipai/shared";
+import { cloudProductEvents, companyOnboardingSeeds, issues } from "@paperclipai/db";
+import { isUuidLike, ONBOARDING_FIRST_TASK_ORIGIN_KIND } from "@paperclipai/shared";
 import { logger } from "../middleware/logger.js";
 import { isCloudManagedInstance, type CloudInstanceEnv } from "./cloud-instance.js";
 
@@ -194,12 +194,20 @@ export function draftCloudProductEvent(source: CloudProductEventSource): CloudPr
 async function issueProperties(db: Db, source: CloudProductEventSource): Promise<Properties> {
   if (source.entityType !== "issue" || !isUuidLike(source.entityId)) return {};
   const issue = await db
-    .select({ originKind: issues.originKind, parentId: issues.parentId })
+    .select({ originKind: issues.originKind, parentId: issues.parentId, seededIssueId: companyOnboardingSeeds.issueId })
     .from(issues)
+    .leftJoin(companyOnboardingSeeds, and(
+      eq(companyOnboardingSeeds.companyId, issues.companyId),
+      eq(companyOnboardingSeeds.issueId, issues.id),
+    ))
     .where(and(eq(issues.companyId, source.companyId), eq(issues.id, source.entityId)))
     .then((rows) => rows[0] ?? null);
   if (!issue) return {};
-  return { ...fixedValues({ origin: issue.originKind }), isSubtask: issue.parentId !== null };
+  return {
+    ...fixedValues({ origin: issue.originKind }),
+    isSubtask: issue.parentId !== null,
+    isOnboarding: issue.originKind === ONBOARDING_FIRST_TASK_ORIGIN_KIND || issue.seededIssueId !== null,
+  };
 }
 
 async function pruneCloudProductEvents(db: Db, now: number) {

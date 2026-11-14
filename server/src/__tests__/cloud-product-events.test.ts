@@ -3,7 +3,7 @@ import express from "express";
 import request from "supertest";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { eq, sql } from "drizzle-orm";
-import { activityLog, cloudProductEvents, companies, createDb, issues } from "@paperclipai/db";
+import { activityLog, cloudProductEvents, companies, companyOnboardingSeeds, createDb, issues } from "@paperclipai/db";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 import { cloudControlMiddleware } from "../middleware/cloud-control.js";
 import { cloudProductEventRoutes } from "../routes/cloud-product-events.js";
@@ -240,9 +240,30 @@ const support = await getEmbeddedPostgresTestSupport();
       responsibleUserId: "user-owner",
       entityType: "issue",
       entityId: issueId,
-      properties: { origin: "routine_execution", isSubtask: true },
+      properties: { origin: "routine_execution", isSubtask: true, isOnboarding: false },
     });
     expect(Object.values(rows[0]!).map((value) => JSON.stringify(value, (_key, item) => typeof item === "bigint" ? item.toString() : item)).join(" ")).not.toContain("Private customer wording");
+  });
+
+  it("marks the onboarding task, whether the wizard or the Cloud seed created it", async () => {
+    const companyId = await createCompany();
+    const seededId = randomUUID();
+    const wizardId = randomUUID();
+    const ownId = randomUUID();
+    await db.insert(issues).values([
+      { id: seededId, companyId, title: "Seeded first task" },
+      { id: wizardId, companyId, title: "Wizard first task", originKind: "onboarding_first_task" },
+      { id: ownId, companyId, title: "Own task" },
+    ]);
+    await db.insert(companyOnboardingSeeds).values({ companyId, revision: "1", issueId: seededId });
+
+    for (const entityId of [seededId, wizardId, ownId]) {
+      await recordCloudProductEvent(db, source({ companyId, action: "issue.created", entityType: "issue", entityId }), null);
+    }
+
+    const rows = await db.select().from(cloudProductEvents).where(eq(cloudProductEvents.companyId, companyId));
+    const onboardingByIssue = Object.fromEntries(rows.map((row) => [row.entityId, row.properties.isOnboarding]));
+    expect(onboardingByIssue).toEqual({ [seededId]: true, [wizardId]: true, [ownId]: false });
   });
 
   it("records nothing on a self-hosted instance and still logs the activity", async () => {

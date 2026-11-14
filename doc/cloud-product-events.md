@@ -26,8 +26,8 @@ the closed list. `draftCloudProductEvent` in the same file is the only mapping.
 | `agent.created` | `agent.created`, `agent.hire_created` | `role`, `source` |
 | `plan.created` | `issue.document_created` with key `plan` | none |
 | `artifact.created` | `issue.document_created` with another key, `issue.work_product_created`, `issue.attachment_added` | `kind`, `type` |
-| `task.created` | `issue.created` | `origin`, `isSubtask` |
-| `task.completed` | `issue.updated` when the status changes to `done` | `origin`, `isSubtask` |
+| `task.created` | `issue.created` | `origin`, `isSubtask`, `isOnboarding` |
+| `task.completed` | `issue.updated` when the status changes to `done` | `origin`, `isSubtask`, `isOnboarding` |
 | `connector.connected` | `tool_connection.created` | `transport`, `status` |
 | `routine.created` | `routine.created` | none |
 | `routine.run_triggered` | `routine.run_triggered` | `source`, `status`, `routineId` |
@@ -35,6 +35,10 @@ the closed list. `draftCloudProductEvent` in the same file is the only mapping.
 | `project.created` | `project.created` | none |
 | `goal.created` | `goal.created` | none |
 | `skill.added` | `company.skill_created`, `company.skill_catalog_installed` | `source` |
+
+`isOnboarding` is true for the first task of the onboarding wizard and for the
+first task that Paperclip Cloud seeds. The seeded task has the origin `manual`,
+so `origin` alone does not identify it.
 
 ## Data rules
 
