@@ -85,6 +85,8 @@ import {
   type WorktreeRunExecutionActivationState,
 } from "./instance-settings.js";
 import { queueIssueAssignmentWakeup, type IssueAssignmentWakeupDeps } from "./issue-assignment-wakeup.js";
+import { withRoutineDispatchLock } from "./routine-dispatch-lock.js";
+import { isUniqueViolation } from "../db-errors.js";
 import { logActivity } from "./activity-log.js";
 import type { PluginWorkerManager } from "./plugin-worker-manager.js";
 import { runtimePublicOrigin } from "./cloud-runtime-identity.js";
@@ -1699,15 +1701,15 @@ export function routineService(
     return { secret, secretValue };
   }
 
-  async function resolveTriggerSecret(trigger: typeof routineTriggers.$inferSelect, companyId: string) {
+  async function resolveTriggerSecret(trigger: typeof routineTriggers.$inferSelect, companyId: string, executor: Db) {
     if (!trigger.secretId) throw notFound("Routine trigger secret not found");
-    const secret = await db
+    const secret = await executor
       .select()
       .from(companySecrets)
       .where(eq(companySecrets.id, trigger.secretId))
       .then((rows) => rows[0] ?? null);
     if (!secret || secret.companyId !== companyId) throw notFound("Routine trigger secret not found");
-    const value = await secretsSvc.resolveSecretValue(companyId, trigger.secretId, "latest", {
+    const value = await secretService(executor).resolveSecretValue(companyId, trigger.secretId, "latest", {
       consumerType: "routine",
       consumerId: trigger.routineId,
       actorType: "system",
@@ -1802,7 +1804,57 @@ export function routineService(
     const idempotentRunId = input.routineIdempotency && input.idempotencyKey
       ? routineScopedRunId(input.routine.id, input.source, input.idempotencyKey) : null;
     let reusedExistingRun = false;
-    const run = await db.transaction(async (tx) => {
+    const runId = idempotentRunId ?? crypto.randomUUID();
+    type Dispatch = { triggeredAt: Date; responsibleUserId: string | null; nextRunAt: Date | null | undefined };
+    const recordRun = async (
+      executor: Db,
+      dispatch: Dispatch,
+      status: string,
+      patch: Partial<typeof routineRuns.$inferInsert>,
+    ) => {
+      if (input.trigger?.kind === "schedule" && input.nextRunAtOverride === undefined) {
+        await notifyDeliveryWork(executor, DELIVERY_QUEUES.routineSchedules);
+      }
+      const triggerId = input.trigger
+        ? await executor.select({ id: routineTriggers.id }).from(routineTriggers)
+          .where(eq(routineTriggers.id, input.trigger.id)).for("key share").then((rows) => rows[0]?.id ?? null)
+        : null;
+      const [createdRun] = await executor
+        .insert(routineRuns)
+        .values({
+          companyId: input.routine.companyId,
+          routineId: input.routine.id,
+          triggerId,
+          source: input.source,
+          status: "received",
+          id: runId,
+          createdByRunId: input.createdByRunId ?? null,
+          triggeredAt: dispatch.triggeredAt,
+          idempotencyKey: input.idempotencyKey ?? null,
+          triggerPayload,
+          dispatchFingerprint,
+          routineRevisionId: input.routine.latestRevisionId,
+          responsibleUserId: dispatch.responsibleUserId,
+        })
+        .returning();
+      const updated = await finalizeRun(createdRun.id, { ...patch, status }, executor);
+      await updateRoutineTouchedState({
+        routineId: input.routine.id,
+        triggerId,
+        triggeredAt: dispatch.triggeredAt,
+        status,
+        issueId: patch.linkedIssueId ?? null,
+        nextRunAt: dispatch.nextRunAt,
+      }, executor);
+      return updated ?? createdRun;
+    };
+    const recordRunJoiningIssue = (executor: Db, dispatch: Dispatch, issue: typeof issues.$inferSelect) =>
+      recordRun(executor, dispatch, input.routine.concurrencyPolicy === "skip_if_active" ? "skipped" : "coalesced", {
+        linkedIssueId: issue.id,
+        coalescedIntoRunId: issue.originRunId,
+        completedAt: dispatch.triggeredAt,
+      });
+    const openDispatch = () => db.transaction(async (tx) => {
       const txDb = tx as unknown as Db;
       await tx.execute(
         sql`select id from ${routines} where ${routines.id} = ${input.routine.id} and ${routines.companyId} = ${input.routine.companyId} for update`,
@@ -1864,15 +1916,11 @@ export function routineService(
             throw conflict("Webhook replay detected");
           }
           reusedExistingRun = true;
-          return existing;
+          return { settledRun: existing };
         }
       }
 
 
-
-      if (input.trigger?.kind === "schedule" && input.nextRunAtOverride === undefined) {
-        await notifyDeliveryWork(tx, DELIVERY_QUEUES.routineSchedules);
-      }
       const triggeredAt = new Date();
       const manualRunnerUserId = input.source === "manual" ? input.actor?.userId ?? null : null;
       const latestRevisionResponsibleUserId = input.routine.latestRevisionId
@@ -1895,121 +1943,51 @@ export function routineService(
         : null;
       const responsibleUserId =
         manualRunnerUserId ?? latestRevisionResponsibleUserId ?? input.routine.responsibleUserId ?? null;
-      const [createdRun] = await txDb
-        .insert(routineRuns)
-        .values({
-          companyId: input.routine.companyId,
-          routineId: input.routine.id,
-          triggerId: input.trigger?.id ?? null,
-          source: input.source,
-          status: "received",
-          id: idempotentRunId ?? undefined,
-          createdByRunId: input.createdByRunId ?? null,
-          triggeredAt,
-          idempotencyKey: input.idempotencyKey ?? null,
-          triggerPayload,
-          dispatchFingerprint,
-          routineRevisionId: input.routine.latestRevisionId,
-          responsibleUserId,
-        })
-        .returning();
-
       const nextRunAt = input.nextRunAtOverride !== undefined
         ? input.nextRunAtOverride
         : input.trigger?.kind === "schedule" && input.trigger.cronExpression && input.trigger.timezone
           ? nextCronTickInTimeZone(input.trigger.cronExpression, input.trigger.timezone, triggeredAt)
           : undefined;
-
+      const dispatch = { triggeredAt, responsibleUserId, nextRunAt };
+      const liveIssueOrigin = { kind: issueOriginKind, id: issueOriginId, allowLegacyDefault: !creationRunFingerprint };
+      const activeIssue = await findLiveExecutionIssue(input.routine, txDb, dispatchFingerprint, liveIssueOrigin);
+      if (activeIssue && input.routine.concurrencyPolicy !== "always_enqueue") {
+        return { settledRun: await recordRunJoiningIssue(txDb, dispatch, activeIssue) };
+      }
+      return { dispatch, manualRunnerUserId, interactionActorAgentId, interactionActorCompanyId, liveIssueOrigin };
+    });
+    const run = await withRoutineDispatchLock(db, input.routine.id, async () => {
+      const opened = await openDispatch();
+      if (opened.settledRun) return opened.settledRun;
+      const { dispatch, manualRunnerUserId, interactionActorAgentId, interactionActorCompanyId, liveIssueOrigin } = opened;
       let createdIssue: Awaited<ReturnType<typeof issueSvc.create>> | null = null;
       try {
-        const activeIssue = await findLiveExecutionIssue(input.routine, txDb, dispatchFingerprint, {
-          kind: issueOriginKind,
-          id: issueOriginId,
-          allowLegacyDefault: !creationRunFingerprint,
+        createdIssue = await issueSvc.create(input.routine.companyId, {
+          projectId,
+          projectWorkspaceId,
+          goalId: input.routine.goalId,
+          parentId: input.routine.parentIssueId,
+          // A routine's parent is configured, not chosen per run. Human-configured
+          // routines keep any depth; agent-authored ones follow the agent limit.
+          parentDepthPolicy: input.routine.createdByAgentId ? "flatten" : "allow_nested",
+          title,
+          description,
+          status: "todo",
+          priority: input.routine.priority,
+          assigneeAgentId,
+          createdByAgentId: input.source === "manual" ? input.actor?.agentId ?? null : null,
+          createdByUserId: manualRunnerUserId,
+          responsibleUserId: dispatch.responsibleUserId,
+          trustExplicitResponsibleUserId: true,
+          originKind: issueOriginKind,
+          originId: issueOriginId,
+          originRunId: runId,
+          originFingerprint: dispatchFingerprint,
+          billingCode: issueBillingCode,
+          executionWorkspaceId: input.executionWorkspaceId ?? null,
+          executionWorkspacePreference: input.executionWorkspacePreference ?? null,
+          executionWorkspaceSettings: input.executionWorkspaceSettings ?? null,
         });
-        if (activeIssue && input.routine.concurrencyPolicy !== "always_enqueue") {
-          const status = input.routine.concurrencyPolicy === "skip_if_active" ? "skipped" : "coalesced";
-          const updated = await finalizeRun(createdRun.id, {
-            status,
-            linkedIssueId: activeIssue.id,
-            coalescedIntoRunId: activeIssue.originRunId,
-            completedAt: triggeredAt,
-          }, txDb);
-          await updateRoutineTouchedState({
-            routineId: input.routine.id,
-            triggerId: input.trigger?.id ?? null,
-            triggeredAt,
-            status,
-            issueId: activeIssue.id,
-            nextRunAt,
-          }, txDb);
-          return updated ?? createdRun;
-        }
-
-        try {
-          createdIssue = await issueSvc.create(input.routine.companyId, {
-            projectId,
-            projectWorkspaceId,
-            goalId: input.routine.goalId,
-            parentId: input.routine.parentIssueId,
-            // A routine's parent is configured, not chosen per run. Human-configured
-            // routines keep any depth; agent-authored ones follow the agent limit.
-            parentDepthPolicy: input.routine.createdByAgentId ? "flatten" : "allow_nested",
-            title,
-            description,
-            status: "todo",
-            priority: input.routine.priority,
-            assigneeAgentId,
-            createdByAgentId: input.source === "manual" ? input.actor?.agentId ?? null : null,
-            createdByUserId: manualRunnerUserId,
-            responsibleUserId,
-            trustExplicitResponsibleUserId: true,
-            originKind: issueOriginKind,
-            originId: issueOriginId,
-            originRunId: createdRun.id,
-            originFingerprint: dispatchFingerprint,
-            billingCode: issueBillingCode,
-            executionWorkspaceId: input.executionWorkspaceId ?? null,
-            executionWorkspacePreference: input.executionWorkspacePreference ?? null,
-            executionWorkspaceSettings: input.executionWorkspaceSettings ?? null,
-          });
-        } catch (error) {
-          const isOpenExecutionConflict =
-            !!error &&
-            typeof error === "object" &&
-            "code" in error &&
-            (error as { code?: string }).code === "23505" &&
-            "constraint" in error &&
-            (error as { constraint?: string }).constraint === "issues_open_routine_execution_uq";
-          if (!isOpenExecutionConflict || input.routine.concurrencyPolicy === "always_enqueue") {
-            throw error;
-          }
-
-          const existingIssue = await findLiveExecutionIssue(input.routine, txDb, dispatchFingerprint, {
-            kind: issueOriginKind,
-            id: issueOriginId,
-            allowLegacyDefault: !creationRunFingerprint,
-          });
-          if (!existingIssue) throw error;
-          const status = input.routine.concurrencyPolicy === "skip_if_active" ? "skipped" : "coalesced";
-          const updated = await finalizeRun(createdRun.id, {
-            status,
-            linkedIssueId: existingIssue.id,
-            coalescedIntoRunId: existingIssue.originRunId,
-            completedAt: triggeredAt,
-          }, txDb);
-          await updateRoutineTouchedState({
-            routineId: input.routine.id,
-            triggerId: input.trigger?.id ?? null,
-            triggeredAt,
-            status,
-            issueId: existingIssue.id,
-            nextRunAt,
-          }, txDb);
-          return updated ?? createdRun;
-        }
-
-        // Keep the dispatch lock until the issue is linked to a queued heartbeat run.
         await queueIssueAssignmentWakeup({
           heartbeat,
           issue: createdIssue,
@@ -2021,41 +1999,30 @@ export function routineService(
           requestedByActorCompanyId: interactionActorCompanyId,
           rethrowOnError: true,
         });
-        const updated = await finalizeRun(createdRun.id, {
-          status: "issue_created",
-          linkedIssueId: createdIssue.id,
-        }, txDb);
-        await updateRoutineTouchedState({
-          routineId: input.routine.id,
-          triggerId: input.trigger?.id ?? null,
-          triggeredAt,
-          status: "issue_created",
-          issueId: createdIssue.id,
-          nextRunAt,
-        }, txDb);
-        return updated ?? createdRun;
       } catch (error) {
-        if (createdIssue) {
-          await notifyApprovalWork(txDb, createdIssue.companyId);
-          await notifyDecisionTargetIssueRemoval(txDb, createdIssue.id);
-          await notifyStatusCardIssueChange(txDb, createdIssue.companyId);
-          await txDb.delete(issues).where(eq(issues.id, createdIssue.id));
-        }
-        const failureReason = error instanceof Error ? error.message : String(error);
-        const failed = await finalizeRun(createdRun.id, {
-          status: "failed",
-          failureReason,
-          completedAt: new Date(),
-        }, txDb);
-        await updateRoutineTouchedState({
-          routineId: input.routine.id,
-          triggerId: input.trigger?.id ?? null,
-          triggeredAt,
-          status: "failed",
-          nextRunAt,
-        }, txDb);
-        return failed ?? createdRun;
+        const removedIssue = createdIssue;
+        const liveIssue = isUniqueViolation(error, "issues_open_routine_execution_uq")
+          && input.routine.concurrencyPolicy !== "always_enqueue"
+          ? await findLiveExecutionIssue(input.routine, db, dispatchFingerprint, liveIssueOrigin)
+          : null;
+        const existingIssue = liveIssue && liveIssue.id !== removedIssue?.id ? liveIssue : null;
+        return db.transaction(async (tx) => {
+          const txDb = tx as unknown as Db;
+          if (removedIssue) {
+            await notifyApprovalWork(txDb, removedIssue.companyId);
+            await notifyDecisionTargetIssueRemoval(txDb, removedIssue.id);
+            await notifyStatusCardIssueChange(txDb, removedIssue.companyId);
+            await txDb.delete(issues).where(eq(issues.id, removedIssue.id));
+          }
+          if (existingIssue) return recordRunJoiningIssue(txDb, dispatch, existingIssue);
+          return recordRun(txDb, dispatch, "failed", {
+            failureReason: error instanceof Error ? error.message : String(error),
+            completedAt: new Date(),
+          });
+        });
       }
+      const linkedIssueId = createdIssue.id;
+      return db.transaction((tx) => recordRun(tx as unknown as Db, dispatch, "issue_created", { linkedIssueId }));
     });
 
     if (!reusedExistingRun && (input.source === "schedule" || input.source === "webhook")) {
@@ -3033,20 +3000,20 @@ export function routineService(
             // No authentication — the publicId in the URL acts as a shared secret.
           } else if (trigger.signingMode === "app_webhook") {
             appDelivery = verifyAppWebhook({
-              secret: await resolveTriggerSecret(trigger, routine.companyId),
+              secret: await resolveTriggerSecret(trigger, routine.companyId, txDb),
               publicId, authorization: input.authorizationHeader,
               signature: input.firefliesSignatureHeader ?? input.hubSignatureHeader,
               rawBody: input.rawBody, idempotencyKey: input.idempotencyKey,
             });
           } else if (trigger.signingMode === "fireflies_hmac") {
             appDelivery = { ...verifyFirefliesWebhook({
-              secret: await resolveTriggerSecret(trigger, routine.companyId),
+              secret: await resolveTriggerSecret(trigger, routine.companyId, txDb),
               signature: input.firefliesSignatureHeader,
               rawBody: input.rawBody,
               publicId,
             }), meetingMetadata: true };
           } else if (trigger.signingMode === "github_hmac") {
-            const secretValue = await resolveTriggerSecret(trigger, routine.companyId);
+            const secretValue = await resolveTriggerSecret(trigger, routine.companyId, txDb);
             const rawBody = input.rawBody ?? Buffer.from(JSON.stringify(input.payload ?? {}));
             // Accept X-Hub-Signature-256 (GitHub/Sentry) or fall back to the
             // generic X-Paperclip-Signature header so operators can use github_hmac
@@ -3065,7 +3032,7 @@ export function routineService(
               crypto.timingSafeEqual(normalizedBuf, expectedBuf);
             if (!valid) throw unauthorized();
           } else if (trigger.signingMode === "bearer") {
-            const secretValue = await resolveTriggerSecret(trigger, routine.companyId);
+            const secretValue = await resolveTriggerSecret(trigger, routine.companyId, txDb);
             const expected = `Bearer ${secretValue}`;
             const provided = input.authorizationHeader?.trim() ?? "";
             const expectedBuf = Buffer.from(expected);
@@ -3078,7 +3045,7 @@ export function routineService(
               throw unauthorized();
             }
           } else {
-            const secretValue = await resolveTriggerSecret(trigger, routine.companyId);
+            const secretValue = await resolveTriggerSecret(trigger, routine.companyId, txDb);
             const rawBody = input.rawBody ?? Buffer.from(JSON.stringify(input.payload ?? {}));
             const providedSignature = input.signatureHeader?.trim() ?? "";
             const providedTimestamp = input.timestampHeader?.trim() ?? "";
