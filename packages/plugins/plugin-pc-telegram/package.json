@@ -1,5 +1,5 @@
 {
-  "name": "@paperclipai/plugin-telegram-user-client",
+  "name": "@paperclipai/plugin-pc-telegram",
   "version": "0.1.0",
   "description": "First-party Paperclip plugin for personal Telegram accounts via MTProto QR login",
   "license": "MIT",
@@ -10,7 +10,7 @@
   "repository": {
     "type": "git",
     "url": "https://github.com/paperclipai/paperclip",
-    "directory": "packages/plugins/plugin-telegram-user-client"
+    "directory": "packages/plugins/plugin-pc-telegram"
   },
   "type": "module",
   "exports": {

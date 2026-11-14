@@ -1,8 +1,8 @@
-# @paperclipai/plugin-telegram-user-client
+# @paperclipai/plugin-pc-telegram
 
 First-party Paperclip plugin for personal Telegram accounts.
 
-This is not the Bot API `telegram` chat channel. It uses MTProto user-client sessions in a plugin worker.
+This is not the Bot API `telegram` chat channel. It uses MTProto sessions in a plugin worker.
 
 ## What it does
 

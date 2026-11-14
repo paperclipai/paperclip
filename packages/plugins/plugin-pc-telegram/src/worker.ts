@@ -187,7 +187,7 @@ export function createTelegramUserClientPlugin(deps: TelegramPluginDeps = {}) {
     async setup(ctx) {
       pluginContext = ctx;
       const log = wrapLogger(ctx);
-      log.info("Telegram user-client plugin setup");
+      log.info("Telegram plugin setup");
       await reconnectAll(ctx);
 
       ctx.data.register(DATA_OVERVIEW, async (params) => {
@@ -417,7 +417,7 @@ export function createTelegramUserClientPlugin(deps: TelegramPluginDeps = {}) {
     async onHealth(): Promise<PluginHealthDiagnostics> {
       return {
         status: "ok",
-        message: "Telegram user-client plugin ready",
+        message: "Telegram plugin ready",
         details: {
           liveAccounts: liveByAccount.size,
           pendingLogins: pendingLogins.size,
