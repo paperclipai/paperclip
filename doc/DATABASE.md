@@ -507,6 +507,16 @@ indexes also serve the comment and delivery `on delete set null` actions. Issue
 lists share one external review-wait read per issue between the review and
 blocked-inbox attention maps.
 
+Migration 0487 builds two partial `heartbeat_runs` indexes concurrently for the
+settled-process recovery queue. `heartbeat_runs_settled_process_identity_idx`
+keys settled native runs that still hold a process identity by
+`process_host_hash`, company and id. Each server reads only the runs recorded in
+its own PID space, sandbox runs (`remote`) and rows saved before the hash, so
+finished runs from replaced containers are not read at all.
+`heartbeat_runs_pending_api_stop_idx` keys cancelled `cursor_cloud_api` runs
+whose Stop is still `requested`. Without them, the queue reads every finished
+run of a company on each hint.
+
 Migration 0476 builds `agent_wakeup_requests_company_run_idx` concurrently. It
 keys wake requests by company and `run_id`, partial on a non-null run. Queued-run
 dispatch finds the person wakes that joined or were adopted by each queued run

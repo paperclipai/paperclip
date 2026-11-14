@@ -276,6 +276,23 @@ turn, so memory per session counts for idle agents too.
 | 1g | Size the shared limiters (log uploads, checkpoint pool, recovery pass) from the active run count | no fixed slot count below the run count |
 | 1h | Keep one frozen, parsed tool catalog per catalog hash and company, shared by the sessions that use it, in place of two private copies per session (`assigned-mcp-tools.ts:146`) | server memory per live or warm session from about 5–11 MB (measured at 400–800 tools) to near zero; at 1,000 agents that is 5–11 GB |
 
+### Background recovery sweeps
+
+Run events used to send a company recovery hint, so the stranded-assignment
+and assigned-work queues re-checked every open task of the company on each
+run event (#21552). Local fixture: 1,500 open tasks, 60 agents, process agents
+that fail at once, 180-second window that includes one 5-minute backstop pass.
+
+| Build | Runs created (/s) | Stranded checks per window | Assigned-work checks per window | `agent_task_sessions` reads (/s) | Statements (/s) |
+| --- | --- | --- | --- | --- | --- |
+| Before #21552 (54c3616ad9) | 1.09 | 4,327 | 245 | 26.5 | 1,431 |
+| #21552 at dcd170e29f | 1.00 | 702 | 276 | 7.2 | 1,060 |
+| master at 340157d1d6 | 0.24 | 330 | 72 | 2.5 | 409 |
+
+The master row has much less run churn than the earlier rows, so compare the
+per-window totals with care. In that window the one backstop pass loaded 260
+tasks into the stranded queue; run events loaded 147.
+
 ### Phase 2: several controller processes (target: 1,000)
 
 | # | Change |

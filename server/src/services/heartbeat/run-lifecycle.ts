@@ -1557,11 +1557,15 @@ export function createHeartbeatLifecycle(db: Db, dependencies: HeartbeatLifecycl
   ) {
     if (!wakeupRequestId) return;
     await db.transaction(async tx => {
-      const [current] = await tx.select({ companyId: agentWakeupRequests.companyId, agentId: agentWakeupRequests.agentId, status: agentWakeupRequests.status })
+      const [current] = await tx.select({ companyId: agentWakeupRequests.companyId, agentId: agentWakeupRequests.agentId, status: agentWakeupRequests.status,
+        runId: agentWakeupRequests.runId, issueId: sql<string | null>`${agentWakeupRequests.payload}->>'issueId'` })
         .from(agentWakeupRequests).where(eq(agentWakeupRequests.id, wakeupRequestId)).for("update");
       if (!current || current.status === "cancelled") return;
       if (current.status !== (patch?.status ?? status) || patch?.payload !== undefined || patch?.runId !== undefined) {
-        await notifyExternalConversationSettlement(tx, { companyId: current.companyId });
+        const runId = patch?.runId ?? current.runId;
+        const issueId = current.issueId && /^[0-9a-f-]{36}$/i.test(current.issueId) ? current.issueId : undefined;
+        await notifyExternalConversationSettlement(tx, issueId || runId
+          ? { companyId: current.companyId, issueId, runId: runId ?? undefined } : { companyId: current.companyId });
       }
       await notifyStrandedAgentStatus(tx, { companyId: current.companyId, agentId: current.agentId });
       await tx.update(agentWakeupRequests)
@@ -2605,7 +2609,7 @@ export function createHeartbeatLifecycle(db: Db, dependencies: HeartbeatLifecycl
         .returning()
         .then((rows) => rows[0]);
 
-      await notifyRunDispatch(tx, { companyId: run.companyId });
+      await notifyRunDispatch(tx, { companyId: run.companyId, issueId });
       const queuedRun = await tx
         .insert(heartbeatRuns)
         .values({

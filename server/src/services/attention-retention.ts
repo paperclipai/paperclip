@@ -1,8 +1,8 @@
-import { and, eq, getTableColumns, inArray, isNull, sql, type SQL } from "drizzle-orm";
+import { and, eq, inArray, isNull, sql, type SQL } from "drizzle-orm";
 import { agents, decisionRetention, decisions, heartbeatRuns,
   issueApprovals, issueRecoveryActions, issueThreadInteractions, issues, approvals, type Db } from "@paperclipai/db";
 import { evaluateAgentInvokability } from "./agent-invokability.js";
-import { HUMAN_RECOVERY_OWNER_TYPES, ATTENTION_BUDGET_WARNING_PERCENT, ATTENTION_AGENT_ERROR_STATUS, collapsePendingConfirmationsToNewest, listFailedRunsWithNewerRun, loadNewestSettledConfirmationAt, readRunIssueId, requiresReviewAttention, terminalBlockerRequiresAttention } from "./attention-source-eligibility.js";
+import { HUMAN_RECOVERY_OWNER_TYPES, ATTENTION_BUDGET_WARNING_PERCENT, ATTENTION_AGENT_ERROR_STATUS, collapsePendingConfirmationsToNewest, listFailedRunsWithNewerRun, loadNewestSettledConfirmationAt, requiresReviewAttention, terminalBlockerRequiresAttention } from "./attention-source-eligibility.js";
 import { decisionRetentionService, DEFAULT_DECISION_ARCHIVE_DAYS } from "./decision-retention.js";
 import type { createDeliveryWorkCoordinator } from "./delivery-work-coordinator.js";
 import { DELIVERY_QUEUES } from "./delivery-work-notifications.js";
@@ -23,12 +23,22 @@ type Candidate = { sourceKind: Kind; sourceId: string; companyId: string; activi
 type Entry = Candidate & { id: string; dueAt: number; rootId: string; variant?: "owner" | "terminal" };
 type Cursor = { sourceKind: string; sourceId: string };
 
-type PageIssue = typeof issues.$inferSelect & { activityAt: string; deadlineAt: number;
+const pageIssueColumns = { id: issues.id, companyId: issues.companyId, parentId: issues.parentId, identifier: issues.identifier,
+  title: issues.title, status: issues.status, assigneeAgentId: issues.assigneeAgentId, assigneeUserId: issues.assigneeUserId,
+  executionRunId: issues.executionRunId, unblockDescriptor: issues.unblockDescriptor, blockedTransitionAt: issues.blockedTransitionAt };
+const contextSnapshot = heartbeatRuns.contextSnapshot;
+const runProbeColumns = { id: heartbeatRuns.id, agentId: heartbeatRuns.agentId, createdAt: heartbeatRuns.createdAt,
+  issueId: sql<string | null>`case when jsonb_typeof(${contextSnapshot}->'issueId') is not null and jsonb_typeof(${contextSnapshot}->'issueId') <> 'null'
+    then case when jsonb_typeof(${contextSnapshot}->'issueId') = 'string' then nullif(${contextSnapshot}->>'issueId', '') end
+    else case when jsonb_typeof(${contextSnapshot}->'taskId') = 'string' then nullif(${contextSnapshot}->>'taskId', '') end end` };
+type VisibleIssue = { [K in keyof typeof pageIssueColumns]: (typeof issues.$inferSelect)[K] };
+type PageIssue = VisibleIssue & { activityAt: string; deadlineAt: number;
   blockedActivityAt: string | null; blockedDeadlineAt: number | null };
+type RunProbe = { id: string; agentId: string; createdAt: Date; issueId: string | null };
 type PageEvidence = {
   decisions: Map<string, { originIssueId: string }>;
-  recoveries: Map<string, typeof issueRecoveryActions.$inferSelect>;
-  runs: Map<string, typeof heartbeatRuns.$inferSelect>;
+  recoveries: Map<string, { id: string; sourceIssueId: string }>;
+  runs: Map<string, RunProbe>;
   agents: Set<string>;
   visibleIssues: Map<string, PageIssue>;
   newerRuns: Set<string>;
@@ -127,7 +137,7 @@ export function attentionRetentionService(db: Db) {
   const candidates = listAttentionRetentionCandidates;
 
   async function visibleIssue(database: Db, companyId: string, issueId: string, conversations = false) {
-    const [row] = await database.select().from(issues).where(and(eq(issues.companyId, companyId), eq(issues.id, issueId),
+    const [row] = await database.select(pageIssueColumns).from(issues).where(and(eq(issues.companyId, companyId), eq(issues.id, issueId),
       attentionIssueCondition(conversations)));
     return row;
   }
@@ -149,7 +159,8 @@ export function attentionRetentionService(db: Db) {
       const visible = await database.select({ id: issues.id }).from(issues).where(and(eq(issues.companyId, companyId),
         inArray(issues.id, rows.map(row => row.issueId)), attentionIssueCondition(true)));
       const visibleIds = new Set(visible.map(row => row.id));
-      const roster = await database.select().from(agents).where(eq(agents.companyId, companyId));
+      const roster = await database.select({ id: agents.id, companyId: agents.companyId, name: agents.name,
+        reportsTo: agents.reportsTo, status: agents.status }).from(agents).where(eq(agents.companyId, companyId));
       const boardAddressed = (row: typeof issueThreadInteractions.$inferSelect) => !row.addresseeAgentId
         || !evaluateAgentInvokability(roster.find(agent => agent.id === row.addresseeAgentId), roster).invokable;
       const confirmationIssueIds = rows.filter(row => row.kind === "request_confirmation").map(row => row.issueId);
@@ -175,7 +186,8 @@ export function attentionRetentionService(db: Db) {
       byCompany.set(candidate.companyId, ids);
     }
     for (const [companyId, ids] of byCompany) {
-      const rows = await database.select().from(issues).where(and(eq(issues.companyId, companyId),
+      const rows = await database.select({ id: issues.id, companyId: issues.companyId, status: issues.status,
+        executionState: issues.executionState, assigneeUserId: issues.assigneeUserId }).from(issues).where(and(eq(issues.companyId, companyId),
         inArray(issues.id, ids), attentionIssueCondition(false)));
       const pendingApprovals = await database.select({ issueId: issueApprovals.issueId }).from(issueApprovals)
         .innerJoin(approvals, eq(approvals.id, issueApprovals.approvalId)).where(and(
@@ -209,14 +221,15 @@ export function attentionRetentionService(db: Db) {
       const decisionIds = ids("decision"), recoveryIds = ids("recovery_action"), runIds = ids("failed_run"), blockerIds = ids("blocker_attention");
       const decisionRows = decisionIds.length ? await database.select({ id: decisions.id, originIssueId: decisions.originIssueId })
         .from(decisions).where(and(eq(decisions.companyId, companyId), inArray(decisions.id, decisionIds), eq(decisions.status, "open"))) : [];
-      const recoveryRows = recoveryIds.length ? await database.select().from(issueRecoveryActions).where(and(
+      const recoveryRows = recoveryIds.length ? await database.select({ id: issueRecoveryActions.id,
+        sourceIssueId: issueRecoveryActions.sourceIssueId }).from(issueRecoveryActions).where(and(
         eq(issueRecoveryActions.companyId, companyId), inArray(issueRecoveryActions.id, recoveryIds))) : [];
-      const runRows = runIds.length ? await database.select().from(heartbeatRuns).where(and(
+      const runRows: RunProbe[] = runIds.length ? await database.select(runProbeColumns).from(heartbeatRuns).where(and(
         eq(heartbeatRuns.companyId, companyId), inArray(heartbeatRuns.id, runIds))) : [];
       const runAgents = runRows.length ? await database.select({ id: agents.id }).from(agents).where(and(
         eq(agents.companyId, companyId), inArray(agents.id, [...new Set(runRows.map(row => row.agentId))]),
         sql`${agents.status} <> 'terminated'`)) : [];
-      const readIssues = async (issueIds: string[]) => issueIds.length ? database.select({ ...getTableColumns(issues),
+      const readIssues = async (issueIds: string[]) => issueIds.length ? database.select({ ...pageIssueColumns,
         activityAt: sql<string>`${issues.updatedAt}::text`,
         deadlineAt: sql<number>`ceil(extract(epoch from ${issues.updatedAt}) * 1000 + ${archiveDelay})`.mapWith(Number),
         blockedActivityAt: sql<string | null>`${issues.blockedTransitionAt}::text`,
@@ -224,7 +237,7 @@ export function attentionRetentionService(db: Db) {
       }).from(issues).where(and(eq(issues.companyId, companyId), inArray(issues.id, [...new Set(issueIds)]),
         attentionIssueCondition(false))) : [];
       const issueIds = [...blockerIds, ...decisionRows.map(row => row.originIssueId), ...recoveryRows.map(row => row.sourceIssueId),
-        ...runRows.map(row => readRunIssueId(row.contextSnapshot))].filter((id): id is string => Boolean(id));
+        ...runRows.map(row => row.issueId)].filter((id): id is string => Boolean(id));
       const visibleRows = await readIssues(issueIds);
       const visible = new Map(visibleRows.map(row => [row.id, row]));
       const blockerRoots = visibleRows.filter(row => blockerIds.includes(row.id));
@@ -238,7 +251,7 @@ export function attentionRetentionService(db: Db) {
         decisions: new Map(decisionRows.map(row => [row.id, row])), recoveries: new Map(recoveryRows.map(row => [row.id, row])),
         runs: new Map(runRows.map(row => [row.id, row])), agents: new Set(runAgents.map(row => row.id)), visibleIssues: visible,
         newerRuns: await listFailedRunsWithNewerRun(database, companyId,
-          runRows.map(run => ({ ...run, issueId: readRunIssueId(run.contextSnapshot) }))), blockers, deferredRoots: blockerBatch.deferredRootIds,
+          runRows), blockers, deferredRoots: blockerBatch.deferredRootIds,
       });
     }
     return result;
@@ -261,7 +274,8 @@ export function attentionRetentionService(db: Db) {
       const attention = interactionAttention ?? await interactionEligibility(database, [candidate]);
       if (!attention.get(sourceId)) return null;
     } else if (candidate.sourceKind === "recovery_action") {
-      const row = evidence ? evidence.recoveries.get(sourceId) : (await database.select().from(issueRecoveryActions).where(and(eq(issueRecoveryActions.companyId, candidate.companyId), eq(issueRecoveryActions.id, sourceId))))[0];
+      const row = evidence ? evidence.recoveries.get(sourceId) : (await database.select({ id: issueRecoveryActions.id,
+        sourceIssueId: issueRecoveryActions.sourceIssueId }).from(issueRecoveryActions).where(and(eq(issueRecoveryActions.companyId, candidate.companyId), eq(issueRecoveryActions.id, sourceId))))[0];
       if (!row || !(evidence ? evidence.visibleIssues.has(row.sourceIssueId)
         : await visibleIssue(database, candidate.companyId, row.sourceIssueId))) return null;
     } else if (candidate.sourceKind === "review") {
@@ -297,14 +311,14 @@ export function attentionRetentionService(db: Db) {
         eq(decisionRetention.sourceKind, candidate.sourceKind), eq(decisionRetention.sourceId, sourceId)));
       if (retention?.keep || retention?.archivedAt) return null;
     } else if (candidate.sourceKind === "failed_run") {
-      const run = evidence ? evidence.runs.get(sourceId) : (await database.select().from(heartbeatRuns).where(and(eq(heartbeatRuns.companyId, candidate.companyId), eq(heartbeatRuns.id, sourceId))))[0];
+      const run: RunProbe | undefined = evidence ? evidence.runs.get(sourceId) : (await database.select(runProbeColumns).from(heartbeatRuns).where(and(eq(heartbeatRuns.companyId, candidate.companyId), eq(heartbeatRuns.id, sourceId))))[0];
       if (!run) return null;
       const agent = evidence ? evidence.agents.has(run.agentId) : (await database.select({ id: agents.id }).from(agents).where(and(eq(agents.companyId, candidate.companyId),
         eq(agents.id, run.agentId), sql`${agents.status} <> 'terminated'`)))[0];
-      const issueId = readRunIssueId(run.contextSnapshot);
+      const issueId = run.issueId;
       if (!agent || issueId && !(evidence ? evidence.visibleIssues.has(issueId)
         : await visibleIssue(database, candidate.companyId, issueId))) return null;
-      if ((evidence ? evidence.newerRuns : await listFailedRunsWithNewerRun(database, candidate.companyId, [{ ...run, issueId }])).has(run.id)) return null;
+      if ((evidence ? evidence.newerRuns : await listFailedRunsWithNewerRun(database, candidate.companyId, [run])).has(run.id)) return null;
     }
     return { ...candidate, sourceId, activityAt, rootId: candidate.sourceId, variant,
       id: `${candidate.sourceKind}:${candidate.sourceId}:${variant ?? "source"}`, dueAt };
