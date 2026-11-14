@@ -3,6 +3,8 @@ import { createHash } from "node:crypto";
 // Claude includes this namespace in its 128-character tool-name limit.
 // Gateway punctuation is normalized one-for-one by the MCP client.
 export const ASSIGNED_MCP_SERVER_NAME = "paperclip-assigned";
+export const PROJECT_TOOLS_MCP_SERVER_NAME = "paperclip_projects";
+export const RUNTIME_TOOLS_MCP_SERVER_NAME = "paperclip_connections";
 export const MAX_GATEWAY_TOOL_NAME_LENGTH = 128 - `mcp__${ASSIGNED_MCP_SERVER_NAME}__`.length;
 
 /** Preserve existing short names; aliases still resolve through gateway metadata. */

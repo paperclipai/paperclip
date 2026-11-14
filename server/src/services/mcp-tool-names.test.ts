@@ -1,5 +1,19 @@
 import { describe, expect, it } from "vitest";
-import { ASSIGNED_MCP_SERVER_NAME, boundedMcpToolName } from "./mcp-tool-names.js";
+import {
+  ASSIGNED_MCP_SERVER_NAME,
+  PROJECT_TOOLS_MCP_SERVER_NAME,
+  RUNTIME_TOOLS_MCP_SERVER_NAME,
+  boundedMcpToolName,
+} from "./mcp-tool-names.js";
+
+describe("runtime MCP server names", () => {
+  it.each([PROJECT_TOOLS_MCP_SERVER_NAME, RUNTIME_TOOLS_MCP_SERVER_NAME])(
+    "%s is a legal function-name prefix for ACP agents",
+    (name) => {
+      expect(name).toMatch(/^[A-Za-z_][A-Za-z0-9_.:-]*$/);
+    },
+  );
+});
 
 describe("provider MCP name budget", () => {
   it("keeps short names compatible", () => {
