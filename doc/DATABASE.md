@@ -1723,6 +1723,17 @@ pinned history and an empty queue do not cause recurring scans. Deletion fences
 new adoption, rechecks references, and removes every recorded upload candidate
 and winning object within the company/workspace prefix.
 
+When retention finds a pinned version, it records the first reference that holds
+it in `metadata.retentionPin`: the current pointer, an importing parent, an
+operation, an unfinished child, a run, or a recovery action. The candidate query
+leaves that version out while the recorded reference still holds, so execution
+notifications do not re-examine unchanged history. When the recorded reference
+releases, the next pass checks every reference again. It records the next
+reference that holds, or schedules or retires the version. The record is durable,
+so a restarted server keeps the exclusion. A version without a record, such as
+one saved before this change, is examined once. Wakes coalesce for up to one
+second.
+
 Database backups contain snapshot receipts, not S3 payloads or encryption keys.
 Disaster recovery requires the database, object store, and original master key.
 Unsaved live sandbox edits remain outside that saved-version guarantee. See
