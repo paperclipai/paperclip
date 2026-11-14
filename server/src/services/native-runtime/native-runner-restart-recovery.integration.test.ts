@@ -1644,6 +1644,150 @@ process.on("SIGTERM", () => child.kill("SIGTERM"));
       .toBe(unanswered ? true : undefined);
   });
 
+  describe("a same-run reattachment claimed to replace a Runner that left its recovery read unanswered", () => {
+    async function replacementClaim(label: string) {
+      const fixture = await seedRun(`remote-unanswered-progress-${label}`);
+      await fixture.db.update(heartbeatRuns).set({ processPid: null, runnerProfileJson: {
+        nativeWorkspaceSync: remotePreparedWorkspace(),
+        sessionCheckpoint: { identity: { companyId, agentId, issueId: fixture.issueId, runId: fixture.runId,
+          sessionId: fixture.native.normalizedSessionId }, providerSessionId: "provider-session" },
+      } }).where(eq(heartbeatRuns.id, fixture.runId));
+      await fixture.db.update(nativeRunFinalizations).set({ attempt: 1, failureDetail: {
+        message: "native_session_recovery_failed: Error: runner_ingress_unavailable: PRP command runner.drain timed out (runner connected; pending ahead 0; last runner event seq 338 16s ago)",
+        recoveryMode: "exact_checkpoint_resume", checkpointExists: true, adoptedRunnerUnanswered: true,
+      } }).where(eq(nativeRunFinalizations.runId, fixture.runId));
+      const [claim] = await claimNativeRestartRecoveries({ db: fixture.db, controller: successor,
+        restartKind: "graceful", runIds: [fixture.runId] });
+      if (claim?.kind !== "reattach_remote_runner" || claim.replaceUnansweredRunner !== true) {
+        throw new Error(`expected a replacement claim, got ${JSON.stringify(claim)}`);
+      }
+      const identity = { runId: fixture.runId, normalizedSessionId: fixture.native.normalizedSessionId,
+        runnerInstanceId: "unanswered-runner", environmentLeaseId: "lease", turnId: "turn", itemId: "item" };
+      return { claim, identity };
+    }
+    function sandbox(providerLeaseId: string, identity: Record<string, unknown>, runnerState: (read: number) => Record<string, unknown> | null,
+      alive: (check: number) => boolean) {
+      let reads = 0, checks = 0;
+      const execute = vi.fn(async (request: { args: string[] }) => {
+        const script = request.args[1] ?? "";
+        if (request.args[2] === "paperclip-runner-recovery-check") {
+          return { stdout: "", stderr: "", exitCode: alive(checks++) ? 0 : 45, timedOut: false };
+        }
+        if (script.includes("base64")) {
+          const state = runnerState(reads++);
+          if (state === null) return { stdout: "", stderr: "state read failed", exitCode: 1, timedOut: false };
+          return { stdout: Buffer.from(JSON.stringify({ ...identity, outbox: [], pendingTerminalDelivery: null, pendingProviderCleanup: null,
+            ...state })).toString("base64"), stderr: "", exitCode: 0, timedOut: false };
+        }
+        if (script.includes("cat --")) {
+          return { stdout: `nonce\n4242\n2026-11-13T09:00:00.000Z\n${String(identity.runnerInstanceId)}\nlinux:abcd-1234:100\n`,
+            stderr: "", exitCode: 0, timedOut: false };
+        }
+        return { stdout: "", stderr: "", exitCode: 0, timedOut: false };
+      });
+      const target = { kind: "remote" as const, transport: "sandbox" as const, remoteCwd: "/workspace", providerKey: "daytona",
+        leaseId: "lease", sandboxLeaseAcquisition: { outcome: "resumed" as const, providerLeaseId }, runner: { execute } };
+      const signalled = () => execute.mock.calls.some(([request]) => /kill -/.test(request.args.join(" ")));
+      return { target, signalled };
+    }
+    async function reattach(label: string, runnerState: (read: number) => Record<string, unknown> | null,
+      alive: (check: number) => boolean = () => true, controllerAckedSourceSeq: number | null = 338, providerAttempt?: number) {
+      const { claim, identity } = await replacementClaim(label);
+      if (claim.remote.kind === "plugin_task") throw new Error("expected a sandbox claim");
+      const { target, signalled } = sandbox(claim.remote.providerLeaseId, identity, runnerState, alive);
+      const onReplace = vi.fn();
+      const outcome = await verifyRemoteRunnerOrSettledExit({ claim, target: target as never, identity, runId: identity.runId,
+        normalizedSessionId: identity.normalizedSessionId, providerAttempt: providerAttempt ?? claim.providerAttempt,
+        unansweredRunnerProgress: { controllerAckedSourceSeq, onReplace, windowMs: 200, pollMs: 20 } }).catch(error => error as Error);
+      return { outcome, onReplace, signalled };
+    }
+
+    it("adopts a live Runner that emitted events past the controller's last acknowledgement", async () => {
+      const { outcome, onReplace, signalled } = await reattach("emitted",
+        () => ({ lifecycle: "turn_active", nextSourceSeq: 2345, ackedSourceSeq: 338, lastControllerCommandSeq: 40 }));
+      expect(outcome).toMatchObject({ pid: 4242 });
+      expect(onReplace).not.toHaveBeenCalled();
+      expect(signalled()).toBe(false);
+    });
+
+    it("adopts a live Runner whose saved state advances within the bounded wait", async () => {
+      const { outcome, onReplace, signalled } = await reattach("advancing",
+        read => ({ lifecycle: "turn_active", nextSourceSeq: 339 + read, ackedSourceSeq: 338, lastControllerCommandSeq: 40 }),
+        () => true, null);
+      expect(outcome).toMatchObject({ pid: 4242 });
+      expect(onReplace).not.toHaveBeenCalled();
+      expect(signalled()).toBe(false);
+    });
+
+    it("hands a live Runner that made no progress to the relaunch, whose launch fence stops it, without signalling it here", async () => {
+      const { outcome, onReplace, signalled } = await reattach("wedged",
+        () => ({ lifecycle: "turn_active", nextSourceSeq: 339, ackedSourceSeq: 338, lastControllerCommandSeq: 40 }));
+      expect(outcome).toBeUndefined();
+      expect(onReplace).toHaveBeenCalledOnce();
+      expect(signalled()).toBe(false);
+    });
+
+    it("restores from the journal of a Runner that suspended and exited during the wait", async () => {
+      const { outcome, onReplace } = await reattach("suspended-exit",
+        read => read === 0 ? { lifecycle: "turn_active", nextSourceSeq: 339, ackedSourceSeq: 338, lastControllerCommandSeq: 40 }
+          : { lifecycle: "suspended", nextSourceSeq: 339, ackedSourceSeq: 339, lastControllerCommandSeq: 40 },
+        check => check === 0);
+      expect(outcome).toBeUndefined();
+      expect(onReplace).not.toHaveBeenCalled();
+    });
+
+    it("adopts a live Runner whose first state read failed and whose later reads advance", async () => {
+      const { outcome, onReplace, signalled } = await reattach("first-read-failed",
+        read => read === 1 ? null : { lifecycle: "turn_active", nextSourceSeq: 339 + read, ackedSourceSeq: 338, lastControllerCommandSeq: 40 },
+        () => true, null);
+      expect(outcome).toMatchObject({ pid: 4242 });
+      expect(onReplace).not.toHaveBeenCalled();
+      expect(signalled()).toBe(false);
+    });
+
+    it("adopts a live Runner whose first readable state is already past the controller's acknowledgement", async () => {
+      const { outcome, onReplace } = await reattach("first-read-failed-emitted",
+        read => read === 0 ? { lifecycle: "turn_active", nextSourceSeq: 339, ackedSourceSeq: 338, lastControllerCommandSeq: 40 }
+          : read === 1 ? null : { lifecycle: "turn_active", nextSourceSeq: 2345, ackedSourceSeq: 338, lastControllerCommandSeq: 40 });
+      expect(outcome).toMatchObject({ pid: 4242 });
+      expect(onReplace).not.toHaveBeenCalled();
+    });
+
+    it("does not replace a live Runner whose state could not be read at all during the wait", async () => {
+      const { outcome, onReplace, signalled } = await reattach("unreadable",
+        read => read === 0 ? { lifecycle: "turn_active", nextSourceSeq: 339, ackedSourceSeq: 338, lastControllerCommandSeq: 40 } : null);
+      expect(outcome).toMatchObject({ pid: 4242 });
+      expect(onReplace).not.toHaveBeenCalled();
+      expect(signalled()).toBe(false);
+    });
+
+    it("fails closed when the Runner's identity changes during the wait", async () => {
+      const { outcome, onReplace } = await reattach("identity-changed",
+        read => read === 0 ? { lifecycle: "turn_active", nextSourceSeq: 339, ackedSourceSeq: 338, lastControllerCommandSeq: 40 }
+          : { lifecycle: "turn_active", nextSourceSeq: 339, ackedSourceSeq: 338, lastControllerCommandSeq: 40, runnerInstanceId: "another-runner" });
+      expect(outcome).toBeInstanceOf(Error);
+      expect((outcome as Error).message).toContain("runner_remote_recovery_identity_mismatch");
+      expect(onReplace).not.toHaveBeenCalled();
+    });
+
+    it("restores from the journal of a Runner that suspended and exited during the wait on the admitted fourth attempt", async () => {
+      const { outcome, onReplace } = await reattach("suspended-exit-fourth",
+        read => read === 0 ? { lifecycle: "turn_active", nextSourceSeq: 339, ackedSourceSeq: 338, lastControllerCommandSeq: 40 }
+          : { lifecycle: "suspended", nextSourceSeq: 339, ackedSourceSeq: 339, lastControllerCommandSeq: 40 },
+        check => check === 0, 338, 4);
+      expect(outcome).toBeUndefined();
+      expect(onReplace).not.toHaveBeenCalled();
+    });
+
+    it("stays fail-closed for a Runner that exited mid-turn during the wait", async () => {
+      const { outcome, onReplace } = await reattach("midturn-exit",
+        () => ({ lifecycle: "turn_active", nextSourceSeq: 339, ackedSourceSeq: 338, lastControllerCommandSeq: 40 }),
+        check => check === 0);
+      expect(outcome).toBeInstanceOf(Error);
+      expect(onReplace).not.toHaveBeenCalled();
+    });
+  });
+
   it("keeps a restart recovery's attempt credit while the agent directory is busy, then resumes at attempt 3", async () => {
     const fixture = await seedRun("remote-busy-directory");
     await fixture.db.update(heartbeatRuns).set({
@@ -3709,10 +3853,20 @@ process.on("SIGTERM", () => child.kill("SIGTERM"));
     it("leaves a run this process handed to the next server for that server", async () => {
       const fixture = await seedUnlaunchedRemoteClaim("SELF-LAPSED-HANDED-OFF",
         { liveController: true, leaseExpired: true, event: { eventType: "native.process_start_requested" } });
+      const [before] = await fixture.db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, fixture.runId));
+      const activityBefore = await fixture.db.select({ id: activityLog.id }).from(activityLog).where(eq(activityLog.companyId, companyId));
+      const actionsBefore = await fixture.db.select({ id: issueRecoveryActions.id }).from(issueRecoveryActions)
+        .where(eq(issueRecoveryActions.companyId, companyId));
       expect(await claimNativeRestartRecoveries({ db: fixture.db, controller: await currentNativeControllerIdentity(),
         restartKind: "hard", runIds: [fixture.runId], liveRunExecutions: new Set(),
-        handedOffForShutdown: runId => runId === fixture.runId }))
-        .toEqual([expect.objectContaining({ kind: "awaiting_evidence", reason: "controller_still_alive" })]);
+        handedOffForShutdown: runId => runId === fixture.runId, handedOffByThisController: runId => runId === fixture.runId }))
+        .toEqual([expect.objectContaining({ kind: "blocked", reason: "handed_off_to_next_controller" })]);
+      const [after] = await fixture.db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, fixture.runId));
+      expect(after).toEqual(before);
+      expect(await fixture.db.select({ id: activityLog.id }).from(activityLog).where(eq(activityLog.companyId, companyId)))
+        .toEqual(activityBefore);
+      expect(await fixture.db.select({ id: issueRecoveryActions.id }).from(issueRecoveryActions)
+        .where(eq(issueRecoveryActions.companyId, companyId))).toEqual(actionsBefore);
     });
 
     it("keeps waiting for a different live controller in this process space", async () => {
