@@ -20,9 +20,10 @@ export type LocalBrowserLoginState = {
 // the terminal required by both CLIs. The Docker image already includes
 // python3. This bridge forwards only bytes; provider output is never logged.
 const PYTHON_PTY_BRIDGE = String.raw`
-import errno, os, pty, select, signal, sys
+import errno, fcntl, os, pty, select, signal, struct, sys, termios
 pid, master = pty.fork()
 if pid == 0:
+    fcntl.ioctl(0, termios.TIOCSWINSZ, struct.pack("HHHH", 50, 1000, 0, 0))
     os.execvpe(sys.argv[1], sys.argv[1:], os.environ)
 def stop(_signal, _frame):
     try: os.killpg(pid, signal.SIGKILL)
