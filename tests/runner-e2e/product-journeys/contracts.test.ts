@@ -17,7 +17,11 @@ import { journeyRequiredChecks } from "./success-contract.js";
 import type { OnboardingConnectEvidence } from "./onboarding-connect.js";
 vi.mock("@playwright/test", () => ({
   expect: Object.assign(
-    (locator: { textContent(): Promise<string> }) => ({ async toContainText(value: string) { expect(await locator.textContent()).toContain(value); } }),
+    (locator: { textContent(): Promise<string>; isVisible(): Promise<boolean>; inViewport: boolean }) => ({
+      async toContainText(value: string) { expect(await locator.textContent()).toContain(value); },
+      async toBeVisible() { expect(await locator.isVisible()).toBe(true); },
+      async toBeInViewport() { expect(locator.inViewport).toBe(true); },
+    }),
     { poll: (read: () => Promise<unknown>) => ({ async toBe(value: unknown) { expect(await read()).toBe(value); } }) },
   ),
 }));
@@ -189,10 +193,10 @@ describe("deployment journey contracts", () => {
     await fixtures.resolve(["backlog-task"]);
     api.post.mockImplementation(async () => { throw Error("task creation inside measured story"); });
     let assigned = false;
-    const locator = { filter: vi.fn(), first: vi.fn(), locator: vi.fn(), getByRole: vi.fn(), click: vi.fn(), isVisible: vi.fn(async () => false), textContent: vi.fn(async () => assigned ? "You" : "Unassigned") };
+    const locator = { filter: vi.fn(), first: vi.fn(), locator: vi.fn(), getByRole: vi.fn(), click: vi.fn(), isVisible: vi.fn(async () => true), inViewport: false, scrollIntoViewIfNeeded: vi.fn(async () => { locator.inViewport = true; }), textContent: vi.fn(async () => assigned ? "You" : "Unassigned") };
     for (const method of [locator.filter, locator.first, locator.locator, locator.getByRole]) method.mockReturnValue(locator);
     const assign = { click: vi.fn(async () => { assigned = true; }) };
-    const page = { goto: vi.fn(), reload: vi.fn(), locator: vi.fn(() => locator), getByRole: vi.fn((_role: string, options?: { name?: unknown }) => options?.name === "Assign to me" ? assign : locator) };
+    const page = { goto: vi.fn(), reload: vi.fn(async () => { locator.inViewport = false; }), locator: vi.fn(() => locator), getByRole: vi.fn((_role: string, options?: { name?: unknown }) => options?.name === "Assign to me" ? assign : locator) };
     const get = vi.fn(async (route: string) => route.endsWith("/runs") ? [] : { assigneeUserId: assigned ? context.user.id : null, assigneeAgentId: null, status: "backlog" });
     Object.assign(context.api, { get });
     context.page = page as unknown as JourneyContext["page"];
@@ -204,6 +208,7 @@ describe("deployment journey contracts", () => {
     expect(locator.filter).toHaveBeenCalledWith({ hasText: "Journey QA campaign-1" });
     expect(assign.click).toHaveBeenCalledOnce();
     expect(page.reload).toHaveBeenCalledOnce();
+    expect(locator.scrollIntoViewIfNeeded).toHaveBeenCalledTimes(2);
     expect(get.mock.calls.map(([route]) => route)).toEqual(["/api/issues/task-1", "/api/issues/task-1", "/api/issues/task-1/runs"]);
     expect(evidence.checks).toEqual([{ id: "assignment-persisted", passed: true }, { id: "no-agent-work", passed: true }]);
   });

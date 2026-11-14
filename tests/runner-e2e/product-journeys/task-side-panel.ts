@@ -1,6 +1,5 @@
 import { expect, type Page } from "@playwright/test";
 
-/** Open the shipped task panel only when its requested controls are unavailable. */
 export async function openTaskSidePanel(page: Page, ready: () => Promise<boolean>) {
   if (await ready()) return;
   const toggle = page.getByRole("button", { name: "Toggle side panel", exact: true, pressed: false }).filter({ visible: true }).first();
@@ -13,8 +12,6 @@ export async function openTaskSidePanel(page: Page, ready: () => Promise<boolean
 }
 
 export async function taskPropertyRow(page: Page, label: string) {
-  // A closed panel retains its rows with nonzero child geometry. Playwright's
-  // visibility filter alone cannot establish that those rows are usable.
   const row = page.locator('[data-property-row]:not([inert] *):not([aria-hidden="true"] *)')
     .filter({ has: page.locator(`[data-property-label=${JSON.stringify(label)}]`) }).filter({ visible: true });
   const tab = page.getByRole("tab", { name: "Properties", exact: true }).filter({ visible: true });
