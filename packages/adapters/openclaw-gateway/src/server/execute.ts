@@ -1045,7 +1045,32 @@ function extractResultText(value: unknown): string | null {
   return nonEmpty(record.text) ?? nonEmpty(record.summary) ?? null;
 }
 
+interface GatewayCancellation {
+  abortConfirmed: Promise<boolean> | null;
+}
+
+function acknowledgedCancellation(): Record<string, unknown> {
+  return { state: "acknowledged", acknowledgedAt: new Date().toISOString(), forced: false };
+}
+
 export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExecutionResult> {
+  const cancellation: GatewayCancellation = { abortConfirmed: null };
+  const result = await executeGatewayRun(ctx, cancellation);
+  if (!ctx.signal?.aborted || !cancellation.abortConfirmed) return result;
+  if (!(await cancellation.abortConfirmed)) return result;
+  await ctx.onProviderStopped?.();
+  return {
+    ...result,
+    errorCode: "cancelled",
+    errorMessage: "Cancelled; the OpenClaw gateway stopped the session",
+    resultJson: { ...(result.resultJson ?? {}), executionCancellation: acknowledgedCancellation() },
+  };
+}
+
+async function executeGatewayRun(
+  ctx: AdapterExecutionContext,
+  cancellation: GatewayCancellation,
+): Promise<AdapterExecutionResult> {
   const urlValue = asString(ctx.config.url, "").trim();
   if (!urlValue) {
     return {
@@ -1259,6 +1284,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       onEvent,
       onLog: ctx.onLog,
     });
+    let removeAbortListener: (() => void) | null = null;
 
     try {
       deviceIdentity = disableDeviceAuth ? null : resolveDeviceIdentity(parseObject(ctx.config));
@@ -1326,6 +1352,54 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         `[openclaw-gateway] connected protocol=${asNumber(asRecord(hello)?.protocol, PROTOCOL_VERSION)}\n`,
       );
 
+      await ctx.onCancellationReady?.();
+      if (ctx.signal?.aborted) {
+        return {
+          exitCode: null,
+          signal: null,
+          timedOut: false,
+          errorMessage: "Stopped before the OpenClaw gateway got the run",
+          errorCode: "cancelled",
+          executionRecovery: { kind: "bootstrap", providerWorkStarted: false },
+          resultJson: { executionCancellation: acknowledgedCancellation() },
+        };
+      }
+
+      let gatewayRunId = ctx.runId;
+      const logAbortOutcome = async (stream: "stdout" | "stderr", chunk: string) => {
+        try {
+          await ctx.onLog(stream, chunk);
+        } catch {}
+      };
+      const abortGatewaySession = () => {
+        cancellation.abortConfirmed = client
+          .request(
+            "sessions.abort",
+            {
+              key: sessionKey,
+              runId: gatewayRunId,
+              ...(nonEmpty(agentParams.agentId) ? { agentId: nonEmpty(agentParams.agentId) } : {}),
+              clearQueued: true,
+            },
+            { timeoutMs: connectTimeoutMs },
+          )
+          .then(
+            async () => {
+              await logAbortOutcome("stdout", `[openclaw-gateway] run cancelled: sessions.abort sent for ${sessionKey}\n`);
+              return true;
+            },
+            async (err: unknown) => {
+              await logAbortOutcome(
+                "stderr",
+                `[openclaw-gateway] sessions.abort failed: ${err instanceof Error ? err.message : String(err)}\n`,
+              );
+              return false;
+            },
+          );
+      };
+      ctx.signal?.addEventListener("abort", abortGatewaySession, { once: true });
+      removeAbortListener = () => ctx.signal?.removeEventListener("abort", abortGatewaySession);
+
       // Keep any server-side continuation lock through retryable websocket
       // setup and backoff. The first agent request is the remote-work boundary:
       // once it is sent, retrying would be unsafe because the gateway may have
@@ -1339,6 +1413,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
 
       const acceptedStatus = nonEmpty(acceptedPayload?.status)?.toLowerCase() ?? "";
       const acceptedRunId = nonEmpty(acceptedPayload?.runId) ?? ctx.runId;
+      gatewayRunId = acceptedRunId;
       trackedRunIds.add(acceptedRunId);
 
       await ctx.onLog(
@@ -1530,7 +1605,12 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         resultJson: asRecord(latestResultPayload),
       };
     } finally {
-      client.close();
+      removeAbortListener?.();
+      try {
+        if (cancellation.abortConfirmed) await cancellation.abortConfirmed;
+      } finally {
+        client.close();
+      }
     }
   }
 }
