@@ -2,7 +2,7 @@ import { lstat, mkdir, mkdtemp, readFile, realpath, rename, rm, writeFile } from
 import path from "node:path";
 import os from "node:os";
 import type { AdapterSandboxExecutionTarget } from "@paperclipai/adapter-utils/execution-target";
-import { hasRemoteRecoveryAttachment, removeRemoteRecoveryAttachment } from "./remote-workspace-transport.js";
+import { hasRemoteRecoveryAttachment, isRemoteRecoveryAttachmentRefusal, removeRemoteRecoveryAttachment } from "./remote-workspace-transport.js";
 import { removeTaskDirectoryTree } from "./isolated-task-directory-snapshot.js";
 import { LEGACY_WORKSPACE_RECOVERY_MIGRATION } from "./legacy-workspace-recovery-migration.js";
 import { and, eq, inArray, sql } from "drizzle-orm";
@@ -284,7 +284,17 @@ export async function retainRemoteRecoveryAttachments(input: {
       await input.assertOwned?.();
       const location = { target: input.target, remoteCwd: input.remoteRoot, operationId: item.operationId, provenance };
       if (input.retiredOperationIds.has(item.operationId)) {
-        await removeRemoteRecoveryAttachment(location);
+        // Removing a retired copy only reduces save size; it is never shown
+        // again. When the sandbox refuses (its proof changed, the path is not a
+        // plain directory, a file cannot be deleted), its files stay in place
+        // and the run continues. Failing here failed every later preparation
+        // that restored the same save.
+        await removeRemoteRecoveryAttachment(location).catch((error: unknown) => {
+          if (!isRemoteRecoveryAttachmentRefusal(error)) throw error;
+          logger.warn({ companyId: input.workspace.companyId, workspaceId: input.workspace.id, runId: input.runId,
+            operationId: item.operationId, code: "remote_workspace_retired_copy_kept", cause: error.message },
+          "A retired recovered copy was left in the workspace because the sandbox refused to remove it");
+        });
         input.recoveredFiles.push({ operationId: item.operationId, sourceRunId: item.sourceRunId, path: item.path, provenance, retired: true });
         continue;
       }

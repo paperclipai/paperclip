@@ -64,6 +64,9 @@ const SETUP_FAILURE_CHECK = String.raw`const setupFailure=(prefix,stage,error)=>
  for(const field of failureDetail(error).split(' ').filter(Boolean))if(!fields.some(value=>value.startsWith(field.split('=')[0]+'=')))fields.push(field);
  return prefix+': '+fields.join(' ');};`;
 const SANDBOX_SETUP_CAUSE = /^remote_workspace_(prepare|repository|restore)_failed: stage=[a-z_]{1,32}(?: (?:reason|archive|disk|git|code|exit|signal|syscall|killed|program|name)=[A-Za-z0-9_]{1,64}){0,16}$/;
+// A recovered-copy check names its own refusal or the filesystem errno; never a path.
+const SANDBOX_RECOVERY_ATTACHMENT_CAUSE =
+  /^remote_workspace_recovery_attachment_invalid: reason=(?:invalid_attachment|unsafe_attachment|missing_workspace|attachment_proof_changed|filesystem)(?: code=E[A-Z0-9]{1,20})?$/;
 
 type RemoteWorkspaceOperation = "prepare" | "repository" | "archive_helper" | "capture" | "download" | "upload" | "restore" | "cleanup" | "recovery_attachment";
 
@@ -235,7 +238,9 @@ async function command(target: RemoteWorkspaceTarget, operation: RemoteWorkspace
     if (reported) throw new Error(reported);
     const cause = operation === "capture" || operation === "archive_helper"
       ? output.find(value => value.length <= 1024 && SANDBOX_CAPTURE_CAUSE.test(value))
-      : output.find(value => value.length <= 1024 && SANDBOX_SETUP_CAUSE.exec(value)?.[1] === operation);
+      : operation === "recovery_attachment"
+        ? output.find(value => value.length <= 1024 && SANDBOX_RECOVERY_ATTACHMENT_CAUSE.test(value))
+        : output.find(value => value.length <= 1024 && SANDBOX_SETUP_CAUSE.exec(value)?.[1] === operation);
     const status = [`operation=${operation}`,
       Number.isSafeInteger(result.exitCode) ? `exit=${result.exitCode}` : null,
       typeof result.signal === "string" && /^SIG[A-Z0-9]{1,12}$/.test(result.signal) ? `signal=${result.signal}` : null,
@@ -273,7 +278,10 @@ const fs=require('node:fs/promises'),path=require('node:path');
  if(input.remove!==true){process.stdout.write('present');return}
  await fs.rename(destination,retiring);await discard();
  process.stdout.write('removed');
-})().catch(()=>{process.stderr.write('remote_workspace_recovery_attachment_invalid');process.exitCode=1});`;
+})().catch(e=>{const known=['invalid_attachment','unsafe_attachment','missing_workspace','attachment_proof_changed'];
+ const code=typeof e?.code==='string'&&/^E[A-Z0-9]{1,20}$/.test(e.code)?' code='+e.code:'';
+ process.stderr.write('remote_workspace_recovery_attachment_invalid: reason='+(known.includes(e?.message)?e.message:'filesystem')+code);
+ process.exitCode=1});`;
 
 /** Reuse a restored attachment only with its exact provenance. User edits to
  * its files remain intact; unknown destinations are never overwritten. */
@@ -295,6 +303,13 @@ export async function removeRemoteRecoveryAttachment(input: {
     input.remoteCwd, JSON.stringify({ operationId: input.operationId, provenance: input.provenance, remove: true })]);
   if (output !== "removed" && output !== "missing") throw new Error("remote_workspace_recovery_attachment_invalid");
   return output === "removed";
+}
+
+/** The sandbox ran the recovered-copy check and refused it with an exit status.
+ * Timeouts and provider transport failures are not refusals. */
+export function isRemoteRecoveryAttachmentRefusal(error: unknown): error is RemoteWorkspaceOperationError {
+  return error instanceof RemoteWorkspaceOperationError
+    && error.message.startsWith("remote_workspace_operation_failed: operation=recovery_attachment exit=");
 }
 
 const PREPARE = String.raw`
