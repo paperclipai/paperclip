@@ -434,13 +434,15 @@ test("published packages preserve the patched embedded-postgres runtime", () => 
     rootPackage.pnpm.patchedDependencies["embedded-postgres@18.1.0-beta.16"],
     "patches/embedded-postgres@18.1.0-beta.16.patch",
   );
-  assert.deepEqual(dbPackage.bundleDependencies, ["embedded-postgres", "postgres"]);
+  assert.deepEqual(dbPackage.bundleDependencies, ["embedded-postgres", "postgres", "drizzle-orm"]);
   assert.equal(bundledCliNpmDependencies.has("embedded-postgres"), true);
   assert.equal(cliEsbuildConfig.external.includes("embedded-postgres"), false);
   assert.equal(rootPackage.pnpm.patchedDependencies["postgres@3.4.9"], "patches/postgres@3.4.9.patch");
   assert.equal(dbPackage.dependencies.postgres, "3.4.9");
   assert.equal(cliPackage.dependencies.postgres, "3.4.9");
-  assert.deepEqual(cliPackage.bundleDependencies, ["postgres"]);
+  assert.deepEqual(cliPackage.bundleDependencies, ["postgres", "drizzle-orm"]);
+  assert.equal(dbPackage.dependencies["drizzle-orm"], "0.45.2");
+  assert.equal(cliPackage.dependencies["drizzle-orm"], "0.45.2");
   assert.equal(cliEsbuildConfig.external.includes("postgres"), true);
   assert.equal(cliEsbuildConfig.external.includes("drizzle-orm"), true);
 });

@@ -27,7 +27,8 @@
     "dist"
   ],
   "bundleDependencies": [
-    "postgres"
+    "postgres",
+    "drizzle-orm"
   ],
   "publishConfig": {
     "access": "public"
