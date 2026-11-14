@@ -1,3 +1,6 @@
+import { createChatSdkStatePersistence } from "../../services/chat-channels/sdk-state.js";
+import type { PhotonCheckpointAuthority } from "../../services/chat-channels/imessage-photon/external-owner.js";
+import { credentialFingerprint } from "../../services/chat-channels/credential-fingerprint.js";
 import { connectionManagementService } from "../../services/connection-management.js";
 import { currentControllerProcess } from "../../services/controller-process-identity.js";
 import { photonCoverageFingerprint } from "../../services/chat-channels/imessage-photon/idle-coverage.js";
@@ -1030,7 +1033,7 @@ describe("iMessage Photon channel control plane", () => {
     () => onlinePhotonEnrollment(false, true), 30_000);
   it("fences late connector loss at the normal Photon SDK intake-placement callback and restores its original handoff",
     () => onlinePhotonEnrollment(false, false, true), 30_000);
-  async function resumeOriginalHandoff(phase: "enrolling" | "joining", observeIdleRenewal = false, otherAuthorizedOperator = false, retirementResume: "pending" | "revoked" | null = null) {
+  async function resumeOriginalHandoff(phase: "enrolling" | "joining", observeIdleRenewal = false, otherAuthorizedOperator = false, retirementResume: "pending" | "revoked" | null = null, reconnectCheckpoint: "current" | "rotated" | "rollback" | "untagged" | "foreign" | null = null) {
     const renew = vi.fn(async () => true);
     const signing = generateKeyPairSync("ed25519"), sealing = generateKeyPairSync("x25519");
     const connectorConfig = { baseUrl: "https://cloud.example", instanceId: "instance", environment: "test" as const,
@@ -1079,11 +1082,11 @@ describe("iMessage Photon channel control plane", () => {
       if (!retained) throw new Error("Normal staged enrollment absent");
       expect(subject).toBe(retained.identity.subject);
       if (operation.kind === "enroll") {
-        if (retirementResume && requests.filter(value => value.kind === "enroll").length > 1)
+        if ((retirementResume || reconnectCheckpoint) && requests.filter(value => value.kind === "enroll").length > 1)
           expect(retiredReplyIssued, "replacement enrollment must follow the exact retired receipt").toBe(true);
         return { binding: retained.binding };
       }
-      if (retirementResume && (operation.kind === "retire" || operation.kind === "status")) {
+      if ((retirementResume || reconnectCheckpoint) && (operation.kind === "retire" || operation.kind === "status")) {
         expect(operation.binding).toEqual(retained.binding);
         if (operation.kind === "retire") return { binding: retained.binding };
         await revokeDuringRetirement?.();
@@ -1116,9 +1119,9 @@ describe("iMessage Photon channel control plane", () => {
       vi.spyOn(local, "shutdown").mockRejectedValueOnce(new Error("Controlled original local join pending"));
       await expect(owner.reconcile(t.endpoint.id)).rejects.toThrow("Controlled original local join pending");
     }
-    if (retirementResume) await owner.reconcile(t.endpoint.id);
+    if (retirementResume || reconnectCheckpoint) await owner.reconcile(t.endpoint.id);
     const original = readPhotonExternalState(await state.read(PHOTON_EXTERNAL_STATE));
-    expect(original?.phase).toBe(retirementResume ? "external" : phase);
+    expect(original?.phase).toBe(retirementResume || reconnectCheckpoint ? "external" : phase);
     if (!original) throw new Error("Normal unfinished handoff absent");
     const [before] = await db.select().from(chatEndpoints).where(eq(chatEndpoints.id, t.endpoint.id));
     const [connectionBefore] = await db.select().from(toolConnections).where(eq(toolConnections.id, t.endpoint.connectionId));
@@ -1133,7 +1136,7 @@ describe("iMessage Photon channel control plane", () => {
       await db.insert(principalPermissionGrants).values({ companyId: t.companyId, principalType: "user", principalId: operatorUserId,
         permissionKey: "tools:manage_connections", grantedByUserId: t.userId });
     }
-    const management = otherAuthorizedOperator || retirementResume ? await connectionManagementService(db).authorize(
+    const management = otherAuthorizedOperator || retirementResume || reconnectCheckpoint ? await connectionManagementService(db).authorize(
       { type: "board", userId: operatorUserId, source: "session" }, "connections:configure",
       { type: "connection_management", companyId: t.companyId, connectionId: t.endpoint.connectionId,
         provider: "imessage-photon", purpose: "chat", operation: "POST /chat-endpoints/:endpointId/configure" }, { mutation: true }) : undefined;
@@ -1147,7 +1150,92 @@ describe("iMessage Photon channel control plane", () => {
     expect(paused.status).toBe("paused");
     expect(Reflect.get(paused.setup, "runtimeGeneration")).toBe(Reflect.get(before.setup, "runtimeGeneration"));
     expect(readPhotonExternalState(await state.read(PHOTON_EXTERNAL_STATE)))
-      .toMatchObject({ phase: retirementResume ? "external" : phase, binding: original.binding, handoffId: original.handoffId, identity: original.identity });
+      .toMatchObject({ phase: retirementResume || reconnectCheckpoint ? "external" : phase, binding: original.binding, handoffId: original.handoffId, identity: original.identity });
+    if (reconnectCheckpoint) {
+      retirementComplete = true;
+      await owner.retire(t.endpoint.id, management!);
+      expect(readPhotonExternalState(await state.read(PHOTON_EXTERNAL_STATE))?.phase).toBe("retired");
+      const checkpoint = await state.read<{ schema: 1; lineId: string; sequence: number }>("checkpoint");
+      const authority = await state.read<PhotonCheckpointAuthority>("checkpoint-authority");
+      expect(checkpoint?.sequence).toBeGreaterThanOrEqual(0);
+      expect(authority).toMatchObject({ companyId: t.companyId, endpointId: t.endpoint.id,
+        connectionId: t.endpoint.connectionId, runtimeGeneration: Reflect.get(paused.setup, "runtimeGeneration"),
+        credentialReferences: credentialFingerprint(connectionBefore.credentialSecretRefs), sequence: checkpoint?.sequence });
+      if (!checkpoint || !authority) throw new Error("Normal tagged checkpoint absent before reconnect");
+      const savedAuthority = reconnectCheckpoint === "untagged" ? null
+        : reconnectCheckpoint === "foreign" ? { ...authority, connectionId: randomUUID() } : authority;
+      if (reconnectCheckpoint === "untagged") {
+        const persistence = createChatSdkStatePersistence(db);
+        const scope = { companyId: t.companyId, endpointId: t.endpoint.id };
+        const key = `photon:${createHash("sha256").update("checkpoint-authority").digest("hex")}`;
+        const currentAuthority = await persistence.read(scope, key);
+        if (!currentAuthority) throw new Error("Normal checkpoint authority row absent before untagged fixture");
+        expect(await persistence.deleteIfVersion({ ...scope, key, expectedVersion: currentAuthority.version })).toBe(true);
+      } else if (reconnectCheckpoint === "foreign")
+        await state.update<PhotonCheckpointAuthority | null>("checkpoint-authority", () => savedAuthority);
+      const enrollmentCount = requests.filter(value => value.kind === "enroll").length;
+      const reconnectSecret = reconnectCheckpoint === "rotated" ? "rotated-project-secret" : "secret";
+      const rollback = new Error("Controlled normal reconnect final generation transaction rollback");
+      let generationRolledBack = false;
+      const stage = photonExternalRuntime.stagePhotonExternalConfiguration;
+      const rollbackStage = reconnectCheckpoint === "rollback"
+        ? vi.spyOn(photonExternalRuntime, "stagePhotonExternalConfiguration").mockImplementation(async (tx, id, actor) => {
+          await stage(tx, id, actor);
+          const [current] = await tx.select().from(chatEndpoints).where(eq(chatEndpoints.id, t.endpoint.id));
+          if (id === t.endpoint.id && Number(Reflect.get(current.setup, "runtimeGeneration")) > Number(Reflect.get(paused.setup, "runtimeGeneration"))) {
+            generationRolledBack = true;
+            throw rollback;
+          }
+        }) : null;
+      const reconnect = () => t.service.configure(t.endpoint.id, { action: "reconnect",
+        photon: { projectId: "project", lineId: "line" }, credentials: { projectSecret: reconnectSecret } }, operatorUserId, management)
+        .then(snapshot => ({ snapshot, error: null }), error => ({ snapshot: null, error }));
+      let outcome = await reconnect();
+      if (reconnectCheckpoint === "rollback") {
+        rollbackStage!.mockRestore();
+        expect(generationRolledBack).toBe(true);
+        expect(outcome.error).toBe(rollback);
+        const [afterRollback] = await db.select().from(chatEndpoints).where(eq(chatEndpoints.id, t.endpoint.id));
+        const [afterCredentialCommit] = await db.select().from(toolConnections).where(eq(toolConnections.id, t.endpoint.connectionId));
+        expect(Reflect.get(afterRollback.setup, "runtimeGeneration")).toBe(Reflect.get(paused.setup, "runtimeGeneration"));
+        expect(afterCredentialCommit.credentialSecretRefs).not.toEqual(connectionBefore.credentialSecretRefs);
+        expect(await state.read("checkpoint")).toEqual(checkpoint);
+        expect(await state.read("checkpoint-authority")).toEqual({ ...authority,
+          credentialReferences: credentialFingerprint(afterCredentialCommit.credentialSecretRefs) });
+        expect(readPhotonExternalState(await state.read(PHOTON_EXTERNAL_STATE))?.phase).toBe("retired");
+        expect(requests.filter(value => value.kind === "enroll")).toHaveLength(enrollmentCount);
+        await management!.reauthorize();
+        outcome = await reconnect();
+      }
+      const [currentEndpoint] = await db.select().from(chatEndpoints).where(eq(chatEndpoints.id, t.endpoint.id));
+      const [currentConnection] = await db.select().from(toolConnections).where(eq(toolConnections.id, t.endpoint.connectionId));
+      if (reconnectCheckpoint === "untagged" || reconnectCheckpoint === "foreign") {
+        expect(outcome.error).not.toBeNull();
+        expect(await state.read("checkpoint-authority")).toEqual(savedAuthority);
+        expect(await state.read("checkpoint")).toEqual(checkpoint);
+        expect(Reflect.get(currentEndpoint.setup, "runtimeGeneration")).toBe(Reflect.get(paused.setup, "runtimeGeneration"));
+        expect(currentConnection.credentialSecretRefs).toEqual(connectionBefore.credentialSecretRefs);
+        expect(requests.filter(value => value.kind === "enroll")).toHaveLength(enrollmentCount);
+        return;
+      }
+      expect(outcome.error, "normal same-line reconnect must carry only its exact known checkpoint into the new generation").toBeNull();
+      expect(Reflect.get(currentEndpoint.setup, "runtimeGeneration")).toBe(Number(Reflect.get(paused.setup, "runtimeGeneration")) + 1);
+      expect(currentConnection.credentialSecretRefs).not.toEqual(connectionBefore.credentialSecretRefs);
+      if (reconnectCheckpoint === "rotated")
+        expect(Reflect.get(currentEndpoint.setup, "credentialEntryGenerations")).not.toEqual(Reflect.get(paused.setup, "credentialEntryGenerations"));
+      else expect(Reflect.get(currentEndpoint.setup, "credentialEntryGenerations")).toEqual(Reflect.get(paused.setup, "credentialEntryGenerations"));
+      await owner.reconcile(t.endpoint.id);
+      const replacement = readPhotonExternalState(await state.read(PHOTON_EXTERNAL_STATE));
+      expect(replacement).toMatchObject({ phase: "external", initialSequence: checkpoint.sequence });
+      expect(replacement?.handoffId).not.toBe(original.handoffId);
+      expect(await state.read("checkpoint-authority")).toEqual({ companyId: t.companyId, endpointId: t.endpoint.id,
+        connectionId: t.endpoint.connectionId, runtimeGeneration: Reflect.get(currentEndpoint.setup, "runtimeGeneration"),
+        credentialReferences: credentialFingerprint(currentConnection.credentialSecretRefs), sequence: checkpoint.sequence });
+      expect(await state.read("checkpoint")).toEqual(checkpoint);
+      expect(requests.filter(value => value.kind === "enroll")).toHaveLength(enrollmentCount + 1);
+      await management!.reauthorize();
+      return;
+    }
     if (retirementResume) {
       await expect(owner.retire(t.endpoint.id, management!)).rejects.toThrow("Photon original physical close or queue drain remains outstanding");
       const retiring = readPhotonExternalState(await state.read(PHOTON_EXTERNAL_STATE));
@@ -1358,6 +1446,14 @@ describe("iMessage Photon channel control plane", () => {
     () => resumeOriginalHandoff("enrolling", false, false, "pending"), 30_000);
   it("reauthorizes normal Photon resume after awaited retirement without activating revoked configuration",
     () => resumeOriginalHandoff("enrolling", false, false, "revoked"), 30_000);
+  it("carries the exact normal checkpoint through same-line same-secret reconnect and new Cloud handoff",
+    () => resumeOriginalHandoff("enrolling", false, false, null, "current"), 30_000);
+  it("carries the exact normal checkpoint through genuine same-line changed-secret reconnect",
+    () => resumeOriginalHandoff("enrolling", false, false, null, "rotated"), 30_000);
+  it("keeps normal reconnect checkpoint authority retriable after final generation transaction rollback",
+    () => resumeOriginalHandoff("enrolling", false, false, null, "rollback"), 30_000);
+  it.each(["untagged", "foreign"] as const)("refuses normal reconnect checkpoint carry for %s old authority",
+    kind => resumeOriginalHandoff("enrolling", false, false, null, kind), 30_000);
   it("restores group membership queued during pause before admitting fresh messages after resume", async () => {
     const t = await setup();
     await t.start();

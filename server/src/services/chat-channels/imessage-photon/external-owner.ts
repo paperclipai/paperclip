@@ -17,22 +17,27 @@ class PhotonPhysicalResourceUnknown extends Error {}
 class PhotonExternalBrokerUnavailable extends Error {}
 class PhotonSenderResourceUnknown extends PhotonPhysicalResourceUnknown {}
 const CHECKPOINT_AUTHORITY = "checkpoint-authority";
-const checkpointIdentity = ({ subject: _subject, ...identity }: PhotonExternalIdentity) => identity;
+export type PhotonCheckpointIdentity = Pick<PhotonExternalIdentity,
+  "companyId" | "endpointId" | "connectionId" | "runtimeGeneration" | "credentialReferences">;
+const checkpointIdentity = (identity: PhotonCheckpointIdentity): PhotonCheckpointIdentity => ({
+  companyId: identity.companyId, endpointId: identity.endpointId, connectionId: identity.connectionId,
+  runtimeGeneration: identity.runtimeGeneration, credentialReferences: identity.credentialReferences,
+});
 type Checkpoint = { schema: 1; lineId: string; sequence: number };
-export type PhotonCheckpointAuthority = Omit<PhotonExternalIdentity, "subject"> & { sequence: number };
+export type PhotonCheckpointAuthority = PhotonCheckpointIdentity & { sequence: number };
 /** Called INSIDE the ordinary checkpoint SQL transaction before writing it.
  * Untagged initialized legacy history remains local-only attention for handoff;
  * neither a newer generation nor one successful request proves its provenance. */
-export async function checkpointAuthorityMayAdvance(state: PhotonState, identity: PhotonExternalIdentity): Promise<boolean> {
+export async function checkpointAuthorityMayAdvance(state: PhotonState, identity: PhotonCheckpointIdentity): Promise<boolean> {
   const checkpoint = await state.read<Checkpoint>("checkpoint");
   const authority = await state.read<PhotonCheckpointAuthority>(CHECKPOINT_AUTHORITY);
   if (!checkpoint) return !(await state.read("receiver-initialized")) && authority === null;
   return authority !== null && isDeepStrictEqual(authority, { ...checkpointIdentity(identity), sequence: checkpoint.sequence });
 }
-export async function recordPhotonCheckpointAuthority(state: PhotonState, identity: PhotonExternalIdentity, sequence: number): Promise<void> {
+export async function recordPhotonCheckpointAuthority(state: PhotonState, identity: PhotonCheckpointIdentity, sequence: number): Promise<void> {
   await state.update<PhotonCheckpointAuthority>(CHECKPOINT_AUTHORITY, () => ({ ...checkpointIdentity(identity), sequence }));
 }
-export async function handoffCheckpoint(state: PhotonState, identity: PhotonExternalIdentity, lineId: string): Promise<number | null> {
+export async function handoffCheckpoint(state: PhotonState, identity: PhotonCheckpointIdentity, lineId: string): Promise<number | null> {
   const checkpoint = await state.read<Checkpoint>("checkpoint");
   if (!checkpoint) {
     if (await state.read("receiver-initialized")) throw new Error("Photon initialized history has no checkpoint");
@@ -42,6 +47,37 @@ export async function handoffCheckpoint(state: PhotonState, identity: PhotonExte
     || !await checkpointAuthorityMayAdvance(state, identity)) throw new Error("Photon legacy checkpoint provenance requires operator recovery");
   return checkpoint.sequence;
 }
+export async function preparePhotonCheckpointConfiguration(state: PhotonState, identity: PhotonCheckpointIdentity, lineId: string) {
+  const sequence = await handoffCheckpoint(state, identity, lineId);
+  const retained = readPhotonExternalState(await state.read(PHOTON_EXTERNAL_STATE));
+  if (retained && (retained.phase !== "retired" || retained.identity.companyId !== identity.companyId
+    || retained.identity.endpointId !== identity.endpointId || retained.identity.connectionId !== identity.connectionId))
+    throw new Error("Photon original custody must settle before reconnect checkpoint carry");
+  if (sequence === null) return null;
+  const checkpoint = await state.read<Checkpoint>("checkpoint");
+  const authority = await state.read<PhotonCheckpointAuthority>(CHECKPOINT_AUTHORITY);
+  if (!checkpoint || !authority || !isDeepStrictEqual(authority, { ...checkpointIdentity(identity), sequence }))
+    throw new Error("Photon reconnect checkpoint authority changed");
+  return { identity, checkpoint, authority };
+}
+export async function carryPhotonCheckpointConfiguration(state: PhotonState,
+  prepared: NonNullable<Awaited<ReturnType<typeof preparePhotonCheckpointConfiguration>>>, identity: PhotonCheckpointIdentity,
+  lineId: string, transition: "credentials" | "generation") {
+  const validTransition = transition === "credentials"
+    ? identity.runtimeGeneration === prepared.identity.runtimeGeneration
+    : identity.runtimeGeneration === prepared.identity.runtimeGeneration + 1
+      && identity.credentialReferences === prepared.identity.credentialReferences;
+  if (identity.companyId !== prepared.identity.companyId || identity.endpointId !== prepared.identity.endpointId
+    || identity.connectionId !== prepared.identity.connectionId || !validTransition || lineId !== prepared.checkpoint.lineId)
+    throw new Error("Photon reconnect checkpoint scope changed");
+  const current = await preparePhotonCheckpointConfiguration(state, prepared.identity, lineId);
+  if (!current || !isDeepStrictEqual(current, prepared)) throw new Error("Photon reconnect checkpoint changed before commit");
+  await state.update<PhotonCheckpointAuthority>(CHECKPOINT_AUTHORITY, value => {
+    if (!isDeepStrictEqual(value, prepared.authority)) throw new Error("Photon reconnect checkpoint authority changed before commit");
+    return { ...checkpointIdentity(identity), sequence: prepared.checkpoint.sequence };
+  });
+}
+
 export interface PhotonExternalBroker {
   instanceIdentity(): { instanceId: string; environment: PhotonExternalBinding["environment"] };
   photonReceiverAvailable?(): Promise<boolean>;

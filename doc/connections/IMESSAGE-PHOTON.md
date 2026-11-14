@@ -200,6 +200,13 @@ handoff and publication identities rather than replacing uncertain work with a
 new send. An unknown retirement keeps its credential-cleanup responsibility
 until normal acceptance and resource closure are confirmed.
 
+Reconnect first settles the original receiver. On the same verified project and
+line, it carries the exact durable checkpoint across credential and configuration
+generation changes. Each authority update commits with the normal credential or
+configuration transaction, so a failed final write can be retried without
+replaying the accepted prefix. Missing or foreign checkpoint authority still
+requires operator recovery; reconnect does not bless unverified history.
+
 After process replacement, a current authorized receiver lease may recover useful
 intake from the exact tagged durable checkpoint even while an old local resource
 is physically unconfirmed. This restores business delivery, not a close receipt.

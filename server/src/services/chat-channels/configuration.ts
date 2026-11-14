@@ -797,19 +797,37 @@ export function createChatConfiguration(db: Db, options: ChatConfigurationOption
         throw error;
       }
     }
+    let commitProviderConfiguration: {
+      credentialsCommitted(tx: Db): Promise<void>;
+      commit(tx: Db, nextGeneration: number, credentialRefs: EndpointRecord["credentialSecretRefs"]): Promise<void>;
+    } | undefined;
+    let configurationCredentialRefs = record.credentialSecretRefs;
     if (endpoint.provider === "imessage-photon") {
-      await persistPhotonConfiguration(endpoint, credentials, credentialLease);
+      if (endpoint.botExternalId) {
+        await credentialLease.assertOwned();
+        const settled = await options.prepareCredentialRemoval?.(endpoint.id, {
+          responsibleUserId: managementContext?.responsibleUserId ?? actorUserId,
+          reauthorize: async () => { await managementContext?.reauthorize(); await credentialLease.assertOwned(); },
+        });
+        if (settled !== "settled") throw conflict("The original provider owner must settle before reconnect");
+        await managementContext?.reauthorize();
+        await credentialLease.assertOwned();
+      }
+      commitProviderConfiguration = await persistPhotonConfiguration(record, credentials, credentialLease);
     }
     if (
       (input.credentials && Object.keys(input.credentials).length > 0) ||
       credentialsChangedByDiscovery
     )
-      await persistCredentials(
+      configurationCredentialRefs = await persistCredentials(
         endpoint,
         credentials,
         credentialLease,
         actorUserId,
-        managementContext ? async () => managementContext.reauthorize() : undefined,
+        managementContext || commitProviderConfiguration ? async tx => {
+          await managementContext?.reauthorize();
+          await commitProviderConfiguration?.credentialsCommitted(tx);
+        } : undefined,
       );
     if (prepared.inventory)
       await reconcileProviderResourceRows(
@@ -835,6 +853,8 @@ export function createChatConfiguration(db: Db, options: ChatConfigurationOption
         if (endpoint.provider === "speko") {
         await installSpekoVoiceTools(tx, endpoint, actorUserId);
       }
+        const nextGeneration = runtimeGeneration(current.setup) + 1;
+        await commitProviderConfiguration?.commit(tx as unknown as Db, nextGeneration, configurationCredentialRefs);
         const preserveSlackVerification = preservesProvisionedSlackVerification(current.setup, credentials.signingSecret ?? "", `${getWebhookPublicBaseUrl()}/api/chat-webhooks/${endpoint.publicId}/slack`);
         await notifyChatEndpointConfiguration(tx, endpoint);
         await notifyChatEndpointWork(tx, endpoint.connectionId, endpoint.companyId);
@@ -866,7 +886,7 @@ export function createChatConfiguration(db: Db, options: ChatConfigurationOption
               webhookVerifiedAt: waitingForSlackConfiguration
                 ? preserveSlackVerification ? (current.setup.webhookVerifiedAt ?? null) : null
                 : (current.setup.webhookVerifiedAt ?? null),
-              runtimeGeneration: runtimeGeneration(current.setup) + 1,
+              runtimeGeneration: nextGeneration,
             } as InternalSetupState,
             updatedAt,
           })
