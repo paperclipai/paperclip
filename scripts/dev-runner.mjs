@@ -7,6 +7,7 @@ import { createInterface } from "node:readline/promises";
 import { stdin, stdout } from "node:process";
 import { fileURLToPath } from "node:url";
 import { createCapturedOutputBuffer, parseJsonResponseWithLimit } from "./dev-runner-output.mjs";
+import { applyRepoRootEnvFile } from "./dev-runner-env-file.mjs";
 import { shouldTrackDevServerPath } from "./dev-runner-paths.mjs";
 
 const mode = process.argv[2] === "watch" ? "watch" : "dev";
@@ -82,6 +83,18 @@ const env = {
   ...process.env,
   PAPERCLIP_UI_DEV_MIDDLEWARE: "true",
 };
+
+// The server runs with cwd `server/`, so it never loads a repo-root `.env`.
+// Without this, secrets like BETTER_AUTH_SECRET set only there are silently
+// missing from local agent runs (#13816). Precedence stays shell > instance
+// `.env` > repo-root `.env`, and each (re)start re-reads both files and
+// re-resolves the instance path, so a changed `.paperclip/config.json` or an
+// edited instance `.env` is honored on restart rather than cached.
+function withRepoRootEnv(baseEnv) {
+  return applyRepoRootEnvFile(baseEnv, repoRoot, {
+    log: (line) => console.log(line),
+  }).env;
+}
 
 if (mode === "dev") {
   env.PAPERCLIP_DEV_SERVER_STATUS_FILE = devServerStatusFilePath;
@@ -292,7 +305,9 @@ async function runPnpm(args, options = {}) {
 async function getMigrationStatusPayload() {
   const status = await runPnpm(
     ["--filter", "@paperclipai/db", "exec", "tsx", "src/migration-status.ts", "--json"],
-    { env },
+    // Migration checks must inspect the same database the server child will
+    // open, including a DATABASE_URL set only in the repo-root `.env`.
+    { env: withRepoRootEnv(env) },
   );
   if (status.code !== 0) {
     process.stderr.write(
@@ -370,7 +385,7 @@ async function maybePreflightMigrations(options = {}) {
 
   const migrate = spawn(pnpmBin, ["db:migrate"], {
     stdio: "inherit",
-    env,
+    env: withRepoRootEnv(env),
     shell: process.platform === "win32",
   });
   const exit = await new Promise((resolve) => {
@@ -471,7 +486,7 @@ async function startServerChild() {
   child = spawn(
     pnpmBin,
     ["--filter", "@paperclipai/server", serverScript, ...forwardedArgs],
-    { stdio: "inherit", env, shell: process.platform === "win32" },
+    { stdio: "inherit", env: withRepoRootEnv(env), shell: process.platform === "win32" },
   );
 
   childExitPromise = new Promise((resolve, reject) => {
