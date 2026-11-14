@@ -920,7 +920,7 @@ describe.skipIf(!support.supported)("heartbeat queue database wiring", () => {
       const row = rows.find(row => row.id === before.id)!;
       expect(row).toMatchObject({ payload: before.payload, status: "deferred_issue_execution", runId: null,
         finishedAt: null, error: null });
-      expect(row.updatedAt.getTime()).toBeGreaterThan(0);
+      expect(row.updatedAt.getTime()).toBe(0);
     }
   }
 

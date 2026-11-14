@@ -8,8 +8,9 @@ import { enqueueFastResponse } from "../../fast-responses.js";
 import { and, eq, sql } from "drizzle-orm";
 import { retryChatControlAdmission } from "../../chat-control-admission-retry.js";
 import type { Db } from "@paperclipai/db";
-import { createDurableChatWakeupRequest, assertDurableChatWakeupReceipt, registerDeferredChatWakeOwner } from "../../durable-chat-wakeup.js";
-import { agentWakeupRequests, chatActions, chatConversations, chatDeliveries, chatEndpoints } from "@paperclipai/db";
+import { createDurableChatWakeupRequest, assertDurableChatWakeupReceipt, registerDeferredChatWakeOwner, CLOSED_TASK_CHAT_WAKE_REOPEN_WINDOW_MS, type DeferredChatWakeDecline } from "../../durable-chat-wakeup.js";
+import { agentWakeupRequests, chatActions, chatConversations, chatDeliveries, chatEndpoints, issues } from "@paperclipai/db";
+import { issueService } from "../../issues.js";
 import { forbidden } from "../../../errors.js";
 import { logger } from "../../../middleware/logger.js";
 import { queueIssueAssignmentWakeup } from "../../issue-assignment-wakeup.js";
@@ -438,17 +439,41 @@ export function createInboundWakeups(db: Db, options: WakeupOptions) {
       return denied;
     }
   }
-  const unregisterDeferredWakeOwner = registerDeferredChatWakeOwner(db, async (scope) => {
-    const action = await db.select().from(chatActions).where(and(
+  async function reopenClosedChatTask(tx: Db, action: typeof chatActions.$inferSelect) {
+    const [issue] = await tx.select().from(issues).where(and(eq(issues.companyId, action.companyId),
+      eq(issues.id, String(action.payload.issueId)))).for("update");
+    if (!issue || issue.assigneeAgentId !== action.payload.agentId || !["done", "cancelled"].includes(issue.status)) return;
+    const [endpoint] = await tx.select({ sponsorUserId: chatEndpoints.sponsorUserId }).from(chatEndpoints)
+      .where(and(eq(chatEndpoints.companyId, action.companyId), eq(chatEndpoints.id, action.endpointId)));
+    await issueService(tx).update(issue.id, { status: "todo",
+      actorUserId: action.payload.requestedByActorType === "user" ? String(action.payload.requestedByActorId) : endpoint?.sponsorUserId ?? null,
+    }, tx);
+  }
+  const unregisterDeferredWakeOwner = registerDeferredChatWakeOwner(db, async (scope): Promise<DeferredChatWakeDecline | void> => {
+    const source = await db.select().from(chatActions).where(and(
       eq(chatActions.id, scope.requestId), eq(chatActions.companyId, scope.companyId),
-      eq(chatActions.kind, "inbound_wakeup"), eq(chatActions.status, "processed"),
+      eq(chatActions.kind, "inbound_wakeup"),
     )).then(rows => rows[0] ?? null);
-    if (!action || action.payload.agentId !== scope.agentId || action.payload.issueId !== scope.issueId) return;
     const [receipt] = await db.select().from(agentWakeupRequests).where(and(
-      eq(agentWakeupRequests.id, action.id), eq(agentWakeupRequests.companyId, scope.companyId),
+      eq(agentWakeupRequests.id, scope.requestId), eq(agentWakeupRequests.companyId, scope.companyId),
       eq(agentWakeupRequests.agentId, scope.agentId), eq(agentWakeupRequests.status, "deferred_issue_execution"),
     ));
     if (!receipt || receipt.runId) return;
+    const sweep = scope.recoverySweep === true;
+    if (source && ["preparing", "issued", "processing"].includes(source.status)) return sweep ? { retry: "source_pending" } : undefined;
+    if (!source || source.status !== "processed" || source.payload.agentId !== scope.agentId ||
+        source.payload.issueId !== scope.issueId) return sweep ? { settle: "source_missing" } : undefined;
+    const action = source;
+    let closed = false;
+    if (sweep) {
+      const [task] = await db.select({ status: issues.status, assigneeAgentId: issues.assigneeAgentId }).from(issues)
+        .where(and(eq(issues.companyId, scope.companyId), eq(issues.id, scope.issueId)));
+      if (!task) return { settle: "task_missing" };
+      if (task.assigneeAgentId !== scope.agentId) return { settle: "task_reassigned" };
+      if (task.status === "backlog") return { retry: "task_backlog" };
+      closed = task.status === "done" || task.status === "cancelled";
+      if (closed && receipt.createdAt.getTime() < Date.now() - CLOSED_TASK_CHAT_WAKE_REOPEN_WINDOW_MS) return { settle: "task_closed" };
+    }
     const authorize = async (tx: Db) => {
       const [source] = await tx.select().from(chatActions).where(and(
         eq(chatActions.id, action.id), eq(chatActions.companyId, scope.companyId),
@@ -462,7 +487,10 @@ export function createInboundWakeups(db: Db, options: WakeupOptions) {
     };
     // The same authority used at ingress checks the live endpoint, principal,
     // immutable action source, conversation generation and original comment.
-    const context = await db.transaction(tx => authorize(tx as unknown as Db));
+    const context = await db.transaction(async tx => {
+      if (closed) await reopenClosedChatTask(tx as unknown as Db, action);
+      return authorize(tx as unknown as Db);
+    });
     const request = createDurableChatWakeupRequest({
       id: action.id, companyId: scope.companyId, agentId: scope.agentId, issueId: scope.issueId,
       commentId: String(action.payload.commentId),
