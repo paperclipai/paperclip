@@ -7279,6 +7279,30 @@ export function issueRoutes(
     return false;
   }
 
+  async function getRequestedDependencyReadiness(
+    req: Request,
+    issue: Parameters<typeof decideIssueAccess>[1],
+  ) {
+    if (req.body.blockedByIssueIds === undefined) {
+      return svc.getDependencyReadiness(issue.id);
+    }
+    const blockerIds = req.body.blockedByIssueIds as string[];
+    const unresolved = blockerIds.length === 0
+      ? []
+      : await db
+          .select({ id: issueRows.id })
+          .from(issueRows)
+          .where(and(
+            eq(issueRows.companyId, issue.companyId),
+            inArray(issueRows.id, blockerIds),
+            notInArray(issueRows.status, ["done", "cancelled"]),
+          ));
+    return {
+      unresolvedBlockerCount: unresolved.length,
+      unresolvedBlockerIssueIds: unresolved.map((row) => row.id),
+    };
+  }
+
   async function assertExplicitResumeIntentAllowed(
     req: Request,
     res: Response,
@@ -7331,7 +7355,7 @@ export function issueRoutes(
     }
 
     if (issue.status === "blocked") {
-      const readiness = await svc.getDependencyReadiness(issue.id);
+      const readiness = await getRequestedDependencyReadiness(req, issue);
       if (readiness.unresolvedBlockerCount > 0) {
         res.status(409).json({
           error: "Issue follow-up blocked by unresolved blockers",
@@ -15310,7 +15334,7 @@ export function issueRoutes(
         : null;
       const hasUnresolvedFirstClassBlockers =
         isBlocked && effectiveMoveToTodoRequested
-          ? (await svc.getDependencyReadiness(existing.id))
+          ? (await getRequestedDependencyReadiness(req, existing))
               .unresolvedBlockerCount > 0
           : false;
       if (
@@ -20100,7 +20124,7 @@ export function issueRoutes(
           shouldResumeInProgressScheduledRetry);
       const hasUnresolvedFirstClassBlockers =
         isBlocked && effectiveMoveToTodoRequested
-          ? (await svc.getDependencyReadiness(issue.id))
+          ? (await getRequestedDependencyReadiness(req, issue))
               .unresolvedBlockerCount > 0
           : false;
       if (
