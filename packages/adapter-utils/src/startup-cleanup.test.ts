@@ -209,6 +209,8 @@ describe("sandbox callback bridge startup cleanup", () => {
     );
 
     expect(runner.execute).toHaveBeenCalledTimes(2);
+    const launchScript = calls[0]?.args?.[1] ?? "";
+    expect(launchScript).toMatch(/nohup[\s\S]*'--paperclip-bridge-launch-token=[^']+' >>/);
     const cleanupScript = calls[1]?.args?.[1] ?? "";
     expect(cleanupScript).toContain('kill "$pid"');
     expect(cleanupScript).toContain('kill -KILL "$pid"');
@@ -312,24 +314,46 @@ describe("sandbox callback bridge startup cleanup", () => {
       },
     };
 
-    await expect(startSandboxCallbackBridgeServer({
-      runner,
-      remoteCwd: rootDir,
-      assetRemoteDir,
-      queueDir,
-      bridgeToken: "bridge-token",
-      nodeCommand: fakeNode,
-      timeoutMs: 10_000,
-    })).rejects.toThrow(/start sandbox callback bridge/i);
+    try {
+      await expect(startSandboxCallbackBridgeServer({
+        runner,
+        remoteCwd: rootDir,
+        assetRemoteDir,
+        queueDir,
+        bridgeToken: "bridge-token",
+        nodeCommand: fakeNode,
+        timeoutMs: 10_000,
+      })).rejects.toThrow(/start sandbox callback bridge/i);
 
-    expect(spawnedPid).toBeGreaterThan(1);
-    await expectIdentityExitedOrZombie(
-      spawnedPid,
-      spawnedIdentity,
-      "/definitely-missing-procfs",
-    );
-    await expect(readFile(directories.pidFile, "utf8")).rejects.toThrow();
-    expect((await readdir(directories.rootDir)).filter((name) => name.includes(".launch-"))).toEqual([]);
+      expect(spawnedPid).toBeGreaterThan(1);
+      await expectIdentityExitedOrZombie(
+        spawnedPid,
+        spawnedIdentity,
+        "/definitely-missing-procfs",
+      );
+      await expect(readFile(directories.pidFile, "utf8")).rejects.toThrow();
+      expect((await readdir(directories.rootDir)).filter((name) => name.includes(".launch-"))).toEqual([]);
+    } finally {
+      if (spawnedPid > 1 && spawnedIdentity) {
+        const currentIdentity = await pidIdentityRecord(
+          spawnedPid,
+          "/definitely-missing-procfs",
+        ).catch(() => null);
+        const currentCommand = await readFile(`/proc/${spawnedPid}/cmdline`, "utf8")
+          .catch(async () => {
+            try {
+              return String((await execFile("ps", ["-ww", "-o", "command=", "-p", String(spawnedPid)])).stdout);
+            } catch {
+              return "";
+            }
+          });
+        if (currentIdentity === spawnedIdentity && currentCommand.replaceAll("\0", " ").includes(fakeNode)) {
+          try {
+            process.kill(spawnedPid, "SIGKILL");
+          } catch {}
+        }
+      }
+    }
   }, 15_000);
 
   it("bounds unresolved cancellation tombstones without spawning another bridge", async () => {

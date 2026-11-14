@@ -1848,13 +1848,14 @@ export async function startSandboxCallbackBridgeServer(input: {
   });
   const nodeCommand = input.nodeCommand?.trim() || "node";
   const launchToken = randomUUID();
+  const launchTokenArgument = `--paperclip-bridge-launch-token=${launchToken}`;
   const launchStateFile = path.posix.join(directories.rootDir, `.launch-${launchToken}.state`);
   const launchCancellationFile = path.posix.join(directories.rootDir, `.launch-${launchToken}.cancel`);
   const launchWrapperScript = [
     "pid=$$",
     'node_command="$1"',
     'bridge_entrypoint="$2"',
-    'launch_token="$3"',
+    'launch_token_argument="$3"',
     'start_time=""',
     'if [ -r "/proc/$pid/stat" ]; then',
     '  stat_line=""',
@@ -1872,7 +1873,7 @@ export async function startSandboxCallbackBridgeServer(input: {
     "  exit 1",
     "fi",
     `rm -f ${shellQuote(launchStateFile)}`,
-    'exec "$node_command" "$bridge_entrypoint" "--paperclip-bridge-launch-token=$launch_token"',
+    'exec "$node_command" "$bridge_entrypoint" "$launch_token_argument"',
   ].join("\n");
   let launchCompleted = false;
   let launchTransportAmbiguous = true;
@@ -1892,7 +1893,7 @@ export async function startSandboxCallbackBridgeServer(input: {
           '  echo "Callback bridge launch was cancelled before process creation." >&2',
           "  exit 1",
           "fi",
-          `nohup ${shellQuote(shellCommand)} -c ${shellQuote(launchWrapperScript)} ${shellQuote(shellCommand)} ${shellQuote(nodeCommand)} ${shellQuote(remoteEntrypoint)} ${shellQuote(launchToken)} ` +
+          `nohup ${shellQuote(shellCommand)} -c ${shellQuote(launchWrapperScript)} ${shellQuote(shellCommand)} ${shellQuote(nodeCommand)} ${shellQuote(remoteEntrypoint)} ${shellQuote(launchTokenArgument)} ` +
             `>> ${shellQuote(directories.logFile)} 2>&1 < /dev/null &`,
           "pid=$!",
           "i=0",
