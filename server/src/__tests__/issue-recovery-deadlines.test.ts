@@ -9,7 +9,8 @@ import { issueService } from "../services/issues.js";
 import { issueRecoveryActionService } from "../services/issue-recovery-actions.js";
 import { registerIssueRecoveryWork } from "../services/recovery/work.js";
 import { recoveryService } from "../services/recovery/service.js";
-import { ISSUE_RECOVERY_BACKSTOP_MS, ISSUE_RECOVERY_MAX_ISSUE_IDS, notifyIssueRecovery } from "../services/issue-recovery-notifications.js";
+import { ISSUE_RECOVERY_BACKSTOP_MS, ISSUE_RECOVERY_MAX_ISSUE_IDS, notifyIssueGraphRecovery, notifyIssueRecovery }
+  from "../services/issue-recovery-notifications.js";
 import { notifyNativeStatusReassessment } from "../services/native-status-reassessment-notifications.js";
 import { notifyExecutionRunWork } from "../services/execution-control-notifications.js";
 import { notifyRunDispatch } from "../services/run-dispatch-notifications.js";
@@ -173,6 +174,19 @@ describeIssueRecovery("issue recovery production producers and deadlines", () =>
     await lifecycleEvent(tx => promoteDeferredWorkIntents(tx, { companyId: f.companyId, trigger: "accounting_settled", runId: graph.runId }));
     await graph.backlog(4000);
     expect(await lifecycleEvent(finished())).toBe(first);
+  });
+  it("resolves a run's task graph through index lookups, not the backlog", async () => {
+    const f = await fixture();
+    const graph = await runGraph(f.companyId, f.agentId);
+    await graph.backlog(2000);
+    await state.db.execute(sql`analyze issues`);
+    await state.db.execute(sql`analyze heartbeat_runs`);
+    const [read] = await state.db.transaction(async tx => {
+      await notifyIssueGraphRecovery(tx, { companyId: f.companyId, runId: graph.runId });
+      return tx.execute<{ rows: number }>(sql`select (coalesce(seq_tup_read, 0) + coalesce(idx_tup_fetch, 0))::int as rows
+        from pg_stat_xact_user_tables where relname = 'issues'`);
+    });
+    expect(read.rows).toBeLessThan(50);
   });
   it("finds a stranded task outside the affected set within the backstop bound", async () => {
     const f = await fixture();

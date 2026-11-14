@@ -9,6 +9,7 @@ export type IssueRecoveryScope = { companyId: string; issueId?: string; issueIds
 
 export const ISSUE_RECOVERY_MAX_ISSUE_IDS = 100;
 export const ISSUE_RECOVERY_BACKSTOP_MS = 5 * 60_000;
+const UUID_PATTERN = "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$";
 
 const COMPANY_QUEUES: DeliveryQueue[] = [DELIVERY_QUEUES.orphanBlockers, DELIVERY_QUEUES.activeRecoveryActions, DELIVERY_QUEUES.taskWatchdogs];
 const TASK_QUEUES: DeliveryQueue[] = [DELIVERY_QUEUES.strandedAssignments, DELIVERY_QUEUES.assignedWorkInvariant,
@@ -44,8 +45,10 @@ export async function notifyIssueGraphRecovery(transaction: object,
       select id from issues where company_id = ${company} and id = ${scope.issueId ?? null}::uuid
       union select issue_id from heartbeat_runs where company_id = ${company} and id = ${run} and issue_id is not null
       union select native_issue_id from heartbeat_runs where company_id = ${company} and id = ${run} and native_issue_id is not null
-      union select issue.id from heartbeat_runs run inner join issues issue on issue.company_id = run.company_id
-        and issue.id::text = coalesce(run.context_snapshot->>'issueId', run.context_snapshot->>'taskId')
+      union select issue.id from heartbeat_runs run
+        cross join lateral (select coalesce(run.context_snapshot->>'issueId', run.context_snapshot->>'taskId') as saved) context
+        inner join issues issue on issue.company_id = run.company_id
+          and issue.id = case when context.saved ~* ${UUID_PATTERN} then context.saved::uuid end
       where run.company_id = ${company} and run.id = ${run}
     ), affected(id) as (
       select id from seed
