@@ -1,3 +1,6 @@
+import fs from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { AdapterEnvironmentTestContext } from "@paperclipai/adapter-utils";
 
@@ -100,6 +103,29 @@ describe("agy-local testEnvironment", () => {
     expect(capturedRuns[0].options.stdin).toBe(
       JSON.stringify({ event: "user", message: { content: "Respond with hello." } }) + "\n",
     );
+  });
+
+  it("hands an AGY_API_KEY alias to the probe as GEMINI_API_KEY", async () => {
+    const tempHome = await fs.mkdtemp(path.join(os.tmpdir(), "agy-test-alias-"));
+    try {
+      const ctx: AdapterEnvironmentTestContext = {
+        companyId: "company-1",
+        adapterType: "agy_local",
+        config: {
+          env: {
+            HOME: tempHome,
+            AGY_API_KEY: "alias-key",
+          },
+        },
+      };
+
+      const result = await testEnvironment(ctx);
+      expect(result.status).toBe("pass");
+      expect(capturedRuns).toHaveLength(1);
+      expect(capturedRuns[0].options.env?.GEMINI_API_KEY).toBe("alias-key");
+    } finally {
+      await fs.rm(tempHome, { recursive: true, force: true }).catch(() => undefined);
+    }
   });
 
   it("passes --print and text input format when inputFormat is explicitly set to text", async () => {

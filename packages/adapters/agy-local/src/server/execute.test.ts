@@ -728,6 +728,26 @@ describe("agy-local execute run outcome", () => {
     expect(result.costStatus).toBeUndefined();
   });
 
+  it("hands an AGY_API_KEY alias to the CLI as GEMINI_API_KEY and bills it as API usage", async () => {
+    // Readiness reports aliases as ready, so the run must actually hand
+    // the CLI the key — otherwise the agent would fall back to OAuth.
+    const tempHome = await fs.mkdtemp(path.join(os.tmpdir(), "agy-exec-billing-"));
+    try {
+      const { result } = await runWithOutput(SIMPLE_RUN, "", 0, {
+        HOME: tempHome,
+        AGY_API_KEY: "alias-key",
+      });
+      expect(result.exitCode).toBe(0);
+      const calls = vi.mocked(runChildProcess).mock.calls;
+      const lastCallOptions = calls[calls.length - 1][3] as { env?: Record<string, string> };
+      expect(lastCallOptions?.env?.GEMINI_API_KEY).toBe("alias-key");
+      expect(result.billingType).toBe("api");
+      expect(result.costUsd).toBeNull();
+    } finally {
+      await fs.rm(tempHome, { recursive: true, force: true }).catch(() => undefined);
+    }
+  });
+
   it("bills a blank API key as subscription", async () => {
     // A non-empty-looking key still triggers the settings write under
     // HOME, so use a scratch home even though billing falls back.

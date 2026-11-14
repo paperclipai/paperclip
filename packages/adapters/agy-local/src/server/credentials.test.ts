@@ -3,9 +3,11 @@ import os from "node:os";
 import path from "node:path";
 import { describe, expect, it, afterEach } from "vitest";
 import {
+  applyAgyApiKeyAlias,
   evaluateAgyCredentialReadiness,
   hasUsableAgyOAuthToken,
   listAgyOAuthTokenPaths,
+  resolveAgyApiKey,
   resolveAgyOAuthTokenPath,
   parseAgyOAuthToken,
   ensureAgyApiKeySettings,
@@ -106,6 +108,60 @@ describe("evaluateAgyCredentialReadiness", () => {
 
     const res = evaluateAgyCredentialReadiness({ homedir: fakeHome, env: {} as NodeJS.ProcessEnv });
     expect(res.ready).toBe(false);
+  });
+});
+
+describe("resolveAgyApiKey", () => {
+  it("prefers GEMINI_API_KEY over the aliases", () => {
+    expect(
+      resolveAgyApiKey({ GEMINI_API_KEY: "gemini", AGY_API_KEY: "agy", ANTIGRAVITY_API_KEY: "antigravity" }),
+    ).toBe("gemini");
+  });
+
+  it("falls through to AGY_API_KEY, then ANTIGRAVITY_API_KEY", () => {
+    expect(resolveAgyApiKey({ AGY_API_KEY: "agy", ANTIGRAVITY_API_KEY: "antigravity" })).toBe("agy");
+    expect(resolveAgyApiKey({ ANTIGRAVITY_API_KEY: "antigravity" })).toBe("antigravity");
+  });
+
+  it("falls through when GEMINI_API_KEY is blank", () => {
+    expect(resolveAgyApiKey({ GEMINI_API_KEY: "   ", AGY_API_KEY: "agy" })).toBe("agy");
+  });
+
+  it("returns null when no key is present", () => {
+    expect(resolveAgyApiKey({})).toBeNull();
+    expect(resolveAgyApiKey({ GEMINI_API_KEY: "   " })).toBeNull();
+  });
+});
+
+describe("applyAgyApiKeyAlias", () => {
+  it("maps AGY_API_KEY to GEMINI_API_KEY", () => {
+    const env: Record<string, string> = { AGY_API_KEY: "agy-key" };
+    applyAgyApiKeyAlias(env);
+    expect(env.GEMINI_API_KEY).toBe("agy-key");
+  });
+
+  it("maps ANTIGRAVITY_API_KEY to GEMINI_API_KEY", () => {
+    const env: Record<string, string> = { ANTIGRAVITY_API_KEY: "antigravity-key" };
+    applyAgyApiKeyAlias(env);
+    expect(env.GEMINI_API_KEY).toBe("antigravity-key");
+  });
+
+  it("never overwrites a set GEMINI_API_KEY", () => {
+    const env: Record<string, string> = { GEMINI_API_KEY: "gemini-key", AGY_API_KEY: "agy-key" };
+    applyAgyApiKeyAlias(env);
+    expect(env.GEMINI_API_KEY).toBe("gemini-key");
+  });
+
+  it("replaces a blank GEMINI_API_KEY with the alias", () => {
+    const env: Record<string, string> = { GEMINI_API_KEY: "   ", AGY_API_KEY: "agy-key" };
+    applyAgyApiKeyAlias(env);
+    expect(env.GEMINI_API_KEY).toBe("agy-key");
+  });
+
+  it("is a no-op when no key is present", () => {
+    const env: Record<string, string> = {};
+    applyAgyApiKeyAlias(env);
+    expect(env.GEMINI_API_KEY).toBeUndefined();
   });
 });
 

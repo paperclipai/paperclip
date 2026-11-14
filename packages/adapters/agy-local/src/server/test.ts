@@ -32,6 +32,7 @@ import {
 } from "../index.js";
 import { detectAgyAuthRequired, parseAgyJsonl } from "./parse.js";
 import {
+  applyAgyApiKeyAlias,
   copyBackAgyAuth,
   ensureAgyApiKeySettings,
   resolveAgyOAuthTokenPath,
@@ -109,7 +110,12 @@ export async function testEnvironment(
   for (const [key, value] of Object.entries(envConfig)) {
     if (typeof value === "string") env[key] = value;
   }
+  // The probe runs with `env`, the settings write and remote staging with
+  // `runtimeEnv`: map the alias in both, so either source of the key
+  // reaches the CLI as GEMINI_API_KEY.
+  applyAgyApiKeyAlias(env);
   const runtimeEnv = ensurePathInEnv({ ...process.env, ...env });
+  applyAgyApiKeyAlias(runtimeEnv);
 
   if (targetIsRemote) {
     const installCheck = await maybeRunSandboxInstallCommand({

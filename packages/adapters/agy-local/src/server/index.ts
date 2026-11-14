@@ -30,6 +30,8 @@ export {
 export {
   evaluateAgyCredentialReadiness,
   listAgyOAuthTokenPaths,
+  resolveAgyApiKey,
+  applyAgyApiKeyAlias,
   resolveAgyOAuthTokenPath,
   hasUsableAgyOAuthToken,
   parseAgyOAuthToken,

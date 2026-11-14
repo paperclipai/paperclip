@@ -60,7 +60,7 @@ import {
   syncSkillsForRun,
 } from "./skills.js";
 import { inferModelProvider } from "./models.js";
-import { ensureAgyApiKeySettings } from "./credentials.js";
+import { applyAgyApiKeyAlias, ensureAgyApiKeySettings } from "./credentials.js";
 import { prepareAgyLocalRunMcpHome } from "./mcp.js";
 import {
   DEFAULT_AGY_LOCAL_MODEL,
@@ -104,12 +104,10 @@ export function resolveAgyPrintTimeoutSec(timeoutSec: number): number {
 /**
  * Billing for an Antigravity run follows the credential the CLI actually
  * uses: a Gemini API key is metered API usage, while the OAuth token is a
- * subscription run. Only GEMINI_API_KEY is consulted — it is the key the
- * CLI consumes (and the key the server injects for api_key connections).
- * The adapter's AGY_API_KEY/ANTIGRAVITY_API_KEY aliases are readiness
- * conveniences that nothing maps into GEMINI_API_KEY, so a run with only
- * an alias set falls back to OAuth and is correctly billed subscription.
- * Mirrors gemini-local's resolveGeminiBillingType.
+ * subscription run. Only GEMINI_API_KEY is consulted here because the
+ * supported aliases are mapped into it by applyAgyApiKeyAlias before
+ * execution, so by the time billing resolves the effective key is in
+ * GEMINI_API_KEY. Mirrors gemini-local's resolveGeminiBillingType.
  */
 function resolveAgyBillingType(env: Record<string, string>): "api" | "subscription" {
   return typeof env.GEMINI_API_KEY === "string" && env.GEMINI_API_KEY.trim().length > 0
@@ -321,6 +319,11 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const runtimeEnv: Record<string, string> = Object.fromEntries(
     Object.entries(rawEnv).filter((entry): entry is [string, string] => typeof entry[1] === "string"),
   );
+
+  // Map a supported API-key alias to GEMINI_API_KEY before anything reads
+  // the effective env: readiness reports aliases as ready, so the run must
+  // actually hand the CLI the key.
+  applyAgyApiKeyAlias(runtimeEnv);
 
   if (runtimeEnv.GEMINI_API_KEY && !executionTargetIsRemote) {
     try {

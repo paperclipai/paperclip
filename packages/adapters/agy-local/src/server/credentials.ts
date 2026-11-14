@@ -211,6 +211,33 @@ export async function ensureAgyApiKeySettings(
 }
 
 /**
+ * The effective Gemini API key for an Antigravity run. The CLI only reads
+ * GEMINI_API_KEY; AGY_API_KEY and ANTIGRAVITY_API_KEY are Paperclip-side
+ * aliases for the same key. Precedence is GEMINI_API_KEY, then AGY_API_KEY,
+ * then ANTIGRAVITY_API_KEY; a blank value falls through to the next alias.
+ */
+export function resolveAgyApiKey(env: Record<string, string | undefined>): string | null {
+  for (const name of ["GEMINI_API_KEY", "AGY_API_KEY", "ANTIGRAVITY_API_KEY"] as const) {
+    const value = (env[name] ?? "").trim();
+    if (value.length > 0) return value;
+  }
+  return null;
+}
+
+/**
+ * Map a supported API-key alias to GEMINI_API_KEY, the only key the CLI
+ * reads. No-op when GEMINI_API_KEY is already set to a non-blank value, or
+ * when no alias is present. Call on the effective env before testing and
+ * execution so readiness and the run cannot disagree about whether an API
+ * key is configured.
+ */
+export function applyAgyApiKeyAlias(env: Record<string, string | undefined>): void {
+  if ((env.GEMINI_API_KEY ?? "").trim().length > 0) return;
+  const key = resolveAgyApiKey(env);
+  if (key) env.GEMINI_API_KEY = key;
+}
+
+/**
  * Checks whether Antigravity credentials are ready to use.
  * Checks for:
  * 1. Explicitly configured API key
@@ -228,8 +255,8 @@ export function evaluateAgyCredentialReadiness(
     return { ready: true, authMode: "api", detail: "configured_api_key" };
   }
 
-  const envKey = (env.GEMINI_API_KEY || env.AGY_API_KEY || env.ANTIGRAVITY_API_KEY || "").trim();
-  if (envKey.length > 0) {
+  const envKey = resolveAgyApiKey(env);
+  if (envKey) {
     return { ready: true, authMode: "api", detail: "env_api_key" };
   }
 
