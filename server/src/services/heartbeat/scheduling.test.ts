@@ -570,7 +570,8 @@ describe.skipIf(!postgres.supported)("heartbeat scheduling database boundary", (
     async function quiet() {
 
       await advance(31_000);
-      if (!draining) await vi.waitFor(() => {
+      if (!draining) await vi.waitFor(async () => {
+        await advance(1000);
         expect(idleWorkSnapshot().active).toBe(0);
         expect(coordinator!.nextWakeAt()).toBeNull();
       }, { timeout: 5000 });

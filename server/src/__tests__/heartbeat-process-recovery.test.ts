@@ -9254,13 +9254,21 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       runtimeMode: "legacy", adapterType: "codex_local", agentStatus: "idle", runStatus: "queued",
     });
     await db.update(agents).set({ adapterConfig: {
-      command: process.execPath, args: ["-e", "console.log('ready');setInterval(() => {}, 1000)"], graceSec: 1,
+      command: process.execPath, args: ["-e", "console.log('cli input ready');setInterval(() => {}, 1000)"], graceSec: 1,
     } }).where(eq(agents.id, agentId));
-    mockAdapterExecute.mockImplementationOnce((async (input: unknown) =>
-      actualProcess.execute(input as Parameters<typeof actualProcess.execute>[0])) as typeof mockAdapterExecute);
+    let reportReady!: () => void;
+    const ready = new Promise<void>((resolve) => { reportReady = resolve; });
+    mockAdapterExecute.mockImplementationOnce((async (input: unknown) => {
+      const context = input as Parameters<typeof actualProcess.execute>[0];
+      return actualProcess.execute({ ...context, onLog: async (stream, text) => {
+        await context.onLog(stream, text);
+        if (text.includes("cli input ready")) reportReady();
+      } });
+    }) as typeof mockAdapterExecute);
     const heartbeat = heartbeatService(db);
     await heartbeat.resumeQueuedRuns();
-    expect(await waitForValue(async () => runningProcesses.get(runId))).toBeTruthy();
+    await ready;
+    expect(runningProcesses.get(runId)).toBeTruthy();
     if (earlyExit) return; // Exercise afterEach while the unbounded CLI child is still live.
     const [comment] = await db.insert(issueComments).values({ companyId, issueId, authorUserId: "responsible-user", body: "continue" }).returning();
     const [wake] = await db.insert(agentWakeupRequests).values({
@@ -9964,11 +9972,9 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
         .where(eq(agents.id, agentId));
       const heartbeat = heartbeatService(db);
       await heartbeat.resumeQueuedRuns();
-      const running = await waitForValue(async () =>
-        runningProcesses.get(runId),
-      );
-      expect(running?.child.pid).toBeTruthy();
       await ready;
+      const running = runningProcesses.get(runId);
+      expect(running?.child.pid).toBeTruthy();
       const cancellation = heartbeat
         .cancelRun(runId, "Stopped by test operator")
         .then(
