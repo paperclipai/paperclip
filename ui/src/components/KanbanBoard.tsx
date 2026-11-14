@@ -220,7 +220,7 @@ function KanbanColumn({
 
   return (
     <div className="flex flex-col shrink-0 min-w-(--sz-260px) w-(--sz-260px)">
-      <div className="flex items-center gap-2 px-3 py-2 mb-1">
+      <div className="sticky top-0 z-10 flex items-center gap-2 px-3 py-2 mb-1 bg-background">
         <StatusIcon status={status} />
         <span className={cn("text-xs font-semibold uppercase tracking-wide", tone.header)}>
           {statusLabel(status)}
@@ -494,7 +494,7 @@ export function KanbanBoard({
     >
       {showOverflowFades
         ? <HorizontalScrollViewport label="Task board columns" contentClassName="flex gap-3 pb-4 px-2">{columns}</HorizontalScrollViewport>
-        : <div className="flex gap-3 overflow-x-auto pb-4 -mx-2 px-2">{columns}</div>}
+        : <div role="region" aria-label="Task board columns" className="grid grid-flow-col auto-cols-max gap-3 overflow-auto max-h-(--sz-calc-33) pb-4 -mx-2 px-2">{columns}</div>}
       <DragOverlay>
         {activeIssue ? (
           <KanbanCard issue={activeIssue} agents={agents} isOverlay compact={compactCards} />
