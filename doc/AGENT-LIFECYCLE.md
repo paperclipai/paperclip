@@ -229,6 +229,8 @@ Return the same `operationId` and `version` with `status: "complete"` or
 `status: "pending"`.
 Return `complete` only after the requested effect is complete.
 Return `pending` while external work continues.
+The host calls a `pending` step again two seconds after an attempt.
+From the 31st attempt of one operation, the host waits one minute after each attempt.
 Throw an error when the step fails.
 
 The host stores a fixed error message. It does not store the provider error text.
