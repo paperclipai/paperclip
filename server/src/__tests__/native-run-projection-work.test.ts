@@ -485,6 +485,21 @@ describe("committed native run projection lifecycle", () => {
     await projectCommittedRun({ db, run, coordinator: await state(binding.runId) });
     expect(await read(binding.runId)).toMatchObject({ status: "failed", errorCode: expectedCode, error: expectedError });
   });
+  it("names a recorded runner turn failure in committed recovery projection", async () => {
+    const binding = await accepted("failed");
+    await finalizeNativeRun({ db, runId: binding.runId, workspaceFinalizeStatus: "succeeded" });
+    const [unfinished] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, binding.runId));
+    await db.update(heartbeatRuns).set({ errorCode: null, error: null, resultJson: { ...unfinished.resultJson,
+      nativeTurnFailure: { provider: "opencode", category: "turn_failed", runnerFailureCode: "opencode_empty_response", message: "private provider text" } } })
+      .where(eq(heartbeatRuns.id, binding.runId));
+    const run = await read(binding.runId);
+    expect(run.status).toBe("running");
+    await projectCommittedRun({ db, run, coordinator: await state(binding.runId) });
+    const projected = await read(binding.runId);
+    expect(projected).toMatchObject({ status: "failed", errorCode: NATIVE_RUN_FAILED_UNEXPLAINED.errorCode,
+      error: "The OpenCode turn failed (opencode_empty_response). Inspect the run events for the last recorded step." });
+    expect(projected.error).not.toContain("private");
+  });
   it("ignores routine company-only finalization hints and still repairs a committed run", async () => {
     await start(); await flush(); await quiet();
     const previous = db.$client.options.debug;

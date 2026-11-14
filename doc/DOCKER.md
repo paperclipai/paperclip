@@ -92,7 +92,9 @@ identity rules and how to consume the image.
 
 The application image takes its Runner from the `runner-artifacts` stage. It
 has no Runner build of its own, no Rust toolchain and no C compiler. Every
-build of the `production` or `cloud` target builds that stage itself, once:
+build of the `production` or `cloud` target builds that stage itself, once,
+unless it is given a published Runner image in its place (see "The Runner of
+the application image" below):
 
 - The `build` stage copies the Runner's build output and its build stamp into
   `packages/paperclip-runner`. It sets `PAPERCLIP_RUNNER_VENDOR_REQUIRE_CURRENT=1`,
@@ -110,14 +112,46 @@ contract for the rules a consumer of the application image can rely on.
 
 The Runner stages install with a frozen lockfile, so `docker build` fails when
 `pnpm-lock.yaml` is behind the manifests they read: the root `package.json`,
-`packages/paperclip-runner` and `packages/paperclip-eval-kernel`. The `deps`
-stage still resolves every other manifest change inside the image. Refresh the
+`packages/paperclip-runner` and `packages/paperclip-eval-kernel`. The
+`runner-lockfile` stage makes that check from those manifests and the lockfile
+alone, so it runs as soon as the `base` stage is built. The `deps` stage starts
+from it, so the application's dependency install cannot start before the check
+passes. A stale lockfile fails the build within seconds of the check running,
+with a message that names the command below. The Runner's own frozen install
+fails on the same lockfile, but it comes after the daemon compile. Stages that
+do not depend on the check can already be running when it fails: the Runner's
+toolchain download and daemon compile, and the tool layer of the `production`
+stage. The failed check stops the build and cancels them. The `deps` stage
+still resolves every other manifest change inside the image. Refresh the
 lockfile in the checkout, then build again. Do not commit the result (see
 "Dependency Lockfile Policy" in `doc/DEVELOPING.md`):
 
 ```sh
 pnpm install --resolution-only --ignore-scripts --no-frozen-lockfile
 ```
+
+### The Runner of the application image
+
+An application image either makes its own Runner in its build (inline) or
+copies the published Runner image of the same inputs. A local build, a fork,
+a pull request and the merge-queue build are always inline.
+`.github/workflows/docker.yml` in this repository copies the published image
+when the repository variable `RUNNER_IMAGE_CONSUME_ENABLED` is exactly `true`
+and the image of the commit's inputs is published and its attestation
+verifies. On a `master` push it waits for the commit's own run of
+`runner-image.yml`, at most 40 minutes from the push. In every other case the
+build is inline, with a notice: no state of the Runner image fails an
+application image build. A build that copies the published image builds the
+committed `pnpm-lock.yaml`: the workflow does not refresh it first, and the
+`deps` stage resolves the other packages' manifests inside the image.
+
+An image that copied the published Runner has the labels
+`io.paperclip.runner.image` (`ghcr.io/paperclipai/paperclip-runner@sha256:<digest>`)
+and `io.paperclip.runner.inputs-digest`. An image without them made its own
+Runner and is as complete. To go back to inline builds everywhere, set the
+variable to another value or delete it; nothing needs a revert. See "The
+Runner of the application image" in
+[`doc/runner-image-contract.md`](runner-image-contract.md).
 
 `.github/workflows/docker.yml` builds the application image on `master` and on
 tags only. `.github/workflows/docker-app-check.yml` builds the `build` and

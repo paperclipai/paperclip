@@ -1130,7 +1130,11 @@ task finishes with no Retry and no run ends with
 
 Before starting, the harness compares the image's `io.paperclip.runner.content-id`
 label with the content ID of this checkout (`pnpm test:e2e:runner:image-id`,
-which hashes every runner input) and refuses to run on a mismatch. To get an
+which hashes every runner input) and refuses to run on a mismatch. For a local
+test of a branch that changes only controller-side TypeScript, set
+`PAPERCLIP_CHAOS_TEST_ACCEPT_IMAGE_CONTENT_ID` to the image's exact content ID
+to run against that existing image; the harness prints a `TEST OVERRIDE` warning
+and the timeline keeps both content IDs. Such a wave is not image qualification. To get an
 image for the current master, dispatch a narrow image build and reject its paid
 gate:
 

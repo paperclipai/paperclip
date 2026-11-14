@@ -6,7 +6,6 @@ import {
   heartbeatRunEvents, issueComments, issues, nativeRunFinalizations, toolInvocations,
 } from "@paperclipai/db";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "../__tests__/helpers/embedded-postgres.js";
-import { truncateTablesWithDeadlockRetry } from "../__tests__/helpers/truncate-with-deadlock-retry.js";
 import { deliverReconciledExecutions, settleUnrecoverableExecutions } from "./execution-recovery-resolution.js";
 import { PENDING_CONTINUATION_BOUND_MS } from "./recovery-continuation-pacing.js";
 import { getExecutionBlocker } from "./execution-blocker.js";
@@ -64,7 +63,9 @@ suite("fresh-continuation fallback", () => {
   afterEach(async () => {
     resetBacklogContinuationPacingForTests(db);
     await heartbeatService(db).drainActiveRunExecutions();
-    await truncateTablesWithDeadlockRetry(db, `truncate table issue_recovery_actions, native_run_finalizations, tool_invocations,
+    // The drain covers every background run, wake and resume dispatch, so
+    // nothing still holds these tables. A deadlock here is a leak to fix.
+    await db.execute(sql`truncate table issue_recovery_actions, native_run_finalizations, tool_invocations,
       issue_approvals, approvals, issue_thread_interactions, activity_log, agent_wakeup_requests, environment_leases, execution_workspaces, heartbeat_runs, issues cascade`);
   });
 
@@ -992,6 +993,33 @@ suite("fresh-continuation fallback", () => {
     } as typeof agentWakeupRequests.$inferInsert);
     expect(await ensureFreshContinuation(db, { companyId, runId: f.runId, trigger: "recovery_refused" }))
       .toMatchObject({ kind: "continued", delivery: taken ? "recorded" : "saved_input" });
+  }, 60_000);
+
+  it.each(["native", "legacy"] as const)("starts a run for the person's message once the task continues from saved work (%s)", async runtime => {
+    const f = await unfinishedRun({ runtime, errorCode: runtime === "native" ? "native_provider_terminal_failed" : "process_lost" });
+    const [comment] = await db.insert(issueComments).values({ companyId, issueId: f.issueId, authorType: "user",
+      authorUserId: userId, body: "try again" } as typeof issueComments.$inferInsert).returning();
+    const heartbeat = heartbeatService(db);
+    await heartbeat.wakeup(agentId, { source: "automation", triggerDetail: "system", reason: "issue_commented",
+      payload: { issueId: f.issueId, commentId: comment!.id, mutation: "comment" },
+      requestedByActorType: "user", requestedByActorId: userId,
+      contextSnapshot: { issueId: f.issueId, taskId: f.issueId, commentId: comment!.id, wakeCommentId: comment!.id,
+        source: "issue.comment", wakeReason: "issue_commented" } });
+    const wakes = () => db.select().from(agentWakeupRequests).where(sql`${agentWakeupRequests.payload}->>'issueId' = ${f.issueId}`);
+    expect((await wakes()).map(w => w.status)).toEqual(["deferred_issue_execution"]);
+    expect(await ensureFreshContinuation(db, { companyId, runId: f.runId, trigger: "recovery_refused" }))
+      .toMatchObject({ kind: "continued", delivery: "saved_input" });
+    await occupySlot();
+    await deliver();
+    await heartbeat.resumeQueuedRuns();
+    const runs = await db.select().from(heartbeatRuns).where(and(
+      sql`${heartbeatRuns.contextSnapshot}->>'issueId' = ${f.issueId}`, sql`${heartbeatRuns.id} <> ${f.runId}`));
+    const saved = await wakes();
+    expect(runs, JSON.stringify({ issue: await issue(f.issueId),
+      wakes: saved.map(w => ({ status: w.status, error: w.error, runId: w.runId, payload: w.payload })) })).toHaveLength(1);
+    expect(runs[0]!.contextSnapshot?.wakeCommentIds).toContain(comment!.id);
+    expect(saved).toHaveLength(1);
+    expect(saved[0]!.runId).toBe(runs[0]!.id);
   }, 60_000);
 
   it.each([

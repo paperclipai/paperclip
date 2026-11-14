@@ -179,7 +179,7 @@ test("master promotes only after proof and otherwise builds exactly as before", 
   const step = name => { const found = steps.find(item => item.startsWith(`      - name: ${name}\n`)); assert.ok(found, name); return found; };
   const order = name => steps.indexOf(step(name));
   assert.match(step("Find the merge-queue build of this commit"),
-    /if: github.repository == 'paperclipai\/paperclip' && github.repository_id == '1170821064' && github.event_name == 'push' && github.ref == 'refs\/heads\/master'/);
+    /if: needs.runner_image.outputs.mode != 'published' && github.repository == 'paperclipai\/paperclip' && github.repository_id == '1170821064' && github.event_name == 'push' && github.ref == 'refs\/heads\/master'/);
   for (const name of ["Find the merge-queue build of this commit", "Download the merge-queue image", "Promote the merge-queue image"]) {
     assert.match(step(name), /continue-on-error: true/, `${name} must fall back to the build`);
   }
