@@ -1,24 +1,37 @@
 import { generateKeyPairSync, randomUUID, sign } from "node:crypto";
 import express from "express";
 import request from "supertest";
-import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { eq, sql } from "drizzle-orm";
-import { activityLog, cloudProductEvents, companies, companyOnboardingSeeds, createDb, issues } from "@paperclipai/db";
+import { activityLog, agents, cloudProductEvents, companies, companyOnboardingSeeds, createDb, heartbeatRuns, issues } from "@paperclipai/db";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 import { cloudControlMiddleware } from "../middleware/cloud-control.js";
+import { BUILT_IN_AGENT_METADATA_KEY } from "../lib/built-in-agent-metadata.js";
+import { logger } from "../middleware/logger.js";
 import { cloudProductEventRoutes } from "../routes/cloud-product-events.js";
 import { logActivity } from "../services/activity-log.js";
 import { cloudTenantPrimaryCompanyId } from "../services/cloud-instance.js";
 import {
   CLOUD_PRODUCT_EVENT_NAMES,
   CLOUD_PRODUCT_EVENT_START_CURSOR,
+  CLOUD_RUN_FAILURE_CLASSES,
+  DIRECT_CLOUD_PRODUCT_EVENT_NAMES,
+  cloudRunFailureClass,
   draftCloudProductEvent,
   hasCloudProductEvent,
   listCloudProductEvents,
+  recordAgentFirstRunCloudProductEvent,
   recordCloudProductEvent,
+  recordConnectorUsedCloudProductEvent,
+  recordDirectCloudProductEvent,
+  recordRunFinishedCloudProductEvent,
+  resetCloudProductEventConnectorUseGuardForTests,
   resetCloudProductEventPruneClockForTests,
+  type CloudProductEventConnectorUse,
   type CloudProductEventSource,
+  type DirectCloudProductEvent,
 } from "../services/cloud-product-events.js";
+import { PERSON_OWNED_FAILURE_CODES, RESTART_CLASS_FAILURE_CODES } from "../services/continuation-cause.js";
 import {
   CLOUD_CONTROL_AUDIENCE,
   CLOUD_CONTROL_HEADER,
@@ -115,13 +128,92 @@ describe("draftCloudProductEvent", () => {
     ];
     const names = actions.map((action) => draftCloudProductEvent(source({ action }))?.name);
     names.push(draftCloudProductEvent(source({ action: "issue.updated", details: { status: "done", _previous: { status: "todo" } } }))?.name);
-    expect(new Set(names)).toEqual(new Set(CLOUD_PRODUCT_EVENT_NAMES.filter((name) => name !== "plan.created")));
+    const direct: readonly string[] = DIRECT_CLOUD_PRODUCT_EVENT_NAMES;
+    expect(new Set(names)).toEqual(new Set(CLOUD_PRODUCT_EVENT_NAMES.filter((name) => name !== "plan.created" && !direct.includes(name))));
   });
 
   it("applies only on Cloud-managed instances", () => {
     expect(hasCloudProductEvent(source(), CLOUD_ENV)).toBe(true);
     expect(hasCloudProductEvent(source(), SELF_HOSTED_ENV)).toBe(false);
     expect(hasCloudProductEvent(source({ action: "issue.comment_added" }), CLOUD_ENV)).toBe(false);
+  });
+});
+
+describe("cloudRunFailureClass", () => {
+  it.each([
+    ["operator_cancelled", "stopped"],
+    ["issue_paused", "stopped"],
+    ["github_auth_required", "missing_access"],
+    ["user_secret_missing", "missing_access"],
+    ["provider_quota", "provider_limit"],
+    ["native_provider_usage_limit", "provider_limit"],
+    ["budget_hard_stop", "waiting_on_person"],
+    ["approval_required", "waiting_on_person"],
+    ["adapter_failed", "execution_failure"],
+    ["process_lost", "execution_failure"],
+    ["a_code_added_later", "other"],
+    ["", "other"],
+    [null, "other"],
+    [undefined, "other"],
+  ])("maps %s to %s", (errorCode, failureClass) => {
+    expect(cloudRunFailureClass(errorCode)).toBe(failureClass);
+  });
+
+  it("gives each person-owned code a customer-side class", () => {
+    const customerSide = ["stopped", "missing_access", "provider_limit", "waiting_on_person"];
+    for (const code of PERSON_OWNED_FAILURE_CODES) expect([code, customerSide.includes(cloudRunFailureClass(code))]).toEqual([code, true]);
+  });
+
+  it("gives each restart code the execution failure class", () => {
+    for (const code of RESTART_CLASS_FAILURE_CODES) expect([code, cloudRunFailureClass(code)]).toEqual([code, "execution_failure"]);
+  });
+
+  it("returns only listed classes", () => {
+    const classes: readonly string[] = CLOUD_RUN_FAILURE_CLASSES;
+    for (const code of [...PERSON_OWNED_FAILURE_CODES, ...RESTART_CLASS_FAILURE_CODES, "timeout", "unknown"]) {
+      expect(classes).toContain(cloudRunFailureClass(code));
+    }
+  });
+});
+
+describe("direct cloud product events", () => {
+  it("keeps the direct names inside the closed list", () => {
+    const names: readonly string[] = CLOUD_PRODUCT_EVENT_NAMES;
+    for (const name of DIRECT_CLOUD_PRODUCT_EVENT_NAMES) expect(names).toContain(name);
+  });
+
+  it("reads no data on a self-hosted instance", async () => {
+    const unusedDb = new Proxy({}, {
+      get() {
+        throw new Error("the database must not be used");
+      },
+    }) as never;
+    const options = { env: SELF_HOSTED_ENV };
+    const event: DirectCloudProductEvent = {
+      name: "plan.approved",
+      companyId: randomUUID(),
+      actorType: "user",
+      actorId: "user-1",
+      responsibleUserId: "user-1",
+      entityType: "issue",
+      entityId: randomUUID(),
+    };
+    const use: CloudProductEventConnectorUse = {
+      companyId: randomUUID(),
+      connectionId: randomUUID(),
+      connectorKey: "github",
+      status: "succeeded",
+      actorType: "agent",
+      actorId: randomUUID(),
+      runId: null,
+      issueId: null,
+    };
+    const agent = { id: randomUUID(), companyId: randomUUID(), role: "engineer", adapterType: "claude_local", metadata: null };
+
+    expect(await recordDirectCloudProductEvent(unusedDb, event, options)).toBe(false);
+    expect(await recordRunFinishedCloudProductEvent(unusedDb, randomUUID(), options)).toBe(false);
+    expect(await recordAgentFirstRunCloudProductEvent(unusedDb, agent, options)).toBe(false);
+    expect(await recordConnectorUsedCloudProductEvent(unusedDb, use, options)).toBe(false);
   });
 });
 
@@ -182,6 +274,56 @@ const support = await getEmbeddedPostgresTestSupport();
     return id;
   }
 
+  async function createAgent(companyId: string, overrides: Partial<typeof agents.$inferInsert> = {}) {
+    const id = randomUUID();
+    await db.insert(agents).values({
+      id,
+      companyId,
+      name: "Private agent name",
+      role: "engineer",
+      adapterType: "claude_local",
+      adapterConfig: { model: "claude-configured-model" },
+      ...overrides,
+    });
+    return id;
+  }
+
+  async function createRun(companyId: string, agentId: string, overrides: Partial<typeof heartbeatRuns.$inferInsert> = {}) {
+    const id = randomUUID();
+    await db.insert(heartbeatRuns).values({
+      id,
+      companyId,
+      agentId,
+      status: "succeeded",
+      startedAt: new Date("2026-11-01T10:00:00.000Z"),
+      finishedAt: new Date("2026-11-01T10:01:30.400Z"),
+      ...overrides,
+    });
+    return id;
+  }
+
+  function connectorUse(companyId: string, overrides: Partial<CloudProductEventConnectorUse> = {}): CloudProductEventConnectorUse {
+    return {
+      companyId,
+      connectionId: randomUUID(),
+      connectorKey: "github",
+      status: "succeeded",
+      actorType: "agent",
+      actorId: randomUUID(),
+      runId: null,
+      issueId: null,
+      ...overrides,
+    };
+  }
+
+  function eventsNamed(name: string) {
+    return db.select().from(cloudProductEvents).where(eq(cloudProductEvents.name, name));
+  }
+
+  function stored(rows: unknown[]) {
+    return JSON.stringify(rows, (_key, item) => typeof item === "bigint" ? item.toString() : item);
+  }
+
   beforeAll(async () => {
     temporary = await startEmbeddedPostgresTestDatabase("paperclip-cloud-product-events-");
     db = createDb(temporary.connectionString);
@@ -195,6 +337,7 @@ const support = await getEmbeddedPostgresTestSupport();
     delete process.env.PAPERCLIP_MANAGED_CONFIG;
     resetCloudControlReplayFenceForTests();
     resetCloudProductEventPruneClockForTests();
+    resetCloudProductEventConnectorUseGuardForTests();
   });
 
   afterEach(async () => {
@@ -387,6 +530,245 @@ const support = await getEmbeddedPostgresTestSupport();
 
     await recordCloudProductEvent(db, source({ companyId, action: "goal.created" }), null, { now: now + 61 * 60_000 });
     expect((await db.select().from(cloudProductEvents)).map((row) => row.name)).toEqual(["goal.created", "goal.created", "goal.created"]);
+  });
+
+  it("records a finished run with its failure class and numbers, and no free text", async () => {
+    const companyId = await createCompany();
+    const agentId = await createAgent(companyId);
+    const runId = await createRun(companyId, agentId, {
+      status: "failed",
+      error: "Private error text",
+      errorCode: "provider_quota",
+      responsibleUserId: "user-owner",
+      usageJson: { model: "claude-fable-5-2", inputTokens: 1200.7, output_tokens: 340, cacheReadInputTokens: 55, note: "Private usage note" },
+    });
+
+    expect(await recordRunFinishedCloudProductEvent(db, runId)).toBe(true);
+
+    const rows = await eventsNamed("run.finished");
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({
+      companyId,
+      actorType: "agent",
+      actorId: agentId,
+      responsibleUserId: "user-owner",
+      entityType: "heartbeat_run",
+      entityId: runId,
+    });
+    expect(rows[0]!.properties).toEqual({
+      outcome: "failed",
+      errorCode: "provider_quota",
+      failureClass: "provider_limit",
+      adapterType: "claude_local",
+      model: "claude-fable-5-2",
+      durationSeconds: 90,
+      inputTokens: 1200,
+      outputTokens: 340,
+      cachedTokens: 55,
+    });
+    expect(stored(rows)).not.toMatch(/Private/);
+  });
+
+  it("omits the failure class of a successful run and a model that is not a fixed value", async () => {
+    const companyId = await createCompany();
+    const agentId = await createAgent(companyId, { adapterConfig: { model: "Customer Model (private)" } });
+    const runId = await createRun(companyId, agentId);
+
+    expect(await recordRunFinishedCloudProductEvent(db, runId)).toBe(true);
+
+    expect((await eventsNamed("run.finished"))[0]!.properties).toEqual({
+      outcome: "succeeded",
+      adapterType: "claude_local",
+      durationSeconds: 90,
+    });
+  });
+
+  it("classes an unlisted error code as other and drops an error code that is not a slug", async () => {
+    const companyId = await createCompany();
+    const agentId = await createAgent(companyId);
+    const unlisted = await createRun(companyId, agentId, { status: "failed", errorCode: "a_code_added_later" });
+    const freeText = await createRun(companyId, agentId, { status: "timed_out", errorCode: "Private failure sentence" });
+
+    await recordRunFinishedCloudProductEvent(db, unlisted);
+    await recordRunFinishedCloudProductEvent(db, freeText);
+
+    const rows = await eventsNamed("run.finished");
+    expect(rows.find((row) => row.entityId === unlisted)!.properties).toMatchObject({ errorCode: "a_code_added_later", failureClass: "other" });
+    expect(rows.find((row) => row.entityId === freeText)!.properties).toEqual({
+      outcome: "timed_out",
+      failureClass: "other",
+      adapterType: "claude_local",
+      model: "claude-configured-model",
+      durationSeconds: 90,
+    });
+  });
+
+  it("records no run event for a run that is not finished, a built-in agent, or a self-hosted instance", async () => {
+    const companyId = await createCompany();
+    const agentId = await createAgent(companyId);
+    const builtInAgentId = await createAgent(companyId, {
+      metadata: { [BUILT_IN_AGENT_METADATA_KEY]: { key: "assistant", featureKeys: ["assistant"] } },
+    });
+    const running = await createRun(companyId, agentId, { status: "running", finishedAt: null });
+    const builtIn = await createRun(companyId, builtInAgentId);
+    const finished = await createRun(companyId, agentId);
+
+    expect(await recordRunFinishedCloudProductEvent(db, running)).toBe(false);
+    expect(await recordRunFinishedCloudProductEvent(db, builtIn)).toBe(false);
+    expect(await recordRunFinishedCloudProductEvent(db, randomUUID())).toBe(false);
+    expect(await recordRunFinishedCloudProductEvent(db, finished, { env: SELF_HOSTED_ENV })).toBe(false);
+    expect(await db.select().from(cloudProductEvents)).toHaveLength(0);
+  });
+
+  it("warns and does not throw when a direct event cannot be stored", async () => {
+    const companyId = await createCompany();
+    const agentId = await createAgent(companyId);
+    const runId = await createRun(companyId, agentId);
+    const warn = vi.spyOn(logger, "warn").mockImplementation(() => undefined);
+    await db.execute(sql`ALTER TABLE cloud_product_events RENAME TO cloud_product_events_unavailable`);
+    try {
+      expect(await recordRunFinishedCloudProductEvent(db, runId)).toBe(false);
+      expect(await recordAgentFirstRunCloudProductEvent(db, { id: agentId, companyId, role: "engineer", adapterType: "claude_local", metadata: null })).toBe(false);
+      expect(await recordConnectorUsedCloudProductEvent(db, connectorUse(companyId))).toBe(false);
+      expect(await recordDirectCloudProductEvent(db, {
+        name: "plan.approved",
+        companyId,
+        actorType: "user",
+        actorId: "user-1",
+        responsibleUserId: "user-1",
+        entityType: "issue",
+        entityId: randomUUID(),
+      })).toBe(false);
+      expect(warn.mock.calls.map((call) => (call[0] as { name: string }).name))
+        .toEqual(["run.finished", "agent.first_run", "connector.used", "plan.approved"]);
+    } finally {
+      warn.mockRestore();
+      await db.execute(sql`ALTER TABLE cloud_product_events_unavailable RENAME TO cloud_product_events`);
+    }
+    expect(await db.select().from(cloudProductEvents)).toHaveLength(0);
+  });
+
+  it("stores only fixed values, numbers, and booleans from a direct event", async () => {
+    const companyId = await createCompany();
+    const issueId = randomUUID();
+
+    expect(await recordDirectCloudProductEvent(db, {
+      name: "plan.approved",
+      companyId,
+      actorType: "user",
+      actorId: "user-1",
+      responsibleUserId: "user-1",
+      entityType: "issue",
+      entityId: issueId,
+      properties: {
+        kind: "plan",
+        count: 3,
+        flag: true,
+        title: "Private plan title",
+        nested: { text: "Private nested text" },
+        list: ["Private list text"],
+        notFinite: Number.NaN,
+        empty: null,
+      },
+    })).toBe(true);
+    expect(await recordDirectCloudProductEvent(db, {
+      name: "plan.approved",
+      companyId,
+      actorType: "system",
+      actorId: "paperclip-cloud",
+      responsibleUserId: null,
+      entityType: "issue",
+      entityId: issueId,
+    })).toBe(false);
+
+    const rows = await eventsNamed("plan.approved");
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ actorId: "user-1", responsibleUserId: "user-1", entityType: "issue", entityId: issueId });
+    expect(rows[0]!.properties).toEqual({ kind: "plan", count: 3, flag: true });
+    expect(stored(rows)).not.toMatch(/Private/);
+  });
+
+  it("records the first run of an agent with the responsible person of that run", async () => {
+    const companyId = await createCompany();
+    const agentId = await createAgent(companyId, { role: "cto", adapterType: "codex_local" });
+    await createRun(companyId, agentId, { responsibleUserId: "user-first", createdAt: new Date("2026-11-01T09:00:00.000Z") });
+    await createRun(companyId, agentId, { responsibleUserId: "user-later", createdAt: new Date("2026-11-02T09:00:00.000Z") });
+    const builtInAgentId = await createAgent(companyId, {
+      metadata: { [BUILT_IN_AGENT_METADATA_KEY]: { key: "assistant", featureKeys: ["assistant"] } },
+    });
+
+    expect(await recordAgentFirstRunCloudProductEvent(db, { id: agentId, companyId, role: "cto", adapterType: "codex_local", metadata: null })).toBe(true);
+    expect(await recordAgentFirstRunCloudProductEvent(db, {
+      id: builtInAgentId,
+      companyId,
+      role: "engineer",
+      adapterType: "claude_local",
+      metadata: { [BUILT_IN_AGENT_METADATA_KEY]: { key: "assistant", featureKeys: ["assistant"] } },
+    })).toBe(false);
+
+    const rows = await eventsNamed("agent.first_run");
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({
+      actorType: "agent",
+      actorId: agentId,
+      responsibleUserId: "user-first",
+      entityType: "agent",
+      entityId: agentId,
+      properties: { role: "cto", adapterType: "codex_local" },
+    });
+    expect(stored(rows)).not.toContain("Private agent name");
+  });
+
+  it("records a connector use one time for each connection and UTC day, also after a restart", async () => {
+    const companyId = await createCompany();
+    const agentId = await createAgent(companyId);
+    const runId = await createRun(companyId, agentId, { responsibleUserId: "user-owner" });
+    const now = Date.parse("2026-11-03T23:50:00.000Z");
+    const use = connectorUse(companyId, { actorId: agentId, runId });
+    const otherUse = connectorUse(companyId, { connectorKey: "Private Server Name", status: "failed", actorType: "user", actorId: "user-tester" });
+
+    expect(await recordConnectorUsedCloudProductEvent(db, use, { now })).toBe(true);
+    expect(await recordConnectorUsedCloudProductEvent(db, { ...use, status: "failed" }, { now: now + 60_000 })).toBe(false);
+    expect(await recordConnectorUsedCloudProductEvent(db, otherUse, { now })).toBe(true);
+
+    resetCloudProductEventConnectorUseGuardForTests();
+    expect(await recordConnectorUsedCloudProductEvent(db, use, { now: now + 120_000 })).toBe(false);
+    expect(await eventsNamed("connector.used")).toHaveLength(2);
+
+    expect(await recordConnectorUsedCloudProductEvent(db, use, { now: now + 15 * 60_000 })).toBe(true);
+    resetCloudProductEventConnectorUseGuardForTests();
+    expect(await recordConnectorUsedCloudProductEvent(db, use, { now: now + 16 * 60_000 })).toBe(false);
+
+    const rows = await eventsNamed("connector.used");
+    const forConnection = rows.filter((row) => row.entityId === use.connectionId);
+    expect(forConnection.map((row) => row.occurredAt.toISOString().slice(0, 10))).toEqual(["2026-11-03", "2026-11-04"]);
+    expect(forConnection[0]).toMatchObject({
+      actorType: "agent",
+      actorId: agentId,
+      responsibleUserId: "user-owner",
+      entityType: "tool_connection",
+      properties: { connectorKey: "github", status: "succeeded" },
+    });
+    expect(rows.find((row) => row.entityId === otherUse.connectionId)).toMatchObject({
+      actorType: "user",
+      actorId: "user-tester",
+      responsibleUserId: "user-tester",
+      properties: { status: "failed" },
+    });
+    expect(stored(rows)).not.toMatch(/Private/);
+  });
+
+  it("records one connector use when two requests for one connection run at the same time", async () => {
+    const companyId = await createCompany();
+    const use = connectorUse(companyId);
+    const now = Date.parse("2026-11-03T12:00:00.000Z");
+
+    const first = recordConnectorUsedCloudProductEvent(db, use, { now });
+    resetCloudProductEventConnectorUseGuardForTests();
+    const second = recordConnectorUsedCloudProductEvent(db, use, { now });
+
+    expect([await first, await second].sort()).toEqual([false, true]);
+    expect(await eventsNamed("connector.used")).toHaveLength(1);
   });
 
   it("serves events only to a signed Cloud read", async () => {

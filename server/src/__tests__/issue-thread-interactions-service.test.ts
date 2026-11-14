@@ -8,6 +8,7 @@ import {
   activityLog,
   agents,
   authUsers,
+  cloudProductEvents,
   companyMemberships,
   instanceUserRoles,
   issueQuestionResponseDeliveries,
@@ -3967,6 +3968,62 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
     await expect(issueService(db).getById(issueId)).resolves.toMatchObject({
       workMode: "standard",
     });
+  });
+
+  it("records a plan.approved Cloud product event when a person accepts the plan document, on a Cloud-managed instance only", async () => {
+    const companyId = randomUUID();
+    const goalId = randomUUID();
+    await db.insert(companies).values(interactionCompanyRow(companyId));
+    await instanceSettingsService(db).updateExperimental({ enableIsolatedWorkspaces: false });
+    await db.insert(goals).values({ id: goalId, companyId, title: "Plan approval", level: "task", status: "active" });
+
+    async function acceptDocumentConfirmation(key: string) {
+      const issueId = randomUUID();
+      const documentId = randomUUID();
+      const revisionId = randomUUID();
+      await db.insert(issues).values(parentIssueRow(issueId, companyId, goalId));
+      await db.insert(documents).values({
+        id: documentId, companyId, title: "Private document title", format: "markdown",
+        latestBody: "Private document body", latestRevisionId: revisionId, latestRevisionNumber: 1,
+      });
+      await db.insert(issueDocuments).values({ companyId, issueId, documentId, key });
+      await db.insert(documentRevisions).values({
+        id: revisionId, companyId, documentId, revisionNumber: 1, title: "Private document title", format: "markdown", body: "Private document body",
+      });
+      const created = await interactionsSvc.create({ id: issueId, companyId }, {
+        kind: "request_confirmation",
+        continuationPolicy: "wake_assignee",
+        payload: {
+          version: 1,
+          prompt: "Private prompt text",
+          target: { type: "issue_document", issueId, documentId, key, revisionId, revisionNumber: 1 },
+        },
+      }, { userId: "local-board" });
+      await expect(interactionsSvc.acceptInteraction(acceptIssueScope(issueId, companyId, goalId), created.id, {}, {
+        userId: "local-board",
+      })).resolves.toMatchObject({ interaction: { status: "accepted" } });
+      return issueId;
+    }
+
+    await acceptDocumentConfirmation("plan");
+    vi.stubEnv("PAPERCLIP_CLOUD_TENANT_SERVER_TOKEN", "tenant-token");
+    await acceptDocumentConfirmation("notes");
+    const planIssueId = await acceptDocumentConfirmation("plan");
+
+    await vi.waitFor(async () => {
+      expect(await db.select().from(cloudProductEvents).where(eq(cloudProductEvents.name, "plan.approved"))).toHaveLength(1);
+    });
+    const events = await db.select().from(cloudProductEvents).where(eq(cloudProductEvents.name, "plan.approved"));
+    expect(events[0]).toMatchObject({
+      companyId,
+      actorType: "user",
+      actorId: "local-board",
+      responsibleUserId: "local-board",
+      entityType: "issue",
+      entityId: planIssueId,
+      properties: {},
+    });
+    expect(JSON.stringify(events[0]!.properties)).not.toContain("Private");
   });
 
   it("preserves resolved request_item_verdicts items when the watched issue document revision changes", async () => {

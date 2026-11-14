@@ -1,7 +1,7 @@
 import { randomBytes, randomUUID } from "node:crypto";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
-import { agents, companies, createDb, heartbeatRuns, type Db } from "@paperclipai/db";
-import { eq } from "drizzle-orm";
+import { agents, cloudProductEvents, companies, createDb, heartbeatRuns, type Db } from "@paperclipai/db";
+import { eq, sql } from "drizzle-orm";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
@@ -25,6 +25,7 @@ vi.mock("@paperclipai/shared/telemetry", async () => {
 });
 
 import { emitAgentTaskRun, emitAgentTaskRunById } from "../services/agent-task-run-telemetry.ts";
+import { logger } from "../middleware/logger.js";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
@@ -42,6 +43,7 @@ describeEmbeddedPostgres("emitAgentTaskRun", () => {
 
   afterEach(async () => {
     vi.clearAllMocks();
+    vi.unstubAllEnvs();
     await db.delete(heartbeatRuns);
     await db.delete(agents);
     await db.delete(companies);
@@ -337,5 +339,54 @@ describeEmbeddedPostgres("emitAgentTaskRun", () => {
     const dims = mockTrackAgentTaskRun.mock.calls[0][1];
     expect(dims).not.toHaveProperty("adapterType");
     expect(dims).not.toHaveProperty("agentRole");
+  });
+
+  it("records a run.finished Cloud product event on a Cloud-managed instance only", async () => {
+    await seedCompanyAndAgent();
+    const insertRun = () => db.insert(heartbeatRuns).values({
+      companyId,
+      agentId,
+      status: "failed",
+      errorCode: "adapter_failed",
+      startedAt: new Date("2026-01-01T00:00:00Z"),
+      finishedAt: new Date("2026-01-01T00:00:07Z"),
+    }).returning().then((rows) => rows[0]!);
+
+    await emitAgentTaskRun(db, await insertRun());
+    vi.stubEnv("PAPERCLIP_CLOUD_TENANT_SERVER_TOKEN", "tenant-token");
+    const cloudRun = await insertRun();
+    await emitAgentTaskRunById(db, { companyId, runId: cloudRun.id });
+
+    await vi.waitFor(async () => {
+      expect(await db.select().from(cloudProductEvents)).toHaveLength(1);
+    });
+    const [event] = await db.select().from(cloudProductEvents);
+    expect(event).toMatchObject({
+      name: "run.finished",
+      actorId: agentId,
+      entityType: "heartbeat_run",
+      entityId: cloudRun.id,
+      properties: { outcome: "failed", errorCode: "adapter_failed", failureClass: "execution_failure", adapterType: "codex_local", durationSeconds: 7 },
+    });
+    expect(mockTrackAgentTaskRun).toHaveBeenCalledTimes(2);
+  });
+
+  it("keeps the run path and the telemetry event when the Cloud product event cannot be stored", async () => {
+    await seedCompanyAndAgent();
+    vi.stubEnv("PAPERCLIP_CLOUD_TENANT_SERVER_TOKEN", "tenant-token");
+    const [run] = await db.insert(heartbeatRuns).values({ companyId, agentId, status: "succeeded" }).returning();
+    const warn = vi.spyOn(logger, "warn").mockImplementation(() => undefined);
+    await db.execute(sql`ALTER TABLE cloud_product_events RENAME TO cloud_product_events_unavailable`);
+    try {
+      await expect(emitAgentTaskRun(db, run!)).resolves.toBeUndefined();
+      await vi.waitFor(() => {
+        expect(warn).toHaveBeenCalledWith(expect.objectContaining({ name: "run.finished" }), "cloud product event was not recorded");
+      });
+    } finally {
+      warn.mockRestore();
+      await db.execute(sql`ALTER TABLE cloud_product_events_unavailable RENAME TO cloud_product_events`);
+    }
+    expect(mockTrackAgentTaskRun).toHaveBeenCalledTimes(1);
+    expect(await db.select().from(cloudProductEvents)).toHaveLength(0);
   });
 });

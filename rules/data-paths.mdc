@@ -14,7 +14,8 @@ a path by its file path, not by the word "observability" or "telemetry" alone.
 This rule also applies to any file that adds or changes a caller of
 `packages/shared/src/telemetry/events.ts` or
 `packages/shared/src/telemetry/client.ts`, even when that file is outside the
-globs above.
+globs above. It also applies to any file that adds or changes a caller of a
+direct record function in `server/src/services/cloud-product-events.ts`.
 
 ## The paths
 
@@ -43,6 +44,7 @@ globs above.
   - `packages/db/src/schema/cloud_product_events.ts`
   - `server/src/services/cloud-product-events.ts`
   - `server/src/routes/cloud-product-events.ts`
+  - each caller of a direct record function in `server/src/services/cloud-product-events.ts`
 
 ## Requirements
 

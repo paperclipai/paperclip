@@ -6,6 +6,7 @@ import { and, asc, desc, eq, lte, sql } from "drizzle-orm";
 import { trackAgentFirstHeartbeat } from "@paperclipai/shared/telemetry";
 import { getTelemetryClient } from "../../telemetry.js";
 import { logActivity, publishActivity, type ActivityPublication } from "../activity-log.js";
+import { recordAgentFirstRunCloudProductEvent } from "../cloud-product-events.js";
 import { publishLiveEvent } from "../live-events.js";
 import { finishedIdleRun, finishedIdleWake, finishedFailedIdleLease } from "../idle-work-proof.js";
 
@@ -109,6 +110,7 @@ export function createHeartbeatAgentStatus(db: Db) {
     if (result.isFirstHeartbeat) {
       const client = getTelemetryClient();
       if (client) trackAgentFirstHeartbeat(client, { agentRole: result.updated.role, agentId: result.updated.id });
+      void recordAgentFirstRunCloudProductEvent(db, result.updated);
     }
     publishStatus(result.updated, outcome);
   }
