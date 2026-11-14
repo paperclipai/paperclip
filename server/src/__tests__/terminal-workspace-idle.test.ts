@@ -92,15 +92,22 @@ const realSleep = (ms: number) => new Promise(resolve => realSetTimeout(resolve,
       terminalWorkspaceInspectionBackoffMs: TERMINAL_WORKSPACE_RETRY_MS,
     });
     const sweeps: Array<{ targeted: boolean; checked: number }> = [];
+    let inFlight = 0;
     const coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => true, onError: () => {} });
     const worker = registerTerminalWorkspaceWork(coordinator, { ...service,
       sweepTerminalWorkspaces: async (limit, signal, options) => {
-        const result = await service.sweepTerminalWorkspaces(limit, signal, options);
-        sweeps.push({ targeted: Boolean(options?.targets), checked: result.checked });
-        return result;
+        inFlight += 1;
+        try {
+          const result = await service.sweepTerminalWorkspaces(limit, signal, options);
+          sweeps.push({ targeted: Boolean(options?.targets), checked: result.checked });
+          return result;
+        } finally { inFlight -= 1; }
       } }, () => true);
     const idle = async (seconds: number) => {
-      for (let second = 0; second < seconds; second += 10) { await vi.advanceTimersByTimeAsync(10_000); await realSleep(20); }
+      for (let second = 0; second < seconds; second += 10) {
+        await vi.advanceTimersByTimeAsync(10_000);
+        do { await realSleep(10); await vi.advanceTimersByTimeAsync(1); } while (inFlight > 0);
+      }
     };
     try {
       await idle(120);
