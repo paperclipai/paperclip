@@ -393,6 +393,11 @@ RUN gosu node tailscale version && gosu node tailscaled --version
 
 COPY scripts/docker-entrypoint.sh /usr/local/bin/
 RUN chmod +x /usr/local/bin/docker-entrypoint.sh
+RUN apt-get update \
+  && apt-get install -y --no-install-recommends dos2unix \
+  && rm -rf /var/lib/apt/lists/*
+RUN dos2unix /usr/local/bin/docker-entrypoint.sh
+RUN apt-get -y remove dos2unix && apt-get -y autoremove && apt-get -y autoclean
 
 # Installed dependencies are ~2.9 GB of /app and change only with the lockfile.
 # Copied from the deps stage as their own layer, a commit that leaves the
