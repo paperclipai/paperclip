@@ -32,7 +32,7 @@ import { onboardingFirstTaskAwaitingUserSql } from "./onboarding-first-task-wait
 import { workspaceRecoverySourceEligible } from "../workspace-recovery-source.js";
 import { PENDING_CONTINUATION_BOUND_MS } from "../recovery-continuation-pacing.js";
 import { attributeBlock, BLOCK_ATTRIBUTION_WINDOW_MS, blockedStatusDetailsSql } from "../interruption-block-release.js";
-import { ASSIGNED_WORK_CONTINUED_ACTION, taskAutomaticAttempts } from "./task-automatic-attempts.js";
+import { ASSIGNED_WORK_CONTINUED_ACTION, PAUSED_FOR_AUTOMATIC_WORK, taskAutomaticAttempts } from "./task-automatic-attempts.js";
 import { automaticRunCreationHeldUntil, readAutomaticWorkStatus, reserveAutomaticRunCreation } from "./automatic-run-brake.js";
 import { isReattachPhaseActive, reattachPhaseRecheckAt } from "../heartbeat/run-admission.js";
 import { ensureFreshContinuation, type FreshContinuationResult } from "../fresh-continuation-fallback.js";
@@ -608,7 +608,8 @@ export function assignedWorkSweep(db: Db, deps: AssignedWorkDeps) {
       ? await reserveAutomaticRunCreation(db, issue.companyId, { issueId: issue.id, sourceRunId: facts.latestRun.id }) : null;
     if (slot?.heldUntil) {
       if (claimed.restoredTo) await revertRestoredBlock(issue, claimed);
-      await settleContinuationActivity(claimed, claimed.reason, "not_started", { waitingUntil: slot.heldUntil.toISOString() });
+      await settleContinuationActivity(claimed, claimed.reason, "not_started",
+        { waitingUntil: slot.heldUntil.toISOString(), [PAUSED_FOR_AUTOMATIC_WORK]: "true" });
       return { verdict: claimed.verdict, outcome: "deferred_rate_limit", retryAt: slot.heldUntil };
     }
     const release = async () => { if (slot && !slot.heldUntil) await slot.release(); };

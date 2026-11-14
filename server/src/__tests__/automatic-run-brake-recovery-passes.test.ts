@@ -140,6 +140,19 @@ suite("automatic-run brake in the recovery passes", () => {
     expect(enqueueWakeup).toHaveBeenCalledTimes(1);
   }, 120_000);
 
+  it("a task that loses the creation slot to another sweep check gains no extra wait", async () => {
+    await seedCompany();
+    const [first, second] = [await strandedTask(), await strandedTask()];
+    await openBrake({ startingAutomaticRun: false });
+    const enqueueWakeup = wakeQueue();
+    const recovery = recoveryService(db, { enqueueWakeup, scheduleRecoveryRetry: async () => null });
+    const checks = await Promise.all([first, second].map(issueId => recovery.assignedWork.checkIssue({ companyId, issueId })));
+    expect(checks.map(check => check!.outcome).sort()).toEqual(["deferred_rate_limit", "repaired"]);
+    expect(enqueueWakeup).toHaveBeenCalledTimes(1);
+    const loser = checks[0]!.outcome === "deferred_rate_limit" ? first : second;
+    expect(await ledger(loser)).toBe(0);
+  }, 120_000);
+
   it("leaves every pass exactly as before when the company has no pause record", async () => {
     await seedCompany();
     const issueId = await strandedTask();
