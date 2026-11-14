@@ -43,6 +43,7 @@ import {
   type RunTranscriptSource,
 } from "@/components/transcript/useLiveRunTranscripts";
 import { useNativeRunTranscripts } from "@/components/transcript/useNativeRunTranscripts";
+import { MAX_ISSUE_CHAT_TRANSCRIPT_RUNS } from "@/lib/issueChatTranscriptRuns";
 import { TaskChatLiveTail } from "@/components/task-chat/TaskChatLiveTail";
 import { McpAppIssueProvider } from "@/components/mcp-app/McpAppIssueContext";
 import { ProviderToolIconsProvider } from "@/components/ProviderToolIcon";
@@ -1048,11 +1049,16 @@ export function TaskChatThread(props: TaskChatThreadProps) {
     }
     return deferred;
   }, [issueId, runs, projectedComments, linkedRunMetaById, interactions, compactTranscriptDeferral, slowSettledTranscriptRunIds, openedAt]);
-  const transcriptRuns = useMemo(() => runs.filter(run =>
-    !deferredTranscriptRunIds.has(run.id) &&
-    !(props.compactHistory && !conversationMode && props.onExpandHistory && !scrollNavigation.hash &&
-      initialHistoryPending && isTerminalRunStatus(run.status) && !requestedTranscripts.current.ids.has(run.id)),
-  ), [issueId, runs, deferredTranscriptRunIds, props.compactHistory, conversationMode, props.onExpandHistory, scrollNavigation.hash, initialHistoryPending]);
+  const transcriptRuns = useMemo(() => {
+    const settled = runs.filter(run => isTerminalRunStatus(run.status));
+    const settledSlots = Math.max(0, MAX_ISSUE_CHAT_TRANSCRIPT_RUNS - (runs.length - settled.length));
+    const retained = new Set(settled.sort((a, b) => toMs(b.createdAt) - toMs(a.createdAt)).slice(0, settledSlots).map(run => run.id));
+    return runs.filter(run =>
+      (!isTerminalRunStatus(run.status) || retained.has(run.id)) &&
+      !deferredTranscriptRunIds.has(run.id) &&
+      !(props.compactHistory && !conversationMode && props.onExpandHistory && !scrollNavigation.hash &&
+        initialHistoryPending && isTerminalRunStatus(run.status) && !requestedTranscripts.current.ids.has(run.id)));
+  }, [issueId, runs, deferredTranscriptRunIds, props.compactHistory, conversationMode, props.onExpandHistory, scrollNavigation.hash, initialHistoryPending]);
   useLayoutEffect(() => {
     for (const run of transcriptRuns) requestedTranscripts.current.ids.add(run.id);
   }, [transcriptRuns]);
