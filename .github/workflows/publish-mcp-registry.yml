@@ -1,0 +1,87 @@
+name: Publish MCP Registry
+
+# Lists @paperclipai/mcp-server on the official MCP Registry
+# (registry.modelcontextprotocol.io). Downstream directories — PulseMCP
+# (daily), Glama, mcp.so — ingest from the official registry automatically,
+# so this single publish cascades to the ecosystem.
+#
+# Auth is GitHub OIDC: because this workflow runs inside the `paperclipai`
+# org, it is authorized to publish the `io.github.paperclipai/*` namespace
+# with NO secrets, tokens, or interactive login required.
+#
+# Prereq: the published npm package must carry an `mcpName` field matching
+# server.json `name` (added in the same PR). The gate step below skips
+# gracefully until that published version exists, so this workflow is safe
+# to merge before the first mcpName-bearing release lands.
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Published @paperclipai/mcp-server version to list (blank = latest on npm)."
+        required: false
+        type: string
+  push:
+    tags:
+      - "canary/v*"
+      - "v*"
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write # required for GitHub OIDC → MCP Registry auth
+      contents: read
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v5
+
+      - name: Resolve target version
+        id: v
+        run: |
+          if [ -n "${{ github.event.inputs.version }}" ]; then
+            V="${{ github.event.inputs.version }}"
+          elif [ "${GITHUB_REF}" != "${GITHUB_REF#refs/tags/}" ]; then
+            V="${GITHUB_REF##*/v}"
+          else
+            V="$(npm view @paperclipai/mcp-server version)"
+          fi
+          echo "version=$V" >> "$GITHUB_OUTPUT"
+          echo "Resolved version: $V"
+
+      - name: Gate — require published mcpName at this version
+        id: gate
+        run: |
+          V="${{ steps.v.outputs.version }}"
+          NAME="$(npm view @paperclipai/mcp-server@"$V" mcpName 2>/dev/null || true)"
+          if [ -z "$NAME" ]; then
+            echo "::notice::@paperclipai/mcp-server@$V does not declare mcpName yet — skipping registry publish (no-op)."
+            echo "ready=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "ready=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Sync server.json version to the released package
+        if: steps.gate.outputs.ready == 'true'
+        working-directory: packages/mcp-server
+        env:
+          V: ${{ steps.v.outputs.version }}
+        run: |
+          node -e "const fs=require('fs');const s=JSON.parse(fs.readFileSync('server.json','utf8'));s.version=process.env.V;(s.packages||[]).forEach(p=>{p.version=process.env.V});fs.writeFileSync('server.json',JSON.stringify(s,null,2)+'\n')"
+          cat server.json
+
+      - name: Install mcp-publisher
+        if: steps.gate.outputs.ready == 'true'
+        run: |
+          curl -L "https://github.com/modelcontextprotocol/registry/releases/latest/download/mcp-publisher_$(uname -s | tr '[:upper:]' '[:lower:]')_$(uname -m | sed 's/x86_64/amd64/;s/aarch64/arm64/').tar.gz" | tar xz mcp-publisher
+
+      - name: Authenticate to MCP Registry (GitHub OIDC)
+        if: steps.gate.outputs.ready == 'true'
+        working-directory: packages/mcp-server
+        run: "$GITHUB_WORKSPACE/mcp-publisher" login github-oidc
+
+      - name: Publish to MCP Registry
+        if: steps.gate.outputs.ready == 'true'
+        working-directory: packages/mcp-server
+        run: "$GITHUB_WORKSPACE/mcp-publisher" publish
