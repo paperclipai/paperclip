@@ -11,6 +11,7 @@ import {
   createGitRemoteAuthProvider,
   createIssueGitRemoteAuthProvider,
   describeGitAuthFailure,
+  filterResolvedGitHubConnectionsForRun,
   isGitHubHttpsRemoteUrl,
   resolveGitHubApiCredential,
   scrubGitCredentialText,
@@ -189,7 +190,10 @@ describe("createGitRemoteAuthProvider", () => {
           companyId: "company-1",
           enabled: true,
           status: "active",
-          config: { sourceTemplateKey: "github" },
+          config: {
+            sourceTemplateKey: "github",
+            oauth: { connectorProfile: "github.code" },
+          },
         }]))
         .mockReturnValueOnce(query([{
           connectionId: "github-connection",
@@ -210,6 +214,40 @@ describe("createGitRemoteAuthProvider", () => {
     expect(invocation?.secretName).toBe("GH_TOKEN");
     expect(invocation?.env[GIT_CREDENTIAL_TOKEN_ENV_KEY]).toBe("agent-b-legacy-token");
     expect(db.select).toHaveBeenCalledTimes(2);
+  });
+
+  it("keeps a generic GitHub MCP connection and falls back to the company token", async () => {
+    const query = (rows: unknown[]) => ({
+      from: () => ({ where: async () => rows }),
+    });
+    const connection = {
+      id: "github-connection",
+      companyId: "company-1",
+      enabled: true,
+      status: "active",
+      config: { sourceTemplateKey: "github" },
+    };
+    const db = {
+      select: vi.fn()
+        .mockReturnValue(query([connection])),
+    } as unknown as Db;
+    const secrets = buildSecretsFake({ GITHUB_TOKEN: "company-token" });
+    const provider = createGitRemoteAuthProvider(db, "company-1", { agentId: "agent-a" }, {
+      secrets,
+      env: {},
+    });
+
+    const invocation = await provider(githubUrl);
+
+    expect(invocation?.source).toBe("company_secret");
+    expect(invocation?.secretName).toBe("GITHUB_TOKEN");
+    expect(invocation?.env[GIT_CREDENTIAL_TOKEN_ENV_KEY]).toBe("company-token");
+    await expect(filterResolvedGitHubConnectionsForRun({
+      db,
+      companyId: "company-1",
+      agentId: "agent-a",
+      connections: [connection],
+    })).resolves.toEqual([connection]);
   });
 });
 
