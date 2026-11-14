@@ -1,4 +1,4 @@
-export const PLUGIN_ID = "paperclipai.plugin-pc-telegram";
+export const PLUGIN_ID = "andhash.plugin-pc-telegram";
 export const PLUGIN_VERSION = "0.1.0";
 export const PLUGIN_DISPLAY_NAME = "Telegram";
 

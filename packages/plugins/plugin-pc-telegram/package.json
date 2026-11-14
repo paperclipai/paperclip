@@ -1,15 +1,15 @@
 {
-  "name": "@paperclipai/plugin-pc-telegram",
+  "name": "@andhash/plugin-pc-telegram",
   "version": "0.1.0",
-  "description": "First-party Paperclip plugin for personal Telegram accounts via MTProto QR login",
+  "description": "Paperclip plugin for personal Telegram accounts via MTProto QR login",
   "license": "MIT",
-  "homepage": "https://github.com/paperclipai/paperclip",
+  "homepage": "https://github.com/andhash/paperclip",
   "bugs": {
-    "url": "https://github.com/paperclipai/paperclip/issues"
+    "url": "https://github.com/andhash/paperclip/issues"
   },
   "repository": {
     "type": "git",
-    "url": "https://github.com/paperclipai/paperclip",
+    "url": "https://github.com/andhash/paperclip",
     "directory": "packages/plugins/plugin-pc-telegram"
   },
   "type": "module",
