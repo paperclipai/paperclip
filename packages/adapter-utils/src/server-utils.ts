@@ -4482,13 +4482,37 @@ export async function ensurePaperclipSkillSymlink(
     .stat(resolvedLinkedPath)
     .then(() => true)
     .catch(() => false);
-  if (linkedPathExists) {
+  const replacesOlderVersion =
+    linkedPathExists && isOlderVersionOfSameSkill(resolvedLinkedPath, path.resolve(source));
+  if (linkedPathExists && !replacesOlderVersion) {
     return "skipped";
+  }
+
+  if (replacesOlderVersion) {
+    const tempTarget = `${target}.relink-${process.pid}-${randomUUID()}`;
+    try {
+      await linkSkill(source, tempTarget);
+      await fs.rename(tempTarget, target);
+    } catch (error) {
+      await fs.unlink(tempTarget).catch(() => {});
+      const now = await fs.readlink(target).catch(() => null);
+      if (now && path.resolve(path.dirname(target), now) === path.resolve(source)) {
+        return "repaired";
+      }
+      throw error;
+    }
+    return "repaired";
   }
 
   await fs.unlink(target);
   await linkSkill(source, target);
   return "repaired";
+}
+
+function isOlderVersionOfSameSkill(linkedPath: string, source: string): boolean {
+  if (linkedPath === source) return false;
+  const skillDir = path.dirname(source);
+  return path.basename(path.dirname(skillDir)) === "__versions__" && path.dirname(linkedPath) === skillDir;
 }
 
 async function hashSkillDirectory(root: string): Promise<string> {
