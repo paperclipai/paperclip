@@ -17,7 +17,7 @@ import { PROJECT_ACCESS_DENIED, ProjectAccessDeniedError } from "../project-acce
 import { pendingCaseHandoffForRun } from "./case-handoff-lifecycle.js";
 import { NON_RETRYABLE_PREFLIGHT_FAILURE_CODES, isHeartbeatRunTerminalStatus } from "./run-lifecycle.js";
 import { ChatControlRecoveryUnresolvedError } from "./queue.js";
-import { readTransientRecoveryContractFromRun, readHeartbeatRunErrorFamily, isTransientWorkspacePreparationCode } from "./retries.js";
+import { readTransientRecoveryContractFromRun, readHeartbeatRunErrorFamily, isTransientWorkspacePreparationCode, isSpawnTargetNotFoundInPathMessage } from "./retries.js";
 import { RemoteWorkspacePreparationTimeoutError, REMOTE_WORKSPACE_RESTORE_FAILED_CODE, findRemoteWorkspaceRestoreError } from "../remote-workspace-transport.js";
 import { escalateRemoteWorkspaceRestoreFailure } from "../remote-workspace-restore-recovery.js";
 import { findReusableSandboxResumeError } from "../reusable-sandbox-resume-error.js";
@@ -95,7 +95,7 @@ export interface HeartbeatRunCompletionDependencies extends Pick<RunState,
     "finalizeIssueCommentPolicy" | "handleIssueReviewPathDisposition" | "handleRunLivenessContinuation" |
     "handleSuccessfulRunHandoff" | "updateRuntimeState">,
   Pick<ReturnType<typeof createHeartbeatRetries>,
-    "scheduleBoundedRetryForRun" | "scheduleInteractionContinuationInfrastructureRetryIfEligible" | "timerClaimWasFirstHeartbeat">,
+    "scheduleBoundedRetryForRun" | "scheduleInteractionContinuationInfrastructureRetryIfEligible" | "scheduleTransientSpawnLikeFailureRetryIfEligible" | "timerClaimWasFirstHeartbeat">,
   Pick<ReturnType<typeof createHeartbeatRunControl>, "releaseIssueExecutionAndPromote">,
   Pick<HeartbeatRetryDependencies, "finalizeAgentStatus">,
   Pick<ReturnType<typeof createHeartbeatQueue>, "enqueueWakeup"> {
@@ -423,6 +423,7 @@ export function createHeartbeatRunCompletion(db: Db, dependencies: HeartbeatRunC
     updateRuntimeState,
     scheduleBoundedRetryForRun,
     scheduleInteractionContinuationInfrastructureRetryIfEligible,
+    scheduleTransientSpawnLikeFailureRetryIfEligible,
     timerClaimWasFirstHeartbeat,
     releaseIssueExecutionAndPromote,
     finalizeAgentStatus,
@@ -1013,10 +1014,20 @@ export function createHeartbeatRunCompletion(db: Db, dependencies: HeartbeatRunC
         outcome === "failed" &&
         !(await legacyExecutionNeedsReconciliationWithEvidence(db, livenessRun))
       ) {
-        await scheduleInteractionContinuationInfrastructureRetryIfEligible(
+        const interactionRetry = await scheduleInteractionContinuationInfrastructureRetryIfEligible(
           livenessRun,
           agent,
         );
+        if (interactionRetry === null) {
+          // The adapter can return a failed result instead of throwing (the
+          // `process` adapter does this when its command cannot start), so
+          // this ordinary-completion path needs the same spawn-like fallback
+          // as the thrown-error paths in failRun/failRunSetup.
+          await scheduleTransientSpawnLikeFailureRetryIfEligible(
+            livenessRun,
+            agent,
+          );
+        }
       }
       const issueCommentPolicyResult = await finalizeIssueCommentPolicy(
         livenessRun,
@@ -1398,7 +1409,23 @@ export function createHeartbeatRunCompletion(db: Db, dependencies: HeartbeatRunC
             {}),
           ...(stoppedDuringFailure ? controllerLeaseLossResultJson(signal) : {}),
           ...nativePreDispatchFailure,
-          ...(!legacyAdapterEntered && run.runtimeMode !== "native"
+          // resolveSpawnTarget's "Command not found in PATH" throws
+          // synchronously before any process is created, so it proves no
+          // provider work started even when legacyAdapterEntered is already
+          // true — entering the adapter call is not the same as a child
+          // process actually launching. This lets
+          // scheduleTransientSpawnLikeFailureRetryIfEligible's
+          // scheduleBoundedRetryForRun call clear the legacy-reconciliation
+          // gate (legacyExecutionNeedsReconciliationWithEvidence) instead of
+          // falling into terminal reconciliation on the very failure class
+          // this retry lane exists for. Deliberately narrower than
+          // isSpawnLikeFailureMessage: that function's other patterns (bare
+          // `ENOENT`, `spawn\b`) can also match an unrelated late-stage
+          // filesystem error (e.g. an adapter's post-execution cleanup write
+          // failing with its own ENOENT after real provider work already
+          // happened), which must not fabricate "no work started" evidence.
+          ...(run.runtimeMode !== "native" &&
+            (!legacyAdapterEntered || isSpawnTargetNotFoundInPathMessage(thrownMessage))
             ? {
                 executionRecovery: {
                   kind: "bootstrap",
@@ -1499,6 +1526,12 @@ export function createHeartbeatRunCompletion(db: Db, dependencies: HeartbeatRunC
           livenessRun,
           agent,
         );
+        if (fallbackRetry === null) {
+          fallbackRetry = await scheduleTransientSpawnLikeFailureRetryIfEligible(
+            livenessRun,
+            agent,
+          );
+        }
       }
       // Another retry that took over after a failed storage wait keeps the promise.
       await settleStorageWaitMessage(livenessRun, fallbackRetry?.outcome === "scheduled" ? fallbackRetry : storageWait, err);
@@ -1878,6 +1911,8 @@ export function createHeartbeatRunCompletion(db: Db, dependencies: HeartbeatRunC
                 : scheduleBoundedRetryForRun(livenessRun, failedAgent)
             : scheduleNativePreDispatchRetry(livenessRun, failedAgent).then(nativeRetry => nativeRetry
               ?? scheduleInteractionContinuationInfrastructureRetryIfEligible(livenessRun, failedAgent))
+              .then(fallbackRetry => fallbackRetry
+                ?? scheduleTransientSpawnLikeFailureRetryIfEligible(livenessRun, failedAgent))
           ).catch((retryError) => {
             logger.warn(
               { err: retryError, runId: livenessRun.id },

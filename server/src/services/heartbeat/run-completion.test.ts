@@ -127,6 +127,7 @@ function callbacks(db: Db) {
     updateRuntimeState: vi.fn<Dependencies["updateRuntimeState"]>(),
     scheduleBoundedRetryForRun: vi.fn<Dependencies["scheduleBoundedRetryForRun"]>(),
     scheduleInteractionContinuationInfrastructureRetryIfEligible: vi.fn<Dependencies["scheduleInteractionContinuationInfrastructureRetryIfEligible"]>(async () => null),
+    scheduleTransientSpawnLikeFailureRetryIfEligible: vi.fn<Dependencies["scheduleTransientSpawnLikeFailureRetryIfEligible"]>(async () => null),
     timerClaimWasFirstHeartbeat: vi.fn<Dependencies["timerClaimWasFirstHeartbeat"]>(() => undefined),
     releaseIssueExecutionAndPromote: vi.fn<Dependencies["releaseIssueExecutionAndPromote"]>(async () => undefined),
     finalizeAgentStatus: vi.fn<Dependencies["finalizeAgentStatus"]>(async () => undefined),
@@ -852,6 +853,71 @@ describe.skipIf(!support.supported && !process.env.PAPERCLIP_TEST_DATABASE_URL)(
     expect(run.error).not.toContain("private-identity-material");
     expect((await f.deps.getTaskSession(f.agent.companyId, f.agent.id, f.agent.adapterType, "completion-task"))?.sessionDisplayId).toBe("checkpoint");
     expect(f.deps.finalizeAgentStatus).toHaveBeenCalledOnce();
+  });
+
+  it("records bootstrap evidence for a spawn-like thrown failure even though legacyAdapterEntered is already true, and tries the transient fallback", async () => {
+    const f = await fixture();
+    // f.failure() defaults legacyAdapterEntered to true, so without the fix
+    // this run would get no bootstrap evidence at all (the existing
+    // `!legacyAdapterEntered` condition alone would skip it), leaving
+    // scheduleBoundedRetryForRun's legacy-reconciliation gate
+    // (legacyExecutionNeedsReconciliationWithEvidence) unable to clear for
+    // this run even though no provider work could possibly have started.
+    await f.completion.failRun(f.failure(new Error('Command not found in PATH: "claude"')));
+    const run = await read(f.run.id);
+    expect(run).toMatchObject({ status: "failed", errorCode: "adapter_failed",
+      resultJson: { executionRecovery: { kind: "bootstrap", providerWorkStarted: false } } });
+    expect(f.deps.scheduleInteractionContinuationInfrastructureRetryIfEligible)
+      .toHaveBeenCalledWith(expect.objectContaining({ id: f.run.id }), f.agent);
+    expect(f.deps.scheduleTransientSpawnLikeFailureRetryIfEligible)
+      .toHaveBeenCalledWith(expect.objectContaining({ id: f.run.id }), f.agent);
+  });
+
+  it("does not record bootstrap evidence for an unrelated thrown failure", async () => {
+    const f = await fixture();
+    await f.completion.failRun(f.failure(new Error("some unrelated adapter error")));
+    const run = await read(f.run.id);
+    expect(run.resultJson).not.toHaveProperty("executionRecovery");
+  });
+
+  it("does not fabricate bootstrap evidence for a late, unrelated ENOENT after provider work already started", async () => {
+    // A bare ENOENT also matches isSpawnLikeFailureMessage's broader
+    // patterns, but it can come from an adapter's post-execution cleanup
+    // write (e.g. restoring config.toml) failing long after real provider
+    // work already happened — not from resolveSpawnTarget's pre-dispatch
+    // check. Only the narrower isSpawnTargetNotFoundInPathMessage text may
+    // mark providerWorkStarted: false; this must stay false for a plain
+    // ENOENT so the legacy-reconciliation guard is not cleared on an attempt
+    // that already did real work.
+    const f = await fixture();
+    await f.completion.failRun(f.failure(new Error("ENOENT: no such file or directory, open 'config.toml'")));
+    const run = await read(f.run.id);
+    expect(run.resultJson).not.toHaveProperty("executionRecovery");
+  });
+
+  it("falls back to the transient spawn-like retry when completeRun's adapter result is a returned (not thrown) PATH failure", async () => {
+    // native runtimeMode bypasses legacyExecutionNeedsReconciliationWithEvidence
+    // entirely, isolating this test to the fallback-ordering fix (the
+    // reconciliation gate's own interaction with a legacy-mode returned
+    // failure is a separate, pre-existing question not raised here).
+    const f = await fixture({ runtimeMode: "native" });
+    Object.assign(f.input.adapterResult, { exitCode: 1, errorCode: "adapter_failed",
+      errorMessage: 'Command not found in PATH: "claude"' });
+    await f.completion.completeRun(f.input);
+    expect(await read(f.run.id)).toMatchObject({ status: "failed", errorCode: "adapter_failed" });
+    expect(f.deps.scheduleInteractionContinuationInfrastructureRetryIfEligible)
+      .toHaveBeenCalledWith(expect.objectContaining({ id: f.run.id }), f.agent);
+    expect(f.deps.scheduleTransientSpawnLikeFailureRetryIfEligible)
+      .toHaveBeenCalledWith(expect.objectContaining({ id: f.run.id }), f.agent);
+  });
+
+  it("does not try the transient spawn-like fallback in completeRun when the interaction-continuation retry already claimed it", async () => {
+    const f = await fixture({ runtimeMode: "native" });
+    f.deps.scheduleInteractionContinuationInfrastructureRetryIfEligible.mockResolvedValueOnce({ outcome: "scheduled", run: { id: "retry-run" } } as never);
+    Object.assign(f.input.adapterResult, { exitCode: 1, errorCode: "adapter_failed",
+      errorMessage: 'Command not found in PATH: "claude"' });
+    await f.completion.completeRun(f.input);
+    expect(f.deps.scheduleTransientSpawnLikeFailureRetryIfEligible).not.toHaveBeenCalled();
   });
 
   it.each(["execution", "setup"] as const)("retains a provider startup cause at the outer %s settlement boundary", async phase => {
