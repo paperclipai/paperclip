@@ -18,6 +18,7 @@ import {
   executionWorkspaces,
   heartbeatRunEvents,
   heartbeatRuns,
+  issueApprovals,
   issueAttachments,
   issueComments,
   issueDocuments,
@@ -1188,6 +1189,63 @@ describeEmbeddedPostgres("plugin orchestration APIs", () => {
     expect(result.approval).toMatchObject({ id: approvalId, status: "approved", decidedByUserId: adminUserId });
     const [row] = await db.select().from(approvals).where(eq(approvals.id, approvalId));
     expect(row?.status).toBe("approved");
+  });
+
+  it("approvals.decide wakes the requester with the linked issue context the web route provides", async () => {
+    const { companyId, agentId } = await seedCompanyAndAgent();
+    const humanUserId = randomUUID();
+    await db.insert(companyMemberships).values({
+      companyId, principalType: "user", principalId: humanUserId, status: "active", membershipRole: "owner",
+    });
+    const issueId = randomUUID();
+    await db.insert(issues).values({
+      id: issueId, companyId, title: "Approval subject", status: "in_progress", priority: "medium", assigneeAgentId: agentId,
+    });
+    const approvalId = randomUUID();
+    await db.insert(approvals).values({
+      id: approvalId,
+      companyId,
+      type: "request_board_approval",
+      status: "pending",
+      payload: { title: "Ship it" },
+      requestedByAgentId: agentId,
+    });
+    await db.insert(issueApprovals).values({
+      companyId, issueId, approvalId, linkedByUserId: humanUserId,
+    });
+    await db.update(agents).set({ runtimeConfig: { heartbeat: { maxConcurrentRuns: 1 } } }).where(eq(agents.id, agentId));
+    await db.insert(heartbeatRuns).values({
+      companyId, agentId, status: "running", invocationSource: "assignment", contextSnapshot: {},
+    });
+
+    const services = buildHostServices(db, "plugin-record-id", "paperclip.gateway", createEventBusStub(), undefined, { heartbeatRuntimeEnv: {} });
+    const result = await services.approvals.decide({
+      approvalId, companyId, action: "approve", actorUserId: humanUserId,
+    });
+    expect(result.applied).toBe(true);
+
+    await drainHeartbeatRunsToQuiescence(db, heartbeatService(db));
+
+    const [wakeupRequest] = await db
+      .select()
+      .from(agentWakeupRequests)
+      .where(and(
+        eq(agentWakeupRequests.companyId, companyId),
+        eq(agentWakeupRequests.agentId, agentId),
+        eq(agentWakeupRequests.reason, "approval_approved"),
+      ));
+    expect(wakeupRequest?.status).toBe("queued");
+    expect(wakeupRequest?.runId).toEqual(expect.any(String));
+
+    const [run] = await db
+      .select()
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.id, wakeupRequest!.runId!));
+    expect(run?.contextSnapshot).toMatchObject({
+      issueId,
+      issueIds: [issueId],
+      taskId: issueId,
+    });
   });
 
   it("approvals.decide applies for an active member and redacts secret payload fields", async () => {
