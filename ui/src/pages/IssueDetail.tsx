@@ -1,3 +1,4 @@
+import { createUuid } from "@/lib/uuid";
 import { companyProjectsQuery } from "@/lib/company-projects-query";
 import { NativeControllerContainmentRecovery } from "../components/IssueRecoveryActionCard";
 import { useIssueIdBatches } from "@/hooks/useIssueIdBatches";
@@ -306,6 +307,7 @@ import {
   PopoverContent,
 } from "@/components/ui/popover";
 import { Button } from "@/components/ui/button";
+import { usePageSettled } from "@/hooks/usePageSettled";
 import { QueryErrorState, useQueryView } from "@/components/QueryView";
 import { describeError, isTransientError } from "@/api/errors";
 import {
@@ -414,7 +416,10 @@ import {
   type WorkspaceFileRef,
   workspaceFileRefSchema,
   isUuidLike,
+  type ExecutionAgentQueue,
 } from "@paperclipai/shared";
+import { AgentQueueWaitChip } from "@/components/AgentQueueWait";
+import { agentQueueWaitOf, isWaitingToStart } from "@/lib/agent-queue-wait";
 import { taskStatusIconProps } from "@/lib/task-status-presentation";
 
 // Stable empty array for React Query `data` defaults. A literal `= []` default
@@ -519,6 +524,20 @@ export function shouldScrollIssueDetailToTopOnNavigation(input: {
 }): boolean {
   if (input.navigationType === "POP") return false;
   return input.previousIssueId !== input.nextIssueId;
+}
+
+type LiveRunSummary = { count: number; waitingOnly: boolean; agentQueue: ExecutionAgentQueue | null };
+const EMPTY_LIVE_RUN_SUMMARY: LiveRunSummary = { count: 0, waitingOnly: false, agentQueue: null };
+
+function summarizeLiveRuns(
+  runs: ReadonlyArray<Pick<LiveRunForIssue | ActiveRunForIssue, "status" | "startedAt" | "execution">>,
+): LiveRunSummary {
+  if (!runs.length) return EMPTY_LIVE_RUN_SUMMARY;
+  return {
+    count: runs.length,
+    waitingOnly: runs.every(run => isWaitingToStart(run)),
+    agentQueue: runs.map(run => agentQueueWaitOf(run.execution)).find(Boolean) ?? null,
+  };
 }
 
 function resolveInterruptibleIssueRun(
@@ -3622,38 +3641,45 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
     recordIssueDetailReadiness({ issue: !!loadedIssue, comments: !commentsLoading, interactions: !interactionsLoading, attachments: !attachmentsLoading, "work-products": !workProductsLoading });
   }, [issueId, loadedIssue, commentsLoading, interactionsLoading, attachmentsLoading, workProductsLoading]);
 
-  const { data: liveRunCount = 0 } = useQuery<LiveRunForIssue[], Error, number>(
+  const { data: liveRunSummary = EMPTY_LIVE_RUN_SUMMARY } = useQuery<LiveRunForIssue[], Error, LiveRunSummary>(
     {
       queryKey: queryKeys.issues.liveRuns(issueId!),
       queryFn: () => heartbeatsApi.liveRunsForIssue(issueId!),
       enabled: !!issueId,
       refetchInterval: (query) => liveRunRefetchInterval(hasLiveConnection, query.state, 3000),
-      select: (runs) => runs.length,
+      select: summarizeLiveRuns,
       placeholderData: keepPreviousDataForSameQueryTail<LiveRunForIssue[]>(
         issueId ?? "pending",
       ),
     },
   );
 
-  const { data: hasActiveRun = false } = useQuery<
+  const liveRunCount = liveRunSummary.count;
+  const { data: activeRunSummary = EMPTY_LIVE_RUN_SUMMARY } = useQuery<
     ActiveRunForIssue | null,
     Error,
-    boolean
+    LiveRunSummary
   >({
     queryKey: queryKeys.issues.activeRun(issueId!),
     queryFn: () => heartbeatsApi.activeRunForIssue(issueId!),
     enabled:
       !!issueId && (!!issue?.executionRunId || issue?.status === "in_progress"),
     refetchInterval: (query) => liveRunCount > 0 ? false : liveRunRefetchInterval(hasLiveConnection, query.state, 3000),
-    select: (run) => !!run,
+    select: (run) => summarizeLiveRuns(run ? [run] : []),
     placeholderData: keepPreviousDataForSameQueryTail<ActiveRunForIssue | null>(
       issueId ?? "pending",
     ),
   });
+  const hasActiveRun = activeRunSummary.count > 0;
   const resolvedHasActiveRun = issue
     ? shouldTrackIssueActiveRun(issue) && hasActiveRun
     : hasActiveRun;
   const hasLiveRuns = liveRunCount > 0 || resolvedHasActiveRun;
+  // Every live run is still waiting to start: say so instead of "Live".
+  const headerWaiting = hasLiveRuns
+    && (liveRunCount === 0 || liveRunSummary.waitingOnly)
+    && (!resolvedHasActiveRun || activeRunSummary.waitingOnly);
+  const headerAgentQueue = liveRunSummary.agentQueue ?? (resolvedHasActiveRun ? activeRunSummary.agentQueue : null);
   useEffect(() => {
     if (!hasLiveRuns && locallyQueuedCommentRunIds.size > 0) {
       setLocallyQueuedCommentRunIds(new Map());
@@ -3759,7 +3785,10 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
     enabled: !!selectedCompanyId,
   });
   // Bounded pool of recently-updated issues to back the `@task` reference picker.
-  // The picker filters this list client-side by identifier/title.
+  // The picker filters this list client-side by identifier/title. It is a large
+  // read (full rows) that never affects the first chat frame, so it starts once
+  // the page's own reads have finished.
+  const mentionPoolReady = usePageSettled();
   const { data: mentionIssues = EMPTY_ISSUES } = useQuery({
     queryKey: resolvedCompanyId
       ? queryKeys.issues.mentionPool(resolvedCompanyId)
@@ -3770,7 +3799,7 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
         sortField: "updated",
         sortDir: "desc",
       }),
-    enabled: !!resolvedCompanyId,
+    enabled: !!resolvedCompanyId && mentionPoolReady,
     staleTime: 60_000,
     placeholderData: keepPreviousDataForSameQueryTail<Issue[]>(
       resolvedCompanyId ?? "pending",
@@ -5092,7 +5121,7 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
         assertCurrentAccount();
         queryClient.setQueryData(queryKeys.issues.detail(writableIssueId), updated);
       }
-      return issuesApi.addComment(writableIssueId, body, reopen, interrupt, attachmentIds, clientRequestId ?? crypto.randomUUID());
+      return issuesApi.addComment(writableIssueId, body, reopen, interrupt, attachmentIds, clientRequestId ?? createUuid());
     },
     onMutate: async ({ body, reopen, interrupt }) => {
       // Start cache cancellation immediately but do not put it in front of the
@@ -7738,7 +7767,11 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
             {issue.identifier ?? issue.id.slice(0, 8)}
           </span>
         ) : null}
-        {hasLiveRuns && (
+        {headerWaiting ? (
+          <span className="shrink-0" data-testid="issue-header-waiting">
+            <AgentQueueWaitChip queue={headerAgentQueue} />
+          </span>
+        ) : hasLiveRuns && (
           <Badge
             variant="outline"
             className={cn("gap-1.5 text-(length:--text-nano)", liveBlueBadge)}
@@ -8220,6 +8253,7 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
       <TextAttachmentContext.Provider value={taskChatShellEnabled ? handleOpenTextAttachment : null}><IssueGalleryContext.Provider value={openIssueGallery}>
         <div
           data-task-chat-shell={taskChatShellEnabled ? "" : undefined}
+          data-classic-task-shell={!isMobile && !taskChatShellEnabled && resolvedDetailTab === "chat" ? "" : undefined}
           className={
             taskChatShellEnabled
               ? // Fill main exactly so the outer page never scrolls — the

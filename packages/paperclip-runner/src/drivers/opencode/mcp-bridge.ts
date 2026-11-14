@@ -4,6 +4,9 @@ import type { Socket } from "node:net";
 import type { ValidateFunction } from "ajv/dist/2020.js";
 import { admitToolInputSchema } from "../tool-input-schema.js";
 import { toolInputError } from "../tool-input-error.js";
+import { admitToolInput, TOOL_INPUT_COERCION_DIAGNOSTIC_SCHEMA } from "../tool-input-coercion.js";
+import { RepeatedToolInputRejectionGuard } from "../repeated-tool-input-rejection.js";
+import { toolInputVariantError } from "../../contracts/tool-input-variants.js";
 
 import {
   PRP_BLOCK_RESULT_PROVIDER_INPUT_SCHEMA,
@@ -61,6 +64,7 @@ const DEFAULT_MAX_BODY_BYTES = 1_048_576;
 const MAX_RESULT_BYTES = 1_048_576;
 const TOOL_DELIVERY_DIAGNOSTIC_SCHEMA = "paperclip.opencode.tool-delivery-diagnostic/v1";
 const MAX_TOOL_DELIVERY_DIAGNOSTICS = 256;
+const MAX_TOOL_INPUT_COERCION_DIAGNOSTICS = 64;
 
 type SocketUse = { requests: number; lastResponseAt: number | null };
 type ToolDelivery = {
@@ -87,6 +91,7 @@ export async function startOpenCodeMcpBridge(
   const privateTools = normalizeTools(options.privateTools ?? [], false);
   const admittedTools = [...tools, ...privateTools.filter((candidate) => !tools.some((tool) => tool.name === candidate.name))];
   const validators = compileValidators(admittedTools);
+  const rejections = new RepeatedToolInputRejectionGuard();
   const finishSchema = admittedTools.find(tool => tool.name === PRP_COMPLETION_TOOL_NAME)?.inputSchema;
   const finishSchemaSha256 = finishSchema && options.onDiagnostic
     ? createHash("sha256").update(JSON.stringify(finishSchema)).digest("hex") : undefined;
@@ -103,6 +108,20 @@ export async function startOpenCodeMcpBridge(
         rootShape: inputShape(rejection.input),
         continuationShape: inputShape(isRecord(rejection.input) ? rejection.input.continuation : undefined),
       } : {}),
+    };
+    try { options.onDiagnostic(JSON.stringify(diagnostic)); } catch { /* Optional diagnostics never change admission. */ }
+  };
+  let coercionDiagnostics = 0;
+  // Records each call accepted only after an object-typed field sent as JSON
+  // text was parsed back into its object. Names fields, never their values.
+  const diagnoseInputCoercion = (tool: string, callId: string, paths: string[]) => {
+    if (!options.onDiagnostic || coercionDiagnostics++ >= MAX_TOOL_INPUT_COERCION_DIAGNOSTICS) return;
+    const diagnostic = {
+      schema: TOOL_INPUT_COERCION_DIAGNOSTIC_SCHEMA,
+      tool,
+      callIdSha256: createHash("sha256").update(callId).digest("hex"),
+      coercion: "json_string_to_object",
+      paths,
     };
     try { options.onDiagnostic(JSON.stringify(diagnostic)); } catch { /* Optional diagnostics never change admission. */ }
   };
@@ -145,11 +164,13 @@ export async function startOpenCodeMcpBridge(
       tools,
       admittedTools,
       validators,
+      rejections,
       calls,
       controllers,
       handler: options.handler,
       onRejectedCall: options.onRejectedCall,
       diagnoseFinishInput,
+      diagnoseInputCoercion,
       timeoutMs: options.timeoutMs === null ? null : options.timeoutMs ?? DEFAULT_TIMEOUT_MS,
       privateToolTimeoutMs: options.privateToolTimeoutMs ?? options.timeoutMs ?? DEFAULT_TIMEOUT_MS,
       privateToolNames: new Set(privateTools.map((tool) => tool.name)),
@@ -234,6 +255,7 @@ async function handleRequest(
     tools: OpenCodeMcpToolDefinition[];
     admittedTools: OpenCodeMcpToolDefinition[];
     validators: Map<string, ValidateFunction>;
+    rejections: RepeatedToolInputRejectionGuard;
     calls: Map<string, { fingerprint: string; promise: Promise<unknown>; waiting: Set<ServerResponse> }>;
     controllers: Map<string, AbortController>;
     handler: OpenCodeMcpBridgeOptions["handler"];
@@ -243,6 +265,7 @@ async function handleRequest(
     privateToolNames: ReadonlySet<string>;
     maxBodyBytes: number;
     diagnoseFinishInput: (rejection?: FinishInputRejection) => void;
+    diagnoseInputCoercion: (tool: string, callId: string, paths: string[]) => void;
   },
 ): Promise<void> {
   setSecurityHeaders(response);
@@ -337,16 +360,21 @@ async function handleRequest(
     writeRpc(response, id, { isError: true, content: [{ type: "text", text: "Unsupported tool." }] });
     return;
   }
-  const args = params.arguments ?? {};
+  const received = params.arguments ?? {};
   const validator = context.validators.get(tool);
-  if (validator === undefined || !validator(args)) {
+  const admitted = admitToolInput(validator, received);
+  const { args, schemaValid } = admitted;
+  // The completion tool's yielded-only continuation rule is not part of its
+  // advertised schema; some hosts hide a root conditional's arguments.
+  const variantError = schemaValid && tool === PRP_COMPLETION_TOOL_NAME ? toolInputVariantError(tool, args) : null;
+  if (!schemaValid || variantError !== null) {
     if (tool === PRP_COMPLETION_TOOL_NAME) {
-      const errors = validator?.errors ?? [];
-      const validationCategory = errors.some(error => error.instancePath === "/continuation" || error.instancePath.startsWith("/continuation/"))
+      const errors = schemaValid ? [] : validator?.errors ?? [];
+      const validationCategory = variantError !== null || errors.some(error => error.instancePath === "/continuation" || error.instancePath.startsWith("/continuation/"))
         ? "continuation" : errors.some(error => error.instancePath === "") ? "root" : "other";
       context.diagnoseFinishInput({ input: params.arguments, callId, validationCategory });
     }
-    const error = toolInputError(validator, args);
+    const error = context.rejections.reject({ tool, args, error: variantError ?? toolInputError(validator, args), schema: validator?.schema });
     try { context.onRejectedCall?.({ tool, callId, arguments: args }, error); } catch {}
     outcome = "error";
     writeRpc(response, id, {
@@ -370,6 +398,7 @@ async function handleRequest(
     context.privateToolNames.has(tool) ? context.privateToolTimeoutMs : context.timeoutMs,
   );
   if (!existing) {
+    if (admitted.coercedPaths) context.diagnoseInputCoercion(tool, callId, admitted.coercedPaths);
     if (context.calls.size >= 2_048) context.calls.delete(context.calls.keys().next().value!);
     context.calls.set(callId, { fingerprint, promise: execution, waiting: new Set() });
     context.controllers.set(callId, controller!);

@@ -22,7 +22,7 @@ import { handoffCaseSchema } from "@paperclipai/shared";
 import { skillAccessService } from "../skill-access.js";
 import { SKILL_LIBRARY_SCHEMAS, SKILL_LIBRARY_TOOL_DEFINITIONS, SkillLibraryReadCache, executeSkillLibraryTool } from "./native-skill-library-tools.js";
 import { withExternalExecutionAdmission, type ExternalAdmissionTransaction } from "../../modules/external-agents/index.js";
-import { callTaskWorkspaceTool, pendingTaskRepositoryContinuation } from "../task-workspace-tools.js";
+import { apiResultMayHaveWorkspace, callTaskWorkspaceTool, pendingTaskRepositoryContinuation, withWorkspacePageHref } from "../task-workspace-tools.js";
 import { TaskAttachmentReadCache, TASK_ATTACHMENT_DEFINITIONS, TASK_ATTACHMENT_SCHEMAS, listTaskAttachments, readTaskAttachment } from "./runner-task-attachments.js";
 import { RUNNER_BRIDGE_READ_OPERATIONS, RUNNER_BRIDGE_SCHEMAS, runnerBridgeDefinitions, readAssignedSkill, executeWorkspaceTool, readWorkspaceUploadFile, settleRunnerBridgeRead, assertRunnerWorkspacePathAllowed } from "./runner-bridge-tools.js";
 import type { NativeRuntimeContextSnapshot } from "../../vendor/paperclip-runner/index.js";
@@ -72,7 +72,7 @@ import { canActorReadAssetContent } from "../asset-content-access.js";
 import { getSecretProvider } from "../../secrets/provider-registry.js";
 import { runnerApiSensitiveResponse } from "./runner-api-sensitive-response.js";
 import { workspaceFileResourceService } from "../workspace-file-resources.js";
-import { badRequest, forbidden, notFound, HttpError } from "../../errors.js";
+import { badRequest, forbidden, notFound, HttpError, unprocessable } from "../../errors.js";
 import { casesDisabledError } from "../cases-disabled.js";
 import { runnerApiCatalog, searchRunnerApi, withCompanyPagePaths } from "./runner-api-catalog.js";
 import { assertRunnerApiDispatchable, executeRunnerApi, validateRunnerApiCall, RUNNER_API_MAX_BYTES, type RunnerApiCall, type RunnerApiFile, type RunnerApiIo } from "./runner-api-client.js";
@@ -102,7 +102,7 @@ import {
   projects,
   issueThreadInteractions,
 } from "@paperclipai/db";
-import { CAPABILITY_CANONICAL_OPERATIONS, CAPABILITY_SEMANTIC_TOOL_CATALOG, parseNativeExecutionInput, runnerCodexDynamicToolsFit, SemanticToolOutcomeUnknownError } from "../../vendor/paperclip-runner/index.js";
+import { CAPABILITY_CANONICAL_OPERATIONS, CAPABILITY_SEMANTIC_TOOL_CATALOG, parseNativeExecutionInput, runnerCodexDynamicToolsFit, SemanticToolOutcomeUnknownError, toolInputVariantError } from "../../vendor/paperclip-runner/index.js";
 import { agentService } from "../agents.js";
 import { approvalService } from "../approvals.js";
 import { documentService } from "../documents.js";
@@ -349,7 +349,7 @@ function hireAgentResult(value: unknown, provider: unknown) {
 export class PaperclipRunnerToolAuthority {
   #taskAttachmentCache = new TaskAttachmentReadCache();
   #skillLibraryCache = new SkillLibraryReadCache();
-  close() { this.#taskAttachmentCache.close(); this.#skillLibraryCache.close(); }
+  close() { this.#taskAttachmentCache.close(); this.#skillLibraryCache.close(); this.binding.assignedMcpTools?.close?.(); }
   constructor(readonly db: Db, readonly binding: Binding) {}
 
   definitions(): Array<Record<string, unknown>> {
@@ -631,6 +631,12 @@ export class PaperclipRunnerToolAuthority {
     callId: string;
     arguments: unknown;
   }): Promise<unknown> {
+    // Advertised schemas are plain objects so every model host shows their
+    // arguments; their cross-field variants are checked here with named errors.
+    if (!this.binding.assignedMcpTools?.has(call.tool) && !isConnectorTool(call.tool)) {
+      const variantError = toolInputVariantError(call.tool, call.arguments);
+      if (variantError) throw unprocessable(variantError);
+    }
     if ((call.tool === "handoff_case" || call.tool === "create_case") && !this.binding.nativeReview) {
       if (this.binding.workMode && this.binding.workMode !== "standard") throw forbidden("Case tools require standard work mode");
       const create = call.tool === "create_case" ? createNativeCaseSchema.parse(call.arguments) : null;
@@ -727,7 +733,7 @@ export class PaperclipRunnerToolAuthority {
         // read-only options; the shared client still enforces GET-only export.
         return apiToolResult(await this.#callApi(call.callId, { ...input, saveResponse: true } as RunnerApiCall));
       }
-      return apiToolResult(await this.#callApi(call.callId, taskBridgeApiRequest(call.tool, input)));
+      return apiToolResult(await this.#withWorkspacePageHref(await this.#callApi(call.callId, taskBridgeApiRequest(call.tool, input))));
     }
     if (this.binding.firstPartyOnly && (call.tool === READ_TOOL_RESULT || this.binding.assignedMcpTools?.has(call.tool) || isConnectorTool(call.tool)
       || RUNTIME_CONNECTION_TOOL_DEFINITIONS.some(tool => tool.name === call.tool))) throw forbidden("This Grok Bot connection exposes first-party Paperclip operations. Use your own provider apps under their existing permissions.");
@@ -925,7 +931,7 @@ export class PaperclipRunnerToolAuthority {
         // PRP reserves operationId/callId for semantic result identity. The
         // HTTP operation is metadata, including in previously saved receipts;
         // exposing it as operationId makes the runner reject a valid response.
-        return apiToolResult(await this.#callApi(call.callId, call.arguments));
+        return apiToolResult(await this.#withWorkspacePageHref(await this.#callApi(call.callId, call.arguments)));
       }
       case "get_task_context": {
         if (this.#apiScope(context).kind === "skill_test") return {
@@ -1155,6 +1161,12 @@ export class PaperclipRunnerToolAuthority {
       ? this.#companyPagePrefix() : null;
   }
 
+  /** Gives workspace reads the same page href get_workspace returns, reading the setting only for those reads. */
+  async #withWorkspacePageHref(result: unknown) {
+    return apiResultMayHaveWorkspace(result)
+      ? withWorkspacePageHref(result, await this.#workspacePagePrefix(), this.binding.companyId) : result;
+  }
+
   #apiToken(context: {
     actor: { adapterType: string };
     issue: { workMode: string };
@@ -1193,11 +1205,11 @@ export class PaperclipRunnerToolAuthority {
     if (!apiUrl) throw new Error("Paperclip API origin is unavailable");
     const token = this.#apiToken(bound);
     if (!token) throw new Error("Paperclip run authentication is unavailable");
-    const execute = async () => {
+    const execute = async (callKey?: string) => {
       const current = await this.#boundContext();
       assertAvailable(current.issue.workMode);
       const result = await executeRunnerApi(input, { ...context, workMode: current.issue.workMode }, {
-        apiUrl, token,
+        apiUrl, token, callKey,
         beforeDispatch: async () => {
           const fresh = await this.#boundContext();
           assertAvailable(fresh.issue.workMode);
@@ -1241,7 +1253,7 @@ export class PaperclipRunnerToolAuthority {
       return null;
     });
     if (prior) return prior.result;
-    const result = await execute();
+    const result = await execute(key);
     const storedResult = provider
       ? { encryptedResult: (await provider.createSecret({ value: JSON.stringify(result) })).material }
       : { result };

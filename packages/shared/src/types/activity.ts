@@ -3,6 +3,8 @@ export interface ActivityEvent {
   companyId: string;
   actorType: "agent" | "user" | "system" | "plugin";
   actorId: string;
+  /** Person-facing name of the actor, such as an agent's or member's name, or "Board". */
+  actorName?: string;
   action: string;
   entityType: string;
   entityId: string;

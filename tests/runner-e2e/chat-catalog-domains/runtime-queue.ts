@@ -17,8 +17,21 @@ import type { IssueWorkProduct } from "../../../packages/shared/src/types/work-p
  * request; its status is returned so the caller can tell an accepted move from a refused one. When a gesture
  * sends nothing, `beforeRetry` (for example a reload that refetches the queue) runs and the gesture is pressed
  * again, up to `attempts` gestures in all; every gesture is reported. */
-export async function keyboardMoveQueuedMessageUp(page: Pick<Page, "waitForResponse">, handle: Pick<Locator, "isEnabled" | "focus" | "press">,
-  timeoutMs = 15_000, intervalMs = 100, options: { attempts?: number; beforeRetry?: () => Promise<void> } = {}): Promise<{ status: number; waitedForEnabledMs: number; gestures: number }> {
+export async function keyboardMoveQueuedMessageUp(page: Pick<Page, "waitForResponse" | "evaluate">, handle: Pick<Locator, "isEnabled" | "focus" | "press" | "getAttribute">,
+  timeoutMs = 15_000, intervalMs = 100, options: { attempts?: number; beforeRetry?: () => Promise<void> } = {}): Promise<{ status: number; waitedForEnabledMs: number; gestures: number; dragStarted: boolean[] }> {
+  const dragStarted: boolean[] = [];
+  // The drag library starts a keyboard drag on Space but listens for the next keys only after a timer, and moves
+  // only once it has measured the rows on a later render. A person's keystrokes are far apart; automated ones are
+  // not, so wait for the handle to report the drag (aria-pressed) and let the page paint between keys.
+  const settle = () => page.evaluate(() => new Promise<void>(resolve => setTimeout(() => requestAnimationFrame(() => requestAnimationFrame(() => resolve())), 0)));
+  const waitForDrag = async () => {
+    const started = Date.now();
+    while (await handle.getAttribute("aria-pressed") !== "true") {
+      if (Date.now() - started >= Math.min(timeoutMs, 3_000)) return false;
+      await new Promise(resolve => setTimeout(resolve, Math.min(intervalMs, 50)));
+    }
+    return true;
+  };
   const attempts = Math.max(1, options.attempts ?? 1);
   for (let gesture = 1; ; gesture++) {
     const started = Date.now();
@@ -30,10 +43,12 @@ export async function keyboardMoveQueuedMessageUp(page: Pick<Page, "waitForRespo
     const sent = page.waitForResponse((response: Response) => response.request().method() === "PUT"
       && new URL(response.url()).pathname.endsWith("/queued-comments/order"), { timeout: timeoutMs });
     sent.catch(() => undefined);
-    await handle.focus(); await handle.press("Space"); await handle.press("ArrowUp"); await handle.press("Space");
-    const response = await sent.catch(() => null);
-    if (response) return { status: response.status(), waitedForEnabledMs, gestures: gesture };
-    if (gesture >= attempts) throw new Error(`The keyboard reorder gesture sent no queue order request after ${gesture} gesture(s)`);
+    await handle.focus(); await handle.press("Space");
+    const dragging = await waitForDrag(); dragStarted.push(dragging);
+    if (dragging) { await settle(); await handle.press("ArrowUp"); await settle(); await handle.press("Space"); }
+    const response = dragging ? await sent.catch(() => null) : null;
+    if (response) return { status: response.status(), waitedForEnabledMs, gestures: gesture, dragStarted };
+    if (gesture >= attempts) throw new Error(`The keyboard reorder gesture sent no queue order request after ${gesture} gesture(s) (drag started: ${dragStarted.join(", ")})`);
     await options.beforeRetry?.();
   }
 }
@@ -127,6 +142,18 @@ export function replyNamesTask(reply: string, task: Entity) {
 function savedRequirement(queue: IssueQueuedCommentQueue | undefined, leadId: string) {
   return queue?.entries.length === 1 && queue.entries[0]!.comment.authorAgentId === leadId ? queue.entries[0] : undefined;
 }
+export function queuedFollowUpBrief(marker: string) {
+  return [
+    `The human brief is now ready. Website brief, reference ${marker}:`,
+    "- Product: Acorn Notes, a shared notebook app for small research teams. It launches in beta next month.",
+    "- Page: one static website.html page with a light background and a readable sans-serif font.",
+    "- Hero: the headline \"Research notes your whole team can find\", the line \"Shared notebooks, full-text search across experiments, and one-click citation export\", and a \"Request early access\" button.",
+    "- Features: three short items: shared notebooks, search across every experiment, citation export to BibTeX.",
+    "- Pricing: \"Free for teams of up to ten during the beta.\"",
+    "- Company details: hello@acornnotes.example, +1 555 0142, 12 Elm Street, Portland, OR 97201.",
+    `Save this brief as an initial task document that includes the exact reference ${marker}, then finish this current turn normally. Keep all prior user requirements queued by Paperclip intact for normal delivery; do not create tasks or external effects.`,
+  ].join("\n");
+}
 export function gradeQueuedFollowup(value: unknown) {
   const c = checks(); const o = runtimeObservation(value);
   c.add("real-queue-and-delivery-evidence", !!o, "The actual task queue, saved requirement, real initial worker and later consuming native input are required."); if (!o) return c.result();
@@ -150,7 +177,7 @@ export function gradeQueuedFollowup(value: unknown) {
   return c.result();
 }
 export const runtimeQueueCases = [runtimeDefinition("steering.queue-follow-up", busyRuntimeWorker, gradeQueuedFollowup, {
-  oracleVersion: "paperclip.chat-catalog.runtime-queue.v3",
+  oracleVersion: "paperclip.chat-catalog.runtime-queue.v4",
   sourceFiles: ["chat-catalog-domains/runtime-queue.ts", "chat-catalog-domains/runtime-busy-worker.ts", "chat-catalog-domains/runtime-support.ts", "chat-scenarios/steering.yaml"],
   expectedRunCount: 3, attemptTimeoutMs: 720_000,
   setupPolicy: { readiness: "preserve-scenario", invariantCheckIds: ["lead-ready", "real-busy-worker", "worker-task-scope"] },
@@ -181,7 +208,7 @@ export const runtimeQueueCases = [runtimeDefinition("steering.queue-follow-up", 
     await ctx.input.capture("actual-contact-followup-queue", "Contact requirement remains visibly queued behind real active work", "runtime-contact-queue.png");
     await ctx.input.page.goto(source, { waitUntil: "domcontentloaded" });
     const marker = `Original website brief ${ctx.input.nonce}`; state.briefMarker = marker;
-    await writeFile((state.gate as { gate: string }).gate, `The human brief is now ready: save an initial task document with the exact reference ${marker}, then finish this current turn normally. Keep all prior user requirements queued by Paperclip intact for normal delivery; do not create tasks or external effects.`, "utf8");
+    await writeFile((state.gate as { gate: string }).gate, queuedFollowUpBrief(marker), "utf8");
     const delivered = await pollUntil({ label: "Normal successor receives actual queued contact requirement", deadlineAt: Date.now() + 240_000,
       load: async () => ({ task: await ctx.input.api.get<Entity>(`/api/issues/${task.id}`), runs: await ctx.allRuns(), queue: await ctx.input.api.get<IssueQueuedCommentQueue>(`/api/issues/${task.id}/queued-comments`) }),
       accept: value => value.task.status === "done" && value.runs.length === 3 && value.runs.every(run => run.status === "succeeded") && value.queue.entries.length === 0,

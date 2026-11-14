@@ -34,6 +34,7 @@ export {
   summarizeCodexTurnDiff,
 } from "./drivers/codex/codex-turn-diff.js";
 export * from "./native-session-runtime.js";
+export * from "./native-provider-turn-wait.js";
 export * from "./steering-delivery.js";
 export {
   DurablePrpControlPlane,
@@ -74,6 +75,8 @@ export * from "./drivers/codex/codex-app-server-driver.js";
 export { codexUsageBaselineForNextRun } from "./drivers/codex/codex-usage-baseline.js";
 export { resolveCodexCommand, resolvePinnedCodexCommand } from "./drivers/codex/codex-command.js";
 export { admitToolInputSchema, canonicalToolInputSchema, TOOL_INPUT_SCHEMA_MAX_BYTES, type ToolInputSchemaAdmission } from "./drivers/tool-input-schema.js";
+export { TOOL_INPUT_VARIANT_TOOLS, toolInputVariantError } from "./contracts/tool-input-variants.js";
+export { providerToolSchemaShapeIssues } from "./contracts/provider-tool-schema-shape.js";
 export { runnerBinaryTarget } from "./live/runner-binary.js";
 export * from "./drivers/opencode/opencode-server-driver.js";
 export * from "./drivers/opencode/mcp-bridge.js";

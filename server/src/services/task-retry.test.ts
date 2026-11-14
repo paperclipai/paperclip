@@ -1,9 +1,13 @@
 import { randomUUID } from "node:crypto";
+import type { AddressInfo } from "node:net";
+import express from "express";
 import { and, eq, sql } from "drizzle-orm";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { agents, agentTaskSessions, agentWakeupRequests, chatActions, chatConversations, chatEndpoints, companies, budgetPolicies, costEvents, createDb, type Db, environmentLeases, environments, executionWorkspaces, executionWorkspaceSnapshots, workspaceOperations, heartbeatRunEvents, heartbeatRuns, issueComments, issues, approvals, issueApprovals, issueRecoveryActions, nativeRunFinalizations, toolApplications, toolConnections, toolInvocations, applyPendingMigrations } from "@paperclipai/db";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
+import { activityLog, agents, agentTaskSessions, agentWakeupRequests, chatActions, chatConversations, chatEndpoints, companies, budgetPolicies, costEvents, createDb, type Db, environmentLeases, environments, executionWorkspaces, executionWorkspaceSnapshots, workspaceOperations, heartbeatRunEvents, heartbeatRuns, issueComments, issueRelations, issues, approvals, issueApprovals, issueRecoveryActions, nativeRunFinalizations, toolApplications, toolConnections, toolInvocations, applyPendingMigrations } from "@paperclipai/db";
 import { startEmbeddedPostgresTestDatabase } from "../__tests__/helpers/embedded-postgres.js";
 import { priorRecoveryApiReceipt, unresolvedRecoveryToolInvocation } from "./recovery-effect-receipts.js";
+import { recordRunnerApiOutcome, runnerCallOutcomeMiddleware } from "../middleware/runner-call-outcome.js";
+import { RUNNER_API_CALL_HEADER } from "./native-runtime/runner-api-client.js";
 import { requestTaskRetry } from "./task-retry.js";
 import { HttpError } from "../errors.js";
 import { NativeChatReviewPresentationContentionError } from "./native-runtime/native-chat-review-presentation.js";
@@ -740,6 +744,33 @@ describe("durable task Retry admission", () => {
     await expect(dispatchRun(input, queued[0])).resolves.toMatchObject({ interruptedRunId: refused.id });
   });
 
+  it("lifts the failure's block once the Retry's run is queued, and keeps a block made for another reason", async () => {
+    for (const reason of ["failure", "declared", "dependency", "newer", "person"] as const) {
+      const { input, source, refused, hold } = await seedRefusedRetry();
+      if (reason === "newer") await db.update(issueRecoveryActions).set({ evidence: { ...hold.evidence,
+        nativeFailureBlock: { runId: source.id, statusVersion: 2 } } }).where(eq(issueRecoveryActions.id, hold.id));
+      await db.update(issues).set({ blockedTransitionAt: new Date(), statusVersion: 3,
+        ...(reason === "declared" ? { unblockDescriptor: { owner: { userId: "someone" }, action: "Add the key" } } : {}),
+      }).where(eq(issues.id, input.issueId));
+      if (reason === "person") await db.insert(activityLog).values({ companyId: input.companyId, actorType: "user", actorId: "board-user",
+        action: "issue.updated", entityType: "issue", entityId: input.issueId, details: { status: "blocked", previousStatus: "todo" } });
+      if (reason === "dependency") {
+        const [blocker] = await db.insert(issues).values({ companyId: input.companyId, title: "Blocker", status: "todo" }).returning();
+        await db.insert(issueRelations).values({ companyId: input.companyId, issueId: blocker.id, relatedIssueId: input.issueId, type: "blocks" });
+      }
+      await db.update(agents).set({ runtimeConfig: { heartbeat: { maxConcurrentRuns: 1 } } }).where(eq(agents.id, source.agentId));
+      await db.insert(heartbeatRuns).values({ companyId: input.companyId, agentId: source.agentId, status: "running" });
+      const receipt = await requestTaskRetry(input);
+      await heartbeatService(db).resumeTaskRetry(input.companyId, receipt.requestId!);
+      const queued = await db.select().from(heartbeatRuns).where(and(eq(heartbeatRuns.companyId, input.companyId), eq(heartbeatRuns.status, "queued")));
+      const [task] = await db.select().from(issues).where(eq(issues.id, input.issueId));
+      if (reason === "failure") {
+        expect(queued[0]?.contextSnapshot).toMatchObject({ explicitUserContinuation: { previousRunId: refused.id } });
+        expect(task).toMatchObject({ status: "todo", blockedTransitionAt: null });
+      } else expect(task.status, reason).toBe("blocked");
+    }
+  });
+
   it("serializes concurrent clicks and remembers each key after completion", async () => {
     const input = await seed();
     const second = { ...input, idempotencyKey: randomUUID() };
@@ -995,7 +1026,7 @@ describe("durable task Retry admission", () => {
     const input = await seed();
     const first = await requestTaskRetry(input);
     const state = failSystemRecovery(createSystemRecovery(input.observedRunId, first.requestId!),
-      new SystemRecoveryFailure("source_unavailable", "service_required"));
+      new SystemRecoveryFailure("export_interrupted", "user_action_required"));
     const [action] = await db.insert(issueRecoveryActions).values({
       companyId: input.companyId, sourceIssueId: input.issueId, kind: "active_run_watchdog",
       ownerType: "system", cause: "legacy_execution_requires_reconciliation", fingerprint: randomUUID(),
@@ -1012,11 +1043,7 @@ describe("durable task Retry admission", () => {
     expect(wakes.find(row => row.id === first.requestId)?.status).toBe("failed");
     expect(wakes.filter(row => row.status === "deferred_issue_execution")).toHaveLength(1);
   });
-  it("accepts Retry for an old-release retained-export hold whose source ownership could not be verified", async () => {
-    // State saved by an earlier release: a board-owned export hold whose only
-    // attempt ended with a permanent ownership refusal. The task UI now offers
-    // Retry for it; Retry must open one new bounded generation that re-verifies
-    // the source, keep the hold in place, and never resolve or bypass it.
+  it("accepts Retry for an old-release retained-export hold whose source ownership could not be verified, without repeating the check", async () => {
     const input = await seed();
     const previous = { ...failSystemRecovery({ ...createSystemRecovery(input.observedRunId), revision: 4 },
       new SystemRecoveryFailure("allocation_ownership_ambiguous", "service_required")), revision: 5 };
@@ -1036,15 +1063,12 @@ describe("durable task Retry admission", () => {
     const [updated] = await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.id, action.id));
     expect(updated.status).toBe("active");
     expect(updated.resolvedAt).toBeNull();
-    expect(readSystemRecovery(updated.evidence)).toMatchObject({ generationId: receipt.requestId, sourceRunId: input.observedRunId,
-      attempts: 0, failure: null, revision: 6, freshAttemptRunId: null, preservationOperationIds: [] });
-    // File recovery is queued again for the worker, which re-verifies the source.
-    expect(updated.evidence.workspaceRecovery).toMatchObject({ runId: input.observedRunId, status: "queued",
-      stage: "verifying_stop", attemptLimit: 6, retryable: true });
-    // A replayed click is idempotent and does not open another generation.
+    expect(readSystemRecovery(updated.evidence)).toMatchObject({ generationId: previous.generationId, intentId: receipt.requestId,
+      state: "exhausted", failure: { code: "allocation_ownership_ambiguous" }, freshAttemptRunId: null });
+    expect(updated.evidence.workspaceRecovery).toMatchObject({ status: "blocked" });
     expect((await requestTaskRetry(input)).requestId).toBe(receipt.requestId);
     const [replayed] = await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.id, action.id));
-    expect(readSystemRecovery(replayed.evidence)?.revision).toBe(6);
+    expect(readSystemRecovery(replayed.evidence)?.generationId).toBe(previous.generationId);
   });
   it("binds a key to its company, task and actor across all statuses", async () => {
     const input = await seed();
@@ -1143,6 +1167,99 @@ describe("durable task Retry admission", () => {
     await db.update(heartbeatRuns).set({ retryOfRunId: null, contextSnapshot: { previousRunId: retry.id } })
       .where(eq(heartbeatRuns.id, automatic.id));
     expect(await priorRecoveryApiReceipt(db, call)).toBeNull();
+  });
+
+  it.each([[200, "applied"], [422, "rejected"], [500, "fenced"], [null, "fenced"]] as const)(
+    "settles an uncertain API receipt from the recorded server outcome %s of the same call", async (status, expected) => {
+      const { input, retry, automatic } = await automaticSuccessorOfTaskRetry();
+      const callKey = "a".repeat(64);
+      const receipt = { operationId: "PATCH /api/issues/{id}", digest: "same-update", state: "completed",
+        result: { ok: false, status: null, error: "api_transport_failure", outcome: "unknown" } };
+      await db.update(heartbeatRuns).set({ resultJson: { apiToolReceipts: { [callKey]: receipt } } }).where(eq(heartbeatRuns.id, retry.id));
+      const outcome = { companyId: input.companyId, agentId: retry.agentId, runId: retry.id };
+      if (status === null) await recordRunnerApiOutcome(db, { ...outcome, callKey: "b".repeat(64), status: 200 });
+      else await recordRunnerApiOutcome(db, { ...outcome, callKey, status });
+      const call = { companyId: input.companyId, issueId: input.issueId, runId: automatic.id,
+        operationId: receipt.operationId, digest: receipt.digest };
+      const another = { ...call, digest: "another-update" };
+      if (expected === "applied") {
+        expect(await priorRecoveryApiReceipt(db, call)).toMatchObject({ state: "completed",
+          result: { ok: true, status: 200, outcome: "applied" } });
+        expect(await priorRecoveryApiReceipt(db, another)).toBeNull();
+      } else if (expected === "rejected") {
+        expect(await priorRecoveryApiReceipt(db, call)).toBeNull();
+      } else {
+        expect(await priorRecoveryApiReceipt(db, another)).toMatchObject({ state: "pending", result: { outcome: "unknown" } });
+      }
+    });
+
+  it("records the final status of a mutation whose client disconnected and settles its receipt without repeating it", async () => {
+    const { input, retry, automatic } = await automaticSuccessorOfTaskRetry();
+    const callKey = "e".repeat(64);
+    const receipt = { operationId: "PATCH /api/issues/{id}", digest: "late-handoff", state: "completed",
+      result: { ok: false, status: null, error: "api_transport_failure", outcome: "unknown" } };
+    await db.update(heartbeatRuns).set({ resultJson: { apiToolReceipts: { [callKey]: receipt } } }).where(eq(heartbeatRuns.id, retry.id));
+    let writes = 0;
+    let entered!: () => void;
+    const handlerEntered = new Promise<void>(resolve => { entered = resolve; });
+    let releaseHandler!: () => void;
+    const handlerReleased = new Promise<void>(resolve => { releaseHandler = resolve; });
+    const app = express();
+    app.use((req, _res, next) => {
+      req.actor = { type: "agent", source: "agent_jwt", agentId: retry.agentId, companyId: input.companyId, runId: retry.id };
+      next();
+    });
+    app.use(runnerCallOutcomeMiddleware(db));
+    app.patch("/slow", async (req, res) => {
+      const clientGone = new Promise<void>(resolve => req.once("close", () => resolve()));
+      entered();
+      await Promise.all([clientGone, handlerReleased]);
+      writes += 1;
+      res.status(200).json({ ok: true });
+    });
+    const server = app.listen(0, "127.0.0.1");
+    await new Promise<void>(resolve => server.once("listening", () => resolve()));
+    try {
+      const { port } = server.address() as AddressInfo;
+      const client = new AbortController();
+      const response = fetch(`http://127.0.0.1:${port}/slow`, { method: "PATCH", signal: client.signal,
+        headers: { [RUNNER_API_CALL_HEADER]: callKey, "content-type": "application/json" }, body: "{}" });
+      await handlerEntered;
+      client.abort();
+      await expect(response).rejects.toThrow();
+      releaseHandler();
+      const outcomes = () => db.select({ details: activityLog.details }).from(activityLog).where(and(
+        eq(activityLog.runId, retry.id), eq(activityLog.action, "runner.api_completed")));
+      await vi.waitFor(async () => expect(await outcomes()).toHaveLength(1), { timeout: 5_000 });
+      expect(await outcomes()).toEqual([{ details: { callKey, status: 200 } }]);
+      expect(writes).toBe(1);
+      expect(await priorRecoveryApiReceipt(db, { companyId: input.companyId, issueId: input.issueId, runId: automatic.id,
+        operationId: receipt.operationId, digest: receipt.digest })).toMatchObject({ state: "completed",
+        result: { ok: true, status: 200, outcome: "applied" } });
+    } finally {
+      await new Promise<void>(resolve => server.close(() => resolve()));
+    }
+  });
+
+  it.each(["user", "agent", "system"] as const)("lifts an uncertain API receipt fence only after a later %s change", async actorType => {
+    const { input, retry, automatic } = await automaticSuccessorOfTaskRetry();
+    const receipt = { operationId: "PATCH /api/issues/{id}", digest: "handoff", state: "completed",
+      result: { ok: false, status: null, error: "api_transport_failure", outcome: "unknown" } };
+    const call = { companyId: input.companyId, issueId: input.issueId, runId: automatic.id,
+      operationId: receipt.operationId, digest: "reassign" };
+    const change = { companyId: input.companyId, actorType, actorId: actorType === "agent" ? retry.agentId : "board",
+      entityType: "issue", entityId: input.issueId };
+    await db.update(heartbeatRuns).set({ resultJson: { apiToolReceipts: { ["c".repeat(64)]: receipt } } })
+      .where(eq(heartbeatRuns.id, retry.id));
+    await db.insert(activityLog).values({ ...change, action: "issue.comment_added", createdAt: new Date(Date.now() + 5_000) });
+    expect(await priorRecoveryApiReceipt(db, call)).toMatchObject({ state: "pending", result: { outcome: "unknown" } });
+    const finishedAt = new Date(Date.now() + 10_000);
+    await db.update(heartbeatRuns).set({ finishedAt }).where(eq(heartbeatRuns.id, retry.id));
+    await db.insert(activityLog).values({ ...change, action: "issue.read_marked", createdAt: new Date(finishedAt.getTime() + 1_000) });
+    expect(await priorRecoveryApiReceipt(db, call)).toMatchObject({ state: "pending", result: { outcome: "unknown" } });
+    await db.insert(activityLog).values({ ...change, action: "issue.updated", createdAt: new Date(finishedAt.getTime() + 2_000) });
+    if (actorType === "user") expect(await priorRecoveryApiReceipt(db, call)).toBeNull();
+    else expect(await priorRecoveryApiReceipt(db, call)).toMatchObject({ state: "pending", result: { outcome: "unknown" } });
   });
 
   it("automatic successors retain uncertain upstream mutation fences after task Retry", async () => {

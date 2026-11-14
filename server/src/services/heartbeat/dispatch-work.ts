@@ -1,8 +1,10 @@
+import { subscribeTaskDrainChanges, subscribeTaskDrainExpiry } from "../task-admission.js";
 import type { RunDispatchScope } from "../run-dispatch-notifications.js";
 import type { createDeliveryWorkCoordinator } from "../delivery-work-coordinator.js";
 import { registerDeadlineWork } from "../deadline-work.js";
 import { DELIVERY_QUEUES } from "../delivery-work-notifications.js";
 import { createQueuedRunRedriveSchedule, type QueuedRunRedrivePlan, type UndispatchedQueuedRun } from "../queued-run-dispatch-liveness.js";
+import { nextAutomaticRunWakeAt, takeDueAutomaticRunWakes } from "../recovery/automatic-run-brake.js";
 
 export function registerRunDispatchWork(
   coordinator: ReturnType<typeof createDeliveryWorkCoordinator>,
@@ -30,12 +32,17 @@ export function registerRunDispatchWork(
   const scopes = new Set<string>(["*"]);
   const redrive = createQueuedRunRedriveSchedule();
   let dispatched: "all" | Set<string> = new Set();
+  let unsubscribeRefresh: (() => void) | undefined;
   const queue = registerDeadlineWork(coordinator, DELIVERY_QUEUES.queuedRunDispatch, {
     retryMs: 30_000,
     notificationCoalesceMs: 1_000,
     canRun,
     onSettled: hints => { for (const hint of hints ?? ["*"]) scopes.add(hint); },
+    onStop: () => { unsubscribeRefresh?.(); unsubscribeRefresh = undefined; },
     run: async signal => {
+      const dueWakes = takeDueAutomaticRunWakes();
+      if (dueWakes.all) scopes.add("*");
+      for (const companyId of dueWakes.companyIds) scopes.add(JSON.stringify({ companyId }));
       const requested = scopes.has("*") ? ["*"] : [...scopes];
       if (requested[0] === "*") scopes.clear();
       else for (const hint of requested) scopes.delete(hint);
@@ -75,9 +82,15 @@ export function registerRunDispatchWork(
         throw error;
       }
       for (const companyId of plan.companyIds) scopes.add(JSON.stringify({ companyId }));
-      return plan.nextAt;
+      const wakeAt = nextAutomaticRunWakeAt();
+      return plan.nextAt === null ? wakeAt : wakeAt === null ? plan.nextAt : Math.min(plan.nextAt, wakeAt);
     },
   });
+  const refresh = () => {
+    if (canRun() && !queue.reconciliationSnapshot().reconciled) queue.wake();
+  };
+  const unsubscribe = [subscribeTaskDrainChanges(refresh), subscribeTaskDrainExpiry(refresh)];
+  unsubscribeRefresh = () => { for (const stop of unsubscribe) stop(); };
   return {
     retries,
     ready: Promise.all([retries.ready, queue.ready]),

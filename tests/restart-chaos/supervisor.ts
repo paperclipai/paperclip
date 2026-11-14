@@ -42,6 +42,7 @@ import { isMultiServerFault, runMultiServerFault, type MultiServerKind, type Mul
 import { generationHome, nextRedeployIdentity, redeployEnvironment, redeployIdentity, redeployNodeArgs, redeployReceipt, type RedeployIdentity } from "./redeploy.js";
 import { startEdgeProxy, type EdgeProxy } from "./edge-proxy.js";
 import { ephemeralServerEnvironment } from "./ephemeral-server.js";
+import { whileFrozen } from "./server-freeze.js";
 import type { SwapPhase, SwapPhaseInfo } from "./release-swap-driver.js";
 import { CLASS_R_PRE_FAULT_DEADLINE_MS, classRRedeploys, isClassRFault, runPluginStall, withReplacementPluginStall, type ClassRHooks } from "./class-r.js";
 
@@ -72,6 +73,12 @@ const PHASE_POLL_MS = 50;
 export function crashLoopShouldFire(target: (typeof CRASH_LOOP_TARGETS)[number], phase: string): boolean {
   if (target === "recovering") return phase === "recovering" || phase === "ready";
   return phase === "ready";
+}
+
+export function overlapKillAfterMs(raw: string | undefined, overlapMs: number, name = "RESTART_CHAOS_K15_KILL_OLD_AFTER_SECONDS"): number | null {
+  if (raw === undefined || raw === "") return null;
+  if (!/^[0-9]+$/.test(raw)) throw new Error(`${name} must be a whole number of seconds`);
+  return Math.min(Number(raw) * 1000, overlapMs);
 }
 
 /**
@@ -176,6 +183,7 @@ export class ChaosSupervisor {
   deployShape: { overlap: boolean; freshHome: boolean } = { overlap: false, freshHome: false };
   ephemeralServer = false;
   swapHook: ((info: SwapPhaseInfo) => Promise<string | void>) | null = null;
+  private rollingRedeploys = 0;
   /** `--k15-fresh-home`: the instance home and config of the serving generation (generation 0 uses `paths`). */
   private serverHome: { home: string; configPath: string };
   /** `--k15-overlap-seconds`: the edge on the wave's port, and the serving generation's own port behind it. */
@@ -822,10 +830,29 @@ export class ChaosSupervisor {
     this.edge.target = this.backendPort;
     this.timeline.add("k15_traffic_switched", { faultId: receipt.faultId, fromPort, toPort: this.backendPort, overlapMs });
     await swap("switched", next);
-    for (const until = Date.now() + overlapMs; Date.now() < until && !this.shuttingDown;) await delay(Math.min(1_000, until - Date.now()));
-    await swap("stopping", next); await this.stopper(previous, "SIGTERM");
-    receipt.stoppedAt = Date.now();
-    this.timeline.add("fault_server_down", { faultId: receipt.faultId, previousPid: previous.pid, overlapMs });
+    this.rollingRedeploys += 1;
+    const killSwaps = process.env.RESTART_CHAOS_K15_KILL_OLD_SWAPS?.split(",").map(Number) ?? null;
+    const killAfterMs = killSwaps && !killSwaps.includes(this.rollingRedeploys) ? null
+      : overlapKillAfterMs(process.env.RESTART_CHAOS_K15_KILL_OLD_AFTER_SECONDS, overlapMs);
+    for (const until = Date.now() + (killAfterMs ?? overlapMs); Date.now() < until && !this.shuttingDown;) await delay(Math.min(1_000, until - Date.now()));
+    await swap("stopping", next);
+    const freezeSwaps = process.env.RESTART_CHAOS_K15_FREEZE_SWAPS?.split(",").map(Number) ?? null;
+    const freezeMs = freezeSwaps && !freezeSwaps.includes(this.rollingRedeploys) ? null
+      : overlapKillAfterMs(process.env.RESTART_CHAOS_K15_FREEZE_NEW_SECONDS, 600_000, "RESTART_CHAOS_K15_FREEZE_NEW_SECONDS");
+    if (freezeMs !== null && next.pid) this.timeline.add("k15_new_server_frozen", { faultId: receipt.faultId, pid: next.pid, forMs: freezeMs });
+    const frozen = await whileFrozen({ pid: next.pid, freezeMs }, async () => {
+      if (killAfterMs === null) await this.stopper(previous, "SIGTERM");
+      else {
+        this.timeline.add("k15_old_server_killed", { faultId: receipt.faultId, previousPid: previous.pid, afterMs: killAfterMs });
+        await this.stopper.crashForRestart(previous);
+      }
+      receipt.stoppedAt = Date.now();
+      this.timeline.add("fault_server_down", { faultId: receipt.faultId, previousPid: previous.pid, overlapMs });
+    });
+    if (frozen.frozenAt !== null) {
+      this.timeline.add("k15_new_server_thawed", { faultId: receipt.faultId, pid: next.pid, frozenMs: frozen.thawedAt! - frozen.frozenAt,
+        afterOldExitMs: frozen.thawedAt! - receipt.stoppedAt! });
+    }
     await swap("stopped", next);
     await this.redeployEvidence?.(receipt.faultId, "stopped");
   }

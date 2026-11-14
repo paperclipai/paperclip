@@ -6,6 +6,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import express from "express";
 import { and, eq, sql } from "drizzle-orm";
+import type { LiveEvent } from "@paperclipai/shared";
+import { subscribeCompanyLiveEvents } from "../services/live-events.js";
+import { assignedToolName as nativeAssignedToolName } from "../services/native-runtime/assigned-mcp-tools.js";
 import request from "supertest";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
@@ -3584,6 +3587,7 @@ rl.on("line", (line) => {
         "kv_get",
         "kv_list",
         "kv_set",
+        "slow_with_progress",
       ]);
 
       await allowAllToolsForAgent(db, company.id, agent.id);
@@ -3614,6 +3618,61 @@ rl.on("line", (line) => {
         expect.objectContaining({ key: "streamable-key", value: "streamable-value" }),
       ]);
     } finally {
+      await kvDemo.close();
+    }
+  });
+
+  it("shows a run's viewers the provider's progress for a long call, saves it on the call, and returns the same result", async () => {
+    const company = await createCompany(db);
+    const other = await createCompany(db);
+    const agent = await createAgent(db, company.id);
+    const { issue, run } = await createIssueAndRun(db, company.id, agent.id);
+    const kvDemo: KvDemoHttpServer = createKvDemoHttpServer();
+    const port = await kvDemo.listen(0, "127.0.0.1");
+    const events: LiveEvent[] = [];
+    const otherEvents: LiveEvent[] = [];
+    const stop = subscribeCompanyLiveEvents(company.id, (event) => { events.push(event); });
+    const stopOther = subscribeCompanyLiveEvents(other.id, (event) => { otherEvents.push(event); });
+    try {
+      const access = toolAccessService(db);
+      const connection = await access.createConnection(company.id, {
+        name: "KV demo progress fixture", connectionPurpose: "tool", transport: "mcp_remote", authKind: "none",
+        ownership: "customer", connectionKind: "managed",
+        config: { url: `http://127.0.0.1:${port}/mcp` }, transportConfig: { url: `http://127.0.0.1:${port}/mcp` },
+        credentialSecretRefs: [], enabled: true, status: "active",
+      });
+      await access.refreshCatalog(connection.id, { actorType: "user", actorId: "board" });
+      await allowAllToolsForAgent(db, company.id, agent.id);
+      const gateway = createTestToolGatewayService(db);
+      const session = await gateway.createSession({ companyId: company.id, agentId: agent.id, runId: run.id, issueId: issue.id });
+      const slowTool = (await gateway.listToolsForSession(session.token))
+        .find((tool) => tool.upstreamToolName === "slow_with_progress");
+      expect(slowTool).toBeTruthy();
+
+      const result = await gateway.executeTool({
+        sessionToken: session.token,
+        tool: slowTool!.name,
+        parameters: { steps: 6, stepMs: 200 },
+      });
+      expect(result).toMatchObject({ status: "completed", result: { data: { isError: false, transport: "mcp_http" } } });
+
+      const progress = events.filter((event) => event.type === "heartbeat.run.tool_progress");
+      // Throttled: six provider updates over ~1.2s, a handful of events, the last one marks the end.
+      expect(progress.length).toBeGreaterThanOrEqual(3);
+      expect(progress.length).toBeLessThanOrEqual(7);
+      expect(progress.every((event) => event.companyId === company.id && event.payload.runId === run.id
+        && event.payload.issueId === issue.id && event.payload.toolName === slowTool!.name
+        && event.payload.nativeToolName === nativeAssignedToolName(slowTool!.name))).toBe(true);
+      expect(progress[0]!.payload).toMatchObject({ progress: 1, total: 6, message: "Finished step 1 of 6", done: false });
+      expect(progress.at(-1)!.payload).toMatchObject({ done: true });
+      expect(otherEvents.filter((event) => event.type === "heartbeat.run.tool_progress")).toEqual([]);
+      const [invocation] = await db.select().from(toolInvocations)
+        .where(eq(toolInvocations.id, String(progress[0]!.payload.invocationId)));
+      expect(invocation).toMatchObject({ companyId: company.id, runId: run.id, status: "succeeded" });
+      expect(invocation!.progress).toMatchObject({ total: 6 });
+    } finally {
+      stop();
+      stopOther();
       await kvDemo.close();
     }
   });

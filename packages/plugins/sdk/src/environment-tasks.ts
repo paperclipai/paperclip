@@ -146,6 +146,7 @@ export const environmentTaskOperationSchema = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("release"), identity: durableIdentity }).strict(),
   z.object({ kind: z.literal("resume"), identity: durableIdentity, bootstrapTicket: credentialValue,
     handoffCredential: z.object({ accountIdentity: z.string().min(1).max(1024), environment: claudeCredentialEnvironment }).strict().optional(),
+    credential: environmentTaskCredentialSchema.optional(),
     configuredEnvironment: environmentTaskConfiguredEnvironmentSchema.optional(),
   }).strict(),
   z.object({
@@ -203,6 +204,7 @@ export const environmentTaskResultSchema = z.discriminatedUnion("kind", [
     workspaceFileReadVersion: z.literal(1).optional(),
     githubCredentialBrokerVersion: z.literal(1).optional(),
     configuredEnvironmentVersion: z.literal(1).optional(),
+    resumeLaunchInputsVersion: z.literal(1).optional(),
   }).strict(),
   z.object({
     kind: z.literal("status"), taskId: providerId,

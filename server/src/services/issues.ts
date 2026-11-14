@@ -3593,13 +3593,20 @@ async function activeRunMapForIssues(
   return map;
 }
 
+/**
+ * `live` counts descendants with a queued or running run: work that covers a
+ * blocked parent. `running` counts only descendants whose run started; a run
+ * still waiting for its agent's slot is not running below.
+ */
+type LiveDescendantCounts = { live: number; running: number };
+
 async function liveDescendantCountMapForIssues(
   dbOrTx: any,
   companyId: string,
   issueIds: string[],
-): Promise<Map<string, number>> {
+): Promise<Map<string, LiveDescendantCounts>> {
   const uniqueIssueIds = [...new Set(issueIds)];
-  const map = new Map<string, number>();
+  const map = new Map<string, LiveDescendantCounts>();
   if (uniqueIssueIds.length === 0) return map;
 
   for (const issueIdChunk of chunkList(
@@ -3615,8 +3622,8 @@ async function liveDescendantCountMapForIssues(
         target_issues(issue_id) AS (
           VALUES ${sql.join(targetRows, sql`, `)}
         ),
-        live_issues(live_issue_id, parent_id) AS (
-          SELECT DISTINCT live_issue.id, live_issue.parent_id
+        live_issues(live_issue_id, parent_id, started) AS (
+          SELECT DISTINCT live_issue.id, live_issue.parent_id, (live_run.status = 'running' OR live_run.started_at IS NOT NULL)
           FROM issues live_issue
           JOIN heartbeat_runs live_run ON live_run.id = live_issue.execution_run_id
           WHERE live_issue.company_id = ${companyId}
@@ -3625,7 +3632,7 @@ async function liveDescendantCountMapForIssues(
             AND live_run.company_id = ${companyId}
             AND live_run.status IN ('queued', 'running')
           UNION
-          SELECT DISTINCT live_issue.id, live_issue.parent_id
+          SELECT DISTINCT live_issue.id, live_issue.parent_id, (live_run.status = 'running' OR live_run.started_at IS NOT NULL)
           FROM heartbeat_runs live_run
           JOIN issues live_issue ON live_issue.id::text = (live_run.context_snapshot ->> 'issueId')
           WHERE live_issue.company_id = ${companyId}
@@ -3634,8 +3641,8 @@ async function liveDescendantCountMapForIssues(
             AND live_run.company_id = ${companyId}
             AND live_run.status IN ('queued', 'running')
         ),
-        live_ancestors(live_issue_id, ancestor_id, next_parent_id, visited_issue_ids) AS (
-          SELECT live_issues.live_issue_id, parent.id, parent.parent_id, ARRAY[live_issues.live_issue_id, parent.id]
+        live_ancestors(live_issue_id, started, ancestor_id, next_parent_id, visited_issue_ids) AS (
+          SELECT live_issues.live_issue_id, live_issues.started, parent.id, parent.parent_id, ARRAY[live_issues.live_issue_id, parent.id]
           FROM live_issues
           JOIN issues parent ON parent.id = live_issues.parent_id
           WHERE parent.company_id = ${companyId}
@@ -3644,6 +3651,7 @@ async function liveDescendantCountMapForIssues(
           UNION ALL
           SELECT
             live_ancestors.live_issue_id,
+            live_ancestors.started,
             parent.id,
             parent.parent_id,
             live_ancestors.visited_issue_ids || parent.id
@@ -3656,7 +3664,8 @@ async function liveDescendantCountMapForIssues(
         )
       SELECT
         live_ancestors.ancestor_id::text AS "issueId",
-        count(DISTINCT live_ancestors.live_issue_id)::int AS "liveDescendantCount"
+        count(DISTINCT live_ancestors.live_issue_id)::int AS "liveDescendantCount",
+        count(DISTINCT live_ancestors.live_issue_id) FILTER (WHERE live_ancestors.started)::int AS "runningDescendantCount"
       FROM live_ancestors
       JOIN target_issues ON target_issues.issue_id = live_ancestors.ancestor_id
       WHERE live_ancestors.ancestor_id <> live_ancestors.live_issue_id
@@ -3669,14 +3678,10 @@ async function liveDescendantCountMapForIssues(
     for (const row of resultRows) {
       if (typeof row !== "object" || row === null) continue;
       const issueId = (row as { issueId?: unknown }).issueId;
-      const liveDescendantCount = (row as { liveDescendantCount?: unknown })
-        .liveDescendantCount;
       if (typeof issueId !== "string") continue;
-      const count =
-        typeof liveDescendantCount === "number"
-          ? liveDescendantCount
-          : Number(liveDescendantCount);
-      if (Number.isFinite(count)) map.set(issueId, count);
+      const live = Number((row as { liveDescendantCount?: unknown }).liveDescendantCount);
+      const running = Number((row as { runningDescendantCount?: unknown }).runningDescendantCount);
+      if (Number.isFinite(live)) map.set(issueId, { live, running: Number.isFinite(running) ? running : 0 });
     }
   }
 
@@ -6864,7 +6869,7 @@ async function listBlockedInboxIssues(
     listIssueBlockedInboxAttentionMap(dbOrTx, companyId, withRuns, readExternalReviewWaits),
     includeLiveDescendantSummary
       ? liveDescendantCountMapForIssues(dbOrTx, companyId, issueIds)
-      : Promise.resolve(new Map<string, number>()),
+      : Promise.resolve(new Map<string, LiveDescendantCounts>()),
   ]);
 
   const rawSearchInput = filters?.q?.trim() ?? "";
@@ -6937,7 +6942,9 @@ async function listBlockedInboxIssues(
           ...(includeLiveDescendantSummary
             ? {
                 liveDescendantCount:
-                  liveDescendantCountByIssueId.get(row.id) ?? 0,
+                  liveDescendantCountByIssueId.get(row.id)?.live ?? 0,
+                runningDescendantCount:
+                  liveDescendantCountByIssueId.get(row.id)?.running ?? 0,
               }
             : {}),
           ...(contextUserId
@@ -8801,7 +8808,7 @@ export function issueService(db: Db) {
           : Promise.resolve(new Map<string, IssueRelationIssueSummary[]>()),
         includeLiveDescendantSummary
           ? timePhase("live_descendants", () => liveDescendantCountMapForIssues(db, companyId, issueIds))
-          : Promise.resolve(new Map<string, number>()),
+          : Promise.resolve(new Map<string, LiveDescendantCounts>()),
       ]);
       const statsByIssueId = new Map(
         statsRows.map((row) => [row.issueId, row]),
@@ -8857,7 +8864,9 @@ export function issueService(db: Db) {
             ...(includeLiveDescendantSummary
               ? {
                   liveDescendantCount:
-                    liveDescendantCountByIssueId.get(row.id) ?? 0,
+                    liveDescendantCountByIssueId.get(row.id)?.live ?? 0,
+                  runningDescendantCount:
+                    liveDescendantCountByIssueId.get(row.id)?.running ?? 0,
                 }
               : {}),
           };
@@ -8900,7 +8909,9 @@ export function issueService(db: Db) {
           ...(includeLiveDescendantSummary
             ? {
                 liveDescendantCount:
-                  liveDescendantCountByIssueId.get(row.id) ?? 0,
+                  liveDescendantCountByIssueId.get(row.id)?.live ?? 0,
+                runningDescendantCount:
+                  liveDescendantCountByIssueId.get(row.id)?.running ?? 0,
               }
             : {}),
           ...deriveIssueUserContext(row, contextUserId, {
@@ -12173,6 +12184,9 @@ export function issueService(db: Db) {
           || patch.completedAt !== undefined || patch.cancelledAt !== undefined
           || issueData.parentId !== undefined || issueData.executionWorkspaceId !== undefined) {
           await notifyTerminalWorkspaceWork(tx, `issue:${id}`);
+          if (issueData.parentId !== undefined && receiptExisting.parentId && receiptExisting.parentId !== issueData.parentId) {
+            await notifyTerminalWorkspaceWork(tx, `issue:${receiptExisting.parentId}`);
+          }
         }
         await notifyIssueAttentionRetentionWork(tx, { companyId: receiptExisting.companyId, issueId: id, parentId: patch.parentId, originKind: patch.originKind, originId: patch.originId });
         if (patch.status !== undefined || patch.hiddenAt !== undefined) {
@@ -12636,7 +12650,8 @@ export function issueService(db: Db) {
 
     remove: (id: string, actorAgentId?: string | null) =>
       db.transaction(async (tx) => {
-        const [task] = await tx.select({ companyId: issues.companyId }).from(issues).where(eq(issues.id, id));
+        const [task] = await tx.select({ companyId: issues.companyId, parentId: issues.parentId,
+          executionWorkspaceId: issues.executionWorkspaceId }).from(issues).where(eq(issues.id, id)).for("update");
         if (task) await assertAgentInteraction(tx, { companyId: task.companyId, actorAgentId,
           operation: "edit", issueId: id, lock: true });
         const attachmentAssetIds = await tx
@@ -12651,6 +12666,8 @@ export function issueService(db: Db) {
         let removedIssue;
         try {
           await notifyTerminalWorkspaceWork(tx, `issue:${id}`);
+          if (task?.parentId) await notifyTerminalWorkspaceWork(tx, `issue:${task.parentId}`);
+          if (task?.executionWorkspaceId) await notifyTerminalWorkspaceWork(tx, `workspace:${task.executionWorkspaceId}`);
           await requestRestorePointDeletion(tx, { sourceIssueId: id });
           const [owner] = await tx.select({ companyId: issues.companyId }).from(issues).where(eq(issues.id, id));
           if (owner) {

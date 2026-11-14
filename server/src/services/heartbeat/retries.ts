@@ -70,6 +70,7 @@ import { logger } from "../../middleware/logger.js";
 import { parseObject } from "../../adapters/utils.js";
 import { logActivity } from "../activity-log.js";
 import { readContinuationAttempt } from "../recovery/index.js";
+import { transientRetryWithinTaskCap } from "../recovery/task-automatic-attempts.js";
 import { withRecoveryContext } from "../recovery/status-only-context.js";
 import {
   MAX_TURN_CONTINUATION_RETRY_REASON,
@@ -602,7 +603,11 @@ export function createHeartbeatRetries(db: Db, dependencies: HeartbeatRetryDepen
     // a chain whose real failures already spent the failure budget either.
     const failureBudgetSpent = interruptedPreparationLane && opts?.maxAttempts == null
       && executionFailureRetryCount(run) >= BOUNDED_TRANSIENT_HEARTBEAT_RETRY_MAX_ATTEMPTS;
-    const computedBaseSchedule = failureBudgetSpent ? null
+    const transientIssueId = retryReason === BOUNDED_TRANSIENT_HEARTBEAT_RETRY_REASON && opts?.maxAttempts == null
+      ? readNonEmptyString(run.contextSnapshot?.issueId) : null;
+    const taskCapSpent = transientIssueId !== null
+      && !(await transientRetryWithinTaskCap(db, run.companyId, transientIssueId, now));
+    const computedBaseSchedule = failureBudgetSpent || taskCapSpent ? null
       : opts?.delayMs != null
         ? nextAttempt <= maxAttempts
           ? {
@@ -646,7 +651,7 @@ export function createHeartbeatRetries(db: Db, dependencies: HeartbeatRetryDepen
     // issue binding: that could either violate the FK or misclassify history.
     const issueId = run.scopeKind === "issue" ? run.issueId : null;
 
-    if (!baseSchedule) {
+    const reportRetryExhausted = async () => {
       const exhaustion = {
         retryReason,
         scheduledRetryAttempt: consumedAttempts,
@@ -682,7 +687,8 @@ export function createHeartbeatRetries(db: Db, dependencies: HeartbeatRetryDepen
         attempt: nextAttempt,
         maxAttempts,
       };
-    }
+    };
+    if (!baseSchedule) return reportRetryExhausted();
 
     if (await legacyExecutionNeedsReconciliationWithEvidence(db, run)) {
       return {
@@ -874,6 +880,7 @@ export function createHeartbeatRetries(db: Db, dependencies: HeartbeatRetryDepen
           run: typeof heartbeatRuns.$inferSelect;
           reusedExisting: boolean;
         }
+      | { outcome: "task_cap_spent" }
       | {
           outcome: "not_scheduled";
           reason: string;
@@ -922,6 +929,14 @@ export function createHeartbeatRetries(db: Db, dependencies: HeartbeatRetryDepen
               run: existing,
               reusedExisting: true,
             };
+          if (transientIssueId !== null) {
+            if (transientIssueId !== issueId)
+              await tx.execute(
+                sql`select id from issues where company_id = ${run.companyId} and id = ${transientIssueId} for update`,
+              );
+            if (!(await transientRetryWithinTaskCap(tx as unknown as Db, run.companyId, transientIssueId, now)))
+              return { outcome: "task_cap_spent" };
+          }
         }
         if (retryReason === INTERACTION_CONTINUATION_INFRA_RETRY_REASON) {
           if (issueId) {
@@ -1410,6 +1425,7 @@ export function createHeartbeatRetries(db: Db, dependencies: HeartbeatRetryDepen
       },
     );
 
+    if (scheduleResult.outcome === "task_cap_spent") return reportRetryExhausted();
     if (scheduleResult.outcome === "not_scheduled") {
       await appendRunEvent(run, {
         eventType: "lifecycle",

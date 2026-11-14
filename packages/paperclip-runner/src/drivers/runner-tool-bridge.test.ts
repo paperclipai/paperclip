@@ -15,6 +15,7 @@ import {
   canonicalRunnerToolName,
   startRunnerToolBridge,
   type RunnerToolBridge,
+  type RunnerToolCall,
 } from "./runner-tool-bridge.js";
 
 const bridges: RunnerToolBridge[] = [];
@@ -542,6 +543,107 @@ function tool(name: string): Readonly<Record<string, unknown>> {
   return { name, inputSchema: { type: "object" } };
 }
 
+describe("provider tool-use identity", () => {
+  const META_KEY = "claudecode/toolUseId";
+  const call = (id: string | number, args: Record<string, unknown>, meta?: Record<string, unknown>) => ({
+    id, method: "tools/call", params: { name: "documents.read", arguments: args, ...(meta === undefined ? {} : { _meta: meta }) },
+  });
+
+  it("carries the provider tool-use id to the handler only when the caller names its meta key", async () => {
+    const handler = vi.fn(async (_call: RunnerToolCall) => ({ ok: true }));
+    const opted = await startRunnerToolBridge({ tools: [tool("documents.read")], providerToolUseIdMetaKey: META_KEY, handler });
+    const plain = await startRunnerToolBridge({ tools: [tool("documents.read")], handler });
+    bridges.push(opted, plain);
+    await rpc(opted, call(2, { n: 1 }, { [META_KEY]: "toolu_01Abc", progressToken: 2 }));
+    await rpc(plain, call(2, { n: 1 }, { [META_KEY]: "toolu_01Abc" }));
+    expect(handler.mock.calls.map(([value]) => value.providerToolUseId))
+      .toEqual(["toolu_01Abc", undefined]);
+    expect(handler.mock.calls.map(([value]) => value.callId)).toEqual(["2", "2"]);
+  });
+
+  it("passes no id when the provider omits it and refuses a malformed one before dispatch", async () => {
+    const handler = vi.fn(async (_call: RunnerToolCall) => ({ ok: true }));
+    const bridge = await startRunnerToolBridge({ tools: [tool("documents.read")], providerToolUseIdMetaKey: META_KEY, handler });
+    bridges.push(bridge);
+    await rpc(bridge, call(1, { n: 1 }));
+    await rpc(bridge, call(2, { n: 2 }, { progressToken: 2 }));
+    expect(handler.mock.calls.map(([value]) => value.providerToolUseId))
+      .toEqual([undefined, undefined]);
+    for (const [index, value] of [7, "", "x".repeat(129), "toolu 01", "toolu_01\n", "_toolu", { id: "toolu_01" }].entries()) {
+      expect(await (await rpc(bridge, call(10 + index, { n: 3 }, { [META_KEY]: value }))).json()).toMatchObject({
+        result: { isError: true, content: [{ text: "Invalid provider tool-use identity." }] },
+      });
+    }
+    expect(handler).toHaveBeenCalledTimes(2);
+  });
+
+  it("replays a retried tool use under a new request id and refuses it with different arguments", async () => {
+    let finish!: (value: unknown) => void;
+    const handler = vi.fn(() => new Promise(resolve => { finish = resolve; }));
+    const bridge = await startRunnerToolBridge({ tools: [tool("documents.read")], providerToolUseIdMetaKey: META_KEY, handler });
+    bridges.push(bridge);
+    const first = rpc(bridge, call(2, { n: 1 }, { [META_KEY]: "toolu_A" }));
+    await vi.waitFor(() => expect(handler).toHaveBeenCalledOnce());
+    const retry = rpc(bridge, call(9, { n: 1 }, { [META_KEY]: "toolu_A" }));
+    expect(await (await rpc(bridge, call(10, { n: 2 }, { [META_KEY]: "toolu_A" }))).json()).toMatchObject({
+      result: { isError: true, content: [{ text: "Duplicate call identity conflict." }] },
+    });
+    finish({ value: 1 });
+    expect(await (await first).json()).toMatchObject({ id: 2, result: { content: [{ text: '{"value":1}' }] } });
+    expect(await (await retry).json()).toMatchObject({ id: 9, result: { content: [{ text: '{"value":1}' }] } });
+    expect(await (await rpc(bridge, call(2, { n: 1 }, { [META_KEY]: "toolu_A" }))).json())
+      .toMatchObject({ result: { content: [{ text: '{"value":1}' }] } });
+    expect(handler).toHaveBeenCalledOnce();
+  });
+
+  it("dispatches distinct tool uses that reuse a request id, as two turns' calls on one session do", async () => {
+    const handler = vi.fn(async ({ providerToolUseId }: { providerToolUseId?: string }) => ({ providerToolUseId }));
+    const bridge = await startRunnerToolBridge({ tools: [tool("documents.read")], providerToolUseIdMetaKey: META_KEY, handler });
+    bridges.push(bridge);
+    expect(await (await rpc(bridge, call(2, { n: 1 }, { [META_KEY]: "toolu_turn1" }))).json())
+      .toMatchObject({ result: { content: [{ text: '{"providerToolUseId":"toolu_turn1"}' }] } });
+    expect(await (await rpc(bridge, call(2, { n: 2 }, { [META_KEY]: "toolu_turn2" }))).json())
+      .toMatchObject({ result: { content: [{ text: '{"providerToolUseId":"toolu_turn2"}' }] } });
+    expect(handler).toHaveBeenCalledTimes(2);
+  });
+
+  it("cancels a tool-use keyed call through its request id", async () => {
+    let signal: AbortSignal | undefined;
+    const handler = vi.fn((value: { signal: AbortSignal }) => { signal = value.signal; return new Promise(() => {}); });
+    const bridge = await startRunnerToolBridge({ tools: [tool("documents.read")], providerToolUseIdMetaKey: META_KEY, handler });
+    bridges.push(bridge);
+    const pending = rpc(bridge, call(4, { n: 1 }, { [META_KEY]: "toolu_cancel" }));
+    await vi.waitFor(() => expect(handler).toHaveBeenCalledOnce());
+    expect((await rpc(bridge, { method: "notifications/cancelled", params: { requestId: 4 } })).status).toBe(202);
+    expect(signal?.aborted).toBe(true);
+    expect(await (await pending).json()).toMatchObject({ result: { isError: true, content: [{ text: "Paperclip tool call cancelled" }] } });
+  });
+
+  it("cancels only the call of the MCP session that sent the cancel when two sessions reuse a request id", async () => {
+    const signals = new Map<string, AbortSignal>();
+    const handler = vi.fn((value: { signal: AbortSignal; providerToolUseId?: string }) => {
+      signals.set(value.providerToolUseId!, value.signal);
+      return new Promise(() => {});
+    });
+    const bridge = await startRunnerToolBridge({ tools: [tool("documents.read")], providerToolUseIdMetaKey: META_KEY, handler });
+    bridges.push(bridge);
+    const send = (session: string, body: Record<string, unknown>) => fetch(bridge.url, { method: "POST",
+      headers: { Authorization: `Bearer ${bridge.secret}`, "Content-Type": "application/json", "Mcp-Session-Id": session },
+      body: JSON.stringify({ jsonrpc: "2.0", ...body }) });
+    const first = send("session-a", call(7, { n: 1 }, { [META_KEY]: "toolu_first" }));
+    await vi.waitFor(() => expect(handler).toHaveBeenCalledTimes(1));
+    const second = send("session-b", call(7, { n: 2 }, { [META_KEY]: "toolu_second" }));
+    await vi.waitFor(() => expect(handler).toHaveBeenCalledTimes(2));
+    expect((await send("session-a", { method: "notifications/cancelled", params: { requestId: 7 } })).status).toBe(202);
+    expect(signals.get("toolu_first")?.aborted).toBe(true);
+    expect(signals.get("toolu_second")?.aborted).toBe(false);
+    expect(await (await first).json()).toMatchObject({ result: { isError: true, content: [{ text: "Paperclip tool call cancelled" }] } });
+    expect((await send("session-b", { method: "notifications/cancelled", params: { requestId: 7 } })).status).toBe(202);
+    expect(signals.get("toolu_second")?.aborted).toBe(true);
+    await second;
+  });
+});
+
 describe("Copilot semantic receipt opt-in", () => {
   const rawFinish = { reportedWorkDisposition: "done", summary: "The task is complete.", evidence: [], verification: [],
     completionClaim: { contractRevision: "1", objectiveSatisfied: true, criteria: [], remainingWork: [] } };
@@ -667,4 +769,64 @@ it("returns missing-field guidance before dispatch and accepts an explicit retry
   const accepted = await (await rpc(bridge, { ...request, params: { ...request.params, arguments: { key: "sentry-case", taskId } } })).json() as ScopeResponse;
   expect(accepted.result.isError).not.toBe(true);
   expect(handler).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ arguments: { key: "sentry-case", taskId } }));
+});
+
+describe("runner bridge repeated identical input rejections", () => {
+  it("corrects the second identical rejection and stops the third", async () => {
+    const handler = vi.fn(async () => ({ ok: true }));
+    const bridge = await startRunnerToolBridge({
+      tools: [{ name: "update_case", inputSchema: { type: "object", additionalProperties: false, required: ["idempotencyKey"], properties: { idempotencyKey: { type: "string" }, title: { type: "string" } } } }],
+      handler,
+    });
+    bridges.push(bridge);
+    const text = async (id: number) => ((await (await rpc(bridge, { id, method: "tools/call", params: { name: "update_case", arguments: {} } })).json()) as {
+      result: { content: Array<{ text: string }> };
+    }).result.content[0]!.text;
+    expect(await text(1)).not.toContain("rejected");
+    expect(await text(2)).toContain("Expected properties: required idempotencyKey; optional title.");
+    expect(await text(3)).toMatch(/^This call was not accepted: update_case was already rejected 2 times/);
+    expect(handler).not.toHaveBeenCalled();
+  });
+});
+
+describe("runner bridge input coercion", () => {
+  it("accepts an object-typed field sent as JSON text, records it, and keeps text fields as text", async () => {
+    const handler = vi.fn(async () => ({ ok: true }));
+    const diagnostics: string[] = [];
+    const bridge = await startRunnerToolBridge({
+      tools: [{ name: "update_case", inputSchema: { type: "object", additionalProperties: false, required: ["title", "patch"], properties: {
+        title: { type: "string" }, patch: { type: ["object", "null"], required: ["status"], properties: { status: { type: "string" } } },
+      } } }],
+      handler,
+      onDiagnostic: message => diagnostics.push(message),
+    });
+    bridges.push(bridge);
+    const send = async (id: number, args: unknown) => ((await (await rpc(bridge, { id, method: "tools/call", params: { name: "update_case", arguments: args } })).json()) as {
+      result: { isError?: boolean; content: Array<{ text: string }> };
+    }).result;
+    expect((await send(1, { title: '{"a":1}', patch: '{"status":"done"}' })).isError).not.toBe(true);
+    expect(handler).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ arguments: { title: '{"a":1}', patch: { status: "done" } } }));
+    expect(diagnostics.map(message => JSON.parse(message))).toEqual([
+      expect.objectContaining({ schema: "paperclip.runner.tool-input-coerced/v1", tool: "update_case", paths: ["/patch"] }),
+    ]);
+    expect((await send(2, { title: "t", patch: "done" })).isError).toBe(true);
+    expect(handler).toHaveBeenCalledOnce();
+  });
+});
+
+describe("runner bridge receipts for coerced input", () => {
+  it("binds the receipt to the arguments as the host sent them, while the handler gets the parsed object", async () => {
+    const receipts: SemanticToolReceipt[] = [];
+    const handler = vi.fn(async () => ({ accepted: true }));
+    const bridge = await startRunnerToolBridge({ captureSemanticReceipt: () => receipt => receipts.push(receipt), handler });
+    bridges.push(bridge);
+    const continuation = { kind: "response_wake", summary: "wait", idempotencyKey: "k" };
+    const raw = { reportedWorkDisposition: "yielded", summary: "Waiting for the reply.", evidence: [], verification: [],
+      completionClaim: { contractRevision: "1", objectiveSatisfied: false, criteria: [], remainingWork: [] }, continuation: JSON.stringify(continuation) };
+    const body = await (await rpc(bridge, { id: 9, method: "tools/call", params: { name: "paperclip_finish", arguments: raw } })).json() as ToolCallBody;
+    expect(handler).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ arguments: { ...raw, continuation } }));
+    expect(receipts).toHaveLength(1);
+    expect(readNativeSemanticReceipt({ contents: body.result.content })).toEqual(receipts[0]);
+    expect(receipts[0]!.inputSha256).toBe(semanticInputSha256(raw));
+  });
 });

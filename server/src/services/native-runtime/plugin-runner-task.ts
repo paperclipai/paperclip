@@ -49,6 +49,7 @@ export function createPluginRunnerTaskOwner(input: {
   pollMs?: number;
   warmTaskVersion?: 1;
   releaseResumeVersion?: 1;
+  resumeLaunchInputsVersion?: 1;
   releasedSource?: DurableRecoveryIdentity;
   sessionHandoff?: boolean;
   onResumed?: (identity: DurableRecoveryIdentity) => Promise<void>;
@@ -431,9 +432,11 @@ export function createPluginRunnerTaskOwner(input: {
     const handoffCredential = input.sessionHandoff && input.credential?.type === "claude-env"
       ? { accountIdentity: input.accountIdentity, environment: input.credential.environment }
       : undefined;
+    const launchInputs = input.resumeLaunchInputsVersion === 1;
     const result = await call(environmentTaskOperationSchema.parse({ kind: "resume", identity, bootstrapTicket,
       ...(handoffCredential ? { handoffCredential } : {}),
-      ...configuredEnvironmentFields(!!input.sessionHandoff),
+      ...(launchInputs && input.credential ? { credential: input.credential } : {}),
+      ...configuredEnvironmentFields(!!input.sessionHandoff || launchInputs),
     }));
     requireReleaseResume();
     if (result.kind !== "resume") throw new Error("Plugin Runner resume result unavailable");

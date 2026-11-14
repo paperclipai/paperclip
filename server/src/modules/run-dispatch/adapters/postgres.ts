@@ -15,6 +15,7 @@ import { readClaimedNativeStopRecovery } from "../../../services/native-runtime/
 import { hasConversationContinuationPolicy } from "../../../services/conversation-continuation.js";
 import { recordedUserStop, userStopBoundaryAt } from "../../../services/run-cancellation.js";
 import { getExecutionBlocker } from "../../../services/execution-blocker.js";
+import { continueFreshInTransaction, recordFreshContinuationCheck } from "../../../services/fresh-continuation-fallback.js";
 import { validateReconstructedWorkspaceDispatch } from "../../../services/native-runtime/native-workspace-reconstruction.js";
 import { getNativeReviewAssignment } from "../../../services/native-runtime/native-review-participant.js";
 import { and, asc, eq, gte, inArray, isNull, lte, or, sql } from "drizzle-orm";
@@ -55,6 +56,7 @@ import { appendHeartbeatRunEvent } from "../../../services/heartbeat-run-events.
 import { emitAgentTaskRun } from "../../../services/agent-task-run-telemetry.js";
 import { issueService } from "../../../services/issues.js";
 import { verifyBlockerStallWake } from "../../../services/recovery/blocker-stall-wakeups.js";
+import { readPredecessorRetirementFallback } from "../../../services/native-runtime/predecessor-retirement.js";
 import {
   issueTreeControlService,
   isVerifiedIssueTreeControlInteractionWake,
@@ -159,6 +161,19 @@ async function readNativeReviewParticipantFacts(db: Db, input: {
 
 function readNonEmptyString(value: unknown): string | null {
   return typeof value === "string" && value.trim().length > 0 ? value : null;
+}
+
+async function continuesNoWorkRunOnBlockedTask(dbOrTx: Db,
+  input: { companyId: string; runId: string }): Promise<boolean> {
+  const [run] = await dbOrTx.select({ resultJson: heartbeatRuns.resultJson, retryOfRunId: heartbeatRuns.retryOfRunId })
+    .from(heartbeatRuns).where(and(eq(heartbeatRuns.companyId, input.companyId), eq(heartbeatRuns.id, input.runId)));
+  let fallback = readPredecessorRetirementFallback(run?.resultJson);
+  if (!fallback && run?.retryOfRunId) {
+    const [source] = await dbOrTx.select({ resultJson: heartbeatRuns.resultJson }).from(heartbeatRuns)
+      .where(and(eq(heartbeatRuns.companyId, input.companyId), eq(heartbeatRuns.id, run.retryOfRunId)));
+    fallback = readPredecessorRetirementFallback(source?.resultJson);
+  }
+  return fallback?.issueStatusAtFailure === "blocked";
 }
 
 function classifyRetryReasonKind(retryReason: string | null): RetryReasonKind {
@@ -430,6 +445,8 @@ export function createPostgresRunDispatchAdapter(
     if (!facts.issueFound) return { agentFound: true, facts };
 
     facts.issueStatus = issue.status;
+    facts.continuesNoWorkRunOnBlockedTask = retryReasonKind === "native_safe_replacement" && issue.status === "blocked"
+      && await continuesNoWorkRunOnBlockedTask(dbOrTx as unknown as Db, { companyId: input.companyId, runId: input.runId });
     facts.issueAssigneeAgentId = issue.assigneeAgentId;
     facts.issueExecutionRunId = issue.executionRunId;
     facts.issueCheckoutRunId = issue.checkoutRunId;
@@ -513,6 +530,7 @@ export function createPostgresRunDispatchAdapter(
       && typeof (preparationWait as Record<string, unknown>).kind === "string");
     facts.dependenciesBlocked =
       readiness && !readiness.isDependencyReady && !stallAdmitted && !responseAdmitted && !preparationWaitAdmitted
+        && !facts.continuesNoWorkRunOnBlockedTask
         ? {
             unresolvedBlockerIssueIds: readiness.unresolvedBlockerIssueIds,
             unresolvedBlockerCount: readiness.unresolvedBlockerCount,
@@ -685,12 +703,15 @@ export function createPostgresRunDispatchAdapter(
       && await verifyBlockerStallWake(dbOrTx as unknown as Db, { companyId: input.companyId, issueId,
         contextSnapshot: context, requestedByActorType: null })
       ? null : replacementReadiness;
+    const continuesNoWorkRun = retryReasonKind === "native_safe_replacement" && issue?.status === "blocked"
+      && await continuesNoWorkRunOnBlockedTask(dbOrTx as unknown as Db, { companyId: input.companyId, runId: input.runId });
     return {
       runId: input.runId,
       runAgentId: input.agentId,
       issueId,
       retryReasonKind,
-      dependenciesBlocked: readiness && !readiness.isDependencyReady ? {
+      continuesNoWorkRunOnBlockedTask: continuesNoWorkRun,
+      dependenciesBlocked: readiness && !readiness.isDependencyReady && !continuesNoWorkRun ? {
         unresolvedBlockerIssueIds: readiness.unresolvedBlockerIssueIds,
         unresolvedBlockerCount: readiness.unresolvedBlockerCount,
       } : null,
@@ -1380,6 +1401,19 @@ export function createPostgresRunDispatchAdapter(
     return { outcome: "deferred" as const, postCommitEffects: [statusEffect(waiting, run.status)] };
   }
 
+  async function settleOlderRunHold(tx: Db, run: HeartbeatRun, issueId: string,
+    blocker: NonNullable<Awaited<ReturnType<typeof getExecutionBlocker>>>, now: Date) {
+    if (!blocker.recoveryActionId || !blocker.runId || blocker.runId === run.id) return;
+    const [issue] = await tx.select({ conversationAgentId: issues.conversationAgentId }).from(issues)
+      .where(and(eq(issues.id, issueId), eq(issues.companyId, run.companyId)));
+    if (!issue || issue.conversationAgentId) return;
+    const fresh = await continueFreshInTransaction(tx, { companyId: run.companyId, runId: blocker.runId,
+      trigger: "continuation_wake", delivery: "record", now });
+    if (fresh.kind === "exact_recovery_pending")
+      await recordFreshContinuationCheck(tx, { companyId: run.companyId, actionId: blocker.recoveryActionId }, fresh, now);
+    await notifyDeliveryWork(tx, DELIVERY_QUEUES.executionDisposition);
+  }
+
   async function cancelStaleQueuedRun(
     input: CancelStaleQueuedRunInput,
   ): Promise<CancelStaleQueuedRunOutcome> {
@@ -1404,7 +1438,9 @@ export function createPostgresRunDispatchAdapter(
         const deferred = await deferRetryForCleanupInTx(tx, run, issueId, input.now, executionBlocker);
         if (deferred) return deferred;
       }
-      return cancelStaleRunInTx(tx, run, issueId, decision, input.expectedStatus, input.now);
+      const cancelled = await cancelStaleRunInTx(tx, run, issueId, decision, input.expectedStatus, input.now);
+      if (cancelled.outcome === "cancelled" && executionBlocker) await settleOlderRunHold(tx, run, issueId, executionBlocker, input.now);
+      return cancelled;
     };
 
     return withIssueThenRunLocks(

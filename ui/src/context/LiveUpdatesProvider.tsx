@@ -315,9 +315,8 @@ function resolveIssueQueryRefs(
   const detailIssue = queryClient.getQueryData<Issue>(
     queryKeys.issues.detail(issueId),
   );
-  const listIssues = queryClient.getQueryData<Issue[]>(
-    queryKeys.issues.list(companyId),
-  );
+  const listIssues = queryClient.getQueryData<Issue[]>(queryKeys.issues.list(companyId))
+    ?? queryClient.getQueryData<Issue[]>(queryKeys.issues.listIndex(companyId));
   const detailsIdentifier =
     readString(details?.identifier) ?? readString(details?.issueIdentifier);
 
@@ -375,8 +374,8 @@ function resolveIssueToastContext(
   const detailIssue = issueRefs
     .map((ref) => queryClient.getQueryData<Issue>(queryKeys.issues.detail(ref)))
     .find((issue): issue is Issue => !!issue);
-  const listIssue = queryClient
-    .getQueryData<Issue[]>(queryKeys.issues.list(companyId))
+  const listIssue = (queryClient.getQueryData<Issue[]>(queryKeys.issues.list(companyId))
+    ?? queryClient.getQueryData<Issue[]>(queryKeys.issues.listIndex(companyId)))
     ?.find((issue) =>
       issueRefs.some((ref) => issue.id === ref || issue.identifier === ref),
     );
@@ -1066,6 +1065,42 @@ function refreshMentionPoolForActivity(
   }, wait);
 }
 
+const TASK_INDEX_REFRESH_WINDOW_MS = 30_000;
+const taskIndexRefreshes = new WeakMap<
+  object,
+  Map<string, { lastRequestedAt: number; timer: ReturnType<typeof setTimeout> | null }>
+>();
+
+function refreshTaskIndexForActivity(queryClient: QueryClient, companyId: string, ownActivity: boolean) {
+  const queryKey = queryKeys.issues.listIndex(companyId);
+  if (queryClient.getQueryData(queryKey) === undefined) return;
+  if (ownActivity) {
+    queryClient.invalidateQueries({ queryKey, exact: true });
+    return;
+  }
+  const query = queryClient.getQueryCache().find({ queryKey, exact: true });
+  if (!query) return;
+  if (query.getObserversCount() === 0) {
+    queryClient.invalidateQueries({ queryKey, exact: true, refetchType: "none" });
+    return;
+  }
+  let refresh = taskIndexRefreshes.get(queryClient);
+  if (!refresh) {
+    refresh = new Map();
+    taskIndexRefreshes.set(queryClient, refresh);
+  }
+  const state = refresh.get(companyId) ?? { lastRequestedAt: 0, timer: null };
+  refresh.set(companyId, state);
+  if (state.timer !== null) return;
+  const lastRefresh = Math.max(query.state.dataUpdatedAt, state.lastRequestedAt);
+  const wait = Math.max(0, lastRefresh + TASK_INDEX_REFRESH_WINDOW_MS - Date.now());
+  state.timer = setTimeout(() => {
+    state.timer = null;
+    state.lastRequestedAt = Date.now();
+    queryClient.invalidateQueries({ queryKey, exact: true });
+  }, wait);
+}
+
 const ISSUE_DOCUMENT_ACTIVITY_ACTIONS = new Set([
   "issue.document_created",
   "issue.document_updated",
@@ -1644,8 +1679,9 @@ function invalidateActivityQueries(
     }
     queryClient.invalidateQueries({
       queryKey: queryKeys.issues.list(companyId),
-      predicate: excludingQueryKeys(queryKeys.issues.mentionPool(companyId)),
+      predicate: excludingQueryKeys(queryKeys.issues.mentionPool(companyId), queryKeys.issues.listIndex(companyId)),
     });
+    refreshTaskIndexForActivity(queryClient, companyId, ownActorActivity);
     refreshMentionPoolForActivity(
       queryClient,
       companyId,
@@ -2119,6 +2155,9 @@ function handleLiveEvent(
 
   const nameOf = (id: string) =>
     resolveAgentName(queryClient, expectedCompanyId, id);
+  // Tool call progress is read by the tool row itself (useToolCallProgress); it
+  // changes no cached run state and must not invalidate queries several times a second.
+  if (event.type === "heartbeat.run.tool_progress") return;
   const payload = event.payload ?? {};
   // Resolve membership before terminal lifecycle patches remove live-run rows.
   const suppressRunToast =
@@ -2320,6 +2359,7 @@ export const __liveUpdatesTestUtils = {
   createLiveInvalidationBatcher,
   isAmbientCompanyQueryKey,
   MENTION_POOL_REFRESH_WINDOW_MS,
+  TASK_INDEX_REFRESH_WINDOW_MS,
   buildActivityToast,
   applyRunLifecycleToCompanyLiveRuns,
   buildAgentStatusToast,
@@ -2337,12 +2377,31 @@ export const __liveUpdatesTestUtils = {
   readRunLiveStatusPatchFromPayload,
   resolveLiveCompanyId,
   canUseLiveSession,
+  nextSocketAuthScope,
   shouldDeferIssueRefetchForVisibleAgentActivity,
   shouldDeferVisibleIssueCommentActivity,
   shouldSuppressActivityToastForVisibleIssue,
   shouldSuppressRunStatusToastForVisibleIssue,
   shouldSuppressAgentStatusToastForVisibleIssue,
 };
+
+type SocketAuthScope = { userId: string | null; sessionId: string | null; key: string };
+
+/**
+ * The socket's sign-in scope. A new key closes the socket, opens another and
+ * refreshes every active query, because events are not replayed.
+ *
+ * A session restored from the saved query cache carries the user but no
+ * session id. Its first verified read adds the id for the same user. That is
+ * the same sign-in, so the key stays and the open socket is kept. A
+ * different user, or a different session id once one is known, still
+ * reconnects.
+ */
+function nextSocketAuthScope(previous: SocketAuthScope | null, userId: string | null, sessionId: string | null): SocketAuthScope {
+  if (previous && previous.userId === userId && previous.sessionId === sessionId) return previous;
+  if (previous && userId !== null && previous.userId === userId && previous.sessionId === null) return { ...previous, sessionId };
+  return { userId, sessionId, key: sessionId ?? userId ?? "signed_out" };
+}
 
 function canUseLiveSession(sessionStatus: string, hasSession: boolean, deploymentMode?: string) {
   return sessionStatus === "success" && (hasSession || deploymentMode === "local_trusted");
@@ -2371,7 +2430,12 @@ export function LiveUpdatesProvider({ children }: { children: ReactNode }) {
   const { data: health } = useQuery({ queryKey: queryKeys.health, queryFn: healthApi.get });
   const currentUserId = session?.user?.id ?? session?.session?.userId ??
     (health?.deploymentMode === "local_trusted" ? "local-board" : null);
-  const socketAuthKey = session?.session?.id ?? currentUserId ?? "signed_out";
+  const sessionId = session?.session?.id ?? null;
+  const [socketAuth, setSocketAuth] = useState(() => nextSocketAuthScope(null, currentUserId, sessionId));
+  const nextSocketAuth = nextSocketAuthScope(socketAuth, currentUserId, sessionId);
+  // Adjust state during render: the scope depends on the previous scope.
+  if (nextSocketAuth !== socketAuth) setSocketAuth(nextSocketAuth);
+  const socketAuthKey = nextSocketAuth.key;
   const [connectedScopeKey, setConnectedScopeKey] = useState<string | null>(null);
   const liveCompanyId = resolveLiveCompanyId(selectedCompanyId, selectedCompany?.id ?? null);
   const socketScopeKey = JSON.stringify([liveCompanyId, socketAuthKey]);
