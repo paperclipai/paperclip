@@ -1,6 +1,6 @@
-# @paperclipai/plugin-pc-telegram
+# @andhash/plugin-pc-telegram
 
-First-party Paperclip plugin for personal Telegram accounts.
+Paperclip plugin for personal Telegram accounts.
 
 This is not the Bot API `telegram` chat channel. It uses MTProto sessions in a plugin worker.
 
