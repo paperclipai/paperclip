@@ -18,8 +18,9 @@ export const skillSourcePreviewSchema = skillSourceLocationSchema.extend({
 });
 const sha = z.string().regex(/^[a-f0-9]{40}$/i);
 /**
- * Path bytes one approval may carry. With the hashes this keeps an approval near 5 MB,
- * well inside the server's 10 MB JSON body limit together with the selected paths.
+ * Path bytes one approval may carry, as JSON sends them: escaped characters count at their escaped
+ * size. With the hashes this keeps an approval near 5 MB, well inside the server's 10 MB JSON body
+ * limit together with the same paths among the selected ones.
  */
 /** The longest approval reason, which the activity log keeps. */
 export const SKILL_SECURITY_OVERRIDE_REASON_MAX_LENGTH = 2000;
@@ -27,7 +28,7 @@ export const SKILL_SECURITY_OVERRIDE_MAX_PATH_BYTES = 4 * 1024 * 1024;
 const utf8 = new TextEncoder();
 export function skillSecurityOverridePathBytes(files: ReadonlyArray<{ path: string }>) {
   let total = 0;
-  for (const file of files) total += utf8.encode(file.path).length;
+  for (const file of files) total += utf8.encode(JSON.stringify(file.path)).length;
   return total;
 }
 // The count matches the server's repository scan file limit; the path budget above keeps the request within the body limit.

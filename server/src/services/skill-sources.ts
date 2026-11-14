@@ -17,7 +17,7 @@ import { companySkillService, parseSkillImportSourceInput } from './company-skil
 import { scanGitHubSkillsWithPackageFallback as scanGitHubSkills, previewGitHubSkillFile, type GitHubRead, type ScannedSkillSource, type SkillScanOptions } from './github-skill-source.js';
 import { skillAccessService } from './skill-access.js';
 import { skillSnapshotHash } from './skill-snapshot.js';
-import { recordedSecurityOverride, skillRelativeToRepositoryPath, verifySecurityOverride, versionApprovalGrant, versionSecurityApproval, type SecurityOverrideGrant } from './skill-security-overrides.js';
+import { followsReviewedRef, recordedSecurityOverride, skillRelativeToRepositoryPath, verifySecurityOverride, versionApprovalGrant, versionSecurityApproval, type SecurityOverrideGrant } from './skill-security-overrides.js';
 import type { SkillSecurityOverrideRequest, SkillSourceSecurityOverride, SkillSourceSecurityOverrideSummary } from '@paperclipai/shared';
 
 type PreparedPackages = Map<string, { id: string; restore: SkillPackageRestoreRecipe }>;
@@ -371,7 +371,7 @@ export function skillSourceService(db: Db) {
       if (scan.repositoryUrl !== input.repositoryUrl) await approveSecurityOverride(context, scan.repositoryUrl, override);
       verifySecurityOverride(override, scan);
     }
-    const recorded = override ? recordedSecurityOverride(override, scan.securityFindings ?? [], context.actor.userId ?? null) : null;
+    const recorded = override ? recordedSecurityOverride(override, scan.securityFindings ?? [], context.actor.userId ?? null, scan.trackingRef) : null;
     if (!context.projectBindingId && scan.trackingRef === scan.defaultBranch && (await list(companyId)).some(source => source.repositoryUrl.toLowerCase() === scan.repositoryUrl.toLowerCase() && source.trackingRef === 'HEAD')) {
       throw conflict('This repository is already in Sources. Manage its skills there.');
     }
@@ -461,7 +461,7 @@ export function skillSourceService(db: Db) {
         if (scan.repositoryUrl !== source.repositoryUrl) await approveSecurityOverride(context, scan.repositoryUrl, override);
         verifySecurityOverride(override, scan);
       }
-      const recorded = override ? recordedSecurityOverride(override, scan.securityFindings ?? [], context.actor.userId ?? null) : null;
+      const recorded = override ? recordedSecurityOverride(override, scan.securityFindings ?? [], context.actor.userId ?? null, scan.trackingRef) : null;
       if (options.automatic) await settleAutomaticSkillWork(db, companyId, id, token,
         packageMode === 'repository' && (scan.packageMode === 'skills' || scan.repositorySubset) ? {} : scan);
       if (source.repositoryId && source.repositoryId !== scan.repositoryId) throw conflict('The repository at this URL has changed identity. Add it as a new source.');
@@ -499,9 +499,20 @@ export function skillSourceService(db: Db) {
           await tx.update(sources).set(overrideColumns(null)).where(scope(companyId, id));
           await context.audit(tx, id, 'company.skill_source_security_override_revoked', {
             approvedCommit: locked.securityOverride?.commitSha ?? null, fileCount: locked.securityOverride?.files.length ?? 0 });
-        } else await auditCarriedSecurityOverride(tx, id, locked.securityOverride ?? null, scan, selectedPaths, context);
+        }
+        let carried = recorded || revoke ? null : locked.securityOverride ?? null;
+        if (carried?.trustFutureUpdates && !followsReviewedRef(carried, scan.trackingRef)) {
+          // A source tracking HEAD now resolves to another default branch: the scan did not apply the
+          // trust, and the saved approval keeps only its reviewed commit until an administrator reviews again.
+          carried = { ...carried, trustFutureUpdates: false };
+          await tx.update(sources).set(overrideColumns(carried)).where(scope(companyId, id));
+          await context.audit(tx, id, 'company.skill_source_security_override_revoked', {
+            approvedCommit: carried.commitSha, fileCount: carried.files.length, futureUpdatesOnly: true, cause: 'default_branch_changed',
+            reviewedRef: carried.reviewedRef, trackingRef: scan.trackingRef });
+        }
+        if (!recorded && !revoke) await auditCarriedSecurityOverride(tx, id, carried, scan, selectedPaths, context);
         const result = await publish(tx, locked, scan, selectedPaths, selection?.excludedFolders ?? source.excludedFolders, context, Boolean(selection), prepared,
-          recorded ?? (revoke ? null : locked.securityOverride ?? null));
+          recorded ?? carried);
         if (selection || scan.connectionId !== undefined) await tx.update(sources).set({ ...(selection ? { enabled: true } : {}), connectionId: scan.connectionId ?? connectionId,
           ...(source.refreshGrantId === null && reader.grantId ? { refreshGrantId: reader.grantId } : {}),
           ...(selection?.connectionId !== undefined || (!source.refreshUserId && !source.refreshLocalTrusted && context.setup) ? { refreshUserId: context.setup?.userId, refreshAgentId: context.setup?.agentId ?? null, refreshLocalTrusted: context.setup?.localTrusted ?? false, refreshGrantId: reader.grantId ?? null } : {}) }).where(scope(companyId, id));
@@ -605,7 +616,8 @@ export function skillSourceService(db: Db) {
       if (source.accessScope === 'projects') {
         // Copies and forks keep this source identity as their dynamic access boundary.
         await tx.delete(entries).where(and(eq(entries.companyId, companyId), eq(entries.sourceId, id)));
-        await tx.update(sources).set({ removedAt: new Date(), enabled: false, automaticUpdates: false,
+        // Installed versions keep their own approval records; the retained row no longer applies one.
+        await tx.update(sources).set({ removedAt: new Date(), enabled: false, automaticUpdates: false, ...overrideColumns(null),
           revision: sql`${sources.revision} + 1`, leaseToken: null, leaseExpiresAt: null })
           .where(scope(companyId, id));
       } else {

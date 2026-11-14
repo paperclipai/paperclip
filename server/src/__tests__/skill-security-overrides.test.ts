@@ -98,9 +98,20 @@ describe('skill security overrides', () => {
   it('keeps a maximum-sized approval within the JSON body limit', () => {
     const valid = override('a'.repeat(40), { 'hooks/install.sh': hook });
     const longFiles = (count: number) => Array.from({ length: count }, (_, index) => ({ path: `${String(index).padStart(5, '0')}/${'x'.repeat(4000)}`, sha256: hash(hook) }));
-    const fitting = { ...valid, files: longFiles(Math.floor(SKILL_SECURITY_OVERRIDE_MAX_PATH_BYTES / 4006)) };
+    const fitting = { ...valid, files: longFiles(Math.floor(SKILL_SECURITY_OVERRIDE_MAX_PATH_BYTES / 4008)) };
     expect(skillSecurityOverrideSchema.safeParse(fitting).success).toBe(true);
     expect(Buffer.byteLength(JSON.stringify(fitting))).toBeLessThan(DEFAULT_JSON_BODY_LIMIT_BYTES / 2);
     expect(skillSecurityOverrideSchema.safeParse({ ...valid, files: longFiles(3000) }).success).toBe(false);
+  });
+
+  it('budgets paths at the size JSON sends them, with the same paths among the selected ones', () => {
+    const valid = override('a'.repeat(40), { 'hooks/install.sh': hook });
+    // Control characters are valid in a path and JSON sends each one as a six-byte escape.
+    const escaped = (count: number) => Array.from({ length: count }, (_, index) => ({ path: `${String(index).padStart(5, '0')}/${''.repeat(900)}`, sha256: hash(hook) }));
+    expect(skillSecurityOverrideSchema.safeParse({ ...valid, files: escaped(1000) }).success).toBe(false);
+    const fitting = { ...valid, files: escaped(Math.floor(SKILL_SECURITY_OVERRIDE_MAX_PATH_BYTES / 5408)) };
+    expect(skillSecurityOverrideSchema.safeParse(fitting).success).toBe(true);
+    const request = { repositoryUrl: 'https://github.com/acme/skills', commitSha: 'a'.repeat(40), selectedPaths: fitting.files.map(file => file.path), securityOverride: fitting };
+    expect(Buffer.byteLength(JSON.stringify(request))).toBeLessThan(DEFAULT_JSON_BODY_LIMIT_BYTES);
   });
 });

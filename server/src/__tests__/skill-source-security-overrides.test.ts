@@ -79,7 +79,7 @@ describe.skipIf(!support.supported)('skill source security overrides', () => {
     const packaged = result.source.repositoryPackage?.files.map(file => file.path).sort();
     expect(packaged).toEqual(['hooks/install.sh', 'skills/one/SKILL.md']);
     // Source responses carry a summary; the approved files stay on the server.
-    expect(result.source.securityOverride).toEqual({ commitSha: first, reason: 'Maintained by our platform team.', trustFutureUpdates: false,
+    expect(result.source.securityOverride).toEqual({ commitSha: first, reviewedRef: 'main', reason: 'Maintained by our platform team.', trustFutureUpdates: false,
       approvedByUserId: 'admin-user', approvedAt: expect.any(String), fileCount: 1 });
     const [stored] = await db.select({ securityOverride: companySkillSources.securityOverride, summary: companySkillSources.securityOverrideSummary })
       .from(companySkillSources).where(eq(companySkillSources.id, result.source.id));
@@ -444,6 +444,36 @@ echo third`;
     const saved = await skills.saveSecurityApproval(raced, companyId, approval);
     expect(saved).not.toBe(original);
     expect(await db.select({ id: companySkillSecurityApprovals.id }).from(companySkillSecurityApprovals).where(eq(companySkillSecurityApprovals.companyId, companyId))).toEqual([{ id: saved }]);
+  });
+
+  it('stops trusting future updates when the default branch a HEAD source follows changes', async () => {
+    const { companyId, result, service, context, audits, setFiles } = await setup(true);
+    expect((await db.select({ securityOverride: companySkillSources.securityOverride }).from(companySkillSources)
+      .where(eq(companySkillSources.id, result.source.id)))[0]?.securityOverride?.reviewedRef).toBe('main');
+    // Project sources keep the HEAD alias; the repository's default branch then moves to another branch.
+    await db.update(companySkillSources).set({ trackingRef: 'HEAD' }).where(eq(companySkillSources.id, result.source.id));
+    setFiles({ 'skills/one/SKILL.md': md('one'), 'hooks/install.sh': `${hook}
+echo develop` }, second);
+    const moved: SkillSourceContext = { ...context, authorizeSecurityOverride: undefined, read: connectionId => {
+      const read = context.read(connectionId);
+      return Object.assign(async (url: string, signal?: AbortSignal) => url === '/repos/acme/skills'
+        ? { id: 42, full_name: 'acme/skills', default_branch: 'develop' } : read(url, signal), read) as typeof read;
+    } };
+    const refreshed = await service.refresh(companyId, result.source.id, moved);
+    expect(refreshed.source.repositoryPackage?.files.map(file => file.path)).toEqual(['skills/one/SKILL.md']);
+    expect(refreshed.source.securityOverride).toMatchObject({ commitSha: first, trustFutureUpdates: false });
+    expect(audits.find(entry => entry.action === 'company.skill_source_security_override_revoked')?.details)
+      .toMatchObject({ cause: 'default_branch_changed', futureUpdatesOnly: true, reviewedRef: 'main', trackingRef: 'develop' });
+  });
+
+  it('clears the approval from a project source row it keeps after disconnecting', async () => {
+    const { companyId, result, service, context } = await setup(false);
+    await db.update(companySkillSources).set({ accessScope: 'projects' }).where(eq(companySkillSources.id, result.source.id));
+    const { revision } = await service.detail(companyId, result.source.id);
+    await service.disconnect(companyId, result.source.id, context, { revision, skills: 'delete' });
+    const [retained] = await db.select({ removedAt: companySkillSources.removedAt, securityOverride: companySkillSources.securityOverride,
+      summary: companySkillSources.securityOverrideSummary }).from(companySkillSources).where(eq(companySkillSources.id, result.source.id));
+    expect(retained).toMatchObject({ removedAt: expect.any(Date), securityOverride: null, summary: null });
   });
 
   it('keeps the approval on an editable copy kept when the source is disconnected', async () => {

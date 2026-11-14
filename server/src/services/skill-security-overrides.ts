@@ -17,7 +17,7 @@ import { skillFileBytes } from './skill-snapshot.js';
 export type SecurityFindingAcceptor = (filePath: string, sha256: string, code: string) => boolean;
 
 /** An approval as a scan applies it: a source's saved approval, a new request, or an installed version's record. */
-export type SecurityOverrideGrant = Pick<SkillSourceSecurityOverride, 'commitSha' | 'trustFutureUpdates'> & {
+export type SecurityOverrideGrant = Pick<SkillSourceSecurityOverride, 'commitSha' | 'trustFutureUpdates' | 'reviewedRef'> & {
   files: Array<{ path: string; sha256: string }>;
 };
 
@@ -32,12 +32,13 @@ export function fileSha256(file: CompanySkillVersionFileInventoryEntry) {
  * Builds the acceptor for one scanned commit. A grant applies to the commit an
  * administrator reviewed, and only to the exact bytes they saw. With the
  * explicit future-updates opt-in it keeps applying to the same paths in later
- * commits. Non-overridable codes are never accepted, whatever the grant says.
+ * commits of the branch they reviewed. Non-overridable codes are never accepted, whatever the grant says.
  */
 export function securityOverrideAcceptor(
   grants: Array<SecurityOverrideGrant | null | undefined>,
   commitSha: string,
   toRepositoryPath: (filePath: string) => string = filePath => filePath,
+  trackingRef?: string,
 ): SecurityFindingAcceptor | undefined {
   const active = grants.filter((grant): grant is SecurityOverrideGrant => Boolean(grant));
   if (!active.length) return undefined;
@@ -48,7 +49,7 @@ export function securityOverrideAcceptor(
     const sameCommit = grant.commitSha.toLowerCase() === commit;
     for (const file of grant.files) {
       const approvals = byPath.get(file.path) ?? [];
-      approvals.push({ sha256: file.sha256.toLowerCase(), sameCommit, trustFutureUpdates: grant.trustFutureUpdates });
+      approvals.push({ sha256: file.sha256.toLowerCase(), sameCommit, trustFutureUpdates: grant.trustFutureUpdates && followsReviewedRef(grant, trackingRef) });
       byPath.set(file.path, approvals);
     }
   }
@@ -119,11 +120,20 @@ export function verifySecurityOverride(request: SkillSecurityOverrideRequest, sc
   }
 }
 
-export function recordedSecurityOverride(request: SkillSecurityOverrideRequest, findings: SkillSecurityFinding[], userId: string | null, now = new Date()): SkillSourceSecurityOverride {
+/**
+ * Whether a scan of `trackingRef` follows the branch an approval was reviewed on. A source that tracks
+ * `HEAD` resolves it to the default branch on every scan, so a changed default branch is another branch.
+ */
+export function followsReviewedRef(grant: Pick<SecurityOverrideGrant, 'reviewedRef'>, trackingRef: string | undefined) {
+  return !grant.reviewedRef || trackingRef === undefined || grant.reviewedRef === trackingRef;
+}
+
+export function recordedSecurityOverride(request: SkillSecurityOverrideRequest, findings: SkillSecurityFinding[], userId: string | null, reviewedRef?: string, now = new Date()): SkillSourceSecurityOverride {
   const overridableCode = new Map<string, string>();
   for (const finding of findings) if (finding.overridable && !overridableCode.has(finding.path)) overridableCode.set(finding.path, finding.code);
   return {
     commitSha: request.commitSha.toLowerCase(),
+    ...(reviewedRef ? { reviewedRef } : {}),
     files: request.files.map(file => ({ path: file.path, sha256: file.sha256.toLowerCase(),
       code: overridableCode.get(file.path) ?? 'remote_fetch_exec' }))
       .sort((left, right) => left.path.localeCompare(right.path)),

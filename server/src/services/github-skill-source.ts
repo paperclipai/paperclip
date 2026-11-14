@@ -209,7 +209,7 @@ async function scanRepository(input: SkillScanInput, providerRead: GitHubRead, o
       return bytes;
     };
     const skills: DiscoveredSkill[] = [];
-    const accepts = (toRepositoryPath?: (filePath: string) => string) => securityOverrideAcceptor(options.securityOverrides ?? [], commit.sha, toRepositoryPath);
+    const accepts = (toRepositoryPath?: (filePath: string) => string) => securityOverrideAcceptor(options.securityOverrides ?? [], commit.sha, toRepositoryPath, trackingRef);
     const securityFindings: NonNullable<ScannedSkillSource['securityFindings']> = [];
     Object.assign(progress, { phase: 'checking', totalSkills: selectedRoots.length, currentPath: null });
     await report();

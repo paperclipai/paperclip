@@ -40,6 +40,8 @@ export interface SkillSecurityOverrideRequest {
 /** The recorded override a source applies on refresh. Grants file inclusion only, never execution. */
 export interface SkillSourceSecurityOverride {
   commitSha: string;
+  /** The branch the reviewed commit was scanned from. Future-update trust covers later commits of this branch only. */
+  reviewedRef?: string;
   files: Array<{ path: string; code: string; sha256: string }>;
   reason: string;
   trustFutureUpdates: boolean;
