@@ -172,5 +172,17 @@ describe("native session.open the provider rejected before any provider work", (
     const notices = await db.select().from(issueComments).where(eq(issueComments.issueId, chatId));
     expect(notices).toMatchObject([{ authorType: "system", presentation: expect.objectContaining({ kind: "system_notice" }) }]);
     expect(notices[0]!.body).toContain(`${first.coordinator.nextAttemptAt!.toISOString().slice(0, 16).replace("T", " ")} UTC`);
+
+    // A later reset makes the shown time wrong, so the next held run posts the new time once.
+    const laterResetAt = new Date(resetAt.getTime() + 2 * 60 * 60_000);
+    await db.insert(heartbeatRuns).values({ companyId, agentId: limitedAgentId, status: "failed", runtimeMode: "native",
+      errorCode: "provider_quota", startedAt: new Date(Date.now() - 30_000), finishedAt: new Date(),
+      resultJson: { retryNotBefore: laterResetAt.toISOString() } });
+    const later = await rejectSessionOpen(exitProven(rejection(startupFailure())), 0, { remote: true, agentId: limitedAgentId, issueId: chatId });
+    expect(later.coordinator.nextAttemptAt!.getTime()).toBeGreaterThan(laterResetAt.getTime());
+    await rejectSessionOpen(exitProven(rejection(startupFailure())), 0, { remote: true, agentId: limitedAgentId, issueId: chatId });
+    const updated = await db.select().from(issueComments).where(eq(issueComments.issueId, chatId)).orderBy(issueComments.createdAt);
+    expect(updated).toHaveLength(2);
+    expect(updated[1]!.body).toContain(`${later.coordinator.nextAttemptAt!.toISOString().slice(0, 16).replace("T", " ")} UTC`);
   }, 120_000);
 });
