@@ -295,6 +295,7 @@ describeEmbeddedPostgres("atomic ordinary run events", () => {
       locked();
       await released;
     });
+    void holder.catch(() => undefined);
     await lockedPromise;
     return { release: () => { release(); return holder; } };
   };
@@ -549,6 +550,7 @@ describeEmbeddedPostgres("atomic ordinary run events", () => {
       locked();
       await released;
     });
+    void holder.catch(() => undefined);
     await lockedRun;
     const wakes: string[] = [];
     const unsubscribe = subscribeDatabaseWork(db, DELIVERY_QUEUES.chatNativeProgress, wake => { wakes.push(wake); });
@@ -600,11 +602,13 @@ describeEmbeddedPostgres("atomic ordinary run events", () => {
       locked();
       await released;
     });
+    void holder.catch(() => undefined);
     await lockedRun;
     const wakes: string[] = [];
     const unsubscribe = subscribeDatabaseWork(db, DELIVERY_QUEUES.chatNativeProgress, wake => { wakes.push(wake); });
     try {
       const appended = sentStatements(db.$client, () => appendHeartbeatRunEvent(db, event));
+      void appended.catch(() => undefined);
       await vi.waitFor(async () => {
         const [waiting] = await otherDb.execute<{ count: number }>(sql`select count(*)::int as count from pg_stat_activity
           where datname = current_database() and wait_event_type = 'Lock' and query like '%"locked_run"%'`);
@@ -754,9 +758,11 @@ describeEmbeddedPostgres("atomic ordinary run events", () => {
       holderLocked();
       await held;
     });
+    void holder.catch(() => undefined);
     await locked;
     let secondSettled = false;
     const second = appendHeartbeatRunEvent(db, native(2)).finally(() => { secondSettled = true; });
+    void second.catch(() => undefined);
     try {
       // A controller checkpoint row references the run row by foreign key.
       // Its insert must not wait for the open append.
