@@ -91,11 +91,60 @@ fn a_poisoned_transport_discards_events_buffered_before_failure() {
 
 #[test]
 fn bounds_events_while_waiting_for_a_response() {
-    let mut transport = transport("flood", Duration::from_secs(2));
+    let mut transport = transport("flood", Duration::from_secs(10));
     let error = transport
         .request(GeneratedAcpxSidecarCommand::Initialize, json!({}))
         .expect_err("event flood must fail");
     assert!(error.to_string().contains("buffered event limit"));
+}
+
+#[test]
+fn bounds_tiny_events_by_count_while_waiting_for_a_response() {
+    let mut transport = transport("count-flood", Duration::from_secs(20));
+    let error = transport
+        .request(GeneratedAcpxSidecarCommand::Initialize, json!({}))
+        .expect_err("a flood of tiny events must fail");
+    assert!(error.to_string().contains("buffered event limit"));
+}
+
+#[test]
+fn buffers_a_backlog_of_small_events_before_a_response() {
+    let mut transport = transport("backlog", Duration::from_secs(10));
+    transport
+        .request(GeneratedAcpxSidecarCommand::Initialize, json!({}))
+        .expect("a backlog within the byte budget should not fail the request");
+    for expected in 1..=2_048 {
+        let event = transport
+            .poll_event(Duration::ZERO)
+            .expect("buffered event should parse")
+            .expect("buffered event should exist");
+        assert_eq!(event.sequence, expected);
+    }
+    assert!(transport
+        .poll_event(Duration::ZERO)
+        .expect("drained buffer should not fail")
+        .is_none());
+    transport.shutdown().expect("fake sidecar should stop");
+}
+
+#[test]
+fn frees_the_byte_budget_as_buffered_events_drain() {
+    let mut transport = transport("large-backlog", Duration::from_secs(10));
+    let mut expected = 1;
+    for _ in 0..2 {
+        transport
+            .request(GeneratedAcpxSidecarCommand::SessionRead, json!({}))
+            .expect("a drained buffer should admit the next backlog");
+        for _ in 0..192 {
+            let event = transport
+                .poll_event(Duration::ZERO)
+                .expect("buffered event should parse")
+                .expect("buffered event should exist");
+            assert_eq!(event.sequence, expected);
+            expected += 1;
+        }
+    }
+    transport.shutdown().expect("fake sidecar should stop");
 }
 
 #[test]
