@@ -1,3 +1,4 @@
+import { notifyTerminalWorkspaceWork } from "../terminal-workspace-work.js";
 import { settleReattachRun } from "./run-admission.js";
 import { readNativeStartupCleanup } from "../native-runtime/native-startup-cleanup.js";
 import { isContextCompactionRun } from "../context-compaction.js";
@@ -1122,6 +1123,8 @@ export function createHeartbeatLifecycle(db: Db, dependencies: HeartbeatLifecycl
       if (previous && isHeartbeatRunTerminalStatus(status))
         await notifyRetainedNativeSessionCleanup(tx, { companyId: previous.companyId, runId: previous.id });
       if (isHeartbeatRunTerminalStatus(status)) await notifyDeliveryWork(tx, DELIVERY_QUEUES.accounting, companyId);
+      const runIssueId = previous ? previous.nativeIssueId ?? previous.issueId ?? readNonEmptyString(parseObject(previous.contextSnapshot).issueId) : null;
+      if (previous && isHeartbeatRunTerminalStatus(status) && runIssueId) await notifyTerminalWorkspaceWork(tx, `issue:${runIssueId}`);
       await notifyExecutionRunWork(tx, previous ? { companyId: previous.companyId, runId: previous.id,
         issueId: previous.nativeIssueId ?? previous.issueId ?? readNonEmptyString(parseObject(previous.contextSnapshot).issueId) ?? undefined } : undefined);
       if (previous) await notifyChatRunMilestones(tx, { companyId: previous.companyId, runId: previous.id,

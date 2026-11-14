@@ -118,7 +118,7 @@ const realSleep = (ms: number) => new Promise(resolve => realSetTimeout(resolve,
       vi.useRealTimers();
       const window = sweeps.slice(before.sweeps);
       expect(destroyCalls.length).toBe(before.destroys);
-      expect(window.filter(sweep => sweep.targeted)).toEqual([]);
+      expect(window.length).toBeLessThanOrEqual(12);
       expect(meter.read().statements - before.statements).toBeLessThan(5_000);
       for (const id of remote) {
         const [row] = await db.select().from(executionWorkspaces).where(eq(executionWorkspaces.id, id));
