@@ -173,17 +173,6 @@ export async function findNewerIssueRun(tx: Db, run: Run, issueId: string): Prom
       ne(heartbeatRuns.id, run.id),
       since,
     )).limit(1),
-    tx.select({ id: heartbeatRuns.id }).from(nativeRunFinalizations)
-      .innerJoin(heartbeatRuns, and(
-        eq(heartbeatRuns.id, nativeRunFinalizations.runId),
-        eq(heartbeatRuns.companyId, run.companyId),
-      ))
-      .where(and(
-        eq(nativeRunFinalizations.companyId, run.companyId),
-        eq(nativeRunFinalizations.issueId, issueId),
-        ne(heartbeatRuns.id, run.id),
-        since,
-      )).limit(1),
   ).limit(1);
   return newer;
 }

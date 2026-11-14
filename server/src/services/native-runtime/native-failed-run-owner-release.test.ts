@@ -572,6 +572,8 @@ describe("failed native run owner release", () => {
     });
     await expect(findNewerIssueRun(db, sourceRun!, issueId)).resolves.toEqual({ id: newerBySnapshotId });
 
+    await db.update(heartbeatRuns).set({ contextSnapshot: null }).where(eq(heartbeatRuns.id, newerBySnapshotId));
+
     const newerByNativeIssueId = randomUUID();
     await db.insert(heartbeatRuns).values({
       id: newerByNativeIssueId,
@@ -582,6 +584,6 @@ describe("failed native run owner release", () => {
       runtimeMode: "native",
       createdAt: new Date(sourceRun!.createdAt.getTime() + 600),
     });
-    await expect(findNewerIssueRun(db, sourceRun!, issueId)).resolves.toMatchObject({ id: expect.any(String) });
+    await expect(findNewerIssueRun(db, sourceRun!, issueId)).resolves.toEqual({ id: newerByNativeIssueId });
   });
 });
