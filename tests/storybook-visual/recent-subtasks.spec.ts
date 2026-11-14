@@ -42,7 +42,8 @@ for (const theme of ["light", "dark"]) {
 test("fold, keyboard, overflow and parent navigation preserve personal unread state", async ({ page }) => {
   await open(page, "more-than-ten");
   const group = page.getByRole("group", { name: "Subtasks of Ship the project workspace" });
-  const parent = page.getByRole("link", { name: "Ship the project workspace", exact: true });
+  const parent = page.getByRole("link", { name: /Ship the project workspace/ });
+  await expect(parent).toHaveCount(1);
   await expect(parent.getByLabel("Unread")).toHaveCount(0);
   const url = page.url();
   const collapse = page.getByRole("button", { name: "Collapse subtasks of Ship the project workspace", exact: true });
