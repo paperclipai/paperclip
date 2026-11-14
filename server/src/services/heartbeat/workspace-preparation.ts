@@ -745,9 +745,15 @@ async function prepareHeartbeatWorkspaceLocked(db: Db, input: HeartbeatWorkspace
     boundWorkspace: reusableExistingExecutionWorkspace ?? existingExecutionWorkspace,
   }));
   const skipHostProvision = copyOnlyProvisioning || hostProvisionDriver === "sandbox" || hostProvisionDriver === "ssh" || hostProvisionDriver === "plugin";
+  const retainedWorkspaceConfig = !fresh && requestedShouldReuseExisting && reusableExistingExecutionWorkspace
+    ? { ...mergedConfig, workspaceStrategy: {
+        ...parseObject(mergedConfig.workspaceStrategy),
+        type: reusableExistingExecutionWorkspace.strategyType,
+      } }
+    : mergedConfig;
   const hostExecutionWorkspaceConfig = controllerOnly ? {} :
     stripHostWorkspaceProvision({
-      config: fresh && !remoteAuthority ? { ...mergedConfig, workspaceStrategy: { type: "project_primary" } } : mergedConfig,
+      config: fresh && !remoteAuthority ? { ...mergedConfig, workspaceStrategy: { type: "project_primary" } } : retainedWorkspaceConfig,
       skipHostProvision,
     });
   const executionWorkspaceBase = {
