@@ -49,6 +49,7 @@ enum CommandLifecycle {
 const TERMINAL_RESULT_ACK_TIMEOUT: Duration = Duration::from_secs(2);
 const HOST_PARK_PREPARATION_BUDGET: Duration = Duration::from_secs(20);
 const CUMULATIVE_ACK_PERSIST_INTERVAL: usize = 16;
+const MAX_IN_FLIGHT_PROVIDER_EVENTS: u64 = 64;
 
 fn reconnect_delay(base: Duration, max_delay: Duration, attempt: &mut u32) -> Duration {
     let multiplier = 1_u128 << (*attempt).min(5);
@@ -1172,7 +1173,7 @@ pub fn run_durable_runner_with_host_control<E: CommandExecutor>(
             let source_seq_before_poll = state.highest_source_seq();
             let polls_provider = matches!(control_message, Ok(None))
                 && state.pending_provider_cleanup.is_none()
-                && state.acked_source_seq >= sent_source_seq;
+                && provider_ingress_has_window(&state, sent_source_seq);
             poll_executor_events_when_control_idle(
                 &mut state,
                 &store,
@@ -2196,13 +2197,11 @@ fn poll_executor_events_after_controller_ack<E: CommandExecutor>(
     if state.pending_provider_cleanup.is_some() {
         return Ok(());
     }
-    // The controller emits one cumulative ACK per durably committed event.
-    // Polling another provider batch before consuming that already-sent prefix
-    // makes the ACK/stop queue grow faster than this loop can read it. Keep
-    // provider events at their durable owner while draining control frames in
-    // order. Command handling, authentication and cumulative ACK processing
-    // remain live; unsent outbox events must not fence their own first delivery.
-    if state.acked_source_seq < sent_source_seq {
+    // Polling runs only after a read finds no queued control frame, so a stop
+    // or suspend already queued still precedes the next provider batch. A
+    // bounded window of sent, unacknowledged events keeps the ACK queue and
+    // the outbox bounded; past it, provider events stay at their durable owner.
+    if !provider_ingress_has_window(state, sent_source_seq) {
         return executor.maintain_backpressured_provider();
     }
     poll_executor_events(state, store, config, executor)?;
@@ -2214,6 +2213,15 @@ fn poll_executor_events_after_controller_ack<E: CommandExecutor>(
         }
     }
     Ok(())
+}
+
+fn provider_ingress_has_window(state: &DurableState, sent_source_seq: u64) -> bool {
+    sent_source_seq.saturating_sub(state.acked_source_seq) < MAX_IN_FLIGHT_PROVIDER_EVENTS
+        && state.outbox_bytes()
+            < state
+                .max_outbox_bytes
+                .saturating_sub(state.p0_reserve_bytes)
+                / 2
 }
 
 fn poll_executor_events_when_control_idle<E: CommandExecutor>(
@@ -5060,6 +5068,100 @@ mod tests {
     }
 
     #[test]
+    fn provider_poll_continues_inside_the_in_flight_window_and_stops_at_its_bounds() {
+        let delta = |index: u64| PolledEvent {
+            executor_event_id: format!("provider-event-{index}"),
+            event_type: "item.delta".to_owned(),
+            priority: EventPriority::P1,
+            payload: json!({"index": index}),
+        };
+        let directory = std::env::temp_dir().join(format!(
+            "paperclip-runner-in-flight-window-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let mut window_config = config(directory.clone());
+        window_config.max_outbox_bytes = 1024 * 1024;
+        let store = DurableStateStore::new(&directory).unwrap();
+        let (mut state, _) = store.load_or_create(&window_config).unwrap();
+        let mut executor = RetainingEventExecutor {
+            events: VecDeque::from([delta(1)]),
+            fail_acknowledgement: false,
+            acknowledgements: Vec::new(),
+        };
+        for index in 1..=MAX_IN_FLIGHT_PROVIDER_EVENTS {
+            let sent_source_seq = state.highest_source_seq();
+            poll_executor_events_after_controller_ack(
+                &mut state,
+                &store,
+                &window_config,
+                &mut executor,
+                sent_source_seq,
+            )
+            .unwrap();
+            assert_eq!(state.highest_source_seq(), index);
+            executor.events.push_back(delta(index + 1));
+        }
+        let sent_source_seq = state.highest_source_seq();
+        poll_executor_events_after_controller_ack(
+            &mut state,
+            &store,
+            &window_config,
+            &mut executor,
+            sent_source_seq,
+        )
+        .unwrap();
+        assert_eq!(state.highest_source_seq(), MAX_IN_FLIGHT_PROVIDER_EVENTS);
+        assert_eq!(executor.events.len(), 1);
+        state.apply_ack(1, 2).unwrap();
+        poll_executor_events_after_controller_ack(
+            &mut state,
+            &store,
+            &window_config,
+            &mut executor,
+            sent_source_seq,
+        )
+        .unwrap();
+        assert_eq!(
+            state.highest_source_seq(),
+            MAX_IN_FLIGHT_PROVIDER_EVENTS + 1
+        );
+        fs::remove_dir_all(directory).unwrap();
+
+        let directory = std::env::temp_dir().join(format!(
+            "paperclip-runner-in-flight-bytes-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let mut bytes_config = config(directory.clone());
+        bytes_config.max_outbox_bytes = 8 * 1024;
+        bytes_config.p0_reserve_bytes = 2 * 1024;
+        let store = DurableStateStore::new(&directory).unwrap();
+        let (mut state, _) = store.load_or_create(&bytes_config).unwrap();
+        let mut executor = RetainingEventExecutor {
+            events: VecDeque::from([delta(1)]),
+            fail_acknowledgement: false,
+            acknowledgements: Vec::new(),
+        };
+        for index in 1..=MAX_IN_FLIGHT_PROVIDER_EVENTS {
+            let sent_source_seq = state.highest_source_seq();
+            poll_executor_events_after_controller_ack(
+                &mut state,
+                &store,
+                &bytes_config,
+                &mut executor,
+                sent_source_seq,
+            )
+            .unwrap();
+            if executor.events.is_empty() {
+                executor.events.push_back(delta(index + 1));
+            }
+        }
+        assert!(state.highest_source_seq() < MAX_IN_FLIGHT_PROVIDER_EVENTS);
+        assert!(state.outbox_bytes() >= (8 * 1024 - 2 * 1024) / 2);
+        assert_eq!(executor.events.len(), 1);
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
     fn provider_poll_yields_until_the_sent_controller_ack_prefix_is_consumed() {
         let directory = std::env::temp_dir().join(format!(
             "paperclip-runner-controller-ack-fairness-{}",
@@ -5105,12 +5207,17 @@ mod tests {
                 sent_source_seq,
             )
             .unwrap();
-            assert_eq!(state.highest_source_seq(), 128, "before ACK {ack}");
-            assert_eq!(executor.events.len(), 1);
+            let window_open = sent_source_seq - (ack - 1) < MAX_IN_FLIGHT_PROVIDER_EVENTS;
+            assert_eq!(
+                state.highest_source_seq(),
+                if window_open { 129 } else { 128 },
+                "before ACK {ack}"
+            );
+            assert_eq!(executor.events.len(), usize::from(!window_open));
             state.apply_ack(ack, 2).unwrap();
             store.save(&state).unwrap();
         }
-        assert_eq!(executor.acknowledgements, vec![128]);
+        assert_eq!(executor.acknowledgements, vec![128, 1]);
         poll_executor_events_after_controller_ack(
             &mut state,
             &store,
@@ -5183,7 +5290,11 @@ mod tests {
         );
         poll_executor_events_after_controller_ack(&mut state, &store, &config, &mut executor, 1)
             .unwrap();
-        assert_eq!(executor.calls[2..], ["maintain"]);
+        assert_eq!(
+            executor.calls[2..],
+            ["poll"],
+            "the next turn waits for the terminal ACK"
+        );
         state.apply_ack(1, 2).unwrap();
         store.save(&state).unwrap();
         poll_executor_events_when_control_idle(
@@ -5266,8 +5377,14 @@ mod tests {
             calls: 0,
             fail: false,
         };
-        poll_executor_events_after_controller_ack(&mut state, &store, &config, &mut executor, 1)
-            .unwrap();
+        poll_executor_events_after_controller_ack(
+            &mut state,
+            &store,
+            &config,
+            &mut executor,
+            MAX_IN_FLIGHT_PROVIDER_EVENTS,
+        )
+        .unwrap();
         assert_eq!(executor.calls, 1);
         assert_eq!(serde_json::to_value(&state).unwrap(), original);
         executor.fail = true;
@@ -5276,7 +5393,7 @@ mod tests {
             &store,
             &config,
             &mut executor,
-            1
+            MAX_IN_FLIGHT_PROVIDER_EVENTS
         )
         .unwrap_err()
         .to_string()
@@ -5315,8 +5432,14 @@ mod tests {
             fail_acknowledgement: false,
             acknowledgements: Vec::new(),
         };
-        poll_executor_events_after_controller_ack(&mut state, &store, &config, &mut executor, 1)
-            .unwrap();
+        poll_executor_events_after_controller_ack(
+            &mut state,
+            &store,
+            &config,
+            &mut executor,
+            MAX_IN_FLIGHT_PROVIDER_EVENTS,
+        )
+        .unwrap();
         let (result, lifecycle) = process_command(
             &mut state,
             &store,
@@ -5534,7 +5657,7 @@ mod tests {
             &store,
             &config,
             &mut executor,
-            1,
+            MAX_IN_FLIGHT_PROVIDER_EVENTS,
             &idle,
         )
         .unwrap();
@@ -5595,7 +5718,7 @@ mod tests {
             &store,
             &config,
             &mut executor,
-            1,
+            MAX_IN_FLIGHT_PROVIDER_EVENTS,
         )
         .unwrap();
         assert_eq!(executor.events.len(), 1);
