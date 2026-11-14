@@ -349,4 +349,108 @@ describe("tool OAuth over local HTTP", () => {
       await new Promise<void>((resolve, reject) => provider.close((error) => error ? reject(error) : resolve()));
     }
   });
+
+  it.each([
+    { advertiseGrants: true },
+    { advertiseGrants: false },
+  ] as const)("activates a DCR client that never receives a refresh token (advertiseGrants=$advertiseGrants)", async ({ advertiseGrants }) => {
+    const userId = `oauth-user-${randomUUID()}`;
+    const [company] = await db.insert(companies).values({
+      name: "OAuth no-refresh fixture", issuePrefix: `O${randomUUID().slice(0, 5)}`,
+    }).returning();
+    await db.insert(companyMemberships).values({
+      companyId: company.id, principalType: "user", principalId: userId,
+      status: "active", membershipRole: "admin",
+    });
+    const calls: Array<{ path: string; authorization?: string; body: string }> = [];
+    let origin: string;
+    const provider = createServer(async (req, res) => {
+      let body = "";
+      for await (const chunk of req) body += chunk;
+      const path = new URL(req.url!, origin).pathname;
+      calls.push({ path, authorization: req.headers.authorization, body });
+      const json = (value: unknown, status = 200) => {
+        res.writeHead(status, { "content-type": "application/json" });
+        res.end(JSON.stringify(value));
+      };
+      if (path.startsWith("/.well-known/oauth-protected-resource")) {
+        return json({ resource: `${origin}/mcp`, authorization_servers: [origin] });
+      }
+      if (path === "/.well-known/oauth-authorization-server") {
+        return json({
+          issuer: origin, authorization_endpoint: `${origin}/authorize`,
+          token_endpoint: `${origin}/token`, registration_endpoint: `${origin}/register`,
+          code_challenge_methods_supported: ["S256"],
+          token_endpoint_auth_methods_supported: ["none"],
+          scopes_supported: ["tools.read"],
+          ...(advertiseGrants ? { grant_types_supported: ["authorization_code"] } : {}),
+        });
+      }
+      if (path === "/register") {
+        const metadata = JSON.parse(body);
+        // The server registers only the authorization-code grant, as DCR servers
+        // without refresh-token support do.
+        return json({ ...metadata, client_id: "fixture-client", grant_types: ["authorization_code"] });
+      }
+      if (path === "/token") {
+        return json({ access_token: "fixture-access", expires_in: 3600, token_type: "Bearer", scope: "tools.read" });
+      }
+      if (path === "/mcp") {
+        if (req.headers.authorization !== "Bearer fixture-access") {
+          res.setHeader("www-authenticate", `Bearer resource_metadata="${origin}/.well-known/oauth-protected-resource/mcp"`);
+          return json({}, 401);
+        }
+        const rpc = JSON.parse(body);
+        if (rpc.method === "notifications/initialized") {
+          res.writeHead(202).end();
+          return;
+        }
+        return json({ jsonrpc: "2.0", id: rpc.id, result: rpc.method === "initialize"
+          ? { protocolVersion: "2025-06-18", capabilities: { tools: {} }, serverInfo: { name: "fixture", version: "1" } }
+          : { tools: [{ name: "read_fixture", description: "Read fixture", inputSchema: { type: "object", properties: {} }, annotations: { readOnlyHint: true } }] },
+        });
+      }
+      json({}, 404);
+    });
+    await new Promise<void>((resolve) => provider.listen(0, "127.0.0.1", resolve));
+    origin = `http://127.0.0.1:${(provider.address() as AddressInfo).port}`;
+    try {
+      const app = express();
+      app.use(express.json());
+      app.use((req, _res, next) => {
+        req.actor = { type: "board", userId, source: "local_implicit", isInstanceAdmin: true };
+        next();
+      });
+      app.use("/api", toolAccessRoutes(db, { deploymentMode: "local_trusted", deploymentExposure: "private", paperclipCloudConnector: null }));
+      app.use(errorHandler);
+
+      const connected = await request(app).post(`/api/companies/${company.id}/tools/apps/connect`)
+        .send({ link: `${origin}/mcp`, name: "No refresh OAuth", grantKind: "organization" }).expect(201);
+      const state = new URL(connected.body.auth.startUrl).searchParams.get("state")!;
+      const completed = await request(app).get("/api/tools/oauth/callback")
+        .query({ state, code: "fixture-code", iss: origin }).expect(200);
+      await request(app).post(`/api/companies/${company.id}/tools/apps/${connected.body.connectionId}/finish`)
+        .send({ enabledCatalogEntryIds: completed.body.catalog.map((entry: { id: string }) => entry.id), askFirstCatalogEntryIds: [], access: "all_agents" }).expect(200);
+
+      const [connection] = await db.select().from(toolConnections).where(eq(toolConnections.id, connected.body.connectionId));
+      expect(connection).toMatchObject({ status: "active", enabled: true, ownership: "dcr" });
+      const refs = connection.credentialSecretRefs.map((ref) => ref.configPath);
+      expect(refs).toContain("oauth.access_token");
+      expect(refs).not.toContain("oauth.refresh_token");
+      expect(JSON.stringify(connection.config)).not.toMatch(/fixture-(access|refresh|secret)/);
+
+      const [grant] = await db.select().from(connectionGrants).where(eq(connectionGrants.connectionId, connection.id));
+      await db.update(connectionGrants).set({ providerTenant: {
+        ...grant.providerTenant,
+        oauth: { ...grant.providerTenant?.oauth, accessTokenExpiresAt: new Date(0).toISOString() },
+      } }).where(eq(connectionGrants.id, grant.id));
+      const service = toolAccessService(db, { deploymentMode: "local_trusted", deploymentExposure: "private", paperclipCloudConnector: null });
+      await expect(service.checkHealth(connection.id, { actorType: "user", actorId: userId }))
+        .rejects.toMatchObject({ status: 422, details: { code: "oauth_refresh_missing" } });
+      expect(calls.filter(call => call.path === "/token")).toHaveLength(1);
+    } finally {
+      provider.closeAllConnections();
+      await new Promise<void>((resolve, reject) => provider.close((error) => error ? reject(error) : resolve()));
+    }
+  });
 });
