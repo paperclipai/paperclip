@@ -20,6 +20,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import os from "node:os";
+import { securityOverrideAcceptor, skillRelativeToRepositoryPath, versionApprovalGrant } from "./skill-security-overrides.js";
 import { skillFileBytes, snapshotFile, assertSkillSnapshotPath, skillSnapshotHash, MAX_SKILL_SNAPSHOT_BYTES, MAX_SKILL_SNAPSHOT_FILES } from "./skill-snapshot.js";
 import { fileURLToPath } from "node:url";
 import { and, asc, desc, eq, inArray, isNull, isNotNull, lt, ne, or, sql } from "drizzle-orm";
@@ -34,7 +35,7 @@ import {
   companySkillTestInputs,
   companySkillTestRunTemplates,
   companySkillTestRuns,
-  companySkillVersions, withDedicatedDbConnection,
+  companySkillVersions, withDedicatedDbConnection, companySkillSecurityApprovals,
   companySkills,
   companySkillRepositorySnapshots,
   costEvents,
@@ -123,6 +124,7 @@ import {
   parseFrontmatterMarkdown,
   splitFrontmatterBlock,
   stringifyFrontmatter,
+  type SkillVersionSecurityApproval,
 } from "@paperclipai/shared";
 import { resolvePaperclipInstanceRoot } from "../home-paths.js";
 import { conflict, forbidden, notFound, unprocessable } from "../errors.js";
@@ -133,6 +135,7 @@ import { toIssueWorkProduct } from "./work-products.js";
 import { projectService } from "./projects.js";
 import { normalizePortablePath } from "./portable-path.js";
 import { folderService } from "./folders.js";
+import { isForeignKeyViolation } from "../db-errors.js";
 import {
   copyCatalogSkillFile,
   getCatalogPackageMetadata,
@@ -444,6 +447,10 @@ type CreateVersionOptions = {
   skipInventoryRefresh?: boolean;
   skill?: CompanySkill;
   database?: DbOrTransaction;
+  /** The approval that admitted this version's flagged files, recorded with the version. */
+  securityApproval?: SkillVersionSecurityApproval | null;
+  /** An approval record already saved with `saveSecurityApproval`, shared by the versions one publish installs. */
+  securityApprovalId?: string | null;
 };
 
 type DbTransaction = Parameters<Parameters<Db["transaction"]>[0]>[0];
@@ -1961,7 +1968,7 @@ function serializeVersionFileInventory(
 }
 
 function toCompanySkillVersion(row: CompanySkillVersionRow): CompanySkillVersion {
-  const { packageSnapshotId: _package, packageFileMap: _map, migrationAt: _migration, ...publicRow } = row;
+  const { packageSnapshotId: _package, packageFileMap: _map, migrationAt: _migration, securityApprovalId: _approval, ...publicRow } = row;
   return {
     ...publicRow,
     label: row.label ?? null,
@@ -2575,7 +2582,14 @@ function pushFinding(
   findings.push({ code, severity, message, path: filePath });
 }
 
-async function auditInstalledSkillBytes(skill: CompanySkill, requireEntrypoint = true): Promise<CompanySkillAuditResult> {
+/**
+ * Decides whether an administrator accepted an overridable finding for the
+ * exact file bytes. Only codes listed in SKILL_SECURITY_OVERRIDABLE_CODES reach
+ * this callback; credential exfiltration and structural findings never do.
+ */
+export type SkillSecurityFindingAcceptor = (filePath: string, sha256: string, code: string) => boolean;
+
+async function auditInstalledSkillBytes(skill: CompanySkill, requireEntrypoint = true, accept?: SkillSecurityFindingAcceptor): Promise<CompanySkillAuditResult> {
   const skillDir = normalizeSkillDirectory(skill);
   const scannedAt = new Date().toISOString();
   const originHash = asString(getSkillMeta(skill).originHash);
@@ -2656,7 +2670,12 @@ async function auditInstalledSkillBytes(skill: CompanySkill, requireEntrypoint =
 
     const text = file.bytes.toString("utf8");
     if (remoteExecPattern.test(text) || (file.kind === "script" && shellEvalPattern.test(text))) {
-      pushFinding(findings, "remote_fetch_exec", "error", "Remote-fetch or dynamic execution pattern is not allowed.", file.path);
+      if (accept?.(file.path, sha256Buffer(file.bytes), "remote_fetch_exec")) {
+        // Accepted findings stay visible; they only stop blocking inclusion.
+        pushFinding(findings, "remote_fetch_exec", "warning", "Remote-fetch or dynamic execution pattern was accepted by an administrator.", file.path);
+      } else {
+        pushFinding(findings, "remote_fetch_exec", "error", "Remote-fetch or dynamic execution pattern is not allowed.", file.path);
+      }
     }
     if (secretExfilPattern.test(text)) {
       pushFinding(findings, "secret_exfiltration", "error", "Secret exfiltration pattern is not allowed.", file.path);
@@ -2699,7 +2718,7 @@ async function auditInstalledSkillBytes(skill: CompanySkill, requireEntrypoint =
 }
 
 /** Audit downloaded packages before they become installed company content. */
-export async function auditSkillSnapshot(files: CompanySkillVersionFileInventoryEntry[], requireEntrypoint = true) {
+export async function auditSkillSnapshot(files: CompanySkillVersionFileInventoryEntry[], requireEntrypoint = true, accept?: SkillSecurityFindingAcceptor) {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-skill-audit-"));
   try {
     for (const file of files) {
@@ -2708,7 +2727,7 @@ export async function auditSkillSnapshot(files: CompanySkillVersionFileInventory
       await fs.writeFile(target, skillFileBytes(file), { mode: 0o600 });
     }
     const result = await auditInstalledSkillBytes({ sourceType: "local_path", sourceLocator: root,
-      fileInventory: files, metadata: null } as unknown as CompanySkill, requireEntrypoint);
+      fileInventory: files, metadata: null } as unknown as CompanySkill, requireEntrypoint, accept);
     return result.findings;
   } finally { await fs.rm(root, { recursive: true, force: true }); }
 }
@@ -3274,11 +3293,14 @@ export function companySkillService(db: Db, options: { actor?: AuthorizationActo
 
       await removeRuntimeSkillCache(resolveManagedSkillsRoot(companyId), skill.id, async () => {
         await fs.rm(resolveRuntimeSkillMaterializedPath(companyId, skill), { recursive: true, force: true });
-        await db.transaction(async tx => {
+        const approvalIds = await db.transaction(async tx => {
           await notifyDeliveryWork(tx, DELIVERY_QUEUES.skillPackages);
           await notifySkillVersionRetention(tx, companyId);
+          const used = await securityApprovalIdsOf(tx, companyId, [skill.id]);
           await tx.delete(companySkills).where(eq(companySkills.id, skill.id));
+          return used;
         });
+        await releaseSecurityApprovals(companyId, approvalIds);
       });
     }
   }
@@ -3590,6 +3612,111 @@ export function companySkillService(db: Db, options: { actor?: AuthorizationActo
     });
   }
 
+  /**
+   * Where a skill's files came from in a repository: its source, or for an editable copy or fork the source it was
+   * copied from. Audits map installed files back to repository paths with it.
+   */
+  function repositoryLayout(skill: Pick<CompanySkill, "metadata" | "sourceLocator" | "sourceRef">) {
+    const copied = isPlainRecord(skill.metadata?.copiedFromRepository) ? skill.metadata.copiedFromRepository : null;
+    const path = asString(skill.metadata?.skillSourcePath) ?? asString(copied?.path);
+    if (!path) return null;
+    return { url: asString(skill.metadata?.skillSourcePath) ? skill.sourceLocator : asString(copied?.url) ?? null,
+      ref: asString(skill.metadata?.skillSourcePath) ? skill.sourceRef : asString(copied?.ref) ?? null,
+      path, packageMode: asString(skill.metadata?.packageMode) ?? asString(copied?.packageMode) ?? null };
+  }
+
+  /** Stores an approval record once per company and content; the versions one publish installs share it. */
+  async function saveSecurityApproval(tx: DbOrTransaction, companyId: string, approval: SkillVersionSecurityApproval) {
+    const contentHash = createHash("sha256").update(JSON.stringify(approval)).digest("hex");
+    for (let attempt = 1; ; attempt++) {
+      await tx.insert(companySkillSecurityApprovals).values({ companyId, contentHash, approval }).onConflictDoNothing();
+      // The key-share lock keeps a cleanup of unreferenced approvals from deleting this one before the version that uses it commits.
+      const [row] = await tx.select({ id: companySkillSecurityApprovals.id }).from(companySkillSecurityApprovals)
+        .where(and(eq(companySkillSecurityApprovals.companyId, companyId), eq(companySkillSecurityApprovals.contentHash, contentHash))).for("key share");
+      if (row) return row.id;
+      // A cleanup deleted the existing record between the insert and the lock; the next insert saves it again.
+      if (attempt >= 3) throw conflict("The security approval changed while it was saved. Try again.");
+    }
+  }
+
+  /** The approval records the versions of these skills use, read before the skills are deleted. */
+  async function securityApprovalIdsOf(tx: DbOrTransaction, companyId: string, skillIds: string[]) {
+    if (!skillIds.length) return [];
+    const rows = await tx.selectDistinct({ id: companySkillVersions.securityApprovalId }).from(companySkillVersions)
+      .where(and(eq(companySkillVersions.companyId, companyId), inArray(companySkillVersions.companySkillId, skillIds),
+        sql`${companySkillVersions.securityApprovalId} is not null`));
+    return rows.map(row => row.id!);
+  }
+
+  /**
+   * Deletes the approval records no version uses any more, after the skills that used them were deleted.
+   * A version that takes up a record meanwhile keeps it: the foreign key then refuses the delete.
+   */
+  async function releaseSecurityApprovals(companyId: string, approvalIds: Iterable<string>) {
+    for (const approvalId of new Set(approvalIds)) {
+      await db.delete(companySkillSecurityApprovals).where(and(eq(companySkillSecurityApprovals.companyId, companyId),
+        eq(companySkillSecurityApprovals.id, approvalId),
+        sql`not exists (select 1 from ${companySkillVersions} where ${companySkillVersions.securityApprovalId} = ${companySkillSecurityApprovals.id})`))
+        .catch(error => {
+          if (isForeignKeyViolation(error)) return;
+          logger.warn({ err: error, companyId, approvalId }, "Skill deleted; unused security approval cleanup failed");
+        });
+    }
+  }
+
+  /** The security approval recorded on an installed version when it was installed, if it admitted flagged files. */
+  async function installedSecurityApproval(companyId: string, skillId: string, versionId: string) {
+    const [row] = await db.select({ approval: companySkillSecurityApprovals.approval }).from(companySkillVersions)
+      .innerJoin(companySkillSecurityApprovals, and(eq(companySkillSecurityApprovals.companyId, companySkillVersions.companyId),
+        eq(companySkillSecurityApprovals.id, companySkillVersions.securityApprovalId)))
+      .where(and(eq(companySkillVersions.companyId, companyId), eq(companySkillVersions.companySkillId, skillId), eq(companySkillVersions.id, versionId)));
+    return row?.approval ?? null;
+  }
+
+  /**
+   * Accepts the flagged files an installed version's own approval record admitted: the same path and the exact
+   * bytes it installed. The source's current approval plays no part, so renewing, withdrawing or narrowing it
+   * later never changes how an installed version audits.
+   */
+  async function installedVersionAcceptor(skill: CompanySkill, versionId: string, installedRoot: string) {
+    const layout = repositoryLayout(skill);
+    const entrypoint = layout?.path ?? null;
+    if (!entrypoint) return undefined;
+    const record = await installedSecurityApproval(skill.companyId, skill.id, versionId);
+    if (!record) return undefined;
+    // The approval record keeps the layout the version was installed with, so a restored or copied version maps its
+    // files the way they were approved, whatever the skill's latest layout is.
+    const packageMode = record.packageMode ?? layout?.packageMode ?? "skills";
+    // A repository package installs the original files under REPOSITORY_CONTENT_DIR at their repository paths;
+    // a skill package installs them relative to the skill directory.
+    const repositoryPrefix = `${REPOSITORY_CONTENT_DIR}/`;
+    const fromSkillDirectory = skillRelativeToRepositoryPath(path.posix.dirname(entrypoint));
+    // The generated agents/openai.yaml is a copy of the skill directory's policy file; the generated SKILL.md is not an original.
+    const policyCopy = path.posix.join(path.posix.dirname(entrypoint), "agents/openai.yaml");
+    const toRepositoryPath = packageMode === "repository"
+      ? (filePath: string) => filePath.startsWith(repositoryPrefix) ? filePath.slice(repositoryPrefix.length)
+        : filePath === "agents/openai.yaml" ? policyCopy : `${repositoryPrefix}${filePath}`
+      : (filePath: string) => filePath === "SKILL.md" ? entrypoint : fromSkillDirectory(filePath);
+    const accept = securityOverrideAcceptor([versionApprovalGrant(record)], record.commitSha, toRepositoryPath);
+    if (!accept || packageMode !== "repository") return accept;
+    // The generated SKILL.md repeats the original entrypoint's frontmatter. Accept its findings only while it is
+    // still exactly the file generated from that original, and the original itself matches the approval. An edited
+    // SKILL.md (for example in an editable copy) is judged on its own bytes.
+    const original = await fs.readFile(path.join(installedRoot, REPOSITORY_CONTENT_DIR, ...entrypoint.split("/"))).catch(() => null);
+    if (!original) return accept;
+    const originalHash = sha256Buffer(original);
+    let generatedHash: string | null = null;
+    try {
+      const generated = repositorySkillProjection([{ path: entrypoint, kind: "skill", content: original.toString("utf8") }], entrypoint)
+        .find(file => file.path === "SKILL.md");
+      generatedHash = generated ? sha256Buffer(generated.content) : null;
+    } catch {
+      generatedHash = null;
+    }
+    return (filePath: string, sha256: string, code: string) => filePath === "SKILL.md" && generatedHash !== null && sha256 === generatedHash
+      ? accept(`${repositoryPrefix}${entrypoint}`, originalHash, code) : accept(filePath, sha256, code);
+  }
+
   async function auditSkillContents(skill: CompanySkill): Promise<CompanySkillAuditResult> {
     const companyId = skill.companyId;
     if (skill.currentVersionId && (skill.sourceType !== "local_path" || skill.metadata?.skillSourceId || skill.metadata?.sourceKind === "paperclip_bundled")) {
@@ -3598,13 +3725,14 @@ export function companySkillService(db: Db, options: { actor?: AuthorizationActo
         const version = await readVersionMetadata(companyId, skill.id, versionId);
         if (!version) throw unprocessable("Installed skill version is unavailable.");
         const sourceLocator = await materializeVersionSnapshot(companyId, skill, version);
+        const fileInventory = version.repositorySnapshotId || version.packageSnapshotId
+          ? await packageRuntime.inventory(version) : await packages.versionFiles(version);
         return auditInstalledSkillBytes({
           ...skill,
           sourceType: "local_path",
           sourceLocator,
-          fileInventory: version.repositorySnapshotId || version.packageSnapshotId
-            ? await packageRuntime.inventory(version) : await packages.versionFiles(version),
-        });
+          fileInventory,
+        }, true, await installedVersionAcceptor(skill, versionId, sourceLocator));
       });
     }
     if (skill.sourceType !== "catalog" && skill.sourceType !== "local_path") {
@@ -3778,6 +3906,7 @@ export function companySkillService(db: Db, options: { actor?: AuthorizationActo
         fileInventory: serializeFileInventory(inventory), trustLevel: deriveTrustLevel(inventory),
         ...readSkillStoreMetadata(parsed.frontmatter, skill.metadata),
       }, actor, { ...options.publication, expectedVersionId: input.expectedVersionId, label: input.label,
+        ...(options.fileInventory ? {} : { contentVersionId: selectedId }),
         validate: async tx => {
           await visibility(tx).assertSkill(companyId, skillId);
           await options.publication?.validate?.(tx);
@@ -3848,6 +3977,11 @@ export function companySkillService(db: Db, options: { actor?: AuthorizationActo
           fileInventory: packageSnapshotId ? [] : fileInventory,
           authorAgentId: actor?.type === "agent" ? actor.agentId ?? null : null,
           authorUserId: actor?.type === "user" ? actor.userId ?? null : null,
+          // A copy of the current version keeps the approval that admitted its unchanged files.
+          securityApprovalId: options.securityApprovalId !== undefined ? options.securityApprovalId
+            : options.securityApproval !== undefined
+            ? options.securityApproval ? await saveSecurityApproval(tx, companyId, options.securityApproval) : null
+            : options.fileInventory === undefined ? previousVersion?.securityApprovalId ?? null : null,
         })
         .returning()
         .then((rows) => rows[0] ?? null);
@@ -4619,6 +4753,10 @@ export function companySkillService(db: Db, options: { actor?: AuthorizationActo
       throw forbidden("Project skills cannot be published through a public link.");
     }
     const files = forkSource ? await collectVersionFileInventory(companyId, forkSource) : [];
+    const forkLayout = forkSource ? repositoryLayout(forkSource) : null;
+    // A fork copies the source's current files, so it keeps the approval that admitted them; audits still check exact bytes.
+    const forkApprovalId = forkSource?.currentVersionId ? (await db.select({ id: companySkillVersions.securityApprovalId }).from(companySkillVersions)
+      .where(and(eq(companySkillVersions.companyId, companyId), eq(companySkillVersions.id, forkSource.currentVersionId))))[0]?.id ?? null : null;
     const fallbackMarkdown = ["---", stringifyFrontmatter({ name: input.name,
       ...(input.description?.trim() ? { description: input.description.trim() } : {}) }),
       "---", "", `# ${input.name}`, "", input.description?.trim() || "Describe what this skill does.", ""].join("\n");
@@ -4645,12 +4783,14 @@ export function companySkillService(db: Db, options: { actor?: AuthorizationActo
       forkedFromSkillId: forkSource?.id ?? null, forkedFromCompanyId: forkSource?.companyId ?? null,
       metadata: { sourceKind: "managed", ...(forkSource ? {
         forkedFromSkillId: forkSource.id, forkedFromCompanyId: forkSource.companyId,
+        // A fork of a repository skill keeps where its files came from, so its approved files still map in audits.
+        ...(forkLayout ? { copiedFromRepository: forkLayout } : {}),
         forkedByAgentId: actor?.type === "agent" ? actor.agentId ?? null : null,
         forkedByUserId: actor?.type === "user" ? actor.userId ?? null : null,
       } : {}) },
     };
     const result = await managedContent.create(values, candidate, actor, {
-      ...publication, label: publication.label ?? "Initial version",
+      ...publication, label: publication.label ?? "Initial version", securityApprovalId: forkApprovalId,
       validate: async tx => {
         await publication.validate?.(tx);
         if (input.folderId) await folderService(tx as unknown as Db).validateSkillFolder(companyId, input.folderId);
@@ -7401,7 +7541,7 @@ export function companySkillService(db: Db, options: { actor?: AuthorizationActo
       markdown: files.find(file => file.path === "SKILL.md")!.content,
       fileInventory: serializeFileInventory(files), trustLevel: deriveTrustLevel(files),
       metadata: { sourceKind: "managed",
-        copiedFromRepository: { url: skill.sourceLocator, ref: skill.sourceRef, path: skill.metadata?.skillSourcePath },
+        copiedFromRepository: { url: skill.sourceLocator, ref: skill.sourceRef, path: skill.metadata?.skillSourcePath, packageMode: skill.metadata?.packageMode },
         forkedByUserId: actor.type === "user" ? actor.userId ?? null : null,
         forkedByAgentId: actor.type === "agent" ? actor.agentId ?? null : null,
       },
@@ -7433,6 +7573,7 @@ export function companySkillService(db: Db, options: { actor?: AuthorizationActo
     for (const skill of initial) await assertUnused(skill);
     const managedRoot = resolveManagedSkillsRoot(companyId);
     const moved: Array<{ source: string; quarantine: string }> = [];
+    const releasedApprovalIds = new Set<string>();
     async function restoreSources() {
       for (const item of moved.reverse()) await fs.rename(item.quarantine, item.source);
       moved.length = 0;
@@ -7446,6 +7587,7 @@ export function companySkillService(db: Db, options: { actor?: AuthorizationActo
       }
       try {
         return await db.transaction(async tx => {
+          releasedApprovalIds.clear();
           await notifyDeliveryWork(tx, DELIVERY_QUEUES.skillPackages);
           if (initial.length) await notifySkillVersionRetention(tx, companyId);
           await beforeDelete?.(tx);
@@ -7473,6 +7615,7 @@ export function companySkillService(db: Db, options: { actor?: AuthorizationActo
                 moved.push({ source, quarantine });
               }
             }
+            for (const approvalId of await securityApprovalIdsOf(tx, companyId, [skill.id])) releasedApprovalIds.add(approvalId);
             await tx.delete(companySkills).where(and(eq(companySkills.id, skill.id), eq(companySkills.companyId, companyId)));
             deleted.push(skill);
           }
@@ -7487,6 +7630,7 @@ export function companySkillService(db: Db, options: { actor?: AuthorizationActo
     let deleted: CompanySkill[];
     try { deleted = await withSkillVersionCacheLock(db, companyId, () => withCacheLocks(0)); }
     catch (error) { await restoreSources(); throw error; }
+    await releaseSecurityApprovals(companyId, releasedApprovalIds);
     for (const item of moved) {
       await fs.rm(item.quarantine, { recursive: true, force: true }).catch(error => {
         logger.warn({ err: error, companyId }, "Skill deleted; quarantined source cleanup failed");
@@ -7566,6 +7710,8 @@ export function companySkillService(db: Db, options: { actor?: AuthorizationActo
     scanProjectWorkspaces,
     importPackageFiles,
     auditSkill,
+    installedSecurityApproval,
+    saveSecurityApproval,
     installUpdate,
     resetSkill,
     listRuntimeSkillEntries,

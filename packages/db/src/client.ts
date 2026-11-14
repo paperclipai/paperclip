@@ -749,6 +749,7 @@ const MIGRATIONS_WITH_TOP_LEVEL_STATEMENTS = new Set([
   "0476_wakeup_request_run_index.sql",
   "0486_heartbeat_runs_company_finished_index.sql",
   "0487_heartbeat_runs_settled_process_indexes.sql",
+  "0491_skill_version_security_approval_index.sql",
   "0469_zippy_photon.sql",
 
 

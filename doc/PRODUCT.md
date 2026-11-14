@@ -264,6 +264,25 @@ Missing references are advisory: a valid selected skill can still be imported.
 Unavailable files are listed, and existing installed dependencies are retained
 when a bounded refresh cannot preserve them. File limits and content validation
 still apply; importing never executes repository code.
+The import audit separates suspicious patterns from real risks. A company owner or
+admin can include files flagged only for a remote-fetch or dynamic-execution pattern
+(for example `eval` in instructions or `curl … | sh` in a hook) by trusting the
+repository at the reviewed commit, with a required reason. Credential exfiltration,
+path escapes, symlinks, and other structural findings can never be overridden. The
+approval covers the exact file bytes at that commit; later commits need a new review
+unless the admin opted in to trusting those paths in future updates. That opt-in
+ends when the source starts following another branch or revision. Each approval,
+and each later commit an opt-in covers, is written to the activity log with the
+approver, files, hashes, and reason. Agents and unattended refreshes can apply a
+recorded approval but never create one. An administrator can withdraw a saved
+approval from the source; later updates then leave the flagged files out. Each
+installed skill version records the approval that admitted its files, with the exact
+bytes it installed. Audits, update comparisons and file previews of that version read
+its own record, so renewing, narrowing or withdrawing the source approval later never
+changes how an installed version is judged; the source approval decides only what new
+scans and refreshes include. Trust
+allows importing the files only; it does not grant scripts any execution rights. Company skill policy can restrict the
+`skills.override_security` action further; legacy broad skill grants do not cover it.
 Authored and unproven legacy versions retain an independent recovery copy. Unused Git
 packages with an exact restore recipe may expire; later use requires access to that
 original repository and commit.

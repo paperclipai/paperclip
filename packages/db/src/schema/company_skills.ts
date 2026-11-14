@@ -10,7 +10,7 @@ import {
   uniqueIndex,
 } from "drizzle-orm/pg-core";
 import { sql } from "drizzle-orm";
-import type { CompanySkillFileInventoryEntry, CompanySkillSharingScope } from "@paperclipai/shared";
+import type { CompanySkillFileInventoryEntry, CompanySkillSharingScope, SkillVersionSecurityApproval } from "@paperclipai/shared";
 import { agents } from "./agents.js";
 import { companies } from "./companies.js";
 import { issues } from "./issues.js";
@@ -155,6 +155,24 @@ export const companySkillRepositorySnapshots = pgTable("company_skill_repository
   maintenance: index("company_skill_snapshots_maintenance_idx").on(table.maintenanceAt).where(sql`${table.maintenanceAt} is not null`),
 }));
 
+/**
+ * Immutable security approval records for installed skill versions, one per distinct record. The versions
+ * one publish installs from a repository share a record instead of each embedding a copy.
+ */
+export const companySkillSecurityApprovals = pgTable(
+  "company_skill_security_approvals",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    companyId: uuid("company_id").notNull().references(() => companies.id, { onDelete: "cascade" }),
+    contentHash: text("content_hash").notNull(),
+    approval: jsonb("approval").$type<SkillVersionSecurityApproval>().notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => ({
+    companyContentIdx: uniqueIndex("company_skill_security_approvals_company_content_idx").on(table.companyId, table.contentHash),
+  }),
+);
+
 export const companySkillVersions = pgTable(
   "company_skill_versions",
   {
@@ -175,9 +193,13 @@ export const companySkillVersions = pgTable(
     authorAgentId: uuid("author_agent_id").references(() => agents.id, { onDelete: "set null" }),
     authorUserId: text("author_user_id"),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    /** The administrator approval that admitted this version's flagged files, if any. Shared by the versions one publish installs. */
+    securityApprovalId: uuid("security_approval_id").references(() => companySkillSecurityApprovals.id, { onDelete: "restrict" }),
   },
   (table) => ({
     migrationIdx: index("company_skill_versions_migration_idx").on(table.migrationAt).where(sql`${table.migrationAt} is not null`),
+    // Finds the versions that still use an approval, so an unused one can be deleted.
+    securityApprovalIdx: index("company_skill_versions_security_approval_idx").on(table.securityApprovalId).where(sql`${table.securityApprovalId} is not null`),
     packageSnapshotIdx: index("company_skill_versions_package_snapshot_idx").on(table.packageSnapshotId),
     repositorySnapshotIdx: index("company_skill_versions_repository_snapshot_idx").on(table.repositorySnapshotId),
     companySkillRevisionUniqueIdx: uniqueIndex("company_skill_versions_skill_revision_idx").on(

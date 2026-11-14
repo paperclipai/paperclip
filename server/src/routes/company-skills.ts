@@ -7,6 +7,7 @@ import { skillAccessRequestContext, skillAccessService } from "../services/skill
 import { skillSourceService, type SkillSourceContext } from "../services/skill-sources.js";
 import { skillSourceGitHubReader } from "../services/skill-source-github-access.js";
 import { diffGitHubSkillUpdate } from "../services/skill-update-diff.js";
+import { versionApprovalGrant } from "../services/skill-security-overrides.js";
 import { toolAccessService } from "../services/tool-access.js";
 import { skillSourceCreateSchema, skillSourceDiscoverySchema, skillSourcePreviewSchema, skillSourceSelectionSchema, skillSourceSettingsSchema, skillSourceBranchesQuerySchema, projectSkillSourceAdoptSchema, skillSourceDisconnectSchema } from "@paperclipai/shared";
 import type { ActivityPublication } from "../services/activity-log.js";
@@ -274,6 +275,25 @@ export function companySkillRoutes(db: Db, options: { pluginWorkerManager?: Plug
     }
   }
 
+  /**
+   * Accepting a flagged file is a company-administrator decision. Agents,
+   * operators, and unattended refreshes can never approve one; the company
+   * skill policy can restrict administrators further.
+   */
+  async function assertCanOverrideSkillSecurity(req: Request, companyId: string, resource: SkillPolicyEvaluationResource) {
+    if (req.actor.type !== "board") {
+      throw forbidden("Only company administrators can include files that the security check flagged.", { code: "skill_security_override_denied" });
+    }
+    assertCompanyAccess(req, companyId);
+    const membership = req.actor.memberships?.find((item) => item.companyId === companyId);
+    const admin = req.actor.source === "local_implicit" || req.actor.isInstanceAdmin
+      || (membership?.status === "active" && ["owner", "admin"].includes(String(membership.membershipRole)));
+    if (!admin) {
+      throw forbidden("Only company administrators can include files that the security check flagged.", { code: "skill_security_override_denied" });
+    }
+    await assertCanMutateCompanySkills(req, companyId, "skills.override_security", resource);
+  }
+
   function publishCommittedActivity(publication: ActivityPublication) {
     try { publishActivity(publication); }
     catch { logger.warn({ companyId: publication.companyId }, "Committed skill activity notification failed"); }
@@ -363,6 +383,9 @@ export function companySkillRoutes(db: Db, options: { pluginWorkerManager?: Plug
       setup: { userId: setup.refreshUserId, agentId: setup.refreshAgentId, localTrusted: setup.refreshLocalTrusted },
       read: connectionId => skillSourceGitHubReader(db, companyId, req.actor, connectionId),
       authorize: (action, resource) => assertCanMutateCompanySkills(req, companyId, action, resource),
+      authorizeSecurityOverride: (resource) => assertCanOverrideSkillSecurity(req, companyId, {
+        sourceType: "git", sourceLocator: normalizeSkillPolicySourceLocator(resource.sourceLocator),
+      }),
       audit: async (tx, sourceId, action, details) => {
         const { publication } = await persistActivity(tx as unknown as Db, { ...actor, companyId, action, entityType: "company_skill_source", entityId: sourceId, details });
         publications.push(publication);
@@ -413,7 +436,7 @@ export function companySkillRoutes(db: Db, options: { pluginWorkerManager?: Plug
     const companyId = req.params.companyId as string;
     res.vary("Accept");
     if (!req.get("Accept")?.includes("application/x-ndjson")) {
-      res.json(await sourceOperation(req, companyId, context => sourceSvc.discover(req.body, context)));
+      res.json(await sourceOperation(req, companyId, context => sourceSvc.discover(req.body, context, undefined, companyId)));
       return;
     }
     const controller = new AbortController();
@@ -439,7 +462,7 @@ export function companySkillRoutes(db: Db, options: { pluginWorkerManager?: Plug
       }
     };
     try {
-      const discovery = await sourceOperation(req, companyId, context => sourceSvc.discover(req.body, context, { signal: controller.signal, onProgress: send }));
+      const discovery = await sourceOperation(req, companyId, context => sourceSvc.discover(req.body, context, { signal: controller.signal, onProgress: send }, companyId));
       await send({ type: "complete", discovery });
     } catch (error) {
       if (controller.signal.aborted) return;
@@ -454,7 +477,7 @@ export function companySkillRoutes(db: Db, options: { pluginWorkerManager?: Plug
   });
   router.post("/companies/:companyId/skill-sources/preview", validate(skillSourcePreviewSchema), async (req, res) => {
     const companyId = req.params.companyId as string;
-    res.json(await sourceOperation(req, companyId, context => sourceSvc.preview(req.body, context)));
+    res.json(await sourceOperation(req, companyId, context => sourceSvc.preview(companyId, req.body, context)));
   });
   router.post("/companies/:companyId/skill-sources", validate(skillSourceCreateSchema), async (req, res) => {
     const companyId = req.params.companyId as string;
@@ -1255,7 +1278,9 @@ export function companySkillRoutes(db: Db, options: { pluginWorkerManager?: Plug
         return;
       }
       const diff = await diffGitHubSkillUpdate({
-        repositoryUrl: managed.repositoryUrl, packageMode: managed.packageMode, skillPath: entry.path, installedCommitSha: currentRef, latestCommitSha: latest.sha,
+        repositoryUrl: managed.repositoryUrl, packageMode: managed.packageMode, trackingRef: managed.trackingRef, skillPath: entry.path, installedCommitSha: currentRef, latestCommitSha: latest.sha,
+        securityOverrides: [await sourceSvc.savedSecurityOverride(companyId, managed.id)],
+        installedSecurityOverrides: [skill.currentVersionId ? versionApprovalGrant(await svc.installedSecurityApproval(companyId, skill.id, skill.currentVersionId)) : null],
       }, read, controller.signal);
       const result: SkillSourceUpdateDiff = diff.supported
         ? { supported: true, reason: null, currentRef, latestRef: latest.sha, hasUpdate: true, files: diff.files, truncated: diff.truncated }

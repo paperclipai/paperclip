@@ -193,6 +193,12 @@ describeEmbeddedPostgres("companySkillPolicyService", () => {
       principal: seeded.principal,
       action: "skills.remove",
     })).resolves.toMatchObject({ allowed: false, reason: "explicit_rule" });
+    // Legacy broad grants predate security overrides and never authorize them.
+    await expect(service.evaluate({
+      companyId: seeded.companyId,
+      principal: seeded.principal,
+      action: "skills.override_security",
+    })).resolves.toMatchObject({ allowed: false, reason: "policy_default" });
   });
 
   it("matches sourceLocator deny rules regardless of GitHub URL casing or .git suffix", async () => {

@@ -1,6 +1,76 @@
 import type { CompanySkill } from './company-skill.js';
 
 export type SkillSourcePackageMode = 'skills' | 'repository';
+
+/**
+ * Audit codes an administrator may accept for one repository commit. They flag
+ * suspicious patterns (for example `eval` or `curl | sh` in instructions), not
+ * confirmed harm. Every other blocking code, such as credential exfiltration,
+ * path traversal, or symlinks, can never be overridden.
+ */
+export const SKILL_SECURITY_OVERRIDABLE_CODES = ['remote_fetch_exec'] as const;
+export type SkillSecurityOverridableCode = typeof SKILL_SECURITY_OVERRIDABLE_CODES[number];
+export function isSkillSecurityOverridableCode(code: string): code is SkillSecurityOverridableCode {
+  return (SKILL_SECURITY_OVERRIDABLE_CODES as readonly string[]).includes(code);
+}
+
+/** A file a repository scan left out because of a blocking audit finding. */
+export interface SkillSecurityFinding {
+  /** Repository-relative path. */
+  path: string;
+  code: string;
+  message: string;
+  /** SHA-256 of the exact file bytes at the scanned commit. */
+  sha256: string;
+  /** False for real risks (for example credential exfiltration); those always stay blocked. */
+  overridable: boolean;
+  /** True when a recorded administrator override already includes this file. */
+  accepted?: boolean;
+}
+
+/** An administrator's request to include flagged files from one reviewed commit. */
+export interface SkillSecurityOverrideRequest {
+  commitSha: string;
+  files: Array<{ path: string; sha256: string }>;
+  reason: string;
+  /** Opt-in: keep trusting these paths in later commits, even when their content changes. */
+  trustFutureUpdates: boolean;
+}
+
+/** The recorded override a source applies on refresh. Grants file inclusion only, never execution. */
+export interface SkillSourceSecurityOverride {
+  commitSha: string;
+  /** The branch the reviewed commit was scanned from. Future-update trust covers later commits of this branch only. */
+  reviewedRef?: string;
+  files: Array<{ path: string; code: string; sha256: string }>;
+  reason: string;
+  trustFutureUpdates: boolean;
+  approvedByUserId: string | null;
+  approvedAt: string;
+}
+/**
+ * The security approval that admitted an installed skill version's flagged files, recorded on the
+ * version when it is installed. Audits, update diffs and previews of that version read this record;
+ * a source's current approval only decides what new scans and refreshes include.
+ */
+export interface SkillVersionSecurityApproval {
+  /** The commit this version was installed from. */
+  commitSha: string;
+  /** How this version installed its files: a single skill package, or the repository package. Audits map paths with it. */
+  packageMode?: SkillSourcePackageMode;
+  /** The commit the administrator reviewed; differs when future-update trust carried the approval. */
+  approvedCommitSha: string;
+  approvedByUserId: string | null;
+  approvedAt: string;
+  reason: string;
+  trustFutureUpdates: boolean;
+  /** The admitted files at their repository paths, with the exact bytes this version installed. */
+  files: Array<{ path: string; code: string; sha256: string }>;
+}
+/** What a source response shows about its saved approval. The approved files stay on the server. */
+export interface SkillSourceSecurityOverrideSummary extends Omit<SkillSourceSecurityOverride, 'files'> {
+  fileCount: number;
+}
 export interface SkillRepositoryPackage {
   files: SkillPackageFile[];
   requirements: string | null;
@@ -32,7 +102,7 @@ export interface SkillPackageReference {
   resolvedPath: string;
   kind: 'missing' | 'outside_package';
 }
-export interface SkillSourcePreviewRequest extends SkillSourceDiscoveryRequest {
+export interface SkillSourcePreviewRequest extends Omit<SkillSourceDiscoveryRequest, 'sourceId'> {
   commitSha: string;
   skillPath: string;
   filePath: string;
@@ -103,6 +173,7 @@ export interface SkillSource {
   lastScanCommit: string | null;
   lastError: string | null;
   repairAction?: 'connection' | 'branch' | 'retry' | null;
+  securityOverride?: SkillSourceSecurityOverrideSummary | null;
   entries: SkillSourceEntry[];
 }
 export interface SkillSourceSettingsRequest {
@@ -138,6 +209,8 @@ export interface SkillSourceDiscoveryRequest {
   repositoryUrl: string;
   trackingRef?: string;
   connectionId?: string | null;
+  /** Scan a saved source again: authorized like editing that source, and scans its stored repository. */
+  sourceId?: string;
 }
 export interface SkillSourceCandidate {
   inspection?: SkillPackageInspection | null;
@@ -160,6 +233,10 @@ export interface SkillSourceDiscovery {
   commitSha: string;
   candidates: SkillSourceCandidate[];
   warnings: string[];
+  /** Files left out by blocking audit findings at this commit; omitted by older servers. */
+  securityFindings?: SkillSecurityFinding[];
+  /** Whether this caller may approve or withdraw a security override for this repository; omitted by older servers. */
+  canOverrideSecurity?: boolean;
 }
 /** Live scan metadata only. A complete event is required before selections can be imported. */
 export interface SkillSourceScanProgress {
@@ -181,10 +258,11 @@ export type SkillSourceDiscoveryEvent = SkillSourceScanUpdate
   | { type: 'complete'; discovery: SkillSourceDiscovery }
   | { type: 'error'; error: string; status: number };
 
-export interface SkillSourceCreateRequest extends SkillSourceDiscoveryRequest {
+export interface SkillSourceCreateRequest extends Omit<SkillSourceDiscoveryRequest, 'sourceId'> {
   commitSha: string;
   selectedPaths: string[];
   excludedFolders?: string[];
+  securityOverride?: SkillSecurityOverrideRequest;
 }
 export interface SkillSourceSelectionRequest {
   packageMode?: SkillSourcePackageMode;
@@ -192,6 +270,8 @@ export interface SkillSourceSelectionRequest {
   selectedPaths: string[];
   excludedFolders: string[];
   connectionId?: string | null;
+  /** A new approval replaces the saved one; null withdraws the saved approval. */
+  securityOverride?: SkillSecurityOverrideRequest | null;
 }
 export interface SkillSourceRefreshResult {
   source: SkillSource;
