@@ -81,6 +81,13 @@ export function buildHermesConfig(
     ac.promptTemplate = v.promptTemplate;
   }
 
+  if (typeof v.adapterSchemaValues?.quiet === "boolean") {
+    ac.quiet = v.adapterSchemaValues.quiet;
+  }
+  if (typeof v.adapterSchemaValues?.emitResultRecord === "boolean") {
+    ac.emitResultRecord = v.adapterSchemaValues.emitResultRecord;
+  }
+
   // Heartbeat config is handled by Paperclip itself
 
   return ac;

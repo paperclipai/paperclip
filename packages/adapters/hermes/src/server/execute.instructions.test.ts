@@ -45,6 +45,12 @@ if (process.env.FIXTURE_PROVIDER_ERROR) {
   console.error(process.env.FIXTURE_PROVIDER_ERROR);
   process.exit(1);
 }
+if (process.env.FIXTURE_ABORT_AFTER_COMPLETION) {
+  console.log("Fixture completed");
+  console.error('hermes_result: {"schema_version":1,"status":"completed","session_id":"${SESSION_ID}"}');
+  console.error("\\nsession_id: ${SESSION_ID}");
+  process.kill(process.pid, "SIGABRT");
+}
 console.log("Fixture completed\\nsession_id: ${SESSION_ID}");
 `, { mode: 0o700 });
   });
@@ -152,10 +158,71 @@ console.log("Fixture completed\\nsession_id: ${SESSION_ID}");
     }, runtime: { ...ctx.runtime, sessionParams: { sessionId: SESSION_ID } } });
     const [invocation] = await invocations();
     expect(invocation.args).toContain("-Q");
+    expect(invocation.args).not.toContain("--emit-result-record");
     expect(query(invocation)).toContain("Current custom direction for run-fresh.");
     expect(query(invocation)).not.toContain(INSTRUCTIONS);
     expect(invocation.systemPrompt).toContain("User configured system guidance.");
     expect(invocation.systemPrompt).toContain(INSTRUCTIONS);
+  });
+
+  it("enables the structured result record only when explicitly configured with quiet mode", async () => {
+    const ctx = context();
+    await execute({
+      ...ctx,
+      config: { ...ctx.config, quiet: true, emitResultRecord: true },
+    });
+    const [invocation] = await invocations();
+    expect(invocation.args).toContain("-Q");
+    expect(invocation.args).toContain("--emit-result-record");
+    expect(invocation.args).toContain("--cli");
+  });
+
+  it.each([
+    { quiet: false, emitResultRecord: false },
+    { quiet: true, emitResultRecord: false },
+    { quiet: false, emitResultRecord: true },
+  ])(
+    "does not normalize teardown without full structured opt-in (%o)",
+    async ({ quiet, emitResultRecord }) => {
+      const ctx = context();
+      const result = await execute({
+        ...ctx,
+        config: {
+          ...ctx.config,
+          quiet,
+          emitResultRecord,
+          env: { CAPTURE_PATH: capturePath, FIXTURE_ABORT_AFTER_COMPLETION: "1" },
+        },
+      });
+
+      expect(result.exitCode).not.toBe(0);
+      expect(result.resultJson).toMatchObject({
+        teardown_normalized: false,
+        hermes_result_status: "completed",
+      });
+    },
+  );
+
+  it("persists raw teardown evidence when a completed turn is normalized", async () => {
+    const ctx = context();
+    const result = await execute({
+      ...ctx,
+      config: {
+        ...ctx.config,
+        quiet: true,
+        emitResultRecord: true,
+        env: { CAPTURE_PATH: capturePath, FIXTURE_ABORT_AFTER_COMPLETION: "1" },
+      },
+    });
+
+    expect(result.exitCode).toBe(0);
+    expect(result.signal).toBeNull();
+    expect(result.resultJson).toMatchObject({
+      raw_exit_code: null,
+      raw_signal: "SIGABRT",
+      teardown_normalized: true,
+      hermes_result_status: "completed",
+    });
   });
 
   it.each([false, true])("keeps an empty wake runnable with current identity (conversation=%s)", async (conversationMode) => {

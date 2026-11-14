@@ -186,7 +186,7 @@ export async function readProcessStartedAt(
   const runCommand = options.runCommand ?? runProcessCommand;
 
   if (platform === "linux") {
-    const { readLinuxProcessStartedAt } = await import("../vendor/paperclip-runner/index.js");
+    const { readLinuxProcessStartedAt } = await import("../vendor/paperclip-runner/live/linux-process-start.js");
     return readLinuxProcessStartedAt(pid, options.linuxProcessStart);
   }
 

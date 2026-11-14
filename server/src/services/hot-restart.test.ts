@@ -89,6 +89,12 @@ describe("hot-restart path compatibility", () => {
     ).not.toBeNull();
   });
 
+  it("keeps the Linux process-start probe behind the leaf Runner boundary", async () => {
+    const source = await fs.readFile(new URL("./hot-restart.ts", import.meta.url), "utf8");
+    expect(source).toContain('await import("../vendor/paperclip-runner/live/linux-process-start.js")');
+    expect(source).not.toContain('await import("../vendor/paperclip-runner/index.js")');
+  });
+
   it("reads Linux process birth from kernel ticks rather than proc directory metadata", async () => {
     await expect(
       readProcessStartedAt(123, {
