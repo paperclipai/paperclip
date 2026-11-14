@@ -36,6 +36,7 @@ import {
 import { CONFIGURATION_INCOMPLETE_FAILURE_CODE } from "./run-preparation.js";
 import { WORKSPACE_VALIDATION_FAILURE_CODE } from "./workspaces.js";
 import { boundHeartbeatRunEventPayloadForStorage } from "./run-log.js";
+import { readRunSourceCommentCandidate, resolveRunSourceCommentId } from "./run-source-comment.js";
 import { preserveWorkspaceRestoreRecoveryMetadata } from "../workspace-restore-recovery-state.js";
 import { pendingNativeWorkspaceFinalizationCondition } from "../native-runtime/native-workspace-finalization-state.js";
 import { activeIssueInteractionCondition } from "../issue-question-context.js";
@@ -720,6 +721,32 @@ function preserveNativeExecutionObligationsSql(incoming: Record<string, unknown>
     ) else ${result} end`;
 }
 
+// Plugin lifecycle events for one run publish in call order. agent.run.started
+// can wait on a source comment read; a later event for the same run, such as a
+// cancel handled by another heartbeat service instance, queues behind it
+// instead of overtaking it. With nothing pending, events publish synchronously.
+const pendingRunPluginEvents = new Map<string, Promise<void>>();
+
+function publishRunPluginEventInOrder(runId: string, publish: () => void | Promise<void>): Promise<void> {
+  const pending = pendingRunPluginEvents.get(runId);
+  let next: Promise<void>;
+  if (pending) {
+    next = pending.then(publish);
+  } else {
+    const result = publish();
+    if (!result) return Promise.resolve();
+    next = result;
+  }
+  const tracked = next.catch((error) => {
+    logger.warn({ err: error, runId }, "failed to publish run lifecycle plugin event");
+  });
+  pendingRunPluginEvents.set(runId, tracked);
+  void tracked.then(() => {
+    if (pendingRunPluginEvents.get(runId) === tracked) pendingRunPluginEvents.delete(runId);
+  });
+  return tracked;
+}
+
 /** Run lifecycle binds status, progress, liveness, and completion operations. */
 export function createHeartbeatLifecycle(db: Db, dependencies: HeartbeatLifecycleDependencies) {
   const {
@@ -1202,7 +1229,7 @@ export function createHeartbeatLifecycle(db: Db, dependencies: HeartbeatLifecycl
         type: "heartbeat.run.status",
         payload: buildHeartbeatRunStatusLiveEventPayload(updated),
       });
-      publishRunLifecyclePluginEvent(updated);
+      await publishRunLifecyclePluginEvent(updated);
       emitTerminalAgentTaskRun(updated, previousStatus?.status ?? null);
     }
 
@@ -1366,7 +1393,7 @@ export function createHeartbeatLifecycle(db: Db, dependencies: HeartbeatLifecycl
         type: "heartbeat.run.status",
         payload: buildHeartbeatRunStatusLiveEventPayload(updated),
       });
-      publishRunLifecyclePluginEvent(updated);
+      await publishRunLifecyclePluginEvent(updated);
       emitTerminalAgentTaskRun(updated, previousStatus?.status ?? null, failureReport);
       return { run: updated, updated: true as const };
     }
@@ -1484,8 +1511,27 @@ export function createHeartbeatLifecycle(db: Db, dependencies: HeartbeatLifecycl
 
   function publishRunLifecyclePluginEvent(
     run: typeof heartbeatRuns.$inferSelect,
+  ): Promise<void> {
+    return publishRunPluginEventInOrder(run.id, () => {
+      if (!readRunSourceCommentCandidate(run)) {
+        publishRunPluginEventNow(run, null);
+        return;
+      }
+      return resolveRunSourceCommentId(db, run)
+        .catch((error) => {
+          logger.warn({ err: error, runId: run.id }, "failed to verify run source comment");
+          return null;
+        })
+        .then((sourceCommentId) => publishRunPluginEventNow(run, sourceCommentId));
+    });
+  }
+
+  function publishRunPluginEventNow(
+    run: typeof heartbeatRuns.$inferSelect,
+    sourceCommentId: string | null,
   ) {
-    publishRunLifecyclePluginEventData({
+    publishRunLifecyclePluginEventNow({
+      sourceCommentId,
       companyId: run.companyId,
       runId: run.id,
       agentId: run.agentId,
@@ -1500,7 +1546,14 @@ export function createHeartbeatLifecycle(db: Db, dependencies: HeartbeatLifecycl
     });
   }
 
-  function publishRunLifecyclePluginEventData(run: {
+  function publishRunLifecyclePluginEventData(
+    run: Parameters<typeof publishRunLifecyclePluginEventNow>[0],
+  ) {
+    void publishRunPluginEventInOrder(run.runId, () => publishRunLifecyclePluginEventNow(run));
+  }
+
+  function publishRunLifecyclePluginEventNow(run: {
+    sourceCommentId?: string | null;
     companyId: string;
     runId: string;
     agentId: string;
@@ -1542,6 +1595,7 @@ export function createHeartbeatLifecycle(db: Db, dependencies: HeartbeatLifecycl
         error: run.error ?? null,
         errorCode: run.errorCode ?? null,
         issueId: run.issueId,
+        sourceCommentId: run.sourceCommentId ?? null,
         startedAt: run.startedAt ? new Date(run.startedAt).toISOString() : null,
         finishedAt: run.finishedAt
           ? new Date(run.finishedAt).toISOString()
