@@ -252,6 +252,60 @@ ensure_temp_dir() {
   fi
 }
 
+update_path() {
+  local target="${HOME}/.local/bin"
+  local pending=()
+  local rc
+
+  # Deliberately not gated on the current $PATH: this process may already export
+  # $target (inherited from a parent, or left over from an earlier install) while
+  # the user's startup files still lack it. Persisting is what a fresh shell
+  # depends on, so it runs regardless; the per-file grep below keeps it
+  # idempotent.
+
+  # Patch every existing shell startup file that lacks the export so both
+  # interactive (.bashrc/.zshrc) and login shells pick up the CLI.
+  for rc in "${HOME}/.bashrc" "${HOME}/.zshrc" "${HOME}/.bash_profile" "${HOME}/.bash_login" "${HOME}/.profile" "${HOME}/.zprofile"; do
+    if [ -f "$rc" ] && ! grep -qF "$target" "$rc"; then
+      pending+=("$rc")
+    fi
+  done
+
+  # Shells read two classes of startup file: login shells read a login file, and
+  # non-login interactive shells read an rc file. When a class has no file at all
+  # the export has nowhere to live, and that kind of session never sees the CLI,
+  # so create the file the user's shell expects. Existing files of either class
+  # were already handled by the loop above.
+  if [[ "${SHELL:-}" == */zsh ]]; then
+    # zsh reads .zshrc for every interactive shell, login ones included, so it
+    # covers both classes on its own. .zprofile is login-only and must not
+    # suppress it, or non-login interactive zsh shells miss the PATH.
+    [ -f "${HOME}/.zshrc" ] || pending+=("${HOME}/.zshrc")
+  else
+    # POSIX/bash/dash login shells read the first of .bash_profile/.bash_login/
+    # .profile and never .bashrc.
+    { [ -f "${HOME}/.bash_profile" ] || [ -f "${HOME}/.bash_login" ] || [ -f "${HOME}/.profile" ]; } ||
+      pending+=("${HOME}/.profile")
+    # Non-login interactive bash reads only .bashrc, so a login file is not
+    # sufficient coverage. Skipped for plain sh/dash, which have no such rc file.
+    if [[ "${SHELL:-}" == */bash || -z "${SHELL:-}" ]]; then
+      [ -f "${HOME}/.bashrc" ] || pending+=("${HOME}/.bashrc")
+    fi
+  fi
+
+  [ "${#pending[@]}" -gt 0 ] || return 0
+
+  log "Adding $target to PATH in shell startup files"
+  for rc in "${pending[@]}"; do
+    if [ "$DRY_RUN" = "1" ]; then
+      log "[dry-run] would add export PATH to $rc"
+      continue
+    fi
+    # shellcheck disable=SC2016  # $PATH must stay literal; it expands when the rc file is sourced
+    printf '\nexport PATH="%s:$PATH"\n' "$target" >> "$rc"
+  done
+}
+
 download_checked_script() {
   local url="$1"
   local destination="$2"
@@ -367,18 +421,14 @@ elif [ -n "$VERSION" ]; then
   PACKAGE_SPEC="$PAPERCLIP_PACKAGE@$VERSION"
 fi
 
-INSTALL_ARGS=(install)
-[ "$CANARY" = "1" ] && INSTALL_ARGS+=(--canary)
-[ -n "$VERSION" ] && INSTALL_ARGS+=(--version "$VERSION")
-[ "$NO_PROMPT" = "1" ] && INSTALL_ARGS+=(--yes)
 ensure_temp_dir
 NPM_USERCONFIG="$TEMP_DIR/npmrc"
 printf 'registry=%s\n@paperclipai:registry=%s\n' "$PUBLIC_NPM_REGISTRY" "$PUBLIC_NPM_REGISTRY" >"$NPM_USERCONFIG"
 chmod 600 "$NPM_USERCONFIG"
 NPM_ENV=(env "NPM_CONFIG_REGISTRY=$PUBLIC_NPM_REGISTRY" "npm_config_registry=$PUBLIC_NPM_REGISTRY" "NPM_CONFIG_USERCONFIG=$NPM_USERCONFIG" "npm_config_userconfig=$NPM_USERCONFIG")
-INSTALL_COMMAND=("${NPM_ENV[@]}" npx --yes "--registry=$PUBLIC_NPM_REGISTRY" "$PACKAGE_SPEC" "${INSTALL_ARGS[@]}")
+INSTALL_COMMAND=("${NPM_ENV[@]}" npm install -g --prefix "${HOME}/.local" "--registry=$PUBLIC_NPM_REGISTRY" "$PACKAGE_SPEC")
 
-log "Delegating to the Paperclip CLI"
+log "Installing the Paperclip CLI to ~/.local/bin"
 if [ "$DRY_RUN" = "1" ]; then
   print_command "${INSTALL_COMMAND[@]}"
   exit 0
@@ -386,6 +436,8 @@ fi
 
 print_command "${INSTALL_COMMAND[@]}"
 "${INSTALL_COMMAND[@]}"
+
+update_path
 
 if [ "$INSTALL_SERVICE" = "1" ]; then
   log "Installing the Paperclip service"
