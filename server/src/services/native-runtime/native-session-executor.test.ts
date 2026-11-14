@@ -18306,6 +18306,50 @@ describe("runnerd provider runtime wiring", () => {
     expect(existsSync(join(root, "control-plane", "control-plane-state.json"))).toBe(true);
   });
 
+  it.each(["progressing", "wedged"] as const)("reattaches a live %s Runner whose recovery read went unanswered on a resumed sandbox lease", async mode => {
+    const current = scopedNativeExecution(`unanswered-live-runner-${mode}`);
+    const identity = { runId: current.binding.runId, normalizedSessionId: current.session.normalizedSessionId!,
+      runnerInstanceId: "unanswered-codex", environmentLeaseId: "unanswered-lease",
+      turnId: `turn_attachment_${randomUUID()}`, itemId: `item_attachment_${randomUUID()}` };
+    const root = await initializeScopedRunnerRoot(current, identity.runnerInstanceId);
+    await mkdir(join(root, "control-plane"), { recursive: true });
+    await writeFile(join(root, "control-plane", "control-plane-state.json"),
+      JSON.stringify({ ...durableControlPlaneState(identity), ackedSourceSeq: 2204 }));
+    const execute = vi.fn(async (request: { args: string[] }) => {
+      const script = request.args[1] ?? "";
+      return { exitCode: 0, timedOut: false, stderr: "",
+        stdout: request.args[0] === "--build-metadata" ? JSON.stringify({
+          schema: "paperclip-runner/runnerd-build-metadata/v1", binaryName: "paperclip-runnerd",
+          packageName: "@paperclipai/paperclip-runner", binaryContractVersion: 2,
+          durableSessionCapabilities: ["unlimited_runtime", "connection_lease_renewal"], prpTransportModes: ["listen_ws"],
+        }) : request.args[0] === "--version" ? "codex-cli 0.160.0" : script.includes("base64")
+          ? Buffer.from(JSON.stringify({ ...identity, lifecycle: "turn_active", outbox: [{ id: 2205 }], pendingTerminalDelivery: null,
+            nextSourceSeq: mode === "progressing" ? 2345 : 2205, ackedSourceSeq: 2204, lastControllerCommandSeq: 61 })).toString("base64")
+          : script.includes("cat --") ? `nonce\n1806\n2026-11-13T08:30:36.187Z\n${identity.runnerInstanceId}\nlinux:abcd-1234:100\n` : "" };
+    });
+    state.createBackend.mockClear(); state.createTransport.mockClear();
+    const logs: string[] = [];
+    await createRunnerdBackend({ db: leaseDb(current), execution: current, runnerInstanceId: identity.runnerInstanceId,
+      runnerIngressAuthorized: true, onLog: async (_stream, chunk) => { logs.push(chunk); },
+      controllerPersistence: { bootId: "successor", runnerArtifact: { version: "admitted-version", digest: `sha256:${"a".repeat(64)}` } },
+      runnerExecutionTarget: { kind: "remote", transport: "sandbox", remoteCwd: "/workspace", environmentId: "environment",
+        leaseId: identity.environmentLeaseId, providerKey: "daytona", runner: { execute },
+        effectiveCapabilities: { runnerWebSocketIngress: true },
+        sandboxLeaseAcquisition: { outcome: "resumed", providerLeaseId: "sandbox" } } as never,
+      restartRecovery: { kind: "reattach_remote_runner", runId: current.binding.runId, leaseOwner: "controller",
+        controllerGeneration: 6, providerAttempt: 2, restartKind: "hard", recoveryRequestId: null,
+        remote: { providerLeaseId: "sandbox", remoteCwd: "/workspace" }, replaceUnansweredRunner: true },
+    });
+    state.createBackend.mock.calls.at(-1)![1].codexTransportFactory!();
+    const options = state.createTransport.mock.calls.at(-1)![0] as RunnerTransportOptions & { prepareExternalRunnerState: () => Promise<void> };
+    if (mode === "progressing") expect(options.adoptExistingRunner).toMatchObject({ pid: 1806 });
+    else expect(options.adoptExistingRunner).toBeUndefined();
+    await expect(options.prepareExternalRunnerState()).resolves.toBeUndefined();
+    expect(execute.mock.calls.some(([request]) => /kill -/.test(request.args.join(" ")))).toBe(false);
+    expect(execute.mock.calls.some(([request]) => request.args.includes("paperclip-runner-launch"))).toBe(false);
+    expect(logs.some(line => line.includes("made no progress"))).toBe(mode === "wedged");
+  }, 30_000);
+
   it.each(["failed", "timeout", "succeeded"] as const)("retains the local controller checkpoint until remote continuity archiving succeeds: %s", async mode => {
     const current = scopedNativeExecution("failed-remote-continuity-archive");
     state.createBackend.mockClear(); state.createTransport.mockClear();
