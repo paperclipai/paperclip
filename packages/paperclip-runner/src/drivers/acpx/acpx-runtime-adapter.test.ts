@@ -500,6 +500,14 @@ describe("Codex ACPX runtime adapter", () => {
       ANTHROPIC_MODEL: options.profile.reportedModelId, ANTHROPIC_CUSTOM_MODEL_OPTION: options.profile.reportedModelId,
     });
     else expect(spawnedAgentEnvironment(created, options.command)!.ANTHROPIC_CUSTOM_MODEL_OPTION).toBeUndefined();
+    const environment = spawnedAgentEnvironment(created, options.command)!;
+    const mcpServers = created.mcpServers;
+    if (!Array.isArray(mcpServers)) throw new Error("Expected static MCP server configuration");
+    const headers = mcpServers.map(server => (server as { headers: Array<{ value: string }> }).headers[0]!.value);
+    expect(new Set(headers).size).toBe(2);
+    expect(headers.map(header => environment[header.slice(2, -1)])).toEqual(["Bearer runner-fixture", "Bearer external-fixture"]);
+    expect(JSON.stringify(created.mcpServers)).not.toContain("runner-fixture");
+    expect(JSON.stringify(created.mcpServers)).not.toContain("external-fixture");
     await expect(created.onPermissionRequest!({ sessionId: "backend-1", raw: {}, inferredKind: "execute" } as never,
       { signal: new AbortController().signal })).resolves.toEqual({ outcome: "reject_once" });
     expect(runtime.setMode).not.toHaveBeenCalled();
@@ -1115,10 +1123,22 @@ describe("Codex ACPX runtime adapter", () => {
           return fakeRuntime();
         },
       });
-      expect(spawnedAgentEnvironment(runtimeOptions, options.command)).toEqual({
+      const environment = spawnedAgentEnvironment(runtimeOptions, options.command)!;
+      expect(environment).toMatchObject({
         PAPERCLIP_ACPX_ISOLATED_CONTEXT: "1",
         PAPERCLIP_ACPX_TASK_TOOL_BRIDGE_URL: binding === "runner-owned" ? "http://127.0.0.1:3210/mcp" : "",
       });
+      if (binding === "absent") {
+        expect(Object.keys(environment)).toHaveLength(2);
+        expect(runtimeOptions?.mcpServers).toEqual([]);
+      } else {
+        const mcpServers = runtimeOptions?.mcpServers;
+        if (!Array.isArray(mcpServers)) throw new Error("Expected static MCP server configuration");
+        const header = (mcpServers[0] as { headers: Array<{ value: string }> }).headers[0]!.value;
+        expect(header).toMatch(/^\$\{PAPERCLIP_CLAUDE_MCP_[A-Za-z0-9_]+\}$/);
+        expect(environment[header.slice(2, -1)]).toBe("Bearer bridge-secret");
+        expect(JSON.stringify(runtimeOptions?.mcpServers)).not.toContain("bridge-secret");
+      }
     },
   );
 
