@@ -4,7 +4,7 @@ import { expect, within } from "storybook/test";
 import { AgentQueueWait } from "@/components/AgentQueueWait";
 import { InboxIssueMetaLeading } from "@/components/IssueColumns";
 import { TaskChatLiveRunPill } from "@/components/task-chat/TaskChatLiveRunPill";
-import { TaskChatRunnerHeader } from "@/components/task-chat/TaskChatRunnerTurn";
+import { TaskChatRunnerHeader, TaskChatRunnerTurn } from "@/components/task-chat/TaskChatRunnerTurn";
 
 const codieQueue: ExecutionAgentQueue = {
   agentId: "8f14e45f-ceea-467a-9575-6f1d0b2c9a01",
@@ -117,9 +117,11 @@ export const WaitingToStart: Story = {
 
 /** A routine task that waits for the routine's open execution. */
 export const WaitingForRoutine: Story = {
-  render: () => <TaskChatRunnerHeader agentName="Test Gardener" status="queued" startedAtMs={Date.now() - 8 * 60_000} runId="run-1"
+  render: () => <TaskChatRunnerTurn agentName="Test Gardener" status="queued" startedAtMs={Date.now() - 8 * 60_000} runId="run-1" items={[]}
     execution={{ ...waitingExecution, cause: "routine_execution_in_progress", label: "Waiting for PAP-3093 to finish", agentQueue: null }} />,
   play: async ({ canvasElement }) => {
-    await expect(within(canvasElement).getByText(/Waiting for PAP-3093 to finish/)).toBeVisible();
+    const holds = within(canvasElement).getAllByText(/Waiting for PAP-3093 to finish/);
+    await expect(holds).toHaveLength(1);
+    await expect(holds[0]).toBeVisible();
   },
 };

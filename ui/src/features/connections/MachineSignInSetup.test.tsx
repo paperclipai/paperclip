@@ -86,13 +86,13 @@ describe("Machine sign-in setup", () => {
       status: vi.fn(),
     };
     await act(async () => {
-      root.render(<MachineSignInSetup companyId="company-1" link="https://mcp.example/mcp" client={client} initialMethod="client_secret" onBack={() => undefined} onConnected={() => undefined} />);
+      root.render(<MachineSignInSetup companyId="company-1" link="https://mcp.example/mcp" client={client} initialMethod="client_secret" applicationId="app-1" onBack={() => undefined} onConnected={() => undefined} />);
     });
     expect(button("Test connection")?.disabled).toBe(true);
     await type("machine-sign-in-client-id", "id-1");
     await type("machine-sign-in-client-secret", "secret-1");
     await click("Test connection");
-    expect(client.create).toHaveBeenCalledWith("company-1", expect.objectContaining({ method: "client_secret", clientId: "id-1", clientSecret: "secret-1" }));
+    expect(client.create).toHaveBeenCalledWith("company-1", expect.objectContaining({ method: "client_secret", clientId: "id-1", clientSecret: "secret-1", applicationId: "app-1" }));
     expect(client.test).toHaveBeenCalledWith("connection-1", { clientId: "id-1", scopes: "" });
   });
 
@@ -115,7 +115,7 @@ describe("Machine sign-in setup", () => {
   });
 
   it("resumes the key draft this tab started instead of creating another", async () => {
-    sessionStorage.setItem("paperclip.machine-sign-in-draft:company-1:https://mcp.example/mcp", "connection-1");
+    sessionStorage.setItem("paperclip.machine-sign-in-draft.v2:company-1:new:https://mcp.example/mcp", "connection-1");
     let finish!: (value: typeof draft.machineSignIn) => void;
     const client: MachineSignInClient = {
       create: vi.fn(),
@@ -132,6 +132,30 @@ describe("Machine sign-in setup", () => {
     expect(client.status).toHaveBeenCalledWith("connection-1");
     expect(container.textContent).toContain("Register this public key");
     expect(client.create).not.toHaveBeenCalled();
+    sessionStorage.clear();
+  });
+
+  it("never resumes a draft started for a different app", async () => {
+    const client: MachineSignInClient = {
+      create: vi.fn(async () => draft),
+      test: vi.fn(),
+      status: vi.fn(async () => draft.machineSignIn),
+    };
+    // App A's setup creates a key draft in this tab, then the admin leaves it.
+    await act(async () => {
+      root.render(<MachineSignInSetup companyId="company-1" link="https://mcp.example/mcp" applicationId="app-a" client={client} onBack={() => undefined} onConnected={() => undefined} />);
+    });
+    await click("Create key");
+    await act(async () => root.unmount());
+    root = createRoot(container);
+    // Setup for app B at the same address starts fresh instead of adopting A's draft.
+    await act(async () => {
+      root.render(<MachineSignInSetup companyId="company-1" link="https://mcp.example/mcp" applicationId="app-b" client={client} onBack={() => undefined} onConnected={() => undefined} />);
+    });
+    await flush();
+    expect(client.status).not.toHaveBeenCalled();
+    await click("Create key");
+    expect(client.create).toHaveBeenLastCalledWith("company-1", expect.objectContaining({ applicationId: "app-b" }));
     sessionStorage.clear();
   });
 });
