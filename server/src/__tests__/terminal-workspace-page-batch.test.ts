@@ -51,6 +51,33 @@ const DAY = 86_400_000;
     return { held };
   }
 
+  it("does not archive a workspace whose run starts after the page was read", async () => {
+    await seed({ open: 3, held: 0, companies: 1 });
+    const [workspace] = await db.select().from(executionWorkspaces).limit(1);
+    const [source] = await db.select().from(issues).where(eq(issues.id, workspace!.sourceIssueId!));
+    await db.update(issues).set({ status: "done", completedAt: new Date(Date.now() - 10 * DAY) }).where(eq(issues.parentId, source!.id));
+    const [agent] = await db.select().from(agents).limit(1);
+    let started: string | null = null;
+    const service = executionWorkspaceService(db, { workspaceReaperCooldownDays: 1,
+      inspectGitCloseReadiness: async inspected => {
+        if (inspected.id === workspace!.id && !started) {
+          started = randomUUID();
+          await db.insert(heartbeatRuns).values({ id: started, companyId: workspace!.companyId, agentId: agent!.id, status: "running" });
+          await db.update(issues).set({ checkoutRunId: started }).where(eq(issues.id, source!.id));
+        }
+        return { statusInspectionSucceeded: true, warnings: [], git: { repoRoot: null, workspacePath: inspected.cwd, branchName: null,
+          baseRef: null, hasDirtyTrackedFiles: false, hasUntrackedFiles: false, dirtyEntryCount: 0, untrackedEntryCount: 0,
+          aheadCount: 0, behindCount: 0, isMergedIntoBase: true, createdByRuntime: false } };
+      } });
+    const result = await service.sweepTerminalWorkspaces(50);
+    expect(started).not.toBeNull();
+    expect(result).toMatchObject({ eligible: 1, archived: 0, skippedRace: 1 });
+    const [row] = await db.select().from(executionWorkspaces).where(eq(executionWorkspaces.id, workspace!.id));
+    expect(row!.status).toBe("active");
+    await db.update(heartbeatRuns).set({ status: "succeeded", finishedAt: new Date() }).where(eq(heartbeatRuns.id, started!));
+    expect(await service.sweepTerminalWorkspaces(50)).toMatchObject({ archived: 1 });
+  });
+
   it("reads the task trees and active runs of a page in a fixed number of statements", async () => {
     await seed({ open: 20, held: 5, companies: 2 });
     const service = executionWorkspaceService(db, { workspaceReaperCooldownDays: 1 });
