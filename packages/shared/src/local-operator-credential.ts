@@ -9,13 +9,19 @@ import { resolvePaperclipInstanceRoot } from "./home-paths.js";
  * the same machine. It is derived from a key file in the instance directory
  * that agent environments never receive.
  */
-export const LOCAL_OPERATOR_COOKIE_NAME = "paperclip_local_operator";
+export {
+  LOCAL_OPERATOR_FRAGMENT_KEY,
+  LOCAL_OPERATOR_HEADER,
+  LOCAL_OPERATOR_SOCKET_PARAM,
+} from "./local-operator-constants.js";
 export const LOCAL_OPERATOR_SIGN_IN_PATH = "/api/local-operator/sign-in";
 export const LOCAL_OPERATOR_SIGN_IN_TTL_MS = 10 * 60 * 1000;
 export const LOCAL_OPERATOR_CREDENTIAL_ENV = "PAPERCLIP_LOCAL_OPERATOR_CREDENTIAL";
 
 const KEY_BYTES = 32;
-const COOKIE_PURPOSE = "paperclip-local-operator-browser-v1";
+const BROWSER_TOKEN_PURPOSE = "paperclip-local-operator-browser-v1";
+const READ_COOKIE_PURPOSE = "paperclip-local-operator-read-cookie-v1";
+const COOKIE_NAME_PURPOSE = "paperclip-local-operator-cookie-name-v1";
 
 export function resolveLocalOperatorKeyPath(input: { homeDir?: string; instanceId?: string } = {}): string {
   return path.resolve(resolvePaperclipInstanceRoot(input), "secrets", "local-operator.key");
@@ -57,12 +63,31 @@ export function ensureLocalOperatorKey(keyPath: string): Buffer {
   return key;
 }
 
-export function localOperatorCookieValue(key: Buffer): string {
-  return `v1.${sign(key, COOKIE_PURPOSE)}`;
+/** The board page's credential. Browsers keep it in origin-scoped storage, never in a cookie. */
+export function localOperatorBrowserToken(key: Buffer): string {
+  return `v1.${sign(key, BROWSER_TOKEN_PURPOSE)}`;
 }
 
-export function verifyLocalOperatorCookieValue(key: Buffer, value: string | null | undefined): boolean {
-  return typeof value === "string" && sameValue(value, localOperatorCookieValue(key));
+export function verifyLocalOperatorBrowserToken(key: Buffer, value: string | null | undefined): boolean {
+  return typeof value === "string" && sameValue(value, localOperatorBrowserToken(key));
+}
+
+/**
+ * Cookies are not isolated by port, so any local server the browser visits
+ * receives them. The cookie is therefore a separate, read-only credential for
+ * the few downloads the browser loads directly. Its name is per instance so
+ * two local boards do not sign each other out.
+ */
+export function localOperatorReadCookieName(key: Buffer): string {
+  return `paperclip_local_operator_${sign(key, COOKIE_NAME_PURPOSE).replace(/[^A-Za-z0-9]/g, "").slice(0, 10)}`;
+}
+
+export function localOperatorReadCookieValue(key: Buffer): string {
+  return `r1.${sign(key, READ_COOKIE_PURPOSE)}`;
+}
+
+export function verifyLocalOperatorReadCookieValue(key: Buffer, value: string | null | undefined): boolean {
+  return typeof value === "string" && sameValue(value, localOperatorReadCookieValue(key));
 }
 
 export interface LocalOperatorSignInLink {

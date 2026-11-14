@@ -1,4 +1,5 @@
 import fs from "node:fs";
+import { localBoardEntryUrl } from "./commands/open.js";
 import path from "node:path";
 import * as p from "@clack/prompts";
 import pc from "picocolors";
@@ -74,7 +75,8 @@ async function waitUntilDashboardReady(timeoutMs = 60_000): Promise<PaperclipRun
 const defaultDashboardDependencies: OnboardServiceDashboardDependencies = {
   isInteractive: () => process.stdin.isTTY === true && process.stdout.isTTY === true,
   waitUntilReady: waitUntilDashboardReady,
-  openDashboard: openUrl,
+  // A local board that requires the operator credential opens signed in.
+  openDashboard: (url) => openUrl(localBoardEntryUrl(url)),
   info: (message) => p.log.info(message),
   success: (message) => p.log.success(message),
   warn: (message) => p.log.warn(message),

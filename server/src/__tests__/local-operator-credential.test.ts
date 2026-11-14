@@ -8,12 +8,13 @@ import express from "express";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import type { Db } from "@paperclipai/db";
 import {
-  LOCAL_OPERATOR_COOKIE_NAME,
+  LOCAL_OPERATOR_FRAGMENT_KEY,
+  LOCAL_OPERATOR_HEADER,
   ensureLocalOperatorKey,
+  localOperatorReadCookieName,
   readLocalOperatorKey,
 } from "@paperclipai/shared/local-operator-credential";
 import { actorMiddleware } from "../middleware/auth.js";
-import { boardMutationGuard } from "../middleware/board-mutation-guard.js";
 import { createLocalAgentProcessBoundary } from "../middleware/local-agent-process-boundary.js";
 import {
   createLocalOperatorCredential,
@@ -33,12 +34,13 @@ function startServer(operator: LocalOperatorCredential): Promise<{ server: Serve
     localAgentProcessBoundary: createLocalAgentProcessBoundary({ serverEnvironment }),
     localOperatorCredential: operator,
   }));
-  app.use(boardMutationGuard());
   const whoami = (req: express.Request, res: express.Response) => {
     res.json({ type: req.actor.type, source: req.actor.source ?? null });
   };
   app.get("/api/whoami", whoami);
   app.post("/api/whoami", whoami);
+  app.get("/api/attachments/:id/content", whoami);
+  app.post("/api/attachments/:id/content", whoami);
   return new Promise((resolve) => {
     const server = app.listen(0, "127.0.0.1", () => {
       const { port } = server.address() as AddressInfo;
@@ -136,14 +138,17 @@ describe.skipIf(!supported)("operator browser sign-in", () => {
     rmSync(dir, { recursive: true, force: true });
   });
 
-  async function signIn(): Promise<string> {
+  async function signIn(): Promise<{ token: string; cookie: string }> {
     const response = await fetch(operator.signInUrl(base), { redirect: "manual" });
     expect(response.status).toBe(303);
-    expect(response.headers.get("location")).toBe("/");
+    const location = new URL(response.headers.get("location")!, base);
+    expect(location.pathname).toBe("/");
+    const token = new URLSearchParams(location.hash.slice(1)).get(LOCAL_OPERATOR_FRAGMENT_KEY);
+    expect(token).toBeTruthy();
     const setCookie = response.headers.get("set-cookie") ?? "";
     expect(setCookie).toMatch(/HttpOnly/i);
     expect(setCookie).toMatch(/SameSite=Strict/i);
-    return setCookie.split(";")[0]!;
+    return { token: token!, cookie: setCookie.split(";")[0]! };
   }
 
   it("keeps the operator key private to the operator's account", () => {
@@ -156,9 +161,27 @@ describe.skipIf(!supported)("operator browser sign-in", () => {
     expect(await response.json()).toEqual({ type: "none", source: "none" });
   });
 
-  it("grants board access to a browser that signed in through the operator's link", async () => {
-    const cookie = await signIn();
-    const response = await fetch(`${base}/api/whoami`, { headers: { cookie } });
+  it("grants board access to the board page of a browser that signed in through the operator's link", async () => {
+    const { token } = await signIn();
+    const read = await fetch(`${base}/api/whoami`, { headers: { [LOCAL_OPERATOR_HEADER]: token } });
+    expect(await read.json()).toEqual({ type: "board", source: "local_implicit" });
+    const change = await fetch(`${base}/api/whoami`, { method: "POST", headers: { [LOCAL_OPERATOR_HEADER]: token } });
+    expect(await change.json()).toEqual({ type: "board", source: "local_implicit" });
+  });
+
+  it("gives the browser's cookie, which other local servers can receive, no board access", async () => {
+    const { cookie } = await signIn();
+    for (const init of [{ headers: { cookie } }, { method: "POST", headers: { cookie } }]) {
+      const response = await fetch(`${base}/api/whoami`, init);
+      expect(await response.json()).toEqual({ type: "none", source: "none" });
+    }
+    const change = await fetch(`${base}/api/attachments/a1/content`, { method: "POST", headers: { cookie } });
+    expect(await change.json()).toEqual({ type: "none", source: "none" });
+  });
+
+  it("lets the browser load a file it was shown with the cookie alone", async () => {
+    const { cookie } = await signIn();
+    const response = await fetch(`${base}/api/attachments/a1/content`, { headers: { cookie } });
     expect(await response.json()).toEqual({ type: "board", source: "local_implicit" });
   });
 
@@ -168,32 +191,28 @@ describe.skipIf(!supported)("operator browser sign-in", () => {
     expect((await fetch(url, { redirect: "manual" })).status).toBe(403);
   });
 
-  it("refuses a forged or stale browser credential and a tampered link", async () => {
-    const forged = await fetch(`${base}/api/whoami`, { headers: { cookie: `${LOCAL_OPERATOR_COOKIE_NAME}=v1.forged` } });
+  it("refuses a forged credential and a tampered link", async () => {
+    const forged = await fetch(`${base}/api/whoami`, { headers: { [LOCAL_OPERATOR_HEADER]: "v1.forged" } });
     expect(await forged.json()).toEqual({ type: "none", source: "none" });
     const tampered = new URL(operator.signInUrl(base));
     tampered.searchParams.set("e", String(Date.now() + 60_000));
     expect((await fetch(tampered, { redirect: "manual" })).status).toBe(403);
   });
 
-  it("only accepts the signed-in browser's changes from the board's own pages", async () => {
-    const cookie = await signIn();
-    const sameOrigin = await fetch(`${base}/api/whoami`, { method: "POST", headers: { cookie, origin: base } });
-    expect(sameOrigin.status).toBe(200);
-    const otherLocalPage = await fetch(`${base}/api/whoami`, {
-      method: "POST",
-      headers: { cookie, origin: "http://localhost:5173" },
-    });
-    expect(otherLocalPage.status).toBe(403);
-  });
-
   it("returns to a page on the board after signing in, never another site", async () => {
-    const next = new URL(operator.signInUrl(base, "/issues"));
-    expect((await fetch(next, { redirect: "manual" })).headers.get("location")).toBe("/issues");
+    const next = await fetch(operator.signInUrl(base, "/issues"), { redirect: "manual" });
+    expect(new URL(next.headers.get("location")!, base).pathname).toBe("/issues");
     const offsite = new URL(operator.signInUrl(base));
     offsite.searchParams.set("next", "//evil.example");
     // The signature covers only the nonce and expiry, so the redirect target is sanitized instead.
-    expect((await fetch(offsite, { redirect: "manual" })).headers.get("location")).toBe("/");
+    const response = await fetch(offsite, { redirect: "manual" });
+    expect(new URL(response.headers.get("location")!, base).origin).toBe(base);
+  });
+
+  it("names its cookie per instance so two local boards do not sign each other out", () => {
+    const other = ensureLocalOperatorKey(path.join(dir, "other.key"));
+    const mine = readLocalOperatorKey(path.join(dir, "secrets", "local-operator.key"))!;
+    expect(localOperatorReadCookieName(other)).not.toBe(localOperatorReadCookieName(mine));
   });
 });
 

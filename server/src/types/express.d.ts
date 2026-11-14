@@ -32,8 +32,6 @@ declare global {
         onBehalfOfUserId?: string | null;
         authorizingUserId?: string;
         identityContextId?: string | null;
-        /** Set when a local_trusted browser proved operator presence with the operator cookie. */
-        localOperatorBrowser?: boolean;
         source?: "local_implicit" | "session" | "board_key" | "agent_key" | "agent_jwt" | "mcp_oauth" | "cloud_tenant" | "cloud_control" | "none";
       };
     }
