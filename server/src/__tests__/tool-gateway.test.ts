@@ -6098,6 +6098,96 @@ rl.on("line", (line) => {
     ).resolves.toHaveLength(0);
   });
 
+  it("pages past retained active-run tokens to reach expired credentials behind them", async () => {
+    const company = await createCompany(db);
+    const agent = await createAgent(db, company.id);
+    const { run } = await createIssueAndRun(db, company.id, agent.id);
+    const profile = await allowToolsForAgent(db, company.id, agent.id, ["mcp-stdio-fixture:runtime_status"]);
+    const gateway = createTestToolGatewayService(db);
+    const namedGateway = await gateway.createNamedGateway({
+      companyId: company.id,
+      body: {
+        name: `Retention gateway ${randomUUID()}`,
+        profileId: profile.id,
+        defaultProfileMode: "gateway_only",
+      },
+    });
+    const protectedExpiry = new Date(Date.now() - 60_000);
+    await db.insert(toolMcpGatewayTokens).values(
+      Array.from({ length: 500 }, (_, index) => ({
+        companyId: company.id,
+        gatewayId: namedGateway.id,
+        name: `Retained run token ${index}`,
+        tokenHash: `protected-${index}-${randomUUID()}`,
+        subjectType: "heartbeat_run" as const,
+        subjectId: run.id,
+        clientLabel: "Heartbeat runtime",
+        expiresAt: protectedExpiry,
+      })),
+    );
+    const deletable = await gateway.createNamedGatewayToken({
+      companyId: company.id,
+      gatewayId: namedGateway.id,
+      body: { name: "Deletable client token", clientLabel: "test", ownerNote: "test" },
+    });
+    await db
+      .update(toolMcpGatewayTokens)
+      .set({ expiresAt: new Date(Date.now() - 1_000), updatedAt: new Date() })
+      .where(eq(toolMcpGatewayTokens.id, deletable.id));
+
+    await expect(gateway.cleanupExpiredSessions({ singleBatch: true })).resolves.toEqual({ deletedCount: 0 });
+    await expect(
+      db.select({ id: toolMcpGatewayTokens.id }).from(toolMcpGatewayTokens).where(eq(toolMcpGatewayTokens.id, deletable.id)),
+    ).resolves.toHaveLength(0);
+    const retained = await db
+      .select({ id: toolMcpGatewayTokens.id })
+      .from(toolMcpGatewayTokens)
+      .where(eq(toolMcpGatewayTokens.subjectId, run.id));
+    expect(retained).toHaveLength(500);
+  });
+
+  it("reports no credential deadline while only active-run tokens sit expired", async () => {
+    const company = await createCompany(db);
+    const agent = await createAgent(db, company.id);
+    const { run } = await createIssueAndRun(db, company.id, agent.id);
+    const profile = await allowToolsForAgent(db, company.id, agent.id, ["mcp-stdio-fixture:runtime_status"]);
+    const gateway = createTestToolGatewayService(db);
+    const namedGateway = await gateway.createNamedGateway({
+      companyId: company.id,
+      body: {
+        name: `Deadline gateway ${randomUUID()}`,
+        profileId: profile.id,
+        defaultProfileMode: "gateway_only",
+      },
+    });
+    const retained = await gateway.createNamedGatewayToken({
+      companyId: company.id,
+      gatewayId: namedGateway.id,
+      body: {
+        name: "Retained runtime token",
+        subjectType: "heartbeat_run",
+        subjectId: run.id,
+        clientLabel: "Heartbeat runtime",
+        ownerNote: "Deadline regression token",
+        expiresAt: new Date(Date.now() + 60_000),
+      },
+      actor: { agentId: agent.id },
+    });
+    await db
+      .update(toolMcpGatewayTokens)
+      .set({ expiresAt: new Date(Date.now() - 1_000), updatedAt: new Date() })
+      .where(eq(toolMcpGatewayTokens.id, retained.id));
+
+    await expect(gateway.nextCredentialExpiryAt()).resolves.toBeNull();
+
+    await db
+      .update(heartbeatRuns)
+      .set({ status: "succeeded", finishedAt: new Date() })
+      .where(eq(heartbeatRuns.id, run.id));
+    await expect(gateway.nextCredentialExpiryAt()).resolves.not.toBeNull();
+    await expect(gateway.cleanupExpiredSessions()).resolves.toEqual({ deletedCount: 0 });
+  });
+
   it("rejects expired, revoked, and tampered durable sessions without auditing token values", async () => {
     const company = await createCompany(db);
     const agent = await createAgent(db, company.id);

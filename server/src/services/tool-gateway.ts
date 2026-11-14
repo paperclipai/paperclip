@@ -13746,6 +13746,11 @@ export function createToolGatewayService(
         select min(expires_at) as at from (
           (select ${toolMcpGatewayTokens.expiresAt} as expires_at from ${toolMcpGatewayTokens}
             where ${toolMcpGatewayTokens.expiresAt} is not null
+              and (${toolMcpGatewayTokens.subjectType} <> 'heartbeat_run'
+                or ${toolMcpGatewayTokens.subjectId} is null
+                or not exists (select 1 from ${heartbeatRuns}
+                  where ${heartbeatRuns.id}::text = ${toolMcpGatewayTokens.subjectId}
+                    and ${heartbeatRuns.status} in (${sql.join([...ACTIVE_GATEWAY_RUN_STATUSES].map((status) => sql`${status}`), sql`, `)})))
             order by ${toolMcpGatewayTokens.expiresAt} limit 1)
           union all
           (select ${toolGatewaySessions.expiresAt} as expires_at from ${toolGatewaySessions}
@@ -13765,7 +13770,14 @@ export function createToolGatewayService(
           subjectId: toolMcpGatewayTokens.subjectId,
         })
           .from(toolMcpGatewayTokens)
-          .where(lte(toolMcpGatewayTokens.expiresAt, now))
+          .where(and(
+            lte(toolMcpGatewayTokens.expiresAt, now),
+            or(
+              ne(toolMcpGatewayTokens.subjectType, "heartbeat_run"),
+              isNull(toolMcpGatewayTokens.subjectId),
+              sql`not exists (select 1 from ${heartbeatRuns} where ${heartbeatRuns.id}::text = ${toolMcpGatewayTokens.subjectId} and ${heartbeatRuns.status} in (${sql.join([...ACTIVE_GATEWAY_RUN_STATUSES].map((status) => sql`${status}`), sql`, `)}))`,
+            ),
+          ))
           .orderBy(asc(toolMcpGatewayTokens.expiresAt), asc(toolMcpGatewayTokens.id))
           .limit(500);
         let deletableTokenIds = expiredTokens.map((token) => token.id);
