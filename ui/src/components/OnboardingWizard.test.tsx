@@ -910,6 +910,206 @@ describe("OnboardingWizard restore-gate (stale localStorage across accounts)", (
       await act(async () => root.unmount());
     });
 
+    it.each(["", "   "])("keeps the organization name blank after going back and clearing it to %j", async (draft) => {
+      const company = { id: "company-new", name: "Initech", issuePrefix: "INI" };
+      mockCompaniesApi.create.mockResolvedValue(company);
+      const { root, renderTree } = await openStepOne();
+      try {
+        mockCompany.companies = [company];
+        mockCompaniesApi.list.mockResolvedValue([company]);
+
+        await clickByText((text) => text.startsWith("Continue"));
+        expect(mockCompaniesApi.create).toHaveBeenCalledTimes(1);
+        expect(document.body.textContent).toContain("Create your first agent");
+
+        await clickByText((text) => text.includes("Back"));
+        const input = document.querySelector<HTMLInputElement>("#onboarding-company-name")!;
+        expect(input.value).toBe("Initech");
+
+        await act(async () => setControlledValue(input, draft));
+        await flushReact();
+
+        expect(input.value).toBe(draft);
+        const continueButton = [...document.querySelectorAll("button")].find((button) =>
+          button.textContent?.trim() === "Continue",
+        )!;
+        expect(continueButton.disabled).toBe(true);
+        await act(async () => input.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true })));
+        await flushReact();
+        expect(mockCompaniesApi.update).not.toHaveBeenCalled();
+        expect(mockCompaniesApi.create).toHaveBeenCalledTimes(1);
+
+        mockCompany.companies = [{ ...company, name: "Updated server name" }];
+        await renderTree();
+        await flushReact();
+
+        expect(input.value).toBe(draft);
+        expect(JSON.parse(window.localStorage.getItem(ONBOARDING_STORAGE_KEY)!).companyName).toBe(draft);
+      } finally {
+        await act(async () => root.unmount());
+      }
+    });
+
+    it("saves a replacement organization name before continuing without creating another organization", async () => {
+      const company = { id: "company-new", name: "Initech", issuePrefix: "INI" };
+      mockCompaniesApi.create.mockResolvedValue(company);
+      let resolveUpdate!: (value: typeof company) => void;
+      mockCompaniesApi.update.mockImplementationOnce(() => new Promise((resolve) => { resolveUpdate = resolve; }));
+      const { root } = await openStepOne();
+      try {
+        mockCompany.companies = [company];
+        mockCompaniesApi.list.mockResolvedValue([company]);
+        await clickByText((text) => text.startsWith("Continue"));
+        await clickByText((text) => text.includes("Back"));
+        const input = document.querySelector<HTMLInputElement>("#onboarding-company-name")!;
+        await act(async () => setControlledValue(input, ""));
+        await flushReact();
+        await act(async () => setControlledValue(input, "  Acme Rockets  "));
+        await flushReact();
+        await clickByText((text) => text.startsWith("Continue"));
+
+        expect(mockCompaniesApi.update).toHaveBeenCalledExactlyOnceWith(company.id, { name: "Acme Rockets" });
+        expect(mockCompaniesApi.create).toHaveBeenCalledTimes(1);
+        expect(document.body.textContent).toContain("What is the name of your organization?");
+        expect(input.disabled).toBe(true);
+        expect([...document.querySelectorAll("button")].find((button) => button.textContent?.includes("Saving..."))?.disabled).toBe(true);
+
+        await act(async () => input.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true })));
+        await flushReact();
+        expect(mockCompaniesApi.update).toHaveBeenCalledTimes(1);
+        await act(async () => resolveUpdate({ ...company, name: "Acme Rockets" }));
+        await flushReact();
+        expect(document.body.textContent).toContain("Create your first agent");
+        expect(JSON.parse(window.localStorage.getItem(ONBOARDING_STORAGE_KEY)!).companyName).toBe("Acme Rockets");
+      } finally {
+        await act(async () => root.unmount());
+      }
+    });
+
+    it("keeps the organization name draft after a failed save and allows retrying", async () => {
+      const company = { id: "company-new", name: "Initech", issuePrefix: "INI" };
+      mockCompaniesApi.create.mockResolvedValue(company);
+      mockCompaniesApi.update.mockRejectedValueOnce(new Error("Could not save organization"));
+      const { root } = await openStepOne();
+      try {
+        mockCompany.companies = [company];
+        mockCompaniesApi.list.mockResolvedValue([company]);
+        await clickByText((text) => text.startsWith("Continue"));
+        await clickByText((text) => text.includes("Back"));
+        const input = document.querySelector<HTMLInputElement>("#onboarding-company-name")!;
+        await act(async () => setControlledValue(input, "Acme Rockets"));
+        await flushReact();
+        await clickByText((text) => text.startsWith("Continue"));
+
+        expect(document.body.textContent).toContain("Could not save organization");
+        expect(document.body.textContent).toContain("What is the name of your organization?");
+        expect(input.value).toBe("Acme Rockets");
+        expect(input.disabled).toBe(false);
+        expect(JSON.parse(window.localStorage.getItem(ONBOARDING_STORAGE_KEY)!).companyName).toBe("Acme Rockets");
+
+        await clickByText((text) => text.startsWith("Continue"));
+        expect(mockCompaniesApi.update).toHaveBeenCalledTimes(2);
+        expect(mockCompaniesApi.create).toHaveBeenCalledTimes(1);
+        expect(document.body.textContent).toContain("Create your first agent");
+        expect(document.body.textContent).not.toContain("Could not save organization");
+      } finally {
+        await act(async () => root.unmount());
+      }
+    });
+
+    it.each(["success", "failure"])("does not change another organization's form when a pending rename ends in %s", async (outcome) => {
+      const company = { id: "company-new", name: "Initech", issuePrefix: "INI" };
+      const otherCompany = { id: "company-other", name: "Other company", issuePrefix: "OTH" };
+      mockCompaniesApi.create.mockResolvedValue(company);
+      let finishUpdate!: () => void;
+      mockCompaniesApi.update.mockImplementationOnce(() => new Promise((resolve, reject) => {
+        finishUpdate = () => outcome === "success"
+          ? resolve({ ...company, name: "Acme Rockets" })
+          : reject(new Error("Could not save organization"));
+      }));
+      const { root, renderTree } = await openStepOne();
+      try {
+        mockCompany.companies = [company, otherCompany];
+        mockCompaniesApi.list.mockResolvedValue([company, otherCompany]);
+        await clickByText((text) => text.startsWith("Continue"));
+        await clickByText((text) => text.includes("Back"));
+        const input = document.querySelector<HTMLInputElement>("#onboarding-company-name")!;
+        await act(async () => setControlledValue(input, "Acme Rockets"));
+        await flushReact();
+        await clickByText((text) => text.startsWith("Continue"));
+        expect(mockCompaniesApi.update).toHaveBeenCalledExactlyOnceWith(company.id, { name: "Acme Rockets" });
+
+        mockDialog.onboardingOptions = { companyId: otherCompany.id, initialStep: 1 };
+        await renderTree();
+        await flushReact();
+        await act(async () => finishUpdate());
+        await flushReact();
+
+        expect(document.querySelector<HTMLInputElement>("#onboarding-company-name")!.value).toBe("Other company");
+        expect(document.body.textContent).toContain("What is the name of your organization?");
+        expect(document.body.textContent).not.toContain("Could not save organization");
+      } finally {
+        await act(async () => root.unmount());
+      }
+    });
+
+    it.each([
+      { draft: undefined, expected: "Initech" },
+      { draft: null, expected: "Initech" },
+      { draft: "", expected: "" },
+      { draft: "Edited name", expected: "Edited name" },
+    ])("restores organization name draft $draft as $expected", async ({ draft, expected }) => {
+      const company = { id: "company-new", name: "Initech", issuePrefix: "INI" };
+      mockCompany.companies = [company];
+      mockCompaniesApi.list.mockResolvedValue([company]);
+      window.localStorage.setItem(ONBOARDING_STORAGE_KEY, JSON.stringify({
+        step: 1, createdCompanyId: company.id, companyName: draft,
+      }));
+      const { root, queryClient } = render();
+      try {
+        await renderWizardView(root, queryClient);
+        await flushReact();
+
+        const input = document.querySelector<HTMLInputElement>("#onboarding-company-name")!;
+        expect(input.value).toBe(expected);
+        expect(mockCompaniesApi.create).not.toHaveBeenCalled();
+        expect(mockCompaniesApi.update).not.toHaveBeenCalled();
+      } finally {
+        await act(async () => root.unmount());
+      }
+    });
+
+    it("initializes the organization name when company details arrive and resets it for another company", async () => {
+      const company = { id: "company-new", name: "Initech", issuePrefix: "INI" };
+      const otherCompany = { id: "company-other", name: "Other company", issuePrefix: "OTH" };
+      mockDialog.onboardingOptions = { companyId: company.id, initialStep: 1 };
+      mockCompaniesApi.list.mockResolvedValue([company, otherCompany]);
+      const { root, queryClient } = render();
+      try {
+        await renderWizardView(root, queryClient);
+        await flushReact();
+        const input = document.querySelector<HTMLInputElement>("#onboarding-company-name")!;
+        expect(input.value).toBe("");
+        expect(JSON.parse(window.localStorage.getItem(ONBOARDING_STORAGE_KEY)!).companyName).toBeNull();
+
+        mockCompany.companies = [company, otherCompany];
+        await renderWizardView(root, queryClient);
+        await flushReact();
+        expect(input.value).toBe("Initech");
+
+        await act(async () => setControlledValue(input, ""));
+        await flushReact();
+        expect(input.value).toBe("");
+
+        mockDialog.onboardingOptions = { companyId: otherCompany.id, initialStep: 1 };
+        await renderWizardView(root, queryClient);
+        await flushReact();
+        expect(input.value).toBe("Other company");
+      } finally {
+        await act(async () => root.unmount());
+      }
+    });
+
     it("sends Back to the screen the run actually came from", async () => {
       // A create run reached the agent step from step 1, so Back owes it step 1 —
       // not the mission screen it never saw.
@@ -1487,7 +1687,7 @@ describe("OnboardingWizard restore-gate (stale localStorage across accounts)", (
         expect(persisted.step).toBe(1);
         expect(persisted.createdCompanyId).toBeNull();
         expect(persisted.createdAgentId).toBeNull();
-        expect(persisted.companyName).toBe("");
+        expect(persisted.companyName).toBeNull();
       } finally { await act(async () => root.unmount()); }
     });
 

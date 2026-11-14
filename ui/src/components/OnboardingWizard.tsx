@@ -537,7 +537,8 @@ function OnboardingWizardInner({
   const [modelSearch, setModelSearch] = useState("");
 
   // Step 1
-  const [companyName, setCompanyName] = useState((saved?.companyName as string) ?? "");
+  const [companyNameDraft, setCompanyNameDraft] = useState<string | null>((saved?.companyName as string) ?? null);
+  const companyName = companyNameDraft ?? "";
 
   // Step 2
   // The name is not defaulted: a pre-filled "Chief of staff" is a choice made
@@ -718,7 +719,7 @@ function OnboardingWizardInner({
   // value the first has not written yet. `createdCompanyId` cannot answer it
   // either, because it is not set until the request it guards has resolved. A
   // ref is written before the request goes out, so the second caller sees it.
-  const creatingCompanyRef = useRef(false);
+  const savingCompanyRef = useRef(false);
   // Same shape for the hire. Greptile (round-3 PR): with "Test now" gone the
   // Connect handler re-runs a cached failed probe — and two overlapping
   // submissions could then both pass the fresh probe and both hire. `loading`
@@ -811,7 +812,7 @@ function OnboardingWizardInner({
     setGatewayConnection(undefined);
     setAgentAppearance(randomAgentAppearance());
     setCreatedCompanyPrefix(null);
-    setCompanyName("");
+    setCompanyNameDraft(null);
     setCreatedCompanyGoalId(null);
     setCreatedProjectId(null);
     setCreatedIssueRef(null);
@@ -915,16 +916,16 @@ function OnboardingWizardInner({
   // not leave it. Nothing reached that state until the dashboard started
   // opening agentless companies there.
   useEffect(() => {
-    if (!effectiveOnboardingOpen || !createdCompanyId || companyName) return;
+    if (!effectiveOnboardingOpen || !createdCompanyId || companyNameDraft !== null) return;
     const company = companies.find((c) => c.id === createdCompanyId);
-    if (company) setCompanyName(company.name);
-  }, [effectiveOnboardingOpen, createdCompanyId, companyName, companies]);
+    if (company) setCompanyNameDraft(company.name);
+  }, [effectiveOnboardingOpen, createdCompanyId, companyNameDraft, companies]);
 
   // Persist wizard state to localStorage on every change
   useEffect(() => {
     if (!effectiveOnboardingOpen) return;
     const state = {
-      step, companyName,
+      step, companyName: companyNameDraft,
       agentName, agentAppearance, agentRole, adapterType, runner, cwd, model, command, args, url,
       // The mode, never the key: this blob is localStorage.
       credentialMode, credentialModeChoice,
@@ -933,7 +934,7 @@ function OnboardingWizardInner({
     };
     onboardingDraftStorage.write(JSON.stringify(state));
   }, [
-    effectiveOnboardingOpen, step, companyName,
+    effectiveOnboardingOpen, step, companyNameDraft,
     agentName, agentAppearance, agentRole, adapterType, runner, cwd, model, command, args, url,
     credentialMode, credentialModeChoice,
     createdCompanyId, createdCompanyPrefix, createdAgentId, setupAgentId,
@@ -1815,7 +1816,7 @@ function OnboardingWizardInner({
     setStep(1);
     setLoading(false);
     setError(null);
-    setCompanyName("");
+    setCompanyNameDraft(null);
     // Back to the mount defaults: an empty name (the step's only question, and
     // what its CTA gates on) and the neutral role every onboarding hire uses.
     setAgentName("");
@@ -2348,18 +2349,23 @@ function OnboardingWizardInner({
   // No goal is written here: the mission is collected later, in the chat with
   // the first agent, so writing an empty one now would only give the
   // organization a goal it did not choose.
-  async function handleCreateCompany() {
-    if (createdCompanyId) {
-      setStep(3);
-      return;
-    }
-    if (creatingCompanyRef.current) return;
-    creatingCompanyRef.current = true;
+  async function handleSaveCompany() {
+    const name = companyName.trim();
+    if (!name || savingCompanyRef.current) return;
+    savingCompanyRef.current = true;
     setLoading(true);
     setError(null);
     const companyIdAtStart = createdCompanyIdRef.current;
     try {
-      const company = await companiesApi.create({ name: companyName.trim() });
+      if (companyIdAtStart) {
+        await companiesApi.update(companyIdAtStart, { name });
+        queryClient.invalidateQueries({ queryKey: queryKeys.companies.all });
+        if (!stillTheSameCompany(companyIdAtStart)) return;
+        setCompanyNameDraft(name);
+        setStep(3);
+        return;
+      }
+      const company = await companiesApi.create({ name });
       queryClient.invalidateQueries({ queryKey: queryKeys.companies.all });
       // Nothing was in hand when this started, so "unchanged" means still
       // nothing. A route that supplied a company while the request was open has
@@ -2376,9 +2382,10 @@ function OnboardingWizardInner({
       setSelectedCompanyId(company.id);
       setStep(3);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to create organization");
+      if (companyIdAtStart && !stillTheSameCompany(companyIdAtStart)) return;
+      setError(err instanceof Error ? err.message : companyIdAtStart ? "Failed to save organization" : "Failed to create organization");
     } finally {
-      creatingCompanyRef.current = false;
+      savingCompanyRef.current = false;
       setLoading(false);
     }
   }
@@ -2737,7 +2744,7 @@ function OnboardingWizardInner({
       // handler whose guard is a piece of state the first one has not set
       // yet — two organizations for one name, two agents for one hire.
       if (loading) return;
-      if (step === 1 && companyName.trim()) void handleCreateCompany();
+      if (step === 1 && companyName.trim()) void handleSaveCompany();
       else if (step === 3 && agentName.trim()) setStep(4);
       // `connectStepReady`, the same predicate the step's button uses. Spelling
       // the condition out here again is what let this path hire against a
@@ -3033,11 +3040,12 @@ function OnboardingWizardInner({
                       className="h-(--sz-44px) rounded-lg border-transparent bg-muted shadow-none dark:bg-muted"
                       placeholder="e.g. Northwind Labs"
                       value={companyName}
-                      onChange={(e) => setCompanyName(e.target.value)}
+                      disabled={loading}
+                      onChange={(e) => setCompanyNameDraft(e.target.value)}
                       onKeyDown={(e) => {
                         if (e.key === "Enter" && companyName.trim()) {
                           e.preventDefault();
-                          void handleCreateCompany();
+                          void handleSaveCompany();
                         }
                       }}
                       autoFocus
@@ -3563,7 +3571,7 @@ function OnboardingWizardInner({
                   primaryIcon={step === 4 ? connectCta.icon : undefined}
                   loadingLabel={
                     step === 1
-                      ? "Creating..."
+                      ? createdCompanyId ? "Saving..." : "Creating..."
                       : step === 4
                         ? "Connecting"
                         : "Launching..."
@@ -3586,7 +3594,7 @@ function OnboardingWizardInner({
                           : loading || launchStateIncomplete
                   }
                   onPrimary={() => {
-                    if (step === 1) void handleCreateCompany();
+                    if (step === 1) void handleSaveCompany();
                     else if (step === 3) setStep(4);
                     // One button, two jobs — start the sign-in, or hire — and
                     // Cmd+Enter has to do the same thing. See
