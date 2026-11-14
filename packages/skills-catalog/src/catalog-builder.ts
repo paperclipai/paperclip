@@ -66,6 +66,7 @@ interface GitHubTreeEntry {
 interface BuildCatalogManifestOptions {
   packageDir: string;
   generatedAt?: string;
+  existingManifest?: CatalogManifest;
 }
 
 interface BuildCatalogManifestResult {
@@ -84,6 +85,7 @@ export async function buildExpectedCatalogManifest(
   const firstPass = await buildCatalogManifest({
     packageDir,
     generatedAt: existing?.generatedAt ?? new Date().toISOString(),
+    existingManifest: existing ?? undefined,
   });
 
   if (existing && sameManifestExceptGeneratedAt(existing, firstPass.manifest)) {
@@ -93,6 +95,7 @@ export async function buildExpectedCatalogManifest(
   return buildCatalogManifest({
     packageDir,
     generatedAt: new Date().toISOString(),
+    existingManifest: existing ?? undefined,
   });
 }
 
