@@ -120,7 +120,7 @@ interface IssueExecutionDecision {
    - Sets status to `in_progress`
    - Reassigns to the original executor (stored in `returnAssignee`)
    - Sets `executionState.status` to `changes_requested`
-3. **Executor makes changes** and transitions to `done` again.
+3. **Executor makes changes** and transitions to `done` again. If the work is reassigned to a different executor before resubmission, that assignee becomes the return owner for the next review cycle. An assignee who was the last stage participant does not replace the stored return owner.
 4. Runtime routes back to the **same review stage** (not the beginning), with the same reviewer.
 5. This loop continues until the reviewer approves.
 
