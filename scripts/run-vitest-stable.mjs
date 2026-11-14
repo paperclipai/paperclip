@@ -417,6 +417,8 @@ function isolatedTestEnv() {
   // /tmp is /private/tmp on macOS, so fixture roots must use the canonical path.
   const testRoot = realpathSync(mkdtempSync(path.join(tempRootParent, "pv-")));
   // Keep per-run paths compact so Unix socket fixtures stay under macOS path limits.
+  // Explicitly clear worktree vars so tests never inherit an outer agent's context
+  // and accidentally clobber the canonical Paperclip config (KEWL-3955).
   const env = {
     ...process.env,
     NODE_ENV: "test",
@@ -428,6 +430,10 @@ function isolatedTestEnv() {
     PAPERCLIP_CONFIG: path.join(testRoot, "h", "config.json"),
     PAPERCLIP_INSTANCE_ID: `vt-${process.pid}-${invocationIndex}`,
     TMPDIR: path.join(testRoot, "t"),
+    PAPERCLIP_IN_WORKTREE: undefined,
+    PAPERCLIP_CONTEXT: undefined,
+    PAPERCLIP_WORKTREE_NAME: undefined,
+    PAPERCLIP_WORKTREES_DIR: undefined,
   };
   // The wrapper has already validated and consumed this shard's manifest.
   // Tests may launch independent runner fixtures with a different root/inventory.

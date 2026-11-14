@@ -8,7 +8,7 @@ import { execFileSync } from "node:child_process";
 import { existsSync, realpathSync } from "node:fs";
 import { basename, dirname, resolve } from "node:path";
 import { config as loadDotenv } from "dotenv";
-import { resolvePaperclipEnvPath } from "./paths.js";
+import { resolvePaperclipConfigPath, resolvePaperclipEnvPath } from "./paths.js";
 import { maybeRepairLegacyWorktreeConfigAndEnvFiles } from "./worktree-config.js";
 import { shouldLoadWorkingDirectoryEnv } from "./env-file-policy.js";
 import { applyEmptyWorktreeSigningSecrets } from "./dev-runner-worktree.js";
@@ -28,6 +28,7 @@ import {
 } from "@paperclipai/shared";
 import {
   resolveDefaultBackupDir,
+  resolveDefaultConfigPath,
   resolveDefaultEmbeddedPostgresDir,
   resolveDefaultSecretsKeyFilePath,
   resolveHomeAwarePath,
@@ -151,7 +152,76 @@ function runTailscaleAddressCommand(): string | undefined {
   }
 }
 
+// KEWL-3955: Guard against a poisoned canonical config (e.g. written by a test
+// run that inherited PAPERCLIP_IN_WORKTREE=true without a scoped PAPERCLIP_CONFIG).
+// In a non-worktree context, /tmp paths in key config fields indicate the production
+// config was overwritten by a test fixture — fail loud rather than boot the wrong instance.
+function checkConfigIntegrity(
+  fileConfig: ReturnType<typeof readConfigFile>,
+  resolvedConfigPath: string,
+  effectivePaths: {
+    databaseEmbeddedPostgresDataDir: string | undefined;
+    databaseBackupDir: string | undefined;
+    loggingLogDir: string | undefined;
+    storageLocalDiskBaseDir: string | undefined;
+    secretsMasterKeyFilePath: string | undefined;
+  },
+): void {
+  if (!fileConfig) return;
+  if (process.env.PAPERCLIP_IN_WORKTREE === "true") return;
+
+  // Only guard the canonical config path. An isolated instance (e.g. an e2e CLI
+  // test) that sets PAPERCLIP_CONFIG to its own scoped path is loading its own
+  // intentionally-scoped config — that is not production poisoning, and the guard
+  // must not block it. Apply the check only when the resolved config path matches
+  // the canonical default (i.e. PAPERCLIP_CONFIG was absent and no ancestor config
+  // was found — the production instance path). (KEWL-3960)
+  const canonicalConfigPath = resolveDefaultConfigPath();
+  if (resolvedConfigPath !== canonicalConfigPath) return;
+
+  // Narrow to the vitest temp dir pattern from scripts/run-vitest-stable.mjs (mkdtempSync
+  // with prefix `pv-`, formerly `pcvt-${pid}-${invocationIndex}-`, which configs poisoned
+  // before the rename still carry). Checking any /tmp path is too broad: Docker and CI
+  // configs may legitimately use /tmp for data dirs; those are not the scenario this
+  // guard prevents. /private/tmp is macOS's real path for /tmp.
+  const VITEST_TMP_RE = /^(?:\/tmp|\/private\/tmp)\/(?:pcvt-\d+-|pv-[A-Za-z0-9]{6}(?:\/|$))/;
+
+  function isVitestTmpPath(value: string | undefined | null): boolean {
+    if (!value) return false;
+    return VITEST_TMP_RE.test(value);
+  }
+
+  const poisoned: string[] = [];
+  if (isVitestTmpPath(effectivePaths.databaseEmbeddedPostgresDataDir))
+    poisoned.push(`database.embeddedPostgresDataDir: ${effectivePaths.databaseEmbeddedPostgresDataDir}`);
+  if (isVitestTmpPath(effectivePaths.databaseBackupDir))
+    poisoned.push(`database.backup.dir: ${effectivePaths.databaseBackupDir}`);
+  if (isVitestTmpPath(effectivePaths.loggingLogDir))
+    poisoned.push(`logging.logDir: ${effectivePaths.loggingLogDir}`);
+  if (isVitestTmpPath(effectivePaths.storageLocalDiskBaseDir))
+    poisoned.push(`storage.localDisk.baseDir: ${effectivePaths.storageLocalDiskBaseDir}`);
+  if (isVitestTmpPath(effectivePaths.secretsMasterKeyFilePath))
+    poisoned.push(`secrets.localEncrypted.keyFilePath: ${effectivePaths.secretsMasterKeyFilePath}`);
+
+  if (poisoned.length > 0) {
+    const configPath = process.env.PAPERCLIP_CONFIG ?? "(default path)";
+    const lines = [
+      "[KEWL-3955] FATAL: canonical Paperclip config contains vitest temp paths.",
+      "This means a test run likely overwrote the production config.",
+      `Config: ${configPath}`,
+      "Poisoned fields:",
+      ...poisoned.map((f) => `  ${f}`),
+      "Restore config.json from backup before restarting. See KEWL-3955 for the incident runbook.",
+    ];
+    console.error(lines.join("\n"));
+    throw new Error(
+      `Config integrity check failed: ${poisoned.length} /tmp path(s) in canonical config (KEWL-3955). See stderr for details.`,
+    );
+  }
+}
+
 export function loadConfig(override?: PaperclipConfig | null): Config {
+  const resolvedConfigPath = resolvePaperclipConfigPath();
   const configFile = override === undefined ? readConfigFile({ includeProvenance: true })
     : override ? { config: override, explicitStorageS3Bucket: true } : null;
   const fileConfig = configFile?.config ?? null;
@@ -162,6 +232,7 @@ export function loadConfig(override?: PaperclipConfig | null): Config {
     !isCloudManagedInstance() && fileDatabaseMode === "postgres"
       ? fileConfig?.database.connectionString
       : undefined;
+  const databaseUrl = process.env.DATABASE_URL ?? fileDbUrl;
   const fileDatabaseBackup = fileConfig?.database.backup;
   const fileSecrets = fileConfig?.secrets;
 
@@ -179,6 +250,14 @@ export function loadConfig(override?: PaperclipConfig | null): Config {
       ?? (configFile?.explicitStorageS3Bucket ? fileConfig?.storage.s3.bucket : undefined),
     databaseUrl: process.env.DATABASE_URL ?? fileDbUrl,
   }, process.env);
+  const embeddedPostgresDataDir = resolveHomeAwarePath(
+    fileConfig?.database.embeddedPostgresDataDir ?? resolveDefaultEmbeddedPostgresDir(),
+  );
+  const secretsMasterKeyFilePath = resolveHomeAwarePath(
+    process.env.PAPERCLIP_SECRETS_MASTER_KEY_FILE ??
+      fileSecrets?.localEncrypted.keyFilePath ??
+      resolveDefaultSecretsKeyFilePath(),
+  );
   const feedbackExportBackendUrl =
     process.env.PAPERCLIP_FEEDBACK_EXPORT_BACKEND_URL?.trim() ||
     process.env.PAPERCLIP_TELEMETRY_BACKEND_URL?.trim() ||
@@ -296,6 +375,14 @@ export function loadConfig(override?: PaperclipConfig | null): Config {
       fileDatabaseBackup?.dir ??
       resolveDefaultBackupDir(),
   );
+  // An in-memory override was not read from the canonical config file.
+  checkConfigIntegrity(override === undefined ? fileConfig : null, resolvedConfigPath, {
+    databaseEmbeddedPostgresDataDir: databaseUrl ? undefined : embeddedPostgresDataDir,
+    databaseBackupDir: databaseBackupEnabled ? databaseBackupDir : undefined,
+    loggingLogDir: fileConfig?.logging?.logDir,
+    storageLocalDiskBaseDir: storage.storageProvider === "local_disk" ? storage.storageLocalDiskBaseDir : undefined,
+    secretsMasterKeyFilePath: secretsProvider === "local_encrypted" ? secretsMasterKeyFilePath : undefined,
+  });
   // The terminal-workspace reaper waits this many days after an issue tree
   // becomes terminal before it archives the workspace. A person can reopen the
   // work inside this window. A value of 0 disables the cooldown and restores
@@ -386,11 +473,9 @@ export function loadConfig(override?: PaperclipConfig | null): Config {
     ),
     authDisableSignUp,
     databaseMode: fileDatabaseMode,
-    databaseUrl: process.env.DATABASE_URL ?? fileDbUrl,
+    databaseUrl,
     databaseMigrationUrl: process.env.DATABASE_MIGRATION_URL,
-    embeddedPostgresDataDir: resolveHomeAwarePath(
-      fileConfig?.database.embeddedPostgresDataDir ?? resolveDefaultEmbeddedPostgresDir(),
-    ),
+    embeddedPostgresDataDir,
     embeddedPostgresPort: fileConfig?.database.embeddedPostgresPort ?? 54329,
     databaseBackupEnabled,
     databaseBackupIntervalMinutes,
@@ -430,12 +515,7 @@ export function loadConfig(override?: PaperclipConfig | null): Config {
     uiDevMiddleware: process.env.PAPERCLIP_UI_DEV_MIDDLEWARE === "true",
     secretsProvider,
     secretsStrictMode,
-    secretsMasterKeyFilePath:
-      resolveHomeAwarePath(
-        process.env.PAPERCLIP_SECRETS_MASTER_KEY_FILE ??
-          fileSecrets?.localEncrypted.keyFilePath ??
-          resolveDefaultSecretsKeyFilePath(),
-      ),
+    secretsMasterKeyFilePath,
     ...storage,
     feedbackExportBackendUrl,
     feedbackExportBackendToken,
