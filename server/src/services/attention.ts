@@ -1,3 +1,4 @@
+import { isActionableAttention, supportsAttentionRecoveryResolution } from "@paperclipai/shared";
 import { recoveryActionAttentionCondition, ATTENTION_BUDGET_WARNING_PERCENT, ATTENTION_AGENT_ERROR_STATUS, collapsePendingConfirmationsToNewest, loadNewestSettledConfirmationAt, readRunIssueId, listFailedRunsWithNewerRun, requiresReviewAttention, terminalBlockerRequiresAttention } from "./attention-source-eligibility.js";
 import { approvalExecutionIssueCondition, firstApprovalIssueId } from "./approval-visibility.js";
 import { and, asc, desc, eq, inArray, isNull, notInArray, or, sql, type SQL } from "drizzle-orm";
@@ -1114,6 +1115,7 @@ async function blockingIssueMap(
       eq(issues.companyId, companyId),
       eq(issueRelations.type, "blocks"),
       inArray(issueRelations.relatedIssueId, ids),
+      notInArray(issues.status, ["done", "cancelled"]),
       isNull(issues.hiddenAt),
       readCondition,
     ))
@@ -2118,6 +2120,7 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
             status: recovery.status,
             href: recoveryIssue ? issueHref(prefix, recoveryIssue) : sourceIssue ? issueHref(prefix, sourceIssue) : null,
             metadata: {
+              hasResolutionActions: supportsAttentionRecoveryResolution(recovery.cause),
               kind: recovery.kind,
               cause: recovery.cause,
               ownerType: recovery.ownerType,
@@ -2740,8 +2743,14 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
       const enrichedById = new Map(enrichedItems.map((item) => [item.id, item]));
       const obligationLeadOf = (item: AttentionItem) =>
         isObligationEvidence(item) ? enrichedById.get(item.obligationLeadId!) ?? item : item;
+      // An obligation is actionable when any member is: a budget hard stop leads its override
+      // approval, and the approval is what the person acts on.
+      const actionableLeadIds = options.actionableOnly
+        ? new Set(enrichedItems.filter(isActionableAttention).map((item) => obligationLeadOf(item).id)) : null;
+      const isActionableLead = (lead: AttentionItem) => !actionableLeadIds || actionableLeadIds.has(lead.id);
       const visibleItems = enrichedItems.filter((member) => {
         const item = obligationLeadOf(member);
+        if (!isActionableLead(item)) return false;
         if (view === "archived") {
           // The person's own Archived view (PAP-749 plan §3): open cards they
           // archived or snoozed, and nothing else.
@@ -2772,6 +2781,7 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
       const viewCounts: AttentionViewCounts = { mine: 0, unassigned: 0, company: 0, archived: 0, all: 0 };
       for (const item of enrichedItems) {
         if (obligationLeadOf(item) !== item) continue;
+        if (!isActionableLead(item)) continue;
         if (item.archivedAt) continue;
         if (item.snoozedUntil && timestamp(item.snoozedUntil) > now) continue;
         if (hiddenForViewer(item)) {
@@ -2879,13 +2889,13 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
       const feed = await list(companyId, { ...options, all: true, allowUnscopedAll: true }, issueIds);
       return feed.items;
     },
-    summary: async (companyId: string, options: Pick<AttentionListOptions, "userId" | "actor"> = {}): Promise<AttentionSummary> => {
+    summary: async (companyId: string, options: Pick<AttentionListOptions, "userId" | "actor" | "actionableOnly"> = {}): Promise<AttentionSummary> => {
       const { items: _items, nextCursor: _cursor, ...summary } = await list(companyId, {
         ...options, all: true, allowUnscopedAll: true, countsOnly: true,
       });
       return summary;
     },
-    taskIndex: async (companyId: string, options: Pick<AttentionListOptions, "userId" | "actor"> = {}): Promise<AttentionTaskIndex> => {
+    taskIndex: async (companyId: string, options: Pick<AttentionListOptions, "userId" | "actor" | "actionableOnly"> = {}): Promise<AttentionTaskIndex> => {
       const { items, nextCursor: _cursor, ...summary } = await list(companyId, {
         ...options, all: true, allowUnscopedAll: true, summaryOnly: true,
       });

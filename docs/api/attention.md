@@ -28,12 +28,22 @@ The feed accepts these query parameters:
 | `sort` | `activity` or `decide`. |
 | `activitySince`, `activityUntil` | Inclusive activity bounds in ISO date-time format. |
 | `queue` | Filter by a decision queue key. |
+| `actionableOnly` | `true` returns only requests a person can act on. Default: `false`. Also accepted by summary and tasks. |
 
 The response includes `items`, `totalCount`, `countsBySourceKind`, `viewCounts`,
 `deskBadgeCount`, and `nextCursor`. Related evidence shares one obligation lead
 and counts once. `deskBadgeCount` counts requests assigned to the viewer.
 Summary returns the same current counts without card bodies. Tasks also returns
 unique `taskIds` for visible requests. Neither endpoint returns card bodies.
+
+`actionableOnly=true` keeps questions, decisions, join requests, approvals,
+stalled reviews, and recoveries with supported actions, and drops operational
+notices such as failed runs and agent errors. An obligation stays when any of
+its members is actionable, so a budget hard stop stays with its override
+approval. The filter applies to `items`, `totalCount`, `countsBySourceKind`,
+`viewCounts`, `deskBadgeCount`, and task membership. Pass the same value to the
+feed, summary, and tasks calls to get matching numbers. The board Inbox does not
+use this filter.
 
 Routing uses explicit recipients, chat ownership, review participants, task
 assignees, human instigators, and configured decision owners. A card with no

@@ -4,6 +4,8 @@ import type {
   IssueThreadInteractionResolverPolicyProvenance,
 } from "../constants.js";
 import type { InboxDismissalKind } from "./inbox-dismissal.js";
+import { requiresExecutionReconciliation } from "./execution-projection.js";
+import { isNativeWorkspaceExportRepairCause } from "../workspace-restore.js";
 
 export const ATTENTION_SOURCE_KINDS = [
   "approval",
@@ -84,6 +86,8 @@ export type AttentionSortMode = "activity" | "decide";
 
 export interface AttentionFeedQuery {
   includeDismissed?: boolean;
+  /** Limit the projection to items with a supported resolution action. */
+  actionableOnly?: boolean;
   archived?: boolean;
   /**
    * Which audience slice to return (PAP-749 plan §1). Defaults to `all`, the
@@ -782,4 +786,30 @@ export type DecisionHistoryScope = (typeof DECISION_HISTORY_SCOPES)[number];
 export interface DecisionHistoryPage {
   items: DecisionHistoryItem[];
   nextCursor: string | null;
+}
+
+/** Operational alerts stay inspectable without becoming human decision requests. */
+export function supportsAttentionRecoveryResolution(cause: string): boolean {
+  return !requiresExecutionReconciliation(cause) && !isNativeWorkspaceExportRepairCause(cause) && ![
+    "native_workspace_sync_out_unsafe_archive",
+    "native_workspace_finalization_owner_unverified",
+    "ownership_owner_unprovable",
+    "native_controller_host_unverified",
+  ].includes(cause);
+}
+
+export function isActionableAttention(item: Pick<AttentionItem, "sourceKind" | "inlineResolvable" | "subject">): boolean {
+  if (item.sourceKind === "recovery_action") return item.subject.metadata?.hasResolutionActions === true;
+  if (item.sourceKind === "approval") return item.inlineResolvable || Boolean(item.subject.href);
+  if (!item.inlineResolvable) return false;
+  switch (item.sourceKind) {
+    case "decision":
+    case "issue_thread_interaction":
+    case "join_request":
+      return true;
+    case "review":
+      return item.subject.kind === "issue" && item.subject.metadata?.reviewAttentionState === "stalled";
+    default:
+      return false;
+  }
 }

@@ -26,6 +26,7 @@ import { BudgetAlertActions, FailedRunActions } from "@/components/AttentionInli
 import { AttentionInteractionResolver } from "@/components/AttentionInteractionResolver";
 import { ApprovalResolver, JoinRequestResolver } from "@/components/AttentionQueueRow";
 import { AttentionObligationEvidence } from "@/components/AttentionObligationEvidence";
+import { AttentionRecoveryResolver } from "@/components/AttentionRecoveryResolver";
 import { DecisionHistoryPanel } from "@/components/DecisionHistoryPanel";
 import { DecisionResolver } from "@/components/DecisionResolver";
 import { DecisionCardFooter } from "@/components/DecisionCardFooter";
@@ -362,6 +363,7 @@ export function CoordinatorNeedsYou() {
         : joinRequest ? <>{heading}<JoinRequestResolver item={item} companyId={selectedCompanyId!} toggle={taskLink} presentation="card" onResolved={() => onResolved(item)} /></>
         : type === "review_task" ? <>{heading}<ReviewTaskCardBody item={item} companyId={selectedCompanyId!} agentMap={agentMap} userLabelMap={userLabelMap} leading={taskLink} footerContext={footerContext} onOpen={navigate} onResolved={refetchAll} /></>
         : type === "blocked_task" ? <>{heading}<BlockedTaskCardBody item={item} companyId={selectedCompanyId!} agentMap={agentMap} userLabelMap={userLabelMap} leading={taskLink} footerContext={footerContext} onOpen={navigate} onResolved={refetchAll} /></>
+        : type === "recovery" && item.subject.metadata?.hasResolutionActions === true ? <>{heading}{footerContext}<AttentionRecoveryResolver item={item} companyId={selectedCompanyId!} agentMap={agentMap} onResolved={refetchAll} footerLeading={taskLink} /></>
         : type === "recovery" ? <>{heading}<RecoveryCardBody item={item} companyId={selectedCompanyId!} leading={taskLink} footerContext={footerContext} onOpen={navigate} onResolved={refetchAll} /></>
         : <>{heading}{footerContext}<DecisionCardFooter leading={taskLink}><Button disabled={!item.subject.href} onClick={() => { if (item.subject.href) navigate(item.subject.href); }}>{openLabel(item)}<ArrowUpRight className="size-4" /></Button></DecisionCardFooter></>}
       </AttentionForOtherGate>

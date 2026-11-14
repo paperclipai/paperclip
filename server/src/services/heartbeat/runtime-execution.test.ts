@@ -1,4 +1,5 @@
 import { armCrashPointForTest } from "@paperclipai/shared/crash-points";
+import { logger } from "../../middleware/logger.js";
 import { NativeControllerRecoveryWaitingError } from "../native-runtime/native-controller-recovery.js";
 
 import { createNativeUsageDelivery } from "../native-runtime/native-usage-delivery.js";
@@ -535,6 +536,16 @@ describe.skipIf(!support.supported)("heartbeat runtime execution boundary", () =
     } else expectCleanup(input);
   });
 
+  it("does not promise result reconciliation when admission failed before a result existed", async () => {
+    const { input } = await fixture(true);
+    const failure = new Error("native_session_cleanup_quarantined");
+    vi.mocked(executePaperclipNativeSession).mockRejectedValueOnce(failure);
+    const warn = vi.spyOn(logger, "warn");
+    try {
+      await expect(executeHeartbeatRuntime(db, input)).rejects.toBe(failure);
+      expect(warn.mock.calls.some(call => call.some(value => typeof value === "string" && value.includes("retry persisted results")))).toBe(false);
+    } finally { warn.mockRestore(); }
+  });
   it("dispatches native execution with the selected session and persists its usage", async () => {
     const { input, adapter, run } = await fixture(true);
     vi.mocked(executePaperclipNativeSession).mockImplementationOnce(async native => {

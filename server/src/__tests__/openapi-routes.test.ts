@@ -411,14 +411,16 @@ describe("openapi routes", () => {
     const operation = spec.paths[`/api/companies/{companyId}/attention/${projection}`].get;
     expect(operation.security).toEqual([{ BoardSessionAuth: [] }, { BoardApiKeyAuth: [] }]);
     expect(operation["x-paperclip-authorization"]).toEqual({ actor: "board" });
-    expect(operation.parameters.filter((parameter: { in: string }) => parameter.in === "query")).toEqual([]);
+    expect(operation.parameters.filter((parameter: { in: string }) => parameter.in === "query")).toEqual([
+      expect.objectContaining({ name: "actionableOnly", required: false }),
+    ]);
     const response = operation.responses["200"].content["application/json"].schema;
     expect(response.properties.totalCount).toMatchObject({ type: "integer", minimum: 0 });
     expect(response.properties.generatedAt).toMatchObject({ format: "date-time" });
     expect(response.properties.items).toBeUndefined();
     expect(response.properties.nextCursor).toBeUndefined();
     if (projection === "tasks") expect(response.properties.taskIds).toMatchObject({ type: "array", items: { type: "string", format: "uuid" } });
-    for (const code of ["200", "401", "403"]) expect(operation.responses[code]).toBeDefined();
+    for (const code of ["200", "400", "401", "403"]) expect(operation.responses[code]).toBeDefined();
   });
 
   // Full chat cohort 4: search_api listed the cancel route as open to agents, so an agent tried it and got 403.

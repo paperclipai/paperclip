@@ -2074,6 +2074,72 @@ describeEmbeddedPostgres("attention service", () => {
     expect(row?.detail).toMatchObject({ kind: "blocker", blockingIssue: null });
   });
 
+  it.each(["done", "cancelled"])("does not describe a %s dependency as the current blocker", async (status) => {
+    const { companyId } = await seedCompany("STALE");
+    const issueId = await insertIssue({ companyId, identifier: "STALE-1", title: "Needs recovery", status: "blocked",
+      unblockDescriptor: { owner: "board", action: "Inspect runtime recovery" }, blockedTransitionAt: new Date() });
+    const prior = await insertIssue({ companyId, identifier: "STALE-2", title: "Finished dependency", status });
+    await db.insert(issueRelations).values({ companyId, issueId: prior, relatedIssueId: issueId, type: "blocks" });
+    const feed = await attentionService(db).list(companyId, { userId: "board-user" });
+    const row = feed.items.find(item => item.dedupKey.startsWith(`blocked-owner:${issueId}:`));
+    expect(row?.detail).toMatchObject({ kind: "blocker", blockingIssue: null });
+  });
+
+  it("projects only actionable items into feed, counts and task membership", async () => {
+    const { companyId, workerId, errorAgentId } = await seedCompany("HUM");
+    const issueId = await insertIssue({ companyId, identifier: "HUM-1", title: "Choose scope", status: "todo", assigneeAgentId: workerId });
+    const questionId = randomUUID();
+    await db.insert(issueThreadInteractions).values({ id: questionId, companyId, issueId, kind: "ask_user_questions", status: "pending",
+      title: "Choose scope", createdByAgentId: workerId, addresseeUserId: "board-user", effectiveResolverPolicy: "human_only",
+      payload: { version: 1, questions: [{ id: "scope", prompt: "Which scope?", options: [], selectionMode: "single", required: true, allowOther: true }] } });
+    const recoveryId = randomUUID();
+    await db.insert(issueRecoveryActions).values({ id: recoveryId, companyId, sourceIssueId: issueId,
+      kind: "workspace_validation", status: "active", ownerType: "board", cause: "workspace_branch_diverged",
+      fingerprint: recoveryId, nextAction: "Choose how the task workspace should continue." });
+    const boardApprovalId = randomUUID();
+    await db.insert(approvals).values({ id: boardApprovalId, companyId, type: "request_board_approval",
+      requestedByAgentId: workerId, status: "pending", payload: { title: "Review the governed request" } });
+    const svc = attentionService(db);
+    const operations = await svc.list(companyId, { userId: "board-user", all: true, allowUnscopedAll: true });
+    expect(operations.items.some(item => item.subject.id === errorAgentId)).toBe(true);
+    const options = { userId: "board-user", actionableOnly: true };
+    const feed = await svc.list(companyId, { ...options, all: true, allowUnscopedAll: true });
+    expect(new Set(feed.items.map(item => item.subject.id))).toEqual(new Set([questionId, recoveryId, boardApprovalId]));
+    expect(feed.items.find(item => item.subject.id === boardApprovalId)).toMatchObject({ inlineResolvable: true, subject: { kind: "approval" } });
+    expect(feed.totalCount).toBe(3);
+    const summary = await svc.summary(companyId, options);
+    const tasks = await svc.taskIndex(companyId, options);
+    expect(summary.totalCount).toBe(3);
+    expect(summary.countsBySourceKind).toEqual(feed.countsBySourceKind);
+    expect(summary.viewCounts.all).toBe(3);
+    expect((await svc.summary(companyId, { userId: "board-user" })).viewCounts.all).toBeGreaterThan(3);
+    expect(tasks.totalCount).toBe(3);
+    expect(tasks.taskIds).toEqual([issueId]);
+    expect((await svc.list(companyId, { userId: "board-user" })).items.some(item => item.subject.id === errorAgentId)).toBe(true);
+  });
+
+  it("keeps a budget override approval and its hard stop in the actionable projection", async () => {
+    const { companyId, workerId } = await seedCompany("BUD");
+    const approvalId = randomUUID();
+    await db.insert(approvals).values({ id: approvalId, companyId, type: "budget_override_required", requestedByAgentId: workerId,
+      status: "pending", payload: { title: "Raise the agent budget" } });
+    const policyId = randomUUID();
+    await db.insert(budgetPolicies).values({ id: policyId, companyId, scopeType: "agent", scopeId: workerId, metric: "billed_cents",
+      windowKind: "calendar_month_utc", amount: 100 });
+    await db.insert(budgetIncidents).values({ companyId, policyId, scopeType: "agent", scopeId: workerId, metric: "billed_cents",
+      windowKind: "calendar_month_utc", windowStart: new Date("2026-07-01T00:00:00.000Z"), windowEnd: new Date("2026-08-01T00:00:00.000Z"),
+      thresholdType: "hard", amountLimit: 100, amountObserved: 100, status: "open", approvalId });
+    const svc = attentionService(db);
+    const options = { userId: "board-user", actionableOnly: true };
+    const feed = await svc.list(companyId, { ...options, all: true, allowUnscopedAll: true });
+    const budget = feed.items.filter(item => item.sourceKind === "budget_alert" || item.subject.id === approvalId);
+    expect(budget.map(item => item.sourceKind).sort()).toEqual(["approval", "budget_alert"]);
+    expect(new Set(budget.map(item => item.obligationLeadId)).size).toBe(1);
+    const summary = await svc.summary(companyId, options);
+    expect(summary.countsBySourceKind).toEqual(feed.countsBySourceKind);
+    expect(summary.viewCounts.all).toBe(new Set(feed.items.map(item => item.obligationLeadId ?? item.id)).size);
+  });
+
   it("does not route pre-rollout human unblock descriptors", async () => {
     const { companyId } = await seedCompany("ATQ");
     const transitionAt = new Date(ROUTABLE_BLOCKED_ROLLOUT_AT.getTime() - 1);
@@ -2576,6 +2642,12 @@ describeEmbeddedPostgres("attention service", () => {
       runId: null,
     };
 
+    for (const suffix of ["", "/summary", "/tasks"]) {
+      await request(app(board)).get(`/api/companies/${companyId}/attention${suffix}?actionableOnly=invalid`).expect(400);
+      const actionable = await request(app(board)).get(`/api/companies/${companyId}/attention${suffix}?actionableOnly=true`).expect(200);
+      expect(actionable.body.totalCount).toBe(0);
+      await request(app(agent)).get(`/api/companies/${companyId}/attention${suffix}?actionableOnly=true`).expect(403);
+    }
     await request(app(board)).get(`/api/companies/${companyId}/attention`).expect(200);
     const completeFeed = await request(app(board))
       .get(`/api/companies/${companyId}/attention?includeDismissed=true&all=true`)

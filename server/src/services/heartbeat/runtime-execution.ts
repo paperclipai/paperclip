@@ -1306,7 +1306,7 @@ export async function executeHeartbeatRuntime(db: Db, input: HeartbeatRuntimeExe
         }
         return { dispatched: true, adapterResult: acceptedResult };
       }
-      try {
+      if (proposedResult) try {
         await measureRunPhase("execution.native_finalize", () => finalizeNativeRun({
           db,
           runId: run.id,
