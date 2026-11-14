@@ -22,13 +22,10 @@ const waitingCopy = (scope: { companyId: string; runId: string }) => sql`company
 
 export async function notifyInstructionCopyStopEvidence(transaction: object, scope: { companyId: string; runId: string }) {
   if (typeof (transaction as Db).execute !== "function") return;
-  const found = await (transaction as Db).execute<{ cleanup: boolean }>(sql`select
-    process_stopped_at is not null and state in ('saved', 'unchanged', 'resolved', 'unavailable') as cleanup
-    from agent_instruction_working_copies where ${waitingCopy(scope)}`);
-  const [copy] = Array.isArray(found) ? found as Array<{ cleanup: boolean }> : [];
-  if (!copy) return;
-  if (copy.cleanup) await notifyDirectoryCleanup(transaction, scope);
-  else await notifyInstructionCollection(transaction, scope);
+  const found = await (transaction as Db).execute(sql`select 1 from agent_instruction_working_copies where ${waitingCopy(scope)}`);
+  if (!Array.isArray(found) || found.length === 0) return;
+  await notifyInstructionCollection(transaction, scope);
+  await notifyDirectoryCleanup(transaction, scope);
   await (transaction as Db).execute(sql`update agent_instruction_working_copies
     set next_attempt_at = least(coalesce(next_attempt_at, now()), now()), updated_at = clock_timestamp()
     where ${waitingCopy(scope)}`);
