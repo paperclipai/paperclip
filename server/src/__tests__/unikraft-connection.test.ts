@@ -47,7 +47,7 @@ const credential = "unikraft-fixture-token";
       throw new Error(`Unexpected provider request ${init.method} ${url}`);
     });
     const service = toolAccessService(db, { remoteHttpRequest: request, remoteHttpEndpointLookup: async () => [{ address: "8.8.8.8", family: 4 }] });
-    const connected = await service.connectGalleryApp(company.id, { galleryKey: "unikraft", methodKey: "api-token",
+    const connected = await service.connectGalleryApp(company.id, { galleryKey: "unikraft", connectionMethodKey: "api-token",
       ...(options.personal ? { grantKind: "user" as const } : {}), ...(options.metro ? { configValues: { metro: options.metro } } : {}),
       credentialValues: { "credentials.authorization": credential } }, actor);
     const [agent] = await db.insert(agents).values({ companyId: company.id, name: "Operator", role: "engineer", adapterType: "process" }).returning();
@@ -182,7 +182,7 @@ describe("Unikraft provider client", () => {
   });
   it("reports a timed-out sandbox wait as a still-running command, not a provider failure", async () => {
     const commandId = randomUUID();
-    const request = vi.fn(async () => new Response(null, { status: 408 }));
+    const request = vi.fn(async (_url: string, _init: RequestInit) => new Response(null, { status: 408 }));
     const call = (toolName: string) => executeUnikraftTool({ binding: { companyId: "company", agentId: "agent" },
       connection: { companyId: "company", config: {} }, headers: { Authorization: `Bearer ${credential}` }, request, toolName,
       parameters: { instance: "web", path: { uuid: commandId }, ...(toolName.endsWith("with_timeout") ? { body: { timeout_s: 0.01 } } : {}) } });

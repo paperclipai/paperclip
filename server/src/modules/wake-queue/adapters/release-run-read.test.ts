@@ -1,6 +1,6 @@
 import { randomBytes, randomUUID } from "node:crypto";
 import { agents, companies, createDb, heartbeatRuns } from "@paperclipai/db";
-import { createDatabaseResponseCapture, installDatabaseResponseCapture } from "@paperclipai/db/response-capture";
+import { createFullDatabaseResponseCapture, installDatabaseResponseCapture } from "../../../__tests__/helpers/full-database-response-capture.js";
 import { eq } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "../../../__tests__/helpers/embedded-postgres.js";
@@ -40,7 +40,7 @@ describe.skipIf(!support.supported)("wake release run reads", () => {
     const scope = { companyId, runId: before.id };
     const events: Array<Record<string, unknown>> = [];
     const now = Date.now();
-    const capture = createDatabaseResponseCapture({ start: now - 100, end: now + 59_000 }, event => events.push(event));
+    const capture = createFullDatabaseResponseCapture({ start: now - 100, end: now + 59_000 }, event => events.push(event));
     installDatabaseResponseCapture(db, { heartbeatRuns }, capture);
     try {
       const native = await db.transaction(tx => readReleaseRun(tx as unknown as typeof db, scope));
@@ -51,7 +51,7 @@ describe.skipIf(!support.supported)("wake release run reads", () => {
       expect(native.run).not.toHaveProperty("stdoutExcerpt");
       expect(native.run).not.toHaveProperty("stderrExcerpt");
     } finally { capture.flush(); }
-    const summary = events.find(event => event.event === "paperclip.db_response_capture.summary.v1")!;
+    const summary = events.find(event => event.event === "paperclip.test_db_response_capture.summary.v1")!;
     expect(summary.completedQueries).toBe(1);
     expect(summary.responseValueBytes).toBeLessThan(8192);
     expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, before.id)))[0]).toEqual(before);
@@ -97,12 +97,12 @@ describe.skipIf(!support.supported)("wake release run reads", () => {
       contextSnapshot: { ...context, ...launch }, resultJson: evidence }).returning();
     const events: Array<Record<string, unknown>> = [];
     const now = Date.now();
-    const capture = createDatabaseResponseCapture({ start: now - 100, end: now + 59_000 }, event => events.push(event));
+    const capture = createFullDatabaseResponseCapture({ start: now - 100, end: now + 59_000 }, event => events.push(event));
     installDatabaseResponseCapture(db, { heartbeatRuns }, capture);
     let selected: Awaited<ReturnType<typeof readReleaseRun>>;
     try { selected = await db.transaction(tx => readReleaseRun(tx as unknown as typeof db, { companyId, runId: before.id })); }
     finally { capture.flush(); }
-    const summary = events.find(event => event.event === "paperclip.db_response_capture.summary.v1")!;
+    const summary = events.find(event => event.event === "paperclip.test_db_response_capture.summary.v1")!;
     expect(summary.completedQueries).toBe(1);
     expect(summary.responseValueBytes).toBeLessThan(8192);
     expect(selected!.run?.contextSnapshot).toEqual(context);

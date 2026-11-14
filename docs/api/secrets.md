@@ -5,6 +5,11 @@ summary: Secrets CRUD
 
 Manage encrypted secrets that agents receive through environment bindings or fetch on demand.
 
+Server-owned connector credentials, including Tailscale enrollment tokens and
+node state, are excluded from company secret catalogs. Generic secret bindings,
+runtime projection, and agent value reads cannot resolve them. Existing bindings
+do not bypass this restriction; those requests return `403`.
+
 ## Agent List and Fetch
 
 These routes require the current run-bound agent JWT. They are not available to

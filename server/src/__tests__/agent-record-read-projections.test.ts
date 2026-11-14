@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { agents, companies, costEvents, createDb } from "@paperclipai/db";
-import { createDatabaseResponseCapture, installDatabaseResponseCapture } from "@paperclipai/db/response-capture";
+import { createFullDatabaseResponseCapture, installDatabaseResponseCapture } from "./helpers/full-database-response-capture.js";
 import { eq } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
@@ -61,7 +61,7 @@ describe.skipIf(!support.supported)("agent roster read projections", () => {
 
   async function observe<T>(run: (observed: ReturnType<typeof createDb>) => Promise<T>) {
     const observed = createDb(database.connectionString), events: Array<Record<string, unknown>> = [], now = Date.now();
-    const capture = createDatabaseResponseCapture({ start: now - 100, end: now + 59_000 }, event => events.push(event));
+    const capture = createFullDatabaseResponseCapture({ start: now - 100, end: now + 59_000 }, event => events.push(event));
     installDatabaseResponseCapture(observed, { agents, costEvents }, capture);
     try {
       const result = await run(observed);

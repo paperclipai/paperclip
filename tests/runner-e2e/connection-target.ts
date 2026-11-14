@@ -29,7 +29,7 @@ export class ConnectionApi {
       throw new ConnectionFailure("api_request_failed");
     }
   }
-  async get<T = any>(route: string): Promise<T> { return (await this.response(route)).json(); }
+  async get<T = any>(route: string, options?: { timeoutMs?: number }): Promise<T> { return (await this.response(route, "GET", undefined, options)).json(); }
   async post<T = any>(route: string, data?: unknown, options?: { timeoutMs?: number }): Promise<T> { return (await this.response(route, "POST", data, options)).json(); }
   async patch<T = any>(route: string, data: unknown): Promise<T> { return (await this.response(route, "PATCH", data)).json(); }
   async delete(route: string) { await this.response(route, "DELETE"); }

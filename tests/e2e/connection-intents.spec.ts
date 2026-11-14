@@ -250,7 +250,7 @@ async function waitForAgentRun(
   companyId: string,
   agentId: string,
 ) {
-  let terminalRun: { id: string; status: string } | null = null;
+  let terminalRun = null as { id: string; status: string } | null;
   await expect
     .poll(
       async () => {

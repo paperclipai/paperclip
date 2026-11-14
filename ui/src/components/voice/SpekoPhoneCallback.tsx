@@ -28,7 +28,7 @@ export function SpekoPhoneCallbackForm({ preference, loading, saving, error, sav
 }
 export function SpekoPhoneCallback({ companyId, endpointId }: { companyId: string; endpointId: string }) {
   const key = ["speko-callback", companyId, endpointId];
-  const query = useQuery({ queryKey: key, queryFn: () => voiceCallbacksApi.get(companyId, endpointId), retry: false });
+  const query = useQuery({ queryKey: key, queryFn: () => voiceCallbacksApi.get(companyId, endpointId) });
   const mutation = useMutation({ mutationFn: (preference: VoiceCallbackPreference) => voiceCallbacksApi.save(companyId, endpointId, preference), onSuccess: () => query.refetch() });
   return <SpekoPhoneCallbackForm preference={query.data} loading={query.isLoading} saving={mutation.isPending} saved={mutation.isSuccess} error={(query.error ?? mutation.error)?.message} onSave={preference => mutation.mutate(preference)} />;
 }

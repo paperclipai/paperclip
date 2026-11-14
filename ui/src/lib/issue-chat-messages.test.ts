@@ -1411,6 +1411,74 @@ describe("buildIssueChatMessages", () => {
     }
   });
 
+  it.each([
+    { adapterType: "codex_local", status: "cancelled" },
+    { adapterType: "paperclip_runner", status: "cancelled" },
+    { adapterType: "codex_local", status: "failed" },
+    { adapterType: "paperclip_runner", status: "failed" },
+    { adapterType: "codex_local", status: "succeeded" },
+    { adapterType: "paperclip_runner", status: "succeeded" },
+  ])("settles a $status $adapterType run once while its live cache is stale", ({ adapterType, status }) => {
+    const startedAt = "2026-11-03T14:22:22.000Z";
+    const live: LiveRunForIssue = {
+      id: "run-stop", status: "running", invocationSource: "manual", triggerDetail: null,
+      createdAt: startedAt, startedAt, finishedAt: null,
+      agentId: "agent-1", agentName: "Agent", adapterType,
+    };
+    const transcript = [
+      { kind: "assistant" as const, ts: startedAt, text: "I'll find the artifact directory and execute the foreground command." },
+      { kind: "tool_call" as const, ts: startedAt, toolUseId: "foreground-command", name: "shell", input: { command: "sleep 300" } },
+    ];
+    const messages = buildIssueChatMessages({
+      comments: [], timelineEvents: [], issueStatus: "in_progress",
+      linkedRuns: [{ runId: live.id, status, agentId: live.agentId, adapterType,
+        createdAt: startedAt, startedAt, finishedAt: "2026-11-03T14:24:19.000Z" }],
+      liveRuns: [live], transcriptsByRunId: new Map([[live.id, transcript]]),
+    });
+
+    expect(messages).toHaveLength(1);
+    expect(messages[0]).toMatchObject({
+      id: "run-assistant:run-stop", status: { type: "complete", reason: "stop" },
+      metadata: { custom: { kind: "historical-run", runStatus: status } },
+    });
+    expect(messages[0]?.content.filter((part) => part.type === "text")).toEqual([
+      { type: "text", text: transcript[0].text },
+    ]);
+    expect(messages[0]?.content.filter((part) => part.type === "tool-call")).toHaveLength(1);
+  });
+
+  it("keeps the live representation when history has not settled the same run", () => {
+    const createdAt = "2026-11-03T14:22:22.000Z";
+    const messages = buildIssueChatMessages({
+      comments: [], timelineEvents: [], issueStatus: "in_progress",
+      linkedRuns: [{ runId: "run-active", status: "queued", agentId: "agent-1", adapterType: "paperclip_runner", createdAt, startedAt: null }],
+      liveRuns: [{ id: "run-active", status: "running", agentId: "agent-1", agentName: "Agent", adapterType: "paperclip_runner",
+        invocationSource: "manual", triggerDetail: null, createdAt, startedAt: createdAt, finishedAt: null }],
+    });
+
+    expect(messages).toHaveLength(1);
+    expect(messages[0]).toMatchObject({
+      id: "run-assistant:run-active", status: { type: "running" },
+      metadata: { custom: { kind: "live-run", runStatus: "running" } },
+    });
+  });
+
+  it("keeps distinct runs when one stopped run hands off from live history", () => {
+    const createdAt = "2026-11-03T14:22:22.000Z";
+    const live = { status: "running" as const, agentId: "agent-1", agentName: "Agent", adapterType: "paperclip_runner",
+      invocationSource: "manual" as const, triggerDetail: null, createdAt, startedAt: createdAt, finishedAt: null };
+    const messages = buildIssueChatMessages({
+      comments: [], timelineEvents: [], issueStatus: "in_progress",
+      linkedRuns: [{ runId: "run-stop", status: "cancelled", agentId: live.agentId, adapterType: live.adapterType,
+        createdAt, startedAt: createdAt, finishedAt: "2026-11-03T14:24:19.000Z" }],
+      liveRuns: [{ ...live, id: "run-stop" }, { ...live, id: "run-other" }],
+    });
+
+    expect(messages.map(message => message.id)).toEqual(["run-assistant:run-stop", "run-assistant:run-other"]);
+    expect(messages[0]).toMatchObject({ metadata: { custom: { runStatus: "cancelled" } } });
+    expect(messages[1]).toMatchObject({ metadata: { custom: { runStatus: "running" } } });
+  });
+
   it("keeps the same assistant message id when a live run becomes a cancelled historical run", () => {
     const liveMessages = buildIssueChatMessages({
       comments: [],

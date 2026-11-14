@@ -43,7 +43,7 @@ describe.skipIf(!support.supported)('automatic project skill sources', () => {
   beforeAll(async () => {
     if (externalUrl) await applyPendingMigrations(externalUrl);
     else testDb = await startEmbeddedPostgresTestDatabase('paperclip-project-skills-');
-    db = createDb(externalUrl ?? testDb.connectionString);
+    db = createDb(externalUrl ?? testDb.connectionString, { maxConnections: 4 });
     home = await fs.mkdtemp(path.join(os.tmpdir(), 'paperclip-project-skills-home-'));
     process.env.PAPERCLIP_HOME = home;
     await db.insert(companies).values({ id: companyId, name: 'Project skills', issuePrefix: 'PSK' });
@@ -664,9 +664,10 @@ describe.skipIf(!support.supported)('automatic project skill sources', () => {
     const sourceId = ready!.sourceId!;
     const service = skillSourceService(db);
     const original = await service.detail(companyId, sourceId);
-    const failure: SkillSourceContext = { ...context, read: () => (async () => {
+    const rateLimited = async () => {
       throw unprocessable('GitHub request limit reached.', { retryAfterMs: 7_200_000 });
-    }) as ReturnType<SkillSourceContext['read']> };
+    };
+    const failure: SkillSourceContext = { ...context, read: () => Object.assign(rateLimited, { openSnapshot: rateLimited }) };
     const failedAt = new Date();
     await db.update(companySkillSources).set({ nextSyncAt: failedAt }).where(eq(companySkillSources.id, sourceId));
     await skillSourceSyncService(db, { context: async () => failure }).tick(failedAt);

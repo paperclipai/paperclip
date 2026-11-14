@@ -1,3 +1,4 @@
+import { issueDisplayStatusSql } from "../services/issue-display-status.js";
 import { Router } from "express";
 import { and, desc, eq, gte, inArray, isNull, or, sql, type SQLWrapper } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
@@ -347,6 +348,7 @@ export function userProfileRoutes(db: Db) {
           identifier: issues.identifier,
           title: issues.title,
           status: issues.status,
+          displayStatus: issueDisplayStatusSql(),
           priority: issues.priority,
           assigneeAgentId: issues.assigneeAgentId,
           assigneeUserId: issues.assigneeUserId,

@@ -71,3 +71,11 @@ test("scans a tree, skips tests, and honors the allowlist", () => {
     rmSync(root, { recursive: true, force: true });
   }
 });
+
+
+test("flags multiline renders and retry overrides", () => {
+  assert.deepEqual(rulesFor("<p>{\n error.message\n}</p>"), ["raw-error-message"]);
+  assert.deepEqual(rulesFor("<p>{\n (error as Error).message\n}</p>"), ["cast-error-message"]);
+  assert.deepEqual(rulesFor("query.isError\n ? <Error /> : <List />"), ["is-error-render"]);
+  assert.deepEqual(rulesFor("useQuery({ retry:\n false })"), ["retry-false"]);
+});

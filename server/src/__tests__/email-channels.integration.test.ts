@@ -38,6 +38,8 @@ import {
   applyPendingMigrations,
   createDb,
   companies,
+  budgetPolicies,
+  costEvents,
   agents,
   chatEndpoints,
   chatConversations,
@@ -217,7 +219,7 @@ describe("AgentMail durable email pipeline", () => {
   });
 
   async function fixture(mode: "websocket" | "webhook" = "webhook", storage?: StorageService,
-    beforeSetup?: (input: { companyId: string; fetcher: typeof fetch; wakeup: ReturnType<typeof vi.fn> }) => Promise<void>,
+    beforeSetup?: (input: { companyId: string; fetcher: typeof fetch; wakeup: Parameters<typeof emailChannelService>[1]["heartbeat"]["wakeup"] }) => Promise<void>,
   ) {
     const companyId = randomUUID(),
       agentId = randomUUID(),
@@ -344,8 +346,8 @@ describe("AgentMail durable email pipeline", () => {
       { userId: "email-board" },
     );
     function message(
-      id = randomUUID(),
-      thread = randomUUID(),
+      id: string = randomUUID(),
+      thread: string = randomUUID(),
       extra: Partial<AgentmailMessage> = {},
     ) {
       return agentmailMessageSchema.parse({
@@ -1127,10 +1129,10 @@ describe("AgentMail durable email pipeline", () => {
       chat.publishComment(f.endpointId, conversation.id, comment.id),
     ).rejects.toThrow(/explicit email/);
     await chat.shutdown();
-    await db
-      .update(agents)
-      .set({ budgetMonthlyCents: 100, spentMonthlyCents: 100 })
-      .where(eq(agents.id, f.agentId));
+    await db.insert(budgetPolicies).values({ companyId: f.companyId, scopeType: "agent", scopeId: f.agentId,
+      windowKind: "calendar_month_utc", amount: 100 });
+    await db.insert(costEvents).values({ companyId: f.companyId, agentId: f.agentId,
+      provider: "test", model: "test", costCents: 100, occurredAt: new Date() });
     await f.service.tick();
     expect(f.sends).toHaveLength(0);
     expect((await f.service.publication(queued.id, f.companyId)).outcome).toBe(
@@ -1318,7 +1320,7 @@ describe("AgentMail durable email pipeline", () => {
     await db.insert(principalPermissionGrants).values({ companyId: f.companyId, principalType: "user",
       principalId: actor.userId, permissionKey: "tools:manage_connections" });
     expect(await accessService(db).hasPermission(f.companyId, "user", actor.userId, "tools:manage_connections")).toBe(true);
-    expect(await accessService(db).hasPermission(f.companyId, "user", actor.userId, "agent_config:update")).toBe(false);
+    expect(await accessService(db).hasPermission(f.companyId, "user", actor.userId, "agents:configure")).toBe(false);
     const requestId = randomUUID();
     const svc = emailConnectionService(db, f.fetcher);
     const connection = await svc.connect(f.companyId, { apiKey: "test-key", grantKind: "organization",

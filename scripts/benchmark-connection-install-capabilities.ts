@@ -15,6 +15,8 @@ import type { AuthorizationActor } from "../server/src/services/authorization.js
 
 // Run explicitly; this benchmark never reads DATABASE_URL or contacts a hosted DB.
 // node --import ./server/node_modules/tsx/dist/esm/index.mjs scripts/benchmark-connection-install-capabilities.ts --baseline-ref=<pre-fix SHA>
+const connectionPurpose = process.argv.find(arg => arg.startsWith("--purpose="))?.slice(10) ?? "tool";
+assert.ok(connectionPurpose === "tool" || connectionPurpose === "ai", "Use --purpose=tool or --purpose=ai");
 const baselineRef = process.argv.find(arg => arg.startsWith("--baseline-ref="))?.slice(15);
 assert.ok(baselineRef, "Supply an explicit pre-fix --baseline-ref");
 const repository = fileURLToPath(new URL("../", import.meta.url));
@@ -101,7 +103,7 @@ try {
         permissionKey: "tools:manage_profiles", scope: { targetAgentIds: candidateIds } });
       await db.insert(toolApplications).values({ id: applicationId, companyId, name: "Synthetic benchmark", type: "mcp_http" });
       await db.insert(toolConnections).values({ id: connectionId, applicationId, companyId, uid: connectionId,
-        name: "Synthetic benchmark", transport: "mcp_remote", authKind: "none", config: { provider: "fixture" } });
+        name: "Synthetic benchmark", connectionPurpose, transport: connectionPurpose === "ai" ? "runtime_auth" : "mcp_remote", authKind: "none", config: { provider: "fixture" } });
       await db.insert(toolConnectionInstalls).values(installs === "company"
         ? [{ companyId, connectionId, targetType: "company", targetId: companyId }]
         : candidateIds.slice(0, Math.max(1, Math.floor(n / 4))).map(targetId => ({ companyId, connectionId, targetType: "agent" as const, targetId })));
@@ -151,7 +153,7 @@ try {
       const expectedRetained = installs === "company" ? n : Math.max(1, Math.floor(n / 4));
       assert.equal(targetLookups(captured.baseline), n * expectedRetained + n - expectedRetained);
       assert.equal(targetLookups(captured.treatment), n);
-      const result = { n, installs, principal: "cloud noncreator member with target-scoped grant", completePositionalEquality: true,
+      const result = { n, installs, connectionPurpose, principal: "cloud noncreator member with target-scoped grant", completePositionalEquality: true,
         baseline: { ...before, ...counters.baseline, targetLookups: targetLookups(captured.baseline) },
         treatment: { ...after, ...counters.treatment, targetLookups: targetLookups(captured.treatment) },
         speedup: before.medianMs! / after.medianMs!, statements: captured, treatmentPlans: plans };

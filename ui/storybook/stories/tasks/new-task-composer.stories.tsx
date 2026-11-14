@@ -12,6 +12,8 @@ import {
   buildUserMentionHref,
 } from "@paperclipai/shared";
 import { MarkdownBody } from "@/components/MarkdownBody";
+import { composerImageFiles } from "../../support/composerImageFiles";
+import { composerSkills as SKILLS } from "../../support/composerSkills";
 import { NewIssueDialog } from "@/components/NewIssueDialog";
 import { useCompany } from "@/context/CompanyContext";
 import { useDialog } from "@/context/DialogContext";
@@ -34,7 +36,6 @@ const NEW_TASK_AGENTS = [...storybookAgents, { ...storybookAgents[2]!, id: "agen
     : { ...agent, appearance: appearanceForPalette("pink-lemonade") },
 );
 const REQUEST = "Review the sign-in flow and fix the redirect after a session expires.";
-const SKILLS = [{ id: "skill-test-drive", key: "test-it-for-real", slug: "test-it-for-real", name: "Test it for real", description: "Walk through the feature in the browser." }];
 const ROUTINES = [{ id: "routine-daily-check", title: "Daily check-in", status: "active" }];
 const RICH_REQUEST = [
   `Ask [@CodexCoder](${buildAgentMentionHref("agent-codex", "code")}) and [@QAChecker](${buildAgentMentionHref("agent-qa", "shield")}) to review [@Board UI](${buildProjectMentionHref("project-board-ui", storybookProjects[0]!.color)}).`,
@@ -69,7 +70,6 @@ function NewTaskStory({
 
   useLayoutEffect(() => {
     const originalFetch = window.fetch;
-    const imageUrls: string[] = [];
     window.fetch = async (input, init) => {
       const url = new URL(
         typeof input === "string" ? input : input instanceof URL ? input.href : input.url,
@@ -82,13 +82,6 @@ function NewTaskStory({
         if (worktrees === "loading") return new Promise<Response>(() => {});
         if (worktrees === "error") return Response.json({ error: "Worktrees unavailable" }, { status: 503 });
         return Response.json(worktrees === "empty" || url.searchParams.get("projectId") !== "project-board-ui" ? [] : WORKTREES);
-      }
-      if (url.pathname === `/api/companies/${COMPANY_ID}/assets/images` && init?.method === "POST") {
-        const file = init.body instanceof FormData ? init.body.get("file") : null;
-        if (!(file instanceof File)) return Response.json({ error: "Select an image" }, { status: 400 });
-        const contentPath = URL.createObjectURL(file);
-        imageUrls.push(contentPath);
-        return Response.json({ contentPath });
       }
       if (url.pathname === `/api/companies/${COMPANY_ID}/issues` && init?.method === "POST") {
         if (scenario === "saving") return new Promise<Response>(() => {});
@@ -112,7 +105,6 @@ function NewTaskStory({
     };
     return () => {
       window.fetch = originalFetch;
-      imageUrls.forEach((url) => URL.revokeObjectURL(url));
     };
   }, [scenario, worktrees]);
 
@@ -225,7 +217,7 @@ const meta = {
       "status": "current",
       "implementation": "production",
       "boundary": "fixtures",
-      "notes": "WorktreePicker, ReuseWorktree, CreateWithReusedWorktree and NewWorktreeAfterReuse exercise workspace selection and submitted fixture request values. Actual admission/binding and execution remain outside this story. The filter uses one lowercase label without helper text. All chat-channel tasks count as bot-created; the focused visibility stories cover human-initiated channel work."
+      "notes": "Images and MobileImages exercise staged image thumbnails above the editor; Files includes a document. These examples do not create a real task. WorktreePicker, ReuseWorktree, CreateWithReusedWorktree and NewWorktreeAfterReuse exercise workspace selection and submitted fixture request values. Actual admission/binding and execution remain outside this story. The filter uses one lowercase label without helper text. All chat-channel tasks count as bot-created; the focused visibility stories cover human-initiated channel work."
     },
   },
   args: { scenario: "empty" },
@@ -326,15 +318,32 @@ export const Files: Story = {
     const page = within(canvasElement.ownerDocument.body);
     await page.findByTestId("task-chat-composer-input");
     const input = canvasElement.ownerDocument.querySelector<HTMLInputElement>('input[type="file"]')!;
+    const [image] = await composerImageFiles();
     await userEvent.upload(input, [
       new File(["# Sign-in plan\n\nReproduce the redirect."], "plan.md", {
         type: "text/markdown",
       }),
-      new File(["fixture"], "redirect.png", { type: "image/png" }),
+      image!,
     ]);
     await expect(page.getByText("plan.md")).toBeVisible();
-    await expect(page.getByText("redirect.png")).toBeVisible();
+    await expect(page.getByAltText("desktop-reference.jpg")).toBeVisible();
   },
+};
+export const Images: Story = {
+  args: { scenario: "prefilled" },
+  play: async ({ canvasElement }) => {
+    const page = within(canvasElement.ownerDocument.body);
+    await page.findByTestId("task-chat-composer-input");
+    const input = canvasElement.ownerDocument.querySelector<HTMLInputElement>('input[type="file"]')!;
+    await userEvent.upload(input, await composerImageFiles());
+    await expect(page.getByAltText("desktop-reference.jpg")).toBeVisible();
+    await expect(page.getByAltText("mobile-reference.jpg")).toBeVisible();
+    await expect(page.getByRole("textbox", { name: "editable markdown" })).toHaveTextContent(REQUEST);
+  },
+};
+export const MobileImages: Story = {
+  ...Images,
+  globals: { viewport: { value: "mobile", isRotated: false } },
 };
 export const Saving: Story = {
   args: { scenario: "saving" },
@@ -472,10 +481,13 @@ export const MentionPicker: Story = {
 export const SlashCommands: Story = {
   play: async ({ canvasElement }) => {
     const page = within(canvasElement.ownerDocument.body);
-    await userEvent.type(await page.findByRole("textbox", { name: "editable markdown" }), "/");
+    await waitFor(() => expect(page.getByTestId("task-chat-composer-assignee-label")).toHaveTextContent("CEO"));
+    await userEvent.type(await page.findByRole("textbox", { name: "editable markdown" }), "/", { delay: 25 });
     const menuElement = await page.findByTestId("mention-autocomplete-menu");
     const menu = within(menuElement);
     await expect(menu.getByText("/test-it-for-real")).toBeVisible();
+    await expect(menu.getByText(SKILLS[0]!.description!)).toBeVisible();
+    await expect(menu.getByText(`/${SKILLS[2]!.slug}`)).toBeVisible();
     await expect(menu.getByText("/routine:Daily check-in")).toBeVisible();
     await expect(menuElement.getBoundingClientRect().right).toBeLessThanOrEqual(canvasElement.ownerDocument.defaultView!.innerWidth);
   },
@@ -504,6 +516,7 @@ export const CreateWithRichChips: Story = {
     const receipt = await page.findByRole("status");
     await expect(receipt).toHaveTextContent("Task created");
     await expect(receipt).toHaveTextContent("/test-it-for-real");
+    await expect(within(receipt).getByRole("link", { name: "/test-it-for-real" })).toHaveAttribute("href", `/skills/${SKILLS[0]!.id}`);
     await expect(receipt).toHaveTextContent("/routine:Daily check-in");
     await expect(receipt.querySelector('[data-mention-kind="agent"]')).toHaveAttribute("style", expect.stringContaining("electric-grove"));
   },
@@ -543,3 +556,31 @@ export const MobileMentionPicker: Story = { ...MentionPicker, globals: { viewpor
 export const MobileSlashCommands: Story = { ...SlashCommands, globals: { viewport: { value: "mobile", isRotated: false } } };
 export const MobileRichChips: Story = { ...RichChips, globals: { viewport: { value: "mobile", isRotated: false } } };
 export const MobileInsertRichChips: Story = { ...InsertRichChips, globals: { viewport: { value: "mobile", isRotated: false } } };
+
+export const InlineSkill: Story = {
+  play: async ({ canvasElement }) => {
+    const page = within(canvasElement.ownerDocument.body);
+    await waitFor(() => expect(page.getByTestId("task-chat-composer-assignee-label")).toHaveTextContent("CEO"));
+    const editor = await page.findByRole("textbox", { name: "editable markdown" });
+    await userEvent.type(editor, "Use /test-it", { delay: 25 });
+    await expect(await page.findByTestId("mention-autocomplete-menu")).toBeVisible();
+    await userEvent.keyboard("{Tab}");
+    await waitFor(() => expect(editor.querySelector('[data-mention-kind="skill"]')).toBeVisible());
+    await userEvent.keyboard(" to verify the sign-in redirect.", { delay: 25 });
+    await expect(editor).toHaveTextContent("Use /test-it-for-real to verify the sign-in redirect.");
+  },
+};
+export const MobileInlineSkill: Story = { ...InlineSkill, globals: { viewport: { value: "mobile", isRotated: false } } };
+
+export const ScreenDragOver: Story = {
+  play: async ({ canvasElement }) => {
+    const document = canvasElement.ownerDocument;
+    const page = within(document.body);
+    await expect(await page.findByRole("textbox", { name: "editable markdown" })).toBeVisible();
+    await waitFor(() => expect(page.getByTestId("task-chat-composer-add")).toBeEnabled());
+    const transfer = new DataTransfer();
+    transfer.items.add(new File(["image"], "screenshot.png", { type: "image/png" }));
+    document.body.dispatchEvent(new DragEvent("dragenter", { bubbles: true, cancelable: true, dataTransfer: transfer }));
+    await waitFor(() => expect(page.getByTestId("composer-file-drop-overlay")).toBeVisible());
+  },
+};

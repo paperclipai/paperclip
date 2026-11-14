@@ -28,6 +28,8 @@ import {
   getDefaultValues,
   type JsonSchemaNode,
 } from "@/components/JsonSchemaForm";
+import { describeError } from "@/api/errors";
+import { QueryErrorState, QueryPlaceholder, useQueryView } from "@/components/QueryView";
 
 /**
  * PluginSettings page component.
@@ -67,11 +69,13 @@ export function PluginSettings() {
   const { hideHostPaths } = useManagedSandboxOnly();
   const [activeTab, setActiveTab] = useState<"configuration" | "status">("configuration");
 
-  const { data: plugin, isLoading: pluginLoading } = useQuery({
+  const pluginQuery = useQuery({
     queryKey: queryKeys.plugins.detail(pluginId!),
     queryFn: () => pluginsApi.get(pluginId!),
     enabled: !!pluginId,
   });
+  const plugin = pluginQuery.data;
+  const pluginView = useQueryView(pluginQuery);
 
   const { data: healthData, isLoading: healthLoading } = useQuery({
     queryKey: queryKeys.plugins.health(pluginId!),
@@ -102,7 +106,7 @@ export function PluginSettings() {
     ? queryKeys.plugins.config(pluginId, selectedCompanyId)
     : ["plugins", pluginId ?? "__missing_plugin__", "companies", "__missing_company__", "config"] as const;
 
-  const { data: configData, isLoading: configLoading } = useQuery({
+  const { data: configData, isLoading: configLoading, isSuccess: configLoaded } = useQuery({
     queryKey: configQueryKey,
     queryFn: () => pluginsApi.getConfig(pluginId!, selectedCompanyId!),
     enabled: !!pluginId && !!hasConfigSchema && !!selectedCompanyId,
@@ -114,8 +118,9 @@ export function PluginSettings() {
     enabled: !!selectedCompanyId,
   });
 
-  // Filter slots to only show settings pages for this specific plugin
-  const pluginSlots = slots.filter((slot) => slot.pluginId === pluginId);
+  // Filter slots to only show settings pages for this specific plugin. The route
+  // segment can be the plugin's id or its key, so match either.
+  const pluginSlots = slots.filter((slot) => slot.pluginId === pluginId || slot.pluginKey === pluginId);
 
   // If the plugin has a custom settingsPage slot, prefer that over auto-generated form
   const hasCustomSettingsPage = pluginSlots.length > 0;
@@ -133,8 +138,24 @@ export function PluginSettings() {
     setActiveTab("configuration");
   }, [pluginId]);
 
-  if (pluginLoading) {
-    return <div className="p-4 text-sm text-muted-foreground">Loading plugin details...</div>;
+  if (pluginView.kind === "loading" || pluginView.kind === "reconnecting") {
+    return <QueryPlaceholder size="page" label="Loading plugin details" className="p-4" />;
+  }
+
+  // A failed load must not bounce the operator back to the plugin list: a
+  // cached plugin keeps the page up through an outage, and a real failure
+  // shows readable copy with Retry.
+  if (pluginView.kind === "error") {
+    return (
+      <QueryErrorState
+        size="page"
+        className="p-4"
+        error={pluginQuery.error}
+        action="load this plugin"
+        onRetry={pluginView.retry}
+        retrying={pluginView.isFetching}
+      />
+    );
   }
 
   if (!plugin) {
@@ -259,6 +280,7 @@ export function PluginSettings() {
                   companyId={selectedCompanyId}
                   schema={configSchema!}
                   initialValues={configData?.configJson}
+                  needsInitialSave={configLoaded && configData === null}
                   isLoading={configLoading}
                   pluginStatus={plugin.status}
                   supportsConfigTest={(plugin as unknown as { supportsConfigTest?: boolean }).supportsConfigTest === true}
@@ -592,15 +614,17 @@ interface PluginLocalFoldersSettingsProps {
 }
 
 function PluginLocalFoldersSettings({ pluginId, companyId, declarations }: PluginLocalFoldersSettingsProps) {
-  const { data, isLoading, error } = useQuery({
+  const foldersQuery = useQuery({
     queryKey: companyId
       ? queryKeys.plugins.localFolders(pluginId, companyId)
       : ["plugins", pluginId, "companies", "none", "local-folders"],
     queryFn: () => pluginsApi.listLocalFolders(pluginId, companyId!),
     enabled: !!companyId,
   });
+  const foldersView = useQueryView(foldersQuery);
 
-  const statusByKey = new Map((data?.folders ?? []).map((folder) => [folder.folderKey, folder]));
+  // Loaded folder statuses stay on the rows through an outage.
+  const statusByKey = new Map((foldersQuery.data?.folders ?? []).map((folder) => [folder.folderKey, folder]));
 
   if (!companyId) {
     return (
@@ -616,16 +640,17 @@ function PluginLocalFoldersSettings({ pluginId, companyId, declarations }: Plugi
         <FolderOpen className="h-4 w-4 text-muted-foreground" />
         <h3 className="text-sm font-medium">Local folders</h3>
       </div>
-      {error ? (
-        <div className="rounded-md border border-destructive/20 bg-destructive/10 px-3 py-2 text-sm text-destructive">
-          {(error as Error).message || "Failed to load local folder settings."}
-        </div>
+      {foldersView.kind === "error" ? (
+        <QueryErrorState
+          size="panel"
+          error={foldersQuery.error}
+          action="load local folder settings"
+          onRetry={foldersView.retry}
+          retrying={foldersView.isFetching}
+        />
       ) : null}
-      {isLoading ? (
-        <div className="flex items-center gap-2 py-3 text-sm text-muted-foreground">
-          <Loader2 className="h-4 w-4 animate-spin" />
-          Loading local folders...
-        </div>
+      {foldersView.kind === "loading" || foldersView.kind === "reconnecting" ? (
+        <QueryPlaceholder size="panel" label="Loading local folders" className="py-3" />
       ) : (
         <div className="space-y-3">
           {declarations.map((declaration) => (
@@ -679,7 +704,7 @@ function PluginLocalFolderRow({ pluginId, companyId, declaration, status }: Plug
       queryClient.invalidateQueries({ queryKey: queryKeys.plugins.localFolders(pluginId, companyId) });
     },
     onError: (err: Error) => {
-      setMessage({ type: "error", text: err.message || "Failed to save local folder." });
+      setMessage({ type: "error", text: describeError(err).body });
     },
   });
 
@@ -934,6 +959,7 @@ interface PluginConfigFormProps {
   companyId: string | null;
   schema: JsonSchemaNode;
   initialValues?: Record<string, unknown>;
+  needsInitialSave: boolean;
   isLoading?: boolean;
   /** Current plugin lifecycle status — "Test Configuration" only available when `ready`. */
   pluginStatus?: string;
@@ -948,7 +974,7 @@ interface PluginConfigFormProps {
  * Separated from PluginSettings to isolate re-render scope — only the form
  * re-renders on field changes, not the entire page.
  */
-function PluginConfigForm({ pluginId, companyId, schema, initialValues, isLoading, pluginStatus, supportsConfigTest }: PluginConfigFormProps) {
+function PluginConfigForm({ pluginId, companyId, schema, initialValues, needsInitialSave, isLoading, pluginStatus, supportsConfigTest }: PluginConfigFormProps) {
   const queryClient = useQueryClient();
 
   // Form values: start with saved values, fall back to schema defaults
@@ -988,21 +1014,22 @@ function PluginConfigForm({ pluginId, companyId, schema, initialValues, isLoadin
 
   // Save mutation
   const saveMutation = useMutation({
-    mutationFn: (configJson: Record<string, unknown>) => {
+    mutationFn: ({ pluginId, companyId, configJson }: { pluginId: string; companyId: string | null; configJson: Record<string, unknown> }) => {
       if (!companyId) throw new Error("Select an organization before saving plugin configuration.");
       return pluginsApi.saveConfig(pluginId, companyId, configJson);
     },
-    onSuccess: () => {
+    onSuccess: (savedConfig, { pluginId, companyId }) => {
       setSaveMessage({ type: "success", text: "Configuration saved." });
       setTestResult(null);
       if (companyId) {
+        queryClient.setQueryData(queryKeys.plugins.config(pluginId, companyId), savedConfig);
         queryClient.invalidateQueries({ queryKey: queryKeys.plugins.config(pluginId, companyId) });
       }
       // Clear success message after 3s
       setTimeout(() => setSaveMessage(null), 3000);
     },
     onError: (err: Error) => {
-      setSaveMessage({ type: "error", text: err.message || "Failed to save configuration." });
+      setSaveMessage({ type: "error", text: describeError(err).body });
     },
   });
 
@@ -1020,7 +1047,7 @@ function PluginConfigForm({ pluginId, companyId, schema, initialValues, isLoadin
       }
     },
     onError: (err: Error) => {
-      setTestResult({ type: "error", text: err.message || "Configuration test failed." });
+      setTestResult({ type: "error", text: describeError(err).body });
     },
   });
 
@@ -1039,8 +1066,8 @@ function PluginConfigForm({ pluginId, companyId, schema, initialValues, isLoadin
       return;
     }
     setErrors({});
-    saveMutation.mutate(values);
-  }, [schema, values, saveMutation]);
+    saveMutation.mutate({ pluginId, companyId, configJson: values });
+  }, [schema, values, saveMutation, pluginId, companyId]);
 
   const handleTestConnection = useCallback(() => {
     // Validate before testing
@@ -1102,7 +1129,7 @@ function PluginConfigForm({ pluginId, companyId, schema, initialValues, isLoadin
       <div className="flex items-center gap-2 pt-2">
         <Button
           onClick={handleSave}
-          disabled={saveMutation.isPending || !isDirty}
+          disabled={saveMutation.isPending || (!isDirty && !needsInitialSave)}
           size="sm"
         >
           {saveMutation.isPending ? (

@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { useMutation } from "@tanstack/react-query";
 import { isUuidLike } from "@paperclipai/shared";
 import { emailApi } from "@/api/email";
+import { describeError } from "@/api/errors";
 import { Button } from "@/components/ui/button";
 import { AgentMailCredentialField } from "./AgentMailCredentialField";
 
@@ -103,8 +104,8 @@ export function AgentMailIntentSetup({ companyId, agentId, requestId, savedCrede
       disabled={setup.isPending || changeKey.isPending || declining} onClick={() => changeKey.mutate(setupRequestId)}>
       {changeKey.isPending ? "Checking setup…" : "Change API key"}
     </Button>}
-    {changeKey.error && <p className="text-sm text-destructive" role="alert">{changeKey.error.message}</p>}
-    {setup.error && <p className="text-sm text-destructive" role="alert">{setup.error.message}</p>}
+    {changeKey.error && <p className="text-sm text-destructive" role="alert">{describeError(changeKey.error).body}</p>}
+    {setup.error && <p className="text-sm text-destructive" role="alert">{describeError(setup.error).body}</p>}
     <div className="flex items-center justify-between gap-2">
       <Button type="button" variant="ghost" disabled={setup.isPending || changeKey.isPending || declining} onClick={onDecline}>Not now</Button>
       <Button type="submit" disabled={setup.isPending || changeKey.isPending || declining || (!credentialId && !selectedCredentialId && !inboxConnectionId && !apiKey.trim())}>

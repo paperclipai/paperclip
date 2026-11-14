@@ -5,17 +5,11 @@ import { StatusGlyph, type StatusGlyphSize } from "./StatusGlyph";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Button } from "@/components/ui/button";
 import { displayText } from "@/i18n/display-text";
+import { resolveTaskStatusPresentation, taskStatusLabel, type TaskStatusPresentationInput } from "../lib/task-status-presentation";
 
 const allStatuses = ["backlog", "todo", "in_progress", "in_review", "done", "cancelled", "blocked"];
 
-function statusLabel(status: string): string {
-  return displayText(status.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase()));
-}
-
-interface StatusIconProps {
-  status: string;
-  externalConversationState?: "active" | "waiting" | null;
-  blockerAttention?: IssueBlockerAttention | null;
+interface StatusIconProps extends TaskStatusPresentationInput {
   onChange?: (status: string) => void;
   className?: string;
   /** Optional layout wrapper around the glyph. Does not change glyph dimensions. */
@@ -25,55 +19,9 @@ interface StatusIconProps {
   size?: StatusGlyphSize;
 }
 
-function blockedAttentionLabel(blockerAttention: IssueBlockerAttention | null | undefined) {
-  if (!blockerAttention || blockerAttention.state === "none") return displayText("Blocked");
-
-  if (blockerAttention.reason === "active_child") {
-    const count = blockerAttention.coveredBlockerCount;
-    if (count === 1 && blockerAttention.sampleBlockerIdentifier) {
-      return displayText("Blocked · waiting on active sub-task {{v0}}", { v0: blockerAttention.sampleBlockerIdentifier });
-    }
-    if (count === 1) return displayText("Blocked · waiting on 1 active sub-task");
-    return displayText("Blocked · waiting on {{v0}} active sub-tasks", { v0: count });
-  }
-
-  if (blockerAttention.reason === "active_dependency") {
-    const count = blockerAttention.coveredBlockerCount;
-    if (count === 1 && blockerAttention.sampleBlockerIdentifier) {
-      return displayText("Blocked · covered by active dependency {{v0}}", { v0: blockerAttention.sampleBlockerIdentifier });
-    }
-    if (count === 1) return displayText("Blocked · covered by 1 active dependency");
-    return displayText("Blocked · covered by {{v0}} active dependencies", { v0: count });
-  }
-
-  if (blockerAttention.reason === "stalled_review") {
-    const count = blockerAttention.stalledBlockerCount;
-    const leaf = blockerAttention.sampleStalledBlockerIdentifier ?? blockerAttention.sampleBlockerIdentifier;
-    if (count === 1 && leaf) return displayText("Blocked · review stalled on {{v0}}", { v0: leaf });
-    if (count === 1) return displayText("Blocked · review stalled with no clear next step");
-    return displayText("Blocked · {{v0}} reviews stalled with no clear next step", { v0: count });
-  }
-
-  if (blockerAttention.reason === "attention_required") {
-    const count = blockerAttention.attentionBlockerCount || blockerAttention.unresolvedBlockerCount;
-    const coveredCount = blockerAttention.coveredBlockerCount;
-    if (coveredCount > 0) {
-      return count === 1
-        ? displayText("Blocked · {{v0}} blocker needs attention; {{v1}} covered by active work", { v0: count, v1: coveredCount })
-        : displayText("Blocked · {{v0}} blockers need attention; {{v1}} covered by active work", { v0: count, v1: coveredCount });
-    }
-    return count === 1
-      ? displayText("Blocked · {{v0}} blocker needs attention", { v0: count })
-      : displayText("Blocked · {{v0}} blockers need attention", { v0: count });
-  }
-
-  return displayText("Blocked");
-}
-
 /** Shared accessible/tooltip copy, including waiting and covered-blocker states. */
-export function getStatusIconLabel(status: string, externalConversationState?: "active" | "waiting" | null, blockerAttention?: IssueBlockerAttention | null): string {
-  const displayStatus = status === "in_review" && externalConversationState === "waiting" ? "idle" : status;
-  return status === "blocked" ? blockedAttentionLabel(blockerAttention) : statusLabel(displayStatus);
+export function getStatusIconLabel(status: string, externalConversationState?: "active" | "waiting" | null, blockerAttention?: IssueBlockerAttention | null, presentationStatus?: string | null): string {
+  return displayText(resolveTaskStatusPresentation({ status, displayStatus: presentationStatus, externalConversationState, blockerAttention }).ariaLabel);
 }
 
 /**
@@ -88,12 +36,10 @@ export function getStatusIconLabel(status: string, externalConversationState?: "
  * glyph — the blocked shape recoloured blue — while the full blocked reason
  * still rides on the accessible label.
  */
-export function StatusIcon({ status, externalConversationState, blockerAttention, onChange, className, glyphContainerClassName, showLabel, size = "md" }: StatusIconProps) {
+export function StatusIcon({ status, displayStatus: presentationStatus, externalConversationState, blockerAttention, onChange, className, glyphContainerClassName, showLabel, size = "md" }: StatusIconProps) {
   const [open, setOpen] = useState(false);
-  const displayStatus = status === "in_review" && externalConversationState === "waiting" ? "idle" : status;
-  const isCoveredBlocked = status === "blocked" && blockerAttention?.state === "covered";
-  const ariaLabel = getStatusIconLabel(status, externalConversationState, blockerAttention);
-  const glyphStatus = isCoveredBlocked ? "in_queue" : displayStatus;
+  const presentation = { status, displayStatus: presentationStatus, externalConversationState, blockerAttention };
+  const { glyphStatus, label, ariaLabel } = resolveTaskStatusPresentation(presentation);
 
   const glyphIcon = (
     <StatusGlyph
@@ -113,7 +59,7 @@ export function StatusIcon({ status, externalConversationState, blockerAttention
     return showLabel ? (
       <span className="inline-flex items-center gap-1.5">
         {glyph}
-        <span className="text-sm">{statusLabel(displayStatus)}</span>
+        <span className="text-sm">{label}</span>
       </span>
     ) : (
       glyph
@@ -127,7 +73,7 @@ export function StatusIcon({ status, externalConversationState, blockerAttention
       className="inline-flex min-h-5 items-center gap-1.5 cursor-pointer hover:bg-accent/50 rounded px-1 -mx-1 py-0.5 transition-colors"
     >
       {glyph}
-      <span className="text-sm">{statusLabel(displayStatus)}</span>
+      <span className="text-sm">{label}</span>
     </button>
   ) : (
     <button
@@ -155,8 +101,9 @@ export function StatusIcon({ status, externalConversationState, blockerAttention
               setOpen(false);
             }}
           >
-            <StatusIcon status={s} size="lg" />
-            {statusLabel(s)}
+            {/* The current row is the task's state: draw it exactly like the trigger. */}
+            <StatusIcon {...(s === status ? presentation : { status: s })} size="lg" />
+            {displayText(taskStatusLabel(s))}
           </Button>
         ))}
       </PopoverContent>

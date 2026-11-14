@@ -1,13 +1,20 @@
 import { and, asc, eq, gt, or, sql } from "drizzle-orm";
-import { chatActions, chatEndpointLeases, type Db } from "@paperclipai/db";
+import { chatActions, chatEndpointLeases, chatGitHubReviews, type Db } from "@paperclipai/db";
 import type { GitHubReviewEventContext } from "@paperclipai/shared";
 import type { createDeliveryWorkCoordinator } from "../../delivery-work-coordinator.js";
 import { DELIVERY_QUEUES, notifyDeliveryWork } from "../../delivery-work-notifications.js";
 import { registerScopedDeadlineWork } from "../../scoped-deadline-work.js";
 import { githubReviewCheckState } from "./review-check-state.js";
 
-type Scope = { companyId: string; endpointId?: string; repositoryId?: string; number?: number };
+type Scope = { companyId: string; endpointId?: string; repositoryId?: string; number?: number; issueId?: string };
 type Entry = Scope & { id: string; dueAt: number };
+
+export const GITHUB_REVIEW_CHECK_COMPANY_RECONSTRUCTION_MS = 30_000;
+
+export function githubReviewCheckReconstructionIntervalMs(scope: Scope | undefined) {
+  return scope && !scope.endpointId && !scope.repositoryId && !scope.number && !scope.issueId
+    ? GITHUB_REVIEW_CHECK_COMPANY_RECONSTRUCTION_MS : 0;
+}
 
 export async function notifyGitHubReviewChecks(tx: object, scope: Scope) {
   await notifyDeliveryWork(tx, DELIVERY_QUEUES.chatGitHubReviewChecks, JSON.stringify(scope));
@@ -19,8 +26,14 @@ export function registerGitHubReviewCheckWork(
   dispatch: (id: string, canContinue: () => boolean) => Promise<unknown>,
   canRun: () => boolean,
 ) {
+  const reviewIssueId = sql<string | null>`(select r.issue_id from ${chatGitHubReviews} r
+    where r.endpoint_id = ${chatActions.endpointId}
+      and r.repository_id = ${chatActions.payload}->'event'->>'repositoryId'
+      and r.pull_number = (${chatActions.payload}->'event'->>'pullNumber')::integer
+      and r.head_sha = ${chatActions.payload}->'event'->>'headSha'
+    order by r.created_at desc limit 1)`;
   async function page(scope?: Scope, cursor?: string, actionId?: string) {
-    return db.select({ action: chatActions,
+    return db.select({ action: chatActions, reviewIssueId,
       leaseExpiresAt: sql<string | null>`(select max(l.expires_at) from ${chatEndpointLeases} l
         where l.company_id = ${chatActions.companyId} and l.endpoint_id = ${chatActions.endpointId}
           and l.lease_key = 'github-publication:' || (${chatActions.payload}->'event'->>'repositoryId')
@@ -31,6 +44,7 @@ export function registerGitHubReviewCheckWork(
       scope?.endpointId ? eq(chatActions.endpointId, scope.endpointId) : undefined,
       scope?.repositoryId ? sql`${chatActions.payload}->'event'->>'repositoryId' = ${scope.repositoryId}` : undefined,
       scope?.number ? sql`${chatActions.payload}->'event'->>'pullNumber' = ${String(scope.number)}` : undefined,
+      scope?.issueId ? sql`${reviewIssueId} = ${scope.issueId}` : undefined,
       cursor ? gt(chatActions.id, cursor) : undefined, actionId ? eq(chatActions.id, actionId) : undefined,
     )).orderBy(asc(chatActions.id)).limit(100);
   }
@@ -45,14 +59,16 @@ export function registerGitHubReviewCheckWork(
     }
     if (row.leaseExpiresAt) dueAt = Math.max(dueAt, Date.parse(row.leaseExpiresAt));
     return { id: action.id, companyId: action.companyId, endpointId: action.endpointId,
-      repositoryId: event.repositoryId, number: event.pullNumber, dueAt };
+      repositoryId: event.repositoryId, number: event.pullNumber, issueId: row.reviewIssueId ?? undefined, dueAt };
   }
   return registerScopedDeadlineWork(coordinator, {
     queue: DELIVERY_QUEUES.chatGitHubReviewChecks,
     decodeScope: (hint: string): Scope | undefined => hint === "*" ? undefined : JSON.parse(hint),
     matches: (value: Entry, scope?: Scope) => !scope || (value.companyId === scope.companyId &&
       (!scope.endpointId || value.endpointId === scope.endpointId) &&
-      (!scope.repositoryId || value.repositoryId === scope.repositoryId) && (!scope.number || value.number === scope.number)),
+      (!scope.repositoryId || value.repositoryId === scope.repositoryId) && (!scope.number || value.number === scope.number) &&
+      (!scope.issueId || value.issueId === scope.issueId)),
+    reconstructionIntervalMs: githubReviewCheckReconstructionIntervalMs,
     load: async (scope?: Scope, signal?: AbortSignal) => {
       const entries: Entry[] = [];
       let cursor: string | undefined;

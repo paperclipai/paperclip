@@ -3,29 +3,53 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 afterEach(() => vi.unstubAllEnvs());
 
-import { ACPX_CREDENTIAL_BINDING_ENV, createAcpxCredentialBinding, createAcpxSidecarHostEnvironment, createSanitizedAcpxSpawnInput } from "./environment.js";
+import { ACPX_CREDENTIAL_BINDING_ENV, CLAUDE_CRON_DISABLE_ENV, CLAUDE_TODO_TOOLS_ENV, createAcpxCredentialBinding, createAcpxSidecarHostEnvironment, createSanitizedAcpxSpawnInput } from "./environment.js";
+
+const claudeLauncherEnv = { [CLAUDE_TODO_TOOLS_ENV]: "1", [CLAUDE_CRON_DISABLE_ENV]: "1" };
 
 describe("ACPX launch environment", () => {
+  it("enables Claude's task-list tools for the native plan and only for Claude", () => {
+    const host = { PATH: "/bin", [CLAUDE_TODO_TOOLS_ENV]: "0" };
+    expect(createSanitizedAcpxSpawnInput(host, "claude").env[CLAUDE_TODO_TOOLS_ENV]).toBe("1");
+    expect(createSanitizedAcpxSpawnInput({ PATH: "/bin" }, "claude").env[CLAUDE_TODO_TOOLS_ENV]).toBe("1");
+    expect(createSanitizedAcpxSpawnInput(host, "codex").env[CLAUDE_TODO_TOOLS_ENV]).toBeUndefined();
+  });
+
+  it("disables Claude's own cron scheduler for every Claude launch and only for Claude", () => {
+    const host = { PATH: "/bin", [CLAUDE_CRON_DISABLE_ENV]: "0" };
+    expect(createSanitizedAcpxSpawnInput(host, "claude").env[CLAUDE_CRON_DISABLE_ENV]).toBe("1");
+    expect(createSanitizedAcpxSpawnInput({ PATH: "/bin", PAPERCLIP_RUNNER_HOME_MODE: "preconfigured" }, "claude").env[CLAUDE_CRON_DISABLE_ENV]).toBe("1");
+    expect(createSanitizedAcpxSpawnInput(host, "codex").env[CLAUDE_CRON_DISABLE_ENV]).toBeUndefined();
+  });
+
   it("rejects task shell selectors without a controller-owned helper projection", () => {
     const selectors = { BASH_ENV: "/workspace/hook.sh", ZDOTDIR: "/workspace", GH_CONFIG_DIR: "/workspace/gh" };
-    expect(createSanitizedAcpxSpawnInput(selectors, "claude").env).toEqual({});
+    expect(createSanitizedAcpxSpawnInput(selectors, "claude").env).toEqual(claudeLauncherEnv);
     for (const [key, value] of Object.entries(selectors)) {
       expect(configuredEnvironmentProjection({[key]: value})).not.toHaveProperty(key);
       expect(() => createSanitizedAcpxSpawnInput({[key]:value, [CONFIGURED_ENVIRONMENT_KEYS]:JSON.stringify([key])}, "claude")).toThrow("configured environment");
     }
   });
-  it("keeps explicit Claude managed-command selectors without forwarding GitHub credentials", () => {
+  it("keeps explicit Claude managed-command transport without forwarding GitHub credentials", () => {
     const helpers = { PATH: "/managed:/usr/bin", BASH_ENV: "/managed/.bashrc", ZDOTDIR: "/managed",
-      GH_CONFIG_DIR: "/managed", PAPERCLIP_GITHUB_LAUNCHER_DIR: "/managed" };
+      GH_CONFIG_DIR: "/managed", PAPERCLIP_GITHUB_LAUNCHER_DIR: "/managed",
+      PAPERCLIP_GITHUB_BROKER_URL: "http://127.0.0.1:3210", PAPERCLIP_GITHUB_BROKER_TOKEN: "session-capability",
+      PAPERCLIP_GITHUB_BRIDGE_TOKEN: "bridge-capability" };
     const source = { ...helpers, GH_TOKEN: "host-secret", GITHUB_TOKEN: "host-secret",
-      PAPERCLIP_GITHUB_BROKER_TOKEN: "host-capability", NODE_OPTIONS: "--require=untrusted" };
-    expect(createSanitizedAcpxSpawnInput(source, "claude").env).toEqual(helpers);
+      PAPERCLIP_GIT_TOKEN: "host-secret", NODE_OPTIONS: "--require=untrusted" };
+    expect(createSanitizedAcpxSpawnInput(source, "claude").env).toEqual({ ...helpers, ...claudeLauncherEnv });
     for (const [key, value] of Object.entries(helpers)) vi.stubEnv(key, value);
     const ambient = createSanitizedAcpxSpawnInput(undefined, "claude").env;
     const sibling = createSanitizedAcpxSpawnInput(source, "cursor").env;
     for (const key of Object.keys(helpers).filter(key => key !== "PATH")) {
       expect(ambient).not.toHaveProperty(key);
       expect(sibling).not.toHaveProperty(key);
+    }
+    const { PAPERCLIP_GITHUB_LAUNCHER_DIR: _launcher, ...withoutLauncher } = source;
+    expect(createSanitizedAcpxSpawnInput(withoutLauncher, "claude").env).toEqual({ PATH: helpers.PATH, ...claudeLauncherEnv });
+    for (const [key, value] of Object.entries(helpers).filter(([key]) => key.startsWith("PAPERCLIP_GITHUB_"))) {
+      expect(configuredEnvironmentProjection({ [key]: value })).not.toHaveProperty(key);
+      expect(() => createSanitizedAcpxSpawnInput({ [key]: value, [CONFIGURED_ENVIRONMENT_KEYS]: JSON.stringify([key]) }, "claude")).toThrow("configured environment");
     }
   });
   it("does not inherit ambient prepared storage", () => {
@@ -86,6 +110,7 @@ describe("ACPX launch environment", () => {
       ANTHROPIC_BASE_URL: source.ANTHROPIC_BASE_URL,
       ANTHROPIC_AUTH_TOKEN: "selected-key", CLAUDE_CODE_USE_BEDROCK: "1",
       AWS_REGION: "us-east-1", AWS_BEARER_TOKEN_BEDROCK: "bedrock-key",
+      ...claudeLauncherEnv,
     });
     expect(createSanitizedAcpxSpawnInput(source, "codex").env).toEqual({ PAPERCLIP_AI_PROVIDER_KEY: "codex-key" });
     expect(createSanitizedAcpxSpawnInput(source, "cursor").env).toEqual({});
@@ -118,6 +143,7 @@ describe("ACPX launch environment", () => {
       LC_ALL: "C.UTF-8",
       HTTPS_PROXY: "https://proxy.example",
       ANTHROPIC_API_KEY: "anthropic-secret",
+      ...claudeLauncherEnv,
     });
     expect(createSanitizedAcpxSpawnInput(source, "pi").env).toEqual({
       PATH: "/bin",
@@ -159,7 +185,7 @@ describe("ACPX launch environment", () => {
     expect(createSanitizedAcpxSpawnInput(source, "pi").env).toEqual({ COPILOT_GITHUB_TOKEN: "copilot-key" });
   });
 
-  it("strips configured Kimi model redirects and home overrides while retaining selected task and MCP values", () => {
+  it("strips configured Kimi model redirects, home overrides and retired gateway values while retaining selected task values", () => {
     const overrides = {
       KIMI_MODEL_NAME: "__kimi_env_model__", KIMI_MODEL_API_KEY: "unselected-model-key",
       KIMI_MODEL_BASE_URL: "https://unselected.invalid/v1", KIMI_MODEL_PROVIDER_TYPE: "openai_legacy",
@@ -174,8 +200,8 @@ describe("ACPX launch environment", () => {
     for (const environment of [sidecar, createSanitizedAcpxSpawnInput(source, "kimi").env,
       createSanitizedAcpxSpawnInput(sidecar, "kimi").env]) {
       for (const name of Object.keys(overrides)) expect(environment).not.toHaveProperty(name);
-      expect(environment).toMatchObject({ KIMI_API_KEY: "selected-code-key", CUSTOM_SETTING: "allowed",
-        PAPERCLIP_NATIVE_MCP_NAME: "assigned", PAPERCLIP_NATIVE_MCP_URL: "https://assigned.example/mcp" });
+      expect(environment).toMatchObject({ KIMI_API_KEY: "selected-code-key", CUSTOM_SETTING: "allowed" });
+      if (environment !== sidecar) for (const name of ["PAPERCLIP_NATIVE_MCP_NAME", "PAPERCLIP_NATIVE_MCP_URL", "PAPERCLIP_NATIVE_MCP_TOKEN"]) expect(environment).not.toHaveProperty(name);
       expect(JSON.parse(environment[CONFIGURED_ENVIRONMENT_KEYS]!)).toEqual(["CUSTOM_SETTING"]);
     }
     expect(createSanitizedAcpxSpawnInput(source, "kimi").env).not.toHaveProperty("PAPERCLIP_NATIVE_MCP_TOKEN");

@@ -43,5 +43,10 @@ export const activityLog = pgTable(
     companyUserIssueActorIdx: index("activity_log_company_user_issue_actor_idx")
       .on(table.companyId, table.actorId, table.entityId)
       .where(sql`${table.actorType} = 'user' AND ${table.entityType} = 'issue'`),
+    // Receipts for the person a card was for (PAP-749 plan §6): the For you
+    // feed reads the last 7 days of entries that name `handledForUserId`.
+    companyHandledForCreatedIdx: index("activity_log_company_handled_for_created_idx")
+      .on(table.companyId, sql`(${table.details} ->> 'handledForUserId')`, table.createdAt)
+      .where(sql`(${table.details} ->> 'handledForUserId') IS NOT NULL`),
   }),
 );

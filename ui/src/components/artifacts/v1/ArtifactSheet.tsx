@@ -81,14 +81,14 @@ const LABEL: CSSProperties = {
   color: "var(--artifact-ink)",
 };
 
-export function IconSheet({ subject, play = false }: { subject: ArtifactSubject; play?: boolean }) {
+export function IconSheet({ subject, play = false, showLabel = true }: { subject: ArtifactSubject; play?: boolean; showLabel?: boolean }) {
   return (
     <div className="artifact-sheet relative shrink-0 overflow-clip" data-artifact-sheet="icon">
       <Paper />
       <Glyph subject={subject} />
-      <span className="absolute whitespace-nowrap font-bold" style={LABEL}>
+      {showLabel && <span className="absolute whitespace-nowrap font-bold" style={LABEL}>
         {labelOf(subject)}
-      </span>
+      </span>}
       {play ? (
         <span
           aria-hidden

@@ -173,9 +173,9 @@ export function connectionManagementGuard(db: Db, purpose: "tool" | "chat" | "ai
         if (secret.deletedAt || secret.status !== "active" || (secret.scope === "user" && secret.ownerUserId !== userId)) throw forbidden("Credential binding is unavailable to the responsible user");
       }
       if (options.slackManagerGrant) {
-        const [grant] = await db.select().from(chatSlackManagerGrants).where(eq(chatSlackManagerGrants.id, String(req.params.grantId)));
+        const [grant] = await db.select().from(chatSlackManagerGrants).where(eq(chatSlackManagerGrants.id, uuid(req.params.grantId ?? body.grantId)));
         bindCompany(grant); resource.provider = "slack";
-        if (req.actor.type === "agent" && grant.userId !== userId) throw forbidden("Manager consent belongs to another user");
+        if (grant.userId !== userId) throw forbidden("Manager consent belongs to another user");
       }
       if (!options.slackManagerGrant && (req.params.grantId || body.grantId)) {
         const [grant] = await db.select().from(connectionGrants).where(eq(connectionGrants.id, uuid(req.params.grantId ?? body.grantId)));

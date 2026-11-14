@@ -1,0 +1,5 @@
+CREATE INDEX CONCURRENTLY IF NOT EXISTS "heartbeat_runs_settled_process_identity_idx" ON "heartbeat_runs" USING btree ("process_host_hash","company_id","id") WHERE "heartbeat_runs"."runtime_mode" = 'native' and "heartbeat_runs"."status" in ('failed', 'cancelled', 'timed_out', 'interrupted')
+        and "heartbeat_runs"."finished_at" is not null
+        and ("heartbeat_runs"."process_pid" is not null or "heartbeat_runs"."process_group_id" is not null or "heartbeat_runs"."process_started_at" is not null);--> statement-breakpoint
+CREATE INDEX CONCURRENTLY IF NOT EXISTS "heartbeat_runs_pending_api_stop_idx" ON "heartbeat_runs" USING btree ("company_id","id") WHERE "heartbeat_runs"."status" = 'cancelled' and "heartbeat_runs"."driver_kind" = 'cursor_cloud_api'
+        and ("heartbeat_runs"."result_json"->'executionCancellation'->>'state') = 'requested';

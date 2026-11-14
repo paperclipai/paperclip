@@ -1,8 +1,9 @@
+import { assertAgentInteraction } from "./agent-interaction-policy.js";
 import { and, eq, inArray, or } from "drizzle-orm";
 import { isUuidLike } from "@paperclipai/shared";
 import { agents, agentApiKeys, heartbeatRuns, runIdentityContexts, issues, projects, toolApplications, toolCatalogEntries, toolConnections, toolConnectionInstalls, toolProfiles, toolProfileEntries, toolProfileBindings, toolMcpGateways, aiConnectionPools, connectionGrants, routines, type Db } from "@paperclipai/db";
 import { forbidden } from "../errors.js";
-import { authorizationService, canActorReadIssuePrivacy, canActorReadProjectPrivacy, type AuthorizationActor, type AuthorizationDecision } from "./authorization.js";
+import { authorizationService, authorizationDeniedDetails, canActorReadIssuePrivacy, canActorReadProjectPrivacy, type AuthorizationActor, type AuthorizationDecision } from "./authorization.js";
 import { captureRunIdentity, runIdentityTaskFields, type RunIdentityCapture } from "./run-identity.js";
 import type { LogActivityInput } from "./activity-log.js";
 import type { ConnectionManagementAction, ConnectionManagementResource } from "./connection-management-policy.js";
@@ -32,12 +33,36 @@ type PreparedAuthorization = {
   expandedTargets: Set<string>;
   referencedConnections: string[];
   currentGatewayResource: ConnectionManagementResource | undefined;
-  savedNonAiConnection: boolean;
+  savedConnection: boolean;
 };
 type ConnectionCapability = { allowed: boolean; reason: string; operation: string };
 
 export function responsibleConnectionUser(actor: AuthorizationActor): string | null {
   return (actor.type === "agent" ? actor.onBehalfOfUserId : actor.userId) ?? null;
+}
+
+/** Installation changes require the same agent-edit authority at every entry point. */
+export async function assertAgentConnectionInstallAccess(db: Db, actor: AuthorizationActor, companyId: string, agentIds: string[]) {
+  const authorization = authorizationService(db);
+  await assertAgentToolAssignmentInteractions(db, actor.type === "agent" ? actor.agentId : null, companyId, agentIds);
+  for (const agentId of new Set(agentIds)) {
+    const [agent] = await db.select({ id: agents.id }).from(agents)
+      .where(and(eq(agents.id, agentId), eq(agents.companyId, companyId))).limit(1);
+    if (!agent) throw forbidden("The target agent is not available in this company");
+    const decision = await authorization.decide({
+      actor, action: "agent_config:update", resource: { type: "agent", companyId, agentId }, scope: { targetAgentId: agentId },
+    });
+    if (!decision.allowed) throw forbidden(`You cannot edit agent ${agentId}, so you cannot change its connection installs`, authorizationDeniedDetails(decision));
+  }
+}
+
+export async function assertAgentToolAssignmentInteractions(db: Db, actorAgentId: string | null | undefined,
+  companyId: string, agentIds: readonly string[], lock = typeof (db as unknown as { nestedIndex?: number }).nestedIndex === "number") {
+  const targets = [...new Set(agentIds)].sort();
+  for (const [index, targetAgentId] of targets.entries()) {
+    await assertAgentInteraction(db, { companyId, actorAgentId, operation: "configure", targetAgentId,
+      lock: index === 0 && lock ? "update" : false, lockAgentIds: index === 0 ? targets : undefined });
+  }
 }
 
 /** Used at HTTP and service boundaries; capability probes call the same evaluator. */
@@ -88,7 +113,7 @@ export function connectionManagementService(db: Db) {
     const expandedTargets = new Set(options.targetAgentIds ?? []);
     const referencedConnections: string[] = [];
     let currentGatewayResource: ConnectionManagementResource | undefined;
-    let savedNonAiConnection = false;
+    let savedConnection = false;
     if (resource.gatewayId && !options.gatewayContextChecked) {
       const [gateway] = await db.select().from(toolMcpGateways).where(and(eq(toolMcpGateways.id, resource.gatewayId), eq(toolMcpGateways.companyId, resource.companyId)));
       if (!gateway) throw forbidden("Gateway is unavailable in this company");
@@ -159,7 +184,7 @@ export function connectionManagementService(db: Db) {
     if (resource.connectionId) {
       const [connection] = await db.select().from(toolConnections).where(and(eq(toolConnections.id, resource.connectionId), eq(toolConnections.companyId, resource.companyId)));
       if (!connection) throw forbidden("Connection is unavailable in this company");
-      savedNonAiConnection = connection.connectionPurpose !== "ai";
+      savedConnection = true;
       resource = { ...resource, selfServiceUserId: connection.createdByUserId,
         purpose: connection.connectionPurpose === "ai" ? "ai" : connection.connectionPurpose === "channel" ? "chat" : "tool",
         provider: typeof connection.config.sourceTemplateKey === "string" ? connection.config.sourceTemplateKey
@@ -241,7 +266,7 @@ export function connectionManagementService(db: Db) {
       }
     }
     return { actor, action, resource, options, responsibleUserId, workContext, capturedRun,
-      expandedTargets, referencedConnections, currentGatewayResource, savedNonAiConnection };
+      expandedTargets, referencedConnections, currentGatewayResource, savedConnection };
   }
 
   async function evaluateTarget(prepared: PreparedAuthorization, targetAgentId: string | undefined): Promise<AuthorizationDecision> {
@@ -261,14 +286,17 @@ export function connectionManagementService(db: Db) {
     if (targetAgentId) {
       const [target] = await db.select({ id: agents.id }).from(agents).where(and(eq(agents.id, targetAgentId), eq(agents.companyId, resource.companyId)));
       if (!target) throw forbidden("Target agent is outside this company");
+      if (targetAgentId === resource.targetAgentId && (prepared.options.mutation ?? action !== "connections:read")) {
+        await assertAgentToolAssignmentInteractions(db, actor.type === "agent" ? actor.agentId : null, resource.companyId, [targetAgentId]);
+      }
       // Explicitly enforce both principals even when unrelated authorization is in shadow mode.
       // Existing human routes retain their domain-specific target authority.
       // Delegation additionally checks both the acting agent and its human.
       const principals: AuthorizationActor[] = actor.type === "agent" || resource.selfServiceAgentInstalls ? [actor] : [];
       if (actor.type === "agent") principals.push({ type: "board", userId: responsibleUserId, source: "session", ignoreInstanceAdmin: true });
       for (const principal of principals) {
-        const targetDecision = await authorization.decide({ actor: principal, action: "agent_config:update", resource: { type: "agent", companyId: resource.companyId, agentId: targetAgentId }, scope: { targetAgentId } });
-        if (!targetDecision.allowed) throw forbidden(targetDecision.explanation);
+        const targetDecision = await authorization.decide({ actor: principal, action: "agent_config:update", resource: { type: "agent", companyId: resource.companyId, agentId: targetAgentId }, scope: { targetAgentId } }, { interactionPolicy: "defer_to_mutation" });
+        if (!targetDecision.allowed) throw forbidden(targetDecision.explanation, authorizationDeniedDetails(targetDecision));
       }
     }
     return decision;
@@ -388,7 +416,9 @@ export function connectionManagementService(db: Db) {
     }
     const resolved = prepared.resource;
     const isCanonicalAgentId = (id: string) => isUuidLike(id) && id === id.toLowerCase();
-    const eligible = actor.type === "board" && prepared.savedNonAiConnection
+    // Direct AI accounts use the same target checks. Pools with members still
+    // use the full evaluator through referencedConnections below.
+    const eligible = actor.type === "board" && prepared.savedConnection
       && [resolved.profileId, resolved.gatewayId, resolved.routineId, resolved.projectId, resolved.issueId].every(id => id == null)
       && !Object.hasOwn(resolved, "requestedProvider") && !Object.hasOwn(resolved, "requestedInstallCompanyIds")
       && !resolved.selfServiceAgentInstalls

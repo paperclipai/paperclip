@@ -9,12 +9,14 @@ import { App } from "./App";
 import { AppErrorBoundary } from "./components/AppErrorBoundary";
 import { SentryGate } from "./components/SentryGate";
 import { CompanyProvider, useCompany } from "./context/CompanyContext";
+import { LinkPreviewProvider } from "./context/LinkPreviewContext";
 import { LiveUpdatesProvider } from "./context/LiveUpdatesProvider";
 import { BreadcrumbProvider } from "./context/BreadcrumbContext";
 import { PanelProvider } from "./context/PanelContext";
 import { SidebarProvider } from "./context/SidebarContext";
 import { DialogProvider } from "./context/DialogContext";
 import { EditorAutocompleteProvider } from "./context/EditorAutocompleteContext";
+import { applyLiveEventFreeQueryDefaults } from "./lib/live-reconcile";
 import { PrimaryAgentProvider } from "./context/PrimaryAgentProvider";
 import { ToastProvider, useToastActions, type ToastInput } from "./context/ToastContext";
 import { ThemeProvider } from "./context/ThemeContext";
@@ -28,8 +30,10 @@ import { getOrCreatePaperclipReactRoot } from "./lib/react-root";
 import { startServiceWorkerUpdates } from "./lib/service-worker-updates";
 import { connectivity } from "./lib/connectivity";
 import { bindConnectivity, createAppQueryClient } from "./lib/query-client";
-import { captureBrowserException } from "./lib/sentry";
+import { captureBrowserException, captureQueryException } from "./lib/sentry";
 import { initDisplayLanguage } from "./i18n/display-text";
+import { startPersistedQueryCache } from "./lib/persisted-query-cache";
+import { hasPendingWrites, subscribePendingWrites } from "./lib/reload-safety";
 import "@mdxeditor/editor/style.css";
 import "./index.css";
 
@@ -41,14 +45,6 @@ initPluginBridge(React, ReactDOM);
 startPerfMeasureReaper();
 
 startChunkLoadRecovery();
-
-// Parked SPA tabs never navigate, so beyond registering the worker this also
-// re-checks /sw.js on tab focus and hourly, and applies a discovered update
-// with one reload while the tab is hidden — otherwise an old worker and its
-// cached shell can outlive a deploy indefinitely.
-window.addEventListener("load", () => {
-  startServiceWorkerUpdates();
-});
 
 // The global mutation error toast is raised from the MutationCache, outside
 // React; the bridge below hands it the ToastProvider's pushToast.
@@ -70,7 +66,7 @@ function MutationErrorToastBridge() {
 const queryClient = createAppQueryClient(
   {
     connectivity,
-    reportError: (error) => captureBrowserException(error),
+    reportError: (error, queryKey) => captureQueryException(error, queryKey),
     notifyMutationError: ({ title, body }) => pushMutationErrorToast?.({ title, body, tone: "error" }),
   },
   {
@@ -86,9 +82,24 @@ const queryClient = createAppQueryClient(
     },
   },
 );
+// Instance and personal preference reads have no live events; see live-reconcile.ts.
+applyLiveEventFreeQueryDefaults(queryClient);
 // Outages pause queries and replayable mutations instead of failing them, and
 // live queries refresh once when the server answers again.
 bindConnectivity(queryClient, connectivity);
+startPersistedQueryCache(queryClient, {
+  buildId: typeof __PAPERCLIP_BUILD_COMMIT__ === "string" ? __PAPERCLIP_BUILD_COMMIT__ : null,
+});
+window.addEventListener("load", () => {
+  startServiceWorkerUpdates({
+    canReload: () => connectivity.getSnapshot().status === "online"
+      && connectivity.getSnapshot().pendingWrites === 0 && queryClient.isMutating() === 0 && !hasPendingWrites(),
+    subscribeReloadSafety: listener => {
+      const cleanups = [connectivity.subscribe(listener), queryClient.getMutationCache().subscribe(listener), subscribePendingWrites(listener)];
+      return () => { for (const cleanup of cleanups) cleanup(); };
+    },
+  });
+});
 
 function CompanyAwareBreadcrumbProvider({ children }: { children: React.ReactNode }) {
   const { selectedCompany } = useCompany();
@@ -102,6 +113,12 @@ function CompanyVoiceCalls({ children }: { children: React.ReactNode }) {
 }
 
 await initDisplayLanguage();
+
+function CompanyLinkPreviews({ children }: { children: React.ReactNode }) {
+  const { selectedCompanyId } = useCompany();
+  const { userId, settled } = useAccountIdentity();
+  return <LinkPreviewProvider companyId={settled ? selectedCompanyId : null} userId={userId}>{children}</LinkPreviewProvider>;
+}
 
 const rootElement = document.getElementById("root");
 if (!rootElement) throw new Error("Paperclip root element is missing");
@@ -125,7 +142,7 @@ getOrCreatePaperclipReactRoot(window, rootElement).render(
                           <PanelProvider>
                             <PluginLauncherProvider>
                               <DialogProvider>
-                                <DesignSandboxProvider><CompanyVoiceCalls><App /></CompanyVoiceCalls></DesignSandboxProvider>
+                                <DesignSandboxProvider><CompanyVoiceCalls><CompanyLinkPreviews><App /></CompanyLinkPreviews></CompanyVoiceCalls></DesignSandboxProvider>
                               </DialogProvider>
                             </PluginLauncherProvider>
                           </PanelProvider>

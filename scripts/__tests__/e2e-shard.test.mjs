@@ -216,11 +216,11 @@ test("the trusted PR workflow keeps a stable aggregate check named e2e over the 
   }
 });
 
-test("runner authorization uses hosted capacity and executes metadata checks only", () => {
+test("runner authorization uses reserved capacity and executes metadata checks only", () => {
   const workflow = readFileSync(routingWorkflow, "utf8");
   const jobs = readWorkflowJobs(workflow.split(/^jobs:\n/m)[1]);
   assert.deepEqual([...jobs.keys()], ["gate"]);
-  assert.match(jobs.get("gate"), /^ {4}runs-on: ubuntu-latest$/m);
+  assert.match(jobs.get("gate"), /runs-on\/fleet=paperclip-ci-routing-x64\/env=public-ci/);
   assert.doesNotMatch(jobs.get("gate"), /uses:|actions\/checkout|secrets\./);
   assert.match(workflow, /^ {6}runner:\n {8}value: \$\{\{ jobs\.gate\.outputs\.runner \}\}$/m);
   assert.match(workflow, /^ {6}full_ci:\n {8}value: \$\{\{ jobs\.gate\.outputs\.full_ci \}\}$/m);
@@ -246,6 +246,7 @@ test("the trusted PR workflow limits full CI to merge-relevant stack layers", ()
     "verify_serialized_server",
     "canary_dry_run",
     "e2e_shards",
+    "verify_runner_e2e_support",
   ]) {
     assert.match(
       jobs.get(jobId),
@@ -263,7 +264,7 @@ test("the trusted PR workflow limits full CI to merge-relevant stack layers", ()
   const verify = jobs.get("verify");
   assert.match(
     verify,
-    /^ {4}needs: \[gate, test_selection, policy, typecheck_release_registry, general_tests, verify_paperclip_runner, build, docker_context_integrity, verify_serialized_server, canary_dry_run\]$/m,
+    /^ {4}needs: \[gate, test_selection, policy, typecheck_release_registry, general_tests, verify_paperclip_runner, build, docker_context_integrity, sandbox_provider_tests, verify_serialized_server, canary_dry_run, verify_runner_e2e_support\]$/m,
   );
   assert.equal(runAggregate(verify, true).status, 0);
   assert.equal(runAggregate(verify, false).status, 0);
@@ -272,7 +273,7 @@ test("the trusted PR workflow limits full CI to merge-relevant stack layers", ()
       "an optional selector cannot block the successful original matrix");
   }
   for (const job of ["gate", "policy", "typecheck_release_registry", "general_tests", "verify_paperclip_runner",
-    "build", "docker_context_integrity", "verify_serialized_server", "canary_dry_run"]) {
+    "build", "docker_context_integrity", "sandbox_provider_tests", "verify_serialized_server", "canary_dry_run", "verify_runner_e2e_support"]) {
     for (const result of ["failure", "cancelled", "skipped"]) {
       assert.notEqual(runAggregate(verify, true, { [job]: result }).status, 0, `${job}: ${result}`);
     }

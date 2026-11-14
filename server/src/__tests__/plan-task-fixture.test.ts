@@ -71,7 +71,7 @@ if (!support.supported) console.warn(`Planning fixture API calibration skipped: 
     expect(sources.every(s => s.key.startsWith(`company/${companyId}/eval-`))).toBe(true);
     const selected = await selectPlanSkills(api, companyId, agentId, sources);
     const invocations = planInvocations(sources, selected);
-    const contextSkills = [];
+    const contextSkills: Array<{ key: string; runtimeName: string; versionId: string; bundle: { rootPath: string } }> = [];
     await companySkillService(db).withRuntimeSkillEntries(companyId, {
       onlyKeys: new Set(sources.filter(source => source.selected).map(source => source.key)), snapshotLatest: true,
     }, async entries => { for (const source of sources.filter(s => s.selected)) {
@@ -91,7 +91,7 @@ if (!support.supported) console.warn(`Planning fixture API calibration skipped: 
     expect(inputs).toHaveLength(variant === "disabled" ? 0 : 2);
     expect(inputs.map(i => i.name)).toEqual(invocations.map(i => i.name));
     const providerHome = path.join(root, "isolated-codex-home");
-    expect(resolveRunnerdCodexSkillInputs(inputs, context, providerHome)).toEqual(inputs.map(i => ({
+    expect(resolveRunnerdCodexSkillInputs(inputs.map(i => ({ ...i })), context, providerHome)).toEqual(inputs.map(i => ({
       ...i, path: path.join(providerHome, "skills", i.name, "SKILL.md"),
     })));
     await verifyPlanSelection(api, companyId, agentId, sources);

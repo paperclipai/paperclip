@@ -8,15 +8,23 @@ const { sql }: typeof import("../../packages/db/node_modules/drizzle-orm/index.j
 import { createDb, type Db } from "../../packages/db/src/index.js";
 import { paperclipConfigSchema } from "../../packages/shared/src/config-schema.js";
 import { loadNativeRunnerCheckpoint } from "../../server/src/services/native-runtime/native-runner-checkpoint.js";
-import type { ControllerOutageReceipt } from "./controller-outage.js";
+import type { ControllerReplacementReceipt } from "./controller-replacement.js";
 
 export interface RecoveryBinding { companyId: string; issueId: string; runId: string }
 export interface RecoverySnapshot {
   runId: string; runnerInstanceId: string; nativeSessionId: string;
+  status: string; phase: string; resultId: string | null;
   bootId: string; generation: number; attempt: number; leaseExpiresAt: string | null;
   sourceSeq: number; history: Array<Record<string, unknown>>;
   authenticatedConnectionCount: number;
   checkpointSourceSeq: number;
+}
+
+export function assertActiveRecoveryBoundary(snapshot: RecoverySnapshot): void {
+  if (snapshot.status !== "running" || snapshot.phase !== "observed" || snapshot.resultId !== null
+    || !snapshot.leaseExpiresAt || !Number.isFinite(Date.parse(snapshot.leaseExpiresAt)) || Date.parse(snapshot.leaseExpiresAt) <= Date.now()) {
+    throw new Error("Active controller handoff boundary unexercised: original execution settled before traffic switched");
+  }
 }
 export interface ControllerRecoveryReceipt {
   binding: RecoveryBinding;
@@ -47,7 +55,7 @@ export function parseRecoveryBinding(value: unknown): RecoveryBinding {
   return row as unknown as RecoveryBinding;
 }
 
-export function recoveryObservation(before: RecoverySnapshot, after: RecoverySnapshot, fault: ControllerOutageReceipt,
+export function recoveryObservation(before: RecoverySnapshot, after: RecoverySnapshot, fault: ControllerReplacementReceipt,
   binding: RecoveryBinding, observedAfterMs: number): ControllerRecoveryReceipt | null {
   if (before.runId !== binding.runId || after.runId !== before.runId || after.runnerInstanceId !== before.runnerInstanceId
     || after.nativeSessionId !== before.nativeSessionId || after.attempt !== before.attempt) {
@@ -77,7 +85,17 @@ export function recoveryObservation(before: RecoverySnapshot, after: RecoverySna
     authenticatedConnectionCount: after.authenticatedConnectionCount, attachmentEvidence: "runner_checkpoint_authenticated_connection" };
 }
 
-export function validControllerRecoveryReceipt(fault: ControllerOutageReceipt | undefined): boolean {
+/** B can claim before A exits. Preserve A's original owner/authentication
+ * identity while excluding every event committed through A's final exit. */
+export function advanceRecoveryCursor(before: RecoverySnapshot, stopped: RecoverySnapshot): RecoverySnapshot {
+  if (before.runId !== stopped.runId || before.runnerInstanceId !== stopped.runnerInstanceId
+    || before.nativeSessionId !== stopped.nativeSessionId || before.attempt !== stopped.attempt) {
+    throw new Error("Controller replacement changed the admitted execution");
+  }
+  return { ...before, sourceSeq: Math.max(before.sourceSeq, stopped.sourceSeq, stopped.checkpointSourceSeq) };
+}
+
+export function validControllerRecoveryReceipt(fault: ControllerReplacementReceipt | undefined): boolean {
   const r = fault?.recovery;
   return Boolean(r && r.bootId !== r.previousBootId && r.generation > r.previousGeneration
     && r.runnerSourceSeqAfter > r.runnerSourceSeqBefore && r.authenticatedConnectionCount > r.previousAuthenticatedConnectionCount
@@ -88,7 +106,7 @@ export function validControllerRecoveryReceipt(fault: ControllerOutageReceipt | 
 
 export async function readControllerRecoverySnapshot(db: Db, binding: RecoveryBinding): Promise<RecoverySnapshot> {
   return db.transaction(async tx => {
-    const [row] = await tx.execute(sql`select r.id as "runId", r.runner_instance_id as "runnerInstanceId",
+    const [row] = await tx.execute(sql`select r.id as "runId", r.status, f.phase, f.result_id as "resultId", r.runner_instance_id as "runnerInstanceId",
       r.native_session_id as "nativeSessionId", f.controller_boot_id as "bootId", f.controller_generation as generation,
       f.attempt, f.lease_expires_at::text as "leaseExpiresAt", f.recovery_history as history,
       coalesce((select max(e.source_seq) from heartbeat_run_events e where e.run_id = r.id
@@ -120,19 +138,29 @@ export async function createControllerRecoveryObserver(configPath: string, bindi
   const db = createDb(url);
   let before: RecoverySnapshot | undefined;
   const read = () => readControllerRecoverySnapshot(db, binding);
-  return {
-    // Called only after the old server is confirmed dead. This also excludes
-    // receipts committed while it was stopping from replacement evidence.
-    stopped: async (fault: ControllerOutageReceipt) => {
+  const capture = async (fault: ControllerReplacementReceipt) => {
       before = await read();
       before.sourceSeq = Math.max(before.sourceSeq, before.checkpointSourceSeq);
       fault.recoveryProgress = { binding, previousBootId: before.bootId, previousGeneration: before.generation,
         previousLeaseExpiresAt: before.leaseExpiresAt, runnerSourceSeqBefore: before.sourceSeq,
         previousAuthenticatedConnectionCount: before.authenticatedConnectionCount,
         runnerInstanceId: before.runnerInstanceId, nativeSessionId: before.nativeSessionId };
+  };
+  return {
+    beforeHandoff: async (fault: ControllerReplacementReceipt) => {
+      await capture(fault);
+      assertActiveRecoveryBoundary(before!);
     },
-    recovered: async (fault: ControllerOutageReceipt, record: () => Promise<void>, cancelled: () => boolean) => {
-      if (!before) throw new Error("Missing stopped-controller observation");
+    // Called only after the old server is confirmed dead. This also excludes
+    // receipts committed while it was stopping from replacement evidence.
+    stopped: capture,
+    stoppedAfterHandoff: async (fault: ControllerReplacementReceipt) => {
+      if (!before) throw new Error("Missing pre-handoff controller observation");
+      before = advanceRecoveryCursor(before, await read());
+      fault.recoveryProgress = { ...fault.recoveryProgress, runnerSourceSeqBefore: before.sourceSeq };
+    },
+    recovered: async (fault: ControllerReplacementReceipt, record: () => Promise<void>, cancelled: () => boolean) => {
+      if (!before) throw new Error("Missing controller boundary observation");
       const deadline = Date.parse(fault.startedAt) + 420_000;
       let ownershipObservedAfterMs: number | undefined;
       let authenticatedObservedAfterMs: number | undefined;

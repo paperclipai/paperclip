@@ -43,6 +43,12 @@ export const CACHED_PATHS = [
   `${RELEASE_DIR}/deps/paperclip_runnerd-*`,
   `${RELEASE_DIR}/paperclip-runnerd`,
   `${RELEASE_DIR}/paperclip-runnerd.d`,
+  // The process-table library is the crate's one workspace dependency. Cargo
+  // rebuilds a dependent whose workspace dependency is newer than it, so the
+  // library's lib unit is cached and marked current with the crate.
+  `${RELEASE_DIR}/.fingerprint/paperclip-process-table-*`,
+  `${RELEASE_DIR}/deps/libpaperclip_process_table-*`,
+  `${RELEASE_DIR}/deps/paperclip_process_table-*.d`,
 ];
 
 // Every file the release build of the crate reads, as hashFiles() patterns:
@@ -81,7 +87,19 @@ export const REQUIRED = [
   { label: "the bin fingerprint hash", glob: `${RELEASE_DIR}/.fingerprint/paperclip-runner-core-*/bin-paperclip-runnerd` },
   { label: "the bin dep-info", glob: `${RELEASE_DIR}/.fingerprint/paperclip-runner-core-*/dep-bin-paperclip-runnerd` },
   { label: "the bin under deps", glob: `${RELEASE_DIR}/deps/paperclip_runnerd-*`, exclude: /\.d$/ },
+  ...processTableRequired(RELEASE_DIR),
 ];
+
+/** The lib unit of the process-table workspace dependency, in `directory`. */
+export function processTableRequired(directory) {
+  const fingerprint = `${directory}/.fingerprint/paperclip-process-table-*`;
+  return [
+    { label: "the process-table lib fingerprint hash", glob: `${fingerprint}/lib-paperclip_process_table` },
+    { label: "the process-table lib dep-info", glob: `${fingerprint}/dep-lib-paperclip_process_table` },
+    { label: "the process-table lib rlib", glob: `${directory}/deps/libpaperclip_process_table-*.rlib` },
+    { label: "the process-table lib rmeta", glob: `${directory}/deps/libpaperclip_process_table-*.rmeta` },
+  ];
+}
 
 const SCHEMA = "paperclip.runner-release-crate.v1";
 
@@ -103,10 +121,10 @@ export function computeScope({ workspace = process.env.GITHUB_WORKSPACE ?? proce
   return `${keySafe(os.platform())}-${keySafe(os.arch())}-${keySafe(rustcVersion)}-${root}`;
 }
 
-function readRustcVersion(env = process.env) {
+export function readRustcVersion(env = process.env, cwd = process.cwd()) {
   let output;
   try {
-    output = execFileSync("rustc", ["--version", "--verbose"], { encoding: "utf8", env });
+    output = execFileSync("rustc", ["--version", "--verbose"], { encoding: "utf8", env, cwd });
   } catch {
     return "no-rustc";
   }
@@ -156,12 +174,13 @@ function walk(target, visit) {
  * older than the build. When the set is incomplete, remove whatever was
  * restored and report it: cargo then compiles the crate as on a miss.
  */
-export function markCurrent({ root = process.env.GITHUB_WORKSPACE ?? process.cwd(), now = new Date() } = {}) {
-  const missing = REQUIRED.find(({ glob, exclude }) => expandGlob(root, glob).filter((entry) => !exclude?.test(entry)).length === 0);
-  const matched = CACHED_PATHS.flatMap((pattern) => expandGlob(root, pattern));
+export function markCurrent({ root = process.env.GITHUB_WORKSPACE ?? process.cwd(), now = new Date(),
+  required = REQUIRED, cachedPaths = CACHED_PATHS, schema = SCHEMA } = {}) {
+  const missing = required.find(({ glob, exclude }) => expandGlob(root, glob).filter((entry) => !exclude?.test(entry)).length === 0);
+  const matched = cachedPaths.flatMap((pattern) => expandGlob(root, pattern));
   if (missing) {
     for (const target of matched) rmSync(target, { recursive: true, force: true });
-    return { schema: SCHEMA, action: "discarded", reason: `incomplete: ${missing.label} is missing`, removed: matched.length };
+    return { schema, action: "discarded", reason: `incomplete: ${missing.label} is missing`, removed: matched.length };
   }
   let files = 0;
   let bytes = 0;
@@ -181,7 +200,7 @@ export function markCurrent({ root = process.env.GITHUB_WORKSPACE ?? process.cwd
       }
     });
   }
-  return { schema: SCHEMA, action: "marked", files, bytes };
+  return { schema, action: "marked", files, bytes };
 }
 
 function main(argv) {
