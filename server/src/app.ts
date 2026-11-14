@@ -6,6 +6,7 @@ import { startMcpIngressHandoffExpiry } from "./services/public-mcp/ingress-hand
 import { runnerAttachmentDownloadRoutes } from "./services/native-runtime/runner-attachment-download.js";
 import { nativeRunMcpRoutes } from "./routes/native-run-mcp.js";
 import { connectionEventWakeRoutes } from "./routes/connection-event-wake.js";
+import { cloudProductEventRoutes } from "./routes/cloud-product-events.js";
 import { registerGitHubReviewProjectionWork } from "./services/chat-channels/github/review-projection-work.js";
 import { finishServiceShutdown } from "./shutdown.js";
 import { promptInjectionPreventionRoutes } from "./routes/prompt-injection-prevention.js";
@@ -626,6 +627,7 @@ export async function createApp(
   app.use(cloudControlMiddleware());
   app.use(runnerCallOutcomeMiddleware(db));
   app.use(connectionEventWakeRoutes(db));
+  app.use(cloudProductEventRoutes(db));
   app.use(skillAccessRequestContext);
   app.use("/api/auth", authRoutes(db));
   if (opts.betterAuthHandler) {

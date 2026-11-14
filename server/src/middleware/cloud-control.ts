@@ -35,6 +35,9 @@ const ACTIONS_BY_ENDPOINT: Record<string, Record<string, CloudControlAction>> = 
   "/api/instance/lifecycle/unarchive-primary": {
     POST: "lifecycle:unarchive-primary",
   },
+  "/api/instance/product-events": {
+    GET: "product-events:read",
+  },
 };
 
 /**
