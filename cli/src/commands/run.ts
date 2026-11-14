@@ -123,11 +123,12 @@ export async function runCommand(opts: RunOptions): Promise<void> {
   process.once("exit", () => removeRuntimeInfoForPid(process.pid, instanceId));
 
   if (shouldGenerateBootstrapInviteAfterStart(config)) {
-    p.log.step("Generating bootstrap CEO invite");
+    p.log.step("Checking bootstrap CEO invite");
     await bootstrapCeoInvite({
       config: configPath,
       dbUrl: startedServer.databaseUrl,
-      baseUrl: resolveBootstrapInviteBaseUrl(config, startedServer),
+      fallbackBaseUrl: startedServer.apiUrl,
+      rotate: false,
     });
   }
 
@@ -139,24 +140,6 @@ export async function runCommand(opts: RunOptions): Promise<void> {
       throw error;
     }
   }
-}
-
-function resolveBootstrapInviteBaseUrl(
-  config: PaperclipConfig,
-  startedServer: StartedServer,
-): string {
-  const explicitBaseUrl =
-    process.env.PAPERCLIP_PUBLIC_URL ??
-    process.env.PAPERCLIP_AUTH_PUBLIC_BASE_URL ??
-    process.env.BETTER_AUTH_URL ??
-    process.env.BETTER_AUTH_BASE_URL ??
-    (config.auth.baseUrlMode === "explicit" ? config.auth.publicBaseUrl : undefined);
-
-  if (typeof explicitBaseUrl === "string" && explicitBaseUrl.trim().length > 0) {
-    return explicitBaseUrl.trim().replace(/\/+$/, "");
-  }
-
-  return startedServer.apiUrl.replace(/\/api$/, "");
 }
 
 function formatError(err: unknown): string {
