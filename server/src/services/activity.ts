@@ -2,6 +2,7 @@ import { DELIVERY_QUEUES, notifyDeliveryWork } from "./delivery-work-notificatio
 import { skillAccessService } from "./skill-access.js";
 import { credentialAccessConnectionNameSql } from "./credential-access-visibility.js";
 import { executionProjectionsForRuns } from "./execution-projection.js";
+import { heartbeatRunContextSnapshotOnce, heartbeatRunJsonOnce, heartbeatRunResultJsonOnce } from "./heartbeat-run-json.js";
 import { and, asc, desc, eq, inArray, isNull, or, sql, type SQL } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
@@ -127,64 +128,64 @@ export function activityService(db: Db) {
     case
       when ${heartbeatRuns.resultJson} is null then null
       else jsonb_strip_nulls(jsonb_build_object(
-        'conversationReset', ${heartbeatRuns.resultJson} -> 'conversationReset',
-        'executionCancellation', case when ${heartbeatRuns.resultJson} ? 'executionCancellation'
+        'conversationReset', ${heartbeatRunResultJsonOnce} -> 'conversationReset',
+        'executionCancellation', case when ${heartbeatRunResultJsonOnce} ? 'executionCancellation'
           then jsonb_build_object('state', case
-            when jsonb_typeof(${heartbeatRuns.resultJson} -> 'executionCancellation') = 'object'
-              and ${heartbeatRuns.resultJson} #>> '{executionCancellation,state}' in ('requested', 'acknowledged')
-            then ${heartbeatRuns.resultJson} #>> '{executionCancellation,state}' else 'unknown' end) end,
+            when jsonb_typeof(${heartbeatRunResultJsonOnce} -> 'executionCancellation') = 'object'
+              and ${heartbeatRunResultJsonOnce} #>> '{executionCancellation,state}' in ('requested', 'acknowledged')
+            then ${heartbeatRunResultJsonOnce} #>> '{executionCancellation,state}' else 'unknown' end) end,
         'nativeCancellation', case
-          when jsonb_typeof(${heartbeatRuns.resultJson} -> 'nativeCancellation') = 'object'
-            and ${heartbeatRuns.resultJson} #>> '{nativeCancellation,schema}' = 'paperclip.native-cancellation.v1'
-            and ${heartbeatRuns.resultJson} #>> '{nativeCancellation,runId}' = ${heartbeatRuns.id}::text
-            and ${heartbeatRuns.resultJson} #>> '{nativeCancellation,companyId}' = ${heartbeatRuns.companyId}::text
-            and ${heartbeatRuns.resultJson} #>> '{nativeCancellation,dispatchState}' in ('pending', 'acknowledged')
+          when jsonb_typeof(${heartbeatRunResultJsonOnce} -> 'nativeCancellation') = 'object'
+            and ${heartbeatRunResultJsonOnce} #>> '{nativeCancellation,schema}' = 'paperclip.native-cancellation.v1'
+            and ${heartbeatRunResultJsonOnce} #>> '{nativeCancellation,runId}' = ${heartbeatRuns.id}::text
+            and ${heartbeatRunResultJsonOnce} #>> '{nativeCancellation,companyId}' = ${heartbeatRuns.companyId}::text
+            and ${heartbeatRunResultJsonOnce} #>> '{nativeCancellation,dispatchState}' in ('pending', 'acknowledged')
           then jsonb_build_object('schema', 'paperclip.native-cancellation.v1',
             'runId', ${heartbeatRuns.id}, 'companyId', ${heartbeatRuns.companyId},
-            'dispatchState', ${heartbeatRuns.resultJson} #>> '{nativeCancellation,dispatchState}') end,
+            'dispatchState', ${heartbeatRunResultJsonOnce} #>> '{nativeCancellation,dispatchState}') end,
         'configurationIncomplete', case
-          when ${heartbeatRuns.resultJson} -> 'configurationIncomplete' ->> 'reason' = 'workspace_base_ref_unresolved'
+          when ${heartbeatRunResultJsonOnce} -> 'configurationIncomplete' ->> 'reason' = 'workspace_base_ref_unresolved'
           then jsonb_build_object('reason', 'workspace_base_ref_unresolved')
           when ${heartbeatRuns.errorCode} = 'configuration_incomplete'
-          and (${heartbeatRuns.resultJson} #>> '{configurationIncomplete,selectionFailure}' = 'ai_connection_credential_not_shared'
+          and (${heartbeatRunResultJsonOnce} #>> '{configurationIncomplete,selectionFailure}' = 'ai_connection_credential_not_shared'
             or ${heartbeatRuns.error} = 'This credential is not shared with the responsible user')
           then jsonb_build_object(
-            'selectionFailure', case when ${heartbeatRuns.resultJson} #>> '{configurationIncomplete,selectionFailure}' = 'ai_connection_credential_not_shared'
+            'selectionFailure', case when ${heartbeatRunResultJsonOnce} #>> '{configurationIncomplete,selectionFailure}' = 'ai_connection_credential_not_shared'
               then 'ai_connection_credential_not_shared' end,
             'credentialAccess', jsonb_build_object(
-              'connectionName', ${credentialAccessConnectionNameSql(viewerUserId)}
+              'connectionName', ${credentialAccessConnectionNameSql(viewerUserId, heartbeatRunResultJsonOnce)}
             )
           ) end,
-        'workspaceRestoreFailure', case when ${heartbeatRuns.resultJson} ->> 'workspaceRestoreFailure'
+        'workspaceRestoreFailure', case when ${heartbeatRunResultJsonOnce} ->> 'workspaceRestoreFailure'
           in (${workspaceRestoreFailureCodesSql})
-          then ${heartbeatRuns.resultJson} -> 'workspaceRestoreFailure' end,
-        'workspaceRestorePath', case when length(${heartbeatRuns.resultJson} ->> 'workspaceRestorePath') <= 180
-          then ${heartbeatRuns.resultJson} -> 'workspaceRestorePath' end,
-        'finalResponseRecorded', case when jsonb_typeof(${heartbeatRuns.resultJson} -> 'finalResponseRecorded') = 'boolean'
-          then ${heartbeatRuns.resultJson} -> 'finalResponseRecorded' end,
-        'billingType', coalesce(${heartbeatRuns.resultJson} -> 'billingType', ${heartbeatRuns.resultJson} -> 'billing_type'),
-        'billing_type', coalesce(${heartbeatRuns.resultJson} -> 'billing_type', ${heartbeatRuns.resultJson} -> 'billingType'),
+          then ${heartbeatRunResultJsonOnce} -> 'workspaceRestoreFailure' end,
+        'workspaceRestorePath', case when length(${heartbeatRunResultJsonOnce} ->> 'workspaceRestorePath') <= 180
+          then ${heartbeatRunResultJsonOnce} -> 'workspaceRestorePath' end,
+        'finalResponseRecorded', case when jsonb_typeof(${heartbeatRunResultJsonOnce} -> 'finalResponseRecorded') = 'boolean'
+          then ${heartbeatRunResultJsonOnce} -> 'finalResponseRecorded' end,
+        'billingType', coalesce(${heartbeatRunResultJsonOnce} -> 'billingType', ${heartbeatRunResultJsonOnce} -> 'billing_type'),
+        'billing_type', coalesce(${heartbeatRunResultJsonOnce} -> 'billing_type', ${heartbeatRunResultJsonOnce} -> 'billingType'),
         'costUsd', coalesce(
-          ${heartbeatRuns.resultJson} -> 'costUsd',
-          ${heartbeatRuns.resultJson} -> 'cost_usd',
-          ${heartbeatRuns.resultJson} -> 'total_cost_usd'
+          ${heartbeatRunResultJsonOnce} -> 'costUsd',
+          ${heartbeatRunResultJsonOnce} -> 'cost_usd',
+          ${heartbeatRunResultJsonOnce} -> 'total_cost_usd'
         ),
         'cost_usd', coalesce(
-          ${heartbeatRuns.resultJson} -> 'cost_usd',
-          ${heartbeatRuns.resultJson} -> 'costUsd',
-          ${heartbeatRuns.resultJson} -> 'total_cost_usd'
+          ${heartbeatRunResultJsonOnce} -> 'cost_usd',
+          ${heartbeatRunResultJsonOnce} -> 'costUsd',
+          ${heartbeatRunResultJsonOnce} -> 'total_cost_usd'
         ),
         'total_cost_usd', coalesce(
-          ${heartbeatRuns.resultJson} -> 'total_cost_usd',
-          ${heartbeatRuns.resultJson} -> 'cost_usd',
-          ${heartbeatRuns.resultJson} -> 'costUsd'
+          ${heartbeatRunResultJsonOnce} -> 'total_cost_usd',
+          ${heartbeatRunResultJsonOnce} -> 'cost_usd',
+          ${heartbeatRunResultJsonOnce} -> 'costUsd'
         ),
-        'stopReason', ${heartbeatRuns.resultJson} -> 'stopReason',
-        'effectiveTimeoutSec', ${heartbeatRuns.resultJson} -> 'effectiveTimeoutSec',
-        'effectiveTimeoutMs', ${heartbeatRuns.resultJson} -> 'effectiveTimeoutMs',
-        'timeoutConfigured', ${heartbeatRuns.resultJson} -> 'timeoutConfigured',
-        'timeoutSource', ${heartbeatRuns.resultJson} -> 'timeoutSource',
-        'timeoutFired', ${heartbeatRuns.resultJson} -> 'timeoutFired'
+        'stopReason', ${heartbeatRunResultJsonOnce} -> 'stopReason',
+        'effectiveTimeoutSec', ${heartbeatRunResultJsonOnce} -> 'effectiveTimeoutSec',
+        'effectiveTimeoutMs', ${heartbeatRunResultJsonOnce} -> 'effectiveTimeoutMs',
+        'timeoutConfigured', ${heartbeatRunResultJsonOnce} -> 'timeoutConfigured',
+        'timeoutSource', ${heartbeatRunResultJsonOnce} -> 'timeoutSource',
+        'timeoutFired', ${heartbeatRunResultJsonOnce} -> 'timeoutFired'
       ))
     end
   `.as("resultJson");
@@ -504,8 +505,8 @@ export function activityService(db: Db) {
           usageJson: summarizedUsageJson,
           resultJson: summarizedResultJson(viewerUserId),
           // Bounded cause of a generic failure code; validated below, legacy rows have none.
-          failureCause: sql<string | null>`case when jsonb_typeof(${heartbeatRuns.resultJson} -> 'failureCause') = 'string'
-            then left(${heartbeatRuns.resultJson} ->> 'failureCause', ${RUN_FAILURE_CAUSE_MAX_LENGTH + 1}) end`,
+          failureCause: sql<string | null>`case when jsonb_typeof(${heartbeatRunResultJsonOnce} -> 'failureCause') = 'string'
+            then left(${heartbeatRunResultJsonOnce} ->> 'failureCause', ${RUN_FAILURE_CAUSE_MAX_LENGTH + 1}) end`,
           logBytes: heartbeatRuns.logBytes,
           retryOfRunId: heartbeatRuns.retryOfRunId,
           scheduledRetryAt: heartbeatRuns.scheduledRetryAt,
@@ -516,11 +517,11 @@ export function activityService(db: Db) {
           continuationAttempt: heartbeatRuns.continuationAttempt,
           lastUsefulActionAt: heartbeatRuns.lastUsefulActionAt,
           nextAction: heartbeatRuns.nextAction,
-          wakeCommentIds: sql<string[] | null>`${heartbeatRuns.contextSnapshot} -> 'wakeCommentIds'`,
-          queuedCommentSourceWakeIds: sql<string[] | null>`${heartbeatRuns.contextSnapshot} -> 'queuedCommentSourceWakeIds'`,
-          wakeCommentId: sql<string | null>`${heartbeatRuns.contextSnapshot} ->> 'wakeCommentId'`,
-          contextCommentId: sql<string | null>`${heartbeatRuns.contextSnapshot} ->> 'commentId'`,
-          contextIssueId: sql<string | null>`${heartbeatRuns.contextSnapshot} ->> 'issueId'`,
+          wakeCommentIds: sql<string[] | null>`${heartbeatRunContextSnapshotOnce} -> 'wakeCommentIds'`,
+          queuedCommentSourceWakeIds: sql<string[] | null>`${heartbeatRunContextSnapshotOnce} -> 'queuedCommentSourceWakeIds'`,
+          wakeCommentId: sql<string | null>`${heartbeatRunContextSnapshotOnce} ->> 'wakeCommentId'`,
+          contextCommentId: sql<string | null>`${heartbeatRunContextSnapshotOnce} ->> 'commentId'`,
+          contextIssueId: sql<string | null>`${heartbeatRunContextSnapshotOnce} ->> 'issueId'`,
         })
         .from(heartbeatRuns)
         .innerJoin(
@@ -530,6 +531,7 @@ export function activityService(db: Db) {
             eq(agents.companyId, heartbeatRuns.companyId),
           ),
         )
+        .leftJoinLateral(heartbeatRunJsonOnce, sql`true`)
         .where(
           and(
             eq(heartbeatRuns.companyId, companyId),

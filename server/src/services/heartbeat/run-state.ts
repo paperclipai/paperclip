@@ -50,6 +50,7 @@ import {
   HEARTBEAT_RUN_SAFE_RESULT_JSON_MAX_BYTES,
   summarizeRunErrorForModel,
 } from "../heartbeat-run-summary.js";
+import { heartbeatRunContextSnapshotOnce, heartbeatRunJsonOnce, heartbeatRunResultJsonOnce } from "../heartbeat-run-json.js";
 import {
   hasSessionCompactionThresholds,
   resolveSessionCompactionPolicy,
@@ -139,8 +140,7 @@ const heartbeatRunSummaryListColumns = {
 } as const;
 
 const heartbeatRunListContextRecord = sql`lateral jsonb_to_record(
-  case when jsonb_typeof(${heartbeatRuns.contextSnapshot}) = 'object'
-    then ${heartbeatRuns.contextSnapshot} else '{}'::jsonb end
+  jsonb_path_query_first(${heartbeatRuns.contextSnapshot}, 'strict $ ? (@.type() == "object")')
 ) as run_context("issueId" text, "taskId" text, "taskKey" text,
   "commentId" text, "wakeCommentId" text, "wakeReason" text,
   "wakeSource" text, "wakeTriggerDetail" text)`;
@@ -199,7 +199,7 @@ const diagnosticRetrievalTitleBytes = 1024;
 const diagnosticRetrievalDetailsBytes = 8192;
 
 function boundedRunDiagnosticText(field: "title" | "details", maxBytes: number) {
-  const value = sql`${heartbeatRuns.resultJson} #>> ARRAY['terminalSessionFailure', ${field}]`;
+  const value = sql`${heartbeatRunResultJsonOnce} #>> ARRAY['terminalSessionFailure', ${field}]`;
   return sql`case when octet_length(${value}) <= ${maxBytes} then ${value}
     else left(${value}, ${Math.floor((maxBytes - 100) / 4)})
       || E'\\n[truncated for run retrieval; full text in run error/transcript]' end`;
@@ -209,99 +209,100 @@ const heartbeatRunSafeResultJsonColumn = sql<Record<string, unknown> | null>`
   case
     when ${heartbeatRuns.resultJson} is null then null
     when pg_column_size(${heartbeatRuns.resultJson}) <= ${HEARTBEAT_RUN_SAFE_RESULT_JSON_MAX_BYTES}
-      then ${heartbeatRuns.resultJson}
+      then case when jsonb_typeof(${heartbeatRunResultJsonOnce}) = 'object'
+        then ${heartbeatRunResultJsonOnce} else ${heartbeatRuns.resultJson} end
     else jsonb_strip_nulls(
       jsonb_build_object(
-        'summary', left(${heartbeatRuns.resultJson} ->> 'summary', ${HEARTBEAT_RUN_RESULT_SUMMARY_MAX_CHARS}),
-        'result', left(${heartbeatRuns.resultJson} ->> 'result', ${HEARTBEAT_RUN_RESULT_SUMMARY_MAX_CHARS}),
-        'message', left(${heartbeatRuns.resultJson} ->> 'message', ${HEARTBEAT_RUN_RESULT_SUMMARY_MAX_CHARS}),
-        'error', left(${heartbeatRuns.resultJson} ->> 'error', ${HEARTBEAT_RUN_RESULT_SUMMARY_MAX_CHARS}),
-        'stdout', left(${heartbeatRuns.resultJson} ->> 'stdout', ${HEARTBEAT_RUN_RESULT_OUTPUT_MAX_CHARS}),
-        'stderr', left(${heartbeatRuns.resultJson} ->> 'stderr', ${HEARTBEAT_RUN_RESULT_OUTPUT_MAX_CHARS}),
-        'terminalSessionFailure', case when jsonb_typeof(${heartbeatRuns.resultJson} -> 'terminalSessionFailure') = 'object'
+        'summary', left(${heartbeatRunResultJsonOnce} ->> 'summary', ${HEARTBEAT_RUN_RESULT_SUMMARY_MAX_CHARS}),
+        'result', left(${heartbeatRunResultJsonOnce} ->> 'result', ${HEARTBEAT_RUN_RESULT_SUMMARY_MAX_CHARS}),
+        'message', left(${heartbeatRunResultJsonOnce} ->> 'message', ${HEARTBEAT_RUN_RESULT_SUMMARY_MAX_CHARS}),
+        'error', left(${heartbeatRunResultJsonOnce} ->> 'error', ${HEARTBEAT_RUN_RESULT_SUMMARY_MAX_CHARS}),
+        'stdout', left(${heartbeatRunResultJsonOnce} ->> 'stdout', ${HEARTBEAT_RUN_RESULT_OUTPUT_MAX_CHARS}),
+        'stderr', left(${heartbeatRunResultJsonOnce} ->> 'stderr', ${HEARTBEAT_RUN_RESULT_OUTPUT_MAX_CHARS}),
+        'terminalSessionFailure', case when jsonb_typeof(${heartbeatRunResultJsonOnce} -> 'terminalSessionFailure') = 'object'
           then jsonb_strip_nulls(jsonb_build_object(
-            'category', left(${heartbeatRuns.resultJson} #>> '{terminalSessionFailure,category}', 32),
+            'category', left(${heartbeatRunResultJsonOnce} #>> '{terminalSessionFailure,category}', 32),
             'title', ${boundedRunDiagnosticText("title", diagnosticRetrievalTitleBytes)},
             'details', ${boundedRunDiagnosticText("details", diagnosticRetrievalDetailsBytes)},
             'retrievalTruncated', case when
-              octet_length(${heartbeatRuns.resultJson} #>> '{terminalSessionFailure,title}') > ${diagnosticRetrievalTitleBytes}
-              or octet_length(${heartbeatRuns.resultJson} #>> '{terminalSessionFailure,details}') > ${diagnosticRetrievalDetailsBytes}
+              octet_length(${heartbeatRunResultJsonOnce} #>> '{terminalSessionFailure,title}') > ${diagnosticRetrievalTitleBytes}
+              or octet_length(${heartbeatRunResultJsonOnce} #>> '{terminalSessionFailure,details}') > ${diagnosticRetrievalDetailsBytes}
               then to_jsonb(true) end,
-            'truncatedFields', case when ${heartbeatRuns.resultJson} #> '{terminalSessionFailure,truncatedFields}'
+            'truncatedFields', case when ${heartbeatRunResultJsonOnce} #> '{terminalSessionFailure,truncatedFields}'
               in ('["title"]'::jsonb, '["details"]'::jsonb, '["title","details"]'::jsonb)
-              then ${heartbeatRuns.resultJson} #> '{terminalSessionFailure,truncatedFields}' end
+              then ${heartbeatRunResultJsonOnce} #> '{terminalSessionFailure,truncatedFields}' end
           )) end,
-        'instructionSave', case when jsonb_typeof(${heartbeatRuns.resultJson} -> 'instructionSave') = 'object'
+        'instructionSave', case when jsonb_typeof(${heartbeatRunResultJsonOnce} -> 'instructionSave') = 'object'
           then jsonb_strip_nulls(jsonb_build_object(
-            'state', left(${heartbeatRuns.resultJson} #>> '{instructionSave,state}', 32),
-            'contract', left(${heartbeatRuns.resultJson} #>> '{instructionSave,contract}', 32),
-            'entryFile', left(${heartbeatRuns.resultJson} #>> '{instructionSave,entryFile}', 512),
-            'errorCode', left(${heartbeatRuns.resultJson} #>> '{instructionSave,errorCode}', 128),
-            'errorMessage', left(${heartbeatRuns.resultJson} #>> '{instructionSave,errorMessage}', 1024),
-            'storageWarning', left(${heartbeatRuns.resultJson} #>> '{instructionSave,storageWarning}', 1024)
+            'state', left(${heartbeatRunResultJsonOnce} #>> '{instructionSave,state}', 32),
+            'contract', left(${heartbeatRunResultJsonOnce} #>> '{instructionSave,contract}', 32),
+            'entryFile', left(${heartbeatRunResultJsonOnce} #>> '{instructionSave,entryFile}', 512),
+            'errorCode', left(${heartbeatRunResultJsonOnce} #>> '{instructionSave,errorCode}', 128),
+            'errorMessage', left(${heartbeatRunResultJsonOnce} #>> '{instructionSave,errorMessage}', 1024),
+            'storageWarning', left(${heartbeatRunResultJsonOnce} #>> '{instructionSave,storageWarning}', 1024)
           )) end,
-        'workspaceRestoreRecovery', case when ${heartbeatRuns.resultJson} #>> '{workspaceRestoreRecovery,schema}' = 'paperclip.workspace-restore-recovery.v1'
+        'workspaceRestoreRecovery', case when ${heartbeatRunResultJsonOnce} #>> '{workspaceRestoreRecovery,schema}' = 'paperclip.workspace-restore-recovery.v1'
           then jsonb_build_object('schema', 'paperclip.workspace-restore-recovery.v1') end,
-        'workspaceRestoreFailure', case when ${heartbeatRuns.resultJson} ->> 'workspaceRestoreFailure'
+        'workspaceRestoreFailure', case when ${heartbeatRunResultJsonOnce} ->> 'workspaceRestoreFailure'
           in (${workspaceRestoreFailureCodesSql})
-          then ${heartbeatRuns.resultJson} -> 'workspaceRestoreFailure' end,
-        'cancellation', case when jsonb_typeof(${heartbeatRuns.resultJson} -> 'cancellation') = 'object'
+          then ${heartbeatRunResultJsonOnce} -> 'workspaceRestoreFailure' end,
+        'cancellation', case when jsonb_typeof(${heartbeatRunResultJsonOnce} -> 'cancellation') = 'object'
           then jsonb_strip_nulls(jsonb_build_object(
-            'source', case when ${heartbeatRuns.resultJson} #>> '{cancellation,source}'
+            'source', case when ${heartbeatRunResultJsonOnce} #>> '{cancellation,source}'
               in ('operator', 'queued_message', 'shutdown', 'provider', 'transport', 'control_plane', 'controller_lease', 'unknown')
-              then ${heartbeatRuns.resultJson} #> '{cancellation,source}' end,
-            'expected', case when jsonb_typeof(${heartbeatRuns.resultJson} #> '{cancellation,expected}') = 'boolean'
-              then ${heartbeatRuns.resultJson} #> '{cancellation,expected}' end,
+              then ${heartbeatRunResultJsonOnce} #> '{cancellation,source}' end,
+            'expected', case when jsonb_typeof(${heartbeatRunResultJsonOnce} #> '{cancellation,expected}') = 'boolean'
+              then ${heartbeatRunResultJsonOnce} #> '{cancellation,expected}' end,
             'initiator', jsonb_strip_nulls(jsonb_build_object(
-              'type', case when ${heartbeatRuns.resultJson} #>> '{cancellation,initiator,type}' in ('user', 'agent', 'system', 'provider')
-                then ${heartbeatRuns.resultJson} #> '{cancellation,initiator,type}' end,
-              'id', left(${heartbeatRuns.resultJson} #>> '{cancellation,initiator,id}', 128)
+              'type', case when ${heartbeatRunResultJsonOnce} #>> '{cancellation,initiator,type}' in ('user', 'agent', 'system', 'provider')
+                then ${heartbeatRunResultJsonOnce} #> '{cancellation,initiator,type}' end,
+              'id', left(${heartbeatRunResultJsonOnce} #>> '{cancellation,initiator,id}', 128)
             )),
-            'reason', left(${heartbeatRuns.resultJson} #>> '{cancellation,reason}', 512),
-            'recordedAt', left(${heartbeatRuns.resultJson} #>> '{cancellation,recordedAt}', 64)
+            'reason', left(${heartbeatRunResultJsonOnce} #>> '{cancellation,reason}', 512),
+            'recordedAt', left(${heartbeatRunResultJsonOnce} #>> '{cancellation,recordedAt}', 64)
           )) end,
-        'acpToolInventoryComplete', case when jsonb_typeof(${heartbeatRuns.resultJson} -> 'acpToolInventoryComplete') = 'boolean'
-          then ${heartbeatRuns.resultJson} -> 'acpToolInventoryComplete' end,
-        'acpPendingToolCount', case when jsonb_typeof(${heartbeatRuns.resultJson} -> 'acpPendingToolCount') = 'number'
-          and length(${heartbeatRuns.resultJson} ->> 'acpPendingToolCount') < 16
-          then ${heartbeatRuns.resultJson} -> 'acpPendingToolCount' end,
-        'errorFamily', left(${heartbeatRuns.resultJson} ->> 'errorFamily', 32),
-        'finalResponseRecorded', case when jsonb_typeof(${heartbeatRuns.resultJson} -> 'finalResponseRecorded') = 'boolean'
-          then ${heartbeatRuns.resultJson} -> 'finalResponseRecorded' end,
-        'executionBeforeRestore', case when jsonb_typeof(${heartbeatRuns.resultJson} -> 'executionBeforeRestore') = 'object'
+        'acpToolInventoryComplete', case when jsonb_typeof(${heartbeatRunResultJsonOnce} -> 'acpToolInventoryComplete') = 'boolean'
+          then ${heartbeatRunResultJsonOnce} -> 'acpToolInventoryComplete' end,
+        'acpPendingToolCount', case when jsonb_typeof(${heartbeatRunResultJsonOnce} -> 'acpPendingToolCount') = 'number'
+          and length(${heartbeatRunResultJsonOnce} ->> 'acpPendingToolCount') < 16
+          then ${heartbeatRunResultJsonOnce} -> 'acpPendingToolCount' end,
+        'errorFamily', left(${heartbeatRunResultJsonOnce} ->> 'errorFamily', 32),
+        'finalResponseRecorded', case when jsonb_typeof(${heartbeatRunResultJsonOnce} -> 'finalResponseRecorded') = 'boolean'
+          then ${heartbeatRunResultJsonOnce} -> 'finalResponseRecorded' end,
+        'executionBeforeRestore', case when jsonb_typeof(${heartbeatRunResultJsonOnce} -> 'executionBeforeRestore') = 'object'
           then jsonb_strip_nulls(jsonb_build_object(
-            'errorCode', left(${heartbeatRuns.resultJson} #>> '{executionBeforeRestore,errorCode}', 128),
-            'exitCode', case when jsonb_typeof(${heartbeatRuns.resultJson} #> '{executionBeforeRestore,exitCode}') = 'number'
-              and length(${heartbeatRuns.resultJson} #>> '{executionBeforeRestore,exitCode}') < 16
-              then ${heartbeatRuns.resultJson} #> '{executionBeforeRestore,exitCode}' end,
-            'signal', left(${heartbeatRuns.resultJson} #>> '{executionBeforeRestore,signal}', 50),
-            'timedOut', case when jsonb_typeof(${heartbeatRuns.resultJson} #> '{executionBeforeRestore,timedOut}') = 'boolean'
-              then ${heartbeatRuns.resultJson} #> '{executionBeforeRestore,timedOut}' end
+            'errorCode', left(${heartbeatRunResultJsonOnce} #>> '{executionBeforeRestore,errorCode}', 128),
+            'exitCode', case when jsonb_typeof(${heartbeatRunResultJsonOnce} #> '{executionBeforeRestore,exitCode}') = 'number'
+              and length(${heartbeatRunResultJsonOnce} #>> '{executionBeforeRestore,exitCode}') < 16
+              then ${heartbeatRunResultJsonOnce} #> '{executionBeforeRestore,exitCode}' end,
+            'signal', left(${heartbeatRunResultJsonOnce} #>> '{executionBeforeRestore,signal}', 50),
+            'timedOut', case when jsonb_typeof(${heartbeatRunResultJsonOnce} #> '{executionBeforeRestore,timedOut}') = 'boolean'
+              then ${heartbeatRunResultJsonOnce} #> '{executionBeforeRestore,timedOut}' end
           )) end,
         'stdoutTruncated', case
-          when length(${heartbeatRuns.resultJson} ->> 'stdout') > ${HEARTBEAT_RUN_RESULT_OUTPUT_MAX_CHARS}
+          when length(${heartbeatRunResultJsonOnce} ->> 'stdout') > ${HEARTBEAT_RUN_RESULT_OUTPUT_MAX_CHARS}
             then to_jsonb(true)
           else null
         end,
         'stderrTruncated', case
-          when length(${heartbeatRuns.resultJson} ->> 'stderr') > ${HEARTBEAT_RUN_RESULT_OUTPUT_MAX_CHARS}
+          when length(${heartbeatRunResultJsonOnce} ->> 'stderr') > ${HEARTBEAT_RUN_RESULT_OUTPUT_MAX_CHARS}
             then to_jsonb(true)
           else null
         end,
         'costUsd', coalesce(
-          ${heartbeatRuns.resultJson} -> 'costUsd',
-          ${heartbeatRuns.resultJson} -> 'cost_usd',
-          ${heartbeatRuns.resultJson} -> 'total_cost_usd'
+          ${heartbeatRunResultJsonOnce} -> 'costUsd',
+          ${heartbeatRunResultJsonOnce} -> 'cost_usd',
+          ${heartbeatRunResultJsonOnce} -> 'total_cost_usd'
         ),
         'cost_usd', coalesce(
-          ${heartbeatRuns.resultJson} -> 'cost_usd',
-          ${heartbeatRuns.resultJson} -> 'costUsd',
-          ${heartbeatRuns.resultJson} -> 'total_cost_usd'
+          ${heartbeatRunResultJsonOnce} -> 'cost_usd',
+          ${heartbeatRunResultJsonOnce} -> 'costUsd',
+          ${heartbeatRunResultJsonOnce} -> 'total_cost_usd'
         ),
         'total_cost_usd', coalesce(
-          ${heartbeatRuns.resultJson} -> 'total_cost_usd',
-          ${heartbeatRuns.resultJson} -> 'cost_usd',
-          ${heartbeatRuns.resultJson} -> 'costUsd'
+          ${heartbeatRunResultJsonOnce} -> 'total_cost_usd',
+          ${heartbeatRunResultJsonOnce} -> 'cost_usd',
+          ${heartbeatRunResultJsonOnce} -> 'costUsd'
         ),
         'truncated', true,
         'truncationReason', 'oversized_result_json',
@@ -316,26 +317,36 @@ const heartbeatRunSafeResultJsonColumn = sql<Record<string, unknown> | null>`
 // only the evidence used by eligibility; never retrieve provider diagnostics.
 const heartbeatRunExecutionEvidenceColumn = sql<Record<string, unknown> | null>`
   case when ${heartbeatRuns.resultJson} is null then null else jsonb_build_object(
-    'startupCancellation', ${heartbeatRuns.resultJson} -> 'startupCancellation',
-    'startupPreparationSettledAt', ${heartbeatRuns.resultJson} -> 'startupPreparationSettledAt',
-    'stopReason', ${heartbeatRuns.resultJson} -> 'stopReason',
-    'timeoutSource', ${heartbeatRuns.resultJson} -> 'timeoutSource',
-    'workspaceRestoreFailure', ${heartbeatRuns.resultJson} -> 'workspaceRestoreFailure',
-    'workspaceRestoreRecovery', ${heartbeatRuns.resultJson} -> 'workspaceRestoreRecovery',
+    'startupCancellation', ${heartbeatRunResultJsonOnce} -> 'startupCancellation',
+    'startupPreparationSettledAt', ${heartbeatRunResultJsonOnce} -> 'startupPreparationSettledAt',
+    'stopReason', ${heartbeatRunResultJsonOnce} -> 'stopReason',
+    'timeoutSource', ${heartbeatRunResultJsonOnce} -> 'timeoutSource',
+    'workspaceRestoreFailure', ${heartbeatRunResultJsonOnce} -> 'workspaceRestoreFailure',
+    'workspaceRestoreRecovery', ${heartbeatRunResultJsonOnce} -> 'workspaceRestoreRecovery',
     'executionRecovery', jsonb_build_object(
-      'kind', ${heartbeatRuns.resultJson} #> '{executionRecovery,kind}',
-      'providerWorkStarted', ${heartbeatRuns.resultJson} #> '{executionRecovery,providerWorkStarted}'),
-    'executionCancellation', ${heartbeatRuns.resultJson} -> 'executionCancellation',
-    'nativeCancellation', ${heartbeatRuns.resultJson} -> 'nativeCancellation',
-    'cancelledByActorType', ${heartbeatRuns.resultJson} -> 'cancelledByActorType',
-    'cancelledByUserId', ${heartbeatRuns.resultJson} -> 'cancelledByUserId',
-    'reassignmentStopRequested', ${heartbeatRuns.resultJson} -> 'reassignmentStopRequested',
-    'conversationContinuation', ${heartbeatRuns.resultJson} -> 'conversationContinuation',
-    'cancellation', ${heartbeatRuns.resultJson} -> 'cancellation',
-    'acpToolInventoryComplete', ${heartbeatRuns.resultJson} -> 'acpToolInventoryComplete',
-    'acpPendingToolCount', ${heartbeatRuns.resultJson} -> 'acpPendingToolCount'
+      'kind', ${heartbeatRunResultJsonOnce} #> '{executionRecovery,kind}',
+      'providerWorkStarted', ${heartbeatRunResultJsonOnce} #> '{executionRecovery,providerWorkStarted}'),
+    'executionCancellation', ${heartbeatRunResultJsonOnce} -> 'executionCancellation',
+    'nativeCancellation', ${heartbeatRunResultJsonOnce} -> 'nativeCancellation',
+    'cancelledByActorType', ${heartbeatRunResultJsonOnce} -> 'cancelledByActorType',
+    'cancelledByUserId', ${heartbeatRunResultJsonOnce} -> 'cancelledByUserId',
+    'reassignmentStopRequested', ${heartbeatRunResultJsonOnce} -> 'reassignmentStopRequested',
+    'conversationContinuation', ${heartbeatRunResultJsonOnce} -> 'conversationContinuation',
+    'cancellation', ${heartbeatRunResultJsonOnce} -> 'cancellation',
+    'acpToolInventoryComplete', ${heartbeatRunResultJsonOnce} -> 'acpToolInventoryComplete',
+    'acpPendingToolCount', ${heartbeatRunResultJsonOnce} -> 'acpPendingToolCount'
   ) end
 `.as("resultJson");
+
+const heartbeatRunCompactionResultColumns = {
+  resultSummary: sql<string | null>`left(${heartbeatRunResultJsonOnce} ->> 'summary', ${HEARTBEAT_RUN_RESULT_SUMMARY_MAX_CHARS})`.as("resultSummary"),
+  resultResult: sql<string | null>`left(${heartbeatRunResultJsonOnce} ->> 'result', ${HEARTBEAT_RUN_RESULT_SUMMARY_MAX_CHARS})`.as("resultResult"),
+  resultMessage: sql<string | null>`left(${heartbeatRunResultJsonOnce} ->> 'message', ${HEARTBEAT_RUN_RESULT_SUMMARY_MAX_CHARS})`.as("resultMessage"),
+  resultError: sql<string | null>`left(${heartbeatRunResultJsonOnce} ->> 'error', ${HEARTBEAT_RUN_RESULT_SUMMARY_MAX_CHARS})`.as("resultError"),
+  resultTotalCostUsd: sql<string | null>`${heartbeatRunResultJsonOnce} ->> 'total_cost_usd'`.as("resultTotalCostUsd"),
+  resultCostUsd: sql<string | null>`${heartbeatRunResultJsonOnce} ->> 'cost_usd'`.as("resultCostUsd"),
+  resultCostUsdCamel: sql<string | null>`${heartbeatRunResultJsonOnce} ->> 'costUsd'`.as("resultCostUsdCamel"),
+} as const;
 
 const heartbeatRunSafeColumns = {
   ...getTableColumns(heartbeatRuns),
@@ -1144,6 +1155,7 @@ export function createHeartbeatRunState(db: Db) {
         ? { ...columns, resultJson: heartbeatRunExecutionEvidenceColumn }
         : columns)
       .from(heartbeatRuns)
+      .leftJoinLateral(heartbeatRunJsonOnce, sql`true`)
       .where(eq(heartbeatRuns.id, runId))
       .then((rows) => rows[0] ?? null);
   }
@@ -1166,12 +1178,12 @@ export function createHeartbeatRunState(db: Db) {
       controllerBootId: heartbeatRuns.controllerBootId,
       controllerLeaseExpiresAt: heartbeatRuns.controllerLeaseExpiresAt,
       resultJson: heartbeatRunExecutionEvidenceColumn,
-      contextSnapshot: sql<Record<string, unknown> | null>`case when jsonb_typeof(${heartbeatRuns.contextSnapshot}) = 'object'
+      contextSnapshot: sql<Record<string, unknown> | null>`case when jsonb_typeof(${heartbeatRunContextSnapshotOnce}) = 'object'
         then (select coalesce(jsonb_object_agg(key, value), '{}'::jsonb)
-          from jsonb_each(${heartbeatRuns.contextSnapshot})
+          from jsonb_each(${heartbeatRunContextSnapshotOnce})
           where key = any(array['issueId', 'connectionIntentResolution', 'source', 'interactionKind',
             'interactionStatus', 'mutation', 'interactionId'])) else null end`,
-    }).from(heartbeatRuns).where(and(
+    }).from(heartbeatRuns).leftJoinLateral(heartbeatRunJsonOnce, sql`true`).where(and(
       eq(heartbeatRuns.companyId, companyId), eq(heartbeatRuns.id, runId),
     )).then(rows => rows[0] ?? null);
   }
@@ -1397,11 +1409,12 @@ export function createHeartbeatRunState(db: Db) {
         usageJson: heartbeatRuns.usageJson,
         error: heartbeatRuns.error,
         terminalFailureCategory: sql<string | null>`case
-          when jsonb_typeof(${heartbeatRuns.resultJson} -> 'terminalSessionFailure') = 'object'
-          then coalesce(left(${heartbeatRuns.resultJson} #>> '{terminalSessionFailure,category}', 32), 'unknown') end`,
-        ...heartbeatRunListResultColumns,
+          when jsonb_typeof(${heartbeatRunResultJsonOnce} -> 'terminalSessionFailure') = 'object'
+          then coalesce(left(${heartbeatRunResultJsonOnce} #>> '{terminalSessionFailure,category}', 32), 'unknown') end`,
+        ...heartbeatRunCompactionResultColumns,
       })
       .from(heartbeatRuns)
+      .leftJoinLateral(heartbeatRunJsonOnce, sql`true`)
       .where(
         and(
           eq(heartbeatRuns.agentId, agent.id),
