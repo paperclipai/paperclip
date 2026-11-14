@@ -274,7 +274,7 @@ describe("instruction working copies that cannot make progress", () => {
     } finally { await worker.stop(); }
   }, 120_000);
 
-  it("sends a run-scoped hint only when a waiting copy is brought forward, in one update", async () => {
+  it("sends a run-scoped hint only when a waiting copy is brought forward, and writes nothing otherwise", async () => {
     const [waiting] = await unprovenStops(1, 30 * DAY);
     const [none] = await runs(1, DAY);
     const due = new Date(Date.now() + 6 * HOUR);
@@ -287,11 +287,34 @@ describe("instruction working copies that cannot make progress", () => {
       meter.startLog();
       await db.transaction(tx => notifyInstructionCopyStopEvidence(tx, { companyId, runId: none! }));
       const quiet = meter.stopLog();
-      expect(quiet.filter(entry => !/^(begin|commit)/i.test(entry.sql.trim())).map(entry => entry.sql.split(" ")[0])).toEqual(["update"]);
+      expect(quiet.filter(entry => !/^(begin|commit)/i.test(entry.sql.trim())).map(entry => entry.sql.trim().split(/\s/)[0])).toEqual(["select"]);
       expect(hints).toEqual([]);
       await db.transaction(tx => notifyInstructionCopyStopEvidence(tx, { companyId, runId: waiting! }));
       await vi.waitFor(() => expect(hints).toEqual([JSON.stringify({ companyId, runId: waiting })]));
       expect((await copy(waiting!)).nextAttemptAt!.getTime()).toBeLessThanOrEqual(Date.now());
     } finally { unsubscribe(); }
   }, 60_000);
+  it("collects a copy whose stop is recorded between the worker's evidence read and its backoff write", async () => {
+    const [runId] = await unprovenStops(1, 30 * DAY);
+    await db.update(agentInstructionWorkingCopies).set({ state: "pending_collection", nextAttemptAt: new Date(Date.now() - 1000) })
+      .where(eq(agentInstructionWorkingCopies.runId, runId!));
+    const deadPid = spawnSync(process.execPath, ["-e", ""]).pid!;
+    const [run] = await db.update(heartbeatRuns).set({ processPid: deadPid }).where(eq(heartbeatRuns.id, runId!)).returning();
+    const transaction = db.transaction.bind(db);
+    let recorded = false;
+    const transactions = vi.spyOn(db, "transaction").mockImplementation((async (callback, options) => {
+      if (!recorded) {
+        recorded = true;
+        expect(await transaction(tx => recordNativeLocalProcessStopInTransaction(tx as unknown as typeof db, run!))).toBe(true);
+      }
+      return transaction(callback, options);
+    }) as typeof db.transaction);
+    clock(); const worker = await start("collection");
+    try {
+      transactions.mockRestore();
+      expect(recorded).toBe(true);
+      await advance(10_000, () => Date.now() + 1000);
+      expect(await copy(runId!)).toMatchObject({ state: "unchanged", nextAttemptAt: null });
+    } finally { transactions.mockRestore(); await worker.stop(); }
+  }, 120_000);
 });
