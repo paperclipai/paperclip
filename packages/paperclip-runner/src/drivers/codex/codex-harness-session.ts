@@ -83,7 +83,7 @@ export class CodexHarnessSession
         "runtime_request_recovery_failed", error instanceof Error ? error.message : String(error),
       ));
     }
-    if (this.terminal) {
+    if (this.terminal && !this.awaitingProviderTurn) {
       this.#deferredNotificationPump = true;
       this.eventQueue.close();
     } else {
@@ -760,7 +760,13 @@ export class CodexHarnessSession
     }
   }
 
-  async reconcile(): Promise<Record<string, unknown>> {
+  reconcile(): Promise<Record<string, unknown>> {
+    const reconciled = this.#reconcile();
+    this.recoveryReconciled = reconciled.then(() => undefined, () => undefined);
+    return reconciled;
+  }
+
+  async #reconcile(): Promise<Record<string, unknown>> {
     this.assertProtocolIntegrity();
     this.requireCapability("reconciliation");
     const snapshot = await this.read();
@@ -816,11 +822,17 @@ export class CodexHarnessSession
     const unexpectedActive = activeTurns.find(
       (turn) => text(turn.id) !== expectedTurnId,
     );
-    if (unexpectedActive !== undefined) {
-      throw new HarnessReconciliationError(
-        `thread/read exposed active turn ${text(unexpectedActive.id)} instead of persisted active turn ${expectedTurnId ?? "none"}`,
-      );
-    }
+    const expectedIndex = turns.findIndex((turn) => text(turn.id) === expectedTurnId);
+    const awaitedProviderTurn = unexpectedActive !== undefined && activeTurns.length === 1 && expectedIndex >= 0
+      && turns.indexOf(unexpectedActive) > expectedIndex && text(turns[expectedIndex]!.status) === "completed"
+      && turns[expectedIndex]!.awaitingProviderTurn === true;
+    const unexpectedActiveTurn = () => new HarnessReconciliationError(
+      `thread/read exposed active turn ${text(unexpectedActive?.id)} instead of persisted active turn ${expectedTurnId ?? "none"}`,
+    );
+    const lastTerminalIndex = turns.findLastIndex((turn) => this.terminalTurns.has(text(turn.id)));
+    const awaitedWhileWaiting = unexpectedActive !== undefined && activeTurns.length === 1 && expectedTurnId === null
+      && this.awaitingProviderTurn && lastTerminalIndex >= 0 && turns.indexOf(unexpectedActive) > lastTerminalIndex;
+    if (unexpectedActive !== undefined && !awaitedProviderTurn && !awaitedWhileWaiting) throw unexpectedActiveTurn();
 
     let reconciledTerminalTurnId: string | null = null;
     if (expectedTurnId !== null) {
@@ -857,6 +869,7 @@ export class CodexHarnessSession
         }
       }
     }
+    if (awaitedProviderTurn && !this.awaitingProviderTurn) throw unexpectedActiveTurn();
 
     for (const [turnId, fingerprint] of this.terminalTurns) {
       const reported = turns.find((turn) => text(turn.id) === turnId);
@@ -899,6 +912,10 @@ export class CodexHarnessSession
 
   async snapshot(): Promise<PersistedHarnessSession> {
     this.assertProtocolIntegrity();
+    return this.persistedSnapshot();
+  }
+
+  protected persistedSnapshot(): PersistedHarnessSession {
     return {
       driverKind: this.driverKind,
       workingDirectory: this.opened.context.workingDirectory,

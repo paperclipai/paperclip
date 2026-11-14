@@ -17325,7 +17325,7 @@ describe("runnerd provider runtime wiring", () => {
     state.createBackend.mock.calls.at(-1)![1].codexTransportFactory!();
     expect(state.createTransport.mock.calls.at(-1)![0]).toMatchObject({
       provider: "acpx", acpxAgent: "claude", acpxPermissionMode: "approve-all",
-      acpxPermissionModePinned: true, claudeEffort: "high", homeMode,
+      acpxPermissionModePinned: true, claudeEffort: "high", homeMode, providerStartedTurns: true,
     });
   });
 
@@ -17346,6 +17346,7 @@ describe("runnerd provider runtime wiring", () => {
       provider: "acpx", acpxAgent: "grok", acpxPermissionMode: "approve-all",
       acpxPermissionModePinned: true, grokEffort: "high", grokDisableWebSearch: disableWebSearch, homeMode,
     });
+    expect(state.createTransport.mock.calls.at(-1)![0]).not.toHaveProperty("providerStartedTurns");
   });
 
   it("requires explicit Grok credentials before v10 daemon startup", async () => {
@@ -18894,7 +18895,8 @@ describe("runnerd provider runtime wiring", () => {
       expect(owner.mock.results.at(-1)!.value.credentialsUpdated).toHaveBeenCalledWith(notification);
       expect(options).toMatchObject({ ...driver, runnerArtifact: { version: "fixture" },
         prpIdentity: { environmentLeaseId: "plugin-task-lease" } });
-      if (kind === "acpx") expect(options).toMatchObject({ acpxAgent: "claude", claudeEffort: "high" });
+      if (kind === "acpx") expect(options).toMatchObject({ acpxAgent: "claude", claudeEffort: "high", providerStartedTurns: true });
+      else expect(options).not.toHaveProperty("providerStartedTurns");
       for (const key of ["environment", "codexCommand", "codexArgs", "runnerRuntimePaths", "readRunnerState", "archiveExternalRunnerState"]) {
         expect(options).not.toHaveProperty(key);
       }
