@@ -320,6 +320,11 @@ export async function terminalizeLegacyExecution(input: {
     const owner = task ? decisionOwner(task, updated, retainedLeaseIds.length) : null;
     if (task && owner?.owns) {
       const { isCurrentReviewer } = owner;
+      // Periodic stranded-work checks may revisit this terminal run before its
+      // reconciled or explicitly requested continuation is dispatched. Preserve
+      // its recorded decision instead of creating another hold. The explicit
+      // receipt must identify an actual successor under the same task/agent;
+      // retained user intent remains authoritative after that successor finishes.
       const reconciled = await findRecordedLegacyDecision(tx as unknown as Db, run, task.id, updated.resultJson);
       if (reconciled) return updated;
       await issueRecoveryActionService(tx as unknown as Db).upsertSourceScoped({
