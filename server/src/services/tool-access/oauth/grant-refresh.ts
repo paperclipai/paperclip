@@ -18,6 +18,8 @@ import { withoutOAuthRefreshLease, type OAuthRefreshLeases } from "./refresh-lea
 import { managedConnectorProfile, oauthGrantConfig, oauthGrantExpiresAtMs } from "./client-settings.js";
 import { connectionSetupUrl, connectionReconnectUrl } from "../identifiers.js";
 import { singleFlight } from "../single-flight.js";
+import { usesClientCredentials } from "./client-credentials.js";
+import { requireClientCredentials, type ClientCredentialsService } from "./client-credentials-service.js";
 function asRecord(value: unknown): Record<string, unknown> {
   if (value && typeof value === "object" && !Array.isArray(value))
     return value as Record<string, unknown>;
@@ -31,9 +33,11 @@ type GrantRefreshDependencies = {
   currentCloudConnector: () => PaperclipCloudConnector | null;
   getConnectionRow(idOrUid: string, companyId?: string): Promise<typeof toolConnections.$inferSelect>;
   exchangeOAuthToken: ReturnType<typeof createOAuthClientProtocol>["exchangeOAuthToken"];
+  /** Absent only in narrow test harnesses that never use machine sign-in. */
+  requestClientCredentialsToken?: ClientCredentialsService["requestClientCredentialsToken"];
 };
 
-export function createOAuthGrantRefresh(db: Db, { now, store, leases, currentCloudConnector, getConnectionRow, exchangeOAuthToken }: GrantRefreshDependencies) {
+export function createOAuthGrantRefresh(db: Db, { now, store, leases, currentCloudConnector, getConnectionRow, exchangeOAuthToken, requestClientCredentialsToken }: GrantRefreshDependencies) {
   const oauthGrantRefreshFlights = new Map<string, Promise<unknown>>();
   const { getOAuthGrantRow, resolveOAuthGrantSecret, createOrRotateOAuthSecret, oauthClientForConnection, syncCredentialBindings } = store;
   const { acquireOAuthGrantRefreshLease, clearOAuthGrantRefreshLease } = leases;
@@ -272,10 +276,13 @@ export function createOAuthGrantRefresh(db: Db, { now, store, leases, currentClo
       if (!lease.leaseId) return lease.grant;
       try {
         const grant = lease.grant;
-        const refreshRef = grant.credentialSecretRefs.find(
+        // Machine sign-in has no refresh token: it simply asks for a new access
+        // token with the connection's own client credentials.
+        const machineSignIn = usesClientCredentials(connection);
+        const refreshRef = machineSignIn ? undefined : grant.credentialSecretRefs.find(
           (ref) => ref.configPath === "oauth.refresh_token",
         );
-        if (!refreshRef) {
+        if (!machineSignIn && !refreshRef) {
           throw unprocessable(
             "OAuth credentials have expired and no refresh token is available",
             {
@@ -285,29 +292,32 @@ export function createOAuthGrantRefresh(db: Db, { now, store, leases, currentClo
             },
           );
         }
-        const refreshSecret = await resolveOAuthGrantSecret(
+        const refreshSecret = refreshRef ? await resolveOAuthGrantSecret(
           connection,
           grant,
           refreshRef,
           input.actor,
           input,
-        );
+        ) : null;
         const credentialActor: ActorInfo | undefined =
           grant.kind === "user" && grant.subjectUserId
             ? { actorType: "user", actorId: grant.subjectUserId }
             : input.actor;
-        const client = await oauthClientForConnection(
-          connection,
-          oauthProvider,
-          credentialActor,
-        );
-        if (!client.clientId)
-          throw unprocessable(
-            `OAuth client id is not configured for ${oauthProvider}`,
-          );
         const grantOauth = oauthGrantConfig(grant);
         let token: Awaited<ReturnType<typeof exchangeOAuthToken>>;
         try {
+          if (machineSignIn) {
+            token = await requireClientCredentials(requestClientCredentialsToken)(connection, input.actor);
+          } else {
+          const client = await oauthClientForConnection(
+            connection,
+            oauthProvider,
+            credentialActor,
+          );
+          if (!client.clientId)
+            throw unprocessable(
+              `OAuth client id is not configured for ${oauthProvider}`,
+            );
           token = await exchangeOAuthToken({
             tokenUrl: oauthTokenUrl,
             clientId: client.clientId,
@@ -323,14 +333,16 @@ export function createOAuthGrantRefresh(db: Db, { now, store, leases, currentClo
                 : normalizeOauthScopes(oauth.scopes).length > 0
                   ? normalizeOauthScopes(oauth.scopes)
                   : normalizeOauthScopes(oauth.scope),
-            refreshToken: refreshSecret.value,
+            refreshToken: refreshSecret!.value,
             resource:
               typeof oauth.resource === "string" && oauth.resource
                 ? oauth.resource
                 : null,
           });
+          }
         } catch (error) {
           if (
+            refreshRef && refreshSecret &&
             error instanceof HttpError &&
             asRecord(error.details).code === "oauth_reauthorization_required"
           ) {

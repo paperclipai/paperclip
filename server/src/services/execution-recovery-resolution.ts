@@ -39,6 +39,8 @@ import { hasRemoteTerminationReceipt } from "./remote-execution-termination.js";
 import { readSystemRecovery } from "./system-recovery-state.js";
 import { isReattachPhaseActive } from "./heartbeat/run-admission.js";
 import { provenGoneLegacyControllerBootId } from "./legacy-controller-lease.js";
+import { reserveAutomaticRunCreation } from "./recovery/automatic-run-brake.js";
+import { recordContinuationDeliveryAttempt } from "./recovery/continuation-delivery-attempt.js";
 import { continueFreshInTransaction, continueHeldExecutions, freshContinuationCheckDue, recordFreshContinuationCheck,
   settleCoalescedFreshContinuationHolds } from "./fresh-continuation-fallback.js";
 import { alias } from "drizzle-orm/pg-core";
@@ -395,6 +397,7 @@ export async function deliverReconciledExecutions(
     ] : [
       sql`${pastBound} desc`,
       sql`${overdueTurn} asc nulls last`,
+      sql`${attemptedAt} asc nulls first`,
       sql`${sourceRun.finishedAt} desc nulls last`,
       sql`${issueRecoveryActions.updatedAt} asc`,
     ];
@@ -445,21 +448,14 @@ export async function deliverReconciledExecutions(
       ] : [
         sql`${candidates.pastBound} desc`,
         sql`${candidates.heldAt} asc nulls last`,
+        sql`${candidates.attemptedAt} asc nulls first`,
         sql`${candidates.sourceFinishedAt} desc nulls last`,
         sql`${candidates.actionUpdatedAt} asc`,
       ]))
       .limit(25);
     return rows.map(row => row.action);
   };
-  const deferRefusedContinuation = (action: typeof issueRecoveryActions.$inferSelect) => db.update(issueRecoveryActions)
-    .set({ evidence: sql`${issueRecoveryActions.evidence} || ${JSON.stringify(
-      { continuationDeliveryAttemptedAt: new Date().toISOString() })}::jsonb` })
-    .where(and(
-      eq(issueRecoveryActions.companyId, action.companyId),
-      eq(issueRecoveryActions.id, action.id),
-      eq(issueRecoveryActions.status, "resolved"),
-      sql`${issueRecoveryActions.evidence}->>'continuationDelivery' = 'pending'`,
-    ));
+  const deferRefusedContinuation = (action: typeof issueRecoveryActions.$inferSelect) => recordContinuationDeliveryAttempt(db, action);
   const agentHasRoom = async (action: typeof issueRecoveryActions.$inferSelect, agentId: string, kind: ContinuationClass) => {
     if ((admittedByCompany.get(action.companyId) ?? 0) >= companyLimit) return false;
     // A few at a time per agent, fresh or not: the rest waits here, durably,
@@ -553,6 +549,8 @@ export async function deliverReconciledExecutions(
           seenAgents.add(action.returnOwnerAgentId);
           continue;
         }
+        const slot = await reserveAutomaticRunCreation(db, action.companyId, { issueId: task.id, sourceRunId: decision.runId });
+        if (slot.heldUntil) { await deferRefusedContinuation(action); continue; }
         const run = await wake(action.returnOwnerAgentId, {
           source: "automation",
           triggerDetail: "system",
@@ -573,9 +571,10 @@ export async function deliverReconciledExecutions(
             ...((action.evidence.freshContinuation as { isolation?: unknown } | undefined)?.isolation === "fresh_isolated_workspace"
               ? { freshContinuationIsolation: action.id } : {}),
           },
-        });
+        }).catch(async error => { await slot.release(); throw error; });
         seenAgents.add(action.returnOwnerAgentId);
         if (!run) {
+          await slot.release();
           await deferRefusedContinuation(action);
           continue;
         }

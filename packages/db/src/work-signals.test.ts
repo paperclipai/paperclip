@@ -3,7 +3,7 @@ import { drizzle } from "drizzle-orm/postgres-js";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { createDb, withDedicatedDbConnection } from "./client.js";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./test-embedded-postgres.js";
-import { DATABASE_WORK_CHANNEL, databaseWorkScopeKey, databaseWorkPending, enableDatabaseWorkNotifications, installDatabaseWorkSignals, notifyDatabaseWorkOnCommit, primeDatabaseWorkTransactionId, reconcileDatabaseWork, signalDatabaseWork, subscribeDatabaseWork } from "./work-signals.js";
+import { DATABASE_WORK_CHANNEL, databaseWorkScopeKey, databaseWorkPending, enableDatabaseWorkNotifications, installDatabaseWorkSignals, notifyDatabaseWorkOnCommit, primeDatabaseWorkTransactionId, publishDatabaseWorkSettled, reconcileDatabaseWork, signalDatabaseWork, subscribeDatabaseWork } from "./work-signals.js";
 
 const support = await getEmbeddedPostgresTestSupport();
 (support.supported ? describe : describe.skip)("database work signals", () => {
@@ -159,6 +159,33 @@ const support = await getEmbeddedPostgresTestSupport();
     await reconcileDatabaseWork(db, "primed-disconnect");
     expect(databaseWorkPending(db, "primed-disconnect")).toBe(false);
     expect(await db.execute(sql`select * from work_signal_test where id = 'primed-disconnect'`)).toHaveLength(0);
+  });
+
+  it("publishes a settled wake at once outside a transaction, and inside one only after the outermost commit", async () => {
+    const events: Array<[string, string[]]> = [];
+    const unsubscribe = subscribeDatabaseWork(db, "settled-after-commit", (event, hints) => events.push([event, [...hints ?? []]]));
+    try {
+      publishDatabaseWorkSettled(db, "settled-after-commit", "outside");
+      expect(events).toEqual([["settled", ["outside"]]]);
+      events.length = 0;
+      await db.transaction(async tx => {
+        publishDatabaseWorkSettled(tx, "settled-after-commit", "committed");
+        await tx.transaction(async savepoint => { publishDatabaseWorkSettled(savepoint, "settled-after-commit", "released"); });
+        await expect(tx.transaction(async savepoint => {
+          publishDatabaseWorkSettled(savepoint, "settled-after-commit", "rolled-back-savepoint");
+          throw new Error("savepoint rollback");
+        })).rejects.toThrow("savepoint rollback");
+        expect(events).toEqual([]);
+      });
+      expect(events).toEqual([["settled", ["committed"]], ["settled", ["released"]]]);
+      events.length = 0;
+      await expect(db.transaction(async tx => {
+        publishDatabaseWorkSettled(tx, "settled-after-commit", "rolled-back");
+        throw new Error("outer rollback");
+      })).rejects.toThrow("outer rollback");
+      expect(events).toEqual([]);
+      expect(databaseWorkPending(db, "settled-after-commit")).toBe(false);
+    } finally { unsubscribe(); }
   });
 
   it("recovers after a real backend disconnect without replaying the queue write", async () => {

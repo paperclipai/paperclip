@@ -26,7 +26,7 @@ import { notifyRoutineExecutionStatus } from "./routine-execution-status-notific
 import { notifyStatusCardIssueChange } from "./status-card-notifications.js";
 import { readRunCancellation } from "./run-cancellation.js";
 import { readSystemRecovery } from "./system-recovery-state.js";
-import { RESTART_CLASS_FAILURE_CODES, continuationCauseIsSystemOwned, continuesAutomaticallySql, isPersonOwnedFailureCode } from "./continuation-cause.js";
+import { RESTART_CLASS_FAILURE_CODES, continuationCauseIsSystemOwned, continuationCauseIsSystemOwnedSql, continuesAutomaticallySql, isPersonOwnedFailureCode, recoveryRunSql } from "./continuation-cause.js";
 import { sharedContinuationAttempts } from "./recovery/continuation-ledger.js";
 
 export { AUTOMATIC_CONTINUATION_WAKE_REASONS, PERSON_OWNED_FAILURE_CODES, isPersonOwnedFailureCode, isRecoveryRun } from "./continuation-cause.js";
@@ -813,7 +813,10 @@ function interruptionEligibility(input: { now: Date; companyId: SQL; issueId: SQ
       and retry.run_id is null and retry.payload->>'issueId' = ${input.issueId}::text and retry.requested_at > source.finished_at)
     or exists (select 1 from ${heartbeatRuns} held where ${refusedLater}
       and held.context_snapshot->>'wakeReason' = 'task_retry' and held.finished_at > ${since}))`);
-  const recent = source(sql`${continuesAutomaticallySql("source")}
+  const systemRetriedSource = sql`(${continuationCauseIsSystemOwnedSql("source")}
+    and coalesce(source.context_snapshot->>'wakeReason', '') <> 'task_retry' and not coalesce(source.context_snapshot ? 'explicitUserContinuation', false)
+    and exists (select 1 from ${heartbeatRuns} held where ${refusedLater} and ${recoveryRunSql("held")}))`;
+  const recent = source(sql`(${continuesAutomaticallySql("source")} or ${systemRetriedSource})
     and greatest(source.finished_at, (select max(held.finished_at) from ${heartbeatRuns} held where ${refusedLater})) > ${since}`);
   return { recent, personAsked };
 }

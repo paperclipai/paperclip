@@ -5,6 +5,7 @@ import { eq, inArray, sql } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/postgres-js";
 import { agents, companies, createDb, heartbeatRunEvents, heartbeatRuns, issues, nativeRunnerCheckpoints, databaseWorkPending,
   reconcileDatabaseWork, signalDatabaseWork, subscribeDatabaseWork } from "@paperclipai/db";
+import { DATABASE_WORK_CHANNEL, enableDatabaseWorkNotifications } from "@paperclipai/db/work-signals";
 import { DELIVERY_QUEUES } from "../services/delivery-work-notifications.js";
 import { appendHeartbeatRunEvent, appendHeartbeatRunEventBatch } from "../services/heartbeat-run-events.js";
 import { nativeSha256 } from "../services/native-runtime/canonical.js";
@@ -484,28 +485,133 @@ describeEmbeddedPostgres("atomic ordinary run events", () => {
       .rejects.toThrow("heartbeat_run_event_batch_unsupported");
   });
 
-  it("registers a native event's wakes before its write and only when the event is new", async () => {
+  const finalMessage = (runId: string, sourceSeq: number) => {
+    const event = nativeEvent(runId, sourceSeq, "item.completed");
+    const prpEvent = { sourceSeq, payload: { kind: "agentMessage", channel: "final", text: "Done" } };
+    return { ...event, payload: { prpEvent }, nativeSource: { ...event.nativeSource, canonicalPayload: prpEvent } };
+  };
+  const nativeTaskRun = async (title: string) => {
     const runId = await makeRun();
-    const [issue] = await db.insert(issues).values({ companyId, title: "Progress task" }).returning();
+    const [issue] = await db.insert(issues).values({ companyId, title }).returning();
     await db.update(heartbeatRuns).set({ nativeIssueId: issue!.id, runtimeMode: "native" }).where(eq(heartbeatRuns.id, runId));
+    return runId;
+  };
+
+  it("appends an event whose only wake is chat progress in one statement and wakes progress after it commits", async () => {
+    const runId = await nativeTaskRun("Progress task");
     const wakes: string[] = [];
     const unsubscribe = subscribeDatabaseWork(db, DELIVERY_QUEUES.chatNativeProgress, event => { wakes.push(event); });
     try {
-      const first = await sentStatements(db.$client, () => appendHeartbeatRunEvent(db, nativeEvent(runId, 1, "item.completed")));
+      const first = await sentStatements(db.$client, () => appendHeartbeatRunEvent(db, nativeEvent(runId, 1, "tool.execution.progressed")));
+      expect(first.statements).toHaveLength(1);
+      expect(first.statements[0]).toMatch(/^with snapshot_run as .* insert into heartbeat_run_events .* pg_notify/);
+      expect(wakes).toEqual(["settled"]);
+      expect(first.result).toMatchObject({ disposition: "committed", highestContiguousSourceSeq: 1 });
+      wakes.length = 0;
+      const replay = await sentStatements(db.$client, () => appendHeartbeatRunEvent(db, nativeEvent(runId, 1, "tool.execution.progressed")));
+      expect(wakes).toEqual([]);
+      expect(replay.result).toEqual({ row: first.result.row, disposition: "duplicate", highestContiguousSourceSeq: 1 });
+      expect(await readEvents(runId)).toEqual([first.result.row]);
+    } finally { unsubscribe(); }
+  });
+
+  it("keeps a progress-only event inside a caller's transaction on the locked path, and settles its wake only when that transaction ends", async () => {
+    const runId = await nativeTaskRun("Progress in a caller transaction");
+    const wakes: string[] = [];
+    const unsubscribe = subscribeDatabaseWork(db, DELIVERY_QUEUES.chatNativeProgress, event => { wakes.push(event); });
+    try {
+      const committed = await sentStatements(db.$client, () => db.transaction(async tx => {
+        await appendHeartbeatRunEvent(tx as unknown as typeof db, nativeEvent(runId, 1, "tool.execution.progressed"));
+        expect(wakes).not.toContain("settled");
+      }));
+      expect(committed.statements[0]).toMatch(/^begin/i);
+      expect(committed.statements.some(text => text.startsWith("with snapshot_run as"))).toBe(false);
+      expect(wakes).toEqual(["intent", "settled"]);
+      wakes.length = 0;
+      await expect(db.transaction(async tx => {
+        await appendHeartbeatRunEvent(tx as unknown as typeof db, nativeEvent(runId, 2, "tool.execution.progressed"));
+        expect(wakes).not.toContain("settled");
+        throw new Error("caller rollback");
+      })).rejects.toThrow("caller rollback");
+      expect((await readEvents(runId)).map(row => row.sourceSeq)).toEqual([1]);
+      await reconcileDatabaseWork(db, DELIVERY_QUEUES.chatNativeProgress);
+      expect(databaseWorkPending(db, DELIVERY_QUEUES.chatNativeProgress)).toBe(false);
+    } finally { unsubscribe(); }
+  });
+
+  it("sends the progress wake to other server processes with the one statement's commit", async () => {
+    const runId = await nativeTaskRun("Cross-process progress");
+    const notifying = createDb(externalTestDatabaseUrl ?? temporary!.connectionString);
+    enableDatabaseWorkNotifications(notifying);
+    const received: string[] = [];
+    const listener = await otherDb.$client.listen(DATABASE_WORK_CHANNEL, payload => { received.push(payload); });
+    try {
+      const appended = await sentStatements(notifying.$client, () =>
+        appendHeartbeatRunEvent(notifying, nativeEvent(runId, 1, "tool.execution.completed")));
+      expect(appended.statements.filter(text => !text.includes("pg_catalog"))).toHaveLength(1);
+      await vi.waitFor(() => {
+        expect(received.map(payload => JSON.parse(payload).topic)).toEqual([DELIVERY_QUEUES.chatNativeProgress]);
+      }, { timeout: 5_000 });
+      await appendHeartbeatRunEvent(notifying, nativeEvent(runId, 1, "tool.execution.completed"));
+      await new Promise(resolve => setTimeout(resolve, 200));
+      expect(received).toHaveLength(1);
+    } finally {
+      await listener.unlisten();
+      await notifying.$client.end({ timeout: 1 });
+    }
+  });
+
+  it("registers a response wake with chat progress before its write and only when the event is new", async () => {
+    const runId = await nativeTaskRun("Response task");
+    const wakes: string[] = [];
+    const unsubscribe = subscribeDatabaseWork(db, DELIVERY_QUEUES.chatNativeProgress, event => { wakes.push(event); });
+    try {
+      const first = await sentStatements(db.$client, () => appendHeartbeatRunEvent(db, finalMessage(runId, 1)));
       expect(first.statements).toHaveLength(4);
       expect(first.statements[0]).toMatch(/^begin/i);
       expect(first.statements[1]).toMatch(/^with "snapshot_run" as .*pg_current_xact_id\(\).* for no key update.*"replay_found"/);
       expect(first.statements[2]).toMatch(/insert into heartbeat_run_events/);
       expect(first.statements[3]).toMatch(/^commit/i);
       expect(wakes).toEqual(["intent", "settled"]);
-      expect(first.result).toMatchObject({ disposition: "committed", highestContiguousSourceSeq: 1 });
       wakes.length = 0;
-      const replay = await sentStatements(db.$client, () => appendHeartbeatRunEvent(db, nativeEvent(runId, 1, "item.completed")));
+      const replay = await sentStatements(db.$client, () => appendHeartbeatRunEvent(db, finalMessage(runId, 1)));
       expect(wakes).toEqual([]);
       expect(replay.statements).toHaveLength(4);
       expect(replay.result).toEqual({ row: first.result.row, disposition: "duplicate", highestContiguousSourceSeq: 1 });
-      expect(await readEvents(runId)).toEqual([first.result.row]);
     } finally { unsubscribe(); }
+  });
+
+  it("keeps the transaction for the last events of a turn and a run, and one statement for progress-only events", async () => {
+    const runId = await nativeTaskRun("Last events");
+    const events = [
+      ["tool.execution.started", nativeEvent(runId, 1, "tool.execution.started")],
+      ["tool.execution.progressed", nativeEvent(runId, 2, "tool.execution.progressed")],
+      ["tool.execution.completed", nativeEvent(runId, 3, "tool.execution.completed")],
+      ["item.completed (not a final message)", nativeEvent(runId, 4, "item.completed")],
+      ["item.completed (final message)", finalMessage(runId, 5)],
+      ["run.result.accepted", nativeEvent(runId, 6, "run.result.accepted")],
+      ["turn.completed", nativeEvent(runId, 7, "turn.completed")],
+      ["turn.failed", nativeEvent(runId, 8, "turn.failed")],
+      ["turn.cancelled", nativeEvent(runId, 9, "turn.cancelled")],
+      ["turn.interrupted", nativeEvent(runId, 10, "turn.interrupted")],
+    ] as const;
+    const paths: Array<[string, string]> = [];
+    for (const [name, input] of events) {
+      const { statements } = await sentStatements(db.$client, () => appendHeartbeatRunEvent(db, input));
+      paths.push([name, /^begin/i.test(statements[0] ?? "") ? "transaction" : "one statement"]);
+    }
+    expect(paths).toEqual([
+      ["tool.execution.started", "one statement"],
+      ["tool.execution.progressed", "one statement"],
+      ["tool.execution.completed", "one statement"],
+      ["item.completed (not a final message)", "one statement"],
+      ["item.completed (final message)", "transaction"],
+      ["run.result.accepted", "transaction"],
+      ["turn.completed", "transaction"],
+      ["turn.failed", "transaction"],
+      ["turn.cancelled", "transaction"],
+      ["turn.interrupted", "transaction"],
+    ]);
   });
 
   it("gives the wake the transaction id of the transaction that took the run lock", async () => {
@@ -591,7 +697,7 @@ describeEmbeddedPostgres("atomic ordinary run events", () => {
     const runId = await makeRun();
     const [issue] = await db.insert(issues).values({ companyId, title: "Progress race" }).returning();
     await db.update(heartbeatRuns).set({ nativeIssueId: issue!.id, runtimeMode: "native" }).where(eq(heartbeatRuns.id, runId));
-    const event = nativeEvent(runId, 1, "item.completed");
+    const event = finalMessage(runId, 1);
     let release!: () => void, locked!: () => void;
     const released = new Promise<void>(resolve => { release = resolve; });
     const lockedRun = new Promise<void>(resolve => { locked = resolve; });
