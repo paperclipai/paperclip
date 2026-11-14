@@ -77,12 +77,14 @@ export function agentService(db: Db, budgetHooks: BudgetServiceHooks = {}) {
       return updated ? getById(updated.id) : null;
     },
 
-    listConfigRevisions: async (id: string) =>
-      db
+    listConfigRevisions: async (id: string, options?: { limit?: number }) => {
+      const query = db
         .select()
         .from(agentConfigRevisions)
         .where(eq(agentConfigRevisions.agentId, id))
-        .orderBy(desc(agentConfigRevisions.createdAt)),
+        .orderBy(desc(agentConfigRevisions.createdAt));
+      return options?.limit !== undefined ? query.limit(options.limit) : query;
+    },
 
     getConfigRevision: async (id: string, revisionId: string) =>
       db
