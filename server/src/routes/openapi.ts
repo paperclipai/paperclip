@@ -1468,6 +1468,9 @@ const mcpSkillsBoardOperations = [
 
 const BOARD_ONLY_OPERATIONS = new Set([
   "PATCH /api/agents/{id}/permission-grants",
+  "GET /api/agents/{id}/runtime-state",
+  "POST /api/agents/{id}/runtime-state/reset-session",
+  "GET /api/agents/{id}/task-sessions",
   // Budget changes are board-only (assertBoard in routes/costs.ts).
   "POST /api/companies/{companyId}/budgets/policies",
   "POST /api/companies/{companyId}/budget-incidents/{incidentId}/resolve",
