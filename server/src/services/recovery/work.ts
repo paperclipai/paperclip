@@ -9,7 +9,7 @@ import { registerScopedDeadlineWork } from "../scoped-deadline-work.js";
 import { workSignalDebug } from "@paperclipai/db/work-signal-debug";
 import { recoveryActionSweepCondition } from "./blocker-stall-wakeups.js";
 
-type Entry = { id: string; companyId: string; dueAt: number };
+type Entry = { id: string; companyId: string; dueAt: number; fromDeadline?: true };
 type Scope = { companyId: string; issueId: string; onDeferredDeadline: (at: number) => void };
 const PAGE_SIZE = 100;
 
@@ -79,7 +79,6 @@ export function registerIssueRecoveryWork(
   function register(queue: DeliveryQueue, statuses: string[] | null, check: (scope: Scope) => Promise<unknown>, eligible?: SQL) {
     const cursors = new Map<string, string>();
     const passes = fullPasses();
-    const deadlines = new Map<string, number>();
     let enabled = false;
     const worker: ReturnType<typeof registerScopedDeadlineWork<Entry, IssueRecoveryScope>> = registerScopedDeadlineWork<Entry, IssueRecoveryScope>(coordinator, {
       queue,
@@ -112,18 +111,12 @@ export function registerIssueRecoveryWork(
       },
       check: async entry => {
         if (!enabled) return null;
-        if (workSignalDebug.enabled) {
-          const deadline = deadlines.get(entry.id);
-          workSignalDebug.event(queue, "check", { issueId: entry.id, companyId: entry.companyId,
-            wake: deadline === entry.dueAt ? "deadline" : "load", dueAt: entry.dueAt });
-        }
+        if (workSignalDebug.enabled) workSignalDebug.event(queue, "check", { issueId: entry.id, companyId: entry.companyId,
+          wake: entry.fromDeadline ? "deadline" : "load", dueAt: entry.dueAt });
         let next: number | null = null;
         await check({ companyId: entry.companyId, issueId: entry.id,
           onDeferredDeadline: at => { next = next === null ? at : Math.min(next, at); } });
-        if (workSignalDebug.enabled) {
-          if (next === null) deadlines.delete(entry.id); else deadlines.set(entry.id, next);
-        }
-        return next === null ? null : { ...entry, dueAt: next };
+        return next === null ? null : { ...entry, dueAt: next, ...(workSignalDebug.enabled ? { fromDeadline: true as const } : {}) };
       },
     }, canRun);
     return worker;
@@ -230,11 +223,15 @@ export function registerIssueRecoveryWork(
   }, canRun);
   const workers = [assignments, orphanBlockers, recoveryActions, dependencies, locks, watchdogs,
     ...(assignedWork ? [assignedWork] : [])];
+  const queues: string[] = [DELIVERY_QUEUES.strandedAssignments, DELIVERY_QUEUES.orphanBlockers, DELIVERY_QUEUES.activeRecoveryActions,
+    DELIVERY_QUEUES.resolvedDependencies, DELIVERY_QUEUES.staleIssueLocks, DELIVERY_QUEUES.taskWatchdogs,
+    ...(assignedWork ? [DELIVERY_QUEUES.assignedWorkInvariant] : [])];
   return { watchdogs, assignments, assignedWork, ready: Promise.all(workers.map(worker => worker.ready)),
-    wake() {
-      if (workSignalDebug.enabled) for (const queue of [DELIVERY_QUEUES.strandedAssignments, DELIVERY_QUEUES.orphanBlockers,
-        DELIVERY_QUEUES.activeRecoveryActions, DELIVERY_QUEUES.resolvedDependencies, DELIVERY_QUEUES.staleIssueLocks,
-        DELIVERY_QUEUES.assignedWorkInvariant, DELIVERY_QUEUES.taskWatchdogs]) workSignalDebug.event(queue, "direct_wake", {}, true);
+    wake: function wake() {
+      if (workSignalDebug.enabled) {
+        const topic = queues.find(queue => workSignalDebug.allows(queue));
+        if (topic) workSignalDebug.event(topic, "direct_wake", { queues: queues.join(",") }, "always", wake);
+      }
       for (const worker of workers) worker.invalidate();
     },
     async stop() { await Promise.all(workers.map(worker => worker.stop())); } };

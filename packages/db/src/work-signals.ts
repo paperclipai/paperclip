@@ -73,7 +73,7 @@ export async function signalDatabaseWork(connection: object, topic: string, hint
   if (!context) return; // Lightweight service test doubles have no DB lifecycle.
   const state = context.transaction;
   if (!state) throw new Error("Database work must be registered inside a transaction");
-  if (workSignalDebug.enabled) workSignalDebug.signal(topic, hint);
+  if (workSignalDebug.enabled) workSignalDebug.signal(topic, hint, signalDatabaseWork);
   state.topics.add(topic);
   if (hint !== undefined) {
     let hints = state.hints.get(topic);
@@ -140,7 +140,7 @@ export function databaseWorkCommitNotification(owner: object, topic: string): st
 export function publishDatabaseWorkSettled(owner: object, topic: string, hint?: string): void {
   const context = contexts.get(owner);
   if (!context) return;
-  if (workSignalDebug.enabled) workSignalDebug.event(topic, "settled_publish", { hint }, true);
+  if (workSignalDebug.enabled) workSignalDebug.event(topic, "settled_publish", { hint }, "sampled", publishDatabaseWorkSettled);
   if (!context.transaction) {
     publish(context.scope, topic, "settled", hint === undefined ? undefined : new Set([hint]));
     return;
