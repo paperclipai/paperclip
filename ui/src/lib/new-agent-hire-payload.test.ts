@@ -6,6 +6,18 @@ import { codexLocalUIAdapter } from "../adapters/codex-local";
 import { resolveCodexLocalCliPolicy } from "@paperclipai/adapter-codex-local";
 
 describe("buildNewAgentHirePayload", () => {
+  it("does not force no-actionable-work timer skipping in new hire payloads", () => {
+    const payload = buildNewAgentHirePayload({
+      name: "Default agent",
+      effectiveRole: "general",
+      configValues: { ...defaultCreateValues },
+      adapterConfig: {},
+    });
+
+    const heartbeat = payload.runtimeConfig.heartbeat as Record<string, unknown>;
+    expect(heartbeat).not.toHaveProperty("skipTimerWhenNoActionableWork");
+  });
+
   it.each([false, true])("preserves explicit automatic Legacy sandbox choice %s through the actual CLI policy", (bypass) => {
     const values = { ...defaultCreateValues, adapterType: "codex_local", runner: "auto" as const, dangerouslyBypassSandbox: bypass, codexLegacySandboxBypass: bypass };
     const payload = buildNewAgentHirePayload({ name: "Codex", effectiveRole: "general", configValues: values, adapterConfig: codexLocalUIAdapter.buildAdapterConfig(values) });
