@@ -46,7 +46,7 @@ import { dotRunnerBroker } from "./dot-runner-broker.js";
 import { withRunExecutionTiming, measureRunPhase, measureWorkspaceSyncPhase, isWorkspaceSyncDetailPhase } from "./execution-preparation-timing.js";
 import { createHeartbeatPreparationTiming } from "./heartbeat/preparation-timing.js";
 import { createHeartbeatInstructionCopyRelease, createHeartbeatInstructionWorkingCopy } from "./heartbeat/instruction-working-copy.js";
-import { AgentDirectoryPreparationDeferral, deferRunForBusyAgentDirectory, prepareWithAgentDirectoryDeferral } from "./heartbeat/agent-directory-busy.js";
+import { AgentDirectoryPreparationDeferral, deferRunForBusyAgentDirectory, prepareWithAgentDirectoryDeferral, REATTACH_AGENT_DIRECTORY_WAIT_MS } from "./heartbeat/agent-directory-busy.js";
 import { preparePredecessorRetirementFallback } from "./heartbeat/predecessor-retirement-fallback.js";
 import { prepareHeartbeatRuntimeServiceIntents, startHeartbeatRuntimeServices, recordHeartbeatAdapterRuntimeServices } from "./heartbeat/runtime-services.js";
 import { bindHeartbeatRunnerHomeMode, buildHeartbeatWorkspaceConfiguration, prepareHeartbeatExecutionConfiguration } from "./heartbeat/execution-configuration.js";
@@ -1109,6 +1109,7 @@ export function heartbeatService(
     reapOrphanedRuns,
     sweepOrphanedActiveLeases,
     drainRunningRunsForShutdown,
+    handOffNativeRunsForShutdown,
     registerScheduledRetryCancellationWork,
     registerRetainedNativeSessionCleanupWork,
     registerNativeWorkspaceFinalizationWork,
@@ -3419,6 +3420,7 @@ export function heartbeatService(
         appendRunEvent, getCurrentUserRedactionOptions,
         assertWriterAuthority: createRunLogWriterAuthority(db, run, runOptions.nativeLeaseOwner),
         runtimeLogSecretValues: observabilitySecretValues(observability),
+        deferNativeLogRecovery: runOptions.nativeRestartRecovery?.kind === "reattach_remote_runner",
         signal: executionControl.controller.signal,
       });
       const goalCheckpointSession: {
@@ -3669,7 +3671,8 @@ export function heartbeatService(
         }, {
           measure: timePreparation,
           prepareInstructions: async nativeLifecyclePolicy => {
-            runtimeConfig = await prepareWithAgentDirectoryDeferral(() => preparedInstructions.prepare({ runtimeConfig, nativeRuntimeResolution, hasInstructionFilesystem, nativeLifecyclePolicy }));
+            runtimeConfig = await prepareWithAgentDirectoryDeferral(() => preparedInstructions.prepare({ runtimeConfig, nativeRuntimeResolution, hasInstructionFilesystem, nativeLifecyclePolicy }),
+              { waitMs: runOptions.nativeRestartRecovery ? REATTACH_AGENT_DIRECTORY_WAIT_MS : 0 });
             return { runtimeConfig, instructionCopy: preparedInstructions.instructionCopy };
           },
         });
@@ -4682,6 +4685,7 @@ export function heartbeatService(
     // gate on suppression should prefer this over the env-only resolver.
     resolveSchedulingSuppression: getSchedulingSuppression,
     drainRunningRunsForShutdown,
+    handOffNativeRunsForShutdown,
     drainActiveRunExecutions,
     scheduleNativeSessionResumeDispatch,
     startTaskDrain,

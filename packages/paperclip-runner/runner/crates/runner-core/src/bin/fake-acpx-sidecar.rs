@@ -682,8 +682,30 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 write_json(&mut stdout, &success(id, command, &request))?;
             }
             "flood" => {
-                for sequence in 1..=513 {
-                    write_event(&mut stdout, sequence)?;
+                for _ in 0..288 {
+                    write_padded_event(&mut stdout, next_sequence, 64 * 1024)?;
+                    next_sequence += 1;
+                }
+                write_json(&mut stdout, &success(id, command, &request))?;
+            }
+            "count-flood" => {
+                for _ in 0..=65_536 {
+                    write_event(&mut stdout, next_sequence)?;
+                    next_sequence += 1;
+                }
+                write_json(&mut stdout, &success(id, command, &request))?;
+            }
+            "backlog" => {
+                for _ in 0..2_048 {
+                    write_event(&mut stdout, next_sequence)?;
+                    next_sequence += 1;
+                }
+                write_json(&mut stdout, &success(id, command, &request))?;
+            }
+            "large-backlog" => {
+                for _ in 0..192 {
+                    write_padded_event(&mut stdout, next_sequence, 64 * 1024)?;
+                    next_sequence += 1;
                 }
                 write_json(&mut stdout, &success(id, command, &request))?;
             }
@@ -1486,6 +1508,20 @@ fn write_event(output: &mut impl Write, sequence: u64) -> io::Result<()> {
             "runId": null,
             "turnId": null,
             "payload": { "code": "fake_event", "message": "bounded" },
+        }),
+    )
+}
+
+fn write_padded_event(output: &mut impl Write, sequence: u64, padding: usize) -> io::Result<()> {
+    write_json(
+        output,
+        &json!({
+            "protocolVersion": GENERATED_ACPX_SIDECAR_PROTOCOL_VERSION,
+            "sequence": sequence,
+            "eventType": "runtime.diagnostic",
+            "runId": null,
+            "turnId": null,
+            "payload": { "code": "fake_event", "message": "x".repeat(padding) },
         }),
     )
 }

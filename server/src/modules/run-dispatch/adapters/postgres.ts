@@ -56,6 +56,7 @@ import { appendHeartbeatRunEvent } from "../../../services/heartbeat-run-events.
 import { emitAgentTaskRun } from "../../../services/agent-task-run-telemetry.js";
 import { issueService } from "../../../services/issues.js";
 import { verifyBlockerStallWake } from "../../../services/recovery/blocker-stall-wakeups.js";
+import { readPredecessorRetirementFallback } from "../../../services/native-runtime/predecessor-retirement.js";
 import {
   issueTreeControlService,
   isVerifiedIssueTreeControlInteractionWake,
@@ -160,6 +161,19 @@ async function readNativeReviewParticipantFacts(db: Db, input: {
 
 function readNonEmptyString(value: unknown): string | null {
   return typeof value === "string" && value.trim().length > 0 ? value : null;
+}
+
+async function continuesNoWorkRunOnBlockedTask(dbOrTx: Db,
+  input: { companyId: string; runId: string }): Promise<boolean> {
+  const [run] = await dbOrTx.select({ resultJson: heartbeatRuns.resultJson, retryOfRunId: heartbeatRuns.retryOfRunId })
+    .from(heartbeatRuns).where(and(eq(heartbeatRuns.companyId, input.companyId), eq(heartbeatRuns.id, input.runId)));
+  let fallback = readPredecessorRetirementFallback(run?.resultJson);
+  if (!fallback && run?.retryOfRunId) {
+    const [source] = await dbOrTx.select({ resultJson: heartbeatRuns.resultJson }).from(heartbeatRuns)
+      .where(and(eq(heartbeatRuns.companyId, input.companyId), eq(heartbeatRuns.id, run.retryOfRunId)));
+    fallback = readPredecessorRetirementFallback(source?.resultJson);
+  }
+  return fallback?.issueStatusAtFailure === "blocked";
 }
 
 function classifyRetryReasonKind(retryReason: string | null): RetryReasonKind {
@@ -431,6 +445,8 @@ export function createPostgresRunDispatchAdapter(
     if (!facts.issueFound) return { agentFound: true, facts };
 
     facts.issueStatus = issue.status;
+    facts.continuesNoWorkRunOnBlockedTask = retryReasonKind === "native_safe_replacement" && issue.status === "blocked"
+      && await continuesNoWorkRunOnBlockedTask(dbOrTx as unknown as Db, { companyId: input.companyId, runId: input.runId });
     facts.issueAssigneeAgentId = issue.assigneeAgentId;
     facts.issueExecutionRunId = issue.executionRunId;
     facts.issueCheckoutRunId = issue.checkoutRunId;
@@ -514,6 +530,7 @@ export function createPostgresRunDispatchAdapter(
       && typeof (preparationWait as Record<string, unknown>).kind === "string");
     facts.dependenciesBlocked =
       readiness && !readiness.isDependencyReady && !stallAdmitted && !responseAdmitted && !preparationWaitAdmitted
+        && !facts.continuesNoWorkRunOnBlockedTask
         ? {
             unresolvedBlockerIssueIds: readiness.unresolvedBlockerIssueIds,
             unresolvedBlockerCount: readiness.unresolvedBlockerCount,
@@ -686,12 +703,15 @@ export function createPostgresRunDispatchAdapter(
       && await verifyBlockerStallWake(dbOrTx as unknown as Db, { companyId: input.companyId, issueId,
         contextSnapshot: context, requestedByActorType: null })
       ? null : replacementReadiness;
+    const continuesNoWorkRun = retryReasonKind === "native_safe_replacement" && issue?.status === "blocked"
+      && await continuesNoWorkRunOnBlockedTask(dbOrTx as unknown as Db, { companyId: input.companyId, runId: input.runId });
     return {
       runId: input.runId,
       runAgentId: input.agentId,
       issueId,
       retryReasonKind,
-      dependenciesBlocked: readiness && !readiness.isDependencyReady ? {
+      continuesNoWorkRunOnBlockedTask: continuesNoWorkRun,
+      dependenciesBlocked: readiness && !readiness.isDependencyReady && !continuesNoWorkRun ? {
         unresolvedBlockerIssueIds: readiness.unresolvedBlockerIssueIds,
         unresolvedBlockerCount: readiness.unresolvedBlockerCount,
       } : null,
