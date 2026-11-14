@@ -109,6 +109,7 @@ import { getAdapterDisplay } from "../adapters/adapter-display-registry";
 import { buildFixedClaudeOAuthBinding, CLAUDE_OAUTH_TOKEN_ENV_KEY } from "./environment-variables-editor/model";
 import { defaultCreateValues } from "./agent-config-defaults";
 import { onboardingDraftStorage, restoreOnboardingState } from "../lib/onboarding-state";
+import { createUuid } from "../lib/uuid";
 import {
   buildOnboardingIssuePayload,
   buildOnboardingProjectPayload,
@@ -503,14 +504,22 @@ function OnboardingWizardInner({
   // wizard drops the customer straight onto the first real question.
   const initialStep = effectiveOnboardingOptions.initialStep ?? 1;
   const existingCompanyId = effectiveOnboardingOptions.companyId;
+  // Create organization is a new company. A draft left on the connect step
+  // still names the company that already exists, so Continue would skip the
+  // create, and the setup effect would call crypto.randomUUID before the step
+  // reset landed. Plain HTTP has no randomUUID, and the setup overlay dies.
+  const freshOrganizationRequest = onboardingOpen
+    && effectiveOnboardingOptions.initialStep === 1
+    && existingCompanyId == null;
+  const draft = freshOrganizationRequest ? null : saved;
 
-  const [step, setStep] = useState<Step>((saved?.step as Step) ?? initialStep);
+  const [step, setStep] = useState<Step>((draft?.step as Step) ?? initialStep);
   // The step this run *entered* on, which bounds how far back it can walk.
   // Captured once, when the wizard opens, for the same reason the step itself
   // is: it derives from queries, so a live read would move the floor under a
   // customer mid-flow — and here that would quietly re-open the "create a
   // company" step to a run that already holds one.
-  const [entryStep, setEntryStep] = useState<number>((saved?.step as Step) ?? initialStep);
+  const [entryStep, setEntryStep] = useState<number>((draft?.step as Step) ?? initialStep);
   /**
    * A page that opens straight onto the agent step — a cloud-managed
    * workspace arriving from Cloud's naming screen, or a reload — plays the
@@ -537,14 +546,14 @@ function OnboardingWizardInner({
   const [modelSearch, setModelSearch] = useState("");
 
   // Step 1
-  const [companyName, setCompanyName] = useState((saved?.companyName as string) ?? "");
+  const [companyName, setCompanyName] = useState((draft?.companyName as string) ?? "");
 
   // Step 2
   // The name is not defaulted: a pre-filled "Chief of staff" is a choice made
   // on the customer's behalf that they then have to notice and undo. It is the
   // step's only question, and its CTA gates on it.
-  const [agentName, setAgentName] = useState((saved?.agentName as string) ?? "");
-  const [agentAppearance, setAgentAppearance] = useState(() => agentAppearanceSchema.safeParse(saved?.agentAppearance).data ?? randomAgentAppearance());
+  const [agentName, setAgentName] = useState((draft?.agentName as string) ?? "");
+  const [agentAppearance, setAgentAppearance] = useState(() => agentAppearanceSchema.safeParse(draft?.agentAppearance).data ?? randomAgentAppearance());
   // Defaults to `general` rather than empty. The arc stopped asking for a role
   // — a customer naming their first agent is describing what it does, not
   // filing it — but the hire still needs one, and the guard below returns
@@ -557,11 +566,11 @@ function OnboardingWizardInner({
     // reaches the silent return in the hire — the exact failure the default
     // exists to prevent, arriving through a restored draft instead of a fresh
     // one.
-    (saved?.agentRole as AgentRole) || DEFAULT_AGENT_ROLE,
+    (draft?.agentRole as AgentRole) || DEFAULT_AGENT_ROLE,
   );
   const savedCopilotDraft = saved?.adapterType === "paperclip_runner" && saved?.onboardingCopilot === true;
   const [adapterType, setAdapterType] = useState<AdapterType>(() =>
-    restoreOnboardingAdapterType(saved?.adapterType, saved?.runnerProvider, saved?.onboardingCopilot),
+    restoreOnboardingAdapterType(draft?.adapterType, draft?.runnerProvider, draft?.onboardingCopilot),
   );
   const [runner, setRunner] = useState<AgentRunnerChoice>(() => savedCopilotDraft ? "auto" : saved?.runner === "legacy" || saved?.runner === "paperclip"
     ? saved.runner : saved?.adapterType === "paperclip_runner" && (saved?.runnerProvider === undefined || ["codex", "claude", "acpx", "opencode", "pi"].includes(String(saved?.runnerProvider))) ? "paperclip" : "auto");
@@ -598,13 +607,13 @@ function OnboardingWizardInner({
     savedCopilotDraft || (savedNativeRunnerDraft && saved?.runnerProvider !== undefined && !["codex", "claude", "acpx", "opencode", "pi"].includes(String(saved.runnerProvider))) ? "" : (saved?.model as string) ?? "",
   );
   const [command, setCommand] = useState(
-    saved?.adapterType === "paperclip_runner" ? "" : (saved?.command as string) ?? "",
+    draft?.adapterType === "paperclip_runner" ? "" : (draft?.command as string) ?? "",
   );
   const [args, setArgs] = useState(
-    saved?.adapterType === "paperclip_runner" ? "" : (saved?.args as string) ?? "",
+    draft?.adapterType === "paperclip_runner" ? "" : (draft?.args as string) ?? "",
   );
   const [url, setUrl] = useState(
-    saved?.adapterType === "paperclip_runner" ? "" : (saved?.url as string) ?? "",
+    draft?.adapterType === "paperclip_runner" ? "" : (draft?.url as string) ?? "",
   );
   const [adapterEnvResult, setAdapterEnvResult] =
     useState<AdapterEnvironmentTestResult | null>(null);
@@ -622,9 +631,9 @@ function OnboardingWizardInner({
    * already said no to.
    */
   const [credentialModeChoice, setCredentialMode] = useState<CredentialMode | null>(
-    (saved?.credentialModeChoice !== undefined
-      ? saved.credentialModeChoice as CredentialMode | null
-      : saved?.credentialMode as CredentialMode | undefined) ?? null,
+    (draft?.credentialModeChoice !== undefined
+      ? draft.credentialModeChoice as CredentialMode | null
+      : draft?.credentialMode as CredentialMode | undefined) ?? null,
   );
   /**
    * Where the connect step's sign-in sequence is.
@@ -664,7 +673,7 @@ function OnboardingWizardInner({
 
   // Created entity IDs — pre-populate from existing company when skipping step 1
   const [createdCompanyId, setCreatedCompanyId] = useState<string | null>(
-    existingCompanyId ?? (saved?.createdCompanyId as string) ?? null
+    existingCompanyId ?? (draft?.createdCompanyId as string) ?? null
   );
   const savedKeys = useSavedProviderKeys(
     createdCompanyId,
@@ -686,9 +695,9 @@ function OnboardingWizardInner({
   );
   const [createdCompanyPrefix, setCreatedCompanyPrefix] = useState<
     string | null
-  >((saved?.createdCompanyPrefix as string) ?? null);
-  const [createdAgentId, setCreatedAgentId] = useState<string | null>((saved?.createdAgentId as string) ?? null);
-  const [setupAgentId, setSetupAgentId] = useState<string | null>((saved?.setupAgentId as string) ?? null);
+  >((draft?.createdCompanyPrefix as string) ?? null);
+  const [createdAgentId, setCreatedAgentId] = useState<string | null>((draft?.createdAgentId as string) ?? null);
+  const [setupAgentId, setSetupAgentId] = useState<string | null>((draft?.setupAgentId as string) ?? null);
   const [setupPrepared, setSetupPrepared] = useState(false);
   const [setupError, setSetupError] = useState(false);
   const [setupAttempt, setSetupAttempt] = useState(0);
@@ -696,13 +705,13 @@ function OnboardingWizardInner({
   const [restoredSetup, setRestoredSetup] = useState<Agent | null>(null);
   const setupSave = useRef<Promise<unknown>>(Promise.resolve());
   const [createdCompanyGoalId, setCreatedCompanyGoalId] = useState<string | null>(
-    (saved?.createdCompanyGoalId as string) ?? null
+    (draft?.createdCompanyGoalId as string) ?? null
   );
   const [createdProjectId, setCreatedProjectId] = useState<string | null>(
-    (saved?.createdProjectId as string) ?? null
+    (draft?.createdProjectId as string) ?? null
   );
   const [createdIssueRef, setCreatedIssueRef] = useState<string | null>(
-    (saved?.createdIssueRef as string) ?? null
+    (draft?.createdIssueRef as string) ?? null
   );
 
   // The company the *route* last supplied, so a navigation that stops naming
@@ -792,6 +801,7 @@ function OnboardingWizardInner({
   const initialStepRef = useRef<Step | undefined>(undefined);
   initialStepRef.current = effectiveOnboardingOptions.initialStep;
   const openingRequestRef = useRef<{ open: boolean; companyId: string | null; hasOpened: boolean } | null>(null);
+  const skipStaleSetupRef = useRef(false);
 
   /**
    * Forget everything that describes one particular company.
@@ -844,6 +854,13 @@ function OnboardingWizardInner({
     if (initialStepRef.current && !resumesRouteDraft) {
       setStep(initialStepRef.current);
       setEntryStep(initialStepRef.current);
+    }
+    // A wizard that is already mounted still holds the draft's company. The
+    // useState initializers above only see a fresh request on the first mount.
+    if (onboardingOpen && initialStepRef.current === 1 && !routeCompanyId && !resumesRouteDraft) {
+      setCreatedCompanyId(null);
+      setAgentName("");
+      clearCompanyScopedState();
     }
     if (routeCompanyId) {
       // Claim ownership only when the route *introduces* a company. A route
@@ -1266,13 +1283,26 @@ function OnboardingWizardInner({
     && !selectedSavedKey && (restoredSetup.adapterConfig.env as Record<string, unknown> | undefined)?.[apiKeyEnvKeyFor(adapterType)];
   const connectStepReady = Boolean(setupPrepared || createdAgentId) && sourceSelected && !adapterEnvLoading && !savedKeys.loading && runnerDiscoveryReady && connectionModelReady;
 
+  const previousOpen = openingRequestRef.current;
+  const openCompanyId = effectiveOnboardingOptions.companyId ?? null;
+  const openIsNew = effectiveOnboardingOpen && !(previousOpen?.open && previousOpen.companyId === openCompanyId);
+  // The open effect resets the step in this same commit. `step` here is still
+  // the draft's, so preparing now would create an agent for the company the
+  // customer is leaving. createUuid does not throw, but the agent would still
+  // belong to the wrong company.
+  skipStaleSetupRef.current = openIsNew
+    && onboardingOpen
+    && typeof effectiveOnboardingOptions.initialStep === "number"
+    && effectiveOnboardingOptions.initialStep !== step;
+
   useEffect(() => {
+    if (!effectiveOnboardingOpen || skipStaleSetupRef.current) return;
     if (step !== 4 || !createdCompanyId || !agentName.trim() || !adapterRegistryLoaded
       || createdAgentId || setupPrepared || preparingSetup.current.has(createdCompanyId) || setupError
       || (!sourceSelected && setupNameConflict === JSON.stringify([createdCompanyId, agentName.trim().toLowerCase()]))) return;
     const companyId = createdCompanyId;
     preparingSetup.current.add(companyId);
-    const id = setupAgentId ?? crypto.randomUUID();
+    const id = setupAgentId ?? createUuid();
     let restoring = Boolean(setupAgentId);
     void (async () => {
       if (!setupAgentId) {
@@ -1348,7 +1378,7 @@ function OnboardingWizardInner({
       preparingSetup.current.delete(companyId);
       setSetupAttempt(attempt => attempt + 1);
     });
-  }, [step, createdCompanyId, agentName, adapterRegistryLoaded, sourceSelected, setupNameConflict, runnerDiscoveryReady, createdAgentId, setupPrepared, setupAttempt]);
+  }, [effectiveOnboardingOpen, step, createdCompanyId, agentName, adapterRegistryLoaded, sourceSelected, setupNameConflict, runnerDiscoveryReady, createdAgentId, setupPrepared, setupAttempt]);
 
   /**
    * Whether this step has a sign-in to do before it can hire.

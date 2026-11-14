@@ -41,7 +41,17 @@ const mockAgentsApi = vi.hoisted(() => ({
   testEnvironment: vi.fn(),
   getClaudeOAuthTokenStatus: vi.fn(),
 }));
-const mockCompaniesApi = vi.hoisted(() => ({ create: vi.fn() }));
+const mockCompaniesApi = vi.hoisted(() => ({
+  create: vi.fn(),
+  list: vi.fn(async () => [] as Array<{ id: string; name: string; issuePrefix: string }>),
+  detachInflightList: vi.fn(),
+}));
+const mockAuthApi = vi.hoisted(() => ({
+  getSession: vi.fn(async () => ({
+    session: { id: "session-1", userId: "user-1" },
+    user: { id: "user-1", name: "A", email: "a@example.com", image: null },
+  })),
+}));
 // The hire path resolves the Test environment before it probes: it reads the
 // environment list, the instance settings, and the experimental settings. The
 // test stubs these so the resolution settles on the local default, the same as
@@ -72,6 +82,10 @@ const companyState = vi.hoisted(() => ({
 vi.mock("../api/goals", () => ({ goalsApi: mockGoalsApi }));
 vi.mock("@/api/adapters", () => ({ adaptersApi: mockAdaptersApi }));
 vi.mock("../api/companies", () => ({ companiesApi: mockCompaniesApi }));
+vi.mock("../api/auth", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../api/auth")>();
+  return { ...actual, authApi: { ...actual.authApi, getSession: mockAuthApi.getSession } };
+});
 vi.mock("../api/agents", () => ({ agentsApi: mockAgentsApi }));
 vi.mock("../api/approvals", () => ({ approvalsApi: { create: vi.fn() } }));
 vi.mock("../api/issues", () => ({ issuesApi: { create: vi.fn() } }));
@@ -628,6 +642,87 @@ describe("OnboardingWizard — which step it lands on", () => {
 
       // And company creation is genuinely unreachable, not merely unlinked.
       expect(document.body.textContent).not.toContain("Name your organization");
+    });
+  });
+
+  describe("plain HTTP", () => {
+    const draft = {
+      step: 4,
+      companyName: "Acme",
+      agentName: "Chief",
+      createdCompanyId: "company-1",
+      adapterType: "claude_local",
+    };
+    let restoreRandomUUID: (() => void) | null = null;
+
+    function hideRandomUUID() {
+      const descriptor = Object.getOwnPropertyDescriptor(crypto, "randomUUID");
+      Object.defineProperty(crypto, "randomUUID", { configurable: true, value: undefined });
+      restoreRandomUUID = () => {
+        if (descriptor) Object.defineProperty(crypto, "randomUUID", descriptor);
+        else delete (crypto as { randomUUID?: unknown }).randomUUID;
+      };
+    }
+
+    beforeEach(() => {
+      hideRandomUUID();
+      window.localStorage.setItem("paperclip-onboarding-state", JSON.stringify(draft));
+      queryClient.setQueryData(queryKeys.auth.session, {
+        session: { id: "session-1", userId: "user-1" },
+        user: { id: "user-1", name: "A", email: "a@example.com", image: null },
+      });
+      // The agent page has already loaded this list. A cold cache hides the
+      // crash: the setup effect bails until the list arrives, and by then the
+      // open request has moved the step off 4.
+      queryClient.setQueryData(queryKeys.adapters.all, [
+        { type: "claude_local", source: "builtin", label: "Claude", disabled: false, loaded: true },
+        { type: "codex_local", source: "builtin", label: "Codex", disabled: false, loaded: true },
+      ]);
+      mockCompaniesApi.list.mockResolvedValue([
+        { id: "company-1", name: "Acme", issuePrefix: "PC1" },
+      ]);
+      routerState.pathname = "/PC1/agents/00000000-0000-4000-8000-000000000099";
+    });
+
+    afterEach(() => {
+      restoreRandomUUID?.();
+      restoreRandomUUID = null;
+    });
+
+    it("opens the organization name step from Create organization while a connect-step draft is stored", async () => {
+      dialogState.onboardingOpen = true;
+      dialogState.onboardingOptions = { initialStep: 1 };
+      mockCompaniesApi.create.mockResolvedValue({ id: "company-new", name: "Northwind", issuePrefix: "NOR" });
+      await render();
+      await settle();
+
+      expect(document.getElementById("onboarding-company-name")).not.toBeNull();
+      expect(mockAgentsApi.create).not.toHaveBeenCalled();
+
+      const nameInput = document.getElementById("onboarding-company-name") as HTMLInputElement;
+      setControlledValue(nameInput, "Northwind");
+      await settle();
+      const next = [...document.body.querySelectorAll("button")].find(
+        (button) => button.textContent?.trim() === "Continue",
+      )!;
+      await act(async () => {
+        next.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      });
+      await settle();
+
+      expect(mockCompaniesApi.create).toHaveBeenCalledWith({ name: "Northwind" });
+    });
+
+    it("still prepares the connect-step agent when randomUUID is missing", async () => {
+      dialogState.onboardingOpen = true;
+      dialogState.onboardingOptions = {};
+      await render();
+      await settle();
+      await settle();
+
+      expect(mockAgentsApi.create).toHaveBeenCalled();
+      const setupId = mockAgentsApi.create.mock.calls[0]?.[1].setupId as string;
+      expect(setupId).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
     });
   });
 });

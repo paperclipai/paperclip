@@ -7,6 +7,7 @@ import { useEffect, useId, useRef, useState } from "react";
 import type { Agent } from "@paperclipai/shared";
 import { agentsApi } from "@/api/agents";
 import { buildNewAgentRuntimeConfig } from "@/lib/new-agent-runtime-config";
+import { createUuid } from "@/lib/uuid";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { ArrowLeft, ArrowRight, Check, ChevronRight } from "lucide-react";
 import { adaptersApi } from "@/api/adapters";
@@ -63,7 +64,7 @@ export function AgentBasicsDialog({
   const { selectedCompanyId: companyId } = useCompany();
   const cache = useQueryClient();
   const appearanceDraft = useAgentAppearanceDraft(`${companyId}:new-agent`);
-  const setupId = useRef(setupAgentId ?? crypto.randomUUID());
+  const setupId = useRef(setupAgentId ?? createUuid());
   const saved = useRef<Agent | null>(null);
   const busy = useRef(false);
   const active = useRef(true);
