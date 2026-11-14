@@ -35,7 +35,8 @@ import { HELD_RECOVERY_WAKE_KEYS, queuedRecoveryRunsOf } from "../recovery-queue
 import { listPersonOriginSourceRunIds } from "../heartbeat/queued-run-line.js";
 import { aliasedRun, queuedRunStalledSql } from "./stalled-queued-run-sql.js";
 import { attributeBlock, BLOCK_ATTRIBUTION_WINDOW_MS, blockedStatusDetailsSql } from "../interruption-block-release.js";
-import { ASSIGNED_WORK_CONTINUED_ACTION, taskAutomaticAttempts } from "./task-automatic-attempts.js";
+import { ASSIGNED_WORK_CONTINUED_ACTION, PAUSED_FOR_AUTOMATIC_WORK, taskAutomaticAttempts } from "./task-automatic-attempts.js";
+import { automaticRunCreationHeldUntil, readAutomaticWorkStatus, reserveAutomaticRunCreation } from "./automatic-run-brake.js";
 import { isReattachPhaseActive, reattachPhaseRecheckAt } from "../heartbeat/run-admission.js";
 import { continueSweepTaskFromSavedWork } from "./sweep-saved-work-continuation.js";
 import { STRANDED_CONTINUATION_MAX_AGE_MS, STRANDED_KIND, strandedHoldContinuesAutomatically, type StrandedHoldRun } from "./stranded-hold-continuation.js";
@@ -640,6 +641,9 @@ export function assignedWorkSweep(db: Db, deps: AssignedWorkDeps) {
     // hundreds of runs at once. Deferred tasks come back on their deadline.
     const budgetDeferral = repairBudgetDeferral(at);
     if (budgetDeferral) return { verdict, outcome: "deferred_rate_limit", retryAt: budgetDeferral };
+    const heldUntil = facts.latestRun
+      ? await automaticRunCreationHeldUntil(db, issue.companyId, { issueId: issue.id, sourceRunId: facts.latestRun.id }) : null;
+    if (heldUntil) return { verdict, outcome: "deferred_rate_limit", retryAt: heldUntil };
     const claimed = await claimContinuation(issue, at);
     if (claimed.kind !== "claimed") return { verdict, outcome: claimed.kind === "capped" ? "deferred_cap" : claimed.kind === "changed" ? "changed" : "deferred_rate_limit",
       retryAt: claimed.kind === "changed" ? null : claimed.retryAt };
@@ -661,6 +665,15 @@ export function assignedWorkSweep(db: Db, deps: AssignedWorkDeps) {
       await settleContinuationActivity(claimed, claimed.reason, "not_started", { waitingUntil: fresh.retryAt.toISOString() });
       return { verdict: claimed.verdict, outcome: fresh.kind === "backoff" ? "deferred_cap" : "waiting_on_recovery", retryAt: fresh.retryAt };
     }
+    const slot = facts.latestRun
+      ? await reserveAutomaticRunCreation(db, issue.companyId, { issueId: issue.id, sourceRunId: facts.latestRun.id }) : null;
+    if (slot?.heldUntil) {
+      if (claimed.restoredTo) await revertRestoredBlock(issue, claimed);
+      await settleContinuationActivity(claimed, claimed.reason, "not_started",
+        { waitingUntil: slot.heldUntil.toISOString(), [PAUSED_FOR_AUTOMATIC_WORK]: "true" });
+      return { verdict: claimed.verdict, outcome: "deferred_rate_limit", retryAt: slot.heldUntil };
+    }
+    const release = async () => { if (slot && !slot.heldUntil) await slot.release(); };
     const run = await deps.enqueueWakeup(issue.assigneeAgentId!, {
       source: facts.latestRun ? "automation" : "assignment", triggerDetail: "system",
       reason: facts.latestRun ? "issue_continuation_needed" : "issue_assigned",
@@ -676,6 +689,7 @@ export function assignedWorkSweep(db: Db, deps: AssignedWorkDeps) {
     // A refused continuation stays a violation; the claim spaces the next try.
     // A block lifted for it is put back, so the task never sits unblocked
     // with nothing pending.
+    if (!run) await release();
     if (!run && claimed.restoredTo) await revertRestoredBlock(issue, claimed);
     await settleContinuationActivity(claimed, claimed.reason, run ? "queued" : "not_started",
       fresh?.kind === "person_owned" ? { waitingFor: fresh.reason } : {});
@@ -700,12 +714,19 @@ export function assignedWorkSweep(db: Db, deps: AssignedWorkDeps) {
   }
 
   async function replaceStalledRun(issue: IssueRow, claimed: Claimed, runId: string): Promise<AssignedWorkCheck> {
+    const slot = await reserveAutomaticRunCreation(db, issue.companyId, { issueId: issue.id, sourceRunId: runId });
+    if (slot.heldUntil) {
+      await settleContinuationActivity(claimed, claimed.reason, "not_started",
+        { waitingUntil: slot.heldUntil.toISOString(), [PAUSED_FOR_AUTOMATIC_WORK]: "true" });
+      return { verdict: claimed.verdict, outcome: "deferred_rate_limit", retryAt: slot.heldUntil };
+    }
     const cancelled = !claimed.stalledFence ? false : await deps.cancelStalledQueuedRun!({ companyId: issue.companyId, runId,
       ...claimed.stalledFence }).catch(error => {
       logger.warn({ err: error, companyId: issue.companyId, issueId: issue.id, runId }, "assigned-work sweep could not cancel a stalled queued run");
       return false;
     });
     if (!cancelled) {
+      await slot.release();
       await db.delete(activityLog).where(eq(activityLog.id, claimed.activityId));
       return { verdict: claimed.verdict, outcome: "changed", retryAt: null };
     }
@@ -719,6 +740,7 @@ export function assignedWorkSweep(db: Db, deps: AssignedWorkDeps) {
       logger.warn({ err: error, companyId: issue.companyId, issueId: issue.id }, "assigned-work replacement for a stalled run was not admitted");
       return null;
     });
+    if (!run) await slot.release();
     await settleContinuationActivity(claimed, claimed.reason, run ? "queued" : "not_started");
     return { verdict: claimed.verdict, outcome: run ? "replaced_stalled_run" : "enqueue_refused", retryAt: claimed.nextCheckAt };
   }
@@ -950,7 +972,7 @@ export function assignedWorkSweep(db: Db, deps: AssignedWorkDeps) {
     const queuedByAgent = new Map(queuedRows.map(row => [row.agentId, Number(row.queuedRuns)]));
     const slotRows = stalledRows.map(row => ({ agentName: row.agentName, stalledRuns: Number(row.stalledRuns),
       queuedRuns: queuedByAgent.get(row.agentId) ?? 0 }));
-    return { ...summary, agentsWithStalledSlots: slotRows };
+    return { ...summary, agentsWithStalledSlots: slotRows, automaticWork: await readAutomaticWorkStatus(db, companyId) };
   }
 
   return { checkIssue, listSuspects, report, loadFacts, flushPassLog: passLog.flush };

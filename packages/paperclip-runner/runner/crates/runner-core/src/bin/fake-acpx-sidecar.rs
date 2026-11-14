@@ -123,6 +123,8 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let mut provider_lost = false;
     let mut session_identity = Value::Null;
     let mut source_run = String::new();
+    let mut pending_provider_run: Option<String> = None;
+    let mut provider_rearmable = false;
     let mut source_pending_completion: Option<String> = None;
     let mut source_goal_revision = 0_u64;
     let mut runtime_directory: Option<std::path::PathBuf> = None;
@@ -216,6 +218,94 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 write_json(&mut stdout, &error)?;
                 continue;
             }
+        }
+        if command == "turn.cancel"
+            && provider_turn_tokens()
+                .iter()
+                .any(|token| token == "provider-turn-open")
+            && request["params"]["turnId"]
+                .as_str()
+                .is_some_and(|turn| turn.starts_with("provider-"))
+        {
+            let turn = request["params"]["turnId"].as_str().unwrap().to_owned();
+            write_json(
+                &mut stdout,
+                &json!({"protocolVersion":GENERATED_ACPX_SIDECAR_PROTOCOL_VERSION,"id":id,"ok":true,
+                    "result":{"cancelled":true,"sessionClosed":true}}),
+            )?;
+            write_json(
+                &mut stdout,
+                &json!({"protocolVersion":GENERATED_ACPX_SIDECAR_PROTOCOL_VERSION,"sequence":next_sequence,
+                    "eventType":"runtime.turn_terminal","runId":"run-1","turnId":turn,
+                    "payload":{"status":"cancelled","stopReason":"cancelled"}}),
+            )?;
+            next_sequence += 1;
+            continue;
+        }
+        if command == "session.provider_turn" {
+            if let Some(journal) = source_journal.as_mut() {
+                write_json(journal, &request)?;
+            }
+            let tokens = provider_turn_tokens();
+            let lost = if request["params"]["armed"] == json!(true) {
+                "provider-arm-reply-lost"
+            } else {
+                "provider-disarm-reply-lost"
+            };
+            if tokens.iter().any(|token| token == lost) {
+                continue;
+            }
+            let armed = request["params"]["armed"] == json!(true)
+                && (pending_provider_run.is_some() || provider_rearmable)
+                && !tokens.iter().any(|token| token == "provider-arm-reject");
+            write_json(
+                &mut stdout,
+                &json!({"protocolVersion":GENERATED_ACPX_SIDECAR_PROTOCOL_VERSION,"id":id,"ok":true,
+                    "result":{"armed":armed}}),
+            )?;
+            if request["params"]["armed"] == json!(false)
+                && tokens
+                    .iter()
+                    .any(|token| token == "provider-turn-after-disarm")
+            {
+                if let Some(run) = pending_provider_run.take() {
+                    next_sequence = write_provider_turn(&mut stdout, next_sequence, &run)?;
+                }
+            }
+            if armed
+                && tokens
+                    .iter()
+                    .any(|token| token == "provider-sidecar-exit-after-arm")
+            {
+                std::thread::spawn(|| {
+                    std::thread::sleep(Duration::from_millis(300));
+                    std::process::exit(0);
+                });
+            }
+            if armed
+                && tokens
+                    .iter()
+                    .any(|token| token == "provider-lost-after-arm")
+            {
+                write_json(
+                    &mut stdout,
+                    &json!({"protocolVersion":GENERATED_ACPX_SIDECAR_PROTOCOL_VERSION,"sequence":next_sequence,
+                        "eventType":"runtime.diagnostic","runId":null,"turnId":null,
+                        "payload":{"code":"ACPX_PROVIDER_PROCESS_LOST","message":"The provider exited."}}),
+                )?;
+                next_sequence += 1;
+            }
+            if armed && tokens.iter().any(|token| token == "provider-turn-hold") {
+                continue;
+            }
+            if let (true, Some(run)) = (armed, pending_provider_run.take()) {
+                next_sequence = write_provider_turn(&mut stdout, next_sequence, &run)?;
+                provider_rearmable = tokens.iter().any(|token| token == "provider-terminal-live");
+            } else {
+                provider_rearmable = false;
+            }
+            pending_provider_run = None;
+            continue;
         }
         if let Some(journal) = source_journal.as_mut() {
             write_json(journal, &request)?;
@@ -452,6 +542,12 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     json!({"status":status}),
                 )?;
                 next_sequence += 1;
+                next_sequence = offer_provider_turn(
+                    &mut stdout,
+                    next_sequence,
+                    &source_run,
+                    &mut pending_provider_run,
+                )?;
             }
             if command == "tool.resolve" {
                 let turn = source_pending_completion
@@ -974,6 +1070,22 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     )?;
                     next_sequence += 1;
                 }
+                if command == "turn.start"
+                    && matches!(
+                        mode,
+                        "turns-tool-terminal"
+                            | "turns-reused-tool-id-terminal"
+                            | "turns-tool-result-terminal"
+                            | "turns-reserved-result-terminal"
+                    )
+                {
+                    next_sequence = offer_provider_turn(
+                        &mut stdout,
+                        next_sequence,
+                        "run-1",
+                        &mut pending_provider_run,
+                    )?;
+                }
                 if command == "turn.start" && mode == "turns-multiple-tool-results-terminal" {
                     for index in 1..=2 {
                         write_turn_event(
@@ -1446,6 +1558,134 @@ fn bootstrap_success(
         "ok": true,
         "result": result,
     })
+}
+
+fn provider_turn_tokens() -> Vec<String> {
+    BACKGROUND_TASKS
+        .get()
+        .and_then(Option::as_ref)
+        .and_then(|path| std::fs::read_to_string(path).ok())
+        .map(|modes| modes.split_whitespace().map(str::to_owned).collect())
+        .unwrap_or_default()
+}
+
+fn offer_provider_turn(
+    output: &mut impl Write,
+    sequence: u64,
+    default_run: &str,
+    pending: &mut Option<String>,
+) -> io::Result<u64> {
+    let tokens = provider_turn_tokens();
+    if !tokens.iter().any(|token| token == "provider-turn") {
+        return Ok(sequence);
+    }
+    if tokens.iter().any(|token| token == "provider-turn-unarmed") {
+        return write_provider_turn(output, sequence, default_run);
+    }
+    *pending = Some(default_run.to_owned());
+    Ok(sequence)
+}
+
+fn write_provider_turn(
+    output: &mut impl Write,
+    mut sequence: u64,
+    default_run: &str,
+) -> io::Result<u64> {
+    let tokens = provider_turn_tokens();
+    if !tokens.iter().any(|token| token == "provider-turn") {
+        return Ok(sequence);
+    }
+    let value = |prefix: &str, fallback: &str| {
+        tokens
+            .iter()
+            .find_map(|token| token.strip_prefix(prefix).map(str::to_owned))
+            .unwrap_or_else(|| fallback.to_owned())
+    };
+    let turn_id = value("provider-turn-id=", "provider-1");
+    let run_id = value("provider-run=", default_run);
+    let frame = |sequence: u64, event_type: &str, payload: Value| {
+        json!({"protocolVersion":GENERATED_ACPX_SIDECAR_PROTOCOL_VERSION,"sequence":sequence,
+            "eventType":event_type,"runId":run_id,"turnId":turn_id,"payload":payload})
+    };
+    write_json(
+        output,
+        &frame(
+            sequence,
+            "runtime.turn_started",
+            json!({"origin":"provider"}),
+        ),
+    )?;
+    sequence += 1;
+    if let Some(call_id) = tokens
+        .iter()
+        .find_map(|token| token.strip_prefix("provider-reuse-call="))
+    {
+        write_json(
+            output,
+            &frame(
+                sequence,
+                "runtime.tool_called",
+                json!({"callId":call_id,"operationId":"issues.read","input":{"id":"issue-1"}}),
+            ),
+        )?;
+        sequence += 1;
+    }
+    if tokens.iter().any(|token| token == "provider-result") {
+        let result = valid_reserved_completion_result();
+        write_json(
+            output,
+            &frame(
+                sequence,
+                "runtime.tool_called",
+                json!({"callId":"call-provider-finish","operationId":"paperclip_finish","input":result.clone()}),
+            ),
+        )?;
+        write_json(
+            output,
+            &frame(
+                sequence + 1,
+                "runtime.event",
+                json!({"type":"semantic_result","callId":"call-provider-finish","operationId":"paperclip_finish","ok":true,"result":result}),
+            ),
+        )?;
+        sequence += 2;
+    }
+    write_json(
+        output,
+        &frame(
+            sequence,
+            "runtime.event",
+            json!({"type":"text_delta","text":"Claude finished its own work."}),
+        ),
+    )?;
+    sequence += 1;
+    if tokens.iter().any(|token| token == "provider-turn-open") {
+        return Ok(sequence);
+    }
+    write_json(
+        output,
+        &frame(
+            sequence,
+            "runtime.event",
+            json!({"type":"status","tag":"usage_update","text":"terminal prompt usage",
+                "breakdown":{"inputTokens":6,"outputTokens":4,"cachedReadTokens":0,"cachedWriteTokens":0,"thoughtTokens":0}}),
+        ),
+    )?;
+    sequence += 1;
+    let live = if tokens.iter().any(|token| token == "provider-terminal-live") {
+        1
+    } else {
+        0
+    };
+    write_json(
+        output,
+        &frame(
+            sequence,
+            "runtime.turn_terminal",
+            json!({"status":"completed","stopReason":"end_turn","backgroundTasks":{"live":live}}),
+        ),
+    )?;
+    Ok(sequence + 1)
 }
 
 fn write_turn_event(

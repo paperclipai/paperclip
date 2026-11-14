@@ -4,6 +4,7 @@ import { ASSIGNED_WORK_CONTINUED_ACTION, AUTOMATIC_RETRY_REASONS, SCHEDULER_TRAN
 import { CONTINUATION_CAP, CONTINUATION_CAP_WINDOW_MS } from "./assigned-work-invariant.js";
 
 export { ASSIGNED_WORK_CONTINUED_ACTION, SCHEDULER_TRANSIENT_RETRY_REASON };
+export const PAUSED_FOR_AUTOMATIC_WORK = "pausedForAutomaticWork";
 
 export async function taskAutomaticAttempts(db: Db, companyId: string, issueId: string, at: Date) {
   const since = new Date(at.getTime() - CONTINUATION_CAP_WINDOW_MS);
@@ -11,7 +12,8 @@ export async function taskAutomaticAttempts(db: Db, companyId: string, issueId: 
     db.select({ createdAt: activityLog.createdAt, outcome: sql<string | null>`${activityLog.details}->>'outcome'` }).from(activityLog).where(and(
       eq(activityLog.companyId, companyId), eq(activityLog.entityType, "issue"), eq(activityLog.entityId, issueId),
       eq(activityLog.action, ASSIGNED_WORK_CONTINUED_ACTION), gte(activityLog.createdAt, since),
-      sql`coalesce(${activityLog.details}->>'continuedFromSavedWork', '') <> 'true'`))
+      sql`coalesce(${activityLog.details}->>'continuedFromSavedWork', '') <> 'true'`,
+      sql`coalesce(${activityLog.details}->>${PAUSED_FOR_AUTOMATIC_WORK}, '') <> 'true'`))
       .orderBy(desc(activityLog.createdAt)).limit(64),
     db.select({ createdAt: heartbeatRuns.createdAt }).from(heartbeatRuns).where(and(
       eq(heartbeatRuns.companyId, companyId), sql`${heartbeatRuns.contextSnapshot}->>'issueId' = ${issueId}`,

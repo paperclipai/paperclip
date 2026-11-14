@@ -21,6 +21,10 @@ export const artifactName = arch => `merge-group-image-${arch}`;
 const architectures = ["amd64", "arm64"];
 const indexTypes = ["application/vnd.oci.image.index.v1+json", "application/vnd.docker.distribution.manifest.list.v2+json"];
 const manifestTypes = ["application/vnd.oci.image.manifest.v1+json", "application/vnd.docker.distribution.manifest.v2+json"];
+// How long a master push waits for a merge-queue build that is still running.
+// A build takes about 12 minutes and the exact-source gate about 14.
+const findWaitMs = 15 * 60_000;
+const findPollMs = 20_000;
 const fullSha = /^[a-f0-9]{40}$/;
 const digestPattern = /^sha256:[a-f0-9]{64}$/;
 const sha256 = bytes => `sha256:${createHash("sha256").update(bytes).digest("hex")}`;
@@ -43,6 +47,11 @@ export function selectVerifiedRun({ sha, runs }) {
     typeof run.head_branch === "string" && run.head_branch.startsWith("gh-readonly-queue/master/"));
   if (eligible.length === 0) return { reason: "no merge-queue image build exists for this commit" };
   const passed = eligible.filter(run => run.status === "completed" && run.conclusion === "success").sort((a, b) => b.id - a.id);
+  // The queue can land a commit while its image is still building. `pending`
+  // tells the caller that waiting can still produce a usable run.
+  if (passed.length === 0 && eligible.some(run => run.status !== "completed")) {
+    return { pending: true, reason: "the merge-queue image build for this commit did not finish in time" };
+  }
   if (passed.length === 0) return { reason: "the merge-queue image build for this commit did not succeed" };
   return { runId: passed[0].id };
 }
@@ -163,8 +172,18 @@ async function main(command) {
       assert.ok(response.ok, `GitHub API ${path}: HTTP ${response.status}`);
       return response.json();
     };
-    const { workflow_runs: runs } = await api(`/actions/workflows/docker-merge-group.yml/runs?event=merge_group&head_sha=${sha}&per_page=20`);
-    const run = selectVerifiedRun({ sha, runs });
+    // Publication waits for the exact-source gate in any case, so waiting here
+    // for an unfinished build costs nothing while the build is the shorter of
+    // the two. Past the deadline the push builds from source.
+    const deadline = Date.now() + findWaitMs;
+    let run;
+    for (;;) {
+      const { workflow_runs: runs } = await api(`/actions/workflows/docker-merge-group.yml/runs?event=merge_group&head_sha=${sha}&per_page=20`);
+      run = selectVerifiedRun({ sha, runs });
+      if (!run.pending || Date.now() >= deadline) break;
+      console.log("The merge-queue image build for this commit is still running. Waiting.");
+      await new Promise(resolve => setTimeout(resolve, findPollMs));
+    }
     if (!run.runId) { console.log(`No promotion: ${run.reason}. Building from source.`); return; }
     const { artifacts } = await api(`/actions/runs/${run.runId}/artifacts?per_page=100`);
     const artifact = selectArtifact({ artifacts, arch });
