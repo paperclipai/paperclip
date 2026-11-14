@@ -62866,8 +62866,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     const commentsBeforeDisabledLifecycle = await db
       .select({ id: issueComments.id })
       .from(issueComments)
-      .where(eq(issueComments.issueId, conversation.issueId))
-      .orderBy(issueComments.id);
+      .where(eq(issueComments.issueId, conversation.issueId));
     const priorLifecycleIds = new Set(
       (
         await db
@@ -62947,8 +62946,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       db
         .select({ id: issueComments.id })
         .from(issueComments)
-        .where(eq(issueComments.issueId, conversation.issueId))
-        .orderBy(issueComments.id),
+        .where(eq(issueComments.issueId, conversation.issueId)),
     ).resolves.toEqual(commentsBeforeDisabledLifecycle);
     await service.shutdown();
   });
