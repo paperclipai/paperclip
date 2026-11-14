@@ -348,7 +348,7 @@ describe("Runner image stages", () => {
       "pnpm run check:protocol-coverage",
       "node scripts/generate-semantic-contracts.mjs --check",
       "node scripts/check-runner-workflow-traceability.mjs",
-      "pnpm run build:binary",
+      "node scripts/build-runner-binary.mjs",
       "node scripts/generate-replay-goldens.mjs --check",
       "node scripts/generate-semantic-action-catalog.mjs --check",
       "node scripts/record-build-inputs.mjs --finish",
