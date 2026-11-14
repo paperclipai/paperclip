@@ -35,6 +35,7 @@ describe("createTestHarness action context", () => {
         agentId: string | null;
         runId: string | null;
         companyId: string | null;
+        authenticationSource: string | null;
       };
       companyId: string | null;
       contextFrozen: boolean;
@@ -48,6 +49,7 @@ describe("createTestHarness action context", () => {
           type: "user",
           userId: "board-user-1",
           runId: "run-1",
+          authenticationSource: "session",
         },
       },
     );
@@ -60,6 +62,7 @@ describe("createTestHarness action context", () => {
       agentId: null,
       runId: "run-1",
       companyId: "host-company",
+      authenticationSource: "session",
     });
     expect(result.contextFrozen).toBe(true);
     expect(result.actorFrozen).toBe(true);
