@@ -208,8 +208,8 @@ shape changes; sessions from the previous release retain their existing behavior
 If the controller sends assigned MCP tools in the PRP catalog, the sidecar uses
 its authenticated tool bridge.
 Isolated provider admission accepts this route without a separate native MCP endpoint.
-Direct runtime-host callers must supply the native gateway binding unless they select
-PRP tool delivery and supply the semantic tool bridge.
+When the runtime context names an assigned MCP binding, direct runtime-host callers
+must select PRP tool delivery and supply the semantic tool bridge.
 PRP delivery keeps the controller's exact operation names, including compact MCP catalog tools.
 The selected permission and read-only policies still apply.
 
@@ -1062,8 +1062,8 @@ qualification before this mode can be enabled for them.
 
 ## Assigned local MCP servers
 
-An execution host can assign local stdio MCP servers alongside the existing
-`PAPERCLIP_NATIVE_MCP_NAME` / `URL` / `TOKEN` HTTP gateway. This is general transport
+An execution host can assign local stdio MCP servers. Assigned gateway tools reach
+the provider through the controller's PRP relay, not as a server here. This is general transport
 support for local MCP implementations that satisfy the executable-verification
 and private Unix socket requirements below. Runner uses each server's own tool
 schemas and responses. Set
@@ -1080,7 +1080,7 @@ with the ownership and path requirements below.
 Set `PAPERCLIP_NATIVE_MCP_PROXY` to the assigned Runner executable. These are
 execution-host inputs, excluded from configurable task environment and provider
 shell inheritance. Names use letters, digits, underscores or hyphens and cannot
-replace the internal task server or gateway. Commands are verified against their
+replace the internal task server. Commands are verified against their
 assigned digest before execution. The backend receives only its assigned environment.
 
 Runner supplies these session-local bindings to native Codex and through the

@@ -12,6 +12,7 @@ import { conversationRecoveryActionPredicate, getConversationOwnershipBlocker } 
 import { isInterruptedNativePreparationCandidate } from "./cancelled-native-startup.js";
 import { persistActivity } from "./activity-log.js";
 import { appendHeartbeatRunEvent } from "./heartbeat-run-events.js";
+import { foldWaitingRetriesIntoContinuation } from "./fresh-continuation-retry-fold.js";
 import { logger } from "../middleware/logger.js";
 import { and, asc, eq, exists, inArray, isNull, not, or, sql } from "drizzle-orm";
 import {
@@ -36,14 +37,18 @@ import { isSupersededConversationRun } from "./agent-conversations.js";
 import { hasRequiredWorkspaceRecovery } from "./workspace-restore-recovery-state.js";
 import { hasRemoteTerminationReceipt } from "./remote-execution-termination.js";
 import { readSystemRecovery } from "./system-recovery-state.js";
+import { isReattachPhaseActive } from "./heartbeat/run-admission.js";
 import { provenGoneLegacyControllerBootId } from "./legacy-controller-lease.js";
+import { reserveAutomaticRunCreation } from "./recovery/automatic-run-brake.js";
+import { recordContinuationDeliveryAttempt } from "./recovery/continuation-delivery-attempt.js";
 import { continueFreshInTransaction, continueHeldExecutions, freshContinuationCheckDue, recordFreshContinuationCheck,
   settleCoalescedFreshContinuationHolds } from "./fresh-continuation-fallback.js";
 import { alias } from "drizzle-orm/pg-core";
-import { RECOVERY_WAKE_REASONS } from "./heartbeat/queued-run-dispatch-order.js";
+import { RECOVERY_BACKLOG_AGE_MS, RECOVERY_WAKE_REASONS } from "./heartbeat/queued-run-dispatch-order.js";
+import { agentRecoveryQueueIsFull } from "./recovery-queue-admission.js";
 import { parseHeartbeatPolicy } from "./heartbeat/timer-policy.js";
 
-import { RECOVERY_CONTINUATIONS_PER_COMPANY_PER_PASS, RECOVERY_CONTINUATION_MAX_HOLD_MS,
+import { RECOVERY_CONTINUATIONS_PER_COMPANY_PER_PASS, RECOVERY_CONTINUATION_BACKLOG_SHARE_PER_PASS, RECOVERY_CONTINUATION_MAX_HOLD_MS,
   recoveryContinuationHeldSince } from "./recovery-continuation-pacing.js";
 
 export { RECOVERY_CONTINUATIONS_PER_COMPANY_PER_PASS, RECOVERY_CONTINUATION_DELIVERY_BOUND_MS,
@@ -367,23 +372,32 @@ export async function deliverReconciledExecutions(
   db: Db,
   wake: ReturnType<typeof import("./heartbeat.js").heartbeatService>["wakeup"],
 ) {
+  if (isReattachPhaseActive()) return;
   const recoveryReasons = [...RECOVERY_WAKE_REASONS];
   const sourceRun = alias(heartbeatRuns, "continuation_source_run");
   const seenActionIds = new Set<string>();
-  const seenAgentIds = new Set<string>();
+  const seenAgentIds: Record<ContinuationClass, Set<string>> = { fresh: new Set(), backlog: new Set() };
   const admittedByCompany = new Map<string, number>();
+  let companyLimit = RECOVERY_CONTINUATIONS_PER_COMPANY_PER_PASS;
   const fullCompanies = () => [...admittedByCompany].flatMap(([companyId, count]) =>
-    count >= RECOVERY_CONTINUATIONS_PER_COMPANY_PER_PASS ? [companyId] : []);
+    count >= companyLimit ? [companyId] : []);
   const heldSince = sql`coalesce(${issueRecoveryActions.evidence}#>>'{freshContinuation,recordedAt}', ${issueRecoveryActions.resolvedAt}::text, ${issueRecoveryActions.updatedAt}::text)::timestamptz`;
-  const readPendingPage = async () => {
+  const attemptedAt = sql`(${issueRecoveryActions.evidence}->>'continuationDeliveryAttemptedAt')::timestamptz`;
+  const freshSource = () => sql`coalesce(${sourceRun.finishedAt} > ${new Date(Date.now() - RECOVERY_BACKLOG_AGE_MS).toISOString()}::timestamptz, false)`;
+  const readPendingPage = async (kind: ContinuationClass) => {
     const companies = fullCompanies();
+    const seenAgents = seenAgentIds[kind];
     const heldBound = new Date(Date.now() - RECOVERY_CONTINUATION_MAX_HOLD_MS).toISOString();
     const pastBound = sql`${heldSince} <= ${heldBound}::timestamptz`;
-    const overdueTurn = sql`case when ${pastBound} then greatest(${heldSince},
-      (${issueRecoveryActions.evidence}->>'continuationDeliveryAttemptedAt')::timestamptz) end`;
-    const priority = [
+    const overdueTurn = sql`case when ${pastBound} then greatest(${heldSince}, ${attemptedAt}) end`;
+    const priority = kind === "fresh" ? [
+      sql`${attemptedAt} asc nulls first`,
+      sql`${sourceRun.finishedAt} desc`,
+      sql`${issueRecoveryActions.updatedAt} asc`,
+    ] : [
       sql`${pastBound} desc`,
       sql`${overdueTurn} asc nulls last`,
+      sql`${attemptedAt} asc nulls first`,
       sql`${sourceRun.finishedAt} desc nulls last`,
       sql`${issueRecoveryActions.updatedAt} asc`,
     ];
@@ -393,6 +407,7 @@ export async function deliverReconciledExecutions(
         pastBound: sql<boolean>`${pastBound}`.as("past_bound"),
         heldAt: sql<Date | null>`${overdueTurn}`.as("held_at"),
         sourceFinishedAt: sql<Date | null>`${sourceRun.finishedAt}`.as("source_finished_at"),
+        attemptedAt: sql<Date | null>`${attemptedAt}`.as("attempted_at"),
         actionUpdatedAt: sql<Date>`${issueRecoveryActions.updatedAt}`.as("action_updated_at"),
         agentRank: sql<number>`row_number() over (
           partition by coalesce(${issueRecoveryActions.returnOwnerAgentId}::text, ${issueRecoveryActions.id}::text)
@@ -409,12 +424,14 @@ export async function deliverReconciledExecutions(
           eq(issueRecoveryActions.status, "resolved"),
           sql`${issueRecoveryActions.evidence}->>'continuationDelivery' = 'pending'`,
           seenActionIds.size ? not(inArray(issueRecoveryActions.id, [...seenActionIds])) : undefined,
-          seenAgentIds.size ? sql`coalesce(${issueRecoveryActions.returnOwnerAgentId}::text, '') <> all(${sql.param([...seenAgentIds])}::text[])` : undefined,
+          seenAgents.size ? sql`coalesce(${issueRecoveryActions.returnOwnerAgentId}::text, '') <> all(${sql.param([...seenAgents])}::text[])` : undefined,
           companies.length ? not(inArray(issueRecoveryActions.companyId, companies)) : undefined,
-          sql`(${pastBound} or not exists (select 1 from ${heartbeatRuns} queued_recovery
+          kind === "fresh" ? freshSource() : sql`not ${freshSource()}`,
+          kind === "fresh" ? undefined : sql`(${pastBound} or not exists (select 1 from ${heartbeatRuns} queued_recovery
             where queued_recovery.company_id = ${issueRecoveryActions.companyId}
               and queued_recovery.agent_id = ${issueRecoveryActions.returnOwnerAgentId}
               and queued_recovery.status = 'queued'
+              and queued_recovery.context_snapshot->>'recoveryActionId' is distinct from ${issueRecoveryActions.id}::text
               and queued_recovery.context_snapshot->>'wakeReason' in (${sql.join(recoveryReasons.map(reason => sql`${reason}`), sql`, `)})))`,
         ),
       )
@@ -424,26 +441,27 @@ export async function deliverReconciledExecutions(
       .from(candidates)
       .innerJoin(issueRecoveryActions, eq(issueRecoveryActions.id, candidates.id))
       .where(eq(candidates.agentRank, 1))
-      .orderBy(
+      .orderBy(...(kind === "fresh" ? [
+        sql`${candidates.attemptedAt} asc nulls first`,
+        sql`${candidates.sourceFinishedAt} desc`,
+        sql`${candidates.actionUpdatedAt} asc`,
+      ] : [
         sql`${candidates.pastBound} desc`,
         sql`${candidates.heldAt} asc nulls last`,
+        sql`${candidates.attemptedAt} asc nulls first`,
         sql`${candidates.sourceFinishedAt} desc nulls last`,
         sql`${candidates.actionUpdatedAt} asc`,
-      )
+      ]))
       .limit(25);
     return rows.map(row => row.action);
   };
-  const deferRefusedContinuation = (action: typeof issueRecoveryActions.$inferSelect) => db.update(issueRecoveryActions)
-    .set({ evidence: sql`${issueRecoveryActions.evidence} || ${JSON.stringify(
-      { continuationDeliveryAttemptedAt: new Date().toISOString() })}::jsonb` })
-    .where(and(
-      eq(issueRecoveryActions.companyId, action.companyId),
-      eq(issueRecoveryActions.id, action.id),
-      eq(issueRecoveryActions.status, "resolved"),
-      sql`${issueRecoveryActions.evidence}->>'continuationDelivery' = 'pending'`,
-    ));
-  const agentHasRoom = async (action: typeof issueRecoveryActions.$inferSelect, agentId: string) => {
-    if ((admittedByCompany.get(action.companyId) ?? 0) >= RECOVERY_CONTINUATIONS_PER_COMPANY_PER_PASS) return false;
+  const deferRefusedContinuation = (action: typeof issueRecoveryActions.$inferSelect) => recordContinuationDeliveryAttempt(db, action);
+  const agentHasRoom = async (action: typeof issueRecoveryActions.$inferSelect, agentId: string, kind: ContinuationClass) => {
+    if ((admittedByCompany.get(action.companyId) ?? 0) >= companyLimit) return false;
+    // A few at a time per agent, fresh or not: the rest waits here, durably,
+    // until a queued recovery run starts or is dropped.
+    if (await agentRecoveryQueueIsFull(db, action.companyId, agentId)) return false;
+    if (kind === "fresh") return true;
     const [agent] = await db.select().from(agents).where(and(eq(agents.companyId, action.companyId), eq(agents.id, agentId)));
     if (!agent) return true;
     const [queued] = await db.select({ count: sql<number>`count(*)::int` }).from(heartbeatRuns).where(and(
@@ -451,12 +469,23 @@ export async function deliverReconciledExecutions(
     if (Number(queued?.count ?? 0) < parseHeartbeatPolicy(agent).maxConcurrentRuns) return true;
     return Date.now() - recoveryContinuationHeldSince(action) >= RECOVERY_CONTINUATION_MAX_HOLD_MS;
   };
-  for (let page = 0; page < RECOVERY_CONTINUATION_PAGES_PER_PASS; page += 1) {
-    const pending = await readPendingPage();
-    if (!pending.length) break;
+  const cap = RECOVERY_CONTINUATIONS_PER_COMPANY_PER_PASS;
+  const phases: Array<[ContinuationClass, number]> = [
+    ["fresh", cap - RECOVERY_CONTINUATION_BACKLOG_SHARE_PER_PASS], ["backlog", cap], ["fresh", cap]];
+  for (let page = 0; page < RECOVERY_CONTINUATION_PAGES_PER_PASS * phases.length; page += 1) {
+    const phase = Math.floor(page / RECOVERY_CONTINUATION_PAGES_PER_PASS);
+    const [kind, limit] = phases[phase]!;
+    companyLimit = limit;
+    const seenAgents = seenAgentIds[kind];
+    const pending = await readPendingPage(kind);
+    if (!pending.length) {
+      page = (phase + 1) * RECOVERY_CONTINUATION_PAGES_PER_PASS - 1;
+      continue;
+    }
     for (const action of pending) {
+      if ((admittedByCompany.get(action.companyId) ?? 0) >= companyLimit) continue;
       seenActionIds.add(action.id);
-      if (action.returnOwnerAgentId && seenAgentIds.has(action.returnOwnerAgentId)) continue;
+      if (action.returnOwnerAgentId && seenAgents.has(action.returnOwnerAgentId)) continue;
       try {
         const decision = action.evidence.executionReconciliation as
           ExecutionReconciliation | undefined;
@@ -496,7 +525,7 @@ export async function deliverReconciledExecutions(
         // recorded already continues the task, so it is never a second run.
         const fresh = action.evidence.freshContinuation as { recordedAt?: unknown } | undefined;
         if (fresh && typeof fresh.recordedAt === "string") {
-          const [newer] = await db.select({ id: heartbeatRuns.id }).from(heartbeatRuns).where(and(
+          const [newer] = await db.select({ id: heartbeatRuns.id, contextSnapshot: heartbeatRuns.contextSnapshot }).from(heartbeatRuns).where(and(
             eq(heartbeatRuns.companyId, action.companyId), sql`${heartbeatRuns.id}::text <> ${decision.runId}`,
             or(eq(heartbeatRuns.nativeIssueId, task.id), eq(heartbeatRuns.issueId, task.id),
               sql`${heartbeatRuns.contextSnapshot}->>'issueId' = ${task.id}::text`),
@@ -507,13 +536,21 @@ export async function deliverReconciledExecutions(
               .where(pendingDecision);
             await settleCoalescedFreshContinuationHolds(db, { companyId: action.companyId, primaryId: action.id,
               delivery: "delivered", continuationRunId: newer.id });
+            if (newer.contextSnapshot?.recoveryActionId === action.id)
+              await db.transaction(async tx => {
+                await tx.execute(sql`select id from issues where company_id = ${action.companyId} and id = ${task.id} for update`);
+                await foldWaitingRetriesIntoContinuation(tx as unknown as Db, { companyId: action.companyId, issueId: task.id, runId: newer.id,
+                  sourceRunId: decision.runId });
+              });
             continue;
           }
         }
-        if (!await agentHasRoom(action, action.returnOwnerAgentId)) {
-          seenAgentIds.add(action.returnOwnerAgentId);
+        if (!await agentHasRoom(action, action.returnOwnerAgentId, kind)) {
+          seenAgents.add(action.returnOwnerAgentId);
           continue;
         }
+        const slot = await reserveAutomaticRunCreation(db, action.companyId, { issueId: task.id, sourceRunId: decision.runId });
+        if (slot.heldUntil) { await deferRefusedContinuation(action); continue; }
         const run = await wake(action.returnOwnerAgentId, {
           source: "automation",
           triggerDetail: "system",
@@ -534,9 +571,10 @@ export async function deliverReconciledExecutions(
             ...((action.evidence.freshContinuation as { isolation?: unknown } | undefined)?.isolation === "fresh_isolated_workspace"
               ? { freshContinuationIsolation: action.id } : {}),
           },
-        });
-        seenAgentIds.add(action.returnOwnerAgentId);
+        }).catch(async error => { await slot.release(); throw error; });
+        seenAgents.add(action.returnOwnerAgentId);
         if (!run) {
+          await slot.release();
           await deferRefusedContinuation(action);
           continue;
         }
@@ -567,9 +605,12 @@ export async function deliverReconciledExecutions(
             .where(pendingDecision);
           await settleCoalescedFreshContinuationHolds(tx as unknown as Db, { companyId: action.companyId, primaryId: action.id,
             delivery: "delivered", continuationRunId: run.id });
+          if (fresh)
+            await foldWaitingRetriesIntoContinuation(tx as unknown as Db, { companyId: action.companyId, issueId: task.id, runId: run.id,
+              sourceRunId: decision.runId });
         });
       } catch {
-        if (action.returnOwnerAgentId) seenAgentIds.add(action.returnOwnerAgentId);
+        if (action.returnOwnerAgentId) seenAgents.add(action.returnOwnerAgentId);
         await deferRefusedContinuation(action).catch(() => undefined);
         logger.warn(
           { recoveryActionId: action.id },
@@ -579,6 +620,8 @@ export async function deliverReconciledExecutions(
     }
   }
 }
+
+type ContinuationClass = "fresh" | "backlog";
 
 const supersedingWorkspaceHold = alias(issueRecoveryActions, "superseding_workspace_hold");
 

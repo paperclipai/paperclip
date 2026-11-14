@@ -18,7 +18,9 @@ use crate::provider_failure::validated_provider_failure;
 use crate::stable_identity::{is_stable_id, DURABLE_STABLE_ID_CHARS, SHORT_STABLE_ID_CHARS};
 
 pub const ACPX_SIDECAR_MAX_FRAME_BYTES: usize = 1024 * 1024;
-const MAX_BUFFERED_EVENTS: usize = 512;
+const SIDECAR_MAX_UNFLUSHED_OUTPUT_BYTES: usize = 4 * ACPX_SIDECAR_MAX_FRAME_BYTES;
+const MAX_BUFFERED_EVENT_BYTES: usize = 4 * SIDECAR_MAX_UNFLUSHED_OUTPUT_BYTES;
+const MAX_BUFFERED_EVENTS: usize = MAX_BUFFERED_EVENT_BYTES / 256;
 const MAX_EVENT_POLL_TIMEOUT: Duration = Duration::from_secs(120);
 const MAX_JSON_SAFE_INTEGER: u64 = 9_007_199_254_740_991;
 /// A response wait blocks in slices of at most this long.
@@ -128,7 +130,9 @@ pub struct AcpxSidecarTransport {
     request_deadline: Option<Instant>,
     next_request_id: u64,
     last_event_sequence: u64,
-    buffered_events: VecDeque<AcpxSidecarEvent>,
+    buffered_events: VecDeque<(AcpxSidecarEvent, usize)>,
+    buffered_event_bytes: usize,
+    last_polled_event_bytes: usize,
     stderr_tail: BoundedLogBuffer,
     stderr_categories: BTreeSet<&'static str>,
     poisoned: bool,
@@ -295,11 +299,6 @@ impl AcpxSidecarTransport {
             "no_proxy",
             "all_proxy",
             "RUST_BACKTRACE",
-            "PAPERCLIP_NATIVE_MCP_NAME",
-            "PAPERCLIP_NATIVE_MCP_URL",
-            // The qualified sidecar configures the runner-owned gateway. Keep
-            // its credential with the name/URL; unrelated secrets stay excluded.
-            "PAPERCLIP_NATIVE_MCP_TOKEN",
             "PAPERCLIP_NATIVE_MCP_STDIO",
             "PAPERCLIP_NATIVE_MCP_PROXY",
             "PAPERCLIP_ACPX_BUILTIN_ROOT",
@@ -444,6 +443,8 @@ impl AcpxSidecarTransport {
             next_request_id: 1,
             last_event_sequence: 0,
             buffered_events: VecDeque::new(),
+            buffered_event_bytes: 0,
+            last_polled_event_bytes: 0,
             stderr_tail: BoundedLogBuffer::new(32, 8 * 1024),
             stderr_categories: BTreeSet::new(),
             poisoned: false,
@@ -469,7 +470,7 @@ impl AcpxSidecarTransport {
     }
 
     pub(crate) fn buffered_events(&self) -> impl ExactSizeIterator<Item = &AcpxSidecarEvent> {
-        self.buffered_events.iter()
+        self.buffered_events.iter().map(|(event, _)| event)
     }
 
     pub fn request(
@@ -480,6 +481,22 @@ impl AcpxSidecarTransport {
         match self.request_outcome(command, params)? {
             CommandOutcome::Success(value) => Ok(value),
             CommandOutcome::Rejected { error, .. } => Err(error),
+        }
+    }
+
+    pub(crate) fn request_by(
+        &mut self,
+        command: GeneratedAcpxSidecarCommand,
+        params: Value,
+        deadline: Instant,
+    ) -> Result<Result<Value, LocalRunnerError>, LocalRunnerError> {
+        let bound = self.request_deadline;
+        self.request_deadline = Some(bound.map_or(deadline, |bound| bound.min(deadline)));
+        let outcome = self.request_outcome(command, params);
+        self.request_deadline = bound;
+        match outcome? {
+            CommandOutcome::Success(value) => Ok(Ok(value)),
+            CommandOutcome::Rejected { error, .. } => Ok(Err(error)),
         }
     }
 
@@ -555,22 +572,33 @@ impl AcpxSidecarTransport {
                 "ACPX sidecar event poll timeout must not exceed 120 s",
             ));
         }
-        if let Some(event) = self.buffered_events.pop_front() {
+        self.last_polled_event_bytes = 0;
+        if let Some((event, bytes)) = self.buffered_events.pop_front() {
+            self.buffered_event_bytes -= bytes;
+            self.last_polled_event_bytes = bytes;
             return Ok(Some(event));
         }
         if timeout.is_zero() {
             return Ok(None);
         }
-        let result = self.poll_event_inner(timeout);
-        if result.is_err() {
-            self.poison();
+        match self.poll_event_inner(timeout) {
+            Ok(Some((event, bytes))) => {
+                self.last_polled_event_bytes = bytes;
+                Ok(Some(event))
+            }
+            Ok(None) => Ok(None),
+            Err(error) => {
+                self.poison();
+                Err(error)
+            }
         }
-        result
     }
 
     pub(crate) fn defer_polled_event(&mut self, event: AcpxSidecarEvent) {
         // poll_event already validated its sequence and freed its FIFO slot.
-        self.buffered_events.push_front(event);
+        let bytes = std::mem::take(&mut self.last_polled_event_bytes);
+        self.buffered_event_bytes += bytes;
+        self.buffered_events.push_front((event, bytes));
     }
 
     pub fn shutdown(&mut self) -> Result<(), LocalRunnerError> {
@@ -772,7 +800,7 @@ impl AcpxSidecarTransport {
                 continue;
             };
             match parse_frame(&line)? {
-                ParsedFrame::Event(event) => self.buffer_event(event)?,
+                ParsedFrame::Event(event) => self.buffer_event(event, line.len())?,
                 ParsedFrame::Response(response) => {
                     if self.abandoned_observation == Some(response.id) {
                         self.abandoned_observation = None;
@@ -816,7 +844,7 @@ impl AcpxSidecarTransport {
     fn poll_event_inner(
         &mut self,
         timeout: Duration,
-    ) -> Result<Option<AcpxSidecarEvent>, LocalRunnerError> {
+    ) -> Result<Option<(AcpxSidecarEvent, usize)>, LocalRunnerError> {
         let deadline = Instant::now() + timeout;
         loop {
             let Some(line) = self.receive_stdout_line(
@@ -829,7 +857,7 @@ impl AcpxSidecarTransport {
             match parse_frame(&line)? {
                 ParsedFrame::Event(event) => {
                     self.validate_event_sequence(event.sequence)?;
-                    return Ok(Some(event));
+                    return Ok(Some((event, line.len())));
                 }
                 ParsedFrame::Response(response)
                     if self.abandoned_observation == Some(response.id) =>
@@ -887,14 +915,21 @@ impl AcpxSidecarTransport {
         }
     }
 
-    fn buffer_event(&mut self, event: AcpxSidecarEvent) -> Result<(), LocalRunnerError> {
-        if self.buffered_events.len() >= MAX_BUFFERED_EVENTS {
+    fn buffer_event(
+        &mut self,
+        event: AcpxSidecarEvent,
+        bytes: usize,
+    ) -> Result<(), LocalRunnerError> {
+        if self.buffered_events.len() >= MAX_BUFFERED_EVENTS
+            || self.buffered_event_bytes.saturating_add(bytes) > MAX_BUFFERED_EVENT_BYTES
+        {
             return Err(LocalRunnerError::invalid(
                 "ACPX sidecar exceeded the buffered event limit",
             ));
         }
         self.validate_event_sequence(event.sequence)?;
-        self.buffered_events.push_back(event);
+        self.buffered_event_bytes += bytes;
+        self.buffered_events.push_back((event, bytes));
         Ok(())
     }
 
@@ -920,6 +955,17 @@ impl AcpxSidecarTransport {
             command.as_str(),
             self.diagnostic_suffix()
         ))
+    }
+
+    pub(crate) fn exited_error(&mut self, stage: &str) -> Option<LocalRunnerError> {
+        match self.process.try_wait() {
+            Ok(None) => None,
+            Ok(Some(_)) | Err(_) => {
+                let error = self.closed_error(stage);
+                self.poison();
+                Some(error)
+            }
+        }
     }
 
     fn closed_error(&mut self, stage: &str) -> LocalRunnerError {
@@ -999,6 +1045,7 @@ impl AcpxSidecarTransport {
         }
         self.poisoned = true;
         self.buffered_events.clear();
+        self.buffered_event_bytes = 0;
         let _ = self.process.terminate_group();
     }
 }

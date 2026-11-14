@@ -658,6 +658,13 @@ export function resolvePaperclipRunnerProviderProfile(
   };
 }
 
+export function supportsPaperclipRunnerPreconfiguredHome(adapterConfig: unknown, options: { companyId?: string } = {}): boolean {
+  const config = asRecord(adapterConfig);
+  const profile = resolvePaperclipRunnerProviderProfile(config, options);
+  return profile.provider === "codex" || (profile.provider === "acpx" && profile.acpxAgent === "claude"
+    && (config.acpxPermissionMode === undefined || config.acpxPermissionMode === "approve-all"));
+}
+
 /**
  * Project the operator-owned adapter configuration and a qualified stored
  * profile into the closed native execution descriptor. Editable adapter

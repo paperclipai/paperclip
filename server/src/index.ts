@@ -1,5 +1,7 @@
+import { tailscaleNetworks } from "./services/connectors/tailscale/network.js";
 import type { IdleDeadlineOwners } from "./services/idle-deadline-types.js";
 import { closeProcessRunAdmission, isProcessRunAdmissionClosed } from "./services/heartbeat/run-admission.js";
+import { registerReattachPhaseWork } from "./services/heartbeat/reattach-phase.js";
 import { createRunStartHandover, registerRunStartHandover } from "./services/run-start-handover.js";
 import { registerOwnershipReconciliationWork } from "./services/native-runtime/native-finalization-reconciler.js";
 import { bindIdleDeadlineOwner } from "./services/idle-deadline-owner.js";
@@ -34,6 +36,7 @@ import { registerToolReviewInterruptionWork } from "./services/tool-review-inter
 import { registerToolReviewRecoveryWork } from "./services/tool-review-recovery-work.js";
 import { registerToolReviewExpiryWork } from "./services/tool-review-expiry-work.js";
 import { registerGatewayCredentialExpiryWork } from "./services/gateway-credential-expiry-work.js";
+import { registerMcpTaskWork } from "./services/mcp-task-work.js";
 import { registerSecretProposalExpiryWork } from "./services/secret-proposal-expiry-work.js";
 import { registerCustomImageCleanupWork } from "./services/custom-image-cleanup-work.js";
 import { registerWorkspaceRecoveryWork } from "./services/workspace-recovery-work.js";
@@ -1297,6 +1300,7 @@ async function startServerWithDatabaseTeardown(
     runIds?: readonly string[] | null,
   ) => Promise<unknown>) | null = null;
   let drainHeartbeatExecutionFinalizers: (() => Promise<void>) | null = null;
+  let handOffNativeRunsForShutdown: ((signal: "SIGINT" | "SIGTERM") => Promise<string[]>) | null = null;
   let prepareHotRestartShutdown: ((signal: "SIGINT" | "SIGTERM") => Promise<{
     skipDrain: boolean;
     drainRunIds?: string[];
@@ -1341,6 +1345,18 @@ async function startServerWithDatabaseTeardown(
   // instead of behind every unrelated startup recovery pass. Agents with a run
   // left `running`, or a queued retry/continuation, keep waiting for the full
   // queued-run pass registered after native restart recovery below.
+  if (heartbeat && config.heartbeatSchedulerEnabled && !isWarmStandby()) {
+    const reattachHeartbeat = heartbeat;
+    registerReattachPhaseWork(deliveryWork, db as any, {
+      claim: runIds => reattachHeartbeat.recoverNativeRunsAfterRestart(new Date(), runIds),
+      onEnd: summary => {
+        if (!summary.gatedStarts || heartbeatSchedulerStopped) return;
+        trackHeartbeatSchedulerWork(accountingHeartbeat.resumeQueuedRunsAfterDrain().catch(err => {
+          logger.error({ err }, "failed to start queued runs held during the reattach phase");
+        }));
+      },
+    });
+  }
   if (heartbeat) {
     const startupHeartbeat = heartbeat;
     trackHeartbeatSchedulerWork(timeStartupRecovery("fresh_queued_runs", async () => {
@@ -1600,6 +1616,13 @@ async function startServerWithDatabaseTeardown(
     ? registerGatewayCredentialExpiryWork(deliveryWork, app.locals.toolGateway,
       () => !isIdleTaskDrainActive() && !heartbeatSchedulerStopped && !isWarmStandby()).ready
     : app.locals.toolGateway.cleanupExpiredSessions()).catch((err: unknown) => logger.error({ err }, "startup gateway token cleanup failed"))));
+  // Provider tasks outlive calls, restarts, and deploys; polling resumes from
+  // the rows. Tool calls create tasks whether or not heartbeats are scheduled,
+  // so recovery always runs; only waking an agent needs the scheduler.
+  trackHeartbeatSchedulerWork(startupTimeline.background("mcp_tasks", () => timeStartupRecovery("mcp_tasks", () =>
+    registerMcpTaskWork(deliveryWork, app.locals.toolGateway, heartbeat,
+      () => !isIdleTaskDrainActive() && !heartbeatSchedulerStopped && !isWarmStandby()).ready)
+    .catch((err: unknown) => logger.error({ err }, "startup provider task recovery failed"))));
   trackHeartbeatSchedulerWork(startupTimeline.background("delivery_workers", () => timeStartupRecovery("delivery_workers",
     () => Promise.all([budgetEnforcementWorker, accountingWorker, fastResponseWorker, ...deliveryWorkers].map(worker => worker.ready)))));
   trackHeartbeatSchedulerWork(startupTimeline.background("github_connections",
@@ -1616,6 +1639,7 @@ async function startServerWithDatabaseTeardown(
     );
     drainHeartbeatExecutionFinalizers = () =>
       heartbeat.drainActiveRunExecutions();
+    handOffNativeRunsForShutdown = signal => heartbeat.handOffNativeRunsForShutdown(signal);
     prepareHotRestartShutdown = heartbeat.prepareHotRestartShutdown;
     const routines = routineService(db as any, { pluginWorkerManager });
     const statusCardEvaluation = statusCardEvaluationService(db as any, heartbeat);
@@ -1681,8 +1705,8 @@ async function startServerWithDatabaseTeardown(
     let lastTerminalWorkspaceSkipLogAt = 0;
     const terminalWorkspaceWorker = registerTerminalWorkspaceWork(deliveryWork, {
       ...terminalWorkspaces,
-      terminalWorkspaceWorkSettled: (hints) => {
-        terminalWorkspaces.terminalWorkspaceWorkSettled?.(hints);
+      terminalWorkspaceWorkSettled: (hints, options) => {
+        terminalWorkspaces.terminalWorkspaceWorkSettled?.(hints, options);
         gitRestorePointWorker.issuesChanged();
       },
       sweepTerminalWorkspaces: async (limit, signal, options) => {
@@ -2190,6 +2214,13 @@ async function startServerWithDatabaseTeardown(
     const shutdownStartedAt = Date.now();
     logger.info({ signal }, "shutdown signal received; starting ordered shutdown");
     eventLoopStallMonitor.stop();
+    const nativeHandOffStartedAt = Date.now();
+    const nativeHandOff = runStartHandover && handOffNativeRunsForShutdown
+      ? handOffNativeRunsForShutdown(signal).then(runIds => {
+        logger.info({ signal, runs: runIds.length, durationMs: Date.now() - nativeHandOffStartedAt },
+          "handed live native runs to the next server at shutdown start");
+      }, err => { logger.warn({ err, signal }, "early native run hand-off failed; the graceful drain hands them off"); })
+      : null;
     setStartupRecoveryPhase("draining");
     for (const client of liveEventsWebSocketServer.clients) client.close(1012, "Server restarting");
     liveEventsWebSocketServer.close();
@@ -2240,6 +2271,7 @@ async function startServerWithDatabaseTeardown(
     unregisterTerminalWorkspaceProbe?.();
     unsubscribeNativeWorkspaceSyncRetention?.();
 
+    if (nativeHandOff) await preDrain.run("native_run_hand_off", () => nativeHandOff);
     const prepareHotRestart = prepareHotRestartShutdown;
     const heartbeatShutdown = await coordinateHeartbeatSchedulerShutdown({
       signal,
@@ -2346,7 +2378,7 @@ async function startServerWithDatabaseTeardown(
         try { await appShutdown?.(); } finally {
           await runStartHandover?.stop().catch(() => {});
           registerRunStartHandover(null);
-          await stopControllerInstanceLease();
+          try { await tailscaleNetworks.close(); } finally { await stopControllerInstanceLease(); }
         }
       },
       closeHttpListener: () =>

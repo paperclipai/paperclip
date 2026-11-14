@@ -10,6 +10,7 @@ import {
   findUncheckedTests,
   LOCKED_PROVIDERS,
   PROGRAMS,
+  prepareTestPrograms,
   PROVIDER_WORKSPACE,
   RESOLVE_ARGS,
   SANDBOX_PROVIDERS,
@@ -120,6 +121,20 @@ test("providers install frozen without scripts, then relink the SDK", () => {
   assert.ok(install.args.includes("--frozen-lockfile"));
   assert.ok(install.args.includes("--ignore-scripts"));
   assert.equal(calls.linked, 1);
+});
+
+test("preparation runs on its own, and a run that skips it only checks", () => {
+  const prepared = harness();
+  assert.equal(prepareTestPrograms(prepared.options), 0);
+  assert.ok(prepared.calls.pnpm.some(({ cwd }) => cwd === path.join("/repo", PROVIDER_WORKSPACE)));
+  assert.equal(prepared.calls.linked, 1);
+  assert.deepEqual(prepared.calls.tsc, []);
+
+  const checked = harness();
+  assert.equal(typecheckTestPrograms({ ...checked.options, prepare: false }), 0);
+  assert.deepEqual(checked.calls.pnpm, []);
+  assert.equal(checked.calls.linked, 0);
+  assert.equal(checked.calls.tsc.length, 2);
 });
 
 test("a locked provider installs frozen from its own lockfile, outside any workspace", () => {

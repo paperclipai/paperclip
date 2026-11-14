@@ -80,6 +80,9 @@ pub enum AcpxProviderStateEvent {
         status: AcpxTurnStatus,
         error: Option<Value>,
     },
+    ProviderTurnStarted {
+        turn_id: String,
+    },
     Process(Value),
     Goal(Value),
     Diagnostic {

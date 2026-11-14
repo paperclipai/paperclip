@@ -1562,6 +1562,7 @@ async function prepareHeartbeatWorkspaceLocked(db: Db, input: HeartbeatWorkspace
     realizationResult = await timeWorkspace("workspace_environment_realize", () => envOrchestrator.realizeForRun({
       environment: selectedEnvironment,
       lease: activeEnvironmentLease.lease,
+      sandboxLeaseAcquisition: acquiredEnvironment.sandboxLeaseAcquisition,
       adapterType: agent.adapterType,
       companyId: agent.companyId,
       issueId: issueId ?? null,

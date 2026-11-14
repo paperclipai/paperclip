@@ -5,6 +5,7 @@ import { ApiError, api, detachInflightGets } from "@/api/client";
 import { bindAccount } from "./account-scope";
 import { hasUnverifiedSession, markCachedSession } from "./cached-session";
 import { queryKeys } from "./queryKeys";
+import { mineRevealSourcesQueryKey } from "./inbox-mine-reveal-sources";
 import { readComposerRunSettings } from "../components/task-chat/composer-run-settings";
 import { agentConnection, agentDefaultModel } from "./bulk-agent-settings";
 import { clearPersistedQueryCache, persistedQueryScope, QUERY_CACHE_ACTIVE, QUERY_CACHE_CLEARED, QUERY_CACHE_MAX_AGE, QUERY_CACHE_PREFIX, startPersistedQueryCache } from "./persisted-query-cache";
@@ -527,6 +528,20 @@ describe("persisted read cache", () => {
     expect(restored.client.getQueryData([...queryKeys.issues.detail("foreign"), "core"])).toBeUndefined();
     expect(persistedQueryScope(["agents", "company-one", "keys"], [], "alice", ["company-one"])).toBeUndefined();
     expect(persistedQueryScope(["agent-chats", "company-one", "bob"], [], "alice", ["company-one"])).toBeUndefined();
+  });
+
+  it("restores Mine's reveal sources for the same user and company only", () => {
+    const first = setup(); seed(first.client);
+    const sources = { userId: "alice", companyId: "company-one", approvals: [{ id: "approval-1", status: "pending" }], joinRequests: [], dismissals: [] };
+    first.client.setQueryData(mineRevealSourcesQueryKey("company-one", "alice"), sources);
+    first.client.setQueryData(mineRevealSourcesQueryKey("company-one", "bob"), { ...sources, userId: "bob" });
+    first.handle.flush();
+    const restored = setup(first.storage);
+    const state = restored.client.getQueryState(mineRevealSourcesQueryKey("company-one", "alice"));
+    expect(state?.data).toEqual(sources);
+    // Restored reads are marked stale, so every consumer still refreshes them.
+    expect(state?.isInvalidated).toBe(true);
+    expect(restored.client.getQueryData(mineRevealSourcesQueryKey("company-one", "bob"))).toBeUndefined();
   });
 
   it.each(["build", "expiry"])("discards snapshots after %s changes", kind => {

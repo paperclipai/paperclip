@@ -53,6 +53,12 @@ The New task form opens immediately. Load its code with the board and fill
 agent and project choices in place as their requests finish. Keep text entered
 while those requests are pending.
 
+Submitting a new task closes and clears its composer immediately. Save the
+submitted text, settings, and files separately while the request runs in the
+background. A failed save reopens that draft with an actionable error. If the
+person has started another draft, keep that draft and offer recovery for the
+failed request. A background receipt must not clear or close a later draft.
+
 ## Mobile navigation and text fields
 
 The fixed bottom navigation uses an opaque surface so scrolling content cannot
@@ -143,7 +149,16 @@ Runtime discovery must not replace the turn with a generic spinner or a
 
 A queued turn shows the same `Working` header and shimmering `Thinking` activity
 as a running turn, starting at message submission. Keep specific server holds,
-such as `Waiting for maintenance` or agent setup, visible during admission.
+such as `Waiting for maintenance`, agent setup, or another open task of the same
+routine, visible during admission. Admission normally starts a run within seconds,
+so this startup feedback lasts at most 30 seconds: a turn still queued after that
+with no named hold says `Waiting to start`, without spinner or shimmer.
+A run that waits for one of its agent's concurrency slots is a hold too: show
+`Waiting for <agent> · N slots max · P of Q in line · Configure` (the shared
+`AgentQueueWait` component) with no spinner or elapsed timer, link Configure to the
+agent's run policy, and take the place in line from the server's dispatch order.
+Task rows show a quiet `Waiting` instead of the pulsing `Live`, and live counts
+count only started runs.
 This is presentation only; queue and execution authority stay unchanged. A saved
 message that starts this queued turn stays in history, including when it reopens an older
 task. This placement is not a consumption receipt. Later follow-ups remain in

@@ -2,6 +2,7 @@ import { registerHeldPreparationResumer } from "./interrupted-preparation-hold-s
 import { registerCompletedTurnCleanupResumer } from "./native-runtime/completed-turn-cleanup-hold-settlement.js";
 import { endStorageOutageWaitOn, reportStorageOutageWaitsTo, runInOwnStorageScope } from "../storage/storage-unavailable.js";
 import { createStorageWaitNotice } from "./heartbeat/storage-wait-notice.js";
+import { createStalledQueuedRunCancel } from "./heartbeat/stalled-queued-run.js";
 import { resolveProviderApiPlacement } from "./native-runtime/provider-api-placement.js";
 import { isProcessRunAdmissionClosed } from "./heartbeat/run-admission.js";
 import { isYieldingRunStarts, refreshRunStartYieldIfStale, type RunStartHandover } from "./run-start-handover.js";
@@ -40,13 +41,13 @@ import { promptInjectionPreventionService } from "./prompt-injection-prevention.
 import { createHeartbeatAgentStatus } from "./heartbeat/agent-status.js";
 import { heartbeatExternalProvider, nativeRuntimeHasInstructionFilesystem } from "./heartbeat/external-provider.js";
 import { pendingCaseHandoffForRun, recordCaseHandoffExecutionReleased, recordLegacyCaseHandoffCleanupIntent, recordLegacyCaseHandoffCleanupVerified } from "./heartbeat/case-handoff-lifecycle.js";
-import { recordLegacyPreparationSettlement, recordLegacyProcessSettlement } from "./heartbeat/legacy-process-settlement.js";
+import { recordLegacyPreparationSettlement, recordLegacyProcessSettlement, recoverLegacyProcessSettlement } from "./heartbeat/legacy-process-settlement.js";
 import { hasStoppedLocalProcessTree, legacyAdapterNeedsLocalProcessSettlement } from "./heartbeat/process-settlement.js";
 import { dotRunnerBroker } from "./dot-runner-broker.js";
 import { withRunExecutionTiming, measureRunPhase, measureWorkspaceSyncPhase, isWorkspaceSyncDetailPhase } from "./execution-preparation-timing.js";
 import { createHeartbeatPreparationTiming } from "./heartbeat/preparation-timing.js";
 import { createHeartbeatInstructionCopyRelease, createHeartbeatInstructionWorkingCopy } from "./heartbeat/instruction-working-copy.js";
-import { AgentDirectoryPreparationDeferral, deferRunForBusyAgentDirectory, prepareWithAgentDirectoryDeferral } from "./heartbeat/agent-directory-busy.js";
+import { AgentDirectoryPreparationDeferral, deferRunForBusyAgentDirectory, prepareWithAgentDirectoryDeferral, REATTACH_AGENT_DIRECTORY_WAIT_MS } from "./heartbeat/agent-directory-busy.js";
 import { preparePredecessorRetirementFallback } from "./heartbeat/predecessor-retirement-fallback.js";
 import { prepareHeartbeatRuntimeServiceIntents, startHeartbeatRuntimeServices, recordHeartbeatAdapterRuntimeServices } from "./heartbeat/runtime-services.js";
 import { bindHeartbeatRunnerHomeMode, buildHeartbeatWorkspaceConfiguration, prepareHeartbeatExecutionConfiguration } from "./heartbeat/execution-configuration.js";
@@ -58,12 +59,13 @@ import { readRecoverableRunLog } from "./native-runtime/native-run-log-recovery.
 import { observabilitySecretValues } from "@paperclipai/adapter-utils/agent-observability";
 import { prepareHeartbeatSession, resolveHeartbeatAdapterSession } from "./heartbeat/session-preparation.js";
 import { prepareHeartbeatTaskContext } from "./heartbeat/task-context.js";
-import { selectHeartbeatEnvironment } from "./heartbeat/environment-selection.js";
+import { selectHeartbeatEnvironment, resolveSshAuthenticationBeforeRouting } from "./heartbeat/environment-selection.js";
 import { reconcileMuseNativeTerminalRun } from "./native-runtime/muse-terminal-reconciliation.js";
 import { prepareHeartbeatWorkspace, RetryWorkspaceRefused } from "./heartbeat/workspace-preparation.js";
 import { nativeRecoveryClaimRelinquished, ownNativeExecutionLeaseLapsed, releaseLapsedNativeRestartClaim } from "./native-runtime/native-execution-lease.js";
 import { executeHeartbeatRuntime, NativeSessionResumeScheduledError, NativeWorkspaceFinalizeScheduledError } from "./heartbeat/runtime-execution.js";
 import { preserveNativeFailedWorkspace } from "./native-runtime/native-failed-workspace-recovery.js";
+import { startOverdueWorkspaceRecovery } from "./workspace-recovery.js";
 import { nativeRunHasNoWorkspaceAccess } from "./workspace-restore-recovery-state.js";
 import { prepareAndSelectHeartbeatRuntime } from "./heartbeat/runtime-selection.js";
 import { createHeartbeatRunCompletion } from "./heartbeat/run-completion.js";
@@ -281,6 +283,7 @@ import {
 } from "./native-runtime/native-cancellation-request.js";
 import {
   prepareChatCompletionTurn,
+  chatCompletionAlreadyReported,
 } from "./chat-completion-delivery.js";
 
 import {
@@ -407,6 +410,8 @@ import {
 
 import { nativeChatWorkspaceCwd } from "./native-runtime/native-chat-workspace.js";
 import {
+  configuredEnvironmentProjection,
+  configuredSecretEnvironment,
   type NativeExecutionInput,
   type NativeSessionBackend,
 } from "../vendor/paperclip-runner/index.js";
@@ -646,6 +651,13 @@ const activeRunExecutionPromises = new Set<Promise<void>>();
 // can await a wake that is still before run registration. A caller that tears
 // down a shared database (a test afterEach) then cannot race a late wake.
 const activeWakeupPromises = new Set<Promise<unknown>>();
+// A native resume dispatch whose timer has fired reads and claims run state
+// before it registers an execution. Track that work too, so a drain cannot
+// return while it is still writing.
+const activeNativeResumeDispatches = new Set<Promise<void>>();
+// When each armed resume timer is due, so a drain can tell a dispatch that is
+// already due (pending work) from one scheduled for later.
+const nativeSessionResumeDispatchDueAt = new WeakMap<object, number>();
 const nativeSessionResumeDispatchTimers = new Map<
   string,
   ReturnType<typeof setTimeout>
@@ -1011,6 +1023,10 @@ export function heartbeatService(
   const budgetHooks = {
     cancelWorkForScope: cancelBudgetScopeWork,
   };
+  const recoverLegacyAccountingReceipt = (companyId: string, runId: string) =>
+    recoverLegacyProcessSettlement(db, companyId, runId, id =>
+      !activeRunExecutions.has(id) && !runningProcesses.has(id) && !adapterExecutionControls.has(id)
+      && !processRunCancellationSettlements.has(id) && !failedProcessRunCancellations.has(id));
   const reconcileCostAccounting = createCostAccountingReconciler(db, budgetHooks, async () => {
     const outcomes = await Promise.allSettled([
       decisionModelService(db, { budgetHooks }).recoverInterrupted(),
@@ -1025,6 +1041,8 @@ export function heartbeatService(
     liveRunExecutions,
     // Bound at call time: the heartbeat recovery module is created below.
     settleLostRunProcess: scope => recoverActiveExecutions(scope),
+    startSavedWorkRecovery: source => startOverdueWorkspaceRecovery(db, environmentRuntime, resumeRemoteStopComments, source),
+    cancelStalledQueuedRun: createStalledQueuedRunCancel({ setRunStatusFromLive, setWakeupStatus, appendRunEvent, releaseIssueExecutionAndPromote }),
     settleExplicitContinuationRetry: releaseIssueExecutionAndPromote,
     scheduleRecoveryRetry: async (runId, outcome) => {
       const [run] = await db
@@ -1093,6 +1111,7 @@ export function heartbeatService(
     reapOrphanedRuns,
     sweepOrphanedActiveLeases,
     drainRunningRunsForShutdown,
+    handOffNativeRunsForShutdown,
     registerScheduledRetryCancellationWork,
     registerRetainedNativeSessionCleanupWork,
     registerNativeWorkspaceFinalizationWork,
@@ -1771,6 +1790,24 @@ export function heartbeatService(
     return recovery.buildRunOutputSilence(run, now);
   }
 
+  async function buildRunOutputSilences(
+    runs: ReadonlyArray<Pick<
+      typeof heartbeatRuns.$inferSelect,
+      | "id"
+      | "companyId"
+      | "status"
+      | "lastOutputAt"
+      | "lastOutputSeq"
+      | "lastOutputStream"
+      | "processStartedAt"
+      | "startedAt"
+      | "createdAt"
+    >>,
+    now = new Date(),
+  ) {
+    return recovery.buildRunOutputSilences(runs, now);
+  }
+
   async function reconcileResolvedDependencyWakes(opts?: Parameters<typeof recovery.reconcileResolvedDependencyWakeBackstop>[0]) {
     return recovery.reconcileResolvedDependencyWakeBackstop(opts);
   }
@@ -1793,12 +1830,23 @@ export function heartbeatService(
       clearTimeout(timer);
     }
     nativeSessionResumeDispatchTimers.clear();
-    while (
-      activeWakeupPromises.size > 0 ||
-      activeRunExecutionPromises.size > 0
-    ) {
-      await Promise.allSettled([...activeWakeupPromises]);
-      await Promise.all([...activeRunExecutionPromises]);
+    const resumeDispatchDue = () => [...nativeSessionResumeDispatchTimers.values()]
+      .some((timer) => (nativeSessionResumeDispatchDueAt.get(timer) ?? Infinity) <= Date.now());
+    for (;;) {
+      if (
+        activeWakeupPromises.size > 0 ||
+        activeNativeResumeDispatches.size > 0 ||
+        activeRunExecutionPromises.size > 0
+      ) {
+        await Promise.allSettled([...activeWakeupPromises]);
+        await Promise.allSettled([...activeNativeResumeDispatches]);
+        await Promise.all([...activeRunExecutionPromises]);
+        continue;
+      }
+      // Work that settled during the drain can arm an immediate resume
+      // dispatch. It is pending work: let it fire, then drain what it starts.
+      if (!resumeDispatchDue()) return;
+      await new Promise<void>((resolve) => setTimeout(resolve, 0));
     }
   }
 
@@ -1817,7 +1865,7 @@ export function heartbeatService(
     const timer = setTimeout(() => {
       if (nativeSessionResumeDispatchTimers.get(runId) !== timer) return;
       nativeSessionResumeDispatchTimers.delete(runId);
-      void (async () => {
+      const dispatchWork: Promise<void> = (async () => {
         if ((await getSchedulingSuppression()).suppressed) return;
         if (nativeRecoveryDeadlines.get(runId) !== pending) return;
         nativeRecoveryDeadlines.delete(runId);
@@ -1854,8 +1902,11 @@ export function heartbeatService(
           "failed to dispatch scheduled native session resume",
         );
       });
+      activeNativeResumeDispatches.add(dispatchWork);
+      void dispatchWork.finally(() => activeNativeResumeDispatches.delete(dispatchWork));
     }, delayMs);
     timer.unref?.();
+    nativeSessionResumeDispatchDueAt.set(timer, Date.now() + delayMs);
     nativeSessionResumeDispatchTimers.set(runId, timer);
   }
 
@@ -2195,6 +2246,14 @@ export function heartbeatService(
         conversation: isConversation(conversationIdentity),
       })) return;
       run = await timePreparation("chat_completion", () => prepareChatCompletionTurn(db, run));
+      if (chatCompletionAlreadyReported(run)) {
+        // An earlier reply in this conversation already reported each completion.
+        await setRunStatus(run.id, "succeeded", { finishedAt: new Date(), resultJson: { chatCompletionAlreadyReported: true }, issueCommentStatus: "not_applicable" });
+        await setWakeupStatus(run.wakeupRequestId, "completed", { finishedAt: new Date() });
+        await releaseIssueExecutionAndPromote((await getRun(run.id))!, { suppressImmediateRecovery: true });
+        await finalizeAgentStatus(agent.id, "succeeded");
+        return;
+      }
       const preparedConversation = await timePreparation("conversation", () => prepareConversationTurn(db, run));
       run = { ...run, contextSnapshot: preparedConversation.context };
       if (preparedConversation.reset) {
@@ -2680,8 +2739,17 @@ export function heartbeatService(
         if ("homeMode" in homeConfig) config = { ...config, homeMode: homeConfig.homeMode };
       }
       const persistedRouterPoolId = routerHasPersistedInput ? readNonEmptyString(parseObject(context.aiRouterSelection).poolId) : null;
+      const sshAuthentication = routerHasPersistedInput ? null : await resolveSshAuthenticationBeforeRouting({
+        agentDefaultEnvironmentId: agent.defaultEnvironmentId,
+        lowTrustIssueEnvironmentId: trustPreset.kind === "low_trust_review"
+          ? parseIssueExecutionWorkspaceSettings(issueContext?.executionWorkspaceSettings, { includeEnvironmentId: true })?.environmentId ?? null : null,
+        environmentsSvc, instanceSettings,
+      });
+      if (agent.adapterType === "paperclip_runner" && sshAuthentication) {
+        config = { ...config, homeMode: sshAuthentication === "host" ? "preconfigured" : "isolated" };
+      }
       const preconfiguredHome = agent.adapterType === "paperclip_runner" && config.homeMode === "preconfigured";
-      const requestedAiBinding = preconfiguredHome ? undefined : persistedRouterPoolId ? { mode: "router" as const, connectionId: persistedRouterPoolId } : agent.runtimeConfig?.aiConnection ? aiRuntimeConnectionBindingSchema.parse(agent.runtimeConfig.aiConnection) : undefined;
+      const requestedAiBinding = preconfiguredHome || sshAuthentication === "host" ? undefined : persistedRouterPoolId ? { mode: "router" as const, connectionId: persistedRouterPoolId } : agent.runtimeConfig?.aiConnection ? aiRuntimeConnectionBindingSchema.parse(agent.runtimeConfig.aiConnection) : undefined;
       let aiBinding = requestedAiBinding?.mode === "router" ? undefined : requestedAiBinding;
       const originalAiIssueOverrides = issueAssigneeOverrides;
       if (requestedAiBinding?.mode === "router") {
@@ -3354,6 +3422,7 @@ export function heartbeatService(
         appendRunEvent, getCurrentUserRedactionOptions,
         assertWriterAuthority: createRunLogWriterAuthority(db, run, runOptions.nativeLeaseOwner),
         runtimeLogSecretValues: observabilitySecretValues(observability),
+        deferNativeLogRecovery: runOptions.nativeRestartRecovery?.kind === "reattach_remote_runner",
         signal: executionControl.controller.signal,
       });
       const goalCheckpointSession: {
@@ -3576,6 +3645,9 @@ export function heartbeatService(
             runtimeConfig,
             runtimeSkillEntries,
             runScopedMentionedSkillKeys,
+            configuredSecretNames: configuredSecretEnvironment(
+              configuredEnvironmentProjection(configuredTaskEnvironment, secretKeys),
+            ).map(secret => secret.name),
             instructionCopy: preparedInstructions.instructionCopy,
             agentIdentity,
             issueAssigneeOverrides,
@@ -3601,7 +3673,8 @@ export function heartbeatService(
         }, {
           measure: timePreparation,
           prepareInstructions: async nativeLifecyclePolicy => {
-            runtimeConfig = await prepareWithAgentDirectoryDeferral(() => preparedInstructions.prepare({ runtimeConfig, nativeRuntimeResolution, hasInstructionFilesystem, nativeLifecyclePolicy }));
+            runtimeConfig = await prepareWithAgentDirectoryDeferral(() => preparedInstructions.prepare({ runtimeConfig, nativeRuntimeResolution, hasInstructionFilesystem, nativeLifecyclePolicy }),
+              { waitMs: runOptions.nativeRestartRecovery ? REATTACH_AGENT_DIRECTORY_WAIT_MS : 0 });
             return { runtimeConfig, instructionCopy: preparedInstructions.instructionCopy };
           },
         });
@@ -3644,6 +3717,7 @@ export function heartbeatService(
             resolvedConfig,
             resolvedInstanceSettings,
             configuredTaskEnvironment,
+            secretKeys,
             adapterEnv,
             agentIdentity,
             observability,
@@ -4279,6 +4353,7 @@ export function heartbeatService(
       } finally {
         controllerLease.stop();
         activeRunExecutions.delete(run.id);
+        heartbeatQueue.releaseClaimBackoffsForTask(run);
         if (restartClaimLapsed || detachedWithoutHandoff) scheduleNativeSessionResumeDispatch(run.id, new Date(), "restart");
         // A failed owned Stop remains visible until this exact executor settles,
         // including a graceful exit result arriving after the cancellation error.
@@ -4388,6 +4463,7 @@ export function heartbeatService(
   }
 
   return {
+    recoverLegacyAccountingReceipt,
     stopInvocationsForAgents,
     waitForRunExecutionDrain: async (
       runId: string,
@@ -4611,7 +4687,9 @@ export function heartbeatService(
     // gate on suppression should prefer this over the env-only resolver.
     resolveSchedulingSuppression: getSchedulingSuppression,
     drainRunningRunsForShutdown,
+    handOffNativeRunsForShutdown,
     drainActiveRunExecutions,
+    scheduleNativeSessionResumeDispatch,
     startTaskDrain,
     stopTaskDrain,
     getTaskDrainStatus,
@@ -4712,6 +4790,7 @@ export function heartbeatService(
     reconcileCostAccounting,
 
     buildRunOutputSilence,
+    buildRunOutputSilences,
 
     tickTimers,
     tickAgentTimers,

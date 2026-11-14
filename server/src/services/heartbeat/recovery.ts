@@ -7,6 +7,7 @@ import { legacyWorkspaceRecoveryNotMigrated } from "../legacy-workspace-recovery
 import { pendingFailedNativeRetryCancellationCondition } from "../native-runtime/native-cancellation-request.js";
 import { notifyLiveRunRecovery } from "../live-run-recovery-notifications.js";
 import { registerLiveRecoveryWork } from "./live-recovery-work.js";
+import { noteReattachRunsClaimed, notifyReattachHandOver } from "./reattach-phase.js";
 import { NATIVE_RETAINED_OWNER_WAIT } from "../native-runtime/native-controller-recovery.js";
 import { nativeEnvironmentSettlementDisposition, nativeEnvironmentSettlementWork } from "../native-runtime/native-environment-settlement-work.js";
 import { nativeWorkspaceFinalizationWork } from "../native-runtime/native-workspace-finalization-work.js";
@@ -32,6 +33,7 @@ import { preserveWorkspaceRestoreRecoveryMetadataSql } from "../legacy-workspace
 import { preserveCancelledNativeWorkspaces, preserveOrphanedNativeWorkspace } from "../native-runtime/native-failed-workspace-recovery.js";
 import { nativeWorkspaceExportPendingForLease, pendingNativeWorkspaceFinalizationCondition } from "../native-runtime/native-workspace-finalization-state.js";
 import { expireAbandonedWorkspaceFileHoldsWhenDue, parkAbandonedWorkspaceFilesLease, recordAbandonedWorkspaceFilesRemoved } from "../remote-workspace-abandoned-files-hold.js";
+import { stopWarmSandboxesPastWindowWhenDue } from "../warm-sandbox-expiry.js";
 import { CHAT_COMPLETION_WAKE_REASON } from "../chat-completion-delivery.js";
 import {
   hasStopOnlyCleanup,
@@ -375,6 +377,11 @@ function readNonEmptyString(value: unknown): string | null {
 
 /** Restart recovery shares the service lifecycle callbacks and execution ownership. */
 export function createHeartbeatRecovery(db: Db, dependencies: HeartbeatRecoveryDependencies) {
+  const runsHandedOffByThisController = new Set<string>();
+  const markHandedOffByThisController = (runId: string) => {
+    runsHandedOffByThisController.add(runId);
+    markRunHandedOffForShutdown(runId);
+  };
   const {
     enterShutdown,
     scheduleBoundedRetryForRun,
@@ -607,7 +614,7 @@ export function createHeartbeatRecovery(db: Db, dependencies: HeartbeatRecoveryD
           isNativeSessionId(run.nativeSessionId),
       )
       .map(({ run }) => run.id);
-    for (const runId of nativeRunIds) markRunHandedOffForShutdown(runId);
+    for (const runId of nativeRunIds) markHandedOffByThisController(runId);
     const detachedNativeSessions =
       await detachNativeSessionsForRestart(nativeRunIds);
 
@@ -1019,6 +1026,7 @@ export function createHeartbeatRecovery(db: Db, dependencies: HeartbeatRecoveryD
         db,
         liveRunExecutions: activeRunExecutions,
         handedOffForShutdown: isRunHandedOffForShutdown,
+        handedOffByThisController: runId => runsHandedOffByThisController.has(runId),
         runIds,
         restartKind,
         recoveryRequestId: intent?.recoveryRequestId ?? null,
@@ -1041,6 +1049,7 @@ export function createHeartbeatRecovery(db: Db, dependencies: HeartbeatRecoveryD
           disposition.kind === "resume_dead_runner" ||
           disposition.kind === "bootstrap_incomplete",
       );
+      if (options?.trigger !== "same_run_retry") noteReattachRunsClaimed(claims.map(claim => claim.runId));
       for (const disposition of dispositions) {
         if ((disposition.kind === "awaiting_evidence" || disposition.kind === "blocked") && disposition.retryAt) {
           scheduleNativeSessionResumeDispatch(disposition.runId, disposition.retryAt, "restart");
@@ -1149,6 +1158,113 @@ export function createHeartbeatRecovery(db: Db, dependencies: HeartbeatRecoveryD
     }
   }
 
+  const nativeRunsHandedOffEarly = new Set<string>();
+
+  async function suspendNativeRunForShutdown(run: typeof heartbeatRuns.$inferSelect, signal: "SIGINT" | "SIGTERM",
+    now: Date, controllerBootId: string) {
+    const [owner] = await db.select({ bootId: nativeRunFinalizations.controllerBootId })
+      .from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, run.id));
+    if (owner?.bootId && owner.bootId !== controllerBootId) return false;
+    // A graceful shutdown relinquishes controller authority just like a
+    // hot restart. Leaving the old event consumer attached lets its
+    // finalizer interrupt/suspend Claude while the next server is adopting
+    // the same turn.
+    markHandedOffByThisController(run.id);
+    await detachNativeSessionsForRestart([run.id]);
+    const recoveryHistoryEntry = JSON.stringify({
+      at: now.toISOString(),
+      restartKind: "graceful",
+      disposition: "restart_suspended",
+      reason: signal,
+      processPid: run.processPid,
+      processStartedAt: run.processStartedAt?.toISOString() ?? null,
+    });
+    // An accepted result needs finalization, not a runner reattach. Its
+    // execution lease must still be released: the detached executor will
+    // not finalize, and the next controller's reconciler skips leased rows.
+    // A finalizer lease belongs to finalization already in progress here.
+    const released = await db.transaction(async tx => {
+      await notifyLiveRunRecovery(tx, { companyId: run.companyId, runId: run.id });
+      await notifyReattachHandOver(tx, run.id);
+      return tx.update(nativeRunFinalizations).set({
+        leaseExpiresAt: sql`case when ${nativeRunFinalizations.resultId} is not null
+          and ${nativeRunFinalizations.leaseOwner} like 'native-finalizer:%'
+          then ${nativeRunFinalizations.leaseExpiresAt} else ${now.toISOString()}::timestamptz end`,
+        recoveryState: sql`case when ${nativeRunFinalizations.resultId} is null
+          then 'awaiting_runner_reattach' else ${nativeRunFinalizations.recoveryState} end`,
+        recoveryHistory: sql`(
+          select coalesce(jsonb_agg(item order by ordinal), '[]'::jsonb)
+          from jsonb_array_elements(
+            coalesce(${nativeRunFinalizations.recoveryHistory}, '[]'::jsonb)
+            || jsonb_build_array(${recoveryHistoryEntry}::jsonb)
+          ) with ordinality as history(item, ordinal)
+          where ordinal > greatest(
+            jsonb_array_length(
+              coalesce(${nativeRunFinalizations.recoveryHistory}, '[]'::jsonb)
+              || jsonb_build_array(${recoveryHistoryEntry}::jsonb)
+            ) - 20,
+            0
+          )
+        )`,
+        updatedAt: now,
+      })
+      .where(
+        and(
+          eq(nativeRunFinalizations.runId, run.id),
+          owner?.bootId ? eq(nativeRunFinalizations.controllerBootId, owner.bootId)
+            : isNull(nativeRunFinalizations.controllerBootId),
+        ),
+      )
+      .returning({ resultId: nativeRunFinalizations.resultId, leaseOwner: nativeRunFinalizations.leaseOwner });
+    });
+    const resultAccepted = Boolean(released[0]?.resultId);
+    const finalizerHeld = resultAccepted && Boolean(released[0]?.leaseOwner?.startsWith("native-finalizer:"));
+    await appendRunEvent(run, {
+      eventType: "native.recovery.transition",
+      stream: "system",
+      level: "info",
+      message: finalizerHeld
+        ? "Server shutdown kept the in-progress finalizer lease of the accepted native result"
+        : resultAccepted
+          ? "Server shutdown released the accepted native result for finalization by the next controller"
+          : "Server shutdown suspended native controller ownership without cancelling provider work",
+      payload: {
+        restartKind: "graceful",
+        signal,
+        runnerDisposition: finalizerHeld ? "finalizer_in_progress"
+          : resultAccepted ? "awaiting_result_finalization" : "awaiting_runner_reattach",
+        processPid: run.processPid,
+        processGroupId: run.processGroupId,
+        processStartedAt: run.processStartedAt?.toISOString() ?? null,
+        retryRunCreated: false,
+      },
+    });
+    return true;
+  }
+
+  async function handOffNativeRunsForShutdown(signal: "SIGINT" | "SIGTERM", now = new Date()) {
+    const intent = await readHotRestartIntent().catch(() => null);
+    if (intent && !intent.drainRequired && shouldHonorHotRestartIntentForProcess(intent)) return [];
+    const nativeController = await currentNativeControllerIdentity();
+    const liveRuns = await db.select({ run: heartbeatRuns }).from(heartbeatRuns)
+      .innerJoin(agents, eq(heartbeatRuns.agentId, agents.id))
+      .where(and(eq(heartbeatRuns.status, "running"), eq(heartbeatRuns.runtimeMode, "native"),
+        eq(agents.adapterType, "paperclip_runner")));
+    const handedOff: string[] = [];
+    await Promise.allSettled(liveRuns.map(async ({ run }) => {
+      if (isNativeRunnerOwnershipHeld(run) || nativeRunsHandedOffEarly.has(run.id)) return;
+      nativeRunsHandedOffEarly.add(run.id);
+      try {
+        if (await suspendNativeRunForShutdown(run, signal, now, nativeController.bootId)) handedOff.push(run.id);
+        else nativeRunsHandedOffEarly.delete(run.id);
+      } catch (error) {
+        nativeRunsHandedOffEarly.delete(run.id);
+        logger.warn({ err: error, runId: run.id }, "early native run hand-off failed; the shutdown drain retries it");
+      }
+    }));
+    return handedOff;
+  }
+
   async function drainRunningRunsForShutdown(
     signal: "SIGINT" | "SIGTERM",
     now = new Date(),
@@ -1195,89 +1311,14 @@ export function createHeartbeatRecovery(db: Db, dependencies: HeartbeatRecoveryD
         run.runtimeMode === "native" &&
         agent.adapterType === "paperclip_runner"
       ) {
-        const [owner] = await db.select({ bootId: nativeRunFinalizations.controllerBootId })
-          .from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, run.id));
-        if (owner?.bootId && owner.bootId !== nativeController.bootId) return;
-        // A graceful shutdown relinquishes controller authority just like a
-        // hot restart. Leaving the old event consumer attached lets its
-        // finalizer interrupt/suspend Claude while the next server is adopting
-        // the same turn.
-        markRunHandedOffForShutdown(run.id);
-        await detachNativeSessionsForRestart([run.id]);
-        const recoveryHistoryEntry = JSON.stringify({
-          at: now.toISOString(),
-          restartKind: "graceful",
-          disposition: "restart_suspended",
-          reason: signal,
-          processPid: run.processPid,
-          processStartedAt: run.processStartedAt?.toISOString() ?? null,
-        });
-        // An accepted result needs finalization, not a runner reattach. Its
-        // execution lease must still be released: the detached executor will
-        // not finalize, and the next controller's reconciler skips leased rows.
-        // A finalizer lease belongs to finalization already in progress here.
-        const released = await db.transaction(async tx => {
-          await notifyLiveRunRecovery(tx, { companyId: run.companyId, runId: run.id });
-          return tx.update(nativeRunFinalizations).set({
-            leaseExpiresAt: sql`case when ${nativeRunFinalizations.resultId} is not null
-              and ${nativeRunFinalizations.leaseOwner} like 'native-finalizer:%'
-              then ${nativeRunFinalizations.leaseExpiresAt} else ${now.toISOString()}::timestamptz end`,
-            recoveryState: sql`case when ${nativeRunFinalizations.resultId} is null
-              then 'awaiting_runner_reattach' else ${nativeRunFinalizations.recoveryState} end`,
-            recoveryHistory: sql`(
-              select coalesce(jsonb_agg(item order by ordinal), '[]'::jsonb)
-              from jsonb_array_elements(
-                coalesce(${nativeRunFinalizations.recoveryHistory}, '[]'::jsonb)
-                || jsonb_build_array(${recoveryHistoryEntry}::jsonb)
-              ) with ordinality as history(item, ordinal)
-              where ordinal > greatest(
-                jsonb_array_length(
-                  coalesce(${nativeRunFinalizations.recoveryHistory}, '[]'::jsonb)
-                  || jsonb_build_array(${recoveryHistoryEntry}::jsonb)
-                ) - 20,
-                0
-              )
-            )`,
-            updatedAt: now,
-          })
-          .where(
-            and(
-              eq(nativeRunFinalizations.runId, run.id),
-              owner?.bootId ? eq(nativeRunFinalizations.controllerBootId, owner.bootId)
-                : isNull(nativeRunFinalizations.controllerBootId),
-            ),
-          )
-          .returning({ resultId: nativeRunFinalizations.resultId, leaseOwner: nativeRunFinalizations.leaseOwner });
-        });
-        const resultAccepted = Boolean(released[0]?.resultId);
-        const finalizerHeld = resultAccepted && Boolean(released[0]?.leaseOwner?.startsWith("native-finalizer:"));
-        await appendRunEvent(run, {
-          eventType: "native.recovery.transition",
-          stream: "system",
-          level: "info",
-          message: finalizerHeld
-            ? "Server shutdown kept the in-progress finalizer lease of the accepted native result"
-            : resultAccepted
-              ? "Server shutdown released the accepted native result for finalization by the next controller"
-              : "Server shutdown suspended native controller ownership without cancelling provider work",
-          payload: {
-            restartKind: "graceful",
-            signal,
-            runnerDisposition: finalizerHeld ? "finalizer_in_progress"
-              : resultAccepted ? "awaiting_result_finalization" : "awaiting_runner_reattach",
-            processPid: run.processPid,
-            processGroupId: run.processGroupId,
-            processStartedAt: run.processStartedAt?.toISOString() ?? null,
-            retryRunCreated: false,
-          },
-        });
-        restartSuspendedRunIds.push(run.id);
+        if (nativeRunsHandedOffEarly.has(run.id)
+          || await suspendNativeRunForShutdown(run, signal, now, nativeController.bootId)) restartSuspendedRunIds.push(run.id);
         return;
       }
       if (agent.adapterType === "paperclip_runner" && run.runtimeMode === "legacy" && run.scopeKind === "issue" &&
           run.issueId && run.executionStage === "preparing" && run.controllerBootId === legacyControllerBootId &&
           await handoffLegacyControllerPreparation(db, run, portableTaskPreparationLeaseId(db, run),
-            () => markRunHandedOffForShutdown(run.id))) {
+            () => markHandedOffByThisController(run.id))) {
         restartSuspendedRunIds.push(run.id);
         return;
       }
@@ -1750,6 +1791,11 @@ export function createHeartbeatRecovery(db: Db, dependencies: HeartbeatRecoveryD
 
     if (!manualRetry) await expireAbandonedWorkspaceFileHoldsWhenDue(db).catch(() => {
       logger.warn({ errorKind: "abandoned_workspace_files_expiry_failed" }, "abandoned workspace file expiry failed; a later sweep retries");
+    });
+    // A warm sandbox whose warm window ended is handed to the stop-only cleanup
+    // here, so the rows read below already include its first stop.
+    if (!manualRetry) await stopWarmSandboxesPastWindowWhenDue(db).catch(() => {
+      logger.warn({ errorKind: "warm_sandbox_expiry_failed" }, "warm sandbox expiry failed; a later sweep retries");
     });
 
     const rows = await db
@@ -3094,5 +3140,6 @@ export function createHeartbeatRecovery(db: Db, dependencies: HeartbeatRecoveryD
     recoverActiveExecutions,
     sweepOrphanedActiveLeases,
     drainRunningRunsForShutdown,
+    handOffNativeRunsForShutdown,
   };
 }

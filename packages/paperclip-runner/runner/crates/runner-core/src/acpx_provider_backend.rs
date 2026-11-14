@@ -43,6 +43,8 @@ use crate::qualified_launch::{verify_executable_launch_artifact, verify_launch_a
 
 #[path = "acpx_park_preparation.rs"]
 mod park_preparation;
+#[path = "acpx_provider_turn_wait.rs"]
+mod provider_turn_wait;
 
 fn bounded_turn_timing(response: &Value, elapsed: Duration) -> Value {
     let mut receipt = serde_json::Map::new();
@@ -639,6 +641,8 @@ struct AcpxDurableState {
     /// clears it and resumes the saved session. Written only while set.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     turn_end_restart_failed_run: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    provider_turn_wait: Option<provider_turn_wait::AcpxProviderTurnWait>,
 }
 
 /// The saved launch names the same executable and sidecar files as this
@@ -719,6 +723,7 @@ impl AcpxDurableState {
             open_semantic_calls: BTreeSet::new(),
             retired_semantic_calls: BTreeSet::new(),
             turn_end_restart_failed_run: None,
+            provider_turn_wait: None,
         }
     }
 
@@ -806,6 +811,10 @@ impl AcpxDurableState {
                 .turn_end_restart_failed_run
                 .as_ref()
                 .is_some_and(|run_id| *run_id != self.descriptor.run_id)
+            || self
+                .provider_turn_wait
+                .as_ref()
+                .is_some_and(|wait| !wait.is_consistent(self))
         {
             return Err(DurableRunnerError::invalid(
                 "ACPX durable provider state is malformed or inconsistent",
@@ -1062,6 +1071,7 @@ pub struct AcpxCommandExecutor {
     failed_turn_end_restart: Option<String>,
     /// The failed turn-end restart's cause, until the Runner records it.
     unreported_turn_end_restart_failure: Option<String>,
+    turn_accepts_provider_turns: bool,
 }
 
 // The durable command's turn and the live provider callback have separate IDs.
@@ -1103,6 +1113,7 @@ impl AcpxCommandExecutor {
             recovery_pending_effects: None,
             failed_turn_end_restart: None,
             unreported_turn_end_restart_failure: None,
+            turn_accepts_provider_turns: false,
             restore_error: None,
             persistence_error: None,
             #[cfg(test)]
@@ -1315,6 +1326,14 @@ impl AcpxCommandExecutor {
     fn restore_session_if_needed(&mut self) -> Result<(), DurableRunnerError> {
         if self.session.is_some() {
             return Ok(());
+        }
+        if self.awaiting_provider_turn() {
+            let same_run = self
+                .state
+                .as_ref()
+                .is_some_and(|state| state.descriptor.run_id == self.context.run_id);
+            self.end_provider_turn_wait(same_run)?;
+            self.save_state()?;
         }
         let Some(state) = self.state.as_ref() else {
             return Ok(());
@@ -1626,6 +1645,9 @@ impl AcpxCommandExecutor {
 
     fn save_state(&mut self) -> Result<(), DurableRunnerError> {
         self.ensure_persistence_healthy()?;
+        if let Some(state) = self.state.as_mut() {
+            state.leave_finished_provider_turn_wait()?;
+        }
         let result = self
             .state
             .as_ref()
@@ -1897,6 +1919,7 @@ impl AcpxCommandExecutor {
                 "run.attach requires the same settled ACPX provider profile and session",
             ));
         }
+        let different_run = state.descriptor.run_id != attachment_context.run_id;
         if !self.rebind_prepared_session(&descriptor, &tool_set, next_candidate.is_some()) {
             if let Some(session) = self.session.as_mut() {
                 session
@@ -1927,6 +1950,11 @@ impl AcpxCommandExecutor {
         state.semantic_result = None;
         state.pending_events.clear();
         state.lifecycle = "suspended".to_owned();
+        let ended_wait = if different_run {
+            state.provider_turn_wait.take()
+        } else {
+            None
+        };
         // A new run starts a fresh provider generation; the previous run's
         // failed turn-end restart no longer applies to it. A same-run attach
         // keeps the restriction.
@@ -1945,6 +1973,11 @@ impl AcpxCommandExecutor {
         };
         if saved.is_ok() && clears_turn_end_restart_failure {
             self.failed_turn_end_restart = None;
+        }
+        if let (true, Some(wait), Some(session)) =
+            (saved.is_ok(), ended_wait.as_ref(), self.session.as_mut())
+        {
+            session.disarm_provider_turn(&wait.turn_id);
         }
         saved
     }
@@ -2237,12 +2270,13 @@ impl AcpxCommandExecutor {
                 error
             });
         }
-        let (provider_process_will_be_replaced, previous_process_id) = self
+        let previous_process_id = self
             .session
             .as_ref()
-            .map(|session| match session.restarted_after_turn_from() {
-                Some(process_id) => (true, process_id),
-                None => (session.generation_has_run_turn(), session.process_id()),
+            .map(|session| {
+                session
+                    .restarted_after_turn_from()
+                    .unwrap_or_else(|| session.process_id())
             })
             .expect("ACPX session exists after availability check");
         {
@@ -2270,6 +2304,8 @@ impl AcpxCommandExecutor {
             .map(|state| PathBuf::from(&state.descriptor.cwd))
             .expect("ACPX state exists before turn start");
         let measure = payload.get("performance").and_then(Value::as_bool) == Some(true);
+        self.turn_accepts_provider_turns =
+            payload.get("providerStartedTurns").and_then(Value::as_bool) == Some(true);
         let timing_started = std::time::Instant::now();
         let start_result = self
             .session
@@ -2370,12 +2406,12 @@ impl AcpxCommandExecutor {
             json!({"sessionGoals": state.goal_projection["sessionGoals"], "turnControls":state.turn_controls})
         });
         self.save_state()?;
-        let mut events = Vec::with_capacity(if provider_process_will_be_replaced {
-            2
-        } else {
-            1
-        });
-        if provider_process_will_be_replaced {
+        let provider_process_was_replaced = self
+            .session
+            .as_ref()
+            .is_some_and(AcpxProviderSession::turn_start_replaced_provider);
+        let mut events = Vec::with_capacity(if provider_process_was_replaced { 2 } else { 1 });
+        if provider_process_was_replaced {
             let session = self
                 .session
                 .as_ref()
@@ -2506,10 +2542,7 @@ impl AcpxCommandExecutor {
             .as_ref()
             .and_then(|state| state.active_turn_id.clone());
         let Some(turn_id) = turn_id else {
-            return Ok(CommandExecution::result(json!({
-                "status": "already_settled",
-                "reason": reason,
-            })));
+            return self.settled_without_turn(reason);
         };
         self.session
             .as_mut()
@@ -2540,10 +2573,7 @@ impl AcpxCommandExecutor {
                 .as_ref()
                 .is_some_and(|state| state.descriptor.agent == "pi");
         if turn_id.is_none() && !stop_idle_pi {
-            return Ok(CommandExecution::result(json!({
-                "status": "already_settled",
-                "reason": reason,
-            })));
+            return self.settled_without_turn(reason);
         }
         let provider_lifetime_fence_candidates = {
             let session = self
@@ -2921,6 +2951,9 @@ impl AcpxCommandExecutor {
                         self.state
                             .as_ref()
                             .and_then(|state| state.goal_source_revision),
+                        self.state
+                            .as_ref()
+                            .is_some_and(|state| state.provider_turn_wait.is_some()),
                     );
                 let events = match events {
                     Ok(events) => events,
@@ -2956,6 +2989,25 @@ impl AcpxCommandExecutor {
                 received = true;
                 let mut provider_turn_settled = false;
                 for event in events {
+                    if let crate::acpx_provider_state::AcpxProviderStateEvent::ProviderTurnStarted {
+                    turn_id,
+                } = &event
+                {
+                    let state = self
+                        .state
+                        .as_mut()
+                        .expect("ACPX state remains available while polling");
+                    if state.lifecycle != "session_open" || state.active_turn_id.is_some() {
+                        return Err(DurableRunnerError::invalid(
+                            "ACPX provider turn started outside an open idle session",
+                        ));
+                    }
+                    state.active_turn_id = Some(turn_id.clone());
+                    state.attempted_turn_controls.clear();
+                    state.semantic_result = None;
+                    state.lifecycle = "turn_active".to_owned();
+                    self.context.provider_turn_id = Some(turn_id.clone());
+                }
                     let provider_process_lost = matches!(
                         &event,
                         crate::acpx_provider_state::AcpxProviderStateEvent::TurnTerminal {
@@ -2993,10 +3045,16 @@ impl AcpxCommandExecutor {
                             })?;
                         }
                     }
+                    let provider_lost = matches!(
+                        &event,
+                        crate::acpx_provider_state::AcpxProviderStateEvent::Diagnostic { code, .. }
+                            if code == crate::generated_acpx_sidecar_contract::GENERATED_ACPX_PROVIDER_TURN_LOST_CODE
+                    );
                     let state = self
                         .state
                         .as_mut()
                         .expect("ACPX state remains available while polling");
+                    let mut accepted = Vec::with_capacity(normalized.len());
                     for mut event in normalized {
                         if matches!(
                             event.event_type.as_str(),
@@ -3019,12 +3077,10 @@ impl AcpxCommandExecutor {
                         if event.event_type == "run.result.proposed" {
                             state.semantic_result = Some(event.payload.clone());
                         }
-                        if state.pending_events.len() > batch_start {
-                            state.push_streaming(event)?;
-                        } else {
-                            state.push(event)?;
-                        }
+                        accepted.push(event);
                     }
+                    let turn_ended = terminal.is_some();
+                    let mut run_terminal = None;
                     if let Some(event_type) = terminal {
                         state.active_turn_id = None;
                         state.provider_exit_unconfirmed |= provider_process_lost;
@@ -3042,15 +3098,12 @@ impl AcpxCommandExecutor {
                         provider_turn_settled = true;
                         // An ACP goal has session lifetime, not prompt lifetime.
                         // Out-of-prompt goal updates remain observable after quiescence.
-                        if !provider_process_lost
+                        let goal_continues = !provider_process_lost
                             && state
                                 .goal_projection
                                 .pointer("/goal/status")
                                 .and_then(Value::as_str)
-                                == Some("active")
-                        {
-                            continue;
-                        }
+                                == Some("active");
                         let (turn_terminal_state, status) = match event_type.as_str() {
                             "turn.completed" => ("completed", "succeeded"),
                             "turn.cancelled" => ("cancelled", "cancelled"),
@@ -3069,18 +3122,20 @@ impl AcpxCommandExecutor {
                                 .and_then(Value::as_str),
                             status == "succeeded",
                         );
-                        state.push(NormalizedProviderEvent {
-                            event_type: "run.terminal".to_owned(),
-                            priority: EventPriority::P0,
-                            payload: json!({
+                        run_terminal = (!goal_continues).then(|| {
+                            json!({
                                 "schema": "paperclip.prp.terminal.v1",
                                 "status": status,
                                 "turnTerminalState": turn_terminal_state,
                                 "runTerminalState": status,
                                 "reportedWorkDisposition": disposition,
                                 "provider": "acpx",
-                            }),
-                        })?;
+                            })
+                        });
+                    }
+                    self.settle_turn_events(accepted, turn_ended, run_terminal, batch_start)?;
+                    if provider_lost {
+                        self.end_provider_turn_wait(true)?;
                     }
                 }
                 if provider_turn_settled {
@@ -3142,6 +3197,7 @@ impl CommandExecutor for AcpxCommandExecutor {
             || !state.pending_runtime_requests.is_empty()
             || (!state.goal_projection.is_null() && !goal_is_dormant(&state.goal_projection))
             || !state.descriptor.names_qualified_release()
+            || state.provider_turn_wait.is_some()
             || self.candidate_admission().is_some()
             || !acpx_release_profile(&state.descriptor.agent)
                 .is_some_and(|profile| !profile.qualification_pending)
@@ -3296,6 +3352,21 @@ impl CommandExecutor for AcpxCommandExecutor {
         }
         self.poll_provider(false)?;
         self.retained_events()
+    }
+
+    fn provider_poll_is_live(&self) -> bool {
+        self.restore_checked
+            && self.persistence_error.is_none()
+            && self
+                .session
+                .as_ref()
+                .is_some_and(|session| !session.awaits_next_turn())
+            && self.state.as_ref().is_some_and(|state| {
+                matches!(state.lifecycle.as_str(), "turn_starting" | "turn_active")
+                    && state.active_turn_id.is_some()
+                    && !state.provider_exit_unconfirmed
+                    && state.descriptor.run_id == self.context.run_id
+            })
     }
 
     fn poll_disconnected_events(&mut self) -> Result<Vec<PolledEvent>, DurableRunnerError> {
@@ -3568,7 +3639,7 @@ mod tests {
         }
     }
 
-    fn descriptor(agent: &str) -> Value {
+    pub(super) fn descriptor(agent: &str) -> Value {
         let profile = acpx_release_profile(agent).unwrap();
         let mut value = json!({
             "kind": "acpx",
