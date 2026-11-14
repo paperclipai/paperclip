@@ -112,8 +112,6 @@ export function NeedsYouTaskLink({ task, short = false, onOpen }: {
 }) {
   if (!task?.href) return null;
   const href = task.href;
-  // A real link, so ctrl/middle-click opens the task in a new tab. A plain click
-  // still goes through onOpen.
   return <Link to={href} disableIssueQuicklook data-attention-task-link title={task.title ?? undefined} onClick={(event) => openInPlace(event, href, onOpen)}
     className={cn("flex min-w-0 items-center gap-1.5 text-left text-(length:--text-compact) leading-5 text-muted-foreground hover:text-foreground", short ? "shrink-0" : "max-w-full")}>
     {task.status ? <StatusIcon status={task.status} size="sm" /> : null}
