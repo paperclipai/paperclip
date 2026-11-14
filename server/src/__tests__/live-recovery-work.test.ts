@@ -6,7 +6,7 @@ import { once } from "node:events";
 import { setImmediate as immediate, setTimeout as realDelay } from "node:timers/promises";
 import { and, eq, sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
-import { agents, authUsers, companies, companyMemberships, createDb, closeLivenessDb, closeCheckpointDb,
+import { agents, authUsers, companies, companyMemberships, createDb, closeLivenessDb, closeCheckpointDb, livenessDb,
   heartbeatRuns, heartbeatRunEvents, nativeRunFinalizations, environmentLeases, issueThreadInteractions, applyPendingMigrations,
   issueRecoveryActions, issues, activityLog, agentWakeupRequests, reconcileDatabaseWork } from "@paperclipai/db";
 import { resolveExternalTestDatabaseUrl } from "./helpers/external-test-database.js";
@@ -35,6 +35,7 @@ import { nativeRetryCancellationEligible, pendingFailedNativeRetryCancellationCo
 import { requestNativeQuestionRunCancellation } from "../services/native-runtime/native-question-bridge.js";
 import { readNativeLocalProcessStop, releaseSettledNativeRunProcess, settleNativeRunProcess } from "../services/native-local-process-stop.js";
 import { DELIVERY_QUEUES } from "../services/delivery-work-notifications.js";
+import { renewNativeSessionExecutionLease } from "../services/native-runtime/native-execution-lease.js";
 import { buildNativeExecutionInput } from "../services/native-runtime/native-execution-input.js";
 import { nativeRuntimeContextFixture } from "../services/native-runtime/runtime-context.test-fixture.js";
 import * as nativeStopEvidence from "../services/acknowledged-native-stop.js";
@@ -578,6 +579,63 @@ describe("residual recovery production matrix", () => {
     expect((await getRun(run.id)).status).toBe("running");
     expect(deadlines.get("active-execution-recovery")!()).toBe(moved.getTime());
     await heartbeat.cancelRun(run.id, "Operator cancelled the controller renewal fixture");
+    await quiet();
+  });
+  it("renews a native execution lease without scheduling recovery and still finds the run at the end of its last lease", async () => {
+    // Another server owns the run. Its renewals must not make this server's
+    // recovery re-check the healthy run, and when they stop, recovery acts at
+    // the expiry of the last renewed lease, as it would have before.
+    const f = await fixture(), old = new Date(Date.now() - 6 * 60_000);
+    const owner = { bootId: randomUUID(), pid: process.pid + 100_000, processStartedAt: old };
+    const [run] = await db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: f.agent.id,
+      status: "running", runtimeMode: "native", nativeIssueId: f.issue.id, contextSnapshot: { issueId: f.issue.id },
+      startedAt: old, updatedAt: old }).returning();
+    await db.insert(nativeRunFinalizations).values({ companyId: f.companyId, issueId: f.issue.id, runId: run.id,
+      phase: "observed", attempt: 1, leaseOwner: "other-server", controllerBootId: owner.bootId, controllerPid: owner.pid,
+      controllerProcessStartedAt: old, leaseExpiresAt: sql`clock_timestamp() + interval '3 seconds'` });
+    const savedExpiry = async () => (await db.select().from(nativeRunFinalizations)
+      .where(eq(nativeRunFinalizations.runId, run.id)))[0].leaseExpiresAt!.getTime();
+    const expiry = await savedExpiry();
+    await start(true);
+    await vi.waitFor(() => expect(deadlines.get("active-execution-recovery")!()).toBe(expiry));
+    await Promise.allSettled([...passes]);
+    const before = timeline.length;
+    // Renew through this client so a recovery signal, if any, reaches the
+    // registered owners in-process, as it reaches peers through notifications.
+    try {
+      await renewNativeSessionExecutionLease({ db, runId: run.id, companyId: f.companyId, issueId: f.issue.id,
+        leaseOwner: "other-server", attempt: 1, controller: owner, leaseTtlMs: 6_000 });
+    } finally {
+      // Only this test uses the private liveness pool; end it while timers are real.
+      await livenessDb(db).$client.end({ timeout: 1 });
+    }
+    const moved = await savedExpiry();
+    expect(moved).toBeGreaterThan(expiry);
+    await realDelay(1_000);
+    expect(timeline.slice(before).filter(event => Array.isArray(event) && event[0] === "pass")).toEqual([]);
+    // At the old deadline recovery re-reads the row and moves to the new one.
+    await realDelay(Math.max(0, expiry - Date.now() + 500));
+    await Promise.allSettled([...passes]);
+    expect(await getRun(run.id)).toMatchObject({ status: "running", errorCode: null });
+    expect(deadlines.get("active-execution-recovery")!()).toBe(moved);
+    // The owner stopped renewing: recovery acts at the end of the last lease.
+    const acted = async () => {
+      const current = await getRun(run.id);
+      const [coordinator] = await db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, run.id));
+      return current.status !== "running" || current.errorCode !== null || coordinator.recoveryState !== null
+        || coordinator.leaseOwner !== "other-server";
+    };
+    expect(await acted()).toBe(false);
+    await vi.waitFor(async () => expect(await acted()).toBe(true), { timeout: 15_000 });
+    expect(Date.now()).toBeGreaterThanOrEqual(moved);
+    expect(Date.now() - moved).toBeLessThan(10_000);
+    await Promise.allSettled([...passes]);
+    await db.transaction(async tx => {
+      await notifyExecutionRunWork(tx, { companyId: f.companyId, runId: run.id, agentId: f.agent.id });
+      await tx.update(heartbeatRuns).set({ status: "cancelled", finishedAt: new Date() }).where(eq(heartbeatRuns.id, run.id));
+      await tx.update(nativeRunFinalizations).set({ phase: "terminal_failure", recoveryState: "blocked", leaseExpiresAt: null })
+        .where(eq(nativeRunFinalizations.runId, run.id));
+    });
     await quiet();
   });
   it("recovers orphan active leases after restart, including a deleted heartbeat reference, without starving behind 100 guarded rows", async () => {

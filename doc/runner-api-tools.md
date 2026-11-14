@@ -149,7 +149,13 @@ The result contains `data` as text (including JSON), plus `responseText` with
 until it is null. Windows end at UTF-8 boundaries. The limit defaults to 24 KiB
 and accepts 4–24,576 bytes. The server rejects binary content, invalid UTF-8,
 and offsets inside a code point or beyond the response. This option only works
-with GET; never repeat a mutation to retrieve another part of its response.
+with GET; never repeat a mutation to retrieve another part of its response. On
+a write, an empty or default `responseText` (`{}` or `offsetBytes: 0`) and
+`saveResponse: false` change nothing, so they are dropped and the write is sent
+once. A new write whose `responseText` sets a window (`limitBytes` or a later
+offset) is refused before it is sent: it never carries request fields, so resend
+the write once without it and with its fields in `body`. Older saved calls stay
+valid for recovery.
 Read the saved artifact for a stable snapshot instead of paging a changing live
 response. A text-window call against a live response above 24 KiB also returns
 that snapshot's artifact reference; continue on its content operation. A saved

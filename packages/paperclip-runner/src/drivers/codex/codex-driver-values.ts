@@ -43,6 +43,7 @@ export const RUNNERD_CANONICAL_ITEM = Symbol.for(
 );
 
 export const RUNNERD_RUNTIME_ACTIVITY = Symbol("paperclip.runnerd.runtime-activity");
+export const RUNNERD_RUN_TERMINAL = Symbol("paperclip.runnerd.run-terminal");
 
 export function text(value: unknown, fallback = ""): string {
   return typeof value === "string" ? value : fallback;

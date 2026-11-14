@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { agentRouteNames, gradePortability, savedAgentConfiguration } from "./identity-portability.js";
+import { agentRouteNames, gradePortability, importPreviewPackageFiles, savedAgentConfiguration } from "./identity-portability.js";
 import type { IdentityObservation } from "./identity-support.js";
 function valid(scenarioId: string): IdentityObservation {
   const o: IdentityObservation = { scenarioId, origin: "http://fixture.invalid", companyId: "acorn", leadId: "ceo", company: { id: "acorn" }, companies: [], agents: [], tasks: [], projects: [], goals: [], comments: [], interactions: [], documents: [], revisions: [], activity: [], links: [], runs: [], humanQueries: [], reply: "Secrets are excluded; supply EXPORT_FIXTURE_KEY when importing.", state: {} };
@@ -60,4 +60,12 @@ describe("imported employee review link", () => {
       "/COM/issues/morgan-package", "/COM/agents", "/COM/agents/morgan-package/runs/x/y", "/COM/agents/%E0%A4%A"])
       expect(agentRouteNames(href, origin, "COM", imported), href).toBe(false);
   });
+});
+// Full cohort 5 on 98c18784c6: safe import refused the package's local-process adapter (403), so the case tested
+// whether the CEO swapped adapters on its own rather than the preview and rename the person asked for.
+it("ships the conflicting employee with the runner adapter a Paperclip export writes, which safe import admits", () => {
+  const yaml = importPreviewPackageFiles[".paperclip.yaml"];
+  expect(yaml).toMatch(/type: paperclip_runner\n\s+config:\n\s+provider: opencode\n\s+model: [a-z0-9-]+\/[a-z0-9.-]+\n/);
+  expect(yaml).not.toMatch(/type: (?:process|http)\b/);
+  expect(Object.values(importPreviewPackageFiles).join("\n")).not.toMatch(/synthetic|fixture|\beval|\btest\b|rubric/i);
 });

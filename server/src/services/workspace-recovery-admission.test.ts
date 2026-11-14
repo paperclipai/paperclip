@@ -969,8 +969,9 @@ describe("automatic retained workspace recovery", () => {
       const [wake] = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, receipt.requestId!));
       expect(wake.payload?.executionWait).toMatchObject({ reason: "remote_cleanup" });
       const [task] = await db.select().from(issues).where(eq(issues.id, f.issueId));
-      expect(await taskInterruptionPresentation(db, task)).toMatchObject({ state: "failed", canRetry: true,
+      expect(await taskInterruptionPresentation(db, task)).toMatchObject({ state: "failed", canRetry: false,
         retryWait: { reason: "remote_cleanup", message: "Retry is waiting for the previous environment to stop. Your message is saved." } });
+      expect((await getExecutionBlocker(db, f.companyId, f.issueId))?.canRetry).toBe(false);
       const commentId = randomUUID(), messageWakeId = randomUUID();
       await db.insert(issueComments).values({ id: commentId, companyId: f.companyId, issueId: f.issueId,
         authorType: "user", authorUserId: "board", body: "Keep my saved message while the previous environment stops." });
@@ -1595,7 +1596,7 @@ describe("automatic retained workspace recovery", () => {
         await expect(db.transaction(async tx => {
           await tx.update(agentWakeupRequests).set({ status: "skipped" }).where(eq(agentWakeupRequests.id, wake.id));
           await recover(tx as unknown as typeof db);
-          expect(scheduleRecoveryRetry).toHaveBeenCalledWith(queued.id);
+          expect(scheduleRecoveryRetry).toHaveBeenCalledWith(queued.id, expect.any(Object));
           throw rollback;
         })).rejects.toBe(rollback);
         scheduleRecoveryRetry.mockClear();

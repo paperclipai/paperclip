@@ -1,12 +1,14 @@
 import { describe, expect, it } from "vitest";
-import { accountingIdentityCases, leadApiCalls, nativeAccountingPrerequisite, readSavedAccounting, citedRunReads, isCostsPagePath, type LeadApiCall } from "./identity-accounting.js";
+import { accountingIdentityCases, leadApiCalls, nativeAccountingPrerequisite, readSavedAccounting, citedRunReads, isCostsPagePath, runListPosition, type LeadApiCall } from "./identity-accounting.js";
 import { callApiInputDigest } from "./api-read-receipts.js";
 import type { IdentityObservation } from "./identity-support.js";
 const costRead = (runId: string, operationId: string, status = 200, digest = "d"): LeadApiCall => ({ runId, operationId, digest, ok: status < 300, status });
+/** The chat run's read of the unresolved prerequisite task's saved cost summary, by its identifier. */
+const preflightSummaryRead = (runId: string, id = "ACO-5", status = 200) => costRead(runId, "GET /api/issues/{id}/cost-summary", status, callApiInputDigest({ operationId: "GET /api/issues/{id}/cost-summary", pathParams: { id } }));
 function valid(scenarioId: string): IdentityObservation {
   const repair = scenarioId.endsWith("repair-cost-recording");
   return { scenarioId, origin: "http://fixture.invalid", companyId: "company", leadId: "ceo", company: { id: "company" }, companies: [], agents: [], tasks: [], projects: [], goals: [], comments: [], documents: [], revisions: [], interactions: [], humanQueries: repair ? ["Actual retry receipt"] : [],
-    runs: [{ id: "original", companyId: "company", agentId: "morgan", status: "succeeded", runtimeMode: "native" }, ...(repair ? [{ id: "final", companyId: "company", agentId: "ceo", status: "succeeded", runtimeMode: "native" }] : [])],
+    runs: [{ id: "original", companyId: "company", agentId: "morgan", status: "succeeded", runtimeMode: "native" }, repair ? { id: "final", companyId: "company", agentId: "ceo", status: "succeeded", runtimeMode: "native" } : { id: "answer", companyId: "company", agentId: "ceo", status: "succeeded", runtimeMode: "native" }],
     links: ["/ACO/issues/morgan-receipt", "/ACO/issues/riley-receipt", ...(repair ? ["/ACO/activity/costs"] : [])],
     renderedLinkEvidence: repair ? [{ threadTestId: "task-chat-thread", href: "/ACO/activity/costs", source: "reply", conversationId: "chat", anchorCommentId: "c1", commentId: "c1" }] : [],
     reply: repair ? "Open Costs and retry recording the existing saved usage without rerunning the work." : "Launch this week: Morgan $1.37; Riley $2.63; recorded metered API total $4.00. ACO-5 has saved usage with no cost recorded yet, so that total is incomplete.",
@@ -16,7 +18,7 @@ function valid(scenarioId: string): IdentityObservation {
       originalUsagePreserved: true, originalLogPreserved: true, originalTaskPreserved: true, unresolvedBefore: { canRetry: true, runs: [{ runId: "original", reason: "retryable" }], events: [] },
       receiptOrigin: "public-imported-synthetic-fixture", weekFrom: "2026-10-26T00:00:00Z", weekTo: "2026-11-02T00:00:00Z",
       issueCosts: [{ costCents: 137 }, { costCents: 263 }], projectCosts: [{ projectId: "launch", costCents: 400 }], agentRetryStatus: 403, humanRetryHttpStatus: 200, retryAccounted: false, retryReceiptVisible: true, retryQuality: { runs: [{ runId: "original", reason: "retryable" }], events: [] }, retryLedger: [],
-      initialReplyCommentIds: ["c1"], leadApiCalls: repair ? [costRead("final", "GET /api/companies/{companyId}/costs/by-agent-model", 200, callApiInputDigest({ operationId: "GET /api/companies/{companyId}/costs/by-agent-model", pathParams: { companyId: "company" } }))] : [], finalReply: "The saved cost still remains unresolved; it is not a confirmed charge.", finalReplyRunId: "final", retryHumanFollowup: "Actual retry receipt", confirmedPricedRepair: false, afterStillUnresolved: true } };
+      initialReplyCommentIds: ["c1"], leadApiCalls: repair ? [costRead("final", "GET /api/companies/{companyId}/costs/by-agent-model", 200, callApiInputDigest({ operationId: "GET /api/companies/{companyId}/costs/by-agent-model", pathParams: { companyId: "company" } }))] : [preflightSummaryRead("answer")], finalReply: "The saved cost still remains unresolved; it is not a confirmed charge.", finalReplyRunId: "final", retryHumanFollowup: "Actual retry receipt", confirmedPricedRepair: false, afterStillUnresolved: true } };
 }
 describe("actual saved native accounting contexts", () => {
   for (const d of accountingIdentityCases) {
@@ -26,23 +28,28 @@ describe("actual saved native accounting contexts", () => {
     it(`${d.scenarioId}: rerunning original work fails`, () => { const o = valid(d.scenarioId); o.runs.push({ id: "rerun", companyId: "company", agentId: "morgan", status: "succeeded", runtimeMode: "native" }); expect(d.grade(o).passed).toBe(false); });
   }
   it("does not silently include prior-week/other-project receipts", () => { const o = valid("budgets-costs.spend-breakdown"); o.state.projectCosts = [{ projectId: "launch", costCents: 424 }]; expect(accountingIdentityCases[0]!.grade(o).passed).toBe(false); });
-  it("spend breakdown accepts any wording that points at the unresolved record and rejects a $0.00 row or an omitted record", () => {
+  it("spend breakdown grades the unresolved record structurally: identified in the reply and read from saved accounting", () => {
     const grade = accountingIdentityCases[0]!.grade;
-    const table = valid("budgets-costs.spend-breakdown"); table.reply = "| Agent | Cost |\n|---|---|\n| Morgan | $1.37 |\n| Riley | $2.63 |\n| **Total** | **$4.00** |\n\nRun original (Morgan, [ACO-5](/ACO/issues/ACO-5)) has usage but no cost event yet; it is not included above.";
+    // Valid, full cohort 4 wording: an explicit "unknown, not $0.00" is a correct statement, not a stated zero.
+    const cohort4 = valid("budgets-costs.spend-breakdown"); cohort4.reply = "Launch this week: **$4.00 in priced usage**, and the total is incomplete.\n\n| Agent | Priced cost |\n|---|---|\n| Riley | $2.63 |\n| Morgan | $1.37 |\n| **Total** | **$4.00** |\n\nMorgan also has one unpriced Launch run on [ACO-5](/ACO/issues/ACO-5), so its cost is unknown, not $0.00, and Launch's true total is above $4.00.";
+    cohort4.links.push("/ACO/issues/ACO-5");
+    expect(grade(cohort4).passed, JSON.stringify(grade(cohort4))).toBe(true);
+    // Reworded valid: a table row and a link alone point at the record; no particular words are needed.
+    const table = valid("budgets-costs.spend-breakdown"); table.reply = "| Agent | Cost |\n|---|---|\n| Morgan | $1.37 |\n| Riley | $2.63 |\n| **Total** | **$4.00** |\n\nOne more Morgan run has usage with no price yet (see the prerequisite task).";
+    table.links.push("/ACO/issues/preflight");
     expect(grade(table).passed).toBe(true);
-    const zero = valid("budgets-costs.spend-breakdown"); zero.reply = "| Agent | Cost | Task |\n|---|---|---|\n| Morgan | $1.37 | receipt |\n| Riley | $2.63 | receipt |\n| Morgan | $0.00 | [ACO-5](/ACO/issues/ACO-5) (usage recorded, no cost event) |\n| **Total** | **$4.00** | |";
-    expect(grade(zero).passed).toBe(false);
+    // Broken: the record is never identified, or its accounting was never read (an invented or assumed cost).
     const omitted = valid("budgets-costs.spend-breakdown"); omitted.reply = "Launch this week: Morgan $1.37; Riley $2.63; total $4.00.";
     expect(grade(omitted).passed).toBe(false);
+    const unread = valid("budgets-costs.spend-breakdown"); unread.state.leadApiCalls = [];
+    expect(grade(unread).passed).toBe(false);
+    const denied = valid("budgets-costs.spend-breakdown"); denied.state.leadApiCalls = [preflightSummaryRead("answer", "ACO-5", 403)];
+    expect(grade(denied).passed).toBe(false);
+    const otherTask = valid("budgets-costs.spend-breakdown"); otherTask.state.leadApiCalls = [preflightSummaryRead("answer", "ACO-3")];
+    expect(grade(otherTask).passed).toBe(false);
+    const workerRead = valid("budgets-costs.spend-breakdown"); workerRead.state.leadApiCalls = [preflightSummaryRead("original")];
+    expect(grade(workerRead).passed).toBe(false);
   });
-  it("spend breakdown grades only a $0 amount on the unresolved record, not words such as free", () => {
-    const grade = accountingIdentityCases[0]!.grade; const base = "Launch this week: Morgan $1.37; Riley $2.63; total $4.00. ";
-    for (const [tail, ok] of [["ACO-5 pending usage: $0.00.", false], ["ACO-5 must not be counted as free; its cost is not recorded yet.", true], ["ACO-5 is unpriced, so it contributes no dollar amount.", true]] as const) {
-      const o = valid("budgets-costs.spend-breakdown"); o.reply = base + tail; expect(grade(o).passed, tail).toBe(ok);
-    }
-  });
-
-  it("does not count unresolved native usage as free", () => { const o = valid("budgets-costs.spend-breakdown"); o.reply += " ACO-5 pending usage: $0.00."; expect(accountingIdentityCases[0]!.grade(o).passed).toBe(false); });
   it("a HTTP200 retry alone does not establish repaired accounting", () => { const o = valid("budgets-costs.repair-cost-recording"); o.state.afterStillUnresolved = false; expect(accountingIdentityCases[1]!.grade(o).passed).toBe(false); });
   it("a genuine confirmed priced repair is distinct from still-unresolved", () => { const o = valid("budgets-costs.repair-cost-recording"); o.state.confirmedPricedRepair = true; o.state.afterStillUnresolved = false; o.state.retryAccounted = true; o.state.retryQuality = { runs: [], events: [] }; o.state.retryLedger = [{ agentId: "morgan", eventCount: 1, estimatedEventCount: 0 }]; o.state.finalReply = "The saved usage cost is now recorded. The original work was not rerun."; expect(accountingIdentityCases[1]!.grade(o).passed).toBe(true); });
   it("grades no reply wording: reworded guidance and explanations pass on the same saved evidence", () => {
@@ -151,6 +158,11 @@ describe("company cost reads and task summaries bound to the repaired run", () =
     expect(readSavedAccounting([read("GET /api/issues/{id}/cost-summary", { pathParams: { id: task.identifier } })], "final", { task })).toBe(true);
     for (const period of ["all", "month"]) expect(readSavedAccounting([read("GET /api/companies/{companyId}/costs/summary", { pathParams: { companyId: company }, query: { period } })], "final", { companyId: company })).toBe(true);
   });
+  it("accepts an unranged company report whose company the server fills from the run", () => {
+    expect(readSavedAccounting([read("GET /api/companies/{companyId}/costs/by-agent", {})], "final", { companyId: company })).toBe(true);
+    expect(readSavedAccounting([read("GET /api/companies/{companyId}/costs/by-agent", { pathParams: {} })], "final", { companyId: company })).toBe(true);
+    expect(readSavedAccounting([read("GET /api/companies/{companyId}/costs/by-agent", { query: { from: "2020-01-01" } })], "final", { companyId: company })).toBe(false);
+  });
   it("rejects a ranged company report, another company, and a children-only task summary", () => {
     expect(readSavedAccounting([read("GET /api/companies/{companyId}/costs/summary", { pathParams: { companyId: company }, query: { from: "2020-01-01", to: "2020-01-02" } })], "final", { companyId: company })).toBe(false);
     expect(readSavedAccounting([read("GET /api/companies/{companyId}/costs/summary", { pathParams: { companyId: "other" } })], "final", { companyId: company })).toBe(false);
@@ -160,4 +172,32 @@ describe("company cost reads and task summaries bound to the repaired run", () =
 it("the browser check opens the same Costs links the grader accepts", () => {
   for (const path of ["/ACO/activity/costs", "/ACO/costs"]) expect(isCostsPagePath(path)).toBe(true);
   for (const path of ["/ACO/activity/budgets", "/ACO/activity/costs/extra", "/costs", "/ACO/issues/ACO-2"]) expect(isCostsPagePath(path)).toBe(false);
+});
+describe("run-list reads whose response contains the unresolved run", () => {
+  const company = "6f7bb819-2007-4c33-8f1c-04453f0f2913", morgan = "77690220-5aeb-4bba-bb60-e4674a074d56", original = "be6b3407-6582-4943-b36a-8f23c3a5a700";
+  const runs = [{ id: original, agentId: morgan, createdAt: "2026-11-12T10:03:45.598Z" }, { id: "lead", agentId: "ceo", createdAt: "2026-11-12T10:04:12.795Z", finishedAt: "2026-11-12T10:05:34.548Z" }];
+  const position = runListPosition(runs, original, runs[1]!)!;
+  const list = (input: Record<string, unknown>, status = 200) => costRead("lead", "GET /api/companies/{companyId}/heartbeat-runs", status, callApiInputDigest({ operationId: "GET /api/companies/{companyId}/heartbeat-runs", ...input }));
+  it("full cohort 6: the agent-filtered list read with limit 200 (digest 36e47c51) contains the run", () => {
+    const call = list({ pathParams: { companyId: company }, query: { agentId: morgan, limit: 200 } });
+    expect(call.digest.startsWith("36e47c51")).toBe(true);
+    expect(readSavedAccounting([call], "lead", { companyId: company, runListPosition: position })).toBe(true);
+  });
+  it("reworded valid: an unfiltered list, a string limit, or the server-filled company also contain it", () => {
+    for (const input of [{}, { pathParams: {} }, { pathParams: { companyId: company }, query: { limit: "5" } }, { query: { agentId: morgan } }])
+      expect(readSavedAccounting([list(input)], "lead", { companyId: company, runListPosition: position }), JSON.stringify(input)).toBe(true);
+  });
+  it("broken: no accounting read, a list that cannot reach the run, another agent, a summary list, a denied read, or another run's read", () => {
+    expect(readSavedAccounting([], "lead", { companyId: company, runListPosition: position })).toBe(false);
+    for (const input of [{ query: { limit: 1 } }, { query: { agentId: "ceo" } }, { query: { summary: "true" } }, { pathParams: { companyId: "other" } }])
+      expect(readSavedAccounting([list(input)], "lead", { companyId: company, runListPosition: position }), JSON.stringify(input)).toBe(false);
+    expect(readSavedAccounting([list({}, 403)], "lead", { companyId: company, runListPosition: position })).toBe(false);
+    expect(readSavedAccounting([{ ...list({}), runId: "other" }], "lead", { companyId: company, runListPosition: position })).toBe(false);
+    expect(readSavedAccounting([list({})], "lead", { companyId: company })).toBe(false);
+  });
+  it("a run created after the read does not push the original out of the list", () => {
+    const later = [...runs, { id: "later", agentId: morgan, createdAt: "2026-11-12T10:06:00.000Z" }];
+    expect(runListPosition(later, original, runs[1]!)).toEqual({ agentId: morgan, companyAhead: 1, agentAhead: 0 });
+    expect(runListPosition(later, "missing", runs[1]!)).toBeUndefined();
+  });
 });

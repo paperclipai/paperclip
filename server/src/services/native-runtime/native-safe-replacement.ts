@@ -31,6 +31,7 @@ import { NATIVE_PROVIDER_DURABLE_EVENT_TYPES } from "./native-retired-backup-sou
 import { completedWorkspaceRecoveryCondition } from "../workspace-recovery-receipt.js";
 import { nativeRunHasNoWorkspaceAccess } from "../workspace-restore-recovery-state.js";
 import { verifiedWorkspaceSnapshotReuse } from "../remote-workspace-snapshot-reuse-receipt.js";
+import { RECOVERY_CONTINUATION_MAX_HOLD_MS } from "../recovery-continuation-pacing.js";
 
 export const NATIVE_SAFE_REPLACEMENT_REASON = "native_safe_replacement";
 const record = (v: unknown): Record<string, unknown> =>
@@ -249,6 +250,45 @@ export function nativeReplacementPending() {
   );
 }
 
+export const NATIVE_OWNERSHIP_PROOF_BOUND_MS = RECOVERY_CONTINUATION_MAX_HOLD_MS;
+const OWNERSHIP_UNVERIFIED = "provider_ownership_unverified";
+const ownershipProofDeadline = () => sql`(coalesce(${heartbeatRuns.finishedAt}, ${nativeRunFinalizations.updatedAt})
+  + ${NATIVE_OWNERSHIP_PROOF_BOUND_MS}::integer * interval '1 millisecond')`;
+const ownershipProofWaiting = () => and(
+  eq(nativeRunFinalizations.failureCode, "native_provider_terminal_failed"), isNull(nativeRunFinalizations.leaseOwner));
+
+async function ownershipProofExpired(db: ReplacementDb, run: typeof heartbeatRuns.$inferSelect) {
+  const [row] = await db.select({ id: heartbeatRuns.id }).from(heartbeatRuns)
+    .innerJoin(nativeRunFinalizations, eq(nativeRunFinalizations.runId, heartbeatRuns.id)).where(and(
+      eq(heartbeatRuns.companyId, run.companyId), eq(heartbeatRuns.id, run.id), nativeReplacementPending(),
+      ownershipProofWaiting(), sql`${ownershipProofDeadline()} <= now()`,
+    )).limit(1);
+  return Boolean(row);
+}
+
+async function markOwnershipProofWaiting(db: ReplacementDb, run: typeof heartbeatRuns.$inferSelect) {
+  await db.update(nativeRunFinalizations).set({
+    failureDetail: sql`coalesce(${nativeRunFinalizations.failureDetail}, '{}'::jsonb)
+      || jsonb_build_object('ownershipUnverifiedAt', now())`,
+  }).where(and(eq(nativeRunFinalizations.companyId, run.companyId), eq(nativeRunFinalizations.runId, run.id),
+    ownershipProofWaiting(), sql`not (coalesce(${nativeRunFinalizations.failureDetail}, '{}'::jsonb) ? 'ownershipUnverifiedAt')`));
+}
+
+async function releaseOwnershipProofWake(db: ReplacementDb, run: typeof heartbeatRuns.$inferSelect) {
+  await db.update(nativeRunFinalizations).set({
+    failureDetail: sql`${nativeRunFinalizations.failureDetail} - 'ownershipUnverifiedAt'`,
+  }).where(and(eq(nativeRunFinalizations.companyId, run.companyId), eq(nativeRunFinalizations.runId, run.id),
+    sql`${nativeRunFinalizations.failureDetail} ? 'ownershipUnverifiedAt'`));
+}
+
+export async function nextNativeOwnershipProofDeadlineAt(db: Db): Promise<number | null> {
+  const [row] = await db.select({ at: sql<number | null>`(extract(epoch from min(${ownershipProofDeadline()})) * 1000)::float8` })
+    .from(heartbeatRuns).innerJoin(nativeRunFinalizations, eq(nativeRunFinalizations.runId, heartbeatRuns.id))
+    .where(and(nativeReplacementPending(), ownershipProofWaiting(),
+      sql`${nativeRunFinalizations.failureDetail} ? 'ownershipUnverifiedAt'`));
+  return row?.at == null ? null : Math.ceil(Number(row.at));
+}
+
 const REPLACEMENT_SCAN_LIMIT = 100;
 const replacementDiscovery = new WeakMap<object, { after: string | undefined; complete: boolean; generation: number; rescan: boolean }>();
 function replacementDiscoveryState(db: Db) {
@@ -383,8 +423,14 @@ export async function reconcileSafeNativeReplacements(
             eq(environmentLeases.heartbeatRunId, run.id),
           ),
         );
+      let overdue: boolean | undefined;
+      const ownershipOverdue = async () => overdue ??= await ownershipProofExpired(db, run);
+      const leaseHeld = leases.some((lease) => lease.releasedAt === null);
       // Teardown is still in progress. The next sweep rechecks its durable outcome.
-      if (leases.some((lease) => lease.releasedAt === null)) continue;
+      if (leaseHeld && !await ownershipOverdue()) {
+        if (coordinator.failureCode === "native_provider_terminal_failed") await markOwnershipProofWaiting(db, run);
+        continue;
+      }
       const historicalListener = coordinator.failureCode === "native_session_interrupted";
       if (historicalListener && !await historicalListenerGuardEvidence(db, run)) continue;
       const preClaim = coordinator.failureCode === NATIVE_PRE_CLAIM_FAILURE_CODE;
@@ -483,7 +529,10 @@ export async function reconcileSafeNativeReplacements(
           : [];
       });
       const history = await replacementHistoryReady(db, run, coordinator.issueId);
-      if (history === false) continue;
+      if (history === false) {
+        if (await ownershipOverdue()) await releaseOwnershipProofWake(db, run);
+        continue;
+      }
       const historyComplete = history === true;
       const remoteWorkspace = await remoteWorkspaceReplacementEvidence(db, run, coordinator.issueId, leases);
       if (historicalListener && (!remoteWorkspace?.workspacePreserved || !remoteWorkspace.providerStopped || invocations.length)) continue;
@@ -508,7 +557,7 @@ export async function reconcileSafeNativeReplacements(
         providerStopped:
           !processAlive(run.processPid) &&
           !processAlive(run.processGroupId ? -run.processGroupId : null) &&
-          (remoteWorkspace?.providerStopped ?? true),
+          (remoteWorkspace?.providerStopped ?? true) && !leaseHeld,
         workspacePreserved: noWorkspaceToSave || (remoteWorkspace ? remoteWorkspace.workspacePreserved :
           typeof workspace.cwd === "string" &&
           (await stat(workspace.cwd).then(
@@ -526,7 +575,14 @@ export async function reconcileSafeNativeReplacements(
       });
       if (!decision.allowed) {
         // Lack of containment can be temporary; do not prevent the next proof.
-        if (decision.cause === "provider_ownership_unverified") continue;
+        const ownershipBound = decision.cause === OWNERSHIP_UNVERIFIED;
+        if (ownershipBound && !await ownershipOverdue()) {
+          await markOwnershipProofWaiting(db, run);
+          continue;
+        }
+        const nextAction = ownershipBound
+          ? "The previous session could not be confirmed stopped, so the task continues in a fresh run with its own workspace."
+          : decision.nextAction;
         await db.transaction(async (tx) => {
           await tx.execute(
             sql`select set_config('statement_timeout', '15000', true), set_config('lock_timeout', '1000', true)`,
@@ -550,7 +606,8 @@ export async function reconcileSafeNativeReplacements(
             !current ||
             current.phase !== "terminal_failure" ||
             current.failureDetail?.successorRunId ||
-            current.failureDetail?.replacementDenied
+            current.failureDetail?.replacementDenied ||
+            (ownershipBound && !await ownershipProofExpired(tx, run))
           )
             return;
           await notifyExecutionRunWork(tx, { companyId: run.companyId });
@@ -560,7 +617,7 @@ export async function reconcileSafeNativeReplacements(
               failureDetail: {
                 ...current.failureDetail,
                 replacementDenied: decision.cause,
-                nextAction: decision.nextAction,
+                nextAction,
               },
               updatedAt: now,
             })
@@ -583,7 +640,7 @@ export async function reconcileSafeNativeReplacements(
             cause: decision.cause,
             fingerprint: `native-replacement:${run.id}`,
             evidence: { runId: run.id, attempts: coordinator.attempt },
-            nextAction: decision.nextAction,
+            nextAction,
             wakePolicy: null,
             maxAttempts: 3,
             supersedeOnIdentityChange: true,
@@ -818,7 +875,7 @@ export async function reconcileSafeNativeReplacements(
       if (created) {
         options.failpoint?.("lineage_committed");
         scheduled += 1;
-      }
+      } else if (await ownershipOverdue()) await releaseOwnershipProofWake(db, run);
     } catch (error) {
       if (options.failpoint) throw error;
       pendingFailures++;

@@ -3,7 +3,7 @@ import { and, asc, eq, gt, inArray, isNull, or, sql } from "drizzle-orm";
 import { agentWakeupRequests, type Db } from "@paperclipai/db";
 import type { createDeliveryWorkCoordinator } from "../delivery-work-coordinator.js";
 import { DELIVERY_QUEUES } from "../delivery-work-notifications.js";
-import type { DeferredExecutionScope, DeferredReceiptRecoveryOptions } from "../deferred-execution-notifications.js";
+import { assignmentWakePayloadSql, type DeferredExecutionScope, type DeferredReceiptRecoveryOptions } from "../deferred-execution-notifications.js";
 import { registerScopedDeadlineWork } from "../scoped-deadline-work.js";
 import { dependencyResolvedWakePayloadSql } from "../issue-dependency-wakeups.js";
 
@@ -87,6 +87,7 @@ export function registerDeferredReceiptWork(
                 and ${agentWakeupRequests.payload}#>'{_paperclipWakeContext,wakeCommentIds}' <> '[]'::jsonb`,
               sql`${agentWakeupRequests.payload}->>'mutation' = 'interaction'`,
               dependencyResolvedWakePayloadSql,
+              assignmentWakePayloadSql,
               sql`exists (select 1 from heartbeat_runs r where r.company_id = ${agentWakeupRequests.companyId}
                 and r.runtime_mode = 'legacy' and r.status = 'cancelled'
                 and r.result_json->>'queuedCommentInterruptQueueId' = ${agentWakeupRequests.id}::text)`,

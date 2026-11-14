@@ -24,7 +24,6 @@ import {
   parseNativeRuntimeContext,
   type NativeRuntimeContextSnapshot,
 } from "../contracts/runtime-context.js";
-import { nativeMcpLaunchBinding } from "./native-mcp.js";
 import {
   materializeNativeRuntimeSkills,
   prepareIsolatedCodexRecoveryHome,
@@ -106,21 +105,7 @@ describe("runtime context materialization", () => {
     expect(parseNativeRuntimeContext(next).instructions.workingCopy?.kind).toBe("agent_files");
   });
 
-  it("validates native MCP launch bindings before they reach Codex", () => {
-    expect(nativeMcpLaunchBinding({})).toBeNull();
-    expect(() => nativeMcpLaunchBinding({
-      PAPERCLIP_NATIVE_MCP_NAME: "paperclip",
-      PAPERCLIP_NATIVE_MCP_URL: "http://paperclip.example/mcp",
-      PAPERCLIP_NATIVE_MCP_TOKEN: "x".repeat(40),
-    })).toThrow("requires HTTPS or loopback HTTP");
-    expect(() => nativeMcpLaunchBinding({
-      PAPERCLIP_NATIVE_MCP_NAME: "paperclip",
-      PAPERCLIP_NATIVE_MCP_URL: "https://user:pass@paperclip.example/mcp#secret",
-      PAPERCLIP_NATIVE_MCP_TOKEN: "x".repeat(40),
-    })).toThrow("contains forbidden URL data");
-  });
-
-  it("copies only assigned skills and writes an isolated MCP config", async () => {
+  it("copies only assigned skills and writes an isolated config with no MCP servers", async () => {
     const root = await mkdtemp(join(tmpdir(), "paperclip-runtime-context-"));
     roots.push(root);
     const assigned = join(root, "assigned-source");
@@ -144,11 +129,6 @@ describe("runtime context materialization", () => {
       context: context(assigned, instructions),
       codexHome,
       sourceCodexHome: join(root, "host-home"),
-      nativeMcp: nativeMcpLaunchBinding({
-        PAPERCLIP_NATIVE_MCP_NAME: "paperclip-assigned",
-        PAPERCLIP_NATIVE_MCP_URL: "https://paperclip.example/mcp",
-        PAPERCLIP_NATIVE_MCP_TOKEN: "x".repeat(40),
-      }),
     });
 
     await expect(readFile(
@@ -162,9 +142,8 @@ describe("runtime context materialization", () => {
     ).toBe(0);
     const config = await readFile(join(codexHome, "config.toml"), "utf8");
     expect(config).toContain("shell_snapshot = false");
-    expect(config).toContain("paperclip-assigned");
-    expect(config).toContain('default_tools_approval_mode = "approve"');
-    expect(config).toContain("Bearer ");
+    expect(parse(config).mcp_servers).toBeUndefined();
+    expect(config).not.toContain("Bearer ");
     expect(config).not.toContain("unassigned");
   });
 
@@ -530,23 +509,42 @@ base_url = "https://example.com/v1"
 wire_api = "responses"
 requires_openai_auth = false
 `);
-    const nativeMcp = mode === "selected"
-      ? { name: "assigned", url: "https://paperclip.example/mcp/current", token: "current-assigned-gateway-credential" }
-      : null;
-    await prepareIsolatedCodexRecoveryHome({ codexHome, sourceCodexHome, nativeMcp });
+    await prepareIsolatedCodexRecoveryHome({ codexHome, sourceCodexHome });
     const restoredConfig = await readFile(join(codexHome, "config.toml"), "utf8");
     expect(restoredConfig).not.toContain("attacker.invalid");
     expect(restoredConfig).not.toContain("mcp_servers.stale");
     expect(restoredConfig).toContain('cli_auth_credentials_store = "file"');
     expect(restoredConfig).toContain("shell_snapshot = false");
-    expect(parse(restoredConfig).mcp_servers ?? {}).toEqual(nativeMcp ? {
-      assigned: { url: nativeMcp.url, default_tools_approval_mode: "approve", http_headers: { Authorization: `Bearer ${nativeMcp.token}` } },
-    } : {});
+    expect(parse(restoredConfig).mcp_servers).toBeUndefined();
     expect(restoredConfig.includes("https://example.com/v1")).toBe(mode === "routing");
     expect(await readFile(join(codexHome, "skills", "retained"), "utf8")).toBe("source skills");
     if (mode === "selected") {
       expect(await readFile(join(codexHome, "auth.json"), "utf8")).toBe(selectedAuth);
       expect((await stat(join(codexHome, "auth.json"))).mode & 0o777).toBe(0o600);
     } else await expect(stat(join(codexHome, "auth.json"))).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it.each(["next_run", "same_run_recovery"] as const)("drops a retained direct gateway server from a previous-release Codex home (%s)", async mode => {
+    const root = await mkdtemp(join(tmpdir(), "paperclip-relayed-codex-home-"));
+    roots.push(root);
+    const codexHome = join(root, "retained-provider");
+    await mkdir(codexHome);
+    await writeFile(join(codexHome, "config.toml"), [
+      'cli_auth_credentials_store = "file"',
+      "[features]",
+      "shell_snapshot = false",
+      "",
+      '[mcp_servers."paperclip-assigned"]',
+      'url = "http://127.0.0.1:3100/mcp/gateways/assigned-before-relay"',
+      'default_tools_approval_mode = "approve"',
+      'http_headers = { Authorization = "Bearer revoked-previous-release-gateway-token" }',
+      "",
+    ].join("\n"));
+    if (mode === "next_run") await prepareIsolatedCodexHome({ context: null, codexHome });
+    else await prepareIsolatedCodexRecoveryHome({ codexHome });
+    const config = await readFile(join(codexHome, "config.toml"), "utf8");
+    expect(parse(config).mcp_servers).toBeUndefined();
+    expect(config).not.toContain("revoked-previous-release-gateway-token");
+    expect(config).not.toContain("assigned-before-relay");
   });
 });

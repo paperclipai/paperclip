@@ -18,22 +18,23 @@ function remainingCompanyServiceObservationBudget(ctx: ChatCatalogContext): numb
   return deadline! - now;
 }
 
-/** The settings click starts an async PUT; observe its completion before independent readback. */
-export async function saveFastResponseModelBeforeTest(ctx: ChatCatalogContext, connection: AiManagedConnectionSummary,
-  clickSave: (options: { timeout: number }) => Promise<unknown>): Promise<FastResponseSettings> {
+export async function saveServiceModelBeforeTest(ctx: ChatCatalogContext, service: "fast-response" | "prompt-injection-prevention", connection: AiManagedConnectionSummary,
+  clickSave: (options: { timeout: number }) => Promise<unknown>): Promise<FastResponseSettings | PromptInjectionPreventionSettings> {
   const remaining = () => remainingCompanyServiceObservationBudget(ctx);
-  const path = `/api/companies/${ctx.input.fixtures.company.id}/fast-response`;
+  const path = `/api/companies/${ctx.input.fixtures.company.id}/${service}`;
   const origin = new URL(ctx.input.page.url()).origin;
   const response = ctx.input.page.waitForResponse(row => row.request().method() === "PUT"
     && new URL(row.url()).origin === origin && new URL(row.url()).pathname === path, { timeout: remaining() });
   const [, receipt] = await Promise.all([clickSave({ timeout: remaining() }), response]);
   remaining();
-  expect(receipt.status(), "Actual fast response save completed successfully before service test").toBe(200);
-  const saved = await receipt.json() as FastResponseSettings;
+  expect(receipt.status(), "Actual service settings save completed successfully before service test").toBe(200);
+  const sent = receipt.request().postDataJSON() as { model?: unknown } | null;
+  expect(sent?.model, "The settings save sent the requested auxiliary model").toBe(requestedAuxiliaryServiceModel);
+  const saved = await receipt.json() as FastResponseSettings | PromptInjectionPreventionSettings;
   const expected = { companyId: ctx.input.fixtures.company.id, enabled: true, connectionId: connection.id,
     grantId: connection.grantId, model: requestedAuxiliaryServiceModel };
   expect(saved, "Requested auxiliary model saved before any service test").toMatchObject(expected);
-  const persisted = (await ctx.input.api.get<{ settings: FastResponseSettings }>(path, { timeout: remaining() })).settings;
+  const persisted = (await ctx.input.api.get<{ settings: FastResponseSettings | PromptInjectionPreventionSettings }>(path, { timeout: remaining() })).settings;
   remaining();
   expect(persisted, "Requested auxiliary model saved before any service test").toMatchObject(expected);
   return persisted;
@@ -76,6 +77,10 @@ export function gradeCompanyModel(value: unknown) {
     const href = o.state.replyLinkedControlHref;
     c.add("reply-link-opens-fast-response-control", typeof href === "string" && o.links.includes(href),
       "The person clicked a link rendered in the reply and that page showed the Fast response control; a settings page without it does not qualify.");
+  } else if (o.scenarioId === "companies.configure-decision-model") {
+    const href = o.state.replyLinkedControlHref;
+    c.add("reply-link-opens-decision-model-control", typeof href === "string" && o.links.includes(href),
+      "The service was still off after the reply, and the person reached the board-only Decision model control by clicking a link rendered in the reply; the reply's wording is not graded.");
   } else c.add("honest-human-settings-guidance", /settings|connections/i.test(o.reply) && !/\bI(?:'ve| have)?\s+(?:enabled|configured|turned on|tested)\b/i.test(o.reply), "The chat names the human settings surface and does not claim a board-only change or test it could not perform.");
   if (["companies.prompt-injection-guard", "companies.fast-responses"].includes(o.scenarioId)) {
     c.add("requested-service-model-persisted-before-test", o.state.modelBeforeTest === requestedAuxiliaryServiceModel && saved?.model === requestedAuxiliaryServiceModel,
@@ -125,7 +130,9 @@ export const companyModelIdentityCases: readonly ChatCatalogCase[] = specs.map(s
   } catch (error) { const prior = fastExperiments.get(ctx); if (prior !== undefined) { await ctx.input.api.patch("/api/instance/settings/experimental", { enableFastResponses: prior }); fastExperiments.delete(ctx); } throw error; }
 }, gradeCompanyModel, {
   sourceFiles: sources, authentication: "human-session", requiredCredentials: ["OPENROUTER_API_KEY"], attemptTimeoutMs: 420_000,
-  ...(spec.id === "companies.fast-responses" ? { oracleVersion: "paperclip.chat-catalog.identity.fast-responses.v3" } : {}),
+  ...(spec.id === "companies.fast-responses" ? { oracleVersion: "paperclip.chat-catalog.identity.fast-responses.v4" }
+    : spec.id === "companies.prompt-injection-guard" ? { oracleVersion: "paperclip.chat-catalog.identity.prompt-injection-guard.v2" }
+    : { oracleVersion: "paperclip.chat-catalog.identity.configure-decision-model.v2" }),
   async act(ctx, state) {
     await waitForCompanySettingsTurn(ctx); const root = `/api/companies/${ctx.input.fixtures.company.id}`; const source = ctx.input.page.url();
     state.afterReplyEnabled = (await ctx.input.api.get<{ settings: Settings }>(`${root}/${spec.path}`)).settings.enabled;
@@ -133,7 +140,7 @@ export const companyModelIdentityCases: readonly ChatCatalogCase[] = specs.map(s
       ...(spec.path === "decision-model" ? { allowBackground: false } : spec.path === "fast-response" ? { model: requestedAuxiliaryServiceModel, allowSponsored: false } : { model: requestedAuxiliaryServiceModel }) });
     state.agentTestStatus = await probeAgentPermission(ctx, `${root}/${spec.path}/test`, "POST", {});
     const section = spec.path === "decision-model" ? ctx.input.page.locator('section[aria-labelledby="decision-model-heading"]') : ctx.input.page.getByRole("region", { name: spec.section, exact: true });
-    if (spec.path === "fast-response") {
+    if (spec.path !== "prompt-injection-prevention") {
       // The run is recorded finished before its reply is saved and rendered; read the reply's links only once it is on the page.
       await waitForTurnReplyLinks(ctx);
       const o = await observeIdentity(ctx, state);
@@ -145,14 +152,11 @@ export const companyModelIdentityCases: readonly ChatCatalogCase[] = specs.map(s
     await section.getByRole("button", { name: (state.connection as AiManagedConnectionSummary).name, exact: true }).click();
     if (spec.path !== "decision-model") await section.getByLabel("Model", { exact: true }).fill(requestedAuxiliaryServiceModel);
     await section.getByRole("switch", { name: spec.toggle, exact: true }).setChecked(true);
-    if (spec.path === "fast-response") {
-      const persisted = await saveFastResponseModelBeforeTest(ctx, state.connection as AiManagedConnectionSummary,
+    if (spec.path === "decision-model") await section.getByRole("button", { name: spec.save, exact: true }).click();
+    else {
+      expect(await section.getByLabel("Model", { exact: true }).inputValue(), "The requested model is entered before saving").toBe(requestedAuxiliaryServiceModel);
+      const persisted = await saveServiceModelBeforeTest(ctx, spec.path, state.connection as AiManagedConnectionSummary,
         options => section.getByRole("button", { name: spec.save, exact: true }).click(options));
-      state.modelBeforeTest = persisted.model;
-    } else await section.getByRole("button", { name: spec.save, exact: true }).click();
-    if (spec.path === "prompt-injection-prevention") {
-      const persisted = (await ctx.input.api.get<{ settings: Settings }>(`${root}/${spec.path}`)).settings;
-      expect(persisted.model, "Requested auxiliary model saved before any service test").toBe(requestedAuxiliaryServiceModel);
       state.modelBeforeTest = persisted.model;
     }
     const testOptions = () => spec.path === "fast-response" ? { timeout: remainingCompanyServiceObservationBudget(ctx) } : {};

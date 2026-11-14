@@ -179,6 +179,7 @@
   "dependencies": {
     "@agentclientprotocol/claude-agent-acp": "0.73.0",
     "@agentclientprotocol/codex-acp": "1.6.2",
+    "@agentclientprotocol/sdk": "1.9.0",
     "@openai/codex": "0.160.0",
     "acpx": "0.22.0",
     "ajv": "^8.20.0",

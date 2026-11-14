@@ -102,6 +102,8 @@ export function registerLiveRecoveryWork(db: Db, coordinator: ReturnType<typeof 
       reconstructionIntervalMs: 30_000,
       beforePass: async () => { enabled = await owner.enabled(); },
       decodeScope: hint => hint === "*" ? undefined : JSON.parse(hint),
+      // `matches` below never matches a scope of another company.
+      scopeKey: { entry: entry => entry.companyId, scope: scope => scope.companyId },
       matches: (entry, scope) => !scope || entry.companyId === scope.companyId && (
         kind === "agent" ? !scope.agentId || entry.id === scope.agentId
           : kind === "orphanLease" || kind === "shutdown" ? (!scope.leaseId || entry.id === scope.leaseId) && (!scope.runId || entry.runId === scope.runId)

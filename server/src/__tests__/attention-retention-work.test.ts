@@ -21,6 +21,7 @@ import { issueThreadInteractionService } from "../services/issue-thread-interact
 import { createAgentLifecycle } from "../services/agent-lifecycle.js";
 import { BLOCKER_ATTENTION_MAX_DEPTH, BLOCKER_ATTENTION_MAX_NODES, issueService } from "../services/issues.js";
 import { notifyAttentionRetentionWork, notifyIssueAttentionRetentionWork } from "../services/retention-work-notifications.js";
+import { notifyNativeFinalizationWork } from "../services/native-finalization-notifications.js";
 import { idleWorkSnapshot } from "../services/task-admission.js";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 
@@ -857,6 +858,23 @@ const delay = DEFAULT_DECISION_ARCHIVE_DAYS * 86_400_000;
       await db.transaction(tx => notifyIssueAttentionRetentionWork(tx, { companyId, runId: opaque.id }));
     } finally { unsubscribe(); }
     expect(hints).toEqual([JSON.stringify({ companyId, issueId: issue.id }), JSON.stringify({ companyId })]);
+  });
+
+  it("scopes native run finalization to the task graph of the run", async () => {
+    const parent = await insertIssue("blocked");
+    const issue = await insertIssue("todo", { parentId: parent.id });
+    const [run] = await db.insert(heartbeatRuns).values({ companyId, agentId, status: "succeeded",
+      contextSnapshot: { issueId: issue.id } }).returning();
+    const hints: string[] = [];
+    const unsubscribe = subscribeDatabaseWork(db, DELIVERY_QUEUES.attentionRetention, (event, values) => {
+      if (event === "settled") hints.push(...values ?? []);
+    });
+    try {
+      await db.transaction(tx => notifyNativeFinalizationWork(tx, { companyId, runId: run.id }));
+      await db.transaction(tx => notifyNativeFinalizationWork(tx, { companyId, issueId: issue.id }));
+    } finally { unsubscribe(); }
+    const scoped = JSON.stringify({ companyId, issueIds: [issue.id, parent.id].sort() });
+    expect(hints).toEqual([scoped, scoped]);
   });
 
   it("accepts ordinary liveness incident creation and completion with a none leaf sentinel", async () => {

@@ -67,10 +67,12 @@ export function gradePortability(value: unknown) {
   return c.result();
 }
 const sources = ["chat-catalog-domains/identity-portability.ts", "chat-catalog-domains/identity-support.ts", "chat-catalog-domains/internal-support.ts", "chat-scenarios/companies.yaml"];
-const packageFiles = {
-  "COMPANY.md": '---\nschema: "agentcompanies/v1"\nname: "Synthetic Website Team"\nincludes:\n  - agents/morgan/AGENTS.md\n---\n\nA synthetic import-preview package; no external service is contacted.\n',
-  "agents/morgan/AGENTS.md": "---\nname: Morgan\nslug: morgan\nkind: agent\nrole: engineer\n---\n\n# Morgan\nA package employee for local website drafting. Do not overwrite an existing employee.\n",
-  ".paperclip.yaml": "schema: paperclip/v1\nagents:\n  morgan:\n    adapter:\n      type: process\n      config:\n        command: node\n        args: ['-e', 'process.exit(0)']\n    runtime:\n      heartbeat:\n        enabled: false\n",
+export const importPreviewPackageFiles = {
+  "COMPANY.md": '---\nschema: "agentcompanies/v1"\nname: "Website Team"\nincludes:\n  - agents/morgan/AGENTS.md\n---\n\nA small team that drafts and maintains the marketing website.\n',
+  "agents/morgan/AGENTS.md": "---\nname: Morgan\nslug: morgan\nkind: agent\nrole: engineer\n---\n\n# Morgan\nWeb engineer. Drafts landing pages and keeps the marketing site accessible and fast.\n",
+  // The adapter block a Paperclip export writes for a runner employee. A local-process adapter would be refused by the
+  // safe import the CEO uses, forcing it to swap adapters the person never asked about.
+  ".paperclip.yaml": "schema: paperclip/v1\nagents:\n  morgan:\n    adapter:\n      type: paperclip_runner\n      config:\n        provider: opencode\n        model: anthropic/claude-sonnet-4-5\n        lifecycleMode: per_turn\n    runtime:\n      heartbeat:\n        enabled: false\n",
 };
 export const portabilityIdentityCases: readonly ChatCatalogCase[] = [
   identityDefinition("companies.export-company", async ctx => {
@@ -110,7 +112,7 @@ export const portabilityIdentityCases: readonly ChatCatalogCase[] = [
   }),
   identityDefinition("companies.import-preview", async ctx => {
     const source = await openStandingChat(ctx); const existing = await identityWorker(ctx); const existingConfiguration = await ctx.input.api.get<AgentConfiguration>(`/api/agents/${existing.id}/configuration`);
-    const sourcePackage = { type: "inline", rootPath: "synthetic-website-team", files: packageFiles, expectedFileCount: Object.keys(packageFiles).length };
+    const sourcePackage = { type: "inline", rootPath: "website-team", files: importPreviewPackageFiles, expectedFileCount: Object.keys(importPreviewPackageFiles).length };
     const filename = "company-package.json";
     await ctx.input.page.locator('input[type="file"]').first().setInputFiles({ name: filename, mimeType: "application/json", buffer: Buffer.from(JSON.stringify({ source: sourcePackage })) });
     const receipts = await pollUntil({ label: "actual human synthetic package upload", deadlineAt: Date.now() + 30_000, load: () => ctx.input.api.get<IssueAttachment[]>(`/api/issues/${source.id}/attachments`), accept: rows => rows.some(row => row.originalFilename === filename) });
@@ -120,7 +122,7 @@ export const portabilityIdentityCases: readonly ChatCatalogCase[] = [
     return { sourceId: source.id, existing, existingConfiguration, sourcePackage, packageAttachment, actualPackageAttached: true,
       beforeAgentIds: (await ctx.input.api.get<Entity[]>(`/api/companies/${ctx.input.fixtures.company.id}/agents`)).map(row => row.id) };
   }, gradePortability, {
-    authentication: "human-session", sourceFiles: sources, oracleVersion: "paperclip.chat-catalog.identity.import-preview.v3", queryAttachments: [{ stateKey: "packageAttachment", filename: "company-package.json" }], expectedRunCount: 2, expectedHumanMessageCount: 2, attemptTimeoutMs: 420_000,
+    authentication: "human-session", sourceFiles: sources, oracleVersion: "paperclip.chat-catalog.identity.import-preview.v4", queryAttachments: [{ stateKey: "packageAttachment", filename: "company-package.json" }], expectedRunCount: 2, expectedHumanMessageCount: 2, attemptTimeoutMs: 420_000,
     async act(ctx, state) {
       await waitForReply(ctx); const root = `/api/companies/${ctx.input.fixtures.company.id}`;
       const current = await ctx.input.api.get<Entity[]>(`${root}/agents`); state.beforeChoiceUnchanged = JSON.stringify(current.map(row => row.id).sort()) === JSON.stringify([...(state.beforeAgentIds as string[])].sort())

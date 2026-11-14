@@ -28,6 +28,8 @@ import type {
   VerifiedAcpxInstallation,
 } from "./installation-integrity.js";
 import { resolveQualifiedAcpxProfile } from "./qualified-profiles.js";
+import type { AcpxExpectedSessionIdentity } from "./sidecar-protocol.js";
+import { acpxProviderSessionIdentity } from "./recovery-identity.js";
 import {
   prepareAcpxRuntimeSandbox,
   type AcpxRuntimeSandbox,
@@ -372,17 +374,6 @@ describe("ACPX runtime host", () => {
     expect(await readFile(auth, "utf8")).toBe('{"user_owned":true}');
   });
 
-  it.each([
-    { PAPERCLIP_NATIVE_MCP_NAME: "paperclip-assigned" },
-    { PAPERCLIP_NATIVE_MCP_NAME: "paperclip", PAPERCLIP_NATIVE_MCP_URL: "http://127.0.0.1:3211/mcp", PAPERCLIP_NATIVE_MCP_TOKEN: "x".repeat(40) },
-    { PAPERCLIP_NATIVE_MCP_NAME: "paperclip-assigned", PAPERCLIP_NATIVE_MCP_URL: "http://external.example/mcp", PAPERCLIP_NATIVE_MCP_TOKEN: "x".repeat(40) },
-  ])("rejects invalid assigned connection bindings before runtime launch", async (environment) => {
-    const fixture = await hostFixture();
-    const openRuntime = vi.fn();
-    await expect(AcpxRuntimeHost.open({ ...fixture.options, agent: "claude", model: "claude-sonnet-5", permissionMode: "approve-reads", environment }, fixture.dependencies({ openRuntime }))).rejects.toThrow(/assigned native MCP/);
-    expect(openRuntime).not.toHaveBeenCalled();
-  });
-
   it("leaves an active Claude owner's effort settings unchanged when a second opener loses the lifetime lease", async () => {
     const fixture = await hostFixture();
     let settingsPath = "";
@@ -485,28 +476,34 @@ describe("ACPX runtime host", () => {
     expect(openRuntime).toHaveBeenCalledTimes(1);
   });
 
-  it("registers the assigned connection gateway alongside the Claude task bridge", async () => {
+  it.each([
+    { agent: "claude" as const, model: "claude-sonnet-5", environment: {} },
+    { agent: "codex" as const, model: "gpt-5.6-sol", environment: { OPENAI_API_KEY: "synthetic-test-key" } },
+    { agent: "cursor" as const, model: "explicit-test-model", environment: { CURSOR_API_KEY: "test" } },
+  ])("admits a relayed $agent run with a binding id and ignores a previous-release gateway binding", async ({ agent, model, environment }) => {
     const fixture = await hostFixture();
-    let servers: AcpxRuntimePortOpenOptions["mcpServers"] = [];
+    const retiredGateway = {
+      PAPERCLIP_NATIVE_MCP_NAME: "paperclip-assigned",
+      PAPERCLIP_NATIVE_MCP_URL: "http://127.0.0.1:3211/mcp/gateways/previous-release",
+      PAPERCLIP_NATIVE_MCP_TOKEN: "previous-release-gateway-token-".repeat(2),
+    };
+    let launch: AcpxRuntimePortOpenOptions | undefined;
     const host = await AcpxRuntimeHost.open({
-      ...fixture.options,
-      agent: "claude", model: "claude-sonnet-5",
-      permissionMode: "approve-reads",
-      environment: {
-        PAPERCLIP_NATIVE_MCP_NAME: "paperclip-assigned",
-        PAPERCLIP_NATIVE_MCP_URL: "http://127.0.0.1:3211/mcp/gateway",
-        PAPERCLIP_NATIVE_MCP_TOKEN: "fixture-gateway-token-".repeat(3),
-      },
+      ...fixture.options, agent, model, permissionMode: "approve-all",
+      runtimeContext: { skills: [], instructions: {}, mcp: { bindingId: "assigned-run" } } as unknown as NativeRuntimeContextSnapshot,
+      environment: { ...environment, ...retiredGateway },
+      assignedMcpTransport: "prp",
       semanticTools: { tools: [], handler: async () => ({}) },
-    }, fixture.dependencies({ openRuntime: async (options) => {
-      servers = options.mcpServers;
-      return runtimePort({ getStatus: async () => ({ models: { currentModelId: "claude-sonnet-5" } }) });
+    }, fixture.dependencies({ openRuntime: async options => {
+      launch = options;
+      return runtimePort({ getStatus: async () => ({ models: { currentModelId: model } }),
+        ...(agent === "cursor" ? { identity: async () => ({ acpxRecordId: "record-1", backendSessionId: "backend-1", agentSessionId: "agent-1", mode: "agent" }) } : {}) });
     } }));
     try {
-      expect(servers.map(server => server.name)).toEqual(["paperclip", "paperclip-assigned"]);
-      expect(servers[1]).toEqual({ name: "paperclip-assigned", url: "http://127.0.0.1:3211/mcp/gateway",
-        bearerToken: "fixture-gateway-token-".repeat(3), runnerOwned: true });
-    } finally { await host.close({ reason: "gateway test complete" }); }
+      expect(launch!.mcpServers.map(server => server.name)).toEqual(["paperclip"]);
+      for (const name of Object.keys(retiredGateway)) expect(launch!.launchEnvironment).not.toHaveProperty(name);
+      expect(JSON.stringify(launch!.launchEnvironment)).not.toContain("previous-release");
+    } finally { await host.close({ reason: "relayed admission verified" }); }
   });
 
   it.each([false, true])("keeps stdio registration session-local and omits it for readOnly=%s", async readOnly => {
@@ -543,7 +540,7 @@ describe("ACPX runtime host", () => {
           join(options.launchEnvironment.CLAUDE_CONFIG_DIR!, "settings.json"),
           "utf8",
         ));
-        expect(settings.permissions).toEqual(allow ? { allow } : undefined);
+        expect(settings.permissions).toEqual({ ...(allow ? { allow } : {}), deny: ["CronCreate", "CronDelete", "CronList", "ScheduleWakeup"] });
         expect(options.mcpServers).toMatchObject([
           { name: "paperclip", runnerOwned: true },
         ]);
@@ -568,6 +565,57 @@ describe("ACPX runtime host", () => {
       },
     }, dependencies);
     await host.close({ reason: "read permission verified" });
+  });
+
+  it("resumes a Claude session saved by the previous release and withholds self-scheduling tools on relaunch", async () => {
+    const fixture = await hostFixture();
+    const tools = {
+      tools: [{ name: "get_task_context", inputSchema: { type: "object" } }],
+      handler: async () => ({}),
+    };
+    const launches: Array<{ env: Readonly<NodeJS.ProcessEnv>; settings: Record<string, unknown>; restoring: boolean }> = [];
+    const dependencies = fixture.dependencies({
+      openRuntime: async (options) => {
+        launches.push({
+          env: options.launchEnvironment,
+          settings: JSON.parse(await readFile(join(options.launchEnvironment.CLAUDE_CONFIG_DIR!, "settings.json"), "utf8")),
+          restoring: options.restoringSession === true,
+        });
+        return runtimePort({ getStatus: async () => ({ models: { currentModelId: "claude-sonnet-5" } }) });
+      },
+    });
+    const open = (expectedIdentity?: AcpxExpectedSessionIdentity) => AcpxRuntimeHost.open({
+      ...fixture.options, agent: "claude", model: "claude-sonnet-5", permissionMode: "approve-reads",
+      semanticTools: tools, ...(expectedIdentity ? { expectedIdentity } : {}),
+    }, dependencies);
+
+    const first = await open();
+    const savedIdentity = acpxProviderSessionIdentity(first.identity(), first.binding());
+    await first.close({ reason: "previous release parked the session" });
+    const claudeHome = launches[0]!.env.CLAUDE_CONFIG_DIR!;
+    const previousReleaseSettings = {
+      model: "claude-sonnet-5", availableModels: ["claude-sonnet-5"],
+      permissions: { allow: ["mcp__paperclip__get_task_context"] },
+    };
+    await writeFile(join(claudeHome, "settings.json"), `${JSON.stringify(previousReleaseSettings)}\n`, { mode: 0o600 });
+    const transcript = join(claudeHome, "projects", "workspace", "agent-1.jsonl");
+    await mkdir(join(claudeHome, "projects", "workspace"), { recursive: true });
+    await writeFile(transcript, "{\"type\":\"user\",\"message\":\"saved by the previous release\"}\n");
+
+    const resumed = await open(savedIdentity);
+    try {
+      expect(resumed.identity()).toEqual(first.identity());
+      expect(launches[1]!.restoring).toBe(true);
+      expect(launches[1]!.env.CLAUDE_CONFIG_DIR).toBe(claudeHome);
+      expect(launches[1]!.env.CLAUDE_CODE_DISABLE_CRON).toBe("1");
+      expect(launches[1]!.settings).toEqual({
+        ...previousReleaseSettings,
+        permissions: { ...previousReleaseSettings.permissions, deny: ["CronCreate", "CronDelete", "CronList", "ScheduleWakeup"] },
+      });
+      expect(await readFile(transcript, "utf8")).toContain("saved by the previous release");
+    } finally {
+      await resumed.close({ reason: "previous-release session resumed" });
+    }
   });
 
   it("loads assigned Claude skills before launch and refreshes them when reopening", async () => {

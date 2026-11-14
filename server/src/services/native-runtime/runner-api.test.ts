@@ -7,6 +7,7 @@ import {
 import {
   executeRunnerApi,
   readBoundedResponse,
+  RUNNER_API_CALL_HEADER,
   runnerApiUrl,
   validateRunnerApiCall,
   type RunnerApiCall,
@@ -76,6 +77,15 @@ describe("capped list pagination", () => {
   it("adds nothing for routes that do not page", async () => {
     const result = await executeRunnerApi({ operationId: projects }, context, io(page({})));
     expect(result).not.toHaveProperty("pagination");
+  });
+});
+
+describe("runner call identity", () => {
+  it.each([[createProject, "call-key-a"], [projects, null]] as const)("sends the call key only with mutations: %s", async (operationId, expected) => {
+    const fetcher = vi.fn(async (_url: string | URL | Request, _init?: RequestInit) => new Response("{}", { headers: { "content-type": "application/json" } }));
+    await executeRunnerApi({ operationId, ...(operationId === createProject ? { body: { name: "Keyed" } } : {}) }, context,
+      { ...io(fetcher as unknown as typeof fetch), callKey: "call-key-a" });
+    expect(new Headers(fetcher.mock.calls[0]![1]!.headers).get(RUNNER_API_CALL_HEADER)).toBe(expected);
   });
 });
 
@@ -811,15 +821,37 @@ describe("runner API request boundary", () => {
     await expect(executeRunnerApi({ operationId: createProject, body: { name: "Once" }, responseText: { offsetBytes: 4 } }, context, io(request))).rejects.toThrow("This request was not sent");
     expect(request).not.toHaveBeenCalled();
   });
-  it.each([{}, { limitBytes: 8192 }, { offsetBytes: 0, limitBytes: 4096 }])("sends a mutation once when responseText asks only for the first window: %j", async responseText => {
+  it.each([{ limitBytes: 8192 }, { offsetBytes: 0, limitBytes: 4096 }])("refuses a new write whose responseText sets a window before sending: %j", async responseText => {
     const request = vi.fn<typeof fetch>(async () => Response.json({ id: "company-a", name: "Acorn Studio" }));
-    const result = await executeRunnerApi({ operationId: "PATCH /api/companies/{companyId}", pathParams: { companyId: "company-a" }, body: { name: "Acorn Studio" }, responseText }, context, io(request));
+    const call = { operationId: "PATCH /api/companies/{companyId}", pathParams: { companyId: "company-a" }, body: { name: "Acorn Studio" }, responseText };
+    const error = await executeRunnerApi(call, context, io(request)).then(() => null, (caught: Error) => caught);
+    expect(request).not.toHaveBeenCalled();
+    expect(error?.message).toContain("This request was not sent: responseText applies only to GET reads and never carries request fields.");
+    expect(error?.message).toContain("Resend PATCH /api/companies/{companyId} once without responseText, with its request fields in body");
+    expect(validateRunnerApiCall(call, context).input).not.toHaveProperty("responseText");
+  });
+  it.each([
+    { responseText: {} },
+    { responseText: { offsetBytes: 0 } },
+    { saveResponse: false },
+    { responseText: {}, saveResponse: false },
+  ])("sends a write once when its read options are empty or default: %j", async options => {
+    const request = vi.fn<typeof fetch>(async () => Response.json({ ok: true }));
+    const result = await executeRunnerApi({ operationId: "POST /api/issues/{id}/inbox-archive", pathParams: { id: "issue-a" }, body: {}, ...options }, context, io(request));
     expect(request).toHaveBeenCalledTimes(1);
-    const [, init] = request.mock.calls[0]!;
-    expect(init?.method).toBe("PATCH");
-    expect(JSON.parse(String(init?.body))).toEqual({ name: "Acorn Studio" });
-    expect(result).toMatchObject({ ok: true, status: 200, data: { name: "Acorn Studio" } });
+    const [url, init] = request.mock.calls[0]!;
+    expect(String(url)).toMatch(/\/api\/issues\/issue-a\/inbox-archive$/);
+    expect(init?.method).toBe("POST");
+    expect(JSON.parse(String(init?.body))).toEqual({});
+    expect(result).toMatchObject({ ok: true, status: 200 });
     expect(result).not.toHaveProperty("responseText");
+  });
+  it("still sends the same write once without responseText", async () => {
+    const request = vi.fn<typeof fetch>(async () => Response.json({ id: "company-a", name: "Acorn Studio" }));
+    const result = await executeRunnerApi({ operationId: "PATCH /api/companies/{companyId}", pathParams: { companyId: "company-a" }, body: { name: "Acorn Studio" } }, context, io(request));
+    expect(request).toHaveBeenCalledTimes(1);
+    expect(JSON.parse(String(request.mock.calls[0]![1]?.body))).toEqual({ name: "Acorn Studio" });
+    expect(result).toMatchObject({ ok: true, status: 200, data: { name: "Acorn Studio" } });
   });
   it("rejects a PATCH with no body instead of sending a no-op update", async () => {
     const request = vi.fn<typeof fetch>();

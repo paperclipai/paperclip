@@ -1,6 +1,7 @@
-import { and, asc, eq, gte, notInArray, sql } from "drizzle-orm";
+import { and, asc, eq, gte, inArray, notInArray, sql } from "drizzle-orm";
 import { agents, companies, heartbeatRuns, type Db } from "@paperclipai/db";
 import { instanceSettingsService, isTruthyRuntimeEnvValue, resolveWorktreeRunExecutionActivation } from "./instance-settings.js";
+import { maxConcurrentRunsSql } from "./heartbeat/timer-policy.js";
 
 export const QUEUED_RUN_REDRIVE_AFTER_MS = 60_000;
 export const QUEUED_RUN_REDRIVE_MAX_INTERVAL_MS = 15 * 60_000;
@@ -18,21 +19,28 @@ export type UndispatchedQueuedRun = {
   createdAt: Date;
 };
 
-type PageCursor = { at: string; runId: string };
+export type UndispatchedQueuedRunCursor = { at: string; runId: string };
+type PageCursor = UndispatchedQueuedRunCursor;
 
-async function listUndispatchedQueuedRunPage(db: Db, companyId: string | undefined, createdAfter: Date | null | undefined,
-  after: PageCursor | null, limit: number):
-  Promise<Array<UndispatchedQueuedRun & { cursorAt: string }>> {
+/** One page of undispatched queued runs. Live runs are counted once per agent. */
+export function undispatchedQueuedRunPageQuery(db: Db, companyId: string | undefined, createdAfter: Date | null | undefined,
+  after: PageCursor | null, limit: number) {
+  const liveRuns = db.select({ companyId: heartbeatRuns.companyId, agentId: heartbeatRuns.agentId,
+    count: sql<number>`count(*)`.as("live_count") }).from(heartbeatRuns)
+    .where(and(inArray(heartbeatRuns.status, ["running", "scheduled_retry"]),
+      companyId ? eq(heartbeatRuns.companyId, companyId) : undefined))
+    .groupBy(heartbeatRuns.companyId, heartbeatRuns.agentId).as("agent_live_runs");
   return db.select({
     runId: heartbeatRuns.id,
     companyId: heartbeatRuns.companyId,
     agentId: heartbeatRuns.agentId,
     issueId: sql<string | null>`coalesce(${heartbeatRuns.issueId}::text, ${heartbeatRuns.contextSnapshot}->>'issueId')`,
     createdAt: heartbeatRuns.createdAt,
-    cursorAt: sql<string>`${heartbeatRuns.createdAt}::text`,
+    cursorAt: sql<string>`to_char(${heartbeatRuns.createdAt} at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"')`,
   }).from(heartbeatRuns)
     .innerJoin(companies, eq(companies.id, heartbeatRuns.companyId))
     .innerJoin(agents, and(eq(agents.id, heartbeatRuns.agentId), eq(agents.companyId, heartbeatRuns.companyId)))
+    .leftJoin(liveRuns, and(eq(liveRuns.companyId, heartbeatRuns.companyId), eq(liveRuns.agentId, heartbeatRuns.agentId)))
     .where(and(
       eq(heartbeatRuns.status, "queued"),
       companyId ? eq(heartbeatRuns.companyId, companyId) : undefined,
@@ -41,12 +49,19 @@ async function listUndispatchedQueuedRunPage(db: Db, companyId: string | undefin
       eq(agents.lifecycleState, "ready"),
       notInArray(agents.status, NOT_READY_AGENT_STATUSES),
       after ? sql`(${heartbeatRuns.createdAt}, ${heartbeatRuns.id}) > (${after.at}::timestamptz, ${after.runId}::uuid)` : undefined,
-      sql`not exists (select 1 from ${heartbeatRuns} live
-        where live.company_id = ${heartbeatRuns.companyId} and live.agent_id = ${heartbeatRuns.agentId}
-          and live.status = 'running')`,
+      sql`coalesce(${liveRuns.count}, 0) < ${maxConcurrentRunsSql()}`,
+      sql`not exists (select 1 from ${heartbeatRuns} task_live
+        where task_live.company_id = ${heartbeatRuns.companyId}
+          and task_live.context_snapshot->>'issueId' = coalesce(${heartbeatRuns.issueId}::text, ${heartbeatRuns.contextSnapshot}->>'issueId')
+          and task_live.status in ('running', 'scheduled_retry'))`,
     ))
     .orderBy(asc(heartbeatRuns.createdAt), asc(heartbeatRuns.id))
     .limit(limit);
+}
+
+async function listUndispatchedQueuedRunPage(db: Db, companyId: string | undefined, createdAfter: Date | null | undefined,
+  after: PageCursor | null, limit: number): Promise<Array<UndispatchedQueuedRun & { cursorAt: string }>> {
+  return undispatchedQueuedRunPageQuery(db, companyId, createdAfter, after, limit);
 }
 
 /** Every undispatched queued run, read page by page with no cap; one
@@ -55,15 +70,26 @@ async function listUndispatchedQueuedRunPage(db: Db, companyId: string | undefin
 export async function listUndispatchedQueuedRuns(db: Db,
   options: { companyId?: string; createdAfter?: Date | null; pageSize?: number } = {}):
   Promise<UndispatchedQueuedRun[]> {
+  return (await readUndispatchedQueuedRuns(db, options)).runs;
+}
+
+/** Reads from `after` until the set ends or `maxRuns` rows were read. `next`
+ * is where a later read continues, or null when the set was read to its end. */
+export async function readUndispatchedQueuedRuns(db: Db, options: { companyId?: string; createdAfter?: Date | null;
+  pageSize?: number; after?: UndispatchedQueuedRunCursor | null; maxRuns?: number } = {}):
+  Promise<{ runs: UndispatchedQueuedRun[]; next: UndispatchedQueuedRunCursor | null }> {
   const pageSize = options.pageSize ?? UNDISPATCHED_PAGE_SIZE;
+  const maxRuns = options.maxRuns ?? Number.POSITIVE_INFINITY;
   const runs: UndispatchedQueuedRun[] = [];
-  let after: PageCursor | null = null;
+  let after: PageCursor | null = options.after ?? null;
   for (;;) {
-    const page = await listUndispatchedQueuedRunPage(db, options.companyId, options.createdAfter, after, pageSize);
+    const want = Math.min(pageSize, maxRuns - runs.length);
+    const page = await listUndispatchedQueuedRunPage(db, options.companyId, options.createdAfter, after, want);
     runs.push(...page.map(({ cursorAt: _cursorAt, ...run }) => run));
-    if (page.length < pageSize) return runs;
+    if (page.length < want) return { runs, next: null };
     const last = page[page.length - 1]!;
     after = { at: last.cursorAt, runId: last.runId };
+    if (runs.length >= maxRuns) return { runs, next: after };
   }
 }
 

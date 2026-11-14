@@ -219,6 +219,30 @@ describe("HarnessDriverBackend", () => {
     expect(recover.mock.calls[0]![0].codexUsageBaseline!.latest.inputTokens).toBe(150);
   });
 
+  it.each([true, false])("carries the provider-turn wait marker through a serialized native checkpoint only while waiting (%s)", async (awaiting) => {
+    class WaitSession extends FakeHarnessSession {
+      override async snapshot(): Promise<PersistedHarnessSession> {
+        return { ...(await super.snapshot()), semanticResult: undefined, activeTurnId: null,
+          ...(awaiting ? { awaitingProviderTurn: true } : {}) };
+      }
+    }
+    const original = new HarnessDriverBackend({ ...driver, openSession: async () => new WaitSession() });
+    const session = await original.openSession({ identity: {
+      runId: "run-1", sessionId: "session-1", companyId: "company-1", issueId: "issue-1", agentId: "agent-1",
+    } });
+    const checkpoint = JSON.parse(JSON.stringify(await session.snapshot()));
+    const recover = vi.fn(async (_snapshot: PersistedHarnessSession) => ({ recovered: true, session: new WaitSession() }));
+    await new HarnessDriverBackend({ ...driver, recoverSession: recover })
+      .recoverSession(checkpoint, { signal: new AbortController().signal });
+    if (awaiting) {
+      expect(checkpoint.awaitingProviderTurn).toBe(true);
+      expect(recover.mock.calls[0]![0].awaitingProviderTurn).toBe(true);
+    } else {
+      expect(checkpoint).not.toHaveProperty("awaitingProviderTurn");
+      expect(recover.mock.calls[0]![0]).not.toHaveProperty("awaitingProviderTurn");
+    }
+  });
+
   it("rejects and closes a provider session without a durable provider identity", async () => {
     let closed = false;
     class MissingProviderIdentitySession extends FakeHarnessSession {

@@ -305,6 +305,11 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
       }
       await expect(f.service.resolve({ ...f.request, workspaceId: randomUUID() }, f.scope)).rejects.toThrow();
       await expect(f.service.resolve({ ...f.request, companyId: randomUUID() }, f.scope)).rejects.toThrow();
+      await db.update(heartbeatRuns).set({ status: "succeeded" }).where(eq(heartbeatRuns.id, f.input.runId));
+      const preparation = { ...f.scope, workspaceId: f.workspace.id, operation: "prepare" as const };
+      await expect(f.service.resolve(f.request, { ...preparation, runId: f.input.runId, agentId: f.input.agentId }))
+        .rejects.toThrow("Active task run is unavailable");
+      await expect(f.service.resolve(f.request, preparation)).resolves.toBe("test-token-A");
     });
     it.each(["configured", "bound"])("authorizes a %s workspace selected from another project, but not an unselected source", async selection => {
       const f = await projectAuthorizationFixture();

@@ -2,7 +2,7 @@ import { chatCatalogOriginalPhaseDeadline } from "../chat-catalog-contract.js";
 import { mislabeledIssueLinks } from "../chat-rendered-links.js";
 import { expect } from "@playwright/test";
 import { checks, entity, hasLink, project, task, verifyInternalResult } from "./internal-support.js";
-import { identityDefinition, identityObservation, waitForReply, probeAgentPermission } from "./identity-support.js";
+import { identityDefinition, identityObservation, waitForReply, waitForTurnReplyLinks, probeAgentPermission } from "./identity-support.js";
 import { createAuthenticatedPerson, enrollPrerequisitePerson } from "./identity-auth.js";
 import type { ChatCatalogContext } from "../chat-catalog-contract.js";
 // The palette shortcut is a fixed product fact the person needs to act on, so it is graded as a literal key combination:
@@ -53,7 +53,10 @@ async function fixture(ctx: Parameters<typeof project>[0]) {
 export const navigationIdentityCases = [
   identityDefinition("navigation-preferences.find-project-view", fixture, gradeNavigation, {
     async act(ctx, state) {
-      await waitForReply(ctx); state.preferencesAfterReply = await preferenceSnapshot(ctx);
+      await waitForReply(ctx);
+      // The run finishes before its reply is saved and rendered; read the reply's links only once it renders.
+      state.replyRender = await waitForTurnReplyLinks(ctx);
+      state.preferencesAfterReply = await preferenceSnapshot(ctx);
       state.agentPreferenceReadStatus = await probeAgentPermission(ctx, "/api/sidebar-preferences/me", "GET");
       const o = await ctx.input.api.get<Array<{ id: string; body: string; authorAgentId?: string }>>(`/api/issues/${ctx.issue()!.id}/comments`);
       const hrefs = await ctx.input.page.locator(`[id^="comment-"] a[href]`).evaluateAll(elements => elements.map(el => el.getAttribute("href")!));
@@ -75,7 +78,7 @@ export const navigationIdentityCases = [
       await ctx.input.evidence("identity-project-navigation.json", { projectId: p.id, openTaskId: entity(state, "task").id,
         openTaskVisible: state.openTaskVisible, closedTaskVisible: state.closedTaskVisible, url: ctx.input.page.url() });
       await ctx.input.page.goto(source, { waitUntil: "domcontentloaded" });
-    }, verifyResult: verifyInternalResult, oracleVersion: "paperclip.chat-catalog.identity.find-project-view.v2",
+    }, verifyResult: verifyInternalResult, oracleVersion: "paperclip.chat-catalog.identity.find-project-view.v3",
     sourceFiles: ["chat-catalog-domains/identity-support.ts", "chat-catalog-domains/internal-support.ts", "chat-catalog-domains/identity-navigation-preferences.ts", "chat-rendered-links.ts", "chat-scenarios/navigation-preferences.yaml"],
   }),
   identityDefinition("navigation-preferences.quick-search", async ctx => {

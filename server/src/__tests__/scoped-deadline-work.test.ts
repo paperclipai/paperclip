@@ -624,3 +624,76 @@ it("keeps partial reconstruction and failed checks uncertified until they finish
   fail = false; await vi.advanceTimersByTimeAsync(30_000);
   expect(worker.reconciliationSnapshot().reconciled).toBe(true);
 });
+
+it("tests each entry only against the dirty scopes of its own key, and decodes each hint once", async () => {
+  vi.useFakeTimers();
+  const onError = vi.fn();
+  const owner = installDatabaseWorkSignals({ execute: vi.fn(async () => []), transaction: vi.fn(async () => undefined) });
+  coordinator = createDeliveryWorkCoordinator({ owner, canRun: () => true, onError });
+  type Scope = { companyId: string; runId?: string };
+  type Row = { id: string; companyId: string; dueAt: number };
+  const dueAt = Date.now() + 10 * 60_000;
+  const rows: Row[] = Array.from({ length: 40 }, (_, company) => Array.from({ length: 10 }, (_, run) =>
+    ({ id: `run-${company}-${run}`, companyId: `company-${company}`, dueAt }))).flat();
+  const inScope = (row: Row, scope?: Scope) => !scope
+    || row.companyId === scope.companyId && (!scope.runId || row.id === scope.runId);
+  const matches = vi.fn(inScope);
+  const decodeScope = vi.fn((hint: string): Scope | undefined => hint === "*" ? undefined : JSON.parse(hint));
+  const worker = registerScopedDeadlineWork<Row, Scope>(coordinator, {
+    queue: DELIVERY_QUEUES.activeExecutionRecovery,
+    minimumPassIntervalMs: 0,
+    decodeScope,
+    matches,
+    scopeKey: { entry: row => row.companyId, scope: scope => scope.companyId },
+    load: async scope => rows.filter(row => inScope(row, scope)),
+    check: async row => row,
+  }, () => true);
+  await worker.ready;
+  await vi.advanceTimersByTimeAsync(1);
+  matches.mockClear(); decodeScope.mockClear();
+  // One run of each company changes: 40 run-scoped hints at once.
+  for (let company = 0; company < 40; company++) {
+    worker.invalidate(JSON.stringify({ companyId: `company-${company}`, runId: `run-${company}-0` }));
+  }
+  await vi.advanceTimersByTimeAsync(1);
+  await vi.advanceTimersByTimeAsync(1);
+  // Without the key every entry is tested against every dirty scope
+  // (400 entries x 40 scopes for each schedule computation).
+  expect(matches.mock.calls.length).toBeLessThan(rows.length * 8);
+  expect(decodeScope.mock.calls.length).toBeLessThanOrEqual(40);
+  expect(coordinator.nextWakeAt()).toBe(dueAt);
+  expect(onError).not.toHaveBeenCalled();
+});
+
+it("drops an entry that vanished from a keyed scope and keeps other companies' saved work", async () => {
+  vi.useFakeTimers();
+  const onError = vi.fn();
+  const owner = installDatabaseWorkSignals({ execute: vi.fn(async () => []), transaction: vi.fn(async () => undefined) });
+  coordinator = createDeliveryWorkCoordinator({ owner, canRun: () => true, onError });
+  type Scope = { companyId: string; runId?: string };
+  type Row = { id: string; companyId: string; dueAt: number };
+  const dueAt = Date.now() + 60_000;
+  let rows: Row[] = ["a", "b"].flatMap(company => [1, 2].map(run => ({ id: `${company}-${run}`, companyId: company, dueAt })));
+  const inScope = (row: Row, scope?: Scope) => !scope
+    || row.companyId === scope.companyId && (!scope.runId || row.id === scope.runId);
+  const check = vi.fn(async (_row: Row) => null);
+  const worker = registerScopedDeadlineWork<Row, Scope>(coordinator, {
+    queue: DELIVERY_QUEUES.activeExecutionRecovery,
+    minimumPassIntervalMs: 0,
+    decodeScope: hint => hint === "*" ? undefined : JSON.parse(hint),
+    matches: inScope,
+    scopeKey: { entry: row => row.companyId, scope: scope => scope.companyId },
+    load: async scope => rows.filter(row => inScope(row, scope)),
+    check,
+  }, () => true);
+  await worker.ready;
+  await vi.advanceTimersByTimeAsync(1);
+  rows = rows.filter(row => row.id !== "a-1");
+  worker.invalidate(JSON.stringify({ companyId: "a" }));
+  await vi.advanceTimersByTimeAsync(1);
+  expect(check).not.toHaveBeenCalled();
+  await vi.advanceTimersByTimeAsync(60_000);
+  expect(check.mock.calls.map(([row]) => row.id).sort()).toEqual(["a-2", "b-1", "b-2"]);
+  expect(coordinator.nextWakeAt()).toBeNull();
+  expect(onError).not.toHaveBeenCalled();
+});

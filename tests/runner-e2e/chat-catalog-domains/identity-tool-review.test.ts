@@ -19,7 +19,9 @@ it.each([
 });
 it("matches the actual review presentation and selected request opener in production UI source", () => {
   const card = readFileSync(new URL("../../../ui/src/components/task-chat/TaskChatInteractionCard.tsx", import.meta.url), "utf8");
-  expect(card).toContain('id={`interaction-${interaction.id}`} data-testid="task-chat-tool-review"');
+  // The timeline item owns the page anchor id; the composer takeover carries only data-interaction-id.
+  expect(card).toContain('const anchorId = presentation === "takeover" ? undefined : `interaction-${interaction.id}`;');
+  expect(card).toContain('id={anchorId} data-interaction-id={interaction.id} data-testid="task-chat-tool-review"');
   expect(card).toContain('onClick={() => onReviewRequest?.(interaction.id)}>Review request</Button>');
   expect(card).toContain('if (presentation === "takeover")');
   const composer = readFileSync(new URL("../../../ui/src/components/task-chat/TaskChatComposer.tsx", import.meta.url), "utf8");

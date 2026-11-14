@@ -114,3 +114,19 @@ it("forwards closed tool delivery records after binding and drops any record tha
   expect(frames).toEqual([{ method: "warning", params: { threadId: "actual-session",
     message: JSON.stringify({ ...delivery, socketRequestIndex: 2, socketIdleMs: 5270 }) } }]);
 });
+
+it("forwards closed input-coercion records and drops any that could carry values", () => {
+  const frames: { params: { message: string } }[] = [];
+  const forward = createOpenCodeFinishDiagnosticForwarder(frame => frames.push(frame as never));
+  forward.bind("session");
+  const record = { schema: "paperclip.runner.tool-input-coerced/v1", tool: "paperclip_finish", callIdSha256: "c".repeat(64), coercion: "json_string_to_object", paths: ["/continuation", "/evidence/0"] };
+  forward.diagnostic(JSON.stringify(record));
+  for (const bad of [
+    { ...record, value: "secret" },
+    { ...record, paths: ["/continuation value"] },
+    { ...record, paths: [] },
+    { ...record, coercion: "other" },
+    { ...record, tool: "x y" },
+  ]) forward.diagnostic(JSON.stringify(bad));
+  expect(frames.map(frame => JSON.parse(frame.params.message))).toEqual([record]);
+});

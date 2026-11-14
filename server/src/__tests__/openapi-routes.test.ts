@@ -41,6 +41,8 @@ const apiPrefixes: Record<string, string> = {
   "auth.ts": "/api/auth",
   "board-chat.ts": "/api",
   "browser-use.ts": "/api",
+  "mcp-apps.ts": "/api",
+  "mcp-skills.ts": "/api",
   "built-in-agents.ts": "/api",
   "chat-channels.ts": "/api",
   "slack-tools.ts": "/api",
@@ -96,6 +98,7 @@ const apiPrefixes: Record<string, string> = {
   "sidebar-preferences.ts": "/api",
   "summary-slots.ts": "/api",
   "status-cards.ts": "/api",
+  "tailscale-connections.ts": "/api",
   "teams-catalog.ts": "/api",
   "tool-access.ts": "/api",
   "voice-sessions.ts": "/api",
@@ -395,6 +398,14 @@ describe("openapi routes", () => {
     expect(operation.requestBody.content).toHaveProperty("application/json");
     expect(spec.paths).not.toHaveProperty("/api/routine-triggers/public/{publicId}/sentry-run-failures");
   });
+  it("documents connected-app skill review as board only and file reads as agent-run only", () => {
+    const spec = buildOpenApiSpec() as any;
+    const files = spec.paths["/api/agents/me/mcp-skills/{skillId}/files"].get;
+    expect(files["x-paperclip-authorization"]).toEqual({ actor: "agent", heartbeatBound: true });
+    expect(files.security).not.toContainEqual({ BoardSessionAuth: [] });
+    expect(spec.paths["/api/companies/{companyId}/mcp-skills/{skillId}/approve"].post["x-paperclip-authorization"]).toEqual({ actor: "board" });
+  });
+
   it.each(["summary", "tasks"])("documents the board-only compact attention %s contract", projection => {
     const spec = buildOpenApiSpec() as any;
     const operation = spec.paths[`/api/companies/{companyId}/attention/${projection}`].get;
@@ -408,6 +419,29 @@ describe("openapi routes", () => {
     expect(response.properties.nextCursor).toBeUndefined();
     if (projection === "tasks") expect(response.properties.taskIds).toMatchObject({ type: "array", items: { type: "string", format: "uuid" } });
     for (const code of ["200", "401", "403"]) expect(operation.responses[code]).toBeDefined();
+  });
+
+  // Full chat cohort 4: search_api listed the cancel route as open to agents, so an agent tried it and got 403.
+  it("documents question cancellation as board-only and points agents to withdraw", () => {
+    const spec = buildOpenApiSpec() as any;
+    const cancel = spec.paths["/api/issues/{id}/interactions/{interactionId}/cancel"].post;
+    expect(cancel["x-paperclip-authorization"]).toEqual({ actor: "board" });
+    expect(cancel.security).toEqual([{ BoardSessionAuth: [] }, { BoardApiKeyAuth: [] }]);
+    expect(cancel.summary).toContain("POST /api/issues/{id}/interactions/{interactionId}/withdraw");
+    expect(spec.paths["/api/issues/{id}/interactions/{interactionId}/withdraw"].post["x-paperclip-authorization"]).toEqual({ actor: "board_or_agent" });
+  });
+
+  it("points agents to resolve-from-comment to record a person's decline and keeps withdraw for their own obsolete card", () => {
+    const spec = buildOpenApiSpec() as any;
+    const interaction = "/api/issues/{id}/interactions/{interactionId}";
+    for (const summary of [spec.paths[`${interaction}/cancel`].post.summary, spec.paths[`${interaction}/withdraw`].post.summary]) {
+      expect(summary).toContain("only for the agent's own obsolete card");
+      expect(summary).toContain(`POST ${interaction}/resolve-from-comment`);
+      expect(summary).toContain("when the card's resolver policy allows");
+      expect(summary).toContain("to accept or decline a confirmation card on the person's explicit instruction");
+      expect(summary).toContain("not for question forms or governed approvals");
+    }
+    expect(spec.paths[`${interaction}/resolve-from-comment`].post.summary).toContain("including a decline of a card the person created");
   });
 
   it("documents the owned pending-question read as canonical attention items without client scope overrides", () => {
@@ -806,7 +840,7 @@ describe("openapi routes", () => {
     expect(
       res.body.paths["/api/issues/{id}/interactions/{interactionId}/withdraw"]
         .post.summary,
-    ).toBe("Withdraw a pending issue thread interaction");
+    ).toMatch(/^Withdraw a pending issue thread interaction\. /);
     const createInteraction =
       res.body.paths["/api/issues/{id}/interactions"].post;
     expect(createInteraction.description).toContain(
@@ -1215,6 +1249,51 @@ describe("openapi routes", () => {
     expect(spec.paths[base + "/test"].post.requestBody.content["application/json"].schema).toMatchObject({
       type: "object", additionalProperties: false, properties: {},
     });
+  });
+
+  it("documents Tailscale management as instance-admin operations without credential responses", () => {
+    const { spec } = loadSpecRoutes();
+    const base = "/api/companies/{companyId}/tailscale-connections";
+    for (const [path, method] of [[base, "get"], [base, "post"], [base + "/{connectionId}", "delete"],
+      [base + "/{connectionId}/device-login", "post"],
+      [base + "/{connectionId}/devices", "get"], [base + "/{connectionId}/pairing", "post"], ["/api/tools/oauth/tailscale/callback", "get"]]) {
+      const operation = spec.paths[path]?.[method];
+      expect(operation).toBeDefined();
+      expect(operation["x-paperclip-authorization"]).toEqual({ actor: "board", instanceAdmin: true });
+      expect(operation.security).toEqual([{ BoardSessionAuth: [] }, { BoardApiKeyAuth: [] }]);
+      expect(operation.responses["403"]).toBeDefined();
+    }
+    const connection = spec.paths[base].get.responses["200"].content["application/json"].schema.items;
+    expect(Object.keys(connection.properties).sort()).toEqual(["companyId", "id", "name", "status"]);
+    expect(connection.additionalProperties).toBe(false);
+    expect(connection.properties.status.enum).toEqual(["pending", "authorizing", "connecting", "connected", "disconnected", "expired", "error"]);
+    const start = spec.paths[base].post;
+    expect(start.requestBody.content["application/json"].schema).toMatchObject({ additionalProperties: false,
+      properties: { name: { minLength: 1, maxLength: 100 }, connectionId: { format: "uuid" } } });
+    expect(start.requestBody.content["application/json"].schema.required ?? []).toEqual([]);
+    const session = start.responses["201"].content["application/json"].schema;
+    expect(session.required).toEqual(["connection", "expiresAt"]);
+    expect(Object.keys(session.properties).sort()).toEqual(["authorizationUrl", "connection", "expiresAt", "needsApproval"]);
+    expect(session.properties.expiresAt).toMatchObject({ type: "string", format: "date-time", nullable: true });
+    expect(session.properties.authorizationUrl).toMatchObject({ type: "string", format: "uri" });
+    expect(session.properties.needsApproval).toEqual({ type: "boolean" });
+    expect(session.additionalProperties).toBe(false);
+    const progress = spec.paths[base + "/{connectionId}/device-login"].post;
+    expect(progress.responses["200"].content["application/json"].schema).toEqual(session);
+    expect(progress.requestBody).toBeUndefined();
+    for (const response of [start.responses["201"], progress.responses["200"]]) {
+      expect(response.headers).toMatchObject({
+        "Cache-Control": { schema: { enum: ["no-store"] } },
+        "Referrer-Policy": { schema: { enum: ["no-referrer"] } },
+      });
+    }
+    const pairing = spec.paths[base + "/{connectionId}/pairing"].post;
+    expect(pairing.requestBody.content["application/json"].schema).toMatchObject({ additionalProperties: false, required: ["deviceId"],
+      properties: { deviceId: { minLength: 1, maxLength: 256 }, port: { minimum: 1, maximum: 65535 } } });
+    expect(Object.keys(pairing.responses["200"].content["application/json"].schema.properties).sort()).toEqual(["command", "privateKeySecretId", "publicKey"]);
+    const callback = spec.paths["/api/tools/oauth/tailscale/callback"].get;
+    expect(callback.responses["303"].headers).toMatchObject({ Location: { schema: { type: "string" } }, "Cache-Control": { schema: { enum: ["no-store"] } } });
+    expect(callback.parameters).toContainEqual(expect.objectContaining({ in: "query", name: "state", required: true, schema: expect.objectContaining({ maxLength: 128 }) }));
   });
 
   it("covers the mounted server routes exactly", () => {

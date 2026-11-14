@@ -70,8 +70,18 @@ writers and another server process are not covered by these process-local signal
 A creation operation retains company, original environment, run, request identity,
 provider, and nonsecret configuration references. Its environment FK uses SET NULL;
 company/run/task identifiers remain after those records are removed. One operation
-owns each company/environment/run/request. A retry of an attached operation returns
-its active lease. Pending or unresolved ownership never authorizes another create.
+owns each company/environment/run/request until it is resolved. A retry of an
+attached operation returns its active lease. Pending or unresolved ownership never
+authorizes another create. An attached operation resolves when its lease is proven
+stopped, checked at the next creation with the same key: the closed lease must
+carry the stop proof same-run recovery requires (`remoteExecutionHasStopped`), a
+termination receipt for the sandbox this operation created, whether release, the
+Runner `complete` operation, or a destroyed reusable successor supplied it. That
+creation resolves the operation and records its replacement in one transaction,
+so concurrent recoveries make one provider call. A recovered cleanup operation
+resolves when its cleanup lease settles. Failed cleanup, success without a
+receipt, a receipt for another sandbox, a retained lease, and pending cleanup keep
+the operation and its key.
 Normal success transfers operation ownership and the lease in one transaction.
 Current company binding and run authority are checked again at attachment.
 Declared secret-reference fields retain only their references and nonsecret value

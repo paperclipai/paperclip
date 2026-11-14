@@ -190,6 +190,53 @@ function companyIdForResource(resource: AuthorizationResource) {
   return resource.companyId;
 }
 
+function plainAuthorizationActionPhrase(action: AuthorizationAction): string {
+  switch (action) {
+    case "tasks:assign": return "assign this task";
+    case "issue:mutate": return "change this task";
+    case "issue:comment": return "comment on this task";
+    case "issue:read": return "view this task";
+    case "agent_config:read": return "view this agent's settings";
+    case "agent_config:update": return "change this agent's settings";
+    case "agent_instructions:update": return "change this agent's instructions";
+    case "skill_config:update": return "change skills";
+    case "secrets:read": return "read secrets";
+    case "secrets:propose": return "propose secrets";
+    case "project:read": return "view this project";
+    case "project:write_workspace": return "change this project's workspace";
+    default: return "do this";
+  }
+}
+
+const lowerFirst = (text: string) => `${text.charAt(0).toLowerCase()}${text.slice(1)}`;
+
+type AuthorizationDenialReason = Exclude<AuthorizationDecision["reason"], `allow_${string}`>;
+
+const PLAIN_DELEGATED_USER_DENIALS: Record<AuthorizationDenialReason, (subject: string, action: string) => string> = {
+  deny_missing_membership: (subject) => `${subject} is no longer an active member of this company.`,
+  deny_company_boundary: (subject) => `${subject} cannot act in this company.`,
+  deny_unauthenticated: (subject) => `Paperclip could not confirm who ${lowerFirst(subject)} is.`,
+  deny_missing_grant: (subject, action) => `${subject} does not have permission to ${action}.`,
+  deny_no_grant: (subject, action) => `${subject} does not have permission to ${action}.`,
+  deny_scope: (subject, action) => `${subject} does not have permission to ${action}.`,
+  deny_unsupported_action: (subject, action) => `${subject} does not have permission to ${action}.`,
+  deny_missing_consent: (subject) => `${subject} can propose this change, but it needs approval before it is applied.`,
+  deny_policy_restricted: (subject, action) => `This company's access policy does not let ${lowerFirst(subject)} ${action}.`,
+  deny_low_trust_boundary: (subject, action) => `This company's limits for this agent do not let ${lowerFirst(subject)} ${action}.`,
+  deny_agent_interaction: (_subject, action) => `Agents are not allowed to ${action} in this company; a person who manages permissions can change this.`,
+  deny_issue_private: (subject) => `${subject} cannot see this private task.`,
+  deny_project_private: (subject) => `${subject} cannot see this private project.`,
+  inbox_target_user_unresolved: () => "Paperclip could not tell whose inbox this is.",
+  inbox_management_disabled: () => "This person has turned off agent management of their inbox.",
+  inbox_agent_not_allowed: () => "This agent is not on the list of agents this person allows to manage their inbox.",
+};
+
+export function plainDelegatedUserDenial(subject: string, decision: Pick<AuthorizationDecision, "reason">, action: AuthorizationAction): string {
+  const phrase = plainAuthorizationActionPhrase(action);
+  const explain = decision.reason.startsWith("allow_") ? null : PLAIN_DELEGATED_USER_DENIALS[decision.reason as AuthorizationDenialReason];
+  return explain ? explain(subject, phrase) : `${subject} does not have permission to ${phrase}.`;
+}
+
 function permissionForAction(action: AuthorizationAction): PermissionKey | null {
   if (isConnectionManagementAction(action)) return CONNECTION_MANAGEMENT_PERMISSIONS[action];
   if (action === "project:write_workspace") return "tasks:assign";
@@ -1017,7 +1064,7 @@ function createAuthorizationService(db: Db | DbTransaction, readSnapshot?: ReadA
       return deny({
         action: input.action,
         reason: "deny_missing_membership",
-        explanation: `${input.principalType} principal ${input.principalId} is not an active member of company ${input.companyId}.`,
+        explanation: input.principalType === "agent" ? "This agent is not an active member of this company." : "This user is not an active member of this company.",
       });
     }
 
@@ -2223,7 +2270,7 @@ function createAuthorizationService(db: Db | DbTransaction, readSnapshot?: ReadA
           return deny({
             action: input.action,
             reason: "deny_missing_membership",
-            explanation: `user principal ${input.actor.userId} is not an active member of company ${companyId}.`,
+            explanation: "This user is not an active member of this company.",
           });
         }
         if (
@@ -2265,7 +2312,7 @@ function createAuthorizationService(db: Db | DbTransaction, readSnapshot?: ReadA
           return deny({
             action: input.action,
             reason: "deny_missing_membership",
-            explanation: `user principal ${input.actor.userId} is not an active member of company ${companyId}.`,
+            explanation: "This user is not an active member of this company.",
           });
         }
         return deny({
@@ -2441,7 +2488,7 @@ function createAuthorizationService(db: Db | DbTransaction, readSnapshot?: ReadA
         return deny({
           action: input.action,
           reason: "deny_missing_membership",
-          explanation: `Inbox target user ${targetUserId} is not an active member of company ${companyId}.`,
+          explanation: "The person whose inbox was requested is not an active member of this company.",
         });
       }
 
@@ -2486,14 +2533,14 @@ function createAuthorizationService(db: Db | DbTransaction, readSnapshot?: ReadA
           return deny({
             action: input.action,
             reason: "inbox_management_disabled",
-            explanation: `Inbox management is disabled for user ${targetUserId}.`,
+            explanation: "This person has turned off agent management of their inbox.",
           });
         }
         if (policy?.mode === "allowlist" && !policy.allowedAgentIds.includes(actorAgentId)) {
           return deny({
             action: input.action,
             reason: "inbox_agent_not_allowed",
-            explanation: `Agent ${actorAgentId} is not allowed to manage user ${targetUserId}'s inbox.`,
+            explanation: "This agent is not on the list of agents this person allows to manage their inbox.",
           });
         }
         if (policy?.mode === "open" || policy?.mode === "allowlist") {
@@ -2531,14 +2578,14 @@ function createAuthorizationService(db: Db | DbTransaction, readSnapshot?: ReadA
         return deny({
           action: input.action,
           reason: "inbox_management_disabled",
-          explanation: `Inbox management is disabled for user ${targetUserId}.`,
+          explanation: "This person has turned off agent management of their inbox.",
         });
       }
       if (policy?.mode === "allowlist" && !policy.allowedAgentIds.includes(actorAgentId)) {
         return deny({
           action: input.action,
           reason: "inbox_agent_not_allowed",
-          explanation: `Agent ${actorAgentId} is not allowed to manage user ${targetUserId}'s inbox.`,
+          explanation: "This agent is not on the list of agents this person allows to manage their inbox.",
         });
       }
 
@@ -2822,7 +2869,7 @@ function createAuthorizationService(db: Db | DbTransaction, readSnapshot?: ReadA
       : deny({
           action: input.action,
           reason: "deny_missing_membership",
-          explanation: `Responsible user ${responsibleUserId} is unavailable for company ${companyId}.`,
+          explanation: "The person this agent acts for is no longer an active member of this company.",
         });
 
     if (
@@ -2841,8 +2888,8 @@ function createAuthorizationService(db: Db | DbTransaction, readSnapshot?: ReadA
       code: denyCode,
       explanation:
         denyCode === "RESPONSIBLE_USER_UNAVAILABLE"
-          ? `Responsible user ${responsibleUserId} is unavailable for company ${companyId}.`
-          : `Responsible user ${responsibleUserId} is not authorized for ${input.action}: ${userDecision.explanation}`,
+          ? "The person this agent acts for is no longer an active member of this company."
+          : plainDelegatedUserDenial("The person this agent acts for", userDecision, input.action),
       grant: userDecision.grant,
     });
 
@@ -2893,7 +2940,7 @@ function createAuthorizationService(db: Db | DbTransaction, readSnapshot?: ReadA
     return deny({
       action: input.action,
       reason: userDecision.reason,
-      explanation: `Authorizing user is not authorized for ${input.action}: ${userDecision.explanation}`,
+      explanation: plainDelegatedUserDenial("The person who authorized this agent", userDecision, input.action),
       grant: userDecision.grant,
     });
   }

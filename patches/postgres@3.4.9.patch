@@ -1,5 +1,5 @@
 diff --git a/cjs/src/connection.js b/cjs/src/connection.js
-index 07f6716702ac888215c86ad6e0071aaf55ae519c..85700681ccc7bf98f1fe987978db47e0097227f3 100644
+index 07f6716702ac888215c86ad6e0071aaf55ae519c..4ee75faa8ae47555576e3b4e0ec6b7c4b140ec2f 100644
 --- a/cjs/src/connection.js
 +++ b/cjs/src/connection.js
 @@ -173,8 +173,8 @@ function Connection(options, queues = {}, { onopen = noop, onend = noop, onclose
@@ -12,7 +12,16 @@ index 07f6716702ac888215c86ad6e0071aaf55ae519c..85700681ccc7bf98f1fe987978db47e0
      } catch (error) {
        sent.length === 0 && write(Sync)
        errored(error)
-@@ -438,6 +438,7 @@ function Connection(options, queues = {}, { onopen = noop, onend = noop, onclose
+@@ -330,6 +330,8 @@ function Connection(options, queues = {}, { onopen = noop, onend = noop, onclose
+       remaining = 0
+       incomings = null
+     }
++
++    incoming.length === 0 && (incoming = Buffer.alloc(0))
+   }
+ 
+   async function connect() {
+@@ -438,6 +440,7 @@ function Connection(options, queues = {}, { onopen = noop, onend = noop, onclose
      remaining = 0
      incomings = null
      clearImmediate(nextWriteTimer)
@@ -20,7 +29,7 @@ index 07f6716702ac888215c86ad6e0071aaf55ae519c..85700681ccc7bf98f1fe987978db47e0
      socket.removeListener('data', data)
      socket.removeListener('connect', connected)
      idleTimer.cancel()
-@@ -451,6 +452,9 @@ function Connection(options, queues = {}, { onopen = noop, onend = noop, onclose
+@@ -451,6 +454,9 @@ function Connection(options, queues = {}, { onopen = noop, onend = noop, onclose
        return reconnect()
  
      !hadError && (query || sent.length) && error(Errors.connection('CONNECTION_CLOSED', options, socket))
@@ -94,7 +103,7 @@ index f09c61c7e998f411560b95c9a8e1ed6a97972c11..04dded5c7e2cdc34ac01b29a87cc9324
            ? queries.push(q)
            : c.execute(q) || move(c, full)
 diff --git a/src/connection.js b/src/connection.js
-index 1b1cccde43b4570d5d071d6ffaab2669b3c2065a..81541f9cea75925256d7b02b2079c60802b2f92f 100644
+index 1b1cccde43b4570d5d071d6ffaab2669b3c2065a..0a4c4cc185f14afa30c7c6a294bafe689e685683 100644
 --- a/src/connection.js
 +++ b/src/connection.js
 @@ -173,8 +173,8 @@ function Connection(options, queues = {}, { onopen = noop, onend = noop, onclose
@@ -107,7 +116,16 @@ index 1b1cccde43b4570d5d071d6ffaab2669b3c2065a..81541f9cea75925256d7b02b2079c608
      } catch (error) {
        sent.length === 0 && write(Sync)
        errored(error)
-@@ -438,6 +438,7 @@ function Connection(options, queues = {}, { onopen = noop, onend = noop, onclose
+@@ -330,6 +330,8 @@ function Connection(options, queues = {}, { onopen = noop, onend = noop, onclose
+       remaining = 0
+       incomings = null
+     }
++
++    incoming.length === 0 && (incoming = Buffer.alloc(0))
+   }
+ 
+   async function connect() {
+@@ -438,6 +440,7 @@ function Connection(options, queues = {}, { onopen = noop, onend = noop, onclose
      remaining = 0
      incomings = null
      clearImmediate(nextWriteTimer)
@@ -115,7 +133,7 @@ index 1b1cccde43b4570d5d071d6ffaab2669b3c2065a..81541f9cea75925256d7b02b2079c608
      socket.removeListener('data', data)
      socket.removeListener('connect', connected)
      idleTimer.cancel()
-@@ -451,6 +452,9 @@ function Connection(options, queues = {}, { onopen = noop, onend = noop, onclose
+@@ -451,6 +454,9 @@ function Connection(options, queues = {}, { onopen = noop, onend = noop, onclose
        return reconnect()
  
      !hadError && (query || sent.length) && error(Errors.connection('CONNECTION_CLOSED', options, socket))

@@ -33,7 +33,12 @@ afterEach(async () => {
   await Promise.all(roots.splice(0).map(root => fs.rm(root, { recursive: true, force: true })));
 });
 
-async function fixture(options: { wrongCode?: boolean; unsafeOverlay?: boolean; changedFileLayer?: boolean; hardlink?: "safe" | "escape" | "unknown" } = {}) {
+const runnerInputs = "c".repeat(64);
+type RunnerImage = "published" | "one-transport-layer" | "three-transport-layers" | "unpublished" | "token-refused" | "slim-unreachable"
+  | "other-inputs" | "other-revision" | "no-slim-annotation" | "slim-annotation-is-a-tag" | "slim-is-other-bytes" | "slim-not-a-prefix" | "slim-is-the-full-image"
+  | "nine-transport-layers" | "pack-file-in-transport";
+
+async function fixture(options: { wrongCode?: boolean; unsafeOverlay?: boolean; changedFileLayer?: boolean; hardlink?: "safe" | "escape" | "unknown"; runnerImage?: RunnerImage } = {}) {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "retained-pack-test-"));
   roots.push(root);
   const temporary = path.join(root, "tmp");
@@ -44,6 +49,7 @@ async function fixture(options: { wrongCode?: boolean; unsafeOverlay?: boolean; 
     await fs.mkdir(path.join(pack, "bin"), { recursive: true });
     const artifact = { path: "bin/tool", sha256: `sha256:${hash(tool)}` };
     const payload = { pins: { opencode: "1.18.34" }, target: { platform: "linux", architecture: "x64" }, runnerSourceRevision: source,
+      ...(options.runnerImage ? { runnerInputsDigest: runnerInputs } : {}),
       contractDigest: `sha256:${hash(tool)}`, artifacts: { nodeCommand: artifact, opencodeCommand: artifact, opencodeProxy: artifact } };
     const manifest = { schema: "paperclip-runner/remote-provider-pack/v1", payload, digest: `sha256:${hash(canonicalProviderPackJson(payload))}` };
     await fs.writeFile(path.join(pack, "provider-pack.json"), JSON.stringify(manifest));
@@ -81,16 +87,21 @@ async function fixture(options: { wrongCode?: boolean; unsafeOverlay?: boolean; 
     await fs.writeFile(selected.pack + ".archive.json", JSON.stringify(receipt));
   }
   const transportPack = options.wrongCode ? current.pack : selected.pack;
-  const archive = tar.pack();
-  const chunks: Buffer[] = [];
-  const collected = (async () => { for await (const chunk of archive) chunks.push(Buffer.from(chunk)); })();
-  for (const name of ["provider-pack.archive.json", ...await fs.readdir(transportPack + ".archives").then(names => names.map(name => `provider-pack.archives/${name}`))]) {
-    const bytes = await fs.readFile(path.join(path.dirname(transportPack), name.replace("provider-pack", path.basename(transportPack))));
-    await new Promise<void>((done, reject) => archive.entry({ name: `opt/paperclip-runner/${name}`, type: "file", size: bytes.length }, bytes, error => error ? reject(error) : done()));
-  }
-  archive.finalize();
-  await collected;
-  const layer = gzipSync(Buffer.concat(chunks));
+  const transportNames = ["provider-pack.archive.json", ...await fs.readdir(transportPack + ".archives").then(names => names.map(name => `provider-pack.archives/${name}`))];
+  const transportLayer = async (prefix: string, names: string[], directories: string[] = []) => {
+    const archive = tar.pack();
+    const chunks: Buffer[] = [];
+    const collected = (async () => { for await (const chunk of archive) chunks.push(Buffer.from(chunk)); })();
+    for (const name of directories) await new Promise<void>((done, reject) => archive.entry({ name: `${name}/`, type: "directory" }, error => error ? reject(error) : done()));
+    for (const name of names) {
+      const bytes = name.startsWith("provider-pack/") ? Buffer.from("{}") : await fs.readFile(path.join(path.dirname(transportPack), name.replace("provider-pack", path.basename(transportPack))));
+      await new Promise<void>((done, reject) => archive.entry({ name: `${prefix}${name}`, type: "file", size: bytes.length }, bytes, error => error ? reject(error) : done()));
+    }
+    archive.finalize();
+    await collected;
+    return gzipSync(Buffer.concat(chunks));
+  };
+  const layer = await transportLayer("opt/paperclip-runner/", transportNames);
   const config = Buffer.from(JSON.stringify({ architecture: "amd64", os: "linux", config: { Labels: {
     "org.opencontainers.image.revision": selected.manifest.payload.runnerSourceRevision,
     "org.opencontainers.image.source": "https://github.com/paperclipai/paperclip",
@@ -104,14 +115,44 @@ async function fixture(options: { wrongCode?: boolean; unsafeOverlay?: boolean; 
     [`/v2/paperclipai/paperclip/blobs/sha256:${hash(config)}`, config],
     [`/v2/paperclipai/paperclip/blobs/sha256:${hash(layer)}`, layer],
   ]);
+  if (options.runnerImage && options.runnerImage !== "unpublished") {
+    const kind = options.runnerImage, repository = "/v2/paperclipai/paperclip-runner";
+    const stable = transportNames.filter(name => /\/[0-9]+\.tar\.zst$/.test(name)), rest = transportNames.filter(name => !stable.includes(name));
+    const archives = ["provider-pack.archives"];
+    const transport = kind === "one-transport-layer" ? [await transportLayer("", transportNames, archives)]
+      : kind === "three-transport-layers" ? [await transportLayer("", stable, archives), await transportLayer("", ["provider-pack.archive.json"]), await transportLayer("", rest.slice(1), archives)]
+      : [await transportLayer("", stable, archives), await transportLayer("", [...rest, ...(kind === "pack-file-in-transport" ? ["provider-pack/provider-pack.json"] : [])], archives)];
+    const described = (bytes: Buffer | string) => ({ digest: `sha256:${hash(bytes)}`, size: bytes.length, mediaType: "application/vnd.oci.image.layer.v1.tar+gzip" });
+    const shared = [described("large pack files"), described("the rest of the pack")];
+    const added = kind === "nine-transport-layers" ? Array.from({ length: 9 }, (_value, index) => described(`transport ${index}`)) : transport.map(described);
+    const imageOf = (layers: unknown[]) => Buffer.from(JSON.stringify({ schemaVersion: 2, config: { digest: `sha256:${hash("runner config")}`, size: 13 }, layers }));
+    const indexOf = (image: Buffer, annotations?: Record<string, string>) => Buffer.from(JSON.stringify({ schemaVersion: 2,
+      manifests: [{ digest: `sha256:${hash(image)}`, size: image.length, platform: { os: "linux", architecture: "amd64" } }], ...(annotations ? { annotations } : {}) }));
+    const full = imageOf([...shared, ...added]);
+    const slim = imageOf(kind === "slim-not-a-prefix" ? [shared[1], shared[0]] : kind === "slim-is-the-full-image" ? [...shared, ...added] : shared);
+    const slimIndex = indexOf(slim), slimDigest = `sha256:${hash(slimIndex)}`;
+    const fullIndex = indexOf(full, {
+      "io.paperclip.runner.inputs-digest": kind === "other-inputs" ? "d".repeat(64) : runnerInputs,
+      "org.opencontainers.image.revision": kind === "other-revision" ? "e".repeat(40) : selected.manifest.payload.runnerSourceRevision,
+      ...(kind === "no-slim-annotation" ? {} : { "io.paperclip.runner.slim-digest": kind === "slim-annotation-is-a-tag" ? `inputs-${runnerInputs}-slim` : slimDigest }),
+    });
+    routes.set(`${repository}/manifests/inputs-${runnerInputs}`, fullIndex);
+    routes.set(`${repository}/manifests/inputs-${runnerInputs}-slim`, slimIndex);
+    routes.set(`${repository}/manifests/sha256:${hash(full)}`, full);
+    routes.set(`${repository}/manifests/sha256:${hash(slim)}`, slim);
+    if (kind !== "slim-unreachable") routes.set(`${repository}/manifests/${slimDigest}`, kind === "slim-is-other-bytes" ? indexOf(slim, { moved: "true" }) : slimIndex);
+    for (const bytes of transport) routes.set(`${repository}/blobs/sha256:${hash(bytes)}`, bytes);
+  }
   const requests: string[] = [];
   const stalled = new Set<string>();
   const observers = new Map<string, () => void>();
   const server = createServer((request, response) => {
-    const route = new URL(request.url!, "http://fixture").pathname;
+    const url = new URL(request.url!, "http://fixture");
+    const route = url.pathname;
     requests.push(route);
-    const bytes = routes.get(route);
-    response.writeHead(bytes ? 200 : 404, { "content-length": bytes?.length ?? 0 });
+    const refused = options.runnerImage === "token-refused" && route === "/token" && url.searchParams.get("scope") === "repository:paperclipai/paperclip-runner:pull";
+    const bytes = refused ? undefined : routes.get(route);
+    response.writeHead(bytes ? 200 : refused ? 403 : 404, { "content-length": bytes?.length ?? 0 });
     response.flushHeaders();
     observers.get(route)?.();
     if (stalled.has(route)) return;
@@ -167,6 +208,63 @@ it("installs the exact retained pack through the real uploader on an empty host 
   expect(verifyUploaded).toHaveBeenCalledOnce();
   expect(input.requests.some(route => route.includes("/blobs/"))).toBe(true);
 });
+
+const fromRunnerImage = (route: string) => route.startsWith("/v2/paperclipai/paperclip-runner/");
+const fromApplicationImage = (route: string) => route.startsWith("/v2/paperclipai/paperclip/");
+
+async function importedSource(input: Awaited<ReturnType<typeof fixture>>) {
+  const source = await resolveProviderPackUploadSource({ root: input.current.pack, sourceDigest: input.current.manifest.digest, manifest: input.selected.manifest });
+  expect(source.archiveOnly).toBe(true);
+  expect(JSON.parse(await fs.readFile(path.join(source.root, "provider-pack.json"), "utf8"))).toEqual(input.selected.manifest);
+  expect(await fs.readFile(source.root + ".archive.json")).toEqual(await fs.readFile(input.selected.pack + ".archive.json"));
+  for (const name of await fs.readdir(input.selected.pack + ".archives")) {
+    expect(await fs.readFile(path.join(source.root + ".archives", name))).toEqual(await fs.readFile(path.join(input.selected.pack + ".archives", name)));
+  }
+  return source;
+}
+
+const transportBlobs = (input: Awaited<ReturnType<typeof fixture>>) => input.requests.filter(fromRunnerImage).filter(route => route.includes("/blobs/"));
+
+it("reads a retained pack that names its Runner image from only the layers that image adds to its slim image, and never reads the slim tag", async () => {
+  const input = await fixture({ runnerImage: "published" });
+  const source = await importedSource(input);
+  expect(input.requests.filter(fromRunnerImage)).toHaveLength(6);
+  expect(transportBlobs(input)).toHaveLength(2);
+  expect(input.requests.filter(fromApplicationImage)).toEqual([]);
+  expect(input.requests.filter(route => route.endsWith("-slim"))).toEqual([]);
+  expect((await fs.readdir(path.dirname(source.root))).sort()).toEqual(["provider-pack", "provider-pack.archive.json", "provider-pack.archives"]);
+  const pointer = JSON.parse(await fs.readFile(path.join(path.dirname(path.dirname(source.root)), input.selected.manifest.digest.slice(7) + ".json"), "utf8"));
+  expect(pointer.runnerImage).toMatchObject({ inputsDigest: runnerInputs });
+  expect(pointer.runnerImage.transportLayerDigests).toHaveLength(2);
+  expect(pointer.transportLayerDigest).toBe(pointer.runnerImage.transportLayerDigests[1]);
+});
+
+it.each([["one-transport-layer", 1], ["three-transport-layers", 3]] as const)("takes every layer after the slim image's, however many (%s)", async (runnerImage, layers) => {
+  const input = await fixture({ runnerImage });
+  await importedSource(input);
+  expect(transportBlobs(input)).toHaveLength(layers);
+  expect(input.requests.filter(fromApplicationImage)).toEqual([]);
+});
+
+it.each(["unpublished", "token-refused", "slim-unreachable"] as const)("falls back to the application image when the Runner image cannot be read (%s)", async runnerImage => {
+  const input = await fixture({ runnerImage });
+  const source = await importedSource(input);
+  expect(transportBlobs(input)).toEqual([]);
+  expect(input.requests.filter(fromApplicationImage).some(route => route.includes("/blobs/"))).toBe(true);
+  expect((await fs.readdir(path.dirname(source.root))).sort()).toEqual(["provider-pack", "provider-pack.archive.json", "provider-pack.archives"]);
+});
+
+it.each(["other-inputs", "other-revision", "no-slim-annotation", "slim-annotation-is-a-tag", "slim-is-other-bytes", "slim-not-a-prefix", "slim-is-the-full-image",
+  "nine-transport-layers", "pack-file-in-transport"] as const)(
+  "refuses a Runner image that does not match the pack or the layer contract, without trying another source (%s)", async runnerImage => {
+    const input = await fixture({ runnerImage });
+    await expect(upload(input)).rejects.toThrow("runner_remote_provider_source_invalid");
+    expect(input.requests.filter(fromApplicationImage)).toEqual([]);
+    expect(input.requests.filter(route => route.endsWith("-slim"))).toEqual([]);
+    if (runnerImage !== "pack-file-in-transport") expect(transportBlobs(input)).toEqual([]);
+    expect(input.runner.execute).not.toHaveBeenCalled();
+    expect(input.runner.syncIn).not.toHaveBeenCalled();
+  });
 
 it("keeps a matching current pack on its existing path without registry or cache reads", async () => {
   const input = await fixture();

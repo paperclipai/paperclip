@@ -684,6 +684,14 @@ export function budgetServiceInTransaction(db: Db, publications: ActivityPublica
     });
   }
 
+  async function listOpenIncidents(companyId: string): Promise<BudgetIncident[]> {
+    return hydrateIncidentRows(await db
+      .select()
+      .from(budgetIncidents)
+      .where(and(eq(budgetIncidents.companyId, companyId), eq(budgetIncidents.status, "open")))
+      .orderBy(desc(budgetIncidents.createdAt)));
+  }
+
   async function reconcileScope(companyId: string, scopeType: BudgetScopeType, scopeId: string,
     prepared?: { scope: ScopeRecord; policies: PolicyRow[]; observations: ObservedSpend[] }) {
     const scope = prepared?.scope ?? await resolveScopeRecord(db, scopeType, scopeId);
@@ -982,15 +990,13 @@ export function budgetServiceInTransaction(db: Db, publications: ActivityPublica
       return buildPolicySummary(row);
     },
 
+    /** The `activeIncidents` of `overview`, without the spend of every policy. */
+    openIncidents: listOpenIncidents,
+
     overview: async (companyId: string): Promise<BudgetOverview> => {
       const rows = await listPolicyRows(companyId);
       const policies = await mapBudgetReads(rows, buildPolicySummary);
-      const activeIncidentRows = await db
-        .select()
-        .from(budgetIncidents)
-        .where(and(eq(budgetIncidents.companyId, companyId), eq(budgetIncidents.status, "open")))
-        .orderBy(desc(budgetIncidents.createdAt));
-      const activeIncidents = await hydrateIncidentRows(activeIncidentRows);
+      const activeIncidents = await listOpenIncidents(companyId);
       return {
         companyId,
         policies,
@@ -1373,6 +1379,8 @@ export function budgetService(db: Db, _hooks: BudgetServiceHooks = {}) {
       tx => budgetServiceInTransaction(tx).listPolicies(companyId)),
     overview: (companyId: string) => withAccountingReadSnapshot(db, companyId,
       tx => budgetServiceInTransaction(tx).overview(companyId)),
+    openIncidents: (companyId: string) => withAccountingReadSnapshot(db, companyId,
+      tx => budgetServiceInTransaction(tx).openIncidents(companyId)),
     evaluateAdmission: (companyId: string, agentId: string | null, context?: AdmissionContext) =>
       withAccountingReadSnapshot(db, companyId, tx => budgetServiceInTransaction(tx).evaluateAdmission(companyId, agentId, context)),
     evaluateAffectedScopes: (companyId: string, agentId: string | null, projectId: string | null) =>

@@ -17,7 +17,6 @@ import { parse as parseToml } from "smol-toml";
 import { codexObservabilityToml } from "./agent-observability.js";
 
 import type { NativeRuntimeContextSnapshot } from "../contracts/runtime-context.js";
-import type { NativeMcpLaunchBinding } from "./native-mcp.js";
 
 async function assertSafeTree(root: string, child = ""): Promise<void> {
   const directory = child ? join(root, child) : root;
@@ -337,7 +336,6 @@ export async function prepareIsolatedCodexHome(input: {
   context: NativeRuntimeContextSnapshot | null;
   codexHome: string;
   sourceCodexHome?: string | null;
-  nativeMcp?: NativeMcpLaunchBinding | null;
   apiKey?: string | null;
 }): Promise<void> {
   await materializeNativeRuntimeSkills(
@@ -350,7 +348,7 @@ export async function prepareIsolatedCodexHome(input: {
   await writeIsolatedCodexAuth(input, providerConfig);
 }
 
-async function writeIsolatedCodexConfig(input: CodexAuthInput & { nativeMcp?: NativeMcpLaunchBinding | null }, providerConfig: string): Promise<void> {
+async function writeIsolatedCodexConfig(input: CodexAuthInput, providerConfig: string): Promise<void> {
   const configPath = join(input.codexHome, "config.toml");
   await mkdir(input.codexHome, { recursive: true, mode: 0o700 });
   await chmod(input.codexHome, 0o700);
@@ -366,18 +364,6 @@ async function writeIsolatedCodexConfig(input: CodexAuthInput & { nativeMcp?: Na
       "[features]",
       "shell_snapshot = false",
       "",
-      ...(input.nativeMcp
-        ? [
-            `[mcp_servers.${JSON.stringify(input.nativeMcp.name)}]`,
-            `url = ${JSON.stringify(input.nativeMcp.url)}`,
-            // This endpoint is Paperclip's authenticated policy gateway, not an
-            // upstream server. It enforces connection grants and human approvals
-            // for every operation; the provider must deliver calls to that gate.
-            'default_tools_approval_mode = "approve"',
-            `http_headers = { Authorization = ${JSON.stringify(`Bearer ${input.nativeMcp.token}`)} }`,
-            "",
-          ]
-        : []),
     ].join("\n"), { mode: 0o600, flag: "wx" });
     await rename(temporaryConfig, configPath);
     await chmod(configPath, 0o600);
@@ -391,7 +377,7 @@ type CodexAuthInput = {
   observability?: import("./agent-observability.js").ProviderObservabilityLaunch;
 };
 
-export async function prepareIsolatedCodexRecoveryHome(input: CodexAuthInput & { nativeMcp?: NativeMcpLaunchBinding | null }): Promise<void> {
+export async function prepareIsolatedCodexRecoveryHome(input: CodexAuthInput): Promise<void> {
   const providerConfig = await managedCodexProviderConfig(input.sourceCodexHome);
   await writeIsolatedCodexConfig(input, providerConfig);
   await writeIsolatedCodexAuth(input, providerConfig);

@@ -505,6 +505,7 @@ export interface PersistedHarnessSession {
     | "same_session_only"
     | "allow_replacement_after_governed_wait"
     | "allow_replacement_after_resume_failure";
+  awaitingProviderTurn?: boolean;
 }
 
 /** Runner proof that saved provider state cannot be restored by this runner
