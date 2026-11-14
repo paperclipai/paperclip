@@ -64,6 +64,13 @@
  * entire sites' surrounding functional code rather than individual
  * characters.
  *
+ * Test files (`*.test.*`, `*.spec.*`) still run through gates 1–3, but
+ * line comments and block comments (including JSX block comments) are
+ * stripped first. Comments are not rendered, so a test that documents a
+ * previously hardcoded hex must not fail the gate. String literals and
+ * executable code in tests are still scanned. Non-test files keep
+ * scanning comments.
+ *
  * Exit code: 0 if all three gates are clean (prints a per-gate summary).
  * Exit code: 1 if any gate has violations (lists them, grouped by gate).
  *
@@ -79,6 +86,170 @@ const REPO_ROOT = resolve(__dirname, "..");
 const UI_SRC = resolve(REPO_ROOT, "ui/src");
 const SCAN_DIRS = ["components", "pages"];
 const CSS_PATH = resolve(UI_SRC, "index.css");
+export const UI_TEST_FILE_RE = /\.(?:test|spec)\.[cm]?[jt]sx?$/;
+
+export function isUiTestFile(relPath) {
+  return UI_TEST_FILE_RE.test(relPath);
+}
+
+/**
+ * Replace line and block comments with spaces so match indices and line
+ * numbers stay aligned with the original source. Strings, template-literal
+ * interpolations, and regex literals are preserved. `://` is not treated as
+ * a line comment so URLs in JSX text survive. Regex literals are copied as
+ * code so an escaped slash plus the closing delimiter (`\/` `/`) is not
+ * mistaken for a line comment.
+ */
+export function stripJsCommentsPreservingNewlines(source) {
+  let output = "";
+  let index = 0;
+  const length = source.length;
+
+  function isLineTerminator(ch) {
+    return ch === "\n" || ch === "\r";
+  }
+
+  function looksLikeRegexLiteralStart() {
+    let cursor = index - 1;
+    while (cursor >= 0 && (source[cursor] === " " || source[cursor] === "\t")) {
+      cursor -= 1;
+    }
+    if (cursor < 0 || isLineTerminator(source[cursor])) return true;
+
+    const prev = source[cursor];
+    if (prev === "+" && cursor > 0 && source[cursor - 1] === "+") return false;
+    if (prev === "-" && cursor > 0 && source[cursor - 1] === "-") return false;
+
+    if (/[A-Za-z0-9_)$\]]/.test(prev)) {
+      if (!/[A-Za-z0-9_$]/.test(prev)) return false;
+      let start = cursor;
+      while (start >= 0 && /[A-Za-z0-9_$]/.test(source[start])) start -= 1;
+      const word = source.slice(start + 1, cursor + 1);
+      return /^(?:return|case|throw|typeof|void|delete|new|in|of|await|yield|else)$/.test(word);
+    }
+    return true;
+  }
+
+  function copyRegexLiteral() {
+    output += "/";
+    index += 1;
+    let inCharClass = false;
+    while (index < length) {
+      const ch = source[index];
+      if (isLineTerminator(ch)) return;
+      if (ch === "\\") {
+        output += ch;
+        index += 1;
+        if (index < length && !isLineTerminator(source[index])) {
+          output += source[index];
+          index += 1;
+        }
+        continue;
+      }
+      if (ch === "[" && !inCharClass) inCharClass = true;
+      else if (ch === "]" && inCharClass) inCharClass = false;
+      else if (ch === "/" && !inCharClass) {
+        output += ch;
+        index += 1;
+        while (index < length && /[gimsuy]/.test(source[index])) {
+          output += source[index];
+          index += 1;
+        }
+        return;
+      }
+      output += ch;
+      index += 1;
+    }
+  }
+
+  function copyCode(stopAtUnmatchedBrace) {
+    let braceDepth = 0;
+    while (index < length) {
+      const ch = source[index];
+      const next = index + 1 < length ? source[index + 1] : "";
+
+      if (stopAtUnmatchedBrace && ch === "}" && braceDepth === 0) {
+        return;
+      }
+
+      if (ch === "'" || ch === '"' || ch === "`") {
+        copyString(ch);
+        continue;
+      }
+
+      if (ch === "/" && next === "/" && source[index - 1] !== ":") {
+        while (index < length && !isLineTerminator(source[index])) {
+          output += " ";
+          index += 1;
+        }
+        continue;
+      }
+
+      if (ch === "/" && next === "*") {
+        output += "  ";
+        index += 2;
+        while (index < length) {
+          if (source[index] === "*" && source[index + 1] === "/") {
+            output += "  ";
+            index += 2;
+            break;
+          }
+          output += isLineTerminator(source[index]) ? source[index] : " ";
+          index += 1;
+        }
+        continue;
+      }
+
+      if (ch === "/" && looksLikeRegexLiteralStart()) {
+        copyRegexLiteral();
+        continue;
+      }
+
+      if (ch === "{") braceDepth += 1;
+      else if (ch === "}") braceDepth = Math.max(0, braceDepth - 1);
+
+      output += ch;
+      index += 1;
+    }
+  }
+
+  function copyString(quote) {
+    output += quote;
+    index += 1;
+    while (index < length) {
+      const ch = source[index];
+      if (ch === "\\") {
+        output += ch;
+        index += 1;
+        if (index < length) {
+          output += source[index];
+          index += 1;
+        }
+        continue;
+      }
+      if (quote === "`" && ch === "$" && source[index + 1] === "{") {
+        output += "${";
+        index += 2;
+        copyCode(true);
+        if (index < length && source[index] === "}") {
+          output += "}";
+          index += 1;
+        }
+        continue;
+      }
+      output += ch;
+      index += 1;
+      if (ch === quote) return;
+    }
+  }
+
+  copyCode(false);
+  return output;
+}
+
+export function prepareScanContent(relPath, content) {
+  return isUiTestFile(relPath) ? stripJsCommentsPreservingNewlines(content) : content;
+}
 
 // ── Allowlist parsing ────────────────────────────────────────────────────
 // Reads the machine-readable "* allow <path> — <reason>" lines from the
@@ -139,7 +310,7 @@ const HEX_COLOR_RE = /(?<![a-zA-Z0-9_/])#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{4}|[0-9a-
 // MUST match (literal numeric channels).
 const COLOR_FN_LITERAL_RE = /\b(?:rgb|rgba|hsl|hsla|oklch)\(\s*(?!var\()[0-9.%-]/g;
 
-function findColorLiteralIssues(content) {
+export function findColorLiteralIssues(content) {
   const issues = [];
   for (const m of content.matchAll(HEX_COLOR_RE)) {
     issues.push({ index: m.index, snippet: m[0] });
@@ -197,7 +368,7 @@ function bracketCarriesValue(raw) {
   return false;
 }
 
-function findArbitraryBracketIssues(content) {
+export function findArbitraryBracketIssues(content) {
   const issues = [];
   for (const m of content.matchAll(BRACKET_RE)) {
     const [full, , word, raw] = m;
@@ -231,7 +402,7 @@ const FONT_SIZE_CLASS_RE = /\btext-\[(?:[0-9.]+(?:px|rem|em)|[0-9.]+\/[0-9.]+)\]
 const FONT_SIZE_INLINE_RE = /\bfontSize\s*:\s*["'][0-9][^"']*["']/g;
 const FONT_SIZE_CSS_PROP_RE = /(?<!-)\bfont-size\s*:\s*["'`][0-9][^"'`]*["'`]/g;
 
-function findFontSizeIssues(content) {
+export function findFontSizeIssues(content) {
   const issues = [];
   for (const m of content.matchAll(FONT_SIZE_CLASS_RE)) {
     issues.push({ index: m.index, snippet: m[0] });
@@ -256,7 +427,7 @@ function findLegacyHslVarWrapperIssues(content) {
   }));
 }
 
-function lineNumberAt(content, index) {
+export function lineNumberAt(content, index) {
   return content.slice(0, index).split("\n").length;
 }
 
@@ -272,10 +443,11 @@ function main() {
     const relPathPosix = relPathToPosix(filePath);
 
     const allowed = isAllowlisted(relPathPosix, allowlist);
+    const scanContent = prepareScanContent(relPathPosix, content);
 
-    const g1 = findColorLiteralIssues(content);
-    const g2 = findArbitraryBracketIssues(content);
-    const g3 = findFontSizeIssues(content);
+    const g1 = findColorLiteralIssues(scanContent);
+    const g2 = findArbitraryBracketIssues(scanContent);
+    const g3 = findFontSizeIssues(scanContent);
 
     if (allowed) {
       allowlistedSkips += g1.length + g2.length + g3.length;
@@ -283,13 +455,13 @@ function main() {
     }
 
     for (const issue of g1) {
-      violations.gate1.push({ file: relPathPosix, line: lineNumberAt(content, issue.index), snippet: issue.snippet });
+      violations.gate1.push({ file: relPathPosix, line: lineNumberAt(scanContent, issue.index), snippet: issue.snippet });
     }
     for (const issue of g2) {
-      violations.gate2.push({ file: relPathPosix, line: lineNumberAt(content, issue.index), snippet: issue.snippet });
+      violations.gate2.push({ file: relPathPosix, line: lineNumberAt(scanContent, issue.index), snippet: issue.snippet });
     }
     for (const issue of g3) {
-      violations.gate3.push({ file: relPathPosix, line: lineNumberAt(content, issue.index), snippet: issue.snippet });
+      violations.gate3.push({ file: relPathPosix, line: lineNumberAt(scanContent, issue.index), snippet: issue.snippet });
     }
   }
 
@@ -338,4 +510,10 @@ function relPathToPosix(filePath) {
   return ("ui/src/" + relative(UI_SRC, filePath)).split("\\").join("/");
 }
 
-main();
+function isMainModule() {
+  return Boolean(process.argv[1]) && resolve(process.argv[1]) === fileURLToPath(import.meta.url);
+}
+
+if (isMainModule()) {
+  main();
+}
