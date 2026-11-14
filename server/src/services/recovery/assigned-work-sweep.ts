@@ -32,8 +32,8 @@ import { onboardingFirstTaskAwaitingUserSql } from "./onboarding-first-task-wait
 import { workspaceRecoverySourceEligible } from "../workspace-recovery-source.js";
 import { PENDING_CONTINUATION_BOUND_MS } from "../recovery-continuation-pacing.js";
 import { HELD_RECOVERY_WAKE_KEYS, queuedRecoveryRunsOf } from "../recovery-queue-admission.js";
-import { OLDEST_DISPATCH_SHARE, PERSON_WAKE_REASONS, QUEUED_RUN_AGING_MS } from "../heartbeat/queued-run-dispatch-order.js";
-import { listPersonOriginSourceRunIds } from "../heartbeat/queued-run-line.js";
+import { OLDEST_DISPATCH_SHARE, QUEUED_RUN_AGING_MS } from "../heartbeat/queued-run-dispatch-order.js";
+import { listPersonOriginSourceRunIds, personOriginRunSql } from "../heartbeat/queued-run-line.js";
 import { attributeBlock, BLOCK_ATTRIBUTION_WINDOW_MS, blockedStatusDetailsSql } from "../interruption-block-release.js";
 import { ASSIGNED_WORK_CONTINUED_ACTION, taskAutomaticAttempts } from "./task-automatic-attempts.js";
 import { isReattachPhaseActive, reattachPhaseRecheckAt } from "../heartbeat/run-admission.js";
@@ -962,15 +962,13 @@ type StalledRunColumns = { id: SQLWrapper; companyId: SQLWrapper; agentId: SQLWr
 const UUID_TEXT = "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$";
 
 /**
- * A run people wait on, as the dispatcher ranks it: a person asked for it (a
- * person wake reason or a person's wake request) or its task was created by a
- * person. `alias` names a heartbeat_runs row in the enclosing query.
+ * A run people wait on, as the dispatcher ranks it: a person asked for it
+ * (itself or through its source chain, the dispatcher's own rule) or its task
+ * was created by a person. `alias` names a heartbeat_runs row in the enclosing query.
  */
 function personWaitingRunSql(alias: string) {
   const run = (column: string) => sql.raw(`${alias}.${column}`);
-  return sql`(coalesce(${run("context_snapshot")}->>'wakeReason', '') in (${sql.join([...PERSON_WAKE_REASONS].map(reason => sql`${reason}`), sql`, `)})
-    or exists (select 1 from agent_wakeup_requests person_wake where person_wake.company_id = ${run("company_id")}
-      and (person_wake.id = ${run("wakeup_request_id")} or person_wake.run_id = ${run("id")}) and person_wake.requested_by_actor_type = 'user')
+  return sql`(${personOriginRunSql(sql`${run("company_id")}`, sql`${run("id")}`)}
     or exists (select 1 from issues person_task where person_task.company_id = ${run("company_id")}
       and person_task.id = case when ${run("context_snapshot")}->>'issueId' ~* ${UUID_TEXT}
         then (${run("context_snapshot")}->>'issueId')::uuid end

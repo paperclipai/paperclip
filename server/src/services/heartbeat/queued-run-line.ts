@@ -1,4 +1,4 @@
-import { and, asc, desc, eq, gte, inArray, isNotNull, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gte, inArray, isNotNull, sql, type SQL } from "drizzle-orm";
 import { agentWakeupRequests, agents, heartbeatRuns, issues, type Db } from "@paperclipai/db";
 import type { ExecutionAgentQueue } from "@paperclipai/shared";
 import { parseObject } from "../../adapters/utils.js";
@@ -36,6 +36,33 @@ export function issueRunPriorityRank(priority: string | null | undefined) {
     case "low": return 3;
     default: return 4;
   }
+}
+
+/**
+ * SQL: whether the run `runId` was asked for by a person, itself or through
+ * its source chain (`previousRunId`, else `retryOfRunId`), the same rule as
+ * {@link listPersonOriginSourceRunIds}. For use inside another query.
+ */
+export function personOriginRunSql(companyId: SQL, runId: SQL) {
+  const uuidPattern = "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$";
+  return sql`exists (
+    with recursive origin_chain(run_id, depth) as (
+      select ${runId}, 0
+      union all
+      select parent.id, origin_chain.depth + 1
+      from origin_chain
+      join heartbeat_runs origin_child on origin_child.id = origin_chain.run_id
+      join heartbeat_runs parent on parent.company_id = ${companyId} and parent.id = coalesce(
+        case when origin_child.context_snapshot->>'previousRunId' ~* ${uuidPattern}
+          then (origin_child.context_snapshot->>'previousRunId')::uuid end,
+        origin_child.retry_of_run_id)
+      where origin_chain.depth < ${PERSON_ORIGIN_CHAIN_DEPTH}
+    )
+    select 1 from origin_chain join heartbeat_runs origin_run on origin_run.id = origin_chain.run_id
+    where origin_run.context_snapshot->>'wakeReason' in (${sql.join([...PERSON_WAKE_REASONS].map(reason => sql`${reason}`), sql`, `)})
+      or origin_run.context_snapshot->>'taskRetryRequestId' is not null
+      or exists (select 1 from agent_wakeup_requests origin_wake where origin_wake.company_id = ${companyId}
+        and origin_wake.requested_by_actor_type = 'user' and (origin_wake.run_id = origin_run.id or origin_wake.id = origin_run.wakeup_request_id)))`;
 }
 
 export async function listPersonOriginSourceRunIds(db: Db, companyId: string, sourceRunIds: string[]) {
