@@ -2285,6 +2285,7 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
     isWriteTarget: (fresh: FenceableWorkspaceRow) => boolean;
     onSkip: () => T;
     skipLog?: { event: string; message: string };
+    sweepOwned?: boolean;
     write: (context: { tx: DbTransaction; fresh: FenceableWorkspaceRow }) => Promise<T>;
   }): Promise<T> {
     return withExecutionWorkspaceLifecycleLock(db, input.workspaceId, async (tx) => {
@@ -2317,7 +2318,7 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
         }
         return input.onSkip();
       }
-      await measureRunPhase("workspace.notification", () => notifyTerminalWorkspaceWork(tx, `workspace:${input.workspaceId}`));
+      if (!input.sweepOwned) await measureRunPhase("workspace.notification", () => notifyTerminalWorkspaceWork(tx, `workspace:${input.workspaceId}`));
       return input.write({ tx, fresh });
     });
   }
@@ -2337,11 +2338,12 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
   // snapshot.
   async function clearReopenPendingConsumptionUnderLock(
     workspaceId: string,
-    options: { expectedGeneration: number; requireStaleSinceBefore?: Date },
+    options: { expectedGeneration: number; requireStaleSinceBefore?: Date; sweepOwned?: boolean },
   ): Promise<boolean> {
     return fenceLifecycleGenerationWrite<boolean>({
       workspaceId,
       expectedGeneration: options.expectedGeneration,
+      sweepOwned: options.sweepOwned,
       isWriteTarget: (fresh) => {
         if (!metadataHasReopenPendingConsumption(fresh.metadata)) return false;
         if (options.requireStaleSinceBefore) {
@@ -2622,6 +2624,7 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
     return fenceLifecycleGenerationWrite<{ cleaned: boolean; warnings: string[]; skippedReopened?: boolean }>({
       workspaceId: workspace.id,
       expectedGeneration: capturedGeneration,
+      sweepOwned: true,
       isWriteTarget: (fresh) => isClosedExecutionWorkspaceStatus(fresh.status),
       skipLog: {
         event: "execution_workspace.cleanup_skipped",
@@ -2753,6 +2756,7 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
     return fenceLifecycleGenerationWrite<boolean>({
       workspaceId: input.workspaceId,
       expectedGeneration: input.capturedGeneration,
+      sweepOwned: true,
       isWriteTarget: (fresh) => isClosedExecutionWorkspaceStatus(fresh.status),
       skipLog: {
         event: "execution_workspace.cleanup_failed_write_skipped",
@@ -3798,7 +3802,7 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
         const expirationTree = usingIssueIds ? issueTree.filter(issue => usingIssueIds.has(issue.id)) : issueTree;
         if (!sourceIssue || expirationTree.some(issue => !TERMINAL_ISSUE_STATUSES.has(issue.status))) {
           if (reopenPending) {
-            await clearReopenPendingConsumptionUnderLock(workspace.id, {
+            await clearReopenPendingConsumptionUnderLock(workspace.id, { sweepOwned: true,
               expectedGeneration: readExecutionWorkspaceLifecycleGeneration(
                 workspace.metadata as Record<string, unknown> | null,
               ),
@@ -4055,7 +4059,7 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
             // a later terminal cycle can archive the workspace again. Pass the
             // generation from this snapshot, so the clear skips a newer reopen that
             // raised the generation and installed its own fence after this read.
-            await clearReopenPendingConsumptionUnderLock(workspace.id, {
+            await clearReopenPendingConsumptionUnderLock(workspace.id, { sweepOwned: true,
               expectedGeneration: readExecutionWorkspaceLifecycleGeneration(
                 workspace.metadata as Record<string, unknown> | null,
               ),
@@ -4127,7 +4131,7 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
           // the rebuilt worktree. Pass this snapshot's generation and re-confirm
           // staleness against the fresh row under the lock, so a newer reopen that
           // raised the generation or refreshed the timestamp keeps its live fence.
-          const cleared = await clearReopenPendingConsumptionUnderLock(workspace.id, {
+          const cleared = await clearReopenPendingConsumptionUnderLock(workspace.id, { sweepOwned: true,
             expectedGeneration: readExecutionWorkspaceLifecycleGeneration(
               workspace.metadata as Record<string, unknown> | null,
             ),
