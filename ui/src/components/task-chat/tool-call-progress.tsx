@@ -58,16 +58,17 @@ export function readToolCallProgressEvent(payload: Record<string, unknown>): Too
 }
 
 /** Whether a row is a call of this tool, under its gateway name or the native runner's name for it. */
-export function rowShowsTool(item: Pick<TaskChatToolItem, "rawName" | "name">, entry: Pick<ToolCallProgressSnapshot, "toolName" | "nativeToolName">): boolean {
-  const rowName = item.rawName ?? item.name;
-  return toolCallNameMatches(rowName, entry.toolName)
-    || (Boolean(entry.nativeToolName) && toolCallNameMatches(rowName, entry.nativeToolName!));
+export function rowShowsTool(item: Pick<TaskChatToolItem, "rawName" | "name" | "appToolName">, entry: Pick<ToolCallProgressSnapshot, "toolName" | "nativeToolName">): boolean {
+  // A wrapper call (OpenCode's paperclip_call_assigned_tool) is matched by the tool it runs.
+  return [item.appToolName, item.rawName ?? item.name].some((rowName) => Boolean(rowName) && (
+    toolCallNameMatches(rowName, entry.toolName)
+    || (Boolean(entry.nativeToolName) && toolCallNameMatches(rowName, entry.nativeToolName!))));
 }
 
 /** The progress for a row: the latest unfinished call of the same tool, in the same run when known. */
 export function pickToolCallProgress(
   entries: Iterable<ToolCallProgressSnapshot>,
-  item: Pick<TaskChatToolItem, "rawName" | "name">,
+  item: Pick<TaskChatToolItem, "rawName" | "name" | "appToolName">,
   runId: string | null,
 ): ToolCallProgressSnapshot | null {
   let best: ToolCallProgressSnapshot | null = null;

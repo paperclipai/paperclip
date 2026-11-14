@@ -15,6 +15,7 @@ import {
   ToolCallProgressStore,
 } from "./tool-call-progress";
 import type { TaskChatToolItem } from "./task-chat-model";
+import { transcriptToTaskChatItems, wrappedAppToolName } from "./transcript-adapter";
 
 const savedProgress = vi.hoisted(() => ({ list: vi.fn() }));
 vi.mock("@/api/mcpApps", () => ({ mcpAppsApi: { toolCallProgress: savedProgress.list } }));
@@ -53,6 +54,23 @@ describe("tool call progress matching", () => {
     // Another tool's hash never matches.
     expect(pickToolCallProgress([entry], tool({ rawName: "app_mcp_kv_demo_1a2b3c4d_slow_with_progress_000000000000" }), "run-1")).toBeNull();
     expect(readToolCallProgressEvent({ ...entry })?.nativeToolName).toBe(nativeName);
+  });
+
+  it("finds a wrapper call's row (OpenCode's paperclip_call_assigned_tool) by the tool it runs", () => {
+    const gatewayName = "mcp.kv-demo-1a2b3c4d:slow-with-progress";
+    const nativeName = "app_mcp_kv_demo_1a2b3c4d_slow_with_progress_889fb9a8d98e";
+    const items = transcriptToTaskChatItems([{
+      kind: "tool_call", ts: "2026-11-13T10:00:00.000Z", toolUseId: "call-1",
+      name: "paperclip_call_assigned_tool", input: { name: nativeName, arguments: { steps: 10 } },
+    }], { runId: "run-1", running: true });
+    const row = items.find((item): item is TaskChatToolItem => item.kind === "tool")!;
+    expect(row.appToolName).toBe(nativeName);
+    const entry = snapshot({ toolName: gatewayName, nativeToolName: nativeName });
+    expect(pickToolCallProgress([entry], row, "run-1")).toBe(entry);
+    // Any other call, or a wrapper without a name, carries none.
+    expect(wrappedAppToolName("Bash", { name: nativeName })).toBeUndefined();
+    expect(wrappedAppToolName("mcp__paperclip__paperclip_call_assigned_tool", { name: nativeName })).toBe(nativeName);
+    expect(wrappedAppToolName("paperclip_call_assigned_tool", { arguments: {} })).toBeUndefined();
   });
 
   it("picks the newest unfinished call of the row's tool in the row's run", () => {
