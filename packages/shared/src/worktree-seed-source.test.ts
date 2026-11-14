@@ -79,6 +79,37 @@ describe("resolveCanonicalWorktreeSeedSource", () => {
     });
   });
 
+  it("uses the canonical instance-root identity with an adjacent env lacking a pointer", () => {
+    const source = makeInstanceRoot("default");
+    fs.writeFileSync(path.join(path.dirname(source.configPath), ".env"), "# Other instance settings\n");
+    const target = makeInstance("paperclip-seed-target-", "target-instance");
+    expect(resolveCanonicalWorktreeSeedSource({
+      registeredBaseWorkspaceCwd: makePlainCheckout(),
+      explicitSourceConfigPath: source.configPath,
+      targetConfigPath: target.configPath,
+      expectedTargetInstanceId: target.instanceId,
+      manifestSource: source,
+      manifestTargetInstanceId: target.instanceId,
+    }).instanceId).toBe("default");
+  });
+
+  it("rejects conflicting instance-root pointers and missing worktree pointers", () => {
+    const source = makeInstanceRoot("default");
+    fs.writeFileSync(path.join(path.dirname(source.configPath), ".env"), "PAPERCLIP_INSTANCE_ID=another\n");
+    const target = makeInstance("paperclip-seed-target-", "target-instance");
+    const input = {
+      explicitSourceConfigPath: source.configPath,
+      targetConfigPath: target.configPath,
+      expectedTargetInstanceId: target.instanceId,
+      manifestSource: source,
+      manifestTargetInstanceId: target.instanceId,
+    };
+    expect(() => resolveCanonicalWorktreeSeedSource(input)).toThrow(/does not match its instance directory/);
+    fs.writeFileSync(path.join(path.dirname(source.configPath), ".env"), "# No pointer\n");
+    fs.writeFileSync(path.join(path.dirname(target.configPath), ".env"), "# No pointer\n");
+    expect(() => resolveCanonicalWorktreeSeedSource(input)).toThrow(/no PAPERCLIP_INSTANCE_ID binding/);
+  });
+
   it("rejects a dangling config symlink instead of falling back to the named source", () => {
     const baseCwd = makePlainCheckout();
     fs.mkdirSync(path.join(baseCwd, ".paperclip"), { recursive: true });

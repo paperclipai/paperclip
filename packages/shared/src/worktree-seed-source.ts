@@ -25,6 +25,9 @@ export type RegisteredWorktreeSeedSourceInput = {
 function readInstanceId(configPath: string, label: "source" | "target"): string {
   const configDir = path.dirname(configPath);
   const envPath = path.join(configDir, ".env");
+  const directoryInstanceId = path.basename(path.dirname(configDir)) === "instances"
+    ? resolvePaperclipInstanceId(path.basename(configDir))
+    : null;
   if (!existsSync(envPath)) {
     // An instance-root config (`<home>/instances/<id>/config.json`) names its instance
     // by directory rather than by an adjacent .env; worktree configs always ship one.
@@ -39,8 +42,14 @@ function readInstanceId(configPath: string, label: "source" | "target"): string 
       /^\s*(?:export\s+)?PAPERCLIP_INSTANCE_ID\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s#]+))/,
     );
     const value = (match?.[1] ?? match?.[2] ?? match?.[3] ?? "").trim();
-    if (value) return value;
+    if (value) {
+      if (directoryInstanceId && value !== directoryInstanceId) {
+        throw new Error(`Registered ${label} Paperclip config pointer does not match its instance directory.`);
+      }
+      return value;
+    }
   }
+  if (directoryInstanceId) return directoryInstanceId;
   throw new Error(`Registered ${label} Paperclip config has no PAPERCLIP_INSTANCE_ID binding.`);
 }
 
