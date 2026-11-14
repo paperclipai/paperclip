@@ -1,6 +1,6 @@
 import { resolveExternalTestDatabaseUrl } from "./helpers/external-test-database.js";
 import { randomBytes } from "node:crypto";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { eq, inArray, sql } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/postgres-js";
 import { agents, companies, createDb, heartbeatRunEvents, heartbeatRuns, issues, nativeRunnerCheckpoints, subscribeDatabaseWork } from "@paperclipai/db";
@@ -325,7 +325,11 @@ describeEmbeddedPostgres("atomic ordinary run events", () => {
     const unsubscribe = subscribeDatabaseWork(db, DELIVERY_QUEUES.chatNativeProgress, wake => { wakes.push(wake); });
     try {
       const appended = sentStatements(db.$client, () => appendHeartbeatRunEvent(db, event));
-      await new Promise(resolve => setTimeout(resolve, 200));
+      await vi.waitFor(async () => {
+        const [waiting] = await otherDb.execute<{ count: number }>(sql`select count(*)::int as count from pg_stat_activity
+          where datname = current_database() and wait_event_type = 'Lock' and query like '%"locked_run"%'`);
+        expect(waiting?.count).toBe(1);
+      }, { timeout: 10_000, interval: 20 });
       release();
       await holder;
       const { result, statements } = await appended;
