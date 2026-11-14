@@ -925,8 +925,10 @@ advisory locks and nest dedicated actions, so an action that finds no idle
 client opens one and closes it on release when four are already retained. A
 connection whose action throws is closed, never reused. Actions must keep
 session state transaction-scoped (`pg_advisory_xact_lock`,
-`set_config(..., true)`). Shutdown and ending the owner client close the idle
-set.
+`set_config(..., true)`). Like the main pool, a retained session sees an
+`ALTER DATABASE` or `ALTER ROLE ... SET` change only after it reconnects; a test
+that changes such a setting calls `closeDedicatedDbConnections` first. Shutdown
+and ending the owner client close the idle set.
 
 An explicit `DATABASE_PREPARED_STATEMENTS=true` enables named prepared statements
 for parameterized ORM queries, transactions, reserved connections, and dedicated
