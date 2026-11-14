@@ -4,6 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import {
   claudeCommandSupportsEffortFlag,
+  minimumClaudeCliVersionForModel,
   readClaudeCommandVersion,
   resetClaudeCliCapabilitiesCacheForTests,
 } from "./cli-capabilities.js";
@@ -39,4 +40,19 @@ describe.skipIf(process.platform === "win32")("Claude CLI capability probe budge
     await expect(readClaudeCommandVersion(input)).resolves.toBeNull();
     await expect(claudeCommandSupportsEffortFlag(input)).resolves.toBeNull();
   }, 30_000);
+});
+
+describe("minimumClaudeCliVersionForModel", () => {
+  it("returns 2.1.290 for claude-fable-5-2 including provider prefixes and [1m] suffix", () => {
+    expect(minimumClaudeCliVersionForModel("claude-fable-5-2")).toBe("2.1.290");
+    expect(minimumClaudeCliVersionForModel("anthropic.claude-fable-5-2[1m]")).toBe("2.1.290");
+    expect(minimumClaudeCliVersionForModel("us.anthropic.claude-fable-5-2")).toBe("2.1.290");
+  });
+
+  it("preserves minimum versions for existing models and null for unknown models", () => {
+    expect(minimumClaudeCliVersionForModel("claude-opus-5-5")).toBe("2.1.280");
+    expect(minimumClaudeCliVersionForModel("claude-sonnet-5-5")).toBe("2.1.284");
+    expect(minimumClaudeCliVersionForModel("claude-fable-5-1")).toBe("2.1.251");
+    expect(minimumClaudeCliVersionForModel("claude-unknown-model")).toBeNull();
+  });
 });
