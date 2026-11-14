@@ -13,6 +13,7 @@ import { runtimePublicOrigin } from "./cloud-runtime-identity.js";
 import { projectSafeChatPublicationText } from "./chat-publication-projection.js";
 import { githubReviewCheckService } from "./chat-github-checks.js";
 import { githubReviewSummary } from "./chat-channels/github/review-heading.js";
+import { findGitHubReviewCheck, githubReviewCheckName } from "./chat-channels/github/review-check-name.js";
 import { githubPublicationRetry, GITHUB_INLINE_RETRY_WINDOW_MS, GITHUB_INLINE_MAX_ATTEMPTS } from "./chat-channels/github/retry.js";
 import { createHash } from "node:crypto";
 import { githubResponseCommentService, writeGitHubResponseComment } from "./chat-github-response-comments.js";
@@ -1367,21 +1368,13 @@ export function githubChatReviewService(db: Db, fetchImpl = fetch) {
               }, source, firstInlineReceipt, api, lease, async () => { await currentHead(review.headSha); });
             }
             await currentHead(review.headSha);
-            const checks = await api.request<{
-              check_runs: Array<{
-                id: number;
-                external_id?: string;
-                app?: { id?: number };
-              }>;
-            }>(
-              `/commits/${review.headSha}/check-runs?check_name=Paperclip%20Review&per_page=100`,
-            );
-            const check = checks.check_runs.find(
-              (item) =>
-                item.external_id ===
-                  `${source.endpoint.id}:${source.number}:${review.headSha}` &&
-                String(item.app?.id) === source.endpoint.botExternalId,
-            );
+            const checkName = githubReviewCheckName(source.endpoint);
+            const check = await findGitHubReviewCheck(api.request, {
+              headSha: review.headSha,
+              externalId: `${source.endpoint.id}:${source.number}:${review.headSha}`,
+              appId: source.endpoint.botExternalId,
+              name: checkName,
+            });
             await currentHead(review.headSha);
             const postedCheck = await api.request<{
               id: number;
@@ -1389,7 +1382,7 @@ export function githubChatReviewService(db: Db, fetchImpl = fetch) {
             }>(check ? `/check-runs/${check.id}` : "/check-runs", {
               method: check ? "PATCH" : "POST",
               body: {
-                name: "Paperclip Review",
+                name: checkName,
                 head_sha: review.headSha,
                 external_id: `${source.endpoint.id}:${source.number}:${review.headSha}`,
                 ...(board ? { details_url: `${board}/issues/${source.issue.id}` } : {}),
