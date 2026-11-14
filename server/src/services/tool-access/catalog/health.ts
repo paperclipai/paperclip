@@ -35,12 +35,13 @@ type HealthDependencies = {
   discovery: ToolCatalogDiscovery;
   setupPolicy: ConnectionSetupPolicy;
   resolveCredentialHeaders: ConnectionCredentialAccess["resolveCredentialHeaders"];
+  vaultGrantForConnection: ConnectionCredentialAccess["vaultGrantForConnection"];
   refreshManagedGitHubGrantAccess: ReturnType<typeof createGitHubGrantContinuity>["refreshManagedGitHubGrantAccess"];
   ensureRuntimeSlot: ReturnType<typeof createToolRuntimeSlots>["ensureRuntimeSlot"];
   stdioTemplateId(companyId: string, config: Record<string, unknown>): Promise<string>;
 };
 
-export function createConnectionHealth(db: Db, { now, audit, getConnectionRow, discovery, setupPolicy, resolveCredentialHeaders, refreshManagedGitHubGrantAccess, ensureRuntimeSlot, stdioTemplateId }: HealthDependencies) {
+export function createConnectionHealth(db: Db, { now, audit, getConnectionRow, discovery, setupPolicy, resolveCredentialHeaders, vaultGrantForConnection, refreshManagedGitHubGrantAccess, ensureRuntimeSlot, stdioTemplateId }: HealthDependencies) {
   const { discoverTools, remoteTools, validateAgentMailConnection, validateCogneeConnection } = discovery;
   const { assertConnectorConnectionSetupEnabled } = setupPolicy;
   async function updateConnectionHealth(
@@ -94,7 +95,9 @@ export function createConnectionHealth(db: Db, { now, audit, getConnectionRow, d
         config.sourceTemplateKey === "github" &&
         oauth.connectorProfile === "github.code"
       ) {
-        const activeGrants = await db
+        const activeGrants = connection.credentialPolicy === "per_agent"
+          ? [await vaultGrantForConnection(connection, actor)].filter(grant => grant !== null)
+          : await db
           .select()
           .from(connectionGrants)
           .where(
