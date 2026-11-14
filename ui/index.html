@@ -36,8 +36,21 @@
             themeColorMeta.setAttribute("content", isDark ? darkThemeColor : lightThemeColor);
           }
         } catch {
-          document.documentElement.classList.add("dark");
-          document.documentElement.style.colorScheme = "dark";
+          // Storage is unavailable, so no choice can be remembered. Follow the
+          // OS here too: the provider reads an unreadable preference as
+          // "follow the system", and first paint must not disagree with it.
+          let prefersDark = true;
+          try {
+            prefersDark = window.matchMedia("(prefers-color-scheme: dark)").matches;
+          } catch {
+            // Keep the dark default when the environment cannot report one.
+          }
+          document.documentElement.classList.toggle("dark", prefersDark);
+          document.documentElement.style.colorScheme = prefersDark ? "dark" : "light";
+          const themeColorMeta = document.querySelector('meta[name="theme-color"]');
+          if (themeColorMeta) {
+            themeColorMeta.setAttribute("content", prefersDark ? darkThemeColor : lightThemeColor);
+          }
         }
       })();
     </script>
