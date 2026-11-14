@@ -530,6 +530,7 @@ export function environmentService(db: Db) {
           stockVersion: string,
           installedStockHash: string,
           defaultsJson: Record<string, unknown>,
+          onlyStale = false,
         ) => {
           await tx
             .update(builtInManagedResources)
@@ -544,6 +545,7 @@ export function environmentService(db: Db) {
               eq(builtInManagedResources.resourceKind, MANAGED_ENVIRONMENT_RESOURCE_KIND),
               eq(builtInManagedResources.resourceKey, MANAGED_ENVIRONMENT_RESOURCE_KEY),
               eq(builtInManagedResources.resourceId, environmentId),
+              ...(onlyStale ? [ne(builtInManagedResources.stockHash, installedStockHash)] : []),
             ));
         };
 
@@ -677,8 +679,14 @@ export function environmentService(db: Db) {
           });
         // Keep the observed stockStatus so activity records disclose overwrites.
         // Manifest ownership does not grant permission to undo operator archives.
+        // Only a row carrying the managed marker is Paperclip's to replace. A
+        // binding alone is not proof: the skipped path below also binds an
+        // operator-created same-name row.
+        const ownedByPaperclip =
+          (row.metadata as Record<string, unknown> | null)?.managedByPaperclip === true;
         const applyOverOperatorEdits = stockStatus === "operator_modified" &&
           input.applyOverOperatorEdits === true &&
+          ownedByPaperclip &&
           (row.status !== "archived" || (archivedByReconciler && !operatorReaffirmedArchive));
         if (applyOverOperatorEdits && row.status === "archived") providerReactivated = true;
 
@@ -783,6 +791,14 @@ export function environmentService(db: Db) {
         if (stockStatus === "stock_current") {
           const hasStaleBinding = matchingBindings.some(
             (binding) => binding.stockHash !== latestStockHash,
+          );
+          // Another company's pass may already have installed this stock.
+          await refreshAttachedBindings(
+            row.id,
+            input.stockVersion ?? MANAGED_ENVIRONMENT_STOCK_VERSION,
+            latestStockHash,
+            desiredStock,
+            true,
           );
           await writeBindings(
             row.id,
