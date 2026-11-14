@@ -3,7 +3,7 @@ import { eq } from "drizzle-orm";
 import express from "express";
 import request from "supertest";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { connectionGrants, createDb, toolMcpGatewayTokens, toolPolicies, startEmbeddedPostgresTestDatabase, getEmbeddedPostgresTestSupport } from "@paperclipai/db";
+import { connectionGrants, createDb, heartbeatRuns, toolMcpGatewayTokens, toolPolicies, startEmbeddedPostgresTestDatabase, getEmbeddedPostgresTestSupport } from "@paperclipai/db";
 import { createToolGatewayService } from "../services/tool-gateway.js";
 import { mcpGatewayProtocolRoutes } from "../routes/tool-gateway.js";
 import { createListingFixture } from "./helpers/tool-gateway-listing-fixture.js";
@@ -45,6 +45,8 @@ suite("MCP discovery over HTTP", () => {
     const response = await post();
     expect(response.status, JSON.stringify(response.body)).toBe(200);
     expect(calls).toBe(1);
+    await db.update(heartbeatRuns).set({ status: "succeeded", finishedAt: new Date() })
+      .where(eq(heartbeatRuns.id, fixture.run.id));
     await post().expect(401);
     expect(calls).toBe(1);
   });
