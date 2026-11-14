@@ -463,7 +463,20 @@ jobs:
         run: node scripts/runner-release-crate-cache.mjs mark-current
 
       - name: Typecheck, CLI guidance safety and release registry tests
+        if: ${{ hashFiles('scripts/ci-typecheck-lane.mjs') != '' }}
         run: node scripts/ci-typecheck-lane.mjs
+
+      - name: Typecheck a checkout that predates the typecheck lane script
+        if: ${{ hashFiles('scripts/ci-typecheck-lane.mjs') == '' }}
+        env:
+          PAPERCLIP_TYPECHECK_LOW_MEMORY: "1"
+        run: |
+          pnpm run typecheck:build-gaps
+          node scripts/typecheck-test-programs.mjs --low-memory
+          pnpm --filter @paperclipai/server typecheck
+          node scripts/typecheck-test-projects.mjs --low-memory --reuse-declarations
+          pnpm exec vitest run --project @paperclipai/server server/src/__tests__/cli-invocation-safety.test.ts
+          pnpm run test:release-registry
 
       - name: Upload CI profile timings
         continue-on-error: true
@@ -639,6 +652,9 @@ jobs:
       # image published for eight hours while PR CI stayed green.)
       - name: Run generated-file drift checks against the Docker build context
         run: docker buildx build --file .github/docker-context-checks.Dockerfile .
+
+      - name: Verify Tailscale runtime clients
+        run: docker buildx build --file Dockerfile --target tailscale-client .
 
       - name: Upload CI profile timings
         continue-on-error: true

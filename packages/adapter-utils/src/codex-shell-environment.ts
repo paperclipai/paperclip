@@ -26,6 +26,9 @@ export function codexShellEnvironmentKeys(
     .map(([key]) => key));
   return [...new Set([
     "PATH", "HOME", "LANG", "LANGUAGE", "LC_ALL", "LC_CTYPE", "TZ", "TMPDIR", "TEMP", "TMP", "CODEX_HOME",
+    // Certificate-trust names stay inheritable even when the launch environment
+    // does not carry them yet: sandboxes inject the values at execution time.
+    "SSL_CERT_FILE", "SSL_CERT_DIR", "GIT_SSL_CAINFO", "NODE_EXTRA_CA_CERTS", "DENO_CERT", "REQUESTS_CA_BUNDLE", "CURL_CA_BUNDLE",
     ...Object.keys(environment).filter(key => ENVIRONMENT_NAME.test(key) && !PROVIDER_ONLY_KEYS.has(key.toUpperCase())
       && (key === "PAPERCLIP_API_KEY" || configuredSecrets.has(key) || !SECRET_NAME.test(key))),
     ...GITHUB_LAUNCHER_KEYS.filter(key => environment[key]),

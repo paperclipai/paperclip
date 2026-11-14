@@ -53,6 +53,7 @@ export interface PreparedRemoteManagedRuntime {
    * absent (per-project failure isolation).
    */
   additionalSourceDirs: Record<string, string>;
+  disposeRuntime(): Promise<void>;
   restoreWorkspace(onProgress?: RuntimeProgressSink): Promise<void>;
 }
 
@@ -75,16 +76,30 @@ function shellQuote(value: string): string {
 }
 
 async function readRemoteFile(spec: SshRemoteExecutionSpec, remotePath: string): Promise<Buffer> {
-  const result = await runSshCommand(spec, `base64 < ${shellQuote(remotePath)}`, {
-    maxBuffer: 1024 * 1024,
-  });
-  return Buffer.from(result.stdout.replace(/\s+/g, ""), "base64");
+  const missingMarker = "paperclip:remote-file-missing";
+  const missingExitCode = 44;
+  const file = shellQuote(remotePath);
+  const parent = shellQuote(path.posix.dirname(remotePath));
+  /* Confirm the parent is searchable so a permission error cannot masquerade as absence. */
+  const command = `if [ -d ${parent} ] && [ -x ${parent} ] && [ ! -e ${file} ]; then printf '%s\\n' '${missingMarker}'; exit ${missingExitCode}; fi; base64 < ${file}`;
+  try {
+    const result = await runSshCommand(spec, command, { maxBuffer: 1024 * 1024 });
+    return Buffer.from(result.stdout.replace(/\s+/g, ""), "base64");
+  } catch (error) {
+    const failure = error as { code?: unknown; stdout?: unknown } | null;
+    if (failure?.code === missingExitCode && typeof failure.stdout === "string" && failure.stdout.trim() === missingMarker) {
+      throw Object.assign(new Error("Remote runtime file does not exist"), { code: "ENOENT" });
+    }
+    throw error;
+  }
 }
 
 export function buildRemoteExecutionSessionIdentity(spec: SshRemoteExecutionSpec | null) {
   if (!spec) return null;
   return {
     transport: "ssh",
+    ...(typeof spec.useHostAuth === "boolean" ? { useHostAuth: spec.useHostAuth } : {}),
+    ...(spec.tailscaleIdentity ? { tailscaleIdentity: spec.tailscaleIdentity } : {}),
     host: spec.host,
     port: spec.port,
     username: spec.username,
@@ -99,6 +114,8 @@ export function remoteExecutionSessionMatches(saved: unknown, current: SshRemote
   const parsedSaved = asObject(saved);
   return (
     asString(parsedSaved.transport) === currentIdentity.transport &&
+    parsedSaved.useHostAuth === currentIdentity.useHostAuth &&
+    asString(parsedSaved.tailscaleIdentity) === asString(currentIdentity.tailscaleIdentity) &&
     asString(parsedSaved.host) === currentIdentity.host &&
     asNumber(parsedSaved.port) === currentIdentity.port &&
     asString(parsedSaved.username) === currentIdentity.username &&
@@ -113,6 +130,8 @@ export async function prepareRemoteManagedRuntime(input: {
   workspaceLocalDir: string;
   workspaceRemoteDir?: string;
   syncWorkspace?: boolean;
+  privateRuntime?: boolean;
+  retainRuntime?: boolean;
   workspaceFileMode?: "all";
   workspaceExclude?: string[];
   assets?: RemoteManagedRuntimeAsset[];
@@ -133,7 +152,13 @@ export async function prepareRemoteManagedRuntime(input: {
         "workspace",
       )
     : baseWorkspaceRemoteDir;
-  const runtimeRootDir = path.posix.join(workspaceRemoteDir, ".paperclip-runtime", input.adapterKey);
+  let runtimeRootDir = path.posix.join(workspaceRemoteDir, ".paperclip-runtime", input.adapterKey);
+  let privateRuntimeDir: string | null = null;
+  const cleanupPrivateRuntime = async () => {
+    if (!privateRuntimeDir) return;
+    await runSshCommand(input.spec, `rm -rf -- ${shellQuote(privateRuntimeDir)}`, { timeoutMs: 15_000 });
+    privateRuntimeDir = null;
+  };
 
   const preparedWorkspace = syncWorkspace
     ? await prepareWorkspaceForSshExecution({
@@ -169,7 +194,14 @@ export async function prepareRemoteManagedRuntime(input: {
 
   const assetDirs: Record<string, string> = {};
   try {
+    if (input.privateRuntime) {
+      const result = await runSshCommand(input.spec, "umask 077; mktemp -d /tmp/paperclip-ssh-runtime.XXXXXXXXXX", { timeoutMs: 15_000 });
+      const directory = result.stdout.trim();
+      if (!/^\/tmp\/paperclip-ssh-runtime\.[A-Za-z0-9]+$/.test(directory)) throw new Error("SSH private runtime directory unavailable");
+      runtimeRootDir = privateRuntimeDir = directory;
+    }
     for (const asset of input.assets ?? []) {
+      if (input.privateRuntime && !/^[A-Za-z0-9_-]+$/.test(asset.key)) throw new Error("Invalid SSH runtime asset key");
       const remoteDir = path.posix.join(runtimeRootDir, asset.key);
       assetDirs[asset.key] = remoteDir;
       await syncDirectoryToSsh({
@@ -183,8 +215,8 @@ export async function prepareRemoteManagedRuntime(input: {
       });
     }
   } catch (error) {
-    if (preparedWorkspace && baselineSnapshot) {
-      await restoreWorkspaceFromSshExecution({
+    try {
+      if (preparedWorkspace && baselineSnapshot) await restoreWorkspaceFromSshExecution({
         spec: input.spec,
         localDir: input.workspaceLocalDir,
         remoteDir: workspaceRemoteDir,
@@ -193,7 +225,7 @@ export async function prepareRemoteManagedRuntime(input: {
         onProgress: input.onProgress,
         repositories: repositoryBaselines,
       });
-    }
+    } finally { await cleanupPrivateRuntime(); }
     throw error;
   }
 
@@ -243,6 +275,33 @@ export async function prepareRemoteManagedRuntime(input: {
     }
   }
 
+  const restore = async (onProgress?: RuntimeProgressSink) => {
+    let failure: unknown;
+    try {
+      if (preparedWorkspace && baselineSnapshot) await restoreWorkspaceFromSshExecution({
+        spec: input.spec,
+        localDir: input.workspaceLocalDir,
+        remoteDir: workspaceRemoteDir,
+        baselineSnapshot,
+        restoreGitHistory: preparedWorkspace.gitBacked,
+        onProgress,
+        repositories: repositoryBaselines,
+      });
+    } catch (error) { failure = error; }
+    for (const asset of input.assets ?? []) {
+      if (!asset.restore) continue;
+      try { await asset.restore({
+        assetDir: path.posix.join(runtimeRootDir, asset.key),
+        readFile: (remotePath) => readRemoteFile(input.spec, remotePath),
+      }); } catch (error) { failure ??= error; }
+    }
+    if (!input.retainRuntime) {
+      try { await cleanupPrivateRuntime(); } catch (error) { failure ??= error; }
+    }
+    if (failure) throw failure;
+  };
+  let privateRestore: Promise<void> | undefined;
+
   return {
     spec: input.spec,
     workspaceLocalDir: input.workspaceLocalDir,
@@ -250,25 +309,10 @@ export async function prepareRemoteManagedRuntime(input: {
     runtimeRootDir,
     assetDirs,
     additionalSourceDirs,
-    restoreWorkspace: async (onProgress?: RuntimeProgressSink) => {
-      if (preparedWorkspace && baselineSnapshot) {
-        await restoreWorkspaceFromSshExecution({
-          spec: input.spec,
-          localDir: input.workspaceLocalDir,
-          remoteDir: workspaceRemoteDir,
-          baselineSnapshot,
-          restoreGitHistory: preparedWorkspace.gitBacked,
-          onProgress,
-          repositories: repositoryBaselines,
-        });
-      }
-      for (const asset of input.assets ?? []) {
-        if (!asset.restore) continue;
-        await asset.restore({
-          assetDir: path.posix.join(runtimeRootDir, asset.key),
-          readFile: (remotePath) => readRemoteFile(input.spec, remotePath),
-        });
-      }
+    disposeRuntime: cleanupPrivateRuntime,
+    restoreWorkspace: (onProgress?: RuntimeProgressSink) => {
+      if (!input.privateRuntime || input.retainRuntime) return restore(onProgress);
+      return privateRestore ??= restore(onProgress);
     },
   };
 }

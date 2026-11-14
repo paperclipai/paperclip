@@ -4807,7 +4807,7 @@ it("does not certify probe cleanup while owned credential preparation is unconfi
   }
 }, 15_000);
 
-it.each(["admission-only", "admission-only-mismatched-model", "complete", "api-key", "default-model", "mismatched-model", "model-refresh-error", "model-cleanup-error", "missing-model", "missing-runtime", "missing-completion", "late-bootstrap", "remote-complete", "remote-mismatched-model", "late-remote-preparation", "late-remote-release-error"] as const)("native Codex setup requires its daemon/app-server hello (%s)", async mode => {
+it.each(["admission-only", "admission-only-mismatched-model", "complete", "api-key", "default-model", "mismatched-model", "model-refresh-error", "model-cleanup-error", "missing-model", "missing-runtime", "missing-completion", "late-bootstrap", "remote-complete", "preconfigured", "remote-preconfigured", "remote-mismatched-model", "late-remote-preparation", "late-remote-release-error"] as const)("native Codex setup requires its daemon/app-server hello (%s)", async mode => {
   const root = await mkdtemp(join(tmpdir(), "runnerd-native-setup-"));
   const runtimeDirectory = join(root, "native-state");
   await mkdir(runtimeDirectory, { mode: 0o700 });
@@ -4816,6 +4816,8 @@ it.each(["admission-only", "admission-only-mismatched-model", "complete", "api-k
   await mkdir(sourceHome, { mode: 0o700 });
   await writeFile(join(sourceHome, "auth.json"), JSON.stringify({ OPENAI_API_KEY: mode === "api-key" ? "unrelated-login" : "selected-account" }), { mode: 0o600 });
   if (mode === "api-key") await writeFile(join(sourceHome, "config.toml"), 'model = "ambient-model"\n[mcp_servers.ambient]\ncommand = "untrusted-ambient-command"\n', { mode: 0o600 });
+  const preconfigured = mode.endsWith("preconfigured");
+  if (preconfigured) await writeFile(join(sourceHome, "config.toml"), 'model = "native-model"\n', { mode: 0o600 });
   const remote = mode.startsWith("remote-") || mode.startsWith("late-remote-");
   const remoteRoot = join(root, "assigned-remote-filesystem");
   const remoteFilesystem = join(remoteRoot, "filesystem");
@@ -4827,18 +4829,21 @@ it.each(["admission-only", "admission-only-mismatched-model", "complete", "api-k
     const probe = probeNativeRunnerEnvironment({
       runtimeDirectory, provider: "codex", model: mode === "default-model" ? null : "gpt-6.1-sol", reasoningEffort: "low",
       ...(mode.startsWith("admission-only") ? { admissionOnly: true } : {}),
-      environment: { PATH: process.env.PATH, OPENAI_API_KEY: mode === "api-key" ? "selected-account" : "", HOME: "/unrelated/home" },
+      environment: { PATH: process.env.PATH, OPENAI_API_KEY: mode === "api-key" ? "selected-account" : "", HOME: preconfigured ? root : "/unrelated/home", ...(preconfigured ? { CODEX_HOME: sourceHome } : {}) },
       timeoutMs: mode.startsWith("late-remote-") ? 800 : mode === "late-bootstrap" ? 100 : mode === "missing-completion" ? 1_000 : 10_000,
       ...(remote ? { workingDirectory: remoteWorkspace } : {}),
       transportOptions: {
+        ...(preconfigured ? { homeMode: "preconfigured" as const } : {}),
         ...(remote ? {
           runnerFilesystemRoot: remoteFilesystem, runnerStateDirectory: join(remoteRoot, "runner"),
           readRunnerState: async () => JSON.parse(await readFile(join(remoteRoot, "runner", "runner-state.json"), "utf8")),
           controlPlaneRegistration: async authority => {
             await mkdir(remoteWorkspace, { recursive: true, mode: 0o700 });
+            if (!preconfigured) {
             const remoteHome = join(remoteFilesystem, "codex-home");
             await mkdir(remoteHome, { mode: 0o700 });
             for (const name of ["auth.json", "config.toml"] as const) await cp(join(runtimeDirectory, "codex-home", name), join(remoteHome, name));
+            }
             if (mode.startsWith("late-remote-")) await new Promise(resolve => setTimeout(resolve, 1000));
             await authority.start();
             return { connectUrl: authority.connectUrl, release: async () => { registrationReleased = true; await authority.stop(); if (mode === "late-remote-release-error") throw new Error("PRP registration release failed"); } };
@@ -4852,7 +4857,7 @@ it.each(["admission-only", "admission-only-mismatched-model", "complete", "api-k
           ...(mode === "late-bootstrap" ? ["--thread-start-delay-ms", "1000"] : [])),
         sourceCodexHome: sourceHome,
       },
-      onCodexCredentialRefresh: async filename => {
+      onCodexCredentialRefresh: preconfigured ? undefined : async filename => {
         expect(filename).toBe(join(remote ? remoteFilesystem : runtimeDirectory, "codex-home", "auth.json"));
         expect(JSON.parse(await readFile(filename, "utf8"))).toEqual({ OPENAI_API_KEY: "selected-account" });
         if (mode === "api-key") {
@@ -4864,16 +4869,21 @@ it.each(["admission-only", "admission-only-mismatched-model", "complete", "api-k
         if (mode === "model-refresh-error") throw new Error("credential refresh failed after the native model error");
       },
       onCleanupConfirmed: async () => {
+        if (preconfigured) {
+          await expect(stat(join(runtimeDirectory, "codex-home"))).rejects.toMatchObject({ code: "ENOENT" });
+          if (remote) await expect(stat(join(remoteFilesystem, "codex-home"))).rejects.toMatchObject({ code: "ENOENT" });
+        }
         cleanupConfirmed = true;
-        expect(refreshed || mode === "missing-runtime" || mode === "late-bootstrap" || mode.startsWith("late-remote-")).toBe(true);
+        expect(preconfigured || refreshed || mode === "missing-runtime" || mode === "late-bootstrap" || mode.startsWith("late-remote-")).toBe(true);
         if (mode === "model-cleanup-error") throw new Error("owned temporary state cleanup failed");
         await rm(runtimeDirectory, { recursive: true, force: true });
       },
     });
-    if (mode === "admission-only" || mode === "complete" || mode === "api-key" || mode === "default-model" || mode === "remote-complete") {
+    if (preconfigured || mode === "admission-only" || mode === "complete" || mode === "api-key" || mode === "default-model" || mode === "remote-complete") {
       const observedModel = mode === "default-model" ? "gpt-test" : "gpt-6.1-sol";
       await expect(probe).resolves.toEqual({ provider: "codex", providerDriver: "codex_app_server", effectiveModel: observedModel, ...(mode === "admission-only" ? { helloProbePassed: false, admissionOnly: true, sessionAdmissionPassed: true } : { helloProbePassed: true }) });
-      expect(refreshed).toBe(true);
+      expect(refreshed).toBe(!preconfigured);
+      if (preconfigured) expect(await readFile(join(sourceHome, "config.toml"), "utf8")).toBe('model = "native-model"\n');
       if (remote) expect(registrationReleased).toBe(true);
       expect(cleanupConfirmed).toBe(true);
       await expect(stat(runtimeDirectory)).rejects.toThrow();
@@ -6576,15 +6586,17 @@ it.each([
   }
 }, 30_000);
 
-it.each(["claude", "codex"] as const)("keeps the explicitly assigned gateway in the %s runner environment", (agent) => {
+it.each([
+  ["acpx", "claude"], ["acpx", "codex"], ["acpx", "pi"], ["acpx", "cursor"], ["acpx", "copilot"], ["acpx", "kimi"], ["opencode", undefined],
+] as const)("drops a previous-release gateway binding from the %s %s runner environment", (provider, agent) => {
   const gateway = {
     PAPERCLIP_NATIVE_MCP_NAME: "paperclip-assigned",
-    PAPERCLIP_NATIVE_MCP_URL: "http://127.0.0.1:3100/mcp/gateway",
+    PAPERCLIP_NATIVE_MCP_URL: "http://127.0.0.1:3100/mcp/gateways/previous-release",
     PAPERCLIP_NATIVE_MCP_TOKEN: "fixture-scoped-gateway-token-1234567890",
   };
   const environment = createCapabilityRunnerdProviderEnvironment({
-    provider: "acpx",
-    options: { provider: "acpx", acpxAgent: agent, environment: {
+    provider,
+    options: { provider, ...(agent ? { acpxAgent: agent } : {}), environment: {
       PATH: "/bin", ...gateway, PAPERCLIP_API_KEY: "must-not-cross", DATABASE_URL: "must-not-cross",
     } },
     identity: { runnerInstanceId: "runner-1", environmentLeaseId: "lease-1", runId: "run-1",
@@ -6592,7 +6604,9 @@ it.each(["claude", "codex"] as const)("keeps the explicitly assigned gateway in 
     codexHome: "/isolated/home", runtimeContextPath: "/isolated/context.json", hasRuntimeContext: true,
     acpxSidecarPath: "/verified/provider-pack/dist/cli/acpx-runtime-sidecar.cjs",
   });
-  expect(environment).toMatchObject(gateway);
+  for (const name of Object.keys(gateway)) expect(environment).not.toHaveProperty(name);
+  expect(JSON.stringify(environment)).not.toContain("fixture-scoped-gateway-token");
+  expect(JSON.stringify(environment)).not.toContain("previous-release");
   expect(environment.PAPERCLIP_API_KEY).toBeUndefined();
   expect(environment.DATABASE_URL).toBeUndefined();
 });

@@ -302,7 +302,7 @@ const state = vi.hoisted(() => ({
 
 vi.mock("../../runtime-api.js", async importOriginal => ({ ...await importOriginal<typeof import("../../runtime-api.js")>(), resolveLocalRuntimeApiUrl: state.localRuntimeApiUrl }));
 
-const accountingEvents = vi.hoisted(() => ({ committed: undefined as undefined | ((event: PrpEvent) => Promise<void>), duplicate: undefined as undefined | ((event: PrpEvent) => Promise<void>) }));
+const accountingEvents = vi.hoisted(() => ({ committed: undefined as undefined | ((event: PrpEvent) => Promise<void>), duplicate: undefined as undefined | ((event: PrpEvent) => Promise<void>), secrets: undefined as undefined | readonly string[] }));
 vi.mock("./paperclip-control-plane-port.js", async importOriginal => {
   const original = await importOriginal<typeof import("./paperclip-control-plane-port.js")>();
   return { ...original, PaperclipControlPlanePort: class extends original.PaperclipControlPlanePort {
@@ -310,6 +310,7 @@ vi.mock("./paperclip-control-plane-port.js", async importOriginal => {
       super(...args);
       accountingEvents.committed = args[2]?.onCommittedEvent ? event => args[2]!.onCommittedEvent!(event, 1) : undefined;
       accountingEvents.duplicate = args[2]?.onDuplicateEvent ? event => args[2]!.onDuplicateEvent!(event, 1) : undefined;
+      accountingEvents.secrets = args[2]?.secrets;
     }
   } };
 });
@@ -15587,6 +15588,53 @@ describe("native session bounded recovery", () => {
     }
   });
 
+  it("redacts secret-bound environment values from native failure writes and logs and gives them to the control plane port", async () => {
+    const secret = "sk_test_synthetic_native_failure_value";
+    const failure = new Error(`native provider failed: ${secret}`);
+    const updates: Array<{ table: unknown; values: Record<string, unknown> }> = [];
+    const logs: string[] = [];
+    accountingEvents.secrets = undefined;
+    state.execute.mockReset().mockRejectedValueOnce(failure);
+    state.upsertRecoveryAction.mockReset().mockResolvedValue({});
+    const service = vi.spyOn(issueServiceModule, "issueService").mockReturnValue({
+      update: vi.fn(async () => ({ status: "blocked", statusVersion: 1 })),
+    } as unknown as ReturnType<typeof issueServiceModule.issueService>);
+    try {
+      await expect(executePaperclipNativeSession({
+        db: leaseDb(execution, {}, {}, updates), execution, runnerInstanceId: "runner",
+        runnerEnvironment: { STRIPE_KEY: secret, PLAIN_URL: "https://plain.example.test/api" },
+        outputSecrets: [secret],
+        onLog: async (_stream, text) => { logs.push(text); },
+      })).rejects.toBe(failure);
+      expect(accountingEvents.secrets).toEqual([secret]);
+      for (const output of [inspect(updates.map(entry => entry.values), { depth: null }), logs.join("")]) {
+        expect(output).not.toContain(secret);
+      }
+      expect(inspect(updates.map(entry => entry.values), { depth: null })).toContain("***REDACTED***");
+      expect(failure.message).toBe(`native provider failed: ${secret}`);
+    } finally {
+      service.mockRestore();
+    }
+  });
+
+  it("classifies a native failure from its original text when a bound secret equals words in it", async () => {
+    const failure = new Error("runner_local_connect_failed: PRP command session.open timed out");
+    state.execute.mockReset().mockRejectedValueOnce(failure);
+    state.upsertRecoveryAction.mockReset().mockResolvedValue({});
+    const service = vi.spyOn(issueServiceModule, "issueService").mockReturnValue({
+      update: vi.fn(async () => ({ status: "blocked", statusVersion: 1 })),
+    } as unknown as ReturnType<typeof issueServiceModule.issueService>);
+    try {
+      await expect(executePaperclipNativeSession({
+        db: leaseDb(execution, {}, {}, []), execution, runnerInstanceId: "runner",
+        outputSecrets: ["timed out", "session.open"],
+      })).rejects.toBe(failure);
+      expect(nativeSessionFailureSourceCode(failure)).toBe("provider_session_open_timeout");
+    } finally {
+      service.mockRestore();
+    }
+  });
+
   it("persists plain cleanup recovery without an automatic cleanup wake", async () => {
     const updates: Array<{ table: unknown; values: Record<string, unknown> }> =
       [];
@@ -18661,7 +18709,7 @@ describe("runnerd provider runtime wiring", () => {
     const release = vi.fn(async () => {}), resume = vi.fn(async () => "resumed" as const);
     const owner = vi.spyOn(pluginTaskRuntime, "createPluginRunnerTaskOwner").mockReturnValue({ launcher, registration, driver, readWorkspaceFile, release, resume, isRetired: () => false, retireSupersededTask: async () => false, retiredBeforeClaim: () => false, configuredEnvironmentDelivered: () => false, credentialsUpdated: vi.fn(), rebind:vi.fn() });
     const description = { kind: "description" as const, launchPreparationVersion: 1 as const, projectAuthCheckVersion: 1 as const,
-      releaseResumeVersion: 1 as const, resumeCredentialVersion: 1 as const, ...(kind === "codex" ? { workspaceFileReadVersion: 1 as const } : {}),
+      releaseResumeVersion: 1 as const, resumeLaunchInputsVersion: 1 as const, ...(kind === "codex" ? { workspaceFileReadVersion: 1 as const } : {}),
       taskId: "task", runner: { version: "fixture", digest: `sha256:${"a".repeat(64)}` } };
     const task = vi.fn(async (operation: unknown) => {
       environmentTaskOperationSchema.parse(operation);
@@ -18684,7 +18732,7 @@ describe("runnerd provider runtime wiring", () => {
       expect(state.toolAuthorityDefinitions).toHaveBeenCalledWith(expect.objectContaining({ assignedMcpTools }));
       expect(state.createAssignedMcpTools).toHaveBeenCalledWith(expect.objectContaining({ gatewayPublicId: "assigned-test", bearerToken: "fixture-mcp-secret" }));
       expect(owner).toHaveBeenCalledWith(expect.objectContaining({ task, projectIds: target.runnerTaskProjectIds,
-        credentialIdentity: undefined, releaseResumeVersion: 1, resumeCredentialVersion: 1 }));
+        credentialIdentity: undefined, releaseResumeVersion: 1, resumeLaunchInputsVersion: 1 }));
       expect(state.createBackend.mock.calls.at(-1)![1]).toMatchObject({ workingDirectoryAuthority: "runner_prepared_launch", environment: {} });
       state.createBackend.mock.calls.at(-1)![1].codexTransportFactory!();
       const options = state.createTransport.mock.calls.at(-1)![0];
@@ -21658,7 +21706,7 @@ describe("runnerd provider runtime wiring", () => {
       homeMode: "preconfigured" as const, executionMode: "default" as const, planningContext: null,
       provider: { kind: "codex" as const, model: null, approvalPolicy: "never" as const }, runtimeContext: nativeRuntimeContextFixture() };
     const remoteExecute = vi.fn(async (command: { args?: string[] }) => ({
-      exitCode: 0, timedOut: false, stderr: "", stdout: command.args?.[1]?.includes("getent passwd") ? "/home/executor\n" : "",
+      exitCode: 0, timedOut: false, stderr: "", stdout: command.args?.includes("paperclip-remote-home") ? "/home/executor\n" : "",
     }));
     await createRunnerdBackend({ db: leaseDb(remoteExecution), execution: remoteExecution, runnerInstanceId: "remote-home-manifest",
       runnerEnvironment, runnerIngressAuthorized: true, runnerExecutionTarget: {
@@ -22137,7 +22185,7 @@ describe("runnerd provider runtime wiring", () => {
       if (command.args?.[0] === "--version") return {
         exitCode: 0, timedOut: false, stdout: "codex-cli 0.160.0", stderr: "",
       };
-      if (command.args?.[1]?.includes("getent passwd")) return {
+      if (command.args?.includes("paperclip-remote-home")) return {
         exitCode: 0, timedOut: false, stdout: "/home/executor\n", stderr: "",
       };
       if (command.args?.[2] === "paperclip-runner-launch") {
