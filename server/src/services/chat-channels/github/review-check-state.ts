@@ -27,7 +27,7 @@ export async function githubReviewCheckState(db: Db, action: typeof chatActions.
       and(
         eq(chatEndpoints.id, action.endpointId),
         eq(chatEndpoints.companyId, action.companyId),
-        eq(chatEndpointResources.providerResourceId, event.repository),
+        eq(chatEndpointResources.providerResourceId, event.repository.toLowerCase()),
       ),
     );
   if (
