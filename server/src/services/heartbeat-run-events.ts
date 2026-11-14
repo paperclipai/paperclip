@@ -347,8 +347,7 @@ function decodeRunEventRow(raw: Record<string, unknown>): typeof heartbeatRunEve
  * replayed event or reserves the sequence and inserts, and reads how much of
  * the source is retained. A statement that waits for the run lock keeps the
  * snapshot it took before waiting, so it would not see an event the lock
- * holder had just committed. The replay probe in the lock read counts only
- * when `next_event_seq` did not change between that snapshot and the lock.
+ * holder had just committed.
  */
 async function appendNativeSourceEvent(
   tx: Db,
