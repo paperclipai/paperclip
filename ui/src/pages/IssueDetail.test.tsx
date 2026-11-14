@@ -4057,6 +4057,70 @@ describe("IssueDetail", () => {
     mockIssuesApi.resolveRecoveryAction.mockReset();
   });
 
+  it("shows Archive in the streamlined task header when the task was opened from the inbox", async () => {
+    mockLocation.state = createIssueDetailLocationState(
+      "Inbox",
+      "/inbox/mine",
+      "inbox",
+    );
+    mockIssuesApi.get.mockResolvedValue(
+      createIssue({ id: "issue-1", identifier: "PAP-1" }),
+    );
+    mockIssuesApi.archiveFromInbox.mockClear();
+
+    await act(async () => {
+      renderIssueView();
+    });
+    await flushReact();
+    await flushReact();
+
+    const titleActions = container.querySelector(
+      '[data-slot="task-title-actions"]',
+    );
+    const archiveButton = titleActions?.querySelector<HTMLButtonElement>(
+      'button[aria-label="Archive from inbox"]',
+    );
+    const titleRow = container.querySelector(
+      '[data-slot="task-detail-title"]',
+    )?.parentElement;
+    expect(archiveButton).not.toBeNull();
+    expect(
+      titleActions?.querySelector('button[aria-label="More task actions"]'),
+    ).not.toBeNull();
+    expect(titleRow?.className).toContain("md:pr-14");
+
+    await act(async () => archiveButton!.click());
+    await waitForAssertion(() => {
+      expect(mockIssuesApi.archiveFromInbox).toHaveBeenCalledWith("issue-1");
+    });
+  });
+
+  it("keeps the streamlined task header without Archive when the task was not opened from the inbox", async () => {
+    mockLocation.state = createIssueDetailLocationState(
+      "Tasks",
+      "/issues/all",
+      "issues",
+    );
+    mockIssuesApi.get.mockResolvedValue(createIssue());
+
+    await act(async () => {
+      renderIssueView();
+    });
+    await flushReact();
+    await flushReact();
+
+    const titleActions = container.querySelector(
+      '[data-slot="task-title-actions"]',
+    );
+    const titleRow = container.querySelector(
+      '[data-slot="task-detail-title"]',
+    )?.parentElement;
+    expect(
+      titleActions?.querySelector('button[aria-label="Archive from inbox"]'),
+    ).toBeNull();
+    expect(titleRow?.className).toContain("md:pr-8");
+  });
+
   it("removes an inbox-origin archived issue and restores it when the toast Undo action is pressed", async () => {
     const issue = createIssue({
       id: "issue-1",

@@ -7699,7 +7699,12 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
       )}
     >
       {streamlinedTaskDetailEnabled ? (
-        <div className="flex min-w-0 items-start gap-2 md:items-center md:pr-8">
+        <div
+          className={cn(
+            "flex min-w-0 items-start gap-2 md:items-center",
+            canArchiveFromInbox ? "md:pr-14" : "md:pr-8",
+          )}
+        >
           {!proposedTaskHeader ? (
             <div className="hidden md:block">{issueStatusControl}</div>
           ) : null}
@@ -7988,6 +7993,22 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
                 "absolute right-0 top-0 flex h-7 items-center",
             )}
           >
+            {streamlinedTaskDetailEnabled && canArchiveFromInbox ? (
+              <Button
+                variant="ghost"
+                size="icon-xs"
+                className="shrink-0"
+                onClick={() => {
+                  if (!archivePending && issue?.id)
+                    archiveFromInbox.mutate(issue.id);
+                }}
+                disabled={archivePending}
+                title="Archive from inbox"
+                aria-label="Archive from inbox"
+              >
+                <Archive className={proposedTaskHeader ? "h-3 w-3" : "h-4 w-4"} />
+              </Button>
+            ) : null}
             <IssuePrivacyActions
                 issue={issue}
                 companyId={issue.companyId}
