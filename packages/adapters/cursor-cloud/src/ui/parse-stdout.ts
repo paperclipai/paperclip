@@ -35,8 +35,8 @@ function parseAssistantMessage(message: Record<string, unknown>, ts: string): Tr
     if (!part) continue;
     const type = asString(part.type).trim();
     if (type === "text") {
-      const text = asString(part.text).trim();
-      if (text) entries.push({ kind: "assistant", ts, text });
+      const text = asString(part.text);
+      if (text.trim()) entries.push({ kind: "assistant", ts, text, delta: true });
       continue;
     }
     if (type === "tool_use") {
@@ -75,8 +75,8 @@ function parseSdkMessage(messageRaw: unknown, ts: string): TranscriptEntry[] {
   }
 
   if (type === "thinking") {
-    const text = asString(message.text).trim();
-    return text ? [{ kind: "thinking", ts, text }] : [];
+    const text = asString(message.text);
+    return text ? [{ kind: "thinking", ts, text, delta: true }] : [];
   }
 
   if (type === "tool_call") {
