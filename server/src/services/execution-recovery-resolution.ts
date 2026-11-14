@@ -396,6 +396,7 @@ export async function deliverReconciledExecutions(
     ] : [
       sql`${pastBound} desc`,
       sql`${overdueTurn} asc nulls last`,
+      sql`${attemptedAt} asc nulls first`,
       sql`${sourceRun.finishedAt} desc nulls last`,
       sql`${issueRecoveryActions.updatedAt} asc`,
     ];
@@ -446,6 +447,7 @@ export async function deliverReconciledExecutions(
       ] : [
         sql`${candidates.pastBound} desc`,
         sql`${candidates.heldAt} asc nulls last`,
+        sql`${candidates.attemptedAt} asc nulls first`,
         sql`${candidates.sourceFinishedAt} desc nulls last`,
         sql`${candidates.actionUpdatedAt} asc`,
       ]))
@@ -555,7 +557,10 @@ export async function deliverReconciledExecutions(
           continue;
         }
         const slot = await reserveAutomaticRunCreation(db, action.companyId, { issueId: task.id, sourceRunId: decision.runId });
-        if (slot.heldUntil) continue;
+        if (slot.heldUntil) {
+          await deferRefusedContinuation(action);
+          continue;
+        }
         const run = await wake(action.returnOwnerAgentId, {
           source: "automation",
           triggerDetail: "system",

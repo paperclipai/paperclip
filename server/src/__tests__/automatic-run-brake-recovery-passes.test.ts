@@ -431,6 +431,21 @@ suite("automatic-run brake in the recovery passes", () => {
     expect(await delivery(automaticAction.id)).toBe("pending");
   }, 120_000);
 
+  it("held continuations take turns across passes so they cannot fill every page", async () => {
+    await seedCompany();
+    const recent = await pendingContinuation(agentId, 2 * HOUR);
+    const older = await pendingContinuation(agentId, 3 * HOUR);
+    await openBrake();
+    const wake = runWake();
+    const attempted = async (id: string) => (await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.id, id)))[0]!
+      .evidence.continuationDeliveryAttemptedAt;
+    await deliverReconciledExecutions(db, wake as never);
+    await deliverReconciledExecutions(db, wake as never);
+    expect(wake).not.toHaveBeenCalled();
+    expect(await attempted(recent.id)).toBeTruthy();
+    expect(await attempted(older.id)).toBeTruthy();
+  }, 120_000);
+
   it("still pauses the delivery of a continuation no person asked for", async () => {
     await seedCompany();
     const action = await pendingContinuation();
