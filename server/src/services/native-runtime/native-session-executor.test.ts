@@ -22,6 +22,7 @@ import { configuredEnvironment, configuredEnvironmentProjection } from "../../ve
 import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from "vitest";
 import { enableReattachPhase, isReattachPhaseActive, joinReattachPhase, onReattachPhaseEnd, resetReattachPhaseForTests, type ReattachPhaseSummary } from "../heartbeat/run-admission.js";
 import { createSystemRecovery, failSystemRecovery, reserveSystemRecoveryAttempt, SystemRecoveryFailure } from "../system-recovery-state.js";
+import { registerRunStartHandover } from "../run-start-handover.js";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { once } from "node:events";
 import { PgDialect } from "drizzle-orm/pg-core";
@@ -11461,6 +11462,41 @@ describe("native warm session supervision", () => {
     } finally {
       Object.assign(warmSessionReleaseWait, original);
       releaseGate();
+      await closeWarmNativeSessionsForEnvironment({ environmentId: identity, reason: "test cleanup" });
+    }
+  });
+
+  it.each(["before", "after"] as const)("closes a warm session promptly when a replacement server starts this server's runs (%s the turn ends)", async when => {
+    const identity = `warm-handoff-${when}`;
+    const warmExecution = { ...execution, binding: { ...execution.binding, runId: identity, executionWorkspaceId: `${identity}-workspace` },
+      session: { ...execution.session, normalizedSessionId: identity, lifecyclePolicy: { mode: "warm" as const, idleTimeoutMs: 600_000 } },
+    } as NativeExecutionInputV1;
+    const session = { close: vi.fn(async () => undefined) };
+    state.execute.mockReset().mockImplementation(async (options) => {
+      await options.onSession?.(session);
+      return { result: { summary: "completed" }, terminal: { runTerminalState: "succeeded" },
+        turnId: identity, normalizedSessionId: identity, providerSessionId: identity,
+        driverKind: "test", driverVersion: "1", nativeEventCount: 1, highestContiguousSourceSeq: 1, usage: null };
+    });
+    const listeners = new Set<() => void>();
+    let leaving = when === "before";
+    registerRunStartHandover({ isLeavingRunStarts: () => leaving, subscribe: (listener: () => void) => {
+      listeners.add(listener);
+      return () => { listeners.delete(listener); };
+    } } as unknown as Parameters<typeof registerRunStartHandover>[0]);
+    try {
+      await executePaperclipNativeSession({ db: leaseDb(warmExecution), execution: warmExecution, runnerInstanceId: identity,
+        runnerExecutionTarget: { kind: "remote", transport: "sandbox", environmentId: identity, remoteCwd: `/tmp/${identity}` } });
+      if (when === "after") {
+        await new Promise(resolve => setTimeout(resolve, 1_500));
+        expect(session.close).not.toHaveBeenCalled();
+        leaving = true;
+        for (const listener of listeners) listener();
+      }
+      await vi.waitFor(() => expect(session.close).toHaveBeenCalledTimes(1), { timeout: 3_000 });
+      await vi.waitFor(() => expect(readNativeSessionIdleWork()).toBe("none"));
+    } finally {
+      registerRunStartHandover(null);
       await closeWarmNativeSessionsForEnvironment({ environmentId: identity, reason: "test cleanup" });
     }
   });
