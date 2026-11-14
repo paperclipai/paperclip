@@ -39,6 +39,17 @@ let scenario = 0;
 const durableState = async (root: string) => (await Promise.all(["control-plane/control-plane-state.json", "runner/runner-state.json"]
   .map(path => readFile(join(root, path), "utf8").catch(() => "")))).join("\n");
 
+function storeSourceEvent(committed: PrpEvent[], value: PrpEvent) {
+  const source = () => committed.filter(event => event.sourceInstanceId === value.sourceInstanceId);
+  const existing = source().find(event => event.sourceEventId === value.sourceEventId || event.sourceSeq === value.sourceSeq);
+  if (existing && (existing.sourceEventId !== value.sourceEventId || JSON.stringify(existing.payload) !== JSON.stringify(value.payload))) throw new Error("source_event_replay_conflict");
+  if (!existing) committed.push(structuredClone(value));
+  const stored = new Set(source().map(event => event.sourceSeq));
+  let highestContiguousSourceSeq = 0;
+  while (stored.has(highestContiguousSourceSeq + 1)) highestContiguousSourceSeq += 1;
+  return { cursor: value.sourceSeq, highestContiguousSourceSeq, disposition: existing ? "duplicate" as const : "committed" as const };
+}
+
 async function runProviderTurnScenario(tokens: string, options: { agent?: "claude" | "codex"; capMs?: number; providerStartedTurns?: boolean } = {}) {
   const agent = options.agent ?? "claude";
   const providerStartedTurns = options.providerStartedTurns ?? agent === "claude";
@@ -117,12 +128,7 @@ async function runProviderTurnScenario(tokens: string, options: { agent?: "claud
         async openRun() {}, async checkpointSession() {},
         async appendEvent(value: PrpEvent) {
           appended.push(structuredClone(value));
-          const source = committed.filter(event => event.sourceInstanceId === value.sourceInstanceId);
-          const existing = source.find(event => event.sourceEventId === value.sourceEventId);
-          if (existing && (existing.sourceSeq !== value.sourceSeq || JSON.stringify(existing.payload) !== JSON.stringify(value.payload))) throw new Error("source_event_replay_conflict");
-          if (!existing && value.sourceSeq !== (source.at(-1)?.sourceSeq ?? 0) + 1) throw new Error(`native_event_source_gap: ${value.eventType} ${value.sourceSeq}`);
-          if (!existing) committed.push(structuredClone(value));
-          return { cursor: value.sourceSeq, highestContiguousSourceSeq: Math.max(value.sourceSeq, source.at(-1)?.sourceSeq ?? 0), disposition: existing ? "duplicate" as const : "committed" as const };
+          return storeSourceEvent(committed, value);
         },
         async replayEvents() { return { events: [], highestContiguousSourceSeq: 0 }; },
         completeRun,
@@ -402,17 +408,14 @@ async function runConsumerRestartScenario(tokens: string, options: { at: "wait" 
           if (options.slowAppend(value)) { slowed = true; await new Promise(done => setTimeout(done, 1_000)); }
         }
         appended.push(structuredClone(value)); appendedAt.push(Date.now());
-        const source = committed.filter(event => event.sourceInstanceId === value.sourceInstanceId);
-        const existing = source.find(event => event.sourceEventId === value.sourceEventId);
-        if (existing && (existing.sourceSeq !== value.sourceSeq || JSON.stringify(existing.payload) !== JSON.stringify(value.payload))) throw new Error("source_event_replay_conflict");
-        if (!existing && value.sourceSeq !== (source.at(-1)?.sourceSeq ?? 0) + 1) throw new Error(`native_event_source_gap: ${value.eventType} ${value.sourceSeq}`);
-        if (!existing) committed.push(structuredClone(value));
-        return { cursor: value.sourceSeq, highestContiguousSourceSeq: Math.max(value.sourceSeq, source.at(-1)?.sourceSeq ?? 0), disposition: existing ? "duplicate" as const : "committed" as const };
+        return storeSourceEvent(committed, value);
       },
       async replayEvents(request: { sourceInstanceId: string; afterSourceSeq: number; limit?: number }) {
-        const source = committed.filter(event => event.sourceInstanceId === request.sourceInstanceId);
-        const events = source.filter(event => event.sourceSeq > request.afterSourceSeq).slice(0, request.limit ?? 1_000);
-        return { events: structuredClone(events), highestContiguousSourceSeq: source.at(-1)?.sourceSeq ?? 0 };
+        const events = committed.filter(event => event.sourceInstanceId === request.sourceInstanceId && event.sourceSeq > request.afterSourceSeq)
+          .sort((left, right) => left.sourceSeq - right.sourceSeq).slice(0, request.limit ?? 1_000);
+        let highestContiguousSourceSeq = request.afterSourceSeq;
+        for (const event of events) if (event.sourceSeq === highestContiguousSourceSeq + 1) highestContiguousSourceSeq += 1;
+        return { events: structuredClone(events), highestContiguousSourceSeq };
       },
       async completeRun(value: unknown) { guard(); await completeRun(value); },
     };
@@ -741,5 +744,29 @@ it.skipIf(process.platform === "win32")("R8 characterization: after the old cont
   expect(answeredCalls(run)).toEqual([]);
   expect(resolvedCalls(run.journalled)).toEqual([["provider-1", "call-provider-finish", null]]);
   expect(run.completeRun).not.toHaveBeenCalled();
+  expect(run.durable).not.toContain("conflicting duplicate");
+}, 60_000);
+
+it.skipIf(process.platform === "win32")("R9 characterization: an ordinary turn whose start checkpoint is ahead of Core settles after a restart, and Core lacks only the event the old controller did not store", async () => {
+  const run = await runConsumerRestartScenario("quiet", { at: "turn", waitMs: 500, holdFirstToolCall: true, sidecarArgs: " --wait-completion-feedback", optIn: false,
+    slowAppend: event => event.eventType === "turn.started" });
+  const turnId = run.checkpoint.activeTurnId!;
+  const stored = (events: PrpEvent[]) => events.filter(event => event.sourceInstanceId === run.runnerInstanceId).map(event => event.sourceSeq);
+  const lost = run.queuedAtRestart.map(event => event.sourceSeq);
+  expect(run.queuedAtRestart.map(event => [event.eventType, event.turnId])).toEqual([["turn.accepted", turnId]]);
+  expect(run.checkpoint.cursor).toBe(String(lost[0]));
+  expect(stored(run.committedAtRestart).at(-1)).toBe(lost[0]! - 1);
+  expect(run.outcome, run.diagnostics.slice(-12).join("\n")).toBe("finalized");
+  expect(run.recoveredPid).toBe(run.pid);
+  expect(run.completeRun).toHaveBeenCalledOnce();
+  expect(run.completeRun.mock.calls[0]![0]).toMatchObject({ turnId, result: { reportedWorkDisposition: "done" } });
+  expect(answeredCalls(run)).toEqual([[turnId, "paperclip_finish", true]]);
+  expect(run.appendedAfterRestart.filter(event => event.turnId === turnId && !event.eventType.startsWith("session.")).map(event => event.eventType))
+    .toEqual(["run.result.proposed", "turn.completed", "run.result.accepted", "run.terminal"]);
+  const sequence = stored(run.committed);
+  expect(sequence).toEqual(Array.from({ length: sequence.at(-1)! }, (_value, index) => index + 1).filter(sourceSeq => !lost.includes(sourceSeq)));
+  expect(run.committed.filter(event => event.eventType === "turn.accepted")).toEqual([]);
+  expect(run.closeOutcome).toBe("closed");
+  expect(unsettled(run.diagnostics)).toEqual([]);
   expect(run.durable).not.toContain("conflicting duplicate");
 }, 60_000);
