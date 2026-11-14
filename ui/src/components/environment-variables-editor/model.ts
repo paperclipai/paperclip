@@ -177,6 +177,7 @@ export function validateName(
   name: string,
   duplicateNames: ReadonlySet<string>,
   reservedPrefixes: readonly string[],
+  takenNames: ReadonlySet<string> = new Set(),
 ): NameIssue | null {
   const trimmed = name.trim();
   if (!trimmed) return null;
@@ -185,6 +186,9 @@ export function validateName(
   }
   if (duplicateNames.has(trimmed)) {
     return { level: "error", message: "Duplicate name" };
+  }
+  if (takenNames.has(trimmed)) {
+    return { level: "error", message: "Used by a secret on the Secrets tab" };
   }
   for (const prefix of reservedPrefixes) {
     if (prefix && trimmed.startsWith(prefix)) {
@@ -297,10 +301,13 @@ export function secretNameFromKey(key: string): string {
 
 /** Suggest an env KEY (UPPER_SNAKE) from a secret name (for quick-bind). */
 export function envKeyFromSecretName(name: string): string {
-  return name
+  const normalized = name
     .trim()
     .toUpperCase()
     .replace(/[^A-Z0-9_]+/g, "_")
     .replace(/^_+|_+$/g, "")
     .slice(0, 64);
+  if (!normalized) return "SECRET";
+  if (/^[A-Z_]/.test(normalized)) return normalized;
+  return `_${normalized.slice(0, 63)}`;
 }
