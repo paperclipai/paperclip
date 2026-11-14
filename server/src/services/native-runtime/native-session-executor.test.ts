@@ -18991,7 +18991,7 @@ describe("runnerd provider runtime wiring", () => {
   it.each((["codex", "claude"] as const).flatMap(provider => [
     ...[[false, false, false, false], [true, false, false, false], [false, true, false, false], [false, false, true, false], ...(provider === "codex" ? [[false, false, false, true]] : [])]
       .map(([unknown, shutdown, journalFailure, deadline]) => [provider, unknown, shutdown, journalFailure, deadline, "idle timeout"] as const),
-    ...(["controller restart", "detach failure", "environment deletion"] as const)
+    ...(["controller restart", "detach failure", "environment deletion", "replacement hand-off"] as const)
       .map(retirement => [provider, false, false, false, false, retirement] as const),
   ]))(
     "releases settled %s only under its current owner and retires its cache (unknown=%s, shutdown=%s, journalFailure=%s, deadline=%s, retirement=%s)", async (provider, unknown, shutdown, journalFailure, deadline, retirement) => {
@@ -19001,6 +19001,8 @@ describe("runnerd provider runtime wiring", () => {
       process.env.PAPERCLIP_HOME = isolatedStateDirectory;
       const current = scopedNativeExecution(`released-${provider}-${unknown}`);
       current.session.lifecyclePolicy = { mode: "warm", idleTimeoutMs: retirement === "idle timeout" ? unknown ? 750 : 250 : 60_000 };
+      if (retirement === "replacement hand-off") registerRunStartHandover({ isLeavingRunStarts: () => true,
+        subscribe: () => () => undefined } as unknown as Parameters<typeof registerRunStartHandover>[0]);
       if (provider === "claude") current.provider = { kind: "acpx", agent: "claude", model: "fixture", permissionMode: "deny-all" } as never;
       const source = { runnerInstanceId: "released-runner", environmentLeaseId: "released-lease", runId: current.binding.runId,
         normalizedSessionId: current.session.normalizedSessionId!, turnId: "settled-turn", itemId: "settled-item" };
@@ -19155,10 +19157,10 @@ describe("runnerd provider runtime wiring", () => {
           }
           detachControllerForRestart.mockResolvedValue(undefined);
         }
-        if (retirement !== "idle timeout") {
+        if (retirement !== "idle timeout" && retirement !== "replacement hand-off") {
           expect(await closeIdleWarmNativeSessionsForRestart()).toEqual({ closed: 1, busy: 0, failed: 0, failures: [] });
           expect(await closeIdleWarmNativeSessionsForRestart()).toEqual({ closed: 0, busy: 0, failed: 0, failures: [] });
-        } else await vi.waitFor(() => expect(detachControllerForRestart).toHaveBeenCalledOnce());
+        } else await vi.waitFor(() => expect(detachControllerForRestart).toHaveBeenCalledOnce(), { timeout: 3_000 });
         expect(readNativeSessionIdleWork()).toBe("none");
         expect(close).not.toHaveBeenCalled();
         expect(task.mock.calls.map(([operation]) => (operation as { kind: string }).kind)).toEqual(["describe"]);
@@ -19193,6 +19195,7 @@ describe("runnerd provider runtime wiring", () => {
         expect(JSON.parse(await readFile(path, "utf8")).releasedRunner).toEqual(replacement.releasedRunner);
       } finally {
         detachControllerForRestart.mockResolvedValue(undefined);
+        registerRunStartHandover(null);
         allowRelease(); allowPhysicalStop(); await execute.catch(() => undefined); await closeIdleWarmNativeSessionsForRestart(); owners.mockRestore();
         if (previousHome === undefined) delete process.env.PAPERCLIP_HOME; else process.env.PAPERCLIP_HOME = previousHome;
       }
