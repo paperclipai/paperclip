@@ -11,6 +11,7 @@ import { logActivity } from "../services/activity-log.js";
 import { cloudTenantPrimaryCompanyId } from "../services/cloud-instance.js";
 import {
   CLOUD_PRODUCT_EVENT_NAMES,
+  CLOUD_PRODUCT_EVENT_START_CURSOR,
   draftCloudProductEvent,
   hasCloudProductEvent,
   listCloudProductEvents,
@@ -78,8 +79,19 @@ describe("draftCloudProductEvent", () => {
   it("records a task completion only when the status changes to done", () => {
     const completed = source({ action: "issue.updated", entityType: "issue", details: { status: "done", _previous: { status: "in_progress" } } });
     expect(draftCloudProductEvent(completed)).toMatchObject({ name: "task.completed", describesIssue: true });
+    expect(draftCloudProductEvent(source({ action: "issue.updated", details: { status: "done", previousStatus: "in_review" } })))
+      .toMatchObject({ name: "task.completed" });
     expect(draftCloudProductEvent(source({ action: "issue.updated", details: { status: "done", _previous: { status: "done" } } }))).toBeNull();
     expect(draftCloudProductEvent(source({ action: "issue.updated", details: { title: "Renamed" } }))).toBeNull();
+  });
+
+  it("ignores a repeated completion request that changes no status", () => {
+    const repeated = source({
+      action: "issue.updated",
+      details: { status: "done", _previous: { completedAt: "2099-01-01T00:00:00.000Z" } },
+    });
+    expect(draftCloudProductEvent(repeated)).toBeNull();
+    expect(draftCloudProductEvent(source({ action: "issue.updated", details: { status: "done" } }))).toBeNull();
   });
 
   it("drops values that are not fixed slugs", () => {
@@ -102,7 +114,7 @@ describe("draftCloudProductEvent", () => {
       "issue.thread_interaction_accepted", "issue.work_product_created",
     ];
     const names = actions.map((action) => draftCloudProductEvent(source({ action }))?.name);
-    names.push(draftCloudProductEvent(source({ action: "issue.updated", details: { status: "done" } }))?.name);
+    names.push(draftCloudProductEvent(source({ action: "issue.updated", details: { status: "done", _previous: { status: "todo" } } }))?.name);
     expect(new Set(names)).toEqual(new Set(CLOUD_PRODUCT_EVENT_NAMES.filter((name) => name !== "plan.created")));
   });
 
@@ -157,7 +169,15 @@ const support = await getEmbeddedPostgresTestSupport();
     return app;
   }
 
-  async function createCompany(id = randomUUID()) {
+  function gate() {
+    let open!: () => void;
+    const wait = new Promise<void>((resolve) => {
+      open = resolve;
+    });
+    return { wait, open };
+  }
+
+  async function createCompany(id: string = randomUUID()) {
     await db.insert(companies).values({ id, name: "Product events fixture", issuePrefix: `E${id.slice(0, 6)}` });
     return id;
   }
@@ -222,14 +242,14 @@ const support = await getEmbeddedPostgresTestSupport();
       entityId: issueId,
       properties: { origin: "routine_execution", isSubtask: true },
     });
-    expect(JSON.stringify(rows[0])).not.toContain("Private customer wording");
+    expect(Object.values(rows[0]!).map((value) => JSON.stringify(value, (_key, item) => typeof item === "bigint" ? item.toString() : item)).join(" ")).not.toContain("Private customer wording");
   });
 
   it("records nothing on a self-hosted instance and still logs the activity", async () => {
     delete process.env.PAPERCLIP_CLOUD_TENANT_SERVER_TOKEN;
     const companyId = await createCompany();
 
-    await logActivity(db, source({ companyId, action: "routine.created" }));
+    await logActivity(db, { ...source({ companyId, action: "routine.created" }), actorType: "user" });
 
     expect(await db.select().from(cloudProductEvents)).toHaveLength(0);
     expect(await db.select().from(activityLog).where(eq(activityLog.companyId, companyId))).toHaveLength(1);
@@ -239,7 +259,7 @@ const support = await getEmbeddedPostgresTestSupport();
     const companyId = await createCompany();
     await db.execute(sql`ALTER TABLE cloud_product_events RENAME TO cloud_product_events_unavailable`);
     try {
-      await logActivity(db, source({ companyId, action: "routine.created" }));
+      await logActivity(db, { ...source({ companyId, action: "routine.created" }), actorType: "user" });
     } finally {
       await db.execute(sql`ALTER TABLE cloud_product_events_unavailable RENAME TO cloud_product_events`);
     }
@@ -256,18 +276,71 @@ const support = await getEmbeddedPostgresTestSupport();
     }
     await recordCloudProductEvent(db, source({ companyId: otherCompanyId, action: "goal.created" }), null);
 
-    const first = await listCloudProductEvents(db, { companyId, after: 0, limit: 2 });
+    const first = await listCloudProductEvents(db, { companyId, after: CLOUD_PRODUCT_EVENT_START_CURSOR, limit: 2 });
     expect(first.events.map((event) => event.name)).toEqual(["project.created", "project.created"]);
     expect(first.hasMore).toBe(true);
-    expect(first.nextAfter).toBe(first.events[1]!.sequence);
+    expect(first.nextAfter.endsWith(`.${first.events[1]!.sequence}`)).toBe(true);
 
     const second = await listCloudProductEvents(db, { companyId, after: first.nextAfter, limit: 2 });
     expect(second.events).toHaveLength(1);
     expect(second.hasMore).toBe(false);
-    expect(second.events[0]!.sequence).toBeGreaterThan(first.nextAfter);
+    expect(second.events[0]!.sequence).toBeGreaterThan(first.events[1]!.sequence);
 
     const empty = await listCloudProductEvents(db, { companyId, after: second.nextAfter, limit: 2 });
     expect(empty).toEqual({ events: [], nextAfter: second.nextAfter, hasMore: false });
+  });
+
+  it("holds back a later event until an earlier open transaction ends", async () => {
+    const companyId = await createCompany();
+    const inserted = gate();
+    const release = gate();
+    const open = db.transaction(async (tx) => {
+      await recordCloudProductEvent(tx as unknown as typeof db, source({ companyId, action: "project.created" }), null);
+      inserted.open();
+      await release.wait;
+    });
+    await inserted.wait;
+    await recordCloudProductEvent(db, source({ companyId, action: "goal.created" }), null);
+
+    const during = await listCloudProductEvents(db, { companyId, after: CLOUD_PRODUCT_EVENT_START_CURSOR, limit: 10 });
+    expect(during).toEqual({ events: [], nextAfter: CLOUD_PRODUCT_EVENT_START_CURSOR, hasMore: false });
+
+    release.open();
+    await open;
+    const afterCommit = await listCloudProductEvents(db, { companyId, after: during.nextAfter, limit: 10 });
+    expect(afterCommit.events.map((event) => event.name)).toEqual(["project.created", "goal.created"]);
+  });
+
+  it("returns an event with a lower sequence that commits after the cursor moved", async () => {
+    const companyId = await createCompany();
+    const olderStarted = gate();
+    const olderMayInsert = gate();
+    const newerInserted = gate();
+    const newerMayCommit = gate();
+    const older = db.transaction(async (tx) => {
+      await tx.execute(sql`select txid_current()`);
+      olderStarted.open();
+      await olderMayInsert.wait;
+      await recordCloudProductEvent(tx as unknown as typeof db, source({ companyId, action: "project.created" }), null);
+    });
+    await olderStarted.wait;
+    const newer = db.transaction(async (tx) => {
+      await recordCloudProductEvent(tx as unknown as typeof db, source({ companyId, action: "goal.created" }), null);
+      newerInserted.open();
+      await newerMayCommit.wait;
+    });
+    await newerInserted.wait;
+    olderMayInsert.open();
+    await older;
+
+    const first = await listCloudProductEvents(db, { companyId, after: CLOUD_PRODUCT_EVENT_START_CURSOR, limit: 10 });
+    expect(first.events.map((event) => event.name)).toEqual(["project.created"]);
+
+    newerMayCommit.open();
+    await newer;
+    const second = await listCloudProductEvents(db, { companyId, after: first.nextAfter, limit: 10 });
+    expect(second.events.map((event) => event.name)).toEqual(["goal.created"]);
+    expect(second.events[0]!.sequence).toBeLessThan(first.events[0]!.sequence);
   });
 
   it("removes events older than thirty days, at most once an hour", async () => {
@@ -306,6 +379,7 @@ const support = await getEmbeddedPostgresTestSupport();
     expect((await request(app).get(path)).status).toBe(403);
     expect((await request(app).get(path).set(CLOUD_CONTROL_HEADER, assertion("lifecycle:read"))).status).toBe(401);
     expect((await request(app).get(`${path}?limit=0`).set(CLOUD_CONTROL_HEADER, assertion("product-events:read"))).status).toBe(400);
+    expect((await request(app).get(`${path}?after=12`).set(CLOUD_CONTROL_HEADER, assertion("product-events:read"))).status).toBe(400);
 
     const response = await request(app).get(path).set(CLOUD_CONTROL_HEADER, assertion("product-events:read"));
     expect(response.status).toBe(200);
@@ -319,6 +393,11 @@ const support = await getEmbeddedPostgresTestSupport();
       entityType: "project",
       properties: {},
     });
-    expect(response.body.nextAfter).toBe(response.body.events[0].sequence);
+    expect(response.body.nextAfter).toMatch(new RegExp(`^\\d+\\.${response.body.events[0].sequence}$`));
+
+    const next = await request(app)
+      .get(`${path}?after=${response.body.nextAfter}`)
+      .set(CLOUD_CONTROL_HEADER, assertion("product-events:read"));
+    expect(next.body).toEqual({ events: [], nextAfter: response.body.nextAfter, hasMore: false });
   });
 });

@@ -49,14 +49,22 @@ the closed list. `draftCloudProductEvent` in the same file is the only mapping.
 
 ## How Paperclip Cloud reads events
 
-`GET /api/instance/product-events?after=<sequence>&limit=<count>` returns events
-in sequence order. The response holds `events`, `nextAfter`, and `hasMore`.
+`GET /api/instance/product-events?after=<cursor>&limit=<count>` returns events
+in commit-safe order. The response holds `events`, `nextAfter`, and `hasMore`.
 
 - The request must carry a Cloud control assertion for the action
   `product-events:read`. A board user, an agent, or an API key cannot read this
-  endpoint.
+  endpoint. For this reason the endpoint is not in the OpenAPI document.
 - The response holds only the events of the Cloud primary company of the stack.
 - `limit` accepts 1 to 500. The default is 200.
+- `after` is the `nextAfter` value of the last response. Omit it for the first
+  read.
+
+Each row stores the ID of the database transaction that wrote it. The cursor
+orders rows by that transaction ID and then by row ID. A read returns a row
+only after each transaction that started before it has ended. This prevents a
+skipped event when two writes commit out of order. A long open transaction on
+the database delays later events until it ends.
 
 ## Adding or changing an event
 

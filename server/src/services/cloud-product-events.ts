@@ -1,4 +1,4 @@
-import { and, asc, eq, gt, lt } from "drizzle-orm";
+import { and, asc, eq, lt, sql } from "drizzle-orm";
 import { z } from "zod";
 import type { Db } from "@paperclipai/db";
 import { cloudProductEvents, issues } from "@paperclipai/db";
@@ -29,8 +29,24 @@ export type CloudProductEventPropertyValue = string | number | boolean;
 export const CLOUD_PRODUCT_EVENT_PAGE_DEFAULT = 200;
 export const CLOUD_PRODUCT_EVENT_PAGE_MAX = 500;
 
+export const CLOUD_PRODUCT_EVENT_START_CURSOR = "0.0";
+
+export interface CloudProductEventCursor {
+  transactionId: bigint;
+  id: number;
+}
+
+export function parseCloudProductEventCursor(value: string): CloudProductEventCursor {
+  const [transactionId, id] = value.split(".");
+  return { transactionId: BigInt(transactionId!), id: Number(id) };
+}
+
+export function formatCloudProductEventCursor(cursor: CloudProductEventCursor): string {
+  return `${cursor.transactionId}.${cursor.id}`;
+}
+
 export const cloudProductEventQuerySchema = z.object({
-  after: z.coerce.number().int().min(0).default(0),
+  after: z.string().regex(/^\d{1,18}\.\d{1,15}$/).default(CLOUD_PRODUCT_EVENT_START_CURSOR),
   limit: z.coerce.number().int().min(1).max(CLOUD_PRODUCT_EVENT_PAGE_MAX).default(CLOUD_PRODUCT_EVENT_PAGE_DEFAULT),
 });
 
@@ -51,7 +67,7 @@ export interface CloudProductEvent {
 
 export interface CloudProductEventPage {
   events: CloudProductEvent[];
-  nextAfter: number;
+  nextAfter: string;
   hasMore: boolean;
 }
 
@@ -108,9 +124,16 @@ function fixedValues(values: Record<string, unknown>): Properties {
   return properties;
 }
 
-function previousStatus(details: Record<string, unknown>): unknown {
+function previousStatus(details: Record<string, unknown>): string | null {
   const previous = details._previous;
-  return previous && typeof previous === "object" ? (previous as Record<string, unknown>).status : undefined;
+  const nested = previous && typeof previous === "object" ? (previous as Record<string, unknown>).status : undefined;
+  const status = nested ?? details.previousStatus;
+  return typeof status === "string" ? status : null;
+}
+
+function changedToDone(details: Record<string, unknown>): boolean {
+  const previous = previousStatus(details);
+  return details.status === "done" && previous !== null && previous !== "done";
 }
 
 export function draftCloudProductEvent(source: CloudProductEventSource): CloudProductEventDraft | null {
@@ -136,9 +159,7 @@ export function draftCloudProductEvent(source: CloudProductEventSource): CloudPr
     case "issue.created":
       return { name: "task.created", properties: {}, describesIssue: true };
     case "issue.updated":
-      return details.status === "done" && previousStatus(details) !== "done"
-        ? { name: "task.completed", properties: {}, describesIssue: true }
-        : null;
+      return changedToDone(details) ? { name: "task.completed", properties: {}, describesIssue: true } : null;
     case "routine.created":
       return { name: "routine.created", properties: {} };
     case "routine.run_triggered":
@@ -225,15 +246,21 @@ export async function recordCloudProductEvent(
 
 export async function listCloudProductEvents(
   db: Db,
-  input: { companyId: string; after: number; limit: number },
+  input: { companyId: string; after: string; limit: number },
 ): Promise<CloudProductEventPage> {
+  const after = parseCloudProductEventCursor(input.after);
   const rows = await db
     .select()
     .from(cloudProductEvents)
-    .where(and(eq(cloudProductEvents.companyId, input.companyId), gt(cloudProductEvents.id, input.after)))
-    .orderBy(asc(cloudProductEvents.id))
+    .where(and(
+      eq(cloudProductEvents.companyId, input.companyId),
+      sql`${cloudProductEvents.transactionId} < txid_snapshot_xmin(txid_current_snapshot())`,
+      sql`(${cloudProductEvents.transactionId}, ${cloudProductEvents.id}) > (${after.transactionId.toString()}::bigint, ${after.id}::bigint)`,
+    ))
+    .orderBy(asc(cloudProductEvents.transactionId), asc(cloudProductEvents.id))
     .limit(input.limit + 1);
   const page = rows.slice(0, input.limit);
+  const last = page[page.length - 1];
   const events: CloudProductEvent[] = page.map((row) => ({
     sequence: row.id,
     eventId: row.eventId,
@@ -248,7 +275,7 @@ export async function listCloudProductEvents(
   }));
   return {
     events,
-    nextAfter: events.length > 0 ? events[events.length - 1]!.sequence : input.after,
+    nextAfter: last ? formatCloudProductEventCursor({ transactionId: last.transactionId, id: last.id }) : input.after,
     hasMore: rows.length > input.limit,
   };
 }

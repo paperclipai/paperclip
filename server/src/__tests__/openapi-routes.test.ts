@@ -127,6 +127,7 @@ const explicitOpenApiCoverageExclusions = new Set<string>();
 const explicitOpenApiOperationCoverageExclusions = new Set([
   // Exact Cloud-control signed action; ordinary board/agent credentials cannot invoke it.
   "POST /api/instance/connector-events/wake",
+  "GET /api/instance/product-events",
   "POST /api/instance/ephemeral-enrollment/prepare",
   // Muse uses its closed, versioned receiver protocol and dedicated credentials,
   // documented in doc/muse-personal-agent.md and the shared protocol contract.

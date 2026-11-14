@@ -1,5 +1,5 @@
 {
-  "id": "0355e856-581d-4c3a-8934-4b1ed6629c34",
+  "id": "5b21b1c3-bd26-4766-953b-30fbd380b827",
   "prevId": "0c3e74be-7936-4c97-9798-505daf53c16b",
   "version": "7",
   "dialect": "postgresql",
@@ -16423,6 +16423,13 @@
           "primaryKey": true,
           "notNull": true
         },
+        "transaction_id": {
+          "name": "transaction_id",
+          "type": "bigint",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "txid_current()"
+        },
         "event_id": {
           "name": "event_id",
           "type": "uuid",
@@ -16503,11 +16510,17 @@
           "method": "btree",
           "with": {}
         },
-        "cloud_product_events_company_id_idx": {
-          "name": "cloud_product_events_company_id_idx",
+        "cloud_product_events_company_cursor_idx": {
+          "name": "cloud_product_events_company_cursor_idx",
           "columns": [
             {
               "expression": "company_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "transaction_id",
               "isExpression": false,
               "asc": true,
               "nulls": "last"

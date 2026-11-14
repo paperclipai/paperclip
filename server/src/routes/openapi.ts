@@ -7579,16 +7579,6 @@ registry.registerPath({
   responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden, 404: r.notFound },
 });
 
-registry.registerPath({
-  method: "get",
-  path: "/api/instance/product-events",
-  tags: ["instance"],
-  summary:
-    "Read the Cloud product events of the Cloud-pinned primary company in sequence order; accepts only a Cloud control assertion for product-events:read; 404 when the instance is not Cloud-managed",
-  request: { query: z.object({ after: z.coerce.number().int().min(0).optional(), limit: z.coerce.number().int().min(1).max(500).optional() }) },
-  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 404: r.notFound },
-});
-
 // ─── Board chat (Conference Room Chat, experimental) ──────────────────────────
 
 registry.registerPath({
