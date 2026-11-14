@@ -149,6 +149,32 @@ export async function resolveResponsibleUserIdForActivity(db: Db, input: LogActi
   return readNonEmptyString(company?.defaultResponsibleUserId);
 }
 
+async function resolveKnownActivityRunId(db: Db, input: Pick<LogActivityInput, "companyId" | "runId">) {
+  const runId = readNonEmptyString(input.runId);
+  if (!runId) return null;
+  if (!isUuidLike(runId)) {
+    logger.warn(
+      { companyId: input.companyId, runId },
+      "activity log runId is not a valid heartbeat run id; recording without run attribution",
+    );
+    return null;
+  }
+  const known = await db
+    .select({ id: heartbeatRuns.id })
+    .from(heartbeatRuns)
+    .where(and(eq(heartbeatRuns.companyId, input.companyId), eq(heartbeatRuns.id, runId)))
+    .limit(1)
+    .then((rows) => rows.length > 0);
+  if (!known) {
+    logger.warn(
+      { companyId: input.companyId, runId },
+      "activity log runId does not reference a known heartbeat run; recording without run attribution",
+    );
+    return null;
+  }
+  return runId;
+}
+
 export function publishActivity(publication: ActivityPublication) {
   const finish = beginRunPhase("execution.realtime");
   try {
@@ -167,6 +193,7 @@ export function publishActivity(publication: ActivityPublication) {
 export async function persistActivity(db: Db, input: LogActivityInput, receipt?: { id: string }) {
   const redactedDetails = await redactActivityDetails(db, input.authorization ? { ...input.details, permissionDecision: input.authorization, ...(input.agentApiKeyId ? { agentApiKeyId: input.agentApiKeyId } : {}) } : input.details ?? null);
   const responsibleUserId = await resolveResponsibleUserIdForActivity(db, input);
+  const persistedRunId = await resolveKnownActivityRunId(db, input);
   const insert = (runner: Db) => runner.insert(activityLog).values({
     ...(receipt ? { id: receipt.id } : {}),
     companyId: input.companyId,
@@ -176,15 +203,15 @@ export async function persistActivity(db: Db, input: LogActivityInput, receipt?:
     entityType: input.entityType,
     entityId: input.entityId,
     agentId: input.agentId ?? null,
-    runId: input.runId ?? null,
+    runId: persistedRunId,
     responsibleUserId,
     details: redactedDetails,
   }).returning({ id: activityLog.id });
   const [activity] = input.entityType === "issue"
     ? await db.transaction(async tx => {
       await notifyDeliveryWork(tx, DELIVERY_QUEUES.mcpEvents, `task:${input.entityId}`);
-      if (input.runId && input.action === "issue.updated" && ["done", "cancelled"].includes(String(input.details?.status)))
-        await notifyActiveRunSilence(tx, { companyId: input.companyId, runId: input.runId });
+      if (persistedRunId && input.action === "issue.updated" && ["done", "cancelled"].includes(String(input.details?.status)))
+        await notifyActiveRunSilence(tx, { companyId: input.companyId, runId: persistedRunId });
       return insert(tx as unknown as Db);
     })
     : await insert(db);

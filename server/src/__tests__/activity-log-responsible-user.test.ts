@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { eq } from "drizzle-orm";
 import {
   activityLog,
@@ -17,6 +17,7 @@ import {
   type ActivityPublication,
   type LogActivityInput,
 } from "../services/activity-log.js";
+import { DELIVERY_QUEUES, subscribeDeliveryWork } from "../services/delivery-work-notifications.js";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
@@ -242,5 +243,155 @@ describeEmbeddedPostgres("logActivity responsible-user stamping", () => {
       .then((rows) => rows[0]);
 
     expect(row?.responsibleUserId).toBe("key-user");
+  });
+
+  it("persists null run attribution when the supplied runId is unknown", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const unknownRunId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      defaultResponsibleUserId: "default-user",
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "CodexCoder",
+      role: "engineer",
+      status: "running",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+
+    await expect(logActivity(db, activityInput({
+      companyId,
+      actorId: agentId,
+      agentId,
+      entityType: "agent",
+      entityId: agentId,
+      runId: unknownRunId,
+    }), [])).resolves.toBeDefined();
+
+    const row = await db
+      .select({ runId: activityLog.runId })
+      .from(activityLog)
+      .where(eq(activityLog.companyId, companyId))
+      .then((rows) => rows[0]);
+
+    expect(row?.runId).toBeNull();
+  });
+
+  it("preserves run attribution when the supplied runId is known", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const runId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      defaultResponsibleUserId: "default-user",
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "CodexCoder",
+      role: "engineer",
+      status: "running",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    await db.insert(heartbeatRuns).values({
+      id: runId,
+      companyId,
+      agentId,
+      invocationSource: "assignment",
+      triggerDetail: "system",
+      status: "running",
+      contextSnapshot: {},
+    });
+
+    await logActivity(db, activityInput({
+      companyId,
+      actorId: agentId,
+      agentId,
+      entityType: "agent",
+      entityId: agentId,
+      runId,
+    }), []);
+
+    const row = await db
+      .select({ runId: activityLog.runId })
+      .from(activityLog)
+      .where(eq(activityLog.companyId, companyId))
+      .then((rows) => rows[0]);
+
+    expect(row?.runId).toBe(runId);
+  });
+
+  it("signals active run silence only for a known run when an issue update completes", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const runId = randomUUID();
+    const entityId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      defaultResponsibleUserId: "default-user",
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "CodexCoder",
+      role: "engineer",
+      status: "running",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    await db.insert(heartbeatRuns).values({
+      id: runId,
+      companyId,
+      agentId,
+      invocationSource: "assignment",
+      triggerDetail: "system",
+      status: "running",
+      contextSnapshot: {},
+    });
+
+    const wake = vi.fn();
+    const unsubscribe = subscribeDeliveryWork(db, DELIVERY_QUEUES.activeRunSilence, wake);
+    try {
+      const completedIssueUpdate = { companyId, actorId: agentId, agentId, entityId, details: { status: "done" } };
+
+      await logActivity(db, activityInput({ ...completedIssueUpdate, runId: "not-a-uuid" }), []);
+      await logActivity(db, activityInput({ ...completedIssueUpdate, runId: randomUUID() }), []);
+      expect(wake).not.toHaveBeenCalled();
+
+      await logActivity(db, activityInput({ ...completedIssueUpdate, runId }), []);
+      expect(wake).toHaveBeenCalledTimes(1);
+    } finally {
+      unsubscribe();
+    }
+
+    const rows = await db
+      .select({ runId: activityLog.runId })
+      .from(activityLog)
+      .where(eq(activityLog.companyId, companyId));
+
+    expect(rows.map((row) => row.runId).sort()).toEqual([runId, null, null].sort());
   });
 });
