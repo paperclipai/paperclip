@@ -63,6 +63,7 @@ export async function setProvisionalChatTitle(
 /**
  * Whether a chat waits for the agent's first turn after the person's first message: the person has written,
  * and no agent message followed it yet. A chat the agent opened with a message of its own still qualifies.
+ * A fast-response acknowledgement is not the agent's turn: it can arrive while the first run is still queued.
  */
 export async function chatAwaitsFirstAgentTurn(db: Db, companyId: string, issueId: string) {
   const [first] = await db.select({ createdAt: issueComments.createdAt }).from(issueComments).where(and(
@@ -71,7 +72,7 @@ export async function chatAwaitsFirstAgentTurn(db: Db, companyId: string, issueI
   if (!first) return false;
   const [reply] = await db.select({ id: issueComments.id }).from(issueComments).where(and(
     eq(issueComments.companyId, companyId), eq(issueComments.issueId, issueId), isNotNull(issueComments.authorAgentId),
-    gt(issueComments.createdAt, first.createdAt),
+    ne(issueComments.origin, "fast_response"), gt(issueComments.createdAt, first.createdAt),
   )).limit(1);
   return !reply;
 }

@@ -3,7 +3,7 @@ import os from "node:os";
 import { instanceSettingsService } from "../services/instance-settings.js";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { eq } from "drizzle-orm";
-import { activityLog, issues } from "@paperclipai/db";
+import { activityLog, issueComments, issues } from "@paperclipai/db";
 import { createLocalAgentJwt } from "../agent-auth-jwt.js";
 import { issueService } from "../services/issues.js";
 import { chatAwaitsFirstAgentTurn, chatTitleFromMessage, setProvisionalChatTitle } from "../services/chat-titles.js";
@@ -82,6 +82,17 @@ describe("agent-named chats", () => {
     expect(await chatAwaitsFirstAgentTurn(server.db, f.companyId, f.issueId)).toBe(true);
     await new Promise(resolve => setTimeout(resolve, 5));
     await svc.addComment(f.issueId, "The CSV export.", { agentId: f.agentId, runId: f.runId });
+    expect(await chatAwaitsFirstAgentTurn(server.db, f.companyId, f.issueId)).toBe(false);
+  });
+
+  it("still asks for a title when only a fast-response acknowledgement answered the first message", async () => {
+    const f = await chatFixture();
+    const svc = issueService(server.db);
+    await svc.addComment(f.issueId, "How do I reset my password?", { userId: f.responsibleUserId! }, { authorType: "user" });
+    await new Promise(resolve => setTimeout(resolve, 5));
+    await server.db.insert(issueComments).values({ companyId: f.companyId, issueId: f.issueId, authorAgentId: f.agentId, origin: "fast_response", body: "On it." });
+    expect(await chatAwaitsFirstAgentTurn(server.db, f.companyId, f.issueId)).toBe(true);
+    await svc.addComment(f.issueId, "Here is how.", { agentId: f.agentId, runId: f.runId });
     expect(await chatAwaitsFirstAgentTurn(server.db, f.companyId, f.issueId)).toBe(false);
   });
 
