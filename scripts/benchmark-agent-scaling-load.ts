@@ -158,7 +158,8 @@ try {
     fleet.push({ agentId: agent!.id, issueId: issue!.id, runId, leaseOwner, write, records, checkpoint, seq: 0,
       checkpointTail: Promise.resolve(), appendTail: Promise.resolve() as Promise<unknown>,
       deltaQueue: [] as Array<{ input: AppendHeartbeatRunEventInput; settle: (error?: unknown) => void }>,
-      deltaTimer: null as ReturnType<typeof setTimeout> | null, streamedSinceBoundary: false, flushQueued: false,
+      deltaTimer: null as ReturnType<typeof setTimeout> | null, streamedSinceBoundary: false,
+      openBatch: null as Array<{ input: AppendHeartbeatRunEventInput; settle: (error?: unknown) => void }> | null,
       eventSlot: Math.floor(index * EVENT_CYCLE.length / Math.max(1, AGENTS)), token: createLocalAgentJwt(agent!.id, companyId, "process", runId, null)! });
   }
 
@@ -191,13 +192,17 @@ try {
     if (agent.deltaQueue.length === 0) return;
     agent.streamedSinceBoundary = true;
     // As the port: one batch waits behind the batch that is committing, and
-    // takes every delta queued by the time it starts.
-    if (agent.flushQueued) return;
-    agent.flushQueued = true;
-    agent.appendTail = agent.appendTail.then(() => {
-      agent.flushQueued = false;
-      const batch = agent.deltaQueue;
+    // takes every delta queued until it starts or until the next other event.
+    if (agent.openBatch) {
+      agent.openBatch.push(...agent.deltaQueue);
       agent.deltaQueue = [];
+      return;
+    }
+    const batch = agent.deltaQueue;
+    agent.deltaQueue = [];
+    agent.openBatch = batch;
+    agent.appendTail = agent.appendTail.then(() => {
+      if (agent.openBatch === batch) agent.openBatch = null;
       return appendHeartbeatRunEventBatch(db, batch.map(item => item.input), () => {})
         .then(() => { for (const item of batch) item.settle(); }, error => { for (const item of batch) item.settle(error); });
     });
@@ -219,21 +224,20 @@ try {
   const append = (agent: Agent, eventType: string, bytes: number) => {
     const { seq, event, input } = eventInput(agent, eventType, bytes);
     flushDeltas(agent);
+    agent.openBatch = null;
     agent.streamedSinceBoundary = false;
     const queued = agent.appendTail.then(() => appendHeartbeatRunEvent(db, input)).then(() => ({ seq, event }));
     agent.appendTail = queued.catch(() => undefined);
     return queued;
   };
   // The server's run trace appends its spans directly: not a runner event, so
-  // no source sequence, no wake and no checkpoint.
+  // no source sequence, no wake, no checkpoint, and no place in the run's
+  // stream of runner events.
   const appendSpan = (agent: Agent) => {
-    flushDeltas(agent);
     const payload = { schema: "paperclip.run-performance-span.v1", span: "tool.call", parentSpan: "task.turn",
       durationMs: 12.5, outcome: "ok", detail: randomBytes(Math.ceil(SPAN_BYTES * 0.75)).toString("base64") };
-    const queued = agent.appendTail.then(() => appendHeartbeatRunEvent(db, { companyId, agentId: agent.agentId, runId: agent.runId,
-      eventType: "run.performance.span", stream: "system", level: "info", message: "runner span: tool.call (12.5ms)", payload }));
-    agent.appendTail = queued.catch(() => undefined);
-    return queued;
+    return appendHeartbeatRunEvent(db, { companyId, agentId: agent.agentId, runId: agent.runId,
+      eventType: "run.performance.span", stream: "system", level: "info", message: "runner span: tool.call (12.5ms)", payload });
   };
   const eventsByType: Record<string, number> = {};
   const operations: Record<Source, (agent: Agent) => Promise<unknown>> = {
