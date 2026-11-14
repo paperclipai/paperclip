@@ -2440,6 +2440,27 @@ describe("IssueDetail", () => {
     }));
   });
 
+  it("applies the saved newest-first order to task threads", async () => {
+    localStorage.setItem("paperclip:issue-comments:thread-order", "newest_first");
+    mockIssuesApi.get.mockResolvedValue(createIssue());
+    await act(async () => renderIssueView());
+    await waitForAssertion(() => expect(mockIssueChatThreadRender.mock.calls.at(-1)?.[0].threadOrder).toBe("newest_first"));
+    const sortControl = container.querySelector('button[aria-label="Sort task thread"]');
+    expect(sortControl?.textContent).toContain("Newest first");
+  });
+
+  it("keeps Agent Chat chronological without a sort control", async () => {
+    localStorage.setItem("paperclip:issue-comments:thread-order", "newest_first");
+    const chat = createIssue({ conversationAgentId: "agent-1", conversationUserId: "user-1" });
+    mockIssuesApi.getCore.mockResolvedValue(chat);
+    mockIssuesApi.get.mockResolvedValue(chat);
+    await act(async () => renderIssueView());
+    await waitForAssertion(() => expect(mockIssueChatThreadRender.mock.calls.at(-1)?.[0]).toMatchObject({
+      threadOrder: "oldest_first", scrollingHistory: expect.any(Object),
+    }));
+    expect(container.querySelector('button[aria-label="Sort task thread"]')).toBeNull();
+  });
+
   it("opens chats compactly and pages backward without expanding all history", async () => {
     queryClient.setQueryData(["issues", "history-expanded", "PAP-1"], false);
     const chat = createIssue({ conversationAgentId: "agent-1", conversationUserId: "user-1" });

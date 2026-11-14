@@ -578,6 +578,8 @@ export function TaskChatThread(props: TaskChatThreadProps) {
     onSubmitInteractionVerdicts,
     externalReferences,
     threadHeader,
+    threadFooter,
+    threadOrder = "oldest_first",
     browsers = EMPTY_BROWSERS,
     onOpenBrowser,
     hasOlderComments = false,
@@ -3073,12 +3075,18 @@ export function TaskChatThread(props: TaskChatThreadProps) {
     ],
   );
 
+  const newestFirstThread = threadOrder === "newest_first";
   const historyControl = props.historyControl ?? (
     props.compactHistory && props.onExpandHistory
     && (deferredTranscriptRunIds.size > 0 || logRuns.some((run) => truncatedRunIds?.has(run.id)))
       ? <Button type="button" variant="ghost" size="sm" onClick={props.onExpandHistory}>More run output</Button>
       : null
   );
+  // Without a brief bubble, the earlier-history control sits at the thread's
+  // chronological edge: the header when oldest-first, the list end when
+  // newest-first. The brief bubble already sits at that edge in either order.
+  const headerHistoryControl = !issueBrief && !newestFirstThread ? historyControl : null;
+  const footerHistoryControl = !issueBrief && newestFirstThread ? historyControl : null;
   const renderBrief = useCallback(
     () => issueBrief ? <><TaskChatDescriptionBubble brief={issueBrief} />{historyControl}</> : null,
     [issueBrief, historyControl],
@@ -3452,13 +3460,25 @@ export function TaskChatThread(props: TaskChatThreadProps) {
                             {bottomBlockerLinks}
                           </div>
                         ) : null}
+                        {threadFooter ? (
+                          <div
+                            className={cn(
+                              "mx-auto w-full max-w-(--tc-shell-max-w) px-4 pb-4",
+                              streamlinedUiEnabled && "md:px-0",
+                            )}
+                          >
+                            {threadFooter}
+                          </div>
+                        ) : null}
                       </div>
                     ) : (
                       <TaskChatThreadView
                         items={threadItems}
                         scrollingHistory={scrollingHistory}
                         attachments={attachments}
-                        header={<>{threadHeaderWithBlockers}{!issueBrief ? historyControl : null}<CoordinatorChatQuestionStatus query={pendingQuestions} /><CoordinatorChatReceiptStatus query={decisionReceipts} scroll={!!scrollingHistory} /><CoordinatorChatHandoffStatus query={taskHandoffs} scroll={!!scrollingHistory} /></>}
+                        threadOrder={threadOrder}
+                        footer={threadFooter || footerHistoryControl ? <>{threadFooter}{footerHistoryControl}</> : undefined}
+                        header={<>{threadHeaderWithBlockers}{headerHistoryControl}<CoordinatorChatQuestionStatus query={pendingQuestions} /><CoordinatorChatReceiptStatus query={decisionReceipts} scroll={!!scrollingHistory} /><CoordinatorChatHandoffStatus query={taskHandoffs} scroll={!!scrollingHistory} /></>}
                         renderInteraction={renderInteraction}
                         renderBrief={renderBrief}
                         renderMessageActions={renderMessageActions}

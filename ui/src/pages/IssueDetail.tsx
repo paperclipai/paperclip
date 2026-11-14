@@ -228,6 +228,7 @@ import {
   type IssueChatComposerHandle,
   type IssueChatRunFinalizationAction,
 } from "../components/IssueChatThread";
+import type { IssueChatThreadOrder } from "../lib/issue-chat-messages";
 import { TaskChatThread } from "../components/TaskChatThread";
 import type { TaskChatIssueBrief } from "../components/task-chat/TaskChatDescriptionBubble";
 import { useClassicTaskInterfaceEnabled } from "../hooks/useClassicTaskInterfaceEnabled";
@@ -311,6 +312,14 @@ import { usePageSettled } from "@/hooks/usePageSettled";
 import { QueryErrorState, useQueryView } from "@/components/QueryView";
 import { describeError, isTransientError } from "@/api/errors";
 import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuLabel,
+  DropdownMenuRadioGroup,
+  DropdownMenuRadioItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
+import {
   Sheet,
   SheetContent,
   SheetHeader,
@@ -367,6 +376,7 @@ import {
   Activity as ActivityIcon,
   AlertTriangle,
   Archive,
+  ArrowDownUp,
   ArrowLeft,
   Check,
   ChevronRight,
@@ -499,6 +509,37 @@ const FEEDBACK_TERMS_URL =
   "https://paperclip.ing/tos";
 const ISSUE_COMMENT_AUTOLOAD_LIMIT = ISSUE_COMMENT_PAGE_SIZE * 3;
 const JUMP_TO_LATEST_MAX_COMMENT_PAGES = 10;
+const ISSUE_COMMENT_THREAD_ORDER_STORAGE_KEY =
+  "paperclip:issue-comments:thread-order";
+const ISSUE_COMMENT_THREAD_ORDER_OPTIONS: Array<{
+  value: IssueChatThreadOrder;
+  label: string;
+}> = [
+  { value: "oldest_first", label: "Oldest first" },
+  { value: "newest_first", label: "Newest first" },
+];
+
+function readIssueCommentThreadOrderPreference(): IssueChatThreadOrder {
+  if (typeof window === "undefined") return "oldest_first";
+  try {
+    return window.localStorage.getItem(ISSUE_COMMENT_THREAD_ORDER_STORAGE_KEY) ===
+      "newest_first"
+      ? "newest_first"
+      : "oldest_first";
+  } catch {
+    return "oldest_first";
+  }
+}
+
+function writeIssueCommentThreadOrderPreference(order: IssueChatThreadOrder) {
+  if (typeof window === "undefined") return;
+  try {
+    window.localStorage.setItem(ISSUE_COMMENT_THREAD_ORDER_STORAGE_KEY, order);
+  } catch {
+    // Storage can be unavailable (private mode); the in-memory choice still applies.
+  }
+}
+
 function treeControlPreviewErrorCopy(error: unknown): string {
   if (error instanceof ApiError) {
     if (error.status === 403)
@@ -1279,6 +1320,8 @@ type IssueDetailChatTabProps = {
   commentsOlderError?: boolean;
   onLoadOlderComments: () => void;
   onRefreshLatestComments: () => Promise<unknown> | void;
+  threadOrder: IssueChatThreadOrder;
+  onThreadOrderChange: (order: IssueChatThreadOrder) => void;
   onWorkModeChange?: (workMode: IssueWorkMode) => Promise<void> | void;
   composerRef: Ref<IssueChatComposerHandle>;
   /** Optional node rendered inline directly above the reply composer (e.g. the monitor strip). */
@@ -1438,6 +1481,8 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
   commentsOlderError = false,
   onLoadOlderComments,
   onRefreshLatestComments,
+  threadOrder,
+  onThreadOrderChange,
   onWorkModeChange,
   composerRef,
   composerAccessory,
@@ -2629,6 +2674,58 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
     </div>
   ) : null;
 
+  // Agent Chat pages its history by scrolling toward the top, so it stays
+  // chronological; the sort choice applies to task threads.
+  const showThreadOrderControl = !conversationMode;
+  const effectiveThreadOrder: IssueChatThreadOrder = showThreadOrderControl
+    ? threadOrder
+    : "oldest_first";
+  const threadOrderLabel =
+    ISSUE_COMMENT_THREAD_ORDER_OPTIONS.find(
+      (option) => option.value === threadOrder,
+    )?.label ?? "Oldest first";
+  // Fixed chrome above the thread in both interfaces so the toggle stays
+  // reachable mid-thread. The load-older control sits at the thread's
+  // chronological edge for the selected order.
+  const threadOrderControl = (
+    <DropdownMenu>
+      <DropdownMenuTrigger asChild>
+        <Button
+          type="button"
+          variant="outline"
+          size="sm"
+          className="shrink-0"
+          aria-label="Sort task thread"
+          title="Sort task thread"
+        >
+          <ArrowDownUp className="h-3.5 w-3.5" />
+          <span>{threadOrderLabel}</span>
+        </Button>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent align="end" className="w-44">
+        <DropdownMenuLabel>Sort thread</DropdownMenuLabel>
+        <DropdownMenuRadioGroup
+          value={threadOrder}
+          onValueChange={(value) =>
+            onThreadOrderChange(value as IssueChatThreadOrder)
+          }
+        >
+          {ISSUE_COMMENT_THREAD_ORDER_OPTIONS.map((option) => (
+            <DropdownMenuRadioItem key={option.value} value={option.value}>
+              {option.label}
+            </DropdownMenuRadioItem>
+          ))}
+        </DropdownMenuRadioGroup>
+      </DropdownMenuContent>
+    </DropdownMenu>
+  );
+  // Explicit paging stays at the thread's chronological edge: above the
+  // oldest loaded row when oldest-first, below it when newest-first.
+  const loadOlderAtBottom = effectiveThreadOrder === "newest_first";
+  const topLoadOlderButton = loadOlderAtBottom ? null : loadOlderButton;
+  const bottomLoadOlderButton = loadOlderAtBottom ? loadOlderButton : null;
+  const classicTopLoadOlderButton = classicTaskInterfaceEnabled ? topLoadOlderButton : null;
+
   const savedThread = (
     <div
       className={
@@ -2637,9 +2734,21 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
           : "flex min-h-0 flex-1 flex-col"
       }
     >
-      {/* Chat-style: the button rides inside the thread's scroll viewport with
-          the header so nothing sits above the thread in the page flow. */}
-      {classicTaskInterfaceEnabled ? loadOlderButton : null}
+      {showThreadOrderControl || classicTopLoadOlderButton ? (
+        <div
+          className={cn(
+            "flex flex-wrap items-center gap-2",
+            classicTopLoadOlderButton ? "justify-between" : "justify-end",
+            !classicTaskInterfaceEnabled && "px-1 pb-2 md:px-4",
+          )}
+        >
+          {classicTopLoadOlderButton}
+          {showThreadOrderControl ? threadOrderControl : null}
+        </div>
+      ) : null}
+      {/* Chat-style: the load-older button rides inside the thread's scroll
+          viewport (header in oldest-first, list end in newest-first), so the
+          only page-flow addition is the fixed sort row above. */}
       {classicTaskInterfaceEnabled &&
       commentsInitialLoading &&
       commentsWithRunMeta.length === 0 &&
@@ -2708,13 +2817,17 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
             composerAccessory={<><WorkspaceRetryControl />{composerAccessory}</>}
             threadHeader={
               !classicTaskInterfaceEnabled &&
-              (threadHeader || loadOlderButton) ? (
+              (threadHeader || topLoadOlderButton) ? (
                 <>
                   {threadHeader}
-                  {loadOlderButton}
+                  {topLoadOlderButton}
                 </>
               ) : null
             }
+            threadFooter={
+              !classicTaskInterfaceEnabled ? bottomLoadOlderButton : null
+            }
+            threadOrder={effectiveThreadOrder}
             issueBrief={issueBrief}
             comments={commentsForThread}
             interactions={interactions}
@@ -2857,6 +2970,9 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
           </EmailThreadProvider>
         </TaskChatScrollNavigation.Provider>
       )}
+      {/* Classic thread, newest-first: the chronological edge sits below the
+          thread, so the load-older control follows it here. */}
+      {classicTaskInterfaceEnabled ? bottomLoadOlderButton : null}
     </div>
   );
 
@@ -3341,6 +3457,9 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
   >(() => new Map());
   const [pendingCommentComposerFocusKey, setPendingCommentComposerFocusKey] =
     useState(0);
+  const [threadOrder, setThreadOrder] = useState<IssueChatThreadOrder>(() =>
+    readIssueCommentThreadOrderPreference(),
+  );
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const readReceiptRef = useRef<{
     issueId: string;
@@ -6904,6 +7023,10 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
     attachmentsLoading && attachments === undefined;
   const loadOlderComments = useCallback(() => paginatedConversation
     ? earlierChatComments.load() : fetchOlderComments(), [paginatedConversation, earlierChatComments.load, fetchOlderComments]);
+  const handleThreadOrderChange = useCallback((order: IssueChatThreadOrder) => {
+    setThreadOrder(order);
+    writeIssueCommentThreadOrderPreference(order);
+  }, []);
   const refetchLatestComments = useCallback(async () => {
     // Submission reconciliation needs the current admission receipt as well as comments.
     void refetchIssueDetail();
@@ -8740,6 +8863,8 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
                   commentsLoadingOlder={paginatedConversation ? earlierChatComments.isFetching : commentsLoadingOlder}
                   onLoadOlderComments={loadOlderComments}
                   onRefreshLatestComments={refetchLatestComments}
+                  threadOrder={threadOrder}
+                  onThreadOrderChange={handleThreadOrderChange}
                   composerRef={commentComposerRef}
                   composerAccessory={
                     hasVisibleMonitorSurface(issue) ? (
