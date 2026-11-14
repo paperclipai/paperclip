@@ -1,6 +1,6 @@
 import { and, count, eq } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
-import { activityLog, heartbeatRuns } from "@paperclipai/db";
+import { activityLog, heartbeatRuns, issues } from "@paperclipai/db";
 import { isUuidLike, issueWriteDenialResponse } from "@paperclipai/shared";
 import { forbidden } from "../errors.js";
 import { logger } from "../middleware/logger.js";
@@ -107,6 +107,31 @@ export async function observeCrossIssueInfluence(
       run.agentId !== input.agentId
     ) {
       throw crossIssueInfluenceRunContextError();
+    }
+
+    // If the run owns the checkout/execution lock on the target issue, the
+    // write is same-issue by definition and does not spend the cross-issue cap.
+    // Re-read the issue row here (inside the run lock) so an ownership adopted
+    // by assertAgentIssueMutationAllowed just above is visible; the caller-
+    // supplied row may be stale, and the issue row alone does not prove run
+    // ownership — the locked heartbeatRuns row above already validated that.
+    if (input.targetIssueId) {
+      const issue = await tx
+        .select({
+          assigneeAgentId: issues.assigneeAgentId,
+          checkoutRunId: issues.checkoutRunId,
+          executionRunId: issues.executionRunId,
+        })
+        .from(issues)
+        .where(eq(issues.id, input.targetIssueId))
+        .then((rows) => rows[0] ?? null);
+      if (
+        issue &&
+        issue.assigneeAgentId === run.agentId &&
+        (issue.checkoutRunId === run.id || issue.executionRunId === run.id)
+      ) {
+        return null;
+      }
     }
 
     // An unscoped run (timer heartbeat with no checked-out issue) has no source

@@ -3932,7 +3932,14 @@ export function issueRoutes(
   async function assertCrossIssueInfluenceWithinRunCap(
     req: Request,
     res: Response,
-    issue: { id: string; identifier?: string | null; companyId: string },
+    issue: {
+      id: string;
+      identifier?: string | null;
+      companyId: string;
+      assigneeAgentId?: string | null;
+      checkoutRunId?: string | null;
+      executionRunId?: string | null;
+    },
     kind: CrossIssueInfluenceKind,
   ) {
     if (req.actor.type !== "agent") return true;
@@ -3954,7 +3961,7 @@ export function issueRoutes(
 
     const labels = await issueWriteDenialLabels(req, {
       identifier: issue.identifier ?? null,
-      assigneeAgentId: null,
+      assigneeAgentId: issue.assigneeAgentId ?? null,
     });
     res.status(429).json(
       crossIssueInfluenceLimitError(decision, {
@@ -17484,6 +17491,29 @@ export function issueRoutes(
 
       const checkoutRunId = requireAgentRunId(req, res);
       if (req.actor.type === "agent" && !checkoutRunId) return;
+      // The checkout run id is caller-supplied. Verify it is a persisted run
+      // owned by the authenticated agent and company before persisting it into
+      // the issue row; otherwise an agent could bind another agent's run to
+      // this issue and later use it to bypass the cross-issue cap.
+      if (req.actor.type === "agent" && checkoutRunId) {
+        const checkoutRun = await db
+          .select({ id: heartbeatRuns.id, agentId: heartbeatRuns.agentId, status: heartbeatRuns.status })
+          .from(heartbeatRuns)
+          .where(and(
+            eq(heartbeatRuns.id, checkoutRunId),
+            eq(heartbeatRuns.companyId, issue.companyId),
+            eq(heartbeatRuns.agentId, req.actor.agentId),
+          ))
+          .then((rows) => rows[0] ?? null);
+        if (!checkoutRun) {
+          res.status(403).json({
+            error: "Checkout run id does not belong to the authenticated agent",
+            details: { issueId: issue.id, checkoutRunId },
+            securityPrinciples: ["Least Privilege", "Complete Mediation", "Fail Securely"],
+          });
+          return;
+        }
+      }
 
       // Reopen the closed isolated workspace only after the run-id gate passes. A
       // rejected checkout must not rebuild and republish the workspace as active.
