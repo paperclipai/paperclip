@@ -188,6 +188,19 @@ describe("deferred chat wake sweep", () => {
     expect(errors).toEqual([]);
   });
 
+  it("settles a saved chat wake whose task no longer exists", async () => {
+    const c = await company();
+    const orphan = await wake(c, { status: "todo", ageMs: 60_000 });
+    const before = await receipt(orphan.requestId);
+    await db.update(agentWakeupRequests).set({ payload: { ...before.payload, issueId: randomUUID() } })
+      .where(eq(agentWakeupRequests.id, orphan.requestId));
+    await heartbeat.registerDeferredReceiptWork(coordinator, () => true).ready;
+    await settle();
+    expect(await receipt(orphan.requestId)).toMatchObject({ status: "skipped", error: "task_missing", runId: null });
+    expect(await idle(30)).toEqual({ statements: 0, wakeUpdates: 0 });
+    expect(errors).toEqual([]);
+  });
+
   it("reopens a finished task for a recent saved chat message, as a message on a finished task does", async () => {
     const c = await company();
     const recent = await wake(c, { status: "done", ageMs: 5 * 60_000 });

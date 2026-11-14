@@ -2201,6 +2201,25 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
     // A server restart or a message/cleanup race can leave a deferred wake
     // after its owner has released the issue lock. Revisit it through the same
     // release admission, so recovery holds and operator Stops still apply.
+    const orphanedChatWakes = await db.select({ id: agentWakeupRequests.id, companyId: agentWakeupRequests.companyId,
+      payload: agentWakeupRequests.payload }).from(agentWakeupRequests)
+      .where(and(scope.companyId ? eq(agentWakeupRequests.companyId, scope.companyId) : undefined,
+        scope.requestId ? eq(agentWakeupRequests.id, scope.requestId) : undefined,
+        eq(agentWakeupRequests.status, "deferred_issue_execution"), isNull(agentWakeupRequests.runId),
+        sql`${agentWakeupRequests.idempotencyKey} like 'chat-inbound:%'`,
+        sql`NOT EXISTS (SELECT 1 FROM issues chat_wake_issue WHERE chat_wake_issue.company_id = ${agentWakeupRequests.companyId}
+          AND chat_wake_issue.id::text = ${agentWakeupRequests.payload}->>'issueId')`))
+      .limit(50);
+    for (const wake of orphanedChatWakes) {
+      await recordDeferredChatWakeDecline(db, { companyId: wake.companyId, issueId: String(wake.payload?.issueId),
+        requestId: wake.id }, { settle: "task_missing" }).then(recorded => {
+        if (recorded) logger.warn({ requestId: wake.id, reason: recorded.reason, outcome: recorded.outcome, attempts: recorded.attempts },
+          "saved chat source could not resume after recovery");
+      }).catch(err => {
+        scope.onError?.(err);
+        logger.warn({ err, requestId: wake.id }, "saved chat source could not record its resume outcome");
+      });
+    }
     const strandedQueues = await db.select({ wake: agentWakeupRequests })
       .from(agentWakeupRequests)
       .innerJoin(issues, and(eq(issues.companyId, agentWakeupRequests.companyId),
