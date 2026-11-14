@@ -31,6 +31,7 @@ import { prepareRemoteOpenCodeArtifacts, type OpenCodeLaunchArtifacts } from "./
 import { prepareRuntimeContextSource, rehydratePinnedInstructionAsset } from "./runtime-context.js";
 import { createNativeUsageDelivery } from "./native-usage-delivery.js";
 import { createNativeRecoveryUsageDelivery } from "./native-recovery-usage-delivery.js";
+import { nativeProviderTurnWaitOptions } from "./native-provider-turn-wait.js";
 import { createNativeTurnAccounting, NATIVE_LOST_TURN_USAGE_EVIDENCE, nativeUsageCostUsd, nativeUsageBiller, normalizeNativeUsage, usesNativeUsageDelivery, isNativeUsageAccountingEvent, isNativeUsageDeliveryEvent } from "./native-usage-accounting.js";
 import { crashPoint } from "@paperclipai/shared/crash-points";
 export { nativeUsageCostUsd, nativeUsageBiller, normalizeNativeUsage } from "./native-usage-accounting.js";
@@ -12377,10 +12378,13 @@ async function executePaperclipNativeSessionAttempt(
           startedAtMs: nativeSessionExecuteStartedAtMs,
         });
         trace.activate(runnerSessionStartupScope);
+        const providerTurnWait = input.execution.provider.kind === "acpx" && input.execution.provider.agent === "claude"
+          ? await nativeProviderTurnWaitOptions(input.db, input.execution.binding) : undefined;
         const runExecution = () =>
           executeNativeSession({
             resumeInterruptedTurn: input.restartRecovery?.kind === "resume_dead_runner"
               || input.restartRecovery?.kind === "reattach_remote_runner" || scheduledResumeContinuation,
+            providerTurnWait,
             getFreshSessionHandoff: input.getFreshSessionHandoff,
             // A failed seal commits nothing: the messages stay queued for the
             // turn boundary instead of failing this run before its turn.

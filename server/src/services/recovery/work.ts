@@ -12,6 +12,13 @@ type Entry = { id: string; companyId: string; dueAt: number };
 type Scope = { companyId: string; issueId: string; onDeferredDeadline: (at: number) => void };
 const PAGE_SIZE = 100;
 
+export const resolvedDependencyCandidate = sql`exists (select 1 from ${issueRelations} r where r.company_id = ${issues.companyId}
+      and r.related_issue_id = ${issues.id} and r.type = 'blocks' offset 0)
+    and not exists (select 1 from ${issueRelations} r inner join ${issues} blocker
+      on blocker.id = r.issue_id and blocker.company_id = r.company_id
+      where r.company_id = ${issues.companyId} and r.related_issue_id = ${issues.id}
+        and r.type = 'blocks' and blocker.status <> 'done' offset 0)`;
+
 export function registerIssueRecoveryWork(
   db: Db,
   coordinator: ReturnType<typeof createDeliveryWorkCoordinator>,
@@ -204,12 +211,7 @@ export function registerIssueRecoveryWork(
   const dependencies = register(DELIVERY_QUEUES.resolvedDependencies, ["blocked"], async scope => {
     const result = await owner.dependencies(scope);
     if (result.enqueueFailed > 0) throw new Error("Resolved dependency wake remains undelivered");
-  }, sql`exists (select 1 from ${issueRelations} r where r.company_id = ${issues.companyId}
-      and r.related_issue_id = ${issues.id} and r.type = 'blocks')
-    and not exists (select 1 from ${issueRelations} r inner join ${issues} blocker
-      on blocker.id = r.issue_id and blocker.company_id = r.company_id
-      where r.company_id = ${issues.companyId} and r.related_issue_id = ${issues.id}
-        and r.type = 'blocks' and blocker.status <> 'done')`);
+  }, resolvedDependencyCandidate);
   const locks = register(DELIVERY_QUEUES.staleIssueLocks, null, owner.locks);
   const assignedWork = owner.assignedWork ? registerAssignedWork(owner.assignedWork) : null;
   const watchdogs = registerTaskWatchdogWork(db, coordinator, {
