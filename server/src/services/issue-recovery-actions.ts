@@ -394,19 +394,19 @@ export function issueRecoveryActionService(db: DbOrTransaction) {
     const now = new Date();
     if (existing && input.createOnly) return existing;
     if (!existing) {
-      const [settled] = await db.select({ action: issueRecoveryActions }).from(issueRecoveryActions)
-        .innerJoin(issues, and(eq(issues.id, issueRecoveryActions.sourceIssueId), eq(issues.companyId, issueRecoveryActions.companyId)))
-        .where(and(
+      const [source] = await db.select({ status: issues.status }).from(issues)
+        .where(and(eq(issues.companyId, input.companyId), eq(issues.id, input.sourceIssueId))).limit(1);
+      if (source && (source.status === "done" || source.status === "cancelled")) {
+        const [settled] = await db.select().from(issueRecoveryActions).where(and(
           eq(issueRecoveryActions.companyId, input.companyId),
           eq(issueRecoveryActions.sourceIssueId, input.sourceIssueId),
+          eq(issueRecoveryActions.status, "resolved"),
           eq(issueRecoveryActions.cause, input.cause),
           eq(issueRecoveryActions.fingerprint, input.fingerprint),
-          eq(issueRecoveryActions.status, "resolved"),
           eq(issueRecoveryActions.resolutionNote, SOURCE_TERMINAL_RESOLUTION),
-          inArray(issues.status, ["done", "cancelled"]),
-        ))
-        .orderBy(desc(issueRecoveryActions.resolvedAt)).limit(1);
-      if (settled) return toReadModel(settled.action);
+        )).limit(1);
+        if (settled) return toReadModel(settled);
+      }
     }
     const ownerType = input.ownerType ?? (input.ownerAgentId ? "agent" : "board");
     if (existing) {
