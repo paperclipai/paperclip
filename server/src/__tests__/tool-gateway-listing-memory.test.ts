@@ -145,6 +145,8 @@ describeEmbeddedPostgres("tool gateway listing memory", () => {
       expect("tools" in result && result.tools.length).toBeGreaterThan(0);
       const audits = await db.select().from(activityLog).where(eq(activityLog.companyId, fixture.company.id));
       expect(audits.some((audit) => audit.action === "tool_gateway.discovery")).toBe(true);
+      await db.update(heartbeatRuns).set({ status: "succeeded", finishedAt: new Date() })
+        .where(eq(heartbeatRuns.id, fixture.run.id));
       await expect(service.listToolsForNamedGateway({ gatewayId: fixture.namedGateway.id, bearerToken: fixture.token.token }))
         .rejects.toMatchObject({ status: 401 });
     } finally {

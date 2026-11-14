@@ -9280,7 +9280,7 @@ export function createToolGatewayService(
         clientMetadata,
       });
     }
-    if (row.token.expiresAt && row.token.expiresAt.getTime() <= Date.now()) {
+    if (row.token.expiresAt && row.token.expiresAt.getTime() <= Date.now() && row.token.subjectType !== "heartbeat_run") {
       await recordNamedGatewayAuthFailure({
         gatewayId: input.gatewayId,
         gatewayPublicId: input.gatewayPublicId,
@@ -9453,8 +9453,10 @@ export function createToolGatewayService(
       responsibleUserId,
       createdAt: row.token.createdAt,
       expiresAt:
-        row.token.expiresAt ??
-        new Date(Date.now() + 3650 * 24 * 60 * 60 * 1000),
+        row.token.expiresAt &&
+        !(row.token.subjectType === "heartbeat_run" && row.token.expiresAt.getTime() <= Date.now())
+          ? row.token.expiresAt
+          : new Date(Date.now() + 3650 * 24 * 60 * 60 * 1000),
     };
     await assertNamedGatewayProtocolLimit(
       session,
@@ -14161,6 +14163,11 @@ export function createToolGatewayService(
         select min(expires_at) as at from (
           (select ${toolMcpGatewayTokens.expiresAt} as expires_at from ${toolMcpGatewayTokens}
             where ${toolMcpGatewayTokens.expiresAt} is not null
+              and (${toolMcpGatewayTokens.subjectType} <> 'heartbeat_run'
+                or ${toolMcpGatewayTokens.subjectId} is null
+                or not exists (select 1 from ${heartbeatRuns}
+                  where ${heartbeatRuns.id}::text = ${toolMcpGatewayTokens.subjectId}
+                    and ${heartbeatRuns.status} in (${sql.join([...ACTIVE_GATEWAY_RUN_STATUSES].map((status) => sql`${status}`), sql`, `)})))
             order by ${toolMcpGatewayTokens.expiresAt} limit 1)
           union all
           (select ${toolGatewaySessions.expiresAt} as expires_at from ${toolGatewaySessions}
@@ -14174,14 +14181,44 @@ export function createToolGatewayService(
       const now = input.now ?? new Date();
       let deletedCount = 0;
       while (true) {
-        const expiredTokens = await db.select({ id: toolMcpGatewayTokens.id })
+        const expiredTokens = await db.select({
+          id: toolMcpGatewayTokens.id,
+          subjectType: toolMcpGatewayTokens.subjectType,
+          subjectId: toolMcpGatewayTokens.subjectId,
+        })
           .from(toolMcpGatewayTokens)
-          .where(lte(toolMcpGatewayTokens.expiresAt, now))
+          .where(and(
+            lte(toolMcpGatewayTokens.expiresAt, now),
+            or(
+              ne(toolMcpGatewayTokens.subjectType, "heartbeat_run"),
+              isNull(toolMcpGatewayTokens.subjectId),
+              sql`not exists (select 1 from ${heartbeatRuns} where ${heartbeatRuns.id}::text = ${toolMcpGatewayTokens.subjectId} and ${heartbeatRuns.status} in (${sql.join([...ACTIVE_GATEWAY_RUN_STATUSES].map((status) => sql`${status}`), sql`, `)}))`,
+            ),
+          ))
           .orderBy(asc(toolMcpGatewayTokens.expiresAt), asc(toolMcpGatewayTokens.id))
           .limit(500);
-        if (expiredTokens.length > 0) {
+        let deletableTokenIds = expiredTokens.map((token) => token.id);
+        const runScopedSubjectIds = expiredTokens
+          .filter((token) => token.subjectType === "heartbeat_run" && token.subjectId)
+          .map((token) => token.subjectId as string);
+        if (runScopedSubjectIds.length > 0) {
+          const activeRunIds = new Set(
+            (await db.select({ id: heartbeatRuns.id }).from(heartbeatRuns)
+              .where(and(
+                inArray(heartbeatRuns.id, runScopedSubjectIds),
+                inArray(heartbeatRuns.status, [...ACTIVE_GATEWAY_RUN_STATUSES]),
+              )))
+            .map((run) => run.id),
+          );
+          deletableTokenIds = expiredTokens
+            .filter((token) => !(
+              token.subjectType === "heartbeat_run" && token.subjectId && activeRunIds.has(token.subjectId)
+            ))
+            .map((token) => token.id);
+        }
+        if (deletableTokenIds.length > 0) {
           await db.delete(toolMcpGatewayTokens)
-            .where(and(inArray(toolMcpGatewayTokens.id, expiredTokens.map((token) => token.id)), lte(toolMcpGatewayTokens.expiresAt, now)))
+            .where(and(inArray(toolMcpGatewayTokens.id, deletableTokenIds), lte(toolMcpGatewayTokens.expiresAt, now)))
             .returning({ id: toolMcpGatewayTokens.id });
         }
         const expiredSessions = await db.select({ id: toolGatewaySessions.id })
@@ -14197,7 +14234,11 @@ export function createToolGatewayService(
         }
         // The worker schedules the next page; one-shot startup/manual callers
         // must finish the backlog without relying on another scheduled pass.
-        if (input.singleBatch || (expiredTokens.length < 500 && expiredSessions.length < 500)) break;
+        if (
+          input.singleBatch ||
+          (expiredTokens.length < 500 && expiredSessions.length < 500) ||
+          (deletableTokenIds.length === 0 && expiredSessions.length === 0)
+        ) break;
       }
       return { deletedCount };
     },
