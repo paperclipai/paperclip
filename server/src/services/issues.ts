@@ -4596,7 +4596,6 @@ async function readIssueBlockerAttentionBatch(
         createIssueBlockerAttention({
           state: "needs_attention",
           reason: "attention_required",
-          terminalBlockerIssueId: root.id,
         }),
       );
       continue;
@@ -4690,14 +4689,16 @@ async function readIssueBlockerAttentionBatch(
           pathHasLiveWork(edge.blockerIssueId, new Set([root.id]), traversal),
         ),
         directBlockerIssueId: sampleEntry?.edge.blockerIssueId ?? null,
-        terminalBlockerIssueId,
-        terminalBlocker: terminalBlockerNode
-          ? {
-              id: terminalBlockerNode.id,
-              identifier: terminalBlockerNode.identifier,
-              title: terminalBlockerNode.title,
-            }
-          : null,
+        terminalBlockerIssueId:
+          terminalBlockerIssueId === root.id ? null : terminalBlockerIssueId,
+        terminalBlocker:
+          terminalBlockerNode && terminalBlockerNode.id !== root.id
+            ? {
+                id: terminalBlockerNode.id,
+                identifier: terminalBlockerNode.identifier,
+                title: terminalBlockerNode.title,
+              }
+            : null,
       }),
     );
   }
