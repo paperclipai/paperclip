@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { eq } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
-import { agents, companies, companyMemberships, completionContracts, createDb, heartbeatRuns, issues, nativeRunFinalizations } from "@paperclipai/db";
+import { agents, companies, companyMemberships, completionContracts, createDb, heartbeatRuns, issueComments, issues, nativeRunFinalizations } from "@paperclipai/db";
 import type { NativeExecutionInputV1 } from "@paperclipai/paperclip-runner";
 import { startEmbeddedPostgresTestDatabase } from "../../__tests__/helpers/embedded-postgres.js";
 
@@ -23,6 +23,7 @@ describe("native session.open the provider rejected before any provider work", (
   let db: ReturnType<typeof createDb>;
   const companyId = randomUUID();
   const agentId = randomUUID();
+  const defaultAgentId = agentId;
 
   beforeAll(async () => {
     temporary = await startEmbeddedPostgresTestDatabase("native-startup-rejected-");
@@ -46,9 +47,11 @@ describe("native session.open the provider rejected before any provider work", (
     message: "error creating thread: failed to load AGENTS.md instructions for environment `local`: fs sandbox helper failed with status exit status: 1: bwrap: loopback: Failed RTM_NEWADDR: Operation not permitted",
     ...fields });
 
-  async function rejectSessionOpen(failure: Error, attempt = 0, options: { remote?: boolean; recoveryHistory?: Record<string, unknown>[] } = {}) {
-    const issueId = randomUUID();
-    await db.insert(issues).values({ id: issueId, companyId, title: "Plan the change", status: "in_progress", workMode: "standard",
+  async function rejectSessionOpen(failure: Error, attempt = 0, options: { remote?: boolean; recoveryHistory?: Record<string, unknown>[];
+    agentId?: string; issueId?: string } = {}) {
+    const agentId = options.agentId ?? defaultAgentId;
+    const issueId = options.issueId ?? randomUUID();
+    if (!options.issueId) await db.insert(issues).values({ id: issueId, companyId, title: "Plan the change", status: "in_progress", workMode: "standard",
       assigneeAgentId: agentId, createdByUserId: "board-user", responsibleUserId: "board-user" });
     const [issue] = await db.select().from(issues).where(eq(issues.id, issueId));
     const runId = randomUUID();
@@ -148,5 +151,38 @@ describe("native session.open the provider rejected before any provider work", (
     expect(coordinator.failureDetail?.nextAction).toContain("Retry starts a new run");
     const [issue] = await db.select().from(issues).where(eq(issues.id, issueId));
     await expect(taskInterruptionPresentation(db, issue)).resolves.toMatchObject({ state: "failed", canRetry: true });
+  }, 120_000);
+  it("tells the person in a chat once why its held runs wait and when the agent will answer", async () => {
+    const limitedAgentId = randomUUID();
+    await db.insert(agents).values({ id: limitedAgentId, companyId, name: "Limited agent", status: "active", adapterType: "paperclip_runner",
+      adapterConfig: { provider: "codex", model: "gpt-test" } });
+    const resetAt = new Date(Date.now() + 8 * 60 * 60_000);
+    await db.insert(heartbeatRuns).values({ companyId, agentId: limitedAgentId, status: "failed", runtimeMode: "native",
+      errorCode: "provider_quota", startedAt: new Date(Date.now() - 60_000), finishedAt: new Date(),
+      resultJson: { retryNotBefore: resetAt.toISOString() } });
+    const chatId = randomUUID();
+    await db.insert(issues).values({ id: chatId, companyId, title: "Chat", status: "in_progress", workMode: "standard",
+      assigneeAgentId: limitedAgentId, conversationAgentId: limitedAgentId, conversationUserId: "board-user", conversationState: "active",
+      createdByUserId: "board-user", responsibleUserId: "board-user" });
+    const first = await rejectSessionOpen(exitProven(rejection(startupFailure())), 0, { remote: true, agentId: limitedAgentId, issueId: chatId });
+    expect(first.coordinator).toMatchObject({ phase: "retryable_failure",
+      failureDetail: expect.objectContaining({ recoveryMode: "bootstrap_retry", providerCooldownAt: resetAt.toISOString() }) });
+    expect(first.coordinator.nextAttemptAt!.getTime()).toBeGreaterThan(resetAt.getTime());
+    await rejectSessionOpen(exitProven(rejection(startupFailure())), 0, { remote: true, agentId: limitedAgentId, issueId: chatId });
+    const notices = await db.select().from(issueComments).where(eq(issueComments.issueId, chatId));
+    expect(notices).toMatchObject([{ authorType: "system", presentation: expect.objectContaining({ kind: "system_notice" }) }]);
+    expect(notices[0]!.body).toContain(`${first.coordinator.nextAttemptAt!.toISOString().slice(0, 16).replace("T", " ")} UTC`);
+
+    // A later reset makes the shown time wrong, so the next held run posts the new time once.
+    const laterResetAt = new Date(resetAt.getTime() + 2 * 60 * 60_000);
+    await db.insert(heartbeatRuns).values({ companyId, agentId: limitedAgentId, status: "failed", runtimeMode: "native",
+      errorCode: "provider_quota", startedAt: new Date(Date.now() - 30_000), finishedAt: new Date(),
+      resultJson: { retryNotBefore: laterResetAt.toISOString() } });
+    const later = await rejectSessionOpen(exitProven(rejection(startupFailure())), 0, { remote: true, agentId: limitedAgentId, issueId: chatId });
+    expect(later.coordinator.nextAttemptAt!.getTime()).toBeGreaterThan(laterResetAt.getTime());
+    await rejectSessionOpen(exitProven(rejection(startupFailure())), 0, { remote: true, agentId: limitedAgentId, issueId: chatId });
+    const updated = await db.select().from(issueComments).where(eq(issueComments.issueId, chatId)).orderBy(issueComments.createdAt);
+    expect(updated).toHaveLength(2);
+    expect(updated[1]!.body).toContain(`${later.coordinator.nextAttemptAt!.toISOString().slice(0, 16).replace("T", " ")} UTC`);
   }, 120_000);
 });
