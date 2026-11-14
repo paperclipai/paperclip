@@ -31,6 +31,7 @@ export type RunSnapshot = {
   operatorStopped?: boolean;
   retryableBeforeProviderWork?: boolean;
   executionRetryAccounting?: Record<string, unknown> | null;
+  reassignmentStopConfirmed?: boolean;
 };
 
 export type IssueSnapshot = {

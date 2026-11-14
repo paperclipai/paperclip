@@ -68,9 +68,10 @@ function isExecutionReviewParticipantRecoveryEligibleRun(run: Pick<RunSnapshot, 
 }
 
 function didAutomaticRecoveryFail(
-  run: Pick<RunSnapshot, "status" | "contextSnapshot">,
+  run: Pick<RunSnapshot, "status" | "contextSnapshot" | "reassignmentStopConfirmed">,
   expectedRetryReason: "assignment_recovery" | "issue_continuation_needed",
 ): boolean {
+  if (run.reassignmentStopConfirmed === true) return false;
   const latestRetryReason = readNonEmptyString(run.contextSnapshot.retryReason);
   return (latestRetryReason === expectedRetryReason || latestRetryReason === INTERRUPTED_PREPARATION_RETRY_REASON)
     && UNSUCCESSFUL_HEARTBEAT_RUN_TERMINAL_STATUSES.has(run.status);
@@ -663,7 +664,7 @@ async function runReleaseRecoveryTail(
     reviewParticipant: {
       applies: reviewParticipantApplies,
       isExecutionReviewParticipantRecoveryRun:
-        isExecutionReviewParticipantRecoveryRun(run),
+        isExecutionReviewParticipantRecoveryRun(run) && run.reassignmentStopConfirmed !== true,
     },
     immediate: {
       applies: immediateApplies,
