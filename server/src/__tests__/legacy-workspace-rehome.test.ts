@@ -12,6 +12,9 @@ import { REMOTE_WORKSPACE_WRITER_PENDING_MESSAGE } from "../services/remote-work
 import { LEGACY_WORKSPACE_REHOME_OUTCOME, rehomeStrandedLegacyWorkspaceTasks } from "../services/recovery/legacy-workspace-rehome.js";
 import { recoveryActionSweepCondition } from "../services/recovery/blocker-stall-wakeups.js";
 import { recoveryService } from "../services/recovery/service.js";
+import { assignedWorkSweep } from "../services/recovery/assigned-work-sweep.js";
+import { evaluateAssignedWork } from "../services/recovery/assigned-work-invariant.js";
+import { QUEUED_RECOVERY_RUNS_PER_AGENT } from "../services/recovery-queue-admission.js";
 import { recoveryPostgresSupport, startRecoveryPostgres } from "./helpers/recovery-postgres.js";
 
 const describePostgres = recoveryPostgresSupport.supported ? describe : describe.skip;
@@ -223,6 +226,47 @@ describePostgres("stranded subtasks bound to a parent's held workspace", () => {
     expect(woken).toEqual([f.pricing.id, f.hero.id]);
     expect((await action(hero.actionId)).evidence).toMatchObject({ legacyWorkspaceRehome: { wake: "delivered" } });
     expect(last.nextWakeRetryAt).toBeNull();
+  }, 60_000);
+
+  it("holds a move's wake while its agent's recovery queue is full, and the assigned-work sweep sees it as pending", async () => {
+    const f = await seedSharedFamily();
+    const hero = await f.strand(f.hero.id);
+    expect((await rehomeStrandedLegacyWorkspaceTasks(db, null, { companyId: f.companyId })).rehomed).toEqual([f.hero.id]);
+    const queuedIds: string[] = [];
+    for (let index = 0; index < QUEUED_RECOVERY_RUNS_PER_AGENT; index += 1) {
+      const [busy] = await db.insert(issues).values({ companyId: f.companyId, title: `Busy ${index}`, status: "in_progress",
+        assigneeAgentId: f.agentId }).returning();
+      const [run] = await db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: f.agentId, issueId: busy!.id, status: "queued",
+        invocationSource: "automation", triggerDetail: "system",
+        contextSnapshot: { issueId: busy!.id, wakeReason: "issue_recovery_action_restored" } }).returning();
+      queuedIds.push(run!.id);
+    }
+    const woken: string[] = [];
+    const wake = async (_agentId: string, options: { payload: Record<string, unknown> }) => {
+      woken.push(String(options.payload.issueId)); return { id: randomUUID() };
+    };
+    const held = await rehomeStrandedLegacyWorkspaceTasks(db, wake as never, { companyId: f.companyId });
+    expect(woken).toEqual([]);
+    const pending = (await action(hero.actionId)).evidence.legacyWorkspaceRehome as Record<string, unknown>;
+    // Waiting its turn is not a refusal: no failure is counted.
+    expect(pending).toMatchObject({ wake: "pending" });
+    expect(pending.wakeFailures).toBeUndefined();
+    expect(held.nextWakeRetryAt).toBe(Number(pending.wakeRetryAt));
+
+    // The sweep reads the held wake as the task's pending path, so it queues no uncapped continuation.
+    const sweep = assignedWorkSweep(db, { enqueueWakeup: async () => null });
+    const facts = (await sweep.loadFacts(f.companyId, [await issue(f.hero.id)])).get(f.hero.id)!;
+    expect(facts.pendingWakes).toBeGreaterThan(0);
+    expect(evaluateAssignedWork(facts)).toMatchObject({ kind: "ok", clause: "pending_intent" });
+
+    // A queued recovery run leaves the queue; the held wake is delivered on its next turn.
+    await db.update(heartbeatRuns).set({ status: "succeeded", startedAt: new Date(), finishedAt: new Date() })
+      .where(eq(heartbeatRuns.id, queuedIds[0]!));
+    await db.update(issueRecoveryActions).set({ evidence: { ...(await action(hero.actionId)).evidence,
+      legacyWorkspaceRehome: { ...pending, wakeRetryAt: Date.now() - 1 } } }).where(eq(issueRecoveryActions.id, hero.actionId));
+    await rehomeStrandedLegacyWorkspaceTasks(db, wake as never, { companyId: f.companyId });
+    expect(woken).toEqual([f.hero.id]);
+    expect((await action(hero.actionId)).evidence).toMatchObject({ legacyWorkspaceRehome: { wake: "delivered" } });
   }, 60_000);
 
   it("pages past escalations the guards reject", async () => {
