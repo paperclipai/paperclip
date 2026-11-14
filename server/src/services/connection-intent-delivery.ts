@@ -175,6 +175,7 @@ export function connectionIntentDeliveryService(db: Db, heartbeat: Pick<Heartbea
         current = restored;
       }
       if (!await waitingOnAiRepair(current, linked.sourceRunId)) continue;
+      if (await connectionContinuationPendingResponse(db, current, interaction.addresseeUserId, linked.sourceRunId)) continue;
       const key = connectionIntentWakeKey(interaction.id, interaction.status, current.id);
       const [woken] = await db.select({ id: agentWakeupRequests.id }).from(agentWakeupRequests).where(and(
         eq(agentWakeupRequests.companyId, interaction.companyId), eq(agentWakeupRequests.idempotencyKey, key),

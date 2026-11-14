@@ -2024,6 +2024,23 @@ console.log(JSON.stringify({ type: "result", subtype: "success", result: "hello"
       expect(await f.deliverAll([card!.id])).not.toHaveBeenCalled();
     });
 
+    it("does not wake a linked task that waits on its own question when the person completes the card", async () => {
+      const f = await latchedFleet("linked-question", 3);
+      for (const task of f.tasks) await connectionIntentService(db).requestForRunAuthFailure(task.runId!);
+      const [card] = await f.cardsFor(f.tasks.map(task => task.issueId));
+      const linkedIds = ((card!.payload as { linkedIssues: Array<{ issueId: string }> }).linkedIssues).map(entry => entry.issueId);
+      const [asking, other] = linkedIds.map(issueId => f.tasks.find(task => task.issueId === issueId)!);
+      const owner = f.tasks.find(task => task.issueId === card!.issueId)!;
+      await db.insert(issueThreadInteractions).values({ companyId, issueId: asking!.issueId, kind: "ask_user_questions",
+        status: "pending", continuationPolicy: "wake_assignee", payload: {} } as never);
+      await f.reconnect();
+      await connectionIntentService(db).complete(card!.id, f.account.connectionId, f.userId);
+      const wakeup = await f.deliverAll([card!.id]);
+      const woken = wakeup.mock.calls.map(([agentId]) => agentId);
+      expect(woken.sort()).toEqual([owner.agentId, other!.agentId].sort());
+      expect(woken).not.toContain(asking!.agentId);
+    });
+
     it("completes the pending card after a reconnect and wakes each affected agent once, idempotently", async () => {
       const f = await latchedFleet("reconnect", 3);
       for (const task of f.tasks) await connectionIntentService(db).requestForRunAuthFailure(task.runId!);
