@@ -276,10 +276,14 @@ export function githubChatManagementService(db: Db, fetchImpl = fetch) {
     return verified;
   }
   async function linkObservedIdentity(endpointId: string, userId: string, verified: { githubUserId: string; login: string; avatarUrl?: string | null; grantId?: string; connectionId?: string }) {
-    const bot = await endpoint(endpointId);
-    await member(bot.companyId, userId);
-    if (!bot.providerAccountId) throw conflict("Verify the App installation first");
     await db.transaction(async (tx) => {
+      const [bot] = await tx
+        .select()
+        .from(chatEndpoints)
+        .where(and(eq(chatEndpoints.id, endpointId), eq(chatEndpoints.provider, "github")))
+        .for("share");
+      if (!bot || bot.status === "archived") throw notFound("GitHub bot not found");
+      if (!bot.providerAccountId) throw conflict("Verify the App installation first");
       const [membership] = await tx.select().from(companyMemberships).where(and(eq(companyMemberships.companyId, bot.companyId), eq(companyMemberships.principalType, "user"), eq(companyMemberships.principalId, userId))).for("update");
       if (!membership || membership.status !== "active" || membership.membershipRole === "viewer") throw forbidden("An active company manager is required");
       const [principal] = await tx
