@@ -4,6 +4,7 @@ import type {
   AgentCommentaryDetail, AgentCommentaryEntry, AgentCommentaryPage, AgentCommentaryQuery, AgentCommentaryVoteState,
 } from "@paperclipai/shared";
 import { persistActivity, publishActivity, type LogActivityInput } from "./activity-log.js";
+import { canonicalExecutionUuid } from "./execution-identity.js";
 
 export type AgentCommentaryVoteActor = Pick<LogActivityInput, "actorType" | "actorId" | "agentId" | "runId" | "agentApiKeyId">;
 
@@ -44,7 +45,7 @@ export function agentCommentaryActivityVisible(entityId: SQL | AnyColumn, compan
   return sql<boolean>`exists (select 1 from ${agentCommentary}
     inner join ${heartbeatRuns} on ${heartbeatRuns.id} = ${agentCommentary.runId} and ${heartbeatRuns.companyId} = ${agentCommentary.companyId}
     left join ${issues} on ${issues.id} = ${agentCommentary.issueId} and ${issues.companyId} = ${agentCommentary.companyId}
-    where ${agentCommentary.id}::text = ${entityId} and ${visible(companyId, readCondition)})`;
+    where ${agentCommentary.id} = ${canonicalExecutionUuid(sql`${entityId}`)} and ${visible(companyId, readCondition)})`;
 }
 
 export function agentCommentaryReader(db: Db) {

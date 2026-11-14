@@ -123,6 +123,18 @@ describe("agent commentary browsing", () => {
     expect((await reader.list(companyId, query({ q: "Deleted private task feedback" }), eq(issues.id, visibleTaskId))).total).toBe(0);
   });
 
+  it("lists company activity whose entity ids are not UUIDs", async () => {
+    await db.insert(activityLog).values([
+      { companyId, actorId: "operator", action: "plugin.updated", entityType: "plugin", entityId: "example.plugin" },
+      { companyId, actorId: "operator", action: "agent_commentary.voted", entityType: "agent_commentary", entityId: "not-a-uuid" },
+      { companyId, actorId: "operator", action: "agent_commentary.voted", entityType: "agent_commentary", entityId: firstId },
+    ]);
+    const entityIds = (await activityService(db).list({ companyId, readCondition: sql<boolean>`true` }))
+      .map((row) => row.entityId);
+    expect(entityIds).toEqual(expect.arrayContaining(["example.plugin", firstId]));
+    expect(entityIds).not.toContain("not-a-uuid");
+  });
+
   it("enforces board membership, commentary permission and filter bounds at the HTTP boundary", async () => {
     let actor: Record<string, unknown> = { type: "board", source: "local_implicit", userId: "operator" };
     const app = express();
