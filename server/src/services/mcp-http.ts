@@ -213,7 +213,7 @@ export type McpJsonRpcRequest = { id?: string | number; method: string; params?:
 export function mcpHttpRequestInit(
   headers: Record<string, string> | undefined,
   message: McpJsonRpcRequest,
-  options: { toolInputSchema?: unknown; declareTasks?: boolean; elicitationForm?: boolean; progressToken?: string; declareClientCredentials?: boolean } = {},
+  options: { toolInputSchema?: unknown; declareTasks?: boolean; elicitationForm?: boolean; declareClientCredentials?: boolean; progressToken?: string } = {},
 ): { method: "POST"; headers: Record<string, string>; body: string } {
   const requestHeaders = mcpHttpRequestHeaders(headers);
   const protocolVersion = mcpProtocolVersionOf(headers);
