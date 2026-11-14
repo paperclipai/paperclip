@@ -8,6 +8,13 @@ import { normalizeAgentNameKey } from "../agent-name-key.js";
 import { notifyStatusCardIssueChange } from "../status-card-notifications.js";
 import { notifyScheduledRetryDispatch } from "../run-dispatch-notifications.js";
 import { deriveTaskKeyWithHeartbeatFallback } from "./run-state.js";
+import {
+  PROVIDER_NETWORK_UNREACHABLE_CODE,
+  PROVIDER_NETWORK_UNREACHABLE_RECHECK_MS,
+  createProviderHostReachabilityProbe,
+  isHostNetworkUnreachableFailure,
+  isProbeHostRelevantToAdapter,
+} from "./provider-network-reachability.js";
 import { infrastructureRetryDelayMs } from "../system-recovery-state.js";
 import {
   WORKSPACE_VALIDATION_FAILURE_CODE,
@@ -143,6 +150,13 @@ export interface HeartbeatRetryDependencies {
   ) => Promise<void>;
   getWorktreeExecutionCutoff: () => Promise<Date | null>;
   applyRunDispatchPostCommitEffects: (effects: PostCommitEffect[]) => void;
+  /**
+   * Confirms the host can still reach the provider before a retry is spent on a
+   * run that already failed because it could not. Optional: defaults to a cached
+   * DNS probe, and anything unexpected inside it reports reachable, so the gate
+   * can only ever fall back to today's behaviour.
+   */
+  isProviderHostReachable?: () => Promise<boolean>;
 }
 
 export const BOUNDED_TRANSIENT_HEARTBEAT_RETRY_DELAYS_MS = [
@@ -526,6 +540,8 @@ export function createHeartbeatRetries(db: Db, dependencies: HeartbeatRetryDepen
     getWorktreeExecutionCutoff,
     applyRunDispatchPostCommitEffects,
   } = dependencies;
+  const isProviderHostReachable =
+    dependencies.isProviderHostReachable ?? createProviderHostReachabilityProbe();
 
   async function scheduleBoundedRetryForRun(
     run: typeof heartbeatRuns.$inferSelect,
@@ -571,6 +587,50 @@ export function createHeartbeatRetries(db: Db, dependencies: HeartbeatRetryDepen
         run.contextSnapshot.chatCompletionDeliveryIds.some(id => typeof id === "string")) {
       return { outcome: "not_scheduled" as const, reason: "The completion outbox owns this reply's retry budget and publication identity.",
         errorCode: "chat_completion_outbox_owns_retry" as const, issueId: readNonEmptyString(run.contextSnapshot.issueId) };
+    }
+    // The previous run already proved the host could not reach the provider. If
+    // that is still true, a retry is a full adapter spawn that cannot succeed, so
+    // hold it instead of spending it. Holding here costs NO attempt: the budget is
+    // consumed when the retry run row is written further down, not at this gate,
+    // so the issue is not parked for attempts that were never made.
+    //
+    // The caller is NOT automatically the re-probe loop, which is the mistake an
+    // earlier draft of this comment made. The doomed retry run was itself the
+    // clock: it spawned, failed, and its terminal state re-dirtied the scope that
+    // brought the sweeper back. Suppressing the spawn stops that clock, and
+    // `scoped-deadline-work` deletes any entry whose check reports no deadline.
+    // That is why the hold returns `retryAt` below and every caller must carry it
+    // through `onDeferredDeadline`; it is not optional bookkeeping.
+    //
+    // Ordered last among the pure guards on purpose: the classifier and the
+    // adapter-relevance check are cheap but the probe is I/O, and it only runs
+    // once a failure has already named a host-level network error ON an adapter
+    // the probe host actually answers for.
+    if (isHostNetworkUnreachableFailure(run)
+        && isProbeHostRelevantToAdapter(agent.adapterType)
+        && !(await isProviderHostReachable())) {
+      // The hold is otherwise SILENT: it writes no run row and no run event,
+      // because writing either would be the spawn it is suppressing. Without
+      // this line an outage is indistinguishable from an idle fleet in the log.
+      logger.info({
+        runId: run.id,
+        issueId: readNonEmptyString(run.contextSnapshot?.issueId),
+        agentId: run.agentId,
+        adapterType: agent.adapterType,
+        errorCode: PROVIDER_NETWORK_UNREACHABLE_CODE,
+        recheckInMs: PROVIDER_NETWORK_UNREACHABLE_RECHECK_MS,
+      }, "held a bounded retry: host cannot reach the provider");
+      return {
+        outcome: "not_scheduled" as const,
+        reason:
+          "The host cannot reach the provider; holding the retry instead of spending an attempt on a spawn that cannot succeed.",
+        errorCode: PROVIDER_NETWORK_UNREACHABLE_CODE,
+        // The caller MUST re-examine this run; the hold is not a refusal and
+        // nothing else will bring it back. See the constant's own comment: the
+        // suppressed retry run was the clock that used to re-wake the sweeper.
+        retryAt: Date.now() + PROVIDER_NETWORK_UNREACHABLE_RECHECK_MS,
+        issueId: readNonEmptyString(run.contextSnapshot?.issueId),
+      };
     }
     const now = opts?.now ?? new Date();
     const preparationRecovery = parseObject(run.resultJson?.executionRecovery);

@@ -976,6 +976,13 @@ export type StrandedRecoveryOutcome = {
   /** The person's original Retry or message no longer authorizes this run's
    * continuation (for example the task or its message changed since). */
   continuationRefused?: boolean;
+  /**
+   * When no successor was queued because the retry is being HELD (today: the
+   * host cannot reach the provider) rather than refused or exhausted. The
+   * caller must report this through `onDeferredDeadline` or the entry is
+   * dropped and nothing comes back for it.
+   */
+  retryAt?: number;
 };
 
 export function recoveryService(
@@ -2105,9 +2112,18 @@ export function recoveryService(
      * Out-parameter: set `retryExhausted` when no successor was queued
      * because the failed predecessor has spent its bounded transient retry
      * budget. A null return without it means another authority owns the
-     * run (native runtime, reconciliation) and the caller must leave it.
+     * run (native runtime, reconciliation) and the caller must leave it,
+     * UNLESS `retryAt` is set, which means the retry was held and this issue
+     * must be looked at again at that time.
      */
     outcome?: StrandedRecoveryOutcome;
+    /**
+     * The sweep's deadline sink. A held retry reports its recheck through this
+     * so the entry keeps a `dueAt`; `scoped-deadline-work` deletes any entry
+     * whose check reports no deadline, and the hold has suppressed the retry
+     * run whose terminal state used to re-dirty the scope.
+     */
+    onDeferredDeadline?: (at: number) => void;
   }) {
     if (input.retryOfRunId) {
       const [predecessor] = await db
@@ -2141,6 +2157,14 @@ export function recoveryService(
           const retry = await deps.scheduleRecoveryRetry(predecessor.id, scheduling);
           if (retry) return retry;
           if (input.outcome && scheduling.continuationRefused) input.outcome.continuationRefused = true;
+          // A held retry is the one "no retry" that is neither exhaustion nor
+          // foreign ownership: it is coming back, but only if someone keeps a
+          // deadline for it. Report it before the exhaustion branch below so a
+          // hold is never mistaken for a spent budget.
+          if (scheduling.retryAt !== undefined) {
+            if (input.outcome) input.outcome.retryAt = scheduling.retryAt;
+            input.onDeferredDeadline?.(scheduling.retryAt);
+          }
           // A spent budget is the one "no retry" the sweeper must not wait
           // out: nothing else will ever queue a successor for this run, so
           // it reports the exhaustion instead of leaving the issue with no
@@ -4717,13 +4741,17 @@ export function recoveryService(
       }
       handled.add(issue.id);
       const outcome: StrandedRecoveryOutcome = {};
-      const queued = await enqueueStrandedIssueRecovery({ issueId: issue.id, agentId: issue.assigneeAgentId,
+      const queued = await enqueueStrandedIssueRecovery({ onDeferredDeadline: onDeferredDeadline, issueId: issue.id, agentId: issue.assigneeAgentId,
         reason: "issue_continuation_needed", retryReason: "issue_continuation_needed",
         source: "issue.shutdown_stopped_retry_preparation", retryOfRunId: run.id, outcome });
       if (queued) {
         result.continuationRequeued += 1;
         result.issueIds.push(issue.id);
       } else if ((outcome.continuationRefused || outcome.retryExhausted)
+        // LAC-6885: see the held-retry note on the continuation lane. A hold
+        // reports `retryAt` and owns its own return; escalating here would
+        // park an issue that is already coming back.
+        && outcome.retryAt === undefined
         && !(await hasActiveExecutionPath(issue.companyId, issue.id))
         && await escalateStrandedAssignedIssue({ issue, previousStatus: "in_progress", latestRun,
           notice: outcome.continuationRefused ? CONTINUATION_REFUSED_NOTICE : null })) {
@@ -5409,7 +5437,7 @@ export function recoveryService(
             continue;
           }
 
-          const queued = await enqueueStrandedIssueRecovery({
+          const queued = await enqueueStrandedIssueRecovery({ onDeferredDeadline: opts?.onDeferredDeadline,
             issueId: issue.id,
             agentId,
             reason: "issue_continuation_needed",
@@ -5583,8 +5611,11 @@ export function recoveryService(
           continue;
         }
 
-        const reviewOutcome: { retryExhausted?: boolean } = {};
-        const queued = await enqueueStrandedIssueRecovery({
+        // Typed as the shared outcome, not `{ retryExhausted?: boolean }`: the
+        // narrow inline type is why this lane could not see `retryAt` and kept
+        // escalating held reviewer runs (LAC-6885 review round 3).
+        const reviewOutcome: StrandedRecoveryOutcome = {};
+        const queued = await enqueueStrandedIssueRecovery({ onDeferredDeadline: opts?.onDeferredDeadline,
           issueId: issue.id,
           agentId: participantAgentId,
           reason: EXECUTION_REVIEW_PARTICIPANT_RECOVERY_REASON,
@@ -5604,6 +5635,13 @@ export function recoveryService(
           result.issueIds.push(issue.id);
         } else if (
           reviewOutcome.retryExhausted &&
+        // LAC-6885: a HELD retry is not an exhausted one. `outcome.retryAt` is
+        // written only by the network hold, and only alongside the
+        // `onDeferredDeadline` that brings this issue back, so parking it
+        // `blocked` here is the LAC-6342 harm the hold exists to prevent.
+        // Deferred, not lost: once the probe clears, the hold falls through,
+        // this returns with no `retryAt`, and the escalation happens as today.
+          reviewOutcome.retryAt === undefined &&
           !(await hasActiveExecutionPath(issue.companyId, issue.id, null))
         ) {
           // Same exhaustion as the other lanes: the reviewer run's bounded
@@ -5701,8 +5739,9 @@ export function recoveryService(
           continue;
         }
 
-        const dispatchOutcome: { retryExhausted?: boolean } = {};
-        const queued = await enqueueStrandedIssueRecovery({
+        // Shared outcome type, same reason as the review lane above.
+        const dispatchOutcome: StrandedRecoveryOutcome = {};
+        const queued = await enqueueStrandedIssueRecovery({ onDeferredDeadline: opts?.onDeferredDeadline,
           issueId: issue.id,
           agentId,
           reason: "issue_assignment_recovery",
@@ -5716,6 +5755,13 @@ export function recoveryService(
           result.issueIds.push(issue.id);
         } else if (
           dispatchOutcome.retryExhausted &&
+        // LAC-6885: a HELD retry is not an exhausted one. `outcome.retryAt` is
+        // written only by the network hold, and only alongside the
+        // `onDeferredDeadline` that brings this issue back, so parking it
+        // `blocked` here is the LAC-6342 harm the hold exists to prevent.
+        // Deferred, not lost: once the probe clears, the hold falls through,
+        // this returns with no `retryAt`, and the escalation happens as today.
+          dispatchOutcome.retryAt === undefined &&
           !assignedWorkSweepOwnsFailedRun(issue, latestRun, agentId) &&
           !(await hasActiveExecutionPath(issue.companyId, issue.id, null))
         ) {
@@ -5789,7 +5835,7 @@ export function recoveryService(
             result.skipped += 1;
             continue;
           }
-          const retried = await enqueueStrandedIssueRecovery({
+          const retried = await enqueueStrandedIssueRecovery({ onDeferredDeadline: opts?.onDeferredDeadline,
             issueId: issue.id,
             agentId,
             reason: "issue_continuation_needed",
@@ -5873,7 +5919,7 @@ export function recoveryService(
           continue;
         }
 
-        const queued = await enqueueStrandedIssueRecovery({
+        const queued = await enqueueStrandedIssueRecovery({ onDeferredDeadline: opts?.onDeferredDeadline,
           issueId: issue.id,
           agentId,
           reason: "issue_continuation_needed",
@@ -5996,7 +6042,7 @@ export function recoveryService(
       }
 
       const recoveryOutcome: StrandedRecoveryOutcome = {};
-      const queued = await enqueueStrandedIssueRecovery({
+      const queued = await enqueueStrandedIssueRecovery({ onDeferredDeadline: opts?.onDeferredDeadline,
         issueId: issue.id,
         agentId,
         reason: "issue_continuation_needed",
@@ -6010,6 +6056,36 @@ export function recoveryService(
         result.issueIds.push(issue.id);
       } else if (
         (recoveryOutcome.retryExhausted || recoveryOutcome.continuationRefused || preparationRetry) &&
+        // A HELD retry is not a reason to escalate: `outcome.retryAt` is set
+        // ONLY by the network hold (service.ts ~2163, from the gate's own
+        // return), and it means a recheck deadline is already out through
+        // `onDeferredDeadline`. The issue is coming back on its own, so parking
+        // it `blocked` here would be the exact LAC-6342 harm the hold exists to
+        // prevent, and redundant besides.
+        //
+        // This guard covers all three arms, not just `preparationRetry`:
+        //
+        //   `retryExhausted` CAN be true alongside a hold. The gate sits ahead
+        //   of the attempt-count logic in `scheduleBoundedRetryForRun`, so a run
+        //   whose budget was already spent is held before it ever reaches the
+        //   exhaustion branch, while line ~2172 re-derives exhaustion
+        //   independently via `transientRetryBudgetSpent(predecessor)`. That
+        //   combination is real and this guard is what makes it safe: the
+        //   escalation is deferred, not lost. On the next pass the probe
+        //   succeeds, the gate falls through, the exhaustion branch returns with
+        //   NO `retryAt`, and the issue escalates exactly as it does today, one
+        //   recheck late. A host that never recovers holds indefinitely instead;
+        //   that gap is tracked separately (cap or visible card).
+        //
+        //   `preparationRetry` is independent of why no successor was queued, so
+        //   it would escalate a held run on its own. Measured on this deployment
+        //   over 21 days: of 168 runs whose error carries a host-level network
+        //   code, ALL 168 are `adapter_failed` and NONE carry a transient
+        //   workspace-preparation code, so the two have not in fact co-occurred
+        //   here. It is reachable in principle (a prep step failing its own
+        //   network call would carry both), but it is unmeasured, so this arm is
+        //   defensive rather than a fix for an observed park.
+        recoveryOutcome.retryAt === undefined &&
         !assignedWorkSweepOwnsFailedRun(issue, latestRun, agentId) &&
         !(await hasActiveExecutionPath(issue.companyId, issue.id, null))
       ) {

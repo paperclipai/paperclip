@@ -1059,6 +1059,12 @@ export function heartbeatService(
       if (outcome && result.outcome === "retry_exhausted") outcome.retryExhausted = true;
       if (outcome && result.outcome === "not_scheduled" && "errorCode" in result
         && result.errorCode === "continuation_user_authorization_missing") outcome.continuationRefused = true;
+      // A network hold is NOT "another authority owns this run". Nothing owns
+      // it, and nothing else will come back for it, so carry the recheck
+      // deadline out to the sweep that asked. Without this the sweep drops the
+      // entry and the held issue waits on an unrelated notification.
+      if (outcome && result.outcome === "not_scheduled" && "retryAt" in result
+        && typeof result.retryAt === "number") outcome.retryAt = result.retryAt;
       return result.outcome === "scheduled" ? result.run : null;
     },
     // Mirrors scheduleBoundedRetryForRun's transient budget check: a failed
