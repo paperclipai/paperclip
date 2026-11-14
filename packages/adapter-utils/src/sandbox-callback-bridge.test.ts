@@ -7,7 +7,7 @@ import { promisify } from "node:util";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { getActiveStepContext, measureStartupStep } from "./acpx-engine/startup-timing.js";
-import { prepareCommandManagedRuntime } from "./command-managed-runtime.js";
+import { prepareCommandManagedRuntime as prepareCommandManagedRuntimeUntracked } from "./command-managed-runtime.js";
 import {
   authorizeSandboxCallbackBridgeRequestWithRoutes,
   createCommandManagedSandboxCallbackBridgeQueueClient,
@@ -28,6 +28,21 @@ import { DUPLEX_FRAME_VERSION, encodeDuplexFrame } from "./duplex-frame-codec.js
 import { createHttp2BridgeServer } from "./http2-bridge-server.js";
 import type { Http2BridgeForwardRequest, Http2BridgeForwardResult } from "./http2-bridge-server.js";
 import type { CommandManagedDuplexChannel } from "./command-managed-runtime.js";
+
+const preparedRuntimes: Array<{ cleanupWorkspaceSnapshot?(): Promise<void> }> = [];
+function releaseAfterEach<Args extends unknown[], Prepared extends { cleanupWorkspaceSnapshot?(): Promise<void> }>(
+  prepare: (...args: Args) => Promise<Prepared>,
+): (...args: Args) => Promise<Prepared> {
+  return async (...args) => {
+    const prepared = await prepare(...args);
+    preparedRuntimes.push(prepared);
+    return prepared;
+  };
+}
+const prepareCommandManagedRuntime = releaseAfterEach(prepareCommandManagedRuntimeUntracked);
+afterEach(async () => {
+  for (const prepared of preparedRuntimes.splice(0)) await prepared.cleanupWorkspaceSnapshot?.();
+});
 import type { RuntimeSpanRunner } from "./acpx-engine/startup-timing.js";
 import type { RunProcessResult } from "./server-utils.js";
 

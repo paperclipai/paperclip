@@ -13,6 +13,18 @@ import {
   startAdapterExecutionTargetProcessSessionBridge,
 } from "@paperclipai/adapter-utils/execution-target";
 
+const { preparedRuntimes, trackPreparedRuntimes } = vi.hoisted(() => {
+  const preparedRuntimes: Array<{ cleanupWorkspaceSnapshot?(): Promise<void> }> = [];
+  const trackPreparedRuntimes = <Args extends unknown[], Prepared extends { cleanupWorkspaceSnapshot?(): Promise<void> }>(
+    prepare: (...args: Args) => Promise<Prepared>,
+  ) => async (...args: Args) => {
+    const prepared = await prepare(...args);
+    preparedRuntimes.push(prepared);
+    return prepared;
+  };
+  return { preparedRuntimes, trackPreparedRuntimes };
+});
+
 // Wrap the staging seam + both sandbox bridges in call-recording spies that
 // still delegate to the real implementations (a runner-backed sandbox test
 // exercises them end-to-end against a local runner). This lets the staging
@@ -22,7 +34,7 @@ vi.mock("@paperclipai/adapter-utils/execution-target", async (importActual) => {
   const actual = await importActual<typeof import("@paperclipai/adapter-utils/execution-target")>();
   return {
     ...actual,
-    prepareAdapterExecutionTargetRuntime: vi.fn(actual.prepareAdapterExecutionTargetRuntime),
+    prepareAdapterExecutionTargetRuntime: vi.fn(trackPreparedRuntimes(actual.prepareAdapterExecutionTargetRuntime)),
     startAdapterExecutionTargetPaperclipBridge: vi.fn(actual.startAdapterExecutionTargetPaperclipBridge),
     startAdapterExecutionTargetProcessSessionBridge: vi.fn(actual.startAdapterExecutionTargetProcessSessionBridge),
   };
@@ -72,6 +84,7 @@ async function makeTempRoot() {
 }
 
 afterEach(async () => {
+  for (const prepared of preparedRuntimes.splice(0)) await prepared.cleanupWorkspaceSnapshot?.();
   defaultGeminiTestHome = undefined;
   // A remote run stages a process-session bridge whose detached event writer can
   // still be flushing a trailing event file into `.../process-sessions/<id>/events`
@@ -4661,7 +4674,7 @@ describe("ACPX engine remote managed-home seam (PR 2: per-adapter home seed)", (
       expect(dispose).toHaveBeenCalledTimes(2);
       expect(stagedRuntimes.size).toBe(0);
     } finally {
-      vi.mocked(prepareAdapterExecutionTargetRuntime).mockReset().mockImplementation(actual.prepareAdapterExecutionTargetRuntime);
+      vi.mocked(prepareAdapterExecutionTargetRuntime).mockReset().mockImplementation(trackPreparedRuntimes(actual.prepareAdapterExecutionTargetRuntime));
       vi.mocked(startAdapterExecutionTargetPaperclipBridge).mockReset().mockImplementation(actual.startAdapterExecutionTargetPaperclipBridge);
       vi.mocked(startAdapterExecutionTargetProcessSessionBridge).mockReset().mockImplementation(actual.startAdapterExecutionTargetProcessSessionBridge);
     }

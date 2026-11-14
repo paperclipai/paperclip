@@ -12,7 +12,7 @@ export type TestPostgresInstance = {
   process?: ChildProcess;
 };
 
-type Owner = { stop(clean?: boolean): Promise<void>; interrupt(): void };
+type Owner = { stop(clean?: boolean): Promise<void>; interrupt(): void; removeAfterStop?(): Promise<void> };
 export class TestPostgresShutdownError extends Error {}
 const owners = new Set<Owner>();
 type ShutdownTask = { stop(signal: NodeJS.Signals): Promise<void>; interrupt(): void; afterStop?(): Promise<void> };
@@ -45,8 +45,13 @@ async function shutdown(signal: "SIGINT" | "SIGTERM" | "SIGHUP"): Promise<void> 
   for (const result of tasks) {
     if (result.status === "rejected") console.error(result.reason);
   }
-  try { await drainTestPostgresOwners(); }
-  catch (error) { console.error(error); }
+  const drained = await Promise.allSettled([...owners].map(async (owner) => {
+    await owner.stop();
+    await owner.removeAfterStop?.();
+  }));
+  for (const result of drained) {
+    if (result.status === "rejected") console.error(result.reason);
+  }
   const cleanups = await Promise.allSettled(registered.map((task) => task.afterStop?.()));
   for (const result of cleanups) {
     if (result.status === "rejected") console.error(result.reason);
@@ -86,7 +91,11 @@ async function settlesWithin(promise: Promise<unknown>, timeoutMs: number): Prom
   }
 }
 
-export function ownTestPostgres(instance: TestPostgresInstance, dataDir?: string): Pick<TestPostgresInstance, "initialise" | "start" | "stop"> & {
+export function ownTestPostgres(
+  instance: TestPostgresInstance,
+  dataDir?: string,
+  removeAfterStop?: () => Promise<void>,
+): Pick<TestPostgresInstance, "initialise" | "start" | "stop"> & {
   stopGracefully(): Promise<void>;
 } {
   let pending: Promise<void> | null = null;
@@ -122,6 +131,7 @@ export function ownTestPostgres(instance: TestPostgresInstance, dataDir?: string
   }
 
   const owner: Owner = {
+    removeAfterStop,
     interrupt() {
       const child = instance.process;
       if (child && child.exitCode === null && child.signalCode === null) {

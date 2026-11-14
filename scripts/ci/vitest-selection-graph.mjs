@@ -28,11 +28,11 @@ const pureBuiltins = new Set(["assert", "assert/strict", "path", "path/posix", "
 // following local imports even for these files; helper changes affect all tests.
 const reviewedSetup = new Map([
   ["server/src/__tests__/setup-supertest.ts", {
-    hash: "99d7193927468e98b41255ea9a5e37b1a681f02b259c304f3af1a52304eed2bb",
+    hash: "707f173c137f0433a5310ecef46347fb9c431a198dccd741c80a51fd0303d21b",
     external: ["supertest/lib/test.js"],
   }],
   ["server/src/__tests__/helpers/isolated-test-home.ts", {
-    hash: "bd5645dc590087f26b473beab06d5c3ddd7956a79949f0b3e9713f11897a0c1b",
+    hash: "a294b9be3502b32ceca8b7364b033630bf75d9b39895a4deb6df72a5efc09d7c",
     external: [],
   }],
 ]);
