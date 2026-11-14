@@ -22,7 +22,6 @@ async function session(db: Pick<Db, "execute">): Promise<Session> {
 
 const key = (value: Session) => `${value.pid}@${value.backendStart}`;
 
-// A closed client's backend leaves pg_stat_activity shortly after the socket closes.
 async function eventually<T>(read: () => Promise<T>, accept: (value: T) => boolean): Promise<T> {
   const deadline = Date.now() + 5_000;
   for (;;) {
@@ -88,7 +87,6 @@ describe.skipIf(!support.supported)("withDedicatedDbConnection connection reuse"
         await tx.execute(sql`select pg_advisory_xact_lock(${mine.pid})`);
         if (++arrived === concurrency) allArrived();
         await gate;
-        // Still the same session at the end of the action: nobody else ran on it.
         expect(await session(tx)).toEqual(mine);
         return mine;
       })));
@@ -98,7 +96,6 @@ describe.skipIf(!support.supported)("withDedicatedDbConnection connection reuse"
     expect(new Set(sessions.map(key)).size).toBe(concurrency);
     expect((await eventually(openDedicatedSessions, open => open.length <= DEDICATED_CONNECTION_IDLE_MAX)).length)
       .toBeLessThanOrEqual(DEDICATED_CONNECTION_IDLE_MAX);
-    // Later calls reuse those retained sessions instead of opening new ones.
     const retained = new Set(sessions.map(key));
     for (let i = 0; i < 20; i++) {
       expect(retained.has(key(await withDedicatedDbConnection(db, session)))).toBe(true);
@@ -135,7 +132,6 @@ describe.skipIf(!support.supported)("withDedicatedDbConnection connection reuse"
     const db = owner();
     const first = await withDedicatedDbConnection(db, session);
     await observer.execute(sql`select pg_terminate_backend(${first.pid})`);
-    // The server closed the idle socket; postgres.js reconnects on the next query.
     await eventually(openDedicatedSessions, rows => !rows.some(row => row.pid === first.pid));
     await new Promise(resolve => setTimeout(resolve, 50));
     const second = await withDedicatedDbConnection(db, session);

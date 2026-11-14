@@ -273,30 +273,16 @@ export function postgresJsOptions(options: DatabaseClientOptions): Record<string
 // originating Db lifetime; callers receive neither URLs nor credentials.
 const ownedDatabaseListenerFactories = new WeakMap<object, () => Db>();
 
-/**
- * How many idle single-connection clients `withDedicatedDbConnection` keeps per
- * owner `createDb` client for reuse. Each retained client holds at most one
- * physical connection, which postgres.js still closes after the owner's
- * `DATABASE_IDLE_TIMEOUT_SECONDS` and recycles after `DATABASE_MAX_LIFETIME_SECONDS`.
- * This bounds what the owner keeps open between actions. It is not an
- * admission limit: callers hold advisory locks and nest dedicated actions, so
- * an action that finds no idle client opens one (as before) and closes it on
- * release when the retained set is full.
- */
 export const DEDICATED_CONNECTION_IDLE_MAX = 4;
 
 type DedicatedConnectionSet = {
   create(): Db;
   idle: Db[];
-  /** Clients whose `$client.end` was called, by the pool or by an action. */
   ended: WeakSet<Db>;
   closed: boolean;
 };
-// Shared by an owner and every private client derived from it, so a nested
-// dedicated action draws from the same bounded set.
 const dedicatedConnectionSets = new WeakMap<object, DedicatedConnectionSet>();
 
-/** Runs `onEnd` alongside every `$client.end` call, by the pool or by anyone holding the client. */
 function trackClientEnd(client: Db, onEnd: (timeoutSeconds: number | undefined) => Promise<void> | void): void {
   const sql = client.$client;
   const end = sql.end;
@@ -309,12 +295,6 @@ async function endDedicatedConnections(clients: Db[], timeoutSeconds: number): P
   await Promise.all(clients.map(client => client.$client.end({ timeout: timeoutSeconds }).catch(() => undefined)));
 }
 
-/**
- * Ends the owner's idle dedicated connections and stops retaining new ones.
- * An action still running keeps its connection, which closes on release; a
- * later action gets a connection that closes when it finishes. Ending the
- * owner's `$client` does the same.
- */
 export async function closeDedicatedDbConnections(db: Db, timeoutSeconds: number): Promise<void> {
   const set = dedicatedConnectionSets.get(db);
   if (!set) return;
@@ -337,14 +317,6 @@ export function createOwnedDatabaseListener(db: Db): OwnedDatabaseListener {
   };
 }
 
-/**
- * Runs `action` with exclusive use of one database session that the owner's
- * main pool does not share. The session is reused by later actions, so an
- * action must keep session state transaction-scoped (`pg_advisory_xact_lock`,
- * `set_config(..., true)`). A connection is closed instead of reused when the
- * action throws, so a failed or cancelled transaction, a broken socket or an
- * interrupted lock wait never reaches the next action.
- */
 export async function withDedicatedDbConnection<T>(db: Db, action: (dedicated: Db) => Promise<T>): Promise<T> {
   const set = dedicatedConnectionSets.get(db);
   if (!set) throw new Error("dedicated_connection_requires_create_db");

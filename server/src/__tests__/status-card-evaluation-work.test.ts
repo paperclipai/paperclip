@@ -545,7 +545,6 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
     db = createDb(external ?? temporary!.connectionString, { maxConnections: 1, idleTimeoutSeconds: 0, maxLifetimeSeconds: 0 });
     try {
       const created = await card("reactive", { ...policy(), debounceSeconds: 1 });
-      // Dedicated sessions are reused between actions; the advisory locks they took must not outlive them.
       const countLocks = async () => Number((await db.execute<{ count: string }>(sql`
         select count(*) from pg_locks l join pg_database d on d.oid = l.database
         where l.locktype = 'advisory' and d.datname = current_database()`))[0]!.count);
