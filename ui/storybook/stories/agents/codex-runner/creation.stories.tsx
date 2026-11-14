@@ -34,7 +34,7 @@ function installCodexCreationFixture({ setupFailure = false, nativeRunnerEnabled
       const native = request.runner === "paperclip" || request.adapterType === "paperclip_runner"
         || (request.runner !== "legacy" && !unqualifiedTarget);
       return Response.json({ adapterType: native ? "paperclip_runner" : "codex_local", testedAt: new Date(0).toISOString(), status: setupFailure && native ? "fail" : "pass",
-        checks: setupFailure && native ? [{ code: "runner_missing", level: "error", message: "Paperclip Runner is missing from this environment.", hint: "Install the runner or choose Legacy runner in Advanced." }]
+        checks: setupFailure && native ? [{ code: "runner_missing", level: "error", message: "Paperclip Runner is missing from this environment.", hint: "Install the runner in the selected environment, then retry setup." }]
           : [{ code: native ? "paperclip_runner_codex_hello_probe_passed" : "codex_hello_probe_passed", level: "info", message: "The selected runtime responded." }],
       });
     }
@@ -65,7 +65,7 @@ const meta = {
       status: "current",
       implementation: "production",
       boundary: "fixtures",
-      notes: "Production NewAgent and AgentBasicsDialog with simulated accounts, target qualification, setup and hire replies. Covers automatic and Legacy choices, old native links and setup failures; no live credentials, cleanup, persistence or provider execution.",
+      notes: "Production NewAgent and AgentBasicsDialog with simulated accounts, target qualification, setup and hire replies. Covers automatic selection, saved Legacy choices, old native links and setup failures; no live credentials, cleanup, persistence or provider execution.",
     },
   },
   beforeEach: ({ parameters }) => installCodexCreationFixture(parameters.codexCreationFixture),
@@ -73,10 +73,11 @@ const meta = {
 } satisfies Meta<typeof NewAgent>;
 export default meta;
 type Story = StoryObj<typeof meta>;
-const showRunner: NonNullable<Story["play"]> = async ({ canvasElement }) => {
+const expectRunnerHidden: NonNullable<Story["play"]> = async ({ canvasElement }) => {
   const canvas = within(canvasElement);
-  await userEvent.click(await canvas.findByText("Advanced", { exact: true, selector: "summary" }));
-  await expect(await canvas.findByRole("button", { name: "Runner" })).toBeVisible();
+  await expect(await canvas.findByRole("heading", { name: "Connect a model" })).toBeVisible();
+  await expect(canvas.queryByRole("button", { name: "Runner" })).not.toBeInTheDocument();
+  await expect(canvas.queryByText("Advanced", { exact: true, selector: "summary" })).not.toBeInTheDocument();
 };
 const connectCodex: NonNullable<Story["play"]> = async ({ canvasElement }) => {
   const canvas = within(canvasElement);
@@ -86,25 +87,21 @@ const connectCodex: NonNullable<Story["play"]> = async ({ canvasElement }) => {
   await userEvent.click(connect);
 };
 export const AutomaticCodex: Story = { play: async context => {
-  await showRunner(context);
-  await expect(await within(context.canvasElement).findByRole("button", { name: "Runner" })).toHaveTextContent("Paperclip Runner (default)");
+  await expectRunnerHidden(context);
 } };
 export const ExplicitLegacy: Story = { parameters: { initialEntries: ["/PAP/agents/new?name=Nova&adapterType=codex_local&runner=legacy"] }, play: async context => {
-  await showRunner(context);
-  await expect(await within(context.canvasElement).findByRole("button", { name: "Runner" })).toHaveTextContent("Legacy runner");
+  await expectRunnerHidden(context);
 } };
 export const AutomaticLegacyOnUnqualifiedTarget: Story = {
   parameters: { codexCreationFixture: { unqualifiedTarget: true } },
   play: async context => {
-    await showRunner(context);
-    await expect(await within(context.canvasElement).findByRole("button", { name: "Runner" })).toHaveTextContent("Legacy runner (default)");
+    await expectRunnerHidden(context);
   },
 };
 export const OldNativeCodexLink: Story = {
   parameters: { initialEntries: ["/PAP/agents/new?name=Nova&adapterType=paperclip_runner&runnerProvider=codex"], codexCreationFixture: { unqualifiedTarget: true } },
   play: async context => {
-    await showRunner(context);
-    await expect(await within(context.canvasElement).findByRole("button", { name: "Runner" })).toHaveTextContent("Paperclip Runner");
+    await expectRunnerHidden(context);
   },
 };
 export const AutomaticLight: Story = { ...AutomaticCodex, globals: { theme: "light" } };
@@ -112,7 +109,7 @@ export const LegacyMobile: Story = { ...ExplicitLegacy, globals: { viewport: { v
 export const SetupFailure: Story = { parameters: { codexCreationFixture: { setupFailure: true } }, play: async context => {
   await connectCodex(context);
   await expect(await within(context.canvasElement).findByText("Paperclip Runner is missing from this environment.")).toBeVisible();
-  await showRunner(context);
+  await expectRunnerHidden(context);
 } };
 export const TaskReady: Story = {
   play: async context => {

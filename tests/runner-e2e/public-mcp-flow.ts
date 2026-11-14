@@ -1,3 +1,8 @@
+import { readFile, writeFile } from "node:fs/promises";
+import path from "node:path";
+import type { BrowserContext } from "@playwright/test";
+import { readValidatedPublicOriginReceipt, PUBLIC_ORIGIN_RECEIPT_ENV } from "./chat-public-origin.js";
+import { privatePublicSignIn } from "./chat-catalog-domains/external-public-signin.js";
 import { redactTransferEvidence } from "./public-mcp-transfer-evidence.js";
 import { runExpandedMcpScenario } from "./public-mcp-expanded-flow.js";
 import { type AssistantTool } from "./public-mcp-model.js";
@@ -11,13 +16,35 @@ import { isReadOnlyMcpCall, gradeEventFollowUp, gradeDelegation, gradePausedAgen
 import { eventReceiver, mcpEventRpc, connect, mcp, oauthPost, api as browserApi, type Team, type Task, type Run, type Document, type Comment } from "./public-mcp-client.js";
 import { runPublicMcpInvitationFlow } from "./public-mcp-invitation-flow.js";
 
+const publicFixtureCredentials = new WeakMap<RunnerApi, { userId: string; email: string; password: string; secrets: string[] }>();
+/** The same API object is created once in runner.spec, bootstrapped before fixture
+ * setup, and passed unchanged into ChatFlowInput. A replacement client has no
+ * authority to retrieve or submit this person's private credentials. */
+export async function signInPublicFixturePerson(api: RunnerApi, target: BrowserContext) {
+  const person = publicFixtureCredentials.get(api);
+  if (!person) throw new Error("Public sign-in requires the exact registered fixture API/person object");
+  const receiptPath = process.env[PUBLIC_ORIGIN_RECEIPT_ENV], attemptId = process.env.PAPERCLIP_E2E_ACCOUNTING_ATTEMPT_ID;
+  const executions = JSON.parse(process.env.PAPERCLIP_RUNNER_E2E_EXECUTION_IDS ?? "[]") as string[];
+  if (!receiptPath || !attemptId || executions.length !== 1) throw new Error("Public fixture sign-in requires its exact selected attempt's validated origin receipt");
+  const receipt = await readValidatedPublicOriginReceipt({ receiptPath, attemptId, executionId: executions[0]!, backendOrigin: api.baseURL });
+  return privatePublicSignIn({ receiptPath, attemptId, executionId: receipt.executionId, backendOrigin: api.baseURL, publicOrigin: receipt.publicOrigin, userId: person.userId, email: person.email, password: person.password }, person.secrets, async file => {
+    const incoming = JSON.parse(await readFile(file, "utf8")) as Awaited<ReturnType<BrowserContext["storageState"]>>;
+    const existing = await target.storageState(), hostname = new URL(receipt.publicOrigin).hostname;
+    // Preserve existing jars as-is. Only a REAL public sign-in contributes
+    // public-host cookies; no loopback value is renamed/copied to HTTPS.
+    const merged = { cookies: [...existing.cookies.filter(cookie => cookie.domain.replace(/^\./, "") !== hostname), ...incoming.cookies], origins: [...existing.origins.filter(origin => origin.origin !== receipt.publicOrigin), ...incoming.origins] };
+    const mergedFile = path.join(path.dirname(file), "merged-public-session.json"); await writeFile(mergedFile, JSON.stringify(merged), { mode: 0o600, flag: "wx" });
+    await target.setStorageState(mergedFile);
+  });
+}
+
 /** Real first-admin browser bootstrap, no direct fixture DB writes. */
 export async function establishPublicMcpSession(api: RunnerApi, page: Page, secrets: string[]) {
-  const password = randomBytes(32).toString("base64url");
+  const password = randomBytes(32).toString("base64url"), email = `mcp-${randomUUID()}@example.test`;
   secrets.push(password);
   const response = await fetch(api.baseURL + "/api/auth/sign-up/email", {
     method: "POST", headers: { "Content-Type": "application/json", Origin: api.baseURL },
-    body: JSON.stringify({ name: "MCP evaluation person", email: `mcp-${randomUUID()}@example.test`, password }),
+    body: JSON.stringify({ name: "MCP evaluation person", email, password }),
   });
   if (!response.ok) throw new Error(`Browser signup failed with HTTP ${response.status}; body withheld`);
   const user = await response.json() as { user: { id: string } };
@@ -28,6 +55,7 @@ export async function establishPublicMcpSession(api: RunnerApi, page: Page, secr
   await page.context().addCookies(cookies.map(cookie => ({ name: cookie.slice(0, cookie.indexOf("=")), value: cookie.slice(cookie.indexOf("=") + 1), url: api.baseURL, httpOnly: true, sameSite: "Lax" })));
   await api.post("/api/bootstrap/claim");
   await api.patch("/api/instance/settings/experimental", { enablePublicMcp: true });
+  publicFixtureCredentials.set(api, { userId: user.user.id, email, password, secrets });
   return user.user.id;
 }
 

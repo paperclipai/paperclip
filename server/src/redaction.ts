@@ -2,6 +2,7 @@ import { redactCommandText } from "@paperclipai/adapter-utils";
 import { isPublicExecutorToolSelector, looksLikeCredentialJwt } from "@paperclipai/adapter-utils/command-redaction";
 
 const SECRET_FIELD_NAME_PATTERN = String.raw`[A-Za-z0-9_-]*(?:api[-_]?key|access[-_]?token|auth(?:_?token)?|token|authorization(?:[-_]?code)?|bearer|secrets?|passwd|passwords?|credentials?|jwt|private[-_]?key|cookie|connectionstring|browser[-_]?code|login[-_]?url)(?:[-_]?(?:value|header|prod(?:uction)?|dev(?:elopment)?|test|staging|primary|secondary))*`;
+const SECRET_FIELD_NAME_START = String.raw`(?<![A-Za-z0-9_-])`;
 
 const SECRET_PAYLOAD_KEY_RE = new RegExp(`^(?:${SECRET_FIELD_NAME_PATTERN})(?:_plain|_ref)?$`, "i");
 // Authorization reasons are policy decision codes, not credentials. They must
@@ -92,6 +93,8 @@ export const PAPERCLIP_PUBLIC_SCHEMA_IDS = new Set([
   "paperclip.native-execution-input.v5",
   "paperclip.native-execution-input.v7",
   "paperclip.native-execution-input.v8",
+  "paperclip.native-execution-input.v9",
+  "paperclip.native-execution-input.v10",
   "paperclip.native-finalization.v1",
   "paperclip.native-finalization.v2",
   "paperclip.native-harness-backup-stamp.v1",
@@ -140,6 +143,7 @@ export const PAPERCLIP_PUBLIC_SCHEMA_IDS = new Set([
   "paperclip.runner.conformance.fixture.v1",
   "paperclip.runner.conformance.output.v1",
   "paperclip.runner.durable.control-plane-state.v1",
+  "paperclip.runner.durable.control-plane-state.v2",
   "paperclip.runner.durable.diagnostics.v1",
   "paperclip.runner.durable.state.v1",
   "paperclip.runner.durable.trace.v1",
@@ -217,11 +221,13 @@ export const PRP_V1_EVENT_TYPES = new Set([
   "workspace.diff.recorded",
   "workspace.file.referenced",
   "auth.credentials.updated",
+  "runtime.activity.recorded",
   "harness.starting",
   "harness.ready",
   "harness.exited",
   "harness.diagnostic",
   "plan.updated",
+  "plan.proposed",
   "tool.execution.started",
   "tool.execution.progressed",
   "tool.execution.completed",
@@ -328,6 +334,7 @@ const NATIVE_RUN_SPAN_NAMES = new Set([
   "native.result.finalize",
   "native.session.execute",
   "provider.session.continuity_break",
+  "provider.session.load",
   "provider.session.resume",
   "provider.time_to_first_agent_event",
   "provider.turn.queue",
@@ -346,6 +353,7 @@ const NATIVE_RUN_SPAN_NAMES = new Set([
   "runner.artifact.discover",
   "runner.artifact.prepare",
   "runner.prp.authenticate",
+  "runner.process.launch",
   "runner.prp.route.register",
   "runner.runtime.stage",
   "runner.session.bootstrap",
@@ -366,13 +374,13 @@ const CLI_SECRET_FLAG_RE = new RegExp(
   "i",
 );
 const JSON_SECRET_FIELD_TEXT_RE = new RegExp(
-  String.raw`((?:"|')?${SECRET_FIELD_NAME_PATTERN}(?:"|')?\s*:\s*(?:"|'))[^"'` +
+  String.raw`((?:"|')?${SECRET_FIELD_NAME_START}${SECRET_FIELD_NAME_PATTERN}(?:"|')?\s*:\s*(?:"|'))[^"'` +
     "`" +
     String.raw`\r\n]+((?:"|'))`,
   "gi",
 );
 const ESCAPED_JSON_SECRET_FIELD_TEXT_RE = new RegExp(
-  String.raw`((?:\\")?${SECRET_FIELD_NAME_PATTERN}(?:\\")?\s*:\s*(?:\\"))[^\\\r\n]+((?:\\"))`,
+  String.raw`((?:\\")?${SECRET_FIELD_NAME_START}${SECRET_FIELD_NAME_PATTERN}(?:\\")?\s*:\s*(?:\\"))[^\\\r\n]+((?:\\"))`,
   "gi",
 );
 const SECRET_TEXT_HINTS = [
@@ -663,7 +671,7 @@ function authorizationCredentialRange(
 function redactAuthorizationCredentials(input: string): string {
   // Include compound diagnostic labels such as proxyAuthorization while the
   // value parser still requires a Basic/Bearer scheme before redacting.
-  const authorizationWord = /\b[A-Za-z0-9_-]*Authorization[A-Za-z0-9_-]*\b/gi;
+  const authorizationWord = /(?<![A-Za-z0-9_-])[A-Za-z0-9_-]*Authorization[A-Za-z0-9_-]*\b/gi;
   const parts: string[] = [];
   let copiedThrough = 0;
   let match: RegExpExecArray | null;

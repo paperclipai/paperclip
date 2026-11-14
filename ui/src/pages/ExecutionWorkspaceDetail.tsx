@@ -4,6 +4,8 @@ import { Link, Navigate, useLocation, useNavigate, useParams } from "@/lib/route
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type { ExecutionWorkspace, Issue, Project, ProjectWorkspace, RoutineListItem, WorkspaceOperation } from "@paperclipai/shared";
 import { Copy, ExternalLink, Loader2, Play, Repeat } from "lucide-react";
+import { QueryErrorState, useQueryView } from "@/components/QueryView";
+import { describeError } from "@/api/errors";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle, CardAction } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -48,6 +50,7 @@ import {
   routineHasWorkspaceSpecificVariables,
   sortWorkspaceRoutinesByName,
 } from "../lib/workspace-routines";
+import { useUpdateIssueMutation } from "../hooks/useUpdateIssueMutation";
 
 type WorkspaceFormState = {
   name: string;
@@ -550,15 +553,13 @@ function ExecutionWorkspaceIssuesList({
 
   const liveIssueIds = useMemo(() => collectLiveIssueIds(liveRuns, issues), [issues, liveRuns]);
 
-  const updateIssue = useMutation({
-    mutationFn: ({ id, data }: { id: string; data: Record<string, unknown> }) => issuesApi.update(id, data),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: queryKeys.issues.listByExecutionWorkspace(companyId, workspace.id) });
-      queryClient.invalidateQueries({ queryKey: queryKeys.issues.list(companyId) });
-      if (project?.id) {
-        queryClient.invalidateQueries({ queryKey: queryKeys.issues.listByProject(companyId, project.id) });
-      }
-    },
+  const updateIssue = useUpdateIssueMutation({
+    companyId,
+    invalidateKeys: [
+      queryKeys.issues.listByExecutionWorkspace(companyId, workspace.id),
+      queryKeys.issues.list(companyId),
+      ...(project?.id ? [queryKeys.issues.listByProject(companyId, project.id)] : []),
+    ],
   });
 
   const projectOptions = useMemo(
@@ -654,10 +655,14 @@ function ExecutionWorkspaceRoutinesList({
   const [runDialogRoutine, setRunDialogRoutine] = useState<RoutineListItem | null>(null);
   const [runningRoutineId, setRunningRoutineId] = useState<string | null>(null);
 
-  const { data: routines, isLoading, error } = useQuery({
+  const routinesQuery = useQuery({
     queryKey: queryKeys.routines.list(workspace.companyId, { projectId: workspace.projectId }),
     queryFn: () => routinesApi.list(workspace.companyId, { projectId: workspace.projectId }),
   });
+  // Read the routine list through the shared view: cached rows stay usable
+  // during a transient refetch failure,and a no-data failure shows readable
+  // copy with Retry.
+  const routinesView = useQueryView(routinesQuery);
 
   const { data: agents } = useQuery({
     queryKey: queryKeys.agents.list(workspace.companyId),
@@ -665,8 +670,8 @@ function ExecutionWorkspaceRoutinesList({
   });
 
   const workspaceRoutines = useMemo(
-    () => sortWorkspaceRoutinesByName((routines ?? []).filter(routineHasWorkspaceSpecificVariables)),
-    [routines],
+    () => sortWorkspaceRoutinesByName((routinesQuery.data ?? []).filter(routineHasWorkspaceSpecificVariables)),
+    [routinesQuery.data],
   );
 
   const runRoutine = useMutation({
@@ -705,7 +710,7 @@ function ExecutionWorkspaceRoutinesList({
     onError: (mutationError) => {
       pushToast({
         title: "Routine run failed",
-        body: mutationError instanceof Error ? mutationError.message : "Paperclip could not start the routine run.",
+        body: describeError(mutationError).body,
         tone: "error",
       });
     },
@@ -721,12 +726,16 @@ function ExecutionWorkspaceRoutinesList({
           </CardDescription>
         </CardHeader>
         <CardContent>
-          {isLoading ? (
+          {routinesView.kind === "loading" || routinesView.kind === "reconnecting" ? (
             <p className="text-sm text-muted-foreground">Loading routines...</p>
-          ) : error ? (
-            <p className="text-sm text-destructive">
-              {error instanceof Error ? error.message : "Failed to load routines."}
-            </p>
+          ) : routinesView.kind === "error" ? (
+            <QueryErrorState
+              size="inline"
+              error={routinesView.error}
+              action="load workspace routines"
+              onRetry={routinesView.retry}
+              retrying={routinesView.isFetching}
+            />
           ) : workspaceRoutines.length === 0 ? (
             <div className="flex flex-col items-center gap-2 py-10 text-center">
               <Repeat className="h-5 w-5 text-muted-foreground" />
@@ -800,6 +809,7 @@ export function ExecutionWorkspaceDetail() {
     queryFn: () => executionWorkspacesApi.get(workspaceId!),
     enabled: Boolean(workspaceId),
   });
+  const workspaceView = useQueryView(workspaceQuery);
   const workspace = workspaceQuery.data ?? null;
 
   const projectQuery = useQuery({
@@ -831,6 +841,7 @@ export function ExecutionWorkspaceDetail() {
     queryFn: () => issuesApi.list(workspace!.companyId, { executionWorkspaceId: workspace!.id }),
     enabled: Boolean(workspace?.companyId),
   });
+  const linkedIssuesView = useQueryView(linkedIssuesQuery);
   const linkedIssues = linkedIssuesQuery.data ?? [];
 
   const linkedProjectWorkspace = useMemo(
@@ -931,7 +942,7 @@ export function ExecutionWorkspaceDetail() {
       setErrorMessage(null);
     },
     onError: (error) => {
-      setErrorMessage(error instanceof Error ? error.message : "Failed to save execution workspace.");
+      setErrorMessage(describeError(error).body);
     },
   });
   const workspaceOperationsQuery = useQuery({
@@ -939,6 +950,11 @@ export function ExecutionWorkspaceDetail() {
     queryFn: () => executionWorkspacesApi.listWorkspaceOperations(workspaceId!),
     enabled: Boolean(workspaceId),
   });
+  // Read workspace operations through the shared view: cached rows stay
+  // visible during a transient refetch failure,and a no-data failure shows
+  // readable copy with Retry.
+
+  const opsView = useQueryView(workspaceOperationsQuery);
   const runtimeProvisionCommand =
     workspace?.config?.runtimeProvisionCommand
     ?? project?.executionWorkspacePolicy?.workspaceStrategy?.runtimeProvisionCommand
@@ -972,19 +988,25 @@ export function ExecutionWorkspaceDetail() {
     },
     onError: (error) => {
       setRuntimeActionMessage(null);
-      setRuntimeActionErrorMessage(error instanceof Error ? error.message : "Failed to control workspace commands.");
+      setRuntimeActionErrorMessage(describeError(error).body);
     },
     onSettled: (_result, _error, request) => {
       setPendingRuntimeActions((current) => current.filter((pendingRequest) => pendingRequest !== request));
     },
   });
 
-  if (workspaceQuery.isLoading) return <p className="text-sm text-muted-foreground">Loading workspace…</p>;
-  if (workspaceQuery.error) {
+  if (workspaceQuery.isLoading || workspaceView.kind === "reconnecting") {
+    return <p className="text-sm text-muted-foreground">Loading workspace…</p>;
+  }
+  if (workspaceView.kind === "error") {
     return (
-      <p className="text-sm text-destructive">
-        {workspaceQuery.error instanceof Error ? workspaceQuery.error.message : "Failed to load workspace"}
-      </p>
+      <QueryErrorState
+        size="page"
+        error={workspaceQuery.error}
+        action="load this workspace"
+        onRetry={workspaceView.retry}
+        retrying={workspaceView.isFetching}
+      />
     );
   }
   if (!workspace || !form || !initialState) return null;
@@ -1035,12 +1057,11 @@ export function ExecutionWorkspaceDetail() {
       return;
     }
 
-    let patch: Record<string, unknown>;
+    let patch: Record<string, unknown> = {};
     try {
       patch = buildWorkspacePatch(initialState, form);
-    } catch (error) {
-      setErrorMessage(error instanceof Error ? error.message : "Failed to build workspace update.");
-      return;
+} catch (error) {
+      setErrorMessage(describeError(error).body);
     }
 
     if (Object.keys(patch).length === 0) return;
@@ -1523,14 +1544,16 @@ export function ExecutionWorkspaceDetail() {
               <CardDescription>Recent operations</CardDescription>
             </CardHeader>
             <CardContent>
-            {workspaceOperationsQuery.isLoading ? (
+            {(opsView.kind === "loading" || opsView.kind === "reconnecting") ? (
               <p className="text-sm text-muted-foreground">Loading workspace operations…</p>
-            ) : workspaceOperationsQuery.error ? (
-              <p className="text-sm text-destructive">
-                {workspaceOperationsQuery.error instanceof Error
-                  ? workspaceOperationsQuery.error.message
-                  : "Failed to load workspace operations."}
-              </p>
+            ) : opsView.kind === "error" ? (
+              <QueryErrorState
+                size="inline"
+                error={opsView.error}
+                action="load workspace operations"
+                onRetry={opsView.retry}
+                retrying={opsView.isFetching}
+              />
             ) : workspaceOperationsQuery.data && workspaceOperationsQuery.data.length > 0 ? (
               <div className="space-y-3">
                 {workspaceOperationsQuery.data.map((operation) => (
@@ -1567,14 +1590,16 @@ export function ExecutionWorkspaceDetail() {
               title="Workspace summary"
               description="Summarizer keeps the latest workspace status, next step, and operator-needed items here."
             />
+            {linkedIssuesView.kind === "error" ? <QueryErrorState error={linkedIssuesView.error} action="load workspace tasks" onRetry={linkedIssuesView.retry} retrying={linkedIssuesView.isFetching} /> : (
             <ExecutionWorkspaceIssuesList
               companyId={workspace.companyId}
               workspace={workspace}
               issues={linkedIssues}
-              isLoading={linkedIssuesQuery.isLoading}
-              error={linkedIssuesQuery.error as Error | null}
+              isLoading={linkedIssuesView.kind === "loading" || linkedIssuesView.kind === "reconnecting"}
+              error={null}
               project={project}
             />
+            )}
           </div>
         ) : activePluginTab ? (
           <PluginSlotMount

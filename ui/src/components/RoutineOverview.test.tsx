@@ -14,6 +14,10 @@ import {
 
 const issueRowRender = vi.hoisted(() => vi.fn());
 
+vi.mock("./RoutineResponsibleUser", () => ({
+  RoutineResponsibleUser: ({ routine }: { routine: RoutineDetail }) => <section data-responsible-routine={routine.id}>Responsible user</section>,
+}));
+
 vi.mock("@/components/IssueRow", () => ({
   IssueRow: (props: { issue: { title: string }; presentation?: string }) => {
     issueRowRender(props);

@@ -64,6 +64,14 @@ describe("isPrivateWebhookHttpRequest", () => {
 });
 
 describe("isSecretSensitiveHttpRequest", () => {
+  it("protects company observability credentials on accepted and rejected paths", () => {
+    for (const method of ["GET", "PUT", "POST", "DELETE", "PATCH"]) {
+      for (const url of ["/api/companies/company/observability", "/api/companies/company/observability/test", "/api/companies/company/observability/unknown", "https://paperclip.test/API/COMPANIES/company/OBSERVABILITY?ignored=private"]) {
+        expect(isSecretSensitiveHttpRequest(method, url)).toBe(true);
+      }
+    }
+    expect(isSecretSensitiveHttpRequest("PUT", "/api/companies/company/observability-extra")).toBe(false);
+  });
   it("protects Slack registration, installation, recovery, and all callback methods", () => {
     for (const suffix of ["registration", "install", "resume"]) expect(isSecretSensitiveHttpRequest("POST", `/api/chat-endpoints/id/slack/${suffix}`)).toBe(true);
     for (const method of ["GET", "POST", "DELETE"]) for (const path of ["/api/chat-slack/oauth/callback?code=canary", "/api/chat-slack/managed/oauth/callback?claim=canary", "/api/chat-slack/managed/oauth/callback?code=canary", "/api/chat-endpoints/endpoint/slack/managed/authorize", "/api/chat-endpoints/endpoint/slack/managed/provision", "https://paperclip.test/API/CHAT-SLACK/OAUTH/callback?code=canary"])

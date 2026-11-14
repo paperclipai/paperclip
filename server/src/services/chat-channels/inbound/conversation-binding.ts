@@ -9,7 +9,7 @@ type ConversationBindingInput = {
   thread: { id: string; channelId: string };
   isLinear: () => boolean;
   lookupConversation?: () => Promise<ConversationRow | null>;
-  conversationIsComplete?: (conversationId: string) => Promise<boolean>;
+  conversationIsComplete?: (conversationId: string, state: ConversationRow["state"]) => Promise<boolean>;
 };
 
 export async function resolveInboundConversationBinding(
@@ -54,7 +54,7 @@ export async function resolveInboundConversationBinding(
     isLinear &&
     existingConversation &&
     (conversationIsComplete
-      ? await conversationIsComplete(existingConversation.id)
+      ? await conversationIsComplete(existingConversation.id, existingConversation.state)
       : existingConversation.state === "completed" ||
         existingIssue?.status === "done" ||
         existingIssue?.status === "cancelled")

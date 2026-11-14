@@ -126,9 +126,9 @@ describe("CompanySettings rename hint", () => {
     );
   }
 
-  it.each([false, true])("keeps decision setup in General only while the experiment is off (%s)", (enabled) => {
+  it.each([false, true])("keeps decision setup out of General regardless of the fast response flag (%s)", (enabled) => {
     const root = render(SELF_HOSTED_HEALTH, enabled);
-    expect(Boolean(container.querySelector("[data-testid=decision-model-settings]"))).toBe(!enabled);
+    expect(container.querySelector("[data-testid=decision-model-settings]")).toBeNull();
     flushSync(() => root.unmount());
   });
 

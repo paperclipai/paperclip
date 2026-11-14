@@ -13,6 +13,16 @@ function readNonEmptyString(value: unknown) {
   return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
 }
 
+export function buildReviewPathRecoveryDisposition(context: Record<string, unknown>) {
+  if (!isIssueReviewPathRecoveryRun(context)) return null;
+  return {
+    attempt: 1,
+    maxAttempts: 1,
+    sourceRunId: readNonEmptyString(context.sourceRunId),
+    instruction: REVIEW_PATH_RECOVERY_INSTRUCTION,
+  };
+}
+
 export function isIssueReviewPathRecoveryRun(contextSnapshot: Record<string, unknown> | null | undefined) {
   return readNonEmptyString(contextSnapshot?.wakeReason) === ISSUE_REVIEW_PATH_LOST_WAKE_REASON
     || contextSnapshot?.reviewPathRecoveryAttempt === 1;

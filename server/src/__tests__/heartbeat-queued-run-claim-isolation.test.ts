@@ -4,10 +4,14 @@ import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest
 import {
   agents,
   agentWakeupRequests,
+  authUsers,
   companies,
+  companyMemberships,
   createDb,
   heartbeatRuns,
   externalAgentHolds,
+  issues,
+  issueThreadInteractions,
 } from "@paperclipai/db";
 import {
   getEmbeddedPostgresTestSupport,
@@ -231,6 +235,49 @@ describeEmbeddedPostgres("heartbeat queued-run claim isolation", () => {
     expect(await runStatus(healthyRunId)).toMatchObject({ status: "succeeded" });
   });
 
+  it("keeps a routine run queued while another task holds the routine slot, then runs it once the slot is free", async () => {
+    const { companyId, agentId } = await insertAgent();
+    const origin = { originKind: "routine_execution", originId: randomUUID(), originFingerprint: "scheduled" };
+    // The earlier task keeps its lock while its failed run waits for a scheduled resume.
+    const holderIssueId = randomUUID();
+    const holderRunId = randomUUID();
+    await db.insert(issues).values({ id: holderIssueId, companyId, title: "Earlier routine task",
+      status: "in_progress", assigneeAgentId: agentId, ...origin });
+    await db.insert(heartbeatRuns).values({ id: holderRunId, companyId, agentId, status: "failed",
+      finishedAt: new Date(), contextSnapshot: { issueId: holderIssueId } });
+    await db.update(issues).set({ executionRunId: holderRunId }).where(sql`${issues.id} = ${holderIssueId}`);
+    const userId = `routine-owner-${randomUUID()}`;
+    await db.insert(authUsers).values({ id: userId, name: "Routine owner", email: `${userId}@paperclip.test`,
+      createdAt: new Date(), updatedAt: new Date() });
+    await db.insert(companyMemberships).values({ companyId, principalType: "user", principalId: userId,
+      status: "active", membershipRole: "owner" });
+    const routineIssueId = randomUUID();
+    await db.insert(issues).values({ id: routineIssueId, companyId, title: "Current routine task",
+      status: "todo", assigneeAgentId: agentId, responsibleUserId: userId, ...origin });
+    const { runId: routineRunId } = await insertQueuedRun(companyId, agentId, {
+      requestedByActorType: "user", requestedByActorId: userId,
+      payload: { manualUserWake: true, issueId: routineIssueId },
+    }, new Date(Date.now() - 60_000));
+    await db.update(heartbeatRuns).set({ contextSnapshot: { issueId: routineIssueId } })
+      .where(sql`${heartbeatRuns.id} = ${routineRunId}`);
+    const { runId: healthyRunId } = await insertClaimableRun(companyId, agentId);
+
+    await expect(heartbeat.resumeQueuedRuns()).resolves.toBeUndefined();
+    await heartbeat.drainActiveRunExecutions();
+    expect(await runStatus(routineRunId)).toMatchObject({ status: "queued", errorCode: null });
+    expect(await runStatus(healthyRunId)).toMatchObject({ status: "succeeded" });
+    expect(mockAdapterExecute).toHaveBeenCalledOnce();
+
+    await db.update(issues).set({ executionRunId: null }).where(sql`${issues.id} = ${holderIssueId}`);
+    await expect(heartbeat.resumeQueuedRuns()).resolves.toBeUndefined();
+    await heartbeat.drainActiveRunExecutions();
+    expect(await runStatus(routineRunId)).toMatchObject({ status: "succeeded" });
+    // Count executions per run: the finished task may queue its own follow-up run.
+    const executedRunIds = mockAdapterExecute.mock.calls.map(call => ((call as unknown[])[0] as { runId?: string }).runId);
+    expect(executedRunIds.filter(id => id === routineRunId)).toHaveLength(1);
+    expect(executedRunIds.filter(id => id === healthyRunId)).toHaveLength(1);
+  });
+
   it.each(["worker", "native-effects"])("retains a %s barrier across provider changes and resumes only after reconciliation", async barrier => {
     const { companyId, agentId } = await insertAgent();
     const { runId } = await insertClaimableRun(companyId, agentId);
@@ -247,6 +294,62 @@ describeEmbeddedPostgres("heartbeat queued-run claim isolation", () => {
     expect(await runStatus(runId)).toMatchObject({ status: "succeeded" });
     expect(mockAdapterExecute).toHaveBeenCalledOnce();
   });
+
+  async function insertCardAnswerInterruptRun(fault?: "other-answer" | "other-resolver") {
+    const { companyId, agentId } = await insertAgent();
+    const userId = `card-owner-${randomUUID()}`;
+    await db.insert(authUsers).values({ id: userId, name: "Card owner", email: `${userId}@paperclip.test`,
+      createdAt: new Date(), updatedAt: new Date() });
+    await db.insert(companyMemberships).values({ companyId, principalType: "user", principalId: userId,
+      status: "active", membershipRole: "owner" });
+    const issueId = randomUUID();
+    await db.insert(issues).values({ id: issueId, companyId, title: "Website", status: "in_progress",
+      assigneeAgentId: agentId, responsibleUserId: userId });
+    const [interaction] = await db.insert(issueThreadInteractions).values({ companyId, issueId,
+      kind: "request_confirmation", status: "accepted", payload: { version: 1, prompt: "Use the simpler layout?" },
+      result: { version: 1, outcome: "accepted" }, createdByUserId: userId,
+      resolvedByUserId: fault === "other-resolver" ? "another-user" : userId, resolvedAt: new Date() }).returning();
+    const queueId = randomUUID();
+    const { runId, wakeupRequestId } = await insertQueuedRun(companyId, agentId, {
+      reason: "issue_commented",
+      idempotencyKey: `queued-comment-interrupt:${queueId}`,
+      requestedByActorType: "user",
+      requestedByActorId: userId,
+      payload: { issueId, interactionId: interaction!.id, explicitUserContinuation: { queuedCommentInterruptId: queueId } },
+    }, new Date(Date.now() - 60_000));
+    await db.insert(agentWakeupRequests).values({ id: queueId, companyId, agentId, source: "automation",
+      triggerDetail: "system", reason: "issue_commented", status: "coalesced", runId,
+      requestedByActorType: "user", requestedByActorId: userId,
+      payload: { issueId, mutation: "interaction", interactionId: interaction!.id, interactionKind: "request_confirmation",
+        interactionStatus: "accepted", queuedCommentInterrupt: { actorId: userId, requestedAt: new Date().toISOString() } } });
+    await db.update(heartbeatRuns).set({ contextSnapshot: { issueId, taskId: issueId,
+      interactionId: fault === "other-answer" ? randomUUID() : interaction!.id, interactionKind: "request_confirmation",
+      interactionStatus: "accepted", queuedCommentSourceWakeIds: [queueId] } }).where(sql`${heartbeatRuns.id} = ${runId}`);
+    return { runId, wakeupRequestId, userId };
+  }
+
+  it("claims the successor of an interrupt that delivers a queued card answer", async () => {
+    const { runId, userId } = await insertCardAnswerInterruptRun();
+
+    await expect(heartbeat.resumeQueuedRuns()).resolves.toBeUndefined();
+    await heartbeat.drainActiveRunExecutions();
+
+    expect(await runStatus(runId)).toMatchObject({ status: "succeeded", errorCode: null });
+    const [run] = await db.select({ responsibleUserId: heartbeatRuns.responsibleUserId }).from(heartbeatRuns)
+      .where(sql`${heartbeatRuns.id} = ${runId}`);
+    expect(run).toMatchObject({ responsibleUserId: userId });
+  });
+
+  it.each(["other-answer", "other-resolver"] as const)(
+    "rejects a card-answer interrupt whose %s does not match the receipt", async (fault) => {
+      const { runId } = await insertCardAnswerInterruptRun(fault);
+
+      await expect(heartbeat.resumeQueuedRuns()).resolves.toBeUndefined();
+
+      expect(await runStatus(runId)).toMatchObject({ status: "cancelled", errorCode: "queued_run_claim_rejected" });
+      expect(mockAdapterExecute).not.toHaveBeenCalled();
+    },
+  );
 
   it("keeps processing other agents' queued runs after one agent's run is rejected", async () => {
     const first = await insertAgent();

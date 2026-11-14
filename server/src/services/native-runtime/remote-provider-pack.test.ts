@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import { prepareVerifiedRemoteProviderPack, runRemoteProviderVerification } from "./remote-provider-pack.js";
+import { prepareVerifiedRemoteProviderPack, useVerifiedPreinstalledRemoteProviderPack, runRemoteProviderVerification, shouldUseBundledAcpxImageAssets } from "./remote-provider-pack.js";
 
 describe("remote provider verification", () => {
   const ok = { exitCode: 0, timedOut: false, stdout: "verified", stderr: "", signal: null };
@@ -23,6 +23,14 @@ describe("remote provider verification", () => {
   it.each(["", "manifest mismatch", "dist tree digest mismatch"])("fails closed without retrying a completed rejection: %s", async stderr => {
     const execute = vi.fn().mockResolvedValue({ ...ok, exitCode: 1, stderr });
     await expect(runRemoteProviderVerification(execute, "pack")).rejects.toThrow("runner_remote_provider_artifact_incompatible: pack failed (exitCode=1");
+    expect(execute).toHaveBeenCalledOnce();
+  });
+  it("retains a bounded redacted rejection from a combined-output transport", async () => {
+    const execute = vi.fn().mockResolvedValue({ ...ok, exitCode: 1,
+      stdout: "Error: manifest mismatch\nANTHROPIC_API_KEY=secret-fixture-value", stderr: "" });
+    const failure = await runRemoteProviderVerification(execute, "pack").catch(error => error);
+    expect(failure.message).toContain("manifest mismatch");
+    expect(failure.message).not.toContain("secret-fixture-value");
     expect(execute).toHaveBeenCalledOnce();
   });
   it("recovers a transport exception and propagates cancellation", async () => {
@@ -87,5 +95,42 @@ describe("remote provider pack reuse", () => {
     await expect(prepareVerifiedRemoteProviderPack(input)).rejects.toThrow("artifact hash mismatch");
     stageAndVerify.mockResolvedValue(undefined);
     await expect(prepareVerifiedRemoteProviderPack(input)).resolves.toBe("uploaded");
+  });
+});
+
+
+describe("ordinary ACPX image artifacts", () => {
+  const provider = (agent: string) => ({ kind: "acpx", agent, model: "selected-model" } as Parameters<typeof shouldUseBundledAcpxImageAssets>[0]["provider"]);
+  it.each(["cursor", "copilot"])("selects bundled artifacts for remote %s without an operator override", agent => {
+    expect(shouldUseBundledAcpxImageAssets({ requiresRemoteProviderPack: true, configuredProviderPackRoot: null, provider: provider(agent) })).toBe(true);
+    expect(shouldUseBundledAcpxImageAssets({ requiresRemoteProviderPack: false, configuredProviderPackRoot: null, provider: provider(agent) })).toBe(false);
+    expect(shouldUseBundledAcpxImageAssets({ requiresRemoteProviderPack: true, configuredProviderPackRoot: "/explicit/pack", provider: provider(agent) })).toBe(false);
+  });
+  it.each(["pi", "claude", "codex", "grok"])("does not change the artifact authority for %s", agent => {
+    expect(shouldUseBundledAcpxImageAssets({ requiresRemoteProviderPack: true, configuredProviderPackRoot: null, provider: provider(agent) })).toBe(false);
+  });
+  it("does not admit a non-ACPX provider through bundled image selection", () => {
+    expect(shouldUseBundledAcpxImageAssets({ requiresRemoteProviderPack: true, configuredProviderPackRoot: null, provider: { kind: "codex", model: null } })).toBe(false);
+  });
+});
+
+describe("standard remote provider pack discovery", () => {
+  const roots = ["/opt/paperclip-runner/provider-pack", "/home/operator/.local/share/paperclip-runner/provider-pack"];
+  it.each(["old manifest", "modified artifact", "failed link"])("tries the matching home pack after %s rejects /opt", async reason => {
+    const verifyAndLink = vi.fn(async (root: string) => {
+      if (root === roots[0]) throw new Error(reason);
+    });
+    await expect(useVerifiedPreinstalledRemoteProviderPack({ candidates: roots, verifyAndLink })).resolves.toBe(true);
+    expect(verifyAndLink.mock.calls.map(([root]) => root)).toEqual(roots);
+  });
+  it("keeps the first matching pack without consulting another installation", async () => {
+    const verifyAndLink = vi.fn(async () => {});
+    await expect(useVerifiedPreinstalledRemoteProviderPack({ candidates: roots, verifyAndLink })).resolves.toBe(true);
+    expect(verifyAndLink).toHaveBeenCalledExactlyOnceWith(roots[0]);
+  });
+  it("fails closed when every standard installation is incompatible", async () => {
+    const verifyAndLink = vi.fn().mockRejectedValue(new Error("manifest mismatch"));
+    await expect(useVerifiedPreinstalledRemoteProviderPack({ candidates: roots, verifyAndLink })).resolves.toBe(false);
+    expect(verifyAndLink).toHaveBeenCalledTimes(2);
   });
 });

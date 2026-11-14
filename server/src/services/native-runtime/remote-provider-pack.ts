@@ -1,4 +1,17 @@
+import { redactSensitiveText } from "../../redaction.js";
 import type { NativeRunTrace } from "./native-run-trace.js";
+import type { NativeExecutionInput } from "../../vendor/paperclip-runner/index.js";
+
+/** Qualified ACPX releases carry their Linux image manifest and daemon. */
+export function shouldUseBundledAcpxImageAssets(input: {
+  requiresRemoteProviderPack: boolean;
+  configuredProviderPackRoot: string | null;
+  provider: NativeExecutionInput["provider"];
+}): boolean {
+  return input.requiresRemoteProviderPack && !input.configuredProviderPackRoot &&
+    input.provider.kind === "acpx" &&
+    ["cursor", "copilot", "kimi"].includes(input.provider.agent);
+}
 
 type VerificationCommandResult = {
   exitCode: number | null;
@@ -25,10 +38,10 @@ export async function runRemoteProviderVerification(
       result = await execute();
     } catch (error) {
       if (error instanceof Error && error.name === "AbortError") throw error;
-      diagnostic = error instanceof Error ? error.message : String(error);
+      diagnostic = redactSensitiveText(error instanceof Error ? error.message : String(error)).slice(-1_024);
       continue;
     }
-    diagnostic = `exitCode=${result.exitCode}; timedOut=${result.timedOut}; signal=${result.signal ?? "none"}; ${result.stderr.trim().slice(-1_024)}`;
+    diagnostic = `exitCode=${result.exitCode}; timedOut=${result.timedOut}; signal=${result.signal ?? "none"}; ${redactSensitiveText([result.stderr, result.stdout].filter(Boolean).join("\n")).trim().slice(-1_024)}`;
     if (result.timedOut || result.exitCode === null || result.signal) continue;
     if (result.exitCode !== 0) {
       throw new Error(`runner_remote_provider_artifact_incompatible: ${label} failed (${diagnostic})`);
@@ -67,4 +80,18 @@ export async function prepareVerifiedRemoteProviderPack(input: {
   } finally {
     if (scope) await input.trace!.end(scope, { outcome: failed ? "failed" : "ok" });
   }
+}
+
+export async function useVerifiedPreinstalledRemoteProviderPack(input: {
+  candidates: readonly string[];
+  verifyAndLink: (root: string) => Promise<void>;
+}): Promise<boolean> {
+  for (const candidate of input.candidates) {
+    try {
+      await input.verifyAndLink(candidate);
+      return true;
+    } catch {
+    }
+  }
+  return false;
 }

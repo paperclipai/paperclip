@@ -44,6 +44,18 @@ describe.skipIf(!support.supported)("personal task toast eligibility (persisted 
     await db.insert(issueComments).values({ companyId, issueId: id, authorUserId: "alice", body: "Following this." });
     await onlyAlice(id);
   });
+  it("keeps automatic attribution and imported comments quiet until direct participation", async () => {
+    for (const originKind of ["chat_channel", "routine_execution"]) {
+      const id = await task({ originKind, createdByUserId: "alice", responsibleUserId: "alice" });
+      await db.insert(issueComments).values({ companyId, issueId: id, authorUserId: "alice", body: "Imported reply",
+        metadata: { version: 1, sourceChannel: "github", sections: [] } });
+      await db.insert(activityLog).values({ companyId, entityType: "issue", entityId: id, actorType: "user", actorId: "alice",
+        action: "issue.inbox_touched", details: { source: "manual_routine_run" } });
+      expect(await taskToastEligible(db, event(id), "alice")).toBe(false);
+      await db.insert(issueComments).values({ companyId, issueId: id, authorUserId: "alice", body: "Direct board reply" });
+      await onlyAlice(id);
+    }
+  });
   it("qualifies the first mention and subsequent events, excluding deleted mentions and plain names", async () => {
     const id = await task({ description: "alice user://alice" });
     expect(await taskToastEligible(db, event(id), "alice")).toBe(false);

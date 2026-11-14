@@ -737,6 +737,7 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
 
     try {
       await db.insert(companies).values(wakeCompanyRow(companyId, issuePrefix));
+      await grantFixtureWorkspaceAccess(companyId, ["responsible-user", "user-1"]);
       await db.insert(agents).values(wakeGatewayAgentRow(agentId, companyId, "Gateway Agent", gateway));
       await db.insert(issues).values(wakeIssueRow(issueId, companyId, "Discard deferred follow-up", agentId, issuePrefix));
       const firstComment = await db
@@ -852,6 +853,7 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
 
     try {
       await db.insert(companies).values(wakeCompanyRow(companyId, issuePrefix));
+      await grantFixtureWorkspaceAccess(companyId, ["responsible-user", "user-1"]);
 
       await db.insert(agents).values(wakeGatewayAgentRow(agentId, companyId, "Gateway Agent", gateway));
 
@@ -1105,10 +1107,13 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
   }, 120_000);
 
   it.each([
-    { caseName: "delivers explicit agent feedback after completion", targetAssignee: true, terminalStatus: "done", explicitResume: true },
-    { caseName: "cancels an assignee continuation without resume intent on completed work", targetAssignee: true, terminalStatus: "done", explicitResume: false },
-    { caseName: "cancels an assignee continuation on cancelled work", targetAssignee: true, terminalStatus: "cancelled", explicitResume: true },
-  ] as const)("$caseName", async ({ targetAssignee, terminalStatus, explicitResume }) => {
+    { caseName: "delivers explicit agent feedback after completion", targetAssignee: true, terminalStatus: "done", explicitResume: true, commenterCreatedTask: false },
+    // The delegating agent commented while the run it was waiting on was active.
+    // It receives the completed result; its comment does not reopen the task.
+    { caseName: "keeps a task done for its delegator's comment posted during the closing run", targetAssignee: true, terminalStatus: "done", explicitResume: true, commenterCreatedTask: true },
+    { caseName: "cancels an assignee continuation without resume intent on completed work", targetAssignee: true, terminalStatus: "done", explicitResume: false, commenterCreatedTask: false },
+    { caseName: "cancels an assignee continuation on cancelled work", targetAssignee: true, terminalStatus: "cancelled", explicitResume: true, commenterCreatedTask: false },
+  ] as const)("$caseName", async ({ targetAssignee, terminalStatus, explicitResume, commenterCreatedTask }) => {
     const gateway = await createControlledGatewayServer();
     const companyId = randomUUID();
     const assigneeAgentId = randomUUID();
@@ -1117,7 +1122,7 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
     const issuePrefix = `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
     const heartbeat = heartbeatService(db);
     const targetAgentId = targetAssignee ? assigneeAgentId : mentionedAgentId;
-    const shouldReopen = targetAssignee && terminalStatus === "done" && explicitResume;
+    const shouldReopen = targetAssignee && terminalStatus === "done" && explicitResume && !commenterCreatedTask;
     const commentingAgentId = targetAssignee ? mentionedAgentId : assigneeAgentId;
     const wakeReason = "issue_commented";
 
@@ -1168,7 +1173,10 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
         },
       ]);
 
-      await db.insert(issues).values(wakeIssueRow(issueId, companyId, "Agent feedback at completion boundary", assigneeAgentId, issuePrefix));
+      await db.insert(issues).values({
+        ...wakeIssueRow(issueId, companyId, "Agent feedback at completion boundary", assigneeAgentId, issuePrefix),
+        ...(commenterCreatedTask ? { createdByAgentId: commentingAgentId } : {}),
+      });
 
       const firstRun = await heartbeat.wakeup(assigneeAgentId, {
         source: "assignment",
@@ -1631,13 +1639,7 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
           paperclipUserId: userId,
           status: "linked",
         });
-        await db.insert(companyMemberships).values({
-          companyId,
-          principalType: "user",
-          principalId: userId,
-          status: "active",
-          membershipRole: "member",
-        });
+        await grantFixtureWorkspaceAccess(companyId, ["responsible-user", userId]);
         await db.insert(chatDeliveries).values({
           id: deliveryId,
           companyId,
@@ -1880,6 +1882,9 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
           expect(deniedRun).toMatchObject({
             status: "failed",
             error: "reviewed_chat_execution_binding_not_authorized",
+            resultJson: expect.objectContaining({
+              reviewedChatBinding: { denialReason: "question_response_missing" },
+            }),
             contextSnapshot: expect.objectContaining({
               interactionId: answered.id,
               sourceRunId,
@@ -2169,6 +2174,7 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
 
     try {
       await db.insert(companies).values(wakeCompanyRow(companyId, issuePrefix));
+      await grantFixtureWorkspaceAccess(companyId, ["responsible-user", "user-1"]);
 
       await db.insert(agents).values(wakeGatewayAgentRow(agentId, companyId, "Gateway Agent", gateway));
 
@@ -2307,6 +2313,7 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
 
     try {
       await db.insert(companies).values(wakeCompanyRow(companyId, issuePrefix));
+      await grantFixtureWorkspaceAccess(companyId, ["responsible-user", "local-cli-user"]);
 
       await db.insert(agents).values(wakeGatewayAgentRow(agentId, companyId, "Local CLI Agent", gateway));
 
@@ -2998,6 +3005,7 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
 
     try {
       await db.insert(companies).values(wakeCompanyRow(companyId, issuePrefix));
+      await grantFixtureWorkspaceAccess(companyId, ["responsible-user"]);
 
       await db.insert(agents).values(wakeGatewayAgentRow(agentId, companyId, "Gateway Agent", gateway));
 

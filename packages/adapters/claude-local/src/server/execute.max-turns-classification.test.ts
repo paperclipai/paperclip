@@ -53,6 +53,14 @@ function buildProcResult(resultEvent: Record<string, unknown>, extraStdout = "")
   };
 }
 
+function mockExecutionResult(result: ReturnType<typeof buildProcResult>) {
+  runAdapterExecutionTargetProcess.mockImplementation(async (_runId: string, _target: unknown, _command: string, args: string[]) =>
+    args.includes("--version")
+      ? { ...result, exitCode: 0, stdout: "2.1.284 (Claude Code)" }
+      : result,
+  );
+}
+
 function buildContext() {
   return {
     runId: "run-1",
@@ -76,7 +84,7 @@ describe("claude_local failure classification precedence", () => {
   });
 
   it("keeps max_turns_exhausted when stdout mentions model_not_found", async () => {
-    runAdapterExecutionTargetProcess.mockResolvedValue(
+    mockExecutionResult(
       buildProcResult({ is_error: true, subtype: "error_max_turns" }, POISONED_TOOL_OUTPUT),
     );
 
@@ -86,7 +94,7 @@ describe("claude_local failure classification precedence", () => {
   });
 
   it("still reports model_not_found when the provider returns it", async () => {
-    runAdapterExecutionTargetProcess.mockResolvedValue(
+    mockExecutionResult(
       buildProcResult({ is_error: true, subtype: "error", result: "API Error: 404 model not found" }),
     );
 

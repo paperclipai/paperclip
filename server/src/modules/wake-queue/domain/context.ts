@@ -4,8 +4,8 @@
 // shape; this file holds only the small pieces that are specific to
 // building the release half's promoted-run snapshot.
 
-import { extractWakeCommentIds, WAKE_COMMENT_IDS_KEY } from "../../run-dispatch/index.js";
-import { readNonEmptyString } from "./values.js";
+import { extractWakeCommentIds, WAKE_COMMENT_IDS_KEY, wakeChatConversationsConflict } from "../../run-dispatch/index.js";
+import { parseObject, readNonEmptyString } from "./values.js";
 
 const PAPERCLIP_WAKE_PAYLOAD_KEY = "paperclipWake";
 const PAPERCLIP_WAKE_COMMENT_KEY = "paperclipWakeComment";
@@ -69,6 +69,34 @@ export function hasInteractionContinuationWakeContext(contextSnapshot: Record<st
   return INTERACTION_CONTINUATION_CONTEXT_KEYS.some((key) => readNonEmptyString(contextSnapshot[key]));
 }
 
+/**
+ * Whether a wake must stay out of the active issue run. Each resolved card has
+ * its own immutable decision and continuation, so it never merges with
+ * comments or another card, in either arrival order. A reviewed chat run
+ * attests exactly one conversation, so a reply from another conversation on
+ * the same issue queues as its own wake.
+ */
+export function wakeMustNotJoinActiveRun(
+  activeRunContext: unknown,
+  wakeContext: Record<string, unknown>,
+  interactionReceipt: boolean,
+): boolean {
+  // A context compaction run does no task work, so ordinary wakes and
+  // compactions never merge, in either arrival order.
+  return hasRetainedExternalChatRetry(activeRunContext) || interactionReceipt || Boolean(parseObject(activeRunContext).interactionId) ||
+    Boolean(readNonEmptyString(parseObject(activeRunContext).contextCompactionRequestId)) ||
+    Boolean(readNonEmptyString(wakeContext.contextCompactionRequestId)) ||
+    wakeChatConversationsConflict(activeRunContext, wakeContext);
+}
+
+export function hasRetainedExternalChatRetry(context: unknown): boolean {
+  const active = parseObject(context);
+  const activeSource = readNonEmptyString(active.source);
+  return readNonEmptyString(active.retryOfRunId) !== null &&
+    (activeSource?.startsWith("chat:") === true ||
+      (activeSource === "issue.interaction.respond" && active.externalChatContinuation === true));
+}
+
 function isInteractionResolutionWakePayload(payload: Record<string, unknown> | null | undefined): boolean {
   return readNonEmptyString(payload?.mutation) === "interaction";
 }
@@ -99,21 +127,30 @@ export type EnrichPromotedWakeContextResult = {
 /**
  * Fills the promoted run's context snapshot with the fields the original
  * wake enrichment always fills, without overwriting a field the deferred
- * wake already carried. The deferred wake's own context snapshot was
- * already enriched once when it was first queued, so most calls only
- * normalize the interaction-continuation keys.
+ * wake already carried. A deferred wake queued through the wake queue was
+ * already enriched once, so most calls only normalize the
+ * interaction-continuation keys.
  */
 export function enrichPromotedWakeContext(
   input: EnrichPromotedWakeContextInput,
 ): EnrichPromotedWakeContextResult {
   const contextSnapshot = { ...input.contextSnapshot };
   const { reason, source, triggerDetail, payload } = input;
+  const issueIdFromPayload = readNonEmptyString(payload?.["issueId"]) ?? readNonEmptyString(payload?.["taskId"]);
   const commentIdFromPayload = readNonEmptyString(payload?.["commentId"]);
   const taskKey = deriveTaskKey(contextSnapshot, payload);
   const wakeCommentIds = mergeWakeCommentIds(contextSnapshot, commentIdFromPayload);
 
   if (!readNonEmptyString(contextSnapshot["wakeReason"]) && reason) {
     contextSnapshot.wakeReason = reason;
+  }
+  // Some durable receipts, such as a board Retry, store only the payload and
+  // never had a queued context snapshot. Keep their issue scope.
+  if (!readNonEmptyString(contextSnapshot["issueId"]) && issueIdFromPayload) {
+    contextSnapshot.issueId = issueIdFromPayload;
+  }
+  if (!readNonEmptyString(contextSnapshot["taskId"]) && issueIdFromPayload) {
+    contextSnapshot.taskId = issueIdFromPayload;
   }
   if (!readNonEmptyString(contextSnapshot["taskKey"]) && taskKey) {
     contextSnapshot.taskKey = taskKey;

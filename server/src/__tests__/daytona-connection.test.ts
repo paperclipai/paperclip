@@ -49,7 +49,7 @@ const credential = "daytona-fixture-secret";
       throw new Error("Unexpected provider request");
     });
     const service = toolAccessService(db, { remoteHttpRequest: request, remoteHttpEndpointLookup: async () => [{ address: "8.8.8.8", family: 4 }] });
-    const connected = await service.connectGalleryApp(company.id, { galleryKey: "daytona", methodKey: "workspace-diagnostics",
+    const connected = await service.connectGalleryApp(company.id, { galleryKey: "daytona", connectionMethodKey: "workspace-diagnostics",
       ...(personal ? { grantKind: "user" as const } : {}), credentialValues: { "credentials.authorization": credential } }, actor);
     const [agent] = await db.insert(agents).values({ companyId: company.id, name: "Maintainer", role: "engineer", adapterType: "process" }).returning();
     await service.finishGalleryAppConnection(company.id, connected.connectionId, { enabledCatalogEntryIds: connected.catalog.map(c => c.id),
@@ -156,7 +156,7 @@ const credential = "daytona-fixture-secret";
     const legacy = await db.insert(toolCatalogEntries).values(legacyNames.map(toolName => ({
       companyId: f.company.id, applicationId: f.connected.connection.applicationId, connectionId: f.connected.connectionId,
       name: toolName, toolName, title: toolName === "daytona_get_workspace_recovery" ? "Get workspace recovery" : toolName,
-      entryKind: "tool", status: "active", riskLevel: "read", isReadOnly: true,
+      entryKind: "tool" as const, status: "active" as const, riskLevel: "read" as const, isReadOnly: true,
       inputSchema: { type: "object" }, versionHash: "legacy", schemaHash: "legacy",
     }))).returning();
     await f.service.finishGalleryAppConnection(f.company.id, f.connected.connectionId, {

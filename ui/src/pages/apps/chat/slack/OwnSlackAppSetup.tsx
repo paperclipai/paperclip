@@ -1,3 +1,4 @@
+import { useAuthorizationWindow } from "@/hooks/useAuthorizationWindow";
 import { useEffect, useRef, useState } from "react";
 import { ExternalLink, Loader2 } from "lucide-react";
 import { slackRegistrationErrorMessage } from "@paperclipai/shared";
@@ -52,7 +53,7 @@ export function OwnSlackAppSetup({ endpoint, stage, disabled, saveDetails, onSav
     onBusy(true);
     setError(null);
     try { await action(); }
-    catch (failure) { setError(sanitizedSetupErrorMessage(failure, { configurationToken })); }
+    catch (failure) { authorization.cancel(); setError(sanitizedSetupErrorMessage(failure, { configurationToken })); }
     finally {
       setConfigurationToken("");
       setBusy(false);
@@ -119,13 +120,15 @@ export function OwnSlackAppSetup({ endpoint, stage, disabled, saveDetails, onSav
     }
   }
 
+  const authorization = useAuthorizationWindow();
   async function authorize() {
+    authorization.reserve();
     const result = await chatEndpointsApi.installSlackApp(endpoint.id);
-    // Current-tab navigation avoids popup blockers. The callback resumes this saved draft.
-    window.location.assign(result.authorizationUrl);
+    await authorization.open(result.authorizationUrl);
   }
 
   return <div className="space-y-5">
+    {authorization.fallback}
     {error || registration?.errorCode ? <p role="alert" className="text-sm text-destructive">
       {error ?? slackRegistrationErrorMessage(registration!.errorCode!)}
     </p> : null}
