@@ -1225,3 +1225,22 @@ statement and its parameters, or unwrapped statement text with `$n`
 placeholders, is replaced with "Database query failed (<cause>)". The wrapper
 text before the statement is kept.
 
+
+## Chat outcome read receipts
+
+Two run-log events record what the conversation agent saw before it replied.
+`chat_handoff.completed_read` records that a run read a task it handed off, in
+the done state, with the task ID and status version. `chat_interaction.declined_read`
+records that a run listed its conversation's interactions and saw a declined tool
+action, with the issue ID, interaction ID and status. Neither carries task text,
+tool arguments or results.
+
+A completion or decline continuation that an earlier reply already reported
+creates no run. The server checks for a reply by the same agent in the same
+conversation, posted after the outcome, from a run that has one of these receipts
+for that exact outcome. A completion reply must also link the task. The
+completion delivery is then marked delivered with that reply as its response,
+and a deferred wake ends `skipped` with the reason "Already reported by an
+earlier reply in this conversation".
+The conversation's handoff listing (`GET /api/issues/{id}/chat-handoffs`) shows
+that reply as `completionReportCommentId` once the latest completion is delivered.
