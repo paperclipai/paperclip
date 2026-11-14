@@ -12,6 +12,8 @@ describe("bounded Codex model fallback", () => {
     expect(codexModelFallbackCandidates("gpt-6.1-sol")).toEqual(["gpt-6-sol", "gpt-5.6-sol"]);
     expect(codexModelFallbackCandidates("gpt-6-luna")).toEqual(["gpt-5.6-luna", "gpt-5.6-sol"]);
     expect(codexModelFallbackCandidates("gpt-6-astra")).toEqual(["gpt-5.6-sol"]);
+    // Terra stays in the Terra class: the first fallback is the newest older Terra, not a Sol model.
+    expect(codexModelFallbackCandidates("gpt-6.1-terra")).toEqual(["gpt-5.6-terra", "gpt-5.6-sol"]);
     expect(codexModelFallbackCandidates("gpt-5.6-sol")).toEqual([]);
   });
 
