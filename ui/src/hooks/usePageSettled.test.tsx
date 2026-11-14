@@ -34,7 +34,7 @@ afterEach(async () => {
 
 it("turns true after the page paints and its reads finish", async () => {
   let finish!: (value: string) => void;
-  void client.fetchQuery({ queryKey: ["first-frame"], queryFn: () => new Promise<string>((resolve) => { finish = resolve; }) });
+  void client.fetchQuery({ queryKey: ["first-frame"], queryFn: () => new Promise<string>((resolve) => { finish = resolve; }) }).catch(() => {});
   await render();
   await act(async () => { await vi.advanceTimersByTimeAsync(500); });
   expect(settled.at(-1)).toBe(false);
@@ -43,7 +43,7 @@ it("turns true after the page paints and its reads finish", async () => {
 });
 
 it("turns true after the maximum wait on a page that keeps reading", async () => {
-  void client.fetchQuery({ queryKey: ["never"], queryFn: () => new Promise<string>(() => {}) });
+  void client.fetchQuery({ queryKey: ["never"], queryFn: () => new Promise<string>(() => {}) }).catch(() => {});
   await render();
   await act(async () => { await vi.advanceTimersByTimeAsync(PAGE_SETTLED_MAX_WAIT_MS - 10); });
   expect(settled.at(-1)).toBe(false);
