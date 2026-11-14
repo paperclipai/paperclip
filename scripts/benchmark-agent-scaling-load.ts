@@ -192,7 +192,7 @@ try {
     if (agent.deltaQueue.length === 0) return;
     agent.streamedSinceBoundary = true;
     // As the port: one batch waits behind the batch that is committing, and
-    // takes every delta queued until it starts or until the next other event.
+    // takes every delta queued when it starts, unless a runner event came first.
     if (agent.openBatch) {
       agent.openBatch.push(...agent.deltaQueue);
       agent.deltaQueue = [];
@@ -202,7 +202,13 @@ try {
     agent.deltaQueue = [];
     agent.openBatch = batch;
     agent.appendTail = agent.appendTail.then(() => {
-      if (agent.openBatch === batch) agent.openBatch = null;
+      if (agent.openBatch === batch) {
+        agent.openBatch = null;
+        batch.push(...agent.deltaQueue);
+        agent.deltaQueue = [];
+        if (agent.deltaTimer !== null) clearTimeout(agent.deltaTimer);
+        agent.deltaTimer = null;
+      }
       return appendHeartbeatRunEventBatch(db, batch.map(item => item.input), () => {})
         .then(() => { for (const item of batch) item.settle(); }, error => { for (const item of batch) item.settle(error); });
     });
