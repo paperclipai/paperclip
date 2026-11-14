@@ -279,6 +279,33 @@ function cleanResponse(raw: string): string {
 // Output parsing
 // ---------------------------------------------------------------------------
 
+function hasRealException(stderrText: string): boolean {
+  const onlyTeardown = /code_execution_tool\.py/.test(stderrText) &&
+                       /Bad file descriptor/.test(stderrText);
+  if (onlyTeardown) return false;
+  return /^\w*(?:Error|Exception)\b\s*:/m.test(stderrText) ||
+         /^(?:ValueError|TypeError|KeyError|RuntimeError)\b/m.test(stderrText) ||
+         /(?:^|[^\w])(?:OSError|IOError)\b/m.test(stderrText) ||
+         /thread '.*' panicked at/.test(stderrText);
+}
+
+export function realFaultBeyondTeardown(stderr: string): boolean {
+  const withoutTeardown = stderr
+    .replace(/File "[^"]*code_execution_tool\.py"[^\n]*\n?/g, "")
+    .replace(/File "[^"]*socket\.py"[^\n]*in accept[^\n]*\n?/g, "")
+    .replace(/^OSError: \[Errno 9\] Bad file descriptor\s*$/gm, "");
+  if (
+    /MemoryError|Cannot allocate memory|Segmentation fault|\bKilled\b|Fatal Python error|JavaScript heap out of memory/.test(
+      withoutTeardown,
+    )
+  ) {
+    return true;
+  }
+  return /^(?:[A-Za-z_][\w.]*)?(?:Error|Exception|Interrupt)\b\s*(?::|$)/m.test(
+    withoutTeardown,
+  );
+}
+
 function parseHermesOutput(stdout: string, stderr: string): ParsedOutput {
   const combined = stdout + "\n" + stderr;
   const result: ParsedOutput = {};
@@ -328,8 +355,19 @@ function parseHermesOutput(stdout: string, stderr: string): ParsedOutput {
   if (stderr.trim()) {
     const errorLines = stderr
       .split("\n")
-      .filter((line) => /error|exception|traceback|failed/i.test(line))
-      .filter((line) => !/INFO|DEBUG|warn/i.test(line)); // skip log-level noise
+      .filter((line) => {
+        if (/^\d{2}:\d{2}:\d{2}\s+-\s+[\w.]+\s+-\s+(DEBUG|INFO|WARNING|WARN|ERROR|CRITICAL)\b/.test(line))
+          return false;
+        if (/^Traceback \(most recent call last\)/.test(line) && !hasRealException(stderr))
+          return false;
+        return (
+          /^(?:Error|Exception|FatalError|SystemExit)\b/.test(line) ||
+          /^\w+(?:Error|Exception)\b\s*:/.test(line) ||
+          /^thread '.*' panicked at/.test(line) ||
+          /^FATAL\b/.test(line) ||
+          /^\s*File "/.test(line)
+        );
+      });
     if (errorLines.length > 0) {
       result.errorMessage = errorLines.slice(0, 5).join("\n");
     }
@@ -611,10 +649,28 @@ export async function execute(
     model,
   };
 
-  if (parsed.errorMessage) {
+  const stderrText = result.stderr || "";
+  const sawTeardown =
+    /code_execution_tool\.py/.test(stderrText) &&
+    /Bad file descriptor/.test(stderrText);
+  const stderrWasTeardownOnly =
+    sawTeardown && !realFaultBeyondTeardown(stderrText);
+
+  if (parsed.errorMessage && !stderrWasTeardownOnly) {
     executionResult.errorMessage = parsed.errorMessage;
-  } else if (!result.timedOut && typeof result.exitCode === "number" && result.exitCode !== 0) {
+  } else if (
+    !result.timedOut &&
+    typeof result.exitCode === "number" &&
+    result.exitCode !== 0 &&
+    !stderrWasTeardownOnly
+  ) {
     executionResult.errorMessage = `Hermes exited with code ${result.exitCode}`;
+  } else if (stderrWasTeardownOnly && result.exitCode) {
+    await ctx.onLog(
+      "stdout",
+      `[hermes] ignoring exit code ${result.exitCode}: RPC socket teardown only\n`,
+    );
+    executionResult.exitCode = 0;
   }
 
   if (parsed.usage) {
