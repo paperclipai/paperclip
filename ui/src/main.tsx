@@ -30,7 +30,8 @@ import { getOrCreatePaperclipReactRoot } from "./lib/react-root";
 import { startServiceWorkerUpdates } from "./lib/service-worker-updates";
 import { connectivity } from "./lib/connectivity";
 import { bindConnectivity, createAppQueryClient } from "./lib/query-client";
-import { captureQueryException } from "./lib/sentry";
+import { captureBrowserException, captureQueryException } from "./lib/sentry";
+import { initDisplayLanguage } from "./i18n/display-text";
 import { startPersistedQueryCache } from "./lib/persisted-query-cache";
 import { hasPendingWrites, subscribePendingWrites } from "./lib/reload-safety";
 import "@mdxeditor/editor/style.css";
@@ -110,6 +111,8 @@ function CompanyVoiceCalls({ children }: { children: React.ReactNode }) {
   const { userId } = useAccountIdentity();
   return <VoiceCallProvider companyId={selectedCompanyId} userId={userId}>{children}</VoiceCallProvider>;
 }
+
+await initDisplayLanguage();
 
 function CompanyLinkPreviews({ children }: { children: React.ReactNode }) {
   const { selectedCompanyId } = useCompany();
