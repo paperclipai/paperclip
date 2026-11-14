@@ -56,14 +56,6 @@ function normalizeOptionalString(value: string | null | undefined) {
   return value?.trim() || null;
 }
 
-/**
- * Normalize the X-Paperclip-Run-Id header into a single valid UUID or
- * undefined. Node.js joins duplicate headers with ", ", which produces a
- * string like "uuid-a, uuid-b" that is not a valid UUID and triggers a
- * Postgres 500 when it reaches a parameterised query. Take the first value
- * when the header is duplicated and drop values that are not UUID-like so
- * downstream code never sees a malformed run id.
- */
 function normalizeRunIdHeader(value: string | undefined): string | undefined {
   const raw = value?.trim();
   if (!raw) return undefined;

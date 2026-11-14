@@ -223,10 +223,9 @@ describe("agent auth middleware", () => {
     const runId = randomUUID();
     const { db } = createDbState({ agent: { id: randomUUID(), companyId: randomUUID() } });
 
-    // Node.js joins duplicate headers with ", " which is not a valid UUID.
     const res = await request(createApp(db, "local_trusted"))
       .get("/actor")
-      .set("X-Paperclip-Run-Id", `${runId}, ${runId}`);
+      .set("X-Paperclip-Run-Id", `${runId}, ${randomUUID()}`);
 
     expect(res.status).toBe(200);
     expect(res.body).toMatchObject({ type: "board", userId: "local-board", runId });
