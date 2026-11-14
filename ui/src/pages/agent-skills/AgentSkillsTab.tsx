@@ -16,12 +16,13 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
+import { QueryErrorState } from "../../components/QueryView";
 import { PageSkeleton } from "../../components/PageSkeleton";
 import {
-  applyAgentSkillSnapshot,
+  agentSkillLibrarySelection,
+  sameSkillLibrarySelection,
+  type AgentSkillLibrarySelection,
   isReadOnlyUnmanagedSkillEntry,
-  sameSkillSelection,
-  shouldScheduleSkillAutosave,
 } from "../../lib/agent-skills-state";
 import { AgentSkillRow, type AgentSkillRowData } from "./AgentSkillRow";
 import { filterAgentSkills } from "./agent-skill-filter";
@@ -45,11 +46,6 @@ export function toDesiredSkillPayload(
   ));
 }
 
-/** Extract the skill key from either payload shape (string or entry). */
-function desiredSkillKey(entry: string | AgentDesiredSkillEntry): string {
-  return typeof entry === "string" ? entry : entry.key;
-}
-
 /** Reduce desired entries to a key → versionId map for non-default pins only. */
 function pinsFromEntries(entries: AgentDesiredSkillEntry[] | undefined): Record<string, string> {
   const pins: Record<string, string> = {};
@@ -59,29 +55,34 @@ function pinsFromEntries(entries: AgentDesiredSkillEntry[] | undefined): Record<
   return pins;
 }
 
-export function AgentSkillsTab({ agent, companyId }: { agent: Agent; companyId?: string }) {
+export function AgentSkillsTab(props: { agent: Agent; companyId?: string }) {
+  // A new agent owns a new draft, debounce, search, and mutation lifecycle.
+  return <AgentSkillsEditor key={props.agent.id} {...props} />;
+}
+
+function AgentSkillsEditor({ agent, companyId }: { agent: Agent; companyId?: string }) {
   const queryClient = useQueryClient();
-  const [skillDraft, setSkillDraft] = useState<string[]>([]);
-  const [lastSavedSkills, setLastSavedSkills] = useState<string[]>([]);
+  const [draft, setDraft] = useState<AgentSkillLibrarySelection>({ enabled: [], installed: [] });
+  const [lastSaved, setLastSaved] = useState<AgentSkillLibrarySelection>(draft);
+  const lastSavedRef = useRef(lastSaved);
+  const skillDraft = draft.enabled;
   // key → pinned versionId; absence means the live default (no pin).
   const [versionPins, setVersionPins] = useState<Record<string, string>>({});
   const versionPinsRef = useRef<Record<string, string>>({});
   const [search, setSearch] = useState("");
   const [detectedOpen, setDetectedOpen] = useState(false);
-  const lastSavedSkillsRef = useRef<string[]>([]);
   const hasHydratedSkillSnapshotRef = useRef(false);
-  const skipNextSkillAutosaveRef = useRef(true);
   // The exact draft of a save that failed, so we don't re-fire the identical
   // payload on every `isPending` flip (that was an infinite 422 retry storm).
-  const failedSkillDraftRef = useRef<string[] | null>(null);
+  const failedSkillDraftRef = useRef<AgentSkillLibrarySelection | null>(null);
 
-  const { data: skillSnapshot, isLoading } = useQuery({
+  const { data: skillSnapshot, isLoading, error: skillError, refetch: retrySkills } = useQuery({
     queryKey: queryKeys.agents.skills(agent.id),
     queryFn: () => agentsApi.skills(agent.id, companyId),
     enabled: Boolean(companyId),
   });
 
-  const { data: companySkills } = useQuery({
+  const { data: companySkills, isLoading: libraryLoading, error: libraryError, refetch: retryLibrary } = useQuery({
     queryKey: queryKeys.companySkills.list(companyId ?? ""),
     queryFn: () => companySkillsApi.list(companyId!),
     enabled: Boolean(companyId),
@@ -96,7 +97,7 @@ export function AgentSkillsTab({ agent, companyId }: { agent: Agent; companyId?:
 
   const paperclipCoreSkill = useMemo(
     () => (companySkills ?? []).find((skill) => skill.key === PAPERCLIP_CORE_SKILL_KEY) ?? null,
-    [companySkills, skillSnapshot],
+    [companySkills],
   );
 
   // Seeded releases (release_id IS NOT NULL) for the paperclip core skill. Only
@@ -112,12 +113,15 @@ export function AgentSkillsTab({ agent, companyId }: { agent: Agent; companyId?:
   );
 
   const syncSkills = useMutation({
-    mutationFn: (desiredSkills: Array<string | AgentDesiredSkillEntry>) =>
-      agentsApi.syncSkills(agent.id, desiredSkills, "replace", companyId),
-    onSuccess: async (snapshot) => {
+    mutationFn: ({ selection, pins }: { selection: AgentSkillLibrarySelection; pins: Record<string, string> }) =>
+      agentsApi.syncSkills(agent.id, toDesiredSkillPayload(selection.enabled, pins, betaSkillsEnabled),
+        "replace", companyId, selection.installed),
+    onSuccess: async (snapshot, { selection }) => {
+      const saved = agentSkillLibrarySelection(snapshot);
+      setDraft((current) => sameSkillLibrarySelection(current, selection) ? saved : current);
+      lastSavedRef.current = saved;
+      setLastSaved(saved);
       queryClient.setQueryData(queryKeys.agents.skills(agent.id), snapshot);
-      lastSavedSkillsRef.current = snapshot.desiredSkills;
-      setLastSavedSkills(snapshot.desiredSkills);
       const nextPins = pinsFromEntries(snapshot.desiredSkillEntries);
       versionPinsRef.current = nextPins;
       setVersionPins(nextPins);
@@ -126,26 +130,11 @@ export function AgentSkillsTab({ agent, companyId }: { agent: Agent; companyId?:
         queryClient.invalidateQueries({ queryKey: queryKeys.agents.detail(agent.urlKey) }),
       ]);
     },
-    onError: (_error, attemptedDesiredSkills) => {
-      // Remember the (keyed) payload that failed so the autosave effect stops
-      // retrying it until the user edits the draft again.
-      failedSkillDraftRef.current = attemptedDesiredSkills.map(desiredSkillKey);
+    onError: (_error, { selection }) => {
+      failedSkillDraftRef.current = selection;
     },
   });
 
-  useEffect(() => {
-    setSkillDraft([]);
-    setLastSavedSkills([]);
-    lastSavedSkillsRef.current = [];
-    setVersionPins({});
-    versionPinsRef.current = {};
-    hasHydratedSkillSnapshotRef.current = false;
-    skipNextSkillAutosaveRef.current = true;
-    failedSkillDraftRef.current = null;
-  }, [agent.id]);
-
-  // Hydrate version pins from the persisted snapshot. Skipped while a save is in
-  // flight so an optimistic pin selection isn't reverted by stale query data.
   useEffect(() => {
     if (!skillSnapshot || syncSkills.isPending) return;
     const nextPins = pinsFromEntries(skillSnapshot.desiredSkillEntries);
@@ -155,63 +144,24 @@ export function AgentSkillsTab({ agent, companyId }: { agent: Agent; companyId?:
 
   useEffect(() => {
     if (!skillSnapshot) return;
-    const nextState = applyAgentSkillSnapshot(
-      {
-        draft: skillDraft,
-        lastSaved: lastSavedSkillsRef.current,
-        hasHydratedSnapshot: hasHydratedSkillSnapshotRef.current,
-      },
-      skillSnapshot.desiredSkills,
-    );
-    skipNextSkillAutosaveRef.current = nextState.shouldSkipAutosave;
-    hasHydratedSkillSnapshotRef.current = nextState.hasHydratedSnapshot;
-    setSkillDraft(nextState.draft);
-    lastSavedSkillsRef.current = nextState.lastSaved;
-    setLastSavedSkills(nextState.lastSaved);
-  }, [skillDraft, skillSnapshot]);
+    const saved = agentSkillLibrarySelection(skillSnapshot);
+    const previousSaved = lastSavedRef.current;
+    const firstSnapshot = !hasHydratedSkillSnapshotRef.current;
+    setDraft((current) => firstSnapshot || sameSkillLibrarySelection(current, previousSaved) ? saved : current);
+    hasHydratedSkillSnapshotRef.current = true;
+    lastSavedRef.current = saved;
+    setLastSaved(saved);
+  }, [skillSnapshot]);
 
   useEffect(() => {
-    if (!skillSnapshot) return;
-    if (skipNextSkillAutosaveRef.current) {
-      skipNextSkillAutosaveRef.current = false;
-      return;
-    }
-    if (syncSkills.isPending) return;
-    if (
-      !shouldScheduleSkillAutosave({
-        draft: skillDraft,
-        lastSaved: lastSavedSkillsRef.current,
-        failedDraft: failedSkillDraftRef.current,
-      })
-    ) {
-      return;
-    }
-
+    if (!skillSnapshot || !hasHydratedSkillSnapshotRef.current || syncSkills.isPending) return;
+    if (sameSkillLibrarySelection(draft, lastSaved)
+      || (failedSkillDraftRef.current && sameSkillLibrarySelection(draft, failedSkillDraftRef.current))) return;
     const timeout = window.setTimeout(() => {
-      if (
-        shouldScheduleSkillAutosave({
-          draft: skillDraft,
-          lastSaved: lastSavedSkillsRef.current,
-          failedDraft: failedSkillDraftRef.current,
-        })
-      ) {
-        syncSkills.mutate(toDesiredSkillPayload(
-          skillDraft,
-          versionPinsRef.current,
-          betaSkillsEnabled,
-        ));
-      }
+      syncSkills.mutate({ selection: draft, pins: versionPinsRef.current });
     }, 250);
-
     return () => window.clearTimeout(timeout);
-  }, [
-    betaSkillsEnabled,
-    skillDraft,
-    skillSnapshot,
-    syncSkills.isPending,
-    syncSkills.isError,
-    syncSkills.mutate,
-  ]);
+  }, [draft, lastSaved, skillSnapshot, syncSkills.isPending, syncSkills.mutate]);
 
   const companySkillByKey = useMemo(
     () => new Map((companySkills ?? []).map((skill) => [skill.key, skill])),
@@ -221,17 +171,16 @@ export function AgentSkillsTab({ agent, companyId }: { agent: Agent; companyId?:
     () => new Set((companySkills ?? []).map((skill) => skill.key)),
     [companySkills],
   );
-  const adapterEntryByKey = useMemo(
-    () => new Map((skillSnapshot?.entries ?? []).map((entry) => [entry.key, entry])),
+  const readOnlySkillKeys = useMemo(
+    () => new Set((skillSnapshot?.entries ?? []).filter((entry) => entry.readOnly).map((entry) => entry.key)),
     [skillSnapshot],
   );
-
   const unsupported = skillSnapshot?.mode === "unsupported";
 
   // Library skills → row models (the store's visual language, tuned for rows).
   const libraryRows = useMemo<AgentSkillRowData[]>(
     () =>
-      (companySkills ?? []).filter((skill) => !(skillSnapshot?.entries ?? []).some((entry) => entry.key === skill.key && entry.readOnly)).map((skill) => ({
+      (companySkills ?? []).filter((skill) => !readOnlySkillKeys.has(skill.key)).map((skill) => ({
         key: skill.key,
         name: skill.name,
         icon: {
@@ -252,7 +201,7 @@ export function AgentSkillsTab({ agent, companyId }: { agent: Agent; companyId?:
         description: skill.description,
         categories: skill.categories,
       })),
-    [companySkills, skillSnapshot],
+    [companySkills, readOnlySkillKeys],
   );
 
   // Adapter-detected, user-installed / unmanaged skills → read-only rows.
@@ -273,24 +222,25 @@ export function AgentSkillsTab({ agent, companyId }: { agent: Agent; companyId?:
     [companySkillKeys, skillSnapshot],
   );
 
-  const enabledRows = useMemo(
-    () => libraryRows.filter((row) => skillDraft.includes(row.key)),
-    [libraryRows, skillDraft],
+  const enabledKeys = useMemo(() => new Set(skillDraft), [skillDraft]);
+  const installedKeys = useMemo(() => new Set(draft.installed), [draft.installed]);
+  const installedRows = useMemo(
+    () => libraryRows.filter((row) => installedKeys.has(row.key)),
+    [libraryRows, installedKeys],
   );
-  const availableRows = useMemo(
-    () => libraryRows.filter((row) => !skillDraft.includes(row.key)),
-    [libraryRows, skillDraft],
+  const enabledCount = useMemo(() => installedRows.filter((row) => enabledKeys.has(row.key)).length,
+    [installedRows, enabledKeys]);
+  const hasSearch = search.trim().length > 0;
+  const searchResults = useMemo(
+    () => search.trim() ? filterAgentSkills(libraryRows.filter((row) => !installedKeys.has(row.key)), search) : [],
+    [libraryRows, installedKeys, search],
   );
 
   // Desired keys that no longer exist in the library → actionable warnings.
   const staleDesiredKeys = useMemo(
-    () => skillDraft.filter((key) => !companySkillByKey.has(key)),
-    [companySkillByKey, skillDraft],
+    () => skillDraft.filter((key) => !companySkillByKey.has(key) && !readOnlySkillKeys.has(key)),
+    [companySkillByKey, skillDraft, readOnlySkillKeys],
   );
-
-  const filteredEnabled = useMemo(() => filterAgentSkills(enabledRows, search), [enabledRows, search]);
-  const filteredAvailable = useMemo(() => filterAgentSkills(availableRows, search), [availableRows, search]);
-  const filteredDetected = useMemo(() => filterAgentSkills(detectedRows, search), [detectedRows, search]);
 
   const applicationLabel = useMemo(() => {
     switch (skillSnapshot?.mode) {
@@ -320,14 +270,13 @@ export function AgentSkillsTab({ agent, companyId }: { agent: Agent; companyId?:
     return "Paperclip cannot manage skills for this adapter yet. Manage them in the adapter directly.";
   }, [agent.adapterConfig.agent, agent.adapterType, unsupported]);
 
-  const hasUnsavedChanges = !sameSkillSelection(skillDraft, lastSavedSkills);
+  const hasUnsavedChanges = !sameSkillLibrarySelection(draft, lastSaved);
 
   const toggleSkill = (key: string, next: boolean) => {
-    setSkillDraft((current) =>
-      next
-        ? Array.from(new Set([...current, key]))
-        : current.filter((value) => value !== key),
-    );
+    setDraft((current) => ({
+      enabled: next ? Array.from(new Set([...current.enabled, key])) : current.enabled.filter((value) => value !== key),
+      installed: Array.from(new Set([...current.installed, key])),
+    }));
   };
 
   // Explicit release selection saves immediately (no autosave debounce), carrying
@@ -338,7 +287,7 @@ export function AgentSkillsTab({ agent, companyId }: { agent: Agent; companyId?:
     else delete nextPins[key];
     versionPinsRef.current = nextPins;
     setVersionPins(nextPins);
-    syncSkills.mutate(toDesiredSkillPayload(skillDraft, nextPins));
+    syncSkills.mutate({ selection: draft, pins: nextPins });
   };
 
   // The release picker only applies to the enabled paperclip core skill while the
@@ -350,14 +299,14 @@ export function AgentSkillsTab({ agent, companyId }: { agent: Agent; companyId?:
     // The server rejects new assignments and omits stale ones from native
     // runtime context, so disabling an enabled row would only trap stale data.
     const legacyPaperclipBlocked = agent.adapterType === "paperclip_runner"
-      && variant === "available"
+      && !enabledKeys.has(row.key)
       && row.key === PAPERCLIP_CORE_SKILL_KEY;
     const rowDisabled = unsupported || legacyPaperclipBlocked;
     const rowDisabledReason = legacyPaperclipBlocked
       ? "Paperclip Runner uses native semantic coordination and cannot attach the legacy Paperclip operational skill."
       : unsupportedMessage;
     const showReleasePicker =
-      releasePickerActive && variant === "enabled" && row.key === PAPERCLIP_CORE_SKILL_KEY;
+      releasePickerActive && enabledKeys.has(row.key) && row.key === PAPERCLIP_CORE_SKILL_KEY;
     const pinnedVersionId = versionPins[row.key] ?? null;
     const pinnedRelease = pinnedVersionId
       ? paperclipReleases.find((release) => release.id === pinnedVersionId) ?? null
@@ -368,7 +317,7 @@ export function AgentSkillsTab({ agent, companyId }: { agent: Agent; companyId?:
         key={row.key}
         variant={variant}
         data={row}
-        checked={variant === "enabled"}
+        checked={enabledKeys.has(row.key)}
         disabled={rowDisabled}
         disabledReason={rowDisabledReason}
         onCheckedChange={(next) => toggleSkill(row.key, next)}
@@ -395,13 +344,16 @@ export function AgentSkillsTab({ agent, companyId }: { agent: Agent; companyId?:
 
   const libraryEmpty = libraryRows.length === 0;
 
+  if (skillError) return <QueryErrorState error={skillError} action="load agent skills" onRetry={() => { void retrySkills(); }} />;
+  if (libraryError) return <QueryErrorState error={libraryError} action="load the skill library" onRetry={() => { void retryLibrary(); }} />;
+
   return (
     <div className="max-w-4xl space-y-4">
       {/* Header */}
       <div className="flex flex-col gap-3">
         <div className="flex flex-wrap items-center gap-2">
           <span className="text-sm font-medium text-foreground">
-            {enabledRows.length} of {libraryRows.length} enabled
+            {enabledCount} enabled · {installedRows.length} installed
           </span>
           {applicationLabel ? (
             <Tooltip>
@@ -421,16 +373,6 @@ export function AgentSkillsTab({ agent, companyId }: { agent: Agent; companyId?:
             error={syncSkills.isError && hasUnsavedChanges} // query-error-ok: syncSkills is a save mutation result, not a query read
           />
           <div data-canonical-toolbar="agent-skills" role="toolbar" aria-label="Agent skills controls" className="ml-auto flex w-full flex-col items-stretch gap-2 sm:w-auto sm:flex-row sm:items-center">
-            <div className="relative w-full sm:w-auto">
-              <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
-              <Input
-                value={search}
-                onChange={(event) => setSearch(event.target.value)}
-                placeholder="Search skills"
-                className="h-8 w-full pl-8 sm:w-56"
-                aria-label="Search skills"
-              />
-            </div>
             <Button asChild variant="outline" size="sm" className="shrink-0">
               <Link to="/skills" className="no-underline">
                 <Store className="h-3.5 w-3.5" />
@@ -478,32 +420,45 @@ export function AgentSkillsTab({ agent, companyId }: { agent: Agent; companyId?:
         </div>
       ) : null}
 
-      {isLoading ? (
+      {isLoading || libraryLoading ? (
         <PageSkeleton variant="list" />
       ) : libraryEmpty && detectedRows.length === 0 ? (
         <EmptyLibraryCard />
       ) : (
         <div className="space-y-4">
-          <SkillSection title="Enabled on this agent" count={filteredEnabled.length}>
-            {filteredEnabled.length > 0 ? (
-              filteredEnabled.map((row) => renderRow(row, "enabled"))
+          <SkillSection title="Installed on this agent" count={installedRows.length}>
+            {installedRows.length > 0 ? (
+              installedRows.map((row) => renderRow(row, "enabled"))
             ) : (
-              <SectionEmpty>
-                {search ? "No enabled skills match your search." : "No skills enabled on this agent yet."}
-              </SectionEmpty>
+              <SectionEmpty>No skills installed on this agent yet. Search the library below to add skills.</SectionEmpty>
             )}
           </SkillSection>
 
-          <SkillSection title="Available from the library" count={filteredAvailable.length}>
-            {filteredAvailable.length > 0 ? (
-              filteredAvailable.map((row) => renderRow(row, "available"))
+          <SkillSection title="Add skills" count={searchResults.length}>
+            <div className="px-3 py-3">
+              <div className="relative">
+                <Search aria-hidden="true" className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
+                <Input
+                  type="search"
+                  value={search}
+                  onChange={(event) => setSearch(event.target.value)}
+                  placeholder="Search the skill library"
+                  className="w-full pl-8 pr-10 [&::-webkit-search-cancel-button]:appearance-none"
+                  aria-label="Search the skill library"
+                />
+                {search ? (
+                  <Button variant="ghost" size="icon-sm" className="absolute right-1 top-1/2 -translate-y-1/2"
+                    aria-label="Clear skill search" onClick={() => setSearch("")}>
+                    <X aria-hidden="true" className="h-3.5 w-3.5" />
+                  </Button>
+                ) : null}
+              </div>
+            </div>
+            {searchResults.length > 0 ? (
+              searchResults.map((row) => renderRow(row, "available"))
             ) : (
               <SectionEmpty>
-                {search
-                  ? "No available skills match your search."
-                  : libraryEmpty
-                    ? "Import skills into the organization library to enable them here."
-                    : "Every library skill is enabled on this agent."}
+                {hasSearch ? "No library skills match your search." : "Search the library to find and add skills."}
               </SectionEmpty>
             )}
           </SkillSection>
@@ -521,15 +476,15 @@ export function AgentSkillsTab({ agent, companyId }: { agent: Agent; companyId?:
                   <span className="text-xs font-medium text-muted-foreground">
                     Automatic and detected skills (read-only)
                   </span>
-                  <span className="text-xs text-muted-foreground/70">{filteredDetected.length}</span>
+                  <span className="text-xs text-muted-foreground/70">{detectedRows.length}</span>
                 </CollapsibleTrigger>
                 <CollapsibleContent>
-                  {filteredDetected.length > 0 ? (
-                    filteredDetected.map((row) => (
+                  {detectedRows.length > 0 ? (
+                    detectedRows.map((row) => (
                       <AgentSkillRow key={row.key} variant="readonly" data={row} />
                     ))
                   ) : (
-                    <SectionEmpty>No detected skills match your search.</SectionEmpty>
+                    <SectionEmpty>No detected skills.</SectionEmpty>
                   )}
                 </CollapsibleContent>
               </div>

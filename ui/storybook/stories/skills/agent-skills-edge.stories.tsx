@@ -1,4 +1,4 @@
-import type { ReactNode } from "react";
+import { useState, type ReactNode } from "react";
 import type { Meta, StoryObj } from "@storybook/react-vite";
 import { useQueryClient } from "@tanstack/react-query";
 import type { Agent, AgentSkillSnapshot, CompanySkillListItem } from "@paperclipai/shared";
@@ -186,8 +186,11 @@ function StoryFrame({ title, subtitle, children }: { title: string; subtitle: st
 
 function EdgeState({ agent, snapshot }: { agent: Agent; snapshot: AgentSkillSnapshot }) {
   const queryClient = useQueryClient();
-  queryClient.setQueryData(queryKeys.companySkills.list(COMPANY_ID), library);
-  queryClient.setQueryData(queryKeys.agents.skills(agent.id), snapshot);
+  useState(() => {
+    queryClient.setQueryData(queryKeys.companySkills.list(COMPANY_ID), library);
+    queryClient.setQueryData(queryKeys.agents.skills(agent.id), snapshot);
+    return true;
+  });
   return <AgentSkillsTab agent={agent} companyId={COMPANY_ID} />;
 }
 
@@ -226,6 +229,18 @@ export const DetectedAdapter: StoryObj = {
       subtitle="A user-installed skill outside Paperclip's management shows in a collapsed, read-only section with a lock icon."
     >
       <EdgeState agent={buildAgent("agent-detected", ["paperclip"])} snapshot={detectedSnapshot()} />
+    </StoryFrame>
+  ),
+};
+
+export const SearchToAdd: StoryObj = {
+  name: "Search to add with retained disabled skills",
+  render: () => (
+    <StoryFrame title="Agent skills" subtitle="Installed skills stay visible. Search the library to add more.">
+      <EdgeState agent={buildAgent("agent-search", [])} snapshot={{
+        ...staleSnapshot(), desiredSkills: [], installedSkills: ["paperclip"],
+        entries: [],
+      }} />
     </StoryFrame>
   ),
 };

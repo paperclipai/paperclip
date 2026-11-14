@@ -1,3 +1,4 @@
+import { readInstalledAgentSkillKeys } from "./agent-skill-library.js";
 import { notifyStatusCardIssueChange } from "./status-card-notifications.js";
 import { skillExecutionContent } from "./skill-execution-content.js";
 import { notifySkillVersionRetention } from "./skill-version-retention-notifications.js";
@@ -2398,6 +2399,27 @@ function resolveDesiredSkillEntries(
   return Array.from(out.values());
 }
 
+/** Keep enabled selection and installed membership aligned during a key rename. */
+function renamedAgentSkillConfiguration(
+  skills: SkillReferenceTarget[],
+  config: Record<string, unknown>,
+  previousKey: string,
+  nextKey: string,
+): Record<string, unknown> | null {
+  const installed = readInstalledAgentSkillKeys(config)
+    .map((key) => resolveSkillReference(skills, key).skill?.key ?? normalizeSkillKey(key))
+    .filter((key): key is string => Boolean(key));
+  if (!installed.includes(previousKey)) return null;
+  const entries = resolveDesiredSkillEntries(skills, config).map((entry) =>
+    entry.key === previousKey ? { ...entry, key: nextKey } : entry);
+  const next = writePaperclipSkillSyncPreference(config, entries);
+  next.paperclipSkillSync = {
+    ...(next.paperclipSkillSync as Record<string, unknown>),
+    installedSkills: Array.from(new Set(installed.map((key) => key === previousKey ? nextKey : key))),
+  };
+  return next;
+}
+
 function normalizeSkillDirectory(skill: SkillSourceInfoTarget) {
   if ((skill.sourceType !== "local_path" && skill.sourceType !== "catalog") || !skill.sourceLocator) return null;
   const resolved = path.resolve(skill.sourceLocator);
@@ -4193,11 +4215,10 @@ export function companySkillService(db: Db, options: { actor?: AuthorizationActo
             .where(eq(agentsTable.companyId, companyId)).orderBy(asc(agentsTable.id)).for("update");
           for (const row of rows) {
             const config = row.adapterConfig as Record<string, unknown>;
-            const entries = resolveDesiredSkillEntries(references, config);
-            if (!entries.some(entry => entry.key === base.key)) continue;
-            const next = entries.map(entry => entry.key === base.key ? { ...entry, key: newKey } : entry);
+            const next = renamedAgentSkillConfiguration(references, config, base.key, newKey);
+            if (!next) continue;
             await updateAgentConfigurationInTransaction(tx as unknown as Db, row.id, {
-              adapterConfig: writePaperclipSkillSyncPreference(config, next),
+              adapterConfig: next,
             }, { allowPendingApprovalConfigUpdate: true });
             reassignments.push({ agentId: row.id, previousSkillKey: base.key, nextSkillKey: newKey });
           }
@@ -4272,8 +4293,7 @@ export function companySkillService(db: Db, options: { actor?: AuthorizationActo
           const agentRows = await agents.list(companyId, { includeTerminated: true });
           const plannedReassignments: CompanySkillForkReassignment[] = agentRows
             .filter((agent) =>
-              resolveDesiredSkillEntries(referenceSkills, agent.adapterConfig as Record<string, unknown>)
-                .some((entry) => entry.key === previousKey))
+              renamedAgentSkillConfiguration(referenceSkills, agent.adapterConfig as Record<string, unknown>, previousKey, newKey) !== null)
             .map((agent) => ({ agentId: agent.id, previousSkillKey: previousKey, nextSkillKey: newKey }));
 
           // Reversible filesystem stage: capture the original SKILL.md so a failed DB
@@ -4324,12 +4344,10 @@ export function companySkillService(db: Db, options: { actor?: AuthorizationActo
                 .then((rows) => rows[0] ?? null);
               if (!row) continue;
               const adapterConfig = row.adapterConfig as Record<string, unknown>;
-              const nextEntries = resolveDesiredSkillEntries(referenceSkills, adapterConfig).map((entry) =>
-                entry.key === previousKey
-                  ? { key: newKey, versionId: entry.versionId ?? null }
-                  : entry);
+              const next = renamedAgentSkillConfiguration(referenceSkills, adapterConfig, previousKey, newKey);
+              if (!next) continue;
               await updateAgentConfigurationInTransaction(tx as unknown as Db, item.agentId, {
-                adapterConfig: writePaperclipSkillSyncPreference(adapterConfig, nextEntries),
+                adapterConfig: next,
               }, { allowPendingApprovalConfigUpdate: true });
             }
           } catch (error) {

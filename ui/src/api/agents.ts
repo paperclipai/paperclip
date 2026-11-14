@@ -229,7 +229,8 @@ export const agentsApi = {
     desiredSkills: Array<string | AgentDesiredSkillEntry>,
     mode: AgentSkillAssignmentMode,
     companyId?: string,
-  ) => api.post<AgentSkillSnapshot>(agentPath(id, companyId, "/skills/sync"), { desiredSkills, mode }),
+    installedSkills?: string[],
+  ) => api.post<AgentSkillSnapshot>(agentPath(id, companyId, "/skills/sync"), { desiredSkills, mode, installedSkills }),
   createKey: (id: string, name: string, companyId?: string, scope?: AgentApiKeyScope) =>
     api.post<AgentKeyCreated>(agentPath(id, companyId, "/keys"), { name, ...(scope ? { scope } : {}) }),
   revokeKey: (agentId: string, keyId: string, companyId?: string) =>

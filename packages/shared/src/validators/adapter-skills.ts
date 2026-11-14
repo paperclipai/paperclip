@@ -60,12 +60,14 @@ export const agentSkillSnapshotSchema = z.object({
   mode: agentSkillSyncModeSchema,
   desiredSkills: z.array(z.string().min(1)),
   desiredSkillEntries: z.array(agentDesiredSkillEntrySchema).optional(),
+  installedSkills: z.array(z.string().trim().min(1)).optional(),
   entries: z.array(agentSkillEntrySchema),
   warnings: z.array(z.string()),
 });
 
 export const agentSkillSyncSchema = z.object({
   mode: agentSkillAssignmentModeSchema,
+  installedSkills: z.array(z.string().trim().min(1)).optional(),
   desiredSkills: z.array(agentDesiredSkillSelectionSchema),
 });
 
