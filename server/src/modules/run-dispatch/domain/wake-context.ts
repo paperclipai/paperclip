@@ -165,6 +165,14 @@ export function wakeChatConversationsConflict(existing: unknown, incoming: unkno
   return existingId !== null && incomingId !== null && existingId !== incomingId;
 }
 
+export function isInteractionAddresseeWake(
+  contextSnapshot: Record<string, unknown> | null | undefined,
+): boolean {
+  const wakeReason = readNonEmptyString(contextSnapshot?.wakeReason);
+  const interactionId = readNonEmptyString(contextSnapshot?.interactionId);
+  return wakeReason === "interaction_pending" && interactionId !== null;
+}
+
 /**
  * `allowedWakeReasons` is the issue-tree-control module's own set of wake
  * reasons that excuse an interaction wake. This file stays free of service

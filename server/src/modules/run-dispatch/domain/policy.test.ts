@@ -454,6 +454,39 @@ describe("decideQueuedRunStaleness", () => {
     expect(decideQueuedRunStaleness(facts, NOW)).toEqual({ stale: false });
   });
 
+  it("allows an interaction addressee wake to bypass the ownership check on a non-assigned issue", () => {
+    const facts: QueuedRunFacts = {
+      ...baseStalenessFacts(),
+      runAgentId: "agent-1",
+      issueAssigneeAgentId: "agent-2",
+      isInteractionWake: true,
+      wakeCommentIdPresent: false,
+      issueStatus: "in_review",
+      reviewParticipant: NO_PARTICIPANT,
+    };
+    expect(decideQueuedRunStaleness(facts, NOW)).toEqual({ stale: false });
+  });
+
+  it("allows an interaction addressee wake to bypass the review-participant check on an in-review issue", () => {
+    const facts: QueuedRunFacts = {
+      ...baseStalenessFacts(),
+      runAgentId: "agent-1",
+      issueAssigneeAgentId: "agent-2",
+      isInteractionWake: true,
+      wakeCommentIdPresent: false,
+      issueStatus: "in_review",
+      reviewParticipant: {
+        isInReview: true,
+        hasParticipant: true,
+        participantIsAgent: true,
+        participantAgentId: "agent-3",
+        currentStageType: "review",
+        currentParticipant: { type: "agent", agentId: "agent-3" },
+      },
+    };
+    expect(decideQueuedRunStaleness(facts, NOW)).toEqual({ stale: false });
+  });
+
   it("allows a comment wake to bypass the ownership, terminal-status, and review-participant checks", () => {
     const facts: QueuedRunFacts = {
       ...baseStalenessFacts(),
