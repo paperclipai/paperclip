@@ -90,13 +90,6 @@ export const MODEL_PREFIX_PROVIDER_HINTS: [string, string][] = [
 /** Regex to extract session ID from Hermes CLI output. */
 export const SESSION_ID_REGEX = /session[_ ](?:id|saved)[:\s]+([a-zA-Z0-9_-]+)/i;
 
-/** Regex to extract token usage from Hermes output. */
-export const TOKEN_USAGE_REGEX =
-  /tokens?[:\s]+(\d+)\s*(?:input|in)\b.*?(\d+)\s*(?:output|out)\b/i;
-
-/** Regex to extract cost from Hermes output. */
-export const COST_REGEX = /(?:cost|spent)[:\s]*\$?([\d.]+)/i;
-
 /** Prefix used by Hermes for tool output lines. */
 export const TOOL_OUTPUT_PREFIX = "┊";
 
