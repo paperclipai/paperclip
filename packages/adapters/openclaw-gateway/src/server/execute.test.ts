@@ -64,7 +64,7 @@ describe("buildAgentParams", () => {
         sessionKey: "agent:meridian:paperclip:issue:issue-456",
         runId: "run-123",
         configuredAgentId: "meridian",
-        waitTimeoutMs: 30_000,
+        runBudgetMs: 30_000,
       }),
     ).toEqual({
       keep: "value",
@@ -72,8 +72,27 @@ describe("buildAgentParams", () => {
       sessionKey: "agent:meridian:paperclip:issue:issue-456",
       idempotencyKey: "run-123",
       agentId: "meridian",
-      timeout: 30_000,
+      // The gateway reads `timeout` in seconds: a 30_000 ms budget is 30 s.
+      timeout: 30,
     });
+  });
+
+  it("sends the run budget as agent.timeout in seconds, not milliseconds", () => {
+    // OpenClaw multiplies `agent.timeout` by 1000. Passing milliseconds through
+    // turned a 30 min budget (1_800_000 ms) into ~20.8 days on the gateway.
+    const timeoutFor = (runBudgetMs: number) =>
+      buildAgentParams({
+        payloadTemplate: {},
+        message: "wake text",
+        sessionKey: "paperclip",
+        runId: "run-123",
+        configuredAgentId: null,
+        runBudgetMs,
+      }).timeout;
+
+    expect(timeoutFor(1_800_000)).toBe(1_800);
+    expect(timeoutFor(1_500)).toBe(2);
+    expect(timeoutFor(1)).toBe(1);
   });
 
   it("preserves an explicit agentId and timeout from the payload template", () => {
@@ -87,7 +106,7 @@ describe("buildAgentParams", () => {
         sessionKey: "paperclip",
         runId: "run-123",
         configuredAgentId: "configured-agent",
-        waitTimeoutMs: 30_000,
+        runBudgetMs: 30_000,
       }),
     ).toEqual({
       agentId: "template-agent",
