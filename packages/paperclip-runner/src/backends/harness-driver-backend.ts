@@ -153,6 +153,7 @@ export class HarnessDriverBackend implements NativeSessionBackend {
       pendingRuntimeRequests: snapshot.pendingRuntimeRequests ?? [],
       goal: snapshot.goal ?? null,
       lineage: snapshot.lineage ?? [],
+      ...(snapshot.awaitingProviderTurn === true ? { awaitingProviderTurn: true } : {}),
     };
     const recoveryOptions: HarnessSessionRecoveryOptions = {
       signal: options.signal,
@@ -918,6 +919,7 @@ class HarnessNativeSession implements NativeSession {
       pendingRuntimeRequests: snapshot.pendingRuntimeRequests ?? [],
       goal: snapshot.goal ?? null,
       lineage: snapshot.lineage ?? [],
+      ...(snapshot.awaitingProviderTurn === true ? { awaitingProviderTurn: true } : {}),
     };
   }
 

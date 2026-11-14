@@ -933,6 +933,7 @@ export class CodexHarnessSession
         this.currentGoal === null ? null : structuredClone(this.currentGoal),
       lineage: this.lineage(),
       lastSourceSequence: this.sourceSequence,
+      ...(this.awaitingProviderTurn ? { awaitingProviderTurn: true } : {}),
     };
   }
 

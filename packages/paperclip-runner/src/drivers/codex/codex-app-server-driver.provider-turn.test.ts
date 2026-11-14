@@ -26,6 +26,28 @@ async function completedFirstTurn(awaiting: boolean) {
   return { transport, session, events, first };
 }
 
+async function restoredAfterFirstTurn(awaiting: boolean) {
+  const first = new FakeCodexTransport();
+  const second = new FakeCodexTransport();
+  const driver = makeDriver([first, second]);
+  const original = await driver.openSession({
+    runId: "provider-turn", normalizedSessionId: "provider-turn-session", workingDirectory: WORKSPACE,
+  });
+  await original.startTurn({ message: { role: "user", text: "Start a background install." } });
+  first.push("turn/started", { threadId: "thread-1", turn: { id: "turn-1", status: "inProgress" } });
+  first.push("turn/completed", { threadId: "thread-1", turn: { id: "turn-1", status: "completed", items: [] },
+    ...(awaiting ? { awaitingProviderTurn: true } : {}) });
+  await collectUntilTerminal(original.events());
+  const checkpoint = await original.snapshot();
+  await original.close({ reason: "controller restarted" });
+  second.readResponse = { thread: { id: "thread-1", sessionId: "provider-session-1", cwd: WORKSPACE,
+    turns: [{ id: "turn-1", status: "completed", items: [] }] } };
+  const recovery = await driver.recoverSession!(checkpoint);
+  expect(recovery).toMatchObject({ recovered: true });
+  const session = recovery.session!;
+  return { transport: second, session, checkpoint, events: session.events()[Symbol.asyncIterator]() };
+}
+
 async function nextUntil(events: AsyncIterator<{ eventType: string; payload: Record<string, unknown> }>, done: (eventType: string) => boolean) {
   const collected: Array<{ eventType: string; payload: Record<string, unknown>; turnId?: string }> = [];
   for (;;) {
@@ -100,6 +122,53 @@ describe("Codex app-server driver with provider-started turns", () => {
     const after = await nextUntil(ordinary.events, eventType => eventType === "session.failed");
     expect(after.some(event => event.payload.kind === "interrupt_acknowledgement")).toBe(false);
     await ordinary.session.close({ reason: "fixture complete" }).catch(() => undefined);
+  });
+
+  it("keeps the wait across a controller restart and adopts the provider's own next turn", async () => {
+    const { transport, session, checkpoint, events } = await restoredAfterFirstTurn(true);
+    expect(checkpoint).toMatchObject({ activeTurnId: null, semanticResult: null, awaitingProviderTurn: true });
+    expect(await session.snapshot()).toMatchObject({ awaitingProviderTurn: true });
+    transport.push("turn/started", { threadId: "thread-1", turn: { id: "provider-1", status: "inProgress" }, origin: "provider" });
+    transport.push("paperclip/runResult", { threadId: "thread-1", turnId: "provider-1", result });
+    transport.push("turn/completed", { threadId: "thread-1", turn: { id: "provider-1", status: "completed", items: [] } });
+    const adopted = await nextUntil(events, eventType => eventType === "turn.completed" || eventType === "session.failed");
+    expect(adopted.some(event => event.eventType === "session.failed")).toBe(false);
+    expect(adopted.find(event => event.eventType === "turn.started")).toMatchObject({ turnId: "provider-1", payload: { origin: "provider" } });
+    expect(adopted.at(-1)).toMatchObject({ eventType: "turn.completed", turnId: "provider-1" });
+    const settled = await session.snapshot();
+    expect(settled.semanticResult).toMatchObject({ result, turnId: "provider-1" });
+    expect(settled).not.toHaveProperty("awaitingProviderTurn");
+    await session.close({ reason: "fixture complete" });
+  });
+
+  it("writes no wait marker in a snapshot taken outside a wait", async () => {
+    const ordinary = await completedFirstTurn(false);
+    expect(await ordinary.session.snapshot()).not.toHaveProperty("awaitingProviderTurn");
+    await ordinary.session.close({ reason: "fixture complete" });
+    const opened = await makeDriver([new FakeCodexTransport()]).openSession({
+      runId: "provider-turn", normalizedSessionId: "provider-turn-session", workingDirectory: WORKSPACE,
+    });
+    expect(await opened.snapshot()).not.toHaveProperty("awaitingProviderTurn");
+    await opened.close({ reason: "fixture complete" });
+  });
+
+  it("still fails closed on a provider-started turn after a restore with no wait", async () => {
+    const { transport, session, checkpoint, events } = await restoredAfterFirstTurn(false);
+    expect(checkpoint).not.toHaveProperty("awaitingProviderTurn");
+    transport.push("turn/started", { threadId: "thread-1", turn: { id: "provider-1", status: "inProgress" }, origin: "provider" });
+    const failed = await nextUntil(events, eventType => eventType === "session.failed");
+    expect(failed.at(-1)).toMatchObject({ eventType: "session.failed", payload: { code: "turn_binding_mismatch" } });
+    await session.close({ reason: "fixture complete" }).catch(() => undefined);
+  });
+
+  it("acknowledges an interrupt during a restored wait without sending one to the provider", async () => {
+    const { transport, session, events } = await restoredAfterFirstTurn(true);
+    await session.interrupt!({ reason: "Stop" });
+    let acknowledged = await events.next();
+    while (!acknowledged.done && acknowledged.value.payload.kind !== "interrupt_acknowledgement") acknowledged = await events.next();
+    expect(acknowledged.value).toMatchObject({ payload: { kind: "interrupt_acknowledgement", status: "provider_turn_wait_ended" } });
+    expect(transport.calls.some(request => request.method === "turn/interrupt")).toBe(false);
+    await session.close({ reason: "fixture complete" });
   });
 
   it("keeps rejecting an interrupt after a terminal that does not await", async () => {
