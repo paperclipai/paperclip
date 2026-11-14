@@ -327,6 +327,29 @@ describe("a done the server rejected as incomplete", () => {
     expect(runsAfterDone("t004", evidence, anchor).started.map(turn => [turn.runId, turn.wakeReason])).toEqual([[woken, "issue_recovery_action_restored"]]);
     expect(completionOnce(comments, completion)).toMatchObject({ ok: false, detail: "duplicate completion: runs 4a4a4a4a, 5b5b5b5b each reported completion" });
   });
+
+  it("keeps a real done when a later recovery run yields with an incomplete wake, and still fails the extra run", () => {
+    const done = "4a4a4a4a-done", yielded = "6c6c6c6c-yield", extra = "7d7d7d7d-extra";
+    const evidence: WakeEvidenceFile = {
+      completedAt: 10_000,
+      runs: [{ runId: done, createdAt: 1_000, startedAt: 1_100, invocationSource: "assignment", triggerDetail: null, wakeupRequestId: "w1", acceptedDisposition: "done", acceptedAt: 9_900 },
+        { runId: yielded, createdAt: 20_000, startedAt: 20_100, invocationSource: "automation", triggerDetail: "system", wakeupRequestId: "w2",
+          acceptedDisposition: "yielded", acceptedAt: 21_000 },
+        { runId: extra, createdAt: 21_100, startedAt: 21_200, invocationSource: "automation", triggerDetail: "system", wakeupRequestId: "w3",
+          acceptedDisposition: "done", acceptedAt: 22_000 }],
+      wakes: [{ id: "w1", reason: "issue_assigned", source: "assignment", triggerDetail: null, requestedByActorType: "user", requestedByActorId: "u1", createdAt: 1_000 },
+        { id: "w2", reason: "issue_recovery_action_restored", source: "automation", triggerDetail: "system", requestedByActorType: "system", requestedByActorId: "sweep",
+          createdAt: 20_000 },
+        { id: "w3", reason: "issue_status_changed", source: "automation", triggerDetail: "system", requestedByActorType: "system", requestedByActorId: null,
+          createdAt: 21_050, payload: incomplete }],
+    };
+    const comments: typeof posted = [];
+    const completion = evidenceCompletion(evidence)!;
+    const anchor = completedAtAnchor(completion, comments, nonce);
+    expect(anchor).toEqual({ at: 9_900, source: "accepted_result" });
+    expect(runsAfterDone("t004", evidence, anchor).started.map(turn => turn.runId)).toEqual([yielded, extra]);
+    expect(completionOnce(comments, completion)).toMatchObject({ ok: false, detail: "duplicate completion: runs 4a4a4a4a, 7d7d7d7d each reported completion" });
+  });
 });
 
 describe("a follow-up the running turn did not receive (w-20261113T052703-s7301 t010)", () => {

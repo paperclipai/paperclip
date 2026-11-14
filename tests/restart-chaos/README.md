@@ -1649,7 +1649,8 @@ server's delivery rule (`task_history.read`, cited evidence, child-result reads)
 `completion_once` stays the independent side-effect check. The first run that reported completion is always the
 baseline. A later completion counts as a duplicate unless its run answered a comment as above. A `done` result that the
 server rejected as incomplete is not a completion: the server shows the rejection by queueing a same-agent continuation
-wake with key `native-completion-incomplete` for the issue after that result. Such a run counts only when it posted the
+wake with key `native-completion-incomplete` for the issue, and the latest accepted result before that wake is the
+`done`. A wake that follows a later result, such as a `yielded` one, does not reject an earlier `done`. Such a run counts only when it posted the
 DONE comment itself. Otherwise the continuation run that finishes the work is the baseline.
 
 The completion time comes from the product's own record, in this order:
