@@ -932,6 +932,10 @@ export interface PluginEntityQuery {
   scopeId?: string;
   /** Optional filter by entity type (e.g. 'project', 'issue'). */
   entityType?: string;
+  /** Optional filter by scope kind. */
+  scopeKind?: PluginStateScopeKind;
+  /** Optional filter by scope identifier. */
+  scopeId?: string;
   /** Optional filter by external system identifier. */
   externalId?: string;
   /** Maximum number of records to return. Defaults to 100. */
