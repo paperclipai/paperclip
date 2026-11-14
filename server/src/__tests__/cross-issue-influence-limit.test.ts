@@ -113,6 +113,8 @@ describe("cross-issue influence limit rollout", () => {
       runId: "11111111-1111-4111-8111-111111111111",
       agentId: "33333333-3333-4333-8333-333333333333",
       targetIssueId: "55555555-5555-4555-8555-555555555555",
+      targetIssueCheckoutRunId: null,
+      targetIssueExecutionRunId: null,
       now: new Date(CROSS_ISSUE_INFLUENCE_ENFORCE_AT.getTime() - 1),
     } as const;
 
@@ -136,6 +138,8 @@ describe("cross-issue influence limit rollout", () => {
       runId: "11111111-1111-4111-8111-111111111111",
       agentId: "33333333-3333-4333-8333-333333333333",
       targetIssueId: "55555555-5555-4555-8555-555555555555",
+      targetIssueCheckoutRunId: null,
+      targetIssueExecutionRunId: null,
       kind: "interaction_resolution",
       now: CROSS_ISSUE_INFLUENCE_ENFORCE_AT,
     })).resolves.toMatchObject({
@@ -157,6 +161,8 @@ describe("cross-issue influence limit rollout", () => {
       runId: "11111111-1111-4111-8111-111111111111",
       agentId: "33333333-3333-4333-8333-333333333333",
       targetIssueId: "55555555-5555-4555-8555-555555555555",
+      targetIssueCheckoutRunId: null,
+      targetIssueExecutionRunId: null,
       kind: "comment",
     })).resolves.toBeNull();
     expect(fake.inserted).toEqual([]);
@@ -174,6 +180,8 @@ describe("cross-issue influence limit rollout", () => {
       runId: "11111111-1111-4111-8111-111111111111",
       agentId: "33333333-3333-4333-8333-333333333333",
       targetIssueId: "55555555-5555-4555-8555-555555555555",
+      targetIssueCheckoutRunId: null,
+      targetIssueExecutionRunId: null,
       kind: "comment",
     })).rejects.toMatchObject({
       status: 403,
@@ -190,6 +198,8 @@ describe("cross-issue influence limit rollout", () => {
       runId: "attacker-controlled-run-id",
       agentId: "33333333-3333-4333-8333-333333333333",
       targetIssueId: "55555555-5555-4555-8555-555555555555",
+      targetIssueCheckoutRunId: null,
+      targetIssueExecutionRunId: null,
       kind: "comment",
     })).rejects.toMatchObject({
       status: 403,
@@ -198,11 +208,14 @@ describe("cross-issue influence limit rollout", () => {
     expect(fake.inserted).toEqual([]);
   });
 
-  it("counts writes from an unscoped run instead of rejecting them", async () => {
-    // A timer heartbeat with no checked-out issue has no source issue: every
-    // write it makes is cross-issue by definition. The persisted run row is
-    // still the attribution anchor, so the write spends the cap rather than
-    // failing as run-less.
+  it.each([
+    ["checkout", "11111111-1111-4111-8111-111111111111", null],
+    ["execution", null, "11111111-1111-4111-8111-111111111111"],
+  ] as const)("allows an unscoped run that owns the target issue %s", async (
+    _ownership,
+    targetIssueCheckoutRunId,
+    targetIssueExecutionRunId,
+  ) => {
     const fake = counterDb(0, { contextSnapshot: {} });
 
     await expect(observeCrossIssueInfluence(fake.db as never, {
@@ -210,32 +223,28 @@ describe("cross-issue influence limit rollout", () => {
       runId: "11111111-1111-4111-8111-111111111111",
       agentId: "33333333-3333-4333-8333-333333333333",
       targetIssueId: "55555555-5555-4555-8555-555555555555",
+      targetIssueCheckoutRunId,
+      targetIssueExecutionRunId,
       kind: "update",
-    })).resolves.toMatchObject({ count: 1, allowed: true });
-    expect(fake.inserted).toEqual([
-      expect.objectContaining({
-        action: "issue.cross_issue_influence_observed",
-        details: expect.objectContaining({ sourceIssueId: null }),
-      }),
-    ]);
+    })).resolves.toBeNull();
+    expect(fake.inserted).toEqual([]);
   });
 
-  it("still caps an unscoped run once its budget is spent", async () => {
-    const fake = counterDb(CROSS_ISSUE_INFLUENCE_LIMIT, { contextSnapshot: {} });
+  it("rejects an unscoped run that does not own the target issue", async () => {
+    const fake = counterDb(0, { contextSnapshot: {} });
 
     await expect(observeCrossIssueInfluence(fake.db as never, {
       companyId: "22222222-2222-4222-8222-222222222222",
       runId: "11111111-1111-4111-8111-111111111111",
       agentId: "33333333-3333-4333-8333-333333333333",
       targetIssueId: "55555555-5555-4555-8555-555555555555",
+      targetIssueCheckoutRunId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      targetIssueExecutionRunId: null,
       kind: "comment",
-      now: CROSS_ISSUE_INFLUENCE_ENFORCE_AT,
-    })).resolves.toMatchObject({
-      allowed: false,
-      count: CROSS_ISSUE_INFLUENCE_LIMIT + 1,
+    })).rejects.toMatchObject({
+      status: 403,
+      details: { code: "cross_issue_influence_run_context_required" },
     });
-    expect(fake.inserted).toEqual([
-      expect.objectContaining({ action: "issue.cross_issue_influence_cap_rejected" }),
-    ]);
+    expect(fake.inserted).toEqual([]);
   });
 });

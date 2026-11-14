@@ -90,6 +90,8 @@ describeEmbeddedPostgres("cross-issue influence limit PostgreSQL serialization",
       agentId,
       targetIssueId,
       targetIssueIdentifier: "CAP-2",
+      targetIssueCheckoutRunId: null,
+      targetIssueExecutionRunId: null,
       kind: "comment" as const,
       now: CROSS_ISSUE_INFLUENCE_ENFORCE_AT,
     };
