@@ -105,6 +105,7 @@ const realSleep = (ms: number) => new Promise(resolve => realSetTimeout(resolve,
     try {
       await idle(120);
       expect(new Set(destroyCalls)).toEqual(new Set(remote));
+      expect(destroyCalls.length).toBe(remote.length);
       const before = { statements: meter.read().statements, sweeps: sweeps.length, destroys: destroyCalls.length };
       await idle(30 * 60);
       vi.useRealTimers();
