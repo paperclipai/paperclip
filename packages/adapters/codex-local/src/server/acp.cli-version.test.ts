@@ -141,12 +141,12 @@ describe("codex ACP lane model CLI floor", () => {
     });
   });
 
-  it("passes the sandbox Test when the shared codex satisfies the floor", async () => {
+  it.each(["0.160.0", "0.164.0-alpha.11.1"])("passes the sandbox Test for compatible Codex CLI %s", async (version) => {
     runAdapterExecutionTargetProcess.mockResolvedValueOnce({
       exitCode: 0,
       signal: null,
       timedOut: false,
-      stdout: "codex-cli 0.160.0\n",
+      stdout: `codex-cli ${version}\n`,
       stderr: "",
       pid: 1,
       startedAt: new Date().toISOString(),
@@ -162,7 +162,7 @@ describe("codex ACP lane model CLI floor", () => {
 
     expect(result.status).toBe("pass");
     expect(result.checks.find((check) => check.code === "codex_cli_version_compatible")).toMatchObject({
-      message: "Codex CLI 0.160.0 satisfies the 0.159.0 minimum for gpt-6.1-sol.",
+      message: `Codex CLI ${version} satisfies the 0.159.0 minimum for gpt-6.1-sol.`,
     });
   });
 
