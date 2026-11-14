@@ -88,11 +88,12 @@ JavaScript on every run. Serve a production build
 ### Returning direct task load (saved read cache)
 
 A returning browser restores the saved read cache (`paperclip:query-cache:v1:*`)
-before the first render, including the core fields of recently opened tasks.
-Chat history is never saved, so the restored task's chat still reads the
-bootstrap. Its reads, including the restored task's own revalidation and its
-plan projection, share that one request instead of reading each endpoint.
-The always-on request-shape test checks this with a saved cache. The opt-in
+before the first render, including the core fields and the first chat frame of
+recently opened tasks (see the read-cache rules in `doc/DEVELOPING.md`). The
+restored chat shows at once; its reads revalidate through the bootstrap and
+share that one request instead of reading each endpoint. The always-on tests
+check both: with every response held for 2.5 s, the frame appears before the
+first response, and no per-endpoint first-frame read starts before the frame. The opt-in
 benchmark runs alternating pairs with the saved read cache present and
 cleared (other app storage kept) and writes `returning-task-<label>.{json,md}`:
 

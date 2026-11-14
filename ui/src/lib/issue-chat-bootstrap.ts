@@ -258,6 +258,25 @@ function adoptEarlyChatBootstrap(queryClient: QueryClient, companyId: string | n
 }
 
 /**
+ * At app start, adopt the bootstrap a hard load of a task URL started, so
+ * every reader of that task's chat shares it, including ones that start before
+ * the task page mounts. A task the saved read cache restored is also known by
+ * its id and identifier. Starts no request of its own.
+ */
+export function adoptHardLoadChatBootstrap(queryClient: QueryClient) {
+  if (typeof window === "undefined") return;
+  const early = (window as unknown as Record<string, EarlyChatBootstrap | undefined>)[EARLY_CHAT_BOOTSTRAP_GLOBAL];
+  if (!early?.ref || currentEntry(queryClient, early.ref)) return;
+  const restored = queryClient.getQueryData<{ id?: unknown; identifier?: unknown; companyId?: unknown }>([...queryKeys.issues.detail(early.ref), "core"]);
+  const companyId = typeof restored?.companyId === "string" ? restored.companyId : null;
+  if (!adoptEarlyChatBootstrap(queryClient, companyId, early.ref)) return;
+  const entry = currentEntry(queryClient, early.ref);
+  for (const alias of [restored?.id, restored?.identifier]) {
+    if (entry && typeof alias === "string" && alias && !currentEntry(queryClient, alias)) entries.set(refKey(alias), entry);
+  }
+}
+
+/**
  * The single-task route, for a task whose company the caller does not know
  * (a link's open intent). The task's own company owns the answer.
  */
