@@ -3068,6 +3068,9 @@ another comment cannot settle it, and newer draft text must be preserved.
 The composer **Stop** action cancels the current response and verifies termination;
 it does not create a pause hold. An acknowledged intentional cancellation remains
 neutral even if teardown releases the run lease or returns no semantic result.
+The same holds when the provider answers the interrupt with a failed turn: after
+an acknowledged Stop of the run, that failure is the Stop's effect and the run
+stays cancelled.
 **Pause work** separately controls future execution. A crash preventing progress
 is **Blocked**; **In Review** requires a concrete human decision.
 

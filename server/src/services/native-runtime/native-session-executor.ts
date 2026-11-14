@@ -12915,10 +12915,13 @@ async function executePaperclipNativeSessionAttempt(
       if (activeAtFailure?.cancelRequested) await activeAtFailure.cancellationSettled?.catch(() => undefined);
       // Stop before paperclip_finish is normal. Bounded provider teardown has
       // finished; a missing result must not overwrite cancellation or trigger
-      // another turn to perform completion bookkeeping.
+      // another turn to perform completion bookkeeping. A provider can also
+      // answer the interrupt with a failed turn: that failure is the Stop's
+      // effect, not a provider fault to record on the run.
       const stoppedBeforeFirstTurn = error instanceof Error && error.message === "native_session_cancelled";
       if (!startupUnsettled && protocolIntegrityFailure === null && error instanceof Error &&
-          (stoppedBeforeFirstTurn || error instanceof NativePermissionDeclinedError || error instanceof NativeCancellationPendingRecoveryError || error.message === "native_finalization_missing: session returned no semantic result")) {
+          (stoppedBeforeFirstTurn || error instanceof NativePermissionDeclinedError || error instanceof NativeCancellationPendingRecoveryError ||
+            error instanceof NativeProviderTerminalFailure || error.message === "native_finalization_missing: session returned no semantic result")) {
         const [stoppedRun] = await input.db.select().from(heartbeatRuns).where(and(
           eq(heartbeatRuns.id, input.execution.binding.runId),
           eq(heartbeatRuns.companyId, input.execution.binding.companyId),
