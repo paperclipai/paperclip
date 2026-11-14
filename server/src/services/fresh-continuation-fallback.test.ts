@@ -6,7 +6,6 @@ import {
   heartbeatRunEvents, issueComments, issues, nativeRunFinalizations, toolInvocations,
 } from "@paperclipai/db";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "../__tests__/helpers/embedded-postgres.js";
-import { truncateTablesWithDeadlockRetry } from "../__tests__/helpers/truncate-with-deadlock-retry.js";
 import { deliverReconciledExecutions, settleUnrecoverableExecutions } from "./execution-recovery-resolution.js";
 import { PENDING_CONTINUATION_BOUND_MS } from "./recovery-continuation-pacing.js";
 import { getExecutionBlocker } from "./execution-blocker.js";
@@ -66,7 +65,9 @@ suite("fresh-continuation fallback", () => {
   afterEach(async () => {
     resetBacklogContinuationPacingForTests(db);
     await heartbeatService(db).drainActiveRunExecutions();
-    await truncateTablesWithDeadlockRetry(db, `truncate table issue_recovery_actions, native_run_finalizations, tool_invocations,
+    // The drain covers every background run, wake and resume dispatch, so
+    // nothing still holds these tables. A deadlock here is a leak to fix.
+    await db.execute(sql`truncate table issue_recovery_actions, native_run_finalizations, tool_invocations,
       issue_approvals, approvals, issue_thread_interactions, activity_log, agent_wakeup_requests, environment_leases, execution_workspaces, heartbeat_runs, issues cascade`);
   });
 

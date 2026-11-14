@@ -86,6 +86,7 @@ import {
   startPaperclipCloudConnectorEnrollment,
 } from "../services/paperclip-cloud-connector-enrollment.js";
 import { reconcilePaperclipCloudConnectorEnrollmentStatus } from "../services/paperclip-cloud-connector-status.js";
+import { paperclipCloudEnrollmentPrincipal } from "../services/paperclip-cloud-connector-principal.js";
 import {
   OAUTH_CLIENT_ID_METADATA_DOCUMENT_PATH,
   oauthClientIdMetadataDocument,
@@ -209,7 +210,7 @@ function normalizeCloudConnectorEnrollmentReturnTo(returnTo?: string | null): st
     const parsed = new URL(returnTo, "http://paperclip.local");
     if (
       parsed.origin !== "http://paperclip.local"
-      || !["/apps/connect", "/apps/chat/connect"].includes(parsed.pathname)
+      || !["/apps/connect", "/apps/chat/connect", "/apps/tailscale"].includes(parsed.pathname)
       || parsed.username
       || parsed.password
     ) return null;
@@ -464,7 +465,7 @@ export function toolAccessRoutes(
   }
 
 function connectorEnrollmentPrincipal(req: Request): string {
-  return req.actor.userId ? `user:${req.actor.userId}` : `source:${req.actor.source ?? "board"}`;
+  return paperclipCloudEnrollmentPrincipal(req.actor);
 }
 
 /**

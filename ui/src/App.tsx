@@ -108,6 +108,7 @@ const AdvancedToolsRoute = lazy(() => import("./pages/tools/AdvancedToolsRoute")
 const ProfileWizardRoute = lazy(() => import("./pages/tools/profiles/ProfileWizardRoute").then((module) => ({ default: module.ProfileWizardRoute })));
 const ProfileDetailRoute = lazy(() => import("./pages/tools/profiles/ProfileDetailRoute").then((module) => ({ default: module.ProfileDetailRoute })));
 const Browse = lazy(() => import("./pages/apps/Browse").then((module) => ({ default: module.Browse })));
+const TailscaleConnector = lazy(() => import("./pages/apps/TailscaleConnector").then((module) => ({ default: module.TailscaleConnector })));
 const AppsConnect = lazy(() => import("./pages/apps/AppsConnect").then((module) => ({ default: module.AppsConnect })));
 const ChatEndpointSetup = lazy(() => import("./pages/apps/chat/ChatEndpointSetup").then((module) => ({ default: module.ChatEndpointSetup })));
 const ChatEndpointDetail = lazy(() => import("./pages/apps/chat/ChatEndpointDetail").then((module) => ({ default: module.ChatEndpointDetail })));
@@ -199,6 +200,7 @@ function boardRoutes(streamlinedUiEnabled: boolean, combinedInboxTasksEnabled: b
       <Route path="tools" element={<LegacyToolsRedirect />} />
       <Route path="tools/:tab" element={<LegacyToolsRedirect />} />
       <Route path="apps" element={<Browse />} />
+      <Route path="apps/tailscale" element={<TailscaleConnector />} />
       <Route path="apps/assistant-connection" element={<AssistantConnection />} />
       <Route path="apps/browse" element={<Navigate to="/apps" replace />} />
       <Route path="apps/connections" element={<Navigate to="/apps" replace />} />

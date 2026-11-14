@@ -714,6 +714,68 @@ async function dispatch(
   throw new Error("unreachable ACPX sidecar command");
 }
 
+function createRuntimeEventStep(
+  currentTurnId: string,
+  toolEvidence?: AcpxToolEvidence,
+): { accept(event: AcpRuntimeEvent): void; settle(): void } {
+  // ACP tool updates are deltas. Preserve the opening event's identity and
+  // display metadata for later progress/completion frames before they cross
+  // the sidecar boundary, matching the in-process ACPX driver path.
+  const normalizeToolEvent = createAcpxToolEventNormalizer<AcpRuntimeEvent>();
+  const piMessages = initializedAgent === "pi" ? createPiMessageProjection<AcpRuntimeEvent>() : null;
+  const kimiMessages = initializedAgent === "kimi" ? createKimiMessageProjection<AcpRuntimeEvent>() : null;
+  const normalizeMessage = kimiMessages ? kimiMessages.normalize : piMessages ? piMessages.normalize : initializedAgent === "grok"
+    ? createGrokMessageNormalizer<AcpRuntimeEvent>() : (event: AcpRuntimeEvent) => event;
+  // Claude subagent lineage reads the bounded `_meta` and `rawInput` before
+  // they are dropped at this boundary. Only display data leaves: a
+  // schema-checked delegation rich event and a child tool's parent id.
+  const trackSubagents = initializedAgent === "claude"
+    ? createClaudeSubagentLineageTracker<AcpRuntimeEventShape>((id) => stableProviderIdentity(id, "tool"))
+    : null;
+  const accept = (event: AcpRuntimeEvent): void => {
+    toolUseAdmission?.observe(currentTurnId, event);
+    toolEvidence?.tool(event);
+    // Claude hook lifecycle rides on session_info_update `_meta`; publish it
+    // as schema-validated display activity rather than a raw status event.
+    const hook = claudeHookCanonicalEvent(event);
+    if (hook) {
+      try { validateAcpxRichEvent(hook); emit("runtime.rich_event", { ...hook }, currentTurnId); } catch { /* display only */ }
+      return;
+    }
+    const sanitized = sanitizeRuntimeEvent(
+      normalizeMessage(normalizeToolEvent(withSidecarToolDetail(event, boundRuntimeEventForNormalization(event)))),
+    );
+    const lineage = trackSubagents && event.type === "tool_call" && typeof sanitized.toolCallId === "string"
+      ? trackSubagents({
+          type: "tool_call",
+          toolCallId: sanitized.toolCallId,
+          tag: event.tag,
+          status: event.status,
+          rawInput: event.rawInput,
+          rawOutput: event.rawOutput,
+          _meta: boundedAcpMeta((event as { _meta?: unknown })._meta),
+        })
+      : null;
+    if (lineage?.paperclipParentToolCallId) sanitized.parentToolCallId = lineage.paperclipParentToolCallId;
+    emit("runtime.event", sanitized, currentTurnId);
+    if (lineage?.paperclipSubagent) {
+      // Rust names the tool call (and each child's parentItemId) with
+      // acpx_opaque_item_id; the delegation must use the same identity.
+      const delegationId = acpxOpaqueToolItemId(String(sanitized.toolCallId));
+      for (const mapped of canonicalProviderEventsFromAcpxRuntimeEvent(lineage, `${currentTurnId}:subagent`, currentTurnId)) {
+        const rich = withDelegationIdentity(mapped, delegationId);
+        try {
+          validateAcpxRichEvent(rich);
+          emit("runtime.rich_event", { ...rich }, currentTurnId);
+        } catch {
+          // Display-only lineage must never fail the provider turn.
+        }
+      }
+    }
+  };
+  return { accept, settle: () => { piMessages?.settle(); kimiMessages?.settle(); } };
+}
+
 /** Turns whose native plan approval was declined after capturing the proposal. */
 const planProposalTurns = new Set<string>();
 
@@ -729,63 +791,10 @@ async function pumpTurn(
 ): Promise<void> {
   let terminal: Record<string, unknown>;
   try {
-    // ACP tool updates are deltas. Preserve the opening event's identity and
-    // display metadata for later progress/completion frames before they cross
-    // the sidecar boundary, matching the in-process ACPX driver path.
-    const normalizeToolEvent = createAcpxToolEventNormalizer<AcpRuntimeEvent>();
-    const piMessages = initializedAgent === "pi" ? createPiMessageProjection<AcpRuntimeEvent>() : null;
-    const kimiMessages = initializedAgent === "kimi" ? createKimiMessageProjection<AcpRuntimeEvent>() : null;
-    const normalizeMessage = kimiMessages ? kimiMessages.normalize : piMessages ? piMessages.normalize : initializedAgent === "grok"
-      ? createGrokMessageNormalizer<AcpRuntimeEvent>() : (event: AcpRuntimeEvent) => event;
-    // Claude subagent lineage reads the bounded `_meta` and `rawInput` before
-    // they are dropped at this boundary. Only display data leaves: a
-    // schema-checked delegation rich event and a child tool's parent id.
-    const trackSubagents = initializedAgent === "claude"
-      ? createClaudeSubagentLineageTracker<AcpRuntimeEventShape>((id) => stableProviderIdentity(id, "tool"))
-      : null;
-    for await (const event of runtimeTurn.events) {
-      toolUseAdmission?.observe(currentTurnId, event);
-      toolEvidence?.tool(event);
-      // Claude hook lifecycle rides on session_info_update `_meta`; publish it
-      // as schema-validated display activity rather than a raw status event.
-      const hook = claudeHookCanonicalEvent(event);
-      if (hook) {
-        try { validateAcpxRichEvent(hook); emit("runtime.rich_event", { ...hook }, currentTurnId); } catch { /* display only */ }
-        continue;
-      }
-      const sanitized = sanitizeRuntimeEvent(
-        normalizeMessage(normalizeToolEvent(withSidecarToolDetail(event, boundRuntimeEventForNormalization(event)))),
-      );
-      const lineage = trackSubagents && event.type === "tool_call" && typeof sanitized.toolCallId === "string"
-        ? trackSubagents({
-            type: "tool_call",
-            toolCallId: sanitized.toolCallId,
-            tag: event.tag,
-            status: event.status,
-            rawInput: event.rawInput,
-            rawOutput: event.rawOutput,
-            _meta: boundedAcpMeta((event as { _meta?: unknown })._meta),
-          })
-        : null;
-      if (lineage?.paperclipParentToolCallId) sanitized.parentToolCallId = lineage.paperclipParentToolCallId;
-      emit("runtime.event", sanitized, currentTurnId);
-      if (lineage?.paperclipSubagent) {
-        // Rust names the tool call (and each child's parentItemId) with
-        // acpx_opaque_item_id; the delegation must use the same identity.
-        const delegationId = acpxOpaqueToolItemId(String(sanitized.toolCallId));
-        for (const mapped of canonicalProviderEventsFromAcpxRuntimeEvent(lineage, `${currentTurnId}:subagent`, currentTurnId)) {
-          const rich = withDelegationIdentity(mapped, delegationId);
-          try {
-            validateAcpxRichEvent(rich);
-            emit("runtime.rich_event", { ...rich }, currentTurnId);
-          } catch {
-            // Display-only lineage must never fail the provider turn.
-          }
-        }
-      }
-    }
+    const step = createRuntimeEventStep(currentTurnId, toolEvidence);
+    for await (const event of runtimeTurn.events) step.accept(event);
     const result = await runtimeTurn.result;
-    if (result.status === "completed") { piMessages?.settle(); kimiMessages?.settle(); }
+    if (result.status === "completed") step.settle();
     await drainExtensions();
     try {
       const usageAfter = await readSidecarHostStatusWithin(activeHost);
@@ -836,6 +845,15 @@ async function pumpTurn(
   if (declinedPlan) {
     terminal = { status: "completed", stopReason: "end_turn" };
   }
+  emitTurnTerminal(currentTurnId, terminal, activeHost, declinedPlan);
+}
+
+function emitTurnTerminal(
+  currentTurnId: string,
+  terminal: Record<string, unknown>,
+  activeHost: AcpxRuntimeHost,
+  declinedPlan: boolean,
+): void {
   // A terminal frame is also runnerd's permission to recycle this provider.
   // Publish it only after no callback can inherit this turn's mutable binding.
   // runnerd can settle this turn offline using the same observation as session.goal.get.
