@@ -345,6 +345,29 @@ describe("parseSetupTokenPrompt", () => {
     expect(result?.prompt).toBe(SETUP_TOKEN_PROMPT);
   });
 
+  it("skips the Claude Code login-method status line before the browser-code prompt", () => {
+    const text = [
+      PREAMBLE_LINE,
+      osc8Hyperlink(CLAUDE_COM_URL, CLAUDE_COM_URL),
+      "Hold Shift while selecting to use your terminal's native copy",
+      "Login method pre-selected: Subscription Plan (Claude Pro/Max)",
+      PROMPT_LINE,
+    ].join("\n");
+    const result = parseSetupTokenPrompt(text);
+    expect(result?.url).toBe(CLAUDE_COM_URL);
+    expect(result?.prompt).toBe(SETUP_TOKEN_PROMPT);
+  });
+
+  it("does not skip unknown lines when binding the browser-code prompt", () => {
+    const text = [
+      PREAMBLE_LINE,
+      CLAUDE_COM_URL,
+      "Login method pre-selected: an unexpected method",
+      PROMPT_LINE,
+    ].join("\n");
+    expect(parseSetupTokenPrompt(text)).toBeNull();
+  });
+
   it("returns null when a code-like value sits on the line after the URL", () => {
     // The line right after the URL must hold the browser-code prompt. A code-like
     // value on that line cannot bind, so the parser returns null.
