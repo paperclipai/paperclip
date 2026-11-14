@@ -3,6 +3,7 @@ import { useCallback, useMemo, useState } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { Copy, Fingerprint, KeyRound, Link2, ShieldAlert, Variable, ServerCog } from "lucide-react";
 import type {
+  ApproveSecretProposalInput,
   CompanySecretProviderConfig,
   SecretProposalAgentRef,
   SecretProposalView,
@@ -102,10 +103,29 @@ export function FingerprintChip({
 export function ProposalJustification({
   justification,
   className,
+  variant = "captioned",
 }: {
   justification: string;
   className?: string;
+  /**
+   * `captioned` (default) shows the "Reason given by the agent" caption above
+   * the quote. `quote` is one quiet quoted line with the caption kept for
+   * screen readers, for surfaces whose heading already names the agent.
+   */
+  variant?: "captioned" | "quote";
 }) {
+  if (variant === "quote") {
+    return (
+      <p
+        className={cn(
+          "whitespace-pre-wrap break-words border-l-2 border-border pl-3 text-sm text-muted-foreground",
+          className,
+        )}
+      >
+        <span className="sr-only">Reason given by the agent: </span>“{justification}”
+      </p>
+    );
+  }
   return (
     <div className={cn("space-y-0.5", className)}>
       <p className="text-(length:--text-micro) text-muted-foreground">Reason given by the agent</p>
@@ -215,22 +235,33 @@ export interface UseProposalReview {
   dialogs: React.ReactNode;
 }
 
+export interface UseProposalDecision {
+  /** Approve a proposal, optionally with edits (secret) or a cascade (access). */
+  approve: (proposal: SecretProposalView, input?: ApproveSecretProposalInput) => void;
+  /** Reject a proposal. The API requires a non-empty reason. */
+  reject: (proposal: SecretProposalView, reason: string) => void;
+  approving: boolean;
+  rejecting: boolean;
+  /** True while an approve/reject request is in flight. */
+  isBusy: boolean;
+  /** Readable message from the last failed request, if any. */
+  error: string | null;
+  clearError: () => void;
+}
+
 /**
- * Shared approve/reject workflow for secret & binding proposals. Both the
- * board Proposals tab and the agent-settings "Proposed" rows use this so the
- * confirm/reject affordances behave identically everywhere.
+ * Approve/reject requests for one review surface: API calls, toasts, cache
+ * invalidation and the last error. Surfaces own their presentation — dialogs
+ * (`useProposalReview`) or inline rows (the Secrets page Proposals tab).
  */
-export function useProposalReview(
+export function useProposalDecision(
   companyId: string | null,
-  providerConfigs: CompanySecretProviderConfig[] = [],
-): UseProposalReview {
+  callbacks: { onApproved?: () => void; onRejected?: () => void } = {},
+): UseProposalDecision {
   const queryClient = useQueryClient();
   const { pushToast } = useToastActions();
-
-  const [approveDraft, setApproveDraft] = useState<ApproveDraft | null>(null);
-  const [rejectTarget, setRejectTarget] = useState<SecretProposalView | null>(null);
-  const [rejectReason, setRejectReason] = useState("");
   const [error, setError] = useState<string | null>(null);
+  const { onApproved, onRejected } = callbacks;
 
   const invalidate = useCallback(() => {
     if (!companyId) return;
@@ -239,35 +270,19 @@ export function useProposalReview(
   }, [companyId, queryClient]);
 
   const approveMutation = useMutation({
-    mutationFn: (draft: ApproveDraft) => {
-      const { proposal } = draft;
-      if (proposal.kind === "secret") {
-        const name = draft.folder.trim()
-          ? `${draft.folder.trim().replace(/\/+$/, "")}/${draft.leaf.trim()}`
-          : draft.leaf.trim();
-        return secretsApi.approveProposal(companyId!, proposal.id, {
-          overrides: {
-            name,
-            description: draft.description.trim() || null,
-            providerConfigId: draft.providerConfigId || null,
-          },
-        });
-      }
-      return secretsApi.approveProposal(companyId!, proposal.id, {
-        cascade: draft.cascade || undefined,
-      });
-    },
+    mutationFn: ({ proposal, input }: { proposal: SecretProposalView; input: ApproveSecretProposalInput }) =>
+      secretsApi.approveProposal(companyId!, proposal.id, input),
     onSuccess: (result) => {
       pushToast({
-        title: result.kind === "secret" ? "Secret approved" : "Binding approved",
+        title: result.kind === "secret" ? "Secret approved" : "Access approved",
         body:
           result.kind === "secret"
             ? (result.proposedName ?? "Secret created")
-            : `${result.target?.name ?? "Agent"} · ${bindingEnvKey(result) || "binding"}`,
+            : `${result.target?.name ?? "Agent"} · ${bindingEnvKey(result) || "access"}`,
         tone: "success",
       });
-      setApproveDraft(null);
       setError(null);
+      onApproved?.();
       invalidate();
     },
     onError: (err) => setError(readableError(err)),
@@ -282,17 +297,77 @@ export function useProposalReview(
         body: result.kind === "secret" ? (result.proposedName ?? undefined) : undefined,
         tone: "info",
       });
-      setRejectTarget(null);
-      setRejectReason("");
       setError(null);
+      onRejected?.();
       invalidate();
     },
     onError: (err) => setError(readableError(err)),
   });
 
+  const { mutate: mutateApprove } = approveMutation;
+  const { mutate: mutateReject } = rejectMutation;
+  const approve = useCallback(
+    (proposal: SecretProposalView, input: ApproveSecretProposalInput = {}) =>
+      mutateApprove({ proposal, input }),
+    [mutateApprove],
+  );
+  const reject = useCallback(
+    (proposal: SecretProposalView, reason: string) => mutateReject({ proposal, reason }),
+    [mutateReject],
+  );
+  const clearError = useCallback(() => setError(null), []);
+
+  return {
+    approve,
+    reject,
+    approving: approveMutation.isPending,
+    rejecting: rejectMutation.isPending,
+    isBusy: approveMutation.isPending || rejectMutation.isPending,
+    error,
+    clearError,
+  };
+}
+
+function approveInputFromDraft(draft: ApproveDraft): ApproveSecretProposalInput {
+  if (draft.proposal.kind === "secret") {
+    const name = draft.folder.trim()
+      ? `${draft.folder.trim().replace(/\/+$/, "")}/${draft.leaf.trim()}`
+      : draft.leaf.trim();
+    return {
+      overrides: {
+        name,
+        description: draft.description.trim() || null,
+        providerConfigId: draft.providerConfigId || null,
+      },
+    };
+  }
+  return { cascade: draft.cascade || undefined };
+}
+
+/**
+ * Shared approve/reject dialogs for secret & access proposals, used where a
+ * proposal is reviewed among other rows (the agent-settings "Proposed" rows).
+ */
+export function useProposalReview(
+  companyId: string | null,
+  providerConfigs: CompanySecretProviderConfig[] = [],
+): UseProposalReview {
+  const [approveDraft, setApproveDraft] = useState<ApproveDraft | null>(null);
+  const [rejectTarget, setRejectTarget] = useState<SecretProposalView | null>(null);
+  const [rejectReason, setRejectReason] = useState("");
+
+  const decision = useProposalDecision(companyId, {
+    onApproved: () => setApproveDraft(null),
+    onRejected: () => {
+      setRejectTarget(null);
+      setRejectReason("");
+    },
+  });
+  const { error, clearError } = decision;
+
   const requestApprove = useCallback(
     (proposal: SecretProposalView) => {
-      setError(null);
+      clearError();
       const segments = (proposal.proposedName ?? "").split("/");
       const leaf = segments.pop() ?? "";
       setApproveDraft({
@@ -309,42 +384,42 @@ export function useProposalReview(
         cascade: Boolean(proposal.secretProposalId),
       });
     },
-    [providerConfigs],
+    [providerConfigs, clearError],
   );
 
   const requestReject = useCallback((proposal: SecretProposalView) => {
-    setError(null);
+    clearError();
     setRejectReason("");
     setRejectTarget(proposal);
-  }, []);
+  }, [clearError]);
 
   const dialogs = (
     <>
       <ApproveDialog
         draft={approveDraft}
         error={error}
-        pending={approveMutation.isPending}
+        pending={decision.approving}
         providerConfigs={providerConfigs}
         onChange={setApproveDraft}
         onCancel={() => {
           setApproveDraft(null);
-          setError(null);
+          clearError();
         }}
-        onConfirm={() => approveDraft && approveMutation.mutate(approveDraft)}
+        onConfirm={() => approveDraft && decision.approve(approveDraft.proposal, approveInputFromDraft(approveDraft))}
       />
       <RejectDialog
         proposal={rejectTarget}
         reason={rejectReason}
         error={error}
-        pending={rejectMutation.isPending}
+        pending={decision.rejecting}
         onReasonChange={setRejectReason}
         onCancel={() => {
           setRejectTarget(null);
           setRejectReason("");
-          setError(null);
+          clearError();
         }}
         onConfirm={() =>
-          rejectTarget && rejectMutation.mutate({ proposal: rejectTarget, reason: rejectReason })
+          rejectTarget && decision.reject(rejectTarget, rejectReason)
         }
       />
     </>
@@ -353,7 +428,7 @@ export function useProposalReview(
   return {
     requestApprove,
     requestReject,
-    isBusy: approveMutation.isPending || rejectMutation.isPending,
+    isBusy: decision.isBusy,
     dialogs,
   };
 }
@@ -395,12 +470,12 @@ function ApproveDialog({
           <>
             <DialogHeader>
               <DialogTitle>
-                {isSecret ? "Approve & create secret" : "Approve binding"}
+                {isSecret ? "Approve and save secret" : "Approve access"}
               </DialogTitle>
               <DialogDescription>
                 {isSecret
-                  ? "The value is created as the proposing agent recorded it. Re-folder or rename it before it lands."
-                  : "Grant the target agent access to this secret. This runs with your permissions."}
+                  ? "The value is saved exactly as the agent recorded it. You can rename it or move it to another folder first."
+                  : "Give the agent access to this secret. Access is granted with your permissions."}
               </DialogDescription>
             </DialogHeader>
 
@@ -440,7 +515,7 @@ function ApproveDialog({
                   </div>
                 </div>
                 <p className="text-(length:--text-micro) text-muted-foreground">
-                  Lands as{" "}
+                  Saved as{" "}
                   {previewName ? (
                     <SecretPathName name={previewName} className="font-mono" />
                   ) : (
@@ -460,7 +535,7 @@ function ApproveDialog({
 
                 {localConfigs.length > 0 ? (
                   <div className="space-y-1">
-                    <Label htmlFor="approve-provider-config">Provider vault</Label>
+                    <Label htmlFor="approve-provider-config">Stored in</Label>
                     <select
                       id="approve-provider-config"
                       value={draft.providerConfigId}
@@ -469,7 +544,7 @@ function ApproveDialog({
                       }
                       className="h-9 w-full rounded-md border border-input bg-transparent px-2 text-sm outline-none focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50"
                     >
-                      <option value="">Deployment default</option>
+                      <option value="">Default vault</option>
                       {localConfigs.map((config) => (
                         <option key={config.id} value={config.id}>
                           {config.displayName}
@@ -504,10 +579,10 @@ function ApproveDialog({
                 {pending
                   ? "Approving…"
                   : isSecret
-                    ? "Approve & create"
+                    ? "Approve and save secret"
                     : draft.cascade
-                      ? "Approve secret & bind"
-                      : "Approve binding"}
+                      ? "Approve access and save secret"
+                      : "Approve access"}
               </Button>
             </DialogFooter>
           </>
@@ -531,7 +606,7 @@ function BindingApproveBody({
     <div className="space-y-3 text-sm">
       <div className="space-y-2 rounded-md border border-border p-3">
         <div className="flex items-center justify-between gap-2">
-          <span className="text-xs text-muted-foreground">Target agent</span>
+          <span className="text-xs text-muted-foreground">Agent</span>
           {proposal.target ? (
             <AgentRefChip agent={proposal.target} className="text-sm font-medium" />
           ) : (
@@ -566,8 +641,8 @@ function BindingApproveBody({
           />
           <span className="text-foreground/90">
             Also approve the proposed secret{" "}
-            <span className="font-medium">{secret.name}</span> and create it in the same step. The
-            binding can’t land without it.
+            <span className="font-medium">{secret.name}</span> and save it in the same step. Access
+            can’t be approved without it.
           </span>
         </label>
       ) : null}
@@ -606,8 +681,8 @@ function RejectDialog({
               <DialogTitle>Reject proposal</DialogTitle>
               <DialogDescription>
                 The reason is sent back to{" "}
-                <AgentRefChip agent={proposal.proposedBy} className="text-foreground" />. Dependent
-                bindings are rejected too.
+                <AgentRefChip agent={proposal.proposedBy} className="text-foreground" />. Requests to
+                use this secret are rejected too.
               </DialogDescription>
             </DialogHeader>
             <div className="space-y-1">

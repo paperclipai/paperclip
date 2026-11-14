@@ -2,6 +2,7 @@ export interface WarmShutdownCleanup {
   environmentDeleted: boolean;
   environmentDeleteBlocked: string | null;
   remainingSandboxes: string[];
+  undeletedSandboxes?: string[];
 }
 
 export interface WarmShutdownCheck {
@@ -34,12 +35,13 @@ export function gradeWarmShutdown(input: { cleanup: WarmShutdownCleanup | null; 
   if (input.cleanup?.environmentDeleteBlocked) problems.push(`environment delete blocked: ${input.cleanup.environmentDeleteBlocked}`);
   else if (input.cleanup && !input.cleanup.environmentDeleted) problems.push("environment was not deleted");
   if (input.cleanup?.remainingSandboxes.length) problems.push(`sandboxes still running after cleanup: ${input.cleanup.remainingSandboxes.join(", ")}`);
+  if (input.cleanup?.undeletedSandboxes?.length) problems.push(`wave sandboxes left after the harness deleted them: ${input.cleanup.undeletedSandboxes.join(", ")}`);
   for (const line of shutdownCloseFailures) problems.push(`warm session did not close: ${line}`);
   return {
     verdict: problems.length ? "fail" : "pass",
     environmentDeleted: input.cleanup?.environmentDeleted ?? null,
     environmentDeleteBlocked: input.cleanup?.environmentDeleteBlocked ?? null,
-    leakedSandboxes: input.cleanup?.remainingSandboxes ?? [],
+    leakedSandboxes: [...new Set([...input.cleanup?.remainingSandboxes ?? [], ...input.cleanup?.undeletedSandboxes ?? []])],
     shutdownCloseFailures,
     idleCloseFailures,
     problems,

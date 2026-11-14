@@ -125,6 +125,7 @@ const mockHeartbeatService = vi.hoisted(() => ({
   reportRunActivity: vi.fn(async () => undefined),
   getRun: vi.fn(async (): Promise<unknown> => null),
   getActiveRunForAgent: vi.fn(async (): Promise<unknown> => null),
+  getQueuedAssignmentRunForIssue: vi.fn(async (): Promise<unknown> => null),
   cancelRun: vi.fn(async (): Promise<unknown> => null),
   resumeTaskRetry: vi.fn(async () => undefined),
 }));
@@ -191,6 +192,7 @@ function registerRouteMocks() {
   vi.doMock("../services/task-interruption-presentation.js", () => ({
     taskInterruptionPresentation: vi.fn(async () => null),
     taskInterruptionPresentations: vi.fn(async () => new Map()),
+    taskRetryRefusal: vi.fn(async () => null),
   }));
   vi.doMock("../services/native-runtime/native-workspace-owner-recovery.js", () => ({ resumeNativeWorkspaceAfterOwnerStop: mockResumeWorkspaceFinalization }));
   vi.doMock("../services/native-runtime/native-workspace-export-retry.js", () => ({ retryNativeWorkspaceExport: mockRetryWorkspaceExport }));

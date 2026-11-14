@@ -67,13 +67,3 @@ export const questionPayloadSchema = {
   },
   additionalProperties: true,
 } as const;
-
-export const questionsPayloadRequirement = {
-  if: { properties: { interactionKind: { const: "questions" } }, required: ["interactionKind"] },
-  then: {
-    required: ["payload"],
-    properties: {
-      payload: { anyOf: [{ required: ["questionSet"] }, { required: ["questions"] }] },
-    },
-  },
-} as const;

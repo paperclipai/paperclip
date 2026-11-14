@@ -575,6 +575,24 @@ describe("agent test-environment route", () => {
     expect(mockCopilotModels).not.toHaveBeenCalled();
   });
 
+  it.each([undefined, true, false])("uses the selected SSH authentication source for probes (%s)", async useHostAuth => {
+    const environmentId = "11111111-1111-4111-8111-111111111111";
+    mockEnvironmentService.getById.mockResolvedValue({ id: environmentId, name: "SSH", driver: "ssh",
+      config: { ...(useHostAuth !== undefined ? { useHostAuth } : {}), host: "fixture.invalid", username: "fixture", remoteWorkspacePath: "/workspace" } });
+    const target = { kind: "remote", transport: "ssh", remoteCwd: "/workspace", spec: { host: "fixture.invalid", port: 22, username: "fixture", remoteCwd: "/workspace", remoteWorkspacePath: "/workspace", useHostAuth } };
+    mockResolveEnvironmentExecutionTarget.mockResolvedValue(target);
+    const response = await request(await createApp()).post("/api/companies/company-1/adapters/external_test/test-environment")
+      .send({ adapterConfig: {}, environmentId });
+    if (useHostAuth === false) {
+      expect(response.status, JSON.stringify(response.body)).toBe(422);
+      expect(response.body.code).toBe("ssh_ai_connection_required");
+      expect(testEnvironmentSpy).not.toHaveBeenCalled();
+    } else {
+      expect(response.status, JSON.stringify(response.body)).toBe(200);
+      expect(testEnvironmentSpy).toHaveBeenCalledWith(expect.objectContaining({ executionTarget: target }));
+    }
+  });
+
   it("tests the instance default sandbox when the agent inherits its environment", async () => {
     const environmentId = "11111111-1111-4111-8111-111111111111";
     mockInstanceSettingsService.get.mockResolvedValue({ defaultEnvironmentId: environmentId });

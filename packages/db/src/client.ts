@@ -163,6 +163,11 @@ export interface DatabaseClientOptions {
    * `postgres.js`).
    */
   applicationName?: string;
+  /**
+   * Connection-level `statement_timeout` in milliseconds, sent as a startup
+   * parameter (no extra round trip). For dedicated single-purpose pools only.
+   */
+  statementTimeoutMs?: number;
 }
 
 /**
@@ -256,17 +261,46 @@ export function postgresJsOptions(options: DatabaseClientOptions): Record<string
   if (options.idleTimeoutSeconds !== undefined) driverOptions.idle_timeout = options.idleTimeoutSeconds;
   if (options.connectTimeoutSeconds !== undefined) driverOptions.connect_timeout = options.connectTimeoutSeconds;
   if (options.maxLifetimeSeconds !== undefined) driverOptions.max_lifetime = options.maxLifetimeSeconds;
-  if (options.applicationName !== undefined) {
-    driverOptions.connection = { application_name: options.applicationName };
-  }
+  const connection: Record<string, string> = {};
+  if (options.applicationName !== undefined) connection.application_name = options.applicationName;
+  if (options.statementTimeoutMs !== undefined) connection.statement_timeout = String(options.statementTimeoutMs);
+  if (Object.keys(connection).length) driverOptions.connection = connection;
   return driverOptions;
 }
 
 // A long advisory-lock transaction must not borrow the normal pool that its
 // work needs for progress writes. Keep connection configuration private to the
 // originating Db lifetime; callers receive neither URLs nor credentials.
-const dedicatedDbFactories = new WeakMap<object, () => Db>();
 const ownedDatabaseListenerFactories = new WeakMap<object, () => Db>();
+
+export const DEDICATED_CONNECTION_IDLE_MAX = 4;
+
+type DedicatedConnectionSet = {
+  create(): Db;
+  idle: Db[];
+  ended: WeakSet<Db>;
+  closed: boolean;
+};
+const dedicatedConnectionSets = new WeakMap<object, DedicatedConnectionSet>();
+
+function trackClientEnd(client: Db, onEnd: (timeoutSeconds: number | undefined) => Promise<void> | void): void {
+  const sql = client.$client;
+  const end = sql.end;
+  sql.end = async (options?: { timeout?: number }) => {
+    await Promise.all([onEnd(options?.timeout), end(options)]);
+  };
+}
+
+async function endDedicatedConnections(clients: Db[], timeoutSeconds: number): Promise<void> {
+  await Promise.all(clients.map(client => client.$client.end({ timeout: timeoutSeconds }).catch(() => undefined)));
+}
+
+export async function closeDedicatedDbConnections(db: Db, timeoutSeconds: number): Promise<void> {
+  const set = dedicatedConnectionSets.get(db);
+  if (!set) return;
+  set.closed = true;
+  await endDedicatedConnections(set.idle.splice(0), timeoutSeconds);
+}
 
 export interface OwnedDatabaseListener {
   listen: Db["$client"]["listen"];
@@ -284,11 +318,26 @@ export function createOwnedDatabaseListener(db: Db): OwnedDatabaseListener {
 }
 
 export async function withDedicatedDbConnection<T>(db: Db, action: (dedicated: Db) => Promise<T>): Promise<T> {
-  const factory = dedicatedDbFactories.get(db);
-  if (!factory) throw new Error("dedicated_connection_requires_create_db");
-  const dedicated = factory();
-  try { return await action(dedicated); }
-  finally { await dedicated.$client.end({ timeout: 1 }); }
+  const set = dedicatedConnectionSets.get(db);
+  if (!set) throw new Error("dedicated_connection_requires_create_db");
+  let dedicated: Db | undefined;
+  while (!dedicated && set.idle.length) {
+    const candidate = set.idle.pop()!;
+    if (!set.ended.has(candidate)) dedicated = candidate;
+  }
+  dedicated ??= set.create();
+  let completed = false;
+  try {
+    const result = await action(dedicated);
+    completed = true;
+    return result;
+  } finally {
+    if (completed && !set.closed && !set.ended.has(dedicated) && set.idle.length < DEDICATED_CONNECTION_IDLE_MAX) {
+      set.idle.push(dedicated);
+    } else if (!set.ended.has(dedicated)) {
+      await dedicated.$client.end({ timeout: 1 });
+    }
+  }
 }
 
 // postgres.js pipelines a query onto a busy connection when none is idle, so
@@ -324,11 +373,42 @@ export function controllerLeaseDb(db: Db): Db {
   return created;
 }
 
+const controllerInstanceLeaseDbFactories = new WeakMap<object, (statementTimeoutMs: number | null) => Db>();
+const controllerInstanceLeaseDbs = new WeakMap<object, Db>();
+
+/** One private connection for the server's controller-instance lease, so its
+ * renewal never waits behind request or worker traffic on the main pool.
+ * `statementTimeoutMs` (first call wins) is a connection-level
+ * `statement_timeout`: the server cancels a slow renewal, so it never holds the
+ * single connection that the next renewal needs, at no extra round trip. */
+export function controllerInstanceLeaseDb(db: Db, options: { statementTimeoutMs?: number | null } = {}): Db {
+  const existing = controllerInstanceLeaseDbs.get(db);
+  if (existing) return existing;
+  const factory = controllerInstanceLeaseDbFactories.get(db);
+  if (!factory) return db;
+  const created = factory(options.statementTimeoutMs ?? null);
+  controllerInstanceLeaseDbs.set(db, created);
+  return created;
+}
+
+/** Replaces the lease connection with one that sends no `statement_timeout`
+ * startup parameter, for a connection pooler that refuses it. */
+export function controllerInstanceLeaseDbWithoutStatementTimeout(db: Db): Db {
+  const factory = controllerInstanceLeaseDbFactories.get(db);
+  if (!factory) return db;
+  const previous = controllerInstanceLeaseDbs.get(db);
+  const created = factory(null);
+  controllerInstanceLeaseDbs.set(db, created);
+  void previous?.$client.end({ timeout: 0 }).catch(() => undefined);
+  return created;
+}
+
 /** Ends the liveness pool if one was created. The ended pool stays cached, so
  * a late renewal fails like a query on the ended primary pool. */
 export async function closeLivenessDb(db: Db, timeoutSeconds: number): Promise<void> {
   await Promise.all([livenessDbs.get(db)?.$client.end({ timeout: timeoutSeconds }),
-    controllerLeaseDbs.get(db)?.$client.end({ timeout: timeoutSeconds })]);
+    controllerLeaseDbs.get(db)?.$client.end({ timeout: timeoutSeconds }),
+    controllerInstanceLeaseDbs.get(db)?.$client.end({ timeout: timeoutSeconds })]);
 }
 
 // Control checkpoints must not occupy the request or lease-renewal pools
@@ -383,7 +463,7 @@ export function createDb(url: string, options?: DatabaseClientOptions) {
   return createDbClient(url, resolved);
 }
 
-function createDbClient(url: string, resolved: DatabaseClientOptions, owner?: object) {
+function createDbClient(url: string, resolved: DatabaseClientOptions, owner?: object, dedicatedSet?: DedicatedConnectionSet) {
   const sql = postgres(url, postgresJsOptions(resolved));
   if (resolved.prepare === true) installPreparedQueries(sql);
   const key = hostPortKeyOrNull(url);
@@ -394,9 +474,22 @@ function createDbClient(url: string, resolved: DatabaseClientOptions, owner?: ob
   // that know the complete operation is idempotent.
   const db = installDatabaseWorkSignals(drizzleWithLazyTransactionQueries(sql, schema), owner);
   installDatabaseResponseCapture(db, schema);
-  dedicatedDbFactories.set(db, () => createDbClient(url, {
-    ...resolved, maxConnections: 1, applicationName: "paperclip-workspace-finalization-lock",
-  }, db));
+  const ownerSet = owner ? dedicatedConnectionSets.get(owner) : undefined;
+  if (dedicatedSet) {
+    trackClientEnd(db, () => { dedicatedSet.ended.add(db); });
+    dedicatedConnectionSets.set(db, dedicatedSet);
+  } else if (ownerSet) {
+    dedicatedConnectionSets.set(db, ownerSet);
+  } else {
+    const set: DedicatedConnectionSet = {
+      create: () => createDbClient(url, {
+        ...resolved, maxConnections: 1, applicationName: "paperclip-workspace-finalization-lock",
+      }, db, set),
+      idle: [], ended: new WeakSet(), closed: false,
+    };
+    dedicatedConnectionSets.set(db, set);
+    trackClientEnd(db, timeoutSeconds => closeDedicatedDbConnections(db, timeoutSeconds ?? 1));
+  }
   ownedDatabaseListenerFactories.set(db, () => createDbClient(url, {
     ...resolved, maxConnections: 1,
   }, db));
@@ -405,6 +498,10 @@ function createDbClient(url: string, resolved: DatabaseClientOptions, owner?: ob
   }, db));
   controllerLeaseDbFactories.set(db, () => createDbClient(url, {
     ...resolved, maxConnections: 1, applicationName: "paperclip-legacy-controller-lease",
+  }, db));
+  controllerInstanceLeaseDbFactories.set(db, statementTimeoutMs => createDbClient(url, {
+    ...resolved, maxConnections: 1, applicationName: "paperclip-controller-instance-lease",
+    ...(statementTimeoutMs !== null ? { statementTimeoutMs } : {}),
   }, db));
   checkpointDbFactories.set(db, () => createDbClient(url, {
     ...resolved, maxConnections: CHECKPOINT_POOL_MAX_CONNECTIONS, applicationName: "paperclip-runner-checkpoint",
@@ -649,6 +746,9 @@ const MIGRATIONS_WITH_TOP_LEVEL_STATEMENTS = new Set([
   "0461_created_from_legacy_origin_run_index.sql",
   "0470_heartbeat_runs_queued_created_index.sql",
   "0472_runner_api_capture_pending_deletes.sql",
+  "0476_wakeup_request_run_index.sql",
+  "0486_heartbeat_runs_company_finished_index.sql",
+  "0487_heartbeat_runs_settled_process_indexes.sql",
   "0469_zippy_photon.sql",
 
 

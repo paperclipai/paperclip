@@ -41,6 +41,9 @@ describe("optimistic task Retry", () => {
   });
   it.each([
     ["a replaced attempt", { requestId: null, accepted: false, stale: true }, "already replaced, so Retry did not start new work"],
+    ["a Retry that admission refused", { requestId: "retry", accepted: false, stale: false,
+      refused: { reason: "previous_execution_unverified", message: "Retry can't continue because Paperclip can't confirm that the previous attempt stopped before it started work." } },
+      "can't confirm that the previous attempt stopped"],
     ["a scheduled retry held by a gate", { requestId: "retry", accepted: true, stale: false,
       scheduledRetry: { outcome: "gate_suppressed" as const, message: "The company budget is paused." } }, "The company budget is paused."],
     ["a scheduled retry still waiting", { requestId: "retry", accepted: true, stale: false,
@@ -57,6 +60,19 @@ describe("optimistic task Retry", () => {
     await render({ ...waiting, interruption: { ...presentation, state: "working", canRetry: false } } as Issue);
     expect(container.querySelector('[role="alert"]')).toBeNull();
   });
+  it("sends the move-forward intent from the offer and says plainly when the task already moved on", async () => {
+    const presentation = { intentId: null, responsibility: "system" as const, state: "working" as const, canRetry: true,
+      retryAction: "move_forward" as const, nextRetryAt: null, userAction: null, sourceRunIds: ["continuation"], observedRunId: "continuation" };
+    vi.mocked(issuesApi.retryTask).mockResolvedValue({ requestId: null, accepted: false, stale: false, alreadyMovedOn: true,
+      presentation: { ...presentation, canRetry: false, retryAction: undefined } } as Awaited<ReturnType<typeof issuesApi.retryTask>>);
+    await render({ ...issue, interruption: presentation } as Issue);
+    await act(async () => container.querySelector("button")!.click());
+    expect(issuesApi.retryTask).toHaveBeenCalledExactlyOnceWith("task", {
+      observedRunId: "continuation", retryAction: "move_forward", idempotencyKey: expect.any(String),
+    });
+    expect(container.querySelector('[role="alert"]')?.textContent).toContain("already moved on, so nothing new was started");
+  });
+
   it("shows nothing extra when Retry promoted the scheduled run", async () => {
     vi.mocked(issuesApi.retryTask).mockResolvedValue({ requestId: "retry", accepted: true, stale: false,
       scheduledRetry: { outcome: "promoted", message: "Retry promoted" }, presentation: null });

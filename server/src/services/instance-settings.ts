@@ -294,6 +294,7 @@ export function normalizeExperimentalSettings(raw: unknown): InstanceExperimenta
       enableWorkspaceDirtyQuarantineRepair: parsed.data.enableWorkspaceDirtyQuarantineRepair ?? true,
       enableOwnerInstanceAdmin: parsed.data.enableOwnerInstanceAdmin ?? false,
       enableSandboxDuplexBridge: parsed.data.enableSandboxDuplexBridge ?? false,
+      enableMcpTasks: parsed.data.enableMcpTasks ?? false,
       enableRunnerPreviewIngress: parsed.data.enableRunnerPreviewIngress ?? false,
       enableWorktreeRunExecution: parsed.data.enableWorktreeRunExecution ?? false,
       worktreeRunExecutionActivatedAt: parsed.data.worktreeRunExecutionActivatedAt ?? null,
@@ -353,6 +354,7 @@ export function normalizeExperimentalSettings(raw: unknown): InstanceExperimenta
     enableWorkspaceDirtyQuarantineRepair: true,
     enableOwnerInstanceAdmin: false,
     enableSandboxDuplexBridge: false,
+    enableMcpTasks: false,
     enableRunnerPreviewIngress: false,
     enableWorktreeRunExecution: false,
     worktreeRunExecutionActivatedAt: null,
@@ -652,6 +654,7 @@ export function instanceSettingsService(db: Db, options: InstanceSettingsService
         if (patch.enableStatusCards !== undefined) await notifyStatusCardEvaluation(tx);
         if (chatBecameEnabled) await notifyDeferredExecutionEligibility(tx);
         if(toExperimentalView(current.experimental).enablePublicMcp!==toExperimentalView(nextExperimental).enablePublicMcp)await prepareMcpClientMirrorPolicy(tx as unknown as Db,toExperimentalView(nextExperimental).enablePublicMcp);
+        if (patch.enableMcpTasks !== undefined) await notifyDeliveryWork(tx, DELIVERY_QUEUES.mcpTasks);
         await notifyDeliveryWork(tx, DELIVERY_QUEUES.mcpIngressHandoffs);
         await notifyDeliveryWork(tx, DELIVERY_QUEUES.mcpClientMirror);
         await notifyDeliveryWork(tx, DELIVERY_QUEUES.mcpRevocationIndex, "*");

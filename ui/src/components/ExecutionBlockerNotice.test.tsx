@@ -66,6 +66,26 @@ describe("ordinary task interruption", () => {
   it.each(["working", "resolved"] as const)("does not duplicate the thread indicator for %s", async state => {
     await render({ ...failed, state }); expect(container.textContent).toBe("");
   });
+  it("offers to move a waiting continuation forward in plain words, without reporting a failure", async () => {
+    await render({ ...failed, state: "working", retryAction: "move_forward" });
+    expect(container.textContent).toContain("Paperclip continues this task by itself.");
+    expect(container.textContent).not.toMatch(/Couldn’t finish|failed|continuation|queue|run\b/i);
+    const button = container.querySelector<HTMLButtonElement>('[data-testid="task-execution-move-forward"]');
+    expect(button?.textContent).toBe("Move it forward now");
+    expect(container.querySelectorAll("button")).toHaveLength(1);
+    await act(async () => button!.click());
+    expect(retry).toHaveBeenCalledOnce();
+  });
+
+  it("shows a waiting continuation without the button to a read-only user, or once the move was requested", async () => {
+    await act(async () => root.render(<ExecutionBlockerNotice presentation={{ ...failed, state: "working", retryAction: "move_forward" }}
+      canRetry={false} onRetry={retry} />));
+    expect(container.textContent).toContain("Paperclip continues this task by itself.");
+    expect(container.querySelector("button")).toBeNull();
+    await render({ ...failed, state: "working", canRetry: false });
+    expect(container.textContent).toBe("");
+  });
+
   it("names the admission hold a task that has not started waits for", async () => {
     await render({ ...failed, state: "working", canRetry: false, sourceRunIds: [], observedRunId: null,
       retryWait: { reason: "budget.blocked", message: "Waiting for the budget to allow new work. The task starts automatically when it does." } });

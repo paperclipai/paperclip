@@ -1,4 +1,4 @@
-import { notifyAttentionRetentionWork } from "../retention-work-notifications.js";
+import { notifyIssueAttentionRetentionWork } from "../retention-work-notifications.js";
 import { notifyScheduledRetryDispatch } from "../run-dispatch-notifications.js";
 import { randomUUID } from "node:crypto";
 import { and, eq } from "drizzle-orm";
@@ -51,8 +51,8 @@ export async function materializeNativeProviderCapacityRetry(input: {
     scheduledRetryAt: dueAt.toISOString(),
     executionRetryAccounting: accountingForScheduledRetry(run, NATIVE_PROVIDER_OVERLOADED_CODE, attempt),
   };
-  await notifyAttentionRetentionWork(input.tx, { companyId: input.companyId });
-  await notifyScheduledRetryDispatch(input.tx, { companyId: run.companyId });
+  await notifyIssueAttentionRetentionWork(input.tx, { companyId: input.companyId, issueId: input.issueId, runId: run.id });
+  await notifyScheduledRetryDispatch(input.tx, { companyId: run.companyId, runId: run.id });
   const [wake] = await input.tx.insert(agentWakeupRequests).values({
     companyId: run.companyId, agentId: run.agentId, source: "automation", triggerDetail: "system",
     reason: NATIVE_PROVIDER_OVERLOADED_CODE, status: "queued", runId: retryId,

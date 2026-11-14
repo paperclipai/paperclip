@@ -950,25 +950,28 @@ select:where(:not([multiple]):not(.appearance-none)):where(:not([size]), [size="
   transition: bottom var(--mobile-nav-motion-duration, var(--motion-mobile-nav-enter)) var(--mobile-nav-motion-ease, var(--motion-ease-out-expo));
 }
 
-/* Mobile conversations use the same single message scroller + normal footer as
-   desktop. Opt in from the rendered task shell, so classic tasks, lists, and
-   the empty agent-chat picker retain their existing document layout. */
-html:has(.paperclip-app-shell[data-mobile="true"] [data-task-chat-shell]),
-html:has(.paperclip-app-shell[data-mobile="true"] [data-task-chat-shell]) body {
+html:has(.paperclip-app-shell:is([data-mobile="true"], [data-keyboard-open="true"]) [data-task-chat-shell]),
+html:has(.paperclip-app-shell:is([data-mobile="true"], [data-keyboard-open="true"]) [data-task-chat-shell]) body,
+html:has(.paperclip-app-shell[data-keyboard-open="true"] [data-classic-task-shell]),
+html:has(.paperclip-app-shell[data-keyboard-open="true"] [data-classic-task-shell]) body {
   position: fixed;
   inset: 0;
   width: 100%;
 }
 
-html:has(.paperclip-app-shell[data-mobile="true"] [data-task-chat-shell]),
-html:has(.paperclip-app-shell[data-mobile="true"] [data-task-chat-shell]) body,
-html:has(.paperclip-app-shell[data-mobile="true"] [data-task-chat-shell]) #root {
+html:has(.paperclip-app-shell:is([data-mobile="true"], [data-keyboard-open="true"]) [data-task-chat-shell]),
+html:has(.paperclip-app-shell:is([data-mobile="true"], [data-keyboard-open="true"]) [data-task-chat-shell]) body,
+html:has(.paperclip-app-shell:is([data-mobile="true"], [data-keyboard-open="true"]) [data-task-chat-shell]) #root,
+html:has(.paperclip-app-shell[data-keyboard-open="true"] [data-classic-task-shell]),
+html:has(.paperclip-app-shell[data-keyboard-open="true"] [data-classic-task-shell]) body,
+html:has(.paperclip-app-shell[data-keyboard-open="true"] [data-classic-task-shell]) #root {
   height: 100%;
   overflow: hidden !important;
   overscroll-behavior: none;
 }
 
-.paperclip-app-shell[data-mobile="true"]:has([data-task-chat-shell]) {
+.paperclip-app-shell:is([data-mobile="true"], [data-keyboard-open="true"]):has([data-task-chat-shell]),
+.paperclip-app-shell[data-keyboard-open="true"]:has([data-classic-task-shell]) {
   position: fixed;
   inset: 0;
   display: flex;
@@ -978,28 +981,43 @@ html:has(.paperclip-app-shell[data-mobile="true"] [data-task-chat-shell]) #root 
   overflow: hidden;
 }
 
-.paperclip-app-shell[data-mobile="true"]:has([data-task-chat-shell]) :is(.app-main-row, .app-content-row) {
+.paperclip-app-shell:is([data-mobile="true"], [data-keyboard-open="true"]):has([data-task-chat-shell]) :is(.app-main-row, .app-content-row),
+.paperclip-app-shell[data-keyboard-open="true"]:has([data-classic-task-shell]) :is(.app-main-row, .app-content-row) {
   display: flex;
   flex: 1;
   min-height: 0;
   overflow: hidden;
 }
 
-.paperclip-app-shell[data-mobile="true"]:has([data-task-chat-shell]) .app-content-column {
+.paperclip-app-shell:is([data-mobile="true"], [data-keyboard-open="true"]):has([data-task-chat-shell]) .app-content-column,
+.paperclip-app-shell[data-keyboard-open="true"]:has([data-classic-task-shell]) .app-content-column {
   flex: 1;
   min-height: 0;
 }
 
-.paperclip-app-shell[data-mobile="true"]:has([data-task-chat-shell]) .app-breadcrumb {
+.paperclip-app-shell:is([data-mobile="true"], [data-keyboard-open="true"]):has([data-task-chat-shell]) .app-breadcrumb,
+.paperclip-app-shell[data-keyboard-open="true"]:has([data-classic-task-shell]) .app-breadcrumb {
   flex-shrink: 0;
 }
 
-.paperclip-app-shell[data-mobile="true"]:has([data-task-chat-shell]) #main-content {
+.paperclip-app-shell:is([data-mobile="true"], [data-keyboard-open="true"]):has([data-task-chat-shell]) #main-content {
   display: flex;
   flex-direction: column;
   min-height: 0;
   overflow: hidden;
+}
+
+.paperclip-app-shell[data-mobile="true"]:has([data-task-chat-shell]) #main-content {
   padding-bottom: var(--tc-composer-visible-nav-offset);
+}
+
+.paperclip-app-shell[data-keyboard-open="true"]:has([data-classic-task-shell]) #main-content {
+  min-height: 0;
+  overflow-y: auto;
+}
+
+.paperclip-app-shell[data-keyboard-open="true"] [data-classic-task-shell] [data-testid="issue-chat-composer-dock"] {
+  bottom: 0;
 }
 
 .paperclip-app-shell[data-mobile="true"][data-keyboard-open="true"]:has([data-task-chat-shell]) #main-content {
@@ -3285,7 +3303,7 @@ span.paperclip-mention-chip[data-mention-kind="external-object"] {
   --gtc-40: minmax(0,1fr) 320px; /* Extracted from ui/src/pages/IssueChatLongThreadPerf.tsx (grid-cols-[minmax(0,1fr)_320px]). */
   --gtc-52: minmax(0,1.4fr) minmax(220px,0.8fr); /* Extracted from ui/src/pages/PluginSettings.tsx (grid-cols-[minmax(0,1.4fr)_minmax(220px,0.8fr)]). */
   --gtc-53: minmax(0,1.4fr) minmax(18rem,0.9fr); /* Extracted from ui/src/pages/ProjectWorkspaceDetail.tsx (grid-cols-[minmax(0,1.4fr)_minmax(18rem,0.9fr)]). */
-  --gtc-54: minmax(12rem,2.4fr) minmax(5.25rem,0.75fr) minmax(7rem,1fr) minmax(5rem,0.7fr) 2.75rem; /* Extracted from ui/src/pages/Secrets.tsx (grid-cols-[minmax(12rem,2.4fr)_minmax(5.25rem,0.75fr)_minmax(7rem,1fr)_minmax(5rem,0.7fr)_2.75rem]). */
+  --gtc-54: minmax(12rem,2.2fr) minmax(9rem,1.1fr) minmax(7rem,1fr) minmax(4.5rem,0.6fr) 2.75rem; /* Secrets list: name, provided by, used by, updated, actions (ui/src/pages/Secrets.tsx). */
   --gtc-55: 8rem minmax(0,1fr); /* Extracted from ui/src/pages/Secrets.tsx (grid-cols-[8rem_minmax(0,1fr)]). */
   --gtc-56: minmax(0,1fr) minmax(14rem,18rem); /* Extracted from ui/src/pages/TeamCatalog.tsx (grid-cols-[minmax(0,1fr)_minmax(14rem,18rem)]). */
   --gtc-57: repeat(14,minmax(0,1fr)); /* Extracted from ui/src/pages/UserProfile.tsx (grid-cols-[repeat(14,minmax(0,1fr))]). */
@@ -3753,6 +3771,19 @@ span.paperclip-mention-chip[data-mention-kind="external-object"] {
 @media (prefers-reduced-motion: reduce) {
   .skill-import-enter, .skill-import-sweep { animation: none; }
   .skill-import-progress::-webkit-progress-value { transition: none; }
+}
+
+/* Connected-app tool call progress: a filling bar when the total is known, a quiet sweep otherwise. */
+.tool-call-progress-fill {
+  transition: width var(--motion-line-scroll) var(--motion-ease-standard);
+}
+.tool-call-progress-sweep {
+  width: 40%;
+  animation: skill-import-sweep var(--motion-approval-pulse) var(--motion-ease-standard) infinite;
+}
+@media (prefers-reduced-motion: reduce) {
+  .tool-call-progress-fill { transition: none; }
+  .tool-call-progress-sweep { animation: none; }
 }
 
 /* Agent setup handoff: the same logo stack travels from trigger to prompt. */
@@ -5747,4 +5778,9 @@ html:has(.design-proposal-theme) .agent-markdown-name-field [data-slot="input"],
   .agents-org-toolbar [data-toolbar-search] { flex: 1; min-width: 0; }
   .agents-org-toolbar .design-toolbar-actions { width: 100%; justify-content: flex-end; gap: var(--spacing); }
   .agents-org-toolbar .org-chart-controls { gap: var(--spacing); }
+}
+
+/* Secret values stay hidden while typed; a multi-line field cannot use type="password". */
+.secret-value-masked {
+  -webkit-text-security: disc;
 }

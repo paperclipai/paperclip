@@ -150,7 +150,14 @@ for (const action of ["task_retry", "retry_after_reload", "inbox_retry", "messag
       expect(completed).toMatchObject({ status: "done", executionBlocker: null });
       const runs = await db.select().from(heartbeatRuns).where(and(eq(heartbeatRuns.companyId, company.id), eq(heartbeatRuns.agentId, agent.id)));
       expect(runs.filter(run => run.id !== sourceRunId)).toHaveLength(1);
-      expect(runs.find(run => run.id === sourceRunId)).toMatchObject({ status: "failed", resultJson: null });
+      const source = runs.find(run => run.id === sourceRunId)!;
+      expect(source).toMatchObject({ status: "failed", errorCode: "process_lost", error: "Server restarted during startup" });
+      // Fresh continuation revokes the replaced run's write authority with this timestamp.
+      if (source.resultJson !== null) {
+        expect(source.resultJson).toEqual({ freshContinuationSupersededAt: expect.any(String) });
+        const supersededAt = source.resultJson.freshContinuationSupersededAt as string;
+        expect(new Date(supersededAt).toISOString()).toBe(supersededAt);
+      }
       const prompts = await readFile(path.join(root, "prompts"), "utf8");
       if (action === "queued_retry" || action === "automatic_message_on_reactivation") {
         expect(prompts).toContain("Approved");

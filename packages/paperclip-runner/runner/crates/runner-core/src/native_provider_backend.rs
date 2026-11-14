@@ -99,6 +99,7 @@ impl CommandExecutor for SelectedExecutor {
     fn provider_poll_is_live(&self) -> bool {
         match self {
             Self::LocalFacade(executor) => executor.provider_poll_is_live(),
+            Self::Acpx(executor) => executor.provider_poll_is_live(),
             _ => false,
         }
     }

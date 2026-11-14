@@ -105,6 +105,7 @@ export type ScheduledRetryFacts = {
   dispositionRepair: DispositionRepairFacts | null;
   /** A conversation retry must wait for unresolved questions and approvals. */
   pendingResponse?: "interaction" | "approval" | null;
+  continuesNoWorkRunOnBlockedTask?: boolean;
 };
 
 export type QueuedRunStalenessErrorCode =
@@ -132,6 +133,7 @@ export type StalenessDecision =
 
 export type QueuedRunFacts = {
   pendingResponse?: "interaction" | "approval" | null;
+  continuesNoWorkRunOnBlockedTask?: boolean;
   /** Rechecked for automatic native replacements immediately before dispatch. */
   dependenciesBlocked?: DependencyBlockFacts | null;
   runId: string;
@@ -369,7 +371,7 @@ export function decideScheduledRetryGate(
     };
   }
 
-  if (facts.retryReasonKind === "native_safe_replacement" && facts.issueStatus === "blocked") {
+  if (facts.retryReasonKind === "native_safe_replacement" && facts.issueStatus === "blocked" && !facts.continuesNoWorkRunOnBlockedTask) {
     return { allowed: false, issueId: facts.issueId, errorCode: "issue_blocked",
       reason: "Scheduled replacement suppressed because the task was blocked after recovery",
       details: { issueId: facts.issueId } };
@@ -613,7 +615,7 @@ export function decideQueuedRunStaleness(
     };
   }
 
-  if (facts.retryReasonKind === "native_safe_replacement" && facts.dependenciesBlocked) {
+  if (facts.retryReasonKind === "native_safe_replacement" && facts.dependenciesBlocked && !facts.continuesNoWorkRunOnBlockedTask) {
     return { stale: true, errorCode: "issue_dependencies_blocked",
       reason: "Cancelled because issue dependencies became blocked before replacement dispatch",
       details: { issueId: facts.issueId,
@@ -621,7 +623,7 @@ export function decideQueuedRunStaleness(
         unresolvedBlockerCount: facts.dependenciesBlocked.unresolvedBlockerCount } };
   }
 
-  if (facts.retryReasonKind === "native_safe_replacement" && facts.issueStatus === "blocked") {
+  if (facts.retryReasonKind === "native_safe_replacement" && facts.issueStatus === "blocked" && !facts.continuesNoWorkRunOnBlockedTask) {
     return { stale: true, errorCode: "issue_blocked",
       reason: "Cancelled because the task was blocked before replacement dispatch",
       details: { issueId: facts.issueId } };

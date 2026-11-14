@@ -26,6 +26,23 @@ export interface ExecutionBlocker {
   };
 }
 
+/**
+ * Where a queued, never-started run waits while its agent's concurrency limit
+ * is full. Position follows the order the server starts the agent's queued runs.
+ */
+export interface ExecutionAgentQueue {
+  agentId: string;
+  agentName: string;
+  /** The agent's concurrency limit (runtimeConfig.heartbeat.maxConcurrentRuns, as enforced). */
+  maxConcurrentRuns: number;
+  /** The agent's runs that are running now. */
+  runningCount: number;
+  /** 1-based place among the agent's queued runs; 1 starts when the next slot frees. */
+  position: number;
+  /** All of the agent's queued runs. */
+  queuedCount: number;
+}
+
 /** Presentation of existing execution records, not a second task status machine. */
 export interface ExecutionProjection {
   /** The board can Stop this run now: any queued or running run, or a failed native run whose retry is still pending. */
@@ -53,6 +70,8 @@ export interface ExecutionProjection {
   permittedActions: Array<"inspect_run" | "inspect_recovery">;
   predecessorRunId: string | null;
   successorRunId: string | null;
+  /** Set when phase is "queued" because the agent's concurrency limit is full (cause "agent_at_capacity"). */
+  agentQueue?: ExecutionAgentQueue | null;
 }
 
 /** These incidents require an explicit reconciliation, never a generic Retry. */
@@ -145,6 +164,7 @@ export interface TaskInterruptionPresentation {
   state: "working" | "retry_scheduled" | "failed" | "waiting_for_user" | "resolved";
   nextRetryAt: string | null;
   canRetry: boolean;
+  retryAction?: "move_forward";
   userAction: "approval" | "reconnect" | "assign_agent" | "choose_model" | "resume" | "budget" | "project_access"
     /** Board confirms that a previous server, which can no longer report, stopped its workspace copyback. */
     | "confirm_owner_stop"

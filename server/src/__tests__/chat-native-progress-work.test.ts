@@ -3,7 +3,7 @@ import { persistReprojectedWorkspaceDiffs, projectCodexWorkspaceDiffsFromTrace }
 import { randomUUID } from "node:crypto";
 import { eq, like, and } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
-import { chatPublications, createDb, heartbeatRunEvents, heartbeatRuns, issues, subscribeDatabaseWork } from "@paperclipai/db";
+import { chatPublications, chatMessageLinks, createDb, heartbeatRunEvents, heartbeatRuns, issues, issueComments, issueThreadInteractions, subscribeDatabaseWork } from "@paperclipai/db";
 import { resolveExternalTestDatabaseUrl } from "./helpers/external-test-database.js";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 import { createChatMilestoneFixtures } from "./helpers/chat-milestone-fixtures.js";
@@ -14,6 +14,11 @@ import { appendHeartbeatRunEvent } from "../services/heartbeat-run-events.js";
 import { NativeRunCoordinatorStore } from "../services/native-runtime/native-run-coordinator-store.js";
 import { PaperclipControlPlanePort } from "../services/native-runtime/paperclip-control-plane-port.js";
 import type { PrpEvent } from "../vendor/paperclip-runner/index.js";
+import { createRunSecretRedactionRegistry } from "../services/run-secret-redaction.js";
+import { publicProgressEvent } from "../services/chat-channels/slack/native-progress.js";
+import { publicNativeChatProgressText } from "../services/safe-native-chat-progress.js";
+import { enqueueSlackProgressCompletion, slackProgressCompletionTarget } from "../services/chat-channels/slack/public-progress.js";
+import { REDACTED_EVENT_VALUE } from "../redaction.js";
 import { idleWorkSnapshot } from "../services/task-admission.js";
 
 const external = resolveExternalTestDatabaseUrl("PAPERCLIP_NATIVE_PROGRESS_TEST_DATABASE_URL");
@@ -79,6 +84,135 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
     };
   }
 
+  async function commentary(text: string) {
+    return appendHeartbeatRunEvent(db, { ...event(), payload: { prpEvent: {
+      schema: "paperclip.prp.event.v1", eventType: "item.completed", runId,
+      payload: { kind: "agentMessage", channel: "progress", text },
+    } }, message: "PRIVATE event metadata" });
+  }
+
+  it("coalesces public commentary through grace, cooldown and restart, then becomes quiet", async () => {
+    await db.update(chatPublications).set({ createdAt: new Date() }).where(eq(chatPublications.issueId, f.issueId));
+    await commentary("Checking retries.");
+    await start();
+    expect(await publications()).toHaveLength(0);
+    expect(coordinator!.nextWakeAt()).not.toBeNull();
+    await vi.advanceTimersByTimeAsync(11_000);
+    await vi.waitFor(async () => expect(await publications()).toHaveLength(1));
+    const [first] = await publications();
+    expect(first.payload.text).toContain("Checking retries.");
+    await db.update(chatPublications).set({ state: "published", publishedAt: new Date() }).where(eq(chatPublications.id, first.id));
+    for (let index = 0; index < 20; index++) await commentary(`Found retry case ${index}. Checking recovery next.`);
+    // A later coarse operation must not displace the useful public note.
+    await appendHeartbeatRunEvent(db, event(false, "tool.execution.completed"));
+    await coordinator!.stop(); await start();
+    expect(await publications()).toHaveLength(1);
+    expect(coordinator!.nextWakeAt()).not.toBeNull();
+    await vi.advanceTimersByTimeAsync(31_000);
+    await vi.waitFor(async () => expect(await publications()).toHaveLength(2));
+    expect((await publications()).map(row => row.payload.text).join(" ")).toContain("Found retry case 19.");
+    expect(JSON.stringify(await publications())).not.toContain("PRIVATE");
+    await settle(); await quiet();
+    // Repeated whitespace and another completed item must not create work.
+    await commentary("Found  retry case 19. Checking recovery next.");
+    await settle(); expect(await publications()).toHaveLength(2); await quiet();
+    expect(errors).toEqual([]);
+  });
+
+  it.each(["progress", "commentary", "final", "summary", "unknown", "wrong-run", "wrong-schema", "wrong-kind"])(
+    "keeps SQL selection and the public text boundary aligned for %s", async kind => {
+      const payload = { prpEvent: { schema: kind === "wrong-schema" ? "other" : "paperclip.prp.event.v1",
+        runId: kind === "wrong-run" ? randomUUID() : runId, eventType: "item.completed",
+        payload: { kind: kind === "wrong-kind" ? "reasoning" : "agentMessage", channel: kind, text: "Checking recovery." },
+      } };
+      if (kind.startsWith("wrong-")) payload.prpEvent.payload.channel = "progress";
+      await appendHeartbeatRunEvent(db, { ...event(), payload });
+      const selected = await db.select({ payload: heartbeatRunEvents.payload }).from(heartbeatRunEvents)
+        .where(and(eq(heartbeatRunEvents.runId, runId), publicProgressEvent(heartbeatRunEvents)));
+      const projected = publicNativeChatProgressText("item.completed", payload, runId);
+      expect(selected.length > 0).toBe(projected !== null);
+      expect(selected.length > 0).toBe(kind === "progress");
+    },
+  );
+
+  it("retires a generic progress link once and refuses a link consumed by another output", async () => {
+    await db.update(chatPublications).set({ providerMessageId: "working" }).where(eq(chatPublications.issueId, f.issueId));
+    const [base] = await db.select().from(chatPublications).where(eq(chatPublications.issueId, f.issueId));
+    await db.insert(chatMessageLinks).values({ companyId: f.companyId, endpointId: f.endpointId,
+      conversationId: f.conversationId, publicationId: base.id, providerMessageId: "working", direction: "outbound" });
+    const [comment] = await db.insert(issueComments).values({ companyId: f.companyId, issueId: f.issueId,
+      authorType: "agent", authorAgentId: f.agentId, createdByRunId: runId, body: "Answer" }).returning();
+    const [answer] = await db.insert(chatPublications).values({ companyId: f.companyId, endpointId: f.endpointId,
+      conversationId: f.conversationId, issueId: f.issueId, commentId: comment.id,
+      idempotencyKey: "answer", payload: { text: "Answer" }, state: "published", providerMessageId: "answer" }).returning();
+    await db.transaction(async tx => {
+      await enqueueSlackProgressCompletion(tx, answer);
+      await enqueueSlackProgressCompletion(tx, answer);
+    });
+    const cleanup = await db.select().from(chatPublications).where(like(chatPublications.idempotencyKey, `%:slack-progress-close:${base.id}`));
+    expect(cleanup).toHaveLength(1);
+    expect(cleanup[0].payload).toEqual({ text: "Response sent.", progressState: "completed" });
+    expect(await slackProgressCompletionTarget(db, cleanup[0])).toBe("working");
+    await db.update(chatMessageLinks).set({ publicationId: answer.id }).where(eq(chatMessageLinks.publicationId, base.id));
+    expect(await slackProgressCompletionTarget(db, cleanup[0])).toBeNull();
+  });
+
+  it("redacts registered run secrets before saving public progress", async () => {
+    const secret = "ordinary-synthetic-value-without-credential-prefix";
+    vi.stubEnv("PAPERCLIP_SECRETS_MASTER_KEY", "a".repeat(64));
+    try {
+      await createRunSecretRedactionRegistry(db).register(f.companyId, runId, secret);
+      await commentary(`Checked ${secret}. Verifying recovery.`);
+      await start(); await settle();
+      const saved = await publications();
+      expect(saved).toHaveLength(1);
+      expect(saved[0].payload.text).toContain(REDACTED_EVENT_VALUE);
+      expect(JSON.stringify(saved)).not.toContain(secret);
+      expect(errors).toEqual([]);
+    } finally { vi.unstubAllEnvs(); }
+  });
+
+  it("pages past unusable public notes to keep the latest useful commentary", async () => {
+    await commentary("Found the retry cause. Checking recovery.");
+    for (let index = 0; index < 51; index++) await commentary("x".repeat(450));
+    await commentary("<thinking>PRIVATE</thinking>");
+    await start(); await settle();
+    expect(await publications()).toEqual([expect.objectContaining({ payload: expect.objectContaining({
+      text: expect.stringContaining("Found the retry cause. Checking recovery."),
+    }) })]);
+    await quiet(); expect(errors).toEqual([]);
+  });
+
+  it("uses a real lifecycle fallback when public notes are unusable", async () => {
+    await commentary("x".repeat(450));
+    await appendHeartbeatRunEvent(db, event(false, "tool.execution.completed"));
+    await start(); await settle();
+    expect(await publications()).toEqual([expect.objectContaining({ payload: expect.objectContaining({ text: "Maya is using tools…" }) })]);
+    await quiet(); expect(errors).toEqual([]);
+  });
+
+  it.each(["terminal", "question", "answer"])("cancels the cooldown deadline when %s takes over", async reason => {
+    await commentary("Checking retries.");
+    await start(); await settle();
+    const [first] = await publications();
+    await db.update(chatPublications).set({ state: "published", publishedAt: new Date() }).where(eq(chatPublications.id, first.id));
+    await commentary("Found the cause. Checking recovery.");
+    await vi.advanceTimersByTimeAsync(1000);
+    await vi.waitFor(() => expect(coordinator!.nextWakeAt()).not.toBeNull());
+    if (reason === "terminal") await db.update(heartbeatRuns).set({ status: "succeeded" }).where(eq(heartbeatRuns.id, runId));
+    if (reason === "question") await db.insert(issueThreadInteractions).values({ companyId: f.companyId, issueId: f.issueId,
+      kind: "ask_user_questions", continuationPolicy: "wake_assignee", status: "pending", createdByAgentId: f.agentId, sourceRunId: runId,
+      payload: { version: 1, questions: [] } });
+    if (reason === "answer") {
+      const [comment] = await db.insert(issueComments).values({ companyId: f.companyId, issueId: f.issueId,
+        authorType: "agent", authorAgentId: f.agentId, createdByRunId: runId, body: "Done", metadata: { version: 1, sections: [], authorizationReason: "paperclip_runner_protocol" } }).returning();
+      await db.insert(chatPublications).values({ companyId: f.companyId, endpointId: f.endpointId, conversationId: f.conversationId,
+        issueId: f.issueId, commentId: comment.id, idempotencyKey: `answer:${runId}`, payload: { text: "Done" } });
+    }
+    await vi.advanceTimersByTimeAsync(31_000); await settle();
+    expect(await publications()).toHaveLength(1); await quiet(); expect(errors).toEqual([]);
+  });
+
   it.each([false, true])("wakes from a real committed event after idle (native source: %s)", async nativeSource => {
     await start(); await settle(); await quiet(); expect(await publications()).toEqual([]);
     const input = event(nativeSource);
@@ -105,6 +239,60 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
     }
   });
 
+  const progressEvent = (sourceSeq: number) => ({ companyId: f.companyId, agentId: f.agentId, runId,
+    eventType: "tool.execution.progressed", message: "PRIVATE event text", payload: { token: "PRIVATE token" },
+    nativeSource: { sourceInstanceId: runId, sourceEventId: `event-${sourceSeq}`, sourceSeq, protocolSchemaVersion: 1,
+      canonicalPayload: { eventType: "tool.execution.progressed", sourceSeq } } });
+  const progressPublished = async () => {
+    await vi.waitFor(async () => {
+      await vi.advanceTimersByTimeAsync(1000);
+      expect(await publications()).toHaveLength(1);
+    }, { timeout: 5000 });
+  };
+  const appendWithoutWake = async (sourceSeq: number) => {
+    const [run] = await db.select({ nextEventSeq: heartbeatRuns.nextEventSeq }).from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
+    await db.insert(heartbeatRunEvents).values({ companyId: f.companyId, agentId: f.agentId, runId, seq: run!.nextEventSeq,
+      eventType: "tool.execution.progressed", message: "PRIVATE event text", payload: { token: "PRIVATE token" },
+      sourceInstanceId: runId, sourceEventId: `event-${sourceSeq}`, sourceSeq, protocolSchemaVersion: 1, sourcePayloadSha256: "no-wake" });
+    await db.update(heartbeatRuns).set({ nextEventSeq: run!.nextEventSeq + 1, nativeSourceCursors: { [runId]: sourceSeq } })
+      .where(eq(heartbeatRuns.id, runId));
+  };
+
+  it("wakes the projection from a one-statement progress event after the statement commits", async () => {
+    await start(); await settle(); await quiet(); expect(await publications()).toEqual([]);
+    const signals: string[] = [];
+    const unsubscribe = subscribeDatabaseWork(db, DELIVERY_QUEUES.chatNativeProgress, kind => signals.push(kind));
+    const statements: string[] = [];
+    const options = db.$client.options as { debug?: unknown };
+    options.debug = (_connection: number, text: string) => { statements.push(text.trim().replace(/\s+/g, " ")); };
+    try {
+      expect((await appendHeartbeatRunEvent(db, progressEvent(1))).disposition).toBe("committed");
+    } finally { options.debug = undefined; unsubscribe(); }
+    expect(statements).toHaveLength(1);
+    expect(statements[0]).toMatch(/^with snapshot_run as .* pg_notify/);
+    expect(signals).toEqual(["settled"]);
+    await progressPublished();
+    await settle(); await quiet(); expect(errors).toEqual([]);
+  });
+
+  it("repairs a lost progress wake with the run's next progress event", async () => {
+    await start(); await settle(); await quiet();
+    await appendWithoutWake(1);
+    await settle(); await quiet();
+    expect(await publications()).toEqual([]);
+    await appendHeartbeatRunEvent(db, progressEvent(2));
+    await progressPublished();
+    await settle(); await quiet(); expect(errors).toEqual([]);
+  });
+
+  it("repairs a lost progress wake with the startup reconcile", async () => {
+    await appendWithoutWake(1);
+    expect(await publications()).toEqual([]);
+    await start();
+    await progressPublished();
+    await settle(); await quiet(); expect(errors).toEqual([]);
+  });
+
   it("wakes a saved event when its first working publication commits after event selection", async () => {
     await db.delete(chatPublications).where(eq(chatPublications.issueId, f.issueId));
     await appendHeartbeatRunEvent(db, event(true));
@@ -116,7 +304,7 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
       // Model a base transaction that began before the event but committed
       // afterwards, without a wall-clock delay in the suite. PostgreSQL's
       // default now() is transaction-start time, not commit time.
-      await tx.update(chatPublications).set({ createdAt: new Date(Date.now() - 300_000) })
+      await tx.update(chatPublications).set({ createdAt: new Date(Date.now() - 300_000), state: "published" })
         .where(eq(chatPublications.idempotencyKey, `run:${runId}:working:${f.endpointId}`));
       await vi.advanceTimersByTimeAsync(1000); expect(await publications()).toEqual([]);
     });

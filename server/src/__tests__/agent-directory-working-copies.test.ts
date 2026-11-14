@@ -355,6 +355,31 @@ describe("persistent agent directories", () => {
         expect(worker.nextWakeAt()).toBeNull();
       } finally { release(); await foreground; removes.mockRestore(); await worker.stop(); }
     });
+    it("keeps a cleanup pending without an error while another server holds the agent directory lock", async () => {
+      const copy = await run();
+      await db.update(agentInstructionWorkingCopies).set({ location: `remote:${randomUUID()}` })
+        .where(eq(agentInstructionWorkingCopies.runId, copy.runId));
+      await stopped(copy, new Date(Date.now() - 1000));
+      vi.stubEnv("PAPERCLIP_EPHEMERAL_SERVER", "true");
+      const held = await db.$client.reserve();
+      const lockKey = `agent-directory:${companyId}:${agentId}`;
+      await held`select pg_advisory_lock(hashtextextended(${lockKey}, 0))`;
+      const errors: unknown[] = [], worker = coordinator(() => true, () => true, error => errors.push(error));
+      try {
+        const before = Date.now();
+        await copies.registerDirectoryCleanupWork(worker, () => true, async () => true).ready;
+        await expect.poll(() => idleWorkSnapshot().active).toBe(0);
+        expect(errors).toEqual([]);
+        const pending = (await copies.get(companyId, copy.runId))!;
+        expect(pending.receipt?.cleanupPending).not.toBe(false);
+        expect(pending.nextAttemptAt!.getTime()).toBeGreaterThan(before);
+      } finally {
+        await worker.stop();
+        await held`select pg_advisory_unlock(hashtextextended(${lockKey}, 0))`;
+        held.release();
+        vi.unstubAllEnvs();
+      }
+    });
     it("reactivates from the real worktree setting without polling disabled policy", async () => {
       const copy = await run(); await stopped(copy);
       const runtimeEnv = { PAPERCLIP_IN_WORKTREE: "true", PAPERCLIP_INSTANCE_ID: "sleep41-directory-activation" };

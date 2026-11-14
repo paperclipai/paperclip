@@ -6,6 +6,7 @@ import type { AttentionSourceKind } from "@paperclipai/shared";
 import { DELIVERY_QUEUES, notifyDeliveryWork } from "./delivery-work-notifications.js";
 
 export const ATTENTION_RETENTION_MAX_ISSUE_IDS = 100;
+const UUID_PATTERN = "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$";
 export type AttentionRetentionScope = { companyId?: string; sourceKind?: AttentionSourceKind;
   issueId?: string; issueIds?: string[]; sourceId?: string };
 
@@ -27,9 +28,10 @@ export async function notifyIssueAttentionRetentionWork(transaction: object,
       where company_id = ${scope.companyId}::uuid and id = ${scope.runId}::uuid and issue_id is not null
       union select native_issue_id::text from heartbeat_runs
       where company_id = ${scope.companyId}::uuid and id = ${scope.runId}::uuid and native_issue_id is not null
-      union select issue.id::text from heartbeat_runs run inner join issues issue
-        on issue.company_id = run.company_id
-          and issue.id::text = coalesce(run.context_snapshot->>'issueId', run.context_snapshot->>'taskId')
+      union select issue.id::text from heartbeat_runs run
+        cross join lateral (select coalesce(run.context_snapshot->>'issueId', run.context_snapshot->>'taskId') as saved) context
+        inner join issues issue on issue.company_id = run.company_id
+          and issue.id = case when context.saved ~* ${UUID_PATTERN} then context.saved::uuid end
       where run.company_id = ${scope.companyId}::uuid and run.id = ${scope.runId}::uuid`);
     for (const row of rows) seeds.push(row.id as string);
   }

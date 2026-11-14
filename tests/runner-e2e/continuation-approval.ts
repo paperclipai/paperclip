@@ -64,7 +64,7 @@ export async function confirmContinuationPlan(input: {
   expect(current.id, "the reviewed confirmation must still be current").toBe(expected.id);
   expect(sameTarget(current.payload.target, expected.payload.target), "the reviewed plan must not change before approval").toBe(true);
   const card = input.page.getByTestId("task-chat-composer-takeover")
-    .locator(`[id=${JSON.stringify(`interaction-${current.id}`)}]`);
+    .locator(`[data-interaction-id=${JSON.stringify(current.id)}]`);
   await expect(card, "the exact current confirmation must be visible").toBeVisible();
   await card.getByRole("button", { name: current.payload.acceptLabel ?? "Approve", exact: true }).click();
   const saved = await pollUntil({

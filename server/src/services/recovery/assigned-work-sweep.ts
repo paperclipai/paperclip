@@ -9,6 +9,7 @@ import {
   companies,
   heartbeatRuns,
   issueApprovals,
+  issueRecoveryActions,
   issueRelations,
   issueThreadInteractions,
   issues,
@@ -17,7 +18,7 @@ import {
 } from "@paperclipai/db";
 import { logger } from "../../middleware/logger.js";
 import { logActivity, publishActivity, type ActivityPublication } from "../activity-log.js";
-import { evaluateAgentInvokabilityFromDb } from "../agent-invokability.js";
+import { evaluateAgentInvokability } from "../agent-invokability.js";
 import { isAgentAwaitingSetup } from "../../modules/agent-lifecycle/index.js";
 import { unadmittedChatWakeupCondition } from "../durable-chat-wakeup.js";
 import { issueRecoveryActionService } from "../issue-recovery-actions.js";
@@ -28,26 +29,41 @@ import { issueTreeControlService } from "../issue-tree-control.js";
 import { taskInterruptionPresentations } from "../task-interruption-presentation.js";
 import { CHAT_CONTROL_RECOVERY_STOP_CODE, CHAT_CONTROL_RECOVERY_UNRESOLVED_CODE } from "../chat-control-recovery-stop.js";
 import { onboardingFirstTaskAwaitingUserSql } from "./onboarding-first-task-wait.js";
+import { workspaceRecoverySourceEligible } from "../workspace-recovery-source.js";
+import { PENDING_CONTINUATION_BOUND_MS } from "../recovery-continuation-pacing.js";
+import { HELD_RECOVERY_WAKE_KEYS, queuedRecoveryRunsOf } from "../recovery-queue-admission.js";
+import { listPersonOriginSourceRunIds } from "../heartbeat/queued-run-line.js";
+import { aliasedRun, queuedRunStalledSql } from "./stalled-queued-run-sql.js";
+import { attributeBlock, BLOCK_ATTRIBUTION_WINDOW_MS, blockedStatusDetailsSql } from "../interruption-block-release.js";
+import { ASSIGNED_WORK_CONTINUED_ACTION, PAUSED_FOR_AUTOMATIC_WORK, taskAutomaticAttempts } from "./task-automatic-attempts.js";
+import { automaticRunCreationHeldUntil, readAutomaticWorkStatus, reserveAutomaticRunCreation } from "./automatic-run-brake.js";
+import { isReattachPhaseActive, reattachPhaseRecheckAt } from "../heartbeat/run-admission.js";
+import { continueSweepTaskFromSavedWork } from "./sweep-saved-work-continuation.js";
+import { STRANDED_CONTINUATION_MAX_AGE_MS, STRANDED_KIND, strandedHoldContinuesAutomatically, type StrandedHoldRun } from "./stranded-hold-continuation.js";
 import {
   continuationActivityMessage,
   continuationAllowance,
   CONTINUATION_PENDING_MESSAGE,
+  SAVED_WORK_RECOVERY_START_BOUND_MS,
+  savedWorkRecoveryDueSince,
   CONTINUATION_REFUSED_MESSAGE,
   CONTINUATION_REVIEW_MESSAGE,
-  evaluateAssignedWork,
   CONTINUATION_CAP_WINDOW_MS,
+  evaluateAssignedWork,
   STALE_BLOCK_MS,
   NATIVE_STALL_MS,
   type AssignedWorkFacts,
   type AssignedWorkVerdict,
   type RunOwnerVerdict,
+  type SavedWorkRecoveryFact,
   type ViolationReason,
 } from "./assigned-work-invariant.js";
 
 /** Activity action recorded for every automatic continuation. It is also the
  * durable claim two servers serialize on, and the per-task rate-limit ledger. */
-export const ASSIGNED_WORK_CONTINUED_ACTION = "issue.continued_automatically";
+export { ASSIGNED_WORK_CONTINUED_ACTION };
 export const ASSIGNED_WORK_CONTINUATION_SOURCE = "issue.assigned_work_invariant";
+export const STRANDED_TRANSIENT_CONTINUED_OUTCOME = "stranded_transient_continued";
 /** Repairs per process per minute, so a deploy with many violations does not
  * start hundreds of runs at once. The rest are deferred, newest first. */
 export const ASSIGNED_WORK_REPAIRS_PER_MINUTE = 10;
@@ -56,10 +72,11 @@ export const ASSIGNED_WORK_REPORT_LIMIT = 2_000;
 
 const OPEN_STATUSES = ["todo", "in_progress", "blocked"] as const;
 const PENDING_WAKE_STATUSES = ["queued", "deferred_issue_execution", "claimed"];
+const DEFERRED_WAKE_PENDING_BOUND_MS = 5 * 60_000;
+export { PENDING_CONTINUATION_BOUND_MS };
 const NON_TERMINAL_RUN_STATUSES = ["queued", "running", "scheduled_retry"];
 const NATIVE_PENDING_RECOVERY_STATES = ["awaiting_evidence", "awaiting_runner_reattach", "resuming_session", "bootstrap_incomplete"];
 const PROVIDER_LIMIT_CAUSES = ["provider_quota", "native_provider_usage_limit"];
-const BLOCK_ATTRIBUTION_WINDOW_MS = 10_000;
 
 type IssueRow = Pick<typeof issues.$inferSelect, "id" | "companyId" | "status" | "assigneeAgentId" | "assigneeUserId" | "hiddenAt"
   | "blockedTransitionAt" | "updatedAt" | "unblockDescriptor" | "monitorNextCheckAt" | "conversationAgentId" | "originKind"
@@ -78,6 +95,10 @@ export type AssignedWorkDeps = {
   liveRunExecutions?: Readonly<{ has(id: string): boolean }>;
   /** Heartbeat's lost-process settle path for a running run whose owner is gone. */
   settleLostRunProcess?: (scope: { companyId: string; runId: string; onDeferredDeadline?: (at: number) => void }) => Promise<unknown>;
+  /** Starts a saved-work recovery the recovery queue has not reached in time. */
+  startSavedWorkRecovery?: (source: { companyId: string; issueId: string; runId: string; actionId: string }) =>
+    Promise<"started" | "in_flight" | "busy" | "not_eligible">;
+  cancelStalledQueuedRun?: (scope: { companyId: string; runId: string; version: string; attachedWakes: number }) => Promise<boolean>;
   /** Shared owner proof, injectable for tests. */
   proveOwner?: (stamp: LocalOwnerStamp) => Promise<OwnerProof>;
   now?: () => Date;
@@ -85,9 +106,13 @@ export type AssignedWorkDeps = {
 
 export type AssignedWorkCheck = {
   verdict: AssignedWorkVerdict;
-  outcome: "ok" | "settling" | "repaired" | "settled_lost_run" | "deferred_rate_limit" | "deferred_cap" | "stale_reported" | "left_to_hold_owner" | "left_to_native_recovery" | "changed" | "enqueue_refused";
+  outcome: "ok" | "settling" | "repaired" | "settled_lost_run" | "deferred_rate_limit" | "deferred_cap" | "deferred_reattach_phase" | "stale_reported" | "left_to_hold_owner" | "left_to_native_recovery" | "changed" | "enqueue_refused"
+    | "waiting_on_recovery" | "started_saved_work_recovery" | "saved_work_recovery_busy"
+    | "replaced_stalled_run" | "left_person_work" | "left_stalled_replacement";
   retryAt: Date | null;
 };
+
+const rowsOf = <T>(value: unknown): T[] => Array.isArray(value) ? value as T[] : ((value as { rows?: T[] })?.rows ?? []);
 
 const json = (value: unknown): Record<string, unknown> =>
   value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
@@ -116,7 +141,8 @@ function createPassLog() {
       } else if (verdict.kind === "violation") {
         pass.violations[verdict.reason] = (pass.violations[verdict.reason] ?? 0) + 1;
       }
-      if (check.outcome === "repaired" || check.outcome === "settled_lost_run") pass.repaired += 1;
+      if (check.outcome === "repaired" || check.outcome === "settled_lost_run" || check.outcome === "started_saved_work_recovery"
+        || check.outcome === "replaced_stalled_run") pass.repaired += 1;
       if (check.outcome === "deferred_rate_limit" || check.outcome === "deferred_cap") pass.deferred += 1;
       if (check.outcome === "stale_reported") pass.stale += 1;
       if (!timer) { timer = setTimeout(flush, 5_000); timer.unref?.(); }
@@ -130,6 +156,7 @@ export function assignedWorkSweep(db: Db, deps: AssignedWorkDeps) {
   const proveOwner = deps.proveOwner ?? ((stamp: LocalOwnerStamp) => proveOwnerGone(stamp, { ...currentProcessProbe(), readOnly: true }));
   const passLog = createPassLog();
   const repairTimes: number[] = [];
+  const reportedStalledRuns = new Set<string>();
   const sweepTreeControl = issueTreeControlService(db);
 
   async function runOwner(run: RunRow, at: Date, proveOwners = true): Promise<RunOwnerVerdict> {
@@ -175,9 +202,13 @@ export function assignedWorkSweep(db: Db, deps: AssignedWorkDeps) {
       sql`${issueThreadInteractions.issueId}::text`, issueThreadInteractions.createdAt);
 
     const [activeRuns, latestRuns, wakes, chatWakes, nativePending, handoffs, goals, interactions, approvalRows,
-      blockerRows, resolvedBlockerRows, childRows, actionMap, agentRows, companyRows, onboardingRows, blockActivity, interruptions] = await Promise.all([
-      database.select(runColumns).from(heartbeatRuns).where(and(eq(heartbeatRuns.companyId, companyId),
-        inArray(heartbeatRuns.status, NON_TERMINAL_RUN_STATUSES), sql`${runIssue} = any(${idParam})`)),
+      blockerRows, resolvedBlockerRows, childRows, actionMap, agentRows, companyRows, onboardingRows, blockActivity, interruptions,
+      savedWorkRows] = await Promise.all([
+      database.select({ ...runColumns, createdAt: heartbeatRuns.createdAt, stalledQueued: queuedRunStalledSql(aliasedRun("heartbeat_runs"), at),
+        replacesStalledRunId: sql<string | null>`${heartbeatRuns.contextSnapshot}->>'replacesStalledRunId'`,
+        explicitUserContinuation: sql<boolean>`jsonb_typeof(${heartbeatRuns.contextSnapshot}->'explicitUserContinuation') = 'object'` })
+        .from(heartbeatRuns).where(and(eq(heartbeatRuns.companyId, companyId),
+          inArray(heartbeatRuns.status, NON_TERMINAL_RUN_STATUSES), sql`${runIssue} = any(${idParam})`)),
       // The newest run per task, read through the (company, issueId, created) index.
       database.execute<RunRow & { issue_id: string }>(sql`select requested.id as "issueId", latest.*
         from unnest(${idParam}) as requested(id)
@@ -194,6 +225,15 @@ export function assignedWorkSweep(db: Db, deps: AssignedWorkDeps) {
       database.select({ issueId: sql<string>`${agentWakeupRequests.payload}->>'issueId'`, count: sql<number>`count(*)::int` })
         .from(agentWakeupRequests).where(and(eq(agentWakeupRequests.companyId, companyId),
           inArray(agentWakeupRequests.status, PENDING_WAKE_STATUSES),
+          sql`(${agentWakeupRequests.status} = 'queued'
+            or (${agentWakeupRequests.status} = 'deferred_issue_execution'
+              and ${agentWakeupRequests.createdAt} > ${at.toISOString()}::timestamptz - ${`${DEFERRED_WAKE_PENDING_BOUND_MS} milliseconds`}::interval)
+            -- A claimed wake becomes a run within seconds; one claimed long ago with no run never will.
+            or (${agentWakeupRequests.status} = 'claimed' and (${agentWakeupRequests.runId} is not null
+              or coalesce(${agentWakeupRequests.claimedAt}, ${agentWakeupRequests.createdAt})
+                > ${at.toISOString()}::timestamptz - ${`${DEFERRED_WAKE_PENDING_BOUND_MS} milliseconds`}::interval)))`,
+          sql`not exists (select 1 from heartbeat_runs wake_run where wake_run.id = ${agentWakeupRequests.runId}
+            and ${queuedRunStalledSql(aliasedRun("wake_run"), at)})`,
           sql`${agentWakeupRequests.payload}->>'issueId' = any(${idParam})`))
         .groupBy(sql`${agentWakeupRequests.payload}->>'issueId'`),
       database.select({ id: issues.id }).from(issues).where(and(eq(issues.companyId, companyId), inArray(issues.id, ids),
@@ -256,27 +296,75 @@ export function assignedWorkSweep(db: Db, deps: AssignedWorkDeps) {
           where a.company_id = ${companyId} and a.entity_type = 'issue' and a.entity_id = requested.id
             and a.created_at between requested.blocked_at - make_interval(secs => ${BLOCK_ATTRIBUTION_WINDOW_MS / 1000})
               and requested.blocked_at + make_interval(secs => ${BLOCK_ATTRIBUTION_WINDOW_MS / 1000})
-            and (a.details->>'status' = 'blocked' or a.details->>'toStatus' = 'blocked'
-              or a.details->'changes'->'status'->>'to' = 'blocked')
+            and ${blockedStatusDetailsSql(sql`a.details`)}
           order by a.created_at desc limit 1
         ) latest`) : [],
       taskInterruptionPresentations(database, companyId, issueRows.map(issue => ({ id: issue.id, companyId: issue.companyId,
         status: issue.status, assigneeAgentId: issue.assigneeAgentId, projectId: issue.projectId }))),
+      // Saved-work recoveries the recovery queue still owes: exactly what its
+      // worker selects, so "pending" means the worker will start it.
+      database.select({ issueId: issueRecoveryActions.sourceIssueId, actionId: issueRecoveryActions.id, runId: heartbeatRuns.id,
+        finishedAt: heartbeatRuns.finishedAt,
+        state: sql<string>`${issueRecoveryActions.evidence}#>>'{systemRecovery,state}'`,
+        nextAttemptAt: sql<unknown>`${issueRecoveryActions.evidence}#>'{systemRecovery,nextAttemptAt}'`,
+        activeAt: sql<unknown>`${issueRecoveryActions.evidence}->'systemRecoveryActiveAt'` })
+        .from(issueRecoveryActions).innerJoin(heartbeatRuns, and(eq(heartbeatRuns.companyId, issueRecoveryActions.companyId),
+          sql`${heartbeatRuns.id}::text = ${issueRecoveryActions.evidence}->>'runId'`))
+        .where(and(eq(issueRecoveryActions.companyId, companyId), inArray(issueRecoveryActions.sourceIssueId, ids),
+          inArray(heartbeatRuns.status, ["failed", "interrupted", "timed_out", "cancelled", "succeeded"]),
+          workspaceRecoverySourceEligible(),
+          sql`${issueRecoveryActions.evidence}#>>'{systemRecovery,state}' in ('scheduled', 'running', 'awaiting_evidence')`))
+        .orderBy(desc(issueRecoveryActions.createdAt)),
     ]);
 
-    const rowsOf = <T>(value: unknown): T[] => Array.isArray(value) ? value as T[] : ((value as { rows?: T[] })?.rows ?? []);
+    const strandedRunIds = [...actionMap.values()].filter(action => action.kind === STRANDED_KIND && action.ownerType === "board")
+      .map(action => action.evidence?.latestRunId).filter((id): id is string => typeof id === "string" && /^[0-9a-f-]{36}$/i.test(id));
+    const strandedRuns = new Map<string, StrandedHoldRun>((strandedRunIds.length ? await database.select({ id: heartbeatRuns.id,
+      agentId: heartbeatRuns.agentId, status: heartbeatRuns.status, errorCode: heartbeatRuns.errorCode, error: heartbeatRuns.error,
+      finishedAt: heartbeatRuns.finishedAt, retryOfRunId: heartbeatRuns.retryOfRunId, scheduledRetryReason: heartbeatRuns.scheduledRetryReason,
+      contextSnapshot: heartbeatRuns.contextSnapshot, runnerProfileJson: heartbeatRuns.runnerProfileJson,
+      executionRecovery: sql<StrandedHoldRun["executionRecovery"]>`${heartbeatRuns.resultJson}->'executionRecovery'` })
+      .from(heartbeatRuns).where(and(eq(heartbeatRuns.companyId, companyId), inArray(heartbeatRuns.id, strandedRunIds))) : [])
+      .map(({ id, ...run }) => [id, run]));
     const agentsById = new Map<string, typeof agents.$inferSelect & { invokable: boolean }>();
+    const companyAgents = agentRows.length ? await database.select({ id: agents.id, companyId: agents.companyId, name: agents.name,
+      reportsTo: agents.reportsTo, status: agents.status }).from(agents).where(eq(agents.companyId, companyId)) : [];
     for (const agent of agentRows as Array<typeof agents.$inferSelect>) {
       // An agent still being set up, or held by a lifecycle hold, takes no work
       // yet; its setup or release is the next move, not a continuation.
       const ready = !isAgentAwaitingSetup(agent) && (agent.lifecycleHolds ?? []).length === 0;
-      agentsById.set(agent.id, { ...agent, invokable: ready && (await evaluateAgentInvokabilityFromDb(database, agent)).invokable });
+      agentsById.set(agent.id, { ...agent, invokable: ready && evaluateAgentInvokability(agent, companyAgents).invokable });
     }
     const company = companyRows[0];
     const companyBudget = company?.pauseReason === "budget" || company?.pauseReason === "budget_exceeded";
     const counts = (rows: Array<{ issueId: string | null; count: number }>) =>
       new Map(rows.filter(row => row.issueId).map(row => [row.issueId!, Number(row.count)]));
+    const pendingContinuations = await database.select({ issueId: issueRecoveryActions.sourceIssueId,
+      agentId: issueRecoveryActions.returnOwnerAgentId }).from(issueRecoveryActions).where(and(
+      eq(issueRecoveryActions.companyId, companyId), inArray(issueRecoveryActions.sourceIssueId, ids),
+      eq(issueRecoveryActions.status, "resolved"),
+      sql`${issueRecoveryActions.evidence}->>'continuationDelivery' = 'pending'`,
+      // Recent, or waiting its turn behind the agent's queued recovery runs.
+      sql`(coalesce(${issueRecoveryActions.evidence}#>>'{freshContinuation,recordedAt}', ${issueRecoveryActions.resolvedAt}::text,
+        ${issueRecoveryActions.updatedAt}::text)::timestamptz
+        > ${at.toISOString()}::timestamptz - ${`${PENDING_CONTINUATION_BOUND_MS} milliseconds`}::interval
+        or exists (${queuedRecoveryRunsOf(sql`${issueRecoveryActions.companyId}`, sql`${issueRecoveryActions.returnOwnerAgentId}`)}))`));
+    // A restored task's wake that is waiting its turn behind its assignee's
+    // queued recovery runs (see HELD_RECOVERY_WAKE_KEYS) is its pending path too.
+    const heldWakes = await database.select({ issueId: issueRecoveryActions.sourceIssueId, agentId: issues.assigneeAgentId })
+      .from(issueRecoveryActions)
+      .innerJoin(issues, and(eq(issues.companyId, issueRecoveryActions.companyId), eq(issues.id, issueRecoveryActions.sourceIssueId)))
+      .where(and(
+        eq(issueRecoveryActions.companyId, companyId), inArray(issueRecoveryActions.sourceIssueId, ids),
+        eq(issueRecoveryActions.status, "resolved"),
+        or(...HELD_RECOVERY_WAKE_KEYS.map(key => sql`${issueRecoveryActions.evidence} #>> array[${key}::text, 'wake'] = 'pending'`)),
+        sql`exists (${queuedRecoveryRunsOf(sql`${issues.companyId}`, sql`${issues.assigneeAgentId}`)})`));
     const wakeCounts = counts(wakes);
+    for (const continuation of [...pendingContinuations, ...heldWakes]) {
+      const issue = issueRows.find(row => row.id === continuation.issueId);
+      if (!issue || !continuation.agentId || issue.assigneeAgentId !== continuation.agentId) continue;
+      wakeCounts.set(continuation.issueId, (wakeCounts.get(continuation.issueId) ?? 0) + 1);
+    }
     const chatWakeIds = new Set(chatWakes.map(row => row.id));
     // A native restart-recovery claim that nobody renewed for NATIVE_STALL_MS
     // is not a pending path, and its still-running run is not live.
@@ -286,6 +374,14 @@ export function assignedWorkSweep(db: Db, deps: AssignedWorkDeps) {
       && row.updatedAt.getTime() < at.getTime() - NATIVE_STALL_MS).map(row => row.runId));
     const nativeIds = new Set(nativePending.filter(row => !stalledRunIds.has(row.runId)).map(row => row.issueId));
     const handoffIds = new Set(handoffs.map(row => row.issueId));
+    const epochMs = (value: unknown) => typeof value === "number" && Number.isFinite(value) ? value : null;
+    const savedWorkByIssue = new Map<string, SavedWorkRecoveryFact>();
+    for (const row of savedWorkRows) {
+      if (savedWorkByIssue.has(row.issueId)) continue;
+      savedWorkByIssue.set(row.issueId, { actionId: row.actionId, runId: row.runId,
+        state: row.state as SavedWorkRecoveryFact["state"], nextAttemptAt: epochMs(row.nextAttemptAt), activeAt: epochMs(row.activeAt),
+        sourceFinishedAt: row.finishedAt ? new Date(row.finishedAt) : null });
+    }
     const interactionCounts = counts(interactions);
     const approvalCounts = counts(approvalRows);
     const blockerCounts = counts(blockerRows);
@@ -296,13 +392,26 @@ export function assignedWorkSweep(db: Db, deps: AssignedWorkDeps) {
     const blockActivityByIssue = new Map(rowsOf<{ issueId: string; actorType: string; actorId: string; agentId: string | null; details: unknown }>(blockActivity)
       .map(row => [row.issueId, row]));
 
+    const stalledQueuedIds = activeRuns.filter(row => row.stalledQueued).map(row => row.id);
+    const personQueuedIds = new Set(stalledQueuedIds.length ? await listPersonOriginSourceRunIds(database, companyId, stalledQueuedIds) : []);
+    const ownedRunsByIssue = new Map<string, AssignedWorkFacts["activeRuns"]>();
+    for (const issue of issueRows) {
+      const ownedRuns: AssignedWorkFacts["activeRuns"] = [];
+      for (const run of activeRuns.filter(row => row.issueId === issue.id)) {
+        ownedRuns.push({ id: run.id, status: run.status, scheduledRetryAt: run.scheduledRetryAt,
+          owner: stalledRunIds.has(run.id) && run.status === "running" ? "stalled" : await runOwner(run as RunRow, at, proveOwners),
+          queuedStall: run.stalledQueued ? { personWork: personQueuedIds.has(run.id) || Boolean(run.explicitUserContinuation),
+            replacement: Boolean(run.replacesStalledRunId), queuedSince: new Date(run.createdAt) } : null });
+      }
+      ownedRunsByIssue.set(issue.id, ownedRuns);
+    }
+    const pauseCheckIds = issueRows.filter(issue => !ownedRunsByIssue.get(issue.id)!.some(run => run.owner !== "gone")
+      && !(wakeCounts.get(issue.id) ?? 0)).map(issue => issue.id);
+    const pauseHeldIds = await treeControl.listActivePauseHeldIssueIds(companyId, pauseCheckIds);
+
     for (const issue of issueRows) {
       const agent = issue.assigneeAgentId ? agentsById.get(issue.assigneeAgentId) ?? null : null;
-      const runs = activeRuns.filter(run => run.issueId === issue.id) as RunRow[];
-      const ownedRuns = [];
-      for (const run of runs) {
-        ownedRuns.push({ id: run.id, status: run.status, scheduledRetryAt: run.scheduledRetryAt, owner: stalledRunIds.has(run.id) && run.status === "running" ? "stalled" : await runOwner(run, at, proveOwners) });
-      }
+      const ownedRuns = ownedRunsByIssue.get(issue.id)!;
       const latest = latestByIssue.get(issue.id) ?? null;
       const latestFinishedAt = latest?.finishedAt ? new Date(latest.finishedAt) : null;
       const leaseUntil = latest?.controllerLeaseExpiresAt ? new Date(latest.controllerLeaseExpiresAt) : null;
@@ -311,10 +420,7 @@ export function assignedWorkSweep(db: Db, deps: AssignedWorkDeps) {
       const interruption = interruptions.get(issue.id) ?? null;
       const executionState = json(issue.executionState);
       const blockedEntry = blockActivityByIssue.get(issue.id);
-      // The tree pause gate walks ancestors; read it only when nothing else
-      // already gives the task a path.
-      const needsPauseCheck = !ownedRuns.some(run => run.owner !== "gone") && !(wakeCounts.get(issue.id) ?? 0);
-      const pauseHold = needsPauseCheck && Boolean(await treeControl.getActivePauseHoldGate(companyId, issue.id));
+      const pauseHold = pauseHeldIds.has(issue.id);
       result.set(issue.id, {
         issue: {
           status: issue.status, assigneeAgentId: issue.assigneeAgentId, assigneeUserId: issue.assigneeUserId,
@@ -348,13 +454,16 @@ export function assignedWorkSweep(db: Db, deps: AssignedWorkDeps) {
         lastBlockerResolvedAt: resolvedBlockerAt.get(issue.id) ?? null,
         openChildren: childCounts.get(issue.id) ?? 0,
         reviewPending: executionState.status === "pending" || Boolean(executionState.reviewRequest),
-        activeRecoveryAction: action ? { cause: action.cause, ownerType: action.ownerType,
-          resumeAt: PROVIDER_LIMIT_CAUSES.includes(action.cause) && interruption?.nextRetryAt ? new Date(interruption.nextRetryAt) : null } : null,
+        activeRecoveryAction: action ? { id: action.id, cause: action.cause, ownerType: action.ownerType,
+          resumeAt: PROVIDER_LIMIT_CAUSES.includes(action.cause) && interruption?.nextRetryAt ? new Date(interruption.nextRetryAt) : null,
+          continuedBySweep: strandedHoldContinuesAutomatically(action,
+            strandedRuns.get(String(action.evidence?.latestRunId ?? "")) ?? null, issue.assigneeAgentId, at) } : null,
         agent: agent ? { status: agent.status, invokable: agent.invokable } : null,
         companyPaused: company?.status === "paused",
         pauseHold,
         budgetStop: companyBudget || agent?.pauseReason === "budget" || agent?.pauseReason === "budget_exceeded",
         blockedBy: issue.status !== "blocked" ? null : attributeBlock(blockedEntry, issue.assigneeAgentId),
+        savedWorkRecovery: savedWorkByIssue.get(issue.id) ?? null,
       });
     }
     return result;
@@ -389,11 +498,31 @@ export function assignedWorkSweep(db: Db, deps: AssignedWorkDeps) {
    * Chat conversations and blocks older than the stale window are left out:
    * the first wait on a person's message, the second is only reported.
    */
-  async function listSuspects(scope: { companyId?: string; issueId?: string; createdAfter?: Date | null }, cursor: string | null, limit: number) {
+  function latestRunRefusedAtDispatch(at: Date) {
+    return sql`coalesce((select lr.status = 'cancelled' and lr.started_at is null and lr.error_code = 'execution_reconciliation_required'
+        and lr.finished_at > ${new Date(at.getTime() - STRANDED_CONTINUATION_MAX_AGE_MS).toISOString()}::timestamptz
+      from heartbeat_runs lr where lr.company_id = ${issues.companyId} and (lr.context_snapshot->>'issueId') = ${issues.id}::text
+      order by lr.created_at desc limit 1), false)`;
+  }
+
+  async function listSuspects(scope: { companyId?: string; issueId?: string; issueIds?: string[]; createdAfter?: Date | null },
+    cursor: string | null, limit: number) {
     const at = now();
+    const liveRun = sql`exists (select 1 from heartbeat_runs r where r.company_id = ${issues.companyId}
+        and (r.context_snapshot->>'issueId') = ${issues.id}::text
+        and r.status in ('queued', 'running', 'scheduled_retry')
+        and not (r.status = 'running' and r.runtime_mode = 'legacy' and r.controller_lease_expires_at is not null
+          and r.controller_lease_expires_at < ${at.toISOString()}::timestamptz))`;
+    const liveUnstalledRun = sql`exists (select 1 from heartbeat_runs r where r.company_id = ${issues.companyId}
+        and (r.context_snapshot->>'issueId') = ${issues.id}::text
+        and r.status in ('queued', 'running', 'scheduled_retry')
+        and not (r.status = 'running' and r.runtime_mode = 'legacy' and r.controller_lease_expires_at is not null
+          and r.controller_lease_expires_at < ${at.toISOString()}::timestamptz)
+        and not ${queuedRunStalledSql(aliasedRun("r"), at)})`;
     return db.select({ id: issues.id, companyId: issues.companyId, updatedAt: issues.updatedAt }).from(issues).where(and(
       scope.companyId ? eq(issues.companyId, scope.companyId) : undefined,
       scope.issueId ? eq(issues.id, scope.issueId) : undefined,
+      scope.issueIds ? inArray(issues.id, scope.issueIds) : undefined,
       cursor ? sql`${issues.id} > ${cursor}` : undefined,
       scope.createdAfter ? gte(issues.createdAt, scope.createdAfter) : undefined,
       inArray(issues.status, [...OPEN_STATUSES]),
@@ -406,14 +535,15 @@ export function assignedWorkSweep(db: Db, deps: AssignedWorkDeps) {
       sql`(${issues.monitorNextCheckAt} is null or ${issues.monitorNextCheckAt} <= ${at.toISOString()}::timestamptz)`,
       // A legacy run whose controller lease lapsed may have lost its owner;
       // the predicate judges it with the owner proof. Other active runs are live.
-      sql`not exists (select 1 from heartbeat_runs r where r.company_id = ${issues.companyId}
-        and (r.context_snapshot->>'issueId') = ${issues.id}::text
-        and r.status in ('queued', 'running', 'scheduled_retry')
-        and not (r.status = 'running' and r.runtime_mode = 'legacy' and r.controller_lease_expires_at is not null
-          and r.controller_lease_expires_at < ${at.toISOString()}::timestamptz))`,
-      sql`not exists (select 1 from agent_wakeup_requests w where w.company_id = ${issues.companyId}
+      sql`(${issues.status} = 'blocked' or not ${liveUnstalledRun})`,
+      sql`((${issues.status} = 'blocked' and ${liveRun}) or not exists (select 1 from agent_wakeup_requests w where w.company_id = ${issues.companyId}
         and (w.payload->>'issueId') = ${issues.id}::text
-        and w.status in ('queued', 'deferred_issue_execution', 'claimed'))`,
+        and (w.status = 'queued'
+          or (w.status = 'deferred_issue_execution' and w.created_at > ${new Date(at.getTime() - DEFERRED_WAKE_PENDING_BOUND_MS).toISOString()}::timestamptz)
+          or (w.status = 'claimed' and (w.run_id is not null
+            or coalesce(w.claimed_at, w.created_at) > ${new Date(at.getTime() - DEFERRED_WAKE_PENDING_BOUND_MS).toISOString()}::timestamptz)))
+        and not exists (select 1 from heartbeat_runs wake_run where wake_run.id = w.run_id
+          and ${queuedRunStalledSql(aliasedRun("wake_run"), at)})))`,
       sql`not exists (select 1 from issue_thread_interactions t where t.company_id = ${issues.companyId}
         and t.issue_id = ${issues.id} and t.status = 'pending'
         and ${interactionNotSupersededSql(sql`t.company_id`, sql`t.issue_id::text`, sql`t.created_at`)})`,
@@ -429,7 +559,17 @@ export function assignedWorkSweep(db: Db, deps: AssignedWorkDeps) {
       // hold on a blocked task is re-continued by the hold's owner.
       sql`not exists (select 1 from issue_recovery_actions ra where ra.company_id = ${issues.companyId}
         and ra.source_issue_id = ${issues.id} and ra.status in ('active', 'escalated')
-        and (ra.cause in ('configuration_incomplete', 'ownership_owner_unprovable') or ${issues.status} = 'blocked'))`,
+        and (ra.cause in ('configuration_incomplete', 'ownership_owner_unprovable') or ${issues.status} = 'blocked')
+        -- except a saved-work recovery the queue still owes: the predicate
+        -- counts it pending for its bound and starts it once it is overdue
+        and not (${issues.status} = 'blocked' and ra.cause not in ('configuration_incomplete', 'ownership_owner_unprovable')
+          and coalesce(ra.evidence#>>'{systemRecovery,state}', '') in ('scheduled', 'running', 'awaiting_evidence'))
+        -- except a recent board escalation, which the predicate judges by its failed run's cause
+        and not (ra.kind = ${STRANDED_KIND} and ra.owner_type = 'board' and exists (select 1 from heartbeat_runs sr
+          where sr.company_id = ra.company_id and sr.id::text = ra.evidence->>'latestRunId'
+            and sr.finished_at > ${new Date(at.getTime() - STRANDED_CONTINUATION_MAX_AGE_MS).toISOString()}::timestamptz))
+        and not (${issues.status} = 'blocked' and ra.cause not in ('configuration_incomplete', 'ownership_owner_unprovable')
+          and ${latestRunRefusedAtDispatch(at)}))`,
       // An assignee that cannot take work (paused, being set up, held) is
       // its own wait; the predicate names it when anything else asks.
       sql`exists (select 1 from agents a where a.id = ${issues.assigneeAgentId} and a.company_id = ${issues.companyId}
@@ -455,14 +595,33 @@ export function assignedWorkSweep(db: Db, deps: AssignedWorkDeps) {
   }
 
   async function act(issue: IssueRow, facts: AssignedWorkFacts, verdict: AssignedWorkVerdict, at: Date): Promise<AssignedWorkCheck> {
+    // A queued saved-work recovery is pending only for its bound: look again
+    // when the bound ends, so an overdue recovery is started even if nothing
+    // else wakes this task.
+    if (verdict.kind === "ok" && verdict.clause === "pending_intent" && verdict.intent === "saved_work_recovery" && facts.savedWorkRecovery)
+      return { verdict, outcome: "ok", retryAt: new Date(savedWorkRecoveryDueSince(facts.savedWorkRecovery) + SAVED_WORK_RECOVERY_START_BOUND_MS + 1_000) };
     if (verdict.kind === "not_applicable" || verdict.kind === "ok") return { verdict, outcome: "ok", retryAt: null };
     if (verdict.kind === "settling") return { verdict, outcome: "settling", retryAt: verdict.recheckAt };
     if (verdict.stale) return { verdict, outcome: "stale_reported", retryAt: null };
+    if (verdict.reason === "saved_work_recovery_overdue") return startSavedWorkRecovery(issue, facts, verdict, at);
+    if (isReattachPhaseActive()) return { verdict, outcome: "deferred_reattach_phase", retryAt: reattachPhaseRecheckAt(at.getTime()) };
+    if (verdict.reason === "blocked_with_live_run") {
+      return { verdict, outcome: await liftBlockBehindLiveRun(issue, at) ? "repaired" : "changed", retryAt: null };
+    }
     // A task blocked under an active recovery hold is re-continued by the
     // hold's owner (the fresh-continuation fallback, same per-task cap). The
     // sweep reports it and repairs only blocks that have no hold at all, so
-    // the two never continue one task twice.
-    if (issue.status === "blocked" && facts.activeRecoveryAction) return { verdict, outcome: "left_to_hold_owner", retryAt: null };
+    if (issue.status === "blocked" && facts.activeRecoveryAction && !facts.activeRecoveryAction.continuedBySweep) {
+      const behindRefusedRun = facts.latestRun?.status === "cancelled" && facts.latestRun.errorCode === "execution_reconciliation_required";
+      const deferred = behindRefusedRun ? repairBudgetDeferral(at) : null;
+      if (deferred) return { verdict, outcome: "deferred_rate_limit", retryAt: deferred };
+      const refused = behindRefusedRun ? await continueFromSavedWork(issue, facts, at) : null;
+      if (refused?.kind === "continued") repairTimes.push(at.getTime());
+      if (refused?.kind === "continued" || refused?.kind === "already_continued") return { verdict, outcome: "repaired", retryAt: null };
+      if (refused?.kind === "backoff" || refused?.kind === "exact_recovery_pending")
+        return { verdict, outcome: refused.kind === "backoff" ? "deferred_cap" : "waiting_on_recovery", retryAt: refused.retryAt };
+      return { verdict, outcome: "left_to_hold_owner", retryAt: null };
+    }
     // A stalled native run is ended by native recovery, not here: the sweep
     // builds no second ender. It stays a counted violation in the report.
     if (verdict.reason === "native_run_stalled") return { verdict, outcome: "left_to_native_recovery", retryAt: null };
@@ -472,23 +631,51 @@ export function assignedWorkSweep(db: Db, deps: AssignedWorkDeps) {
       await deps.settleLostRunProcess?.({ companyId: issue.companyId, runId: verdict.runId! });
       return { verdict, outcome: "settled_lost_run", retryAt: new Date(at.getTime() + 90_000) };
     }
+    if (verdict.reason === "queued_run_stalled") {
+      const stall = facts.activeRuns.find(run => run.id === verdict.runId)?.queuedStall ?? null;
+      if (!stall || stall.personWork || stall.replacement || !deps.cancelStalledQueuedRun) {
+        reportStalledRun(issue, verdict.runId!, stall, at);
+        return { verdict, outcome: stall?.personWork ? "left_person_work" : "left_stalled_replacement",
+          retryAt: new Date(at.getTime() + CONTINUATION_CAP_WINDOW_MS) };
+      }
+    }
     // A small process-wide budget keeps a post-deploy backlog from starting
     // hundreds of runs at once. Deferred tasks come back on their deadline.
-    const minuteAgo = at.getTime() - 60_000;
-    while (repairTimes.length && repairTimes[0] <= minuteAgo) repairTimes.shift();
-    if (repairTimes.length >= ASSIGNED_WORK_REPAIRS_PER_MINUTE) {
-      return { verdict, outcome: "deferred_rate_limit", retryAt: new Date(repairTimes[0] + 60_000 + Math.floor(Math.random() * 5_000)) };
-    }
+    const budgetDeferral = repairBudgetDeferral(at);
+    if (budgetDeferral) return { verdict, outcome: "deferred_rate_limit", retryAt: budgetDeferral };
+    const heldUntil = facts.latestRun
+      ? await automaticRunCreationHeldUntil(db, issue.companyId, { issueId: issue.id, sourceRunId: facts.latestRun.id }) : null;
+    if (heldUntil) return { verdict, outcome: "deferred_rate_limit", retryAt: heldUntil };
     const claimed = await claimContinuation(issue, at);
     if (claimed.kind !== "claimed") return { verdict, outcome: claimed.kind === "capped" ? "deferred_cap" : claimed.kind === "changed" ? "changed" : "deferred_rate_limit",
       retryAt: claimed.kind === "changed" ? null : claimed.retryAt };
     repairTimes.push(at.getTime());
+    if (claimed.reason === "queued_run_stalled") return replaceStalledRun(issue, claimed, claimed.verdict.runId!);
     // A block that interrupted a review goes back to review; the review's own
     // recovery wakes its participant. No agent work starts from here.
     if (claimed.restoredTo === "in_review") {
       await settleContinuationActivity(claimed, claimed.reason, "restored_to_review");
       return { verdict: claimed.verdict, outcome: "repaired", retryAt: null };
     }
+    const fresh = await continueFromSavedWork(issue, facts, at, claimed);
+    if (fresh?.kind === "continued") {
+      await settleContinuationActivity(claimed, claimed.reason, "queued", { continuedFromSavedWork: "true" });
+      return { verdict: claimed.verdict, outcome: "repaired", retryAt: claimed.nextCheckAt };
+    }
+    if (fresh?.kind === "backoff" || fresh?.kind === "exact_recovery_pending") {
+      if (claimed.restoredTo && fresh.kind === "exact_recovery_pending") await revertRestoredBlock(issue, claimed);
+      await settleContinuationActivity(claimed, claimed.reason, "not_started", { waitingUntil: fresh.retryAt.toISOString() });
+      return { verdict: claimed.verdict, outcome: fresh.kind === "backoff" ? "deferred_cap" : "waiting_on_recovery", retryAt: fresh.retryAt };
+    }
+    const slot = facts.latestRun
+      ? await reserveAutomaticRunCreation(db, issue.companyId, { issueId: issue.id, sourceRunId: facts.latestRun.id }) : null;
+    if (slot?.heldUntil) {
+      if (claimed.restoredTo) await revertRestoredBlock(issue, claimed);
+      await settleContinuationActivity(claimed, claimed.reason, "not_started",
+        { waitingUntil: slot.heldUntil.toISOString(), [PAUSED_FOR_AUTOMATIC_WORK]: "true" });
+      return { verdict: claimed.verdict, outcome: "deferred_rate_limit", retryAt: slot.heldUntil };
+    }
+    const release = async () => { if (slot && !slot.heldUntil) await slot.release(); };
     const run = await deps.enqueueWakeup(issue.assigneeAgentId!, {
       source: facts.latestRun ? "automation" : "assignment", triggerDetail: "system",
       reason: facts.latestRun ? "issue_continuation_needed" : "issue_assigned",
@@ -504,15 +691,91 @@ export function assignedWorkSweep(db: Db, deps: AssignedWorkDeps) {
     // A refused continuation stays a violation; the claim spaces the next try.
     // A block lifted for it is put back, so the task never sits unblocked
     // with nothing pending.
+    if (!run) await release();
     if (!run && claimed.restoredTo) await revertRestoredBlock(issue, claimed);
-    await settleContinuationActivity(claimed, claimed.reason, run ? "queued" : "not_started");
+    await settleContinuationActivity(claimed, claimed.reason, run ? "queued" : "not_started",
+      fresh?.kind === "person_owned" ? { waitingFor: fresh.reason } : {});
     return { verdict: claimed.verdict, outcome: run ? "repaired" : "enqueue_refused", retryAt: claimed.nextCheckAt };
+  }
+
+  function repairBudgetDeferral(at: Date): Date | null {
+    const minuteAgo = at.getTime() - 60_000;
+    while (repairTimes.length && repairTimes[0] <= minuteAgo) repairTimes.shift();
+    return repairTimes.length >= ASSIGNED_WORK_REPAIRS_PER_MINUTE
+      ? new Date(repairTimes[0] + 60_000 + Math.floor(Math.random() * 5_000)) : null;
+  }
+
+  function reportStalledRun(issue: IssueRow, runId: string, stall: NonNullable<AssignedWorkFacts["activeRuns"][number]["queuedStall"]> | null, at: Date) {
+    if (reportedStalledRuns.has(runId)) return;
+    if (reportedStalledRuns.size >= 1_000) reportedStalledRuns.clear();
+    reportedStalledRuns.add(runId);
+    logger.warn({ event: "assigned_work_invariant.queued_run_stalled", companyId: issue.companyId, issueId: issue.id, runId,
+      agentId: issue.assigneeAgentId, queuedForMs: stall ? at.getTime() - stall.queuedSince.getTime() : null,
+      personWork: stall?.personWork ?? null, replacement: stall?.replacement ?? null },
+    "queued run its agent keeps passing over was left in place");
+  }
+
+  async function replaceStalledRun(issue: IssueRow, claimed: Claimed, runId: string): Promise<AssignedWorkCheck> {
+    const slot = await reserveAutomaticRunCreation(db, issue.companyId, { issueId: issue.id, sourceRunId: runId });
+    if (slot.heldUntil) {
+      await settleContinuationActivity(claimed, claimed.reason, "not_started",
+        { waitingUntil: slot.heldUntil.toISOString(), [PAUSED_FOR_AUTOMATIC_WORK]: "true" });
+      return { verdict: claimed.verdict, outcome: "deferred_rate_limit", retryAt: slot.heldUntil };
+    }
+    const cancelled = !claimed.stalledFence ? false : await deps.cancelStalledQueuedRun!({ companyId: issue.companyId, runId,
+      ...claimed.stalledFence }).catch(error => {
+      logger.warn({ err: error, companyId: issue.companyId, issueId: issue.id, runId }, "assigned-work sweep could not cancel a stalled queued run");
+      return false;
+    });
+    if (!cancelled) {
+      await slot.release();
+      await db.delete(activityLog).where(eq(activityLog.id, claimed.activityId));
+      return { verdict: claimed.verdict, outcome: "changed", retryAt: null };
+    }
+    const run = await deps.enqueueWakeup(issue.assigneeAgentId!, {
+      source: "automation", triggerDetail: "system", reason: "issue_continuation_needed",
+      payload: { issueId: issue.id, mutation: "assigned_work_invariant" },
+      requestedByActorType: "system", requestedByActorId: null,
+      contextSnapshot: { issueId: issue.id, taskId: issue.id, wakeReason: "issue_continuation_needed",
+        source: ASSIGNED_WORK_CONTINUATION_SOURCE, assignedWorkViolation: claimed.reason, previousRunId: runId, replacesStalledRunId: runId },
+    }).catch(error => {
+      logger.warn({ err: error, companyId: issue.companyId, issueId: issue.id }, "assigned-work replacement for a stalled run was not admitted");
+      return null;
+    });
+    if (!run) await slot.release();
+    await settleContinuationActivity(claimed, claimed.reason, run ? "queued" : "not_started");
+    return { verdict: claimed.verdict, outcome: run ? "replaced_stalled_run" : "enqueue_refused", retryAt: claimed.nextCheckAt };
+  }
+
+  function continueFromSavedWork(issue: IssueRow, facts: AssignedWorkFacts, at: Date, claim?: { activityId: string; reason: ViolationReason }) {
+    return continueSweepTaskFromSavedWork(db, { companyId: issue.companyId, issueId: issue.id, latestRun: facts.latestRun }, at, claim);
+  }
+
+  async function startSavedWorkRecovery(issue: IssueRow, facts: AssignedWorkFacts,
+    verdict: Extract<AssignedWorkVerdict, { kind: "violation" }>, at: Date): Promise<AssignedWorkCheck> {
+    const recovery = facts.savedWorkRecovery!;
+    const recheckAt = new Date(at.getTime() + SAVED_WORK_RECOVERY_START_BOUND_MS);
+    if (!deps.startSavedWorkRecovery) return { verdict, outcome: "saved_work_recovery_busy", retryAt: recheckAt };
+    const started = await deps.startSavedWorkRecovery({ companyId: issue.companyId, issueId: issue.id,
+      runId: recovery.runId, actionId: recovery.actionId }).catch(error => {
+      logger.warn({ err: error, companyId: issue.companyId, issueId: issue.id, runId: recovery.runId },
+        "assigned-work sweep could not start the overdue saved-work recovery");
+      return "busy" as const;
+    });
+    logger.info({ event: "assigned_work_invariant.saved_work_recovery", companyId: issue.companyId, issueId: issue.id,
+      runId: recovery.runId, recoveryActionId: recovery.actionId, result: started,
+      waitedMs: at.getTime() - savedWorkRecoveryDueSince(recovery) }, "assigned-work sweep found an overdue saved-work recovery");
+    // A busy limit or another server's attempt is looked at again soon; a
+    // started attempt gets the whole bound to report progress.
+    const retryAt = started === "started" || started === "in_flight" ? recheckAt : new Date(at.getTime() + 60_000);
+    return { verdict, outcome: started === "started" ? "started_saved_work_recovery" : "saved_work_recovery_busy", retryAt };
   }
 
   type Claimed = { kind: "claimed"; nextCheckAt: Date; activityId: string; publications: ActivityPublication[];
     verdict: Extract<AssignedWorkVerdict, { kind: "violation" }>; reason: ViolationReason;
     restoredTo: "todo" | "in_progress" | "in_review" | null; restoredStatusVersion: number | null;
-    blockedTransitionAt: Date | null; unblockDescriptor: IssueRow["unblockDescriptor"]; blockedOwnerNotifiedAt: Date | null };
+    blockedTransitionAt: Date | null; unblockDescriptor: IssueRow["unblockDescriptor"]; blockedOwnerNotifiedAt: Date | null;
+    stalledFence: { version: string; attachedWakes: number } | null };
 
   /**
    * The durable, serialized claim. Under the task's row lock it loads the
@@ -531,15 +794,25 @@ export function assignedWorkSweep(db: Db, deps: AssignedWorkDeps) {
         .where(and(eq(issues.companyId, issue.companyId), eq(issues.id, issue.id))).for("update");
       if (!current || current.status !== issue.status || current.statusVersion !== issue.statusVersion
         || current.assigneeAgentId !== issue.assigneeAgentId || current.assigneeUserId || current.hiddenAt) return { kind: "changed" as const };
+      const fences = rowsOf<{ id: string; version: string; attachedWakes: number }>(await tx.execute(sql`
+        select r.id, r.xmin::text as version, (select count(*)::int from agent_wakeup_requests w
+          where w.company_id = r.company_id and (w.run_id = r.id or w.id = r.wakeup_request_id)) as "attachedWakes"
+        from heartbeat_runs r where r.company_id = ${issue.companyId} and r.status = 'queued'
+          and (r.context_snapshot->>'issueId') = ${issue.id}`));
       const fresh = (await loadFacts(issue.companyId, [current], { database: tx as unknown as Db, proveOwners: false })).get(current.id)!;
       const verdict = evaluateAssignedWork(fresh, at);
+      let stalledFence: Claimed["stalledFence"] = null;
       if (verdict.kind !== "violation" || verdict.stale || verdict.reason === "run_owner_gone" || verdict.reason === "native_run_stalled"
-        || (current.status === "blocked" && fresh.activeRecoveryAction)) return { kind: "changed" as const };
-      const recent = await tx.select({ createdAt: activityLog.createdAt }).from(activityLog).where(and(
-        eq(activityLog.companyId, issue.companyId), eq(activityLog.entityType, "issue"), eq(activityLog.entityId, issue.id),
-        eq(activityLog.action, ASSIGNED_WORK_CONTINUED_ACTION),
-        gte(activityLog.createdAt, new Date(at.getTime() - CONTINUATION_CAP_WINDOW_MS)))).orderBy(desc(activityLog.createdAt)).limit(64);
-      const allowance = continuationAllowance(recent.map(row => row.createdAt), at);
+        || (current.status === "blocked" && fresh.activeRecoveryAction && !fresh.activeRecoveryAction.continuedBySweep)) return { kind: "changed" as const };
+      if (verdict.reason === "queued_run_stalled") {
+        const stall = fresh.activeRuns.find(run => run.id === verdict.runId)?.queuedStall;
+        const fence = fences.find(row => row.id === verdict.runId);
+        if (!stall || stall.personWork || stall.replacement || !deps.cancelStalledQueuedRun || !fence) return { kind: "changed" as const };
+        stalledFence = { version: fence.version, attachedWakes: Number(fence.attachedWakes) };
+      }
+      const attempts = await taskAutomaticAttempts(tx as unknown as Db, issue.companyId, issue.id, at);
+      const recent = attempts.continuations;
+      const allowance = continuationAllowance(attempts.started, at, attempts.all);
       if (!allowance.allowed) return { kind: allowance.capped ? "capped" as const : "spaced" as const, retryAt: allowance.retryAt };
       let restoredTo: Claimed["restoredTo"] = null;
       let restoredStatusVersion: number | null = null;
@@ -551,6 +824,14 @@ export function assignedWorkSweep(db: Db, deps: AssignedWorkDeps) {
           sql`(${activityLog.details}->>'status' = 'blocked' or ${activityLog.details}->>'toStatus' = 'blocked')`,
         )).orderBy(desc(activityLog.createdAt)).limit(1);
         restoredTo = recordedPreviousStatus(blocking?.details);
+        const hold = fresh.activeRecoveryAction;
+        if (hold?.continuedBySweep && hold.id) {
+          await tx.update(issueRecoveryActions).set({ status: "resolved", outcome: "restored", resolvedAt: at, updatedAt: at,
+            ownerType: "system", ownerAgentId: null, ownerUserId: null, returnOwnerAgentId: issue.assigneeAgentId,
+            resolutionNote: STRANDED_TRANSIENT_CONTINUED_OUTCOME, nextAction: CONTINUATION_PENDING_MESSAGE, wakePolicy: null, monitorPolicy: null })
+            .where(and(eq(issueRecoveryActions.companyId, issue.companyId), eq(issueRecoveryActions.id, hold.id),
+              inArray(issueRecoveryActions.status, ["active", "escalated"])));
+        }
         await issueService(tx as unknown as Db).update(issue.id, { status: restoredTo }, tx);
         const [restored] = await tx.select({ statusVersion: issues.statusVersion }).from(issues).where(eq(issues.id, issue.id));
         restoredStatusVersion = restored?.statusVersion ?? null;
@@ -562,12 +843,36 @@ export function assignedWorkSweep(db: Db, deps: AssignedWorkDeps) {
           ...(restoredTo ? { status: restoredTo, previousStatus: "blocked" } : {}),
           attempt: recent.length + 1 },
       }, publications);
-      const next = continuationAllowance([at, ...recent.map(row => row.createdAt)], at);
-      return { kind: "claimed" as const, activityId: activity.id, publications, verdict, reason: verdict.reason,
+      const next = continuationAllowance([at, ...attempts.started], at, [at, ...attempts.all]);
+      return { kind: "claimed" as const, activityId: activity.id, publications, verdict, reason: verdict.reason, stalledFence,
         restoredTo, restoredStatusVersion, blockedTransitionAt: current.blockedTransitionAt,
         unblockDescriptor: current.unblockDescriptor, blockedOwnerNotifiedAt: current.blockedOwnerNotifiedAt,
         nextCheckAt: next.allowed ? new Date(at.getTime() + 90_000) : next.retryAt };
     });
+  }
+
+  async function liftBlockBehindLiveRun(issue: IssueRow, at: Date): Promise<boolean> {
+    const publications: ActivityPublication[] = [];
+    const lifted = await db.transaction(async tx => {
+      const [current] = await tx.select(issueColumns).from(issues)
+        .where(and(eq(issues.companyId, issue.companyId), eq(issues.id, issue.id))).for("update");
+      if (!current || current.status !== "blocked" || current.statusVersion !== issue.statusVersion) return false;
+      const fresh = (await loadFacts(issue.companyId, [current], { database: tx as unknown as Db, proveOwners: false })).get(current.id)!;
+      const verdict = evaluateAssignedWork(fresh, at);
+      if (verdict.kind !== "violation" || verdict.reason !== "blocked_with_live_run") return false;
+      const running = fresh.activeRuns.some(run => run.id === verdict.runId && run.status === "running");
+      const status = running ? "in_progress" : "todo";
+      await issueService(tx as unknown as Db).update(issue.id, { status }, tx);
+      await logActivity(tx as unknown as Db, {
+        companyId: issue.companyId, actorType: "system", actorId: "system", agentId: issue.assigneeAgentId, runId: null,
+        action: "issue.updated", entityType: "issue", entityId: issue.id,
+        details: { identifier: issue.identifier, status, previousStatus: "blocked", source: ASSIGNED_WORK_CONTINUATION_SOURCE,
+          violation: verdict.reason, message: continuationActivityMessage(verdict.reason) },
+      }, publications);
+      return true;
+    });
+    if (lifted) for (const publication of publications) publishActivity(publication);
+    return lifted;
   }
 
   /** Put back a block lifted for a continuation that admission refused, when
@@ -596,10 +901,10 @@ export function assignedWorkSweep(db: Db, deps: AssignedWorkDeps) {
    * admitted or refused; it is published then, never before. A refused
    * continuation stays a violation and is tried again under the same cap. */
   async function settleContinuationActivity(claimed: { activityId: string; publications: ActivityPublication[] },
-    reason: ViolationReason, outcome: "queued" | "not_started" | "restored_to_review") {
-    const update = outcome === "queued" ? { outcome, message: continuationActivityMessage(reason) }
+    reason: ViolationReason, outcome: "queued" | "not_started" | "restored_to_review", extra: Record<string, string> = {}) {
+    const update = outcome === "queued" ? { outcome, message: continuationActivityMessage(reason), ...extra }
       : outcome === "restored_to_review" ? { outcome, message: CONTINUATION_REVIEW_MESSAGE }
-        : { outcome, message: CONTINUATION_REFUSED_MESSAGE };
+        : { outcome, message: CONTINUATION_REFUSED_MESSAGE, ...extra };
     await db.update(activityLog).set({ details: sql`coalesce(${activityLog.details}, '{}'::jsonb) || ${JSON.stringify(update)}::jsonb` })
       .where(eq(activityLog.id, claimed.activityId));
     for (const publication of claimed.publications) {
@@ -638,7 +943,8 @@ export function assignedWorkSweep(db: Db, deps: AssignedWorkDeps) {
         else if (verdict.kind === "violation") {
           if (verdict.stale) { summary.staleBlocked += 1; continue; }
           summary.violationCount += 1;
-          if (issue.status === "blocked" && facts.get(issue.id)!.activeRecoveryAction) summary.heldByRecoveryOwner += 1;
+          const hold = facts.get(issue.id)!.activeRecoveryAction;
+          if (issue.status === "blocked" && hold && !hold.continuedBySweep) summary.heldByRecoveryOwner += 1;
           summary.violations[verdict.reason] = (summary.violations[verdict.reason] ?? 0) + 1;
           if (summary.sample.length < 20) summary.sample.push({ identifier: issue.identifier, status: issue.status, reason: verdict.reason });
         }
@@ -668,24 +974,10 @@ export function assignedWorkSweep(db: Db, deps: AssignedWorkDeps) {
     const queuedByAgent = new Map(queuedRows.map(row => [row.agentId, Number(row.queuedRuns)]));
     const slotRows = stalledRows.map(row => ({ agentName: row.agentName, stalledRuns: Number(row.stalledRuns),
       queuedRuns: queuedByAgent.get(row.agentId) ?? 0 }));
-    return { ...summary, agentsWithStalledSlots: slotRows };
+    return { ...summary, agentsWithStalledSlots: slotRows, automaticWork: await readAutomaticWorkStatus(db, companyId) };
   }
 
   return { checkIssue, listSuspects, report, loadFacts, flushPassLog: passLog.flush };
-}
-
-/** Who moved a task to `blocked`, from the activity entry written with it. */
-export function attributeBlock(entry: { actorType: string; actorId: string; agentId: string | null; details: unknown } | undefined,
-  assigneeAgentId: string | null): "user" | "assignee" | "system" | "unknown" {
-  if (!entry) return "unknown";
-  const details = json(entry.details);
-  if (entry.actorType === "user") return "user";
-  if (entry.actorType === "agent") return entry.agentId && entry.agentId === assigneeAgentId ? "assignee" : "system";
-  // The agent's own turn decided to block (committed by the native status
-  // decision), except when the decision only bound a dependency.
-  if (entry.actorId === "native-status-committer" && details.source === "native_status_decision"
-    && details.reasonCode !== "durable_dependency_blocker_bound") return "assignee";
-  return "system";
 }
 
 /** A pending interaction no explicit user continuation (Retry or message)
@@ -696,6 +988,7 @@ function interactionNotSupersededSql(companyId: SQLWrapper, issueIdText: SQLWrap
     and jsonb_typeof(retry.context_snapshot->'explicitUserContinuation') = 'object'
     and retry.created_at > ${createdAt})`;
 }
+
 
 /** The status a block replaced, from the activity entry that blocked the task:
  * the normal update route records it as `_previous.status`, recovery as

@@ -1,3 +1,4 @@
+import { markReattachAuthenticated } from "../heartbeat/run-admission.js";
 import { existsSync } from "node:fs";
 import type { AdapterExecutionTarget } from "@paperclipai/adapter-utils/execution-target";
 import { resolvePaperclipRunnerTransport, type PaperclipRunnerTransport } from "@paperclipai/adapter-utils/runner-connectivity";
@@ -319,6 +320,7 @@ export function createNativeRunnerExecutionDriver(input: NativeRunnerExecutionDr
                     "runner.prp.authenticate",
                     () => outbound!.ready,
                   );
+                  markReattachAuthenticated(input.binding.runId);
                   await input.processIdentityReady;
                 },
                 { parentName: "runner.session.startup" },
@@ -329,6 +331,7 @@ export function createNativeRunnerExecutionDriver(input: NativeRunnerExecutionDr
             },
             startupFailureCode: "runner_ingress_unavailable" as const,
             checkpoint: input.checkpoint,
+            quiesce: () => { outbound?.quiesce(); },
             release: async () => {
               if (outbound) await outbound.close();
               else await transport.ingress.close();
