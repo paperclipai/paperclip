@@ -125,6 +125,8 @@ suite("automatic-run start gate in the dispatch pass", () => {
     const small = await passCost(10, 100);
     const large = await passCost(250, 100);
     expect(large).toBeLessThanOrEqual(small + 100);
+    const beyondCache = await passCost(AUTOMATIC_RUN_BRAKE.maxRuns + 476, 3);
+    expect(beyondCache).toBeLessThanOrEqual(await passCost(10, 3) + 100);
 
     const { companyId, agentIds: [agentId] } = await seedCompany(1, 1);
     await openBrake(companyId, agentId!, { probeAllowed: false });
@@ -134,6 +136,40 @@ suite("automatic-run start gate in the dispatch pass", () => {
     expect(await started([work!.id])).toBe(1);
     expect(await started(held.map(run => run.id))).toBe(0);
   }, 600_000);
+
+  it("returns the probe when its run's claim is declined, so another automatic run starts in the same pass", async () => {
+    const { companyId, agentIds: [agentId] } = await seedCompany(1, 5);
+    await openBrake(companyId, agentId!, { probeAllowed: true });
+    const [declined, next] = await queued(companyId, agentId!, 2, () => ({ wakeReason: "transient_failure_retry" }));
+    await db.update(heartbeatRuns).set({ runnerProfileJson: { chatControlRecoveryAdmission: { phase: "unknown" } } })
+      .where(eq(heartbeatRuns.id, declined!.id));
+    await heartbeat.resumeQueuedRunsAfterDrain({ companyId });
+    expect(await started([declined!.id])).toBe(0);
+    expect(await started([next!.id])).toBe(1);
+    const [brake] = await db.select().from(automaticRunBrakes).where(eq(automaticRunBrakes.companyId, companyId));
+    expect(brake?.probeRunId).toBe(next!.id);
+    automaticRunBrake.reset();
+    await heartbeatService(db).resumeQueuedRunsAfterDrain({ companyId });
+    expect(await started([declined!.id])).toBe(0);
+    expect((await db.select().from(automaticRunBrakes).where(eq(automaticRunBrakes.companyId, companyId)))[0]?.probeRunId).toBe(next!.id);
+  }, 300_000);
+
+  it("returns an unused half-open release start to its window", async () => {
+    const { companyId, agentIds: [agentId] } = await seedCompany(1, 1);
+    const runs = await queued(companyId, agentId!, 4, automatic);
+    await db.insert(automaticRunBrakes).values({ companyId, state: "half_open", stateChangedAt: sql`date_trunc('milliseconds', now())`,
+      openedAt: sql`now() - interval '5 minutes'` });
+    const reserve = (index: number) => automaticRunBrake.reserveStart(db, runs[index]!, { personOrigin: false });
+    const first = await reserve(0);
+    expect(first.held).toBe(false);
+    expect((await reserve(1)).held).toBe(false);
+    automaticRunBrake.reset();
+    expect((await reserve(2)).held).toBe(true);
+    if (!first.held) await first.release();
+    expect((await reserve(2)).held).toBe(false);
+    automaticRunBrake.reset();
+    expect((await reserve(3)).held).toBe(true);
+  }, 300_000);
 
   it("never holds a person's Retry", async () => {
     const { companyId, agentIds: [agentId] } = await seedCompany(1, 1);

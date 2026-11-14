@@ -207,6 +207,10 @@ export type AutomaticWork = { issueId: string; sourceRunId: string | null };
 
 export type AutomaticRunCreationSlot = { heldUntil: Date } | { heldUntil: null; release: () => Promise<void> };
 
+export type AutomaticRunStartSlot = { held: true } | { held: false; release: () => Promise<void> };
+
+const NOT_HELD: AutomaticRunStartSlot = { held: false, release: async () => undefined };
+
 const NO_RESERVATION = async () => undefined;
 
 type CacheEntry = { snapshot: AutomaticRunBrakeSnapshot; readAt: number; skewMs: number; heldUntil: number };
@@ -472,15 +476,22 @@ export function createAutomaticRunBrake(options: { loadRules?: () => Promise<Aut
     if (granted) {
       entry.heldUntil = now + AUTOMATIC_RUN_BRAKE.probeClaimBoundMs;
       entry.snapshot = { ...entry.snapshot, probeRunId: run.id, nextProbeAt: granted.nextProbeAt };
-      return true;
+      return async () => {
+        await db.update(automaticRunBrakes).set({ probeRunId: null, nextProbeAt: null, updatedAt: sql`now()` })
+          .where(sql`${automaticRunBrakes.companyId} = ${run.companyId} and ${automaticRunBrakes.state} = 'open'
+            and ${automaticRunBrakes.probeRunId} = ${run.id}::uuid
+            and not exists (select 1 from heartbeat_runs p where p.company_id = ${run.companyId} and p.id = ${run.id}::uuid
+              and p.started_at is not null)`);
+        companies.delete(run.companyId);
+      };
     }
     const nextProbeAt = entry.snapshot.nextProbeAt ? entry.snapshot.nextProbeAt.getTime() - entry.skewMs : 0;
     entry.heldUntil = Math.max(now + AUTOMATIC_RUN_BRAKE.cacheTtlMs, nextProbeAt);
-    return false;
+    return null;
   }
 
   async function grantRelease(db: Db, entry: CacheEntry, companyId: string) {
-    const [granted] = [...await db.execute<{ starts: number; window_ends_at: string | Date }>(sql`
+    const [granted] = [...await db.execute<{ starts: number; window_start: string | Date; window_ends_at: string | Date }>(sql`
       with ramp as (
         select b.company_id, b.state_changed_at + floor(extract(epoch from now() - b.state_changed_at) * 1000
             / ${AUTOMATIC_RUN_BRAKE.releaseIntervalMs}) * ${`${AUTOMATIC_RUN_BRAKE.releaseIntervalMs} milliseconds`}::interval as window_start,
@@ -494,35 +505,50 @@ export function createAutomaticRunBrake(options: { loadRules?: () => Promise<Aut
       from ramp
       where b.company_id = ramp.company_id and b.state = 'half_open'
         and (b.release_window_started_at is distinct from ramp.window_start or b.release_window_starts < ramp.rate)
-      returning b.release_window_starts as starts, ramp.window_start + ${`${AUTOMATIC_RUN_BRAKE.releaseIntervalMs} milliseconds`}::interval as window_ends_at`)];
-    if (granted) return true;
+      returning b.release_window_starts as starts, ramp.window_start, ramp.window_start + ${`${AUTOMATIC_RUN_BRAKE.releaseIntervalMs} milliseconds`}::interval as window_ends_at`)];
+    if (granted) {
+      const windowStart = new Date(granted.window_start).toISOString();
+      return async () => {
+        await db.update(automaticRunBrakes).set({ releaseWindowStarts: sql`${automaticRunBrakes.releaseWindowStarts} - 1`, updatedAt: sql`now()` })
+          .where(sql`${automaticRunBrakes.companyId} = ${companyId} and ${automaticRunBrakes.state} = 'half_open'
+            and ${automaticRunBrakes.releaseWindowStartedAt} = ${windowStart}::timestamptz and ${automaticRunBrakes.releaseWindowStarts} > 0`);
+        companies.delete(companyId);
+      };
+    }
     const step = rampStep(entry.snapshot.stateChangedAt ?? entry.snapshot.dbNow, new Date(Date.now() + entry.skewMs));
     const windowEnds = (entry.snapshot.stateChangedAt?.getTime() ?? 0) + (step + 1) * AUTOMATIC_RUN_BRAKE.releaseIntervalMs;
     entry.heldUntil = Math.max(Date.now() + 1_000, windowEnds - entry.skewMs);
-    return false;
+    return null;
   }
 
-  async function holdAutomaticRunStart(db: Db, run: AutomaticRunFacts, options: { personOrigin?: boolean } = {}): Promise<boolean> {
-    if (!isAutomaticRun(run)) return false;
+  async function reserveStart(db: Db, run: AutomaticRunFacts, options: { personOrigin?: boolean } = {}): Promise<AutomaticRunStartSlot> {
+    if (!isAutomaticRun(run)) return NOT_HELD;
     const cached = companies.get(run.companyId);
-    if (cached && cached.snapshot.state === "closed" && Date.now() - cached.readAt < AUTOMATIC_RUN_BRAKE.cacheTtlMs) return false;
-    if (options.personOrigin ?? await isPersonOrigin(db, run)) return false;
+    if (cached && cached.snapshot.state === "closed" && Date.now() - cached.readAt < AUTOMATIC_RUN_BRAKE.cacheTtlMs) return NOT_HELD;
+    if (options.personOrigin ?? await isPersonOrigin(db, run)) return NOT_HELD;
     if (cached && cached.heldUntil > Date.now()) return held(cached);
     const entry = await current(db, run.companyId);
-    if (entry.snapshot.state === "closed") return false;
+    if (entry.snapshot.state === "closed") return NOT_HELD;
     if (entry.heldUntil > Date.now()) return held(entry);
-    const allowed = entry.snapshot.state === "open" ? await grantProbe(db, entry, run) : await grantRelease(db, entry, run.companyId);
-    return allowed ? false : held(entry);
+    const release = entry.snapshot.state === "open" ? await grantProbe(db, entry, run) : await grantRelease(db, entry, run.companyId);
+    if (!release) return held(entry);
+    return { held: false, release: () => release().catch(error => {
+      logger.warn({ err: error, companyId: run.companyId, runId: run.id }, "Automatic work pause could not return an unused start");
+    }) };
   }
 
-  function held(entry: CacheEntry) {
+  async function holdAutomaticRunStart(db: Db, run: AutomaticRunFacts, options: { personOrigin?: boolean } = {}) {
+    return (await reserveStart(db, run, options)).held;
+  }
+
+  function held(entry: CacheEntry): AutomaticRunStartSlot {
     const now = Date.now();
     const nextProbeAt = entry.snapshot.nextProbeAt ? entry.snapshot.nextProbeAt.getTime() - entry.skewMs : 0;
     const due = entry.snapshot.state === "open" ? Math.max(entry.heldUntil, nextProbeAt) : entry.heldUntil;
     const at = due - now < 1_000 ? now + AUTOMATIC_RUN_BRAKE.probeIntervalMs : due;
     const known = wakes.get(entry.snapshot.companyId);
     if (known === undefined || known <= now || at < known) wakes.set(entry.snapshot.companyId, at);
-    return true;
+    return { held: true };
   }
 
   function takeDueWakes(now = Date.now()) {
@@ -542,6 +568,7 @@ export function createAutomaticRunBrake(options: { loadRules?: () => Promise<Aut
     creationHeldUntil,
     reserveCreation,
     holdAutomaticRunStart,
+    reserveStart,
     takeDueWakes,
     cacheSizes: () => ({ companies: companies.size, runs: personOrigin.size, wakes: wakes.size }),
     reset: () => { companies.clear(); personOrigin.clear(); wakes.clear(); },
@@ -550,8 +577,8 @@ export function createAutomaticRunBrake(options: { loadRules?: () => Promise<Aut
 
 export const automaticRunBrake = createAutomaticRunBrake();
 
-export function holdAutomaticRunStart(db: Db, run: AutomaticRunFacts, options: { personOrigin?: boolean } = {}) {
-  return automaticRunBrake.holdAutomaticRunStart(db, run, options);
+export function reserveAutomaticRunStart(db: Db, run: AutomaticRunFacts, options: { personOrigin?: boolean } = {}) {
+  return automaticRunBrake.reserveStart(db, run, options);
 }
 
 export function takeDueAutomaticRunWakes(now = Date.now()) {
