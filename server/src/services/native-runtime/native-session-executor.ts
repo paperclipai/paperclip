@@ -110,6 +110,7 @@ import { createNativeToolTrace, type NativeToolTrace } from "./native-tool-trace
 import { createNativeProviderFailureObservation } from "./native-provider-failure.js";
 import { explainNativeTurnFailure } from "./native-run-failure-explanation.js";
 import { nativeStartupRetryExhaustedAction, nativeStartupRetryWait, planNativeStartupRetry } from "./native-startup-retry.js";
+import { postProviderLimitHoldNotice } from "./provider-limit-hold-notice.js";
 import { admitUnclaimedNativeBootstrapRetry } from "./native-bootstrap-retry.js";
 import { attemptLaunchesFreshBootstrap, RUNNERD_CONTROL_PLANE_STATE_SCHEMAS, runnerdStateIsIncompleteBootstrap,
   runnerdStateHasNoProviderTurn, runnerdStateIsOpenedSessionBeforeTurn, runnerdStateIsUnconnectedBootstrap } from "./native-bootstrap-proof.js";
@@ -13144,11 +13145,14 @@ async function executePaperclipNativeSessionAttempt(
       // transitions the run into "failed". Read after the transaction
       // commits, so a rolled-back write never reports a false failure.
       let terminalRunToReport: typeof heartbeatRuns.$inferSelect | null = null;
+      // Set only when the committed write holds this run until a provider limit resets.
+      let providerLimitHold: Date | null = null;
       // A lock timeout rolls this write back whole, so a fresh attempt is safe.
       // Without it a briefly held row strands the run under its dead lease and
       // the task needs reconciliation instead of its recorded recovery.
       await retryTransientLockContention(() => input.db.transaction(async (tx) => {
         terminalRunToReport = null;
+        providerLimitHold = null;
         await tx.execute(
           sql`select set_config('statement_timeout', '15000', true), set_config('lock_timeout', '1000', true)`,
         );
@@ -13456,6 +13460,7 @@ async function executePaperclipNativeSessionAttempt(
             .where(eq(issues.id, input.execution.binding.issueId));
         }
         if (!stillOwnsTask) return;
+        if (phase === "retryable_failure" && providerCooldownAt && nextAttemptAt) providerLimitHold = nextAttemptAt;
         // The hold's reset deadline belongs to the provider-limit owner.
         if (providerLimit?.plan.automatic) await notifyDeliveryWork(tx, DELIVERY_QUEUES.providerLimitResume,
           JSON.stringify({ companyId: input.execution.binding.companyId }));
@@ -13583,6 +13588,9 @@ async function executePaperclipNativeSessionAttempt(
       // Pass the raw error only for closed settlement labels: its text bypasses
       // the identity redactor applied to the persisted message above.
       if (terminalRunToReport) void reportRunFailure(input.db, terminalRunToReport, { nativeCloseFailure: error });
+      // A failed notice must not change the committed retry.
+      if (providerLimitHold) await postProviderLimitHoldNotice(input.db, { ...input.execution.binding, retryAt: providerLimitHold })
+        .catch((failure: unknown) => logger.warn({ err: failure, runId: input.execution.binding.runId }, "provider limit hold notice failed"));
       await boundedExecutionCleanup(async () => {
         await stoppedLeaseRenewal;
         await attemptFailureStep(() =>
