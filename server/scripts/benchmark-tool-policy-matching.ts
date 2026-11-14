@@ -9,7 +9,9 @@
  *   --baseline-ref origin/master --tools 800 --rounds 9
  */
 import { execFileSync } from "node:child_process";
+import { randomBytes } from "node:crypto";
 import { rmSync, writeFileSync } from "node:fs";
+import { setTimeout as sleep } from "node:timers/promises";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { monitorEventLoopDelay, performance } from "node:perf_hooks";
 import { createDb, toolPolicies, type Db as DbClient } from "@paperclipai/db";
@@ -29,14 +31,19 @@ const baselineRef = option("--baseline-ref", "origin/master");
 const concurrency = 16; // LISTING_DECISION_CONCURRENCY in tool-gateway.ts
 
 // The baseline imports its siblings by relative path, so it sits next to the
-// current service for the run.
-const baselineUrl = new URL("../src/services/tool-access-policy.benchmark-baseline.ts", import.meta.url);
-writeFileSync(baselineUrl, execFileSync("git", ["show", `${baselineRef}:server/src/services/tool-access-policy.ts`], {
+// current service for the run. Each run uses its own file, so overlapping runs
+// cannot replace or remove another run's baseline.
+const baselineSource = execFileSync("git", ["show", `${baselineRef}:server/src/services/tool-access-policy.ts`], {
   cwd: fileURLToPath(new URL("..", import.meta.url)), maxBuffer: 64 * 1024 * 1024,
-}));
+});
+const baselineUrl = new URL(
+  `../src/services/tool-access-policy.benchmark-baseline-${process.pid}-${randomBytes(4).toString("hex")}.ts`,
+  import.meta.url,
+);
 type Service = typeof current.toolAccessPolicyService;
 let baseline: { toolAccessPolicyService: Service; createToolAccessDecisionCache: typeof current.createToolAccessDecisionCache };
 try {
+  writeFileSync(baselineUrl, baselineSource, { flag: "wx" });
   baseline = await import(pathToFileURL(fileURLToPath(baselineUrl)).href);
 } finally {
   rmSync(baselineUrl, { force: true });
@@ -141,12 +148,16 @@ try {
     for (const name of order) {
       global.gc?.();
       const delay = monitorEventLoopDelay({ resolution: 1 });
+      // The delay timer runs before the timed work starts and after it ends, so
+      // it also records a long final synchronous stretch.
       delay.enable();
+      await sleep(5);
       const cpu = process.cpuUsage();
       const started = performance.now();
       await listing(name);
       const wallMs = performance.now() - started;
       const used = process.cpuUsage(cpu);
+      await sleep(5);
       delay.disable();
       // Two warm-up rounds are not recorded.
       if (round >= 2) samples[name]!.push({ wallMs, cpuMs: (used.user + used.system) / 1000, maxBlockMs: delay.max / 1e6 });
