@@ -148,6 +148,34 @@ suite("heartbeat run JSON reads", () => {
     expect(limited.blocks).toBe(2 * 2 * resultRead);
   });
 
+  it("reads large results only for the session runs compaction keeps", async () => {
+    const { companyId, agent, issue } = await fixture();
+    const runIds: string[] = [];
+    for (let index = 0; index < 10; index += 1) {
+      const [run] = await db.insert(heartbeatRuns).values({
+        companyId, agentId: agent.id, issueId: issue.id, status: "succeeded", livenessState: "completed",
+        sessionIdAfter: "long-session", usageJson: { rawInputTokens: 200 },
+        createdAt: new Date(Date.UTC(2026, 0, 1, 0, index)),
+        contextSnapshot: { issueId: issue.id },
+        resultJson: { summary: `run ${index}`, stdout: randomBytes(128 * 1024).toString("base64") },
+      }).returning();
+      runIds.push(run.id);
+    }
+    const { blocks: resultRead } = await measured(() =>
+      db.execute(sql`select ${heartbeatRuns.resultJson} ->> 'summary' from ${heartbeatRuns} where ${heartbeatRuns.id} = ${runIds[9]}`));
+    expect(resultRead).toBeGreaterThan(10);
+
+    const compaction = await measured(() => createHeartbeatRunState(db).evaluateSessionCompaction({
+      agent: { ...agent, runtimeConfig: { heartbeat: { sessionCompaction: { maxRawInputTokens: 100 } } } },
+      sessionId: "long-session", issueId: issue.id,
+    }));
+
+    expect(compaction.result.rotate).toBe(true);
+    expect(compaction.result.previousRunId).toBe(runIds[9]);
+    expect(compaction.result.handoffMarkdown).toContain("run 9");
+    expect(compaction.blocks).toBe(4 * resultRead);
+  });
+
   it("reads a large run context once per listed run", async () => {
     const { companyId, agent, issue } = await fixture();
     const [run] = await db.insert(heartbeatRuns).values({

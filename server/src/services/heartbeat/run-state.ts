@@ -13,6 +13,7 @@ import {
   eq,
   getTableColumns,
   gt,
+  inArray,
   isNull,
   or,
   sql,
@@ -1402,7 +1403,18 @@ export function createHeartbeatRunState(db: Db) {
       policy.maxSessionRuns > 0 ? policy.maxSessionRuns + 1 : 0,
       4,
     );
-    const runs = await db
+    const sessionRunIds = (await db
+      .select({ id: heartbeatRuns.id })
+      .from(heartbeatRuns)
+      .where(
+        and(
+          eq(heartbeatRuns.agentId, agent.id),
+          eq(heartbeatRuns.sessionIdAfter, sessionId),
+        ),
+      )
+      .orderBy(desc(heartbeatRuns.createdAt))
+      .limit(fetchLimit)).map((row) => row.id);
+    const runs = sessionRunIds.length === 0 ? [] : await db
       .select({
         id: heartbeatRuns.id,
         createdAt: heartbeatRuns.createdAt,
@@ -1415,14 +1427,8 @@ export function createHeartbeatRunState(db: Db) {
       })
       .from(heartbeatRuns)
       .leftJoinLateral(heartbeatRunJsonOnce, sql`true`)
-      .where(
-        and(
-          eq(heartbeatRuns.agentId, agent.id),
-          eq(heartbeatRuns.sessionIdAfter, sessionId),
-        ),
-      )
-      .orderBy(desc(heartbeatRuns.createdAt))
-      .limit(fetchLimit);
+      .where(inArray(heartbeatRuns.id, sessionRunIds))
+      .orderBy(desc(heartbeatRuns.createdAt));
 
     if (runs.length === 0) {
       return {
