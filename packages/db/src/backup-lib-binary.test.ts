@@ -31,18 +31,18 @@ vi.mock("postgres", () => ({
 }));
 
 describe("JavaScript backup binary SQL", () => {
-  it("writes exact binary scalars and nested arrays without changing JSON or redaction", async () => {
+  it("writes exact binary scalars, nested arrays and JSON text without changing redaction", async () => {
     const directory = await mkdtemp(path.join(os.tmpdir(), "backup-binary-sql-"));
     const binary = Buffer.from([0, 255, ...Buffer.from("雪")]);
-    const metadata = { bytes: binary, values: [null, "雪"] };
+    const metadata = '{"big": 9007199254740993123, "fraction": 0.123456789012345678901, "values": [null, "é"]}';
     const hex = binary.toString("hex");
     const payloads = `{"\\\\x${hex}","\\\\x",NULL}`;
     const boundedPayloads = `[0:1][3:4]={{"\\\\x${hex}",NULL},{"\\\\x","\\\\x00ff"}}`;
     transport.rows = [
       [binary, payloads, metadata, payloads],
-      [new Uint8Array(), "{}", [], payloads],
+      [new Uint8Array(), "{}", "null", payloads],
       [null, null, null, payloads],
-      [new Uint8Array([0, 255]), boundedPayloads, {}, boundedPayloads],
+      [new Uint8Array([0, 255]), boundedPayloads, "{}", boundedPayloads],
     ];
     transport.end.mockClear();
     try {
@@ -55,12 +55,12 @@ describe("JavaScript backup binary SQL", () => {
       const array = (value: string) => literal(value);
       const prefix = 'INSERT INTO "public"."binary_fixture" ("bytes", "payloads", "metadata", "redacted") VALUES ';
       expect(inserts).toEqual([
-        `${prefix}(decode('${hex}', 'hex'), ${array(`{"\\\\x${hex}","\\\\x",NULL}`)}, ${literal(JSON.stringify(metadata))}, NULL);`,
-        `${prefix}(decode('', 'hex'), ${array("{}")}, ${literal("[]")}, NULL);`,
+        `${prefix}(decode('${hex}', 'hex'), ${array(`{"\\\\x${hex}","\\\\x",NULL}`)}, ${literal(metadata)}, NULL);`,
+        `${prefix}(decode('', 'hex'), ${array("{}")}, ${literal("null")}, NULL);`,
         `${prefix}(NULL, NULL, NULL, NULL);`,
         `${prefix}(decode('00ff', 'hex'), ${array(boundedPayloads)}, ${literal("{}")}, NULL);`,
       ]);
-      expect(transport.projection).toBe('SELECT "bytes", "payloads"::text AS "payloads", "metadata", "redacted"::text AS "redacted" FROM "public"."binary_fixture"');
+      expect(transport.projection).toBe('SELECT "bytes", "payloads"::text AS "payloads", "metadata"::text AS "metadata", "redacted"::text AS "redacted" FROM "public"."binary_fixture"');
       expect(transport.end).toHaveBeenCalledTimes(1);
     } finally { await rm(directory, { recursive: true, force: true }); }
   });
