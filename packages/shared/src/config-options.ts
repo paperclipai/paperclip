@@ -271,7 +271,6 @@ export const META_OPTIONS: readonly ConfigOptionDefinition[] = [
   {
     key: "$meta.version",
     type: "1",
-    default: 1,
     description: "Configuration schema version",
   },
   {

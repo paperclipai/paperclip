@@ -248,7 +248,9 @@ describe("paperclip config schema", () => {
     const metaSection = getConfigSection("meta");
     expect(metaSection).toBeDefined();
     expect(getConfigSection("$meta")).toBeDefined();
-    expect(metaSection?.options.some((opt) => opt.key === "$meta.version")).toBe(true);
+    const metaVersionOpt = metaSection?.options.find((opt) => opt.key === "$meta.version");
+    expect(metaVersionOpt).toBeDefined();
+    expect(metaVersionOpt?.default).toBeUndefined();
 
     const loggingSection = getConfigSection("logging");
     const loggingModeOpt = loggingSection?.options.find((opt) => opt.key === "logging.mode");
