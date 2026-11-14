@@ -1401,6 +1401,11 @@ annotation for each such test, and a row to the step summary with the file, test
 retry count and job. Fix a test that this reporter reports. Do not treat the
 retry as the fix. Playwright retries stay at zero.
 
+Database-work tests that intentionally roll back signaled writes must stop their
+coordinator and call `reconcileDatabaseWork` for the affected queue during
+teardown. Deleting fixture rows does not retire process-local uncertain
+transactions; retaining them can add unrelated retry deadlines to the next test.
+
 #### Embedded Postgres template cache
 
 To run the suite with one owned PostgreSQL server and a separate disposable
