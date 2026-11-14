@@ -1,5 +1,6 @@
-import { and, asc, eq, exists, gt, not, notInArray } from "drizzle-orm";
-import { heartbeatRuns, issues, nativeRunFinalizations, nativeRunResults, workspaceOperations, type Db } from "@paperclipai/db";
+import { and, asc, eq, exists, gt, not, notInArray, sql, type SQL } from "drizzle-orm";
+import { heartbeatRuns, issues, nativeRunFinalizations, nativeRunResults, statusDecisions, workAssessments, workspaceOperations,
+  type Db } from "@paperclipai/db";
 import type { createDeliveryWorkCoordinator } from "../delivery-work-coordinator.js";
 import { DELIVERY_QUEUES } from "../delivery-work-notifications.js";
 import type { NativeResultCommitScope } from "../native-result-commit-notifications.js";
@@ -11,7 +12,25 @@ import { readNativeWorkspaceSyncReference } from "./native-workspace-sync.js";
 
 type Entry = { id: string; companyId: string; issueId: string; dueAt: number };
 
-
+function recordedFinalizationErrorCondition(db: Db): SQL {
+  return and(eq(nativeRunFinalizations.phase, "retryable_failure"),
+    sql`${nativeRunFinalizations.failureCode} is distinct from 'workspace_finalization_failed'`,
+    exists(db.select({ id: statusDecisions.id }).from(statusDecisions)
+      .innerJoin(workAssessments, and(eq(workAssessments.id, statusDecisions.assessmentId),
+        eq(workAssessments.companyId, statusDecisions.companyId), eq(workAssessments.issueId, statusDecisions.issueId)))
+      .where(and(eq(statusDecisions.id, nativeRunFinalizations.decisionId),
+        eq(statusDecisions.companyId, nativeRunFinalizations.companyId), eq(statusDecisions.issueId, nativeRunFinalizations.issueId),
+        eq(statusDecisions.assessmentId, nativeRunFinalizations.assessmentId),
+        eq(workAssessments.runId, nativeRunFinalizations.runId), eq(workAssessments.resultId, nativeRunFinalizations.resultId),
+        sql`${statusDecisions.decisionJson}->'effects' @> jsonb_build_array(jsonb_build_object(
+          'kind', 'record_finalization_error', 'cause', ${nativeRunFinalizations.failureCode}::text))`))),
+    sql`${issues.updatedAt} <= ${nativeRunFinalizations.updatedAt}`,
+    sql`not exists (select 1 from heartbeat_runs successor
+      where successor.company_id = ${nativeRunFinalizations.companyId} and successor.id <> ${nativeRunFinalizations.runId}
+        and (successor.context_snapshot->>'issueId' = ${nativeRunFinalizations.issueId}::text
+          or successor.issue_id = ${nativeRunFinalizations.issueId})
+        and successor.created_at > ${nativeRunFinalizations.updatedAt})`)!;
+}
 
 export function nativeResultCommitWork(db: Db, finalize = finalizeNativeRun) {
   function candidates(scope?: NativeResultCommitScope, after?: string) {
@@ -28,6 +47,7 @@ export function nativeResultCommitWork(db: Db, finalize = finalizeNativeRun) {
       .where(and(eq(heartbeatRuns.runtimeMode, "native"), nativeRunnerOwnershipNotHeldCondition(),
         notInArray(nativeRunFinalizations.phase, ["committed", "terminal_failure"]),
         not(pendingNativeStatusEffectsCondition(db)),
+        not(recordedFinalizationErrorCondition(db)),
         exists(db.select({ id: workspaceOperations.id }).from(workspaceOperations).where(and(
           eq(workspaceOperations.companyId, nativeRunFinalizations.companyId),
           eq(workspaceOperations.issueId, nativeRunFinalizations.issueId), eq(workspaceOperations.heartbeatRunId, nativeRunFinalizations.runId),
