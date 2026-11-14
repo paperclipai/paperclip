@@ -13,9 +13,11 @@ export interface ComposerRunSettings {
 
 export const DEFAULT_COMPOSER_RUN_SETTINGS: ComposerRunSettings = { model: null, effort: null, fast: false };
 export const EFFORT_LABELS: Record<string, string> = {
-  off: "Off", minimal: "Minimal", low: "Low", medium: "Medium", high: "High",
+  off: "Off", none: "None", minimal: "Minimal", low: "Low", medium: "Medium", high: "High",
   xhigh: "Extra High", max: "Max", ultra: "Ultra",
 };
+
+const HERMES_EFFORTS = ["none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"] as const;
 
 const MODEL_ADAPTERS = new Set([
   "claude_local", "codex_local", "opencode_local", "pi_local", "kimi_local",
@@ -64,6 +66,7 @@ export function composerCatalogProvider(agent: Agent | undefined): string | unde
 
 export function composerEfforts(agent: Agent | undefined, model: string, catalogIds: readonly string[]): readonly string[] {
   if (!agent) return [];
+  if (agent.adapterType === "hermes_local") return HERMES_EFFORTS;
   const effectiveModel = model.trim() || (agent.adapterType === "grok_local" ? DEFAULT_GROK_LOCAL_MODEL
     : agent.adapterType === "kimi_local" ? DEFAULT_KIMI_LOCAL_MODEL : "");
   if (!effectiveModel) return [];
@@ -99,7 +102,7 @@ export function readComposerRunSettings(overrides: IssueAssigneeAdapterOverrides
 
 function composerEffortKey(adapterType: string | undefined): string | null {
   if (adapterType === "codex_local" || adapterType === "paperclip_runner") return "modelReasoningEffort";
-  if (adapterType === "claude_local" || adapterType === "kimi_local") return "effort";
+  if (adapterType === "claude_local" || adapterType === "kimi_local" || adapterType === "hermes_local") return "effort";
   if (adapterType === "grok_local") return "reasoningEffort";
   if (adapterType === "pi_local") return "thinking";
   if (adapterType === "opencode_local") return "variant";

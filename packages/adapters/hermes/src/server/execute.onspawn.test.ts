@@ -125,6 +125,40 @@ describe("hermes-local adapter onSpawn forwarding", () => {
     expect(vi.mocked(serverUtils.runChildProcess).mock.calls.at(-1)![3].cwd).toBe("/private/qa/configured-workspace");
   });
 
+  it("passes the configured thinking effort as --reasoning", async () => {
+    const { ctx } = makeCtx({ effort: "High" });
+    await execute(ctx as any);
+    const args = vi.mocked(serverUtils.runChildProcess).mock.calls.at(-1)![2] as string[];
+    expect(args.slice(args.indexOf("--reasoning"), args.indexOf("--reasoning") + 2)).toEqual(["--reasoning", "high"]);
+    expect(args).not.toContain("--reasoning-effort");
+  });
+
+  it("skips an unsupported effort and defers to an explicit --reasoning extra arg", async () => {
+    const { ctx } = makeCtx({ effort: "turbo" });
+    await execute(ctx as any);
+    expect(vi.mocked(serverUtils.runChildProcess).mock.calls.at(-1)![2]).not.toContain("--reasoning");
+    expect(ctx.onLog).toHaveBeenCalledWith("stderr", expect.stringContaining("unsupported thinking effort"));
+    const explicit = makeCtx({ effort: "high", extraArgs: ["--reasoning", "low"] });
+    await execute(explicit.ctx as any);
+    const args = vi.mocked(serverUtils.runChildProcess).mock.calls.at(-1)![2] as string[];
+    expect(args.filter((arg) => arg === "--reasoning")).toHaveLength(1);
+    expect(args[args.indexOf("--reasoning") + 1]).toBe("low");
+  });
+
+  it("repairs a saved --reasoning-effort extra arg from older agent configs", async () => {
+    const { ctx } = makeCtx({ extraArgs: ["--reasoning-effort", "medium", "--checkpoints"] });
+    await execute(ctx as any);
+    const args = vi.mocked(serverUtils.runChildProcess).mock.calls.at(-1)![2] as string[];
+    expect(args).not.toContain("--reasoning-effort");
+    expect(args[args.indexOf("--reasoning") + 1]).toBe("medium");
+    expect(args).toContain("--checkpoints");
+    const both = makeCtx({ effort: "high", extraArgs: ["--reasoning-effort=low"] });
+    await execute(both.ctx as any);
+    const bothArgs = vi.mocked(serverUtils.runChildProcess).mock.calls.at(-1)![2] as string[];
+    expect(bothArgs.some((arg) => arg.startsWith("--reasoning-effort"))).toBe(false);
+    expect(bothArgs[bothArgs.indexOf("--reasoning") + 1]).toBe("high");
+  });
+
   it("runChildProcess opts type includes onSpawn", () => {
     // Type-level assertion: if onSpawn were removed from the type,
     // this file would fail to compile. The runtime test above catches

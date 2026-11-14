@@ -46,6 +46,7 @@ import {
   DEFAULT_GRACE_SEC,
   DEFAULT_MODEL,
   VALID_PROVIDERS,
+  VALID_REASONING_EFFORTS,
 } from "../shared/constants.js";
 
 import {
@@ -71,6 +72,23 @@ function cfgStringArray(v: unknown): string[] | undefined {
   return Array.isArray(v) && v.every((i) => typeof i === "string")
     ? (v as string[])
     : undefined;
+}
+function splitLegacyReasoningEffort(extraArgs: string[] | undefined): { args: string[] | undefined; effort: string | undefined } {
+  if (!extraArgs) return { args: undefined, effort: undefined };
+  const args: string[] = [];
+  let effort: string | undefined;
+  for (let i = 0; i < extraArgs.length; i++) {
+    const arg = extraArgs[i];
+    if (arg === "--reasoning-effort") {
+      effort = extraArgs[i + 1];
+      i++;
+    } else if (arg.startsWith("--reasoning-effort=")) {
+      effort = arg.slice("--reasoning-effort=".length);
+    } else {
+      args.push(arg);
+    }
+  }
+  return { args, effort };
 }
 function cfgEnvString(v: unknown): string | undefined {
   if (typeof v === "string" && v.length > 0) return v;
@@ -354,7 +372,7 @@ export async function execute(
   const graceSec = cfgNumber(config.graceSec) || DEFAULT_GRACE_SEC;
   const maxTurns = cfgNumber(config.maxTurnsPerRun);
   const toolsets = cfgString(config.toolsets) || cfgStringArray(config.enabledToolsets)?.join(",");
-  const extraArgs = cfgStringArray(config.extraArgs);
+  const { args: extraArgs, effort: legacyEffort } = splitLegacyReasoningEffort(cfgStringArray(config.extraArgs));
   const persistSession = cfgBoolean(config.persistSession) !== false;
   const worktreeMode = cfgBoolean(config.worktreeMode) === true;
   const checkpoints = cfgBoolean(config.checkpoints) === true;
@@ -474,6 +492,15 @@ export async function execute(
 
   if (maxTurns && maxTurns > 0) {
     args.push("--max-turns", String(maxTurns));
+  }
+
+  const effort = (cfgString(config.effort) ?? legacyEffort)?.trim().toLowerCase();
+  if (effort && !extraArgs?.some((arg) => arg === "--reasoning" || arg.startsWith("--reasoning="))) {
+    if ((VALID_REASONING_EFFORTS as readonly string[]).includes(effort)) {
+      args.push("--reasoning", effort);
+    } else {
+      await ctx.onLog("stderr", `[hermes] Ignoring unsupported thinking effort "${effort}".\n`);
+    }
   }
 
   if (worktreeMode) args.push("-w");
