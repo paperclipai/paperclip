@@ -113,6 +113,9 @@ export function normalizeIssueQueuedCommentQueue(
     executionWait: typeof wait?.reason === "string" && typeof wait?.message === "string"
       ? { reason: wait.reason, message: wait.message }
       : null,
+    ...(Array.isArray(source?.firstTurnCommentIds) ? {
+      firstTurnCommentIds: source.firstTurnCommentIds.filter((id): id is string => typeof id === "string" && id.length > 0),
+    } : {}),
   };
 }
 
@@ -182,5 +185,6 @@ export function mergePendingIssueQueuedComments(params: {
         : "unsupported"),
     entries,
     executionWait: params.authoritativeQueue?.executionWait ?? null,
+    ...(params.authoritativeQueue?.firstTurnCommentIds ? { firstTurnCommentIds: params.authoritativeQueue.firstTurnCommentIds } : {}),
   };
 }

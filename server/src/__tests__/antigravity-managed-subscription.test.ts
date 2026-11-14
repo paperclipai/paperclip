@@ -123,7 +123,8 @@ describe("managed Antigravity subscription projection and writeback", () => {
     await expect(access(join(provider, "auth.json"))).rejects.toMatchObject({ code: "ENOENT" });
     await writeFile(token, credential("resolved-project"));
     await runtime.cleanup();
-    expect(account.locks).toEqual(["grant:update", "secret:update"]);
+    // Preparation reads the secret version under a share lock before and after resolving it.
+    expect(account.locks).toEqual(["secret:share", "secret:share", "grant:update", "secret:update"]);
     expect(account.rotation).toHaveBeenCalledWith(account.refs[0].secretId,
       { value: credential("resolved-project"), preserveAiSessionEpoch: true }, { userId: "alice" });
     await expect(access(runtime.home!)).rejects.toMatchObject({ code: "ENOENT" });
@@ -195,6 +196,7 @@ describe("managed Antigravity subscription projection and writeback", () => {
     account.rotation.mockImplementationOnce(async (_secretId, input) => { account.credential = input.value; account.version += 1; });
     request.mockResolvedValueOnce(Response.json({ access_token: "fixture-access", refresh_token: "fixture-retry-rotation" }))
       .mockResolvedValueOnce(Response.json({ email_verified: true, email: "alice@example.test" }));
+    await runtime.cleanup();
     const next = await prepare();
     expect(new URLSearchParams(request.mock.calls[2][1].body).get("refresh_token")).toBe("fixture-latest-rotation");
     expect(await readFile(join(String(next.config.env.GEMINI_HOME), "antigravity-acp", "acp_token.json"), "utf8"))
@@ -215,7 +217,7 @@ describe("managed Antigravity subscription projection and writeback", () => {
     } else {
       await expect(runtime.cleanup()).rejects.toThrow("The refreshed Google account does not match the selected connection.");
       expect(account.rotation).not.toHaveBeenCalled();
-      expect(account.locks).toEqual([]);
+      expect(account.locks).toEqual(["secret:share", "secret:share"]);
       expect(account.journal).toMatchObject({ provider: "google", google: { verified: false }, value: credential("resolved-project", "fixture-rotated-refresh") });
       expect(await readFile(token, "utf8")).toBe(credential("resolved-project", "fixture-rotated-refresh"));
     }

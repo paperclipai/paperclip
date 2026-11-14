@@ -1,6 +1,6 @@
 {
   "schema": "paperclip.acpx-profiles.v1",
-  "acpxVersion": "0.13.1",
+  "acpxVersion": "0.22.0",
   "driverKind": "acpx_runtime",
   "protocolVersion": 1,
   "profiles": {

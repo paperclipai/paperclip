@@ -56,9 +56,9 @@ describe("assigned stdio MCP bindings", () => {
       expect(() => stdioMcpLaunchBindings(environment)).toThrow();
     }
   });
-  it("rejects duplicate names and collisions with the existing HTTP gateway", () => {
+  it("rejects duplicate names and the task bridge name", () => {
     const { binding, environment } = fixture();
     expect(() => stdioMcpLaunchBindings({ ...environment, [STDIO_MCP_BINDINGS_ENV]: JSON.stringify([binding, binding]) })).toThrow();
-    expect(() => stdioMcpLaunchBindings({ ...environment, PAPERCLIP_NATIVE_MCP_NAME: binding.name })).toThrow();
+    expect(() => stdioMcpLaunchBindings({ ...environment, [STDIO_MCP_BINDINGS_ENV]: JSON.stringify([{ ...binding, name: "paperclip" }]) })).toThrow();
   });
 });

@@ -24,6 +24,12 @@ Override the sample count (minimum five) or port when needed:
 PAPERCLIP_ISSUE_PERF_RUNS=7 PAPERCLIP_ISSUE_PERF_PORT=3210 pnpm exec playwright test --config tests/perf/issue-detail/playwright.config.ts
 ```
 
+S1 clicks as soon as the list row is visible. Set
+`PAPERCLIP_ISSUE_PERF_LIST_DWELL_MS=1500` to wait on the list first, as a
+person does. Task lists preload the chat of their top rows after the list's
+own reads settle, so S1 with a dwell measures a preloaded open and S1 without
+one measures an open that usually has to read the task.
+
 Outputs include `baseline.md`, `baseline.json`, and a Chrome trace for the first run of each scenario/profile. Open `*.trace.json` in Chrome DevTools Performance to inspect the `issue-detail:*` user-timing marks.
 
 Set `PAPERCLIP_ISSUE_PERF_PROFILE=1` to capture actual Chrome CPU samples and
@@ -50,7 +56,80 @@ harness validates the task identity before measuring. Network spans in the trace
 use recorded request start/end timestamps relative to task navigation; they
 include completed requests observed during the sample, even after content paint.
 
+## Cold direct task load (chat bootstrap)
+
+A hard load of a task URL starts `GET /api/issues/:ref/chat-bootstrap` from the
+inline preload script, before the app's JavaScript loads. The chat's
+first-frame reads share that answer (`ui/src/lib/issue-chat-bootstrap.ts`) and
+fall back to their own requests when it fails, lacks a field, or stalls.
+
+`cold-bootstrap.perf.spec.ts` delays every API response (300 ms by default)
+so serial request stages show up as wall-clock time. It opens the task by URL
+in a fresh browser context with the app's JavaScript in the HTTP cache and no
+app storage. The finish event is the revealed history with the latest saved
+message and an editable composer. Its request-shape test always runs: one
+bootstrap request, no per-endpoint first-frame read before the frame, and no
+such read completing before it. Reads that start after the live socket
+connects are its catch-up refresh and are excluded. The benchmark is opt-in:
+
+```sh
+PAPERCLIP_ISSUE_PERF_BASE_URL=http://127.0.0.1:3287 \
+PAPERCLIP_ISSUE_PERF_COLD_RUNS=7 PAPERCLIP_ISSUE_PERF_LABEL=candidate \
+  pnpm exec playwright test --config tests/perf/issue-detail/playwright.config.ts cold-bootstrap -g benchmark
+```
+
+It writes `cold-bootstrap-<label>.{json,md}` with the median, spread, the
+request count before the frame, the requests that finished last before it,
+and the first run's request timeline. `PAPERCLIP_ISSUE_PERF_API_DELAY_MS`
+changes the delay. `PAPERCLIP_ISSUE_PERF_COLD_HTTP_CACHE=1` downloads the
+JavaScript on every run. Serve a production build
+(`PAPERCLIP_UI_DEV_MIDDLEWARE=false`).
+
+## Real-instance click harness
+
+Local fixtures cannot reproduce staging's network round trips, server contention
+or object-store latency. `staging-click-harness.js` measures the same journey on
+any running instance, including staging, from the signed-in browser:
+
+1. Open an Issues list, for example `/<company>/issues?view=mine`.
+2. Paste the file into the DevTools console (or evaluate it through a browser
+   automation tool).
+3. Run `await __taskOpenHarness.series(["ABC-1", "ABC-2", "ABC-3"])`.
+
+Each sample reports the time from the row click to a visible composer and to the
+latest message in the viewport, the requests started before that point, the
+requests that finished last before it (`releasedBy`), the slowest and repeated
+requests, layout shifts, and any movement of the latest message after it first
+appeared. `serverMs` comes from the `paperclip_api` Server-Timing entry that every
+API response carries, so a long `duration` with a short `serverMs` points to the
+network or browser queueing rather than the handler. A fetch that is still
+running when the sample ends is listed with `pending: true`. Run samples
+serially and record whether each task's data was already cached (a revisit) or
+not.
+
+The summary labels each sample (`sample 1`, ...) instead of the task reference.
+It replaces query values and every path segment that contains a digit with a
+placeholder. Other path segments can stay, so review the output before you
+share it outside the instance.
+
 ## Task layout stability
+
+The normal browser CI suite also runs `tests/e2e/task-loading-frame.spec.ts`.
+It seeds a smaller API-only task and checks desktop/mobile frame and composer
+geometry, title typography, the initial reading position, Classic preference
+loading and typography, mobile shell handoff, and a stalled font request. It does not require a separate database URL.
+The rich 200-message fixture below remains an additional local stress journey.
+
+`loading-layout.spec.ts` uses a retained synthetic task with a wrapping title,
+200 saved messages, document and PR cards, a monitor, and a pending confirmation.
+It records every animation frame during direct and list-based entry on desktop
+and mobile, including delayed web fonts and workspace preferences. It rejects real headers shown before
+the initial conversation is ready, loading-frame movement, different header
+typography, composer displacement, and movement of the initial reading position.
+The fixture requires the disposable PostgreSQL URL described below. Its agent
+has interval and on-demand wakes disabled, including when the retained fixture
+is reused. The suite does not start provider work.
+Videos, screenshots, and `frames.json` are retained with each result.
 
 `compact-startup.spec.ts` keeps a synthetic local reproduction with 24 messages,
 a plan, three documents and three saved PR cards. It holds the enriched task
@@ -75,17 +154,23 @@ Back navigation, and covers mobile reduced motion and explicit comment links.
 The eight scenarios also exercise same-task hash navigation without remounting
 on desktop and mobile, and stalled native/log reads that expose Retry after
 the 15-second request deadline.
-`plan-startup.spec.ts` also opens tasks with and without a saved plan while
-blocking the separate plan endpoint. Both must reveal the saved conversation
-from the task response without issuing that redundant read.
-It also checks task-list navigation, where a list-only snapshot needs one normal
-plan fetch and must still show a saved plan when present.
+`plan-startup.spec.ts` opens tasks directly and from the task list, with and
+without a saved plan, while holding separate plan reads. The core projection
+must reveal the saved conversation and plan before those reads finish. Separate
+plan reads are recorded as diagnostics. The hook tests cover fallback reads for
+list-only snapshots and responses without a plan projection.
 Videos and per-frame `layout.json` measurements are written under each test's
 output directory. The two-pixel assertion measures a logical row's viewport
 offset; total scroll offset legitimately changes when history is prepended.
 
 Ordinary task opens defer the concealed history and composer until their initial
 data is ready. The skeleton and scroll/composer containers retain their geometry.
+Compact tasks reuse saved replies from completed runs. Their transcript reads
+start when the reader opens older history through **More messages** or **More run
+output**. Saved Plans from completed runs stay visible while their output is deferred or pending.
+Live runs, failures, yielded runs, explicit anchors, and runs without a
+saved reply still load their output. A transcript already shown during this visit
+stays mounted when the run completes.
 Comment-link navigation prepares content eagerly so the target can be positioned
 before reveal. Revealed content stays mounted during refresh. The draft scenario
 holds a background task read, checks the same editor remains mounted, reloads the
@@ -104,6 +189,20 @@ not a shared or production instance. Without the override, the harness starts it
 isolated instance as before. Live provider walkthroughs additionally require a
 configured native Paperclip runner and Codex authentication; deterministic
 browser fixtures do not substitute for watching an actual provider run.
+
+`saved-reply-startup.spec.ts` adds a PostgreSQL fixture with 200 long saved agent
+replies, 200 completed native runs, and a Plan linked to the latest run. It holds
+transcript requests, checks both task presentations on desktop and mobile, and measures
+reply positions on each frame. Opening older history must start the transcript
+reads and preserve the editor and draft. This case is skipped unless
+`PAPERCLIP_ISSUE_PERF_DATABASE_URL` points to a disposable loopback PostgreSQL
+database whose name ends in `_test`. Use the same database as the local server:
+
+```sh
+PAPERCLIP_ISSUE_PERF_BASE_URL=http://127.0.0.1:3102 \
+PAPERCLIP_ISSUE_PERF_DATABASE_URL=postgres://paperclip:paperclip@127.0.0.1:5432/task_loading_test \
+  pnpm exec playwright test --config tests/perf/issue-detail/playwright.config.ts saved-reply-startup.spec.ts
+```
 
 For the live walkthrough, first assign a disposable task to a native Paperclip
 runner configured with the Codex provider. Its scratch project should contain

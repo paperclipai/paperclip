@@ -86,20 +86,23 @@ scenarios:
     expected_outcome: >-
       Morgan's durable instructions gain the requested rule while retaining unrelated guidance.
       The response links to the agent or revision and explains when future work will use it. A
-      concurrent edit produces a visible conflict or a fresh merge rather than silently
-      overwriting the newer instructions.
+      concurrent human edit made during the run is merged: the saved result keeps the newer
+      instructions and adds the rule rather than silently overwriting them.
   - id: agents.restore-instructions
     capabilities:
       - agents/instructions
     context: >-
-      Morgan has two visible instruction revisions and the latest introduced an unwanted rule.
+      Someone just added an unwanted rule to Morgan's instructions. Paperclip keeps only the
+      current instruction files: saving does not record earlier versions, so Morgan's history
+      is empty and no other saved copy of the earlier text exists.
     query: >-
       Undo Morgan's last instruction change.
     expected_outcome: >-
-      The agent identifies the exact last revision and restores the previous contents through
-      the versioned instruction path. History retains both the unwanted edit and the
-      restoration, and chat describes what was restored without claiming to rewind tasks already
-      executed under the old instructions.
+      The agent checks what Paperclip actually retains instead of guessing. With no saved earlier
+      version, it leaves Morgan's instructions unchanged, does not reconstruct or invent a
+      previous revision, says plainly that no instruction history exists to undo from, and asks
+      the person for the text they want (or which rule to remove). If a real retained copy of the
+      earlier text existed, restoring exactly that would be acceptable instead.
   - id: agents.change-manager
     capabilities:
       - agents/organization

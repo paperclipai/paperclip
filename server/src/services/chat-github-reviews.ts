@@ -776,6 +776,7 @@ export function githubChatReviewService(db: Db, fetchImpl = fetch) {
         reviewId: review.id,
         reviewedCommit: review.headSha,
         state: review.state,
+        findingCategories: review.policySnapshot.findingCategories,
       };
     }
     if (name === "submit_review") {

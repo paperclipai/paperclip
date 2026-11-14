@@ -5,6 +5,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { useNativeRunTranscripts } from "./useNativeRunTranscripts";
 import { TRANSCRIPT_REQUEST_TIMEOUT_MS } from "./read-transcript-request";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 
 const eventsMock = vi.hoisted(() => vi.fn());
 const conversationEventsMock = vi.hoisted(() => vi.fn());
@@ -39,6 +40,7 @@ describe("useNativeRunTranscripts", () => {
   beforeEach(() => {
     vi.useFakeTimers();
     eventsMock.mockReset();
+    conversationEventsMock.mockReset();
     container = document.createElement("div");
     document.body.appendChild(container);
     root = createRoot(container);
@@ -71,6 +73,111 @@ describe("useNativeRunTranscripts", () => {
     await act(async () => { root.render(<Window compact={false} />); });
     expect(eventsMock).toHaveBeenCalledWith("old", 0, 1000, expect.any(Object));
     expect(state!.transcriptByRun.get("old")?.filter((entry) => entry.kind === "assistant").map((entry) => entry.text)).toEqual(["Earlier answer", "Latest answer"]);
+  });
+
+  it("reopens saved terminal history immediately and catches up without duplicating saved events", async () => {
+    const client = new QueryClient();
+    let latest!: ReturnType<typeof useNativeRunTranscripts>;
+    const row = (seq: number) => ({ id: `event-${seq}`, runId: "saved", companyId: "company", createdAt: new Date().toISOString(), seq, eventType: "item.completed", payload: { prpEvent: {
+      schema: "paperclip.prp.event.v1", schemaVersion: 1, eventType: "item.completed", runId: "saved",
+      emittedAt: new Date().toISOString(), itemId: `answer-${seq}`, payload: { kind: "agentMessage", text: `Answer ${seq}` },
+    } } });
+    function Saved({ companyId = "company", compact = true, status = "succeeded", extra = false }) {
+      latest = useNativeRunTranscripts([
+        { id: "saved", status, runtimeMode: "native", conversationOnly: compact },
+        ...(extra ? [{ id: "earlier", status, runtimeMode: "native" as const, conversationOnly: compact }] : []),
+      ], { companyId });
+      return null;
+    }
+    async function mount(props = {}) {
+      await act(async () => root.render(<QueryClientProvider client={client}><Saved {...props} /></QueryClientProvider>));
+    }
+    async function leave() {
+      await act(async () => root.render(null));
+    }
+    conversationEventsMock.mockResolvedValueOnce([row(1)]);
+    await mount();
+    expect(latest.hydratedRunIds.has("saved")).toBe(true);
+    await leave();
+    let finish!: (rows: ReturnType<typeof row>[]) => void;
+    conversationEventsMock.mockImplementationOnce(() => new Promise(resolve => { finish = resolve; }));
+    await mount();
+    expect(latest.isInitialHydrating).toBe(false);
+    expect(latest.transcriptByRun.has("saved")).toBe(true);
+    expect(conversationEventsMock.mock.calls.at(-1)?.[1]).toBe(1);
+    await act(async () => finish([row(2)]));
+    expect(latest.transcriptByRun.get("saved")?.filter(entry => entry.kind === "assistant").map(entry => entry.text)).toEqual(["Answer 1", "Answer 2"]);
+    await leave();
+    conversationEventsMock.mockImplementation(() => new Promise(() => {}));
+    await mount();
+    expect(conversationEventsMock.mock.calls.at(-1)?.[1]).toBe(2);
+    expect(latest.isInitialHydrating).toBe(false);
+    expect(latest.transcriptByRun.get("saved")?.filter(entry => entry.kind === "assistant").map(entry => entry.text)).toEqual(["Answer 1", "Answer 2"]);
+    await leave();
+    conversationEventsMock.mockResolvedValue([]);
+    await mount();
+    client.removeQueries({ queryKey: ["native-run-transcript"] });
+    await mount({ extra: true });
+    expect(latest.transcriptByRun.get("saved")?.filter(entry => entry.kind === "assistant").map(entry => entry.text)).toEqual(["Answer 1", "Answer 2"]);
+    conversationEventsMock.mockImplementation(() => new Promise(() => {}));
+    for (const props of [{ companyId: "other" }, { compact: false }, { status: "running" }]) {
+      await leave();
+      eventsMock.mockImplementation(() => new Promise(() => {}));
+      await mount(props);
+      expect(latest.isInitialHydrating).toBe(true);
+      expect(latest.transcriptByRun.has("saved")).toBe(false);
+    }
+    await leave();
+    client.clear();
+    await mount();
+    expect(latest.isInitialHydrating).toBe(true);
+    expect(latest.transcriptByRun.has("saved")).toBe(false);
+    await leave();
+    client.clear();
+    eventsMock.mockResolvedValueOnce([row(1), row(2)]);
+    await mount({ compact: false });
+    conversationEventsMock.mockResolvedValueOnce([row(2)]);
+    await mount();
+    await leave();
+    conversationEventsMock.mockResolvedValueOnce([row(3)]);
+    await mount();
+    expect(latest.transcriptByRun.get("saved")?.filter(entry => entry.kind === "assistant").map(entry => entry.text)).toEqual(["Answer 2", "Answer 3"]);
+    eventsMock.mockResolvedValueOnce([row(3)]);
+    await mount({ compact: false });
+    expect(latest.transcriptByRun.get("saved")?.filter(entry => entry.kind === "assistant").map(entry => entry.text)).toEqual(["Answer 1", "Answer 2", "Answer 3"]);
+    await leave();
+    client.clear();
+  });
+
+  it("reuses a 300-run saved window without rescanning its cache on unchanged renders", async () => {
+    const client = new QueryClient();
+    const runs = Array.from({ length: 300 }, (_, index) => ({
+      id: `saved-${index}`, status: "succeeded", runtimeMode: "native" as const, conversationOnly: true,
+    }));
+    for (const run of runs) {
+      client.setQueryData(["native-run-transcript", "company", run.id, true, run.status], { events: [], cursor: 0 });
+    }
+    const originalRead = client.getQueryData.bind(client);
+    let reads = 0;
+    vi.spyOn(client, "getQueryData").mockImplementation(((key) => {
+      if (key[0] === "native-run-transcript" && ++reads > runs.length) throw new Error("Saved history was rescanned");
+      return originalRead(key);
+    }) as typeof client.getQueryData);
+    conversationEventsMock.mockImplementation(() => new Promise(() => {}));
+    let state!: ReturnType<typeof useNativeRunTranscripts>;
+    function Window({ tick }: { tick: number }) {
+      state = useNativeRunTranscripts(runs, { companyId: "company" });
+      return <span>{tick}</span>;
+    }
+    for (let tick = 0; tick < 3; tick++) {
+      await act(async () => root.render(<QueryClientProvider client={client}><Window tick={tick} /></QueryClientProvider>));
+      expect(state.isInitialHydrating).toBe(false);
+      expect(state.transcriptByRun.size).toBe(300);
+    }
+    expect(reads).toBe(300);
+    await act(async () => root.render(null));
+    client.clear();
+    vi.restoreAllMocks();
   });
 
   it("exposes event transport failures and retries terminal runs until recovery", async () => {

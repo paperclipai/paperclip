@@ -1,3 +1,5 @@
+import { companyProjectsQuery } from "@/lib/company-projects-query";
+import { describeError } from "../api/errors";
 import { useSelectedHeartbeatRun } from "../hooks/useSelectedHeartbeatRun";
 import { AgentCharacter } from "../components/AgentCharacter";
 import { characterStateForAgent } from "@paperclipai/shared";
@@ -14,6 +16,8 @@ import { builtInAgentsApi, type BuiltInManagedResourceKind } from "../api/builtI
 import { companySkillsApi } from "../api/companySkills";
 import { budgetsApi } from "../api/budgets";
 import { heartbeatsApi } from "../api/heartbeats";
+import { runCancellationLabel } from "../lib/run-cancellation-label";
+import { stopFailedNativeRun } from "../lib/native-run-stop";
 import { instanceSettingsApi } from "../api/instanceSettings";
 import { ApiError } from "../api/client";
 import { ChartCard, RunActivityChart, PriorityChart, IssueStatusChart, SuccessRateChart } from "../components/ActivityCharts";
@@ -21,7 +25,6 @@ import { SHOW_TASK_PRIORITY_UI } from "../lib/ui-flags";
 import { activityApi } from "../api/activity";
 import { accessApi } from "../api/access";
 import { issuesApi } from "../api/issues";
-import { projectsApi } from "../api/projects";
 import { usePanel } from "../context/PanelContext";
 import { useSidebar } from "../context/SidebarContext";
 import { useCompany } from "../context/CompanyContext";
@@ -1643,8 +1646,7 @@ export function ConfigurationTab({
   const lowTrustSelected = getTrustPreset(agent.permissions) === "low_trust_review";
 
   const { data: boundaryProjects, isLoading: boundaryProjectsLoading } = useQuery({
-    queryKey: companyId ? queryKeys.projects.list(companyId) : ["projects", "__low-trust-disabled"],
-    queryFn: () => projectsApi.list(companyId!),
+    ...companyProjectsQuery(companyId ?? ""),
     enabled: Boolean(companyId && lowTrustSelected) && content === "configuration",
   });
 
@@ -2804,8 +2806,12 @@ function RunDetail({ run: initialRun, agentRouteId, adapterType, adapterConfig }
   }, [run.id]);
 
   const cancelRun = useMutation({
-    mutationFn: () => heartbeatsApi.cancel(run.id),
-    onSuccess: () => {
+    mutationFn: () => {
+      if (run.status !== "failed") return heartbeatsApi.cancel(run.id);
+      return stopFailedNativeRun(initialRun.id, initialRun.companyId);
+    },
+    onSettled: () => {
+      queryClient.invalidateQueries({ queryKey: queryKeys.runDetail(run.id) });
       queryClient.invalidateQueries({ queryKey: queryKeys.heartbeats(run.companyId, run.agentId) });
     },
   });
@@ -2930,7 +2936,7 @@ function RunDetail({ run: initialRun, agentRouteId, adapterType, adapterConfig }
           <div className="flex-1 p-4 space-y-3">
             <div className="flex items-center gap-2">
               <StatusBadge status={run.status} />
-              {(run.status === "running" || run.status === "queued") && (
+              {(run.status === "running" || run.status === "queued" || (run.status === "failed" && run.driverKind !== "grok_bot_mcp" && run.execution?.canStop === true)) && (
                 <Button
                   variant="ghost"
                   size="sm"
@@ -2938,7 +2944,7 @@ function RunDetail({ run: initialRun, agentRouteId, adapterType, adapterConfig }
                   onClick={() => cancelRun.mutate()}
                   disabled={cancelRun.isPending}
                 >
-                  {cancelRun.isPending ? "Cancelling…" : "Cancel"}
+                  {runCancellationLabel({ isFailed: run.status === "failed", isPending: cancelRun.isPending })}
                 </Button>
               )}
               {canResumeLostRun && (
@@ -2996,6 +3002,11 @@ function RunDetail({ run: initialRun, agentRouteId, adapterType, adapterConfig }
                 <span className="text-foreground">
                   {responsibleUserName ?? responsibleUserLabel(null)}
                 </span>
+              </div>
+            )}
+            {cancelRun.error && (
+              <div className="text-xs text-destructive" role="alert">
+                {cancelRun.error instanceof Error ? cancelRun.error.message : "Failed to stop run"}
               </div>
             )}
             {resumeRun.isError && ( // query-error-ok: mutation result, not a query

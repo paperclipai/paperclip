@@ -13,7 +13,8 @@ import { SpekoProviderError } from "./speko-provider.js";
 
 type Entry = { id: string; companyId: string; endpointId: string; connectionId: string; dueAt: number };
 type Report = SpekoCallReport;
-const WINDOW_MS = 24 * 60 * 60 * 1000;
+export const VOICE_CALL_REPORT_WINDOW_MS = 24 * 60 * 60 * 1000;
+const WINDOW_MS = VOICE_CALL_REPORT_WINDOW_MS;
 const eligible = (now: number) => and(inArray(chatVoiceSessions.state, ["ended", "failed", "expired"]),
   isNotNull(chatVoiceSessions.providerSessionId), gte(chatVoiceSessions.endedAt, new Date(now - WINDOW_MS)));
 

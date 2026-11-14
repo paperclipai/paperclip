@@ -21,6 +21,7 @@ Build arguments:
 | `CLI_TOOLS_CACHE_EPOCH` | empty | Refresh the CLI-install layer; CI supplies the current ISO week |
 | `PAPERCLIP_BUILD_VERSION` | empty | Runtime version when Git metadata is unavailable |
 | `PAPERCLIP_BUILD_COMMIT` | empty | Source commit written into the server build stamp and runtime environment |
+| `PAPERCLIP_RUNNER_EXPECT_INPUTS_DIGEST` | empty | Inputs digest of the published Runner image a build was given as `runner-artifacts`; the build fails on any other Runner. Leave it empty for a build that makes its own Runner |
 
 Changing the build version or commit preserves the CLI-install cache. The
 tool layer refreshes when its weekly epoch, base image, installation command,
@@ -76,6 +77,90 @@ A published image alone does not prove source tests or migration compatibility.
 Downstream deployment tooling must verify [source proof](cloud-build-readiness.md),
 the standard image attestation, the exact-source migrator, and its own composed
 image before rollout. Resolve immutable digests instead of deploying mutable tags.
+
+## Runner image
+
+The `runner-artifacts` target builds the Runner alone: the daemon, the Runner
+package's build output, the remote provider pack and its transport archives.
+The `runner-artifacts-slim` target is the same image without the transport
+archives. Neither depends on the server or UI build.
+`.github/workflows/runner-image.yml` builds and checks
+both on pull requests, for Linux AMD64 and ARM64, and publishes them from
+`master` as `ghcr.io/paperclipai/paperclip-runner`. See
+[`doc/runner-image-contract.md`](runner-image-contract.md) for the layout, the
+identity rules and how to consume the image.
+
+The application image takes its Runner from the `runner-artifacts` stage. It
+has no Runner build of its own, no Rust toolchain and no C compiler. Every
+build of the `production` or `cloud` target builds that stage itself, once,
+unless it is given a published Runner image in its place (see "The Runner of
+the application image" below):
+
+- The `build` stage copies the Runner's build output and its build stamp into
+  `packages/paperclip-runner`. It sets `PAPERCLIP_RUNNER_VENDOR_REQUIRE_CURRENT=1`,
+  so the server build vendors that output and fails when the stamp does not
+  match the source tree. It never builds the Runner again.
+- The `runner-provider-pack` stage copies the pack and its transport archives
+  out of `runner-artifacts` and moves the pack's large files to a tree of their
+  own. The image keeps its paths under `/opt/paperclip-runner/` and its layers.
+
+The daemon in the application image is therefore the stripped binary compiled
+on Debian bookworm, and the pack's Node is the pinned bookworm build. The
+build runs the steps of the Runner's `build` script that write output, not its
+drift checks; repository CI runs those. See "The application image" in the
+contract for the rules a consumer of the application image can rely on.
+
+The Runner stages install with a frozen lockfile, so `docker build` fails when
+`pnpm-lock.yaml` is behind the manifests they read: the root `package.json`,
+`packages/paperclip-runner` and `packages/paperclip-eval-kernel`. The
+`runner-lockfile` stage makes that check from those manifests and the lockfile
+alone, so it runs as soon as the `base` stage is built. The `deps` stage starts
+from it, so the application's dependency install cannot start before the check
+passes. A stale lockfile fails the build within seconds of the check running,
+with a message that names the command below. The Runner's own frozen install
+fails on the same lockfile, but it comes after the daemon compile. Stages that
+do not depend on the check can already be running when it fails: the Runner's
+toolchain download and daemon compile, and the tool layer of the `production`
+stage. The failed check stops the build and cancels them. The `deps` stage
+still resolves every other manifest change inside the image. Refresh the
+lockfile in the checkout, then build again. Do not commit the result (see
+"Dependency Lockfile Policy" in `doc/DEVELOPING.md`):
+
+```sh
+pnpm install --resolution-only --ignore-scripts --no-frozen-lockfile
+```
+
+### The Runner of the application image
+
+An application image either makes its own Runner in its build (inline) or
+copies the published Runner image of the same inputs. A local build, a fork,
+a pull request and the merge-queue build are always inline.
+`.github/workflows/docker.yml` in this repository copies the published image
+when the repository variable `RUNNER_IMAGE_CONSUME_ENABLED` is exactly `true`
+and the image of the commit's inputs is published and its attestation
+verifies. On a `master` push it waits for the commit's own run of
+`runner-image.yml`, at most 40 minutes from the push. In every other case the
+build is inline, with a notice: no state of the Runner image fails an
+application image build. A build that copies the published image builds the
+committed `pnpm-lock.yaml`: the workflow does not refresh it first, and the
+`deps` stage resolves the other packages' manifests inside the image.
+
+An image that copied the published Runner has the labels
+`io.paperclip.runner.image` (`ghcr.io/paperclipai/paperclip-runner@sha256:<digest>`)
+and `io.paperclip.runner.inputs-digest`. An image without them made its own
+Runner and is as complete. To go back to inline builds everywhere, set the
+variable to another value or delete it; nothing needs a revert. See "The
+Runner of the application image" in
+[`doc/runner-image-contract.md`](runner-image-contract.md).
+
+`.github/workflows/docker.yml` builds the application image on `master` and on
+tags only. `.github/workflows/docker-app-check.yml` builds the `build` and
+`runner-provider-pack` stages on a pull request that changes the `Dockerfile`,
+`.dockerignore` or the step that vendors the Runner into the server, so a
+change to how the application image gets its Runner fails before it merges.
+It refreshes the lockfile before the build, as `docker.yml` does. It holds no
+credential: it reads the build cache that `docker.yml` writes on `master`
+anonymously, never writes it, and exports and publishes nothing.
 
 ## One-liner (build + run)
 
@@ -373,21 +458,20 @@ Notes:
 
 ## Native Runner build cache
 
-The image compiles the native Runner in `runner-build`, before copying the
-application source. A pinned `cargo-chef` generates a dependency recipe in
-`runner-plan`. The separate `runner-deps` stage compiles that recipe with the
-package-owned Rust compiler. Both the dependency build and the real binary use
-the release profile and locked Cargo dependencies. The recipe stage never
-modifies source in the checkout.
+The image compiles the native Runner once, in the `runner-artifacts-runnerd`
+stage, with the package-owned Rust compiler, the release profile and locked
+Cargo dependencies. That stage reads only the files Cargo reads.
 
-Changes to Rust source or embedded protocol inputs rebuild the real binary but
-can reuse compiled dependencies when the recipe is unchanged. Dependency
-manifests, the Cargo lockfile, target metadata, or compiler changes invalidate
-the relevant cache. Ordinary server or UI changes can reuse the entire native
-build through the existing registry cache (`mode=max`). Each platform gets its
-own native build; no cross-architecture binary is reused. No additional GitHub
-Actions cache is created. A cold build also installs the recipe generator and
-compiles dependencies, so the savings apply after those layers are available.
+Ordinary server, UI or Runner TypeScript changes can reuse the entire native
+build through the existing registry cache (`mode=max`). A change to Rust
+source, embedded protocol inputs, a dependency manifest, the Cargo lockfile or
+the compiler compiles the daemon and its dependencies again. Each platform
+gets its own native build; no cross-architecture binary is reused. No
+additional GitHub Actions cache is created.
+
+The `runner-artifacts-build` stage takes the build commit as an argument, so
+every stamped build runs it: the frozen install, the Runner's TypeScript
+build and the provider pack. Cargo finds the compiled daemon current there.
 
 Cloud builds import one registry cache: the first available full-SHA cache in
 the current commit's ten-entry first-parent ancestry, with the legacy cache
@@ -397,24 +481,6 @@ missed native layers that a single matching manifest reused. The selector
 inspects metadata after Docker login, stops at the first available cache, and
 permits a cold build if no cache can be read.
 
-The application build inherits that stage and still runs the normal server
-build, including Cargo, binary staging, and generated-contract checks. Rust
-input file times are normalized in both stages so fresh checkouts do not force
-Cargo to rebuild unchanged source. Changes made by build scripts still reach
-Cargo's normal validation. The final application copy excludes Cargo's target
-directory as before. Cache misses only cost compilation time.
-
-Pull requests that change the Dockerfile, Docker ignore rules, or Runner native
-inputs also build the isolated `runner-build` target in `Docker Runner check`.
-The check runs `bash scripts/check-docker-runner-cache.sh` against a disposable
-copy of tracked source and the actual Docker ignore rules. It compiles a baseline
-and exports a local cache, removes that builder, changes a Rust metadata constant,
-and rebuilds on a fresh builder using only the exported cache. It requires a
-cached dependency build, an unchanged dependency recipe, and changed metadata
-from the real binary. It also verifies that a dependency declaration change
-alters the recipe. The probe exports small metadata results instead of importing
-a large test image into the Docker daemon. Temporary builders and cache files
-are removed afterward. It catches missing embedded inputs before the post-merge
-build. It uses a GitHub-hosted runner with read-only repository access and never
-publishes images or registry caches. Allow up to 20 minutes for its cold build and
-source rebuild.
+Rust input file times are normalized in both stages so fresh checkouts do not
+force Cargo to rebuild unchanged source. The application build runs no Cargo
+command. Cache misses only cost compilation time.

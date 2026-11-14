@@ -29,3 +29,47 @@ export function restoreOnboardingState(
 
   return companies.some((c) => c.id === companyId) ? saved : null;
 }
+
+// Exported so tests write/read the exact key the component uses, instead of
+// duplicating the literal and silently drifting from it if it's ever renamed.
+export const ONBOARDING_STORAGE_KEY = "paperclip-onboarding-state";
+/**
+ * The onboarding draft in `localStorage`, via a browser that is allowed to say
+ * no.
+ *
+ * Storage access throws outright where a browser denies it — Safari's private
+ * mode, a blocked third-party context — and every call site here sits in a
+ * render, an effect, or a close handler, so an escaping exception takes down
+ * something the customer was using. Losing the ability to resume onboarding is
+ * a far smaller failure than the wizard tearing down mid-answer, or refusing
+ * to close.
+ *
+ * Routed through one object on purpose. Guarding these one at a time is how
+ * three of the four call sites ended up unguarded while the fourth looked
+ * fixed: the read, the stale-blob cleanup, the persist effect, and `reset()`
+ * all have the same failure and want the same answer.
+ */
+export const onboardingDraftStorage = {
+  read(): string | null {
+    try {
+      return window.localStorage.getItem(ONBOARDING_STORAGE_KEY);
+    } catch {
+      return null;
+    }
+  },
+  write(value: string): void {
+    try {
+      window.localStorage.setItem(ONBOARDING_STORAGE_KEY, value);
+    } catch {
+      // Storage unavailable: the draft is simply not resumable this session.
+    }
+  },
+  clear(): void {
+    try {
+      window.localStorage.removeItem(ONBOARDING_STORAGE_KEY);
+    } catch {
+      // Nothing to do. A draft that cannot be cleared is re-rejected on the
+      // next load by the same ownership check that rejected it here.
+    }
+  },
+};

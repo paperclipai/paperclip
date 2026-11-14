@@ -15,7 +15,6 @@ import { expireReconstructableGitWorkspace, gitWorkspaceLastActivityAt } from ".
 import { getStorageService } from "../storage/index.js";
 import { markGitRestorePointExpired } from "../services/git-restore-point-storage.js";
 import { GIT_RESTORE_POINT_EXPIRED_WARNING, setMetadataReopenPendingConsumption } from "../services/execution-workspaces.js";
-import { issueService } from "../services/issues.js";
 
 const gitEnv = { ...process.env, GIT_AUTHOR_NAME: "Fixture", GIT_AUTHOR_EMAIL: "fixture@example.test",
   GIT_COMMITTER_NAME: "Fixture", GIT_COMMITTER_EMAIL: "fixture@example.test", GIT_TERMINAL_PROMPT: "0" };
@@ -472,10 +471,11 @@ describeEmbeddedPostgres("git restore point expiration", () => {
       expect(await exists(f.cwd)).toBe(true);
     });
 
-    it("keeps the worktree for a child created later that inherits it with reuse_existing", async () => {
+    it("keeps the worktree for an older-release child still bound to it with reuse_existing", async () => {
       const f = await fixture();
-      const created = await issueService(db).create(f.companyId, { parentId: f.issueId, title: "Inherited follow-up", status: "todo" });
-      expect(created).toMatchObject({ executionWorkspaceId: f.workspaceId, executionWorkspacePreference: "reuse_existing" });
+      // New children get their own workspace; this is the binding an older release wrote.
+      await child(f, { title: "Inherited follow-up", status: "todo", executionWorkspaceId: f.workspaceId,
+        executionWorkspacePreference: "reuse_existing" });
       expect(await f.expire()).toMatchObject({ expired: false, skipReason: "live_or_unresolved_consumer" });
       expect(await worker().sweepTerminalWorkspaces()).toMatchObject({ archived: 0, skippedNonTerminalTree: 1 });
       expect(await exists(f.cwd)).toBe(true);

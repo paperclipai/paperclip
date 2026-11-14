@@ -1,11 +1,8 @@
 import { and, desc, eq, inArray, sql } from "drizzle-orm";
 import { agents, documents, heartbeatRuns, issueComments, issueDocuments, issues, issueThreadInteractions, type Db } from "@paperclipai/db";
-import { ONBOARDING_FIRST_TASK_ORIGIN_KIND, requestCheckboxConfirmationPayloadSchema, requestCheckboxConfirmationResultSchema,
-  requestConfirmationPayloadSchema, requestConfirmationResultSchema } from "@paperclipai/shared";
+import { ONBOARDING_FIRST_TASK_ORIGIN_KIND } from "@paperclipai/shared";
 import { badRequest, forbidden } from "../errors.js";
-
-const object = (value: unknown): Record<string, unknown> =>
-  value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
+import { readPersistedConfirmationDecision } from "./confirmation-decision.js";
 
 const runOriginFields = {
   nativeIssueId: heartbeatRuns.nativeIssueId,
@@ -97,10 +94,7 @@ export async function assertOnboardingFirstTaskDependenciesAllowed(tx: Db, input
   assertNotBlockedByFirstTaskSource(sources.find(source => source.isRequestedBlocker));
 }
 
-/** Shared persisted-decision proof; creation and completion retain different authority. */
-async function readOnboardingFirstTaskDecision(tx: Db, input: {
-  companyId: string; issueId: string; outcomes: Array<"accepted" | "rejected">;
-}): Promise<"accepted" | "rejected" | null> {
+async function readLatestProposal(tx: Db, input: { companyId: string; issueId: string }, planOnly = false) {
   // Select the newest proposal before checking its outcome: a later pending or
   // rejected proposal must never fall back to an older accepted scope. Governed
   // tool/credential actions and custom completion reviews are not proposals.
@@ -109,23 +103,17 @@ async function readOnboardingFirstTaskDecision(tx: Db, input: {
     inArray(issueThreadInteractions.kind, ["request_confirmation", "request_checkbox_confirmation"]),
     sql`NOT (${issueThreadInteractions.payload} ?| ARRAY['toolAction', 'secretProposal', 'connectionAuthorization'])`,
     sql`COALESCE(${issueThreadInteractions.payload}->'target'->>'type', '') <> 'custom'`,
+    planOnly ? sql`${issueThreadInteractions.payload}->'target'->>'type' = 'issue_document'
+      AND ${issueThreadInteractions.payload}->'target'->>'key' = 'plan'` : undefined,
   )).orderBy(desc(issueThreadInteractions.createdAt), desc(issueThreadInteractions.id)).limit(1).for("share");
-  if (!proposal || (proposal.status !== "accepted" && proposal.status !== "rejected") ||
-    !input.outcomes.includes(proposal.status) || !proposal.resolvedAt) return null;
-  const checkbox = proposal.kind === "request_checkbox_confirmation";
-  const payload = checkbox ? requestCheckboxConfirmationPayloadSchema.safeParse(proposal.payload)
-    : requestConfirmationPayloadSchema.safeParse(proposal.payload);
-  const result = checkbox ? requestCheckboxConfirmationResultSchema.safeParse(proposal.result)
-    : requestConfirmationResultSchema.safeParse(proposal.result);
-  if (!payload.success || !result.success || result.data.outcome !== proposal.status) return null;
-  if (checkbox && proposal.status === "accepted") {
-    const selected = object(result.data).selectedOptionIds;
-    if (!("options" in payload.data) || !Array.isArray(selected) || selected.length === 0) return null;
-    const allowed = new Set(payload.data.options.map(option => option.id));
-    if (selected.some(id => typeof id !== "string" || !allowed.has(id))
-      || selected.length < payload.data.minSelected
-      || (payload.data.maxSelected != null && selected.length > payload.data.maxSelected)) return null;
-  }
+  return proposal;
+}
+
+async function readHumanDecision(tx: Db, input: { companyId: string; issueId: string },
+  proposal: typeof issueThreadInteractions.$inferSelect | undefined) {
+  if (!proposal) return null;
+  const decision = readPersistedConfirmationDecision(proposal);
+  if (!decision) return null;
 
   if (proposal.sourceRunId) {
     const [origin] = await tx.select(runOriginFields).from(heartbeatRuns).where(and(
@@ -139,7 +127,7 @@ async function readOnboardingFirstTaskDecision(tx: Db, input: {
 
   const directHumanDecision = Boolean(proposal.resolvedByUserId && !proposal.resolvedByAgentId && !proposal.resolvedByRunId);
   if (!directHumanDecision) {
-    const commentId = result.data.commentId;
+    const commentId = decision.commentId;
     if (!commentId || !proposal.resolvedByAgentId || !proposal.resolvedByRunId) return null;
     const [comment] = await tx.select().from(issueComments).where(and(
       eq(issueComments.id, commentId), eq(issueComments.companyId, input.companyId), eq(issueComments.issueId, input.issueId),
@@ -155,20 +143,28 @@ async function readOnboardingFirstTaskDecision(tx: Db, input: {
     if (!resolver || runIssueId(resolver) !== input.issueId
       || (resolver.responsibleUserId && resolver.responsibleUserId !== comment.authorUserId)) return null;
   }
+  return decision;
+}
+
+/** Shared persisted-decision proof; creation and completion retain different authority. */
+async function readOnboardingFirstTaskDecision(tx: Db, input: {
+  companyId: string; issueId: string; outcomes: Array<"accepted" | "rejected">;
+}): Promise<"accepted" | "rejected" | null> {
+  const decision = await readHumanDecision(tx, input, await readLatestProposal(tx, input));
+  if (!decision || !input.outcomes.includes(decision.outcome)) return null;
 
   // Refusal permits acknowledgement and closure, never execution. An agent-only
   // plan edit cannot turn that human refusal into permission to execute.
-  if (proposal.status === "rejected") return "rejected";
+  if (decision.outcome === "rejected") return "rejected";
 
-  const target = payload.data.target;
+  const planDecision = !decision.target
+    ? await readHumanDecision(tx, input, await readLatestProposal(tx, input, true)) : null;
   const [plan] = await tx.select({ documentId: documents.id, revisionId: documents.latestRevisionId })
     .from(issueDocuments).innerJoin(documents, eq(documents.id, issueDocuments.documentId)).where(and(
       eq(issueDocuments.companyId, input.companyId), eq(documents.companyId, input.companyId),
       eq(issueDocuments.issueId, input.issueId), eq(issueDocuments.key, "plan"),
     )).for("share", { of: documents });
-  // Document writers do not all lock the issue, so hold the document row too.
-  // A saved plan must be accepted by revision; an untargeted card cannot stand
-  // in for approval of a different or subsequently edited document.
+  const target = decision.target ?? (plan && planDecision?.outcome === "accepted" ? planDecision.target : null);
   if (plan || target) {
     if (!target || target.type !== "issue_document" || target.key !== "plan"
       || (target.issueId && target.issueId !== input.issueId) || !plan || plan.revisionId !== target.revisionId

@@ -22,6 +22,23 @@ Repeat an interruption to prove the recovery budget and genuine stops still work
 strings does not define compatibility. Disabling warm reuse may hide the failure
 while imposing a new startup cost on every turn.
 
+## Saved run state meets a different release
+
+**Mechanism:** One release saves a session, checkpoint, lease, or launch input;
+a deploy or restart lands; another release resumes it. Launch arguments, a pack
+digest, a listener, or workspace authority changed in between, so the new code
+refuses the saved state. The refusal surfaces as a generic retryable interruption,
+and recovery retries or replaces saved state over a refusal that cannot change.
+
+**Prove:** Save state with the previous release's shape, then resume with the
+current code. Also land the restart while the run is in flight. Assert the state
+carries forward, or recovery stops once with a permanent, named code and keeps the
+saved state. For remote sandboxes, apply the provider's workspace confinement.
+
+**Trap:** Adding one more code to a non-retryable list fixes one identity, not the
+class. A fresh local session and a test run outside the sandbox's confinement both
+skip the cutover the incident depended on.
+
 ## A successful result gets stranded during finalization
 
 **Mechanism:** The provider completed useful work, but result persistence, artifact

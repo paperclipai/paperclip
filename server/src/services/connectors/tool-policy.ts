@@ -3,6 +3,7 @@ import type { ToolRiskLevel } from "@paperclipai/shared";
 import { NATIVE_PROVIDER_CATALOGS } from "../native-provider-catalogs.js";
 import { classifyRailwayToolRisk, isRailwayEndpoint } from "../railway.js";
 import { braintrustRisk } from "./braintrust/risk.js";
+import { circlebackRisk } from "./circleback/risk.js";
 import { enterpretRisk } from "./enterpret/risk.js";
 
 interface ToolDescriptor {
@@ -50,6 +51,9 @@ const reviewedPolicies: ReviewedToolPolicy[] = [
   })),
   { sourceTemplateKey: "enterpret", quarantineNewEntries: true, classifyRisk: enterpretRisk },
   { sourceTemplateKey: "braintrust", quarantineNewEntries: true, classifyRisk: braintrustRisk },
+  // Circleback adds tools to its hosted server over time; unreviewed names are
+  // writes, but stay available like other MCP-direct catalog connections.
+  { sourceTemplateKey: "circleback", quarantineNewEntries: false, classifyRisk: circlebackRisk },
 ];
 
 const bySource = new Map(reviewedPolicies.map(policy => [policy.sourceTemplateKey, policy]));

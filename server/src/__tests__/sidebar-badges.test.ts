@@ -66,7 +66,7 @@ describePostgres("sidebar badge failure candidates", () => {
         return (table: Parameters<Db["insert"]>[0]) => {
           if (table === companies) return { values: (values: (typeof companies.$inferInsert)[]) => {
             companyIds = values.map(row => row.id!);
-            fixtures.push({ ...fixture, companyId: companyIds[0]!, foreignCompanyId: companyIds[1]! });
+            fixtures.push({ ...fixture, companyId: companyIds[0]! as typeof fixture.companyId, foreignCompanyId: companyIds[1]! as typeof fixture.foreignCompanyId });
             return target.insert(companies).values(values);
           }};
           if (table === approvals) return { values: async (values: typeof approvals.$inferInsert) => {

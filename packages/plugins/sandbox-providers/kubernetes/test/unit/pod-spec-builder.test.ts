@@ -1,5 +1,9 @@
 import { describe, it, expect } from "vitest";
-import { buildJobManifest } from "../../src/pod-spec-builder.js";
+import { buildJobManifest as buildRawJobManifest, type BuildJobManifestInput } from "../../src/pod-spec-builder.js";
+import type { JobManifestView } from "./manifest-views.js";
+
+const buildJobManifest = (input: BuildJobManifestInput) =>
+  buildRawJobManifest(input) as unknown as JobManifestView;
 
 const baseInput = {
   namespace: "paperclip-acme",

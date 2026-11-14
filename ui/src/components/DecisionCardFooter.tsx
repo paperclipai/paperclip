@@ -7,11 +7,10 @@ export function DecisionCardFooter({ leading, children, className }: {
   children?: ReactNode;
   className?: string;
 }) {
-  if (!leading) return <>{children}</>;
   return (
     <div data-decision-footer className={cn("flex flex-wrap items-center justify-between gap-x-4 gap-y-3", className)}>
-      <div className="min-w-0 flex-1 basis-48">{leading}</div>
-      {children ? <div className="ml-auto max-w-full">{children}</div> : null}
+      {leading ? <div className="min-w-0 flex-1 basis-48">{leading}</div> : null}
+      {children ? <div data-decision-actions className="ml-auto flex max-w-full flex-wrap items-center justify-end gap-1.5">{children}</div> : null}
     </div>
   );
 }

@@ -65,6 +65,7 @@ describe("plugin-kubernetes end-to-end", () => {
       });
 
       expect(lease.providerLeaseId).toMatch(/^pc-/);
+      const providerLeaseId = lease.providerLeaseId!;
 
       // Verify the Job exists in the tenant namespace
       const jobs = kubectl(`get jobs -n ${NAMESPACE} -o name`);
@@ -137,6 +138,7 @@ describe("plugin-kubernetes end-to-end", () => {
       });
 
       expect(lease.providerLeaseId).toMatch(/^pc-/);
+      const providerLeaseId = lease.providerLeaseId!;
 
       // Verify the Sandbox CR exists in the tenant namespace
       const sandboxes = kubectl(
@@ -156,7 +158,7 @@ describe("plugin-kubernetes end-to-end", () => {
       await sandboxCrOrchestrator.waitForCompletion(
         clients,
         NAMESPACE,
-        lease.providerLeaseId,
+        providerLeaseId,
         { timeoutMs: 90_000, pollMs: 3000 },
       );
 
@@ -164,7 +166,7 @@ describe("plugin-kubernetes end-to-end", () => {
       const podName = await sandboxCrOrchestrator.findPod(
         clients,
         NAMESPACE,
-        lease.providerLeaseId,
+        providerLeaseId,
       );
       expect(podName).toBeTruthy();
 

@@ -28,7 +28,7 @@ Agent access: [companion](../agent-access-map/questions-and-approvals.md).
   resolution. A visible request is not necessarily actionable by that viewer.
 - `governance`: `questions-and-approvals/governance` — pending/history views, approve/reject, revision request, and
   resubmission for formal board approvals.
-- `tool-review`: `questions-and-approvals/tool-review` — approve once, always allow the displayed scope, or decline;
+- `tool-review`: `questions-and-approvals/tool-review` — inspect the bounded server-redacted arguments and audit hash before approving once, always allowing the displayed scope, or declining;
   decision status and provider execution outcome remain distinct.
 - `continuation`: `questions-and-approvals/continuation` — one recorded response leads to the eligible waiting run or
   continuation; repeated clicks, reloads, and competing tabs do not repeat work.
@@ -79,8 +79,6 @@ Channel-specific forms and identity linking require separate provider evidence.
 
 ## Driving it
 
-The explicit `plan-revise-accept` and `protected-actions` [Product journeys](../../tests/runner-e2e/PRODUCT-JOURNEYS.md) cover `questions-and-approvals/plan-review` and `questions-and-approvals/tool-review`. They share the classic browser actions and saved-state checks. Cloud qualification remains separate; source registration is not a passing result.
-
 Preconditions: follow the [baseline](./README.md#before-driving-a-journey).
 Use separate disposable requests for accept, decline, and revision paths. Record
 the actor and request revision. Prepare a waiting question through a test agent;
@@ -98,7 +96,7 @@ Use these checks alongside the entry-point recipes below and the operation recor
 | `questions-and-approvals/plan-review` | Open the exact requested plan revision; reject one request and accept another. Inspect saved revision, work mode, owner, and the resulting continuation. | Edit after requesting review and reject stale acceptance. Test finalization readiness and bound completion review separately. In Agent Chat, inspect the later project/task creation and its source-plan provenance; acceptance alone is not a completed handoff. |
 | `questions-and-approvals/audience` | Repeat a request for a named person, named agent, human-only resolver, and independent reviewer. Inspect actionability and final attribution. | Test creator exclusion, wrong audience/company, private task, missing or cancelled run, and changed responsible-user access. A human comment used by an agent remains subject to that agent’s resolver authority. |
 | `questions-and-approvals/governance` | Create and inspect a formal request, comment, request revision, resubmit, then approve or reject distinct requests. Reload history and linked task state. | Test board decision authority separately from agent request/comment/resubmit authority. A repeated decision cannot repeat activation. Current pending status, payload revision, and governed side effects must agree. |
-| `questions-and-approvals/tool-review` | Invoke a harmless Ask first action, compare task and Apps review surfaces, then exercise Approve once, Always allow, and Decline separately. | No provider call before approval. Repeat decisions and compare invocation count. Change the tool definition, revoke access, or set Off before a decision. Record the approval decision and provider outcome independently. |
+| `questions-and-approvals/tool-review` | Invoke a harmless Ask first action with a proposal longer than its preview. Open Arguments and audit hash on task and Apps review surfaces and inspect the tail before a decision. Then exercise Approve once, Always allow, and Decline separately. | No provider call before approval. Repeat decisions and compare invocation count. Change the tool definition, revoke access, or set Off before a decision. Record the approval decision and provider outcome independently. |
 | `questions-and-approvals/continuation` | After answering, inspect the saved response, delivery receipt, eligible run, and useful result in the original task/thread. | Reload, race two tabs, and interrupt delivery after saving. Require one continuation without repeated external actions. Reassignment, Stop, pause, budget, and external-thread boundaries remain effective. |
 
 ### `task-thread`
@@ -217,8 +215,6 @@ qualify Slack, Discord, Telegram, email, or iMessage; record each as not run
 unless its actual provider journey was driven.
 
 ## Gotchas
-
-- Canonical question forms show field validation only after Next/Submit (including the keyboard submit shortcut) is attempted. Invalid answers remain unsent and the form stays on the relevant question; correction clears the field warning. Pagination arrows still browse without validation, drafts remain preserved, and uploads/requests in flight still disable submission.
 
 - Dismissing a question does not answer it. Dismissing an app review neither
   grants permission nor resumes the agent. Ordinary comments cannot approve it.

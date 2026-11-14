@@ -46,12 +46,14 @@ import { accessService } from "./access.js";
 import { toolAccessPolicyService } from "./tool-access-policy.js";
 import { createCostEventInTransaction } from "./costs.js";
 import { createFinanceEventInTransaction } from "./finance.js";
-import { withAccountingTransaction } from "./accounting-transaction.js";
+import { withOperationAccountingTransaction } from "./accounting-transaction.js";
 import { logActivity, type ActivityPublication } from "./activity-log.js";
 import { DELIVERY_QUEUES, notifyDeliveryWork } from "./delivery-work-notifications.js";
 import { browserUseViewports } from "./browser-use-viewport.js";
 import { withBudgetSpan } from "./budget-tracing.js";
 import { forbidden, notFound, conflict } from "../errors.js";
+import { isUniqueViolation } from "../db-errors.js";
+import { lockBudgetAdmissionControls } from "./budget-admission-controls.js";
 
 type Session = typeof sessions.$inferSelect;
 type Binding = {
@@ -76,10 +78,29 @@ const liveSessions = ["starting", "running", "idle", "stopping"];
 const requestMarker = (invocationId: string) => `\n\n[Paperclip request: ${invocationId}]`;
 type BrowserBudgetHold = { invocationId: string; amountCents: string; projectId: string | null;
   state: "held" | "released" | "settled"; uncapped?: boolean;
-  dispatchCommittedAt?: string; accountedCentsExact?: string; billingUnknown?: boolean };
+  dispatchCommittedAt?: string; accountedCentsExact?: string; billingUnknown?: boolean;
+  receipt?: BrowserUsageReceipt };
+type BrowserUsageReceipt = { invocationId: string; providerRunId: string; totalCentsExact: string;
+  model: string; occurredAt: string };
 const resultObject = (value: unknown): Record<string, unknown> =>
   value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
-const budgetHold = (value: unknown) => resultObject(value).paperclipBudgetHold as BrowserBudgetHold | undefined;
+const exactNonnegativeCents = z.string().refine(value => {
+  try { return centsToUnits(value) >= 0n; } catch { return false; }
+});
+const browserReceiptSchema = z.object({ invocationId: z.string(), providerRunId: z.string(),
+  totalCentsExact: exactNonnegativeCents, model: z.string(),
+  occurredAt: z.string().refine(value => Number.isFinite(new Date(value).getTime())) });
+const browserHoldSchema = z.object({ invocationId: z.string(), amountCents: exactNonnegativeCents.default("0.0000000"),
+  projectId: z.string().nullable().default(null), state: z.enum(["held", "released", "settled"]),
+  uncapped: z.boolean().optional(), dispatchCommittedAt: z.string().optional(), accountedCentsExact: exactNonnegativeCents.optional(),
+  billingUnknown: z.boolean().optional(), receipt: browserReceiptSchema.optional() });
+function budgetHold(value: unknown): BrowserBudgetHold | undefined {
+  const raw = resultObject(value).paperclipBudgetHold;
+  if (raw === undefined) return undefined;
+  const parsed = browserHoldSchema.safeParse(raw);
+  if (!parsed.success) throw conflict("Browser accounting evidence is invalid.");
+  return parsed.data;
+}
 function publicResult(value: unknown) {
   if (!value || typeof value !== "object" || Array.isArray(value)) return value;
   const { paperclipBudgetHold: _internal, ...visible } = resultObject(value);
@@ -427,6 +448,17 @@ export function browserUseService(
       .limit(1);
     if (existing[0])
       return snapshot(await owned(binding, grant, existing[0].sessionId));
+    const lockAdmissionScopes = async (tx: Db) => {
+      // Shared authority fences let concurrent paid claims proceed together.
+      // A company/project pause must precede the claim or see its durable run.
+      // Take these before browser/session/run rows, matching control writers.
+      const [scope] = await tx.select({ projectId: issues.projectId }).from(issues)
+        .where(and(eq(issues.id, binding.issueId!), eq(issues.companyId, binding.companyId)));
+      await lockBudgetAdmissionControls(tx, binding.companyId, scope?.projectId);
+      const [locked] = await tx.select({ projectId: issues.projectId }).from(issues)
+        .where(and(eq(issues.id, binding.issueId!), eq(issues.companyId, binding.companyId))).for("share");
+      if (locked?.projectId !== scope?.projectId) throw conflict("The browser task's project changed before dispatch.");
+    };
     const admissionCheck = async (tx: Db, publications: ActivityPublication[], hold?: BrowserBudgetHold) => {
       const [parent] = await tx.select().from(heartbeatRuns).where(and(
         eq(heartbeatRuns.id, binding.runId!), eq(heartbeatRuns.companyId, binding.companyId),
@@ -505,7 +537,8 @@ export function browserUseService(
       return { amountCents: unitsToCents(amount ?? 0n), maxCostUsd: amount === undefined ? undefined : Number(centsToUsd(unitsToCents(amount))), projectId: issue.projectId };
     };
     const sid = args.sessionId;
-    const admitted = await withAccountingTransaction(db, binding.companyId, async (tx, publications) => {
+    const admitted = await withOperationAccountingTransaction(db, binding.companyId, async (tx, publications) => {
+      await lockAdmissionScopes(tx);
       const [duplicate] = await tx.select().from(runs).where(and(eq(runs.companyId, binding.companyId), eq(runs.invocationId, invocationId)));
       if (duplicate) return { existing: duplicate.sessionId };
       const check = await admissionCheck(tx, publications);
@@ -561,7 +594,16 @@ export function browserUseService(
           ? new Date(Date.now() + BROWSER_USE_IDLE_MS)
           : null,
       });
+      await budgetServiceInTransaction(tx, publications).evaluateAffectedScopes(binding.companyId, binding.agentId, check.projectId!);
       return { session: row, hold, maxCostUsd: check.maxCostUsd };
+    }).catch(async error => {
+      // Parallel retries can both observe no invocation in their snapshots.
+      // Roll back the losing session/hold and replay the committed owner.
+      if (!isUniqueViolation(error, "browser_use_runs_invocation_uq")) throw error;
+      const [duplicate] = await db.select().from(runs).where(and(
+        eq(runs.companyId, binding.companyId), eq(runs.invocationId, invocationId)));
+      if (!duplicate) throw error;
+      return { existing: duplicate.sessionId, reason: undefined, session: undefined, hold: undefined, maxCostUsd: undefined };
     });
     if (admitted.reason) throw forbidden(admitted.reason);
     if (admitted.existing) return snapshot(await owned(binding, grant, admitted.existing));
@@ -583,7 +625,8 @@ export function browserUseService(
         },
         ...(maxCostUsd === undefined ? {} : { maxCostUsd }),
       }, async () => {
-        const reason = await withAccountingTransaction(db, binding.companyId, async (tx, publications) => {
+        const reason = await withOperationAccountingTransaction(db, binding.companyId, async (tx, publications) => {
+          await lockAdmissionScopes(tx);
           const [current] = await tx.select().from(runs).where(and(eq(runs.invocationId, invocationId), eq(runs.companyId, binding.companyId))).for("update");
           const [currentSession] = await tx.select().from(sessions).where(and(eq(sessions.id, s.id), eq(sessions.companyId, binding.companyId))).for("update");
           const hold = budgetHold(current?.result);
@@ -593,36 +636,48 @@ export function browserUseService(
           const check = await admissionCheck(tx, publications, hold);
           if (check.reason) return check.reason;
           await tx.update(runs).set({ result: { ...resultObject(current.result), paperclipBudgetHold: { ...hold, dispatchCommittedAt: new Date().toISOString() } } }).where(eq(runs.id, current.id));
+          await budgetServiceInTransaction(tx, publications).evaluateAffectedScopes(binding.companyId, binding.agentId, hold.projectId);
           return null;
         });
         if (reason) throw new BrowserUseError(403, reason, 0, true);
         providerAttempted = true;
       });
-      await db.transaction(async (tx) => {
+      const persistedSession = await withOperationAccountingTransaction(db, binding.companyId, async (tx) => {
+        const [currentRun] = await tx.select().from(runs).where(and(eq(runs.invocationId, invocationId),
+          eq(runs.companyId, binding.companyId))).for("update");
+        const [currentSession] = await tx.select().from(sessions).where(and(eq(sessions.id, s.id),
+          eq(sessions.companyId, binding.companyId))).for("update");
+        if (!currentRun || !currentSession || (currentRun.providerRunId && currentRun.providerRunId !== result.id))
+          throw conflict("Browser provider response does not match its invocation.");
         await notifyDeliveryWork(tx, DELIVERY_QUEUES.browser);
         await tx
           .update(runs)
-          .set({ providerRunId: result.id, status: result.status })
-          .where(eq(runs.invocationId, invocationId));
-        await tx
+          .set({ providerRunId: result.id, status: browserUseTerminal(currentRun.status) ? currentRun.status : result.status })
+          .where(eq(runs.id, currentRun.id));
+        const [updated] = await tx
           .update(sessions)
           .set({
             providerSessionId: result.sessionId,
-            status: "running",
-            error: null,
+            status: currentSession.stopRequested || currentSession.status === "stopping" ? "stopping" : currentSession.status === "closed" ? "closed" : "running",
+            error: currentSession.stopRequested ? currentSession.error : null,
             nextPollAt: new Date(),
             updatedAt: new Date(),
           })
-          .where(eq(sessions.id, s.id));
+          .where(eq(sessions.id, s.id)).returning();
+        return updated;
       });
+      Object.assign(s, persistedSession);
     } catch (error) {
       // A lost create response can mean paid work exists. Never submit it again.
       const rejected = !providerAttempted || (error instanceof BrowserUseError && error.requestRejected);
       const message = rejected ? (error instanceof Error ? error.message : "Browser dispatch was rejected.") :
         "Browser run creation could not be confirmed. Paperclip is locating and stopping possible provider work. Do not start another run yet.";
-      await withAccountingTransaction(db, binding.companyId, async (tx, publications) => {
+      await withOperationAccountingTransaction(db, binding.companyId, async (tx, publications) => {
+        const [currentRun] = await tx.select().from(runs).where(and(eq(runs.invocationId, invocationId),
+          eq(runs.companyId, binding.companyId))).for("update");
+        const [current] = await tx.select().from(sessions).where(and(eq(sessions.id, s.id), eq(sessions.companyId, binding.companyId))).for("update");
+        if (!currentRun || !current || currentRun.providerRunId || currentRun.eventsDrained || budgetHold(currentRun.result)?.state === "settled") return;
         await notifyDeliveryWork(tx, DELIVERY_QUEUES.browser);
-        const [current] = await tx.select().from(sessions).where(eq(sessions.id, s.id)).for("update");
         if (rejected) {
           await tx.update(runs).set({ result: sql`jsonb_set(${runs.result}, '{paperclipBudgetHold,state}', '"released"'::jsonb)` }).where(eq(runs.invocationId, invocationId));
           await budgetServiceInTransaction(tx, publications).evaluateAffectedScopes(binding.companyId, binding.agentId, admitted.hold!.projectId);
@@ -654,7 +709,7 @@ export function browserUseService(
     await signal(s, "browser.started");
     return {
       sessionId: s.id,
-      status: result.status,
+      status: s.stopRequested || s.status === "stopping" ? "stopping" : result.status,
       instruction:
         "Poll browser_status until terminal. The human's Browser tab opens when the browser is ready.",
     };
@@ -1029,52 +1084,98 @@ export function browserUseService(
   async function account(
     s: Session,
     run: typeof runs.$inferSelect,
-    summary: Awaited<
-      ReturnType<ReturnType<typeof browserUseClient>["summary"]>
-    >,
+    summary?: Awaited<ReturnType<ReturnType<typeof browserUseClient>["summary"]>>,
   ) {
-    let amount: bigint;
-    try { amount = usdToUnits(summary.totalCostUsd); }
-    catch { throw new BrowserUseError(502, "Browser Use returned invalid usage."); }
-    if (amount < 0n || !browserUseTerminal(summary.status))
-      throw new BrowserUseError(502, "Browser Use returned invalid terminal usage.");
-    const cents = unitsToCents(amount);
-    await withBudgetSpan("budget.accounting.settlement", () => withAccountingTransaction(db, s.companyId, async (tx, publications) => {
-      const [current] = await tx.select().from(runs).where(and(eq(runs.id, run.id), eq(runs.companyId, s.companyId))).for("update");
-      const hold = budgetHold(current.result);
-      const previous = centsToUnits(hold?.accountedCentsExact ?? current.accountedCents);
-      const [issue] = await tx.select({ projectId: issues.projectId }).from(issues)
-        .where(and(eq(issues.id, s.issueId), eq(issues.companyId, s.companyId)));
-      const projectId = hold ? hold.projectId : issue?.projectId ?? null;
-      // Replace the separate browser hold with its ledger charge atomically.
-      // Provider output never gets to overwrite the private accounting state.
-      const settled: BrowserBudgetHold = { ...(hold ?? { invocationId: current.invocationId, amountCents: "0.0000000", projectId }), state: "settled",
-        accountedCentsExact: unitsToCents(amount > previous ? amount : previous) };
-      await tx.update(runs).set({
-        result: { ...resultObject(sanitizeBrowserUse({ result: summary.result, output: summary.output })),
-          paperclipBudgetHold: settled },
-        eventsDrained: 1,
-        accountedCents: Math.min(2_147_483_647, Math.round(Number(unitsToCents(amount > previous ? amount : previous)))),
-      }).where(eq(runs.id, current.id));
-      if (amount <= previous) {
-        if (hold?.state === "held") await budgetServiceInTransaction(tx, publications).evaluateAffectedScopes(s.companyId, s.agentId, projectId);
-        return;
-      }
-      const e = await createCostEventInTransaction(tx, s.companyId, {
-        agentId: s.agentId, issueId: s.issueId, projectId,
-        heartbeatRunId: run.heartbeatRunId,
-        provider: "browser-use-cloud", biller: "browser-use-cloud", billingType: "metered_api", model: summary.model,
-        costCents: unitsToCents(amount - previous), occurredAt: new Date(),
-        billingCode: `browser-use-cloud:${run.id}`, idempotencyKey: `browser-use-cloud:${run.id}:${cents}`,
-      }, publications);
-      await createFinanceEventInTransaction(tx, publications, s.companyId, {
-        agentId: e.agentId, issueId: e.issueId, projectId: e.projectId, heartbeatRunId: e.heartbeatRunId,
-        costEventId: e.id, billingCode: e.billingCode, eventKind: "inference_charge", direction: "debit",
-        biller: "browser-use-cloud", provider: "browser-use-cloud", model: e.model,
-        amountCents: e.costCentsExact, currency: "USD", description: "Browser Use agent run", occurredAt: e.occurredAt,
+    let candidate: { amount: bigint; model: string; result: Record<string, unknown> } | undefined;
+    if (summary) {
+      let amount: bigint;
+      try { amount = usdToUnits(summary.totalCostUsd); }
+      catch { throw new BrowserUseError(502, "Browser Use returned invalid usage."); }
+      if (amount < 0n || !browserUseTerminal(summary.status))
+        throw new BrowserUseError(502, "Browser Use returned invalid terminal usage.");
+      candidate = { amount, model: summary.model,
+        result: resultObject(sanitizeBrowserUse({ result: summary.result, output: summary.output })) };
+    }
+    // Persist the provider observation before attempting the ledger transaction.
+    // A failed/uncertain commit can then recover its exact price, attribution and
+    // occurrence time without depending on another provider response.
+    for (;;) {
+      const receipt = await withOperationAccountingTransaction(db, s.companyId, async (tx, publications) => {
+        const [current] = await tx.select().from(runs).where(and(eq(runs.id, run.id), eq(runs.companyId, s.companyId))).for("update");
+        if (!current || current.sessionId !== s.id || !current.providerRunId || current.providerRunId !== run.providerRunId)
+          throw conflict("Browser usage no longer belongs to this run.");
+        const hold = budgetHold(current.result);
+        if (hold && hold.invocationId !== current.invocationId) throw conflict("Browser accounting identity does not match its invocation.");
+        const previous = centsToUnits(hold?.accountedCentsExact ?? current.accountedCents);
+        const saved = hold?.receipt;
+        if (saved && (saved.invocationId !== current.invocationId || saved.providerRunId !== current.providerRunId
+          || !Number.isFinite(new Date(saved.occurredAt).getTime()) || centsToUnits(saved.totalCentsExact) < 0n))
+          throw conflict("Browser usage receipt identity is invalid.");
+        if (saved && (centsToUnits(saved.totalCentsExact) > previous || hold?.state === "held")) return saved;
+        if (!candidate) return null;
+        if (candidate.amount <= previous && hold?.state !== "held") {
+          if (!current.eventsDrained) await tx.update(runs).set({ eventsDrained: 1 }).where(eq(runs.id, current.id));
+          return null;
+        }
+        const [issue] = await tx.select({ projectId: issues.projectId }).from(issues)
+          .where(and(eq(issues.id, s.issueId), eq(issues.companyId, s.companyId)));
+        const projectId = hold ? hold.projectId : issue?.projectId ?? null;
+        const captured: BrowserUsageReceipt = { invocationId: current.invocationId, providerRunId: current.providerRunId,
+          totalCentsExact: unitsToCents(candidate.amount), model: candidate.model, occurredAt: new Date().toISOString() };
+        const remaining = candidate.amount > previous ? candidate.amount - previous : 0n;
+        const held = hold?.state === "held" ? centsToUnits(hold.amountCents) : 0n;
+        await tx.update(runs).set({ eventsDrained: 0, result: { ...candidate.result, paperclipBudgetHold: {
+          ...(hold ?? { invocationId: current.invocationId, projectId }), state: "held",
+          amountCents: unitsToCents(held > remaining ? held : remaining), accountedCentsExact: unitsToCents(previous), receipt: captured,
+        } } }).where(eq(runs.id, current.id));
+        await budgetServiceInTransaction(tx, publications).evaluateAffectedScopes(s.companyId, s.agentId, projectId);
+        return captured;
       });
-    }));
+      if (!receipt) return;
+      const amount = centsToUnits(receipt.totalCentsExact);
+      await withBudgetSpan("budget.accounting.settlement", () => withOperationAccountingTransaction(db, s.companyId, async (tx, publications) => {
+        const [current] = await tx.select().from(runs).where(and(eq(runs.id, run.id), eq(runs.companyId, s.companyId))).for("update");
+        const hold = current && budgetHold(current.result);
+        if (!current || current.sessionId !== s.id || !hold || hold.invocationId !== receipt.invocationId
+          || current.providerRunId !== receipt.providerRunId) throw conflict("Browser usage no longer belongs to this run.");
+        const previous = centsToUnits(hold.accountedCentsExact ?? current.accountedCents);
+        if (hold.receipt?.totalCentsExact !== receipt.totalCentsExact || hold.receipt.occurredAt !== receipt.occurredAt) return;
+        // Another reconciler may already have committed this receipt (or a later
+        // cumulative observation). Its local operation fence makes that replay.
+        if (amount <= previous && hold.state === "settled") return;
+        const total = amount > previous ? amount : previous;
+        const settled: BrowserBudgetHold = { ...hold, state: "settled", billingUnknown: false,
+          accountedCentsExact: unitsToCents(total) };
+        await tx.update(runs).set({
+          result: { ...resultObject(current.result), paperclipBudgetHold: settled }, eventsDrained: 1,
+          accountedCents: Math.min(2_147_483_647, Math.round(Number(unitsToCents(total)))),
+        }).where(eq(runs.id, current.id));
+        if (amount <= previous) {
+          await budgetServiceInTransaction(tx, publications).evaluateAffectedScopes(s.companyId, s.agentId, hold.projectId);
+          return;
+        }
+        const e = await createCostEventInTransaction(tx, s.companyId, {
+          agentId: s.agentId, issueId: s.issueId, projectId: hold.projectId,
+          heartbeatRunId: current.heartbeatRunId,
+          provider: "browser-use-cloud", biller: "browser-use-cloud", billingType: "metered_api", model: receipt.model,
+          costCents: unitsToCents(amount - previous), occurredAt: new Date(receipt.occurredAt),
+          billingCode: `browser-use-cloud:${current.id}`, idempotencyKey: `browser-use-cloud:${current.id}:${receipt.totalCentsExact}`,
+        }, publications);
+        await createFinanceEventInTransaction(tx, publications, s.companyId, {
+          agentId: e.agentId, issueId: e.issueId, projectId: e.projectId, heartbeatRunId: e.heartbeatRunId,
+          costEventId: e.id, billingCode: e.billingCode, eventKind: "inference_charge", direction: "debit",
+          biller: "browser-use-cloud", provider: "browser-use-cloud", model: e.model,
+          amountCents: e.costCentsExact, currency: "USD", description: "Browser Use agent run", occurredAt: e.occurredAt,
+          idempotencyKey: `browser-use-cloud:${current.id}:${receipt.totalCentsExact}`,
+        });
+      }), { "budget.accounting.owner": "browser" });
+      if (!candidate || amount >= candidate.amount) return;
+    }
   }
+  const sessionLeaseFence = (s: Session) => and(eq(sessions.id, s.id), eq(sessions.companyId, s.companyId),
+    s.leaseToken ? eq(sessions.leaseToken, s.leaseToken) : sql`false`, sql`${sessions.leaseUntil} > clock_timestamp()`);
+  const runLeaseFence = (s: Session, runId: string) => and(eq(runs.id, runId), eq(runs.companyId, s.companyId),
+    sql`exists (select 1 from ${sessions} where ${sessionLeaseFence(s)})`);
   async function reconcile(s: Session) {
     const { grant, connection, client } = await credentials(s, true);
     let end =
@@ -1128,6 +1229,8 @@ export function browserUseService(
     let pendingAccounting = false;
     let discovered = false;
     for (const run of allRuns) {
+      const [ownedLease] = await db.select({ id: sessions.id }).from(sessions).where(sessionLeaseFence(s));
+      if (!ownedLease) return;
       if (!run.providerRunId) {
         if (run.eventsDrained) continue; // A definitive rejection made no paid run.
         if (run.status === "creating" && Date.now() - run.createdAt.getTime() <= 60_000) {
@@ -1135,21 +1238,22 @@ export function browserUseService(
           continue;
         }
         if (budgetHold(run.result)?.state === "held" && !budgetHold(run.result)?.dispatchCommittedAt) {
-          const repaired = await withAccountingTransaction(db, s.companyId, async (tx, publications) => {
+          const repaired = await withOperationAccountingTransaction(db, s.companyId, async (tx, publications) => {
             const [current] = await tx.select().from(runs).where(and(eq(runs.id, run.id), eq(runs.companyId, s.companyId))).for("update");
             const hold = budgetHold(current?.result);
             if (!current || current.providerRunId || current.status !== "creating" || hold?.state !== "held" || hold.dispatchCommittedAt
               || Date.now() - current.createdAt.getTime() <= 60_000) return null;
+            const [session] = await tx.select().from(sessions).where(sessionLeaseFence(s)).for("update");
+            if (!session) return null;
             await notifyDeliveryWork(tx, DELIVERY_QUEUES.browser);
             await tx.update(runs).set({ status: "failed", eventsDrained: 1,
-              result: { ...resultObject(current.result), paperclipBudgetHold: { ...hold, state: "released" } } }).where(eq(runs.id, run.id));
-            const [session] = await tx.select().from(sessions).where(eq(sessions.id, s.id)).for("update");
+              result: { ...resultObject(current.result), paperclipBudgetHold: { ...hold, state: "released" } } }).where(runLeaseFence(s, run.id));
             const stopping = session.stopRequested === "end";
             const [updated] = await tx.update(sessions).set({
               status: stopping ? "stopping" : session.providerSessionId ? "idle" : "failed",
               idleDeadline: !stopping && session.providerSessionId ? new Date(Date.now() + BROWSER_USE_IDLE_MS) : null,
               updatedAt: new Date(),
-            }).where(eq(sessions.id, s.id)).returning();
+            }).where(sessionLeaseFence(s)).returning();
             await budgetServiceInTransaction(tx, publications).evaluateAffectedScopes(s.companyId, s.agentId, hold.projectId);
             return updated;
           });
@@ -1163,7 +1267,7 @@ export function browserUseService(
         }
         end = true;
         await db.update(sessions).set({ status: "stopping", stopRequested: "end" })
-          .where(eq(sessions.id, s.id));
+          .where(sessionLeaseFence(s));
         let cursor = run.recoveryCursor;
         for (let page = 0; page < 5 && !run.providerRunId; page++) {
           const listed = await client.listRuns(s.providerSessionId, cursor);
@@ -1175,9 +1279,9 @@ export function browserUseService(
           if (found) {
             await db.transaction(async tx => {
               await tx.update(runs).set({ providerRunId: found.id, status: found.status, recoveryCursor: null })
-                .where(eq(runs.id, run.id));
+                .where(and(runLeaseFence(s, run.id), isNull(runs.providerRunId)));
               await tx.update(sessions).set({ providerSessionId: found.sessionId })
-                .where(eq(sessions.id, s.id));
+                .where(sessionLeaseFence(s));
             });
             run.providerRunId = found.id;
             run.status = found.status;
@@ -1187,7 +1291,8 @@ export function browserUseService(
           if (listed.hasMore && (!listed.nextCursor || listed.nextCursor === cursor))
             throw new BrowserUseError(502, "Browser recovery cursor did not advance.");
           cursor = listed.hasMore ? listed.nextCursor! : null;
-          await db.update(runs).set({ status: "unknown", recoveryCursor: cursor }).where(eq(runs.id, run.id));
+          await db.update(runs).set({ status: "unknown", recoveryCursor: cursor })
+            .where(and(runLeaseFence(s, run.id), isNull(runs.providerRunId)));
           if (!listed.hasMore) break;
         }
         if (!run.providerRunId) {
@@ -1244,12 +1349,12 @@ export function browserUseService(
         await db
           .update(runs)
           .set({
-            eventCursor: cursor,
+            eventCursor: sql`greatest(${runs.eventCursor}, ${cursor})`,
             progress: progress
               ? String(sanitizeBrowserUse(progress)).slice(0, 200)
               : null,
           })
-          .where(eq(runs.id, run.id));
+          .where(runLeaseFence(s, run.id));
         if (!events.hasMore) {
           drained = true;
           break;
@@ -1263,11 +1368,14 @@ export function browserUseService(
       }
       await db
         .update(runs)
-        .set({ status: state.status })
-        .where(eq(runs.id, run.id));
+        .set({ status: sql`case when ${runs.status} in ('completed', 'failed', 'cancelled') then ${runs.status} else ${state.status} end` })
+        .where(runLeaseFence(s, run.id));
       pendingAccounting ||= browserUseTerminal(state.status) && !drained;
       if (browserUseTerminal(state.status) && drained) {
-        const summary = await client.summary(run.providerRunId);
+        const hold = budgetHold(run.result);
+        const saved = hold?.receipt;
+        const pendingReceipt = hold && saved && (centsToUnits(saved.totalCentsExact) > centsToUnits(hold.accountedCentsExact ?? run.accountedCents) || hold.state === "held");
+        const summary = pendingReceipt ? undefined : await client.summary(run.providerRunId);
         await account(s, run, summary);
         await signal(s, "browser.run_finished");
       }
@@ -1277,7 +1385,7 @@ export function browserUseService(
       await db
         .update(sessions)
         .set({ status: "stopping", stopRequested: "end" })
-        .where(eq(sessions.id, s.id));
+        .where(sessionLeaseFence(s));
       const live = await db
         .select()
         .from(browsers)
@@ -1302,7 +1410,7 @@ export function browserUseService(
         await db
           .update(sessions)
           .set({ status: "closed", error: null, stopRequested: null })
-          .where(eq(sessions.id, s.id));
+          .where(sessionLeaseFence(s));
         await signal(s, "browser.closed");
       }
     } else if (
@@ -1321,7 +1429,7 @@ export function browserUseService(
         })
         .where(
           and(
-            eq(sessions.id, s.id),
+            sessionLeaseFence(s),
             ne(sessions.status, "starting"),
             or(
               isNull(sessions.stopRequested),
@@ -1378,6 +1486,7 @@ export function browserUseService(
         )
         .returning();
       if (!lease.length) continue;
+      Object.assign(s, lease[0]);
       // Renew while paginating provider events or stopping multiple browsers.
       const renewal = setInterval(() => {
         void db
@@ -1403,7 +1512,7 @@ export function browserUseService(
                 ? "Browser shutdown is not confirmed. Paperclip will retry."
                 : "Browser synchronization failed. Paperclip will retry.",
           })
-          .where(eq(sessions.id, s.id));
+          .where(sessionLeaseFence(s));
       } finally {
         clearInterval(renewal);
         const release = (tx: Pick<Db, "update">) => tx.update(sessions).set({

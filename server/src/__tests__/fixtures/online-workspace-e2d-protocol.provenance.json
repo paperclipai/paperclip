@@ -1,0 +1,49 @@
+{
+  "commit": "e2d490c61bbf12290b35af65f6e12648f5f2af75",
+  "entry": "export {withWorkspaceSourceLocks} from './server/src/services/workspace-source-lock.js';export {readRemoteWorkspaceAuthority} from './packages/shared/src/remote-workspace.js';export {getWorkspaceSnapshot,loadWorkspaceSnapshotArchive} from './server/src/services/remote-workspace-snapshot-storage.js';export {restoreRemoteWorkspaceArchive} from './server/src/services/remote-workspace-snapshot-archive.js';",
+  "sourceFiles": {
+    "server/src/services/remote-workspace-snapshot-archive.ts": "81ef616f81804849d6feb17ae9ff4b2e39ccc78aa8784cce6203a5a8b0ab5f23",
+    "server/src/services/workspace-source-lock.ts": "f01502b1432e896a922fbf0b3526d15b1a987f785afe89c3e8992d05a21c8040",
+    "server/src/services/remote-workspace-snapshot-storage.ts": "0816d4343a47ced33f520589c1b5398831cb02e6b190c21786cdeca01ed27245",
+    "packages/shared/src/remote-workspace.ts": "d4928b2ddd1fb1cfc767aaca474b25796ee3dd5c0d65c9005b051a1c0330dd1b",
+    "server/src/home-paths.ts": "1b36cc65179959c0c4467e80360d5ed8c7fec177abcd1eeaa9c0f523d611585b",
+    "server/src/services/execution-workspace-source-roots.ts": "15027f3782fa6f99c47436d89e81fc770239a55ffc1edb9b44c264ed29e33e04",
+    "server/src/services/native-runtime/native-workspace-lock-keepalive.ts": "29b6b8db45d0c4e8bbbf69bc917f4f02f27bfddea259ca0459948fcd6f66964c",
+    "server/src/services/workspace-git-source-roots.ts": "17810fbdb593f9c330f42f548f286ac9701780395ad908500702f1a4dc2ac79b",
+    "server/src/services/remote-workspace-snapshot-retention.ts": "7cb5d4bbd5a6d20dc9ce992eddfb8a79f015fcee228c359c3d4d240c053de01c",
+    "server/src/secrets/local-encrypted-provider.ts": "b582069603e39102d109c6ce72a29a753b537ceec344285dcb5b26ef33fd94e5",
+    "server/src/services/delivery-work-notifications.ts": "cab5c17b4d5c52955b4eb294d5945b0ac5d721ccb260587a622973e827b73ecf",
+    "server/src/services/remote-execution-termination.ts": "f23a3aa3d4607010b9d5b7bda2c463e5aea44433b2ca459ae09e308ee701378a",
+    "server/src/secrets/types.ts": "3c56de8d21a8d85d9bbfe149c697036e70f01e777a6975d4fb2517a08e049955",
+    "server/src/errors.ts": "b9919cbf75bb358fa8724bb44db62edc3ae32dcb53a2870ce03615a93ade5144",
+    "server/src/services/environment-lease-handoff.ts": "5d4bbba4d619e1608d04861b380a48fa7f4da0a0dce83b7b14ce61ecde38d787"
+  },
+  "bundleSha256": "b668e53a48c6b8cd6c3ce6a8d935144fdedb74de43970607e740f3bfd45bb218",
+  "compiler": {
+    "name": "esbuild",
+    "version": "0.28.2",
+    "format": "esm",
+    "platform": "node",
+    "target": "node22",
+    "minify": true,
+    "legalComments": "none",
+    "virtualModuleSideEffects": false
+  },
+  "externalImports": [
+    "@paperclipai/db",
+    "@paperclipai/shared/home-paths",
+    "drizzle-orm",
+    "node:async_hooks",
+    "node:crypto",
+    "node:fs",
+    "node:fs/promises",
+    "node:os",
+    "node:path",
+    "node:stream",
+    "node:stream/promises",
+    "node:timers/promises",
+    "node:util",
+    "zod"
+  ],
+  "scope": "Frozen Core e2d lock and authority/snapshot read/decrypt/restore owners; real current installed database/query/Zod package boundary; no old importer or whole-server compatibility claim."
+}

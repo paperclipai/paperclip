@@ -4,16 +4,20 @@ import { constants as fsConstants, createReadStream, createWriteStream, promises
 import net from "node:net";
 import os from "node:os";
 import path from "node:path";
-import { Transform } from "node:stream";
+import { pipeline, Transform } from "node:stream";
 import type { CommandManagedRuntimeRunner } from "./command-managed-runtime.js";
 import {
   createUnrelatedHistoryGraftCommit,
   GIT_SYNC_COMMIT_IDENTITY_ARGS,
+  listProjectRepositoryStagingPaths,
   PROJECT_REPOSITORIES_DIR,
+  PROJECT_REPOSITORY_STAGING_PATTERN,
   readSanitizedOriginRemoteUrl,
+  resetLocalGitIndexToHead,
 } from "./git-workspace-sync.js";
 import type { RunProcessResult } from "./server-utils.js";
 import type { DirectorySnapshot } from "./workspace-restore-merge.js";
+
 import { mergeDirectoryWithBaseline } from "./workspace-restore-merge.js";
 import {
   createRuntimeProgressReporter,
@@ -22,7 +26,12 @@ import {
   type RuntimeProgressSink,
 } from "./runtime-progress.js";
 
+const SSH_STDIN_COMMAND = "IFS= read -r paperclip_ssh_command_b64 || exit 125; paperclip_ssh_command=$(printf '%s' \"$paperclip_ssh_command_b64\" | base64 -d) || exit 125; unset paperclip_ssh_command_b64; eval \"$paperclip_ssh_command\"";
+
 export interface SshConnectionConfig {
+  useHostAuth?: boolean;
+  tailscaleSocket?: string;
+  tailscaleIdentity?: string;
   host: string;
   port: number;
   username: string;
@@ -65,14 +74,12 @@ export function createSshCommandManagedRuntimeRunner(input: {
           throw new Error(`Invalid SSH environment variable key: ${key}`);
         }
       }
-      const envPrefix = envEntries.length > 0
-        ? `env ${envEntries.map(([key, value]) => shellQuote(`${key}=${value}`)).join(" ")} `
-        : "";
-      const commandScript = `exec ${envPrefix}${[shellQuote(command), ...args.map((arg) => shellQuote(arg))].join(" ")}`;
+      const commandScript = `exec ${[shellQuote(command), ...args.map((arg) => shellQuote(arg))].join(" ")}`;
       const remoteCommand = `cd ${shellQuote(cwd)} && ${commandScript}`;
 
       try {
         const result = await runSshCommand(input.spec, remoteCommand, {
+          env: Object.fromEntries(envEntries),
           stdin: commandInput.stdin,
           timeoutMs: commandInput.timeoutMs,
           maxBuffer: maxBufferBytes,
@@ -171,8 +178,16 @@ export function parseSshRemoteExecutionSpec(value: unknown): SshRemoteExecutionS
   if (!host || !username || !remoteCwd || !Number.isInteger(portValue) || portValue < 1 || portValue > 65535) {
     return null;
   }
+  if (parsed.useHostAuth !== undefined && typeof parsed.useHostAuth !== "boolean") return null;
+
+  if (parsed.tailscaleSocket !== undefined && (typeof parsed.tailscaleSocket !== "string" || !/^\/[A-Za-z0-9_./-]+$/.test(parsed.tailscaleSocket))) return null;
+
+  if (parsed.tailscaleIdentity && !parsed.tailscaleSocket) return null;
 
   return {
+    ...(typeof parsed.useHostAuth === "boolean" ? { useHostAuth: parsed.useHostAuth } : {}),
+    ...(typeof parsed.tailscaleSocket === "string" ? { tailscaleSocket: parsed.tailscaleSocket } : {}),
+    ...(typeof parsed.tailscaleIdentity === "string" ? { tailscaleIdentity: parsed.tailscaleIdentity } : {}),
     host,
     port: portValue,
     username,
@@ -320,6 +335,10 @@ async function spawnText(
     });
 
     if (options.stdin != null && child.stdin) {
+      child.stdin.on("error", (error) => {
+        child.kill("SIGTERM");
+        finishReject(Object.assign(error, { code: null }));
+      });
       child.stdin.end(options.stdin);
     }
   });
@@ -371,7 +390,7 @@ async function withTempFile(
 }
 
 async function createSshAuthArgs(
-  config: Pick<SshConnectionConfig, "privateKey" | "knownHosts" | "strictHostKeyChecking">,
+  config: Pick<SshConnectionConfig, "privateKey" | "knownHosts" | "strictHostKeyChecking" | "tailscaleSocket" | "tailscaleIdentity" | "host">,
 ): Promise<{ args: string[]; cleanup: () => Promise<void> }> {
   const tempFiles: Array<() => Promise<void>> = [];
   const sshArgs = [
@@ -382,6 +401,15 @@ async function createSshAuthArgs(
     "-o",
     `StrictHostKeyChecking=${config.strictHostKeyChecking ? "yes" : "no"}`,
   ];
+
+  if (config.tailscaleIdentity && !config.tailscaleSocket) throw new Error("Tailscale connection is unavailable");
+  if (config.tailscaleSocket) {
+    if (!net.isIP(config.host) && !/^[A-Za-z0-9][A-Za-z0-9_.-]*$/.test(config.host)) throw new Error("Invalid Tailscale host");
+    if (!/^\/[A-Za-z0-9_./-]+$/.test(config.tailscaleSocket)) throw new Error("Invalid Tailscale socket path");
+    const configuredCli = process.env.PAPERCLIP_TAILSCALE_CLI?.trim();
+    const cli = configuredCli ? shellQuote(configuredCli).replaceAll("%", "%%") : "tailscale";
+    sshArgs.push("-o", `ProxyCommand=${cli} --socket=${config.tailscaleSocket} nc %h %p`);
+  }
 
   if (config.strictHostKeyChecking) {
     if (config.knownHosts) {
@@ -724,36 +752,49 @@ async function streamSshToLocalFile(input: {
 
     let sshStderr = "";
     let settled = false;
+    let sshClosed = false;
+    let streamFinished = false;
+
+    const settle = () => {
+      if (settled || !sshClosed || !streamFinished) return;
+      settled = true;
+      resolve();
+    };
 
     const fail = (error: Error) => {
       if (settled) return;
       settled = true;
       ssh.kill("SIGTERM");
+      ssh.stdout.destroy();
+      input.progress?.counter.destroy();
       sink.destroy();
       reject(error);
     };
 
+    const onStreamFinished = (error: NodeJS.ErrnoException | null) => {
+      if (error) {
+        fail(error);
+        return;
+      }
+      streamFinished = true;
+      settle();
+    };
     if (input.progress) {
-      input.progress.counter.on("error", fail);
-      ssh.stdout?.pipe(input.progress.counter).pipe(sink);
+      pipeline(ssh.stdout, input.progress.counter, sink, onStreamFinished);
     } else {
-      ssh.stdout?.pipe(sink);
+      pipeline(ssh.stdout, sink, onStreamFinished);
     }
     ssh.stderr?.on("data", (chunk) => {
       sshStderr += String(chunk);
     });
     ssh.on("error", fail);
-    sink.on("error", fail);
     ssh.on("close", (code) => {
-      sink.end(() => {
-        if (settled) return;
-        settled = true;
-        if ((code ?? 0) !== 0) {
-          reject(new Error(sshStderr.trim() || `ssh exited with code ${code ?? -1}`));
-          return;
-        }
-        resolve();
-      });
+      if ((code ?? 0) !== 0) {
+        fail(new Error(sshStderr.trim() || `ssh exited with code ${code ?? -1}`));
+        return;
+      }
+      sshClosed = true;
+      settle();
     });
   }).finally(auth.cleanup);
 }
@@ -1100,6 +1141,7 @@ export async function listLocalProjectRepositories(localDir: string): Promise<st
   }
   const repositories: string[] = [];
   for (const entry of await fs.readdir(root, { withFileTypes: true })) {
+    if (entry.isDirectory() && PROJECT_REPOSITORY_STAGING_PATTERN.test(entry.name)) continue;
     if (!entry.isDirectory() || !PROJECT_REPOSITORY_NAME_PATTERN.test(entry.name)) {
       throw new Error("Invalid project repository directory");
     }
@@ -1322,19 +1364,14 @@ export async function runSshCommand(
       "-p",
       String(config.port),
       `${config.username}@${config.host}`,
-      `sh -c ${shellQuote(remoteScript)}`,
+      `sh -c ${shellQuote(SSH_STDIN_COMMAND)}`,
     );
 
-    return options.stdin != null
-      ? await spawnText("ssh", sshArgs, {
-          stdin: options.stdin,
-          timeout: options.timeoutMs ?? 15_000,
-          maxBuffer: options.maxBuffer ?? 1024 * 128,
-        })
-      : await execFileText("ssh", sshArgs, {
-          timeout: options.timeoutMs ?? 15_000,
-          maxBuffer: options.maxBuffer ?? 1024 * 128,
-        });
+    return await spawnText("ssh", sshArgs, {
+      stdin: Buffer.from(remoteScript).toString("base64") + "\n" + (options.stdin ?? ""),
+      timeout: options.timeoutMs ?? 15_000,
+      maxBuffer: options.maxBuffer ?? 1024 * 128,
+    });
   } finally {
     await cleanup();
   }
@@ -1348,6 +1385,7 @@ export async function buildSshSpawnTarget(input: {
 }): Promise<{
   command: string;
   args: string[];
+  stdinPrefix: string;
   cleanup: () => Promise<void>;
 }> {
   for (const key of Object.keys(input.env)) {
@@ -1387,12 +1425,13 @@ export async function buildSshSpawnTarget(input: {
     "-p",
     String(input.spec.port),
     `${input.spec.username}@${input.spec.host}`,
-    `sh -c ${shellQuote(remoteScript)}`,
+    `sh -c ${shellQuote(SSH_STDIN_COMMAND)}`,
   );
 
   return {
     command: "ssh",
     args: sshArgs,
+    stdinPrefix: Buffer.from(remoteScript).toString("base64") + "\n",
     cleanup: auth.cleanup,
   };
 }
@@ -1644,9 +1683,11 @@ export async function prepareWorkspaceForSshExecution(input: {
   onProgress?: RuntimeProgressSink;
   workspaceFileMode?: "all";
   workspaceExclude?: string[];
-}): Promise<{ gitBacked: boolean; repositories?: string[] }> {
+}): Promise<{ gitBacked: boolean; repositories?: string[]; excludedPaths?: string[] }> {
   const remoteDir = input.remoteDir ?? input.spec.remoteCwd;
   const gitSnapshot = input.workspaceFileMode === "all" ? null : await readLocalGitWorkspaceSnapshot(input.localDir);
+  const excludedPaths = await listProjectRepositoryStagingPaths(input.localDir);
+  const excludedResult = excludedPaths.length > 0 ? { excludedPaths } : {};
 
   if (gitSnapshot) {
     const repositories = await listLocalProjectRepositories(input.localDir);
@@ -1655,7 +1696,7 @@ export async function prepareWorkspaceForSshExecution(input: {
       localDir: input.localDir,
       remoteDir,
       snapshot: gitSnapshot,
-      exclude: repositories.length > 0 ? [PROJECT_REPOSITORIES_DIR] : [],
+      exclude: repositories.length > 0 ? [PROJECT_REPOSITORIES_DIR] : excludedPaths,
       onProgress: input.onProgress,
       progressLabel: "workspace",
     });
@@ -1675,7 +1716,7 @@ export async function prepareWorkspaceForSshExecution(input: {
         progressLabel: relative,
       });
     }
-    return { gitBacked: true, ...(repositories.length > 0 ? { repositories } : {}) };
+    return { gitBacked: true, ...(repositories.length > 0 ? { repositories } : {}), ...excludedResult };
   }
 
   await clearRemoteDirectory({
@@ -1687,11 +1728,11 @@ export async function prepareWorkspaceForSshExecution(input: {
     spec: input.spec,
     localDir: input.localDir,
     remoteDir,
-    exclude: [".paperclip-runtime", ...(input.workspaceFileMode === "all" ? input.workspaceExclude ?? [] : [])],
+    exclude: [".paperclip-runtime", ...excludedPaths, ...(input.workspaceFileMode === "all" ? input.workspaceExclude ?? [] : [])],
     onProgress: input.onProgress,
     progressLabel: "workspace",
   });
-  return { gitBacked: false };
+  return { gitBacked: false, ...excludedResult };
 }
 
 export async function restoreWorkspaceFromSshExecution(input: {
@@ -1793,6 +1834,13 @@ async function restoreWorkspaceRootFromSsh(input: {
               localDir: input.localDir,
               importedHead,
             });
+          }
+          : undefined,
+        // integrateImportedGitHead moves the branch with update-ref, which leaves the index
+        // on the old tip. Reset it to HEAD as the sandbox restore does (#8595).
+        afterApply: importedHead
+          ? async () => {
+            await resetLocalGitIndexToHead({ localDir: input.localDir });
           }
           : undefined,
       });

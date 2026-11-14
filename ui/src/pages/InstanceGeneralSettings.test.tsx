@@ -4,6 +4,7 @@ import { flushSync } from "react-dom";
 import { createRoot, type Root } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { ApiError } from "@/api/client";
 import { queryKeys } from "@/lib/queryKeys";
 import { InstanceGeneralSettings } from "./InstanceGeneralSettings";
 
@@ -265,5 +266,79 @@ describe("InstanceGeneralSettings operator-hidden sections", () => {
     expect(container.textContent).toContain("Deployment and auth");
     expect(container.textContent).toContain("Censor username in logs");
     expect(container.textContent).toContain("Backup retention");
+  });
+});
+
+describe("InstanceGeneralSettings read resilience", () => {
+  let container: HTMLDivElement;
+  let root: Root | null;
+  let queryClient: QueryClient;
+
+  beforeEach(() => {
+    container = document.createElement("div");
+    document.body.appendChild(container);
+    root = null;
+    queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    mockHealthApi.get.mockResolvedValue(SELF_HOSTED_HEALTH);
+    queryClient.setQueryData(queryKeys.health, SELF_HOSTED_HEALTH);
+    mockInstanceSettingsApi.getGeneral.mockResolvedValue({
+      censorUsernameInLogs: false,
+      feedbackDataSharingPreference: "not_allowed",
+      backupRetention: { dailyDays: 7, weeklyWeeks: 4, monthlyMonths: 1 },
+    });
+  });
+
+  afterEach(() => {
+    flushSync(() => root?.unmount());
+    queryClient.clear();
+    container.remove();
+    vi.clearAllMocks();
+  });
+
+  function renderPage() {
+    root = createRoot(container);
+    flushSync(() => {
+      root?.render(
+        <QueryClientProvider client={queryClient}>
+          <InstanceGeneralSettings />
+        </QueryClientProvider>,
+      );
+    });
+  }
+
+  it("keeps loaded settings on screen when a refetch fails transiently", async () => {
+    renderPage();
+    await vi.waitFor(() => expect(container.textContent).toContain("Backup retention"));
+
+    mockInstanceSettingsApi.getGeneral.mockRejectedValue(
+      new ApiError("Paperclip is restarting.", 503, { error: "tenant_app_unavailable" }),
+    );
+    await queryClient.invalidateQueries({ queryKey: queryKeys.instance.generalSettings });
+    await vi.waitFor(() =>
+      expect(queryClient.getQueryState(queryKeys.instance.generalSettings)?.status).toBe("error"),
+    );
+    await new Promise((resolve) => setTimeout(resolve, 20));
+
+    expect(mockInstanceSettingsApi.getGeneral).toHaveBeenCalledTimes(2);
+    expect(container.textContent).toContain("Backup retention");
+    expect(container.querySelector('[data-query-view="error"]')).toBeNull();
+    expect(container.textContent).not.toContain("Paperclip is restarting.");
+    expect(container.textContent).not.toContain("tenant_app_unavailable");
+  });
+
+  it("shows readable copy and a Retry button when settings fail to load", async () => {
+    mockInstanceSettingsApi.getGeneral.mockRejectedValueOnce(new ApiError("Boom", 500, { error: "Boom" }));
+    renderPage();
+    await vi.waitFor(() => expect(container.textContent).toContain("Couldn't load general settings"));
+    expect(container.querySelector('[data-query-view="error"]')).not.toBeNull();
+    expect(container.textContent).not.toContain("Backup retention");
+
+    const retryButton = Array.from(container.querySelectorAll("button"))
+      .find((button) => button.textContent?.trim() === "Retry");
+    expect(retryButton).toBeDefined();
+    flushSync(() => retryButton?.click());
+
+    await vi.waitFor(() => expect(container.textContent).toContain("Backup retention"));
+    expect(container.querySelector('[data-query-view="error"]')).toBeNull();
   });
 });

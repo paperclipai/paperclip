@@ -1,0 +1,2 @@
+ALTER TABLE "heartbeat_runs" ADD COLUMN IF NOT EXISTS "controller_process" jsonb;--> statement-breakpoint
+CREATE INDEX CONCURRENTLY IF NOT EXISTS "heartbeat_runs_legacy_controller_lease_idx" ON "heartbeat_runs" USING btree ("controller_lease_expires_at") WHERE "heartbeat_runs"."runtime_mode" = 'legacy' AND "heartbeat_runs"."status" = 'running' AND "heartbeat_runs"."controller_boot_id" is not null;

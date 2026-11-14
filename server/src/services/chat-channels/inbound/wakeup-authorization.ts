@@ -43,7 +43,8 @@ export function createInboundWakeAuthority(db: Db, options: WakeAuthorityOptions
   async function authorizeInboundWakeup(
     tx: DbOrTransaction,
     action: typeof chatActions.$inferSelect,
-    notice?: { nonblocking: true; terminal: boolean; taskRetry?: TaskRetryWakeAuthority },
+    notice?: { nonblocking: true; terminal: boolean; taskRetry?: TaskRetryWakeAuthority;
+      onEndpointContention?: () => never },
   ) {
     const payload = action.payload;
     const deny = chatWakeAuthorityDenied;
@@ -91,7 +92,17 @@ export function createInboundWakeAuthority(db: Db, options: WakeAuthorityOptions
       )
       .for("no key update", { noWait: true })
       .limit(1)
-      .then((rows) => rows[0] ?? null);
+      .then((rows) => rows[0] ?? null)
+      .catch(error => {
+        if (notice?.onEndpointContention) {
+          let cause: unknown = error;
+          for (let depth = 0; depth < 4 && cause && typeof cause === "object"; depth += 1) {
+            if ("code" in cause && cause.code === "55P03") notice.onEndpointContention();
+            cause = "cause" in cause ? cause.cause : undefined;
+          }
+        }
+        throw error;
+      });
     const delivery = await tx
       .select()
       .from(chatDeliveries)

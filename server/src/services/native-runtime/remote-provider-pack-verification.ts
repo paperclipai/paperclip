@@ -22,6 +22,8 @@ export type ProviderPackIdentity = {
     pins: { opencode: string; [key: string]: string | null };
     target: { platform: string; architecture: string };
     runnerSourceRevision: string;
+    /** Identity of the Runner image the pack was built in, when it was built there. Provenance only. */
+    runnerInputsDigest?: string;
     artifacts: { nodeCommand: { path: string; sha256: string }; opencodeCommand: { path: string; sha256: string }; [key: string]: { path: string; sha256: string } };
   };
 };

@@ -1,5 +1,5 @@
 import { notifyAttentionRetentionWork } from "../retention-work-notifications.js";
-import { and, eq, isNull, ne, sql } from "drizzle-orm";
+import { and, eq, isNull, ne, or, sql } from "drizzle-orm";
 import { completionContracts, heartbeatRuns, issues, issueThreadInteractions, statusDecisionEffects, statusDecisions, workAssessments, type Db } from "@paperclipai/db";
 import { hasPublishedGitHubReview } from "../chat-channels/github/review-wait.js";
 import { issueThreadInteractionService } from "../issue-thread-interactions.js";
@@ -47,7 +47,8 @@ export async function findSupersededExternalReviewRequests(db: Db, binding: Revi
       eq(issueThreadInteractions.companyId, binding.companyId), eq(issueThreadInteractions.issueId, binding.issueId),
       eq(issueThreadInteractions.status, "pending"), eq(issueThreadInteractions.kind, "request_confirmation"),
       ne(issueThreadInteractions.sourceRunId, binding.runId),
-      isNull(issueThreadInteractions.createdByAgentId), isNull(issueThreadInteractions.createdByUserId),
+      or(isNull(issueThreadInteractions.createdByAgentId), eq(issueThreadInteractions.createdByAgentId, heartbeatRuns.agentId)),
+      isNull(issueThreadInteractions.createdByUserId),
       isNull(issueThreadInteractions.addresseeAgentId), eq(issueThreadInteractions.effectiveResolverPolicy, "human_only"),
       sql`exists (select 1 from jsonb_array_elements(${statusDecisions.decisionJson}->'effects') effect
         where effect->>'kind' = 'bind_reviewer'
