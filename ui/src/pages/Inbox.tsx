@@ -2,6 +2,7 @@ import { errorCodes, isTransientError } from "@/api/errors";
 import { useQueryView } from "@/components/QueryView";
 import { useCoordinatorPresentation } from "@/components/coordinator/CoordinatorPresentation";
 import { useWarmTaskDetailCode } from "@/hooks/useWarmTaskDetailCode";
+import { topTaskRefs, usePreloadTaskChats } from "../hooks/usePreloadTaskChats";
 import { describeError } from "../api/errors";
 import { useIssueRowDetails } from "../hooks/useIssueRowDetails";
 import { IssueRowDetailsNotice } from "../components/IssueRowDetailsNotice";
@@ -43,7 +44,7 @@ import {
   normalizeIssueFilterState,
   type IssueFilterState,
 } from "../lib/issue-filters";
-import { collectLiveIssueIds, collectSubtreeLiveCounts } from "../lib/liveIssueIds";
+import { collectLiveIssueIds, collectSubtreeLiveCounts, issueWaitingOf } from "../lib/liveIssueIds";
 import { formatAssigneeUserLabel } from "../lib/assignees";
 import { buildCompanyUserLabelMap, buildCompanyUserProfileMap } from "../lib/company-members";
 import {
@@ -63,7 +64,7 @@ import {
 } from "../lib/keyboardShortcuts";
 import {
   resolveInboxIssueBlockerAttention,
-  resolveIssueLiveDescendantCount,
+  resolveIssueRunningDescendantCount,
 } from "../lib/inbox-live-descendants";
 import {
   beginLocalInboxArchive,
@@ -180,6 +181,7 @@ import {
   type InboxWorkItemGroupBy,
   INBOX_FILTER_PREFERENCES_KEY_PREFIX,
   INBOX_ISSUE_COLUMNS_KEY,
+  inboxNavEntryTask,
 } from "../lib/inbox";
 import { useDismissedInboxAlerts, useInboxDismissals, useReadInboxItems } from "../hooks/useInboxBadge";
 import { useInboxSortAttention } from "../hooks/useInboxSortAttention";
@@ -414,7 +416,7 @@ export function FailedRunInboxRow({
           confirm_owner_stop: "Confirm the previous server stopped",
           confirm_run_stopped: "Confirm the previous run stopped",
         }[interruption.userAction ?? "resume"]) : runFailureMessage(run);
-  const retryAvailable = !interruption || interruption.canRetry;
+  const retryAvailable = !interruption || (interruption.canRetry && interruption.retryAction !== "move_forward");
   const showUnreadSlot = unreadState !== null;
   const showUnreadDot = unreadState === "visible" || unreadState === "fading";
 
@@ -802,6 +804,7 @@ function InboxCollectionToolbar({
   if (streamlined) {
     return (
       <CollectionToolbar
+        className={ariaLabel === "Tasks controls" ? "mobile-task-toolbar" : undefined}
         ariaLabel={ariaLabel}
         context={context}
         search={search}
@@ -1819,7 +1822,7 @@ function StreamlinedInbox({
   flatNavItemsRef.current = flatNavItems;
   // Roll live descendant runs up to their ancestors across the loaded inbox tree
   // so a parent that is not itself live can still surface "n live below".
-  const subtreeLiveCounts = useMemo(() => {
+  const subtreeCounts = useMemo(() => {
     const nodes: { id: string; parentId: string | null }[] = [];
     const seen = new Set<string>();
     const pushIssue = (issue: Issue) => {
@@ -1835,8 +1838,12 @@ function StreamlinedInbox({
         for (const child of children) pushIssue(child);
       }
     }
-    return collectSubtreeLiveCounts(nodes, liveIssueIds);
+    return {
+      live: collectSubtreeLiveCounts(nodes, liveIssueIds),
+      running: collectSubtreeLiveCounts(nodes, liveIssueIds, { startedOnly: true }),
+    };
   }, [groupedSections, liveIssueIds]);
+  const subtreeLiveCounts = subtreeCounts.live;
   const topFlatIndex = useMemo(() => {
     const map = new Map<string, number>();
     flatNavItems.forEach((entry, index) => {
@@ -2624,6 +2631,11 @@ function StreamlinedInbox({
   }, [initialSourcesSettled, listError, revealScope]);
   const allLoaded = initialSourcesSettled || revealedScope === revealScope;
   useWarmTaskDetailCode(allLoaded && !listError && tab !== "blocked" && showWorkItemsSection);
+  // Preload the chat of the top visible tasks, in display order, so opening
+  // one renders its latest messages and composer from cache.
+  // The walk stops at the preload limit, whatever the size of the Inbox.
+  const preloadTaskRefs = useMemo(() => topTaskRefs(flatNavItems, inboxNavEntryTask), [flatNavItems]);
+  usePreloadTaskChats(selectedCompanyId, preloadTaskRefs, allLoaded && !listError && showWorkItemsSection);
 
   const showSeparatorBefore = (key: SectionKey) => visibleSections.indexOf(key) > 0;
   const { enrichIssueRow, error: rowDetailsError, retry: retryRowDetails } = useIssueRowDetails(
@@ -3049,7 +3061,7 @@ function StreamlinedInbox({
                     originatingActor?.kind === "user" ? originatingActor.viaAgentId ?? null : null;
                   const isLive = liveIssueIds.has(issue.id);
                   const loadedSubtreeLiveCount = subtreeLiveCounts.get(issue.id) ?? 0;
-                  const liveDescendantCount = resolveIssueLiveDescendantCount(issue, loadedSubtreeLiveCount);
+                  const runningDescendantCount = resolveIssueRunningDescendantCount(issue, subtreeCounts.running.get(issue.id) ?? 0);
                   const blockerAttention = resolveInboxIssueBlockerAttention(issue, {
                     isLive,
                     loadedSubtreeLiveCount,
@@ -3100,7 +3112,8 @@ function StreamlinedInbox({
                         <InboxIssueMetaLeading
                           issue={issue}
                           isLive={isLive}
-                          subtreeLiveCount={liveDescendantCount}
+                          waiting={issueWaitingOf(liveIssueIds, issue.id)}
+                          subtreeLiveCount={runningDescendantCount}
                           showSubtreeLiveChip={showSubtreeLiveChip}
                           showStatus={false}
                           showIdentifier={false}
@@ -3132,7 +3145,8 @@ function StreamlinedInbox({
                           <InboxIssueMetaLeading
                             issue={issue}
                             isLive={isLive}
-                            subtreeLiveCount={liveDescendantCount}
+                          waiting={issueWaitingOf(liveIssueIds, issue.id)}
+                            subtreeLiveCount={runningDescendantCount}
                             showSubtreeLiveChip={showSubtreeLiveChip}
                             showStatus={showStatus}
                             showIdentifier={visibleIssueColumnSet.has("id") && availableIssueColumnSet.has("id")}

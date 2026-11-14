@@ -10,6 +10,7 @@ export const QUERY_CACHE_ACTIVE = `${QUERY_CACHE_PREFIX}active`;
 export const QUERY_CACHE_CLEARED = "paperclip:query-cache-cleared";
 export const QUERY_CACHE_MAX_AGE = 24 * 60 * 60 * 1000;
 export const QUERY_CACHE_MAX_ISSUES = 20;
+const MAX_LINK_PREVIEWS = 100;
 const MAX_RECORD_BYTES = 2 * 1024 * 1024;
 const REVISION_PREFIX = "paperclip:query-cache-revision:";
 const controllers = new WeakMap<QueryClient, { clear: () => void }>();
@@ -102,6 +103,8 @@ export function persistedQueryScope(key: readonly unknown[], data: unknown, user
     return typeof companyId === "string" && companyIds.includes(companyId) ? companyId : undefined;
   }
   if (typeof second !== "string" || !companyIds.includes(second)) return undefined;
+  if (root === "link-preview" && typeof key[3] === "string"
+    && hashKey(key) === hashKey(queryKeys.linkPreview(second, userId, key[3]))) return second;
   if (isLegacyInboxQuery(key) && Array.isArray(data)) return second;
   if (["sidebar-badges", "agents", "built-in-agents"].includes(String(root)) && key.length === 2) return second;
   if (root === "projects" && key.length <= 3) return second;
@@ -304,7 +307,9 @@ export function startPersistedQueryCache(client: QueryClient, options: {
       .map(query => ({ queryKey: query.queryKey, queryHash: hashKey(query.queryKey), state: {
         data: queryDisplayData(query.queryKey, query.state.data, deniedIssues), dataUpdatedAt: query.state.dataUpdatedAt, dataUpdateCount: 1,
         error: null, errorUpdateCount: 0, errorUpdatedAt: 0, fetchFailureCount: 0, fetchFailureReason: null,
-        fetchMeta: null, isInvalidated: true, status: "success" as const, fetchStatus: "idle" as const,
+        // Optional link enrichment stays demand-driven. Keep its original read
+        // time so a fresh hover reuses it and a stale hover refreshes it.
+        fetchMeta: null, isInvalidated: query.queryKey[0] !== "link-preview", status: "success" as const, fetchStatus: "idle" as const,
       } }));
     hydrate(client, { mutations: [], queries });
   };
@@ -361,7 +366,10 @@ export function startPersistedQueryCache(client: QueryClient, options: {
       .sort((a, b) => (visits.get(hashKey(b.queryKey)) ?? b.state.dataUpdatedAt) - (visits.get(hashKey(a.queryKey)) ?? a.state.dataUpdatedAt));
     const issueIds = new Set<string>();
     for (const query of recent) if (issueIds.size < QUERY_CACHE_MAX_ISSUES) issueIds.add(issueIdentity(query));
+    const previews = new Set([...merged.values()].filter(query => query.queryKey[0] === "link-preview")
+      .sort((a, b) => b.state.dataUpdatedAt - a.state.dataUpdatedAt).slice(0, MAX_LINK_PREVIEWS).map(query => hashKey(query.queryKey)));
     const queries = [...merged.values()].filter(query => allowedIssue(query)
+      && (query.queryKey[0] !== "link-preview" || previews.has(hashKey(query.queryKey)))
       && !(query.queryKey[0] === "issues" && query.queryKey[1] === "detail" && !issueIds.has(issueIdentity(query))))
       .map(query => projectQuery(query, userId)).filter(query => query.state.data !== undefined);
     try {

@@ -1,4 +1,6 @@
+import { hasPendingRunCleanup } from "../execution-blocker.js";
 import { runOwnerFenceHeldSql } from "../remote-workspace-writer-hold.js";
+import { AGENT_DIRECTORY_BUSY_ERROR_CODE, AGENT_DIRECTORY_BUSY_MAX_DEFERRALS, AGENT_DIRECTORY_BUSY_RETRY_REASON, AGENT_DIRECTORY_BUSY_RETRY_WAKE_REASON, agentDirectoryBusyRetryDelayMs, type AgentDirectoryPreparationDeferral } from "./agent-directory-busy.js";
 import { isInterruptedNativePreparation } from "../cancelled-native-startup.js";
 import { isPreDispatchExecutionWaitVerified } from "../pre-dispatch-execution-wait.js";
 import { notifyAttentionRetentionWork } from "../retention-work-notifications.js";
@@ -24,7 +26,12 @@ import {
   accountingForScheduledRetry,
   INTERRUPTED_PREPARATION_RETRY_MAX_ATTEMPTS,
   INTERRUPTED_PREPARATION_RETRY_REASON,
+  SERVER_RESTART_RETRY_MAX_ATTEMPTS,
+  SERVER_RESTART_RETRY_REASON,
+  serverRestartAttemptCount,
+  serverRestartBudgetSpent,
 } from "../execution-recovery-attempt.js";
+import { isReplacedPreparation, isServerReplacementInterruption } from "../server-replacement-interruption.js";
 import { WORKSPACE_GIT_SCAN_ERROR_CODES } from "../workspace-git-operation-scheduler.js";
 import { REMOTE_WORKSPACE_PREPARATION_TIMEOUT_CODE, REMOTE_WORKSPACE_RESTORE_FAILED_CODE } from "../remote-workspace-transport.js";
 import { REUSABLE_SANDBOX_RESUME_FAILED_CODE } from "../reusable-sandbox-resume-error.js";
@@ -63,6 +70,7 @@ import { logger } from "../../middleware/logger.js";
 import { parseObject } from "../../adapters/utils.js";
 import { logActivity } from "../activity-log.js";
 import { readContinuationAttempt } from "../recovery/index.js";
+import { transientRetryWithinTaskCap } from "../recovery/task-automatic-attempts.js";
 import { withRecoveryContext } from "../recovery/status-only-context.js";
 import {
   MAX_TURN_CONTINUATION_RETRY_REASON,
@@ -78,6 +86,7 @@ import {
   type WorkspaceBusyWait,
   isNonAssigneeWorkspaceBusyRetry,
   isResolvedInteractionContinuationWakeContext,
+  isPreparationWaitRetryReason,
 } from "../../modules/run-dispatch/index.js";
 
 import type { AppendHeartbeatRunEventInput } from "../heartbeat-run-events.js";
@@ -153,15 +162,74 @@ export function isTransientWorkspacePreparationCode(code: string | null | undefi
     || code === STORAGE_UNAVAILABLE_CODE;
 }
 
+/**
+ * The persisted form of the setup-failure decision in run completion: this
+ * failed legacy run stopped before provider work with a transient preparation
+ * code, so its own bounded retry (scheduleBoundedRetryForRun) continues it.
+ * The stranded-task sweep uses it to offer a run whose executor has not
+ * scheduled that retry (still settling, or its server stopped) to the same
+ * idempotent scheduler instead of escalating it.
+ */
+export function failedPreparationOwnsBoundedRetry(run: Pick<HeartbeatRun,
+  "status" | "runtimeMode" | "nativeSessionId" | "runnerInstanceId" | "errorCode" | "resultJson" | "contextSnapshot">): boolean {
+  if (run.status !== "failed" || run.runtimeMode !== "legacy" || run.nativeSessionId !== null || run.runnerInstanceId !== null
+    || !isTransientWorkspacePreparationCode(run.errorCode)) return false;
+  const recovery = parseObject(run.resultJson?.executionRecovery);
+  if (recovery.kind !== "bootstrap" || recovery.providerWorkStarted !== false) return false;
+  // A restore failure is retried only when its owner proved it retryable.
+  if (run.errorCode === REMOTE_WORKSPACE_RESTORE_FAILED_CODE)
+    return parseObject(run.resultJson?.remoteWorkspaceRestore).retryable === true;
+  // An accepted interaction keeps its own continuation retry.
+  return !((run.errorCode === PLUGIN_WORKER_UNAVAILABLE_CODE || run.errorCode === ENVIRONMENT_PROVIDER_UNAVAILABLE_CODE
+    || run.errorCode === REPOSITORY_CATALOG_UNAVAILABLE_CODE || run.errorCode === REVIEWED_CHAT_BINDING_NOT_READY)
+    && isResolvedInteractionContinuationWakeContext(run.contextSnapshot));
+}
+
 export const BOUNDED_TRANSIENT_HEARTBEAT_RETRY_MAX_ATTEMPTS =
   BOUNDED_TRANSIENT_HEARTBEAT_RETRY_DELAYS_MS.length;
 
-export function failedRunRetryBudgetSpent(run: Parameters<typeof executionFailureRetryCount>[0] & { errorCode?: string | null }): boolean {
+type LaneRun = Parameters<typeof executionFailureRetryCount>[0] & Partial<Parameters<typeof isServerReplacementInterruption>[0]>
+  & { controllerProcess?: unknown };
+
+/**
+ * A server restart or replacement ended this run, so its continuation uses the
+ * server-restart lane. One exception keeps its existing lane: a preparation
+ * that never started provider work (interrupted_preparation), while the chain
+ * still has failure budget. Once real failures spent that budget, the
+ * preparation lane refuses, but a restart is still not a failure, so the run
+ * continues in the server-restart lane.
+ *
+ * The exception applies only when the preparation lane really takes the run.
+ * scheduleBoundedRetryForRun passes its own verdict. Without one, only an
+ * interrupted run qualifies. A legacy run that the orphan reaper ended as
+ * `process_lost` while it was preparing carries the same bootstrap marker, but
+ * the preparation lane refuses it: it continues in this lane when its row names
+ * the replaced owner (isReplacedPreparation), and otherwise keeps the charged
+ * transient-failure lane.
+ */
+export function usesServerRestartLane(run: LaneRun, preparationLaneTakesRun?: boolean): boolean {
+  if (!run.status || !run.runtimeMode || !isServerReplacementInterruption({ runtimeMode: run.runtimeMode, status: run.status,
+    errorCode: run.errorCode ?? null, resultJson: run.resultJson ?? null, controllerBootId: run.controllerBootId ?? null }))
+    return false;
+  const preparation = parseObject(run.resultJson?.executionRecovery);
+  const bootstrap = preparation.kind === "bootstrap" && preparation.providerWorkStarted === false;
+  if (!bootstrap || executionFailureRetryCount(run) >= BOUNDED_TRANSIENT_HEARTBEAT_RETRY_MAX_ATTEMPTS) return true;
+  if (preparationLaneTakesRun ?? run.status === "interrupted") return false;
+  return isReplacedPreparation({ runtimeMode: run.runtimeMode, status: run.status, errorCode: run.errorCode ?? null,
+    resultJson: run.resultJson ?? null, controllerBootId: run.controllerBootId ?? null, controllerProcess: run.controllerProcess });
+}
+
+export function failedRunRetryBudgetSpent(run: Parameters<typeof executionFailureRetryCount>[0]
+  & Partial<Parameters<typeof isServerReplacementInterruption>[0]>, now = new Date()): boolean {
+  // A restart or replacement is not a failure: only its own bound applies
+  // (the same lane choice as scheduleBoundedRetryForRun).
+  if (usesServerRestartLane(run)) return serverRestartBudgetSpent(run, now);
   return run.errorCode === RUNNER_REVISION_MISMATCH_CODE
     ? executionRetryAttemptCount(run, RUNNER_REVISION_WAIT_RETRY_REASON) >= RUNNER_REVISION_MISMATCH_RETRY.maxAttempts
     : run.errorCode === STORAGE_UNAVAILABLE_CODE
       ? executionRetryAttemptCount(run, STORAGE_UNAVAILABLE_WAIT_RETRY_REASON) >= STORAGE_UNAVAILABLE_RETRY.maxAttempts
-      : executionFailureRetryCount(run) >= BOUNDED_TRANSIENT_HEARTBEAT_RETRY_MAX_ATTEMPTS;
+      : executionFailureRetryCount(run) >= BOUNDED_TRANSIENT_HEARTBEAT_RETRY_MAX_ATTEMPTS
+        || executionRetryAttemptCount(run, INTERRUPTED_PREPARATION_RETRY_REASON) >= INTERRUPTED_PREPARATION_RETRY_MAX_ATTEMPTS;
 }
 
 const INTERACTION_CONTINUATION_INFRA_MAX_ATTEMPTS = 2;
@@ -469,6 +537,7 @@ export function createHeartbeatRetries(db: Db, dependencies: HeartbeatRetryDepen
       wakeReason?: string;
       maxAttempts?: number;
       delayMs?: number;
+      preserveWakeContext?: boolean;
     },
   ) {
     const preparation = parseObject(run.resultJson?.executionRecovery);
@@ -508,27 +577,37 @@ export function createHeartbeatRetries(db: Db, dependencies: HeartbeatRetryDepen
     const interruptedPreparation = ["interrupted", "failed"].includes(run.status) &&
       preparationRecovery.kind === "bootstrap" && preparationRecovery.providerWorkStarted === false
       && (run.status === "interrupted" || await isInterruptedNativePreparation(db, run));
+    // A run that a server restart or replacement ended did not fail: it
+    // continues in the server-restart lane and never spends the failure budget.
     const retryReason = opts?.retryReason ??
-      (interruptedPreparation ? INTERRUPTED_PREPARATION_RETRY_REASON : BOUNDED_TRANSIENT_HEARTBEAT_RETRY_REASON);
+      (usesServerRestartLane(run, interruptedPreparation) ? SERVER_RESTART_RETRY_REASON
+        : interruptedPreparation ? INTERRUPTED_PREPARATION_RETRY_REASON : BOUNDED_TRANSIENT_HEARTBEAT_RETRY_REASON);
     const wakeReason =
       opts?.wakeReason ?? BOUNDED_TRANSIENT_HEARTBEAT_RETRY_WAKE_REASON;
     // Interrupted preparation spent no provider work: its own lane, bounded
     // like the native controller-generation cap (execution-recovery-attempt).
     const interruptedPreparationLane = retryReason === INTERRUPTED_PREPARATION_RETRY_REASON;
+    const serverRestartLane = retryReason === SERVER_RESTART_RETRY_REASON;
     const maxAttempts = Math.max(
       0,
       Math.floor(
         opts?.maxAttempts ?? (interruptedPreparationLane
-          ? INTERRUPTED_PREPARATION_RETRY_MAX_ATTEMPTS : BOUNDED_TRANSIENT_HEARTBEAT_RETRY_MAX_ATTEMPTS),
+          ? INTERRUPTED_PREPARATION_RETRY_MAX_ATTEMPTS
+          : serverRestartLane ? SERVER_RESTART_RETRY_MAX_ATTEMPTS : BOUNDED_TRANSIENT_HEARTBEAT_RETRY_MAX_ATTEMPTS),
       ),
     );
-    const consumedAttempts = executionRetryAttemptCount(run, retryReason);
+    const consumedAttempts = serverRestartLane
+      ? serverRestartAttemptCount(run, now) : executionRetryAttemptCount(run, retryReason);
     const nextAttempt = consumedAttempts + 1;
     // An interrupted preparation never spends failures, but it never revives
     // a chain whose real failures already spent the failure budget either.
     const failureBudgetSpent = interruptedPreparationLane && opts?.maxAttempts == null
       && executionFailureRetryCount(run) >= BOUNDED_TRANSIENT_HEARTBEAT_RETRY_MAX_ATTEMPTS;
-    const computedBaseSchedule = failureBudgetSpent ? null
+    const transientIssueId = retryReason === BOUNDED_TRANSIENT_HEARTBEAT_RETRY_REASON && opts?.maxAttempts == null
+      ? readNonEmptyString(run.contextSnapshot?.issueId) : null;
+    const taskCapSpent = transientIssueId !== null
+      && !(await transientRetryWithinTaskCap(db, run.companyId, transientIssueId, now));
+    const computedBaseSchedule = failureBudgetSpent || taskCapSpent ? null
       : opts?.delayMs != null
         ? nextAttempt <= maxAttempts
           ? {
@@ -542,7 +621,9 @@ export function createHeartbeatRetries(db: Db, dependencies: HeartbeatRetryDepen
             }
           : null
         : nextAttempt <= maxAttempts
-          ? interruptedPreparationLane
+          // Both lanes start the first continuation at once and back off
+          // after that, so a run that keeps taking the server down is slowed.
+          ? interruptedPreparationLane || serverRestartLane
             ? computeInterruptedPreparationRetrySchedule(nextAttempt, now, opts?.random)
             : computeBoundedTransientHeartbeatRetrySchedule(
               nextAttempt,
@@ -570,7 +651,7 @@ export function createHeartbeatRetries(db: Db, dependencies: HeartbeatRetryDepen
     // issue binding: that could either violate the FK or misclassify history.
     const issueId = run.scopeKind === "issue" ? run.issueId : null;
 
-    if (!baseSchedule) {
+    const reportRetryExhausted = async () => {
       const exhaustion = {
         retryReason,
         scheduledRetryAttempt: consumedAttempts,
@@ -606,7 +687,8 @@ export function createHeartbeatRetries(db: Db, dependencies: HeartbeatRetryDepen
         attempt: nextAttempt,
         maxAttempts,
       };
-    }
+    };
+    if (!baseSchedule) return reportRetryExhausted();
 
     if (await legacyExecutionNeedsReconciliationWithEvidence(db, run)) {
       return {
@@ -696,8 +778,7 @@ export function createHeartbeatRetries(db: Db, dependencies: HeartbeatRetryDepen
     }
     const taskKey = deriveTaskKeyWithHeartbeatFallback(contextSnapshot, null);
     const sessionBefore = await resolveSessionBeforeForWakeup(agent, taskKey);
-    const interactionRunnerWait = (retryReason === RUNNER_REVISION_WAIT_RETRY_REASON
-      || retryReason === STORAGE_UNAVAILABLE_WAIT_RETRY_REASON)
+    const interactionRunnerWait = isPreparationWaitRetryReason(retryReason)
       && isResolvedInteractionContinuationWakeContext(run.contextSnapshot);
     const interactionContinuationPayload =
       retryReason === INTERACTION_CONTINUATION_INFRA_RETRY_REASON || interactionRunnerWait
@@ -726,10 +807,11 @@ export function createHeartbeatRetries(db: Db, dependencies: HeartbeatRetryDepen
     const retryContextSnapshot: Record<string, unknown> = withRecoveryContext(
       {
         ...contextSnapshot,
-        executionRetryAccounting: accountingForScheduledRetry(run, retryReason, schedule.attempt),
+        executionRetryAccounting: accountingForScheduledRetry(run, retryReason, schedule.attempt, now),
         retryOfRunId: run.id,
-        wakeReason,
-        retryReason,
+        ...(opts?.preserveWakeContext
+          ? { preparationWait: { kind: retryReason, attempt: schedule.attempt, nextAttemptAt: schedule.dueAt.toISOString() } }
+          : { wakeReason, retryReason }),
         ...(interactionRunnerWait ? { mutation: "interaction" } : {}),
         ...(retryReason === WORKSPACE_BUSY_RETRY_REASON
           ? {
@@ -780,6 +862,7 @@ export function createHeartbeatRetries(db: Db, dependencies: HeartbeatRetryDepen
     delete retryContextSnapshot.skillVersions;
     delete retryContextSnapshot.skillSelectionSnapshot;
     delete retryContextSnapshot.shadowedSkills;
+    delete retryContextSnapshot.retryWorkspaceRefusal;
     const responsibleUserId = await resolveResponsibleUserIdForRunContext(
       run,
       retryContextSnapshot,
@@ -797,6 +880,7 @@ export function createHeartbeatRetries(db: Db, dependencies: HeartbeatRetryDepen
           run: typeof heartbeatRuns.$inferSelect;
           reusedExisting: boolean;
         }
+      | { outcome: "task_cap_spent" }
       | {
           outcome: "not_scheduled";
           reason: string;
@@ -807,6 +891,7 @@ export function createHeartbeatRetries(db: Db, dependencies: HeartbeatRetryDepen
             | "issue_terminal_status"
             | "issue_not_in_progress"
             | "continuation_user_authorization_missing"
+            | "workspace_verification_cleanup_pending"
             | "issue_execution_lock_changed";
           issueId: string | null;
           details: Record<string, unknown>;
@@ -844,6 +929,14 @@ export function createHeartbeatRetries(db: Db, dependencies: HeartbeatRetryDepen
               run: existing,
               reusedExisting: true,
             };
+          if (transientIssueId !== null) {
+            if (transientIssueId !== issueId)
+              await tx.execute(
+                sql`select id from issues where company_id = ${run.companyId} and id = ${transientIssueId} for update`,
+              );
+            if (!(await transientRetryWithinTaskCap(tx as unknown as Db, run.companyId, transientIssueId, now)))
+              return { outcome: "task_cap_spent" };
+          }
         }
         if (retryReason === INTERACTION_CONTINUATION_INFRA_RETRY_REASON) {
           if (issueId) {
@@ -1087,8 +1180,18 @@ export function createHeartbeatRetries(db: Db, dependencies: HeartbeatRetryDepen
 
         const scheduledRunId = randomUUID();
         if (contextSnapshot.explicitUserContinuation) {
-          const continuation = issueId && (retryReason === "transient_failure" || retryReason === RUNNER_REVISION_WAIT_RETRY_REASON
-            || retryReason === STORAGE_UNAVAILABLE_WAIT_RETRY_REASON) ? await admitExplicitContinuationRetry({
+          // A preparation that a shutdown or restart stopped before provider
+          // work continues in the uncharged interrupted_preparation lane while
+          // its failure budget is unspent, and in server_restart after that.
+          const refusal = parseObject(contextSnapshot.retryWorkspaceRefusal);
+          if (typeof refusal.leaseId === "string" && await hasPendingRunCleanup(tx as unknown as Db, run.companyId, run.id)) {
+            return { outcome: "not_scheduled", issueId, errorCode: "workspace_verification_cleanup_pending",
+              reason: "The previous workspace verification lease still requires cleanup.", details: {} };
+          }
+          const continuation = issueId && (retryReason === "transient_failure" || retryReason === SERVER_RESTART_RETRY_REASON
+            || retryReason === INTERRUPTED_PREPARATION_RETRY_REASON || isPreparationWaitRetryReason(retryReason)
+            || retryReason === AGENT_DIRECTORY_BUSY_RETRY_REASON)
+            ? await admitExplicitContinuationRetry({
             db: tx as unknown as Db, companyId: run.companyId, issueId, agentId: run.agentId,
             parentRunId: run.id, successorRunId: scheduledRunId, now,
           }) : null;
@@ -1100,6 +1203,10 @@ export function createHeartbeatRetries(db: Db, dependencies: HeartbeatRetryDepen
           };
           retryContextSnapshot.explicitUserContinuation = continuation;
           retryContextSnapshot.previousRunId = continuation.previousRunId;
+          if (continuation.taskRetryRequestId && refusal.intentId === continuation.taskRetryRequestId &&
+              typeof refusal.workspaceId === "string") {
+            retryContextSnapshot.retryWorkspaceRefusal = { intentId: refusal.intentId, workspaceId: refusal.workspaceId, leaseId: null };
+          }
         }
 
         await notifyAttentionRetentionWork(tx, { companyId: run.companyId });
@@ -1111,7 +1218,7 @@ export function createHeartbeatRetries(db: Db, dependencies: HeartbeatRetryDepen
             agentId: run.agentId,
             source: "automation",
             triggerDetail: "system",
-            reason: wakeReason,
+            reason: opts?.preserveWakeContext ? readNonEmptyString(contextSnapshot.wakeReason) ?? wakeReason : wakeReason,
             payload: withRecoveryContext(
               {
                 ...(issueId ? { issueId } : {}),
@@ -1318,6 +1425,7 @@ export function createHeartbeatRetries(db: Db, dependencies: HeartbeatRetryDepen
       },
     );
 
+    if (scheduleResult.outcome === "task_cap_spent") return reportRetryExhausted();
     if (scheduleResult.outcome === "not_scheduled") {
       await appendRunEvent(run, {
         eventType: "lifecycle",
@@ -1592,6 +1700,60 @@ export function createHeartbeatRetries(db: Db, dependencies: HeartbeatRetryDepen
         await finalizeAgentStatus(run.agentId, "cancelled", null, { wasFirstHeartbeat: timerClaimWasFirstHeartbeat(run) });
       }
     }
+  }
+
+  async function finalizeAgentDirectoryBusyDeferral(
+    run: typeof heartbeatRuns.$inferSelect,
+    deferral: AgentDirectoryPreparationDeferral,
+  ): Promise<boolean> {
+    if (executionRetryAttemptCount(run, AGENT_DIRECTORY_BUSY_RETRY_REASON) >= AGENT_DIRECTORY_BUSY_MAX_DEFERRALS) return false;
+    const now = new Date();
+    const runContext = parseObject(run.contextSnapshot);
+    const admittedNonAssignee = parseObject(run.runnerProfileJson).aiConnectionNonAssigneeCommentWake === true
+      || isNonAssigneeWorkspaceBusyRetry(run.scheduledRetryReason, runContext);
+    const cancelled = await setRunStatusIfRunning(run.id, "cancelled", {
+      error: deferral.message, errorCode: AGENT_DIRECTORY_BUSY_ERROR_CODE, finishedAt: now,
+      resultJson: {
+        executionRecovery: { kind: "agent_directory_wait", providerWorkStarted: false },
+        cancellation: {
+          source: "control_plane",
+          expected: true,
+          initiator: { type: "system" },
+          reason: "Waiting for another run of this agent to finish with its files",
+          recordedAt: now.toISOString(),
+        },
+      },
+      contextSnapshot: { ...runContext, preparationWaitDeferredWhileAssignee: !admittedNonAssignee },
+    });
+    if (!cancelled.updated) return true;
+    await setWakeupStatus(run.wakeupRequestId, "cancelled", { finishedAt: now, error: deferral.message }).catch(() => undefined);
+    const cancelledRun = cancelled.run ?? await getRun(run.id);
+    const agent = await getAgent(run.agentId);
+    let scheduled = false;
+    try {
+      if (cancelledRun && agent) {
+        const retry = await scheduleBoundedRetryForRun(cancelledRun, agent, {
+          now, retryReason: AGENT_DIRECTORY_BUSY_RETRY_REASON, wakeReason: AGENT_DIRECTORY_BUSY_RETRY_WAKE_REASON,
+          maxAttempts: AGENT_DIRECTORY_BUSY_MAX_DEFERRALS,
+          delayMs: agentDirectoryBusyRetryDelayMs(),
+          preserveWakeContext: true,
+        });
+        scheduled = retry.outcome === "scheduled";
+        await appendRunEvent(cancelledRun, {
+          eventType: "lifecycle", stream: "system", level: "info",
+          message: scheduled ? "Another run of this agent is still using its files. This task will continue automatically."
+            : "Another run of this agent is still using its files, and this task could not be rescheduled.",
+          payload: { retryScheduled: scheduled },
+        });
+      }
+    } finally {
+      try {
+        if (cancelledRun && !scheduled) await releaseIssueExecutionAndPromote(cancelledRun);
+      } finally {
+        await finalizeAgentStatus(run.agentId, "cancelled", null, { wasFirstHeartbeat: timerClaimWasFirstHeartbeat(run) });
+      }
+    }
+    return true;
   }
 
   // The wait applies only while the task keeps the workspace binding it had
@@ -2057,6 +2219,7 @@ export function createHeartbeatRetries(db: Db, dependencies: HeartbeatRetryDepen
     findExecutionWorkspaceHolder,
     finalizeAiConnectionBusyDeferral,
     finalizeWorkspaceBusyDeferral,
+    finalizeAgentDirectoryBusyDeferral,
     promoteDueScheduledRetries,
     nextScheduledRetryAt,
     retryScheduledRetryNow,

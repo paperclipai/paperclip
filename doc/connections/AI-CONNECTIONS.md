@@ -4,6 +4,10 @@ AI accounts use the existing Apps/Connections substrate. Manage them at
 `/:company/apps`; select their use beside an agent's harness/model settings.
 Onboarding, new-agent setup, account creation/reconnect, and inline task requests
 reuse `AdapterLoginPanel`, its existing login controllers, and `AdapterLoginChrome`.
+For Codex and Claude subscriptions on an agent computer, Connections selects an
+eligible computer in the chosen company and sign-in environment when the user
+starts sign-in. The session keeps that computer until it ends. Connection
+ownership and permissions still come from the account setup.
 Onboarding and new-agent setup retain upstream's `SavedProviderKeySelect` and
 `useSavedProviderKeys`, including saved-key references and account-specific Codex
 homes. Managed default/shared accounts are additional choices in that same
@@ -428,6 +432,98 @@ explicit closure. Each follow-up rechecks current authorization and account
 identity before reusing the session; changing identity retires the previous owner.
 Other managed harnesses retain per-turn cleanup. A suspended native execution
 whose credential identity changed must restart as a new execution.
+
+New SSH environments use the agent's configured AI account, including
+subscriptions. Account selection and
+authorization remain in Paperclip. The remote computer supplies the harness
+executable and workspace. In this mode, the SSH user's provider login is not a
+fallback, and Paperclip does not replace that user's saved credentials. A
+missing or unavailable agent account prevents execution and provider probes.
+
+The **Use authentication configured on the remote machine** option under
+**Advanced** selects the remote user's provider login instead. New environments
+save `useHostAuth: false`; enabling it saves `true`, skips the agent's managed AI
+credential projection, and uses the preconfigured home for native Runner.
+Existing environments without the field default to the remote machine's
+configured authentication and display the option as enabled when edited. No
+migration rewrites existing SSH records. Changing an explicit authentication source invalidates the saved
+SSH provider session identity for future runs; already admitted native recovery
+retains its original home contract. Fresh native Runner launch uses the effective
+SSH authentication choice. Native Codex Test uses that remote user's login in
+preconfigured mode, without reading or staging controller credentials. Remote
+home discovery uses the SSH shell, including on machines without `getent`.
+Native preconfigured homes support Codex and ACPX Claude with `approve-all`.
+Other native providers, and Claude with stricter permissions, retain their
+supported isolated home mode on SSH. Explicitly unsupported preconfigured
+provider configurations outside this SSH compatibility choice still fail.
+
+Codex CLI host-auth runs also receive the current Paperclip MCP configuration
+and authorized skills. Paperclip merges its managed block into the remote
+user's configuration and preserves other settings and manually installed skills.
+The native remote home retains authentication and conversation files; they are
+not uploaded from or copied back to the controller. This mode shares the remote
+user's configuration. Use separate SSH users when independent configuration is
+required. Run-specific skill files are removed at teardown, and the next run
+replaces or removes the managed skill links. Host-auth runtime files use private
+SSH staging, with cleanup registered before upload so partial uploads are removed.
+When company tracing is enabled with a selected remote Codex profile, the overlay
+reads that profile from the remote home and preserves its other settings. Missing
+or linked profile files disable export for that run; execution continues.
+
+Managed SSH runs stage the selected account into a randomly allocated directory
+with owner-only access and set the harness's home/configuration paths there.
+Credential-bearing launch commands travel through SSH stdin instead of SSH
+process arguments. The existing account-specific refresh merge runs before
+per-turn directories are removed, including after provider or setup failure.
+Environment tests use the selected account and remove their temporary homes
+after probing. Managed Codex probes copy refreshed credentials to that account's
+local home before cleanup, even when the provider request fails. Managed Codex
+ACP runs also copy back subscription refreshes when the controller has an API
+key; the selected run's authentication decides whether copyback is needed. The merge rejects
+credentials from another account. Routed accounts can omit `auth.json`; the SSH
+reader reports confirmed file absence as `ENOENT`, which needs no copyback.
+Connection and file-read failures still fail the probe. A disconnected target can prevent remote cleanup; the run reports
+the resulting failure rather than silently selecting another account.
+
+Claude and Codex CLI runs in an in-place SSH workspace keep conversation files
+(and Codex's native SQLite indexes) in a private remote home scoped to the company, agent, AI account,
+and conversation. The home path stays stable across turns and token refreshes.
+Each turn installs the current managed files, copies refreshed authentication
+back, and removes everything except conversation state, including on provider
+failure. Credentials and managed MCP configuration do not remain there between
+turns. Switching accounts selects a different home and starts a new conversation.
+The cache lives below the environment's remote workspace root. Removing that
+root also removes the retained conversation state.
+Older SSH host-auth sessions keep their existing remote home. A managed SSH
+session saved before conversation retention has no retained state reference and
+starts a fresh conversation instead of reusing an unavailable thread. This reset
+is recorded as `claude_ssh_session_state_unavailable` or
+`codex_ssh_session_state_unavailable`; existing saved files remain. Claude retains
+only its `projects` transcript directory, removing credentials and configuration
+after every turn. Saved CLI sessions preserve normalized remote identity and
+account-scoped conversation references across server persistence.
+
+ACP SSH sessions use the existing remote process bridge and session reuse
+lifecycle. Both provider adapters admit managed SSH through their public
+execution entry points. SSH ACP needs
+an agent-managed account and a copied workspace. Host authentication, in-place
+SSH workspaces, and local filesystem/network confinement require the CLI engine.
+The SSH prerequisite check retains only the controller's `PATH` to resolve the
+local SSH client; it excludes controller credentials. The ACP server command
+must be installed on the remote machine and is started there by the process bridge.
+A compatible session can retain its private remote home; workspace
+sync and credential refresh run at turn teardown, and the session disposal hook
+removes the home on retirement. Workspace identity includes the company, agent,
+task and execution fingerprint. The fingerprint normalizes temporary managed-home
+paths and credential refreshes against the stable account session identity.
+Switching accounts or changing other adapter environment values starts a fresh
+conversation. The launch still receives the current credentials. When a Codex
+ACP session reuses its staged remote home, credential copyback and logging bind
+to the current run's local managed home before the remote environment is applied.
+Refreshed credentials cannot recreate a retired run's local home.
+Older managed SSH ACP sessions used a different
+working-directory identity and start fresh after this change. Native runner
+session identities and sandbox staging are unchanged.
 
 After a verified provider resume, plain-text Slack follow-ups send the new
 authorized message delta instead of repeating the full task framing. The saved

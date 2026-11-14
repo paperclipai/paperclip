@@ -151,6 +151,13 @@ jobs:
           git checkout -B "$BRANCH"
           git add $LOCKFILES tests/runner-e2e/report-lock.json tests/runner-e2e/report-lock.patch
           git commit -m "chore(lockfile): refresh pnpm lockfiles"
+          # The SDK public source proof pins the committed lock blob and the
+          # report-lock output hash. This PR merges without CI, so resync those
+          # pins from the commit above and check them before pushing (#20615).
+          node tests/runner-e2e/source-sdk-public-inputs.mjs "$(git rev-parse HEAD)" --write
+          git add tests/runner-e2e/source-sdk-public-inputs.json
+          git commit --amend --no-edit
+          node tests/runner-e2e/source-sdk-public-inputs.mjs "$(git rev-parse HEAD)" --check
           git push --force origin "$BRANCH"
 
           # Only reuse an open PR from this repository owner, not a fork with the same branch name.
@@ -189,6 +196,7 @@ jobs:
           - Refresh the dependency lock from the manifests on master.
           - Refresh the sandbox provider lockfiles from their manifests on master.
           - Include the matching offline report correction and hashes.
+          - Resync the SDK public source proof's lock pins from the refreshed lock.
 
           ## Verification
 

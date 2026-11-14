@@ -261,6 +261,14 @@ describe("Daytona options", () => {
     expect(() => parseCommand(["--env", "local", "--daytona-cpu", "2"])).toThrow(/only to --env daytona/);
     expect(() => parseCommand(["--env", "local", "--daytona-reuse-lease"])).toThrow(/only to --env daytona/);
   });
+  it("starts sandboxes from a pack-mismatched image while the controller keeps the matched pack", () => {
+    const older = `ghcr.io/paperclipai/paperclip-daytona-runner@sha256:${"b".repeat(64)}`;
+    expect(parseCommand(["--env", "daytona", "--daytona-image", image, "--daytona-pack-mismatch", older]))
+      .toMatchObject({ mode: "wave", options: { daytonaImage: image, daytonaSandboxImage: older } });
+    expect(() => parseCommand(["--env", "daytona", "--daytona-image", image, "--daytona-pack-mismatch", image])).toThrow(/different image/);
+    expect(() => parseCommand(["--env", "daytona", "--daytona-image", image, "--daytona-pack-mismatch", "ghcr.io/x/y:old"])).toThrow(/immutable image/);
+    expect(() => parseCommand(["--env", "local", "--daytona-pack-mismatch", older])).toThrow(/only to --env daytona/);
+  });
   it("counts every task's sandbox against the budget when warm sandboxes outlive their task", () => {
     const wave = (...extra: string[]) => parseCommand(["--env", "daytona", "--daytona-image", image, "--tasks", "20", "--concurrency", "4", ...extra]);
     expect(() => wave("--daytona-warm")).toThrow(/--daytona-warm keeps each task's sandbox.*20 tasks/);

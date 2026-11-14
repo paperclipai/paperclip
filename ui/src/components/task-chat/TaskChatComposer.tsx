@@ -1,3 +1,4 @@
+import { createUuid } from "@/lib/uuid";
 import { useCurrentAccountGuard } from "@/hooks/useAccountBoundMutation";
 import { ComposerFileDropTarget } from "./ComposerFileDropTarget";
 import { AgentAvatar } from "../AgentAvatar";
@@ -552,6 +553,8 @@ export function TaskChatComposer({
     const previousId = previousQueuedEditIdRef.current;
     const nextEdit = queuedEdit;
     const nextId = nextEdit?.commentId ?? null;
+    // A save error belongs to the edit that produced it.
+    if (previousId !== nextId) setActionError(null);
 
     if (nextEdit && previousId !== nextId) {
       if (!queuedEditBackupRef.current) {
@@ -719,7 +722,7 @@ export function TaskChatComposer({
   }
 
   async function uploadImage(file: File): Promise<string> {
-    const id = crypto.randomUUID();
+    const id = createUuid();
     setAttachments((prev) => [
       ...prev,
       {
@@ -1053,7 +1056,15 @@ export function TaskChatComposer({
     try {
       if (queuedEdit) {
         if (!onSaveQueuedEdit) return;
-        await onSaveQueuedEdit(queuedEdit.commentId, fullBody);
+        setActionError(null);
+        try {
+          await onSaveQueuedEdit(queuedEdit.commentId, fullBody);
+        } catch (error) {
+          // A rejected edit keeps its text below; say why it was not saved.
+          if (mountedTaskKey.current === draftKey && queuedEditRef.current?.commentId === queuedEdit.commentId)
+            setActionError(describeError(error, { action: "save this queued message" }).body);
+          throw error;
+        }
         onCancelQueuedEdit?.();
         return;
       }
@@ -1066,7 +1077,7 @@ export function TaskChatComposer({
         setBody(submittedBody);
         return;
       }
-      attemptId = crypto.randomUUID();
+      attemptId = createUuid();
       if (requestOwner === undefined) markRequestUnbound(attemptId);
       // IDs come only from this composer's upload receipts, never from parsing
       // arbitrary Markdown. A removed inline image no longer selects its receipt.
@@ -1448,7 +1459,7 @@ export function TaskChatComposer({
             <p
               className="px-1 text-xs text-destructive"
               role="alert"
-              data-testid={creation ? "task-chat-create-error" : "task-chat-goal-error"}
+              data-testid={creation ? "task-chat-create-error" : queuedEdit ? "task-chat-queued-edit-error" : "task-chat-goal-error"}
             >
               {actionError}
             </p>

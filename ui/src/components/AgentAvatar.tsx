@@ -17,13 +17,15 @@ export interface AgentAvatarProps {
   name?: string;
   label?: string;
   pose?: CharacterState;
+  view?: AgentAvatarView;
   muted?: boolean;
   className?: string;
 }
-export function AgentAvatar({ agent, appearance, size = 24, name, label, pose = "rest", muted = false, className }: AgentAvatarProps) {
+export function AgentAvatar({ agent, appearance, size = 24, name, label, pose = "rest", view = "front", muted = false, className }: AgentAvatarProps) {
   const identity = resolveAgentAppearance(appearance ?? agent?.appearance, agent?.id);
   const src = agentAvatarUrl(identity, size, 1, pose, muted);
   const custom = Boolean(identity.customAvatarAssetId);
+  const src = agentAvatarUrl(identity, size, 1, pose, muted, "transparent", view);
   const [failedUrl, setFailedUrl] = useState<string | null>(null);
   const initials = useAvatarInitials(deriveInitials(name ?? agent?.name ?? "Agent"));
   return (

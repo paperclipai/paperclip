@@ -11,6 +11,7 @@ import Markdown, { defaultUrlTransform, type Components, type Options } from "re
 import remarkGfm from "remark-gfm";
 import { cn } from "../lib/utils";
 import { MarkdownUrlLink } from "./MarkdownUrlLink";
+import { recognizeLinkPreview, type LinkPreviewState } from "@paperclipai/shared";
 import { Link, useCaseHref } from "@/lib/router";
 import { useTheme } from "../context/ThemeContext";
 import { useOptionalCompany } from "../context/CompanyContext";
@@ -279,6 +280,18 @@ function MarkdownExternalLink({
     `${displayKey} — ${statusLabel}${livenessSuffix}`,
   ];
   const title = titleParts.filter(Boolean).join(" · ");
+  if (recognizeLinkPreview(href)) {
+    const knownState: LinkPreviewState = reference.statusIconKey === "git-merge" || reference.statusLabel === "Merged" ? "merged"
+      : reference.statusLabel === "Merge conflicts" ? "conflicts"
+      : reference.statusLabel === "Draft" ? "draft"
+      : reference.statusCategory === "open" ? "open"
+      : reference.statusCategory === "closed" ? "closed" : "unknown";
+    return <MarkdownUrlLink href={href} title={title} knownState={knownState}
+      externalStatus={{ category: reference.statusCategory, liveness: reference.liveness,
+        ariaLabel: `${displayKey} ${statusLabel}${livenessSuffix}: ${reference.displayTitle ?? href}` }}>
+      {children}
+    </MarkdownUrlLink>;
+  }
   return (
     <a
       href={href}
@@ -779,6 +792,10 @@ function MarkdownBodyImpl({
     () => (companies?.length ? companies.map((c) => c.issuePrefix) : undefined),
     [companies],
   );
+  const knownPrefixSet = useMemo(
+    () => (knownPrefixes ? new Set(knownPrefixes.map((prefix) => prefix.toUpperCase())) : undefined),
+    [knownPrefixes],
+  );
   const externalReferenceLookup = useMemo<MarkdownExternalReferenceMap | null>(() => {
     if (!externalReferences) return null;
     const lookup: MarkdownExternalReferenceMap = {};
@@ -887,7 +904,7 @@ function MarkdownBodyImpl({
         );
       }
 
-      const issueRef = linkIssueReferences ? parseIssueReferenceFromHref(href) : null;
+      const issueRef = linkIssueReferences ? parseIssueReferenceFromHref(href, knownPrefixSet) : null;
       const documentHash = href?.includes("#") ? href.slice(href.indexOf("#")) : null;
       const documentLink = Boolean(coordinator && documentHash && parseDocumentAnnotationHash(documentHash));
       if (documentLink && href?.startsWith("#")) {
@@ -1004,7 +1021,7 @@ function MarkdownBodyImpl({
       };
     }
     return map;
-  }, [theme, coordinator, linkIssueReferences, linkCaseReferences, externalReferenceLookup, resolveImageSrc, resolveLinkHref, onImageClick, mediaMode, knownPrefixes]);
+  }, [theme, coordinator, linkIssueReferences, linkCaseReferences, externalReferenceLookup, resolveImageSrc, resolveLinkHref, onImageClick, mediaMode, knownPrefixes, knownPrefixSet]);
 
   return (
     <div

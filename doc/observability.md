@@ -124,6 +124,17 @@ Use Chrome's request waterfall and this mark together to distinguish API wait,
 request dependencies, and rendering time. A hard-load trace also includes auth,
 company selection, and JavaScript startup before the task navigation mark.
 
+## Browser performance tracing
+
+Hosted Paperclip Cloud instances can also trace the board UI in the browser:
+a `page.load` span for every hard load and client-side navigation (named by
+route pattern), Core Web Vitals, and same-origin API request spans whose W3C
+trace context joins the server spans above. It is off unless the instance is
+cloud managed and `PAPERCLIP_BROWSER_TRACES_ENDPOINT` is set; self-hosted
+installs never download the browser SDK. Configuration, the closed attribute
+allowlist, the page-load definitions, and example queries are in
+[browser-performance-tracing.md](browser-performance-tracing.md).
+
 ## Enabling tracing
 
 ### 1. Install the OTel peer dependencies
@@ -1115,6 +1126,12 @@ evidence, unknown binding reasons, secret-provider failures, ambiguous missing
 secret-definition lookups remain reportable. This filter does not change task
 recovery, credentials, or execution policy.
 
+Native `native_provider_usage_limit` failures also stay on the task when their
+typed provider failure is `quota_exhausted` or `rate_limit`. The task keeps its
+blocked state and quota cooldown. Setup failures, interrupted processes, missing
+or malformed provider evidence, and other failure categories still report.
+`all` mode also reports typed native usage limits.
+
 AI account selection also stays local when the selection service proves a
 missing responsible user, personal default, or selected connection; an
 incompatible selection; an account that needs reconnection; or an active
@@ -1999,6 +2016,8 @@ execution.plugin_dispatch
     ├── sandbox.daytona.lease.lookup
     ├── sandbox.daytona.lease.refresh            (missing-container confirmation)
     ├── sandbox.daytona.lease.channel_cleanup    (before restart)
+    ├── sandbox.daytona.lease.wait_transition    (only while the sandbox is changing state)
+    │   └── sandbox.daytona.lease.force_stop     (only when `stopping` outlasts 30 s)
     ├── sandbox.daytona.lease.start              (or lease.recover)
     └── sandbox.daytona.lease.verify
         ├── sandbox.daytona.lease.workspace
@@ -2011,8 +2030,16 @@ execution.plugin_dispatch
 internal readiness wait. They also cover starts triggered by execution or sync.
 They do not separate SDK-internal requests or provider-side queue time.
 Their `paperclip.sandbox.startup.state` attribute records the state before the
-call: `started`, `stopped`, `archived`, `error`, or `other`. Both the plugin and
+call: `started`, `stopped`, `archived`, `error`, a transition (`starting`,
+`stopping`, `restoring`, `archiving`, `resizing`), or `other`. Both the plugin and
 host restrict this value; no provider error text or resource identity is sent.
+`lease.wait_transition` covers polling a sandbox that is changing state before a
+start; its state attribute is the state it found. A start that finds the sandbox
+`stopping` for more than 30 s forces the stop (`lease.force_stop`) and keeps
+waiting within the same start deadline if Daytona refuses. The forced stop belongs
+to the sandbox: parallel callers send one, and none of them starts the sandbox
+until that request settles. A confirmed start ends that stuck stop, so a later
+one is forced again.
 
 Fresh acquisition emits `lease.create`, `lease.workspace`, `lease.shell`,
 `lease.expiry`, and `lease.sentinel`. `lease.create` covers the existing creation

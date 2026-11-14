@@ -24,6 +24,12 @@ Override the sample count (minimum five) or port when needed:
 PAPERCLIP_ISSUE_PERF_RUNS=7 PAPERCLIP_ISSUE_PERF_PORT=3210 pnpm exec playwright test --config tests/perf/issue-detail/playwright.config.ts
 ```
 
+S1 clicks as soon as the list row is visible. Set
+`PAPERCLIP_ISSUE_PERF_LIST_DWELL_MS=1500` to wait on the list first, as a
+person does. Task lists preload the chat of their top rows after the list's
+own reads settle, so S1 with a dwell measures a preloaded open and S1 without
+one measures an open that usually has to read the task.
+
 Outputs include `baseline.md`, `baseline.json`, and a Chrome trace for the first run of each scenario/profile. Open `*.trace.json` in Chrome DevTools Performance to inspect the `issue-detail:*` user-timing marks.
 
 Set `PAPERCLIP_ISSUE_PERF_PROFILE=1` to capture actual Chrome CPU samples and

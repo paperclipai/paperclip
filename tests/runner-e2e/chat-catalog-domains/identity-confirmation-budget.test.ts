@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import type { ChatCatalogContext } from "../chat-catalog-contract.js";
 const repeated = vi.hoisted(() => vi.fn());
 vi.mock("../chat-flow.js", async importOriginal => ({ ...await importOriginal<object>(), sendChatMessage: repeated }));
-import { confirmationWorkflowIdentityCases } from "./identity-confirmation-workflows.js";
+import { confirmationWorkflowIdentityCases, repeatedProposalAcceptance } from "./identity-confirmation-workflows.js";
 const definition = confirmationWorkflowIdentityCases.find(row => row.scenarioId === "questions-and-approvals.accept-one-proposal")!;
 function context(settlesAt = 180_000): ChatCatalogContext {
   return { observationDeadlineAt: 390_000, scenario: { query: "Yes, go ahead with that." }, refreshIssue: async () => {},
@@ -45,6 +45,6 @@ describe("confirmation first reply and declared repeat share the original420s ou
     ctx.input = { api: { get }, fixtures: { company: { id: "acorn" } }, page: { reload: async () => {} }, evidence: async () => {} } as never;
     repeated.mockImplementation(async (_page, _query, remaining) => { expect(remaining()).toBe(10_000); vi.setSystemTime(391_000); expect(() => remaining()).toThrow(/exhausted/); });
     await expect(definition.act!(ctx, { taskTitle: "Acorn checklist", original: { id: "proposal" } })).rejects.toThrow(/exhausted/);
-    expect(repeated).toHaveBeenCalledOnce(); expect(repeated.mock.calls[0]![1]).toBe(ctx.scenario.query);
+    expect(repeated).toHaveBeenCalledOnce(); expect(repeated.mock.calls[0]![1]).toBe(repeatedProposalAcceptance); expect(repeatedProposalAcceptance).not.toBe(ctx.scenario.query);
   });
 });

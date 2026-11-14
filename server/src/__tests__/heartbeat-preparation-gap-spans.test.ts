@@ -100,7 +100,10 @@ describe.skipIf(!support.supported)("heartbeat preparation gap spans", () => {
         .toMatchObject({ status: "succeeded" });
 
       await provider.forceFlush();
-      const spans = exporter.getFinishedSpans();
+      const attempts = exporter.getFinishedSpans().filter(span => span.name === "task.execution_attempt");
+      expect(attempts).toHaveLength(1);
+      const attemptTrace = attempts[0]!.spanContext().traceId;
+      const spans = exporter.getFinishedSpans().filter(span => span.spanContext().traceId === attemptTrace);
       const names = new Set(spans.map(span => span.name));
       const preparation = [
         "heartbeat.prepare.chat_retry_admission",
@@ -120,8 +123,6 @@ describe.skipIf(!support.supported)("heartbeat preparation gap spans", () => {
         "native.controller.state_migration",
       ];
       for (const name of [...preparation, ...controller]) expect(names, name).toContain(name);
-      const attempts = spans.filter(span => span.name === "task.execution_attempt");
-      expect(attempts).toHaveLength(1);
       for (const span of spans.filter(span => preparation.includes(span.name))) {
         expect(span.parentSpanContext?.spanId, span.name).toBe(attempts[0]!.spanContext().spanId);
       }

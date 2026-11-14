@@ -243,7 +243,7 @@ export function activityRoutes(db: Db) {
       caseReadCondition: await caseActivityReadSqlCondition(db, req.actor),
     };
     const result = await svc.list(filters);
-    res.json(result);
+    res.json(await svc.withActorNames(result));
   });
 
   router.get("/companies/:companyId/audit/agent-actions", async (req, res) => {
@@ -366,7 +366,7 @@ export function activityRoutes(db: Db) {
       return;
     }
     const result = await (req.query.view === "recent" ? svc.forIssue(issue.id, 50) : svc.forIssue(issue.id));
-    res.json(result);
+    res.json(await svc.withActorNames(result));
   });
 
   router.get("/issues/:id/runs", async (req, res) => {

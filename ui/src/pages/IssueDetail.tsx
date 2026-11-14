@@ -1,3 +1,4 @@
+import { createUuid } from "@/lib/uuid";
 import { companyProjectsQuery } from "@/lib/company-projects-query";
 import { NativeControllerContainmentRecovery } from "../components/IssueRecoveryActionCard";
 import { useIssueIdBatches } from "@/hooks/useIssueIdBatches";
@@ -88,6 +89,7 @@ import {
   recentIssueRunWindowQueryKey,
   type RecentIssueRunWindow,
 } from "../lib/issue-chat-history-queries";
+import { readFromIssueChatBootstrap, sameIds, startIssueChatBootstrap } from "../lib/issue-chat-bootstrap";
 import {
   heartbeatsApi,
   type ActiveRunForIssue,
@@ -161,7 +163,9 @@ import {
   ISSUE_DETAIL_HEADER_PAINT_MARK,
   reportIssueDetailWebVitals,
   scheduleIssueDetailPaintMeasure,
+  useIssueDetailContentPaintedAt,
 } from "../lib/issue-detail-performance";
+import { usePageContentReady } from "../hooks/usePageContentReady";
 import {
   beginLocalInboxArchive,
   boundLocalInboxArchive,
@@ -205,6 +209,7 @@ import {
 } from "../lib/optimistic-issue-runs";
 import { useProjectOrder } from "../hooks/useProjectOrder";
 import { recordRecentTask } from "../lib/recent-tasks";
+import { modelStillUnavailableToast } from "../lib/model-retry-refusal";
 import {
   relativeTime,
   cn,
@@ -410,7 +415,10 @@ import {
   type WorkspaceFileRef,
   workspaceFileRefSchema,
   isUuidLike,
+  type ExecutionAgentQueue,
 } from "@paperclipai/shared";
+import { AgentQueueWaitChip } from "@/components/AgentQueueWait";
+import { agentQueueWaitOf, isWaitingToStart } from "@/lib/agent-queue-wait";
 import { taskStatusIconProps } from "@/lib/task-status-presentation";
 
 // Stable empty array for React Query `data` defaults. A literal `= []` default
@@ -515,6 +523,20 @@ export function shouldScrollIssueDetailToTopOnNavigation(input: {
 }): boolean {
   if (input.navigationType === "POP") return false;
   return input.previousIssueId !== input.nextIssueId;
+}
+
+type LiveRunSummary = { count: number; waitingOnly: boolean; agentQueue: ExecutionAgentQueue | null };
+const EMPTY_LIVE_RUN_SUMMARY: LiveRunSummary = { count: 0, waitingOnly: false, agentQueue: null };
+
+function summarizeLiveRuns(
+  runs: ReadonlyArray<Pick<LiveRunForIssue | ActiveRunForIssue, "status" | "startedAt" | "execution">>,
+): LiveRunSummary {
+  if (!runs.length) return EMPTY_LIVE_RUN_SUMMARY;
+  return {
+    count: runs.length,
+    waitingOnly: runs.every(run => isWaitingToStart(run)),
+    agentQueue: runs.map(run => agentQueueWaitOf(run.execution)).find(Boolean) ?? null,
+  };
 }
 
 function resolveInterruptibleIssueRun(
@@ -1504,7 +1526,14 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
   const inputCommentIds = issueInputCommentIds(comments);
   const inputFacts = useIssueIdBatches(
     issueCommentInputFactsQueryKey(issueQueryRef), inputCommentIds,
-    ids => activityApi.inputFactsForIssue(issueQueryRef, ids), !!issueId && !historyExpanded,
+    ids => readFromIssueChatBootstrap(
+      queryClient,
+      [...issueCommentInputFactsQueryKey(issueQueryRef), "batch", ids],
+      issueQueryRef,
+      // The bootstrap answers exactly the saved recent-window comments.
+      (item) => sameIds(issueInputCommentIds(item.recentComments.comments), ids) ? item.commentInputFacts : undefined,
+      () => activityApi.inputFactsForIssue(issueQueryRef, ids),
+    ), !!issueId && !historyExpanded,
   );
   const {
     data: liveRuns,
@@ -1513,7 +1542,7 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
     refetch: refetchLiveRuns,
   } = useQuery({
     queryKey: queryKeys.issues.liveRuns(issueQueryRef),
-    queryFn: () => heartbeatsApi.liveRunsForIssue(issueQueryRef),
+    queryFn: () => readFromIssueChatBootstrap(queryClient, queryKeys.issues.liveRuns(issueQueryRef), issueQueryRef, (item) => item.liveRuns, () => heartbeatsApi.liveRunsForIssue(issueQueryRef)),
     enabled: !!issueId,
     refetchInterval: (query) => liveRunRefetchInterval(hasLiveConnection, query.state, 1000),
     placeholderData:
@@ -1530,7 +1559,7 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
     refetch: refetchActiveRun,
   } = useQuery({
     queryKey: queryKeys.issues.activeRun(issueQueryRef),
-    queryFn: () => heartbeatsApi.activeRunForIssue(issueQueryRef),
+    queryFn: () => readFromIssueChatBootstrap(queryClient, queryKeys.issues.activeRun(issueQueryRef), issueQueryRef, (item) => item.activeRun, () => heartbeatsApi.activeRunForIssue(issueQueryRef)),
     enabled: activeRunQueryEnabled,
     refetchInterval: (query) => liveRunCount > 0 ? false : liveRunRefetchInterval(hasLiveConnection, query.state, 1000),
     placeholderData: keepPreviousDataForSameQueryTail<ActiveRunForIssue | null>(
@@ -1677,8 +1706,9 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
         queryKey: queryKeys.issues.activeRun(issueQueryRef),
       });
     },
-    onError: (error) => {
-      pushToast({
+    onError: (error, runId) => {
+      const failedRun = resolvedLinkedRuns.find((run) => run.runId === runId);
+      pushToast(modelStillUnavailableToast(error, failedRun ? agentMap.get(failedRun.agentId) : undefined) ?? {
         title: "Run retry failed",
         body: error instanceof Error ? error.message : "Unable to retry run",
         tone: "error",
@@ -1841,6 +1871,26 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
         anchorMs,
         kind: "steer",
         queueIds: inputPlacementByCommentId.get(commentId)?.queueIds ?? new Set(),
+      });
+    }
+    // A run that is still starting (a booting sandbox, say) cannot be steered,
+    // but its first turn takes these messages. They are sent: show them at
+    // their submission time in the conversation, not in the queue.
+    const firstTurnRunId = authoritativeQueuedCommentQueue?.targetRunId ?? null;
+    if (firstTurnRunId) {
+      const createdAtById = new Map(comments.map((comment) => [comment.id, comment.createdAt]));
+      authoritativeQueuedCommentQueue?.firstTurnCommentIds?.forEach((commentId, sequence) => {
+        const createdAt = createdAtById.get(commentId);
+        if (inputPlacementByCommentId.has(commentId) || !createdAt) return;
+        const anchorAt = new Date(createdAt).toISOString();
+        inputPlacementByCommentId.set(commentId, {
+          runId: firstTurnRunId,
+          anchorAt,
+          sequence,
+          anchorMs: new Date(anchorAt).getTime(),
+          kind: "run_start",
+          queueIds: new Set(authoritativeQueuedCommentQueue.queueId ? [authoritativeQueuedCommentQueue.queueId] : []),
+        });
       });
     }
     for (const [commentId, placement] of localSteeringPlacements) {
@@ -2128,6 +2178,7 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
         });
     return [...projectedComments, ...responseComments];
   }, [
+    authoritativeQueuedCommentQueue,
     comments,
     classicTaskInterfaceEnabled,
     interactions,
@@ -2186,6 +2237,11 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
           : comment.queueState === "queued"
             ? (comment.queueTargetRunId ?? null)
             : null);
+      // A saved message the server queue never listed (a run's first turn
+      // took it) is not pending once that run settles. Keeping it would
+      // withhold the queue id, and with it Steer and Discard, from every
+      // later message. A request still in flight keeps its original target.
+      if (targetRunId && !liveRunIds.has(targetRunId) && !comment.id.startsWith("optimistic-")) return [];
       return targetRunId ? [{ comment, targetRunId }] : [];
     });
     const fallbackProtocol =
@@ -2205,6 +2261,7 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
     consumedQueuedCommentIds,
     discardedQueuedCommentIds,
     issueId,
+    liveRunIds,
     liveRuntimeRun,
     assigneeUsesPaperclipRunner,
     locallyQueuedCommentRunIds,
@@ -2311,9 +2368,17 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
           "The queued messages are awaiting server acknowledgement.",
         );
       try {
+        // The server orders its whole queue. Messages this view hides (inputs
+        // a starting run already admitted, or ones its first turn takes) keep
+        // their place; the person reorders only the rest.
+        const firstTurnIds = new Set(authoritativeQueuedCommentQueue?.firstTurnCommentIds ?? []);
+        const hidden = (id: string) => startingCommentIds.has(id) || firstTurnIds.has(id);
+        const serverEntries = authoritativeQueuedCommentQueue?.queueId === queueId
+          ? authoritativeQueuedCommentQueue.entries
+          : effectiveQueuedCommentQueue.entries;
         let nextPosition = 0;
-        const fullOrder = effectiveQueuedCommentQueue.entries.map(entry =>
-          startingCommentIds.has(entry.comment.id) ? entry.comment.id : orderedCommentIds[nextPosition++]!);
+        const fullOrder = serverEntries.map(entry =>
+          hidden(entry.comment.id) ? entry.comment.id : orderedCommentIds[nextPosition++]!);
         storeQueuedCommentQueue(
           await issuesApi.reorderQueuedComments(issueId, {
             orderedCommentIds: fullOrder,
@@ -2326,6 +2391,7 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
       }
     },
     [
+      authoritativeQueuedCommentQueue,
       effectiveQueuedCommentQueue,
       startingCommentIds,
       issueId,
@@ -2464,20 +2530,25 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
   const discardQueuedComment = useCallback(
     async (commentId: string, revision: string) => {
       const queueId = effectiveQueuedCommentQueue?.queueId;
-      if (!queueId)
-        throw new Error(
-          "The queued message is awaiting server acknowledgement.",
-        );
       try {
-        storeQueuedCommentQueue(
-          await issuesApi.discardQueuedComment(issueId, commentId, {
-            queueId,
-            revision,
-          }),
-        );
+        if (queueId) {
+          storeQueuedCommentQueue(
+            await issuesApi.discardQueuedComment(issueId, commentId, {
+              queueId,
+              revision,
+            }),
+          );
+        } else {
+          await issuesApi.cancelComment(issueId, commentId);
+        }
         setDiscardedQueuedCommentIds((current) =>
           new Set(current).add(commentId),
         );
+        if (!queueId) {
+          void queryClient.invalidateQueries({
+            queryKey: queryKeys.issues.queuedComments(issueId),
+          });
+        }
         // Discard deletes the persisted comment. Update both history caches
         // and task aliases so the row stays removed after this view unmounts.
         await onRemoveCommentFromCache(commentId);
@@ -3313,6 +3384,15 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
     [location.state, resolvedIssueDetailState],
   );
 
+  // A cold open sends one bootstrap request for everything the chat's first
+  // frame needs; the reads below wait for its answer instead of fanning out.
+  // A task preloaded by the list is already cached, so this is a no-op.
+  const bootstrapCompanyId = companies.find((company) => company.issuePrefix === companyPrefix?.toUpperCase())?.id ?? selectedCompanyId;
+  if (issueId && !conversation && queryClient.getQueryData([...queryKeys.issues.detail(issueId), "core"]) === undefined) {
+    startIssueChatBootstrap(queryClient, bootstrapCompanyId, issueId);
+  }
+  // The core issue keeps its own small, fast read so the header never waits
+  // for the larger chat bootstrap; a preloaded task already has it cached.
   const coreIssueQuery = useQuery({
     ...getIssueCoreQueryOptions(queryClient, issueId!),
     enabled: !!issueId,
@@ -3468,6 +3548,11 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
   useLayoutEffect(() => {
     beginIssueDetailNavigation();
   }, [issueId]);
+  // The task page is loaded when its conversation content has painted: the
+  // same point as the `issue-detail:navigate→content-paint` measure. An agent
+  // chat with no saved task never records that mark, so it uses the generic rule.
+  const contentPaintedAt = useIssueDetailContentPaintedAt();
+  usePageContentReady(contentPaintedAt !== null, contentPaintedAt, { enabled: Boolean(issueId) });
 
   useEffect(() => {
     if (!(import.meta.env.DEV || import.meta.env.MODE === "qa")) return;
@@ -3521,7 +3606,7 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
     refetch: refetchInteractions,
   } = useQuery({
     queryKey: queryKeys.issues.interactions(issueId!),
-    queryFn: () => issuesApi.listInteractions(issueId!),
+    queryFn: () => readFromIssueChatBootstrap(queryClient, queryKeys.issues.interactions(issueId!), issueId!, (item) => item.interactions, () => issuesApi.listInteractions(issueId!)),
     enabled: !!issueId,
     // A review can be committed between the initial fetch and live-socket
     // subscription. Reconcile even after its originating run has ended.
@@ -3538,7 +3623,7 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
     refetch: refetchAttachments,
   } = useQuery({
     queryKey: queryKeys.issues.attachments(issueId!),
-    queryFn: () => issuesApi.listAttachments(issueId!),
+    queryFn: () => readFromIssueChatBootstrap(queryClient, queryKeys.issues.attachments(issueId!), issueId!, (item) => item.attachments, () => issuesApi.listAttachments(issueId!)),
     enabled: !!issueId,
     placeholderData: keepPreviousDataForSameQueryTail<IssueAttachment[]>(
       issueId ?? "pending",
@@ -3555,38 +3640,45 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
     recordIssueDetailReadiness({ issue: !!loadedIssue, comments: !commentsLoading, interactions: !interactionsLoading, attachments: !attachmentsLoading, "work-products": !workProductsLoading });
   }, [issueId, loadedIssue, commentsLoading, interactionsLoading, attachmentsLoading, workProductsLoading]);
 
-  const { data: liveRunCount = 0 } = useQuery<LiveRunForIssue[], Error, number>(
+  const { data: liveRunSummary = EMPTY_LIVE_RUN_SUMMARY } = useQuery<LiveRunForIssue[], Error, LiveRunSummary>(
     {
       queryKey: queryKeys.issues.liveRuns(issueId!),
       queryFn: () => heartbeatsApi.liveRunsForIssue(issueId!),
       enabled: !!issueId,
       refetchInterval: (query) => liveRunRefetchInterval(hasLiveConnection, query.state, 3000),
-      select: (runs) => runs.length,
+      select: summarizeLiveRuns,
       placeholderData: keepPreviousDataForSameQueryTail<LiveRunForIssue[]>(
         issueId ?? "pending",
       ),
     },
   );
 
-  const { data: hasActiveRun = false } = useQuery<
+  const liveRunCount = liveRunSummary.count;
+  const { data: activeRunSummary = EMPTY_LIVE_RUN_SUMMARY } = useQuery<
     ActiveRunForIssue | null,
     Error,
-    boolean
+    LiveRunSummary
   >({
     queryKey: queryKeys.issues.activeRun(issueId!),
     queryFn: () => heartbeatsApi.activeRunForIssue(issueId!),
     enabled:
       !!issueId && (!!issue?.executionRunId || issue?.status === "in_progress"),
     refetchInterval: (query) => liveRunCount > 0 ? false : liveRunRefetchInterval(hasLiveConnection, query.state, 3000),
-    select: (run) => !!run,
+    select: (run) => summarizeLiveRuns(run ? [run] : []),
     placeholderData: keepPreviousDataForSameQueryTail<ActiveRunForIssue | null>(
       issueId ?? "pending",
     ),
   });
+  const hasActiveRun = activeRunSummary.count > 0;
   const resolvedHasActiveRun = issue
     ? shouldTrackIssueActiveRun(issue) && hasActiveRun
     : hasActiveRun;
   const hasLiveRuns = liveRunCount > 0 || resolvedHasActiveRun;
+  // Every live run is still waiting to start: say so instead of "Live".
+  const headerWaiting = hasLiveRuns
+    && (liveRunCount === 0 || liveRunSummary.waitingOnly)
+    && (!resolvedHasActiveRun || activeRunSummary.waitingOnly);
+  const headerAgentQueue = liveRunSummary.agentQueue ?? (resolvedHasActiveRun ? activeRunSummary.agentQueue : null);
   useEffect(() => {
     if (!hasLiveRuns && locallyQueuedCommentRunIds.size > 0) {
       setLocallyQueuedCommentRunIds(new Map());
@@ -5025,7 +5117,7 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
         assertCurrentAccount();
         queryClient.setQueryData(queryKeys.issues.detail(writableIssueId), updated);
       }
-      return issuesApi.addComment(writableIssueId, body, reopen, interrupt, attachmentIds, clientRequestId ?? crypto.randomUUID());
+      return issuesApi.addComment(writableIssueId, body, reopen, interrupt, attachmentIds, clientRequestId ?? createUuid());
     },
     onMutate: async ({ body, reopen, interrupt }) => {
       // Start cache cancellation immediately but do not put it in front of the
@@ -5972,15 +6064,14 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
       sourceBreadcrumb,
       ...(breadcrumbParent ? [{
         label: isLockedIssueStub(breadcrumbParent) ? "Private task" : breadcrumbParent.title,
-        identifier: breadcrumbParent.identifier ?? undefined,
         href: isLockedIssueStub(breadcrumbParent)
           ? undefined
           : createIssueDetailPath(breadcrumbParent.identifier ?? breadcrumbParent.id),
         onClick: isLockedIssueStub(breadcrumbParent) ? undefined : rememberBreadcrumbParent,
         control: isLockedIssueStub(breadcrumbParent)
-          ? <LockedIssueChip identifier={isMobile ? null : breadcrumbParent.identifier} />
+          ? <LockedIssueChip identifier={null} />
           : undefined,
-        controlKey: isLockedIssueStub(breadcrumbParent) ? `private-parent:${isMobile}` : undefined,
+        controlKey: isLockedIssueStub(breadcrumbParent) ? "private-parent" : undefined,
       }] : []),
       {
         // The status glyph (leading) already conveys in-progress/live state;
@@ -5997,7 +6088,6 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
     breadcrumbTitle,
     breadcrumbIdentifier,
     breadcrumbParent,
-    isMobile,
     rememberBreadcrumbParent,
     hasLiveRuns,
     setBreadcrumbs,
@@ -7673,7 +7763,11 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
             {issue.identifier ?? issue.id.slice(0, 8)}
           </span>
         ) : null}
-        {hasLiveRuns && (
+        {headerWaiting ? (
+          <span className="shrink-0" data-testid="issue-header-waiting">
+            <AgentQueueWaitChip queue={headerAgentQueue} />
+          </span>
+        ) : hasLiveRuns && (
           <Badge
             variant="outline"
             className={cn("gap-1.5 text-(length:--text-nano)", liveBlueBadge)}
@@ -8155,6 +8249,7 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
       <TextAttachmentContext.Provider value={taskChatShellEnabled ? handleOpenTextAttachment : null}><IssueGalleryContext.Provider value={openIssueGallery}>
         <div
           data-task-chat-shell={taskChatShellEnabled ? "" : undefined}
+          data-classic-task-shell={!isMobile && !taskChatShellEnabled && resolvedDetailTab === "chat" ? "" : undefined}
           className={
             taskChatShellEnabled
               ? // Fill main exactly so the outer page never scrolls — the

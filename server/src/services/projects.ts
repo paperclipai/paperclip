@@ -53,6 +53,18 @@ export async function lockProjectRootMutation(tx: ProjectTransaction, projectId:
 }
 
 type ProjectRow = typeof projects.$inferSelect;
+
+function legacyProjectEnvironmentId(policy: Record<string, unknown> | null | undefined) {
+  const id = policy?.environmentId;
+  return typeof id === "string" || id === null ? id : undefined;
+}
+
+function withoutLegacyProjectEnvironment<T extends Record<string, unknown> | null | undefined>(policy: T): T {
+  if (legacyProjectEnvironmentId(policy) === undefined) return policy;
+  const normalized = parseProjectExecutionWorkspacePolicy(policy);
+  return (normalized ? { ...normalized } : null) as T;
+}
+
 type ProjectWorkspaceRow = typeof projectWorkspaces.$inferSelect;
 type WorkspaceRuntimeServiceRow = typeof workspaceRuntimeServices.$inferSelect;
 const REPO_ONLY_CWD_SENTINEL = "/__paperclip_repo_only__";
@@ -137,7 +149,7 @@ export async function ensurePersonalPrivateProject(dbOrTx: any, companyId: strin
   return project;
 }
 
-interface ProjectWithGoals extends Omit<ProjectRow, "executionWorkspacePolicy"> {
+interface ProjectWithGoals extends Omit<ProjectRow, "executionWorkspacePolicy" | "legacyEnvironmentId"> {
   urlKey: string;
   goalIds: string[];
   goals: ProjectGoalRef[];
@@ -189,8 +201,9 @@ async function attachGoals(db: Db, rows: ProjectRow[]): Promise<ProjectWithGoals
 
   return rows.map((r) => {
     const g = map.get(r.id) ?? [];
+    const { legacyEnvironmentId: _legacyEnvironmentId, ...project } = r;
     return {
-      ...r,
+      ...project,
       urlKey: deriveProjectUrlKey(r.name, r.id),
       goalIds: g.map((x) => x.id),
       goals: g,
@@ -675,7 +688,8 @@ export function projectService(db: Db, options: { captureWorkspaceUpdates?: bool
     // skipped validation whenever `goalIds: []` and `goalId` arrive
     // together (goalIds wins resolution, mirroring the update path).
     const legacyGoalId = ids?.[0] ?? null;
-    const executionWorkspacePolicy = await withDefaultProjectStorage(db, companyId, projectData.executionWorkspacePolicy ?? null, environment) as typeof projectData.executionWorkspacePolicy;
+    const executionWorkspacePolicy = await withDefaultProjectStorage(db, companyId,
+      withoutLegacyProjectEnvironment(projectData.executionWorkspacePolicy) ?? null, environment) as typeof projectData.executionWorkspacePolicy;
 
     return db.transaction(async (tx) => {
       const txDb = tx as unknown as Db;
@@ -982,18 +996,15 @@ export function projectService(db: Db, options: { captureWorkspaceUpdates?: bool
         .where(eq(projects.id, id)).for("update")
         .then((rows) => rows[0] ?? null);
       if (!existingProject) return null;
+      projectData.executionWorkspacePolicy = withoutLegacyProjectEnvironment(projectData.executionWorkspacePolicy);
+      const currentStorage = parseProjectExecutionWorkspacePolicy(existingProject.executionWorkspacePolicy)?.storageProviderPluginId;
       if (projectData.executionWorkspacePolicy !== undefined) {
-        const attachedPluginId = parseProjectExecutionWorkspacePolicy(existingProject.executionWorkspacePolicy)?.storageProviderPluginId;
-        const requestedPluginId = parseProjectExecutionWorkspacePolicy(projectData.executionWorkspacePolicy)?.storageProviderPluginId;
-        if (attachedPluginId) {
-          if (requestedPluginId !== undefined && requestedPluginId !== attachedPluginId) {
-            throw conflict("A plugin-backed project stays attached to its storage plugin");
-          }
-          if (requestedPluginId === undefined) {
-            projectData.executionWorkspacePolicy = { enabled: true, ...projectData.executionWorkspacePolicy, storageProviderPluginId: attachedPluginId };
-          }
-        } else if (requestedPluginId) {
-          await retireRemovedPluginWorkspaceDependents(db, id);
+        const requestedStorage = parseProjectExecutionWorkspacePolicy(projectData.executionWorkspacePolicy)?.storageProviderPluginId;
+        if (requestedStorage !== undefined && requestedStorage !== (currentStorage ?? null)) {
+          throw conflict("A project stays on the workspace storage chosen when it was created", { code: "project_storage_locked" });
+        }
+        if (requestedStorage === undefined && currentStorage) {
+          projectData.executionWorkspacePolicy = { enabled: true, ...projectData.executionWorkspacePolicy, storageProviderPluginId: currentStorage };
         }
       }
       if (ids && ids.length > 0) {
@@ -1078,11 +1089,10 @@ export function projectService(db: Db, options: { captureWorkspaceUpdates?: bool
 
       let cleared = 0;
       for (const row of rows) {
-        const policy = parseProjectExecutionWorkspacePolicy(row.executionWorkspacePolicy);
-        if (policy?.environmentId !== environmentId) continue;
+        if (legacyProjectEnvironmentId(row.executionWorkspacePolicy) !== environmentId) continue;
 
         await projectService(db).update(row.id, {
-          executionWorkspacePolicy: { ...policy, environmentId: null },
+          executionWorkspacePolicy: withoutLegacyProjectEnvironment(row.executionWorkspacePolicy),
         });
         cleared += 1;
       }
@@ -1106,7 +1116,9 @@ export function projectService(db: Db, options: { captureWorkspaceUpdates?: bool
       await notifyDeliveryWork(tx, DELIVERY_QUEUES.skillSourceSync);
       await notifyStatusCardIssueChange(tx, project.companyId);
       const [row] = await tx.delete(projects).where(eq(projects.id, id)).returning();
-      return row ? { ...row, urlKey: deriveProjectUrlKey(row.name, row.id) } : null;
+      if (!row) return null;
+      const { legacyEnvironmentId: _legacyEnvironmentId, ...publicProject } = row;
+      return { ...publicProject, urlKey: deriveProjectUrlKey(row.name, row.id) };
     }),
 
     listWorkspaces: async (projectId: string): Promise<ProjectWorkspace[]> => {

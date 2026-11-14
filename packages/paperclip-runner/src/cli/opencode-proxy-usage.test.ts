@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   OpenCodeProxyUsageLedger,
+  openCodeProxyUpstreamUsage,
   openCodeProxyUsageMeasurement,
 } from "./opencode-proxy-usage.js";
 
@@ -131,5 +132,15 @@ describe("OpenCode proxy usage accounting", () => {
         providerCostUsd: 0.001,
       },
     });
+  });
+});
+
+describe("OpenCode proxy upstream usage", () => {
+  it("forwards the serving host and generation id only when the host is named", () => {
+    expect(openCodeProxyUpstreamUsage({ input: 1, upstreamProvider: "Novita", providerRequestId: "gen-1" }))
+      .toEqual({ upstreamProvider: "Novita", providerRequestId: "gen-1" });
+    expect(openCodeProxyUpstreamUsage({ upstreamProvider: "Novita", providerRequestId: 7 })).toEqual({ upstreamProvider: "Novita" });
+    expect(openCodeProxyUpstreamUsage({ providerRequestId: "gen-1" })).toEqual({});
+    expect(openCodeProxyUpstreamUsage(null)).toEqual({});
   });
 });

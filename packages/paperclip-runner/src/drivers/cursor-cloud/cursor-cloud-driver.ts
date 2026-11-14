@@ -1,4 +1,5 @@
 import { randomBytes, randomUUID } from "node:crypto";
+import { RUNNER_TOOL_BRIDGE_DIAGNOSTIC_CODE } from "../tool-input-coercion.js";
 import { chmod, lstat } from "node:fs/promises";
 import { dirname, isAbsolute, resolve } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
@@ -198,7 +199,8 @@ class CursorCloudSession implements CursorCloudSessionHandle {
     this.#bridge = await startRunnerToolBridge({ socketPath: this.#options.relay.socketPath, secret: this.#options.relay.token, tools, preserveToolNames: true, timeoutMs: null,
       sessionScope: () => this.#closed || this.#stopping || this.#pendingTerminal || !active(this.#cp) ? null : this.#cp.turnId,
       scopeToken: () => this.#closed || this.#stopping || this.#pendingTerminal || !active(this.#cp) ? null : this.#cp.relayTurnToken ?? null,
-      handler: call => this.#dispatch(call) });
+      handler: call => this.#dispatch(call),
+      onDiagnostic: message => this.#emit("harness.diagnostic", { code: RUNNER_TOOL_BRIDGE_DIAGNOSTIC_CODE, message }) });
     const socket = await lstat(this.#options.relay.socketPath);
     if (!socket.isSocket() || socket.isSymbolicLink() || (process.getuid && socket.uid !== process.getuid())) throw new Error("Cursor Cloud bound relay socket ownership is unsafe");
     await chmod(this.#options.relay.socketPath, 0o600);

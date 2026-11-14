@@ -287,6 +287,21 @@ export async function nativeRunNeverLaunched(db: Db, run: Pick<typeof heartbeatR
   return !launch;
 }
 
+/** A native run the cleanup gate refused before it asked for a runner. Its
+ * process fields may name its predecessor's process, copied at admission for
+ * the same session; that process is checked separately. This run launched
+ * nothing of its own. */
+export async function nativeGatedRunNeverLaunched(db: Db, run: Pick<typeof heartbeatRuns.$inferSelect,
+  "id" | "companyId" | "runtimeMode" | "status" | "errorCode">): Promise<boolean> {
+  if (run.runtimeMode !== "native" || run.status !== "failed" || run.errorCode !== "native_session_cleanup_quarantined") return false;
+  const [launch] = await db.select({ id: heartbeatRunEvents.id }).from(heartbeatRunEvents).where(and(
+    eq(heartbeatRunEvents.companyId, run.companyId), eq(heartbeatRunEvents.runId, run.id),
+    or(isNotNull(heartbeatRunEvents.sourceEventId),
+      inArray(heartbeatRunEvents.eventType, ["adapter.invoke", PROCESS_START_REQUESTED, PROCESS_IDENTITY_RECORDED])),
+  )).limit(1);
+  return !launch;
+}
+
 /** Pre-receipt native runs can retain an exact suspended session after their
  * mutable process fields were cleared. This is admission evidence for a new
  * user turn only, never permission to replay the old run or infer its outcomes.
@@ -331,6 +346,19 @@ export async function withReleasedNativeRunProcess<T extends {
 }
 
 /** Recover the exact stopped identity after the mutable run fields were cleared. */
+export async function readUnidentifiedLocalRunnerStop(db: Db, companyId: string, runId: string): Promise<boolean> {
+  const [latest, launch] = await db.select({ eventType: heartbeatRunEvents.eventType, payload: heartbeatRunEvents.payload })
+    .from(heartbeatRunEvents)
+    .where(and(eq(heartbeatRunEvents.companyId, companyId), eq(heartbeatRunEvents.runId, runId),
+      isNull(heartbeatRunEvents.sourceEventId),
+      inArray(heartbeatRunEvents.eventType, [PROCESS_START_REQUESTED, PROCESS_IDENTITY_RECORDED, LOCAL_PROCESS_STOPPED])))
+    .orderBy(desc(heartbeatRunEvents.seq)).limit(2);
+  if (latest?.eventType !== LOCAL_PROCESS_STOPPED || latest.payload?.basis !== "unidentified_runner_absent" ||
+      launch?.eventType !== PROCESS_START_REQUESTED || launch.payload?.hostname !== os.hostname()) return false;
+  const { noLocalRunnerProcessForRun } = await import("./native-runtime/native-session-executor.js");
+  return noLocalRunnerProcessForRun(runId);
+}
+
 export async function readNativeLocalProcessStop(db: Db, companyId: string, runId: string) {
   const [event] = await db.select({ eventType: heartbeatRunEvents.eventType, payload: heartbeatRunEvents.payload })
     .from(heartbeatRunEvents)

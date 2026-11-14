@@ -40,10 +40,13 @@ import { capturePolicyRearmDueCondition, retainedSourceFallbackDueCondition, sto
 import { rearmExhaustedCapturePolicy } from "./workspace-recovery-capture-policy.js";
 import { rearmExhaustedStopProof } from "./workspace-recovery-stop-proof.js";
 import { settleRecoveredWorkspaceRestoreHolds } from "./workspace-restore-hold-settlement.js";
+import { reusableSandboxNotKeptAfterReplacementSql } from "./reusable-sandbox-kept-marker.js";
 
 const exportCauses = ["native_workspace_sync_out_unrecoverable", "native_workspace_sync_out_retry_exhausted"];
 const terminal = ["failed", "interrupted", "timed_out", "cancelled", "succeeded"];
 const sandboxDiskFull = /No space left on device|Disk quota exceeded/i;
+export const SANDBOX_DISK_FULL_RECOVERY_CAUSE = { label: "sandbox_disk_full", code: "ENOSPC", status: null } as const;
+const isSandboxDiskFullSave = (error: unknown) => error instanceof Error && error.message === REMOTE_WORKSPACE_SANDBOX_DISK_FULL;
 type Source = { companyId: string; issueId: string; runId: string; actionId: string };
 
 type StopEvidenceSource = Omit<Source, "actionId"> & { actionId?: string };
@@ -258,6 +261,7 @@ export async function recoverRetainedWorkspace(input: Source & { db: Db; environ
           sql`${issueRecoveryActions.evidence}#>>'{systemRecovery,attemptId}' = ${reserved.attemptId}`));
     };
     let observing = Promise.resolve();
+    let cacheReclaimUnconfirmed = false;
     const observer = setInterval(() => { observing = observing.then(observeActive).catch(() => undefined); }, 15_000);
     try {
       await observeActive();
@@ -317,6 +321,11 @@ export async function recoverRetainedWorkspace(input: Source & { db: Db; environ
                 ?? await settleStopOnlyCleanup(db, pending, { attemptId: ownership.token }));
           if (!settled || !hasRemoteTerminationReceipt(settled))
             throw new SystemRecoveryFailure("agent_stop_unconfirmed", "recheck_evidence");
+          // The provider confirmed the sandbox is gone: its files cannot be read.
+          if ((settled.metadata?.remoteExecutionTermination as Record<string, unknown> | undefined)?.state === "destroyed") {
+            sourceUnavailable = true;
+            continue;
+          }
           stoppedLease = settled;
         }
         const target = await resolveEnvironmentExecutionTarget({ db, companyId: input.companyId, adapterType: "paperclip_runner",
@@ -368,13 +377,18 @@ export async function recoverRetainedWorkspace(input: Source & { db: Db; environ
             let saved: Awaited<ReturnType<typeof save>>;
             try { saved = await save(); }
             catch (error) {
-              if (!(error instanceof Error) || error.message !== REMOTE_WORKSPACE_SANDBOX_DISK_FULL) throw error;
+              if (!isSandboxDiskFullSave(error)) throw error;
               let reclaimed = false;
               try {
-                reclaimed = await reclaimInactiveNativeProviderCache({ db, companyId: input.companyId,
+                const reclaim = await reclaimInactiveNativeProviderCache({ db, companyId: input.companyId,
                   issueId: input.issueId, runId: input.runId, workspaceId: workspace.id, target,
                   assertOwned: ownership.assertHeld });
-              } catch { logger.warn({ runId: input.runId }, "Retained provider cache cleanup could not be confirmed"); }
+                reclaimed = reclaim.changed;
+                cacheReclaimUnconfirmed = !reclaim.confirmed;
+              } catch {
+                cacheReclaimUnconfirmed = true;
+                logger.warn({ runId: input.runId }, "Retained provider cache cleanup could not be confirmed");
+              }
               if (!reclaimed) throw error;
               await ownership.assertHeld();
               saved = await save();
@@ -471,7 +485,9 @@ export async function recoverRetainedWorkspace(input: Source & { db: Db; environ
         return;
       }
       const classification = classifyNativeWorkspaceFailure(error);
+      const diskFull = !(error instanceof SystemRecoveryFailure) && !cacheReclaimUnconfirmed && isSandboxDiskFullSave(error);
       const failure = error instanceof SystemRecoveryFailure ? error
+        : diskFull ? new SystemRecoveryFailure("export_interrupted", "user_action_required")
         : classifyWorkspaceRestoreFailure(error) === "restore_invalid_metadata"
           ? new SystemRecoveryFailure("snapshot_verification_failed", "service_required")
         : classification.code === "workspace_sync_out_unsafe_archive"
@@ -485,7 +501,7 @@ export async function recoverRetainedWorkspace(input: Source & { db: Db; environ
       // A classified failure already names its subsystem.
       const generic = !(error instanceof SystemRecoveryFailure) && failure.retryClass === "retry_transient"
         && (failure.code === "provider_unavailable" || failure.code === "export_interrupted");
-      const cause = generic ? sandboxProviderFailureLabel(error) : undefined;
+      const cause = diskFull ? { ...SANDBOX_DISK_FULL_RECOVERY_CAUSE } : generic ? sandboxProviderFailureLabel(error) : undefined;
       const failed = failSystemRecovery(current!, failure, {
         ...(typeof retryAfterAt === "number" && Number.isFinite(retryAfterAt) ? { retryAfterAt } : {}),
         ...(cause ? { cause } : {}),
@@ -556,6 +572,10 @@ async function recordCopybackOwnerHold(db: Db, input: Source, generationId: stri
 
 const cursors = new WeakMap<Db, string>();
 const workInFlight = new WeakMap<Db, Set<string>>();
+/** Overdue recoveries the assigned-work sweep started outside the queue's
+ * slots. The queue skips their runs; their count has its own small limit. */
+const overdueInFlight = new WeakMap<Db, Set<string>>();
+export const OVERDUE_WORKSPACE_RECOVERY_LIMIT = 2;
 const unfinishedCursors = new WeakMap<Db, string>();
 
 /** Destruction is a later cleanup obligation, authorized only by a matching
@@ -585,9 +605,14 @@ export async function scheduleRecoveredWorkspaceCleanup(db: Db, run: typeof hear
     eq(environmentLeases.heartbeatRunId, run.id), eq(environmentLeases.providerLeaseId, ref.providerLeaseId),
     eq(environmentLeases.status, "released"), eq(environmentLeases.cleanupStatus, "success"),
     sql`${environmentLeases.metadata} = ${JSON.stringify(lease.metadata)}::jsonb`,
-    sql`${environmentLeases.metadata}->>'workspaceRecoveryCleanup' is null`)), { companyId: run.companyId, runId: run.id });
+    sql`${environmentLeases.metadata}->>'workspaceRecoveryCleanup' is null`, reusableSandboxNotKeptAfterReplacementSql())),
+  { companyId: run.companyId, runId: run.id });
 }
-export function retainedWorkspaceCandidates(db: Db, cursor?: string, unfinishedOnly = false, obligationsOnly = false, inFlightRunIds: string[] = []) {
+/** `dueOnly` narrows the obligations to exhausted holds whose re-arm or
+ * fallback is due now. Cleanup, interrupted preparation and saved input that
+ * waits stay with the obligation pass. */
+export function retainedWorkspaceCandidates(db: Db, cursor?: string, unfinishedOnly = false, obligationsOnly = false, inFlightRunIds: string[] = [],
+  dueOnly = false) {
   const cleanup = sql`(((${heartbeatRuns.runnerProfileJson}#>>'{nativeWorkspaceSync,resourceDisposition}' = 'destroy'
     and ${heartbeatRuns.runnerProfileJson}#>>'{nativeWorkspaceSync,leaseId}' is not null)
     or (${heartbeatRuns.runnerProfileJson}->>'nativeResourceDisposition' = 'destroy'
@@ -620,6 +645,8 @@ export function retainedWorkspaceCandidates(db: Db, cursor?: string, unfinishedO
       and ${issues.executionRunId} is null and ${issues.checkoutRunId} is null
       and (${issues.status} <> 'blocked' or
         ${issueRecoveryActions.evidence}#>>'{nativeBootstrapFailureBlock,statusVersion}' = ${issues.statusVersion}::text)))`;
+  const now = Date.now();
+  const dueHold = sql`(${retainedSourceFallbackDueCondition(now)} or ${stopProofRearmDueCondition(now)} or ${capturePolicyRearmDueCondition(now)})`;
   return db.select({ action: issueRecoveryActions, run: heartbeatRuns }).from(issueRecoveryActions)
     .innerJoin(heartbeatRuns, and(eq(heartbeatRuns.companyId, issueRecoveryActions.companyId), eq(heartbeatRuns.id,
       sql`case when ${issueRecoveryActions.evidence}->>'runId' ~* '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
@@ -632,11 +659,11 @@ export function retainedWorkspaceCandidates(db: Db, cursor?: string, unfinishedO
           and coalesce(${issueRecoveryActions.evidence}->>'bootstrapPreparationContinuation', 'pending') = 'pending'))` : undefined,
       obligationsOnly ? sql`(${issueRecoveryActions.evidence}#>>'{systemRecovery,state}' in ('scheduled', 'running', 'awaiting_evidence')
         or (${issueRecoveryActions.evidence}#>>'{systemRecovery,state}' = 'complete' and (${cleanup} or ${interruptedPreparation})) or ${waitingInput}
-        or ${retainedSourceFallbackDueCondition(Date.now())} or ${stopProofRearmDueCondition(Date.now())}
-        or ${capturePolicyRearmDueCondition(Date.now())})` : undefined,
+        or ${dueHold})` : undefined,
+      dueOnly ? dueHold : undefined,
       sql`(${issueRecoveryActions.evidence}#>>'{systemRecovery,state}' in ('scheduled', 'running', 'awaiting_evidence', 'complete', 'exhausted')
         and (${issueRecoveryActions.evidence}#>'{systemRecovery,nextAttemptAt}' = 'null'::jsonb
-          or ${issueRecoveryActions.evidence}#>'{systemRecovery,nextAttemptAt}' <= to_jsonb(${Date.now()}::bigint)))`,
+          or ${issueRecoveryActions.evidence}#>'{systemRecovery,nextAttemptAt}' <= to_jsonb(${now}::bigint)))`,
       sql`(${issueRecoveryActions.evidence}#>>'{workspaceRecovery,status}' is distinct from 'recovered' or
         ${cleanup} or ${waitingInput} or ${interruptedPreparation})`,
       cursor ? gt(issueRecoveryActions.id, cursor) : undefined,
@@ -644,54 +671,161 @@ export function retainedWorkspaceCandidates(db: Db, cursor?: string, unfinishedO
     )).orderBy(asc(issueRecoveryActions.id)).limit(5);
 }
 
+/**
+ * The worker's lane positions, kept in memory: a restart starts every lane
+ * from its first candidate, so no persisted state or migration is involved.
+ * `cursor`, `complete` and `restart` belong to the obligation pass; `dueCursor`
+ * to the due lane; `firstLane` names the lane that has priority in the next run.
+ */
+export type PassiveSweep = { cursor?: string; complete?: boolean; restart?: boolean; dueCursor?: string; firstLane?: number };
+
+type CandidateRow = Awaited<ReturnType<typeof retainedWorkspaceCandidates>>[number];
+type CandidateLane = { rows: CandidateRow[]; index: number; advance: (actionId: string) => void };
+
 /** Bounded discovery shares the periodic recovery lifecycle. A repaired source
- * still owes cleanup even without saved input or after task reconciliation. */
+ * still owes cleanup even without saved input or after task reconciliation.
+ *
+ * Candidates come from lanes, each an ordered page that a cursor advances:
+ * unfinished saves; for the worker, exhausted holds whose re-arm or fallback
+ * is due; and the obligation pass (cleanup, interrupted preparation, saved
+ * input that waits, and the same due holds). Each lane with work takes one
+ * free slot before any lane takes a second, and the worker rotates which lane
+ * goes first, so no kind of load (a save another server owns, a long local
+ * export, hundreds of waiting holds) starves another. */
 export async function reconcileRetainedWorkspaces(db: Db, runtime: EnvironmentRuntimeService,
   onRecovered: (run: typeof heartbeatRuns.$inferSelect) => Promise<void>, obligationsOnly = false,
-  onFinished?: (continueSweep: boolean) => void, passiveSweep?: { cursor?: string }) {
+  onFinished?: (continueSweep: boolean) => void, passiveSweep?: PassiveSweep) {
   await adoptHistoricalWorkspaceRecoveries(db);
   let pending = workInFlight.get(db);
   if (!pending) { pending = new Set(); workInFlight.set(db, pending); }
   if (pending.size >= 2) return;
   // Locally running exports already own their slot. Exclude them before
   // pagination so a page containing only held work cannot prevent wrapping.
-  const inFlightRunIds = [...pending];
-  let rows = await retainedWorkspaceCandidates(db, unfinishedCursors.get(db), true, false, inFlightRunIds);
-  if (!rows.length) rows = await retainedWorkspaceCandidates(db, undefined, true, false, inFlightRunIds);
-  const unfinished = rows.length > 0;
-  if (!rows.length) rows = await retainedWorkspaceCandidates(db, passiveSweep ? passiveSweep.cursor : cursors.get(db), false, obligationsOnly, inFlightRunIds);
-  if (!rows.length && !passiveSweep) rows = await retainedWorkspaceCandidates(db, undefined, false, obligationsOnly, inFlightRunIds);
+  const inFlightRunIds = [...pending, ...(overdueInFlight.get(db) ?? [])];
+  let unfinishedRows = await retainedWorkspaceCandidates(db, unfinishedCursors.get(db), true, false, inFlightRunIds);
+  if (!unfinishedRows.length) unfinishedRows = await retainedWorkspaceCandidates(db, undefined, true, false, inFlightRunIds);
+  const unfinished: CandidateLane = { rows: unfinishedRows, index: 0, advance: id => unfinishedCursors.set(db, id) };
+  let rows = await retainedWorkspaceCandidates(db, passiveSweep ? passiveSweep.cursor : cursors.get(db), false, obligationsOnly, inFlightRunIds);
+  if (passiveSweep && !rows.length && passiveSweep.restart) {
+    Object.assign(passiveSweep, { cursor: undefined, restart: false });
+    rows = await retainedWorkspaceCandidates(db, undefined, false, obligationsOnly, inFlightRunIds);
+  }
+  if (passiveSweep) passiveSweep.complete = !rows.length;
+  else if (!rows.length) rows = await retainedWorkspaceCandidates(db, undefined, false, obligationsOnly, inFlightRunIds);
+  const sweep: CandidateLane = { rows, index: 0,
+    advance: id => { if (passiveSweep) passiveSweep.cursor = id; else cursors.set(db, id); } };
+  const lanes = [unfinished];
+  if (passiveSweep) {
+    // The due lane wraps at its tail like the unfinished lane. A hold that
+    // becomes due by time alone (a lease expiry, a re-arm backoff) is reached
+    // even after the obligation pass completed with no committed change.
+    let dueRows = await retainedWorkspaceCandidates(db, passiveSweep.dueCursor, false, true, inFlightRunIds, true);
+    if (!dueRows.length && passiveSweep.dueCursor)
+      dueRows = await retainedWorkspaceCandidates(db, undefined, false, true, inFlightRunIds, true);
+    const due: CandidateLane = { rows: dueRows, index: 0, advance: id => { passiveSweep.dueCursor = id; } };
+    lanes.push(due, sweep);
+    // Priority rotates across all three lanes, so each lane is first in one
+    // run of three. With one free slot (a long local export holds the other),
+    // a save that keeps finding its run's lock busy cannot take it every run.
+    const first = (passiveSweep.firstLane ?? 0) % lanes.length;
+    lanes.push(...lanes.splice(0, first));
+    passiveSweep.firstLane = (first + 1) % lanes.length;
+  } else lanes.push(sweep);
   const work: Promise<void>[] = [];
-  let hasUnvisited = false;
-  for (const { action, run } of rows) {
-    if (pending.size >= 2) { hasUnvisited = true; break; }
-    if (unfinished) unfinishedCursors.set(db, action.id);
-    else if (passiveSweep) passiveSweep.cursor = action.id;
-    else cursors.set(db, action.id);
-    if (pending.has(run.id)) continue;
-    pending.add(run.id);
+  // Several actions of one run (an export hold and a later no-replay hold)
+  // run one after another in that run's job. Skipping the later one would
+  // starve it while the earlier one stays selectable (for example while saved
+  // input waits for the later one to settle).
+  const groups = new Map<string, { run: typeof heartbeatRuns.$inferSelect; actions: (typeof issueRecoveryActions.$inferSelect)[] }>();
+  const join = (lane: CandidateLane) => {
+    for (; lane.index < lane.rows.length; lane.index += 1) {
+      const { action, run } = lane.rows[lane.index]!;
+      const group = groups.get(run.id);
+      if (!group) return lane.rows[lane.index]!;
+      if (!group.actions.some(item => item.id === action.id)) group.actions.push(action);
+      lane.advance(action.id);
+    }
+    return undefined;
+  };
+  // Takes the lane's next run into a free slot. Actions of a run already taken
+  // (by any lane) join its job without a slot.
+  const take = (lane: CandidateLane) => {
+    const next = join(lane);
+    if (!next || pending.size >= 2) return false;
+    lane.index += 1;
+    lane.advance(next.action.id);
+    pending.add(next.run.id);
+    groups.set(next.run.id, { run: next.run, actions: [next.action] });
+    return true;
+  };
+  for (let taken = true; taken && pending.size < 2;) {
+    taken = false;
+    for (const lane of lanes) if (pending.size < 2 && take(lane)) taken = true;
+  }
+  for (const lane of lanes) join(lane);
+  const hasUnvisited = lanes.some(lane => lane.index < lane.rows.length);
+  for (const { run, actions } of groups.values()) {
     const finish = beginIdleTrackedWork();
-    const physical = ["scheduled", "running", "awaiting_evidence"].includes(readSystemRecovery(action.evidence)?.state ?? "");
+    const physical = actions.some(action => ["scheduled", "running", "awaiting_evidence"].includes(readSystemRecovery(action.evidence)?.state ?? ""));
     work.push((async () => { try {
-      await recoverRetainedWorkspace({ db, environmentRuntime: runtime, companyId: action.companyId, issueId: action.sourceIssueId, runId: run.id, actionId: action.id });
-      const [updated] = await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.id, action.id));
-      const recovered = readWorkspaceRecovery(updated?.evidence ?? null)?.status === "recovered";
-      const exhausted = readSystemRecovery(updated?.evidence)?.state === "exhausted";
-      if (recovered || exhausted) {
-        const [current] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, run.id));
-        if (current) {
-          if (recovered) {
-            await resumePreservedResultFinalization(db, current.companyId, current.id);
-            await scheduleRecoveredWorkspaceCleanup(db, current);
-          }
-          // Only normal dispatch can consume existing authorized input. An
-          // exhausted export permits evaluation of an isolated continuation,
-          // never another export attempt or a replay of an old assignment.
-          await onRecovered(current);
-        }
-      }
-    } catch { logger.warn({ runId: run.id }, "Retained workspace remains pending"); }
-    finally { pending.delete(run.id); finish(); onFinished?.(physical || hasUnvisited); } })());
+      for (const action of actions) await recoverRunAction(db, runtime, onRecovered, action, run);
+    } finally { pending.delete(run.id); finish(); onFinished?.(physical || hasUnvisited); } })());
   }
   return work;
+}
+
+/**
+ * Starts one saved-work recovery that the queue has not reached within its
+ * bound (the assigned-work sweep's repair). It runs outside the queue's two
+ * slots, so a queue held by slow or stuck attempts cannot keep a task waiting
+ * indefinitely, and it goes through the same ownership and attempt bookkeeping
+ * as the queue, so it never runs beside another attempt for the same run.
+ * Resolves once the attempt is started (or refused), not when it finishes.
+ */
+export async function startOverdueWorkspaceRecovery(db: Db, runtime: EnvironmentRuntimeService,
+  onRecovered: (run: typeof heartbeatRuns.$inferSelect) => Promise<void>, source: Source):
+  Promise<"started" | "in_flight" | "busy" | "not_eligible"> {
+  const overdue = overdueInFlight.get(db) ?? new Set<string>();
+  overdueInFlight.set(db, overdue);
+  if (overdue.has(source.runId) || workInFlight.get(db)?.has(source.runId)) return "in_flight";
+  if (overdue.size >= OVERDUE_WORKSPACE_RECOVERY_LIMIT) return "busy";
+  const [row] = await db.select({ action: issueRecoveryActions, run: heartbeatRuns }).from(issueRecoveryActions)
+    .innerJoin(heartbeatRuns, and(eq(heartbeatRuns.companyId, issueRecoveryActions.companyId), eq(heartbeatRuns.id, source.runId)))
+    .where(and(eq(issueRecoveryActions.companyId, source.companyId), eq(issueRecoveryActions.id, source.actionId),
+      eq(issueRecoveryActions.sourceIssueId, source.issueId), sql`${issueRecoveryActions.evidence}->>'runId' = ${source.runId}`,
+      inArray(heartbeatRuns.status, terminal), workspaceRecoverySourceEligible(),
+      sql`${issueRecoveryActions.evidence}#>>'{systemRecovery,state}' in ('scheduled', 'running', 'awaiting_evidence')`)).limit(1);
+  if (!row) return "not_eligible";
+  if (overdue.has(source.runId) || workInFlight.get(db)?.has(source.runId)) return "in_flight";
+  overdue.add(source.runId);
+  const finish = beginIdleTrackedWork();
+  void (async () => {
+    try { await recoverRunAction(db, runtime, onRecovered, row.action, row.run); }
+    finally { overdue.delete(source.runId); finish(); }
+  })();
+  return "started";
+}
+
+async function recoverRunAction(db: Db, runtime: EnvironmentRuntimeService,
+  onRecovered: (run: typeof heartbeatRuns.$inferSelect) => Promise<void>,
+  action: typeof issueRecoveryActions.$inferSelect, run: typeof heartbeatRuns.$inferSelect) {
+  try {
+    await recoverRetainedWorkspace({ db, environmentRuntime: runtime, companyId: action.companyId, issueId: action.sourceIssueId, runId: run.id, actionId: action.id });
+    const [updated] = await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.id, action.id));
+    const recovered = readWorkspaceRecovery(updated?.evidence ?? null)?.status === "recovered";
+    const exhausted = readSystemRecovery(updated?.evidence)?.state === "exhausted";
+    if (recovered || exhausted) {
+      const [current] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, run.id));
+      if (current) {
+        if (recovered) {
+          await resumePreservedResultFinalization(db, current.companyId, current.id);
+          await scheduleRecoveredWorkspaceCleanup(db, current);
+        }
+        // Only normal dispatch can consume existing authorized input. An
+        // exhausted export permits evaluation of an isolated continuation,
+        // never another export attempt or a replay of an old assignment.
+        await onRecovered(current);
+      }
+    }
+  } catch (error) { logger.warn({ err: error, runId: run.id, actionId: action.id }, "Retained workspace remains pending"); }
 }

@@ -15,6 +15,13 @@ it("accepts a tagline heading under a visible brand header", () => {
   expect(hasSimplerWebsite(page.map(n => ({ ...n, text: n.text.replace(/Acorn Notes/g, "Our app") })))).toBe(false);
 });
 it("accepts a natural button signup equivalent", () => { const x = simple(); x[2] = node("BUTTON", "Subscribe"); expect(hasSimplerWebsite(x)).toBe(true); });
+it("accepts a labelled signup form whatever its submit button says, and rejects an unlabelled or unsubmittable one", () => {
+  const withForm = (form: RuntimeRenderedNode["form"]) => [...simple().filter(n => n.tag !== "A"), node("BUTTON", "Start writing free"), node("FORM", "Email Start writing free", { form })];
+  expect(hasSimplerWebsite(withForm({ labelledField: true, submit: true }))).toBe(true);
+  expect(hasSimplerWebsite(withForm({ labelledField: false, submit: true }))).toBe(false);
+  expect(hasSimplerWebsite(withForm({ labelledField: true, submit: false }))).toBe(false);
+  expect(hasSimplerWebsite([...simple().filter(n => n.tag !== "A"), node("BUTTON", "Start writing free")])).toBe(false);
+});
 it("rejects comment-only/hidden heading absent from rendered evidence", () => expect(hasSimplerWebsite(simple().filter(n => n.tag !== "H1"))).toBe(false));
 it("rejects an invisible signup action", () => expect(hasSimplerWebsite(simple().filter(n => n.tag !== "A"))).toBe(false));
 it("rejects an actual tabbed complex layout", () => expect(hasSimplerWebsite([...simple(), node("BUTTON", "Dashboard", { role: "tab" })])).toBe(false));
@@ -37,6 +44,14 @@ it.skipIf(process.env.PAPERCLIP_CHAT_EVAL_RENDERED_ARTIFACT_CANARY !== "1")("qua
       [body.replace('<a href=', '<a style="opacity:0" href='), false],
       [body + '<nav><a href="pricing.html">Pricing</a><a href="dashboard.html">Dashboard</a></nav>', false],
       [body + '<div role="tablist"><button role="tab">Metrics</button><button role="tab">Dashboard</button></div>', false],
+      [body.replace('<a href="#signup">Join early access</a>', '<form><label for="e">Email</label><input id="e" type="email"><button type="submit">Start writing free</button></form>'), true],
+      [body.replace('<a href="#signup">Join early access</a>', '<form><input type="email"><button type="submit">Start writing free</button></form>'), false],
+      [body.replace('<a href="#signup">Join early access</a>', '<form><label>Email <input type="email"></label><button type="button">Start writing free</button></form>'), false],
+      [body.replace('<a href="#signup">Join early access</a>', '<form><label>Search <input type="search"></label><button>Search</button></form>'), false],
+      [body.replace('<a href="#signup">Join early access</a>', '<form><label for="m">Email</label><input id="m" type="text"><button>Start writing free</button></form>'), true],
+      [body.replace('<a href="#signup">Join early access</a>', '<form><label>Search <input type="text"></label><button>Search</button></form>'), false],
+      [body.replace('<a href="#signup">Join early access</a>', '<form><label><input type="email"></label><button>Start writing free</button></form>'), false],
+      [body.replace('<a href="#signup">Join early access</a>', '<form><input type="email" aria-labelledby="missing"><button>Start writing free</button></form>'), false],
     ] as const) expect(hasSimplerWebsite(await renderRuntimeArtifact(ctx, html))).toBe(valid);
   } finally { await context.close(); await browser.close(); }
 }, 30_000);

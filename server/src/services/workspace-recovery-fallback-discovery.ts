@@ -1,13 +1,12 @@
 import { sql } from "drizzle-orm";
 import { issueRecoveryActions } from "@paperclipai/db";
 import { REMOTE_WORKSPACE_CAPTURE_POLICY_VERSION } from "./remote-workspace-snapshot-archive.js";
-import { CAPTURE_POLICY_REARM_CODES, isExhaustedStopProofWait, STOP_PROOF_MAX_REARMS, STOP_PROOF_RECOVERY_KEY, STOP_PROOF_RECOVERY_SCHEMA, STOP_PROOF_WAIT_CODE,
+import { CAPTURE_POLICY_REARM_CODES, FINISHED_COORDINATOR_PHASES, PERMANENT_SOURCE_RETRY_CLASSES, UNVERIFIABLE_SOURCE_CODES, isExhaustedStopProofWait, STOP_PROOF_MAX_REARMS, STOP_PROOF_RECOVERY_KEY, STOP_PROOF_RECOVERY_SCHEMA, STOP_PROOF_WAIT_CODE,
   stopProofRearmsSpent, type SystemRecoveryState } from "./system-recovery-state.js";
 import { canonicalExecutionUuid } from "./execution-identity.js";
 
 /** Source refusals that repeat on every retry (see workspace-recovery-fallback). */
-export const UNVERIFIABLE_SOURCE_CODES = ["allocation_ownership_ambiguous", "source_binding_invalid", "source_unavailable", "historical_source_missing"] as const;
-export const PERMANENT_SOURCE_RETRY_CLASSES = ["service_required", "use_alternative_strategy"] as const;
+export { PERMANENT_SOURCE_RETRY_CLASSES, UNVERIFIABLE_SOURCE_CODES };
 export const RETAINED_SOURCE_FALLBACK_CHECK_KEY = "retainedSourceFallbackCheck";
 /** Holds of an accepted result whose copy-back could not finish. */
 export const EXPORT_HOLD_CAUSES = ["native_workspace_sync_out_unrecoverable", "native_workspace_sync_out_retry_exhausted"] as const;
@@ -15,8 +14,14 @@ export const EXPORT_HOLD_CAUSES = ["native_workspace_sync_out_unrecoverable", "n
  * no-replay hold. It is recorded resolved-but-blocked: replay stays blocked
  * until its files are recovered, or the task continues from the last save. */
 export const NATIVE_NO_REPLAY_HOLD_CAUSE = "native_continuation_requires_reconciliation";
+/** Marks the retained-file hold of a result retired as superseded while its
+ * workspace export failed. No result waits for those files, so once the
+ * bounded re-export is spent the task continues from its last save. */
+export const SUPERSEDED_WORKSPACE_EXPORT_KEY = "supersededWorkspaceExport";
+export const SUPERSEDED_WORKSPACE_EXPORT_SCHEMA = "paperclip.superseded-workspace-export.v1";
 
 type HoldAction = { cause: string; status: string; outcome: string | null; evidence: Record<string, unknown> };
+const list = (values: readonly string[]) => sql.join(values.map(value => sql`${value}`), sql`, `);
 const field = (value: unknown, key: string) => value && typeof value === "object" ? (value as Record<string, unknown>)[key] : undefined;
 
 /** Whether this recovery action is a retained-file hold the fallback may settle. */
@@ -40,10 +45,19 @@ function retainedFileHoldCondition() {
       and ${issueRecoveryActions.evidence}#>>'{automaticRecovery,runId}' = ${issueRecoveryActions.evidence}->>'runId'))`;
 }
 
+/** Whether a hold names the superseded export of its own source run. */
+export function isSupersededWorkspaceExportHold(evidence: Record<string, unknown> | null | undefined) {
+  const marker = evidence?.[SUPERSEDED_WORKSPACE_EXPORT_KEY];
+  return field(marker, "schema") === SUPERSEDED_WORKSPACE_EXPORT_SCHEMA && typeof evidence?.runId === "string"
+    && field(marker, "runId") === evidence.runId;
+}
+
 /** Whether an exhausted hold may continue from the last save: its source is
- * refused permanently, or its stop stayed unproven through every re-arm. */
+ * refused permanently, its stop stayed unproven through every re-arm, or it
+ * holds the files of a superseded result whose bounded re-export is spent. */
 export function retainedHoldFallbackEligible(evidence: Record<string, unknown> | null | undefined, state: SystemRecoveryState | null) {
   if (!state || state.state !== "exhausted") return false;
+  if (isSupersededWorkspaceExportHold(evidence)) return true;
   const failure = state.failure;
   if (failure && (UNVERIFIABLE_SOURCE_CODES as readonly string[]).includes(failure.code)
     && (PERMANENT_SOURCE_RETRY_CLASSES as readonly string[]).includes(failure.retryClass)) return true;
@@ -63,17 +77,23 @@ const exhaustedStopProofWait = sql`(${issueRecoveryActions.evidence}#>>'{systemR
   and ${issueRecoveryActions.evidence}#>>'{systemRecovery,failure,code}' = ${STOP_PROOF_WAIT_CODE}
   and ${issueRecoveryActions.evidence}#>>'{systemRecovery,failure,retryClass}' = 'recheck_evidence')`;
 
+// A stale (lapsed or expiry-less) owner of an unfinished coordinator waits for
+// the abandoned-owner settlement: the attempt would refuse it, and the passive
+// sweep revisits the hold after it. The re-arm itself releases a lapsed owner
+// of a finished coordinator (lapsedFinishedCoordinatorOwner), because no
+// settlement ever would.
+const staleUnfinishedFinalizerOwner = sql`exists (select 1 from native_run_finalizations finalizer
+  where finalizer.company_id = ${issueRecoveryActions.companyId} and finalizer.run_id = ${sourceRunId}
+    and finalizer.lease_owner is not null and coalesce(finalizer.lease_expires_at <= now(), true)
+    and finalizer.phase not in (${list(FINISHED_COORDINATOR_PHASES)}))`;
+
 /** An exhausted unproven-stop hold whose next bounded re-arm is pending. Holds
- * saved by older releases carry no marker and are due immediately. A finalizer
- * owner whose lease is not live waits for the abandoned-owner settlement (the
- * attempt would refuse it, and the passive sweep revisits the hold after it);
- * a live one makes the re-arm due at its expiry (stopProofRearmDueAt). */
+ * saved by older releases carry no marker and are due immediately. A live
+ * finalizer lease makes the re-arm due at its expiry (stopProofRearmDueAt). */
 export function stopProofRearmPendingCondition() {
   return sql`(${issueRecoveryActions.status} in ('active', 'escalated')
     and ${exhaustedStopProofWait}
-    and not exists (select 1 from native_run_finalizations finalizer
-      where finalizer.company_id = ${issueRecoveryActions.companyId} and finalizer.run_id = ${sourceRunId}
-        and finalizer.lease_owner is not null and coalesce(finalizer.lease_expires_at <= now(), true))
+    and not ${staleUnfinishedFinalizerOwner}
     and ${issueRecoveryActions.evidence}->'retainedSourceFallback' is null
     and ${issueRecoveryActions.evidence}->'executionReconciliation' is null
     and ${stopProofRearms} < ${STOP_PROOF_MAX_REARMS})`;
@@ -101,7 +121,6 @@ export function stopProofRearmDueCondition(now: number) {
   return sql`(${stopProofRearmPendingCondition()} and ${stopProofRearmDueAt()} <= ${now}::bigint)`;
 }
 
-const list = (values: readonly string[]) => sql.join(values.map(value => sql`${value}`), sql`, `);
 const capturePolicyVersion = sql`case when jsonb_typeof(${issueRecoveryActions.evidence}#>'{systemRecovery,capturePolicyVersion}') = 'number'
   then (${issueRecoveryActions.evidence}#>>'{systemRecovery,capturePolicyVersion}')::int else 1 end`;
 
@@ -114,9 +133,7 @@ export function capturePolicyRearmPendingCondition() {
     and ${issueRecoveryActions.evidence}#>>'{systemRecovery,phase}' = 'preserve_files'
     and ${issueRecoveryActions.evidence}#>>'{systemRecovery,failure,code}' in (${list(CAPTURE_POLICY_REARM_CODES)})
     and ${capturePolicyVersion} < ${REMOTE_WORKSPACE_CAPTURE_POLICY_VERSION}
-    and not exists (select 1 from native_run_finalizations finalizer
-      where finalizer.company_id = ${issueRecoveryActions.companyId} and finalizer.run_id = ${sourceRunId}
-        and finalizer.lease_owner is not null and coalesce(finalizer.lease_expires_at <= now(), true))
+    and not ${staleUnfinishedFinalizerOwner}
     and ${issueRecoveryActions.evidence}->'retainedSourceFallback' is null
     and ${issueRecoveryActions.evidence}->'executionReconciliation' is null)`;
 }
@@ -156,11 +173,18 @@ export function retainedSourceFallbackPendingCondition() {
         and exists (select 1 from heartbeat_runs source where source.company_id = ${issueRecoveryActions.companyId}
           and source.id = ${sourceRunId}
           and source.runner_profile_json#>>'{remoteWorkspace,state}' = 'prepared'))
+      or (${retainedFileHoldCondition()}
+        and ${issueRecoveryActions.evidence}#>>'{${sql.raw(SUPERSEDED_WORKSPACE_EXPORT_KEY)},schema}' = ${SUPERSEDED_WORKSPACE_EXPORT_SCHEMA}
+        and ${issueRecoveryActions.evidence}#>>'{${sql.raw(SUPERSEDED_WORKSPACE_EXPORT_KEY)},runId}' = ${issueRecoveryActions.evidence}->>'runId'
+        and exists (select 1 from heartbeat_runs source where source.company_id = ${issueRecoveryActions.companyId}
+          and source.id = ${sourceRunId}
+          and source.runner_profile_json#>>'{remoteWorkspace,state}' = 'prepared'))
       or (${retainedFileHoldCondition()} and ${exhaustedStopProofWait} and ${stopProofRearms} >= ${STOP_PROOF_MAX_REARMS}
         and exists (select 1 from heartbeat_runs source where source.company_id = ${issueRecoveryActions.companyId}
           and source.id = ${sourceRunId}
           and source.runner_profile_json#>>'{remoteWorkspace,state}' = 'prepared'))
-      or (${issueRecoveryActions.status} in ('active', 'escalated') and exists (select 1 from issue_recovery_actions sibling
+      or ((${issueRecoveryActions.status} in ('active', 'escalated') or ${retainedFileHoldCondition()})
+        and exists (select 1 from issue_recovery_actions sibling
         where sibling.company_id = ${issueRecoveryActions.companyId} and sibling.source_issue_id = ${issueRecoveryActions.sourceIssueId}
           and sibling.id <> ${issueRecoveryActions.id} and sibling.evidence->>'runId' = ${issueRecoveryActions.evidence}->>'runId'
           and sibling.evidence#>>'{systemRecovery,state}' = 'complete'

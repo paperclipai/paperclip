@@ -8,8 +8,9 @@ export function recentTaskPathRef(task: { id: string; identifier: string | null 
 }
 
 /**
- * A Recents task link. It warms the task on open intent the same way task
- * lists do, under the reference the task page reads.
+ * A sidebar task link (Recents, a project's recent tasks). It warms the task
+ * on open intent the same way task lists do, under the reference the task
+ * page reads.
  */
 export function RecentTaskNavItem({
   task,

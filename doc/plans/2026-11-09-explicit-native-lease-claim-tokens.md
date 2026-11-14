@@ -22,7 +22,14 @@ succeeds only when all of these hold:
   process start are unchanged;
 - the phase is `observed` and no result was accepted;
 - `recovery_state`, `recovery_request_id`, `failure_code` and `next_attempt_at`
-  are null;
+  are null, or (2026-11-10) they still show exactly the local restart-recovery
+  claim that granted this lease: the last `recovery_history` entry names this
+  boot and generation, its disposition pairs with `recovery_state`
+  (`resume_dead_runner`/`resuming_session`, `reattach_existing_runner`/
+  `awaiting_runner_reattach`, `bootstrap_incomplete`/`bootstrap_incomplete`),
+  and `recovery_request_id` is the request that claim recorded. A resumed run
+  keeps that state until a result is accepted, so without this rule it could
+  never survive a later host sleep;
 - `controller_host_hash` is not the board's attested-stopped stamp;
 - the run is still `running`, without the ownership-unverified error code and
   without a `nativeStartupCleanup` marker;
@@ -31,7 +38,11 @@ succeeds only when all of these hold:
 After a result is accepted, the owner may only relinquish a lapsed lease, and
 never renews it. The rule lives in `nativeExecutionLeaseHeldCondition` and
 `lockNativeExecutionLeaseForReacquire` (`native-execution-lease.ts`). Renewal,
-failure settlement and the final release use it.
+failure settlement and the final release use it. Budget admission of a restart
+claim (`lockRunBudgetRecoveryOwnerInTransaction`) uses it too, through
+`holdOwnNativeRecoveryClaimInTransaction` (2026-11-10). A restart claim whose lease
+lapsed in a time jump before dispatch therefore takes the lease back when the row
+still shows exactly that claim. The budget checks that follow are unchanged.
 
 This works because every consumer that acts on a lapsed executor lease of a
 running, pre-result run already writes one of those fields under the coordinator

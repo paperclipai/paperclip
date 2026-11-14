@@ -703,7 +703,9 @@ export function decisionService(db: Db, options: DecisionServiceOptions) {
   }
 
   async function decide(input: { id: string; optionId: string; inputValues?: Record<string, string>; idempotencyKey?: string | null; decidedByUserId: string;
-    userActor: AuthorizationActor; dismissed?: boolean; dismissReason?: string | null }) {
+    userActor: AuthorizationActor; dismissed?: boolean; dismissReason?: string | null;
+    /** Extra activity details, e.g. the receipt for the person the card was for (PAP-749 plan §6). */
+    activityDetails?: Record<string, unknown> }) {
     const current = await get(input.id); if (!current) throw notFound("Decision not found");
     const metadata = current.metadata as Record<string, unknown>;
     if (!verifyDecisionSpec(spec({ id: current.id, options: current.options, targetSnapshots: current.targetSnapshots as Record<string, Snapshot> }), current.signedSpec)) throw forbidden("Decision signature verification failed");
@@ -735,21 +737,29 @@ export function decisionService(db: Db, options: DecisionServiceOptions) {
     await logActivity(db, { companyId: claimed.companyId, actorType: "system", actorId: "decision-executor", agentId: claimed.originAgentId, runId: claimed.originRunId,
       responsibleUserIdOverride: input.decidedByUserId, action: input.dismissed ? "decision.dismissed" : "decision.decided", entityType: "decision", entityId: claimed.id,
       details: { chosenOptionId: input.optionId, decidedByUserId: input.decidedByUserId, originResponsibleUserId: run?.responsibleUserId ?? null,
-        ...(input.dismissed ? { dismissed: true, dismissReason: input.dismissReason ?? null } : {}) } });
+        ...(input.dismissed ? { dismissed: true, dismissReason: input.dismissReason ?? null } : {}), ...input.activityDetails } });
     return resumeDecision(claimed, input.userActor);
   }
 
-  async function cancel(id: string, actor: { actorType: "agent" | "user"; actorId: string; runId?: string | null }) {
+  async function cancel(id: string, actor: { actorType: "agent" | "user"; actorId: string; runId?: string | null },
+    options: { reason?: string | null; activityDetails?: Record<string, unknown> } = {}) {
     const current = await get(id); if (!current) throw notFound("Decision not found");
     if (actor.actorType === "agent" && actor.actorId !== current.originAgentId) throw forbidden("Only the origin agent may cancel");
     if (current.status === "cancelled") {
       await continuations.deliver(current.id);
       return (await get(id))!;
     }
-    const [updated] = await writeDecisionChange(db, async tx => tx.update(decisions).set({ status: "cancelled", updatedAt: new Date(), metadata: { ...current.metadata,
+    // A person who withdraws an out-of-date decision (PAP-749) is recorded as
+    // its closer, with the reason, so history can say who withdrew it.
+    const reason = options.reason?.trim() || null;
+    const byUser = actor.actorType === "user" ? { decidedByUserId: actor.actorId, decidedAt: new Date() } : {};
+    const [updated] = await writeDecisionChange(db, async tx => tx.update(decisions).set({ status: "cancelled", ...byUser, updatedAt: new Date(), metadata: { ...current.metadata,
+      ...(reason ? { cancelReason: reason } : {}),
       ...(current.continuationPolicy === "wake_origin_agent" ? { continuationPending: true } : {}) } }).where(and(eq(decisions.id, id), eq(decisions.status, "open"))).returning(), { companyId: current.companyId, sourceId: id });
     if (!updated) throw conflict("decision_already_resolved", { code: "decision_already_resolved" });
-    await logActivity(db, { companyId: updated.companyId, actorType: actor.actorType, actorId: actor.actorId, runId: actor.runId, action: "decision.cancelled", entityType: "decision", entityId: id });
+    const details = { ...(reason ? { reason } : {}), ...options.activityDetails };
+    await logActivity(db, { companyId: updated.companyId, actorType: actor.actorType, actorId: actor.actorId, runId: actor.runId, action: "decision.cancelled", entityType: "decision", entityId: id,
+      ...(Object.keys(details).length > 0 ? { details } : {}) });
     await continuations.deliver(updated.id);
     return (await get(id))!;
   }

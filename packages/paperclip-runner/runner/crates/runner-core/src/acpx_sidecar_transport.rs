@@ -18,9 +18,51 @@ use crate::provider_failure::validated_provider_failure;
 use crate::stable_identity::{is_stable_id, DURABLE_STABLE_ID_CHARS, SHORT_STABLE_ID_CHARS};
 
 pub const ACPX_SIDECAR_MAX_FRAME_BYTES: usize = 1024 * 1024;
-const MAX_BUFFERED_EVENTS: usize = 512;
+const SIDECAR_MAX_UNFLUSHED_OUTPUT_BYTES: usize = 4 * ACPX_SIDECAR_MAX_FRAME_BYTES;
+const MAX_BUFFERED_EVENT_BYTES: usize = 4 * SIDECAR_MAX_UNFLUSHED_OUTPUT_BYTES;
+const MAX_BUFFERED_EVENTS: usize = MAX_BUFFERED_EVENT_BYTES / 256;
 const MAX_EVENT_POLL_TIMEOUT: Duration = Duration::from_secs(120);
 const MAX_JSON_SAFE_INTEGER: u64 = 9_007_199_254_740_991;
+/// A response wait blocks in slices of at most this long.
+const RESPONSE_WAIT_SLICE: Duration = Duration::from_secs(1);
+/// A slice that returns this much later than it asked was not waiting: this
+/// process was stopped (SIGSTOP, a frozen container, a whole-process stall).
+const STOPPED_TIME_THRESHOLD: Duration = Duration::from_secs(2);
+/// After a stop, the thawed sidecar keeps at least this long to answer.
+const POST_STOP_GRACE: Duration = Duration::from_secs(5);
+/// One request never credits more stopped time than this in total.
+const MAX_STOPPED_CREDIT: Duration = Duration::from_secs(15 * 60);
+
+/// Moves `deadline` later after a wait slice that this process spent stopped.
+///
+/// The sidecar is a child of this process and is normally stopped with it, so
+/// it could not answer either. Without this, a thaw found the deadline already
+/// past and failed the request before either process ran (chaos t05: a 61 s
+/// freeze failed a turn start against its 30 s bound). The slice overshoot is
+/// credited, and the deadline is at least `POST_STOP_GRACE` after the thaw, so
+/// a stop in the last slice still leaves the sidecar time to answer. Total
+/// credit is capped, so a process that never runs normally still times out.
+/// `credited` carries the request's total credit between slices.
+pub(crate) fn credit_stopped_time(
+    deadline: Instant,
+    slice: Duration,
+    slice_ended: Instant,
+    elapsed: Duration,
+    credited: &mut Duration,
+) -> Instant {
+    let Some(stopped) = elapsed.checked_sub(slice) else {
+        return deadline;
+    };
+    if stopped <= STOPPED_TIME_THRESHOLD || *credited >= MAX_STOPPED_CREDIT {
+        return deadline;
+    }
+    let extended = (deadline + stopped).max(slice_ended + POST_STOP_GRACE);
+    let credit = extended
+        .saturating_duration_since(deadline)
+        .min(MAX_STOPPED_CREDIT - *credited);
+    *credited += credit;
+    deadline + credit
+}
 
 #[derive(Clone, Debug)]
 pub struct AcpxSidecarTransportConfig {
@@ -88,7 +130,9 @@ pub struct AcpxSidecarTransport {
     request_deadline: Option<Instant>,
     next_request_id: u64,
     last_event_sequence: u64,
-    buffered_events: VecDeque<AcpxSidecarEvent>,
+    buffered_events: VecDeque<(AcpxSidecarEvent, usize)>,
+    buffered_event_bytes: usize,
+    last_polled_event_bytes: usize,
     stderr_tail: BoundedLogBuffer,
     stderr_categories: BTreeSet<&'static str>,
     poisoned: bool,
@@ -255,11 +299,6 @@ impl AcpxSidecarTransport {
             "no_proxy",
             "all_proxy",
             "RUST_BACKTRACE",
-            "PAPERCLIP_NATIVE_MCP_NAME",
-            "PAPERCLIP_NATIVE_MCP_URL",
-            // The qualified sidecar configures the runner-owned gateway. Keep
-            // its credential with the name/URL; unrelated secrets stay excluded.
-            "PAPERCLIP_NATIVE_MCP_TOKEN",
             "PAPERCLIP_NATIVE_MCP_STDIO",
             "PAPERCLIP_NATIVE_MCP_PROXY",
             "PAPERCLIP_ACPX_BUILTIN_ROOT",
@@ -404,6 +443,8 @@ impl AcpxSidecarTransport {
             next_request_id: 1,
             last_event_sequence: 0,
             buffered_events: VecDeque::new(),
+            buffered_event_bytes: 0,
+            last_polled_event_bytes: 0,
             stderr_tail: BoundedLogBuffer::new(32, 8 * 1024),
             stderr_categories: BTreeSet::new(),
             poisoned: false,
@@ -429,7 +470,7 @@ impl AcpxSidecarTransport {
     }
 
     pub(crate) fn buffered_events(&self) -> impl ExactSizeIterator<Item = &AcpxSidecarEvent> {
-        self.buffered_events.iter()
+        self.buffered_events.iter().map(|(event, _)| event)
     }
 
     pub fn request(
@@ -515,22 +556,33 @@ impl AcpxSidecarTransport {
                 "ACPX sidecar event poll timeout must not exceed 120 s",
             ));
         }
-        if let Some(event) = self.buffered_events.pop_front() {
+        self.last_polled_event_bytes = 0;
+        if let Some((event, bytes)) = self.buffered_events.pop_front() {
+            self.buffered_event_bytes -= bytes;
+            self.last_polled_event_bytes = bytes;
             return Ok(Some(event));
         }
         if timeout.is_zero() {
             return Ok(None);
         }
-        let result = self.poll_event_inner(timeout);
-        if result.is_err() {
-            self.poison();
+        match self.poll_event_inner(timeout) {
+            Ok(Some((event, bytes))) => {
+                self.last_polled_event_bytes = bytes;
+                Ok(Some(event))
+            }
+            Ok(None) => Ok(None),
+            Err(error) => {
+                self.poison();
+                Err(error)
+            }
         }
-        result
     }
 
     pub(crate) fn defer_polled_event(&mut self, event: AcpxSidecarEvent) {
         // poll_event already validated its sequence and freed its FIFO slot.
-        self.buffered_events.push_front(event);
+        let bytes = std::mem::take(&mut self.last_polled_event_bytes);
+        self.buffered_event_bytes += bytes;
+        self.buffered_events.push_front((event, bytes));
     }
 
     pub fn shutdown(&mut self) -> Result<(), LocalRunnerError> {
@@ -710,16 +762,29 @@ impl AcpxSidecarTransport {
         request_id: u64,
         deadline: Instant,
     ) -> Result<Option<CommandOutcome>, LocalRunnerError> {
+        let mut deadline = deadline;
+        let mut credited = Duration::ZERO;
         loop {
-            let remaining = deadline.saturating_duration_since(Instant::now());
+            let slice_started = Instant::now();
+            let remaining = deadline.saturating_duration_since(slice_started);
             if remaining.is_zero() {
                 return Ok(None);
             }
-            let Some(line) = self.receive_stdout_line(remaining, command.as_str())? else {
-                return Ok(None);
+            let slice = remaining.min(RESPONSE_WAIT_SLICE);
+            let received = self.receive_stdout_line(slice, command.as_str())?;
+            let slice_ended = Instant::now();
+            deadline = credit_stopped_time(
+                deadline,
+                slice,
+                slice_ended,
+                slice_ended.saturating_duration_since(slice_started),
+                &mut credited,
+            );
+            let Some(line) = received else {
+                continue;
             };
             match parse_frame(&line)? {
-                ParsedFrame::Event(event) => self.buffer_event(event)?,
+                ParsedFrame::Event(event) => self.buffer_event(event, line.len())?,
                 ParsedFrame::Response(response) => {
                     if self.abandoned_observation == Some(response.id) {
                         self.abandoned_observation = None;
@@ -763,7 +828,7 @@ impl AcpxSidecarTransport {
     fn poll_event_inner(
         &mut self,
         timeout: Duration,
-    ) -> Result<Option<AcpxSidecarEvent>, LocalRunnerError> {
+    ) -> Result<Option<(AcpxSidecarEvent, usize)>, LocalRunnerError> {
         let deadline = Instant::now() + timeout;
         loop {
             let Some(line) = self.receive_stdout_line(
@@ -776,7 +841,7 @@ impl AcpxSidecarTransport {
             match parse_frame(&line)? {
                 ParsedFrame::Event(event) => {
                     self.validate_event_sequence(event.sequence)?;
-                    return Ok(Some(event));
+                    return Ok(Some((event, line.len())));
                 }
                 ParsedFrame::Response(response)
                     if self.abandoned_observation == Some(response.id) =>
@@ -834,14 +899,21 @@ impl AcpxSidecarTransport {
         }
     }
 
-    fn buffer_event(&mut self, event: AcpxSidecarEvent) -> Result<(), LocalRunnerError> {
-        if self.buffered_events.len() >= MAX_BUFFERED_EVENTS {
+    fn buffer_event(
+        &mut self,
+        event: AcpxSidecarEvent,
+        bytes: usize,
+    ) -> Result<(), LocalRunnerError> {
+        if self.buffered_events.len() >= MAX_BUFFERED_EVENTS
+            || self.buffered_event_bytes.saturating_add(bytes) > MAX_BUFFERED_EVENT_BYTES
+        {
             return Err(LocalRunnerError::invalid(
                 "ACPX sidecar exceeded the buffered event limit",
             ));
         }
         self.validate_event_sequence(event.sequence)?;
-        self.buffered_events.push_back(event);
+        self.buffered_event_bytes += bytes;
+        self.buffered_events.push_back((event, bytes));
         Ok(())
     }
 
@@ -946,6 +1018,7 @@ impl AcpxSidecarTransport {
         }
         self.poisoned = true;
         self.buffered_events.clear();
+        self.buffered_event_bytes = 0;
         let _ = self.process.terminate_group();
     }
 }
@@ -1288,8 +1361,66 @@ fn response_error_classification(error: &ResponseError) -> &'static str {
 #[cfg(test)]
 mod tests {
     #[test]
+    fn credits_a_stop_and_leaves_the_sidecar_time_to_answer() {
+        let start = Instant::now();
+        let deadline = start + Duration::from_secs(30);
+        let slice = Duration::from_secs(1);
+        let mut credited = Duration::ZERO;
+        // A slice that returned on time, or a little late on a loaded host.
+        for elapsed in [Duration::from_millis(400), Duration::from_millis(2_900)] {
+            assert_eq!(
+                credit_stopped_time(deadline, slice, start + elapsed, elapsed, &mut credited),
+                deadline
+            );
+        }
+        assert_eq!(credited, Duration::ZERO);
+        // A 61 s freeze inside a 1 s slice early in the wait: 60 s are credited.
+        let ended = start + Duration::from_secs(61);
+        assert_eq!(
+            credit_stopped_time(
+                deadline,
+                slice,
+                ended,
+                Duration::from_secs(61),
+                &mut credited
+            ),
+            deadline + Duration::from_secs(60)
+        );
+        // A freeze in the last 0.5 s slice still leaves the grace after thaw.
+        let mut credited = Duration::ZERO;
+        let last = start + Duration::from_millis(29_500);
+        let half = Duration::from_millis(500);
+        let ended = last + Duration::from_secs(60);
+        assert_eq!(
+            credit_stopped_time(
+                deadline,
+                half,
+                ended,
+                Duration::from_secs(60),
+                &mut credited
+            ),
+            ended + POST_STOP_GRACE
+        );
+        // Total credit is capped.
+        let mut credited = MAX_STOPPED_CREDIT;
+        assert_eq!(
+            credit_stopped_time(
+                deadline,
+                slice,
+                ended,
+                Duration::from_secs(61),
+                &mut credited
+            ),
+            deadline
+        );
+    }
+
+    #[test]
     #[cfg(unix)]
     fn a_timed_out_turn_start_never_establishes_a_resumable_rejection() {
+        // Shutdown can orphan the `sleep` for a moment after its shell dies.
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
+        let _orphans = crate::process_lineage::host_orphans::may_orphan();
         let mut transport = AcpxSidecarTransport::start(&AcpxSidecarTransportConfig {
             command: "/bin/sh".into(),
             args: vec!["-c".to_owned(), "read request; sleep 10".to_owned()],

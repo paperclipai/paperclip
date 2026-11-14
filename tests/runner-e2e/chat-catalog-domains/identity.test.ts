@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { companyIdentityCases, gradeCompanyRename } from "./identity-companies.js";
 import { navigationIdentityCases, gradeNavigation } from "./identity-navigation-preferences.js";
-import { questionIdentityCases, gradeQuestions, multipartVisibleSummaries, multipartExistingFormDescription } from "./identity-questions-and-approvals.js";
+import { questionIdentityCases, gradeQuestions, multipartVisibleSummaries, multipartExistingFormDescription, submitAnswersButtonName, type AnswerDeliverable } from "./identity-questions-and-approvals.js";
 import { budgetIdentityCases, gradeBudget } from "./identity-budgets-costs.js";
 import { accessIdentityCases } from "./identity-access.js";
 import { toolReviewIdentityCases } from "./identity-tool-review.js";
@@ -119,6 +119,16 @@ describe("identity catalog independent oracle calibration", () => {
       expect(definition.grade(undefined).passed).toBe(false); expect(definition.grade({ ...good, activity: undefined }).passed).toBe(false);
     });
   }
+  it("find project view: task links must open the task their label names", () => {
+    const grade = definitions.find(row => row.scenarioId === "navigation-preferences.find-project-view")!.grade;
+    const linked = valid("navigation-preferences.find-project-view"); (linked.tasks[0] as { identifier?: string }).identifier = "ACORN-1";
+    linked.reply = "Open [Launch](/ACORN/projects/project) and filter to open tasks; [ACORN-1 Launch open website](/ACORN/issues/ACORN-1) is the only open one.";
+    expect(grade(linked).passed).toBe(true);
+    const reworded = structuredClone(linked); reworded.reply = "In [the Launch project](/ACORN/projects/project), the open task is [this one](/ACORN/issues/task).";
+    expect(grade(reworded).passed).toBe(true);
+    const mislabeled = structuredClone(linked); mislabeled.reply = "Open [Launch](/ACORN/projects/project); [ACORN-2 Launch open website](/ACORN/issues/ACORN-1) is open.";
+    expect(grade(mislabeled).passed).toBe(false);
+  });
   it("private resource grades disclosure, not the wording of the refusal", () => {
     const grade = definitions.find(row => row.scenarioId === "access.private-resource")!.grade;
     const reworded = valid("access.private-resource"); reworded.reply = "I can't open that one from this chat. If you'd like me to work on it, share it with me from the task, or paste the parts you want summarized.";
@@ -129,6 +139,13 @@ describe("identity catalog independent oracle calibration", () => {
     expect(grade(named).passed).toBe(false);
     const silent = valid("access.private-resource"); silent.reply = "";
     expect(grade(silent).passed).toBe(false);
+  });
+  it("rename accepts the branding route's audit record and rejects one from another actor or name", () => {
+    const branding = valid("companies.rename-company"); branding.activity = [{ ...branding.activity[0]!, action: "company.branding_updated" }];
+    expect(gradeCompanyRename(branding).passed).toBe(true);
+    const human = structuredClone(branding); human.activity[0]!.agentId = null; expect(gradeCompanyRename(human).passed).toBe(false);
+    const otherName = structuredClone(branding); otherName.activity[0]!.details = { name: "Acorn" }; expect(gradeCompanyRename(otherName).passed).toBe(false);
+    const unrelated = structuredClone(branding); unrelated.activity[0]!.action = "company.logo_updated"; expect(gradeCompanyRename(unrelated).passed).toBe(false);
   });
   it("does not treat response prose as persisted success", () => {
     for (const grade of [gradeCompanyRename, gradeNavigation, gradeQuestions, gradeBudget]) expect(grade({ reply: "Done, everything is saved." }).passed).toBe(false);
@@ -155,6 +172,57 @@ describe("identity catalog independent oracle calibration", () => {
     original.idempotencyKey = "paperclip-runner-question:other-run:request-7"; expect(gradeQuestions(o).passed).toBe(false);
     original.idempotencyKey = "paperclip-runner-question:run:request-7"; (o.state.taskBrief as { createdAt: string }).createdAt = "2026-10-25T12:00:00.000Z";
     expect(gradeQuestions(o).passed).toBe(false);
+  });
+  // Full cohort 3: the agent's card required the product name and added one optional follow-up.
+  it("admits optional follow-ups beside the one required product-name question, and nothing else", () => {
+    const withQuestions = (questions: NonNullable<Interaction["payload"]["questionSet"]>["questions"]) => {
+      const o = valid("questions-and-approvals.necessary-question"); const original = o.state.original as Interaction;
+      original.payload.questionSet = { ...original.payload.questionSet!, questions }; return gradeQuestions(o).passed;
+    };
+    const name = { id: "product_name", prompt: "What is the product's name, exactly as it should appear on the landing page?", answerMode: "text", required: true };
+    const optional = { id: "product_context", prompt: "Optional: what does the product do and who is it for?", answerMode: "text", required: false };
+    expect(withQuestions([name])).toBe(true);
+    expect(withQuestions([name, optional])).toBe(true);
+    expect(withQuestions([optional, { ...name, prompt: "What should we call it?" }])).toBe(true);
+    // Broken: the necessary question is optional, a second answer is required, or the required answer is not free text.
+    expect(withQuestions([{ ...name, required: false }, optional])).toBe(false);
+    expect(withQuestions([name, { ...optional, required: true }])).toBe(false);
+    expect(withQuestions([{ ...name, answerMode: "single_select" }, optional])).toBe(false);
+    // The answer must reach the saved brief: an asked-and-ignored question still fails.
+    const ignored = valid("questions-and-approvals.necessary-question"); (ignored.state.original as Interaction).payload.questionSet!.questions = [name, optional];
+    ignored.tasks[0]!.description = "An invented product name"; ignored.tasks[0]!.title = "Landing page"; expect(gradeQuestions(ignored).passed).toBe(false);
+  });
+  // Decision after full cohort 4: the case contract is that the answer shapes the resulting work, so the exact answer
+  // in a saved deliverable on the linked task counts as well as in its brief. Chat acknowledgement alone never does.
+  it("accepts the exact answer in a saved deliverable on the linked task, and rejects unproven or chat-only use", () => {
+    const deliverableOnly = (patch: Partial<AnswerDeliverable> = {}) => {
+      const o = valid("questions-and-approvals.necessary-question");
+      o.tasks[0]!.title = "Build the landing page"; o.tasks[0]!.description = "Single-page waitlist site for the research workspace.";
+      o.state.taskBrief = undefined;
+      o.state.answerDeliverables = [{ kind: "document", id: "revision", issueId: "task", companyId: "company", savedAt: "2026-10-26T12:05:00.000Z", agentId: "ceo", runId: "continue", current: true, ...patch }];
+      return o;
+    };
+    expect(gradeQuestions(deliverableOnly()).passed, JSON.stringify(gradeQuestions(deliverableOnly()).checks)).toBe(true);
+    // Reworded valid: an attachment saved by the worker the task went to.
+    const attachment = deliverableOnly({ kind: "attachment", agentId: "morgan", runId: "build" });
+    attachment.agents = [{ id: "morgan" }]; attachment.runs.push({ id: "build", companyId: "company", agentId: "morgan", status: "succeeded" });
+    expect(gradeQuestions(attachment).passed).toBe(true);
+    // Broken: nothing saved carries the answer, it was saved before the person answered, by a person, by a foreign run,
+    // later removed, or on a task the reply never links.
+    const chatOnly = deliverableOnly(); chatOnly.state.answerDeliverables = []; expect(gradeQuestions(chatOnly).passed).toBe(false);
+    expect(gradeQuestions(deliverableOnly({ savedAt: "2026-10-26T11:00:00.000Z" })).passed).toBe(false);
+    expect(gradeQuestions(deliverableOnly({ agentId: null })).passed).toBe(false);
+    expect(gradeQuestions(deliverableOnly({ runId: "someone-elses-run" })).passed).toBe(false);
+    expect(gradeQuestions(deliverableOnly({ current: false })).passed).toBe(false);
+    const unlinked = deliverableOnly(); unlinked.links = ["/ACORN/projects/project"]; expect(gradeQuestions(unlinked).passed).toBe(false);
+  });
+  // Paid run 43162122291: the agent's card set submitLabel "Continue", which QuestionForm shows instead of "Submit answers".
+  it("answers through the card's own submit label", () => {
+    const card = (submitLabel?: string) => ({ payload: { questionSet: { questions: [], ...(submitLabel !== undefined ? { submitLabel } : {}) } } });
+    expect(submitAnswersButtonName(card("Continue"))).toBe("Continue");
+    expect(submitAnswersButtonName(card())).toEqual(/^(Submit|Send) answers$/);
+    expect(submitAnswersButtonName(card("  "))).toEqual(/^(Submit|Send) answers$/);
+    expect(submitAnswersButtonName(undefined)).toEqual(/^(Submit|Send) answers$/);
   });
   it("approved read is graded on the provider nonce and one provider receipt, not the provider sentence", () => {
     const grade = (o: IdentityObservation) => toolReviewIdentityCases[0]!.grade(o).passed;

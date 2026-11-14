@@ -2,7 +2,7 @@ import { createRequire } from "node:module";
 import { afterEach, expect, it, vi } from "vitest";
 import type { ChatCatalogContext } from "../chat-catalog-contract.js";
 import type { InternalObservation } from "./internal-support.js";
-vi.mock("@playwright/test",()=>({expect:Object.assign((node:any)=>({toBeVisible:async()=>{if(!node.visible)throw Error("Missing real UI item");},toBeEditable:async()=>{if(!node.editable)throw Error("Noneditable real UI");},toHaveURL:async(predicate:(url:URL)=>boolean)=>{if(!predicate(new URL(node.url())))throw Error("Wrong actual Studio identity");}}),{poll:(read:()=>Promise<boolean>)=>({toBe:async(expected:boolean)=>{for(let i=0;i<3;i++)if(await read()===expected)return;throw Error("UI content did not hydrate to the saved checklist");}})})}));
+vi.mock("@playwright/test",()=>({expect:Object.assign((node:any)=>({toBeVisible:async()=>{if(!node.visible)throw Error("Missing real UI item");},toBeEditable:async()=>{if(!node.editable)throw Error("Noneditable real UI");},toHaveURL:async(predicate:(url:URL)=>boolean)=>{if(!predicate(new URL(node.url())))throw Error("Wrong actual Studio identity");},toPass:async()=>{let error:unknown;for(let i=0;i<3;i++){try{await node();return;}catch(caught){error=caught;}}throw error;}}),{poll:(read:()=>Promise<boolean>)=>({toBe:async(expected:boolean)=>{for(let i=0;i<3;i++)if(await read()===expected)return;throw Error("UI content did not hydrate to the saved checklist");}})})}));
 const observed=vi.hoisted(()=>({base:undefined as unknown}));
 vi.mock("./integrator-support.js",async original=>({...await original<typeof import("./integrator-support.js")>(),observeInternal:vi.fn(async(_ctx:unknown,state:unknown)=>({...observed.base as object,state}))}));
 import { gradeIntegratorSkills, authoredChecklistTextBlocks, preservesVisibleWebsiteChecklist, inspectAuthoredSkill, integratorSkillsCases, websiteChecklist } from "./integrator-skills.js";
@@ -13,7 +13,7 @@ function fixture(){
  const skill={id:"skill",companyId:"company",name:"Website review checklist",slug:"website-review-checklist",editable:true,currentVersionId:"revision",markdown,usedByAgents:[]};
  const state:Record<string,unknown>={},o={scenarioId:"skills.author-skill",origin:"https://fixture.test",companyId:"company",leadId:"ceo",state,skills:[skill],versions:{skill:[version]},policy:{},editDecision:{allowed:true},tasks:[],projects:[],goals:[],comments:[],documents:[],revisions:[],humanQueries:["Turn our website review checklist into a reusable skill."],runs:[{id:"native",status:"succeeded",agentId:"ceo",companyId:"company"}],activity:[{action:"company.skill_created",entityId:"skill",agentId:"ceo"}],links:["/skills/studio/skill"],renderedLinkEvidence:[{threadTestId:"task-chat-thread",href:"/skills/studio/skill",source:"reply",conversationId:"conversation",anchorCommentId:"query",commentId:"reply"}],reply:"Created the reusable company skill, saved in the library and not assigned to any agent."} as unknown as InternalObservation;
  observed.base=o;
- const ui={card:true,library:true,studio:true,editable:true,body:markdown,changedAfterReload:false,wrongRoute:false,foreignRoute:false,directStudio:false,delayedHydration:false,inEdit:false,filesSelected:false};const events:string[]=[];
+ const ui={card:true,library:true,studio:true,editable:true,body:markdown,changedAfterReload:false,wrongRoute:false,foreignRoute:false,directStudio:false,delayedHydration:false,inEdit:false,filesSelected:false,ignoredCardClicks:0};const events:string[]=[];
  const editor={get visible(){return ui.studio && (ui.inEdit || ui.directStudio);},get editable(){return ui.editable;},locator:()=>({evaluateAll:async()=>ui.delayedHydration&&editorReads++===0?[]:(ui.changedAfterReload&&reloads?"Lost checklist":ui.body).split("\n")})};
  const page={url:()=>current,getByRole:(role:string,options?:{name?:string})=>{
   if(role==="textbox")return editor;
@@ -22,7 +22,7 @@ function fixture(){
   if(role==="tab" && options?.name==="Files")return{click:async()=>{ui.filesSelected=true;events.push("Files");}};
   if(role==="button" && options?.name==="Edit")return{click:async()=>{if(!ui.editable||!ui.filesSelected)throw Error("No Edit control outside Files");ui.inEdit=true;events.push("Edit");}};
   if(role==="link")return{first:()=>({click:async()=>{events.push(options!.name!);current=options?.name==="Skills"?"https://fixture.test/ACORN/skills":"https://fixture.test/ACORN/skills/studio";}})};
-  return{filter:()=>({first:()=>({get visible(){return ui.library;},click:async()=>{events.push("open-skill");current=ui.foreignRoute?"https://fixture.test/FOREIGN/skills/website-review-checklist":ui.wrongRoute?"https://fixture.test/ACORN/skills/other":ui.directStudio?"https://fixture.test/ACORN/skills/studio/skill":"https://fixture.test/ACORN/skills/website-review-checklist";}})})};
+  return{filter:()=>({first:()=>({get visible(){return ui.library;},click:async()=>{events.push("open-skill");if(ui.ignoredCardClicks>0){ui.ignoredCardClicks--;return;}current=ui.foreignRoute?"https://fixture.test/FOREIGN/skills/website-review-checklist":ui.wrongRoute?"https://fixture.test/ACORN/skills/other":ui.directStudio?"https://fixture.test/ACORN/skills/studio/skill":"https://fixture.test/ACORN/skills/website-review-checklist";}})})};
  },getByText:()=>({first:()=>({get visible(){return ui.studio;}})}),locator:()=>({}),getByTestId:()=>({get visible(){return current===source;},filter:()=>({locator:(selector:string)=>({first:()=>({click:async()=>{if(!selector.includes('"/skills/studio/skill"'))throw Error("Not the rendered skill link");events.push("reply-link");current="https://fixture.test/ACORN/skills/studio/skill";}})})})}),reload:async()=>{reloads++;ui.inEdit=false;ui.filesSelected=false;events.push("reload");},goto:async(url:string)=>{current=url;events.push("return-chat");}};
  const after=structuredClone(skill),get=vi.fn(async(route:string)=>{
   if(route.endsWith("/skills"))return[{id:"skill"}];
@@ -63,8 +63,8 @@ it("rejects invented inspection receipts and keeps other skill cases on their or
  const f=fixture();expect(gradeIntegratorSkills(f.o).passed).toBe(false);
  f.state.authoredSkillInspection={companyId:"company",skillId:"other",versionId:"revision",libraryVisible:true,studioVisible:true,editable:true,checklistVisible:true,reloaded:true,readbackMatched:true};
  expect(gradeIntegratorSkills(f.o).passed).toBe(false);
- expect(integratorSkillsCases.find(x=>x.scenarioId==="skills.explicit-restriction")!.oracleVersion).toBe("paperclip.chat-catalog.integrator.v1");
- expect(integratorSkillsCases.find(x=>x.scenarioId==="skills.author-skill")!.oracleVersion).toBe("paperclip.chat-catalog.skill-authoring.v7");
+ expect(integratorSkillsCases.find(x=>x.scenarioId==="skills.explicit-restriction")!.oracleVersion).toBe("paperclip.chat-catalog.skill-restriction.structural.v2");
+ expect(integratorSkillsCases.find(x=>x.scenarioId==="skills.author-skill")!.oracleVersion).toBe("paperclip.chat-catalog.skill-authoring.v9");
 });
 it("opens the skill from its Skill created card when the reply has no skill link",async()=>{
  const f=fixture();Object.assign(f.o,{links:[],renderedLinkEvidence:[]});
@@ -125,4 +125,12 @@ it.each(["wrong section","missing check","heading only","negated directive","neg
  if(fault==="negated directive")markup=markup.replace("Load the landing page", "Do not test the landing page");
  if(fault==="negated keyboard")markup=markup.replace("Do not use a mouse or touch input.", "Do not use the keyboard.");
  expect(preservesVisibleWebsiteChecklist(renderedSections(markup))).toBe(false);
+});
+
+it("clicks the library card again when the first click leaves the list open (gha-42937394973), still requiring this skill's page",async()=>{
+ const f=fixture(),d=integratorSkillsCases.find(x=>x.scenarioId==="skills.author-skill")!;
+ f.ui.ignoredCardClicks=1; await d.act!(f.ctx,f.state);
+ expect(f.events.filter(e=>e==="open-skill")).toHaveLength(2);
+ expect(f.state.authoredSkillInspection).toMatchObject({skillId:"skill",readbackMatched:true});
+ const wrong=fixture(); wrong.ui.ignoredCardClicks=1; wrong.ui.wrongRoute=true; await expect(d.act!(wrong.ctx,wrong.state)).rejects.toThrow();
 });

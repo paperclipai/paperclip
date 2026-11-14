@@ -1001,6 +1001,8 @@ export interface Issue {
   watchdog?: IssueWatchdogSummary | null;
   scheduledRetry?: IssueScheduledRetry | null;
   liveDescendantCount?: number;
+  /** Descendants whose run started; excludes runs still waiting for an agent slot. */
+  runningDescendantCount?: number;
   relatedWork?: IssueRelatedWorkSummary;
   referencedIssueIdentifiers?: string[];
   planDocument?: IssueDocument | null;
@@ -1076,6 +1078,8 @@ export type CompactIssue = Pick<
   blockedInboxAttention?: IssueBlockedInboxAttention | null;
   scheduledRetry?: IssueScheduledRetry | null;
   liveDescendantCount?: number;
+  /** Descendants whose run started; excludes runs still waiting for an agent slot. */
+  runningDescendantCount?: number;
   myLastTouchAt?: Date | null;
   lastExternalCommentAt?: Date | null;
   lastActivityAt?: Date | null;
@@ -1177,6 +1181,13 @@ export interface IssueQueuedCommentQueue {
   entries: IssueQueuedCommentEntry[];
   /** Current admission condition for a saved user continuation. */
   executionWait?: { reason: string; message: string } | null;
+  /**
+   * Messages the target run's first provider turn takes: ones it already
+   * sealed into that turn, and ones it will take while it is still starting
+   * (for example while its sandbox boots). They are sent, not waiting for
+   * Steer or Interrupt. Omitted when there are none.
+   */
+  firstTurnCommentIds?: string[];
 }
 
 interface IssueCommentMetadataRowBase {

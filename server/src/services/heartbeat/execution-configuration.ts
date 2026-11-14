@@ -1,3 +1,4 @@
+import { supportsPaperclipRunnerPreconfiguredHome } from "../native-runtime/provider-profile.js";
 import { agentHarnessType } from "@paperclipai/shared";
 import { observabilitySecretValues } from "@paperclipai/adapter-utils/agent-observability";
 import { agentObservabilityService, unavailableAgentObservability, type ResolvedAgentObservability } from "../agent-observability.js";
@@ -12,7 +13,7 @@ import { readPaperclipSkillSyncPreference, resolvePaperclipDesiredSkillNames, re
 import { parseObject } from "../../adapters/utils.js";
 import { logger } from "../../middleware/logger.js";
 import { AI_CONNECTION_BUSY_RETRY_REASON, extractWakeCommentIds, isNonAssigneeWorkspaceBusyRetry } from "../../modules/run-dispatch/index.js";
-import { createAgentIdentityRedactor } from "../agent-identity-redaction.js";
+import { createAgentIdentityRedactor, secretEnvironmentValues } from "../agent-identity-redaction.js";
 import { agentIdentityService, supportsManagedAgentIdentity } from "../agent-identity.js";
 import { readAiConnectionConfigurationFailure, readAiCredentialAccessFailure } from "../ai-connection-configuration-failure.js";
 import { AI_AUTH_ENV_KEYS, isAiConnectionBusy, prepareManagedAiRuntime, stripAiAuthBindings } from "../ai-connection-runtime.js";
@@ -23,7 +24,8 @@ import { PLUGIN_RUNNER_AI_CONNECTION_REQUIRED, pluginEnvironmentRunnerTaskDriver
 import { prepareConnectionInstructionDelivery } from "../connection-instructions.js";
 import { applyConnectorSkills, prepareConnectorSkillDelivery, resolveConnectorAssignments } from "../connector-runtime.js";
 import { resolveManagedGitHubIdentitySelection } from "../git-credentials.js";
-import { resolveAssignedConnectionInstructionsForRun } from "../native-runtime/assigned-mcp-tools.js";
+import { resolveAssignedConnectionInstructionsForRun, resolveMcpConnectionSkillsForRun } from "../native-runtime/assigned-mcp-tools.js";
+import { applyMcpConnectionSkills } from "../mcp-skill-runtime.js";
 import { recordFailedSkillPreparation, type NativeRunHistoricalSpan } from "../native-runtime/native-run-trace.js";
 import { collectRunFailureSecretValues } from "../run-failure-diagnostics.js";
 import { skillVersionSelectionMap } from "../runtime-skill-selections.js";
@@ -32,6 +34,7 @@ import type { selectHeartbeatEnvironment } from "./environment-selection.js";
 import type { createHeartbeatRetries } from "./retries.js";
 import type { createHeartbeatLifecycle } from "./run-lifecycle.js";
 import { createHeartbeatPreparationTiming } from "./preparation-timing.js";
+import { mcpAppViewsService, renderMcpAppRunContext } from "../mcp-app-views.js";
 import {
   ConfigurationIncompleteFailure, applyRunScopedMentionedSkillKeys, resolveExecutionRunAdapterConfig,
   resolveRunScopedMentionedSkillKeys, type createHeartbeatRunPreparation, type resolveAcceptedPlanWakeRoutingDecision,
@@ -70,6 +73,8 @@ export interface HeartbeatExecutionConfigurationInput {
     routineEnvContext: Awaited<ReturnType<ReturnType<typeof createHeartbeatRunPreparation>["getRoutineEnvForExecutionIssue"]>>;
     /** Resolved from the durable Studio test row by task-context, never wake input. */
     pinnedSkillTest?: { key: string; versionId: string } | null;
+    /** Restart recovery is reconnecting to this run's live remote Runner. */
+    adoptingLiveRunner?: boolean;
   };
   config: {
     sourceWorkspaceConfig: Record<string, unknown>;
@@ -91,15 +96,37 @@ export interface HeartbeatExecutionConfigurationInput {
   onIdentityRedactorPrepared: (redactor: ReturnType<typeof createAgentIdentityRedactor>) => void;
 }
 
+export function buildHeartbeatWorkspaceConfiguration(
+  sourceWorkspaceConfig: Record<string, unknown>,
+  { useIsolatedTaskDirectory, explicitTaskDirectory, requestedExecutionWorkspaceMode }: HeartbeatExecutionConfigurationInput["policy"],
+  selectedEnvironmentId: string | null,
+) {
+  const forceDirectoryStrategy = useIsolatedTaskDirectory || (explicitTaskDirectory && (
+    requestedExecutionWorkspaceMode === "agent_default" || Object.keys(parseObject(sourceWorkspaceConfig.workspaceStrategy)).length > 0
+  ));
+  const mergedConfig: Record<string, unknown> = {
+    ...sourceWorkspaceConfig,
+    // The base below is already task-owned. Keep directory transport while
+    // preserving isolated mode and the mandatory sandbox preflight.
+    ...(forceDirectoryStrategy ? { workspaceStrategy: { type: "project_primary" } } : {}),
+  };
+  return { mergedConfig, configSnapshot: buildExecutionWorkspaceConfigSnapshot(mergedConfig, selectedEnvironmentId) };
+}
+
 /** Assembles effective run configuration; the executor retains cleanup ownership. */
 export async function prepareHeartbeatExecutionConfiguration(db: Db, input: HeartbeatExecutionConfigurationInput) {
   const { run, agent, onFailureSecretsResolved, onManagedAiRuntimeAcquired, onIdentityRedactorPrepared } = input;
   const time = createHeartbeatPreparationTiming(run.id);
   const { issueId, context, responsibleUserId, acceptedPlanContinuationWake, acceptedPlanWakeRoutingDecision, taskProjectContext, routineEnvContext, pinnedSkillTest } = input.task;
   const { selectedEnvironmentId, selectedEnvironmentForConfig, resolvedInstanceSettings, persistedNativeExecutionInput } = input.environment;
+  const useSshHostAuth = selectedEnvironmentForConfig?.driver === "ssh" && selectedEnvironmentForConfig.config.useHostAuth !== false && !persistedNativeExecutionInput;
+  let sshRunnerHomeMode: "isolated" | "preconfigured" | undefined;
+  if (agent.adapterType === "paperclip_runner" && selectedEnvironmentForConfig?.driver === "ssh" && !persistedNativeExecutionInput) {
+    sshRunnerHomeMode = useSshHostAuth && supportsPaperclipRunnerPreconfiguredHome(agent.adapterConfig, { companyId: agent.companyId }) ? "preconfigured" : "isolated";
+  }
   const sourceWorkspaceConfig = agent.adapterType === "paperclip_runner"
     ? { ...input.config.sourceWorkspaceConfig,
-        homeMode: bindHeartbeatRunnerHomeMode(parseObject(agent.adapterConfig), persistedNativeExecutionInput).homeMode }
+        homeMode: bindHeartbeatRunnerHomeMode({ ...parseObject(agent.adapterConfig), ...(sshRunnerHomeMode ? { homeMode: sshRunnerHomeMode } : {}) }, persistedNativeExecutionInput).homeMode }
     : input.config.sourceWorkspaceConfig;
   const preconfiguredHome = agent.adapterType === "paperclip_runner" && sourceWorkspaceConfig.homeMode === "preconfigured";
   if (preconfiguredHome && pinnedSkillTest) {
@@ -133,23 +160,16 @@ export async function prepareHeartbeatExecutionConfiguration(db: Db, input: Hear
   // The executor keeps these values in its failure redactor before any later
   // preparation step can fail. Subsequent provider/identity values extend it.
   onFailureSecretsResolved(() => []);
-  const aiBinding = preconfiguredHome ? undefined : input.config.aiBinding;
-  const { trustPreset, useIsolatedTaskDirectory, explicitTaskDirectory, requestedExecutionWorkspaceMode } = input.policy;
+  const aiBinding = preconfiguredHome || useSshHostAuth ? undefined : input.config.aiBinding;
+  if (selectedEnvironmentForConfig?.driver === "ssh" && selectedEnvironmentForConfig.config.useHostAuth === false && !aiBinding && !persistedNativeExecutionInput) {
+    throw new ConfigurationIncompleteFailure("Select an AI account for this agent or enable authentication configured on the remote machine in the SSH environment's advanced settings.", {
+      configurationIncomplete: { reason: "ssh_ai_connection_required", actionUrl: `/agents/${agent.id}/runtime` },
+    });
+  }
+  const { trustPreset } = input.policy;
   const { secretsSvc, companySkills, appendRunEvent, finalizeAiConnectionBusyDeferral } = input.services;
   let managedAiRuntime: ManagedAiRuntime | undefined;
-  const forceDirectoryStrategy = useIsolatedTaskDirectory || (explicitTaskDirectory && (
-    requestedExecutionWorkspaceMode === "agent_default" || Object.keys(parseObject(sourceWorkspaceConfig.workspaceStrategy)).length > 0
-  ));
-  const mergedConfig = {
-    ...sourceWorkspaceConfig,
-    // The base below is already task-owned. Keep directory transport while
-    // preserving isolated mode and the mandatory sandbox preflight.
-    ...(forceDirectoryStrategy ? { workspaceStrategy: { type: "project_primary" } } : {}),
-  };
-  const configSnapshot = buildExecutionWorkspaceConfigSnapshot(
-    mergedConfig,
-    selectedEnvironmentId,
-  );
+  const { mergedConfig, configSnapshot } = buildHeartbeatWorkspaceConfiguration(sourceWorkspaceConfig, input.policy, selectedEnvironmentId);
   const executionRunConfig =
     stripWorkspaceRuntimeFromExecutionRunConfig(mergedConfig);
   const skillActor: AuthorizationActor = { type: "agent", agentId: agent.id, companyId: agent.companyId,
@@ -204,6 +224,7 @@ export async function prepareHeartbeatExecutionConfiguration(db: Db, input: Hear
       trustPreset,
     }));
   onFailureSecretsResolved(() => collectRunFailureSecretValues(resolvedConfig.env, secretKeys));
+  identityRedactor.addSecretValues(secretEnvironmentValues(resolvedConfig.env, secretKeys));
   if (aiBinding) {
     try {
       managedAiRuntime = await time("configuration_ai_runtime", () => prepareManagedAiRuntime(db, { companyId: agent.companyId, agentId: agent.id, responsibleUserId, adapterType: agent.adapterType, binding: aiBinding, config: resolvedConfig }));
@@ -290,6 +311,10 @@ export async function prepareHeartbeatExecutionConfiguration(db: Db, input: Hear
   const skillsPrepareStartedAtMs = Date.now();
   let skillsPrepareEndedAtMs = skillsPrepareStartedAtMs;
   let skillDeliveryConfig = effectiveResolvedConfig;
+  // A live remote Runner already holds the files of its admitted skill versions.
+  // Reuse that exact selection instead of re-downloading it on this server.
+  const reuseAdmittedSkills = input.task.adoptingLiveRunner === true && hasStoredVersions
+    && persistedNativeExecutionInput != null && "runtimeContext" in persistedNativeExecutionInput;
   const prepareSkills = async () => {
 
     try {
@@ -302,7 +327,7 @@ export async function prepareHeartbeatExecutionConfiguration(db: Db, input: Hear
       // pins and the Beta skills preference. Recovery keeps the admitted map.
       if (!hasStoredVersions && pinnedSkillTest) versionSelections.set(pinnedSkillTest.key, pinnedSkillTest.versionId);
       return await withSkillActor(skillActor, () => companySkills.withRuntimeSkillEntries(agent.companyId, {
-        versionSelections, snapshotLatest: true,
+        versionSelections, ...(reuseAdmittedSkills ? { admittedVersionsOnly: true } : { snapshotLatest: true }),
         ...(hasStoredVersions
           ? { onlyKeys: new Set(Object.keys(storedVersions)) }
           : { selectionConfig: effectiveResolvedConfig, includeLegacy: agent.adapterType !== "paperclip_runner" }),
@@ -361,9 +386,28 @@ export async function prepareHeartbeatExecutionConfiguration(db: Db, input: Hear
       throw error;
     }
   };
-  const skillsPreparation = (preconfiguredHome ? Promise.resolve([]) : time("configuration_skills", prepareSkills))
+  const skillsPreparation = (preconfiguredHome ? Promise.resolve([])
+    : time(reuseAdmittedSkills ? "configuration_skills_adopted" : "configuration_skills", prepareSkills))
     .finally(() => { skillsPrepareEndedAtMs = Date.now(); });
   const assignmentsPreparation = preconfiguredHome ? Promise.resolve([]) : time("configuration_connector_assignments", () => resolveConnectorAssignments(db, { companyId: agent.companyId, agentId: agent.id, runId: run.id, issueId: typeof context.issueId === "string" ? context.issueId : undefined }));
+  // Context that MCP Apps widgets on this task reported (`ui/update-model-context`).
+  // One indexed read beside the other preparation; it never fails or delays the run on error.
+  const mcpAppContextPreparation = typeof context.issueId === "string"
+    ? time("configuration_mcp_app_context", () => mcpAppViewsService(db).runContextForIssue(agent.companyId, context.issueId as string))
+      .then(renderMcpAppRunContext)
+      .catch((error) => {
+        logger.warn({ err: error, runId: run.id }, "App context from task widgets could not be loaded; the run continues without it");
+        return null;
+      })
+    : Promise.resolve(null);
+  // Approved skills from connected apps load beside company skills. A skill
+  // that cannot load now is left out with a warning; it never fails the run.
+  const mcpSkillsPreparation = preconfiguredHome ? Promise.resolve(null)
+    : time("configuration_mcp_skills", () => resolveMcpConnectionSkillsForRun(db, { companyId: agent.companyId, agentId: agent.id, runId: run.id }))
+      .catch((error) => {
+        logger.warn({ err: error, runId: run.id }, "Skills from connected apps could not be prepared; the run continues without them");
+        return null;
+      });
   const [preparedSkills, preparedAssignments, preparedInstructions] = await Promise.allSettled([
     skillsPreparation,
     assignmentsPreparation,
@@ -373,6 +417,11 @@ export async function prepareHeartbeatExecutionConfiguration(db: Db, input: Hear
   if (preparedAssignments.status === "rejected") throw preparedAssignments.reason;
   if (preparedInstructions.status === "rejected") throw preparedInstructions.reason;
   const runtimeSkillEntries = preparedSkills.value;
+  if (reuseAdmittedSkills) {
+    await appendRunEvent(run, { eventType: "lifecycle", stream: "system", level: "info",
+      message: "Reconnecting to the running agent with the skills it already has",
+      payload: { skillPreparation: "reused_admitted", skills: runtimeSkillEntries.length } });
+  }
   nativeRunnerPreparationSpans.push({
     name: "skills.prepare",
     parentName: "task.prepare",
@@ -380,12 +429,26 @@ export async function prepareHeartbeatExecutionConfiguration(db: Db, input: Hear
     endedAtMs: skillsPrepareEndedAtMs,
   });
   const connectorAssignments = preparedAssignments.value;
-  const connectorSkillConfig = await time("configuration_connector_skills", () => applyConnectorSkills(skillDeliveryConfig, runtimeSkillEntries, connectorAssignments));
+  const appliedConnectorSkills = await time("configuration_connector_skills", () => applyConnectorSkills(skillDeliveryConfig, runtimeSkillEntries, connectorAssignments));
+  const mcpSkills = await mcpSkillsPreparation;
+  if (mcpSkills?.skipped.length) {
+    await appendRunEvent(run, { eventType: "skills.mcp_unavailable", stream: "system", level: "warn",
+      message: mcpSkills.skipped.map(({ skillName, appName, reason }) => skillName ? `Skill "${skillName}" from ${appName} was not loaded: ${reason}` : reason).join("\n"),
+      payload: { skipped: mcpSkills.skipped } });
+  }
+  const connectorSkillConfig = mcpSkills?.loaded.length
+    ? await time("configuration_mcp_skill_bundles", () => applyMcpConnectionSkills(appliedConnectorSkills, mcpSkills.loaded))
+    : appliedConnectorSkills;
   // Both CLI adapters and native context materialization use the same resolved set.
   runtimeSkillEntries.splice(0, runtimeSkillEntries.length, ...connectorSkillConfig.paperclipRuntimeSkills);
   const connectorDelivery = await time("configuration_connector_delivery", () => prepareConnectorSkillDelivery(connectorSkillConfig, agent.adapterType));
   // Always replace this runtime-only field; caller wake data cannot supply skills.
-  context.paperclipWake = { ...parseObject(context.paperclipWake), connectorSkillInstructions: connectorDelivery.instructions };
+  // App context is server-owned too: a caller's wake data cannot supply it.
+  context.paperclipWake = {
+    ...parseObject(context.paperclipWake),
+    connectorSkillInstructions: connectorDelivery.instructions,
+    mcpAppContext: await mcpAppContextPreparation,
+  };
   let runtimeConfig = await prepareConnectionInstructionDelivery({
     resolve: async () => preparedInstructions.value,
     context, config: connectorDelivery.config, native: agent.adapterType === "paperclip_runner",

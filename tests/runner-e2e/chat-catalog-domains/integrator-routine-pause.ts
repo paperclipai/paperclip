@@ -30,9 +30,11 @@ export function gradeIntegratorRoutinePause(value: unknown) {
   const checkpointRun = first?.runs.find(run => run.id === o.state.activeNativeRunId);
   c.add("pause-does-not-cancel-inflight", !!first && checkpointRun?.status === "running" && checkpointRun.agentId === (o.state.worker as Entity)?.id
     && first.tasks.some(task => task.id === active?.linkedIssueId && task.status === "in_progress")
-    && /\b(?:paus(?:ed|ing)|disabled|stopped)\b/i.test(first.reply) && /\b(?:running|in.flight|in.progress|underway|active task)\b/i.test(first.reply)
-    && !/\b(?:cancelled|canceled|terminated|stopped)\b[^.!?\n]{0,35}\b(?:running|in.flight|task|execution)\b|\b(?:task|execution|work)\b[^.!?\n]{0,25}\b(?:cancelled|canceled|terminated)\b/i.test(first.reply),
-  "At the actual response the separately assigned execution is still genuinely running, and chat describes it separately from future schedules.");
+    // The pause and the still-running task are proven by saved state at the response, and the later check
+    // proves the run finished normally, so a reply that cancelled it fails there. The reply must exist; its
+    // wording is not keyword-graded (a correct reply can offer "use Pause on its task page if you want it stopped").
+    && !!first.reply.trim(),
+  "At the actual response the separately assigned execution is still genuinely running and the turn saved a reply.");
   const savedPrior = o.invocations.find(run => run.id === prior?.id); const savedActive = o.invocations.find(run => run.id === active?.id);
   c.add("history-retained-and-inflight-completes-normally", o.invocations.length === 2 && savedPrior?.status === "completed" && savedPrior.linkedIssueId === prior.linkedIssueId
     && savedActive?.status === "completed" && savedActive.linkedIssueId === active.linkedIssueId
@@ -65,7 +67,7 @@ export const integratorRoutinePauseCases = [integratorDefinition("routines", "ro
 }, observePause, gradeIntegratorRoutinePause, async (ctx, state) => {
   const routine = state.routine as RoutineDetail; await inspectResult(ctx, `/${ctx.input.fixtures.company.issuePrefix}/routines/${routine.id}/history`, routine.title);
 }, { sourceFiles: ["chat-catalog-domains/integrator-routine-pause.ts", "chat-catalog-domains/internal-run-brief.ts", "chat-catalog-domains/internal-definition.ts", "chat-catalog-domains/internal-support.ts", "chat-catalog-domains/integrator-support.ts", "chat-scenarios/routines.yaml"],
-  expectedRunCount: 3, attemptTimeoutMs: 720_000,
+  oracleVersion: "paperclip.chat-catalog.routine-pause.structural.v3", expectedRunCount: 3, attemptTimeoutMs: 720_000,
   setupPolicy: { readiness: "preserve-scenario", invariantCheckIds: ["lead-ready", "owned-routine-real-active-task"] },
   async verifySetup(ctx, state) {
     const c = checks(); const lead = await ctx.input.api.get<RuntimeAgent>(`/api/agents/${ctx.input.fixtures.agent.id}`);

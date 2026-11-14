@@ -765,7 +765,23 @@ This is an opt-in restriction model. Finishing a connection is still limited to
 a board user with connection-configuration access, commits the selected action
 IDs to an auditable profile, and leaves **Ask first** available for any action.
 The open default changes the initial policy; it does not create a route around a
-policy the operator has applied.
+policy the operator has applied. Adding an agent uses the saved action choices.
+An independent approval policy can still require approval for an action marked
+Allowed on the app page. That page manages the app-specific Ask first rules; it
+does not remove independent policies.
+
+The app permission save reconciles the selected targets and actions with their
+saved rows. It retains unchanged bindings, entries, and Ask first policies,
+batches policy changes, and leaves already-disabled rules untouched. Use the
+disposable PostgreSQL benchmark to measure this path:
+
+```sh
+node --import ./server/node_modules/tsx/dist/loader.mjs scripts/benchmark-app-permission-save.ts --baseline-ref=<pre-fix SHA> --output=/tmp/app-permission-save.json
+```
+
+The benchmark uses synthetic data, two warmups, and six samples in alternating
+order. It compares saved values and action decisions. Its timings measure the
+local service, not hosted endpoint latency.
 
 Saving a connection's installation list grants its app profile only to newly
 added targets. Targets that remain installed keep their existing profile
@@ -789,8 +805,8 @@ This is the implementation sequence an autonomous coding agent should follow.
 
 ### Phase 0: Establish scope and preserve the worktree
 
-1. Read `AGENTS.md`, `doc/GOAL.md`, `doc/PRODUCT.md`,
-   `doc/SPEC-implementation.md`, `doc/DEVELOPING.md`, and `doc/DATABASE.md`.
+1. Read `AGENTS.md`, `doc/GOAL.md`, `doc/PRODUCT.md`, `doc/DEVELOPING.md`,
+   and `doc/DATABASE.md`.
 2. Read this runbook, [the connections overview](./README.md), and
    [the security threat model](./SECURITY-THREAT-MODEL.md).
 3. Inspect `git status --short`. Existing changes belong to the user or another

@@ -5,6 +5,7 @@ import { flushSync } from "react-dom";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { IssueQueuedCommentQueue } from "@paperclipai/shared";
+import { mergePendingIssueQueuedComments } from "@/lib/issue-queued-comment-queue";
 import { ThemeProvider } from "@/context/ThemeContext";
 import { MemoryRouter } from "@/lib/router";
 import {
@@ -387,8 +388,9 @@ describe("TaskChatQueuedMessages", () => {
     expect(container.textContent).toContain("Queued message discarded.");
   });
 
-  it("keeps a too-late discard visible with an explicit error", async () => {
+  it.each(["wake-1", null])("keeps a too-late discard visible with an explicit error (queue=%s)", async (queueId) => {
     render({
+      queue: { ...queue, queueId },
       onDiscard: vi.fn().mockRejectedValue({
         body: { details: { code: "queued_comment_already_dispatching" } },
       }),
@@ -429,13 +431,43 @@ describe("TaskChatQueuedMessages", () => {
     expect(container.textContent).not.toContain("Queued message discarded.");
   });
 
-  it("does not expose queue controls before a real queue id is acknowledged", () => {
-    const props = render({ queue: { ...queue, queueId: null, state: null } });
+  it("can discard a saved message while queue acknowledgement is pending", async () => {
+    const merged = mergePendingIssueQueuedComments({
+      issueId: queue.issueId,
+      authoritativeQueue: queue,
+      pendingComments: [{
+        comment: { ...queue.entries[0].comment, id: "optimistic-next" },
+        targetRunId: queue.targetRunId,
+      }],
+      fallbackProtocol: queue.protocol,
+    })!;
+    expect(merged.queueId).toBeNull();
+    const props = render({ queue: merged });
+    const discard = container.querySelector<HTMLButtonElement>(
+      '[data-testid="task-chat-queued-discard-comment-1"]',
+    );
+    expect(discard?.disabled).toBe(false);
+    expect(container.querySelector<HTMLButtonElement>(
+      '[data-testid="task-chat-queued-steer-comment-1"]',
+    )?.disabled).toBe(true);
+    await act(async () => { discard!.click(); });
+    expect(props.onDiscard).toHaveBeenCalledWith("comment-1", "rev-1");
+    expect(container.querySelector('[data-testid="task-chat-queued-message-comment-1"]')).toBeNull();
+  });
+
+  it("keeps another author's saved message protected while acknowledgement is pending", () => {
+    const props = render({
+      queue: {
+        ...queue,
+        queueId: null,
+        entries: [{ ...queue.entries[0], canDiscard: false }],
+      },
+    });
     const discard = container.querySelector<HTMLButtonElement>(
       '[data-testid="task-chat-queued-discard-comment-1"]',
     );
     expect(discard?.disabled).toBe(true);
-    discard?.click();
+    discard!.click();
     expect(props.onDiscard).not.toHaveBeenCalled();
   });
 

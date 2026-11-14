@@ -1,6 +1,7 @@
-import { UI_RETRY_BUTTON_MISSING, UI_RETRY_NO_REQUEST, type FaultReceipt, type OracleResult, type RuleId, type RuleResult, type TaskGrade, type TaskRecord, type TaskSample } from "./types.js";
+import { UI_RETRY_BLOCKED_BY_MODAL, UI_RETRY_BUTTON_MISSING, UI_RETRY_NO_REQUEST, type FaultReceipt, type OracleResult, type RuleId, type RuleResult, type TaskGrade, type TaskRecord, type TaskSample } from "./types.js";
 import { g1Decision } from "./workloads.js";
-import { enforcedUniversalFailures, gradeUniversal, type UniversalDbEvidence } from "./universal.js";
+import { gradeDiskFullRetry, isDiskFullFault } from "./disk-full-faults.js";
+import { enforcedUniversalFailures, gradeUniversal, type SlotFree, type UniversalBounds, type UniversalDbEvidence } from "./universal.js";
 
 /** Pure R1–R6 grading over observer samples (plan §2). No I/O. */
 
@@ -53,8 +54,9 @@ export function outageOverlapMs(record: TaskRecord, faults: readonly FaultReceip
   }, 0);
 }
 
-/** The status a task rests in when it succeeds: `done`, or `cancelled` for a G1 request the board rejected. */
+/** The status a task rests in when it succeeds: `done`, `cancelled` for a G1 request the board rejected, `in_review` for an H2 hand-off. */
 export function expectedFinalStatus(record: TaskRecord): string {
+  if (record.plan.workload === "H2") return "in_review";
   return record.plan.workload === "G1" && g1Decision(record.plan.nonce) === "reject" ? "cancelled" : "done";
 }
 
@@ -98,7 +100,8 @@ export function gradeR2(record: TaskRecord, oracle: OracleResult): RuleResult {
 }
 
 export function gradeR3(record: TaskRecord): RuleResult {
-  const own = gradeOwnRetry(record);
+  // DF1: a full sandbox disk needs a person, so one Retry is expected (disk-full-faults.ts).
+  const own = isDiskFullFault(record.plan.fault) ? gradeDiskFullRetry(record, expectedFinalStatus(record)) : gradeOwnRetry(record);
   const childClicks = record.childRetries?.length ?? 0;
   if (!childClicks || own.verdict === "fail") return own;
   return { verdict: "fail", detail: `retry_needed_on_subtask_${childClicks} (${record.childRetries!.map(attempt => attempt.childIssueId).join(",")})` };
@@ -112,7 +115,7 @@ function gradeOwnRetry(record: TaskRecord): RuleResult {
     }
     return { verdict: "n/a", detail: "no Retry needed" };
   }
-  if (record.retry.via === "ui" && (record.retry.error === UI_RETRY_BUTTON_MISSING || record.retry.error === UI_RETRY_NO_REQUEST)) {
+  if (record.retry.via === "ui" && [UI_RETRY_BUTTON_MISSING, UI_RETRY_NO_REQUEST, UI_RETRY_BLOCKED_BY_MODAL].includes(record.retry.error ?? "")) {
     return { verdict: "fail", detail: `${record.retry.error}${record.retry.bannerText ? ` (user saw: ${record.retry.bannerText})` : ""}` };
   }
   if (record.retry.error || record.retry.accepted !== true) {
@@ -189,7 +192,7 @@ export function gradeR4(record: TaskRecord): RuleResult {
 
 function namedWait(sample: TaskSample): boolean {
   const interruption = sample.interruption;
-  return Boolean(sample.executionBlocker || sample.scheduledRetry || sample.activeRecoveryAction || interruption?.retryWait
+  return Boolean(sample.executionBlocker || sample.scheduledRetry || sample.activeRecoveryAction || sample.waitingOnChildren || interruption?.retryWait
     || interruption?.state === "retry_scheduled" || interruption?.canRetry
     || (interruption && ["failed", "waiting_for_user"].includes(interruption.state)));
 }
@@ -247,7 +250,7 @@ export function gradeR6(record: TaskRecord): RuleResult {
 }
 
 export function gradeTask(record: TaskRecord, faults: readonly FaultReceipt[], budgetMs: number, oracle: OracleResult,
-  universalDb?: UniversalDbEvidence): TaskGrade {
+  universalDb?: UniversalDbEvidence, queue: { bounds?: UniversalBounds; slotFree?: SlotFree } = {}): TaskGrade {
   const crossing = crossingFaults(record, faults);
   const rules: Record<RuleId, RuleResult> = {
     R1: gradeR1(record, budgetMs, faults),
@@ -259,7 +262,7 @@ export function gradeTask(record: TaskRecord, faults: readonly FaultReceipt[], b
   };
   const failed = (Object.entries(rules) as Array<[RuleId, RuleResult]>).find(([, rule]) => rule.verdict === "fail");
   // Universal checks run on every task whatever its workload; only enforced ones fail it (universal.ts).
-  const universal = gradeUniversal(record, universalDb ? { db: universalDb } : {});
+  const universal = gradeUniversal(record, { ...(universalDb ? { db: universalDb } : {}), ...queue });
   const [universalFailure] = enforcedUniversalFailures(universal);
   const pass = !failed && oracle.verdict === "pass" && !universalFailure;
   let signature: string | null = null;
