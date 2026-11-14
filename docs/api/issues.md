@@ -31,6 +31,19 @@ endpoint for its instruction and related content. Company and private-task acces
 checks apply before results are returned. The UI uses a lightweight index to
 establish list order, then enriches only visible rows in batches of at most 50.
 
+## Navigation summaries
+
+`GET /api/companies/{companyId}/issues/summaries?ids={comma-separated UUIDs}`
+returns a bounded title/status projection. Missing, hidden, and unreadable tasks
+are omitted. The response does not include task bodies or mark tasks read.
+
+Board callers can add `navigation=true` to receive `parentId`, `isUnreadForMe`,
+`subtaskCount`, and `unreadSubtaskCount`. Counts include readable direct children
+only. Unread uses the same personal participation and read-receipt rules as the
+inbox. A parent read receipt does not mark children read. Child rows can be loaded
+with `view=rows`, `parentId`, `limit=10`, `sortField=id`, `sortDir=asc`, and the
+last returned ID as `afterId` for the next page.
+
 ## Get Issue
 
 ```

@@ -1,5 +1,5 @@
 import { issueDisplayStatusSql } from "./issue-display-status.js";
-import { and, eq, inArray, isNull, type SQL } from "drizzle-orm";
+import { and, eq, inArray, isNull, sql, type SQL } from "drizzle-orm";
 import { issues, type Db } from "@paperclipai/db";
 import { ISSUE_SUMMARIES_MAX_IDS } from "@paperclipai/shared";
 import { externalConversationStateSql } from "./slack-conversation-state.js";
@@ -37,4 +37,39 @@ export async function listIssueSummaries(
     const row = byId.get(id);
     return row ? [row] : [];
   });
+}
+
+/** Counts stay on the server: a collapsed group never downloads its children. */
+export async function listIssueNavigationState(
+  db: Db,
+  companyId: string,
+  ids: readonly string[],
+  readCondition: SQL<boolean>,
+  unreadCondition: SQL<boolean>,
+) {
+  if (ids.length > ISSUE_SUMMARIES_MAX_IDS) throw new Error("Too many issue summary IDs");
+  if (!ids.length) return new Map();
+  // Keep the correlated unread predicate in WHERE. Drizzle unqualifies nested
+  // column references in single-table SELECT expressions.
+  const childCondition = and(eq(issues.companyId, companyId), inArray(issues.parentId, [...ids]),
+    isNull(issues.hiddenAt), isNull(issues.conversationAgentId), readCondition);
+  const [unreadTasks, children, unreadChildren] = await Promise.all([
+    db.select({ id: issues.id }).from(issues).where(and(
+      eq(issues.companyId, companyId), inArray(issues.id, [...ids]), isNull(issues.hiddenAt), readCondition, unreadCondition,
+    )),
+    db.select({
+      parentId: issues.parentId,
+      subtaskCount: sql<number>`count(*)::int`,
+    }).from(issues).where(childCondition).groupBy(issues.parentId),
+    db.select({ parentId: issues.parentId, count: sql<number>`count(*)::int` }).from(issues)
+      .where(and(childCondition, unreadCondition)).groupBy(issues.parentId),
+  ]);
+  const byParent = new Map(children.map(child => [child.parentId, child]));
+  const unreadByParent = new Map(unreadChildren.map(child => [child.parentId, child.count]));
+  const unreadIds = new Set(unreadTasks.map(task => task.id));
+  return new Map(ids.map(id => [id, {
+    isUnreadForMe: unreadIds.has(id),
+    subtaskCount: byParent.get(id)?.subtaskCount ?? 0,
+    unreadSubtaskCount: unreadByParent.get(id) ?? 0,
+  }]));
 }

@@ -4,12 +4,13 @@ import request from "supertest";
 import { eq } from "drizzle-orm";
 import { afterAll, beforeAll, expect, it, vi } from "vitest";
 import {
-  agents, chatConversations, chatEndpoints, heartbeatRuns, issueRelations, issues, toolApplications, toolConnections,
+  agents, chatConversations, chatEndpoints, companyMemberships, heartbeatRuns, issueComments, issueReadStates, issueRelations, issues, toolApplications, toolConnections,
 } from "@paperclipai/db";
 import { ISSUE_SUMMARIES_MAX_IDS } from "@paperclipai/shared";
 import { issueRoutes } from "../routes/issues.js";
 import * as issueServices from "../services/issues.js";
 import { errorHandler } from "../middleware/index.js";
+import { ensureHumanRoleDefaultGrants } from "../services/principal-access-compatibility.js";
 import { describeEmbeddedPostgres, seedCompanyWithBoardAccess, useEmbeddedPostgres, type BoardActor } from "./helpers/route-test-harness.js";
 
 describeEmbeddedPostgres("bounded issue summaries", () => {
@@ -38,6 +39,35 @@ describeEmbeddedPostgres("bounded issue summaries", () => {
     return result;
   }
   const url = (companyId: string) => `/api/companies/${companyId}/issues/summaries`;
+
+  it("counts only readable subtasks and preserves each person's unread state beyond ten children", async () => {
+    const f = await fixture();
+    const parent = f.rows[0]!;
+    const children = await ctx.db.insert(issues).values(Array.from({ length: 14 }, (_, index) => ({
+      companyId: f.companyId, parentId: parent.id, title: `Child ${index}`, createdByUserId: f.actor.userId,
+      createdAt: new Date("2026-01-01"), updatedAt: new Date("2026-01-01"),
+    }))).returning();
+    await ctx.db.insert(issueComments).values(children.map(child => ({
+      companyId: f.companyId, issueId: child.id, authorUserId: "another-user", body: "New message", createdAt: new Date("2026-01-02"),
+    })));
+    await ctx.db.update(issues).set({ hiddenAt: new Date() }).where(eq(issues.id, children[0]!.id));
+    await ctx.db.update(issues).set({ visibility: "private", privacyRootIssueId: children[1]!.id, responsibleUserId: "another-user", createdByUserId: "another-user" }).where(eq(issues.id, children[1]!.id));
+    const read = () => request(app(f.actor)).get(url(f.companyId)).query({ ids: `${parent.id},${children[13]!.id}`, navigation: "true" }).expect(200);
+    const first = (await read()).body;
+    expect(first[0]).toMatchObject({ parentId: null, isUnreadForMe: false, subtaskCount: 12, unreadSubtaskCount: 12 });
+    expect(first[1]).toMatchObject({ parentId: parent.id, isUnreadForMe: true, subtaskCount: 0 });
+    // Opening a parent records only its own read receipt.
+    await ctx.db.insert(issueReadStates).values({ companyId: f.companyId, issueId: parent.id, userId: f.actor.userId!, lastReadAt: new Date("2026-01-03") });
+    expect((await read()).body[0].unreadSubtaskCount).toBe(12);
+    await ctx.db.insert(issueReadStates).values({ companyId: f.companyId, issueId: children[13]!.id, userId: f.actor.userId!, lastReadAt: new Date("2026-01-03") });
+    const last = (await read()).body;
+    expect(last[0].unreadSubtaskCount).toBe(11);
+    expect(last[1].isUnreadForMe).toBe(false);
+    const otherViewer = { ...f.actor, userId: "untouched-viewer" };
+    await ctx.db.insert(companyMemberships).values({ companyId: f.companyId, principalType: "user", principalId: otherViewer.userId, status: "active", membershipRole: "owner" });
+    await ensureHumanRoleDefaultGrants(ctx.db, { companyId: f.companyId, principalId: otherViewer.userId, membershipRole: "owner", grantedByUserId: null });
+    expect((await request(app(otherViewer)).get(url(f.companyId)).query({ ids: parent.id, navigation: "true" }).expect(200)).body[0].unreadSubtaskCount).toBe(0);
+  });
 
   it("returns only summaries in requested order without full-detail reads", async () => {
     const f = await fixture();

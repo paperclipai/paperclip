@@ -98,6 +98,17 @@ a linked card at creation time with the current title, task number, and status.
 The Tasks tab keeps the full relationship list and shows each task once. Project
 groups omit tasks already shown in the other sections and disappear when empty.
 
+Sidebar Recents shows readable direct subtasks below a recent parent. Each group
+can fold independently, starts with at most ten children, and loads more on
+request. A selected child beyond the first ten replaces the last preview row.
+Children already in recent history appear once under their recent root parent.
+Orphans remain in the main list. Standard Recents and Classic Recent Tasks use
+the same groups; Classic keeps its existing parent action menus.
+
+Unread stays personal to each task. Folding, loading children, and Show more do
+not mark tasks read. A folded group shows its readable unread-child count,
+including children beyond ten, separately from the parent's own unread marker.
+
 Agent-owned tasks show **In Progress** only while a task-linked run is queued
 or running. When execution ends, their visible status reflects recovery
 (**Blocked**), a pending response or review (**In Review**), monitoring, or

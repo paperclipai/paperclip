@@ -20,7 +20,8 @@ import { ISSUE_SUMMARIES_MAX_IDS, issueChatBootstrapQuerySchema, issueSummariesQ
 import { readIssueChatBootstrapItems } from "../services/issue-chat-bootstrap.js";
 import { issueRunPresenceService } from "../services/issue-run-presence.js";
 import { activityService } from "../services/activity.js";
-import { listIssueSummaries } from "../services/issue-summaries.js";
+import { listIssueNavigationState, listIssueSummaries } from "../services/issue-summaries.js";
+import { unreadForUserCondition } from "../services/issues.js";
 import { listIssueStatusBlockerAttention } from "../services/issue-status-presentation.js";
 import { assertNoCaseHandoffMutation } from "../services/heartbeat/case-handoff-lifecycle.js";
 import { assertHandedOffRunTaskOwnership } from "../run-task-ownership.js";
@@ -8779,11 +8780,20 @@ export function issueRoutes(
     }
     const parsed = issueSummariesQuerySchema.safeParse(req.query);
     if (!parsed.success) {
-      res.status(400).json({ error: `ids must be the only query parameter and contain one to ${ISSUE_SUMMARIES_MAX_IDS} comma-separated UUIDs` });
+      res.status(400).json({ error: `ids must contain one to ${ISSUE_SUMMARIES_MAX_IDS} comma-separated UUIDs; navigation=true is the only optional parameter` });
       return;
     }
-    const rows = await listIssueSummaries(db, companyId, parsed.data.ids, await issueReadSqlCondition(db, req.actor));
+    if (parsed.data.navigation && req.actor.type !== "board") {
+      res.status(403).json({ error: "Navigation summaries require board authentication" });
+      return;
+    }
+    const readCondition = await issueReadSqlCondition(db, req.actor);
+    const rows = await listIssueSummaries(db, companyId, parsed.data.ids, readCondition);
     const visible = await filterIssuesForActor(req, rows);
+    const navigation = parsed.data.navigation ? await listIssueNavigationState(
+      db, companyId, visible.map(row => row.id), readCondition,
+      unreadForUserCondition(companyId, getActorInfo(req).actorId),
+    ) : null;
     // Blocked rows carry glyph-only blocker state so every task view resolves
     // the same glyph (covered → "in queue") as the task pane. At most ISSUE_SUMMARIES_MAX_IDS IDs.
     const blockerAttention = await listIssueStatusBlockerAttention(db, companyId, visible, async (ids) => new Set(
@@ -8801,6 +8811,7 @@ export function issueRoutes(
         displayStatus: row.displayStatus,
         updatedAt: row.updatedAt,
         externalConversationState: row.externalConversationState,
+        ...(navigation ? { parentId: row.parentId, ...navigation.get(row.id) } : {}),
         ...(attention ? { blockerAttention: attention } : {}),
       };
     });

@@ -95,7 +95,7 @@ export function useRecentTasks({
       const worker = async () => {
         while (next < chunks.length) {
           const index = next++;
-          results[index] = await issuesApi.summaries(companyId!, chunks[index]!, { signal });
+          results[index] = await issuesApi.summaries(companyId!, chunks[index]!, { signal, navigation: true });
         }
       };
       await Promise.all(Array.from({ length: Math.min(RECENT_TASK_SUMMARY_CONCURRENCY, chunks.length) }, worker));
@@ -111,9 +111,11 @@ export function useRecentTasks({
   const summaries = summaryQuery.isSuccess ? summaryQuery.data : undefined;
   const confirmed = new Map((summaries ?? []).filter((issue) => issue.companyId === companyId)
     .map((issue) => [issue.id, issue]));
-  const refreshedEntries = entries.map((entry) => {
+  const refreshedEntries: RecentTaskEntry[] = entries.map((entry) => {
     const issue = confirmed.get(entry.id);
-    return issue ? mergeRecentTaskSnapshot(entry, issue) : entry;
+    // Relationship/read state is session data, never a localStorage snapshot.
+    return issue ? { ...mergeRecentTaskSnapshot(entry, issue), parentId: issue.parentId,
+      isUnreadForMe: issue.isUnreadForMe, subtaskCount: issue.subtaskCount, unreadSubtaskCount: issue.unreadSubtaskCount } : entry;
   });
   const processed = useRef<{ scope: string; revision: number } | null>(null);
 

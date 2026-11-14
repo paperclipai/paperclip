@@ -1594,6 +1594,8 @@ function invalidateActivityQueries(
     const readerId = readString(details?.userId) ?? (actorType === "user" ? actorId : null);
     if (readerId && readerId === currentActor.userId) {
       for (const queryKey of [
+        queryKeys.issues.summaries(companyId),
+        [...queryKeys.issues.list(companyId), "recent-subtasks"],
         queryKeys.issues.listMineByMe(companyId),
         queryKeys.issues.listTouchedByMe(companyId),
         queryKeys.issues.listUnreadTouchedByMe(companyId),
