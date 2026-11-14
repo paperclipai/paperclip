@@ -61,8 +61,8 @@ fn format_limit(bytes: u64) -> String {
 fn memory_note(limit_bytes: u64, task_cgroup: &Path) -> Option<String> {
     let shared = task_cgroup.parent()?;
     Some(format!(
-        "All task processes on this computer share a {limit} memory limit, and memory used by a \
-         concurrent task counts toward it. Above the limit, the kernel kills a process with \
+        "All task processes on this computer share a {limit} memory limit, and memory used by \
+         concurrent tasks or other work on this computer counts toward it. Above the limit, the kernel kills a process with \
          SIGKILL, usually the largest, and the shell reports exit code 137. Other causes can also \
          produce that exit code. To check for a memory kill, read the oom_kill count in \
          {task}/memory.events. Read \
