@@ -3,7 +3,7 @@ import { drizzle } from "drizzle-orm/postgres-js";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { createDb, withDedicatedDbConnection } from "./client.js";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./test-embedded-postgres.js";
-import { DATABASE_WORK_CHANNEL, databaseWorkScopeKey, databaseWorkPending, enableDatabaseWorkNotifications, installDatabaseWorkSignals, notifyDatabaseWorkOnCommit, reconcileDatabaseWork, signalDatabaseWork, subscribeDatabaseWork } from "./work-signals.js";
+import { DATABASE_WORK_CHANNEL, databaseWorkScopeKey, databaseWorkPending, enableDatabaseWorkNotifications, installDatabaseWorkSignals, notifyDatabaseWorkOnCommit, primeDatabaseWorkTransactionId, reconcileDatabaseWork, signalDatabaseWork, subscribeDatabaseWork } from "./work-signals.js";
 
 const support = await getEmbeddedPostgresTestSupport();
 (support.supported ? describe : describe.skip)("database work signals", () => {
@@ -145,6 +145,22 @@ const support = await getEmbeddedPostgresTestSupport();
     } finally { release(); await serverDone?.catch(() => {}); unsubscribe(); }
   });
 
+  it("resolves an uncertain transaction with a transaction id that a statement returned", async () => {
+    await expect(db.transaction(async tx => {
+      const [{ xid }] = await tx.execute(sql`select pg_current_xact_id()::text as xid`);
+      primeDatabaseWorkTransactionId(tx, xid as string);
+      await signalDatabaseWork(tx, "primed-disconnect");
+      await tx.execute(sql`insert into work_signal_test values ('primed-disconnect')`);
+      const [{ pid }] = await tx.execute(sql`select pg_backend_pid() as pid`);
+      await db.execute(sql`select pg_terminate_backend(${pid as number})`);
+      await tx.execute(sql`select 1`);
+    })).rejects.toThrow();
+    expect(databaseWorkPending(db, "primed-disconnect")).toBe(true);
+    await reconcileDatabaseWork(db, "primed-disconnect");
+    expect(databaseWorkPending(db, "primed-disconnect")).toBe(false);
+    expect(await db.execute(sql`select * from work_signal_test where id = 'primed-disconnect'`)).toHaveLength(0);
+  });
+
   it("recovers after a real backend disconnect without replaying the queue write", async () => {
     await expect(db.transaction(async tx => {
       await signalDatabaseWork(tx, "disconnect");
@@ -195,6 +211,17 @@ describe("work signal query boundaries", () => {
     await expect(connection.transaction(async (tx: any) => { await signalDatabaseWork(tx, "failed"); write(); })).rejects.toThrow("disconnected");
     expect(write).not.toHaveBeenCalled();
     expect(databaseWorkPending(connection, "failed")).toBe(false);
+  });
+  it("reads no transaction id when a statement of the transaction already returned it", async () => {
+    const execute = vi.fn();
+    const connection = installDatabaseWorkSignals({ execute, transaction: async (callback: any) => callback({ execute, transaction: async () => {} }) });
+    primeDatabaseWorkTransactionId(connection, "outside");
+    await connection.transaction(async (tx: any) => {
+      primeDatabaseWorkTransactionId(tx, "42");
+      await signalDatabaseWork(tx, "primed");
+      await signalDatabaseWork(tx, "primed-again");
+    });
+    expect(execute).not.toHaveBeenCalled();
   });
   it("rejects registration on an autocommit root", async () => {
     const connection = installDatabaseWorkSignals({ execute: vi.fn(), transaction: vi.fn() });

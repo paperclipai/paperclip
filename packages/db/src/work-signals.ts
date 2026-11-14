@@ -88,6 +88,11 @@ export async function signalDatabaseWork(connection: object, topic: string, hint
   if (context.scope.notify) notifyAtCommit(context, notification(context.scope, topic));
 }
 
+export function primeDatabaseWorkTransactionId(connection: object, xid: string): void {
+  const state = contexts.get(connection)?.transaction;
+  if (state && !state.xid) state.xid = Promise.resolve(xid);
+}
+
 function notifyAtCommit(context: Context, payload: string): void {
   if (context.ended) throw new Error("Database work was signalled after its transaction or savepoint ended");
   const key = `${DATABASE_WORK_CHANNEL}\u0000${payload}`;
