@@ -17,7 +17,7 @@ import { mkdtemp, realpath, rm, access, readFile, writeFile, stat } from "node:f
 import os from "node:os";
 import path from "node:path";
 import { and, eq, sql } from "drizzle-orm";
-import { createDb, type Db, companies, agents, agentTaskSessions, heartbeatRuns, companyMemberships, connectionGrants, toolApplications, connectionGrantDelegations, connectionGrantMembers, toolConnections, toolConnectionInstalls, aiConnectionDefaults, aiProviderDefaults, adapterAuthSessions, environments, plugins, issues, issueThreadInteractions, issueRecoveryActions, connectionIntentDeliveries, agentWakeupRequests, companySecrets, companySecretVersions, secretAccessEvents, userSecretDefinitions, principalPermissionGrants } from "@paperclipai/db";
+import { createDb, type Db, activityLog, companies, agents, agentTaskSessions, heartbeatRuns, companyMemberships, connectionGrants, toolApplications, connectionGrantDelegations, connectionGrantMembers, toolConnections, toolConnectionInstalls, aiConnectionDefaults, aiProviderDefaults, adapterAuthSessions, environments, plugins, issues, issueThreadInteractions, issueRecoveryActions, connectionIntentDeliveries, agentWakeupRequests, companySecrets, companySecretVersions, secretAccessEvents, userSecretDefinitions, principalPermissionGrants } from "@paperclipai/db";
 import { startEmbeddedPostgresTestDatabase } from "@paperclipai/db/test-embedded-postgres";
 import { fetchCompanyQuotaWindows } from "../services/quota-windows.js";
 import { quotaCredentialRecoveryPath, quotaCredentialRecovery, quotaCredentialHash } from "../services/quota-credential-recovery.js";
@@ -1717,6 +1717,8 @@ console.log(JSON.stringify({ type: "result", subtype: "success", result: "hello"
     await db.insert(issues).values({ id: issueId, companyId, title: "Fix provider login", status: "in_progress", assigneeAgentId: id });
     const account = await service.save(companyId, userId, { provider, method: "api_key", ownership: "personal", name: "Recovery account", apiKey: "fixture", agentIds: [id], allAgents: false }, "fixture-recovery-key");
     const runtime = await prepareManagedAiRuntime(db, { companyId, agentId: id, responsibleUserId: userId, adapterType, binding: selectedBinding, config: {} });
+    await db.insert(heartbeatRuns).values({ companyId, agentId: id, status: "failed", errorCode: "acpx_auth_required", responsibleUserId: userId,
+      contextSnapshot: { issueId: randomUUID(), aiConnection: { ...runtime.attribution, identity: runtime.identity } } });
     await db.insert(heartbeatRuns).values({ id: runId, companyId, agentId: id, status: "failed", errorCode: "acpx_auth_required", responsibleUserId: userId,
       contextSnapshot: { issueId, aiConnection: { ...runtime.attribution, identity: runtime.identity } } });
     await runtime.cleanup();
@@ -1753,6 +1755,187 @@ console.log(JSON.stringify({ type: "result", subtype: "success", result: "hello"
     // Reprocessing an old failure cannot invalidate the newly saved credential.
     await intents.requestForRunAuthFailure(runId);
     expect((await service.select({ companyId, agentId: id, userId, adapterType, binding: selectedBinding })).grant.status).toBe("active");
+  });
+
+  describe("repeated, generation-scoped authentication failures", () => {
+    async function setup(label: string, agentCount = 1) {
+      const userId = `auth-threshold-${label}-${randomUUID()}`;
+      const binding = { provider: "anthropic", method: "api_key", mode: "responsible_user" } as const;
+      await db.insert(companyMemberships).values({ companyId, principalId: userId, principalType: "user", status: "active", membershipRole: "member" });
+      const agentIds = Array.from({ length: agentCount }, () => randomUUID());
+      for (const id of agentIds) await db.insert(agents).values({ id, companyId, name: `Threshold ${label}`, adapterType: "claude_local", runtimeConfig: { aiConnection: binding } });
+      const account = await service.save(companyId, userId, { provider: "anthropic", method: "api_key", ownership: "personal", name: `Threshold ${label}`, apiKey: "fixture", agentIds, allAgents: false }, `fixture-threshold-${label}`);
+      const attributionFor = async (agentId: string) => {
+        const runtime = await prepareManagedAiRuntime(db, { companyId, agentId, responsibleUserId: userId, adapterType: "claude_local", binding, config: {} });
+        try { return { ...runtime.attribution, identity: runtime.identity }; } finally { await runtime.cleanup(); }
+      };
+      const run = async (agentId: string, status: "failed" | "succeeded", errorCode: string | null, aiConnection: Record<string, unknown>) => {
+        const issueId = randomUUID();
+        await db.insert(issues).values({ id: issueId, companyId, title: `Threshold ${label}`, status: "in_progress", assigneeAgentId: agentId });
+        const [row] = await db.insert(heartbeatRuns).values({ companyId, agentId, status, errorCode, responsibleUserId: userId,
+          startedAt: new Date(), finishedAt: new Date(), contextSnapshot: { issueId, aiConnection } }).returning();
+        return { runId: row!.id, issueId };
+      };
+      const grantStatus = async () => (await db.select().from(connectionGrants).where(eq(connectionGrants.id, account.grantId)))[0]!.status;
+      const latches = async () => (await db.select().from(activityLog).where(and(eq(activityLog.companyId, companyId),
+        eq(activityLog.action, "ai_connection.authentication_failed"), eq(activityLog.entityId, account.connectionId)))).length;
+      const cards = async (issueId: string) => db.select().from(issueThreadInteractions).where(and(
+        eq(issueThreadInteractions.issueId, issueId), eq(issueThreadInteractions.kind, "connection_intent")));
+      return { userId, agentIds, account, attributionFor, run, grantStatus, latches, cards };
+    }
+
+    it("does not latch the connection or raise a card for one isolated genuine failure", async () => {
+      const t = await setup("isolated");
+      const failed = await t.run(t.agentIds[0]!, "failed", "claude_auth_required", await t.attributionFor(t.agentIds[0]!));
+      expect(await connectionIntentService(db).requestForRunAuthFailure(failed.runId)).toBeNull();
+      expect(await t.grantStatus()).toBe("active");
+      expect(await t.latches()).toBe(0);
+      expect(await t.cards(failed.issueId)).toEqual([]);
+      const [observed] = await db.select().from(activityLog).where(and(eq(activityLog.runId, failed.runId),
+        eq(activityLog.action, "ai_connection.authentication_failure_observed")));
+      expect(observed?.details).toMatchObject({ observedFailures: 1, threshold: 2, source: "run" });
+    });
+
+    it("latches on one genuine rejection from an explicit Test or save probe", async () => {
+      const t = await setup("probe");
+      expect(await aiConnectionService(db).markAuthenticationFailed({ companyId, agentId: t.agentIds[0], runStartedAt: new Date(),
+        attribution: await t.attributionFor(t.agentIds[0]!) as never })).toBe("latched");
+      expect(await t.grantStatus()).toBe("needs_reauthorization");
+      expect(await t.latches()).toBe(1);
+    });
+
+    it("latches after repeated genuine failures of the same generation from distinct runs", async () => {
+      const t = await setup("repeated");
+      const attribution = await t.attributionFor(t.agentIds[0]!);
+      const first = await t.run(t.agentIds[0]!, "failed", "claude_auth_required", attribution);
+      expect(await connectionIntentService(db).requestForRunAuthFailure(first.runId)).toBeNull();
+      const second = await t.run(t.agentIds[0]!, "failed", "claude_auth_required", attribution);
+      const card = await connectionIntentService(db).requestForRunAuthFailure(second.runId);
+      expect(card).toMatchObject({ state: "needs_user_action", service: "anthropic" });
+      expect(await t.grantStatus()).toBe("needs_reauthorization");
+      expect(await t.latches()).toBe(1);
+    });
+
+    it("resets the count after a successful run", async () => {
+      const t = await setup("reset");
+      const attribution = await t.attributionFor(t.agentIds[0]!);
+      const first = await t.run(t.agentIds[0]!, "failed", "claude_auth_required", attribution);
+      expect(await connectionIntentService(db).requestForRunAuthFailure(first.runId)).toBeNull();
+      await new Promise(resolve => setTimeout(resolve, 5));
+      await t.run(t.agentIds[0]!, "succeeded", null, attribution);
+      await new Promise(resolve => setTimeout(resolve, 5));
+      const after = await t.run(t.agentIds[0]!, "failed", "claude_auth_required", attribution);
+      expect(await connectionIntentService(db).requestForRunAuthFailure(after.runId)).toBeNull();
+      expect(await t.grantStatus()).toBe("active");
+    });
+
+    it("resets the count after a success queued before a reconnect that ran on the new credential", async () => {
+      const t = await setup("queued-success");
+      const attribution = await t.attributionFor(t.agentIds[0]!);
+      const [grant] = await db.select().from(connectionGrants).where(eq(connectionGrants.id, t.account.grantId));
+      const first = await t.run(t.agentIds[0]!, "failed", "claude_auth_required", attribution);
+      expect(await connectionIntentService(db).requestForRunAuthFailure(first.runId)).toBeNull();
+      await new Promise(resolve => setTimeout(resolve, 5));
+      await db.insert(heartbeatRuns).values({ companyId, agentId: t.agentIds[0]!, status: "succeeded", responsibleUserId: t.userId,
+        createdAt: new Date(grant!.updatedAt.getTime() - 60_000), startedAt: new Date(), finishedAt: new Date(),
+        contextSnapshot: { aiConnection: attribution } });
+      await new Promise(resolve => setTimeout(resolve, 5));
+      const after = await t.run(t.agentIds[0]!, "failed", "claude_auth_required", attribution);
+      expect(await connectionIntentService(db).requestForRunAuthFailure(after.runId)).toBeNull();
+      expect(await t.grantStatus()).toBe("active");
+      expect(await t.latches()).toBe(0);
+    });
+
+    it("does not count a failure checked late after a newer success", async () => {
+      const t = await setup("late-check");
+      const attribution = await t.attributionFor(t.agentIds[0]!);
+      const early = await t.run(t.agentIds[0]!, "failed", "claude_auth_required", attribution);
+      await new Promise(resolve => setTimeout(resolve, 5));
+      await t.run(t.agentIds[1] ?? t.agentIds[0]!, "succeeded", null, attribution);
+      await new Promise(resolve => setTimeout(resolve, 5));
+      const after = await t.run(t.agentIds[0]!, "failed", "claude_auth_required", attribution);
+      expect(await connectionIntentService(db).requestForRunAuthFailure(after.runId)).toBeNull();
+      const [earlyRow] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, early.runId));
+      expect(await aiConnectionService(db).markAuthenticationFailed({ companyId, runId: early.runId, agentId: t.agentIds[0],
+        runStartedAt: earlyRow!.startedAt!, attribution: attribution as never })).toBe("below_threshold");
+      expect(await t.grantStatus()).toBe("active");
+      expect(await t.latches()).toBe(0);
+    });
+
+    it("never lets failures of an older credential generation invalidate a reconnected one", async () => {
+      const t = await setup("stale");
+      const old = await t.attributionFor(t.agentIds[0]!);
+      const first = await t.run(t.agentIds[0]!, "failed", "claude_auth_required", old);
+      expect(await connectionIntentService(db).requestForRunAuthFailure(first.runId)).toBeNull();
+      await service.save(companyId, t.userId, { provider: "anthropic", method: "api_key", ownership: "personal", name: "Threshold stale",
+        connectionId: t.account.connectionId, apiKey: "fixture", agentIds: t.agentIds, allAgents: false }, "fixture-threshold-stale-reconnected");
+      const late = await t.run(t.agentIds[0]!, "failed", "claude_auth_required", old);
+      expect(await connectionIntentService(db).requestForRunAuthFailure(late.runId)).toBeNull();
+      expect(await aiConnectionService(db).markAuthenticationFailed({ companyId, runId: late.runId, runStartedAt: new Date(Date.now() + 60_000),
+        attribution: old as never })).toBe("stale_generation");
+      expect(await t.grantStatus()).toBe("active");
+      expect(await t.latches()).toBe(0);
+      const fresh = await t.run(t.agentIds[0]!, "failed", "claude_auth_required", await t.attributionFor(t.agentIds[0]!));
+      expect(await connectionIntentService(db).requestForRunAuthFailure(fresh.runId)).toBeNull();
+      expect(await t.grantStatus()).toBe("active");
+    });
+
+    it("does not count an edge rejection as a credential failure", async () => {
+      const t = await setup("edge");
+      const attribution = await t.attributionFor(t.agentIds[0]!);
+      const edge = await t.run(t.agentIds[0]!, "failed", "claude_edge_rejected", attribution);
+      expect(await connectionIntentService(db).requestForRunAuthFailure(edge.runId)).toBeNull();
+      const genuine = await t.run(t.agentIds[0]!, "failed", "claude_auth_required", attribution);
+      expect(await connectionIntentService(db).requestForRunAuthFailure(genuine.runId)).toBeNull();
+      expect(await t.grantStatus()).toBe("active");
+      expect(await t.cards(edge.issueId)).toEqual([]);
+    });
+
+    it("counts genuine failures past many interleaved non-credential failures", async () => {
+      const t = await setup("crowded");
+      const attribution = await t.attributionFor(t.agentIds[0]!);
+      for (let index = 0; index < 60; index += 1) await t.run(t.agentIds[0]!, "failed", "claude_edge_rejected", attribution);
+      const first = await t.run(t.agentIds[0]!, "failed", "claude_auth_required", attribution);
+      expect(await connectionIntentService(db).requestForRunAuthFailure(first.runId)).toBeNull();
+      const second = await t.run(t.agentIds[0]!, "failed", "claude_auth_required", attribution);
+      expect(await connectionIntentService(db).requestForRunAuthFailure(second.runId)).toMatchObject({ state: "needs_user_action" });
+      expect(await t.grantStatus()).toBe("needs_reauthorization");
+    });
+
+    it("counts and resets one credential generation across the users of a grant", async () => {
+      const asOtherUser = (attribution: { identity: string }) => {
+        const [grantId, , generation] = attribution.identity.split(":");
+        return { ...attribution, responsibleUserId: `other-${randomUUID()}`, identity: `${grantId}:other-${randomUUID()}:${generation}` };
+      };
+      const reset = await setup("shared-reset");
+      const resetAttribution = await reset.attributionFor(reset.agentIds[0]!);
+      const before = await reset.run(reset.agentIds[0]!, "failed", "claude_auth_required", resetAttribution);
+      expect(await connectionIntentService(db).requestForRunAuthFailure(before.runId)).toBeNull();
+      await new Promise(resolve => setTimeout(resolve, 5));
+      await reset.run(reset.agentIds[0]!, "succeeded", null, asOtherUser(resetAttribution));
+      await new Promise(resolve => setTimeout(resolve, 5));
+      const after = await reset.run(reset.agentIds[0]!, "failed", "claude_auth_required", resetAttribution);
+      expect(await connectionIntentService(db).requestForRunAuthFailure(after.runId)).toBeNull();
+      expect(await reset.grantStatus()).toBe("active");
+
+      const combined = await setup("shared-combined");
+      const combinedAttribution = await combined.attributionFor(combined.agentIds[0]!);
+      await combined.run(combined.agentIds[0]!, "failed", "claude_auth_required", asOtherUser(combinedAttribution));
+      const own = await combined.run(combined.agentIds[0]!, "failed", "claude_auth_required", combinedAttribution);
+      expect(await connectionIntentService(db).requestForRunAuthFailure(own.runId)).toMatchObject({ state: "needs_user_action" });
+      expect(await combined.grantStatus()).toBe("needs_reauthorization");
+    });
+
+    it("latches a shared connection exactly once when agents fail concurrently", async () => {
+      const t = await setup("concurrent", 3);
+      const attribution = await t.attributionFor(t.agentIds[0]!);
+      const runs = [];
+      for (const agentId of t.agentIds) runs.push(await t.run(agentId, "failed", "claude_auth_required", attribution));
+      const results = await Promise.all(runs.map(run => connectionIntentService(db).requestForRunAuthFailure(run.runId)));
+      expect(await t.grantStatus()).toBe("needs_reauthorization");
+      expect(await t.latches()).toBe(1);
+      expect(results.filter(result => result?.state === "needs_user_action").length).toBeGreaterThanOrEqual(1);
+    });
   });
 
   it("offers a compatible connection for legacy auth failures without silently adopting it", async () => {

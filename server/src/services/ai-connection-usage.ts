@@ -70,7 +70,9 @@ export async function readUsage(url: string, headers: Record<string, string>, re
   });
   if (!response.ok) {
     await response.body?.cancel();
+    const edgePage = /^\s*text\/html\b/i.test(response.headers.get("content-type") ?? "");
     throw new ProbeFailure(response.status === 401 ? "authentication_required"
+      : response.status === 403 && edgePage ? "provider_unavailable"
       : response.status === 403 ? "permission_denied"
       : response.status === 429 ? "rate_limited" : "provider_unavailable");
   }

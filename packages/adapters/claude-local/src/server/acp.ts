@@ -55,7 +55,17 @@ import {
 } from "./probe-diagnostics.js";
 import { createWorkspaceRestoreTeardown } from "@paperclipai/adapter-utils/workspace-restore-teardown";
 import { buildLocalAdapterTestProbeEnv } from "./probe-env.js";
-import { detectClaudeLoginRequired, extractClaudeRetryNotBefore, isClaudeProviderQuotaError, parseClaudeStreamJson } from "./parse.js";
+import {
+  CLAUDE_EDGE_REJECTED_ERROR_CODE,
+  type ClaudeEdgeFailureEvidence,
+  describeClaudeEdgeFailure,
+  detectClaudeEdgeFailure,
+  detectClaudeLoginRequired,
+  extractClaudeRetryAfter,
+  extractClaudeRetryNotBefore,
+  isClaudeProviderQuotaError,
+  parseClaudeStreamJson,
+} from "./parse.js";
 import { buildClaudeProbePermissionArgs, claudeSandboxPermissionEnv } from "./permissions.js";
 import { ADAPTER_AUTH_MISSING_CHECK_CODE } from "./auth-check.js";
 import {
@@ -372,7 +382,18 @@ export function classifyClaudeTerminalSessionFailure(
   // Claude's typed AIR access category is emitted for auth_required. This is
   // a provider signal, including its generic fallback, not a tool permission
   // error inferred from text. Keep it on the existing sign-in recovery path.
-  if (failure.category === "access") return { errorCode: "acpx_auth_required" };
+  if (failure.category === "access") {
+    const text = [failure.title, failure.details].filter(Boolean).join("\n");
+    if (detectClaudeEdgeFailure({ parsed: null, stdout: "", stderr: text })) {
+      const retryNotBefore = extractClaudeRetryAfter({ stderr: text }, now)?.toISOString();
+      return {
+        errorCode: CLAUDE_EDGE_REJECTED_ERROR_CODE,
+        errorFamily: "transient_upstream",
+        ...(retryNotBefore ? { retryNotBefore } : {}),
+      };
+    }
+    return { errorCode: "acpx_auth_required" };
+  }
   // `limit` also includes context, turn, rate and configured budget limits.
   // Only the provider's quota wording qualifies for a quota wait.
   if (failure.category !== "limit") return null;
@@ -424,10 +445,65 @@ const CLAUDE_AUTH_REQUIRED_ERROR_CODE = "claude_auth_required";
  * prompt. Provider diagnostics stay intact; the generic terminal-access
  * fallback instead explains that Claude needs sign-in.
  */
+function scrubClaudeAcpEdgeFailure(
+  result: AdapterExecutionResult,
+  evidence: ClaudeEdgeFailureEvidence,
+): AdapterExecutionResult {
+  const resultJson = result.resultJson ?? null;
+  const terminal = resultJson?.terminalSessionFailure;
+  return {
+    ...result,
+    errorMessage: describeClaudeEdgeFailure(evidence),
+    ...(resultJson && terminal && typeof terminal === "object"
+      ? {
+          resultJson: {
+            ...resultJson,
+            terminalSessionFailure: {
+              ...(terminal as Record<string, unknown>),
+              title: "Claude API edge rejection",
+              details: evidence.excerpt || null,
+            },
+            edgeFailure: evidence,
+          },
+        }
+      : {}),
+  };
+}
+
 export function mapClaudeAcpAuthErrorCode(
   result: AdapterExecutionResult,
+  now = new Date(),
 ): AdapterExecutionResult {
+  if (result.errorCode === CLAUDE_EDGE_REJECTED_ERROR_CODE) {
+    const resultJson = result.resultJson ?? null;
+    const terminal = resultJson && typeof resultJson.terminalSessionFailure === "object"
+      ? resultJson.terminalSessionFailure as { title?: unknown; details?: unknown } | null
+      : null;
+    const text = [terminal?.title, terminal?.details, result.errorMessage]
+      .filter((part): part is string => typeof part === "string" && part.length > 0)
+      .join("\n");
+    const edgeFailure = text ? detectClaudeEdgeFailure({ parsed: null, stdout: "", stderr: text }) : null;
+    return edgeFailure ? scrubClaudeAcpEdgeFailure(result, edgeFailure) : result;
+  }
   if (result.errorCode !== ACPX_AUTH_REQUIRED_ERROR_CODE) return result;
+  const edgeFailure = result.errorMessage
+    ? detectClaudeEdgeFailure({ parsed: null, stdout: "", stderr: result.errorMessage })
+    : null;
+  if (edgeFailure) {
+    const retryNotBefore = extractClaudeRetryAfter({ stderr: result.errorMessage ?? "" }, now)?.toISOString();
+    const scrubbed = scrubClaudeAcpEdgeFailure(result, edgeFailure);
+    return {
+      ...scrubbed,
+      errorCode: CLAUDE_EDGE_REJECTED_ERROR_CODE,
+      errorFamily: "transient_upstream",
+      ...(retryNotBefore
+        ? {
+            retryNotBefore,
+            ...(scrubbed.resultJson ? { resultJson: { ...scrubbed.resultJson, retryNotBefore } } : {}),
+          }
+        : {}),
+    };
+  }
   return {
     ...result,
     errorCode: CLAUDE_AUTH_REQUIRED_ERROR_CODE,

@@ -693,3 +693,34 @@ describe("claude CLI local hello probe hardening", () => {
     expect(targetCheck?.message).toContain("Paperclip host");
   });
 });
+
+describe("claude hello probe edge rejections", () => {
+  it("reports a Cloudflare 403 as an edge rejection, not as login required", async () => {
+    probeResult.value = {
+      exitCode: 1,
+      stdout: [
+        initLine,
+        '{"type":"result","subtype":"success","is_error":true,"api_error_status":403,"error":"authentication_failed","result":"Failed to authenticate. API Error: 403 <!DOCTYPE html><html><head><title>Attention Required! | Cloudflare</title></head><body>Cloudflare Ray ID: <strong>8f2a1b3c4d5e6f70</strong><script>__cf_chl_opt={}</script></body></html>","session_id":"abc"}',
+      ].join("\n"),
+      stderr: "",
+    };
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    const result = await testEnvironment({
+      companyId: "company-1",
+      adapterType: "claude_local",
+      config: { engine: "cli", command: "claude", model: "claude-opus-4-8" },
+      executionTarget: sandboxTarget,
+      environmentName: "Daytona",
+    });
+
+    expect(result.checks.some((check) => /_hello_probe_auth_required$/.test(check.code))).toBe(false);
+    expect(result.checks.some((check) => check.code === "adapter_auth_missing")).toBe(false);
+    const edge = result.checks.find((check) => check.code === "claude_hello_probe_edge_rejected");
+    expect(edge).toMatchObject({ level: "warn" });
+    expect(edge?.hint).toContain("HTTP 403");
+    expect(edge?.hint).toContain("8f2a1b3c4d5e6f70");
+    expect(JSON.stringify(result.checks)).not.toMatch(/<html|<script/);
+    warnSpy.mockRestore();
+  });
+});
