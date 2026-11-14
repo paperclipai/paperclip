@@ -25,8 +25,9 @@ import { abandonUnverifiedRemoteWorkspaceEpoch } from "./remote-workspace-epoch-
 import { notifyRoutineExecutionStatus } from "./routine-execution-status-notifications.js";
 import { notifyStatusCardIssueChange } from "./status-card-notifications.js";
 import { readRunCancellation } from "./run-cancellation.js";
-import { readSystemRecovery } from "./system-recovery-state.js";
-import { RESTART_CLASS_FAILURE_CODES, continuationCauseIsSystemOwned, continuesAutomaticallySql, isPersonOwnedFailureCode } from "./continuation-cause.js";
+import { PERMANENT_SOURCE_RETRY_CLASSES, UNVERIFIABLE_SOURCE_CODES, readSystemRecovery } from "./system-recovery-state.js";
+import { RESTART_CLASS_FAILURE_CODES, continuationCauseIsSystemOwned, continuationCauseIsSystemOwnedSql, continuesAutomaticallySql,
+  isPersonOwnedFailureCode } from "./continuation-cause.js";
 import { sharedContinuationAttempts } from "./recovery/continuation-ledger.js";
 
 export { AUTOMATIC_CONTINUATION_WAKE_REASONS, PERSON_OWNED_FAILURE_CODES, isPersonOwnedFailureCode, isRecoveryRun } from "./continuation-cause.js";
@@ -802,6 +803,8 @@ const cancelledAtDispatch = (alias: "newer" | "held") => sql.raw(`coalesce(${ali
 const runOfTask = (alias: "newer" | "held", issueId: SQL) => sql`(${sql.raw(alias)}.native_issue_id::text = ${issueId}::text
   or ${sql.raw(alias)}.issue_id::text = ${issueId}::text or ${sql.raw(alias)}.context_snapshot->>'issueId' = ${issueId}::text)`;
 
+const sqlList = (values: readonly string[]) => sql.join(values.map(value => sql`${value}`), sql`, `);
+
 function interruptionEligibility(input: { now: Date; companyId: SQL; issueId: SQL; sourceRunId: SQL }) {
   const since = sql`${new Date(input.now.getTime() - BACKLOG_CONTINUATION_MAX_AGE_MS).toISOString()}::timestamptz`;
   const source = (condition: SQL) => sql`exists (select 1 from ${heartbeatRuns} source where source.company_id = ${input.companyId}
@@ -813,7 +816,18 @@ function interruptionEligibility(input: { now: Date; companyId: SQL; issueId: SQ
       and retry.run_id is null and retry.payload->>'issueId' = ${input.issueId}::text and retry.requested_at > source.finished_at)
     or exists (select 1 from ${heartbeatRuns} held where ${refusedLater}
       and held.context_snapshot->>'wakeReason' = 'task_retry' and held.finished_at > ${since}))`);
-  const recent = source(sql`${continuesAutomaticallySql("source")}
+  // Saved-work recovery proved the run's unsaved files are permanently gone
+  // (`source_unavailable`, use another strategy). The only way on is a fresh
+  // run in a new workspace, which is exactly what Retry would do: a person
+  // adds nothing, so the system takes that step itself (needed-retry is 0%).
+  const savedFilesLost = sql`exists (select 1 from ${issueRecoveryActions} lost where lost.company_id = source.company_id
+    and lost.source_issue_id::text = ${input.issueId}::text
+    and coalesce(lost.evidence->>'runId', lost.evidence->>'sourceRunId') = source.id::text
+    and lost.evidence#>>'{systemRecovery,state}' = 'exhausted'
+    and lost.evidence#>>'{systemRecovery,failure,code}' in (${sqlList(UNVERIFIABLE_SOURCE_CODES)})
+    and lost.evidence#>>'{systemRecovery,failure,retryClass}' in (${sqlList(PERMANENT_SOURCE_RETRY_CLASSES)}))`;
+  const recent = source(sql`(${continuesAutomaticallySql("source")}
+      or (${continuationCauseIsSystemOwnedSql("source")} and ${savedFilesLost}))
     and greatest(source.finished_at, (select max(held.finished_at) from ${heartbeatRuns} held where ${refusedLater})) > ${since}`);
   return { recent, personAsked };
 }

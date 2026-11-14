@@ -231,6 +231,17 @@ export async function terminalizeLegacyExecution(input: {
       )).orderBy(desc(issueRecoveryActions.createdAt)).limit(1).for("update");
       const decision = existing?.evidence.executionReconciliation as Record<string, unknown> | undefined;
       if (hasRequiredWorkspaceRecovery(existing?.evidence) && decision?.runId === run.id) return updated;
+      // The stranded sweep revisits this terminal run every pass. The hold
+      // already records this exact no-replay decision, or a fresh continuation
+      // already took it over: rewriting it would only churn its timestamps and
+      // reset a coalesced continuation's delivery state.
+      const recorded = existing?.evidence.automaticRecovery as Record<string, unknown> | undefined;
+      const continuation = existing?.evidence.freshContinuation as Record<string, unknown> | undefined;
+      if (existing && (continuation?.sourceRunId === run.id || (existing.status === "resolved"
+        && recorded?.runId === run.id && recorded.replay === "blocked"
+        && existing.evidence.workspaceRestoreFailure === updated.resultJson!.workspaceRestoreFailure
+        && JSON.stringify(existing.evidence.workspaceRestoreRecovery) === JSON.stringify(updated.resultJson!.workspaceRestoreRecovery))))
+        return updated;
       const now = new Date();
       const evidence = {
         ...existing?.evidence,

@@ -37,7 +37,7 @@ import { aliasedRun, queuedRunStalledSql } from "./stalled-queued-run-sql.js";
 import { attributeBlock, BLOCK_ATTRIBUTION_WINDOW_MS, blockedStatusDetailsSql } from "../interruption-block-release.js";
 import { ASSIGNED_WORK_CONTINUED_ACTION, taskAutomaticAttempts } from "./task-automatic-attempts.js";
 import { isReattachPhaseActive, reattachPhaseRecheckAt } from "../heartbeat/run-admission.js";
-import { ensureFreshContinuation, type FreshContinuationResult } from "../fresh-continuation-fallback.js";
+import { ensureFreshContinuation, hasPendingFreshContinuation, type FreshContinuationResult } from "../fresh-continuation-fallback.js";
 import { canContinueRecoveryRunAutomatically } from "../continuation-cause.js";
 import { STRANDED_CONTINUATION_MAX_AGE_MS, STRANDED_KIND, strandedHoldContinuesAutomatically, type StrandedHoldRun } from "./stranded-hold-continuation.js";
 import {
@@ -660,6 +660,16 @@ export function assignedWorkSweep(db: Db, deps: AssignedWorkDeps) {
       logger.warn({ err: error, companyId: issue.companyId, issueId: issue.id }, "assigned-work continuation was not admitted");
       return null;
     });
+    // Admission may settle the task's hold and coalesce this wake into a
+    // fresh continuation from saved work, which the continuation worker
+    // starts. That is a continuation, not a refusal.
+    if (!run && await db.transaction(tx => hasPendingFreshContinuation(tx as unknown as Db, issue.companyId, issue.id)).catch(error => {
+      logger.warn({ err: error, companyId: issue.companyId, issueId: issue.id }, "assigned-work sweep could not read the task's continuation");
+      return false;
+    })) {
+      await settleContinuationActivity(claimed, claimed.reason, "queued", { continuedFromSavedWork: "true" });
+      return { verdict: claimed.verdict, outcome: "repaired", retryAt: claimed.nextCheckAt };
+    }
     // A refused continuation stays a violation; the claim spaces the next try.
     // A block lifted for it is put back, so the task never sits unblocked
     // with nothing pending.
