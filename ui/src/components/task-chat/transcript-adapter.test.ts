@@ -2640,6 +2640,31 @@ describe("coalesceSettledTurns (PAP-362)", () => {
     ).toHaveLength(2);
   });
 
+  it("lets another agent's chat message end the merge when runs carry no display name", () => {
+    const unnamed = new Map<string, SettledTurnMergeMeta>([
+      ["run-a:turn", { agentKey: "agent-1", parts: [{ entries: runA, durationMs: 30_000 }] }],
+      ["run-b:turn", { agentKey: "agent-1", parts: [{ entries: runB, durationMs: 15_000 }] }],
+    ]);
+    const fromAgent = (id: string, agentId: string, authorName: string): TaskChatItem => ({
+      id, kind: "message", author: "agent", authorName, agent: { id: agentId }, text: "Note.",
+    });
+    const items: TaskChatItem[] = [
+      turn("run-a:turn", runA, 30_000),
+      fromAgent("msg-cos", "agent-2", "Chief of Staff"),
+      turn("run-b:turn", runB, 15_000),
+    ];
+    expect(coalesceSettledTurns(items, unnamed).map((i) => i.id)).toEqual([
+      "run-a:turn",
+      "msg-cos",
+      "run-b:turn",
+    ]);
+    const ownReply = [items[0]!, fromAgent("msg-a", "agent-1", "CEO"), items[2]!];
+    expect(coalesceSettledTurns(ownReply, unnamed).map((i) => i.id)).toEqual([
+      "msg-a",
+      "run-a:turn",
+    ]);
+  });
+
   it("never merges the live (unsettled) turn and preserves animateFold", () => {
     const live: TaskChatItem = {
       id: "run-b:turn",
@@ -2741,6 +2766,19 @@ describe("attachSettledTurns (round 9)", () => {
     // Nothing above at all.
     const first = attachSettledTurns([settledTurn("run-a:turn")], metaById);
     expect(first.map((i) => i.kind)).toEqual(["turn"]);
+  });
+
+  it("matches the bubble's agent ID when the run carries no display name", () => {
+    const unnamed = new Map<string, SettledTurnMergeMeta>([
+      ["run-a:turn", { agentKey: "agent-1", parts: [{ entries: runA, durationMs: 30_000 }] }],
+    ]);
+    const fromAgent = (agentId: string, authorName: string): TaskChatItem => ({
+      id: `msg-${agentId}`, kind: "message", author: "agent", authorName, agent: { id: agentId }, text: "Done.",
+    });
+    const other = attachSettledTurns([fromAgent("agent-2", "Chief of Staff"), settledTurn("run-a:turn")], unnamed);
+    expect(other.map((i) => i.kind)).toEqual(["message", "turn"]);
+    const own = attachSettledTurns([fromAgent("agent-1", "CEO"), settledTurn("run-a:turn")], unnamed);
+    expect((own[0] as Extract<TaskChatItem, { kind: "message" }>).attachedTurn?.id).toBe("run-a:turn");
   });
 
   it("never attaches the live (unsettled) turn and attaches at most one turn per bubble", () => {

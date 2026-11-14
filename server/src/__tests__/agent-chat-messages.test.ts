@@ -323,7 +323,7 @@ import { recoveryPostgresSupport as support } from "./helpers/recovery-postgres.
     await server.db.update(issues).set({ assigneeAgentId: agent.id, executionRunId: runId }).where(eq(issues.id, f.issueId));
     const c = await send({ ...f, agentId: agent.id, runId });
     expect(new Set([a!.conversationId, b!.conversationId, c!.conversationId]).size).toBe(3);
-    await expect(issueService(server.db).addComment(a!.conversationId, "Wrong agent", { agentId: agent.id, runId })).rejects.toThrow(/Only this conversation/);
+    await expect(issueService(server.db).addComment(a!.conversationId, "Wrong person", { agentId: agent.id, runId })).rejects.toThrow(/person who owns that chat/);
     await expect(issueService(server.db).addComment(b!.conversationId, "Bypass", { agentId: f.agentId, runId: f.runId })).rejects.toThrow(/earlier session/);
   });
 
