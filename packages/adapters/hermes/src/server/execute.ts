@@ -236,7 +236,7 @@ const TOKEN_USAGE_REGEX =
   /tokens?[:\s]+(\d+)\s*(?:input|in)\b.*?(\d+)\s*(?:output|out)\b/i;
 
 /** Regex to extract cost from Hermes output. */
-const COST_REGEX = /(?:cost|spent)[:\s]*\$?([\d.]+)/i;
+const COST_REGEX = /(?:cost|spent)[:\s]*\$?(\d+(?:\.\d+)?)/i;
 
 interface ParsedOutput {
   sessionId?: string;
@@ -321,7 +321,9 @@ function parseHermesOutput(stdout: string, stderr: string): ParsedOutput {
   // Extract cost
   const costMatch = combined.match(COST_REGEX);
   if (costMatch?.[1]) {
-    result.costUsd = parseFloat(costMatch[1]);
+    const parsedCost = parseFloat(costMatch[1]);
+    // A NaN cost fails run-result validation and marks a finished run adapter_failed (#16930).
+    if (Number.isFinite(parsedCost)) result.costUsd = parsedCost;
   }
 
   // Check for error patterns in stderr
