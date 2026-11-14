@@ -19,11 +19,26 @@ export type LocalBrowserLoginState = {
 // Node has no built-in PTY API. Python's standard-library pty module supplies
 // the terminal required by both CLIs. The Docker image already includes
 // python3. This bridge forwards only bytes; provider output is never logged.
+//
+// pty.fork() leaves the new terminal at 0 rows by 0 columns. The Claude
+// setup-token screen is a terminal UI and shows no sign-in link at that size.
+// The child sets a real window size before it execs the provider, so the
+// provider reads it at startup. The parent also sets it on the master side, so
+// the terminal keeps a real size if the child call fails. 200 by 50 is the size
+// of the setup-token characterization harness that the prompt parser is tested
+// against (setup-token-characterization.test.ts).
+const LOCAL_LOGIN_PTY_COLS = 200;
+const LOCAL_LOGIN_PTY_ROWS = 50;
 const PYTHON_PTY_BRIDGE = String.raw`
-import errno, os, pty, select, signal, sys
+import errno, fcntl, os, pty, select, signal, struct, sys, termios
+WINSIZE = struct.pack("HHHH", ${LOCAL_LOGIN_PTY_ROWS}, ${LOCAL_LOGIN_PTY_COLS}, 0, 0)
 pid, master = pty.fork()
 if pid == 0:
+    try: fcntl.ioctl(0, termios.TIOCSWINSZ, WINSIZE)
+    except OSError: pass
     os.execvpe(sys.argv[1], sys.argv[1:], os.environ)
+try: fcntl.ioctl(master, termios.TIOCSWINSZ, WINSIZE)
+except OSError: pass
 def stop(_signal, _frame):
     try: os.killpg(pid, signal.SIGKILL)
     except ProcessLookupError: pass
