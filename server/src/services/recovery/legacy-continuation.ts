@@ -15,6 +15,13 @@ export interface LegacyContinuationInput {
     ownedLifecycle: boolean;
     conversation: boolean;
     agentInvokable: boolean;
+    /**
+     * The settling run recorded a disposition on the issue thread itself
+     * (for example an issue comment authored by that run). A repair attempt
+     * that reports on the thread has done what this contract asks of it, even
+     * when it legitimately returns the issue to `todo` for the same owner.
+     */
+    dispositionRecorded: boolean;
   };
 }
 export interface LegacyDispositionEpisode {
@@ -76,6 +83,20 @@ export function decideLegacyContinuation(input: LegacyContinuationInput):
     [gates.conversation, "conversation"],
     [!gates.agentInvokable || ["paused", "terminated", "pending_approval"].includes(agent.status), "agent_not_invokable"],
   ] as const) if (blocked) return { kind: "skip", reason };
+  /**
+   * A repair attempt that recorded its outcome on the thread has satisfied this
+   * contract. This check sits after every hard gate, so Stop, pause, budgets and
+   * an owned execution path keep precedence, and before the attempt budget, so a
+   * satisfied repair is never charged as a spent attempt.
+   *
+   * Without it the only way a repair could be scored as successful is to move the
+   * issue out of `todo`/`in_progress`, because those are the two statuses this
+   * function runs for. A correct hand-back returns the issue to `todo` for the
+   * same owner, so it is indistinguishable from a run that recorded nothing, and
+   * the budget below then exhausts the episode and escalates a healthy issue.
+   * Only repair attempts count: an initial run's comment is not a repair outcome.
+   */
+  if (episode.attempt >= 1 && gates.dispositionRecorded) return { kind: "skip", reason: "recorded_on_thread_disposition" };
   if (episode.attempt >= episode.maxAttempts) return { kind: "exhausted", attempt: episode.attempt, maxAttempts: episode.maxAttempts };
   const nextAttempt = episode.attempt + 1;
   return {
