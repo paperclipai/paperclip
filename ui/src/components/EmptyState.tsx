@@ -49,7 +49,7 @@ export function EmptyState({
       {action && onAction && (
         <Button onClick={onAction}>
           {!hideActionIcon && <Plus className="h-4 w-4 mr-1.5" />}
-          {action}
+          {tx(action)}
         </Button>
       )}
     </div>

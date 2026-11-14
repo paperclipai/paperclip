@@ -169,10 +169,12 @@ describe("translateLabel", () => {
   });
 
   it("keeps every Russian value non-empty and free of markup", () => {
+    // Product names are the label. A translation that copies the name is not a missed string.
+    const productNames = new Set(["OpenAI Dot", "Braintrust"]);
     for (const [key, value] of Object.entries(ruLabels)) {
       expect(key.length).toBeGreaterThan(0);
       expect(value.trim().length).toBeGreaterThan(0);
-      expect(value).not.toBe(key);
+      if (!productNames.has(key)) expect(value).not.toBe(key);
       expect(value).not.toMatch(/[<>]|javascript:/i);
     }
   });

@@ -6,6 +6,8 @@ import { IssueReferenceActivitySummary } from "./IssueReferenceActivitySummary";
 import { timeAgo } from "../lib/timeAgo";
 import { cn } from "../lib/utils";
 import { formatActivityVerb } from "../lib/activity-format";
+import { translateActivityVerb } from "../i18n/ru-activity-verbs";
+import { useTx, useUiLanguage } from "../i18n/tx";
 import { deriveProjectUrlKey, type ActivityEvent, type Agent } from "@paperclipai/shared";
 import type { CompanyUserProfile } from "../lib/company-members";
 import { useState, type ReactNode } from "react";
@@ -34,7 +36,8 @@ export interface ActivityRowProps {
 }
 
 export function ActivityRow({ event, agentMap, userProfileMap, entityNameMap, entityTitleMap, className, appearance = "default", density = "comfortable" }: ActivityRowProps) {
-  const verb = formatActivityVerb(event.action, event.details, { agentMap, userProfileMap });
+  const tx = useTx();
+  const verb = translateActivityVerb(useUiLanguage(), formatActivityVerb(event.action, event.details, { agentMap, userProfileMap }));
 
   const isHeartbeatEvent = event.entityType === "heartbeat_run";
   const heartbeatAgentId = isHeartbeatEvent
@@ -54,7 +57,11 @@ export function ActivityRow({ event, agentMap, userProfileMap, entityNameMap, en
 
   const actor = event.actorType === "agent" ? agentMap.get(event.actorId) : null;
   const userProfile = event.actorType === "user" ? userProfileMap?.get(event.actorId) : null;
-  const actorName = actor?.name ?? (event.actorType === "system" ? "System" : userProfile?.label ?? (event.actorType === "user" ? "Board" : event.actorId || "Unknown"));
+  const actorName = actor?.name
+    ?? (event.actorType === "system"
+      ? tx("System")
+      : userProfile?.label
+        ?? tx(event.actorType === "user" ? "Board" : event.actorId || "Unknown"));
   const actorAvatarUrl = userProfile?.image ?? null;
   const avatar = event.actorType === "agent" ? (
     <AgentAvatar agent={actor} name={actorName} size={24} className="@xl:self-center" />
@@ -66,7 +73,7 @@ export function ActivityRow({ event, agentMap, userProfileMap, entityNameMap, en
   );
 
   if (appearance === "refreshed") {
-    const subject = event.entityType === "issue" ? entityTitle || name || "Task" : [name, entityTitle].filter(Boolean).join(" — ");
+    const subject = event.entityType === "issue" ? entityTitle || name || tx("Task") : [name, entityTitle].filter(Boolean).join(" — ");
     return <RefreshedActivityRow event={event} avatar={avatar} actorName={actorName} verb={verb} subject={subject} identifier={event.entityType === "issue" ? name ?? undefined : undefined} link={link} density={density} className={className} />;
   }
 
