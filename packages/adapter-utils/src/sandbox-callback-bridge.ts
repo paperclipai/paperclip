@@ -1692,6 +1692,118 @@ export async function syncSandboxCallbackBridgeEntrypoint(input: {
   };
 }
 
+async function stopSandboxCallbackBridgeServerProcess(input: {
+  runner: CommandManagedRuntimeRunner;
+  remoteCwd: string;
+  remoteEntrypoint: string;
+  directories: SandboxCallbackBridgeDirectories;
+  timeoutMs: number;
+  shellCommand: "bash" | "sh";
+  launchToken: string;
+  preserveCancellationFile?: boolean;
+}): Promise<void> {
+  const launchStateFile = path.posix.join(input.directories.rootDir, `.launch-${input.launchToken}.state`);
+  const launchCancellationFile = path.posix.join(input.directories.rootDir, `.launch-${input.launchToken}.cancel`);
+  const cleanupTimeoutMs = Math.max(input.timeoutMs, 10_000);
+  const stopResult = await runSandboxBridgeControlCommand(input.runner, {
+    command: input.shellCommand,
+    args: shellCommandArgs(
+      [
+        `mkdir -p ${shellQuote(input.directories.rootDir)}`,
+        `: > ${shellQuote(launchCancellationFile)}`,
+        "launch_identity_published=0",
+        "i=0",
+        `while [ -e ${shellQuote(launchStateFile)} ] && [ ! -s ${shellQuote(input.directories.pidFile)} ] && [ "$i" -lt 40 ]; do`,
+        "  i=$((i + 1))",
+        "  sleep 0.05",
+        "done",
+        `if [ -e ${shellQuote(launchStateFile)} ] && [ ! -s ${shellQuote(input.directories.pidFile)} ]; then`,
+        '  echo "Callback bridge launch did not finish publishing process identity." >&2',
+        "  exit 1",
+        "fi",
+        `if [ -s ${shellQuote(input.directories.pidFile)} ]; then`,
+        "  launch_identity_published=1",
+        `  read -r pid expected_start_time extra < ${shellQuote(input.directories.pidFile)} || true`,
+        '  case "$pid" in ""|*[!0-9]*) pid="" ;; esac',
+        '  case "$expected_start_time" in ""|*[!0-9]*) pid="" ;; esac',
+        '  if [ -n "${extra:-}" ]; then pid=""; fi',
+        '  if [ -n "$pid" ] && [ "$pid" -gt 1 ] 2>/dev/null && kill -0 "$pid" 2>/dev/null; then',
+        '    stat_line="$(cat "/proc/$pid/stat" 2>/dev/null || true)"',
+        '    current_state="$(printf \'%s\\n\' "${stat_line##*) }" | awk \'{print $1}\')"',
+        '    current_start_time="$(printf \'%s\\n\' "${stat_line##*) }" | awk \'{print $20}\')"',
+        '    portable_identity=0',
+        '    if [ -z "$current_start_time" ]; then portable_identity=1; portable_started_at="$(LC_ALL=C ps -o lstart= -p "$pid" 2>/dev/null | awk \'{$1=$1; print}\')"; if [ -n "$portable_started_at" ]; then current_start_time="$(printf \'%s\' "$portable_started_at" | cksum 2>/dev/null | awk \'{print $1}\')"; fi; current_state="$(LC_ALL=C ps -o state= -p "$pid" 2>/dev/null | awk \'{print substr($1,1,1)}\')"; fi',
+        '    if [ -z "$current_start_time" ]; then echo "Unable to verify callback bridge process identity." >&2; exit 1; fi',
+        '    if [ "$current_start_time" = "$expected_start_time" ] && [ "$current_state" != "Z" ]; then',
+        '      command_line="$(tr \'\\000\' \' \' < "/proc/$pid/cmdline" 2>/dev/null || true)"',
+        '      if [ -z "$command_line" ]; then command_line="$(LC_ALL=C ps -ww -o command= -p "$pid" 2>/dev/null || true)"; fi',
+        '      if [ -z "$command_line" ]; then echo "Unable to verify callback bridge process identity." >&2; exit 1; fi',
+        '      case "$command_line" in',
+        '        *"$PAPERCLIP_EXPECTED_BRIDGE_ENTRYPOINT"*"$PAPERCLIP_EXPECTED_BRIDGE_LAUNCH_TOKEN"*)',
+        '          kill "$pid" 2>/dev/null || true',
+        '          i=0',
+        '          while kill -0 "$pid" 2>/dev/null && [ "$i" -lt 40 ]; do',
+        '            stat_line="$(cat "/proc/$pid/stat" 2>/dev/null || true)"',
+        '            current_state="$(printf \'%s\\n\' "${stat_line##*) }" | awk \'{print $1}\')"',
+        '            if [ -z "$current_state" ]; then current_state="$(LC_ALL=C ps -o state= -p "$pid" 2>/dev/null | awk \'{print substr($1,1,1)}\')"; fi',
+        '            if [ "$current_state" = "Z" ]; then break; fi',
+        '            i=$((i + 1))',
+        '            sleep 0.05',
+        '          done',
+        '          if kill -0 "$pid" 2>/dev/null; then',
+        '            stat_line="$(cat "/proc/$pid/stat" 2>/dev/null || true)"',
+        '            current_state="$(printf \'%s\\n\' "${stat_line##*) }" | awk \'{print $1}\')"',
+        '            current_start_time="$(printf \'%s\\n\' "${stat_line##*) }" | awk \'{print $20}\')"',
+        '            if [ -z "$current_start_time" ]; then portable_started_at="$(LC_ALL=C ps -o lstart= -p "$pid" 2>/dev/null | awk \'{$1=$1; print}\')"; if [ -n "$portable_started_at" ]; then current_start_time="$(printf \'%s\' "$portable_started_at" | cksum 2>/dev/null | awk \'{print $1}\')"; fi; current_state="$(LC_ALL=C ps -o state= -p "$pid" 2>/dev/null | awk \'{print substr($1,1,1)}\')"; fi',
+        '            if [ "$current_start_time" = "$expected_start_time" ] && [ "$current_state" != "Z" ]; then',
+        '              if [ "$portable_identity" -eq 1 ]; then command_line="$(LC_ALL=C ps -ww -o command= -p "$pid" 2>/dev/null || true)"; case "$command_line" in *"$PAPERCLIP_EXPECTED_BRIDGE_ENTRYPOINT"*"$PAPERCLIP_EXPECTED_BRIDGE_LAUNCH_TOKEN"*) ;; *) echo "Callback bridge command identity changed; refusing SIGKILL." >&2; exit 1 ;; esac; fi',
+        '              kill -KILL "$pid" 2>/dev/null || true',
+        '            fi',
+        '            i=0',
+        '            while kill -0 "$pid" 2>/dev/null && [ "$i" -lt 40 ]; do',
+        '              stat_line="$(cat "/proc/$pid/stat" 2>/dev/null || true)"',
+        '              current_state="$(printf \'%s\\n\' "${stat_line##*) }" | awk \'{print $1}\')"',
+        '              if [ -z "$current_state" ]; then current_state="$(LC_ALL=C ps -o state= -p "$pid" 2>/dev/null | awk \'{print substr($1,1,1)}\')"; fi',
+        '              if [ "$current_state" = "Z" ]; then break; fi',
+        '              i=$((i + 1))',
+        '              sleep 0.05',
+        '            done',
+        '          fi',
+        '          if kill -0 "$pid" 2>/dev/null; then',
+        '            stat_line="$(cat "/proc/$pid/stat" 2>/dev/null || true)"',
+        '            current_state="$(printf \'%s\\n\' "${stat_line##*) }" | awk \'{print $1}\')"',
+        '            current_start_time="$(printf \'%s\\n\' "${stat_line##*) }" | awk \'{print $20}\')"',
+        '            if [ -z "$current_start_time" ]; then portable_started_at="$(LC_ALL=C ps -o lstart= -p "$pid" 2>/dev/null | awk \'{$1=$1; print}\')"; if [ -n "$portable_started_at" ]; then current_start_time="$(printf \'%s\' "$portable_started_at" | cksum 2>/dev/null | awk \'{print $1}\')"; fi; current_state="$(LC_ALL=C ps -o state= -p "$pid" 2>/dev/null | awk \'{print substr($1,1,1)}\')"; fi',
+        '            if [ "$current_start_time" = "$expected_start_time" ] && [ "$current_state" != "Z" ]; then',
+        '              echo "Callback bridge process did not stop." >&2',
+        '              exit 1',
+        '            fi',
+        '          fi',
+        '          ;;',
+        '        *)',
+        '          echo "Callback bridge command identity changed; retaining process state." >&2',
+        '          exit 1',
+        '          ;;',
+        '      esac',
+        '    fi',
+        '  fi',
+        'fi',
+        input.preserveCancellationFile
+          ? `if [ "$launch_identity_published" -eq 1 ]; then rm -f ${shellQuote(input.directories.pidFile)} ${shellQuote(input.directories.readyFile)} ${shellQuote(launchStateFile)} ${shellQuote(launchCancellationFile)}; else rm -f ${shellQuote(input.directories.pidFile)} ${shellQuote(input.directories.readyFile)} ${shellQuote(launchStateFile)}; fi`
+          : `rm -f ${shellQuote(input.directories.pidFile)} ${shellQuote(input.directories.readyFile)} ${shellQuote(launchStateFile)} ${shellQuote(launchCancellationFile)}`,
+      ].join("\n"),
+    ),
+    cwd: input.remoteCwd,
+    env: {
+      [SANDBOX_EXEC_CHANNEL_ENV]: SANDBOX_EXEC_CHANNEL_BRIDGE,
+      PAPERCLIP_EXPECTED_BRIDGE_ENTRYPOINT: input.remoteEntrypoint,
+      PAPERCLIP_EXPECTED_BRIDGE_LAUNCH_TOKEN: `--paperclip-bridge-launch-token=${input.launchToken}`,
+    },
+    timeoutMs: cleanupTimeoutMs,
+  });
+  requireSuccessfulResult("stop sandbox callback bridge", stopResult);
+}
+
 export async function startSandboxCallbackBridgeServer(input: {
   runner: CommandManagedRuntimeRunner;
   remoteCwd: string;
@@ -1735,109 +1847,150 @@ export async function startSandboxCallbackBridgeServer(input: {
     maxBodyBytes: input.maxBodyBytes,
   });
   const nodeCommand = input.nodeCommand?.trim() || "node";
-  const startResult = await runSandboxBridgeControlCommand(input.runner, {
-    command: shellCommand,
-    args: shellCommandArgs(
-      [
-        `mkdir -p ${shellQuote(directories.requestsDir)} ${shellQuote(directories.responsesDir)} ${shellQuote(directories.logsDir)}`,
-        `rm -f ${shellQuote(directories.readyFile)} ${shellQuote(directories.pidFile)}`,
-        `nohup ${shellQuote(nodeCommand)} ${shellQuote(remoteEntrypoint)} ` +
-          `>> ${shellQuote(directories.logFile)} 2>&1 < /dev/null &`,
-        "pid=$!",
-        `printf '%s\\n' \"$pid\" > ${shellQuote(directories.pidFile)}`,
-        "printf '{\"pid\":%s}\\n' \"$pid\"",
-      ].join("\n"),
-    ),
-    cwd: input.remoteCwd,
-    env: {
-      [SANDBOX_EXEC_CHANNEL_ENV]: SANDBOX_EXEC_CHANNEL_BRIDGE,
-      ...env,
-    },
-    timeoutMs,
-  });
-  requireSuccessfulResult("start sandbox callback bridge", startResult);
-
-  const readyResult = await runShell(
-    input.runner,
-    input.remoteCwd,
-    [
-      "i=0",
-      `while [ \"$i\" -lt 200 ]; do`,
-      `  if [ -s ${shellQuote(directories.readyFile)} ]; then`,
-      `    cat ${shellQuote(directories.readyFile)}`,
-      "    exit 0",
-      "  fi",
-      `  if [ -s ${shellQuote(directories.logFile)} ] && ! kill -0 \"$(cat ${shellQuote(directories.pidFile)} 2>/dev/null)\" 2>/dev/null; then`,
-      `    cat ${shellQuote(directories.logFile)} >&2`,
-      "    exit 1",
-      "  fi",
-      "  i=$((i + 1))",
-      "  sleep 0.05",
-      "done",
-      `echo "Timed out waiting for bridge readiness." >&2`,
-      `if [ -s ${shellQuote(directories.logFile)} ]; then cat ${shellQuote(directories.logFile)} >&2; fi`,
-      "exit 1",
-    ].join("\n"),
-    timeoutMs,
-    shellCommand,
-  );
-  requireSuccessfulResult("wait for sandbox callback bridge readiness", readyResult);
-
-  let readyData: { host?: string; port?: number; baseUrl?: string; pid?: number };
+  const launchToken = randomUUID();
+  const launchStateFile = path.posix.join(directories.rootDir, `.launch-${launchToken}.state`);
+  const launchCancellationFile = path.posix.join(directories.rootDir, `.launch-${launchToken}.cancel`);
+  const launchWrapperScript = [
+    "pid=$$",
+    'node_command="$1"',
+    'bridge_entrypoint="$2"',
+    'launch_token="$3"',
+    'start_time=""',
+    'if [ -r "/proc/$pid/stat" ]; then',
+    '  stat_line=""',
+    '  IFS= read -r stat_line < "/proc/$pid/stat" || true',
+    '  start_time="${stat_line##*) }"',
+    '  set -- $start_time',
+    '  start_time="${20:-}"',
+    'fi',
+    'case "$start_time" in ""|*[!0-9]*) portable_started_at="$(LC_ALL=C ps -o lstart= -p "$pid" 2>/dev/null | awk \'{$1=$1; print}\')"; if [ -n "$portable_started_at" ]; then start_time="$(printf \'%s\' "$portable_started_at" | cksum 2>/dev/null | awk \'{print $1}\')"; fi ;; esac',
+    `case "$start_time" in ""|*[!0-9]*) rm -f ${shellQuote(launchStateFile)}; echo "Unable to record callback bridge process identity." >&2; exit 1 ;; esac`,
+    `printf '%s %s\\n' "$pid" "$start_time" > ${shellQuote(directories.pidFile)}`,
+    `if [ -e ${shellQuote(launchCancellationFile)} ]; then`,
+    `  rm -f ${shellQuote(directories.pidFile)} ${shellQuote(directories.readyFile)} ${shellQuote(launchStateFile)} ${shellQuote(launchCancellationFile)}`,
+    '  echo "Callback bridge launch was cancelled after process creation." >&2',
+    "  exit 1",
+    "fi",
+    `rm -f ${shellQuote(launchStateFile)}`,
+    'exec "$node_command" "$bridge_entrypoint" "--paperclip-bridge-launch-token=$launch_token"',
+  ].join("\n");
+  let launchCompleted = false;
+  let launchTransportAmbiguous = true;
   try {
-    readyData = JSON.parse(readyResult.stdout.trim()) as { host?: string; port?: number; baseUrl?: string; pid?: number };
-  } catch (error) {
-    throw new Error(
-      `Sandbox callback bridge wrote invalid readiness JSON: ${error instanceof Error ? error.message : String(error)}`,
+    const startResult = await runSandboxBridgeControlCommand(input.runner, {
+      command: shellCommand,
+      args: shellCommandArgs(
+        [
+          `mkdir -p ${shellQuote(directories.requestsDir)} ${shellQuote(directories.responsesDir)} ${shellQuote(directories.logsDir)}`,
+          `rm -f ${shellQuote(directories.readyFile)} ${shellQuote(directories.pidFile)}`,
+          `if [ -e ${shellQuote(launchCancellationFile)} ]; then rm -f ${shellQuote(launchCancellationFile)} ${shellQuote(launchStateFile)}; echo "Callback bridge launch was cancelled before process creation." >&2; exit 1; fi`,
+          `set -- ${shellQuote(directories.rootDir)}/.launch-*.cancel`,
+          'if [ -e "$1" ] && [ "$#" -ge 64 ]; then echo "Too many unresolved callback bridge launches; refusing to create another." >&2; exit 1; fi',
+          `printf '%s\\n' ${shellQuote(launchToken)} > ${shellQuote(launchStateFile)}`,
+          `if [ -e ${shellQuote(launchCancellationFile)} ]; then`,
+          `  rm -f ${shellQuote(launchStateFile)} ${shellQuote(launchCancellationFile)}`,
+          '  echo "Callback bridge launch was cancelled before process creation." >&2',
+          "  exit 1",
+          "fi",
+          `nohup ${shellQuote(shellCommand)} -c ${shellQuote(launchWrapperScript)} ${shellQuote(shellCommand)} ${shellQuote(nodeCommand)} ${shellQuote(remoteEntrypoint)} ${shellQuote(launchToken)} ` +
+            `>> ${shellQuote(directories.logFile)} 2>&1 < /dev/null &`,
+          "pid=$!",
+          "i=0",
+          `while [ -e ${shellQuote(launchStateFile)} ] && [ ! -s ${shellQuote(directories.pidFile)} ] && [ "$i" -lt 40 ]; do i=$((i + 1)); sleep 0.05; done`,
+          `if [ ! -s ${shellQuote(directories.pidFile)} ]; then echo "Callback bridge process did not publish its identity." >&2; exit 1; fi`,
+          "printf '{\"pid\":%s}\\n' \"$pid\"",
+        ].join("\n"),
+      ),
+      cwd: input.remoteCwd,
+      env: {
+        [SANDBOX_EXEC_CHANNEL_ENV]: SANDBOX_EXEC_CHANNEL_BRIDGE,
+        ...env,
+      },
+      timeoutMs,
+    });
+    launchTransportAmbiguous =
+      startResult.timedOut || startResult.exitCode === null || startResult.exitCode === 255 || startResult.signal !== null;
+    requireSuccessfulResult("start sandbox callback bridge", startResult);
+    launchCompleted = true;
+
+    const readyResult = await runShell(
+      input.runner,
+      input.remoteCwd,
+      [
+        "i=0",
+        `while [ \"$i\" -lt 200 ]; do`,
+        `  if [ -s ${shellQuote(directories.readyFile)} ]; then`,
+        `    cat ${shellQuote(directories.readyFile)}`,
+        "    exit 0",
+        "  fi",
+        `  if [ -s ${shellQuote(directories.logFile)} ]; then read -r bridge_pid _ < ${shellQuote(directories.pidFile)} 2>/dev/null || true; if [ -z \"$bridge_pid\" ] || ! kill -0 \"$bridge_pid\" 2>/dev/null; then`,
+        `    cat ${shellQuote(directories.logFile)} >&2`,
+        "    exit 1",
+        "  fi; fi",
+        "  i=$((i + 1))",
+        "  sleep 0.05",
+        "done",
+        `echo "Timed out waiting for bridge readiness." >&2`,
+        `if [ -s ${shellQuote(directories.logFile)} ]; then cat ${shellQuote(directories.logFile)} >&2; fi`,
+        "exit 1",
+      ].join("\n"),
+      timeoutMs,
+      shellCommand,
     );
-  }
+    requireSuccessfulResult("wait for sandbox callback bridge readiness", readyResult);
 
-  const host = typeof readyData.host === "string" && readyData.host.trim().length > 0
-    ? readyData.host.trim()
-    : "127.0.0.1";
-  const port = typeof readyData.port === "number" && Number.isFinite(readyData.port) ? readyData.port : 0;
-  if (!port) {
-    throw new Error("Sandbox callback bridge did not report a listening port.");
-  }
-  const baseUrl =
-    typeof readyData.baseUrl === "string" && readyData.baseUrl.trim().length > 0
-      ? readyData.baseUrl.trim()
-      : `http://${host}:${port}`;
+    let readyData: { host?: string; port?: number; baseUrl?: string; pid?: number };
+    try {
+      readyData = JSON.parse(readyResult.stdout.trim()) as { host?: string; port?: number; baseUrl?: string; pid?: number };
+    } catch (error) {
+      throw new Error(
+        `Sandbox callback bridge wrote invalid readiness JSON: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
 
-  return {
-    baseUrl,
-    host,
-    port,
-    pid: typeof readyData.pid === "number" && Number.isFinite(readyData.pid) ? readyData.pid : 0,
-    directories,
-    stop: async () => {
-      const stopResult = await runSandboxBridgeControlCommand(input.runner, {
-        command: shellCommand,
-        args: shellCommandArgs(
-          [
-            `if [ -s ${shellQuote(directories.pidFile)} ]; then`,
-            `  pid="$(cat ${shellQuote(directories.pidFile)})"`,
-            "  kill \"$pid\" 2>/dev/null || true",
-            "  i=0",
-            "  while kill -0 \"$pid\" 2>/dev/null && [ \"$i\" -lt 40 ]; do",
-            "    i=$((i + 1))",
-            "    sleep 0.05",
-            "  done",
-            "fi",
-            `rm -f ${shellQuote(directories.pidFile)} ${shellQuote(directories.readyFile)}`,
-          ].join("\n"),
-        ),
-        cwd: input.remoteCwd,
-        env: {
-          [SANDBOX_EXEC_CHANNEL_ENV]: SANDBOX_EXEC_CHANNEL_BRIDGE,
-        },
-        timeoutMs,
-      });
-      if (stopResult.timedOut) {
-        throw new Error(buildRunnerFailureMessage("stop sandbox callback bridge", stopResult));
-      }
-    },
-  };
+    const host = typeof readyData.host === "string" && readyData.host.trim().length > 0
+      ? readyData.host.trim()
+      : "127.0.0.1";
+    const port = typeof readyData.port === "number" && Number.isFinite(readyData.port) ? readyData.port : 0;
+    if (!port) {
+      throw new Error("Sandbox callback bridge did not report a listening port.");
+    }
+    const baseUrl =
+      typeof readyData.baseUrl === "string" && readyData.baseUrl.trim().length > 0
+        ? readyData.baseUrl.trim()
+        : `http://${host}:${port}`;
+
+    return {
+      baseUrl,
+      host,
+      port,
+      pid: typeof readyData.pid === "number" && Number.isFinite(readyData.pid) ? readyData.pid : 0,
+      directories,
+      stop: async () => {
+        await stopSandboxCallbackBridgeServerProcess({
+          runner: input.runner,
+          remoteCwd: input.remoteCwd,
+          remoteEntrypoint,
+          directories,
+          timeoutMs,
+          shellCommand,
+          launchToken,
+        });
+      },
+    };
+  } catch (error) {
+    await stopSandboxCallbackBridgeServerProcess({
+      runner: input.runner,
+      remoteCwd: input.remoteCwd,
+      remoteEntrypoint,
+      directories,
+      timeoutMs,
+      shellCommand,
+      launchToken,
+      preserveCancellationFile: !launchCompleted && launchTransportAmbiguous,
+    }).catch(() => undefined);
+    throw error;
+  }
 }
 
 // ---------------------------------------------------------------------------

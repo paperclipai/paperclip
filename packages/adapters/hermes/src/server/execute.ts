@@ -238,12 +238,19 @@ const TOKEN_USAGE_REGEX =
 /** Regex to extract cost from Hermes output. */
 const COST_REGEX = /(?:cost|spent)[:\s]*\$?([\d.]+)/i;
 
+export interface HermesResultRecord {
+  schemaVersion: 1;
+  status: "completed" | "failed";
+  sessionId: string;
+}
+
 interface ParsedOutput {
   sessionId?: string;
   response?: string;
   usage?: UsageSummary;
   costUsd?: number;
   errorMessage?: string;
+  completionRecord?: HermesResultRecord;
 }
 
 // ---------------------------------------------------------------------------
@@ -279,27 +286,63 @@ function cleanResponse(raw: string): string {
 // Output parsing
 // ---------------------------------------------------------------------------
 
-function parseHermesOutput(stdout: string, stderr: string): ParsedOutput {
+export function parseHermesOutput(stdout: string, stderr: string): ParsedOutput {
   const combined = stdout + "\n" + stderr;
   const result: ParsedOutput = {};
+
+  const completionRecordLines = stderr
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter((line) => line.startsWith("hermes_result:"));
+  if (completionRecordLines.length === 1) {
+    try {
+      const raw = JSON.parse(completionRecordLines[0].slice("hermes_result:".length).trim()) as {
+        schema_version?: unknown;
+        status?: unknown;
+        session_id?: unknown;
+      };
+      if (
+        raw.schema_version === 1 &&
+        (raw.status === "completed" || raw.status === "failed") &&
+        typeof raw.session_id === "string" &&
+        raw.session_id.length > 0
+      ) {
+        result.completionRecord = {
+          schemaVersion: 1,
+          status: raw.status,
+          sessionId: raw.session_id,
+        };
+      }
+    } catch {}
+  }
 
   // In quiet mode, Hermes outputs:
   //   <response text>
   //
   //   session_id: <id>
+  const terminalSessionIds = stderr
+    .split(/\r?\n/)
+    .map((line) => line.trim().match(/^session_id:\s*([a-zA-Z0-9_-]+)$/)?.[1])
+    .filter((value): value is string => Boolean(value));
+  const authoritativeSessionId =
+    terminalSessionIds.length === 1 ? terminalSessionIds[0] : undefined;
   const sessionMatch = stdout.match(SESSION_ID_REGEX);
-  if (sessionMatch?.[1]) {
-    result.sessionId = sessionMatch?.[1] ?? null;
-    // The response is everything before the session_id line
-    const sessionLineIdx = stdout.lastIndexOf("\nsession_id:");
-    if (sessionLineIdx > 0) {
-      result.response = cleanResponse(stdout.slice(0, sessionLineIdx));
-    }
+  if (authoritativeSessionId) {
+    result.sessionId = authoritativeSessionId;
+    const cleaned = cleanResponse(stdout);
+    if (cleaned.length > 0) result.response = cleaned;
+  } else if (sessionMatch?.[1]) {
+    result.sessionId = sessionMatch[1];
+    const withoutSessionLine = stdout.replace(/^session_id:\s*\S+\s*$/m, "");
+    const cleaned = cleanResponse(withoutSessionLine);
+    if (cleaned.length > 0) result.response = cleaned;
   } else {
-    // Legacy format (non-quiet mode)
-    const legacyMatch = combined.match(SESSION_ID_REGEX_LEGACY);
+    const legacyMatch =
+      combined.match(SESSION_ID_REGEX_LEGACY) ||
+      combined.match(/hermes\s+--resume\s+([a-zA-Z0-9_-]+)/i) ||
+      combined.match(/^Session:\s*([a-zA-Z0-9_-]+)/im);
     if (legacyMatch?.[1]) {
-      result.sessionId = legacyMatch?.[1] ?? null;
+      result.sessionId = legacyMatch[1];
     }
     // In non-quiet mode, extract clean response from stdout by
     // filtering out tool lines, system messages, and noise
@@ -336,6 +379,51 @@ function parseHermesOutput(stdout: string, stderr: string): ParsedOutput {
   }
 
   return result;
+}
+
+export interface HermesAbortOutcome {
+  timedOut: boolean;
+  exitCode: number | null;
+  signal: string | null;
+  response?: string;
+  sessionId?: string | null;
+  errorMessage?: string;
+  stdout?: string;
+  stderr?: string;
+  completionRecord?: HermesResultRecord;
+}
+
+export function shouldNormalizeCompletedHermesAbort(
+  outcome: HermesAbortOutcome,
+): boolean {
+  const response = outcome.response?.trim() ?? "";
+  const sessionId = outcome.sessionId?.trim() ?? "";
+  const stderrLines = (outcome.stderr ?? "")
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean);
+  const completionRecord = outcome.completionRecord;
+  const hasAuthoritativeCompletionRecord =
+    completionRecord?.schemaVersion === 1 &&
+    completionRecord.status === "completed" &&
+    completionRecord.sessionId === sessionId;
+  const hasOnlyTerminalProtocolMetadata =
+    stderrLines.length === 2 &&
+    stderrLines[0].startsWith("hermes_result:") &&
+    stderrLines[1] === `session_id: ${sessionId}`;
+  const abortLikeExit =
+    (outcome.exitCode == null && outcome.signal === "SIGABRT") ||
+    (outcome.exitCode === 134 && outcome.signal == null);
+
+  return (
+    outcome.timedOut !== true &&
+    response.length > 0 &&
+    sessionId.length > 0 &&
+    hasAuthoritativeCompletionRecord &&
+    hasOnlyTerminalProtocolMetadata &&
+    !outcome.errorMessage &&
+    abortLikeExit
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -455,8 +543,14 @@ export async function execute(
   // ── Build command args ─────────────────────────────────────────────────
   // Use -Q (quiet) to get clean output: just response + session_id line
   const useQuiet = cfgBoolean(config.quiet) === true; // default false
+  const emitResultRecord = cfgBoolean(config.emitResultRecord) === true;
   const args: string[] = ["chat", "-q", prompt];
-  if (useQuiet) args.push("-Q");
+  if (useQuiet) {
+    args.push("-Q");
+    if (emitResultRecord) {
+      args.push("--cli", "--emit-result-record");
+    }
+  }
 
   if (model) {
     args.push("-m", model);
@@ -503,7 +597,6 @@ export async function execute(
     ...buildPaperclipEnv(ctx.agent, ctx.agentIdentity),
     ...buildRuntimeToolsEnv(ctx.runtimeTools),
   };
-
   // Scope the overlay to this child process. Read the current bundle on every
   // invocation; never infer its availability from a persisted session ID.
   // Preserve an operator's explicit overlay before Paperclip's instructions.
@@ -594,9 +687,32 @@ export async function execute(
   // ── Parse output ───────────────────────────────────────────────────────
   const parsed = parseHermesOutput(result.stdout || "", result.stderr || "");
 
+  const rawExitCode = result.exitCode;
+  let normalizedExitCode = result.exitCode;
+  let normalizedSignal = result.signal;
+  const canNormalizeAbort =
+    useQuiet &&
+    emitResultRecord &&
+    shouldNormalizeCompletedHermesAbort({
+      timedOut: result.timedOut === true,
+      exitCode: normalizedExitCode,
+      signal: result.signal,
+      response: parsed.response,
+      sessionId: parsed.sessionId,
+      errorMessage: parsed.errorMessage,
+      completionRecord: parsed.completionRecord,
+      stdout: result.stdout || "",
+      stderr: result.stderr || "",
+    });
+  if (canNormalizeAbort) {
+    normalizedExitCode = 0;
+    normalizedSignal = null;
+  }
+
+  const teardownNormalized = normalizedExitCode !== rawExitCode || normalizedSignal !== result.signal;
   await ctx.onLog(
     "stdout",
-    `[hermes] Exit code: ${result.exitCode ?? "null"}, timed out: ${result.timedOut}\n`,
+    `[hermes] Exit code: ${rawExitCode ?? "null"}, signal: ${result.signal ?? "null"}, normalized exit: ${normalizedExitCode ?? "null"}, normalized signal: ${normalizedSignal ?? "null"}, teardown normalized: ${teardownNormalized}, timed out: ${result.timedOut}\n`,
   );
   if (parsed.sessionId) {
     await ctx.onLog("stdout", `[hermes] Session: ${parsed.sessionId}\n`);
@@ -604,8 +720,8 @@ export async function execute(
 
   // ── Build result ───────────────────────────────────────────────────────
   const executionResult: AdapterExecutionResult = {
-    exitCode: result.exitCode,
-    signal: result.signal,
+    exitCode: normalizedExitCode,
+    signal: normalizedSignal,
     timedOut: result.timedOut,
     provider: resolvedProvider,
     model,
@@ -613,8 +729,8 @@ export async function execute(
 
   if (parsed.errorMessage) {
     executionResult.errorMessage = parsed.errorMessage;
-  } else if (!result.timedOut && typeof result.exitCode === "number" && result.exitCode !== 0) {
-    executionResult.errorMessage = `Hermes exited with code ${result.exitCode}`;
+  } else if (!result.timedOut && typeof normalizedExitCode === "number" && normalizedExitCode !== 0) {
+    executionResult.errorMessage = `Hermes exited with code ${normalizedExitCode}`;
   }
 
   if (parsed.usage) {
@@ -636,6 +752,10 @@ export async function execute(
     session_id: parsed.sessionId || null,
     usage: parsed.usage || null,
     cost_usd: parsed.costUsd ?? null,
+    raw_exit_code: rawExitCode,
+    raw_signal: result.signal,
+    teardown_normalized: teardownNormalized,
+    hermes_result_status: parsed.completionRecord?.status ?? null,
   };
 
   // Store session ID for next run
