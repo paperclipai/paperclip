@@ -9119,6 +9119,15 @@ export function issueRoutes(
       string | undefined;
     const unreadForUserFilterRaw = req.query.unreadForUserId as
       string | undefined;
+    if (req.query.includeReadState !== undefined && !["true", "false"].includes(req.query.includeReadState as string)) {
+      res.status(400).json({ error: "includeReadState must be true or false" });
+      return;
+    }
+    const includeReadState = req.query.includeReadState === "true";
+    if (includeReadState && req.actor.type !== "board") {
+      res.status(403).json({ error: "includeReadState requires board authentication" });
+      return;
+    }
     const assigneeUserId =
       assigneeUserFilterRaw === "me" && req.actor.type === "board"
         ? req.actor.userId
@@ -9340,6 +9349,7 @@ export function issueRoutes(
       touchedByUserId,
       inboxArchivedByUserId,
       unreadForUserId,
+      readStateForUserId: includeReadState ? getActorInfo(req).actorId : undefined,
       projectId: uuidFilters.projectId,
       workspaceId: uuidFilters.workspaceId,
       executionWorkspaceId: uuidFilters.executionWorkspaceId,

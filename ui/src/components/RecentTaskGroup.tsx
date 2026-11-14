@@ -8,6 +8,7 @@ import type { RecentTaskEntry } from "@/lib/recent-tasks";
 import { RecentTaskNavItem } from "./RecentTaskNavItem";
 import { StatusIcon } from "./StatusIcon";
 import { taskStatusIconProps } from "@/lib/task-status-presentation";
+import { QueryErrorState, useQueryView } from "./QueryView";
 
 export const RECENT_SUBTASK_PAGE_SIZE = 10;
 
@@ -20,10 +21,12 @@ type RecentTaskGroupProps = {
   className?: string;
   rail?: boolean;
   renderChild?: (task: RecentTaskEntry) => ReactNode;
+  /** Invalid cyclic ancestry remains reachable as plain task rows. */
+  flattened?: boolean;
 };
 
 export function RecentTaskGroup(props: RecentTaskGroupProps) {
-  if (!props.task.subtaskCount || props.rail) return <>{props.children}</>;
+  if (!props.task.subtaskCount || props.rail || props.flattened) return <>{props.children}</>;
   return <ExpandableRecentTaskGroup {...props} />;
 }
 
@@ -48,13 +51,14 @@ function ExpandableRecentTaskGroup({ task, userId, selectedChild, children, clas
     queryKey: [...queryKeys.issues.list(task.companyId), "recent-subtasks", userId ?? "__local_board__", task.id],
     queryFn: ({ pageParam, signal }) => issuesApi.listCompact(task.companyId, {
       parentId: task.id, projection: "rows", limit: RECENT_SUBTASK_PAGE_SIZE,
-      sortField: "id", sortDir: "asc", afterId: pageParam, includeRoutineExecutions: true,
+      sortField: "id", sortDir: "asc", afterId: pageParam, includeRoutineExecutions: true, includeReadState: true,
     }, { signal, cache: "no-store", fresh: true }),
     initialPageParam: undefined as string | undefined,
     getNextPageParam: (lastPage) => lastPage.length === RECENT_SUBTASK_PAGE_SIZE ? lastPage.at(-1)?.id : undefined,
     enabled: count > 0 && expanded && visible && !rail,
     staleTime: 30_000,
   });
+  const view = useQueryView(query);
   // Always filter by scope/parent, including cache data after an account switch.
   const pages = query.data?.pages ?? [];
   const loaded = [...new Map(pages.flat().filter(child => child.companyId === task.companyId && child.parentId === task.id)
@@ -82,13 +86,13 @@ function ExpandableRecentTaskGroup({ task, userId, selectedChild, children, clas
     {!expanded ? <button type="button" className={cn(controlClass, "ml-7")} onClick={() => setExpanded(true)}>
       {count} subtasks{task.unreadSubtaskCount ? ` · ${task.unreadSubtaskCount} unread` : ""}
     </button> : <div id={contentId} className="ml-5 min-w-0 border-l border-border pl-1" role="group" aria-label={`Subtasks of ${task.title}`}>
-      {query.isPending && <p role="status" className="px-3 py-1 text-xs text-muted-foreground">Loading subtasks…</p>}
+      {(view.kind === "loading" || view.kind === "reconnecting") && <p role="status" className="px-3 py-1 text-xs text-muted-foreground">Loading subtasks…</p>}
       {displayed.map(child => <div key={child.id}>{childRow({ ...child, recordedAt: 0 })}</div>)}
       {pinned && childRow(pinned)}
-      {query.isError ? <div role="alert" className="px-3 py-1 text-xs text-muted-foreground">Couldn’t load subtasks.
-        <button type="button" className={controlClass} onClick={() => void (query.isFetchNextPageError ? query.fetchNextPage() : query.refetch())}>Retry</button>
-      </div> : query.isSuccess && loaded.length === 0 ? <p className="px-3 py-1 text-xs text-muted-foreground">No subtasks available.</p> : null}
-      {remaining > 0 && loaded.length > 0 && (loaded.length > displayed.length || query.hasNextPage) && !query.isError && <button type="button" disabled={query.isFetching} className={controlClass}
+      {view.kind === "error" ? <QueryErrorState size="inline" action="load subtasks" error={view.error} retrying={view.isFetching}
+        className="px-3 py-1 text-xs" onRetry={() => { if (query.isFetchNextPageError) void query.fetchNextPage(); else view.retry(); }} />
+        : view.data && loaded.length === 0 ? <p className="px-3 py-1 text-xs text-muted-foreground">No subtasks available.</p> : null}
+      {remaining > 0 && loaded.length > 0 && (loaded.length > displayed.length || query.hasNextPage) && view.kind !== "error" && <button type="button" disabled={query.isFetching} className={controlClass}
         onClick={() => { setShowAllLoaded(true); if (loaded.length <= displayed.length + (pinned ? 1 : 0) && query.hasNextPage) void query.fetchNextPage(); }}>
         {query.isFetching ? "Loading…" : `Show more (${remaining})`}{hiddenUnread > 0 ? ` · ${hiddenUnread} unread` : ""}
       </button>}

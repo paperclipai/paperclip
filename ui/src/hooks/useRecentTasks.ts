@@ -40,9 +40,9 @@ export function useRecentTasks({
     entries: storageKey && companyId ? readRecentTasks(storageKey, companyId) : [],
   }));
   // A scope change must not request the previous account's IDs for one render.
-  const entries = snapshot.storageKey === storageKey
+  const entries = useMemo(() => snapshot.storageKey === storageKey
     ? snapshot.entries
-    : storageKey && companyId ? readRecentTasks(storageKey, companyId) : [];
+    : storageKey && companyId ? readRecentTasks(storageKey, companyId) : [], [snapshot, storageKey, companyId]);
   const setEntries = (next: RecentTaskEntry[]) => setSnapshot({ storageKey, entries: next });
 
   useEffect(() => {
@@ -109,14 +109,16 @@ export function useRecentTasks({
   const fetchingSummaries = summaryQuery.isFetching;
   const updateCount = queryClient.getQueryState(summaryKey)?.dataUpdateCount ?? 0;
   const summaries = summaryQuery.isSuccess ? summaryQuery.data : undefined;
-  const confirmed = new Map((summaries ?? []).filter((issue) => issue.companyId === companyId)
-    .map((issue) => [issue.id, issue]));
-  const refreshedEntries: RecentTaskEntry[] = entries.map((entry) => {
+  // A failed background refresh must not flatten already loaded task groups.
+  // Only successful responses below may update/prune the stored history.
+  const confirmed = useMemo(() => new Map((summaryQuery.data ?? []).filter((issue) => issue.companyId === companyId)
+    .map((issue) => [issue.id, issue])), [summaryQuery.data, companyId]);
+  const refreshedEntries: RecentTaskEntry[] = useMemo(() => entries.map((entry) => {
     const issue = confirmed.get(entry.id);
     // Relationship/read state is session data, never a localStorage snapshot.
     return issue ? { ...mergeRecentTaskSnapshot(entry, issue), parentId: issue.parentId,
       isUnreadForMe: issue.isUnreadForMe, subtaskCount: issue.subtaskCount, unreadSubtaskCount: issue.unreadSubtaskCount } : entry;
-  });
+  }), [entries, confirmed]);
   const processed = useRef<{ scope: string; revision: number } | null>(null);
 
   useEffect(() => {
@@ -175,11 +177,14 @@ export function useRecentTasks({
     return () => window.clearTimeout(timeout);
   }, [activityRevision, membership, settledOrder, storageKey]);
 
-  const entryById = new Map(refreshedEntries.map((entry) => [entry.id, entry]));
-  const hasSameMembership = settledOrder.length === entries.length && settledOrder.every((id) => entryById.has(id));
+  const orderedEntries = useMemo(() => {
+    const entryById = new Map(refreshedEntries.map((entry) => [entry.id, entry]));
+    const hasSameMembership = settledOrder.length === refreshedEntries.length && settledOrder.every((id) => entryById.has(id));
+    return hasSameMembership ? settledOrder.map((id) => entryById.get(id)!) : refreshedEntries;
+  }, [refreshedEntries, settledOrder]);
 
   return {
-    entries: hasSameMembership ? settledOrder.map((id) => entryById.get(id)!) : refreshedEntries,
+    entries: orderedEntries,
     storageKey,
   };
 }

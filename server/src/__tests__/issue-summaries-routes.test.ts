@@ -63,6 +63,14 @@ describeEmbeddedPostgres("bounded issue summaries", () => {
     const last = (await read()).body;
     expect(last[0].unreadSubtaskCount).toBe(11);
     expect(last[1].isUnreadForMe).toBe(false);
+    const [untouched] = await ctx.db.insert(issues).values({ companyId: f.companyId, parentId: parent.id, title: "Untouched child" }).returning();
+    const childrenRead = await request(app(f.actor)).get(`/api/companies/${f.companyId}/issues`).query({
+      parentId: parent.id, view: "rows", limit: 100, includeReadState: "true",
+    }).expect(200);
+    expect(childrenRead.body).toHaveLength(13);
+    expect(childrenRead.body.find((row: { id: string }) => row.id === children[13]!.id)?.isUnreadForMe).toBe(false);
+    expect(childrenRead.body.find((row: { id: string }) => row.id === children[12]!.id)?.isUnreadForMe).toBe(true);
+    expect(childrenRead.body.find((row: { id: string }) => row.id === untouched!.id)?.isUnreadForMe).toBe(false);
     const otherViewer = { ...f.actor, userId: "untouched-viewer" };
     await ctx.db.insert(companyMemberships).values({ companyId: f.companyId, principalType: "user", principalId: otherViewer.userId, status: "active", membershipRole: "owner" });
     await ensureHumanRoleDefaultGrants(ctx.db, { companyId: f.companyId, principalId: otherViewer.userId, membershipRole: "owner", grantedByUserId: null });
@@ -125,6 +133,7 @@ describeEmbeddedPostgres("bounded issue summaries", () => {
     const actor: Express.Request["actor"] = { type: "agent", agentId: agent!.id, companyId: f.companyId, source: "agent_key" };
     const res = await request(app(actor)).get(url(f.companyId)).query({ ids: f.rows[0]!.id }).expect(200);
     expect(res.body).toHaveLength(1);
+    await request(app(actor)).get(`/api/companies/${f.companyId}/issues`).query({ view: "rows", includeReadState: "true" }).expect(403);
     await request(app({ ...actor, keyScope: { kind: "task_bridge", issueId: f.rows[0]!.id } } as Express.Request["actor"]))
       .get(url(f.companyId)).query({ ids: f.rows[0]!.id }).expect(403);
   });

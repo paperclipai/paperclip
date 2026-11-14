@@ -58,6 +58,17 @@ beforeEach(() => {
 });
 
 describe("Coordinator task creation", () => {
+  it("shows every task once in a four-level recent chain", async () => {
+    fixture.recentTasks = ["a", "b", "c", "d"].map((id, index) => ({
+      id, companyId: "company", identifier: `TASK-${id}`, title: `Task ${id}`, status: "todo", recordedAt: index,
+      parentId: index ? ["a", "b", "c"][index - 1] : null, subtaskCount: index < 3 ? 1 : 0,
+    }));
+    fixture.projectTasks.mockImplementation(async (_company, filters) => fixture.recentTasks.filter(task => task.parentId === filters.parentId));
+    await renderSidebar();
+    const region = container.querySelector('[aria-label="Recents"]')!;
+    expect(region.querySelectorAll("a")).toHaveLength(4);
+    for (const id of ["a", "b", "c", "d"]) expect(region.querySelectorAll(`a[href="/issues/TASK-${id}"]`)).toHaveLength(1);
+  });
   it("nests recent children once, limits the first page to ten, and keeps folding separate from read state", async () => {
     fixture.recentTasks = [
       { id: "parent", companyId: "company", identifier: "TASK-1", title: "Parent", status: "todo", recordedAt: 1, subtaskCount: 14, unreadSubtaskCount: 12, isUnreadForMe: false },
@@ -80,7 +91,7 @@ describe("Coordinator task creation", () => {
     await flush();
     expect(region().querySelectorAll("a")).toHaveLength(15);
     expect(region().textContent).toContain("Show less");
-    expect(fixture.projectTasks).toHaveBeenCalledWith("company", expect.objectContaining({ parentId: "parent", limit: 10, afterId: "child-09" }), expect.anything());
+    expect(fixture.projectTasks).toHaveBeenCalledWith("company", expect.objectContaining({ parentId: "parent", limit: 10, afterId: "child-09", includeReadState: true }), expect.anything());
   });
   it("keeps the selected child beyond ten visible within the ten-row preview", async () => {
     fixture.pathname = "/COO/issues/TASK-12";
@@ -104,11 +115,21 @@ describe("Coordinator task creation", () => {
     ]);
     await renderSidebar();
     expect(container.querySelector('a[href="/issues/TASK-1"]')).not.toBeNull();
-    expect(container.textContent).toContain("Couldn’t load subtasks.");
+    expect(container.querySelector('[role="alert"]')).not.toBeNull();
     await act(async () => Array.from(container.querySelectorAll("button")).find(button => button.textContent === "Retry")!.click());
     await flush();
     expect(container.textContent).toContain("Recovered child");
     expect(fixture.pathname).toBe("/COO/issues");
+  });
+  it("keeps cached children visible during a temporary refetch failure", async () => {
+    fixture.recentTasks = [{ id: "parent", companyId: "company", identifier: "TASK-1", title: "Parent", status: "todo", recordedAt: 1, subtaskCount: 1 }];
+    fixture.projectTasks.mockResolvedValue([{ id: "child", companyId: "company", parentId: "parent", identifier: "CHILD", title: "Cached child", status: "todo" }]);
+    await renderSidebar();
+    fixture.projectTasks.mockRejectedValue(Object.assign(new Error("Gateway unavailable"), { status: 503 }));
+    await act(async () => { await client.invalidateQueries({ queryKey: ["issues", "company", "recent-subtasks"] }); });
+    expect(container.textContent).toContain("Cached child");
+    expect(container.querySelector('[role="alert"]')).toBeNull();
+    expect(container.querySelector('a[href="/issues/CHILD"]')).not.toBeNull();
   });
   it("keeps every recent entry below the section header instead of truncating at twelve", async () => {
     fixture.recentTasks = Array.from({ length: 20 }, (_, index) => ({

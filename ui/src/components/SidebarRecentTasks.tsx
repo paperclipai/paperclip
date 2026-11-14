@@ -315,7 +315,7 @@ function RecentTasksList({
     <>
       <SidebarSection label="Recent Tasks">
         {entries.filter(entry => rail || !hierarchy.nestedIds.has(entry.id)).map((entry) => (
-          <RecentTaskGroup key={entry.id} task={entry} userId={userId} rail={rail}
+          <RecentTaskGroup key={entry.id} task={entry} userId={userId} rail={rail} flattened={hierarchy.flattenedIds.has(entry.id)}
             selectedChild={hierarchy.selectedChild?.parentId === entry.id ? hierarchy.selectedChild : undefined} renderChild={renderTaskRow}>
           {renderTaskRow(entry)}
           </RecentTaskGroup>

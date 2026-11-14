@@ -201,7 +201,7 @@ export function CoordinatorSidebar({ children }: { children?: ReactNode }) {
       {!rail && session.isSuccess && recents.length > 0 && <div className="design-sidebar-recents"><SidebarSection label="Recents" collapsible={{ open: recentsOpen, onOpenChange: setRecentsOpen }}>
         <RecentNavigationList>
         {recents.map(item => item.kind === "task"
-          ? <RecentTaskGroup key={`${scope}:${item.id}`} task={item.task} userId={userId} className="design-sidebar-item"
+          ? <RecentTaskGroup key={`${scope}:${item.id}`} task={item.task} userId={userId} className="design-sidebar-item" flattened={hierarchy.flattenedIds.has(item.id)}
               selectedChild={hierarchy.selectedChild?.parentId === item.id ? hierarchy.selectedChild : undefined}>
               <RecentTaskNavItem className="design-sidebar-item" task={item.task} label={item.task.title} iconNode={<StatusIcon {...taskStatusIconProps(item.task)} />} />
             </RecentTaskGroup>

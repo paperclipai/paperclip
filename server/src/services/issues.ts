@@ -1912,6 +1912,8 @@ export interface IssueFilters {
   touchedCandidates?: "participation";
   inboxArchivedByUserId?: string;
   unreadForUserId?: string;
+  /** Read projection only; never filters the result set by participation. */
+  readStateForUserId?: string;
   projectId?: string;
   workspaceId?: string;
   executionWorkspaceId?: string;
@@ -6674,7 +6676,7 @@ async function blockedInboxIssueConditions(
     filters?.inboxArchivedByUserId?.trim() || undefined;
   const unreadForUserId = filters?.unreadForUserId?.trim() || undefined;
   const contextUserId =
-    unreadForUserId ?? touchedByUserId ?? inboxArchivedByUserId;
+    unreadForUserId ?? touchedByUserId ?? inboxArchivedByUserId ?? filters?.readStateForUserId;
 
   if (filters?.createdFromIssueId) {
     conditions.push(createdFromIssueCondition(companyId, filters.createdFromIssueId));
@@ -8573,7 +8575,7 @@ export function issueService(db: Db) {
         filters?.inboxArchivedByUserId?.trim() || undefined;
       const unreadForUserId = filters?.unreadForUserId?.trim() || undefined;
       const contextUserId =
-        unreadForUserId ?? touchedByUserId ?? inboxArchivedByUserId;
+        unreadForUserId ?? touchedByUserId ?? inboxArchivedByUserId ?? filters?.readStateForUserId;
       const includeBlockedBy = filters?.includeBlockedBy === true;
       const includeBlockedInboxAttention =
         filters?.includeBlockedInboxAttention === true;

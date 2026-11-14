@@ -19,7 +19,7 @@ const mockAgentsApi = vi.hoisted(() => ({ wakeup: vi.fn() }));
 const mockIssuesApi = vi.hoisted(() => ({
   get: vi.fn(),
   summaries: vi.fn(),
-  listCompact: vi.fn(async () => []),
+  listCompact: vi.fn(async (_company: string, _filters?: { parentId?: string }) => [] as unknown[]),
   update: vi.fn(),
   archiveFromInbox: vi.fn(),
   getTreeControlState: vi.fn(),
@@ -145,6 +145,18 @@ describe("SidebarRecentTasks", () => {
     expect(menuItem("Rename")).toBeDefined();
     expect(menuItem("Archive")).toBeDefined();
     expect(menuItem("Pause/Restart")).toBeDefined();
+  });
+  it("shows every task once in a four-level recent chain", async () => {
+    const tasks = ["a", "b", "c", "d"].map((id, index) => ({
+      id, companyId: "company-1", identifier: `TASK-${id}`, title: `Task ${id}`, status: "todo" as const, updatedAt: new Date(index + 1),
+      parentId: index ? ["a", "b", "c"][index - 1] : null, subtaskCount: index < 3 ? 1 : 0,
+    }));
+    tasks.forEach(task => recordRecentTask(task, "user-1"));
+    mockIssuesApi.summaries.mockResolvedValue(tasks);
+    mockIssuesApi.listCompact.mockImplementation(async (_company, filters) => tasks.filter(task => task.parentId === filters?.parentId));
+    await render();
+    expect(container.querySelectorAll("a")).toHaveLength(4);
+    for (const id of ["a", "b", "c", "d"]) expect(container.querySelectorAll(`a[href="/issues/TASK-${id}"]`)).toHaveLength(1);
   });
 
   it("renders refreshed task text and live state without shifting for a status icon", async () => {

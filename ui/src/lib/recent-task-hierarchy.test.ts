@@ -12,6 +12,11 @@ describe("recent task hierarchy", () => {
     const hierarchy = recentTaskHierarchy(entries, "/PAP/issues/child");
     expect([...hierarchy.nestedIds]).toEqual(["child"]);
     expect(hierarchy.selectedChild?.id).toBe("child");
+    expect(hierarchy.flattenedIds).toEqual(new Set(["cycle-a", "cycle-b"]));
+  });
+  it("deduplicates children of every displayed root in a four-level chain regardless of recent order", () => {
+    const entries = [task("d", "c"), task("b", "a", 1), task("c", "b", 1), task("a", null, 1)];
+    expect(recentTaskHierarchy(entries, "/PAP/issues/d").nestedIds).toEqual(new Set(["b", "d"]));
   });
   it("indexes a large history without rescanning it for each child", () => {
     let reads = 0;
