@@ -20952,6 +20952,315 @@ describeEmbeddedPostgres("tool access service", () => {
       ),
     ).toBe(true);
   });
+
+  it("rejects an installs PUT when a concurrent install appears between the authorization read and the locked write", async () => {
+    const company = await createCompany(db);
+    const agent = await createAgent(db, company.id);
+    const { connection } = await createRemoteToolFixture(db, company.id);
+    const requesterAppName = `installs-requester-${randomUUID()}`;
+    const requesterDb = createDb(
+      externalDatabaseUrl ?? tempDb!.connectionString,
+      { maxConnections: 2, applicationName: requesterAppName },
+    );
+    const app = createRouteApp(
+      requesterDb,
+      undefined,
+      createToolGatewayService(db, {
+        toolActionSigningSecret: "test-secret",
+      }),
+    );
+
+    await request(app)
+      .put(`/api/tool-connections/${connection.id}/installs`)
+      .send({ installs: [{ targetType: "company", targetId: company.id }] })
+      .expect(200);
+
+    const boardDb = createDb(externalDatabaseUrl ?? tempDb!.connectionString, {
+      maxConnections: 1,
+    });
+    const probeDb = createDb(externalDatabaseUrl ?? tempDb!.connectionString, {
+      maxConnections: 1,
+    });
+    const boardPid = (
+      await boardDb.execute<{ pid: number }>(
+        sql`select pg_backend_pid() as pid`,
+      )
+    )[0]!.pid;
+    let boardStaged!: () => void;
+    const boardIsStaged = new Promise<void>((resolve) => {
+      boardStaged = resolve;
+    });
+    let releaseBoard!: () => void;
+    const boardMayCommit = new Promise<void>((resolve) => {
+      releaseBoard = resolve;
+    });
+    const boardChange = boardDb.transaction(async (tx) => {
+      await tx
+        .select({ id: toolConnections.id })
+        .from(toolConnections)
+        .where(
+          and(
+            eq(toolConnections.id, connection.id),
+            eq(toolConnections.companyId, company.id),
+          ),
+        )
+        .for("update");
+      await tx.insert(toolConnectionInstalls).values({
+        companyId: company.id,
+        connectionId: connection.id,
+        targetType: "agent",
+        targetId: agent.id,
+      });
+      boardStaged();
+      await boardMayCommit;
+    });
+    try {
+      await boardIsStaged;
+      const sentAt = Date.now();
+      const putPromise = request(app)
+        .put(`/api/tool-connections/${connection.id}/installs`)
+        .send({
+          installs: [{ targetType: "company", targetId: company.id }],
+        })
+        .then((res) => res);
+      await vi.waitFor(
+        async () => {
+          const sessions = await probeDb.execute<{
+            state: string | null;
+            blockers: number[];
+            query: string;
+            queryStart: string;
+          }>(sql`
+            select state, pg_blocking_pids(pid) as blockers, query,
+              query_start as "queryStart"
+            from pg_stat_activity
+            where application_name = ${requesterAppName}
+          `);
+          const readBaselineOrBlocked = sessions.some(
+            (session) =>
+              session.blockers.includes(boardPid) ||
+              (session.state === "idle" &&
+                session.query.includes("tool_connection_installs") &&
+                new Date(session.queryStart).getTime() > sentAt),
+          );
+          expect(readBaselineOrBlocked).toBe(true);
+        },
+        { timeout: 20000 },
+      );
+      releaseBoard();
+      const put = await putPromise;
+      await boardChange;
+
+      expect(put.status).toBe(409);
+      expect(put.body.code).toBe("tool_connection_installs_changed");
+      const installs = await db
+        .select()
+        .from(toolConnectionInstalls)
+        .where(eq(toolConnectionInstalls.connectionId, connection.id));
+      expect(installs).toHaveLength(2);
+      expect(
+        installs.map(({ targetType, targetId }) => ({ targetType, targetId })),
+      ).toEqual(
+        expect.arrayContaining([
+          { targetType: "company", targetId: company.id },
+          { targetType: "agent", targetId: agent.id },
+        ]),
+      );
+    } finally {
+      releaseBoard();
+      await Promise.all([
+        requesterDb.$client.end(),
+        boardDb.$client.end(),
+        probeDb.$client.end(),
+      ]);
+    }
+  }, 30000);
+
+  it("rejects an installs PUT when a concurrent removal empties the authorized baseline", async () => {
+    const company = await createCompany(db);
+    const agent = await createAgent(db, company.id);
+    const other = await createAgent(db, company.id);
+    const { connection } = await createRemoteToolFixture(db, company.id);
+    const requesterAppName = `installs-requester-${randomUUID()}`;
+    const requesterDb = createDb(
+      externalDatabaseUrl ?? tempDb!.connectionString,
+      { maxConnections: 2, applicationName: requesterAppName },
+    );
+    const app = createRouteApp(
+      requesterDb,
+      undefined,
+      createToolGatewayService(db, {
+        toolActionSigningSecret: "test-secret",
+      }),
+    );
+
+    await request(app)
+      .put(`/api/tool-connections/${connection.id}/installs`)
+      .send({
+        installs: [
+          { targetType: "company", targetId: company.id },
+          { targetType: "agent", targetId: agent.id },
+        ],
+      })
+      .expect(200);
+
+    const boardDb = createDb(externalDatabaseUrl ?? tempDb!.connectionString, {
+      maxConnections: 1,
+    });
+    const probeDb = createDb(externalDatabaseUrl ?? tempDb!.connectionString, {
+      maxConnections: 1,
+    });
+    const boardPid = (
+      await boardDb.execute<{ pid: number }>(
+        sql`select pg_backend_pid() as pid`,
+      )
+    )[0]!.pid;
+    let boardStaged!: () => void;
+    const boardIsStaged = new Promise<void>((resolve) => {
+      boardStaged = resolve;
+    });
+    let releaseBoard!: () => void;
+    const boardMayCommit = new Promise<void>((resolve) => {
+      releaseBoard = resolve;
+    });
+    const boardChange = boardDb.transaction(async (tx) => {
+      await tx
+        .select({ id: toolConnections.id })
+        .from(toolConnections)
+        .where(
+          and(
+            eq(toolConnections.id, connection.id),
+            eq(toolConnections.companyId, company.id),
+          ),
+        )
+        .for("update");
+      await tx
+        .delete(toolConnectionInstalls)
+        .where(
+          and(
+            eq(toolConnectionInstalls.companyId, company.id),
+            eq(toolConnectionInstalls.connectionId, connection.id),
+            eq(toolConnectionInstalls.targetType, "agent"),
+            eq(toolConnectionInstalls.targetId, agent.id),
+          ),
+        );
+      boardStaged();
+      await boardMayCommit;
+    });
+    try {
+      await boardIsStaged;
+      const sentAt = Date.now();
+      const putPromise = request(app)
+        .put(`/api/tool-connections/${connection.id}/installs`)
+        .send({
+          installs: [
+            { targetType: "company", targetId: company.id },
+            { targetType: "agent", targetId: agent.id },
+            { targetType: "agent", targetId: other.id },
+          ],
+        })
+        .then((res) => res);
+      await vi.waitFor(
+        async () => {
+          const sessions = await probeDb.execute<{
+            state: string | null;
+            blockers: number[];
+            query: string;
+            queryStart: string;
+          }>(sql`
+            select state, pg_blocking_pids(pid) as blockers, query,
+              query_start as "queryStart"
+            from pg_stat_activity
+            where application_name = ${requesterAppName}
+          `);
+          const readBaselineOrBlocked = sessions.some(
+            (session) =>
+              session.blockers.includes(boardPid) ||
+              (session.state === "idle" &&
+                session.query.includes("tool_connection_installs") &&
+                new Date(session.queryStart).getTime() > sentAt),
+          );
+          expect(readBaselineOrBlocked).toBe(true);
+        },
+        { timeout: 20000 },
+      );
+      releaseBoard();
+      const put = await putPromise;
+      await boardChange;
+
+      expect(put.status).toBe(409);
+      expect(put.body.code).toBe("tool_connection_installs_changed");
+      const installs = await db
+        .select()
+        .from(toolConnectionInstalls)
+        .where(eq(toolConnectionInstalls.connectionId, connection.id));
+      expect(
+        installs.map(({ targetType, targetId }) => ({ targetType, targetId })),
+      ).toEqual([{ targetType: "company", targetId: company.id }]);
+    } finally {
+      releaseBoard();
+      await Promise.all([
+        requesterDb.$client.end(),
+        boardDb.$client.end(),
+        probeDb.$client.end(),
+      ]);
+    }
+  }, 30000);
+
+  it("rejects putConnectionInstalls against a stale expected baseline without writing", async () => {
+    const company = await createCompany(db);
+    const agent = await createAgent(db, company.id);
+    const other = await createAgent(db, company.id);
+    const { connection } = await createRemoteToolFixture(db, company.id);
+    const service = createTestToolAccessService(db);
+    const actor = { actorType: "user" as const, actorId: "board-user" };
+
+    await service.putConnectionInstalls(
+      connection.id,
+      { installs: [{ targetType: "agent", targetId: agent.id }] },
+      actor,
+    );
+
+    await expect(
+      service.putConnectionInstalls(
+        connection.id,
+        { installs: [{ targetType: "agent", targetId: other.id }] },
+        actor,
+        { expectedExistingInstalls: [] },
+      ),
+    ).rejects.toMatchObject({
+      status: 409,
+      details: { code: "tool_connection_installs_changed" },
+    });
+    expect(
+      (
+        await db
+          .select()
+          .from(toolConnectionInstalls)
+          .where(eq(toolConnectionInstalls.connectionId, connection.id))
+      ).map(({ targetType, targetId }) => ({ targetType, targetId })),
+    ).toEqual([{ targetType: "agent", targetId: agent.id }]);
+    expect(
+      await db
+        .select()
+        .from(toolAccessAuditEvents)
+        .where(eq(toolAccessAuditEvents.action, "connection_installs.changed")),
+    ).toHaveLength(1);
+
+    const snapshot = await service.putConnectionInstalls(
+      connection.id,
+      { installs: [{ targetType: "agent", targetId: other.id }] },
+      actor,
+      {
+        expectedExistingInstalls: [
+          { targetType: "agent", targetId: agent.id },
+        ],
+      },
+    );
+    expect(snapshot.installs).toEqual([
+      expect.objectContaining({ targetType: "agent", targetId: other.id }),
+    ]);
+  });
 });
 
 describe("classifyRisk", () => {
