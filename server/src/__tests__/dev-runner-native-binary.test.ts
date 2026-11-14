@@ -24,7 +24,7 @@ afterEach(() => {
   tempRoots.clear();
 });
 
-function createRunnerCheckout(): { root: string; source: string; binary: string } {
+function createRunnerCheckout(platform: NodeJS.Platform = process.platform, architecture = process.arch): { root: string; source: string; binary: string } {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "paperclip-dev-runner-binary-"));
   tempRoots.add(root);
 
@@ -36,14 +36,14 @@ function createRunnerCheckout(): { root: string; source: string; binary: string 
     "paperclip-runner",
     "dist",
     "bin",
-    process.platform === "win32" ? "paperclip-runnerd.exe" : "paperclip-runnerd",
+    platform === "win32" ? "paperclip-runnerd.exe" : "paperclip-runnerd",
   );
   fs.mkdirSync(path.dirname(source), { recursive: true });
   fs.mkdirSync(path.dirname(binary), { recursive: true });
   fs.writeFileSync(path.join(runnerRoot, "Cargo.toml"), "[workspace]\n", "utf8");
   fs.writeFileSync(path.join(runnerRoot, "Cargo.lock"), "", "utf8");
   fs.writeFileSync(source, "fn main() {}\n", "utf8");
-  fs.writeFileSync(binary, nativeHeader(process.platform, process.arch));
+  fs.writeFileSync(binary, nativeHeader(platform, architecture));
   return { root, source, binary };
 }
 
@@ -160,7 +160,7 @@ describe("paperclip runner native dev prerequisite", () => {
   });
 
   it.each(["arm64", "x64"] as const)("uses the staged Mac %s target before the flat build output", architecture => {
-    const checkout = createRunnerCheckout();
+    const checkout = createRunnerCheckout("darwin", architecture);
     const target = path.join(path.dirname(checkout.binary), `darwin-${architecture}`, "paperclip-runnerd");
     fs.mkdirSync(path.dirname(target), { recursive: true });
     fs.writeFileSync(target, nativeHeader("darwin", architecture));
@@ -183,7 +183,7 @@ describe("paperclip runner native dev prerequisite", () => {
   });
 
   it.each(["arm64", "x64"] as const)("uses only a newer matching Mac %s source build without changing release selection", architecture => {
-    const checkout = createRunnerCheckout();
+    const checkout = createRunnerCheckout("darwin", architecture);
     const target = path.join(path.dirname(checkout.binary), `darwin-${architecture}`, "paperclip-runnerd");
     fs.mkdirSync(path.dirname(target), { recursive: true });
     fs.writeFileSync(target, nativeHeader("darwin", architecture));
