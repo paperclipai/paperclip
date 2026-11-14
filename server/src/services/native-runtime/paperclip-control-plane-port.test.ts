@@ -920,7 +920,7 @@ describe("PaperclipControlPlanePort conformance", () => {
     expect(await readTaskPanelActivations(db, randomUUID(), identity.runId)).toEqual([]);
   });
 
-  it("persists each streamed event in one transaction of two statements and rolls back a revoked writer", async () => {
+  it("persists each streamed event in one statement and rejects the receipt of a writer revoked while it commits", async () => {
     const identity = { ...CONTROL_PLANE_CONFORMANCE_OPEN.identity, runId: randomUUID(), sessionId: randomUUID() };
     const runnerId = randomUUID();
     await db.insert(heartbeatRuns).values({
@@ -958,32 +958,33 @@ describe("PaperclipControlPlanePort conformance", () => {
         await expect(port.appendEvent(delta(sourceSeq))).resolves.toEqual({
           cursor: sourceSeq, highestContiguousSourceSeq: sourceSeq, disposition: "committed",
         });
-        // BEGIN, the run lock, the append, COMMIT: no SAVEPOINT and no separate
-        // replay, sequence, insert or cursor statement.
-        expect(statements).toHaveLength(4);
-        expect(statements.filter(text => /^(begin|commit)/i.test(text))).toHaveLength(2);
+        expect(statements).toHaveLength(1);
+        expect(statements[0]).toMatch(/^with snapshot_run as /);
       }
       statements.length = 0;
       await expect(port.appendEvent(delta(2))).resolves.toEqual({ cursor: 2, highestContiguousSourceSeq: 3, disposition: "duplicate" });
-      expect(statements).toHaveLength(4);
-      // The controller loses the run while its append is in flight: the lock
-      // read is the first statement after the opening check.
-      options.debug = (_connection: number, text: string) => { if (/for no key update$/.test(text.trim())) active = false; };
+      expect(statements).toHaveLength(5);
+      active = false;
+      statements.length = 0;
+      await expect(port.appendEvent(delta(4))).rejects.toThrow("controller_revoked");
+      expect(statements).toEqual([]);
+      active = true;
+      options.debug = (_connection: number, text: string) => { if (/^with snapshot_run as /.test(text.trim())) active = false; };
       await expect(port.appendEvent(delta(4))).rejects.toThrow("controller_revoked");
     } finally { options.debug = undefined; }
     active = true;
     expect(committed).toEqual([1, 2, 3]);
     const stored = () => db.select({ seq: heartbeatRunEvents.seq, sourceSeq: heartbeatRunEvents.sourceSeq })
       .from(heartbeatRunEvents).where(eq(heartbeatRunEvents.runId, identity.runId)).orderBy(asc(heartbeatRunEvents.seq));
-    expect(await stored()).toEqual([1, 2, 3].map(seq => ({ seq, sourceSeq: seq })));
-    // The rolled-back event took no sequence: a replacement writes it next.
+    expect(await stored()).toEqual([1, 2, 3, 4].map(seq => ({ seq, sourceSeq: seq })));
     const replacement = new PaperclipControlPlanePort(db, {
       ...identity, completionContractId: contractId, completionContractSha256: contractSha,
       sourceInstanceId: runnerId, controlPlaneSourceInstanceId: `stream-${identity.runId}`,
     });
     await replacement.openRun({ identity, backendKind: "mock", sourceInstanceId: runnerId });
-    await expect(replacement.appendEvent(delta(4))).resolves.toEqual({ cursor: 4, highestContiguousSourceSeq: 4, disposition: "committed" });
-    expect(await stored()).toEqual([1, 2, 3, 4].map(seq => ({ seq, sourceSeq: seq })));
+    await expect(replacement.appendEvent(delta(4))).resolves.toEqual({ cursor: 4, highestContiguousSourceSeq: 4, disposition: "duplicate" });
+    await expect(replacement.appendEvent(delta(5))).resolves.toEqual({ cursor: 5, highestContiguousSourceSeq: 5, disposition: "committed" });
+    expect(await stored()).toEqual([1, 2, 3, 4, 5].map(seq => ({ seq, sourceSeq: seq })));
   });
 
   const streamingFixture = async (options: ConstructorParameters<typeof PaperclipControlPlanePort>[2] = {}) => {
@@ -1041,9 +1042,10 @@ describe("PaperclipControlPlanePort conformance", () => {
         cursor: sourceSeq, highestContiguousSourceSeq: sourceSeq, disposition: "committed" })));
       await expect(boundary).resolves.toMatchObject({ cursor: 7, highestContiguousSourceSeq: 7, disposition: "committed" });
       expect(settled).toEqual([2, 3, 4, 5, 6]);
-      // The five deltas share one transaction and one insert; the boundary event has its own.
-      expect(statements.filter(text => text.includes("insert into heartbeat_run_events"))).toHaveLength(2);
-      expect(statements.filter(text => /^begin/i.test(text))).toHaveLength(2);
+      const inserts = statements.filter(text => text.includes("insert into heartbeat_run_events"));
+      expect(inserts).toHaveLength(2);
+      expect(statements[0]).toMatch(/^with snapshot_run as /);
+      expect(statements.indexOf(inserts[1]!)).toBeGreaterThan(0);
     } finally { options.debug = undefined; }
     expect(committed).toEqual([1, 2, 3, 4, 5, 6, 7]);
     expect(await f.stored()).toEqual([1, 2, 3, 4, 5, 6, 7].map(seq => ({ seq, sourceSeq: seq })));
@@ -1071,6 +1073,45 @@ describe("PaperclipControlPlanePort conformance", () => {
     await expect(receipts[2]).resolves.toMatchObject({ cursor: 4 });
     expect(observed).toEqual([1, 2, 4]);
     expect(await f.stored()).toEqual([1, 2, 3, 4].map(seq => ({ seq, sourceSeq: seq })));
+  });
+
+  it("collects the deltas that arrive while a batch commits into one next batch, before the next other event", async () => {
+    const f = await streamingFixture({ streamingBatchMs: 5 });
+    await f.port.appendEvent(f.event(1), f.streamed);
+    let release!: () => void, locked!: () => void;
+    const released = new Promise<void>(resolve => { release = resolve; });
+    const lockedRun = new Promise<void>(resolve => { locked = resolve; });
+    const holder = db.transaction(async tx => {
+      await tx.execute(sql`select id from heartbeat_runs where id = ${f.identity.runId} for update`);
+      locked();
+      await released;
+    });
+    await lockedRun;
+    const options = db.$client.options as { debug?: unknown };
+    const statements: string[] = [];
+    options.debug = (_connection: number, text: string) => { statements.push(text.trim().replace(/\s+/g, " ")); };
+    const pause = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
+    let boundary: Promise<unknown> | undefined;
+    const deltas: Promise<unknown>[] = [];
+    try {
+      deltas.push(f.port.appendEvent(f.event(2), f.streamed));
+      await pause(30);
+      for (const sourceSeq of [3, 4, 5, 6, 7, 8]) {
+        deltas.push(f.port.appendEvent(f.event(sourceSeq), f.streamed));
+        await pause(15);
+      }
+      boundary = f.port.appendEvent(f.event(9, "tool.execution.started"));
+      await pause(20);
+    } finally {
+      release();
+      await holder;
+    }
+    try {
+      expect((await Promise.all(deltas)).map(receipt => (receipt as { cursor: number }).cursor)).toEqual([2, 3, 4, 5, 6, 7, 8]);
+      await expect(boundary).resolves.toMatchObject({ cursor: 9, disposition: "committed" });
+      expect(statements.filter(text => text.includes("insert into heartbeat_run_events"))).toHaveLength(3);
+    } finally { options.debug = undefined; }
+    expect(await f.stored()).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9].map(seq => ({ seq, sourceSeq: seq })));
   });
 
   it("flushes queued deltas on the timer and before a replay read, and rejects every delta of a failed batch", async () => {
