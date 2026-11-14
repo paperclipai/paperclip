@@ -1,6 +1,6 @@
 import { resolveExternalTestDatabaseUrl } from "../../__tests__/helpers/external-test-database.js";
 import { randomUUID } from "node:crypto";
-import { eq } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { agentWakeupRequests, agents, companies, completionContracts, createDb, heartbeatRuns, issueComments, issueRelations, issueThreadInteractions, issues, nativeRunFinalizations, nativeRunResults, pluginManagedResources, plugins, routineRuns, routines, statusDecisionEffects, statusDecisions, workAssessments } from "@paperclipai/db";
 import type { Db } from "@paperclipai/db";
@@ -94,12 +94,18 @@ if (!support.supported) console.warn(`Skipping native routine status tests: ${su
       decision: { policyVersion: NATIVE_STATUS_ARBITER_POLICY_VERSION, statusAction: "in_review", toStatus: "in_review",
         reasonCode: "governed_response_waiting", unblockDescriptor: null,
         effects: [{ kind: "create_interaction", gate: { kind: "interaction", id: cards[1].id } }] } as NativeStatusDecision };
+    const staleWakeOf = () => db.select().from(agentWakeupRequests).where(and(eq(agentWakeupRequests.reason, "native_completion_review"),
+      sql`${agentWakeupRequests.payload}->>'nativeReviewInteractionId' = ${cards[1].id}`)).then(rows => rows[0]);
+    await db.update(agentWakeupRequests).set({ status: "deferred_issue_execution", runId: null, finishedAt: null })
+      .where(eq(agentWakeupRequests.id, (await staleWakeOf())!.id));
     await expect(db.transaction(async tx => {
       await commitNativeStatusDecision({ db: tx as unknown as Db, ...continuation });
       throw new Error("rollback renewal");
     })).rejects.toThrow("rollback renewal");
     expect((await db.select().from(issueThreadInteractions).where(eq(issueThreadInteractions.id, cards[1].id)))[0].status).toBe("pending");
+    expect((await staleWakeOf())?.status).toBe("deferred_issue_execution");
     const renewed = await commitNativeStatusDecision({ db, ...continuation });
+    expect((await staleWakeOf())?.status).toBe("skipped");
     const saved = await db.select().from(issueThreadInteractions).where(eq(issueThreadInteractions.issueId, f.issueId));
     expect(saved.find(card => card.id === cards[0].id)?.status).toBe("accepted");
     expect(saved.find(card => card.id === cards[1].id)?.status).toBe("cancelled");

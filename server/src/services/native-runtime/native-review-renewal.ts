@@ -1,5 +1,5 @@
-import { and, asc, eq, sql } from "drizzle-orm";
-import { heartbeatRuns, issueThreadInteractions, issues, statusDecisionEffects, statusDecisions, type Db } from "@paperclipai/db";
+import { and, asc, eq, inArray, isNull, sql } from "drizzle-orm";
+import { agentWakeupRequests, heartbeatRuns, issueThreadInteractions, issues, statusDecisionEffects, statusDecisions, type Db } from "@paperclipai/db";
 import { notifyAttentionRetentionWork } from "../retention-work-notifications.js";
 import { enqueueTerminalIssueInteractionChatPublications } from "../chat-interaction-publications.js";
 import { issueThreadInteractionService } from "../issue-thread-interactions.js";
@@ -90,6 +90,13 @@ export async function retireRenewedNativeReviews(tx: Db, input: {
     }).where(and(eq(issueThreadInteractions.id, interaction.id), eq(issueThreadInteractions.companyId, input.companyId),
       eq(issueThreadInteractions.status, "pending"))).returning();
     if (!retired) throw new Error("native_review_renewal_race");
+    await tx.update(agentWakeupRequests).set({ status: "skipped", finishedAt: new Date(), updatedAt: new Date(),
+      error: "A later completion review round replaced this review request." }).where(and(
+      eq(agentWakeupRequests.companyId, input.companyId),
+      inArray(agentWakeupRequests.status, ["queued", "deferred_issue_execution"]),
+      isNull(agentWakeupRequests.runId),
+      sql`${agentWakeupRequests.payload}->>'nativeReviewInteractionId' = ${interaction.id}`,
+    ));
     const projected = await issueThreadInteractionService(tx).getById(retired.id);
     if (projected) await enqueueTerminalIssueInteractionChatPublications(tx, projected);
     const { publication } = await persistActivity(tx, { companyId: input.companyId, actorType: "system", actorId: "native-status-committer",
