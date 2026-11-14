@@ -17,6 +17,17 @@ function record(value: unknown): Record<string, unknown> {
     : {};
 }
 
+/**
+ * Whether this attempt launches its own fresh Runner bootstrap, so that its
+ * unclaimed controller checkpoint can prove a startup failure retryable. A
+ * `bootstrap_incomplete` restart does: it stops and quarantines the unfinished
+ * bootstrap, then launches a new one on the same run. Other recoveries continue
+ * an existing Runner or provider session.
+ */
+export function attemptLaunchesFreshBootstrap(restartRecovery: { kind: string } | null | undefined): boolean {
+  return !restartRecovery || restartRecovery.kind === "bootstrap_incomplete";
+}
+
 /** The runner never connected, so every bootstrap command is still undelivered. */
 export function runnerdStateIsUnconnectedBootstrap(state: Record<string, unknown>): boolean {
   const commands = Array.isArray(state.commands) ? state.commands.map(record) : [];
@@ -25,6 +36,47 @@ export function runnerdStateIsUnconnectedBootstrap(state: Record<string, unknown
     state.connectionCount === 0 && committedEvents.length === 0 &&
     commands.every(command => command.status === "pending" &&
       RUNNERD_BOOTSTRAP_COMMAND_TYPES.has(String(command.type)));
+}
+
+/** Events a runner commits while opening a provider session, before any turn. */
+const SESSION_OPEN_EVENT_TYPES = new Set([
+  "harness.ready",
+  "session.started",
+  "session.resumed",
+  "session.updated",
+  "session.capabilities.updated",
+  "session.goal.snapshot",
+  "harness.diagnostic",
+]);
+
+/**
+ * A remote controller record whose runner opened its provider session but was
+ * never sent a turn. Only the controller issues turn commands, and it writes
+ * each one to this record before sending it, so a record holding just
+ * run.prepare and session.open, with every committed event a session-open
+ * event and every committed event accounted for, proves no provider turn,
+ * tool call or result exists. Use only where the controller record is the
+ * complete authority (a remote runner after its controller's lease expired).
+ */
+export function runnerdStateHasNoProviderTurn(state: Record<string, unknown>): boolean {
+  if (runnerdStateIsIncompleteBootstrap(state)) return true;
+  if (!RUNNERD_CONTROL_PLANE_STATE_SCHEMAS.has(String(state.schema))) return false;
+  if (typeof state.connectionCount !== "number" || !Number.isSafeInteger(state.connectionCount) ||
+      state.connectionCount < 0) return false;
+  if (state.warmTransition != null || state.completedWarmTransition != null ||
+      state.stagedRunAttachment != null) return false;
+  if (record(state.bootstrapHistory).adopted === true) return false;
+  if (!Array.isArray(state.commands) || !Array.isArray(state.committedEvents)) return false;
+  const commands = state.commands.map(record);
+  if (!commands.every(command => RUNNER_MAINTENANCE_COMMAND_TYPES.has(String(command.type)) ||
+      (RUNNERD_BOOTSTRAP_COMMAND_TYPES.has(String(command.type)) &&
+        (command.status === "pending" || command.status === "completed")))) return false;
+  const events = state.committedEvents.map(record);
+  // Every event since the first must still be here, in order, so none is hidden.
+  if (typeof state.ackedSourceSeq !== "number" || !Number.isSafeInteger(state.ackedSourceSeq) ||
+      state.ackedSourceSeq < 0 || state.ackedSourceSeq > events.length) return false;
+  return events.every((event, index) => event.sourceSeq === index + 1 &&
+    SESSION_OPEN_EVENT_TYPES.has(String(event.eventType)));
 }
 
 /**
@@ -97,7 +149,9 @@ function collectRecordedProcessIds(value: unknown, into: Array<{ id: unknown; gr
   if (Array.isArray(value)) return value.every(entry => collectRecordedProcessIds(entry, into, depth + 1));
   if (!value || typeof value !== "object") return true;
   for (const [key, entry] of Object.entries(value)) {
-    if (key === "processId" || key === "pid") into.push({ id: entry, group: false });
+    // A null id records a launch that had not produced a process yet, so
+    // there is nothing to prove gone. Any other non-number fails the proof.
+    if (key === "processId" || key === "pid") { if (entry !== null) into.push({ id: entry, group: false }); }
     else if (key === "processGroupId") { if (entry !== null) into.push({ id: entry, group: true }); }
     else if (!collectRecordedProcessIds(entry, into, depth + 1)) return false;
   }

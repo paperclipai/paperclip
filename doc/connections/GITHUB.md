@@ -154,7 +154,13 @@ repository owner first. The authenticated GitHub username and the accounts
 where the App is installed are separate. An organization installation does not
 grant access to the user's personal repositories. Personal repository creation
 needs App access to that personal account; organization creation needs App access
-to that organization and the tool's `organization` argument. The agent must
+to that organization and the tool's `organization` argument. When the App is
+installed on exactly one account, and its access snapshot identifies that
+account as an organization, `create_repository` and `fork_repository` calls that omit `organization` use
+that organization, because the personal account is unavailable. Paperclip fills
+it in before policy, approval, and audit, so approval cards and test results
+show the owner. An explicit owner is unchanged, and any other installation set
+keeps GitHub's personal-account default. The agent must
 keep the owner requested by the user. The user can choose the intended account
 from **Add More Repos on GitHub**, then select **Refresh access**. If creation remains
 unavailable, the user can create the repository on GitHub and give the App access,
@@ -380,10 +386,15 @@ exact executor termination proof. Successful results and uncertain delivery do
 not grant a replay. A certified failed-chat Retry retains the exact accepted
 message identity when its predecessor stopped before identity initialization,
 so a published review can expose its authorized passive response wait.
-If an inherited task-resume attempt already recorded a result, ordinary Retry
-explains that exact replay is unavailable and directs the user to send a new
-message to continue from saved work. That new turn still passes normal current
-requester, access and executor-containment checks.
+When the exact failed GitHub request cannot be repeated (for example, the
+attempt already recorded a result, its output was already published, the run
+did not start from a GitHub message, or the requester's GitHub access changed),
+a person's Retry continues the task from its saved work instead, the same way a
+new message on the task would. That continuation runs as the person who clicked
+Retry in a fresh session, never with the GitHub requester's authority, and never
+repeats the original request or its output. It still passes the normal current
+access and executor-containment checks. Automatic Retry on a person's behalf
+does not take this path; it continues only with the exact GitHub request.
 
 If that successor failed at Retry authorization before runtime or provider
 startup, the next normal Retry follows its canonical source receipt. The exact

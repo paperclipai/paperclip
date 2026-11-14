@@ -1,4 +1,5 @@
 import type { AggregatorAppsResponse, ArcadeDiscoverySetupInput } from "@paperclipai/shared/aggregator-apps";
+import type { ProviderToolIconsResponse } from "@paperclipai/shared";
 import type { ComposioAppAccountInput, ComposioAppSetupInput, ComposioAppSetupResult, ComposioAppSnapshot, ComposioAppsResponse } from "@paperclipai/shared";
 import type {
   ToolApplication,
@@ -430,6 +431,8 @@ export const toolsApi = {
     }),
   refreshCatalog: (connectionId: string) =>
     api.post<ToolCatalogRefreshResult>(`/tool-connections/${connectionId}/catalog/refresh`, {}),
+  listProviderToolIcons: (companyId: string) =>
+    api.get<ProviderToolIconsResponse>(`/companies/${companyId}/tool-icons`),
   listCatalog: (connectionId: string) =>
     api.get<ToolCatalogResponse>(`/tool-connections/${connectionId}/catalog`),
   listConnectionActivity: (connectionId: string, limit = 20) =>
@@ -585,6 +588,8 @@ export const toolsApi = {
     api.patch<ToolMcpGatewayWithTokens>(`/tool-gateway/gateways/${gatewayId}`, { ...input, companyId }),
   createGatewayToken: (companyId: string, gatewayId: string, input: CreateGatewayTokenInput) =>
     api.post<ToolMcpGatewayTokenCreated>(`/tool-gateway/gateways/${gatewayId}/tokens`, { ...input, companyId }),
+  revealGatewayToken: (companyId: string, tokenId: string) =>
+    api.post<ToolMcpGatewayTokenCreated>(`/tool-gateway/gateway-tokens/${tokenId}/reveal`, { companyId }),
   revokeGatewayToken: (companyId: string, tokenId: string) =>
     api.post<ToolMcpGatewayToken>(`/tool-gateway/gateway-tokens/${tokenId}/revoke`, { companyId }),
 

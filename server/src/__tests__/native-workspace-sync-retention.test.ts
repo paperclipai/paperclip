@@ -1,3 +1,4 @@
+import { currentProcessSpaceHash } from "../services/controller-process-identity.js";
 import { randomUUID } from "node:crypto";
 import os from "node:os";
 import path from "node:path";
@@ -55,6 +56,7 @@ type SeedInput = {
   processPid?: number | null;
   processGroupId?: number | null;
   processStartedAt?: Date | null;
+  processHostHash?: string | null;
   leaseProvider?: string | null;
   controllerLeaseDaysFromNow?: number | null;
   finalization?: {
@@ -148,6 +150,7 @@ describeEmbeddedPostgres("native workspace sync retention", () => {
       processPid: input.processPid ?? null,
       processGroupId: input.processGroupId ?? null,
       processStartedAt: input.processStartedAt ?? null,
+      processHostHash: input.processHostHash ?? null,
       controllerLeaseExpiresAt: input.controllerLeaseDaysFromNow == null
         ? null
         : new Date(now.getTime() + input.controllerLeaseDaysFromNow * DAY_MS),
@@ -295,6 +298,23 @@ describeEmbeddedPostgres("native workspace sync retention", () => {
     });
     expect((await service().tick()).expired).toBe(1);
     expect(await exists(folder)).toBe(false);
+  });
+
+  it("keeps a run whose process was recorded in another PID space, even if that pid is dead here", async () => {
+    await expectKept({ processPid: 1234, processStartedAt: processStart, processHostHash: "another-host-pid-space",
+      leaseProvider: "local" }, "process_live");
+  });
+
+  it("deletes a terminal run whose process, recorded in this PID space, has exited", async () => {
+    const { folder } = await seed({ processPid: 1234, processStartedAt: processStart,
+      processHostHash: currentProcessSpaceHash(), leaseProvider: "local" });
+    expect((await service().tick()).expired).toBe(1);
+    expect(await exists(folder)).toBe(false);
+  });
+
+  it("keeps a run whose live pid's start time matches within the 1 s start-time precision", async () => {
+    livePids.set(1234, new Date(processStart.getTime() + 400).toISOString());
+    await expectKept({ processPid: 1234, processStartedAt: processStart, leaseProvider: "local" }, "process_live");
   });
 
   it("deletes a terminal run whose recorded pid was recycled by another process", async () => {

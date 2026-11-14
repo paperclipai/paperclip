@@ -6382,7 +6382,9 @@ describeEmbeddedPostgres("tool access service", () => {
     expect(result.actions.readOnly).toEqual([
       expect.objectContaining({ toolName: "list_state", riskLevel: "read" }),
     ]);
-    expect(requests[0]).toEqual({ method: "tools/list", sessionId: null });
+    // One version probe, then the plain listing that reveals the session need.
+    expect(requests[0]).toEqual({ method: "server/discover", sessionId: null });
+    expect(requests[1]).toEqual({ method: "tools/list", sessionId: null });
     expect(
       requests.filter(({ method }) => method === "initialize").length,
     ).toBeGreaterThanOrEqual(1);
@@ -12517,7 +12519,8 @@ describeEmbeddedPostgres("tool access service", () => {
       grant_types: ["authorization_code", "refresh_token"],
       response_types: ["code"],
       token_endpoint_auth_method: "none",
-      application_type: "web",
+      // A localhost callback is a native client under OIDC registration rules.
+      application_type: "native",
     });
     expect(registrationBody?.client_name).toMatch(/^[A-Za-z0-9 -]+$/);
     expect(new URL(result.authorizationUrl).searchParams.get("client_id")).toBe("calendly-public-client");
@@ -12830,7 +12833,8 @@ describeEmbeddedPostgres("tool access service", () => {
         .query({ state, code: "oauth-code" });
 
       expect(callbackRes.status).toBe(200);
-      expect(fetchMock).toHaveBeenCalledTimes(3);
+      // Token exchange, the one-time MCP version probe, and the catalog listing.
+      expect(fetchMock).toHaveBeenCalledTimes(4);
       expect(callbackRes.body.connection).toMatchObject({
         id: connectRes.body.connectionId,
         status: "active",
@@ -12879,7 +12883,8 @@ describeEmbeddedPostgres("tool access service", () => {
       expect(redirectCallbackRes.headers.location).toBe(
         `/${company.issuePrefix}/apps/${redirectConnectRes.body.connectionId}/permissions?success=1`,
       );
-      expect(fetchMock).toHaveBeenCalledTimes(6);
+      // Each of the two connections is probed once for its MCP version.
+      expect(fetchMock).toHaveBeenCalledTimes(8);
       await expect(db.select().from(toolOauthStates)).resolves.toHaveLength(0);
       await expect(
         db.select().from(companySecretBindings),
@@ -15107,7 +15112,8 @@ describeEmbeddedPostgres("tool access service", () => {
       actorId: "health-check",
     });
     expect(health.connection.healthStatus).toBe("ok");
-    expect(fetchMock).toHaveBeenCalledTimes(2);
+    // Token request, the one-time MCP version probe, and the catalog listing.
+    expect(fetchMock).toHaveBeenCalledTimes(3);
     const [updated] = await db
       .select()
       .from(toolConnections)
@@ -16625,6 +16631,76 @@ describeEmbeddedPostgres("tool access service", () => {
     await expect(db.select().from(toolConnections)).resolves.toHaveLength(0);
   });
 
+  it("asks for a key when a pasted link answers 401 without a challenge header", async () => {
+    const company = await createCompany(db);
+    const app = createRouteApp(db);
+    vi.spyOn(globalThis, "fetch").mockResolvedValue({
+      ok: false,
+      status: 401,
+      headers: { get: () => null },
+      text: async () => "",
+      json: async () => ({}),
+    } as unknown as Response);
+
+    const res = await request(app)
+      .post(`/api/companies/${company.id}/tools/apps/connect`)
+      .send({
+        link: "https://key.example.test/mcp",
+        name: "Key app",
+      });
+
+    expect(res.status).toBe(422);
+    expect(res.body).toMatchObject({
+      details: expect.objectContaining({ code: "oauth_challenge" }),
+    });
+  });
+
+  it("keeps the raw rejection when a pasted link's own URL token is refused", async () => {
+    const company = await createCompany(db);
+    const app = createRouteApp(db);
+    vi.spyOn(globalThis, "fetch").mockResolvedValue({
+      ok: false,
+      status: 401,
+      headers: { get: () => null },
+      text: async () => "",
+      json: async () => ({}),
+    } as unknown as Response);
+
+    const res = await request(app)
+      .post(`/api/companies/${company.id}/tools/apps/connect`)
+      .send({
+        link: "https://key.example.test/mcp?token=expired-url-token",
+        name: "URL token app",
+      });
+
+    expect(res.body?.details?.code).not.toBe("oauth_challenge");
+    expect(res.status).not.toBe(422);
+  });
+
+  it("still asks for a key when a pasted link carries only plain settings", async () => {
+    const company = await createCompany(db);
+    const app = createRouteApp(db);
+    vi.spyOn(globalThis, "fetch").mockResolvedValue({
+      ok: false,
+      status: 401,
+      headers: { get: () => null },
+      text: async () => "",
+      json: async () => ({}),
+    } as unknown as Response);
+
+    const res = await request(app)
+      .post(`/api/companies/${company.id}/tools/apps/connect`)
+      .send({
+        link: "https://key.example.test/mcp?region=us",
+        name: "Regional key app",
+      });
+
+    expect(res.status).toBe(422);
+    expect(res.body).toMatchObject({
+      details: expect.objectContaining({ code: "oauth_challenge" }),
+    });
+  });
+
   it.each(["catalog", "catalog/refresh", "health-check"])(
     "explains disabled Slack MCP access on %s without reporting a server error",
     async (path) => {
@@ -17417,7 +17493,8 @@ describeEmbeddedPostgres("tool access service", () => {
       "mcp-key",
     );
 
-    expect(fetchMock).toHaveBeenCalledTimes(2);
+    // The one-time MCP version probe and the catalog listing.
+    expect(fetchMock).toHaveBeenCalledTimes(3);
     expect(fetchMock).toHaveBeenCalledWith(
       PUBLIC_MCP_FIXTURE_URL,
       expect.objectContaining({

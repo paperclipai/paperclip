@@ -200,6 +200,13 @@ interface DaytonaDriverConfig {
    * normalized provider config; it only raises the effective auto-stop.
    */
   warmIdleTimeoutMs: number | null;
+  /**
+   * Host-owned remote runner reconnect grace (ms): how long the host still
+   * reattaches a live remote runner after a controller outage. Null when the
+   * lease hosts no remote runner. Never persisted in the normalized provider
+   * config; it only raises the effective auto-stop.
+   */
+  runnerReconnectGraceMs: number | null;
 }
 
 type WorkspaceSentinelResult = {
@@ -256,17 +263,37 @@ const DEFAULT_AUTO_STOP_INTERVAL_MINUTES = 15;
 export const DEFAULT_WARM_RUNNER_IDLE_TIMEOUT_MS = 300_000;
 export const WARM_IDLE_AUTO_STOP_MARGIN_MINUTES = 5;
 
+// A remote runner keeps working while its controller is offline, but Daytona
+// counts only SDK and lifecycle events as activity. With no controller there are
+// none, so an auto-stop shorter than the host's reconnect grace stops the
+// sandbox (and kills the runner) while the host would still reattach it. The
+// host forwards its grace for runner leases; the provider backstop then fires
+// only after the grace plus this margin. Idle sandboxes still stop.
+
+/**
+ * Host-owned floors (ms) the provider auto-stop must outlive: the warm runner
+ * idle window and the remote runner reconnect grace.
+ */
+function hostAutoStopFloorsMs(
+  config: Pick<DaytonaDriverConfig, "warmIdleTimeoutMs" | "runnerReconnectGraceMs">,
+): number[] {
+  return [config.warmIdleTimeoutMs, config.runnerReconnectGraceMs]
+    .filter((value): value is number => value != null && value > 0);
+}
+
 /**
  * Effective Daytona auto-stop (minutes) for a sandbox. An explicit 0 (disabled)
- * is preserved. A warm reusable lease never auto-stops before the host's warm
- * idle window plus {@link WARM_IDLE_AUTO_STOP_MARGIN_MINUTES}.
+ * is preserved. A sandbox never auto-stops before a host-owned window (the warm
+ * idle window of a warm reusable lease, or the remote runner reconnect grace)
+ * plus {@link WARM_IDLE_AUTO_STOP_MARGIN_MINUTES}.
  */
 export function effectiveAutoStopIntervalMinutes(
-  config: Pick<DaytonaDriverConfig, "autoStopInterval" | "warmIdleTimeoutMs">,
+  config: Pick<DaytonaDriverConfig, "autoStopInterval" | "warmIdleTimeoutMs" | "runnerReconnectGraceMs">,
 ): number | null {
   const configured = config.autoStopInterval;
-  if (configured === 0 || config.warmIdleTimeoutMs == null) return configured;
-  const floor = Math.ceil(config.warmIdleTimeoutMs / 60_000) + WARM_IDLE_AUTO_STOP_MARGIN_MINUTES;
+  const floorsMs = hostAutoStopFloorsMs(config);
+  if (configured === 0 || floorsMs.length === 0) return configured;
+  const floor = Math.ceil(Math.max(...floorsMs) / 60_000) + WARM_IDLE_AUTO_STOP_MARGIN_MINUTES;
   return Math.max(configured ?? DEFAULT_AUTO_STOP_INTERVAL_MINUTES, floor);
 }
 
@@ -347,6 +374,11 @@ function parseOptionalNumber(value: unknown): number | null {
   return Number.isFinite(parsed) ? parsed : null;
 }
 
+function parsePositiveInteger(value: unknown): number | null {
+  const parsed = parseOptionalInteger(value);
+  return parsed != null && parsed > 0 ? parsed : null;
+}
+
 function parseDriverConfig(raw: Record<string, unknown>): DaytonaDriverConfig {
   const timeoutMs = Number(raw.timeoutMs ?? DEFAULT_DAYTONA_OPERATION_TIMEOUT_MS);
   const livenessTimeoutMs = Number(raw.livenessTimeoutMs ?? DEFAULT_LIVENESS_TIMEOUT_MS);
@@ -370,6 +402,7 @@ function parseDriverConfig(raw: Record<string, unknown>): DaytonaDriverConfig {
     reuseLease: raw.reuseLease === true,
     archiveOnRelease: raw.archiveOnRelease === true,
     warmIdleTimeoutMs: parseWarmIdleTimeoutMs(raw),
+    runnerReconnectGraceMs: parsePositiveInteger(raw.runnerReconnectGraceMs),
   };
 }
 
@@ -604,7 +637,124 @@ async function terminateAtProvider<T>(scope: SandboxScope, operation: string, ac
 // restart, so the next command opens a fresh session instead of sending a dead
 // id and failing with "session not found". A running sandbox keeps its live
 // session, so the id is left in place when no restart happens.
+const SANDBOX_TRANSITION_STATES: ReadonlySet<string> = new Set([
+  "starting", "stopping", "restoring", "archiving", "creating", "pending_build", "pulling_snapshot", "building_snapshot", "resizing",
+]);
+const SANDBOX_TRANSITION_POLL_MS = 1_000;
+
+function isSandboxStateChangeInProgress(error: unknown): boolean {
+  return /state change in progress/i.test(error instanceof Error ? error.message : String(error));
+}
+
+/**
+ * How long a sandbox may stay `stopping` before a start forces the stop. The
+ * host stops an idle sandbox gracefully with a 30 s budget, so a stop still
+ * pending after this is stuck, typically on a process that ignores SIGTERM.
+ * Daytona can leave such a sandbox `stopping` for many minutes.
+ */
+export const STUCK_STOPPING_FORCE_AFTER_MS = 30_000;
+const STUCK_STOPPING_FORCE_STOP_SECONDS = 30;
+/**
+ * One forced stop per stuck stop, whichever caller sends it. A confirmed start
+ * ends the episode early (see {@link endForcedStopEpisode}).
+ */
+export const FORCED_STOP_COOLDOWN_MS = 10 * 60_000;
+
+// Forced stops are owned by the sandbox, not by a caller. Several callers can
+// wait on one stuck sandbox at once (execute, sync, realize, resume). Only one
+// of them sends the forced stop, and no caller starts the sandbox while that
+// request is unsettled: a late stop would otherwise kill a sandbox another
+// caller has just restarted. The entry outlives its liveness timeout until
+// the SDK request itself settles.
+const forcedSandboxStops = new Map<string, { issuedAt: number; pending: Promise<void> | null }>();
+
+function forcedStopInFlight(key: string): Promise<void> | null {
+  return forcedSandboxStops.get(key)?.pending ?? null;
+}
+
+// A confirmed start ends the stuck stop. A later stuck stop is a new episode
+// and may be forced at once. An unsettled request still blocks every start.
+function endForcedStopEpisode(key: string): void {
+  if (forcedSandboxStops.get(key)?.pending === null) forcedSandboxStops.delete(key);
+}
+
+function claimForcedStop(key: string, now: number): boolean {
+  const previous = forcedSandboxStops.get(key);
+  if (previous && (previous.pending || now - previous.issuedAt < FORCED_STOP_COOLDOWN_MS)) return false;
+  forcedSandboxStops.set(key, { issuedAt: now, pending: null });
+  return true;
+}
+
+async function sendForcedStop(sandbox: Sandbox, key: string, deadline: number): Promise<void> {
+  const remainingSeconds = Math.max(1, Math.floor((deadline - Date.now()) / 1_000));
+  const stopSeconds = Math.min(STUCK_STOPPING_FORCE_STOP_SECONDS, remainingSeconds);
+  const entry = forcedSandboxStops.get(key)!;
+  // `request` settles only when the SDK call does, even past the liveness bound.
+  const request = Promise.resolve().then(() => sandbox.stop(stopSeconds, true));
+  entry.pending = request.then(() => undefined, () => undefined)
+    .finally(() => { if (forcedSandboxStops.get(key) === entry) entry.pending = null; });
+  try {
+    await traceLeaseStep("lease.force_stop", () => withLivenessTimeout("sandbox.stop",
+      stopSeconds * 1_000 + LIVENESS_START_TIMEOUT_MARGIN_MS, () => request));
+  } catch {
+    // Keep waiting within the same deadline; the next read reports the state.
+  }
+}
+
+async function waitOutSandboxTransition(sandbox: Sandbox, scope: SandboxScope, deadline: number,
+  readTimeoutMs: number): Promise<void> {
+  const key = sandboxHandleCacheKey(scope);
+  const mustWait = () => SANDBOX_TRANSITION_STATES.has(sandbox.state ?? "") || forcedStopInFlight(key) !== null;
+  if (!mustWait()) return;
+  await traceLeaseStep("lease.wait_transition", async () => {
+    let stoppingSince: number | null = null;
+    while (mustWait() && Date.now() + SANDBOX_TRANSITION_POLL_MS < deadline) {
+      stoppingSince = sandbox.state === "stopping" ? stoppingSince ?? Date.now() : null;
+      // The sandbox is about to be started, so killing what holds the stop
+      // loses nothing a graceful stop would keep: the disk survives a stop.
+      // A refusal leaves the plain wait unchanged.
+      if (stoppingSince !== null && Date.now() - stoppingSince >= STUCK_STOPPING_FORCE_AFTER_MS
+        && claimForcedStop(key, Date.now())) {
+        await sendForcedStop(sandbox, key, deadline);
+        continue;
+      }
+      const pending = forcedStopInFlight(key);
+      await Promise.race([
+        new Promise(resolve => setTimeout(resolve, SANDBOX_TRANSITION_POLL_MS)),
+        ...(pending ? [pending] : []),
+      ]);
+      await withLivenessTimeout("sandbox.refreshData", Math.min(readTimeoutMs, Math.max(1, deadline - Date.now())),
+        () => sandbox.refreshData());
+    }
+  }, leaseStateAttributes(sandbox.state));
+}
+
 async function ensureSandboxStarted(sandbox: Sandbox, timeoutSeconds: number, scope: SandboxScope): Promise<void> {
+  if (sandbox.state === "started") return;
+  sandboxHandleSessionStore.clear(scope);
+  const deadline = Date.now() + timeoutSeconds * 1_000;
+  const readTimeoutMs = Math.min(scope.config.livenessTimeoutMs, 30_000);
+  for (;;) {
+    await waitOutSandboxTransition(sandbox, scope, deadline, readTimeoutMs);
+    if (SANDBOX_TRANSITION_STATES.has(sandbox.state ?? "") || forcedStopInFlight(sandboxHandleCacheKey(scope))
+      || Date.now() >= deadline) {
+      throw new Error(`Daytona sandbox ${sandbox.id} is still ${sandbox.state ?? "changing state"} at its start deadline`);
+    }
+    const remainingSeconds = Math.max(1, Math.ceil((deadline - Date.now()) / 1_000));
+    try {
+      await startSettledSandbox(sandbox, remainingSeconds, scope);
+      endForcedStopEpisode(sandboxHandleCacheKey(scope));
+      return;
+    } catch (error) {
+      if (!isSandboxStateChangeInProgress(error) || Date.now() + SANDBOX_TRANSITION_POLL_MS >= deadline) throw error;
+      await new Promise(resolve => setTimeout(resolve, SANDBOX_TRANSITION_POLL_MS));
+      await withLivenessTimeout("sandbox.refreshData", Math.min(readTimeoutMs, Math.max(1, deadline - Date.now())),
+        () => sandbox.refreshData());
+    }
+  }
+}
+
+async function startSettledSandbox(sandbox: Sandbox, timeoutSeconds: number, scope: SandboxScope): Promise<void> {
   if (sandbox.state === "started") return;
   sandboxHandleSessionStore.clear(scope);
   // Bound the lifecycle call just past its own SDK deadline. A normal slow start
@@ -1071,6 +1221,7 @@ async function createSandbox(
     onCreateAttempt?: (cleanup: PluginEnvironmentCreationCleanup) => void;
     onCreateFailure?: () => PluginEnvironmentAcquisitionDiagnostic;
     onSnapshotIdentity?: (identity: SnapshotIdentity) => void;
+    claimCleanup?: () => boolean;
   } = {},
 ): Promise<Sandbox> {
   const resourceRequestError = validateCreationTtl(config) ?? validateRuntimeResourceRequest(config);
@@ -1125,15 +1276,11 @@ async function createSandbox(
     idleActivity.observe(allocation, providerActivityKey(params, config, sandbox.id));
     if (config.ttlMinutes != null) {
       cleanup.observedProviderLeaseId = sandbox.id;
-      await withLivenessTimeout("sandbox.refreshData", config.livenessTimeoutMs, () => sandbox.refreshData());
-      const expiry = Date.parse(sandbox.autoDestroyAt ?? "");
-      const nowMs = Date.now();
-      if (!Number.isFinite(expiry) || expiry <= nowMs || expiry > nowMs + config.ttlMinutes * 60_000) {
-        throw new Error("Daytona did not confirm the configured creation TTL.");
-      }
+      await confirmCreationTtl(sandbox, config);
     }
     return sandbox;
   } catch (createError) {
+    if (options.claimCleanup && !options.claimCleanup()) throw createError;
     // Observe the create failure before compensating deletion can stall or fail.
     const diagnostic = options.onCreateFailure?.();
     try {
@@ -1147,6 +1294,16 @@ async function createSandbox(
         `Daytona sandbox creation failed${status === undefined ? "" : ` (HTTP ${status})`}; cleanup could not be confirmed for ${name}`, cleanup, diagnostic);
     }
     throw createError;
+  }
+}
+
+async function confirmCreationTtl(sandbox: Sandbox, config: DaytonaDriverConfig): Promise<void> {
+  if (config.ttlMinutes == null) return;
+  await withLivenessTimeout("sandbox.refreshData", config.livenessTimeoutMs, () => sandbox.refreshData());
+  const expiry = Date.parse(sandbox.autoDestroyAt ?? "");
+  const nowMs = Date.now();
+  if (!Number.isFinite(expiry) || expiry <= nowMs || expiry > nowMs + config.ttlMinutes * 60_000) {
+    throw new Error("Daytona did not confirm the configured creation TTL.");
   }
 }
 
@@ -1214,19 +1371,31 @@ const REPORTED_CREATE_STATES = new Set<string>([
 // One read-only lookup of the provisional creation name, so a create deadline
 // records where the provider left the allocation. It neither deletes nor
 // records an observed ID: the host-owned cleanup envelope is unchanged.
-async function observeCreateState(
+async function lookupCreation(
   config: DaytonaDriverConfig, cleanup: PluginEnvironmentCreationCleanup,
-): Promise<PluginEnvironmentAcquisitionProviderState> {
+): Promise<{ state: PluginEnvironmentAcquisitionProviderState; sandbox?: Sandbox }> {
   try {
     const sandbox = await withLivenessTimeout("sandbox.createStateLookup", 5_000,
       () => createDaytonaClient(config).get(cleanup.providerLeaseId));
     if (!sandbox || sandbox.name !== cleanup.providerLeaseId || typeof sandbox.state !== "string" ||
-        Object.entries(cleanup.labels).some(([key, value]) => sandbox.labels?.[key] !== value)) return "unavailable";
-    return REPORTED_CREATE_STATES.has(sandbox.state) ? sandbox.state as PluginEnvironmentAcquisitionProviderState : "other";
+        Object.entries(cleanup.labels).some(([key, value]) => sandbox.labels?.[key] !== value)) return { state: "unavailable" };
+    return { state: REPORTED_CREATE_STATES.has(sandbox.state) ? sandbox.state as PluginEnvironmentAcquisitionProviderState : "other", sandbox };
   } catch (error) {
-    return error instanceof DaytonaNotFoundError ? "absent" : "unavailable";
+    return { state: error instanceof DaytonaNotFoundError ? "absent" : "unavailable" };
   }
 }
+
+async function observeCreateState(
+  config: DaytonaDriverConfig, cleanup: PluginEnvironmentCreationCleanup,
+): Promise<PluginEnvironmentAcquisitionProviderState> {
+  return (await lookupCreation(config, cleanup)).state;
+}
+
+const DAYTONA_CREATE_ATTEMPT_MS = 90_000;
+const DAYTONA_ACQUIRE_ATTEMPT_BUDGET_MS = 180_000;
+const SNAPSHOT_PREPARATION_STATES = new Set<PluginEnvironmentAcquisitionProviderState>([
+  "pending_build", "building_snapshot", "pulling_snapshot",
+]);
 
 // ─── Per-lease started-sandbox handle cache ──────────────────────────────────
 // Memoize the started Daytona `Sandbox` handle so repeated exec/sync/resume/
@@ -1785,6 +1954,7 @@ export function __resetDaytonaSandboxHandleCacheForTest(): void {
   sandboxHandleActivityGates.reset();
   sandboxHandleLeaseAdmissionStates.reset();
   sandboxHandleWritableDirs.reset();
+  forcedSandboxStops.clear();
   sandboxHandleSessionStore.reset();
   runnerIngressGenerationStore.reset();
   retiredDaytonaDuplexChannelByRoute.clear();
@@ -2635,7 +2805,9 @@ async function stopLease(params: PluginEnvironmentReleaseLeaseParams): Promise<P
   const cleanupProof = idleActivity.proof(sandboxHandleCacheKey(scope));
   try {
     const sandbox = await getSandboxOrNull(scope, { bypassTeardownGate: true });
-    if (!sandbox) throw new Error("Daytona retained sandbox is unavailable");
+    // Daytona reports the exact sandbox as not found: it is gone, so nothing
+    // runs there and nothing is retained. Destroy reports the same receipt.
+    if (!sandbox) return { providerLeaseId: params.providerLeaseId, state: "destroyed" };
     evictSandboxHandle(scope);
     // Provider auto-delete can destroy a stopped sandbox without an explicit
     // delete call. Confirm the provider disabled it before stopping saved work;
@@ -2744,8 +2916,10 @@ const plugin = definePlugin(trackDaytonaHooks({
       return { ok: false, errors };
     }
 
-    // The warm idle window is host-owned; keep it out of the saved provider config.
-    const { warmIdleTimeoutMs: _warmIdleTimeoutMs, ...normalizedConfig } = config;
+    // The warm idle window and reconnect grace are host-owned; keep them out of
+    // the saved provider config.
+    const { warmIdleTimeoutMs: _warmIdleTimeoutMs, runnerReconnectGraceMs: _runnerReconnectGraceMs,
+      ...normalizedConfig } = config;
     return {
       ok: true,
       normalizedConfig,
@@ -2807,7 +2981,10 @@ const plugin = definePlugin(trackDaytonaHooks({
     let snapshotIdentity: SnapshotIdentity | undefined;
     // One budget covers creation, setup, and inline cleanup. The host leaves
     // 30 seconds beyond this deadline to receive/journal the cleanup record.
-    const budgetMs = config.timeoutMs > 0 ? config.timeoutMs : DEFAULT_DAYTONA_OPERATION_TIMEOUT_MS;
+    const budgetMs = Math.min(config.timeoutMs > 0 ? config.timeoutMs : DEFAULT_DAYTONA_OPERATION_TIMEOUT_MS,
+      DAYTONA_ACQUIRE_ATTEMPT_BUDGET_MS);
+    const createCapMs = Math.min(DAYTONA_CREATE_ATTEMPT_MS, budgetMs);
+    let allocationClaim: "adopted" | "cleanup" | undefined;
     const startedAt = Date.now();
     const deadline = startedAt + budgetMs;
     let expired = false;
@@ -2846,13 +3023,44 @@ const plugin = definePlugin(trackDaytonaHooks({
       if (createPending) diagnostic.providerState = await observeCreateState(config, createPending);
       return timeoutFailure();
     };
+    const createWithinCap = async (creating: Promise<Sandbox>): Promise<Sandbox> => {
+      let createdBeforeDecision = false;
+      creating.then(() => { createdBeforeDecision = true; }, () => undefined);
+      let capTimer: ReturnType<typeof setTimeout> | undefined;
+      const capReached = await Promise.race([
+        creating.then(() => false, () => false),
+        new Promise<boolean>(resolve => { capTimer = setTimeout(() => resolve(true), Math.max(0, startedAt + createCapMs - Date.now())); }),
+      ]).finally(() => clearTimeout(capTimer));
+      if (!capReached || !cleanup || expired || phase !== "create" || firstFailure) return creating;
+      const elapsedMs = Math.max(createCapMs, Date.now() - startedAt);
+      const observed = await lookupCreation(config, cleanup);
+      if (expired || createdBeforeDecision || allocationClaim === "cleanup" || firstFailure) return creating;
+      if (observed.state === "started" && observed.sandbox) {
+        allocationClaim = "adopted";
+        cleanup.observedProviderLeaseId = observed.sandbox.id;
+        idleActivity.observe(idleActivity.resource(providerActivityKey(params, config, cleanup.providerLeaseId), true),
+          providerActivityKey(params, config, observed.sandbox.id));
+        return observed.sandbox;
+      }
+      if (SNAPSHOT_PREPARATION_STATES.has(observed.state)) return creating;
+      firstFailure = { phase: "create", elapsedMs, budgetMs: createCapMs, providerState: observed.state };
+      expired = true;
+      throw timeoutFailure();
+    };
     const acquire = async (): Promise<PluginEnvironmentLease> => {
-      const sandbox = await traceLeaseStep("lease.create", () => createSandbox(params, config, {
+      const creating = traceLeaseStep("lease.create", () => createSandbox(params, config, {
         onCreateAttempt: (attempt) => { assertActive(); cleanup = attempt; },
         onCreateFailure: observeFailure,
         onSnapshotIdentity: identity => { snapshotIdentity = identity; },
+        claimCleanup: () => {
+          if (allocationClaim === "adopted") return false;
+          allocationClaim = "cleanup";
+          return true;
+        },
       }));
+      const sandbox = createCapMs < budgetMs ? await createWithinCap(creating) : await creating;
       try {
+        if (allocationClaim === "adopted") await confirmCreationTtl(sandbox, config);
         assertActive();
         if (cleanup) cleanup.observedProviderLeaseId = sandbox.id;
         phase = "workspace";
@@ -3028,13 +3236,14 @@ const plugin = definePlugin(trackDaytonaHooks({
         }
         const resumedFromState = sandbox.state ?? null;
         await ensureSandboxStarted(sandbox, toTimeoutSeconds(config.timeoutMs), scope);
-        // A sandbox created before the warm floor (or under a shorter warm
-        // window) keeps its old auto-stop. Raise it on resume so the provider
-        // backstop cannot race the host's warm idle window. Best effort: the
-        // host's bounded resume retry still covers a refused resume.
+        // A sandbox created before a host floor (or under a shorter warm window
+        // or reconnect grace) keeps its old auto-stop. Raise it on resume so the
+        // provider backstop cannot race the host's warm idle window or a later
+        // controller outage. Best effort: the host's bounded resume retry still
+        // covers a refused resume.
         const autoStopInterval = effectiveAutoStopIntervalMinutes(config);
         const currentAutoStop = sandbox.autoStopInterval;
-        if (autoStopInterval != null && autoStopInterval > 0 && config.warmIdleTimeoutMs != null
+        if (autoStopInterval != null && autoStopInterval > 0 && hostAutoStopFloorsMs(config).length > 0
           && typeof currentAutoStop === "number" && currentAutoStop > 0 && currentAutoStop < autoStopInterval) {
           await withLivenessTimeout("sandbox.setAutostopInterval",
             Math.max(1, Math.min(config.livenessTimeoutMs > 0 ? config.livenessTimeoutMs : AUTO_STOP_UPDATE_TIMEOUT_MS, AUTO_STOP_UPDATE_TIMEOUT_MS)),

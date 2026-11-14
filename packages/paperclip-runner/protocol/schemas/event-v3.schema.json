@@ -41,6 +41,12 @@
         "control_plane"
       ]
     },
+    "generation": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 9007199254740991,
+      "description": "The runner process generation that emitted the event. A consumer records an event from an earlier generation for a turn that is not active as history; it never fails the current turn."
+    },
     "runId": {
       "type": "string",
       "minLength": 1,
@@ -174,6 +180,7 @@
         "external_provider.dispatch_requested",
         "external_provider.operation_settled",
         "external_provider.input_available",
+        "runner.attachment.settled",
         "auth.credentials.updated",
         "runtime.activity.recorded"
       ]
@@ -731,6 +738,54 @@
             "additionalProperties": false
           }
         }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "eventType": {
+            "const": "turn.started"
+          }
+        },
+        "type": "object"
+      },
+      "then": {
+        "properties": {
+          "payload": {
+            "type": "object",
+            "properties": {
+              "origin": {
+                "$ref": "https://paperclip.dev/schemas/prp/v3/provider-turn.schema.json#/$defs/origin"
+              }
+            },
+            "additionalProperties": true
+          }
+        },
+        "type": "object"
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "eventType": {
+            "const": "turn.completed"
+          }
+        },
+        "type": "object"
+      },
+      "then": {
+        "properties": {
+          "payload": {
+            "type": "object",
+            "properties": {
+              "awaitingProviderTurn": {
+                "$ref": "https://paperclip.dev/schemas/prp/v3/provider-turn.schema.json#/$defs/awaitingProviderTurn"
+              }
+            },
+            "additionalProperties": true
+          }
+        },
+        "type": "object"
       }
     }
   ],

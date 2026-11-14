@@ -2227,8 +2227,11 @@ export async function prepareSandboxManagedRuntime(input: {
                       }
                       if (captured) {
                         const output = path.join(tempDir, "checkpoint");
+                        // The checkpoint output is an exact copy that the host validates entry
+                        // by entry. Ordinary export applies the host umask and drops `._*` names,
+                        // which turns a legitimate workspace file into a permanent mismatch.
                         const outbound: SandboxSyncOperation[] = [{ operationId: nextSyncOperationId(), files: [
-                          { sourcePath: remoteOutput, targetPath: output, kind: "directory" },
+                          { sourcePath: remoteOutput, targetPath: output, kind: "directory", preserveSourceEntries: true },
                         ] }];
                         assertSyncOperationsConfined(outbound, { sourceRoots: [runtimeRootDir], targetRoots: [tempDir] });
                         await withWorkspaceRestoreStep("workspace_transfer", () => input.client.syncOut!(outbound));

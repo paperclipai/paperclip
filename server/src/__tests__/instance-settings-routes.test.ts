@@ -1,4 +1,5 @@
-import { generateKeyPairSync, randomUUID, sign } from "node:crypto";
+import { DEFAULT_JSON_BODY_LIMIT } from "../http/body-limits.js";
+import { createHash, generateKeyPairSync, randomUUID, sign } from "node:crypto";
 import express from "express";
 import request from "supertest";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -20,6 +21,7 @@ const mockHeartbeatService = vi.hoisted(() => ({
   applyTaskDrain: vi.fn(),
   stopTaskDrain: vi.fn(),
   getTaskDrainStatus: vi.fn(),
+  prepareIdleWarmNativeSessionsForSleep: vi.fn(),
   readUpgradeReadiness: vi.fn(),
   resumeQueuedRunsAfterDrain: vi.fn(),
 }));
@@ -99,7 +101,7 @@ describe("instance settings routes", () => {
   function createApp(actor: any, pluginWorkers?: PluginWorkerManager, prepareBackup?: () => Promise<boolean>, verifyControl = false) {
     const { errorHandler, instanceSettingsRoutes, cloudControlMiddleware } = routeModules.value;
     const app = express();
-    app.use(express.json());
+    app.use(express.json({ limit: DEFAULT_JSON_BODY_LIMIT, verify: (req, _res, raw) => { Reflect.set(req, "rawBody", raw); } }));
     app.use((req, _res, next) => {
       req.actor = actor;
       next();
@@ -1079,7 +1081,7 @@ describe("instance settings routes", () => {
       await request(createApp(adminActor)).post("/api/instance/task-drain").send({ purpose: "idle", ttlMs: 60_000 }).expect(200);
       expect(mockHeartbeatService.computeTaskDrain).toHaveBeenCalledWith({ purpose: "idle", ttlMs: 60_000 });
       await request(createApp(adminActor)).get(`/api/instance/task-drain?idleSleepSafety=1&ownerId=${ownerId}`).expect(200);
-      expect(mockReadIdleSleepSafety).toHaveBeenLastCalledWith(mockDb, expect.any(Function), Date.now, ownerId, expect.any(Function), undefined, undefined, false, false, { incomingWake: undefined, deadlineCapability: undefined });
+      expect(mockReadIdleSleepSafety).toHaveBeenLastCalledWith(mockDb, expect.any(Function), Date.now, ownerId, expect.any(Function), undefined, undefined, false, false, { incomingWake: undefined, deadlineCapability: undefined, prepareLocalWork: expect.any(Function) });
     });
 
     it.each([{}, { ttlMs: null }, { ttlMs: 1 }, { ttlMs: 300_001 }])("rejects an unbounded or invalid idle TTL: %j", async body => {
@@ -1106,8 +1108,23 @@ describe("instance settings routes", () => {
       const res = await request(createApp(adminActor)).get("/api/instance/task-drain?idleSleepSafety=1");
       expect(res.status).toBe(200);
       expect(res.body).toEqual({ ...idleStatus, idleSleepSafety: report });
-      expect(mockReadIdleSleepSafety).toHaveBeenCalledWith(mockDb, expect.any(Function), Date.now, undefined, expect.any(Function), undefined, undefined, false, false, { incomingWake: undefined, deadlineCapability: undefined });
+      expect(mockReadIdleSleepSafety).toHaveBeenCalledWith(mockDb, expect.any(Function), Date.now, undefined, expect.any(Function), undefined, undefined, false, false, { incomingWake: undefined, deadlineCapability: undefined, prepareLocalWork: expect.any(Function) });
       expect(mockReadIdleSleepSafety.mock.calls[0][1]()).toEqual(idleStatus);
+    });
+
+    it.each([
+      [{ closed: 1, busy: 0, failed: 0 }, "none"],
+      [{ closed: 0, busy: 1, failed: 0 }, "present"],
+      [{ closed: 0, busy: 0, failed: 1 }, "present"],
+    ] as const)("binds native retirement to the safety owner's current-admission predicate: %j", async (result, state) => {
+      const canPrepare = () => true;
+      mockHeartbeatService.getTaskDrainStatus.mockReturnValue(idleStatus);
+      mockHeartbeatService.prepareIdleWarmNativeSessionsForSleep.mockResolvedValue(result);
+      mockReadIdleSleepSafety.mockImplementation(async (_db, _status, _now, _owner, _local, _plugins, _backup, _routines, _monitors, options) =>
+        ({ version: 1, backgroundWork: await options.prepareLocalWork({ canPrepare }) }));
+      const response = await request(createApp(adminActor)).get("/api/instance/task-drain?idleSleepSafety=1&ownerId=fixture-owner").expect(200);
+      expect(mockHeartbeatService.prepareIdleWarmNativeSessionsForSleep).toHaveBeenCalledWith({ canRetire: canPrepare });
+      expect(response.body.idleSleepSafety.backgroundWork).toBe(state);
     });
 
     it("collects fixed-key diagnostics only through the privileged safety report", async () => {
@@ -1120,7 +1137,7 @@ describe("instance settings routes", () => {
         .get("/api/instance/task-drain?idleSleepSafety=1&idleSleepDiagnostics=1&ownerId=fixture-owner").expect(200);
       expect(response.body.idleSleepSafety.diagnostics.checks).toEqual([{ reason: "agent_api_keys", state: "present" }]);
       expect(mockReadIdleSleepSafety).toHaveBeenCalledWith(mockDb, expect.any(Function), Date.now,
-        "fixture-owner", expect.any(Function), undefined, undefined, false, false, { incomingWake: undefined, deadlineCapability: undefined, collectDiagnostics: true });
+        "fixture-owner", expect.any(Function), undefined, undefined, false, false, { incomingWake: undefined, deadlineCapability: undefined, prepareLocalWork: expect.any(Function), collectDiagnostics: true });
       mockReadIdleSleepSafety.mockClear();
       for (const actor of [nonAdminActor, { type: "agent", agentId: "agent-1", companyId: "company-1", source: "api_key" }]) {
         await request(createApp(actor))
@@ -1142,7 +1159,7 @@ describe("instance settings routes", () => {
       await request(createApp({ ...adminActor, source: "cloud_control" }))
         .get(`/api/instance/task-drain?idleSleepSafety=1&scheduledWake=${version}&ownerId=fixture-owner`).expect(200);
       expect(mockReadIdleSleepSafety).toHaveBeenCalledWith(mockDb, expect.any(Function), Date.now,
-        "fixture-owner", expect.any(Function), undefined, undefined, true, version === "2", { incomingWake: undefined, deadlineCapability: undefined });
+        "fixture-owner", expect.any(Function), undefined, undefined, true, version === "2", { incomingWake: undefined, deadlineCapability: undefined, prepareLocalWork: expect.any(Function) });
     });
 
     describe("signed incoming capability handoff", () => {
@@ -1174,6 +1191,46 @@ describe("instance settings routes", () => {
       });
       afterEach(() => vi.unstubAllEnvs());
 
+      it("reads the same owner and deadline scope through the real body-bound middleware and production handler", async () => {
+        const raw = JSON.stringify({ idleCapabilities: catalog });
+        const token = assertion({ action: "task-drain:read-body", idleCapabilities: undefined, bodySha256: createHash("sha256").update(raw).digest("hex") });
+        const url = `/api/instance/task-drain/status?idleSleepSafety=1&scheduledWake=domain-deadlines-v1&ownerId=${ownerId}`;
+        await request(createControlApp({ type: "none" })).post(url).set("content-type", "application/json")
+          .set("x-paperclip-cloud-control", token).send(raw).expect(200);
+        expect(mockReadIdleSleepSafety).toHaveBeenCalledExactlyOnceWith(mockDb, expect.any(Function), Date.now,
+          ownerId, expect.any(Function), undefined, undefined, true, true,
+          { incomingWake: catalog, deadlineCapability: catalog, prepareLocalWork: expect.any(Function) });
+        expect(Object.isFrozen(mockReadIdleSleepSafety.mock.calls[0][9].incomingWake)).toBe(true);
+        await request(createControlApp({ type: "none" })).post(url).set("content-type", "application/json")
+          .set("x-paperclip-cloud-control", token).send(raw).expect(401);
+      });
+      it("rejects body tampering before installing capabilities or consuming the valid request", async () => {
+        const raw = JSON.stringify({ idleCapabilities: catalog });
+        const token = assertion({ action: "task-drain:read-body", idleCapabilities: undefined, bodySha256: createHash("sha256").update(raw).digest("hex") });
+        const url = `/api/instance/task-drain/status?idleSleepSafety=1&ownerId=${ownerId}`;
+        await request(createControlApp(adminActor)).post(url).set("content-type", "application/json")
+          .set("x-paperclip-cloud-control", token).send(raw + " ").expect(401);
+        expect(mockReadIdleSleepSafety).not.toHaveBeenCalled();
+        await request(createControlApp({ type: "none" })).post(url).set("content-type", "application/json")
+          .set("x-paperclip-cloud-control", token).send(raw).expect(200);
+      });
+      it("rejects unsigned and actor-only body authority and cross-route method replay", async () => {
+        const raw = JSON.stringify({ idleCapabilities: catalog }), url = `/api/instance/task-drain/status?idleSleepSafety=1&ownerId=${ownerId}`;
+        for (const source of ["session", "cloud_tenant", "local_implicit", "cloud_control"]) {
+          await request(createControlApp({ ...adminActor, source, idleCapabilities: catalog })).post(url)
+            .set("content-type", "application/json").send(raw).expect(403);
+        }
+        expect(mockReadIdleSleepSafety).not.toHaveBeenCalled();
+        const token = assertion({ action: "task-drain:read-body", idleCapabilities: undefined, bodySha256: createHash("sha256").update(raw).digest("hex") });
+        await request(createControlApp(adminActor)).get(url).set("x-paperclip-cloud-control", token).expect(400);
+        await request(createControlApp(adminActor)).post("/api/instance/task-drain").set("content-type", "application/json")
+          .set("x-paperclip-cloud-control", token).send(raw).expect(401);
+        await request(createControlApp(adminActor)).delete("/api/instance/task-drain").set("x-paperclip-cloud-control", token).expect(401);
+        expect(mockReadIdleSleepSafety).not.toHaveBeenCalled();
+        await request(createControlApp({ type: "none" })).post(url).set("content-type", "application/json")
+          .set("x-paperclip-cloud-control", token).send(raw).expect(200);
+      });
+
       it("passes only the immutable signed catalog through real middleware and the production route", async () => {
         const token = assertion();
         const response = await request(createControlApp({ type: "none" }))
@@ -1183,7 +1240,7 @@ describe("instance settings routes", () => {
         expect(response.body.idleSleepSafety).toEqual({ version: 3, backgroundWork: "none" });
         expect(mockReadIdleSleepSafety).toHaveBeenCalledExactlyOnceWith(mockDb, expect.any(Function), Date.now,
           ownerId, expect.any(Function), undefined, undefined, false, false,
-          { incomingWake: catalog, deadlineCapability: undefined });
+          { incomingWake: catalog, deadlineCapability: undefined, prepareLocalWork: expect.any(Function) });
         const options = mockReadIdleSleepSafety.mock.calls[0][9];
         expect(options.deadlineCapability).toBeUndefined();
         expect(Object.isFrozen(options.incomingWake)).toBe(true);
@@ -1198,7 +1255,7 @@ describe("instance settings routes", () => {
           .set("x-paperclip-cloud-control", assertion()).expect(200);
         expect(mockReadIdleSleepSafety).toHaveBeenCalledExactlyOnceWith(mockDb, expect.any(Function), Date.now,
           ownerId, expect.any(Function), undefined, undefined, true, true,
-          { incomingWake: catalog, deadlineCapability: catalog });
+          { incomingWake: catalog, deadlineCapability: catalog, prepareLocalWork: expect.any(Function) });
         const options = mockReadIdleSleepSafety.mock.calls[0][9];
         expect(options.incomingWake).toBe(options.deadlineCapability);
         expect(Object.isFrozen(options.deadlineCapability)).toBe(true);
@@ -1226,7 +1283,7 @@ describe("instance settings routes", () => {
       it("leaves legacy signed reads without a catalog conservative", async () => {
         await request(createControlApp({ type: "none" })).get(path)
           .set("x-paperclip-cloud-control", assertion({ idleCapabilities: undefined })).expect(200);
-        expect(mockReadIdleSleepSafety.mock.calls[0][9]).toEqual({ incomingWake: undefined, deadlineCapability: undefined });
+        expect(mockReadIdleSleepSafety.mock.calls[0][9]).toEqual({ incomingWake: undefined, deadlineCapability: undefined, prepareLocalWork: expect.any(Function) });
       });
 
       it("cannot install capabilities from tenant, actor, query or body values", async () => {
@@ -1234,7 +1291,7 @@ describe("instance settings routes", () => {
           const actor = { ...adminActor, source, idleCapabilities: catalog, incomingWake: catalog };
           await request(createControlApp(actor)).get(`${path}&incomingWake=${encodeURIComponent(JSON.stringify(catalog))}`)
             .send({ idleCapabilities: catalog }).expect(200);
-          expect(mockReadIdleSleepSafety.mock.lastCall?.[9]).toEqual({ incomingWake: undefined, deadlineCapability: undefined });
+          expect(mockReadIdleSleepSafety.mock.lastCall?.[9]).toEqual({ incomingWake: undefined, deadlineCapability: undefined, prepareLocalWork: expect.any(Function) });
         }
         mockReadIdleSleepSafety.mockClear();
         await request(createControlApp(nonAdminActor)).get(path).send({ idleCapabilities: catalog }).expect(403);
@@ -1274,7 +1331,7 @@ describe("instance settings routes", () => {
       expect(mockReadIdleSleepSafety).not.toHaveBeenCalled();
       await request(app).get("/api/instance/task-drain?idleSleepSafety=1&ownerId=fixture-owner").expect(200);
       expect(mockReadIdleSleepSafety).toHaveBeenCalledWith(mockDb, expect.any(Function), Date.now,
-        "fixture-owner", expect.any(Function), undefined, backup, false, false, { incomingWake: undefined, deadlineCapability: undefined });
+        "fixture-owner", expect.any(Function), undefined, backup, false, false, { incomingWake: undefined, deadlineCapability: undefined, prepareLocalWork: expect.any(Function) });
       mockReadIdleSleepSafety.mockClear();
       await request(createApp(nonAdminActor, undefined, backup)).get("/api/instance/task-drain?idleSleepSafety=1").expect(403);
       expect(mockReadIdleSleepSafety).not.toHaveBeenCalled();
@@ -1296,7 +1353,7 @@ describe("instance settings routes", () => {
         const control = createApp({ ...adminActor, source: "cloud_control" }, undefined, backup);
         await request(control).get("/api/instance/task-drain?idleSleepSafety=1&ownerId=fixture-owner").expect(200);
         expect(mockReadIdleSleepSafety).toHaveBeenCalledWith(mockDb, expect.any(Function), Date.now,
-          "fixture-owner", expect.any(Function), undefined, backup, false, false, { incomingWake: undefined, deadlineCapability: undefined });
+          "fixture-owner", expect.any(Function), undefined, backup, false, false, { incomingWake: undefined, deadlineCapability: undefined, prepareLocalWork: expect.any(Function) });
       } finally {
         delete process.env.PAPERCLIP_CLOUD_TENANT_SERVER_TOKEN;
       }

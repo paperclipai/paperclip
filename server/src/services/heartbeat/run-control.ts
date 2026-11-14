@@ -72,7 +72,9 @@ import {
   waitForAdapterStop,
 } from "../adapter-execution-control.js";
 import { AdapterStopTimeoutError } from "../adapter-stop-timeout.js";
-import { budgetCancellationScopePredicate, pendingBudgetRunCancellationPredicate } from "./budget-cancellation.js";
+import { isTransientLockContention, postgresErrorCode } from "../transient-lock-contention.js";
+import { pendingBudgetRunCancellationPredicate, pendingBudgetRunIdsForScopeQuery } from "./budget-cancellation.js";
+import { notifyBudgetStopsSettled } from "../budget-resume-continuation.js";
 import { withBudgetSpan } from "../budget-tracing.js";
 import { captureException } from "../../sentry.js";
 import { randomUUID } from "node:crypto";
@@ -128,6 +130,7 @@ import {
 } from "../native-runtime/index.js";
 import { runningProcesses } from "../../adapters/index.js";
 import { parseObject } from "../../adapters/utils.js";
+import { resumePreservedResultFinalization } from "../preserved-result-finalization.js";
 import { isNativeRunnerOwnershipHeld, nativeManualAdmissionOwnerColumns, nativeRunnerOwnershipNotHeldCondition } from "../native-runtime/native-runner-ownership.js";
 import { readNativeStartupCleanup, acknowledgeNativeStartupCleanup } from "../native-runtime/native-startup-cleanup.js";
 import {
@@ -177,7 +180,12 @@ async function withBudgetStopDelivery<T>(db: Db, work: () => Promise<T>): Promis
   }
 }
 
+/** `preservePauseDeferred`: the stop comes from a pause, which keeps the
+ * messages it deferred for delivery once the pause lifts. */
+export type StopInvocationOptions = { preservePauseDeferred?: boolean };
+
 /** Cancellation shares executor ownership and delegates lifecycle and admission effects. */
+
 export interface HeartbeatRunControlDependencies extends Pick<ReturnType<typeof createHeartbeatRunState>,
   "getRun" | "getAgent" | "getRunCleanupState" | "getRunExecutionWait">,
   Pick<ReturnType<typeof createHeartbeatLifecycle>,
@@ -845,6 +853,14 @@ export function createHeartbeatRunControl(db: Db, dependencies: HeartbeatRunCont
         responsibleUserId: intent.actorId },
       issueStateGuard: { assigneeAgentId: wake.agentId, statuses: ["todo", "in_progress", "in_review", "blocked"] },
       idempotencyKey: `task-retry-dispatch:${wake.id}` }, wake.id);
+    // Admission held this Retry because its source run's files are saved and
+    // its accepted result can be applied. Apply it now instead of a new turn.
+    // One key read after admission; the resumption runs only for a held Retry.
+    const [held] = await db.select({ status: agentWakeupRequests.status, payload: agentWakeupRequests.payload })
+      .from(agentWakeupRequests).where(and(eq(agentWakeupRequests.companyId, companyId), eq(agentWakeupRequests.id, wake.id)));
+    if (held?.status === "deferred_issue_execution"
+      && parseObject(held.payload?.executionWait).reason === "finalizing_saved_result")
+      await resumePreservedResultFinalization(db, companyId, intent.sourceRunId);
   }
 
   async function resumeExecutionWaitComments(scope: DeferredReceiptRecoveryOptions = {}) {
@@ -1234,10 +1250,19 @@ export function createHeartbeatRunControl(db: Db, dependencies: HeartbeatRunCont
     let caseHandoffRetryClaimed = false;
     if (handoffIssueId && supersedesCaseHandoff && options.resultJson?.caseHandoffYieldStop !== true) {
       const publications: ActivityPublication[] = [];
+      let taskRowLocked = false;
       const applySupersession = () => db.transaction(async tx => {
+        taskRowLocked = false;
+        // As in legacy terminalization, wait at most 1s for the task row so a
+        // board Stop never queues behind a slow task writer. Later locks keep
+        // the transaction's previous timeout.
+        const [settings] = await tx.execute(sql`select current_setting('lock_timeout') as lock_timeout`);
+        await tx.execute(sql`select set_config('lock_timeout', '1000', true)`);
         const [issue] = await tx.select({ id: issues.id, executionRunId: issues.executionRunId, checkoutRunId: issues.checkoutRunId,
           assigneeAgentId: issues.assigneeAgentId, assigneeUserId: issues.assigneeUserId }).from(issues)
           .where(and(eq(issues.companyId, run!.companyId), eq(issues.id, handoffIssueId))).for("update");
+        taskRowLocked = true;
+        await tx.execute(sql`select set_config('lock_timeout', ${String(settings.lock_timeout)}, true)`);
         const [current] = await tx.select().from(heartbeatRuns).where(and(eq(heartbeatRuns.id, runId),
           eq(heartbeatRuns.companyId, run!.companyId))).for("update");
         if (!current || (options.expectedStatus && current.status !== options.expectedStatus)) return false;
@@ -1298,9 +1323,18 @@ export function createHeartbeatRunControl(db: Db, dependencies: HeartbeatRunCont
           supersessionApplied = await applySupersession();
           break;
         } catch (error) {
-          const value = parseObject(error);
-          const deadlock = value.code === "40P01" || parseObject(value.cause).code === "40P01";
-          if (!deadlock || attempt >= 2) rethrowNativeCancellationLockConflict(error);
+          const code = postgresErrorCode(error);
+          const taskRowBusy = code === "55P03" && !taskRowLocked;
+          if ((code !== "40P01" && !taskRowBusy) || attempt >= 2) {
+            // The task row stayed locked through every attempt. Nothing was
+            // committed, so the same Stop can be sent again.
+            if (taskRowBusy) {
+              throw conflict("The task is busy, so Stop could not finish. Try Stop again.", {
+                code: "run_stop_busy", runId,
+              });
+            }
+            rethrowNativeCancellationLockConflict(error);
+          }
           // PostgreSQL aborted the entire transaction. Discard its local
           // receipts before re-reading current authority under fresh locks.
           // Provider Stop and publication happen only after this boundary.
@@ -1631,6 +1665,13 @@ export function createHeartbeatRunControl(db: Db, dependencies: HeartbeatRunCont
               );
             }
           }
+          // Another writer held the task row through every bounded attempt.
+          // The terminal write rolled back, so the same Stop can be sent again.
+          if (isTransientLockContention(error)) {
+            throw conflict("The task is busy, so Stop could not finish. Try Stop again.", {
+              code: "run_stop_busy", runId: run.id,
+            });
+          }
           throw error;
         } finally {
           if (processCancellationSettlement) {
@@ -1661,6 +1702,11 @@ export function createHeartbeatRunControl(db: Db, dependencies: HeartbeatRunCont
           level: "warn",
           message: options.eventMessage ?? "run cancelled",
           payload: { ...options.eventPayload, cancellation: readRunCancellation(cancelled.resultJson) },
+        }).catch((eventErr) => {
+          logger.warn(
+            { err: eventErr, runId: run.id },
+            "failed to append run event for cancellation",
+          );
         });
         await releaseIssueExecutionAndPromote(cancelled, {
           suppressImmediateRecovery: options.suppressImmediateRecovery,
@@ -1699,6 +1745,7 @@ export function createHeartbeatRunControl(db: Db, dependencies: HeartbeatRunCont
   async function cancelPendingWakeupsForAgentsInternal(
     agentIds: string[],
     reason: string,
+    options: StopInvocationOptions = {},
   ) {
     const uniqueAgentIds = [...new Set(agentIds)].filter(
       (agentId) => agentId.length > 0,
@@ -1713,6 +1760,10 @@ export function createHeartbeatRunControl(db: Db, dependencies: HeartbeatRunCont
           inArray(agentWakeupRequests.agentId, uniqueAgentIds),
           inArray(agentWakeupRequests.status, ["queued", "deferred_issue_execution"]),
           isNull(agentWakeupRequests.runId),
+          // A pause is temporary: a message it deferred waits for the pause to
+          // lift (work-intent outbox), so the pause's own stop keeps it.
+          options.preservePauseDeferred ? sql`not (${agentWakeupRequests.status} = 'deferred_issue_execution'
+            and coalesce(${agentWakeupRequests.payload}->'executionWait'->>'trigger', '') = 'pause_lifted')` : undefined,
         ));
       if (!wakeups.length) return 0;
       for (const companyId of new Set(wakeups.map(row => row.companyId))) {
@@ -1733,6 +1784,7 @@ export function createHeartbeatRunControl(db: Db, dependencies: HeartbeatRunCont
   async function cancelInvocationsForAgentsInternal(
     agentIds: string[],
     reason: string,
+    options: StopInvocationOptions = {},
   ) {
     const uniqueAgentIds = [...new Set(agentIds)].filter(
       (agentId) => agentId.length > 0,
@@ -1744,6 +1796,7 @@ export function createHeartbeatRunControl(db: Db, dependencies: HeartbeatRunCont
     const wakeupsCancelled = await cancelPendingWakeupsForAgentsInternal(
       uniqueAgentIds,
       reason,
+      options,
     );
     return {
       agentIds: uniqueAgentIds,
@@ -1805,9 +1858,7 @@ export function createHeartbeatRunControl(db: Db, dependencies: HeartbeatRunCont
     });
     // A later policy change revokes permission to fence new work, not the Stop
     // already committed for older work. Recovery must deliver those intents.
-    const pending = await db.select({ id: heartbeatRuns.id }).from(heartbeatRuns).where(and(
-      pendingBudgetRunCancellationPredicate(), budgetCancellationScopePredicate(scope),
-    ));
+    const pending = await pendingBudgetRunIdsForScopeQuery(db, scope);
     const runIds = [...new Set([...(newlyFenced ?? []), ...pending.map(run => run.id)])];
     if (!runIds.length) return;
     const failures: unknown[] = [];
@@ -1830,6 +1881,9 @@ export function createHeartbeatRunControl(db: Db, dependencies: HeartbeatRunCont
         }
       }
     }));
+    // A resumed budget owes these runs a continuation once their Stop lands.
+    await notifyBudgetStopsSettled(db, runIds).catch(error =>
+      logger.warn({ err: error, companyId: scope.companyId }, "Budget resume continuation notification deferred"));
     // Drain the batch before rejecting; one failed provider must not prevent
     // the remaining runs from receiving their already-committed Stop.
     if (failures.length) throw new AggregateError(failures, "Budget cancellation delivery remains pending");

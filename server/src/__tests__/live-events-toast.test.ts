@@ -128,6 +128,8 @@ describe("authenticated activity notifications", () => {
         if (actorType === "agent") expect(event.payload.actorName).toBe("Coder");
         if (actorType === "user") expect(event.payload.actorName).toBe("Alex Example");
         if (deploymentMode === "authenticated") expect(event.payload).not.toHaveProperty("details");
+        // Routine updates are not task identity changes.
+        expect(event.payload.taskIdentityChanged).toBe(false);
       }
       expect(messages[3].payload.issueIdentifier).toBe("PAP-1234");
     } finally {
@@ -260,6 +262,16 @@ describe("authenticated activity notifications", () => {
       await second;
       expect(messages[1].payload).toMatchObject({ issueIdentifier: "PAP-1234", actorName: "Coder", actorType: "agent", actorId: "agent", actorAppearance: { paletteId: "bubblegum-sky" } });
       if (deploymentMode === "authenticated") expect(messages[1].payload).not.toHaveProperty("details");
+      expect(messages[0].payload.taskIdentityChanged).toBe(true);
+      const third = once(socket, "message");
+      publishLiveEvent({ companyId: "company", type: "activity.logged", payload: {
+        action: "issue.updated", entityType: "issue", entityId: "visible", actorType: "user", actorId: "viewer",
+        details: { title: "Secret new title", hiddenAt: null },
+      } });
+      await third;
+      // A rename or hide is flagged with a closed boolean; its content stays off the socket.
+      expect(messages[2].payload.taskIdentityChanged).toBe(true);
+      if (deploymentMode === "authenticated") expect(JSON.stringify(messages[2].payload)).not.toContain("Secret new title");
     } finally {
       socket.terminate();
       await new Promise<void>((resolve) => server.close(() => resolve()));

@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { createRunnerProviderLaunch, preparedRunnerLaunchWorkingDirectory, runnerLaunchRequirementsDigest, runnerLaunchSettingsMatch, validatePreparedRunnerLaunch,
   runnerProviderLaunchRequirements, type RunnerProviderLaunchEnvironment, type RunnerProviderLaunchRequirements } from "./runner-provider-launch.js";
+import { createSecuredCodexThreadParams } from "../drivers/codex/codex-security-config.js";
 
 const requirements: RunnerProviderLaunchRequirements = {
   schema: "paperclip.runner.launch-requirements.v1",
@@ -25,6 +26,22 @@ describe("built-in provider launch preparation", () => {
     expect(runnerLaunchSettingsMatch(frozen, { acpxPermissionMode: "approve-reads" })).toBe(false);
     expect(runnerLaunchSettingsMatch(frozen, { acpxPermissionModePinned: false })).toBe(false);
     expect(frozen.settings).toEqual({});
+  });
+
+  it.each([
+    { workMode: "ask", executionMode: "default", readOnly: false, collaborationMode: "default" },
+    { workMode: "standard", executionMode: "default", readOnly: false, collaborationMode: "default" },
+    { workMode: "planning", executionMode: "plan", readOnly: true, collaborationMode: "plan" },
+  ] as const)("launches a $workMode Codex run in an external sandbox without a read-only Codex sandbox claim", (mode) => {
+    const thread = createSecuredCodexThreadParams("/execution/workspace", mode.executionMode, true, false,
+      { PAPERCLIP_RUNNER_EXTERNAL_SANDBOX: "1" });
+    const selected = runnerProviderLaunchRequirements({ provider: "codex", externallySandboxed: true },
+      requirements.identity, { model: requirements.model, ...thread }, null, "");
+    expect(selected.readOnly).toBe(mode.readOnly);
+    const launch = createRunnerProviderLaunch(selected, { ...environment,
+      options: { ...environment.options, externallySandboxed: true } });
+    expect(launch).toMatchObject({ externallySandboxed: true, collaborationMode: mode.collaborationMode });
+    expect("readOnly" in launch).toBe(mode.readOnly);
   });
 
   it("preserves probe project-instruction suppression through a prepared launch", () => {

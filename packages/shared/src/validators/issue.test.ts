@@ -369,6 +369,37 @@ describe("issue validators", () => {
     } }).success).toBe(true);
   });
 
+  it.each(["backlog", "in_progress", "blocked"] as const)("allows a complete controller containment request to retain %s status for locked route validation", sourceIssueStatus => {
+    const input = { actionId: "22222222-2222-4222-8222-222222222222", outcome: "restored", sourceIssueStatus,
+      executionReconciliation: { runId: "11111111-1111-4111-8111-111111111111", providerStopped: true,
+        controllerStopped: true, controllerAuthorityDigest: "a".repeat(64), actionOutcome: "mixed",
+        outcomeEvidence: "The original-host controller and provider stopped; action outcomes were reviewed." } };
+    // The real historical HTTP request failed here before its route could
+    // enforce same-status/current-authority checks. Syntax grants no authority.
+    expect(resolveIssueRecoveryActionSchema.parse(input)).toEqual(input);
+  });
+
+  it.each(["controller-only", "digest-only", "missing-action", "wrong-outcome", "partial-with-workspace-evidence"] as const)(
+    "rejects incomplete controller containment even when ordinary status validation would pass: %s", mode => {
+      const complete = { runId: "11111111-1111-4111-8111-111111111111", providerStopped: true,
+        controllerStopped: true, controllerAuthorityDigest: "a".repeat(64), actionOutcome: "mixed",
+        outcomeEvidence: "The original-host controller and provider stopped; action outcomes were reviewed." };
+      const ordinary = { runId: complete.runId, providerStopped: complete.providerStopped,
+        actionOutcome: complete.actionOutcome, outcomeEvidence: complete.outcomeEvidence };
+      const input = { actionId: mode === "missing-action" ? undefined : "22222222-2222-4222-8222-222222222222",
+        outcome: mode === "wrong-outcome" ? "blocked" : "restored",
+        sourceIssueStatus: mode === "wrong-outcome" ? "blocked" : "todo",
+        executionReconciliation: mode === "controller-only" ? { ...ordinary, controllerStopped: true }
+          : mode === "digest-only" ? { ...ordinary, controllerAuthorityDigest: complete.controllerAuthorityDigest }
+          : mode === "partial-with-workspace-evidence" ? { ...ordinary, controllerStopped: true,
+            workspaceRepairEvidence: "Retained workspace files were repaired and inspected separately." }
+          : complete };
+      const result = resolveIssueRecoveryActionSchema.safeParse(input);
+      expect(result.success).toBe(false);
+      if (!result.success) expect(result.error.issues).toContainEqual(expect.objectContaining({ path: ["executionReconciliation"] }));
+    },
+  );
+
   it("allows cancelled recovery resolutions to atomically restore the source issue status", () => {
     expect(
       resolveIssueRecoveryActionSchema.parse({

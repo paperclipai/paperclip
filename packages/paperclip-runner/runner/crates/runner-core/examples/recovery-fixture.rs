@@ -273,6 +273,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             value("--reconnect-grace-ms")?.parse()?,
         )),
         max_runtime: Duration::ZERO,
+        turn_scoped: false,
     };
     run_durable_runner(
         config,

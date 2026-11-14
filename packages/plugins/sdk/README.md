@@ -595,13 +595,14 @@ headers?, body? }`.
 
 Workflow plugins can use `ctx.issues` for orchestration-grade issue operations without importing host server internals.
 
+A child issue always gets its own execution workspace, realized from the project base. It keeps the parent's project and workspace strategy, never the parent's checkout, branch or unmerged changes. `inheritExecutionWorkspaceFromIssueId` likewise copies only the source issue's project and workspace strategy.
+
 Expanded create/update fields include blockers, billing code, board or agent assignees, labels, namespaced plugin origins, request depth, and safe execution workspace fields:
 
 ```ts
 const child = await ctx.issues.create({
   companyId,
   parentId: missionIssueId,
-  inheritExecutionWorkspaceFromIssueId: missionIssueId,
   title: "Implement feature slice",
   status: "todo",
   assigneeAgentId: workerAgentId,
@@ -1565,3 +1566,26 @@ The return value is transient raw credential material with the Connector's
 existing permissions. This capability is for trusted execution infrastructure,
 not agent-facing tools or UI. Never expose or persist it. See
 [GitHub identity](../../../doc/execution-github-identity.md#project-authorization-for-background-repository-work).
+
+## Login on an existing computer
+
+A driver can use the existing login PTY hooks for a login on a saved agent's
+computer. Core sends `purpose: "login"`, a closed `loginCommandKey`, a stable
+`creationOperationId`, and an absolute `requestedExpiresAt` to lease acquisition.
+Release and destroy must retire only that login allocation and preserve the
+computer. Omitted purpose retains the existing execution behavior.
+
+Core supplies `expiresAt` to the PTY open and an `inputId` for each input write.
+Input, stop, and close retain the opening company context so provider callbacks
+can use company-scoped host services during cleanup.
+A provider that retries delivery must retain the input identity and bytes, and
+reject reuse of the identity with different input. A failed input call ends the
+Core login; Core does not silently replay an unconfirmed write.
+
+Providers can implement `onLoginPtyReadCredential` to export the fixed Codex
+credential artifact for a bound login lease. The result is
+`{ kind: "codex-auth-json", authJson }`; the request accepts no path or command.
+The worker advertises this optional method only when the hook exists. The host
+must check that method before using this read path, enforce a size limit, and
+keep credential bytes out of logs and public session responses. Existing sandbox
+providers can continue to use their descriptor-bound credential read.

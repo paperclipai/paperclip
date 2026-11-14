@@ -148,6 +148,10 @@ GitHub Actions owns every managed pnpm lockfile:
   each lockfile with `pnpm install --resolution-only --ignore-scripts --no-frozen-lockfile`
   and opens one `chore/refresh-lockfile` pull request for all of them. See
   `doc/RELEASE-AUTOMATION-SETUP.md` for when the bot merges it.
+- A local `docker build` installs the Runner with a frozen lockfile. When the
+  root `pnpm-lock.yaml` is behind the Runner's manifests, run that same command
+  in the checkout before the build, and do not commit the result. See "Runner
+  image" in `doc/DOCKER.md`.
 
 The Pi and Kimi distribution lockfiles under `packages/paperclip-runner/scripts/`
 are not on this list. They hold attested provider pins, so change them by hand
@@ -187,14 +191,21 @@ AWS fleet. A stale admission roster can allocate only the short metadata gate;
 the fresh CODEOWNERS check still denies PR execution for a removed owner.
 
 AWS runners are sometimes lost mid-job. `ci-runner-loss-rerun.yml` re-runs the
-failed jobs of a PR's first CI attempt once when every failed job lost its
-runner. A lost runner is recognized by the check-run annotation "lost
-communication with the server" or "received a shutdown signal". When the only
-annotation is "The operation was canceled.", the job log is checked for the
-same messages. The `verify` and `e2e` aggregates are not counted. Any other
-failure, a failed routing gate, or a PR whose head has moved prevents the
-automatic re-run. The workflow job summary lists each failed job and its
-evidence. Like a maintainer's "Re-run failed jobs", the re-run reuses the
+failed jobs of a PR's first CI attempt once when every failed or cancelled job
+lost its runner. A spot reclaim often ends the job, and the run, as
+`cancelled`. A lost runner is recognized by the check-run annotation "lost
+communication with the server" or "received a shutdown signal". When a job has
+the annotation "The operation was canceled.", the job log is checked for the
+same messages. This evidence counts even if the job also has other error
+annotations, so a test that really failed just before a reclaim gets one
+wasted re-run. A cancelled job without this evidence, such as a job a person
+cancelled, counts as a real failure. The `verify` and `e2e` aggregates are not
+counted. Any other failure, a failed or cancelled routing gate, or a PR whose
+head has moved prevents the automatic re-run. The head check runs before any
+job is classified, so a run cancelled by a newer push costs no log reads. It
+runs again just before the re-run, because a re-run of an old run joins the
+PR's `cancel-in-progress` concurrency group and would cancel the newer CI. The
+workflow job summary lists each failed or cancelled job and its evidence. Like a maintainer's "Re-run failed jobs", the re-run reuses the
 gate's successful outputs, including its AWS admission. Attempt 2's
 triggering actor is `github-actions[bot]`, so `profile-ci` does not export
 that attempt. Later attempts are never re-run automatically.
@@ -321,8 +332,16 @@ repository's complete history.
 
 Server test costs are recorded in CI with tests, hooks, collection, setup and
 environment preparation included. The weekly **Refresh CI test durations**
-workflow reads two successful protected-master Cloud readiness runs and opens a
-timing-only PR. It never executes code from logs, changes test selection rules,
+workflow opens a timing-only PR. It reads the general server weights from the
+`General tests (server)` jobs of the two newest successful `PR` runs of merged
+PRs, pinned to each PR's final head. Each run must have the full shard count in
+`.github/ci-task-matrix.json` and cover at least 90% of the lane, so a run that
+selected a few files does not count. These jobs run files three at a time, and
+their contention changes relative file costs. Measured against two other PR
+runs, Cloud readiness weights placed the slowest of 12 shards at 1,748-1,770 s of
+summed file time, against a 1,595 s mean; PR-run weights placed it at 1,684-1,702 s. The
+serialized weights still come from two successful protected-master Cloud
+readiness runs. It never executes code from logs, changes test selection rules,
 or grants AWS access. GitHub may require a maintainer to approve the bot PR's
 workflow runs; the refresh never merges itself. An outstanding refresh PR pauses
 new refreshes. Both timing manifests include source runs and measurement coverage.
@@ -388,6 +407,26 @@ A maintainer's manual dispatch of `ci-routing.yml` on master exercises the AWS
 metadata gate without launching the test matrix; its non-PR event returns the
 hosted test-runner output.
 
+GitHub starts a limited number of hosted jobs per hour for this repository, and
+every hosted job waits in one first-come queue. Two settings keep community PRs
+from delaying CODEOWNERS work in that queue:
+
+- A PR run on GitHub-hosted runners queues at most four jobs per test matrix
+  (`max-parallel` in `pr-trusted.yml`). It runs the same jobs; the rest wait
+  inside the run instead of in the shared queue. AWS runs are not limited.
+- With `AWS_CI_SHORT_JOBS_ENABLED` set to `true`, the `commitperclip PR Review`
+  job and the `PR merge review notification` job for a CODEOWNER's own
+  same-repository PR use the reserved `paperclip-ci-routing-x64` fleet. Both
+  run only master's scripts, never PR code, and use the same admission
+  variables as the gate. Check-run and commit-status notifications carry no
+  verifiable author and stay GitHub-hosted, as does every community PR.
+  Before setting the variable, allow
+  `paperclipai/paperclip/.github/workflows/commitperclip-review.yml@refs/heads/master`
+  and
+  `paperclipai/paperclip/.github/workflows/pr-merge-review.yml@refs/heads/master`
+  in the `paperclip-ci-routing` runner group. A job routed to a group that
+  does not allow its workflow stays queued.
+
 Keep the `.github/**` rule in `.github/CODEOWNERS` and the active master ruleset's
 code-owner review requirement enabled. This covers the caller, the trusted
 workflow, and CODEOWNERS itself. Existing administrator pull-request bypasses
@@ -408,8 +447,19 @@ recovery behavior for the same reason. Unsharded local tests and route/authz
 lanes retain their existing file concurrency. Maintenance server cases overlap
 two owned server/database fixtures within their file; an explicit shared
 maintenance database keeps them serial. Sharded chat jobs run
-two independent partitions, each with its own embedded PostgreSQL, home and
-config; an explicit shared test database retains one partition per job.
+three independent partitions, each with its own embedded PostgreSQL, home and
+config; an explicit shared test database retains one partition per job. The
+partitions keep each source line whole and balance by the recorded time in
+`scripts/chat-shard-durations.json`; entries without a record take the median.
+Collected-case counts were a poor proxy because one `it.each` line can run many
+cases: one of six count-balanced partitions recorded 532 s of test time against
+a 377 s mean. To refresh the weights, add the `profile-ci` label to a PR, download
+the `ci-profile-*` artifacts of its three chat jobs into one directory, and run
+`node scripts/ci/refresh-chat-shard-durations.mjs --source=<run URL> <directory>`.
+Stale weights change only the balance, never which tests run. A chat job
+collects the suite once, then validates its three partitions' filters at the
+same time; each partition still checks that its filters select exactly its
+assigned tests.
 The Runner transport lease-expiry and cold-admission regressions live in their
 own file so those real-clock waits overlap other files in the existing pool.
 
@@ -442,7 +492,8 @@ Changing that file selects its consumers. Generated/untracked files and unknown
 query loaders retain their consumers conservatively. Other filesystem, process
 and network effects keep their existing fallback.
 
-For a full wall-clock profile of all main PR CI jobs, add `profile-ci` to the PR.
+One in ten CI CODEOWNER PR runs sends its job, step and outside-check timings to
+Honeycomb. For a full wall-clock profile of all main PR CI jobs, add `profile-ci` to the PR.
 See [CI profiling](ci-profiling.md) for the Honeycomb waterfall, coverage,
 operator setup, and activation requirements.
 
@@ -551,6 +602,28 @@ no remote metadata requests. Run its light/dark desktop/mobile checks with:
 STORYBOOK_TEST_BASE_URL=http://localhost:6006 pnpm exec playwright test inline-links.spec.ts --config=tests/storybook-visual/playwright.config.ts --project=stories
 ```
 
+**Link previews** mounts the same Markdown renderer with its production preview
+provider. A delayed hover or keyboard focus requests PR metadata. Repeated PR URLs,
+including diff links and fragments, share a viewer/company-scoped query. The card
+stays aligned with the link, and the exact navigation URL stays intact. The stories
+simulate the API response for open, merged, conflicts, draft, closed, loading,
+unavailable and failed reads, with a narrow long-title example. Run:
+
+```sh
+STORYBOOK_TEST_BASE_URL=http://localhost:6006 pnpm exec playwright test link-previews.spec.ts --config=tests/storybook-visual/playwright.config.ts --project=stories
+```
+
+The board-only `GET /api/companies/:companyId/link-preview?url=...` is optional
+enrichment, independent of the External Objects experiment. Its GitHub adapter
+uses the viewer's eligible managed connection, then the existing company/public
+credential path only when no managed connection is configured. Personal results
+remain in bounded, process-local viewer/company caches and are never persisted as
+company external objects. Successful responses live for one minute; unavailable
+responses use a short negative cache or GitHub's retry window. Reads have an
+abortable deadline and a bounded concurrency budget. Nothing polls while idle.
+The browser neither retries these reads nor refreshes them on window focus.
+These stories do not verify live GitHub authentication.
+
 **Task chat → Failure notices** covers compact run errors and adjacent recovery
 notices in both presentation modes, with expanded details, fixture retry
 callbacks (including the legacy run retry when recovery retry is unavailable),
@@ -648,6 +721,10 @@ behavior for review cards. Its dismissal save and decisions are simulated;
 server persistence and permission boundaries have separate regression tests.
 The demo uses real thread/form components with fixture response callbacks.
 The Agent Chat stories share the same component fixture.
+The **Send instead of confirming** and **Reopen skipped confirmation** stories
+exercise sending a separate message while a completion review is open, then
+opening that unchanged request from the feed. These use the production thread
+with simulated message saves and decision callbacks.
 
 Use **Composer → New task** to review task creation through the production
 `TaskChatComposer`. The editor, file menu, work modes, assignee/model picker,
@@ -1064,8 +1141,10 @@ npx paperclipai allowed-hostname dotta-macbook-pro
 ## Agent status recovery
 
 Lifecycle verification stops automatic attempts after missing authentication,
-an unavailable model or command, an invalid working directory, or unexpected
-probe output. A generic failed test gets up to three failures before automatic
+an unavailable model or command, an invalid working directory, unexpected
+probe output, or an owned AI account selection refusal. Account selection guidance
+names missing defaults, unavailable accounts, incompatible bindings, missing
+responsible users, or credential sharing requirements without provider error text. A generic failed test gets up to three failures before automatic
 checks stop. The saved `verificationFailures` count only advances when the host
 verification test fails; claims deferred before the test do not spend that budget.
 An explicit retry or execution configuration change resets that count.
@@ -1113,6 +1192,15 @@ orphan recovery.
 pnpm exec vitest run server/src/services/heartbeat/agent-status.test.ts server/src/__tests__/heartbeat-agent-status-recovery.test.ts
 ```
 
+## Task document bodies
+
+The native `write_document` tool preserves the supplied Markdown body, including
+leading whitespace, hard-break spaces, line endings, and final newlines. It still
+requires a nonblank body and normalizes key/title fields. `write_task_document`
+and REST document PUT also retain surrounding whitespace. Those REST-backed
+paths keep their existing escaped-line-break normalization: a body with no real
+line breaks can have literal `\n` sequences converted to newlines.
+
 ## Test Commands
 
 The [feature map](../maps/feature-map/README.md) is an optional reference for user
@@ -1134,12 +1222,19 @@ Prepare a new or updated agent worktree with one command:
 node scripts/agent-preflight.mjs
 ```
 
-It does what `pnpm install --frozen-lockfile`, the Runner's `ensure:eval-build-deps`,
-`build:rust`, `build` and `build:runner-binaries` did, and skips work whose inputs
-are unchanged:
+It does what `pnpm install --frozen-lockfile`, the plugin SDK's `ensure-build-deps`,
+the Runner's `ensure:eval-build-deps`, `build:rust`, `build` and
+`build:runner-binaries` did, and skips work whose inputs are unchanged:
 
 - **install** is skipped when the lockfile, every `package.json`, `patches/`, Node
   and pnpm match this worktree's last install.
+- **plugin SDK build** runs `scripts/ensure-plugin-build-deps.mjs`, which builds
+  `@paperclipai/plugin-sdk` and its `@paperclipai/shared` dependency and skips
+  them when their content fingerprints match the last build. Like the Runner and
+  the eval kernel, the SDK is imported through its built `dist` (plugin workers
+  load it under plain Node), so the server and the restart-chaos harness cannot
+  start without it. Both compile in about two seconds, so they do not use the
+  shared cache.
 - **Runner build** is skipped when the Runner's build stamp is current. When another
   worktree built the same inputs (the build-input digest described under
   "Reused Runner build in the server build", plus the compiler), the Runner and eval
@@ -1182,6 +1277,14 @@ final committed revision. The task/input policy, conservative import and file-re
 graph, exact Vitest specifications, and stable test runner are shared with CI.
 Serialized server tests retain their owner. Native server tests remain in local
 coverage. Selected chat tests retain six sequential isolated line shards.
+
+When the change touches `packages/shared/src`, `packages/plugins/sdk/src`, or an
+SDK build input such as `pnpm-lock.yaml`, the command first checks the committed
+SDK public input pins (`tests/runner-e2e/source-sdk-public-inputs.json`) against
+the working tree. If they are stale it exits 1 and prints the refresh command:
+commit the change, run
+`node tests/runner-e2e/source-sdk-public-inputs.mjs $(git rev-parse HEAD) --write`,
+and commit the updated registry. Otherwise the Runner support suite fails in CI.
 
 Successful selected checks with complete input graphs are reusable in this
 worktree. Opaque filesystem, subprocess, network, generated/untracked-module, and
@@ -1399,6 +1502,16 @@ The server typecheck builds only the Runner's TypeScript output. Use
 `pnpm --filter @paperclipai/paperclip-runner build` when a local check needs the
 Runner binary.
 
+`node server/scripts/typecheck-layers.mjs --layer <name>` checks one layer
+against the configs and declarations that an earlier `--declarations-only` run
+left in that directory. It does not write them again. Stale declarations pass
+silently, so use it only straight after `--declarations-only` on the same commit.
+
+If a compiler child terminates on a signal, the wrapper reports the signal,
+layer, command, and working directory on stderr, then stops with a nonzero exit.
+Compiler stdout and stderr remain visible. A signal such as `SIGKILL` alone does
+not establish that the process ran out of memory.
+
 `src/__tests__/tsconfig.json` holds the options for the test-tree layers, so an
 editor and the typecheck report the same errors. Server tests reach Daytona plugin
 source, but the root install does not install that plugin's dependencies. So this
@@ -1436,8 +1549,9 @@ available to the task is limited, add `--low-memory`, or set
 
 The command fails if a project loads server source, because that is what makes
 these programs large. It does not limit memory. CI runs it with
-`--reuse-declarations` straight after the server typecheck, so it does not build
-the declarations again. Do not use that option when the declarations can be stale.
+`--reuse-declarations` after the server declarations of the same run, so it does
+not build the declarations again. Do not use that option when the declarations
+can be stale.
 
 Add each new test project that imports server source to `PROJECTS` in
 `scripts/typecheck-test-projects.mjs`.
@@ -1448,6 +1562,49 @@ that file, and it fails when a referenced config does not exist yet. The
 `tests/runner-e2e/native-completion-checks.mjs` still checks that project as one
 program. That program peaks at about 15 GiB at default settings and about 8 GiB on
 one thread.
+
+#### Typecheck lane in CI
+
+The required `Typecheck + Release Registry` job runs one command:
+
+```sh
+node scripts/ci-typecheck-lane.mjs [--concurrency <n>]
+```
+
+It first runs the steps that write shared outputs, one at a time:
+
+1. Link the workspace packages and build the plugin SDK.
+2. Build the server with `PAPERCLIP_TSC_EMIT_ONLY=1`, then check that the
+   server runtime assets are in `dist`. The server build no longer checks types
+   here: the server layers check the same files, and the `Build` job runs the
+   full `pnpm build`. The full program peaked at about 13.5 GiB, which left this
+   16 GiB runner swapping.
+3. Install the sandbox providers for the test programs
+   (`typecheck-test-programs.mjs --prepare-only`).
+4. Typecheck the Runner. Its typecheck rebuilds the eval kernel, which other
+   checks read, so it cannot run beside them.
+5. Run the CLI guidance test. It runs here, before the parallel checks, because
+   one of its cases took 17 seconds beside them against a 15 second timeout.
+
+Then it runs the remaining checks in parallel, as many as the machine has CPUs
+(default) or `--concurrency`. Each `tsc` uses one thread. The server
+declaration layers start first, because the test layers and the test projects
+read them. The test programs and the other build-gap workspaces run at a lower
+CPU priority, so they use only the CPU that the server layers and the release
+registry tests leave free.
+
+A passing check prints its output in a collapsed log group. A failing check
+prints its output in full, between `=== FAILED ...` and `=== end of ...`
+lines, with an error annotation. When the server declarations fail, the test
+layers and test projects are reported as skipped. The lane ends with a table
+of each check's start time, duration and result. If a preparation step fails,
+nothing else runs.
+
+To add a check to the job, add it to `planLane` in the script.
+
+PR runs take the workflow from `master` but check out the PR's merge commit. A
+stacked PR, whose base is another branch, can have a merge commit without this
+script. The job then runs the six earlier commands one after another instead.
 
 #### Typecheck test files outside the build
 
@@ -1461,7 +1618,9 @@ node scripts/typecheck-test-programs.mjs --low-memory
 node scripts/typecheck-test-programs.mjs packages/paperclip-runner/tsconfig.test.json
 ```
 
-The first form runs in the required `Typecheck + Release Registry` job. It checks
+The first form runs in the required `Typecheck + Release Registry` job, split in
+two: `--prepare-only` installs the sandbox providers and builds what the programs
+read, and `--skip-prepare` then only checks. It checks
 one program at a time and the largest peaks below 2 GiB. It then fails if a tracked
 `*.test.ts(x)` or `*.spec.ts(x)` file is in no program. The compiler's file list
 decides that, because `include` silently drops `foo.test.tsx` when `foo.test.ts`
@@ -1551,6 +1710,15 @@ stamp is only written after a Runner build that passed every step, and both
 the Runner's first build step and the prepare step remove any existing stamp
 before a rebuild starts, so a build that stops partway never leaves a stamp
 that vouches for it.
+
+Set `PAPERCLIP_RUNNER_VENDOR_REQUIRE_CURRENT=1` when the Runner under
+`packages/paperclip-runner/dist` was built elsewhere and this build must not
+build it again, for example because it has no Rust toolchain. The step then
+reuses a current build as usual. When the build is not current it prints the
+reason and fails, without starting a rebuild and without removing the stamp.
+Setting both variables fails. The `build` stage of the `Dockerfile` sets it:
+that stage copies `dist` and the stamp out of the `runner-artifacts` stage
+(see "Runner image" in `doc/DOCKER.md`).
 
 ### Task search evaluation
 
@@ -2134,7 +2302,9 @@ admin can change it in instance settings.
 capabilities a release supports, for the control plane to read at a release
 commit. It must equal `MANAGED_CONFIG_CAPABILITIES` in `managed-config.ts`
 (`managed-config-capabilities.test.ts` checks this), and the parser accepts plugin
-entries only while that list includes `pluginEnvironments`.
+entries only while that list includes `pluginEnvironments`. When sending a plugin
+environment, include `runnerLifecycleMode` only if the target release also lists
+`pluginEnvironmentRunnerLifecycleMode`.
 
 
 ### Experimental native remote workspace storage
@@ -2175,6 +2345,44 @@ S3 multipart uploads stream up to four parts concurrently. One producer reads
 the source in order, and bounded stream buffers preserve backpressure. Failed
 uploads cancel and settle their active requests before multipart cleanup.
 Snapshot publication still requires full object hash and size verification.
+Snapshot hashing, encryption, and decryption run on worker threads
+(`server/src/storage/file-crypto-pool.ts`), so they do not hold the server's
+thread. The Content-MD5 of each uploaded part is computed the same way. At most
+two jobs run at once, each through two reused 1 MiB buffers. A waiting job holds
+file names, not file contents, and a cancelled job stops at its next chunk.
+Every integrity check runs as before, with the same failures; archive contents
+and saved snapshot formats are unchanged. Reproduce the effect on the server's
+thread with:
+
+```sh
+pnpm --filter @paperclipai/server exec tsx scripts/benchmark-workspace-snapshot-crypto.ts --mib=1024
+```
+
+The benchmark saves and restores one synthetic archive through the real storage
+functions and the real S3 client. The object store is a local process that
+checks each part's Content-MD5. A third process requests a trivial route from
+the measured server and times each reply with its own clock. It reports
+main-thread busy time, the longest event-loop delay, process CPU time, wall
+time, peak memory, and the latency of the unrelated requests. To compare two
+revisions, run it from a checkout of each. The result is synthetic: the store
+is on loopback without TLS, and sandbox transfer is excluded.
+
+Archive transfers that still stream on the server's thread use bounded 1 MiB
+filesystem stream buffers to reduce event-loop handoffs under background load.
+Reproduce that scheduling effect with:
+
+```sh
+node --expose-gc scripts/benchmark-workspace-archive-io.mjs
+```
+
+This bounded benchmark alternates three baseline/treatment pairs over the same
+32 MiB archive with 5 ms of competing main-thread work per turn. It runs real
+hashing and encryption file passes, compares plaintext and ciphertext digests,
+and reports callback counts and diagnostic peak memory growth. Larger buffers
+trade additional bounded stream memory for fewer scheduling handoffs. The result
+is synthetic; it does not identify the competing workload or establish hosted
+finalization latency, and excludes sandbox, database, and object-storage time.
+
 Preparation creates a saved baseline, and native finalization saves the stopped
 writer's files before releasing its persistence obligation. Replacing a
 webserver reconnects to the recorded allocation without copying files back to
@@ -2189,6 +2397,18 @@ or `cleanup`) and its timeout in milliseconds. Command output is excluded from
 that diagnostic. A timeout does not prove the remote process stopped or that a
 save failed before publication. Reconcile the existing workspace and operation
 receipts before recovery; the transport does not automatically repeat the command.
+The internal helper commands suppress Node runtime warnings so their fixed
+failure labels stay separate from warning text. Actual command errors still
+fail the operation. This does not change an agent process's environment.
+
+Loading an encrypted saved snapshot cancels its storage request after five
+minutes without incoming bytes, including a wait for response headers. Incoming
+bytes renew that idle deadline, so a large download can take longer while it
+makes progress. The failure is `remote_workspace_snapshot_download_stalled`;
+private download scratch is removed before returning and the saved snapshot is
+unchanged. Preparation offers its existing bounded retry only after rechecking
+the same clean saved version and workspace owner. Caller cancellation still
+cancels the request and does not become a download timeout.
 Export cleanup keeps this typed timeout diagnostic in the operation's
 `metadata.exportCleanup.lastError`. Other cleanup errors retain a generic message.
 The saved snapshot stays acknowledged and the cleanup obligation stays pending
@@ -2332,8 +2552,7 @@ for storage, import, retention, and lifecycle regression checks. These checks do
 not qualify a deployed Runner/provider or a zero-outage webserver deploy. Keep
 the existing persistent volume until the other instance data paths and deploy
 handoff are separately qualified. See the
-[implementation contract](SPEC-implementation.md#experimental-native-remote-workspace-authority-2026-10-30)
-and [snapshot storage contract](DATABASE.md#experimental-remote-workspace-snapshots).
+[snapshot storage contract](DATABASE.md#experimental-remote-workspace-snapshots).
 
 ## Agent Artifact Uploads
 
@@ -2378,6 +2597,11 @@ For `codex_local`, Paperclip assigns new and updated agents an isolated Codex ho
 - `~/.paperclip/instances/default/companies/<company-id>/agents/<agent-id>/codex-home`
 
 Paperclip also persists an empty `OPENAI_API_KEY` override for those agents so a host-level `OPENAI_API_KEY` cannot leak into Codex runs through process inheritance. If an operator explicitly configures `adapterConfig.env.CODEX_HOME`, it must not point at the shared company `codex-home`, `$CODEX_HOME`, or `~/.codex`.
+
+Codex shell commands keep sandbox-injected certificate-trust variables (for
+example `SSL_CERT_FILE` and `GIT_SSL_CAINFO`) even though the shell environment
+allowlist is constructed before the sandbox injects them. See
+[Codex shell certificate trust](sandbox-shell-environment.md).
 
 If the `codex` CLI is not installed or not on `PATH`, `codex_local` agent runs fail at execution time with a clear adapter error. Quota polling uses a short-lived `codex app-server` subprocess: when `codex` cannot be spawned, that provider reports `ok: false` in aggregated quota results and the API server keeps running (it must not exit on a missing binary).
 
@@ -2564,7 +2788,7 @@ The default `worktree init` still seeds eagerly. A lean worktree (created withou
 
 - `pnpm paperclipai worktree ensure-seeded` performs the deferred seed **exactly once**. It is lock-guarded and idempotent: only a complete `verified` manifest short-circuits it, so it is safe to call repeatedly and from concurrent processes. Managed workspaces derive the source from the control-plane-provided base project workspace when it carries its own `.paperclip/config.json`, and otherwise from the control plane's own registered instance config; either way the workspace's manifest never selects it. Manual worktrees must pass `--from-config`.
 - `paperclipai run` calls `ensureWorktreeSeeded` automatically before doctor/boot. Managed runs transparently seed a lean worktree from their registered base workspace; an unmanaged lean worktree must first run `worktree ensure-seeded --from-config <source-config>`.
-- Managed Paperclip git worktrees default to the repository's `scripts/provision-worktree.sh` when the strategy omits `provisionCommand`. When a registered source config exists, setup creates the isolated config and pending manifest. Runtime startup also runs `scripts/provision-worktree-runtime.sh` automatically when no explicit runtime provision command is configured and the manifest is not verified. Explicitly configured provision commands still take precedence.
+- Managed git worktrees run a repository's `scripts/provision-worktree.sh` when the strategy omits `provisionCommand` and that file exists. The Paperclip repository deliberately does not ship a file at that path, so agent turns in Paperclip worktrees do not wait on dependency installs or instance setup. Its setup script is `scripts/setup-paperclip-worktree.sh`: run it by hand, or set it as the project's `provisionCommand` to opt in. When a registered source config exists, it creates the isolated config and pending manifest, then installs dependencies. Runtime startup still runs `scripts/provision-worktree-runtime.sh` automatically when no explicit runtime provision command is configured and the manifest is not verified; that script runs `scripts/setup-paperclip-worktree.sh` first when the worktree has no config. Explicitly configured provision commands still take precedence.
 - An environment-configured server may have no local seed config. If neither the base checkout nor the default control-plane instance has one, a fresh worktree prepares its dependencies without creating a development instance. This also applies when `PAPERCLIP_CONFIG` names the default `$PAPERCLIP_HOME/instances/$PAPERCLIP_INSTANCE_ID/config.json` path, as the Docker image does. Setup creates no config, environment file, or seed manifest and does not claim runtime or seed readiness. A later request for a seeded development runtime still needs a canonical registered source config. Once that source exists, provisioning the checkout again creates the development instance normally.
 - A missing custom `PAPERCLIP_CONFIG`, rejected symlink, or non-regular source file still fails setup. An existing worktree with a config, environment file, or seed state also fails if its source disappears; setup never downgrades that instance to a plain checkout. Repair the source before retrying.
 - The built-in deferred seed is recorded as its own terminal `workspace_seed` operation. A zero exit code is not enough for success: the operation succeeds only when `.paperclip/seed-manifest.json` contains complete verified evidence; failed, missing, or malformed manifests produce a failed operation with the seed phase in metadata.
@@ -3146,7 +3370,8 @@ and model.
 
 OpenCode requires an explicit `provider/model` before testing or finishing setup.
 An inactive setup draft can be saved before choosing a model. Automatic native
-selection uses `allow` permissions and a `per_turn` lifecycle. Native `ask` and
+selection uses `allow` permissions and leaves the lifecycle unset (see "Runner
+lifecycle default" below). Native `ask` and
 `deny` policies remain available in agent configuration. Legacy custom commands,
 extra arguments, model variants, and inherited permission rules require the
 Legacy runner; incompatible settings return remediation instead of being ignored.
@@ -3155,6 +3380,10 @@ Saved OpenCode agents keep their runner and runtime policies.
 Plugin environment drivers can declare `requiresAgent: true` when their leases
 need an agent-owned resource. The host selects that plugin's lifecycle work only for
 agents on that environment. See [Required plugin work](./AGENT-LIFECYCLE.md#required-plugin-work).
+Moving a ready agent to an environment that needs a new plugin automatically
+pauses execution, waits for stop completion, starts the required resources, and
+verifies the saved configuration before allowing work. Existing pause holds
+still apply; the user does not need to pause or resume the agent for this move.
 Setup saves the draft and environment, runs its
 existing lifecycle preparation, and waits in `verifying` with the `setup` hold.
 The worker becomes idle there until the user finishes hiring. Connection tests
@@ -3422,6 +3651,13 @@ and `packages/adapter-utils/src/sandbox-callback-bridge.test.ts` for these contr
 
 ### Native runner restart recovery
 
+An explicit Retry can continue a recovered setup failure that began as a
+scheduled retry. Its settlement proof accepts the host-authored promotion event
+only when its deadline, reason and attempt match the run and its saved retry
+context. The exact failure and durable measurement must still follow. Provider
+dispatch evidence, an active controller, unsafe files or changed user authority
+keep the Retry held. This adds no automatic replay or recovery loop.
+
 For remote controller disk-loss work, use the existing control-plane snapshot
 transaction and `native-controller-recovery.ts`; do not add a second snapshot
 writer. The private versioned metadata is limited to 4 KiB. Its importer handles
@@ -3432,6 +3668,21 @@ the direct/prepared transport and three-controller continuation fixtures.
 An upgrade readiness report contains preliminary native evidence, not permission
 to remove a deployment volume. Keep the checkpoint pool bounded and measure all
 pools when qualifying database cost; the current size of two is a default.
+
+Cloud repeats the upgrade readiness probe, so the probe does not read or decrypt
+a checkpoint header that has not changed. The statement that reads each run also
+reads its header's row revision (`xmin`, `ctid`, `updated_at` and stored size)
+and returns the encrypted material only for a revision the process has not
+inspected. The memo in `native-runner-checkpoint.ts` keeps four identifiers per
+header, is bounded in entries and bytes, and forgets a header that the latest
+probe did not inspect. It loads the secrets key again for each answer it reuses, as a direct read
+does for each header, and refuses the answer when the key is missing or changed. It
+never remembers a header that failed to decrypt. Measure a probe with
+`pnpm --filter @paperclipai/server exec tsx scripts/benchmark-upgrade-readiness.ts --baseline-ref=<pre-fix-commit>`.
+The harness runs both revisions over the same PostgreSQL rows, reports bytes
+from the database, decryptions, CPU and sampled allocation per probe, and fails
+unless both give the same answer after a header changes, stops decrypting or is
+deleted.
 
 Committed native Agent Chat turns recover their unanswered final reply through
 the existing response presentation worker. Recovery verifies the accepted result
@@ -3552,10 +3803,54 @@ that classification finishes.
 
 A resumed sandbox lease can contain a workspace whose provider never started. A new attempt may create its exact session directory only when durable control-plane evidence proves zero connections, zero events, and untouched bootstrap commands, and no backup or remote session directory exists. Directory creation is atomic; partial state or uncertain ownership remains blocked.
 
+### Runner lifecycle default
+
+New native Codex, Claude and OpenCode agents store no `lifecycleMode`. For Codex
+and OpenCode on a local target, the controller resolves that to `warm` with the default 5-minute idle
+window (`resolveHeartbeatNativeLifecyclePolicy`), so a follow-up turn on the same
+task reuses the live runner and provider session instead of launching and
+loading them again. Claude (ACPX) relaunches its provider process on every
+follow-up turn by design, so warm does not shorten its follow-up and it resolves
+to `per_turn`, as do remote targets, other harnesses and managed providers
+without warm support. An explicit `per_turn` or `warm` choice
+("Turn by turn" or "Warm session" in the agent's Runner lifecycle field) always
+wins, and a session keeps the policy it was admitted with. The measurements are
+in [`plans/2026-11-07-warm-follow-up-ttft.md`](plans/2026-11-07-warm-follow-up-ttft.md).
+
+A warm local runner outlives its turn, so it carries a 7-minute reconnect grace
+(`localRunnerProcessReconnectGraceMs`, the same grace remote runners use). If its
+controller dies without suspending it, runnerd proves after the grace that no
+controller re-authenticated, stops its provider, keeps its durable state for a
+cold resume, and exits. A graceful controller shutdown suspends idle warm
+sessions first. A per-turn local runner keeps its connection-lease bound.
+
 Only successful turns retain a live warm provider session. A structured failed
 or cancelled result must retire that session and collect its managed files before
 heartbeat stops the reusable sandbox. A later retry can resume the same sandbox
 without inheriting the stopped provider transport.
+
+A rejected warm-session close retains its owner, even when no managed instruction
+copy exists. Idle expiry, failed-turn release, and restart must not report that
+owner as quiet or launch a replacement over it. The next retirement attempt uses
+the same owner and must finish provider closure and stopped-file collection.
+The existing explicit-reset exception still requires its typed retirement proof.
+
+`heartbeatService(...).prepareIdleWarmNativeSessionsForSleep({ canRetire })`
+delegates to the native owner's retirement path for idle owners. Its caller owns
+the admission hold and supplies a synchronous
+current-authority check. The check runs before each retirement and after its
+awaited effects. A started cleanup settles if the hold expires, but no further
+owner retires under that expired hold. Busy turns remain active and do not inherit
+a close-on-release request from an abandoned sleep attempt. Counts describe the
+attempt; the caller must still validate its hold and final local-work proof.
+Diagnostic-only inspection must never invoke this resource preparation.
+
+The privileged `task-drain?idleSleepSafety=1` preflight invokes this operation only
+for the exact current, unexpired idle owner with no active admitted work. It tracks
+the actual cleanup promise, rejects concurrent work or a changed hold, and then
+takes a fresh durable/local safety snapshot. Busy or failed retirement keeps the
+instance awake. Plain drain reads and `idleSleepDiagnostics=1` remain passive with
+respect to native retirement.
 
 An idle warm owner proves only the exact prior run in the same company, session,
 workspace and environment. Mutable configuration compatibility is checked
@@ -3648,9 +3943,10 @@ boundary. `managed-skill-content.test.ts` covers the focused domain behavior;
 `ephemeral-skills-process.test.ts` requires independent disposable Postgres and
 S3 fixtures and starts separate Node processes. The optional
 `PAPERCLIP_TEST_POSTGRES_ADMIN_URL` creates a random test database per suite.
-On hosts with unavailable Tailscale, set `PAPERCLIP_TAILNET_BIND_HOST=127.0.0.1`
-for local fixtures to avoid repeated CLI discovery. Do not use fixture timings
-collected during builds as hosted performance evidence.
+The server starts the `tailscale` command only when the bind configuration reads
+a tailnet address, and at most one time per process, so local fixtures need no
+`PAPERCLIP_TAILNET_BIND_HOST`. Do not use fixture timings collected during
+builds as hosted performance evidence.
 
 ## App-Shipped Skills Catalog
 
@@ -4000,6 +4296,13 @@ Environment overrides:
   negative, empty, or non-numeric value falls back to the default.
   `PAPERCLIP_NATIVE_HARNESS_BACKUP_EXPIRATION_ENABLED=false` turns expiry off, and
   `PAPERCLIP_NATIVE_HARNESS_BACKUP_EXPIRATION_DRY_RUN=true` only reports candidates.
+  A resumed session restores its failover backup from durable storage before the
+  provider starts. Each read has a five-minute idle limit instead of a short total
+  limit: a large or slow backup keeps restoring while bytes flow. A read that makes
+  no progress for five minutes fails with `native_harness_storage_download_stalled`
+  and publishes no partial backup. The whole restore, including local decrypt,
+  digest and extraction, has a 30-minute outer limit
+  (`native_harness_storage_restore_deadline_exceeded`). Stop ends the restore.
 - `PAPERCLIP_NATIVE_RUNNER_EVIDENCE_RETENTION_DAYS=<days>` sets how long native
   session continuity-break archives and quarantined session state are kept (see
   `doc/recoverable-disk-cleanup.md`). The default is `7` and the minimum is `1`. A
@@ -4071,7 +4374,7 @@ CLI configuration support:
 - Provider health is available at `GET /api/companies/:companyId/secret-providers/health` and reports local key permission warnings plus backup guidance.
 
 Per-company provider vaults are configured in the board UI under
-`Company Settings → Secrets → Provider vaults`, backed by
+`Company Settings → Secrets → Vaults`, backed by
 `/api/companies/{companyId}/secret-provider-configs`. The CLI does not own
 vault lifecycle today. See `docs/deploy/secrets.md` (`Provider Vaults` section)
 for the operator model.
@@ -4510,6 +4813,16 @@ retryable restoration failure. It never substitutes the default branch.
 Reopening failures reject the consuming request with HTTP 409 before saving a
 comment or changing its task. The response preserves the restoration message, so
 the composer keeps an editable draft and permits retry after access is restored.
+It also carries `diagnostic: { step, kind }`, and the server log records the same
+pair. Both are closed values: `step` names the failed stage (for example
+`source_materialize`, `restore_point` or `saved_commit`), and `kind` names the
+failure class (`remote_unavailable`, `auth_rejected`, `commit_unavailable`,
+`timeout`, `verification`, `filesystem`, `git_command` or `unknown`). They never
+contain paths, repository URLs or Git output.
+Nested checkout failures retain their original restore step. The checkout
+wrapper keeps process error codes and timeout flags privately for classification;
+it does not attach the raw command error as a cause or add those flags to the
+public error object.
 
 Both enable switches default off. Rollback disables further expiration while
 leaving saved recipes and restoration support intact. Recovery archives, runner
@@ -4588,8 +4901,9 @@ whether or not anything is left to compact.
 
 A compacted worktree is in the same state as a freshly created one, so when the
 task resumes, whatever produced those files the first time produces them again:
-reuse runs the workspace provision command (or `scripts/provision-worktree.sh`),
-which reinstalls dependencies when `node_modules` is missing. Repositories without
+reuse runs the workspace provision command (or a repository's
+`scripts/provision-worktree.sh`), which can reinstall dependencies when
+`node_modules` is missing. Repositories without
 a provision command rely on the agent's own install step, as they do for a new
 worktree.
 
@@ -4623,6 +4937,17 @@ before any subsequent upload. An interrupted account-bound request stays pending
 under its original key; it is never relabelled as a provider refusal. Legacy
 unowned form drafts remain in browser storage but are not restored into another
 account. Storybook fixtures seed the same account-specific keys.
+
+New-task submissions use `useBackgroundSubmitQueue` around `useDurableSubmit`.
+The account-scoped queue retains each request's original key and draft snapshot
+before the composer closes. The worker sends requests in order. A request with an
+uncertain receipt retains its key; a rejection restores the submitted draft or
+offers a retry beside a newer draft. Submitted files use separate IndexedDB keys
+for the account, company, and request, so finishing an older save cannot remove
+newer files. Each submitted request has its own local-storage entry. A write or
+receipt in one tab cannot replace another tab's queued requests. Legacy queue
+arrays migrate to separate entries before the shared array is removed. Legacy
+single-request recovery records remain readable.
 
 New-task staged file bytes are stored in IndexedDB for the account and company.
 Writes merge the selected files with the current saved list in one read/write
@@ -5006,6 +5331,44 @@ lease and save baseline remain unchanged; current canonical files are never
 uploaded over the retained execution. Remote collection and cleanup serialize
 through Postgres across controller homes. A missing remote collector retains a
 pending save instead of treating an empty local cache as the agent's files.
+A run whose instruction preparation finds another operation on the same
+agent's directory holding that lock does not fail. Before native admission it
+is cancelled as an expected wait and a `agent_directory_busy` retry is
+scheduled 5 to 15 seconds later; this lane spends no failure retries and stops
+after 30 attempts. A native run resuming on its own saved state instead stays
+on the same run and is rescheduled through the same-run retry schedule; its
+count is kept on the run's context so a resume claim does not reset it, and a
+Stop, a lost lease or a moved task leave it to normal settlement. A busy lock
+met while collecting files after a turn is not deferred this way.
+
+Agent configuration writes refuse external instructions on a volume-free
+server. An agent's managed instruction paths are saved as absolute paths under
+the home of the server that wrote them, and each replacement server can have a
+new home. When a configuration change keeps the saved `instructionsFilePath`
+of a managed bundle, the bundle stays managed and its paths are rewritten under
+the current server's managed root. A change that sets a different
+`instructionsFilePath` is classified from that path and is still refused when
+it points outside the managed root.
+
+### Runner controller state on a restarted volume-free server
+
+A volume-free server keeps Runner controller files under
+`runtime/paperclip-runner/durable-sessions/` while it runs. Its durable record is
+the Postgres checkpoint, so those files are disposable. Early in startup, before
+any controller can write, a volume-free server claims an empty (or absent) state
+directory by writing `.volume-free-owner.json` there. A later start that finds
+this marker treats every file in the directory as its own, and the data
+eligibility gate does not count it as legacy volume data; normal restart
+recovery reconciles it as it would after a crash of a volume-backed server. A
+server started without `PAPERCLIP_EPHEMERAL_SERVER` removes the marker, because
+from then on it may write files that exist only on that disk.
+
+A volume-free server that finds files it did not claim (a mounted legacy volume,
+or a directory written before this marker existed) logs a warning and keeps the
+existing protection: if the native controller check finds state the database does
+not prove, startup refuses and the error names the run, the task and the file,
+because that file may be the only copy of the run's progress. Adopt it with the
+native controller migration first.
 
 ## Cloud startup configuration
 
@@ -5017,6 +5380,39 @@ database without loading home `.env` files or repairing worktree config. See
 secret handling, initialization order and migration interfaces.
 
 
+### Dedicated native recovery test database
+
+The native idle continuation fixture reads `PAPERCLIP_RECOVERY_TEST_DATABASE_URL`
+and passes it through `nativeRestartFixture({ dedicatedDatabaseUrl })`. The URL
+must name a dedicated PostgreSQL database ending in `_test`, without database-name
+or connection-option overrides. This explicit option applies pending migrations
+and closes registered clients at cleanup; it does not create or drop that
+database. Its provisioning owner remains responsible for disposal. The environment
+variable alone does not opt other `startRecoveryPostgres()` callers into shared
+storage: they retain their existing fresh-database allocation and cleanup.
+
+The native idle-sleep continuation integration uses a controlled local provider
+with the real heartbeat queue, authorized comment wake, native session
+checkpoint, files, retained secret encryption and fresh resolution, and owned
+idle preflight. Credential resolution through the secret owner does not prove
+production backend credential injection. It uses an explicit two-connection
+main pool, alongside the production auxiliary pools, and verifies the driver's
+actual setting. It does not
+exercise the remote Runner harness backup transport or a live provider.
+
+The workspace runtime lifecycle test uses the actual local runtime owner and an
+ephemeral HTTP child. Normal run release must remove the original PID, listener,
+and service registry entry before the same owner starts another useful service
+from the retained workspace files. This is physical local resource retirement
+and next-use coverage; it does not establish global tenant quiet.
+
+The plugin idle manager lifecycle test uses a real SDK worker process and a
+controlled host state handler that persists worker requests to a temporary file.
+It checks the actual manifest generation, refusal of work under the owned hold,
+and a second useful write after release. This boundary does not exercise the
+production plugin database loader or plugin jobs. Unsupported manifests, active
+manual resources, and missing completion receipts remain sleep blockers.
+
 ### Read resilience during deploys
 
 Read surfaces use `useQueryView` and `QueryErrorState`. Transient refetch failures keep loaded data visible. An initial outage keeps a quiet placeholder until recovery. Authorization, missing resources and validation failures still show readable errors. Exhausted first reads on a reachable server offer Retry, including task filters and hierarchy reads. Health probes and the socket own app-wide recovery; a successful component load may be an older in-flight response or a local no-op. Sensitive manual reads use `useResilientFetch`; browser viewer URLs and pairing previews remain in component memory and never enter a shared cache.
@@ -5026,6 +5422,14 @@ Run `node scripts/check-query-error-rendering.mjs`. The guard now enforces acros
 The browser saves a small read cache in `paperclip:query-cache:v1:*` local storage records. It contains session display identity, health and shell preferences, company and sidebar data, agent/project lists, plugin UI contribution metadata, the first inbox page (including up to 100 rows per legacy Inbox query), and up to 20 recently opened tasks. Records belong to one user and company, expire 24 hours after each read, and are discarded when the build changes. Normal in-memory query garbage collection does not erase saved recent tasks or extend their expiry. Builds without a source commit stamp skip read-cache hydration and persistence, but still revoke and clear saved reads on sign-out. Plugin contributions use the existing instance-wide query inside the user's root record. Session tokens, bootstrap payloads, documents, comments, browser viewer capabilities, pairing data, other queries and mutations are excluded. Task content in this allowlist remains on the browser until expiry or sign-out; use the normal sign-out action to clear it across tabs. Account changes also detach pending shared GETs so a new user cannot join the previous user’s private reads. Editors that need fields excluded from the display cache, including bulk agent settings, fetch complete current data before opening.
 
 Restored identity permits cached display only. Restored inline task drafts compare their saved base with a fresh field read before each replay; conflicting edits stay in the editor for review. Account-bound writes wait for a fresh server session and are cancelled if its user changes. A definitive session denial removes saved account reads. Service-worker updates reload hidden tabs only after connectivity is online and mutations, durable sends and autosaves have settled. Durable queues synchronously report each unresolved operation, including the intervals between online rate-limit retries. Sign-out revocation also works on plain-HTTP installs without `crypto.randomUUID`.
+
+The read cache also retains up to 100 learned link previews for the current user
+and accessible companies, including unavailable results. Reloading restores the
+last known PR status without a provider request. Preview timestamps keep their
+original age: hover or keyboard focus reuses a fresh result and refreshes a stale
+one. Stale status stays visible until then. Preview retention uses the same
+24-hour expiry, build boundary, membership checks, and sign-out cleanup as other
+saved reads. It does not add polling or fetch every PR on page load.
 
 Embedded plan documents and preview work products are stripped from saved payloads. A denied task clears its UUID and identifier projections. Sign-out revocation markers contain no task content and remain after sign-out to reject stale records and delayed writes from older tabs. Session responses started before revocation cannot restore those reads, even before the storage event reaches the other tab.
 
@@ -5059,3 +5463,33 @@ failure remains retryable even when the clone directory already exists. Later
 workspace saves retain repository coverage only for directories present in the
 captured archive. Deleted checkouts lose coverage and can be acquired again.
 A failed batch upload marks the affected repository rows as needing repair.
+
+### Native Runner credential refreshes
+
+Core handles PRP `auth.credentials.updated` notifications for managed Codex and
+Grok subscriptions across local, SSH, sandbox, and supported plugin Runner tasks.
+After validating the company, agent, run, session, and Runner binding, it exports
+the selected account and writes newer credentials directly to the tenant secret.
+Grant, secret, version-selector, session-epoch, and provider freshness checks are
+shared across execution targets. Explicit reconnects and revoked grants win over
+old refreshes. Providers that do not emit this event keep their existing flow;
+operator-owned homes do not acquire tenant writeback authority.
+
+The transport's credential handler rebinds with each warm invocation, including
+its current target exporter. Idle refreshes and recovered controller handles do
+not depend on a completed invocation's temporary home. Detached handles cannot
+process new updates. Native/ACPX Codex and Grok use bounded, descriptor-based file
+reads; SSH and sandbox readers use the Node runtime already required by remote
+isolated-home preparation. Plugin tasks use their account-bound export operation.
+
+A notification is acknowledged only after writeback succeeds or its authority is
+intentionally discarded. Export and database failures replay through PRP. An
+unchanged managed-subscription turn does no credential export or database write.
+Retirement keeps a final export for legacy and recovery paths; a failed final
+export retains the provider's credential files for retry. After verified provider
+exit, ACPX Codex and Grok preserve a private `auth-refresh.json` handoff before
+scrubbing `auth.json`; Core removes it after retirement writeback. Plugin retirement also
+records rotation, unchanged credential, changed binding, undispatched task, or a
+null export. No secret bytes appear in PRP events or lease metadata. The plugin
+provider must support live account-bound exports before enabling the paired Core
+handler.

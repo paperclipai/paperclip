@@ -13,6 +13,7 @@ import { useMemoryConnectorsEnabled } from "@/hooks/useMemoryConnectorsEnabled";
 import { useConnectorAvailability } from "@/hooks/useConnectorAvailability";
 import { AiConnectionCredentialStep } from "@/components/ai-connections/AiConnectionCredentialStep";
 import { ConnectionChoiceList } from "./ConnectionChoiceList";
+import { GenericMcpConnectStep } from "./GenericMcpConnectStep";
 import { useCallback, useEffect, useId, useMemo, useRef, useState, type ReactNode, type Ref } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
@@ -20,7 +21,6 @@ import {
   Bot,
   Building2,
   Check,
-  ChevronDown,
   ChevronRight,
   Cloud,
   Copy,
@@ -86,7 +86,6 @@ import { cn } from "@/lib/utils";
 import { useCopyAction } from "@/lib/use-copy-action";
 import { resolveAuthorizationTarget } from "@/lib/authorizationUrl";
 import { prepareOAuthNavigation, savePendingCloudHandoff } from "@/lib/oauthHandoff";
-import { redactUrlSecrets } from "@/lib/redact-url-secrets";
 import { askFirstCatalogEntryIdsFor } from "./connection-defaults";
 import { AppLogo } from "@/pages/apps/AppLogo";
 import { appApplicationSourceSlug, appConnectionSourceSlug } from "@/pages/apps/app-definition-display";
@@ -101,8 +100,6 @@ import {
 import { parseGoogleSheetIds } from "@/pages/apps/google-sheets";
 import { connectionNameForGrantKind } from "@/pages/apps/connection-identity";
 import {
-  canSubmitGenericConnect,
-  customHeaderError,
   defaultGenericMcpName,
   endpointHost,
   genericConnectGuidance,
@@ -110,7 +107,6 @@ import {
   newCustomHeaderRow,
   oauthCallbackUrlForBrowser,
   type CustomHeaderRow,
-  type GenericConnectDraft,
   type GenericConnectGuidance,
   type GenericMcpAuthMode,
 } from "@/pages/apps/generic-mcp-connect";
@@ -349,7 +345,7 @@ type AppAccessSelection = "all_agents" | { agentIds: string[] };
 // PAP-659: identity and agent reach are no longer a step. They are resolved to
 // a default, stated in one line above the primary action, and changed either in
 // the Advanced disclosure on this screen or on the Permissions tab afterwards.
-const STEP_LABELS = ["Pick app", "Add your key"];
+const STEP_LABELS = ["Pick app", "Connect"];
 const STEP_INDEX: Record<Exclude<Step, "success">, number> = {
   gallery: 0,
   key: 1,
@@ -464,6 +460,11 @@ function recommendedManagedConnectorMethod(
       : [],
   );
 }
+
+// One-method sign-in skips the access step. These providers' warnings (Railway
+// project scope, Circleback sharing outside the workspace) must still be read
+// before authorizing, so the sign-in screen repeats them.
+const SIGN_IN_GUIDANCE_SLUGS = new Set(["railway", "circleback"]);
 
 function canUseAutomaticOAuthFastPath(entry: AppDefinition | null | undefined): boolean {
   if (!entry) return false;
@@ -2337,7 +2338,7 @@ function StandardConnectionSetupFlow({
         } : undefined}
         authorizationHost={authorizationHost}
         authorizationUrl={authorizationFallbackUrl}
-        guidance={entry?.slug === "railway" && accessStepMethod ? (
+        guidance={entry && SIGN_IN_GUIDANCE_SLUGS.has(entry.slug) && accessStepMethod ? (
           <div className="space-y-3 text-sm text-muted-foreground">
             <p>{accessStepMethod.guidanceMd}</p>
             <ul className="list-disc space-y-2 pl-5">
@@ -2789,7 +2790,7 @@ function StandardConnectionSetupFlow({
       )}
 
       {step === "key" && !entry && linkUrl && !zapierSource && (
-        <LinkConnectStep
+        <GenericMcpConnectStep
           link={linkUrl}
           name={linkName}
           needsKey={linkNeedsKey}
@@ -3342,320 +3343,6 @@ function normalizeAppLink(value: string): string | null {
   } catch {
     return null;
   }
-}
-
-/**
- * The guided universal flow for an unknown remote MCP server (PAP-17087, plan 2).
- *
- * The simple path stays exactly as short as it was — URL, name, "does it need a
- * key?" — because that is all most servers need. Everything protocol-shaped lives
- * behind "Advanced authentication", and no OAuth/DCR/CIMD jargon appears on the
- * consumer path: the operator picks how the server authenticates, not which RFC
- * Paperclip will use to satisfy it.
- *
- * The endpoint host and the "Unverified server" label stay visible the whole way
- * through, so the operator can always see whose server they are about to let
- * agents call.
- */
-function LinkConnectStep({
-  link,
-  name,
-  needsKey,
-  keyValue,
-  onKeyChange,
-  authMode,
-  onAuthModeChange,
-  headers,
-  onHeadersChange,
-  oauthClientId,
-  onOAuthClientIdChange,
-  oauthClientSecret,
-  onOAuthClientSecretChange,
-  advancedOpen,
-  onAdvancedOpenChange,
-  guidance,
-  matchedEntry,
-  onUseMatchedEntry,
-  submitting,
-  defaults,
-  onBack,
-  onConnect,
-}: {
-  link: string;
-  name: string;
-  needsKey: boolean;
-  keyValue: string;
-  onKeyChange: (next: string) => void;
-  authMode: GenericMcpAuthMode;
-  onAuthModeChange: (next: GenericMcpAuthMode) => void;
-  headers: CustomHeaderRow[];
-  onHeadersChange: (next: CustomHeaderRow[]) => void;
-  oauthClientId: string;
-  onOAuthClientIdChange: (next: string) => void;
-  oauthClientSecret: string;
-  onOAuthClientSecretChange: (next: string) => void;
-  advancedOpen: boolean;
-  onAdvancedOpenChange: (next: boolean) => void;
-  guidance: GenericConnectGuidance | null;
-  /** A curated app whose endpoint matches, offered as a convenience only. */
-  matchedEntry?: AppDefinition | null;
-  onUseMatchedEntry?: () => void;
-  submitting: boolean;
-  /** The stated default and its Advanced disclosure (PAP-659 C0). */
-  defaults?: ReactNode;
-  onBack: () => void;
-  onConnect: () => void;
-}) {
-  const host = endpointHost(link);
-  const headerError = authMode === "custom_headers" ? customHeaderError(headers) : null;
-  const draft: GenericConnectDraft = {
-    link,
-    name,
-    authMode,
-    needsKey,
-    keyValue,
-    headers,
-    oauthClientId,
-    oauthClientSecret,
-  };
-  const canSubmit = canSubmitGenericConnect(draft);
-  // PAP-659 bucket H: the address alone is the whole default path. `needsKey` is
-  // now set by the server's probe after a credential challenge, never guessed at
-  // up front, so the field appears exactly when it is known to be required.
-  const showKeyField = (authMode === "auto" && needsKey) || authMode === "bearer";
-  const displayedLink = matchedEntry?.slug === "zapier" ? redactUrlSecrets(link) : link;
-
-  const updateHeader = (id: string, patch: Partial<CustomHeaderRow>) => {
-    onHeadersChange(headers.map((row) => (row.id === id ? { ...row, ...patch } : row)));
-  };
-
-  return (
-    <div className="mx-auto max-w-xl">
-      <div className="flex items-center justify-between gap-3">
-        <p className="min-w-0 truncate font-mono text-sm text-muted-foreground" title={displayedLink}>{displayedLink}</p>
-        <UnverifiedServerBadge host={host} />
-      </div>
-
-      {matchedEntry && onUseMatchedEntry ? (
-        <div className="mt-6 flex flex-wrap items-center justify-between gap-3 rounded-lg border border-border bg-muted/40 px-3 py-2">
-          <div className="flex min-w-0 items-center gap-2 text-sm">
-            <AppLogo name={matchedEntry.name} logoUrl={matchedEntry.branding.logoUrl} darkLogoUrl={matchedEntry.branding.darkLogoUrl} size={24} />
-            <span className="truncate">Paperclip has a guided setup for {matchedEntry.name}.</span>
-          </div>
-          <Button type="button" size="sm" variant="outline" onClick={onUseMatchedEntry}>
-            Use {matchedEntry.name}
-          </Button>
-        </div>
-      ) : null}
-
-      {guidance ? (
-        <div className="mt-6">
-          <InlineBanner tone="warning" title={guidance.title}>
-            {guidance.body}
-          </InlineBanner>
-        </div>
-      ) : null}
-
-      <div className="mt-6 space-y-6">
-        {showKeyField ? (
-          <div className="space-y-4">
-            <div>
-              <label className="text-sm font-medium text-foreground" htmlFor="generic-mcp-key">App key</label>
-              <Input
-                id="generic-mcp-key"
-                type="password"
-                autoComplete="off"
-                value={keyValue}
-                onChange={(e) => onKeyChange(e.target.value)}
-                placeholder="••••••••••••••••"
-                className="mt-2 h-11 font-mono"
-              />
-              <p className="mt-2 text-xs text-muted-foreground">
-                Grant this key read and write access to the resources your agents need. Paperclip cannot increase its permissions.
-              </p>
-            </div>
-          </div>
-        ) : null}
-
-        <Collapsible open={advancedOpen} onOpenChange={onAdvancedOpenChange}>
-          <CollapsibleTrigger className="flex w-full items-center justify-between rounded-lg border border-border bg-background px-3 py-2 text-left text-sm font-medium text-foreground hover:bg-accent/40">
-            Advanced authentication
-            <ChevronDown className={cn("h-4 w-4 text-muted-foreground transition-transform", advancedOpen && "rotate-180")} />
-          </CollapsibleTrigger>
-          <CollapsibleContent className="space-y-5 pt-4">
-            <p className="text-xs text-muted-foreground">
-              Only needed when the server's docs are specific about how to authenticate.
-            </p>
-            <div className="flex flex-wrap gap-2">
-              {GENERIC_AUTH_MODE_OPTIONS.map((option) => (
-                <SegmentedOption
-                  key={option.mode}
-                  label={option.label}
-                  selected={authMode === option.mode}
-                  onClick={() => onAuthModeChange(option.mode)}
-                />
-              ))}
-            </div>
-            <p className="text-xs text-muted-foreground">
-              {GENERIC_AUTH_MODE_OPTIONS.find((option) => option.mode === authMode)?.hint}
-            </p>
-
-            {authMode === "custom_headers" ? (
-              <div className="space-y-3">
-                {headers.map((row) => (
-                  <div key={row.id} className="flex items-start gap-2">
-                    <Input
-                      value={row.name}
-                      onChange={(e) => updateHeader(row.id, { name: e.target.value })}
-                      placeholder="Header name"
-                      aria-label="Header name"
-                      className="h-10 font-mono"
-                    />
-                    <Input
-                      type="password"
-                      autoComplete="off"
-                      value={row.value}
-                      onChange={(e) => updateHeader(row.id, { value: e.target.value })}
-                      placeholder="Value"
-                      aria-label={row.name.trim() ? `Value for ${row.name.trim()}` : "Header value"}
-                      className="h-10 font-mono"
-                    />
-                    <Button
-                      type="button"
-                      variant="ghost"
-                      size="sm"
-                      className="h-10 shrink-0"
-                      onClick={() => onHeadersChange(headers.filter((candidate) => candidate.id !== row.id))}
-                      disabled={headers.length === 1}
-                    >
-                      Remove
-                    </Button>
-                  </div>
-                ))}
-                <Button
-                  type="button"
-                  variant="outline"
-                  size="sm"
-                  onClick={() => onHeadersChange([...headers, newCustomHeaderRow()])}
-                >
-                  Add another header
-                </Button>
-                {headerError ? <p className="text-xs text-destructive">{headerError}</p> : null}
-              </div>
-            ) : null}
-
-            {authMode === "oauth" ? (
-              <div className="space-y-4">
-                <p className="text-xs text-muted-foreground">
-                  Paperclip sets sign-in up on its own whenever the server allows it. Only fill these in when the
-                  server's docs tell you to register Paperclip yourself first.
-                </p>
-                <div>
-                  <label className="text-sm font-medium text-foreground" htmlFor="generic-mcp-client-id">
-                    Client ID
-                  </label>
-                  <Input
-                    id="generic-mcp-client-id"
-                    value={oauthClientId}
-                    onChange={(e) => onOAuthClientIdChange(e.target.value)}
-                    autoComplete="off"
-                    placeholder="Optional"
-                    className="mt-2 h-11 font-mono"
-                  />
-                </div>
-                <div>
-                  <label className="text-sm font-medium text-foreground" htmlFor="generic-mcp-client-secret">
-                    Client secret
-                  </label>
-                  <Input
-                    id="generic-mcp-client-secret"
-                    type="password"
-                    autoComplete="off"
-                    value={oauthClientSecret}
-                    onChange={(e) => onOAuthClientSecretChange(e.target.value)}
-                    placeholder="Optional"
-                    className="mt-2 h-11 font-mono"
-                  />
-                </div>
-              </div>
-            ) : null}
-          </CollapsibleContent>
-        </Collapsible>
-      </div>
-
-      {defaults}
-
-      <div className="mt-8 flex items-center justify-between">
-        <Button variant="ghost" onClick={onBack} disabled={submitting}>
-          Back
-        </Button>
-        <Button onClick={onConnect} disabled={submitting || !canSubmit || Boolean(headerError)}>
-          {submitting && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
-          {submitting ? "Checking…" : "Check link"}
-        </Button>
-      </div>
-    </div>
-  );
-}
-
-/**
- * What the operator is choosing is how the *server* authenticates, in its own
- * terms. Paperclip decides internally whether that means a preconfigured client,
- * a client ID metadata document, dynamic registration, or the credentials pasted
- * below — none of which belongs on this screen.
- */
-const GENERIC_AUTH_MODE_OPTIONS: Array<{ mode: GenericMcpAuthMode; label: string; hint: string }> = [
-  {
-    mode: "auto",
-    label: "Let Paperclip check",
-    hint: "Paperclip asks the server what it needs and walks you through it. Start here.",
-  },
-  {
-    mode: "none",
-    label: "No sign-in needed",
-    hint: "The server is open to anyone with the address.",
-  },
-  {
-    mode: "bearer",
-    label: "Key or token",
-    hint: "Paperclip sends your key as an Authorization header.",
-  },
-  {
-    mode: "custom_headers",
-    label: "Custom headers",
-    hint: "For servers that name their own headers. Values are stored as Paperclip secrets and can\u2019t be read back.",
-  },
-  {
-    mode: "oauth",
-    label: "Browser sign-in",
-    hint: "You\u2019ll sign in at the provider. Add a client ID and secret only if the provider requires you to register Paperclip first.",
-  },
-];
-
-function SegmentedOption({
-  label,
-  selected,
-  onClick,
-}: {
-  label: string;
-  selected: boolean;
-  onClick: () => void;
-}) {
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      aria-pressed={selected}
-      className={cn(
-        "min-w-(--sz-64px) rounded-md px-4 py-1.5 text-sm font-medium transition-colors",
-        selected
-          ? "bg-background text-foreground shadow-sm"
-          : "text-muted-foreground hover:text-foreground",
-      )}
-    >
-      {label}
-    </button>
-  );
 }
 
 function KeyStep({

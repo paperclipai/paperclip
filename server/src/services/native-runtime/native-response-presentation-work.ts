@@ -84,7 +84,7 @@ export function nativeResponsePresentationWork(db: Db) {
       queue: DELIVERY_QUEUES.nativeResponsePresentation,
       // Endpoint and principal IDs are only dispatch hints. Recovery still locks and checks
       // the complete current source authority inside its own transaction.
-      concurrentChecks: { limit: 4, key: (entry: Entry) => [
+      concurrentChecks: { limit: 4, admitDueWhileActive: true, key: (entry: Entry) => [
         `issue:${entry.companyId}:${entry.issueId}`,
         ...(entry.endpointId ? [`endpoint:${entry.companyId}:${entry.endpointId}`] : []),
         ...(entry.principalId ? [`principal:${entry.companyId}:${entry.principalId}`] : []),

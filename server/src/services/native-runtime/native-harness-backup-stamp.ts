@@ -211,10 +211,14 @@ export function verifyNativeHarnessBackupStamp(value: unknown, expectedProviderL
   return false;
 }
 
-export async function verifyNativeHarnessBackupStampAsync(value: unknown, expectedProviderLeaseId: string, signal: AbortSignal): Promise<boolean> {
+export async function verifyNativeHarnessBackupStampAsync(value: unknown, expectedProviderLeaseId: string, signal: AbortSignal,
+  exactRoot?: string): Promise<boolean> {
   const stamp = readNativeHarnessBackupStamp(value, expectedProviderLeaseId);
   if (!stamp) return false;
   for (const candidate of backupCandidates(stamp)) {
+    // A preservation publisher must authenticate the tree it actually copied;
+    // an intact previous backup cannot authorize a changed current payload.
+    if (exactRoot !== undefined && resolve(candidate) !== resolve(exactRoot)) continue;
     signal.throwIfAborted();
     try {
       const directories = matchingBackupDirectories(candidate, stamp);

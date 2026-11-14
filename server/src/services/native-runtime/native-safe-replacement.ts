@@ -29,6 +29,9 @@ import { appendHeartbeatRunEvent } from "../heartbeat-run-events.js";
 import { hasRemoteTerminationReceipt } from "../remote-execution-termination.js";
 import { NATIVE_PROVIDER_DURABLE_EVENT_TYPES } from "./native-retired-backup-source.js";
 import { completedWorkspaceRecoveryCondition } from "../workspace-recovery-receipt.js";
+import { nativeRunHasNoWorkspaceAccess } from "../workspace-restore-recovery-state.js";
+import { verifiedWorkspaceSnapshotReuse } from "../remote-workspace-snapshot-reuse-receipt.js";
+import { RECOVERY_CONTINUATION_MAX_HOLD_MS } from "../recovery-continuation-pacing.js";
 
 export const NATIVE_SAFE_REPLACEMENT_REASON = "native_safe_replacement";
 const record = (v: unknown): Record<string, unknown> =>
@@ -107,8 +110,68 @@ async function historicalListenerGuardEvidence(db: ReplacementDb, run: typeof he
   return Boolean(evidence);
 }
 
+/**
+ * A native run that failed before its first coordinator claim. The claim is the
+ * only gate to provider dispatch: it moves the coordinator past attempt 0 and
+ * records a controller generation. A run that never claimed started no provider
+ * process, turn or tool, so a fresh session can continue the task once its
+ * prepared files are saved. Any claim, process, provider or tool event, user
+ * Stop, or recorded provider work keeps today's reconciliation. One automatic
+ * continuation per chain: a continuation that itself fails is not continued.
+ */
+export const NATIVE_PRE_CLAIM_FAILURE_CODE = "native_continuation_requires_reconciliation";
+function preClaimFailurePending() {
+  const providerEvents = sql.join([...NATIVE_PROVIDER_DURABLE_EVENT_TYPES].map(value => sql`${value}`), sql`, `);
+  return and(
+    eq(nativeRunFinalizations.failureCode, NATIVE_PRE_CLAIM_FAILURE_CODE),
+    eq(heartbeatRuns.runtimeMode, "native"),
+    eq(nativeRunFinalizations.attempt, 0), eq(nativeRunFinalizations.controllerGeneration, 0),
+    isNull(nativeRunFinalizations.leaseOwner), isNull(nativeRunFinalizations.leaseExpiresAt),
+    isNull(nativeRunFinalizations.assessmentId), isNull(nativeRunFinalizations.decisionId),
+    isNull(heartbeatRuns.processPid), isNull(heartbeatRuns.processGroupId),
+    isNull(heartbeatRuns.processStartedAt), isNull(heartbeatRuns.sessionIdAfter),
+    sql`${heartbeatRuns.nativeIssueId} = ${nativeRunFinalizations.issueId}`,
+    sql`coalesce(${heartbeatRuns.resultJson}#>'{executionRecovery,providerWorkStarted}', 'false'::jsonb) = 'false'::jsonb`,
+    sql`not (coalesce(${heartbeatRuns.resultJson}, '{}'::jsonb) ?| array['cancellation', 'nativeCancellation', 'executionCancellation'])`,
+    sql`coalesce(${heartbeatRuns.contextSnapshot}->>'nativePreClaimContinuationOf', '') = ''`,
+    sql`not exists (select 1 from ${heartbeatRunEvents} event where event.company_id = ${heartbeatRuns.companyId}
+      and event.run_id = ${heartbeatRuns.id} and (event.source_event_id is not null
+        or event.event_type in (${providerEvents}) or event.event_type ~ '^(turn|item|tool|semantic_tool|run[.]result)[.]'))`,
+    sql`not exists (select 1 from ${toolInvocations} invocation where invocation.company_id = ${heartbeatRuns.companyId}
+      and invocation.run_id = ${heartbeatRuns.id})`,
+    // Saved files come first. A no-replay hold settles only with its completed recovery.
+    sql`not exists (select 1 from ${issueRecoveryActions}
+      where ${issueRecoveryActions.companyId} = ${heartbeatRuns.companyId}
+        and ${issueRecoveryActions.sourceIssueId} = ${nativeRunFinalizations.issueId}
+        and ${issueRecoveryActions.evidence}->>'runId' = ${heartbeatRuns.id}::text
+        and (${issueRecoveryActions.evidence} ? 'explicitUserContinuation'
+          or (${issueRecoveryActions.evidence}->'automaticRecovery'->>'replay' = 'blocked'
+            and not coalesce((${completedWorkspaceRecoveryCondition(heartbeatRuns.id)}), false))))`,
+    // The task has not moved on: a later run (such as a user's message) owns it.
+    sql`not exists (select 1 from ${heartbeatRuns} later where later.company_id = ${heartbeatRuns.companyId}
+      and (later.context_snapshot ->> 'issueId') = ${nativeRunFinalizations.issueId}::text
+      and later.created_at > ${heartbeatRuns.createdAt} and later.id <> ${heartbeatRuns.id})`,
+    sql`exists (select 1 from ${issues} task where task.company_id = ${heartbeatRuns.companyId}
+      and task.id = ${nativeRunFinalizations.issueId} and task.assignee_agent_id = ${heartbeatRuns.agentId}
+      and task.status in ('todo', 'in_progress', 'in_review', 'blocked')
+      and (task.status <> 'blocked' or exists (select 1 from ${issueRecoveryActions} hold
+        where hold.company_id = task.company_id and hold.source_issue_id = task.id and hold.kind = 'active_run_watchdog'
+          and hold.cause = ${nativeRunFinalizations.failureCode} and hold.evidence->>'runId' = ${heartbeatRuns.id}::text
+          and hold.evidence#>>'{nativeFailureBlock,runId}' = ${heartbeatRuns.id}::text
+          and hold.evidence#>'{nativeFailureBlock,statusVersion}' = to_jsonb(task.status_version))))`,
+  );
+}
+
+async function preClaimFailureEvidence(db: ReplacementDb, run: typeof heartbeatRuns.$inferSelect) {
+  const [evidence] = await db.select({ id: heartbeatRuns.id }).from(heartbeatRuns)
+    .innerJoin(nativeRunFinalizations, eq(nativeRunFinalizations.runId, heartbeatRuns.id)).where(and(
+      eq(heartbeatRuns.companyId, run.companyId), eq(heartbeatRuns.id, run.id), preClaimFailurePending(),
+    )).limit(1);
+  return Boolean(evidence);
+}
+
 /** A saved remote source is proved by its current ledger, never a controller path. */
-async function remoteWorkspaceReplacementEvidence(
+export async function remoteWorkspaceReplacementEvidence(
   db: ReplacementDb,
   run: typeof heartbeatRuns.$inferSelect,
   issueId: string,
@@ -154,11 +217,11 @@ async function remoteWorkspaceReplacementEvidence(
   const snapshotQuery = db.select().from(executionWorkspaceSnapshots).where(and(
     eq(executionWorkspaceSnapshots.companyId, run.companyId), eq(executionWorkspaceSnapshots.executionWorkspaceId, workspace.id),
     eq(executionWorkspaceSnapshots.id, reference.snapshotId!), eq(executionWorkspaceSnapshots.status, "committed"),
-    eq(executionWorkspaceSnapshots.epoch, reference.epoch), eq(executionWorkspaceSnapshots.sourceRunId, run.id),
   ));
   const [snapshot] = await (lock ? snapshotQuery.for("update") : snapshotQuery);
   if (!snapshot?.sha256 || !snapshot.objectKey || !snapshot.key || !snapshot.manifestDigest || !snapshot.byteSize) return denied;
-  const [operation] = await db.select({ id: workspaceOperations.id }).from(workspaceOperations).where(and(
+  const [operation] = snapshot.sourceRunId === run.id && snapshot.epoch === reference.epoch
+    ? await db.select({ id: workspaceOperations.id }).from(workspaceOperations).where(and(
     eq(workspaceOperations.id, snapshot.sourceOperationId), eq(workspaceOperations.companyId, run.companyId),
     eq(workspaceOperations.executionWorkspaceId, workspace.id), eq(workspaceOperations.heartbeatRunId, run.id),
     eq(workspaceOperations.issueId, issueId), eq(workspaceOperations.phase, "remote_workspace_snapshot"),
@@ -167,8 +230,10 @@ async function remoteWorkspaceReplacementEvidence(
     sql`${workspaceOperations.metadata}->>'epoch' = ${String(reference.epoch)}`,
     sql`${workspaceOperations.metadata}->>'snapshotId' = ${snapshot.id}`,
     sql`${workspaceOperations.metadata}->>'sha256' = ${snapshot.sha256}`,
-  ));
-  return { workspacePreserved: Boolean(operation), providerStopped };
+  )) : [];
+  const reused = operation ? null : await verifiedWorkspaceSnapshotReuse(db, {
+    companyId: run.companyId, issueId, runId: run.id, reference, snapshot });
+  return { workspacePreserved: Boolean(operation || reused), providerStopped };
 }
 
 export function nativeReplacementPending() {
@@ -178,11 +243,50 @@ export function nativeReplacementPending() {
     or(inArray(
       nativeRunFinalizations.failureCode,
       ["native_provider_terminal_failed", "native_session_cleanup_quarantined", "provider_transport_failed"],
-    ), historicalListenerGuardPending()),
+    ), historicalListenerGuardPending(), preClaimFailurePending()),
     isNull(nativeRunFinalizations.resultId),
     sql`coalesce(${nativeRunFinalizations.failureDetail}->>'successorRunId', '') = ''`,
     sql`coalesce(${nativeRunFinalizations.failureDetail}->>'replacementDenied', '') = ''`,
   );
+}
+
+export const NATIVE_OWNERSHIP_PROOF_BOUND_MS = RECOVERY_CONTINUATION_MAX_HOLD_MS;
+const OWNERSHIP_UNVERIFIED = "provider_ownership_unverified";
+const ownershipProofDeadline = () => sql`(coalesce(${heartbeatRuns.finishedAt}, ${nativeRunFinalizations.updatedAt})
+  + ${NATIVE_OWNERSHIP_PROOF_BOUND_MS}::integer * interval '1 millisecond')`;
+const ownershipProofWaiting = () => and(
+  eq(nativeRunFinalizations.failureCode, "native_provider_terminal_failed"), isNull(nativeRunFinalizations.leaseOwner));
+
+async function ownershipProofExpired(db: ReplacementDb, run: typeof heartbeatRuns.$inferSelect) {
+  const [row] = await db.select({ id: heartbeatRuns.id }).from(heartbeatRuns)
+    .innerJoin(nativeRunFinalizations, eq(nativeRunFinalizations.runId, heartbeatRuns.id)).where(and(
+      eq(heartbeatRuns.companyId, run.companyId), eq(heartbeatRuns.id, run.id), nativeReplacementPending(),
+      ownershipProofWaiting(), sql`${ownershipProofDeadline()} <= now()`,
+    )).limit(1);
+  return Boolean(row);
+}
+
+async function markOwnershipProofWaiting(db: ReplacementDb, run: typeof heartbeatRuns.$inferSelect) {
+  await db.update(nativeRunFinalizations).set({
+    failureDetail: sql`coalesce(${nativeRunFinalizations.failureDetail}, '{}'::jsonb)
+      || jsonb_build_object('ownershipUnverifiedAt', now())`,
+  }).where(and(eq(nativeRunFinalizations.companyId, run.companyId), eq(nativeRunFinalizations.runId, run.id),
+    ownershipProofWaiting(), sql`not (coalesce(${nativeRunFinalizations.failureDetail}, '{}'::jsonb) ? 'ownershipUnverifiedAt')`));
+}
+
+async function releaseOwnershipProofWake(db: ReplacementDb, run: typeof heartbeatRuns.$inferSelect) {
+  await db.update(nativeRunFinalizations).set({
+    failureDetail: sql`${nativeRunFinalizations.failureDetail} - 'ownershipUnverifiedAt'`,
+  }).where(and(eq(nativeRunFinalizations.companyId, run.companyId), eq(nativeRunFinalizations.runId, run.id),
+    sql`${nativeRunFinalizations.failureDetail} ? 'ownershipUnverifiedAt'`));
+}
+
+export async function nextNativeOwnershipProofDeadlineAt(db: Db): Promise<number | null> {
+  const [row] = await db.select({ at: sql<number | null>`(extract(epoch from min(${ownershipProofDeadline()})) * 1000)::float8` })
+    .from(heartbeatRuns).innerJoin(nativeRunFinalizations, eq(nativeRunFinalizations.runId, heartbeatRuns.id))
+    .where(and(nativeReplacementPending(), ownershipProofWaiting(),
+      sql`${nativeRunFinalizations.failureDetail} ? 'ownershipUnverifiedAt'`));
+  return row?.at == null ? null : Math.ceil(Number(row.at));
 }
 
 const REPLACEMENT_SCAN_LIMIT = 100;
@@ -239,11 +343,25 @@ async function discoverNativeReplacements(db: Db, after: string | undefined, lim
           }
         }
       }
+      if (row.coordinator.failureCode === NATIVE_PRE_CLAIM_FAILURE_CODE)
+        ready = await preClaimContinuationReady(db, row.run, row.coordinator.issueId);
       if (ready) candidates.push(row);
       if (candidates.length >= limit || scanned >= REPLACEMENT_SCAN_LIMIT) return { candidates, scanned, after };
     }
     if (rows.length < 25) return { candidates, scanned, after: undefined };
   }
+}
+
+/** Saved files and a stopped sandbox, or a run that had no workspace to save. */
+async function preClaimContinuationReady(db: Db, run: typeof heartbeatRuns.$inferSelect, issueId: string) {
+  const leases = await db.select().from(environmentLeases).where(and(
+    eq(environmentLeases.companyId, run.companyId), eq(environmentLeases.heartbeatRunId, run.id),
+  ));
+  if (leases.some(lease => lease.releasedAt === null)) return false;
+  const evidence = await remoteWorkspaceReplacementEvidence(db, run, issueId, leases);
+  const workspaceReady = evidence ? evidence.workspacePreserved && evidence.providerStopped
+    : run.runnerProfileJson?.nativeWorkspaceSync == null && nativeRunHasNoWorkspaceAccess(run);
+  return workspaceReady && await replacementHistoryReady(db, run, issueId, true) === true;
 }
 
 function settleReplacementDiscovery(state: ReturnType<typeof replacementDiscoveryState>, after: string | undefined, generation: number) {
@@ -305,15 +423,23 @@ export async function reconcileSafeNativeReplacements(
             eq(environmentLeases.heartbeatRunId, run.id),
           ),
         );
+      let overdue: boolean | undefined;
+      const ownershipOverdue = async () => overdue ??= await ownershipProofExpired(db, run);
+      const leaseHeld = leases.some((lease) => lease.releasedAt === null);
       // Teardown is still in progress. The next sweep rechecks its durable outcome.
-      if (leases.some((lease) => lease.releasedAt === null)) continue;
+      if (leaseHeld && !await ownershipOverdue()) {
+        if (coordinator.failureCode === "native_provider_terminal_failed") await markOwnershipProofWaiting(db, run);
+        continue;
+      }
       const historicalListener = coordinator.failureCode === "native_session_interrupted";
       if (historicalListener && !await historicalListenerGuardEvidence(db, run)) continue;
-      const stoppedSession = coordinator.failureCode !== "native_provider_terminal_failed" && !historicalListener
+      const preClaim = coordinator.failureCode === NATIVE_PRE_CLAIM_FAILURE_CODE;
+      if (preClaim && !await preClaimFailureEvidence(db, run)) continue;
+      const stoppedSession = coordinator.failureCode !== "native_provider_terminal_failed" && !historicalListener && !preClaim
         ? await options.verifyStoppedSession?.(run) ?? null : null;
       // A transport label alone is not evidence. Keep inspecting these candidates
       // as process cleanup and the final transcript become durable.
-      if (coordinator.failureCode !== "native_provider_terminal_failed" && !historicalListener && !stoppedSession) continue;
+      if (coordinator.failureCode !== "native_provider_terminal_failed" && !historicalListener && !preClaim && !stoppedSession) continue;
       const invocations = await db
         .select()
         .from(toolInvocations)
@@ -403,16 +529,24 @@ export async function reconcileSafeNativeReplacements(
           : [];
       });
       const history = await replacementHistoryReady(db, run, coordinator.issueId);
-      if (history === false) continue;
+      if (history === false) {
+        if (await ownershipOverdue()) await releaseOwnershipProofWake(db, run);
+        continue;
+      }
       const historyComplete = history === true;
       const remoteWorkspace = await remoteWorkspaceReplacementEvidence(db, run, coordinator.issueId, leases);
       if (historicalListener && (!remoteWorkspace?.workspacePreserved || !remoteWorkspace.providerStopped || invocations.length)) continue;
+      const noWorkspaceToSave = preClaim && !remoteWorkspace
+        && run.runnerProfileJson?.nativeWorkspaceSync == null && nativeRunHasNoWorkspaceAccess(run);
+      if (preClaim && (invocations.length || !noWorkspaceToSave
+        && (!remoteWorkspace?.workspacePreserved || !remoteWorkspace.providerStopped))) continue;
       const decision = decideNativeReplacement({
         failedSession: true,
         // A facade transport failure can conceal an authoritative protocol
         // rejection. A stopped process and read receipts do not resolve that.
+        // Before its first claim the run could not dispatch provider work.
         failureMeaningKnown:
-          Boolean(stoppedSession) || (typeof coordinator.failureDetail?.originalFailureCode === "string" &&
+          preClaim || Boolean(stoppedSession) || (typeof coordinator.failureDetail?.originalFailureCode === "string" &&
           ![
             "notification_transport_failed",
             "provider_turn_failed",
@@ -423,16 +557,16 @@ export async function reconcileSafeNativeReplacements(
         providerStopped:
           !processAlive(run.processPid) &&
           !processAlive(run.processGroupId ? -run.processGroupId : null) &&
-          (remoteWorkspace?.providerStopped ?? true),
-        workspacePreserved: remoteWorkspace ? remoteWorkspace.workspacePreserved :
+          (remoteWorkspace?.providerStopped ?? true) && !leaseHeld,
+        workspacePreserved: noWorkspaceToSave || (remoteWorkspace ? remoteWorkspace.workspacePreserved :
           typeof workspace.cwd === "string" &&
           (await stat(workspace.cwd).then(
             (s) => s.isDirectory(),
             () => false,
-          )),
+          ))),
         historyComplete,
         effectInventoryComplete:
-          Boolean(stoppedSession) || (record(run.runnerProfileJson).recoveryEventInventoryVersion === 1 &&
+          preClaim || Boolean(stoppedSession) || (record(run.runnerProfileJson).recoveryEventInventoryVersion === 1 &&
           record(execution.provider).kind === "codex"),
         attempts: coordinator.attempt,
         invocations,
@@ -441,7 +575,14 @@ export async function reconcileSafeNativeReplacements(
       });
       if (!decision.allowed) {
         // Lack of containment can be temporary; do not prevent the next proof.
-        if (decision.cause === "provider_ownership_unverified") continue;
+        const ownershipBound = decision.cause === OWNERSHIP_UNVERIFIED;
+        if (ownershipBound && !await ownershipOverdue()) {
+          await markOwnershipProofWaiting(db, run);
+          continue;
+        }
+        const nextAction = ownershipBound
+          ? "The previous session could not be confirmed stopped, so the task continues in a fresh run with its own workspace."
+          : decision.nextAction;
         await db.transaction(async (tx) => {
           await tx.execute(
             sql`select set_config('statement_timeout', '15000', true), set_config('lock_timeout', '1000', true)`,
@@ -465,7 +606,8 @@ export async function reconcileSafeNativeReplacements(
             !current ||
             current.phase !== "terminal_failure" ||
             current.failureDetail?.successorRunId ||
-            current.failureDetail?.replacementDenied
+            current.failureDetail?.replacementDenied ||
+            (ownershipBound && !await ownershipProofExpired(tx, run))
           )
             return;
           await notifyExecutionRunWork(tx, { companyId: run.companyId });
@@ -475,7 +617,7 @@ export async function reconcileSafeNativeReplacements(
               failureDetail: {
                 ...current.failureDetail,
                 replacementDenied: decision.cause,
-                nextAction: decision.nextAction,
+                nextAction,
               },
               updatedAt: now,
             })
@@ -498,7 +640,7 @@ export async function reconcileSafeNativeReplacements(
             cause: decision.cause,
             fingerprint: `native-replacement:${run.id}`,
             evidence: { runId: run.id, attempts: coordinator.attempt },
-            nextAction: decision.nextAction,
+            nextAction,
             wakePolicy: null,
             maxAttempts: 3,
             supersedeOnIdentityChange: true,
@@ -541,7 +683,7 @@ export async function reconcileSafeNativeReplacements(
         )
           return false;
         let historicalRun: typeof heartbeatRuns.$inferSelect | undefined;
-        if (historicalListener) {
+        if (historicalListener || preClaim) {
           const [currentRun] = await tx.select().from(heartbeatRuns).where(and(
             eq(heartbeatRuns.id, run.id), eq(heartbeatRuns.companyId, run.companyId),
           )).for("update");
@@ -569,6 +711,7 @@ export async function reconcileSafeNativeReplacements(
           sql`${issueRecoveryActions.evidence}->'automaticRecovery'->>'replay' = 'blocked'`,
         )).for("update") : [];
         if (historicalListener && (!historicalRun || !await historicalListenerGuardEvidence(tx, historicalRun))) return false;
+        if (preClaim && (!historicalRun || !await preClaimFailureEvidence(tx, historicalRun))) return false;
         if (remoteWorkspace) {
           const currentWorkspace = await remoteWorkspaceReplacementEvidence(tx, run, coordinator.issueId, leases, true);
           if (!currentWorkspace?.workspacePreserved || !currentWorkspace.providerStopped) return false;
@@ -615,6 +758,8 @@ export async function reconcileSafeNativeReplacements(
           forceFreshSession: true,
           recoveryIncidentRootRunId:
             record(run.contextSnapshot).recoveryIncidentRootRunId ?? run.id,
+          // Bounds pre-claim continuation to one automatic successor per chain.
+          ...(preClaim ? { nativePreClaimContinuationOf: run.id } : {}),
         };
         const [wake] = await tx
           .insert(agentWakeupRequests)
@@ -645,7 +790,7 @@ export async function reconcileSafeNativeReplacements(
           contextSnapshot: context,
           retryOfRunId: run.id,
           scheduledRetryAt: dueAt,
-          scheduledRetryAttempt: current.attempt,
+          scheduledRetryAttempt: preClaim ? 1 : current.attempt,
           scheduledRetryReason: NATIVE_SAFE_REPLACEMENT_REASON,
         });
         options.failpoint?.("successor_inserted");
@@ -659,6 +804,7 @@ export async function reconcileSafeNativeReplacements(
             failureDetail: {
               ...current.failureDetail,
               ...(stoppedSession ? { stoppedTextTurn: stoppedSession.evidence } : {}),
+              ...(preClaim ? { preClaimContinuation: true } : {}),
               successorRunId,
               nextAction:
                 "Continue in the linked fresh provider session after the retry delay.",
@@ -699,7 +845,9 @@ export async function reconcileSafeNativeReplacements(
             status: "resolved", outcome: "handed_back", resolvedAt: now, updatedAt: now,
             wakePolicy: null, monitorPolicy: null,
             nextAction: `Safe continuation is scheduled in run ${successorRunId}.`,
-            resolutionNote: "Verified process termination and action receipts allow a fresh session to continue.",
+            resolutionNote: preClaim
+              ? "The run stopped before it started any provider work, and its saved files are recovered. A fresh session continues the task."
+              : "Verified process termination and action receipts allow a fresh session to continue.",
             evidence: { ...hold.evidence, verifiedReplacement: { successorRunId, recordedAt: now.toISOString() },
               ...(hold.evidence.automaticRecovery ? { automaticRecovery: {
                 ...record(hold.evidence.automaticRecovery), replay: "verified_safe_replacement", successorRunId,
@@ -727,7 +875,7 @@ export async function reconcileSafeNativeReplacements(
       if (created) {
         options.failpoint?.("lineage_committed");
         scheduled += 1;
-      }
+      } else if (await ownershipOverdue()) await releaseOwnershipProofWake(db, run);
     } catch (error) {
       if (options.failpoint) throw error;
       pendingFailures++;

@@ -1,7 +1,7 @@
 import { subscribeDeliveryWork } from "../services/delivery-work-notifications.js";
 import { DELIVERY_QUEUES } from "../services/delivery-work-notifications.js";
 import { randomUUID } from "node:crypto";
-import { and, eq, sql } from "drizzle-orm";
+import { and, eq, inArray, sql } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   agents,
@@ -203,6 +203,33 @@ describeEmbeddedPostgres("connectionIntentService", () => {
     expect(serialized).not.toContain(claims.sub);
   });
 
+  it("tells the agent to configure a single match only when the person asked to set it up", async () => {
+    const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
+    const issueId = String(run!.contextSnapshot?.issueId);
+    const say = (body: string) => db.insert(issueComments).values({
+      companyId: claims.company_id, issueId, authorUserId: "responsible-user", body,
+      createdAt: new Date(Date.now() + 1000),
+    }).returning().then(rows => rows[0]!);
+    const said: string[] = [];
+    try {
+      for (const body of ["Read my Notion and tell me the latest on the launch.", "What is the easiest way to connect Notion here?",
+        "Connect Slack, then read my Notion."]) {
+        said.push((await say(body)).id);
+        const result = await connectionIntentService(db).search(claims, "Notion");
+        expect(result.results).toEqual([expect.objectContaining({ service: "notion", state: "available" })]);
+        expect(result.instruction).not.toMatch(/^The person asked you to set up/);
+        expect(result.instruction).toContain("call connection_request with service notion");
+        expect(result.instruction).toMatch(/\[Connect Notion\]\(\/[A-Z0-9]+\/apps\/connect\?source=notion\)/);
+        expect(result.instruction).toContain("Do not create a connection or a saved draft yourself");
+      }
+      said.push((await say("Connect Notion, then continue the launch summary here.")).id);
+      const requested = await connectionIntentService(db).search(claims, "Notion");
+      expect(requested.instruction).toMatch(/^The person asked you to set up this connection\. If method\.management\.allowed, use search_api\/call_api/);
+    } finally {
+      await db.delete(issueComments).where(inArray(issueComments.id, said));
+    }
+  });
+
   it("discovers GitHub review bots independently from chat connectors", async () => {
     const settings = instanceSettingsService(db);
     const previous = await settings.getExperimental();
@@ -224,6 +251,42 @@ describeEmbeddedPostgres("connectionIntentService", () => {
         enableGitHubReviewBots: previous.enableGitHubReviewBots,
       });
     }
+  });
+
+  it("names the instance setting and its page when a requested chat channel is turned off", async () => {
+    const settings = instanceSettingsService(db);
+    const previous = await settings.getExperimental();
+    const service = connectionIntentService(db);
+    try {
+      await settings.updateExperimental({ enableChatConnectors: false });
+      expect((await service.search(claims, "iMessage chat messaging with a contact")).results.find(item => item.service === "imessage-photon")?.state).toBe("unavailable");
+      const off = await service.search(claims, "iMessage");
+      const imessage = off.results.find(item => item.service === "imessage-photon");
+      expect(imessage).toMatchObject({ state: "unavailable", methods: [] });
+      expect(imessage?.reason).toMatch(/\[Experimental settings\]\(\/[A-Z0-9]+\/company\/settings\/instance\/experimental\)/);
+      expect(off.instruction).toContain("Explain the reason");
+      expect((await service.search(claims, "slack")).results.some(item => item.state === "unavailable" && item.methods.length === 0)).toBe(false);
+      expect((await service.search(claims, "discord")).results.some(item => item.service === "discord" && item.state === "unavailable")).toBe(false);
+      const partial = await service.search(claims, "imess");
+      expect(partial.results.map(item => item.service)).toEqual(["imessage-photon"]);
+      expect(partial.instruction).toContain("Explain the reason");
+      await settings.updateExperimental({ enableChatConnectors: true });
+      const on = (await service.search(claims, "iMessage")).results.find(item => item.service === "imessage-photon");
+      expect(on?.state).not.toBe("unavailable");
+      expect(on?.methods.some(method => method.purpose === "channel")).toBe(true);
+    } finally {
+      await settings.updateExperimental({ enableChatConnectors: previous.enableChatConnectors });
+    }
+  });
+
+  it("points a service the catalog does not list at the secure own-server setup page", async () => {
+    const ranked = await connectionIntentService(db).search(claims, "Synthetic notes service connect my account with an API key");
+    expect(ranked.results.length).toBeGreaterThan(1);
+    expect(ranked.instruction).toMatch(/^These are ranked connection matches[\s\S]*\[Connect your own MCP server\]\(\/[A-Z0-9]+\/apps\/byo\)/);
+    expect(ranked.instruction).toMatch(/for a catalog app \(a service without the connection: prefix\), link its setup page as \[Connect <app name>\]\(\/[A-Z0-9]+\/apps\/connect\?source=<service>\) instead, because connection_request ends your turn[\s\S]*A saved connection \(service connection:<id>\) has no catalog setup page: use connection_request for it\./);
+    const result = await connectionIntentService(db).search(claims, "Synthetic notes service");
+    expect(result.instruction).toMatch(/\[Connect your own MCP server\]\(\/[A-Z0-9]+\/apps\/byo\)/);
+    expect(result.instruction).toContain("Do not create the connection yourself, ask for the key in chat");
   });
 
   it("creates one addressed request, resolves after install, and then reports ready for the responsible user", async () => {

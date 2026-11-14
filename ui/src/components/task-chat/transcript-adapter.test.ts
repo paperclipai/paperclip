@@ -274,6 +274,27 @@ describe("omitProgressRepeatedByResponseAcrossSegments", () => {
     ).toEqual([[first], []]);
   });
 
+  it("lets the response own the progress messages it was saved from", () => {
+    const work = progress("work", "Checking your inbox.");
+    const answer = progress("answer", "Two items need you: COM-2 and COM-1.");
+    const coda = progress("coda", "Answered above.");
+    const segments = [[work, answer], [coda]];
+    expect(
+      omitProgressRepeatedByResponseAcrossSegments(segments, "Two items need you: COM-2 and COM-1.\n\nAnswered above."),
+    ).toEqual([[work], []]);
+    // The closing line's own progress is gone once its completion exists; the earlier answer still composes the response.
+    expect(
+      omitProgressRepeatedByResponseAcrossSegments([[work, answer]], "Two items need you: COM-2 and COM-1.\n\nAnswered above."),
+    ).toEqual([[work]]);
+    // A long unrelated history is not hidden.
+    const history = [Array.from({ length: 500 }, (_, index) => progress(`p${index}`, `Step ${index} of a long run.`))];
+    expect(omitProgressRepeatedByResponseAcrossSegments(history, "Short reply.")).toBe(history);
+    // A response that only shares a progress message's text does not hide it.
+    expect(
+      omitProgressRepeatedByResponseAcrossSegments(segments, "Something else.\n\nTwo items need you: COM-2 and COM-1."),
+    ).toBe(segments);
+  });
+
   it("preserves segment identity when there is no durable-response match", () => {
     const segments = [[progress("first", "Progress only")]];
     expect(

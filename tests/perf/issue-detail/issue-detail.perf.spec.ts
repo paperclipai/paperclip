@@ -7,6 +7,7 @@ const CAPTURE_PROFILE = process.env.PAPERCLIP_ISSUE_PERF_PROFILE === "1";
 const RUNS = CAPTURE_PROFILE ? 1 : Number.isFinite(requestedRuns) ? Math.max(5, Math.floor(requestedRuns)) : 5;
 const OUTPUT_DIR = path.resolve(process.cwd(), "test-results/issue-detail-perf");
 const PAGE_READY_TIMEOUT_MS = 90_000;
+const LIST_DWELL_MS = Math.max(0, Number(process.env.PAPERCLIP_ISSUE_PERF_LIST_DWELL_MS ?? 0) || 0);
 const HEADER_MEASURE = "issue-detail:navigate→header-paint";
 const CONTENT_MEASURE = "issue-detail:navigate→content-paint";
 
@@ -256,6 +257,10 @@ async function runScenario(browser: Browser, baseURL: string, seedData: Seed, pr
     await page.goto(`/${seedData.prefix}/issues`);
     const issueLink = page.locator("[data-inbox-issue-link]", { hasText: seedData.title }).first();
     await expect(issueLink).toBeVisible({ timeout: PAGE_READY_TIMEOUT_MS });
+    // Optional time spent reading the list before the click, as a person does.
+    // Background work the list starts after painting (such as preloading the
+    // top tasks) only helps when the click comes after it.
+    if (LIST_DWELL_MS > 0) await page.waitForTimeout(LIST_DWELL_MS);
     network.clear();
   }
   if (captureProfile) {

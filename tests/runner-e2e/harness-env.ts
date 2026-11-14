@@ -1,3 +1,7 @@
+import { PUBLIC_ORIGIN_CONTROL_ENV, PUBLIC_ORIGIN_RECEIPT_ENV } from "./chat-public-origin.js";
+import { scrubChatPrivateEnvironment } from "./chat-private-inputs.js";
+import { CHAT_ANNOUNCEMENT_FEED_URL, CHAT_ANNOUNCEMENT_SCENARIO } from "./chat-announcement-fixture.js";
+import { PRIVATE_DIAGNOSTICS_ENV } from "./private-diagnostics.js";
 import { installedDaytonaPluginKeys } from "./installed-daytona-plugin.js";
 import { QUALIFIED_ACPX_PROFILES } from "../../packages/paperclip-runner/src/drivers/acpx/qualified-profiles.js";
 import { assertInstalledCliSelection, installedCliKeys, usesInstalledCli } from "./installed-cli.js";
@@ -35,6 +39,13 @@ const AMBIENT_EXTERNAL_STATE_KEYS = [
   "PAPERCLIP_STORAGE_S3_FORCE_PATH_STYLE",
 ] as const;
 const PROVIDER_SECRET_KEY = /^(?:OPENAI|ANTHROPIC|OPENROUTER|BRAINTRUST|DAYTONA|XAI|GROK|KIMI|CURSOR|COPILOT|GITHUB|GH)(?:_|$)/;
+
+/** Vault SDK authority is never ambient chat input. An explicitly selected
+ * server-only vault handoff supplies its own finite overrides after scrubbing. */
+export function scrubAmbientVaultEnvironment(env: NodeJS.ProcessEnv) {
+  for (const name of Object.keys(env)) if (name.startsWith("AWS_") || name.startsWith("PAPERCLIP_SECRETS_AWS_")) delete env[name];
+  return env;
+}
 
 export function applyEvalGatewayEnvironment(env: NodeJS.ProcessEnv, credential: string, gateway: {
   token: string; baseUrl: string; phasePath: string; observability?: { token: string; baseUrl: string };
@@ -136,6 +147,10 @@ export function buildRunnerE2EProcessEnvironment(
   const installed = usesInstalledCli(source);
   if (installed) assertInstalledCliSelection(source, executions);
   const result = { ...source };
+  if (executions.some(execution => execution.suite.id === "chat-features")) scrubAmbientVaultEnvironment(result);
+  delete result[PUBLIC_ORIGIN_CONTROL_ENV]; delete result[PUBLIC_ORIGIN_RECEIPT_ENV];
+  if (executions.some(execution => execution.suite.id === "chat-features")) scrubChatPrivateEnvironment(result, executions);
+  else scrubChatPrivateEnvironment(result, []);
   delete result.PAPERCLIP_RUNNER_E2E_POSTGRES_ADMIN_URL;
   // The supervisor's read-only recovery observer must use the same disposable
   // instance key as the serving child, never a launching shell's vault key.
@@ -144,8 +159,12 @@ export function buildRunnerE2EProcessEnvironment(
   delete result.PAPERCLIP_E2E_GATEWAY_PHASE_PATH;
   delete result.PAPERCLIP_E2E_OTLP_RELAY_URL;
   delete result.PAPERCLIP_E2E_REMOTE_GATEWAY_ORIGIN;
-  // Announcements are unrelated to the scenarios and obscure screenshot evidence.
-  result.PAPERCLIP_ANNOUNCEMENTS_ENABLED = "false";
+  // Only the isolated dismissal journey consumes the reviewed public staging feed.
+  // Other cells keep announcements disabled so ambient notices cannot obscure evidence.
+  const announcement = executions.length === 1 && executions[0]!.suite.id === "chat-features"
+    && executions[0]!.task.id === CHAT_ANNOUNCEMENT_SCENARIO;
+  result.PAPERCLIP_ANNOUNCEMENTS_ENABLED = announcement ? "true" : "false";
+  if (announcement) result.PAPERCLIP_ANNOUNCEMENTS_FEED_URL = CHAT_ANNOUNCEMENT_FEED_URL;
   delete result.OPENCODE_ALLOW_ALL_MODELS;
   // Discard ambient admission. Only explicit candidate cells authorize the
   // exact model in their isolated server; credentials still use company secrets.
@@ -209,7 +228,10 @@ export function buildPaperclipServerEnvironment(
   source: NodeJS.ProcessEnv,
   overrides: NodeJS.ProcessEnv = {},
 ): NodeJS.ProcessEnv {
-  const result = { ...source };
+  const result = scrubChatPrivateEnvironment({ ...source }, [], true);
+  scrubAmbientVaultEnvironment(result);
+  delete result[PUBLIC_ORIGIN_CONTROL_ENV]; delete result[PUBLIC_ORIGIN_RECEIPT_ENV];
+  delete result[PRIVATE_DIAGNOSTICS_ENV];
   delete result.PAPERCLIP_RUNNER_E2E_POSTGRES_ADMIN_URL;
   for (const key of Object.keys(result)) {
     if (PROVIDER_SECRET_KEY.test(key)) delete result[key];
@@ -224,6 +246,7 @@ export function buildPaperclipServerEnvironment(
   }
   for (const key of [...GENERATED_SERVER_SECRET_KEYS, ...installedCliKeys, ...installedDaytonaPluginKeys, "PAPERCLIP_RUNNER_E2E_UPGRADE_ARTIFACTS"]) delete result[key];
   Object.assign(result, overrides);
+  delete result[PRIVATE_DIAGNOSTICS_ENV];
   return result;
 }
 
@@ -234,6 +257,7 @@ export function assertIsolatedServerEnvironment(
     paperclipHome: string;
     configPath: string;
     workspaceStorage?: NodeJS.ProcessEnv;
+    generatedSecretsMasterKey?: string;
   },
 ) {
   const home = env.PAPERCLIP_HOME;
@@ -262,6 +286,7 @@ export function assertIsolatedServerEnvironment(
     ...AMBIENT_PAPERCLIP_CREDENTIAL_KEYS,
     ...AMBIENT_EXTERNAL_STATE_KEYS,
   ]) {
+    if (key === "PAPERCLIP_SECRETS_MASTER_KEY" && expected.generatedSecretsMasterKey && env[key] === expected.generatedSecretsMasterKey) continue;
     if (env[key] && !(AMBIENT_EXTERNAL_STATE_KEYS.includes(key as typeof AMBIENT_EXTERNAL_STATE_KEYS[number])
       && expected.workspaceStorage?.[key] === env[key] && expected.workspaceStorage?.PAPERCLIP_STORAGE_PROVIDER === "s3"))
       throw new Error(

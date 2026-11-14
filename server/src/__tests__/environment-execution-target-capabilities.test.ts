@@ -218,6 +218,16 @@ describe("resolveEnvironmentExecutionTarget effective capability snapshot", () =
     expect(target.reusableLeaseConfigured).toBe(true);
   });
 
+  it("carries an inheriting environment's idle window for the remote warm default", async () => {
+    const { target } = await buildSandboxTarget({
+      snapshot: FULL_GRANT,
+      supportsSync: false,
+      config: { reuseLease: true, runnerIdleTimeoutMs: 900_000 },
+    });
+    expect(target.runnerLifecyclePolicy).toBeNull();
+    expect(target.runnerIdleTimeoutMs).toBe(900_000);
+  });
+
   it("carries host-owned sandbox acquisition provenance without persisting provider ids in metadata", async () => {
     mockResolveEnvironmentDriverConfigForRuntime.mockResolvedValue({
       driver: "sandbox",

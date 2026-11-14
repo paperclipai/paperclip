@@ -46,8 +46,9 @@ export async function emitStartupReuse(
 export function environmentStartupReuse(target: {
   kind: string; transport?: string;
   sandboxLeaseAcquisition?: { outcome: string; reason?: string } | null;
-} | null | undefined): StartupReuseDecision {
+} | null | undefined, options: { reattachedRetainedLease?: boolean } = {}): StartupReuseDecision {
   if (!target || target.kind === "local") return { state: "not_applicable", reason: "not_applicable" };
+  if (options.reattachedRetainedLease) return { state: "reused", reason: "verified_reuse" };
   const acquisition = target.sandboxLeaseAcquisition;
   if (target.transport !== "sandbox" || !acquisition) return { state: "unknown", reason: "evidence_missing" };
   if (acquisition.outcome === "resumed") return { state: "reused", reason: "verified_reuse" };

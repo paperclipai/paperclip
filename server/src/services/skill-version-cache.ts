@@ -3,7 +3,7 @@ import { AsyncLocalStorage } from "node:async_hooks";
 import { randomUUID } from "node:crypto";
 import { constants, promises as fs } from "node:fs";
 import path from "node:path";
-import { and, eq, sql } from "drizzle-orm";
+import { and, eq, inArray, isNull, sql } from "drizzle-orm";
 import { companySkillVersions, heartbeatRuns,
   nativeRunFinalizations, environmentLeases, withDedicatedDbConnection, type Db } from "@paperclipai/db";
 import { resolvePaperclipInstanceRoot } from "../home-paths.js";
@@ -13,6 +13,7 @@ import type { CompanySkillVersionFileInventoryEntry } from "@paperclipai/shared"
 import { noteSkillVersionCacheChange } from "./skill-version-retention-notifications.js";
 import { parseNativeExecutionInput } from "../vendor/paperclip-runner/index.js";
 import { beginRunPhase } from "./execution-preparation-timing.js";
+import { noRetainedExecutionPredicate } from "./pre-dispatch-execution-evidence.js";
 import { withWorkspaceLockKeepalive } from "./native-runtime/native-workspace-lock-keepalive.js";
 
 export const SKILL_VERSION_CACHE_IDLE_MS = 60 * 60 * 1000;
@@ -101,7 +102,13 @@ export async function lastUsedAt(filename: string): Promise<number | null> {
 }
 
 export function skillRunNeedsFilesSql() {
-  return sql`(
+  const unstartedAdmission = and(
+    inArray(heartbeatRuns.status, ["queued", "scheduled_retry"]), noRetainedExecutionPredicate(),
+    isNull(heartbeatRuns.finishedAt), isNull(heartbeatRuns.runnerInstanceId),
+    isNull(heartbeatRuns.nativePhase), isNull(heartbeatRuns.nativePhaseUpdatedAt),
+    sql`not (coalesce(${heartbeatRuns.contextSnapshot}, '{}'::jsonb) ?| array['skillVersions', 'skillSelectionSnapshot'])`,
+  );
+  return sql`not (${unstartedAdmission}) and (
       ${heartbeatRuns.status} not in ('succeeded', 'failed', 'timed_out', 'cancelled', 'interrupted')
       or ${heartbeatRuns.finishedAt} is null
       or ${heartbeatRuns.controllerLeaseExpiresAt} > now()
@@ -119,9 +126,10 @@ export function skillRunNeedsFilesSql() {
 
 // A terminal run can still own provider execution or recovery. Only fully settled
 // runs release their pins; resume preparation reacquires the same cache lock.
-export async function protectedVersions(db: Db, companyId: string): Promise<{ versions: Set<string> | null; leaseDeadlines: Map<string, number> }> {
+export async function protectedVersions(db: Db, companyId: string, targetSkill?: { createdAt: Date }): Promise<{ versions: Set<string> | null; leaseDeadlines: Map<string, number> }> {
   const rows = await db.select({
     id: heartbeatRuns.id, agentId: heartbeatRuns.agentId, nativeIssueId: heartbeatRuns.nativeIssueId,
+    status: heartbeatRuns.status, finishedAt: heartbeatRuns.finishedAt,
     leaseDeadline: sql<number | null>`case when ${heartbeatRuns.status} in ('succeeded', 'failed', 'timed_out', 'cancelled', 'interrupted')
       and ${heartbeatRuns.finishedAt} is not null and ${heartbeatRuns.controllerLeaseExpiresAt} > now()
       then extract(epoch from ${heartbeatRuns.controllerLeaseExpiresAt}) * 1000 end`,
@@ -135,7 +143,7 @@ export async function protectedVersions(db: Db, companyId: string): Promise<{ ve
   const versions = new Set<string>();
   const leaseDeadlines = new Map<string, number>();
   const unknown = () => ({ versions: null, leaseDeadlines });
-  for (const { pins, legacyInput, id, agentId, nativeIssueId, leaseDeadline } of rows) {
+  for (const { pins, legacyInput, id, agentId, nativeIssueId, leaseDeadline, status, finishedAt } of rows) {
     const add = (version: string) => {
       versions.add(version);
       if (leaseDeadline !== null) leaseDeadlines.set(version, Math.min(leaseDeadlines.get(version) ?? Infinity, Number(leaseDeadline)));
@@ -151,7 +159,11 @@ export async function protectedVersions(db: Db, companyId: string): Promise<{ ve
           || input.binding.runId !== id || input.binding.agentId !== agentId
           || input.binding.issueId !== nativeIssueId) return unknown();
         for (const skill of input.runtimeContext.skills) {
-          if (skill.versionId === null) return unknown();
+          if (skill.versionId === null) {
+            if (targetSkill && finishedAt && targetSkill.createdAt > finishedAt
+              && ["succeeded", "failed", "timed_out", "cancelled", "interrupted"].includes(status)) continue;
+            return unknown();
+          }
           if (!uuid.test(skill.versionId)) return unknown();
           add(skill.versionId);
         }

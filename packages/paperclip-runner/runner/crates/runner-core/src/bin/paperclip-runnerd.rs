@@ -243,6 +243,13 @@ fn optional_value(args: &[String], name: &str) -> Result<Option<String>, LocalRu
         .ok_or_else(|| LocalRunnerError::invalid(format!("missing value for {name}")))
 }
 
+/// Launches without `--lifecycle-mode` (older controllers) and warm launches
+/// keep the turn-end provider restart; only an explicit per-turn lifecycle,
+/// whose Runner exits with its run, skips it.
+fn turn_scoped(args: &[String]) -> Result<bool, LocalRunnerError> {
+    Ok(optional_value(args, "--lifecycle-mode")?.as_deref() == Some("per_turn"))
+}
+
 fn optional_u64(args: &[String], name: &str) -> Result<Option<u64>, LocalRunnerError> {
     let Some(index) = args.iter().position(|argument| argument == name) else {
         return Ok(None);
@@ -497,6 +504,7 @@ fn run_durable(args: &[String]) -> Result<(), LocalRunnerError> {
         reconnect_delay: duration("--reconnect-delay-ms", 250)?,
         reconnect_grace: optional_u64(args, "--reconnect-grace-ms")?.map(Duration::from_millis),
         max_runtime: duration("--max-runtime-ms", 0)?,
+        turn_scoped: turn_scoped(args)?,
     };
     if host_control.is_some() && !config.connect_url.starts_with("listen://") {
         return Err(LocalRunnerError::invalid(
@@ -518,6 +526,14 @@ fn run_durable(args: &[String]) -> Result<(), LocalRunnerError> {
         if let Ok(executable) = std::env::current_exe() {
             std::env::set_var(key, executable);
         }
+    }
+    // Journal every provider's process lineage before any provider starts, so
+    // a controller can stop and prove gone the provider and its tools if this
+    // process dies. Without the journal the controller keeps its fail-closed
+    // cleanup quarantine; the run itself is unaffected.
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    if let Err(error) = paperclip_runner_core::process_lineage::enable_journal(&state_dir) {
+        eprintln!("paperclip-runnerd: process lineage journal unavailable: {error}");
     }
     let executor = NativeProviderCommandExecutor::with_runner_config(state_dir, &config);
     paperclip_runner_core::durable::run_durable_runner_with_host_control(
@@ -543,11 +559,73 @@ fn apply_oom_score_adj(args: &[String]) -> Result<(), LocalRunnerError> {
     Ok(())
 }
 
+/// `--trusted-launch-root <dir>`: the host asserts that `<dir>` is an
+/// immutable, digest-pinned image (the agent computer's Runner ROM). Launch
+/// artifacts the root admits run in place instead of from a sealed copy. A root
+/// that fails its startup checks only loses that speedup, never protection.
+fn apply_trusted_launch_root(args: &[String]) -> Result<(), LocalRunnerError> {
+    let Some(path) = optional_value(args, "--trusted-launch-root")? else {
+        return Ok(());
+    };
+    match paperclip_runner_core::qualified_launch::TrustedLaunchRoot::open(Path::new(&path)) {
+        Ok(root) => paperclip_runner_core::qualified_launch::set_trusted_launch_root(root),
+        Err(reason) => eprintln!(
+            "paperclip-runnerd: ignoring --trusted-launch-root {path}: {reason}; launch artifacts keep sealed snapshots"
+        ),
+    }
+    Ok(())
+}
+
 fn apply_task_memory_cgroup(args: &[String]) -> Result<(), LocalRunnerError> {
     if let Some(path) = optional_value(args, "--task-memory-cgroup")? {
         paperclip_runner_core::task_memory::set_task_cgroup(PathBuf::from(path));
     }
     Ok(())
+}
+
+/// `reap-lineage --state-dir <dir> --runner-pid <pid> [--grace-ms N] [--deadline-ms N]`
+///
+/// Run by the controller after it confirmed that runnerd exited. Prints one
+/// JSON report and exits 0 only when every journalled process is proven gone.
+fn reap_lineage(args: &[String]) -> Result<(), LocalRunnerError> {
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    {
+        let state_dir = PathBuf::from(value(args, "--state-dir")?);
+        let runner_pid = value(args, "--runner-pid")?
+            .parse::<i32>()
+            .ok()
+            .filter(|pid| *pid > 1)
+            .ok_or_else(|| LocalRunnerError::invalid("--runner-pid must be a process ID"))?;
+        let grace = Duration::from_millis(optional_u64(args, "--grace-ms")?.unwrap_or(1_000));
+        let deadline =
+            Duration::from_millis(optional_u64(args, "--deadline-ms")?.unwrap_or(10_000));
+        let report = paperclip_runner_core::process_lineage::reap_journals(
+            &state_dir,
+            runner_pid,
+            grace,
+            deadline.max(grace),
+        );
+        println!(
+            "{}",
+            serde_json::to_string(&report)
+                .map_err(|error| LocalRunnerError::invalid(error.to_string()))?
+        );
+        if report.verified {
+            Ok(())
+        } else {
+            Err(LocalRunnerError::invalid(format!(
+                "process lineage not proven stopped: {}",
+                report.reason.unwrap_or("unknown")
+            )))
+        }
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    {
+        let _ = args;
+        Err(LocalRunnerError::invalid(
+            "process lineage reaping is unavailable on this platform",
+        ))
+    }
 }
 
 fn run(args: &[String]) -> Result<(), LocalRunnerError> {
@@ -565,6 +643,9 @@ fn run(args: &[String]) -> Result<(), LocalRunnerError> {
         return paperclip_runner_core::stdio_mcp::run_proxy(Path::new(&args[1]), args.len() == 3)
             .map_err(|e| LocalRunnerError::invalid(e.to_string()));
     }
+    if args.first().map(String::as_str) == Some("reap-lineage") {
+        return reap_lineage(args);
+    }
     if args.first().map(String::as_str) == Some("--build-metadata") {
         println!("{}", metadata_with_provider_packs(args)?);
         return Ok(());
@@ -576,6 +657,7 @@ fn run(args: &[String]) -> Result<(), LocalRunnerError> {
     }
     apply_oom_score_adj(args)?;
     apply_task_memory_cgroup(args)?;
+    apply_trusted_launch_root(args)?;
     if args.iter().any(|argument| argument == "--connect-url")
         || args.iter().any(|argument| argument == "--listen-address")
         || args.iter().any(|argument| argument == "--listen-port")
@@ -639,6 +721,26 @@ fn run_main(args: Vec<String>) -> ExitCode {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_a_per_turn_lifecycle_is_turn_scoped() {
+        let args = |values: &[&str]| {
+            values
+                .iter()
+                .map(|value| value.to_string())
+                .collect::<Vec<_>>()
+        };
+        assert!(turn_scoped(&args(&["--lifecycle-mode", "per_turn"])).unwrap());
+        assert!(!turn_scoped(&args(&[
+            "--lifecycle-mode",
+            "warm",
+            "--idle-timeout-ms",
+            "1"
+        ]))
+        .unwrap());
+        assert!(!turn_scoped(&args(&[])).unwrap());
+        assert!(turn_scoped(&args(&["--lifecycle-mode"])).is_err());
+    }
 
     #[test]
     fn cursor_cloud_launch_flags_are_optional_as_a_whole_and_required_as_an_exact_pin_set() {

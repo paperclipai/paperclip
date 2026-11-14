@@ -174,7 +174,7 @@ describe("managed worktree seed source through the server spawn path", () => {
     await fs.mkdir(path.join(repoRoot, "scripts"), { recursive: true });
     await fs.writeFile(path.join(repoRoot, "README.md"), "server spawn regression\n", "utf8");
     await fs.copyFile(
-      fileURLToPath(new URL("../../../scripts/provision-worktree.sh", import.meta.url)),
+      fileURLToPath(new URL("../../../scripts/setup-paperclip-worktree.sh", import.meta.url)),
       path.join(repoRoot, "scripts", "provision-worktree.sh"),
     );
     await fs.chmod(path.join(repoRoot, "scripts", "provision-worktree.sh"), 0o755);

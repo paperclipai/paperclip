@@ -10,7 +10,7 @@ import { restConnectorFor } from "../../connectors/rest-registry.js";
 import { GOOGLE_WORKSPACE_SERVICES, googleWorkspaceServiceGranted, googleWorkspaceToolName, googleWorkspaceGrantedScopes, isGoogleWorkspaceToolGranted, type GoogleWorkspaceService } from "@paperclipai/shared";
 import { isInsufficientConnectionScope, INSUFFICIENT_CONNECTION_SCOPE_MESSAGE } from "../../connection-permission-errors.js";
 import { mcpDiscoveryHttpFailure, withMcpConnectionFailure } from "../../mcp-connection-failure.js";
-import { BROWSER_USE_TOOLS } from "@paperclipai/shared";
+import { BROWSER_USE_TOOLS, MCP_SKILLS_EXTENSION_ID } from "@paperclipai/shared";
 import { browserUseClient, isBrowserUseConnection } from "../../browser-use-client.js";
 import { COGNEE_STDIO_TEMPLATE, cogneeCloudUrl } from "../../cognee-connection.js";
 import { isMemoryConnectorId } from "@paperclipai/shared";
@@ -20,7 +20,34 @@ import { connectionGrants, toolConnections } from "@paperclipai/db";
 import { GOOGLE_WORKSPACE_CONNECTOR_PROFILES, getConnectableAppDefinition } from "@paperclipai/shared";
 import { badRequest, HttpError, unprocessable } from "../../../errors.js";
 import { isSlackMcpAccessDisabledResponse } from "../../slack-mcp-error.js";
-import { initializeMcpHttpSession, McpHttpInitializationError, getMcpHttpSession, forgetMcpHttpSessions, readMcpHttpResponse, mcpHttpRequestHeaders } from "../../mcp-http.js";
+import {
+  forgetMcpHttpSessions,
+  forgetMcpProtocolVersion,
+  getMcpHttpSession,
+  initializeMcpHttpSession,
+  isModernMcpProtocolVersion,
+  knownMcpProtocolVersion,
+  knownMcpServerCapabilities,
+  mcpServerDeclaresExtension,
+  rememberMcpServerCapabilities,
+  MCP_ERROR_UNSUPPORTED_PROTOCOL_VERSION,
+  MCP_PROTOCOL_VERSION,
+  mcpCacheHint,
+  mcpCredentialFingerprint,
+  mcpEraKey,
+  McpHttpInitializationError,
+  mcpHttpRequestInit,
+  McpResultCache,
+  mcpProtocolVersionOf,
+  mcpToolHeaderParameters,
+  negotiateMcpProtocolVersion,
+  readMcpHttpResponse,
+  readMcpModernError,
+  rememberMcpProtocolVersion,
+  selectMcpProtocolVersion,
+} from "../../mcp-http.js";
+import { logger } from "../../../middleware/logger.js";
+import { saveMcpNegotiation } from "../mcp-protocol-config.js";
 import { secretService } from "../../secrets.js";
 import { agentmailApi } from "../../agentmail-api.js";
 import { createRailwayClient, discoverRailwayWorkspace, isRailwayConnection, normalizeRailwayToolName, RAILWAY_TOOLS, RAILWAY_TOOL_PREFIX, RailwayError } from "../../railway.js";
@@ -34,7 +61,15 @@ import type { OAuthCredentialStore } from "../oauth/credential-store.js";
 import type { ConnectionSetupPolicy } from "../connections/setup-policy.js";
 import type { ToolRemoteHttp } from "../remote-http.js";
 import { normalizeToolDescriptor, type McpToolDescriptor } from "./descriptors.js";
-import { unsupportedToolConnectionTransport } from "./failures.js";
+import { googleWorkspaceServicesUnavailable, unsupportedToolConnectionTransport } from "./failures.js";
+
+const URL_CREDENTIAL_PARAMETER = /token|secret|passw|api[-_]?key|^key$|auth|signature|^sig$|session|credential/i;
+
+/** Whether a sent URL carries a credential: user info, or a query parameter named like one. Plain settings such as `?region=us` do not. */
+export function urlCarriesCredential(url: URL): boolean {
+  if (url.username || url.password) return true;
+  return [...url.searchParams.keys()].some((key) => URL_CREDENTIAL_PARAMETER.test(key));
+}
 function asRecord(value: unknown): Record<string, unknown> {
   if (value && typeof value === "object" && !Array.isArray(value))
     return value as Record<string, unknown>;
@@ -59,6 +94,20 @@ type DiscoveryDependencies = {
   localTools(connection: typeof toolConnections.$inferSelect): Promise<McpToolDescriptor[]>;
 };
 
+/** Fresh `tools/list` results, honoring the server's `ttlMs` and `cacheScope`. */
+const remoteToolListCache = new McpResultCache<McpToolDescriptor[]>(500);
+
+/** Fresh `skills/list` results (raw entries), honoring the server's `ttlMs` and `cacheScope`. */
+const remoteSkillListCache = new McpResultCache<unknown[]>(500);
+
+export function forgetRemoteToolListCache(connectionId: string) {
+  remoteToolListCache.deletePrefix(`${connectionId}:`);
+  remoteSkillListCache.deletePrefix(`${connectionId}:`);
+}
+
+const MAX_SKILL_LIST_PAGES = 50;
+const MAX_LISTED_SKILLS = 5_000;
+
 export function createToolCatalogDiscovery(db: Db, { now, audit, secrets, credentials, vercel, vercelConnect, setupPolicy, requestRemoteHttpEndpoint, resolveOAuthGrantSecret, discoverOAuthEndpoints, localTools }: DiscoveryDependencies) {
   const { vaultGrantForConnection, resolveCredentialHeaders, resolvedRemoteEndpoint } = credentials;
   const { resolveVercelCredentialHeaders, vercelGrantForConnection } = vercel;
@@ -69,6 +118,8 @@ export function createToolCatalogDiscovery(db: Db, { now, audit, secrets, creden
     actor?: ActorInfo,
     workspaceEndpoint?: string,
     unavailableServices: string[] = [],
+    /** `live` skips a fresh cached list: health checks must reach the server. */
+    listOptions: { live?: boolean } = {},
   ): Promise<McpToolDescriptor[]> {
     assertSupportedConnection(connection);
     await assertConnectorConnectionSetupEnabled(connection);
@@ -84,7 +135,7 @@ export function createToolCatalogDiscovery(db: Db, { now, audit, secrets, creden
       // One credential authority, no child connections or implied service grants.
       const catalogs = await Promise.allSettled(services.map(async (service) => {
         const profile = GOOGLE_WORKSPACE_CONNECTOR_PROFILES[GOOGLE_WORKSPACE_SERVICES[service]];
-        const tools = await remoteTools(connection, headers, actor, profile.serverUrl);
+        const tools = await remoteTools(connection, headers, actor, profile.serverUrl, [], listOptions);
         return tools.map((tool) => ({ ...tool, name: googleWorkspaceToolName(service, tool.name) }))
           .filter((tool) => isGoogleWorkspaceToolGranted(tool.name, scopes));
       }));
@@ -99,8 +150,8 @@ export function createToolCatalogDiscovery(db: Db, { now, audit, secrets, creden
       const currentGrant = await vaultGrantForConnection(connection, actor);
       if (!currentGrant) throw unprocessable("OAuth authorization must be reconnected", { code: "oauth_reauthorization_required" });
       if (catalogs.length > 0 && catalogs.every((catalog) => catalog.status === "rejected")) {
-        throw new HttpError(502, `Google services unavailable: ${unavailableServices.join(", ")}. Retry refreshing actions.`,
-          { code: "google_workspace_services_unavailable" });
+        throw googleWorkspaceServicesUnavailable(unavailableServices,
+          catalogs.map((catalog) => catalog.status === "rejected" ? catalog.reason : undefined));
       }
       // A service's authentication retry may have refreshed into a narrower
       // grant. Never publish actions using the pre-refresh permission snapshot.
@@ -117,8 +168,7 @@ export function createToolCatalogDiscovery(db: Db, { now, audit, secrets, creden
     const sendRemote = (init: RequestInit) => withMcpConnectionFailure(() => requestRemoteHttpEndpoint(new URL(endpoint), init));
     const sendToolsList = (requestHeaders: Record<string, string>, cursor?: string) => {
       sessionHeaders = requestHeaders;
-      return sendRemote({ method: "POST", headers: mcpHttpRequestHeaders(requestHeaders),
-        body: JSON.stringify({ jsonrpc: "2.0", id: listRequestId, method: "tools/list", params: cursor ? { cursor } : {} }) });
+      return sendRemote(mcpHttpRequestInit(requestHeaders, { id: listRequestId, method: "tools/list", params: cursor ? { cursor } : {} }));
     };
     const connectionConfig = asRecord(connection.config);
     const sourceTemplateKey = typeof connectionConfig?.sourceTemplateKey === "string"
@@ -133,68 +183,127 @@ export function createToolCatalogDiscovery(db: Db, { now, audit, secrets, creden
         method.key === connectionMethodKey && method.defaults?.mcpSessionRequired === true
       ),
     );
+    // The protocol era is saved on the connection, so a restart does not
+    // re-probe every server. It is checked again when a request using it fails.
+    const eraKey = mcpEraKey(connection.id, endpoint);
+    const savedProtocolVersion = typeof connectionConfig.mcpProtocolVersion === "string" ? connectionConfig.mcpProtocolVersion : null;
+    if (!knownMcpProtocolVersion(eraKey)) {
+      if (savedProtocolVersion) rememberMcpProtocolVersion(eraKey, savedProtocolVersion);
+      // Saved as needing a session: a handshake server, re-probed only if it refuses.
+      else if (connectionConfig?.mcpSessionRequired === true || curatedMethodRequiresMcpSession) rememberMcpProtocolVersion(eraKey, MCP_PROTOCOL_VERSION);
+    }
+    const privateCacheKey = `${eraKey}:${mcpCredentialFingerprint(headers)}`;
+    const publicCacheKey = `${eraKey}:public`;
+    if (!listOptions.live && isModernMcpProtocolVersion(knownMcpProtocolVersion(eraKey)) && !isRailwayConnection(connection)) {
+      const cached = remoteToolListCache.get(privateCacheKey) ?? remoteToolListCache.get(publicCacheKey);
+      if (cached) return structuredClone(cached);
+    }
+    const sessionScope = `${connection.id}:catalog:${actor?.actorType}:${actor?.actorId}:${endpoint}`;
+    let protocolVersion = MCP_PROTOCOL_VERSION;
     let usedInitializedSession = connectionConfig?.mcpSessionRequired === true || curatedMethodRequiresMcpSession;
-    let response: Response;
-    if (usedInitializedSession) {
+    // Resolves to the challenge itself when the server rejects the credential.
+    const negotiate = async (): Promise<Response | null> => {
       try {
-        sessionHeaders = await getMcpHttpSession({ send: sendRemote, headers,
-          scope: `${connection.id}:catalog:${actor?.actorType}:${actor?.actorId}:${endpoint}`,
-          requestId: listRequestId });
-        response = await sendToolsList(sessionHeaders);
+        protocolVersion = await negotiateMcpProtocolVersion({ send: sendRemote, headers, requestId: listRequestId, eraKey });
+        return null;
       } catch (error) {
         if (!(error instanceof McpHttpInitializationError) || !error.response) throw error;
-        response = error.response;
+        return error.response;
       }
-    } else {
-      response = await sendToolsList(headers);
+    };
+    const listFirstPage = async (versionChanges = 0): Promise<Response> => {
+      if (isModernMcpProtocolVersion(protocolVersion)) {
+        const modernResponse = await sendToolsList({ ...headers, "MCP-Protocol-Version": protocolVersion });
+        const modernError = await readMcpModernError(modernResponse);
+        const supported = modernError?.code === MCP_ERROR_UNSUPPORTED_PROTOCOL_VERSION
+          ? selectMcpProtocolVersion(modernError.supported) : null;
+        if (!supported || supported === protocolVersion || versionChanges > 1) return modernResponse;
+        await modernResponse.body?.cancel().catch(() => undefined);
+        protocolVersion = supported;
+        rememberMcpProtocolVersion(eraKey, supported);
+        return listFirstPage(versionChanges + 1);
+      }
+      if (usedInitializedSession) {
+        try {
+          sessionHeaders = await getMcpHttpSession({ send: sendRemote, headers, scope: sessionScope, requestId: listRequestId, eraKey });
+          return await sendToolsList(sessionHeaders);
+        } catch (error) {
+          if (!(error instanceof McpHttpInitializationError) || !error.response) throw error;
+          return error.response;
+        }
+      }
+      let legacyResponse = await sendToolsList(headers);
       // `tools/list` is read-only, so a 400 can safely be retried after the MCP
       // initialize handshake. Stateful servers such as Supabase require the
       // returned Mcp-Session-Id on every non-initialization request.
-      if (response.status === 400) {
+      if (legacyResponse.status === 400) {
         try {
-          const sessionHeaders = await initializeMcpHttpSession({
+          const initialized = await initializeMcpHttpSession({
             send: sendRemote,
             headers,
             requestId: "paperclip-catalog-refresh",
+            eraKey,
           });
-          response = await sendToolsList(sessionHeaders);
-          usedInitializedSession = response.ok;
+          const retried = await sendToolsList(initialized);
+          await legacyResponse.body?.cancel().catch(() => undefined);
+          legacyResponse = retried;
+          usedInitializedSession = legacyResponse.ok;
         } catch {
           // Preserve the original HTTP failure below when this was not an MCP
           // session requirement after all.
         }
       }
+      return legacyResponse;
+    };
+    let response = await negotiate() ?? await listFirstPage();
+    if (savedProtocolVersion && response.status === 400) {
+      // The server no longer accepts the saved version (for example it moved to
+      // stateless MCP). Listing is read-only, so probe once more and retry.
+      await response.body?.cancel().catch(() => undefined);
+      forgetMcpProtocolVersion(eraKey);
+      forgetMcpHttpSessions(connection.id);
+      response = await negotiate() ?? await listFirstPage();
     }
     if (response.status === 404 && new Headers(sessionHeaders).has("mcp-session-id")) {
       // MCP uses 404 for an expired server session. Discovery is read-only, so
       // discard the stale session and retry it once with a new handshake.
       forgetMcpHttpSessions(connection.id);
       await response.body?.cancel().catch(() => undefined);
-      sessionHeaders = await getMcpHttpSession({ send: sendRemote, headers,
-        scope: `${connection.id}:catalog:${actor?.actorType}:${actor?.actorId}:${endpoint}`,
-        requestId: listRequestId });
+      sessionHeaders = await getMcpHttpSession({ send: sendRemote, headers, scope: sessionScope, requestId: listRequestId, eraKey });
       response = await sendToolsList(sessionHeaders);
       if (response.status === 404) forgetMcpHttpSessions(connection.id);
     }
-    if (
-      usedInitializedSession &&
-      connectionConfig?.mcpSessionRequired !== true
-    ) {
-      const nextConfig = { ...connection.config, mcpSessionRequired: true };
-      await db
-        .update(toolConnections)
-        .set({
-          config: nextConfig,
-          transportConfig: nextConfig,
-          updatedAt: now(),
-        })
-        .where(
-          and(
-            eq(toolConnections.id, connection.id),
-            eq(toolConnections.companyId, connection.companyId),
-          ),
-        );
-    }
+    // After a credential refresh, list in the shape this server needs. A server
+    // whose probe was itself refused for the old credential is probed now.
+    const relistAfterCredentialRefresh = async () => {
+      if (!isModernMcpProtocolVersion(protocolVersion) && knownMcpProtocolVersion(eraKey)) return sendToolsList(headers);
+      return await negotiate() ?? await listFirstPage();
+    };
+    // Save what the last request actually used. A session request can come
+    // back modern after a refused handshake, and a credential refresh can
+    // negotiate after the first listing.
+    const usedProtocolVersion = () => {
+      const sent = mcpProtocolVersionOf(sessionHeaders);
+      if (isModernMcpProtocolVersion(sent)) return sent;
+      return isModernMcpProtocolVersion(protocolVersion) ? MCP_PROTOCOL_VERSION : protocolVersion;
+    };
+    const saveNegotiation = async () => {
+      const used = usedProtocolVersion();
+      const current = asRecord(connection.config);
+      const sessionRequiredChanged = !isModernMcpProtocolVersion(used) && usedInitializedSession && current.mcpSessionRequired !== true;
+      const versionChanged = response.ok && current.mcpProtocolVersion !== used;
+      if (response.ok) rememberMcpProtocolVersion(eraKey, used);
+      if (!sessionRequiredChanged && !versionChanged) return;
+      const saved = await saveMcpNegotiation(db, connection, {
+        ...(sessionRequiredChanged ? { mcpSessionRequired: true as const } : {}),
+        ...(versionChanged ? { mcpProtocolVersion: used } : {}),
+      });
+      if (saved) {
+        connection.config = saved.config;
+        connection.transportConfig = saved.transportConfig;
+      }
+    };
+    await saveNegotiation();
     if (isInsufficientConnectionScope(response)) {
       await response.body?.cancel().catch(() => undefined);
       throw unprocessable(INSUFFICIENT_CONNECTION_SCOPE_MESSAGE, { code: "oauth_insufficient_scope", connectionId: connection.id });
@@ -219,7 +328,7 @@ export function createToolCatalogDiscovery(db: Db, { now, audit, secrets, creden
           forceRefresh: true,
         })),
       };
-      response = await sendToolsList(headers);
+      response = await relistAfterCredentialRefresh();
     }
     if (
       response.status === 401 &&
@@ -232,7 +341,7 @@ export function createToolCatalogDiscovery(db: Db, { now, audit, secrets, creden
           forceRefresh: true,
         })),
       };
-      response = await sendToolsList(headers);
+      response = await relistAfterCredentialRefresh();
       if (
         response.status === 401 &&
         isPaperclipCloudConnectorStrategy(oauthConfig(connection).strategy)
@@ -251,6 +360,7 @@ export function createToolCatalogDiscovery(db: Db, { now, audit, secrets, creden
         }
       }
     }
+    if (response.ok) await saveNegotiation();
     if (!response.ok) {
       if ((response.status === 401 || response.status === 403)
         && connection.authKind === "api_key" && isMemoryConnectorId(connection.config.sourceTemplateKey)) {
@@ -263,9 +373,23 @@ export function createToolCatalogDiscovery(db: Db, { now, audit, secrets, creden
         );
       }
       const authenticate = response.headers.get("www-authenticate") ?? "";
+      // A bare 401 to a request that carried no credential is the server's
+      // answer to "does it need a key?". Treat it like a challenge whose sign-in
+      // Paperclip cannot discover, so the person is asked for a key instead of
+      // seeing a raw HTTP status. A request that carried a credential (stored
+      // secret, header, or a token or user info in the URL) keeps the raw
+      // rejection: that credential needs replacing, not a new key.
+      const sentUrl = new URL(endpoint);
+      const bareCredentialChallenge =
+        !authenticate.trim() &&
+        connection.authKind === "none" &&
+        connection.credentialSecretRefs.length === 0 &&
+        Object.keys(headers).length === 0 &&
+        !urlCarriesCredential(sentUrl);
       if (
         response.status === 401 &&
-        /bearer|oauth|authorization/i.test(authenticate)
+        (/bearer|oauth|authorization/i.test(authenticate) ||
+          bareCredentialChallenge)
       ) {
         const endpoints = await discoverOAuthEndpoints(
           connection,
@@ -291,6 +415,7 @@ export function createToolCatalogDiscovery(db: Db, { now, audit, secrets, creden
               resource: endpoints.resource ?? null,
               clientIdMetadataDocumentSupported:
                 endpoints.clientIdMetadataDocumentSupported === true,
+              issParameterSupported: endpoints.issParameterSupported === true,
               discoveredAt: new Date().toISOString(),
             },
           };
@@ -319,13 +444,29 @@ export function createToolCatalogDiscovery(db: Db, { now, audit, secrets, creden
     }
     const descriptors: McpToolDescriptor[] = [];
     const seenCursors = new Set<string>();
+    // Each page carries its own freshness hint; the list is fresh while all are.
+    let cacheHint: { ttlMs: number; scope: "public" | "private" } | null = null;
     for (let page = 0; ; page += 1) {
       const payload = await withMcpConnectionFailure(() => readMcpHttpResponse(response, listRequestId));
       const record = asRecord(payload);
       if (record.error) throw new HttpError(502, "Remote MCP tool discovery failed", { code: "mcp_catalog_error" });
       const result = asRecord(record.result);
       if (!Array.isArray(result.tools)) throw new HttpError(502, "Remote MCP returned an invalid tool catalog", { code: "mcp_catalog_invalid" });
-      descriptors.push(...result.tools.map((tool) => normalizeToolDescriptor(tool)).filter((tool): tool is McpToolDescriptor => Boolean(tool)));
+      const pageHint = mcpCacheHint(result);
+      cacheHint = page === 0 ? pageHint : pageHint && cacheHint
+        ? { ttlMs: Math.min(pageHint.ttlMs, cacheHint.ttlMs), scope: cacheHint.scope === "private" || pageHint.scope === "private" ? "private" : "public" }
+        : null;
+      descriptors.push(...result.tools.map((tool) => normalizeToolDescriptor(tool)).filter((tool): tool is McpToolDescriptor => {
+        if (!tool) return false;
+        // Header-mirrored parameters must be well formed; a bad tool is dropped
+        // so it cannot block the rest of the catalog.
+        const headerParameters = mcpToolHeaderParameters(tool.inputSchema);
+        if (!headerParameters.ok) {
+          logger.warn({ connectionId: connection.id, tool: tool.name, reason: headerParameters.reason }, "Skipped an MCP tool with invalid x-mcp-header annotations");
+          return false;
+        }
+        return true;
+      }));
       const cursor = typeof result.nextCursor === "string" ? result.nextCursor : null;
       if (!cursor) break;
       if (seenCursors.has(cursor) || page >= 99 || descriptors.length > 20_000) throw new HttpError(502, "Remote MCP tool catalog pagination did not finish", { code: "mcp_catalog_pagination" });
@@ -334,7 +475,14 @@ export function createToolCatalogDiscovery(db: Db, { now, audit, secrets, creden
       response = await sendToolsList(sessionHeaders, cursor);
       if (!response.ok) throw mcpDiscoveryHttpFailure(response, "Remote MCP catalog page could not be read");
     }
-    if (!isRailwayConnection(connection)) return descriptors;
+    if (!isRailwayConnection(connection)) {
+      if (isModernMcpProtocolVersion(mcpProtocolVersionOf(sessionHeaders)) && cacheHint) {
+        // Keyed by the credential that made the successful listing, which a
+        // token refresh above may have replaced.
+        remoteToolListCache.set(cacheHint.scope === "public" ? publicCacheKey : `${eraKey}:${mcpCredentialFingerprint(headers)}`, structuredClone(descriptors), cacheHint.ttlMs);
+      }
+      return descriptors;
+    }
     if (descriptors.some((tool) => normalizeRailwayToolName(tool.name).startsWith(RAILWAY_TOOL_PREFIX))) {
       throw unprocessable("Railway advertised a reserved Paperclip action name. Refresh is blocked pending review.", { code: "railway_tool_name_collision" });
     }
@@ -423,6 +571,7 @@ export function createToolCatalogDiscovery(db: Db, { now, audit, secrets, creden
     credentialHeaders?: Record<string, string>,
     actor?: ActorInfo,
     unavailableServices: string[] = [],
+    listOptions: { live?: boolean } = {},
   ): Promise<McpToolDescriptor[]> {
     assertSupportedConnection(connection);
     await assertConnectorConnectionSetupEnabled(connection);
@@ -449,7 +598,7 @@ export function createToolCatalogDiscovery(db: Db, { now, audit, secrets, creden
       return [];
     }
     if (connection.transport === "mcp_remote")
-      return remoteTools(connection, credentialHeaders, actor, undefined, unavailableServices);
+      return remoteTools(connection, credentialHeaders, actor, undefined, unavailableServices, listOptions);
     if (connection.transport !== "local_stdio") {
       throw unsupportedToolConnectionTransport();
     }
@@ -457,6 +606,70 @@ export function createToolCatalogDiscovery(db: Db, { now, audit, secrets, creden
     await validateCogneeConnection(connection, actor);
     return localTools(connection);
   }
-  return { remoteTools, validateCogneeConnection, validateAgentMailConnection, discoverTools };
+  /**
+   * The skills a stateless MCP server publishes (`skills/list`), or null when
+   * the server does not declare the skills extension. Only called from a
+   * catalog refresh, never while an agent run is starting. A fresh listing
+   * (`ttlMs`) is reused, and `fresh: false` tells the caller nothing changed.
+   */
+  async function discoverSkills(
+    connection: typeof toolConnections.$inferSelect,
+    actor?: ActorInfo,
+  ): Promise<{ entries: unknown[]; fresh: boolean } | null> {
+    if (connection.transport !== "mcp_remote" || isRailwayConnection(connection)
+      || connection.config.sourceTemplateKey === "google-workspace") return null;
+    const endpoint = await resolvedRemoteEndpoint(connection, actor);
+    const eraKey = mcpEraKey(connection.id, endpoint);
+    const saved = asRecord(connection.config).mcpProtocolVersion;
+    if (!knownMcpProtocolVersion(eraKey) && typeof saved === "string") rememberMcpProtocolVersion(eraKey, saved);
+    const protocolVersion = knownMcpProtocolVersion(eraKey);
+    // The extension is defined for stateless MCP (2026-07-28 and later).
+    if (!isModernMcpProtocolVersion(protocolVersion)) return null;
+    const headers = { ...projectedConnectionHeaders(connection), ...(await resolveCredentialHeaders(connection, actor)) };
+    const requestHeaders = { ...headers, "MCP-Protocol-Version": protocolVersion };
+    const request = async (method: string, params: Record<string, unknown>, id: string, maxBytes?: number) => {
+      const response = await withMcpConnectionFailure(() => requestRemoteHttpEndpoint(new URL(endpoint), mcpHttpRequestInit(requestHeaders, { id, method, params })));
+      if (!response.ok) {
+        await response.body?.cancel().catch(() => undefined);
+        return null;
+      }
+      const payload = asRecord(await withMcpConnectionFailure(() => readMcpHttpResponse(response, id, maxBytes ? { maxBytes } : {})));
+      return payload.error === undefined ? asRecord(payload.result) : null;
+    };
+    let capabilities = knownMcpServerCapabilities(eraKey);
+    if (!capabilities) {
+      const discovered = await request("server/discover", {}, "paperclip-skills-discover", 256 * 1024);
+      if (!discovered) return null;
+      capabilities = asRecord(discovered.capabilities);
+      rememberMcpServerCapabilities(eraKey, capabilities);
+    }
+    // Clients issue skills/list only after observing the server's declaration.
+    if (!mcpServerDeclaresExtension(capabilities, MCP_SKILLS_EXTENSION_ID)) return null;
+    const privateKey = `${eraKey}:${mcpCredentialFingerprint(headers)}`;
+    const publicKey = `${eraKey}:public`;
+    const cached = remoteSkillListCache.get(privateKey) ?? remoteSkillListCache.get(publicKey);
+    if (cached) return { entries: structuredClone(cached), fresh: false };
+    const entries: unknown[] = [];
+    const seenCursors = new Set<string>();
+    let cacheHint: { ttlMs: number; scope: "public" | "private" } | null = null;
+    let cursor: string | null = null;
+    for (let page = 0; page < MAX_SKILL_LIST_PAGES; page += 1) {
+      const result = await request("skills/list", cursor ? { cursor } : {}, `paperclip-skills-list-${page}`, 8 * 1024 * 1024);
+      if (!result || !Array.isArray(result.skills)) {
+        throw new HttpError(502, "This app's skill list could not be read", { code: "mcp_skills_list_invalid" });
+      }
+      entries.push(...result.skills);
+      const pageHint = mcpCacheHint(result);
+      cacheHint = page === 0 ? pageHint : pageHint && cacheHint
+        ? { ttlMs: Math.min(pageHint.ttlMs, cacheHint.ttlMs), scope: cacheHint.scope === "private" || pageHint.scope === "private" ? "private" : "public" }
+        : null;
+      cursor = typeof result.nextCursor === "string" && result.nextCursor ? result.nextCursor : null;
+      if (!cursor || seenCursors.has(cursor) || entries.length >= MAX_LISTED_SKILLS) break;
+      seenCursors.add(cursor);
+    }
+    if (cacheHint) remoteSkillListCache.set(cacheHint.scope === "public" ? publicKey : privateKey, structuredClone(entries), cacheHint.ttlMs);
+    return { entries, fresh: true };
+  }
+  return { remoteTools, validateCogneeConnection, validateAgentMailConnection, discoverTools, discoverSkills };
 }
 export type ToolCatalogDiscovery = ReturnType<typeof createToolCatalogDiscovery>;

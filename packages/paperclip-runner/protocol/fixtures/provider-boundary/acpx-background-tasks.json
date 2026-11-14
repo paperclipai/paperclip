@@ -1,0 +1,20 @@
+{
+  "schema": "paperclip.acpx-background-tasks-vectors.v1",
+  "accepted": [
+    { "value": { "live": 0 }, "live": 0 },
+    { "value": { "live": 3 }, "live": 3 },
+    { "value": { "live": 9007199254740991 }, "live": 9007199254740991 }
+  ],
+  "rejected": [
+    { "case": "extra key", "value": { "live": 0, "extra": true } },
+    { "case": "negative", "value": { "live": -1 } },
+    { "case": "non-integer", "value": { "live": 0.5 } },
+    { "case": "string", "value": { "live": "0" } },
+    { "case": "null live", "value": { "live": null } },
+    { "case": "null", "value": null },
+    { "case": "missing live", "value": {} },
+    { "case": "array", "value": [0] },
+    { "case": "number", "value": 0 },
+    { "case": "above the safe range", "value": { "live": 9007199254740992 } }
+  ]
+}

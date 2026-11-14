@@ -22,6 +22,13 @@ describe("API payload persistence redaction", () => {
     expect(JSON.stringify(saved)).not.toContain("proposal-fixture-value");
     expect(JSON.parse(saved.text).result.apiPayloadRedacted).toBe(true);
   });
+  it.each([{ query: { token: "private-fixture-value" } }, { operationId: "GET /issues/{id}", query: { token: "private-fixture-value" } }])("redacts malformed save_api_response arguments before history: %j", input => {
+    const saved = redactRunnerApiPayloads({ item: { type: "tool_use", name: "save_api_response", input } });
+    expect(saved.item.input).toMatchObject({ apiPayloadRedacted: true });
+    expect(JSON.stringify(saved)).not.toContain("private-fixture-value");
+    const result = redactRunnerApiPayloads({ result: { operationId: "save_api_response", data: { value: "private-fixture-value" } } });
+    expect(JSON.stringify(result)).not.toContain("private-fixture-value");
+  });
   it("preserves unrelated tool output and JSON text formatting", () => {
     const value = { result: { operationId: "get_task_context", data: { title: "Work" } }, text: '{ "ordinary": "output" }' };
     expect(redactRunnerApiPayloads(value)).toEqual(value);

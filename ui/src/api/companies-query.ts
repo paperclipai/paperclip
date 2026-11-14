@@ -57,6 +57,11 @@ const sessionQueryOptions = {
   queryFn: () => authApi.getSession(),
 } as const;
 
+/** Observe the shared session read when a surface needs error and retry state. */
+export function useAccountSessionQuery() {
+  return useQuery(sessionQueryOptions);
+}
+
 /**
  * The signed-in account, as the cache currently understands it.
  *
@@ -79,7 +84,7 @@ export function useAccountIdentity(): {
   bootstrap: BoardBootstrap | undefined;
   updatedAt: number;
 } {
-  const { data: session, isSuccess, isError, dataUpdatedAt } = useQuery(sessionQueryOptions);
+  const { data: session, isSuccess, isError, dataUpdatedAt } = useAccountSessionQuery();
   const userId = session?.user.id ?? null;
   return {
     userId, settled: isSuccess, failed: isError, updatedAt: dataUpdatedAt,

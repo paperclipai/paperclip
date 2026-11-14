@@ -29,6 +29,7 @@ import type {
   CompanySkillVersionSummary,
 } from "@paperclipai/shared";
 import { companySkillsApi } from "../api/companySkills";
+import { ConnectedAppSkills } from "../components/skills/ConnectedAppSkills";
 import { foldersApi } from "../api/folders";
 import { agentsApi } from "../api/agents";
 import { useCompany } from "../context/CompanyContext";
@@ -3958,7 +3959,7 @@ export function CompanySkills({ collectionView }: { collectionView?: "authored" 
   // Route a failed skill mutation to the persistent policy banner when it is an
   // explicit-policy (State B) or platform-safety (State C) denial; otherwise keep
   // the existing transient error toast. This is the core "actionable denial only
-  // for real restrictions" behavior from §9.10 (PAP-13865).
+  // for real restrictions" behavior from `doc/company-skill-policy.md` (PAP-13865).
   const reportSkillError = (error: unknown, title: string, fallbackBody: string, actionLabel?: string) => {
     if (policyDenial.capture(error, actionLabel)) return;
     pushToast({
@@ -5419,6 +5420,7 @@ export function CompanySkills({ collectionView }: { collectionView?: "authored" 
             </Tabs>
           </div>
         ) : null}
+        {collectionView !== "authored" ? <ConnectedAppSkills companyId={selectedCompanyId} /> : null}
         <DiscoveryGrid
           collectionView={collectionView}
           navigation={streamlinedUiEnabled ? <SkillsNavigationTabs activeView={collectionView ?? effectiveDiscoveryTab} /> : undefined}

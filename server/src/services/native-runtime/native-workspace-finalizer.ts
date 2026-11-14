@@ -3,12 +3,15 @@ import { readRemoteWorkspaceAuthority, saveRemoteWorkspace } from "../remote-wor
 import { remoteWorkspaceFailureCause } from "../remote-workspace-transport.js";
 import { recordNativeFinalizationFailure } from "./native-run-finalizer.js";
 import { inspectPluginWorkspaceForFinalization } from "./native-plugin-workspace-finalization.js";
-import type { WorkspaceWorkers } from "../plugin-workspaces.js";
+import { resolvePluginWorkspaceFinalization, type WorkspaceWorkers } from "../plugin-workspaces.js";
 import { restoreNativeWorkspaceBestEffort } from "./native-workspace-best-effort.js";
-import { withNativeWorkspaceFinalizationOwnership } from "./native-workspace-finalization-ownership.js";
+import { withNativeWorkspaceFinalizationOwnership, type NativeWorkspaceFinalizationOwnership } from "./native-workspace-finalization-ownership.js";
+import { settleSupersededNativeWorkspaceFinalizations } from "./native-workspace-finalization-supersession.js";
+import { logger } from "../../middleware/logger.js";
 import fs from "node:fs/promises";
 import { and, desc, eq } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
+import { pluginWorkspaceParamsSchema } from "@paperclipai/plugin-sdk";
 import {
   executionWorkspaces,
   heartbeatRuns,
@@ -83,6 +86,20 @@ export async function attemptNativeWorkspaceFinalization(input: {
     throw new Error("native_workspace_finalization_binding_missing");
   }
 
+  // An attempt interrupted by a controller crash stays `running`; once this
+  // owner records a terminal attempt, settle the orphan under the same proof.
+  const settleSuperseded = async (ownership: NativeWorkspaceFinalizationOwnership,
+    superseding: { id: string; status: string }) => {
+    try {
+      await ownership.assertHeld();
+      await settleSupersededNativeWorkspaceFinalizations(input.db, {
+        companyId: bound.companyId, runId: input.runId, issueId: bound.issueId, superseding,
+      });
+    } catch (error) {
+      // Settlement is bookkeeping; it must not change the finalization outcome.
+      logger.warn({ runId: input.runId, error }, "Superseded workspace finalization could not be settled");
+    }
+  };
   const owned = await withNativeWorkspaceFinalizationOwnership({
     db: input.db, companyId: bound.companyId, runId: input.runId,
   }, async (ownership) => {
@@ -113,7 +130,10 @@ export async function attemptNativeWorkspaceFinalization(input: {
     eq(workspaceOperations.status, "succeeded"),
   )).orderBy(desc(workspaceOperations.createdAt)).limit(1).then((rows) => rows[0] ?? null);
   // A stale failure from a pre-fencing controller cannot invalidate exported work.
-  if (successful) return { kind: "completed", operation: successful } as const;
+  if (successful) {
+    await settleSuperseded(ownership, successful);
+    return { kind: "completed", operation: successful } as const;
+  }
   const previous = await input.db.select().from(workspaceOperations).where(and(
     eq(workspaceOperations.companyId, bound.companyId),
     eq(workspaceOperations.heartbeatRunId, input.runId),
@@ -138,6 +158,21 @@ export async function attemptNativeWorkspaceFinalization(input: {
       )).limit(1).then((rows) => rows[0] ?? null)
     : null;
   const cwd = workspace?.providerRef ?? workspace?.cwd ?? previous?.cwd ?? null;
+  let pluginFinalizationPlan: Awaited<ReturnType<typeof resolvePluginWorkspaceFinalization>>;
+  if (workspace && !nativeWorkspaceSync && !readRemoteWorkspaceAuthority(workspace.metadata)) {
+    try {
+      const taskLease = previous
+        ? pluginWorkspaceParamsSchema.shape.taskLease.parse(previous.metadata?.pluginWorkspaceTaskLease) ?? null
+        : undefined;
+      pluginFinalizationPlan = await resolvePluginWorkspaceFinalization(input.db, workspace, {
+        runId: input.runId, agentId: bound.agentId, taskLease,
+      });
+    } catch {
+      await ownership.assertHeld();
+      return { kind: "failed", operation: { stderrExcerpt: "plugin_workspace_inspection_failed" } } as const;
+    }
+  }
+  const recordedTaskLease = pluginFinalizationPlan?.kind === "finalize" ? pluginFinalizationPlan.taskLease : undefined;
 
   const recorder = workspaceOperationService(input.db).createRecorder({
     companyId: bound.companyId,
@@ -154,6 +189,7 @@ export async function attemptNativeWorkspaceFinalization(input: {
     metadata: {
       resumedFromOperationId: previous?.id ?? null,
       owningService: "native_workspace_finalizer",
+      ...(recordedTaskLease ? { pluginWorkspaceTaskLease: recordedTaskLease } : {}),
       observation: workspace?.strategyType === "git_worktree"
         ? "managed_git_worktree_branch"
         : "workspace_directory",
@@ -288,7 +324,10 @@ export async function attemptNativeWorkspaceFinalization(input: {
       let pluginWorkspace: Record<string, unknown> | null;
       try {
         pluginWorkspace = workspace
-          ? await inspectPluginWorkspaceForFinalization(input.db, input.pluginWorkerManager, workspace, bound.agentId, input.runId)
+          ? await inspectPluginWorkspaceForFinalization(input.db, input.pluginWorkerManager, workspace, bound.agentId, input.runId, {
+              taskLease: null,
+              plan: pluginFinalizationPlan,
+            })
           : null;
       } catch (error) {
         await ownership.assertHeld();
@@ -345,6 +384,7 @@ export async function attemptNativeWorkspaceFinalization(input: {
       };
     },
   });
+  await settleSuperseded(ownership, operation);
   return { kind: "completed", operation } as const;
   });
   return owned.acquired ? owned.value : { kind: "waiting", reason: owned.reason } as const;

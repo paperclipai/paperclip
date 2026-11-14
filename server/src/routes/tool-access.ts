@@ -5,7 +5,7 @@ import { composioAppSetupSchema, composioAppsRefreshSchema, composioAppsSyncSche
 import { aggregatorAppsSyncSchema, aggregatorAppsRefreshSchema, arcadeDiscoverySetupSchema } from "@paperclipai/shared/aggregator-apps";
 import { Router, type Request, type Response } from "express";
 import type { Db } from "@paperclipai/db";
-import { agents, companies, connectionGrants, issueThreadInteractions, toolConnectionInstalls } from "@paperclipai/db";
+import { agents, companies, connectionGrants, issues, issueThreadInteractions, toolConnectionInstalls, toolMcpAppViews } from "@paperclipai/db";
 import { and, eq, or } from "drizzle-orm";
 import {
   APP_STORE_DEFINITIONS,
@@ -65,6 +65,10 @@ import { getActorInfo, assertBoard, assertBoardOrAgent, assertCompanyAccess, ass
 import { badRequest, forbidden, HttpError, notFound, unprocessable } from "../errors.js";
 import { accessService, logActivity, toolAccessPolicyService, toolAccessService, vercelConnectIntegrationStatus } from "../services/index.js";
 import { ToolGatewayHttpError, type ToolGatewayService } from "../services/tool-gateway.js";
+import { authorizationService } from "../services/authorization.js";
+import { mcpAppViewsService } from "../services/mcp-app-views.js";
+import { listCompanyProviderToolIcons } from "../services/tool-access/catalog/icons.js";
+import { mcpAppToolCallSchema } from "@paperclipai/shared";
 import { RailwayError } from "../services/railway.js";
 import type { VercelConnectClient } from "../services/vercel-connect.js";
 import {
@@ -82,6 +86,7 @@ import {
   startPaperclipCloudConnectorEnrollment,
 } from "../services/paperclip-cloud-connector-enrollment.js";
 import { reconcilePaperclipCloudConnectorEnrollmentStatus } from "../services/paperclip-cloud-connector-status.js";
+import { paperclipCloudEnrollmentPrincipal } from "../services/paperclip-cloud-connector-principal.js";
 import {
   OAUTH_CLIENT_ID_METADATA_DOCUMENT_PATH,
   oauthClientIdMetadataDocument,
@@ -205,7 +210,7 @@ function normalizeCloudConnectorEnrollmentReturnTo(returnTo?: string | null): st
     const parsed = new URL(returnTo, "http://paperclip.local");
     if (
       parsed.origin !== "http://paperclip.local"
-      || !["/apps/connect", "/apps/chat/connect"].includes(parsed.pathname)
+      || !["/apps/connect", "/apps/chat/connect", "/apps/tailscale"].includes(parsed.pathname)
       || parsed.username
       || parsed.password
     ) return null;
@@ -235,6 +240,8 @@ export function cloudConnectorEnrollmentReturnPath(issuePrefix: string, returnTo
   }
   return `${companyRoot}/apps/connections?cloud_connector=enrolled`;
 }
+
+const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 export function toolAccessRoutes(
   db: Db,
@@ -458,7 +465,7 @@ export function toolAccessRoutes(
   }
 
 function connectorEnrollmentPrincipal(req: Request): string {
-  return req.actor.userId ? `user:${req.actor.userId}` : `source:${req.actor.source ?? "board"}`;
+  return paperclipCloudEnrollmentPrincipal(req.actor);
 }
 
 /**
@@ -2116,6 +2123,54 @@ function connectorEnrollmentPrincipal(req: Request): string {
     res.json(result);
   });
 
+  // An MCP Apps view's tools/call. It runs through the connection test-call
+  // path, so it needs exactly what a test call needs: connection management
+  // (connections:test), connection access, tool permission and test-as-agent
+  // authority for the agent whose call recorded the view, plus task read access.
+  router.post("/issues/:issueId/mcp-app-views/:viewId/tool-calls", async (req, res, next) => {
+    assertBoard(req);
+    const issueId = String(req.params.issueId);
+    const viewId = String(req.params.viewId);
+    if (!UUID_PATTERN.test(issueId) || !UUID_PATTERN.test(viewId)) {
+      res.status(404).json({ error: "View not found" });
+      return;
+    }
+    const [issue] = await db.select({ id: issues.id, companyId: issues.companyId }).from(issues).where(eq(issues.id, issueId)).limit(1);
+    if (!(await getAccessibleResource(req, res, issue, "Task not found"))) return;
+    const readable = await authorizationService(db).decide({ actor: req.actor, action: "issue:read", resource: { type: "issue", companyId: issue.companyId, issueId: issue.id } });
+    const view = readable.allowed ? await mcpAppViewsService(db).get(issue.companyId, viewId) : null;
+    if (!view || view.issueId !== issue.id) {
+      res.status(404).json({ error: "View not found" });
+      return;
+    }
+    res.locals.mcpAppView = view;
+    // The management guard resolves the connection from this parameter.
+    req.params.connectionId = view.connectionId;
+    next();
+  }, managementGuard("connections:test", "POST /issues/:issueId/mcp-app-views/:viewId/tool-calls", { personal: true }), validate(mcpAppToolCallSchema), async (req, res) => {
+    if (!options.toolGateway) {
+      res.status(501).json({ error: "Tool gateway service is not configured" });
+      return;
+    }
+    const view = res.locals.mcpAppView as typeof toolMcpAppViews.$inferSelect;
+    const connection = await getAccessibleResource(req, res, svc.getConnection(view.connectionId), "Tool connection not found");
+    if (!connection) return;
+    await assertBoardAnyToolPermission(req, connection.companyId, ["tools:use", "tools:manage_connections"]);
+    if (!view.agentId) throw forbidden("This view's agent no longer exists");
+    await assertCanTestAsAgent(req, connection.companyId, view.agentId);
+    try {
+      res.json(await options.toolGateway.callMcpAppViewTool({
+        companyId: connection.companyId,
+        userId: connectionRequestUserId(req) ?? "board",
+        view,
+        toolName: req.body.name,
+        arguments: req.body.arguments ?? {},
+      }));
+    } catch (error) {
+      if (!sendToolGatewayError(res, error)) throw error;
+    }
+  });
+
   router.post("/tool-connections/:connectionId/test-calls", managementGuard("connections:test", "POST /tool-connections/:connectionId/test-calls", { personal: true }), validate(toolConnectionTestCallSchema), async (req, res) => {
     assertBoardOrAgent(req);
     if (!options.toolGateway) {
@@ -2303,6 +2358,20 @@ function connectorEnrollmentPrincipal(req: Request): string {
     const existing = await getAccessibleResource(req, res, svc.getConnection(req.params.connectionId as string), "Tool connection not found");
     if (!existing) return;
     res.json({ catalog: await svc.listCatalog(existing.id, existing.companyId, getActorInfo(req)) });
+  });
+
+  // Provider tool icons for the task chat's tool rows. Same gate and
+  // visibility as the connection list: only icons of connections this viewer
+  // can see.
+  router.get("/companies/:companyId/tool-icons", managementGuard("connections:read", "GET /companies/:companyId/tool-icons", { personal: true }), async (req, res) => {
+    assertBoard(req);
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+    const connections = await svc.listConnections(companyId, connectionRequestUserId(req) ?? undefined);
+    const canManageConnections = await isToolConnectionManagerQuiet(req, companyId);
+    const visible = filterVisibleToolConnections(connections, { userId: connectionRequestUserId(req), canManageConnections });
+    res.setHeader("Cache-Control", "private, max-age=300");
+    res.json({ icons: await listCompanyProviderToolIcons(db, companyId, visible.map(connection => connection.id)) });
   });
 
   router.get("/tool-connections/:connectionId/activity", managementGuard("connections:audit", "GET /tool-connections/:connectionId/activity", { personal: true }), async (req, res) => {

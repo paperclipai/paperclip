@@ -8,8 +8,8 @@ import { createIssueDetailPath, withIssueDetailHeaderSeed } from "@/lib/issueDet
 import {
   getIssueDetailQueryOptions,
   ISSUE_DETAIL_STALE_TIME_MS,
-  prefetchIssueDetailForNavigation,
 } from "@/lib/issueDetailCache";
+import { ISSUE_HISTORY_HOVER_PREFETCH_DELAY_MS, useIssueNavigationPrefetch } from "@/hooks/useIssueNavigationPrefetch";
 import { queryKeys } from "@/lib/queryKeys";
 import { cn } from "@/lib/utils";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
@@ -219,6 +219,8 @@ export function IssueQuicklookCard({
   );
 }
 
+export { ISSUE_HISTORY_HOVER_PREFETCH_DELAY_MS };
+
 export const IssueLinkQuicklook = React.forwardRef<
   HTMLAnchorElement,
   React.ComponentProps<typeof RouterDom.Link> & {
@@ -242,6 +244,8 @@ export const IssueLinkQuicklook = React.forwardRef<
     onClick,
     onClickCapture,
     onMouseEnter,
+    onMouseLeave,
+    onPointerDown,
     onFocus,
     onBlur,
     onTouchStart,
@@ -361,9 +365,7 @@ export const IssueLinkQuicklook = React.forwardRef<
   });
 
   const detailPath = createIssueDetailPath(issuePathId);
-  const handlePrefetch = React.useCallback(() => {
-    void prefetchIssueDetailForNavigation(queryClient, issuePathId, { issue: issuePrefetch });
-  }, [issuePathId, issuePrefetch, queryClient]);
+  const prefetchHandlers = useIssueNavigationPrefetch(issuePathId, issuePrefetch);
   const link = (
     <RouterDom.Link
       ref={setTriggerRef}
@@ -371,25 +373,34 @@ export const IssueLinkQuicklook = React.forwardRef<
       state={prefetchedState}
       className={className}
       onMouseEnter={(event) => {
-        handlePrefetch();
+        prefetchHandlers.onMouseEnter(event);
         onMouseEnter?.(event);
       }}
+      onMouseLeave={(event) => {
+        prefetchHandlers.onMouseLeave(event);
+        onMouseLeave?.(event);
+      }}
+      onPointerDown={(event) => {
+        prefetchHandlers.onPointerDown(event);
+        onPointerDown?.(event);
+      }}
       onFocus={(event) => {
-        handlePrefetch();
+        prefetchHandlers.onFocus(event);
         openNow();
         onFocus?.(event);
       }}
       onBlur={(event) => {
+        prefetchHandlers.onBlur(event);
         // Let clicks inside the portaled quicklook content finish before closing.
         setTimeout(() => close(), 0);
         onBlur?.(event);
       }}
       onTouchStart={(event) => {
-        handlePrefetch();
+        prefetchHandlers.onTouchStart(event);
         onTouchStart?.(event);
       }}
       onClickCapture={(event) => {
-        handlePrefetch();
+        prefetchHandlers.onClickCapture(event);
         onClickCapture?.(event);
       }}
       onClick={(event) => {
@@ -410,10 +421,8 @@ export const IssueLinkQuicklook = React.forwardRef<
     <Popover open={open} onOpenChange={(next) => (next ? openNow() : close())}>
       <PopoverTrigger
         asChild
-        onMouseEnter={() => {
-          handlePrefetch();
-          scheduleOpen();
-        }}
+        // The link's own hover handler warms the task; history waits for a dwell.
+        onMouseEnter={scheduleOpen}
         onMouseLeave={close}
       >
         {link}

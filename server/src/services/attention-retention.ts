@@ -42,48 +42,89 @@ const sourceTables: Record<Kind, SQL> = {
   failed_run: sql`heartbeat_runs`, budget_alert: sql`budget_incidents`, agent_error_alert: sql`agents`,
 };
 
-const sources: Record<Kind, SQL> = {
-  decision: sql`select 'decision' as source_kind, d.id::text as source_id, d.company_id, d.updated_at as activity_at, d.origin_issue_id::text as issue_id
-    from decisions d where d.status = 'open'`,
-  issue_thread_interaction: sql`select 'issue_thread_interaction', i.id::text, i.company_id, i.updated_at, i.issue_id::text
-    from issue_thread_interactions i where i.status = 'pending' and i.addressee_user_id is null`,
-  recovery_action: sql`select 'recovery_action', r.id::text, r.company_id, r.updated_at, r.source_issue_id::text
-    from issue_recovery_actions r where r.status in ('active', 'escalated') and r.owner_type in (${sql.join(HUMAN_RECOVERY_OWNER_TYPES.map(owner => sql`${owner}`), sql`, `)})`,
-  blocker_attention: sql`select 'blocker_attention', i.id::text, i.company_id, i.updated_at, i.id::text
-    from issues i where i.status = 'blocked' and i.hidden_at is null and i.harness_kind is null`,
-  review: sql`select 'review', i.id::text, i.company_id, i.updated_at, i.id::text
-    from issues i where i.status = 'in_review' and i.hidden_at is null and i.harness_kind is null`,
-  failed_run: sql`select 'failed_run', r.id::text, r.company_id, coalesce(r.finished_at, r.updated_at, r.created_at), coalesce(r.context_snapshot->>'issueId', r.context_snapshot->>'taskId')
-    from heartbeat_runs r where r.status in ('failed', 'timed_out') and exists (
-      select 1 from heartbeat_run_events e where e.run_id = r.id and e.company_id = r.company_id
-        and e.event_type = 'lifecycle' and e.message like ${`${RETRY_EXHAUSTION_MESSAGE_PREFIX}%`})`,
-  budget_alert: sql`select 'budget_alert', b.id::text, b.company_id, b.updated_at, null::text from budget_incidents b
-    where b.status = 'open' and (b.threshold_type = 'hard' or (b.amount_limit > 0
-      and round(b.amount_observed::numeric / b.amount_limit * 10000) / 100 >= ${ATTENTION_BUDGET_WARNING_PERCENT}))`,
-  agent_error_alert: sql`select 'agent_error_alert', a.id::text, a.company_id, a.updated_at, null::text from agents a where a.status = ${ATTENTION_AGENT_ERROR_STATUS}`,
+// Each source is one table read. `id` is the source row's uuid primary key and
+// `source_id` is its text form. `where` holds the source's own eligibility.
+type Source = { from: SQL; id: SQL; companyId: SQL; activityAt: SQL; issueId: SQL; where: SQL };
+const sources: Record<Kind, Source> = {
+  decision: { from: sql`decisions d`, id: sql`d.id`, companyId: sql`d.company_id`, activityAt: sql`d.updated_at`,
+    issueId: sql`d.origin_issue_id::text`, where: sql`d.status = 'open'` },
+  issue_thread_interaction: { from: sql`issue_thread_interactions i`, id: sql`i.id`, companyId: sql`i.company_id`,
+    activityAt: sql`i.updated_at`, issueId: sql`i.issue_id::text`, where: sql`i.status = 'pending' and i.addressee_user_id is null` },
+  recovery_action: { from: sql`issue_recovery_actions r`, id: sql`r.id`, companyId: sql`r.company_id`, activityAt: sql`r.updated_at`,
+    issueId: sql`r.source_issue_id::text`,
+    where: sql`r.status in ('active', 'escalated') and r.owner_type in (${sql.join(HUMAN_RECOVERY_OWNER_TYPES.map(owner => sql`${owner}`), sql`, `)})` },
+  blocker_attention: { from: sql`issues i`, id: sql`i.id`, companyId: sql`i.company_id`, activityAt: sql`i.updated_at`,
+    issueId: sql`i.id::text`, where: sql`i.status = 'blocked' and i.hidden_at is null and i.harness_kind is null` },
+  review: { from: sql`issues i`, id: sql`i.id`, companyId: sql`i.company_id`, activityAt: sql`i.updated_at`,
+    issueId: sql`i.id::text`, where: sql`i.status = 'in_review' and i.hidden_at is null and i.harness_kind is null` },
+  // Keep the receipt filters as SQL literals. They must imply the predicate of
+  // the partial index heartbeat_run_events_retry_exhausted_idx; a bound
+  // parameter stops a generic prepared plan from using that index.
+  failed_run: { from: sql`heartbeat_runs r`, id: sql`r.id`, companyId: sql`r.company_id`,
+    activityAt: sql`coalesce(r.finished_at, r.updated_at, r.created_at)`,
+    issueId: sql`coalesce(r.context_snapshot->>'issueId', r.context_snapshot->>'taskId')`,
+    where: sql`r.status in ('failed', 'timed_out') and exists (
+      select 1 from heartbeat_run_events e where e.company_id = r.company_id and e.run_id = r.id
+        and e.event_type = 'lifecycle' and e.message like ${sql.raw(`'${RETRY_EXHAUSTION_MESSAGE_PREFIX}%'`)})` },
+  budget_alert: { from: sql`budget_incidents b`, id: sql`b.id`, companyId: sql`b.company_id`, activityAt: sql`b.updated_at`,
+    issueId: sql`null::text`, where: sql`b.status = 'open' and (b.threshold_type = 'hard' or (b.amount_limit > 0
+      and round(b.amount_observed::numeric / b.amount_limit * 10000) / 100 >= ${ATTENTION_BUDGET_WARNING_PERCENT}))` },
+  agent_error_alert: { from: sql`agents a`, id: sql`a.id`, companyId: sql`a.company_id`, activityAt: sql`a.updated_at`,
+    issueId: sql`null::text`, where: sql`a.status = ${ATTENTION_AGENT_ERROR_STATUS}` },
 };
+
+const CANDIDATE_PAGE_SIZE = 100;
+// PostgreSQL prints a uuid only in this form, so no other text equals a source_id.
+const CANONICAL_UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+// The keyset orders by (source_kind, source_id). Each kind name differs from the
+// others before its first underscore, so this code-unit order is also the order
+// under linguistic collations. A test pins it against the database.
+export const ATTENTION_RETENTION_KIND_ORDER: readonly Kind[] = [...kinds].sort();
+
+/** One page of retention candidates in (source_kind, source_id) order.
+ * Each kind is read in its own branch with every filter pushed into it and is
+ * limited to one page, so a page reads at most one page per kind instead of
+ * every candidate of every kind in every company. */
+function candidateQuery(scope: Scope, cursor: Cursor | undefined, sourceId: string | undefined, issueIds: string[]): SQL | null {
+  const selected = ATTENTION_RETENTION_KIND_ORDER.filter(kind => (!scope.sourceKind || scope.sourceKind === kind)
+    && (!issueIds.length || !["budget_alert", "agent_error_alert"].includes(kind))
+    && (!cursor || kind >= cursor.sourceKind));
+  if (!selected.length) return null;
+  if (sourceId !== undefined && !CANONICAL_UUID.test(sourceId)) return null;
+  const branches = selected.map(kind => {
+    const source = sources[kind];
+    const conditions: SQL[] = [source.where, sql`company.status = 'active'`];
+    if (scope.companyId != null) conditions.push(sql`${source.companyId} = ${scope.companyId}::uuid`);
+    if (sourceId !== undefined) conditions.push(sql`${source.id} = ${sourceId}::uuid`);
+    if (issueIds.length) conditions.push(sql`${source.issueId} in (${sql.join(issueIds.map(id => sql`${id}`), sql`, `)})`);
+    // Blocker attention re-reads retention for its terminal source in eligible().
+    if (kind !== "blocker_attention") conditions.push(sql`(retention.id is null or retention.keep = false) and retention.archived_at is null`);
+    if (cursor?.sourceKind === kind) conditions.push(sql`${source.id}::text > ${cursor.sourceId}`);
+    const retention = kind === "blocker_attention" ? sql`` : sql`left join decision_retention retention on retention.company_id = ${source.companyId}
+      and retention.source_kind = ${kind} and retention.source_id = ${source.id}::text`;
+    return sql`(select ${kind}::text as source_kind, ${source.id}::text as source_id, ${source.companyId} as company_id,
+        ${source.activityAt} as activity_at, ${source.issueId} as issue_id
+      from ${source.from} inner join companies company on company.id = ${source.companyId} ${retention}
+      where ${sql.join(conditions, sql` and `)}
+      order by ${source.id}::text limit ${CANDIDATE_PAGE_SIZE})`;
+  });
+  return sql`with source_candidates(source_kind, source_id, company_id, activity_at, issue_id) as (${sql.join(branches, sql` union all `)})
+    select s.source_kind as "sourceKind", s.source_id as "sourceId", s.company_id as "companyId",
+      s.issue_id as "issueId", s.activity_at::text as "activityAt", ceil(extract(epoch from s.activity_at) * 1000 + ${archiveDelay}) as "deadlineAt"
+    from source_candidates s order by s.source_kind, s.source_id limit ${CANDIDATE_PAGE_SIZE}`;
+}
+
+export async function listAttentionRetentionCandidates(database: Db, scope: Scope = {}, cursor?: Cursor, sourceId?: string): Promise<Candidate[]> {
+  const issueIds = scope.issueIds ?? (scope.issueId ? [scope.issueId] : []);
+  const query = candidateQuery(scope, cursor, sourceId ?? scope.sourceId ?? undefined, issueIds);
+  if (!query) return [];
+  const rows = await database.execute(query) as unknown as Candidate[];
+  return rows.map(row => ({ ...row, deadlineAt: Number(row.deadlineAt) }));
+}
 
 export function attentionRetentionService(db: Db) {
   const cursors = new Map<string, Cursor>();
-  async function candidates(database: Db, scope: Scope = {}, cursor?: Cursor, sourceId?: string): Promise<Candidate[]> {
-    const issueIds = scope.issueIds ?? (scope.issueId ? [scope.issueId] : []);
-    const selected = kinds.filter(kind => (!scope.sourceKind || scope.sourceKind === kind)
-      && (!issueIds.length || !["budget_alert", "agent_error_alert"].includes(kind)));
-    if (!selected.length) return [];
-    const rows = await database.execute(sql`with source_candidates(source_kind, source_id, company_id, activity_at, issue_id) as (${sql.join(selected.map(kind => sources[kind]), sql` union all `)})
-      select s.source_kind as "sourceKind", s.source_id as "sourceId", s.company_id as "companyId",
-        s.issue_id as "issueId", s.activity_at::text as "activityAt", ceil(extract(epoch from s.activity_at) * 1000 + ${archiveDelay}) as "deadlineAt"
-      from source_candidates s inner join companies c on c.id = s.company_id
-      left join decision_retention r on r.company_id = s.company_id and r.source_kind = s.source_kind and r.source_id = s.source_id
-      where c.status = 'active'
-        ${issueIds.length ? sql`and s.issue_id in (${sql.join(issueIds.map(id => sql`${id}`), sql`, `)})` : sql``}
-        and (${scope.companyId ?? null}::uuid is null or s.company_id = ${scope.companyId ?? null}::uuid)
-        and (${sourceId ?? scope.sourceId ?? null}::text is null or s.source_id = ${sourceId ?? scope.sourceId ?? null})
-        and (s.source_kind = 'blocker_attention' or ((r.id is null or r.keep = false) and r.archived_at is null))
-        ${cursor ? sql`and (s.source_kind, s.source_id) > (${cursor.sourceKind}, ${cursor.sourceId})` : sql``}
-      order by s.source_kind, s.source_id limit 100`) as unknown as Candidate[];
-    return rows.map(row => ({ ...row, deadlineAt: Number(row.deadlineAt) }));
-  }
+  const candidates = listAttentionRetentionCandidates;
 
   async function visibleIssue(database: Db, companyId: string, issueId: string, conversations = false) {
     const [row] = await database.select().from(issues).where(and(eq(issues.companyId, companyId), eq(issues.id, issueId),
@@ -283,11 +324,11 @@ export function attentionRetentionService(db: Db) {
         if (entry) entries.push(entry);
       }
     }
-    if (rows.length === 100) {
+    if (rows.length === CANDIDATE_PAGE_SIZE) {
       const last = rows[rows.length - 1]!;
       cursors.set(key, { sourceKind: last.sourceKind, sourceId: last.sourceId });
     } else cursors.delete(key);
-    return { rows: entries, complete: rows.length < 100 };
+    return { rows: entries, complete: rows.length < CANDIDATE_PAGE_SIZE };
   }
 
   async function check(entry: Entry) {

@@ -37,6 +37,20 @@ export function canBoardManageRuntime(
 /** Client affordance for board task mutations; the server rechecks issue access. */
 export const canBoardResolveRecoveryAction = canBoardManageRuntime;
 
+/** Client mirror of `runtime:confirm_owner_stop`: company owners and administrators,
+ * the trusted local board, or an instance administrator. The server is authoritative. */
+export function canBoardConfirmOwnerStop(
+  companyId: string | null | undefined,
+  boardAccess: CurrentBoardAccess | undefined,
+) {
+  if (!companyId || !boardAccess) return false;
+  if (boardAccess.source === "local_implicit" || boardAccess.isInstanceAdmin) return true;
+  const membership = boardAccess.memberships?.find(
+    (item) => item.companyId === companyId && item.status === "active",
+  );
+  return membership?.membershipRole === "owner" || membership?.membershipRole === "admin";
+}
+
 /** Classifies the native export hold, independently of source or actor readiness. */
 export function isRetainedWorkspaceExportCause(cause: unknown): boolean {
   return cause === "native_workspace_sync_out_retry_exhausted" || cause === "native_workspace_sync_out_unrecoverable";

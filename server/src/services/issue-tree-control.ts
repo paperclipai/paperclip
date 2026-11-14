@@ -1,4 +1,5 @@
 import { notifyStrandedAgentStatus } from "./live-run-recovery-notifications.js";
+import { promoteDeferredWorkIntents } from "./work-intent-outbox.js";
 import { notifyStatusCardIssueChange } from "./status-card-notifications.js";
 import { notifyRoutineExecutionStatus } from "./routine-execution-status-notifications.js";
 import { notifyDeferredExecutionEligibility } from "./deferred-execution-notifications.js";
@@ -671,6 +672,29 @@ export function issueTreeControlService(db: Db) {
     return null;
   }
 
+  async function listActivePauseHeldIssueIds(companyId: string, issueIds: string[]): Promise<Set<string>> {
+    if (issueIds.length === 0) return new Set();
+    const [anyHold] = await db.select({ id: issueTreeHolds.id }).from(issueTreeHolds).where(and(
+      eq(issueTreeHolds.companyId, companyId), eq(issueTreeHolds.status, "active"), eq(issueTreeHolds.mode, "pause"))).limit(1);
+    if (!anyHold) return new Set();
+    const result = await db.execute<{ issueId: string }>(sql`
+      with recursive chain(start_id, id, depth, path) as (
+        select requested.id, requested.id, 1, array[requested.id]
+        from unnest(${sql.param(issueIds)}::uuid[]) as requested(id)
+        union all
+        select chain.start_id, parent.parent_id, chain.depth + 1, chain.path || parent.parent_id
+        from chain
+        join issues parent on parent.id = chain.id and parent.company_id = ${companyId}
+        where parent.parent_id is not null and chain.depth < ${MAX_PAUSE_HOLD_ANCESTOR_DEPTH}
+          and not parent.parent_id = any(chain.path)
+      )
+      select distinct chain.start_id::text as "issueId" from chain
+      where exists (select 1 from issue_tree_holds hold where hold.company_id = ${companyId}
+        and hold.status = 'active' and hold.mode = 'pause' and hold.root_issue_id = chain.id)`);
+    const rows = Array.isArray(result) ? result : (result as { rows?: Array<{ issueId: string }> }).rows ?? [];
+    return new Set(rows.map(row => row.issueId));
+  }
+
   async function preview(
     companyId: string,
     rootIssueId: string,
@@ -1209,8 +1233,7 @@ export function issueTreeControlService(db: Db) {
     }
 
     const [updated] = await db.transaction(async tx => {
-      await notifyIssueRecovery(tx, { companyId });
-      await notifyDeferredExecutionEligibility(tx, { companyId });
+      await promoteDeferredWorkIntents(tx, { companyId, trigger: "tree_hold_released" });
       return tx
       .update(issueTreeHolds)
       .set({
@@ -1348,6 +1371,7 @@ export function issueTreeControlService(db: Db) {
     getHold,
     listHolds,
     getActivePauseHoldGate,
+    listActivePauseHeldIssueIds,
     releaseHold,
     findOwedPauseResume,
     cancelUnclaimedWakeupsForTree,

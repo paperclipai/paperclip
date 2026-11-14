@@ -1,3 +1,4 @@
+import type { McpAppToolUi, McpIcon } from "../mcp-apps.js";
 import type {
   ConnectionTokenIssuanceOutcome,
   ConnectionTokenIssuancePath,
@@ -568,6 +569,10 @@ export interface ToolCatalogEntry {
   inputSchema: Record<string, unknown> | null;
   outputSchema: Record<string, unknown> | null;
   annotations: Record<string, unknown> | null;
+  /** MCP Apps view declaration (`_meta.ui`), when the tool renders one. */
+  uiMeta?: McpAppToolUi | null;
+  /** Sanitized provider icons (SEP-973), when the tool declares any. */
+  icons?: McpIcon[] | null;
   riskLevel: ToolRiskLevel;
   isReadOnly: boolean;
   isWrite: boolean;
@@ -754,6 +759,8 @@ export interface ToolMcpGatewayToken {
   createdByUserId: string | null;
   /** Agent client delegation. Null with an issuing agent identifies an unbound legacy client. */
   responsibleUserId?: string | null;
+  /** True for an agent-created client token whose value has not yet been revealed to its responsible person. */
+  pendingReveal?: boolean;
   createdAt: Date | string;
   updatedAt: Date | string;
 }
@@ -1202,7 +1209,7 @@ export interface ToolOAuthHandoff {
  * What an unknown remote MCP endpoint told Paperclip it needs, so the wizard can
  * branch without re-probing. `manualClientRequired` means discovery succeeded but
  * the authorization server supports neither CIMD nor DCR, so the operator has to
- * supply a preregistered client under Advanced authentication.
+ * supply a preregistered client in the sign-in options on the connect screen.
  */
 export interface ConnectToolAppAuthChallenge {
   kind: "oauth";
@@ -1755,4 +1762,18 @@ export interface ToolConnectionTestCallStatus {
   requestedAt: string;
   /** ISO timestamp the request was resolved (approved/denied/cancelled), when applicable. */
   resolvedAt?: string | null;
+}
+
+/** A connected tool's provider icons, keyed by its tool gateway name. */
+export interface ProviderToolIconEntry {
+  /** `mcp.<app>-<connection>:<tool>`, as agents see the tool. */
+  gatewayToolName: string;
+  /** `app_<name>_<digest>`, the name native runners (and so their transcripts) use. */
+  nativeToolName?: string;
+  icons: McpIcon[];
+}
+
+/** `GET /api/companies/:companyId/tool-icons` */
+export interface ProviderToolIconsResponse {
+  icons: ProviderToolIconEntry[];
 }

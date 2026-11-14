@@ -6,10 +6,12 @@ import type { createDeliveryWorkCoordinator } from "./delivery-work-coordinator.
 import { activeNativeExecutionRunIds, subscribeActiveNativeExecutions } from "./native-runtime/native-active-runs.js";
 import { isIdleTaskDrainActive, subscribeTaskDrainChanges } from "./task-admission.js";
 import { subscribeAllCompanyLiveEvents } from "./live-events.js";
+import { isRunStartHandoverActive, subscribeRunStartHandoverChanges } from "./run-start-handover.js";
 
 /** Temporary overlap, not steady-state horizontal scaling. Listen while startup
  * and its 120-second handoff window are active, or while this process owns a
- * native execution. Browser connections alone never keep PostgreSQL awake.
+ * native execution, or while run starts are handed over between servers.
+ * Browser connections alone never keep PostgreSQL awake.
  * Durable queues and their existing claims remain execution authority. */
 export function deploymentNotifications(db: Db, coordinator: ReturnType<typeof createDeliveryWorkCoordinator>, input: {
   directDatabaseUrl: string; isWarmStandby?: () => boolean; handoffMs?: number;
@@ -18,7 +20,8 @@ export function deploymentNotifications(db: Db, coordinator: ReturnType<typeof c
   let stopped = false, handoffEndsAt: number | null = null;
   let client: ReturnType<typeof createDb>["$client"] | null = null;
   const wanted = () => !stopped && !isIdleTaskDrainActive()
-    && (handoffEndsAt === null || handoffEndsAt > Date.now() || activeNativeExecutionRunIds.size > 0);
+    && (handoffEndsAt === null || handoffEndsAt > Date.now() || activeNativeExecutionRunIds.size > 0
+      || isRunStartHandoverActive());
   async function close() {
     const previous = client; client = null;
     await previous?.end({ timeout: 1 });
@@ -45,6 +48,7 @@ export function deploymentNotifications(db: Db, coordinator: ReturnType<typeof c
   });
   const stopActive = subscribeActiveNativeExecutions(listener.wake);
   const stopDrain = subscribeTaskDrainChanges(listener.wake);
+  const stopHandover = subscribeRunStartHandoverChanges(listener.wake);
 
   // Only company identity crosses the hint channel, never event contents or
   // authorization decisions. A receiving tab refreshes through its normal API.
@@ -92,7 +96,7 @@ export function deploymentNotifications(db: Db, coordinator: ReturnType<typeof c
     },
     async stop() {
       stopped = true;
-      stopActive(); stopDrain(); stopEvents();
+      stopActive(); stopDrain(); stopHandover(); stopEvents();
       await close();
       await Promise.all([listener.stop(), publisher.stop()]);
     },

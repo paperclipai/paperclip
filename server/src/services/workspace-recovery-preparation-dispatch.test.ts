@@ -48,7 +48,7 @@ describe("automatic retained workspace recovery", () => {
     const experimental = await instanceSettingsService(db).getExperimental();
     let stoppedWorker: Awaited<ReturnType<typeof stoppedWorkspaceWorker>> | undefined;
     let storage: { mockRestore(): void } | undefined;
-    const starts = vi.spyOn(agentStarts, "withAgentStartLock");
+    const starts = vi.spyOn(agentStarts, "dispatchForAgent");
     const retryResumes: Promise<void>[] = [];
     let resumeSpy: { mockRestore(): void } | undefined;
     let ownedHeartbeat: ReturnType<typeof heartbeatService> | undefined;
@@ -178,7 +178,8 @@ describe("automatic retained workspace recovery", () => {
       });
       const app = boardRecoveryApp(undefined, heartbeat);
       const gate = new Promise<void>(resolve => { releaseStart = resolve; });
-      heldStart = agentStarts.withAgentStartLock(source.agentId, () => gate);
+      heldStart = agentStarts.dispatchForAgent(source.agentId, { request: null, idle: undefined, merge: () => null,
+        run: async () => ({ value: await gate }) });
       const receipt = mode === "automatic_lost" ? null : (await request(app).post(`/api/issues/${f.issueId}/retry`)
         .send({ observedRunId: f.runId, idempotencyKey: randomUUID() }).expect(202)).body;
       if (mode === "automatic_lost") {
@@ -237,7 +238,14 @@ describe("automatic retained workspace recovery", () => {
         recoveryWorker = registerWorkspaceRecoveryWork(db, recoveryCoordinator, runtime, heartbeat.resumeRemoteStopComments);
         await recoveryWorker.ready;
         const retryIntent = { observedRunId: completed.id, idempotencyKey: randomUUID() };
-        const retry = (await request(app).post(`/api/issues/${f.issueId}/retry`).send(retryIntent).expect(202)).body;
+        // Until saved-work recovery verifies the files, admission refuses this
+        // Retry and the answer says so. The saved request still starts by
+        // itself once the files are verified.
+        const answer = await request(app).post(`/api/issues/${f.issueId}/retry`).send(retryIntent);
+        expect([200, 202]).toContain(answer.status);
+        if (answer.status === 200) expect(answer.body).toMatchObject({ accepted: false,
+          refused: { reason: "previous_execution_unverified" } });
+        const retry = answer.body;
         const resumed = () => db.select().from(heartbeatRuns).where(and(eq(heartbeatRuns.companyId, f.companyId),
           sql`${heartbeatRuns.contextSnapshot}->>'taskRetryRequestId' = ${retry.requestId}`));
         await expect.poll(async () => await hasVerifiedWorkspaceRepair(db, await run(completed.id)), { timeout: 20_000 }).toBe(true);
@@ -350,8 +358,10 @@ describe("automatic retained workspace recovery", () => {
       const successors = await db.select().from(heartbeatRuns).where(and(eq(heartbeatRuns.companyId, f.companyId),
         eq(heartbeatRuns.status, "scheduled_retry")));
       expect(successors).toHaveLength(1);
-      expect(successors[0]).toMatchObject({ retryOfRunId: withheld.id, scheduledRetryAttempt: 2,
-        scheduledRetryReason: "interrupted_preparation", contextSnapshot: { executionRetryAccounting: { failureRetries: 2 } } });
+      // Interrupted preparation spent no provider work: it keeps the withheld
+      // retry's failure count and starts its own lane (section F).
+      expect(successors[0]).toMatchObject({ retryOfRunId: withheld.id, scheduledRetryAttempt: 1,
+        scheduledRetryReason: "interrupted_preparation", contextSnapshot: { executionRetryAccounting: { failureRetries: 1 } } });
       expect(await getExecutionBlocker(db, f.companyId, f.issueId)).toBeNull();
       expect((await run(f.runId)).status).toBe("failed");
       expect(await run(withheld.id)).toMatchObject({ status: "cancelled", startedAt: null });
@@ -461,7 +471,8 @@ describe("automatic retained workspace recovery", () => {
       }
       const successors = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, withheld.id));
       expect(successors).toHaveLength(1);
-      expect(successors[0]).toMatchObject({ status: "scheduled_retry", scheduledRetryAttempt: 2 });
+      expect(successors[0]).toMatchObject({ status: "scheduled_retry", scheduledRetryAttempt: 1,
+        scheduledRetryReason: "interrupted_preparation" });
       expect((await action(f.actionId)).evidence).toMatchObject({ bootstrapPreparationContinuation: "delivered",
         bootstrapPreparationContinuationRunId: successors[0].id });
       expect(await nextWorkspaceRecoveryAt(restarted)).toBeNull();
@@ -489,7 +500,7 @@ describe("automatic retained workspace recovery", () => {
     await Promise.all(await reconcileRetainedWorkspaces(db, f.environmentRuntime, onRecovered, true, undefined, passiveSweep) ?? []);
     expect(attempts).toBe(2);
     expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, withheld.id)))
-      .toEqual([expect.objectContaining({ status: "scheduled_retry", scheduledRetryAttempt: 2 })]);
+      .toEqual([expect.objectContaining({ status: "scheduled_retry", scheduledRetryAttempt: 1 })]);
     expect(await nextWorkspaceRecoveryAt(db)).toBeNull();
   }, 30_000);
 
