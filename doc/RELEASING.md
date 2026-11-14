@@ -129,6 +129,13 @@ and the next push publishes. If a canary is missing after a quiet period, look
 at the failed `Reuse exact-source verification` job. It names the readiness run
 and lists each failed job as a lost runner or a failure.
 
+During a release (`PAPERCLIP_RELEASE_RUNNER_ARTIFACTS_DIR` set), the Runner
+package build does not compile `paperclip-runnerd`. It verifies the
+exact-source release daemon for the publisher's own target (source, digest,
+architecture and build metadata) and stages it at `dist/bin`, so the build
+stamp and the server's vendored Runner stay current. Every other build still
+runs `build:binary`.
+
 After publication, the onboarding smoke checks out the same source SHA and
 installs its test dependencies from the publisher's resolved lockfile with
 `--frozen-lockfile`. The same-run artifact is captured before tracked files are
