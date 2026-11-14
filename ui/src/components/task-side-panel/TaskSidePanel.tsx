@@ -393,7 +393,7 @@ function TaskSidePanelForScope({
       controller.openTab(taskPanelPluginTab(panel), firstArrival);
     }
   }, [dismissedPluginPanels, openedPluginPanels, pluginPanelKey, pluginPanels, pluginPanelsLoading, controller.tabs, controller.closeTab, controller.openTab]);
-  const browsersQuery = useTaskBrowsers(issue.id);
+  const browsersQuery = useTaskBrowsers(issue.id, issue.companyId);
   const newestLiveBrowser = browsersQuery.data?.findLast((browser) => browser.status === "running" || browser.status === "idle");
   useEffect(() => {
     if (!openBrowserId) return;

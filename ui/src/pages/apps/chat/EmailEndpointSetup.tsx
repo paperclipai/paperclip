@@ -20,7 +20,6 @@ import { useCompany } from "@/context/CompanyContext";
 import { useNavigate, useSearchParams, Link } from "@/lib/router";
 import { agentsApi } from "@/api/agents";
 import { issuesApi } from "@/api/issues";
-import { projectsApi } from "@/api/projects";
 import { toolsApi } from "@/api/tools";
 import { emailApi } from "@/api/email";
 import { Button } from "@/components/ui/button";
@@ -51,6 +50,7 @@ import type {
   AgentPermissions,
   EmailEndpointSummary,
 } from "@paperclipai/shared";
+import { companyProjectsQuery } from "@/lib/company-projects-query";
 const selectClass =
   "w-full rounded-md border border-input bg-background px-3 py-2 text-sm";
 
@@ -134,8 +134,7 @@ function EmailEndpointSetupForm({ companyId }: { companyId: string }) {
   const agents = useQuery({ queryKey: queryKeys.agents.list(companyId),
     queryFn: () => agentsApi.list(companyId), enabled: !!companyId });
   const agentsView = useQueryView(agents);
-  const projects = useQuery({ queryKey: queryKeys.projects.list(companyId),
-    queryFn: () => projectsApi.list(companyId), enabled: !!companyId && trustOpen });
+  const projects = useQuery({ ...companyProjectsQuery(companyId), enabled: !!companyId && trustOpen });
   const projectsView = useQueryView(projects);
   const boundaryIssues = useQuery({ queryKey: ["email-boundary-issues", companyId],
     queryFn: () => issuesApi.list(companyId), enabled: !!companyId && trustOpen });

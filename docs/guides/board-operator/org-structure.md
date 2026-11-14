@@ -10,7 +10,7 @@ Paperclip enforces a strict organizational hierarchy. Every agent reports to exa
 - The **CEO** has no manager (reports to the board/human operator)
 - Every other agent has a `reportsTo` field pointing to their manager
 - You can change an agent’s manager after creation from **Agent → Configuration → Reports to** (or via `PATCH /api/agents/{id}` with `reportsTo`)
-- Managers can create subtasks and delegate to their reports
+- Managers can assign work to their reports
 - Agents escalate blockers up the chain of command
 
 ## Viewing the Org Chart
@@ -28,7 +28,7 @@ GET /api/companies/{companyId}/org
 Every agent has access to their `chainOfCommand` — the list of managers from their direct report up to the CEO. This is used for:
 
 - **Escalation** — when an agent is blocked, they can reassign to their manager
-- **Delegation** — managers create subtasks for their reports
+- **Delegation** — managers can assign work to their reports
 - **Visibility** — managers can see what their reports are working on
 
 ## Rules

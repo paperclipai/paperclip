@@ -162,7 +162,7 @@ test("public Pi descriptors preserve effective thinking levels without invalidat
   const validateDescriptor = new Ajv2020({ allErrors: true, strict: true, strictRequired: false }).compile(descriptorSchema);
   const historical = {
     provider: "acpx", driver: "acpx_runtime", model: "model", executionKind: "local_process",
-    providerVersion: "0.13.1", agent: "pi", requestedModel: "model", acpProtocolVersion: 1,
+    providerVersion: "0.22.0", agent: "pi", requestedModel: "model", acpProtocolVersion: 1,
     agentServerPackage: "pi-acp", agentServerVersion: "0.0.33", acpxRecordId: null, agentProcessId: null,
   };
   assert.equal(validateDescriptor(historical), true, JSON.stringify(validateDescriptor.errors));
@@ -275,5 +275,17 @@ test("Pi native empty message boundaries and replay history fit the strict sidec
   ]) {
     assert.equal(validate({ ...messages[2], payload }), true, JSON.stringify(validate.errors));
     assert.equal(validate({ ...messages[2], payload, piMessageBoundary: { phase: "start" } }), false);
+  }
+});
+
+test("a terminal's background task report matches the shared accepted and rejected vectors", async () => {
+  const vectors = JSON.parse(await readFile(new URL("../protocol/fixtures/provider-boundary/acpx-background-tasks.json", import.meta.url), "utf8"));
+  const terminal = (payload) => ({ ...messages[2], eventType: "runtime.turn_terminal", payload });
+  assert.equal(validate(terminal({ status: "completed" })), true, JSON.stringify(validate.errors));
+  for (const { value } of vectors.accepted) {
+    assert.equal(validate(terminal({ status: "completed", backgroundTasks: value })), true, JSON.stringify(value));
+  }
+  for (const { value, case: name } of vectors.rejected) {
+    assert.equal(validate(terminal({ status: "completed", backgroundTasks: value })), false, name);
   }
 });

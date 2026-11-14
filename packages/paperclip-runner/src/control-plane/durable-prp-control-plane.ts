@@ -1,5 +1,6 @@
+import { safeErrorCauseCode } from "./safe-error-cause.js";
 import { AGENT_OBSERVABILITY_ENV_KEYS } from "../drivers/agent-observability.js";
-import { configuredEnvironment } from "../configured-environment.js";
+import { CERTIFICATE_ENVIRONMENT_KEYS, configuredEnvironment } from "../configured-environment.js";
 import { spawn } from "node:child_process";
 import {
   createCipheriv,
@@ -45,6 +46,7 @@ import {
   type DurableRecoveryIdentity,
   type DurableWarmRunTransition,
 } from "./prp-transport-types.js";
+import { crashPoint } from "../crash-point.js";
 
 const protocol = "paperclip.runner";
 export const RUNNER_PRP_PROTOCOL_MIN = 1;
@@ -63,6 +65,8 @@ const maxFrameBytes = 1024 * 1024;
 // Secure frames hex-encode ciphertext. Reserve envelope/tag space as well.
 const maxCommandBytes = Math.floor((maxFrameBytes - 4 * 1024) / 2);
 const maxCommands = 500;
+const maxCommandsAtAttach = 32;
+const maxEventsPerAck = 64;
 class CommandJournalLimitError extends Error {
   constructor(readonly code: "command_payload_too_large" | "command_journal_full") {
     super(`Durable PRP command journal bound exceeded: ${code}.`);
@@ -72,12 +76,30 @@ class CommandJournalLimitError extends Error {
 // polling turn regains the event loop. Match the transport's explicit deferred
 // event bound so a valid burst is not compacted before it can be observed.
 const maxCommittedEventWindow = 4_096;
+const EVENT_DELIVERY_STALL_FAILURES = 20;
+const EVENT_DELIVERY_STALL_MS = 45_000;
 const maxStateBytes = 256 * 1024 * 1024;
 const authChallengeTtlMs = 5_000;
 const stableIdPattern = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,239}$/;
 const runnerDigestPattern = /^sha256:[0-9a-f]{64}$/;
 export function isRunnerRecoveryMaintenanceCommand(type: string): boolean {
   return ["session.snapshot", "session.goal.get", "runner.drain", "runner.suspend", "runner.shutdown", "turn.stop"].includes(type);
+}
+const orderIndependentResultTypes = new Set(["session.snapshot", "session.goal.get", "runner.drain", "semantic_tool.result"]);
+function answersAheadOfEvents(command: DurableRecoveryCoreCommand | undefined, result: unknown): boolean {
+  if (command === undefined || command.status !== "pending" || !orderIndependentResultTypes.has(command.type)) return false;
+  if (command.type === "session.snapshot" && command.payload.quiesceForWarmAttach === true) return false;
+  const status = isRecord(result) ? result.status : undefined;
+  return status === "completed" || status === "rejected";
+}
+
+/** The Runner journaled this command before its effect, then died. It sends
+ * that `indeterminate` entry as `failed` with `execution_indeterminate`, never
+ * executes it again, and still treats a lifecycle command as terminal. */
+function isIndeterminateCommandResult(command: DurableRecoveryCoreCommand): boolean {
+  if (command.status === "indeterminate") return true;
+  const detail = command.result?.result;
+  return command.status === "failed" && isRecord(detail) && detail.code === "execution_indeterminate";
 }
 
 const commandTypes = new Set([
@@ -92,6 +114,7 @@ const commandTypes = new Set([
   "interaction.receipt",
   "semantic_tool.result",
   "external_provider.operation",
+  "runner.attachment.download",
   "session.snapshot",
   "session.goal.get",
   "session.goal.set",
@@ -298,15 +321,32 @@ export interface DurablePrpControlPlaneOptions {
   }) => Promise<{ readonly result: unknown; readonly isError?: boolean }>;
   /** Persist the canonical event before the runner receives its cumulative ACK. */
   onCommittedEvent?: (event: PrpEvent) => Promise<void>;
+  /**
+   * Resolve a saved input that has no durable result. Return null to keep it
+   * pending. `admission` says whether this controller instance dispatched the
+   * callback itself, or restored it from a journal that an earlier controller
+   * wrote (for example one that a server restart replaced).
+   */
   recoverSemanticToolInput?: (
-    input: Parameters<NonNullable<DurablePrpControlPlaneOptions["onSemanticToolInput"]>>[0],
+    input: Parameters<NonNullable<DurablePrpControlPlaneOptions["onSemanticToolInput"]>>[0]
+      & { readonly admission: SemanticInputAdmission },
   ) => Promise<{ readonly result: unknown; readonly isError?: boolean } | null>;
   /** Stop this exact owner after a proven, authenticated permanent integrity fault. */
   onProtocolIntegrityError?: (
     error: NativeSessionProtocolIntegrityError,
   ) => void;
+  /** Diagnostic only: called synchronously after each runner connection is authenticated. */
+  onAuthenticatedConnection?: () => void;
   connectionLeaseTtlMs?: number;
 }
+
+/**
+ * Who dispatched a saved semantic input: this controller instance, or an
+ * earlier one whose journal this controller restored. This controller now
+ * owns the journal, so an earlier controller can never record a result for
+ * its callback. The caller decides whether that callback's owner is gone.
+ */
+export type SemanticInputAdmission = "this_controller" | "earlier_controller";
 
 export interface DurablePrpCheckpoint {
   /** Read-only protocol evidence. Does not grant attachment or execution authority. */
@@ -362,23 +402,72 @@ function evictionCandidate(state: StoredCoreState): number {
 
 function checkpointChanges(records: ReadonlyMap<string, string>, runId: string, previous?: DurablePrpCheckpoint) {
   const reset = !previous || previous.runId !== runId;
-  return {
-    changedRecords: new Map([...records].filter(([key, value]) => reset || previous.records.get(key) !== value)),
-    removedRecords: reset ? [] : [...previous.records.keys()].filter(key => !records.has(key)),
-    reset,
-  };
+  if (reset) return { changedRecords: new Map(records), removedRecords: [], reset };
+  // Unchanged records keep the same string, so most comparisons are by reference.
+  const changedRecords = new Map<string, string>();
+  for (const [key, value] of records) if (previous.records.get(key) !== value) changedRecords.set(key, value);
+  const removedRecords: string[] = [];
+  for (const key of previous.records.keys()) if (!records.has(key)) removedRecords.push(key);
+  return { changedRecords, removedRecords, reset };
 }
 
-function captureCheckpoint(state: StoredCoreState, runnerVersion: string, runnerDigest: string): DurablePrpCheckpoint {
+/**
+ * Reuses the JSON of a command or event record while the record is unchanged,
+ * so a checkpoint serialises only what changed since the last one, not the
+ * whole journal. Commands and events are flat: their fields are edited in place
+ * (status, result, controllerSeq), but their nested payload, result and
+ * envelope objects are owned copies that are replaced, never edited. The JSON
+ * is therefore reused only while the record has the same keys, in the same
+ * order, with identical values.
+ */
+class CheckpointRecordCache {
+  #entries = new WeakMap<object, CheckpointRecord>();
+
+  /** The record's part name and JSON. The name derives from a field, so it is reused with the JSON. */
+  record(prefix: "command:" | "event:", sequence: number, value: object): CheckpointRecord {
+    const entry = this.#entries.get(value);
+    if (entry && sameRecordFields(value, entry.fields)) return entry;
+    const fields: unknown[] = [];
+    for (const key in value) fields.push(key, (value as Record<string, unknown>)[key]);
+    const created = { key: `${prefix}${sequence}`, json: JSON.stringify(value), fields };
+    this.#entries.set(value, created);
+    return created;
+  }
+}
+
+type CheckpointRecord = { readonly key: string; readonly json: string; readonly fields: readonly unknown[] };
+
+function sameRecordFields(value: object, fields: readonly unknown[]): boolean {
+  let index = 0;
+  for (const key in value) {
+    if (fields[index] !== key || fields[index + 1] !== (value as Record<string, unknown>)[key]) return false;
+    index += 2;
+  }
+  return index === fields.length;
+}
+
+function uncachedRecord(prefix: "command:" | "event:", sequence: number, value: object): Omit<CheckpointRecord, "fields"> {
+  return { key: `${prefix}${sequence}`, json: JSON.stringify(value) };
+}
+
+function captureCheckpoint(state: StoredCoreState, runnerVersion: string, runnerDigest: string,
+  cache?: CheckpointRecordCache): DurablePrpCheckpoint {
   const runId = checkpointRunId(state);
   const records = new Map<string, string>();
+  const record = cache ? cache.record.bind(cache) : uncachedRecord;
   const { commands, committedEvents, ackedSourceSeq: _cursor, replayDeliveries: _replays, stagedRunAttachment, ...metadata } = state;
   const stagedDescriptor = stagedRunAttachment ? (({ runAttachTemplate: _template, ...descriptor }) => descriptor)(stagedRunAttachment) : undefined;
   if (stagedRunAttachment?.commandId === null) records.set("staged-attachment-template", JSON.stringify(stagedRunAttachment.runAttachTemplate));
   const latestUsage = committedEvents.findLast(event => event.eventType === "usage.reported");
   const recoveryEvents = committedEvents.filter(event => !isStreamingEvent(event) || event === latestUsage);
-  for (const command of commands) records.set(`command:${command.controllerSeq}`, JSON.stringify(command));
-  for (const event of recoveryEvents) records.set(`event:${event.sourceSeq}`, JSON.stringify(event));
+  for (const command of commands) {
+    const { key, json } = record("command:", command.controllerSeq, command);
+    records.set(key, json);
+  }
+  for (const event of recoveryEvents) {
+    const { key, json } = record("event:", event.sourceSeq, event);
+    records.set(key, json);
+  }
   const header: CheckpointHeader = { schema: "paperclip.runner.controller-checkpoint.v2",
     runnerVersion, runnerDigest, state: { ...metadata, ...(stagedDescriptor ? { stagedRunAttachment: stagedDescriptor } : {}), checkpointEventPolicy: "control-v1" } };
   records.set("header", JSON.stringify(header));
@@ -386,7 +475,9 @@ function captureCheckpoint(state: StoredCoreState, runnerVersion: string, runner
     commandCount: commands.length, eventCount: recoveryEvents.length }));
   const maintenance = new Set(["turn.stop", "runner.drain", "runner.suspend", "session.snapshot", "session.close"]);
   return {
-    runnerVersion, runnerDigest, runId, records, ...checkpointChanges(records, runId),
+    // The controller replaces this full write set with a delta before it persists.
+    runnerVersion, runnerDigest, runId, records,
+    ...(cache ? { changedRecords: records, removedRecords: [], reset: true } : checkpointChanges(records, runId)),
     recoveryEvidence: { runnerInstanceId: state.identity.runnerInstanceId, normalizedSessionId: state.identity.normalizedSessionId,
       authenticatedConnectionCount: state.connectionCount,
       highestRecordedSourceSeq: state.committedEvents.reduce((highest, event) => Math.max(highest, event.sourceSeq), state.ackedSourceSeq) },
@@ -566,6 +657,34 @@ export function inspectUnclaimedBootstrapCheckpoint(
   } catch { return null; }
 }
 
+function isUnauthenticatedBootstrapState(state: StoredCoreState, expected: Partial<DurableRecoveryIdentity>): boolean {
+  const history = state.bootstrapHistory;
+  const matches = (candidate: DurableRecoveryIdentity | undefined) => candidate !== undefined
+    && (Object.keys(expected) as Array<keyof DurableRecoveryIdentity>).every(key => candidate[key] === expected[key]);
+  return !(state.schema !== coreStateSchema || state.checkpointEventPolicy !== "control-v1"
+      || !expected.runId || !matches(state.identity)
+      || history?.schema !== "paperclip.runner.bootstrap-history.v1"
+      || canonicalJson(history.originIdentity) !== canonicalJson(state.identity)
+      || history.adopted !== false
+      || state.warmTransition || state.completedWarmTransition || state.stagedRunAttachment
+      || state.connectionCount !== 0 || state.ackedSourceSeq !== 0 || state.committedEvents.length !== 0
+      || Object.values(state.tickets).some(ticket => ticket.usedAt !== null || ticket.warmTransitionId !== undefined)
+      || Object.keys(state.leases).length !== 0 || state.lastLeaseId !== null || state.lastLeaseExpiresAt !== null
+      || state.replayDeliveries !== 0 || state.duplicateCommandResults !== 0
+      || state.commands.length < 2 || state.commands[0]?.type !== "run.prepare"
+      || state.commands[1]?.type !== "session.open"
+      || state.commands.some(command => command.status !== "pending" || command.result !== null));
+}
+
+export function inspectUnauthenticatedBootstrapCheckpoint(
+  records: ReadonlyMap<string, string>, expected: Partial<DurableRecoveryIdentity>,
+): boolean {
+  try {
+    if ([...records.values()].reduce((bytes, value) => bytes + Buffer.byteLength(value), 0) > 8 * 1024 * 1024) return false;
+    return isUnauthenticatedBootstrapState(checkpointState(records).state, expected);
+  } catch { return false; }
+}
+
 export function inspectUnclaimedBootstrapState(
   contents: string, expected: DurableRecoveryIdentity, verifiedArtifact: { version: string; digest: string },
 ): ReturnType<typeof inspectUnclaimedBootstrapCheckpoint> {
@@ -616,6 +735,9 @@ export interface RunnerProcessLaunchSpec {
   args: readonly string[];
   cwd: string;
   environment: NodeJS.ProcessEnv;
+  /** True while the launched Runner holds an authenticated connection to its control plane. */
+  isRunnerConnected?: () => boolean;
+  refreshBootstrapTicket?: () => Promise<string>;
 }
 
 function domainDigest(domain: string, parts: readonly Buffer[]): Buffer {
@@ -721,7 +843,12 @@ function canonicalJson(
   }
 }
 
-export const durableRecoveryInternals = Object.freeze({ canonicalJson });
+export const durableRecoveryInternals = Object.freeze({
+  canonicalJson,
+  captureCheckpoint: (state: DurablePrpControlPlaneStore["state"], runnerVersion: string, runnerDigest: string,
+    cache?: CheckpointRecordCache) => captureCheckpoint(state, runnerVersion, runnerDigest, cache),
+  createCheckpointRecordCache: () => new CheckpointRecordCache(),
+});
 
 function canonicalDigest(value: unknown): string {
   return createHash("sha256").update(canonicalJson(value)).digest("hex");
@@ -865,6 +992,12 @@ function validStoredWarmTransition(state: StoredCoreState): boolean {
   } catch {
     return false;
   }
+}
+
+function eventSchemaIssuePaths(issues: readonly { path?: unknown }[] | undefined): string {
+  const paths = [...new Set((issues ?? []).map(issue => typeof issue.path === "string" ? issue.path : "")
+    .map(path => path.replace(/[^A-Za-z0-9_./-]/g, "_").slice(0, 80)).filter(Boolean))];
+  return paths.length ? paths.slice(0, 3).join(",") : "unknown";
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -1617,6 +1750,8 @@ class DurableCoreStore {
   #writeRevision = 0;
   #externallyPersisted = false;
   revision = 0;
+  /** Called after the stored state is replaced or saved. */
+  onChange: (() => void) | null = null;
   #pendingEvent: {
     buildCandidate: (state: StoredCoreState) => StoredCoreState | null;
     isCurrentOwner: () => boolean;
@@ -1678,6 +1813,7 @@ class DurableCoreStore {
     this.#state.checkpointEventPolicy = "control-v1";
     this.#externallyPersisted = true;
     this.revision += 1;
+    this.onChange?.();
   }
 
   save(): void {
@@ -1696,6 +1832,7 @@ class DurableCoreStore {
       this.#state = candidate;
       if (pending && withEvent) pending.committed = true;
       this.revision += 1;
+      this.onChange?.();
     } catch (error) {
       this.#writeIndeterminate = true;
       throw error;
@@ -1721,6 +1858,7 @@ class DurableCoreStore {
         this.#state = candidate;
         ++this.#writeRevision;
         if (checkpointRequired) this.revision += 1;
+        this.onChange?.();
         return true;
       }
       await withStagedPrivateWrite(this.path, `${JSON.stringify(candidate)}\n`, (temporary) => {
@@ -1732,6 +1870,7 @@ class DurableCoreStore {
         ++this.#writeRevision;
         pending.committed = true;
         if (checkpointRequired) this.revision += 1;
+        this.onChange?.();
       });
       // Explicit authority commits do not absorb pending events. On conflict,
       // leave the event unacknowledged for replay instead of rewriting in a loop.
@@ -1765,6 +1904,7 @@ class DurableCoreStore {
       }
       this.#state = candidate;
       if (checkpointRequired) this.revision += 1;
+      this.onChange?.();
     } catch (error) {
       // Rename may already have succeeded before directory fsync failed.
       // Never overwrite that possibly durable receipt using stale memory.
@@ -1958,6 +2098,9 @@ class AuthorityConnection {
   warmTransitionVersion: 1 | null = null;
   identity: DurableRecoveryIdentity | null = null;
   replayOnly = false;
+  readonly deliveredAtAttach = new Set<string>();
+  queuedInboundFrames = 0;
+  unacknowledgedEvents = 0;
   activationReceipt: DurableWarmRunTransition | null = null;
   readonly wire: PrpWireConnection;
   #closed = false;
@@ -2018,7 +2161,14 @@ export class DurablePrpControlPlane {
   #connectionProcessing = new Map<AuthorityConnection, Promise<void>>();
   #connectionLeaseFailure: DurablePrpConnectionLeaseFailure | null = null;
   #pendingSemanticCalls = new Set<string>();
+  /** Result command ids whose callback this instance dispatched live and has
+   * not journaled a result for. A queued result removes its id, so only
+   * in-flight and failed dispatches remain. */
+  #liveDispatchedSemanticCalls = new Set<string>();
   #semanticCallbacksRetired = false;
+  #queuedCommandResults = new Map<string, { count: number; queuedAt: number }>();
+  #inboundFrameSettledAt = 0;
+  #eventCommittedAt: number | null = null;
   #semanticResultPersistenceFailed = false;
   #semanticResultFailures: Array<{
     callId: string;
@@ -2035,20 +2185,26 @@ export class DurablePrpControlPlane {
   #recoverSemanticToolInput?: DurablePrpControlPlaneOptions["recoverSemanticToolInput"];
   #beforeAuthenticatedConnection?: DurablePrpControlPlaneOptions["beforeAuthenticatedConnection"];
   #onProtocolIntegrityError?: DurablePrpControlPlaneOptions["onProtocolIntegrityError"];
+  #onAuthenticatedConnection?: DurablePrpControlPlaneOptions["onAuthenticatedConnection"];
+  readonly #runnerExitListeners = new Set<() => void>();
   #protocolIntegrityError: NativeSessionProtocolIntegrityError | null = null;
+  #eventDeliveryStall: { runId: string; ackedSourceSeq: number; since: number; failures: number } | null = null;
   #connectionLeaseTtlMs: number;
   #persistCheckpoint: ((checkpoint: DurablePrpCheckpoint) => Promise<void>) | null = null;
   #persistedRevision = -1;
   #queuedRevision = -1;
   #lastCheckpoint?: DurablePrpCheckpoint;
+  readonly #checkpointRecords = new CheckpointRecordCache();
   #publishedState?: StoredCoreState;
   #publishedStore?: DurablePrpControlPlaneStore;
   #publicationCommands = new Map<string, { record: string; command: DurableRecoveryCoreCommand }>();
   #visibleStateCache?: { working: StoredCoreState; published: StoredCoreState; revision: number; state: StoredCoreState };
   #checkpointPersistenceFailed = false;
   #persistenceTail = Promise.resolve();
+  #waitingCheckpoint: { snapshot: DurablePrpCheckpoint; published: StoredCoreState; revision: number } | null = null;
   #sendQueues = new Map<AuthorityConnection, Promise<void>>();
   #recoveredCursor: { runId: string; sourceSeq: number } | null = null;
+  #readableStateListeners = new Set<() => void>();
 
   constructor(options: DurablePrpControlPlaneOptions) {
     if (
@@ -2069,6 +2225,7 @@ export class DurablePrpControlPlane {
       options.stateDirectory,
       options.identity,
     );
+    this.#store.onChange = () => this.#readableStateChanged();
     if (this.#store.state.checkpointEventPolicy === "control-v1") {
       this.#recoveredCursor = { runId: options.identity.runId, sourceSeq: this.#store.state.ackedSourceSeq };
     }
@@ -2093,11 +2250,50 @@ export class DurablePrpControlPlane {
     this.#recoverSemanticToolInput = options.recoverSemanticToolInput;
     this.#beforeAuthenticatedConnection = options.beforeAuthenticatedConnection;
     this.#onProtocolIntegrityError = options.onProtocolIntegrityError;
+    this.#onAuthenticatedConnection = options.onAuthenticatedConnection;
     this.#connectionLeaseTtlMs = options.connectionLeaseTtlMs ?? 60_000;
   }
 
   get store(): DurablePrpControlPlaneStore {
     return this.#publishedStore ?? this.#store;
+  }
+
+  /**
+   * Tell a reader of `store` that what it can see may have changed: an event
+   * or command was committed, or a saved checkpoint released the events that
+   * were waiting for it. This is a hint, and it can arrive partway through the
+   * change, so the reader must look at the state in a later task. Returns the
+   * function that removes the listener.
+   */
+  onReadableStateChange(listener: () => void): () => void {
+    this.#readableStateListeners.add(listener);
+    return () => {
+      this.#readableStateListeners.delete(listener);
+    };
+  }
+
+  /**
+   * Notify when the Runner reports a completed suspend or shutdown. The
+   * listener runs after the result is saved and before its acknowledgement;
+   * the Runner exits once acknowledged, so a dropped connection after this
+   * point is that exit, not a transport loss.
+   */
+  onRunnerExitCommitted(listener: () => void): () => void {
+    this.#runnerExitListeners.add(listener);
+    return () => {
+      this.#runnerExitListeners.delete(listener);
+    };
+  }
+
+  #readableStateChanged(): void {
+    for (const listener of this.#readableStateListeners) {
+      // A reader can never fail the commit that woke it.
+      try {
+        listener();
+      } catch {
+        // The reader owns its own failure handling.
+      }
+    }
   }
 
   #capturePublishedState(snapshot: DurablePrpCheckpoint): StoredCoreState {
@@ -2157,7 +2353,7 @@ export class DurablePrpControlPlane {
     this.#store.useExternalPersistence();
     this.#persistCheckpoint = persist;
     this.#publishedState = this.#capturePublishedState(captureCheckpoint(this.#store.state,
-      this.#expectedRunnerVersion, this.#expectedRunnerDigest));
+      this.#expectedRunnerVersion, this.#expectedRunnerDigest, this.#checkpointRecords));
     const core = this;
     this.#publishedStore = { path: this.#store.path, get state() { return core.#visibleState(); } };
   }
@@ -2168,12 +2364,23 @@ export class DurablePrpControlPlane {
       return this.#persistenceTail;
     }
     const snapshot = captureCheckpoint(this.#store.state,
-      this.#expectedRunnerVersion, this.#expectedRunnerDigest);
+      this.#expectedRunnerVersion, this.#expectedRunnerDigest, this.#checkpointRecords);
     const published = this.#capturePublishedState(snapshot);
     const revision = this.#store.revision;
     this.#queuedRevision = revision;
+    const waiting = this.#waitingCheckpoint;
+    if (waiting !== null && waiting.snapshot.runId === snapshot.runId) {
+      waiting.snapshot = snapshot;
+      waiting.published = published;
+      waiting.revision = revision;
+      return this.#persistenceTail;
+    }
+    const job = { snapshot, published, revision };
+    this.#waitingCheckpoint = job;
     const persist = this.#persistCheckpoint;
     const pending = this.#persistenceTail.catch(() => undefined).then(async () => {
+      if (this.#waitingCheckpoint === job) this.#waitingCheckpoint = null;
+      const { snapshot, published, revision } = job;
       // The previous write may have failed after committing. Rebuild the delta
       // at execution time, and reset after uncertainty instead of assuming it failed.
       const checkpoint = { ...snapshot, ...checkpointChanges(snapshot.records, snapshot.runId,
@@ -2184,6 +2391,7 @@ export class DurablePrpControlPlane {
         this.#publishedState = published;
         this.#persistedRevision = revision;
         this.#checkpointPersistenceFailed = false;
+        this.#readableStateChanged();
       } catch (error) {
         this.#checkpointPersistenceFailed = true;
         throw error;
@@ -2206,10 +2414,15 @@ export class DurablePrpControlPlane {
     }
     const checkpoint = this.flushCheckpoint();
     const frame = structuredClone(value);
+    let checkpointFailure: unknown = null;
     const sending = (this.#sendQueues.get(connection) ?? Promise.resolve())
-      .then(() => checkpoint)
+      .then(() => checkpoint.catch(error => { checkpointFailure = error ?? new Error("checkpoint_failed"); throw error; }))
       .then(() => connection.sendJson(frame))
-      .catch(() => connection.close());
+      .catch(() => {
+        if (checkpointFailure !== null && this.#protocolIntegrityError === null) {
+          this.#eventCommitFailed(connection, `checkpoint_flush_failed:${safeErrorCauseCode(checkpointFailure)}`);
+        } else connection.close();
+      });
     this.#sendQueues.set(connection, sending);
     void sending.finally(() => {
       if (this.#sendQueues.get(connection) === sending) this.#sendQueues.delete(connection);
@@ -2257,7 +2470,20 @@ export class DurablePrpControlPlane {
     this.#semanticInputSourceRunId = null;
   }
 
-  async recoverPendingSemanticInputs(): Promise<void> {
+  #semanticRecoveryPass: Promise<void> | null = null;
+
+  recoverPendingSemanticInputs(): Promise<void> {
+    const pass = (this.#semanticRecoveryPass ?? Promise.resolve())
+      .catch(() => undefined)
+      .then(() => this.#recoverPendingSemanticInputsOnce());
+    this.#semanticRecoveryPass = pass;
+    void pass.finally(() => {
+      if (this.#semanticRecoveryPass === pass) this.#semanticRecoveryPass = null;
+    }).catch(() => undefined);
+    return pass;
+  }
+
+  async #recoverPendingSemanticInputsOnce(): Promise<void> {
     if (this.#retainsSourceInputs() || !this.#recoverSemanticToolInput) return;
     const identity = this.#identity;
     for (const saved of [...this.#store.state.committedEvents]) {
@@ -2275,7 +2501,9 @@ export class DurablePrpControlPlane {
           sourceEventId: event.sourceEventId, sourceEventType: event.eventType,
           correlation: { runId: identity.runId, normalizedSessionId: identity.normalizedSessionId,
             turnId: identity.turnId, itemId: event.itemId ?? identity.itemId } };
-        const outcome = await this.#recoverSemanticToolInput(call);
+        const admission: SemanticInputAdmission = this.#liveDispatchedSemanticCalls.has(commandId)
+          ? "this_controller" : "earlier_controller";
+        const outcome = await this.#recoverSemanticToolInput({ ...call, admission });
         if (this.#identity !== identity || this.#semanticCallbacksRetired || this.#retainsSourceInputs()) return;
         if (!outcome || this.#getCommand(commandId)) continue;
         const { input, ...metadata } = call;
@@ -2367,6 +2595,10 @@ export class DurablePrpControlPlane {
     const connections = [...this.#connections];
     this.#connections.clear();
     for (const connection of connections) connection.close();
+  }
+
+  activeRunnerProtocolVersion(): number | null {
+    return this.#eventOwner?.lease?.protocolVersion ?? null;
   }
 
   activeRunnerConnectionCount(): number {
@@ -2541,6 +2773,31 @@ export class DurablePrpControlPlane {
    * source for a later run.attach. Repeating the same write is idempotent;
    * changing an established seed fails closed.
    */
+  queuedCommandResultProgressAt(commandId: string): number | null {
+    const queued = this.#queuedCommandResults.get(commandId);
+    return queued === undefined ? null : Math.max(queued.queuedAt, this.#inboundFrameSettledAt);
+  }
+
+  committedEventProgressAt(): number | null {
+    return this.#eventCommittedAt;
+  }
+
+  withdrawUndeliveredTerminalCommands(): string[] {
+    if (this.#store.state.warmTransition) return [];
+    const commands = this.#store.state.commands;
+    const firstPending = commands.findIndex((command) => command.status === "pending");
+    if (firstPending < 0) return [];
+    const suffix = commands.slice(firstPending);
+    const kept = suffix.filter((command) => !this.#isTerminalLifecycleCommand(command));
+    if (kept.length === suffix.length) return [];
+    const withdrawn = suffix.filter((command) => this.#isTerminalLifecycleCommand(command));
+    for (const command of withdrawn) delete this.#store.state.commandDeliveryCounts[command.commandId];
+    kept.forEach((command, index) => { command.controllerSeq = firstPending + index + 1; });
+    commands.splice(firstPending, suffix.length, ...kept);
+    this.#store.save();
+    return withdrawn.map((command) => command.type);
+  }
+
   persistRunAttachTemplate(runAttachTemplate: Record<string, unknown>): void {
     if (!isRecord(runAttachTemplate.provider)) {
       throw new Error("Durable PRP run attachment template is invalid.");
@@ -2816,16 +3073,24 @@ export class DurablePrpControlPlane {
       }
     }
     const controllerSeq = this.#store.state.commands.length + 1;
+    const sequenceId = `command_prp_${controllerSeq.toString().padStart(8, "0")}`;
+    let generatedId = sequenceId;
+    for (let reuse = 1; this.#store.state.commands.some((candidate) => candidate.commandId === generatedId); reuse += 1) {
+      generatedId = `${sequenceId}_${reuse}`;
+    }
     const command: DurableRecoveryCoreCommand = {
-      schema: type === "external_provider.operation" ? "paperclip.prp.command.v3" : type.startsWith("session.goal.")
-        ? "paperclip.prp.command.v2"
-        : "paperclip.prp.command.v1",
-      commandId:
-        commandId ?? `command_prp_${controllerSeq.toString().padStart(8, "0")}`,
+      schema: type === "external_provider.operation" || type === "runner.attachment.download"
+        ? "paperclip.prp.command.v3"
+        : type.startsWith("session.goal.")
+          ? "paperclip.prp.command.v2"
+          : "paperclip.prp.command.v1",
+      commandId: commandId ?? generatedId,
       controllerSeq,
       type,
       issuedAt: new Date().toISOString(),
-      payload,
+      // The journal owns its copy: checkpoints reuse a command's JSON while
+      // its fields keep the same values, so a caller must not edit it later.
+      payload: structuredClone(payload),
       status: "pending",
       result: null,
     };
@@ -2950,16 +3215,34 @@ export class DurablePrpControlPlane {
             }
             return;
           }
+          if (decrypted.kind === "command_result" && this.#answerOnArrival(connection, decrypted)) return;
           frame = { decrypted };
         } else {
           undecryptedFrames += 1;
           frame = { raw: value };
         }
+        const answeredCommandId = "decrypted" in frame && frame.decrypted.kind === "command_result"
+          ? (frame.decrypted.payload as Record<string, unknown> | undefined)?.commandId : undefined;
+        const queuedResult = typeof answeredCommandId === "string" ? answeredCommandId : null;
+        if (queuedResult !== null) {
+          const queued = this.#queuedCommandResults.get(queuedResult);
+          this.#queuedCommandResults.set(queuedResult, { count: (queued?.count ?? 0) + 1, queuedAt: queued?.queuedAt ?? Date.now() });
+        }
+        connection.queuedInboundFrames += 1;
         processing = processing
           .then(() => "raw" in frame
             ? this.#handleJson(connection, frame.raw).finally(() => { undecryptedFrames -= 1; })
             : this.#handleDecryptedFrame(connection, frame.decrypted))
-          .catch(() => connection.close());
+          .then(() => connection.queuedInboundFrames === 1 ? this.#acknowledgeDeferredEvents(connection) : undefined)
+          .catch(() => connection.close())
+          .finally(() => {
+            connection.queuedInboundFrames -= 1;
+            this.#inboundFrameSettledAt = Date.now();
+            if (queuedResult === null) return;
+            const queued = this.#queuedCommandResults.get(queuedResult);
+            if (queued !== undefined && queued.count > 1) queued.count -= 1;
+            else this.#queuedCommandResults.delete(queuedResult);
+          });
         const tail = processing;
         this.#connectionProcessing.set(connection, tail);
         const release = () => {
@@ -3032,6 +3315,31 @@ export class DurablePrpControlPlane {
     if (!this.#admitEnvelopeVersion(connection, envelope)) return;
     if (!this.#admitAuthenticatedFrame(connection)) return;
     if (envelope.kind === "lease_renew") this.#renewLease(connection, envelope);
+  }
+
+  #answerOnArrival(
+    connection: AuthorityConnection,
+    envelope: Record<string, unknown>,
+  ): boolean {
+    const result = envelope.payload;
+    const commandId = isRecord(result) ? result.commandId : undefined;
+    if (
+      typeof commandId !== "string" ||
+      connection.replayOnly ||
+      this.#store.state.warmTransition !== undefined ||
+      !answersAheadOfEvents(this.#store.state.commands.find(command => command.commandId === commandId), result)
+    ) return false;
+    try {
+      this.#store.assertWritable();
+      if (!this.#admitEnvelopeVersion(connection, envelope) || !this.#admitAuthenticatedFrame(connection)
+        || connection.lease === null) return true;
+      this.#commandResult(connection, envelope);
+    } catch {
+      connection.close();
+      return true;
+    }
+    void this.flushCheckpoint().catch(() => connection.close());
+    return true;
   }
 
   #admitEnvelopeVersion(
@@ -3732,6 +4040,7 @@ export class DurablePrpControlPlane {
       const cursor = Math.max(this.#store.state.ackedSourceSeq, pending.acknowledgedSourceSeq);
       this.#store.state.ackedSourceSeq = cursor;
       this.#recoveredCursor = { runId: this.#identity.runId, sourceSeq: cursor };
+      this.#readableStateChanged();
     }
     connection.pendingChallenge = null;
     connection.lease = lease;
@@ -3773,21 +4082,28 @@ export class DurablePrpControlPlane {
     }
 
     this.#store.state.connectionCount += 1;
+    try { this.#onAuthenticatedConnection?.(); } catch { /* Diagnostics never change admission. */ }
     this.#connectionLeaseFailure = null;
     this.#store.state.lastLeaseId = lease.leaseId;
     this.#store.state.lastLeaseExpiresAt = lease.expiresAt;
 
-    const pending = connection.replayOnly ? [] : this.#nextPendingCommand();
+    const pending = connection.replayOnly ? [] : this.#pendingCommandsAtAttach();
     const [pendingCommand] = pending;
     connection.terminalLifecycleCommandId =
       pendingCommand && this.#isTerminalLifecycleCommand(pendingCommand)
         ? pendingCommand.commandId
         : null;
+    for (const command of pending.slice(1)) connection.deliveredAtAttach.add(command.commandId);
     for (const command of pending) {
       this.#store.state.commandDeliveryCounts[command.commandId] =
         (this.#store.state.commandDeliveryCounts[command.commandId] ?? 0) + 1;
     }
-    this.#store.save();
+    try {
+      this.#store.save();
+    } catch (error) {
+      this.#failEventCommit(connection, `journal_write_failed:${safeErrorCauseCode(error)}`);
+      return;
+    }
     this.#sendJson(connection, {
       protocol,
       version: lease.protocolVersion,
@@ -3855,6 +4171,24 @@ export class DurablePrpControlPlane {
     return command === undefined ? [] : [command];
   }
 
+  #pendingCommandsAtAttach(): DurableRecoveryCoreCommand[] {
+    const [head] = this.#nextPendingCommand();
+    if (head === undefined) return [];
+    const batch = [head];
+    if (this.#isTerminalLifecycleCommand(head) || head.type === "run.attach") return batch;
+    const commands = this.#store.state.commands;
+    let bytes = Buffer.byteLength(JSON.stringify(this.#wireCommand(head)));
+    for (let index = commands.indexOf(head) + 1; index < commands.length && batch.length < maxCommandsAtAttach; index += 1) {
+      const command = commands[index]!;
+      if (command.status !== "pending" || command.controllerSeq !== batch.at(-1)!.controllerSeq + 1
+        || this.#isTerminalLifecycleCommand(command) || command.type === "run.attach") break;
+      bytes += Buffer.byteLength(JSON.stringify(this.#wireCommand(command)));
+      if (bytes > maxCommandBytes) break;
+      batch.push(command);
+    }
+    return batch;
+  }
+
   #controlEnvelope(
     connection: AuthorityConnection,
     envelopeId: string,
@@ -3892,7 +4226,7 @@ export class DurablePrpControlPlane {
     )
       return;
     const [command] = this.#nextPendingCommand();
-    if (command === undefined) return;
+    if (command === undefined || connection.deliveredAtAttach.has(command.commandId)) return;
     if (this.#isTerminalLifecycleCommand(command)) {
       connection.terminalLifecycleCommandId = command.commandId;
     }
@@ -4025,9 +4359,21 @@ export class DurablePrpControlPlane {
       this.#ackWarmTransition(connection, receipt);
       return;
     }
+    const turnStart = command.type === "turn.start";
+    if (turnStart) crashPoint("runner.turn_start.after_runner_accept_before_controller_checkpoint");
     command.status = status;
     command.result = structuredClone(result);
     this.#store.save();
+    if (turnStart) crashPoint("runner.turn_start.after_controller_journal_before_db_checkpoint");
+    if (this.#isTerminalLifecycleCommand(command) && status === "completed") {
+      for (const listener of this.#runnerExitListeners) {
+        try {
+          listener();
+        } catch {
+          // An observer can never change the acknowledgement.
+        }
+      }
+    }
     this.#ackTerminalCommandResult(connection, command);
     this.#releaseServingLifecycle(connection, command);
     if (!this.#isTerminalLifecycleCommand(command) || connection.terminalLifecycleCommandId === null) {
@@ -4039,7 +4385,8 @@ export class DurablePrpControlPlane {
    * A rejected runner.suspend changes no provider state, and the runner keeps
    * serving this connection. Lift the terminal-lifecycle fence it installed
    * so the controller's next command (a fresh suspend) can be delivered.
-   * Completed suspensions and every shutdown keep the fence.
+   * Completed suspensions and every shutdown keep the fence. So does an
+   * indeterminate suspension: the Runner treats it as terminal and exits.
    */
   #releaseServingLifecycle(
     connection: AuthorityConnection,
@@ -4048,6 +4395,7 @@ export class DurablePrpControlPlane {
     if (
       command.type === "runner.suspend" &&
       (command.status === "failed" || command.status === "rejected") &&
+      !isIndeterminateCommandResult(command) &&
       connection.terminalLifecycleCommandId === command.commandId
     ) {
       connection.terminalLifecycleCommandId = null;
@@ -4096,10 +4444,53 @@ export class DurablePrpControlPlane {
           commandId: command.commandId,
           commandType: command.type,
           controllerSeq: command.controllerSeq,
-          status: command.status,
+          // A Runner journals a command it may have started before dying as
+          // `indeterminate` and sends it as `failed`. Runners compare this
+          // acknowledgement with their journal, so name that journal status;
+          // current Runners accept either spelling.
+          status: isIndeterminateCommandResult(command) ? "indeterminate" : command.status,
         },
       ),
     );
+  }
+
+  async #acknowledgeDeferredEvents(connection: AuthorityConnection): Promise<void> {
+    if (connection.unacknowledgedEvents === 0) return;
+    connection.unacknowledgedEvents = 0;
+    const identity = this.#identity;
+    if (this.#eventOwner !== connection || this.#protocolIntegrityError !== null) return;
+    try {
+      await this.flushCheckpoint();
+    } catch (error) {
+      if (this.#eventOwner === connection && this.#identity === identity) {
+        this.#eventCommitFailed(connection, `checkpoint_flush_failed:${safeErrorCauseCode(error)}`);
+      }
+      return;
+    }
+    if (this.#eventOwner !== connection || this.#identity !== identity || this.#protocolIntegrityError !== null) return;
+    this.#sendJson(connection, this.#controlEnvelope(connection, `ack_${this.#store.state.ackedSourceSeq}`, "ack",
+      { ackedSourceSeq: this.#store.state.ackedSourceSeq }));
+  }
+
+  #eventCommitFailed(connection: AuthorityConnection, cause: string, sourceSeq?: number, now = Date.now()): void {
+    const acked = this.#store.state.ackedSourceSeq;
+    const runId = this.#identity.runId;
+    const stall = this.#eventDeliveryStall;
+    if (stall === null || stall.ackedSourceSeq !== acked || stall.runId !== runId) {
+      this.#eventDeliveryStall = { runId, ackedSourceSeq: acked, since: now, failures: 1 };
+    } else {
+      stall.failures += 1;
+      if (stall.failures >= EVENT_DELIVERY_STALL_FAILURES && now - stall.since >= EVENT_DELIVERY_STALL_MS) {
+        this.#failEventCommit(connection, cause, sourceSeq);
+        return;
+      }
+    }
+    connection.close();
+  }
+
+  #failEventCommit(connection: AuthorityConnection, cause: string, sourceSeq?: number): void {
+    this.#failProtocolIntegrity(connection, new NativeSessionProtocolIntegrityError("runner_event_commit_stalled",
+      `${cause} at source seq ${sourceSeq ?? this.#store.state.ackedSourceSeq + 1}`));
   }
 
   #failProtocolIntegrity(
@@ -4142,7 +4533,7 @@ export class DurablePrpControlPlane {
     }
     const validated = validatePrpEvent(envelope.payload);
     if (!validated.ok) {
-      connection.close();
+      this.#eventCommitFailed(connection, `event_schema_invalid:${eventSchemaIssuePaths(validated.issues)}`);
       return;
     }
     const event = validated.event;
@@ -4196,7 +4587,7 @@ export class DurablePrpControlPlane {
         ? sourceSeq !== this.#store.state.ackedSourceSeq + 1
         : sourceSeq !== existing.sourceSeq
     ) {
-      connection.close();
+      this.#eventCommitFailed(connection, "event_sequence_mismatch", sourceSeq);
       return;
     }
     if (
@@ -4255,7 +4646,7 @@ export class DurablePrpControlPlane {
       if (error instanceof NativeSessionProtocolIntegrityError) {
         this.#failProtocolIntegrity(connection, error);
       } else {
-        connection.close();
+        this.#eventCommitFailed(connection, safeErrorCauseCode(error), sourceSeq);
       }
       return;
     }
@@ -4297,20 +4688,42 @@ export class DurablePrpControlPlane {
     };
     const isCurrentOwner = () => this.#eventOwner === connection &&
       this.#identity === identity && this.#protocolIntegrityError === null;
-    if (priority === 0 || isSemanticInput || eventType.startsWith("turn.") || eventType.startsWith("run.")) {
+    const critical = priority === 0 || isSemanticInput || eventType.startsWith("turn.") || eventType.startsWith("run.");
+    if (critical) {
       // Critical lifecycle suffixes and tool admission must finish in this
       // turn before readers react or a replacement owner adopts their cursor.
       const candidate = buildCandidate(this.#store.state);
       if (candidate === null) {
-        connection.close();
+        this.#eventCommitFailed(connection, "journal_sequence_not_contiguous", sourceSeq);
         return;
       }
-      this.#store.commit(candidate, !isStreamingEvent(event));
-    } else if (!await this.#store.commitEvent(buildCandidate, isCurrentOwner, !isStreamingEvent(event))) {
-      if (isCurrentOwner()) connection.close();
-      return;
+      try {
+        this.#store.commit(candidate, !isStreamingEvent(event));
+      } catch (error) {
+        this.#failEventCommit(connection, `journal_write_failed:${safeErrorCauseCode(error)}`, sourceSeq);
+        return;
+      }
+    } else {
+      let committed: boolean;
+      try {
+        committed = await this.#store.commitEvent(buildCandidate, isCurrentOwner, !isStreamingEvent(event));
+      } catch (error) {
+        if (isCurrentOwner()) this.#failEventCommit(connection, `journal_write_failed:${safeErrorCauseCode(error)}`, sourceSeq);
+        else connection.close();
+        return;
+      }
+      if (!committed) {
+        if (isCurrentOwner()) this.#eventCommitFailed(connection, "journal_commit_refused", sourceSeq);
+        return;
+      }
     }
     if (!isCurrentOwner()) return;
+    this.#eventCommittedAt = Date.now();
+    if (!critical && connection.queuedInboundFrames > 1 && connection.unacknowledgedEvents + 1 < maxEventsPerAck) {
+      connection.unacknowledgedEvents += 1;
+      return;
+    }
+    connection.unacknowledgedEvents = 0;
 
     const liveCall = !this.#retainsSourceInputs() && isSemanticInput && this.#onSemanticToolInput && semantic !== undefined
       && typeof semantic.callId === "string" && typeof semantic.operationId === "string"
@@ -4325,10 +4738,20 @@ export class DurablePrpControlPlane {
       && !this.#getCommand(liveCommandId) && !this.#pendingSemanticCalls.has(liveCommandId);
     // Reserve the original callback before exposing its checkpoint wait to
     // recovery. A missing saved outcome must never suppress first dispatch.
-    if (ownsLiveDispatch) this.#pendingSemanticCalls.add(liveCommandId!);
+    if (ownsLiveDispatch) {
+      this.#pendingSemanticCalls.add(liveCommandId!);
+      this.#liveDispatchedSemanticCalls.add(liveCommandId!);
+    }
     let dispatched = false;
     try {
-      await this.flushCheckpoint();
+      try {
+        await this.flushCheckpoint();
+      } catch (error) {
+        if (this.#eventOwner === connection && this.#identity === identity) {
+          this.#eventCommitFailed(connection, `checkpoint_flush_failed:${safeErrorCauseCode(error)}`, sourceSeq);
+        }
+        return;
+      }
       if (this.#eventOwner !== connection || this.#identity !== identity) return;
       if (!this.#retainsSourceInputs() && ownsLiveDispatch && liveCall && liveCommandId && this.#onSemanticToolInput && !this.#getCommand(liveCommandId)) {
         const call = liveCall;
@@ -4358,6 +4781,8 @@ export class DurablePrpControlPlane {
               commandId,
               true,
             );
+            // Its journaled result settles it; recovery never asks again.
+            this.#liveDispatchedSemanticCalls.delete(commandId);
           } catch (error) {
             // A result that cannot fit the bounded durable journal cannot be
             // acknowledged as a usable tool response. Force a reconnect so
@@ -4365,6 +4790,7 @@ export class DurablePrpControlPlane {
             recordFailure("persist_result", error);
           }
         };
+        crashPoint("runner.semantic_tool.after_input_before_dispatch");
         const outcome = this.#onSemanticToolInput(call);
         dispatched = true;
         void outcome
@@ -4417,8 +4843,7 @@ const runnerPlatformEnvironmentKeys = [
   "HTTPS_PROXY",
   "NO_PROXY",
   "ALL_PROXY",
-  "SSL_CERT_FILE",
-  "SSL_CERT_DIR",
+  ...CERTIFICATE_ENVIRONMENT_KEYS,
   "RUST_BACKTRACE",
 ] as const;
 
@@ -4462,9 +4887,6 @@ const runnerExplicitProviderEnvironmentKeys = [
   "PAPERCLIP_RUNNER_INSTANCE_ID",
   "PAPERCLIP_RUN_ID",
   "PAPERCLIP_NORMALIZED_SESSION_ID",
-  "PAPERCLIP_NATIVE_MCP_NAME",
-  "PAPERCLIP_NATIVE_MCP_URL",
-  "PAPERCLIP_NATIVE_MCP_TOKEN",
   "PAPERCLIP_NATIVE_MCP_STDIO",
   "PAPERCLIP_NATIVE_MCP_PROXY",
   "PAPERCLIP_NATIVE_RUNTIME_CONTEXT_PATH",
@@ -4569,6 +4991,8 @@ export function spawnRunner(options: {
   };
   environment?: NodeJS.ProcessEnv;
   processLauncher?: (spec: RunnerProcessLaunchSpec) => RunnerProcessHandle;
+  isRunnerConnected?: () => boolean;
+  refreshBootstrapTicket?: () => Promise<string>;
   diagnosticsDirectory?: string;
 }): RunnerProcessHandle {
   for (const value of [options.maxRuntimeMs, options.maxLifetimeMs]) {
@@ -4711,13 +5135,15 @@ export function spawnRunner(options: {
         throw new Error("runner_process_termination_unconfirmed");
       }
       if (lifetimeDeadline !== undefined && lifetimeDeadline <= Date.now()) throw new Error("runner_process_lifetime_expired");
-      return spawnRunner({ ...options, ticket,
+      return spawnRunner({ ...options, ticket, refreshBootstrapTicket: undefined,
         ...(lifetimeDeadline === undefined ? {} : { maxLifetimeMs: lifetimeDeadline - Date.now() }) });
     },
   });
   if (options.processLauncher !== undefined) {
     return withRestart(
       options.processLauncher({ command, args, cwd: packageRoot, environment,
+        ...(options.isRunnerConnected ? { isRunnerConnected: options.isRunnerConnected } : {}),
+        ...(options.refreshBootstrapTicket ? { refreshBootstrapTicket: options.refreshBootstrapTicket } : {}),
         nativeRunner: {
           identity: options.identity, ticket: options.ticket, connection, stateDirectory: options.stateDirectory,
           runnerVersion: options.runnerVersion, runnerDigest: options.runnerDigest,

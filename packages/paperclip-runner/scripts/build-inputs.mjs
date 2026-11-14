@@ -3,7 +3,7 @@
 // nothing it depends on has changed.
 //
 // server's `prepare:runner-vendor` runs the Runner's full `build`, because a
-// standalone `pnpm --filter @paperclipai/server build` (the Dockerfile's path)
+// standalone `pnpm --filter @paperclipai/server build`
 // must produce a current vendored Runner on its own. Inside `pnpm -r build`
 // the same command has just built the Runner a few seconds earlier, and the
 // rebuild cost 12-16s on the CI Build job's critical path (six master runs,

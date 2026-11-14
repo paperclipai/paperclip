@@ -34,6 +34,15 @@ PR code or downloads PR artifacts or caches. It reacts to the repository's PR
 workflow completions, external check completions, and legacy commit statuses.
 When adding another PR verification workflow, add its name to `workflow_run`.
 
+GitHub cannot filter `check_run` or `status` triggers, so the job condition
+skips events that cannot complete a green state before a runner is allocated.
+Only successful, skipped, or neutral PR workflow runs and non-Actions check runs,
+and successful commit statuses, schedule the job. GitHub Actions check runs are
+skipped because their workflow completions already arrive through `workflow_run`.
+A job-level concurrency group keyed by the PR head SHA cancels older pending or
+running notifiers, because the newest event sees the most complete PR state.
+The group is on the job so skipped events cannot cancel a scheduled notifier.
+
 The separate `PR review API access` workflow checks notifier changes using
 the real read-only Actions token. It has no private environment or webhook
 credentials and sends no webhook. Both workflows explicitly grant

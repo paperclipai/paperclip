@@ -1,9 +1,9 @@
 import { documentService } from "../services/documents.js";
 import { createChatMilestoneFixtures } from "./helpers/chat-milestone-fixtures.js";
 import { randomUUID } from "node:crypto";
-import { eq } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
-import { agents, agentWakeupRequests, caseHandoffs, cases, chatConversations, chatEndpoints, chatPublications, completionContracts, createDb, nativeRunFinalizations, nativeRunResults, statusDecisions, statusDecisionEffects, workAssessments, subscribeDatabaseWork, heartbeatRuns, issueComments, issueQuestionResponseDeliveries, issueThreadInteractions, issues } from "@paperclipai/db";
+import { applyPendingMigrations, agents, agentWakeupRequests, caseHandoffs, cases, chatConversations, chatEndpoints, chatPublications, completionContracts, createDb, nativeRunFinalizations, nativeRunResults, statusDecisions, statusDecisionEffects, workAssessments, subscribeDatabaseWork, heartbeatRuns, issueComments, issueQuestionResponseDeliveries, issueThreadInteractions, issues } from "@paperclipai/db";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 import { resolveExternalTestDatabaseUrl } from "./helpers/external-test-database.js";
 import { createDeliveryWorkCoordinator } from "../services/delivery-work-coordinator.js";
@@ -25,6 +25,11 @@ import { NATIVE_STATUS_ARBITER_POLICY_VERSION, type NativeStatusDecision } from 
 import { claimQueuedNativeReviewRun } from "../services/native-runtime/native-review-dispatch.js";
 import { createChatPublicationResolution } from "../services/chat-channels/publications/resolution.js";
 import { createChatPublicationWorker } from "../services/chat-channels/publications/worker.js";
+import { chatCredentialMutationLease } from "../services/chat-credential-mutation-lease.js";
+import { createSlackFormPublicationStage } from "../services/chat-channels/slack/form-publication.js";
+import { stageSlackFormEnrollment, reconcileSlackFormEnrollment } from "../services/chat-channels/slack/form-owner.js";
+import { parseSlackFormBinding } from "../services/chat-channels/slack/cloud-forms.js";
+import { chatActions } from "@paperclipai/db";
 import { CAPABILITIES } from "../services/chat-channels/provider-catalog.js";
 import { createChatPublicationFailures } from "../services/chat-channels/publications/failures.js";
 import { logger } from "../middleware/logger.js";
@@ -46,7 +51,8 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
 
   beforeAll(async () => {
     if (!external) temporary = await startEmbeddedPostgresTestDatabase("chat-milestones-");
-    db = createDb(external ?? temporary!.connectionString, { maxConnections: 6, idleTimeoutSeconds: 0, maxLifetimeSeconds: 0 });
+    else await applyPendingMigrations(external);
+    db = createDb(external ?? temporary!.connectionString, { maxConnections: 4, idleTimeoutSeconds: 0, maxLifetimeSeconds: 0 });
     fixtures = createChatMilestoneFixtures(db);
   }, 60_000);
   const fixture = (companyId?: string) => fixtures.create(companyId);
@@ -764,6 +770,151 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
     await flush();
     expect((await publications()).map(row => row.idempotencyKey)).toContain(`run:${targetId}:queued:${f.endpointId}`);
     await quiet();
+  });
+  it("parks the first managed form through seven waits and worker restart, then commits one send and its exact grant", async () => {
+    const identity = { instanceId: "publication-readiness-instance", environment: "test" as const };
+    const [originalEndpoint] = await db.select().from(chatEndpoints).where(eq(chatEndpoints.id, f.endpointId));
+    const binding = parseSlackFormBinding({ version: 1, instanceId: identity.instanceId, companyId: f.companyId,
+      endpointId: f.endpointId, connectionId: originalEndpoint.connectionId, publicId: "p".repeat(43), runtimeGeneration: 1,
+      teamId: "TTEST", appId: "ATEST", eventBindingId: "slack-event:" + "a".repeat(64), credentialFingerprint: "b".repeat(64) });
+    const { credentialFingerprint: _fingerprint, eventBindingId, ...base } = binding;
+    const enrollment = { ...base, bindingId: eventBindingId };
+    // Initial fixture configuration has a real pending enrollment, not an
+    // enrolled owner or fabricated grant/transport receipt.
+    await db.update(chatEndpoints).set({ publicId: binding.publicId, capabilities: CAPABILITIES.slack, setup: sql`${JSON.stringify({ runtimeGeneration: 1,
+      slackCloudInstanceId: identity.instanceId, slackCloudSubject: f.userId,
+      slackCloudEvents: { runtimeGeneration: 1, bindingId: eventBindingId, teamId: binding.teamId, appId: binding.appId } })}::jsonb` }).where(eq(chatEndpoints.id, f.endpointId));
+    await db.update(chatConversations).set({ externalConversationId: "slack:CTEST", externalThreadId: "slack:CTEST:1770000000.000001" }).where(eq(chatConversations.id, f.conversationId));
+    const ownerId = await db.transaction(tx => stageSlackFormEnrollment(tx, { enrollment, subject: f.userId, environment: identity.environment }));
+    const source = await run(f, { status: "failed", errorCode: "test_run_failed" });
+    const interaction = await issueThreadInteractionService(db).create({ id: f.issueId, companyId: f.companyId }, {
+      kind: "ask_user_questions", continuationPolicy: "wake_assignee", sourceRunId: source.id,
+      title: "Choose", payload: { version: 1, title: "Choose", questions: ["first", "second"].map(id => ({
+        id, prompt: `Choose ${id}`, selectionMode: "single" as const, required: true, options: [{ id: "yes", label: "Yes" }],
+      })) },
+    }, { agentId: f.agentId, runId: source.id });
+    const prompt = (await publications()).find(row => row.idempotencyKey === `interaction:${interaction.id}:${f.endpointId}`)!;
+    const issued = (await db.select().from(chatActions).where(eq(chatActions.endpointId, f.endpointId)))
+      .filter(row => ["question_form_open", "question_form_submit"].includes(row.kind) && row.payload.publicationId === prompt.id);
+    expect(issued.map(row => row.kind).sort()).toEqual(["question_form_open", "question_form_submit"]);
+    const read = async () => (await db.select().from(chatPublications).where(eq(chatPublications.id, prompt.id)))[0]!;
+    const post = vi.fn(async () => ({ id: "1770000001.000001" }));
+    const failures = createChatPublicationFailures(db, {
+      FailedChatRetryPublicationReadError: class extends Error {}, MAX_ERROR_TEXT: 1000,
+      getTaskBaseUrl: () => null, invalidateRuntime: async () => false, runtimeCallbackEndpoint: async () => null,
+    });
+    // These are the same controlled authorization/SDK ports as the adjacent
+    // receipt-race control. Attempt claims, credential leases, enrollment,
+    // publication receipt and grant transactions are real PostgreSQL owners.
+    const makeWorker = () => createChatPublicationWorker(db, ({
+      CAPABILITIES, settleGitHubAutomaticPublication: async () => false,
+      ensureDurablePublicationTransport: async publication => publication,
+      tryProcessTeamsFilePublication: async () => false,
+      endpointRecord: async () => ({ endpoint: (await db.select().from(chatEndpoints).where(eq(chatEndpoints.id, f.endpointId)))[0]!,
+        assignedAgentName: "Maya", connectionName: "Chat", applicationId: "test", credentialSecretRefs: [] }),
+      runtimeContextForRecord: () => ({ generation: 1, localEpoch: 0, credentialFingerprint: "test", version: "test" }),
+      hasCommittedTaskControlCompletion: async () => false, nonDirectDestinationAllowed: () => true,
+      runOwnershipMilestoneSupersessionReason: async () => null, progressSupersededByFastResponse: async () => false,
+      runProgressSupersededByPublishedInteraction: async () => false, currentTaskControlPayload: async publication => publication.payload,
+      withCredentialMutationLease: chatCredentialMutationLease(db),
+      closeProgressToReplace: async () => null, interactionResolutionPublicationToReplace: async () => null,
+      interactionPromptPublicationToReplace: async () => null, runPublicationToReplace: async () => null,
+      inboundWakePublicationToReplace: async () => null, taskStatusPublicationToReplace: async () => null,
+      claimPublicationTransportAuthorization: async () => ({ endpoint: (await db.select().from(chatEndpoints).where(eq(chatEndpoints.id, f.endpointId)))[0]!,
+        conversation: (await db.select().from(chatConversations).where(eq(chatConversations.id, f.conversationId)))[0]!, authorizationActionId: null, preparedText: null }),
+      prepareSlackFormPublication: createSlackFormPublicationStage(db), postSafePublication: post,
+      commitTaskControlCompletion: async () => {}, receiptReactionCompletionRunId: async () => null,
+      finalizePublicationFailure: failures.finalizePublicationFailure, redactError: String,
+    } satisfies Partial<Parameters<typeof createChatPublicationWorker>[1]>) as unknown as Parameters<typeof createChatPublicationWorker>[1]);
+    for (let wait = 0; wait < 7; wait++) {
+      const before = Date.now();
+      // A new worker reconstructs from the same durable publication each time.
+      await makeWorker().processSelectedPublication(await read());
+      expect(post).not.toHaveBeenCalled();
+      const parked = await read();
+      expect(parked).toMatchObject({ state: "retry", attempts: 0, providerMessageId: null,
+        redactedError: "form_publication_enrollment_pending", payload: prompt.payload });
+      expect(parked.nextAttemptAt!.getTime()).toBeGreaterThanOrEqual(before + 2000);
+      expect(parked.nextAttemptAt!.getTime()).toBeLessThanOrEqual(Date.now() + 2000);
+      await vi.advanceTimersByTimeAsync(2000);
+    }
+    let logicalEnrollments = 0;
+    const protocol = vi.fn(async () => { if (++logicalEnrollments === 1) throw new Error("Controlled enrollment reply lost after external acceptance"); return { binding }; });
+    const reconcile = () => reconcileSlackFormEnrollment(db, { actionId: ownerId, identity, protocol,
+      resolveBotToken: async () => "xoxb-controlled-enrollment" });
+    await expect(reconcile()).rejects.toThrow("Controlled enrollment reply lost");
+    expect(post).not.toHaveBeenCalled();
+    expect((await db.select().from(chatActions).where(eq(chatActions.id, ownerId)))[0]!.result?.phase).toBe("staged");
+    await reconcile();
+    expect((await db.select().from(chatActions).where(eq(chatActions.id, ownerId)))[0]!.result?.phase).toBe("enrolled");
+    const selected = await read();
+    await makeWorker().processSelectedPublication(selected);
+    expect(post).toHaveBeenCalledTimes(1);
+    expect(await read()).toMatchObject({ state: "published", attempts: 1, providerMessageId: "1770000001.000001" });
+    const grants = (await db.select().from(chatActions).where(eq(chatActions.endpointId, f.endpointId))).filter(row => row.kind === "slack_form_grant");
+    expect(grants).toHaveLength(1);
+    expect(grants[0]!.payload).toMatchObject({ binding, subject: f.userId, environment: identity.environment,
+      grant: { publicationId: prompt.id, interactionId: interaction.id, providerMessageId: "1770000001.000001" } });
+    // Lost local receipt response/reconstruction cannot re-claim the old exact attempt.
+    await makeWorker().processSelectedPublication(selected);
+    expect(post).toHaveBeenCalledTimes(1);
+    expect((await db.select().from(chatActions).where(eq(chatActions.endpointId, f.endpointId))).filter(row => row.kind === "slack_form_grant")).toEqual(grants);
+  });
+
+  it("an untyped pre-send error with the same diagnostic still exhausts its ordinary five-attempt budget", async () => {
+    const failures = createChatPublicationFailures(db, { FailedChatRetryPublicationReadError: class extends Error {},
+      MAX_ERROR_TEXT: 1000, getTaskBaseUrl: () => null, invalidateRuntime: async () => false, runtimeCallbackEndpoint: async () => null });
+    const [row] = await db.insert(chatPublications).values({ companyId: f.companyId, endpointId: f.endpointId,
+      conversationId: f.conversationId, issueId: f.issueId, idempotencyKey: `untyped-preparation:${randomUUID()}`,
+      payload: { text: "Original publication" }, state: "streaming", attempts: 5 }).returning();
+    await expect(failures.finalizePublicationFailure({ ...row, attempts: 4 }, new Error("form_publication_enrollment_pending"),
+      false, null, undefined, "not_started")).resolves.toBe(true);
+    expect((await db.select().from(chatPublications).where(eq(chatPublications.id, row.id)))[0]).toMatchObject({ state: "failed", attempts: 5, nextAttemptAt: null });
+  });
+
+  it.each([
+    ["not_started", false, "retry", 4],
+    ["possible", false, "delivery_unknown", 5],
+    ["not_started", true, "delivery_unknown", 5],
+  ] as const)("typed readiness at attempt five respects invocation=%s accepted=%s", async (providerInvocation, providerAccepted, state, attempts) => {
+    const failures = createChatPublicationFailures(db, { FailedChatRetryPublicationReadError: class extends Error {},
+      MAX_ERROR_TEXT: 1000, getTaskBaseUrl: () => null, invalidateRuntime: async () => false, runtimeCallbackEndpoint: async () => null });
+    const [row] = await db.insert(chatPublications).values({ companyId: f.companyId, endpointId: f.endpointId,
+      conversationId: f.conversationId, issueId: f.issueId, idempotencyKey: `typed-preparation:${randomUUID()}`,
+      payload: { text: "Original publication" }, state: "streaming", attempts: 5 }).returning();
+    await expect(failures.finalizePublicationFailure({ ...row, attempts: 4 }, new Error("form_publication_enrollment_pending"),
+      providerAccepted, null, undefined, providerInvocation,
+      { kind: "wait", reason: "form_publication_enrollment_pending", retryAfterMs: 2000 })).resolves.toBe(true);
+    const [settled] = await db.select().from(chatPublications).where(eq(chatPublications.id, row.id));
+    expect(settled).toMatchObject({ state, attempts, providerMessageId: null, payload: row.payload });
+    if (state !== "retry") expect(settled.nextAttemptAt).toBeNull();
+  });
+
+  it.each([
+    ["not_started", false, "retry"],
+    ["possible", false, "delivery_unknown"],
+    ["not_started", true, "delivery_unknown"],
+  ] as const)("settles local preparation context %s with accepted=%s as %s", async (providerInvocation, providerAccepted, state) => {
+    const [claimed] = await db.insert(chatPublications).values({
+      companyId: f.companyId, endpointId: f.endpointId, conversationId: f.conversationId,
+      issueId: f.issueId, idempotencyKey: `preparation:${randomUUID()}`,
+      payload: { text: "Original publication" }, state: "streaming", attempts: 1,
+    }).returning();
+    const failures = createChatPublicationFailures(db, {
+      FailedChatRetryPublicationReadError: class extends Error {},
+      MAX_ERROR_TEXT: 1000, getTaskBaseUrl: () => null,
+      invalidateRuntime: async () => false, runtimeCallbackEndpoint: async () => null,
+    });
+    const before = Date.now();
+    await expect(failures.finalizePublicationFailure({ ...claimed, attempts: 0 },
+      new Error("form_publication_enrollment_pending"), providerAccepted, null, undefined, providerInvocation)).resolves.toBe(true);
+    const [settled] = await db.select().from(chatPublications).where(eq(chatPublications.id, claimed.id));
+    expect(settled).toMatchObject({ state, attempts: 1, providerMessageId: null, payload: claimed.payload });
+    if (state === "retry") {
+      expect(settled.nextAttemptAt?.getTime()).toBeGreaterThanOrEqual(before + 2000);
+      expect(settled.nextAttemptAt?.getTime()).toBeLessThanOrEqual(Date.now() + 2000);
+      expect(settled.redactedError).toBe("form_publication_enrollment_pending");
+    } else expect(settled.nextAttemptAt).toBeNull();
   });
   it.each([
     ["retry", null], ["failed", null], ["delivery_unknown", "cancel"], ["delivery_unknown", "mark_delivered"],

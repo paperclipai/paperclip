@@ -1,7 +1,7 @@
 import type { IdleDeadlineOwners } from "../services/idle-deadline-types.js";
-import { verifiedIdleCapabilities } from "../middleware/cloud-control.js";
+import { verifiedCloudControlClaims, verifiedIdleCapabilities } from "../middleware/cloud-control.js";
 import { trackIdleWork } from "../services/task-admission.js";
-import { Router, type Request } from "express";
+import { Router, type Request, type RequestHandler } from "express";
 import { companies, type Db } from "@paperclipai/db";
 import {
   patchInstanceSettingsSchema,
@@ -32,7 +32,7 @@ import {
 } from "../services/index.js";
 import { environmentService } from "../services/environments.js";
 import { assertEnvironmentSelectionForCompany } from "./environment-selection.js";
-import { assertBoardOrgAccess, getActorInfo } from "./authz.js";
+import { assertBoard, assertBoardOrgAccess, getActorInfo } from "./authz.js";
 
 function sameJsonValue(a: unknown, b: unknown): boolean {
   if (a === b) return true;
@@ -90,9 +90,7 @@ function publishActivitiesBestEffort(publications: ActivityPublication[], action
 }
 
 function assertCanManageInstanceSettings(req: Request) {
-  if (req.actor.type !== "board") {
-    throw forbidden("Board access required");
-  }
+  assertBoard(req);
   if (req.actor.source === "local_implicit" || req.actor.isInstanceAdmin) {
     return;
   }
@@ -304,7 +302,7 @@ export function instanceSettingsRoutes(
     },
   );
 
-  router.get("/instance/task-drain", async (req, res) => {
+  const readTaskDrainStatus: RequestHandler = async (req, res) => {
     assertBoardOrgAccess(req);
     if (req.query.upgradeReadiness === "1") {
       // This covers all companies and must not expose instance-wide work to a member.
@@ -350,6 +348,13 @@ export function instanceSettingsRoutes(
       return;
     }
     res.json(heartbeat.getTaskDrainStatus());
+  };
+  router.get("/instance/task-drain", readTaskDrainStatus);
+  router.post("/instance/task-drain/status", async (req, res, next) => {
+    if (req.actor.source !== "cloud_control" || verifiedCloudControlClaims(req)?.action !== "task-drain:read-body") {
+      throw forbidden("Cloud body-bound read authority is required");
+    }
+    await readTaskDrainStatus(req, res, next);
   });
 
   router.post(

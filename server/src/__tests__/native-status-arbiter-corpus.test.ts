@@ -2313,6 +2313,19 @@ describe("P6-31 Section 18.13 executable status-authority corpus", () => {
       return { promise, release };
     }
 
+    it.each(["legacy", "source agent", "different agent"] as const)("retires only proven fallback reviews attributed to %s", async attribution => {
+      const created = await seedReview();
+      const creator = attribution === "legacy" ? null : attribution === "source agent" ? agentId : outsideAgentId;
+      await db.update(issueThreadInteractions).set({ createdByAgentId: creator })
+        .where(eq(issueThreadInteractions.id, created.interaction.id));
+      await start(); await flush();
+      expect(await card(created.interaction.id)).toMatchObject({
+        createdByAgentId: creator,
+        status: attribution === "different agent" ? "pending" : "cancelled",
+      });
+      await quiet();
+    });
+
     it("leaves genuine pending reviews and completed history quiet", async () => {
       const genuine = await seedReview({ genuine: true });
       const settled = await seedReview();

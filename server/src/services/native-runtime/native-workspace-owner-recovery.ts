@@ -3,14 +3,13 @@ import { notifyNativeWorkspaceFinalization } from "../native-workspace-finalizat
 import { tryLockNativeWorkspaceFinalization } from "./native-workspace-finalization-ownership.js";
 import { notifyNativeStatusReassessment } from "../native-status-reassessment-notifications.js";
 import { notifyQueuedRunDispatch } from "../run-dispatch-notifications.js";
-import os from "node:os";
 import { and, eq, sql } from "drizzle-orm";
 import { heartbeatRuns, issues, issueRecoveryActions, nativeRunFinalizations, type Db } from "@paperclipai/db";
 import { resumeWorkspaceFinalizationSchema } from "@paperclipai/shared";
 import { conflict } from "../../errors.js";
 import { persistActivity, publishActivity } from "../activity-log.js";
 import { currentNativeWorkspaceRecoveryResult } from "./native-workspace-recovery-binding.js";
-import { evaluateNativeControllerTakeover } from "./native-restart-recovery.js";
+import { copybackOwnerOnAnotherHost, proveCopybackOwnerGone } from "./native-workspace-owner-stop-proof.js";
 import { readWorkspaceRecovery } from "../workspace-recovery-receipt.js";
 import { updateSystemRecovery } from "../system-recovery.js";
 import { createSystemRecovery, readSystemRecovery } from "../system-recovery-state.js";
@@ -30,13 +29,14 @@ async function assertRecordedOwnerStopped(prior: Record<string, unknown>, record
     || prior.hostname !== recordedOwner.hostname || prior.pid !== recordedOwner.pid
     || prior.processStartedAt !== recordedOwner.processStartedAt
     || prior.controllerBootId !== recordedOwner.controllerBootId) throw changed();
-  if (prior.hostname === os.hostname()) {
-    const takeover = await evaluateNativeControllerTakeover({ owner: {
-      leaseOwner: ownerToken, leaseExpiresAt: new Date(0),
-      controllerPid: typeof prior.pid === "number" ? prior.pid : null,
-      controllerProcessStartedAt: typeof prior.processStartedAt === "string" ? new Date(prior.processStartedAt) : null,
-    }, now: new Date() });
-    if (!takeover.allowed) throw conflict("The previous workspace controller is still active or its stop cannot be verified.");
+  if (prior.hostHash !== recordedOwner.hostHash) throw changed();
+  // A live or unverifiable owner observable from here contradicts the board's
+  // confirmation. An owner in another PID space is the board's to attest.
+  const proof = await proveCopybackOwnerGone({ hostname: prior.hostname, pid: prior.pid as number,
+    processStartedAt: prior.processStartedAt, ...(typeof prior.controllerBootId === "string" ? { controllerBootId: prior.controllerBootId } : {}),
+    ...(typeof prior.hostHash === "string" ? { hostHash: prior.hostHash } : {}) });
+  if (proof.verdict !== "gone" && !copybackOwnerOnAnotherHost(proof)) {
+    throw conflict("The previous workspace controller is still active or its stop cannot be verified.");
   }
 }
 

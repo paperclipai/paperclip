@@ -8,8 +8,8 @@ import { join, resolve } from "node:path";
 import { getCACertificates, setDefaultCACertificates } from "node:tls";
 import { eq } from "drizzle-orm";
 import WebSocket, { WebSocketServer, type RawData } from "ws";
-import { expect, it } from "vitest";
-import { completionContracts, environmentLeases, environments, executionWorkspaces, heartbeatRuns, issues, nativeRunFinalizations, nativeRunResults, plugins } from "@paperclipai/db";
+import { afterAll, afterEach, beforeAll, expect, it } from "vitest";
+import { completionContracts, environmentLeases, environments, executionWorkspaces, heartbeatRuns, issues, nativeRunFinalizations, nativeRunResults, plugins, agents } from "@paperclipai/db";
 import { environmentTaskOperationSchema, type PluginEnvironmentTaskOperation } from "@paperclipai/plugin-sdk";
 import { readRunnerdArtifactBinding, defaultCapabilityRunnerdBinary,
   parseNativeExecutionInput, parseNativeRuntimeContext, QUALIFIED_ACPX_PROFILES, type DurableRecoveryIdentity, type RunnerProcessHandle, type RunnerProcessLaunchSpec } from "../../vendor/paperclip-runner/index.js";
@@ -22,7 +22,7 @@ import { resolvePaperclipInstanceRoot } from "../../home-paths.js";
 import { environmentRuntimeService } from "../environment-runtime.js";
 import { environmentService } from "../environments.js";
 import { resolveEnvironmentExecutionTarget } from "../environment-execution-target.js";
-import { executeEnvironmentTask } from "../environment-task-runtime.js";
+import { executeEnvironmentTask, isSettledReadyRunnerState } from "../environment-task-runtime.js";
 import type { PluginWorkerManager } from "../plugin-worker-manager.js";
 import { reconcileNativeFinalizations } from "./native-finalization-reconciler.js";
 import { buildNativeCompletionContract } from "./completion-contracts.js";
@@ -38,19 +38,45 @@ const { createPrivateHostControlFixture } = await import(new URL("../../../../pa
 
 const fakeAcpxSidecar = resolve(import.meta.dirname, "../../../../packages/paperclip-runner/runner/target/debug/fake-acpx-sidecar");
 const sha = (value: string) => createHash("sha256").update(value).digest("hex");
+const detachedIdleTimeoutMs = 10_000;
 const parkId = (source: DurableRecoveryIdentity) => `park_${sha(JSON.stringify(Object.fromEntries(Object.entries(source).sort(([a], [b]) => a.localeCompare(b)))))}`;
 
 // The only replaced service is the external environment-task/Launcher edge.
 // Runtime, backend, owner, PRP ingress, checkpoint persistence and native Runner are real.
-describeEmbeddedPostgres("plugin Runner graceful eviction through the Core execution entry", () => {
+describeEmbeddedPostgres("plugin Runner eviction through the Core execution entry", () => {
+  let currentCase: { teardown?: () => Promise<void> } | undefined;
+  afterEach(async () => {
+    const finished = currentCase;
+    currentCase = undefined;
+    await finished?.teardown?.();
+  });
   const environment = nativeRestartFixture();
+  const tlsIdentity = { key: Buffer.alloc(0), cert: Buffer.alloc(0) };
+  let oldCAs: string[] = [], oldAgent = https.globalAgent;
+  beforeAll(async () => {
+    const key = join(environment.current.runtimeRoot, "tls.key"), certificate = join(environment.current.runtimeRoot, "tls.crt");
+    execFileSync("openssl", ["req", "-x509", "-newkey", "rsa:2048", "-nodes", "-keyout", key, "-out", certificate,
+      "-days", "1", "-subj", "/CN=localhost", "-addext", "subjectAltName=IP:127.0.0.1,DNS:localhost"], { stdio: "ignore" });
+    tlsIdentity.key = await readFile(key); tlsIdentity.cert = await readFile(certificate);
+    oldCAs = getCACertificates("default"); oldAgent = https.globalAgent;
+    const certificates = [...oldCAs, tlsIdentity.cert.toString("utf8")];
+    setDefaultCACertificates(certificates); https.globalAgent = new https.Agent({ ca: certificates });
+  });
+  afterAll(() => {
+    https.globalAgent.destroy(); https.globalAgent = oldAgent; setDefaultCACertificates(oldCAs);
+  });
   const nativeIt = process.platform === "win32" ? it.skip : realProcessIt;
-  nativeIt.for([...(["codex", "claude"] as const).flatMap(harness => (["cached", "detached", "reused lease", "prepared copy", "missing stop", "missing state", "foreign state", "working state"] as const).map(mode => [harness, mode] as const))])("continues %s after graceful eviction with a %s Core owner", { timeout: 60_000 }, async ([harness, mode], context) => {
+  nativeIt.for([...(["codex", "claude"] as const).flatMap(harness => (["cached", "detached", "reused lease", "after inspection", "bare unavailable", "prepared copy", "missing stop", "missing state", "foreign state", "working state"] as const).flatMap(mode =>
+    (["retired", "abrupt"] as const).map(exit => [harness, mode, exit] as const)))])("continues %s with a %s Core owner after its Runner exit is %s", { timeout: 60_000 }, async ([harness, mode, exit], context) => {
     if (harness === "claude" && !existsSync(fakeAcpxSidecar)) context.skip();
+    const thisCase: { teardown?: () => Promise<void> } = {};
+    currentCase = thisCase;
     const detached = mode === "detached" || mode === "missing state" || mode === "foreign state";
     const denied = mode.startsWith("missing") || mode.endsWith("state");
+    const unavailableResume = mode === "after inspection" || mode === "bare unavailable";
+    const reusesLease = mode === "reused lease" || unavailableResume;
     const instructionCopy = (id: string) => ({ runId: id, root: workspace, preparationKey: "unchanged-fixture-instructions", hasChanges: async () => false, collectStopped: async () => {} });
-    const first = await environment.seedRun(`RELEASE-ENTRY-${harness}-${mode}`);
+    const first = await environment.seedRun(`RELEASE-ENTRY-${harness}-${mode}-${exit}-${randomUUID().slice(0, 8)}`);
     const { db, runId, issueId, native } = first;
     const { companyId, agentId, runtimeRoot } = environment.current;
     const root = join(runtimeRoot, runId), workspace = join(root, "workspace"), home = join(root, "credential-home");
@@ -59,7 +85,8 @@ describeEmbeddedPostgres("plugin Runner graceful eviction through the Core execu
     const workspaceId = randomUUID(), environmentId = randomUUID(), leaseA = randomUUID(), taskA = randomUUID(), taskB = randomUUID(), pluginId = randomUUID();
     const providerKey = `plugin:${pluginId}:tasks`;
     const metadata = { driver: "plugin", pluginId, driverKey: "tasks", runnerTaskLease: true };
-    await db.insert(plugins).values({ id: pluginId, pluginKey: pluginId, packageName: "eviction-fixture", version: "1.0.0", status: "ready", manifestJson: { capabilities: ["environment.drivers.register"], environmentDrivers: [{ driverKey: "tasks", supportsTasks: true }] } as never });
+    await db.insert(plugins).values({ id: pluginId, pluginKey: pluginId, packageName: "eviction-fixture", version: "1.0.0", status: "ready", manifestJson: { capabilities: ["environment.drivers.register", "agents.lifecycle.manage"], resourceLifecycle: ["agent_runtime"], environmentDrivers: [{ driverKey: "tasks", supportsTasks: true }] } as never });
+    await db.update(agents).set({ lifecycleRequiredPluginIds: [pluginId] }).where(eq(agents.id, agentId));
     await db.insert(executionWorkspaces).values({ id: workspaceId, companyId, sourceIssueId: issueId,
       mode: "isolated", strategyType: "directory", name: "Release fixture", cwd: workspace });
     await db.insert(environments).values({ id: environmentId, name: environmentId, driver: "plugin", config: { pluginKey: pluginId, driverKey: "tasks" } });
@@ -78,7 +105,7 @@ describeEmbeddedPostgres("plugin Runner graceful eviction through the Core execu
       task: { identifier: "RELEASE-ENTRY", title: issue!.title, description: null, prompt: "Complete the controlled task.", workMode: "standard" },
       workspace: { cwd: workspace, repoUrl: null, repoRef: null, branchName: null },
       session: { normalizedSessionId: native.normalizedSessionId, driverKind: harness === "codex" ? "codex_app_server" : "acpx_runtime", protocolVersion: 1,
-        lifecyclePolicy: { mode: "warm", idleTimeoutMs: detached ? 5_000 : 60_000 } },
+        lifecyclePolicy: { mode: "warm", idleTimeoutMs: detached ? detachedIdleTimeoutMs : 60_000 } },
       completionContract: { id: contract!.id, sha256: contract!.canonicalSha256, schemaVersion: "paperclip.completion-contract.v1",
         contract: buildNativeCompletionContract(issue!, { revision: contract!.revision }) }, interactionResponses: [], credentialBindings: [] });
     const resultFile = join(root, "result.json"), calls = join(root, "provider-calls");
@@ -92,15 +119,12 @@ describeEmbeddedPostgres("plugin Runner graceful eviction through the Core execu
       await writeFile(sidecarScript, "qualified fixture entry");
       await writeFile(sidecar, `#!/bin/sh\nexec ${quote(fakeAcpxSidecar)} --mode source-reconcile --profile-digest ${quote(claudeProfile.commandDigest)} --journal ${quote(calls)} --source-fault ${quote(join(root, "fault"))} --wait-completion-feedback\n`, { mode: 0o700 });
     }
-    const key = join(root, "tls.key"), certificate = join(root, "tls.crt");
-    execFileSync("openssl", ["req", "-x509", "-newkey", "rsa:2048", "-nodes", "-keyout", key, "-out", certificate,
-      "-days", "1", "-subj", "/CN=localhost", "-addext", "subjectAltName=IP:127.0.0.1,DNS:localhost"], { stdio: "ignore" });
-    const oldCAs = getCACertificates("default"), oldAgent = https.globalAgent;
-    const certificates = [...oldCAs, await readFile(certificate, "utf8")];
-    const probe = createTcpServer(); await new Promise<void>(done => probe.listen(0, "127.0.0.1", done));
+    const providerPidFile = join(root, "provider.pid"), codexWrapper = join(root, "codex");
+    await writeFile(codexWrapper, `#!/bin/sh\necho $$ > '${providerPidFile}'\nexec '${fakeCodexAppServer}' "$@"\n`, { mode: 0o700 });
+    const probe = createTcpServer(); await new Promise<void>(done => probe.listen(0, "0.0.0.0", done));
     const address = probe.address(); if (!address || typeof address === "string") throw new Error("Fixture listener unavailable");
     const runnerPort = address.port; await new Promise<void>(done => probe.close(() => done()));
-    const tls = createServer({ key: await readFile(key), cert: await readFile(certificate) });
+    const tls = createServer(tlsIdentity);
     const sockets = new Set<WebSocket>(), websocket = new WebSocketServer({ noServer: true });
     let listenPath = "";
     const wireEvents: string[] = [];
@@ -132,15 +156,31 @@ describeEmbeddedPostgres("plugin Runner graceful eviction through the Core execu
     const releases: DurableRecoveryIdentity[] = [], claims: DurableRecoveryIdentity[] = [];
     let handle: RunnerProcessHandle | undefined, submissions = 0, cleaning = false, sourceReadRequests = 0, sourceReadResponses = 0;
     let pendingFollowup: Promise<unknown> | undefined;
+    thisCase.teardown = async () => {
+      cleaning = true;
+      const cleanup = await Promise.allSettled([closeIdleWarmNativeSessionsForRestart(), ...[...hosts.values()].map(host => host.close())]);
+      for (const socket of sockets) socket.terminate(); websocket.close();
+      await new Promise<void>(done => tls.close(() => done()));
+      const failures = cleanup.filter((result): result is PromiseRejectedResult => result.status === "rejected");
+      if (failures.length) throw new AggregateError(failures.map(result => result.reason), "Fixture cleanup failed");
+    };
+    let inspectedLive = false, resumeAttempts = 0, acquisitions = 0, evictRetained: (() => Promise<void>) | undefined;
     const providerStarts = async () => (await readFile(calls, "utf8")).trim().split(/\r?\n/)
       .filter(line => harness === "codex" ? line === "process-start" : JSON.parse(line).processStart).length;
     const state = async (taskId: string = taskA) => JSON.parse(await readFile(join(runnerRoot(taskId), "runner-state.json"), "utf8"));
+    const hostRestorable = (live: Record<string, unknown>) => live.lifecycle === "suspended" || isSettledReadyRunnerState(live);
     const sameSource = (a: DurableRecoveryIdentity, b: DurableRecoveryIdentity) => Object.entries(a).every(([key, value]) => b[key as keyof DurableRecoveryIdentity] === value);
     const task = async (raw: unknown, authorityRunId: string, taskId: string): Promise<unknown> => {
       const host = hosts.get(taskId)!;
       const operation = environmentTaskOperationSchema.parse(raw);
-      if (operation.kind === "describe") return { kind: "description", taskId, launchPreparationVersion: 1,
-        projectAuthCheckVersion: 1, warmTaskVersion: 1, releaseResumeVersion: 1, runner: artifact };
+      if (operation.kind === "describe") {
+        if (unavailableResume && authorityRunId !== runId && !inspectedLive) {
+          expect(handles.get(taskA)?.isExitConfirmed?.()).toBe(false);
+          inspectedLive = true;
+        }
+        return { kind: "description", taskId, launchPreparationVersion: 1,
+          projectAuthCheckVersion: 1, executionContextVersion: 1, warmTaskVersion: 1, releaseResumeVersion: 1, runner: artifact };
+      }
       if (operation.kind === "prepare") {
         expect(operation.requirements.identity.runId).toBe(authorityRunId);
         expect(operation.accountIdentity).toBe("fixture-account");
@@ -151,7 +191,7 @@ describeEmbeddedPostgres("plugin Runner graceful eviction through the Core execu
         const requirements = { ...operation.requirements, runtimeContext: operation.requirements.runtimeContext ? parseNativeRuntimeContext(operation.requirements.runtimeContext) : null, settings: { ...operation.requirements.settings, acpxAgent: harness === "claude" ? "claude" as const : undefined, managedProfile: undefined, agentCoreProfile: undefined } };
         const launch = { configurationId: `configuration-${operation.requirements.identity.runId}`, requirementsDigest: runnerLaunchRequirementsDigest(requirements),
           provider: createRunnerProviderLaunch(requirements, { options: { codexArgs: ["--state-file", join(root, "provider.json"), "--terminal-result-file", resultFile,
-            "--call-log", calls, "--record-process-start", "--durable-turn-ids"] }, root, cwd: workspace, codexHome: home, codexCommand: fakeCodexAppServer,
+            "--call-log", calls, "--record-process-start", "--durable-turn-ids"] }, root, cwd: workspace, codexHome: home, codexCommand: codexWrapper,
             providerNodeCommand: harness === "claude" ? sidecar : process.execPath, opencodeProxyPath: "", acpxSidecarPath: harness === "claude" ? sidecarScript : "" }) };
         preparations.set(launch.configurationId, { operation, launch }); return { kind: "prepared", taskId, launch };
       }
@@ -181,14 +221,15 @@ describeEmbeddedPostgres("plugin Runner graceful eviction through the Core execu
       }
       if (operation.kind === "connection") return { kind: "connection", taskId, endpoint: { kind: "authenticated_websocket",
         websocketUrl: `wss://127.0.0.1:${tlsAddress.port}/runner`, secretHeaders: [{ name: "X-Fixture-Token", value: "synthetic-ingress" }], generation: "fixture" } };
-      if (operation.kind === "status") return { kind: "status", taskId, phase: handles.get(taskId)?.isExitConfirmed?.() ? "cancelled" : "running", executionStopped: (cleaning || mode !== "missing stop") && (handles.get(taskId)?.isExitConfirmed?.() ?? false), sessionStateAvailable: (cleaning || mode !== "missing state" && mode !== "missing stop") && handles.get(taskId)?.isExitConfirmed?.() === true && (await state(taskId)).lifecycle === "suspended" };
+      if (operation.kind === "status") return { kind: "status", taskId, phase: handles.get(taskId)?.isExitConfirmed?.() ? "cancelled" : "running", executionStopped: (cleaning || mode !== "missing stop") && (handles.get(taskId)?.isExitConfirmed?.() ?? false), sessionStateAvailable: (cleaning || mode !== "missing state" && mode !== "missing stop") && handles.get(taskId)?.isExitConfirmed?.() === true && hostRestorable(await state(taskId)) };
       if (operation.kind === "read_state") {
         if (operation.resumeFrom === taskA) sourceReadResponses++;
         const live = await state(operation.resumeFrom ?? taskId);
         const previous = [...preparations.values()].some(({ operation: prepared }) => prepared.priorIdentity && sameSource(prepared.priorIdentity, operation.identity));
         expect(sameSource(operation.identity, live) || previous).toBe(true);
         return { kind: "state", taskId, state: operation.resumeFrom && mode === "foreign state" ? { ...live, turnId: "foreign-turn" }
-          : operation.resumeFrom && mode === "working state" ? { ...live, lifecycle: "ready" } : live };
+          : operation.resumeFrom && mode === "working state" ? { ...live, lifecycle: "ready", processedCommands: { ...live.processedCommands,
+            "command_unresolved_turn": { commandType: "turn.start", status: "indeterminate" } } } : live };
       }
       if (operation.kind === "archive_state") {
         expect(operation.resumeFrom).toBe(taskA);
@@ -205,6 +246,13 @@ describeEmbeddedPostgres("plugin Runner graceful eviction through the Core execu
         if (reply.status !== "parked") throw new Error("Fixture native release refused");
         releases.push(operation.identity); return { kind: "released", taskId };
       }
+      if (operation.kind === "resume" && unavailableResume) {
+        resumeAttempts++;
+        expect(inspectedLive).toBe(true);
+        if (mode === "after inspection") await evictRetained!();
+        expect(handles.get(taskA)?.isExitConfirmed?.()).toBe(mode === "after inspection");
+        return { kind: "resume", taskId, outcome: "unavailable" };
+      }
       if (operation.kind === "resume") {
         const retainedProviderCount = await providerStarts();
         const reply = await host.request({ op: "claim", id: `claim_${sha(operation.bootstrapTicket)}`, parkId: parkId(operation.identity), bootstrapTicket: operation.bootstrapTicket });
@@ -213,7 +261,10 @@ describeEmbeddedPostgres("plugin Runner graceful eviction through the Core execu
         claims.push(operation.identity);
         return { kind: "resume", taskId, outcome: "resumed" };
       }
-      if (operation.kind === "stop") { await host.close(); }
+      if (operation.kind === "stop") {
+        if (mode === "after inspection" && taskId === taskA) await new Promise(done => setTimeout(done, 300));
+        await host.close();
+      }
       if (operation.kind === "complete") { expect(handles.get(taskId)?.isExitConfirmed?.()).toBe(true); }
       return { kind: "accepted", taskId };
     };
@@ -227,6 +278,7 @@ describeEmbeddedPostgres("plugin Runner graceful eviction through the Core execu
     };
     const proof = async () => (await supervisor()).releasedRunner;
     const workers = { getWorker: () => ({ supportedMethods: ["environmentTask"] }), call: async (_id: string, method: string, params: any, _timeout?: number, _unused?: unknown, settled?: () => void) => {
+      if (method === "environmentAcquireLease") acquisitions++;
       if (method === "environmentAcquireLease") return { providerLeaseId: taskB, metadata: { creationOperationId: params.creationOperationId } };
       try { return await task(params.operation, params.runId, params.taskId); } finally { settled?.(); }
     } } as unknown as PluginWorkerManager;
@@ -237,7 +289,7 @@ describeEmbeddedPostgres("plugin Runner graceful eviction through the Core execu
     const execute = async (current: typeof execution, leaseId: string) => {
       await db.update(heartbeatRuns).set({ runnerProfileJson: { nativeExecutionInput: current }, runnerInstanceId: native.runnerInstanceId, completionContractId: contract!.id, completionContractSha256: contract!.canonicalSha256, nativeSessionId: current.session.normalizedSessionId })
         .where(eq(heartbeatRuns.id, current.binding.runId));
-      const target = mode === "reused lease" ? await resolveEnvironmentExecutionTarget({ db, companyId, adapterType: "paperclip_runner",
+      const target = reusesLease ? await resolveEnvironmentExecutionTarget({ db, companyId, adapterType: "paperclip_runner",
         environment: { id: environmentId, driver: "plugin", config: { pluginKey: pluginId, driverKey: "tasks" } }, leaseId,
         lease: await environmentService(db).getLeaseById(leaseId), leaseMetadata: metadata,
         environmentRuntime: environmentRuntimeService(db, { pluginWorkerManager: workers }) }) : {
@@ -252,21 +304,41 @@ describeEmbeddedPostgres("plugin Runner graceful eviction through the Core execu
         runnerExecutionTarget: target });
     };
     try {
-      setDefaultCACertificates(certificates); https.globalAgent = new https.Agent({ ca: certificates });
       const a = await execute(execution, leaseA); expect(a).toMatchObject({ exitCode: 0, timedOut: false });
       await waitForCondition("automatic release A", () => releases.length === 1);
       expect((await db.select().from(nativeRunResults).where(eq(nativeRunResults.runId, runId)))[0]).toMatchObject({ schemaStatus: "accepted", resultJson: { result: { reportedWorkDisposition: "done" } } });
       expect(await proof()).toMatchObject({ source: releases[0], taskId: taskA });
       const providerSessionId = (await supervisor()).snapshot.providerSessionId;
       expect(providerSessionId).toEqual(expect.any(String));
-      if (detached) await new Promise(done => setTimeout(done, 5_200));
+      if (detached) await new Promise(done => setTimeout(done, detachedIdleTimeoutMs + 200));
       expect(readNativeSessionIdleWork()).toBe("none");
       await reconcileNativeFinalizations(db, [runId]);
       const evict = async () => {
-        const retired = await hosts.get(taskA)!.request({ op: "retire", id: "host-eviction", parkId: parkId(releases[0]!) });
-        expect(retired.status).toBe("retired");
-        await handles.get(taskA)!.completion;
-        expect((await state()).lifecycle).toBe("suspended");
+        if (exit === "retired") {
+          const retired = await hosts.get(taskA)!.request({ op: "retire", id: "host-eviction", parkId: parkId(releases[0]!) });
+          expect(retired.status).toBe("retired");
+          await handles.get(taskA)!.completion;
+          expect((await state()).lifecycle).toBe("suspended");
+        } else {
+          const providerPids: number[] = harness === "codex" ? [Number(await readFile(providerPidFile, "utf8"))]
+            : (await readFile(calls, "utf8")).trim().split(/\r?\n/).flatMap(line => { const entry = JSON.parse(line); return [entry.processStart, entry.childPid].filter(Number.isInteger); })
+              .filter(pid => { try { process.kill(pid, 0); return true; } catch (error) { if ((error as NodeJS.ErrnoException).code === "ESRCH") return false; throw error; } });
+          expect(providerPids.length).toBeGreaterThan(0);
+          const nativePid = handles.get(taskA)!.child.pid!;
+          for (const pid of providerPids) {
+            const [parent, group] = execFileSync("ps", ["-p", String(pid), "-o", "ppid=", "-o", "pgid="], { encoding: "utf8" }).trim().split(/\s+/).map(Number);
+            expect([nativePid, ...providerPids]).toContain(parent); expect(group).toBe(pid);
+          }
+          process.kill(nativePid, "SIGKILL");
+          for (const pid of providerPids) {
+            try { process.kill(-pid, "SIGKILL"); } catch (error) { if ((error as NodeJS.ErrnoException).code !== "ESRCH") throw error; }
+          }
+          await handles.get(taskA)!.completion;
+          await waitForCondition("owned providers no longer exist", () => providerPids.every(pid => {
+            try { process.kill(pid, 0); return false; } catch (error) { if ((error as NodeJS.ErrnoException).code === "ESRCH") return true; throw error; }
+          }));
+          expect(isSettledReadyRunnerState(await state())).toBe(true);
+        }
         // The existing task runtime records physical stop and state availability.
         expect(await dispatch(leaseA, { kind: "status" })).toMatchObject({ executionStopped: mode !== "missing stop", sessionStateAvailable: mode !== "missing state" && mode !== "missing stop" });
         if (mode !== "missing stop") {
@@ -274,7 +346,8 @@ describeEmbeddedPostgres("plugin Runner graceful eviction through the Core execu
           await db.update(environmentLeases).set({ status: "released", releasedAt: new Date(), cleanupStatus: "success" }).where(eq(environmentLeases.id, leaseA));
         }
       };
-      if (mode !== "reused lease") await evict();
+      evictRetained = evict;
+      if (!reusesLease) await evict();
       const admitNext = async () => {
         const runB = randomUUID(), leaseB = randomUUID();
         await db.insert(heartbeatRuns).values({ id: runB, companyId, agentId, nativeIssueId: issueId, status: "running", runtimeMode: "native" });
@@ -282,8 +355,8 @@ describeEmbeddedPostgres("plugin Runner graceful eviction through the Core execu
         await db.update(issues).set({ executionRunId: runB, status: "in_progress" }).where(eq(issues.id, issueId));
         const [oldLease] = await db.select().from(environmentLeases).where(eq(environmentLeases.id, leaseA));
         await db.insert(environmentLeases).values({ id: leaseB, companyId, environmentId, heartbeatRunId: runB, issueId, executionWorkspaceId: workspaceId,
-          provider: providerKey, providerLeaseId: mode === "reused lease" ? taskA : taskB, status: "active", leasePolicy: "reuse_by_environment",
-          metadata: mode === "reused lease" ? { ...oldLease!.metadata, runnerTaskReused: true, runnerTaskPreviousLeaseId: leaseA,
+          provider: providerKey, providerLeaseId: reusesLease ? taskA : taskB, status: "active", leasePolicy: "reuse_by_environment",
+          metadata: reusesLease ? { ...oldLease!.metadata, runnerTaskReused: true, runnerTaskPreviousLeaseId: leaseA,
             runnerTaskExecutionStopped: false } : { ...metadata, remoteCwd: workspace } });
         if (mode === "reused lease") {
           expect(handles.get(taskA)!.isExitConfirmed?.()).toBe(false);
@@ -295,6 +368,12 @@ describeEmbeddedPostgres("plugin Runner graceful eviction through the Core execu
           preparationKey: "unchanged-fixture-instructions", adopt: async () => instructionCopy(runB) }) : null;
         if (mode === "prepared copy") expect(releasePreparation).toBeTypeOf("function");
         pendingFollowup = execute(next, leaseB);
+        if (mode === "bare unavailable") {
+          await expect(pendingFollowup).rejects.toThrow("native_runner_reuse_unavailable");
+          expect({ resumeAttempts, acquisitions, submissions, claims }).toEqual({ resumeAttempts: 1, acquisitions: 0, submissions: 1, claims: [] });
+          expect(await db.select().from(nativeRunResults).where(eq(nativeRunResults.runId, runB))).toHaveLength(0);
+          return runB;
+        }
         if (denied) {
           const refusal = mode === "working state" ? "checkpoint_not_settled"
             : mode === "foreign state" ? "Plugin Runner checkpoint identity mismatch"
@@ -316,12 +395,13 @@ describeEmbeddedPostgres("plugin Runner graceful eviction through the Core execu
         return runB;
       };
       const runB = await admitNext();
-      if (denied) return;
+      if (denied || mode === "bare unavailable") return;
       await waitForCondition("automatic release B", () => releases.length === 2);
       expect(await proof()).toMatchObject({ source: releases[1], taskId: taskB });
       expect((await supervisor()).snapshot.providerSessionId).toBe(providerSessionId);
       const methods = (await readFile(calls, "utf8")).trim().split(/\r?\n/);
       expect(submissions).toBe(2);
+      if (mode === "after inspection") expect({ resumeAttempts, acquisitions }).toEqual({ resumeAttempts: 1, acquisitions: 1 });
       expect(releases[1]!.runId).toBe(runB);
       expect(claims).toEqual([]);
       if (harness === "codex") {
@@ -340,15 +420,6 @@ describeEmbeddedPostgres("plugin Runner graceful eviction through the Core execu
     } finally {
       cleaning = true;
       await pendingFollowup?.catch(() => undefined);
-      try {
-        const cleanup = await Promise.allSettled([closeIdleWarmNativeSessionsForRestart(), ...[...hosts.values()].map(host => host.close())]);
-        for (const socket of sockets) socket.terminate(); websocket.close();
-        await new Promise<void>(done => tls.close(() => done()));
-        const failures = cleanup.filter((result): result is PromiseRejectedResult => result.status === "rejected");
-        if (failures.length) throw new AggregateError(failures.map(result => result.reason), "Fixture cleanup failed");
-      } finally {
-        https.globalAgent.destroy(); https.globalAgent = oldAgent; setDefaultCACertificates(oldCAs);
-      }
     }
   });
 });

@@ -193,6 +193,8 @@ export const agentsApi = {
     data: { path: string; content: string; baseRevisionId?: string | null; baseHash?: string | null; clearLegacyPromptTemplate?: boolean },
     companyId?: string,
   ) => api.put<AgentInstructionsFileDetail>(agentPath(id, companyId, "/instructions-bundle/file"), data),
+  renameInstructionsFile: (id: string, data: { path: string; renameTo: string; content: string; baseHash: string | null }, companyId?: string) =>
+    api.put<AgentInstructionsFileDetail>(agentPath(id, companyId, "/instructions-bundle/file"), data),
   instructionCandidates: (id: string, companyId?: string) =>
     api.get<AgentInstructionCandidate[]>(agentPath(id, companyId, "/instructions-bundle/candidates")),
   resolveInstructionCandidate: (id: string, runId: string, data: ResolveAgentInstructionCandidate, companyId?: string) =>
@@ -329,7 +331,7 @@ export const agentsApi = {
   startAdapterAuthLogin: (
     companyId: string,
     type: string,
-    data: { environmentId: string; ttlSeconds?: number; aiConnection?: import("@paperclipai/shared").AiConnectionLoginIntent },
+    data: { environmentId: string; agentId?: string; ttlSeconds?: number; aiConnection?: import("@paperclipai/shared").AiConnectionLoginIntent },
   ) =>
     api.post<AdapterAuthSessionResponse>(
       `/companies/${encodeURIComponent(companyId)}/adapters/${encodeURIComponent(type)}/login-sessions`,
@@ -372,7 +374,7 @@ export const agentsApi = {
     ),
   startClaudeSetupTokenLogin: (
     companyId: string,
-    data: { environmentId: string; overwrite?: ClaudeSetupTokenOverwrite; aiConnection?: import("@paperclipai/shared").AiConnectionLoginIntent },
+    data: { environmentId: string; agentId?: string; overwrite?: ClaudeSetupTokenOverwrite; aiConnection?: import("@paperclipai/shared").AiConnectionLoginIntent },
   ) =>
     api.post<ClaudeSetupTokenSessionOwnerResponse>(
       `/companies/${encodeURIComponent(companyId)}/setup-token-login-sessions`,

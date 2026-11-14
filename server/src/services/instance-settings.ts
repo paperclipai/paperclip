@@ -5,7 +5,7 @@ import { notifyRunDispatch } from "./run-dispatch-notifications.js";
 import { notifyStatusCardEvaluation } from "./status-card-notifications.js";
 import { notifySkillVersionRetentionReconstruction } from "./skill-version-retention-notifications.js";
 import { notifyNativeEnvironmentSettlement } from "./native-environment-settlement-notifications.js";
-import { notifyExternalAgentSettlement } from "../modules/external-agents/index.js";
+import { notifyMuseContactVerification, notifyExternalAgentSettlement } from "../modules/external-agents/index.js";
 import { notifyExternalConversationSettlement } from "./external-conversation-settlement-notifications.js";
 import { notifyNativeRecoveryNotices } from "./native-recovery-notice-notifications.js";
 import { notifyNativeRunProjection } from "./native-run-projection-notifications.js";
@@ -294,6 +294,7 @@ export function normalizeExperimentalSettings(raw: unknown): InstanceExperimenta
       enableWorkspaceDirtyQuarantineRepair: parsed.data.enableWorkspaceDirtyQuarantineRepair ?? true,
       enableOwnerInstanceAdmin: parsed.data.enableOwnerInstanceAdmin ?? false,
       enableSandboxDuplexBridge: parsed.data.enableSandboxDuplexBridge ?? false,
+      enableMcpTasks: parsed.data.enableMcpTasks ?? false,
       enableRunnerPreviewIngress: parsed.data.enableRunnerPreviewIngress ?? false,
       enableWorktreeRunExecution: parsed.data.enableWorktreeRunExecution ?? false,
       worktreeRunExecutionActivatedAt: parsed.data.worktreeRunExecutionActivatedAt ?? null,
@@ -353,6 +354,7 @@ export function normalizeExperimentalSettings(raw: unknown): InstanceExperimenta
     enableWorkspaceDirtyQuarantineRepair: true,
     enableOwnerInstanceAdmin: false,
     enableSandboxDuplexBridge: false,
+    enableMcpTasks: false,
     enableRunnerPreviewIngress: false,
     enableWorktreeRunExecution: false,
     worktreeRunExecutionActivatedAt: null,
@@ -658,6 +660,7 @@ export function instanceSettingsService(db: Db, options: InstanceSettingsService
         await notifyDeliveryWork(tx, DELIVERY_QUEUES.mcpEvents, "*");
         await notifyDeliveryWork(tx, DELIVERY_QUEUES.dotEvents, "*");
         await notifyDeliveryWork(tx, DELIVERY_QUEUES.grokDispatch);
+        if (toExperimentalView(current.experimental).enableMuse !== toExperimentalView(nextExperimental).enableMuse || toExperimentalView(current.experimental).enableNativeRunner !== toExperimentalView(nextExperimental).enableNativeRunner) await notifyMuseContactVerification(tx);
         if (patch.enableExternalObjects !== undefined) await notifyExternalObjectRefresh(tx);
         if (chatBecameEnabled) await notifyDeliveryWork(tx, DELIVERY_QUEUES.strandedAssignments, "*");
         if (patch.enableWorktreeRunExecution !== undefined) await notifyScheduledRetryCancellation(tx);

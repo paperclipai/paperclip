@@ -10,7 +10,7 @@ import { agentsApi } from "@/api/agents";
 import { queryKeys } from "@/lib/queryKeys";
 import { resourceMembershipState, useResourceMemberships } from "@/hooks/useResourceMemberships";
 import { useDialogActions } from "@/context/DialogContext";
-import { AgentChatPin, useAgentChatPins } from "./AgentChatPin";
+import { AgentChatPin, agentChatPinKey, useAgentChatPins } from "./AgentChatPin";
 
 /** Account- and company-scoped data for the secondary chat navigation. */
 export function AgentConversationsSidebar() {
@@ -60,12 +60,19 @@ export function AgentConversationsSidebar() {
     .sort((left, right) => left.name.localeCompare(right.name, undefined, { sensitivity: "base" }));
   const previews = Object.fromEntries((chats.data ?? []).filter(chat => chat.conversationState === "active")
     .map(chat => [chat.conversationAgentId!, "Working…"]));
+  const pinnedAgentIds = useMemo(() => {
+    const prefix = `agent-chat:${companyId}:`;
+    return agentChatPins.orderedKeys.filter(key => key.startsWith(prefix)).map(key => key.slice(prefix.length));
+  }, [companyId, agentChatPins.orderedKeys]);
   return <AgentConversationSidebar key={`${companyId}:${userId}`} agents={[...conversations, ...teammates]} availableAgents={roster}
     existingChatAgentIds={existingChatAgentIds}
     activeId={active?.id} previews={previews}
     unreadAgentIds={unreadAgentIds}
     unreadMessageCounts={unreadMessageCounts}
-    onCreateAgent={openNewAgent} renderAgentAction={agent => <AgentChatPin agent={agent} pins={agentChatPins} />}
+    pinnedAgentIds={pinnedAgentIds}
+    onReorderPins={ids => agentChatPins.reorder(ids.map(id => agentChatPinKey(companyId!, id)))}
+    onCreateAgent={openNewAgent} renderAgentAction={agent => <AgentChatPin agent={agent} pins={agentChatPins}
+      className={agentChatPins.keys.has(agentChatPinKey(agent.companyId, agent.id)) ? "right-10" : undefined} />}
     // Loaded chats stay listed through an outage (the banner covers it); an
     // outage before the first load is a skeleton, and only a real failure is an error.
     loading={[agents, chats, session].some(query => { const kind = queryViewKind(query); return kind === "loading" || kind === "reconnecting"; })}

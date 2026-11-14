@@ -20,19 +20,23 @@ import { canonicalExecutionUuid } from "./execution-identity.js";
 import { randomUUID } from "node:crypto";
 import { and, desc, eq, getTableColumns, inArray, isNull, or, sql, type SQL } from "drizzle-orm";
 import { environmentLeases, heartbeatRunEvents, heartbeatRuns, issueRecoveryActions, issues, nativeRunFinalizations, type Db } from "@paperclipai/db";
-import { executionStartedEventPredicate } from "./pre-dispatch-execution-evidence.js";
+import { executionStartedEventPredicate, isPreDispatchResourceWait } from "./pre-dispatch-execution-evidence.js";
 import { readRunCancellation } from "./run-cancellation.js";
 import { hasRemoteTerminationReceipt } from "./remote-execution-termination.js";
 import { issueRecoveryActionService } from "./issue-recovery-actions.js";
 import { parseIssueExecutionState } from "./issue-execution-policy.js";
 import { executionFailureRetryCount } from "./execution-recovery-attempt.js";
+import { isReplacedPreparation } from "./server-replacement-interruption.js";
 import { logActivity } from "./activity-log.js";
 import { isSupersededConversationRun } from "./agent-conversations.js";
 import { issueService } from "./issues.js";
 import { isInterruptedNativePreparation, isInterruptedNativePreparationCandidate } from "./cancelled-native-startup.js";
 import { hasVerifiedWorkspaceRepair } from "./workspace-recovery-receipt.js";
+import { recordLegacyShutdownBeforeDispatch, SERVER_SHUTDOWN_INTERRUPTED_CODE } from "./legacy-shutdown-before-dispatch.js";
 
 type Run = typeof heartbeatRuns.$inferSelect;
+export const UNRESTORED_FILES_NEXT_ACTION = "The task's saved files could not be put back after the run stopped. "
+  + "They are kept where they were and are not applied. Press Retry to continue from the last saved version in a new workspace.";
 export const LEGACY_RECOVERY_CAUSE = "legacy_execution_requires_reconciliation";
 
 const unusedReconciliationContextKeys = [
@@ -55,7 +59,8 @@ export const legacyReconciliationRunFields = {
 
 /** Error families describe availability, not whether earlier actions happened. */
 export function legacyExecutionNeedsReconciliation(
-  run: Pick<Run, "runtimeMode" | "status" | "errorCode" | "resultJson"> & Partial<Pick<Run, "scheduledRetryAttempt" | "scheduledRetryReason" | "contextSnapshot">>,
+  run: Pick<Run, "runtimeMode" | "status" | "errorCode" | "resultJson">
+    & Partial<Pick<Run, "scheduledRetryAttempt" | "scheduledRetryReason" | "contextSnapshot" | "controllerBootId" | "controllerProcess">>,
 ): boolean {
   if (
     run.runtimeMode === "native" ||
@@ -77,10 +82,7 @@ export function legacyExecutionNeedsReconciliation(
       && (run.resultJson?.executionCancellation as Record<string, unknown> | undefined)?.state === "acknowledged") return false;
   // Waiting for a subscription or workspace precedes provider execution. It is
   // a resource wait, not a failed provider attempt or permission to replay work.
-  if (run.status === "cancelled" && (run.errorCode === "ai_connection_busy" || run.errorCode === "ai_connection_pool_exhausted" || run.errorCode === "provider_limit_wait") &&
-      evidence?.kind === "ai_connection_wait" && evidence.providerWorkStarted === false) return false;
-  if (run.status === "cancelled" && run.errorCode === "workspace_busy" &&
-      evidence?.kind === "workspace_wait" && evidence.providerWorkStarted === false) return false;
+  if (isPreDispatchResourceWait(run)) return false;
   // Setup owns the bounded retry budget for temporary workspace scans. Its
   // exhaustion needs workspace repair, not reconciliation of provider actions
   // that the bootstrap evidence proves never started. Keep unknown outcomes held.
@@ -90,6 +92,10 @@ export function legacyExecutionNeedsReconciliation(
       || run.errorCode === RUNNER_REVISION_MISMATCH_CODE || run.errorCode === ENVIRONMENT_PROVIDER_UNAVAILABLE_CODE
       || run.errorCode === REPOSITORY_CATALOG_UNAVAILABLE_CODE) &&
       evidence?.kind === "bootstrap" && evidence.providerWorkStarted === false) return false;
+  // A server restart or replacement stopped this setup before dispatch: no
+  // provider action happened, so there is nothing to reconcile. Its
+  // continuation is bounded by the server-restart lane, not the failure count.
+  if (isReplacedPreparation({ ...run, controllerBootId: run.controllerBootId ?? null })) return false;
   if (executionFailureRetryCount(run) >= 2) return true;
   return !(
     evidence?.kind === "bootstrap" && evidence.providerWorkStarted === false
@@ -172,6 +178,12 @@ export async function terminalizeLegacyExecution(input: {
       )
       .returning();
     if (!updated) return null;
+    // A graceful shutdown that stopped setup before adapter admission did no
+    // provider work: certify it here, under the run lock, so the process-loss
+    // retry resumes it instead of parking it for reconciliation.
+    if (!input.recordRestoreFailureOnly && current.status === "running" && updated.status === "interrupted"
+        && updated.errorCode === SERVER_SHUTDOWN_INTERRUPTED_CODE)
+      updated = await recordLegacyShutdownBeforeDispatch(tx as unknown as Db, updated) ?? updated;
     const retainedLeaseIds = await preserveLegacyWorkspaceRestoreSources(tx as unknown as Db,
       input.recordRestoreFailureOnly ? { ...updated, status: "failed" } : updated, input.workspaceRestoreSource);
     if (retainedLeaseIds.length) {
@@ -234,7 +246,7 @@ export async function terminalizeLegacyExecution(input: {
       const values = { status: "resolved", outcome: "blocked", ownerType: "board", ownerAgentId: null,
         ownerUserId: null, returnOwnerAgentId: null, evidence, resolvedAt: now, updatedAt: now,
         wakePolicy: null, monitorPolicy: null,
-        nextAction: "The original sandbox is retained for workspace repair. Verify its exact stop receipt, recover the missing files, and record workspaceRepairEvidence without changing the current task. Repair does not replay the stopped run. Explicitly remove the retained allocation after recovery.",
+        nextAction: UNRESTORED_FILES_NEXT_ACTION,
       };
       if (existing) await tx.update(issueRecoveryActions).set(values).where(eq(issueRecoveryActions.id, existing.id));
       else await tx.insert(issueRecoveryActions).values({ ...values, companyId: run.companyId,
@@ -314,10 +326,9 @@ export async function terminalizeLegacyExecution(input: {
           attempt: executionFailureRetryCount(run) + 1,
         },
         nextAction: hasRequiredWorkspaceRecovery(updated.resultJson)
-          ? "The original sandbox is retained for workspace repair. Verify that it has stopped, recover the missing files, record workspaceRepairEvidence, and explicitly remove the retained allocation when recovery is complete. A new agent turn cannot prove file recovery."
-          : hasWorkspaceRestoreFailure(updated.resultJson)
-          ? "Verify safe workspace staging or repair, then reconcile the stopped run before continuing. Saved work and approval decisions remain in force."
-          : "Inspect the stopped provider and recorded actions, then reconcile their outcomes before continuing. This adapter has not established a safe resume checkpoint.",
+          || hasWorkspaceRestoreFailure(updated.resultJson) ? UNRESTORED_FILES_NEXT_ACTION
+          : "The run stopped before it finished, and Paperclip cannot tell which of its last actions took effect. "
+            + "Press Retry to continue the task in a fresh run; the agent checks those actions before repeating any.",
         maxAttempts: 3,
         wakePolicy: null,
         supersedeOnIdentityChange: true,
@@ -328,7 +339,11 @@ export async function terminalizeLegacyExecution(input: {
 }
 
 export async function settleInterruptedNativeBootstrap(
-  db: Db, input: { run: Run; providerDispatchStarted: boolean },
+  db: Db, input: { run: Run; providerDispatchStarted: boolean;
+    /** Owner proof that authorized this settle, recorded in the activity log. */
+    proof?: string;
+    /** Called inside the transaction with the number of holds this call resolved. */
+    onHoldsResolved?: (count: number) => void },
 ): Promise<Run | null> {
   if (input.providerDispatchStarted) return null;
   const issueId = input.run.contextSnapshot?.issueId;
@@ -338,7 +353,10 @@ export async function settleInterruptedNativeBootstrap(
     const [run] = await tx.select().from(heartbeatRuns).where(and(eq(heartbeatRuns.id, input.run.id), eq(heartbeatRuns.companyId, input.run.companyId))).for("update");
     if (!task || !run || !isInterruptedNativePreparationCandidate(run) ||
         run.contextSnapshot?.issueId !== task.id ||
-        executionFailureRetryCount(run) >= 2) return null;
+        // A spent failure budget keeps the hold, except for a preparation that
+        // a server replacement stopped: it never failed, and its continuation
+        // uses the bounded server-restart lane (holds saved by older releases).
+        executionFailureRetryCount(run) >= 2 && !isReplacedPreparation(run)) return null;
     if (hasWorkspaceRestoreFailure(run.resultJson) && !await hasVerifiedWorkspaceRepair(tx as unknown as Db, run)) return null;
     const [native] = await tx.select({ id: nativeRunFinalizations.runId }).from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, run.id)).limit(1);
     const [lease] = await tx.select({ id: environmentLeases.id }).from(environmentLeases).where(and(
@@ -386,8 +404,10 @@ export async function settleInterruptedNativeBootstrap(
     }).where(inArray(issueRecoveryActions.id, holds.map(hold => hold.id))).returning({ id: issueRecoveryActions.id }) : [];
     if (resolved.length) await logActivity(tx as unknown as Db, { companyId: run.companyId, actorType: "system", actorId: "system",
       action: "issue.recovery_action_resolved", entityType: "issue", entityId: task.id, agentId: run.agentId, runId: run.id,
-      details: { reason: "native_bootstrap_stopped_before_provider", recoveryActionIds: resolved.map(r => r.id) },
+      details: { reason: "native_bootstrap_stopped_before_provider", recoveryActionIds: resolved.map(r => r.id),
+        ...(input.proof ? { ownerProof: input.proof } : {}) },
     });
+    input.onHoldsResolved?.(resolved.length);
     return settled;
   });
 }

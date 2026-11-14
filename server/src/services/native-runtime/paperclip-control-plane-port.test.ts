@@ -327,7 +327,7 @@ describe("PaperclipControlPlanePort conformance", () => {
     await rm(outputStorageRoot, { recursive: true, force: true });
   });
 
-  it.each(["settles", "checkpoint timeout", "unscoped terminal"] as const)("retains a durably recorded governed terminal while its postcommit observer is pending: %s", async mode => {
+  it.each(["settles", "checkpoint timeout", "unscoped terminal", "verified shutdown"] as const)("settles a durable governed wait through its recorded terminal or shutdown: %s", async mode => {
     const identity = { ...CONTROL_PLANE_CONFORMANCE_OPEN.identity, issueId: randomUUID(), runId: randomUUID(), sessionId: randomUUID() };
     const runnerId = randomUUID();
     const fixtureContractId = randomUUID();
@@ -383,9 +383,11 @@ describe("PaperclipControlPlanePort conformance", () => {
         async capabilities() { return { resume: false, typedEvents: true, steering: false, interruption: true, structuredResult: true }; },
         async startTurn() { starts++; return { turnId: "park-turn" }; },
         cancel() { return { cleanup: Promise.resolve() }; },
-        async *events() { yield event(1, "item.completed", { kind: "dynamicToolCall" }); terminalEmitted = true; yield event(2, "turn.interrupted", { status: "interrupted", error: null }); },
+        async settleCancelledTurn() { return { runId: identity.runId, normalizedSessionId: identity.sessionId, turnId: "park-turn" }; },
+        async *events() { yield event(1, "item.completed", { kind: "dynamicToolCall" }); terminalEmitted = true;
+          if (mode !== "verified shutdown") yield event(2, "turn.interrupted", { status: "interrupted", error: null }); },
         async snapshot() { return { backendKind: "mock", sessionId: identity.sessionId, identity,
-          activeTurnId: terminalEmitted ? null : "park-turn", cursor: terminalEmitted ? "2" : "1" }; },
+          activeTurnId: terminalEmitted ? null : "park-turn", cursor: terminalEmitted && mode !== "verified shutdown" ? "2" : "1" }; },
         async result() { return null; }, async close() {},
       }; },
     };
@@ -409,6 +411,19 @@ describe("PaperclipControlPlanePort conformance", () => {
     const execution = executeNativeSession(options);
     const outcome = execution.then(value => ({ value }), error => ({ error }));
     try {
+      if (mode === "verified shutdown") {
+        expect(await outcome).toMatchObject({ value: { result: yielded, terminal: { runTerminalState: "succeeded" } } });
+        expect(starts).toBe(1);
+        expect(await db.select().from(nativeRunResults).where(eq(nativeRunResults.runId, identity.runId))).toHaveLength(1);
+        expect((await port.loadSessionCheckpoint())?.governedWait?.settlement).toEqual({
+          runId: identity.runId, normalizedSessionId: identity.sessionId, turnId: "park-turn",
+        });
+        expect((await db.select().from(heartbeatRunEvents).where(eq(heartbeatRunEvents.runId, identity.runId)))
+          .some(row => row.eventType.startsWith("turn."))).toBe(false);
+        expect((await db.select().from(issueThreadInteractions).where(eq(issueThreadInteractions.id, interaction.id)))[0])
+          .toMatchObject({ status: "pending", result: null, effectiveResolverPolicy: "human_only", sourceRunId: identity.runId });
+        return;
+      }
       await Promise.race([recorded, outcome.then(result => { if ("error" in result) throw result.error; throw new Error("run settled before recording terminal"); })]);
       const rows = await db.select().from(heartbeatRunEvents).where(eq(heartbeatRunEvents.runId, identity.runId));
       expect(rows.some(row => row.eventType === "turn.interrupted")).toBe(true);
@@ -821,6 +836,184 @@ describe("PaperclipControlPlanePort conformance", () => {
     expect(activations.filter(row => row.eventType === "runtime.activity.recorded")).toHaveLength(1);
     expect(await readTaskPanelActivations(db, identity.companyId, CONTROL_PLANE_CONFORMANCE_OPEN.identity.runId)).toEqual([]);
     expect(await readTaskPanelActivations(db, randomUUID(), identity.runId)).toEqual([]);
+  });
+
+  it("persists each streamed event in one transaction of two statements and rolls back a revoked writer", async () => {
+    const identity = { ...CONTROL_PLANE_CONFORMANCE_OPEN.identity, runId: randomUUID(), sessionId: randomUUID() };
+    const runnerId = randomUUID();
+    await db.insert(heartbeatRuns).values({
+      id: identity.runId, companyId: identity.companyId, agentId: identity.agentId,
+      status: "running", runtimeMode: "native", nativeIssueId: identity.issueId,
+      nativeSessionId: identity.sessionId, runnerInstanceId: runnerId,
+      completionContractId: contractId, completionContractSha256: contractSha,
+      contextSnapshot: { issueId: identity.issueId },
+    });
+    let active = true;
+    const committed: number[] = [];
+    const port = new PaperclipControlPlanePort(db, {
+      ...identity, completionContractId: contractId, completionContractSha256: contractSha,
+      sourceInstanceId: runnerId, controlPlaneSourceInstanceId: `stream-${identity.runId}`,
+    }, {
+      assertControllerActive: () => { if (!active) throw new Error("controller_revoked"); },
+      onCommittedEvent: async (_event, cursor) => { committed.push(cursor); },
+    });
+    await port.openRun({ identity, backendKind: "mock", sourceInstanceId: runnerId });
+    const emittedAt = new Date().toISOString();
+    const delta = (sourceSeq: number): PrpEvent => ({
+      schema: "paperclip.prp.event.v1", sourceEventId: `${runnerId}:${sourceSeq}`, sourceSeq,
+      sourceInstanceId: runnerId, sourceKind: "runner", runId: identity.runId,
+      normalizedSessionId: identity.sessionId, turnId: "stream-turn", itemId: "stream-message",
+      eventType: "item.delta", schemaVersion: 1, priority: 1, emittedAt,
+      payload: { kind: "agentMessage", text: `chunk ${sourceSeq}` },
+    });
+    // Every statement the driver sends, transaction control included.
+    const options = db.$client.options as { debug?: unknown };
+    const statements: string[] = [];
+    options.debug = (_connection: number, text: string) => { statements.push(text.trim().replace(/\s+/g, " ")); };
+    try {
+      for (const sourceSeq of [1, 2, 3]) {
+        statements.length = 0;
+        await expect(port.appendEvent(delta(sourceSeq))).resolves.toEqual({
+          cursor: sourceSeq, highestContiguousSourceSeq: sourceSeq, disposition: "committed",
+        });
+        // BEGIN, the run lock, the append, COMMIT: no SAVEPOINT and no separate
+        // replay, sequence, insert or cursor statement.
+        expect(statements).toHaveLength(4);
+        expect(statements.filter(text => /^(begin|commit)/i.test(text))).toHaveLength(2);
+      }
+      statements.length = 0;
+      await expect(port.appendEvent(delta(2))).resolves.toEqual({ cursor: 2, highestContiguousSourceSeq: 3, disposition: "duplicate" });
+      expect(statements).toHaveLength(4);
+      // The controller loses the run while its append is in flight: the lock
+      // read is the first statement after the opening check.
+      options.debug = (_connection: number, text: string) => { if (/for no key update$/.test(text.trim())) active = false; };
+      await expect(port.appendEvent(delta(4))).rejects.toThrow("controller_revoked");
+    } finally { options.debug = undefined; }
+    active = true;
+    expect(committed).toEqual([1, 2, 3]);
+    const stored = () => db.select({ seq: heartbeatRunEvents.seq, sourceSeq: heartbeatRunEvents.sourceSeq })
+      .from(heartbeatRunEvents).where(eq(heartbeatRunEvents.runId, identity.runId)).orderBy(asc(heartbeatRunEvents.seq));
+    expect(await stored()).toEqual([1, 2, 3].map(seq => ({ seq, sourceSeq: seq })));
+    // The rolled-back event took no sequence: a replacement writes it next.
+    const replacement = new PaperclipControlPlanePort(db, {
+      ...identity, completionContractId: contractId, completionContractSha256: contractSha,
+      sourceInstanceId: runnerId, controlPlaneSourceInstanceId: `stream-${identity.runId}`,
+    });
+    await replacement.openRun({ identity, backendKind: "mock", sourceInstanceId: runnerId });
+    await expect(replacement.appendEvent(delta(4))).resolves.toEqual({ cursor: 4, highestContiguousSourceSeq: 4, disposition: "committed" });
+    expect(await stored()).toEqual([1, 2, 3, 4].map(seq => ({ seq, sourceSeq: seq })));
+  });
+
+  const streamingFixture = async (options: ConstructorParameters<typeof PaperclipControlPlanePort>[2] = {}) => {
+    const identity = { ...CONTROL_PLANE_CONFORMANCE_OPEN.identity, runId: randomUUID(), sessionId: randomUUID() };
+    const runnerId = randomUUID();
+    await db.insert(heartbeatRuns).values({
+      id: identity.runId, companyId: identity.companyId, agentId: identity.agentId,
+      status: "running", runtimeMode: "native", nativeIssueId: identity.issueId,
+      nativeSessionId: identity.sessionId, runnerInstanceId: runnerId,
+      completionContractId: contractId, completionContractSha256: contractSha,
+      contextSnapshot: { issueId: identity.issueId },
+    });
+    const binding = { ...identity, completionContractId: contractId, completionContractSha256: contractSha,
+      sourceInstanceId: runnerId, controlPlaneSourceInstanceId: `stream-${identity.runId}` };
+    const port = new PaperclipControlPlanePort(db, binding, options);
+    await port.openRun({ identity, backendKind: "mock", sourceInstanceId: runnerId });
+    const emittedAt = new Date().toISOString();
+    const event = (sourceSeq: number, eventType: PrpEvent["eventType"] = "item.delta", text = `chunk ${sourceSeq}`): PrpEvent => ({
+      schema: "paperclip.prp.event.v1", sourceEventId: `${runnerId}:${sourceSeq}`, sourceSeq,
+      sourceInstanceId: runnerId, sourceKind: "runner", runId: identity.runId,
+      normalizedSessionId: identity.sessionId, turnId: "stream-turn", itemId: "stream-message",
+      eventType, schemaVersion: 1, priority: eventType === "item.delta" ? 1 : 0, emittedAt,
+      payload: eventType === "item.delta" ? { kind: "agentMessage", text } : {
+        schema: "paperclip.tool.execution.v1", executionId: `tool-${sourceSeq}`, transport: "builtin",
+        operation: "execute", name: "diagnostic", target: null, namespace: null, readOnly: true,
+        status: "running", durationMs: null, exitCode: null, progress: null,
+        output: null, outputBytes: 0, outputTruncated: false, outputDigest: null,
+      },
+    });
+    const streamed = { signal: new AbortController().signal, streaming: true as const };
+    const stored = () => db.select({ seq: heartbeatRunEvents.seq, sourceSeq: heartbeatRunEvents.sourceSeq })
+      .from(heartbeatRunEvents).where(eq(heartbeatRunEvents.runId, identity.runId)).orderBy(asc(heartbeatRunEvents.seq));
+    return { port, binding, identity, runnerId, event, stored, streamed };
+  };
+
+  it("commits the first text delta at once and later deltas in one batch before the next other event", async () => {
+    const committed: number[] = [];
+    // A timer this long would time the test out: only the first delta and the
+    // next other event may commit the queued deltas.
+    const f = await streamingFixture({ streamingBatchMs: 600_000, onCommittedEvent: async (event) => { committed.push(event.sourceSeq); } });
+    await expect(f.port.appendEvent(f.event(1), f.streamed)).resolves.toEqual({ cursor: 1, highestContiguousSourceSeq: 1, disposition: "committed" });
+    const options = db.$client.options as { debug?: unknown };
+    const statements: string[] = [];
+    options.debug = (_connection: number, text: string) => { statements.push(text.trim().replace(/\s+/g, " ")); };
+    try {
+      const settled: number[] = [];
+      const deltas = [2, 3, 4, 5, 6].map(sourceSeq => f.port.appendEvent(f.event(sourceSeq), f.streamed).then(receipt => { settled.push(sourceSeq); return receipt; }));
+      await new Promise(resolve => setTimeout(resolve, 50));
+      // Queued deltas are neither stored nor acknowledged yet.
+      expect(settled).toEqual([]);
+      expect(await f.stored()).toEqual([{ seq: 1, sourceSeq: 1 }]);
+      statements.length = 0;
+      const boundary = f.port.appendEvent(f.event(7, "tool.execution.started"));
+      expect(await Promise.all(deltas)).toEqual([2, 3, 4, 5, 6].map(sourceSeq => ({
+        cursor: sourceSeq, highestContiguousSourceSeq: sourceSeq, disposition: "committed" })));
+      await expect(boundary).resolves.toMatchObject({ cursor: 7, highestContiguousSourceSeq: 7, disposition: "committed" });
+      expect(settled).toEqual([2, 3, 4, 5, 6]);
+      // The five deltas share one transaction and one insert; the boundary event has its own.
+      expect(statements.filter(text => text.includes("insert into heartbeat_run_events"))).toHaveLength(2);
+      expect(statements.filter(text => /^begin/i.test(text))).toHaveLength(2);
+    } finally { options.debug = undefined; }
+    expect(committed).toEqual([1, 2, 3, 4, 5, 6, 7]);
+    expect(await f.stored()).toEqual([1, 2, 3, 4, 5, 6, 7].map(seq => ({ seq, sourceSeq: seq })));
+    // After another event, the next delta commits at once again.
+    await expect(f.port.appendEvent(f.event(8), f.streamed)).resolves.toMatchObject({ cursor: 8, disposition: "committed" });
+    // A caller that waits for each receipt never waits for the timer.
+    await expect(f.port.appendEvent(f.event(9))).resolves.toMatchObject({ cursor: 9, disposition: "committed" });
+    // A delta without text does not end the immediate commits: the first text still commits at once.
+    await f.port.appendEvent(f.event(10, "tool.execution.started"));
+    await expect(f.port.appendEvent(f.event(11, "item.delta", ""), f.streamed)).resolves.toMatchObject({ cursor: 11 });
+    await expect(f.port.appendEvent(f.event(12), f.streamed)).resolves.toMatchObject({ cursor: 12 });
+  });
+
+  it("observes every committed delta of a batch when one observer fails", async () => {
+    const observed: number[] = [];
+    const f = await streamingFixture({ streamingBatchMs: 600_000, onCommittedEvent: async (event) => {
+      if (event.sourceSeq === 3) throw new Error("log write failed");
+      observed.push(event.sourceSeq);
+    } });
+    await f.port.appendEvent(f.event(1), f.streamed);
+    const receipts = [2, 3, 4].map(sourceSeq => f.port.appendEvent(f.event(sourceSeq), f.streamed));
+    f.port.flushStreamingEvents();
+    await expect(receipts[0]).resolves.toMatchObject({ cursor: 2 });
+    await expect(receipts[1]).rejects.toThrow("log write failed");
+    await expect(receipts[2]).resolves.toMatchObject({ cursor: 4 });
+    expect(observed).toEqual([1, 2, 4]);
+    expect(await f.stored()).toEqual([1, 2, 3, 4].map(seq => ({ seq, sourceSeq: seq })));
+  });
+
+  it("flushes queued deltas on the timer and before a replay read, and rejects every delta of a failed batch", async () => {
+    let active = true;
+    const f = await streamingFixture({ streamingBatchMs: 20, assertControllerActive: () => { if (!active) throw new Error("controller_revoked"); } });
+    await f.port.appendEvent(f.event(1), f.streamed);
+    // Later deltas commit on the timer when no other event follows.
+    expect((await Promise.all([2, 3].map(sourceSeq => f.port.appendEvent(f.event(sourceSeq), f.streamed)))).map(receipt => receipt.cursor)).toEqual([2, 3]);
+    // Replay reads include queued deltas.
+    const queued = f.port.appendEvent(f.event(4), f.streamed);
+    const replay = await f.port.replayEvents({ runId: f.identity.runId, sourceInstanceId: f.runnerId, afterSourceSeq: 0, limit: 10 });
+    expect(replay.highestContiguousSourceSeq).toBe(4);
+    await expect(queued).resolves.toMatchObject({ cursor: 4 });
+    // The controller loses the run before the batch commits: every queued delta
+    // fails and nothing is stored, so the runner's resend commits them.
+    const failing = [5, 6, 7].map(sourceSeq => f.port.appendEvent(f.event(sourceSeq), f.streamed));
+    active = false;
+    for (const receipt of failing) await expect(receipt).rejects.toThrow("controller_revoked");
+    active = true;
+    expect((await f.stored()).map(row => row.sourceSeq)).toEqual([1, 2, 3, 4]);
+    const replacement = new PaperclipControlPlanePort(db, f.binding, { streamingBatchMs: 20 });
+    await replacement.openRun({ identity: f.identity, backendKind: "mock", sourceInstanceId: f.runnerId });
+    const resent = await Promise.all([4, 5, 6, 7].map(sourceSeq => replacement.appendEvent(f.event(sourceSeq), f.streamed)));
+    expect(resent.map(receipt => [receipt.cursor, receipt.disposition])).toEqual([[4, "duplicate"], [5, "committed"], [6, "committed"], [7, "committed"]]);
+    expect(await f.stored()).toEqual([1, 2, 3, 4, 5, 6, 7].map(seq => ({ seq, sourceSeq: seq })));
   });
 
   it("omits API credentials from persisted tool events and checkpoints without changing wire results", async () => {
@@ -1930,6 +2123,13 @@ describe("PaperclipControlPlanePort conformance", () => {
     const agentReview = (await db.select().from(issueThreadInteractions)
       .where(eq(issueThreadInteractions.issueId, issueId)))
       .find((entry) => entry.addresseeAgentId === reviewerAgentId)!;
+    await issueThreadInteractionService(db).sweepSupersededPendingRequestConfirmations();
+    expect(await db.select({ status: issueThreadInteractions.status, createdByAgentId: issueThreadInteractions.createdByAgentId })
+      .from(issueThreadInteractions).where(eq(issueThreadInteractions.issueId, issueId)))
+      .toEqual([
+        { status: "pending", createdByAgentId: identity.agentId },
+        { status: "pending", createdByAgentId: identity.agentId },
+      ]);
     expect(reviewWakes[0]).toMatchObject({
       companyId: identity.companyId, status: "queued", reason: "native_completion_review",
       payload: { issueId, nativeReviewInteractionId: agentReview.id },

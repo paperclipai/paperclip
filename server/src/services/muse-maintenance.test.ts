@@ -1,8 +1,9 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { eq, sql } from "drizzle-orm";
-import { agents, companies, createDb, applyPendingMigrations, heartbeatRuns, museRunnerAssignments, museAgentBindings } from "@paperclipai/db";
+import { agents, companies, createDb, applyPendingMigrations, heartbeatRuns, museRunnerAssignments, museAgentBindings, subscribeDatabaseWork } from "@paperclipai/db";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "../__tests__/helpers/embedded-postgres.js";
+import { notifyMuseContactVerification, parseMuseVerificationHint } from "../modules/external-agents/index.js";
 import { startMuseMaintenance } from "./muse-maintenance.js";
 import { createDeliveryWorkCoordinator } from "./delivery-work-coordinator.js";
 import { DELIVERY_QUEUES, notifyDeliveryWork } from "./delivery-work-notifications.js";
@@ -83,6 +84,74 @@ describeDatabase("Muse commit and deadline maintenance", () => {
         .where(eq(museAgentBindings.id, bindingId));
     });
   }
+
+  it("registers first-contact intent before its write, including a currently paused identity", async () => {
+    const binding = await fixture();
+    await db.update(agents).set({ status: "paused", lifecycleState: "paused" }).where(eq(agents.id, binding.agentId));
+    await db.update(museAgentBindings).set({ pairedAt: new Date() }).where(eq(museAgentBindings.id, binding.id));
+    const hints: string[] = [];
+    const unsubscribe = subscribeDatabaseWork(db, DELIVERY_QUEUES.museMaintenance, (event, values) => {
+      if (event === "intent") hints.push(...values ?? []);
+    });
+    try {
+      await expect(db.transaction(async tx => {
+        expect(await notifyMuseContactVerification(tx, {
+          companyId: binding.companyId, bindingId: binding.id, generation: binding.generation,
+        }, "contact-persist")).toBe(1);
+        expect(hints.map(parseMuseVerificationHint)).toEqual([{
+          kind: "muse-contact-verification", companyId: binding.companyId,
+          bindingId: binding.id, generation: binding.generation,
+        }]);
+        const [before] = await tx.select().from(museAgentBindings).where(eq(museAgentBindings.id, binding.id));
+        expect(before.receiverContactAt).toBeNull();
+        await tx.update(museAgentBindings).set({ receiverContactAt: new Date() }).where(eq(museAgentBindings.id, binding.id));
+        throw new Error("first contact rollback");
+      })).rejects.toThrow("first contact rollback");
+      const [after] = await db.select().from(museAgentBindings).where(eq(museAgentBindings.id, binding.id));
+      expect(after.receiverContactAt).toBeNull();
+      expect(after.challengeHash).toBeNull();
+    } finally { unsubscribe(); }
+  });
+
+  it("targets only pending contact bindings for the affected company and operator", async () => {
+    const binding = await fixture();
+    const foreign = await fixture();
+    const otherOperator = await fixture();
+    for (const pending of [binding, foreign, otherOperator]) {
+      await db.update(museAgentBindings).set({ pairedAt: new Date(), receiverContactAt: new Date() })
+        .where(eq(museAgentBindings.id, pending.id));
+    }
+    const [otherAgent] = await db.insert(agents).values({ companyId: binding.companyId, name: "Other Muse agent" }).returning();
+    await db.update(museAgentBindings).set({ companyId: binding.companyId, agentId: otherAgent.id,
+      operatorId: "another-operator" }).where(eq(museAgentBindings.id, otherOperator.id));
+    const hints: string[] = [];
+    const unsubscribe = subscribeDatabaseWork(db, DELIVERY_QUEUES.museMaintenance, (event, values) => {
+      if (event === "intent") hints.push(...values ?? []);
+    });
+    try {
+      await db.transaction(async tx => {
+        expect(await notifyMuseContactVerification(tx, {
+          companyId: binding.companyId, operatorId: binding.operatorId,
+        })).toBe(1);
+      });
+      expect(hints.map(parseMuseVerificationHint)).toEqual([{
+        kind: "muse-contact-verification", companyId: binding.companyId,
+        bindingId: binding.id, generation: binding.generation,
+      }]);
+      expect(hints.some(hint => hint.includes(foreign.id) || hint.includes(otherOperator.id))).toBe(false);
+      await db.transaction(async tx => {
+        expect(await notifyMuseContactVerification(tx, { companyId: binding.companyId,
+          bindingId: binding.id, generation: binding.generation + 1 })).toBe(0);
+      });
+      expect(hints).toHaveLength(1);
+      await db.update(museAgentBindings).set({ verifiedReplyAt: new Date() }).where(eq(museAgentBindings.id, binding.id));
+      await db.transaction(async tx => {
+        expect(await notifyMuseContactVerification(tx, { companyId: binding.companyId,
+          operatorId: binding.operatorId })).toBe(0);
+      });
+      expect(hints).toHaveLength(1);
+    } finally { unsubscribe(); }
+  });
 
   it("stays SQL-quiet after startup with no bindings, including during drain", async () => {
     await start();

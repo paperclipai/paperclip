@@ -2,8 +2,10 @@ import { and, eq } from "drizzle-orm";
 import { agents, companies, environmentLeases, heartbeatRuns, issues, nativeRunFinalizations, type Db } from "@paperclipai/db";
 import type { AdapterExecutionTarget } from "@paperclipai/adapter-utils/execution-target";
 import { parseNativeExecutionInput, type NativeExecutionInput, type PersistedNativeSession, type DurableRecoveryIdentity } from "../../vendor/paperclip-runner/index.js";
-import { currentNativeControllerIdentity, evaluateNativeControllerTakeover } from "./native-restart-recovery.js";
+import { currentNativeControllerIdentity, evaluateNativeControllerTakeover, recordLegacyHostFallbackProof } from "./native-restart-recovery.js";
 import { NativeControllerRecoveryWaitingError, readNativeControllerRecovery } from "./native-controller-recovery.js";
+import { NativePredecessorRetirementUnprovenError } from "./predecessor-retirement.js";
+import { readyPortableTaskSource } from "../plugin-task-ownership.js";
 
 export type RemoteWarmSessionRecovery = {
   identity: Record<string, string>;
@@ -11,6 +13,7 @@ export type RemoteWarmSessionRecovery = {
   previousExecution: NativeExecutionInput;
   reuseProcess: boolean;
   releasedSource?: DurableRecoveryIdentity;
+  portableSourceTaskId?: string;
   remote: { providerLeaseId: string; remoteCwd: string };
   revalidate: (leaseOwner: string) => Promise<void>;
 };
@@ -31,10 +34,32 @@ function postTerminalEvents(control: Record<string, unknown>): unknown[] {
 /** A session is settled when its commands finished and nothing is live or waiting.
  * Events after the terminal describe the past, so refusing cannot undo them: they
  * are reported instead. Every event must still authenticate as this session's. */
+const RUNNER_LIFECYCLE_COMMAND_TYPES = new Set(["runner.suspend", "runner.drain", "runner.shutdown"]);
+
+function outcomeUnknown(command: Record<string, unknown>): boolean {
+  return command.status === "indeterminate" ||
+    (command.status === "failed" && (record(command.result).code === "execution_indeterminate" ||
+      record(record(command.result).result).code === "execution_indeterminate"));
+}
+
+export function unsettledControllerCommands(commands: readonly Record<string, unknown>[]): Record<string, unknown>[] {
+  const lastCompletedTurnStart = Math.max(-1, ...commands
+    .filter(command => command.type === "turn.start" && command.status === "completed")
+    .map(command => Number(command.controllerSeq)));
+  return commands.filter(command => {
+    if (command.status === "completed") return false;
+    if (outcomeUnknown(command)) {
+      return !(command.type === "turn.start" && Number(command.controllerSeq) < lastCompletedTurnStart);
+    }
+    return !((command.status === "failed" || command.status === "rejected") &&
+      !RUNNER_LIFECYCLE_COMMAND_TYPES.has(String(command.type)));
+  });
+}
+
 export function isSettledRemoteWarmControlState(control: Record<string, unknown>, identity: Record<string, unknown>): boolean {
   const commands = control.commands;
   const events = control.committedEvents;
-  if (!Array.isArray(commands) || commands.some(command => record(command).status !== "completed") ||
+  if (!Array.isArray(commands) || unsettledControllerCommands(commands.map(record)).length > 0 ||
       !Array.isArray(events) || Object.entries(identity).some(([key, value]) => record(control.identity)[key] !== value)) return false;
   const terminalIndex = events.findLastIndex(event => record(event).eventType === "run.terminal");
   if (terminalIndex < 0) return false;
@@ -92,6 +117,10 @@ export function describeFailedAttachment(failureMessage: unknown): string | null
   return `This run could not attach to its provider session: ${cause}. A later run may start a new provider thread. See ${SETTLEMENT_DOC}`;
 }
 
+type WarmRecoveryRefusal = "identity_incomplete" | "target_not_resumed_sandbox" | "owner_unsettled" | "execution_mismatch"
+  | "checkpoint_unsettled" | "journal_unsettled" | "controller_not_stopped" | "prior_lease_mismatch"
+  | "current_run_not_admitted" | "current_owner_changed" | "owner_changed" | "current_lease_changed";
+
 export async function inspectRemoteWarmSessionRecovery(input: {
   db: Db;
   execution: NativeExecutionInput;
@@ -101,40 +130,61 @@ export async function inspectRemoteWarmSessionRecovery(input: {
   matchesExecution: (previous: NativeExecutionInput) => boolean;
   loadCheckpoint: (previous: NativeExecutionInput) => PersistedNativeSession | null;
   canReuseProcess: (previous: NativeExecutionInput) => boolean;
-}): Promise<RemoteWarmSessionRecovery> {
-  const deny = (): never => { throw new Error("runner_state_identity_mismatch: prior_owner_terminal_state_indeterminate"); };
+  portableSourceTaskId?: string;
+}): Promise<RemoteWarmSessionRecovery | null> {
   const { binding } = input.execution;
   const { target } = input;
+  let settledPredecessor: { runId: string; providerLeaseId: string } | null = null;
+  const deny = (reason: WarmRecoveryRefusal): never => {
+    const refusal = new Error(`runner_state_identity_mismatch: prior_owner_terminal_state_indeterminate; warm_recovery_refused=${reason}`);
+    if (settledPredecessor) {
+      throw new NativePredecessorRetirementUnprovenError(settledPredecessor.runId, settledPredecessor.providerLeaseId, refusal);
+    }
+    throw refusal;
+  };
+  const refuseCurrentRun = (reason: WarmRecoveryRefusal): never => {
+    throw new Error(`runner_state_identity_mismatch: prior_owner_terminal_state_indeterminate; warm_recovery_refused=${reason}`);
+  };
   const identity: Record<string, string> = {};
   for (const key of ["runId", "normalizedSessionId", "runnerInstanceId", "environmentLeaseId", "turnId", "itemId"]) {
     const value = input.identity[key];
-    if (typeof value !== "string" || !value) return deny();
+    if (typeof value !== "string" || !value) return deny("identity_incomplete");
     identity[key] = value;
   }
+  // A Runner lives in the sandbox it started in. A created or replacement
+  // sandbox (for example after a restart or deploy replaced the controller)
+  // holds no Runner to adopt, so live adoption steps aside. Ordinary admission
+  // then retires the finished owner or keeps it held with a named reason.
+  if (!input.portableSourceTaskId && target.transport === "sandbox" && ["created", "replacement"].includes(target.sandboxLeaseAcquisition?.outcome ?? "")) {
+    return null;
+  }
   if (target.transport !== "sandbox" || !target.leaseId || !target.environmentId ||
-      !target.providerKey || !target.sandboxLeaseAcquisition || target.sandboxLeaseAcquisition.outcome !== "resumed" ||
-      identity.runId === binding.runId) return deny();
+      !target.providerKey || !target.sandboxLeaseAcquisition ||
+      (!input.portableSourceTaskId && target.sandboxLeaseAcquisition.outcome !== "resumed") ||
+      identity.runId === binding.runId) return deny("target_not_resumed_sandbox");
   const providerLeaseId = target.sandboxLeaseAcquisition.providerLeaseId;
+  const sourceProviderLeaseId = input.portableSourceTaskId ?? providerLeaseId;
   const [prior] = await input.db.select({ run: heartbeatRuns, owner: nativeRunFinalizations })
     .from(heartbeatRuns).innerJoin(nativeRunFinalizations, eq(nativeRunFinalizations.runId, heartbeatRuns.id))
     .where(and(eq(heartbeatRuns.id, identity.runId), eq(heartbeatRuns.companyId, binding.companyId),
       eq(heartbeatRuns.agentId, binding.agentId), eq(heartbeatRuns.nativeIssueId, binding.issueId)));
   if (!prior || prior.run.status !== "succeeded" || !prior.owner.resultId || !prior.owner.controllerPid ||
-      !prior.owner.controllerProcessStartedAt || !prior.owner.controllerBootId) return deny();
+      !prior.owner.controllerProcessStartedAt || !prior.owner.controllerBootId) return deny("owner_unsettled");
   const previous = parseNativeExecutionInput(prior.run.runnerProfileJson?.nativeExecutionInput);
-  if (previous.binding.runId !== identity.runId || !input.matchesExecution(previous)) return deny();
+  if (previous.binding.runId !== identity.runId || !input.matchesExecution(previous)) return deny("execution_mismatch");
   if (prior.owner.leaseOwner && prior.owner.leaseExpiresAt && prior.owner.leaseExpiresAt > new Date()) {
     throw new NativeControllerRecoveryWaitingError(prior.owner.leaseExpiresAt);
   }
-  if (prior.owner.phase !== "committed" || prior.owner.leaseOwner) return deny();
+  if (prior.owner.phase !== "committed" || prior.owner.leaseOwner) return deny("owner_unsettled");
+  if (sourceProviderLeaseId === providerLeaseId) settledPredecessor = { runId: identity.runId, providerLeaseId };
   const checkpoint = input.loadCheckpoint(previous);
   if (!checkpoint || checkpoint.identity.runId !== identity.runId ||
       checkpoint.identity.companyId !== binding.companyId || checkpoint.identity.issueId !== binding.issueId ||
       checkpoint.identity.agentId !== binding.agentId || checkpoint.identity.sessionId !== identity.normalizedSessionId ||
       checkpoint.driverKind !== previous.session.driverKind || !checkpoint.providerSessionId ||
-      checkpoint.activeTurnId !== null || checkpoint.pendingRuntimeRequests?.length !== 0) return deny();
+      checkpoint.activeTurnId !== null || checkpoint.pendingRuntimeRequests?.length !== 0) return deny("checkpoint_unsettled");
   const control = input.readControlState();
-  if (!isSettledRemoteWarmControlState(control, identity)) return deny();
+  if (!isSettledRemoteWarmControlState(control, identity)) return deny("journal_unsettled");
   const assertPriorStopped = async () => {
     const persistedRecovery = readNativeControllerRecovery(prior.run.runnerProfileJson?.nativeControllerRecovery,
       prior.run.runnerProfileJson?.sessionCheckpoint);
@@ -142,21 +192,29 @@ export async function inspectRemoteWarmSessionRecovery(input: {
     // durable controllers are fenced by the database lease and current turn.
     const stopped = await evaluateNativeControllerTakeover({ owner: prior.owner, now: new Date(), requireStoppedController: true,
       remoteLeaseFenced: persistedRecovery !== null });
-    if (!stopped.allowed) return deny();
+    if (!stopped.allowed) return deny("controller_not_stopped");
+    await recordLegacyHostFallbackProof(input.db, prior.run, stopped, "remote_warm_session_recovery");
   };
   await assertPriorStopped();
   const priorLeases = await input.db.select().from(environmentLeases).where(and(
     eq(environmentLeases.companyId, binding.companyId), eq(environmentLeases.heartbeatRunId, identity.runId),
     eq(environmentLeases.issueId, binding.issueId), eq(environmentLeases.environmentId, target.environmentId),
-    eq(environmentLeases.provider, target.providerKey), eq(environmentLeases.providerLeaseId, providerLeaseId),
+    eq(environmentLeases.provider, target.providerKey), eq(environmentLeases.providerLeaseId, sourceProviderLeaseId),
   ));
   if (priorLeases.length !== 1 || priorLeases[0].metadata?.remoteCwd !== target.remoteCwd ||
-      !["released", "expired", "active"].includes(priorLeases[0].status)) return deny();
+      !["released", "expired", "active", ...(input.portableSourceTaskId ? ["retained"] : [])].includes(priorLeases[0].status)) {
+    return deny("prior_lease_mismatch");
+  }
   return {
     identity, checkpoint, previousExecution: previous, reuseProcess: input.canReuseProcess(previous),
+    portableSourceTaskId: input.portableSourceTaskId,
     remote: { providerLeaseId, remoteCwd: target.remoteCwd },
     revalidate: async leaseOwner => {
       await assertPriorStopped();
+      if (input.portableSourceTaskId &&
+          (await readyPortableTaskSource(input.db, binding.companyId, target.leaseId!, identity))?.taskId !== input.portableSourceTaskId) {
+        return deny("prior_lease_mismatch");
+      }
       const controller = await currentNativeControllerIdentity();
       const [current] = await input.db.select({ run: heartbeatRuns, owner: nativeRunFinalizations, issue: issues, agent: agents, company: companies })
         .from(heartbeatRuns).innerJoin(nativeRunFinalizations, eq(nativeRunFinalizations.runId, heartbeatRuns.id))
@@ -176,15 +234,20 @@ export async function inspectRemoteWarmSessionRecovery(input: {
       if (!current || current.run.status !== "running" || current.run.resultJson?.nativeCancellation ||
           current.company.status !== "active" || current.agent.lifecycleState !== "ready" ||
           ["paused", "terminated", "pending_approval"].includes(current.agent.status) ||
-          !priorOwner || priorOwner.leaseOwner || priorOwner.phase !== "committed" ||
-          priorOwner.resultId !== prior.owner.resultId || priorOwner.controllerBootId !== prior.owner.controllerBootId ||
-          current.owner.leaseOwner !== leaseOwner || !current.owner.leaseExpiresAt ||
-          current.owner.leaseExpiresAt <= new Date() || current.owner.resultId ||
-          current.owner.controllerBootId !== controller.bootId || current.owner.controllerPid !== controller.pid ||
           current.issue.executionRunId !== binding.runId || current.issue.assigneeAgentId !== binding.agentId ||
-          current.issue.status !== "in_progress" || !lease || lease.status !== "active" ||
+          current.issue.status !== "in_progress") return refuseCurrentRun("current_run_not_admitted");
+      if (current.owner.leaseOwner !== leaseOwner || !current.owner.leaseExpiresAt ||
+          current.owner.leaseExpiresAt <= new Date() || current.owner.resultId ||
+          current.owner.controllerBootId !== controller.bootId || current.owner.controllerPid !== controller.pid) {
+        return refuseCurrentRun("current_owner_changed");
+      }
+      if (!priorOwner || priorOwner.leaseOwner || priorOwner.phase !== "committed" ||
+          priorOwner.resultId !== prior.owner.resultId || priorOwner.controllerBootId !== prior.owner.controllerBootId) {
+        return deny("owner_changed");
+      }
+      if (!lease || lease.status !== "active" ||
           lease.environmentId !== target.environmentId || lease.provider !== target.providerKey ||
-          lease.providerLeaseId !== providerLeaseId || lease.metadata?.remoteCwd !== target.remoteCwd) return deny();
+          lease.providerLeaseId !== providerLeaseId || lease.metadata?.remoteCwd !== target.remoteCwd) return deny("current_lease_changed");
     },
   };
 }

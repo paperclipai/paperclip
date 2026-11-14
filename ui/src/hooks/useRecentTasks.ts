@@ -20,6 +20,8 @@ type RecentTasksUpdatedDetail = {
 };
 
 const RECENT_TASK_ORDER_DEBOUNCE_MS = 1_000;
+/** Summary chunks in flight at once for a history longer than one request. */
+export const RECENT_TASK_SUMMARY_CONCURRENCY = 3;
 
 export function useRecentTasks({
   companyId,
@@ -82,11 +84,22 @@ export function useRecentTasks({
   const summaryQuery = useQuery({
     queryKey: summaryKey,
     queryFn: async ({ signal }) => {
-      const summaries: IssueSummary[] = [];
+      // One request covers a typical list. Longer lists fetch their chunks a
+      // few at a time rather than one after another or all at once.
+      const chunks: string[][] = [];
       for (let offset = 0; offset < queryIds.length; offset += ISSUE_SUMMARIES_MAX_IDS) {
-        summaries.push(...await issuesApi.summaries(companyId!, queryIds.slice(offset, offset + ISSUE_SUMMARIES_MAX_IDS), { signal }));
+        chunks.push(queryIds.slice(offset, offset + ISSUE_SUMMARIES_MAX_IDS));
       }
-      return summaries;
+      const results: IssueSummary[][] = new Array(chunks.length);
+      let next = 0;
+      const worker = async () => {
+        while (next < chunks.length) {
+          const index = next++;
+          results[index] = await issuesApi.summaries(companyId!, chunks[index]!, { signal });
+        }
+      };
+      await Promise.all(Array.from({ length: Math.min(RECENT_TASK_SUMMARY_CONCURRENCY, chunks.length) }, worker));
+      return results.flat();
     },
     enabled: Boolean(companyId && queryIds.length),
     staleTime: 30_000,

@@ -20,6 +20,7 @@ import { useHiddenSettings } from "./hooks/useHiddenSettings";
 import { OnboardingWizardVariant } from "./components/OnboardingWizardVariant";
 import { CloudAccessGate } from "./components/CloudAccessGate";
 import { ConnectionStatusBanner } from "./components/ConnectionStatusBanner";
+import { PageLoadTracker } from "./components/PageLoadTracker";
 import { ShellConfigurationGate } from "./components/ShellConfigurationGate";
 import { PaperclipLoading } from "./components/AnimatedPaperclipIcon";
 import { AGENT_FILTER_TABS } from "./lib/agent-filter-tabs";
@@ -107,6 +108,7 @@ const AdvancedToolsRoute = lazy(() => import("./pages/tools/AdvancedToolsRoute")
 const ProfileWizardRoute = lazy(() => import("./pages/tools/profiles/ProfileWizardRoute").then((module) => ({ default: module.ProfileWizardRoute })));
 const ProfileDetailRoute = lazy(() => import("./pages/tools/profiles/ProfileDetailRoute").then((module) => ({ default: module.ProfileDetailRoute })));
 const Browse = lazy(() => import("./pages/apps/Browse").then((module) => ({ default: module.Browse })));
+const TailscaleConnector = lazy(() => import("./pages/apps/TailscaleConnector").then((module) => ({ default: module.TailscaleConnector })));
 const AppsConnect = lazy(() => import("./pages/apps/AppsConnect").then((module) => ({ default: module.AppsConnect })));
 const ChatEndpointSetup = lazy(() => import("./pages/apps/chat/ChatEndpointSetup").then((module) => ({ default: module.ChatEndpointSetup })));
 const ChatEndpointDetail = lazy(() => import("./pages/apps/chat/ChatEndpointDetail").then((module) => ({ default: module.ChatEndpointDetail })));
@@ -198,6 +200,7 @@ function boardRoutes(streamlinedUiEnabled: boolean, combinedInboxTasksEnabled: b
       <Route path="tools" element={<LegacyToolsRedirect />} />
       <Route path="tools/:tab" element={<LegacyToolsRedirect />} />
       <Route path="apps" element={<Browse />} />
+      <Route path="apps/tailscale" element={<TailscaleConnector />} />
       <Route path="apps/assistant-connection" element={<AssistantConnection />} />
       <Route path="apps/browse" element={<Navigate to="/apps" replace />} />
       <Route path="apps/connections" element={<Navigate to="/apps" replace />} />
@@ -775,10 +778,10 @@ export function App() {
     else if (/^\/[^/]+\/(issues|tasks)\/?$/.test(pathname)) void loadIssues().catch(() => undefined);
   }, [pathname]);
 
-  return (
+  // One route tree for both the router and the page-load measurement, so
+  // every page is measured under its route pattern.
+  const routeTree = (
     <>
-      <ConnectionStatusBanner />
-      <Suspense fallback={<PaperclipLoading />}><Routes>
         <Route path="oauth-handoff" element={<PaperclipCloudOAuthHandoffPage />} />
         <Route path="auth" element={<AuthPage />} />
         <Route path="board-claim/:token" element={<BoardClaimPage />} />
@@ -811,6 +814,7 @@ export function App() {
           <Route path="issues" element={<UnprefixedBoardRedirect />} />
           <Route path="tasks" element={<UnprefixedBoardRedirect />} />
           <Route path="issues/:issueId" element={<UnprefixedBoardRedirect />} />
+          <Route path="approvals/:approvalId" element={<UnprefixedBoardRedirect />} />
           <Route path="routines" element={<UnprefixedBoardRedirect />} />
           <Route path="routines/:routineId" element={<UnprefixedBoardRedirect />} />
           <Route path="cases" element={<UnprefixedBoardRedirect />} />
@@ -869,7 +873,14 @@ export function App() {
           <Route path="*" element={<NotFoundPage scope="global" />} />
           </Route>
         </Route>
-      </Routes></Suspense>
+    </>
+  );
+
+  return (
+    <>
+      <ConnectionStatusBanner />
+      <PageLoadTracker routes={routeTree} />
+      <Suspense fallback={<PaperclipLoading />}><Routes>{routeTree}</Routes></Suspense>
       <OnboardingWizardVariant />
     </>
   );

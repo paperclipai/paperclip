@@ -8,7 +8,7 @@ import type {
   NativeExecutionInput,
   PersistedNativeSession,
 } from "../../vendor/paperclip-runner/index.js";
-import { canonicalNativeRuntimeContextDigest, parseNativeExecutionInput } from "../../vendor/paperclip-runner/index.js";
+import { canonicalNativeRuntimeContextDigest, parseNativeExecutionInput, type NativeRuntimeContextSnapshot } from "../../vendor/paperclip-runner/index.js";
 
 export type NativeToolExecutionTargetKind = "local" | "remote";
 
@@ -36,7 +36,7 @@ export function nativeToolContractFingerprintForTarget(
   return `sha256:${createHash("sha256")
     .update(
       JSON.stringify({
-        schema: "paperclip.native-tool-contract.v18",
+        schema: "paperclip.native-tool-contract.v19",
         executionTargetKind,
         advertisementPolicy: {
           // Direct provider threads retain declarations from thread/start.
@@ -46,6 +46,9 @@ export function nativeToolContractFingerprintForTarget(
           historicalChatAttachments:
             "always_advertised_conversation_binding_gated.v1",
           registerDeliverable: "verified_local_or_remote_workspace.v2",
+          // Advertised only to Codex runs admitted on an OpenAI API-key
+          // connection; the key stays in the server.
+          generateImage: "codex_openai_api_key_connection_server_key.v1",
           readChatAttachment: "always_advertised_run_scope_local_staging.v2",
           structuredHumanInput:
             "always_advertised_run_issue_agent_binding_gated_current_task_description.v2",
@@ -57,12 +60,11 @@ export function nativeToolContractFingerprintForTarget(
           chatTaskTools: "durable_task_binding_and_accepted_origin.v1",
           githubResponses: "bound_working_comment_progress_and_final.v1",
           githubInstructionSkills: "trusted_configuration_native_selection.v1",
-          ...(executionTargetKind === "remote"
-            ? { assignedMcpTools: "codex_server_gateway_prp_relay.v1" }
-            : {}),
+          assignedMcpTools: "codex_server_gateway_prp_relay.v1",
         },
         tools: [
           { name: "register_deliverable", version: 2 },
+          { name: "generate_image", semanticContract: "paperclip.server-openai-image-generation.v1", version: 1 },
           {
             name: "read_current_wake_comments",
             semanticContract: "paperclip.server-current-wake-comments.v1",
@@ -97,6 +99,19 @@ export const NATIVE_TOOL_CONTRACT_FINGERPRINT =
 /** The runner proved that this run's saved provider session cannot be
  * restored by the current runner build. Its checkpoint is not resumable. */
 export const NATIVE_PROVIDER_STATE_INCOMPATIBLE = "native_provider_state_incompatible";
+/**
+ * `runnerProfileJson` key on a run whose result was accepted but whose
+ * provider state backup was not saved. Its per-turn sandbox is released after
+ * the run, so that backup was the only copy of the provider session. The next
+ * run on the session starts a fresh provider session instead of resuming.
+ * Records without the key, including every record written before it existed,
+ * keep the ordinary resume path.
+ */
+export const NATIVE_PROVIDER_STATE_UNSAVED_KEY = "nativeProviderStateUnsaved";
+
+export function isNativeProviderStateUnsaved(profile: unknown): boolean {
+  return record(record(profile)[NATIVE_PROVIDER_STATE_UNSAVED_KEY]).code === NATIVE_PROVIDER_STATE_INCOMPATIBLE;
+}
 /** The saved session owned a side-effecting call without a delivered result.
  * Recovery requires an explicit reconciliation of that action. */
 export const NATIVE_PROVIDER_SIDE_EFFECT_PENDING = "native_provider_side_effect_pending";
@@ -358,11 +373,13 @@ async function selectNativeSessionResumeBarrier(db: Db, input: NativeSessionResu
         nativeExecutionInput: unknown;
         sessionCheckpoint: unknown;
         nativeControllerRecovery: unknown;
+        nativeProviderStateUnsaved?: unknown;
       }>`jsonb_build_object(
         'nativeToolContractFingerprint', ${heartbeatRuns.runnerProfileJson}->'nativeToolContractFingerprint',
         'nativeExecutionInput', ${heartbeatRuns.runnerProfileJson}->'nativeExecutionInput',
         'sessionCheckpoint', ${heartbeatRuns.runnerProfileJson}->'sessionCheckpoint',
-        'nativeControllerRecovery', ${heartbeatRuns.runnerProfileJson}->'nativeControllerRecovery'
+        'nativeControllerRecovery', ${heartbeatRuns.runnerProfileJson}->'nativeControllerRecovery',
+        '${sql.raw(NATIVE_PROVIDER_STATE_UNSAVED_KEY)}', ${heartbeatRuns.runnerProfileJson}->'${sql.raw(NATIVE_PROVIDER_STATE_UNSAVED_KEY)}'
       )`,
       contextSnapshot: sql<{
         paperclipWake: unknown;
@@ -593,6 +610,15 @@ export function buildNativeExecutionWithCheckpoint(input: {
   };
 }
 
+export function nativeRuntimeContextsMatch(
+  previous: NativeRuntimeContextSnapshot,
+  current: NativeRuntimeContextSnapshot,
+  toolRefreshOnResume?: boolean,
+): boolean {
+  return previous.aggregateDigest === current.aggregateDigest ||
+    (toolRefreshOnResume === true && canonicalNativeRuntimeContextDigest({ ...previous, mcp: current.mcp }) === current.aggregateDigest);
+}
+
 /**
  * Rebind a completed prior run's provider checkpoint to a new heartbeat run.
  * The provider/driver session identity is retained, while every per-turn and
@@ -621,6 +647,9 @@ export function rebindNativeSessionCheckpoint(input: {
   // reconciled continuation then starts a fresh session in the same workspace.
   if (input.previousRun.errorCode === NATIVE_PROVIDER_SIDE_EFFECT_PENDING) return null;
   const previousProfile = record(input.previousRun.runnerProfileJson);
+  // The source's result was accepted, but its provider state was never saved
+  // and its sandbox is gone. Resuming would only fail, so start fresh now.
+  if (isNativeProviderStateUnsaved(previousProfile)) return null;
   if (
     previousProfile.nativeToolContractFingerprint !==
     nativeToolContractFingerprintForTarget(input.executionTargetKind ?? "local", input.currentExecution.provider.kind)
@@ -675,12 +704,7 @@ export function rebindNativeSessionCheckpoint(input: {
     ("homeMode" in previousExecution ? previousExecution.homeMode : "isolated") !== ("homeMode" in current ? current.homeMode : "isolated") ||
     ("runtimeContext" in previousExecution &&
       "runtimeContext" in current &&
-      previousExecution.runtimeContext.aggregateDigest !== current.runtimeContext.aggregateDigest &&
-      !(input.toolRefreshOnResume === true &&
-        canonicalNativeRuntimeContextDigest({
-          ...previousExecution.runtimeContext,
-          mcp: current.runtimeContext.mcp,
-        }) === current.runtimeContext.aggregateDigest))
+      !nativeRuntimeContextsMatch(previousExecution.runtimeContext, current.runtimeContext, input.toolRefreshOnResume))
   )
     return null;
 
@@ -713,6 +737,8 @@ export function rebindNativeSessionCheckpoint(input: {
     activeTurnId: null,
     terminalTurns: [],
     pendingRuntimeRequests: [],
+    dispositionOnlyRecoveryConsumed: false,
+    dispositionOnlyRecoveryTurnId: null,
     // Settlement evidence belongs to the prior heartbeat run, even when the
     // provider session is reused for the user's response.
     governedWait: undefined,

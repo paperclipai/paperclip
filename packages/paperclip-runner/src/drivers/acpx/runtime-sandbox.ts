@@ -2,7 +2,7 @@ import { kimiManagedConfiguration } from "./kimi-config.js";
 import { kimiInstructionBinding } from "./kimi-instructions.js";
 import { AGENT_OBSERVABILITY_ENV_KEYS, codexObservabilityToml } from "../agent-observability.js";
 import { piProviderConfiguration } from "./pi-provider-config.js";
-import { configuredEnvironmentKeys } from "../../configured-environment.js";
+import { CERTIFICATE_ENVIRONMENT_KEYS, configuredEnvironmentKeys } from "../../configured-environment.js";
 import { COPILOT_SYSTEM_INSTRUCTIONS_FILE } from "./copilot-profile.js";
 import { preparedHarnessHome, preconfiguredHomeEnvironment, usesPreconfiguredHome } from "../preconfigured-home.js";
 import { randomBytes } from "node:crypto";
@@ -36,7 +36,7 @@ import {
 
 import { createSanitizedAcpxSpawnInput } from "./environment.js";
 import { cursorInstructionBinding } from "./cursor-instructions.js";
-import { claudePaperclipPermissionRules } from "./permission-policy.js";
+import { CLAUDE_SELF_SCHEDULING_TOOLS, claudePaperclipPermissionRules } from "./permission-policy.js";
 import type { QualifiedAcpxAgent } from "./qualified-profiles.js";
 import {
   resolveAcpxRuntimeRoot,
@@ -440,9 +440,12 @@ export async function prepareAcpxRuntimeSandbox(input: {
         model: input.binding.requestedModel,
         availableModels: [input.binding.requestedModel],
         ...(input.binding.claudeEffort ? { effortLevel: input.binding.claudeEffort } : {}),
-        ...((input.binding.permissionMode === "approve-reads" || input.binding.permissionMode === "approve-paperclip")
-          ? { permissions: { allow: claudePaperclipPermissionRules(input.tools ?? [], input.binding.permissionMode) } }
-          : {}),
+        permissions: {
+          ...((input.binding.permissionMode === "approve-reads" || input.binding.permissionMode === "approve-paperclip")
+            ? { allow: claudePaperclipPermissionRules(input.tools ?? [], input.binding.permissionMode) }
+            : {}),
+          deny: [...CLAUDE_SELF_SCHEDULING_TOOLS],
+        },
       })}\n`,
     );
   } : input.agent === "antigravity" ? async () => {
@@ -510,6 +513,8 @@ export async function prepareAcpxRuntimeSandbox(input: {
           `include_only = ${JSON.stringify([...new Set([
             "PATH", "HOME", "LANG", "LANGUAGE", "TZ", "TMPDIR", "TEMP", "TMP", "CODEX_HOME",
             "PAPERCLIP_AGENT_KEY_ID", "PAPERCLIP_AGENT_PUBLIC_KEY", "PAPERCLIP_AGENT_PRIVATE_KEY",
+            // Certificate-trust names stay inheritable for execution-side injection.
+            ...CERTIFICATE_ENVIRONMENT_KEYS,
             ...taskEnvironmentKeys,
             // Unselected provider/config secrets keep Codex's default shell exclusions;
             // only Paperclip's scoped API token is required by Bash/curl skills.

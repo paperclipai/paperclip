@@ -5,6 +5,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import type { AdapterExecutionContext, AdapterExecutionResult } from "@paperclipai/adapter-utils";
 import {
+  managedRemoteHomeEnvironment,
   adapterExecutionTargetIsRemote,
   adapterExecutionTargetRemoteCwd,
   overrideAdapterExecutionTargetRemoteCwd,
@@ -340,408 +341,411 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   let remoteRuntimeRootDir: string | null = null;
   let paperclipBridge: Awaited<ReturnType<typeof startAdapterExecutionTargetPaperclipBridge>> = null;
 
-  if (executionTargetIsRemote) {
-    try {
-      localSkillsDir = await buildKimiSkillsDir(config);
-      await onLog(
-        "stdout",
-        `[paperclip] Syncing workspace and Kimi runtime assets to ${describeAdapterExecutionTarget(executionTarget)}.\n`,
-      );
-      const preparedExecutionTargetRuntime = await prepareAdapterExecutionTargetRuntime({
+  try {
+    if (executionTargetIsRemote) {
+      try {
+        localSkillsDir = await buildKimiSkillsDir(config);
+        await onLog(
+          "stdout",
+          `[paperclip] Syncing workspace and Kimi runtime assets to ${describeAdapterExecutionTarget(executionTarget)}.\n`,
+        );
+        const preparedExecutionTargetRuntime = await prepareAdapterExecutionTargetRuntime({
+          privateRuntime: Boolean(config.managedAiConnection),
+          runId,
+          target: executionTarget,
+          adapterKey: "kimi",
+          timeoutSec,
+          workspaceLocalDir: cwd,
+          installCommand: SANDBOX_INSTALL_COMMAND,
+          detectCommand: command,
+          onProgress: (line) => onLog("stdout", line),
+          onRuntimeProgress: ctx.onRuntimeProgress,
+          assets: [{
+            key: "skills",
+            localDir: localSkillsDir,
+            followSymlinks: true,
+          }],
+        });
+        restoreRemoteWorkspace = () =>
+          preparedExecutionTargetRuntime.restoreWorkspace((line) => onLog("stdout", line));
+        effectiveExecutionCwd = preparedExecutionTargetRuntime.workspaceRemoteDir ?? effectiveExecutionCwd;
+        refreshPaperclipWorkspaceEnvForExecution({
+          env,
+          envConfig,
+          workspaceCwd: effectiveWorkspaceCwd,
+          workspaceSource,
+          workspaceId,
+          workspaceRepoUrl,
+          workspaceRepoRef,
+          workspaceHints,
+          agentHome,
+          executionTargetIsRemote,
+          executionCwd: effectiveExecutionCwd,
+        });
+        remoteRuntimeRootDir = preparedExecutionTargetRuntime.runtimeRootDir;
+        if (executionTarget?.kind === "remote" && executionTarget.transport === "ssh" && executionTarget.spec.useHostAuth === false && config.managedAiConnection && remoteRuntimeRootDir) Object.assign(env, managedRemoteHomeEnvironment(remoteRuntimeRootDir));
+        const managedHome = adapterExecutionTargetUsesManagedHome(executionTarget, Boolean(config.managedAiConnection));
+        const managedRemoteHomeDir =
+          managedHome && preparedExecutionTargetRuntime.runtimeRootDir
+            ? preparedExecutionTargetRuntime.runtimeRootDir
+            : null;
+        if (managedRemoteHomeDir) {
+          env.HOME = managedRemoteHomeDir;
+        }
+        // Deliver the synced skills snapshot via --skills-dir (see buildArgs)
+        // from its isolated per-run location instead of copying it over the
+        // shared $KIMI_CODE_HOME/skills home. Overwriting the shared home would
+        // delete Kimi skills installed by the operator or other agents that
+        // Paperclip does not own.
+        if (desiredKimiSkillNames.length > 0 && preparedExecutionTargetRuntime.assetDirs.skills) {
+          remoteSkillsDir = preparedExecutionTargetRuntime.assetDirs.skills;
+        }
+      } catch (error) {
+        await Promise.allSettled([
+          restoreRemoteWorkspace?.(),
+          localSkillsDir ? fs.rm(path.dirname(localSkillsDir), { recursive: true, force: true }).catch(() => undefined) : Promise.resolve(),
+        ]);
+        restoreRemoteWorkspace = null;
+        throw error;
+      }
+    }
+    const runtimeExecutionTarget = overrideAdapterExecutionTargetRemoteCwd(executionTarget, effectiveExecutionCwd);
+    if (executionTargetIsRemote && adapterExecutionTargetUsesPaperclipBridge(executionTarget)) {
+      paperclipBridge = await startAdapterExecutionTargetPaperclipBridge({
         runId,
-        target: executionTarget,
+        target: runtimeExecutionTarget,
+        runtimeRootDir: remoteRuntimeRootDir,
         adapterKey: "kimi",
         timeoutSec,
-        workspaceLocalDir: cwd,
-        installCommand: SANDBOX_INSTALL_COMMAND,
-        detectCommand: command,
-        onProgress: (line) => onLog("stdout", line),
-        onRuntimeProgress: ctx.onRuntimeProgress,
-        assets: [{
-          key: "skills",
-          localDir: localSkillsDir,
-          followSymlinks: true,
-        }],
+        hostApiToken: env.PAPERCLIP_API_KEY,
+        onLog,
       });
-      restoreRemoteWorkspace = () =>
-        preparedExecutionTargetRuntime.restoreWorkspace((line) => onLog("stdout", line));
-      effectiveExecutionCwd = preparedExecutionTargetRuntime.workspaceRemoteDir ?? effectiveExecutionCwd;
-      refreshPaperclipWorkspaceEnvForExecution({
-        env,
-        envConfig,
-        workspaceCwd: effectiveWorkspaceCwd,
-        workspaceSource,
-        workspaceId,
-        workspaceRepoUrl,
-        workspaceRepoRef,
-        workspaceHints,
-        agentHome,
-        executionTargetIsRemote,
-        executionCwd: effectiveExecutionCwd,
-      });
-      remoteRuntimeRootDir = preparedExecutionTargetRuntime.runtimeRootDir;
-      const managedHome = adapterExecutionTargetUsesManagedHome(executionTarget);
-      const managedRemoteHomeDir =
-        managedHome && preparedExecutionTargetRuntime.runtimeRootDir
-          ? preparedExecutionTargetRuntime.runtimeRootDir
-          : null;
-      if (managedRemoteHomeDir) {
-        env.HOME = managedRemoteHomeDir;
+      if (paperclipBridge) {
+        Object.assign(env, paperclipBridge.env);
       }
-      // Deliver the synced skills snapshot via --skills-dir (see buildArgs)
-      // from its isolated per-run location instead of copying it over the
-      // shared $KIMI_CODE_HOME/skills home. Overwriting the shared home would
-      // delete Kimi skills installed by the operator or other agents that
-      // Paperclip does not own.
-      if (desiredKimiSkillNames.length > 0 && preparedExecutionTargetRuntime.assetDirs.skills) {
-        remoteSkillsDir = preparedExecutionTargetRuntime.assetDirs.skills;
-      }
-    } catch (error) {
-      await Promise.allSettled([
-        restoreRemoteWorkspace?.(),
-        localSkillsDir ? fs.rm(path.dirname(localSkillsDir), { recursive: true, force: true }).catch(() => undefined) : Promise.resolve(),
-      ]);
-      throw error;
     }
-  }
-  const runtimeExecutionTarget = overrideAdapterExecutionTargetRemoteCwd(executionTarget, effectiveExecutionCwd);
-  if (executionTargetIsRemote && adapterExecutionTargetUsesPaperclipBridge(executionTarget)) {
-    paperclipBridge = await startAdapterExecutionTargetPaperclipBridge({
-      runId,
-      target: runtimeExecutionTarget,
-      runtimeRootDir: remoteRuntimeRootDir,
-      adapterKey: "kimi",
-      timeoutSec,
-      hostApiToken: env.PAPERCLIP_API_KEY,
-      onLog,
-    });
-    if (paperclipBridge) {
-      Object.assign(env, paperclipBridge.env);
+
+    // Local runs deliver desired skills via `--skills-dir` (see buildArgs) from a
+    // dedicated per-run directory, rather than symlinking into the user's
+    // ~/.kimi-code/skills home. This keeps skill loading reliable and isolated
+    // without polluting the operator's Kimi install. Remote runs sync skills into
+    // the remote skills home above, so this only applies to local execution.
+    if (!executionTargetIsRemote && desiredKimiSkillNames.length > 0) {
+      localSkillsDir = await buildKimiSkillsDir(config);
+      await onLog(
+        "stderr",
+        `[paperclip] Prepared ${desiredKimiSkillNames.length} Kimi skill(s) for --skills-dir delivery.\n`,
+      );
     }
-  }
 
-  // Local runs deliver desired skills via `--skills-dir` (see buildArgs) from a
-  // dedicated per-run directory, rather than symlinking into the user's
-  // ~/.kimi-code/skills home. This keeps skill loading reliable and isolated
-  // without polluting the operator's Kimi install. Remote runs sync skills into
-  // the remote skills home above, so this only applies to local execution.
-  if (!executionTargetIsRemote && desiredKimiSkillNames.length > 0) {
-    localSkillsDir = await buildKimiSkillsDir(config);
-    await onLog(
-      "stderr",
-      `[paperclip] Prepared ${desiredKimiSkillNames.length} Kimi skill(s) for --skills-dir delivery.\n`,
-    );
-  }
-
-  const runtimeSessionParams = parseObject(runtime.sessionParams);
-  const runtimeSessionId = asString(runtimeSessionParams.sessionId, runtime.sessionId ?? "");
-  const runtimeSessionCwd = asString(runtimeSessionParams.cwd, "");
-  const runtimeRemoteExecution = parseObject(runtimeSessionParams.remoteExecution);
-  const canResumeSession =
-    runtimeSessionId.length > 0 &&
-    (runtimeSessionCwd.length === 0 || path.resolve(runtimeSessionCwd) === path.resolve(effectiveExecutionCwd)) &&
-    adapterExecutionTargetSessionMatches(runtimeRemoteExecution, runtimeExecutionTarget);
-  const sessionId = canResumeSession ? runtimeSessionId : null;
-  if (executionTargetIsRemote && runtimeSessionId && !canResumeSession) {
-    await onLog(
-      "stdout",
-      `[paperclip] Kimi session "${runtimeSessionId}" does not match the current remote execution identity and will not be resumed in "${effectiveExecutionCwd}". Starting a fresh remote session.\n`,
-    );
-  } else if (runtimeSessionId && !canResumeSession) {
-    await onLog(
-      "stdout",
-      `[paperclip] Kimi session "${runtimeSessionId}" was saved for cwd "${runtimeSessionCwd}" and will not be resumed in "${effectiveExecutionCwd}".\n`,
-    );
-  }
-
-  const instructionsFilePath = asString(config.instructionsFilePath, "").trim();
-  const instructionsDir = instructionsFilePath ? `${path.dirname(instructionsFilePath)}/` : "";
-  let instructionsPrefix = "";
-  if (instructionsFilePath) {
-    try {
-      const instructionsContents = await fs.readFile(instructionsFilePath, "utf8");
-      instructionsPrefix =
-        `${instructionsContents}\n\n` +
-        `The above agent instructions were loaded from ${instructionsFilePath}. ` +
-        `Resolve any relative file references from ${instructionsDir}. ` +
-        `This base directory is authoritative for sibling instruction files such as ` +
-        `./HEARTBEAT.md, ./SOUL.md, and ./TOOLS.md; do not resolve those from the parent agent directory.\n\n`;
-    } catch (err) {
-      const reason = err instanceof Error ? err.message : String(err);
+    const runtimeSessionParams = parseObject(runtime.sessionParams);
+    const runtimeSessionId = asString(runtimeSessionParams.sessionId, runtime.sessionId ?? "");
+    const runtimeSessionCwd = asString(runtimeSessionParams.cwd, "");
+    const runtimeRemoteExecution = parseObject(runtimeSessionParams.remoteExecution);
+    const canResumeSession =
+      runtimeSessionId.length > 0 &&
+      (runtimeSessionCwd.length === 0 || path.resolve(runtimeSessionCwd) === path.resolve(effectiveExecutionCwd)) &&
+      adapterExecutionTargetSessionMatches(runtimeRemoteExecution, runtimeExecutionTarget);
+    const sessionId = canResumeSession ? runtimeSessionId : null;
+    if (executionTargetIsRemote && runtimeSessionId && !canResumeSession) {
       await onLog(
         "stdout",
-        `[paperclip] Warning: could not read agent instructions file "${instructionsFilePath}": ${reason}\n`,
+        `[paperclip] Kimi session "${runtimeSessionId}" does not match the current remote execution identity and will not be resumed in "${effectiveExecutionCwd}". Starting a fresh remote session.\n`,
+      );
+    } else if (runtimeSessionId && !canResumeSession) {
+      await onLog(
+        "stdout",
+        `[paperclip] Kimi session "${runtimeSessionId}" was saved for cwd "${runtimeSessionCwd}" and will not be resumed in "${effectiveExecutionCwd}".\n`,
       );
     }
-  }
-  const commandNotes = (() => {
-    const notes: string[] = ["Prompt is passed to Kimi via -p for non-interactive execution."];
-    notes.push("Added --output-format stream-json for structured headless output.");
-    notes.push("Set headless env (CI=1, NO_COLOR=1, KIMI_CODE_NO_AUTO_UPDATE=1) so unattended runs skip interactive prompts and update preflight.");
-    if (hasNonEmptyEnvValue(env, "KIMI_MODEL_THINKING_EFFORT")) {
-      notes.push(`Set KIMI_MODEL_THINKING_EFFORT=${env.KIMI_MODEL_THINKING_EFFORT} for model ${model}.`);
+
+    const instructionsFilePath = asString(config.instructionsFilePath, "").trim();
+    const instructionsDir = instructionsFilePath ? `${path.dirname(instructionsFilePath)}/` : "";
+    let instructionsPrefix = "";
+    if (instructionsFilePath) {
+      try {
+        const instructionsContents = await fs.readFile(instructionsFilePath, "utf8");
+        instructionsPrefix =
+          `${instructionsContents}\n\n` +
+          `The above agent instructions were loaded from ${instructionsFilePath}. ` +
+          `Resolve any relative file references from ${instructionsDir}. ` +
+          `This base directory is authoritative for sibling instruction files such as ` +
+          `./HEARTBEAT.md, ./SOUL.md, and ./TOOLS.md; do not resolve those from the parent agent directory.\n\n`;
+      } catch (err) {
+        const reason = err instanceof Error ? err.message : String(err);
+        await onLog(
+          "stdout",
+          `[paperclip] Warning: could not read agent instructions file "${instructionsFilePath}": ${reason}\n`,
+        );
+      }
     }
-    const effectiveSkillsDir = executionTargetIsRemote ? remoteSkillsDir : localSkillsDir;
-    if (effectiveSkillsDir) {
-      notes.push(`Loading ${desiredKimiSkillNames.length} desired skill(s) via --skills-dir ${effectiveSkillsDir}.`);
-    }
-    if (!executionTargetIsRemote && instructionsFilePath) {
-      notes.push(`Added --add-dir ${path.dirname(instructionsFilePath)} so sibling instruction files are readable.`);
-    }
-    if (!instructionsFilePath) return notes;
-    if (instructionsPrefix.length > 0) {
+    const commandNotes = (() => {
+      const notes: string[] = ["Prompt is passed to Kimi via -p for non-interactive execution."];
+      notes.push("Added --output-format stream-json for structured headless output.");
+      notes.push("Set headless env (CI=1, NO_COLOR=1, KIMI_CODE_NO_AUTO_UPDATE=1) so unattended runs skip interactive prompts and update preflight.");
+      if (hasNonEmptyEnvValue(env, "KIMI_MODEL_THINKING_EFFORT")) {
+        notes.push(`Set KIMI_MODEL_THINKING_EFFORT=${env.KIMI_MODEL_THINKING_EFFORT} for model ${model}.`);
+      }
+      const effectiveSkillsDir = executionTargetIsRemote ? remoteSkillsDir : localSkillsDir;
+      if (effectiveSkillsDir) {
+        notes.push(`Loading ${desiredKimiSkillNames.length} desired skill(s) via --skills-dir ${effectiveSkillsDir}.`);
+      }
+      if (!executionTargetIsRemote && instructionsFilePath) {
+        notes.push(`Added --add-dir ${path.dirname(instructionsFilePath)} so sibling instruction files are readable.`);
+      }
+      if (!instructionsFilePath) return notes;
+      if (instructionsPrefix.length > 0) {
+        notes.push(
+          `Loaded agent instructions from ${instructionsFilePath}`,
+          `Prepended instructions + path directive to prompt (relative references from ${instructionsDir}).`,
+        );
+        return notes;
+      }
       notes.push(
-        `Loaded agent instructions from ${instructionsFilePath}`,
-        `Prepended instructions + path directive to prompt (relative references from ${instructionsDir}).`,
+        `Configured instructionsFilePath ${instructionsFilePath}, but file could not be read; continuing without injected instructions.`,
       );
       return notes;
-    }
-    notes.push(
-      `Configured instructionsFilePath ${instructionsFilePath}, but file could not be read; continuing without injected instructions.`,
-    );
-    return notes;
-  })();
+    })();
 
-  const bootstrapPromptTemplate = asString(config.bootstrapPromptTemplate, "");
-  const templateData = {
-    agentId: agent.id,
-    companyId: agent.companyId,
-    runId,
-    company: { id: agent.companyId },
-    agent,
-    run: { id: runId, source: "on_demand" },
-    context,
-  };
-  const sessionHandoffNote = asString(context.paperclipSessionHandoffMarkdown, "").trim();
-  const paperclipEnvNote = renderPaperclipEnvNote(env);
-  const apiAccessNote = renderApiAccessNote(env);
-
-  const buildArgs = (resumeSessionId: string | null, prompt: string) => {
-    const args = ["--output-format", "stream-json"];
-    if (resumeSessionId) args.push("-r", resumeSessionId);
-    if (model) args.push("-m", model);
-    // Make the agent instructions directory readable so Kimi can open sibling
-    // instruction files (./HEARTBEAT.md, ./SOUL.md, ./TOOLS.md) referenced by
-    // the prepended entry file. Local-only: the directory is a host path that
-    // is not synced to remote execution targets.
-    if (!executionTargetIsRemote && instructionsFilePath) {
-      args.push("--add-dir", path.dirname(instructionsFilePath));
-    }
-    // Load desired Paperclip skills from the dedicated per-run directory
-    // (local snapshot, or the synced remote snapshot) instead of the shared
-    // skills home. Only passed when skills are desired so unconfigured agents
-    // keep Kimi's default skill discovery.
-    const effectiveSkillsDir = executionTargetIsRemote ? remoteSkillsDir : localSkillsDir;
-    if (effectiveSkillsDir) {
-      args.push("--skills-dir", effectiveSkillsDir);
-    }
-    if (extraArgs.length > 0) args.push(...extraArgs);
-    args.push("-p", prompt);
-    return args;
-  };
-
-  const runAttempt = async (resumeSessionId: string | null) => {
-    await hydrateFreshSessionHandoff(ctx, { resumedSession: Boolean(resumeSessionId) });
-    const attemptSections = selectPaperclipPromptSections(context, {
-      resumedSession: Boolean(resumeSessionId),
-      includeCommunicationGuidance: false,
-    });
-    const attemptBootstrapPrompt = !resumeSessionId && bootstrapPromptTemplate.trim().length > 0
-      ? renderTemplate(bootstrapPromptTemplate, templateData).trim()
-      : "";
-    const attemptWakePrompt = attemptSections.wakePrompt;
-    const attemptRenderedPrompt = Boolean(resumeSessionId) && attemptWakePrompt.length > 0
-      || isPaperclipRecoveryWakePayload(context.paperclipWake)
-      ? ""
-      : renderTemplate(promptTemplate, templateData);
-    const attemptBasePrompt = joinPromptSections([
-      instructionsPrefix,
-      attemptBootstrapPrompt,
-      attemptWakePrompt,
-      attemptSections.taskContextNote,
-      sessionHandoffNote,
-      paperclipEnvNote,
-      apiAccessNote,
-      attemptRenderedPrompt,
-    ]);
-    const prompt = joinPromptSections([
-      selectInitialCommunicationGuidance(context, { resumedSession: Boolean(resumeSessionId) }),
-      attemptBasePrompt,
-    ]);
-    const promptMetrics = {
-      promptChars: prompt.length,
-      instructionsChars: instructionsPrefix.length,
-      bootstrapPromptChars: attemptBootstrapPrompt.length,
-      wakePromptChars: attemptWakePrompt.length,
-      taskContextChars: attemptSections.taskContextNote.length,
-      sessionHandoffChars: sessionHandoffNote.length,
-      runtimeNoteChars: paperclipEnvNote.length + apiAccessNote.length,
-      heartbeatPromptChars: attemptRenderedPrompt.length,
+    const bootstrapPromptTemplate = asString(config.bootstrapPromptTemplate, "");
+    const templateData = {
+      agentId: agent.id,
+      companyId: agent.companyId,
+      runId,
+      company: { id: agent.companyId },
+      agent,
+      run: { id: runId, source: "on_demand" },
+      context,
     };
-    const args = buildArgs(resumeSessionId, prompt);
-    const invocationEnv = buildKimiHeadlessEnv(env);
-    const invocationRuntimeEnv = buildKimiRuntimeEnv(env);
-    const loggedEnv = buildInvocationEnvForLogs(invocationEnv, {
-      runtimeEnv: invocationRuntimeEnv,
-      includeRuntimeKeys: ["HOME"],
-      resolvedCommand,
-    });
-    if (onMeta) {
-      await onMeta({
-        adapterType: "kimi_local",
-        command: resolvedCommand,
-        cwd: effectiveExecutionCwd,
-        commandNotes,
-        commandArgs: args.map((value, index) => (
-          index === args.length - 1 ? `<prompt ${prompt.length} chars>` : value
-        )),
-        env: loggedEnv,
-        prompt,
-        promptMetrics: { ...promptMetrics, promptChars: prompt.length },
-        context,
+    const sessionHandoffNote = asString(context.paperclipSessionHandoffMarkdown, "").trim();
+    const paperclipEnvNote = renderPaperclipEnvNote(env);
+    const apiAccessNote = renderApiAccessNote(env);
+
+    const buildArgs = (resumeSessionId: string | null, prompt: string) => {
+      const args = ["--output-format", "stream-json"];
+      if (resumeSessionId) args.push("-r", resumeSessionId);
+      if (model) args.push("-m", model);
+      // Make the agent instructions directory readable so Kimi can open sibling
+      // instruction files (./HEARTBEAT.md, ./SOUL.md, ./TOOLS.md) referenced by
+      // the prepended entry file. Local-only: the directory is a host path that
+      // is not synced to remote execution targets.
+      if (!executionTargetIsRemote && instructionsFilePath) {
+        args.push("--add-dir", path.dirname(instructionsFilePath));
+      }
+      // Load desired Paperclip skills from the dedicated per-run directory
+      // (local snapshot, or the synced remote snapshot) instead of the shared
+      // skills home. Only passed when skills are desired so unconfigured agents
+      // keep Kimi's default skill discovery.
+      const effectiveSkillsDir = executionTargetIsRemote ? remoteSkillsDir : localSkillsDir;
+      if (effectiveSkillsDir) {
+        args.push("--skills-dir", effectiveSkillsDir);
+      }
+      if (extraArgs.length > 0) args.push(...extraArgs);
+      args.push("-p", prompt);
+      return args;
+    };
+
+    const runAttempt = async (resumeSessionId: string | null) => {
+      await hydrateFreshSessionHandoff(ctx, { resumedSession: Boolean(resumeSessionId) });
+      const attemptSections = selectPaperclipPromptSections(context, {
+        resumedSession: Boolean(resumeSessionId),
+        includeCommunicationGuidance: false,
       });
-    }
-
-    const eventForwarder = createKimiEventForwardingLog(onLog, onEvent);
-    const proc = await runAdapterExecutionTargetProcess(runId, runtimeExecutionTarget, command, args, {
-      onProcessStopped: providerStop.beginInvocation(),
-      cwd,
-      env: invocationEnv,
-      timeoutSec,
-      graceSec,
-      onSpawn,
-      onRuntimeProgress: ctx.onRuntimeProgress,
-      onLog: eventForwarder.log,
-      runLogTail: paperclipBridge?.runLogTail,
-      settleRunDisposition: paperclipBridge?.settleRunDisposition,
-    });
-    await eventForwarder.flush();
-    return {
-      proc,
-      parsed: parseKimiJsonl(proc.stdout),
-    };
-  };
-
-  const toResult = (
-    attempt: {
-      proc: {
-        exitCode: number | null;
-        signal: string | null;
-        timedOut: boolean;
-        stdout: string;
-        stderr: string;
-        errorCode?: string | null;
+      const attemptBootstrapPrompt = !resumeSessionId && bootstrapPromptTemplate.trim().length > 0
+        ? renderTemplate(bootstrapPromptTemplate, templateData).trim()
+        : "";
+      const attemptWakePrompt = attemptSections.wakePrompt;
+      const attemptRenderedPrompt = Boolean(resumeSessionId) && attemptWakePrompt.length > 0
+        || isPaperclipRecoveryWakePayload(context.paperclipWake)
+        ? ""
+        : renderTemplate(promptTemplate, templateData);
+      const attemptBasePrompt = joinPromptSections([
+        instructionsPrefix,
+        attemptBootstrapPrompt,
+        attemptWakePrompt,
+        attemptSections.taskContextNote,
+        sessionHandoffNote,
+        paperclipEnvNote,
+        apiAccessNote,
+        attemptRenderedPrompt,
+      ]);
+      const prompt = joinPromptSections([
+        selectInitialCommunicationGuidance(context, { resumedSession: Boolean(resumeSessionId) }),
+        attemptBasePrompt,
+      ]);
+      const promptMetrics = {
+        promptChars: prompt.length,
+        instructionsChars: instructionsPrefix.length,
+        bootstrapPromptChars: attemptBootstrapPrompt.length,
+        wakePromptChars: attemptWakePrompt.length,
+        taskContextChars: attemptSections.taskContextNote.length,
+        sessionHandoffChars: sessionHandoffNote.length,
+        runtimeNoteChars: paperclipEnvNote.length + apiAccessNote.length,
+        heartbeatPromptChars: attemptRenderedPrompt.length,
       };
-      parsed: ReturnType<typeof parseKimiJsonl>;
-    },
-    clearSessionOnMissingSession = false,
-    isRetry = false,
-  ): AdapterExecutionResult => {
-    const authMeta = detectKimiAuthRequired({
-      stdout: attempt.proc.stdout,
-      stderr: attempt.proc.stderr,
-    });
-    const networkUnavailable = isKimiTransientNetworkError(attempt.proc.stdout, attempt.proc.stderr);
+      const args = buildArgs(resumeSessionId, prompt);
+      const invocationEnv = buildKimiHeadlessEnv(env);
+      const invocationRuntimeEnv = buildKimiRuntimeEnv(env);
+      const loggedEnv = buildInvocationEnvForLogs(invocationEnv, {
+        runtimeEnv: invocationRuntimeEnv,
+        includeRuntimeKeys: ["HOME"],
+        resolvedCommand,
+      });
+      if (onMeta) {
+        await onMeta({
+          adapterType: "kimi_local",
+          command: resolvedCommand,
+          cwd: effectiveExecutionCwd,
+          commandNotes,
+          commandArgs: args.map((value, index) => (
+            index === args.length - 1 ? `<prompt ${prompt.length} chars>` : value
+          )),
+          env: loggedEnv,
+          prompt,
+          promptMetrics: { ...promptMetrics, promptChars: prompt.length },
+          context,
+        });
+      }
 
-    if (attempt.proc.timedOut) {
+      const eventForwarder = createKimiEventForwardingLog(onLog, onEvent);
+      const proc = await runAdapterExecutionTargetProcess(runId, runtimeExecutionTarget, command, args, {
+        onProcessStopped: providerStop.beginInvocation(),
+        cwd,
+        env: invocationEnv,
+        timeoutSec,
+        graceSec,
+        onSpawn,
+        onRuntimeProgress: ctx.onRuntimeProgress,
+        onLog: eventForwarder.log,
+        runLogTail: paperclipBridge?.runLogTail,
+        settleRunDisposition: paperclipBridge?.settleRunDisposition,
+      });
+      await eventForwarder.flush();
+      return {
+        proc,
+        parsed: parseKimiJsonl(proc.stdout),
+      };
+    };
+
+    const toResult = (
+      attempt: {
+        proc: {
+          exitCode: number | null;
+          signal: string | null;
+          timedOut: boolean;
+          stdout: string;
+          stderr: string;
+          errorCode?: string | null;
+        };
+        parsed: ReturnType<typeof parseKimiJsonl>;
+      },
+      clearSessionOnMissingSession = false,
+      isRetry = false,
+    ): AdapterExecutionResult => {
+      const authMeta = detectKimiAuthRequired({
+        stdout: attempt.proc.stdout,
+        stderr: attempt.proc.stderr,
+      });
+      const networkUnavailable = isKimiTransientNetworkError(attempt.proc.stdout, attempt.proc.stderr);
+
+      if (attempt.proc.timedOut) {
+        return {
+          exitCode: attempt.proc.exitCode,
+          signal: attempt.proc.signal,
+          timedOut: true,
+          // This stream protocol has no usage receipt to recover after exit.
+          // Close collection with an explicitly unknown price, never a free run.
+          usageComplete: true,
+          costStatus: "unpriced",
+          usageBasis: "per_run",
+          provider: "moonshot",
+          biller: "moonshot",
+          model: model || null,
+          billingType,
+          costUsd: null,
+          errorMessage: `Timed out after ${timeoutSec}s`,
+          errorCode: authMeta.requiresAuth
+            ? "kimi_auth_required"
+            : networkUnavailable
+              ? "kimi_network_unavailable"
+              : null,
+          clearSession: clearSessionOnMissingSession,
+        };
+      }
+
+      const parsedError = typeof attempt.parsed.errorMessage === "string" ? attempt.parsed.errorMessage.trim() : "";
+      const stderrLine = firstNonEmptyLine(attempt.proc.stderr);
+      const structuredFailure = describeKimiFailure({
+        errorMessage: attempt.parsed.errorMessage,
+        stderr: attempt.proc.stderr,
+      });
+      const fallbackErrorMessage =
+        parsedError ||
+        structuredFailure ||
+        stderrLine ||
+        (attempt.proc.signal
+          ? `Kimi was terminated by signal ${attempt.proc.signal}`
+          : `Kimi exited with code ${attempt.proc.exitCode ?? -1}`);
+      // A null exit code means the process never exited normally (e.g. killed by
+      // a signal). Timeouts are handled earlier; treat any other non-zero or
+      // null exit as a failure so a signaled kill is never reported as success.
+      const failed = attempt.proc.exitCode === null || attempt.proc.exitCode !== 0;
+
+      // On retry, don't fall back to old session ID — the old session was stale
+      const canFallbackToRuntimeSession = !isRetry;
+      const resolvedSessionId = attempt.parsed.sessionId
+        ?? (canFallbackToRuntimeSession ? (runtimeSessionId ?? runtime.sessionId ?? null) : null);
+      const resolvedSessionParams = resolvedSessionId
+        ? ({
+          sessionId: resolvedSessionId,
+          cwd: effectiveExecutionCwd,
+          ...(workspaceId ? { workspaceId } : {}),
+          ...(workspaceRepoUrl ? { repoUrl: workspaceRepoUrl } : {}),
+          ...(workspaceRepoRef ? { repoRef: workspaceRepoRef } : {}),
+          ...(executionTargetIsRemote
+            ? {
+                remoteExecution: adapterExecutionTargetSessionIdentity(runtimeExecutionTarget),
+              }
+            : {}),
+        } as Record<string, unknown>)
+        : null;
+      const resultJson: Record<string, unknown> = {
+        toolCalls: attempt.parsed.toolCalls,
+        toolResults: attempt.parsed.toolResults,
+        ...(failed ? { stderr: attempt.proc.stderr } : {}),
+      };
+
       return {
         exitCode: attempt.proc.exitCode,
         signal: attempt.proc.signal,
-        timedOut: true,
-        // This stream protocol has no usage receipt to recover after exit.
-        // Close collection with an explicitly unknown price, never a free run.
+        timedOut: false,
         usageComplete: true,
         costStatus: "unpriced",
         usageBasis: "per_run",
+        errorMessage: failed ? fallbackErrorMessage : null,
+        // Forward the transport-level error code from the run-disposition seam
+        // first. A lost duplex control channel surfaces the typed
+        // `duplex_channel_lost` code before any provider classification.
+        errorCode: attempt.proc.errorCode
+          ? attempt.proc.errorCode
+          : failed && authMeta.requiresAuth
+          ? "kimi_auth_required"
+          : failed && networkUnavailable
+          ? "kimi_network_unavailable"
+          : null,
+        sessionId: resolvedSessionId,
+        sessionParams: resolvedSessionParams,
+        sessionDisplayId: resolvedSessionId,
         provider: "moonshot",
         biller: "moonshot",
         model: model || null,
         billingType,
-        costUsd: null,
-        errorMessage: `Timed out after ${timeoutSec}s`,
-        errorCode: authMeta.requiresAuth
-          ? "kimi_auth_required"
-          : networkUnavailable
-            ? "kimi_network_unavailable"
-            : null,
-        clearSession: clearSessionOnMissingSession,
+        resultJson,
+        summary: attempt.parsed.summary,
+        clearSession: Boolean(clearSessionOnMissingSession && !resolvedSessionId),
       };
-    }
-
-    const parsedError = typeof attempt.parsed.errorMessage === "string" ? attempt.parsed.errorMessage.trim() : "";
-    const stderrLine = firstNonEmptyLine(attempt.proc.stderr);
-    const structuredFailure = describeKimiFailure({
-      errorMessage: attempt.parsed.errorMessage,
-      stderr: attempt.proc.stderr,
-    });
-    const fallbackErrorMessage =
-      parsedError ||
-      structuredFailure ||
-      stderrLine ||
-      (attempt.proc.signal
-        ? `Kimi was terminated by signal ${attempt.proc.signal}`
-        : `Kimi exited with code ${attempt.proc.exitCode ?? -1}`);
-    // A null exit code means the process never exited normally (e.g. killed by
-    // a signal). Timeouts are handled earlier; treat any other non-zero or
-    // null exit as a failure so a signaled kill is never reported as success.
-    const failed = attempt.proc.exitCode === null || attempt.proc.exitCode !== 0;
-
-    // On retry, don't fall back to old session ID — the old session was stale
-    const canFallbackToRuntimeSession = !isRetry;
-    const resolvedSessionId = attempt.parsed.sessionId
-      ?? (canFallbackToRuntimeSession ? (runtimeSessionId ?? runtime.sessionId ?? null) : null);
-    const resolvedSessionParams = resolvedSessionId
-      ? ({
-        sessionId: resolvedSessionId,
-        cwd: effectiveExecutionCwd,
-        ...(workspaceId ? { workspaceId } : {}),
-        ...(workspaceRepoUrl ? { repoUrl: workspaceRepoUrl } : {}),
-        ...(workspaceRepoRef ? { repoRef: workspaceRepoRef } : {}),
-        ...(executionTargetIsRemote
-          ? {
-              remoteExecution: adapterExecutionTargetSessionIdentity(runtimeExecutionTarget),
-            }
-          : {}),
-      } as Record<string, unknown>)
-      : null;
-    const resultJson: Record<string, unknown> = {
-      toolCalls: attempt.parsed.toolCalls,
-      toolResults: attempt.parsed.toolResults,
-      ...(failed ? { stderr: attempt.proc.stderr } : {}),
     };
 
-    return {
-      exitCode: attempt.proc.exitCode,
-      signal: attempt.proc.signal,
-      timedOut: false,
-      usageComplete: true,
-      costStatus: "unpriced",
-      usageBasis: "per_run",
-      errorMessage: failed ? fallbackErrorMessage : null,
-      // Forward the transport-level error code from the run-disposition seam
-      // first. A lost duplex control channel surfaces the typed
-      // `duplex_channel_lost` code before any provider classification.
-      errorCode: attempt.proc.errorCode
-        ? attempt.proc.errorCode
-        : failed && authMeta.requiresAuth
-        ? "kimi_auth_required"
-        : failed && networkUnavailable
-        ? "kimi_network_unavailable"
-        : null,
-      sessionId: resolvedSessionId,
-      sessionParams: resolvedSessionParams,
-      sessionDisplayId: resolvedSessionId,
-      provider: "moonshot",
-      biller: "moonshot",
-      model: model || null,
-      billingType,
-      resultJson,
-      summary: attempt.parsed.summary,
-      clearSession: Boolean(clearSessionOnMissingSession && !resolvedSessionId),
-    };
-  };
-
-  try {
     const initial = await runAttempt(sessionId);
     if (
       sessionId &&

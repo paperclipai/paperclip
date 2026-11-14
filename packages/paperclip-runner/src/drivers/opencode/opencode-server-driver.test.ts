@@ -58,6 +58,8 @@ beforeAll(async () => {
   fixtureRoot = await mkdtemp(join(tmpdir(), "paperclip-opencode-fixture-"));
   fixture = join(fixtureRoot, "fake-opencode-server.mjs");
   await copyFile(resolve("test/fixtures/fake-opencode-server.mjs"), fixture);
+  // Tests launch the fixture directly; it must not depend on run order.
+  await chmod(fixture, 0o755);
 });
 
 const TURN_TERMINAL_EVENT_TYPES = new Set([
@@ -371,6 +373,73 @@ describe("OpenCodeServerDriver", () => {
     }
   });
 
+  it("delivers configured task values without ambient credentials or driver-owned overrides", async () => {
+    await chmod(fixture, 0o755);
+    const root = await mkdtemp(join(tmpdir(), "paperclip-opencode-task-env-"));
+    roots.push(root);
+    const command = join(root, "configured-task-opencode.mjs");
+    const canaryReceipt = join(root, "task-canary.json");
+    await writeFile(command, `#!${process.execPath}\nimport { writeFile } from "node:fs/promises";\nawait writeFile(${JSON.stringify(canaryReceipt)}, JSON.stringify({ present: process.env.PUBLISHING_API_KEY === "synthetic-task-canary" }));\nawait import(${JSON.stringify(fixture)});\n`, { mode: 0o755 });
+    const driver = new OpenCodeServerDriver({
+      model: "openrouter/test-model", command, runtimeDirectory: root,
+      environment: {
+        ...configuredEnvironmentProjection({ PUBLISHING_API_KEY: "synthetic-task-canary",
+          OPENCODE_SERVER_PASSWORD: "must-not-override", XDG_CONFIG_HOME: "/must-not-override" }),
+        PATH: process.env.PATH, UNRELATED_SECRET: "must-not-leak", PAPERCLIP_API_KEY: "must-not-leak",
+      },
+    });
+    const session = await driver.openSession({ runId: "task-env", normalizedSessionId: "task-env", workingDirectory: root });
+    try {
+      const environment = JSON.parse(await readFile(join(root, "task-env", "data", "fake-environment.json"), "utf8"));
+      expect(environment.keys).not.toContain("UNRELATED_SECRET");
+      expect(environment.keys).not.toContain("PAPERCLIP_API_KEY");
+      expect(dirname(environment.home)).toBe(join(root, "task-env", "homes"));
+      expect(environment.configHome).toBe(join(root, "task-env", "config"));
+      expect(session.ids()).toMatchObject({ providerSessionId: "ses_fake_1" });
+      expect(JSON.parse(await readFile(canaryReceipt, "utf8"))).toEqual({ present: true });
+      expect(environment.keys).toContain("PUBLISHING_API_KEY");
+    } finally {
+      await session.close({ reason: "test" });
+    }
+  });
+
+  it("protects configured secrets in OpenCode output across controller and runner cutovers in one saved session", async () => {
+    await chmod(fixture, 0o755);
+    const root = await mkdtemp(join(tmpdir(), "paperclip-opencode-output-custody-"));
+    roots.push(root);
+    const configured = { PUBLISHING_API_KEY: "synthetic-delivered-secret", PLAIN_SETTING: "ordinary-setting" };
+    const launch = async (secretKeys: string[]) => {
+      const driver = new OpenCodeServerDriver({
+        model: "openrouter/test-model", command: fixture, runtimeDirectory: root,
+        environment: { ...configuredEnvironmentProjection(configured, secretKeys), PATH: process.env.PATH },
+      });
+      const session = await driver.openSession({ runId: `custody-${secretKeys.length}`, normalizedSessionId: "custody", workingDirectory: root });
+      try {
+        const config = JSON.parse(await readFile(join(root, "custody", "config", "opencode", "opencode.json"), "utf8"));
+        const environment = JSON.parse(await readFile(join(root, "custody", "data", "fake-environment.json"), "utf8"));
+        return { config, environment, ids: session.ids() };
+      } finally {
+        await session.close({ reason: "test" });
+      }
+    };
+    // Saved by a controller that predates secret names: today's launch, unchanged.
+    const before = await launch([]);
+    expect(before.config.plugin).toEqual([]);
+    expect(before.config.shell).toBeUndefined();
+    expect(before.environment.keys).not.toContain("PAPERCLIP_OUTPUT_CUSTODY_KEYS");
+    // Resumed by a controller that names the secret: custody applies to the same session.
+    const after = await launch(["PUBLISHING_API_KEY"]);
+    expect(after.config.shell).toMatch(/output-custody\/[0-9a-f]{24}\/(?:zsh|bash|sh)$/);
+    expect(after.config.plugin).toEqual([expect.stringMatching(/^file:\/\/.*\/\.paperclip-output-custody\/paperclip-output-custody\.js$/)]);
+    expect(after.environment.keys).toEqual(expect.arrayContaining(["PAPERCLIP_OUTPUT_CUSTODY_KEYS", "PAPERCLIP_OUTPUT_CUSTODY_NONCE", "PAPERCLIP_OUTPUT_CUSTODY_DIR", "PUBLISHING_API_KEY"]));
+    expect(after.environment.keys).not.toContain("PAPERCLIP_SECRET_ENV_KEYS");
+    expect(JSON.stringify(after.config)).not.toContain(configured.PUBLISHING_API_KEY);
+    // A rollback to a controller without secret names still launches the saved session.
+    const rollback = await launch([]);
+    expect(rollback.config.plugin).toEqual([]);
+    expect(rollback.ids).toMatchObject({ providerSessionId: expect.any(String) });
+  });
+
   it.each([false, true])("uses the native MCP client ceiling only for durable tool requests (%s)", async durableToolRequests => {
     await chmod(fixture, 0o755);
     const root = await mkdtemp(join(tmpdir(), "paperclip-opencode-tool-budget-"));
@@ -648,6 +717,8 @@ describe("OpenCodeServerDriver", () => {
           { status: 200, headers: { "Content-Type": "text/event-stream" } },
         );
       }
+      if (method === "GET" && url.pathname === "/mcp")
+        return json({ paperclip: { status: "connected" } });
       if (method === "POST" && url.pathname === "/session")
         return json({ id: providerSessionId });
       if (method === "GET" && url.pathname === "/question") return json([]);
@@ -939,6 +1010,71 @@ describe("OpenCodeServerDriver", () => {
     }
   });
 
+  it("forwards an unreadable tool-result image as a tool outcome, not as a user message", async () => {
+    // Shape OpenCode 1.18.34 sends through @ai-sdk/openai-compatible after a
+    // text-only model reads a screenshot (chat-eval run 42704461144).
+    const received: unknown[] = [];
+    const upstream = createHttpServer((request, response) => {
+      void (async () => {
+        const chunks = [];
+        for await (const chunk of request) chunks.push(Buffer.from(chunk));
+        received.push(JSON.parse(Buffer.concat(chunks).toString("utf8")));
+        response.writeHead(200, { "content-type": "text/event-stream" });
+        response.end("data: [DONE]\n\n");
+      })().catch(() => response.destroy());
+    });
+    await new Promise<void>(resolve => upstream.listen(0, "127.0.0.1", resolve));
+    const address = upstream.address();
+    if (!address || typeof address === "string") throw new Error("Missing fixture address");
+    const root = await mkdtemp(join(tmpdir(), "paperclip-opencode-media-"));
+    roots.push(root);
+    let session: Awaited<ReturnType<OpenCodeServerDriver["openSession"]>> | undefined;
+    try {
+      const driver = new OpenCodeServerDriver({
+        model: "paperclip/team/model-alias", runtimeDirectory: root, command: fixture,
+        environment: { PATH: process.env.PATH, PAPERCLIP_AI_PROVIDER_URL: `http://127.0.0.1:${address.port}/v1`, PAPERCLIP_AI_PROVIDER_KEY: "gateway-key" },
+      });
+      session = await driver.openSession({ runId: "media", normalizedSessionId: "media", workingDirectory: root });
+      const config = JSON.parse(await readFile(join(root, "media", "config", "opencode", "opencode.json"), "utf8"));
+      const { baseURL, apiKey } = config.provider.paperclip.options;
+      const prefix = [
+        { role: "system", content: "system" },
+        { role: "user", content: "Build the launch page and verify it." },
+        { role: "assistant", content: "", tool_calls: [{ id: "call_read", type: "function", function: { name: "read", arguments: "{\"filePath\":\"/tmp/opencode/website-preview.png\"}" } }] },
+        { role: "tool", tool_call_id: "call_read", content: "Image read successfully" },
+      ];
+      const payload = {
+        model: "team/model-alias",
+        stream: true,
+        messages: [...prefix, {
+          role: "user",
+          content: [
+            { type: "text", text: "Attached media from tool result:" },
+            { type: "text", text: "ERROR: Cannot read image (this model does not support image input). Inform the user." },
+          ],
+        }],
+      };
+      const result = await fetch(`${baseURL}/chat/completions`, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+      expect(result.status).toBe(200);
+      await result.text();
+      const forwarded = received[0] as { messages: Array<{ role: string; content: unknown }> };
+      expect(forwarded.messages.slice(0, 3)).toEqual(prefix.slice(0, 3));
+      expect(forwarded.messages).toHaveLength(prefix.length);
+      expect(forwarded.messages.at(-1)?.role).toBe("tool");
+      const toolContent = String(forwarded.messages.at(-1)?.content);
+      expect(toolContent).toMatch(/^Image read successfully\n\n\[Paperclip runner: This tool result included an image attachment/);
+      expect(toolContent).toContain("not from the user");
+      expect(JSON.stringify(forwarded)).not.toContain("Inform the user");
+    } finally {
+      await session?.close({ reason: "test" });
+      await new Promise<void>(resolve => { upstream.close(() => resolve()); upstream.closeAllConnections(); });
+    }
+  });
+
   it.each(["gateway-key", ""])("forwards selected-model streams without exposing the reusable key and revokes the proxy on close (%s)", async key => {
     const received: Array<{ path: string; authorization?: string; body: unknown }> = [];
     const upstream = createHttpServer((request, response) => {
@@ -1061,6 +1197,171 @@ describe("OpenCodeServerDriver", () => {
       await session?.close({ reason: "test" });
       upstreamTransport.endpoint = "";
       vi.unstubAllEnvs();
+      await new Promise<void>(resolve => { upstream.close(() => resolve()); upstream.closeAllConnections(); });
+    }
+  });
+
+  it("passes OpenRouter's stream through unchanged and records the host that served it on the turn's usage", async () => {
+    await chmod(fixture, 0o755);
+    const model = "deepseek/deepseek-v4.1-flash-1017";
+    const stream = [
+      ": OPENROUTER PROCESSING\n\n",
+      'data: {"id":"gen-1762981234-AbCdEfGh","provider":"Novita","model":"deepseek/deepseek-v4.1-flash-1017","choices":[{"delta":{"content":"Hi"}}]}\n\n',
+      "data: {broken\n\n",
+      "data: [DONE]\n\n",
+    ];
+    const upstream = createHttpServer((request, response) => {
+      void (async () => {
+        for await (const _chunk of request) void _chunk;
+        response.writeHead(200, { "content-type": "text/event-stream" });
+        for (const chunk of stream) response.write(chunk);
+        response.end();
+      })().catch(() => response.destroy());
+    });
+    await new Promise<void>(resolve => upstream.listen(0, "127.0.0.1", resolve));
+    const address = upstream.address();
+    if (!address || typeof address === "string") throw new Error("Missing fixture address");
+    upstreamTransport.endpoint = `http://127.0.0.1:${address.port}/chat/completions`;
+    upstreamTransport.urls = [];
+    const root = await mkdtemp(join(tmpdir(), "paperclip-openrouter-served-"));
+    roots.push(root);
+    let session: Awaited<ReturnType<OpenCodeServerDriver["openSession"]>> | undefined;
+    try {
+      const driver = new OpenCodeServerDriver({ model: `openrouter/${model}`, runtimeDirectory: root, command: fixture,
+        environment: { PATH: process.env.PATH, OPENROUTER_API_KEY: "synthetic-served-key" } });
+      session = await driver.openSession({ runId: "served", normalizedSessionId: "served", workingDirectory: root });
+      const config = JSON.parse(await readFile(join(root, "served", "config", "opencode", "opencode.json"), "utf8"));
+      const { baseURL, apiKey } = config.provider.openrouter.options;
+      const response = await fetch(`${baseURL}/chat/completions`, { method: "POST",
+        headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
+        body: JSON.stringify({ model, stream: true, messages: [{ role: "user", content: "synthetic" }] }) });
+      expect(response.status).toBe(200);
+      expect(Buffer.from(await response.arrayBuffer()).toString("utf8")).toBe(stream.join(""));
+      await session.startTurn({ message: { role: "user", text: "finish" } });
+      const events = await collectTurnEvents(session.events());
+      const usage = events.find(event => event.eventType === "item.completed" && event.payload.kind === "usage")?.payload;
+      expect(usage).toMatchObject({ usage: { upstreamProvider: "Novita", providerRequestId: "gen-1762981234-AbCdEfGh", input: 3, output: 2 } });
+      expect(await session.usage?.()).toMatchObject({ upstreamProvider: "Novita", providerRequestId: "gen-1762981234-AbCdEfGh" });
+    } finally {
+      await session?.close({ reason: "test" });
+      upstreamTransport.endpoint = "";
+      await new Promise<void>(resolve => { upstream.close(() => resolve()); upstream.closeAllConnections(); });
+    }
+  });
+
+  it("keeps a finished call's host on its usage while OpenCode's next model call is already in flight", async () => {
+    await chmod(fixture, 0o755);
+    const model = "deepseek/deepseek-v4.1-flash-1017";
+    let releaseNext: (() => void) | undefined;
+    let call = 0;
+    const upstream = createHttpServer((request, response) => {
+      void (async () => {
+        for await (const _chunk of request) void _chunk;
+        call += 1;
+        response.writeHead(200, { "content-type": "text/event-stream" });
+        if (call === 1) {
+          response.end('data: {"id":"gen-first","provider":"Novita","choices":[{"delta":{"content":"Hi"}}]}\n\ndata: [DONE]\n\n');
+          return;
+        }
+        response.write('data: {"id":"gen-next","provider":"Chutes","choices":[{"delta":{"content":"Hi"}}]}\n\n');
+        await new Promise<void>(resolve => { releaseNext = resolve; });
+        response.end("data: [DONE]\n\n");
+      })().catch(() => response.destroy());
+    });
+    await new Promise<void>(resolve => upstream.listen(0, "127.0.0.1", resolve));
+    const address = upstream.address();
+    if (!address || typeof address === "string") throw new Error("Missing fixture address");
+    upstreamTransport.endpoint = `http://127.0.0.1:${address.port}/chat/completions`;
+    upstreamTransport.urls = [];
+    const root = await mkdtemp(join(tmpdir(), "paperclip-openrouter-inflight-"));
+    roots.push(root);
+    let session: Awaited<ReturnType<OpenCodeServerDriver["openSession"]>> | undefined;
+    try {
+      const driver = new OpenCodeServerDriver({ model: `openrouter/${model}`, runtimeDirectory: root, command: fixture,
+        environment: { PATH: process.env.PATH, OPENROUTER_API_KEY: "synthetic-inflight-key" } });
+      session = await driver.openSession({ runId: "inflight", normalizedSessionId: "inflight", workingDirectory: root });
+      const config = JSON.parse(await readFile(join(root, "inflight", "config", "opencode", "opencode.json"), "utf8"));
+      const { baseURL, apiKey } = config.provider.openrouter.options;
+      const send = () => fetch(`${baseURL}/chat/completions`, { method: "POST",
+        headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
+        body: JSON.stringify({ model, stream: true, messages: [{ role: "user", content: "synthetic" }] }) });
+      await (await send()).arrayBuffer();
+      const next = await send();
+      expect(next.status).toBe(200);
+      const reader = next.body!.getReader();
+      expect(new TextDecoder().decode((await reader.read()).value)).toContain('"provider":"Chutes"');
+      await session.startTurn({ message: { role: "user", text: "finish" } });
+      const events = await collectTurnEvents(session.events());
+      const usage = events.find(event => event.eventType === "item.completed" && event.payload.kind === "usage")?.payload.usage;
+      expect(usage).toMatchObject({ upstreamProvider: "Novita", providerRequestId: "gen-first" });
+      releaseNext?.();
+      while (!(await reader.read()).done);
+      await session.startTurn({ message: { role: "user", text: "finish" } });
+      await collectTurnEvents(session.events());
+      expect(await session.usage?.()).toMatchObject({ upstreamProvider: "Chutes", providerRequestId: "gen-next" });
+    } finally {
+      releaseNext?.();
+      await session?.close({ reason: "test" });
+      upstreamTransport.endpoint = "";
+      await new Promise<void>(resolve => { upstream.close(() => resolve()); upstream.closeAllConnections(); });
+    }
+  });
+
+  it("does not carry an earlier call's host onto a call the tap skips, or into another run", async () => {
+    await chmod(fixture, 0o755);
+    const model = "deepseek/deepseek-v4.1-flash-1017";
+    const responses = [
+      'data: {"id":"gen-first","provider":"Novita","choices":[{"delta":{"content":"Hi"}}]}\n\ndata: [DONE]\n\n',
+      'data: {"id":"gen-second","choices":[{"delta":{"content":"Hi"}}]}\n\ndata: [DONE]\n\n',
+      'data: {"id":"gen-third","provider":"Chutes","choices":[{"delta":{"content":"Hi"}}]}\n\ndata: [DONE]\n\n',
+    ];
+    const upstream = createHttpServer((request, response) => {
+      void (async () => {
+        for await (const _chunk of request) void _chunk;
+        response.writeHead(200, { "content-type": "text/event-stream" }).end(responses.shift());
+      })().catch(() => response.destroy());
+    });
+    await new Promise<void>(resolve => upstream.listen(0, "127.0.0.1", resolve));
+    const address = upstream.address();
+    if (!address || typeof address === "string") throw new Error("Missing fixture address");
+    upstreamTransport.endpoint = `http://127.0.0.1:${address.port}/chat/completions`;
+    upstreamTransport.urls = [];
+    const root = await mkdtemp(join(tmpdir(), "paperclip-openrouter-skipped-"));
+    roots.push(root);
+    let session: Awaited<ReturnType<OpenCodeServerDriver["openSession"]>> | undefined;
+    try {
+      const driver = new OpenCodeServerDriver({ model: `openrouter/${model}`, runtimeDirectory: root, command: fixture,
+        environment: { PATH: process.env.PATH, OPENROUTER_API_KEY: "synthetic-skipped-key" } });
+      session = await driver.openSession({ runId: "skipped", normalizedSessionId: "skipped", workingDirectory: root });
+      const config = JSON.parse(await readFile(join(root, "skipped", "config", "opencode", "opencode.json"), "utf8"));
+      const { baseURL, apiKey } = config.provider.openrouter.options;
+      const call = async () => {
+        const response = await fetch(`${baseURL}/chat/completions`, { method: "POST",
+          headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
+          body: JSON.stringify({ model, stream: true, messages: [{ role: "user", content: "synthetic" }] }) });
+        expect(response.status).toBe(200);
+        await response.arrayBuffer();
+      };
+      await call();
+      await call();
+      await session.startTurn({ message: { role: "user", text: "finish" } });
+      const events = await collectTurnEvents(session.events());
+      const usage = events.find(event => event.eventType === "item.completed" && event.payload.kind === "usage")?.payload.usage;
+      expect(usage).toMatchObject({ input: 3, output: 2 });
+      expect(usage).not.toHaveProperty("upstreamProvider");
+      expect(usage).not.toHaveProperty("providerRequestId");
+      await call();
+      expect(await session.usage?.()).not.toHaveProperty("upstreamProvider");
+      await session.startTurn({ message: { role: "user", text: "finish" } });
+      await collectTurnEvents(session.events());
+      expect(await session.usage?.()).toMatchObject({ upstreamProvider: "Chutes", providerRequestId: "gen-third" });
+      session.attachRun?.({ runId: "skipped-next" });
+      const attached = await session.usage?.();
+      expect(attached).not.toHaveProperty("upstreamProvider");
+      expect(attached).not.toHaveProperty("providerRequestId");
+    } finally {
+      await session?.close({ reason: "test" });
+      upstreamTransport.endpoint = "";
       await new Promise<void>(resolve => { upstream.close(() => resolve()); upstream.closeAllConnections(); });
     }
   });
@@ -1806,7 +2107,7 @@ describe("OpenCodeServerDriver", () => {
     await session.close({ reason: "test" });
   });
 
-  it.each([false, true])("uses the native system channel, selected skill tree, instruction root, and assigned MCP gateway after startup retry=%s", async (retryStartup) => {
+  it.each([false, true])("uses the native system channel, selected skill tree, instruction root, and only the task bridge after startup retry=%s", async (retryStartup) => {
     await chmod(fixture, 0o755);
     const root = await mkdtemp(join(tmpdir(), "paperclip-opencode-context-"));
     const workspace = await mkdtemp(
@@ -1908,12 +2209,10 @@ describe("OpenCodeServerDriver", () => {
       },
       mcp: {
         paperclip: { enabled: true },
-        "paperclip-assigned": {
-          url: "https://paperclip.example/mcp",
-          enabled: true,
-        },
       },
     });
+    expect(Object.keys(config.mcp)).toEqual(["paperclip"]);
+    expect(JSON.stringify(config)).not.toContain("x".repeat(40));
     await expect(
       readFile(join(instructionRoot, "sibling.md"), "utf8"),
     ).resolves.toBe("instruction sibling\n");
@@ -2549,6 +2848,25 @@ describe("OpenCodeServerDriver", () => {
     await session.close({ reason: "test" });
   });
 
+  it("names the expected revision in a repairable stale-revision tool error", async () => {
+    await chmod(fixture, 0o755);
+    const root = await mkdtemp(join(tmpdir(), "paperclip-opencode-revision-"));
+    const workspace = await mkdtemp(join(tmpdir(), "paperclip-opencode-workspace-"));
+    roots.push(root, workspace);
+    const driver = new OpenCodeServerDriver({ model: "openrouter/deepseek/deepseek-v4-flash-0731", runtimeDirectory: root, command: fixture, environment: { PATH: process.env.PATH, OPENROUTER_API_KEY: "fixture-key" }, taskEnvelope: createCodexTaskEnvelope({ objective: "Apply the accepted decision", contractRevision: "approval-v2", criteria: [{ id: "human_response", requirement: "Apply the approved response" }] }) });
+    const session = await driver.openSession({ runId: "revision-repair", normalizedSessionId: "revision-repair", workingDirectory: workspace });
+    await session.startTurn({ message: { role: "user", text: "repair-revision" } });
+    const events = await collectTurnEvents(session.events());
+    const results = events.filter((event) => event.eventType === "run.result.proposed");
+    expect(results).toHaveLength(1);
+    expect(results[0].payload).toMatchObject({ completionClaim: { contractRevision: "approval-v2" } });
+    const files = await readdir(root, { recursive: true });
+    const evidence = files.find((name) => name.endsWith("fake-revision-repair.json"));
+    expect(evidence).toBeDefined();
+    expect(JSON.parse(await readFile(join(root, evidence!), "utf8"))).toMatchObject({ result: { isError: true, content: [{ text: expect.stringContaining('Use contractRevision "approval-v2"') }] } });
+    await session.close({ reason: "test" });
+  });
+
   it.each(["monitor", "response_wake"] as const)("resolves an omitted %s through the real OpenCode MCP boundary only from current server state", async kind => {
     for (const eligible of [true, false]) {
     await chmod(fixture, 0o755);
@@ -2897,9 +3215,206 @@ describe("OpenCodeServerDriver", () => {
         event.payload.channel === "final",
     );
     expect(finalMessages).toHaveLength(1);
+    // Structure cannot tell commentary from an answer, so the saved reply keeps
+    // all prose written after the last work tool, in order, as the person saw it.
     expect(finalMessages[0]?.payload.text).toBe(
-      "This is the complete substantive answer emitted after the accepted completion tool call.",
+      "This deliberately long pre-tool commentary discusses possible schema corrections, retries, compatibility details, and several implementation alternatives, but it is not the provider's final response.\n\nThis is the complete substantive answer emitted after the accepted completion tool call.",
     );
+    await session.close({ reason: "test" });
+  });
+  it("keeps an answer written before the completion call when a later message only refers back to it", async () => {
+    await chmod(fixture, 0o755);
+    const root = await mkdtemp(join(tmpdir(), "paperclip-opencode-driver-"));
+    const workspace = await mkdtemp(
+      join(tmpdir(), "paperclip-opencode-workspace-"),
+    );
+    roots.push(root, workspace);
+    const driver = new OpenCodeServerDriver({
+      model: "openrouter/deepseek/deepseek-v4-flash-0731",
+      runtimeDirectory: root,
+      command: fixture,
+      environment: {
+        PATH: process.env.PATH,
+        OPENROUTER_API_KEY: "fixture-key",
+      },
+    });
+    const session = await driver.openSession({
+      runId: "run-answer-then-reference",
+      normalizedSessionId: "answer-then-reference",
+      workingDirectory: workspace,
+    });
+    await session.startTurn({
+      message: { role: "user", text: "answer-before-finish-then-reference" },
+    });
+    const events = await collectTurnEvents(session.events());
+    const finalMessages = events.filter(
+      (event) =>
+        event.eventType === "item.completed" &&
+        event.payload.kind === "agentMessage" &&
+        event.payload.channel === "final",
+    );
+    expect(finalMessages).toHaveLength(1);
+    // The saved reply must hold the answer the person saw, not only "Answered above".
+    expect(finalMessages[0]?.payload.text).toBe(
+      "Two inbox items need you: [COM-2](/COM/issues/COM-2) is blocked and [COM-1](/COM/issues/COM-1) is waiting for review.\n\nAnswered above: two inbox items need your attention.",
+    );
+    expect(finalMessages[0]?.itemId).toBe("part-reference");
+    await session.close({ reason: "test" });
+  });
+
+  it("keeps a short answer written before the completion call when a later message only refers back to it", async () => {
+    await chmod(fixture, 0o755);
+    const root = await mkdtemp(join(tmpdir(), "paperclip-opencode-driver-"));
+    const workspace = await mkdtemp(join(tmpdir(), "paperclip-opencode-workspace-"));
+    roots.push(root, workspace);
+    const driver = new OpenCodeServerDriver({
+      model: "openrouter/deepseek/deepseek-v4-flash-0731",
+      runtimeDirectory: root,
+      command: fixture,
+      environment: { PATH: process.env.PATH, OPENROUTER_API_KEY: "fixture-key" },
+    });
+    const session = await driver.openSession({
+      runId: "run-short-answer-then-reference",
+      normalizedSessionId: "short-answer-then-reference",
+      workingDirectory: workspace,
+    });
+    await session.startTurn({ message: { role: "user", text: "short-answer-before-finish-then-reference" } });
+    const events = await collectTurnEvents(session.events());
+    const finalMessages = events.filter(
+      (event) => event.eventType === "item.completed" && event.payload.kind === "agentMessage" && event.payload.channel === "final",
+    );
+    expect(finalMessages).toHaveLength(1);
+    expect(finalMessages[0]?.payload.text).toBe("The result is 42.\n\nAnswered above.");
+    await session.close({ reason: "test" });
+  });
+
+  it("keeps a full answer written before the completion call when the later message is only \"Done.\"", async () => {
+    await chmod(fixture, 0o755);
+    const root = await mkdtemp(join(tmpdir(), "paperclip-opencode-driver-"));
+    const workspace = await mkdtemp(join(tmpdir(), "paperclip-opencode-workspace-"));
+    roots.push(root, workspace);
+    const driver = new OpenCodeServerDriver({
+      model: "openrouter/deepseek/deepseek-v4-flash-0731",
+      runtimeDirectory: root,
+      command: fixture,
+      environment: { PATH: process.env.PATH, OPENROUTER_API_KEY: "fixture-key" },
+    });
+    const session = await driver.openSession({
+      runId: "run-long-answer-then-done",
+      normalizedSessionId: "long-answer-then-done",
+      workingDirectory: workspace,
+    });
+    await session.startTurn({ message: { role: "user", text: "long-answer-before-finish-then-done" } });
+    const events = await collectTurnEvents(session.events());
+    const finalMessages = events.filter(
+      (event) => event.eventType === "item.completed" && event.payload.kind === "agentMessage" && event.payload.channel === "final",
+    );
+    expect(finalMessages).toHaveLength(1);
+    expect(finalMessages[0]?.payload.text).toBe(
+      "Morgan's run on [COM-1](/COM/issues/COM-1) finished: the landing page is saved as `index.html` on the task, with the hero, features and signup sections from the brief.\n\nDone.",
+    );
+    await session.close({ reason: "test" });
+  });
+
+  it.each([
+    ["short-status-before-finish-then-short-answer", "Updated the Launch blockers status card."],
+    ["short-answer-repeated-after-finish", "The result is 42."],
+  ])("saves only a short complete answer written after the completion call: %s", async (prompt, expected) => {
+    await chmod(fixture, 0o755);
+    const root = await mkdtemp(join(tmpdir(), "paperclip-opencode-driver-"));
+    const workspace = await mkdtemp(join(tmpdir(), "paperclip-opencode-workspace-"));
+    roots.push(root, workspace);
+    const driver = new OpenCodeServerDriver({
+      model: "openrouter/deepseek/deepseek-v4-flash-0731",
+      runtimeDirectory: root,
+      command: fixture,
+      environment: { PATH: process.env.PATH, OPENROUTER_API_KEY: "fixture-key" },
+    });
+    const session = await driver.openSession({
+      runId: `run-${prompt}`,
+      normalizedSessionId: prompt,
+      workingDirectory: workspace,
+    });
+    await session.startTurn({ message: { role: "user", text: prompt } });
+    const events = await collectTurnEvents(session.events());
+    const finalMessages = events.filter(
+      (event) => event.eventType === "item.completed" && event.payload.kind === "agentMessage" && event.payload.channel === "final",
+    );
+    expect(finalMessages).toHaveLength(1);
+    expect(finalMessages[0]?.payload.text).toBe(expected);
+    await session.close({ reason: "test" });
+  });
+
+  it("saves an answer once when the model restates it after the completion call", async () => {
+    await chmod(fixture, 0o755);
+    const root = await mkdtemp(join(tmpdir(), "paperclip-opencode-driver-"));
+    const workspace = await mkdtemp(
+      join(tmpdir(), "paperclip-opencode-workspace-"),
+    );
+    roots.push(root, workspace);
+    const driver = new OpenCodeServerDriver({
+      model: "openrouter/deepseek/deepseek-v4-flash-0731",
+      runtimeDirectory: root,
+      command: fixture,
+      environment: {
+        PATH: process.env.PATH,
+        OPENROUTER_API_KEY: "fixture-key",
+      },
+    });
+    const session = await driver.openSession({
+      runId: "run-answer-then-restatement",
+      normalizedSessionId: "answer-then-restatement",
+      workingDirectory: workspace,
+    });
+    await session.startTurn({
+      message: { role: "user", text: "answer-before-finish-then-restatement" },
+    });
+    const events = await collectTurnEvents(session.events());
+    const finalMessages = events.filter(
+      (event) =>
+        event.eventType === "item.completed" &&
+        event.payload.kind === "agentMessage" &&
+        event.payload.channel === "final",
+    );
+    expect(finalMessages).toHaveLength(1);
+    expect(finalMessages[0]?.payload.text).toBe(
+      "I can't change agent budgets from chat — that's board-only, and agent credentials get 403. Two agents also match \"Morgan,\" so choose the intended one and set $50/month on its budget tab: [Morgan budgets](/COM/agents/agent-morgan/budgets) or [Morgan Research budgets](/COM/agents/agent-morgan-research/budgets).",
+    );
+    expect(finalMessages[0]?.itemId).toBe("part-reference");
+    await session.close({ reason: "test" });
+  });
+
+  it.each([
+    ["answer-before-finish-then-rewrite", "Work on [COM-1 Website task](/COM/issues/COM-1) stopped at 06:57 UTC, about 90 seconds after starting: its run's local runner process exited unexpectedly (`runnerd exited unexpectedly`), all 3 automatic recovery attempts were exhausted, and Paperclip marked the task **blocked** with cause `native_session_retry_exhausted`. The human-supplied website brief had also not arrived, so no brief was saved.\n\n[The assigned agent, Morgan,](https://example.invalid) is in an error state. To resume, open COM-1 and use **Retry** on that task; it rechecks gates and preserves the failed attempt's evidence. Agents cannot retry it for you."],
+    ["status-before-finish-then-answer", "Updated the [Launch blockers status card](/COM/status/status-card-launch) with current Synthetic Launch Notes verification.\n\n- **COM-1 \u2014 Mobile Safari checkout regression blocks launch** \u2014 `blocked`\n- Payment approval is now recorded as received; the mobile Safari checkout regression remains the blocker.\n- Only COM-1 appears in the bounded changed-issue set; no other Launch blockers were added."],
+  ])("saves only the later message when %s writes its own answer after the completion call", async (prompt, expected) => {
+    await chmod(fixture, 0o755);
+    const root = await mkdtemp(join(tmpdir(), "paperclip-opencode-driver-"));
+    const workspace = await mkdtemp(join(tmpdir(), "paperclip-opencode-workspace-"));
+    roots.push(root, workspace);
+    const driver = new OpenCodeServerDriver({
+      model: "openrouter/deepseek/deepseek-v4-flash-0731",
+      runtimeDirectory: root,
+      command: fixture,
+      environment: { PATH: process.env.PATH, OPENROUTER_API_KEY: "fixture-key" },
+    });
+    const session = await driver.openSession({
+      runId: `run-${prompt}`,
+      normalizedSessionId: prompt,
+      workingDirectory: workspace,
+    });
+    await session.startTurn({ message: { role: "user", text: prompt } });
+    const events = await collectTurnEvents(session.events());
+    const finalMessages = events.filter(
+      (event) =>
+        event.eventType === "item.completed" &&
+        event.payload.kind === "agentMessage" &&
+        event.payload.channel === "final",
+    );
+    // The completion tool names the later message as the final response; a
+    // planning note or an earlier copy of the answer is not saved with it.
+    expect(finalMessages.map((event) => event.payload.text)).toEqual([expected]);
+    expect(finalMessages[0]?.itemId).toBe("part-reference");
     await session.close({ reason: "test" });
   });
 

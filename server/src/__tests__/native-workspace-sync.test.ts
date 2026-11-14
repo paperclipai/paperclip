@@ -109,7 +109,7 @@ describe("native workspace sync durable metadata", () => {
       restartRecovery: { kind: "reattach_remote_runner", runId: "run", leaseOwner: "controller", controllerGeneration: 2,
         providerAttempt: 1, restartKind: "graceful", recoveryRequestId: null,
         remote: { providerLeaseId: "original", remoteCwd: "/workspace" } },
-    })).rejects.toThrow("native_remote_recovery_lease_mismatch");
+    })).rejects.toThrow(new Error("native_remote_recovery_lease_mismatch: stage=workspace_sync field=provider_lease_id"));
     expect(select).not.toHaveBeenCalled();
   });
 

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { PrpEvent, PrpTerminalState } from "../../vendor/paperclip-runner/index.js";
-import { createNativeProviderFailureObservation, NATIVE_MODEL_REJECTION_DIAGNOSTIC, NATIVE_MODEL_REJECTION_MESSAGE, NATIVE_PROVIDER_OVERLOADED_MESSAGE, readNativeTurnFailureDiagnostic } from "./native-provider-failure.js";
+import { createNativeProviderFailureObservation, NATIVE_MODEL_NOT_FOUND_DIAGNOSTIC, NATIVE_MODEL_REJECTION_DIAGNOSTIC, NATIVE_MODEL_REJECTION_MESSAGE, NATIVE_PROVIDER_OVERLOADED_MESSAGE, readNativeTurnFailureDiagnostic } from "./native-provider-failure.js";
 
 const model = "test-model";
 const response = {
@@ -31,6 +31,52 @@ describe("native provider failure observation", () => {
     expect(observed.forTerminal("turn", terminal)).toBeNull();
     expect(observed.providerFailureForTerminal("other-turn", terminal)).toBeNull();
     expect(observed.providerFailureForTerminal("turn", { ...terminal, runTerminalState: "succeeded" })).toBeNull();
+  });
+  it.each(["opencode", "codex"])("classifies an action-required model_unavailable failure from %s as a model rejection", kind => {
+    const observed = createNativeProviderFailureObservation({ kind });
+    const providerFailure = { schema: "paperclip.provider-failure.v1", provider: "openrouter", phase: "turn",
+      category: "model_unavailable", message: "vendor/private-model is not a valid model ID", retryability: "requires_action", httpStatus: 400 };
+    observed.observe({ ...event, payload: { status: "failed", error: { providerFailure } } });
+    const result = observed.forTerminal("turn", terminal);
+    expect(result).toMatchObject({ errorCode: "native_provider_model_rejected", errorMessage: NATIVE_MODEL_REJECTION_MESSAGE });
+    expect(JSON.stringify(result)).not.toContain("private-model");
+    // A closed diagnostic only, and the classified turn is not also reported as unclassified.
+    expect(result?.diagnostic).toEqual(expect.objectContaining({ provider: kind }));
+    expect(JSON.stringify(result?.diagnostic)).not.toContain("not a valid model");
+    expect(observed.unclassifiedTurnFailure("turn", terminal)).toBeNull();
+    expect(observed.forTerminal("other-turn", terminal)).toBeNull();
+    expect(observed.forTerminal("turn", { ...terminal, runTerminalState: "succeeded" })).toBeNull();
+  });
+  it.each(["transient", "unknown"])("does not treat a %s model_unavailable failure as a model rejection", retryability => {
+    const observed = createNativeProviderFailureObservation({ kind: "opencode" });
+    observed.observe({ ...event, payload: { status: "failed", error: { providerFailure: { schema: "paperclip.provider-failure.v1", provider: "openrouter", phase: "turn", category: "model_unavailable", message: "busy", retryability } } } });
+    expect(observed.forTerminal("turn", terminal)).toBeNull();
+  });
+  it("classifies the API-key 404 for the configured model as a model rejection (codex 0.160.0 shape)", () => {
+    const apiKeyFailure = (message: string, info: unknown = { httpConnectionFailed: { httpStatusCode: 404 } }) => ({ ...event, payload: { status: "failed", error: {
+      message, codexErrorInfo: info, additionalDetails: null, misalignment: null } } });
+    const real = `unexpected status 404 Not Found: The model \`${model}\` does not exist or you do not have access to it., url: https://api.openai.com/v1/responses, cf-ray: a5833f01da2716ce-IAH, request id: req_584e320775c34b2c9c6d98af40e0ea3d`;
+    const observed = observation();
+    observed.observe(apiKeyFailure(real));
+    const result = observed.forTerminal("turn", terminal);
+    expect(result).toEqual({ errorCode: "native_provider_model_rejected", errorMessage: NATIVE_MODEL_REJECTION_MESSAGE, diagnostic: NATIVE_MODEL_NOT_FOUND_DIAGNOSTIC });
+    expect(JSON.stringify(result)).not.toContain(model);
+    expect(observed.unclassifiedTurnFailure("turn", terminal)).toBeNull();
+    expect(observed.forTerminal("other-turn", terminal)).toBeNull();
+    // Another model's 404, another status, or a retryable turn is not this rejection.
+    for (const [message, info, recoverable] of [
+      [real.replace(model, "other-model"), undefined, false],
+      [real, { httpConnectionFailed: { httpStatusCode: 500 } }, false],
+      [real, "other", false],
+      // Codex reports its retried 404s with this kind and willRetry; they never end the turn.
+      [real, { responseStreamDisconnected: { httpStatusCode: 404 } }, false],
+      [real, undefined, true],
+    ] as const) {
+      const other = observation();
+      const failed = apiKeyFailure(message, info);
+      other.observe(recoverable ? { ...failed, payload: { ...failed.payload, recoverable: true } } : failed);
+      expect(other.forTerminal("turn", terminal)).toBeNull();
+    }
   });
   it("surfaces a structured capacity failure without copying arbitrary provider text", () => {
     const observed = createNativeProviderFailureObservation({ kind: "codex" });

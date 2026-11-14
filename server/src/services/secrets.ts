@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { and, desc, eq, inArray, like, ne, notInArray, notLike, or, sql } from "drizzle-orm";
+import { and, desc, eq, inArray, isNull, like, ne, notInArray, notLike, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   agents,
@@ -66,6 +66,8 @@ import { isSecretProviderClientError } from "../secrets/types.js";
 import { authorizationDeniedDetails, authorizationService } from "./authorization.js";
 import { findActiveServerAdapter } from "../adapters/index.js";
 import { logActivity } from "./activity-log.js";
+import { retireTailscaleSecret } from "./connectors/tailscale/deletion.js";
+import { isTailscaleNodeState } from "./connectors/tailscale/network.js";
 // Only a `local_encrypted` secret can hold a literal directory path, so only a
 // `local_encrypted` secret can ever name a Codex account-home directory. A
 // create or a rotate that writes a new `local_encrypted` value runs inside
@@ -744,6 +746,7 @@ type SecretResolutionErrorCode =
   | "secret_deleted"
   | "secret_inactive"
   | "secret_scope_invalid"
+  | "secret_system_only"
   | "responsible_user_missing"
   | "user_secret_definition_missing"
   | "user_secret_definition_inactive"
@@ -844,6 +847,7 @@ function secretResolutionErrorCode(error: unknown): SecretResolutionErrorCode {
       case "binding_missing":
       case "secret_deleted":
       case "secret_inactive":
+      case "secret_system_only":
       case "version_missing":
       case "version_inactive":
       case "provider_error":
@@ -970,6 +974,11 @@ function assertSelectableProviderConfig(config: {
   }
 }
 
+export type RemoveSecretOptions = {
+  /** Runs after the secret is marked deleted and before its row is removed. */
+  beforeDelete?: (secret: typeof companySecrets.$inferSelect) => Promise<void>;
+};
+
 export function secretService(db: Db | DbTransaction) {
   const authorization = authorizationService(db);
 
@@ -998,6 +1007,7 @@ export function secretService(db: Db | DbTransaction) {
       .where(and(
         eq(companySecrets.companyId, companyId),
         eq(companySecrets.scope, "company"),
+        isNull(companySecrets.systemPurpose),
         eq(companySecrets.name, name),
         ne(companySecrets.status, "deleted"),
       ))
@@ -1012,6 +1022,7 @@ export function secretService(db: Db | DbTransaction) {
         eq(companySecrets.companyId, companyId),
         eq(companySecrets.key, key),
         eq(companySecrets.scope, "company"),
+        isNull(companySecrets.systemPurpose),
         ne(companySecrets.status, "deleted"),
       ))
       .then((rows) => rows[0] ?? null);
@@ -1221,6 +1232,7 @@ export function secretService(db: Db | DbTransaction) {
     if (secret.status === "deleted") throw notFound("Secret not found");
     if (secret.companyId !== companyId) throw unprocessable("Secret must belong to same company");
     if (secret.scope !== "company") throw unprocessable("Secret references require company-scoped secrets");
+    if (secret.systemPurpose) throw forbidden("System-owned secrets cannot be bound to agent or environment credentials");
     return secret;
   }
 
@@ -1359,10 +1371,12 @@ export function secretService(db: Db | DbTransaction) {
     version: number | "latest",
     options?: SecretResolutionOptions,
     readOnlyEnvironmentInspection = false,
+    preloaded?: { secret: typeof companySecrets.$inferSelect; version: typeof companySecretVersions.$inferSelect | null },
+    systemPurpose?: "tailscale_network",
   ): Promise<RuntimeSecretResolution> {
     const bindingContext = options?.bindingContext;
     const accessContext = options?.accessContext ?? bindingContext;
-    const secret = await getById(secretId);
+    const secret = preloaded && preloaded.secret.id === secretId ? preloaded.secret : await getById(secretId);
     if (!secret) throw notFound("Secret not found");
     if (secret.companyId !== companyId) throw unprocessable("Secret must belong to same company");
     const instanceOwned = secret.scope === "instance" && options?.instanceOwner &&
@@ -1383,8 +1397,12 @@ export function secretService(db: Db | DbTransaction) {
       if (secret.status !== "active") {
         throw unprocessable("Secret is not active", { code: "secret_inactive" });
       }
+      if ((secret.systemPurpose ?? null) !== (systemPurpose ?? null)) {
+        throw forbidden("System-owned secrets require their server-only consumer", { code: "secret_system_only" });
+      }
       const binding = await assertBindingContext(companyId, secret.id, bindingContext);
-      const versionRow = await getSecretVersion(secret.id, resolvedVersion);
+      const versionRow = preloaded?.secret === secret && preloaded.version?.version === resolvedVersion
+        ? preloaded.version : await getSecretVersion(secret.id, resolvedVersion);
       if (!versionRow) throw new HttpError(404, "Secret version not found", { code: "version_missing" });
       if (versionRow.status === "disabled" || versionRow.status === "destroyed" || versionRow.revokedAt) {
         throw unprocessable("Secret version is not active", { code: "version_inactive" });
@@ -1407,6 +1425,9 @@ export function secretService(db: Db | DbTransaction) {
           version: resolvedVersion,
         },
       });
+      if (isTailscaleNodeState(value) && systemPurpose !== "tailscale_network") {
+        throw forbidden("Network node state requires its server-only consumer", { code: "secret_system_only" });
+      }
       if (!readOnlyEnvironmentInspection) await Promise.all([
         db
           .update(companySecrets)
@@ -1881,12 +1902,12 @@ export function secretService(db: Db | DbTransaction) {
     }).sort((left, right) => left.key.localeCompare(right.key));
   }
 
-  async function resolveSecretVersion(
+  async function resolveSecretVersionIdentity(
     companyId: string,
     secretId: string,
     version: number | "latest",
     context?: SecretBindingContext,
-  ): Promise<number> {
+  ): Promise<{ version: number; identityEpoch: number }> {
     const secret = await getById(secretId);
     if (!secret) throw notFound("Secret not found");
     if (secret.companyId !== companyId) throw unprocessable("Secret must belong to same company");
@@ -1903,7 +1924,13 @@ export function secretService(db: Db | DbTransaction) {
     if (versionRow.status === "disabled" || versionRow.status === "destroyed" || versionRow.revokedAt) {
       throw unprocessable("Secret version is not active", { code: "version_inactive" });
     }
-    return resolvedVersion;
+    return { version: resolvedVersion, identityEpoch: secret.aiSessionEpoch };
+  }
+
+  async function resolveSecretVersion(
+    companyId: string, secretId: string, version: number | "latest", context?: SecretBindingContext,
+  ): Promise<number> {
+    return (await resolveSecretVersionIdentity(companyId, secretId, version, context)).version;
   }
 
   async function normalizeEnvConfig(
@@ -2211,6 +2238,7 @@ export function secretService(db: Db | DbTransaction) {
     },
     actor?: { userId?: string | null; agentId?: string | null },
     instanceOwner?: InstanceSecretOwner,
+    systemPurpose?: "tailscale_network",
   ) {
     const existing = instanceOwner ? null : await getByName(companyId, input.name);
     if (existing) throw conflict(`Secret already exists: ${input.name}`);
@@ -2255,6 +2283,7 @@ export function secretService(db: Db | DbTransaction) {
       .values({
         companyId,
         scope: instanceOwner ? "instance" : "company",
+        systemPurpose: systemPurpose ?? null,
         ownerAgentId: instanceOwner?.agentId ?? null,
         ownerProjectId: instanceOwner?.projectId ?? null,
         ownerPluginId: instanceOwner?.pluginId ?? null,
@@ -3399,18 +3428,18 @@ export function secretService(db: Db | DbTransaction) {
   // `removeSecretUnlocked` re-reads the secret under the lock, so a delete
   // that lost a race between the pre-check and the lock still sees current
   // state, not the pre-check's stale read.
-  async function removeSecretInternal(secretId: string) {
+  async function removeSecretInternal(secretId: string, options: RemoveSecretOptions = {}) {
     const preCheckSecret = await getById(secretId);
     if (!preCheckSecret) return null;
     return withAccountHomeSecretMutationLock(undefined, preCheckSecret.companyId, () =>
-      removeSecretUnlocked(secretId),
+      removeSecretUnlocked(secretId, options),
     );
   }
 
   // The body of `removeSecretInternal` above, unchanged. Extracted to a named
   // function so that wrapper can hold the lock across this whole delete
   // sequence without duplicating it.
-  async function removeSecretUnlocked(secretId: string) {
+  async function removeSecretUnlocked(secretId: string, options: RemoveSecretOptions = {}) {
     const secret = await getById(secretId);
     if (!secret) return null;
     const versionRow = await getSecretVersion(secret.id, secret.latestVersion);
@@ -3428,6 +3457,10 @@ export function secretService(db: Db | DbTransaction) {
         })
         .where(eq(companySecrets.id, secretId));
     }
+    // New references now see the deleted status, so the caller can settle
+    // every reference that exists before the row and its cascades go.
+    await options.beforeDelete?.(secret);
+    await retireTailscaleSecret(db, secret.companyId, secretId);
     const providerConfig = secret.providerConfigId
       ? await getProviderConfigById(secret.providerConfigId)
       : null;
@@ -3513,16 +3546,18 @@ export function secretService(db: Db | DbTransaction) {
 
   const instanceSecrets = {
     async read(scope: InstanceSecretScope): Promise<Record<string, string>> {
-      const rows = await db.select().from(companySecrets).where(and(eq(companySecrets.companyId, scope.companyId),
-        eq(companySecrets.scope, "instance"), scope.agentId !== undefined ? eq(companySecrets.ownerAgentId, scope.agentId) : eq(companySecrets.ownerProjectId, scope.projectId),
-        eq(companySecrets.ownerPluginId, scope.pluginId), ne(companySecrets.status, "deleted")));
+      const rows = await db.select({ secret: companySecrets, version: companySecretVersions }).from(companySecrets)
+        .leftJoin(companySecretVersions, and(eq(companySecretVersions.secretId, companySecrets.id), eq(companySecretVersions.version, companySecrets.latestVersion)))
+        .where(and(eq(companySecrets.companyId, scope.companyId),
+          eq(companySecrets.scope, "instance"), scope.agentId !== undefined ? eq(companySecrets.ownerAgentId, scope.agentId) : eq(companySecrets.ownerProjectId, scope.projectId),
+          eq(companySecrets.ownerPluginId, scope.pluginId), ne(companySecrets.status, "deleted")));
       const values: Record<string, string> = Object.create(null);
       for (const row of rows) {
-        const resolved = await resolveSecretValueInternal(scope.companyId, row.id, "latest", {
+        const resolved = await resolveSecretValueInternal(scope.companyId, row.secret.id, "latest", {
           instanceOwner: scope, accessContext: { consumerType: "plugin_worker", consumerId: scope.pluginId,
             actorType: "plugin", actorId: scope.pluginId, pluginId: scope.pluginId },
-        });
-        values[row.name] = resolved.value;
+        }, false, row);
+        values[row.secret.name] = resolved.value;
       }
       return values;
     },
@@ -3824,6 +3859,7 @@ export function secretService(db: Db | DbTransaction) {
           .where(and(
             eq(companySecrets.companyId, companyId),
             eq(companySecrets.scope, "company"),
+            isNull(companySecrets.systemPurpose),
             ne(companySecrets.status, "deleted"),
           ))
           .orderBy(desc(companySecrets.createdAt)),
@@ -4086,6 +4122,8 @@ export function secretService(db: Db | DbTransaction) {
         externalRef?: string | null;
         providerVersionRef?: string | null;
         providerConfigId?: string | null;
+        /** Internal authenticated refresh only; HTTP schemas cannot set this. */
+        preserveAiSessionEpoch?: boolean;
       },
       actor?: { userId?: string | null; agentId?: string | null },
     ) => {
@@ -4632,7 +4670,18 @@ export function secretService(db: Db | DbTransaction) {
     getByName,
     getByKey,
     resolveSecretValue,
+    resolveSystemSecretValue: async (companyId: string, secretId: string, version: number | "latest", purpose: "tailscale_network", consumerId: string) =>
+      (await resolveSecretValueInternal(companyId, secretId, version, {
+        accessContext: { consumerType: "system", consumerId, actorType: "system", actorId: null },
+      }, false, undefined, purpose)).value,
+    createSystemSecret: async (companyId: string, input: Parameters<typeof createSecretUnlocked>[1], purpose: "tailscale_network",
+      actor?: { userId?: string | null; agentId?: string | null }) =>
+      withAccountHomeSecretMutationLock(undefined, companyId, async () => {
+        if (input.value) await assertAccountHomeCacheDirStillValid(undefined, companyId, input.value);
+        return createSecretUnlocked(companyId, input, actor, undefined, purpose);
+      }),
     resolveSecretVersion,
+    resolveSecretVersionIdentity,
     resolveSecretValueForAgentAccess,
     listAgentSecretAccess,
     resolveSecretValueForEphemeralAccess,

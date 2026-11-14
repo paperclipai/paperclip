@@ -9,6 +9,15 @@ export const executionWorkspaceSummaryPageQuerySchema = z.object({
   cursor: z.string().uuid().optional(),
 }).strict();
 
+export const EXECUTION_WORKSPACE_SUMMARY_IDS_MAX = 100;
+
+/** `ids` query for workspace summaries: comma-separated UUIDs, 1–100 distinct values. */
+export const executionWorkspaceSummaryIdsQuerySchema = z
+  .string()
+  .transform((value) => value.split(",").map((id) => id.trim()).filter((id) => id.length > 0))
+  .pipe(z.array(z.string().uuid()).min(1).max(EXECUTION_WORKSPACE_SUMMARY_IDS_MAX))
+  .transform((ids) => [...new Set(ids)]);
+
 export const taskWorkspaceSelectionSchema = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("task_directory") }).strict(),
   z.object({ kind: z.literal("existing"), workspaceId: z.string().uuid() }).strict(),

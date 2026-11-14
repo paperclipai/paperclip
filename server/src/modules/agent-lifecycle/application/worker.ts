@@ -45,7 +45,13 @@ export function createLifecycleWorker(store: LifecycleStore, driver: LifecycleDr
         }
         if (!operation.hostComplete) {
           if (!await runStep("renew", () => store.renew(agent, owner, new Date()))) continue;
-          if (await runStep("host", () => driver.runHost(agent)) === "pending") {
+          const host = await runStep("host", () => driver.runHost(agent));
+          if (host === "waiting") {
+            if (agent.lifecycleState !== "verifying") throw new Error("Only host verification may await an external event");
+            if (!await runStep("defer", () => store.defer(agent, owner, null, new Date(), { waitForSignal: true }))) continue;
+            return;
+          }
+          if (host === "pending") {
             if (!await runStep("defer", () => store.defer(agent, owner, null, new Date()))) continue;
             return;
           }

@@ -1,6 +1,7 @@
 import { skillPackageStore, skillVersionMetadataColumns } from "../skill-package-store.js";
 import { skillAccessService } from "../skill-access.js";
 import { buildReviewPathRecoveryDisposition } from "../recovery/review-path-recovery.js";
+import { readByEarlierTurnCommentIds } from "../queued-comment-delivery.js";
 import type { AuthorizationActor } from "../authorization.js";
 import { spekoToolsForSession } from "../voice/speko-agent-tools.js";
 import { githubConfiguredInstructionSources } from "../chat-github-review-policy.js";
@@ -70,7 +71,7 @@ import {
 } from "@paperclipai/db";
 import { HttpError } from "../../errors.js";
 import { isAiConnectionIncompatible } from "../ai-connection-runtime.js";
-import type { ReviewedChatBindingDenialReason } from "../reviewed-chat-binding-diagnostics.js";
+import { ReviewedChatBindingNotReadyError, type ReviewedChatBindingDenialReason } from "../reviewed-chat-binding-diagnostics.js";
 import { filterResolvedGitHubConnectionsForRun } from "../git-credentials.js";
 import type {
   AdapterRuntimeMcpAccess,
@@ -178,6 +179,7 @@ const ISSUE_RESPONSIBLE_USER_WAKE_REASONS = new Set([
   "issue_reopened_via_comment",
   "issue_blockers_resolved",
   "issue_children_completed",
+  "issue_blocker_stalled",
   "issue_status_changed",
   "issue_tree_restored",
   "issue_recovery_action_restored",
@@ -827,6 +829,7 @@ export interface WakeupOptions {
   idempotencyKey?: string | null;
   requestedByActorType?: "user" | "agent" | "system";
   requestedByActorId?: string | null;
+  requestedByActorCompanyId?: string;
   contextSnapshot?: Record<string, unknown>;
   issueStateGuard?: {
     statuses: string[];
@@ -1768,7 +1771,12 @@ function normalizeInteractionContinuationWakeContext(
   contextSnapshot: Record<string, unknown>,
   payload: Record<string, unknown> | null | undefined,
 ) {
-  if (isInteractionResolutionWakePayload(payload)) return;
+  if (isInteractionResolutionWakePayload(payload)) {
+    if (contextSnapshot.interactionKind === "ask_user_questions") {
+      contextSnapshot.mutation = "interaction";
+    }
+    return;
+  }
   clearInteractionContinuationWakeContext(contextSnapshot);
 }
 
@@ -2239,7 +2247,7 @@ export async function attestReviewedExternalChatRun(input: {
     if (attemptNumber < 50)
       await new Promise((resolve) => setTimeout(resolve, 100));
   }
-  throw new Error("reviewed_chat_execution_binding_not_ready");
+  throw new ReviewedChatBindingNotReadyError();
 }
 
 export async function readHeartbeatWakeComments(db: Db, companyId: string, issueId: string | null, commentIds: string[]) {
@@ -2352,6 +2360,11 @@ export async function buildPaperclipWakePayload(input: {
   const commentsById = new Map(
     commentRows.map((comment) => [comment.id, comment]),
   );
+  const readByEarlierTurn = issueId && input.agentId
+    ? await readByEarlierTurnCommentIds(input.db, { companyId: input.companyId, issueId, agentId: input.agentId,
+      commentIds: commentRows.filter(row => !row.deletedAt).map(row => row.id), currentRunId: input.runId ?? null })
+      .catch(() => new Set<string>())
+    : new Set<string>();
   const issueDescription = conversationMode ? null : issueSummary?.description ?? null;
   const issueDescriptionTruncated =
     issueDescription !== null &&
@@ -2420,6 +2433,7 @@ export async function buildPaperclipWakePayload(input: {
       deletedByRunId: deletedAt ? (row.deletedByRunId ?? null) : null,
       sourceTrust: row.sourceTrust ?? null,
       createdAt: row.createdAt.toISOString(),
+      ...(readByEarlierTurn.has(row.id) ? { readByEarlierTurn: true } : {}),
       author: row.authorAgentId
         ? { type: "agent", id: row.authorAgentId }
         : row.authorUserId
@@ -2747,6 +2761,7 @@ export async function buildPaperclipWakePayload(input: {
       : [],
     childIssueSummaryTruncated:
       input.contextSnapshot.childIssueSummaryTruncated === true,
+    blockerStall: input.contextSnapshot.blockerStall ?? null,
     dispositionRepair:
       buildReviewPathRecoveryDisposition(input.contextSnapshot) ??
       (input.contextSnapshot.legacyDispositionEpisode ? {

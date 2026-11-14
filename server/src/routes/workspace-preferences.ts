@@ -30,7 +30,10 @@ export function workspacePreferenceRoutes(db: Db) {
       throw forbidden("User does not have active company access");
     }
     if (!await db.query.companies.findFirst({ where: eq(companies.id, companyId) })) throw notFound("Company not found");
-    res.json(await svc.set(companyId, req.actor.userId!, req.body.coordinatorWorkspaceEnabled));
+    res.json(await svc.set(companyId, req.actor.userId!, {
+      coordinatorWorkspaceEnabled: req.body.coordinatorWorkspaceEnabled,
+      timeZone: req.body.timeZone,
+    }));
   });
   return router;
 }

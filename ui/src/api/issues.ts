@@ -1,5 +1,7 @@
 import type { SetIssueTitle } from "@paperclipai/shared";
-import { ISSUE_SUMMARIES_MAX_IDS } from "@paperclipai/shared";
+import { ISSUE_CHAT_BOOTSTRAP_MAX_IDS, ISSUE_SUMMARIES_MAX_IDS, type IssueChatBootstrap } from "@paperclipai/shared";
+import type { RunForIssue } from "./activity";
+import type { ActiveRunForIssue, LiveRunForIssue } from "./heartbeats";
 import type { IssueSummary } from "@paperclipai/shared";
 import type { ExecutionReconciliation } from "@paperclipai/shared";
 import type { IssueContextUsage } from "@paperclipai/shared";
@@ -11,6 +13,7 @@ import type {
   InboxMineSnapshot,
   CreateIssueTreeHold,
   DocumentRevision,
+  ExactDocumentRevision,
   FeedbackTargetType,
   FeedbackTrace,
   FeedbackVote,
@@ -299,6 +302,19 @@ export const issuesApi = {
     detachInflightGet(path);
     return api.get<IssueSummary[]>(path, { ...options, cache: "no-store" });
   },
+  /**
+   * The task chat's first-frame reads for up to ten tasks in one request. Each
+   * item's fields have the shape of the matching single-task endpoint;
+   * missing and unreadable tasks are omitted.
+   */
+  chatBootstrap: (companyId: string, issueRefs: readonly string[], options?: RequestOptions) => {
+    const refs = [...new Set(issueRefs.map((ref) => ref.trim()).filter(Boolean))];
+    if (refs.length === 0 || refs.length > ISSUE_CHAT_BOOTSTRAP_MAX_IDS) throw new Error("Chat bootstrap needs one to ten task references");
+    const path = `/companies/${companyId}/issues/chat-bootstrap?${new URLSearchParams({ ids: refs.join(",") })}`;
+    // Never join a request sent with the previous account's cookie.
+    detachInflightGet(path);
+    return api.get<IssueChatBootstrap<RunForIssue, LiveRunForIssue, ActiveRunForIssue>>(path, { ...options, cache: "no-store" });
+  },
   /** Fetch every page for bounded task-detail relations, not just the default first page. */
   listAll: async (companyId: string, filters: Omit<IssueListFilters, "limit" | "offset" | "sortField" | "sortDir" | "afterId" | "attention">, options?: RequestOptions): Promise<Issue[]> => {
     const pageSize = 500;
@@ -419,12 +435,22 @@ export const issuesApi = {
       `/issues/${id}/stalled-review-decision`,
       data,
     ),
+  confirmRunStopped: (id: string, data: { runId: string; stopEvidence: string }) =>
+    api.post<{ runId: string; alreadyStopped: boolean; presentation: import("@paperclipai/shared").TaskInterruptionPresentation | null }>(
+      `/issues/${id}/recovery-actions/confirm-run-stopped`, data),
+  confirmControllerStopped: (id: string, data: { actionId: string; runId: string; stopEvidence: string }) =>
+    api.post<{ runId: string; status: "queued" }>(`/issues/${id}/recovery-actions/confirm-controller-stopped`, data),
+  confirmOwnerGone: (id: string, data: { actionId: string; recordId: string; stopEvidence: string; recordVersion?: string }) =>
+    api.post<{ recordId: string; status: "queued" | "released" }>(`/issues/${id}/recovery-actions/confirm-owner-gone`, data),
   resumeWorkspaceFinalization: (id: string, data: { actionId: string; runId: string; ownerToken: string; controllerAndCopybackStopped: true; stopEvidence: string }) =>
     api.post<{ runId: string; resultId: string | null; status: "queued" }>(`/issues/${id}/recovery-actions/resume-workspace-finalization`, data),
   retryWorkspaceExport: (id: string, data: { actionId: string; runId: string; repairNote: string }) =>
     api.post<{ runId: string; resultId: string; leaseId: string; status: "queued" }>(`/issues/${id}/recovery-actions/retry-workspace-export`, data),
-  retryTask: (issueId: string, body: { idempotencyKey: string; observedRunId: string | null }) =>
-    api.post<{ requestId: string | null; accepted: boolean; stale: boolean; presentation: import("@paperclipai/shared").TaskInterruptionPresentation | null }>(`/issues/${issueId}/retry`, body),
+  retryTask: (issueId: string, body: { idempotencyKey: string; observedRunId: string | null; retryAction?: "move_forward" }) =>
+    api.post<{ requestId: string | null; accepted: boolean; stale: boolean; alreadyMovedOn?: boolean;
+      refused?: { reason: string; message: string };
+      scheduledRetry?: { outcome: "promoted" | "already_promoted" | "gate_suppressed" | "waiting" | "no_scheduled_retry"; message: string };
+      presentation: import("@paperclipai/shared").TaskInterruptionPresentation | null }>(`/issues/${issueId}/retry`, body),
   recoverWorkspace: (id: string, data: { actionId: string; runId: string; idempotencyKey: string }) =>
     api.post<{ actionId: string; status: string }>(`/issues/${id}/recovery-actions/recover-workspace`, data),
   reconstructWorkspace: (id: string, data: { actionId: string; runId: string; expectedStatusVersion: number; attachmentIds: string[];
@@ -745,7 +771,7 @@ export const issuesApi = {
       `/issues/${id}/documents/${encodeURIComponent(key)}/revisions`,
     ),
   getDocumentRevision: (id: string, key: string, revisionId: string) =>
-    api.get<DocumentRevision>(`/issues/${id}/documents/${encodeURIComponent(key)}/revisions/${encodeURIComponent(revisionId)}`),
+    api.get<ExactDocumentRevision>(`/issues/${id}/documents/${encodeURIComponent(key)}/revisions/${encodeURIComponent(revisionId)}`),
   restoreDocumentRevision: (id: string, key: string, revisionId: string) =>
     api.post<IssueDocument>(
       `/issues/${id}/documents/${encodeURIComponent(key)}/revisions/${revisionId}/restore`,

@@ -22,10 +22,17 @@ use crate::provider_bridge::{
 use crate::question_response::validate_question_response;
 use crate::stable_identity::{is_stable_id, DURABLE_STABLE_ID_CHARS, SHORT_STABLE_ID_CHARS};
 
+#[path = "acpx_provider_generation.rs"]
+mod generation;
+
 const MAX_ID_CHARS: usize = 240;
 const MAX_MODEL_CHARS: usize = 240;
 pub(crate) const MAX_SYSTEM_INSTRUCTIONS_BYTES: usize = 1024 * 1024;
 const MAX_JSON_SAFE_INTEGER: u64 = 9_007_199_254_740_991;
+// A healthy sidecar confirms cancellation within about a second. The runner
+// serves controller commands one at a time, so this bound must stay well below
+// the controller's 15 s governed-wait drain and 10 s close grace.
+const ACPX_TURN_CANCEL_ACK_TIMEOUT: Duration = Duration::from_secs(5);
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "kebab-case")]
@@ -352,7 +359,14 @@ pub struct AcpxProviderSession {
     transport_terminated: bool,
     rejected_start_resumable: bool,
     runtime_retired: bool,
+    cancelled_turn_id: Option<String>,
     completed_turn_observed: bool,
+    quiet_turn_observed: bool,
+    continues_in_process: bool,
+    turn_start_replaced_provider: bool,
+    generation_has_run_turn: bool,
+    restarted_after_turn_from: Option<u32>,
+    prepared_generation: Option<String>,
 }
 
 pub(crate) fn goal_is_dormant(projection: &Value) -> bool {
@@ -410,7 +424,14 @@ impl AcpxProviderSession {
             transport_terminated: false,
             rejected_start_resumable: false,
             runtime_retired: false,
+            cancelled_turn_id: None,
             completed_turn_observed: false,
+            quiet_turn_observed: false,
+            continues_in_process: false,
+            turn_start_replaced_provider: false,
+            generation_has_run_turn: false,
+            restarted_after_turn_from: None,
+            prepared_generation: None,
         })
     }
 
@@ -506,10 +527,10 @@ impl AcpxProviderSession {
             || self.failure.is_some()
             || self.transport_terminated
             || self.runtime_retired
-            || !self.completed_turn_observed
+            || !(self.completed_turn_observed || self.prepared_generation.is_some())
             || self.state.active_turn_id().is_some()
             || self.state.has_pending_requests()
-            || self.transport.buffered_events().len() != 0
+            || !self.park_tail_is_quiet()
         {
             return Ok(false);
         }
@@ -529,8 +550,7 @@ impl AcpxProviderSession {
             return Ok(false);
         };
         // Polling still owns every frame observed during these reads.
-        Ok(self.validate_dormant_snapshot(&snapshot).is_ok()
-            && self.transport.buffered_events().len() == 0)
+        Ok(self.validate_dormant_snapshot(&snapshot).is_ok() && self.park_tail_is_quiet())
     }
 
     /// Read the same live sidecar before exposing its in-memory pending ledger.
@@ -654,12 +674,24 @@ impl AcpxProviderSession {
         // provider turn originated a late HTTP callback. Reap the old sidecar
         // and provider before releasing its call-ID tombstones, then resume
         // the same verified persistent session in a fresh process generation.
-        let provider_restarted = self.state.has_settled_turns();
-        if provider_restarted {
-            if let Err(error) = self.restart_idle_provider() {
+        // A quiet Claude generation that the turn-end path kept continues in
+        // place instead: its tool calls are bound to their announcing turn and
+        // its tombstones are retained below.
+        let continue_in_process = self.continues_in_process
+            && !rotate_turn_identity_ledger
+            && !self.tool_bridge.replay_history_blocks_admission()
+            && !self.reserved_tool_bridge.replay_history_blocks_admission()
+            && self.background_work_is_quiet();
+        self.continues_in_process = false;
+        self.quiet_turn_observed = false;
+        let restart_now = self.generation_has_run_turn && !continue_in_process;
+        if restart_now {
+            if let Err(error) = self.restart_idle_provider(None) {
                 return Err(self.fail_closed(error));
             }
         }
+        let provider_restarted = restart_now || self.restarted_after_turn_from.is_some();
+        self.turn_start_replaced_provider = provider_restarted;
         if rotate_turn_identity_ledger {
             if let Err(error) = self
                 .state
@@ -693,6 +725,9 @@ impl AcpxProviderSession {
                 "ACPX reserved tool receipt rotation failed: {error}"
             ))));
         }
+        self.generation_has_run_turn = true;
+        self.restarted_after_turn_from = None;
+        self.prepared_generation = None;
         let response = match self.transport.request_turn_start(
             json!({"turnId":turn_id,"message":message,"performance":performance}),
         ) {
@@ -786,11 +821,24 @@ impl AcpxProviderSession {
                 "ACPX interruption named a stale or inactive turn",
             ));
         }
-        let response = match self.transport.request(
-            GeneratedAcpxSidecarCommand::TurnCancel,
+        self.cancelled_turn_id = Some(turn_id.to_owned());
+        let response = match self.transport.request_turn_cancel(
             json!({"turnId":turn_id,"reason":bounded_reason(reason)}),
+            Instant::now()
+                + ACPX_TURN_CANCEL_ACK_TIMEOUT.min(self.config.transport.request_timeout),
         ) {
-            Ok(response) => response,
+            Ok(Some(response)) => response,
+            Ok(None) => {
+                // The cancel was delivered but its reply is missing. Its turn
+                // terminal still arrives through polling, and turn.stop can
+                // reap a provider that never stops. Failing closed here would
+                // block every controller command for the whole request bound
+                // and discard that terminal. The sidecar may have retired its
+                // runtime in the lost reply, so never admit another prompt.
+                // The caller receives no confirmation: Null is not a reply.
+                self.runtime_retired = true;
+                return Ok(Value::Null);
+            }
             Err(error) => return Err(self.fail_closed(error)),
         };
         if response.get("cancelled").and_then(Value::as_bool) != Some(true) {
@@ -873,6 +921,8 @@ impl AcpxProviderSession {
                 payload.insert("origin".to_owned(), origin);
             }
         }
+        let terminal_quiet = event.event_type == GeneratedAcpxSidecarEventType::RuntimeTurnTerminal
+            && generation::reports_no_live_background_tasks(&event.payload);
         let mut next_state = self.state.clone();
         let events = match next_state.accept_event(&event) {
             Ok(events) => events,
@@ -1026,6 +1076,10 @@ impl AcpxProviderSession {
                 self.completed_turn_observed = *status
                     == crate::acpx_event_payload::AcpxTurnStatus::Completed
                     && self.state.active_turn_id() == Some(turn_id.as_str());
+                self.quiet_turn_observed = self.completed_turn_observed
+                    && terminal_quiet
+                    && self.config.agent == "claude"
+                    && self.cancelled_turn_id.as_deref() != Some(turn_id.as_str());
             }
         }
         self.state = next_state;
@@ -1088,12 +1142,19 @@ impl AcpxProviderSession {
                 "error":Value::Null,
             })
         };
-        let response = match self
-            .transport
-            .request(GeneratedAcpxSidecarCommand::ToolResolve, resolution)
-        {
+        let response = match self.transport.request_tool_resolve(resolution) {
             Ok(response) => response,
-            Err(error) => return Err(self.fail_closed(error)),
+            // This session's own turn.cancel retired the call before its result
+            // arrived, and the turn terminal may still be buffered. The provider
+            // can never receive this result, exactly as after a polled terminal,
+            // so keep the durable result instead of failing the transport.
+            Err((_, true)) if self.cancelled_turn_id.as_deref() == Some(turn_id.as_str()) => {
+                self.state = next_state;
+                self.tool_bridge = next_bridge;
+                self.reserved_tool_bridge = next_reserved_bridge;
+                return Ok(());
+            }
+            Err((error, _)) => return Err(self.fail_closed(error)),
         };
         self.verify_resolution(&response, "tool")?;
         self.state = next_state;
@@ -1307,7 +1368,8 @@ impl AcpxProviderSession {
         Ok(())
     }
 
-    fn restart_idle_provider(&mut self) -> Result<(), LocalRunnerError> {
+    fn restart_idle_provider(&mut self, deadline: Option<Instant>) -> Result<(), LocalRunnerError> {
+        self.transport.bound_requests_by(deadline);
         let suspended = self.transport.request(
             GeneratedAcpxSidecarCommand::SessionSuspend,
             json!({"reason":"ACPX turn receipt epoch rotation"}),
@@ -1322,6 +1384,7 @@ impl AcpxProviderSession {
             &restart_config.transport,
             &restart_config.agent,
         )?;
+        replacement.bound_requests_by(deadline);
         let (replacement_identity, _, turn_controls) =
             match bootstrap(&mut replacement, &restart_config) {
                 Ok(value) => value,
@@ -1340,6 +1403,9 @@ impl AcpxProviderSession {
         self.transport = replacement;
         self.turn_controls = turn_controls;
         self.transport_terminated = false;
+        self.generation_has_run_turn = false;
+        self.quiet_turn_observed = false;
+        self.continues_in_process = false;
         Ok(())
     }
 
@@ -2243,7 +2309,14 @@ mod mode_tests {
             transport_terminated: false,
             rejected_start_resumable: false,
             runtime_retired: false,
+            cancelled_turn_id: None,
             completed_turn_observed: false,
+            quiet_turn_observed: false,
+            continues_in_process: false,
+            turn_start_replaced_provider: false,
+            generation_has_run_turn: false,
+            restarted_after_turn_from: None,
+            prepared_generation: None,
         }
     }
 

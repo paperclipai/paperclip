@@ -1,10 +1,61 @@
 use std::io::{self, BufRead, Write};
 use std::time::Duration;
 
-use paperclip_runner_core::generated_acpx_sidecar_contract::GENERATED_ACPX_SIDECAR_PROTOCOL_VERSION;
+use paperclip_runner_core::generated_acpx_sidecar_contract::{
+    GENERATED_ACPX_SIDECAR_PROTOCOL_VERSION, GENERATED_ACPX_TURN_DISPATCH_JOURNAL_FILE,
+    GENERATED_ACPX_TURN_DISPATCH_SCHEMA,
+};
 use serde_json::{json, Value};
 
 const PROJECTED_INPUT_PROVIDER_ID: &str = "input / réquest";
+
+static BACKGROUND_TASKS: std::sync::OnceLock<Option<String>> = std::sync::OnceLock::new();
+
+fn background_tasks_mode(snapshot: bool) -> Option<String> {
+    let path = BACKGROUND_TASKS.get()?.as_ref()?;
+    let modes = std::fs::read_to_string(path).unwrap_or_default();
+    let mut tokens = modes.split_whitespace();
+    let terminal = tokens.next().unwrap_or("").to_owned();
+    if !snapshot {
+        return Some(terminal);
+    }
+    Some(
+        tokens
+            .find_map(|token| token.strip_prefix("snapshot-"))
+            .map(str::to_owned)
+            .unwrap_or(terminal),
+    )
+}
+
+fn background_tasks_value(mode: &str) -> Option<Value> {
+    match mode {
+        "quiet" => Some(json!({"live":0})),
+        "live" => Some(json!({"live":1})),
+        "malformed" => Some(json!({"live":"0"})),
+        _ => None,
+    }
+}
+
+fn apply_background_snapshot(response: &mut Value, id: u64, idle: bool) {
+    let Some(mode) = background_tasks_mode(true) else {
+        return;
+    };
+    if mode == "reject" {
+        *response = json!({"protocolVersion":GENERATED_ACPX_SIDECAR_PROTOCOL_VERSION,"id":id,"ok":false,
+            "error":{"code":"temporarily_unavailable","message":"Snapshot is unavailable.","retryable":true}});
+        return;
+    }
+    let result = &mut response["result"];
+    if idle {
+        result["turnId"] = Value::Null;
+        result["pendingToolCount"] = json!(0);
+        result["pendingInputCount"] = json!(0);
+        result["pendingRuntimeRequests"] = json!([]);
+    }
+    if let Some(tasks) = background_tasks_value(&mode) {
+        result["backgroundTasks"] = tasks;
+    }
+}
 
 fn main() {
     if let Err(error) = run() {
@@ -31,6 +82,11 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         .map(|pair| pair[1].parse::<u64>())
         .transpose()?;
     let mut opened_identity: Option<Value> = None;
+    let _ = BACKGROUND_TASKS.set(
+        args.windows(2)
+            .find(|pair| pair[0] == "--background-tasks")
+            .map(|pair| pair[1].clone()),
+    );
     let lifetime_fence_candidates = args
         .windows(2)
         .find(|pair| pair[0] == "--lifetime-fence-ports")
@@ -69,16 +125,42 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let mut source_run = String::new();
     let mut source_pending_completion: Option<String> = None;
     let mut source_goal_revision = 0_u64;
+    let mut runtime_directory: Option<std::path::PathBuf> = None;
+    // `--cancel-reply lost|late`: the provider stops its prompt, but the reply
+    // to turn.cancel is dropped, or written only before the next request.
+    let cancel_reply = args
+        .windows(2)
+        .find(|pair| pair[0] == "--cancel-reply")
+        .map(|pair| pair[1].clone());
+    let mut late_cancel_reply: Option<Value> = None;
+    // With --cancel-reply, a cancelled turn forgets its pending tool calls.
+    let mut cancel_retired_tools = false;
     let mut source_journal = if mode == "source-reconcile" {
         let path = args
             .windows(2)
             .find(|pair| pair[0] == "--journal")
             .ok_or("source journal is missing")?;
+        let live_predecessors = std::fs::read_to_string(&path[1])
+            .unwrap_or_default()
+            .lines()
+            .filter_map(|line| serde_json::from_str::<Value>(line).ok())
+            .filter_map(|line| line["processStart"].as_u64())
+            .filter(|pid| {
+                std::process::Command::new("kill")
+                    .args(["-0", &pid.to_string()])
+                    .stderr(std::process::Stdio::null())
+                    .status()
+                    .is_ok_and(|status| status.success())
+            })
+            .collect::<Vec<_>>();
         let mut file = std::fs::OpenOptions::new()
             .create(true)
             .append(true)
             .open(&path[1])?;
-        write_json(&mut file, &json!({"processStart": std::process::id()}))?;
+        write_json(
+            &mut file,
+            &json!({"processStart": std::process::id(), "livePredecessors": live_predecessors}),
+        )?;
         if args.iter().any(|arg| arg == "--spawn-owned-child") {
             let child = std::process::Command::new("/bin/sleep")
                 .arg("120")
@@ -99,6 +181,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             .get("command")
             .and_then(Value::as_str)
             .ok_or("request command is missing")?;
+        if let Some(reply) = late_cancel_reply.take() {
+            write_json(&mut stdout, &reply)?;
+        }
         if command == "turn.start" {
             if let Some(fault) = args
                 .windows(2)
@@ -156,6 +241,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     "turnId":if fault == "active" {json!("unexpected-turn")} else {json!(source_pending_completion)},
                     "pendingToolCount":if fault == "tool" || source_pending_completion.is_some() {1} else {0}, "pendingInputCount":0,
                     "pendingRuntimeRequests":[]});
+            }
+            if command == "session.snapshot" {
+                apply_background_snapshot(&mut response, id, false);
             }
             if command == "session.snapshot" && fault == "foreign-snapshot" {
                 response["result"]["identity"]["agentSessionId"] = json!("foreign-session");
@@ -224,7 +312,86 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 response = json!({"protocolVersion":GENERATED_ACPX_SIDECAR_PROTOCOL_VERSION,"id":id,"ok":false,
                     "error":{"code":"temporarily_unavailable","message":"Optional read is temporarily unavailable.","retryable":true}});
             }
+            if command == "session.open" {
+                runtime_directory = request["params"]["runtimeDirectory"]
+                    .as_str()
+                    .map(std::path::PathBuf::from);
+            }
+            // Like the real runtime port: journal the turn, then its prompt
+            // dispatch, before the provider can see the prompt.
+            // `hang-before-dispatch` / `hang-after-dispatch` freeze the start
+            // on either side of that boundary without replying.
+            if command == "turn.start" {
+                if let Some(directory) = runtime_directory.as_ref() {
+                    let turn = request["params"]["turnId"].as_str().unwrap();
+                    let path = directory.join(GENERATED_ACPX_TURN_DISPATCH_JOURNAL_FILE);
+                    let record = |phase: &str| {
+                        format!(
+                            "{}\n",
+                            json!({"schema":GENERATED_ACPX_TURN_DISPATCH_SCHEMA,"turnId":turn,"phase":phase})
+                        )
+                    };
+                    let mut options = std::fs::OpenOptions::new();
+                    options.write(true).create(true).truncate(true);
+                    #[cfg(unix)]
+                    std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
+                    options
+                        .open(&path)?
+                        .write_all(record("received").as_bytes())?;
+                    if fault == "hang-before-dispatch" {
+                        loop {
+                            std::thread::sleep(std::time::Duration::from_secs(60));
+                        }
+                    }
+                    let mut journal = std::fs::OpenOptions::new().append(true).open(&path)?;
+                    journal.write_all(record("dispatched").as_bytes())?;
+                    // The runtime port fsyncs here; the fixture skips it to stay fast.
+                    if fault == "hang-after-dispatch" {
+                        loop {
+                            std::thread::sleep(std::time::Duration::from_secs(60));
+                        }
+                    }
+                }
+            }
+            if command == "session.open" && fault == "slow-open" {
+                std::thread::sleep(std::time::Duration::from_secs(10));
+            }
+            if command == "session.open" && fault == "reject-open" {
+                response = json!({"protocolVersion":GENERATED_ACPX_SIDECAR_PROTOCOL_VERSION,"id":id,"ok":false,
+                    "error":{"code":"session_open_failed","message":"The replacement provider could not open.","retryable":false}});
+            }
             write_json(&mut stdout, &response)?;
+            if command == "session.open" && args.iter().any(|arg| arg == "--emit-process") {
+                write_json(
+                    &mut stdout,
+                    &json!({"protocolVersion":GENERATED_ACPX_SIDECAR_PROTOCOL_VERSION,
+                        "sequence":next_sequence,"eventType":"runtime.process","runId":null,"turnId":null,
+                        "payload":{"role":"sidecar","pid":std::process::id(),"processGroupId":null,"startedAt":"2026-01-01T00:00:00.000Z"}}),
+                )?;
+                next_sequence += 1;
+            }
+            if command == "session.suspend" && fault == "late-tool-after-suspend" {
+                write_turn_event(
+                    &mut stdout,
+                    next_sequence,
+                    "runtime.tool_called",
+                    &source_run,
+                    "late-turn",
+                    json!({"callId":"late-call","operationId":"issues.delete","input":{"source":"late-old-generation"}}),
+                )?;
+                next_sequence += 1;
+            }
+            if command == "run.attach" && fault == "pre-turn-tool" {
+                write_turn_event(
+                    &mut stdout,
+                    next_sequence,
+                    "runtime.tool_called",
+                    &source_run,
+                    "pre-turn",
+                    json!({"callId":"pre-turn-call","operationId":"issues.read","input":{"id":"issue-1"}}),
+                )?;
+                next_sequence += 1;
+            }
             if command == "turn.start" {
                 let turn = request["params"]["turnId"].as_str().unwrap();
                 if args.iter().any(|arg| arg == "--wait-completion-feedback") {
@@ -245,6 +412,20 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     source_pending_completion = Some(turn.to_owned());
                     continue;
                 }
+                if fault == "pending-input" {
+                    write_turn_event(
+                        &mut stdout,
+                        next_sequence,
+                        "runtime.input_requested",
+                        &source_run,
+                        turn,
+                        json!({"requestId":"input-at-terminal","questionSet":{
+                            "schema":"paperclip.question_set.v1",
+                            "questions":[{"id":"target","prompt":"Which target?","required":true,
+                                "answerMode":"single_select","options":[{"id":"first","label":"First"}]}]}}),
+                    )?;
+                    next_sequence += 1;
+                }
                 write_turn_event(
                     &mut stdout,
                     next_sequence,
@@ -254,13 +435,21 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     json!({"type":"text_delta", "text":"Completed fake ACPX work."}),
                 )?;
                 next_sequence += 1;
+                let status = background_tasks_mode(true)
+                    .and_then(|_| std::fs::read_to_string(BACKGROUND_TASKS.get()?.as_ref()?).ok())
+                    .and_then(|modes| {
+                        modes
+                            .split_whitespace()
+                            .find_map(|token| token.strip_prefix("status-").map(str::to_owned))
+                    })
+                    .unwrap_or_else(|| "completed".to_owned());
                 write_turn_event(
                     &mut stdout,
                     next_sequence,
                     "runtime.turn_terminal",
                     &source_run,
                     turn,
-                    json!({"status":"completed"}),
+                    json!({"status":status}),
                 )?;
                 next_sequence += 1;
             }
@@ -559,7 +748,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             | "suspend-wrong-ack"
             | "suspend-wrong-identity"
             | "suspend-missing-identity" => {
-                if command == "tool.resolve" && mode == "turns-tool-resolution-rejected" {
+                if command == "tool.resolve"
+                    && (mode == "turns-tool-resolution-rejected" || cancel_retired_tools)
+                {
                     write_json(
                         &mut stdout,
                         &json!({
@@ -597,6 +788,30 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 );
                 if command == "session.open" {
                     opened_identity = response.pointer("/result/identity").cloned();
+                }
+                if command == "turn.cancel" {
+                    if let Some(fault) = cancel_reply.as_deref() {
+                        write_turn_event(
+                            &mut stdout,
+                            next_sequence,
+                            "runtime.turn_terminal",
+                            "run-1",
+                            request
+                                .pointer("/params/turnId")
+                                .and_then(Value::as_str)
+                                .unwrap(),
+                            json!({"status":"interrupted"}),
+                        )?;
+                        next_sequence += 1;
+                        cancel_retired_tools = true;
+                        if fault == "late" {
+                            late_cancel_reply = Some(response);
+                        }
+                        continue;
+                    }
+                }
+                if command == "session.snapshot" {
+                    apply_background_snapshot(&mut response, id, true);
                 }
                 if command == "session.suspend" {
                     if let Some(delay_ms) = suspend_delay_ms {
@@ -1217,8 +1432,15 @@ fn write_turn_event(
     event_type: &str,
     run_id: &str,
     turn_id: &str,
-    payload: Value,
+    mut payload: Value,
 ) -> io::Result<()> {
+    if event_type == "runtime.turn_terminal" {
+        if let Some(tasks) =
+            background_tasks_mode(false).and_then(|mode| background_tasks_value(&mode))
+        {
+            payload["backgroundTasks"] = tasks;
+        }
+    }
     write_json(
         output,
         &json!({

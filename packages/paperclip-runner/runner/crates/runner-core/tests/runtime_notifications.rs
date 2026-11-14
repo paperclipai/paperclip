@@ -56,6 +56,7 @@ fn real_cli_uses_relative_state_from_another_directory_and_never_process_run_ide
         reconnect_delay: Duration::from_millis(1),
         reconnect_grace: None,
         max_runtime: Duration::ZERO,
+        turn_scoped: false,
     };
     let store = DurableStateStore::new(&path).unwrap();
     let (mut state, _) = store.load_or_create(&config).unwrap();

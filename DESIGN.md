@@ -53,6 +53,12 @@ The New task form opens immediately. Load its code with the board and fill
 agent and project choices in place as their requests finish. Keep text entered
 while those requests are pending.
 
+Submitting a new task closes and clears its composer immediately. Save the
+submitted text, settings, and files separately while the request runs in the
+background. A failed save reopens that draft with an actionable error. If the
+person has started another draft, keep that draft and offer recovery for the
+failed request. A background receipt must not clear or close a later draft.
+
 ## Mobile navigation and text fields
 
 The fixed bottom navigation uses an opaque surface so scrolling content cannot
@@ -107,20 +113,60 @@ historical preparation sentence as a fallback. Authored progress text stays visi
 
 ## Contextual feedback
 
+The Coordinator inbox follows the Paper **A · Compact cards · All 15 types**
+reference. Cards have 20px padding, 12px spacing, a 16px medium ask, an inset
+context panel, and 32px actions, expressed through the existing tokens. The
+header puts the imperative at the left and the requester, time, and menu at the
+right. Prefix another assignee's name before the imperative; omit the viewer's
+own name. Keep the task status icon and link at the footer's left and the primary
+action at its far right. Keep 20px above, below, and to the right of the primary
+action, including on cards with nested forms. Decisions stay neutral; problem
+context uses the shared error icon and semantic destructive color. Opening an
+artifact highlights its
+card and uses the task-detail sidebar tabs. Render prompts with the canonical
+Markdown renderer, including reference images, lists, and links.
+
+Ask-user-question cards in the inbox, task thread, and composer use the same
+choice control for **Other** as for the listed answers, within their selection
+group. Selecting it reveals the custom-answer field. In single-select questions,
+it stays selected until another option is picked.
+
+The inbox title appears once in the header bar. Put one line of decision,
+problem, and update counts below the toolbar, directly above the cards. Later
+sections keep their labels without repeating counts or explanatory hints. Omit
+the requester avatar and line for the viewer's own requests, matched by user ID.
+
 Keep the runner turn's avatar, name, status header and current-activity slot
 in place from message submission through queued admission and native startup.
 Saving the human comment does not end startup feedback. Keep the identity mounted
 until its run appears or a newer execution outcome ends admission.
+An older intent resolving cannot acknowledge a follow-up. When Send reopens a
+completed task, retain startup feedback while the previous task status catches up.
 Use the sent message's selected recipient through reassignment. Choosing the
 recipient for a later draft must not change the response already starting.
 Runtime discovery must not replace the turn with a generic spinner or a
 "run started" receipt. Queued and running headers use the same spacing.
 
-A queued turn shows `Queued`, or `Waiting for maintenance` while the server holds
-admission. Reserve `Working` and `Thinking` for execution. A saved message that
-starts this queued turn stays in history, including when it reopens an older
+A queued turn shows the same `Working` header and shimmering `Thinking` activity
+as a running turn, starting at message submission. Keep specific server holds,
+such as `Waiting for maintenance` or agent setup, visible during admission.
+A run that waits for one of its agent's concurrency slots is a hold too: show
+`Waiting for <agent> · N slots max · P of Q in line · Configure` (the shared
+`AgentQueueWait` component) with no spinner or elapsed timer, link Configure to the
+agent's run policy, and take the place in line from the server's dispatch order.
+Task rows show a quiet `Waiting` instead of the pulsing `Live`, and live counts
+count only started runs.
+This is presentation only; queue and execution authority stay unchanged. A saved
+message that starts this queued turn stays in history, including when it reopens an older
 task. This placement is not a consumption receipt. Later follow-ups remain in
 the composer queue with their existing edit, order and discard controls.
+
+Queued messages render Markdown and show compact local attachment thumbnails.
+Keep paragraph boundaries and wrap thumbnails and controls within narrow rows.
+Omit inline images from the compact text preview. On
+submit, move the text and attachment previews out of the composer together.
+Retain upload receipts while saving so a rejected or uncertain send restores
+the draft without discarding files added for the next message.
 
 Stream the provider's final reply as the conversational answer. Completion-tool
 reports remain inspectable run data while work continues. Use their summary as
@@ -832,6 +878,14 @@ status picker with its monospaced task ID, project and people. The title remains
 editable and the existing task-actions menu stays at the upper right. Typography
 and spacing use the shared tokens; toggling off restores the ordinary header.
 
+Task breadcrumbs link the immediate parent before the current task. Each task
+title displays at most 48 Unicode code points, including an ellipsis; saved
+titles, hover text and accessible names retain the full title. The parent uses
+at most 40% of the breadcrumb row, and both titles truncate when space runs out.
+Parent breadcrumbs show only the task title, with no identifier, at every width.
+Mobile omits the collection link to preserve both titles and the current task
+identifier. Private parents show a noninteractive Private label without an identifier.
+
 The local task detail also offers a **Thread preview** selector. DES-1 opens a
 complete synthetic conversation matching the staging transcript layout; other
 tasks start with their saved thread. Synthetic runner events pass through
@@ -879,7 +933,7 @@ paused. Agent execution is outside this visual sandbox.
 - Token layer is the single source (`ui/src/index.css`, per above) consumed via CSS variables / Tailwind theme — never values copied into components.
 - Lint/grep gates pass: zero hardcoded hex values, zero arbitrary spacing values, zero raw font-size declarations in `ui/src/components/**` and `ui/src/pages/**` outside the token layer and a documented allowlist (third-party overrides, intentional opt-outs commented inline).
 - `pnpm build`, `pnpm typecheck`, and `pnpm build-storybook` pass.
-- AGENTS.md links here and states the token-only rule.
+- AGENTS.md links here for the token-only rule.
 
 Aspirational (NOT gating this run): no duplicate components; every component has exactly one story covering its variants; all UI copy says "task".
 
@@ -995,7 +1049,7 @@ Further consolidation proposals, pending visual review:
 Projects uses the large artifact stack with a dark grey Paperclip mark on an off-white
 image front. The empty-state action is “Create project”. Artwork, message and
 primary action have 20px gaps (`gap-5`). Hovering or keyboard-focusing the action
-fans the same artwork as hovering the graphic. Artifacts uses that stack for
+fans the artwork; hovering the empty-state graphic itself does not animate it. Single-type empty illustrations use only their icon, without lettering. Actual artifact hover behavior is unchanged. Artifacts uses that stack for
 Tasks and the corresponding single full-size artifact for each other type filter.
 
 Agent lists give chat and status their own vertically centered cells. Chat has a
@@ -1028,7 +1082,13 @@ or certify backend behavior or keyboard accessibility.
 
 Agents and Connectors compose the same `ToolbarSearch`. Connectors also use canonical Standard filled tabs. `AgentsToolbar` is shared by the roster page and
 toolbar references; `ConnectorsToolbar` is shared by Browse and toolbar references. Keep search
-first, source selection next where present, and view/actions last. The agent roster uses a harness filter icon without a status selector.
+first, source selection next where present, and view/actions last. The agent roster filter icon opens model, status, harness and connection selectors.
+Each selector includes an All option. Selected filters intersect with name, role
+and title search. Clear filters resets metadata selectors and keeps the search.
+Filter choices use the same metadata as the roster cells, including harness defaults,
+local credentials, connection pools, and agents that still need setup. Filters stay
+active across list and org-chart views, retain matching nodes' ancestors, and preserve
+bulk selection. The count reports matching agents, without ancestor context.
 Connector source choices use radio semantics and preserve Browse's existing
 automatic search expansion; they do not switch separate content panels.
 Legacy agent status and built-in URLs redirect to the full roster at `/agents/all`.
@@ -1065,17 +1125,15 @@ through the offline tokens.
 
 ### Agent overview and Identity editing
 
-Agent headers lead with the 24px custom title and crown on one line, followed by “harness • name.” The harness logo and label link to the agent’s Harness / Runtime subtab with hover and keyboard-focus feedback. The logo has a 4px gap before its label; Chat and New task share the default 40px button height. Header spacing is reduced by 4px at each vertical edge.
+Agent headers lead with the 24px agent name and crown on one line, followed by “harness • custom title.” The harness logo and label link to the agent’s Harness / Runtime subtab with hover and keyboard-focus feedback. The logo has a 4px gap before its label; Chat and New task share the default 40px button height. Header spacing is reduced by 4px at each vertical edge.
 The character renders in a 102px square (20% smaller than 128px, rounded to a whole pixel) with an 8px gap before the title, without CSS transform scaling. Reporting relationships live in Profile; its creation date shares the
 header metadata position with the Skills count. Empty Direct reports sections
 are hidden. The overview character tracks the page cursor, including paused
-agents, while respecting reduced-motion and custom-avatar fallbacks. Chat sits
-beside the text-only New task action. Recent tasks applies its raised surface to
-the table, leaving the section heading on the page background.
+agents, while respecting reduced-motion and custom-avatar fallbacks. The outlined Chat action shows its icon and label beside the primary New task action, which leads with a Paperclip icon. Recent tasks applies its raised surface to
+the table, leaving the section heading on the page background. When no tasks exist, three clearly labelled suggestions open the task composer with their text and the current agent preselected; clicking a suggestion does not create or run a task. Suggested rows use dashed dividers.
 
 Identity panels share 24px insets and gutters from the token layer. Advanced
-management contains the external-profile controls. New files accept a portable
-basename (letters, numbers, hyphens and underscores) with a fixed `.md` suffix.
+management contains the external-profile controls. Add file immediately opens an italic, subdued Untitled.md draft in the preview, with its filename focused. Filename edits update the selected list row live and save with the content; the fixed `.md` suffix stays subdued. Names accept letters, numbers, hyphens and underscores. The selected row keeps its muted highlight. The root file has a disabled trash control with “This file is required” help.
 Clicking file content enters editing without creating a dirty draft. The Identity
 save footer slides from the viewport bottom only for unsaved changes or a save
 in progress; undoing or discarding changes hides it. Successful saves swap the
@@ -1096,5 +1154,35 @@ Radix’s standard 700ms hover delay on each entry, without the instant-tooltip
 provider or warm-up shortcut; keyboard focus retains immediate accessible help.
 
 Task-list titles use the remaining row width before truncating. Empty recovery,
-external-status, and metadata slots do not reserve space; populated details and
+external-status, and metadata slots do not reserve space. Archive reserves width only on the hovered or keyboard-focused row, with token-driven width and opacity transitions; populated details and
 trailing actions retain their existing layout.
+
+Org charts adapt team packing to the viewport using three fixed tiers: root leads with reports, all other leads with reports, and individual contributors. Leads use two portrait sizes; contributors keep a compact horizontal layout. Card tiers do not inflate to consume empty space. Small orgs (up to four agents) keep extra canvas padding and a 1× automatic zoom cap; Fit centers the result below the toolbar. Leadership cards use the badge treatment: a centered inset slot, name/role/status heading with a working star control, a large character centered in the remaining space, and a full-width divided footer. Tier 1 is 280×368px and tier 2 is 232×320px. Their characters fill the available area and follow the cursor; a dedicated eight-canvas pool bounds GPU work, and offscreen, reduced-motion, custom-avatar, and failed-render states retain static fallbacks. Other surfaces keep the single-hero animation budget. Main-lead names use 24px type, team-lead names use 19px, and their titles use 13px; card edge insets remain generous. Individual contributor names span the full card width; their characters sit at the bottom right, beside left-aligned role and model/effort details. Contributor details use 11px type with 14px leading, and each block wraps to at most two lines before truncating. The character sits 6px from the bottom and right inner edges, half the 12px text inset. Contributor cards request a fixed upward, slightly turned portrait from the existing avatar renderer, with high-resolution images for crisp zooming. Other avatar surfaces retain the default front view. Broad teams wrap into rows, while
+individual contributors reporting alongside leaders stay in their own column.
+Right-angle reporting lines use separate ports, horizontal tracks, and column lanes through the space between cards. The chart extends to the edges of the main collection area beneath a floating toolbar. Camera controls appear immediately before New Agent in chart view and fade in/out across view changes. Their space stays reserved in both views; no width or position transition accompanies the fade. Hidden controls are inert and removed from the accessibility tree. The main content keeps a stable scrollbar gutter in both views so toolbar alignment does not shift. Model labels
+omit provider prefixes; the harness icon provides that context with a 4px gap.
+Configured effort is subdued and sits below the model in leadership footers; contributor model/effort details remain inline with a shared two-line limit. Filtered-out cards and reporting lines with either endpoint filtered out fade to 12% opacity; all cards remain navigable.
+Unknown model or effort values leave no fallback text. Card geometry is
+defined in the CSS token layer and shared with hierarchy placement. Pan, zoom,
+and Fit remain available when a large organization needs closer inspection.
+
+Task layering and its toggle are temporarily hidden on product surfaces, including the demo URL. When enabled for exploration, the chart-specific Tasks toggle overlays currently running task titles and muted
+dashed links to the agents executing them. A shared task appears once with one
+link per working agent. Task data loads only while the layer is enabled and
+refreshes every 15 seconds; queued and completed runs are excluded. Task labels
+link to their task from a separate top rail. Dashed associations are an overlay masked around card faces; toggling the layer preserves every card position and the current camera. The top rail scrolls horizontally for larger task sets. Empty and failed
+loads are explicit. This layer shows execution associations, not inferred
+assignments from the reporting hierarchy.
+
+Agent collection filters sit beside the list/chart toggle and persist across
+views. The roster identity header carries the visible agent count; metadata
+columns follow Status, Harness, Default model, Connection. Harness labels are
+text only, and model text uses the same typography as harness labels.
+Chart filters and search preserve hierarchy placement: nonmatching cards dim
+but remain clickable and keyboard accessible.
+
+Below the mobile shell breakpoint (768px), agent header actions sit beneath the
+identity row, file management chips sit below filenames, runner upgrade actions
+sit below full-width copy, and runtime/trust panels stack. Task toolbar square
+controls occupy a second row. Connector Browse/Review links become top segments
+on their mobile collection surfaces; desktop navigation and layouts stay unchanged.

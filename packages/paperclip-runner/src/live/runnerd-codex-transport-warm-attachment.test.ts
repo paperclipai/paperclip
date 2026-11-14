@@ -709,6 +709,49 @@ it("rotates PRP authority in place for a warm cross-run attachment", async () =>
   }
 }, 30_000);
 
+it("carries each warm run's own completion contract and keeps the provider process", async () => {
+  const stateDirectory = await mkdtemp(join(tmpdir(), "runnerd-warm-contract-"));
+  const bundle = createCapabilityRunnerdCodexTransport({
+    runnerBinary: defaultCapabilityRunnerdBinary(),
+    codexCommand: fakeCodex,
+    codexArgs: fakeCodexArgs(stateDirectory),
+    stateDirectory,
+    lifecyclePolicy: { mode: "warm", idleTimeoutMs: 60_000 },
+    // The transport is created for the first run; its options name that run's contract.
+    resumeCompletionContract: { revision: "first-run-contract", criterionIds: ["objective"] },
+  });
+  bundle.transport.setServerRequestHandler(async () => ({ success: true, contentItems: [] }));
+  const savedContract = async () => JSON.parse(await readFile(
+    join(stateDirectory, "control-plane", "control-plane-state.json"), "utf8")).runAttachTemplate?.completionContract;
+  const notifications = bundle.transport.notifications()[Symbol.asyncIterator]();
+  const completed = async () => {
+    for (;;) if ((await notifications.next()).value?.method === "turn/completed") return;
+  };
+  try {
+    await bundle.transport.request("initialize", {});
+    await bundle.transport.request("thread/start", {
+      cwd: tmpdir(), dynamicTools: [],
+      completionContract: { revision: "first-run-contract", criterionIds: ["objective"] },
+    });
+    const providerPid = bundle.evidence().codexPid;
+    await bundle.transport.request("turn/start", { input: [{ type: "text", text: "first run" }] });
+    await completed();
+
+    await bundle.transport.attachRun!({
+      runId: "run-warm-contract-second", turnId: "turn-warm-contract-second", itemId: "item-warm-contract-second",
+      completionContract: { revision: "second-run-contract", criterionIds: ["objective", "follow-up"] },
+    });
+    expect(await savedContract()).toEqual({ revision: "second-run-contract", criterionIds: ["objective", "follow-up"] });
+    await bundle.transport.request("turn/start", { input: [{ type: "text", text: "second run" }] });
+    await completed();
+    // A changed contract no longer forces a cold provider resume.
+    expect(bundle.evidence()).toMatchObject({ codexPid: providerPid, runnerExited: false });
+  } finally {
+    await bundle.transport.close();
+    await rm(stateDirectory, { recursive: true, force: true });
+  }
+}, 30_000);
+
 it("keeps prior-run events on ordinary accounting when the owner moves ahead for a warm attachment", async () => {
   const stateDirectory = await mkdtemp(join(tmpdir(), "runnerd-warm-owner-"));
   const first = {
@@ -1470,9 +1513,9 @@ it.each([false, true, "restart-before-bootstrap", "unknown-semantic", "accountin
       expect(retainedCore.commands.some((command: { type: string }) => command.type === "run.attach")).toBe(false);
       if (credentialsCleaned) {
         const config = await readFile(join(stateDirectory, "codex-home", "config.toml"), "utf8");
-        expect(config).toContain("https://paperclip.example/mcp/current");
-        expect(config).toContain("current-assigned-gateway-credential");
-        expect(config).not.toContain("first-assigned-gateway-credential");
+        expect(config).not.toContain("mcp_servers");
+        expect(config).not.toContain("paperclip.example/mcp");
+        expect(config).not.toContain("assigned-gateway-credential");
         expect(currentHandler).not.toHaveBeenCalled();
       }
     }

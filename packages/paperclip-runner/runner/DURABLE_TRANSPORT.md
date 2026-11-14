@@ -100,6 +100,25 @@ accepted durable prefix. The ACPX sidecar separately caps queued stdout at
 failure rather than allowing unbounded process memory while the Runner cannot
 read.
 
+## Event generations and stale events
+
+Every runner event payload carries `generation`: the runner process generation
+that emitted it. A runner process that recovers existing durable state starts
+the next generation. The counter is saved with the next state write, so
+recovery adds no write before the first turn. Events that are still in the
+outbox keep the generation that emitted them. State saved before this field
+existed loads as generation 0.
+
+Consumers apply one rule to provider events. An event that names a turn which
+is not the active turn, and which an earlier generation accepted or this
+generation already settled, is history. The consumer records it and it never
+fails the current turn. This covers late usage, items, workspace changes, and
+terminals for a turn lost on restore. An event for a turn the consumer never
+saw is not history and still fails closed. A terminal that contradicts a turn
+the same generation settled is still a conflict. The ACPX provider state and
+the Codex driver (which Runnerd also uses for OpenCode) apply this rule, and a
+pending `turn.start` ignores a held failure that names another turn.
+
 ## Recovering Codex between turns
 
 Suppose run A finishes a turn, its Runner exits, and run B wants to continue
@@ -183,7 +202,19 @@ that sidecar 100 ms to report its goal and session state. If the sidecar is slow
 or declines, Runner stays attached. Runner keeps at most one unanswered read and
 recognizes its late reply. Events received during that read still belong to A
 and are delivered before B attaches. The existing policy still replaces the
-sidecar at the next turn or run attachment; the saved provider identity continues.
+sidecar at park and run attachment; the saved provider identity continues.
+
+Between turns of the same run, Runner keeps a Claude sidecar only when the turn
+completed normally, its terminal reported `backgroundTasks: {"live": 0}`, and
+every condition of the turn-end restart holds. Before the next turn it reads
+`session.snapshot` again and requires the same report. A missing, live or
+malformed report, a failed, cancelled or interrupted turn, any other agent, a
+full settled-turn ledger or a full tool replay ledger replaces the sidecar as
+before. A kept sidecar keeps its tool call-ID tombstones and settled turn
+identities. The report's shape is `$defs.backgroundTasks` in
+`protocol/provider-schemas/acpx-sidecar.schema.json`; both readers are
+generated from it and tested against
+`protocol/fixtures/provider-boundary/acpx-background-tasks.json`.
 
 The check also inspects the live provider
 after that drain, so a late active-goal notification cannot be hidden by the

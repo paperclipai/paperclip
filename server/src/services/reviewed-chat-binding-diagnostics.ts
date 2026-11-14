@@ -1,4 +1,13 @@
 export const REVIEWED_CHAT_BINDING_NOT_AUTHORIZED = "reviewed_chat_execution_binding_not_authorized";
+export const REVIEWED_CHAT_BINDING_NOT_READY = "reviewed_chat_execution_binding_not_ready";
+
+export class ReviewedChatBindingNotReadyError extends Error {
+  readonly code = REVIEWED_CHAT_BINDING_NOT_READY;
+
+  constructor() {
+    super(REVIEWED_CHAT_BINDING_NOT_READY);
+  }
+}
 
 /**
  * The first reviewed-chat attestation check that denied a run. Closed labels

@@ -1,4 +1,5 @@
 import { retainCurrentWorkspaceSource } from "../workspace-source-lock.js";
+import { isGitMountBoundaryMessage } from "../git-mount-boundary-message.js";
 import { localWorkspaceSourcePaths } from "../execution-workspace-source-roots.js";
 import { effectiveProjectWorkspacePolicy } from "../project-workspace-provider.js";
 import { canonicalRepositoryRoot } from "../execution-workspace-source-roots.js";
@@ -856,7 +857,8 @@ async function probeGitWorktreeBase(cwd: string) {
     // corruption and I/O failures must remain reportable in Sentry.
     const notRepository = failure.code === 128 && failure.signal == null &&
       typeof failure.stderr === "string" &&
-      /^fatal: not a git repository \(or any of the parent directories\): \.git\r?\n?$/.test(failure.stderr) &&
+      (/^fatal: not a git repository \(or any of the parent directories\): \.git\r?\n?$/.test(failure.stderr) ||
+        isGitMountBoundaryMessage(failure.stderr)) &&
       !process.env.GIT_DIR && !process.env.GIT_WORK_TREE && !process.env.GIT_COMMON_DIR &&
       await hasNoGitMetadataInWorkspaceAncestors(cwd);
     return { isCheckout: false, notRepository };
@@ -2863,6 +2865,13 @@ export async function buildEffectiveRunSessionConfigMetadata(input: {
     ...(input.managedInstructions.contentHash !== null ? { contentHash: input.managedInstructions.contentHash } : {}),
   } : await resolveInstructionsConfigFingerprintMetadata(input.effectiveAdapterConfig);
   const effectiveAdapterConfig = { ...managedAiSessionFingerprintConfig(input.effectiveAdapterConfig, input.managedAiHome) };
+  // Migration 0443 cleared the stored per_turn creation default from native
+  // agents. Fingerprint an unset lifecycle as that stored value so clearing it
+  // keeps saved task sessions and their provider history. An explicit change
+  // to warm still starts a new session.
+  if (input.adapterType === "paperclip_runner" && effectiveAdapterConfig.lifecycleMode === undefined) {
+    effectiveAdapterConfig.lifecycleMode = "per_turn";
+  }
   if (input.managedInstructions && !input.retainManagedInstructionPaths) {
     delete effectiveAdapterConfig.instructionsRootPath;
     delete effectiveAdapterConfig.instructionsFilePath;

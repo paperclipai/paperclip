@@ -4,6 +4,7 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { ISSUE_SUMMARIES_MAX_IDS } from "@paperclipai/shared";
 import { ApiError } from "@/api/client";
 import { queryKeys } from "@/lib/queryKeys";
 import {
@@ -12,7 +13,7 @@ import {
   recordRecentTask,
   RECENT_TASKS_UPDATED_EVENT,
 } from "@/lib/recent-tasks";
-import { useRecentTasks } from "./useRecentTasks";
+import { RECENT_TASK_SUMMARY_CONCURRENCY, useRecentTasks } from "./useRecentTasks";
 
 const { getIssue, summaries } = vi.hoisted(() => ({ getIssue: vi.fn(), summaries: vi.fn() }));
 vi.mock("@/api/issues", () => ({ issuesApi: { get: getIssue, summaries } }));
@@ -182,21 +183,60 @@ describe("recent task synchronization", () => {
     expect(summaries).not.toHaveBeenCalled();
   });
 
-  it.each([false, true])("refreshes long histories in bounded requests without pruning on a partial failure (%s)", async fails => {
-    const tasks = Array.from({ length: 13 }, (_, i) => ({ ...task(i + 1, `Task ${i}`), id: `issue-${i}` }));
+  it("fetches a 25-task history in one request", async () => {
+    const tasks = Array.from({ length: 25 }, (_, i) => ({ ...task(i + 1, `Task ${i}`), id: `issue-${String(i).padStart(2, "0")}` }));
     tasks.forEach(issue => recordRecentTask(issue, "user-1"));
+    summaries.mockResolvedValue(tasks);
+    await act(async () => root.render(<QueryClientProvider client={client()}><RecentTasks name="staging-size" /></QueryClientProvider>));
+    await flush();
+    expect(summaries).toHaveBeenCalledTimes(1);
+    expect(summaries.mock.calls[0][1]).toHaveLength(25);
+  });
+
+  it.each([false, true])("refreshes long histories in parallel bounded requests without pruning on a partial failure (%s)", async fails => {
+    // Three chunks, all in flight together within the concurrency limit.
+    const count = ISSUE_SUMMARIES_MAX_IDS * 2 + 3;
+    const tasks = Array.from({ length: count }, (_, i) => ({ ...task(i + 1, `Task ${i}`), id: `issue-${String(i).padStart(3, "0")}` }));
+    tasks.forEach(issue => recordRecentTask(issue, "user-1"));
+    const pending: Array<() => void> = [];
     summaries.mockImplementation(async (_company, ids: string[]) => {
-      expect(ids.length).toBeLessThanOrEqual(5);
-      if (fails && summaries.mock.calls.length === 2) throw new ApiError("Unavailable", 500, null);
-      return tasks.filter(issue => ids.includes(issue.id)).map(issue => ({ ...issue, title: `Refreshed ${issue.title}`, updatedAt: new Date(100) }));
+      expect(ids.length).toBeLessThanOrEqual(ISSUE_SUMMARIES_MAX_IDS);
+      const call = summaries.mock.calls.length;
+      // Each chunk waits until the test releases it, so all three must be in flight together.
+      await new Promise<void>(resolve => pending.push(resolve));
+      if (fails && call === 2) throw new ApiError("Unavailable", 500, null);
+      return tasks.filter(issue => ids.includes(issue.id)).map(issue => ({ ...issue, title: `Refreshed ${issue.title}`, updatedAt: new Date(10_000) }));
     });
     await act(async () => root.render(<QueryClientProvider client={client()}><RecentTasks name="long-history" /></QueryClientProvider>));
     await flush();
-    expect(summaries).toHaveBeenCalledTimes(fails ? 2 : 3);
+    expect(summaries).toHaveBeenCalledTimes(3);
+    expect(pending).toHaveLength(3);
+    pending.forEach(resolve => resolve());
+    await flush();
     const entries = readRecentTasks(storageKey, "company-1");
-    expect(entries).toHaveLength(13);
+    expect(entries).toHaveLength(count);
     expect(entries.every(entry => entry.title.startsWith("Refreshed"))).toBe(!fails);
     expect(getIssue).not.toHaveBeenCalled();
+  });
+
+  it("limits how many summary chunks are in flight at once", async () => {
+    const count = ISSUE_SUMMARIES_MAX_IDS * 5;
+    const tasks = Array.from({ length: count }, (_, i) => ({ ...task(i + 1, `Task ${i}`), id: `issue-${String(i).padStart(3, "0")}` }));
+    tasks.forEach(issue => recordRecentTask(issue, "user-1"));
+    const pending: Array<() => void> = [];
+    summaries.mockImplementation(async (_company, ids: string[]) => {
+      await new Promise<void>(resolve => pending.push(resolve));
+      return tasks.filter(issue => ids.includes(issue.id));
+    });
+    await act(async () => root.render(<QueryClientProvider client={client()}><RecentTasks name="many" /></QueryClientProvider>));
+    await flush();
+    expect(summaries).toHaveBeenCalledTimes(RECENT_TASK_SUMMARY_CONCURRENCY);
+    while (pending.length) {
+      pending.splice(0).forEach(resolve => resolve());
+      await flush();
+    }
+    expect(summaries).toHaveBeenCalledTimes(5);
+    expect(readRecentTasks(storageKey, "company-1")).toHaveLength(count);
   });
 
   it("prunes successful omissions without resurrecting cached full details", async () => {

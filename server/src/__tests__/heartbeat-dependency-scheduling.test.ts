@@ -29,6 +29,7 @@ import {
   issueDocuments,
   issueRelations,
   issueRecoveryActions,
+  issueThreadInteractions,
   issueTreeHolds,
   issues,
   workspaceOperations,
@@ -40,7 +41,10 @@ import {
 import { resolveExternalTestDatabaseUrl } from "./helpers/external-test-database.js";
 import { heartbeatService } from "../services/heartbeat.ts";
 import { runningProcesses } from "../adapters/index.ts";
+import { createPostgresRunDispatchAdapter } from "../modules/run-dispatch/adapters/postgres.js";
 import { taskInterruptionPresentation } from "../services/task-interruption-presentation.js";
+import * as workspacePreparation from "../services/heartbeat/workspace-preparation.js";
+import { WorkspaceBusyDeferral } from "../services/heartbeat/retries.js";
 
 const mockAdapterExecute = vi.hoisted(() =>
   vi.fn(async () => ({
@@ -129,6 +133,7 @@ describeEmbeddedPostgres("heartbeat dependency-aware queued run selection", () =
       await new Promise((resolve) => setTimeout(resolve, 50));
     }
     await heartbeat.drainActiveRunExecutions();
+    vi.restoreAllMocks();
     mockAdapterExecute.mockReset();
     mockAdapterExecute.mockImplementation(async () => ({
       exitCode: 0,
@@ -563,6 +568,120 @@ describeEmbeddedPostgres("heartbeat dependency-aware queued run selection", () =
     expect(recoveredIntent).toMatchObject({ status: "coalesced" });
   });
 
+  it.each(["answered", "accepted", "rejected", "pending", "missing", "wrong_issue", "agent_resolved", "changed_before_dispatch",
+    "workspace_wait", "workspace_wait_changed", "blocker_finishes"] as const)(
+    "delivers only a saved human response while dependencies remain blocked: %s", async response => {
+      const companyId = randomUUID(), agentId = randomUUID(), blockerId = randomUUID(), issueId = randomUUID();
+      await db.insert(companies).values({ id: companyId, name: "Response fixture",
+        issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+        requireBoardApprovalForNewAgents: false, defaultResponsibleUserId: "responsible-user" });
+      await db.insert(companyMemberships).values({ companyId, principalType: "user", principalId: "responsible-user",
+        status: "active", membershipRole: "member" });
+      await db.insert(agents).values({ id: agentId, companyId, name: "Parent assignee", role: "engineer", status: "active",
+        adapterType: "codex_local", adapterConfig: {}, runtimeConfig: { heartbeat: { wakeOnDemand: true, maxConcurrentRuns: 1 } }, permissions: {} });
+      await db.insert(issues).values([
+        { id: blockerId, companyId, title: "Parked trial", status: "backlog", responsibleUserId: "responsible-user" },
+        { id: issueId, companyId, title: "Finish trial prerequisites", status: "blocked", assigneeAgentId: agentId,
+          responsibleUserId: "responsible-user" },
+      ]);
+      await db.insert(issueRelations).values({ companyId, issueId: blockerId, relatedIssueId: issueId, type: "blocks" });
+      const confirmation = response === "accepted" || response === "rejected";
+      const status = confirmation ? response : response === "pending" ? "pending" : "answered";
+      const [interaction] = await db.insert(issueThreadInteractions).values({ companyId,
+        issueId: response === "wrong_issue" ? blockerId : issueId, createdByAgentId: agentId,
+        kind: confirmation ? "request_confirmation" : "ask_user_questions", status,
+        title: "Setup access", resolvedByUserId: response === "pending" || response === "agent_resolved" ? null : "responsible-user",
+        resolvedByAgentId: response === "agent_resolved" ? agentId : null,
+        resolvedAt: response === "pending" ? null : new Date(),
+        payload: confirmation ? { version: 1, prompt: "Continue setup?" }
+          : { version: 1, questions: [{ id: "access", prompt: "Can setup continue?", selectionMode: "single",
+            options: [{ id: "ready", label: "Access is ready" }] }] },
+        result: response === "pending" ? null : confirmation ? { version: 1, outcome: response }
+          : { version: 1, answers: [{ questionId: "access", optionIds: ["ready"] }] },
+      }).returning();
+      const context = { issueId, mutation: "interaction", interactionId: response === "missing" ? randomUUID() : interaction.id,
+        interactionKind: interaction.kind, interactionStatus: status, wakeReason: "issue_commented" };
+      const resourceWait = response === "workspace_wait" || response === "workspace_wait_changed";
+      let deferredSourceId: string | null = null;
+      const workspace = resourceWait ? vi.spyOn(workspacePreparation, "prepareHeartbeatWorkspace")
+        .mockRejectedValueOnce(new WorkspaceBusyDeferral({ holder: { runId: randomUUID(), agentId,
+          issueId: blockerId, issueIdentifier: null }, executionWorkspaceId: randomUUID(),
+          wasIssueAssignee: true, deferralAttempt: 0 })) : null;
+      const service = response === "changed_before_dispatch" || resourceWait || response === "blocker_finishes" ? heartbeatService(db, {
+        beforeChatControlRecoveryCheck: async ({ stage }) => {
+          if (response === "blocker_finishes" && stage === "claim")
+            await db.update(issues).set({ status: "done" }).where(eq(issues.id, blockerId));
+        },
+        beforeResolvedInteractionContinuationDispatchCheck: async ({ runId }) => {
+          if (response === "changed_before_dispatch" || response === "workspace_wait_changed" && deferredSourceId && runId !== deferredSourceId)
+            await db.update(issueThreadInteractions).set({ resolvedByUserId: null, resolvedByAgentId: agentId })
+              .where(eq(issueThreadInteractions.id, interaction.id));
+        },
+      }) : heartbeat;
+      const wake = await service.wakeup(agentId, { source: "automation", triggerDetail: "system", reason: "issue_commented",
+        payload: context, contextSnapshot: context, requestedByActorType: "user", requestedByActorId: "responsible-user" });
+      let dispatchedRunId = wake?.id;
+      if (resourceWait) {
+        expect(wake).not.toBeNull();
+        await service.drainActiveRunExecutions();
+        expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, wake!.id)))[0])
+          .toMatchObject({ status: "cancelled", errorCode: "workspace_busy" });
+        expect(mockAdapterExecute).not.toHaveBeenCalled();
+        const [retry] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, wake!.id));
+        expect(retry).toMatchObject({ status: "scheduled_retry", scheduledRetryReason: "workspace_busy" });
+        deferredSourceId = wake!.id;
+        dispatchedRunId = retry.id;
+        workspace!.mockRestore();
+        expect((await service.promoteDueScheduledRetries(new Date(Date.now() + 5 * 60_000))).runIds).toContain(retry.id);
+        await service.resumeQueuedRuns();
+      }
+      const shouldDeliver = ["answered", "accepted", "rejected", "workspace_wait", "blocker_finishes"].includes(response);
+      if (shouldDeliver) {
+        expect(wake).not.toBeNull();
+        await service.drainActiveRunExecutions();
+        const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, dispatchedRunId!));
+        expect({ status: run.status, error: run.error, errorCode: run.errorCode })
+          .toEqual({ status: "succeeded", error: null, errorCode: null });
+        expect(run).toMatchObject({ status: "succeeded", contextSnapshot: {
+          interactionId: interaction.id, interactionStatus: status, dependencyBlockedInteraction: true,
+          unresolvedBlockerIssueIds: [blockerId],
+        } });
+        expect(mockAdapterExecute).toHaveBeenCalledTimes(1);
+        if (response === "answered") {
+          // A resource wait keeps the same bounded interaction and must not
+          // strand the answer again at scheduled promotion.
+          const [retry] = await db.insert(heartbeatRuns).values({ companyId, agentId,
+            invocationSource: "automation", status: "scheduled_retry", scheduledRetryAt: new Date(),
+            scheduledRetryReason: "interaction_continuation_infra_retry", retryOfRunId: run.id,
+            contextSnapshot: { ...run.contextSnapshot, wakeReason: "interaction_continuation_infra_retry",
+              retryReason: "interaction_continuation_infra_retry" },
+          }).returning();
+          const retryGate = () => createPostgresRunDispatchAdapter(db).evaluateScheduledRetryGate({
+            companyId, runId: retry.id, retryReasonOverride: "interaction_continuation_infra_retry", now: new Date(),
+          });
+          expect(await retryGate()).toMatchObject({ allowed: true });
+          await db.update(issueThreadInteractions).set({ resolvedByUserId: null, resolvedByAgentId: agentId })
+            .where(eq(issueThreadInteractions.id, interaction.id));
+          expect(await retryGate()).toMatchObject({ allowed: false, errorCode: "issue_dependencies_blocked" });
+        }
+      } else if (response === "changed_before_dispatch" || response === "workspace_wait_changed") {
+        expect(wake).not.toBeNull();
+        await service.drainActiveRunExecutions();
+        expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, dispatchedRunId!)))[0])
+          .toMatchObject({ status: "cancelled", errorCode: "issue_not_in_progress" });
+        expect(mockAdapterExecute).not.toHaveBeenCalled();
+      } else {
+        expect(wake).toBeNull();
+        expect(mockAdapterExecute).not.toHaveBeenCalled();
+      }
+      expect(await db.select().from(issueRelations).where(eq(issueRelations.relatedIssueId, issueId))).toHaveLength(1);
+      expect((await db.select().from(issues).where(eq(issues.id, blockerId)))[0].status)
+        .toBe(response === "blocker_finishes" ? "done" : "backlog");
+      expect((await db.select().from(issues).where(eq(issues.id, issueId)))[0].status).toBe("blocked");
+      expect(await db.select().from(heartbeatRuns).where(sql`${heartbeatRuns.contextSnapshot}->>'issueId' = ${blockerId}`)).toHaveLength(0);
+    },
+  );
+
   it("keeps blocked descendants idle until their blockers resolve", async () => {
     const companyId = randomUUID();
     const agentId = randomUUID();
@@ -813,6 +932,73 @@ describeEmbeddedPostgres("heartbeat dependency-aware queued run selection", () =
       return rows.every((run) => run.status !== "queued" && run.status !== "running");
     }, 10_000);
     expect(noActiveRuns).toBe(true);
+  });
+
+  it("admits an issue_blocker_stalled wake while a blocker is unresolved", async () => {
+    // The waiter's blocker stalled on a board-owned recovery action. Parking
+    // this wake until the blocker resolves would hide the stall again.
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const blockerId = randomUUID();
+    const dependentId = randomUUID();
+    await db.insert(companies).values({
+      id: companyId, name: "Paperclip", issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false, defaultResponsibleUserId: "responsible-user",
+    });
+    await db.insert(companyMemberships).values({ companyId, principalType: "user", principalId: "responsible-user", status: "active", membershipRole: "member" });
+    await db.insert(agents).values({
+      id: agentId, companyId, name: "CodexCoder", role: "engineer", status: "active", adapterType: "codex_local",
+      adapterConfig: {}, runtimeConfig: { heartbeat: { wakeOnDemand: true, maxConcurrentRuns: 1 } }, permissions: {},
+    });
+    await db.insert(issues).values([
+      { id: blockerId, companyId, title: "Stalled blocker", status: "blocked", priority: "high", responsibleUserId: "responsible-user" },
+      { id: dependentId, companyId, title: "Waiting dependent", status: "blocked", priority: "medium", assigneeAgentId: agentId,
+        responsibleUserId: "responsible-user" },
+    ]);
+    await db.insert(issueRelations).values({ companyId, issueId: blockerId, relatedIssueId: dependentId, type: "blocks" });
+    const [action] = await db.insert(issueRecoveryActions).values({ companyId, sourceIssueId: blockerId, kind: "run_recovery",
+      status: "resolved", outcome: "blocked", ownerType: "board", cause: "native_session_retry_exhausted",
+      fingerprint: "stall", nextAction: "Retry", resolvedAt: new Date() }).returning();
+    const stallWake = (requestedByActorType: "system" | "agent") => heartbeat.wakeup(agentId, {
+      source: "automation",
+      triggerDetail: "system",
+      reason: "issue_blocker_stalled",
+      payload: { issueId: dependentId, stalledIssueId: blockerId },
+      idempotencyKey: `issue_blocker_stalled:${dependentId}:${blockerId}:${action.id}:${requestedByActorType}`,
+      requestedByActorType,
+      requestedByActorId: requestedByActorType === "system" ? "issue-blocker-stall" : agentId,
+      contextSnapshot: { issueId: dependentId, wakeReason: "issue_blocker_stalled",
+        blockerStall: { stalledIssueId: blockerId, relation: "blocker", recoveryAction: { id: action.id } } },
+    });
+
+    // The reason string alone is not trusted: an agent cannot use it to skip the blocker gate.
+    expect(await stallWake("agent")).toBeNull();
+
+    const stalledWake = await stallWake("system");
+    expect(stalledWake).not.toBeNull();
+    await heartbeat.drainActiveRunExecutions();
+    const [run] = await db.select({ status: heartbeatRuns.status, contextSnapshot: heartbeatRuns.contextSnapshot })
+      .from(heartbeatRuns).where(eq(heartbeatRuns.id, stalledWake!.id));
+    expect(run?.status).toBe("succeeded");
+    expect(run?.contextSnapshot).toMatchObject({ dependencyBlockedInteraction: true, unresolvedBlockerIssueIds: [blockerId] });
+
+    // A resource wait replaces the run with a server-created retry that keeps
+    // the stall context but not the wake reason. The retry gate still admits it.
+    const retryGate = async (contextSnapshot: Record<string, unknown>) => {
+      const [retry] = await db.insert(heartbeatRuns).values({ companyId, agentId, invocationSource: "automation",
+        status: "scheduled_retry", scheduledRetryAt: new Date(), scheduledRetryReason: "transient_failure",
+        retryOfRunId: stalledWake!.id, contextSnapshot }).returning();
+      return createPostgresRunDispatchAdapter(db).evaluateScheduledRetryGate({ companyId, runId: retry.id,
+        retryReasonOverride: "transient_failure", now: new Date() });
+    };
+    const replacement: Record<string, unknown> = { ...(run!.contextSnapshot as Record<string, unknown>),
+      wakeReason: "bounded_transient_heartbeat_retry", retryReason: "transient_failure", retryOfRunId: stalledWake!.id };
+    expect(await retryGate(replacement)).toMatchObject({ allowed: true });
+    const { blockerStall: _stall, ...withoutStall } = replacement;
+    expect(await retryGate(withoutStall)).toMatchObject({ allowed: false, errorCode: "issue_dependencies_blocked" });
+    // Once the stall's action is no longer current, the retry waits for the blocker like any other.
+    await db.update(issueRecoveryActions).set({ outcome: "restored" }).where(eq(issueRecoveryActions.id, action.id));
+    expect(await retryGate(replacement)).toMatchObject({ allowed: false, errorCode: "issue_dependencies_blocked" });
   });
 
   it("defers issue_blockers_resolved as a follow-up when the same issue is already running", async () => {
