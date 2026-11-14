@@ -4,7 +4,7 @@ import path from "node:path";
 import { execFile as execFileCallback } from "node:child_process";
 import { promisify } from "node:util";
 import { afterEach, beforeEach, expect, it } from "vitest";
-import { instructionGitExcludeProgram } from "../services/agent-instruction-files.js";
+import { instructionGitExcludeFailureReason, instructionGitExcludeProgram } from "../services/agent-instruction-files.js";
 
 const execFile = promisify(execFileCallback);
 let root: string;
@@ -84,4 +84,46 @@ it("replaces a linked ignore file without writing through its external inode", a
   await exclude(workspace);
   expect(await fs.readFile(externalFile, "utf8")).toBe("untouched\n");
   expect(await fs.readFile(path.join(runtime, ".gitignore"), "utf8")).toBe("*\n");
+});
+
+// The run error used to say only that exclusion failed. Classify the real
+// program's failure output into a closed reason without copying its paths.
+async function failureReason(cwd: string) {
+  const failed = await exclude(cwd).then(() => null, (error: { code?: number; signal?: string | null; stderr?: string }) => error);
+  expect(failed).not.toBeNull();
+  const reason = instructionGitExcludeFailureReason({ exitCode: typeof failed!.code === "number" ? failed!.code : null,
+    timedOut: false, signal: failed!.signal ?? null, stderr: failed!.stderr ?? "" });
+  expect(reason).not.toContain(root);
+  return reason;
+}
+
+it("names a missing task directory without its path", async () => {
+  await expect(failureReason(path.join(root, "missing"))).resolves.toBe("enoent");
+});
+
+it.each(["directory", "file"])("names an unsafe runtime exclusion %s", async kind => {
+  const workspace = path.join(root, "workspace"), runtime = path.join(workspace, ".paperclip-runtime");
+  await fs.mkdir(workspace);
+  if (kind === "directory") await fs.writeFile(runtime, "not a directory");
+  else await fs.mkdir(path.join(runtime, ".gitignore"), { recursive: true });
+  await expect(failureReason(workspace)).resolves.toBe(`unsafe_${kind}`);
+});
+
+it.skipIf(process.getuid?.() === 0)("names a task directory the sandbox user cannot write", async () => {
+  const workspace = path.join(root, "workspace");
+  await fs.mkdir(workspace, { mode: 0o500 });
+  try {
+    await expect(failureReason(workspace)).resolves.toBe("eacces");
+  } finally { await fs.chmod(workspace, 0o700); }
+});
+
+it.each([
+  [{ exitCode: null, timedOut: true, stderr: "" }, "timed_out"],
+  [{ exitCode: 127, timedOut: false, stderr: "sh: 1: node: not found" }, "node_unavailable"],
+  [{ exitCode: null, timedOut: false, signal: "SIGKILL", stderr: "" }, "signal_sigkill"],
+  [{ exitCode: 1, timedOut: false, stderr: "Error: ENOSPC: no space left on device, open '/home/user/x'" }, "enospc"],
+  [{ exitCode: 3, timedOut: false, stderr: "something else at /home/user/secret" }, "exit_3"],
+  [{ exitCode: null, timedOut: false, signal: "not a signal", stderr: "" }, "unknown"],
+] as const)("classifies %j as %s", (result, reason) => {
+  expect(instructionGitExcludeFailureReason(result)).toBe(reason);
 });

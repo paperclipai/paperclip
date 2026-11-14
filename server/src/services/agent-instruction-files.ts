@@ -176,3 +176,22 @@ if(existing && (existing.isSymbolicLink() || !existing.isFile()))throw Error('Un
 const temporary=path.join(root,'.ignore-'+crypto.randomUUID()+'.tmp');
 try{fs.writeFileSync(temporary,'*\n',{flag:'wx',mode:0o600});fs.renameSync(temporary,filename)}finally{fs.rmSync(temporary,{force:true})}
 `;
+
+/**
+ * Names why the exclusion program failed with a closed code, so a failed run
+ * says what went wrong without copying sandbox output (paths, user names) into
+ * the run error or error reports.
+ */
+export function instructionGitExcludeFailureReason(result: {
+  exitCode: number | null; timedOut: boolean; signal?: string | null; stderr?: string | null;
+}): string {
+  if (result.timedOut) return "timed_out";
+  const stderr = result.stderr ?? "";
+  if (stderr.includes("Unsafe runtime exclusion directory")) return "unsafe_directory";
+  if (stderr.includes("Unsafe runtime exclusion file")) return "unsafe_file";
+  const nodeCode = /\b(E[A-Z]{2,15})\b(?::| )/.exec(stderr)?.[1];
+  if (nodeCode) return nodeCode.toLowerCase();
+  if (result.exitCode === 127) return "node_unavailable";
+  if (result.signal && /^SIG[A-Z0-9]{1,10}$/.test(result.signal)) return `signal_${result.signal.toLowerCase()}`;
+  return Number.isSafeInteger(result.exitCode) ? `exit_${result.exitCode}` : "unknown";
+}
