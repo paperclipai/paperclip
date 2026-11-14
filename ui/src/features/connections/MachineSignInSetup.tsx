@@ -66,6 +66,8 @@ export interface MachineSignInSetupProps {
   companyId: string;
   link: string;
   name?: string;
+  /** The existing app this connection belongs to, when setup was opened for one. */
+  applicationId?: string | null;
   client?: MachineSignInClient;
   /** Resume at "register the key" with a key Paperclip already created. */
   initialSetup?: MachineSignInSetupResult | null;
@@ -87,6 +89,7 @@ export function MachineSignInSetup({
   companyId,
   link,
   name,
+  applicationId,
   client = machineSignInApiClient,
   initialSetup = null,
   initialMethod = "paperclip_key",
@@ -141,6 +144,7 @@ export function MachineSignInSetup({
         ...(clientId.trim() ? { clientId: clientId.trim() } : {}),
         ...(method === "client_secret" && clientSecret ? { clientSecret } : {}),
         ...(trimmedScopes ? { scopes: trimmedScopes } : {}),
+        ...(applicationId ? { applicationId } : {}),
       });
       setSetup(created);
       writeDraftId(storageKey, created.connectionId);

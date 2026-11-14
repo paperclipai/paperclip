@@ -89,13 +89,14 @@ function fakeProvider() {
     metadataOnlyAtHint: false,
     /** Runs once when the server first receives a signed-in request (to stage races). */
     onAuthorizedMcpRequest: null as null | (() => Promise<void>),
+    signingAlgorithms: ["RS256", "ES256"],
   };
   const metadata = (issuer: string) => ({
     issuer,
     token_endpoint: `${issuer}/oauth/token`,
     grant_types_supported: ["client_credentials"],
     token_endpoint_auth_methods_supported: ["private_key_jwt", "client_secret_basic", "client_secret_post"],
-    token_endpoint_auth_signing_alg_values_supported: ["RS256", "ES256"],
+    token_endpoint_auth_signing_alg_values_supported: state.signingAlgorithms,
   });
   const handle = async (input: string | URL | Request, init?: RequestInit): Promise<Response> => {
     const url = String(input instanceof Request ? input.url : input);
@@ -600,6 +601,41 @@ describeEmbeddedPostgres("machine sign-in connections", () => {
     const grant = await organizationGrant(created.connectionId);
     await svc.refreshOAuthGrantCredentials({ companyId: company.id, connectionId: created.connectionId, grantId: grant.id, forceRefresh: true, actor });
     expect(provider.state.tokenRequests.at(-1)!.authorization).toBe(`Basic ${Buffer.from(`${CLIENT_ID}:switched-secret`).toString("base64")}`);
+  });
+
+  it("never leaves a refused test's secret behind with another client ID", async () => {
+    const company = await createCompany();
+    const provider = useProvider();
+    const svc = service();
+    const created = await svc.createMachineSignIn(company.id, {
+      link: MCP_URL, method: "client_secret", clientId: CLIENT_ID, clientSecret: CLIENT_SECRET,
+    }, actor);
+    await svc.testMachineSignIn(company.id, created.connectionId, {}, actor);
+    provider.state.extraClients.set("other-client", "other-secret");
+    // While one admin tests another client, a second admin starts a key rotation.
+    provider.state.onAuthorizedMcpRequest = async () => {
+      await svc.rotateMachineSignIn(company.id, created.connectionId, { method: "paperclip_key" }, actor);
+    };
+    await expect(svc.testMachineSignIn(company.id, created.connectionId, { clientId: "other-client", clientSecret: "other-secret" }, actor))
+      .rejects.toMatchObject({ status: 409, details: expect.objectContaining({ code: "client_credentials_changed" }) });
+    expect((await svc.getMachineSignIn(company.id, created.connectionId)).clientId).toBe(CLIENT_ID);
+    // The refused test wrote nothing: the saved ID and secret still belong together.
+    const grant = await organizationGrant(created.connectionId);
+    await svc.refreshOAuthGrantCredentials({ companyId: company.id, connectionId: created.connectionId, grantId: grant.id, forceRefresh: true, actor });
+    expect(provider.state.tokenRequests.at(-1)!.authorization).toBe(`Basic ${Buffer.from(`${CLIENT_ID}:${CLIENT_SECRET}`).toString("base64")}`);
+  });
+
+  it("creates the kind of key the sign-in service accepts when switching from a secret", async () => {
+    const company = await createCompany();
+    const provider = useProvider();
+    provider.state.signingAlgorithms = ["ES256"];
+    const svc = service();
+    const created = await svc.createMachineSignIn(company.id, {
+      link: MCP_URL, method: "client_secret", clientId: CLIENT_ID, clientSecret: CLIENT_SECRET,
+    }, actor);
+    await svc.testMachineSignIn(company.id, created.connectionId, {}, actor);
+    const started = await svc.rotateMachineSignIn(company.id, created.connectionId, { method: "paperclip_key" }, actor);
+    expect(started.machineSignIn.pendingPublicKey?.algorithm).toBe("ES256");
   });
 
   it("tries a new client secret before replacing the old one", async () => {
