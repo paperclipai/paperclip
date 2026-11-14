@@ -63,9 +63,17 @@ const sources: Record<Kind, Source> = {
   failed_run: { from: sql`heartbeat_runs r`, id: sql`r.id`, companyId: sql`r.company_id`,
     activityAt: sql`coalesce(r.finished_at, r.updated_at, r.created_at)`,
     issueId: sql`coalesce(r.context_snapshot->>'issueId', r.context_snapshot->>'taskId')`,
-    where: sql`r.status in ('failed', 'timed_out') and exists (
-      select 1 from heartbeat_run_events e where e.company_id = r.company_id and e.run_id = r.id
-        and e.event_type = 'lifecycle' and e.message like ${sql.raw(`'${RETRY_EXHAUSTION_MESSAGE_PREFIX}%'`)})` },
+    where: sql`r.status in ('failed', 'timed_out') and (
+      exists (
+        select 1 from heartbeat_run_events e where e.company_id = r.company_id and e.run_id = r.id
+          and e.event_type = 'lifecycle' and e.message like ${sql.raw(`'${RETRY_EXHAUSTION_MESSAGE_PREFIX}%'`)})
+      or not exists (
+        select 1 from heartbeat_runs n
+        where n.company_id = r.company_id and n.agent_id = r.agent_id
+          and n.status in ('failed', 'timed_out')
+          and coalesce(n.context_snapshot ->> 'issueId', n.context_snapshot ->> 'taskId', '')
+            = coalesce(r.context_snapshot ->> 'issueId', r.context_snapshot ->> 'taskId', '')
+          and (n.created_at > r.created_at or (n.created_at = r.created_at and n.id > r.id))))` },
   budget_alert: { from: sql`budget_incidents b`, id: sql`b.id`, companyId: sql`b.company_id`, activityAt: sql`b.updated_at`,
     issueId: sql`null::text`, where: sql`b.status = 'open' and (b.threshold_type = 'hard' or (b.amount_limit > 0
       and round(b.amount_observed::numeric / b.amount_limit * 10000) / 100 >= ${ATTENTION_BUDGET_WARNING_PERCENT}))` },

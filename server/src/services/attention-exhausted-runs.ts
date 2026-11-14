@@ -43,13 +43,7 @@ export function listAttentionExhaustedRuns(db: Db, companyId: string) {
       updatedAt: heartbeatRuns.updatedAt,
       finishedAt: heartbeatRuns.finishedAt,
       exhaustionMessage: latestExhaustion.message,
-      failedAttemptCount: sql<number>`(
-        select count(*)::int from ${heartbeatRuns} attempts
-        where attempts.company_id = ${heartbeatRuns.companyId}
-          and attempts.agent_id = ${heartbeatRuns.agentId}
-          and attempts.status in ('failed', 'timed_out')
-          and coalesce(attempts.context_snapshot ->> 'issueId', attempts.context_snapshot ->> 'taskId', '') = ${issueKey}
-      )`.mapWith(Number),
+      failedAttemptCount: sql<number>`count(*) over (partition by ${issueKey}, ${heartbeatRuns.agentId})`.mapWith(Number),
     })
     .from(heartbeatRuns)
     .innerJoin(agents, eq(heartbeatRuns.agentId, agents.id))
