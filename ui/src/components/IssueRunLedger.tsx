@@ -36,6 +36,7 @@ import {
   ProviderTraceStatusBadge,
   runRequestedProviderTrace,
 } from "./ProviderTraceStatusBadge";
+import { readFromIssueChatBootstrap } from "@/lib/issue-chat-bootstrap";
 
 type IssueRunLedgerProps = {
   issueId: string;
@@ -465,7 +466,7 @@ export function IssueRunLedger({
   });
   const { data: liveRuns } = useQuery({
     queryKey: queryKeys.issues.liveRuns(issueId),
-    queryFn: () => heartbeatsApi.liveRunsForIssue(issueId),
+    queryFn: () => readFromIssueChatBootstrap(queryClient, queryKeys.issues.liveRuns(issueId), issueId, (item) => item.liveRuns, () => heartbeatsApi.liveRunsForIssue(issueId)),
     enabled: hasLiveRuns,
     refetchInterval: 3000,
     placeholderData:
