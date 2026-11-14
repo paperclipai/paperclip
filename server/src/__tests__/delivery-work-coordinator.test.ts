@@ -157,7 +157,7 @@ describe("delivery work coordinator", () => {
         expiresAt: current?.expiresAt ?? null, activeRuns: 0, pendingWakes: 0 };
     };
     const db = { transaction: async (fn: (tx: unknown) => Promise<unknown>) =>
-      fn({ execute: async () => [{ blocked: false }] }) } as unknown as Db;
+      fn({ select: () => ({ from: () => ({ where: async () => [] }) }), execute: async () => [{ blocked: false }] }) } as unknown as Db;
     let entered!: () => void;
     const started = new Promise<void>(resolve => { entered = resolve; });
     const checkpoint = async () => {

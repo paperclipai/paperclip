@@ -27,7 +27,7 @@ const emptyLocal = async () => "none" as const;
 
 describe("idle backup checkpoint", () => {
   const database = (blocked = false) => {
-    const transaction = vi.fn(async (run: (tx: unknown) => Promise<unknown>) => run({ execute: async () => [{ blocked }] }));
+    const transaction = vi.fn(async (run: (tx: unknown) => Promise<unknown>) => run({ select: () => ({ from: () => ({ where: async () => [] }) }), execute: async () => [{ blocked }] }));
     return { db: { transaction } as unknown as Db, transaction };
   };
   const backup = (work: () => Promise<boolean> = async () => true) => vi.fn(async () => {
@@ -115,20 +115,20 @@ describe("idle sleep safety failure boundaries", () => {
   ])("rejects a report when the hold changes during the durable scan: %j", async (change) => {
     const getStatus = vi.fn().mockReturnValueOnce(held()).mockReturnValue({ ...held(), ...change });
     const execute = vi.fn().mockResolvedValue([{ blocked: true }]);
-    const transaction = vi.fn(async (fn: (tx: unknown) => Promise<unknown>) => fn({ execute }));
+    const transaction = vi.fn(async (fn: (tx: unknown) => Promise<unknown>) => fn({ select: () => ({ from: () => ({ where: async () => [] }) }), execute }));
     expect(await readIdleSleepSafety({ transaction } as unknown as Db, getStatus, () => now, undefined, emptyLocal)).toEqual(unknown);
     expect(transaction).toHaveBeenCalledWith(expect.any(Function), { isolationLevel: "repeatable read", accessMode: "read only" });
   });
 
   it("reports persisted work when the admission hold remains unchanged", async () => {
     const execute = vi.fn().mockResolvedValue([{ blocked: true }]);
-    const transaction = vi.fn(async (fn: (tx: unknown) => Promise<unknown>) => fn({ execute }));
+    const transaction = vi.fn(async (fn: (tx: unknown) => Promise<unknown>) => fn({ select: () => ({ from: () => ({ where: async () => [] }) }), execute }));
     expect(await readIdleSleepSafety({ transaction } as unknown as Db, held, () => now, undefined, emptyLocal)).toEqual(present);
   });
 });
 
 describe("idle sleep admission and local work", () => {
-  const emptyDb = () => ({ transaction: async (fn: (tx: unknown) => Promise<unknown>) => fn({ execute: async () => [{ blocked: false }] }) }) as unknown as Db;
+  const emptyDb = () => ({ transaction: async (fn: (tx: unknown) => Promise<unknown>) => fn({ select: () => ({ from: () => ({ where: async () => [] }) }), execute: async () => [{ blocked: false }] }) }) as unknown as Db;
   it("requires the exact current idle owner and a bounded expiry", async () => {
     expect(await readIdleSleepSafety(emptyDb(), held, () => now, undefined, emptyLocal)).toEqual(unknown);
     expect(await readIdleSleepSafety(emptyDb(), owned, () => now, "old-owner", emptyLocal)).toEqual(unknown);
