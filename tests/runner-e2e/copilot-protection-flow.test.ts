@@ -1,5 +1,5 @@
 import { matchCopilotFixtureCommand } from "./copilot-protection-evidence.js";
-import { writeFileSync, unlinkSync, utimesSync } from "node:fs";
+import { writeFileSync, unlinkSync, utimesSync, statSync } from "node:fs";
 import { spawn } from "node:child_process";
 import { readFile, mkdtemp, rm, writeFile, unlink, rename, mkdir, symlink } from "node:fs/promises";
 import { join } from "node:path";
@@ -93,6 +93,18 @@ describe("Copilot Product protection integration", () => {
     // Make the pre-mutation version distinct even on filesystems that coalesce
     // directory timestamps within one clock tick. Assertions remain immediate.
     utimesSync(root, new Date(0), new Date(0));
+    const sibling = await mkdtemp("/tmp/pc-denial-gap-sibling-");
+    try {
+      const rootCtime = statSync(root, { bigint: true }).ctimeNs;
+      const deadlineMs = Date.now() + 10_000;
+      while (statSync(sibling, { bigint: true }).ctimeNs <= rootCtime) {
+        if (Date.now() >= deadlineMs) throw new Error("Coverage-gap ctime synchronization timed out");
+        utimesSync(sibling, new Date(), new Date());
+        await new Promise((resolve) => setTimeout(resolve, 1));
+      }
+    } finally {
+      await rm(sibling, { recursive: true, force: true });
+    }
     const watcher = watchDeniedTarget(root, "denied"), targetPath = join(root, "denied");
     try {
       writeFileSync(targetPath, "x"); unlinkSync(targetPath);
