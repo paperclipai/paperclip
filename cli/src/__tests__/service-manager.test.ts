@@ -38,6 +38,12 @@ describe("service definition generation", () => {
     expect(unit).not.toContain("API_KEY");
   });
 
+  it("signals only the main process on stop so the server can shut embedded PostgreSQL down in order", () => {
+    const manager = new SystemdServiceManager("team-a", async () => ({ stdout: "", stderr: "" }), "/home/alice/.paperclip", "/home/alice/.local/bin/paperclipai", "/home/alice");
+    const serviceSection = manager.renderDefinition().split("[Service]")[1].split("[Install]")[0];
+    expect(serviceSection.split("\n")).toContain("KillMode=mixed");
+  });
+
   it("escapes systemd variable and specifier expansion in configured values", () => {
     const unit = renderSystemdUnit({
       instanceId: "team-$USER-%i",
@@ -67,6 +73,28 @@ describe("service definition generation", () => {
 });
 
 describe("systemd drift regeneration", () => {
+  it.each(["install", "start", "restart"] as const)("updates the shutdown policy before %s", async (operation) => {
+    const userHome = await temporaryDirectory();
+    const calls: string[] = [];
+    const runner: CommandRunner = async (command, args) => {
+      calls.push([command, ...args].join(" "));
+      if (command === "systemctl" && args.includes("daemon-reload")) {
+        expect((await fs.readFile(manager.definitionPath, "utf8")).split("\n")).toContain("KillMode=mixed");
+      }
+      return { stdout: "", stderr: "" };
+    };
+    const manager = new SystemdServiceManager("default", runner, path.join(userHome, ".paperclip"), path.join(userHome, ".local/bin/paperclipai"), userHome);
+    await fs.mkdir(path.dirname(manager.definitionPath), { recursive: true });
+    await fs.writeFile(manager.definitionPath, manager.renderDefinition().replace("KillMode=mixed\n", ""));
+
+    if (operation === "install") await manager.install({ startNow: true, startOnLogin: true });
+    else await manager[operation]();
+
+    expect((await fs.readFile(manager.definitionPath, "utf8")).split("\n")).toContain("KillMode=mixed");
+    expect(calls[0]).toBe("systemctl --user daemon-reload");
+    expect(calls.at(-1)).toBe(`systemctl --user ${operation === "install" ? "start" : operation} paperclipai.service`);
+  });
+
   it("rewrites a drifted unit and reloads the user manager", async () => {
     const userHome = await temporaryDirectory();
     const calls: string[] = [];
