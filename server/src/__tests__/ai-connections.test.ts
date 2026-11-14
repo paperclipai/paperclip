@@ -324,6 +324,21 @@ describe("managed AI connections", () => {
     } finally { probe.mockRestore(); }
   });
 
+  it("drops managedAiRouting and managedAiConnection supplied by the agent's own config", async () => {
+    const owner = "agent-routing-owner";
+    await db.insert(companyMemberships).values({ companyId, principalId: owner, principalType: "user", status: "active", membershipRole: "member" });
+    await create(owner, owner);
+    const runtime = await prepareManagedAiRuntime(db, { ...input, responsibleUserId: owner, config: {
+      managedAiRouting: { kind: "local", protocol: "messages", auth: "none", models: [] },
+      managedAiConnection: { identity: "forged-identity", sessionIdentity: "forged-session" },
+    } });
+    try {
+      expect(runtime.config).not.toHaveProperty("managedAiRouting");
+      expect(runtime.config.managedAiConnection).toMatchObject({ identity: runtime.identity, sessionIdentity: runtime.sessionIdentity });
+      expect(JSON.stringify(runtime.config)).not.toContain("forged");
+    } finally { await runtime.cleanup(); }
+  });
+
   it("preserves repository GitHub credentials for managed non-Copilot execution", async () => {
     const owner = "repo-github-owner";
     await db.insert(companyMemberships).values({ companyId, principalId: owner, principalType: "user", status: "active", membershipRole: "member" });

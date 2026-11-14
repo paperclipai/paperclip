@@ -236,6 +236,27 @@ describe("codex sandbox-target credential gate", () => {
     expect(mockRunTargetShellCommand).not.toHaveBeenCalled();
   });
 
+  it("refuses a routed connection without its provider key, whatever login the sandbox has", async () => {
+    const { env, managedAgentHome } = await makeCredentiallessManagedHome();
+    mockRunTargetShellCommand.mockResolvedValue({ exitCode: 0, timedOut: false, stdout: "", stderr: "" });
+
+    await expect(
+      assertCodexCredentialsLaunchable({
+        runId: "run-routed-no-key",
+        companyId: "company-1",
+        configuredCodexHome: managedAgentHome,
+        configuredApiKey: null,
+        managedRouting: { auth: "bearer", providerKey: "" },
+        effectiveCodexHome: managedAgentHome,
+        target: sandboxTarget,
+        cwd: "/workspace",
+        env,
+        onLog: async () => {},
+      }),
+    ).rejects.toThrow(/routing requires a provider key and PAPERCLIP_AI_PROVIDER_KEY is empty/);
+    expect(mockRunTargetShellCommand).not.toHaveBeenCalled();
+  });
+
   it("does not gate at all when a per-agent OPENAI_API_KEY is configured", async () => {
     const { env, managedAgentHome } = await makeCredentiallessManagedHome();
 

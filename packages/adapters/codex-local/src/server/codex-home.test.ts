@@ -980,6 +980,42 @@ describe("evaluateCodexCredentialReadiness", () => {
     }
   });
 
+  it.each([
+    ["a routed local connection that needs no credential", "none", ""],
+    ["a routed gateway connection whose routing carries the provider key", "bearer", "gw-test-key"],
+  ])("is ready for %s", async (_label, auth, providerKey) => {
+    const fx = await makeFixture();
+    try {
+      const result = await evaluateCodexCredentialReadiness({
+        env: fx.env,
+        companyId: "company-1",
+        configuredCodexHome: fx.managedAgentHome,
+        configuredApiKey: "",
+        managedRouting: { auth, providerKey },
+      });
+      expect(result).toMatchObject({ managed: true, authMode: "routed", ready: true });
+    } finally {
+      await fs.rm(fx.root, { recursive: true, force: true });
+    }
+  });
+
+  it("is not ready for a routed connection that needs a provider key it lacks, even with a host login", async () => {
+    const fx = await makeFixture();
+    try {
+      await writeUsableAuth(fx.sharedCodexHome);
+      const result = await evaluateCodexCredentialReadiness({
+        env: fx.env,
+        companyId: "company-1",
+        configuredCodexHome: fx.managedAgentHome,
+        configuredApiKey: "",
+        managedRouting: { auth: "bearer", providerKey: "" },
+      });
+      expect(result).toMatchObject({ managed: true, authMode: "routed", ready: false });
+    } finally {
+      await fs.rm(fx.root, { recursive: true, force: true });
+    }
+  });
+
   it("treats an external/user-supplied CODEX_HOME override as self-managed and ready", async () => {
     const fx = await makeFixture();
     try {
