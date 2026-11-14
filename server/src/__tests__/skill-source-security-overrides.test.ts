@@ -425,6 +425,27 @@ echo third`;
     expect(await approvals()).toHaveLength(0);
   });
 
+  it('saves an approval again when a cleanup deletes the existing record before it is locked', async () => {
+    const companyId = randomUUID();
+    await db.insert(companies).values({ id: companyId, name: 'Raced record', issuePrefix: `Q${companyId.slice(0, 6)}` });
+    const approval = { commitSha: first, packageMode: 'skills' as const, approvedCommitSha: first, approvedByUserId: 'admin-user', approvedAt: new Date(0).toISOString(),
+      reason: 'Maintained by our platform team.', trustFutureUpdates: false, files: [{ path: 'install.sh', code: 'remote_fetch_exec', sha256: hash(hook) }] };
+    const skills = companySkillService(db);
+    const original = await skills.saveSecurityApproval(db, companyId, approval);
+    // The cleanup runs after the insert finds the existing record and before the record is locked.
+    const raced = new Proxy(db, { get(target, key, receiver) {
+      if (key !== 'insert') return Reflect.get(target, key, receiver);
+      return (table: typeof companySkillSecurityApprovals) => ({ values: (values: typeof companySkillSecurityApprovals.$inferInsert) => ({ onConflictDoNothing: () => ({
+        then: (resolve: (value: unknown) => unknown, reject: (reason: unknown) => unknown) => target.insert(table).values(values).onConflictDoNothing()
+          .then(async result => { await target.delete(companySkillSecurityApprovals).where(eq(companySkillSecurityApprovals.id, original)); return result; })
+          .then(resolve, reject),
+      }) }) });
+    } });
+    const saved = await skills.saveSecurityApproval(raced, companyId, approval);
+    expect(saved).not.toBe(original);
+    expect(await db.select({ id: companySkillSecurityApprovals.id }).from(companySkillSecurityApprovals).where(eq(companySkillSecurityApprovals.companyId, companyId))).toEqual([{ id: saved }]);
+  });
+
   it('keeps the approval on an editable copy kept when the source is disconnected', async () => {
     const companyId = randomUUID();
     await db.insert(companies).values({ id: companyId, name: 'Kept copy', issuePrefix: `K${companyId.slice(0, 6)}` });

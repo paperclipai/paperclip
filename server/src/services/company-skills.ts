@@ -3628,11 +3628,15 @@ export function companySkillService(db: Db, options: { actor?: AuthorizationActo
   /** Stores an approval record once per company and content; the versions one publish installs share it. */
   async function saveSecurityApproval(tx: DbOrTransaction, companyId: string, approval: SkillVersionSecurityApproval) {
     const contentHash = createHash("sha256").update(JSON.stringify(approval)).digest("hex");
-    await tx.insert(companySkillSecurityApprovals).values({ companyId, contentHash, approval }).onConflictDoNothing();
-    // The key-share lock keeps a cleanup of unreferenced approvals from deleting this one before the version that uses it commits.
-    const [row] = await tx.select({ id: companySkillSecurityApprovals.id }).from(companySkillSecurityApprovals)
-      .where(and(eq(companySkillSecurityApprovals.companyId, companyId), eq(companySkillSecurityApprovals.contentHash, contentHash))).for("key share");
-    return row!.id;
+    for (let attempt = 1; ; attempt++) {
+      await tx.insert(companySkillSecurityApprovals).values({ companyId, contentHash, approval }).onConflictDoNothing();
+      // The key-share lock keeps a cleanup of unreferenced approvals from deleting this one before the version that uses it commits.
+      const [row] = await tx.select({ id: companySkillSecurityApprovals.id }).from(companySkillSecurityApprovals)
+        .where(and(eq(companySkillSecurityApprovals.companyId, companyId), eq(companySkillSecurityApprovals.contentHash, contentHash))).for("key share");
+      if (row) return row.id;
+      // A cleanup deleted the existing record between the insert and the lock; the next insert saves it again.
+      if (attempt >= 3) throw conflict("The security approval changed while it was saved. Try again.");
+    }
   }
 
   /** The approval records the versions of these skills use, read before the skills are deleted. */
