@@ -188,11 +188,14 @@ What it shows:
   (event-loop utilization 0.85, p99 lateness about 2 s), and 500 agents all in
   their busiest minute at the same time (0.95, p99 under 0.4 s).
 - The 3-connection checkpoint pool kept up locally: about 4,500 statements/s,
-  or 1,100 saves/s, at 500 agents in a busy minute. Each save holds a
-  connection for 4 round trips, so with a hosted round trip of about 1 ms the
-  same 3 connections allow about 750 saves/s, which is about 400 agents in a
-  busy minute. That is a per-process limit on a hosted database (change 1g
-  sizes this pool); it is computed here, not measured.
+  or 1,100 saves/s, at 500 agents in a busy minute. Since #21528 a save is 4
+  statements (BEGIN, the owner lock with the transaction id, the write,
+  COMMIT), and 5 where commit-time notifications are on (a `pg_notify` before
+  COMMIT). Each save holds a connection for those round trips, so with a hosted
+  round trip of about 1 ms the same 3 connections allow about 600–750 saves/s,
+  which is about 330–400 agents in a busy minute. That is a per-process limit
+  on a hosted database (change 1g sizes this pool); it is computed here, not
+  measured.
 - Earlier runs on 2026-11-14 at load averages of 20–55 showed one process
   falling behind at 500 agents in a busy minute and at 2,000 at recorded rates.
   With the machine quieter and the model's event order corrected, both kept up,
