@@ -160,46 +160,53 @@ production:
 | `tool.execution.started`, `tool.execution.completed` | 8% each | the same |
 
 The model's delta batching now also follows #21520: deltas that arrive while a
-batch commits go into one next batch.
+batch commits go into one next batch, until the run's next runner event.
 
 Measured 2026-11-14 on master (after #21511, #21520 and #21528), 60 s window,
-main pool of 10 connections, embedded PostgreSQL on the same machine. The
-machine was shared and its load average moved between 8 and 55; rows marked
-"busy" ran with a load average above 20, where the server process got only
-0.6–0.7 of a core while its event loop reported 0.95 or more busy, so those rows
-show the machine, not the server code.
+main pool of 10 connections, embedded PostgreSQL on the same machine. Each run
+started only when the machine's 1-minute load average was below 15; the load
+average at the start and the end is shown. The machine is shared, and the
+500-agent recorded run had other work start during its window (marked busy).
 
-| Agents | Profile | Load avg | Event-loop utilization | Statements/s | Statements per agent per second | Other events done / offered | Other event lateness p50 / p99 | API p50 / p99 |
-| --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| 500 | recorded | 10.5 | 0.46 | 2,176 | 4.4 | 15,000 / 15,000 | 2 ms / 165 ms | 2 ms / 274 ms |
-| 1,000 | recorded | 7.8 | 0.87 | 4,351 | 4.4 | 30,000 / 30,000 | 27 ms / 4.2 s | 36 ms / 5.2 s |
-| 1,000 | recorded, busy | 20.7 | 0.96 | 2,034 | — | 15,210 / 30,000 | 17 s / 37 s | 15 s / 27 s |
-| 2,000 | recorded | 12.6 | 0.98 | 2,750 | — | 18,804 / 60,000 | 25 s / 47 s | 23 s / 38 s |
-| 500 | burst, busy | 25.5 | 0.98 | 2,686 | — | 19,232 / 90,000 | 35 s / 48 s | 2.0 s / 5.7 s |
-| 1,000 | burst, busy | 25.9 | 0.98 | 3,838 | — | 25,491 / 180,000 | 30 s / 53 s | 2.5 s / 3.9 s |
-| 200 | stress, busy | 25.9 | 0.66 | 2,471 | 12.4 | 12,000 / 12,000 | 8 ms / 250 ms | 5 ms / 240 ms |
+| Agents | Profile | Load avg start / end | Event-loop utilization | Statements/s | Per agent per second | Checkpoint pool statements/s | Other events done / offered | Other event lateness p50 / p99 | Delta lateness p50 / p99 | API p50 / p99 |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| 500 | recorded, busy | 14.9 / 22.2 | 0.66 | 1,979 | 4.0 | 688 | 14,774 / 15,000 | 3 ms / 5.2 s | 2 ms / 5.7 s | 3 ms / 7.1 s |
+| 1,000 | recorded | 14.0 / 13.5 | 0.61 | 4,351 | 4.4 | 1,525 | 30,000 / 30,000 | 1 ms / 10 ms | 1 ms / 252 ms | 2 ms / 9 ms |
+| 2,000 | recorded | 13.4 / 15.9 | 0.85 | 8,701 | 4.4 | 3,049 | 60,000 / 60,000 | 2 ms / 2.1 s | 1 ms / 2.2 s | 3 ms / 3.0 s |
+| 250 | burst | 12.3 / 16.6 | 0.70 | 6,102 | 24.4 | 2,287 | 45,000 / 45,000 | 1 ms / 122 ms | 2 ms / 281 ms | 2 ms / 199 ms |
+| 500 | burst | 13.8 / 11.7 | 0.95 | 12,114 | 24.2 | 4,488 | 90,000 / 90,000 | 4 ms / 171 ms | 9 ms / 318 ms | 5 ms / 268 ms |
 
 No run had a failed operation, a failed checkpoint save or a lost lease.
 
 What it shows:
 
 - At recorded rates one process costs about 4.4 statements per agent per
-  second, and about a third of them are on the 3-connection checkpoint pool. The
+  second, and about 35% of them are on the 3-connection checkpoint pool. The
   non-delta runner events and their checkpoint saves are most of the cost; text
   deltas are now a small share.
-- One process keeps up at 1,000 agents on a quiet machine, near saturation
-  (event-loop utilization 0.87, p99 lateness about 4 s). It falls behind at
-  2,000.
-- In a busy minute (`burst`), one process does not keep up at 500 agents. The
-  3-connection checkpoint pool is a per-process limit here: a burst minute asks
-  for about 1.8 checkpoint saves per agent per second, each a transaction of 4
-  statements on that pool, so 500 agents ask for about 3,600 statements/s from 3
-  connections. That is a real limit of one process, not a model artefact
-  (change 1g sizes this pool).
+- On loopback PostgreSQL one process carries 2,000 agents at recorded rates
+  (event-loop utilization 0.85, p99 lateness about 2 s), and 500 agents all in
+  their busiest minute at the same time (0.95, p99 under 0.4 s).
+- The 3-connection checkpoint pool kept up locally: about 4,500 statements/s,
+  or 1,100 saves/s, at 500 agents in a busy minute. Each save holds a
+  connection for 4 round trips, so with a hosted round trip of about 1 ms the
+  same 3 connections allow about 750 saves/s, which is about 400 agents in a
+  busy minute. That is a per-process limit on a hosted database (change 1g
+  sizes this pool); it is computed here, not measured.
+- Earlier runs on 2026-11-14 at load averages of 20–55 showed one process
+  falling behind at 500 agents in a busy minute and at 2,000 at recorded rates.
+  With the machine quieter and the model's event order corrected, both kept up,
+  so those earlier results described the machine, not the server code.
 - The model saves a checkpoint without blocking the agent's next event. The
   controller acknowledges a runner event only after its checkpoint save, so in
   production a slow checkpoint pool also delays the run's next events. The
   model therefore understates the effect of that pool.
+- On the hosted instance a CPU profile of the main thread (2026-11-14, with
+  these fixes) shows building SQL text in Drizzle costing about as much
+  main-thread time as postgres.js result parsing (each about a fifth). A
+  statement with fixed SQL text, as in #21511, therefore saves more CPU there
+  than its statement count suggests; the next changes should be judged by CPU
+  per operation, not only by statements.
 
 ## Considered and not done
 
