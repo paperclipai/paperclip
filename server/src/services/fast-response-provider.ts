@@ -9,6 +9,7 @@ import { createXai } from "@ai-sdk/xai";
 import { createAmazonBedrock } from "@ai-sdk/amazon-bedrock";
 import { createOpenRouter } from "@openrouter/ai-sdk-provider";
 import {
+  aiRoutingBaseUrl,
   FAST_RESPONSE_MAX_BYTES,
   FAST_RESPONSE_MAX_CHARACTERS,
   unitsToCents,
@@ -114,10 +115,7 @@ export function fastResponseModel(
       redirect: "error",
     });
   };
-  const baseURL =
-    route?.kind === "openrouter"
-      ? "https://openrouter.ai/api/v1"
-      : route?.baseUrl?.replace(/\/+$/, "");
+  const baseURL = route ? aiRoutingBaseUrl(route, "fast_response") : undefined;
   const common = { fetch: guardedFetch, ...(baseURL ? { baseURL } : {}) };
   if (route?.kind === "bedrock")
     return createAmazonBedrock({

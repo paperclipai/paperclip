@@ -1,10 +1,14 @@
 import { describe, it, expect } from "vitest";
 import {
+  aiConnectionCatalogSlug,
   aiProviderRoutingSchema,
+  aiProviderSetupPreset,
+  aiRoutingBaseUrl,
   aiRoutingHarness,
   aiRoutingModel,
   createAiConnectionSchema,
   isAiConnectionCompatible,
+  isAiRoutingCompatible,
 } from "@paperclipai/shared";
 import { managedProviderRouting } from "../services/ai-provider-routing.js";
 
@@ -169,5 +173,45 @@ describe("provider routing", () => {
     });
     expect(aiProviderRoutingSchema.safeParse({ ...routing, auth: "aws_credentials" }).success).toBe(false);
     for (const key of ["AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_SESSION_TOKEN"]) expect(projected.env).not.toHaveProperty(key);
+  });
+  const wally = (extra: object = {}) => ({ kind: "wally", protocol: "chat", ...extra });
+  it.each([
+    [wally(), true],
+    [wally({ auth: "bearer" }), true],
+    [wally({ baseUrl: "https://inference.runanywhere.ai/v1" }), false],
+    [wally({ auth: "none" }), false],
+    [wally({ auth: "api_key", protocol: "messages" }), false],
+    [wally({ protocol: "responses" }), false],
+    [wally({ protocol: "messages" }), false],
+  ])("validates Wally routing %j", (route, valid) => {
+    expect(aiProviderRoutingSchema.safeParse(route).success).toBe(valid);
+  });
+  it.each([
+    ["opencode_local", true], ["hermes_local", true],
+    ["codex_local", false], ["claude_local", false], ["pi_local", false], ["gemini_local", false],
+  ])("Wally compatibility with %s is %s", (harness, expected) => {
+    expect(isAiRoutingCompatible(aiProviderRoutingSchema.parse(wally()), harness)).toBe(expected);
+  });
+  it("projects Wally's official endpoint into OpenCode and Hermes without exposing the key in config", () => {
+    const route = aiProviderRoutingSchema.parse(wally());
+    for (const harness of ["opencode_local", "hermes_local", "fast_response"]) expect(aiRoutingBaseUrl(route, harness)).toBe("https://inference.runanywhere.ai/v1");
+    const opencode = managedProviderRouting(route, "opencode_local", "fixture-secret", "deepseek-v4.1-flash");
+    expect(opencode.config.model).toBe("paperclip/deepseek-v4.1-flash");
+    expect(opencode.env.PAPERCLIP_AI_PROVIDER_URL).toBe("https://inference.runanywhere.ai/v1");
+    expect(JSON.parse(opencode.env.OPENCODE_CONFIG_CONTENT).provider.paperclip.options.baseURL).toBe("https://inference.runanywhere.ai/v1");
+    const hermes = managedProviderRouting(route, "hermes_local", "fixture-secret", "deepseek-v4.1-flash");
+    expect(hermes.env.OPENAI_BASE_URL).toBe("https://inference.runanywhere.ai/v1");
+    expect(hermes.hermesConfig).toContain('provider: "custom"');
+    expect(hermes.hermesConfig).toContain('base_url: "https://inference.runanywhere.ai/v1"');
+    expect(hermes.hermesConfig).not.toContain("fixture-secret");
+  });
+  it("accepts Wally only on OpenAI API-key connections and maps its catalog identity", () => {
+    const input = { provider: "openai", method: "api_key", name: "Wally", ownership: "personal", apiKey: "fixture-key", routing: wally() };
+    expect(createAiConnectionSchema.safeParse(input).success).toBe(true);
+    expect(createAiConnectionSchema.safeParse({ ...input, provider: "anthropic" }).success).toBe(false);
+    expect(createAiConnectionSchema.safeParse({ ...input, provider: "openrouter" }).success).toBe(false);
+    expect(createAiConnectionSchema.safeParse({ ...input, method: "subscription", apiKey: undefined, loginSessionId: "session" }).success).toBe(false);
+    expect(aiConnectionCatalogSlug("openai", { kind: "wally", protocol: "chat" })).toBe("wally");
+    expect(aiProviderSetupPreset("wally")).toEqual({ provider: "wally" });
   });
 });
