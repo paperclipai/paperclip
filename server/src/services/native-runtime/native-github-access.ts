@@ -35,6 +35,11 @@ export async function createNativeGitHubAccess(input: {
   let ready = true;
   let stopping: Promise<void> | undefined;
   let bridge: Awaited<ReturnType<typeof startAdapterExecutionTargetPaperclipBridge>> = null;
+  const stopBridge = async () => {
+    bridge?.markOrderlyCompletion?.();
+    await bridge?.stop();
+    bridge = null;
+  };
   const server = createServer(async (req, res) => {
     res.setHeader("Cache-Control", "no-store");
     res.setHeader("Content-Type", "application/json");
@@ -80,10 +85,9 @@ export async function createNativeGitHubAccess(input: {
   const stop = () => stopping ??= (async () => {
     stopped = true;
     active = null;
-    bridge?.markOrderlyCompletion?.();
     server.closeAllConnections();
     const results = await Promise.allSettled([
-      bridge?.stop(),
+      stopBridge(),
       new Promise<void>(resolve => server.close(() => resolve())),
       cleanupGitHubOperationLaunchers(location),
     ]);
@@ -143,8 +147,7 @@ export async function createNativeGitHubAccess(input: {
         if (!duplexRequested || bridge?.env.PAPERCLIP_API_BRIDGE_MODE !== "http2_v1") throw error;
         // Only the inactive readiness probe can have crossed this bridge.
         // Replacing it cannot replay an agent command or change its identity.
-        await bridge.stop();
-        bridge = null;
+        await stopBridge();
         await input.onLog?.("stderr", "[paperclip] GitHub HTTP/2 startup check failed; retrying with the file bridge.\n").catch(() => undefined);
         bridge = await startVerifiedBridge(false);
       }
@@ -152,6 +155,9 @@ export async function createNativeGitHubAccess(input: {
       // GitHub remains optional. Stage anonymous wrappers for this session;
       // the supervisor retries transport setup on the next run.
       ready = false;
+      // Stop an unverified transport now, including its remote queue polling.
+      // Retain ownership if cleanup throws so the outer teardown can retry it.
+      await stopBridge();
       await new Promise<void>(resolve => server.close(() => resolve()));
       await input.onLog?.("stderr", "[paperclip] GitHub runtime transport unavailable; continuing without managed GitHub access.\n").catch(() => undefined);
     }

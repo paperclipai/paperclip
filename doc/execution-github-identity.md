@@ -199,6 +199,7 @@ environment before publishing the launcher environment. The probe authenticates
 to the inactive broker and acquires no GitHub credential. If the HTTP/2 bridge
 fails this startup check, the controller closes it and tries the existing file
 bridge once. Both transports use the same live identity and credential resolver.
+An unverified final bridge is stopped before anonymous launchers are returned.
 This startup fallback cannot replay an agent command. A later HTTP/2 loss
 still makes the warm session unavailable for reuse.
 
