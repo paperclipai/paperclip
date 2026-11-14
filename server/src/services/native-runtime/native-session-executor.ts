@@ -13790,7 +13790,7 @@ async function executePaperclipNativeSessionAttempt(
             if (current()) {
               delete entry.finishRelease;
               entry.busy = false;
-              armWarmNativeSessionIdleTimer(scope, entry, lifecyclePolicy.idleTimeoutMs);
+              armWarmNativeSessionIdleTimer(scope, entry, warmIdleCloseDelay(lifecyclePolicy.idleTimeoutMs));
             }
           }
         };
