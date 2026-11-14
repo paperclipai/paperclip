@@ -144,6 +144,10 @@ class RunnerdExternalSession implements HarnessSession {
   #release: (() => Promise<void> | void) | null = null;
   #detachPort: (() => Promise<void>) | null = null;
   #closed = false;
+  #processCompletionFulfilled = false;
+  #detachComplete = false;
+  #ingressStopped = false;
+  #detachPromise: Promise<void> | null = null;
   #failure: Error | null = null;
   #resolvingRequests = new Set<string>();
   readonly handoffRuntimeRequest?: NonNullable<HarnessSession["handoffRuntimeRequest"]>;
@@ -247,6 +251,7 @@ class RunnerdExternalSession implements HarnessSession {
       if (pid && !o.runnerProcessLauncher) await o.onSpawn?.({ pid, processGroupId: this.#process.processGroupId ?? null,
         startedAt: this.#process.startedAt ?? new Date().toISOString() });
       void this.#process.completion.then(result => {
+        this.#processCompletionFulfilled = true;
         if (this.#closed) return;
         // Rust exits after the authenticated shutdown receipt is committed and
         // ACKed. That exit can precede the SDK's next command poll.
@@ -376,17 +381,36 @@ class RunnerdExternalSession implements HarnessSession {
       providerRecoveryPolicy: "same_session_only",
       lastSourceSequence: this.#events.at(-1)?.sourceSeq ?? 0 };
   }
-  async detachControllerForRestart() {
+  detachControllerForRestart(): Promise<void> {
+    if (this.#detachComplete) return Promise.resolve();
+    if (this.#detachPromise) return this.#detachPromise;
     this.#closed = true; this.#wake();
-    await this.#detachPort?.(); await this.#release?.(); await this.#core?.stop();
-    await this.#core?.drainPendingConnectionProcessing();
-    this.#core?.retireSemanticToolCallbacks();
+    const cleanup = (async () => {
+      if (this.#detachPort) { await this.#detachPort(); this.#detachPort = null; }
+      if (this.#release) { await this.#release(); this.#release = null; }
+      if (!this.#ingressStopped) { await this.#core?.stop(); this.#ingressStopped = true; }
+      await this.#core?.drainPendingConnectionProcessing();
+      this.#core?.retireSemanticToolCallbacks();
+      this.#detachComplete = true;
+    })();
+    this.#detachPromise = cleanup;
+    void cleanup.finally(() => {
+      if (this.#detachPromise === cleanup) this.#detachPromise = null;
+    }).catch(() => {});
+    return cleanup;
   }
   async close(input: { reason: string; force?: boolean }) {
-    if (this.#closed) return;
-    if (input.force) await this.interrupt();
-    await this.#command("session.close", {}, `${this.codec.commandPrefix}_close`);
-    await this.#command("runner.shutdown", {}, `${this.codec.commandPrefix}_shutdown`);
+    if (this.#closed) return this.detachControllerForRestart();
+    const confirmedExit = () => this.#processCompletionFulfilled && this.#process?.isExitConfirmed?.() === true;
+    if (!confirmedExit()) {
+      try {
+        if (input.force) await this.interrupt();
+        await this.#command("session.close", {}, `${this.codec.commandPrefix}_close`);
+        await this.#command("runner.shutdown", {}, `${this.codec.commandPrefix}_shutdown`);
+      } catch (error) {
+        if (!confirmedExit()) throw error;
+      }
+    }
     await this.detachControllerForRestart();
   }
 }
