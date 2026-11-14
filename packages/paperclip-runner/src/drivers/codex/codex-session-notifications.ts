@@ -590,6 +590,7 @@ async function mapNotificationBody(state: CodexSessionState, notification: Codex
         { status: text(turn.status, "inProgress"), ...(providerStartedTurn ? { origin: "provider" } : {}) },
         { turnId },
       );
+      if (providerStartedTurn) state.captureBoundary(state.sourceSequence);
       return;
     }
     if (notification.method === "turn/completed") {

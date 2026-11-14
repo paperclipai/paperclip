@@ -421,6 +421,32 @@ describe("HarnessDriverBackend", () => {
     });
   });
 
+  it("builds a native snapshot from the driver's boundary snapshot only when asked for that sequence", async () => {
+    const boundarySnapshot = vi.fn((sourceSeq: number): PersistedHarnessSession | null => sourceSeq !== 7 ? null : {
+      driverKind: "fake", driverSessionId: "driver-1", providerSessionId: "provider-1", providerIdentity,
+      activeTurnId: null, semanticResult: null, awaitingProviderTurn: true, lastSourceSequence: 7 });
+    class BoundarySession extends FakeHarnessSession {
+      boundarySnapshot = boundarySnapshot;
+      override async snapshot(): Promise<PersistedHarnessSession> {
+        return { ...(await super.snapshot()), activeTurnId: "provider-1", lastSourceSequence: 9 };
+      }
+    }
+    const backend = new HarnessDriverBackend({ ...driver, async openSession() { return new BoundarySession(); } });
+    const session = await backend.openSession({ identity: {
+      runId: "run-boundary", sessionId: "session-1", companyId: "company-1", issueId: "issue-1", agentId: "agent-1",
+    } });
+    const signal = new AbortController().signal;
+    await expect(session.snapshot({ signal, sourceSeq: 7 })).resolves.toMatchObject({
+      cursor: "7", activeTurnId: null, semanticResult: null, awaitingProviderTurn: true });
+    expect(boundarySnapshot).toHaveBeenCalledExactlyOnceWith(7);
+    const current = await session.snapshot();
+    expect(current).toMatchObject({ cursor: "9", activeTurnId: "provider-1" });
+    expect(current).not.toHaveProperty("awaitingProviderTurn");
+    expect(boundarySnapshot).toHaveBeenCalledOnce();
+    await expect(session.snapshot({ signal, sourceSeq: 8 })).resolves.toMatchObject({ cursor: "9", activeTurnId: "provider-1" });
+    expect(boundarySnapshot).toHaveBeenLastCalledWith(8);
+  });
+
   it("preserves a consumed disposition allowance in native snapshots", async () => {
     class ConsumedRecoverySession extends FakeHarnessSession {
       override async snapshot(): Promise<PersistedHarnessSession> {

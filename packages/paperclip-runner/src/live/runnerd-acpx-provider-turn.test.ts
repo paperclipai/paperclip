@@ -104,7 +104,7 @@ async function runProviderTurnScenario(tokens: string, options: { agent?: "claud
   } });
   const calls = async () => (await readFile(journal, "utf8").catch(() => "")).trim().split("\n").filter(Boolean)
     .flatMap(line => { try { return [JSON.parse(line)]; } catch { return []; } });
-  const appended: PrpEvent[] = [];
+  const appended: PrpEvent[] = [], committed: PrpEvent[] = [];
   const completeRun = vi.fn(async () => undefined);
   const resolveMissingResult = vi.fn(async () => null);
   try {
@@ -117,7 +117,12 @@ async function runProviderTurnScenario(tokens: string, options: { agent?: "claud
         async openRun() {}, async checkpointSession() {},
         async appendEvent(value: PrpEvent) {
           appended.push(structuredClone(value));
-          return { cursor: value.sourceSeq, highestContiguousSourceSeq: value.sourceSeq, disposition: "committed" };
+          const source = committed.filter(event => event.sourceInstanceId === value.sourceInstanceId);
+          const existing = source.find(event => event.sourceEventId === value.sourceEventId);
+          if (existing && (existing.sourceSeq !== value.sourceSeq || JSON.stringify(existing.payload) !== JSON.stringify(value.payload))) throw new Error("source_event_replay_conflict");
+          if (!existing && value.sourceSeq !== (source.at(-1)?.sourceSeq ?? 0) + 1) throw new Error(`native_event_source_gap: ${value.eventType} ${value.sourceSeq}`);
+          if (!existing) committed.push(structuredClone(value));
+          return { cursor: value.sourceSeq, highestContiguousSourceSeq: Math.max(value.sourceSeq, source.at(-1)?.sourceSeq ?? 0), disposition: existing ? "duplicate" as const : "committed" as const };
         },
         async replayEvents() { return { events: [], highestContiguousSourceSeq: 0 }; },
         completeRun,
@@ -375,12 +380,16 @@ const replyResult: PrpStructuredRunResult = { schema: "paperclip.run_result.v1",
   completionClaim: { contractRevision: "acpx-provider-turns-v1", objectiveSatisfied: true, criteria: [{ criterionId: "objective", status: "satisfied", evidenceRefs: [] }], remainingWork: [] },
   evidence: [], verification: [], attentionRequests: [], artifacts: [] };
 
-async function runConsumerRestartScenario(tokens: string, options: { at: "wait" | "provider-turn" | "turn"; waitMs: number; replyResult?: boolean; holdFirstToolCall?: boolean; sidecarArgs?: string; optIn?: boolean }) {
+async function runConsumerRestartScenario(tokens: string, options: { at: "wait" | "provider-turn" | "turn"; waitMs: number; replyResult?: boolean; holdFirstToolCall?: boolean; sidecarArgs?: string; optIn?: boolean;
+  slowAppend?: (event: PrpEvent) => boolean }) {
   const fixture = await restartFixture(tokens, options.sidecarArgs, options.optIn ?? true);
   const { identity, execution } = fixture;
   const appended: PrpEvent[] = [], committed: PrpEvent[] = [], appendedAt: number[] = [], checkpoints: PersistedNativeSession[] = [];
   const completeRun = vi.fn(async (_value: unknown) => undefined);
-  let fenced = false, held = false;
+  let fenced = false, held = false, slowed = false;
+  let releaseQueued = () => {};
+  const fence = new Promise<void>(done => { releaseQueued = done; });
+  const queuedAtRestart: PrpEvent[] = [];
   const controlPlane = (fencedController: boolean) => {
     const guard = () => { if (fencedController && fenced) throw new Error("controller fenced for restart"); };
     return {
@@ -388,6 +397,10 @@ async function runConsumerRestartScenario(tokens: string, options: { at: "wait" 
       async checkpointSession(value: PersistedNativeSession) { guard(); checkpoints.push(structuredClone(value)); },
       async appendEvent(value: PrpEvent) {
         guard();
+        if (fencedController && options.slowAppend) {
+          if (slowed) { queuedAtRestart.push(structuredClone(value)); await fence; guard(); }
+          if (options.slowAppend(value)) { slowed = true; await new Promise(done => setTimeout(done, 1_000)); }
+        }
         appended.push(structuredClone(value)); appendedAt.push(Date.now());
         const source = committed.filter(event => event.sourceInstanceId === value.sourceInstanceId);
         const existing = source.find(event => event.sourceEventId === value.sourceEventId);
@@ -419,8 +432,11 @@ async function runConsumerRestartScenario(tokens: string, options: { at: "wait" 
     const shaped = (value: PersistedNativeSession) => options.at === "wait" ? value.awaitingProviderTurn === true
       : options.at === "turn" ? typeof value.activeTurnId === "string" : value.activeTurnId === "provider-1";
     await vi.waitFor(() => expect(appended.some(reached) && (!options.holdFirstToolCall || held)).toBe(true), { timeout: 20_000, interval: 20 });
-    await vi.waitFor(() => expect(checkpoints.some(shaped)).toBe(true), { timeout: 1_000, interval: 20 }).catch(() => undefined);
+    await vi.waitFor(() => expect(checkpoints.some(shaped)).toBe(true), { timeout: options.slowAppend ? 10_000 : 1_000, interval: 20 }).catch(() => undefined);
+    if (options.slowAppend) await vi.waitFor(() => expect(queuedAtRestart.length).toBeGreaterThan(0), { timeout: 5_000, interval: 20 });
     fenced = true;
+    releaseQueued();
+    const committedAtRestart = structuredClone(committed);
     const checkpoint = checkpoints.at(-1)!;
     const restart = fixture.restarted(first, checkpoint, { resumeActiveTurnId: checkpoint.activeTurnId ?? null });
     await (session as NativeSession | null)!.detachControllerForRestart!();
@@ -437,7 +453,7 @@ async function runConsumerRestartScenario(tokens: string, options: { at: "wait" 
     const closeOutcome = await second.transport.close().then(() => "closed", (error: unknown) => String(error instanceof Error ? error.message : error));
     const final = await fixture.atRestart();
     return { runnerInstanceId: identity.runnerInstanceId, checkpoint, pid, recoveredPid, atRestart, serverRequests, appended, appendedAfterRestart: appended.slice(firstAppended), checkpoints, outcome, completeRun, closeOutcome,
-      diagnostics: fixture.diagnostics, journalled: final.journalled, durable: final.durable };
+      diagnostics: fixture.diagnostics, journalled: final.journalled, durable: final.durable, committed, committedAtRestart, queuedAtRestart };
   } catch (error) {
     throw await fixture.fail(error);
   } finally {
@@ -673,4 +689,57 @@ it.skipIf(process.platform === "win32")("R5 appends both provider turns after a 
   expectNoTerminalPersistedWithoutResult(run);
   expect(answeredCalls(run)).toEqual([["provider-2", "paperclip_finish", true]]);
   expect(resolvedCalls(run.journalled)).toEqual([["provider-2", "call-provider-finish", null]]);
+}, 60_000);
+
+const providerTurnStarts = (run: ConsumerRun) => run.committed.filter(event => event.eventType === "turn.started" && event.payload.origin === "provider").map(event => event.turnId);
+const expectBoundaryRecovery = (run: ConsumerRun) => {
+  expect(run.outcome, run.diagnostics.slice(-12).join("\n")).toBe("finalized");
+  expect(run.queuedAtRestart.length).toBeGreaterThan(0);
+  expect(run.checkpoint.cursor).toBe(String(run.committedAtRestart.filter(event => event.sourceInstanceId === run.runnerInstanceId).at(-1)!.sourceSeq));
+  expect(providerTurnStarts(run)).toEqual(["provider-1"]);
+  expect(run.committed.filter(event => event.eventType === "turn.completed" && event.turnId === "provider-1")).toHaveLength(1);
+  const sequence = run.committed.filter(event => event.sourceInstanceId === run.runnerInstanceId).map(event => event.sourceSeq);
+  expect(sequence).toEqual(sequence.map((_value, index) => index + 1));
+  expect(run.completeRun).toHaveBeenCalledOnce();
+  expect(run.closeOutcome).toBe("closed");
+  expect(unsettled(run.diagnostics)).toEqual([]);
+  expect(run.durable).not.toContain("conflicting duplicate");
+};
+const providerStart = (event: PrpEvent) => event.eventType === "turn.started" && event.payload.origin === "provider";
+const awaitingTerminal = (event: PrpEvent) => event.eventType === "turn.completed" && event.payload.awaitingProviderTurn === true;
+
+it.skipIf(process.platform === "win32")("R6 saves the provider-start checkpoint as of the start Core stored while later output is still queued", async () => {
+  const run = await runConsumerRestartScenario("live provider-turn provider-goal-at-terminal provider-turn-delay-ms=300 provider-turn-until-snapshot",
+    { at: "provider-turn", waitMs: 1_000, replyResult: true, slowAppend: providerStart });
+  expect(run.checkpoint).toMatchObject({ activeTurnId: "provider-1", semanticResult: null });
+  expect(run.queuedAtRestart.map(event => [event.eventType, event.turnId])).toEqual([["item.delta", "provider-1"]]);
+  expectBoundaryRecovery(run);
+}, 60_000);
+
+it.skipIf(process.platform === "win32")("R7 saves the waiting checkpoint as of the awaited terminal Core stored while the provider turn is already queued", async () => {
+  const run = await runConsumerRestartScenario("live provider-turn provider-result-resolved provider-goal-at-terminal",
+    { at: "wait", waitMs: 500, holdFirstToolCall: true, slowAppend: awaitingTerminal });
+  expect(run.checkpoint).toMatchObject({ activeTurnId: null, awaitingProviderTurn: true, semanticResult: null });
+  expectBoundaryRecovery(run);
+  expect(run.committed.filter(event => event.eventType === "run.result.proposed").map(event => event.turnId)).toEqual(["provider-1"]);
+  expect(answeredCalls(run)).toEqual([["provider-1", "paperclip_finish", true]]);
+  expect(resolvedCalls(run.journalled)).toEqual([["provider-1", "call-provider-finish", null]]);
+}, 60_000);
+
+it.skipIf(process.platform === "win32")("R8 characterization: after the old controller answered the provider turn's finish, the boundary checkpoint has no result and the run ends on the missing-result path", async () => {
+  const run = await runConsumerRestartScenario("live provider-turn provider-result-resolved provider-goal-at-terminal provider-turn-delay-ms=300",
+    { at: "provider-turn", waitMs: 500, slowAppend: providerStart });
+  expect(run.outcome).toContain("native_finalization_missing");
+  expect(run.checkpoint).toMatchObject({ activeTurnId: "provider-1", semanticResult: null });
+  expect(run.checkpoint.cursor).toBe(String(run.committedAtRestart.filter(event => event.sourceInstanceId === run.runnerInstanceId).at(-1)!.sourceSeq));
+  expect(run.queuedAtRestart.map(event => event.eventType)).toEqual(["run.result.proposed"]);
+  expect(providerTurnStarts(run)).toEqual(["provider-1"]);
+  expect(run.committed.filter(event => event.eventType === "run.result.proposed")).toEqual([]);
+  expect(run.committed.filter(event => event.eventType === "turn.completed" && event.turnId === "provider-1")).toHaveLength(1);
+  const sequence = run.committed.filter(event => event.sourceInstanceId === run.runnerInstanceId).map(event => event.sourceSeq);
+  expect(sequence).toEqual(sequence.map((_value, index) => index + 1));
+  expect(answeredCalls(run)).toEqual([]);
+  expect(resolvedCalls(run.journalled)).toEqual([["provider-1", "call-provider-finish", null]]);
+  expect(run.completeRun).not.toHaveBeenCalled();
+  expect(run.durable).not.toContain("conflicting duplicate");
 }, 60_000);

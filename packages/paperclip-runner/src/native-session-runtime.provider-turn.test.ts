@@ -108,6 +108,7 @@ function harness(options: { withoutInterrupt?: boolean; restart?: RestartContinu
   let wake: (() => void) | null = null;
   let activeProviderTurn: string | null = null;
   const observed = { activeTurnId: null as string | null, awaiting: false };
+  const snapshotSequences: Array<number | undefined> = [];
   const push = (...values: Array<PrpEvent | "end">) => {
     for (const value of values) {
       if (value !== "end" && value.eventType === "turn.started") activeProviderTurn = value.turnId ?? null;
@@ -152,7 +153,8 @@ function harness(options: { withoutInterrupt?: boolean; restart?: RestartContinu
     startTurn,
     ...(options.withoutInterrupt ? {} : { interrupt }),
     async result() { return null; },
-    async snapshot() {
+    async snapshot(snapshotOptions?: { sourceSeq?: number }) {
+      snapshotSequences.push(snapshotOptions?.sourceSeq);
       const base: PersistedNativeSession = { backendKind: "mock", sessionId: identity.sessionId, identity,
         providerSessionId: "provider-session", cursor: String(sequence), activeTurnId: null, pendingRuntimeRequests: [], lineage: [] };
       if (!options.restart) return { ...base, activeTurnId: observed.activeTurnId, ...(observed.awaiting ? { awaitingProviderTurn: true } : {}) };
@@ -165,7 +167,7 @@ function harness(options: { withoutInterrupt?: boolean; restart?: RestartContinu
     },
     async close() { push("end"); },
   };
-  return { session, push, interrupt, startTurn };
+  return { session, push, interrupt, startTurn, snapshotSequences };
 }
 
 async function run(options: {
@@ -223,7 +225,7 @@ async function run(options: {
   await options.after?.(control, appended);
   const outcome = await execution;
   return { outcome, returned, appended, completeRun, resolveMissingResult, interrupt: control.interrupt, flushStreamingEvents,
-    startTurn: control.startTurn, checkpoints, checkpointedAfter, elapsedMs: Date.now() - started };
+    startTurn: control.startTurn, checkpoints, checkpointedAfter, snapshotSequences: control.snapshotSequences, elapsedMs: Date.now() - started };
 }
 
 const types = (events: PrpEvent[]) => events.map(value => value.eventType);
@@ -262,6 +264,14 @@ describe("the controller consumer with provider-started turn sequences", () => {
       expect(checkpointsAfter(outcome, value => value.turnId === turnId && value.eventType === "turn.started"))
         .toEqual([expect.objectContaining({ activeTurnId: turnId })]);
     }
+  });
+
+  it("asks for the snapshot as of the awaiting terminal and the provider start it has just appended", async () => {
+    const outcome = await run({ stream: [...turnOne(true), ...providerTurn("provider-1", { result: true })] });
+    expect(outcome.outcome).toBe("finalized");
+    const awaited = outcome.appended.find(value => value.payload.awaitingProviderTurn === true)!;
+    const started = outcome.appended.find(value => value.payload.origin === "provider")!;
+    expect(outcome.snapshotSequences.filter(value => value !== undefined)).toEqual([awaited.sourceSeq, started.sourceSeq]);
   });
 
   it("persists no checkpoint of either kind for a turn that does not await", async () => {

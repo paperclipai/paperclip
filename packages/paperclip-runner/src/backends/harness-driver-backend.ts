@@ -10,6 +10,7 @@ import type {
   NativeSessionBackend,
   NativeSessionBackendDescriptor,
   NativeSessionRecoveryOptions,
+  NativeSessionSnapshotOptions,
   OpenNativeSessionInput,
   PersistedNativeSession,
 } from "../contracts/native-session-backend.js";
@@ -420,10 +421,11 @@ class HarnessNativeSession implements NativeSession {
     throw this.#protocolIntegrityFailure;
   }
 
-  async #harnessSnapshot(): Promise<PersistedHarnessSession> {
+  async #harnessSnapshot(sourceSeq?: number): Promise<PersistedHarnessSession> {
     this.#assertProtocolIntegrity();
     try {
-      const snapshot = await this.#session.snapshot();
+      const boundary = sourceSeq === undefined ? null : this.#session.boundarySnapshot?.(sourceSeq) ?? null;
+      const snapshot = boundary ?? await this.#session.snapshot();
       this.#assertProtocolIntegrity();
       return snapshot;
     } catch (error) {
@@ -874,9 +876,9 @@ class HarnessNativeSession implements NativeSession {
     };
   }
 
-  async snapshot(): Promise<PersistedNativeSession> {
+  async snapshot(options?: NativeSessionSnapshotOptions): Promise<PersistedNativeSession> {
     this.#assertProtocolIntegrity();
-    const snapshot = await this.#harnessSnapshot();
+    const snapshot = await this.#harnessSnapshot(options?.sourceSeq);
     return {
       backendKind: "runner",
       driverKind: snapshot.driverKind,

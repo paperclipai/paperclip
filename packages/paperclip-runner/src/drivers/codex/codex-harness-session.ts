@@ -903,6 +903,10 @@ export class CodexHarnessSession
 
   async snapshot(): Promise<PersistedHarnessSession> {
     this.assertProtocolIntegrity();
+    return this.persistedSnapshot();
+  }
+
+  protected persistedSnapshot(): PersistedHarnessSession {
     return {
       driverKind: this.driverKind,
       workingDirectory: this.opened.context.workingDirectory,

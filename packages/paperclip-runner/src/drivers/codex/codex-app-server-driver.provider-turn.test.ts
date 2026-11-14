@@ -403,3 +403,66 @@ describe("Codex app-server driver after a controller restart during a wait for t
     expect(recovery).toMatchObject({ recovered: false, reason: expect.stringContaining("thread/read exposed active turn provider-1 instead of persisted active turn turn-1") });
   });
 });
+
+describe("Codex app-server driver boundary snapshots for provider-started turns", () => {
+  const sourceSeq = (value: unknown) => (value as { sourceSeq: number }).sourceSeq;
+
+  it("keeps the state as of the awaiting terminal and of the provider start after the driver moved on", async () => {
+    const { transport, session, events, first } = await completedFirstTurn(true);
+    const terminalSeq = sourceSeq(first.at(-1));
+    transport.push("turn/started", { threadId: "thread-1", turn: { id: "provider-1", status: "inProgress" }, origin: "provider" });
+    transport.push("paperclip/runResult", { threadId: "thread-1", turnId: "provider-1", result });
+    transport.push("turn/completed", { threadId: "thread-1", turn: { id: "provider-1", status: "completed", items: [] } });
+    const second = await nextUntil(events, eventType => eventType === "turn.completed");
+    const startSeq = sourceSeq(second.find(value => value.eventType === "turn.started"));
+    const current = await session.snapshot();
+    expect(current).toMatchObject({ activeTurnId: null, semanticResult: { turnId: "provider-1" } });
+    expect(current.lastSourceSequence).toBeGreaterThan(startSeq);
+    expect(session.boundarySnapshot!(terminalSeq - 1)).toBeNull();
+    expect(session.boundarySnapshot!(terminalSeq)).toMatchObject({ activeTurnId: null, awaitingProviderTurn: true, semanticResult: null, lastSourceSequence: terminalSeq });
+    expect(session.boundarySnapshot!(terminalSeq)).toBeNull();
+    const atStart = session.boundarySnapshot!(startSeq);
+    expect(atStart).toMatchObject({ activeTurnId: "provider-1", semanticResult: null, lastSourceSequence: startSeq });
+    expect(atStart).not.toHaveProperty("awaitingProviderTurn");
+    expect(session.boundarySnapshot!(startSeq)).toBeNull();
+    await session.close({ reason: "fixture complete" });
+  });
+
+  it("drops an earlier boundary once a later one is asked for", async () => {
+    const { transport, session, events, first } = await completedFirstTurn(true);
+    const terminalSeq = sourceSeq(first.at(-1));
+    transport.push("turn/started", { threadId: "thread-1", turn: { id: "provider-1", status: "inProgress" }, origin: "provider" });
+    const started = await nextUntil(events, eventType => eventType === "turn.started");
+    expect(session.boundarySnapshot!(sourceSeq(started.at(-1)))).toMatchObject({ activeTurnId: "provider-1" });
+    expect(session.boundarySnapshot!(terminalSeq)).toBeNull();
+    await session.close({ reason: "fixture complete" });
+  });
+
+  it("captures no boundary for a terminal that does not await", async () => {
+    const { session, first } = await completedFirstTurn(false);
+    expect(session.boundarySnapshot!(sourceSeq(first.at(-1)))).toBeNull();
+    await session.close({ reason: "fixture complete" });
+  });
+
+  it("keeps the disposition request owed in the boundary of a restart continuation that ends awaiting", async () => {
+    const transport = new FakeCodexTransport();
+    const session = await makeDriver([transport]).openSession({
+      runId: "run-awaiting-continuation", normalizedSessionId: "session-awaiting-continuation", workingDirectory: WORKSPACE,
+    });
+    await session.startTurn({ message: { role: "user", text: "Finish the request." } });
+    transport.push("turn/completed", { threadId: "thread-1", turn: { id: "turn-1", status: "failed",
+      error: { code: "provider_turn_lost_on_restore", recoverable: true }, items: [] } });
+    await collectUntilTerminal(session.events());
+    transport.turnStartResponse = Promise.resolve({ turn: { id: "turn-2", status: "inProgress", items: [] } });
+    await expect(session.startTurn({ message: { role: "user", text: "Continue." }, continuation: true }))
+      .resolves.toMatchObject({ borrowedDispositionMarker: true });
+    expect(await session.snapshot()).toMatchObject({ dispositionOnlyRecoveryConsumed: true, dispositionOnlyRecoveryTurnId: "turn-2" });
+    transport.push("turn/completed", { threadId: "thread-1", turn: { id: "turn-2", status: "completed", items: [] }, awaitingProviderTurn: true });
+    const continuation = await collectUntilTerminal(session.events());
+    const terminal = continuation.at(-1)!;
+    expect(terminal).toMatchObject({ eventType: "turn.completed", turnId: "turn-2", payload: { awaitingProviderTurn: true } });
+    expect(session.boundarySnapshot!(terminal.sourceSeq)).toMatchObject({ activeTurnId: null, awaitingProviderTurn: true,
+      dispositionOnlyRecoveryConsumed: false, dispositionOnlyRecoveryTurnId: null, lastSourceSequence: terminal.sourceSeq });
+    await session.close({ reason: "fixture complete" });
+  });
+});
