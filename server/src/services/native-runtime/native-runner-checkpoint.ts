@@ -128,12 +128,39 @@ export async function assertNativeRunnerCheckpointOwner(tx: CheckpointTransactio
   await validateNativeRunnerCheckpointOwner(tx, owner, locked, newWork);
 }
 
+const ROUTINE_CHECKPOINT_SAVE_SQL = `
+  with locked_owner as (
+    select lease_expires_at from native_run_finalizations
+    where company_id = $1::uuid and issue_id = $2::uuid and run_id = $3::uuid and controller_boot_id = $4::text
+      and controller_generation = $5::integer and lease_owner = $6::text
+    for update
+  ), owner as (
+    select 1 from locked_owner where lease_expires_at > clock_timestamp()
+  ), written as (
+    insert into "native_runner_checkpoints" (company_id, issue_id, run_id, part, material)
+    select $1::uuid, $2::uuid, $7::uuid, part.value ->> 'part', part.value -> 'material'
+    from owner cross join jsonb_array_elements($8::jsonb) as part(value)
+    on conflict (run_id, part) do update set material = excluded.material, updated_at = now()
+    returning 1
+  )
+  select (select count(*)::int from owner) as owned, (select count(*)::int from written) as written`;
+
 export function nativeRunnerCheckpointWriter(db: Db, owner: NativeRunnerCheckpointOwner) {
   const persistenceDb = checkpointDb(db);
   let previousWork = new Set<string>();
   return async (checkpoint: DurablePrpCheckpoint): Promise<void> => {
     if (checkpoint.runId !== owner.runId) throw new Error("native_runner_checkpoint_binding_mismatch");
     const changed = encryptParts(owner, checkpoint.changedRecords);
+    if (changed.length > 0 && !checkpoint.reset && checkpoint.removedRecords.length === 0 && !checkpoint.changedRecords.has("header")
+      && !checkpoint.predecessor && owner.runId === owner.authorityRunId) {
+      const [saved] = await persistenceDb.$client.unsafe<{ owned: number; written: number }[]>(ROUTINE_CHECKPOINT_SAVE_SQL, [
+        owner.companyId, owner.issueId, owner.authorityRunId, owner.bootId, String(owner.generation), owner.leaseOwner, owner.runId,
+        JSON.stringify(changed.map(part => ({ part: part.part, material: part.material })))]);
+      if (saved?.owned === 1 && saved.written === changed.length) {
+        previousWork = new Set(checkpoint.workCommandIds);
+        return;
+      }
+    }
     await persistenceDb.transaction(async tx => {
       if (owner.runId !== owner.authorityRunId) {
         await lockSourceRecoveryCoordinators(tx, owner.companyId, [owner.runId, owner.authorityRunId]);
