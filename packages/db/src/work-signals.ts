@@ -1,5 +1,6 @@
 import { sql } from "drizzle-orm";
 import { randomUUID } from "node:crypto";
+import { workSignalDebug } from "./work-signal-debug.js";
 
 // Hints about existing durable queues; process-local by default, with optional
 // commit-bound PostgreSQL notifications during controller replacement. No SQL
@@ -72,6 +73,7 @@ export async function signalDatabaseWork(connection: object, topic: string, hint
   if (!context) return; // Lightweight service test doubles have no DB lifecycle.
   const state = context.transaction;
   if (!state) throw new Error("Database work must be registered inside a transaction");
+  if (workSignalDebug.enabled) workSignalDebug.signal(topic, hint, signalDatabaseWork);
   state.topics.add(topic);
   if (hint !== undefined) {
     let hints = state.hints.get(topic);
@@ -138,6 +140,7 @@ export function databaseWorkCommitNotification(owner: object, topic: string): st
 export function publishDatabaseWorkSettled(owner: object, topic: string, hint?: string): void {
   const context = contexts.get(owner);
   if (!context) return;
+  if (workSignalDebug.enabled) workSignalDebug.event(topic, "settled_publish", { hint }, "sampled", publishDatabaseWorkSettled);
   if (!context.transaction) {
     publish(context.scope, topic, "settled", hint === undefined ? undefined : new Set([hint]));
     return;
@@ -159,12 +162,16 @@ export function receiveDatabaseWorkNotification(owner: object, payload: string):
   try { value = JSON.parse(payload); } catch { return; }
   if (!value || value.version !== 1 || typeof value.origin !== "string" || value.origin === scope.notificationOrigin
     || typeof value.topic !== "string" || !validTopic(value.topic)) return;
+  if (workSignalDebug.enabled) workSignalDebug.event(value.topic, "remote_notification");
   publish(scope, value.topic);
 }
 /** Reconnect can lose hints. Reconstruct existing durable queues once; no poll. */
 export function reconcileDatabaseWorkNotifications(owner: object): void {
   const scope = contexts.get(owner)?.scope;
-  if (scope) for (const topic of scope.listeners.keys()) publish(scope, topic);
+  if (scope) for (const topic of scope.listeners.keys()) {
+    if (workSignalDebug.enabled) workSignalDebug.event(topic, "notification_reconnect");
+    publish(scope, topic);
+  }
 }
 
 export function databaseWorkPending(owner: object, topic: string): boolean {
@@ -188,7 +195,10 @@ export async function reconcileDatabaseWork(owner: object, topic: string): Promi
       throw new Error("Unexpected database transaction status");
     }
     scope.transactions.delete(state);
-    for (const affected of state.topics) publish(scope, affected, "settled", state.hints.get(affected));
+    for (const affected of state.topics) {
+      if (workSignalDebug.enabled) workSignalDebug.event(affected, "uncertain_settled", { status: rows[0]?.status ?? null });
+      publish(scope, affected, "settled", state.hints.get(affected));
+    }
   }
 }
 
