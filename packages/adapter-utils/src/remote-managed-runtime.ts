@@ -153,6 +153,17 @@ export async function prepareRemoteManagedRuntime(input: {
       )
     : baseWorkspaceRemoteDir;
   let runtimeRootDir = path.posix.join(workspaceRemoteDir, ".paperclip-runtime", input.adapterKey);
+  const remoteRunDir = syncWorkspace ? path.posix.dirname(workspaceRemoteDir) : null;
+  const removeRemoteRunDir = async (): Promise<void> => {
+    if (!remoteRunDir) return;
+    try {
+      await runSshCommand(input.spec, `rm -rf -- ${shellQuote(remoteRunDir)}`);
+    } catch (error) {
+      console.warn(
+        `[paperclip] Failed to remove remote run directory ${remoteRunDir}. ${String(error)}`,
+      );
+    }
+  };
   let privateRuntimeDir: string | null = null;
   const cleanupPrivateRuntime = async () => {
     if (!privateRuntimeDir) return;
@@ -216,16 +227,24 @@ export async function prepareRemoteManagedRuntime(input: {
     }
   } catch (error) {
     try {
-      if (preparedWorkspace && baselineSnapshot) await restoreWorkspaceFromSshExecution({
-        spec: input.spec,
-        localDir: input.workspaceLocalDir,
-        remoteDir: workspaceRemoteDir,
-        baselineSnapshot,
-        restoreGitHistory: preparedWorkspace.gitBacked,
-        onProgress: input.onProgress,
-        repositories: repositoryBaselines,
-      });
-    } finally { await cleanupPrivateRuntime(); }
+      if (preparedWorkspace && baselineSnapshot) {
+        await restoreWorkspaceFromSshExecution({
+          spec: input.spec,
+          localDir: input.workspaceLocalDir,
+          remoteDir: workspaceRemoteDir,
+          baselineSnapshot,
+          restoreGitHistory: preparedWorkspace.gitBacked,
+          onProgress: input.onProgress,
+          repositories: repositoryBaselines,
+        });
+      }
+    } finally {
+      try {
+        await cleanupPrivateRuntime();
+      } finally {
+        await removeRemoteRunDir();
+      }
+    }
     throw error;
   }
 
@@ -297,6 +316,7 @@ export async function prepareRemoteManagedRuntime(input: {
     }
     if (!input.retainRuntime) {
       try { await cleanupPrivateRuntime(); } catch (error) { failure ??= error; }
+      await removeRemoteRunDir();
     }
     if (failure) throw failure;
   };
