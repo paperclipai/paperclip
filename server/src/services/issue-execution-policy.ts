@@ -53,6 +53,7 @@ type TransitionInput = {
   commentBody?: string | null;
   reviewRequest?: IssueExecutionState["reviewRequest"] | null;
   monitorExplicitlyUpdated?: boolean;
+  hasPendingHumanInputWait?: boolean;
 };
 
 type TransitionResult = {
@@ -981,7 +982,7 @@ function applyIssueExecutionStageTransition(input: TransitionInput): TransitionR
 
   const shouldStartWorkflow =
     requestedStatus === "done" ||
-    requestedStatus === "in_review";
+    (requestedStatus === "in_review" && !input.hasPendingHumanInputWait);
 
   if (!shouldStartWorkflow) {
     return { patch };
