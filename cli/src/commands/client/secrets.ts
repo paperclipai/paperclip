@@ -100,8 +100,22 @@ export interface InlineSecretMigrationCandidate {
   existingSecretId: string | null;
 }
 
+export interface RedactedInlineEnvValue {
+  agentId: string;
+  agentName: string;
+  envKey: string;
+}
+
+export const REDACTED_ENV_VALUE = "***REDACTED***";
+
 const SENSITIVE_ENV_KEY_RE =
   /(^token$|[-_]?token$|api[-_]?key|access[-_]?token|auth(?:_?token)?|authorization|bearer|secret|passwd|password|credential|jwt|private[-_]?key|cookie|connectionstring)/i;
+
+// Same key list as scripts/migrate-inline-env-secrets.ts. That script does not
+// match plain token names like GH_TOKEN or TOKEN, so the warning below must not
+// send those keys to it.
+const SERVER_MIGRATION_ENV_KEY_RE =
+  /(api[-_]?key|access[-_]?token|auth(?:_?token)?|authorization|bearer|secret|passwd|password|credential|jwt|private[-_]?key|cookie|connectionstring)/i;
 
 const DEFAULT_DECLARATION_INCLUDE: CompanyPortabilityInclude = {
   company: true,
@@ -157,6 +171,7 @@ export function collectInlineSecretMigrationCandidates(
       if (!isSensitiveEnvKey(envKey)) continue;
       const plain = toPlainEnvValue(binding);
       if (plain === null || plain.trim().length === 0) continue;
+      if (plain === REDACTED_ENV_VALUE) continue;
       const secretName = buildInlineMigrationSecretName(agent.id, envKey);
       candidates.push({
         agentId: agent.id,
@@ -169,6 +184,43 @@ export function collectInlineSecretMigrationCandidates(
   }
 
   return candidates;
+}
+
+export function collectRedactedInlineEnvValues(agents: Agent[]): RedactedInlineEnvValue[] {
+  const redacted: RedactedInlineEnvValue[] = [];
+  for (const agent of agents) {
+    const env = asRecord(agent.adapterConfig.env);
+    if (!env) continue;
+    for (const [envKey, binding] of Object.entries(env)) {
+      if (!isSensitiveEnvKey(envKey)) continue;
+      if (toPlainEnvValue(binding) !== REDACTED_ENV_VALUE) continue;
+      redacted.push({ agentId: agent.id, agentName: agent.name, envKey });
+    }
+  }
+  return redacted;
+}
+
+export function isServerMigratableEnvKey(key: string): boolean {
+  return SERVER_MIGRATION_ENV_KEY_RE.test(key);
+}
+
+export function formatRedactedSkipWarning(redacted: RedactedInlineEnvValue[]): string | null {
+  if (redacted.length === 0) return null;
+  const notCoveredRows = redacted.filter((row) => !isServerMigratableEnvKey(row.envKey));
+  const notCovered = [...new Set(notCoveredRows.map((row) => row.envKey))];
+  const covered = redacted.length - notCoveredRows.length;
+  let message =
+    `Skipping ${redacted.length} env value(s) that the API returned as ${REDACTED_ENV_VALUE}. ` +
+    "They cannot be migrated through the API.";
+  if (covered > 0) {
+    message += " Use pnpm secrets:migrate-inline-env on the server host for these.";
+  }
+  if (notCovered.length > 0) {
+    message +=
+      ` The server script does not pick up ${notCovered.join(", ")}, ` +
+      "so move those into secrets by hand in the agent env settings.";
+  }
+  return message;
 }
 
 export function buildMigratedAgentEnv(
@@ -286,6 +338,11 @@ async function migrateInlineEnv(opts: SecretMigrateInlineEnvOptions): Promise<vo
   const agents = (await ctx.api.get<Agent[]>(apiPath`/api/companies/${companyId}/agents`)) ?? [];
   const secrets = (await ctx.api.get<CompanySecret[]>(apiPath`/api/companies/${companyId}/secrets`)) ?? [];
   const candidates = collectInlineSecretMigrationCandidates(agents, secrets);
+  const redacted = collectRedactedInlineEnvValues(agents);
+  const redactedWarning = formatRedactedSkipWarning(redacted);
+  if (redactedWarning && !ctx.json) {
+    console.log(pc.yellow(redactedWarning));
+  }
 
   if (!opts.apply) {
     printOutput(
@@ -295,6 +352,7 @@ async function migrateInlineEnv(opts: SecretMigrateInlineEnvOptions): Promise<vo
         secretsToCreate: candidates.filter((candidate) => !candidate.existingSecretId).length,
         secretsToRotate: candidates.filter((candidate) => candidate.existingSecretId).length,
         candidates,
+        skippedRedacted: redacted,
       },
       { json: ctx.json },
     );
@@ -312,7 +370,7 @@ async function migrateInlineEnv(opts: SecretMigrateInlineEnvOptions): Promise<vo
     const agent = agents.find((row) => row.id === candidate.agentId);
     const env = asRecord(agent?.adapterConfig.env);
     const value = env ? toPlainEnvValue(env[candidate.envKey]) : null;
-    if (!value) continue;
+    if (!value || value === REDACTED_ENV_VALUE) continue;
 
     if (candidate.existingSecretId) {
       await ctx.api.post(apiPath`/api/secrets/${candidate.existingSecretId}/rotate`, { value });
@@ -359,6 +417,7 @@ async function migrateInlineEnv(opts: SecretMigrateInlineEnvOptions): Promise<vo
       updatedAgents,
       createdSecrets,
       rotatedSecrets,
+      skippedRedacted: redacted.length,
     },
     { json: ctx.json },
   );
