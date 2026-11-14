@@ -13,9 +13,10 @@ describe("agent scaling load model", () => {
   // The default batches deltas and renews every lease in one tick; the other
   // mode is the earlier one transaction per delta and per lease.
   it.each([
-    { mode: "batched deltas and shared lease renewal", env: {} },
-    { mode: "one transaction per delta and per lease", env: { DELTA_BATCH_MS: "0", LEASE_MODE: "single" } },
-  ])("drives every source through the real server code and reports each pool ($mode)", async ({ env }) => {
+    { mode: "recorded event mix, batched deltas and shared lease renewal", env: {}, profile: "recorded" },
+    { mode: "stress profile, one transaction per delta and per lease",
+      env: { PROFILE: "stress", DELTA_BATCH_MS: "0", LEASE_MODE: "single" }, profile: "stress" },
+  ])("drives every source through the real server code and reports each pool ($mode)", async ({ env, profile }) => {
     const { stdout } = await run(process.execPath, [tsx, script], {
       cwd: serverRoot, maxBuffer: 16 * 1024 * 1024,
       env: { ...process.env, AGENTS: "2", SECONDS: "2", DELTAS_PER_S: "5", EVENTS_PER_S: "2", API_PER_S: "1", LEASE_S: "1", ...env },
@@ -24,7 +25,13 @@ describe("agent scaling load model", () => {
       database: { meteredStatementsPerSecondByPool: Record<"main" | "checkpoint" | "lease", number> };
       checkpointSaves: { failed: number };
       bySource: Record<string, { offered: number; done: number; failed: number }>;
+      profile: string;
+      eventsIssuedByType: Record<string, number>;
     };
+    expect(report.profile).toBe(profile);
+    // Server trace spans and runner events with a progress wake are both in the mix.
+    expect(report.eventsIssuedByType["run.performance.span"]).toBeGreaterThan(0);
+    expect(Object.keys(report.eventsIssuedByType).some(type => type.startsWith("tool.execution.") || type === "item.completed")).toBe(true);
     expect(Object.keys(report.bySource).sort()).toEqual(["api", "deltas", "events", "lease"]);
     for (const [source, result] of Object.entries(report.bySource)) {
       expect(result.failed, source).toBe(0);
