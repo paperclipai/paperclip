@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 
 import { QueryClient } from "@tanstack/react-query";
-import type { Issue, IssueRecentComments } from "@paperclipai/shared";
+import type { Issue, IssueDocument, IssueRecentComments } from "@paperclipai/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ApiError } from "@/api/client";
 import { EARLY_CHAT_BOOTSTRAP_GLOBAL } from "./issue-detail-preload-events";
@@ -131,8 +131,8 @@ describe("a task restored from the saved read cache", () => {
     let respond!: (item: ChatBootstrapItem) => void;
     earlyBootstrap(new Promise((resolve) => { respond = resolve; }));
     void startIssueChatBootstrap(client, "company-one", REF, [TASK_ID]);
-    const ownRead = vi.fn(async () => ({ title: "Own read" }));
-    const plan = readFromIssueChatBootstrap(client, [...queryKeys.issues.documents(TASK_ID), "plan"], TASK_ID, (item) => item.issue.planDocument, ownRead);
+    const ownRead = vi.fn(async () => null);
+    const plan = readFromIssueChatBootstrap<IssueDocument | null | undefined>(client, [...queryKeys.issues.documents(TASK_ID), "plan"], TASK_ID, (item) => item.issue.planDocument, ownRead);
     respond(answer({ issue: { ...answer().issue, planDocument: { key: "plan", body: "# Plan" } } as unknown as Issue }));
     await expect(plan).resolves.toMatchObject({ key: "plan" });
     expect(ownRead).not.toHaveBeenCalled();
