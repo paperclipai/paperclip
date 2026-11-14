@@ -15,6 +15,7 @@ import { registerDeferredReceiptWork } from "./heartbeat/deferred-receipt-work.j
 import { registerProviderLimitResumeWork, type PrepareChatRetry } from "./native-runtime/provider-limit-resume.js";
 import { reconcileTaskChatRetryReceipts } from "./task-retry.js";
 import { registerIssueRecoveryWork } from "./recovery/work.js";
+import { reconcilePendingNativeReviews } from "./recovery/pending-native-review-recovery.js";
 import { registerRunDispatchWork } from "./heartbeat/dispatch-work.js";
 import { listUndispatchedQueuedRuns } from "./queued-run-dispatch-liveness.js";
 import { NATIVE_RETAINED_OWNER_WAIT } from "./native-runtime/native-controller-recovery.js";
@@ -4728,7 +4729,10 @@ export function heartbeatService(
     registerIssueStateRecoveryWork: (coordinator: Parameters<typeof registerIssueRecoveryWork>[1], canRun: () => boolean,
       options?: Parameters<typeof registerIssueRecoveryWork>[4]) =>
       registerIssueRecoveryWork(db, coordinator, {
-        stranded: scope => reconcileStrandedAssignedIssues({ ...scope, skipExternalConversationSettlement: true, skipRelatedRecovery: true }),
+        stranded: async scope => {
+          await reconcilePendingNativeReviews(db, scope).catch(err => logger.warn({ err, ...scope }, "Pending completion review recovery failed; will retry"));
+          return reconcileStrandedAssignedIssues({ ...scope, skipExternalConversationSettlement: true, skipRelatedRecovery: true });
+        },
         orphanBlockers: recovery.reconcileUnassignedBlockingIssues,
         recoveryActions: recovery.reconcileActiveRecoveryActions,
         dependencies: reconcileResolvedDependencyWakes,
