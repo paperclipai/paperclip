@@ -5,8 +5,6 @@ const SECRET_FIELD_NAME_PATTERN = String.raw`[A-Za-z0-9_-]*(?:api[-_]?key|access
 const SECRET_FIELD_NAME_START = String.raw`(?<![A-Za-z0-9_-])`;
 
 const SECRET_PAYLOAD_KEY_RE = new RegExp(`^(?:${SECRET_FIELD_NAME_PATTERN})(?:_plain|_ref)?$`, "i");
-// Private-key encodings have suffixes (for example devicePrivateKeyPem or
-// signingPrivateKeyDer) that the general credential-name grammar does not cover.
 const PRIVATE_KEY_PAYLOAD_KEY_RE = /private[-_]?key|pem/i;
 const PRIVATE_KEY_PEM_RE = /-----BEGIN (?:[A-Z0-9]+ )*PRIVATE KEY-----/i;
 // Authorization reasons are policy decision codes, not credentials. They must
@@ -1018,22 +1016,45 @@ export function redactAgentAdapterConfig(
   return { ...(redactEventPayload(rest) ?? {}), env: redactedEnv };
 }
 
-// Exports preserve portable nonsecret configuration, but must never transport
-// private identity material. Reuse the response policy without applying the
-// broader diagnostic redactor to unrelated portable configuration fields.
-export function redactPrivateKeyMaterial(value: unknown): unknown {
-  if (typeof value === "string") return PRIVATE_KEY_PEM_RE.test(value) ? REDACTED_EVENT_VALUE : value;
-  if (Array.isArray(value)) return value.map(redactPrivateKeyMaterial);
-  if (isSecretRefBinding(value) || isUserSecretRefBinding(value)) return sanitizeValue(value);
+export function isPrivateKeyFieldName(key: string): boolean {
+  return PRIVATE_KEY_PAYLOAD_KEY_RE.test(key);
+}
+
+export function containsPrivateKeyMaterial(value: unknown): boolean {
+  return typeof value === "string" && PRIVATE_KEY_PEM_RE.test(value);
+}
+
+function isSecretReference(value: unknown): boolean {
+  return isSecretRefBinding(value) || isUserSecretRefBinding(value);
+}
+
+export function omitPrivateKeyMaterial(value: unknown): unknown {
+  if (Array.isArray(value)) {
+    return value.filter((entry) => !containsPrivateKeyMaterial(entry)).map(omitPrivateKeyMaterial);
+  }
+  if (isSecretReference(value)) return sanitizeValue(value);
   if (!isPlainObject(value)) return value;
-  return Object.fromEntries(Object.entries(value).map(([key, entry]) => [
-    key,
-    PRIVATE_KEY_PAYLOAD_KEY_RE.test(key)
-      ? isSecretRefBinding(entry) || isUserSecretRefBinding(entry)
-        ? sanitizeValue(entry)
-        : REDACTED_EVENT_VALUE
-      : redactPrivateKeyMaterial(entry),
-  ]));
+  const next: Record<string, unknown> = {};
+  for (const [key, entry] of Object.entries(value)) {
+    if (containsPrivateKeyMaterial(entry)) continue;
+    if (isPrivateKeyFieldName(key)) {
+      if (isSecretReference(entry)) next[key] = sanitizeValue(entry);
+      continue;
+    }
+    next[key] = omitPrivateKeyMaterial(entry);
+  }
+  return next;
+}
+
+export function omitRedactedPrivateKeyPlaceholders(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(omitRedactedPrivateKeyPlaceholders);
+  if (!isPlainObject(value)) return value;
+  const next: Record<string, unknown> = {};
+  for (const [key, entry] of Object.entries(value)) {
+    if (isPrivateKeyFieldName(key) && entry === REDACTED_EVENT_VALUE) continue;
+    next[key] = omitRedactedPrivateKeyPlaceholders(entry);
+  }
+  return next;
 }
 
 export function redactSensitiveText(input: string): string {
