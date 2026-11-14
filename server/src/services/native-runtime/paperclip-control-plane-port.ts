@@ -124,6 +124,7 @@ export class PaperclipControlPlanePort implements ControlPlanePort {
    * a delta's receipt settles; the receipt settles after its batch commits.
    */
   readonly pipelinesStreamingEvents = true;
+  readonly pipelinedEventTypes: ReadonlySet<PrpEvent["eventType"]> = new Set(["item.delta", "tool.execution.progressed"]);
   readonly #streamingBatchMs: number;
   #streamingBatch: PendingStreamingEvent[] = [];
   #streamingTimer: ReturnType<typeof setTimeout> | null = null;
@@ -132,7 +133,7 @@ export class PaperclipControlPlanePort implements ControlPlanePort {
   /** Deltas queued or committing. Other operations wait only when some are; otherwise they start at once. */
   #streamingEventsPending = 0;
   /**
-   * False until a delta with text commits after the latest other event. Until
+   * False until a delta with text is appended after the latest other event. Until
    * then each delta commits at once, so the first text of an item, and the
    * time to first token, never wait for the batch timer.
    */
@@ -466,7 +467,7 @@ export class PaperclipControlPlanePort implements ControlPlanePort {
       },
       assertWritable: () => this.#assertActive(options),
     };
-    if (event.eventType === "item.delta" && !options?.deferPostCommitObservers) {
+    if (this.pipelinedEventTypes.has(event.eventType) && !options?.deferPostCommitObservers) {
       return this.#appendStreamingEvent({ event, input, options, startedAtMs: persistenceStartedAt, startedClock: persistenceClock },
         options?.streaming === true);
     }
@@ -543,7 +544,12 @@ export class PaperclipControlPlanePort implements ControlPlanePort {
     return new Promise<AppendReceipt>((resolve, reject) => {
       this.#streamingBatch.push({ ...pending, resolve, reject });
       this.#streamingEventsPending += 1;
-      if (!streaming || !this.#streamedSinceBoundary || this.#streamingBatch.length >= STREAMING_EVENT_BATCH_MAX) {
+      if (pending.event.eventType !== "item.delta") this.#streamedSinceBoundary = false;
+      const flushNow = !streaming || !this.#streamedSinceBoundary || this.#streamingBatch.length >= STREAMING_EVENT_BATCH_MAX;
+      if (typeof pending.event.payload.text === "string" && pending.event.payload.text.length > 0) {
+        this.#streamedSinceBoundary = true;
+      }
+      if (flushNow) {
         void this.#flushStreamingEvents();
       } else {
         this.#streamingTimer ??= setTimeout(() => { void this.#flushStreamingEvents(); }, this.#streamingBatchMs);
@@ -565,9 +571,6 @@ export class PaperclipControlPlanePort implements ControlPlanePort {
         this.#streamingFlushQueued = false;
         const batch = this.#streamingBatch;
         this.#streamingBatch = [];
-        if (batch.some(pending => typeof pending.event.payload.text === "string" && pending.event.payload.text.length > 0)) {
-          this.#streamedSinceBoundary = true;
-        }
         try { await this.#commitStreamingEvents(batch); }
         finally { this.#streamingEventsPending -= batch.length; }
       });

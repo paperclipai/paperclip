@@ -1255,6 +1255,7 @@ async function consumeTurn(
     // delta's receipt settles. Every other event, and every result, waits for
     // the receipts of the deltas before it.
     const pipelinesDeltas = controlPlane.pipelinesStreamingEvents === true;
+    const pipelinedEventTypes: ReadonlySet<string> = controlPlane.pipelinedEventTypes ?? new Set(["item.delta"]);
     let pendingDeltas: Promise<AppendedEventReceipt>[] = [];
     let deltaFailure = null as { error: unknown } | null;
     const settlePendingDeltas = async () => {
@@ -1418,7 +1419,7 @@ async function consumeTurn(
       // A failed delta stops the turn before any later event is appended.
       if (deltaFailure) throw deltaFailure.error;
       let receipt: AppendedEventReceipt | null = null;
-      if (pipelinesDeltas && event.eventType === "item.delta") {
+      if (pipelinesDeltas && pipelinedEventTypes.has(event.eventType)) {
         const pending = controlPlane.appendEvent(event, { signal: appendAbort.signal, streaming: true });
         const settled = pending.then(() => undefined, (error: unknown) => { deltaFailure ??= { error }; });
         outstandingDeltas.add(settled);

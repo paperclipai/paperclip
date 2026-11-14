@@ -2,7 +2,7 @@ import { nativeResponsePresentationWork } from "./native-response-presentation-w
 import { resolveExternalTestDatabaseUrl } from "../../__tests__/helpers/external-test-database.js";
 import { plugins } from "@paperclipai/db";
 import { readTaskPanelActivations } from "../plugin-task-panels.js";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { and, asc, eq, sql } from "drizzle-orm";
 import { createHash, generateKeyPairSync, randomUUID } from "node:crypto";
 import { mkdtemp, rm } from "node:fs/promises";
@@ -1057,6 +1057,31 @@ describe("PaperclipControlPlanePort conformance", () => {
     await f.port.appendEvent(f.event(10, "tool.execution.started"));
     await expect(f.port.appendEvent(f.event(11, "item.delta", ""), f.streamed)).resolves.toMatchObject({ cursor: 11 });
     await expect(f.port.appendEvent(f.event(12), f.streamed)).resolves.toMatchObject({ cursor: 12 });
+  });
+
+  it("commits progress events that arrive while a batch commits in the next single batch", async () => {
+    let release!: () => void;
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    const f = await streamingFixture({ streamingBatchMs: 600_000, onCommittedEvent: async (event) => {
+      if (event.sourceSeq === 1) await gate;
+    } });
+    const first = f.port.appendEvent(f.event(1, "tool.execution.progressed"), f.streamed);
+    await vi.waitFor(async () => expect(await f.stored()).toHaveLength(1));
+    const options = db.$client.options as { debug?: unknown };
+    const statements: string[] = [];
+    options.debug = (_connection: number, text: string) => { statements.push(text.trim().replace(/\s+/g, " ")); };
+    try {
+      const later = [2, 3, 4].map(sourceSeq => f.port.appendEvent(f.event(sourceSeq, "tool.execution.progressed"), f.streamed));
+      await new Promise(resolve => setTimeout(resolve, 50));
+      expect(statements.filter(text => /^begin/i.test(text))).toHaveLength(0);
+      release();
+      await expect(first).resolves.toMatchObject({ cursor: 1, disposition: "committed" });
+      expect((await Promise.all(later)).map(receipt => receipt.cursor)).toEqual([2, 3, 4]);
+      expect(statements.filter(text => /^begin/i.test(text))).toHaveLength(1);
+    } finally { options.debug = undefined; }
+    const boundary = await f.port.appendEvent(f.event(5, "tool.execution.started"));
+    expect(boundary).toMatchObject({ cursor: 5, disposition: "committed" });
+    expect(await f.stored()).toEqual([1, 2, 3, 4, 5].map(seq => ({ seq, sourceSeq: seq })));
   });
 
   it("observes every committed delta of a batch when one observer fails", async () => {
