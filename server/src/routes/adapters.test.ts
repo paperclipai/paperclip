@@ -1,6 +1,11 @@
 import { describe, expect, it } from "vitest";
 import type { AdapterLoginCapability, ServerAdapterModule } from "@paperclipai/adapter-utils";
-import { requireServerAdapter } from "../adapters/registry.js";
+import {
+  registerServerAdapter,
+  requireServerAdapter,
+  setOverridePaused,
+  unregisterServerAdapter,
+} from "../adapters/registry.js";
 import { buildAdapterCapabilities } from "./adapters.js";
 
 // The adapter listing projects the safe scalar login fields to the client. The
@@ -73,5 +78,36 @@ describe("buildAdapterCapabilities login projection", () => {
     });
     expect(caps.login).not.toHaveProperty("getCommand");
     expect(caps.login).not.toHaveProperty("parsePrompt");
+  });
+
+  it("projects supportsConversationContinuation true for built-in conversation adapters", () => {
+    expect(buildAdapterCapabilities(requireServerAdapter("claude_local")).supportsConversationContinuation).toBe(true);
+    expect(buildAdapterCapabilities(requireServerAdapter("grok_local")).supportsConversationContinuation).toBe(true);
+    expect(buildAdapterCapabilities(requireServerAdapter("http")).supportsConversationContinuation).toBe(false);
+  });
+
+  it("respects supportsConversationContinuation overrides", () => {
+    expect(buildAdapterCapabilities(makeAdapter({ supportsConversationContinuation: true })).supportsConversationContinuation).toBe(true);
+    expect(buildAdapterCapabilities(makeAdapter({ supportsConversationContinuation: false })).supportsConversationContinuation).toBe(false);
+    expect(buildAdapterCapabilities(makeAdapter()).supportsConversationContinuation).toBe(false);
+  });
+
+  it("projects supportsConversationContinuation false for paused overrides", () => {
+    registerServerAdapter(makeAdapter({ type: "http", supportsConversationContinuation: true }));
+    setOverridePaused("http", true);
+    try {
+      expect(buildAdapterCapabilities(requireServerAdapter("http")).supportsConversationContinuation).toBe(false);
+    } finally {
+      unregisterServerAdapter("http");
+    }
+  });
+
+  it("projects supportsConversationContinuation false for active non-conversation overrides", () => {
+    registerServerAdapter(makeAdapter({ type: "http", supportsConversationContinuation: true }));
+    try {
+      expect(buildAdapterCapabilities(requireServerAdapter("http")).supportsConversationContinuation).toBe(false);
+    } finally {
+      unregisterServerAdapter("http");
+    }
   });
 });

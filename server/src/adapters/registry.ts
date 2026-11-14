@@ -137,6 +137,10 @@ import {
 import { agentConfigurationDoc as piAgentConfigurationDoc } from "@paperclipai/adapter-pi-local";
 import { BUILTIN_ADAPTER_TYPES } from "./builtin-adapter-types.js";
 import { buildExternalAdapters } from "./plugin-loader.js";
+import {
+  CONVERSATION_ADAPTER_TYPES,
+  setExternalConversationAdapter,
+} from "../services/conversation-continuation.js";
 import { isCloudManagedInstance } from "../services/cloud-instance.js";
 import { assertExternalAdapterCodeAllowed } from "../services/adapter-code-policy.js";
 import { NativeEnvironmentProbeCleanupError } from "../vendor/paperclip-runner/index.js";
@@ -1109,20 +1113,25 @@ const externalAdaptersReady: Promise<void> = (async () => {
         externalAdapter.type,
         resolveExternalAdapterRegistration(externalAdapter),
       );
+      trackConversationSupport(externalAdapter);
     }
   } catch (err) {
     console.error("[paperclip] Failed to load external adapters:", err);
   }
 })();
 
-/**
- * Await this before validating adapter types to avoid race conditions
- * during server startup. External adapters are loaded asynchronously;
- * calling assertKnownAdapterType before this resolves will reject
- * valid external adapter types.
- */
 export function waitForExternalAdapters(): Promise<void> {
   return externalAdaptersReady;
+}
+
+function trackConversationSupport(adapter: ServerAdapterModule): void {
+  if (BUILTIN_ADAPTER_TYPES.has(adapter.type) && !(CONVERSATION_ADAPTER_TYPES as readonly string[]).includes(adapter.type)) {
+    return;
+  }
+  setExternalConversationAdapter(
+    adapter.type,
+    !pausedOverrides.has(adapter.type) && adapter.supportsConversationContinuation === true,
+  );
 }
 
 export function registerServerAdapter(adapter: ServerAdapterModule): void {
@@ -1134,6 +1143,7 @@ export function registerServerAdapter(adapter: ServerAdapterModule): void {
     }
   }
   adaptersByType.set(adapter.type, adapter);
+  trackConversationSupport(adapter);
 }
 
 export function unregisterServerAdapter(type: string): void {
@@ -1144,6 +1154,7 @@ export function unregisterServerAdapter(type: string): void {
     const fallback = builtinFallbacks.get(type);
     if (fallback) {
       adaptersByType.set(type, fallback);
+      trackConversationSupport(fallback);
     }
     return;
   }
@@ -1151,6 +1162,7 @@ export function unregisterServerAdapter(type: string): void {
     return;
   }
   adaptersByType.delete(type);
+  setExternalConversationAdapter(type, false);
 }
 
 export function requireServerAdapter(type: string): ServerAdapterModule {
@@ -1290,11 +1302,15 @@ export function setOverridePaused(type: string, paused: boolean): boolean {
   const wasPaused = pausedOverrides.has(type);
   if (paused && !wasPaused) {
     pausedOverrides.add(type);
+    const fallback = builtinFallbacks.get(type);
+    if (fallback) trackConversationSupport(fallback);
     console.log(`[paperclip] Override paused for "${type}" — builtin adapter restored`);
     return true;
   }
   if (!paused && wasPaused) {
     pausedOverrides.delete(type);
+    const external = adaptersByType.get(type);
+    if (external) trackConversationSupport(external);
     console.log(`[paperclip] Override resumed for "${type}" — external adapter active`);
     return true;
   }

@@ -213,6 +213,7 @@ Adapters can declare what "local" capabilities they support by setting optional 
 | `supportsInstructionsBundle` | `boolean` | `false` | Managed instructions bundle (AGENTS.md) — server-side resolution + UI editor |
 | `instructionsPathKey` | `string` | `"instructionsFilePath"` | The `adapterConfig` key that holds the instructions file path |
 | `requiresMaterializedRuntimeSkills` | `boolean` | `false` | Whether runtime skill entries must be written to disk before execution |
+| `supportsConversationContinuation` | `boolean` | `false` | The adapter resumes its provider conversation, allowing failed or interrupted runs to continue as a conversation turn |
 
 These flags are exposed via `GET /api/adapters` in a `capabilities` object, along with a derived `supportsSkills` flag (true when `listSkills` or `syncSkills` is defined).
 

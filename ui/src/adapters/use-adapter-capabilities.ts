@@ -9,6 +9,7 @@ const ALL_FALSE: AdapterCapabilities = {
   supportsLocalAgentJwt: false,
   requiresMaterializedRuntimeSkills: false,
   supportsAcp: false,
+  supportsConversationContinuation: false,
 };
 
 /**
@@ -20,15 +21,15 @@ const ALL_FALSE: AdapterCapabilities = {
  * Reconcile the two together if any adapter's login flow changes.
  */
 const KNOWN_DEFAULTS: Record<string, AdapterCapabilities> = {
-  claude_local: { supportsInstructionsBundle: true, supportsSkills: true, supportsLocalAgentJwt: true, requiresMaterializedRuntimeSkills: false, supportsAcp: true, login: { panelMode: "submitted_browser_code", timeoutPolicy: "fixed" } },
-  codex_local: { supportsInstructionsBundle: true, supportsSkills: true, supportsLocalAgentJwt: true, requiresMaterializedRuntimeSkills: false, supportsAcp: true, login: { panelMode: "displayed_code", timeoutPolicy: "caller_bounded" } },
-  paperclip_runner: { supportsInstructionsBundle: true, supportsSkills: true, supportsLocalAgentJwt: false, requiresMaterializedRuntimeSkills: false, supportsAcp: false },
-  cursor: { supportsInstructionsBundle: true, supportsSkills: true, supportsLocalAgentJwt: true, requiresMaterializedRuntimeSkills: true, supportsAcp: false },
-  gemini_local: { supportsInstructionsBundle: true, supportsSkills: true, supportsLocalAgentJwt: true, requiresMaterializedRuntimeSkills: true, supportsAcp: true },
-  grok_local: { supportsInstructionsBundle: true, supportsSkills: true, supportsLocalAgentJwt: true, requiresMaterializedRuntimeSkills: true, supportsAcp: false, login: { panelMode: "displayed_code", timeoutPolicy: "caller_bounded" } },
-  kimi_local: { supportsInstructionsBundle: true, supportsSkills: true, supportsLocalAgentJwt: true, requiresMaterializedRuntimeSkills: true, supportsAcp: true },
-  opencode_local: { supportsInstructionsBundle: true, supportsSkills: true, supportsLocalAgentJwt: true, requiresMaterializedRuntimeSkills: true, supportsAcp: false },
-  pi_local: { supportsInstructionsBundle: true, supportsSkills: true, supportsLocalAgentJwt: true, requiresMaterializedRuntimeSkills: true, supportsAcp: false },
+  claude_local: { supportsInstructionsBundle: true, supportsSkills: true, supportsLocalAgentJwt: true, requiresMaterializedRuntimeSkills: false, supportsAcp: true, supportsConversationContinuation: true, login: { panelMode: "submitted_browser_code", timeoutPolicy: "fixed" } },
+  codex_local: { supportsInstructionsBundle: true, supportsSkills: true, supportsLocalAgentJwt: true, requiresMaterializedRuntimeSkills: false, supportsAcp: true, supportsConversationContinuation: true, login: { panelMode: "displayed_code", timeoutPolicy: "caller_bounded" } },
+  paperclip_runner: { supportsInstructionsBundle: true, supportsSkills: true, supportsLocalAgentJwt: false, requiresMaterializedRuntimeSkills: false, supportsAcp: false, supportsConversationContinuation: false },
+  cursor: { supportsInstructionsBundle: true, supportsSkills: true, supportsLocalAgentJwt: true, requiresMaterializedRuntimeSkills: true, supportsAcp: false, supportsConversationContinuation: true },
+  gemini_local: { supportsInstructionsBundle: true, supportsSkills: true, supportsLocalAgentJwt: true, requiresMaterializedRuntimeSkills: true, supportsAcp: true, supportsConversationContinuation: true },
+  grok_local: { supportsInstructionsBundle: true, supportsSkills: true, supportsLocalAgentJwt: true, requiresMaterializedRuntimeSkills: true, supportsAcp: false, supportsConversationContinuation: true, login: { panelMode: "displayed_code", timeoutPolicy: "caller_bounded" } },
+  kimi_local: { supportsInstructionsBundle: true, supportsSkills: true, supportsLocalAgentJwt: true, requiresMaterializedRuntimeSkills: true, supportsAcp: true, supportsConversationContinuation: true },
+  opencode_local: { supportsInstructionsBundle: true, supportsSkills: true, supportsLocalAgentJwt: true, requiresMaterializedRuntimeSkills: true, supportsAcp: false, supportsConversationContinuation: true },
+  pi_local: { supportsInstructionsBundle: true, supportsSkills: true, supportsLocalAgentJwt: true, requiresMaterializedRuntimeSkills: true, supportsAcp: false, supportsConversationContinuation: true },
   openclaw_gateway: ALL_FALSE,
 };
 
