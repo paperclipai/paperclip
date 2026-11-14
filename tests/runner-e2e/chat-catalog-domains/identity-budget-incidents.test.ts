@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { budgetIncidentIdentityCases, budgetHoldSurvivesChat, budgetPage, incidentSourceFundingReady } from "./identity-budget-incidents.js";
+import { budgetIncidentIdentityCases, budgetHoldSurvivesChat, budgetIncidentSourceDescription, budgetPage, incidentSourceFundingReady } from "./identity-budget-incidents.js";
 import type { IdentityObservation } from "./identity-support.js";
 function valid(scenarioId: string): IdentityObservation {
   const resolve = scenarioId.endsWith("resolve-budget"); const task = { id: "task", companyId: "acorn", title: "Unfinished website", status: "backlog", assigneeAgentId: "morgan" };
@@ -15,6 +15,13 @@ function valid(scenarioId: string): IdentityObservation {
   if (resolve) o.activity.push({ id: "resolve", action: "budget.incident_resolved", entityId: "incident", actorType: "user" }); return o;
 }
 describe("real policy incidents and human resolution", () => {
+  // Full cohort 13: the explain-hard-stop reply repeated this note's own setup
+  // jargon ("an imported accounting fixture, not live model billing") to the person.
+  it("writes the setup note in plain words and keeps the task, incident and paused-agent references", () => {
+    const note = budgetIncidentSourceDescription({ taskIdentifier: "COM-2", incidentId: "incident-1", manualName: "Manual research pause" });
+    for (const literal of ["COM-2", "incident-1", "Manual research pause"]) expect(note).toContain(literal);
+    for (const jargon of ["fixture", "synthetic", "imported", "accounting", "billing"]) expect(note.toLowerCase()).not.toContain(jargon);
+  });
   for (const d of budgetIncidentIdentityCases) {
     it(`${d.scenarioId}: valid and missing recorded evidence`, () => { const o = valid(d.scenarioId); expect(d.grade(o), JSON.stringify(d.grade(o))).toMatchObject({ passed: true }); expect(d.grade(undefined).passed).toBe(false); });
     it(`${d.scenarioId}: actual manual pause cannot substitute for the budget incident`, () => { const o = valid(d.scenarioId); (o.state.beforeWorker as { pauseReason: string }).pauseReason = "manual"; expect(d.grade(o).passed).toBe(false); });
