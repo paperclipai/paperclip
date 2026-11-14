@@ -1829,6 +1829,23 @@ console.log(JSON.stringify({ type: "result", subtype: "success", result: "hello"
       expect(await t.grantStatus()).toBe("active");
     });
 
+    it("resets the count after a success queued before a reconnect that ran on the new credential", async () => {
+      const t = await setup("queued-success");
+      const attribution = await t.attributionFor(t.agentIds[0]!);
+      const [grant] = await db.select().from(connectionGrants).where(eq(connectionGrants.id, t.account.grantId));
+      const first = await t.run(t.agentIds[0]!, "failed", "claude_auth_required", attribution);
+      expect(await connectionIntentService(db).requestForRunAuthFailure(first.runId)).toBeNull();
+      await new Promise(resolve => setTimeout(resolve, 5));
+      await db.insert(heartbeatRuns).values({ companyId, agentId: t.agentIds[0]!, status: "succeeded", responsibleUserId: t.userId,
+        createdAt: new Date(grant!.updatedAt.getTime() - 60_000), startedAt: new Date(), finishedAt: new Date(),
+        contextSnapshot: { aiConnection: attribution } });
+      await new Promise(resolve => setTimeout(resolve, 5));
+      const after = await t.run(t.agentIds[0]!, "failed", "claude_auth_required", attribution);
+      expect(await connectionIntentService(db).requestForRunAuthFailure(after.runId)).toBeNull();
+      expect(await t.grantStatus()).toBe("active");
+      expect(await t.latches()).toBe(0);
+    });
+
     it("does not count a failure checked late after a newer success", async () => {
       const t = await setup("late-check");
       const attribution = await t.attributionFor(t.agentIds[0]!);

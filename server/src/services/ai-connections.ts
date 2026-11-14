@@ -6,7 +6,7 @@ import { syncConnectionCredentialBindings } from "./connection-credential-bindin
 import { AI_AUTHENTICATION_FAILURE_CODE_PATTERN, AI_AUTHENTICATION_FAILURE_CODES, isAiAuthenticationFailure } from "./ai-auth-failure.js";
 import { createHash, randomUUID } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
-import { and, eq, gte, inArray, or, sql } from "drizzle-orm";
+import { and, eq, inArray, or, sql } from "drizzle-orm";
 import {
   type Db,
   authUsers,
@@ -1172,7 +1172,7 @@ export function aiConnectionService(db: Db) {
         const [lastSuccess] = await tx.select({ at: sql<Date>`coalesce(${heartbeatRuns.finishedAt}, ${heartbeatRuns.createdAt})` })
           .from(heartbeatRuns).where(and(
             eq(heartbeatRuns.companyId, input.companyId), eq(heartbeatRuns.status, "succeeded"), sameGeneration,
-            gte(heartbeatRuns.createdAt, grant.updatedAt),
+            sql`coalesce(${heartbeatRuns.finishedAt}, ${heartbeatRuns.createdAt}) >= ${grant.updatedAt.toISOString()}::timestamptz`,
           ))
           .orderBy(sql`coalesce(${heartbeatRuns.finishedAt}, ${heartbeatRuns.createdAt}) desc`).limit(1);
         const since = lastSuccess?.at ? new Date(Math.max(new Date(lastSuccess.at).getTime(), grant.updatedAt.getTime())) : grant.updatedAt;
