@@ -13,6 +13,32 @@ Tool action approvals and sensitive request identities use a durable key indepen
 | `remote_http` | Supported | Supported | Preferred production path. Paperclip proxies calls through the gateway with policy, audit, timeout, and redaction controls. |
 | `local_stdio` | Supported through approved templates and supervised runtime slots | Supported only when an explicitly trusted MCP runtime worker/host is configured | Set `PAPERCLIP_TRUSTED_MCP_RUNTIME_HOST` or `PAPERCLIP_TOOL_RUNTIME_TRUSTED_HOST` only for a worker that is allowed to supervise local processes. Do not enable arbitrary agent-supplied commands. |
 
+## Outbound HTTP proxy for remote requests
+
+Paperclip can use an HTTP proxy for guarded remote HTTP and HTTPS requests.
+
+For HTTP endpoints, configure `HTTP_PROXY` or `http_proxy`. For HTTPS endpoints, configure `HTTPS_PROXY` or `https_proxy`. The transport prefers the matching variable and can fall back to the other variable.
+
+The current transport requires an `http://` proxy URL. The proxy host must be an IP address that Paperclip can reach.
+
+Example:
+
+```sh
+HTTP_PROXY=http://192.0.2.10:8080
+HTTPS_PROXY=http://192.0.2.10:8080
+NO_PROXY=localhost,127.0.0.1,.example.internal
+```
+
+Replace the example address and port with your proxy address and port.
+
+For HTTPS endpoints, Paperclip sends CONNECT to the destination IP approved by the endpoint guard. It keeps the original hostname for TLS SNI and certificate verification.
+
+The endpoint guard still resolves and validates the destination hostname before the request. Proxy settings do not provide DNS resolution. The system resolver must resolve the destination hostname.
+
+`NO_PROXY` and `no_proxy` bypass the proxy for matching hostnames. The transport then connects directly to the approved destination IP. Use exclusions only when direct network access is allowed.
+
+Do not disable endpoint validation or TLS verification to work around proxy or DNS failures.
+
 ## Native runtime gateway ownership
 
 Paperclip Runner creates an immutable MCP assignment for one agent. Its gateway
