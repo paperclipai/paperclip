@@ -2028,6 +2028,41 @@ a crash stop with its durable record intact, and recovery continues within the
 normal attempt budget. Any other report keeps the cleanup quarantine below.
 Launcher-owned (remote) and adopted runners are not reaped this way.
 
+Legacy local adapter runs have no runnerd journal. Their CLI runs in its own
+process group, but a tool can move a process out of that group (for example
+Claude Code runs each Bash command with `setsid`, and `nohup` or a double fork
+reparent a server to init). On Linux the server therefore tracks each local
+legacy run's processes itself. A process belongs to the run when its initial
+environment carries the run's exact `PAPERCLIP_RUN_ID` (every local run exports
+it and descendants inherit it), when the run's recorded lineage contains it,
+when its parent belongs to the run, or when it is in a session or process group
+that a run process led. While the run is live a shared sampler (every 250 ms)
+records the run's processes by PID and start time, from the spawned CLI down,
+and saves them under the instance root (`run-lineage/<run id>.json`, with the
+Linux boot id; a file from another boot is ignored). Sampling reads procfs and
+writes the file asynchronously, and a sample never overlaps the previous one. A
+recorded process stays owned after it clears its environment (`env -i`), execs
+or is reparented. When a local legacy run settles (success, failure, timeout or
+in-process cancel), when it is cancelled without a live executor (for example
+after a server restart, using the saved lineage), and when process-loss
+recovery fails it, the server sends SIGTERM to every run process, rescans
+during the grace period so that a process started then (for example by a
+SIGTERM handler) also gets SIGTERM and the rest of the grace period, then sends
+SIGKILL to what is left. The start time is read again before each signal, so a
+reused PID is never signalled. A dead leader's session or group matches only
+members that started no later than the latest member in the process table
+where the leader was first seen gone; this bound uses kernel start times only,
+not `/proc/uptime`, which in a container can report a different clock. The
+server and its
+ancestors (and their sessions and groups), and processes of registered local
+services, are excluded; server-managed runtime services also start without
+`PAPERCLIP_*` variables. Known limit: lineage is sampled, not event-driven. A
+descendant can still survive if it clears its inherited environment and
+detaches through a double fork that starts and finishes between two samples.
+Closing that gap needs kernel containment (a delegated cgroup). A process that
+changes user is also not found. Other platforms keep the process-group stop
+only.
+
 When a native attempt fails before launch because its predecessor's session is
 quarantined, explicit task Retry verifies the retained journal's actual owner.
 That owner must belong to the same company, task, agent, workspace, native session,

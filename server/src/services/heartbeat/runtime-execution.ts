@@ -60,6 +60,7 @@ import { heartbeatRuns, nativeRunFinalizations, workspaceOperations } from "@pap
 import { conflict } from "../../errors.js";
 import { getStartupTraceContext } from "../../instrumentation.js";
 import { logger } from "../../middleware/logger.js";
+import { reapRunDescendants, trackRunDescendants } from "./run-descendant-reaper.js";
 import {
   buildNativeProviderEnvironment,
   executePaperclipNativeSession,
@@ -955,6 +956,16 @@ export async function executeHeartbeatRuntime(db: Db, input: HeartbeatRuntimeExe
               },
               onSpawn: async (meta) => {
                 markDispatchStarted();
+                // Record the run's processes from the CLI down while the run
+                // is live, so teardown still finds a descendant that later
+                // clears its environment or is reparented. The CLI is recorded
+                // synchronously here, before any await: a CLI that exits while
+                // the metadata below is written could no longer be identified,
+                // and a child left in its session would lose its link to the
+                // run. The run's settlement reaps the tracking it starts.
+                if ((executionTarget?.kind ?? "local") === "local") {
+                  void trackRunDescendants({ runId: run.id, rootPid: meta.pid });
+                }
                 await persistRunProcessMetadata(run.id, {
                   pid: meta.pid,
                   processGroupId:
@@ -1336,8 +1347,20 @@ export async function executeHeartbeatRuntime(db: Db, input: HeartbeatRuntimeExe
         "failed to revoke heartbeat-run MCP gateway tokens",
       );
     }
-    await nativeInstructionReservation?.release();
-    await withAdapterExecutionPhase(executionPhaseContext, "instruction_cleanup", releaseInstructionCopy);
+    try {
+      await nativeInstructionReservation?.release();
+      await withAdapterExecutionPhase(executionPhaseContext, "instruction_cleanup", releaseInstructionCopy);
+    } finally {
+      // The CLI's own process group is already handled. Stop anything the
+      // run's tools moved out of that group (setsid, nohup, double fork) so it
+      // cannot outlive the run, and end the lineage tracking that onSpawn
+      // started, even if instruction cleanup failed. Local legacy runs only:
+      // the native runner keeps its own process lineage, and a remote
+      // target's PIDs are not on this host.
+      if (nativeRuntimeResolution.kind === "legacy" && (executionTarget?.kind ?? "local") === "local") {
+        await reapRunDescendants({ runId: run.id, reason: "run_finished" });
+      }
+    }
   }
   return { dispatched: true, adapterResult };
 }

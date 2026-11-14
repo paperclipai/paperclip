@@ -1,5 +1,6 @@
 import { persistHeartbeatRunProcessMetadata } from "../services/heartbeat/run-lifecycle.js";
 import { BOUNDED_TRANSIENT_HEARTBEAT_RETRY_MAX_ATTEMPTS } from "../services/heartbeat/retries.js";
+import { forgetTrackedRunLineageForTests, trackRunDescendants } from "../services/heartbeat/run-descendant-reaper.js";
 import { SERVER_RESTART_RETRY_MAX_ATTEMPTS, SERVER_RESTART_RETRY_WINDOW_MS } from "../services/execution-recovery-attempt.js";
 import { enableRunFailureReporting } from "./helpers/run-failure-reporting.js";
 import { EMBEDDED_POSTGRES_TEST_TIMEOUT_MS } from "@paperclipai/db";
@@ -41,6 +42,7 @@ import { currentControllerProcessStamp } from "../services/controller-process-id
 import { registerControllerInstanceDb, resetControllerInstanceLeaseForTests } from "../services/controller-instance-lease.js";
 import { settleUnrecoverableExecutions } from "../services/execution-recovery-resolution.js";
 import { createOwnershipReportState, runOwnershipReconciliationPass } from "../services/recovery/ownership-invariant-report.js";
+import { readFileSync } from "node:fs";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -512,6 +514,83 @@ async function spawnOrphanedProcessGroup() {
   };
 }
 
+
+/**
+ * Starts a process the way an agent's Bash tool backgrounds a server: in a new
+ * session (setsid), from a shell that exits at once, carrying the run's
+ * PAPERCLIP_RUN_ID. The process is outside any recorded process group.
+ */
+async function spawnEscapedRunDescendant(runId: string) {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "run-descendant-"));
+  const pidFile = path.join(dir, "pid");
+  const starter = spawn(
+    "bash",
+    ["-c", `setsid sh -c 'exec sleep 300' </dev/null >/dev/null 2>&1 & echo $! > '${pidFile}'`],
+    { env: { PATH: process.env.PATH ?? "/usr/bin:/bin", PAPERCLIP_RUN_ID: runId }, stdio: "ignore", detached: true },
+  );
+  await new Promise<void>((resolve, reject) => {
+    starter.once("error", reject);
+    starter.once("exit", () => resolve());
+  });
+  const pid = Number.parseInt((await fs.readFile(pidFile, "utf8")).trim(), 10);
+  await fs.rm(dir, { recursive: true, force: true });
+  if (!Number.isInteger(pid) || pid <= 0) throw new Error("Failed to start escaped run descendant");
+  return pid;
+}
+
+async function waitForDescendantExit(pid: number, timeoutMs = 10_000) {
+  const deadline = Date.now() + timeoutMs;
+  while (isPidAlive(pid) && !isZombiePid(pid)) {
+    if (Date.now() >= deadline) return false;
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+  return true;
+}
+
+function isZombiePid(pid: number) {
+  try {
+    const stat = readFileSync(`/proc/${pid}/stat`, "utf8");
+    return stat.slice(stat.lastIndexOf(")") + 1).trim().startsWith("Z");
+  } catch {
+    return true;
+  }
+}
+
+/**
+ * Starts a marked stand-in for a run's CLI that spawns a detached child with
+ * a cleared environment (`env -i`). Returns both PIDs and a function that
+ * makes the CLI exit, after which the child is reparented and unmarked.
+ */
+async function spawnCliWithEnvClearedChild(runId: string) {
+  const code = `const {spawn}=require('node:child_process');const c=spawn('/usr/bin/env',['-i','PATH=/usr/bin:/bin','sleep','300'],{detached:true,stdio:'ignore'});c.unref();console.log(c.pid);process.stdin.on('data',()=>process.exit(0));`;
+  const cli = spawn(process.execPath, ["-e", code], {
+    env: { PATH: "/usr/bin:/bin", PAPERCLIP_RUN_ID: runId },
+    stdio: ["pipe", "pipe", "ignore"],
+    detached: true,
+  });
+  const childPid = await new Promise<number>((resolve, reject) => {
+    let text = "";
+    cli.stdout!.on("data", (chunk) => {
+      text += chunk;
+      const pid = Number.parseInt(text, 10);
+      if (text.includes("\n") && Number.isInteger(pid)) resolve(pid);
+    });
+    cli.once("error", reject);
+  });
+  const deadline = Date.now() + 5_000;
+  while (Date.now() < deadline) {
+    const environ = await fs.readFile(`/proc/${childPid}/environ`, "utf8").catch(() => "PAPERCLIP_RUN_ID");
+    if (!environ.includes("PAPERCLIP_RUN_ID")) break;
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+  const exitCli = async () => {
+    if (cli.exitCode !== null || cli.signalCode !== null) return;
+    const exited = new Promise((resolve) => cli.once("exit", resolve));
+    cli.stdin!.write("exit\n");
+    await exited;
+  };
+  return { cliPid: cli.pid!, childPid, exitCli };
+}
 
 /** Failure retry accounting with every automatic failure retry already used. */
 const spentFailureRetryAccounting = {
@@ -3381,6 +3460,74 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     const runs = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.agentId, f.agentId));
     expect(runs.filter(run => run.retryOfRunId === f.runId)).toHaveLength(1);
   });
+
+  it.skipIf(process.platform !== "linux")(
+    "stops a lost legacy run's setsid descendant during process-loss recovery",
+    async () => {
+      const { runId } = await seedRunFixture({ agentStatus: "idle", processPid: 999_999_999 });
+      const descendantPid = await spawnEscapedRunDescendant(runId);
+      cleanupPids.add(descendantPid);
+      expect(isPidAlive(descendantPid)).toBe(true);
+
+      const result = await heartbeatService(db).reapOrphanedRuns();
+
+      expect(result.runIds).toEqual([runId]);
+      expect(await waitForDescendantExit(descendantPid)).toBe(true);
+    },
+  );
+
+  it.skipIf(process.platform !== "linux")(
+    "stops a lost process-adapter run's setsid descendant during process-loss recovery",
+    async () => {
+      const { runId } = await seedRunFixture({ agentStatus: "idle", adapterType: "process", processPid: 999_999_999 });
+      const descendantPid = await spawnEscapedRunDescendant(runId);
+      cleanupPids.add(descendantPid);
+
+      const result = await heartbeatService(db).reapOrphanedRuns();
+
+      expect(result.runIds).toEqual([runId]);
+      expect(await waitForDescendantExit(descendantPid)).toBe(true);
+    },
+  );
+
+  it.skipIf(process.platform !== "linux")(
+    "stops a legacy run's setsid descendant when the run is cancelled after a server restart",
+    async () => {
+      const { runId } = await seedRunFixture({ agentStatus: "running", processPid: 999_999_999 });
+      const descendantPid = await spawnEscapedRunDescendant(runId);
+      cleanupPids.add(descendantPid);
+      const unrelatedPid = await spawnEscapedRunDescendant(randomUUID());
+      cleanupPids.add(unrelatedPid);
+
+      // A fresh service has no in-memory process handle for the run, as after a restart.
+      await heartbeatService(db).cancelRun(runId, "Operator Stop");
+
+      expect(await waitForDescendantExit(descendantPid)).toBe(true);
+      expect(isPidAlive(unrelatedPid)).toBe(true);
+    },
+  );
+
+  it.skipIf(process.platform !== "linux")(
+    "stops an environment-cleared descendant from the saved lineage when the run is cancelled after a restart",
+    async () => {
+      const { runId } = await seedRunFixture({ agentStatus: "running", processPid: 999_999_999 });
+      const { cliPid, childPid, exitCli } = await spawnCliWithEnvClearedChild(runId);
+      cleanupPids.add(cliPid);
+      cleanupPids.add(childPid);
+      // The live server records the run's processes, then restarts: the CLI
+      // is gone and only the saved lineage knows the unmarked child.
+      await trackRunDescendants({ runId, rootPid: cliPid });
+      await exitCli();
+      forgetTrackedRunLineageForTests();
+      expect(isPidAlive(childPid)).toBe(true);
+      const environ = await fs.readFile(`/proc/${childPid}/environ`, "utf8");
+      expect(environ).not.toContain("PAPERCLIP_RUN_ID");
+
+      await heartbeatService(db).cancelRun(runId, "Operator Stop");
+
+      expect(await waitForDescendantExit(childPid)).toBe(true);
+    },
+  );
 
   it("schedules one conversation continuation after losing the provider", async () => {
     const { agentId, runId, issueId } = await seedRunFixture({
