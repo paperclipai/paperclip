@@ -165,18 +165,6 @@ export function wakeChatConversationsConflict(existing: unknown, incoming: unkno
   return existingId !== null && incomingId !== null && existingId !== incomingId;
 }
 
-/**
- * True when the wake was generated to notify an interaction addressee on an
- * issue they are not assigned to (e.g. a `request_confirmation` card). Unlike
- * comment-based interaction wakes, these carry no commentId — they are
- * identified by `wakeReason="interaction_pending"` and a non-empty
- * `interactionId` in the context snapshot.
- *
- * The `stale_queued_run_gate` must not cancel these runs with
- * `issue_assignee_changed`: the addressee agent is intentionally not the
- * issue's assignee, and the ownership check in `decideIssueOwnership` already
- * bypasses when `isInteractionWake` is true.
- */
 export function isInteractionAddresseeWake(
   contextSnapshot: Record<string, unknown> | null | undefined,
 ): boolean {
