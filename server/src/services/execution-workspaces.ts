@@ -2256,7 +2256,11 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
       )`));
     const byId = new Map(rows.map(row => [row.id, row]));
     const children = new Map<string, typeof rows>();
-    for (const row of rows) if (row.parentId) children.set(row.parentId, [...(children.get(row.parentId) ?? []), row]);
+    for (const row of rows) {
+      if (!row.parentId) continue;
+      const siblings = children.get(row.parentId);
+      if (siblings) siblings.push(row); else children.set(row.parentId, [row]);
+    }
     for (const workspace of workspaces) {
       const root = workspace.sourceIssueId ? byId.get(workspace.sourceIssueId) : undefined;
       if (!root || root.companyId !== workspace.companyId) { trees.set(workspace.id, []); continue; }
