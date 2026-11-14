@@ -482,4 +482,142 @@ describe("prepareOpenCodeRuntimeConfig", () => {
     expect(config.provider.openrouter.options.headers["HTTP-Referer"]).toBe("https://paperclip.ing");
     await prepared.cleanup();
   });
+
+  it("delivers run MCP servers as remote entries in the isolated config home and cleans up the token-bearing file", async () => {
+    const configHome = await makeConfigHome({ mcp: { existing: { type: "local", command: ["example"] } } });
+    const servers = [
+      {
+        name: "paperclip-assigned",
+        url: "https://paperclip.example/mcp/gateways/gw-1",
+        token: "run-token-abc123",
+        connectionId: "assignment:digest",
+      },
+      {
+        name: "basic-memory",
+        url: "https://paperclip.example/mcp/gateways/gw-2",
+        token: "run-token-def456",
+        connectionId: "connection:basic-memory",
+      },
+    ];
+
+    const prepared = await prepareOpenCodeRuntimeConfig({
+      env: { XDG_CONFIG_HOME: configHome },
+      config: {},
+      runtimeMcpServers: servers,
+    });
+    cleanupPaths.add(prepared.env.XDG_CONFIG_HOME);
+
+    const runtimeConfigPath = path.join(prepared.env.XDG_CONFIG_HOME, "opencode", "opencode.json");
+    const runtimeConfig = JSON.parse(await fs.readFile(runtimeConfigPath, "utf8")) as {
+      mcp?: Record<string, unknown>;
+    };
+    expect(runtimeConfig.mcp).toMatchObject({
+      existing: { type: "local", command: ["example"] },
+      "paperclip-assigned": {
+        type: "remote",
+        url: servers[0]!.url,
+        enabled: true,
+        headers: { Authorization: `Bearer ${servers[0]!.token}` },
+      },
+      "paperclip-basic-memory": {
+        type: "remote",
+        url: servers[1]!.url,
+        enabled: true,
+        headers: { Authorization: `Bearer ${servers[1]!.token}` },
+      },
+    });
+    expect((await fs.stat(runtimeConfigPath)).mode & 0o777).toBe(0o600);
+    expect(prepared.notes.join("\n")).not.toContain(servers[0]!.token);
+    expect(prepared.notes.join("\n")).not.toContain(servers[1]!.token);
+    expect(prepared.notes).toContain(
+      "Injected 2 Paperclip-managed MCP server(s) into the per-run OpenCode config: paperclip-assigned, paperclip-basic-memory.",
+    );
+
+    await prepared.cleanup();
+    cleanupPaths.delete(prepared.env.XDG_CONFIG_HOME);
+    await expect(fs.access(runtimeConfigPath)).rejects.toThrow();
+  });
+
+  it("keeps an operator MCP entry whose name matches a run MCP server", async () => {
+    const operatorEntry = { type: "local", command: ["operator-server"] };
+    const configHome = await makeConfigHome({ mcp: { "paperclip-assigned": operatorEntry } });
+    const server = {
+      name: "paperclip-assigned",
+      url: "https://paperclip.example/mcp/gateways/gw-1",
+      token: "run-token-abc123",
+      connectionId: "assignment:digest",
+    };
+
+    const prepared = await prepareOpenCodeRuntimeConfig({
+      env: { XDG_CONFIG_HOME: configHome },
+      config: {},
+      runtimeMcpServers: [server],
+    });
+    cleanupPaths.add(prepared.env.XDG_CONFIG_HOME);
+
+    const runtimeConfig = JSON.parse(
+      await fs.readFile(path.join(prepared.env.XDG_CONFIG_HOME, "opencode", "opencode.json"), "utf8"),
+    ) as { mcp: Record<string, unknown> };
+    expect(runtimeConfig.mcp["paperclip-assigned"]).toEqual(operatorEntry);
+    const managedEntries = Object.entries(runtimeConfig.mcp).filter(([key]) => key !== "paperclip-assigned");
+    expect(managedEntries).toHaveLength(1);
+    expect(managedEntries[0]![1]).toMatchObject({
+      type: "remote",
+      url: server.url,
+      headers: { Authorization: `Bearer ${server.token}` },
+    });
+    await prepared.cleanup();
+  });
+
+  it("does not write run MCP tokens through a symlinked source config", async () => {
+    const targetDir = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-opencode-target-"));
+    cleanupPaths.add(targetDir);
+    const targetPath = path.join(targetDir, "opencode.json");
+    const operatorConfig = `${JSON.stringify({ mcp: { existing: { type: "local", command: ["example"] } } }, null, 2)}\n`;
+    await fs.writeFile(targetPath, operatorConfig, "utf8");
+    const configHome = await makeConfigHome();
+    await fs.symlink(targetPath, path.join(configHome, "opencode", "opencode.json"));
+    const server = {
+      name: "basic-memory",
+      url: "https://paperclip.example/mcp/gateways/gw-2",
+      token: "run-token-def456",
+      connectionId: "connection:basic-memory",
+    };
+
+    const prepared = await prepareOpenCodeRuntimeConfig({
+      env: { XDG_CONFIG_HOME: configHome },
+      config: {},
+      runtimeMcpServers: [server],
+    });
+    cleanupPaths.add(prepared.env.XDG_CONFIG_HOME);
+
+    const runtimeConfigPath = path.join(prepared.env.XDG_CONFIG_HOME, "opencode", "opencode.json");
+    expect((await fs.lstat(runtimeConfigPath)).isSymbolicLink()).toBe(false);
+    expect((await fs.stat(runtimeConfigPath)).mode & 0o777).toBe(0o600);
+    const runtimeConfig = JSON.parse(await fs.readFile(runtimeConfigPath, "utf8")) as {
+      mcp: Record<string, unknown>;
+    };
+    expect(runtimeConfig.mcp).toMatchObject({
+      existing: { type: "local", command: ["example"] },
+      "paperclip-basic-memory": { headers: { Authorization: `Bearer ${server.token}` } },
+    });
+    expect(await fs.readFile(targetPath, "utf8")).toBe(operatorConfig);
+    await prepared.cleanup();
+  });
+
+  it("adds no mcp entries when no run MCP servers are granted", async () => {
+    const configHome = await makeConfigHome({ permission: { read: "allow" } });
+    const prepared = await prepareOpenCodeRuntimeConfig({
+      env: { XDG_CONFIG_HOME: configHome },
+      config: {},
+      runtimeMcpServers: [],
+    });
+    cleanupPaths.add(prepared.env.XDG_CONFIG_HOME);
+    const runtimeConfig = JSON.parse(
+      await fs.readFile(path.join(prepared.env.XDG_CONFIG_HOME, "opencode", "opencode.json"), "utf8"),
+    ) as Record<string, unknown>;
+    expect(runtimeConfig).not.toHaveProperty("mcp");
+    expect(prepared.notes.some((note) => note.includes("MCP server"))).toBe(false);
+    await prepared.cleanup();
+  });
 });
