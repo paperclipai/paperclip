@@ -78,8 +78,13 @@ Rules for `run.finished`:
 - `PERSON_OWNED_FAILURE_CODES` in `server/src/services/continuation-cause.ts`
   is the product list of customer-side codes. A test fails when a code in that
   list has no customer-side class.
-- `model` is the model that the run reported, or the model in the agent
-  configuration. It is stored only when it is a short fixed value.
+- `errorCode` is stored only when the code is in the failure class lists. A
+  run with a code outside the lists has the class `other` and no `errorCode`.
+  Add a code to a list when it is frequent.
+- `model` is the family of the model that the run reported, or of the model in
+  the agent configuration. `cloudRunModelFamily` derives it. The value is one
+  of `CLOUD_RUN_MODEL_FAMILIES`, for example `claude-sonnet`, `gpt`, or `other`.
+- `adapterType` is a built-in adapter type, or `other`.
 - The token counts are present only when the run reported usage.
 
 Rules for `connector.used`:
@@ -90,9 +95,9 @@ Rules for `connector.used`:
   from the catalog has the value `custom`.
 - A process keeps the pairs of the current day in memory, so most calls do no
   database work for this event. The first call of a pair in a process does one
-  check in the database. Thus a restart writes no second event for the same
-  day. A transaction-level advisory lock makes the check and the insert safe
-  when two processes record the same pair at the same time.
+  insert. The event ID comes from the company, the connection, and the UTC
+  day. The unique index on the event ID rejects a second insert, so a restart
+  or a second process writes no second event for the same day.
 - On a Cloud-managed instance, `emitConnectionInvoked` reads the call and its
   connection one time for each call that ends. Paperclip Telemetry uses the same
   read.
