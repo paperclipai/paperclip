@@ -3,7 +3,9 @@ import { and, desc, eq, inArray, isNotNull, isNull, or, sql } from "drizzle-orm"
 import { environmentLeases, heartbeatRunEvents, heartbeatRuns, issueRecoveryActions, type Db } from "@paperclipai/db";
 import { canonicalExecutionUuid } from "./execution-identity.js";
 import { readProcessStartedAt } from "./hot-restart.js";
+import { legacyControllerBootId } from "./legacy-controller-lease.js";
 import { hasRemoteTerminationReceipt } from "./remote-execution-termination.js";
+import { executionStartedEventPredicate } from "./pre-dispatch-execution-evidence.js";
 
 // These adapters accept a conversation turn. Retrying a process or webhook can
 // replay the action itself, so those adapters retain their recovery contract.
@@ -87,6 +89,23 @@ export function conversationRecoveryActionPredicate() {
           eq(heartbeatRuns.status, "interrupted"),
           inArray(heartbeatRuns.errorCode, ["process_lost", "server_shutdown_interrupted", "execution_reconciliation_required"]),
           and(eq(heartbeatRuns.status, "cancelled"), sql`${heartbeatRuns.resultJson}->'executionCancellation'->>'state' = 'acknowledged'`),
+          and(eq(heartbeatRuns.status, "cancelled"), sql`${heartbeatRuns.runtimeMode} = 'legacy'
+            and ${heartbeatRuns.executionStage} = 'preparing'
+            and ${heartbeatRuns.processPid} is null
+            and ${heartbeatRuns.processGroupId} is null
+            and ${heartbeatRuns.processStartedAt} is null
+            and ${heartbeatRuns.nativeSessionId} is null
+            and ${heartbeatRuns.nativeIssueId} is null
+            and ${heartbeatRuns.sessionIdAfter} is null
+            and ${heartbeatRuns.controllerBootId} is not null
+            and ${heartbeatRuns.controllerBootId} <> ${legacyControllerBootId}
+            and ${heartbeatRuns.controllerLeaseExpiresAt} <= clock_timestamp()
+            and not exists (
+              select 1 from ${heartbeatRunEvents}
+              where ${heartbeatRunEvents.companyId} = ${heartbeatRuns.companyId}
+                and ${heartbeatRunEvents.runId} = ${heartbeatRuns.id}
+                and ${executionStartedEventPredicate()}
+            )`),
         )}
     )`,
   );
