@@ -1888,9 +1888,6 @@ impl AcpxCommandExecutor {
             ));
         }
         let different_run = state.descriptor.run_id != attachment_context.run_id;
-        if different_run {
-            self.end_provider_turn_wait(false)?;
-        }
         if !self.rebind_prepared_session(&descriptor, &tool_set, next_candidate.is_some()) {
             if let Some(session) = self.session.as_mut() {
                 session
@@ -1921,6 +1918,11 @@ impl AcpxCommandExecutor {
         state.semantic_result = None;
         state.pending_events.clear();
         state.lifecycle = "suspended".to_owned();
+        let ended_wait = if different_run {
+            state.provider_turn_wait.take()
+        } else {
+            None
+        };
         // A new run starts a fresh provider generation; the previous run's
         // failed turn-end restart no longer applies to it. A same-run attach
         // keeps the restriction.
@@ -1939,6 +1941,11 @@ impl AcpxCommandExecutor {
         };
         if saved.is_ok() && clears_turn_end_restart_failure {
             self.failed_turn_end_restart = None;
+        }
+        if let (true, Some(wait), Some(session)) =
+            (saved.is_ok(), ended_wait.as_ref(), self.session.as_mut())
+        {
+            session.disarm_provider_turn(&wait.turn_id);
         }
         saved
     }
