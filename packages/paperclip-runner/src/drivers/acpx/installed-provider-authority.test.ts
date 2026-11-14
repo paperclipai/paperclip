@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { afterEach, describe, expect, it } from "vitest";
+import { createAcpxPackageJsonResolver } from "./installation-integrity.js";
 import { resolveInstalledProviderAuthority } from "./installed-provider-authority.js";
 
 const roots: string[] = [];
@@ -18,6 +19,24 @@ async function fixture(name = "@paperclipai/server") {
   await writeFile(manifest, JSON.stringify({ name }));
   return { root, module, manifest };
 }
+async function workspaceFixture(workspaceManifest: object, selfRooted: boolean) {
+  const workspace = await realpath(await mkdtemp(join(tmpdir(), "installed-acpx-workspace-")));
+  roots.push(workspace);
+  const server = join(workspace, "server");
+  const directory = join(server, "dist/vendor/paperclip-runner/drivers/acpx");
+  const bridge = join(workspace, "node_modules/.pnpm/@agentclientprotocol+claude-agent-acp@0.73.0/node_modules/@agentclientprotocol/claude-agent-acp");
+  const scope = join(server, "node_modules/@agentclientprotocol");
+  await Promise.all([directory, bridge, scope, ...(selfRooted ? [join(server, "node_modules/.pnpm")] : [])].map(path => mkdir(path, { recursive: true })));
+  await Promise.all([
+    writeFile(join(directory, "installation-integrity.js"), "export {};\n"),
+    writeFile(join(server, "package.json"), JSON.stringify({ name: "@paperclipai/server" })),
+    writeFile(join(workspace, "package.json"), JSON.stringify(workspaceManifest)),
+    writeFile(join(workspace, "pnpm-workspace.yaml"), "packages:\n  - server\n"),
+    writeFile(join(bridge, "package.json"), JSON.stringify({ name: "@agentclientprotocol/claude-agent-acp", version: "0.73.0" })),
+  ]);
+  await symlink(bridge, join(scope, "claude-agent-acp"));
+  return { workspace, server, module: join(directory, "installation-integrity.js"), manifest: join(server, "package.json"), bridge };
+}
 
 describe("installed provider authority", () => {
   it("derives the owning server only from the normal installed verifier layout", async () => {
@@ -25,6 +44,26 @@ describe("installed provider authority", () => {
     expect(resolveInstalledProviderAuthority(pathToFileURL(f.module).href)).toEqual({ root: f.root, manifest: f.manifest });
     expect(resolveInstalledProviderAuthority(pathToFileURL(join(f.root, "src/drivers/acpx/installation-integrity.ts")).href)).toBeUndefined();
     expect(resolveInstalledProviderAuthority(pathToFileURL(join(f.root, "dist/drivers/acpx/installation-integrity.js")).href)).toBeUndefined();
+  });
+
+  it("binds a source-built server to its pnpm workspace store", async () => {
+    const f = await workspaceFixture({ name: "paperclip", private: true }, false);
+    const authority = resolveInstalledProviderAuthority(pathToFileURL(f.module).href);
+    expect(authority).toEqual({ root: f.workspace, manifest: f.manifest });
+    expect(createAcpxPackageJsonResolver(authority!.root, authority!.manifest)("@agentclientprotocol/claude-agent-acp"))
+      .toBe(join(f.bridge, "package.json"));
+  });
+
+  it.each([
+    [{ name: "paperclip", private: true }, true],
+    [{ name: "paperclip" }, false],
+    [{ name: "other-workspace", private: true }, false],
+  ])("keeps the server authority outside a Paperclip source workspace (%j, self-rooted: %s)", async (workspaceManifest, selfRooted) => {
+    const f = await workspaceFixture(workspaceManifest, selfRooted);
+    const authority = resolveInstalledProviderAuthority(pathToFileURL(f.module).href);
+    expect(authority).toEqual({ root: f.server, manifest: f.manifest });
+    expect(() => createAcpxPackageJsonResolver(authority!.root, authority!.manifest)("@agentclientprotocol/claude-agent-acp"))
+      .toThrow("outside the selected provider root");
   });
 
   it("rejects a substituted package owner", async () => {
