@@ -269,7 +269,12 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     .any(|token| token == "provider-turn-after-disarm")
             {
                 if let Some(run) = pending_provider_run.take() {
-                    next_sequence = write_provider_turn(&mut stdout, next_sequence, &run)?;
+                    next_sequence = write_provider_turn(
+                        &mut stdout,
+                        next_sequence,
+                        &run,
+                        &mut source_pending_completion,
+                    )?;
                 }
             }
             if armed
@@ -299,7 +304,12 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 continue;
             }
             if let (true, Some(run)) = (armed, pending_provider_run.take()) {
-                next_sequence = write_provider_turn(&mut stdout, next_sequence, &run)?;
+                next_sequence = write_provider_turn(
+                    &mut stdout,
+                    next_sequence,
+                    &run,
+                    &mut source_pending_completion,
+                )?;
                 provider_rearmable = tokens.iter().any(|token| token == "provider-terminal-live");
             } else {
                 provider_rearmable = false;
@@ -547,7 +557,18 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     next_sequence,
                     &source_run,
                     &mut pending_provider_run,
+                    &mut source_pending_completion,
                 )?;
+            }
+            if command == "tool.resolve" && request["params"]["callId"] == "call-provider-finish" {
+                let turn = source_pending_completion
+                    .take()
+                    .ok_or("missing provider completion")?;
+                if request["params"]["turnId"] != turn {
+                    return Err("provider completion identity mismatch".into());
+                }
+                next_sequence = finish_provider_turn(&mut stdout, next_sequence, &source_run)?;
+                continue;
             }
             if command == "tool.resolve" {
                 let turn = source_pending_completion
@@ -1084,6 +1105,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                         next_sequence,
                         "run-1",
                         &mut pending_provider_run,
+                        &mut None,
                     )?;
                 }
                 if command == "turn.start" && mode == "turns-multiple-tool-results-terminal" {
@@ -1574,13 +1596,14 @@ fn offer_provider_turn(
     sequence: u64,
     default_run: &str,
     pending: &mut Option<String>,
+    pending_finish: &mut Option<String>,
 ) -> io::Result<u64> {
     let tokens = provider_turn_tokens();
     if !tokens.iter().any(|token| token == "provider-turn") {
         return Ok(sequence);
     }
     if tokens.iter().any(|token| token == "provider-turn-unarmed") {
-        return write_provider_turn(output, sequence, default_run);
+        return write_provider_turn(output, sequence, default_run, pending_finish);
     }
     *pending = Some(default_run.to_owned());
     Ok(sequence)
@@ -1590,6 +1613,7 @@ fn write_provider_turn(
     output: &mut impl Write,
     mut sequence: u64,
     default_run: &str,
+    pending_finish: &mut Option<String>,
 ) -> io::Result<u64> {
     let tokens = provider_turn_tokens();
     if !tokens.iter().any(|token| token == "provider-turn") {
@@ -1650,6 +1674,42 @@ fn write_provider_turn(
         )?;
         sequence += 2;
     }
+    if tokens
+        .iter()
+        .any(|token| token == "provider-result-resolved")
+    {
+        write_json(
+            output,
+            &frame(
+                sequence,
+                "runtime.tool_called",
+                json!({"callId":"call-provider-finish","operationId":"paperclip_finish","input":valid_reserved_completion_result()}),
+            ),
+        )?;
+        *pending_finish = Some(turn_id);
+        return Ok(sequence + 1);
+    }
+    finish_provider_turn(output, sequence, default_run)
+}
+
+fn finish_provider_turn(
+    output: &mut impl Write,
+    mut sequence: u64,
+    default_run: &str,
+) -> io::Result<u64> {
+    let tokens = provider_turn_tokens();
+    let value = |prefix: &str, fallback: &str| {
+        tokens
+            .iter()
+            .find_map(|token| token.strip_prefix(prefix).map(str::to_owned))
+            .unwrap_or_else(|| fallback.to_owned())
+    };
+    let turn_id = value("provider-turn-id=", "provider-1");
+    let run_id = value("provider-run=", default_run);
+    let frame = |sequence: u64, event_type: &str, payload: Value| {
+        json!({"protocolVersion":GENERATED_ACPX_SIDECAR_PROTOCOL_VERSION,"sequence":sequence,
+            "eventType":event_type,"runId":run_id,"turnId":turn_id,"payload":payload})
+    };
     write_json(
         output,
         &frame(
