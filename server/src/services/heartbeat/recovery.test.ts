@@ -31,6 +31,7 @@ import { persistHeartbeatRunProcessMetadata } from "./run-lifecycle.js";
 import { appendHeartbeatRunEvent } from "../heartbeat-run-events.js";
 import { hasNativeLocalProcessStop, PROCESS_START_REQUESTED, releaseSettledNativeRunProcess } from "../native-local-process-stop.js";
 import { legacyControllerBootId } from "../legacy-controller-lease.js";
+import { runBoundedShutdownStep } from "../../shutdown.js";
 
 type Run = typeof heartbeatRuns.$inferSelect;
 
@@ -44,10 +45,12 @@ const native = vi.hoisted(() => ({
 }));
 const hotRestart = vi.hoisted(() => ({
   read: vi.fn<() => Promise<HotRestartIntent | null>>(async () => null),
+  write: vi.fn(async () => undefined),
 }));
 vi.mock("../hot-restart.js", async (importOriginal) => ({
   ...await importOriginal<typeof import("../hot-restart.js")>(),
   readHotRestartIntent: hotRestart.read,
+  writeHotRestartShutdownSnapshot: hotRestart.write,
 }));
 vi.mock("../native-runtime/index.js", async (importOriginal) => ({
   ...await importOriginal<typeof import("../native-runtime/index.js")>(),
@@ -1497,6 +1500,122 @@ describePostgres("heartbeat recovery module ownership", () => {
     } finally {
       await db.delete(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, run.id));
       await db.delete(heartbeatRuns).where(eq(heartbeatRuns.id, run.id));
+    }
+  });
+
+  async function seedOwnedNativeRun() {
+    const run = await seedRun();
+    const identity = await currentNativeControllerIdentity();
+    await db.update(agents).set({ adapterType: "paperclip_runner" }).where(eq(agents.id, run.agentId));
+    const [nativeRun] = await db.update(heartbeatRuns).set({ runtimeMode: "native", nativeIssueId: run.issueId, nativeSessionId: randomUUID() })
+      .where(eq(heartbeatRuns.id, run.id)).returning();
+    await db.insert(nativeRunFinalizations).values({ runId: run.id, companyId: run.companyId, issueId: run.issueId!,
+      phase: "observed", controllerBootId: identity.bootId, leaseOwner: "departing-server", leaseExpiresAt: new Date(Date.now() + 60_000) });
+    return nativeRun;
+  }
+  async function removeNativeRun(runId: string) {
+    await db.delete(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, runId));
+    await db.delete(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
+  }
+  const finalization = async (runId: string) =>
+    (await db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, runId)))[0];
+  const drainHasStarted = () => new Promise(resolve => setTimeout(resolve, 250));
+
+  it("does not count an early hand-off as suspended while its detach is still pending at the shutdown drain", async () => {
+    const run = await seedOwnedNativeRun(), recovery = createHeartbeatRecovery(db, callbacks(db));
+    let finishDetach!: () => void;
+    native.detach.mockImplementationOnce(() => new Promise<number>(resolve => { finishDetach = () => resolve(0); }));
+    try {
+      const early = recovery.handOffNativeRunsForShutdown("SIGTERM");
+      await vi.waitFor(() => expect(native.detach).toHaveBeenCalledTimes(1));
+      let drained = false;
+      const drain = recovery.drainRunningRunsForShutdown("SIGTERM", new Date(), [run.id]).finally(() => { drained = true; });
+      await drainHasStarted();
+      expect(drained).toBe(false);
+      expect((await finalization(run.id)).recoveryState).toBeNull();
+      finishDetach();
+      expect(await early).toEqual([run.id]);
+      expect((await drain).restartSuspendedRunIds).toEqual([run.id]);
+      expect(native.detach).toHaveBeenCalledTimes(1);
+      expect(await finalization(run.id)).toMatchObject({ recoveryState: "awaiting_runner_reattach" });
+    } finally {
+      finishDetach?.();
+      await removeNativeRun(run.id);
+    }
+  });
+
+  it("hands off a run at the shutdown drain when its pending early hand-off fails", async () => {
+    const run = await seedOwnedNativeRun(), recovery = createHeartbeatRecovery(db, callbacks(db));
+    let failDetach!: (error: Error) => void;
+    native.detach.mockImplementationOnce(() => new Promise<number>((_resolve, reject) => { failDetach = reject; }));
+    try {
+      const early = recovery.handOffNativeRunsForShutdown("SIGTERM");
+      await vi.waitFor(() => expect(native.detach).toHaveBeenCalledTimes(1));
+      const drain = recovery.drainRunningRunsForShutdown("SIGTERM", new Date(), [run.id]);
+      await drainHasStarted();
+      failDetach(new Error("runner detach failed"));
+      expect(await early).toEqual([]);
+      expect((await drain).restartSuspendedRunIds).toEqual([run.id]);
+      expect(native.detach).toHaveBeenCalledTimes(2);
+      expect(await finalization(run.id)).toMatchObject({ recoveryState: "awaiting_runner_reattach" });
+    } finally {
+      await removeNativeRun(run.id);
+    }
+  });
+
+  it("writes no hot-restart snapshot and detaches nothing after a timed-out preparation hands over to the drain", async () => {
+    const run = await seedOwnedNativeRun(), recovery = createHeartbeatRecovery(db, callbacks(db));
+    hotRestart.read.mockResolvedValue({ version: 1, requestedAt: new Date().toISOString(), previousServerPid: process.pid,
+      previousServerVersion: null, drainRequired: false, requestedByRunId: null, preflightActiveRunIds: [] });
+    let finishIdleClose!: () => void;
+    native.closeIdle.mockImplementationOnce(() => new Promise(resolve => { finishIdleClose = () => resolve({ closed: 0, failed: 0 }); }));
+    let preparation: ReturnType<typeof recovery.prepareHotRestartShutdown> | undefined;
+    try {
+      const step = await runBoundedShutdownStep({ step: "hot_restart_prepare", signal: "SIGTERM", timeoutMs: 50,
+        log: { info: vi.fn(), error: vi.fn() },
+        run: abort => (preparation = recovery.prepareHotRestartShutdown("SIGTERM", new Date(), abort)) });
+      expect(step.outcome).toBe("timed_out");
+      expect((await recovery.drainRunningRunsForShutdown("SIGTERM", new Date(), [run.id])).restartSuspendedRunIds).toEqual([run.id]);
+      expect(native.detach).toHaveBeenCalledTimes(1);
+      finishIdleClose();
+      await expect(preparation).rejects.toThrow("timed out");
+      expect(hotRestart.write).not.toHaveBeenCalled();
+      expect(native.detach).toHaveBeenCalledTimes(1);
+    } finally {
+      finishIdleClose?.();
+      await preparation?.catch(() => undefined);
+      await removeNativeRun(run.id);
+    }
+  });
+
+  it("records no more hot-restart run events after the preparation times out during its first event", async () => {
+    const runs = [await seedOwnedNativeRun(), await seedOwnedNativeRun(), await seedOwnedNativeRun()];
+    const deps = callbacks(db), recovery = createHeartbeatRecovery(db, deps);
+    hotRestart.read.mockResolvedValue({ version: 1, requestedAt: new Date().toISOString(), previousServerPid: process.pid,
+      previousServerVersion: null, drainRequired: false, requestedByRunId: null, preflightActiveRunIds: [] });
+    let finishFirstEvent!: () => void;
+    const firstEvent = new Promise<undefined>(resolve => { finishFirstEvent = () => resolve(undefined); });
+    deps.appendRunEvent.mockImplementationOnce(() => firstEvent);
+    const hotRestartEvents = () => deps.appendRunEvent.mock.calls
+      .filter(([, event]) => event.message?.startsWith("Hot restart requested") === true).length;
+    let preparation: ReturnType<typeof recovery.prepareHotRestartShutdown> | undefined;
+    try {
+      const step = await runBoundedShutdownStep({ step: "hot_restart_prepare", signal: "SIGTERM", timeoutMs: 2_000,
+        log: { info: vi.fn(), error: vi.fn() },
+        run: abort => (preparation = recovery.prepareHotRestartShutdown("SIGTERM", new Date(), abort)) });
+      expect(step.outcome).toBe("timed_out");
+      expect(hotRestartEvents()).toBe(1);
+      const runIds = runs.map(run => run.id);
+      expect((await recovery.drainRunningRunsForShutdown("SIGTERM", new Date(), runIds)).restartSuspendedRunIds.sort())
+        .toEqual([...runIds].sort());
+      finishFirstEvent();
+      await expect(preparation).rejects.toThrow("timed out");
+      expect(hotRestartEvents()).toBe(1);
+      expect(native.detach).toHaveBeenCalledTimes(runs.length);
+    } finally {
+      finishFirstEvent?.();
+      await preparation?.catch(() => undefined);
+      for (const run of runs) await removeNativeRun(run.id);
     }
   });
 
