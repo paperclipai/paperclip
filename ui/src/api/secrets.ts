@@ -238,9 +238,15 @@ export const secretsApi = {
   // --- Secret & binding proposals (PAP-14731) -----------------------------
   // Board-facing review surface. Agents propose credentials/bindings; humans
   // approve or reject them here. Values are never returned by these routes.
-  listProposals: (companyId: string, status: SecretProposalStatus = "pending") =>
+  listProposals: (
+    companyId: string,
+    status: SecretProposalStatus = "pending",
+    options: { order?: "created" | "resolved"; limit?: number } = {},
+  ) =>
     api.get<SecretProposalView[]>(
-      `/companies/${companyId}/secret-proposals?status=${encodeURIComponent(status)}`,
+      `/companies/${companyId}/secret-proposals?status=${encodeURIComponent(status)}${
+        options.order ? `&order=${options.order}` : ""
+      }${options.limit ? `&limit=${options.limit}` : ""}`,
     ),
   approveProposal: (companyId: string, proposalId: string, data: ApproveSecretProposalInput = {}) =>
     api.post<SecretProposalView>(

@@ -53,7 +53,7 @@ function liveCandidate(id, candidateSlots) {
       source && {
         ...source,
         id: "runner-codex-sol",
-        model: "gpt-5.6-sol",
+        model: "gpt-6.1-sol",
       }
     );
   }

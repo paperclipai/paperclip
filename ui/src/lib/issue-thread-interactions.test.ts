@@ -13,6 +13,7 @@ import {
   interactionReplacesComposerSkip,
   interactionReadinessRefetchInterval,
   isDegenerateAskUserQuestions,
+  isDeferredConversationInteraction,
   isSupersededByNewerSiblingInteraction,
   shouldHideInteractionCard,
   normalizeRequestConfirmationTargetHref,
@@ -63,6 +64,17 @@ describe("buildSuggestedTaskTree", () => {
 });
 
 describe("issue thread interaction helpers", () => {
+  it("allows recovery past dismissed ordinary reviews but retains protected action gates", () => {
+    const review = { ...pendingRequestConfirmationInteraction, dismissedAt: new Date(),
+      payload: { version: 1 as const, prompt: "Review completed work", target: { type: "custom" as const, key: "native_completion_review" } } };
+    expect(isDeferredConversationInteraction(review)).toBe(true);
+    expect(isDeferredConversationInteraction({ ...review, dismissedAt: null })).toBe(false);
+    expect(isDeferredConversationInteraction({ ...review, effectiveResolverPolicySource: "company_cap" })).toBe(false);
+    expect(isDeferredConversationInteraction({ ...pendingRequestConfirmationInteraction, dismissedAt: new Date() })).toBe(false);
+    expect(isDeferredConversationInteraction({ ...review, payload: { ...review.payload, toolAction: {} as never } })).toBe(false);
+    expect(isDeferredConversationInteraction({ ...review, payload: { ...review.payload, secretProposal: {} as never } })).toBe(false);
+  });
+
   it("replaces composer Skip only when the durable form has its own alternative path", () => {
     const base = {
       id: "interaction-1",

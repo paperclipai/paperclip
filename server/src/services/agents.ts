@@ -1,12 +1,15 @@
+import { assertAgentInteraction } from "./agent-interaction-policy.js";
+import { notifyAttentionRetentionWork } from "./retention-work-notifications.js";
 import { type BudgetServiceHooks } from "./budgets.js";
 
-import { and, desc, eq, inArray, ne } from "drizzle-orm";
+import { and, desc, eq, inArray } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { agents, agentConfigRevisions, agentApiKeys, heartbeatRuns } from "@paperclipai/db";
 import { isUuidLike, normalizeAgentApiKeyScope, normalizeAgentUrlKey, type AgentApiKeyScope } from "@paperclipai/shared";
 
 import { conflict, notFound, unprocessable } from "../errors.js";
 
+import { preserveAgentInteractionPermissions } from "../lib/agent-interaction-permissions.js";
 import { normalizeAgentPermissions } from "../lib/agent-permissions.js";
 
 import {
@@ -31,21 +34,17 @@ export function agentService(db: Db, budgetHooks: BudgetServiceHooks = {}) {
     createAgentLifecycle(db, budgetHooks).updateConfiguration(...args);
   return {
     list: async (companyId: string, options?: { includeTerminated?: boolean }) => {
-      const conditions = [eq(agents.companyId, companyId)];
-      if (!options?.includeTerminated) {
-        conditions.push(ne(agents.status, "terminated"));
-      }
-      const [rows, allCompanyRows] = await Promise.all([
-        db.select().from(agents).where(and(...conditions)),
-        listCompanyAgentRows(companyId),
-      ]);
+      const allCompanyRows = await listCompanyAgentRows(companyId);
+      const rows = options?.includeTerminated
+        ? allCompanyRows
+        : allCompanyRows.filter((row) => row.status !== "terminated");
       const hydrated = await hydrateAgentSpend(rows);
       return normalizeAgentRows(hydrated, allCompanyRows);
     },
 
     getById,
 
-    updatePermissions: async (id: string, permissions: Record<string, unknown> & { canCreateAgents: boolean }) => {
+    updatePermissions: async (id: string, permissions: Record<string, unknown> & { canCreateAgents: boolean }, options?: { actorAgentId?: string | null }) => {
       const existing = await getById(id);
       if (!existing) return null;
       if (existing.status === "pending_approval") {
@@ -56,15 +55,24 @@ export function agentService(db: Db, budgetHooks: BudgetServiceHooks = {}) {
         });
       }
 
-      const updated = await db
+      const updated = await db.transaction(async tx => {
+        await assertAgentInteraction(tx, { companyId: existing.companyId, actorAgentId: options?.actorAgentId,
+          operation: "configure", targetAgentId: id, lock: "update" });
+        const [current] = await tx.select().from(agents).where(eq(agents.id, id)).for("update");
+        if (!current) return null;
+        if (current.status === "pending_approval") throw conflict("Pending approval agent permissions cannot be changed before board approval");
+        const protectedPermissions = preserveAgentInteractionPermissions(current.permissions, permissions);
+        await notifyAttentionRetentionWork(tx, { companyId: current.companyId });
+        return tx
         .update(agents)
         .set({
-          permissions: normalizeAgentPermissions({ ...existing.permissions, ...permissions }),
+          permissions: normalizeAgentPermissions({ ...current.permissions, ...protectedPermissions }, { role: current.role }),
           updatedAt: new Date(),
         })
         .where(eq(agents.id, id))
         .returning()
         .then((rows) => rows[0] ?? null);
+      });
 
       return updated ? getById(updated.id) : null;
     },
@@ -117,6 +125,9 @@ export function agentService(db: Db, budgetHooks: BudgetServiceHooks = {}) {
     ) => {
       const existing = await getById(id);
       if (!existing) throw notFound("Agent not found");
+      if (existing.lifecycleHolds?.includes("setup")) {
+        throw conflict("Finish agent setup before creating keys");
+      }
       if (existing.status === "pending_approval") {
         throw conflict("Cannot create keys for pending approval agents");
       }

@@ -47,18 +47,20 @@ describeEmbeddedPostgres("agent service clearError", () => {
     await tempDb?.cleanup();
   });
 
-  it("resets converted agent sessions while preserving identity, configuration and run history", async () => {
+  it.each(["claude_local", "codex_local"])("resets converted %s sessions while preserving identity, configuration and run history", async adapterType => {
     const companyId = randomUUID();
     const agentId = randomUUID();
     const runId = randomUUID();
-    const config = { cwd: "/tmp/runner-conversion", instructionsFilePath: "/tmp/runner-conversion/AGENTS.md", env: { TEST_KEY: { type: "plain", value: "kept" } } };
+    const model = adapterType === "claude_local" ? "claude-sonnet-4-6" : "gpt-5.4";
+    const config = { model, cwd: "/tmp/runner-conversion", instructionsFilePath: "/tmp/runner-conversion/AGENTS.md", env: { TEST_KEY: { type: "plain", value: "kept" } } };
     await db.insert(companies).values({ id: companyId, name: "Conversion", issuePrefix: `T${companyId.slice(0, 6).toUpperCase()}` });
-    await db.insert(agents).values({ id: agentId, companyId, name: "Claude QA", role: "engineer", adapterType: "claude_local", adapterConfig: config });
+    await db.insert(agents).values({ id: agentId, companyId, name: "Migration QA", role: "engineer", adapterType, adapterConfig: config });
     await db.insert(heartbeatRuns).values({ id: runId, companyId, agentId, invocationSource: "on_demand", status: "succeeded", resultJson: { summary: "history stays" } });
-    await db.insert(agentTaskSessions).values({ companyId, agentId, adapterType: "claude_local", taskKey: "issue:test", sessionDisplayId: "old-session", lastRunId: runId });
-    await db.insert(agentRuntimeState).values({ companyId, agentId, adapterType: "claude_local", sessionId: "old-session", stateJson: { old: true }, lastRunId: runId });
-    const updated = await agentService(db).update(agentId, { adapterType: "paperclip_runner", adapterConfig: { ...config, provider: "acpx", acpxAgent: "claude", model: "custom-claude-model" } });
-    expect(updated).toMatchObject({ id: agentId, companyId, name: "Claude QA", role: "engineer", adapterConfig: config });
+    await db.insert(agentTaskSessions).values({ companyId, agentId, adapterType, taskKey: "issue:test", sessionDisplayId: "old-session", lastRunId: runId });
+    await db.insert(agentRuntimeState).values({ companyId, agentId, adapterType, sessionId: "old-session", stateJson: { old: true }, lastRunId: runId });
+    const profile = adapterType === "claude_local" ? { provider: "acpx", acpxAgent: "claude" } : { provider: "codex" };
+    const updated = await agentService(db).update(agentId, { adapterType: "paperclip_runner", adapterConfig: { ...config, ...profile } });
+    expect(updated).toMatchObject({ id: agentId, companyId, name: "Migration QA", role: "engineer", adapterConfig: config });
     expect(await db.select().from(agentTaskSessions).where(eq(agentTaskSessions.agentId, agentId))).toEqual([]);
     const [runtime] = await db.select().from(agentRuntimeState).where(eq(agentRuntimeState.agentId, agentId));
     expect(runtime).toMatchObject({ adapterType: "paperclip_runner", sessionId: null, stateJson: {}, lastRunId: runId });

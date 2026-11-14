@@ -6,6 +6,7 @@ import { readCodexAuthInfo, fetchCodexQuota, CodexQuotaRequestError } from "@pap
 import { parseGrokAuthPayload, hasUsableGrokAuthValue } from "@paperclipai/adapter-grok-local/server";
 import type { AiProvider } from "@paperclipai/shared";
 import { HttpError, unprocessable } from "../errors.js";
+import { verifyAntigravityCredential } from "../vendor/paperclip-runner/index.js";
 
 export class LocalAiVerificationError extends HttpError {
   constructor(kind: "network" | "rejected" | "unavailable") {
@@ -18,6 +19,18 @@ export class LocalAiVerificationError extends HttpError {
   }
 }
 
+export async function readVerifiedLocalAiCredentialDetails(provider: AiProvider, loginHome: string) {
+  if (provider === "google") {
+    try {
+      const verified = await verifyAntigravityCredential(loginHome);
+      return { credential: verified.credential, accountLabel: verified.accountEmail };
+    } catch {
+      throw unprocessable("Could not verify the Google account. Finish browser sign-in, then try Connect again.");
+    }
+  }
+  return { credential: await readVerifiedLocalAiCredential(provider, loginHome), accountLabel: undefined };
+}
+
 /** Read and verify a connection-specific login home. */
 export async function readVerifiedLocalAiCredential(provider: AiProvider, loginHome?: string): Promise<string> {
   if (provider === "openrouter") throw unprocessable("OpenRouter requires an API key.");
@@ -25,6 +38,7 @@ export async function readVerifiedLocalAiCredential(provider: AiProvider, loginH
     ? "Start local sign-in for this connection before connecting."
     : "Start browser sign-in for this connection before connecting.");
   try {
+    if (provider === "google") return (await verifyAntigravityCredential(loginHome)).credential;
     if (provider === "anthropic") {
       // Never change process.env or fall back to the server account when an
       // authenticated user's isolated login is missing or invalid.

@@ -3,6 +3,7 @@ import { useQuery } from "@tanstack/react-query";
 import { ShieldAlert } from "lucide-react";
 import { Link } from "@/lib/router";
 import { accessApi } from "@/api/access";
+import { QueryErrorState, useQueryView } from "@/components/QueryView";
 import { queryKeys } from "@/lib/queryKeys";
 import { useCompany } from "@/context/CompanyContext";
 
@@ -11,17 +12,32 @@ import { useCompany } from "@/context/CompanyContext";
  * `AdvancedToolsRoute` (PAP-10862, plan D8). Local boards, instance admins,
  * and active company owners/admins/operators pass; the server stays
  * authoritative. Shared so the profiles index and create wizard guard identically.
+ *
+ * An outage before the first load is a placeholder, never a denial: the
+ * denial card is only for a loaded answer (or a real 403).
  */
 export function ToolsAdminGate({ children }: { children: ReactNode }) {
   const { selectedCompanyId } = useCompany();
   const boardAccess = useQuery({
     queryKey: queryKeys.access.currentBoardAccess,
     queryFn: () => accessApi.getCurrentBoardAccess(),
-    retry: false,
   });
+  const view = useQueryView(boardAccess);
 
-  if (boardAccess.isLoading) {
+  if (boardAccess.isLoading || view.kind === "reconnecting") {
     return <div className="mx-auto max-w-xl py-10 text-sm text-muted-foreground">Loading…</div>;
+  }
+  if (view.kind === "error" && view.errorKind !== "forbidden") {
+    return (
+      <div className="mx-auto max-w-xl py-10">
+        <QueryErrorState
+          error={boardAccess.error}
+          action="check your access"
+          onRetry={view.retry}
+          retrying={view.isFetching}
+        />
+      </div>
+    );
   }
 
   const data = boardAccess.data;

@@ -8,7 +8,7 @@ ClipHub is the public registry where people share, discover, and download Paperc
 
 ## What It Is
 
-ClipHub is to Paperclip what a package registry is to a programming language. Paperclip already supports exportable org configs (see [SPEC.md](./SPEC.md) §2). ClipHub is the public directory where those exports live.
+ClipHub is to Paperclip what a package registry is to a programming language. Paperclip already supports exportable org configs (see the [company package spec](../docs/companies/companies-spec.md)). ClipHub is the public directory where those exports live.
 
 A user builds a working company in Paperclip — a dev shop, a marketing agency, a research lab, a content studio — exports the template, and publishes it to ClipHub. Anyone can browse, search, download, and spin up that company on their own Paperclip instance.
 

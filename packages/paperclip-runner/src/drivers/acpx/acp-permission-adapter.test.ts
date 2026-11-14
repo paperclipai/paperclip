@@ -1,6 +1,10 @@
 import { describe, expect, it } from "vitest";
 import type { AcpPermissionRequest } from "acpx/runtime";
 import { normalizeAcpxPermission } from "./acp-permission-adapter.js";
+import { mkdtempSync, mkdirSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { createCopilotToolEvidence } from "./copilot-tool-evidence.js";
 
 function request(kinds = ["allow_once", "allow_always", "reject_once"]): AcpPermissionRequest {
   return { sessionId: "session", inferredKind: "edit", raw: {
@@ -9,7 +13,7 @@ function request(kinds = ["allow_once", "allow_always", "reject_once"]): AcpPerm
   } } as AcpPermissionRequest;
 }
 describe("ACP permission normalization", () => {
-  it.each([undefined, "codex", "claude", "pi", "copilot"])("preserves existing %s native identity behavior", provider => {
+  it.each([undefined, "codex", "claude", "pi", "copilot", "kimi"])("preserves existing %s native identity behavior", provider => {
     const native = request(); native.raw.toolCall.toolCallId = "native\u0000tool";
     expect(normalizeAcpxPermission(native, { provider }).toolCallId).toBe("native\u0000tool");
   });
@@ -50,6 +54,78 @@ describe("ACP permission normalization", () => {
     expect(() => normalizeAcpxPermission(request(["allow_once", "allow_once"]))).toThrow("ambiguous");
     const duplicate = request(); duplicate.raw.options[1]!.optionId = duplicate.raw.options[0]!.optionId;
     expect(() => normalizeAcpxPermission(duplicate)).toThrow("ambiguous");
+  });
+  it("keeps a native absolute workspace alias answerable with the same projected target", () => {
+    const root = mkdtempSync(join(tmpdir(), "copilot-permission-alias-"));
+    try {
+      const workspace = join(root, "workspace"), alias = join(root, "alias");
+      mkdirSync(workspace); mkdirSync(join(workspace, "nested")); symlinkSync(workspace, alias);
+      const path = join(alias, "nested", "new.txt"), value = request();
+      value.raw.toolCall = { toolCallId: "patch-call", kind: "edit", rawInput: { fileName: path }, locations: [{ path }] };
+      const cwd = realpathSync(workspace), normalized = normalizeAcpxPermission(value, { provider: "copilot", workingDirectory: cwd });
+      expect(normalized.title).toBe("Change file: nested/new.txt");
+      expect(normalized.resolve({ action: "accept" })).toEqual({ outcome: "allow_once" });
+      const events: any[] = [];
+      const projection = createCopilotToolEvidence({ sessionId: "session", turnId: "turn", workingDirectory: cwd, active: () => true, emit: event => events.push(event) });
+      projection.permission(value, "permission", normalized.choices.map(choice => choice.key));
+      expect(events[0].payload.details).toContainEqual({ name: "target", value: "nested/new.txt" });
+      writeFileSync(join(workspace, "nested", "new.txt"), "existing");
+      expect(normalizeAcpxPermission(value, { provider: "copilot", workingDirectory: cwd }).title).toBe(normalized.title);
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+  it("refuses outside, dangling, conflicting and unresolvable alias targets", () => {
+    const root = mkdtempSync(join(tmpdir(), "copilot-permission-alias-"));
+    try {
+      const workspace = join(root, "workspace"), alias = join(root, "alias"), outside = join(root, "outside");
+      mkdirSync(workspace); mkdirSync(outside); symlinkSync(workspace, alias);
+      symlinkSync(join(outside, "missing.txt"), join(workspace, "dangling.txt"));
+      symlinkSync(outside, join(workspace, "escape"));
+      writeFileSync(join(outside, "existing.txt"), "outside");
+      for (const path of [join(alias, "dangling.txt"), join(alias, "escape", "new.txt"), join(alias, "escape", "existing.txt"), join(alias, "missing-parent", "new.txt"), join(outside, "new.txt")]) {
+        const value = request(); value.raw.toolCall = { toolCallId: "patch-call", kind: "edit", rawInput: { fileName: path }, locations: [{ path }] };
+        const normalized = normalizeAcpxPermission(value, { provider: "copilot", workingDirectory: realpathSync(workspace) });
+        expect(normalized.title).toContain("target unavailable");
+        expect(normalized.choices.map(choice => choice.key)).toEqual(["decline", "cancel"]);
+      }
+      const conflict = request(); conflict.raw.toolCall = { toolCallId: "patch-call", kind: "edit", rawInput: { fileName: join(alias, "one.txt") }, locations: [{ path: join(alias, "two.txt") }] };
+      expect(normalizeAcpxPermission(conflict, { provider: "copilot", workingDirectory: realpathSync(workspace) }).title).toContain("target unavailable");
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+});
+
+describe("Kimi canonical file permission context", () => {
+  const context = { provider: "kimi", workingDirectory: "/fixture/workspace", allowAlwaysScope: "session" as const };
+  function write(call: Record<string, unknown> = {}) {
+    const value = request();
+    Object.assign(value.raw.toolCall, { toolCallId: "kimi-write-native-id", kind: "edit", title: "Write", rawInput: { path: "/fixture/workspace/nested/result.txt", content: "PRIVATE_KIMI_CONTENT" }, locations: [{ path: "nested/result.txt" }], ...call });
+    return value;
+  }
+  it("shows the native Write target and preserves its exact operation and decision identity", () => {
+    const normalized = normalizeAcpxPermission(write(), context);
+    expect(normalized.title).toBe("Change file: nested/result.txt");
+    expect(normalized.toolCallId).toBe("kimi-write-native-id");
+    expect(JSON.stringify(normalized)).not.toContain("PRIVATE_KIMI_CONTENT");
+    expect(normalized.resolve({ action: "accept" })).toEqual({ outcome: "allow_once" });
+    expect(normalized.resolve({ action: "accept_for_session" })).toEqual({ outcome: "allow_always" });
+    expect(normalized.resolve({ action: "decline" })).toEqual({ outcome: "reject_once" });
+  });
+  it.each([
+    { name: "unknown", rawInput: {}, locations: [] },
+    { name: "conflicting", rawInput: { path: "one.txt" }, locations: [{ path: "two.txt" }] },
+    { name: "outside", rawInput: { path: "/outside/result.txt" }, locations: [] },
+  ])("offers only denial or cancellation for a $name Write target", ({ rawInput, locations }) => {
+    const normalized = normalizeAcpxPermission(write({ rawInput, locations }), context);
+    expect(normalized.title).toContain("target unavailable");
+    expect(normalized.toolCallId).toBe("kimi-write-native-id");
+    expect(normalized.choices.map(choice => choice.key)).toEqual(["decline", "cancel"]);
+    expect(normalized.resolve({ action: "decline" })).toEqual({ outcome: "reject_once" });
+    expect(normalized.resolve({ action: "cancel" })).toEqual({ outcome: "cancel" });
+    for (const action of ["accept", "accept_for_session"] as const) expect(() => normalized.resolve({ action })).toThrow("not an offered choice");
+  });
+  it("requires a bound workspace before allowing a native Write", () => {
+    const normalized = normalizeAcpxPermission(write(), { provider: "kimi" });
+    expect(normalized.choices.map(choice => choice.key)).toEqual(["decline", "cancel"]);
+    expect(() => normalized.resolve({ action: "accept" })).toThrow("not an offered choice");
   });
 });
 

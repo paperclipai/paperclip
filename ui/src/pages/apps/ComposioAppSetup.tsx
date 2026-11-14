@@ -8,6 +8,7 @@ import { queryKeys } from "@/lib/queryKeys";
 import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
 import { useToast } from "@/context/ToastContext";
+import { describeError } from "@/api/errors";
 
 /** Provider authorization is performed by the backend; no task or agent run. */
 export function ComposioAppSetup({ name, toolkit, connections, onClose, onBack, onConnectNew }: {
@@ -39,7 +40,7 @@ export function ComposioAppSetup({ name, toolkit, connections, onClose, onBack, 
         onClose();
       }
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : "Couldn’t configure this app. Try again.");
+      setError(describeError(cause).body);
     } finally { setBusy(false); }
   }
 

@@ -86,7 +86,8 @@ export function priceCodexReceipt(
     pricingProvenance: {
       source: "rate_card",
       version: VERSION,
-      evidence: `https://developers.openai.com/api/docs/pricing; ${assumptions.join("; ")}`,
+      evidence: `https://developers.openai.com/api/docs/pricing; ${assumptions.join("; ")}`
+        + (receipt.pricingProvenance?.evidence ? `; ${receipt.pricingProvenance.evidence}` : ""),
       inputCentsPerMillion: unitsToCents(usdToUnits(rates[0])),
       cachedInputCentsPerMillion: unitsToCents(usdToUnits(rates[1])),
       cacheWriteCentsPerMillion: unitsToCents(usdToUnits(rates[2])),

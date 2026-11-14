@@ -64,5 +64,9 @@ export function humanJoinGrantsFromDefaults(
   scope: Record<string, unknown> | null;
 }> {
   const grants = grantsFromDefaults(defaultsPayload, "human");
-  return grants.length > 0 ? grants : grantsForHumanRole(membershipRole);
+  if (grants.length === 0) return grantsForHumanRole(membershipRole);
+  if (!grants.some((grant) => grant.permissionKey === "commentary:view")) {
+    grants.push({ permissionKey: "commentary:view", scope: null });
+  }
+  return grants;
 }

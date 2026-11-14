@@ -1,5 +1,5 @@
 import type { ChatRuntime } from "../chat-runtime.js";
-import type { EndpointRow, RuntimeContext, LifecycleRuntimeFence } from "./runtime-types.js";
+import type { EndpointRow, RuntimeContext, LifecycleRuntimeFence, DbOrTransaction } from "./runtime-types.js";
 
 import { dueChatAction, PROVIDER_EFFECT_STALE_MS } from "../chat-action-work.js";
 
@@ -52,6 +52,7 @@ import type {
 
 import type { EndpointRecord } from "./runtime-types.js";
 import { isSlackReceiptReactionAlreadyApplied } from "./slack/messages.js";
+import { beginSlackReceiptTiming } from "./slack/receipt-timing.js";
 
 type ReceiptReactionsOptions = {
   endpointRecord: (endpointId: string) => Promise<EndpointRecord | null>;
@@ -66,6 +67,17 @@ type ReceiptReactionsOptions = {
   MAX_ERROR_TEXT: number;
   receiptReactionTransportBarrier?: () => Promise<void>;
 };
+
+function deliveryWarningWithoutReceipt(previousDiagnostic: unknown) {
+  const remaining = sql<string | null>`nullif(regexp_replace(${chatDeliveries.redactedError}, ${"^Receipt reaction [^\\n]*(\\n|$)"}, ''), '')`;
+  if (typeof previousDiagnostic !== "string" || !previousDiagnostic) return remaining;
+  return sql<string | null>`case
+    when ${chatDeliveries.redactedError} = ${previousDiagnostic}::text then null
+    when left(${chatDeliveries.redactedError}, length(${previousDiagnostic}::text) + 1) = ${previousDiagnostic}::text || ${"\n"}::text
+      then nullif(substring(${chatDeliveries.redactedError} from length(${previousDiagnostic}::text) + 2), '')
+    else ${remaining}
+  end`;
+}
 
 export function createReceiptReactions(db: Db, options: ReceiptReactionsOptions) {
   const { endpointRecord, runtimeContextForRecord, withCredentialMutationLease, runtimeFor, fetchImpl, runtime, runtimeGeneration, credentialFingerprint, redactError, MAX_ERROR_TEXT } = options;
@@ -88,9 +100,29 @@ export function createReceiptReactions(db: Db, options: ReceiptReactionsOptions)
     // endpoint again after a rotation and accidentally blessing an obsolete
     // adapter with the new generation.
     const context = input.runtimeContext ?? runtimeContextForRecord(record);
-    const [inserted] = await db.transaction(async (tx) => {
-      await notifyChatActionWork(tx, "receipt_reaction");
-      return tx
+    const actionId = await db.transaction((tx) => stageReceiptReaction(tx, {
+      deliveryId: input.deliveryId,
+      endpoint: input.endpoint,
+      threadId: input.thread.id,
+      messageId: input.message.id,
+      runtimeContext: context,
+    }));
+    if (!actionId) return;
+    await processReceiptReaction(actionId);
+  }
+
+  // Stage on the caller's task transaction: acknowledgement survives a crash
+  // after task acceptance, and a rollback can never leave a visible receipt.
+  async function stageReceiptReaction(tx: DbOrTransaction, input: {
+    deliveryId: string;
+    endpoint: EndpointRow;
+    threadId: string;
+    messageId: string;
+    runtimeContext: LifecycleRuntimeFence;
+  }): Promise<string | null> {
+    if (input.endpoint.provider === "github") return null;
+    await notifyChatActionWork(tx, "receipt_reaction");
+    const [inserted] = await tx
         .insert(chatActions)
         .values({
           companyId: input.endpoint.companyId,
@@ -101,20 +133,19 @@ export function createReceiptReactions(db: Db, options: ReceiptReactionsOptions)
           payload: {
             version: 1,
             operation: "add",
-            threadId: input.thread.id,
-            messageId: input.message.id,
+            threadId: input.threadId,
+            messageId: input.messageId,
             reaction: "eyes",
-            runtimeGeneration: context.generation,
-            credentialFingerprint: context.credentialFingerprint,
+            runtimeGeneration: input.runtimeContext.generation,
+            credentialFingerprint: input.runtimeContext.credentialFingerprint,
           } satisfies ReceiptReactionPayload,
           status: "received",
         })
         .onConflictDoNothing()
         .returning({ id: chatActions.id });
-    });
     const actionId =
       inserted?.id ??
-      (await db
+      (await tx
         .select({ id: chatActions.id })
         .from(chatActions)
         .where(
@@ -127,15 +158,19 @@ export function createReceiptReactions(db: Db, options: ReceiptReactionsOptions)
           ),
         )
         .then((rows) => rows[0]?.id ?? null));
-    if (!actionId) return;
-    await options.receiptReactionTransportBarrier?.();
-    await processReceiptReaction(actionId);
+    return actionId;
   }
 
   async function processReceiptReaction(actionId: string): Promise<void> {
+    await options.receiptReactionTransportBarrier?.();
     const initialAction = await db
-      .select({ endpointId: chatActions.endpointId })
+      .select({ endpointId: chatActions.endpointId, receivedAt: chatDeliveries.receivedAt })
       .from(chatActions)
+      .leftJoin(chatDeliveries, and(
+        eq(chatDeliveries.id, chatActions.deliveryId),
+        eq(chatDeliveries.companyId, chatActions.companyId),
+        eq(chatDeliveries.endpointId, chatActions.endpointId),
+      ))
       .where(
         and(
           eq(chatActions.id, actionId),
@@ -151,13 +186,14 @@ export function createReceiptReactions(db: Db, options: ReceiptReactionsOptions)
     // rotation, pause, and removal so credentials cannot become obsolete
     // between authorization and transport.
     await withCredentialMutationLease(initialEndpoint.endpoint, (lease) =>
-      processReceiptReactionWithCredentialLease(actionId, lease),
+      processReceiptReactionWithCredentialLease(actionId, lease, initialAction.receivedAt),
     );
   }
 
   async function processReceiptReactionWithCredentialLease(
     actionId: string,
     credentialLease: CredentialMutationLeaseGuard,
+    receivedAt: Date | null,
   ): Promise<void> {
     let action = await db
       .select()
@@ -350,7 +386,14 @@ export function createReceiptReactions(db: Db, options: ReceiptReactionsOptions)
       const adapter = endpointRuntime.thread(payload.threadId).adapter;
       await credentialLease.assertOwned();
       if (record.endpoint.provider === "slack") {
-        await endpointRuntime.applySlackReceiptReaction(payload, fetchImpl);
+        const finishTiming = beginSlackReceiptTiming({ operation: payload.operation, queuedAt: action.createdAt, receivedAt });
+        try {
+          await endpointRuntime.applySlackReceiptReaction(payload, fetchImpl);
+          finishTiming("confirmed");
+        } catch (error) {
+          finishTiming(payload.operation === "add" && isSlackReceiptReactionAlreadyApplied(error) ? "confirmed" : "failed");
+          throw error;
+        }
       } else if (record.endpoint.provider === "github") {
         const assertCurrent = async () => {
           await credentialLease.assertOwned();
@@ -440,7 +483,7 @@ export function createReceiptReactions(db: Db, options: ReceiptReactionsOptions)
         if (action.deliveryId) {
           await tx
             .update(chatDeliveries)
-            .set({ redactedError: null, updatedAt: new Date() })
+            .set({ redactedError: deliveryWarningWithoutReceipt(action.result?.redactedError), updatedAt: new Date() })
             .where(
               and(
                 eq(chatDeliveries.id, action.deliveryId),
@@ -486,7 +529,7 @@ export function createReceiptReactions(db: Db, options: ReceiptReactionsOptions)
           if (action.deliveryId) {
             await tx
               .update(chatDeliveries)
-              .set({ redactedError: null, updatedAt: new Date() })
+              .set({ redactedError: deliveryWarningWithoutReceipt(action!.result?.redactedError), updatedAt: new Date() })
               .where(
                 and(
                   eq(chatDeliveries.id, action.deliveryId),
@@ -510,7 +553,7 @@ export function createReceiptReactions(db: Db, options: ReceiptReactionsOptions)
       const operationLabel =
         payload.operation === "remove" ? " reaction removal" : " reaction";
       const diagnostic =
-        `Receipt${operationLabel} ${retryable ? "deferred" : "failed"} after ${attempt} attempt${attempt === 1 ? "" : "s"} (${disposition.kind}): ${redactError(error)}`.slice(
+        `Receipt${operationLabel} ${retryable ? "deferred" : "failed"} after ${attempt} attempt${attempt === 1 ? "" : "s"} (${disposition.kind}): ${redactError(error).replace(/[\r\n]+/g, " ")}`.slice(
           0,
           MAX_ERROR_TEXT,
         );
@@ -548,7 +591,7 @@ export function createReceiptReactions(db: Db, options: ReceiptReactionsOptions)
         if (failed && action.deliveryId) {
           await tx
             .update(chatDeliveries)
-            .set({ redactedError: diagnostic, updatedAt: new Date() })
+            .set({ redactedError: sql`concat_ws(${"\n"}, ${diagnostic}::text, ${deliveryWarningWithoutReceipt(action.result?.redactedError)})`, updatedAt: new Date() })
             .where(
               and(
                 eq(chatDeliveries.id, action.deliveryId),
@@ -582,5 +625,5 @@ export function createReceiptReactions(db: Db, options: ReceiptReactionsOptions)
     for (const action of actions) await processReceiptReaction(action.id);
     return actions.length;
   }
-  return { addReceiptReaction, processReceiptReaction, processPendingReceiptReactions };
+  return { stageReceiptReaction, addReceiptReaction, processReceiptReaction, processPendingReceiptReactions };
 }

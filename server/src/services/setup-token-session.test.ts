@@ -771,6 +771,11 @@ describe("SetupTokenSessionService.cancelByScope", () => {
 });
 
 describe("SetupTokenSessionService.findActiveByScope", () => {
+  it("returns the executing computer separately from account ownership", async () => {
+    const { service } = buildService();
+    await service.start({ ...OWNER_SCOPE, agentId: "computer-a" });
+    expect((await service.findActiveByScope(OWNER_SCOPE))?.agentId).toBe("computer-a");
+  });
   it("finds the caller's live active session with no session id", async () => {
     const { service } = buildService();
     const { sessionId } = await service.start(OWNER_SCOPE);

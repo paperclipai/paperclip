@@ -3,7 +3,7 @@ import type { BillingType, CostStatus } from "../constants.js";
 
 export interface CostEvent {
   subscriptionId?: string | null;
-  usageKind?: "agent" | "decision" | "fast_response";
+  usageKind?: "agent" | "decision" | "fast_response" | "prompt_injection";
   responsibleUserId?: string | null;
   id: string;
   companyId: string;
@@ -24,6 +24,8 @@ export interface CostEvent {
   outputTokens: number;
   costCents: number;
   costCentsExact?: string;
+  /** Original usage retained when a late authoritative receipt corrects a placeholder. */
+  reportedUsageJson?: Record<string, unknown> | null;
   occurredAt: Date;
   createdAt: Date;
 }
@@ -117,6 +119,8 @@ export interface CostByAgent {
   /** Ledger events in this group and selected date range, not distinct runs. */
   eventCount: number;
   estimatedEventCount: number;
+  /** Events with usage but no known price; their cost is missing from costCents, not zero. */
+  unpricedEventCount: number;
   costCents: number;
   costCentsExact?: string;
   inputTokens: number;
@@ -181,6 +185,8 @@ export interface CostByAgentModel {
   /** Ledger events in this group and selected date range, not distinct runs. */
   eventCount: number;
   estimatedEventCount: number;
+  /** Events with usage but no known price; their cost is missing from costCents, not zero. */
+  unpricedEventCount: number;
   costCents: number;
   costCentsExact?: string;
   inputTokens: number;
@@ -210,6 +216,8 @@ export interface CostByProject {
   /** Ledger events in this project and selected date range, not distinct runs. */
   eventCount: number;
   estimatedEventCount: number;
+  /** Events with usage but no known price; their cost is missing from costCents, not zero. */
+  unpricedEventCount: number;
   costCents: number;
   costCentsExact?: string;
   inputTokens: number;

@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { eq, sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import { ONBOARDING_FIRST_TASK_ORIGIN_KIND, PROVIDER_QUOTA_MONITOR_SERVICE_NAME } from "@paperclipai/shared";
-import { agents, agentApiKeys, companies, createDb, heartbeatRuns, issues, issueComments, issueRelations, issueThreadInteractions, routines, routineTriggers } from "@paperclipai/db";
+import { agents, agentApiKeys, agentWakeupRequests, companies, createDb, heartbeatRuns, issues, issueComments, issueRelations, issueThreadInteractions, routines, routineTriggers } from "@paperclipai/db";
 import { beginIdleTrackedWork, idleWorkSnapshot } from "../services/task-admission.js";
 import { readIdleSleepSafety, type IdleSleepDrainStatus } from "../services/idle-sleep-safety.js";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
@@ -74,6 +74,67 @@ if (!support.supported) console.warn(`Skipping issue schedule Postgres tests: ${
     await db.insert(issues).values({ companyId: f.companyId, title: "Unfinished automated task", status, assigneeAgentId: f.agentId });
     expect(await readIssueSchedules()).toEqual(present);
   });
+
+  async function completedUnblockRequest() {
+    const f = await seed();
+    const transition = new Date(now - 5000);
+    const descriptor = { owner: { agentId: f.agentId }, action: "Provide the missing input" };
+    const [issue] = await db.insert(issues).values({ companyId: f.companyId, title: "Waiting for unblock input",
+      status: "blocked", assigneeAgentId: f.agentId, unblockDescriptor: descriptor,
+      blockedTransitionAt: transition, blockedOwnerNotifiedAt: new Date(now - 4000),
+    }).returning();
+    await db.update(heartbeatRuns).set({ finishedAt: new Date(now - 1000), contextSnapshot: { issueId: issue.id } }).where(eq(heartbeatRuns.id, f.runId));
+    const [wake] = await db.insert(agentWakeupRequests).values({ companyId: f.companyId, agentId: f.agentId,
+      source: "automation", reason: "issue_unblock_requested", status: "coalesced", runId: f.runId,
+      finishedAt: new Date(now - 2000), idempotencyKey: `issue-unblock:${issue.id}:${transition.toISOString()}`,
+      payload: { issueId: issue.id, action: descriptor.action },
+    }).returning();
+    return { ...f, issue, wake, descriptor };
+  }
+
+  it("allows a blocked task after its exact agent unblock request finishes", async () => {
+    const f = await completedUnblockRequest();
+    expect(await readScheduled()).toEqual(present);
+    expect(await readIssueSchedules()).toEqual(none);
+    expect((await db.select().from(issues).where(eq(issues.id, f.issue.id)))[0]).toMatchObject({ status: "blocked", unblockDescriptor: f.descriptor });
+    expect((await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, f.wake.id)))[0]).toMatchObject({ status: "coalesced", runId: f.runId });
+  });
+
+  it("keeps an explicit board-owned unblock request passive", async () => {
+    const f = await seed();
+    await db.insert(issues).values({ companyId: f.companyId, title: "Waiting for the board", status: "blocked",
+      assigneeAgentId: f.agentId, unblockDescriptor: { owner: "board", action: "Provide input" },
+    });
+    expect(await readIssueSchedules()).toEqual(none);
+  });
+
+  it.each(["missing_receipt", "unnotified", "old_notification", "new_transition", "changed_action", "changed_owner", "foreign_owner", "foreign_receipt", "foreign_run", "wrong_issue", "wrong_run_issue", "missing_run", "unfinished_wake", "cancelled_receipt", "unfinished_run", "retry", "accounting", "unknown_descriptor"])(
+    "retains a blocked task with %s unblock evidence", async kind => {
+      const f = await completedUnblockRequest();
+      if (kind === "missing_receipt") await db.delete(agentWakeupRequests).where(eq(agentWakeupRequests.id, f.wake.id));
+      if (kind === "unnotified") await db.update(issues).set({ blockedOwnerNotifiedAt: null }).where(eq(issues.id, f.issue.id));
+      if (kind === "old_notification") await db.update(issues).set({ blockedOwnerNotifiedAt: new Date(now - 6000) }).where(eq(issues.id, f.issue.id));
+      if (kind === "new_transition") await db.update(issues).set({ blockedTransitionAt: new Date(now - 3000), blockedOwnerNotifiedAt: new Date(now - 2000) }).where(eq(issues.id, f.issue.id));
+      if (kind === "changed_action") await db.update(issues).set({ unblockDescriptor: { ...f.descriptor, action: "Different input" } }).where(eq(issues.id, f.issue.id));
+      if (kind === "changed_owner" || kind === "foreign_owner") {
+        const other = await seed();
+        if (kind === "changed_owner") await db.update(agents).set({ companyId: f.companyId }).where(eq(agents.id, other.agentId));
+        await db.update(issues).set({ unblockDescriptor: { ...f.descriptor, owner: { agentId: other.agentId } } }).where(eq(issues.id, f.issue.id));
+      }
+      if (kind === "foreign_receipt") await db.update(agentWakeupRequests).set({ companyId: (await seed()).companyId }).where(eq(agentWakeupRequests.id, f.wake.id));
+      if (kind === "foreign_run") await db.update(heartbeatRuns).set({ companyId: (await seed()).companyId }).where(eq(heartbeatRuns.id, f.runId));
+      if (kind === "wrong_issue") await db.update(agentWakeupRequests).set({ payload: { ...f.wake.payload, issueId: randomUUID() } }).where(eq(agentWakeupRequests.id, f.wake.id));
+      if (kind === "wrong_run_issue") await db.update(heartbeatRuns).set({ contextSnapshot: { issueId: randomUUID() } }).where(eq(heartbeatRuns.id, f.runId));
+      if (kind === "missing_run") await db.update(agentWakeupRequests).set({ runId: null }).where(eq(agentWakeupRequests.id, f.wake.id));
+      if (kind === "unfinished_wake") await db.update(agentWakeupRequests).set({ finishedAt: null }).where(eq(agentWakeupRequests.id, f.wake.id));
+      if (kind === "cancelled_receipt") await db.update(agentWakeupRequests).set({ status: "cancelled" }).where(eq(agentWakeupRequests.id, f.wake.id));
+      if (kind === "unfinished_run") await db.update(heartbeatRuns).set({ finishedAt: null }).where(eq(heartbeatRuns.id, f.runId));
+      if (kind === "retry") await db.update(heartbeatRuns).set({ scheduledRetryAt: new Date(now + 1000) }).where(eq(heartbeatRuns.id, f.runId));
+      if (kind === "accounting") await db.update(heartbeatRuns).set({ costAccountingPending: true }).where(eq(heartbeatRuns.id, f.runId));
+      if (kind === "unknown_descriptor") await db.execute(sql`UPDATE issues SET unblock_descriptor = unblock_descriptor || '{"unknown":true}'::jsonb WHERE id = ${f.issue.id}`);
+      expect(await readIssueSchedules()).toEqual(present);
+    },
+  );
 
   it.each(["typed", "legacy-typed", "interaction", "run", "origin", "agent-state"])(
     "allows an untouched onboarding task, but retains it after %s activity", async activity => {

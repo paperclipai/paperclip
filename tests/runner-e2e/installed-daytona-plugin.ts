@@ -43,7 +43,7 @@ export async function verifyInstalledDaytonaPlugin(env: NodeJS.ProcessEnv, execu
   const required = usesInstalledCli(env) && executions.some(e => e.environment.id === "daytona");
   if (!selected && !required) return undefined;
   assertInstalledCliSelection(env, executions);
-  if (!usesInstalledCli(env) || !installedDaytonaPluginKeys.every(key => Boolean(env[key])) || executions.some(e => e.environment.id !== "daytona")) throw new Error("Installed Daytona plugin requires complete pins and installed Pi Daytona selection");
+  if (!usesInstalledCli(env) || !installedDaytonaPluginKeys.every(key => Boolean(env[key])) || executions.some(e => e.environment.id !== "daytona")) throw new Error("Installed Daytona plugin requires complete pins and installed Daytona selection");
   const authorityPath = env.PAPERCLIP_RUNNER_E2E_INSTALLED_DAYTONA_PLUGIN_AUTHORITY!;
   const authoritySha256 = env.PAPERCLIP_RUNNER_E2E_INSTALLED_DAYTONA_PLUGIN_AUTHORITY_SHA256!;
   const a: InstalledDaytonaPluginAuthority = JSON.parse((await pinned(authorityPath, authoritySha256, 65536)).toString());

@@ -43,6 +43,8 @@ type StubOptions = {
   deepMismatch?: boolean;
   /** The full-tree find exits non-zero without printing a mismatch (e.g. an I/O error). */
   fullProbeFails?: boolean;
+  /** The node user's passwd home; null models a host without a node passwd entry. */
+  nodeHome?: string | null;
 };
 
 function installStubs(ids: StubOptions) {
@@ -75,6 +77,13 @@ function installStubs(ids: StubOptions) {
     ].join("\n"),
   );
   writeStub("gosu", `echo "gosu $*" >> "${logFile}"\nshift\nexec "$@"`);
+  const nodeHome = ids.nodeHome === undefined ? "/paperclip" : ids.nodeHome;
+  writeStub(
+    "getent",
+    nodeHome === null
+      ? "exit 2"
+      : `if [ "$1" = "passwd" ] && [ "$2" = "node" ]; then echo "node:x:${ids.nodeUid ?? 1000}:${ids.nodeGid ?? 1000}::${nodeHome}:/bin/bash"; else exit 2; fi`,
+  );
 }
 
 async function runEntrypoint(env: Record<string, string> = {}) {
@@ -118,6 +127,82 @@ describe("docker-entrypoint.sh", () => {
     expect(calls).toContain("groupmod -o -g 1001 node");
     expect(calls).toContain(`chown -R node:node ${stubDir}`);
     expect(calls).toContain("gosu node echo ENTRYPOINT-CMD-RAN");
+  });
+
+  it("moves the app home away during the remap so usermod does not walk it", async () => {
+    installStubs({ uid: 0, gid: 0, homeMismatch: true, nodeHome: stubDir });
+
+    const { calls } = await runEntrypoint({ USER_UID: "1001", USER_GID: "1001", PAPERCLIP_HOME: stubDir });
+
+    const lines = calls.trim().split("\n");
+    // usermod re-owns files only under the current home, so every ID change
+    // runs while the home points at a placeholder that does not exist.
+    expect(lines.filter((line) => line.startsWith("usermod "))).toEqual([
+      `usermod -d /nonexistent/paperclip-uid-remap${stubDir} node`,
+      "usermod -o -u 1001 node",
+      "usermod -g 1001 node",
+      `usermod -d ${stubDir} node`,
+    ]);
+    // The ownership probe still repairs the app home after a real ID change.
+    expect(lines.indexOf(`chown -R node:node ${stubDir}`)).toBeGreaterThan(lines.indexOf(`usermod -d ${stubDir} node`));
+  });
+
+  it("moves the app home away for a GID-only remap too", async () => {
+    installStubs({ uid: 0, gid: 0, nodeUid: 1001, nodeGid: 1000, nodeHome: stubDir });
+
+    const { calls } = await runEntrypoint({ USER_UID: "1001", USER_GID: "1001", PAPERCLIP_HOME: stubDir });
+
+    expect(calls.trim().split("\n").filter((line) => line.startsWith("usermod "))).toEqual([
+      `usermod -d /nonexistent/paperclip-uid-remap${stubDir} node`,
+      "usermod -g 1001 node",
+      `usermod -d ${stubDir} node`,
+    ]);
+  });
+
+  it("keeps the plain remap when the passwd home is outside the app home", async () => {
+    // The ownership probe covers only the app home, so usermod must still
+    // re-own a separate passwd home.
+    installStubs({ uid: 0, gid: 0, nodeHome: "/paperclip" });
+
+    const { calls } = await runEntrypoint({ USER_UID: "1001", USER_GID: "1001", PAPERCLIP_HOME: stubDir });
+
+    expect(calls).toContain("usermod -o -u 1001 node");
+    expect(calls).not.toContain("usermod -d");
+  });
+
+  it("remaps without moving the home when the node passwd entry is unavailable", async () => {
+    installStubs({ uid: 0, gid: 0, homeMismatch: true, nodeHome: null });
+
+    const { stdout, calls } = await runEntrypoint({ USER_UID: "1001", USER_GID: "1001", PAPERCLIP_HOME: stubDir });
+
+    expect(stdout).toContain("ENTRYPOINT-CMD-RAN");
+    expect(calls).toContain("usermod -o -u 1001 node");
+    expect(calls).not.toContain("usermod -d");
+  });
+
+  it("restores the home left by an interrupted remap when the IDs already match", async () => {
+    installStubs({ uid: 0, gid: 0, nodeUid: 1001, nodeGid: 1001, nodeHome: `/nonexistent/paperclip-uid-remap${stubDir}` });
+
+    const { stdout, calls } = await runEntrypoint({ USER_UID: "1001", USER_GID: "1001", PAPERCLIP_HOME: stubDir });
+
+    expect(stdout).toContain("ENTRYPOINT-CMD-RAN");
+    expect(calls.trim().split("\n").filter((line) => line.startsWith("usermod "))).toEqual([
+      `usermod -d ${stubDir} node`,
+    ]);
+  });
+
+  it("restores the original home, not the placeholder, when an interrupted remap is retried", async () => {
+    installStubs({ uid: 0, gid: 0, nodeHome: `/nonexistent/paperclip-uid-remap${stubDir}` });
+
+    const { calls } = await runEntrypoint({ USER_UID: "1001", USER_GID: "1001", PAPERCLIP_HOME: stubDir });
+
+    expect(calls.trim().split("\n").filter((line) => line.startsWith("usermod "))).toEqual([
+      `usermod -d ${stubDir} node`,
+      `usermod -d /nonexistent/paperclip-uid-remap${stubDir} node`,
+      "usermod -o -u 1001 node",
+      "usermod -g 1001 node",
+      `usermod -d ${stubDir} node`,
+    ]);
   });
 
   it.each([false, true])("skips remapping a cloud identity while preserving volume repair (mismatch: %s)", async (homeMismatch) => {

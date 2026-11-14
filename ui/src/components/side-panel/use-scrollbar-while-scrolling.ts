@@ -11,11 +11,11 @@ function parseCssTimeMs(value: string): number | null {
 }
 
 /** Marks a scroll viewport active only while scroll events are arriving. */
-export function useScrollbarWhileScrolling(): UIEventHandler<HTMLDivElement> {
+export function useScrollbarWhileScrolling<T extends HTMLElement = HTMLDivElement>(): UIEventHandler<T> {
   const idleTimerRef = useRef<number | null>(null);
-  const activeElementRef = useRef<HTMLDivElement | null>(null);
+  const activeElementRef = useRef<T | null>(null);
 
-  const handleScroll = useCallback<UIEventHandler<HTMLDivElement>>((event) => {
+  const handleScroll = useCallback<UIEventHandler<T>>((event) => {
     const element = event.currentTarget;
     activeElementRef.current = element;
     element.dataset.scrollActive = "true";

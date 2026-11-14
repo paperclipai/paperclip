@@ -1,3 +1,4 @@
+import { OPENROUTER_ATTRIBUTION_HEADERS, isOpenRouterUrl, openRouterClaudeHeaders, openRouterCodexHeaders } from "@paperclipai/shared/openrouter-attribution";
 import {
   aiRoutingBaseUrl,
   aiRoutingModel,
@@ -16,6 +17,7 @@ export function managedProviderRouting(
   let codexConfig = "";
   let hermesConfig = "";
   const baseUrl = aiRoutingBaseUrl(route, harness);
+  const openrouter = isOpenRouterUrl(baseUrl);
   if (route.kind === "bedrock") {
     env.CLAUDE_CODE_USE_BEDROCK = "1";
     env.AWS_REGION = route.region!;
@@ -25,8 +27,10 @@ export function managedProviderRouting(
   } else if (harness === "codex_local") {
     env.PAPERCLIP_AI_PROVIDER_KEY = credential;
     codexConfig = `model_provider = "paperclip"\n[model_providers.paperclip]\nname = "Paperclip connection"\nbase_url = ${JSON.stringify(baseUrl)}\nwire_api = "responses"\nrequires_openai_auth = false\n${route.auth === "none" ? "" : 'env_key = "PAPERCLIP_AI_PROVIDER_KEY"\n'}`;
+    if (openrouter) codexConfig += openRouterCodexHeaders();
   } else if (harness === "claude_local") {
     env.ANTHROPIC_BASE_URL = baseUrl;
+    if (openrouter) env.ANTHROPIC_CUSTOM_HEADERS = openRouterClaudeHeaders();
     env[
       route.auth === "api_key" ? "ANTHROPIC_API_KEY" : "ANTHROPIC_AUTH_TOKEN"
     ] = credential;
@@ -38,6 +42,9 @@ export function managedProviderRouting(
       env.ANTHROPIC_DEFAULT_HAIKU_MODEL = model;
       env.CLAUDE_CODE_SUBAGENT_MODEL = model;
     }
+  } else if (harness === "pi_local" && route.kind === "openrouter") {
+    env.OPENROUTER_API_KEY = credential;
+    config.model = aiRoutingModel(route, harness, model);
   } else if (harness === "opencode_local") {
     const provider = route.kind === "openrouter" ? "openrouter" : "paperclip";
     if (route.kind === "openrouter") env.OPENROUTER_API_KEY = credential;
@@ -54,7 +61,7 @@ export function managedProviderRouting(
           ...(provider === "paperclip"
             ? { npm: "@ai-sdk/openai-compatible", name: "Paperclip connection" }
             : {}),
-          options: { baseURL: baseUrl, apiKey: credential },
+          options: { baseURL: baseUrl, apiKey: credential, ...(openrouter ? { headers: OPENROUTER_ATTRIBUTION_HEADERS } : {}) },
           models: id ? { [id]: { name: id } } : {},
         },
       },
@@ -72,5 +79,6 @@ export function managedProviderRouting(
     // would expose the reusable gateway key to task-controlled shell commands.
     hermesConfig = `model:\n  provider: ${route.kind === "openrouter" ? '"openrouter"' : '"custom"'}\n  default: ${JSON.stringify(model)}\n  base_url: ${JSON.stringify(baseUrl)}\n  api_mode: "chat_completions"\n${route.auth === "none" ? "" : '  api_key: "${OPENAI_API_KEY}"\n'}`;
   }
+  if (openrouter && hermesConfig) hermesConfig += `  default_headers: ${JSON.stringify(OPENROUTER_ATTRIBUTION_HEADERS)}\n`;
   return { env, config, codexConfig, hermesConfig };
 }

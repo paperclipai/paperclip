@@ -1,9 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { Issue, IssueBlockerAttention } from "@paperclipai/shared";
-import {
-  resolveInboxIssueBlockerAttention,
-  resolveIssueLiveDescendantCount,
-} from "./inbox-live-descendants";
+import { resolveInboxIssueBlockerAttention, resolveIssueLiveDescendantCount, resolveIssueRunningDescendantCount } from "./inbox-live-descendants";
 
 function makeIssue(overrides: Partial<Issue>): Issue {
   return {
@@ -86,5 +83,16 @@ describe("inbox live descendant status helpers", () => {
         { isLive: false },
       ),
     ).toBeNull();
+  });
+});
+
+describe("resolveIssueRunningDescendantCount", () => {
+  it("counts only started sub-tasks for the chip and keeps live coverage separate", () => {
+    const issue = { liveDescendantCount: 3, runningDescendantCount: 1 };
+    expect(resolveIssueRunningDescendantCount(issue, 0)).toBe(1);
+    expect(resolveIssueRunningDescendantCount(issue, 2)).toBe(2);
+    expect(resolveIssueLiveDescendantCount(issue, 0)).toBe(3);
+    // Older servers send only the live count.
+    expect(resolveIssueRunningDescendantCount({ liveDescendantCount: 2 }, 0)).toBe(2);
   });
 });
