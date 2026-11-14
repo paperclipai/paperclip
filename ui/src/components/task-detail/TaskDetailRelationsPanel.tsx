@@ -1,4 +1,5 @@
-import type { Issue, IssueStatus } from "@paperclipai/shared";
+import { isLockedIssueStub, LockedIssueChip } from "@/components/LockedIssueChip";
+import type { Issue, IssueStatus, IssueLockedStub } from "@paperclipai/shared";
 import { Plus } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { IssueRow } from "@/components/IssueRow";
@@ -8,12 +9,14 @@ import {
   rememberIssueDetailLocationState,
 } from "@/lib/issueDetailBreadcrumb";
 import { Link } from "@/lib/router";
+import { taskStatusIconProps } from "@/lib/task-status-presentation";
 
 export interface TaskDetailRelationItem {
   id: string;
   identifier?: string | null;
   title: string;
   status?: string | null;
+  displayStatus?: string | null;
 }
 
 export function RelationNavigationList({
@@ -22,7 +25,7 @@ export function RelationNavigationList({
   ariaLabel,
   issueLinkState,
 }: {
-  items: TaskDetailRelationItem[];
+  items: (TaskDetailRelationItem | IssueLockedStub)[];
   emptyMessage: string;
   ariaLabel: string;
   issueLinkState?: unknown;
@@ -34,6 +37,9 @@ export function RelationNavigationList({
   return (
     <ul className="flex flex-col gap-0.5" aria-label={ariaLabel}>
       {items.map((item) => {
+        if (isLockedIssueStub(item)) {
+          return <li key={item.id} className="px-2 py-2"><LockedIssueChip identifier={item.identifier} /></li>;
+        }
         const pathId = item.identifier ?? item.id;
         return (
           <li key={item.id}>
@@ -45,7 +51,7 @@ export function RelationNavigationList({
               title={`${item.identifier ? `${item.identifier} — ` : ""}${item.title}`}
             >
               {item.status ? (
-                <StatusIcon status={item.status} className="h-3.5 w-3.5 shrink-0" />
+                <StatusIcon {...taskStatusIconProps({ ...item, status: item.status })} className="h-3.5 w-3.5 shrink-0" />
               ) : null}
               <span className="min-w-0 flex-1 truncate">{item.title}</span>
               {item.identifier ? (

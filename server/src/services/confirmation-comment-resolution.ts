@@ -1,6 +1,9 @@
 import { and, desc, eq, isNull } from "drizzle-orm";
-import { heartbeatRuns, issueComments, issueThreadInteractions, issues, type Db } from "@paperclipai/db";
-import { resolveConfirmationFromCommentSchema, type ResolveConfirmationFromComment } from "@paperclipai/shared";
+import { companies, heartbeatRuns, issueComments, issueThreadInteractions, issues, type Db } from "@paperclipai/db";
+import {
+  normalizeIssueThreadInteractionResolverPolicy, resolveConfirmationFromCommentSchema,
+  type InteractionResolverGovernance, type IssueThreadInteractionKind, type ResolveConfirmationFromComment,
+} from "@paperclipai/shared";
 import { assertAgentRunWriteAllowed } from "../agent-run-cancellation.js";
 import { conflict, forbidden, notFound, unprocessable } from "../errors.js";
 import { persistActivity, publishActivity, type ActivityPublication } from "./activity-log.js";
@@ -12,8 +15,10 @@ type ResolutionActor = Parameters<ReturnType<typeof issueThreadInteractionServic
 /**
  * Record the agent's interpretation of a reply, using the agent's own authority.
  * The message is provenance, not a credential or server-verified proof of consent.
- * Never promote its author to the resolver: human-only and independent-review
- * gates must still reject this agent, even when the referenced text says yes.
+ * Never promote its author to the resolver. One narrow relay exists: a card the
+ * agent itself requested as human_only may record the latest reply of the user
+ * this run or conversation serves. Company caps, governed actions, quality and
+ * independent-review gates still reject this agent, even when the text says yes.
  */
 export async function resolveConfirmationFromComment(db: Db, args: {
   companyId: string;
@@ -90,8 +95,23 @@ export async function resolveConfirmationFromComment(db: Db, args: {
 
     const svc = issueThreadInteractionService(tx);
     const current = await svc.getForIssue(issue, card.id);
+    // A human-only card the agent created for itself may record the bound
+    // user's verified decision. Quality reviews keep their on-card decision,
+    // and the reply must come from the user this run or conversation serves.
+    // A current company cap of human_only also keeps the card on-card, even
+    // when it tied with the agent's request and so did not become its source.
+    const boundUserId = card.addresseeUserId ?? issue.conversationUserId ?? run.responsibleUserId ?? null;
+    const [company] = card.effectiveResolverPolicy === "human_only"
+      ? await tx.select({ governance: companies.interactionResolverGovernance }).from(companies)
+        .where(eq(companies.id, args.companyId))
+      : [];
+    const cap = (company?.governance as InteractionResolverGovernance | null | undefined)?.[card.kind as IssueThreadInteractionKind]?.cap;
+    const companyRequiresHuman = cap !== undefined && normalizeIssueThreadInteractionResolverPolicy(cap) === "human_only";
+    const relayedHumanUserId = card.effectiveResolverPolicy === "human_only" && !payload.qualityReview && !companyRequiresHuman
+      && boundUserId !== null && comment.authorUserId === boundUserId ? comment.authorUserId : null;
+    const actor = { ...args.actor, relayedHumanUserId };
     assertIssueThreadInteractionResolverAudience({
-      actor: { type: "agent", agentId: args.actor.agentId, runId: args.actor.runId },
+      actor: { type: "agent", agentId: args.actor.agentId, runId: args.actor.runId, relayedHumanUserId },
       interaction: card, additionalRestriction: args.actor.resolverPolicyRestriction,
     });
     const expected = input.decision === "accept" ? "accepted" : "rejected";
@@ -116,8 +136,8 @@ export async function resolveConfirmationFromComment(db: Db, args: {
     // target revision, selection bounds and issue lifecycle under the same lock.
     const mutationOptions = { deferConfirmationCommitEffects: (effect: (committedDb: Db) => Promise<void>) => { commitEffects.push(effect); } };
     const interaction = input.decision === "accept"
-      ? (await svc.acceptInteraction(issue, card.id, { selectedOptionIds: selected }, args.actor, mutationOptions)).interaction
-      : await svc.rejectInteraction(issue, card.id, { reason: input.reason }, args.actor, mutationOptions);
+      ? (await svc.acceptInteraction(issue, card.id, { selectedOptionIds: selected }, actor, mutationOptions)).interaction
+      : await svc.rejectInteraction(issue, card.id, { reason: input.reason }, actor, mutationOptions);
     if ((interaction.kind !== "request_confirmation" && interaction.kind !== "request_checkbox_confirmation") || !interaction.result) {
       throw conflict("Confirmation resolution did not persist a result");
     }
@@ -129,7 +149,8 @@ export async function resolveConfirmationFromComment(db: Db, args: {
       agentId: args.actor.agentId, runId: args.actor.runId,
       action: `issue.thread_interaction_${expected}`, entityType: "issue", entityId: issue.id,
       details: { interactionId: card.id, interactionKind: card.kind, interactionStatus: expected,
-        responseCommentId: comment.id, responseUserId: comment.authorUserId, source: "conversation_reply" },
+        responseCommentId: comment.id, responseUserId: comment.authorUserId, source: "conversation_reply",
+        ...(relayedHumanUserId ? { resolverPolicy: "human_only", resolution: "relayed_human_decision" } : {}) },
     })).publication;
     return { interaction: await svc.getForIssue(issue, card.id), deduplicated: false };
   });

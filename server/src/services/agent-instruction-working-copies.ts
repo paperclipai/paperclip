@@ -1,11 +1,18 @@
-import { agentDirectoryWorkingCopyService, isAgentDirectoryCopy } from "./agent-directory-working-copies.js";
+import { notifyStrandedAgentStatus } from "./live-run-recovery-notifications.js";
+import { notifyInstructionCollection, type InstructionCollectionScope } from "./instruction-collection-notifications.js";
+import { notifyDirectoryCleanup, type DirectoryCleanupScope } from "./directory-cleanup-notifications.js";
+import { notifyInstructionCommit, type InstructionCommitScope } from "./instruction-commit-notifications.js";
+import { DELIVERY_QUEUES } from "./delivery-work-notifications.js";
+import type { createDeliveryWorkCoordinator } from "./delivery-work-coordinator.js";
+import { registerScopedDeadlineWork } from "./scoped-deadline-work.js";
+import { AgentDirectoryOperationBusyError, agentDirectoryWorkingCopyService, isAgentDirectoryCopy } from "./agent-directory-working-copies.js";
 import { createHash } from "node:crypto";
 import { execFile as execFileCallback } from "node:child_process";
 import { promisify } from "node:util";
 import fs from "node:fs/promises";
 import path from "node:path";
-import { and, asc, desc, eq, inArray, lte, or, isNull, isNotNull, sql } from "drizzle-orm";
-import { agents, heartbeatRuns, agentInstructionWorkingCopies as copies, type Db } from "@paperclipai/db";
+import { and, asc, desc, eq, gt, inArray, lte, or, isNull, sql, type SQL } from "drizzle-orm";
+import { agents, heartbeatRuns, agentInstructionWorkingCopies as copies, databaseWorkScopeKey, type Db } from "@paperclipai/db";
 import {
   prepareAdapterExecutionTargetRuntime,
   runAdapterExecutionTargetShellCommand,
@@ -28,10 +35,51 @@ const hash = (bytes: Uint8Array) => createHash("sha256").update(bytes).digest("h
 const quote = (value: string) => `'${value.replaceAll("'", `'"'"'`)}'`;
 const completed = new Set(["saved", "unchanged", "resolved"]);
 const MAX_COLLECTION_ATTEMPTS = 3;
+export const INSTRUCTION_COPY_RETRY_MS = 30_000;
+export const INSTRUCTION_COPY_MAX_RETRY_MS = 6 * 60 * 60_000;
+const settledStates = new Set(["saved", "unchanged", "resolved", "unavailable", "conflict"]);
+
+export function instructionCopyRetryAt(waitingSince: Date, now = Date.now()) {
+  const waited = Math.max(0, now - waitingSince.getTime());
+  return new Date(now + Math.min(INSTRUCTION_COPY_MAX_RETRY_MS, Math.max(INSTRUCTION_COPY_RETRY_MS, Math.floor(waited / 2))));
+}
+
 // Only orchestration can register a live target; tools and HTTP callers cannot
 // supply one. These handles are optional: durable captured bytes survive restart.
 const liveTargets = new Map<string, AdapterExecutionTarget>();
 const targetKey = (companyId: string, runId: string) => `${companyId}:${runId}`;
+const copySaves = new WeakMap<object, Map<string, Promise<void>>>();
+
+export { hasUnsettledLocalInstructionCopies } from "./agent-instruction-copy-preservation.js";
+
+function serializeCopySave<T>(db: Db, companyId: string, runId: string, save: () => Promise<T>): Promise<T> {
+  const scope = databaseWorkScopeKey(db);
+  let active = copySaves.get(scope);
+  if (!active) copySaves.set(scope, active = new Map());
+  const key = targetKey(companyId, runId);
+
+
+  const operation = (active.get(key) ?? Promise.resolve()).then(save);
+  const settled = operation.then(() => undefined, () => undefined);
+  active.set(key, settled);
+  return operation.finally(() => {
+    if (active.get(key) === settled) active.delete(key);
+  });
+}
+
+
+/** Finish only bounded immediate collection work; deferred ownership remains pending. */
+export async function collectStoppedInstructionCopyWithRetries<T extends Pick<Copy, "state" | "attempts" | "nextAttemptAt">>(collect: () => Promise<T | null>): Promise<T | null> {
+  let saved: T | null = null;
+  let previousAttempts = -1;
+  for (let calls = 0; calls < MAX_COLLECTION_ATTEMPTS; calls++) {
+    saved = await collect();
+    if (!saved || saved.state !== "pending_collection" || saved.nextAttemptAt === null
+      || saved.attempts >= MAX_COLLECTION_ATTEMPTS || saved.attempts <= previousAttempts) break;
+    previousAttempts = saved.attempts;
+  }
+  return saved;
+}
 
 export function instructionWorkingCopyGuidance(copy: Pick<Copy, "executionRoot" | "entryFile" | "receipt">) {
   if (isAgentDirectoryCopy(copy)) return `Your persistent agent directory is ${copy.executionRoot} (AGENT_HOME). Your instruction entry is ${copy.executionRoot}/${copy.entryFile}. Read and write your own files and subfolders there. This directory belongs to this agent across tasks and sessions; task files belong in the task working directory. Paperclip restores this directory before execution and saves validated changes at turn boundaries. A warm native Codex session keeps the same writable directory between turns. Other sessions collect after the provider stops. Regular files, including binary files, persist; symlinks and special files are unsupported. Check the agent-files save receipt before claiming persistence; Only files you change or delete are synchronized. If another run changes the same file, the last completed synchronization wins. Temporary copies are removed when the owning session stops; there is no per-run file history. Storage allows 256 MiB per file, 2 GiB total, and 100,000 entries; the instruction entry must remain UTF-8 and at most 1 MiB. Reaching a storage limit never prevents this or future tasks from running. Remove or shrink files to free space; changes that exceed the limits will not be saved.${typeof copy.receipt?.storageWarning === "string" ? `\n\n${copy.receipt.storageWarning}` : ""}`;
@@ -60,10 +108,32 @@ export function agentInstructionWorkingCopyService(db: Db, options: { environmen
     const [row] = await db.select().from(copies).where(scope(companyId, runId));
     return row ?? null;
   }
-  async function patch(row: Copy, values: Partial<typeof copies.$inferInsert>) {
-    const [updated] = await db.update(copies).set({ ...values, updatedAt: new Date() }).where(and(
-      scope(row.companyId, row.runId), eq(copies.state, row.state), eq(copies.attempts, row.attempts), eq(copies.baseHash, row.baseHash),
-    )).returning();
+  async function tryPatch(row: Copy, values: Partial<typeof copies.$inferInsert>, requireDue = false, condition?: SQL) {
+    const next = { ...row, ...values } as Copy;
+    const signalsCollection = collectionCandidate(row) || collectionCandidate(next);
+    const signalsCleanup = directoryCleanupEntry(row) !== null || directoryCleanupEntry(next) !== null;
+    const signalsCommit = row.state === "pending_commit" || values.state === "pending_commit";
+    const where = and(
+      scope(row.companyId, row.runId), eq(copies.state, row.state), eq(copies.attempts, row.attempts), eq(copies.baseHash, row.baseHash), eq(copies.localRoot, row.localRoot),
+      sql`${copies.receipt}->>'retainedByRunId' IS NOT DISTINCT FROM ${typeof row.receipt?.retainedByRunId === "string" ? row.receipt.retainedByRunId : null}`,
+      requireDue ? or(isNull(copies.nextAttemptAt), lte(copies.nextAttemptAt, new Date())) : undefined, condition,
+    );
+    if (onlyDefers(row, next)) {
+      return db.transaction(async tx => (await tx.update(copies).set({ ...values, updatedAt: new Date() }).where(where).returning())[0]);
+    }
+    const write = async (tx: Db) => {
+      await notifyStrandedAgentStatus(tx, { companyId: row.companyId, agentId: row.agentId });
+      if (signalsCommit)
+        await notifyInstructionCommit(tx, { companyId: row.companyId, runId: row.runId });
+      if (signalsCleanup) await notifyDirectoryCleanup(tx, { companyId: row.companyId, runId: row.runId });
+      if (signalsCollection) await notifyInstructionCollection(tx, { companyId: row.companyId, runId: row.runId });
+      const [updated] = await tx.update(copies).set({ ...values, updatedAt: new Date() }).where(where).returning();
+      return updated;
+    };
+    return db.transaction(tx => write(tx as unknown as Db));
+  }
+  async function patch(row: Copy, values: Partial<typeof copies.$inferInsert>, condition?: SQL) {
+    const updated = await tryPatch(row, values, false, condition);
     // A late cleanup must not overwrite an explicit resolution or a newer
     // baseline. Canonical content has its own independent head CAS.
     return updated ?? (await get(row.companyId, row.runId))!;
@@ -72,15 +142,12 @@ export function agentInstructionWorkingCopyService(db: Db, options: { environmen
     return { type: "agent", companyId: row.companyId, agentId: row.agentId, runId: row.runId, onBehalfOfUserId: row.responsibleUserId };
   }
   const directories = agentDirectoryWorkingCopyService(db, get, patch, options.environmentRuntime);
-  async function recoverDirectoryCleanup(row: Copy, cleanup: () => Promise<unknown>) {
-    // Reserve a later retry before I/O, including lock waits. A blocked owner
-    // must not occupy every sweep or prevent other copies from being reclaimed.
+  async function recoverDirectoryCleanup(row: Copy, retryAt: Date, cleanup: () => Promise<unknown>) {
     try {
-      await patch(row, { nextAttemptAt: new Date(Date.now() + 30_000) });
       await cleanup();
     }
     catch (error) {
-      try { await patch(row, { nextAttemptAt: new Date(Date.now() + 30_000) }); }
+      try { await patch(row, { nextAttemptAt: retryAt }); }
       catch (retryError) {
         logger.warn({ err: retryError, runId: row.runId }, "Agent file cleanup retry could not be scheduled");
       }
@@ -141,7 +208,7 @@ export function agentInstructionWorkingCopyService(db: Db, options: { environmen
         })
       : await revisions.readCurrent({ companyId: input.companyId, agentId: input.agentId }, bound);
     if (!baseline) return null;
-    const exported = await agentInstructionsService().exportFiles(agent, { rejectSymlinks: true });
+    const exported = await agentInstructionsService(db).exportFiles(agent, { rejectSymlinks: true });
     const entryFile = instructionPath(baseline?.revision.entryFile ?? exported.entryFile);
     const content = instructionBytes(baseline?.content ?? exported.files[entryFile] ?? "");
     const localRoot = existing?.localRoot ?? expectedLocalRoot;
@@ -150,11 +217,15 @@ export function agentInstructionWorkingCopyService(db: Db, options: { environmen
       ? path.posix.join(target.remoteCwd, ".paperclip-runtime", `instruction-edits-${input.runId}`, "instructions")
       : localRoot;
     if (!existing) {
-      await db.insert(copies).values({
+      await db.transaction(async tx => {
+        await notifyInstructionCollection(tx, { companyId: input.companyId, runId: input.runId });
+        await notifyStrandedAgentStatus(tx, { companyId: input.companyId, agentId: input.agentId });
+      await tx.insert(copies).values({
         runId: input.runId, companyId: input.companyId, agentId: input.agentId,
         responsibleUserId: bound.onBehalfOfUserId!, entryFile,
         baseRevisionId: baseline?.revision.id ?? null, baseHash: hash(content),
         localRoot, executionRoot, location, state: "preparing",
+      });
       });
     }
     const row = (await get(input.companyId, input.runId))!;
@@ -263,7 +334,10 @@ export function agentInstructionWorkingCopyService(db: Db, options: { environmen
   }
 
   /** Caller must have joined the owned provider process before granting this proof. */
-  async function collectStopped(input: { companyId: string; runId: string; target?: AdapterExecutionTarget | null }) {
+  function collectStopped(input: { companyId: string; runId: string; target?: AdapterExecutionTarget | null }): Promise<Copy | null> {
+    return serializeCopySave(db, input.companyId, input.runId, () => collectStoppedOnce(input));
+  }
+  async function collectStoppedOnce(input: Parameters<typeof collectStopped>[0]) {
     let row = await get(input.companyId, input.runId);
     if (!row) return row;
     if (isAgentDirectoryCopy(row)) return directories.collectStopped(row, input.target);
@@ -286,72 +360,280 @@ export function agentInstructionWorkingCopyService(db: Db, options: { environmen
   }
 
   /** Restarts can retry persisted bytes without touching a live filesystem or launching a model. */
-  async function recoverCaptured() {
-    const pending = await db.select().from(copies).where(and(
+  async function recoverCaptured(options: { skipCommit?: boolean; skipDirectoryCleanup?: boolean } = {}) {
+    const pending = options.skipCommit ? [] : await db.select().from(copies).where(and(
       eq(copies.state, "pending_commit"),
       or(isNull(copies.nextAttemptAt), lte(copies.nextAttemptAt, new Date())),
       lte(copies.attempts, MAX_COLLECTION_ATTEMPTS - 1),
     )).limit(20);
-    for (const row of pending) {
-      const result = await commitCandidate(await patch(row, { attempts: row.attempts + 1 }));
-      if (isAgentDirectoryCopy(result) && completed.has(result.state)) await directories.release(result);
-    }
+    for (const row of pending) await recoverCommit(commitEntry(row)!, () => true);
     // A crash between a durable save and release must not retain run snapshots
     // forever. Only discard copies with recorded stop proof and a terminal receipt.
-    const cleanup = await db.select().from(copies).where(and(
-      inArray(copies.state, [...completed, "unavailable"]), isNotNull(copies.processStoppedAt),
-      sql`${copies.receipt}->>'schema' = 'paperclip.agent-files.v1'`,
-      or(sql`${copies.receipt} ? 'baseline'`, sql`${copies.receipt}->>'cleanupPending' = 'true'`),
-      or(isNull(copies.nextAttemptAt), lte(copies.nextAttemptAt, new Date())),
-    )).orderBy(asc(copies.updatedAt)).limit(20);
-    for (const row of cleanup) await recoverDirectoryCleanup(row, () => directories.release(row));
+    if (!options.skipDirectoryCleanup) {
+      const cleanup = await db.select({ id: copies.runId, companyId: copies.companyId,
+        dueAt: copies.nextAttemptAt }).from(copies).where(and(directoryCleanupPredicate(),
+        or(isNull(copies.nextAttemptAt), lte(copies.nextAttemptAt, new Date())),
+      )).orderBy(asc(copies.updatedAt)).limit(20);
+      for (const row of cleanup) {
+        try { await recoverDirectoryRelease({ ...row, dueAt: row.dueAt?.getTime() ?? 0 }, () => true); }
+        catch (error) { logger.warn({ err: error, runId: row.id }, "Agent file cleanup deferred; save receipt unchanged"); }
+      }
+    }
     return pending.length;
   }
 
   /** Recover only the registered copy after independently recorded process-stop
    * proof. Terminal run status is never a substitute for that proof. Remote
    * receipts mean the environment is stopped; do not restart it just to read. */
-  async function recoverStopped() {
-    const pending = await db.select({ copy: copies, runtimeMode: heartbeatRuns.runtimeMode }).from(copies)
+  function collectionCandidate(row: Copy) {
+    return !row.receipt?.retainedByRunId && (
+      row.attempts < MAX_COLLECTION_ATTEMPTS && (["prepared", "pending_collection", "unchanged_turn", "warm_saved"].includes(row.state)
+        || row.state === "preparing" && isAgentDirectoryCopy(row))
+      || row.state === "unavailable" && !row.processStoppedAt && row.location.startsWith("remote:") && isAgentDirectoryCopy(row));
+  }
+  function strandsAgent(row: Copy) {
+    return !settledStates.has(row.state) || !row.processStoppedAt || row.nextAttemptAt !== null
+      || Object.hasOwn(row.receipt ?? {}, "baseline") || row.receipt?.cleanupPending === true;
+  }
+  function onlyDefers(row: Copy, next: Copy) {
+    const due = (copy: Copy) => copy.nextAttemptAt?.getTime() ?? 0;
+    const deferred = (before: boolean, after: boolean) => before === after && (!after || due(next) >= due(row));
+    return deferred(collectionCandidate(row), collectionCandidate(next))
+      && deferred(directoryCleanupEntry(row) !== null, directoryCleanupEntry(next) !== null)
+      && deferred(commitEntry(row) !== null, commitEntry(next) !== null)
+      && (row.state === "pending_commit") === (next.state === "pending_commit")
+      && strandsAgent(row) === strandsAgent(next);
+  }
+  function collectionPredicate() {
+    return and(sql`NOT (coalesce(${copies.receipt}, '{}'::jsonb) ? 'retainedByRunId') AND (
+      (${copies.attempts} < 3 AND (${copies.state} IN ('prepared', 'pending_collection', 'unchanged_turn', 'warm_saved')
+        OR (${copies.state} = 'preparing' AND ${copies.receipt}->>'schema' = 'paperclip.agent-files.v1')))
+      OR (${copies.state} = 'unavailable' AND ${copies.processStoppedAt} IS NULL
+        AND ${copies.location} LIKE 'remote:%' AND ${copies.receipt}->>'schema' = 'paperclip.agent-files.v1'))`,
+      inArray(heartbeatRuns.status, ["succeeded", "failed", "cancelled", "timed_out", "interrupted"]));
+  }
+  type StopEvidence = "directory_unavailable" | "directory_preparing" | "local" | "remote" | null;
+  async function stopEvidence(row: Copy, runtimeMode: string | null): Promise<StopEvidence> {
+    if (row.state === "unavailable" && isAgentDirectoryCopy(row)) return "directory_unavailable";
+    if (row.state === "preparing" && isAgentDirectoryCopy(row)) return "directory_preparing";
+    if (row.location === "local") return row.processStoppedAt || runtimeMode === "native" &&
+      await hasNativeLocalProcessStop(db, row.companyId, row.runId) ? "local" : null;
+    return await remoteExecutionHasStopped(db, row.companyId, row.runId) ? "remote" : null;
+  }
+  function awaitingStop(row: Copy, waitingSince: Date): Partial<typeof copies.$inferInsert> {
+    return { ...(row.state === "prepared" ? { state: "pending_collection", errorCode: "INSTRUCTION_STOP_UNCONFIRMED",
+      errorMessage: "The provider's stop has not been confirmed. Instruction collection is pending; no save is claimed." } : {}),
+      nextAttemptAt: instructionCopyRetryAt(waitingSince) };
+  }
+  async function collectRecovered(row: Copy, evidence: Exclude<StopEvidence, null>, retryAt: Date): Promise<Copy | null | undefined> {
+    if (evidence === "directory_unavailable") {
+      await recoverDirectoryCleanup(row, retryAt, () => directories.recoverUnavailable(row));
+    } else if (evidence === "directory_preparing") {
+      await directories.release(await patch(row, { state: "unavailable", processStoppedAt: new Date(),
+        errorCode: "AGENT_FILES_PREPARE_FAILED", errorMessage: "Agent-file preparation was interrupted. The temporary copy was discarded.", nextAttemptAt: null }));
+    } else if (evidence === "local") {
+      const result = await collectStopped({ companyId: row.companyId, runId: row.runId });
+      if (result && isAgentDirectoryCopy(result) && completed.has(result.state)) await directories.release(result);
+    } else if (row.receipt?.warm === true) {
+      const unavailable = await patch(row, { state: "unavailable", errorCode: "AGENT_FILES_FINAL_COLLECTION_UNAVAILABLE",
+        errorMessage: "The last completed checkpoint remains saved. Files changed afterwards could not be collected after remote termination.", nextAttemptAt: null });
+      if (isAgentDirectoryCopy(unavailable)) {
+        await directories.release(await patch(unavailable, { processStoppedAt: unavailable.processStoppedAt ?? new Date() }));
+      }
+    } else if (isAgentDirectoryCopy(row)) {
+      const result = await directories.recoverStoppedRemote(row);
+      if (result && collectionCandidate(result) && !result.processStoppedAt && (result.nextAttemptAt?.getTime() ?? 0) < retryAt.getTime()) {
+        return patch(result, { nextAttemptAt: retryAt });
+      }
+    } else await reportUnavailable(row.companyId, row.runId);
+    return undefined;
+  }
+  type CollectionEntry = { id: string; companyId: string; dueAt: number };
+  async function loadCollection(scope: InstructionCollectionScope | undefined, admitted: () => boolean) {
+    const entries: CollectionEntry[] = [];
+    let cursor: string | undefined;
+    while (admitted()) {
+      const rows = await db.select({ id: copies.runId, companyId: copies.companyId, nextAttemptAt: copies.nextAttemptAt })
+        .from(copies).innerJoin(heartbeatRuns, and(eq(heartbeatRuns.companyId, copies.companyId), eq(heartbeatRuns.id, copies.runId)))
+        .where(and(collectionPredicate(), scope ? eq(copies.companyId, scope.companyId) : undefined,
+          scope?.runId ? eq(copies.runId, scope.runId) : undefined, cursor ? gt(copies.runId, cursor) : undefined))
+        .orderBy(asc(copies.runId)).limit(100);
+      for (const row of rows) entries.push({ id: row.id, companyId: row.companyId, dueAt: row.nextAttemptAt?.getTime() ?? 0 });
+      if (rows.length < 100) return entries;
+      cursor = rows[rows.length - 1].id;
+    }
+    throw new Error("Instruction collection reconstruction stopped");
+  }
+  async function readCollection(entry: CollectionEntry) {
+    const [current] = await db.select({ copy: copies, runtimeMode: heartbeatRuns.runtimeMode,
+      waitingSince: sql<Date>`(extract(epoch from coalesce(${heartbeatRuns.finishedAt}, ${copies.createdAt})) * 1000)::float8`.mapWith(value => new Date(Number(value))) }).from(copies)
       .innerJoin(heartbeatRuns, and(eq(heartbeatRuns.companyId, copies.companyId), eq(heartbeatRuns.id, copies.runId)))
-      .where(and(or(and(or(inArray(copies.state, ["prepared", "pending_collection", "warm_saved"]),
-          and(eq(copies.state, "preparing"), sql`${copies.receipt}->>'schema' = 'paperclip.agent-files.v1'`)),
-          lte(copies.attempts, MAX_COLLECTION_ATTEMPTS - 1)),
-        and(eq(copies.state, "unavailable"), isNull(copies.processStoppedAt),
-          sql`${copies.location} like 'remote:%'`,
-          sql`${copies.receipt}->>'schema' = 'paperclip.agent-files.v1'`)),
-        inArray(heartbeatRuns.status, ["succeeded", "failed", "cancelled", "timed_out", "interrupted"]),
-        or(isNull(copies.nextAttemptAt), lte(copies.nextAttemptAt, new Date())))).orderBy(asc(copies.updatedAt)).limit(20);
-    for (const { copy: row, runtimeMode } of pending) {
-      if (row.state === "unavailable" && isAgentDirectoryCopy(row)) {
-        await recoverDirectoryCleanup(row, () => directories.recoverUnavailable(row));
-      } else if (row.state === "preparing" && isAgentDirectoryCopy(row)) {
-        // A provider cannot launch until preparation records "prepared". With
-        // the owning run terminal, this is an interrupted staging copy only.
-        await directories.release(await patch(row, { state: "unavailable", processStoppedAt: new Date(),
-          errorCode: "AGENT_FILES_PREPARE_FAILED", errorMessage: "Agent-file preparation was interrupted. The temporary copy was discarded.", nextAttemptAt: null }));
-      } else if (row.location === "local" && (row.processStoppedAt || runtimeMode === "native" &&
-          await hasNativeLocalProcessStop(db, row.companyId, row.runId))) {
-        const result = await collectStopped({ companyId: row.companyId, runId: row.runId });
-        if (result && isAgentDirectoryCopy(result) && completed.has(result.state)) await directories.release(result);
-      } else if (row.location !== "local" && await remoteExecutionHasStopped(db, row.companyId, row.runId)) {
-        const unavailable = row.receipt?.warm === true
-          ? await patch(row, { state: "unavailable", errorCode: "AGENT_FILES_FINAL_COLLECTION_UNAVAILABLE",
-            errorMessage: "The last completed checkpoint remains saved. Files changed afterwards could not be collected after remote termination.", nextAttemptAt: null })
-          : await reportUnavailable(row.companyId, row.runId);
-        if (unavailable && isAgentDirectoryCopy(unavailable)) {
-          await directories.release(await patch(unavailable, { processStoppedAt: unavailable.processStoppedAt ?? new Date() }));
-        }
-      } else if (row.state === "prepared") {
-        await patch(row, { state: "pending_collection", errorCode: "INSTRUCTION_STOP_UNCONFIRMED",
-          errorMessage: "The provider's stop has not been confirmed. Instruction collection is pending; no save is claimed.", nextAttemptAt: null });
-      } else if (row.state === "warm_saved") {
-        // Live retained sessions must not occupy every batch and starve stopped
-        // copies from other agents. This does not permit reads without stop proof.
-        await patch(row, { nextAttemptAt: new Date(Date.now() + 30_000) });
+      .where(and(collectionPredicate(), scope(entry.companyId, entry.id)));
+    return current;
+  }
+  async function recoverCollection(entry: CollectionEntry, admitted: () => boolean) {
+    const current = await readCollection(entry);
+    if (!current) return null;
+    const dueAt = current.copy.nextAttemptAt?.getTime() ?? 0;
+    if (dueAt > Date.now()) return { ...entry, dueAt };
+    if (!admitted()) throw new Error("Instruction collection recovery stopped");
+    const evidence = await stopEvidence(current.copy, current.runtimeMode);
+    const retryAt = instructionCopyRetryAt(current.waitingSince);
+    const claimed = await tryPatch(current.copy, evidence === null ? awaitingStop(current.copy, current.waitingSince)
+      : { nextAttemptAt: evidence === "directory_unavailable" ? retryAt : new Date(Date.now() + INSTRUCTION_COPY_RETRY_MS) }, true,
+      sql`EXISTS (SELECT 1 FROM ${heartbeatRuns} WHERE ${heartbeatRuns.id} = ${copies.runId}
+        AND ${heartbeatRuns.companyId} = ${copies.companyId}
+        AND ${heartbeatRuns.status} IN ('succeeded', 'failed', 'cancelled', 'timed_out', 'interrupted'))
+        AND date_trunc('milliseconds', ${copies.updatedAt}) = ${current.copy.updatedAt.toISOString()}::timestamptz`);
+    const settled = claimed && evidence !== null ? await collectRecovered(claimed, evidence, retryAt) : claimed;
+    const remaining = settled === undefined || settled === null ? (await readCollection(entry))?.copy
+      : collectionCandidate(settled) ? settled : null;
+    if (!remaining) return null;
+    const next = { ...entry, dueAt: remaining.nextAttemptAt?.getTime() ?? 0 };
+    if (next.dueAt <= Date.now() && claimed) throw new Error("Instruction collection remains unresolved without a future retry");
+    return next;
+  }
+  async function recoverStopped() {
+    const rows = await db.select({ id: copies.runId, companyId: copies.companyId, nextAttemptAt: copies.nextAttemptAt })
+      .from(copies).innerJoin(heartbeatRuns, and(eq(heartbeatRuns.companyId, copies.companyId), eq(heartbeatRuns.id, copies.runId)))
+      .where(and(collectionPredicate(), or(isNull(copies.nextAttemptAt), lte(copies.nextAttemptAt, new Date()))))
+      .orderBy(asc(copies.updatedAt)).limit(20);
+    for (const row of rows) {
+      try { await recoverCollection({ id: row.id, companyId: row.companyId, dueAt: row.nextAttemptAt?.getTime() ?? 0 }, () => true); }
+      catch (error) { logger.warn({ err: error, runId: row.id }, "Instruction collection recovery deferred"); }
+    }
+    return rows.length;
+  }
+  function registerStoppedCollectionWork(coordinator: ReturnType<typeof createDeliveryWorkCoordinator>,
+    canRun: () => boolean, canRecover: () => Promise<boolean>) {
+    return registerScopedDeadlineWork(coordinator, {
+      queue: DELIVERY_QUEUES.instructionCollection, batchSize: 20,
+      decodeScope: (hint: string): InstructionCollectionScope | undefined => hint === "*" ? undefined : JSON.parse(hint),
+      matches: (entry: CollectionEntry, scope?: InstructionCollectionScope) => !scope ||
+        entry.companyId === scope.companyId && (!scope.runId || entry.id === scope.runId),
+      load: async (scope, signal) => await canRecover() ? loadCollection(scope, () => canRun() && !signal?.aborted) : [],
+      check: async (entry, signal) => await canRecover() ? recoverCollection(entry, () => canRun() && !signal?.aborted) : null,
+    }, canRun);
+  }
+
+  type DirectoryCleanupEntry = { id: string; companyId: string; dueAt: number };
+  function directoryCleanupEntry(row: Copy | null): DirectoryCleanupEntry | null {
+    return row && ["saved", "unchanged", "resolved", "unavailable"].includes(row.state)
+      && row.processStoppedAt && isAgentDirectoryCopy(row) && !row.receipt?.retainedByRunId
+      && (row.receipt?.cleanupPending === false ? row.nextAttemptAt !== null
+        : Object.hasOwn(row.receipt!, "baseline") || row.receipt?.cleanupPending === true)
+      ? { id: row.runId, companyId: row.companyId, dueAt: row.nextAttemptAt?.getTime() ?? 0 } : null;
+  }
+  function directoryCleanupPredicate() {
+    return sql`${copies.state} IN ('saved', 'unchanged', 'resolved', 'unavailable')
+      AND ${copies.processStoppedAt} IS NOT NULL
+      AND ${copies.receipt}->>'schema' = 'paperclip.agent-files.v1'
+      AND coalesce(${copies.receipt}->>'retainedByRunId', '') = ''
+      AND ((${copies.receipt}->>'cleanupPending' = 'false' AND ${copies.nextAttemptAt} IS NOT NULL)
+        OR (${copies.receipt}->>'cleanupPending' IS DISTINCT FROM 'false'
+          AND (${copies.receipt} ? 'baseline' OR ${copies.receipt}->>'cleanupPending' = 'true')))`;
+  }
+  async function loadDirectoryCleanup(scope: DirectoryCleanupScope | undefined, admitted: () => boolean) {
+    const entries: DirectoryCleanupEntry[] = [];
+    let cursor: string | undefined;
+    while (admitted()) {
+      const rows = await db.select({ id: copies.runId, companyId: copies.companyId, nextAttemptAt: copies.nextAttemptAt })
+        .from(copies).where(and(directoryCleanupPredicate(),
+          scope ? eq(copies.companyId, scope.companyId) : undefined,
+          scope?.runId ? eq(copies.runId, scope.runId) : undefined,
+          cursor ? gt(copies.runId, cursor) : undefined,
+        )).orderBy(asc(copies.runId)).limit(100);
+      for (const row of rows) entries.push({ id: row.id, companyId: row.companyId, dueAt: row.nextAttemptAt?.getTime() ?? 0 });
+      if (rows.length < 100) return entries;
+      cursor = rows[rows.length - 1].id;
+    }
+    throw new Error("Directory cleanup reconstruction stopped");
+  }
+  async function recoverDirectoryRelease(entry: DirectoryCleanupEntry, admitted: () => boolean) {
+    const row = await get(entry.companyId, entry.id);
+    const current = directoryCleanupEntry(row);
+    if (!row || !current || current.dueAt > Date.now()) return current;
+    if (!admitted()) throw new Error("Directory cleanup recovery stopped");
+    const retryAt = instructionCopyRetryAt(row.processStoppedAt ?? row.updatedAt);
+    const claimed = await tryPatch(row, { nextAttemptAt: new Date(Date.now() + INSTRUCTION_COPY_RETRY_MS) }, true);
+    const deferCleanup = async () => {
+      const latest = await get(entry.companyId, entry.id);
+      const pending = directoryCleanupEntry(latest);
+      return claimed && latest && pending && pending.dueAt < retryAt.getTime() ? patch(latest, { nextAttemptAt: retryAt }) : latest;
+    };
+    if (claimed) {
+      try { await directories.release(claimed); }
+      catch (error) {
+        const deferred = await deferCleanup();
+        if (error instanceof AgentDirectoryOperationBusyError) return directoryCleanupEntry(deferred);
+        throw error;
       }
     }
-    return pending.length;
+    const remaining = directoryCleanupEntry(await deferCleanup());
+    if (remaining && remaining.dueAt <= Date.now()) throw new Error("Directory cleanup remains unresolved without a future retry");
+    return remaining;
+  }
+  function registerDirectoryCleanupWork(coordinator: ReturnType<typeof createDeliveryWorkCoordinator>,
+    canRun: () => boolean, canRecover: () => Promise<boolean>) {
+    return registerScopedDeadlineWork(coordinator, {
+      queue: DELIVERY_QUEUES.directoryCleanup,
+      batchSize: 20,
+      decodeScope: (hint: string): DirectoryCleanupScope | undefined => hint === "*" ? undefined : JSON.parse(hint),
+      matches: (entry: DirectoryCleanupEntry, scope?: DirectoryCleanupScope) => !scope ||
+        entry.companyId === scope.companyId && (!scope.runId || entry.id === scope.runId),
+      load: async (scope, signal) => await canRecover() ? loadDirectoryCleanup(scope, () => canRun() && !signal?.aborted) : [],
+      check: async (entry, signal) => await canRecover() ? recoverDirectoryRelease(entry, () => canRun() && !signal?.aborted) : null,
+    }, canRun);
+  }
+
+  type CommitEntry = { id: string; companyId: string; dueAt: number };
+  function commitEntry(row: Pick<Copy, "runId" | "companyId" | "state" | "attempts" | "nextAttemptAt"> | null): CommitEntry | null {
+    return row?.state === "pending_commit" && row.attempts < MAX_COLLECTION_ATTEMPTS
+      ? { id: row.runId, companyId: row.companyId, dueAt: row.nextAttemptAt?.getTime() ?? 0 } : null;
+  }
+  async function loadCommits(scope: InstructionCommitScope | undefined, admitted: () => boolean) {
+    const entries: CommitEntry[] = [];
+    let cursor: string | undefined;
+    while (admitted()) {
+      const rows = await db.select({ runId: copies.runId, companyId: copies.companyId, state: copies.state,
+        attempts: copies.attempts, nextAttemptAt: copies.nextAttemptAt }).from(copies).where(and(
+        eq(copies.state, "pending_commit"), lte(copies.attempts, MAX_COLLECTION_ATTEMPTS - 1),
+        scope ? eq(copies.companyId, scope.companyId) : undefined,
+        scope?.runId ? eq(copies.runId, scope.runId) : undefined,
+        cursor ? gt(copies.runId, cursor) : undefined,
+      )).orderBy(asc(copies.runId)).limit(100);
+      for (const row of rows) entries.push(commitEntry(row)!);
+      if (rows.length < 100) return entries;
+      cursor = rows[rows.length - 1].runId;
+    }
+    throw new Error("Instruction commit reconstruction stopped");
+  }
+  function recoverCommit(entry: CommitEntry, admitted: () => boolean): Promise<CommitEntry | null> {
+    return serializeCopySave(db, entry.companyId, entry.id, () => recoverCommitOnce(entry, admitted));
+  }
+  async function recoverCommitOnce(entry: CommitEntry, admitted: () => boolean) {
+    const row = await get(entry.companyId, entry.id);
+    const current = commitEntry(row);
+    if (!row || !current || current.dueAt > Date.now()) return current;
+    if (!admitted()) throw new Error("Instruction commit recovery stopped");
+    const claimed = await tryPatch(row, { attempts: row.attempts + 1 }, true);
+    if (claimed) {
+      const result = await commitCandidate(claimed);
+      if (isAgentDirectoryCopy(result) && completed.has(result.state)) await directories.release(result);
+    }
+    return commitEntry(await get(entry.companyId, entry.id));
+  }
+  function registerCapturedCommitWork(coordinator: ReturnType<typeof createDeliveryWorkCoordinator>,
+    canRun: () => boolean, canRecover: () => Promise<boolean>) {
+    return registerScopedDeadlineWork(coordinator, {
+      queue: DELIVERY_QUEUES.instructionCommit,
+      batchSize: 20,
+      decodeScope: (hint: string): InstructionCommitScope | undefined => hint === "*" ? undefined : JSON.parse(hint),
+      matches: (entry: CommitEntry, scope?: InstructionCommitScope) => !scope ||
+        entry.companyId === scope.companyId && (!scope.runId || entry.id === scope.runId),
+      load: async (scope, signal) => await canRecover() ? loadCommits(scope, () => canRun() && !signal?.aborted) : [],
+      check: async (entry, signal) => await canRecover() ? recoverCommit(entry, () => canRun() && !signal?.aborted) : null,
+    }, canRun);
   }
 
   async function list(companyId: string, agentId: string, actor: AuthorizationActor) {
@@ -379,11 +661,28 @@ export function agentInstructionWorkingCopyService(db: Db, options: { environmen
   async function reportUnavailable(companyId: string, runId: string) {
     const row = await get(companyId, runId);
     if (!row || completed.has(row.state) || ["unchanged_turn", "warm_saved", "superseded"].includes(row.state) || row.candidateBase64 !== null || (isAgentDirectoryCopy(row) && row.candidateHash !== null) || row.state === "conflict") return row;
-    if (isAgentDirectoryCopy(row) && row.state === "unavailable") return row;
+    // A failed close or deferred lease observation grants no stop proof. Keep
+    // that row recoverable through generic heartbeat cleanup.
+    if (isAgentDirectoryCopy(row) && (row.state === "unavailable"
+      || row.state === "pending_collection" && !row.processStoppedAt)) return row;
     return patch(row, { state: "unavailable", errorCode: "INSTRUCTION_COLLECTION_UNAVAILABLE",
       errorMessage: "The registered instruction copy could not be retrieved safely before environment release. No instruction save is claimed.", nextAttemptAt: null });
   }
 
   async function release(companyId: string, runId: string) { liveTargets.delete(targetKey(companyId, runId)); const row = await get(companyId, runId); if (row && isAgentDirectoryCopy(row)) await directories.release(row); }
-  return { prepare, get, hasChanges, checkpointWarm, canReuseWarm: directories.canReuse, acknowledgeExplicitSave, collectStopped, recoverCaptured, recoverStopped, list, resolve, reportUnavailable, release };
+  async function reportRetirementUnconfirmed(companyId: string, runId: string) {
+    const row = await get(companyId, runId);
+    if (!row || !isAgentDirectoryCopy(row) || row.receipt?.retainedByRunId || row.processStoppedAt) return row;
+    return patch(row, { state: "pending_collection", errorCode: "INSTRUCTION_STOP_UNCONFIRMED",
+      errorMessage: "The retained provider did not confirm retirement. Its registered agent directory is preserved; no save is claimed.", nextAttemptAt: null });
+  }
+  async function adopt(input: Parameters<typeof directories.adopt>[0]) {
+    const row = await directories.adopt(input);
+    if (row) {
+      liveTargets.delete(targetKey(input.companyId, input.previousRunId));
+      if (input.target) liveTargets.set(targetKey(input.companyId, input.runId), input.target);
+    }
+    return row;
+  }
+  return { registerStoppedCollectionWork, registerDirectoryCleanupWork, registerCapturedCommitWork, prepare, checkpointWarm, canReuseWarm: directories.canReuse, adopt, reportRetirementUnconfirmed, get, hasChanges, acknowledgeExplicitSave, collectStopped, recoverCaptured, recoverStopped, list, resolve, reportUnavailable, release };
 }

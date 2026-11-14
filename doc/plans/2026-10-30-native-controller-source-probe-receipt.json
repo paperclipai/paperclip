@@ -1,0 +1,70 @@
+{
+  "schema": "paperclip.native-controller.release-qualification-receipt/v1",
+  "finishedAt": "2026-10-30T19:33:20.587023+00:00",
+  "sourceIntegrity": {
+    "A": {
+      "revision": "59ff89a18fe1312b5f0bb908439bbdb1237b0252",
+      "nativeRuntimeSourceBytesUnchanged": true,
+      "mismatches": []
+    },
+    "B": {
+      "revision": "98f05fcd5b452704131a35ff09486f5c04c6959a",
+      "nativeRuntimeSourceBytesUnchanged": true,
+      "mismatches": []
+    }
+  },
+  "sourceAndArtifact": {
+    "A": "59ff89a18fe1312b5f0bb908439bbdb1237b0252",
+    "B": "98f05fcd5b452704131a35ff09486f5c04c6959a",
+    "admittedRunnerSha256": "b1f04caa1ce04e720dec7eb62ede170eb3621948c0849b8f305ea5c5116bced8",
+    "runnerArtifact": {
+      "role": "admitted Runner artifact A, unchanged through every controller",
+      "sourceRevision": "59ff89a18fe1312b5f0bb908439bbdb1237b0252",
+      "binary": "/private/tmp/native-controller-qualification-20261030-1833/installed-A/consumer/node_modules/@paperclipai/server/dist/vendor/paperclip-runner/bin/linux-arm64/paperclip-runnerd",
+      "sha256": "b1f04caa1ce04e720dec7eb62ede170eb3621948c0849b8f305ea5c5116bced8",
+      "bytes": 35345144,
+      "installationReceipt": "/private/tmp/native-controller-qualification-20261030-1833/installed-A/receipt.json"
+    }
+  },
+  "passed": [
+    "Distinct source-controller active SIGKILL followed by natural 60-second lease takeover; exact same run/provider attempt/Runner retained",
+    "Current real-PostgreSQL stream oracle at 8,512,8192 chunks: zero incremental checkpoint SQL/transactions/changed rows; idle SQL zero; positive control passed",
+    "B1 recovered run completed and committed its result with ready native snapshot and valid v1 recovery envelope"
+  ],
+  "failed": [
+    "Fresh B2 retained continuation rejected after B1 completed because durable control journal has a null-goal snapshot after run.terminal",
+    "Final 98f05fc live probe still rejects actual paperclip.prp.event.v2 because proposed guard accepts only v1"
+  ],
+  "notQualified": [
+    "Complete A/B/A native installed-application startup/rollback gate",
+    "Uninterrupted warm provider process through changed completion-contract boundary",
+    "First compatible published empty-disk rollback reader"
+  ],
+  "limits": [
+    "Source controller processes and scripted Codex-compatible provider in Docker; no live-provider or live-Daytona claim",
+    "Qualified immutable A release Runner used; source controller native modules hash-verified, not full installed server execution",
+    "Only native controller projections deleted; non-native configuration, encryption key, workspace/sandbox dependencies preserved",
+    "Local stream WAL/elapsed diagnostics excluded from quantitative performance due concurrent isolated fixture"
+  ],
+  "evidence": {
+    "finalProbe": "/tmp/native-controller-release-qualification-qualified-A-20261030/evidence.json",
+    "finalProbeLog": "/tmp/native-controller-release-qualification-qualified-A-20261030/run-final-fix.log",
+    "controlLog": "/tmp/native-controller-release-qualification-qualified-A-20261030/controller.log",
+    "streamOracle": "/tmp/native-controller-release-qualification-20261030/stream-cost-current.json",
+    "streamLog": "/tmp/native-controller-release-qualification-20261030/stream-cost-current.log",
+    "earlierThreeTurnBusinessContinuation": "/tmp/native-controller-release-qualification-20261030/evidence-run-06.json"
+  },
+  "finalProbeFailure": {
+    "message": "Error: runner_state_identity_mismatch: prior_owner_terminal_state_indeterminate\n    at deny (/private/tmp/native-controller-release-qualification-qualified-A-20261030/B-98f05f/server/src/services/native-runtime/remote-warm-session-recovery.ts:56:37)\n    at inspectRemoteWarmSessionRecovery (/private/tmp/native-controller-release-qualification-qualified-A-20261030/B-98f05f/server/src/services/native-runtime/remote-warm-session-recovery.ts:85:67)\n    at process.processTicksAndRejections (node:internal/process/task_queues:104:5)\n    at async executePaperclipNativeSessionWithinScope (/private/tmp/native-controller-release-qualification-qualified-A-20261030/B-98f05f/server/src/services/native-runtime/native-session-executor.ts:8237:28)\n    at async executePaperclipNativeSession (/private/tmp/native-controller-release-qualification-qualified-A-20261030/B-98f05f/server/src/services/native-runtime/native-session-executor.ts:8057:12)\n    at async process.<anonymous> (/private/tmp/native-controller-release-qualification-qualified-A-20261030/controller-worker.mjs:36:16)",
+    "cause": null
+  },
+  "candidateCorrection": {
+    "change": "Accept supported PRP event v1 and v2 idle goal suffixes; reject unknown versions",
+    "fullSourceReplay": "not rerun after the final v2 correction within the one-hour qualification window",
+    "focusedTests": {
+      "result": "pass",
+      "cases": 14,
+      "test": "server/src/services/native-runtime/remote-warm-session-recovery.test.ts"
+    }
+  }
+}

@@ -12,7 +12,8 @@
     "darkLogoUrl": "/brands/apps/make-dark.svg"
   },
   "urlPatterns": [
-    "https://mcp.make.com/*"
+    "https://mcp.make.com/*",
+    "https://*.make.com/mcp"
   ],
   "docsUrl": "https://developers.make.com/mcp-server",
   "redirectConstraints": "https-or-loopback-http",
@@ -36,6 +37,57 @@
       },
       "warnings": [
         "A Make account and access to the scenarios exposed to MCP."
+      ]
+    },
+    {
+      "key": "mcp-api-token",
+      "transport": "mcp_remote",
+      "auth": "api_key",
+      "ownershipModes": [
+        "customer"
+      ],
+      "whenToUse": "Use a Make MCP token when browser sign-in is not suitable.",
+      "defaults": {
+        "serverUrlTemplate": "https://{zone}/mcp"
+      },
+      "guidanceMd": "Create a Make API token with the mcp:use scope and any additional scopes required by the selected scenarios. Enter the zone host from your Make organization. The token is sent as a Bearer header and remains a secret.",
+      "riskTier": "S3",
+      "label": "Use an MCP token",
+      "tenantFields": [
+        {
+          "key": "zone",
+          "label": "Make zone host",
+          "type": "text",
+          "required": true,
+          "placeholder": "eu2.make.com",
+          "helperMd": "Enter the zone host for your Make organization exactly as shown in the Make MCP client setup instructions. The server URL is https://<zone>/mcp.",
+          "validation": {
+            "pattern": "^[A-Za-z0-9-]+\\.make\\.com$",
+            "maxLength": 253
+          }
+        }
+      ],
+      "credentialFields": [
+        {
+          "key": "authorization",
+          "label": "Make MCP token",
+          "type": "password",
+          "required": true,
+          "placeholder": "Paste your MCP token",
+          "secret": true,
+          "helperMd": "Provider-issued Make token. Include documented mcp:use and only additional scopes required by selected scenarios; exact scopes are user selected."
+        }
+      ],
+      "keyPlacement": {
+        "location": "header",
+        "name": "Authorization",
+        "prefix": "Bearer "
+      },
+      "consoleLinks": {
+        "docs": "https://developers.make.com/mcp-server/connect-using-mcp-token"
+      },
+      "warnings": [
+        "A token is a secret; do not place it in the server URL. Scenario availability depends on token scopes and scenario access controls."
       ]
     }
   ]

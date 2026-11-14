@@ -1,3 +1,4 @@
+import { notifyLiveRunRecovery } from "../live-run-recovery-notifications.js";
 import { and, eq, inArray, sql } from "drizzle-orm";
 
 import type { Db } from "@paperclipai/db";
@@ -333,7 +334,7 @@ export async function nativeQuestionRunToCancel(
  * Persist cancellation intent in the same transaction that closes the issue.
  * The post-commit fast path and the heartbeat recovery sweep both consume this
  * marker, so process exit or a transient process-termination failure cannot
- * strand a native run after its question has expired.
+ * strand a native run after the task closes, even if its question is retained.
  */
 export async function requestNativeQuestionRunCancellation(
   db: NativeQuestionMutationDb,
@@ -348,6 +349,7 @@ export async function requestNativeQuestionRunCancellation(
     ...cause,
     requestedAt: new Date().toISOString(),
   });
+  await notifyLiveRunRecovery(db, { companyId: interaction.companyId, runId: run.id });
   return db.update(heartbeatRuns).set({
     contextSnapshot: sql`jsonb_set(
       case

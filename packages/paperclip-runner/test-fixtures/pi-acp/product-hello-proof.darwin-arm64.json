@@ -1,0 +1,126 @@
+{
+  "schema": "paperclip.pi-product-qualification-proof.v1",
+  "attemptId": "pi-product-hello-06",
+  "sourceRevision": "dd78df1ef8b279c30c710c9b7a7f9fda22e321d6",
+  "providerPackDigest": "sha256:f75d3de7814276508f3706edb6e4510ce1dcecbc3e8fa674991fd554e5a75273",
+  "runnerdDigest": "sha256:f9aad049d57a2073ce4ec96b6577266afdba5b99db75bb8fc21825a5b7281e39",
+  "profileDigest": "sha256:0f687e38cb3c607a01fab80f03e19bbbf5cb53a8afb1fc40d71f9ab54551cff1",
+  "executionTrees": {
+    "packages/paperclip-runner/src": "a8123cb4396c77ce0127d5ccf49d3584b63a9a58",
+    "packages/paperclip-runner/scripts": "9ede97769bb3f2bbfa8e02be220b5ce06e438a99",
+    "packages/paperclip-runner/runner": "2cc84e150aecbd5faf2c8bcecc4b6352c24dbca8",
+    "packages/paperclip-runner/protocol": "1d50458fb572d0c75f9a398f419209c52c23ba6f",
+    "patches": "1e2f846b8b2dda202b79ee83baeb0860a3b9ab64",
+    "server/src": "b267adc1e0ad36955b68314829cfd4256ab88d37",
+    "tests/runner-e2e": "5ff4b8a85a14e3e005e3e240c145899c0bc742b5"
+  },
+  "environment": {
+    "platform": "darwin",
+    "architecture": "arm64",
+    "execution": "local"
+  },
+  "caseId": "extended-harnesses.runner-acpx-pi.local.hello-complete",
+  "status": "passed",
+  "failureClass": null,
+  "canonicalDurationMs": 32668,
+  "supervisedDurationSeconds": 49.539,
+  "supervisedWallDurationSeconds": 49.539,
+  "agentRunDurationMs": 25621,
+  "configuredModel": "openrouter/deepseek/deepseek-v4-flash-0731",
+  "biller": "openrouter",
+  "runtimeMode": "native",
+  "matchers": [
+    {
+      "kind": "message_exact",
+      "passed": true,
+      "detail": "matched"
+    },
+    {
+      "kind": "message_occurrences",
+      "passed": true,
+      "detail": "matched"
+    },
+    {
+      "kind": "issue_status",
+      "passed": true,
+      "detail": "matched"
+    },
+    {
+      "kind": "run_status",
+      "passed": true,
+      "detail": "matched"
+    },
+    {
+      "kind": "runtime_mode",
+      "passed": true,
+      "detail": "matched"
+    },
+    {
+      "kind": "environment",
+      "passed": true,
+      "detail": "matched"
+    }
+  ],
+  "semanticTools": [
+    {
+      "name": "mcp__paperclip__paperclip_finish",
+      "result": "completed"
+    }
+  ],
+  "terminal": {
+    "schema": "paperclip.prp.terminal.v1",
+    "runTerminalState": "succeeded",
+    "turnTerminalState": "completed",
+    "reportedWorkDisposition": "done"
+  },
+  "usage": {
+    "inputTokens": 26867,
+    "outputTokens": 283,
+    "cachedInputTokens": 0,
+    "usageSource": "per_run",
+    "costStatus": "unpriced",
+    "billingType": "unknown"
+  },
+  "cost": {
+    "providerReportedUsd": null,
+    "catalogEstimateUsd": 0.00384062,
+    "catalogEstimateProvenance": "Pi assistant message receipts priced by its model catalog; estimate notice explicitly marks billing unverified",
+    "measuredExclusiveKeyDeltaUsd": 0.000654767,
+    "canonicalBillingComplete": false,
+    "billingCoverage": "two spaced post-attempt OpenRouter key usage observations"
+  },
+  "cleanup": "passed",
+  "evidenceScan": {
+    "leaks": [],
+    "missing": []
+  },
+  "sourceModelVerification": {
+    "mandatoryAdmissionGate": "requireVerifiedAcpxModel compares actual ACP currentModelId before accepting a prompt",
+    "retainedProductModelMetadata": "unknown/openrouter at session.started; final usage carries configured exact model",
+    "separateAuthenticatedNoPromptProof": "model-admission-proof.darwin-arm64.json"
+  },
+  "qualificationStatus": "pending",
+  "supervision": {
+    "reservationUsd": 2,
+    "billingWatchdogUsd": 0.5,
+    "activeTimeoutSeconds": 120,
+    "outerTimeoutSeconds": 300,
+    "outerClocks": [
+      "wall",
+      "monotonic"
+    ],
+    "sleepAssertion": "caffeinate -i",
+    "automaticRetries": 0
+  },
+  "publicationBoundary": {
+    "credentialsIncluded": false,
+    "privateReasoningIncluded": false,
+    "rawTranscriptsIncluded": false,
+    "providerSessionIdsIncluded": false
+  },
+  "limitations": [
+    "This is one local hello-complete journey, not full provider qualification.",
+    "Dollar usage remains unpriced in Product; independent key-delta billing is retained separately.",
+    "File, question, plan, restart, active steering and Daytona are not proven by this case."
+  ]
+}

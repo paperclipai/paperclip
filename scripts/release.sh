@@ -223,6 +223,10 @@ fi
 require_clean_worktree
 require_npm_publish_auth "$dry_run"
 
+if [ "$channel" = "beta" ] || [ "$channel" = "stable" ]; then
+  require_runner_lockfile_current
+fi
+
 if [ "$channel" = "stable" ] && [ "$dry_run" = false ] && [ ! -f "$NOTES_FILE" ]; then
   release_fail "stable release notes file is required at $NOTES_FILE before publishing stable."
 fi
@@ -284,6 +288,20 @@ release_info ""
 release_info "==> Step 2/7: Building workspace artifacts..."
 cd "$REPO_ROOT"
 pnpm build
+if [ -n "${PAPERCLIP_RELEASE_RUNNER_ARTIFACTS_DIR:-}" ]; then
+  pack_args=()
+  if [ -n "${PAPERCLIP_RELEASE_PROVIDER_PACK_ARTIFACTS_DIR:-}" ]; then
+    pack_args=("$PAPERCLIP_RELEASE_PROVIDER_PACK_ARTIFACTS_DIR")
+  fi
+  node "$REPO_ROOT/packages/paperclip-runner/scripts/stage-release-runner-binaries.mjs" \
+    assemble-daemons "$PAPERCLIP_RELEASE_RUNNER_ARTIFACTS_DIR" "$(git rev-parse HEAD)" "${pack_args[@]}"
+  cp -R "$REPO_ROOT/packages/paperclip-runner/dist/bin/." "$REPO_ROOT/server/dist/vendor/paperclip-runner/bin/"
+  if [ -d "$REPO_ROOT/packages/paperclip-runner/dist/remote-provider-packs" ]; then
+    cp -R "$REPO_ROOT/packages/paperclip-runner/dist/remote-provider-packs" "$REPO_ROOT/server/dist/vendor/paperclip-runner/"
+  fi
+elif [ "$dry_run" = false ]; then
+  release_fail "Public releases require the four hosted runner daemon artifacts; use the supported Release workflow."
+fi
 node "$REPO_ROOT/scripts/build-standalone-public-packages.mjs"
 bash "$REPO_ROOT/scripts/prepare-server-ui-dist.sh"
 for pkg_dir in server packages/adapters/claude-local packages/adapters/codex-local; do

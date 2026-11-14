@@ -26,6 +26,8 @@ export function startServiceWorkerUpdates(
     documentRef?: Document;
     reload?: () => void;
     updateIntervalMs?: number;
+    canReload?: () => boolean;
+    subscribeReloadSafety?: (listener: () => void) => () => void;
   } = {},
 ): () => void {
   const container =
@@ -51,6 +53,10 @@ export function startServiceWorkerUpdates(
   let reloadPending = false;
   const applyUpdate = () => {
     if (reloaded) return;
+    if (documentRef.visibilityState !== "hidden" || options.canReload?.() === false) {
+      reloadPending = true;
+      return;
+    }
     reloaded = true;
     reload();
   };
@@ -66,6 +72,9 @@ export function startServiceWorkerUpdates(
     }
   };
   container.addEventListener("controllerchange", onControllerChange);
+  const unsubscribeReloadSafety = options.subscribeReloadSafety?.(() => {
+    if (reloadPending) applyUpdate();
+  });
 
   let registration: ServiceWorkerRegistration | undefined;
   const checkForUpdates = () => {
@@ -97,5 +106,6 @@ export function startServiceWorkerUpdates(
     container.removeEventListener("controllerchange", onControllerChange);
     documentRef.removeEventListener("visibilitychange", onVisibilityChange);
     clearInterval(intervalId);
+    unsubscribeReloadSafety?.();
   };
 }

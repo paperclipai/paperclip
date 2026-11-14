@@ -1,17 +1,22 @@
+import { updateAgentConfigurationInTransaction } from "./agent-configuration-transaction.js";
+import { currentPluginInteractionOrigin } from "./plugin-interaction-context.js";
+import { extractAgentMentionIds } from "@paperclipai/shared";
+import { assertAgentInteraction } from "./agent-interaction-policy.js";
 import { createHash } from "node:crypto";
 import fs from "node:fs/promises";
 import { cachedAgentFileManifest, checkpointSnapshot, type AgentFileManifest } from "./agent-file-checkpoints.js";
 import { constants } from "node:fs";
 import { Readable } from "node:stream";
 import path from "node:path";
-import { and, eq } from "drizzle-orm";
-import { agents, activityLog, agentInstructionHeads, agentInstructionRevisions, type Db } from "@paperclipai/db";
+import { and, desc, eq, isNull, sql } from "drizzle-orm";
+import { agents, activityLog, agentInstructionHeads, agentInstructionRevisions, resourceLifecycleEvents, fileStorageDb, type Db } from "@paperclipai/db";
 import { captureDirectorySnapshot, mergeDirectoryWithBaseline, type DirectorySnapshot } from "@paperclipai/adapter-utils/workspace-restore-merge";
 import { HttpError, conflict, notFound, unprocessable } from "../errors.js";
 import { authorizeInstructionCommit, authorizeInstructionRead } from "./agent-instruction-authorization.js";
 import { assertInstructionPathSafe, instructionPath, instructionBytes, materializeInstructionBytes, readInstructionBytes, MAX_INSTRUCTION_BYTES } from "./agent-instruction-files.js";
 import { agentInstructionsBundleMode, deriveBundleState, resolveManagedInstructionsRoot } from "./agent-instructions.js";
 import type { AuthorizationActor } from "./authorization.js";
+import { agentFileProjectionCurrent, durableAgentFilesEnabled, invalidateAgentFileProjection, persistDurableAgentFiles, restoreDurableAgentFiles, uploadAgentFilesBeforeCommit, type PreparedAgentFileObjects } from "./agent-file-durability.js";
 
 type Tx = Parameters<Parameters<Db["transaction"]>[0]>[0];
 type Agent = typeof agents.$inferSelect;
@@ -60,11 +65,17 @@ export function agentFileTokenFromHash(h: string): string {
   return `${h.slice(0, 8)}-${h.slice(8, 12)}-8${h.slice(13, 16)}-a${h.slice(17, 20)}-${h.slice(20, 32)}`;
 }
 
-/** Call under the agent row lock. Import deployed revision heads once, then the
- * directory is authoritative. The adoption marker lives OUTSIDE agent files. */
+/** Call under the agent row lock. Restore shared authority first; legacy local
+ * adoption is allowed only on the server that actually owns the old directory. */
 export async function adoptAgentFiles(tx: Tx, agent: Agent): Promise<string> {
   if (agentInstructionsBundleMode(agent) === "external") throw unprocessable("External instructions must be migrated to managed storage first");
   const root = resolveManagedInstructionsRoot(agent);
+  if (await restoreDurableAgentFiles(tx, agent, root)) return root;
+  const storedRoot = agent.adapterConfig.instructionsRootPath;
+  if (durableAgentFilesEnabled() && typeof storedRoot === "string"
+    && (path.resolve(storedRoot) !== root || !await readInstructionBytes(root, deriveBundleState(agent).entryFile))) {
+    throw new HttpError(503, "Migrate managed agent files on their current server before replacing its filesystem", { code: "AGENT_FILES_MIGRATION_REQUIRED" });
+  }
   const markerRoot = path.join(path.dirname(root), "file-sync");
   const marker = "adopted.json";
   await assertInstructionPathSafe(root, deriveBundleState(agent).entryFile);
@@ -76,6 +87,7 @@ export async function adoptAgentFiles(tx: Tx, agent: Agent): Promise<string> {
   });
   if (adopted !== null) {
     if (JSON.parse(adopted).schema !== AGENT_FILES_CONTRACT) throw new Error("Unsupported agent file contract");
+    await persistDurableAgentFiles(tx, agent, root, true);
     return root;
   }
   const legacy = await tx.select({ entryFile: agentInstructionHeads.entryFile, contentBase64: agentInstructionRevisions.contentBase64 })
@@ -83,6 +95,7 @@ export async function adoptAgentFiles(tx: Tx, agent: Agent): Promise<string> {
     .where(and(eq(agentInstructionHeads.companyId, agent.companyId), eq(agentInstructionHeads.agentId, agent.id)));
   for (const entry of legacy) await materializeInstructionBytes(root, entry.entryFile, Buffer.from(entry.contentBase64, "base64"));
   await materializeInstructionBytes(markerRoot, marker, Buffer.from(JSON.stringify({ schema: AGENT_FILES_CONTRACT })));
+  await persistDurableAgentFiles(tx, agent, root, true);
   return root;
 }
 
@@ -161,25 +174,89 @@ export async function snapshotAgentFiles(root: string, enforceLimits = true): Pr
   return (await inspectAgentDirectory(root, enforceLimits)).snapshot;
 }
 
+export async function isAgentFileSaveRecorded(tx: Tx, agent: Agent, relative: string, contentHash: string | null): Promise<boolean> {
+  if (agent.status === "pending_approval" || agent.status === "terminated") return true;
+  const [latest] = await tx.select({ id: resourceLifecycleEvents.id }).from(resourceLifecycleEvents)
+    .where(and(eq(resourceLifecycleEvents.companyId, agent.companyId), eq(resourceLifecycleEvents.resourceType, "agent_runtime"), eq(resourceLifecycleEvents.resourceId, agent.id)))
+    .orderBy(desc(resourceLifecycleEvents.id)).limit(1);
+  if (!latest) return false;
+  const hash = sql<string>`${activityLog.details}->>'contentHash'`;
+  const [recorded] = await tx.select({ id: activityLog.id }).from(activityLog)
+    .innerJoin(resourceLifecycleEvents, and(eq(resourceLifecycleEvents.id, latest.id), eq(activityLog.createdAt, resourceLifecycleEvents.createdAt))).where(and(
+    eq(activityLog.companyId, agent.companyId), eq(activityLog.entityType, "agent"), eq(activityLog.entityId, agent.id), eq(activityLog.action, "agent.files_updated"),
+    eq(sql<string>`${activityLog.details}->>'agentRuntimeRevision'`, String(latest.id)),
+    eq(sql<string>`${activityLog.details}->>'path'`, relative), contentHash === null ? isNull(hash) : eq(hash, contentHash),
+  )).limit(1);
+  return Boolean(recorded);
+}
+
 export function agentFileStore(db: Db) {
+  db = fileStorageDb(db);
   async function locked<T>(companyId: string, agentId: string, actor: AuthorizationActor, write: boolean,
-    fn: (tx: Tx, agent: Agent, root: string, bound: AuthorizationActor) => Promise<T>) {
+    fn: (tx: Tx, agent: Agent, root: string, bound: AuthorizationActor, onRollback: (restore: () => Promise<void>) => void) => Promise<T>, texts: string[] = [],
+    prepared?: PreparedAgentFileObjects) {
     return db.transaction(async tx => {
+      if (write) await assertAgentInteraction(tx, { companyId, actorAgentId: actor.type === "agent" ? actor.agentId : null,
+        operation: "configure", targetAgentId: agentId, lockAgentIds: texts.flatMap(extractAgentMentionIds), lock: "update" });
       const [agent] = await tx.select().from(agents).where(and(eq(agents.companyId, companyId), eq(agents.id, agentId))).for("update");
       if (!agent) throw notFound("Agent not found");
       const bound = write ? await authorizeInstructionCommit(tx, actor, agent) : await authorizeInstructionRead(tx, actor, agent);
       const root = await adoptAgentFiles(tx, agent);
-      return fn(tx, agent, root, bound);
+      if (write) await invalidateAgentFileProjection(root);
+      let restore: (() => Promise<void>) | undefined;
+      try {
+        const result = await fn(tx, agent, root, bound, callback => { restore = callback; });
+        if (write) await persistDurableAgentFiles(tx, agent, root, false, prepared);
+        return result;
+      } catch (error) {
+        await restore?.();
+        throw error;
+      }
     });
   }
   async function audit(tx: Tx, agent: Agent, actor: AuthorizationActor, details: Record<string, unknown>) {
-    await tx.insert(activityLog).values({ companyId: agent.companyId, actorType: actor.type === "board" ? "user" : "agent",
-      actorId: (actor.type === "board" ? actor.userId : actor.agentId)!, agentId: actor.type === "agent" ? actor.agentId : null,
-      runId: actor.runId, responsibleUserId: actor.type === "board" ? actor.userId : actor.onBehalfOfUserId,
+    const origin = currentPluginInteractionOrigin();
+    await tx.insert(activityLog).values({ companyId: agent.companyId, actorType: origin ? "agent" : actor.type === "board" ? "user" : "agent",
+      actorId: origin?.agentId ?? (actor.type === "board" ? actor.userId : actor.agentId)!, agentId: origin?.agentId ?? (actor.type === "agent" ? actor.agentId : null),
+      runId: origin ? origin.runId : actor.runId, responsibleUserId: origin ? null : actor.type === "board" ? actor.userId : actor.onBehalfOfUserId,
       action: "agent.files_updated", entityType: "agent", entityId: agent.id, details });
+  }
+  /** The write authorization of `locked`, without the row lock or the file
+   * tree, in a transaction that always rolls back. It writes nothing: an
+   * accepted change confirmation stays unconsumed, so only the locked commit
+   * of a save consumes it. It is enough for a save that changes no file, and
+   * it stops a save that will be refused before that save uploads any bytes. */
+  async function authorizeSave(companyId: string, agentId: string, actor: AuthorizationActor) {
+    const rollback = Symbol("authorization preview");
+    await db.transaction(async tx => {
+      await assertAgentInteraction(tx, { companyId, actorAgentId: actor.type === "agent" ? actor.agentId : null,
+        operation: "configure", targetAgentId: agentId });
+      const [agent] = await tx.select().from(agents).where(and(eq(agents.companyId, companyId), eq(agents.id, agentId)));
+      if (!agent) throw notFound("Agent not found");
+      await authorizeInstructionCommit(tx, actor, agent);
+      throw rollback;
+    }).catch(error => { if (error !== rollback) throw error; });
+  }
+  /**
+   * The save of a run that changed no file. When the locked file-tree step
+   * would change nothing (see `agentFileProjectionCurrent`), only the
+   * read-only authorization runs, without the row lock. Otherwise the locked
+   * write runs as for any save, so it adopts, restores or heals the durable
+   * head exactly as before.
+   */
+  async function saveUnchanged(companyId: string, agentId: string, actor: AuthorizationActor) {
+    const [agent] = await db.select().from(agents).where(and(eq(agents.companyId, companyId), eq(agents.id, agentId)));
+    if (agent && agentInstructionsBundleMode(agent) !== "external"
+      && await agentFileProjectionCurrent(db, agent, resolveManagedInstructionsRoot(agent))) {
+      await authorizeSave(companyId, agentId, actor);
+      return;
+    }
+    await locked(companyId, agentId, actor, true, async () => undefined);
   }
   return {
     locked,
+    authorizeSave,
+    saveUnchanged,
     download: async (companyId: string, agentId: string, relative: string, actor: AuthorizationActor) => {
       const opened: { file: Awaited<ReturnType<typeof openAgentFile>> } = { file: null };
       try {
@@ -196,6 +273,46 @@ export function agentFileStore(db: Db) {
     },
     read: (companyId: string, agentId: string, relative: string, actor: AuthorizationActor) =>
       locked(companyId, agentId, actor, false, (_tx, _agent, root) => readAgentFile(root, instructionPath(relative))),
+    rename: (input: { companyId: string; agentId: string; path: string; renameTo: string; bytes: Buffer; baseHash: string | null }, actor: AuthorizationActor) =>
+      locked(input.companyId, input.agentId, actor, true, async (tx, agent, root, bound, onRollback) => {
+        const source = agentFilePath(input.path);
+        const target = agentFilePath(input.renameTo);
+        if (source === target) throw unprocessable("Choose a different file name");
+        instructionBytes(input.bytes);
+        const previous = await inspectAgentFile(root, source);
+        const isRoot = deriveBundleState(agent).entryFile === source;
+        if ((!previous && !isRoot) || (previous?.hash ?? null) !== input.baseHash) {
+          throw conflict("This file changed since it was read. Reload before renaming.", { code: "AGENT_FILE_CONFLICT", path: source, currentHash: previous?.hash ?? null });
+        }
+        if (previous && !previous.bytes) throw unprocessable("This file is too large to rename in the editor");
+        const snapshot = await scanAgentFiles(root);
+        if ([...snapshot.entries].some(name => name.toLowerCase() === target.toLowerCase())) throw conflict("A file with this name already exists");
+        const newEntries = target.split("/").map((_part, i, parts) => parts.slice(0, i + 1).join("/")).filter(name => !snapshot.entries.has(name)).length;
+        assertDirectorySize(snapshot.size - (previous?.size ?? 0) + input.bytes.length, snapshot.entries.size - (previous ? 1 : 0) + newEntries);
+        await assertAgentInteraction(tx, { companyId: input.companyId, actorAgentId: bound.type === "agent" ? bound.agentId : null,
+          operation: "mention", texts: [input.bytes.toString("utf8")] });
+        const sourcePath = await assertInstructionPathSafe(root, source);
+        const targetPath = await assertInstructionPathSafe(root, target);
+        onRollback(async () => {
+          if (previous?.bytes) await materializeInstructionBytes(root, source, previous.bytes);
+          await fs.rm(targetPath, { force: true });
+          await invalidateAgentFileProjection(root);
+        });
+        await materializeInstructionBytes(root, target, input.bytes);
+        if (previous) await fs.unlink(sourcePath);
+        if (isRoot) {
+          await updateAgentConfigurationInTransaction(tx as unknown as Db, agent.id, {
+            adapterConfig: { ...agent.adapterConfig, instructionsBundleMode: "managed",
+              instructionsRootPath: root, instructionsEntryFile: target, instructionsFilePath: path.join(root, target) },
+          }, { allowPendingApprovalConfigUpdate: true, recordRevision: {
+            createdByAgentId: bound.type === "agent" ? bound.agentId : null,
+            createdByUserId: bound.type === "board" ? bound.userId : null,
+            source: "instructions_rename",
+          } });
+        }
+        await audit(tx, agent, bound, { path: source, contentHash: null, renamedTo: target });
+        await audit(tx, agent, bound, { path: target, contentHash: fileHash(input.bytes), created: true, renamedFrom: source });
+      }, [input.bytes.toString("utf8")]),
     write: (input: { companyId: string; agentId: string; path: string; bytes: Buffer | null; baseHash: string | null }, actor: AuthorizationActor) =>
       locked(input.companyId, input.agentId, actor, true, async (tx, agent, root, bound) => {
         const relative = agentFilePath(input.path);
@@ -203,7 +320,14 @@ export function agentFileStore(db: Db) {
         const previous = await inspectAgentFile(root, relative);
         const currentHash = previous?.hash ?? null;
         const incomingHash = input.bytes === null ? null : fileHash(input.bytes);
-        if (currentHash === incomingHash) return { contentHash: currentHash, changed: false };
+        if (currentHash === incomingHash) {
+          if (!await isAgentFileSaveRecorded(tx, agent, relative, incomingHash)) await audit(tx, agent, bound, { path: relative, contentHash: incomingHash });
+          return { contentHash: currentHash, changed: false };
+        }
+        if (input.bytes && input.bytes.length <= MAX_INSTRUCTION_BYTES) {
+          await assertAgentInteraction(tx, { companyId: input.companyId, actorAgentId: bound.type === "agent" ? bound.agentId : null,
+            operation: "mention", texts: [input.bytes.toString("utf8")] });
+        }
         if (currentHash !== input.baseHash) throw conflict("This file changed since it was read. Reload before saving.", { code: "AGENT_FILE_CONFLICT", path: relative, currentHash });
         if (input.bytes === null && relative === deriveBundleState(agent).entryFile) throw unprocessable("The configured instruction entry cannot be deleted");
         if (input.bytes !== null) {
@@ -217,12 +341,33 @@ export function agentFileStore(db: Db) {
         }
         if (input.bytes === null) await fs.unlink(await assertInstructionPathSafe(root, relative));
         else await materializeInstructionBytes(root, relative, input.bytes);
-        await audit(tx, agent, bound, { path: relative, contentHash: incomingHash });
+        await audit(tx, agent, bound, { path: relative, contentHash: incomingHash, created: previous === null && input.bytes !== null });
         return { contentHash: incomingHash, changed: true };
-      }),
-    apply: (input: { companyId: string; agentId: string; sourceDir: string; baseline: DirectorySnapshot; checkpoint?: AgentFileManifest }, actor: AuthorizationActor) =>
-      locked(input.companyId, input.agentId, actor, true, async (tx, agent, root, bound) => {
-        const incoming = input.checkpoint ? checkpointSnapshot(input.checkpoint) : await snapshotAgentFiles(input.sourceDir);
+      }, input.bytes && input.bytes.length <= MAX_INSTRUCTION_BYTES ? [input.bytes.toString("utf8")] : []),
+    apply: async (input: { companyId: string; agentId: string; sourceDir: string; baseline: DirectorySnapshot; checkpoint?: AgentFileManifest }, actor: AuthorizationActor) => {
+      const incoming = input.checkpoint ? checkpointSnapshot(input.checkpoint) : await snapshotAgentFiles(input.sourceDir);
+      const [target] = await db.select().from(agents).where(and(eq(agents.companyId, input.companyId), eq(agents.id, input.agentId)));
+      if (!target) throw notFound("Agent not found");
+      const requestedEntry = deriveBundleState(target).entryFile;
+      const changedMentions = new Map<string, { hash: string; text: string }>();
+      if (actor.type === "agent" || currentPluginInteractionOrigin()) {
+        for (const [name, entry] of incoming.entries) {
+          if (entry.kind !== "file" || JSON.stringify(entry) === JSON.stringify(input.baseline.entries.get(name))) continue;
+          if ((await fs.stat(await assertInstructionPathSafe(input.sourceDir, name))).size > MAX_INSTRUCTION_BYTES) continue;
+          const bytes = (await inspectAgentFile(input.sourceDir, name))?.bytes;
+          const mentions = bytes ? extractAgentMentionIds(bytes.toString("utf8")) : [];
+          if (mentions.length) changedMentions.set(name, { hash: fileHash(bytes!), text: mentions.map(id => `[@agent](agent://${id})`).join(" ") });
+        }
+      }
+      // Upload the run's changed bytes before the row lock, after a preview of
+      // the same write authorization. The commit below runs that authorization,
+      // validates the tree and records only objects with matching digests.
+      if (input.checkpoint) await authorizeSave(input.companyId, input.agentId, actor);
+      const prepared = input.checkpoint ? await uploadAgentFilesBeforeCommit(db, target, input.sourceDir, input.checkpoint.entries
+        .filter(([name, entry]) => entry.kind === "file" && JSON.stringify(incoming.entries.get(name)) !== JSON.stringify(input.baseline.entries.get(name)))
+        .map(([name, entry]) => ({ path: name, size: entry.size!, sha256: entry.hash! }))) : undefined;
+      return locked(input.companyId, input.agentId, actor, true, async (tx, agent, root, bound) => {
+        if (deriveBundleState(agent).entryFile !== requestedEntry) throw conflict("Agent instructions entry changed; retry the file synchronization");
         const entryPath = deriveBundleState(agent).entryFile;
         if (incoming.entries.get(entryPath)?.kind !== "file") throw unprocessable("The configured instruction entry cannot be deleted");
         if (!input.checkpoint || JSON.stringify(incoming.entries.get(entryPath)) !== JSON.stringify(input.baseline.entries.get(entryPath))) {
@@ -234,6 +379,12 @@ export function agentFileStore(db: Db) {
         // over quota. Enforce limits on the incoming and resulting tree so a
         // run can delete files to recover instead of being locked out forever.
         const current = input.checkpoint ? checkpointSnapshot(await cachedAgentFileManifest(root)) : await snapshotAgentFiles(root, false);
+        const texts = [...changedMentions].flatMap(([name, value]) => {
+          const prior = current.entries.get(name);
+          return prior?.kind === "file" && prior.hash === value.hash ? [] : [value.text];
+        });
+        await assertAgentInteraction(tx, { companyId: input.companyId, actorAgentId: bound.type === "agent" ? bound.agentId : null,
+          operation: "mention", texts });
         // Rebase only the run's changed paths onto the current tree. This makes
         // same-file edits/deletions last-sync-wins while untouched files retain
         // changes from other runs. Ancestors may need recreating after a writer
@@ -281,8 +432,9 @@ export function agentFileStore(db: Db) {
         assertDirectorySize(total, finalEntries.size);
         await mergeDirectoryWithBaseline({ ...input, baseline: applyBaseline, targetDir: root,
           ...(input.checkpoint ? { snapshots: { source: incoming, current } } : {}) });
-        await audit(tx, agent, bound, { sourceRunId: actor.runId, contract: AGENT_FILES_CONTRACT });
+        await audit(tx, agent, bound, { sourceRunId: currentPluginInteractionOrigin()?.runId ?? actor.runId, contract: AGENT_FILES_CONTRACT });
         return { storageWarning: storageWarning(total, finalEntries.size, fullFile) };
-      }),
+      }, [...changedMentions.values()].map(value => value.text), prepared);
+    },
   };
 }

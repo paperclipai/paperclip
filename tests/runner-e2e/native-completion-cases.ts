@@ -38,7 +38,7 @@ export const nativeCompletionTasks: readonly RunnerTaskFixture[] = [
 ];
 export function nativeCompletionDefinitionDigest() {
   const hash = createHash("sha256");
-  for (const file of ["native-completion-cases.ts", "native-completion-scoring.ts", "native-completion-defaults.ts",
+  for (const file of ["native-completion-cases.ts", "native-completion-scoring.ts", "native-completion-content.ts", "native-completion-defaults.ts",
     "native-blocker-visible.ts", "native-completion-admission.ts", "native-completion-checks.mjs",
     "native-completion-source-contract.mjs", "automatic-retry.ts", "context-integrity-cases.ts", "context-integrity-flow.ts", "context-integrity-scoring.ts", "types.ts", "catalog.ts", "live-fixtures.ts", "runner.spec.ts", "launch.ts"]) {
     hash.update(file); hash.update(readFileSync(new URL(file, import.meta.url)));

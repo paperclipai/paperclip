@@ -60,6 +60,33 @@ export const chatGitHubRegistrations = pgTable(
     userId: text("user_id").notNull(),
     stateHash: text("state_hash").notNull(),
     trustedOrigin: text("trusted_origin").notNull(),
+    ownerType: text("owner_type")
+      .$type<"personal" | "organization">()
+      .notNull()
+      .default("personal"),
+    ownerLogin: text("owner_login"),
+    appName: text("app_name"),
+    handoff: jsonb("handoff").$type<{
+      cloudId: string;
+      redemptionId: string;
+      returnState: string;
+      webhookSecretHash?: string;
+      renewalOf?: string;
+      manifestClaimId?: string;
+      identityLeaseId?: string;
+      identityLeaseExpiresAt?: string;
+      browserSessionId?: string;
+      identitySessionId?: string;
+      identityStateHash?: string;
+      identityExpiresAt?: string;
+      identityRedemptionId?: string;
+      identity?: {
+        githubUserId: string;
+        login: string;
+        avatarUrl: string | null;
+        expiresAt: string;
+      };
+    }>(),
     status: text("status")
       .$type<"pending" | "exchanging" | "completed" | "failed">()
       .notNull()
@@ -132,6 +159,9 @@ export const chatGitHubReviews = pgTable(
   },
   (t) => [
     unique("chat_github_reviews_company_id_uq").on(t.companyId, t.id),
+    index("chat_github_reviews_projection_work_idx").on(t.id).where(sql`${t.state} in ('queued', 'running')
+      and ${t.assessment} is null
+      and ${t.deliveryId} ~ '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'`),
     foreignKey({
       columns: [t.companyId, t.endpointId],
       foreignColumns: [chatEndpoints.companyId, chatEndpoints.id],

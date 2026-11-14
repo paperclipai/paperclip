@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import type { NativeExecutionInput } from "../contracts/native-execution.js";
+import type { NativeExecutionInput, NativeExecutionInputV1 } from "../contracts/native-execution.js";
 import type {
   NativeRunIdentity,
   NativeSessionCapabilities,
@@ -29,8 +29,8 @@ type ProfileKey = "codex" | "opencode" | "acpx-claude" | "acpx-codex";
 
 interface LocalNativeProfile {
   key: ProfileKey;
-  driverKind: NativeExecutionInput["session"]["driverKind"];
-  provider: NativeExecutionInput["provider"];
+  driverKind: NativeExecutionInputV1["session"]["driverKind"];
+  provider: NativeExecutionInputV1["provider"];
 }
 
 /**
@@ -66,7 +66,7 @@ const RUNNERD_FACADE_PROFILES = [
       profile: {
         driverKind: "acpx_runtime",
         protocolVersion: 1,
-        acpxVersion: "0.13.1",
+        acpxVersion: "0.22.0",
         agent: "claude",
         agentProfileVersion: 1,
         agentServerPackage: "@agentclientprotocol/claude-agent-acp",
@@ -88,7 +88,7 @@ const RUNNERD_FACADE_PROFILES = [
       profile: {
         driverKind: "acpx_runtime",
         protocolVersion: 1,
-        acpxVersion: "0.13.1",
+        acpxVersion: "0.22.0",
         agent: "codex",
         agentProfileVersion: 1,
         agentServerPackage: "@agentclientprotocol/codex-acp",

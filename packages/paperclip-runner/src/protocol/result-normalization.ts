@@ -119,6 +119,12 @@ export function normalizeLegacyPrpStructuredRunResult(value: unknown): unknown {
   const source = record(value);
   if (Object.keys(source).length === 0) return value;
   const normalized: Record<string, unknown> = { ...source };
+  // Some provider transports require all tool properties to be present. Null
+  // explicitly means no continuation; preserve every non-null value so strict
+  // canonical validation still rejects contradictory or malformed waits.
+  if (normalized.continuation === null) {
+    delete normalized.continuation;
+  }
   // Provider tool-callers do not consistently echo constant discriminator
   // fields even when they are present in the advertised JSON schema. The
   // transport already selected the semantic-result tool, so adding its

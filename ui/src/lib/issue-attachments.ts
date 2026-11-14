@@ -1,6 +1,8 @@
 import type { IssueAttachment } from "@paperclipai/shared";
 import { isMarkdownAttachmentContent } from "@paperclipai/shared";
 import { isImageLikeOutput, isVideoLikeOutput } from "./issue-output";
+import { isPatchFile } from "./patch";
+import { isHtmlPreview } from "./html-preview";
 
 type AttachmentPathLike = {
   contentPath: string;
@@ -47,7 +49,9 @@ export function isTextAttachment(attachment: {
 }) {
   const type = attachment.contentType.toLowerCase().split(";")[0].trim();
   return isMarkdownAttachmentContent(attachment)
+    || isHtmlPreview(type, attachment.originalFilename)
     || type.startsWith("text/")
+    || (["", "application/octet-stream"].includes(type) && isPatchFile(attachment.originalFilename))
     || /^(application\/(json|xml|javascript|x-yaml|yaml)|application\/[\w.-]+\+json)$/.test(type)
     || (["", "application/octet-stream"].includes(type)
       && /\.(txt|log|csv|json|yaml|yml|toml|ini|sh|ts|tsx|js|jsx|py|css|html)$/i.test(attachment.originalFilename ?? ""));

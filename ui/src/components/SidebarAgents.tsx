@@ -1,3 +1,5 @@
+import { usePrimaryAgentPresentation } from "@/components/primary-agent/PrimaryAgentPresentation";
+import { isWaitingToStart } from "../lib/agent-queue-wait";
 import { AgentAvatar } from "@/components/AgentAvatar";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link, useLocation } from "@/lib/router";
@@ -300,6 +302,7 @@ export function SidebarAgents({ streamlined = false }: { streamlined?: boolean }
   const lastSeenLiveAtRef = useRef<Map<string, number>>(new Map());
   const queryClient = useQueryClient();
   const { selectedCompanyId } = useCompany();
+  const primary = usePrimaryAgentPresentation(selectedCompanyId);
   const { openNewAgent } = useDialogActions();
   const { isMobile, setSidebarOpen, collapsed, peeking } = useSidebar();
   const rail = collapsed && !peeking;
@@ -357,18 +360,17 @@ export function SidebarAgents({ streamlined = false }: { streamlined?: boolean }
 
   const liveCountByAgent = useMemo(() => {
     const counts = new Map<string, number>();
+    // "N live" counts work that started; queued runs only wait for a slot.
     for (const run of liveRuns ?? []) {
+      if (isWaitingToStart(run)) continue;
       counts.set(run.agentId, (counts.get(run.agentId) ?? 0) + 1);
     }
     return counts;
   }, [liveRuns]);
-  const liveAgentIds = useMemo(() => {
-    const ids = new Set<string>();
-    for (const [agentId, count] of liveCountByAgent) {
-      if (count > 0) ids.add(agentId);
-    }
-    return ids;
-  }, [liveCountByAgent]);
+  const liveAgentIds = useMemo(
+    () => new Set((liveRuns ?? []).map((run) => run.agentId)),
+    [liveRuns],
+  );
 
   const visibleAgents = useMemo(() => {
     const filtered = (agents ?? []).filter(
@@ -608,6 +610,10 @@ export function SidebarAgents({ streamlined = false }: { streamlined?: boolean }
     [displayedAgents, starredAgentIdSet],
   );
 
+  const primaryAgent = primary && !primary.loading
+    ? visibleAgents.find(agent => agent.id === primary.primaryAgentId)
+    : undefined;
+
   const renderAgentRow = (agent: Agent, isStarredRow: boolean) => (
     <SidebarAgentItem
       key={agent.id}
@@ -650,8 +656,11 @@ export function SidebarAgents({ streamlined = false }: { streamlined?: boolean }
         onRadioValueChange: persistSortMode,
       }}
     >
-      {starredAgents.map((agent: Agent) => renderAgentRow(agent, true))}
-      {dedupedDisplayedAgents.map((agent: Agent) => renderAgentRow(agent, false))}
+      {[
+        ...(primaryAgent ? [primaryAgent] : []),
+        ...starredAgents.filter(agent => agent.id !== primaryAgent?.id),
+        ...dedupedDisplayedAgents.filter(agent => agent.id !== primaryAgent?.id),
+      ].map(agent => renderAgentRow(agent, starredAgentIdSet.has(agent.id)))}
       {showSeeAllLink && (() => {
         // Deliberately NOT a SidebarNavItem: this is a quiet muted affordance
         // (plain Link) that must not adopt nav-row active-route highlighting.

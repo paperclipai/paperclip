@@ -40,12 +40,12 @@ export interface NativeDefaultReceipt {
   budgets: { company: unknown; agent: unknown };
 }
 
-export function gradeNativeDefault(receipt: NativeDefaultReceipt) {
+export function gradeNativeDefault(receipt: NativeDefaultReceipt, expectedDefaultSha256 = NATIVE_MASTER_DEFAULT_SHA256) {
   const checks = [
     { id: "production-default-bundle", passed: receipt.entryFile === "AGENTS.md"
       && receipt.files.length === 1 && receipt.files[0]?.path === "AGENTS.md"
-      && receipt.files[0]?.sha256 === NATIVE_MASTER_DEFAULT_SHA256,
-    detail: "The served public hire bundle is the unchanged master default, with no QA or reduced-manual injection." },
+      && receipt.files[0]?.sha256 === expectedDefaultSha256,
+    detail: "The served public hire bundle matches the declared production default, with no fixture instruction injection." },
     { id: "bounded-company-and-agent", passed: receipt.budgets.company === NATIVE_COMPLETION_BUDGET_CENTS
       && receipt.budgets.agent === NATIVE_COMPLETION_BUDGET_CENTS,
     detail: "Both public budgets enforce the declared 1,000-cent hard stop." },

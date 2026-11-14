@@ -49,5 +49,8 @@
         "name": "OPENROUTER_API_KEY"
       }
     }
+  ],
+  "tags": [
+    "model-provider"
   ]
 }

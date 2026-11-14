@@ -1,13 +1,10 @@
 import { useId, useState } from "react";
 import {
-  ArrowRight,
-  Check,
   Download,
   ExternalLink,
   Loader2,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { SetupWizardFooter } from "@/components/SetupWizard";
 
 export interface SlackAvatarProps {
   agentName: string;
@@ -15,7 +12,7 @@ export interface SlackAvatarProps {
   avatarUrl: string;
 }
 
-/** Shared by Slack onboarding and its Settings page. Slack upload is manual. */
+/** Manual fallback shared by Slack onboarding and its Settings page. */
 export function SlackAvatarContent({
   agentName,
   appName,
@@ -155,53 +152,6 @@ export function SlackAvatarContent({
   );
 }
 
-export function SlackAvatarStep({
-  uploaded,
-  onUploaded,
-  onSkip,
-  onSaveExit,
-  ...props
-}: SlackAvatarProps & {
-  uploaded: boolean;
-  onUploaded: () => void;
-  onSkip: () => void;
-  onSaveExit: () => void;
-}) {
-  return (
-    <div className="space-y-8">
-      <div className="space-y-2">
-        <div className="flex items-center gap-3">
-          <h1 className="text-xl font-bold">
-            Give {props.agentName} a face in Slack
-          </h1>
-          <span className="text-xs text-muted-foreground">Optional</span>
-        </div>
-        <p className="text-sm text-muted-foreground">
-          Use {props.agentName}’s avatar so your team recognizes the agent
-        </p>
-      </div>
-      <SlackAvatarContent {...props} />
-      {uploaded && (
-        <p
-          role="status"
-          className="flex items-center gap-2 rounded-lg bg-(--status-task-done)/10 p-3 text-sm"
-        >
-          <Check className="size-4 text-(--status-task-done)" />
-          You marked the avatar as uploaded in Slack.
-        </p>
-      )}
-      <SetupWizardFooter onSaveExit={onSaveExit}>
-        <Button variant="ghost" onClick={onSkip}>
-          Skip for now
-        </Button>
-        <Button onClick={onUploaded}>
-          {uploaded ? "Continue" : "I’ve uploaded the avatar"}
-          <ArrowRight className="size-4" />
-        </Button>
-      </SetupWizardFooter>
-    </div>
-  );
-}
 
 export function SlackAvatarSettings(props: SlackAvatarProps) {
   return (

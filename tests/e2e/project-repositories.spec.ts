@@ -6,7 +6,7 @@ test("project creation and repository configuration persist on a short mobile vi
   expect(createdCompany.ok()).toBe(true);
   const company = await createdCompany.json();
   await page.goto(`/${company.issuePrefix}/projects`);
-  await page.getByRole("button", { name: "Add Project", exact: true }).first().click();
+  await page.getByRole("button", { name: "Create project", exact: true }).first().click();
   const dialog = page.getByRole("dialog");
   await expect(dialog.getByRole("textbox", { name: "Project name" })).toBeFocused();
   await dialog.getByRole("textbox", { name: "Project name" }).fill("Repository acceptance");
@@ -48,6 +48,7 @@ test("project creation and repository configuration persist on a short mobile vi
   await section.getByRole("button", { name: "Edit", exact: true }).click();
   await section.getByRole("textbox", { name: "Existing repo URL" }).fill("https://git.example/org/updated");
   await section.getByRole("button", { name: "Save URL" }).click();
+  await expect(section.getByText("https://git.example/org/updated", { exact: true })).toBeVisible();
   await page.reload();
   await expect(section.getByText("https://git.example/org/updated", { exact: true })).toBeVisible();
   await expect(page.getByText("Set the KEY to the env var name", { exact: false })).toHaveCount(0);
@@ -67,7 +68,7 @@ test("a short new-project dialog keeps actions visible and rejects unavailable s
   await page.route(`**/api/companies/${company.id}/project-repositories`, (route) => route.fulfill({ json: { repositories: repos, connectionCount: 1, failedConnectionCount: 0 } }));
   await page.setViewportSize({ width: 390, height: 420 });
   await page.goto(`/${company.issuePrefix}/projects`);
-  await page.getByRole("button", { name: "Add Project", exact: true }).first().click();
+  await page.getByRole("button", { name: "Create project", exact: true }).first().click();
   const dialog = page.getByRole("dialog");
   await dialog.getByRole("textbox", { name: "Project name" }).fill("Rejected draft");
   await dialog.getByRole("button", { name: "Add GitHub repo", exact: true }).click();

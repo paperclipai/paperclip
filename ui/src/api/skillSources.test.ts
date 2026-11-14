@@ -53,4 +53,14 @@ describe('live skill source discovery', () => {
     await expect(skillSourcesApi.discoverStream('company-1', input, updates, controller.signal)).rejects.toMatchObject({ name: 'AbortError' });
     expect(fetchMock.mock.calls[0]![1].signal).toBe(controller.signal);
   });
+  it('sends the required disposition and source revision with the delete request', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(Response.json({ id: 'source-1', copiedCount: 0, deletedCount: 2 }));
+    vi.stubGlobal('fetch', fetchMock);
+    await skillSourcesApi.disconnect('company-1', 'source-1', { revision: 7, skills: 'delete' });
+    const [url, init] = fetchMock.mock.calls[0]!;
+    expect(url).toBe('/api/companies/company-1/skill-sources/source-1');
+    expect(init.method).toBe('DELETE');
+    expect(JSON.parse(init.body)).toEqual({ revision: 7, skills: 'delete' });
+  });
+
 });

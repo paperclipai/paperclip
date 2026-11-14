@@ -3,17 +3,16 @@ import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 
 /**
- * The seven OpenTelemetry packages `server/src/instrumentation.ts` loads
- * through a dynamic import. Each one must be an optional peer dependency, not
- * a normal dependency, so a default install never pulls in the SDK. This test
- * guards the manifest half of that contract; `instrumentation.test.ts` guards
- * the runtime half (the bootstrap fails open when a package is absent).
+ * Infrastructure tracing providers and exporters remain optional peers.
+ * Company connection tests use the resource utility and OTLP serializers as
+ * regular dependencies, without creating a provider or enabling tracing.
+ * `instrumentation.test.ts` guards opt-in provider initialization and fail-open
+ * bootstrap when the optional provider packages are absent.
  */
 
 const OPTIONAL_OTEL_PACKAGES = [
   "@opentelemetry/sdk-node",
   "@opentelemetry/auto-instrumentations-node",
-  "@opentelemetry/resources",
   "@opentelemetry/semantic-conventions",
   "@opentelemetry/exporter-trace-otlp-grpc",
   "@opentelemetry/exporter-trace-otlp-proto",
@@ -50,4 +49,11 @@ describe("server package OpenTelemetry peer metadata", () => {
     expect(packageJson.dependencies?.["@opentelemetry/api"]).toBeDefined();
     expect(packageJson.peerDependencies?.["@opentelemetry/api"]).toBeUndefined();
   });
+
+  it.each(["@opentelemetry/resources", "@opentelemetry/otlp-transformer"])(
+    "provides %s for explicit company connection tests",
+    (packageName) => {
+      expect(packageJson.dependencies?.[packageName]).toBeDefined();
+    },
+  );
 });

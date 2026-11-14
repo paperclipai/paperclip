@@ -5,7 +5,7 @@ import { spawnSync } from "node:child_process";
 
 const repoRoot = process.cwd();
 const args = new Set(process.argv.slice(2));
-const allowedArgs = new Set(["--runtime-assets-only"]);
+const allowedArgs = new Set(["--runtime-assets-only", "--list-packages"]);
 
 for (const arg of args) {
   if (!allowedArgs.has(arg)) {
@@ -170,6 +170,11 @@ if (packagesMissingTypecheck.length > 0) {
 const buildGapPackages = buildGapCandidates.filter(
   ({ pkg }) => typeof pkg.scripts?.typecheck === "string",
 );
+
+if (args.has("--list-packages")) {
+  console.log(JSON.stringify(buildGapPackages.map(({ name }) => name)));
+  process.exit(0);
+}
 
 console.log(
   `[typecheck:build-gaps] typechecking ${buildGapPackages.length} workspace(s): ${buildGapPackages.map(({ name }) => name).join(", ") || "(none)"}`,

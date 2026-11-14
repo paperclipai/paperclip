@@ -1,11 +1,13 @@
-import { Link } from "react-router-dom";
+import { useAuthorizationWindow } from "@/hooks/useAuthorizationWindow";
 import { useId, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import type {
   SlackSearchStatus,
   SlackToolCapabilities,
 } from "@paperclipai/shared";
+import { describeError } from "@/api/errors";
 import { slackToolsApi } from "@/api/slackTools";
+import { QueryErrorState, useQueryView } from "@/components/QueryView";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 
@@ -18,16 +20,8 @@ export function SlackCapabilitiesView({
 }) {
   return (
     <section className="space-y-3">
-      <h3 className="text-sm font-semibold">Slack tools</h3>
-      <p className="text-sm">
-        Invite the bot to a channel, then ask it to read the discussion and act
-        on it. Only linked people can direct these tools.
-      </p>
       <p className="text-sm text-muted-foreground">
-        The agent can read channels shared by the bot and the requester, even
-        when responses are disabled there. Allowed Channels below controls
-        replies and writes. Private research stays in its source channel or your
-        DM with the bot.
+        Read, search, and act in Slack. Some actions require approval.
       </p>
       {error && (
         <p role="alert" className="text-sm text-destructive">
@@ -41,20 +35,6 @@ export function SlackCapabilitiesView({
       )}
       {capabilities && (
         <>
-          <ul className="space-y-2 text-sm">
-            <li>
-              Read channels, threads, messages, files and source links; search
-              available channel history.
-            </li>
-            <li>
-              Send messages and files, react, pin, bookmark, and work with
-              canvases and lists.
-            </li>
-            <li>
-              Creating channels, inviting people and destructive changes require
-              approval.
-            </li>
-          </ul>
           {capabilities.missingScopes.length > 0 && (
             <div className="rounded-lg border border-border bg-muted p-3 space-y-2">
               <p className="text-sm font-medium">
@@ -78,37 +58,6 @@ export function SlackCapabilitiesView({
               </p>
             </div>
           )}
-          <details className="text-sm">
-            <summary className="cursor-pointer text-muted-foreground">
-              Tool permissions and availability
-            </summary>
-            <ul className="mt-3 divide-y divide-border">
-              {capabilities.tools.map((tool) => (
-                <li
-                  key={tool.name}
-                  className="flex items-center justify-between gap-3 py-2"
-                >
-                  <span>
-                    {tool.name.replace(/^slack_/, "").replaceAll("_", " ")}
-                  </span>
-                  <span className="text-xs text-muted-foreground">
-                    {tool.available === false
-                      ? "Needs permissions"
-                      : tool.available === null
-                        ? "Not verified"
-                        : tool.risk === "approval"
-                          ? "Ask first"
-                          : "Available"}
-                  </span>
-                </li>
-              ))}
-            </ul>
-          </details>
-          <p className="text-xs text-muted-foreground">
-            Slack plan, membership and per-action permissions still apply.
-            Native search availability depends on the app and runtime; history
-            scans report what they inspected.
-          </p>
         </>
       )}
     </section>
@@ -141,7 +90,7 @@ export function SlackSearchView({
       await action();
     } catch (e) {
       setError(
-        e instanceof Error ? e.message : "Unable to update Slack search",
+        describeError(e).body,
       );
     } finally {
       setPending(false);
@@ -253,31 +202,23 @@ export function SlackSearchView({
 export function SlackToolsSettings({
   companyId,
   endpointId,
-  connectionId,
 }: {
   companyId: string;
   endpointId: string;
-  connectionId?: string | null;
 }) {
   const query = useQuery({
     queryKey: ["slack-capabilities", companyId, endpointId],
     queryFn: () => slackToolsApi.capabilities(companyId, endpointId),
     staleTime: 60_000,
   });
+  const view = useQueryView(query);
   return (
     <div className="space-y-3">
       <SlackCapabilitiesView
         capabilities={query.data}
-        error={query.error?.message}
+        error={view.kind === "error" ? describeError(query.error).body : undefined}
       />
-      {connectionId && (
-        <Link
-          className="text-sm underline underline-offset-4"
-          to={`/apps/${connectionId}/permissions`}
-        >
-          Manage action permissions
-        </Link>
-      )}
+
     </div>
   );
 }
@@ -292,11 +233,16 @@ export function SlackSearchAccess({
     queryKey: ["slack-search", companyId, endpointId],
     queryFn: () => slackToolsApi.search(companyId, endpointId),
   });
-  if (query.error)
+  const authorization = useAuthorizationWindow();
+  const view = useQueryView(query);
+  if (view.kind === "error")
     return (
-      <p role="alert" className="text-sm text-destructive">
-        {query.error.message}
-      </p>
+      <QueryErrorState
+        error={query.error}
+        action="load Slack search access"
+        onRetry={view.retry}
+        retrying={view.isFetching}
+      />
     );
   if (!query.data)
     return (
@@ -304,12 +250,16 @@ export function SlackSearchAccess({
         Loading search access…
       </p>
     );
-  return (
+  return (<>
+    {authorization.fallback}
     <SlackSearchView
       status={query.data}
       onConnect={async () => {
-        const result = await slackToolsApi.connect(companyId, endpointId);
-        window.location.assign(result.url);
+        authorization.reserve();
+        try {
+          const result = await slackToolsApi.connect(companyId, endpointId);
+          await authorization.open(result.url);
+        } catch (error) { authorization.cancel(); throw error; }
       }}
       onDisconnect={async () => {
         await slackToolsApi.disconnect(companyId, endpointId);
@@ -320,5 +270,5 @@ export function SlackSearchAccess({
         await query.refetch();
       }}
     />
-  );
+  </>);
 }

@@ -6,6 +6,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import type { AdapterExecutionContext, AdapterExecutionResult } from "@paperclipai/adapter-utils";
 import {
+  managedRemoteHomeEnvironment,
   adapterExecutionTargetIsRemote,
   adapterExecutionTargetRemoteCwd,
   adapterExecutionTargetSessionIdentity,
@@ -47,7 +48,7 @@ import {
 } from "@paperclipai/adapter-utils/server-utils";
 import { DEFAULT_GROK_LOCAL_MODEL } from "../index.js";
 import { copyBackGrokAuth } from "./grok-auth-copyback.js";
-import { grokHomeHasUsableAuth, resolveManagedGrokHomeDir, stageGrokHomeForSync } from "./grok-home.js";
+import { grokHomeHasSession, grokHomeHasUsableAuth, resolveManagedGrokHomeDir, stageGrokHomeForSync } from "./grok-home.js";
 import { isGrokUnknownSessionError, parseGrokJsonl } from "./parse.js";
 
 const __moduleDir = path.dirname(fileURLToPath(import.meta.url));
@@ -254,6 +255,7 @@ async function executeTurn(ctx: AdapterExecutionContext): Promise<AdapterExecuti
     legacyRemoteExecution: ctx.executionTransport?.remoteExecution,
   });
   const executionTargetIsRemote = adapterExecutionTargetIsRemote(executionTarget);
+  const useSshHostAuth = executionTarget?.kind === "remote" && executionTarget.transport === "ssh" && executionTarget.spec.useHostAuth === true;
 
   const promptTemplate = asString(
     config.promptTemplate,
@@ -311,7 +313,7 @@ async function executeTurn(ctx: AdapterExecutionContext): Promise<AdapterExecuti
   const executeTurn = async (): Promise<AdapterExecutionResult> => {
     const envConfig = parseObject(config.env);
     const env: Record<string, string> = {
-      ...buildPaperclipEnv(agent),
+      ...buildPaperclipEnv(agent, ctx.agentIdentity),
       ...buildRuntimeToolsEnv(ctx.runtimeTools),
     };
     env.PAPERCLIP_RUN_ID = runId;
@@ -377,7 +379,7 @@ async function executeTurn(ctx: AdapterExecutionContext): Promise<AdapterExecuti
       config.managedAiConnection ? env : { ...process.env, ...env },
       "XAI_API_KEY",
     );
-    if (isGrokSubscriptionMode) {
+    if (isGrokSubscriptionMode && !useSshHostAuth) {
       const pinManagedHome =
         executionTargetIsRemote ||
         Boolean(config.managedAiConnection) ||
@@ -413,10 +415,11 @@ async function executeTurn(ctx: AdapterExecutionContext): Promise<AdapterExecuti
       // temp dir and ship THAT as the `home` asset, the same curated-snapshot
       // approach the Codex adapter uses. Subscription mode only: an API-key
       // run authenticates from the environment variable and needs no home.
-      if (isGrokSubscriptionMode) {
+      if (isGrokSubscriptionMode && !useSshHostAuth) {
         stagedGrokHomeDir = await stageGrokHomeForSync(hostGrokHome, { runId });
       }
       const preparedExecutionTargetRuntime = await prepareAdapterExecutionTargetRuntime({
+        privateRuntime: Boolean(config.managedAiConnection),
         runId,
         target: executionTarget,
         adapterKey: "grok",
@@ -471,7 +474,8 @@ async function executeTurn(ctx: AdapterExecutionContext): Promise<AdapterExecuti
       // Set GROK_HOME after the refresh above, so the refresh cannot overwrite
       // it. The fixed fallback path mirrors `prepareAdapterExecutionTargetRuntime`'s
       // own `home` asset layout, in case `assetDirs.home` is absent.
-      if (isGrokSubscriptionMode) {
+      if (executionTarget?.kind === "remote" && executionTarget.transport === "ssh" && executionTarget.spec.useHostAuth === false && config.managedAiConnection && preparedExecutionTargetRuntime.runtimeRootDir) Object.assign(env, managedRemoteHomeEnvironment(preparedExecutionTargetRuntime.runtimeRootDir));
+      if (isGrokSubscriptionMode && !useSshHostAuth) {
         env.GROK_HOME =
           preparedExecutionTargetRuntime.assetDirs.home ??
           path.posix.join(effectiveExecutionCwd, ".paperclip-runtime", "grok", "home");
@@ -501,12 +505,17 @@ async function executeTurn(ctx: AdapterExecutionContext): Promise<AdapterExecuti
     const runtimeSessionId = asString(runtimeSessionParams.sessionId, runtime.sessionId ?? "");
     const runtimeSessionCwd = asString(runtimeSessionParams.cwd, "");
     const runtimeRemoteExecution = parseObject(runtimeSessionParams.remoteExecution);
+    const missingManagedSession = !executionTargetIsRemote && Boolean(config.managedAiConnection) &&
+      Boolean(runtimeSessionId) && !await grokHomeHasSession(asString(env.GROK_HOME, ""), runtimeSessionId);
     const canResumeSession =
       runtimeSessionId.length > 0 &&
+      !missingManagedSession &&
       (runtimeSessionCwd.length === 0 || path.resolve(runtimeSessionCwd) === path.resolve(effectiveExecutionCwd)) &&
       adapterExecutionTargetSessionMatches(runtimeRemoteExecution, runtimeExecutionTarget);
     const sessionId = canResumeSession ? runtimeSessionId : null;
-    if (executionTargetIsRemote && runtimeSessionId && !canResumeSession) {
+    if (missingManagedSession) {
+      await onLog("stdout", "[paperclip] Selected Grok session history is unavailable. Starting a fresh session with the task handoff instead of remote subscription recovery.\n");
+    } else if (executionTargetIsRemote && runtimeSessionId && !canResumeSession) {
       await onLog(
         "stdout",
         `[paperclip] Grok session "${runtimeSessionId}" does not match the current remote execution identity and will not be resumed in "${effectiveExecutionCwd}". Starting a fresh remote session.\n`,
@@ -653,7 +662,7 @@ async function executeTurn(ctx: AdapterExecutionContext): Promise<AdapterExecuti
         stderrLine ||
         `Grok exited with code ${attempt.proc.exitCode ?? -1}`;
 
-      const canFallbackToRuntimeSession = !isRetry;
+      const canFallbackToRuntimeSession = !isRetry && !missingManagedSession;
       const resolvedSessionId = attempt.parsed.sessionId
         ?? (canFallbackToRuntimeSession ? (runtimeSessionId ?? runtime.sessionId ?? null) : null);
       const resolvedSessionParams = resolvedSessionId
@@ -722,7 +731,7 @@ async function executeTurn(ctx: AdapterExecutionContext): Promise<AdapterExecuti
       return toResult(retry, true, true);
     }
 
-    return toResult(initial);
+    return toResult(initial, missingManagedSession);
   };
 
   try {

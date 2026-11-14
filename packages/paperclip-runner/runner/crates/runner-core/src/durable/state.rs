@@ -12,6 +12,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 
+use crate::attachment_download::{DOWNLOAD_COMMAND, DOWNLOAD_RESULT_EVENT};
 use crate::provider_bridge::{semantic_value_digest, MAX_COMPLETION_SUMMARY_CHARS};
 
 use super::{DurableRunnerConfig, DurableRunnerError, PROTOCOL, PROTOCOL_VERSION};
@@ -78,12 +79,23 @@ impl Command {
         let schema_version = match self.schema.as_str() {
             "paperclip.prp.command.v1" => 1,
             "paperclip.prp.command.v2" => 2,
+            "paperclip.prp.command.v3" => 3,
             _ => {
                 return Err(DurableRunnerError::invalid(
                     "command requires a supported paperclip.prp.command schema",
                 ));
             }
         };
+        if self.command_type == "external_provider.operation" && schema_version < 3 {
+            return Err(DurableRunnerError::invalid(
+                "external provider operations require PRP v3",
+            ));
+        }
+        if self.command_type == DOWNLOAD_COMMAND && schema_version < 3 {
+            return Err(DurableRunnerError::invalid(
+                "attachment downloads require PRP v3",
+            ));
+        }
         if schema_version == 1 && self.command_type.starts_with("session.goal.") {
             return Err(DurableRunnerError::invalid(
                 "session goal commands require the paperclip.prp.command.v2 schema",
@@ -150,6 +162,8 @@ impl Command {
                 | "session.goal.get"
                 | "session.goal.set"
                 | "session.goal.clear"
+                | "external_provider.operation"
+                | DOWNLOAD_COMMAND
         ) {
             return Err(DurableRunnerError::invalid(format!(
                 "command type is not supported by PRP v{schema_version}"
@@ -312,6 +326,8 @@ pub enum CommandDisposition {
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DurableState {
+    #[serde(skip)]
+    identity_output: IdentityOutputBuffer,
     pub schema: String,
     pub runner_instance_id: String,
     pub environment_lease_id: String,
@@ -344,14 +360,40 @@ pub struct DurableState {
     v2_replay_events: BTreeMap<String, StoredV2ReplayEvent>,
     #[serde(default)]
     pub last_connection_protocol_version: Option<u64>,
+    /// The runner process generation that emits events (durable-ownership
+    /// plan, section G). Each runner process that loads existing state starts
+    /// the next generation, and every event envelope carries it, so a consumer
+    /// can record an earlier generation's events as history. State saved
+    /// before this field existed loads as generation 0.
+    #[serde(default)]
+    pub generation: u64,
     pub diagnostics: Vec<String>,
     pub backpressure: bool,
     pub recoverable_failure: Option<String>,
 }
 
 impl DurableState {
+    pub(crate) fn recovery_pending_effects(&self) -> usize {
+        self.processed_commands
+            .values()
+            .filter(|command| {
+                matches!(command.status.as_str(), "pending" | "indeterminate")
+                    && !matches!(
+                        command.command_type.as_str(),
+                        "session.snapshot"
+                            | "session.goal.get"
+                            | "runner.drain"
+                            | "runner.suspend"
+                            | "runner.shutdown"
+                            | "turn.stop"
+                    )
+            })
+            .count()
+    }
+
     pub(crate) fn new(config: &DurableRunnerConfig) -> Self {
         Self {
+            identity_output: IdentityOutputBuffer::default(),
             schema: STATE_SCHEMA.to_owned(),
             runner_instance_id: config.runner_instance_id.clone(),
             environment_lease_id: config.environment_lease_id.clone(),
@@ -377,10 +419,18 @@ impl DurableState {
             executor_event_receipts: BTreeMap::new(),
             v2_replay_events: BTreeMap::new(),
             last_connection_protocol_version: None,
+            generation: 1,
             diagnostics: Vec::new(),
             backpressure: false,
             recoverable_failure: None,
         }
+    }
+
+    /// Starts the next event generation for a runner process that recovered
+    /// existing state. It is persisted with the next save, so recovery adds no
+    /// write before the first turn.
+    pub fn begin_recovered_generation(&mut self) {
+        self.generation = self.generation.saturating_add(1);
     }
 
     pub fn outbox_bytes(&self) -> usize {
@@ -527,11 +577,48 @@ impl DurableState {
         }
         validate_semantic_tool_input_digest(event_type.as_str(), &payload)?;
 
+        // Clone until enqueue succeeds: rejected writes must not consume output.
+        // Pending secret fragments are memory-only and never enter durable state.
+        let mut identity_output = self.identity_output.clone();
+        let payload = if event_type == "item.delta" {
+            identity_output.redact(
+                &format!("{}:{}", self.turn_id, self.item_id),
+                &payload,
+                &self.item_id,
+            )
+        } else if matches!(
+            event_type.as_str(),
+            "item.completed" | "item.failed" | "item.cancelled"
+        ) {
+            identity_output.settle(
+                &format!("{}:{}", self.turn_id, self.item_id),
+                &payload,
+                false,
+            )
+        } else if matches!(
+            event_type.as_str(),
+            "turn.completed"
+                | "turn.failed"
+                | "turn.cancelled"
+                | "turn.interrupted"
+                | "session.closed"
+        ) {
+            identity_output.settle(&format!("{}:", self.turn_id), &payload, true)
+        } else {
+            payload
+        };
+
         let sanitized_payload = preserve_bounded_display_content(
             event_type.as_str(),
             &payload,
             sanitize_value(&payload),
         )?;
+        let sanitized_payload = preserve_final_agent_message_text(
+            event_type.as_str(),
+            &payload,
+            sanitized_payload,
+            config.max_frame_bytes,
+        );
         // Restore authoritative tool arguments before checking protocol identities.
         // Their contents are execution data, not a redacted diagnostic preview.
         let sanitized_payload =
@@ -544,7 +631,11 @@ impl DurableState {
 
         let source_seq = self.next_source_seq;
         let emitted_at = current_timestamp()?;
-        let schema_version = if matches!(
+        let schema_version = if event_type.starts_with("external_provider.")
+            || event_type == DOWNLOAD_RESULT_EVENT
+        {
+            3
+        } else if matches!(
             event_type.as_str(),
             "session.capabilities.updated"
                 | "session.goal.snapshot"
@@ -571,6 +662,7 @@ impl DurableState {
                 "sourceSeq": source_seq,
                 "sourceInstanceId": self.runner_instance_id,
                 "sourceKind": "runner",
+                "generation": self.generation,
                 "runId": self.run_id,
                 "normalizedSessionId": self.normalized_session_id,
                 "turnId": self.turn_id,
@@ -601,7 +693,8 @@ impl DurableState {
             self.record_diagnostic("outbox soft limit reached; non-P0 event rejected");
             return Err(DurableRunnerError::invalid(
                 "outbox soft limit reached; reserved storage is available only to P0 events",
-            ));
+            )
+            .with_classification("outbox_backpressure"));
         }
         if projected > config.max_outbox_bytes {
             self.lifecycle = "unrecoverable".to_owned();
@@ -634,6 +727,7 @@ impl DurableState {
             );
         }
         self.peak_outbox_bytes = self.peak_outbox_bytes.max(projected);
+        self.identity_output = identity_output;
         Ok(source_seq)
     }
 
@@ -737,9 +831,18 @@ impl DurableState {
             .checked_add(1)
             .ok_or_else(|| DurableRunnerError::invalid("controller sequence exhausted"))?;
         if command.controller_seq != expected {
-            return Err(DurableRunnerError::invalid(format!(
-                "controller sequence must be contiguous: expected {expected}, received {}",
-                command.controller_seq
+            return Ok(CommandDisposition::Reject(command_result(
+                command,
+                "rejected",
+                json!({
+                    "code": "controller_sequence_mismatch",
+                    "message": format!(
+                        "controller sequence must be contiguous: expected {expected}, received {}",
+                        command.controller_seq
+                    ),
+                    "expectedControllerSeq": expected,
+                    "receivedControllerSeq": command.controller_seq,
+                }),
             )));
         }
 
@@ -1497,7 +1600,7 @@ fn sensitive_key(key: &str, value: &Value) -> bool {
     if normalized == "tokenbudgetcontrol" {
         return !value.is_boolean();
     }
-    if normalized == "tokenbudget" {
+    if matches!(normalized.as_str(), "tokenbudget" | "tokensused") {
         return !value.is_number() && !value.is_null();
     }
     if matches!(
@@ -1514,7 +1617,6 @@ fn sensitive_key(key: &str, value: &Value) -> bool {
             | "totaltokens"
             | "pretokens"
             | "posttokens"
-            | "tokensused"
     ) {
         return !value.is_number();
     }
@@ -1626,6 +1728,199 @@ fn durable_semantics_changed_by_sanitization(original: &Value, sanitized: &Value
     }
 }
 
+#[derive(Clone, Default, PartialEq)]
+struct IdentityOutputBuffer {
+    pending: BTreeMap<String, String>,
+    streams: BTreeMap<String, IdentityOutputStream>,
+}
+
+#[derive(Clone, PartialEq)]
+struct IdentityOutputStream {
+    scope: String,
+    item_id: Option<Value>,
+    payload: Value,
+    paths: Vec<String>,
+}
+
+impl std::fmt::Debug for IdentityOutputBuffer {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("IdentityOutputBuffer { [REDACTED] }")
+    }
+}
+
+impl IdentityOutputBuffer {
+    fn redact(&mut self, stream: &str, payload: &Value, item_id: &str) -> Value {
+        let Ok(key) = std::env::var("PAPERCLIP_AGENT_PRIVATE_KEY") else {
+            return payload.clone();
+        };
+        if key.is_empty() {
+            return payload.clone();
+        }
+        let result = self.redact_with_key(stream, payload, &key);
+        if let Some(descriptor) = self.streams.get_mut(&Self::stream_key(stream, payload)) {
+            descriptor.item_id = Some(json!(item_id));
+        }
+        result
+    }
+
+    fn stream_key(stream: &str, payload: &Value) -> String {
+        json!([
+            stream,
+            payload.get("itemId"),
+            payload.get("providerItemId"),
+            payload.get("channel"),
+            payload.get("stream")
+        ])
+        .to_string()
+    }
+
+    fn redact_with_key(&mut self, stream: &str, payload: &Value, key: &str) -> Value {
+        let scope = stream.to_owned();
+        let stream = Self::stream_key(stream, payload);
+        let mut values = vec![key.to_owned(), key.trim().to_owned()];
+        values.extend(
+            key.lines()
+                .filter(|line| !line.is_empty() && !line.starts_with("-----"))
+                .map(str::to_owned),
+        );
+        values.sort_by_key(|value| std::cmp::Reverse(value.len()));
+        let result = self.visit(&stream, "", payload, &values);
+        let prefix = format!("{stream}.");
+        let paths: Vec<String> = self
+            .pending
+            .keys()
+            .filter(|path| path.starts_with(&prefix))
+            .cloned()
+            .collect();
+        if paths.is_empty() {
+            self.streams.remove(&stream);
+        } else {
+            let metadata = ["itemId", "providerItemId", "kind", "channel", "stream"]
+                .iter()
+                .filter_map(|key| {
+                    payload
+                        .get(*key)
+                        .filter(|value| value.is_string())
+                        .map(|value| ((*key).to_owned(), sanitize_value(value)))
+                })
+                .collect();
+            self.streams.insert(
+                stream,
+                IdentityOutputStream {
+                    scope,
+                    item_id: None,
+                    payload: Value::Object(metadata),
+                    paths,
+                },
+            );
+        }
+        result
+    }
+
+    fn settle(&mut self, scope: &str, payload: &Value, whole_turn: bool) -> Value {
+        let streams: Vec<String> = self
+            .streams
+            .iter()
+            .filter(|(_, descriptor)| {
+                (if whole_turn {
+                    descriptor.scope.starts_with(scope)
+                } else {
+                    descriptor.scope == scope
+                }) && (whole_turn
+                    || payload.get("itemId").is_none()
+                    || descriptor.payload.get("itemId").is_none()
+                    || payload.get("itemId") == descriptor.payload.get("itemId"))
+            })
+            .map(|(stream, _)| stream.clone())
+            .collect();
+        let mut tails = Vec::new();
+        for stream in streams {
+            let descriptor = self.streams.remove(&stream).unwrap();
+            let primary = descriptor
+                .paths
+                .iter()
+                .find(|path| **path == format!("{stream}.text"))
+                .or_else(|| descriptor.paths.first())
+                .cloned();
+            let mut text = String::new();
+            for path in descriptor.paths {
+                if let Some(held) = self.pending.remove(&path) {
+                    if Some(&path) == primary.as_ref() {
+                        text = if held.len() < 8 {
+                            held
+                        } else {
+                            "[REDACTED]".to_owned()
+                        };
+                    }
+                }
+            }
+            if !text.is_empty() {
+                let mut tail_payload = descriptor.payload;
+                tail_payload["text"] = json!(text);
+                tails.push(json!({"itemId": descriptor.item_id, "payload": tail_payload}));
+            }
+        }
+        let mut result = payload.clone();
+        if !tails.is_empty() {
+            let mut existing = result
+                .get("outputTails")
+                .and_then(Value::as_array)
+                .cloned()
+                .unwrap_or_default();
+            existing.extend(tails);
+            result["outputTails"] = json!(existing);
+        }
+        result
+    }
+
+    fn visit(&mut self, path: &str, field: &str, value: &Value, secrets: &[String]) -> Value {
+        match value {
+            Value::Object(object) => Value::Object(
+                object
+                    .iter()
+                    .map(|(key, child)| {
+                        (
+                            key.clone(),
+                            self.visit(&format!("{path}.{key}"), key, child, secrets),
+                        )
+                    })
+                    .collect(),
+            ),
+            Value::Array(array) => Value::Array(
+                array
+                    .iter()
+                    .enumerate()
+                    .map(|(index, child)| {
+                        self.visit(&format!("{path}.{index}"), field, child, secrets)
+                    })
+                    .collect(),
+            ),
+            Value::String(chunk) if matches!(field, "text" | "delta" | "output" | "patch") => {
+                let mut text = self.pending.remove(path).unwrap_or_default();
+                text.push_str(chunk);
+                for secret in secrets {
+                    text = text.replace(secret, "[REDACTED]");
+                }
+                let mut held = 0;
+                for secret in secrets {
+                    for size in (held + 1..secret.len().min(text.len() + 1)).rev() {
+                        if secret.is_char_boundary(size) && text.ends_with(&secret[..size]) {
+                            held = size;
+                            break;
+                        }
+                    }
+                }
+                if held > 0 {
+                    let tail = text.split_off(text.len() - held);
+                    self.pending.insert(path.to_owned(), tail);
+                }
+                Value::String(text)
+            }
+            other => other.clone(),
+        }
+    }
+}
+
 pub(crate) fn sanitize_value(value: &Value) -> Value {
     match value {
         Value::Object(object) => Value::Object(
@@ -1670,13 +1965,17 @@ fn preserve_bounded_display_content(
     original: &Value,
     mut sanitized: Value,
 ) -> Result<Value, DurableRunnerError> {
-    use crate::acpx_event_payload::{has_bounded_rich_display_shape, validate_question_set};
+    use crate::acpx_event_payload::{
+        fit_redacted_display_to_length_bounds, has_bounded_rich_display_shape,
+        validate_question_set,
+    };
 
     // Rich display payloads are already closed and byte-bounded by their exact
     // protocol schemas. Applying a diagnostic preview cap again would silently
     // change complete output into a truncated artifact without its metadata.
     if has_bounded_rich_display_shape(event_type, original) {
-        let preserved = sanitize_bounded_display_value(original);
+        let mut preserved = sanitize_bounded_display_value(original);
+        fit_redacted_display_to_length_bounds(event_type, &mut preserved);
         if !has_bounded_rich_display_shape(event_type, &preserved) {
             return Err(DurableRunnerError::invalid(
                 "redacted display activity exceeds its schema bounds",
@@ -1712,6 +2011,54 @@ fn preserve_bounded_display_content(
     }
     Ok(sanitized)
 }
+
+/// A completed final answer is the reply the person receives. The generic
+/// diagnostic preview cap would turn it into a cut-off copy, so keep its
+/// complete redacted text when it fits comfortably inside one transport frame.
+/// Otherwise the bounded preview remains, still marked as truncated.
+fn preserve_final_agent_message_text(
+    event_type: &str,
+    original: &Value,
+    mut sanitized: Value,
+    max_frame_bytes: usize,
+) -> Value {
+    if event_type != "item.completed"
+        || !matches!(
+            original.get("kind").and_then(Value::as_str),
+            Some("agentMessage" | "assistant_message")
+        )
+        || original.get("channel").and_then(Value::as_str) != Some("final")
+    {
+        return sanitized;
+    }
+    let Some(text) = original.get("text").and_then(Value::as_str) else {
+        return sanitized;
+    };
+    let mut candidate = sanitized.clone();
+    let Some(object) = candidate.as_object_mut() else {
+        return sanitized;
+    };
+    object.insert(
+        "text".to_owned(),
+        Value::String(redact_sensitive_text_values(text)),
+    );
+    // Size the serialized payload, not the raw text: JSON escaping can double
+    // the text, and the secure frame hex-encodes the encrypted envelope,
+    // doubling it again. Keep the bounded preview unless the complete payload,
+    // its envelope and the secure-frame wrapper all fit in one frame.
+    let Ok(serialized_bytes) = serde_json::to_vec(&candidate).map(|bytes| bytes.len()) else {
+        return sanitized;
+    };
+    let budget = (max_frame_bytes / 2).saturating_sub(FINAL_AGENT_MESSAGE_FRAME_HEADROOM_BYTES);
+    if serialized_bytes > budget {
+        return sanitized;
+    }
+    candidate
+}
+
+/// Plaintext reserved for the event envelope fields around a final answer
+/// payload and for the secure-frame wrapper.
+const FINAL_AGENT_MESSAGE_FRAME_HEADROOM_BYTES: usize = 4_096;
 
 pub(crate) fn validate_semantic_tool_input(
     operation_id: &str,
@@ -1824,6 +2171,9 @@ fn validate_semantic_tool_input_digest(
 }
 
 pub(crate) fn redact_text(input: &str) -> String {
+    // Cutting a secret first leaves an unmatchable plaintext fragment.
+    let redacted = redact_sensitive_text_values(input);
+    let input = redacted.as_str();
     let (bounded, truncated) = if input.len() > 4096 {
         let boundary = input
             .char_indices()
@@ -1835,14 +2185,37 @@ pub(crate) fn redact_text(input: &str) -> String {
     } else {
         (input, false)
     };
-    let mut redacted = redact_sensitive_text_values(bounded);
+    let mut redacted = bounded.to_owned();
     if truncated {
         redacted.push_str("…[truncated]");
     }
     redacted
 }
 
+pub(crate) fn redact_agent_identity_text(input: &str) -> String {
+    let Ok(key) = std::env::var("PAPERCLIP_AGENT_PRIVATE_KEY") else {
+        return input.to_owned();
+    };
+    if key.is_empty() {
+        return input.to_owned();
+    }
+    let escaped = serde_json::to_string(&key).unwrap_or_default();
+    let mut result = input.replace(&key, "[REDACTED]");
+    if escaped.len() > 2 {
+        result = result.replace(&escaped[1..escaped.len() - 1], "[REDACTED]");
+    }
+    for line in key
+        .lines()
+        .filter(|line| !line.is_empty() && !line.starts_with("-----"))
+    {
+        result = result.replace(line, "[REDACTED]");
+    }
+    result
+}
+
 pub(crate) fn redact_sensitive_text_values(input: &str) -> String {
+    let identity_redacted = redact_agent_identity_text(input);
+    let input = identity_redacted.as_str();
     let normalized = input.to_ascii_lowercase();
     let bytes = normalized.as_bytes();
     let mut ranges: Vec<(usize, usize)> = Vec::new();
@@ -2360,6 +2733,128 @@ fn current_timestamp() -> Result<String, DurableRunnerError> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn keeps_a_long_plan_proposal_whole_past_the_display_preview_bound() {
+        use super::*;
+        let markdown = format!("# Plan\n{}", "- step\n".repeat(2_000).trim_end());
+        assert!(markdown.len() > 4096);
+        let payload = json!({
+            "schema": "paperclip.plan.proposed.v1",
+            "proposalId": "plan-1",
+            "status": "completed",
+            "markdown": markdown,
+            "source": "codex_plan_item",
+        });
+        let stored =
+            preserve_bounded_display_content("plan.proposed", &payload, sanitize_value(&payload))
+                .unwrap();
+        assert_eq!(stored["markdown"].as_str(), Some(markdown.as_str()));
+    }
+
+    #[test]
+    fn governance_display_records_survive_the_durable_writer_unchanged() {
+        use super::*;
+        let review = crate::governance_events::codex_safety_review_payload(
+            "item/autoApprovalReview/completed",
+            &json!({
+                "reviewId": "review-1",
+                "targetItemId": "exec-1",
+                "decisionSource": "agent",
+                "review": {"status": "approved", "riskLevel": "low", "userAuthorization": "high", "rationale": "Generated output."},
+                "action": {"type": "command", "source": "shell", "command": "rm -rf build", "cwd": "/work"},
+            }),
+        );
+        let hook = crate::governance_events::codex_hook_payload(
+            "hook/completed",
+            &json!({"run": {
+                "id": "pre-tool-use:0:/x/config.toml", "eventName": "preToolUse", "executionMode": "sync",
+                "scope": "turn", "sourcePath": "/x/config.toml", "source": "user", "status": "blocked",
+                "startedAt": 1, "durationMs": 41, "entries": [{"kind": "feedback", "text": "Append-only."}],
+            }}),
+        );
+        for (event_type, payload) in [
+            ("safety.review.completed", review),
+            ("hook.completed", hook),
+        ] {
+            // Native Codex records also carry the provider label.
+            let mut labelled = payload.clone();
+            labelled["provider"] = json!("codex");
+            for candidate in [payload, labelled] {
+                let preserved = preserve_bounded_display_content(
+                    event_type,
+                    &candidate,
+                    sanitize_value(&candidate),
+                )
+                .unwrap_or_else(|error| panic!("{event_type} was rejected: {error:?}"));
+                assert_eq!(
+                    preserved, candidate,
+                    "{event_type} changed in the durable writer"
+                );
+                assert!(!durable_semantics_changed_by_sanitization(
+                    &candidate, &preserved
+                ));
+            }
+        }
+    }
+
+    #[test]
+    fn identity_delta_redaction_buffers_every_split_and_never_serializes_pending_material() {
+        use super::*;
+        let key = "-----BEGIN PRIVATE KEY-----\nMC4CAQAwBQYDK2VwBCIEIExamplePrivateMaterial\n-----END PRIVATE KEY-----\n";
+        let body = key.lines().nth(1).unwrap();
+        for split in 1..body.len() {
+            let mut buffer = IdentityOutputBuffer::default();
+            let first = buffer.redact_with_key(
+                "envelope-item",
+                &json!({"itemId": "item-1", "text": &body[..split], "update": {"delta": &body[..split]}}),
+                key,
+            );
+            let other = buffer.redact_with_key(
+                "envelope-item",
+                &json!({"itemId": "item-2", "text": "ordinary output\n"}),
+                key,
+            );
+            assert_eq!(other["text"], "ordinary output\n");
+            let second = buffer.redact_with_key(
+                "envelope-item",
+                &json!({"itemId": "item-1", "text": &body[split..], "update": {"delta": &body[split..]}}),
+                key,
+            );
+            assert_eq!(first["text"], "");
+            assert_eq!(second["text"], "[REDACTED]");
+            assert_eq!(second["update"]["delta"], "[REDACTED]");
+        }
+        let mut state = DurableState::new(&config(PathBuf::from("/unused")));
+        state
+            .identity_output
+            .redact_with_key("item", &json!({"text": &body[..20]}), key);
+        assert!(!serde_json::to_string(&state).unwrap().contains(&body[..20]));
+        assert!(!format!("{state:?}").contains(&body[..20]));
+    }
+
+    #[test]
+    fn identity_output_settles_item_and_turn_tails_without_retaining_fragments() {
+        let key = "-----BEGIN PRIVATE KEY-----\nMC4CAQAwBQYDK2VwBCIEITestSecretMaterialForAnAgentIdentity\n-----END PRIVATE KEY-----\n";
+        let mut output = IdentityOutputBuffer::default();
+        assert_eq!(
+            output.redact_with_key(
+                "turn:item",
+                &json!({"itemId": "one", "kind": "reasoning", "text": "Thinking-"}),
+                key
+            )["text"],
+            "Thinking"
+        );
+        let settled = output.settle("turn:item", &json!({"itemId": "one"}), false);
+        assert_eq!(settled["outputTails"][0]["payload"]["text"], "-");
+        assert!(output.pending.is_empty());
+        assert!(output.streams.is_empty());
+        output.redact_with_key("turn:other", &json!({"text": &key[..42]}), key);
+        let settled = output.settle("turn:", &json!({"status": "completed"}), true);
+        assert_eq!(settled["outputTails"][0]["payload"]["text"], "[REDACTED]");
+        assert!(output.pending.is_empty());
+        assert!(output.streams.is_empty());
+    }
+
     use std::time::Duration;
 
     use super::*;
@@ -2379,12 +2874,14 @@ mod tests {
             runner_digest: "sha256:test".to_owned(),
             acpx_launch_profile: None,
             opencode_launch_profile: None,
+            cursor_cloud_launch_profile: None,
             max_outbox_bytes: 16_384,
             p0_reserve_bytes: 4096,
             max_frame_bytes: 65_536,
             reconnect_delay: Duration::from_millis(1),
             reconnect_grace: None,
             max_runtime: Duration::from_secs(1),
+            turn_scoped: false,
         }
     }
 
@@ -2399,6 +2896,51 @@ mod tests {
             precondition: None,
             payload: json!({}),
         }
+    }
+
+    // Section G: every runner event carries the runner process generation, so
+    // a consumer can record an earlier generation's events as history.
+    #[test]
+    fn stamps_every_event_with_the_runner_process_generation() {
+        let directory = temporary_directory("event-generation");
+        let _ = fs::remove_dir_all(&directory);
+        let config = config(directory.clone());
+        let store = DurableStateStore::new(&directory).unwrap();
+        let (mut first, recovered) = store.load_or_create(&config).unwrap();
+        assert!(!recovered);
+        assert_eq!(first.generation, 1);
+        first
+            .enqueue_event(&config, "harness.ready", EventPriority::P1, json!({}))
+            .unwrap();
+        assert_eq!(first.outbox[0].envelope["payload"]["generation"], 1);
+        store.save(&first).unwrap();
+
+        // A restarted runner process starts the next generation. Events it
+        // still has to deliver keep the generation that emitted them.
+        let (mut second, recovered) = store.load_or_create(&config).unwrap();
+        assert!(recovered);
+        // Loading alone never changes state; the runner starts the generation.
+        assert_eq!(second.generation, 1);
+        second.begin_recovered_generation();
+        assert_eq!(second.generation, 2);
+        second
+            .enqueue_event(&config, "harness.ready", EventPriority::P1, json!({}))
+            .unwrap();
+        assert_eq!(second.outbox[0].envelope["payload"]["generation"], 1);
+        assert_eq!(second.outbox[1].envelope["payload"]["generation"], 2);
+
+        // State saved before the field existed loads as generation 0, so its
+        // next process is generation 1.
+        let mut legacy = serde_json::to_value(&second).unwrap();
+        legacy.as_object_mut().unwrap().remove("generation");
+        store
+            .save(&serde_json::from_value::<DurableState>(legacy).unwrap())
+            .unwrap();
+        let (mut upgraded, _) = store.load_or_create(&config).unwrap();
+        assert_eq!(upgraded.generation, 0);
+        upgraded.begin_recovered_generation();
+        assert_eq!(upgraded.generation, 1);
+        let _ = fs::remove_dir_all(&directory);
     }
 
     #[test]
@@ -2763,7 +3305,11 @@ mod tests {
         let mut unknown = command("command_unknown", 1);
         unknown.command_type = "future.required.command".to_owned();
         assert!(state.begin_command(&unknown).is_err());
-        assert!(state.begin_command(&command("command_2", 2)).is_err());
+        assert!(matches!(
+            state.begin_command(&command("command_2", 2)).unwrap(),
+            CommandDisposition::Reject(result) if result.result["code"] == "controller_sequence_mismatch"
+        ));
+        assert_eq!(state.last_controller_command_seq, 0);
         let first = command("command_1", 1);
         state.begin_command(&first).unwrap();
         state.complete_command(&first, json!({})).unwrap();
@@ -3129,6 +3675,30 @@ mod tests {
     }
 
     #[test]
+    fn durable_question_initial_text_survives_serialized_reload_without_resolution() {
+        let mut config = config(PathBuf::from("unused"));
+        config.max_outbox_bytes = 512 * 1024;
+        config.max_frame_bytes = 256 * 1024;
+        let mut state = DurableState::new(&config);
+        let text = "  Editable draft 漢字\n".repeat(1_000);
+        state.enqueue_event(&config, "runtime_request.created", EventPriority::P0, json!({
+            "request": {"schema":"paperclip.runtime_request.v2", "requestKind":"runtime", "requestId":"edit-1",
+                "type":"input", "status":"pending", "input":{"schema":"paperclip.question_set.v1", "questions":[{
+                    "id":"draft", "prompt":"Edit", "answerMode":"text", "required":true, "initialText":text
+                }]}}
+        })).unwrap();
+        let reloaded: DurableState =
+            serde_json::from_slice(&serde_json::to_vec(&state).unwrap()).unwrap();
+        let request = reloaded.outbox[0]
+            .envelope
+            .pointer("/payload/payload/request")
+            .unwrap();
+        assert_eq!(request["input"]["questions"][0]["initialText"], json!(text));
+        assert_eq!(request["status"], "pending");
+        assert!(request.get("response").is_none());
+    }
+
+    #[test]
     fn durable_question_sets_preserve_safe_identity_and_redact_display_text() {
         let config = config(PathBuf::from("unused"));
         let mut state = DurableState::new(&config);
@@ -3344,6 +3914,13 @@ mod tests {
         assert_eq!(sanitized["tokenBudget"], json!(4096));
         assert_eq!(sanitized["tokensUsed"], json!(128));
         assert_eq!(sanitized["accessToken"], json!("[REDACTED]"));
+        let unknown = sanitize_value(&json!({"tokenBudget":null, "tokensUsed":null}));
+        assert!(unknown["tokenBudget"].is_null());
+        assert!(unknown["tokensUsed"].is_null());
+        assert_eq!(
+            sanitize_value(&json!({"tokensUsed":"synthetic credential"}))["tokensUsed"],
+            json!("[REDACTED]")
+        );
     }
 
     #[test]
@@ -3955,6 +4532,132 @@ mod tests {
     }
 
     #[test]
+    fn identity_redaction_precedes_multibyte_truncation() {
+        let prefix = "MC4CAQAwBQYDK2VwBCIEIA";
+        let body = format!("{prefix}{}", "A".repeat(64 - prefix.len()));
+        let key = format!("-----BEGIN PRIVATE KEY-----\n{body}\n-----END PRIVATE KEY-----\n");
+        // Give only this subprocess the key; do not race other tests' environment.
+        if std::env::var_os("PAPERCLIP_IDENTITY_TRUNCATION_TEST").is_none() {
+            let output = std::process::Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "durable::state::tests::identity_redaction_precedes_multibyte_truncation",
+                    "--nocapture",
+                ])
+                .env("PAPERCLIP_IDENTITY_TRUNCATION_TEST", "1")
+                .env("PAPERCLIP_AGENT_PRIVATE_KEY", &key)
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "{}{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+            return;
+        }
+        for material in [&body, &key] {
+            let input = format!("{}{material}", "é".repeat(2025));
+            let output = redact_text(&input);
+            assert!(!output.contains(prefix));
+            assert!(output.contains("[REDACTED]"));
+            assert!(output.len() <= 4096);
+            let persisted = sanitize_value(&json!({"text": input}));
+            assert!(!persisted.to_string().contains(prefix));
+        }
+    }
+
+    #[test]
+    fn keeps_the_complete_final_answer_instead_of_a_display_preview() {
+        let config = config(PathBuf::from("unused"));
+        let mut state = DurableState::new(&config);
+        let answer = format!("token=secret-value {}", "Every open task. ".repeat(400));
+        assert!(answer.len() > 4_096);
+        for (channel, complete) in [("final", true), ("progress", false)] {
+            state
+                .enqueue_event(
+                    &config,
+                    "item.completed",
+                    EventPriority::P1,
+                    json!({"kind": "agentMessage", "channel": channel, "text": answer}),
+                )
+                .unwrap();
+            let text = state
+                .outbox
+                .last()
+                .unwrap()
+                .envelope
+                .pointer("/payload/payload/text")
+                .and_then(Value::as_str)
+                .unwrap()
+                .to_owned();
+            assert!(text.starts_with("token=[REDACTED] "), "{channel}");
+            assert!(!text.contains("secret-value"), "{channel}");
+            assert_eq!(!text.ends_with("…[truncated]"), complete, "{channel}");
+            if complete {
+                assert_eq!(text, answer.replace("secret-value", "[REDACTED]"));
+            }
+        }
+
+        // A frame too small for the complete answer keeps the marked preview.
+        let mut small_frame = config.clone();
+        small_frame.max_frame_bytes = 8_000;
+        let mut small = DurableState::new(&small_frame);
+        small
+            .enqueue_event(
+                &small_frame,
+                "item.completed",
+                EventPriority::P1,
+                json!({"kind": "agentMessage", "channel": "final", "text": answer}),
+            )
+            .unwrap();
+        assert!(small.outbox[0]
+            .envelope
+            .pointer("/payload/payload/text")
+            .and_then(Value::as_str)
+            .unwrap()
+            .ends_with("…[truncated]"));
+    }
+
+    #[test]
+    fn final_answer_frame_check_counts_json_escaping_and_hex_encoding() {
+        let mut frame = config(PathBuf::from("unused"));
+        frame.max_frame_bytes = 64 * 1024;
+        frame.max_outbox_bytes = 1024 * 1024;
+        let final_text = |answer: &str| {
+            let mut state = DurableState::new(&frame);
+            state
+                .enqueue_event(
+                    &frame,
+                    "item.completed",
+                    EventPriority::P1,
+                    json!({"kind": "agentMessage", "channel": "final", "text": answer}),
+                )
+                .unwrap();
+            let envelope = state.outbox[0].envelope.clone();
+            // The wire frame hex-encodes the encrypted envelope.
+            let envelope_bytes = serde_json::to_vec(&envelope).unwrap().len();
+            assert!(
+                envelope_bytes * 2 < frame.max_frame_bytes,
+                "{envelope_bytes}"
+            );
+            envelope
+                .pointer("/payload/payload/text")
+                .and_then(Value::as_str)
+                .unwrap()
+                .to_owned()
+        };
+
+        // 20,000 raw bytes, but about 40,000 once JSON-escaped: keep the preview.
+        let quotes = "\"".repeat(20_000);
+        assert!(final_text(&quotes).ends_with("…[truncated]"));
+
+        // The same length of plain prose fits and is kept complete.
+        let prose = "a".repeat(20_000);
+        assert_eq!(final_text(&prose), prose);
+    }
+
+    #[test]
     fn diagnostic_redaction_still_bounds_retained_text() {
         let output = redact_text(&format!("token=secret-value {}", "x".repeat(4_096)));
         assert!(output.starts_with("token=[REDACTED] "));
@@ -4000,4 +4703,6 @@ mod tests {
             .is_err());
         assert!(state.outbox.is_empty());
     }
+
+    include!("tests/redaction_display_bounds.rs");
 }

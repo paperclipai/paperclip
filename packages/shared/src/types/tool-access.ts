@@ -1,3 +1,4 @@
+import type { McpAppToolUi, McpIcon } from "../mcp-apps.js";
 import type {
   ConnectionTokenIssuanceOutcome,
   ConnectionTokenIssuancePath,
@@ -68,7 +69,7 @@ export type {
 
 export type ToolActorType = "agent" | "user" | "system" | "plugin";
 export type ToolConnectionTransport =
-  "mcp_remote" | "rest_api" | "local_stdio" | "chat_sdk" | "runtime_auth";
+  "mcp_remote" | "rest_api" | "local_stdio" | "chat_sdk" | "runtime_auth" | "voice";
 export type ToolConnectionPurpose = "tool" | "channel" | "ai";
 export type ToolConnectionAuthKind = "oauth" | "api_key" | "none";
 export type ToolConnectionOwnership =
@@ -165,6 +166,7 @@ export interface ToolApplication {
 }
 
 export interface ToolConnection {
+  agentInstructions?: import("../connection-instructions.js").ConnectionAgentInstructions | null;
   id: string;
   companyId: string;
   applicationId: string;
@@ -218,6 +220,22 @@ export interface ConnectionGrant {
       strategy?: string;
       accessTokenExpiresAt?: string | null;
       scopes?: string[];
+      /**
+       * Whether `scopes` is what the provider asserted, or only what we requested.
+       * `requested_fallback` means the token response carried no `scope`, so the value is
+       * inferred from the request per RFC 6749 §5.1 and is not a provider assertion.
+       */
+      scopeSource?: "provider" | "requested_fallback";
+      /** Scopes the provider asserted that we never asked for. Empty unless it over-granted. */
+      unrequestedScopes?: string[];
+      /**
+       * The scopes the authorization URL sent for *this* grant, kept per-grant because two
+       * users can authorize the same connection with different scopes. A refresh has no fresh
+       * request, so this is the baseline its response is judged against.
+       */
+      requestedScopes?: string[];
+      /** Last successful consent; ordinary token refresh preserves this. */
+      consentedAt?: string;
       tokenType?: string;
       refreshTokenExpiresAt?: string;
       refreshedAt?: string;
@@ -241,6 +259,7 @@ export interface ConnectionGrant {
         id: string;
         fullName: string;
         installationId: string;
+        ownerType?: "personal" | "organization";
         private?: boolean;
       }>;
       installationUrl?: string;
@@ -248,6 +267,9 @@ export interface ConnectionGrant {
       appSlug?: string;
       accessRevision?: string;
       lastAccessRefreshAt?: string;
+      /** Unsettled Cloud binding changes; retained until the exact revision is delivered. */
+      bindingSync?: { id: string; removeInstallationIds: string[] };
+      continuityRetry?: { at: string; attempts: number; revision: string };
       lastWebhookAt?: string;
       webhookHealth?: "pending" | "healthy" | "unhealthy";
     };
@@ -286,6 +308,8 @@ export interface ConnectionGrantCapabilities {
  * not "render disabled".
  */
 export interface ToolConnectionCapabilities {
+  management?: { allowed: boolean; reason: string; operation: string };
+  usage?: { allowed: boolean; reason: string; operation: string; requiresApproval?: boolean; allowedCount?: number; askFirstCount?: number };
   canConfigure: boolean;
   canCreateOrganizationGrant: boolean;
   canSetCompanyInstall: boolean;
@@ -545,6 +569,10 @@ export interface ToolCatalogEntry {
   inputSchema: Record<string, unknown> | null;
   outputSchema: Record<string, unknown> | null;
   annotations: Record<string, unknown> | null;
+  /** MCP Apps view declaration (`_meta.ui`), when the tool renders one. */
+  uiMeta?: McpAppToolUi | null;
+  /** Sanitized provider icons (SEP-973), when the tool declares any. */
+  icons?: McpIcon[] | null;
   riskLevel: ToolRiskLevel;
   isReadOnly: boolean;
   isWrite: boolean;
@@ -729,6 +757,10 @@ export interface ToolMcpGatewayToken {
   revokedAt: Date | string | null;
   createdByAgentId: string | null;
   createdByUserId: string | null;
+  /** Agent client delegation. Null with an issuing agent identifies an unbound legacy client. */
+  responsibleUserId?: string | null;
+  /** True for an agent-created client token whose value has not yet been revealed to its responsible person. */
+  pendingReveal?: boolean;
   createdAt: Date | string;
   updatedAt: Date | string;
 }
@@ -758,6 +790,12 @@ export interface ToolProfileSummary {
   assignmentCount: number;
   appliesToAgentCount: number;
   isCompanyDefault: boolean;
+}
+
+/** Saved configuration only; no effective-access summary or pending-review calculation. */
+export interface ToolProfileConfiguration extends Omit<ToolProfile, "newToolsPendingCount"> {
+  entries: ToolProfileEntry[];
+  bindings: ToolProfileBinding[];
 }
 
 export interface ToolProfileWithDetails extends ToolProfile {
@@ -989,6 +1027,11 @@ export interface ToolAppAttentionItem {
   reasons: ToolAppAttentionReason[];
 }
 
+export interface ToolConnectionReviewCounts {
+  pendingActionRequestCount: number;
+  quarantinedCatalogEntryCount: number;
+}
+
 export interface ToolAppsAttentionResponse {
   generatedAt: Date | string;
   apps: ToolAppAttentionItem[];
@@ -1166,7 +1209,7 @@ export interface ToolOAuthHandoff {
  * What an unknown remote MCP endpoint told Paperclip it needs, so the wizard can
  * branch without re-probing. `manualClientRequired` means discovery succeeded but
  * the authorization server supports neither CIMD nor DCR, so the operator has to
- * supply a preregistered client under Advanced authentication.
+ * supply a preregistered client in the sign-in options on the connect screen.
  */
 export interface ConnectToolAppAuthChallenge {
   kind: "oauth";
@@ -1176,6 +1219,39 @@ export interface ConnectToolAppAuthChallenge {
   resource?: string | null;
   registrationSource?: ToolOAuthClientRegistrationSource | null;
   manualClientRequired?: boolean;
+}
+
+/** Public half of a key Paperclip holds for machine sign-in. Safe to show and share. */
+export interface MachineSignInPublicKey {
+  keyId: string;
+  algorithm: "RS256" | "ES256";
+  /** PEM (SPKI) for providers that take a certificate-style key. */
+  pem: string;
+  /** JWK for providers that take a JSON key. */
+  jwk: Record<string, unknown>;
+  createdAt: string;
+}
+
+/** Machine sign-in settings for one organization connection. Never includes secret or private key values. */
+export interface MachineSignInStatus {
+  connectionId: string;
+  method: "paperclip_key" | "client_secret";
+  clientId: string | null;
+  /** The sign-in service this connection's credentials are bound to. */
+  issuer: string | null;
+  tokenUrl: string;
+  scopes: string[];
+  publicKey: MachineSignInPublicKey | null;
+  /** A replacement key waiting to be registered with the provider. */
+  pendingPublicKey: MachineSignInPublicKey | null;
+  hasClientSecret: boolean;
+  lastTokenAt: string | null;
+}
+
+export interface MachineSignInSetupResult {
+  connectionId: string;
+  connection: ToolConnection;
+  machineSignIn: MachineSignInStatus;
 }
 
 export interface ConnectToolAppResult {
@@ -1218,7 +1294,8 @@ export interface ToolOAuthStartResult {
   connectionId: string;
   provider: string;
   authorizationUrl: string;
-  expiresAt: string;
+  /** Null until the addressed human starts provider authorization from a saved setup. */
+  expiresAt: string | null;
   /**
    * Opaque Paperclip Cloud authorization handoff. The board submits this only
    * to its fixed same-origin Cloud endpoint; it is never treated as a URL.
@@ -1558,6 +1635,7 @@ export interface ToolAccessDecisionInput {
   };
   runContext?: {
     heartbeatRunId?: string | null;
+    originatingAgentId?: string | null;
     issueId?: string | null;
     projectId?: string | null;
     routineId?: string | null;
@@ -1717,4 +1795,18 @@ export interface ToolConnectionTestCallStatus {
   requestedAt: string;
   /** ISO timestamp the request was resolved (approved/denied/cancelled), when applicable. */
   resolvedAt?: string | null;
+}
+
+/** A connected tool's provider icons, keyed by its tool gateway name. */
+export interface ProviderToolIconEntry {
+  /** `mcp.<app>-<connection>:<tool>`, as agents see the tool. */
+  gatewayToolName: string;
+  /** `app_<name>_<digest>`, the name native runners (and so their transcripts) use. */
+  nativeToolName?: string;
+  icons: McpIcon[];
+}
+
+/** `GET /api/companies/:companyId/tool-icons` */
+export interface ProviderToolIconsResponse {
+  icons: ProviderToolIconEntry[];
 }

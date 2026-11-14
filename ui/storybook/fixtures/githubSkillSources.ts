@@ -1,5 +1,5 @@
 import { parseGitHubSkillRepositoryUrl } from "@paperclipai/shared";
-import type { AgentDesiredSkillEntry, CompanySkillDetail, CompanySkillListItem, CompanySkillVersion, CompanySkill, SkillSource, SkillPackageInspection, SkillSourceCandidate, SkillSourceEntry, SkillSourceRefreshResult } from "@paperclipai/shared";
+import type { AgentDesiredSkillEntry, CompanySkillDetail, CompanySkillListItem, CompanySkillVersion, CompanySkill, SkillSource, SkillPackageInspection, SkillSourceCandidate, SkillSourceEntry, SkillSourceRefreshResult, SkillRepositoryPackage } from "@paperclipai/shared";
 import { companySkillsApi } from "@/api/companySkills";
 import { agentsApi } from "@/api/agents";
 import { foldersApi } from "@/api/folders";
@@ -37,6 +37,28 @@ export const candidates: SkillSourceCandidate[] = [
   { path: "experimental/deploy/SKILL.md", name: "Deploy preview", description: null, error: "Missing required description in SKILL.md frontmatter." },
 ].map(candidate => ({ ...candidate, inspection: inspection(candidate.path), fileCount: Object.keys(packageContents[candidate.path]!).length, warnings: [] }));
 
+export const repositoryContents: Record<string, string | null> = Object.fromEntries(
+  Object.entries(packageContents).filter(([root]) => !root.startsWith('experimental/')).flatMap(([root, files]) =>
+    Object.entries(files).map(([file, content]) => [root.replace(/SKILL.md$/, '') + file, content])),
+);
+Object.assign(repositoryContents, {
+  '.agents/skills/shared/policy.md': '# Shared policy\n\nCheck company boundaries before changing access.',
+  '.agents/skills/review/security/references/threat-model.md': '# Threat model\n\nReview caller authorization.',
+  'NOTICE.md': 'Example upstream credits are preserved with this repository.',
+  'paperclip.skills.json': JSON.stringify({ version: 1, skills: ['.agents/skills/review/SKILL.md', 'skills/research/SKILL.md'], requirements: 'Python 3.11 and Git. Configure GitHub access for agents that review pull requests.' }, null, 2),
+});
+export type PackageScenario = 'ready' | 'warnings' | 'missing' | 'setup';
+export function repositoryFixture(scenario: PackageScenario = 'ready'): SkillRepositoryPackage {
+  const contents = Object.entries(scenario === 'setup' ? { ...repositoryContents, 'experimental/deploy/SKILL.md': packageContents['experimental/deploy/SKILL.md']!['SKILL.md']!, 'experimental/deploy/README.md': '# Deployment notes' } : repositoryContents).filter(([path]) => scenario !== 'missing' || path !== '.agents/skills/review/security/references/threat-model.md');
+  return { files: contents.map(([path, content]) => ({ path, kind: path.endsWith('SKILL.md') ? 'skill' : path.endsWith('.py') ? 'script' : content === null ? 'asset' : 'reference', encoding: content === null ? 'base64' : 'utf8', sizeBytes: content?.length ?? 2048, executable: path.endsWith('.py') })),
+    skillPaths: ['.agents/skills/review/SKILL.md', 'skills/research/SKILL.md'], requirements: 'Python 3.11 and Git. Configure GitHub access for agents that review pull requests.',
+    error: null, warnings: scenario === 'warnings' ? ['shared/tools — Submodule couldn’t be included.', 'assets/demo.mov — Exceeds the 1 MB file limit; not included.'] : [] };
+}
+export function repositoryCandidates(scenario: PackageScenario = 'ready'): SkillSourceCandidate[] {
+  return candidates.filter(candidate => scenario === 'setup' || !candidate.error).map(candidate => ({ ...candidate,
+    inspection: candidate.inspection ? { ...candidate.inspection, references: scenario === 'missing' && candidate.path.includes('/security/') ? candidate.inspection.references.filter(reference => reference.kind === 'missing') : [] } : undefined }));
+}
+
 export function sourceFixture(): SkillSource {
   return {
     id: SOURCE_ID, companyId: COMPANY_ID, repositoryId: "123456",
@@ -58,7 +80,7 @@ export function importedSkill(source: SkillSource, entry: SkillSourceEntry): Com
     id: entry.skillId!, companyId: COMPANY_ID, key: `github/${source.id}/${entry.path}`,
     slug: entry.name.toLowerCase().replaceAll(" ", "-"), name: entry.name, description: entry.description,
     markdown: `---\nname: ${entry.name}\ndescription: ${entry.description}\n---\n\n# ${entry.name}\n\n${entry.description}\n\n## Workflow\n\n1. Read the task and the relevant project context.\n2. Follow the checklist in references/checklist.md.\n3. Report findings with evidence and clear next steps.\n`, sourceType: "github", sourceLocator: source.repositoryUrl, sourceRef: COMMIT,
-    trustLevel: "assets", compatibility: "compatible", fileInventory: [{ path: "SKILL.md", kind: "skill" }, { path: "references/checklist.md", kind: "reference" }],
+    trustLevel: source.packageMode === "repository" || entry.inspection?.files.some(file => file.kind === "script" || file.executable) ? "scripts_executables" : "markdown_only", compatibility: "compatible", fileInventory: [{ path: "SKILL.md", kind: "skill" }, { path: "references/checklist.md", kind: "reference" }],
     iconUrl: null, color: null, tagline: null, authorName: null, homepageUrl: null,
     categories: [], sharingScope: "company", publicShareToken: null, forkedFromSkillId: null,
     forkedFromCompanyId: null, starCount: 0, installCount: 0, forkCount: 0,
@@ -69,7 +91,7 @@ export function importedSkill(source: SkillSource, entry: SkillSourceEntry): Com
 export type RepositoryScenario = 'single' | 'multiple' | 'none' | 'empty' | 'partial-error' | 'error' | 'loading';
 
 /** Scoped API fixtures keep the production page interactive without contacting GitHub. */
-export function installFixtures(empty: boolean, needsConnection: boolean, options: { journey?: boolean; refreshed?: boolean; assigned?: boolean; repositories?: RepositoryScenario; scan?: "live" | "large" | "interrupted"; saving?: boolean } = {}) {
+export function installFixtures(empty: boolean, needsConnection: boolean, options: { packageScenario?: PackageScenario; journey?: boolean; refreshed?: boolean; assigned?: boolean; repositories?: RepositoryScenario; scan?: "live" | "large" | "interrupted"; saving?: boolean; disconnected?: boolean } = {}) {
   const fixtureController = new AbortController();
   const wait = (ms: number, signal = fixtureController.signal) => new Promise<void>((resolve, reject) => {
     signal.throwIfAborted();
@@ -82,7 +104,7 @@ export function installFixtures(empty: boolean, needsConnection: boolean, option
   const originalSkills = { ...companySkillsApi };
   const originalAgents = { ...agentsApi };
   const originalFolders = { ...foldersApi };
-  const discoveryCandidates = options.journey ? candidates.filter(candidate => !candidate.path.includes('/security/')) : candidates;
+  const discoveryCandidates = options.packageScenario ? repositoryCandidates() : options.journey ? candidates.filter(candidate => !candidate.path.includes('/security/')) : candidates;
   const assigned = new Map<string, AgentDesiredSkillEntry[]>();
   const demoAgents = storybookAgents.slice(0, 3).map(agent => ({ ...agent, adapterType: 'codex_local' }));
   if (options.journey && sources[0]) {
@@ -143,7 +165,7 @@ export function installFixtures(empty: boolean, needsConnection: boolean, option
   if (needsConnection && sources[0]) sources[0].lastError = "GitHub access is no longer available. Reconnect GitHub or choose another connection.";
   function save(source: SkillSource, selectedPaths: string[], excludedFolders: string[]): SkillSourceRefreshResult {
     const imported: CompanySkill[] = [];
-    const warnings: string[] = [];
+    const warnings: string[] = [...(source.repositoryPackage?.warnings ?? [])];
     let unchanged = 0;
     source.entries = source.entries.map(entry => {
       const selected = selectedPaths.includes(entry.path);
@@ -159,6 +181,13 @@ export function installFixtures(empty: boolean, needsConnection: boolean, option
     return structuredClone({ source, imported, updated: [], unchanged, warnings });
   }
   skillSourcesApi.list = async () => structuredClone(sources);
+  skillSourcesApi.projectRepositories = async () => [];
+  skillSourcesApi.settings = async (_companyId, id, input) => {
+    const source = sources.find(item => item.id === id)!;
+    Object.assign(source, { automaticUpdates: input.automaticUpdates ?? source.automaticUpdates ?? true,
+      importNewSkills: input.importNewSkills ?? source.importNewSkills ?? false, revision: source.revision + 1 });
+    return structuredClone(source);
+  };
   const repositoryScenario = options.repositories ?? 'single';
   skillSourcesApi.repositories = async () => {
     if (repositoryScenario === 'loading') return new Promise(() => {});
@@ -188,7 +217,8 @@ export function installFixtures(empty: boolean, needsConnection: boolean, option
     if (!parsed) throw new Error('Enter an HTTPS GitHub repository or branch URL.');
     return {
       repositoryId: '123456', repositoryUrl: parsed.repositoryUrl, fullName: parsed.fullName,
-      trackingRef: input.trackingRef || parsed.trackingRef || 'main', commitSha: COMMIT, candidates: discoveryCandidates, warnings: [],
+      trackingRef: input.trackingRef || parsed.trackingRef || 'main', commitSha: COMMIT, candidates: input.packageMode === 'repository' && options.packageScenario ? repositoryCandidates(options.packageScenario) : discoveryCandidates, warnings: [],
+      packageMode: input.packageMode, ...(input.packageMode === 'repository' ? { repositoryPackage: repositoryFixture(options.packageScenario) } : {}),
     };
   };
   skillSourcesApi.discoverStream = async (companyId, input, onProgress, signal) => {
@@ -231,21 +261,23 @@ export function installFixtures(empty: boolean, needsConnection: boolean, option
     return result;
   };
   skillSourcesApi.preview = async (_companyId, input) => {
-    const file = inspection(input.skillPath).files.find(file => file.path === input.filePath);
+    const file = (input.packageMode === 'repository' ? repositoryFixture(options.packageScenario).files : inspection(input.skillPath).files).find(file => file.path === input.filePath);
     if (!file) throw new Error('File is not included in this package.');
-    return { file, content: packageContents[input.skillPath]![input.filePath]!, truncated: false, commitSha: input.commitSha };
+    return { file, content: input.packageMode === 'repository' ? repositoryContents[input.filePath]! : packageContents[input.skillPath]![input.filePath]!, truncated: false, commitSha: input.commitSha };
   };
   skillSourcesApi.create = async (_companyId, input) => {
     if (options.saving) await wait(3600000);
     const source = sourceFixture();
-    Object.assign(source, { id: `source-${sources.length + 1}`, repositoryUrl: input.repositoryUrl, fullName: input.repositoryUrl.replace("https://github.com/", ""), trackingRef: input.trackingRef || "main", connectionId: input.connectionId ?? null });
-    source.entries = source.entries.filter(entry => discoveryCandidates.some(candidate => candidate.path === entry.path)).map(entry => ({ ...entry, sourceId: source.id, skillId: null }));
+    Object.assign(source, { id: `source-${sources.length + 1}`, packageMode: input.packageMode, repositoryPackage: input.packageMode === 'repository' ? repositoryFixture(options.packageScenario) : null, repositoryUrl: input.repositoryUrl, fullName: input.repositoryUrl.replace("https://github.com/", ""), trackingRef: input.trackingRef || "main", connectionId: input.connectionId ?? null });
+    source.entries = repositoryCandidates(options.packageScenario).filter(entry => discoveryCandidates.some(candidate => candidate.path === entry.path)).map((entry, index) => ({ ...entry, id: `entry-${sources.length * 100 + index}`, sourceId: source.id, present: true, selection: 'new', skillId: null }));
     sources.push(source);
     return save(source, input.selectedPaths, input.excludedFolders ?? []);
   };
   skillSourcesApi.select = async (_companyId, id, input) => {
     const source = sources.find(item => item.id === id)!;
     source.connectionId = input.connectionId ?? null;
+    source.packageMode = input.packageMode ?? source.packageMode;
+    source.repositoryPackage = source.packageMode === 'repository' ? repositoryFixture(options.packageScenario) : null;
     return save(source, input.selectedPaths, input.excludedFolders);
   };
   skillSourcesApi.refresh = async (_companyId, id) => {
@@ -259,10 +291,12 @@ export function installFixtures(empty: boolean, needsConnection: boolean, option
     source.lastSuccessAt = new Date();
     return structuredClone({ source, imported: [], updated: [], unchanged: source.entries.filter(entry => entry.selection === "selected").length, warnings: [] });
   };
-  skillSourcesApi.disconnect = async (_companyId, id) => {
+  if (options.disconnected) sources.forEach(source => { source.enabled = false; });
+  skillSourcesApi.disconnect = async (_companyId, id, input) => {
     const source = sources.find(item => item.id === id)!;
-    source.enabled = false;
-    return structuredClone(source);
+    const count = source.entries.filter(entry => entry.skillId).length;
+    sources.splice(sources.findIndex(item => item.id === id), 1);
+    return { id, copiedCount: input.skills === 'copy' ? count : 0, deletedCount: input.skills === 'delete' ? count : 0 };
   };
   return () => {
     fixtureController.abort();

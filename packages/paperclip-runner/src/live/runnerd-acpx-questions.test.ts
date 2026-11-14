@@ -24,7 +24,7 @@ describe("ACPX questions through the shared runner transport", () => {
       [timing!.id]: { selectedOptionIds: [timing!.options![1]!.id] },
     } };
     expect(runtimeRequestResponse({ requestId: "question-1", requestKind: "elicitation", method: origin.method,
-      turnId: "turn", itemId: "item", status: "pending", prompt: "Interview", input: shown }, { action: "submit", response }, context)).toEqual({ action: "submit", response });
+      turnId: "turn", itemId: "item", status: "pending", prompt: "Interview", details: {}, input: shown }, { action: "submit", response }, context)).toEqual({ action: "submit", response });
     expect(form.accept(response)).toEqual({ action: "accept", content: { organization: "Garden club", goal: "Welcome note", timing: "later" } });
   });
   it("does not admit an invalid canonical question set", () => {

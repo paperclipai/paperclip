@@ -16,6 +16,7 @@ import {
 } from "@paperclipai/shared/worktree-port-registry";
 import { resolvePaperclipConfigPath, resolvePaperclipEnvPath } from "./paths.js";
 import { rewriteUrlPort } from "./url-utils.js";
+import { applyEmptyWorktreeSigningSecrets } from "./dev-runner-worktree.js";
 
 function nonEmpty(value: string | null | undefined): string | null {
   return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
@@ -454,6 +455,8 @@ export function maybeRepairLegacyWorktreeConfigAndEnvFiles(): {
   if (!context) {
     return { repairedConfig: false, repairedEnv: false };
   }
+
+  applyEmptyWorktreeSigningSecrets(path.resolve(path.dirname(context.configPath), ".."));
 
   process.env.PAPERCLIP_HOME = context.homeDir;
   process.env.PAPERCLIP_INSTANCE_ID = context.instanceId;

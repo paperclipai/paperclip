@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const mockApi = vi.hoisted(() => ({
   get: vi.fn(),
+  post: vi.fn(),
 }));
 
 vi.mock("./client", () => ({
@@ -19,6 +20,17 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
+describe("heartbeatsApi.cancel", () => {
+  it("sends an uncorrelated Stop so a run still waiting in line can be stopped", async () => {
+    // Correlated Stop (cancellationRequestId) is only for native runs; the
+    // server rejects it for a queued legacy run. Task Stop must not send it.
+    mockApi.post.mockReset();
+    mockApi.post.mockResolvedValue({ id: "waiting-run", status: "cancelled" });
+    await expect(heartbeatsApi.cancel("waiting-run")).resolves.toMatchObject({ status: "cancelled" });
+    expect(mockApi.post).toHaveBeenCalledWith("/heartbeat-runs/waiting-run/cancel", {});
+  });
+});
+
 describe("heartbeatsApi.list", () => {
   beforeEach(() => {
     mockApi.get.mockReset();
@@ -29,6 +41,11 @@ describe("heartbeatsApi.list", () => {
     await heartbeatsApi.list("company-1", undefined, 200, { summary: true });
 
     expect(mockApi.get).toHaveBeenCalledWith("/companies/company-1/heartbeat-runs?limit=200&summary=true");
+  });
+
+  it("bounds an omitted limit for agent history consumers", async () => {
+    await heartbeatsApi.list("company-1", "agent-1");
+    expect(mockApi.get).toHaveBeenCalledWith("/companies/company-1/heartbeat-runs?agentId=agent-1&limit=200");
   });
 
   it("keeps full row requests as the default for run-history screens", async () => {

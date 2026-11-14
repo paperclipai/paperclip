@@ -3,6 +3,7 @@ import {
   assertDurableChatWakeupReceipt,
   createDurableChatWakeupRequest,
 } from "./durable-chat-wakeup.js";
+import { QUEUED_MESSAGES_DELIVERED_REASON } from "../modules/wake-queue/index.js";
 
 type Action = typeof chatActions.$inferSelect;
 type Receipt = typeof agentWakeupRequests.$inferSelect;
@@ -125,6 +126,10 @@ export function resolveInboundWakeReceipt(
   const declined =
     ["skipped", "cancelled", "failed"].includes(owner.status) ||
     ["skipped", "cancelled", "failed"].includes(receipt.status);
+  // A completed run already received this message and answered it. Saying
+  // "not started" would be wrong; it keeps the same silence as a promotion.
+  if (declined && owner.status === "cancelled" && owner.error === QUEUED_MESSAGES_DELIVERED_REASON)
+    return null;
   if (declined)
     return owner.runId || receipt.runId
       ? null

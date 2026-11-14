@@ -1,3 +1,4 @@
+import { observeCheckoutActivity } from "./checkout-activity.js";
 import type { Page } from "@playwright/test";
 import { randomUUID } from "node:crypto";
 import { contextIntegrityScenario, isAssignedSkillContext } from "./context-integrity-cases.js";
@@ -179,8 +180,8 @@ export async function runContextIntegrityFlow(input: {
       ? `${scenario.prompt}\n\nUse /${scenario.skillKey} for this request.`
       : scenario.prompt;
     skillRequestText = taskPrompt;
-    await createTaskThroughUi({ page, issuePrefix: fixtures.company.issuePrefix!, agentName: fixtures.agent.name, title: execution.task.buildTitle(nonce), prompt: taskPrompt, workMode: "standard" });
-    issue = await pollUntil({ label: "context-integrity task created", deadlineAt: input.deadlineAt, load: async () => (await api.get<Row[]>(`${companyPath}/issues?limit=100`)).find((row) => row.title === execution.task.buildTitle(nonce)), accept: Boolean });
+    const createdTask = await createTaskThroughUi({ page, issuePrefix: fixtures.company.issuePrefix!, agentName: fixtures.agent.name, title: execution.task.buildTitle(nonce), prompt: taskPrompt, workMode: "standard" });
+    issue = await pollUntil({ label: "context-integrity task created", deadlineAt: input.deadlineAt, load: async () => (await api.get<Row[]>(`${companyPath}/issues?limit=100`)).find((row) => row.id === createdTask.issueId), accept: Boolean });
     if (!issue) throw new Error("Missing context-integrity task");
     if (scenario.id === "ordered-comment-continuation") {
       await pollUntil({
@@ -221,6 +222,21 @@ export async function runContextIntegrityFlow(input: {
       await snapshot("initial");
     }
     await snapshot("final");
+    if (execution.suite.id === "stock-harness" && execution.profile.generation === "legacy") {
+      // Successful checkout HTTP calls emit activity even for an idempotent
+      // same-run claim. Server pre-dispatch checkout does not use that route.
+      // Keep this observation separate from the unchanged task-outcome oracle.
+      let checkoutActivity: unknown;
+      try {
+        checkoutActivity = observeCheckoutActivity({
+          companyId: fixtures.company.id, issueId: issue.id, agentId: fixtures.agent.id,
+          runs, activity: await api.get<Row[]>(`/api/issues/${issue.id}/activity`),
+        });
+      } catch {
+        checkoutActivity = { schema: "paperclip.checkout-activity.v1", status: "unavailable" };
+      }
+      await input.evidence("checkout-activity.json", checkoutActivity);
+    }
     const checks = gradeContextIntegrity({ id: scenario.id, marker: scenario.marker, comments: scenario.comments, checkpoints });
     const failures = checks.filter((check) => !check.passed);
     if (failures.length) throw new Error(`Context-integrity matcher failures: ${failures.map((failure) => `${failure.id}: ${failure.detail}`).join("; ")}`);

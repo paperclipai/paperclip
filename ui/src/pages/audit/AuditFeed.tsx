@@ -2,8 +2,8 @@ import { AgentAvatar } from "@/components/AgentAvatar";
 import { useEffect, useMemo, useState } from "react";
 import { useInfiniteQuery, useQuery } from "@tanstack/react-query";
 import { Download, ScrollText, ShieldAlert } from "lucide-react";
-import type { Agent } from "@paperclipai/shared";
-import { Link } from "@/lib/router";
+import type { Agent, CaseWorkflowTransition } from "@paperclipai/shared";
+import { Link, useCaseHref } from "@/lib/router";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -24,7 +24,10 @@ import { auditApi, type AuditActionRecord, type AuditActionFilters } from "@/api
 import { agentsApi } from "@/api/agents";
 import { accessApi } from "@/api/access";
 import { ApiError } from "@/api/client";
+import { describeError } from "@/api/errors";
+import { QueryErrorState, useQueryView } from "@/components/QueryView";
 import { useToastActions } from "@/context/ToastContext";
+import { instanceSettingsApi } from "@/api/instanceSettings";
 
 const PAGE_SIZE = 50;
 const ALL = "__all";
@@ -33,6 +36,7 @@ const ALL = "__all";
 const ACTION_DOMAINS: { value: string; label: string }[] = [
   { value: ALL, label: "All actions" },
   { value: "issue.", label: "Tasks" },
+  { value: "case.", label: "Cases" },
   { value: "agent.", label: "Agents" },
   { value: "heartbeat.", label: "Runs" },
   { value: "approval.", label: "Approvals" },
@@ -47,6 +51,7 @@ const ACTION_DOMAINS: { value: string; label: string }[] = [
 const ENTITY_TYPES: { value: string; label: string }[] = [
   { value: ALL, label: "All entities" },
   { value: "issue", label: "Task" },
+  { value: "case", label: "Case" },
   { value: "agent", label: "Agent" },
   { value: "heartbeat_run", label: "Run" },
   { value: "routine", label: "Routine" },
@@ -86,6 +91,13 @@ export interface AuditFeedProps {
   /** Optional controlled action prefix, used by links from connection testing. */
   actionDomain?: string;
   onActionDomainChange?: (actionDomain: string) => void;
+  /** Shareable resource filter, independent of attribution permission. */
+  entityType?: string;
+  onEntityTypeChange?: (entityType: string) => void;
+  entityId?: string;
+  onEntityIdChange?: (entityId: string) => void;
+  /** Reset controlled URL filters together, preserving any locked agent/run. */
+  onClearFilters?: () => void;
 }
 
 function toStartIso(value: string): string | undefined {
@@ -100,7 +112,7 @@ function toEndIso(value: string): string | undefined {
   return Number.isNaN(date.getTime()) ? undefined : date.toISOString();
 }
 
-/** Actor avatar + name — agents render their icon glyph, humans their avatar. */
+/** Actor avatar + name, using the same identity as the rest of the product. */
 function AuditActor({
   record,
   agentMap,
@@ -121,9 +133,7 @@ function AuditActor({
   if (agent) {
     return (
       <span className="inline-flex min-w-0 items-center gap-1.5" title={agent.name}>
-        <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-muted text-muted-foreground">
-          <AgentAvatar agent={agent} size={16} className="h-3 w-3"/>
-        </span>
+        <AgentAvatar agent={agent} size={20} />
         <span className="truncate font-medium text-foreground">{agent.name}</span>
       </span>
     );
@@ -160,6 +170,15 @@ function AuditActor({
  * that would duplicate the verb.
  */
 function AuditEntityNode({ record }: { record: AuditActionRecord }) {
+  const caseHref = useCaseHref();
+  if (record.entityType === "case") {
+    const caseRef = record.entity.case;
+    return (
+      <Link to={caseHref(caseRef?.identifier ?? record.entityId)} className="font-medium text-primary hover:underline">
+        {caseRef ? `${caseRef.identifier} · ${caseRef.title}` : "the case"}
+      </Link>
+    );
+  }
   const { issue, document } = record.entity;
   const issueRef = issue?.identifier ?? issue?.id ?? null;
 
@@ -193,10 +212,12 @@ function AuditRow({
   record,
   agentMap,
   userProfileMap,
+  casesEnabled,
 }: {
   record: AuditActionRecord;
   agentMap: Map<string, Agent>;
   userProfileMap: Map<string, CompanyUserProfile>;
+  casesEnabled: boolean;
 }) {
   const verb = formatActivityVerb(record.action, record.details, { agentMap, userProfileMap });
   const responsible = record.responsibleUserId ? userProfileMap.get(record.responsibleUserId) : null;
@@ -209,6 +230,8 @@ function AuditRow({
   const excerpt = record.entity.comment?.excerpt?.trim();
   // Show the document key only when it isn't already the linked entity node.
   const documentKey = record.entity.issue && record.entity.document ? record.entity.document.key : null;
+  const workflowTransition = casesEnabled && record.action.startsWith("case.handoff_")
+    ? record.details?.workflowTransition as CaseWorkflowTransition | null | undefined : null;
 
   return (
     <li className="px-4 py-3 text-sm">
@@ -224,6 +247,10 @@ function AuditRow({
               “{excerpt}”
             </p>
           ) : null}
+          {workflowTransition?.from && workflowTransition?.to ? <p className="text-xs text-muted-foreground">
+            {workflowTransition.from.name ?? "Case instructions"}{workflowTransition.from.phase ? ` · ${workflowTransition.from.phase}` : ""}
+            {" → "}{workflowTransition.to.name ?? "Case instructions"} · {workflowTransition.to.phase}
+          </p> : null}
           {documentKey ? (
             <p className="text-xs text-muted-foreground">
               Document <span className="font-mono text-(length:--text-micro)">{documentKey}</span>
@@ -289,7 +316,13 @@ export function AuditFeed({
   onModeChange,
   actionDomain: controlledActionDomain,
   onActionDomainChange,
+  entityType: controlledEntityType,
+  onEntityTypeChange,
+  entityId: controlledEntityId,
+  onEntityIdChange,
+  onClearFilters,
 }: AuditFeedProps) {
+  const caseHref = useCaseHref();
   const { pushToast } = useToastActions();
   const [agent, setAgent] = useState<string>(ALL);
   const [responsibleUser, setResponsibleUser] = useState<string>(ALL);
@@ -299,7 +332,21 @@ export function AuditFeed({
     setLocalActionDomain(next);
     onActionDomainChange?.(next);
   };
-  const [entityType, setEntityType] = useState<string>(ALL);
+  const [localEntityType, setLocalEntityType] = useState<string>(ALL);
+  const entityType = controlledEntityType ?? localEntityType;
+  const setEntityType = (next: string) => {
+    setLocalEntityType(next);
+    onEntityTypeChange?.(next);
+  };
+  const [localEntityId, setLocalEntityId] = useState("");
+  const entityId = controlledEntityId ?? localEntityId;
+  const [entityIdDraft, setEntityIdDraft] = useState(entityId);
+  useEffect(() => setEntityIdDraft(entityId), [entityId]);
+  const setEntityId = (next: string) => {
+    setLocalEntityId(next);
+    setEntityIdDraft(next);
+    onEntityIdChange?.(next);
+  };
   const [dateFrom, setDateFrom] = useState<string>("");
   const [dateTo, setDateTo] = useState<string>("");
   const [exporting, setExporting] = useState(false);
@@ -312,7 +359,6 @@ export function AuditFeed({
   const userDirectory = useQuery({
     queryKey: queryKeys.access.companyUserDirectory(companyId),
     queryFn: () => accessApi.listUserDirectory(companyId),
-    retry: false,
   });
 
   const agentMap = useMemo(
@@ -337,7 +383,7 @@ export function AuditFeed({
     responsibleUserId: responsibleUser === ALL ? undefined : responsibleUser,
     action: actionDomain === ALL ? undefined : actionDomain,
     entityType: lockedEntity?.type ?? (entityType === ALL ? undefined : entityType),
-    entityId: lockedEntity?.id,
+    entityId: lockedEntity?.id ?? (entityType === "case" ? entityId.trim() || undefined : undefined),
     from: toStartIso(dateFrom),
     to: toEndIso(dateTo),
   };
@@ -370,9 +416,11 @@ export function AuditFeed({
       auditApi.listAgentActions(companyId, { ...filters, limit: PAGE_SIZE, cursor: pageParam ?? undefined }),
     initialPageParam: null as string | null,
     getNextPageParam: (lastPage) => lastPage.nextCursor ?? undefined,
-    retry: (count, error) => !(error instanceof ApiError && error.status === 403) && count < 2,
+    // The shared retry policy already covers this: a 403 never retries, a
+    // transient failure pauses across an outage and retries with backoff.
   });
 
+  const feedView = useQueryView(feed);
   const permissionDenied = feed.error instanceof ApiError && feed.error.status === 403;
   const hasBasicPage = feed.data?.pages.some((page) => page.accessTier === "basic") ?? false;
   const hasFullPage = feed.data?.pages.some((page) => page.accessTier === "full") ?? false;
@@ -386,9 +434,15 @@ export function AuditFeed({
     const visible = hasBasicPage ? pages.filter((page) => page.accessTier !== "full") : pages;
     return visible.flatMap((page) => page.items);
   }, [feed.data, hasBasicPage]);
+  const { data: experimentalSettings } = useQuery({
+    queryKey: queryKeys.instance.experimentalSettings,
+    queryFn: () => instanceSettingsApi.getExperimental(),
+    enabled: items.some(item => Boolean(item.details?.workflowTransition)),
+  });
   // Access may be revoked between cursor requests. Treat the least-privileged
   // page as authoritative until every cached page has been fetched again.
   const accessTier = hasBasicPage ? "basic" : feed.data?.pages[0]?.accessTier;
+  const scopedCase = lockedEntity?.type === "case" ? items.find(item => item.entity.case)?.entity.case : null;
   const hasMixedAccessTiers = hasBasicPage && hasFullPage;
   const canUseAdvancedControls = lockedAgentId || lockedRunId
     ? true
@@ -450,10 +504,18 @@ export function AuditFeed({
   const clearFilters = () => {
     setAgent(ALL);
     setResponsibleUser(ALL);
-    setActionDomain(ALL);
-    setEntityType(ALL);
+    setLocalActionDomain(ALL);
+    setLocalEntityType(ALL);
+    setLocalEntityId("");
+    setEntityIdDraft("");
     setDateFrom("");
     setDateTo("");
+    if (onClearFilters) onClearFilters();
+    else {
+      onActionDomainChange?.(ALL);
+      onEntityTypeChange?.(ALL);
+      onEntityIdChange?.("");
+    }
   };
 
   const handleExport = async () => {
@@ -484,7 +546,7 @@ export function AuditFeed({
     } catch (error) {
       pushToast({
         title: "Export failed",
-        body: error instanceof Error ? error.message : "Could not export the audit log.",
+        body: describeError(error, { action: "export the audit log" }).body,
         tone: "error",
       });
     } finally {
@@ -512,8 +574,8 @@ export function AuditFeed({
       ) : null}
 
       {showModeToggle ? (
-        <Tabs value={resolvedMode} onValueChange={(value) => onModeChange?.(value as AuditFeedMode)}>
-          <TabsList aria-label="Activity scope">
+        <Tabs data-canonical-toolbar="audit-scope" value={resolvedMode} onValueChange={(value) => onModeChange?.(value as AuditFeedMode)}>
+          <TabsList className="design-view-toggle" aria-label="Activity scope">
             <TabsTrigger value="all">Activity</TabsTrigger>
             <TabsTrigger
               value="agents"
@@ -532,11 +594,13 @@ export function AuditFeed({
             ? `Scoped to run ${lockedRunId.slice(0, 8)}`
             : lockedAgentId
               ? "Scoped to one agent"
-              : `Scoped to ${lockedEntity?.label ?? lockedEntity?.type ?? "entity"}`}
+              : scopedCase
+                ? <>Case <Link to={caseHref(scopedCase.identifier)} className="font-medium text-primary hover:underline">{scopedCase.identifier} · {scopedCase.title}</Link></>
+                : `Scoped to ${lockedEntity?.label ?? lockedEntity?.type ?? "entity"}`}
         </div>
       ) : null}
 
-      <div className="flex flex-wrap items-end gap-3 border-y border-border py-3">
+      <div data-canonical-toolbar="audit-activity" role="toolbar" aria-label="Audit filters" className="flex flex-wrap items-end gap-3 border-y border-border py-3">
         {canUseAdvancedControls && !lockedAgentId && !lockedRunId ? (
           <label className="grid gap-1 text-(length:--text-micro) font-medium text-muted-foreground">
             <span>Agent</span>
@@ -606,6 +670,29 @@ export function AuditFeed({
             </Select>
           </label>
         ) : null}
+        {!lockedEntity && entityType === "case" ? (
+          <label className="grid gap-1 text-(length:--text-micro) font-medium text-muted-foreground">
+            <span>Case</span>
+            <Input
+              type="search"
+              aria-label="Case ID or identifier"
+              placeholder="CAS-C1"
+              value={entityIdDraft}
+              onChange={event => {
+                setEntityIdDraft(event.target.value);
+                if (!event.target.value) setEntityId("");
+              }}
+              onBlur={() => setEntityId(entityIdDraft.trim())}
+              onKeyDown={event => {
+                if (event.key === "Enter") {
+                  event.preventDefault();
+                  setEntityId(entityIdDraft.trim());
+                }
+              }}
+              className="w-44 font-mono"
+            />
+          </label>
+        ) : null}
         <label className="grid gap-1 text-(length:--text-micro) font-medium text-muted-foreground">
           <span>From</span>
           <Input
@@ -653,21 +740,17 @@ export function AuditFeed({
             Refreshing audit access…
           </CardContent>
         </Card>
-      ) : feed.isLoading ? (
+      ) : feedView.kind === "loading" || feedView.kind === "reconnecting" ? (
         <Card>
           <CardContent className="py-14 text-center text-sm text-muted-foreground">Loading…</CardContent>
         </Card>
-      ) : feed.error ? (
-        <Card>
-          <CardContent className="flex flex-col items-center gap-3 py-14 text-center">
-            <p className="text-sm text-muted-foreground">
-              {feed.error instanceof Error ? feed.error.message : "Failed to load the audit log."}
-            </p>
-            <Button variant="outline" size="sm" onClick={() => feed.refetch()}>
-              Try again
-            </Button>
-          </CardContent>
-        </Card>
+      ) : feedView.kind === "error" ? (
+        <QueryErrorState
+          error={feedView.error}
+          action="load the audit log"
+          onRetry={feedView.retry}
+          retrying={feedView.isFetching}
+        />
       ) : items.length === 0 ? (
         <Card>
           <CardContent className="flex flex-col items-center gap-3 py-14 text-center">
@@ -700,6 +783,7 @@ export function AuditFeed({
                 record={record}
                 agentMap={agentMap}
                 userProfileMap={userProfileMap}
+                casesEnabled={experimentalSettings?.enableCases === true}
               />
             ))}
           </ul>

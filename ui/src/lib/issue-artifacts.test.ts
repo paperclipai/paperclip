@@ -4,9 +4,21 @@ import {
   documentDisplayTitle,
   getAttachmentBackedWorkProductAttachmentIds,
   isAgentAttachment,
+  isGeneralTaskDocumentKey,
   selectAgentArtifactAttachments,
+  selectArtifactAttachments,
   workProductHref,
 } from "./issue-artifacts";
+
+it.each(["plan", " Plan ", "artifact-review-output", "pipeline-case-body", "continuation-summary"])("keeps %s out of general document authoring", key => {
+  expect(isGeneralTaskDocumentKey(key)).toBe(false);
+});
+it("allows ordinary general document keys", () => {
+  expect(isGeneralTaskDocumentKey("notes")).toBe(true);
+});
+it.each([undefined, null])("treats a missing document key (%s) as not general", key => {
+  expect(isGeneralTaskDocumentKey(key)).toBe(false);
+});
 
 function makeAttachment(overrides: Partial<IssueAttachment> & { id: string }): IssueAttachment {
   return {
@@ -131,6 +143,16 @@ describe("selectAgentArtifactAttachments", () => {
       originalFilename: "report.md",
     };
     expect(selectAgentArtifactAttachments([promoted], [workProduct])).toEqual([]);
+  });
+});
+
+describe("selectArtifactAttachments", () => {
+  it("includes files from people while deduping promoted files", () => {
+    const promotedId = "00000000-0000-4000-8000-000000000001";
+    const user = makeAttachment({ id: "user-file", createdByUserId: "user-1", issueCommentId: "comment-1" });
+    const agent = makeAttachment({ id: "agent-file", createdByAgentId: "agent-1" });
+    const promoted = makeAttachment({ id: promotedId, createdByUserId: "user-1" });
+    expect(selectArtifactAttachments([user, agent, promoted], [makePromotingWorkProduct(promotedId)])).toEqual([user, agent]);
   });
 });
 

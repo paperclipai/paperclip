@@ -1,8 +1,11 @@
+import { AccountQuotaPanels } from "./AccountQuotaPanels";
+import { quotaUnavailableMessage } from "@/lib/quota-refresh";
 import { useMemo } from "react";
-import type { CostByProviderModel, CostWindowSpendRow, QuotaWindow } from "@paperclipai/shared";
+import type { CostByProviderModel, CostWindowSpendRow, QuotaWindow, ProviderQuotaResult } from "@paperclipai/shared";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
 import { QuotaBar } from "./QuotaBar";
+import { CostAmount } from "./CostAmount";
 import { ClaudeSubscriptionPanel } from "./ClaudeSubscriptionPanel";
 import { CodexSubscriptionPanel } from "./CodexSubscriptionPanel";
 import {
@@ -21,6 +24,8 @@ interface ProviderQuotaCardProps {
   rows: CostByProviderModel[];
   /** company monthly budget in cents (0 means unlimited) */
   budgetMonthlyCents: number;
+  /** Only compare a current-month report with the monthly budget. */
+  showBudgetUtilization?: boolean;
   /** total company spend in this period in cents, all providers */
   totalCompanySpendCents: number;
   /** spend in the current calendar week in cents, this provider only */
@@ -30,6 +35,8 @@ interface ProviderQuotaCardProps {
   showDeficitNotch: boolean;
   /** live subscription quota windows from the provider's own api */
   quotaWindows?: QuotaWindow[];
+  quotaAccounts?: ProviderQuotaResult[];
+  quotaRequestFailed?: boolean;
   quotaError?: string | null;
   quotaSource?: string | null;
   quotaLoading?: boolean;
@@ -39,10 +46,13 @@ export function ProviderQuotaCard({
   provider,
   rows,
   budgetMonthlyCents,
+  showBudgetUtilization = true,
   totalCompanySpendCents,
   weekSpendCents,
   windowRows,
   showDeficitNotch,
+  quotaAccounts,
+  quotaRequestFailed,
   quotaWindows = [],
   quotaError = null,
   quotaSource = null,
@@ -54,24 +64,29 @@ export function ProviderQuotaCard({
   const totals = useMemo(() => {
     let inputTokens = 0, outputTokens = 0, costCents = 0;
     let apiRunCount = 0, subRunCount = 0, subInputTokens = 0, subOutputTokens = 0;
+    let eventCount = 0, estimatedEventCount = 0, unpricedEventCount = 0;
     for (const r of rows) {
-      inputTokens += r.inputTokens;
+      inputTokens += r.inputTokens + r.cachedInputTokens;
       outputTokens += r.outputTokens;
       costCents += r.costCents;
+      eventCount += r.eventCount ?? 0;
+      estimatedEventCount += r.estimatedEventCount ?? 0;
+      unpricedEventCount += r.unpricedEventCount ?? 0;
       apiRunCount += r.apiRunCount;
       subRunCount += r.subscriptionRunCount;
-      subInputTokens += r.subscriptionInputTokens;
+      subInputTokens += r.subscriptionInputTokens + r.subscriptionCachedInputTokens;
       subOutputTokens += r.subscriptionOutputTokens;
     }
     const totalTokens = inputTokens + outputTokens;
     const subTokens = subInputTokens + subOutputTokens;
-    // denominator: api-billed tokens (from cost_events) + subscription tokens (from heartbeat_runs)
-    const allTokens = totalTokens + subTokens;
+    // Subscription tokens are already included in the ledger totals.
+    const allTokens = totalTokens;
     return {
       totalInputTokens: inputTokens,
       totalOutputTokens: outputTokens,
       totalTokens,
       totalCostCents: costCents,
+      eventCount, estimatedEventCount, unpricedEventCount,
       totalApiRuns: apiRunCount,
       totalSubRuns: subRunCount,
       totalSubInputTokens: subInputTokens,
@@ -94,13 +109,8 @@ export function ProviderQuotaCard({
     subSharePct,
   } = totals;
 
-  // budget bars: use this provider's own spend vs its pro-rata share of budget
-  // pro-rata: if a provider is 40% of total spend, it gets 40% of the budget allocated.
-  // falls back to raw provider spend vs total budget when totalCompanySpend is 0.
-  const providerBudgetShare =
-    budgetMonthlyCents > 0 && totalCompanySpendCents > 0
-      ? (totalCostCents / totalCompanySpendCents) * budgetMonthlyCents
-      : budgetMonthlyCents;
+  // Each biller contributes to the company budget; there is no per-biller allocation.
+  const providerBudgetShare = budgetMonthlyCents;
 
   const budgetPct =
     providerBudgetShare > 0
@@ -112,7 +122,7 @@ export function ProviderQuotaCard({
   const weekPct =
     weeklyBudgetShare > 0 ? Math.min(100, (weekSpendCents / weeklyBudgetShare) * 100) : 0;
 
-  const hasBudget = budgetMonthlyCents > 0;
+  const hasBudget = showBudgetUtilization && budgetMonthlyCents > 0;
 
   // memoized so the Map and max are not reconstructed on every parent render tick
   const windowMap = useMemo(
@@ -127,7 +137,7 @@ export function ProviderQuotaCard({
   const isCodexQuotaPanel = provider === "openai" && quotaSource?.startsWith("codex-");
   const supportsSubscriptionQuota = provider === "anthropic" || provider === "openai";
   const showSubscriptionQuotaSection =
-    supportsSubscriptionQuota && (quotaLoading || quotaWindows.length > 0 || quotaError != null);
+    supportsSubscriptionQuota && (quotaLoading || Boolean(quotaAccounts?.length) || quotaWindows.length > 0 || quotaError != null);
 
   return (
     <Card>
@@ -152,9 +162,10 @@ export function ProviderQuotaCard({
               )}
             </CardDescription>
           </div>
-          <span className="text-xl font-bold tabular-nums shrink-0">
-            {formatCents(totalCostCents)}
-          </span>
+          <div className="text-xl shrink-0">
+            <CostAmount costCents={totalCostCents} eventCount={totals.eventCount}
+              estimatedEventCount={totals.estimatedEventCount} unpricedEventCount={totals.unpricedEventCount} showUnavailableCount />
+          </div>
         </div>
       </CardHeader>
 
@@ -165,7 +176,7 @@ export function ProviderQuotaCard({
               label="Period spend"
               percentUsed={budgetPct}
               leftLabel={formatCents(totalCostCents)}
-              rightLabel={`${Math.round(budgetPct)}% of allocation`}
+              rightLabel={`${Math.round(budgetPct)}% of company budget`}
               showDeficitNotch={showDeficitNotch}
             />
             <QuotaBar
@@ -192,7 +203,7 @@ export function ProviderQuotaCard({
                   // omit windows with no data rather than showing false $0.00 zeros
                   if (!row) return null;
                   const cents = row.costCents;
-                  const tokens = row.inputTokens + row.outputTokens;
+                  const tokens = row.inputTokens + row.cachedInputTokens + row.outputTokens;
                   const barPct = maxWindowCents > 0 ? (cents / maxWindowCents) * 100 : 0;
                   return (
                     <div key={w} className="space-y-1">
@@ -261,7 +272,7 @@ export function ProviderQuotaCard({
             <div className="border-t border-border" />
             <div className="space-y-3">
               {rows.map((row) => {
-                const rowTokens = row.inputTokens + row.outputTokens;
+                const rowTokens = row.inputTokens + row.cachedInputTokens + row.outputTokens;
                 const tokenPct = totalTokens > 0 ? (rowTokens / totalTokens) * 100 : 0;
                 const costPct = totalCostCents > 0 ? (row.costCents / totalCostCents) * 100 : 0;
                 return (
@@ -321,6 +332,8 @@ export function ProviderQuotaCard({
               </div>
               {quotaLoading ? (
                 <QuotaPanelSkeleton />
+              ) : quotaAccounts?.length ? (
+                <AccountQuotaPanels accounts={quotaAccounts} failed={quotaRequestFailed} />
               ) : isClaudeQuotaPanel ? (
                 <ClaudeSubscriptionPanel windows={quotaWindows} source={quotaSource} error={quotaError} />
               ) : isCodexQuotaPanel ? (
@@ -328,8 +341,8 @@ export function ProviderQuotaCard({
               ) : (
                 <>
                   {quotaError ? (
-                    <p className="text-xs text-destructive">
-                      {quotaError}
+                    <p role="status" className="text-xs text-muted-foreground">
+                      {quotaUnavailableMessage(quotaWindows.length > 0)}
                     </p>
                   ) : null}
                   <div className="space-y-2.5">

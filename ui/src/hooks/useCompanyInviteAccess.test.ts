@@ -27,14 +27,14 @@ describe("canInviteCompanyMembers", () => {
     expect(canInviteCompanyMembers(null, snapshot({ isInstanceAdmin: true }))).toBe(true);
   });
 
-  it.each(["owner", "admin"] as const)("passes an active company %s", (membershipRole) => {
+  it.each(["owner", "admin", "operator", "member"] as const)("passes an active company %s", (membershipRole) => {
     const access = snapshot({
       memberships: [{ companyId: "company-1", membershipRole, status: "active" }],
     });
     expect(canInviteCompanyMembers("company-1", access)).toBe(true);
   });
 
-  it.each(["operator", "viewer", "member", null] as const)("rejects a company %s", (membershipRole) => {
+  it.each(["viewer", null] as const)("rejects a company %s", (membershipRole) => {
     const access = snapshot({
       memberships: [{ companyId: "company-1", membershipRole, status: "active" }],
     });

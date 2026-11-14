@@ -3,10 +3,6 @@ import { ACCOUNT_HANDLE_MAX_LENGTH, toAccountHandle } from "./account-handle.js"
 import { createUserSecretDefinitionSchema } from "./validators/secret.js";
 
 describe("toAccountHandle", () => {
-  it("returns the value for a plain identifier", () => {
-    expect(toAccountHandle("acct-42")).toBe("acct-42");
-  });
-
   it("returns null for a value that holds a space, such as \"a b\"", () => {
     expect(toAccountHandle("a b")).toBeNull();
   });

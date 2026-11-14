@@ -1,3 +1,4 @@
+import { generateKeyPairSync, sign, verify } from "node:crypto";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { AdapterExecutionContext } from "@paperclipai/adapter-utils";
 import { createPromptContextFixture } from "@paperclipai/adapter-utils/test-fixtures/prompt-context";
@@ -264,6 +265,39 @@ describe("cursor_cloud execute", () => {
         expect.stringContaining('"type":"cursor_cloud.result"'),
       ]),
     );
+  });
+
+  it("delivers the assigned identity to the managed cloud environment without exposing it in prompts or metadata", async () => {
+    const keys = generateKeyPairSync("ed25519");
+    const identity = {
+      keyId: "sha256:assigned-identity",
+      publicKeyPem: keys.publicKey.export({ type: "spki", format: "pem" }).toString(),
+      privateKeyPem: keys.privateKey.export({ type: "pkcs8", format: "pem" }).toString(),
+    };
+    const sdkAgent = createMockSdkAgent();
+    createMock.mockResolvedValue(sdkAgent);
+    const ctx = createContext({ agentIdentity: identity });
+    ctx.config.env = {
+      CURSOR_API_KEY: "cursor-secret",
+      PAPERCLIP_AGENT_KEY_ID: "configured-override",
+      PAPERCLIP_AGENT_PRIVATE_KEY: "configured-override",
+      paperclip_agent_private_key: "configured-override",
+    };
+
+    await execute(ctx);
+
+    const env = createMock.mock.calls[0]?.[0]?.cloud?.envVars;
+    expect(env).toMatchObject({
+      PAPERCLIP_AGENT_KEY_ID: identity.keyId,
+      PAPERCLIP_AGENT_PUBLIC_KEY: identity.publicKeyPem,
+      PAPERCLIP_AGENT_PRIVATE_KEY: identity.privateKeyPem,
+    });
+    expect(env).not.toHaveProperty("paperclip_agent_private_key");
+    const challenge = Buffer.from("managed cloud identity");
+    expect(verify(null, challenge, identity.publicKeyPem,
+      sign(null, challenge, env.PAPERCLIP_AGENT_PRIVATE_KEY))).toBe(true);
+    const privateBody = identity.privateKeyPem.split("\n")[1];
+    expect(JSON.stringify([ctx.meta, ctx.logs, sdkAgent.send.mock.calls])).not.toContain(privateBody);
   });
 
   it("omits empty environment values while preserving nonempty values exactly", async () => {

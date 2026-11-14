@@ -68,9 +68,9 @@ export async function runInstructionPersistenceFlow(input: {
   let issue: Row = {};
   let runs: Row[] = [];
   async function create(title: string, prompt: string) {
-    await createTaskThroughUi({ page, issuePrefix: fixtures.company.issuePrefix!, agentName: fixtures.agent.name, title, prompt, workMode: "standard", projectName: fixtures.project?.name });
+    const createdTask = await createTaskThroughUi({ page, issuePrefix: fixtures.company.issuePrefix!, agentName: fixtures.agent.name, title, prompt, workMode: "standard", projectName: fixtures.project?.name });
     const found = await pollUntil({ label: `instruction task ${title}`, deadlineAt: input.deadlineAt,
-      load: async () => (await api.get<Row[]>(`/api/companies/${fixtures.company.id}/issues?limit=100`)).find(row => row.title === title), accept: row => Boolean(row) });
+      load: async () => (await api.get<Row[]>(`/api/companies/${fixtures.company.id}/issues?limit=100`)).find(row => row.id === createdTask.issueId), accept: row => Boolean(row) });
     if (!found) throw new Error("Browser-created instruction task missing");
     issue = found;
     input.observe(issue, runs);

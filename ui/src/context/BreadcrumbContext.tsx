@@ -22,6 +22,10 @@ export interface Breadcrumb {
   trailing?: ReactNode;
   /** Stable identity for the action, following leadingKey semantics. */
   trailingKey?: string;
+  /** Optional control that replaces the visible label and its leading/trailing nodes. */
+  control?: ReactNode;
+  /** Stable identity for the control, following leadingKey semantics. */
+  controlKey?: string;
 }
 
 interface BreadcrumbContextValue {
@@ -58,6 +62,7 @@ function breadcrumbsEqual(left: Breadcrumb[], right: Breadcrumb[]) {
       || left[index]?.identifier !== right[index]?.identifier
       || left[index]?.leadingKey !== right[index]?.leadingKey
       || left[index]?.trailingKey !== right[index]?.trailingKey
+      || left[index]?.controlKey !== right[index]?.controlKey
     ) {
       return false;
     }

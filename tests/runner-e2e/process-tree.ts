@@ -1,9 +1,13 @@
+import { spawn, type ChildProcess } from "node:child_process";
+import path from "node:path";
+
 export interface ProcessObservation {
   pid: number;
   parentPid: number;
   processGroupId: number;
   started: string;
   kind: string;
+  state?: string;
 }
 
 export interface ObservedProcessGroup {
@@ -139,4 +143,105 @@ export function refreshContinuouslyLiveProcessGroups(
         ]
       : [];
   });
+}
+
+const diagnosticProcessKinds = new Set([
+  "bash",
+  "chrome",
+  "codex",
+  "google-chrome",
+  "node",
+  "paperclip-runnerd",
+  "playwright",
+  "pnpm",
+  "postgres",
+  "sh",
+  "tsx",
+]);
+
+export function diagnosticProcessKind(command: string, platform: NodeJS.Platform = process.platform) {
+  const name = path.basename(command);
+  // Linux comm is limited to 15 bytes. This is a diagnostic role only;
+  // preservation still requires the trusted run PID/start/group and ancestry.
+  if (platform === "linux" && name === "paperclip-runne") return "paperclip-runnerd";
+  return diagnosticProcessKinds.has(name) ? name : "other";
+}
+
+export async function readProcessTable(
+  startInspector?: () => ChildProcess,
+  onFailure?: (reason: string) => void,
+): Promise<ProcessObservation[] | null> {
+  if (process.platform === "win32") {
+    return null;
+  }
+  return await new Promise<ProcessObservation[] | null>((resolve) => {
+    const inspector = startInspector ? startInspector() : spawn(
+      "ps",
+      ["-e", "-o", "pid=,ppid=,pgid=,lstart=,stat=,comm="],
+      {
+        env: { PATH: "/usr/bin:/bin", LANG: "C", LC_ALL: "C" },
+        stdio: ["ignore", "pipe", "pipe"],
+        // A wrapper-group shutdown must not interrupt its own bounded audit.
+        detached: true,
+      },
+    );
+    let output = "";
+    let settled = false;
+    let truncated = false;
+    let errorOutput = "";
+    const finish = (value: ProcessObservation[] | null, reason?: string) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(inspectionTimeout);
+      if (value === null && reason) onFailure?.(reason);
+      resolve(value);
+    };
+    const inspectionTimeout = setTimeout(() => {
+      inspector.kill("SIGKILL");
+      finish(null, "ps did not finish within 5000ms");
+    }, 5_000);
+    inspectionTimeout.unref();
+    inspector.stdout?.setEncoding("utf8").on("data", (chunk: string) => {
+      if (output.length + chunk.length > 1024 * 1024) {
+        truncated = true;
+        inspector.kill("SIGKILL");
+        finish(null, "ps output exceeded 1 MiB");
+        return;
+      }
+      output += chunk;
+    });
+    inspector.stderr?.setEncoding("utf8").on("data", (chunk: string) => {
+      errorOutput = (errorOutput + chunk).slice(-512);
+    });
+    inspector.once("error", (error) => finish(null, `ps could not start: ${error.message}`));
+    inspector.once("close", (code, signal) => {
+      if (code !== 0 || truncated) {
+        finish(null, `ps exited code=${code} signal=${signal}${errorOutput.trim() ? `: ${errorOutput.trim()}` : ""}`);
+        return;
+      }
+      const observations = output
+        .split(/\r?\n/)
+        .map((line) =>
+          /^\s*(\d+)\s+(\d+)\s+(\d+)\s+(\S+\s+\S+\s+\d+\s+\d{2}:\d{2}:\d{2}\s+\d{4})\s+(\S+)\s+(.+?)\s*$/.exec(
+            line,
+          ),
+        )
+        .filter((match): match is RegExpExecArray => match !== null)
+        .map((match): ProcessObservation => {
+          // A target process can choose its own argv and process name. Emit a
+          // fixed category instead of target-controlled text so diagnostics
+          // can never turn that metadata into a secret-exfiltration channel.
+          const kind = diagnosticProcessKind(match[6]!);
+          return {
+            pid: Number(match[1]),
+            parentPid: Number(match[2]),
+            processGroupId: Number(match[3]),
+            started: match[4]!,
+            kind,
+            state: match[5]!,
+          };
+        });
+      finish(observations);
+    });
+  }).catch(() => null);
 }

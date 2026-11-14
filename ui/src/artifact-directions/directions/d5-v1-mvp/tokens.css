@@ -1,0 +1,131 @@
+/*
+  V1 MVP — values measured from the PCLP-Core mock "Art.Tab - mvp v1"
+  (node 2129:133457). Scoped to the wrapper every frame puts around a kit slot.
+*/
+[data-direction="d5-v1-mvp"] {
+  --v1-font-mono: var(--font-paper-mono, var(--font-mono)); /* index.css declares the face and the variable */
+  /* Paper. The mock draws every sheet and print border in #FAFAFA on both
+     stack backings, so it is one value, not a theme colour. */
+  --v1-paper: #fafafa;
+  --v1-paper-ink: #262626; /* preview title on the sheet */
+  --v1-ink: #333333; /* glyph, type label, bars */
+  --v1-ink-faint: #d2d2d2; /* the mock's 20% #333 composited over the #fafafa sheet (0.2·51 + 0.8·250 = 210), made opaque so a stroked glyph does not darken where its strokes overlap; the preview's text bars too */
+
+  /* Chrome around the artifact: the mock's #FAFAFA / #A1A1A1 / #262626 are
+     the production dark tokens, so the caption follows the theme. */
+  --v1-pill: #333333; /* the task pill, mock #333 */
+  --v1-pill-hover: #333333; /* unchanged while the tile is hovered */
+  --v1-pill-ink: var(--foreground);
+
+  /* Shadows: the mock's blur 30 brought down to 20 and its 0.3 alpha to 0.18
+     (both on request). A box-shadow blur of 20 is a drop-shadow blur of 10 and
+     an SVG stdDeviation of 10; the backing SVGs carry the same values in
+     their baked-in filter. */
+  --v1-shadow-sheet: drop-shadow(0 3.406px 10px rgba(26, 26, 26, 0.18));
+  --v1-shadow-print: 0 3.406px 20px rgba(26, 26, 26, 0.18);
+  --v1-print-radius: 6px;
+  --v1-sheet-radius: 12px;
+  /* 1px inner stroke on every sheet — the leading preview and file/document
+     sheet and the backing papers (drawn inside their SVGs) — but not on prints. */
+  --v1-sheet-stroke: rgba(26, 26, 26, 0.1);
+
+  /* The mock's columns: 330px of content in a 370px cell; cells 28px apart. */
+  --v1-grid: repeat(auto-fill, minmax(330px, 1fr));
+
+  /* The cell: a 254px artwork frame, 20px, then up to two title lines and the
+     pill row; 370px tall in every case so the hover fill (mock #202020 on the
+     #171717 canvas, 12px radius) is the same size whatever the caption's length. */
+  --v1-frame-h: 254px;
+  --v1-tile-h: 370px;
+  --v1-tile-hover: #202020;
+  --v1-tile-radius: 12px;
+
+  /* Side panel rows (node 2096:87691): a 56px row on #262626 with a 6.4px
+     radius, 12px apart (the mock frame's 27px, reduced on request); the hover
+     step is not in the mock. */
+  --v1-row: #262626;
+  --v1-row-hover: #2c2c2c;
+  --v1-row-radius: 6.4px;
+  --v1-row-gap: 12px;
+  --v1-row-ink: #fafafa; /* the type label and glyph on the document icon */
+  --v1-play-scrim: rgba(0, 0, 0, 0.55);
+}
+
+/* Light canvas: the paper is a near-white on white, so its shadow carries a
+   little more weight and a hairline marks the sheet edge. */
+html:not(.dark) [data-direction="d5-v1-mvp"] {
+  /* 30% under the 0.132 the light theme had (2026-10-21); the stack backings share it. */
+  --v1-shadow-sheet: drop-shadow(0 3.406px 10px rgba(26, 26, 26, 0.0924));
+  --v1-shadow-print: 0 3.406px 20px rgba(26, 26, 26, 0.0924);
+  --v1-tile-hover: var(--accent);
+  --v1-pill: var(--muted);
+  --v1-pill-hover: var(--border); /* one token shade under --muted while the tile is hovered, since the hover fill (--accent) is --muted's value and would swallow the pill */
+  --v1-row: var(--muted);
+  --v1-row-hover: #eeeeee; /* one step under the row's #f5f5f5, as dark steps #262626 up to #2c2c2c */
+}
+
+/* The backing sheets' resting angles. */
+[data-direction="d5-v1-mvp"] [data-rotate] {
+  transform: rotate(var(--v1-base, 0deg));
+}
+
+/*
+ * The lab's Animation toggle (html[data-lab-anim="1"]): while a tile is
+ * hovered, the artwork (data-front: a stack's first page, or a single
+ * artifact) rises 6px, and a stack's two backing pages turn 5° from their
+ * resting angles, the left page clockwise and the right page counter-
+ * clockwise. One curve for all of it: a brisk start and a slow settle (more
+ * ease-out than ease-in). The tile's own hover fill is untouched.
+ */
+[data-direction="d5-v1-mvp"] {
+  --v1-hover-ease: 300ms cubic-bezier(0.3, 0, 0.1, 1);
+}
+/* Movement only for people who have not asked for reduced motion; the tile's colour fades stay. */
+@media (prefers-reduced-motion: no-preference) {
+  html[data-lab-anim="1"] [data-direction="d5-v1-mvp"] :is([data-rotate][data-spread], [data-front]) {
+    transition: transform var(--v1-hover-ease);
+  }
+  html[data-lab-anim="1"] [data-direction="d5-v1-mvp"] button:hover [data-front] {
+    transform: translateY(-6px);
+  }
+  html[data-lab-anim="1"] [data-direction="d5-v1-mvp"] button:hover [data-spread="left"] {
+    transform: rotate(calc(var(--v1-base, 0deg) + 5deg));
+  }
+  html[data-lab-anim="1"] [data-direction="d5-v1-mvp"] button:hover [data-spread="right"] {
+    transform: rotate(calc(var(--v1-base, 0deg) - 5deg));
+  }
+}
+
+[data-direction="d5-v1-mvp"] .v1-pill {
+  font-family: var(--v1-font-mono);
+  background: var(--v1-pill);
+  color: var(--v1-pill-ink);
+}
+[data-direction="d5-v1-mvp"] button:is(:hover, :focus-visible) .v1-pill {
+  background: var(--v1-pill-hover);
+}
+
+[data-direction="d5-v1-mvp"] .v1-print {
+  border-style: solid;
+  border-color: var(--v1-paper);
+  border-radius: var(--v1-print-radius);
+  background: var(--v1-paper);
+  box-shadow: var(--v1-shadow-print);
+}
+
+[data-direction="d5-v1-mvp"] .v1-sheet {
+  width: 180px;
+  height: 216px;
+  border-radius: var(--v1-sheet-radius);
+  filter: var(--v1-shadow-sheet);
+}
+
+/* The inner stroke sits above the sheet image and its type, so it is an overlay. */
+[data-direction="d5-v1-mvp"] .v1-sheet::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: var(--v1-sheet-radius);
+  box-shadow: inset 0 0 0 1px var(--v1-sheet-stroke);
+  pointer-events: none;
+}

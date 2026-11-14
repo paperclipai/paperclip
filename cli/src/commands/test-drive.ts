@@ -150,11 +150,14 @@ async function loopbackPortAvailable(port: number): Promise<boolean> {
   });
 }
 
-export async function resolveTestDriveServerPort(preferredPort = 3100): Promise<number> {
-  for (let port = preferredPort; port <= 65_535; port += 1) {
-    if (await loopbackPortAvailable(port)) return port;
+export async function resolveTestDriveServerPort(preferredPort = 3100, available = loopbackPortAvailable): Promise<number> {
+  if (await available(preferredPort)) return preferredPort;
+  // A saved high port can be occupied. Search the ordinary range instead of
+  // trapping the restarted test drive at the top of the TCP port space.
+  for (let port = 3100; port <= 65_535; port += 1) {
+    if (port !== preferredPort && await available(port)) return port;
   }
-  throw new Error(`No available loopback port found at or above ${preferredPort}.`);
+  throw new Error("No available loopback port found at or above 3100.");
 }
 
 /**
@@ -194,7 +197,15 @@ export async function prepareTestDriveEnvironment(
   process.env.PAPERCLIP_DEPLOYMENT_EXPOSURE = "private";
   process.env.PAPERCLIP_BIND = "loopback";
   process.env.HOST = "127.0.0.1";
-  process.env.PORT = String(await resolveTestDriveServerPort());
+  let preferredPort = 3100;
+  try {
+    preferredPort = readConfig(process.env.PAPERCLIP_CONFIG)?.server.port ?? preferredPort;
+  } catch {
+    // The normal startup doctor owns invalid-config diagnostics and repair.
+  }
+  // Reusing a test drive must preserve callback and enrollment origins when
+  // its saved port is available. Only move forward if that port is occupied.
+  process.env.PORT = String(await resolveTestDriveServerPort(preferredPort));
 
   return { dataDir, linkedWorktree };
 }
@@ -396,7 +407,8 @@ export async function bootstrapTestDrive(input: {
 }
 
 function dashboardUrl(server: StartedServer): string {
-  return server.apiUrl.replace(/\/api\/?$/, "");
+  const host = server.host.includes(":") && !server.host.startsWith("[") ? `[${server.host}]` : server.host;
+  return `http://${host}:${server.listenPort}`;
 }
 
 export async function testDriveCommand(
@@ -440,7 +452,8 @@ export async function testDriveCommand(
       skipServiceManagerCheck: !options.dataDir?.trim(),
       introLabel: "paperclipai test-drive",
       afterStart: async (server) => {
-        const api = dependencies.createApi(server.apiUrl);
+        const url = dashboardUrl(server);
+        const api = dependencies.createApi(url);
         const result = await bootstrapTestDrive({
           api,
           options,
@@ -461,7 +474,6 @@ export async function testDriveCommand(
           p.log.success("Run tasks in this worktree is enabled for this instance.");
         }
 
-        const url = dashboardUrl(server);
         if (options.browser === false) {
           p.log.success(`Paperclip is ready at ${pc.cyan(url)}.`);
           return;

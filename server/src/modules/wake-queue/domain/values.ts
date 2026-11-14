@@ -22,5 +22,6 @@ export function isWorkspaceValidationFailedRun(run: { errorCode: string | null }
 }
 
 export function isConfigurationIncompleteFailedRun(run: { errorCode: string | null }): boolean {
-  return run.errorCode === CONFIGURATION_INCOMPLETE_FAILURE_CODE || run.errorCode === "model_not_found";
+  return run.errorCode === CONFIGURATION_INCOMPLETE_FAILURE_CODE || run.errorCode === "model_not_found" ||
+    run.errorCode === "native_provider_model_rejected";
 }

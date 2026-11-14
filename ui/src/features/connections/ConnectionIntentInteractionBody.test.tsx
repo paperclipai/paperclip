@@ -8,6 +8,7 @@ import type {
   ToolConnection,
 } from "@paperclipai/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { ApiError } from "@/api/client";
 import {
   connectedConnectionIntentInteraction,
   issueThreadInteractionFixtureMeta,
@@ -30,6 +31,7 @@ vi.mock("@/api/email", () => ({ emailApi: {
 } }));
 
 const credentialRender = vi.hoisted(() => vi.fn());
+const routedCredentialRender = vi.hoisted(() => vi.fn());
 const setupOptionsMock = vi.hoisted(() => vi.fn());
 const completeMock = vi.hoisted(() => vi.fn());
 const declineMock = vi.hoisted(() => vi.fn());
@@ -68,9 +70,20 @@ vi.mock("@/components/ai-connections/AiConnectionCredentialStep", () => ({
   </div>; },
 }));
 
+vi.mock("@/components/ai-connections/AiProviderSetup", () => ({
+  AiProviderSetup: (props: { reconnect: { id: string }; onComplete: (binding: { connectionId: string; grantId: string; method: "api_key" }) => void; onCancel: () => void }) => {
+    routedCredentialRender(props);
+    return <div data-testid="routed-ai-repair">
+      <button onClick={() => props.onComplete({ connectionId: props.reconnect.id, grantId: "grant", method: "api_key" })}>Reconnect routed account</button>
+      <button onClick={props.onCancel}>Cancel routed repair</button>
+    </div>;
+  },
+}));
+
 vi.mock("./ConnectionSetupFlow", () => ({
   ConnectionSetupFlow: (props: {
     requestedAgentId?: string;
+    requiredAgentId?: string;
     existingConnections?: ToolConnection[];
     onUseExisting?: (id: string) => Promise<void>;
     onComplete?: (completion: { connectionId: string } | { resolvedByCallback: true }) => void;
@@ -79,6 +92,7 @@ vi.mock("./ConnectionSetupFlow", () => ({
   }) => (
     <div data-testid="shared-connection-setup">
       <span data-testid="requested-agent">{props.requestedAgentId}</span>
+      <span data-testid="required-agent">{props.requiredAgentId}</span>
       <span data-testid="existing-count">
         {props.existingConnections?.length ?? 0}
       </span>
@@ -187,6 +201,12 @@ function button(label: string) {
   ) as HTMLButtonElement | undefined;
 }
 
+it("explains all-agent defaults consistently on compact connector cards", () => {
+  renderNode(<ConnectionIntentInteractionBody interaction={pendingConnectionIntentInteraction} currentUserId={issueThreadInteractionFixtureMeta.currentUserId} addresseeLabel="Carol" compact />);
+  expect(document.body.textContent).toContain("New connections default to all agents");
+  expect(document.body.textContent).not.toContain("Access is added only for this agent");
+});
+
 beforeEach(() => {
   sessionStorage.clear();
   emailCredentialsMock.mockReset().mockResolvedValue([]);
@@ -226,6 +246,21 @@ afterEach(async () => {
 });
 
 describe("ConnectionIntentInteractionBody states and audience", () => {
+  it("opens the saved chat authentication step without another setup form", async () => {
+    const interaction = { ...pendingConnectionIntentInteraction, payload: { ...pendingConnectionIntentInteraction.payload,
+      purpose: "channel" as const, serviceSlug: "slack", serviceName: "Slack", phase: "authorizing" as const,
+      savedSetup: { endpointId: "endpoint", connectionId: "connection" } } };
+    setupOptionsMock.mockResolvedValue({ version: 1, interaction, requestedAgentId: interaction.payload.requestingAgentId,
+      existingConnections: [], service: { service: "slack", name: "Slack", methods: [], state: "needs_user_action" },
+      chatSetup: { endpointId: "endpoint", connectionId: "connection", path: "/ACME/apps/chat/connect?provider=slack&resume=endpoint" } });
+    renderBody(interaction);
+    await waitForAssertion(() =>
+      expect(document.querySelector('a')?.getAttribute("href")).toBe("/ACME/apps/chat/connect?provider=slack&resume=endpoint"),
+    );
+    expect(document.querySelector('[data-testid="shared-connection-setup"]')).toBeNull();
+    expect(completeMock).not.toHaveBeenCalled();
+  });
+
   it.each([
     [pendingConnectionIntentInteraction, "Connect"],
     [
@@ -246,6 +281,18 @@ describe("ConnectionIntentInteractionBody states and audience", () => {
   ] as const)("renders the %s state", (interaction, expected) => {
     renderBody(interaction as ConnectionIntentInteraction);
     expect(document.body.textContent).toContain(expected);
+  });
+
+  it("shows the stored reason on an expired request", () => {
+    // The server writes what actually expired the request and what to do next.
+    // A generic "no longer active" line left the reader with no next step.
+    const reason = "The task was reassigned before the connection request was answered, so the Notion connection is still not connected. Reconnect it or choose an available connection.";
+    renderBody({
+      ...terminal("expired", "expired"),
+      result: { version: 1, outcome: "expired", reason },
+    } as ConnectionIntentInteraction);
+    expect(document.body.textContent).toContain(reason);
+    expect(document.body.textContent).not.toContain("This request is no longer active.");
   });
 
   it("shows non-addressees only the waiting state and never loads setup", () => {
@@ -279,7 +326,7 @@ describe("ConnectionIntentInteractionBody dialog behavior", () => {
     expect(completeMock).not.toHaveBeenCalled();
   });
 
-  it("shows loading, then passes existing choices and the locked requesting agent to the shared flow", async () => {
+  it("passes existing choices and requires the requester without locking tool setup to that agent", async () => {
     let resolveSetup!: (value: unknown) => void;
     setupOptionsMock.mockReturnValue(
       new Promise((resolve) => {
@@ -304,7 +351,10 @@ describe("ConnectionIntentInteractionBody dialog behavior", () => {
 
     expect(
       document.querySelector('[data-testid="requested-agent"]')?.textContent,
-    ).toBe("agent-requesting");
+    ).toBe("");
+    expect(document.querySelector('[data-testid="required-agent"]')?.textContent).toBe("agent-requesting");
+    expect(document.body.textContent).toContain("New connections default to all agents");
+    expect(document.body.textContent).not.toContain("Access is added only for this agent");
     expect(
       document.querySelector('[data-testid="existing-count"]')?.textContent,
     ).toBe("2");
@@ -313,25 +363,50 @@ describe("ConnectionIntentInteractionBody dialog behavior", () => {
     expect(button("Connect new")).toBeDefined();
   });
 
-  it("keeps a load failure open and recovers through the query retry", async () => {
-    setupOptionsMock.mockRejectedValueOnce(new Error("setup unavailable"));
+  it("keeps a load failure open with readable copy and recovers through the query retry", async () => {
+    setupOptionsMock.mockRejectedValueOnce(new ApiError("Request failed: 500", 500, { error: "internal_error" }));
     renderBody();
     await act(() => button("Connect / Use existing")?.click());
     await flush();
 
-    expect(document.body.textContent).toContain(
-      "Couldn’t load connection setup",
-    );
-    expect(document.body.textContent).toContain("setup unavailable");
+    expect(document.querySelector('[data-query-view="error"]')).not.toBeNull();
+    expect(document.body.textContent).toContain("Couldn't load connection setup");
+    expect(document.body.textContent).not.toContain("internal_error");
+    expect(document.body.textContent).not.toContain("Request failed: 500");
     setupOptionsMock.mockResolvedValueOnce({
       requestedAgentId: "agent-requesting",
       existingConnections: [],
     });
-    await act(() => button("Try again")?.click());
+    await act(() => button("Retry")?.click());
     await flush();
     expect(
       document.querySelector('[data-testid="shared-connection-setup"]'),
     ).not.toBeNull();
+    expect(document.querySelector('[data-query-view="error"]')).toBeNull();
+  });
+
+  it("keeps loaded setup options usable when a refetch fails during an outage", async () => {
+    renderBody();
+    await act(() => button("Connect / Use existing")?.click());
+    await flush();
+    expect(
+      document.querySelector('[data-testid="shared-connection-setup"]'),
+    ).not.toBeNull();
+
+    setupOptionsMock.mockRejectedValue(
+      new ApiError("Paperclip is restarting.", 503, { error: "tenant_app_unavailable" }),
+    );
+    await act(async () => {
+      await queryClient.invalidateQueries();
+    });
+    await flush();
+
+    expect(
+      document.querySelector('[data-testid="shared-connection-setup"]'),
+    ).not.toBeNull();
+    expect(document.querySelector('[data-query-view="error"]')).toBeNull();
+    expect(document.body.textContent).not.toContain("Paperclip is restarting.");
+    expect(document.body.textContent).not.toContain("Couldn't load connection setup");
   });
 
   it("completes an existing connection, closes, restores focus, and invalidates each task query once", async () => {
@@ -477,15 +552,33 @@ describe("ConnectionIntentInteractionBody dialog behavior", () => {
 describe("AI repair inside the card", () => {
   const interaction: ConnectionIntentInteraction = { ...pendingConnectionIntentInteraction, payload: { ...pendingConnectionIntentInteraction.payload, purpose: "ai" } };
   const connection = { id: "selected-account", name: "My Codex account", provider: "openai", method: "api_key", ownership: "personal", ownerName: "Dotta", status: "revoked" };
+  it.each(["openrouter", "bedrock", "gateway"] as const)("retains the selected %s route through task-card account repair", async kind => {
+    const routing = kind === "bedrock"
+      ? { kind, protocol: "bedrock", region: "us-east-1", auth: "bearer", models: [] }
+      : { kind, protocol: "responses", auth: "bearer", models: [], ...(kind === "gateway" ? { baseUrl: "https://gateway.example/v1" } : {}) };
+    const routedConnection = { ...connection, provider: kind === "bedrock" ? "anthropic" : kind === "openrouter" ? "openrouter" : "openai", routing };
+    setupOptionsMock.mockResolvedValue({ interaction, existingConnections: [], aiRepair: { connection: routedConnection, canReconnect: true } });
+    completeMock.mockResolvedValue({ ...interaction, status: "accepted" });
+    renderBody(interaction); await flush();
+    await act(() => button("Fix connection")!.click());
+    expect(document.querySelector('[data-testid="shared-ai-credentials"]')).toBeNull();
+    expect(routedCredentialRender.mock.lastCall![0]).toMatchObject({ companyId: interaction.companyId, agentId: interaction.payload.requestingAgentId, reconnect: routedConnection });
+    await act(() => button("Reconnect routed account")!.click());
+    expect(completeMock).toHaveBeenCalledWith(interaction.id, connection.id);
+  });
+
   it.each([false, true])("requires atomic validated legacy adoption (validation fails: %s)", async (fails) => {
     const binding = { provider: "openai", method: "subscription", mode: "responsible_user" };
     setupOptionsMock.mockResolvedValue({ interaction, existingConnections: [], aiConnection: binding, aiConnectionRequiresAdoption: true });
     if (fails) adoptMock.mockRejectedValue(new Error("Connection test failed"));
     else adoptMock.mockResolvedValue({ ...interaction, status: "accepted" });
-    renderBody(interaction); await flush();
-    await act(() => button("Fix connection")!.click());
+    renderBody(interaction);
+    await waitForAssertion(() => expect(button("Connect OpenAI")).toBeDefined());
+    await act(() => button("Connect OpenAI")!.click());
     await act(() => button("Reconnect selected account")!.click());
     expect(adoptMock).not.toHaveBeenCalled();
+    expect(document.body.textContent).toContain("Use your OpenAI account");
+    expect(document.body.textContent).toContain("Your account is connected.");
     expect(document.body.textContent).toContain("This replaces the agent’s existing authentication");
     await act(() => button("Use connection and continue")!.click());
     await flush();
@@ -499,14 +592,17 @@ describe("AI repair inside the card", () => {
     setupOptionsMock.mockResolvedValue({ interaction, existingConnections: [], aiConnection: { provider, method: "api_key", mode: "responsible_user" } });
     completeMock.mockResolvedValue({ ...interaction, status: "accepted" });
     renderBody(interaction); await flush();
-    await act(() => button("Fix connection")!.click());
+    const providerName = provider === "anthropic" ? "Claude" : "OpenAI";
+    await waitForAssertion(() => expect(document.body.textContent).toContain(`Connect your ${providerName} account`));
+    expect(document.body.textContent).toContain("needs your own AI connection");
+    await act(() => button(`Connect ${providerName}`)!.click());
     expect(document.querySelector('[role="dialog"]')).toBeNull();
     expect(document.querySelector('[data-testid="shared-connection-setup"]')).toBeNull();
     expect(document.querySelector('[data-testid="shared-ai-credentials"]')).not.toBeNull();
     expect(credentialRender.mock.lastCall![0]).toMatchObject({ provider, hideName: true, ownership: "personal", agentIds: [interaction.payload.requestingAgentId], allAgents: false });
     expect(credentialRender.mock.lastCall![0].connectionId).toBeUndefined();
     expect(credentialRender.mock.lastCall![0].fixedMethod).toBeUndefined();
-    expect(document.body.textContent).toContain("This task can’t run until");
+    expect(document.body.textContent).toContain("the task will resume automatically");
     await act(() => button("Reconnect selected account")!.click());
     expect(completeMock).toHaveBeenCalledWith(interaction.id, "new-ai-account");
   });
@@ -595,6 +691,15 @@ describe("AI repair inside the card", () => {
     await act(() => button("Fix connection")!.click());
     expect(document.body.textContent).toContain("Dotta must reconnect My Codex account");
     expect(document.querySelector('[data-testid="shared-ai-credentials"]')).toBeNull();
+  });
+  it("shows a withdrawn AI request as terminal without another setup action", () => {
+    renderBody({ ...interaction, status: "cancelled", resolvedAt: new Date() });
+    expect(document.body.textContent).toContain("Connection request withdrawn");
+    expect(document.body.textContent).not.toContain("This task can’t run");
+    expect(button("Fix connection")).toBeUndefined();
+    expect(document.querySelector('[data-testid="connection-intent-terminal"]')).not.toBeNull();
+    expect(setupOptionsMock).not.toHaveBeenCalled();
+    expect(credentialRender).not.toHaveBeenCalled();
   });
   it("does not promise to run without credentials when declined", () => {
     renderBody({ ...interaction, status: "rejected" });
@@ -765,5 +870,60 @@ describe("AgentMail inline setup", () => {
     await clickReadyButton("Not now");
     expect(declineMock).toHaveBeenCalledWith(interaction.id);
     expect(emailConnectMock).not.toHaveBeenCalled();
+  });
+});
+
+describe("embedded agent access request", () => {
+  const accessRequest = {
+    connectionId: "22222222-2222-4222-8222-222222222222",
+    connectionName: "Saved Composio",
+    tools: [
+      { catalogEntryId: "33333333-3333-4333-8333-333333333333", toolName: "COMPOSIO_SEARCH_TOOLS", versionHash: "v1", permission: "allowed" as const },
+      { catalogEntryId: "44444444-4444-4444-8444-444444444444", toolName: "COMPOSIO_MANAGE_CONNECTIONS", versionHash: "v1", permission: "ask_first" as const },
+    ],
+  };
+  const interaction: ConnectionIntentInteraction = { ...pendingConnectionIntentInteraction, payload: { ...pendingConnectionIntentInteraction.payload, serviceName: "Composio", accessRequest } };
+
+  it("shows the exact tool permissions before granting inline without a setup modal", async () => {
+    setupOptionsMock.mockResolvedValue({ canGrantAccess: true });
+    getAgentMock.mockResolvedValue({ id: interaction.payload.requestingAgentId, name: "Researcher" });
+    completeMock.mockResolvedValue({ ...interaction, status: "accepted", result: { version: 1, outcome: "connected", connectionId: accessRequest.connectionId } });
+    renderBody(interaction);
+    await waitForAssertion(() => expect(button("Grant access")?.disabled).toBe(false));
+    expect(document.body.textContent).toContain("Grant Researcher access to “Saved Composio”?");
+    expect(document.body.querySelector('[data-slot="agent-avatar"]')?.getAttribute("aria-label")).toBe("Researcher");
+    expect(Array.from(document.body.querySelectorAll('ul[aria-label="Tool permissions"] li'), row => row.textContent)).toEqual([
+      "COMPOSIO_SEARCH_TOOLSAllowed",
+      "COMPOSIO_MANAGE_CONNECTIONSAsk first",
+    ]);
+    expect(completeMock).not.toHaveBeenCalled();
+    await act(() => button("Grant access")?.click());
+    await waitForAssertion(() => expect(completeMock).toHaveBeenCalledWith(interaction.id, accessRequest.connectionId));
+    expect(document.body.querySelector('[role="dialog"]')).toBeNull();
+  });
+
+  it("keeps errors visible and does not allow a non-manager to grant", async () => {
+    setupOptionsMock.mockResolvedValue({ canGrantAccess: false });
+    renderBody(interaction);
+    await waitForAssertion(() => expect(document.body.textContent).toContain("Connection manager required"));
+    expect(button("Grant access")?.disabled).toBe(true);
+    expect(completeMock).not.toHaveBeenCalled();
+  });
+
+  it("supports declining and displays permission errors on the card", async () => {
+    setupOptionsMock.mockResolvedValue({ canGrantAccess: true });
+    completeMock.mockRejectedValue(new Error("Tools changed. Request access again."));
+    renderBody(interaction);
+    await waitForAssertion(() => expect(button("Grant access")?.disabled).toBe(false));
+    await act(() => button("Grant access")?.click());
+    await waitForAssertion(() => expect(document.body.querySelector('[role="alert"]')?.textContent).toContain("Tools changed"));
+    await act(() => button("Not now")?.click());
+    await waitForAssertion(() => expect(declineMock).toHaveBeenCalledWith(interaction.id));
+  });
+
+  it("shows resolved access and does not expose controls to other users", () => {
+    renderBody({ ...interaction, status: "accepted", result: { version: 1, outcome: "connected", connectionId: accessRequest.connectionId } });
+    expect(document.body.textContent).toContain("Composio access granted");
+    expect(button("Grant access")).toBeUndefined();
   });
 });

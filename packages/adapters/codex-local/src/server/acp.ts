@@ -13,7 +13,7 @@ import {
   parseLocalProcessFilesystemScope,
   parseLocalProcessNetworkScope,
 } from "@paperclipai/adapter-utils/local-process-sandbox";
-import { inferOpenAiCompatibleBiller } from "@paperclipai/adapter-utils";
+import { inferOpenAiCompatibleBiller, resolveManagedOpenAiBilling } from "@paperclipai/adapter-utils";
 import {
   ensureAdapterExecutionTargetCommandResolvable,
   readAdapterExecutionTarget,
@@ -42,13 +42,14 @@ import { createWorkspaceRestoreTeardown } from "@paperclipai/adapter-utils/works
 import { normalizeCodexModel } from "../index.js";
 import { classifyCodexAuthRefreshFailure, extractCodexRetryNotBefore } from "./parse.js";
 import { copyBackCodexAuth } from "./codex-auth-copyback.js";
-import { buildCodexAuthInboundProvision } from "./codex-auth-merge-scripts.js";
 import {
+  buildCodexHomeRefreshProvision,
   evaluateCodexCredentialReadiness,
   resolveSharedCodexHomeDir,
   stageCodexHomeForSync,
 } from "./codex-home.js";
 import { ADAPTER_AUTH_MISSING_CHECK_CODE } from "./auth-check.js";
+import { checkCodexCliVersionForModel } from "./cli-version.js";
 
 const moduleDir = path.dirname(fileURLToPath(import.meta.url));
 const packageRootDir = path.resolve(moduleDir, "../..");
@@ -182,7 +183,9 @@ async function prepareCodexRemoteManagedHome(
 ): Promise<AcpxRemoteManagedHomeResult> {
   const { env, runId, onLog } = input;
   // The host managed Codex home the engine seeded and set on env.CODEX_HOME.
-  const effectiveCodexHome = env.CODEX_HOME;
+  let effectiveCodexHome = env.CODEX_HOME;
+  let currentLog = onLog;
+  const copybackLog: typeof onLog = (stream, chunk) => currentLog(stream, chunk);
   if (!effectiveCodexHome) {
     // No managed home resolved (e.g. custom CODEX_HOME cleared) — stage the
     // workspace with no home asset, identical to the no-seam fallback.
@@ -192,7 +195,7 @@ async function prepareCodexRemoteManagedHome(
   // sandbox auth out of the shared subscription copy-back path altogether.
   const apiKeyAuth = Boolean(
     env.OPENAI_API_KEY?.trim() || env.CODEX_API_KEY?.trim()
-    || process.env.OPENAI_API_KEY?.trim() || process.env.CODEX_API_KEY?.trim(),
+    || (!input.config.managedAiConnection && (process.env.OPENAI_API_KEY?.trim() || process.env.CODEX_API_KEY?.trim())),
   );
   // Curated allowlist temp dir (auth/config/skills only); caller owns cleanup.
   const stagedCodexHomeDir = await stageCodexHomeForSync(effectiveCodexHome, { runId });
@@ -203,8 +206,8 @@ async function prepareCodexRemoteManagedHome(
         key: "home",
         localDir: stagedCodexHomeDir,
         followSymlinks: true,
-        // Subscription-only inbound auth merge keeps the newer credential.
-        provision: apiKeyAuth ? undefined : buildCodexAuthInboundProvision(),
+        // Refresh managed config/auth while retaining remote conversation files.
+        provision: buildCodexHomeRefreshProvision({ mergeAuth: !apiKeyAuth }),
         // Subscription-only outbound copy-back at teardown, under the same
         // direction-agnostic decision predicate + directory merge-lock +
         // atomic-rename + 0600 guard. Target is the SHARED host auth.json
@@ -213,7 +216,7 @@ async function prepareCodexRemoteManagedHome(
           void (await copyBackCodexAuth({
             readSandboxAuth: () => readFile(path.posix.join(assetDir, "auth.json")),
             hostAuthPath: path.join(input.config.managedAiConnection ? effectiveCodexHome : resolveSharedCodexHomeDir(process.env), "auth.json"),
-            log: (line) => onLog("stdout", `${line}\n`),
+            log: (line) => copybackLog("stdout", `${line}\n`),
           })),
       },
     ]);
@@ -228,6 +231,13 @@ async function prepareCodexRemoteManagedHome(
 
   return {
     stagedRuntime,
+    rebindRun: binding => {
+      if (input.config.managedAiConnection) {
+        if (!binding.env.CODEX_HOME) throw new Error("Managed Codex copyback requires the current account home");
+        effectiveCodexHome = binding.env.CODEX_HOME;
+      }
+      currentLog = binding.onLog;
+    },
     // Subscription copy-back fires on EVERY run's teardown (including a compatible
     // resume that reuses this staged runtime). It reads the sandbox auth.json /
     // workspace live and copies back to the host; it does NOT remove the staged
@@ -241,7 +251,7 @@ async function prepareCodexRemoteManagedHome(
     // mask the run result.
     teardown: createWorkspaceRestoreTeardown({
       stagedRuntime,
-      onLog,
+      onLog: copybackLog,
       startMessage: apiKeyAuth
         ? "[paperclip] Restoring workspace changes from the sandbox.\n"
         : "[paperclip] Restoring workspace changes and Codex auth from the sandbox.\n",
@@ -265,10 +275,26 @@ async function prepareCodexRemoteManagedHome(
   };
 }
 
+const CODEX_MODEL_CAPACITY_RE =
+  /\b(?:selected model is at capacity|model is at capacity|at capacity for this model|serverOverloaded|server overloaded)\b/i;
+
+const CODEX_PROVIDER_AUTH_RE =
+  /\b(?:401 unauthorized|invalid_api_key|(?:incorrect|invalid) api key)\b/i;
+
 export function classifyCodexTerminalSessionFailure(
   failure: AcpxTerminalSessionFailure,
   now: Date,
 ): AcpxTerminalFailureClassification | null {
+  if (failure.category === "access") {
+    const text = [failure.title, failure.details].filter(Boolean).join("\n");
+    return CODEX_PROVIDER_AUTH_RE.test(text) ? { errorCode: "acpx_auth_required" } : null;
+  }
+  if (failure.category === "service") {
+    const text = [failure.title, failure.details].filter(Boolean).join("\n");
+    return CODEX_MODEL_CAPACITY_RE.test(text)
+      ? { errorCode: "codex_transient_upstream", errorFamily: "transient_upstream" }
+      : null;
+  }
   // ACP's `limit` also covers context, turn, rate and configured budget limits.
   // Require explicit usage exhaustion; the CLI's broader capacity matcher would
   // also match a context/storage capacity limit and defer the wrong failure.
@@ -330,6 +356,8 @@ export function resolveCodexAcpBillingIdentity(
   ctx: Pick<AdapterExecutionContext, "config"> &
     Partial<Pick<AdapterExecutionContext, "executionTarget" | "executionTransport">>,
 ): { provider: string; biller: string; billingType: AdapterBillingType } {
+  const managedBilling = resolveManagedOpenAiBilling(ctx.config.managedAiRouting);
+  if (managedBilling) return managedBilling;
   const envConfig = parseObject(parseObject(ctx.config).env);
   const target = readAdapterExecutionTarget({
     executionTarget: ctx.executionTarget,
@@ -435,7 +463,7 @@ async function commandIsResolvable(
         trimmed,
         target,
         resolveAdapterExecutionTargetCwd(target, asString(input?.config.cwd, ""), process.cwd()),
-        process.env,
+        target.transport === "ssh" ? { PATH: process.env.PATH } : process.env,
       );
       return true;
     } catch {
@@ -479,11 +507,16 @@ async function codexAcpUnavailableReason(
     executionTarget: input.executionTarget,
     legacyRemoteExecution: input.executionTransport?.remoteExecution,
   });
-  if (target?.kind === "remote" && !sandboxTargetHasProcessSessionBridge(target)) {
+  const managedSsh = target?.kind === "remote" && target.transport === "ssh"
+    && target.spec.useHostAuth === false && Boolean(input.config.managedAiConnection);
+  if (managedSsh && target.workspaceRealization?.mode === "in_place") {
+    return "In-place SSH workspace realization requires the Codex CLI engine; ACP archive staging is not supported.";
+  }
+  if (target?.kind === "remote" && !sandboxTargetHasProcessSessionBridge(target) && !managedSsh) {
     if (target.transport === "sandbox") {
       return "Codex ACP requires a bidirectional remote process target; this sandbox exposes only one-shot command execution.";
     }
-    return "Codex ACP supports sandbox remote targets only; this run targets a non-sandbox remote environment.";
+    return "Codex ACP requires an agent-managed SSH account; host authentication is supported by the CLI engine.";
   }
   if (!nodeVersionMeetsCodexAcpMinimum()) {
     return `Node ${process.version} (${process.execPath}) does not satisfy Codex ACP's Node >=${MIN_ACP_NODE_VERSION} prerequisite.`;
@@ -644,6 +677,32 @@ export async function testCodexAcpEnvironment(
         hint: "Provide credentials for this adapter, or start login in the environment.",
       });
     }
+  }
+
+  if (targetIsRemote && commandResolvable) {
+    // The ACP server spawns the shared `codex` installed in the environment.
+    // Models with a verified CLI floor are checked against that executable so
+    // a stale sandbox image is named here, before a run fails on every turn
+    // with the backend's "not supported when using Codex with a ChatGPT
+    // account" rejection. Models without a floor skip the probe.
+    //
+    // Remote ACP runs receive the adapter's string-valued env entries (see
+    // buildCodexAcpConfig), so the probe gets the same ones. An agent that
+    // selects its Codex install through PATH is then measured against that
+    // install rather than the image default.
+    const probeEnv: Record<string, string> = {};
+    for (const [key, value] of Object.entries(envConfig)) {
+      if (typeof value === "string") probeEnv[key] = value;
+    }
+    const versionCheck = await checkCodexCliVersionForModel({
+      runId: `codex-acp-envtest-${Date.now()}-${Math.random().toString(16).slice(2)}`,
+      model: asString(config.model, ""),
+      command: "codex",
+      target,
+      cwd: resolveAdapterExecutionTargetCwd(target, asString(config.cwd, ""), process.cwd()),
+      env: probeEnv,
+    });
+    if (versionCheck) checks.push(versionCheck.check);
   }
 
   const mode = firstNonEmptyString(config.mode, config.acpMode) ?? DEFAULT_ACP_ENGINE_MODE;

@@ -163,6 +163,37 @@ test.describe("Docker authenticated onboarding smoke", () => {
       page.getByRole("heading", { name: "Connect a model" })
     ).toBeVisible({ timeout: 20_000 });
 
+    const companies = await getJson<Array<{ id: string; name: string }>>(
+      page,
+      `${baseUrl}/api/companies`
+    );
+    const company = companies.find((entry) => entry.name === COMPANY_NAME);
+    expect(company).toBeTruthy();
+    const agentsUrl = `${baseUrl}/api/companies/${company!.id}/agents`;
+    await expect.poll(
+      () => getJson<Array<{ id: string }>>(page, agentsUrl),
+      { message: "Connect a model must retain one paused setup record" },
+    ).toEqual([
+      expect.objectContaining({
+        name: AGENT_NAME,
+        status: "paused",
+        pauseReason: "setup",
+        metadata: expect.objectContaining({ setupAdapterPending: true }),
+        runtimeConfig: expect.objectContaining({
+          heartbeat: expect.objectContaining({ enabled: false }),
+        }),
+      }),
+    ]);
+    const [setupAgent] = await getJson<Array<{ id: string }>>(page, agentsUrl);
+    for (const resource of ["issues", "heartbeat-runs"]) {
+      expect(
+        await getJson<Array<{ id: string }>>(
+          page,
+          `${baseUrl}/api/companies/${company!.id}/${resource}`,
+        ),
+      ).toEqual([]);
+    }
+
     await page
       .getByRole("button", { name: "Use API key instead", exact: true })
       .click();
@@ -200,18 +231,14 @@ test.describe("Docker authenticated onboarding smoke", () => {
     await getStartedButton.click();
     await expect(page).toHaveURL(/\/issues\//, { timeout: 30_000 });
 
-    const companies = await getJson<Array<{ id: string; name: string }>>(
-      page,
-      `${baseUrl}/api/companies`
-    );
-    const company = companies.find((entry) => entry.name === COMPANY_NAME);
-    expect(company).toBeTruthy();
-
     const agents = await getJson<
-      Array<{ id: string; name: string; role: string; adapterType: string }>
+      Array<{ id: string; name: string; role: string; adapterType: string; pauseReason: string | null }>
     >(page, `${baseUrl}/api/companies/${company!.id}/agents`);
+    expect(agents).toHaveLength(1);
     const leadAgent = agents.find((entry) => entry.name === AGENT_NAME);
     expect(leadAgent).toBeTruthy();
+    expect(leadAgent!.id).toBe(setupAgent!.id);
+    expect(leadAgent!.pauseReason).not.toBe("setup");
     expect(leadAgent!.role).toBe(AGENT_ROLE);
     expect(leadAgent!.adapterType).not.toBe("process");
 
@@ -252,7 +279,13 @@ test.describe("Docker authenticated onboarding smoke", () => {
     await expect(
       page.getByText("Welcome to Paperclip!").first()
     ).toBeVisible({ timeout: 20_000 });
-    await expect(page.getByText("What would you like to do?")).toBeVisible();
+    // The timeline also summarizes the unanswered question. Check the open
+    // question card so a summary alone cannot satisfy this assertion.
+    await expect(
+      page
+        .getByTestId("task-chat-interaction")
+        .getByText("What would you like to do?", { exact: true })
+    ).toBeVisible();
 
     // … and that the no-run contract holds. This spec used to poll for an
     // assignment-triggered heartbeat run here; a run appearing before the

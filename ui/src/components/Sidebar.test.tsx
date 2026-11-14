@@ -8,6 +8,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { Sidebar } from "./Sidebar";
 import { TooltipProvider } from "@/components/ui/tooltip";
 
+vi.mock("@/hooks/useCoordinatorWorkspaceEnabled", () => ({
+  useCoordinatorWorkspaceEnabled: () => ({ enabled: false, loaded: true, userId: "viewer" }),
+}));
+
 const mockHeartbeatsApi = vi.hoisted(() => ({
   liveRunsForCompany: vi.fn(),
 }));
@@ -267,6 +271,11 @@ describe("Sidebar", () => {
     expect(navLabels).toContain("Projects");
     expect(navLabels).toContain("Agents");
     expect(container.textContent).not.toContain("Organization");
+    expect(container.textContent).not.toContain("Workspaces");
+    expect([...container.querySelectorAll("nav a")].map((a) => a.textContent?.trim())).not.toContain("Goals");
+    expect(container.querySelector('[data-testid="sidebar-goals-placeholder"]')).not.toBeNull();
+    expect(container.textContent).not.toContain("Conference Room");
+    expect(container.textContent).not.toContain("Pipelines");
 
     flushSync(() => {
       root.unmount();
@@ -352,11 +361,11 @@ describe("Sidebar", () => {
     });
   });
 
-  it("keeps the Inbox row, Workspaces and no chat surfaces while both PAP-670 flags are off", async () => {
+  it("keeps Chat, Inbox and Workspaces without the combined Tasks experiment", async () => {
     mockInstanceSettingsApi.getExperimental.mockResolvedValue({ enableIsolatedWorkspaces: true });
     const root = await renderSidebar();
 
-    expect([...container.querySelectorAll("a")].some((anchor) => anchor.getAttribute("href") === "/chats")).toBe(false);
+    expect([...container.querySelectorAll("a")].some((anchor) => anchor.getAttribute("href") === "/chats")).toBe(true);
     expect([...container.querySelectorAll("a")].some((anchor) => anchor.getAttribute("href") === "/inbox")).toBe(true);
     expect([...container.querySelectorAll("a")].some((anchor) => anchor.getAttribute("href") === "/workspaces")).toBe(true);
 
@@ -394,12 +403,12 @@ describe("Sidebar", () => {
       });
     });
 
-    it("does not render Workspaces anywhere in the nav, even with isolated workspaces on", async () => {
+    it("keeps Workspaces available beside Chat when isolated workspaces are on", async () => {
       mockInstanceSettingsApi.getExperimental.mockResolvedValue({ enableAgentChat: true, enableIsolatedWorkspaces: true });
       const root = await renderSidebar();
 
-      expect(container.textContent).not.toContain("Workspaces");
-      expect([...container.querySelectorAll("a")].some((anchor) => anchor.getAttribute("href") === "/workspaces")).toBe(false);
+      expect(container.textContent).toContain("Workspaces");
+      expect([...container.querySelectorAll("a")].some((anchor) => anchor.getAttribute("href") === "/workspaces")).toBe(true);
 
       flushSync(() => {
         root.unmount();
@@ -452,26 +461,15 @@ describe("Sidebar", () => {
       });
     });
 
-    it("adds no chat surfaces while Agent Chat is off", async () => {
+    it("keeps Chat available despite a retired off value", async () => {
       mockInstanceSettingsApi.getExperimental.mockResolvedValue({ enableCombinedInboxTasks: true, enableAgentChat: false });
       const root = await renderSidebar();
 
-      expect([...container.querySelectorAll("a")].some((anchor) => anchor.getAttribute("href") === "/chats")).toBe(false);
+      expect([...container.querySelectorAll("a")].some((anchor) => anchor.getAttribute("href") === "/chats")).toBe(true);
 
       flushSync(() => {
         root.unmount();
       });
-    });
-  });
-
-  it("does not flash the Workspaces link while experimental settings are loading", async () => {
-    mockInstanceSettingsApi.getExperimental.mockImplementation(() => new Promise(() => {}));
-    const root = await renderSidebar();
-
-    expect(container.textContent).not.toContain("Workspaces");
-
-    flushSync(() => {
-      root.unmount();
     });
   });
 
@@ -523,7 +521,7 @@ describe("Sidebar", () => {
     const labels = (section: Element | undefined) => [...(section?.querySelectorAll("a") ?? [])]
       .map((anchor) => anchor.textContent?.trim());
 
-    expect(labels(workSection)).toEqual(["Tasks", "Projects", "Routines", "Artifacts"]);
+    expect(labels(workSection)).toEqual(["Chat", "Tasks", "Projects", "Routines", "Artifacts"]);
     expect(labels(orgSection)).toEqual(["Agents", "Skills", "Connectors", "Audit"]);
     expect(sections.indexOf(workSection!)).toBeLessThan(sections.indexOf(orgSection!));
     expect(
@@ -543,18 +541,6 @@ describe("Sidebar", () => {
     const root = await renderSidebar();
 
     expect([...container.querySelectorAll("nav a")].map((a) => a.textContent?.trim())).not.toContain("Goals");
-
-    flushSync(() => {
-      root.unmount();
-    });
-  });
-
-  it("reserves the Goals nav slot while experimental settings are loading", async () => {
-    mockInstanceSettingsApi.getExperimental.mockImplementation(() => new Promise(() => {}));
-    const root = await renderSidebar();
-
-    expect([...container.querySelectorAll("nav a")].map((a) => a.textContent?.trim())).not.toContain("Goals");
-    expect(container.querySelector('[data-testid="sidebar-goals-placeholder"]')).not.toBeNull();
 
     flushSync(() => {
       root.unmount();
@@ -625,31 +611,6 @@ describe("Sidebar", () => {
     });
   });
 
-  it("does not flash the Conference Room item while experimental settings are loading (PAP-137)", async () => {
-    mockInstanceSettingsApi.getExperimental.mockImplementation(() => new Promise(() => {}));
-    const root = await renderSidebar();
-
-    expect(container.textContent).not.toContain("Conference Room");
-
-    flushSync(() => {
-      root.unmount();
-    });
-  });
-
-  it("hides the Pipelines nav item when pipelines are disabled", async () => {
-    mockInstanceSettingsApi.getExperimental.mockResolvedValue({
-      enableIsolatedWorkspaces: false,
-      enablePipelines: false,
-    });
-    const root = await renderSidebar();
-
-    expect(container.textContent).not.toContain("Pipelines");
-
-    flushSync(() => {
-      root.unmount();
-    });
-  });
-
   it("always shows Connectors in the Org section", async () => {
     mockInstanceSettingsApi.getExperimental.mockResolvedValue({ enableApps: false });
     const root = await renderSidebar();
@@ -670,26 +631,15 @@ describe("Sidebar", () => {
     });
   });
 
-  it("shows the Pipelines nav item when pipelines are enabled", async () => {
+  it("ignores the retired Pipelines flag in old settings responses", async () => {
     mockInstanceSettingsApi.getExperimental.mockResolvedValue({
       enableIsolatedWorkspaces: false,
       enablePipelines: true,
     });
     const root = await renderSidebar();
 
-    const link = [...container.querySelectorAll("a")].find((anchor) => anchor.textContent === "Pipelines");
-    expect(link?.getAttribute("href")).toBe("/pipelines");
-
-    flushSync(() => {
-      root.unmount();
-    });
-  });
-
-  it("does not flash the Pipelines nav item while experimental settings are loading", async () => {
-    mockInstanceSettingsApi.getExperimental.mockImplementation(() => new Promise(() => {}));
-    const root = await renderSidebar();
-
     expect(container.textContent).not.toContain("Pipelines");
+    expect(container.querySelector('a[href="/pipelines"]')).toBeNull();
 
     flushSync(() => {
       root.unmount();

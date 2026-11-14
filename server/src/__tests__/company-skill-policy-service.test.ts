@@ -9,7 +9,7 @@ import {
   principalPermissionGrants,
 } from "@paperclipai/db";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
-import { companySkillPolicyService } from "../services/company-skill-policy.js";
+import { companySkillPolicyService, normalizeSkillPolicySourceType } from "../services/company-skill-policy.js";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
@@ -143,6 +143,20 @@ describeEmbeddedPostgres("companySkillPolicyService", () => {
       action: "skills.install",
       resource: { sourceType: "external_package" },
     })).resolves.toMatchObject({ allowed: true, matchedRuleId: "agent-override" });
+  });
+
+  it("preserves workspace restrictions when a managed skill changes its source label", async () => {
+    const seeded = await seedAgent();
+    const service = companySkillPolicyService(db);
+    await service.replace({ companyId: seeded.companyId, expectedRevision: 0,
+      policy: { schemaVersion: 1, defaultEffect: "allow", rules: [{ id: "deny-workspace-edit", priority: 1,
+        effect: "deny", subject: { type: "all_agents" }, actions: ["skills.edit"], resources: { sourceTypes: ["workspace"] } }] },
+      activity: { actorType: "agent", actorId: seeded.agentId, agentId: seeded.agentId } });
+    for (const sourceType of ["local_path", "managed"]) {
+      await expect(service.evaluate({ companyId: seeded.companyId, principal: seeded.principal,
+        action: "skills.edit", resource: { sourceType: normalizeSkillPolicySourceType(sourceType) } }))
+        .resolves.toMatchObject({ allowed: false, matchedRuleId: "deny-workspace-edit" });
+    }
   });
 
   it("uses retained legacy grants only after explicit rules fail to match", async () => {

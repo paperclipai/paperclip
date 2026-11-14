@@ -11,15 +11,18 @@ import {
 import {
   ensureAdapterExecutionTargetCommandResolvable,
   ensureAdapterExecutionTargetDirectory,
+  isAdapterExecutionTargetUnavailableError,
   maybeRunSandboxInstallCommand,
   runAdapterExecutionTargetProcess,
   describeAdapterExecutionTarget,
   resolveAdapterExecutionTargetCwd,
   prepareAdapterExecutionTargetRuntime,
+  managedRemoteHomeEnvironment,
 } from "@paperclipai/adapter-utils/execution-target";
 import fs from "node:fs/promises";
 import path from "node:path";
 import os from "node:os";
+import { copyBackCodexAuth } from "./codex-auth-copyback.js";
 import { parseCodexJsonl } from "./parse.js";
 import { SANDBOX_INSTALL_COMMAND } from "../index.js";
 import { codexHomeDir, readCodexAuthInfo } from "./quota.js";
@@ -37,6 +40,7 @@ import {
 } from "./codex-auth-cache.js";
 import { resolveCodexExecutionEngineForRun, testCodexAcpEnvironment } from "./acp.js";
 import { ADAPTER_AUTH_MISSING_CHECK_CODE } from "./auth-check.js";
+import { checkCodexCliVersionForModel, codexHelloProbeModelRejectionCheck } from "./cli-version.js";
 
 function summarizeStatus(checks: AdapterEnvironmentCheck[]): AdapterEnvironmentTestResult["status"] {
   if (checks.some((check) => check.level === "error")) return "fail";
@@ -92,17 +96,25 @@ async function prepareCodexHelloProbe(input: {
   env: Record<string, string>;
   cleanup: () => Promise<void>;
 }> {
+  if (input.target?.kind === "remote" && input.target.transport === "ssh" && input.target.spec.useHostAuth === true) {
+    return { command: input.command, args: input.args, env: { ...input.env }, cleanup: async () => {} };
+  }
   let preparedRuntime: Awaited<ReturnType<typeof prepareAdapterExecutionTargetRuntime>> | null = null;
   let preparedRuntimeWorkspaceLocalDir: string | null = null;
   let probeHomeLocalDir: string | null = null;
 
   const cleanup = async () => {
-    await preparedRuntime?.restoreWorkspace().catch(() => {});
-    if (preparedRuntimeWorkspaceLocalDir) {
-      await fs.rm(preparedRuntimeWorkspaceLocalDir, { recursive: true, force: true }).catch(() => {});
-    }
-    if (probeHomeLocalDir) {
-      await fs.rm(probeHomeLocalDir, { recursive: true, force: true }).catch(() => {});
+    try {
+      await preparedRuntime?.restoreWorkspace();
+    } catch (error) {
+      if (input.managedAiConnection) throw error;
+    } finally {
+      if (preparedRuntimeWorkspaceLocalDir) {
+        await fs.rm(preparedRuntimeWorkspaceLocalDir, { recursive: true, force: true }).catch(() => {});
+      }
+      if (probeHomeLocalDir) {
+        await fs.rm(probeHomeLocalDir, { recursive: true, force: true }).catch(() => {});
+      }
     }
   };
 
@@ -169,7 +181,7 @@ async function prepareCodexHelloProbe(input: {
     // Pointing Codex at an empty uploaded home would mask any login already
     // baked into the sandbox (e.g. a captured custom-image snapshot); leaving
     // CODEX_HOME unset lets the probe exercise that in-sandbox login instead.
-    if (!seededAuth) {
+    if (!seededAuth && !input.managedAiConnection) {
       return {
         command: input.command,
         args: input.args,
@@ -182,6 +194,7 @@ async function prepareCodexHelloProbe(input: {
       path.join(os.tmpdir(), `paperclip-codex-envtest-${input.runId}-`),
     );
     preparedRuntime = await prepareAdapterExecutionTargetRuntime({
+      privateRuntime: Boolean(input.managedAiConnection),
       runId: input.runId,
       target: input.target,
       adapterKey: "codex",
@@ -193,11 +206,22 @@ async function prepareCodexHelloProbe(input: {
       workspaceRemoteDir: input.cwd,
       installCommand: SANDBOX_INSTALL_COMMAND,
       detectCommand: input.command,
+      // The probe workspace is a throwaway temp dir; never wait on copy-back retries.
+      workspaceRestoreRetryDelaysMs: [],
       assets: [
         {
           key: "home",
           localDir: probeHomeLocalDir,
           followSymlinks: true,
+          restore: input.managedAiConnection
+            ? async ({ assetDir, readFile }) => {
+              await copyBackCodexAuth({
+                readSandboxAuth: () => readFile(path.posix.join(assetDir, "auth.json")),
+                hostAuthPath: path.join(effectiveHome, "auth.json"),
+                log: async () => {},
+              });
+            }
+            : undefined,
         },
       ],
     });
@@ -206,7 +230,10 @@ async function prepareCodexHelloProbe(input: {
       command: input.command,
       args: input.args,
       env: preparedRuntime.assetDirs.home
-        ? { ...input.env, CODEX_HOME: preparedRuntime.assetDirs.home }
+        ? { ...input.env,
+          ...(input.target?.kind === "remote" && input.target.transport === "ssh" && input.target.spec.useHostAuth === false && input.managedAiConnection && preparedRuntime.runtimeRootDir
+            ? managedRemoteHomeEnvironment(preparedRuntime.runtimeRootDir) : {}),
+          CODEX_HOME: preparedRuntime.assetDirs.home }
         : { ...input.env },
       cleanup,
     };
@@ -303,6 +330,7 @@ export async function testEnvironment(
   } catch (err) {
     checks.push({
       code: "codex_cwd_invalid",
+      ...(isAdapterExecutionTargetUnavailableError(err) ? { retryable: true } : {}),
       level: "error",
       message: err instanceof Error ? err.message : "Invalid working directory",
       detail: cwd,
@@ -334,6 +362,7 @@ export async function testEnvironment(
   } catch (err) {
     checks.push({
       code: "codex_command_unresolvable",
+      ...(isAdapterExecutionTargetUnavailableError(err) ? { retryable: true } : {}),
       level: "error",
       message: err instanceof Error ? err.message : "Command is not executable",
       detail: command,
@@ -341,8 +370,15 @@ export async function testEnvironment(
   }
 
   const configOpenAiKey = env.OPENAI_API_KEY;
-  const hostOpenAiKey = targetIsRemote ? undefined : process.env.OPENAI_API_KEY;
-  if (isNonEmpty(configOpenAiKey) || isNonEmpty(hostOpenAiKey)) {
+  const hostOpenAiKey = targetIsRemote || Object.hasOwn(env, "OPENAI_API_KEY")
+    ? undefined : process.env.OPENAI_API_KEY;
+  if (config.managedAiRouting) {
+    checks.push({
+      code: "codex_managed_provider_configured",
+      level: "info",
+      message: "Testing the selected connection’s provider and model.",
+    });
+  } else if (isNonEmpty(configOpenAiKey) || isNonEmpty(hostOpenAiKey)) {
     const source = isNonEmpty(configOpenAiKey) ? "adapter config env" : "server environment";
     checks.push({
       code: "codex_openai_api_key_present",
@@ -374,7 +410,34 @@ export async function testEnvironment(
 
   const canRunProbe =
     checks.every((check) => check.code !== "codex_cwd_invalid" && check.code !== "codex_command_unresolvable");
-  if (canRunProbe) {
+  // Models with a verified CLI floor are compared against the installed Codex
+  // before the hello probe. A probe on an older CLI only produces the backend's
+  // "not supported when using Codex with a ChatGPT account" rejection, which
+  // hides the real gap: the CLI (often a stale sandbox image), not the account.
+  let detectedCliVersion: string | null = null;
+  let configuredModelIsCompatible = true;
+  if (canRunProbe && commandLooksLike(command, "codex")) {
+    const versionCheck = await checkCodexCliVersionForModel({
+      runId,
+      model: asString(config.model, ""),
+      command,
+      target,
+      cwd,
+      env,
+    });
+    if (versionCheck) {
+      checks.push(versionCheck.check);
+      configuredModelIsCompatible = versionCheck.compatible;
+      detectedCliVersion = versionCheck.detectedVersion;
+    }
+  }
+  if (canRunProbe && !configuredModelIsCompatible) {
+    checks.push({
+      code: "codex_hello_probe_skipped_cli_version",
+      level: "info",
+      message: "Skipped hello probe because the installed Codex CLI cannot use the configured model.",
+    });
+  } else if (canRunProbe) {
     if (!commandLooksLike(command, "codex")) {
       checks.push({
         code: "codex_hello_probe_skipped_custom_command",
@@ -420,7 +483,9 @@ export async function testEnvironment(
       // wrap the probe with a shell that materializes a per-run auth.json so
       // the CLI can authenticate. The key content is passed via env (not on
       // the command line) to avoid leaking it into process listings.
-      const probeApiKey = isNonEmpty(configOpenAiKey)
+      // Managed connections already contain their exact auth and provider config.
+      // Replacing that home with a native-key probe would test another provider.
+      const probeApiKey = config.managedAiConnection ? null : isNonEmpty(configOpenAiKey)
         ? configOpenAiKey
         : isNonEmpty(hostOpenAiKey)
           ? hostOpenAiKey
@@ -514,7 +579,12 @@ export async function testEnvironment(
             });
           }
         } else {
-          checks.push({
+          const modelRejection = codexHelloProbeModelRejectionCheck({
+            evidence: `${parsed.errorMessage ?? ""}\n${providerStderr}\n${probe.stdout}`,
+            detectedVersion: detectedCliVersion,
+            targetIsSandbox,
+          });
+          checks.push(modelRejection ?? {
             code: "codex_hello_probe_failed",
             level: "error",
             message: "Codex hello probe failed.",

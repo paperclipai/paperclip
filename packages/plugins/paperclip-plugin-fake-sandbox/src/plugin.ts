@@ -13,6 +13,8 @@ import type {
   PluginEnvironmentDeleteTemplateParams,
   PluginEnvironmentDeleteTemplateResult,
   PluginEnvironmentDestroyLeaseParams,
+  PluginEnvironmentInspectLeaseParams,
+  PluginEnvironmentLeaseObservation,
   PluginEnvironmentExecuteParams,
   PluginEnvironmentExecuteResult,
   PluginEnvironmentGetInteractiveSetupParams,
@@ -342,6 +344,10 @@ const plugin = definePlugin({
     if (!config.reuseLease) {
       await removeLease(params.providerLeaseId);
     }
+  },
+
+  async onEnvironmentInspectLease(params: PluginEnvironmentInspectLeaseParams): Promise<PluginEnvironmentLeaseObservation> {
+    return { providerLeaseId: params.providerLeaseId, state: leases.has(params.providerLeaseId) ? "active" : "destroyed" };
   },
 
   async onEnvironmentDestroyLease(

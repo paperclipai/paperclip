@@ -215,7 +215,7 @@ function boardActor(input: {
   };
 }
 
-describe.sequential("company route cross-company authorization", () => {
+describe("company route cross-company authorization", () => {
   beforeEach(() => {
     vi.resetModules();
     vi.doUnmock("../routes/authz.js");

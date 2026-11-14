@@ -135,6 +135,7 @@ fn keeps_durable_correlation_separate_from_the_active_provider_turn() {
     let request = project_acpx_state_event(
         &context,
         &AcpxProviderStateEvent::InputRequest {
+            tool_call_id: None,
             request_id: "request-1".to_owned(),
             question_set: json!({
                 "schema":"paperclip.question_set.v1",
@@ -215,6 +216,7 @@ fn projects_structured_input_and_semantic_results_without_provider_envelopes() {
         "questions":[],
     });
     let input = project(AcpxProviderStateEvent::InputRequest {
+        tool_call_id: None,
         request_id: "request-1".to_owned(),
         question_set: question_set.clone(),
         origin: None,
@@ -271,6 +273,7 @@ fn projects_structured_input_and_semantic_results_without_provider_envelopes() {
 #[test]
 fn projects_runtime_request_prompt_and_origin_into_the_strict_schema() {
     let empty_title = AcpxProviderStateEvent::InputRequest {
+        tool_call_id: None,
         request_id: "request-1".to_owned(),
         question_set: json!({
             "schema":"paperclip.question_set.v1",
@@ -299,6 +302,7 @@ fn projects_runtime_request_prompt_and_origin_into_the_strict_schema() {
         json!({"adapter":"codex-acpx","method":null}),
     ] {
         let invalid = AcpxProviderStateEvent::InputRequest {
+            tool_call_id: None,
             request_id: "request-1".to_owned(),
             question_set: json!({
                 "schema":"paperclip.question_set.v1",
@@ -450,6 +454,7 @@ fn rejects_invalid_durable_projection_identity() {
 
     for request_id in [String::new(), "x".repeat(241), "request\n1".to_owned()] {
         let request = AcpxProviderStateEvent::InputRequest {
+            tool_call_id: None,
             request_id,
             question_set: json!({
                 "schema":"paperclip.question_set.v1",
@@ -519,6 +524,7 @@ fn deterministically_projects_bounded_upstream_request_ids() {
         "x".repeat(240),
     ] {
         let event = AcpxProviderStateEvent::InputRequest {
+            tool_call_id: None,
             request_id: upstream_id.clone(),
             question_set: question_set.clone(),
             origin: None,
@@ -536,6 +542,7 @@ fn deterministically_projects_bounded_upstream_request_ids() {
     }
 
     let canonical = AcpxProviderStateEvent::InputRequest {
+        tool_call_id: None,
         request_id: "request-1".to_owned(),
         question_set,
         origin: None,
@@ -556,6 +563,7 @@ fn runtime_request_projection_preserves_durable_identity_boundaries() {
     runtime_request_schema["properties"]["input"] = json!({});
     let request_validator = jsonschema::validator_for(&runtime_request_schema).unwrap();
     let request_event = AcpxProviderStateEvent::InputRequest {
+        tool_call_id: None,
         request_id: "request-1".to_owned(),
         question_set: json!({
             "schema":"paperclip.question_set.v1",
@@ -634,4 +642,49 @@ fn recovery_preserves_the_preceding_provider_turn_answer() {
     assert_ne!(first[0].payload["itemId"], second[0].payload["itemId"]);
     assert_eq!(first[0].payload["text"], "Useful answer");
     assert_eq!(second[0].payload["text"], "Recovery update");
+}
+
+#[test]
+fn cursor_plan_request_item_matches_tool_projection_and_survives_terminal_reconstruction() {
+    use paperclip_runner_core::acpx_event_payload::AcpxRuntimeEventKind;
+    use paperclip_runner_core::provider_events::normalize_acpx_runtime_event;
+    for id in [
+        "tool-1".to_owned(),
+        "tool with spaces".to_owned(),
+        "🧭/plan".to_owned(),
+        "x".repeat(240),
+    ] {
+        let input = AcpxProviderStateEvent::InputRequest {
+            tool_call_id: Some(id.clone()),
+            request_id: "input-1".to_owned(),
+            question_set: json!({"schema":"paperclip.question_set.v1","questions":[]}),
+            origin: Some(
+                json!({"adapter":"acpx-runtime-sidecar","provider":"cursor","method":"cursor/create_plan"}),
+            ),
+        };
+        let request =
+            project_acpx_state_event(&context(), &input).unwrap()[0].payload["request"].clone();
+        let tool = normalize_acpx_runtime_event(
+            AcpxRuntimeEventKind::ToolCall,
+            &json!({"type":"tool_call","toolCallId":id,"kind":"execute","status":"pending","title":"arbitrary"}),
+            Some("execute"),
+            "item-1",
+            "turn-1",
+            0,
+        );
+        assert_eq!(request["itemId"], tool[0].payload["executionId"]);
+        for status in [
+            AcpxTurnStatus::Cancelled,
+            AcpxTurnStatus::Failed,
+            AcpxTurnStatus::Completed,
+        ] {
+            let ended = project_acpx_state_event(&context(), &AcpxProviderStateEvent::RuntimeRequestEnded {
+                tool_call_id: Some(id.clone()), request_id: "input-1".to_owned(),
+                question_set: Some(json!({"schema":"paperclip.question_set.v1","questions":[]})),
+                origin: Some(json!({"adapter":"acpx-runtime-sidecar","provider":"cursor","method":"cursor/create_plan"})), status,
+            }).unwrap();
+            assert_eq!(ended[0].payload["itemId"], request["itemId"]);
+            assert_eq!(ended[0].payload["request"]["itemId"], request["itemId"]);
+        }
+    }
 }

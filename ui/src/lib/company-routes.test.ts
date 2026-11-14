@@ -7,6 +7,18 @@ import {
 } from "./company-routes";
 
 describe("company routes", () => {
+  it("keeps public Dot consent outside company-prefixed routes", () => {
+    const path = `/dot-connect/pcmcp_request_${"a".repeat(43)}`;
+    expect(extractCompanyPrefixFromPath(path)).toBeNull();
+    expect(applyCompanyPrefix(path, "DOT")).toBe(path);
+  });
+  it("keeps a company task path whose prefix matches a board route name", () => {
+    expect(extractCompanyPrefixFromPath("/ORG/issues/ORG-1")).toBe("ORG");
+    expect(applyCompanyPrefix("/ORG/issues/ORG-1", "ORG")).toBe("/ORG/issues/ORG-1");
+    expect(applyCompanyPrefix("/ORG/issues/ORG-1", "COM")).toBe("/ORG/issues/ORG-1");
+    expect(applyCompanyPrefix("/org", "ORG")).toBe("/ORG/org");
+    expect(applyCompanyPrefix("/issues/ORG-1", "ORG")).toBe("/ORG/issues/ORG-1");
+  });
   it("treats the task-list alias as an unprefixed board route", () => {
     expect(isBoardPathWithoutPrefix("/tasks")).toBe(true);
     expect(extractCompanyPrefixFromPath("/tasks")).toBeNull();

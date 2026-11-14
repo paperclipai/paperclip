@@ -1,5 +1,7 @@
+import { groupImageResources } from "./image-resources";
 import { useState, type ReactNode } from "react";
 import { cn } from "@/lib/utils";
+import { TaskChatRunHealthBanner } from "./TaskChatRunHealthBanner";
 import { useStreamlinedTaskChatPresentation } from "./presentation-mode";
 import {
   segmentTaskChatFocusRows,
@@ -102,7 +104,7 @@ export function TaskChatTurn({
   if (item.standaloneHeader) {
     // Chronological segments, same rule as the live Runner turn: expanding the
     // folds must restore the exact timeline order around persistent rows.
-    const focusSegments = segmentTaskChatFocusRows(item.items);
+    const focusSegments = segmentTaskChatFocusRows(groupImageResources(item.items));
     return (
       <div
         data-testid="task-chat-turn"
@@ -128,6 +130,7 @@ export function TaskChatTurn({
                 : "Worked"}
           </span> : null}
         </div> : null}
+        <TaskChatRunHealthBanner failures={item.mcpStartupFailures ?? []} />
         {item.items.length > 0 ? (
           <div
             className="flex min-w-0 flex-col gap-2 py-1"
@@ -147,7 +150,7 @@ export function TaskChatTurn({
                 ),
               )
             ) : (
-              item.items.map(renderTimelineRow)
+              groupImageResources(item.items).map(renderTimelineRow)
             )}
           </div>
         ) : null}
@@ -292,6 +295,7 @@ export function TaskChatTurn({
       ) : (
         header
       )}
+      <TaskChatRunHealthBanner failures={item.mcpStartupFailures ?? []} />
       <div
         className="tc-turn-fold"
         data-folded={folded ? "true" : "false"}
@@ -299,7 +303,7 @@ export function TaskChatTurn({
       >
         <div>
           <div className="flex flex-col gap-2 pt-1">
-            {historyMounted && foldedItems.map((child) => (
+            {historyMounted && groupImageResources(foldedItems).map((child) => (
               <div key={child.id}>{renderChild(child)}</div>
             ))}
           </div>

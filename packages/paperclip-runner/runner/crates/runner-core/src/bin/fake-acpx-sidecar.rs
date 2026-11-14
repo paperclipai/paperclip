@@ -1,10 +1,61 @@
 use std::io::{self, BufRead, Write};
 use std::time::Duration;
 
-use paperclip_runner_core::generated_acpx_sidecar_contract::GENERATED_ACPX_SIDECAR_PROTOCOL_VERSION;
+use paperclip_runner_core::generated_acpx_sidecar_contract::{
+    GENERATED_ACPX_SIDECAR_PROTOCOL_VERSION, GENERATED_ACPX_TURN_DISPATCH_JOURNAL_FILE,
+    GENERATED_ACPX_TURN_DISPATCH_SCHEMA,
+};
 use serde_json::{json, Value};
 
 const PROJECTED_INPUT_PROVIDER_ID: &str = "input / réquest";
+
+static BACKGROUND_TASKS: std::sync::OnceLock<Option<String>> = std::sync::OnceLock::new();
+
+fn background_tasks_mode(snapshot: bool) -> Option<String> {
+    let path = BACKGROUND_TASKS.get()?.as_ref()?;
+    let modes = std::fs::read_to_string(path).unwrap_or_default();
+    let mut tokens = modes.split_whitespace();
+    let terminal = tokens.next().unwrap_or("").to_owned();
+    if !snapshot {
+        return Some(terminal);
+    }
+    Some(
+        tokens
+            .find_map(|token| token.strip_prefix("snapshot-"))
+            .map(str::to_owned)
+            .unwrap_or(terminal),
+    )
+}
+
+fn background_tasks_value(mode: &str) -> Option<Value> {
+    match mode {
+        "quiet" => Some(json!({"live":0})),
+        "live" => Some(json!({"live":1})),
+        "malformed" => Some(json!({"live":"0"})),
+        _ => None,
+    }
+}
+
+fn apply_background_snapshot(response: &mut Value, id: u64, idle: bool) {
+    let Some(mode) = background_tasks_mode(true) else {
+        return;
+    };
+    if mode == "reject" {
+        *response = json!({"protocolVersion":GENERATED_ACPX_SIDECAR_PROTOCOL_VERSION,"id":id,"ok":false,
+            "error":{"code":"temporarily_unavailable","message":"Snapshot is unavailable.","retryable":true}});
+        return;
+    }
+    let result = &mut response["result"];
+    if idle {
+        result["turnId"] = Value::Null;
+        result["pendingToolCount"] = json!(0);
+        result["pendingInputCount"] = json!(0);
+        result["pendingRuntimeRequests"] = json!([]);
+    }
+    if let Some(tasks) = background_tasks_value(&mode) {
+        result["backgroundTasks"] = tasks;
+    }
+}
 
 fn main() {
     if let Err(error) = run() {
@@ -25,10 +76,103 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         .find(|pair| pair[0] == "--profile-digest")
         .map(|pair| pair[1].as_str())
         .unwrap_or("sha256:1111111111111111111111111111111111111111111111111111111111111111");
+    let suspend_delay_ms = args
+        .windows(2)
+        .find(|pair| pair[0] == "--suspend-delay-ms")
+        .map(|pair| pair[1].parse::<u64>())
+        .transpose()?;
+    let mut opened_identity: Option<Value> = None;
+    let _ = BACKGROUND_TASKS.set(
+        args.windows(2)
+            .find(|pair| pair[0] == "--background-tasks")
+            .map(|pair| pair[1].clone()),
+    );
+    let lifetime_fence_candidates = args
+        .windows(2)
+        .find(|pair| pair[0] == "--lifetime-fence-ports")
+        .map(|pair| {
+            pair[1]
+                .split(',')
+                .map(str::parse::<u16>)
+                .collect::<Result<Vec<_>, _>>()
+        })
+        .transpose()?
+        .unwrap_or_else(|| vec![60001, 60002, 60003]);
+    let lifetime_fence_candidates: [u16; 3] = lifetime_fence_candidates
+        .try_into()
+        .map_err(|_| "lifetime fence requires three ports")?;
+    // Only the receiver-admission fixture writes this task-owned command journal.
+    let mut admission_journal = if matches!(mode, "admission-tool" | "admission-tool-oversized") {
+        let path = args
+            .windows(2)
+            .find(|pair| pair[0] == "--journal")
+            .ok_or("admission journal is missing")?;
+        Some(
+            std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&path[1])?,
+        )
+    } else {
+        None
+    };
     let stdin = io::stdin();
     let mut stdout = io::stdout().lock();
     let mut next_sequence = 1_u64;
     let mut goal = Value::Null;
+    let mut provider_lost = false;
+    let mut session_identity = Value::Null;
+    let mut source_run = String::new();
+    let mut pending_provider_run: Option<String> = None;
+    let mut provider_rearmable = false;
+    let mut source_pending_completion: Option<String> = None;
+    let mut source_goal_revision = 0_u64;
+    let mut runtime_directory: Option<std::path::PathBuf> = None;
+    // `--cancel-reply lost|late`: the provider stops its prompt, but the reply
+    // to turn.cancel is dropped, or written only before the next request.
+    let cancel_reply = args
+        .windows(2)
+        .find(|pair| pair[0] == "--cancel-reply")
+        .map(|pair| pair[1].clone());
+    let mut late_cancel_reply: Option<Value> = None;
+    // With --cancel-reply, a cancelled turn forgets its pending tool calls.
+    let mut cancel_retired_tools = false;
+    let mut source_journal = if mode == "source-reconcile" {
+        let path = args
+            .windows(2)
+            .find(|pair| pair[0] == "--journal")
+            .ok_or("source journal is missing")?;
+        let live_predecessors = std::fs::read_to_string(&path[1])
+            .unwrap_or_default()
+            .lines()
+            .filter_map(|line| serde_json::from_str::<Value>(line).ok())
+            .filter_map(|line| line["processStart"].as_u64())
+            .filter(|pid| {
+                std::process::Command::new("kill")
+                    .args(["-0", &pid.to_string()])
+                    .stderr(std::process::Stdio::null())
+                    .status()
+                    .is_ok_and(|status| status.success())
+            })
+            .collect::<Vec<_>>();
+        let mut file = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&path[1])?;
+        write_json(
+            &mut file,
+            &json!({"processStart": std::process::id(), "livePredecessors": live_predecessors}),
+        )?;
+        if args.iter().any(|arg| arg == "--spawn-owned-child") {
+            let child = std::process::Command::new("/bin/sleep")
+                .arg("120")
+                .spawn()?;
+            write_json(&mut file, &json!({"childPid": child.id()}))?;
+        }
+        Some(file)
+    } else {
+        None
+    };
     for line in stdin.lock().lines() {
         let request: Value = serde_json::from_str(&line?)?;
         let id = request
@@ -39,6 +183,439 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             .get("command")
             .and_then(Value::as_str)
             .ok_or("request command is missing")?;
+        if let Some(reply) = late_cancel_reply.take() {
+            write_json(&mut stdout, &reply)?;
+        }
+        if command == "turn.start" {
+            if let Some(fault) = args
+                .windows(2)
+                .find(|pair| pair[0] == "--reject-turn-start")
+            {
+                let fault = fault[1].as_str();
+                if fault == "event" {
+                    write_turn_event(
+                        &mut stdout,
+                        next_sequence,
+                        "runtime.event",
+                        "run-1",
+                        request["params"]["turnId"].as_str().unwrap(),
+                        json!({"type":"text_delta","text":"Work may have started."}),
+                    )?;
+                    next_sequence += 1;
+                }
+                let code = match fault {
+                    "unknown" | "message-only" => "UNKNOWN",
+                    "lowercase" => "session_resume_required",
+                    _ => "SESSION_RESUME_REQUIRED",
+                };
+                let mut error = json!({"protocolVersion":GENERATED_ACPX_SIDECAR_PROTOCOL_VERSION,
+                    "id":if fault == "wrong-id" {id + 1} else {id},"ok":false,
+                    "error":{"code":code,"message":"SESSION_RESUME_REQUIRED retryable=true classification=session_resume_required",
+                        "retryable":fault != "permanent"}});
+                if fault == "malformed" {
+                    error["error"]["retryable"] = json!("true");
+                }
+                write_json(&mut stdout, &error)?;
+                continue;
+            }
+        }
+        if command == "turn.cancel"
+            && provider_turn_tokens()
+                .iter()
+                .any(|token| token == "provider-turn-open")
+            && request["params"]["turnId"]
+                .as_str()
+                .is_some_and(|turn| turn.starts_with("provider-"))
+        {
+            let turn = request["params"]["turnId"].as_str().unwrap().to_owned();
+            write_json(
+                &mut stdout,
+                &json!({"protocolVersion":GENERATED_ACPX_SIDECAR_PROTOCOL_VERSION,"id":id,"ok":true,
+                    "result":{"cancelled":true,"sessionClosed":true}}),
+            )?;
+            write_json(
+                &mut stdout,
+                &json!({"protocolVersion":GENERATED_ACPX_SIDECAR_PROTOCOL_VERSION,"sequence":next_sequence,
+                    "eventType":"runtime.turn_terminal","runId":"run-1","turnId":turn,
+                    "payload":{"status":"cancelled","stopReason":"cancelled"}}),
+            )?;
+            next_sequence += 1;
+            continue;
+        }
+        if command == "session.provider_turn" {
+            if let Some(journal) = source_journal.as_mut() {
+                write_json(journal, &request)?;
+            }
+            let tokens = provider_turn_tokens();
+            let lost = if request["params"]["armed"] == json!(true) {
+                "provider-arm-reply-lost"
+            } else {
+                "provider-disarm-reply-lost"
+            };
+            if tokens.iter().any(|token| token == lost) {
+                continue;
+            }
+            let armed = request["params"]["armed"] == json!(true)
+                && (pending_provider_run.is_some() || provider_rearmable)
+                && !tokens.iter().any(|token| token == "provider-arm-reject");
+            write_json(
+                &mut stdout,
+                &json!({"protocolVersion":GENERATED_ACPX_SIDECAR_PROTOCOL_VERSION,"id":id,"ok":true,
+                    "result":{"armed":armed}}),
+            )?;
+            if request["params"]["armed"] == json!(false)
+                && tokens
+                    .iter()
+                    .any(|token| token == "provider-turn-after-disarm")
+            {
+                if let Some(run) = pending_provider_run.take() {
+                    next_sequence = write_provider_turn(&mut stdout, next_sequence, &run)?;
+                }
+            }
+            if armed
+                && tokens
+                    .iter()
+                    .any(|token| token == "provider-sidecar-exit-after-arm")
+            {
+                std::thread::spawn(|| {
+                    std::thread::sleep(Duration::from_millis(300));
+                    std::process::exit(0);
+                });
+            }
+            if armed
+                && tokens
+                    .iter()
+                    .any(|token| token == "provider-lost-after-arm")
+            {
+                write_json(
+                    &mut stdout,
+                    &json!({"protocolVersion":GENERATED_ACPX_SIDECAR_PROTOCOL_VERSION,"sequence":next_sequence,
+                        "eventType":"runtime.diagnostic","runId":null,"turnId":null,
+                        "payload":{"code":"ACPX_PROVIDER_PROCESS_LOST","message":"The provider exited."}}),
+                )?;
+                next_sequence += 1;
+            }
+            if armed && tokens.iter().any(|token| token == "provider-turn-hold") {
+                continue;
+            }
+            if let (true, Some(run)) = (armed, pending_provider_run.take()) {
+                next_sequence = write_provider_turn(&mut stdout, next_sequence, &run)?;
+                provider_rearmable = tokens.iter().any(|token| token == "provider-terminal-live");
+            } else {
+                provider_rearmable = false;
+            }
+            pending_provider_run = None;
+            continue;
+        }
+        if let Some(journal) = source_journal.as_mut() {
+            write_json(journal, &request)?;
+            if command == "run.attach" {
+                source_run = request["params"]["runId"].as_str().unwrap().to_owned();
+            }
+            let fault = args
+                .windows(2)
+                .find(|pair| pair[0] == "--source-fault")
+                .and_then(|pair| std::fs::read_to_string(&pair[1]).ok())
+                .unwrap_or_default();
+            let mut response = bootstrap_success(
+                id,
+                command,
+                &request,
+                mode,
+                profile_digest,
+                lifetime_fence_candidates,
+                &mut session_identity,
+            );
+            if command == "session.snapshot" {
+                response["result"] = json!({"identity":session_identity, "runId":source_run,
+                    "turnId":if fault == "active" {json!("unexpected-turn")} else {json!(source_pending_completion)},
+                    "pendingToolCount":if fault == "tool" || source_pending_completion.is_some() {1} else {0}, "pendingInputCount":0,
+                    "pendingRuntimeRequests":[]});
+            }
+            if command == "session.snapshot" {
+                apply_background_snapshot(&mut response, id, false);
+            }
+            if command == "session.snapshot" && fault == "foreign-snapshot" {
+                response["result"]["identity"]["agentSessionId"] = json!("foreign-session");
+            }
+            if command == "session.goal.get" {
+                source_goal_revision += 1;
+                response["result"]["providerRevision"] = json!(source_goal_revision);
+            }
+            if command == "session.goal.get"
+                && matches!(fault.as_str(), "read-diagnostic" | "read-burst")
+            {
+                let count = if fault == "read-burst" { 200 } else { 1 };
+                for _ in 0..count {
+                    write_json(
+                        &mut stdout,
+                        &json!({"protocolVersion":GENERATED_ACPX_SIDECAR_PROTOCOL_VERSION,
+                        "sequence":next_sequence,"eventType":"runtime.diagnostic","runId":source_run,"turnId":null,
+                        "payload":{"code":"ordinary_read_tail","message":"Retained before an ordinary turn."}}),
+                    )?;
+                    next_sequence += 1;
+                }
+            }
+            if command == "session.goal.get" && fault == "read-invalid-tail" {
+                write_turn_event(
+                    &mut stdout,
+                    next_sequence,
+                    "runtime.event",
+                    &source_run,
+                    "unbound-old-turn",
+                    json!({"type":"text_delta","text":"Rejected stale tail."}),
+                )?;
+                next_sequence += 1;
+            }
+            if command == "session.snapshot" && fault == "slow-snapshot" {
+                std::thread::sleep(std::time::Duration::from_secs(1));
+                write_json(
+                    &mut stdout,
+                    &json!({"protocolVersion":GENERATED_ACPX_SIDECAR_PROTOCOL_VERSION,
+                    "sequence":next_sequence,"eventType":"runtime.diagnostic","runId":source_run,"turnId":null,
+                    "payload":{"code":"slow_park_observation","message":"Retained after a slow read."}}),
+                )?;
+                next_sequence += 1;
+            }
+            if command == "session.snapshot" && fault == "goal-during-snapshot" {
+                source_goal_revision += 1;
+                let frame = json!({
+                    "protocolVersion":GENERATED_ACPX_SIDECAR_PROTOCOL_VERSION,
+                    "sequence":next_sequence,"eventType":"runtime.goal","runId":source_run,"turnId":null,
+                    "payload":{"schema":"paperclip.session_goal.snapshot.v1","providerRevision":source_goal_revision,
+                        "goal":{"objective":"Changed during final status","status":"active","workingNow":false},"workingNow":false}
+                });
+                write_json(journal, &json!({"emitted":frame}))?;
+                write_json(&mut stdout, &frame)?;
+                next_sequence += 1;
+            }
+            if command == "session.goal.get" && matches!(fault.as_str(), "goal" | "paused") {
+                response["result"]["goal"] = json!({"objective":"Continue independently", "status":if fault == "goal" {"active"} else {"paused"},
+                    "tokenBudget":null,"tokensUsed":null,"elapsedSeconds":null,"iterations":null,
+                    "lastReason":null,"createdAt":null,"updatedAt":null,"completedAt":null,"workingNow":false});
+                response["result"]["sessionGoals"] = json!({"availability":"available", "actions":["set","pause","resume","clear"],
+                    "autonomousUpdates":true,"persistentAcrossResume":true,"maxObjectiveChars":4000,"tokenBudgetControl":false,"usageReporting":false});
+            }
+            if (command == "session.goal.get" && fault == "reject-goal")
+                || (command == "session.snapshot" && fault == "reject-snapshot")
+            {
+                response = json!({"protocolVersion":GENERATED_ACPX_SIDECAR_PROTOCOL_VERSION,"id":id,"ok":false,
+                    "error":{"code":"temporarily_unavailable","message":"Optional read is temporarily unavailable.","retryable":true}});
+            }
+            if command == "session.open" {
+                runtime_directory = request["params"]["runtimeDirectory"]
+                    .as_str()
+                    .map(std::path::PathBuf::from);
+            }
+            // Like the real runtime port: journal the turn, then its prompt
+            // dispatch, before the provider can see the prompt.
+            // `hang-before-dispatch` / `hang-after-dispatch` freeze the start
+            // on either side of that boundary without replying.
+            if command == "turn.start" {
+                if let Some(directory) = runtime_directory.as_ref() {
+                    let turn = request["params"]["turnId"].as_str().unwrap();
+                    let path = directory.join(GENERATED_ACPX_TURN_DISPATCH_JOURNAL_FILE);
+                    let record = |phase: &str| {
+                        format!(
+                            "{}\n",
+                            json!({"schema":GENERATED_ACPX_TURN_DISPATCH_SCHEMA,"turnId":turn,"phase":phase})
+                        )
+                    };
+                    let mut options = std::fs::OpenOptions::new();
+                    options.write(true).create(true).truncate(true);
+                    #[cfg(unix)]
+                    std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
+                    options
+                        .open(&path)?
+                        .write_all(record("received").as_bytes())?;
+                    if fault == "hang-before-dispatch" {
+                        loop {
+                            std::thread::sleep(std::time::Duration::from_secs(60));
+                        }
+                    }
+                    let mut journal = std::fs::OpenOptions::new().append(true).open(&path)?;
+                    journal.write_all(record("dispatched").as_bytes())?;
+                    // The runtime port fsyncs here; the fixture skips it to stay fast.
+                    if fault == "hang-after-dispatch" {
+                        loop {
+                            std::thread::sleep(std::time::Duration::from_secs(60));
+                        }
+                    }
+                }
+            }
+            if command == "session.open" && fault == "slow-open" {
+                std::thread::sleep(std::time::Duration::from_secs(10));
+            }
+            if command == "session.open" && fault == "reject-open" {
+                response = json!({"protocolVersion":GENERATED_ACPX_SIDECAR_PROTOCOL_VERSION,"id":id,"ok":false,
+                    "error":{"code":"session_open_failed","message":"The replacement provider could not open.","retryable":false}});
+            }
+            write_json(&mut stdout, &response)?;
+            if command == "session.open" && args.iter().any(|arg| arg == "--emit-process") {
+                write_json(
+                    &mut stdout,
+                    &json!({"protocolVersion":GENERATED_ACPX_SIDECAR_PROTOCOL_VERSION,
+                        "sequence":next_sequence,"eventType":"runtime.process","runId":null,"turnId":null,
+                        "payload":{"role":"sidecar","pid":std::process::id(),"processGroupId":null,"startedAt":"2026-01-01T00:00:00.000Z"}}),
+                )?;
+                next_sequence += 1;
+            }
+            if command == "session.suspend" && fault == "late-tool-after-suspend" {
+                write_turn_event(
+                    &mut stdout,
+                    next_sequence,
+                    "runtime.tool_called",
+                    &source_run,
+                    "late-turn",
+                    json!({"callId":"late-call","operationId":"issues.delete","input":{"source":"late-old-generation"}}),
+                )?;
+                next_sequence += 1;
+            }
+            if command == "run.attach" && fault == "pre-turn-tool" {
+                write_turn_event(
+                    &mut stdout,
+                    next_sequence,
+                    "runtime.tool_called",
+                    &source_run,
+                    "pre-turn",
+                    json!({"callId":"pre-turn-call","operationId":"issues.read","input":{"id":"issue-1"}}),
+                )?;
+                next_sequence += 1;
+            }
+            if command == "turn.start" {
+                let turn = request["params"]["turnId"].as_str().unwrap();
+                if args.iter().any(|arg| arg == "--wait-completion-feedback") {
+                    let report = json!({"schema":"paperclip.run_result.v1", "reportedWorkDisposition":"done", "summary":"Completed fake ACPX work",
+                    "completionClaim":{"contractRevision":"1","objectiveSatisfied":true,
+                        "criteria":[{"criterionId":"objective","status":"satisfied","evidenceRefs":[]}],"remainingWork":[]},
+                    "evidence":[],"verification":[],"attentionRequests":[],"artifacts":[]});
+                    let call_id = format!("finish-{turn}");
+                    write_turn_event(
+                        &mut stdout,
+                        next_sequence,
+                        "runtime.tool_called",
+                        &source_run,
+                        turn,
+                        json!({"callId":call_id,"operationId":"paperclip_finish","input":report}),
+                    )?;
+                    next_sequence += 1;
+                    source_pending_completion = Some(turn.to_owned());
+                    continue;
+                }
+                if fault == "pending-input" {
+                    write_turn_event(
+                        &mut stdout,
+                        next_sequence,
+                        "runtime.input_requested",
+                        &source_run,
+                        turn,
+                        json!({"requestId":"input-at-terminal","questionSet":{
+                            "schema":"paperclip.question_set.v1",
+                            "questions":[{"id":"target","prompt":"Which target?","required":true,
+                                "answerMode":"single_select","options":[{"id":"first","label":"First"}]}]}}),
+                    )?;
+                    next_sequence += 1;
+                }
+                write_turn_event(
+                    &mut stdout,
+                    next_sequence,
+                    "runtime.event",
+                    &source_run,
+                    turn,
+                    json!({"type":"text_delta", "text":"Completed fake ACPX work."}),
+                )?;
+                next_sequence += 1;
+                let status = background_tasks_mode(true)
+                    .and_then(|_| std::fs::read_to_string(BACKGROUND_TASKS.get()?.as_ref()?).ok())
+                    .and_then(|modes| {
+                        modes
+                            .split_whitespace()
+                            .find_map(|token| token.strip_prefix("status-").map(str::to_owned))
+                    })
+                    .unwrap_or_else(|| "completed".to_owned());
+                write_turn_event(
+                    &mut stdout,
+                    next_sequence,
+                    "runtime.turn_terminal",
+                    &source_run,
+                    turn,
+                    json!({"status":status}),
+                )?;
+                next_sequence += 1;
+                next_sequence = offer_provider_turn(
+                    &mut stdout,
+                    next_sequence,
+                    &source_run,
+                    &mut pending_provider_run,
+                )?;
+            }
+            if command == "tool.resolve" {
+                let turn = source_pending_completion
+                    .take()
+                    .ok_or("missing source completion")?;
+                if request["params"]["turnId"] != turn
+                    || request["params"]["callId"] != format!("finish-{turn}")
+                {
+                    return Err("source completion identity mismatch".into());
+                }
+                write_turn_event(
+                    &mut stdout,
+                    next_sequence,
+                    "runtime.turn_terminal",
+                    &source_run,
+                    &turn,
+                    json!({"status":if request["params"]["error"].is_null() {"completed"} else {"failed"}}),
+                )?;
+                next_sequence += 1;
+            }
+            continue;
+        }
+        if mode == "turns-provider-death" && provider_lost && command == "session.goal.get" {
+            write_json(
+                &mut stdout,
+                &json!({
+                    "protocolVersion":GENERATED_ACPX_SIDECAR_PROTOCOL_VERSION,
+                    "id":id,"ok":false,"error":{"message":"provider has exited"}
+                }),
+            )?;
+            continue;
+        }
+        if let Some(journal) = admission_journal.as_mut() {
+            write_json(journal, &json!({"request":request}))?;
+            let response = if command == "tool.resolve" {
+                json!({"protocolVersion":GENERATED_ACPX_SIDECAR_PROTOCOL_VERSION,
+                    "id":id,"ok":true,"result":{"resolved":
+                        request["params"]["callId"] == "call-admission"
+                        && request["params"]["turnId"] == "turn-admission"
+                        && request["params"]["result"] == json!({"id":"issue-1"})
+                        && request["params"]["error"].is_null()}})
+            } else {
+                bootstrap_success(
+                    id,
+                    command,
+                    &request,
+                    mode,
+                    profile_digest,
+                    lifetime_fence_candidates,
+                    &mut session_identity,
+                )
+            };
+            write_json(&mut stdout, &response)?;
+            if command == "turn.start" {
+                let frame = json!({
+                    "protocolVersion":GENERATED_ACPX_SIDECAR_PROTOCOL_VERSION,
+                    "sequence":next_sequence,"eventType":"runtime.tool_called",
+                    "runId":"run-1","turnId":request["params"]["turnId"],
+                    "payload":{"callId":"call-admission","operationId":"issues.read",
+                        "input":{"id":"issue-1","padding":"x".repeat(
+                            if mode == "admission-tool-oversized" { 300 * 1024 } else { 8 })}},
+                });
+                write_json(journal, &json!({"emitted":frame}))?;
+                write_json(&mut stdout, &frame)?;
+                next_sequence += 1;
+            }
+            continue;
+        }
         if mode == "goals" && command.starts_with("session.goal.") {
             let params = request.get("params").cloned().unwrap_or_else(|| json!({}));
             match command {
@@ -79,7 +656,15 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         if command == "permission.resolve" {
             write_json(
                 &mut stdout,
-                &bootstrap_success(id, command, &request, mode, profile_digest),
+                &bootstrap_success(
+                    id,
+                    command,
+                    &request,
+                    mode,
+                    profile_digest,
+                    lifetime_fence_candidates,
+                    &mut session_identity,
+                ),
             )?;
             continue;
         }
@@ -149,7 +734,8 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                             "hasToken": std::env::var("PAPERCLIP_NATIVE_MCP_TOKEN").is_ok(),
                             "hasUnrelatedSecret": std::env::var("UNRELATED_EVAL_SECRET").is_ok(),
                             "credentialBinding": std::env::var("PAPERCLIP_ACPX_CREDENTIAL_BINDING").ok(),
-                            "credentialKeys": (["ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN", "OPENAI_API_KEY", "CODEX_API_KEY", "OPENROUTER_API_KEY", "CURSOR_API_KEY", "CURSOR_AUTH_TOKEN", "COPILOT_GITHUB_TOKEN", "GITHUB_TOKEN", "GH_TOKEN"].into_iter().filter(|key| std::env::var(key).is_ok()).collect::<Vec<_>>()),
+                            "credentialKeys": (["ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN", "OPENAI_API_KEY", "CODEX_API_KEY", "OPENROUTER_API_KEY", "GEMINI_API_KEY", "PAPERCLIP_ACPX_ANTIGRAVITY_AUTH_JSON_SECRET", "MY_PI_SERVICE_KEY", "LD_API_KEY", "DYLD_API_KEY", "PAPERCLIP_PI_PROVIDERS", "CURSOR_API_KEY", "CURSOR_AUTH_TOKEN", "COPILOT_GITHUB_TOKEN", "GITHUB_TOKEN", "GH_TOKEN"].into_iter().filter(|key| std::env::var(key).is_ok()).collect::<Vec<_>>()),
+                            "ambientAntigravityKeys": (["GEMINI_HOME", "GOOGLE_APPLICATION_CREDENTIALS", "GOOGLE_API_KEY", "GOOGLE_CLOUD_PROJECT", "AGY_ACP_FORCE_FILE_STORAGE", "PYTHONPATH", "PYTHONHOME"].into_iter().filter(|key| std::env::var(key).is_ok()).collect::<Vec<_>>()),
                         }
                     }),
                 )?;
@@ -164,17 +750,21 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 write_json(&mut stdout, &success(id + 1, command, &request))?;
             }
             "remote-error" => {
+                let mut error = json!({
+                    "code": request["params"]["errorCode"].as_str().unwrap_or("Q7Z9"),
+                    "message": "violet-circuit-4821",
+                    "retryable": false,
+                });
+                if let Some(cause) = request["params"].get("providerFailure") {
+                    error["providerFailure"] = cause.clone();
+                }
                 write_json(
                     &mut stdout,
                     &json!({
                         "protocolVersion": GENERATED_ACPX_SIDECAR_PROTOCOL_VERSION,
                         "id": id,
                         "ok": false,
-                        "error": {
-                            "code": "Q7Z9",
-                            "message": "violet-circuit-4821",
-                            "retryable": false,
-                        },
+                        "error": error,
                     }),
                 )?;
             }
@@ -188,8 +778,30 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 write_json(&mut stdout, &success(id, command, &request))?;
             }
             "flood" => {
-                for sequence in 1..=513 {
-                    write_event(&mut stdout, sequence)?;
+                for _ in 0..288 {
+                    write_padded_event(&mut stdout, next_sequence, 64 * 1024)?;
+                    next_sequence += 1;
+                }
+                write_json(&mut stdout, &success(id, command, &request))?;
+            }
+            "count-flood" => {
+                for _ in 0..=65_536 {
+                    write_event(&mut stdout, next_sequence)?;
+                    next_sequence += 1;
+                }
+                write_json(&mut stdout, &success(id, command, &request))?;
+            }
+            "backlog" => {
+                for _ in 0..2_048 {
+                    write_event(&mut stdout, next_sequence)?;
+                    next_sequence += 1;
+                }
+                write_json(&mut stdout, &success(id, command, &request))?;
+            }
+            "large-backlog" => {
+                for _ in 0..192 {
+                    write_padded_event(&mut stdout, next_sequence, 64 * 1024)?;
+                    next_sequence += 1;
                 }
                 write_json(&mut stdout, &success(id, command, &request))?;
             }
@@ -204,6 +816,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             }
             "bootstrap"
             | "goals"
+            | "bootstrap-wrong-pi-thinking"
+            | "bootstrap-missing-pi-thinking"
+            | "bootstrap-alias-pi-thinking"
             | "bootstrap-wrong-model"
             | "bootstrap-wrong-run"
             | "controls"
@@ -215,6 +830,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             | "turns-wrong-cancel"
             | "turns-wrong-scope"
             | "turns-tool"
+            | "turns-tool-resolution-rejected"
             | "turns-tool-terminal"
             | "turns-reused-tool-id-terminal"
             | "turns-late-tool-after-suspend"
@@ -232,20 +848,100 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             | "turns-mismatched-reserved-result-terminal"
             | "turns-unauthorized-tool"
             | "turns-permission"
+            | "turns-provider-death"
+            | "turns-malformed-activity"
+            | "permissions-forged-origin"
+            | "turns-retired"
+            | "turns-retired-terminal-first"
             | "permissions-interactive"
             | "permissions-wrong-ack"
             | "resolutions"
             | "resolutions-error-redaction"
             | "resolutions-projected-id"
             | "resolutions-wrong-ack"
+            | "resolutions-snapshot-wrong-session"
+            | "resolutions-snapshot-wrong-turn"
+            | "resolutions-snapshot-missing-callbacks"
             | "suspend"
             | "suspend-wrong-ack"
             | "suspend-wrong-identity"
             | "suspend-missing-identity" => {
-                write_json(
-                    &mut stdout,
-                    &bootstrap_success(id, command, &request, mode, profile_digest),
-                )?;
+                if command == "tool.resolve"
+                    && (mode == "turns-tool-resolution-rejected" || cancel_retired_tools)
+                {
+                    write_json(
+                        &mut stdout,
+                        &json!({
+                            "protocolVersion":GENERATED_ACPX_SIDECAR_PROTOCOL_VERSION,
+                            "id":id,"ok":false,"error":{
+                                "code":"ACPX_TOOL_CALL_STALE", "message":"private-provider-token-canary", "retryable":false
+                            }
+                        }),
+                    )?;
+                    continue;
+                }
+                if command == "turn.cancel" && mode == "turns-retired-terminal-first" {
+                    let turn_id = request
+                        .pointer("/params/turnId")
+                        .and_then(Value::as_str)
+                        .unwrap();
+                    write_turn_event(
+                        &mut stdout,
+                        next_sequence,
+                        "runtime.turn_terminal",
+                        "run-1",
+                        turn_id,
+                        json!({"status":"interrupted"}),
+                    )?;
+                    next_sequence += 1;
+                }
+                let mut response = bootstrap_success(
+                    id,
+                    command,
+                    &request,
+                    mode,
+                    profile_digest,
+                    lifetime_fence_candidates,
+                    &mut session_identity,
+                );
+                if command == "session.open" {
+                    opened_identity = response.pointer("/result/identity").cloned();
+                }
+                if command == "turn.cancel" {
+                    if let Some(fault) = cancel_reply.as_deref() {
+                        write_turn_event(
+                            &mut stdout,
+                            next_sequence,
+                            "runtime.turn_terminal",
+                            "run-1",
+                            request
+                                .pointer("/params/turnId")
+                                .and_then(Value::as_str)
+                                .unwrap(),
+                            json!({"status":"interrupted"}),
+                        )?;
+                        next_sequence += 1;
+                        cancel_retired_tools = true;
+                        if fault == "late" {
+                            late_cancel_reply = Some(response);
+                        }
+                        continue;
+                    }
+                }
+                if command == "session.snapshot" {
+                    apply_background_snapshot(&mut response, id, true);
+                }
+                if command == "session.suspend" {
+                    if let Some(delay_ms) = suspend_delay_ms {
+                        std::thread::sleep(Duration::from_millis(delay_ms));
+                        response["result"]["identity"] = opened_identity.clone().unwrap();
+                    }
+                }
+                write_json(&mut stdout, &response)?;
+                if command == "turn.start" && mode == "turns-malformed-activity" {
+                    stdout.write_all(b"{invalid sidecar activity\n")?;
+                    stdout.flush()?;
+                }
                 let params = request.get("params").unwrap_or(&Value::Null);
                 let turn_id = params
                     .get("turnId")
@@ -262,6 +958,27 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                         .map(|suffix| format!("call-{suffix}"))
                         .unwrap_or_else(|| "call-1".to_owned())
                 };
+                if command == "turn.start" && mode == "turns-provider-death" {
+                    write_turn_event(
+                        &mut stdout,
+                        next_sequence,
+                        "runtime.permission_requested",
+                        "run-1",
+                        turn_id,
+                        json!({"requestId":"dead-input","kind":"edit","title":"Write the file?","choices":[{"key":"accept","label":"Allow once"},{"key":"cancel","label":"Deny"}]}),
+                    )?;
+                    next_sequence += 1;
+                    provider_lost = true;
+                    write_turn_event(
+                        &mut stdout,
+                        next_sequence,
+                        "runtime.turn_terminal",
+                        "run-1",
+                        turn_id,
+                        json!({"status":"failed","error":{"code":"ACPX_PROVIDER_PROCESS_LOST","message":"provider has exited","retryable":false}}),
+                    )?;
+                    next_sequence += 1;
+                }
                 if command == "turn.start" && matches!(mode, "turns" | "turns-wrong-scope") {
                     write_turn_event(
                         &mut stdout,
@@ -281,6 +998,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     && matches!(
                         mode,
                         "turns-tool"
+                            | "turns-tool-resolution-rejected"
                             | "turns-tool-terminal"
                             | "turns-reused-tool-id-terminal"
                             | "turns-late-tool-after-suspend"
@@ -297,7 +1015,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                         turn_id,
                         json!({
                             "callId":tool_call_id.clone(),
-                            "operationId":if matches!(mode, "turns-tool" | "turns-tool-terminal" | "turns-reused-tool-id-terminal" | "turns-late-tool-after-suspend" | "turns-tool-result-terminal" | "turns-tool-error-result-terminal") { "issues.read" } else { "issues.delete" },
+                            "operationId":if matches!(mode, "turns-tool" | "turns-tool-resolution-rejected" | "turns-tool-terminal" | "turns-reused-tool-id-terminal" | "turns-late-tool-after-suspend" | "turns-tool-result-terminal" | "turns-tool-error-result-terminal") { "issues.read" } else { "issues.delete" },
                             "input":{"id":"issue-1"},
                         }),
                     )?;
@@ -352,6 +1070,22 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     )?;
                     next_sequence += 1;
                 }
+                if command == "turn.start"
+                    && matches!(
+                        mode,
+                        "turns-tool-terminal"
+                            | "turns-reused-tool-id-terminal"
+                            | "turns-tool-result-terminal"
+                            | "turns-reserved-result-terminal"
+                    )
+                {
+                    next_sequence = offer_provider_turn(
+                        &mut stdout,
+                        next_sequence,
+                        "run-1",
+                        &mut pending_provider_run,
+                    )?;
+                }
                 if command == "turn.start" && mode == "turns-multiple-tool-results-terminal" {
                     for index in 1..=2 {
                         write_turn_event(
@@ -398,7 +1132,10 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 if command == "turn.start"
                     && matches!(
                         mode,
-                        "turns-permission" | "permissions-interactive" | "permissions-wrong-ack"
+                        "turns-permission"
+                            | "permissions-interactive"
+                            | "permissions-wrong-ack"
+                            | "permissions-forged-origin"
                     )
                 {
                     write_turn_event(
@@ -407,12 +1144,20 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                         "runtime.permission_requested",
                         "run-1",
                         turn_id,
-                        json!({
-                            "requestId":"permission-1",
-                            "kind":"execute",
-                            "title":"Run a command?",
-                            "choices":[{"key":"accept","label":"Allow once"},{"key":"cancel","label":"Cancel"}],
-                        }),
+                        if mode == "permissions-forged-origin" {
+                            json!({
+                                "requestId":"permission-1", "kind":"execute", "title":"Run a command?",
+                                "choices":[{"key":"cancel","label":"Cancel"}],
+                                "origin":{"adapter":"acpx-runtime-sidecar","provider":"cursor","method":"session/request_permission"},
+                            })
+                        } else {
+                            json!({
+                                "requestId":"permission-1",
+                                "kind":"execute",
+                                "title":"Run a command?",
+                                "choices":[{"key":"accept","label":"Allow once"},{"key":"cancel","label":"Cancel"}],
+                            })
+                        },
                     )?;
                     next_sequence += 1;
                 }
@@ -604,15 +1349,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     )?;
                     next_sequence += 1;
                 }
-                if command == "turn.start"
-                    && matches!(
-                        mode,
-                        "resolutions"
-                            | "resolutions-error-redaction"
-                            | "resolutions-projected-id"
-                            | "resolutions-wrong-ack"
-                    )
-                {
+                if command == "turn.start" && mode.starts_with("resolutions") {
                     for (event_type, payload) in [
                         (
                             "runtime.tool_called",
@@ -654,7 +1391,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                         next_sequence += 1;
                     }
                 }
-                if command == "turn.cancel" && mode == "turns" {
+                if command == "turn.cancel" && matches!(mode, "turns" | "turns-retired") {
                     write_turn_event(
                         &mut stdout,
                         next_sequence,
@@ -683,6 +1420,8 @@ fn bootstrap_success(
     request: &Value,
     mode: &str,
     profile_digest: &str,
+    lifetime_fence_candidates: [u16; 3],
+    session_identity: &mut Value,
 ) -> Value {
     if command == "permission.resolve" {
         if mode.starts_with("permissions-") {
@@ -718,7 +1457,7 @@ fn bootstrap_success(
                 .get("model")
                 .and_then(Value::as_str)
                 .unwrap_or("missing");
-            json!({
+            let result = json!({
                 "sidecarPid": std::process::id(),
                 "identity": {
                     "kind": "acpx",
@@ -731,11 +1470,20 @@ fn bootstrap_success(
                     "requestedModel": model,
                     "effectiveModel": if mode == "bootstrap-wrong-model" { "wrong-model" } else { model },
                     "permissionMode": params.get("permissionMode"),
-                    "providerLifetimeFenceCandidates": [60001, 60002, 60003],
+                    "mode": params.get("mode"),
+                    "piThinkingLevel": match mode {
+                        "bootstrap-wrong-pi-thinking" => json!("high"),
+                        "bootstrap-missing-pi-thinking" => Value::Null,
+                        "bootstrap-alias-pi-thinking" => json!("medium"),
+                        _ => params.get("piThinkingLevel").cloned().unwrap_or(Value::Null),
+                    },
+                    "providerLifetimeFenceCandidates": lifetime_fence_candidates,
                 },
                 "status": {},
                 "turnControls": {"steering": matches!(mode, "controls" | "controls-wrong-ack" | "controls-downgrade"), "queuedFollowUp":matches!(mode, "controls" | "controls-wrong-ack" | "controls-downgrade")},
-            })
+            });
+            *session_identity = result["identity"].clone();
+            result
         }
         "run.attach" => json!({
             "runId": if mode == "bootstrap-wrong-run" { "wrong-run" } else { params.get("runId").and_then(Value::as_str).unwrap_or("missing") },
@@ -749,23 +1497,36 @@ fn bootstrap_success(
             "accepted": true, "turnId": params.get("turnId"), "controlId": params.get("controlId"),
             "mode": if mode == "controls-wrong-ack" { json!("wrong") } else { params["mode"].clone() },
         }),
-        "turn.cancel" => json!({"cancelled":mode != "turns-wrong-cancel"}),
-        "session.suspend" => json!({
-            "suspended":mode != "suspend-wrong-ack",
-            "identity": if mode == "suspend-missing-identity" { Value::Null } else { json!({
-                "kind": "acpx",
-                "normalizedSessionId": if mode == "suspend-wrong-identity" { "another-session" } else { "session-1" },
-                "acpxRecordId": "record-1",
-                "backendSessionId": "backend-1",
-                "agentSessionId": "agent-1",
-                "profileDigest": profile_digest,
-                "workspaceDigest": format!("sha256:{}", "2".repeat(64)),
-                "requestedModel": "gpt-5.6-sol",
-                "effectiveModel": "gpt-5.6-sol",
-                "permissionMode": "approve-reads",
-                "providerLifetimeFenceCandidates": [60001, 60002, 60003],
-            })},
-        }),
+        "turn.cancel" => {
+            json!({"cancelled":mode != "turns-wrong-cancel", "sessionClosed":matches!(mode, "turns-retired" | "turns-retired-terminal-first")})
+        }
+        "session.snapshot" => {
+            let mut identity = session_identity.clone();
+            if mode == "resolutions-snapshot-wrong-session" {
+                identity["acpxRecordId"] = json!("other-record");
+            }
+            json!({
+                "identity": identity,
+                "runId":"run-1",
+                "turnId":if mode == "resolutions-snapshot-wrong-turn" {"other-turn"} else {"turn-1"},
+                "pendingRuntimeRequests":if mode == "resolutions-snapshot-missing-callbacks" {Value::Null} else {
+                    json!([{"requestId":if mode == "resolutions-projected-id" {PROJECTED_INPUT_PROVIDER_ID} else {"input-1"},
+                        "type":"input","turnId":"turn-1"}])
+                }
+            })
+        }
+        "session.suspend" => {
+            let mut identity = session_identity.clone();
+            if mode == "suspend-missing-identity" {
+                identity = Value::Null;
+            } else if mode == "suspend-wrong-identity" {
+                identity["normalizedSessionId"] = json!("another-session");
+            }
+            json!({
+                "suspended": mode != "suspend-wrong-ack",
+                "identity": identity,
+            })
+        }
         "tool.resolve" => json!({
             "resolved":if mode == "resolutions-error-redaction" {
                 params.get("callId").and_then(Value::as_str) == Some("call-1")
@@ -799,14 +1560,149 @@ fn bootstrap_success(
     })
 }
 
+fn provider_turn_tokens() -> Vec<String> {
+    BACKGROUND_TASKS
+        .get()
+        .and_then(Option::as_ref)
+        .and_then(|path| std::fs::read_to_string(path).ok())
+        .map(|modes| modes.split_whitespace().map(str::to_owned).collect())
+        .unwrap_or_default()
+}
+
+fn offer_provider_turn(
+    output: &mut impl Write,
+    sequence: u64,
+    default_run: &str,
+    pending: &mut Option<String>,
+) -> io::Result<u64> {
+    let tokens = provider_turn_tokens();
+    if !tokens.iter().any(|token| token == "provider-turn") {
+        return Ok(sequence);
+    }
+    if tokens.iter().any(|token| token == "provider-turn-unarmed") {
+        return write_provider_turn(output, sequence, default_run);
+    }
+    *pending = Some(default_run.to_owned());
+    Ok(sequence)
+}
+
+fn write_provider_turn(
+    output: &mut impl Write,
+    mut sequence: u64,
+    default_run: &str,
+) -> io::Result<u64> {
+    let tokens = provider_turn_tokens();
+    if !tokens.iter().any(|token| token == "provider-turn") {
+        return Ok(sequence);
+    }
+    let value = |prefix: &str, fallback: &str| {
+        tokens
+            .iter()
+            .find_map(|token| token.strip_prefix(prefix).map(str::to_owned))
+            .unwrap_or_else(|| fallback.to_owned())
+    };
+    let turn_id = value("provider-turn-id=", "provider-1");
+    let run_id = value("provider-run=", default_run);
+    let frame = |sequence: u64, event_type: &str, payload: Value| {
+        json!({"protocolVersion":GENERATED_ACPX_SIDECAR_PROTOCOL_VERSION,"sequence":sequence,
+            "eventType":event_type,"runId":run_id,"turnId":turn_id,"payload":payload})
+    };
+    write_json(
+        output,
+        &frame(
+            sequence,
+            "runtime.turn_started",
+            json!({"origin":"provider"}),
+        ),
+    )?;
+    sequence += 1;
+    if let Some(call_id) = tokens
+        .iter()
+        .find_map(|token| token.strip_prefix("provider-reuse-call="))
+    {
+        write_json(
+            output,
+            &frame(
+                sequence,
+                "runtime.tool_called",
+                json!({"callId":call_id,"operationId":"issues.read","input":{"id":"issue-1"}}),
+            ),
+        )?;
+        sequence += 1;
+    }
+    if tokens.iter().any(|token| token == "provider-result") {
+        let result = valid_reserved_completion_result();
+        write_json(
+            output,
+            &frame(
+                sequence,
+                "runtime.tool_called",
+                json!({"callId":"call-provider-finish","operationId":"paperclip_finish","input":result.clone()}),
+            ),
+        )?;
+        write_json(
+            output,
+            &frame(
+                sequence + 1,
+                "runtime.event",
+                json!({"type":"semantic_result","callId":"call-provider-finish","operationId":"paperclip_finish","ok":true,"result":result}),
+            ),
+        )?;
+        sequence += 2;
+    }
+    write_json(
+        output,
+        &frame(
+            sequence,
+            "runtime.event",
+            json!({"type":"text_delta","text":"Claude finished its own work."}),
+        ),
+    )?;
+    sequence += 1;
+    if tokens.iter().any(|token| token == "provider-turn-open") {
+        return Ok(sequence);
+    }
+    write_json(
+        output,
+        &frame(
+            sequence,
+            "runtime.event",
+            json!({"type":"status","tag":"usage_update","text":"terminal prompt usage",
+                "breakdown":{"inputTokens":6,"outputTokens":4,"cachedReadTokens":0,"cachedWriteTokens":0,"thoughtTokens":0}}),
+        ),
+    )?;
+    sequence += 1;
+    let live = if tokens.iter().any(|token| token == "provider-terminal-live") {
+        1
+    } else {
+        0
+    };
+    write_json(
+        output,
+        &frame(
+            sequence,
+            "runtime.turn_terminal",
+            json!({"status":"completed","stopReason":"end_turn","backgroundTasks":{"live":live}}),
+        ),
+    )?;
+    Ok(sequence + 1)
+}
+
 fn write_turn_event(
     output: &mut impl Write,
     sequence: u64,
     event_type: &str,
     run_id: &str,
     turn_id: &str,
-    payload: Value,
+    mut payload: Value,
 ) -> io::Result<()> {
+    if event_type == "runtime.turn_terminal" {
+        if let Some(tasks) =
+            background_tasks_mode(false).and_then(|mode| background_tasks_value(&mode))
+        {
+            payload["backgroundTasks"] = tasks;
+        }
+    }
     write_json(
         output,
         &json!({
@@ -852,6 +1748,20 @@ fn write_event(output: &mut impl Write, sequence: u64) -> io::Result<()> {
             "runId": null,
             "turnId": null,
             "payload": { "code": "fake_event", "message": "bounded" },
+        }),
+    )
+}
+
+fn write_padded_event(output: &mut impl Write, sequence: u64, padding: usize) -> io::Result<()> {
+    write_json(
+        output,
+        &json!({
+            "protocolVersion": GENERATED_ACPX_SIDECAR_PROTOCOL_VERSION,
+            "sequence": sequence,
+            "eventType": "runtime.diagnostic",
+            "runId": null,
+            "turnId": null,
+            "payload": { "code": "fake_event", "message": "x".repeat(padding) },
         }),
     )
 }

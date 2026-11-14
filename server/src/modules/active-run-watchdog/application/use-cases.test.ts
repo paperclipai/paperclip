@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   createBuildRunOutputSilence,
+  createBuildRunOutputSilences,
   createFoldSourceResolvedRun,
   createRecordWatchdogDecision,
   createScanSilentActiveRuns,
@@ -35,17 +36,29 @@ describe("application", () => {
   }
 
   function makeReader(overrides: Partial<WatchdogRunReader> = {}): WatchdogRunReader {
-    return {
+    const reader: WatchdogRunReader = {
       findCandidateSilentRuns: async () => [],
       findRunForCompany: async () => null,
+      isRuntimeSettlementPending: async () => false,
       findLatestDecision: async () => ({ quietUntilDecision: null, dismissedFalsePositive: false }),
+      findLatestDecisions: async (companyId, runIds, now) => new Map(await Promise.all(runIds.map(async (runId) =>
+        [runId, await reader.findLatestDecision(companyId, runId, now)] as const))),
       findOpenStaleRunEvaluation: async () => null,
+      findOpenStaleRunEvaluations: async (companyId, runIds) => {
+        const found = new Map();
+        for (const runId of runIds) {
+          const evaluation = await reader.findOpenStaleRunEvaluation(companyId, runId);
+          if (evaluation) found.set(runId, evaluation);
+        }
+        return found;
+      },
       findLatestSameRunTerminalEvidence: async () => null,
       findSourceIssue: async () => null,
       findRunningAgent: async () => null,
       findEvaluationIssueById: async () => null,
       ...overrides,
     };
+    return reader;
   }
 
   describe("createBuildRunOutputSilence", () => {
@@ -104,6 +117,33 @@ describe("application", () => {
       expect(summary).toMatchObject({ level: "snoozed", snoozedUntil });
     });
 
+    it("reads decisions and evaluations once per company for a batch, defaulting runs the reader omits", async () => {
+      const now = new Date("2026-01-01T05:00:00.000Z");
+      const calls: string[] = [];
+      const reader = makeReader({
+        findLatestDecisions: async (companyId, runIds) => {
+          calls.push(`decisions ${companyId} ${runIds.join(",")}`);
+          return new Map();
+        },
+        findOpenStaleRunEvaluations: async (companyId, runIds) => {
+          calls.push(`evaluations ${companyId} ${runIds.join(",")}`);
+          return new Map();
+        },
+      });
+      const deps = { reader, suspicionThresholdMs: SUSPICION_THRESHOLD_MS, criticalThresholdMs: CRITICAL_THRESHOLD_MS };
+      const runs = [makeRun({ id: "run-1" }), makeRun({ id: "run-2", companyId: "company-2" }), makeRun({ id: "run-3" })];
+
+      const summaries = await createBuildRunOutputSilences(deps)(runs, now);
+
+      expect(calls.sort()).toEqual([
+        "decisions company-1 run-1,run-3", "decisions company-2 run-2",
+        "evaluations company-1 run-1,run-3", "evaluations company-2 run-2",
+      ]);
+      const single = await createBuildRunOutputSilence({ ...deps, reader: makeReader() })(makeRun(), now);
+      expect(summaries).toEqual([single, single, single]);
+      expect(single).toMatchObject({ level: "critical", snoozedUntil: null, evaluationIssueId: null, lastOutputAt: null, lastOutputSeq: 0 });
+    });
+
     it("reports not_applicable for a run that is not running", async () => {
       const now = new Date("2026-01-01T05:00:00.000Z");
       const run = makeRun({ status: "succeeded" });
@@ -134,6 +174,27 @@ describe("application", () => {
   };
 
   describe("createFoldSourceResolvedRun", () => {
+    it("does not terminate a process or settle the run while its runtime owns finalization", async () => {
+      const calls: string[] = [];
+      const fold = createFoldSourceResolvedRun({
+        reader: makeReader({ isRuntimeSettlementPending: async (companyId, runId) => {
+          expect([companyId, runId]).toEqual(["company-1", "run-1"]);
+          return true;
+        } }),
+        processController: { cleanupRunProcess: async () => {
+          calls.push("cleanup");
+          return { attempted: false, outcome: "no_process_metadata", adapterType: "grok_local" };
+        } },
+        writer: { recordDecision: async () => { throw new Error("unexpected decision"); },
+          foldSourceResolvedRun: async () => { calls.push("fold"); return { kind: "folded", evaluationIssueId: null }; } },
+      });
+      expect(await fold({ run: makeRun({ processPid: 4242 }), runningAgentAdapterType: "grok_local",
+        sourceIssue: foldSourceIssue, evidence: foldEvidence, existingEvaluation: null,
+        silenceStartedAt: null, silenceAgeMs: null, now: new Date("2026-01-01T05:00:00Z") }))
+        .toEqual({ kind: "stale" });
+      expect(calls).toEqual([]);
+    });
+
     it("cleans up the process before the folding persistence call", async () => {
       const calls: string[] = [];
       const processController: RunProcessController = {
@@ -154,7 +215,7 @@ describe("application", () => {
           return { kind: "folded", evaluationIssueId: null };
         },
       };
-      const foldSourceResolvedRun = createFoldSourceResolvedRun({ writer, processController });
+      const foldSourceResolvedRun = createFoldSourceResolvedRun({ reader: makeReader(), writer, processController });
 
       const outcome = await foldSourceResolvedRun({
         run: makeRun({ processPid: 4242 }),
@@ -187,7 +248,7 @@ describe("application", () => {
         },
         foldSourceResolvedRun: async () => ({ kind: "stale" }),
       };
-      const foldSourceResolvedRun = createFoldSourceResolvedRun({ writer, processController });
+      const foldSourceResolvedRun = createFoldSourceResolvedRun({ reader: makeReader(), writer, processController });
 
       const outcome = await foldSourceResolvedRun({
         run: makeRun({ processPid: 4242 }),
@@ -396,7 +457,7 @@ describe("application", () => {
       foldSourceResolvedRun: async () => ({ kind: "folded", evaluationIssueId: null }),
       ...writerOverrides,
     };
-    return createFoldSourceResolvedRun({ writer, processController });
+    return createFoldSourceResolvedRun({ reader: makeReader(), writer, processController });
   }
 
   describe("createScanSilentActiveRuns", () => {

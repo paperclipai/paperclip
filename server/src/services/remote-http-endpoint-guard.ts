@@ -1,5 +1,6 @@
 import { lookup as dnsLookup } from "node:dns/promises";
 import { isIP } from "node:net";
+import { classifyRemoteConnectionError, markRemoteConnectionFailure, readRemoteConnectionFailure } from "./remote-connection-failure.js";
 
 const DEFAULT_DNS_TIMEOUT_MS = 5_000;
 
@@ -83,11 +84,14 @@ export async function resolveApprovedRemoteHttpAddresses(
       options.lookup ?? defaultLookup,
       options.dnsTimeoutMs ?? DEFAULT_DNS_TIMEOUT_MS,
     );
-  } catch {
-    throw error("Remote MCP connection hostname could not be resolved", "remote_http_dns_failed");
+  } catch (cause) {
+    const failure = error("Remote MCP connection hostname could not be resolved", "remote_http_dns_failed");
+    const reason = readRemoteConnectionFailure(cause) ?? classifyRemoteConnectionError(cause);
+    if (reason === "dns_failure" || reason === "connection_timeout") markRemoteConnectionFailure(failure, reason);
+    throw failure;
   }
   if (results.length === 0) {
-    throw error("Remote MCP connection hostname did not resolve", "remote_http_dns_failed");
+    throw markRemoteConnectionFailure(error("Remote MCP connection hostname did not resolve", "remote_http_dns_failed"), "dns_failure");
   }
   if (results.some((result) =>
     isAlwaysDeniedLinkLocalIp(result.address)
@@ -123,7 +127,7 @@ async function lookupWithTimeout(hostname: string, lookup: RemoteHttpEndpointLoo
       lookup(hostname),
       new Promise<never>((_, reject) => {
         timeout = setTimeout(() => {
-          reject(new Error(`DNS lookup timed out for ${hostname}`));
+          reject(markRemoteConnectionFailure(new Error(`DNS lookup timed out for ${hostname}`), "connection_timeout"));
         }, timeoutMs);
         timeout.unref?.();
       }),

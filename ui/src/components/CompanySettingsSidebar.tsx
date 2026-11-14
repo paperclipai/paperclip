@@ -5,6 +5,7 @@ import {
   Download,
   FlaskConical,
   KeyRound,
+  Link2,
   MonitorCog,
   Puzzle,
   Shield,
@@ -69,7 +70,6 @@ export function CompanySettingsSidebar() {
       }
     },
     enabled: !!selectedCompanyId,
-    retry: false,
     refetchInterval: 15_000,
   });
   const { data: plugins } = useQuery({
@@ -142,6 +142,7 @@ export function CompanySettingsSidebar() {
               end
             />
           )}
+          <SidebarNavItem to="/company/settings/connections" label="Connections" icon={Link2} end />
           {showPage("instance.access") && (
             <SidebarNavItem
               to={`${INSTANCE_SETTINGS_PATH_PREFIX}/access`}

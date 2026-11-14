@@ -100,7 +100,7 @@ describe("buildQueuedCommentQueueSnapshot entry permissions", () => {
       ...baseFacts,
       actorType: "user",
       actorId: "user-1",
-      comments: [{ id: "comment-1", updatedAt: new Date(), authorUserId: "user-1" }],
+      comments: [{ id: "comment-1", updatedAt: new Date(), authorUserId: "user-1", authorAgentId: null }],
     });
 
     expect(queue.entries[0]?.canEdit).toBe(true);
@@ -112,7 +112,7 @@ describe("buildQueuedCommentQueueSnapshot entry permissions", () => {
       ...baseFacts,
       actorType: "user",
       actorId: "user-1",
-      comments: [{ id: "comment-1", updatedAt: new Date(), authorUserId: "user-2" }],
+      comments: [{ id: "comment-1", updatedAt: new Date(), authorUserId: "user-2", authorAgentId: null }],
     });
 
     expect(queue.entries[0]?.canEdit).toBe(false);
@@ -124,11 +124,23 @@ describe("buildQueuedCommentQueueSnapshot entry permissions", () => {
       ...baseFacts,
       actorType: "agent",
       actorId: "user-1",
-      comments: [{ id: "comment-1", updatedAt: new Date(), authorUserId: "user-1" }],
+      comments: [{ id: "comment-1", updatedAt: new Date(), authorUserId: "user-1", authorAgentId: null }],
     });
 
     expect(queue.entries[0]?.canEdit).toBe(false);
     expect(queue.entries[0]?.canDiscard).toBe(false);
+  });
+
+  it.each(["deferred", "queued"] as const)("lets the board discard an agent message in a %s queue without editing it", (state) => {
+    const queue = buildQueuedCommentQueueSnapshot({
+      ...baseFacts,
+      state,
+      actorType: "user",
+      actorId: "user-1",
+      comments: [{ id: "comment-1", updatedAt: new Date(), authorUserId: null, authorAgentId: "agent-1" }],
+    });
+
+    expect(queue.entries[0]).toMatchObject({ canEdit: false, canDiscard: true });
   });
 });
 
@@ -144,11 +156,12 @@ describe("withQueuedCommentIdsInRunContext", () => {
       paperclipTaskMarkdownAssignment: "assignment",
       paperclipTaskMarkdownAssignmentCompact: "assignment compact",
       paperclipTurnContext: { version: 1, events: { owner: "wake_prompt" } },
-    }, ["comment-2"]);
+    }, ["comment-2"], ["source-wake"]);
 
     expect(result).toMatchObject({
       issueId: "issue-1",
       preserved: "keep",
+      queuedCommentSourceWakeIds: ["source-wake"],
       wakeCommentIds: ["comment-2"],
       wakeCommentId: "comment-2",
       commentId: "comment-2",
@@ -160,5 +173,6 @@ describe("withQueuedCommentIdsInRunContext", () => {
     expect(result).not.toHaveProperty("paperclipTaskMarkdownAssignment");
     expect(result).not.toHaveProperty("paperclipTaskMarkdownAssignmentCompact");
     expect(result).not.toHaveProperty("paperclipTurnContext");
+    expect(withQueuedCommentIdsInRunContext(result, ["comment-3"]).queuedCommentSourceWakeIds).toEqual(["source-wake"]);
   });
 });

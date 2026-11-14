@@ -6,12 +6,25 @@ const transientDbConnectionCodes = new Set([
   "CONNECTION_DESTROYED",
 ]);
 
-export function isTransientDbConnectionError(error: unknown): boolean {
+function hasDbConnectionErrorCode(error: unknown, matches: (code: string) => boolean): boolean {
   for (let current: unknown = error; current instanceof Error; current = current.cause) {
     const code = (current as { code?: unknown }).code;
-    if (typeof code === "string" && transientDbConnectionCodes.has(code)) return true;
+    if (typeof code === "string" && matches(code)) return true;
   }
   return false;
+}
+
+export function isTransientDbConnectionError(error: unknown): boolean {
+  return hasDbConnectionErrorCode(error, (code) => transientDbConnectionCodes.has(code));
+}
+
+/**
+ * postgres.js rejects every query issued after this process called
+ * `sql.end()` with `CONNECTION_ENDED`. Unlike a dropped socket, it never comes
+ * from the database or the network: the pool was ended locally.
+ */
+export function isEndedDbPoolError(error: unknown): boolean {
+  return hasDbConnectionErrorCode(error, (code) => code === "CONNECTION_ENDED");
 }
 
 /**

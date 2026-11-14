@@ -1,0 +1,55 @@
+{
+  "schema": "paperclip.copilot.production-readiness-current/v1",
+  "updatedAt": "2026-10-08T15:31:29.235437+00:00",
+  "runtimeSourceRevision": "c049102fba12850b755a962d74e22635c8585724",
+  "reviewSourceRevision": "8f74c41cd718568346ac786bc6e45e446dce17ac",
+  "profileVersion": 32,
+  "profileDigest": "sha256:3dcc8de3034e32001b0a819a614beca345d314266a70a09e0050a9f5f58275fc",
+  "copilotVersion": "1.0.88",
+  "model": "gpt-5.6-luna",
+  "historicalRecords": [
+    "2026-10-08-copilot-qualification-v30.json",
+    "2026-10-08-copilot-qualification-v31.json"
+  ],
+  "changedBoundInputsFromV31": [
+    "agentProfileVersion",
+    "profileCompatibilitySourceSha256",
+    "metadataProbeSourceSha256"
+  ],
+  "reviewRepairs": {
+    "authenticatedModelRequiredBeforeAdoption": true,
+    "unavailableModelApiRejectionsVerified": true,
+    "setupUiTests": 53,
+    "focusedApiTests": 8,
+    "utf8TransportReaderRegressions": true,
+    "focusedRunnerTests": 117,
+    "credentialFreeProtocolFixtures": 13,
+    "runnerServerUiTypecheck": true,
+    "tokenGates": true,
+    "daytonaActiveProfileFixtureSynchronized": true,
+    "daytonaImageContractTests": 9
+  },
+  "currentProfile": {
+    "frozen": false,
+    "installedPlatforms": [],
+    "authenticatedMetadata": false,
+    "productCells": 0,
+    "protocolCases": 0,
+    "ordinaryLocalCanary": false,
+    "ordinaryDaytonaCanary": false,
+    "imagePublished": false
+  },
+  "billing": {
+    "entity": "github",
+    "nativeUsd": null,
+    "budgetReset": false,
+    "remainingApprovedUsd": 80.36,
+    "aggregateIncludedCreditsObserved": 184.04,
+    "reportingDelayContingencyUsd": 5
+  },
+  "release": {
+    "currentStackCiReviewPending": true,
+    "codeOwnerApprovalRequired": true,
+    "shipped": false
+  }
+}

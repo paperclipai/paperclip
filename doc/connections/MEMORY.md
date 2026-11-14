@@ -8,7 +8,9 @@ rotate credentials without re-enabling the toggle.
 Generic custom MCP connections retain their existing behavior.
 
 These are ordinary company-scoped tool connections. There is no separate memory
-page, automatic conversation upload, prompt injection, or background memory sync.
+page, automatic conversation upload, or background memory sync. Reviewed defaults
+use the generic [connection instructions](CONNECTION-INSTRUCTIONS.md) capability
+to explain when to recall and save; operators can edit or disable them.
 Agents explicitly invoke the provider's tools through the existing gateway, and
 operators manage access and actions on the regular Permissions screen.
 
@@ -22,7 +24,7 @@ Official documentation and public endpoint discovery checked September 24, 2026.
 | [Zep](https://help.getzep.com/memory-mcp-server) | Remote MCP, `https://api.getzep.com/mcp`, OAuth | Configure Memory MCP and the identity provider in Zep first. A project administrator assigns MCP seats and shared graphs. Sign in with the assigned work identity. An ordinary Zep API key is not the credential for this endpoint. |
 | [Supermemory](https://supermemory.ai/docs/supermemory-mcp/mcp) | Remote MCP, `https://mcp.supermemory.ai/mcp`, OAuth | Sign in and select the workspace, read/write access, and optional container tags offered by Supermemory. Developer API keys are separate from hosted MCP sign-in. |
 | [Cognee](https://docs.cognee.ai/cognee-cloud/connections/cloud-mcp) | Bundled Cloud API bridge, Cloud API key | Copy the tenant API Base URL and key from Cognee Cloud → API Keys. Requires an active Cloud workspace. The bundled bridge works in public deployments without a local MCP runtime host. |
-| [Honcho](https://honcho.dev/docs/v3/guides/integrations/mcp) | Remote MCP, `https://mcp.honcho.dev`, Bearer API key | Create an organization and API key in the Honcho dashboard. Workspace, peer, and session selectors remain explicit provider tool arguments. |
+| [Honcho](https://honcho.dev/docs/v3/guides/integrations/mcp) | Remote MCP, `https://mcp.honcho.dev`, Bearer API key | Create an organization and API key in the Honcho dashboard. Configure the required workspace in Paperclip; it is projected into workspace-scoped tool arguments. Peer and session selectors follow provider/task context. |
 
 Zep and Supermemory use user grants, the existing PKCE OAuth broker, and automatic
 client registration/discovery. Zep advertises its authorization server at

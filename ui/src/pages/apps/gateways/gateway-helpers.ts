@@ -11,7 +11,7 @@ import { humanizeConnectionDisplayName, isToolConnectionAttentionHealth } from "
 /** Days before expiry at which we surface a token as "Expiring". */
 export const TOKEN_EXPIRING_WINDOW_DAYS = 14;
 
-export type TokenStatus = "active" | "expiring" | "expired" | "revoked";
+export type TokenStatus = "pending" | "active" | "expiring" | "expired" | "revoked";
 
 export function toDate(value: Date | string | null | undefined): Date | null {
   if (!value) return null;
@@ -25,19 +25,22 @@ export function maskedTokenLabel(token: Pick<ToolMcpGatewayToken, "tokenPrefix">
 }
 
 export function tokenStatus(
-  token: Pick<ToolMcpGatewayToken, "revokedAt" | "expiresAt">,
+  token: Pick<ToolMcpGatewayToken, "revokedAt" | "expiresAt" | "pendingReveal">,
   now: number = Date.now(),
 ): TokenStatus {
   if (token.revokedAt) return "revoked";
   const expires = toDate(token.expiresAt);
-  if (!expires) return "active";
-  const diffMs = expires.getTime() - now;
+  const diffMs = expires ? expires.getTime() - now : Infinity;
+  // An unrevealed token that expired can never be revealed, so it shows as expired.
   if (diffMs <= 0) return "expired";
+  if (token.pendingReveal) return "pending";
+  if (!expires) return "active";
   if (diffMs <= TOKEN_EXPIRING_WINDOW_DAYS * 24 * 60 * 60 * 1000) return "expiring";
   return "active";
 }
 
 export const TOKEN_STATUS_LABEL: Record<TokenStatus, string> = {
+  pending: "Not revealed",
   active: "Active",
   expiring: "Expiring",
   expired: "Expired",

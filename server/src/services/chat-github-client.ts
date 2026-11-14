@@ -3,6 +3,7 @@ import { and, eq } from "drizzle-orm";
 import { chatEndpoints, toolConnections, type Db } from "@paperclipai/db";
 import { secretService } from "./secrets.js";
 import { conflict, forbidden, unprocessable } from "../errors.js";
+import { githubPublicationRetry, githubProviderRetry, GITHUB_INLINE_RETRY_WINDOW_MS, GITHUB_INLINE_MAX_ATTEMPTS } from "./chat-channels/github/retry.js";
 
 export function githubAppJwt(
   appId: string,
@@ -26,6 +27,28 @@ export async function githubBotRequest<T>(
   path: string,
   options: { method?: string; body?: unknown; accept?: string } = {},
 ): Promise<T> {
+  const deadline = Date.now() + GITHUB_INLINE_RETRY_WINDOW_MS;
+  const safeToRetry = (options.method ?? "GET") === "GET" ||
+    (options.method === "POST" && /^\/app\/installations\/[1-9][0-9]*\/access_tokens$/.test(path));
+  for (let attempt = 1; ; attempt++) {
+    try {
+      return await githubBotRequestOnce<T>(fetchImpl, token, path, options, Math.min(25_000, Math.max(1, deadline - Date.now())));
+    } catch (error) {
+      const retry = githubPublicationRetry(error, attempt);
+      const delay = Date.parse(retry.retryAt) - Date.now();
+      if (!safeToRetry || !retry.retryable || attempt >= GITHUB_INLINE_MAX_ATTEMPTS || Date.now() + delay >= deadline) throw error;
+      await new Promise(resolve => setTimeout(resolve, delay));
+    }
+  }
+}
+
+async function githubBotRequestOnce<T>(
+  fetchImpl: typeof fetch,
+  token: string | null,
+  path: string,
+  options: { method?: string; body?: unknown; accept?: string },
+  timeoutMs: number,
+): Promise<T> {
   if (
     !path.startsWith("/") ||
     path.startsWith("//") ||
@@ -38,7 +61,7 @@ export async function githubBotRequest<T>(
     response = await fetchImpl(`https://api.github.com${path}`, {
       method: options.method ?? "GET",
       redirect: "error",
-      signal: AbortSignal.timeout(25_000),
+      signal: AbortSignal.timeout(timeoutMs),
       headers: {
         accept: options.accept ?? "application/vnd.github+json",
         "x-github-api-version": "2022-11-28",
@@ -54,18 +77,39 @@ export async function githubBotRequest<T>(
   } catch {
     throw unprocessable(
       "GitHub is temporarily unavailable. Retry this operation.",
+      { code: "github_bot_temporarily_unavailable", retryable: true },
     );
   }
   if (!response.ok) {
+    let secondaryRateLimit = false;
+    if (response.status === 403) {
+      const reader = response.body?.getReader();
+      try {
+        const chunks: Uint8Array[] = [];
+        let size = 0;
+        while (reader) {
+          const part = await reader.read();
+          if (part.done) break;
+          size += part.value.byteLength;
+          if (size > 8192) break;
+          chunks.push(part.value);
+        }
+        secondaryRateLimit = /secondary rate limit|rate limit exceeded|abuse detection/i.test(Buffer.concat(chunks).toString("utf8"));
+      } catch {
+      } finally {
+        await reader?.cancel().catch(() => {});
+        reader?.releaseLock();
+      }
+    }
     await response.body?.cancel();
     throw unprocessable(
-      `GitHub rejected this operation (HTTP ${response.status}). Check the App installation and repository permissions.`,
-      { code: "github_bot_operation_failed", providerStatus: response.status },
+      `GitHub rejected this operation (HTTP ${response.status}).`,
+      githubProviderRetry(response, secondaryRateLimit),
     );
   }
   if (response.status === 204) return undefined as T;
   const reader = response.body?.getReader();
-  if (!reader) throw unprocessable("GitHub returned an empty response");
+  if (!reader) throw unprocessable("GitHub returned an empty response", { code: "github_bot_invalid_response", retryable: true });
   const chunks: Uint8Array[] = [];
   let size = 0;
   try {
@@ -80,7 +124,14 @@ export async function githubBotRequest<T>(
       chunks.push(part.value);
     }
     const body = Buffer.concat(chunks).toString("utf8");
-    return (options.accept?.includes("diff") ? body : JSON.parse(body)) as T;
+    try {
+      return (options.accept?.includes("diff") ? body : JSON.parse(body)) as T;
+    } catch {
+      throw unprocessable("GitHub returned an invalid response", { code: "github_bot_invalid_response", retryable: true });
+    }
+  } catch (error) {
+    if (error instanceof Error && "status" in error) throw error;
+    throw unprocessable("GitHub response was interrupted. Retry this operation.", { code: "github_bot_temporarily_unavailable", retryable: true });
   } finally {
     await reader.cancel().catch(() => {});
     reader.releaseLock();
@@ -119,6 +170,9 @@ export async function githubBotCredentials(
     "privateKey",
     "installationId",
     "webhookSecret",
+    "clientId",
+    "clientSecret",
+    "identityCodeVerifier",
   ]) {
     const ref = row.connection.credentialSecretRefs.find(
       (r) => r.configPath === `credentials.${key}`,

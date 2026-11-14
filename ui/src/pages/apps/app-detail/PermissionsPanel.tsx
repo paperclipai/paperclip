@@ -13,12 +13,19 @@ import { cn } from "@/lib/utils";
 import { type InstallState } from "@/lib/tool-installs";
 import { QuarantinedActionsReview } from "./SetupPanel";
 import { ActionTestDialog } from "./ActionTestDialog";
+import { ProviderToolIcon } from "@/components/ProviderToolIcon";
+
+/** Action rows without a provider icon show none, as before. */
+function NoIcon() {
+  return null;
+}
 import type { AccessDraft, AppDetailSectionProps } from "./types";
 
 type ActionPermission = "off" | "ask" | "allowed";
 type ActionKindFilter = "all" | "read" | "write";
 
 export function PermissionsPanel({
+  afterAgentAccess,
   connectionId,
   appName,
   agents,
@@ -61,6 +68,8 @@ export function PermissionsPanel({
   permissionChangeWarning?: string;
   /** A credential-only connection can supply its account controls instead of tool actions. */
   actions?: ReactNode;
+  /** Supplemental agent settings share the existing connection configuration page. */
+  afterAgentAccess?: ReactNode;
 }) {
   const [searchParams] = useSearchParams();
   return (
@@ -73,6 +82,7 @@ export function PermissionsPanel({
         disabled={pending}
         onSave={onSaveAccess}
       />
+      {afterAgentAccess}
       {actions !== undefined ? actions : <ActionsSection
         key={connectionId}
         connectionId={connectionId}
@@ -489,6 +499,9 @@ function ActionRow({
       >
         <div className="min-w-0 flex-1">
           <div className="flex flex-wrap items-center gap-2">
+            {action.icons?.length ? (
+              <ProviderToolIcon icons={action.icons} fallback={NoIcon} className="h-4 w-4 shrink-0" testId="app-action-icon" />
+            ) : null}
             <span className="text-sm font-medium text-foreground">{title}</span>
             {/* PAP-659 C7: the gate is only as good as the classifier, so say
                 what each action was classified as. A misfiled tool is then one
