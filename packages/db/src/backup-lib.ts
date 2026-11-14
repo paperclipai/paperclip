@@ -31,6 +31,15 @@ export type RunDatabaseBackupOptions = {
   backupEngine?: "auto" | "pg_dump" | "javascript";
   /** Optional durability gate. A rejected archive must not prune history. */
   verifyBeforePrune?: (backupFile: string) => Promise<void>;
+  /**
+   * Refuse to write anything when `backupDir` is not a mount point (its device
+   * differs from that of its parent). This is the per-run safety net for
+   * deployments whose backupDir lives on a separately mounted volume: if the
+   * mount is missing, `mkdirSync(backupDir, { recursive: true })` would happily
+   * recreate the path on the root filesystem and refill the primary disk.
+   * Unset (the default) preserves the legacy permissive behavior.
+   */
+  requireMountedBackupDir?: boolean;
 };
 
 export type RunDatabaseBackupResult = {
@@ -115,6 +124,26 @@ function monthlyRetentionCutoff(nowMs: number, monthlyMonths: number): number {
   const months = Math.max(1, monthlyMonths);
   const now = new Date(nowMs);
   return Date.UTC(now.getUTCFullYear(), now.getUTCMonth() - months, 1);
+}
+
+/**
+ * True when `backupDir` is missing or sits on the root filesystem's device —
+ * i.e. the dedicated backup volume is not mounted there. Deployments enable
+ * the guard only when backups live on their own volume, so "same device as /"
+ * can only mean the mount was lost and the recursive backup mkdir would
+ * silently recreate the path on the primary disk. Fails closed on a missing
+ * directory: a per-run guard cannot know the volume returned, and the legacy
+ * behavior (create it wherever the path resolves) is exactly what the guard
+ * exists to prevent. Windows has no comparable root-device semantics and is
+ * never restricted.
+ */
+function isBackupDirOnRootFilesystem(backupDir: string): boolean {
+  if (process.platform === "win32") return false;
+  try {
+    return statSync(backupDir).dev === statSync("/").dev;
+  } catch {
+    return true;
+  }
 }
 
 /**
@@ -547,6 +576,13 @@ export async function runDatabaseBackup(opts: RunDatabaseBackupOptions): Promise
     sqlClosed = true;
     await sql.end();
   };
+  if (opts.requireMountedBackupDir && isBackupDirOnRootFilesystem(opts.backupDir)) {
+    await closeSql();
+    throw new Error(
+      `backup directory ${opts.backupDir} is missing or on the root filesystem — refusing to write backups onto the primary disk. ` +
+        `Mount the dedicated backup volume (or unset the mount requirement) and retry.`,
+    );
+  }
   mkdirSync(opts.backupDir, { recursive: true });
   // Initial and final sleep checks can run within the same second. A failed
   // second checkpoint must never overwrite the first verified recovery point.
