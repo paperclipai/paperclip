@@ -19,7 +19,7 @@ Every company needs a goal — the north star that all work traces back to. Good
 - "Build the #1 AI note-taking app at $1M MRR in 3 months"
 - "Create a marketing agency that serves 10 clients by Q2"
 
-Go to the Goals section and create your top-level company goal.
+Open the Goals page and create your top-level company goal. The sidebar does not show Goals by default. Press `Ctrl+K` (`Cmd+K` on macOS), type "Goals", and select the Goals page. To add the Goals link back to the sidebar, see [Experimental Features](/guides/board-operator/experimental-features).
 
 ## Step 3: Create the CEO Agent
 

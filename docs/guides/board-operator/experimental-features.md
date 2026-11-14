@@ -56,6 +56,14 @@ This setting controls visibility. Turning it off does not disconnect an
 existing bot or stop its messages. To stop a connection, pause it from its
 chat connection settings before turning off the experiment.
 
+## Goals sidebar link
+
+**Goals Sidebar Link** is off by default, so the main sidebar does not show
+Goals. The Goals page stays available: press `Ctrl+K` (`Cmd+K` on macOS) and
+select **Goals**. Enable this setting in the **Legacy** section to show the
+Goals item in the sidebar again. Legacy settings can be removed in a later
+release.
+
 ## When to use them
 
 Experimental features are best used when you are:
