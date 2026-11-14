@@ -136,6 +136,9 @@ export function providerDisplayName(provider: string): string {
     google: "Google",
     cursor: "Cursor",
     jetbrains: "JetBrains AI",
+    ollama: "Ollama",
+    "ollama-cloud": "Ollama Cloud",
+    ollama_cloud: "Ollama Cloud",
   };
   return map[provider.toLowerCase()] ?? provider;
 }
