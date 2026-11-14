@@ -1210,7 +1210,7 @@ export function createHeartbeatRetries(db: Db, dependencies: HeartbeatRetryDepen
         }
 
         await notifyAttentionRetentionWork(tx, { companyId: run.companyId });
-        await notifyScheduledRetryDispatch(tx, { companyId: run.companyId });
+        await notifyScheduledRetryDispatch(tx, { companyId: run.companyId, runId: run.id });
         const wakeupRequest = await tx
           .insert(agentWakeupRequests)
           .values({

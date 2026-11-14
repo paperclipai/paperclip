@@ -12827,7 +12827,7 @@ export function issueService(db: Db) {
         await notifyStatusCardIssueChange(tx, issueCompany.companyId);
         await notifyIssueAttentionRetentionWork(tx, { companyId: issueCompany.companyId, issueId: id });
         await notifyDeliveryWork(tx, DELIVERY_QUEUES.issueMonitors);
-        await notifyRunDispatch(tx, { companyId: issueCompany.companyId });
+        await notifyRunDispatch(tx, { companyId: issueCompany.companyId, issueId: id });
         await notifyDeferredExecutionEligibility(tx, { companyId: issueCompany.companyId });
         await notifyDeliveryWork(tx, DELIVERY_QUEUES.agentTimers);
         await notifyRoutineExecutionStatus(tx, id);
