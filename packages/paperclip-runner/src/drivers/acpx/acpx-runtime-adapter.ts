@@ -309,8 +309,10 @@ export async function openQualifiedAcpxRuntime(
   // them, so goal controls and Pi steering stay available after a restore.
   // `null` means the latest initialize advertised no goal support.
   let initializedGoalCapability: AcpxRuntimeGoalCapability | null | undefined;
+  let connectOnOpenKey: string | null = null;
   const sessionStore: AcpSessionStore = {
     async load(sessionId) {
+      if (sessionId === connectOnOpenKey) return undefined;
       const record = await baseStore.load(sessionId);
       if (record !== undefined) {
         rememberHandshakeHandle(record);
@@ -653,9 +655,19 @@ export async function openQualifiedAcpxRuntime(
 
   let handle: AcpRuntimeHandle | null = null;
   const ensuredSession = Promise.resolve()
-    .then(() => options.restoringSession ? undefined : resetAbandonedBootstrapRecord(baseStore, options.providerSessionKey))
-    .then(() =>
+    .then(async () => {
+      if (!options.restoringSession) {
+        await resetAbandonedBootstrapRecord(baseStore, options.providerSessionKey);
+        return undefined;
+      }
+      if (!CONNECT_ON_OPEN_AGENTS.has(options.profile.agent)) return undefined;
+      const resumeSessionId = await connectOnOpenSessionId(baseStore, options.providerSessionKey);
+      if (resumeSessionId !== undefined) connectOnOpenKey = options.providerSessionKey;
+      return resumeSessionId;
+    })
+    .then((resumeSessionId) =>
       runtime.ensureSession({
+        ...(resumeSessionId === undefined ? {} : { resumeSessionId }),
         sessionKey: options.providerSessionKey,
         agent: options.profile.agent,
         mode: "persistent",
@@ -677,6 +689,8 @@ export async function openQualifiedAcpxRuntime(
         },
       }),
     );
+  const revealSavedRecord = () => { connectOnOpenKey = null; };
+  void ensuredSession.then(revealSavedRecord, revealSavedRecord);
   const handshake = (contextAdmission || modeBinding
     ? ensuredSession.then(async (ensuredHandle) => {
         handle = ensuredHandle;
@@ -1233,6 +1247,16 @@ function nonEmptyRuntimeIdentity(
   return typeof value === "string" && value.length > 0 ? value : undefined;
 }
 
+const CONNECT_ON_OPEN_AGENTS: ReadonlySet<string> = new Set(["claude"]);
+
+async function connectOnOpenSessionId(store: AcpSessionStore, sessionKey: string): Promise<string | undefined> {
+  const record = await store.load(sessionKey);
+  if (!record || record.acpx?.reset_on_next_ensure === true) return undefined;
+  if (typeof record.acpSessionId !== "string" || record.acpSessionId.length === 0) return undefined;
+  if (record.lastPromptAt === undefined && record.acpx?.session_origin !== "resume") return undefined;
+  return record.acpSessionId;
+}
+
 /**
  * A fresh open has no runner-recorded provider identity, so a saved record for
  * its session key was left by an earlier bootstrap of the same session that
@@ -1244,6 +1268,7 @@ function nonEmptyRuntimeIdentity(
 export async function resetAbandonedBootstrapRecord(store: AcpSessionStore, sessionKey: string): Promise<boolean> {
   const record = await store.load(sessionKey);
   if (!record || record.acpx?.reset_on_next_ensure === true) return false;
+  if (record.acpx?.session_origin === "resume") return false;
   // Only a record that provably holds no conversation qualifies.
   if (!Array.isArray(record.messages) || record.messages.length > 0 || record.lastSeq !== 0 ||
       record.lastPromptAt !== undefined) return false;
