@@ -100,6 +100,7 @@ const restartCheckpoint: PersistedNativeSession = {
 
 interface RestartContinuation {
   onDisposition?: (push: (...values: Array<PrpEvent | "end">) => void) => void;
+  recovery?: { checkpoint: PersistedNativeSession; snapshot: Partial<PersistedNativeSession> };
 }
 
 function harness(options: { withoutInterrupt?: boolean; restart?: RestartContinuation } = {}) {
@@ -148,6 +149,7 @@ function harness(options: { withoutInterrupt?: boolean; restart?: RestartContinu
       const base: PersistedNativeSession = { backendKind: "mock", sessionId: identity.sessionId, identity,
         providerSessionId: "provider-session", cursor: String(sequence), activeTurnId: null, pendingRuntimeRequests: [], lineage: [] };
       if (!options.restart) return base;
+      if (options.restart.recovery) return { ...base, ...options.restart.recovery.snapshot };
       const starts = startTurn.mock.calls.length;
       return { ...base, semanticResult: null,
         terminalTurns: [lostTerminal, ...(starts >= 1 ? [completedTerminal("turn-continuation")] : []),
@@ -203,7 +205,7 @@ async function run(options: {
     ...(options.turnTimeoutMs === undefined ? {} : { turnTimeoutMs: options.turnTimeoutMs }),
     resolveMissingResult,
     providerTurnWait: options.providerTurnWait,
-    ...(options.restart ? { persistedSession: restartCheckpoint, resumeInterruptedTurn: true } : {}),
+    ...(options.restart ? { persistedSession: options.restart.recovery?.checkpoint ?? restartCheckpoint, resumeInterruptedTurn: true } : {}),
   }).then((value) => { returned = value; return "finalized"; }, (error: unknown) => String(error instanceof Error ? error.message : error));
   await options.after?.(control, appended);
   const outcome = await execution;
@@ -457,6 +459,37 @@ describe("the controller consumer with provider-started turn sequences", () => {
     expect(outcome.appended.filter(value => value.sourceEventId === turn[0]!.sourceEventId)).toHaveLength(1);
     expect(appendedOf(outcome.appended, turn)).toEqual(ids(turn));
     expect(dispositionRequests(outcome.startTurn)).toBe(1);
+  });
+
+  it.each([true, false])("keeps waiting after a controller restart while the checkpoint still names the awaited turn as active (provider turn arrives: %s)", async (arrives) => {
+    const recovery = {
+      checkpoint: { ...restartCheckpoint, activeTurnId: "turn-1", terminalTurns: [] },
+      snapshot: { terminalTurns: [completedTerminal("turn-1")], semanticResult: null, awaitingProviderTurn: true },
+    };
+    const stream = [event("turn-1", "turn.completed", { status: "completed", error: null, awaitingProviderTurn: true })];
+    const turn = providerTurn("provider-1", { result: true });
+    const outcome = await run({
+      stream, restart: { recovery }, turnTimeoutMs: 10_000,
+      providerTurnWait: { startedAtMs: Date.now() - (arrives ? 599_000 : 599_700) },
+      after: async (control) => {
+        if (!arrives) return;
+        await new Promise(resolve => setTimeout(resolve, 200));
+        control.push(...turn);
+      },
+    });
+    expect(outcome.startTurn).not.toHaveBeenCalled();
+    if (arrives) {
+      expect(outcome.outcome).toBe("finalized");
+      expect(outcome.returned).toMatchObject({ result, turnId: "provider-1" });
+      expect(outcome.interrupt).not.toHaveBeenCalled();
+      expect(appendedOf(outcome.appended, turn)).toEqual(ids(turn));
+    } else {
+      expect(outcome.outcome).toContain("native_finalization_missing");
+      expect(outcome.interrupt).toHaveBeenCalledOnce();
+      expect(outcome.resolveMissingResult).toHaveBeenCalledWith(expect.objectContaining({ turnId: "turn-1",
+        terminalEvent: expect.objectContaining({ eventType: "turn.completed", payload: expect.objectContaining({ awaitingProviderTurn: true }) }) }));
+      expect(outcome.elapsedMs).toBeLessThan(5_000);
+    }
   });
 
   it("fails the run as today when the Runner's stream ends during the wait", async () => {
