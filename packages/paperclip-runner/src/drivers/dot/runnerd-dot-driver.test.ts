@@ -8,6 +8,7 @@ import { RunnerdDotDriver, externalRunnerExitMessage, type RunnerdDotDriverOptio
 import { describeRunnerdNativeSessionBackend } from "../../backends/codex-native-backend.js";
 import { createNativeSessionBackend } from "../../backends/native-backend-factory.js";
 import * as controlPlane from "../../control-plane/durable-prp-control-plane.js";
+import { defaultCapabilityRunnerdBinary } from "../../live/runnerd-codex-transport.js";
 import { externalOperationDigest, type ExternalProviderOperation } from "../../contracts/external-provider.js";
 import { buildNativeModelEnvelope, parseNativeExecutionInput, type NativeExecutionInputV6 } from "../../contracts/native-execution.js";
 import { NATIVE_RUNTIME_ASSET_SCHEMA, PAPERCLIP_EXECUTION_PROMPT, PAPERCLIP_EXECUTION_PROMPT_REVISION,
@@ -107,7 +108,7 @@ it.each([
     execution: input, stateDirectory: join(root, "state"),
     identity: { runnerInstanceId: randomUUID(), environmentLeaseId: randomUUID(), runId: input.binding.runId,
       normalizedSessionId: input.session.normalizedSessionId!, turnId: "turn-" + input.binding.runId, itemId: "item-" + input.binding.runId },
-    runnerBinary: resolve("runner/target/debug/paperclip-runnerd"),
+    runnerBinary: process.env.PAPERCLIP_ATTACH_TRANSITION_RUNNER ?? defaultCapabilityRunnerdBinary(),
     port: { dispatch: async () => {}, settle: async () => {}, attach: async () => async () => {} },
   });
   let session: Awaited<ReturnType<typeof driver.openSession>> | undefined;
@@ -277,3 +278,90 @@ describe("external Runner failure diagnostics", () => {
     expect(recognized).not.toContain("private.example");
   });
 });
+
+
+it.each(["confirmed", "unconfirmed", "absent", "rejected", "partial"] as const)(
+  "joins original external Runner cleanup after real exit (proof=%s)", async proof => {
+    const root = await mkdtemp(join(tmpdir(), "dot-driver-owned-exit-"));
+    await writeFile(join(root, "AGENTS.md"), "Use only the synthetic counter.");
+    const input = execution(root);
+    const monitorFailure = new Error("test_original_monitor_rejection");
+    const joinFailure = new Error("test_original_local_join_failure");
+    let handle: controlPlane.RunnerProcessHandle | undefined;
+    let originalCompletion: controlPlane.RunnerProcessHandle["completion"] | undefined;
+    let terminated = false, detachCalls = 0, releaseCalls = 0, stopCalls = 0, drainCalls = 0, retiredCalls = 0;
+    let releaseDrain!: () => void;
+    const drainGate = new Promise<void>(resolve => { releaseDrain = resolve; });
+    const spawnRunner = controlPlane.spawnRunner;
+    const spawnSpy = vi.spyOn(controlPlane, "spawnRunner").mockImplementation(options => {
+      const original = spawnRunner(options);
+      originalCompletion = original.completion;
+      handle = { ...original, isExitConfirmed: proof === "absent" ? undefined : () => terminated && proof !== "unconfirmed",
+        completion: original.completion.then(result => {
+          terminated = true;
+          if (proof === "rejected") throw monitorFailure;
+          return { ...result, code: null, signal: null };
+        }) };
+      return handle;
+    });
+    const stop = controlPlane.DurablePrpControlPlane.prototype.stop;
+    const drain = controlPlane.DurablePrpControlPlane.prototype.drainPendingConnectionProcessing;
+    const retire = controlPlane.DurablePrpControlPlane.prototype.retireSemanticToolCallbacks;
+    const stopSpy = vi.spyOn(controlPlane.DurablePrpControlPlane.prototype, "stop").mockImplementation(async function (this: controlPlane.DurablePrpControlPlane) {
+      stopCalls++; await stop.call(this);
+    });
+    const drainSpy = vi.spyOn(controlPlane.DurablePrpControlPlane.prototype, "drainPendingConnectionProcessing").mockImplementation(async function (this: controlPlane.DurablePrpControlPlane) {
+      drainCalls++; await drain.call(this);
+      if (proof === "partial" && drainCalls === 1) { await drainGate; throw joinFailure; }
+    });
+    const retireSpy = vi.spyOn(controlPlane.DurablePrpControlPlane.prototype, "retireSemanticToolCallbacks").mockImplementation(function (this: controlPlane.DurablePrpControlPlane) {
+      retiredCalls++; return retire.call(this);
+    });
+    const driver = new RunnerdDotDriver({ execution: input, stateDirectory: join(root, "state"),
+      identity: { runnerInstanceId: randomUUID(), environmentLeaseId: randomUUID(), runId: input.binding.runId,
+        normalizedSessionId: input.session.normalizedSessionId!, turnId: "turn-" + input.binding.runId, itemId: "item-" + input.binding.runId },
+      runnerBinary: process.env.PAPERCLIP_ATTACH_TRANSITION_RUNNER ?? defaultCapabilityRunnerdBinary(),
+      controlPlaneRegistration: async authority => {
+        await authority.start();
+        return { connectUrl: authority.connectUrl, release: () => { releaseCalls++; } };
+      },
+      port: { dispatch: async () => {}, settle: async () => {}, attach: async () => async () => { detachCalls++; } },
+    });
+    let session: Awaited<ReturnType<typeof driver.openSession>> | undefined;
+    try {
+      session = await driver.openSession({ runId: input.binding.runId, normalizedSessionId: input.session.normalizedSessionId!, workingDirectory: root });
+      handle!.child.kill("SIGTERM");
+      await originalCompletion;
+      await handle!.completion.catch(() => {});
+      await expect(session.read!()).rejects.toThrow(/^dot_runner_process_exited_recovery_required:/);
+      if (proof === "unconfirmed" || proof === "absent" || proof === "rejected") {
+        await expect(session.close({ reason: "Unproven cleanup" })).rejects.toThrow(/^dot_runner_process_exited_recovery_required:/);
+        expect([detachCalls, releaseCalls, stopCalls, drainCalls, retiredCalls]).toEqual([0, 0, 0, 0, 0]);
+      } else if (proof === "partial") {
+        const first = session.close({ reason: "First close" });
+        const firstOutcome = first.then(() => null, error => error);
+        await vi.waitFor(() => expect(drainCalls).toBe(1), { timeout: 2000 });
+        const repeated = session.close({ reason: "Concurrent close" });
+        const repeatedOutcome = repeated.then(() => null, error => error);
+        expect([detachCalls, releaseCalls, stopCalls, drainCalls, retiredCalls]).toEqual([1, 1, 1, 1, 0]);
+        releaseDrain();
+        expect(await firstOutcome).toBe(joinFailure);
+        expect(await repeatedOutcome).toBe(joinFailure);
+        await expect(session.close({ reason: "Retry failed local join" })).resolves.toBeUndefined();
+        expect([detachCalls, releaseCalls, stopCalls, drainCalls, retiredCalls]).toEqual([1, 1, 1, 2, 1]);
+      } else {
+        await expect(session.close({ reason: "Confirmed original owner exit" })).resolves.toBeUndefined();
+        expect([detachCalls, releaseCalls, stopCalls, drainCalls, retiredCalls]).toEqual([1, 1, 1, 1, 1]);
+        await session.close({ reason: "Already joined" });
+        expect([detachCalls, releaseCalls, stopCalls, drainCalls, retiredCalls]).toEqual([1, 1, 1, 1, 1]);
+      }
+    } finally {
+      releaseDrain();
+      await session?.detachControllerForRestart?.();
+      spawnSpy.mockRestore(); stopSpy.mockRestore(); drainSpy.mockRestore(); retireSpy.mockRestore();
+      if (!terminated) handle?.child.kill("SIGTERM");
+      await originalCompletion;
+      await rm(root, { recursive: true, force: true });
+    }
+  }, 45000,
+);
