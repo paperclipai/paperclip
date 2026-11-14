@@ -118,4 +118,63 @@ describe("http adapter execute", () => {
     expect(result.errorCode).toBe("timeout");
     expect(result.errorMessage).toContain("timed out after 1ms");
   });
+
+  it("does not add authToken to the body when forwardAuthToken is not set", async () => {
+    guardedFetchMock.mockImplementation(async (_url: string, init?: RequestInit) => {
+      const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
+      expect("authToken" in body).toBe(false);
+      return new Response(null, { status: 204 });
+    });
+
+    await execute({
+      runId: "run-1",
+      agent: { id: "agent-1", companyId: "company-1", name: "Agent", adapterType: "http", adapterConfig: {} },
+      runtime: { sessionId: null, sessionParams: null, sessionDisplayId: null, taskKey: null },
+      config: { url: "https://example.test/webhook" },
+      context: {},
+      authToken: "run-jwt",
+      onLog: async () => {},
+    });
+
+    expect(guardedFetchMock).toHaveBeenCalledOnce();
+  });
+
+  it("does not add authToken to the body when forwardAuthToken is true but no token was issued", async () => {
+    guardedFetchMock.mockImplementation(async (_url: string, init?: RequestInit) => {
+      const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
+      expect("authToken" in body).toBe(false);
+      return new Response(null, { status: 204 });
+    });
+
+    await execute({
+      runId: "run-1",
+      agent: { id: "agent-1", companyId: "company-1", name: "Agent", adapterType: "http", adapterConfig: {} },
+      runtime: { sessionId: null, sessionParams: null, sessionDisplayId: null, taskKey: null },
+      config: { url: "https://example.test/webhook", forwardAuthToken: true },
+      context: {},
+      onLog: async () => {},
+    });
+
+    expect(guardedFetchMock).toHaveBeenCalledOnce();
+  });
+
+  it("adds authToken to the body when forwardAuthToken is true and a run token was issued", async () => {
+    guardedFetchMock.mockImplementation(async (_url: string, init?: RequestInit) => {
+      const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
+      expect(body.authToken).toBe("run-jwt");
+      return new Response(null, { status: 204 });
+    });
+
+    await execute({
+      runId: "run-1",
+      agent: { id: "agent-1", companyId: "company-1", name: "Agent", adapterType: "http", adapterConfig: {} },
+      runtime: { sessionId: null, sessionParams: null, sessionDisplayId: null, taskKey: null },
+      config: { url: "https://example.test/webhook", forwardAuthToken: true },
+      context: {},
+      authToken: "run-jwt",
+      onLog: async () => {},
+    });
+
+    expect(guardedFetchMock).toHaveBeenCalledOnce();
+  });
 });
