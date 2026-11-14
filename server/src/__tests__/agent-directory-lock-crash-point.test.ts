@@ -1,10 +1,11 @@
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
 describe("directory-lock crash point", () => {
   let root: string;
+  let control: string;
   let agentDirectoryWorkingCopyService: typeof import("../services/agent-directory-working-copies.js").agentDirectoryWorkingCopyService;
   let AgentDirectoryOperationBusyError: typeof import("../services/agent-directory-working-copies.js").AgentDirectoryOperationBusyError;
   let prepareWithAgentDirectoryDeferral: typeof import("../services/heartbeat/agent-directory-busy.js").prepareWithAgentDirectoryDeferral;
@@ -12,14 +13,17 @@ describe("directory-lock crash point", () => {
 
   beforeAll(async () => {
     root = await mkdtemp(path.join(os.tmpdir(), "directory-lock-crash-point-"));
-    const control = path.join(root, "crash-point.control");
-    await writeFile(control, "t1 agent_directory.operation_lock.before_acquire:1 fail\n");
+    control = path.join(root, "crash-point.control");
     vi.stubEnv("PAPERCLIP_CRASH_POINT_CONTROL", control);
     vi.stubEnv("PAPERCLIP_EPHEMERAL_SERVER", "true");
     vi.resetModules();
     ({ agentDirectoryWorkingCopyService, AgentDirectoryOperationBusyError } = await import("../services/agent-directory-working-copies.js"));
     ({ prepareWithAgentDirectoryDeferral, AgentDirectoryPreparationDeferral } = await import("../services/heartbeat/agent-directory-busy.js"));
   }, 120_000);
+
+  beforeEach(async () => {
+    await writeFile(control, "t1 agent_directory.operation_lock.before_acquire:1 fail\n");
+  });
 
   afterAll(async () => {
     vi.unstubAllEnvs();
