@@ -345,6 +345,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     env.PI_CODING_AGENT_DIR = localAgentConfigDir;
   }
   let attributionExtension: Awaited<ReturnType<typeof preparePiOpenRouterExtension>> | undefined;
+  let releaseRemoteWorkspaceSnapshot: (() => Promise<void>) | null = null;
   try {
     attributionExtension = await preparePiOpenRouterExtension();
     let attributionExtensionPath = attributionExtension.extensionPath;
@@ -460,8 +461,13 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
                 : []),
             ],
           });
+          let remoteWorkspaceRestore: Promise<void> | null = null;
           restoreRemoteWorkspace = () =>
-            preparedRemoteRuntime.restoreWorkspace((line) => onLog("stdout", line));
+            (remoteWorkspaceRestore = preparedRemoteRuntime.restoreWorkspace((line) => onLog("stdout", line)));
+          releaseRemoteWorkspaceSnapshot = async () => {
+            await remoteWorkspaceRestore?.catch(() => {});
+            await preparedRemoteRuntime.cleanupWorkspaceSnapshot?.();
+          };
           effectiveExecutionCwd = preparedRemoteRuntime.workspaceRemoteDir ?? effectiveExecutionCwd;
           refreshPaperclipWorkspaceEnvForExecution({
             env,
@@ -928,6 +934,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       }
     }
   } finally {
+    await releaseRemoteWorkspaceSnapshot?.().catch(() => {});
     await Promise.all([preparedRuntimeConfig.cleanup(), attributionExtension?.cleanup()]);
   }
 }

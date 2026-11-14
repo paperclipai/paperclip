@@ -666,6 +666,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         });
       })()
     : null;
+  try {
   const restoreRemoteWorkspace = preparedExecutionTargetRuntime
     ? () => preparedExecutionTargetRuntime.restoreWorkspace((line) => onLog("stdout", line))
     : null;
@@ -1478,5 +1479,9 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         }
       }
     }
+  }
+  } catch (error) {
+    await preparedExecutionTargetRuntime?.cleanupWorkspaceSnapshot?.().catch(() => {});
+    throw error;
   }
 }
