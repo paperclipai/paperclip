@@ -325,6 +325,19 @@ function sideEffectIdempotencyKey(ctx: ToolAccessContext, argumentsHash: string,
   })}`;
 }
 
+const REGENERABLE_IMPLICIT_SIDE_EFFECT_TOOLS = new Set([
+  "media_generate_upload_link",
+]);
+
+function nextSideEffectIdempotencyKey(previousKey: string, previousInvocationId: string): string {
+  return `side_effect:implicit:${sha256({ previousKey, previousInvocationId })}`;
+}
+
+function isRegenerableImplicitSideEffectTool(ctx: ToolAccessContext): boolean {
+  return REGENERABLE_IMPLICIT_SIDE_EFFECT_TOOLS.has(ctx.toolName)
+    || (ctx.upstreamToolName !== null && REGENERABLE_IMPLICIT_SIDE_EFFECT_TOOLS.has(ctx.upstreamToolName));
+}
+
 function auditOutcome(accessDecision: ToolAccessDecision): "pending" | "success" | "denied" | "timeout" {
   if (accessDecision.decision === "allow") return "success";
   if (accessDecision.decision === "require_approval") return "pending";
@@ -1846,17 +1859,43 @@ export function toolAccessPolicyService(db: Pick<Db, "select" | "insert" | "upda
     const loaded = await loadContext(input);
     if (!loaded.ok) throw new Error("Cannot record invocation for invalid tool access context");
     const { ctx, redaction } = loaded;
+    const callerIdempotencyKey = input.request.idempotencyKey ?? null;
     const requestIdentityHash = input.request.sideEffecting || accessDecision.decision === "require_approval"
       ? toolRequestIdentityHash(input.request.arguments, options.toolActionSigningSecret)
       : null;
     const argumentsHash = input.request.sideEffecting ? requestIdentityHash! : ctx.argumentsHash;
-    const idempotencyKey = input.request.idempotencyKey
+    let idempotencyKey = callerIdempotencyKey
       ?? (input.request.sideEffecting ? sideEffectIdempotencyKey(ctx, requestIdentityHash!) : null);
     if (idempotencyKey) {
-      const [existing] = await db.select().from(toolInvocations).where(and(
+      const [existingForKey] = await db.select().from(toolInvocations).where(and(
         eq(toolInvocations.companyId, input.companyId),
         eq(toolInvocations.idempotencyKey, idempotencyKey),
       ));
+      let existing: typeof toolInvocations.$inferSelect | undefined = existingForKey;
+      if (
+        existing
+        && !callerIdempotencyKey
+        && isRegenerableImplicitSideEffectTool(ctx)
+      ) {
+        [existing] = await db.select().from(toolInvocations).where(and(
+          eq(toolInvocations.companyId, input.companyId),
+          eq(toolInvocations.toolName, ctx.toolName),
+          eq(toolInvocations.argumentsHash, argumentsHash),
+          sql`${toolInvocations.runId} is not distinct from ${ctx.heartbeatRunId}`,
+          sql`${toolInvocations.issueId} is not distinct from ${ctx.issueId}`,
+          sql`${toolInvocations.applicationId} is not distinct from ${ctx.applicationId}`,
+          sql`${toolInvocations.connectionId} is not distinct from ${ctx.connectionId}`,
+          sql`${toolInvocations.catalogEntryId} is not distinct from ${ctx.catalogEntryId}`,
+          sql`(${toolInvocations.idempotencyKey} = ${idempotencyKey} or ${toolInvocations.idempotencyKey} like 'side_effect:implicit:%')`,
+        )).orderBy(desc(toolInvocations.createdAt), desc(toolInvocations.id)).limit(1);
+        if (existing?.status === "succeeded") {
+          idempotencyKey = nextSideEffectIdempotencyKey(
+            existing.idempotencyKey ?? idempotencyKey,
+            existing.id,
+          );
+          existing = undefined;
+        }
+      }
       if (existing) return { invocation: existing, replayed: true, actionRequest: null };
     }
     if (input.request.sideEffecting && input.request.idempotencyKey == null) {
@@ -1938,7 +1977,15 @@ export function toolAccessPolicyService(db: Pick<Db, "select" | "insert" | "upda
       errorCode: accessDecision.allowed || accessDecision.decision === "require_approval" ? null : accessDecision.reasonCode,
       errorMessage: accessDecision.allowed || accessDecision.decision === "require_approval" ? null : accessDecision.explanation,
       completedAt: accessDecision.allowed || accessDecision.decision === "require_approval" ? null : new Date(),
-    }).returning();
+    }).onConflictDoNothing().returning();
+    if (!invocation && idempotencyKey) {
+      const [concurrent] = await db.select().from(toolInvocations).where(and(
+        eq(toolInvocations.companyId, input.companyId),
+        eq(toolInvocations.idempotencyKey, idempotencyKey),
+      ));
+      if (concurrent) return { invocation: concurrent, replayed: true, actionRequest: null };
+    }
+    if (!invocation) throw new Error("Failed to record tool invocation");
     let actionRequest = null;
     if (accessDecision.decision === "require_approval") {
       [actionRequest] = await db.insert(toolActionRequests).values({
