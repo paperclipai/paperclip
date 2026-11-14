@@ -5,12 +5,6 @@ import { agents, heartbeatRuns, issueRecoveryActions, issues } from "@paperclipa
 import { notifyNativeStatusReassessment } from "../services/native-status-reassessment-notifications.js";
 import { describeIssueRecovery, issueRecoveryFixture } from "./issue-recovery.test-fixture.js";
 
-// Recovery records one decision for a failed legacy run (here: continue in a
-// fresh run from saved work). While the task waits for that decision to be
-// carried out, every stranded-work check revisits the run. The check used to
-// re-assert the run's unchanged terminal status each time; that write notified
-// the run's whole recovery graph, which re-checked the same task about once a
-// second, forever, with no run active.
 describeIssueRecovery("stranded recovery of runs with a recorded decision", () => {
   const state = issueRecoveryFixture();
   const TASKS = 10;
@@ -18,7 +12,6 @@ describeIssueRecovery("stranded recovery of runs with a recorded decision", () =
   async function seed() {
     const f = await state.fixture();
     const db = state.db;
-    // The agent's runs keep failing, so it is in error.
     await db.update(agents).set({ status: "error" }).where(eq(agents.id, f.agentId));
     const tasks = await db.insert(issues).values(Array.from({ length: TASKS }, (_, index) => ({
       companyId: f.companyId, title: `Waiting task ${index}`, status: "in_progress", assigneeAgentId: f.agentId,
@@ -47,7 +40,6 @@ describeIssueRecovery("stranded recovery of runs with a recorded decision", () =
   async function startAndRecordDecisions(f: Awaited<ReturnType<typeof seed>>) {
     vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });
     await state.start({});
-    // The boot pass records one decision per failed run; any backstop it owes runs within 5 minutes.
     await advance(6 * 60_000);
     const decided = await state.db.select({ issueId: issueRecoveryActions.sourceIssueId }).from(issueRecoveryActions).where(and(
       eq(issueRecoveryActions.companyId, f.companyId), eq(issueRecoveryActions.status, "resolved"),
@@ -62,7 +54,6 @@ describeIssueRecovery("stranded recovery of runs with a recorded decision", () =
       .from(heartbeatRuns).where(eq(heartbeatRuns.companyId, f.companyId));
     const idle = await countStatements(() => advance(30 * 60_000));
     expect(idle).toHaveLength(0);
-    // The recorded decisions stand: no run was re-written or started, and no task moved.
     const runsAfter = await state.db.select({ id: heartbeatRuns.id, status: heartbeatRuns.status, updatedAt: heartbeatRuns.updatedAt })
       .from(heartbeatRuns).where(eq(heartbeatRuns.companyId, f.companyId));
     const byId = (a: { id: string }, b: { id: string }) => a.id.localeCompare(b.id);
@@ -75,7 +66,6 @@ describeIssueRecovery("stranded recovery of runs with a recorded decision", () =
     const f = await seed();
     await startAndRecordDecisions(f);
     await advance(10 * 60_000);
-    // A newer run of one task fails after the idle window.
     const target = f.tasks[0].id;
     const [failed] = await state.db.transaction(async tx => {
       const rows = await tx.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: f.agentId, status: "failed",
@@ -83,17 +73,14 @@ describeIssueRecovery("stranded recovery of runs with a recorded decision", () =
       await notifyNativeStatusReassessment(tx, { companyId: f.companyId, runId: rows[0].id });
       return rows;
     });
-    await advance(5_000);
-    // Recovery records a decision for the new failure within seconds.
-    const forNewRun = await state.db.select().from(issueRecoveryActions).where(and(
+    const actionFor = async () => (await state.db.select().from(issueRecoveryActions).where(and(
       eq(issueRecoveryActions.companyId, f.companyId), eq(issueRecoveryActions.sourceIssueId, target),
-      sql`(${issueRecoveryActions.evidence}->>'runId' = ${failed.id}
-        or ${issueRecoveryActions.evidence}->'executionReconciliation'->>'runId' = ${failed.id})`));
-    expect(forNewRun.length).toBeGreaterThan(0);
-    // The failed run is not re-asserted afterwards. The assigned-work
-    // invariant keeps its own spaced re-checks of tasks without a live path,
-    // so the bound here is on volume, not zero.
+      eq(issueRecoveryActions.fingerprint, `legacy-execution:${failed.id}`))))[0];
+    await advance(5_000);
+    expect(await actionFor()).toMatchObject({ kind: "active_run_watchdog", evidence: expect.objectContaining({ runId: failed.id }) });
     await advance(6 * 60_000);
+    expect(await actionFor()).toMatchObject({ status: "resolved",
+      evidence: expect.objectContaining({ executionReconciliation: expect.objectContaining({ runId: failed.id }) }) });
     const after = await countStatements(() => advance(30 * 60_000));
     expect(after.filter(query => query.startsWith("update \"heartbeat_runs\""))).toEqual([]);
     expect(after.length).toBeLessThan(TASKS * 500);

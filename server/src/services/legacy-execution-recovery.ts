@@ -111,10 +111,6 @@ export async function legacyExecutionNeedsReconciliationWithEvidence(db: Db, run
       && !(await isPreDispatchExecutionWaitVerified(db, run)));
 }
 
-/** The resolved recovery decision already recorded for this terminal run, if any.
- * Periodic stranded-work checks may revisit the run before its reconciled or
- * explicitly requested continuation is dispatched; that decision stands. The
- * explicit receipt must identify an actual successor under the same task/agent. */
 async function findRecordedLegacyDecision(db: Db, run: Run, taskId: string, resultJson: Run["resultJson"]) {
   const [reconciled] = await db.select({ id: issueRecoveryActions.id })
     .from(issueRecoveryActions).where(and(
@@ -157,7 +153,6 @@ async function findRecordedLegacyDecision(db: Db, run: Run, taskId: string, resu
   return reconciled ?? null;
 }
 
-/** Whether the task's assignee (or current reviewer) owns a decision about this run. */
 function decisionOwner(task: typeof issues.$inferSelect, run: Run, retainedLeaseCount: number) {
   const review = task.status === "in_review" ? parseIssueExecutionState(task.executionState) : null;
   const isCurrentReviewer = review?.status === "pending" &&
@@ -209,11 +204,6 @@ export async function terminalizeLegacyExecution(input: {
     )).for("update");
     if (!current || (current.runtimeMode !== "legacy" && !(input.recordRestoreFailureOnly && current.runtimeMode === "native")) ||
         (!input.recordRestoreFailureOnly && !(input.fromStatuses ?? [run.status]).includes(current.status))) return null;
-    // Stranded-work and quota checks re-assert the run's unchanged terminal
-    // status each time they revisit its task. Once its decision is recorded
-    // that changes nothing, so it must not write or notify: the notifications
-    // re-check the same task, which re-asserts the run again, about once a
-    // second for as long as the task waits.
     if (!input.recordRestoreFailureOnly && current.status === status && Object.keys(patch ?? {}).length === 0
         && !hasWorkspaceRestoreFailure(current.resultJson) && !hasRequiredWorkspaceRecovery(current.resultJson)
         && task?.executionRunId !== run.id && task?.checkoutRunId !== run.id) {
@@ -330,8 +320,6 @@ export async function terminalizeLegacyExecution(input: {
     const owner = task ? decisionOwner(task, updated, retainedLeaseIds.length) : null;
     if (task && owner?.owns) {
       const { isCurrentReviewer } = owner;
-      // Preserve a recorded decision instead of creating another hold; retained
-      // user intent remains authoritative after its successor finishes.
       const reconciled = await findRecordedLegacyDecision(tx as unknown as Db, run, task.id, updated.resultJson);
       if (reconciled) return updated;
       await issueRecoveryActionService(tx as unknown as Db).upsertSourceScoped({
