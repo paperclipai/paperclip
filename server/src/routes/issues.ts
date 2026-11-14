@@ -15464,6 +15464,27 @@ export function issueRoutes(
         req.body.executionPolicy !== undefined && monitorChanged,
       );
 
+      const hasPendingHumanInputWait =
+        expectedStatusVersion === undefined && updateFields.status === "in_review"
+          ? Boolean(
+              (
+                await db
+                  .select({ id: issueThreadInteractions.id })
+                  .from(issueThreadInteractions)
+                  .where(
+                    and(
+                      eq(issueThreadInteractions.companyId, existing.companyId),
+                      eq(issueThreadInteractions.issueId, existing.id),
+                      eq(issueThreadInteractions.status, "pending"),
+                      eq(issueThreadInteractions.effectiveResolverPolicy, "human_only"),
+                      activeIssueInteractionCondition(),
+                    ),
+                  )
+                  .limit(1)
+              )[0],
+            )
+          : false;
+
       const transition: ReturnType<typeof applyIssueExecutionPolicyTransition> = expectedStatusVersion !== undefined
         ? { patch: {} }
         : applyIssueExecutionPolicyTransition({
@@ -15490,6 +15511,7 @@ export function issueRoutes(
         reviewRequest: reviewRequest === undefined ? undefined : reviewRequest,
         monitorExplicitlyUpdated:
           req.body.executionPolicy !== undefined && monitorChanged,
+        hasPendingHumanInputWait,
       });
       const decisionId = transition.decision ? randomUUID() : null;
       if (decisionId) {
