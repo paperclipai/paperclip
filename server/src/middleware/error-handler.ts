@@ -21,6 +21,7 @@ import { recordResponsibleUserDenialOnActiveRun } from "../services/responsible-
 import { isObjectJournalBusyError } from "../services/object-byte-journal.js";
 import { isExpectedMcpConnectionFailure } from "../services/mcp-connection-failure.js";
 import { isOpenRouterCatalogUnavailable } from "../services/openrouter-models.js";
+import { ENVIRONMENT_PROVIDER_UNAVAILABLE_CODE, readTransientSandboxCreationRefusal } from "../services/environment-provider-unavailable-error.js";
 import { isEndedDbPoolError } from "../database-retry.js";
 import { ToolGatewayHttpError } from "../services/tool-gateway.js";
 
@@ -334,6 +335,20 @@ export function errorHandler(
     if (!res.headersSent) {
       res.set("Retry-After", "2");
       res.status(503).json({ error: rootError.message, code: rootError.code });
+    } else {
+      res.end();
+    }
+    return;
+  }
+
+  // A sandbox provider outage during a sandbox creation that this request
+  // started is not a server fault. The answer is fixed text: provider text and
+  // provisional sandbox names stay out, and cleanup stays with its own record.
+  const providerRefusal = readTransientSandboxCreationRefusal(rootError);
+  if (providerRefusal) {
+    if (!res.headersSent) {
+      res.set("Retry-After", "30");
+      res.status(503).json({ error: providerRefusal.message, code: ENVIRONMENT_PROVIDER_UNAVAILABLE_CODE });
     } else {
       res.end();
     }

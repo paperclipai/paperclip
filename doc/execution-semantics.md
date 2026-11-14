@@ -1527,6 +1527,14 @@ provider failure as the reason, retries automatically, and on exhaustion becomes
 `blocked` with a specific recovery notice and a Retry. Because no provider work
 started, no execution-reconciliation hold is created.
 
+An interactive custom-image setup creates its sandbox through the same provider
+path but outside a run. When its creation fails and cleanup could not be
+confirmed, the setup records the provisional allocation as a pending-cleanup
+lease, and the pending-cleanup sweep destroys it. A request that started a
+sandbox creation directly (a setup session or a login sandbox) and met a
+transient provider refusal answers HTTP 503 `environment_provider_unavailable`
+with fixed text. It is not reported as a server crash.
+
 Lease acquisition precedes provider work by construction, so the same budget
 covers every lease acquisition failure that carries structured transient evidence,
 not only a provider status: the provider's acquisition deadline or an unfinished

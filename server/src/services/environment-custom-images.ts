@@ -20,6 +20,7 @@ import {
   type SandboxEnvironmentConfig,
   redactEnvironmentCustomImageValue,
 } from "@paperclipai/shared";
+import { readEnvironmentCreationCleanupError } from "@paperclipai/plugin-sdk";
 import type {
   PluginEnvironmentCancelInteractiveSetupResult,
   PluginEnvironmentCaptureTemplateResult,
@@ -442,6 +443,7 @@ export function environmentCustomImageService(
       provider,
       rpcCompanyId: storedRpcCompanyId ?? secretContextCompanyId ?? "instance",
       pluginId: resolved.plugin.id,
+      pluginKey: resolved.plugin.pluginKey,
       driver: resolved.driver,
       runtimeConfig: parsed.config,
       driverConfig: stripSandboxProviderEnvelope(parsed.config),
@@ -643,6 +645,45 @@ export function environmentCustomImageService(
       .then((rows) => rows[0] ?? null));
     if (!row) throw notFound("Environment customImage setup session not found");
     return toSession(row);
+  }
+
+  // A setup sandbox whose failed creation could not be cleaned up has no
+  // session lease to cancel. Hand it to the pending-cleanup sweep, the same
+  // owner as a failed run acquisition, so the provider allocation is not lost.
+  async function recordUnconfirmedSetupCreation(input: {
+    error: unknown;
+    environment: Environment;
+    provider: Awaited<ReturnType<typeof resolveSetupProvider>>;
+    sessionId: string;
+  }): Promise<void> {
+    const cleanup = readEnvironmentCreationCleanupError(input.error);
+    if (!cleanup) return;
+    const stored = parseEnvironmentDriverConfig(input.environment);
+    // Accept only an allocation in this setup's own scope. An instance-scoped
+    // setup has no company to own the cleanup record, so it is reported instead.
+    if (input.provider.rpcCompanyId === "instance" || cleanup.companyId !== input.provider.rpcCompanyId ||
+        cleanup.environmentId !== input.environment.id || cleanup.runId !== undefined ||
+        stored.driver !== "sandbox" || stored.config.provider !== input.provider.provider) {
+      throw new Error("Interactive setup sandbox cleanup could not be recorded", { cause: input.error });
+    }
+    // The stored config keeps secret references, never resolved values.
+    await environments.insertPendingCleanupLease({
+      companyId: cleanup.companyId,
+      environmentId: input.environment.id,
+      provider: input.provider.provider,
+      providerLeaseId: cleanup.providerLeaseId,
+      metadata: {
+        ...stored.config,
+        driver: "sandbox",
+        pluginId: input.provider.pluginId,
+        pluginKey: input.provider.pluginKey,
+        sandboxProviderPlugin: true,
+        purpose: "interactive_setup",
+        setupSessionId: input.sessionId,
+        failedCreateCleanup: cleanup,
+      },
+      failureReason: "interrupted_setup_creation",
+    });
   }
 
   async function cancelSession(
@@ -873,11 +914,15 @@ export function environmentCustomImageService(
           connectionPayload: providerSession.connectionPayload ?? null,
         };
       } catch (error) {
-        await markSessionStatus({
-          sessionId,
-          status: "failed",
-          failureReason: error instanceof Error ? error.message : String(error),
-        });
+        try {
+          await recordUnconfirmedSetupCreation({ error, environment, provider, sessionId });
+        } finally {
+          await markSessionStatus({
+            sessionId,
+            status: "failed",
+            failureReason: error instanceof Error ? error.message : String(error),
+          });
+        }
         throw error;
       }
     },
