@@ -111,4 +111,20 @@ describe("a legacy run whose saved files are gone", () => {
     await strandedPass(f.runId);
     expect((await action(f.actionId)).evidence).toMatchObject({ automaticRecovery: { runId: f.runId, replay: "blocked" } });
   }, 90_000);
+
+  it("counts the continuation as started when its worker delivers it before the sweep looks", async () => {
+    const f = await sourceGone();
+    const heartbeat = heartbeatService(db);
+    // The continuation worker delivers the run between admission and the sweep's read.
+    const sweep = assignedWorkSweep(db, { enqueueWakeup: async (agentId, opts) => {
+      const run = await heartbeat.wakeup(agentId, opts);
+      await deliverReconciledExecutions(db, (id, wake) => heartbeat.wakeup(id, wake));
+      return run;
+    } });
+    expect(await sweep.checkIssue({ companyId: f.companyId, issueId: f.issueId })).toMatchObject({ outcome: "repaired" });
+    expect((await action(f.actionId)).evidence).toMatchObject({ continuationDelivery: "delivered" });
+    const refused = await db.select().from(activityLog).where(and(eq(activityLog.entityId, f.issueId),
+      eq(activityLog.action, ASSIGNED_WORK_CONTINUED_ACTION), sql`${activityLog.details}->>'outcome' = 'not_started'`));
+    expect(refused).toHaveLength(0);
+  }, 90_000);
 });
