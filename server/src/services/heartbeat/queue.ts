@@ -207,6 +207,7 @@ import type { HeartbeatRetryDependencies } from "./retries.js";
 import type { HeartbeatRecoveryDependencies, createHeartbeatRecovery } from "./recovery.js";
 import { HEARTBEAT_RUN_TERMINAL_STATUSES } from "./recovery.js";
 import { executeIssuePostCommitActions, type IssuePostCommitAction, type issueService } from "../issues.js";
+import { recordHeldTaskInputNotice } from "../held-task-input-notice.js";
 import type { issueTreeControlService } from "../issue-tree-control.js";
 import type { budgetService } from "../budgets.js";
 import { isBoardOwnedBudgetBlock } from "../budget-block-ownership.js";
@@ -235,7 +236,7 @@ export interface HeartbeatQueueDependencies extends Pick<HeartbeatRetryDependenc
   Pick<HeartbeatRecoveryDependencies, "setRunStatusFromLive"> {
   sweepPendingCleanupLeases: ReturnType<typeof createHeartbeatRecovery>["sweepPendingCleanupLeases"];
   options: Pick<HeartbeatServiceOptions, "beforeChatControlRecoveryCheck">;
-  issuesSvc: Pick<ReturnType<typeof issueService>, "getDependencyReadiness" | "listDependencyReadiness" | "updateForCompany">;
+  issuesSvc: Pick<ReturnType<typeof issueService>, "addComment" | "getDependencyReadiness" | "listDependencyReadiness" | "updateForCompany">;
   treeControlSvc: Pick<ReturnType<typeof issueTreeControlService>, "getActivePauseHoldGate">;
   budgets: Pick<ReturnType<typeof budgetService>, "getInvocationBlock">;
   instanceSettings: Pick<ReturnType<typeof instanceSettingsService>, "getExperimental">;
@@ -4011,6 +4012,12 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
                 requestId: executionWaitRequestId }, condition, { replace: true, publications: issueActivityPublications });
               return { kind: "deferred" as const, admitted: true };
             }
+            await recordHeldTaskInputNotice(tx as unknown as Db, issuesSvc, issueActivityPublications, {
+              companyId: issue.companyId, issueId: issue.id,
+              recoveryActionId: executionBlocker.recoveryActionId, nextAction: executionBlocker.nextAction,
+              requestedByActorType: opts.requestedByActorType, reason,
+              contextSource: enrichedContextSnapshot.source, wakeCommentId,
+            });
             if (durableRequest || wakeCommentId ||
                 hasInteractionContinuationWakeContext(enrichedContextSnapshot) ||
                 readNonEmptyString(enrichedContextSnapshot.nativeStatusWakeIntentId)) {
