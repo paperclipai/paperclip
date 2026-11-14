@@ -68,7 +68,8 @@ export function getCurrentFileViewerSearch(fallbackSearch: string): string {
   return window.location.search;
 }
 
-export function shouldNavigateFileViewerSearch(nextSearch: string, fallbackSearch: string): boolean {
+export function shouldNavigateFileViewerSearch(nextSearch: string, fallbackSearch: string, pathname: string): boolean {
+  if (typeof window !== "undefined" && window.location.pathname !== pathname) return false;
   return nextSearch !== getCurrentFileViewerSearch(fallbackSearch);
 }
 
@@ -218,7 +219,7 @@ function EnabledFileViewerProvider({ issueId, children }: Omit<FileViewerProvide
 
   const navigateSearch = useCallback(
     (nextSearch: string, opts?: Partial<NavigateOptions>) => {
-      if (!shouldNavigateFileViewerSearch(nextSearch, location.search)) return;
+      if (!shouldNavigateFileViewerSearch(nextSearch, location.search, location.pathname)) return;
       navigate(
         { pathname: location.pathname, hash: location.hash, search: nextSearch },
         { ...FILE_VIEWER_NAVIGATE_OPTIONS, ...opts, state: location.state },
