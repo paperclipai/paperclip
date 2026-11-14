@@ -1,4 +1,5 @@
 import { expect, type Page } from "@playwright/test";
+import { deriveAgentUrlKey } from "../../../packages/shared/src/agent-url-key.js";
 import { pollUntil } from "../api.js";
 import type { ChatCatalogCase, ChatCatalogContext } from "../chat-catalog-contract.js";
 import { codexSubscriptionAgentConfig } from "../codex-subscription-fixture.js";
@@ -59,7 +60,19 @@ export async function openRuntimeAgentProfile(ctx: ChatCatalogContext, agent: Ru
   const href = o && agentLink(o, agent);
   if (href) await ctx.input.page.locator(`[id^="comment-"] a[href=${JSON.stringify(href)}]`).first().click();
   else await ctx.input.page.goto(`/${ctx.input.fixtures.company.issuePrefix}/agents/${agent.id}`, { waitUntil: "domcontentloaded" });
+  // The same route key the app's agentRouteRef chooses.
+  await settleAgentProfileRoute(ctx.input.page, agent.urlKey ?? deriveAgentUrlKey(agent.name, agent.id));
   await expect(agentProfileIdentity(ctx.input.page, agent)).toBeVisible();
+}
+/**
+ * The profile page rewrites `/agents/<id>/…` to `/agents/<urlKey>/…` with a client-side replace, which
+ * redraws the page and closes any open menu. Wait for that canonical route before using its controls.
+ */
+export async function settleAgentProfileRoute(page: Page, ref: string, options: { timeout?: number } = {}) {
+  await page.waitForURL(url => {
+    const parts = url.pathname.split("/").map(decodeURIComponent); const at = parts.indexOf("agents");
+    return at >= 0 && parts[at + 1] === ref;
+  }, options);
 }
 /**
  * The profile header's h1 is the agent's editable title (falling back to its
