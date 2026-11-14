@@ -73,6 +73,29 @@ const support = await getEmbeddedPostgresTestSupport();
     expect(await chatRunSourceMessageId(db, f.run, { allowLegacyWakeComment: true })).toBeNull();
   });
 
+  it("withholds chat tools from a same-task continuation whose ancestor carries a comment of another task", async () => {
+    const f = await fixture();
+    const [other] = await db.insert(issues).values({ companyId: f.company.id, title: "Other task" }).returning();
+    const [foreign] = await db.insert(issueComments).values({
+      companyId: f.company.id, issueId: other.id, authorType: "user", authorUserId: "requester", body: "Cross-task comment",
+    }).returning();
+    await db.update(runIdentityContexts).set({ messageId: foreign.id }).where(eq(runIdentityContexts.id, f.origin.id));
+    await expect(chatRunSourceMessageId(db, f.run, { provider: "github" })).resolves.toBeNull();
+    await expect(chatRunSourceMessageId(db, f.run)).resolves.toBe(foreign.id);
+  });
+
+  it("withholds chat tools from a same-task continuation whose ancestor links to another task's chat", async () => {
+    const f = await fixture();
+    const other = await seedGitHubReviewWait(db, { companyId: f.company.id, agentId: f.agent.id });
+    await db.update(runIdentityContexts).set({ messageId: other.commentId }).where(eq(runIdentityContexts.id, f.origin.id));
+    const [run] = await db.update(heartbeatRuns)
+      .set({ contextSnapshot: { wakeCommentId: f.messageId } })
+      .where(eq(heartbeatRuns.id, f.run.id)).returning();
+    await expect(chatRunSourceMessageId(db, run, { provider: "github" })).resolves.toBeNull();
+    await expect(chatRunSourceMessageId(db, run, { provider: "github", allowLegacyWakeComment: true }))
+      .resolves.toBe(f.messageId);
+  });
+
   it("does not borrow GitHub origin from an earlier requester after a board message", async () => {
     const f = await fixture();
     const [message] = await db.insert(issueComments).values({ companyId: f.company.id, issueId: f.issue.id, authorType: "user", authorUserId: "new-requester", body: "Continue" }).returning();
@@ -242,7 +265,20 @@ const support = await getEmbeddedPostgresTestSupport();
 
     // The states of the single-check tests above: a continuation whose
     // accepted message has no link and is not a board message.
-    states.push({ state: "continuation of an unlinked message", run: (await fixture()).run, github: { forbidden: FORBIDDEN.changed } });
+    // A foreign or unverifiable ancestor message confers no chat authority
+    // to a same-task continuation, but does not block it (#21049).
+    states.push({ state: "continuation of an unlinked message", run: (await fixture()).run, github: null });
+    const crossTask = await fixture();
+    const [crossIssue] = await db.insert(issues).values({ companyId: crossTask.company.id, title: "Other task" }).returning();
+    const [crossComment] = await db.insert(issueComments).values({
+      companyId: crossTask.company.id, issueId: crossIssue.id, authorType: "user", authorUserId: "requester", body: "Cross-task comment",
+    }).returning();
+    await db.update(runIdentityContexts).set({ messageId: crossComment.id }).where(eq(runIdentityContexts.id, crossTask.origin.id));
+    states.push({ state: "ancestor instruction with another task's comment", run: crossTask.run, github: null });
+    const crossLink = await fixture();
+    const otherChat = await seedGitHubReviewWait(db, { companyId: crossLink.company.id, agentId: crossLink.agent.id });
+    await db.update(runIdentityContexts).set({ messageId: otherChat.commentId }).where(eq(runIdentityContexts.id, crossLink.origin.id));
+    states.push({ state: "ancestor instruction linked to another task's chat", run: crossLink.run, github: null });
     for (const fault of ["task", "agent", "company", "requester", "missing-parent", "pending-parent", "pending-current", "cycle"]) {
       const f = await fixture();
       await breakInheritedAuthority(f, fault);

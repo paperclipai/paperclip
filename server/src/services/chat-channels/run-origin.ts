@@ -110,16 +110,26 @@ function* sourceMessageWalk(run: Run, options: Options & { context?: Row<"contex
     if (origin.messageId) {
       acceptedMessageSeen = true;
       if (!options.provider) return origin.messageId;
+      // A message of a continued ancestor was verified for the ancestor's own
+      // run, not this one. A message foreign to this run's task confers no
+      // chat authority here — but it does not change this run's provenance.
+      const inherited = origin.id !== active.id;
       const link = yield* read("link", { messageId: origin.messageId, companyId: run.companyId });
       if (link) {
-        if (link.issueId !== boundRunIssueId(run)) throw forbidden("Chat request belongs to another task");
+        if (link.issueId !== boundRunIssueId(run)) {
+          if (inherited) return legacyMessageId;
+          throw forbidden("Chat request belongs to another task");
+        }
         if (link.provider !== options.provider) return null;
         return origin.messageId;
       }
       const message = yield* read("boardMessage", {
         messageId: origin.messageId, companyId: run.companyId, issueId: boundRunIssueId(run) ?? NO_TASK,
       });
-      if (!run.responsibleUserId || message?.authorUserId !== run.responsibleUserId) throw forbidden("Chat requester provenance changed");
+      if (!run.responsibleUserId || message?.authorUserId !== run.responsibleUserId) {
+        if (inherited) return legacyMessageId;
+        throw forbidden("Chat requester provenance changed");
+      }
       // This verified board message may continue its same-user channel history,
       // but its own wake metadata is not the earlier channel request.
       legacyMessageId = null;
