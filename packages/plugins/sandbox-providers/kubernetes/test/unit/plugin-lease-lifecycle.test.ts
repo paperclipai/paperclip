@@ -6,7 +6,22 @@ const h = vi.hoisted(() => ({ clients: {} as Record<string, unknown> }));
 
 vi.mock("../../src/kube-client.js", () => ({
   createKubeConfig: vi.fn(() => ({})),
-  makeKubeClients: vi.fn(() => h.clients),
+  // The provider resolves the Sandbox API version through discovery before it
+  // touches the Sandbox API, so every stub gets that seam. A test that cares
+  // about the negotiated version overrides `apis` in its own `h.clients`.
+  makeKubeClients: vi.fn(() => ({
+    apis: {
+      getAPIVersions: async () => ({
+        groups: [
+          {
+            name: "agents.x-k8s.io",
+            versions: [{ groupVersion: "agents.x-k8s.io/v1beta1", version: "v1beta1" }],
+          },
+        ],
+      }),
+    },
+    ...h.clients,
+  })),
 }));
 
 import plugin from "../../src/plugin.js";

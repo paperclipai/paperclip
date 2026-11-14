@@ -90,6 +90,14 @@ export interface KubernetesLeaseMetadata {
   phase: "Pending" | "Running" | "Succeeded" | "Failed";
   /** Which backend provisioned this lease. */
   backend: "sandbox-cr" | "job";
+  /**
+   * The Sandbox API version this lease was created with, for the sandbox-cr
+   * backend. Release and destroy read it so cleanup deletes the resource with
+   * the version that created it, and does not depend on API discovery being
+   * reachable at that moment. Absent on a job-backend lease, and on a lease
+   * created before this field existed.
+   */
+  sandboxApiVersion?: string | null;
   scopedNetworkPolicyName: string | null;
   scopedNetworkEgress: {
     allowFqdns: string[];
