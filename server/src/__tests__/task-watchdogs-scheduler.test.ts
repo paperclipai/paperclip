@@ -413,6 +413,21 @@ describeEmbeddedPostgres("task watchdog scheduler", () => {
     expect(watchdogIssues).toHaveLength(0);
   });
 
+  it("starts a watchdog after a deferred wake has stopped making progress", async () => {
+    const companyId = await seedCompany();
+    const sourceId = await seedIssue(companyId, { status: "in_progress" });
+    const agentId = await seedAgent(companyId);
+    await seedWatchdog(companyId, sourceId, agentId);
+    await db.insert(agentWakeupRequests).values({ companyId, agentId,
+      status: "deferred_issue_execution", source: "assignment", triggerDetail: "system",
+      reason: "issue_assigned", payload: { issueId: sourceId },
+      requestedAt: new Date(Date.now() - 120_000), updatedAt: new Date() });
+    const { service, wakes } = createService();
+    const result = await service.reconcileTaskWatchdogs({ companyId });
+    expect(result).toMatchObject({ checked: 1, triggered: 1, live: 0 });
+    expect(wakes).toHaveLength(1);
+  });
+
   it("does not keep the source live for runs under a nested task-watchdog issue", async () => {
     const companyId = await seedCompany();
     const sourceId = await seedIssue(companyId, { identifier: "WDOG-NEST", status: "done" });

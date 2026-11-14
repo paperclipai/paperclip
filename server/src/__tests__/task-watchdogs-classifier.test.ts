@@ -56,6 +56,42 @@ describe("task watchdog subtree classifier", () => {
     });
   });
 
+  it("reports a stopped subtree after a deferred wake exceeds the handoff grace", () => {
+    const result = classify({
+      evaluatedAt: new Date("2026-06-17T20:02:00.000Z"),
+      queuedWakeRequests: [{ companyId, issueId: sourceId, agentId: "agent-1",
+        status: "deferred_issue_execution", requestedAt: new Date("2026-06-17T20:00:00.000Z") }],
+    });
+    expect(result.state).toBe("stopped");
+  });
+
+  it("keeps a recent deferred wake live during handoff", () => {
+    const result = classify({
+      evaluatedAt: new Date("2026-06-17T20:00:30.000Z"),
+      queuedWakeRequests: [{ companyId, issueId: sourceId, agentId: "agent-1",
+        status: "deferred_issue_execution", requestedAt: new Date("2026-06-17T20:00:00.000Z") }],
+    });
+    expect(result.state).toBe("live");
+  });
+
+  it("does not treat a deferred wake without an acceptance time as a live run", () => {
+    expect(classify({ queuedWakeRequests: [{ companyId, issueId: sourceId,
+      status: "deferred_issue_execution" }] }).state).toBe("stopped");
+  });
+
+  it("keeps accepted queued work live after the handoff grace expires", () => {
+    expect(classify({ evaluatedAt: new Date("2026-06-17T20:02:00.000Z"),
+      queuedWakeRequests: [{ companyId, issueId: sourceId, status: "queued",
+        requestedAt: new Date("2026-06-17T20:00:00.000Z") }] }).state).toBe("live");
+  });
+
+  it("keeps an actual run live even if an old deferred receipt remains", () => {
+    expect(classify({ evaluatedAt: new Date("2026-06-17T20:02:00.000Z"),
+      activeRuns: [{ companyId, issueId: sourceId, status: "running" }],
+      queuedWakeRequests: [{ companyId, issueId: sourceId, status: "deferred_issue_execution",
+        requestedAt: new Date("2026-06-17T20:00:00.000Z") }] }).state).toBe("live");
+  });
+
   it("treats terminal and waiting leaves as stopped work that needs verification", () => {
     const result = classify({
       issues: [

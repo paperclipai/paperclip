@@ -31,6 +31,7 @@ import { TASK_WATCHDOG_ORIGIN_KIND } from "./task-watchdog-scope.js";
 const TASK_WATCHDOG_STOP_FINGERPRINT_PREFIX = "task_watchdog_stop:";
 const TASK_WATCHDOG_SUBTREE_MAX_DEPTH = 100;
 const TASK_WATCHDOG_LIVE_RUN_STATUSES = ["queued", "running", "scheduled_retry"] as const;
+const TASK_WATCHDOG_DEFERRED_WAKE_GRACE_MS = 60_000;
 const TASK_WATCHDOG_WAKE_REQUEST_STATUSES = ["queued", "deferred_issue_execution"] as const;
 const TASK_WATCHDOG_TERMINAL_ISSUE_STATUSES = ["done", "cancelled"] as const;
 const TASK_WATCHDOG_TERMINAL_RUN_STATUSES = ["succeeded", "interrupted", "failed", "cancelled", "timed_out"] as const;
@@ -85,6 +86,7 @@ export type TaskWatchdogClassifierPath = {
   issueId: string | null;
   agentId?: string | null;
   status: string;
+  requestedAt?: Date | string | null;
 };
 
 export type TaskWatchdogClassifierWaitingPath = {
@@ -429,7 +431,12 @@ export function classifyTaskWatchdogSubtree(input: TaskWatchdogClassifierInput):
   const includedIdSet = new Set(includedIds);
   const liveIssueIds = [
     ...pathIssueIds(input.activeRuns, input.watchdog.companyId),
-    ...pathIssueIds(input.queuedWakeRequests, input.watchdog.companyId),
+    ...pathIssueIds(input.queuedWakeRequests?.filter(path => {
+      if (path.status !== "deferred_issue_execution") return true;
+      const acceptedAt = toEpochMs(path.requestedAt);
+      const now = toEpochMs(input.evaluatedAt);
+      return acceptedAt !== null && now !== null && now - acceptedAt < TASK_WATCHDOG_DEFERRED_WAKE_GRACE_MS;
+    }), input.watchdog.companyId),
   ].filter((issueId) => includedIdSet.has(issueId));
   const uniqueLiveIssueIds = [...new Set(liveIssueIds)].sort();
   if (uniqueLiveIssueIds.length > 0) {
@@ -1051,6 +1058,7 @@ export function taskWatchdogService(db: Db, deps: TaskWatchdogServiceDeps = {}) 
           companyId: agentWakeupRequests.companyId,
           agentId: agentWakeupRequests.agentId,
           status: agentWakeupRequests.status,
+          requestedAt: agentWakeupRequests.requestedAt,
           payload: agentWakeupRequests.payload,
         })
         .from(agentWakeupRequests)
@@ -1180,6 +1188,7 @@ export function taskWatchdogService(db: Db, deps: TaskWatchdogServiceDeps = {}) 
         agentId: row.agentId,
         status: row.status,
         issueId: issueIdFromWakePayload(row.payload),
+        requestedAt: row.requestedAt,
       })),
       blockers: blockerRows,
       pendingInteractions: interactionRows,
@@ -1274,7 +1283,10 @@ export function taskWatchdogService(db: Db, deps: TaskWatchdogServiceDeps = {}) 
         .from(agentWakeupRequests)
         .where(and(
           eq(agentWakeupRequests.companyId, companyId),
-          inArray(agentWakeupRequests.status, [...TASK_WATCHDOG_WAKE_REQUEST_STATUSES]),
+          or(eq(agentWakeupRequests.status, "queued"), and(
+            eq(agentWakeupRequests.status, "deferred_issue_execution"),
+            gte(agentWakeupRequests.requestedAt, new Date(Date.now() - TASK_WATCHDOG_DEFERRED_WAKE_GRACE_MS)),
+          )),
           sql`(${agentWakeupRequests.payload}->>'issueId' = ${issueId}
             OR ${agentWakeupRequests.payload}->>'taskId' = ${issueId}
             OR ${agentWakeupRequests.payload}->'_paperclipWakeContext'->>'issueId' = ${issueId}
