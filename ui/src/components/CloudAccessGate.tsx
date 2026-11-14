@@ -1,12 +1,12 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { RefreshCw } from "lucide-react";
 import { Navigate, Outlet, useLocation } from "@/lib/router";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient, type QueryClient } from "@tanstack/react-query";
 import { accessApi } from "@/api/access";
 import { ApiError } from "@/api/client";
 import { authApi } from "@/api/auth";
 import { boardAccessQueryOptions } from "@/api/board-access-query";
-import { useBootstrapQuery } from "@/api/bootstrap-query";
+import { markBootstrapSnapshotApplied, useBootstrapQuery } from "@/api/bootstrap-query";
 import { healthApi } from "@/api/health";
 import { isTemporaryApiError } from "@/api/response";
 import { useConnectivityStore } from "@/lib/connectivity";
@@ -22,6 +22,7 @@ import { clearCloudSignInAttempt } from "@/lib/cloud-sign-in";
 
 /** Poll while the server reports `starting`; outages are polled by `lib/connectivity`. */
 const SERVER_STARTING_POLL_MS = 5_000;
+const deniedBootstrapAccounts = new WeakMap<QueryClient, Map<string, object>>();
 
 export function CloudAccessError({
   temporary,
@@ -110,19 +111,54 @@ export function CloudAccessGate({ allowMembershipRequest = false }: { allowMembe
   }, [sessionQuery.data]);
 
   const sessionBootstrap = sessionQuery.isSuccess ? sessionQuery.data?.boardBootstrap : undefined;
+  const sessionUserId = sessionQuery.data?.user.id ?? null;
+  const previousSessionUserId = useRef<string | null>(null);
+  const accessError = queryClient.getQueryState([...queryKeys.access.currentBoardAccess, sessionUserId])?.error;
+  const accessDenied = (sessionUserId !== null && deniedBootstrapAccounts.get(queryClient)?.has(sessionUserId))
+    || (accessError instanceof ApiError && (accessError.status === 401 || accessError.status === 403));
   const bootstrap = sessionBootstrap?.userId === sessionQuery.data?.user.id
-    && sessionBootstrap?.boardAccess.userId === sessionQuery.data?.user.id ? sessionBootstrap : undefined;
+    && sessionBootstrap?.boardAccess.userId === sessionQuery.data?.user.id && !accessDenied ? sessionBootstrap : undefined;
   const boardAccessQuery = useBootstrapQuery({
     ...boardAccessQueryOptions(
-      sessionQuery.data?.user.id ?? null,
-      sessionQuery.data?.boardBootstrap,
+      sessionUserId,
+      bootstrap,
       sessionQuery.dataUpdatedAt,
-      () => { void queryClient.invalidateQueries({ queryKey: queryKeys.auth.session }); },
+      () => {
+        const current = queryClient.getQueryData<Awaited<ReturnType<typeof authApi.getSession>>>(queryKeys.auth.session);
+        if (current?.user.id === sessionUserId) void queryClient.invalidateQueries({ queryKey: queryKeys.auth.session });
+      },
+      () => {
+        if (!sessionUserId) return;
+        let denied = deniedBootstrapAccounts.get(queryClient);
+        if (!denied) deniedBootstrapAccounts.set(queryClient, denied = new Map());
+        denied.set(sessionUserId, {});
+      },
+      (startedSnapshot) => {
+        const denied = deniedBootstrapAccounts.get(queryClient);
+        if (!sessionUserId || !denied?.has(sessionUserId)) return;
+        const started = startedSnapshot as { bootstrap: object | undefined; denial: object | undefined };
+        if (started.denial !== denied.get(sessionUserId)) return;
+        if (started.bootstrap) markBootstrapSnapshotApplied(queryClient, [...queryKeys.access.currentBoardAccess, sessionUserId], started.bootstrap);
+        denied.delete(sessionUserId);
+      },
+      () => {
+        const current = queryClient.getQueryData<Awaited<ReturnType<typeof authApi.getSession>>>(queryKeys.auth.session);
+        const bootstrap = current?.user.id === sessionUserId && current.boardBootstrap?.userId === sessionUserId
+          && current.boardBootstrap.boardAccess.userId === sessionUserId ? current.boardBootstrap : undefined;
+        return { bootstrap, denial: sessionUserId ? deniedBootstrapAccounts.get(queryClient)?.get(sessionUserId) : undefined };
+      },
     ),
     enabled: isAuthenticatedMode && !isBootstrapPending && !!sessionQuery.data,
     retry: retryWhileTransient,
     retryDelay: reconnectDelayFor,
   }, bootstrap ? { identity: bootstrap, data: bootstrap.boardAccess, updatedAt: sessionQuery.dataUpdatedAt } : undefined);
+  useEffect(() => {
+    const previous = previousSessionUserId.current;
+    previousSessionUserId.current = sessionUserId;
+    if (!previous || previous === sessionUserId) return;
+    deniedBootstrapAccounts.get(queryClient)?.delete(previous);
+    queryClient.removeQueries({ queryKey: [...queryKeys.access.currentBoardAccess, previous], exact: true });
+  }, [queryClient, sessionUserId]);
   const claimMutation = useMutation({
     mutationFn: () => accessApi.claimBootstrapAdmin(),
     onSuccess: async () => {
@@ -142,7 +178,8 @@ export function CloudAccessGate({ allowMembershipRequest = false }: { allowMembe
   const isServerStarting = healthQuery.data?.status === "starting";
   // A background outage must not unmount editors and discard drafts. Cached
   // access is only retained for transport failures; 401/403 still fail closed.
-  const blockingError = activeQueries.find((query) => query.error && !isTemporaryApiError(query.error))?.error;
+  const blockingError = activeQueries.find((query) => query.error && !isTemporaryApiError(query.error))?.error
+    ?? (isAuthenticatedMode && !isBootstrapPending && sessionQuery.data && accessDenied ? new ApiError("Access check denied", 401, null) : null);
   // Nothing cached yet and the check is retrying a transient failure, or is
   // paused because the connectivity store has confirmed an outage.
   const isWaitingForConnection = activeQueries.some((query) => query.data === undefined
@@ -176,7 +213,8 @@ export function CloudAccessGate({ allowMembershipRequest = false }: { allowMembe
         onRetry={() => {
           connectivity.probeNow();
           for (const query of activeQueries) {
-            if (query.error || query.data === undefined || (query === healthQuery && isServerStarting)) {
+            if (query.error || query.data === undefined || (query === healthQuery && isServerStarting)
+              || (query === boardAccessQuery && accessDenied)) {
               // Skip the rest of the current backoff step: the user asked now.
               void query.refetch({ cancelRefetch: true });
             }

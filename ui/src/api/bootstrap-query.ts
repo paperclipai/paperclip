@@ -1,7 +1,13 @@
 import { useLayoutEffect } from "react";
-import { hashKey, useQuery, useQueryClient, type QueryClient, type UseQueryOptions } from "@tanstack/react-query";
+import { hashKey, useQuery, useQueryClient, type QueryClient, type QueryKey, type UseQueryOptions } from "@tanstack/react-query";
 
 const appliedSnapshots = new WeakMap<QueryClient, Map<string, object>>();
+
+export function markBootstrapSnapshotApplied(client: QueryClient, queryKey: QueryKey, identity: object) {
+  let applied = appliedSnapshots.get(client);
+  if (!applied) appliedSnapshots.set(client, applied = new Map());
+  applied.set(hashKey(queryKey), identity);
+}
 
 /** Apply each canonical session snapshot once, including when its account has cached reads. */
 export function useBootstrapQuery<TData>(
