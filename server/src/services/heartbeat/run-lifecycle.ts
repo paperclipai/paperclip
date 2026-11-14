@@ -2609,7 +2609,7 @@ export function createHeartbeatLifecycle(db: Db, dependencies: HeartbeatLifecycl
         .returning()
         .then((rows) => rows[0]);
 
-      await notifyRunDispatch(tx, { companyId: run.companyId });
+      await notifyRunDispatch(tx, { companyId: run.companyId, issueId });
       const queuedRun = await tx
         .insert(heartbeatRuns)
         .values({
