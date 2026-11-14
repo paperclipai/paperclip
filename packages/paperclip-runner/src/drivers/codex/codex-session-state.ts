@@ -161,6 +161,7 @@ export class CodexSessionState {
    * stricter consumed marker.
    */
   restartContinuationTurnId: string | null = null;
+  awaitingProviderTurn = false;
   turnStarted = false;
   readonly terminalTurns = new Map<string, string>();
   /**
@@ -217,6 +218,7 @@ export class CodexSessionState {
     codexUsageBaseline?: CodexUsageBaseline;
     dispositionOnlyRecoveryConsumed?: boolean;
     dispositionOnlyRecoveryTurnId?: string | null;
+    awaitingProviderTurn?: boolean;
     /** A recovered turn whose turn.accepted the previous controller never emitted. */
     adoptedAcceptedTurnId?: string | null;
     /** A turn the runner accepted for an earlier generation that the restore lost. */
@@ -309,6 +311,8 @@ export class CodexSessionState {
     if (this.activeTurnId && this.terminalTurns.has(this.activeTurnId)) {
       this.activeTurnId = null;
     }
+    this.awaitingProviderTurn = input.awaitingProviderTurn === true && this.activeTurnId === null
+      && this.result === null && this.terminalTurns.size > 0;
     const dispositionOnlyRecoveryPreviouslyConsumed =
       input.dispositionOnlyRecoveryConsumed ?? false;
     const dispositionOnlyRecoveryTurnId =

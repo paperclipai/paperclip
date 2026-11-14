@@ -476,6 +476,19 @@ export class CodexHarnessSession
       );
       return;
     }
+    if (this.awaitingProviderTurn && this.activeTurnId === null && !this.turnStartPending) {
+      this.emit(
+        "item.completed",
+        {
+          kind: "interrupt_acknowledgement",
+          text: "Paperclip stopped waiting for the provider's own next turn.",
+          status: "provider_turn_wait_ended",
+          reason: boundedText(input.reason),
+        },
+        { itemId: `interrupt:provider-turn-wait:${++this.interruptSequence}` },
+      );
+      return;
+    }
     if (this.terminal || this.activeTurnId === null) {
       throw new HarnessOperationAlreadyTerminalError("interruption");
     }
@@ -836,7 +849,7 @@ export class CodexHarnessSession
           ["completed", "failed", "interrupted", "cancelled"].includes(status)
         ) {
           reconciledTerminalTurnId = expectedTurnId;
-          mapTerminalTurn(this, expectedTurn, expectedTurnId, true);
+          mapTerminalTurn(this, expectedTurn, expectedTurnId, true, expectedTurn.awaitingProviderTurn === true);
         } else {
           throw new HarnessReconciliationError(
             `persisted active turn ${expectedTurnId} has unreconcilable status ${status || "missing"}`,
@@ -920,6 +933,7 @@ export class CodexHarnessSession
         this.currentGoal === null ? null : structuredClone(this.currentGoal),
       lineage: this.lineage(),
       lastSourceSequence: this.sourceSequence,
+      ...(this.awaitingProviderTurn ? { awaitingProviderTurn: true } : {}),
     };
   }
 
