@@ -43,7 +43,7 @@ function boardActor(companyId: string, userId: string): Express.Request["actor"]
 }
 
 function agentActor(companyId: string, agentId: string): Express.Request["actor"] {
-  return { type: "agent", agentId, companyId, runId: null, source: "agent_jwt" };
+  return { type: "agent", agentId, companyId, source: "agent_jwt" };
 }
 
 async function createApp(db: Db, actor: Express.Request["actor"]) {
@@ -298,6 +298,14 @@ describeEmbeddedPostgres("issue access grant and locked edge routes", { concurre
     )).get(`/api/issues/${fixture.privateChild.id}`);
     expect(deniedAfterRevoke.status).toBe(404);
     expect(deniedAfterRevoke.body.error).toBe("Issue not found");
+    // A private task and a missing one must give an agent the same final answer.
+    const missing = await request(await createApp(
+      db,
+      agentActor(fixture.companyId, fixture.assignedAgent.id),
+    )).get(`/api/issues/${randomUUID()}`);
+    expect(missing.status).toBe(404);
+    expect(deniedAfterRevoke.body).toEqual(missing.body);
+    expect(deniedAfterRevoke.body.code).toBe("issue_not_visible");
   }, 20_000);
 
   it("creates and enriches explicit grants idempotently while rejecting unauthorized and open shares", async () => {

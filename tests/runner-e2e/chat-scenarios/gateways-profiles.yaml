@@ -8,14 +8,16 @@ scenarios:
     capabilities:
       - gateways-profiles/gateway
     context: >-
-      A tool access profile exists; gateway management requires tools:admin in board context.
+      A tool access profile exists. An agent with delegated connection management may create a
+      gateway for its responsible person; otherwise gateway management requires tools:admin.
     query: >-
       Create a gateway for our website team's tools.
     expected_outcome: >-
-      The agent identifies the profile and supported gateway-management step for the authorized
-      human. The eventual endpoint references the intended profile and company. Chat does not
-      expose a token or claim that an ordinary agent can create a management endpoint merely
-      because it can use assigned tools.
+      Exactly one gateway is saved for the intended profile and company, created by the agent
+      under delegated authority or by the person after the agent hands them the step. The reply
+      or a question card links the person to the saved gateway (or to the gateways page when the
+      person creates it). Any token the agent creates has no value until the person reveals it,
+      and no token value appears in chat or run events.
   - id: gateways-profiles.define-profile
     capabilities:
       - gateways-profiles/profiles
@@ -46,15 +48,18 @@ scenarios:
     capabilities:
       - gateways-profiles/tokens
     context: >-
-      An existing gateway client token needs replacement; only authorized board management can
-      create or revoke it.
+      An existing gateway client token needs replacement. An agent with delegated connection
+      management may create and revoke gateway client tokens, but never receives a token value:
+      an agent-created token's value is revealed once to its responsible person on the gateway's
+      Tokens page.
     query: >-
       Replace the old gateway token for our test client.
     expected_outcome: >-
-      The agent directs the human through scoped token management and secure one-time delivery.
-      The test client uses the new credential and the old one is revoked at the intended point.
-      Token bytes never enter chat, and unrelated clients' credentials retain their existing
-      access.
+      The agent creates the replacement under delegated authority or leaves that step to the
+      person, and the reply or a question card links the gateway's Tokens page, where the person
+      reveals or issues the new value. The test client uses the new credential before the old
+      one is revoked, and unrelated clients keep their existing access. Token values never appear
+      in chat, run events or tool output.
   - id: gateways-profiles.inspect-gateway-error
     capabilities:
       - gateways-profiles/activity

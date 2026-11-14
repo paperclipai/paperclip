@@ -1,10 +1,10 @@
 import { createDeliveryWorkCoordinator } from "../services/delivery-work-coordinator.js";
 import { subscribeDeliveryWork, DELIVERY_QUEUES } from "../services/delivery-work-notifications.js";
 import { randomUUID } from "node:crypto";
-import { and, asc, eq } from "drizzle-orm";
+import { and, asc, eq, sql } from "drizzle-orm";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { agents, agentWakeupRequests, chatCompletionDeliveries as deliveries, chatTaskHandoffs as handoffs,
-  companies, createDb, documents, environmentLeases, heartbeatRuns, issueComments, issueRecoveryActions, issueThreadInteractions, issues } from "@paperclipai/db";
+  companies, createDb, documents, environmentLeases, executionWorkspaces, heartbeatRuns, issueComments, issueRecoveryActions, issueThreadInteractions, issues, workspaceOperations } from "@paperclipai/db";
 import { recoveryPostgresSupport as support, startRecoveryPostgres } from "./helpers/recovery-postgres.js";
 import { settleInterruptedNativeBootstrap, terminalizeLegacyExecution } from "../services/legacy-execution-recovery.js";
 import { getExecutionBlocker } from "../services/execution-blocker.js";
@@ -13,8 +13,10 @@ import { executeIssuePostCommitActions, type IssuePostCommitAction, issueService
 import { buildLowTrustSourceTrust } from "../services/source-trust.js";
 import { documentService } from "../services/documents.js";
 import { instanceSettingsService } from "../services/instance-settings.js";
-import { chatCompletionDeliveryService, isCompletedOnboardingHandoffWake, prepareChatCompletionTurn, recordChatCompletion, recordChatHandoff } from "../services/chat-completion-delivery.js";
+import { chatCompletionAlreadyReported, chatCompletionDeliveryService, isCompletedOnboardingHandoffWake, prepareChatCompletionTurn, recordChatCompletion, recordChatHandoff, recordCompletedHandoffRead } from "../services/chat-completion-delivery.js";
 import { heartbeatService, shouldQueueFollowupForRunningIssueWake } from "../services/heartbeat.js";
+import { createHeartbeatQueue } from "../services/heartbeat/queue.js";
+import { createHeartbeatQueueTestDependencies } from "./helpers/heartbeat-queue.js";
 
 (support.supported ? describe : describe.skip)("chat completion delivery", () => {
   let db: ReturnType<typeof createDb>;
@@ -52,6 +54,41 @@ import { heartbeatService, shouldQueueFollowupForRunningIssueWake } from "../ser
     };
     return { companyId, agentId, sourceId, runId, task, create, finish, rows, due, wakeup, service, run };
   }
+  it("does not report a completion again when an earlier reply read the done task and linked it", async () => {
+    const f = await seed(), identifier = `CHAT-${Math.floor(Math.random() * 1e6)}`;
+    await db.update(issues).set({ identifier }).where(eq(issues.id, f.task.id));
+    // The person's own answer woke a turn that was running when the task finished.
+    const earlierRunId = randomUUID();
+    await db.insert(heartbeatRuns).values({ id: earlierRunId, companyId: f.companyId, agentId: f.agentId, status: "running",
+      contextSnapshot: { issueId: f.sourceId, conversationSessionGeneration: 0 } });
+    await f.finish();
+    // An owner change while done advances the version without a new completion.
+    await db.update(issues).set({ statusVersion: sql`${issues.statusVersion} + 1` }).where(eq(issues.id, f.task.id));
+    const [done] = await db.select().from(issues).where(eq(issues.id, f.task.id));
+    await recordCompletedHandoffRead(db, { companyId: f.companyId, agentId: f.agentId, runId: earlierRunId, task: done });
+    // Unrelated replies from other turns come first and must not hide the report.
+    await db.insert(issueComments).values(Array.from({ length: 25 }, (_, index) => ({ companyId: f.companyId, issueId: f.sourceId,
+      authorAgentId: f.agentId, createdByRunId: f.runId, body: `Other update ${index}`, createdAt: new Date(Date.now() + 500) })));
+    const [reply] = await db.insert(issueComments).values({ companyId: f.companyId, issueId: f.sourceId, authorAgentId: f.agentId,
+      createdByRunId: earlierRunId, body: `The draft is finished: [${identifier}](/CHAT/issues/${identifier}).`, createdAt: new Date(Date.now() + 1000) }).returning();
+    const prepared = await f.run();
+    expect(chatCompletionAlreadyReported(prepared)).toBe(true);
+    expect(await f.rows()).toMatchObject([{ status: "delivered", responseCommentId: reply.id }]);
+  });
+  it("still reports a completion when the earlier reply linked the task without reading it done", async () => {
+    const f = await seed(), identifier = `CHAT-${Math.floor(Math.random() * 1e6)}`;
+    await db.update(issues).set({ identifier }).where(eq(issues.id, f.task.id));
+    const earlierRunId = randomUUID();
+    await db.insert(heartbeatRuns).values({ id: earlierRunId, companyId: f.companyId, agentId: f.agentId, status: "running",
+      contextSnapshot: { issueId: f.sourceId, conversationSessionGeneration: 0 } });
+    await f.finish();
+    // A turn that read the task while it was still in progress, then replied after it finished.
+    await db.insert(issueComments).values({ companyId: f.companyId, issueId: f.sourceId, authorAgentId: f.agentId,
+      createdByRunId: earlierRunId, body: `Morgan is working on [${identifier}](/CHAT/issues/${identifier}).`, createdAt: new Date(Date.now() + 1000) });
+    const prepared = await f.run();
+    expect(chatCompletionAlreadyReported(prepared)).toBe(false);
+    expect(prepared.contextSnapshot?.chatCompletionUpdates).toEqual([expect.objectContaining({ id: f.task.id, status: "done" })]);
+  });
   it("supplies canonical human output verdicts without copying review prose or unrelated approvals", async () => {
     const f = await seed(), reviewId = randomUUID(), revisionId = randomUUID();
     await db.insert(issueThreadInteractions).values([
@@ -67,6 +104,75 @@ import { heartbeatService, shouldQueueFollowupForRunningIssueWake } from "../ser
       recordedOutputDecisions: [{ interactionId: reviewId, outcome: "approve", target: { type: "issue_document", key: "copy", revisionId }, url: `/issues/${f.task.identifier ?? f.task.id}#interaction-${reviewId}` }],
     })]);
     expect(JSON.stringify(run.contextSnapshot?.chatCompletionUpdates)).not.toMatch(/Injected|credentials|Plan accepted|Agent approved/);
+  });
+  it("retains a distinct completion receipt behind a real dependency gate", async () => {
+    const f = await seed();
+    const blocker = await f.create();
+    await issueService(db).update(f.sourceId, { status: "blocked", blockedByIssueIds: [blocker.id] });
+    await f.finish();
+    const heartbeat = heartbeatService(db);
+    // The generic dependency signal is replaceable. The outbox's exact wake
+    // receipt is not: it needs that identity to reconcile a refused admission.
+    await heartbeat.wakeup(f.agentId, {
+      source: "automation", triggerDetail: "system", reason: "issue_continuation_needed",
+      requestedByActorType: "system", requestedByActorId: "dependency-test",
+      payload: { issueId: f.sourceId }, contextSnapshot: { issueId: f.sourceId },
+    });
+    const [delivery] = await f.rows();
+    const service = chatCompletionDeliveryService(db, heartbeat);
+    await service.deliver(delivery.id);
+    const receipts = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.companyId, f.companyId));
+    expect(receipts).toEqual(expect.arrayContaining([
+      expect.objectContaining({ idempotencyKey: `chat-completion:${delivery.id}:0`,
+        reason: "issue_dependencies_blocked", status: "skipped", runId: null,
+        payload: expect.objectContaining({ chatCompletionDeliveryIds: [delivery.id] }) }),
+    ]));
+    expect(receipts).toHaveLength(2);
+    expect(receipts.find(receipt => receipt.idempotencyKey?.startsWith("execution-wait:")))
+      .toMatchObject({ coalescedCount: 0 });
+    expect((await f.rows())[0]).toMatchObject({ attempts: 0, status: "pending", targetRunId: null, error: null });
+    expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.companyId, f.companyId))).toHaveLength(1);
+    expect(await issueService(db).getDependencyReadiness(f.sourceId)).toMatchObject({
+      isDependencyReady: false, unresolvedBlockerIssueIds: [blocker.id],
+    });
+  });
+  it("admits a saved worker completion after its owning finalize encloses the snapshot", async () => {
+    const f = await seed(), workspaceId = randomUUID(), workerRunId = randomUUID();
+    await db.update(issues).set({ responsibleUserId: "operator" }).where(eq(issues.id, f.sourceId));
+    await db.insert(executionWorkspaces).values({ id: workspaceId, companyId: f.companyId,
+      mode: "isolated_workspace", strategyType: "managed_remote", name: "Saved worker", providerType: "daytona" });
+    await db.insert(heartbeatRuns).values({ id: workerRunId, companyId: f.companyId, agentId: f.agentId,
+      status: "succeeded", contextSnapshot: { issueId: f.task.id } });
+    await db.update(issues).set({ executionWorkspaceId: workspaceId }).where(eq(issues.id, f.task.id));
+    await issueService(db).update(f.sourceId, { status: "blocked", blockedByIssueIds: [f.task.id] });
+    await db.insert(workspaceOperations).values([
+      { companyId: f.companyId, issueId: f.task.id, executionWorkspaceId: workspaceId, heartbeatRunId: workerRunId,
+        phase: "workspace_finalize", status: "succeeded", startedAt: new Date(10_000), finishedAt: new Date(12_000) },
+      { companyId: f.companyId, issueId: f.task.id, executionWorkspaceId: workspaceId, heartbeatRunId: workerRunId,
+        phase: "remote_workspace_snapshot", status: "succeeded", startedAt: new Date(10_100), finishedAt: new Date(11_900) },
+    ]);
+    await f.finish();
+    const deps = createHeartbeatQueueTestDependencies(db), issueSvc = issueService(db);
+    deps.getAgent.mockImplementation(id => db.select().from(agents).where(eq(agents.id, id)).then(rows => rows[0] ?? null));
+    deps.instanceSettings.getExperimental.mockImplementation(() => instanceSettingsService(db).getExperimental());
+    deps.issuesSvc.getDependencyReadiness.mockImplementation(issueSvc.getDependencyReadiness);
+    deps.issuesSvc.listDependencyReadiness.mockImplementation(issueSvc.listDependencyReadiness);
+    // Admit the real durable run, then hold provider dispatch at the normal drain boundary.
+    deps.getSchedulingSuppression.mockResolvedValue({ suppressed: true, reason: "task_drain" });
+    const queue = createHeartbeatQueue(db, deps);
+    const service = chatCompletionDeliveryService(db, { wakeup: queue.trackWakeup });
+    const [delivery] = await f.rows();
+    await service.deliver(delivery.id);
+    const [queued] = await f.rows();
+    expect(queued).toMatchObject({ status: "queued", attempts: 0, error: null, targetRunId: expect.any(String) });
+    const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, queued.targetRunId!));
+    expect(run).toMatchObject({ status: "queued", contextSnapshot: { issueId: f.sourceId,
+      wakeReason: "chat_task_completed", chatCompletionDeliveryIds: [delivery.id] } });
+    const prepared = await prepareChatCompletionTurn(db, run);
+    expect(prepared.contextSnapshot?.chatCompletionUpdates).toEqual([
+      expect.objectContaining({ id: f.task.id, status: "done", completedAt: expect.any(Date), url: `/issues/${f.task.identifier ?? f.task.id}` }),
+    ]);
+    expect(deps.executeRun).not.toHaveBeenCalled();
   });
   it("dispatches a committed completion without activity publication and recovers after restart", async () => {
     const f = await seed();
@@ -219,6 +325,9 @@ import { heartbeatService, shouldQueueFollowupForRunningIssueWake } from "../ser
   async function interruptedBootstrap() {
     const f = await seed(); await f.finish(); const run = await f.run();
     const interrupted = await terminalizeLegacyExecution({ db, run, status: "interrupted", patch: {
+      // The real controller claim records preparation before terminal status
+      // records completion. The delivery fixture otherwise leaves both unset.
+      executionStage: "preparing", finishedAt: new Date(),
       errorCode: "server_shutdown_interrupted", runnerProfileJson: { adapterDispatch: { adapterType: "paperclip_runner" } },
     } });
     expect(await getExecutionBlocker(db, f.companyId, f.sourceId)).toMatchObject({ runId: run.id });
@@ -267,8 +376,10 @@ import { heartbeatService, shouldQueueFollowupForRunningIssueWake } from "../ser
     expect(await settleInterruptedNativeBootstrap(db, { run, providerDispatchStarted: false })).not.toBeNull();
     expect(await issueService(db).getById(f.sourceId)).toMatchObject({ status: "blocked" });
   });
-  it.each(["provider-entered", "runtime-selected", "other-adapter", "restore-unsafe", "active-lease", "cleanup-failed", "retry-exhausted"])("retains an interrupted bootstrap hold for %s", async kind => {
+  it.each(["provider-entered", "runtime-selected", "other-adapter", "restore-unsafe", "active-lease", "cleanup-failed", "retry-exhausted", "missing-stage", "unfinished"])("retains an interrupted bootstrap hold for %s", async kind => {
     const { f, run } = await interruptedBootstrap();
+    if (kind === "missing-stage") await db.update(heartbeatRuns).set({ executionStage: null }).where(eq(heartbeatRuns.id, run.id));
+    if (kind === "unfinished") await db.update(heartbeatRuns).set({ finishedAt: null }).where(eq(heartbeatRuns.id, run.id));
     if (kind === "runtime-selected") await db.update(heartbeatRuns).set({ runtimeModeResolvedAt: new Date() }).where(eq(heartbeatRuns.id, run.id));
     if (kind === "other-adapter") await db.update(heartbeatRuns).set({ runnerProfileJson: { adapterDispatch: { adapterType: "process" } } }).where(eq(heartbeatRuns.id, run.id));
     if (kind === "restore-unsafe") await db.update(heartbeatRuns).set({ resultJson: { workspaceRestoreFailure: "restore_unsafe_archive" } }).where(eq(heartbeatRuns.id, run.id));

@@ -138,14 +138,14 @@ describeDatabase("connection install permission preservation", () => {
       await f.putInstalls([first, second, fullAccess]);
       for (const agentId of [first, second]) {
         await expect(f.decide(agentId, "send_email")).resolves.toMatchObject({ decision: "allow" });
-        await f.service.bindProfile(f.limitedProfile.id, { targetType: "agent", targetId: agentId });
+        await f.service.bindProfile(f.limitedProfile.id, { targetType: "agent", targetId: agentId, priority: 100 });
         await f.service.unbindProfile(f.appProfile.id, { targetType: "agent", targetId: agentId });
         await expect(f.decide(agentId, "read_email")).resolves.toMatchObject({ decision: "allow" });
         await expect(f.decide(agentId, "send_email")).resolves.toMatchObject({ decision: "deny", reasonCode: "deny_default" });
       }
       const priorBindings = await f.appBindings();
       const priorEvents = await f.extensions();
-      const desired = change === "adding an agent" ? [first, second, fullAccess, added]
+      const desired: string[] = change === "adding an agent" ? [first, second, fullAccess, added]
         : change === "removing an agent" ? [first, second] : [first, second, fullAccess];
 
       await f.putInstalls(desired);
@@ -191,7 +191,7 @@ describeDatabase("connection install permission preservation", () => {
       await expect(f.decide(first, "send_email")).resolves.toMatchObject({ decision: "allow", reasonCode: "allow_profile" });
       const priorBindings = await f.appBindings();
       const priorEvents = await f.extensions();
-      const desired = change === "removing an agent" ? [first] : [first, second];
+      const desired: string[] = change === "removing an agent" ? [first] : [first, second];
 
       await f.putInstalls(desired);
 

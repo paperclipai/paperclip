@@ -14,7 +14,7 @@ export async function captureTaskListQuery(db: Db, factory: ListFactory, company
     if (key === "with") return (...ctes: unknown[]) => wrap(Reflect.apply(Reflect.get(target, key), target, ctes));
     if (key !== "select" && key !== "selectDistinctOn") return Reflect.get(target, key);
     return (...fields: unknown[]) => {
-      const builder = Reflect.apply(Reflect.get(target, key), target, fields);
+      const builder = Reflect.apply(Reflect.get(target, key), target, fields) as { from: (...tables: unknown[]) => { execute: () => Promise<never>; toSQL: () => ProjectionQuery } };
       const from = builder.from.bind(builder);
       builder.from = (...tables: unknown[]) => {
         const query = from(...tables);
@@ -43,7 +43,7 @@ export async function seedTaskListProjectionFixture(db: Db, options: { count: nu
     originKind: n < options.chatCount ? "chat_channel" : "human",
     createdAt: new Date("2026-01-01T00:00:00Z"), updatedAt: new Date(Date.parse("2026-01-01T00:00:00Z") + n * 1000),
   }))).returning();
-  const [application] = await db.insert(toolApplications).values({ companyId, name: "Projection chat", type: "native" }).returning();
+  const [application] = await db.insert(toolApplications).values({ companyId, name: "Projection chat", type: "chat" }).returning();
   const [connection] = await db.insert(toolConnections).values({ companyId, applicationId: application!.id, name: "Projection chat", uid: randomUUID(), transport: "chat_sdk", connectionPurpose: "channel" }).returning();
   const [endpoint] = await db.insert(chatEndpoints).values({ companyId, connectionId: connection!.id, provider: "slack", publicId: randomUUID(), assignedAgentId: agentId, status: "active" }).returning();
   if (options.chatCount) await db.insert(chatConversations).values(records.slice(0, options.chatCount).map((issue, n) => ({ companyId, endpointId: endpoint!.id, issueId: issue.id,

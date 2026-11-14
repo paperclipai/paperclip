@@ -5,6 +5,10 @@ import type { ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+
+vi.mock("@/hooks/useCoordinatorWorkspaceEnabled", () => ({
+  useCoordinatorWorkspaceEnabled: () => ({ enabled: false, loaded: true }),
+}));
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { PropertiesPanel } from "./PropertiesPanel";
 

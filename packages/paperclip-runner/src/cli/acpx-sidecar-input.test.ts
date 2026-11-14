@@ -54,7 +54,9 @@ describe("ACPX sidecar input sequencing", () => {
         async () => {
           events.push(command);
         },
-        () => events.push(`${command}:error`),
+        () => {
+          events.push(`${command}:error`);
+        },
       );
     }
     const shutdown = pending.then(() => events.push("shutdown"));
@@ -87,7 +89,9 @@ describe("ACPX sidecar input sequencing", () => {
       async () => {
         events.push("recovered");
       },
-      () => events.push("unexpected"),
+      () => {
+        events.push("unexpected");
+      },
     );
 
     await recovered;
@@ -113,7 +117,9 @@ describe("ACPX sidecar input sequencing", () => {
       async () => {
         events.push("recovered");
       },
-      () => events.push("unexpected"),
+      () => {
+        events.push("unexpected");
+      },
     );
 
     await expect(

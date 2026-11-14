@@ -239,6 +239,7 @@ export interface ComposerDraftAttachment {
   name: string;
   size?: number;
   inline: boolean;
+  contentType?: string;
   contentPath: string;
 }
 
@@ -280,6 +281,7 @@ function draftAttachments(value: unknown): ComposerDraftAttachment[] {
       name: row.name,
       inline: row.inline,
       contentPath: row.contentPath,
+      ...(typeof row.contentType === "string" ? { contentType: row.contentType } : {}),
       ...(row.size === undefined ? {} : { size: row.size as number }),
     });
   }

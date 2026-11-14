@@ -13,6 +13,7 @@ export function continuationAnswerCommitted(interactions: ReadonlyArray<{ id?: u
 /** Run completion precedes task-lock release. Observe both before taking a
  * checkpoint, even when the terminal run status is stable across many polls. */
 export function continuationCheckpointReady(input: {
+  requireCompletedTurn?: boolean;
   issue: { status: string; executionRunId?: string | null };
   runs: ReadonlyArray<{ id: string; status: string; runtimeMode?: string }>;
   interactions: ReadonlyArray<{ id?: unknown; kind?: unknown; status?: unknown;
@@ -25,7 +26,7 @@ export function continuationCheckpointReady(input: {
     const waiting = pending.some(i => ["ask_user_questions", "request_confirmation", "request_approval"].includes(String(i.kind)));
     return input.issue.executionRunId === null && (!waiting || input.issue.status === "in_review");
   }
-  if (active.length !== 1) return false;
+  if (input.requireCompletedTurn || active.length !== 1) return false;
   const run = active[0];
   return run.status === "running" && run.runtimeMode === "native" &&
     input.issue.executionRunId === run.id && ["in_progress", "in_review"].includes(input.issue.status) &&

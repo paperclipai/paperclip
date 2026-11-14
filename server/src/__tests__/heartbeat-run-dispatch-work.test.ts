@@ -8,7 +8,7 @@ import { resolveExternalTestDatabaseUrl } from "./helpers/external-test-database
 import { issueService } from "../services/issues.js";
 import { materializeNativeProviderCapacityRetry } from "../services/native-runtime/native-provider-capacity-retry.js";
 import { agentService } from "../services/agents.js";
-import { budgetService } from "../services/budgets.js";
+import { budgetService, flushBudgetEvaluationWork } from "../services/budgets.js";
 import { heartbeatService } from "../services/heartbeat.js";
 import { createDeliveryWorkCoordinator } from "../services/delivery-work-coordinator.js";
 import { DELIVERY_QUEUES } from "../services/delivery-work-notifications.js";
@@ -72,7 +72,10 @@ describe.skipIf(!support.supported)("run dispatch production wiring (controlled 
   }
   async function quiet() {
     await heartbeat.drainActiveRunExecutions();
-    await vi.waitFor(() => expect(coordinator!.nextWakeAt()).toBeNull(), { timeout: 5_000 });
+    await vi.waitFor(() => {
+      expect(coordinator!.nextWakeAt()).toBeNull();
+      expect(idleWorkSnapshot().active).toBe(0);
+    }, { timeout: 5_000 });
     const count = reads.mock.calls.length;
     vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });
     try {
@@ -188,6 +191,7 @@ describe.skipIf(!support.supported)("run dispatch production wiring (controlled 
       provider: "fixture", biller: "fixture", model: "controlled", inputTokens: 0, outputTokens: 0,
       costCents: 125, occurredAt: new Date() }).returning();
     await budgets.evaluateCostEvent(cost);
+    await flushBudgetEvaluationWork(db, { companyId: f.companyId });
     expect((await db.select().from(companies).where(eq(companies.id, f.companyId)))[0].status).toBe("paused");
     const [queued] = await db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: f.agentId,
       status: "queued", responsibleUserId: "dispatch-user", invocationSource: "automation", contextSnapshot: {} }).returning();

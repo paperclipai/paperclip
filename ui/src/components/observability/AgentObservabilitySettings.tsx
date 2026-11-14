@@ -1,3 +1,4 @@
+import { useQueryView } from "@/components/QueryView";
 import { useEffect, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
@@ -167,6 +168,7 @@ function AgentObservabilitySettingsContainer({ companyId }: { companyId: string 
   const client = useQueryClient();
   const queryKey = ["agent-observability", companyId];
   const query = useQuery({ queryKey, queryFn: () => agentObservabilityApi.settings(companyId) });
+  const queryView = useQueryView(query);
   const [error, setError] = useState<string | null>(null);
   const [conflict, setConflict] = useState(false);
   const [resetKey, setResetKey] = useState(0);
@@ -183,10 +185,10 @@ function AgentObservabilitySettingsContainer({ companyId }: { companyId: string 
       ? { ...current, settings: { ...current.settings, lastTest: receipt } } : current);
   }, onError: reject });
   useEffect(() => { setError(null); setConflict(false); save.reset(); test.reset(); remove.reset(); }, [companyId]);
-  if (query.isPending) return <p className="text-sm text-muted-foreground">Loading agent observability…</p>;
+  if (["loading", "reconnecting"].includes(queryView.kind)) return <p className="text-sm text-muted-foreground">Loading agent observability…</p>;
   if (!query.data) return <div role="alert" className="space-y-2 text-sm"><p>Agent observability settings could not be loaded.</p><Button variant="outline" size="sm" onClick={() => void query.refetch()}>Retry</Button></div>;
   return <AgentObservabilitySettingsView key={companyId} companyId={companyId} settings={query.data.settings} canManage={query.data.canManage}
-    saving={save.isPending} removing={remove.isPending} testing={test.isPending} error={error ?? (query.isError ? "Saved settings could not be refreshed. Your draft is unchanged." : null)} conflict={conflict} resetKey={resetKey}
+    saving={save.isPending} removing={remove.isPending} testing={test.isPending} error={error ?? ((queryView.kind === "error") ? "Saved settings could not be refreshed. Your draft is unchanged." : null)} conflict={conflict} resetKey={resetKey}
     onSave={input => save.mutate(input)} onTest={() => { if (query.data.settings) test.mutate(query.data.settings.revision); }}
     onRemove={() => { if (query.data.settings) remove.mutate(query.data.settings.revision); }}
     onReload={() => { setConflict(false); setError(null); void query.refetch(); }} />;

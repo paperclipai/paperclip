@@ -132,6 +132,20 @@ function findButton(label: string): HTMLButtonElement | undefined {
   ) as HTMLButtonElement | undefined;
 }
 
+function fieldByLabel<T extends HTMLElement = HTMLInputElement>(label: string): T | null {
+  const host = [...document.querySelectorAll("label")].find((node) =>
+    node.textContent?.trim().startsWith(label),
+  );
+  return (host?.querySelector("input, select") as T | null) ?? null;
+}
+
+/** Serve each status its own rows, the way the API does. */
+function mockProposals(rows: SecretProposalView[]) {
+  mockSecretsApi.listProposals.mockImplementation(async (_companyId: string, status = "pending") =>
+    rows.filter((row) => row.status === status),
+  );
+}
+
 let activeRoot: ReturnType<typeof createRoot> | null = null;
 let activeContainer: HTMLDivElement | null = null;
 
@@ -163,8 +177,6 @@ async function renderTab(
 
 describe("ProposalsTab", () => {
   afterEach(async () => {
-    // Unmount the React root first so Radix dialog portals clean themselves up
-    // before the DOM is wiped (else jsdom throws NotFoundError on teardown).
     if (activeRoot) await act(async () => activeRoot!.unmount());
     activeContainer?.remove();
     activeRoot = null;
@@ -179,57 +191,92 @@ describe("ProposalsTab", () => {
   });
 
   it("shows a fingerprint and provenance but never the value", async () => {
-    mockSecretsApi.listProposals.mockResolvedValue([makeSecretProposal()]);
+    mockProposals([makeSecretProposal()]);
     await renderTab();
     await waitForReact(() => document.body.textContent?.includes("dev/github/token") ?? false);
 
     const text = document.body.textContent ?? "";
-    expect(text).toContain("token"); // folder-styled leaf
+    expect(text).toContain("Nothing changes until you approve.");
+    expect(text).toContain("ClaudeCoder wants to save a new secret, dev/github/token");
     expect(text).toContain("sha256:abcdef0123"); // fingerprint
     expect(text).toContain("40 bytes"); // length
-    expect(text).toContain("ClaudeCoder"); // proposer
-    expect(text).toContain("PAP-14743"); // origin issue
+    // Provenance: the task is named by its title and linked, not shown as a raw key.
+    expect(text).toContain("While working on “UI review surface”");
+    expect(text).not.toContain("PAP-14743");
+    expect(document.querySelector('a[href="/issues/PAP-14743"]')).not.toBeNull();
+    expect(text).toContain("Expires in");
     // Justification is framed as an untrusted, agent-authored claim (Q0 concern).
     expect(text).toContain("Reason given by the agent");
+    expect(text).toContain("“Need the GitHub token to open the PR.”");
     // Never renders a raw secret value.
     expect(text).not.toContain("ghp_");
   });
 
-  it("disables Approve with the authz explanation when the viewer can't approve", async () => {
-    mockSecretsApi.listProposals.mockResolvedValue([
+  it("copies the full fingerprint for comparison", async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, "clipboard", { value: { writeText }, configurable: true });
+    mockProposals([makeSecretProposal()]);
+    await renderTab();
+    await waitForReact(() => Boolean(findButton("Approve and save secret")));
+
+    const chip = [...document.querySelectorAll("button")].find((button) =>
+      button.textContent?.includes("sha256:abcdef0123"),
+    );
+    await act(async () => chip?.click());
+    await waitForReact(() => mockPushToast.mock.calls.length > 0);
+
+    expect(writeText).toHaveBeenCalledWith("sha256:abcdef0123456789abcdef");
+    expect(mockPushToast).toHaveBeenCalledWith({ title: "Fingerprint copied", tone: "success" });
+  });
+
+  it("replaces the actions with a plain sentence when the viewer can't decide", async () => {
+    mockProposals([
       makeSecretProposal({
         viewerCanApprove: false,
-        approveBlockReason: "You need secrets write to approve this.",
+        approveBlockReason: "Company admin access required",
+      }),
+      makeBindingProposal({
+        viewerCanApprove: false,
+        approveBlockReason: "agent_config:update denied",
+        secretProposalId: null,
+        secretProposalName: null,
+        secretId: "secret-1",
+        secretName: "dev/github/token",
       }),
     ]);
     await renderTab();
-    await waitForReact(() => Boolean(findButton("Approve")));
+    await waitForReact(() => document.body.textContent?.includes("dev/github/token") ?? false);
 
-    const approve = findButton("Approve");
-    expect(approve?.disabled).toBe(true);
+    const text = document.body.textContent ?? "";
+    expect(text).toContain("Only organization admins can approve or reject this.");
+    expect(text).toContain(
+      "Only people who can change DeployBot’s settings can approve or reject this.",
+    );
+    // The server's internal block reason is never shown.
+    expect(text).not.toContain("agent_config:update");
+    expect(findButton("Approve and save secret")).toBeUndefined();
+    expect(findButton("Approve access")).toBeUndefined();
+    expect(findButton("Reject")).toBeUndefined();
+    expect(fieldByLabel("Name")?.disabled).toBe(true);
   });
 
-  it("opens the secret confirm dialog with re-folder/rename and approves with overrides", async () => {
-    mockSecretsApi.listProposals.mockResolvedValue([makeSecretProposal()]);
+  it("approves a new secret with an edited name and the default vault", async () => {
+    mockProposals([makeSecretProposal()]);
     await renderTab();
-    await waitForReact(() => Boolean(findButton("Approve")));
+    await waitForReact(() => Boolean(findButton("Approve and save secret")));
 
-    await act(async () => findButton("Approve")?.click());
-    await flushReact();
-
-    const nameInput = document.getElementById("approve-name") as HTMLInputElement | null;
-    const folderInput = document.getElementById("approve-folder") as HTMLInputElement | null;
-    expect(nameInput?.value).toBe("token");
-    expect(folderInput?.value).toBe("dev/github");
-    // Dialog restates the fingerprint, never a value.
-    expect(document.body.textContent).toContain("sha256:abcdef0123");
+    const nameInput = fieldByLabel("Name");
+    expect(nameInput?.value).toBe("dev/github/token");
+    // One usable vault: nothing to choose, so no picker.
+    expect(fieldByLabel("Stored in")).toBeNull();
+    expect(document.querySelector('[role="dialog"]')).toBeNull();
 
     await act(async () => {
-      if (nameInput) setInputValue(nameInput, "client-secret");
+      if (nameInput) setInputValue(nameInput, " dev/github/client-secret/ ");
     });
     await flushReact();
 
-    await act(async () => findButton("Approve & create")?.click());
+    await act(async () => findButton("Approve and save secret")?.click());
     await waitForReact(() => mockSecretsApi.approveProposal.mock.calls.length > 0);
 
     expect(mockSecretsApi.approveProposal).toHaveBeenCalledWith("company-1", "prop-secret-1", {
@@ -239,19 +286,113 @@ describe("ProposalsTab", () => {
         providerConfigId: "vault-local",
       },
     });
+    await waitForReact(() => mockPushToast.mock.calls.length > 0);
+    expect(mockPushToast).toHaveBeenCalledWith(
+      expect.objectContaining({ title: "Secret approved", tone: "success" }),
+    );
+  });
+
+  it("won't approve a new secret without a name", async () => {
+    mockProposals([makeSecretProposal()]);
+    await renderTab();
+    await waitForReact(() => Boolean(findButton("Approve and save secret")));
+
+    await act(async () => {
+      const nameInput = fieldByLabel("Name");
+      if (nameInput) setInputValue(nameInput, "  ");
+    });
+    await flushReact();
+
+    expect(findButton("Approve and save secret")?.disabled).toBe(true);
+  });
+
+  it("lets the approver pick a vault and add a description", async () => {
+    mockProposals([makeSecretProposal()]);
+    await renderTab("company-1", [
+      providerConfigs[0],
+      { ...providerConfigs[0], id: "vault-team", displayName: "Team vault", isDefault: false },
+    ] as CompanySecretProviderConfig[]);
+    await waitForReact(() => Boolean(findButton("Approve and save secret")));
+
+    const vault = fieldByLabel<HTMLSelectElement>("Stored in");
+    expect(vault?.value).toBe("vault-local");
+    expect([...(vault?.options ?? [])].map((option) => option.textContent)).toEqual([
+      "Local default",
+      "Team vault",
+    ]);
+    await act(async () => {
+      if (vault) {
+        vault.value = "vault-team";
+        vault.dispatchEvent(new Event("change", { bubbles: true }));
+      }
+    });
+
+    // Description stays out of the way until asked for.
+    expect(fieldByLabel("Description")).toBeNull();
+    await act(async () => findButton("Add a description")?.click());
+    await flushReact();
+    await act(async () => {
+      const description = fieldByLabel("Description");
+      if (description) setInputValue(description, "Token for the release bot");
+    });
+    await flushReact();
+
+    await act(async () => findButton("Approve and save secret")?.click());
+    await waitForReact(() => mockSecretsApi.approveProposal.mock.calls.length > 0);
+
+    expect(mockSecretsApi.approveProposal).toHaveBeenCalledWith("company-1", "prop-secret-1", {
+      overrides: {
+        name: "dev/github/token",
+        description: "Token for the release bot",
+        providerConfigId: "vault-team",
+      },
+    });
+  });
+
+  it("offers the only vault as a choice when it is not the default, so it can be picked", async () => {
+    mockProposals([makeSecretProposal()]);
+    await renderTab("company-1", [
+      { ...providerConfigs[0], id: "vault-team", displayName: "Team vault", isDefault: false },
+    ] as CompanySecretProviderConfig[]);
+    await waitForReact(() => Boolean(findButton("Approve and save secret")));
+
+    const vault = fieldByLabel<HTMLSelectElement>("Stored in");
+    expect([...(vault?.options ?? [])].map((option) => [option.value, option.textContent])).toEqual([
+      ["", "Paperclip"],
+      ["vault-team", "Team vault"],
+    ]);
+    await act(async () => {
+      if (vault) {
+        vault.value = "vault-team";
+        vault.dispatchEvent(new Event("change", { bubbles: true }));
+      }
+    });
+    await act(async () => findButton("Approve and save secret")?.click());
+    await waitForReact(() => mockSecretsApi.approveProposal.mock.calls.length > 0);
+
+    expect(mockSecretsApi.approveProposal.mock.calls[0][2].overrides.providerConfigId).toBe("vault-team");
+  });
+
+  it("shows the agent's proposed description for review", async () => {
+    mockProposals([makeSecretProposal({ proposedDescription: "CI token" })]);
+    await renderTab();
+    await waitForReact(() => Boolean(findButton("Approve and save secret")));
+
+    expect(fieldByLabel("Description")?.value).toBe("CI token");
+    await act(async () => findButton("Approve and save secret")?.click());
+    await waitForReact(() => mockSecretsApi.approveProposal.mock.calls.length > 0);
+    expect(mockSecretsApi.approveProposal.mock.calls[0][2].overrides.description).toBe("CI token");
   });
 
   it("does not preselect a non-local default vault for secret approval", async () => {
-    mockSecretsApi.listProposals.mockResolvedValue([makeSecretProposal()]);
+    mockProposals([makeSecretProposal()]);
     await renderTab("company-1", [
       { ...providerConfigs[0], id: "vault-aws", provider: "aws_secrets_manager" },
       { ...providerConfigs[0], isDefault: false },
     ] as CompanySecretProviderConfig[]);
-    await waitForReact(() => Boolean(findButton("Approve")));
+    await waitForReact(() => Boolean(findButton("Approve and save secret")));
 
-    await act(async () => findButton("Approve")?.click());
-    await flushReact();
-    await act(async () => findButton("Approve & create")?.click());
+    await act(async () => findButton("Approve and save secret")?.click());
     await waitForReact(() => mockSecretsApi.approveProposal.mock.calls.length > 0);
 
     expect(mockSecretsApi.approveProposal).toHaveBeenCalledWith("company-1", "prop-secret-1", {
@@ -263,22 +404,25 @@ describe("ProposalsTab", () => {
     });
   });
 
-  it("surfaces the cascade pairing and approves the binding with cascade", async () => {
-    mockSecretsApi.listProposals.mockResolvedValue([makeBindingProposal()]);
+  it("approves access together with the new secret it depends on", async () => {
+    mockProposals([makeBindingProposal()]);
     await renderTab();
-    await waitForReact(() => Boolean(findButton("Approve")));
+    await waitForReact(() => Boolean(findButton("Approve access and save secret")));
 
-    // Row shows target, delivery + env key, and the pending-secret pill.
+    // Row says who gets what, how it is delivered, and that the secret is still new.
     const rowText = document.body.textContent ?? "";
-    expect(rowText).toContain("DeployBot");
-    expect(rowText).toContain("GITHUB_TOKEN");
-    expect(rowText).toContain("Env var");
-    expect(rowText).toContain("Proposed");
+    expect(rowText).toContain("ClaudeCoder wants DeployBot to use dev/github/token");
+    expect(rowText).toContain("DeployBot’s runs as the environment variable GITHUB_TOKEN");
+    expect(rowText).toContain("hasn’t been saved yet");
+    expect(rowText).not.toContain("env.GITHUB_TOKEN");
 
-    await act(async () => findButton("Approve")?.click());
-    await flushReact();
-    // Cascade is pre-checked because the secret is still a pending proposal.
-    await act(async () => findButton("Approve secret & bind")?.click());
+    // Saving the secret is pre-checked because access can't be approved without it.
+    const checkbox = document.querySelector(
+      '[aria-label="Also save the new secret"]',
+    ) as HTMLButtonElement | null;
+    expect(checkbox?.getAttribute("aria-checked")).toBe("true");
+
+    await act(async () => findButton("Approve access and save secret")?.click());
     await waitForReact(() => mockSecretsApi.approveProposal.mock.calls.length > 0);
 
     expect(mockSecretsApi.approveProposal).toHaveBeenCalledWith("company-1", "prop-binding-1", {
@@ -286,37 +430,178 @@ describe("ProposalsTab", () => {
     });
   });
 
-  it("requires a reason to reject", async () => {
-    mockSecretsApi.listProposals.mockResolvedValue([makeSecretProposal()]);
+  it("approves access to an existing secret without a cascade", async () => {
+    mockSecretsApi.approveProposal.mockResolvedValue(makeBindingProposal({ status: "approved" }));
+    mockProposals([
+      makeBindingProposal({
+        secretProposalId: null,
+        secretProposalName: null,
+        secretId: "secret-1",
+        secretName: "dev/stripe/key",
+        target: { id: "agent-coder", name: "ClaudeCoder", icon: "code" },
+        configPath: "access.STRIPE",
+      }),
+    ]);
+    await renderTab();
+    await waitForReact(() => Boolean(findButton("Approve access")));
+
+    const rowText = document.body.textContent ?? "";
+    expect(rowText).toContain("ClaudeCoder wants to use dev/stripe/key");
+    expect(rowText).toContain("could ask for it during a run as STRIPE");
+    expect(document.querySelector('[aria-label="Also save the new secret"]')).toBeNull();
+
+    await act(async () => findButton("Approve access")?.click());
+    await waitForReact(() => mockSecretsApi.approveProposal.mock.calls.length > 0);
+
+    expect(mockSecretsApi.approveProposal.mock.calls[0]).toEqual([
+      "company-1",
+      "prop-binding-1",
+      { cascade: undefined },
+    ]);
+    await waitForReact(() => mockPushToast.mock.calls.length > 0);
+    expect(mockPushToast).toHaveBeenCalledWith(
+      expect.objectContaining({ title: "Access approved" }),
+    );
+  });
+
+  it("tells the approver which environment variable a new secret will be read as", async () => {
+    mockProposals([makeSecretProposal(), makeBindingProposal()]);
+    await renderTab();
+    await waitForReact(() => Boolean(findButton("Approve and save secret")));
+
+    expect(document.body.textContent).toContain("Agents given access will read it as GITHUB_TOKEN.");
+    // New secrets are listed before the access requests that depend on them.
+    const rows = [...document.querySelectorAll('[data-testid^="proposal-"]')].map((row) =>
+      row.getAttribute("data-testid"),
+    );
+    expect(rows).toEqual(["proposal-prop-secret-1", "proposal-prop-binding-1"]);
+  });
+
+  it("requires a reason to reject, inline", async () => {
+    mockProposals([makeSecretProposal()]);
     await renderTab();
     await waitForReact(() => Boolean(findButton("Reject")));
 
     await act(async () => findButton("Reject")?.click());
     await flushReact();
 
-    const dialog = document.querySelector('[role="dialog"]');
-    expect(dialog).not.toBeNull();
-    const dialogReject = () =>
-      [...(dialog?.querySelectorAll("button") ?? [])].find(
-        (b) => b.textContent?.trim() === "Reject",
-      ) as HTMLButtonElement | undefined;
+    // Rejecting happens in the row, not in a dialog.
+    expect(document.querySelector('[role="dialog"]')).toBeNull();
+    const reason = () =>
+      document.querySelector('[aria-label="Reason for rejecting"]') as HTMLInputElement | null;
+    expect(reason()).not.toBeNull();
+    expect(document.body.textContent).toContain("A reason is required. It is sent to ClaudeCoder.");
+    expect(findButton("Approve and save secret")).toBeUndefined();
 
-    // The dialog's confirm button is disabled until a reason is typed.
-    const reason = dialog?.querySelector("#reject-reason") as HTMLTextAreaElement | null;
-    expect(reason).not.toBeNull();
-    expect(dialogReject()?.disabled).toBe(true);
+    // The confirm button is disabled until a reason is typed.
+    expect(findButton("Reject")?.disabled).toBe(true);
+
+    // Cancel returns to the approve/reject footer without calling the API.
+    await act(async () => findButton("Cancel")?.click());
+    await flushReact();
+    expect(reason()).toBeNull();
+    expect(findButton("Approve and save secret")).toBeDefined();
+    await act(async () => findButton("Reject")?.click());
+    await flushReact();
 
     await act(async () => {
-      if (reason) setInputValue(reason, "Not needed for this task.");
+      const input = reason();
+      if (input) setInputValue(input, "  Not needed for this task. ");
     });
     await flushReact();
 
-    expect(dialogReject()?.disabled).toBe(false);
-    await act(async () => dialogReject()?.click());
+    expect(findButton("Reject")?.disabled).toBe(false);
+    await act(async () => findButton("Reject")?.click());
     await waitForReact(() => mockSecretsApi.rejectProposal.mock.calls.length > 0);
 
     expect(mockSecretsApi.rejectProposal).toHaveBeenCalledWith("company-1", "prop-secret-1", {
       reason: "Not needed for this task.",
     });
+    await waitForReact(() => mockPushToast.mock.calls.length > 0);
+    expect(mockPushToast).toHaveBeenCalledWith(
+      expect.objectContaining({ title: "Proposal rejected", tone: "info" }),
+    );
+  });
+
+  it("shows a failed decision in the row and keeps the request open", async () => {
+    mockSecretsApi.approveProposal.mockRejectedValue(new Error("A secret with this name already exists."));
+    mockProposals([makeSecretProposal()]);
+    await renderTab();
+    await waitForReact(() => Boolean(findButton("Approve and save secret")));
+
+    await act(async () => findButton("Approve and save secret")?.click());
+    await waitForReact(() => Boolean(document.querySelector('[role="alert"]')));
+
+    expect(document.querySelector('[role="alert"]')?.textContent).toBeTruthy();
+    expect(findButton("Approve and save secret")?.disabled).toBe(false);
+    expect(mockPushToast).not.toHaveBeenCalled();
+  });
+
+  it("shows the empty state when nothing is waiting or decided", async () => {
+    mockProposals([]);
+    await renderTab();
+    await waitForReact(() => document.body.textContent?.includes("Nothing to review") ?? false);
+
+    expect(document.body.textContent).toContain(
+      "When an agent asks to save a secret or to use one, the request appears here.",
+    );
+  });
+
+  it("lists recent decisions under the pending requests, newest first", async () => {
+    mockProposals([
+      makeSecretProposal({
+        id: "done-approved",
+        status: "approved",
+        proposedName: "dev/slack/token",
+        viewerCanApprove: false,
+        resolvedByUserId: "user-raw-id-123",
+        resolvedAt: new Date(Date.now() - 2 * 3600_000).toISOString(),
+      }),
+      makeBindingProposal({
+        id: "done-rejected",
+        status: "rejected",
+        viewerCanApprove: false,
+        resolvedByUserId: "user-raw-id-123",
+        resolvedAt: new Date(Date.now() - 3600_000).toISOString(),
+        resolutionReason: "Use the shared connection.",
+      }),
+      makeSecretProposal({
+        id: "done-expired",
+        status: "expired",
+        proposedName: "dev/old/key",
+        viewerCanApprove: false,
+        resolvedAt: new Date(Date.now() - 3 * 24 * 3600_000).toISOString(),
+      }),
+    ]);
+    await renderTab();
+    await waitForReact(() => document.body.textContent?.includes("Recently decided") ?? false);
+
+    expect(mockSecretsApi.listProposals.mock.calls.map((call) => call[1]).sort()).toEqual([
+      "approved",
+      "expired",
+      "pending",
+      "rejected",
+    ]);
+    // Decided lists are asked for by decision time, so a fresh decision on an old request is in the page.
+    expect(
+      mockSecretsApi.listProposals.mock.calls.filter((call) => call[1] !== "pending").map((call) => call[2]),
+    ).toEqual([
+      { order: "resolved", limit: 10 },
+      { order: "resolved", limit: 10 },
+      { order: "resolved", limit: 10 },
+    ]);
+    expect(document.body.textContent).toContain("You’re caught up. No requests are waiting.");
+    const decided = [
+      ...document.querySelectorAll('section[aria-label="Recently decided"] li'),
+    ].map((row) => row.textContent);
+    expect(decided).toHaveLength(3);
+    expect(decided[0]).toContain("ClaudeCoder wants DeployBot to use dev/github/token");
+    expect(decided[0]).toContain("Rejected · 1h ago");
+    expect(decided[1]).toContain("ClaudeCoder wants to save a new secret, dev/slack/token");
+    expect(decided[1]).toContain("Approved · 2h ago");
+    expect(decided[2]).toContain("Expired · 3d ago");
+    // Decided rows are read-only and never show a raw user id.
+    expect(document.body.textContent).not.toContain("user-raw-id-123");
+    expect(findButton("Reject")).toBeUndefined();
   });
 });

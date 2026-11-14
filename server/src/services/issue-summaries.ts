@@ -1,3 +1,4 @@
+import { issueDisplayStatusSql } from "./issue-display-status.js";
 import { and, eq, inArray, isNull, type SQL } from "drizzle-orm";
 import { issues, type Db } from "@paperclipai/db";
 import { ISSUE_SUMMARIES_MAX_IDS } from "@paperclipai/shared";
@@ -18,6 +19,7 @@ export async function listIssueSummaries(
     title: issues.title,
     identifier: issues.identifier,
     status: issues.status,
+    displayStatus: issueDisplayStatusSql(),
     updatedAt: issues.updatedAt,
     externalConversationState: externalConversationStateSql(),
     projectId: issues.projectId,

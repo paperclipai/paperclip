@@ -315,6 +315,51 @@ remove expired requests and enforce 10 pending-consent requests per client and 1
 instance-wide, independently of further client registrations. Existing grants
 remain usable when anonymous registration or authorization is throttled.
 
+## Private Dot original-token authority
+
+`POST /mcp/runner/oauth/cloud-principal` is a machine-only Cloud-to-tenant
+identity check for the existing `assistant-connections/client-use` boundary.
+It is not an agent-facing REST/MCP tool, a consent endpoint, or a board-control
+operation. Normal hostname, runtime-claim and unclaimed-standby checks run
+before principal resolution. The route uses the same normally constructed Dot OAuth owner; an
+absent owner or current namespace fails closed.
+
+The caller needs an existing Cloud signature for the closed
+`mcp-dot:principal` action and the original Dot access token. The existing
+signature/nonce verifier applies, with at most a 60-second action lifetime.
+The request ID binds a UUID and the SHA-256 digest of this ordered, UTF-8 JSON
+field tuple:
+
+```text
+["paperclip-dot-original-principal-v1", "mcp-dot:principal", expectedInstanceId,
+ canonicalVerifiedResource, upstreamClientId, selectingUserId,
+ requestedCompanyId ?? null, accessToken]
+```
+
+This covers every accepted body field, independent of JSON property order.
+The raw request is limited to 16 KiB; compressed bodies, invalid UTF-8, malformed
+JSON and unknown fields are rejected. The resource must be the current origin's
+`/mcp/runner`. The stack, claim, instance, origin and connector identity must
+remain current before and after the OAuth call. OAuth authenticates the original
+token once and retains its client, selected user, company, purpose, scope,
+membership and feature checks. The reply contains only the checked user,
+company, grant, client, resource and agent-purpose identity. It creates no board
+actor, grant, agent binding or execution authority.
+
+The original token and signed request remain credentials. Request/response
+headers, bodies, raw buffers, query data and reflected errors must not enter
+logs on accepted or refused paths. The application uses a closed log projection
+for this reserved path, including malformed variants; operators must keep the
+same restriction at proxies. The Cloud caller requires the already verified
+current instance and HTTPS tenant route, refuses redirects, and checks the
+bounded reply and current namespace again.
+
+This private boundary does not advertise or enable a hosted Dot profile, grant
+anonymous wake authority, or change Personal MCP. Hosted discovery, wake,
+capability, operation, event, retry/reactivation and revocation lifecycles and
+Muse integration remain separate requirements. A controlled local HTTP proof
+does not establish durable Cloud server bootstrap or a deployed provider path.
+
 ## Task monitoring with MCP Events
 
 The same authenticated endpoint now supports MCP 2.0 (`2026-07-28`) alongside

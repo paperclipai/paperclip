@@ -15,7 +15,11 @@ export function taskCreatedItems(
     return [{
       id: `task-created:${task.id}`,
       kind: "task_created" as const,
-      task: { id: task.id, identifier: task.identifier, title: task.title, status: task.status },
+      // Keep every status-presentation field so the chip matches the task pane.
+      task: {
+        id: task.id, identifier: task.identifier, title: task.title, status: task.status,
+        displayStatus: task.displayStatus, externalConversationState: task.externalConversationState, blockerAttention: task.blockerAttention,
+      },
       isSubtask: task.parentId === issueId,
       timestamp: new Date(task.createdAt).toISOString(),
     }];

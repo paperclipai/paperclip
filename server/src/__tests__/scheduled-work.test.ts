@@ -28,7 +28,7 @@ function fixture(input: { routine?: number | null; monitor?: number | null; tick
     if (failRead) throw new Error("database unavailable");
     throw new Error(`Unexpected database query: ${text}`);
   });
-  const owner = installDatabaseWorkSignals({ execute, async transaction(callback: (tx: any) => Promise<any>) {
+  const owner = installDatabaseWorkSignals({ execute, async transaction<T>(callback: (tx: any) => Promise<T>): Promise<T> {
     return callback({ execute, transaction: owner.transaction });
   } });
   const errors = vi.fn();

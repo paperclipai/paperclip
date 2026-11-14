@@ -1,11 +1,13 @@
 import type { Page } from "@playwright/test";
 import { JourneyError } from "./types.js";
 
+export function isProductScreenshotUrl(value: string, origin: string): boolean {
+  const url = new URL(value);
+  return url.origin === origin && /^\/[^/]+\/(issues|search|inbox|routines|chats)(\/|$)/.test(url.pathname);
+}
+
 export async function captureProductScreenshot(page: Page, origin: string, file: string, deadlineAt = Date.now() + 10_000) {
-  const permitted = () => {
-    const url = new URL(page.url());
-    return url.origin === origin && /^\/[^/]+\/(issues|search)(\/|$)/.test(url.pathname);
-  };
+  const permitted = () => isProductScreenshotUrl(page.url(), origin);
   const timeout = (maximum: number) => {
     const remaining = deadlineAt - Date.now();
     if (remaining <= 0) throw new JourneyError("failed", "product_screen_unavailable");

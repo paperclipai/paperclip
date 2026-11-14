@@ -1,0 +1,2 @@
+CREATE INDEX CONCURRENTLY IF NOT EXISTS "heartbeat_runs_pending_budget_cancellation_idx" ON "heartbeat_runs" USING btree ("company_id") WHERE jsonb_typeof("heartbeat_runs"."result_json"->'startupCancellation'->'budgetEnforcement') = 'object'
+        and "heartbeat_runs"."result_json"->'startupCancellation'->'budgetEnforcement'->>'deliveredAt' is null;

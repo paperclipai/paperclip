@@ -5,6 +5,7 @@ import type { SkillSourceDiscoveryRequest, SkillRepositoryPackage } from '@paper
 import { skillSourcesApi } from '@/api/skillSources';
 import { queryKeys } from '@/lib/queryKeys';
 import { FileTree, buildFileTree, collectAllPaths } from '@/components/FileTree';
+import { QueryErrorState, useQueryView } from '@/components/QueryView';
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { Button } from '@/components/ui/button';
 import { Link } from '@/lib/router';
@@ -25,8 +26,9 @@ export function SkillPackagePreview({ companyId, repository, commitSha, skill, i
   const preview = useQuery({
     queryKey: [...queryKeys.skillSources.preview(companyId, repository.repositoryUrl, repository.connectionId ?? null, commitSha, skill.path, filePath), repository.packageMode ?? 'skills'],
     queryFn: () => skillSourcesApi.preview(companyId, { ...repository, commitSha: commitSha!, skillPath: skill.path, filePath: repository.packageMode === 'repository' ? repositoryFilePath : filePath }),
-    enabled: Boolean(commitSha && file), retry: false, staleTime: 5 * 60_000, refetchOnWindowFocus: false,
+    enabled: Boolean(commitSha && file), staleTime: 5 * 60_000, refetchOnWindowFocus: false,
   });
+  const previewView = useQueryView(preview);
   const githubPath = repositoryPackage ? filePath : filePath === 'SKILL.md' ? skill.path : [root, filePath].filter(Boolean).join('/');
   const githubUrl = commitSha ? `${repository.repositoryUrl}/blob/${commitSha}/${githubPath.split('/').map(encodeURIComponent).join('/')}` : repository.repositoryUrl;
   return <Dialog open onOpenChange={open => { if (!open) onClose(); }}>
@@ -65,8 +67,9 @@ export function SkillPackagePreview({ companyId, repository, commitSha, skill, i
             {file && <span className="text-muted-foreground">{file.sizeBytes.toLocaleString()} bytes{file.executable ? ' · executable' : ''}</span>}
           </div>
           <div className="max-h-(--sz-480px) min-h-40 overflow-auto p-3">
-            {preview.isFetching && <p role="status" className="text-sm text-muted-foreground">Loading preview…</p>}
-            {preview.error && <div role="alert" className="space-y-2 text-sm"><p className="text-destructive">{preview.error.message}</p><Button variant="outline" size="sm" onClick={() => void preview.refetch()}>Try again</Button> <Link to="/apps" className="underline">Manage GitHub access</Link></div>}
+            {(preview.isFetching || previewView.kind === 'reconnecting') && <p role="status" className="text-sm text-muted-foreground">Loading preview…</p>}
+            {previewView.kind === 'error' && <div className="space-y-2 text-sm"><QueryErrorState size="inline" error={preview.error} action="load the preview" onRetry={previewView.retry} retrying={previewView.isFetching} /> <Link to="/apps" className="underline">Manage GitHub access</Link></div>}
+            {skill.error && <p className="text-sm text-muted-foreground">Preview unavailable for a package that failed validation.</p>}
             {preview.data?.file.encoding === 'base64' && <div className="flex flex-col items-center gap-3 py-8 text-sm text-muted-foreground"><FileImage className="size-6" /><p>Binary asset · included without changes</p><p className="text-xs">Open on GitHub to preview or download this file.</p></div>}
             {preview.data?.content !== null && preview.data?.content !== undefined && <pre className="whitespace-pre-wrap break-words font-mono text-xs leading-relaxed">{preview.data.content}</pre>}
             {preview.data?.truncated && <p className="mt-3 text-xs text-muted-foreground">Showing the first 64 KB. The complete file is imported.</p>}

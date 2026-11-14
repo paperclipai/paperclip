@@ -20,6 +20,7 @@ export interface AutoResendOptions {
   sourceId: string;
   /** A send is waiting to be resent. */
   active: boolean;
+  /** Total unresolved writes, including an attempt currently in flight. */
   pendingCount?: number;
   /** Resend the waiting payload with its original idempotency key. */
   resend: () => Promise<SendOutcome>;
@@ -44,10 +45,10 @@ export interface AutoResendState {
  * single failed request does not always move the connectivity store). Nothing
  * is sent while the store reports an outage.
  */
-export function useAutoResend({ sourceId, active, resend, auto = true, pendingCount = 1 }: AutoResendOptions): AutoResendState {
+export function useAutoResend({ sourceId, active, resend, auto = true, pendingCount }: AutoResendOptions): AutoResendState {
   const store = useConnectivityStore();
   const online = useConnectivity().status === "online";
-  usePendingWritesReporter(sourceId, active ? pendingCount : 0);
+  usePendingWritesReporter(sourceId, pendingCount ?? (active ? 1 : 0));
 
   const resendRef = useRef(resend);
   resendRef.current = resend;
@@ -183,6 +184,7 @@ export interface DurableSubmit<T, R> {
  */
 export function useDurableSubmit<T, R>(options: DurableSubmitOptions<T, R>): DurableSubmit<T, R> {
   const { sourceId, storage = "local", autoResend = true } = options;
+  const store = useConnectivityStore();
   // Records are kept per signed-in account, so another account in this
   // browser never sees or resends them. Until the account is known nothing is
   // restored, and a send stays in memory.
@@ -203,7 +205,10 @@ export function useDurableSubmit<T, R>(options: DurableSubmitOptions<T, R>): Dur
     if (!next) setPersisted(false);
     pendingRef.current = next;
     setPendingState(next);
-  }, []);
+    // A mutation may settle before React reports its waiting state. Keep the
+    // entire keyed operation visible to reload safety between attempts.
+    store.setPendingWrites(sourceId, next ? 1 : 0);
+  }, [sourceId, store]);
 
   const loadedKey = useRef(storageKey);
   useEffect(() => {
@@ -282,6 +287,7 @@ export function useDurableSubmit<T, R>(options: DurableSubmitOptions<T, R>): Dur
   const auto = useAutoResend({
     sourceId,
     active: pending !== null && !sending,
+    pendingCount: pending ? 1 : 0,
     auto: autoResend,
     resend: async () => {
       const record = pendingRef.current;

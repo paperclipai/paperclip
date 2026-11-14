@@ -18,7 +18,9 @@ terminal tasks. Resume/restore retain the optional wake-agents checkbox.
 
 ## Resume and execution recovery
 
-Resume releases a hold. Waking agents is optional and only applies to tasks in
+Resume releases a hold. Work the pause interrupted is re-dispatched once
+automatically, under current admission gates (see `doc/execution-semantics.md`).
+Waking other agents is optional and only applies to tasks in
 `todo`, `in_progress`, or `in_review`; parked and terminal tasks stay untouched.
 The current execution-recovery policy requires verified outcomes before a stopped
 provider can restart. If any affected task still needs that reconciliation,

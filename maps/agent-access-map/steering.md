@@ -4,6 +4,12 @@ Product map: [Steering and queued messages](../feature-map/steering.md).
 
 Feature ID: `steering`.
 
+Pending agent-authored input is rechecked against current
+[interaction restrictions](../../doc/agent-interaction-permissions.md) per item,
+including when a human steers it. A denied item receives a permanent refusal;
+other allowed items retain their own authority. History and already running
+execution remain intact. Restoring a setting does not replay refused input.
+
 Review date: 2026-10-12. Source commit: `58e16dbddfc9c8d0cf60867f9d9847f0feda055b`.
 Native REST transport reconciled in this change; see the
 [shared transport contract](README.md#native-rest-transport).

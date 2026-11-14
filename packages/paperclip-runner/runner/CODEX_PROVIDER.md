@@ -29,7 +29,10 @@ execution and finalization path.
 
 The provider descriptor, Codex thread ID, account session ID, active Codex turn
 ID, and unacknowledged normalized-event prefix are written to a private,
-bounded, atomically replaced sidecar in the runner state directory. On restart,
+bounded, atomically replaced sidecar in the runner state directory. runnerd
+writes the sidecar once for the provider frames read in one poll, not once per
+frame. The write always comes before an event, a command result, or a reply to
+the provider that depends on those frames leaves runnerd. On restart,
 runnerd resumes that exact thread and reconciles the active turn from
 `thread/read`. An unexpected provider exit retains the last active turn until
 that reconciliation proves whether it is still running, so cancellation and a
