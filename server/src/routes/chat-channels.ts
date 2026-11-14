@@ -72,8 +72,16 @@ type ChatWebhookRouteOptions = {
 const CHAT_WEBHOOK_RATE_LIMIT_WINDOW_MS = 60_000;
 const CHAT_WEBHOOK_RATE_LIMIT_MAX_REQUESTS = 600;
 
+function uuidParam(req: ExpressRequest, name: string, label: string): string {
+  const value = req.params[name];
+  if (typeof value !== "string" || value !== value.trim() || !isUuidLike(value)) {
+    throw badRequest(`${label} must be a UUID`);
+  }
+  return value;
+}
+
 function endpointId(req: ExpressRequest): string {
-  return req.params.endpointId as string;
+  return uuidParam(req, "endpointId", "Chat endpoint ID");
 }
 
 function actorUserId(req: ExpressRequest): string | null {
@@ -194,7 +202,7 @@ export function chatChannelRoutes(db: Db, options: ChatChannelRouteOptions) {
 
   router.get("/companies/:companyId/chat-endpoints", managementGuard("connections:read", "GET /companies/:companyId/chat-endpoints"), async (req, res) => {
     assertBoardOrAgent(req);
-    const companyId = req.params.companyId as string;
+    const companyId = uuidParam(req, "companyId", "Company ID");
     assertCompanyAccess(req, companyId);
     res.json(await filterConnectionManagementRows(db, req, "connections:read", await service.list(companyId), row => ({ connectionId: row.connectionId, targetAgentId: row.assignedAgentId })));
   });
@@ -203,7 +211,7 @@ export function chatChannelRoutes(db: Db, options: ChatChannelRouteOptions) {
     "/companies/:companyId/chat-endpoints", managementGuard("connections:configure", "POST /companies/:companyId/chat-endpoints"),
     validate(createChatEndpointSchema),
     async (req, res) => {
-      const companyId = req.params.companyId as string;
+      const companyId = uuidParam(req, "companyId", "Company ID");
       await assertConnectionManager(req, companyId);
       assertChatProviderEnabledForCreate(req.body.provider, await instanceSettingsService(db).getExperimental());
       if (req.body.provider === "slack" && !req.body.slackSetupMethod) {
@@ -230,7 +238,7 @@ export function chatChannelRoutes(db: Db, options: ChatChannelRouteOptions) {
       bypassPermissionCheck: req.actor.type === "board" && (req.actor.source === "local_implicit" || req.actor.isInstanceAdmin === true) };
   };
   router.get("/companies/:companyId/chat-slack/setup-options", managementGuard("connections:read", "GET /companies/:companyId/chat-slack/setup-options"), async (req, res) => {
-    const companyId = req.params.companyId as string;
+    const companyId = uuidParam(req, "companyId", "Company ID");
     await assertConnectionManager(req, companyId);
     res.set("Cache-Control", "no-store");
     res.json(await service.slackRegistration.managerGrants.choices(companyId, slackActor(req)));
@@ -247,9 +255,10 @@ export function chatChannelRoutes(db: Db, options: ChatChannelRouteOptions) {
     res.json(await service.slackRegistration.managed.provision(endpointId(req), slackActor(req), req.body));
   });
   router.delete("/companies/:companyId/chat-slack/manager-grants/:grantId", managementGuard("connections:configure", "DELETE /companies/:companyId/chat-slack/manager-grants/:grantId", { slackManagerGrant: true }), async (req, res) => {
-    const companyId = req.params.companyId as string;
+    const companyId = uuidParam(req, "companyId", "Company ID");
     await assertConnectionManager(req, companyId);
-    await service.slackRegistration.managerGrants.revoke(req.params.grantId as string, companyId, slackActor(req));
+    const grantId = uuidParam(req, "grantId", "Slack manager grant ID");
+    await service.slackRegistration.managerGrants.revoke(grantId, companyId, slackActor(req));
     res.sendStatus(204);
   });
   router.get("/chat-slack/managed/oauth/callback", async (req, res) => {
@@ -533,7 +542,7 @@ export function chatChannelRoutes(db: Db, options: ChatChannelRouteOptions) {
         .json(
           await service.createLinkIntent(
             endpointId(req),
-            req.params.principalId as string,
+            uuidParam(req, "principalId", "Chat principal ID"),
             req.body.expiresInSeconds,
           ),
         );
@@ -546,7 +555,7 @@ export function chatChannelRoutes(db: Db, options: ChatChannelRouteOptions) {
       if (!(await assertEndpointManagementAccess(req, res))) return;
       await service.revokeLink(
         endpointId(req),
-        req.params.principalId as string,
+        uuidParam(req, "principalId", "Chat principal ID"),
       );
       res.status(204).end();
     },
@@ -612,7 +621,7 @@ export function chatChannelRoutes(db: Db, options: ChatChannelRouteOptions) {
       if (!(await assertEndpointManagementAccess(req, res))) return;
       await service.replayDelivery(
         endpointId(req),
-        req.params.deliveryId as string,
+        uuidParam(req, "deliveryId", "Chat delivery ID"),
       );
       res.status(204).end();
     },
@@ -624,7 +633,7 @@ export function chatChannelRoutes(db: Db, options: ChatChannelRouteOptions) {
       if (!(await assertEndpointManagementAccess(req, res))) return;
       await service.replayPublication(
         endpointId(req),
-        req.params.publicationId as string,
+        uuidParam(req, "publicationId", "Chat publication ID"),
       );
       res.status(204).end();
     },
@@ -639,7 +648,7 @@ export function chatChannelRoutes(db: Db, options: ChatChannelRouteOptions) {
       if (!userId) throw badRequest("A board user is required");
       await service.resolvePublication(
         endpointId(req),
-        req.params.publicationId as string,
+        uuidParam(req, "publicationId", "Chat publication ID"),
         req.body.action,
         userId,
         req.body.fileTransfer,
@@ -657,7 +666,7 @@ export function chatChannelRoutes(db: Db, options: ChatChannelRouteOptions) {
       if (!userId) throw badRequest("A board user is required");
       await service.resolveAction(
         endpointId(req),
-        req.params.actionId as string,
+        uuidParam(req, "actionId", "Chat action ID"),
         req.body.action,
         userId,
       );
@@ -676,7 +685,7 @@ export function chatChannelRoutes(db: Db, options: ChatChannelRouteOptions) {
           .json(
             await service.publishComment(
               endpointId(req),
-              req.params.conversationId as string,
+              uuidParam(req, "conversationId", "Chat conversation ID"),
               req.body.commentId,
             ),
           );
@@ -689,7 +698,7 @@ export function chatChannelRoutes(db: Db, options: ChatChannelRouteOptions) {
         .json(
           await service.publishBoardMessage(
             endpointId(req),
-            req.params.conversationId as string,
+            uuidParam(req, "conversationId", "Chat conversation ID"),
             req.body.body,
             req.body.idempotencyKey,
             userId,
@@ -704,7 +713,7 @@ export function chatChannelRoutes(db: Db, options: ChatChannelRouteOptions) {
     async (req, res) => {
       if (
         ![
-          endpointId(req),
+          req.params.endpointId,
           req.params.conversationId,
           req.params.publicationId,
         ].every((id) => typeof id === "string" && isUuidLike(id))
@@ -717,8 +726,8 @@ export function chatChannelRoutes(db: Db, options: ChatChannelRouteOptions) {
       res.json(
         await service.getPublicationBatchStatus(
           endpointId(req),
-          req.params.conversationId as string,
-          req.params.publicationId as string,
+          uuidParam(req, "conversationId", "Chat conversation ID"),
+          uuidParam(req, "publicationId", "Chat publication ID"),
         ),
       );
     },

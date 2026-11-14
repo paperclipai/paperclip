@@ -143,7 +143,7 @@ export function connectionManagementGuard(db: Db, purpose: "tool" | "chat" | "ai
         if (companyId && companyId !== row.companyId) throw forbidden("Resource is outside this company");
         companyId = row.companyId;
       };
-      const uuid = (value: unknown) => { if (typeof value !== "string" || !isUuidLike(value)) throw badRequest("Expected a resource identifier"); return value; };
+      const uuid = (value: unknown) => { if (typeof value !== "string" || value !== value.trim() || !isUuidLike(value)) throw badRequest("Expected a resource identifier"); return value; };
       const text = (value: unknown) => typeof value === "string" && value ? value : null;
       let connectionId = text(req.params.connectionId) ?? text(req.query.connectionId) ?? text(body.resumeConnectionId) ?? text(body.reconnectConnectionId) ?? text(body.connectionId) ?? text(req.params.poolId) ?? (operation.includes("ai-connection-pools") ? text(body.id) : null);
       let profileId = text(req.params.profileId) ?? text(req.query.profileId) ?? text(body.profileId);
