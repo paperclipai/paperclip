@@ -14,6 +14,7 @@ import {
   githubReviewPrompt,
   githubReviewConfigurationPrompt,
   githubReviewConclusion,
+  githubReviewFindingsOutsidePatch,
   githubReviewLineIsInPatch,
   githubReviewSchedulingDecision,
   matchesGitHubReviewPattern,
@@ -99,6 +100,30 @@ it("validates inline findings against the correct side of each diff hunk", () =>
   expect(githubReviewLineIsInPatch(patch, 5, "RIGHT")).toBe(false);
   expect(githubReviewLineIsInPatch(patch, 11, "RIGHT")).toBe(false);
   expect(githubReviewLineIsInPatch(undefined, 1, "RIGHT")).toBe(false);
+});
+
+it("names each inline finding that is outside the current diff", () => {
+  const patches: Record<string, string> = {
+    "src/a.ts": "@@ -4,3 +8,3 @@\n context\n-old\n+new\n context",
+  };
+  expect(
+    githubReviewFindingsOutsidePatch(
+      [
+        { path: "src/a.ts", line: 9, side: "RIGHT" },
+        { path: "src/a.ts", line: 30, side: "RIGHT" },
+        { path: "src/a.ts", line: 5, side: "RIGHT" },
+        { path: "src/big.json", line: 1, side: "RIGHT" },
+      ],
+      (path) => patches[path],
+    ),
+  ).toEqual([
+    "src/a.ts:30 (RIGHT)",
+    "src/a.ts:5 (RIGHT)",
+    "src/big.json:1 (RIGHT; GitHub returned no diff for this file)",
+  ]);
+  expect(
+    githubReviewFindingsOutsidePatch([{ path: "src/a.ts", line: 9, side: "RIGHT" }], (path) => patches[path]),
+  ).toEqual([]);
 });
 function configuration(): GitHubChatConfiguration {
   return {
