@@ -15,6 +15,7 @@ import {
   cleanupGitHubOperationLaunchers,
   prepareGitHubExecutionEnvironment,
   runAdapterExecutionTargetProcess,
+  EXECUTION_TARGET_GIT_CONTEXT_UNAVAILABLE_CODE,
 } from "./execution-target.js";
 
 const exec = promisify(execFile);
@@ -359,6 +360,38 @@ describe("managed GitHub launcher environment", () => {
     expect(env.PAPERCLIP_GIT_METADATA_ROOTS).toBe("[]");
     expect(JSON.parse(env.PAPERCLIP_RUNNER_NETWORK_ROOTS!)).not.toHaveLength(0);
     expect(fixture.runner.execute).toHaveBeenCalledWith(expect.objectContaining({ cwd: fixture.root }));
+  });
+
+  it.each([
+    [{ exitCode: 2, signal: null, timedOut: false, stdout: "" }, "the probe exited with code 2"],
+    [{ exitCode: null, signal: null, timedOut: true, stdout: "" }, "the probe timed out"],
+    [{ exitCode: null, signal: "SIGKILL", timedOut: false, stdout: "" }, "the probe was stopped by SIGKILL"],
+    [{ exitCode: null, signal: null, timedOut: false, stdout: "" }, "the probe reported no exit status"],
+    [{ exitCode: 0, signal: null, timedOut: false, stdout: "login banner only" }, "the probe output was incomplete"],
+  ])("reports an incomplete remote Git context probe with a stable code: %o", async (outcome, reason) => {
+    const fixture = await sandbox("usr/bin");
+    fixture.runner.execute.mockResolvedValue({ ...outcome, stderr: "fatal: GH_TOKEN=probe-secret /private/path",
+      pid: null, startedAt: new Date().toISOString() });
+
+    const failure = await prepareGitHubExecutionEnvironment({
+      target: fixture.target, cwd: fixture.root, env: {}, hostCredentials: false, networkAccess: true,
+    }).catch((error: unknown) => error);
+
+    expect(failure).toBeInstanceOf(Error);
+    expect(failure).toMatchObject({ code: EXECUTION_TARGET_GIT_CONTEXT_UNAVAILABLE_CODE,
+      message: `Could not read execution-target Git context: ${reason}` });
+    // The probe's output can carry credentials and paths; only exit facts are reported.
+    expect((failure as Error).message).not.toMatch(/probe-secret|private|banner/);
+  });
+
+  it("leaves a runner that cannot execute the probe with its own error", async () => {
+    const fixture = await sandbox("usr/bin");
+    const unavailable = Object.assign(new Error("Daytona exec failed"), { status: 503 });
+    fixture.runner.execute.mockRejectedValue(unavailable);
+
+    await expect(prepareGitHubExecutionEnvironment({
+      target: fixture.target, cwd: fixture.root, env: {}, hostCredentials: false, networkAccess: true,
+    })).rejects.toBe(unavailable);
   });
 
   it("reads Git metadata from the SSH workspace instead of an existing controller directory", async () => {
