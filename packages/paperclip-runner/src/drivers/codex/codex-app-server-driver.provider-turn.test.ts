@@ -114,7 +114,12 @@ describe("Codex app-server driver with provider-started turns", () => {
     const ended = await nextUntil(awaiting.events, eventType => eventType === "item.completed");
     expect(ended.filter(event => event.payload.kind === "interrupt_acknowledgement")).toHaveLength(1);
     expect(ended.at(-1)).toMatchObject({ payload: { kind: "interrupt_acknowledgement", status: "provider_turn_wait_ended", cause: "run_terminal" } });
-    await awaiting.session.close({ reason: "fixture complete" });
+    expect(await awaiting.session.snapshot()).not.toHaveProperty("awaitingProviderTurn");
+    awaiting.transport.push("paperclip/runTerminal", { [RUNNERD_RUN_TERMINAL]: true, threadId: "thread-1" });
+    awaiting.transport.push("turn/started", { threadId: "thread-1", turn: { id: "provider-1", status: "inProgress" }, origin: "provider" });
+    const afterSecond = await nextUntil(awaiting.events, eventType => eventType === "session.failed");
+    expect(afterSecond.some(event => event.payload.kind === "interrupt_acknowledgement")).toBe(false);
+    await awaiting.session.close({ reason: "fixture complete" }).catch(() => undefined);
 
     const ordinary = await completedFirstTurn(false);
     ordinary.transport.push("paperclip/runTerminal", { [RUNNERD_RUN_TERMINAL]: true, threadId: "thread-1" });

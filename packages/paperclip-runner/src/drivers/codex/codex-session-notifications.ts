@@ -156,6 +156,7 @@ async function mapNotificationBody(state: CodexSessionState, notification: Codex
     if (notification.method === "paperclip/runTerminal") {
       if ((notification.params as Record<PropertyKey, unknown>)[RUNNERD_RUN_TERMINAL] !== true) return;
       if (state.awaitingProviderTurn && state.activeTurnId === null && !state.turnStartPending) {
+        state.awaitingProviderTurn = false;
         state.emit("item.completed", {
           kind: "interrupt_acknowledgement",
           text: "The Runner ended the wait for the provider's own next turn.",
