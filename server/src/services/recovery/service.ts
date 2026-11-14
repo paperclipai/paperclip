@@ -4748,6 +4748,10 @@ export function recoveryService(
         result.continuationRequeued += 1;
         result.issueIds.push(issue.id);
       } else if ((outcome.continuationRefused || outcome.retryExhausted)
+        // LAC-6885: see the held-retry note on the continuation lane. A hold
+        // reports `retryAt` and owns its own return; escalating here would
+        // park an issue that is already coming back.
+        && outcome.retryAt === undefined
         && !(await hasActiveExecutionPath(issue.companyId, issue.id))
         && await escalateStrandedAssignedIssue({ issue, previousStatus: "in_progress", latestRun,
           notice: outcome.continuationRefused ? CONTINUATION_REFUSED_NOTICE : null })) {
@@ -5607,7 +5611,10 @@ export function recoveryService(
           continue;
         }
 
-        const reviewOutcome: { retryExhausted?: boolean } = {};
+        // Typed as the shared outcome, not `{ retryExhausted?: boolean }`: the
+        // narrow inline type is why this lane could not see `retryAt` and kept
+        // escalating held reviewer runs (LAC-6885 review round 3).
+        const reviewOutcome: StrandedRecoveryOutcome = {};
         const queued = await enqueueStrandedIssueRecovery({ onDeferredDeadline: opts?.onDeferredDeadline,
           issueId: issue.id,
           agentId: participantAgentId,
@@ -5628,6 +5635,13 @@ export function recoveryService(
           result.issueIds.push(issue.id);
         } else if (
           reviewOutcome.retryExhausted &&
+        // LAC-6885: a HELD retry is not an exhausted one. `outcome.retryAt` is
+        // written only by the network hold, and only alongside the
+        // `onDeferredDeadline` that brings this issue back, so parking it
+        // `blocked` here is the LAC-6342 harm the hold exists to prevent.
+        // Deferred, not lost: once the probe clears, the hold falls through,
+        // this returns with no `retryAt`, and the escalation happens as today.
+          reviewOutcome.retryAt === undefined &&
           !(await hasActiveExecutionPath(issue.companyId, issue.id, null))
         ) {
           // Same exhaustion as the other lanes: the reviewer run's bounded
@@ -5725,7 +5739,8 @@ export function recoveryService(
           continue;
         }
 
-        const dispatchOutcome: { retryExhausted?: boolean } = {};
+        // Shared outcome type, same reason as the review lane above.
+        const dispatchOutcome: StrandedRecoveryOutcome = {};
         const queued = await enqueueStrandedIssueRecovery({ onDeferredDeadline: opts?.onDeferredDeadline,
           issueId: issue.id,
           agentId,
@@ -5740,6 +5755,13 @@ export function recoveryService(
           result.issueIds.push(issue.id);
         } else if (
           dispatchOutcome.retryExhausted &&
+        // LAC-6885: a HELD retry is not an exhausted one. `outcome.retryAt` is
+        // written only by the network hold, and only alongside the
+        // `onDeferredDeadline` that brings this issue back, so parking it
+        // `blocked` here is the LAC-6342 harm the hold exists to prevent.
+        // Deferred, not lost: once the probe clears, the hold falls through,
+        // this returns with no `retryAt`, and the escalation happens as today.
+          dispatchOutcome.retryAt === undefined &&
           !assignedWorkSweepOwnsFailedRun(issue, latestRun, agentId) &&
           !(await hasActiveExecutionPath(issue.companyId, issue.id, null))
         ) {

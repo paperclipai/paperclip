@@ -111,7 +111,7 @@ export type AssignedWorkDeps = {
    * network that cannot reach that run's provider. Injectable for tests; the
    * default reads the run and probes.
    */
-  holdForUnreachableProvider?: (source: { companyId: string; runId: string }) => Promise<boolean>;
+  holdForUnreachableProvider?: (source: { companyId: string; runId: string; assigneeAgentId: string }) => Promise<boolean>;
   /** LAC-6885: the reachability probe itself, injectable so a test can exercise
    * the real classifier and adapter check without a DNS syscall. */
   isProviderHostReachable?: () => Promise<boolean>;
@@ -181,8 +181,9 @@ export function assignedWorkSweep(db: Db, deps: AssignedWorkDeps) {
    * The probe fails OPEN inside `createProviderHostReachabilityProbe`, so any
    * unexpected probe error repairs exactly as it does today.
    */
-  const holdForUnreachableProvider = deps.holdForUnreachableProvider ?? (async ({ companyId, runId }) => {
+  const holdForUnreachableProvider = deps.holdForUnreachableProvider ?? (async ({ companyId, runId, assigneeAgentId }) => {
     const [row] = await db.select({
+      agentId: heartbeatRuns.agentId,
       error: heartbeatRuns.error,
       resultJson: heartbeatRuns.resultJson,
       adapterType: agents.adapterType,
@@ -191,6 +192,13 @@ export function assignedWorkSweep(db: Db, deps: AssignedWorkDeps) {
       .where(and(eq(heartbeatRuns.companyId, companyId), eq(heartbeatRuns.id, runId)))
       .limit(1);
     if (!row) return false;
+    // The replacement goes to the CURRENT assignee, so only that agent's own
+    // failure may hold it. `facts.latestRun` is the task's latest run, which
+    // after a reassignment belongs to the previous agent: without this, a task
+    // moved from a DNS-failed claude_local agent to a codex_local one would sit
+    // held on an outage its new provider never saw. The same file already draws
+    // this line for `operatorStopped` (`latest.agentId === issue.assigneeAgentId`).
+    if (row.agentId !== assigneeAgentId) return false;
     if (!isHostNetworkUnreachableFailure(row)) return false;
     if (!isProbeHostRelevantToAdapter(row.adapterType)) return false;
     return !(await isProviderHostReachable());
@@ -675,7 +683,9 @@ export function assignedWorkSweep(db: Db, deps: AssignedWorkDeps) {
     // is carried by `checkIssue`'s existing `onDeferredDeadline`, so the task is
     // re-examined once the probe clears rather than being dropped (the same
     // stall the LAC-8130 fix closed on the retry side).
-    if (facts.latestRun && await holdForUnreachableProvider({ companyId: issue.companyId, runId: facts.latestRun.id })) {
+    if (facts.latestRun && issue.assigneeAgentId
+      && await holdForUnreachableProvider({ companyId: issue.companyId, runId: facts.latestRun.id,
+        assigneeAgentId: issue.assigneeAgentId })) {
       logger.info({ event: "assigned_work_invariant.provider_network_unreachable", companyId: issue.companyId,
         issueId: issue.id, runId: facts.latestRun.id, agentId: issue.assigneeAgentId,
         errorCode: PROVIDER_NETWORK_UNREACHABLE_CODE, violation: verdict.reason,

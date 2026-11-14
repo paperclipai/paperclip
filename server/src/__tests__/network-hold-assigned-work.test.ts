@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
+import { eq } from "drizzle-orm";
 import { agents, companies, createDb, heartbeatRuns, issues } from "@paperclipai/db";
 import { assignedWorkSweep } from "../services/recovery/assigned-work-sweep.js";
 import { recoveryPostgresSupport, startRecoveryPostgres } from "./helpers/recovery-postgres.js";
@@ -64,7 +65,7 @@ describePostgres("the assigned-work sweep holds its replacement while the provid
    * grace, with no successor of any kind. That is exactly the state the hold
    * leaves behind, and `evaluateAssignedWork` reads it as a violation.
    */
-  async function seed(opts: { adapterType?: string; error?: string } = {}) {
+  async function seed(opts: { adapterType?: string; error?: string; reassign?: boolean } = {}) {
     const companyId = randomUUID(), agentId = randomUUID(), issueId = randomUUID();
     await db.insert(companies).values({
       id: companyId, name: "Assigned work hold fixture", issuePrefix: `A${companyId.slice(0, 7)}`,
@@ -78,6 +79,17 @@ describePostgres("the assigned-work sweep holds its replacement while the provid
       assigneeAgentId: agentId, issueNumber: 1, identifier: `A${companyId.slice(0, 7)}-1`,
       createdAt: new Date(Date.now() - 5 * HOUR), updatedAt: new Date(Date.now() - 3 * HOUR),
     });
+    // The run below belongs to `agentId`. When `reassign` is set the task is
+    // then handed to a DIFFERENT agent on a different adapter, which is the
+    // real-world shape: a task moved off a DNS-failed Claude agent onto Codex.
+    if (opts.reassign) {
+      const secondAgentId = randomUUID();
+      await db.insert(agents).values({
+        id: secondAgentId, companyId, name: "Successor", adapterType: "codex_local",
+        status: "idle", adapterConfig: {},
+      });
+      await db.update(issues).set({ assigneeAgentId: secondAgentId }).where(eq(issues.id, issueId));
+    }
     const [run] = await db.insert(heartbeatRuns).values({
       companyId, agentId, invocationSource: "on_demand", status: "failed",
       errorCode: "adapter_failed", error: opts.error ?? OUTAGE_ERROR,
@@ -141,6 +153,18 @@ describePostgres("the assigned-work sweep holds its replacement while the provid
     // The probe is never the sole evidence: a PRIOR run must already have
     // proved the host could not reach the provider. Without this, one bad
     // probe would hold every replacement in the fleet.
+    expect(check?.outcome).not.toBe("deferred_provider_unreachable");
+    expect(enqueueWakeup).toHaveBeenCalledTimes(1);
+  });
+
+  it("control: a reassigned task is not held on the PREVIOUS assignee's outage", async () => {
+    const f = await seed({ reassign: true });
+    const { sweep, enqueueWakeup } = wiring({ reachable: false });
+
+    const check = await sweep.checkIssue({ companyId: f.companyId, issueId: f.issueId });
+
+    // The replacement goes to the new assignee, on a provider that never saw
+    // this outage. Holding it would park healthy work on an unrelated failure.
     expect(check?.outcome).not.toBe("deferred_provider_unreachable");
     expect(enqueueWakeup).toHaveBeenCalledTimes(1);
   });

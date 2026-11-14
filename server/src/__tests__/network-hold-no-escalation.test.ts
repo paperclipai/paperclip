@@ -49,7 +49,7 @@ describePostgres("a held retry defers the continuation lane instead of parking t
    * one from production, subtype and all: the CLI reports `subtype=success`
    * on an object whose `is_error` is true, and Paperclip concatenates it.
    */
-  async function seed() {
+  async function seed(opts: { status?: "todo" | "in_progress" } = {}) {
     const companyId = randomUUID(), agentId = randomUUID(), issueId = randomUUID();
     await db.insert(companies).values({
       id: companyId, name: "Network hold fixture", issuePrefix: `N${companyId.slice(0, 7)}`,
@@ -58,7 +58,7 @@ describePostgres("a held retry defers the continuation lane instead of parking t
       id: agentId, companyId, name: "Builder", adapterType: "claude_local", status: "idle", adapterConfig: {},
     });
     await db.insert(issues).values({
-      id: issueId, companyId, title: "Held by a dead network", status: "in_progress", assigneeAgentId: agentId,
+      id: issueId, companyId, title: "Held by a dead network", status: opts.status ?? "in_progress", assigneeAgentId: agentId,
       issueNumber: 1, identifier: `N${companyId.slice(0, 7)}-1`,
       createdAt: new Date(Date.now() - 5 * HOUR), updatedAt: new Date(Date.now() - 3 * HOUR),
     });
@@ -145,6 +145,27 @@ describePostgres("a held retry defers the continuation lane instead of parking t
     expect(await statusOf(f.issueId)).toBe("in_progress");
     expect(result.escalated).toBe(0);
     expect(deadlines).toHaveLength(1);
+  });
+
+  /**
+   * The SECOND lane, found by Greptile at `7829853892`. `reconcileStrandedAssignedIssues`
+   * has four arms that escalate on a spent budget, and the LAC-8130 fix guarded
+   * exactly one of them. The other three declared their own narrow
+   * `{ retryExhausted?: boolean }` outcome instead of `StrandedRecoveryOutcome`,
+   * so they could not see `retryAt` even in principle. All four are guarded now.
+   *
+   * This drives the assignment-dispatch arm (a `todo` task whose dispatch was
+   * lost). The review-participant arm takes the identical guard; it needs a
+   * seeded execution-review stage to reach, so it is covered by inspection
+   * rather than by this case, and that is said plainly rather than implied.
+   */
+  it("holds the assignment-dispatch lane too, not only the continuation lane", async () => {
+    const f = await seed({ status: "todo" });
+    const { recovery, deadlines } = wiring({ held: true, exhausted: true });
+
+    await sweep(recovery, f.companyId, f.issueId, deadlines);
+
+    expect(await statusOf(f.issueId)).toBe("todo");
   });
 
   it("control: the same lane with no hold still parks the issue, so the cases above are not passing vacuously", async () => {
