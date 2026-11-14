@@ -117,6 +117,7 @@ export const pluginToolDeclarationSchema = z.object({
   displayName: z.string().min(1),
   description: z.string().min(1),
   parametersSchema: jsonSchemaSchema,
+  riskLevel: z.enum(["read", "write", "destructive"]).optional(),
 });
 
 const pluginEnvironmentTemplateConfigFieldSchema = z.string()

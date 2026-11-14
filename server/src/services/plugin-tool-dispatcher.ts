@@ -26,6 +26,7 @@ import type { Db } from "@paperclipai/db";
 import type {
   PaperclipPluginManifestV1,
   PluginRecord,
+  PluginToolDeclaration,
 } from "@paperclipai/shared";
 import type { ToolRunContext, ToolResult } from "@paperclipai/plugin-sdk";
 import type { PluginWorkerManager } from "./plugin-worker-manager.js";
@@ -62,6 +63,7 @@ export interface AgentToolDescriptor {
   parametersSchema: Record<string, unknown>;
   /** The plugin that provides this tool. */
   pluginId: string;
+  riskLevel?: PluginToolDeclaration["riskLevel"];
 }
 
 /**
@@ -285,6 +287,7 @@ export function createPluginToolDispatcher(
       description: tool.description,
       parametersSchema: tool.parametersSchema,
       pluginId: tool.pluginDbId,
+      ...(tool.riskLevel ? { riskLevel: tool.riskLevel } : {}),
     };
   }
 
