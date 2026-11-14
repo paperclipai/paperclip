@@ -23,6 +23,10 @@ export class ClaudeToolUseAdmission {
     this.#wake();
   }
 
+  hasRoomForAnotherTurn(): boolean {
+    return this.#admitted.size + MAX_TURN_ANNOUNCEMENTS <= MAX_ADMITTED_TOOL_USES;
+  }
+
   endTurn(turnId: string): void {
     if (this.#turnId !== turnId) return;
     this.#turnId = null;

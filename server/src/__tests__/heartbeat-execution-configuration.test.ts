@@ -25,7 +25,7 @@ import * as assignedMcp from "../services/native-runtime/assigned-mcp-tools.js";
 import * as sentry from "../sentry.js";
 import { waitForPendingRunFailureReports } from "../services/run-failure-report.js";
 import { recoveryPostgresSupport, startRecoveryPostgres } from "./helpers/recovery-postgres.js";
-import { selectHeartbeatEnvironment, type HeartbeatEnvironmentSelectionInput } from "../services/heartbeat/environment-selection.js";
+import { selectHeartbeatEnvironment, resolveSshAuthenticationBeforeRouting, type HeartbeatEnvironmentSelectionInput } from "../services/heartbeat/environment-selection.js";
 import { environmentService } from "../services/environments.js";
 import { executionWorkspaceService } from "../services/execution-workspaces.js";
 import { buildExecutionWorkspaceAdapterConfig } from "../services/execution-workspace-policy.js";
@@ -40,6 +40,21 @@ function deferred<T>() {
 
 const skillFailures = vi.hoisted(() => new Map<string, string>());
 const skillWaits = vi.hoisted(() => new Map<string, () => Promise<void>>());
+
+describe("SSH authentication before account routing", () => {
+  it.each([
+    { agentDefaultEnvironmentId: "agent", lowTrustIssueEnvironmentId: null, executionMode: "any", expectedId: "agent", expected: "host" },
+    { agentDefaultEnvironmentId: null, lowTrustIssueEnvironmentId: null, executionMode: "any", expectedId: "instance", expected: "host" },
+    { agentDefaultEnvironmentId: "agent", lowTrustIssueEnvironmentId: "sandbox", executionMode: "any", expectedId: "sandbox", expected: null },
+    { agentDefaultEnvironmentId: "agent", lowTrustIssueEnvironmentId: null, executionMode: "kubernetes", expectedId: null, expected: null },
+  ] as const)("honors environment precedence and forced execution policy: %j", async value => {
+    const get = vi.fn(async () => ({ defaultEnvironmentId: "instance", general: { executionMode: value.executionMode } }));
+    const getById = vi.fn(async (id: string) => ({ id, driver: id === "sandbox" ? "sandbox" : "ssh", config: {} } as Environment));
+    expect(await resolveSshAuthenticationBeforeRouting({ ...value, instanceSettings: { get }, environmentsSvc: { getById } })).toBe(value.expected);
+    if (value.expectedId) expect(getById).toHaveBeenCalledExactlyOnceWith(value.expectedId);
+    else expect(getById).not.toHaveBeenCalled();
+  });
+});
 
 describe("Runner home mode during recovery preparation", () => {
   const fingerprint = (effectiveAdapterConfig: Record<string, unknown>) => buildEffectiveRunSessionConfigMetadata({
@@ -333,7 +348,7 @@ describePostgres("heartbeat execution configuration through adapter dispatch", (
     }
   });
 
-  async function configuration(f: Awaited<ReturnType<typeof seed>>, config: Record<string, unknown>, snapshot: Record<string, unknown> = {}, type = "paperclip_runner", explicitTaskDirectory = false, requestedExecutionWorkspaceMode: HeartbeatExecutionConfigurationInput["policy"]["requestedExecutionWorkspaceMode"] = "shared_workspace", selectedEnvironmentForConfig: HeartbeatExecutionConfigurationInput["environment"]["selectedEnvironmentForConfig"] = null, pinnedSkillTest?: HeartbeatExecutionConfigurationInput["task"]["pinnedSkillTest"], adoptingLiveRunner = false) {
+  async function configuration(f: Awaited<ReturnType<typeof seed>>, config: Record<string, unknown>, snapshot: Record<string, unknown> = {}, type = "paperclip_runner", explicitTaskDirectory = false, requestedExecutionWorkspaceMode: HeartbeatExecutionConfigurationInput["policy"]["requestedExecutionWorkspaceMode"] = "shared_workspace", selectedEnvironmentForConfig: HeartbeatExecutionConfigurationInput["environment"]["selectedEnvironmentForConfig"] = null, pinnedSkillTest?: HeartbeatExecutionConfigurationInput["task"]["pinnedSkillTest"], adoptingLiveRunner = false, aiBinding?: HeartbeatExecutionConfigurationInput["config"]["aiBinding"]) {
     const [agent] = await db.update(agents).set({ adapterType: type, adapterConfig: config }).where(eq(agents.id, f.agentId)).returning();
     const [run] = await db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: f.agentId, issueId: f.issueId, scopeKind: "issue", status: "running", contextSnapshot: snapshot }).returning();
     const resolvedInstanceSettings = await instanceSettingsService(db).get();
@@ -344,7 +359,7 @@ describePostgres("heartbeat execution configuration through adapter dispatch", (
       task: { issueId: f.issueId, context: { ...snapshot, issueId: f.issueId }, responsibleUserId: null, pinnedSkillTest, adoptingLiveRunner,
         acceptedPlanContinuationWake: false, acceptedPlanWakeRoutingDecision: null,
         taskProjectContext: null, routineEnvContext: { routineId: null, env: null, responsibleUserId: null } },
-      config: { sourceWorkspaceConfig: config, aiBinding: undefined },
+      config: { sourceWorkspaceConfig: config, aiBinding },
       policy: { trustPreset: { kind: "standard", preset: "standard", boundary: null, sourcePresets: {} }, useIsolatedTaskDirectory: false, explicitTaskDirectory, requestedExecutionWorkspaceMode },
       environment: { selectedEnvironmentId: environment.id, selectedEnvironmentForConfig: environment,
         resolvedInstanceSettings, persistedNativeExecutionInput: adoptingLiveRunner
@@ -355,6 +370,46 @@ describePostgres("heartbeat execution configuration through adapter dispatch", (
       onFailureSecretsResolved: () => {}, onManagedAiRuntimeAcquired: () => {}, onIdentityRedactorPrepared: () => {},
     }) };
   }
+
+  it.each([undefined, true, false])("defaults existing SSH environments to remote authentication and honors the saved choice (saved=%s)", async useHostAuth => {
+    const f = await seed(true);
+    const environment = { ...await environmentService(db).ensureLocalEnvironment(), driver: "ssh", config: { ...(useHostAuth !== undefined ? { useHostAuth } : {}), host: "fixture.invalid", username: "fixture", remoteWorkspacePath: "/workspace" } } as Environment;
+    const binding = aiConnectionBindingSchema.parse((await db.select().from(agents).where(eq(agents.id, f.agentId)))[0]!.runtimeConfig!.aiConnection);
+    const prepare = vi.spyOn(aiRuntime, "prepareManagedAiRuntime").mockRejectedValue(new Error("fixture managed account reached"));
+    const opening = await configuration(f, { provider: "codex" }, {}, "paperclip_runner", false, "shared_workspace", environment, undefined, false, binding);
+    if (useHostAuth !== false) {
+      const result = await opening.prepare();
+      expect(result.prepared).toBe(true);
+      if (!result.prepared) throw new Error("SSH configuration failed");
+      expect(result.runtimeConfig.homeMode).toBe("preconfigured");
+      expect(prepare).not.toHaveBeenCalled();
+    } else {
+      await expect(opening.prepare()).rejects.toThrow("fixture managed account reached");
+      expect(prepare).toHaveBeenCalledOnce();
+    }
+  });
+
+  it.each([
+    { provider: "opencode", model: "openai/gpt-5" },
+    { provider: "acpx", acpxAgent: "copilot", model: "gpt-5.6-luna" },
+    { provider: "acpx", acpxAgent: "claude", model: "claude-sonnet-4-6", acpxPermissionMode: "approve-reads" },
+  ])("keeps native SSH provider home support during preparation: $provider $acpxAgent", async config => {
+    const f = await seed();
+    const environment = { ...await environmentService(db).ensureLocalEnvironment(), driver: "ssh", config: {
+      host: "fixture.invalid", username: "fixture", remoteWorkspacePath: "/workspace",
+    } } as Environment;
+    const opening = await configuration(f, config, {}, "paperclip_runner", false, "shared_workspace", environment);
+    const result = await opening.prepare();
+    if (!result.prepared) throw new Error("SSH preparation failed");
+    expect(result.runtimeConfig.homeMode).toBe("isolated");
+  });
+
+  it("requires an agent AI account for a new SSH environment when remote authentication is off", async () => {
+    const f = await seed();
+    const environment = { ...await environmentService(db).ensureLocalEnvironment(), driver: "ssh", config: { useHostAuth: false } } as Environment;
+    const opening = await configuration(f, { provider: "codex" }, {}, "paperclip_runner", false, "shared_workspace", environment);
+    await expect(opening.prepare()).rejects.toMatchObject({ resultJson: { configurationIncomplete: { reason: "ssh_ai_connection_required" } } });
+  });
 
   it("delivers the Studio pin instead of ordinary assignments and recovers that exact native selection", async () => {
     const f = await seed(), skills = companySkillService(db);

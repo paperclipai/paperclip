@@ -40,6 +40,7 @@
         "session.goal.get",
         "session.goal.set",
         "session.goal.clear",
+        "session.provider_turn",
         "session.suspend",
         "session.close"
       ]
@@ -51,6 +52,7 @@
         "runtime.permission_requested",
         "runtime.input_requested",
         "runtime.tool_called",
+        "runtime.turn_started",
         "runtime.turn_terminal",
         "runtime.process",
         "runtime.diagnostic",
@@ -81,6 +83,10 @@
         {
           "if": { "properties": { "command": { "const": "turn.steer" } } },
           "then": { "properties": { "params": { "$ref": "#/$defs/turnControl" } } }
+        },
+        {
+          "if": { "properties": { "command": { "const": "session.provider_turn" } } },
+          "then": { "properties": { "params": { "$ref": "#/$defs/providerTurnArming" } } }
         },
         {
           "if": { "properties": { "command": { "const": "session.open" } } },
@@ -249,6 +255,10 @@
           "then": { "properties": { "payload": { "type": "object", "properties": { "cost": { "$ref": "#/$defs/usageCost" } } } } }
         },
         {
+          "if": { "properties": { "eventType": { "const": "runtime.turn_terminal" } } },
+          "then": { "properties": { "payload": { "type": "object", "properties": { "backgroundTasks": { "$ref": "#/$defs/backgroundTasks" } } } } }
+        },
+        {
           "if": { "properties": { "eventType": { "const": "runtime.rich_event" } } },
           "then": {
             "properties": {
@@ -257,8 +267,62 @@
               "payload": { "$ref": "#/$defs/richEvent" }
             }
           }
+        },
+        {
+          "if": { "properties": { "eventType": { "const": "runtime.turn_started" } } },
+          "then": {
+            "properties": {
+              "runId": { "type": "string" },
+              "turnId": { "type": "string" },
+              "payload": { "$ref": "#/$defs/providerTurnStarted" }
+            }
+          }
+        },
+        {
+          "if": { "properties": { "eventType": { "const": "runtime.diagnostic" }, "payload": {
+            "type": "object",
+            "properties": { "code": { "const": "ACPX_PROVIDER_PROCESS_LOST" } },
+            "required": ["code"]
+          } } },
+          "then": { "properties": { "payload": { "$ref": "#/$defs/providerTurnLost" } } }
         }
       ]
+    },
+    "providerTurnArming": {
+      "description": "runnerd arms or disarms adoption of Claude's next own cycle. Arming names the completed terminal that reported live background tasks; the sidecar adopts a cycle only while armed and replies whether it is armed.",
+      "type": "object",
+      "required": ["turnId", "armed"],
+      "properties": {
+        "turnId": { "type": "string", "maxLength": 240, "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$" },
+        "armed": { "type": "boolean" }
+      },
+      "additionalProperties": false
+    },
+    "providerTurnLost": {
+      "description": "runtime.diagnostic payload the sidecar sends when the provider exits while runnerd is armed for a provider-started turn. runnerd stops awaiting and releases the run.terminal it held back.",
+      "type": "object",
+      "required": ["code", "message"],
+      "properties": {
+        "code": { "const": "ACPX_PROVIDER_PROCESS_LOST" },
+        "message": { "type": "string", "maxLength": 8192 }
+      },
+      "additionalProperties": false
+    },
+    "providerTurnStarted": {
+      "description": "Claude began its own cycle with no prompt in flight. runnerd admits it only while it awaits a provider-started turn.",
+      "type": "object",
+      "required": ["origin"],
+      "properties": { "origin": { "const": "provider" } },
+      "additionalProperties": false
+    },
+    "backgroundTasks": {
+      "description": "Claude's live background tasks, carried on a completed runtime.turn_terminal payload and on a session.snapshot result taken with no active turn. The sidecar sends it only when it knows the count. An absent value means unknown, and runnerd then restarts the provider as before. runnerd keeps the provider between turns only for exactly {\"live\": 0}.",
+      "type": "object",
+      "properties": {
+        "live": { "type": "integer", "minimum": 0, "maximum": 9007199254740991 }
+      },
+      "required": ["live"],
+      "additionalProperties": false
     },
     "usageCost": {
       "description": "Provider cost is session-cumulative unless basis explicitly identifies a complete turn total. A turn total is never a session counter.",
