@@ -5,8 +5,6 @@ import { expect, it, vi } from "vitest";
 import { runChildProcess } from "@paperclipai/adapter-utils/server-utils";
 import { createPromptContextFixture } from "@paperclipai/adapter-utils/test-fixtures/prompt-context";
 
-// Fail the run after the sandbox stage, in the setup before the run's restoring
-// `finally`. Everything else, including the sandbox stage, is real.
 vi.mock("@paperclipai/adapter-utils/execution-target", async (importActual) => ({
   ...(await importActual<typeof import("@paperclipai/adapter-utils/execution-target")>()),
   startAdapterExecutionTargetPaperclipBridge: async () => {

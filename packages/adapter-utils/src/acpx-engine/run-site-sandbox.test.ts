@@ -357,9 +357,6 @@ describe("sandbox run site", () => {
   });
 });
 
-// The host-side workspace baseline of a staged runtime is a disk-backed
-// directory under the temp dir. These cases stage for real through a local
-// sandbox runner and count the baselines left behind.
 describe("sandbox run site host workspace baseline", () => {
   async function withStagedWorkspace(
     run: (input: {
@@ -429,7 +426,6 @@ describe("sandbox run site host workspace baseline", () => {
   });
 
   it("releases the baseline when the seam stages without a teardown", async () => {
-    // The shape a seam returns when it has no managed home to stage.
     await withStagedWorkspace(async ({ stage, baselines }) => {
       const { site } = makeSite({
         stage,

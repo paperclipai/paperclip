@@ -5,8 +5,6 @@ import { expect, it, vi } from "vitest";
 import { runChildProcess } from "@paperclipai/adapter-utils/server-utils";
 import { createPromptContextFixture } from "@paperclipai/adapter-utils/test-fixtures/prompt-context";
 
-// Fail the run after the sandbox stage, in the setup before the run's restoring
-// `finally`. Everything else, including the sandbox stage, is real.
 vi.mock("@paperclipai/adapter-utils/execution-target", async (importActual) => ({
   ...(await importActual<typeof import("@paperclipai/adapter-utils/execution-target")>()),
   startAdapterExecutionTargetPaperclipBridge: async () => {
@@ -16,8 +14,6 @@ vi.mock("@paperclipai/adapter-utils/execution-target", async (importActual) => (
 
 import { execute } from "./execute.js";
 
-// The CLI engine fails in its own setup; the ACP engine takes the shared ACPX
-// sandbox lane, which Kimi stages without a managed-home seam.
 it.each(["cli", "acp"] as const)("releases the host workspace baseline when the %s run fails after the sandbox stage", async (engine) => {
   const root = await mkdtemp(path.join(os.tmpdir(), "paperclip-kimi-baseline-"));
   const previous = { TMPDIR: process.env.TMPDIR, HOME: process.env.HOME };

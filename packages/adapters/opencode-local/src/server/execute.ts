@@ -337,9 +337,6 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   });
   const localRuntimeConfigHome =
     preparedRuntimeConfig.notes.length > 0 ? preparedRuntimeConfig.env.XDG_CONFIG_HOME : "";
-  // Releases the host-side workspace baseline on every exit path, including a
-  // failure before the restoring `finally` runs. Idempotent, so it is a no-op
-  // after a restore, which releases it itself.
   let releaseRemoteWorkspaceSnapshot: (() => Promise<void>) | null = null;
   try {
     const runtimeEnv = Object.fromEntries(
@@ -425,8 +422,6 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
               : []),
           ],
         });
-        // Track the in-flight restore: it reads the baseline, so the release
-        // below must wait for it even when a sibling cleanup step rejected.
         let remoteWorkspaceRestore: Promise<void> | null = null;
         restoreRemoteWorkspace = () =>
           (remoteWorkspaceRestore = preparedExecutionTargetRuntime.restoreWorkspace((line) => onLog("stdout", line)));

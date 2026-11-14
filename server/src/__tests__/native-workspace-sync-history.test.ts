@@ -63,8 +63,6 @@ describe("native warm workspace Git history", () => {
       roots.push(root);
       process.env.PAPERCLIP_HOME = path.join(root, "home");
       process.env.PAPERCLIP_INSTANCE_ID = "test";
-      // Host-side snapshots and manifests go to a private temp dir, so the case
-      // can prove it releases every one of them.
       const tmp = path.join(root, "tmp");
       await mkdir(tmp);
       process.env.TMPDIR = tmp;
@@ -177,7 +175,6 @@ describe("native warm workspace Git history", () => {
         ...target, remoteCwd: remote, runner: secondRunner, sandboxLeaseAcquisition: { outcome: change === "new_workspace_branch" ? "created" : "resumed", providerLeaseId: "sandbox" },
       } });
       if (change === "plain_nested_commit_error") {
-        // Fail after the warm stamp mismatch prepared a replacement runtime.
         vi.spyOn(restoreMerge, "serializeDirectorySnapshot").mockImplementationOnce(() => {
           throw new Error("descriptor serialization failed");
         });

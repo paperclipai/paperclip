@@ -5,10 +5,6 @@ import { expect, it, vi } from "vitest";
 import { runChildProcess } from "@paperclipai/adapter-utils/server-utils";
 import { createPromptContextFixture } from "@paperclipai/adapter-utils/test-fixtures/prompt-context";
 
-// The run's final cleanup stops the bridge and restores the workspace in
-// parallel. When the bridge stop rejects, the baseline must stay until the
-// restore that reads it has settled. Staging, restore and baseline release are
-// real; the restore is held briefly and the bridge stop is made to fail.
 const state = vi.hoisted(() => ({
   restoring: false,
   releasedWhileRestoring: false,
