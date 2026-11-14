@@ -200,6 +200,11 @@ handoff and publication identities rather than replacing uncertain work with a
 new send. An unknown retirement keeps its credential-cleanup responsibility
 until normal acceptance and resource closure are confirmed.
 
+If the final handoff write succeeds but its response is lost, normal recovery
+releases the same confirmed-closed receiver before admitting useful Cloud work.
+It revalidates the current resource and lease; uncertain ownership continues to
+block sleep.
+
 Reconnect first settles the original receiver. On the same verified project and
 line, it carries the exact durable checkpoint across credential and configuration
 generation changes. Each authority update commits with the normal credential or

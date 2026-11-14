@@ -1033,7 +1033,7 @@ describe("iMessage Photon channel control plane", () => {
     () => onlinePhotonEnrollment(false, true), 30_000);
   it("fences late connector loss at the normal Photon SDK intake-placement callback and restores its original handoff",
     () => onlinePhotonEnrollment(false, false, true), 30_000);
-  async function resumeOriginalHandoff(phase: "enrolling" | "joining", observeIdleRenewal = false, otherAuthorizedOperator = false, retirementResume: "pending" | "revoked" | null = null, reconnectCheckpoint: "current" | "rotated" | "rollback" | "untagged" | "foreign" | null = null) {
+  async function resumeOriginalHandoff(phase: "enrolling" | "joining", observeIdleRenewal = false, otherAuthorizedOperator = false, retirementResume: "pending" | "revoked" | null = null, reconnectCheckpoint: "current" | "rotated" | "rollback" | "untagged" | "foreign" | null = null, handoffCommitReplyLost = false) {
     const renew = vi.fn(async () => true);
     const signing = generateKeyPairSync("ed25519"), sealing = generateKeyPairSync("x25519");
     const connectorConfig = { baseUrl: "https://cloud.example", instanceId: "instance", environment: "test" as const,
@@ -1113,6 +1113,41 @@ describe("iMessage Photon channel control plane", () => {
     const owner = observedOwner;
     if (!owner) throw new Error("Normal external Runtime owner absent");
     const state = photonStateFor(db, { companyId: t.companyId, endpointId: t.endpoint.id });
+    const committedReceiver = handoffCommitReplyLost ? t.service.runtime.get(t.endpoint.id) : null;
+    if (handoffCommitReplyLost) {
+      const originalRuntime = committedReceiver;
+      if (!originalRuntime) throw new Error("Normal original receiver absent before handoff");
+      const shutdown = vi.spyOn(originalRuntime, "shutdown");
+      const transaction = db.transaction.bind(db), lost = new Error("Controlled committed handoff response lost");
+      let droppedReplies = 0;
+      db.transaction = async (work, ...args) => {
+        const result = await transaction(work, ...args);
+        if (droppedReplies === 0 && result && typeof result === "object" && "phase" in result
+          && result.phase === "external" && "businessHandoff" in result && "localClosureConfirmed" in result) {
+          droppedReplies++;
+          throw lost;
+        }
+        return result;
+      };
+      try {
+        const first = await owner.reconcile(t.endpoint.id).then(() => ({ error: null }), error => ({ error }));
+        expect(droppedReplies).toBe(1);
+        expect(first.error).not.toBeNull();
+      } finally { db.transaction = transaction; }
+      const committed = readPhotonExternalState(await state.read(PHOTON_EXTERNAL_STATE));
+      expect(committed).toMatchObject({ phase: "external", localClosureConfirmed: true, localResource: { closed: true } });
+      expect(committed?.businessHandoff).toBeDefined();
+      expect(committed?.senderResource).toBeUndefined();
+      expect(shutdown).toHaveBeenCalled();
+      expect(t.service.runtime.get(t.endpoint.id)).toBe(originalRuntime);
+      expect(await db.select().from(chatEndpointLeases).where(and(eq(chatEndpointLeases.companyId, t.companyId),
+        eq(chatEndpointLeases.endpointId, t.endpoint.id), eq(chatEndpointLeases.leaseKey, "photon_receiver_runtime")))).toHaveLength(1);
+      await expect(owner.reconcile(t.endpoint.id), "committed handoff readback must release its exact closed receiver before useful work").resolves.toBeUndefined();
+      expect(t.service.runtime.get(t.endpoint.id)).toBeNull();
+      expect(await db.select().from(chatEndpointLeases).where(and(eq(chatEndpointLeases.companyId, t.companyId),
+        eq(chatEndpointLeases.endpointId, t.endpoint.id), eq(chatEndpointLeases.leaseKey, "photon_receiver_runtime")))).toEqual([]);
+      expect(readPhotonExternalState(await state.read(PHOTON_EXTERNAL_STATE))).toEqual(committed);
+    }
     if (phase === "joining") {
       const local = t.service.runtime.get(t.endpoint.id);
       if (!local) throw new Error("Normal local receiver absent");
@@ -1121,7 +1156,7 @@ describe("iMessage Photon channel control plane", () => {
     }
     if (retirementResume || reconnectCheckpoint) await owner.reconcile(t.endpoint.id);
     const original = readPhotonExternalState(await state.read(PHOTON_EXTERNAL_STATE));
-    expect(original?.phase).toBe(retirementResume || reconnectCheckpoint ? "external" : phase);
+    expect(original?.phase).toBe(retirementResume || reconnectCheckpoint || handoffCommitReplyLost ? "external" : phase);
     if (!original) throw new Error("Normal unfinished handoff absent");
     const [before] = await db.select().from(chatEndpoints).where(eq(chatEndpoints.id, t.endpoint.id));
     const [connectionBefore] = await db.select().from(toolConnections).where(eq(toolConnections.id, t.endpoint.connectionId));
@@ -1145,12 +1180,12 @@ describe("iMessage Photon channel control plane", () => {
       expect(management.decision).toMatchObject({ allowed: true, action: "connections:configure" });
       if (otherAuthorizedOperator) expect(operatorUserId).not.toBe(original.identity.subject);
     }
-    await t.service.configure(t.endpoint.id, { action: "pause" }, operatorUserId, management);
+    if (!handoffCommitReplyLost) await t.service.configure(t.endpoint.id, { action: "pause" }, operatorUserId, management);
     const [paused] = await db.select().from(chatEndpoints).where(eq(chatEndpoints.id, t.endpoint.id));
-    expect(paused.status).toBe("paused");
+    expect(paused.status).toBe(handoffCommitReplyLost ? "active" : "paused");
     expect(Reflect.get(paused.setup, "runtimeGeneration")).toBe(Reflect.get(before.setup, "runtimeGeneration"));
     expect(readPhotonExternalState(await state.read(PHOTON_EXTERNAL_STATE)))
-      .toMatchObject({ phase: retirementResume || reconnectCheckpoint ? "external" : phase, binding: original.binding, handoffId: original.handoffId, identity: original.identity });
+      .toMatchObject({ phase: retirementResume || reconnectCheckpoint || handoffCommitReplyLost ? "external" : phase, binding: original.binding, handoffId: original.handoffId, identity: original.identity });
     if (reconnectCheckpoint) {
       retirementComplete = true;
       await owner.retire(t.endpoint.id, management!);
@@ -1285,8 +1320,12 @@ describe("iMessage Photon channel control plane", () => {
       await management!.reauthorize();
       return;
     }
-    const outcome = await t.service.configure(t.endpoint.id, { action: "resume" }, operatorUserId, management)
-      .then(snapshot => ({ snapshot, error: null }), error => ({ snapshot: null, error }));
+    if (!handoffCommitReplyLost) {
+      const outcome = await t.service.configure(t.endpoint.id, { action: "resume" }, operatorUserId, management)
+        .then(snapshot => ({ snapshot, error: null }), error => ({ snapshot: null, error }));
+      expect(outcome.error, "normal resume must finish original custody under unchanged authority").toBeNull();
+      expect(outcome.snapshot).toMatchObject({ status: "active" });
+    }
     const [resumed] = await db.select().from(chatEndpoints).where(eq(chatEndpoints.id, t.endpoint.id));
     const [connectionResumed] = await db.select().from(toolConnections).where(eq(toolConnections.id, t.endpoint.connectionId));
     const recovered = readPhotonExternalState(await state.read(PHOTON_EXTERNAL_STATE));
@@ -1295,9 +1334,8 @@ describe("iMessage Photon channel control plane", () => {
     expect(connectionResumed.credentialSecretRefs).toEqual(connectionBefore.credentialSecretRefs);
     const cutoff = Date.parse(String(Reflect.get(resumed.setup, "photonIntakeAfter")));
     expect(Number.isFinite(cutoff)).toBe(true);
-    expect(cutoff).toBeGreaterThan(Date.parse(original.binding.intakeAfter));
-    expect(outcome.error, "normal resume must finish original custody under unchanged authority").toBeNull();
-    expect(outcome.snapshot).toMatchObject({ status: "active" });
+    if (handoffCommitReplyLost) expect(cutoff).toBe(Date.parse(original.binding.intakeAfter));
+    else expect(cutoff).toBeGreaterThan(Date.parse(original.binding.intakeAfter));
     if (otherAuthorizedOperator) {
       expect(Reflect.get(paused.setup, "photonExternalSubject")).toBe(original.identity.subject);
       expect(Reflect.get(resumed.setup, "photonExternalSubject")).toBe(original.identity.subject);
@@ -1383,12 +1421,15 @@ describe("iMessage Photon channel control plane", () => {
     };
     const wakeups = t.wakeup.mock.calls.length;
     const previous = recovered.acceptedSequence;
-    const oldInput = packet((previous ?? 0) + 1, previous, cutoff - 1);
-    await photonExternalRuntime.dispatchPhotonCloudEvent(db, oldInput);
-    expect(t.wakeup).toHaveBeenCalledTimes(wakeups);
-    expect(usefulClients).toHaveLength(0);
-    expect(await receiverLeases()).toEqual([]);
-    const freshInput = packet((previous ?? 0) + 2, (previous ?? 0) + 1, cutoff);
+    if (!handoffCommitReplyLost) {
+      const oldInput = packet((previous ?? 0) + 1, previous, cutoff - 1);
+      await photonExternalRuntime.dispatchPhotonCloudEvent(db, oldInput);
+      expect(t.wakeup).toHaveBeenCalledTimes(wakeups);
+      expect(usefulClients).toHaveLength(0);
+      expect(await receiverLeases()).toEqual([]);
+    }
+    const freshSequence = (previous ?? 0) + (handoffCommitReplyLost ? 1 : 2);
+    const freshInput = packet(freshSequence, handoffCommitReplyLost ? previous : (previous ?? 0) + 1, cutoff);
     const getChat = t.f.client.chats.get.getMockImplementation();
     if (!getChat) throw new Error("Existing controlled provider lookup absent");
     let release!: () => void;
@@ -1396,6 +1437,19 @@ describe("iMessage Photon channel control plane", () => {
     let usefulEntered = false;
     t.f.client.chats.get.mockImplementation(async (...args) => {
       expect(await receiverLeases()).toHaveLength(1);
+      if (handoffCommitReplyLost && !usefulEntered) {
+        expect(usefulClients).toHaveLength(2);
+        const [initial, useful] = usefulClients;
+        expect(initial.joined).toBe(true);
+        expect(initial.close).toHaveBeenCalledTimes(1);
+        expect(initial.methods).toEqual([]);
+        expect(useful.joined).toBe(false);
+        expect(useful.close).not.toHaveBeenCalled();
+        expect(useful.methods).toEqual(["chats.get"]);
+        expect(useful.client).not.toBe(initial.client);
+        expect(t.service.runtime.get(t.endpoint.id)).not.toBeNull();
+        expect(t.service.runtime.get(t.endpoint.id)).not.toBe(committedReceiver);
+      }
       usefulEntered = true;
       await held;
       return getChat(...args);
@@ -1419,7 +1473,11 @@ describe("iMessage Photon channel control plane", () => {
     expect(t.wakeup).toHaveBeenCalledTimes(wakeups + 1);
     expect(await receiverLeases()).toEqual([]);
     const afterAdmission = readPhotonExternalState(await state.read(PHOTON_EXTERNAL_STATE));
-    expect(afterAdmission).toMatchObject({ acceptedSequence: (previous ?? 0) + 2, pending: null, binding: original.binding });
+    expect(afterAdmission).toMatchObject({ acceptedSequence: freshSequence, pending: null, binding: original.binding });
+    if (handoffCommitReplyLost) {
+      expect(afterAdmission?.senderResource?.id).toEqual(expect.any(String));
+      expect(afterAdmission?.senderResource?.id).not.toBe(original.localResourceId);
+    }
     if (observeIdleRenewal) {
       const renewalsAfterDelivery = renew.mock.calls.length;
       await new Promise(resolve => setTimeout(resolve, 5_100));
@@ -1436,6 +1494,8 @@ describe("iMessage Photon channel control plane", () => {
       expect(row.close).toHaveBeenCalledTimes(1);
     }
   }
+  it("releases its exact original receiver after a committed handoff reply is lost and immediately admits useful Cloud delivery",
+    () => resumeOriginalHandoff("enrolling", false, false, null, null, true), 30_000);
   it.each(["enrolling", "joining"] as const)("resumes normal Photon configuration with its original %s custody and the new admission cutoff",
     phase => resumeOriginalHandoff(phase), 30_000);
   it("releases idle Cloud-resume ownership and reacquires it for normal authorized delivery",

@@ -399,6 +399,29 @@ export function createPhotonExternalRuntimeOwner(db: Db, options: {
         if (external.localResourceId !== null && !external.localClosureConfirmed) {
           external = (await createPhotonExternalOwner({ store, broker, resources, notify: value => options.notify(value.endpointId) }).repair(external)).state;
         }
+        const receiverRuntime = options.currentRuntime(id);
+        if (!external.senderResource && external.localResourceId && receiverRuntime && resources.owns(external.localResourceId, receiverRuntime)) {
+          const receiverContext = options.context(receiverRuntime), receiverLease = options.ownership(id);
+          if (!external.localClosureConfirmed || !external.localResource?.closed
+            || external.localResource.id !== external.localResourceId
+            || !receiverContext || !receiverLease || receiverLease.stopping
+            || receiverContext.endpointRuntime !== receiverRuntime || receiverLease.context !== receiverContext
+            || receiverRuntime.companyId !== external.identity.companyId || receiverRuntime.endpointId !== id
+            || receiverLease.companyId !== external.identity.companyId || receiverLease.endpointId !== id
+            || receiverLease.leaseKey !== "photon_receiver_runtime"
+            || receiverContext.generation !== external.identity.runtimeGeneration
+            || receiverContext.credentialFingerprint !== external.identity.credentialReferences
+            || external.localResource.leaseDigest !== photonHash(receiverLease.token))
+            throw new Error("Photon receiver release has no exact original runtime and lease ownership");
+          await resources.join(external.localResourceId);
+          if (options.currentRuntime(id) !== receiverRuntime || options.context(receiverRuntime) !== receiverContext
+            || options.ownership(id) !== receiverLease || receiverLease.context !== receiverContext || receiverLease.stopping)
+            throw new Error("Photon original receiver ownership changed during release");
+          await options.removeRuntime(id);
+          await options.release(receiverLease);
+          receiverContext.discordGatewayOwned = false;
+          return;
+        }
         const usefulRuntime = options.currentRuntime(id), usefulContext = usefulRuntime ? options.context(usefulRuntime) : undefined;
         const adapter = usefulRuntime?.getProviderAdapter();
         const drainedState = external, senderResource = external.senderResource;
