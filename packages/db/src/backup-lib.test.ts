@@ -438,6 +438,57 @@ describeEmbeddedPostgres("runDatabaseBackup", () => {
   );
 
   it(
+    "preserves bytea and bytea[] values in JavaScript backups",
+    async () => {
+      const sourceConnectionString = await createTempDatabase();
+      const restoreConnectionString = await createSiblingDatabase(
+        sourceConnectionString,
+        "paperclip_bytea_restore_target",
+      );
+      const backupDir = createTempDir("paperclip-db-bytea-backup-");
+      const sourceSql = postgres(sourceConnectionString, { max: 1, onnotice: () => {} });
+      const restoreSql = postgres(restoreConnectionString, { max: 1, onnotice: () => {} });
+
+      try {
+        await sourceSql.unsafe(`
+          CREATE SCHEMA "plugin_binary";
+          CREATE TABLE "plugin_binary"."payloads" (
+            "id" integer PRIMARY KEY,
+            "payload" bytea NOT NULL,
+            "chunks" bytea[] NOT NULL
+          );
+          INSERT INTO "plugin_binary"."payloads" ("id", "payload", "chunks")
+          VALUES (1, decode('00015cff', 'hex'), ARRAY[decode('00', 'hex'), decode('5c22', 'hex'), decode('', 'hex')]);
+        `);
+
+        const result = await runDatabaseBackup({
+          connectionString: sourceConnectionString,
+          backupDir,
+          retention: { dailyDays: 7, weeklyWeeks: 4, monthlyMonths: 1 },
+          filenamePrefix: "paperclip-bytea-test",
+          backupEngine: "javascript",
+        });
+
+        await runDatabaseRestore({
+          connectionString: restoreConnectionString,
+          backupFile: result.backupFile,
+        });
+
+        const rows = await restoreSql.unsafe<{ payload: string; chunks: string[] }[]>(`
+          SELECT encode("payload", 'hex') AS "payload",
+                 ARRAY(SELECT encode(chunk, 'hex') FROM unnest("chunks") AS chunk) AS "chunks"
+          FROM "plugin_binary"."payloads"
+        `);
+        expect(rows).toEqual([{ payload: "00015cff", chunks: ["00", "5c22", ""] }]);
+      } finally {
+        await sourceSql.end();
+        await restoreSql.end();
+      }
+    },
+    60_000,
+  );
+
+  it(
     "preserves composite foreign key column order without duplicate referenced columns",
     async () => {
       const sourceConnectionString = await createTempDatabase();
