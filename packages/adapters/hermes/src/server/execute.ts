@@ -53,6 +53,13 @@ import {
   resolveProvider,
 } from "./detect-model.js";
 import { reconcileHermesPaperclipSkills } from "./skills.js";
+import {
+  emptyLedgerTotals,
+  resolveStateDbPath,
+  readLedgerTotals,
+  readLedgerTotalsSettled,
+  diffLedgerTotals,
+} from "./ledger-usage.js";
 
 // ---------------------------------------------------------------------------
 // Config helpers
@@ -225,24 +232,30 @@ export function buildPrompt(
 // Output parsing
 // ---------------------------------------------------------------------------
 
-/** Regex to extract session ID from Hermes quiet-mode output: "session_id: <id>" */
-const SESSION_ID_REGEX = /^session_id:\s*(\S+)/m;
+/**
+ * Regex to extract session ID from Hermes quiet-mode output: "session_id: <id>".
+ * Global so the trailing marker can be taken rather than the first line the
+ * model happened to write — see `parseHermesOutput`.
+ */
+const SESSION_ID_REGEX_GLOBAL = /^session_id:\s*(\S+)/gm;
 
 /** Regex for legacy session output format */
 const SESSION_ID_REGEX_LEGACY = /session[_ ](?:id|saved)[:\s]+([a-zA-Z0-9_-]+)/i;
 
-/** Regex to extract token usage from Hermes output. */
-const TOKEN_USAGE_REGEX =
-  /tokens?[:\s]+(\d+)\s*(?:input|in)\b.*?(\d+)\s*(?:output|out)\b/i;
-
-/** Regex to extract cost from Hermes output. */
-const COST_REGEX = /(?:cost|spent)[:\s]*\$?([\d.]+)/i;
+/** The last match of a global regex, or null. Resets `lastIndex` before use. */
+function matchLast(text: string, regex: RegExp): RegExpExecArray | null {
+  regex.lastIndex = 0;
+  let last: RegExpExecArray | null = null;
+  for (let m = regex.exec(text); m !== null; m = regex.exec(text)) {
+    last = m;
+    if (m.index === regex.lastIndex) regex.lastIndex += 1;
+  }
+  return last;
+}
 
 interface ParsedOutput {
   sessionId?: string;
   response?: string;
-  usage?: UsageSummary;
-  costUsd?: number;
   errorMessage?: string;
 }
 
@@ -279,7 +292,8 @@ function cleanResponse(raw: string): string {
 // Output parsing
 // ---------------------------------------------------------------------------
 
-function parseHermesOutput(stdout: string, stderr: string): ParsedOutput {
+/** Exported for tests: the session id it picks decides which session is billed. */
+export function parseHermesOutput(stdout: string, stderr: string): ParsedOutput {
   const combined = stdout + "\n" + stderr;
   const result: ParsedOutput = {};
 
@@ -287,10 +301,16 @@ function parseHermesOutput(stdout: string, stderr: string): ParsedOutput {
   //   <response text>
   //
   //   session_id: <id>
-  const sessionMatch = stdout.match(SESSION_ID_REGEX);
+  //
+  // The marker is the CLI's trailing line, so take the *last* match rather
+  // than the first. The response is model-authored text and may itself contain
+  // a line beginning "session_id:"; taking the first match would let the
+  // answer choose which session gets billed, and would point the ledger
+  // lookup at a session that does not exist.
+  const sessionMatch = matchLast(stdout, SESSION_ID_REGEX_GLOBAL);
   if (sessionMatch?.[1]) {
-    result.sessionId = sessionMatch?.[1] ?? null;
-    // The response is everything before the session_id line
+    result.sessionId = sessionMatch[1];
+    // The response is everything before that same line.
     const sessionLineIdx = stdout.lastIndexOf("\nsession_id:");
     if (sessionLineIdx > 0) {
       result.response = cleanResponse(stdout.slice(0, sessionLineIdx));
@@ -309,20 +329,8 @@ function parseHermesOutput(stdout: string, stderr: string): ParsedOutput {
     }
   }
 
-  // Extract token usage
-  const usageMatch = combined.match(TOKEN_USAGE_REGEX);
-  if (usageMatch) {
-    result.usage = {
-      inputTokens: parseInt(usageMatch[1], 10) || 0,
-      outputTokens: parseInt(usageMatch[2], 10) || 0,
-    };
-  }
-
-  // Extract cost
-  const costMatch = combined.match(COST_REGEX);
-  if (costMatch?.[1]) {
-    result.costUsd = parseFloat(costMatch[1]);
-  }
+  // Usage and cost are NOT parsed from stdout. They come from Hermes' own
+  // ledger via ledger-usage.ts; see the comment there for why.
 
   // Check for error patterns in stderr
   if (stderr.trim()) {
@@ -582,6 +590,16 @@ export async function execute(
     return ctx.onLog(stream, chunk);
   };
 
+  // Baseline the ledger before the child starts: a resumed session's rows
+  // accumulate, so only the growth belongs to this run. A fresh session has
+  // provably used nothing, which is a known zero rather than an unknown
+  // baseline — the distinction matters, because an unknown baseline leaves the
+  // run unpriced instead of charging it the session's whole history.
+  const stateDbPath = resolveStateDbPath(config, env);
+  const ledgerBefore = prevSessionId
+    ? readLedgerTotals(prevSessionId, stateDbPath)
+    : emptyLedgerTotals();
+
   const result = await runChildProcess(ctx.runId, hermesCmd, args, {
     cwd,
     env,
@@ -617,12 +635,56 @@ export async function execute(
     executionResult.errorMessage = `Hermes exited with code ${result.exitCode}`;
   }
 
-  if (parsed.usage) {
-    executionResult.usage = parsed.usage;
-  }
+  // ── Usage and cost, from Hermes' ledger ────────────────────────────────
+  const ledgerAfter = await readLedgerTotalsSettled(parsed.sessionId, stateDbPath, ledgerBefore);
+  const ledgerDelta = diffLedgerTotals(ledgerBefore, ledgerAfter);
 
-  if (parsed.costUsd !== undefined) {
-    executionResult.costUsd = parsed.costUsd;
+  if (ledgerDelta) {
+    const usage: UsageSummary = {
+      inputTokens: ledgerDelta.inputTokens,
+      cachedInputTokens: ledgerDelta.cachedInputTokens,
+      outputTokens: ledgerDelta.outputTokens,
+    };
+    executionResult.usage = usage;
+    // These tokens are already this run's growth over the pre-run baseline.
+    // Without this the server treats them as session totals and subtracts the
+    // previous run again, so the second run of a resumed session records zero.
+    executionResult.usageBasis = "per_run";
+    // Report a cost only when the ledger priced the usage. Leaving costUsd
+    // unset makes Paperclip record the row as unpriced, which is honest;
+    // sending 0 would read as "this run was free".
+    if (ledgerDelta.priced) {
+      executionResult.costUsd = ledgerDelta.costUsd;
+      executionResult.billingType = "metered_api";
+    }
+    const costLabel = ledgerDelta.priced ? `$${ledgerDelta.costUsd.toFixed(6)}` : "UNPRICED";
+    // When part of the run priced and part did not, say so and show the known
+    // part. It is reported to nobody, and a silent omission looks like $0.
+    const unpricedNote = ledgerDelta.unpriced
+      ? ` (unpriced models: ${ledgerDelta.unpricedModels.join(", ")}` +
+        (ledgerDelta.costUsd > 0
+          ? `; $${ledgerDelta.costUsd.toFixed(6)} of this run did price, withheld as partial)`
+          : ")")
+      : "";
+    await ctx.onLog(
+      "stdout",
+      `[hermes] Metered from ledger: ${ledgerDelta.inputTokens} in / ` +
+        `${ledgerDelta.cachedInputTokens} cached / ${ledgerDelta.outputTokens} out over ` +
+        `${ledgerDelta.apiCalls} call(s); cost ${costLabel}${unpricedNote}\n`,
+    );
+    if (ledgerAfter && !ledgerAfter.hasRows) {
+      await ctx.onLog(
+        "stderr",
+        `[hermes] Ledger holds no rows for session ${parsed.sessionId ?? "(none)"} — ` +
+          `this run recorded no usage. If the child did work, the session id is wrong.\n`,
+      );
+    }
+  } else {
+    await ctx.onLog(
+      "stderr",
+      `[hermes] Ledger unavailable for session ${parsed.sessionId ?? "(none)"} at ` +
+        `${stateDbPath} — this run is unmetered and spend totals will under-count.\n`,
+    );
   }
 
   // Summary from agent response
@@ -634,8 +696,17 @@ export async function execute(
   executionResult.resultJson = {
     result: parsed.response || "",
     session_id: parsed.sessionId || null,
-    usage: parsed.usage || null,
-    cost_usd: parsed.costUsd ?? null,
+    usage: ledgerDelta
+      ? {
+          inputTokens: ledgerDelta.inputTokens,
+          cachedInputTokens: ledgerDelta.cachedInputTokens,
+          outputTokens: ledgerDelta.outputTokens,
+        }
+      : null,
+    cost_usd: ledgerDelta?.priced ? ledgerDelta.costUsd : null,
+    cost_source: ledgerDelta ? (ledgerDelta.priced ? "hermes_ledger" : "unpriced") : "unavailable",
+    api_calls: ledgerDelta ? ledgerDelta.apiCalls : null,
+    unpriced_models: ledgerDelta ? ledgerDelta.unpricedModels : null,
   };
 
   // Store session ID for next run
