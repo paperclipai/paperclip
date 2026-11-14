@@ -128,6 +128,16 @@ export async function notifyDatabaseWorkOnCommit(connection: object, topic: stri
   notifyAtCommit(context, notification(context.scope, topic));
 }
 
+export function databaseWorkCommitNotification(owner: object, topic: string): string | null {
+  const scope = contexts.get(owner)?.scope;
+  return scope?.notify ? notification(scope, topic) : null;
+}
+
+export function publishDatabaseWorkSettled(owner: object, topic: string, hint?: string): void {
+  const scope = contexts.get(owner)?.scope;
+  if (scope) publish(scope, topic, "settled", hint === undefined ? undefined : new Set([hint]));
+}
+
 /** A post-commit invalidation hint, for already-persisted live UI state. */
 export async function publishDatabaseWorkHint(owner: object, topic: string): Promise<void> {
   const scope = contexts.get(owner)?.scope;
