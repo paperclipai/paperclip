@@ -8,6 +8,7 @@ const expectedEngine = ">=24.11.0";
 const expectedTypes = "^24.0.0";
 const failures = [];
 const skippedDirectories = new Set([".git", ".paperclip", "coverage", "data", "dist", "node_modules"]);
+const generatedProviderAssets = path.join(repoRoot, "packages", "paperclip-runner", "provider-assets");
 
 function relative(filePath) {
   return path.relative(repoRoot, filePath) || ".";
@@ -17,6 +18,7 @@ function walk(directory, visit) {
   for (const entry of fs.readdirSync(directory, { withFileTypes: true })) {
     if (entry.isDirectory() && skippedDirectories.has(entry.name)) continue;
     const entryPath = path.join(directory, entry.name);
+    if (entryPath === generatedProviderAssets) continue;
     if (entry.isDirectory()) walk(entryPath, visit);
     else if (entry.isFile()) visit(entryPath);
   }
