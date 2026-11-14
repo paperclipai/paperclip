@@ -410,8 +410,15 @@ export async function createAssignedMcpTools(input: {
       }
       // The gateway normally throws provider errors. Keep a malformed or older
       // provider response from being reported as successful through PRP.
-      if (result.result && typeof result.result === "object" && "isError" in result.result && result.result.isError === true) {
-        throw new ToolGatewayHttpError(502, "The assigned tool returned an error.", "tool_error");
+      const toolResult = result.result;
+      if (toolResult && typeof toolResult === "object" && (
+        ("isError" in toolResult && toolResult.isError === true) ||
+        ("error" in toolResult && typeof toolResult.error === "string")
+      )) {
+        const message = "error" in toolResult && typeof toolResult.error === "string" && toolResult.error.length > 0
+          ? toolResult.error
+          : "The assigned tool returned an error.";
+        throw new ToolGatewayHttpError(502, message, "tool_error");
       }
       return result.result;
     },

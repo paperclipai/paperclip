@@ -602,12 +602,44 @@ describe("assigned MCP runner tools", () => {
     await expect(createAssignedMcpTools(f)).rejects.toBe(error);
   });
 
+  describe.each(["completed", "replayed"])("plugin tool results with %s status", (status) => {
+    it.each([false, true])("returns data without content through the call wrapper: %s", async (wrapped) => {
+      const f = fixture([descriptor("demo-plugin:structured")]);
+      f.executeTool.mockResolvedValue({ status, result: { data: { ok: true } } });
+      const assigned = await createAssignedMcpTools(f);
+      const name = assigned.definitions()[0]!.name as string;
+      const call = wrapped
+        ? { tool: callName, arguments: { name, arguments: {} } }
+        : { tool: name, arguments: {} };
+      await expect(assigned.execute(call)).resolves.toEqual({ data: { ok: true } });
+    });
+
+    it.each([
+      { error: "plugin refused the call", message: "plugin refused the call" },
+      { error: "", message: "The assigned tool returned an error." },
+    ])("rejects plugin errors through direct and wrapped calls: %j", async ({ error, message }) => {
+      const f = fixture([descriptor("demo-plugin:failing")]);
+      f.executeTool.mockResolvedValue({ status, result: { error } });
+      const assigned = await createAssignedMcpTools(f);
+      const name = assigned.definitions()[0]!.name as string;
+      for (const call of [
+        { tool: name, arguments: {} },
+        { tool: callName, arguments: { name, arguments: {} } },
+      ]) {
+        await expect(assigned.execute(call)).rejects.toMatchObject({ reasonCode: "tool_error", status: 502, message });
+      }
+    });
+  });
+
   it("rejects error payloads and incomplete outcomes, and accepts successful replay", async () => {
     const f = fixture([descriptor("recall")]);
     const assigned = await createAssignedMcpTools(f);
     const call = { tool: assigned.definitions()[0]!.name as string, arguments: {} };
     f.executeTool.mockResolvedValueOnce({ status: "completed", result: { isError: true, content: [] } });
-    await expect(assigned.execute(call)).rejects.toMatchObject({ reasonCode: "tool_error" });
+    await expect(assigned.execute(call)).rejects.toMatchObject({
+      reasonCode: "tool_error",
+      message: "The assigned tool returned an error.",
+    });
     f.executeTool.mockResolvedValueOnce({ status: "pending", result: {} });
     await expect(assigned.execute(call)).rejects.toThrow("assigned_mcp_tool_execution_incomplete");
     f.executeTool.mockResolvedValueOnce({ status: "replayed", result: { memory: "synthetic" } });

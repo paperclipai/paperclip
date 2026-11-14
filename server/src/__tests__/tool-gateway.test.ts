@@ -55,6 +55,7 @@ import { buildPaperclipRuntimeMcpServers } from "../services/heartbeat.js";
 import { resolveNativeRuntimeMcpSnapshot } from "../services/native-runtime/runtime-context.js";
 import type { ToolMcpGatewayTokenAction } from "@paperclipai/shared";
 import type { PluginToolDispatcher } from "../services/plugin-tool-dispatcher.js";
+import { createAssignedMcpTools } from "../services/native-runtime/assigned-mcp-tools.js";
 import { mcpGatewayProtocolRoutes, toolGatewayRoutes } from "../routes/tool-gateway.js";
 import { toolAccessService } from "../services/tool-access.js";
 import {
@@ -459,6 +460,34 @@ function expectGatewayError(error: unknown, status: number, reasonCode: string) 
 function tamperToken(token: string) {
   const replacement = token.endsWith("A") ? "B" : "A";
   return `${token.slice(0, -1)}${replacement}`;
+}
+
+function createPluginToolDispatcher(
+  results: Record<string, { content?: string; data?: unknown; error?: string }>,
+): PluginToolDispatcher {
+  return {
+    initialize: async () => {},
+    teardown: () => {},
+    listToolsForAgent: () => Object.keys(results).map((name) => ({
+      name,
+      displayName: name,
+      description: "Plugin tool fixture.",
+      parametersSchema: { type: "object" },
+      pluginId: "demo-plugin",
+    })),
+    getTool: () => null,
+    executeTool: async (tool) => ({
+      pluginId: "demo-plugin",
+      toolName: tool.split(":")[1]!,
+      result: results[tool]!,
+    }),
+    registerPluginTools: () => {},
+    unregisterPluginTools: () => {},
+    toolCount: () => Object.keys(results).length,
+    getRegistry: () => {
+      throw new Error("not used");
+    },
+  };
 }
 
 function createTestToolGatewayService(db: Db, options: ToolGatewayServiceOptions = {}) {
@@ -6620,6 +6649,147 @@ rl.on("line", (line) => {
         parameters: { id: "1" },
       }),
     ]);
+  });
+
+  it("returns spec-valid MCP results for plugin tools over the gateway protocol", async () => {
+    const company = await createCompany(db);
+    const agent = await createAgent(db, company.id);
+    const { run } = await createIssueAndRun(db, company.id, agent.id);
+    const results: Record<string, { content?: string; data?: unknown; error?: string }> = {
+      "demo-plugin:structured": { content: "structured ok", data: { ok: true } },
+      "demo-plugin:text_only": { content: "text only" },
+      "demo-plugin:failing": { error: "plugin refused the call" },
+      "demo-plugin:empty_error": { error: "", content: "ignored on failure" },
+    };
+    const dispatcher = createPluginToolDispatcher(results);
+
+    const gateway = createTestToolGatewayService(db, { pluginToolDispatcher: dispatcher });
+    const profile = await allowToolsForAgent(db, company.id, agent.id, Object.keys(results));
+    const session = await gateway.createSession({ companyId: company.id, agentId: agent.id, runId: run.id });
+
+    await expect(gateway.executeTool({
+      sessionToken: session.token,
+      tool: "demo-plugin:structured",
+      parameters: {},
+    })).resolves.toMatchObject({
+      status: "completed",
+      result: { content: "structured ok", data: { ok: true } },
+    });
+
+    const created = await gateway.createNamedGateway({
+      companyId: company.id,
+      body: { name: "Plugin MCP surface", profileId: profile.id },
+    });
+    const app = createGatewayRouteApp(db, gateway);
+    const endpoint = `/mcp/gateways/${created.gatewayPublicId}`;
+
+    const rest = await request(app)
+      .post("/api/tool-gateway/tools/call")
+      .set("x-paperclip-tool-gateway-token", session.token)
+      .send({ tool: "demo-plugin:structured", parameters: {} })
+      .expect(200);
+    expect(rest.body).toMatchObject({ status: "completed" });
+    expect(rest.body.result).toEqual({ content: "structured ok", data: { ok: true } });
+
+    const structured = await request(app)
+      .post(endpoint)
+      .set("authorization", `Bearer ${session.token}`)
+      .send({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "demo-plugin:structured", arguments: {} } })
+      .expect(200);
+    expect(structured.body.result).toEqual({
+      content: [{ type: "text", text: "structured ok" }],
+      structuredContent: { ok: true },
+      isError: false,
+    });
+
+    const textOnly = await request(app)
+      .post(endpoint)
+      .set("authorization", `Bearer ${session.token}`)
+      .send({ jsonrpc: "2.0", id: 2, method: "tools/call", params: { name: "demo-plugin:text_only", arguments: {} } })
+      .expect(200);
+    expect(textOnly.body.result).toEqual({
+      content: [{ type: "text", text: "text only" }],
+      isError: false,
+    });
+    expect(textOnly.body.result).not.toHaveProperty("structuredContent");
+
+    const failing = await request(app)
+      .post(endpoint)
+      .set("authorization", `Bearer ${session.token}`)
+      .send({ jsonrpc: "2.0", id: 3, method: "tools/call", params: { name: "demo-plugin:failing", arguments: {} } })
+      .expect(200);
+    expect(failing.body.result).toEqual({
+      content: [{ type: "text", text: "plugin refused the call" }],
+      isError: true,
+    });
+
+    const emptyError = await request(app)
+      .post(endpoint)
+      .set("authorization", `Bearer ${session.token}`)
+      .send({ jsonrpc: "2.0", id: 4, method: "tools/call", params: { name: "demo-plugin:empty_error", arguments: {} } })
+      .expect(200);
+    expect(emptyError.body.result).toEqual({
+      content: [{ type: "text", text: "ignored on failure" }],
+      isError: true,
+    });
+  });
+
+  describe.each([undefined, "on_demand"] as const)("assigned plugin tools for the native Runner (%s)", (delivery) => {
+    it.each([
+      { result: { data: { ok: true } }, errorMessage: undefined },
+      { result: { error: "plugin refused the call" }, errorMessage: "plugin refused the call" },
+      { result: { error: "", content: "ignored on failure" }, errorMessage: "The assigned tool returned an error." },
+    ])("delivers plugin results through the assigned gateway: $result", async ({ result, errorMessage }) => {
+      const company = await createCompany(db);
+      const agent = await createAgent(db, company.id);
+      const { run } = await createIssueAndRun(db, company.id, agent.id);
+      const toolName = "demo-plugin:assigned";
+      const dispatcher = createPluginToolDispatcher({ [toolName]: result });
+      const executeTool = vi.spyOn(dispatcher, "executeTool");
+      const gateway = createTestToolGatewayService(db, { pluginToolDispatcher: dispatcher });
+      const profile = await allowToolsForAgent(db, company.id, agent.id, [toolName]);
+      const named = await gateway.createNamedGateway({
+        companyId: company.id,
+        body: { name: "Assigned plugin surface", profileId: profile.id, agentId: agent.id },
+      });
+      const token = await gateway.createNamedGatewayToken({
+        companyId: company.id,
+        gatewayId: named.id,
+        body: {
+          name: "Native Runner",
+          subjectType: "heartbeat_run",
+          subjectId: run.id,
+          clientLabel: "Native Runner",
+          ownerNote: "",
+        },
+      });
+      const assigned = await createAssignedMcpTools({
+        gateway,
+        gatewayPublicId: named.gatewayPublicId,
+        bearerToken: token.token,
+        delivery,
+      });
+      const page = await assigned.execute({
+        tool: "paperclip_search_assigned_tools",
+        arguments: { query: toolName },
+      }) as { tools: Array<{ name: string }> };
+      expect(page.tools).toHaveLength(1);
+      const name = page.tools[0]!.name;
+      const call = delivery === "on_demand"
+        ? { tool: "paperclip_call_assigned_tool", arguments: { name, arguments: {} } }
+        : { tool: name, arguments: {} };
+
+      if (typeof result.error === "string") {
+        await expect(assigned.execute(call)).rejects.toMatchObject({ reasonCode: "tool_error", status: 502, message: errorMessage });
+      } else {
+        await expect(assigned.execute(call)).resolves.toEqual({ data: { ok: true } });
+      }
+      expect(executeTool).toHaveBeenCalledExactlyOnceWith(toolName, {}, expect.objectContaining({
+        companyId: company.id,
+        agentId: agent.id,
+        runId: run.id,
+      }));
+    });
   });
 
   it("rejects caller-supplied issue context outside the run company", async () => {
