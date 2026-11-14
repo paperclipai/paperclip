@@ -335,6 +335,34 @@ describe("codex remote environment diagnostics", () => {
     expect(helloCall[3]).not.toEqual(["--version"]);
   });
 
+  it("reports the provider's message, not the raw JSON line, for a generic probe failure", async () => {
+    // Codex prints backend failures as one JSON error line. The adapter owns
+    // that format, so the check detail carries the message as plain text.
+    runAdapterExecutionTargetProcess.mockResolvedValueOnce({
+      exitCode: 1,
+      signal: null,
+      timedOut: false,
+      stdout: "",
+      stderr: "ERROR: {\"type\":\"error\",\"status\":503,\"error\":{\"type\":\"server_error\",\"message\":\"The service is temporarily overloaded. Try again shortly.\"}}",
+      pid: 223,
+      startedAt: new Date().toISOString(),
+    });
+
+    const result = await testEnvironment({
+      companyId: "company-1",
+      adapterType: "codex_local",
+      config: { engine: "cli", command: "codex", model: "gpt-5.6-sol" },
+      executionTarget: sandboxTarget(),
+      environmentName: "QA Daytona",
+    });
+
+    const failed = result.checks.find((check) => check.code === "codex_hello_probe_failed");
+    expect(failed).toMatchObject({
+      level: "error",
+      detail: "The service is temporarily overloaded. Try again shortly.",
+    });
+  });
+
   it("names the backend's ChatGPT model rejection instead of a generic probe failure", async () => {
     // The CLI is new enough, but the account's plan or rollout does not include
     // the model. The backend answers with one fixed sentence; surface it with

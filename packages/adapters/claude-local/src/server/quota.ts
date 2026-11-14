@@ -170,11 +170,30 @@ function isolatedKeychainService(configDir: string): string {
   return `Claude Code-credentials-${createHash("sha256").update(configDir).digest("hex").slice(0, 8)}`;
 }
 
-async function readClaudeTokenFromKeychain(service: string): Promise<string | null> {
+async function readKeychainItemToken(args: string[]): Promise<{ token: string | null; timedOut: boolean }> {
   try {
-    const { stdout } = await execFileAsync("/usr/bin/security", ["find-generic-password", "-s", service, "-w"], { timeout: 10000, maxBuffer: 1024 * 1024 });
-    return parseClaudeCredentialToken(stdout);
-  } catch { return null; }
+    const { stdout } = await execFileAsync("/usr/bin/security", ["find-generic-password", ...args, "-w"], { timeout: 10000, maxBuffer: 1024 * 1024 });
+    return { token: parseClaudeCredentialToken(stdout), timedOut: false };
+  } catch (error) {
+    // execFile sets `killed` when it ends the child at the timeout.
+    return { token: null, timedOut: Boolean((error as { killed?: boolean } | null)?.killed) };
+  }
+}
+
+// Claude Code writes its login under the macOS username as the account. Other
+// items can share the service name (for example an "unknown" account holding
+// only MCP OAuth state), and an unscoped lookup returns whichever matches
+// first, so prefer the user's own account and fall back to any account.
+// A timed-out scoped lookup does not fall back, so the whole read stays within
+// one Keychain timeout for callers with a fixed polling budget.
+async function readClaudeTokenFromKeychain(service: string): Promise<string | null> {
+  let account: string | null = null;
+  try { account = os.userInfo().username || null; } catch { account = null; }
+  if (account) {
+    const scoped = await readKeychainItemToken(["-s", service, "-a", account]);
+    if (scoped.token || scoped.timedOut) return scoped.token;
+  }
+  return (await readKeychainItemToken(["-s", service])).token;
 }
 
 /**

@@ -1,5 +1,6 @@
 import type { AdapterEnvironmentTestResult } from "@paperclipai/shared";
 import { ADAPTER_AUTH_MISSING_CHECK_CODE } from "@paperclipai/shared";
+import { redactDiagnosticText } from "@paperclipai/adapter-utils/command-redaction";
 import { agentsApi } from "../api/agents";
 
 /** Readiness alone does not authenticate a provider. Reuse the provider's key
@@ -73,4 +74,32 @@ export async function testAgentSetup(input: {
           : "pass",
     checks,
   };
+}
+
+const MAX_FAILURE_DETAIL_LENGTH = 300;
+
+/** Describe the failing setup check, including the provider's reason when the
+ * adapter reported one, so the user knows what to fix. */
+export function describeSetupFailure(
+  checks: AdapterEnvironmentTestResult["checks"] | undefined,
+): string | undefined {
+  const check =
+    checks?.find((candidate) => candidate.level === "error") ??
+    checks?.find(
+      (candidate) =>
+        (candidate.code.includes("hello_probe") ||
+          candidate.code.startsWith("environment_agent_")) &&
+        candidate.level === "warn",
+    );
+  if (!check) return undefined;
+  // Adapters own turning provider output into readable detail text. Probe
+  // details can still echo stderr, so redact before display and bound the
+  // length after redaction.
+  const detail = check.detail ? redactDiagnosticText(check.detail.trim()) : "";
+  if (!detail || detail === check.message) return check.message;
+  const clipped =
+    detail.length > MAX_FAILURE_DETAIL_LENGTH
+      ? `${detail.slice(0, MAX_FAILURE_DETAIL_LENGTH)}…`
+      : detail;
+  return `${check.message} ${clipped}`;
 }
