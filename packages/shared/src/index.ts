@@ -1808,6 +1808,8 @@ export {
   listWorkspaceCommandDefinitions,
   listWorkspaceServiceCommandDefinitions,
   matchWorkspaceRuntimeServiceToCommand,
+  resolveRuntimeServiceStopTarget,
+  countRuntimeServicesActiveAfterStop,
   scoreWorkspaceRuntimeServiceMatch,
 } from "./workspace-commands.js";
 
