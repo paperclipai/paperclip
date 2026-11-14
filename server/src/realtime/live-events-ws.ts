@@ -1,5 +1,6 @@
 import { createLiveEventDelivery, sharedDeliveryRead, type LiveDeliveryReads } from "./live-event-delivery.js";
 import { localAgentProcessBoundary } from "../middleware/local-agent-process-boundary.js";
+import { localOperatorCredential } from "../middleware/local-operator-credential.js";
 import { skillAccessService } from "../services/skill-access.js";
 import { createHash } from "node:crypto";
 import type { IncomingMessage, Server as HttpServer } from "node:http";
@@ -137,6 +138,16 @@ function headersFromIncomingMessage(req: IncomingMessage): Headers {
   return headers;
 }
 
+function sameOriginUpgrade(req: IncomingMessage): boolean {
+  const origin = req.headers.origin;
+  if (!origin) return true;
+  try {
+    return new URL(origin).host.toLowerCase() === (req.headers.host ?? "").toLowerCase();
+  } catch {
+    return false;
+  }
+}
+
 async function authorizeUpgrade(
   db: Db,
   req: IncomingMessage,
@@ -155,6 +166,8 @@ async function authorizeUpgrade(
   // Browser board context has no bearer token in local_trusted and authenticated modes.
   if (!token) {
     if (opts.deploymentMode === "local_trusted") {
+      const operator = localOperatorCredential();
+      if (operator.required && (!operator.hasOperatorCookie(req.headers) || !sameOriginUpgrade(req))) return null;
       if (!(await localAgentProcessBoundary().grantsImplicitBoard(req.socket))) return null;
       return {
         companyId,

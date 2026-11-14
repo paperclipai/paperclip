@@ -34,6 +34,7 @@ import { initTelemetryFromConfigFile, flushTelemetry } from "./telemetry.js";
 import { registerWorktreeCommands } from "./commands/worktree.js";
 import { registerPluginCommands } from "./commands/client/plugin.js";
 import { registerClientAuthCommands } from "./commands/client/auth.js";
+import { registerOpenCommand } from "./commands/open.js";
 import { registerConnectCommand } from "./commands/client/connect.js";
 import { registerTokenCommands } from "./commands/client/token.js";
 import { registerPromptCommands } from "./commands/client/prompt.js";
@@ -278,6 +279,7 @@ auth
   .action(bootstrapCeoInvite);
 
 registerClientAuthCommands(auth);
+registerOpenCommand(program);
 registerMcpCommands(program);
 
 async function main(): Promise<void> {

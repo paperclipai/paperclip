@@ -88,8 +88,11 @@ export function boardMutationGuard(): RequestHandler {
     // Local-trusted mode, board bearer keys, trusted Cloud tenant calls, and
     // signed Cloud control assertions are not browser-session requests.
     // In these modes, origin/referer headers can be absent; do not block those mutations.
+    // A browser that signed in with the local operator cookie is a browser
+    // session: it keeps the same-origin requirement so another local page
+    // cannot ride its cookie.
     if (
-      req.actor.source === "local_implicit"
+      (req.actor.source === "local_implicit" && !req.actor.localOperatorBrowser)
       || req.actor.source === "board_key"
       || req.actor.source === "mcp_oauth"
       || req.actor.source === "cloud_tenant"

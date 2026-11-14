@@ -84,6 +84,12 @@ Paperclip now treats **bind** as a separate concern from auth:
 - no human login flow
 - optimized for fastest local startup
 - implicit board access belongs to the operator's own local processes. On Linux and macOS, a request that comes from inside an agent run's process tree receives no implicit board access and must authenticate with the run's own credentials. On Linux, a request whose process the server cannot inspect receives implicit board access only when every same-user process that the server cannot inspect has a readable operator parent chain outside any agent run. Requests over IPv4 and IPv6 loopback are covered. If the platform has no process inspection, or `/proc/net/tcp` and `/proc/net/tcp6` cannot be read, the server keeps the previous behavior and logs a warning. Other platforms keep the previous behavior.
+- the process check identifies agent runs by their process tree and run markers. A process that an agent run detaches from its tree and starts with an empty environment carries neither, so on its own the check cannot stop it. Set `PAPERCLIP_LOCAL_OPERATOR_CREDENTIAL=required` to close that gap: implicit board access then also requires the operator credential. The process check still applies.
+  - the operator credential is a key in `<instance>/secrets/local-operator.key`. The server creates it with owner-only permissions on first use, and agent environments never receive it.
+  - browsers sign in through a one-time link that expires after 10 minutes. `paperclipai onboard`, and any server started with `PAPERCLIP_OPEN_ON_LISTEN=true`, open the board with that link. `paperclipai open` opens a fresh link, or prints it with `--no-browser`. The link sets a long-lived `HttpOnly`, `SameSite=Strict` cookie. A browser without the cookie sees a screen that asks the operator to run `paperclipai open`.
+  - a signed-in browser's changes must come from the board's own origin. A page served on another local port cannot use that browser's cookie to make changes or to open the live-events socket.
+  - the CLI and local assistants use a board key. Run `paperclipai auth login`, approve the request in the signed-in browser, and the CLI stores the key.
+  - agent-run code running as the same OS user can still read the operator's files. Run agents with a filesystem sandbox that hides `~/.paperclip/instances/<id>/secrets`, or as a separate OS user, when you need that boundary to hold against a deliberate attempt.
 
 ## `authenticated + private`
 

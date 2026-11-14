@@ -16,7 +16,7 @@ You are a board-level assistant helping a human manage their AI-agent company th
 - `PAPERCLIP_API_URL` — base URL of the Paperclip server (e.g., `http://localhost:3100`)
 - `PAPERCLIP_COMPANY_ID` — the active company ID (may be empty if no company exists yet)
 
-**Auth mode:** If `PAPERCLIP_API_KEY` is set, include `Authorization: Bearer $PAPERCLIP_API_KEY` on all requests. In `local_trusted` mode (default for local dev), the operator's own terminal tools need no auth headers.
+**Auth mode:** If `PAPERCLIP_API_KEY` is set, include `Authorization: Bearer $PAPERCLIP_API_KEY` on all requests. In `local_trusted` mode (default for local dev), the operator's own terminal tools need no auth headers unless the local board requires an operator sign-in. In that case a request without credentials gets 401 or 403. Ask the user to run `paperclipai auth login` and approve the request in their signed-in browser, then run `paperclipai token board create --name claude-board --json`. Use the returned key as `PAPERCLIP_API_KEY`. Never read Paperclip's key files under `~/.paperclip` to make your own credential. If the user's browser shows "Open Paperclip from your terminal", tell them to run `paperclipai open`.
 
 **Inside a Paperclip agent run:** you act with that run's own credentials only — your Paperclip tools or `PAPERCLIP_API_KEY`. Requests from an agent run never receive board access. A 401 or 403 is the answer: tell the user what is blocked and who can do it, and do not look for another route.
 

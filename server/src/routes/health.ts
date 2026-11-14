@@ -1,5 +1,6 @@
 import { supportsLocalAiLogin } from "../services/local-ai-login-policy.js";
 import { randomUUID, timingSafeEqual } from "node:crypto";
+import { localOperatorCredential } from "../middleware/local-operator-credential.js";
 import { Router } from "express";
 import type { Db } from "@paperclipai/db";
 import { and, count, eq, gt, inArray, isNull, sql } from "drizzle-orm";
@@ -246,6 +247,10 @@ export function healthRoutes(
     // fuller-detail fetch. Omitted entirely when nothing is hidden, so
     // deployments without the env var keep today's byte-identical responses.
     const hiddenSettings = [...getHiddenSettings(runtimeEnv)];
+    // A local board that requires the operator credential tells a browser
+    // without it how to sign in, instead of failing every request.
+    const operatorSignIn = opts.deploymentMode === "local_trusted" && actorType !== "board"
+      && localOperatorCredential().required ? { localOperatorSignInRequired: true } : {};
     // serverInfo (git SHA + process start) rides on the full-details responses
     // only, so it reaches board/agent actors in authenticated mode or any caller
     // in local_trusted dev — never anonymous authenticated callers. The
@@ -282,6 +287,7 @@ export function healthRoutes(
               serverInfo,
               ...(cloud ? { cloud } : {}),
               ...(hiddenSettings.length ? { hiddenSettings } : {}),
+              ...operatorSignIn,
             }
           : {
               status: healthStatus,
@@ -289,6 +295,7 @@ export function healthRoutes(
               commit,
               ...(cloud ? { cloud } : {}),
               ...(hiddenSettings.length ? { hiddenSettings } : {}),
+              ...operatorSignIn,
             },
       );
       return;
@@ -307,6 +314,7 @@ export function healthRoutes(
         warmStandby: true,
         ...(cloud ? { cloud } : {}),
         ...(hiddenSettings.length ? { hiddenSettings } : {}),
+        ...operatorSignIn,
       });
       return;
     }
@@ -423,6 +431,7 @@ export function healthRoutes(
         ...(workspaceReadiness ? { workspace: workspaceReadiness } : {}),
         ...(cloud ? { cloud } : {}),
         ...(hiddenSettings.length ? { hiddenSettings } : {}),
+        ...operatorSignIn,
       });
       return;
     }
@@ -450,6 +459,7 @@ export function healthRoutes(
       ...(workspaceReadiness ? { workspace: workspaceReadiness } : {}),
       ...(cloud ? { cloud } : {}),
       ...(hiddenSettings.length ? { hiddenSettings } : {}),
+      ...operatorSignIn,
     });
   });
 

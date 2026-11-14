@@ -29,6 +29,7 @@ import { isUuidLike, normalizeAgentApiKeyScope, type DeploymentMode } from "@pap
 import type { BetterAuthSessionResult } from "../auth/better-auth.js";
 import { logger } from "./logger.js";
 import { localAgentProcessBoundary, type LocalAgentProcessBoundary } from "./local-agent-process-boundary.js";
+import { localOperatorCredential, type LocalOperatorCredential } from "./local-operator-credential.js";
 import { resolveRequestRunIdentity } from "../services/run-identity.js";
 import { boardAuthService } from "../services/board-auth.js";
 import { retryIdempotentDatabaseOperation } from "../database-retry.js";
@@ -192,6 +193,7 @@ interface ActorMiddlewareOptions {
   deploymentMode: DeploymentMode;
   resolveSession?: (req: Request) => Promise<BetterAuthSessionResult | null>;
   localAgentProcessBoundary?: LocalAgentProcessBoundary | null;
+  localOperatorCredential?: LocalOperatorCredential | null;
 }
 
 const publicRoutineWebhookPath = /^\/api\/routine-triggers\/public\/[a-f0-9]{24}\/fire\/?$/i;
@@ -202,6 +204,9 @@ export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHa
   const boardAuth = boardAuthService(db);
   const localBoundary = opts.deploymentMode === "local_trusted"
     ? opts.localAgentProcessBoundary === undefined ? localAgentProcessBoundary() : opts.localAgentProcessBoundary
+    : null;
+  const operatorCredential = opts.deploymentMode === "local_trusted"
+    ? opts.localOperatorCredential === undefined ? localOperatorCredential() : opts.localOperatorCredential
     : null;
   const authenticate: RequestHandler = async (req, _res, next) => {
     req.actor =
@@ -288,9 +293,12 @@ export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHa
           return;
         }
       }
-      if (req.actor.source === "local_implicit"
-        && !(await localBoundary?.grantsImplicitBoard(req.socket))) {
-        req.actor = { type: "none", source: "none" };
+      if (req.actor.source === "local_implicit") {
+        const operatorBrowser = operatorCredential?.hasOperatorCookie(req.headers) ?? false;
+        const granted = (operatorBrowser || !operatorCredential?.required)
+          && (await localBoundary?.grantsImplicitBoard(req.socket)) === true;
+        if (!granted) req.actor = { type: "none", source: "none" };
+        else if (operatorBrowser) req.actor.localOperatorBrowser = true;
       }
       if (runIdHeader) req.actor.runId = runIdHeader;
       next();
