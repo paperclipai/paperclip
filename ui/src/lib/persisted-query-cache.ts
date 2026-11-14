@@ -111,6 +111,8 @@ export function persistedQueryScope(key: readonly unknown[], data: unknown, user
   if (root === "agent-chats" && key.length === 3 && third === userId) return second;
   if (root === "primary-agent" && third === userId && key.length === 3) return second;
   if (root === "issues" && third === "mine-context" && key.length === 4 && key[3] === userId && object(data)?.userId === userId) return second;
+  if (root === "inbox" && third === "mine-reveal-sources" && key.length === 4 && key[3] === userId
+    && object(data)?.userId === userId && object(data)?.companyId === second) return second;
   if (root === "issues" && ["mine-by-me", "touched-by-me"].includes(String(third))
     && key[3] === "index" && key[4] === "with-routine-executions" && key[5] === "live-descendant-summary"
     && key[6] === 100 && (third === "mine-by-me" ? key.length === 8 && key[7] === userId : key.length === 7)) return second;
