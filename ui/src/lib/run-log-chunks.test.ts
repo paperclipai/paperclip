@@ -34,6 +34,7 @@ describe("isStructuredStreamingTextDelta", () => {
   it("matches acpx.text_delta and text records", () => {
     expect(isStructuredStreamingTextDelta('{"type":"acpx.text_delta","text":"x"}')).toBe(true);
     expect(isStructuredStreamingTextDelta('{"type":"text"}')).toBe(true);
+    expect(isStructuredStreamingTextDelta('{"event":"step_update","step_update":{"step_type":"agent_response","text_delta":"hello"}}')).toBe(true);
     expect(isStructuredStreamingTextDelta('{"type":"acpx.tool_call"}')).toBe(false);
     expect(isStructuredStreamingTextDelta("plain text")).toBe(false);
   });

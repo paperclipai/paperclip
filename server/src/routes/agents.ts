@@ -51,8 +51,8 @@ import { probeCopilotConnection, probeCopilotExecutionTarget } from "../services
 import { antigravityConnectionModels } from "../services/antigravity-connection-models.js";
 import { resolveAntigravityCandidateAdmission, resolveKimiCandidateAdmission } from "../services/native-runtime/acpx-qualification.js";
 import { defaultAiConnectionForHire } from "../services/agent-ai-connection-default.js";
-import { assertAiConnectionCreateAccess, canInstallSharedAiConnectionForNewAgent, responsibleUserForAiRequest } from "./ai-connections.js";
-import { isAiConnectionCompatible } from "@paperclipai/shared";
+import { assertAiConnectionCreateAccess, canInstallSharedAiConnectionForNewAgent, responsibleUserForAiRequest, validateAiApiKey } from "./ai-connections.js";
+import { isAiConnectionCompatible, adapterSupportsAiConnections } from "@paperclipai/shared";
 import { applyConnectorSkills, resolveConnectorAssignments, annotateConnectorSkills, isConnectorSkill } from "../services/connector-runtime.js";
 import { getExecutionBlocker } from "../services/execution-blocker.js";
 import { canRetryStoppedRun } from "../services/cancelled-native-startup.js";
@@ -164,6 +164,7 @@ import type {
   AdapterEnvironmentTestResult,
 } from "@paperclipai/adapter-utils";
 import { evaluateCodexCredentialReadiness } from "@paperclipai/adapter-codex-local/server";
+import { evaluateAgyCredentialReadiness } from "@paperclipai/adapter-agy-local/server";
 import type { AdapterAuthSignal, AdapterAuthSignalResponse, CodexAccountBindingClaim } from "@paperclipai/shared";
 import { adapterSettingsService } from "../services/adapter-settings.js";
 import { skillVersionSelectionMap } from "../services/runtime-skill-selections.js";
@@ -3115,6 +3116,7 @@ export function agentRoutes(
       return;
     }
     const provider = asNonEmptyString(req.query.provider);
+    const acpxAgent = asNonEmptyString(req.query.acpxAgent);
     if (type === "paperclip_runner" && provider === "acpx" && req.query.acpxAgent === "kimi") {
       res.json([]);
       return;
@@ -3178,10 +3180,10 @@ export function agentRoutes(
       throw unprocessable("Unknown Paperclip Runner provider");
     }
     const modelAdapterType = type === "paperclip_runner"
-      ? provider === "acpx" && req.query.acpxAgent === "grok" ? "grok_local"
-        : provider === "acpx" || provider === "claude_managed" ? "claude_local"
-        : provider === "opencode" ? "opencode_local"
-          : provider === "aws_agentcore" ? type : "codex_local"
+      ? provider === "acpx"
+        ? acpxAgent === "grok" ? "grok_local" : "claude_local"
+        : provider === "claude_managed" ? "claude_local"        : provider === "opencode" ? "opencode_local"
+        : provider === "aws_agentcore" ? type : "codex_local"
       : type;
     if (modelAdapterType === "opencode_local" && environment && environment.driver !== "local") {
       res.json(requireServerAdapter(modelAdapterType).models ?? []);
@@ -3671,9 +3673,55 @@ export function agentRoutes(
     return readiness.ready ? "present" : "absent";
   }
 
+  // The agy_local branch of the auth-signal read. Checks GEMINI_API_KEY, AGY_API_KEY,
+  // or ANTIGRAVITY_API_KEY in the environment bindings for non-local environments,
+  // or evaluateAgyCredentialReadiness against host-local OAuth tokens / env keys for local environments.
+  async function evaluateAgyAuthSignal(
+    req: Request,
+    companyId: string,
+    environmentId: string | null,
+  ): Promise<AdapterAuthSignal> {
+    if (environmentId) {
+      const environment = await environmentsSvc.getById(environmentId);
+      if (environment && environment.driver !== "local") {
+        const environmentEnv = Object.fromEntries(
+          Object.entries(parseObject(environment.envVars)).filter(
+            ([key]) => !isForbiddenConfigEnvKey(key),
+          ),
+        );
+        const bindingsToResolve: Record<string, unknown> = {};
+        for (const key of ["GEMINI_API_KEY", "AGY_API_KEY", "ANTIGRAVITY_API_KEY"]) {
+          if (environmentEnv[key] !== undefined) {
+            bindingsToResolve[key] = environmentEnv[key];
+          }
+        }
+        if (Object.keys(bindingsToResolve).length > 0) {
+          const resolution = await secretsSvc.resolveEnvBindings(
+            companyId,
+            bindingsToResolve,
+            buildActorSecretContext(req, { consumerType: "environment", consumerId: environmentId }),
+          );
+          if (
+            asNonEmptyString(resolution.env.GEMINI_API_KEY) ||
+            asNonEmptyString(resolution.env.AGY_API_KEY) ||
+            asNonEmptyString(resolution.env.ANTIGRAVITY_API_KEY)
+          ) {
+            return "present";
+          }
+        }
+        return "unknown";
+      }
+    }
+
+    const readiness = evaluateAgyCredentialReadiness({
+      env: process.env,
+    });
+    return readiness.ready ? "present" : "absent";
+  }
+
   // The cheap host-local authentication signal for one adapter type. The route
   // reads host-local state only: a stored Claude login, a resolved environment
-  // env var, or the local Codex credential readiness check. It leases no
+  // env var, or the local Codex/Antigravity credential readiness check. It leases no
   // sandbox, starts no shell command, and starts no model request. The two
   // access gates below run before any read, so a caller who cannot create
   // agents for the company and a foreign environment both fail closed before
@@ -3696,6 +3744,8 @@ export function agentRoutes(
           status = await evaluateClaudeAuthSignal(req, companyId, environmentId);
         } else if (type === "codex_local") {
           status = await evaluateCodexAuthSignal(req, companyId, environmentId);
+        } else if (type === "agy_local") {
+          status = await evaluateAgyAuthSignal(req, companyId, environmentId);
         }
       } catch {
         // A failed read is never a claim that the credential is absent. Report
@@ -5796,51 +5846,68 @@ export function agentRoutes(
         adapterConfig: patchData.adapterConfig,
       });
     }
-    const nextAiConfig = (patchData.adapterConfig ?? existing.adapterConfig) as Record<string, unknown>;
-    if (existing.runtimeConfig.aiConnection && requestedRuntimeConfig && !requestedRuntimeConfig.aiConnection
-      && !isAgentSetupDraft(existing)) {
-      const existingBinding = aiRuntimeConnectionBindingSchema.safeParse(existing.runtimeConfig.aiConnection).data;
-      if (existingBinding && agentHarnessType(existing.adapterType, existing.adapterConfig) === agentHarnessType(requestedAdapterType, nextAiConfig)
-        && (existingBinding.mode === "router" || isAiConnectionCompatible(existingBinding,
-          requestedAdapterType, nextAiConfig.model, nextAiConfig.provider, nextAiConfig.acpxAgent))) {
-        requestedRuntimeConfig.aiConnection = existingBinding;
+    const aiConfig = (patchData.adapterConfig ?? existing.adapterConfig) as Record<string, unknown>;
+    const targetSupportsAi = adapterSupportsAiConnections(
+      requestedAdapterType,
+      aiConfig.provider,
+      aiConfig.acpxAgent,
+    );
+    if (!targetSupportsAi) {
+      // Switching to a harness with no AI-connection support drops the stale
+      // binding instead of failing the update (it can never be used there).
+      if (existing.runtimeConfig.aiConnection || requestedRuntimeConfig?.aiConnection) {
+        requestedRuntimeConfig = {
+          ...(requestedRuntimeConfig ?? existing.runtimeConfig),
+        };
+        delete requestedRuntimeConfig.aiConnection;
+        patchData.runtimeConfig = requestedRuntimeConfig;
       }
-    }
-    if (!requestedRuntimeConfig?.aiConnection && !existing.runtimeConfig.aiConnection
-      && !isAgentSetupDraft(existing)
-      && requestedAdapterType === "paperclip_runner" && nextAiConfig.provider === "acpx"
-      && nextAiConfig.acpxAgent === "copilot"
-      && (touchesAdapterConfiguration || Object.prototype.hasOwnProperty.call(patchData, "defaultEnvironmentId"))) {
-      requestedRuntimeConfig = { ...(requestedRuntimeConfig ?? existing.runtimeConfig),
-        aiConnection: { provider: "github", method: "api_key", mode: "responsible_user" } };
-    }
-    const nextAiBinding = aiRuntimeConnectionBindingSchema.safeParse(requestedRuntimeConfig ? requestedRuntimeConfig.aiConnection : existing.runtimeConfig.aiConnection).data;
-    if (nextAiBinding) {
-      await assertCanConfigureAgentSetup(req, existing);
-      const changed = !isDeepStrictEqual(nextAiBinding, existing.runtimeConfig.aiConnection);
-      if (changed && req.actor.type === "agent") {
-        await connectionManagementService(db).authorize(req.actor, "connections:profiles", {
-          type: "connection_management", companyId: existing.companyId, purpose: "ai", targetAgentId: existing.id,
-          connectionId: "connectionId" in nextAiBinding ? nextAiBinding.connectionId : undefined,
-          operation: "agent.ai-binding.update",
-        });
+    } else {
+      const nextAiConfig = aiConfig;
+      if (existing.runtimeConfig.aiConnection && requestedRuntimeConfig && !requestedRuntimeConfig.aiConnection
+        && !isAgentSetupDraft(existing)) {
+        const existingBinding = aiRuntimeConnectionBindingSchema.safeParse(existing.runtimeConfig.aiConnection).data;
+        if (existingBinding && agentHarnessType(existing.adapterType, existing.adapterConfig) === agentHarnessType(requestedAdapterType, nextAiConfig)
+          && (existingBinding.mode === "router" || isAiConnectionCompatible(existingBinding,
+            requestedAdapterType, nextAiConfig.model, nextAiConfig.provider, nextAiConfig.acpxAgent))) {
+          requestedRuntimeConfig.aiConnection = existingBinding;
+        }
       }
-      const aiConfig = (patchData.adapterConfig ?? existing.adapterConfig) as Record<string, unknown>;
-      const nextEnvironmentId = Object.prototype.hasOwnProperty.call(patchData, "defaultEnvironmentId")
-        ? patchData.defaultEnvironmentId : existing.defaultEnvironmentId;
-      const runtimeSelectionChanged = requestedAdapterType !== existing.adapterType
-        || nextEnvironmentId !== existing.defaultEnvironmentId
-        || (nextAiBinding.mode !== "router" && ["model", "provider", "acpxAgent", "engine"].some(
-          key => aiConfig[key] !== existing.adapterConfig[key],
-        ));
-      if (nextAiBinding.mode !== "router" && !isAiConnectionCompatible(nextAiBinding, requestedAdapterType, aiConfig.model, aiConfig.provider, aiConfig.acpxAgent)) throw unprocessable("Select an AI connection compatible with the new harness and model");
-      const copilotConfigurationChanged = requestedAdapterType === "paperclip_runner" && aiConfig.provider === "acpx" && aiConfig.acpxAgent === "copilot"
-        && (touchesAdapterConfiguration || Object.prototype.hasOwnProperty.call(patchData, "defaultEnvironmentId"));
-      if (runtimeSettings || changed || runtimeSelectionChanged || copilotConfigurationChanged) {
-        const configuringSetup = isAgentSetupDraft(existing);
-        await validateManagedAgentBinding(req, existing.companyId, existing.id, requestedAdapterType, aiConfig, nextAiBinding,
-          (patchData.defaultEnvironmentId !== undefined ? patchData.defaultEnvironmentId : existing.defaultEnvironmentId) as string | null,
-          !configuringSetup && (!runtimeSettings || changed) ? "legacy" : "none", configuringSetup, Boolean(runtimeSettings));
+      if (!requestedRuntimeConfig?.aiConnection && !existing.runtimeConfig.aiConnection
+        && !isAgentSetupDraft(existing)
+        && requestedAdapterType === "paperclip_runner" && nextAiConfig.provider === "acpx"
+        && nextAiConfig.acpxAgent === "copilot"
+        && (touchesAdapterConfiguration || Object.prototype.hasOwnProperty.call(patchData, "defaultEnvironmentId"))) {
+        requestedRuntimeConfig = { ...(requestedRuntimeConfig ?? existing.runtimeConfig),
+          aiConnection: { provider: "github", method: "api_key", mode: "responsible_user" } };
+      }
+      const nextAiBinding = aiRuntimeConnectionBindingSchema.safeParse(requestedRuntimeConfig ? requestedRuntimeConfig.aiConnection : existing.runtimeConfig.aiConnection).data;
+      if (nextAiBinding) {
+        await assertCanConfigureAgentSetup(req, existing);
+        const changed = !isDeepStrictEqual(nextAiBinding, existing.runtimeConfig.aiConnection);
+        if (changed && req.actor.type === "agent") {
+          await connectionManagementService(db).authorize(req.actor, "connections:profiles", {
+            type: "connection_management", companyId: existing.companyId, purpose: "ai", targetAgentId: existing.id,
+            connectionId: "connectionId" in nextAiBinding ? nextAiBinding.connectionId : undefined,
+            operation: "agent.ai-binding.update",
+          });
+        }
+        const nextEnvironmentId = Object.prototype.hasOwnProperty.call(patchData, "defaultEnvironmentId")
+          ? patchData.defaultEnvironmentId : existing.defaultEnvironmentId;
+        const runtimeSelectionChanged = requestedAdapterType !== existing.adapterType
+          || nextEnvironmentId !== existing.defaultEnvironmentId
+          || (nextAiBinding.mode !== "router" && ["model", "provider", "acpxAgent", "engine"].some(
+            key => aiConfig[key] !== existing.adapterConfig[key],
+          ));
+        if (nextAiBinding.mode !== "router" && !isAiConnectionCompatible(nextAiBinding, requestedAdapterType, aiConfig.model, aiConfig.provider, aiConfig.acpxAgent)) throw unprocessable("Select an AI connection compatible with the new harness and model");
+        const copilotConfigurationChanged = requestedAdapterType === "paperclip_runner" && aiConfig.provider === "acpx" && aiConfig.acpxAgent === "copilot"
+          && (touchesAdapterConfiguration || Object.prototype.hasOwnProperty.call(patchData, "defaultEnvironmentId"));
+        if (runtimeSettings || changed || runtimeSelectionChanged || copilotConfigurationChanged) {
+          const configuringSetup = isAgentSetupDraft(existing);
+          await validateManagedAgentBinding(req, existing.companyId, existing.id, requestedAdapterType, aiConfig, nextAiBinding,
+            (patchData.defaultEnvironmentId !== undefined ? patchData.defaultEnvironmentId : existing.defaultEnvironmentId) as string | null,
+            !configuringSetup && (!runtimeSettings || changed) ? "legacy" : "none", configuringSetup, Boolean(runtimeSettings));
+        }
       }
     }
     if (requestedRuntimeConfig) patchData.runtimeConfig = requestedRuntimeConfig;

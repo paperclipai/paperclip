@@ -58,22 +58,91 @@ vi.mock("../api/auth", async (importOriginal) => {
   return { ...actual, authApi: { ...actual.authApi, getSession: mockAuthApi.getSession } };
 });
 
+const mockCompaniesApi = vi.hoisted(() => ({
+  create: vi.fn(),
+  list: vi.fn().mockResolvedValue([]),
+  detachInflightList: vi.fn(),
+}));
+
+const mockAgentsApi = vi.hoisted(() => ({
+  adapterModels: vi.fn(async () => []),
+  create: vi.fn(async () => ({
+    id: "setup-agent-1",
+    name: "Chief of Staff",
+    role: "general",
+    adapterType: "process",
+    adapterConfig: {},
+    metadata: { setupAdapterPending: true },
+    pauseReason: "setup",
+    status: "paused",
+    runtimeConfig: {},
+  })),
+  update: vi.fn(async () => ({})),
+  getAdapterAuthSignal: vi.fn(async () => ({ status: "present" })),
+  hire: vi.fn(async () => ({ agent: { id: "agent-1" }, approval: null })),
+  list: vi.fn(async () => []),
+  testEnvironment: vi.fn(async () => ({
+    adapterType: "agy_local",
+    status: "pass",
+    checks: [],
+    testedAt: new Date().toISOString(),
+  })),
+}));
+
+const mockSecretsApi = vi.hoisted(() => ({
+  list: vi.fn().mockResolvedValue([]),
+  listMyUserSecrets: vi.fn().mockResolvedValue([]),
+  createUserSecretDefinition: vi.fn().mockResolvedValue({ id: "def-1" }),
+  createMyUserSecret: vi.fn().mockResolvedValue({ id: "secret-1" }),
+  removeUserSecretDefinition: vi.fn().mockResolvedValue(undefined),
+}));
+
+const mockEnvironmentsApi = vi.hoisted(() => ({
+  list: vi.fn(async () => [] as Array<Record<string, unknown>>),
+  capabilities: vi.fn(
+    async (): Promise<import("@paperclipai/shared").EnvironmentCapabilities> =>
+      (await import("@paperclipai/shared")).getEnvironmentCapabilities([]),
+  ),
+}));
+
+const mockInstanceSettingsApi = vi.hoisted(() => ({
+  get: vi.fn(async () => ({ defaultEnvironmentId: null as string | null })),
+  getExperimental: vi.fn(async () => ({ enableManagedSandboxOnly: false })),
+}));
+
 vi.mock("../api/companies", () => ({
-  companiesApi: {
-    create: vi.fn(),
-    list: vi.fn().mockResolvedValue([]),
-    detachInflightList: vi.fn(),
-  },
+  companiesApi: mockCompaniesApi,
 }));
-vi.mock("../adapters", () => ({
-  listUIAdapters: () => mockAdapterRegistry.list,
-  getUIAdapter: () => ({ buildAdapterConfig: () => ({}) }),
+vi.mock("../api/agents", () => ({
+  agentsApi: mockAgentsApi,
 }));
+vi.mock("../api/secrets", () => ({
+  secretsApi: mockSecretsApi,
+}));
+vi.mock("../api/environments", () => ({
+  environmentsApi: mockEnvironmentsApi,
+}));
+vi.mock("../api/instanceSettings", () => ({
+  instanceSettingsApi: mockInstanceSettingsApi,
+}));
+vi.mock("../adapters", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../adapters")>();
+  return {
+    ...actual,
+    listUIAdapters: () => mockAdapterRegistry.list,
+    getUIAdapter: (type: string) => {
+      if (type === "hermes_local") {
+        return actual.getUIAdapter("hermes_local");
+      }
+      return { buildAdapterConfig: () => ({}) };
+    },
+  };
+});
 vi.mock("../adapters/metadata", () => ({ isVisualAdapterChoice: () => true }));
 vi.mock("../adapters/adapter-display-registry", () => ({
   getAdapterDisplay: (type: string) => ({
     type,
-    recommended: false,
+    recommended: type === "claude_local" || type === "codex_local",
     label: type,
     description: "",
     icon: () => null,
@@ -109,6 +178,15 @@ async function flushReact() {
     await Promise.resolve();
     await new Promise((resolve) => window.setTimeout(resolve, 0));
   });
+}
+
+function setControlledValue(el: HTMLInputElement, value: string) {
+  const setter = Object.getOwnPropertyDescriptor(
+    window.HTMLInputElement.prototype,
+    "value",
+  )!.set!;
+  setter.call(el, value);
+  el.dispatchEvent(new Event("input", { bubbles: true }));
 }
 
 async function mount(nativeRunnerEnabled?: boolean) {
@@ -149,6 +227,9 @@ describe("OnboardingWizard adapter selection", () => {
     mockAdapterRegistry.list = [];
     mockAdapterRegistry.disabled = new Set<string>();
     mockAdapterRegistry.loaded = true;
+    mockAgentsApi.getAdapterAuthSignal.mockResolvedValue({ status: "present" });
+    mockSecretsApi.list.mockResolvedValue([]);
+    mockSecretsApi.listMyUserSecrets.mockResolvedValue([]);
   });
 
   afterEach(() => {
@@ -261,6 +342,99 @@ describe("OnboardingWizard adapter selection", () => {
     expect(saved.command).toBe("");
     expect(saved.args).toBe("");
     expect(saved.url).toBe("");
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
+  it("normalizes a saved cursor_cloud draft to claude_local", async () => {
+    mockAdapterRegistry.list = [
+      { type: "claude_local" },
+      { type: "codex_local" },
+      { type: "cursor_cloud" },
+    ];
+    window.localStorage.setItem(
+      ONBOARDING_STORAGE_KEY,
+      JSON.stringify({
+        step: 0,
+        adapterType: "cursor_cloud",
+      }),
+    );
+
+    const { root } = await mount();
+
+    const saved = JSON.parse(
+      window.localStorage.getItem(ONBOARDING_STORAGE_KEY) ?? "{}",
+    );
+    expect(saved.adapterType).toBe("claude_local");
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
+  it("excludes cursor_cloud from more harnesses even when registered", async () => {
+    mockAdapterRegistry.list = [
+      { type: "claude_local" },
+      { type: "codex_local" },
+      { type: "cursor" },
+      { type: "cursor_cloud" },
+    ];
+    const company = { id: "comp-1", name: "Acme", issuePrefix: "ACM" };
+    mockCompany.companies = [company];
+    mockCompaniesApi.list.mockResolvedValue([company]);
+    window.localStorage.setItem(
+      ONBOARDING_STORAGE_KEY,
+      JSON.stringify({
+        step: 4,
+        companyName: "Acme",
+        agentName: "Chief of Staff",
+        createdCompanyId: "comp-1",
+      }),
+    );
+
+    const { root } = await mount();
+
+    const toggleButton = Array.from(document.querySelectorAll("button")).find(
+      (btn) => btn.textContent?.includes("More harnesses"),
+    );
+    expect(toggleButton).toBeTruthy();
+    expect(toggleButton?.textContent).toContain("More harnesses (1)");
+
+    await act(async () => {
+      toggleButton?.click();
+    });
+    await flushReact();
+
+    const cursorButton = Array.from(document.querySelectorAll("button")).find(
+      (btn) => /cursor/i.test(btn.textContent ?? "") && !/cloud/i.test(btn.textContent ?? ""),
+    );
+    expect(cursorButton).toBeTruthy();
+
+    const cursorCloudButton = Array.from(document.querySelectorAll("button")).find(
+      (btn) => /cursor.*cloud/i.test(btn.textContent ?? ""),
+    );
+    expect(cursorCloudButton).toBeUndefined();
+
+    // Picking the visible "More harnesses" option is a real selection: the
+    // step's Connect button must go live. Before the fix, `sourceSelected`
+    // searched only the recommended row, so `connectStepReady` stayed false
+    // and onboarding could not continue from a More pick.
+    await act(async () => {
+      cursorButton?.click();
+    });
+    await flushReact();
+    await act(async () => {
+      await new Promise((resolve) => window.setTimeout(resolve, 500));
+    });
+    await flushReact();
+
+    const connectButton = Array.from(document.querySelectorAll("button")).find(
+      (btn) => btn.textContent?.trim() === "Connect",
+    );
+    expect(connectButton).toBeTruthy();
+    expect(connectButton?.disabled).toBe(false);
 
     await act(async () => {
       root.unmount();

@@ -52,7 +52,7 @@ export function AgentProviderConnection({
   advancedConnection,
 }: {
   companyId: string;
-  adapterType: "claude_local" | "codex_local" | "grok_local" | "antigravity_runtime";
+  adapterType: "claude_local" | "codex_local" | "grok_local" | "agy_local" | "antigravity_runtime";
   environmentId: string | null;
   canLogin: boolean;
   requiresAgent?: boolean;
@@ -110,10 +110,10 @@ export function AgentProviderConnection({
   const [error, setError] = useState<string | null>(null);
   const [storedConnection, setStoredConnection] =
     useState<ProviderConnection | null>(null);
-  const provider = adapterType === "antigravity_runtime" ? "Google" : adapterType === "claude_local" ? "Claude" : adapterType === "grok_local" ? "Grok" : "OpenAI";
+  const provider = adapterType === "antigravity_runtime" ? "Google" : adapterType === "claude_local" ? "Claude" : adapterType === "grok_local" ? "Grok" : adapterType === "agy_local" ? "Antigravity" : "OpenAI";
   const envKey =
-    adapterType === "antigravity_runtime" ? "GEMINI_API_KEY" : adapterType === "claude_local" ? "ANTHROPIC_API_KEY" : adapterType === "grok_local" ? "XAI_API_KEY" : "OPENAI_API_KEY";
-  const aiProvider = adapterType === "antigravity_runtime" ? "google" : adapterType === "claude_local" ? "anthropic" : adapterType === "grok_local" ? "xai" : "openai";
+    adapterType === "antigravity_runtime" ? "GEMINI_API_KEY" : adapterType === "claude_local" ? "ANTHROPIC_API_KEY" : adapterType === "grok_local" ? "XAI_API_KEY" : adapterType === "agy_local" ? "GEMINI_API_KEY" : "OPENAI_API_KEY";
+  const aiProvider = adapterType === "antigravity_runtime" ? "google" : adapterType === "claude_local" ? "anthropic" : adapterType === "grok_local" ? "xai" : adapterType === "agy_local" ? "antigravity" : "openai";
   const availableKeys = useSavedProviderKeys(companyId, envKey);
   // Add/reconnect creates the requested account, never copies a saved account's
   // credential or silently changes its ownership. Agent setup retains reuse.

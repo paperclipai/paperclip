@@ -2,6 +2,7 @@ import path from "node:path";
 
 export function managedAiHomeEnvironment(home: string): Record<string, string> {
   const providerHome = path.join(home, "provider");
+  const agyCliHome = path.join(home, ".gemini", "antigravity-cli");
   return {
     HOME: home,
     XDG_CONFIG_HOME: path.join(home, "config"),
@@ -9,6 +10,8 @@ export function managedAiHomeEnvironment(home: string): Record<string, string> {
     CODEX_HOME: providerHome,
     GROK_HOME: providerHome,
     CLAUDE_CONFIG_DIR: providerHome,
+    ANTIGRAVITY_CLI_HOME: agyCliHome,
+    GEMINI_CLI_HOME: agyCliHome,
     HERMES_HOME: providerHome,
   };
 }

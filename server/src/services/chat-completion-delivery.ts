@@ -54,15 +54,18 @@ export async function recordAcceptedChatHandoff(tx: Connection, task: Issue, sou
 }
 
 export async function recordChatHandoff(tx: Connection, task: Issue, actorRunId: string | null | undefined) {
-  if (!actorRunId || task.conversationAgentId || !task.createdByAgentId) return;
-  const [run] = await tx.select().from(heartbeatRuns).where(and(eq(heartbeatRuns.id, actorRunId),
+  const effectiveRunId = actorRunId ?? task.originRunId;
+  if (!effectiveRunId || task.conversationAgentId || !task.createdByAgentId) return;
+  const [run] = await tx.select().from(heartbeatRuns).where(and(eq(heartbeatRuns.id, effectiveRunId),
     eq(heartbeatRuns.companyId, task.companyId), eq(heartbeatRuns.agentId, task.createdByAgentId)));
   const sourceId = run?.nativeIssueId ?? run?.contextSnapshot?.issueId;
   if (typeof sourceId !== "string" || sourceId === task.id) return;
   const [source] = await tx.select().from(issues).where(and(eq(issues.id, sourceId), eq(issues.companyId, task.companyId)));
-  if (!source?.conversationAgentId || source.conversationAgentId !== run.agentId ||
-    source.conversationSessionGeneration !== run.contextSnapshot?.conversationSessionGeneration) return;
-  await recordAcceptedChatHandoff(tx, task, source);
+  const sessionGeneration = run?.contextSnapshot?.conversationSessionGeneration;
+  if (typeof sessionGeneration !== "number" || !source?.conversationAgentId || source.conversationAgentId !== run.agentId ||
+    source.conversationSessionGeneration !== sessionGeneration) return;
+  await tx.insert(handoffs).values({ taskId: task.id, companyId: task.companyId,
+    conversationId: source.id, agentId: source.conversationAgentId, sessionGeneration }).onConflictDoNothing();
 }
 
 /** Must run on the same transaction as status projection (including native arbitration). */
@@ -190,9 +193,12 @@ export async function prepareChatCompletionTurn(db: Db, run: Run): Promise<Run> 
     const [source] = await tx.select().from(issues).where(and(eq(issues.id, issueId), eq(issues.companyId, run.companyId))).for("update");
     if (!source) return run;
     if (source.originKind === "onboarding_first_task" && run.contextSnapshot?.wakeReason === "issue_children_completed") {
-      const children = await tx.select().from(issues).where(and(eq(issues.companyId, run.companyId), eq(issues.parentId, source.id), eq(issues.status, "done"))).orderBy(issues.createdAt).limit(20);
+      const children = await tx.select().from(issues).where(and(eq(issues.companyId, run.companyId), eq(issues.parentId, source.id), eq(issues.status, "done"))).orderBy(issues.createdAt).limit(21);
+      const hasOverflow = children.length > 20;
+      const reported = hasOverflow ? children.slice(0, 20) : children;
       const contextSnapshot = { ...run.contextSnapshot, onboardingCompletion: true,
-        chatCompletionUpdates: await Promise.all(children.map(child => taskResult(tx, child))) };
+        ...(hasOverflow ? { onboardingCompletionTruncated: true } : {}),
+        chatCompletionUpdates: await Promise.all(reported.map(child => taskResult(tx, child))) };
       await tx.update(heartbeatRuns).set({ contextSnapshot }).where(eq(heartbeatRuns.id, run.id));
       return { ...run, contextSnapshot };
     }
@@ -245,7 +251,10 @@ export function chatCompletionAlreadyReported(run: Run) {
 
 export function chatCompletionInstruction(context: Record<string, unknown>) {
   if (!Array.isArray(context.chatCompletionUpdates) || !context.chatCompletionUpdates.length) return "";
-  return `\n\nDelegated work has completed. Tell the user in this conversation what finished and provide access using the supplied task links. Report completion only for the tasks listed in this update; other tasks receive their own completion updates. Use the recorded status and result locations; do not repeat a promise to do work that is already Done. Do not start more work, change these tasks, or create duplicate review requests. Reuse and link the task’s existing canonical review/decision; completion updates are notifications, not fresh quality-review authority. recordedOutputDecisions are human verdicts on the exact versions shown. Link them instead of re-requesting review of those versions; do not treat approval as permission to publish. A separate explicit user request may authorize a new review. Keep opaque IDs and hashes out of your visible reply. The following JSON contains server-recorded lifecycle facts and result locations:\n${JSON.stringify(context.chatCompletionUpdates)}`;
+  const overflowNotice = context.onboardingCompletionTruncated
+    ? ` Showing the first ${context.chatCompletionUpdates.length} completed tasks; additional completed tasks omitted to preserve context window.`
+    : "";
+  return `\n\nDelegated work has completed. Tell the user in this conversation what finished and provide access using the supplied task links. Report completion only for the tasks listed in this update; other tasks receive their own completion updates.${overflowNotice} Use the recorded status and result locations; do not repeat a promise to do work that is already Done. Do not start more work, change these tasks, or create duplicate review requests. Reuse and link the task’s existing canonical review/decision; completion updates are notifications, not fresh quality-review authority. recordedOutputDecisions are human verdicts on the exact versions shown. Link them instead of re-requesting review of those versions; do not treat approval as permission to publish. A separate explicit user request may authorize a new review. Keep opaque IDs and hashes out of your visible reply. The following JSON contains server-recorded lifecycle facts and result locations:\n${JSON.stringify(context.chatCompletionUpdates)}`;
 }
 
 /** Called under the comment transaction, before insertion. An event can publish only once. */

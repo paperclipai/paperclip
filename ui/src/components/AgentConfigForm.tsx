@@ -7,7 +7,7 @@ import { adaptersApi } from "../api/adapters";
 import { canQualifyRunnerEnvironment, qualifyRunnerEnvironment } from "../lib/qualify-claude-setup";
 import { aiRoutingHarness } from "@paperclipai/shared";
 import { AiConnectionField } from "./ai-connections/AiConnectionField";
-import { aiConnectionBindingSchema, aiRuntimeConnectionBindingSchema } from "@paperclipai/shared";
+import { aiConnectionBindingSchema, aiRuntimeConnectionBindingSchema, adapterSupportsAiConnections } from "@paperclipai/shared";
 import { testAgentSetup } from "@/lib/test-agent-setup";
 import { setupEfforts } from "../lib/agent-setup-fields";
 import { RuntimeTestCard } from "./RuntimeTestCard";
@@ -45,6 +45,7 @@ import { DEFAULT_CURSOR_LOCAL_MODEL } from "@paperclipai/adapter-cursor-local";
 import { DEFAULT_GEMINI_LOCAL_MODEL } from "@paperclipai/adapter-gemini-local";
 import { DEFAULT_KIMI_LOCAL_MODEL } from "@paperclipai/adapter-kimi-local";
 import { DEFAULT_OPENCODE_LOCAL_MODEL } from "@paperclipai/adapter-opencode-local";
+import { DEFAULT_AGY_LOCAL_MODEL } from "@paperclipai/adapter-agy-local";
 import { QueryErrorState, useQueryView } from "@/components/QueryView";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -182,7 +183,7 @@ const emptyOverlay: AgentConfigOverlay = {
 const EMPTY_ENV: Record<string, EnvBinding> = {};
 
 export function supportsAdapterModelRefresh(adapterType: string): boolean {
-  return adapterType === "claude_local" || adapterType === "codex_local" || adapterType === "paperclip_runner" || adapterType === "opencode_local";
+  return adapterType === "claude_local" || adapterType === "codex_local" || adapterType === "paperclip_runner" || adapterType === "opencode_local" || adapterType === "agy_local";
 }
 
 export function resolvePaperclipRunnerTransitionModel(
@@ -1052,9 +1053,11 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
   const modelCacheIdentity = accountBoundCatalog ? `${modelProvider}:${runnerAcpxAgent}:${isCreate ? "new" : props.agent.id}:${JSON.stringify(modelAiBinding ?? null)}` : runnerAcpxAgent ? `${modelProvider}:${runnerAcpxAgent}` : modelProvider;
   const connectionModels = useConnectionModels(isExternalRunner ? null : selectedCompanyId, isCreate ? undefined : modelAiBinding, aiRoutingHarness(adapterType, runnerProvider, runnerAcpxAgent));
   // Fetch adapter models for the effective provider, including unsaved changes.
+  // ACPX providers host several agents (Claude, Grok, Copilot, ...); the models
+  // route needs the selected agent or it defaults to Claude's catalog.
   const modelAdapterType = accountBoundCatalog ? "paperclip_runner" : isRunnerHarness ? harnessType : adapterType;
   const modelQueryKey = selectedCompanyId
-    ? queryKeys.agents.adapterModels(selectedCompanyId, modelAdapterType, currentDefaultEnvironmentId || null, modelCacheIdentity)
+    ? queryKeys.agents.adapterModels(selectedCompanyId, modelAdapterType, currentDefaultEnvironmentId || null, modelCacheIdentity, runnerAcpxAgent)
     : ["agents", "none", "adapter-models", adapterType];
   const fetchedModelsQuery = useQuery({
     queryKey: modelQueryKey,
@@ -1473,9 +1476,8 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
             ? kimiThinkingEffortOptions
             : adapterType === "pi_local"
               ? [{ id: "", label: "Auto" }, ...["off", "minimal", "low", "medium", "high", "xhigh"].map(id => ({ id, label: id }))]
-              : harnessType === "claude_local" || harnessType === "grok_local"
-                ? [{ id: "", label: "Auto" }, ...setupEfforts(harnessType, currentModelId).map((id) => ({
-                    id,
+              : harnessType === "claude_local" || harnessType === "grok_local" || adapterType === "grok_local" || adapterType === "agy_local"
+                ? [{ id: "", label: "Auto" }, ...setupEfforts(adapterType === "agy_local" ? adapterType : harnessType, currentModelId).map((id) => ({                    id,
                     label: id === "xhigh" ? "X-High" : id[0].toUpperCase() + id.slice(1),
                   }))]
                 : claudeThinkingEffortOptions;
@@ -1857,6 +1859,8 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                       nextValues.model = DEFAULT_CURSOR_LOCAL_MODEL;
                     } else if (t === "opencode_local") {
                       nextValues.model = DEFAULT_OPENCODE_LOCAL_MODEL;
+                    } else if (t === "agy_local") {
+                      nextValues.model = DEFAULT_AGY_LOCAL_MODEL;
                     } else if (t === "paperclip_runner") {
                       nextValues.model = DEFAULT_CODEX_LOCAL_MODEL;
                     }
@@ -1868,11 +1872,13 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                   } else {
                     // Clear all adapter config and explicitly blank out model + effort/mode keys
                     // so the old adapter's values don't bleed through via eff()
-                    setOverlay((prev) => ({
-                      ...prev,
-                      adapterType: t,
-                      runner: ["codex_local", "claude_local", "opencode_local", "pi_local"].includes(t) ? "auto" : undefined,
-                      adapterConfig: {
+                    const newSupportsAi = adapterSupportsAiConnections(t);
+                    setOverlay((prev) => {
+                      const nextOverlay: AgentConfigOverlay = {
+                        ...prev,
+                        adapterType: t,
+                        runner: ["codex_local", "claude_local", "opencode_local", "pi_local"].includes(t) ? "auto" : undefined,
+                        adapterConfig: {
                         model:
                           t === "gemini_local"
                             ? DEFAULT_GEMINI_LOCAL_MODEL
@@ -1882,6 +1888,8 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                               ? DEFAULT_OPENCODE_LOCAL_MODEL
                             : t === "cursor"
                               ? DEFAULT_CURSOR_LOCAL_MODEL
+                            : t === "agy_local"
+                              ? DEFAULT_AGY_LOCAL_MODEL
                             : external ? ""
                             : t === "paperclip_runner"
                               ? resolvePaperclipRunnerTransitionModel(adapterType, config.model)
@@ -1897,8 +1905,21 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                                 ...paperclipRunnerTransitionConfig(adapterType, eff("adapterConfig", "model", config.model)),
                               }
                           : {}),
-                      },
-                    }));
+                        },
+                      };
+                      if (!newSupportsAi) {
+                        const currentRc = ((prev.runtime.runtimeConfig as Record<string, unknown> | undefined) ?? runtimeConfig);
+                        if (currentRc && "aiConnection" in currentRc) {
+                          const nextRc = { ...currentRc };
+                          delete nextRc.aiConnection;
+                          nextOverlay.runtime = {
+                            ...prev.runtime,
+                            runtimeConfig: nextRc,
+                          };
+                        }
+                      }
+                      return nextOverlay;
+                    });
                   }
                 }}
               />
@@ -1977,7 +1998,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                 value={currentModelId}
                 onChange={(v) => {
                   const supportedEfforts = setupEfforts(isRunnerHarness ? harnessType : adapterType, v);
-                  const clearUnsupportedEffort = ["codex_local", "claude_local", "grok_local"].includes(isRunnerHarness ? harnessType : adapterType)
+                  const clearUnsupportedEffort = ["codex_local", "claude_local", "grok_local", "agy_local"].includes(isRunnerHarness ? harnessType : adapterType)
                     && Boolean(currentThinkingEffort)
                     && !supportedEfforts.includes(String(currentThinkingEffort));
                   if (isCreate) {
@@ -2154,6 +2175,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                         pi_local: "pi",
                         cursor: "agent",
                         opencode_local: "opencode",
+                        agy_local: "agy",
                       } as Record<string, string>)[adapterType] ?? adapterType.replace(/_local$/, "")
                     }
                   />
@@ -4446,10 +4468,16 @@ function ThinkingEffortDropdown({
   open: boolean;
   onOpenChange: (open: boolean) => void;
 }) {
+  // A stored effort the current model does not support is not in the option
+  // list; without an entry the select renders "Auto" while the unsupported
+  // value stays saved. Surface it explicitly so the operator can correct it.
+  const effectiveOptions = value && !options.some((option) => option.id === value)
+    ? [...options, { id: value, label: `${value === "xhigh" ? "X-High" : value.charAt(0).toUpperCase() + value.slice(1)} (unsupported)` }]
+    : options;
   return <Field label="Thinking effort" hint={help.thinkingEffort}>
     <SelectPopover aria-label="Thinking effort" value={value} onValueChange={onChange}
       open={open} onOpenChange={onOpenChange}
-      options={options.map(option => ({ value: option.id, label: option.label,
+      options={effectiveOptions.map(option => ({ value: option.id, label: option.label,
         suffix: option.id ? <span className="text-xs text-muted-foreground font-mono">{option.id}</span> : undefined,
       }))} />
   </Field>;

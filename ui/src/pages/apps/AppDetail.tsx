@@ -361,7 +361,7 @@ function StandardAppDetail({ renderActions, renderAgentSettings, renderConnectio
 
   const authorization = useAuthorizationWindow();
   const startOAuth = useMutation({
-    mutationFn: (input?: { asAgentId?: string }) => toolsApi.startOAuth(connectionId, input),
+    mutationFn: (input?: { asAgentId?: string } | void) => toolsApi.startOAuth(connectionId, input ?? undefined),
     onSuccess: async (start) => {
       try {
         await authorization.open(start);

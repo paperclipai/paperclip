@@ -30,6 +30,7 @@ import {
   routineTriggers,
 } from "@paperclipai/db";
 import { readPaperclipSkillSyncPreference } from "@paperclipai/adapter-utils/server-utils";
+import { DEFAULT_AGY_LOCAL_SUMMARIZER_MODEL } from "@paperclipai/adapter-agy-local";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
@@ -342,6 +343,17 @@ describeEmbeddedPostgres("built-in agents", () => {
     expect(edited.agent).toMatchObject({ adapterType: "paperclip_runner", adapterConfig: { provider: "codex", model: "gpt-5.4" } });
   });
 
+  it("provisions a non-default adapter with an empty config without inheriting the default adapter model", async () => {
+    const companyId = await seedCompany({ requireApproval: false });
+    const svc = builtInAgentService(db);
+    const created = await svc.ensure(companyId, "summarizer", { adapterType: "codex_local", adapterConfig: {}, runner: "legacy" });
+    expect(created.agent?.adapterType).toBe("codex_local");
+    const rows = await db.select().from(agents).where(eq(agents.companyId, companyId));
+    expect(rows).toHaveLength(1);
+    expect((rows[0]!.adapterConfig as Record<string, unknown>).model).toBeUndefined();
+    expect(rows[0]!.metadata).toMatchObject({ paperclipBuiltInSetupRequired: true });
+  });
+
   it("freezes Codex built-in execution in the reviewed hire through service restart", async () => {
     const companyId = await seedCompany({ requireApproval: true });
     const result = await builtInAgentService(db).provision(companyId, "briefs", { adapterType: "codex_local", adapterConfig: { model: "gpt-5.4" } }, { requestedByUserId: "board-user" });
@@ -528,8 +540,77 @@ describeEmbeddedPostgres("built-in agents", () => {
       details: {
         code: "built_in_agent_adapter_not_allowed",
         key: "briefs",
-        allowedAdapterTypes: ["codex_local", "claude_local", "gemini_local", "opencode_local", "process"],
+        allowedAdapterTypes: ["codex_local", "claude_local", "gemini_local", "opencode_local", "agy_local", "process"],
       },
+    });
+  });
+
+  it("allows provisioning summarizer with agy_local defaulting to low-effort model and dangerouslySkipPermissions false", async () => {
+    const companyId = await seedCompany();
+
+    const state = await builtInAgentService(db).ensure(companyId, "summarizer", {
+      adapterType: "agy_local",
+    });
+
+    expect(state.status).toBe("paused");
+    expect(state.agent?.adapterType).toBe("agy_local");
+    expect(state.agent?.adapterConfig).toMatchObject({
+      model: DEFAULT_AGY_LOCAL_SUMMARIZER_MODEL,
+      dangerouslySkipPermissions: false,
+    });
+
+    const stateExplicitTrue = await builtInAgentService(db).ensure(companyId, "summarizer", {
+      adapterType: "agy_local",
+      adapterConfig: { dangerouslySkipPermissions: true },
+    });
+    expect(stateExplicitTrue.agent?.adapterConfig).toMatchObject({
+      dangerouslySkipPermissions: true,
+    });
+  });
+
+  it("drops stale AI connection when reconfiguring summarizer to agy_local", async () => {
+    const companyId = await seedCompany();
+
+    const initial = await builtInAgentService(db).ensure(companyId, "summarizer");
+    expect(initial.agent?.adapterType).toBe("paperclip_runner");
+    await db.update(agents).set({
+      runtimeConfig: {
+        aiConnection: {
+          provider: "anthropic",
+          method: "api_key",
+          mode: "responsible_user",
+        },
+      },
+    }).where(eq(agents.id, initial.agent!.id));
+
+    const updated = await builtInAgentService(db).ensure(companyId, "summarizer", {
+      adapterType: "agy_local",
+    });
+
+    expect(updated.agent?.adapterType).toBe("agy_local");
+    expect(updated.agent?.runtimeConfig.aiConnection).toBeUndefined();
+  });
+
+  it("keeps a router-mode AI connection binding when reconfiguring the summarizer", async () => {
+    const companyId = await seedCompany();
+
+    const initial = await builtInAgentService(db).ensure(companyId, "summarizer");
+    expect(initial.agent?.adapterType).toBe("paperclip_runner");
+    const poolId = randomUUID();
+    await db.update(agents).set({
+      runtimeConfig: {
+        aiConnection: { mode: "router", connectionId: poolId },
+      },
+    }).where(eq(agents.id, initial.agent!.id));
+
+    const updated = await builtInAgentService(db).ensure(companyId, "summarizer", {
+      adapterType: "agy_local",
+    });
+
+    expect(updated.agent?.adapterType).toBe("agy_local");
+    expect(updated.agent?.runtimeConfig.aiConnection).toEqual({
+      mode: "router",
+      connectionId: poolId,
     });
   });
 

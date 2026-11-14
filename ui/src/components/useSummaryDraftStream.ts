@@ -5,7 +5,7 @@ import { useQuery } from "@tanstack/react-query";
 import type { LiveEvent, SummarySlotIssueRef } from "@paperclipai/shared";
 
 import { readTranscriptRequest } from "./transcript/read-transcript-request";
-import type { RunLogChunk } from "@/adapters";
+import { buildTranscript, getUIAdapter, type RunLogChunk } from "@/adapters";
 import { heartbeatsApi } from "@/api/heartbeats";
 import { useCompanyLiveEvent, useTranscriptLiveStream } from "@/context/LiveUpdatesProvider";
 import { queryKeys } from "@/lib/queryKeys";
@@ -20,6 +20,7 @@ import {
 import {
   closeDanglingCodeFence,
   extractAssistantOutputText,
+  extractAssistantTextFromEntries,
   parseSummaryDraftStream,
 } from "@/lib/summary-draft-stream";
 
@@ -54,11 +55,13 @@ function readPayloadString(value: unknown): string | null {
  * Learns the generation run's id from `heartbeat.run.progress` /
  * `heartbeat.run.queued` events (matched by `issueId`), falling back to the
  * issue's active-run endpoint after a page refresh. It then merges the run's
- * assistant `acpx.text_delta` output from both the persisted run-log poller and
+ * assistant output from both the persisted run-log poller and
  * the live company-events socket (reusing the shared chunk-merge/seq-dedupe
  * util) and parses the STATUS lines + sentinel-wrapped draft out of that stream.
+ * Assistant text comes from the run adapter's normalized transcript entries;
+ * the `acpx.text_delta` fallback covers runs whose adapter is not known yet.
  *
- * Degrades gracefully: no run id / no deltas (WS down, non-ACP adapter, model
+ * Degrades gracefully: no run id / no deltas (WS down, unknown adapter, model
  * skipped the protocol) simply yields an empty stream and the card keeps its
  * spinner. State resets whenever the tracked generation changes.
  */
@@ -70,6 +73,9 @@ export function useSummaryDraftStream(
   const issueId = generatingIssue?.id ?? null;
   const [runId, setRunId] = useState<string | null>(null);
   const [chunks, setChunks] = useState<RunLogChunk[]>([]);
+  // Last known adapter for the tracked run, latched so the draft survives the
+  // active-run endpoint returning null once the run completes.
+  const [runAdapterType, setRunAdapterType] = useState<string | null>(null);
 
   const mergeRefs = useRef<ChunkMergeRefs>(freshMergeRefs());
   const pendingLogRowsRef = useRef(new Map<string, string>());
@@ -103,6 +109,7 @@ export function useSummaryDraftStream(
   // a superseded generation (new issue id) or generation ending (null).
   useEffect(() => {
     setRunId(null);
+    setRunAdapterType(null);
     setChunks([]);
     mergeRefs.current = freshMergeRefs();
     pendingLogRowsRef.current = new Map();
@@ -133,12 +140,15 @@ export function useSummaryDraftStream(
     if (nextRunId) setRunId((current) => (current === nextRunId ? current : nextRunId));
   });
 
-  // Fallback: resolve the active run for the generation issue when no live event
-  // has surfaced the run id yet (e.g. a page refresh mid-generation).
+  // Resolve the active run for the generation issue: the fallback run id when
+  // no live event has surfaced it yet (e.g. a page refresh mid-generation),
+  // and the run adapter, which selects the stdout parser that normalizes the
+  // run's provider output into transcript entries. The key includes the run id
+  // so a new generation refetches its own adapter.
   const activeRunQuery = useQuery({
-    queryKey: queryKeys.issues.activeRun(issueId ?? "__none__"),
+    queryKey: [...queryKeys.issues.activeRun(issueId ?? "__none__"), runId ?? null],
     queryFn: () => heartbeatsApi.activeRunForIssue(issueId!),
-    enabled: visible && Boolean(companyId) && Boolean(issueId) && !runId,
+    enabled: visible && Boolean(companyId) && Boolean(issueId),
     retry: retryTransientOnly(0),
     refetchInterval: runId ? false : 4000,
   });
@@ -146,13 +156,24 @@ export function useSummaryDraftStream(
   useEffect(() => {
     if (fallbackRunId) setRunId((current) => current ?? fallbackRunId);
   }, [fallbackRunId]);
+  const activeRunAdapterType = activeRunQuery.data?.adapterType ?? null;
 
   useEffect(() => {
     logOffsetRef.current = 0;
     pendingLogRowsRef.current = new Map();
     logIdentityRef.current = null; retiredLogIdentitiesRef.current.clear(); sequenceRef.current = new TranscriptSequence();
     gapPendingRef.current = false; mergeRefs.current = freshMergeRefs(); setChunks([]);
+    setRunAdapterType(null);
   }, [runId, companyId, issueId]);
+  // Latch the adapter after the reset above, so a run-id change first clears
+  // the previous run's adapter and then re-applies the current run's adapter
+  // (the effect re-runs on the run-id change itself, not only on a value
+  // change, which a bare value dep would miss when the adapter is unchanged).
+  useEffect(() => {
+    if (activeRunAdapterType) {
+      setRunAdapterType((current) => (current === activeRunAdapterType ? current : activeRunAdapterType));
+    }
+  }, [activeRunAdapterType, runId]);
   // Live token deltas over the shared company-events socket.
   const stream = useTranscriptLiveStream(runId ? [runId] : [], { companyId, enabled: visible && Boolean(issueId) }, (event: LiveEvent) => {
     if (!visible || !runId) return;
@@ -214,7 +235,18 @@ export function useSummaryDraftStream(
     };
   }, [visible, companyId, runId, appendChunks, stream.healthy, stream.epoch, catchupGeneration]);
 
-  const parse = useMemo(() => parseSummaryDraftStream(extractAssistantOutputText(chunks)), [chunks]);
+  // Assistant text comes from the run adapter's normalized transcript entries
+  // (the same pipeline the transcript view uses), so no provider payload is
+  // parsed here. Until the adapter is known, fall back to the `acpx` record
+  // path; it also covers adapters whose parser yields no assistant entries.
+  const transcript = useMemo(() => {
+    if (!runAdapterType) return null;
+    return buildTranscript(chunks, getUIAdapter(runAdapterType));
+  }, [chunks, runAdapterType]);
+  const parse = useMemo(() => {
+    const assistantText = transcript ? extractAssistantTextFromEntries(transcript) : "";
+    return parseSummaryDraftStream(assistantText || extractAssistantOutputText(chunks));
+  }, [chunks, transcript]);
 
   const draft = parse.draft !== null && !parse.draftClosed
     ? closeDanglingCodeFence(parse.draft)

@@ -62,6 +62,25 @@ function logEvent(runId: string, seq: number, text: string): LiveEvent {
   };
 }
 
+function agyLogEvent(runId: string, seq: number, stepUpdate: unknown): LiveEvent {
+  // Real run-log chunks carry their line terminator, which the transcript
+  // builder needs to split records; a chunk without one reads as a partial
+  // line and is held in its buffer.
+  return {
+    id: seq,
+    companyId: "company-1",
+    type: "heartbeat.run.log",
+    createdAt: `2026-07-15T00:00:0${seq}.000Z`,
+    payload: {
+      runId,
+      seq,
+      ts: `2026-07-15T00:00:0${seq}.000Z`,
+      stream: "stdout",
+      chunk: `${JSON.stringify({ event: "step_update", step_update: stepUpdate })}\n`,
+    },
+  };
+}
+
 interface Captured {
   runId: string | null;
   statusLine: string | null;
@@ -161,6 +180,43 @@ describe("useSummaryDraftStream", () => {
       for (const event of sliceEvents("run-1", PROTOCOL, 4)) {
         dispatchLiveEventToSubscribers(subscribers, "company-1", event);
       }
+    });
+    await flushQueries();
+
+    expect(captured.current?.statusLine).toBe("writing the summary…");
+    expect(captured.current?.draft).toBe("## Needs you\n- Approve the launch");
+    expect(captured.current?.draftClosed).toBe(true);
+    expect(captured.current?.hasStream).toBe(true);
+  });
+
+  it("extracts the draft from agy step_update output through the adapter parser", async () => {
+    // The run adapter is agy_local, so the hook must consume the adapter's
+    // normalized assistant entries — not parse step_update payloads itself.
+    mockHeartbeatsApi.activeRunForIssue.mockResolvedValue({ id: "run-1", adapterType: "agy_local" });
+    const subscribers = new Set<CompanyLiveEventHandler>();
+    ({ root } = renderHarness(issue("1"), subscribers));
+    await flushQueries();
+    expect(captured.current?.runId).toBe("run-1");
+
+    await act(async () => {
+      dispatchLiveEventToSubscribers(
+        subscribers,
+        "company-1",
+        agyLogEvent("run-1", 1, { step_type: "agent_response", text_delta: "STATUS: writing the summary…\n" }),
+      );
+      dispatchLiveEventToSubscribers(
+        subscribers,
+        "company-1",
+        agyLogEvent("run-1", 2, { step_type: "tool", tool_name: "run_command" }),
+      );
+      dispatchLiveEventToSubscribers(
+        subscribers,
+        "company-1",
+        agyLogEvent("run-1", 3, {
+          step_type: "agent_response",
+          text_delta: "<<<SUMMARY-DRAFT>>>\n## Needs you\n- Approve the launch\n<<<END-SUMMARY-DRAFT>>>",
+        }),
+      );
     });
     await flushQueries();
 

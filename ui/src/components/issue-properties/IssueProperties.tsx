@@ -774,8 +774,11 @@ export function IssueProperties({
   );
   const assigneeOverrideChrome = assigneeAdapterType === "claude_local"
     && assigneeOverrideAdapterConfig.chrome === true;
-  const catalogProvider = assigneeAdapterType === "paperclip_runner" ? String(normalizeLegacyRunnerProvider(assigneePrimaryAdapterConfig).provider ?? "codex") : undefined;
-  const catalogAcpxAgent = catalogProvider === "acpx" ? String(assigneePrimaryAdapterConfig.acpxAgent ?? "claude") : undefined;
+  const normalizedRunnerConfig = assigneeAdapterType === "paperclip_runner" ? normalizeLegacyRunnerProvider(assigneePrimaryAdapterConfig) : undefined;
+  const catalogProvider = assigneeAdapterType === "paperclip_runner" ? String(normalizedRunnerConfig?.provider ?? "codex") : undefined;
+  const catalogAcpxAgent = assigneeAdapterType === "paperclip_runner" && catalogProvider === "acpx"
+    ? (typeof normalizedRunnerConfig?.acpxAgent === "string" ? normalizedRunnerConfig.acpxAgent : "claude")
+    : undefined;
   const catalogEnvironmentId = nativeCatalog ? assignee?.defaultEnvironmentId ?? null : null;
   const nativeCatalogScope = JSON.stringify(nativeCatalog ?? null);
   const requestNativeModels = Boolean(nativeCatalog && assigneeOptionsOpen && showAssigneeAdapterOptions && supportsAssigneeOverrides);

@@ -24,11 +24,19 @@ describe("adapter-defaults (built-in)", () => {
     expect(d.probeCommand).toEqual(["codex", "--version"]);
   });
 
+  it("returns defaults for agy_local", () => {
+    const d = getAdapterDefaults("agy_local");
+    expect(d.runtimeImage).toBe("ghcr.io/paperclipai/agent-runtime-agy:v1");
+    expect(d.envKeys).toContain("GEMINI_API_KEY");
+    expect(d.allowFqdns).toContain("generativelanguage.googleapis.com");
+    expect(d.probeCommand).toEqual(["agy", "--version"]);
+  });
+
   it("throws on unknown adapter type", () => {
     expect(() => getAdapterDefaults("nonexistent_local")).toThrow(/unknown adapter type/i);
   });
 
-  it("KNOWN_ADAPTER_TYPES contains all 6 supported adapters", () => {
+  it("KNOWN_ADAPTER_TYPES contains all 7 supported adapters", () => {
     expect(KNOWN_ADAPTER_TYPES).toEqual(
       new Set([
         "claude_local",
@@ -37,6 +45,7 @@ describe("adapter-defaults (built-in)", () => {
         "cursor_local",
         "opencode_local",
         "pi_local",
+        "agy_local",
       ]),
     );
   });

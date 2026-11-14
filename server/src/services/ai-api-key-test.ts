@@ -14,6 +14,7 @@ export async function validateAiApiKey(
     openrouter: "https://openrouter.ai/api/v1/key",
     xai: "https://api.x.ai/v1/models",
     google: "https://generativelanguage.googleapis.com/v1beta/models?pageSize=1",
+    antigravity: "https://generativelanguage.googleapis.com/v1beta/models?pageSize=1",
   };
   let response: Response;
   try {
@@ -21,7 +22,7 @@ export async function validateAiApiKey(
       redirect: "error",
       signal: AbortSignal.timeout(15000),
       headers:
-        provider === "google" ? { "x-goog-api-key": key } : provider === "anthropic"
+        provider === "google" || provider === "antigravity" ? { "x-goog-api-key": key } : provider === "anthropic"
           ? { "x-api-key": key, "anthropic-version": "2023-06-01" }
           : { Authorization: `Bearer ${key}` },
     });
@@ -29,11 +30,15 @@ export async function validateAiApiKey(
     throw unprocessable("Could not verify the account. Try again.", { code: "ai_connection_verification_failed" });
   }
   await response.body?.cancel();
+  const rejected =
+    response.status === 401 ||
+    response.status === 403 ||
+    (provider === "antigravity" && response.status === 400);
   if (!response.ok)
     throw unprocessable(
-      response.status === 401 || response.status === 403
+      rejected
         ? "The provider rejected this API key."
         : "The provider could not verify this account. Try again.",
-      { code: response.status === 401 || response.status === 403 ? "ai_connection_api_key_rejected" : "ai_connection_verification_failed" },
+      { code: rejected ? "ai_connection_api_key_rejected" : "ai_connection_verification_failed" },
     );
 }

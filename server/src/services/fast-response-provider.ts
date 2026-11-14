@@ -156,7 +156,13 @@ export function fastResponseModel(
   }
   if (metadata.provider === "google")
     return createGoogleGenerativeAI({ ...common, apiKey: credential })(model);
-  return createXai({ ...common, apiKey: credential })(model);
+  if (metadata.provider === "xai")
+    return createXai({ ...common, apiKey: credential })(model);
+  // Every supported provider is dispatched explicitly above. Anything else
+  // (for example antigravity, which the fast-response catalog excludes) is
+  // unsupported: fail loudly instead of silently sending its credential and
+  // model to the xAI API.
+  throw new Error(`Unsupported fast-response provider: ${metadata.provider}`);
 }
 export async function runFastResponseProvider(
   input: {
