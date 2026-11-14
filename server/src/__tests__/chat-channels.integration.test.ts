@@ -97,6 +97,7 @@ import { companyObservability } from "@paperclipai/db";
 import * as runIdentityModule from "../services/run-identity.js";
 import * as heartbeatModule from "../services/heartbeat.js";
 import { chatGitHubRegistrations, chatGitHubReviews, chatGitHubConfigurations, toolCatalogEntries } from "@paperclipai/db";
+import { secretAccessEvents } from "@paperclipai/db";
 import { AsyncLocalStorage } from "node:async_hooks";
 import * as cloudRuntimeIdentity from "../services/cloud-runtime-identity.js";
 import {
@@ -6542,6 +6543,44 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
           expect(configured.status).toBe("verifying");
         }
       }
+    });
+    it.each(["current", "invalid_signature"] as const)("resolves only the secrets a %s signed GitHub webhook delivery uses", async (kind) => {
+      const f = await reviewBotFixture();
+      const [endpoint] = await readChatEndpointsById(f.endpoint.id);
+      const accessesBefore = new Set((await db.select({ id: secretAccessEvents.id }).from(secretAccessEvents)
+        .where(eq(secretAccessEvents.consumerId, endpoint.connectionId))).map(row => row.id));
+      const delivery = randomUUID();
+      const response = await f.service.handleWebhook(endpoint.publicId, "github", signedGitHubWebhookRequest({
+        event: "issue_comment", delivery, webhookSecret: kind === "invalid_signature" ? "wrong-secret" : f.webhookSecret,
+        payload: { action: "created", installation: { id: 2468 },
+          repository: { id: 97531, full_name: "paperclipai/paperclip", owner: { id: 1357, login: "paperclipai" } },
+          issue: { number: 418 }, comment: { id: 41801, body: "Ordinary comment", user: { id: 42, login: "octocat" } }, sender: { id: 42, login: "octocat" } },
+      }));
+      if (kind === "invalid_signature") expect(response.status).toBe(401);
+      else {
+        expect(response.status).toBeLessThan(300);
+        await expect.poll(async () => (await db.select({ status: chatActions.status }).from(chatActions).where(and(
+          eq(chatActions.endpointId, endpoint.id), eq(chatActions.providerActionId, `github_webhook_ingress:${delivery}`))))[0]?.status,
+        { timeout: 10_000 }).toBe("processed");
+      }
+      const accesses = (await db.select({ id: secretAccessEvents.id, configPath: secretAccessEvents.configPath }).from(secretAccessEvents)
+        .where(eq(secretAccessEvents.consumerId, endpoint.connectionId))).filter(row => !accessesBefore.has(row.id));
+      const reads: Record<string, number> = {};
+      for (const access of accesses) reads[access.configPath ?? "unknown"] = (reads[access.configPath ?? "unknown"] ?? 0) + 1;
+      // A delivery must never decrypt the App private key, OAuth client
+      // secret or other unused keys. Each step reads only what it uses:
+      // - durable staging verifies the provider signature (webhookSecret);
+      //   once it holds, it rejects foreign installations (installationId)
+      //   and scopes recovery-receipt denial to this App (appId);
+      // - the durable worker signs the retained body for internal replay
+      //   (webhookSecret);
+      // - the replayed request re-authenticates under the credential lease
+      //   against the current secret and installation (webhookSecret,
+      //   installationId).
+      // A bad signature stops after the one webhookSecret read.
+      expect(reads).toEqual(kind === "invalid_signature"
+        ? { "credentials.webhookSecret": 1 }
+        : { "credentials.webhookSecret": 3, "credentials.installationId": 2, "credentials.appId": 1 });
     });
     it("stack rejects forged raw gateway deliveries without changing verification or waking an agent", async () => {
       const f = await reviewBotFixture();
