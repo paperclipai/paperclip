@@ -1,4 +1,5 @@
 import { parseObject } from "../../adapters/utils.js";
+import { resolveProviderApiPlacement } from "../native-runtime/provider-api-placement.js";
 import { parseNativeExecutionInput, type NativeExecutionInput } from "../../vendor/paperclip-runner/index.js";
 
 /** Provider placement is distinct from access to a task's workspace. */
@@ -12,6 +13,16 @@ export function heartbeatExternalProvider(input: {
     ? parseNativeExecutionInput(persisted).provider.kind
     : input.agent.adapterType === "paperclip_runner" ? parseObject(input.agent.adapterConfig).provider : null;
   return provider === "openai_dot" || provider === "grok_bot" || provider === "muse" ? provider : null;
+}
+
+/** True when a run is placed with an external controller or a provider API and
+ * so never adopts the task's workspace files. Run setup skips task workspace
+ * access for such runs, and assignment admission follows the same rule. */
+export function heartbeatRunIsControllerOnly(input: {
+  run: { runtimeMode: string | null; runnerProfileJson: unknown; driverKind?: string | null };
+  agent: { adapterType: string; adapterConfig: unknown };
+}): boolean {
+  return heartbeatExternalProvider(input) !== null || resolveProviderApiPlacement(input) !== null;
 }
 
 export function nativeRuntimeHasInstructionFilesystem(backend: string): boolean {
