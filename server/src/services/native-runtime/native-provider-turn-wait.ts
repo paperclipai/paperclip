@@ -1,6 +1,7 @@
 import { and, asc, eq, gte, isNotNull, isNull, sql } from "drizzle-orm";
 import { agentWakeupRequests, heartbeatRunEvents, heartbeatRuns, issueComments, type Db } from "@paperclipai/db";
 
+import type { createDeliveryWorkCoordinator } from "../delivery-work-coordinator.js";
 import { DELIVERY_QUEUES, subscribeDeliveryWork } from "../delivery-work-notifications.js";
 import type { ProviderTurnWaitOptions } from "../../vendor/paperclip-runner/index.js";
 
@@ -31,45 +32,72 @@ export async function personCommentedDuringNativeRun(db: Db, scope: NativeRunSco
   return comment !== undefined;
 }
 
+type PersonCommentWaiter = { scope: NativeRunScope; owed: boolean; resolve: () => void };
+type Coordinator = Pick<ReturnType<typeof createDeliveryWorkCoordinator>, "register">;
+const personCommentWaiters = new WeakMap<Db, Set<PersonCommentWaiter>>();
+const personCommentWakes = new WeakMap<Db, () => void>();
+
+function waitersFor(db: Db) {
+  let waiters = personCommentWaiters.get(db);
+  if (!waiters) personCommentWaiters.set(db, waiters = new Set());
+  return waiters;
+}
+
+export function registerPersonCommentWaitWork(db: Db, coordinator: Coordinator, read = personCommentedDuringNativeRun) {
+  const waiters = waitersFor(db);
+  const worker = coordinator.register(DELIVERY_QUEUES.nativeProviderTurnWaits, {
+    retryMs: 5_000,
+    runDuringDrain: true,
+    async run(signal) {
+      const failures: unknown[] = [];
+      for (const waiter of [...waiters]) {
+        if (signal.aborted) return;
+        if (!waiter.owed) continue;
+        waiter.owed = false;
+        try {
+          if (await read(db, waiter.scope) && waiters.delete(waiter)) waiter.resolve();
+        } catch (error) {
+          waiter.owed = true;
+          failures.push(error);
+        }
+      }
+      if (failures.length) throw failures[0];
+    },
+    async hasPending() {
+      return [...waiters].some(waiter => waiter.owed);
+    },
+  });
+  personCommentWakes.set(db, worker.wake);
+  const unsubscribe = subscribeDeliveryWork(db, DELIVERY_QUEUES.deferredExecutionReceipts, () => {
+    if (!waiters.size) return;
+    for (const waiter of waiters) waiter.owed = true;
+    worker.wake();
+  });
+  const stop = () => {
+    unsubscribe();
+    if (personCommentWakes.get(db) === worker.wake) personCommentWakes.delete(db);
+  };
+  return { ...worker, stop };
+}
+
 export function awaitPersonCommentDuringNativeRun(db: Db, scope: NativeRunScope, signal: AbortSignal): Promise<void> {
   return new Promise<void>((resolve, reject) => {
     if (signal.aborted) {
       reject(signal.reason);
       return;
     }
-    let checking = false;
-    let again = false;
-    const stop = () => {
-      unsubscribe();
-      signal.removeEventListener("abort", abort);
-    };
+    const waiters = waitersFor(db);
     const abort = () => {
-      stop();
+      waiters.delete(waiter);
       reject(signal.reason);
     };
-    const check = () => {
-      if (checking) {
-        again = true;
-        return;
-      }
-      checking = true;
-      void personCommentedDuringNativeRun(db, scope).then(found => {
-        checking = false;
-        if (signal.aborted) return;
-        if (found) {
-          stop();
-          resolve();
-        } else if (again) {
-          again = false;
-          check();
-        }
-      }, () => {
-        checking = false;
-      });
-    };
-    const unsubscribe = subscribeDeliveryWork(db, DELIVERY_QUEUES.deferredExecutionReceipts, check);
+    const waiter: PersonCommentWaiter = { scope, owed: true, resolve: () => {
+      signal.removeEventListener("abort", abort);
+      resolve();
+    } };
     signal.addEventListener("abort", abort, { once: true });
-    check();
+    waiters.add(waiter);
+    personCommentWakes.get(db)?.();
   });
 }
 
