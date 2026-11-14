@@ -747,6 +747,7 @@ type WarmNativeSession = {
 };
 
 const WARM_CLOSE_FAILURE_DETAIL_MAX = 2_000;
+const WARM_NATIVE_SESSION_CLOSE_CONCURRENCY = 4;
 
 export function describeWarmCloseFailure(error: unknown): string {
   const describe = (value: unknown): string => {
@@ -1141,11 +1142,8 @@ async function closeIdleWarmNativeSessions(input: {
   let busy = 0;
   let failed = 0;
   const failures: WarmNativeSessionCloseFailure[] = [];
-  for (const [sessionId, entry] of [...warmNativeSessions]) {
-    if (input.canRetire && !input.canRetire()) break;
-    if (input.environmentId !== undefined && entry.environmentId !== input.environmentId) {
-      continue;
-    }
+  let stopped = false;
+  const closeEntry = async (sessionId: string, entry: WarmNativeSession) => {
     if (entry.busy || entry.preparingRunId || executingRunnerdSessionScopes.has(sessionId)
       || (input.canRetire && (entry.instructionPreparationRunId || closingWarmNativeSessions.has(sessionId)))) {
       // A busy turn can complete while another idle session is checkpointing.
@@ -1153,10 +1151,10 @@ async function closeIdleWarmNativeSessions(input: {
       // owner behind after the shutdown sweep has already passed it.
       if (input.closeBusyOnRelease) entry.closeOnReleaseReason = input.reason;
       busy += 1;
-      continue;
+      return;
     }
     // The host owns retention after release; a quiet local handle needs no retirement for sleep.
-    if (input.canRetire && entry.released && !entry.closeOnReleaseReason) continue;
+    if (input.canRetire && entry.released && !entry.closeOnReleaseReason) return;
     const detach = input.detachReleased === true && entry.released === true && !entry.closeOnReleaseReason;
     if (entry.idleTimer !== null) clearTimeout(entry.idleTimer);
     // Keep a fenced owner until both retirement and stopped collection succeed.
@@ -1179,7 +1177,7 @@ async function closeIdleWarmNativeSessions(input: {
       if (detach) entry.closeOnReleaseReason = "released Runner local detach is unconfirmed";
       if (!detach && error instanceof AgentDirectoryOperationBusyError) {
         busy += 1;
-        continue;
+        return;
       }
       const destroyed = !detach && input.forceStopUnsettled && input.db
         ? await warmSandboxDestroyed(input.db, entry).catch(proofError => {
@@ -1193,7 +1191,7 @@ async function closeIdleWarmNativeSessions(input: {
         "warm native session's sandbox was already destroyed; released its owner");
         forgetWarmNativeSession(sessionId, entry);
         closed += 1;
-        continue;
+        return;
       }
       failed += 1;
       const forced = forcedStopFailure === undefined ? "" : `; forced Runner stop failed: ${describeWarmCloseFailure(forcedStopFailure)}`;
@@ -1207,8 +1205,28 @@ async function closeIdleWarmNativeSessions(input: {
       }
       releaseIdleSessionToolAuthority(sessionId);
     }
-    if (input.canRetire && !input.canRetire()) break;
+  };
+  const agentQueues = new Map<string, [string, WarmNativeSession][]>();
+  for (const [sessionId, entry] of [...warmNativeSessions]) {
+    if (input.environmentId !== undefined && entry.environmentId !== input.environmentId) continue;
+    const agentKey = `${entry.companyId}:${entry.agentId}`;
+    const queue = agentQueues.get(agentKey);
+    if (queue) queue.push([sessionId, entry]); else agentQueues.set(agentKey, [[sessionId, entry]]);
   }
+  const pendingAgents = [...agentQueues.values()];
+  const closeAgentQueues = async () => {
+    for (let queue = pendingAgents.shift(); queue; queue = pendingAgents.shift()) {
+      for (const [sessionId, entry] of queue) {
+        if (stopped || (input.canRetire && !input.canRetire())) {
+          stopped = true;
+          return;
+        }
+        await closeEntry(sessionId, entry);
+      }
+    }
+  };
+  const concurrency = input.canRetire ? 1 : WARM_NATIVE_SESSION_CLOSE_CONCURRENCY;
+  await Promise.all(Array.from({ length: Math.min(concurrency, pendingAgents.length) }, closeAgentQueues));
   if (failures.length > 0) logger.warn({ reason: input.reason, failures }, "idle warm native sessions did not close");
   return { closed, busy, failed, failures };
 }

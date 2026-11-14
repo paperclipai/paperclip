@@ -5,7 +5,7 @@ import { notifyInstructionCommit, type InstructionCommitScope } from "./instruct
 import { DELIVERY_QUEUES } from "./delivery-work-notifications.js";
 import type { createDeliveryWorkCoordinator } from "./delivery-work-coordinator.js";
 import { registerScopedDeadlineWork } from "./scoped-deadline-work.js";
-import { agentDirectoryWorkingCopyService, isAgentDirectoryCopy } from "./agent-directory-working-copies.js";
+import { AgentDirectoryOperationBusyError, agentDirectoryWorkingCopyService, isAgentDirectoryCopy } from "./agent-directory-working-copies.js";
 import { createHash } from "node:crypto";
 import { execFile as execFileCallback } from "node:child_process";
 import { promisify } from "node:util";
@@ -564,7 +564,8 @@ export function agentInstructionWorkingCopyService(db: Db, options: { environmen
     if (claimed) {
       try { await directories.release(claimed); }
       catch (error) {
-        await deferCleanup();
+        const deferred = await deferCleanup();
+        if (error instanceof AgentDirectoryOperationBusyError) return directoryCleanupEntry(deferred);
         throw error;
       }
     }
