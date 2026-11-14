@@ -1887,6 +1887,10 @@ impl AcpxCommandExecutor {
                 "run.attach requires the same settled ACPX provider profile and session",
             ));
         }
+        let different_run = state.descriptor.run_id != attachment_context.run_id;
+        if different_run {
+            self.end_provider_turn_wait(false)?;
+        }
         if !self.rebind_prepared_session(&descriptor, &tool_set, next_candidate.is_some()) {
             if let Some(session) = self.session.as_mut() {
                 session
