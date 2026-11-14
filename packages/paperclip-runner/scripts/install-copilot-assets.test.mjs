@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { cp, mkdir, mkdtemp, readFile, realpath, rename, rm, symlink, writeFile } from "node:fs/promises";
+import { chmod, cp, mkdir, mkdtemp, readFile, realpath, rename, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -95,6 +95,31 @@ for (const owner of ["runner", "server"]) {
     } finally { await rm(root, { recursive: true, force: true }); }
   });
 }
+
+test("installs when npm extracted the owned executable with group write", {
+  skip: !distribution && "Copilot does not advertise this platform", timeout: 180_000,
+}, async () => {
+  const root = await realpath(await mkdtemp(join(tmpdir(), "copilot-install-umask-")));
+  try {
+    const native = join(root, "node_modules", distribution.packageName);
+    await mkdir(dirname(native), { recursive: true });
+    await cp(dirname(require.resolve(distribution.packageName)), native, { recursive: true });
+    const executable = join(native, "copilot");
+    await chmod(executable, 0o775);
+    await writeFile(join(root, "package.json"), JSON.stringify({ name: "@paperclipai/paperclip-runner", type: "module" }));
+    await build({
+      entryPoints: [join(runnerRoot, "src/drivers/acpx/copilot-installation.ts"),
+        join(runnerRoot, "src/drivers/acpx/qualified-profiles.ts")],
+      outbase: join(runnerRoot, "src"), outdir: join(root, "dist"),
+      bundle: true, platform: "node", format: "esm", target: "node24",
+      logLevel: "silent",
+    });
+    await mkdir(join(root, "scripts"));
+    for (const name of helpers) await cp(join(runnerRoot, "scripts", name), join(root, "scripts", name));
+    succeeded(invoke(join(root, "scripts/install-copilot-assets.mjs")), "installed");
+    assert.equal((await stat(executable)).mode & 0o777, 0o755);
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
 
 test("an unbuilt source workspace defers installation; a published package with missing build output fails", async () => {
   const root = await realpath(await mkdtemp(join(tmpdir(), "copilot-install-bootstrap-")));

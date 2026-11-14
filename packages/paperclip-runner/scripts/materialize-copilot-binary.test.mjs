@@ -5,7 +5,7 @@ import { syncBuiltinESMExports } from "node:module";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, test } from "node:test";
-import { COPILOT_DISTRIBUTIONS, materializePinnedCopilotBinary, resolveCopilotDistribution, writeCopilotMaterialization } from "./materialize-copilot-binary.mjs";
+import { COPILOT_DISTRIBUTIONS, dropGroupWorldWrite, materializePinnedCopilotBinary, resolveCopilotDistribution, writeCopilotMaterialization } from "./materialize-copilot-binary.mjs";
 const directories = [];
 afterEach(async () => { await Promise.all(directories.splice(0).map((path) => rm(path, { recursive: true, force: true }))); });
 async function fixture(version = "1.0.88") {
@@ -39,6 +39,24 @@ test("refuses executable symlinks, directory entries and writable binaries", asy
   assert.throws(() => materializePinnedCopilotBinary({ packageRoot, platform: "linux", architecture: "x64" }));
   await rm(binary); await mkdir(binary);
   assert.throws(() => materializePinnedCopilotBinary({ packageRoot, platform: "linux", architecture: "x64" }), /regular file/);
+});
+
+test("drops group and world write from an owned executable without widening it", async () => {
+  const packageRoot = await fixture(); const binary = join(packageRoot, "copilot");
+  await chmod(binary, 0o775);
+  assert.equal(dropGroupWorldWrite(binary), true);
+  assert.equal(fs.statSync(binary).mode & 0o777, 0o755);
+  assert.equal(dropGroupWorldWrite(binary), false);
+  await chmod(binary, 0o700);
+  assert.equal(dropGroupWorldWrite(binary), false);
+  assert.equal(fs.statSync(binary).mode & 0o777, 0o700);
+  assert.throws(() => materializePinnedCopilotBinary({ packageRoot, platform: "linux", architecture: "x64" }), /digest/);
+});
+test("does not follow a link when it drops write permissions", async () => {
+  const packageRoot = await fixture(); const binary = join(packageRoot, "copilot"); const real = join(packageRoot, "real");
+  await rm(binary); await writeFile(real, "x", { mode: 0o777 }); await chmod(real, 0o777); await symlink(real, binary);
+  assert.throws(() => dropGroupWorldWrite(binary));
+  assert.equal(fs.statSync(real).mode & 0o777, 0o777);
 });
 
 const outputFiles = () => [
