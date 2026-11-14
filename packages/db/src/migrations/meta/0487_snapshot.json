@@ -1,6 +1,6 @@
 {
-  "id": "3cc71c70-cfd1-4f62-b475-b4d6ed594e9e",
-  "prevId": "052c1661-33e6-42a2-a789-2f9ed117b795",
+  "id": "f333aa53-760d-4954-975f-209aa5fdac0e",
+  "prevId": "6c1a7d2e-f5bd-441a-b824-eed2d1a41a0c",
   "version": "7",
   "dialect": "postgresql",
   "tables": {
@@ -20934,22 +20934,6 @@
           ],
           "isUnique": false,
           "where": "\"company_skill_versions\".\"migration_at\" is not null",
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        },
-        "company_skill_versions_security_approval_idx": {
-          "name": "company_skill_versions_security_approval_idx",
-          "columns": [
-            {
-              "expression": "security_approval_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "where": "\"company_skill_versions\".\"security_approval_id\" is not null",
           "concurrently": false,
           "method": "btree",
           "with": {}
@@ -59732,6 +59716,12 @@
         "completed_at": {
           "name": "completed_at",
           "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "progress": {
+          "name": "progress",
+          "type": "jsonb",
           "primaryKey": false,
           "notNull": false
         },

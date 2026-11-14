@@ -1447,6 +1447,7 @@ const browserUseOperations = [
 // MCP Apps views in the task chat. Board only; reads follow task read access.
 const mcpAppsOperations = [
   ["get", "/api/issues/{issueId}/mcp-app-views", "List a task's MCP Apps views", undefined],
+  ["get", "/api/issues/{issueId}/tool-call-progress", "Read the latest progress of a task's running app tool calls", undefined],
   ["get", "/api/issues/{issueId}/mcp-app-views/{viewId}", "Read an MCP Apps view with its document", undefined],
   ["post", "/api/issues/{issueId}/mcp-app-views/{viewId}/tool-calls", "Call a tool from an MCP Apps view", mcpAppToolCallSchema],
   ["put", "/api/issues/{issueId}/mcp-app-views/{viewId}/model-context", "Store an MCP Apps view's context for the task's next run", mcpAppModelContextUpdateSchema],

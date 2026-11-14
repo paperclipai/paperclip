@@ -1,6 +1,6 @@
 {
-  "id": "03f871c6-c1f5-4d0a-9910-5ae9ad2f4497",
-  "prevId": "2b61b020-529b-4700-8979-8f755db4e8e0",
+  "id": "936db6ee-1c88-4fa7-8515-7d81d001a6b3",
+  "prevId": "9389124c-379a-4b64-9c20-c7b37538e7c8",
   "version": "7",
   "dialect": "postgresql",
   "tables": {
@@ -19886,87 +19886,6 @@
       "checkConstraints": {},
       "isRLSEnabled": false
     },
-    "public.company_skill_security_approvals": {
-      "name": "company_skill_security_approvals",
-      "schema": "",
-      "columns": {
-        "id": {
-          "name": "id",
-          "type": "uuid",
-          "primaryKey": true,
-          "notNull": true,
-          "default": "gen_random_uuid()"
-        },
-        "company_id": {
-          "name": "company_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "content_hash": {
-          "name": "content_hash",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "approval": {
-          "name": "approval",
-          "type": "jsonb",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "created_at": {
-          "name": "created_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "now()"
-        }
-      },
-      "indexes": {
-        "company_skill_security_approvals_company_content_idx": {
-          "name": "company_skill_security_approvals_company_content_idx",
-          "columns": [
-            {
-              "expression": "company_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "content_hash",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": true,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        }
-      },
-      "foreignKeys": {
-        "company_skill_security_approvals_company_id_companies_id_fk": {
-          "name": "company_skill_security_approvals_company_id_companies_id_fk",
-          "tableFrom": "company_skill_security_approvals",
-          "tableTo": "companies",
-          "columnsFrom": [
-            "company_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
-        }
-      },
-      "compositePrimaryKeys": {},
-      "uniqueConstraints": {},
-      "policies": {},
-      "checkConstraints": {},
-      "isRLSEnabled": false
-    },
     "public.company_skill_stars": {
       "name": "company_skill_stars",
       "schema": "",
@@ -20907,12 +20826,6 @@
           "primaryKey": false,
           "notNull": true,
           "default": "now()"
-        },
-        "security_approval_id": {
-          "name": "security_approval_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": false
         }
       },
       "indexes": {
@@ -21097,19 +21010,6 @@
             "id"
           ],
           "onDelete": "set null",
-          "onUpdate": "no action"
-        },
-        "company_skill_versions_security_approval_id_company_skill_security_approvals_id_fk": {
-          "name": "company_skill_versions_security_approval_id_company_skill_security_approvals_id_fk",
-          "tableFrom": "company_skill_versions",
-          "tableTo": "company_skill_security_approvals",
-          "columnsFrom": [
-            "security_approval_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "restrict",
           "onUpdate": "no action"
         }
       },
@@ -59710,6 +59610,12 @@
         "completed_at": {
           "name": "completed_at",
           "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "progress": {
+          "name": "progress",
+          "type": "jsonb",
           "primaryKey": false,
           "notNull": false
         },

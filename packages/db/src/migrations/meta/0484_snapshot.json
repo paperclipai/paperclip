@@ -1,5 +1,5 @@
 {
-  "id": "2b61b020-529b-4700-8979-8f755db4e8e0",
+  "id": "9389124c-379a-4b64-9c20-c7b37538e7c8",
   "prevId": "ceaa38c4-681b-430e-9578-0854650d85b3",
   "version": "7",
   "dialect": "postgresql",
@@ -18965,12 +18965,6 @@
           "primaryKey": false,
           "notNull": true,
           "default": "'[]'::jsonb"
-        },
-        "security_override": {
-          "name": "security_override",
-          "type": "jsonb",
-          "primaryKey": false,
-          "notNull": false
         },
         "enabled": {
           "name": "enabled",
@@ -59610,6 +59604,12 @@
         "completed_at": {
           "name": "completed_at",
           "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "progress": {
+          "name": "progress",
+          "type": "jsonb",
           "primaryKey": false,
           "notNull": false
         },

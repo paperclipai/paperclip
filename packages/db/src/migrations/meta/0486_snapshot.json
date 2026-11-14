@@ -1,6 +1,6 @@
 {
-  "id": "052c1661-33e6-42a2-a789-2f9ed117b795",
-  "prevId": "03f871c6-c1f5-4d0a-9910-5ae9ad2f4497",
+  "id": "6c1a7d2e-f5bd-441a-b824-eed2d1a41a0c",
+  "prevId": "936db6ee-1c88-4fa7-8515-7d81d001a6b3",
   "version": "7",
   "dialect": "postgresql",
   "tables": {
@@ -18968,12 +18968,6 @@
         },
         "security_override": {
           "name": "security_override",
-          "type": "jsonb",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "security_override_summary": {
-          "name": "security_override_summary",
           "type": "jsonb",
           "primaryKey": false,
           "notNull": false
@@ -59716,6 +59710,12 @@
         "completed_at": {
           "name": "completed_at",
           "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "progress": {
+          "name": "progress",
+          "type": "jsonb",
           "primaryKey": false,
           "notNull": false
         },
