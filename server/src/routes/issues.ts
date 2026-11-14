@@ -3931,7 +3931,13 @@ export function issueRoutes(
   async function assertCrossIssueInfluenceWithinRunCap(
     req: Request,
     res: Response,
-    issue: { id: string; identifier?: string | null; companyId: string },
+    issue: {
+      id: string;
+      identifier?: string | null;
+      companyId: string;
+      checkoutRunId?: string | null;
+      executionRunId?: string | null;
+    },
     kind: CrossIssueInfluenceKind,
   ) {
     if (req.actor.type !== "agent") return true;
@@ -3947,6 +3953,8 @@ export function issueRoutes(
       responsibleUserId: req.actor.onBehalfOfUserId ?? null,
       targetIssueId: issue.id,
       targetIssueIdentifier: issue.identifier ?? null,
+      targetIssueCheckoutRunId: issue.checkoutRunId ?? null,
+      targetIssueExecutionRunId: issue.executionRunId ?? null,
       kind,
     });
     if (!decision || decision.allowed) return true;

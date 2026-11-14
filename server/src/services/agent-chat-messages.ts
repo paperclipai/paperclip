@@ -167,7 +167,8 @@ export async function sendAgentChatMessage(
     if (options.receiptOnly) return null;
     const influence = await observeCrossIssueInfluence(tx, { companyId: actor.companyId, agentId: actor.agentId,
       runId: actor.runId, responsibleUserId: userId, targetIssueId: conversation.id,
-      targetIssueIdentifier: conversation.identifier, kind: "comment" });
+      targetIssueIdentifier: conversation.identifier, targetIssueCheckoutRunId: null,
+      targetIssueExecutionRunId: null, kind: "comment" });
     if (influence && !influence.allowed) {
       const denial = crossIssueInfluenceLimitError(influence, { actorLabel: current.agent.name,
         assigneeLabel: current.agent.name, issueIdentifier: conversation.identifier });
