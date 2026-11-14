@@ -11,7 +11,8 @@ This adapter always uses WebSocket gateway transport.
 1. receive `connect.challenge`
 2. send `req connect` (protocol/client/auth/device payload)
 3. send `req agent`
-4. wait for completion via `req agent.wait`
+4. wait for completion via `req agent.wait`, and keep listening for the
+   terminal `agent` frame on the same request id (it carries the usage)
 5. stream `event agent` frames into Paperclip logs/transcript parsing
 
 ## Auth Modes
@@ -61,6 +62,38 @@ The agent request is built as:
 - `waitTimeoutMs` controls `agent.wait.timeoutMs`
 
 If `agent.wait` returns `timeout`, adapter returns `openclaw_gateway_wait_timeout`.
+
+## Usage Accounting
+
+The gateway answers the `agent` method twice on the same request id:
+
+1. an immediate `accepted` acknowledgement carrying the run id, and
+2. a terminal frame once the run settles, carrying the run result.
+
+Only the terminal frame carries the run's usage
+(`result.meta.agentMeta.usage`), so the adapter keeps listening for it after
+the acknowledgement instead of discarding it with the first response. The
+terminal frame arrives just after the `agent.wait` response; the adapter waits
+a short grace period for it, and proceeds without usage when a gateway never
+sends one.
+
+The observed counters are reported twice:
+
+- on the adapter result (`usage`, `provider`, `model`, `costUsd`), and
+- through the accounting checkpoint channel (`ctx.onUsage`) as a complete
+  `per_run` receipt, so the usage reaches Paperclip's cost ledger even when
+  the run is settled from a late frame.
+
+`usage` is read from provider-reported counters, so the receipt is complete
+rather than an estimate. A gateway that reports no counters produces no
+receipt rather than a zero-valued one.
+
+Cost is read from the first source that carries a number: `agentMeta.costUsd`,
+then `meta.costUsd`, then the cost total inside the usage counters. The
+gateway reports those two families independently, so a provider that bills
+directly is still priced when the local cost table has no entry for the model.
+A cost that the gateway reports as zero stays a reported zero instead of
+becoming an unpriced run.
 
 ## Log Format
 

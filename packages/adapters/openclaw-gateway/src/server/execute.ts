@@ -89,6 +89,7 @@ type GatewayClientOptions = {
 type GatewayClientRequestOptions = {
   timeoutMs: number;
   expectFinal?: boolean;
+  onLateResponse?: (payload: Record<string, unknown> | null) => void;
 };
 
 const PROTOCOL_VERSION = 4;
@@ -97,6 +98,8 @@ const DEFAULT_CLIENT_ID = "gateway-client";
 const DEFAULT_CLIENT_MODE = "backend";
 const DEFAULT_CLIENT_VERSION = "paperclip";
 const DEFAULT_ROLE = "operator";
+
+const TERMINAL_FRAME_GRACE_MS = 500;
 
 const SENSITIVE_LOG_KEY_PATTERN =
   /(^|[_-])(auth|authorization|token|secret|password|api[_-]?key|private[_-]?key)([_-]|$)|^x-openclaw-(auth|token)$/i;
@@ -648,6 +651,7 @@ function isEventFrame(value: unknown): value is GatewayEventFrame {
 class GatewayWsClient {
   private ws: WebSocket | null = null;
   private pending = new Map<string, PendingRequest>();
+  private lateResponders = new Map<string, (payload: Record<string, unknown> | null) => void>();
   private challengePromise: Promise<string>;
   private resolveChallenge!: (nonce: string) => void;
   private rejectChallenge!: (err: Error) => void;
@@ -757,6 +761,10 @@ class GatewayWsClient {
         expectFinal: opts.expectFinal === true,
         timer,
       });
+
+      if (opts.onLateResponse) {
+        this.lateResponders.set(id, opts.onLateResponse);
+      }
     });
 
     this.ws.send(payload);
@@ -775,6 +783,7 @@ class GatewayWsClient {
       pending.reject(err);
     }
     this.pending.clear();
+    this.lateResponders.clear();
   }
 
   private handleMessage(raw: string) {
@@ -803,7 +812,14 @@ class GatewayWsClient {
     if (!isResponseFrame(parsed)) return;
 
     const pending = this.pending.get(parsed.id);
-    if (!pending) return;
+    if (!pending) {
+      const late = this.lateResponders.get(parsed.id);
+      if (late) {
+        this.lateResponders.delete(parsed.id);
+        late(parsed.ok ? (asRecord(parsed.payload) ?? null) : null);
+      }
+      return;
+    }
 
     const payload = asRecord(parsed.payload);
     const status = nonEmpty(payload?.status)?.toLowerCase();
@@ -942,6 +958,28 @@ function parseUsage(value: unknown): AdapterExecutionResult["usage"] | undefined
     outputTokens,
     ...(cachedInputTokens > 0 ? { cachedInputTokens } : {}),
   };
+}
+
+type ReportedCost = { reported: boolean; usd: number };
+
+function resolveReportedCost(
+  agentMeta: Record<string, unknown> | null,
+  mergedMeta: Record<string, unknown>,
+): ReportedCost {
+  const candidates: unknown[] = [agentMeta?.costUsd, mergedMeta.costUsd];
+
+  const usageRecord = asRecord(agentMeta?.usage ?? mergedMeta.usage);
+  const usageCost = asRecord(usageRecord?.cost);
+  if (usageCost) candidates.push(usageCost.total, usageCost.totalUsd, usageCost.usd);
+  if (usageRecord) candidates.push(usageRecord.costUsd);
+
+  for (const candidate of candidates) {
+    if (typeof candidate === "number" && Number.isFinite(candidate)) {
+      return { reported: true, usd: candidate };
+    }
+  }
+
+  return { reported: false, usd: 0 };
 }
 
 function extractRuntimeServicesFromMeta(meta: Record<string, unknown> | null): AdapterRuntimeServiceReport[] {
@@ -1331,8 +1369,13 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       // once it is sent, retrying would be unsafe because the gateway may have
       // accepted work even if the response is lost.
       reportDispatch();
+      let settleTerminalFrame: (payload: Record<string, unknown> | null) => void = () => {};
+      const terminalFramePromise = new Promise<Record<string, unknown> | null>((resolve) => {
+        settleTerminalFrame = resolve;
+      });
       const acceptedPayload = await client.request<Record<string, unknown>>("agent", agentParams, {
         timeoutMs: connectTimeoutMs,
+        onLateResponse: (payload) => settleTerminalFrame(payload),
       });
 
       latestResultPayload = acceptedPayload;
@@ -1406,6 +1449,14 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         }
       }
 
+      const terminalFrame =
+        acceptedStatus === "ok"
+          ? (acceptedPayload as Record<string, unknown>)
+          : await Promise.race([
+              terminalFramePromise,
+              new Promise<null>((resolve) => setTimeout(() => resolve(null), TERMINAL_FRAME_GRACE_MS)),
+            ]);
+
       const summaryFromEvents = assistantChunks.join("").trim();
       const summaryFromPayload =
         extractResultText(asRecord(acceptedPayload?.result)) ??
@@ -1419,19 +1470,34 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       const latestResult = asRecord(latestPayload?.result);
       const acceptedMeta = asRecord(acceptedResult?.meta) ?? asRecord(acceptedPayload?.meta);
       const latestMeta = asRecord(latestResult?.meta) ?? asRecord(latestPayload?.meta);
+      const terminalResult = asRecord(terminalFrame?.result);
+      const terminalMeta = asRecord(terminalResult?.meta) ?? asRecord(terminalFrame?.meta);
       const mergedMeta = {
         ...(acceptedMeta ?? {}),
         ...(latestMeta ?? {}),
+        ...(terminalMeta ?? {}),
       };
       const agentMeta =
         asRecord(mergedMeta.agentMeta) ??
+        asRecord(terminalMeta?.agentMeta) ??
         asRecord(acceptedMeta?.agentMeta) ??
         asRecord(latestMeta?.agentMeta);
       const usage = parseUsage(agentMeta?.usage ?? mergedMeta.usage);
       const runtimeServices = extractRuntimeServicesFromMeta(agentMeta ?? mergedMeta);
       const provider = nonEmpty(agentMeta?.provider) ?? nonEmpty(mergedMeta.provider) ?? "openclaw";
       const model = nonEmpty(agentMeta?.model) ?? nonEmpty(mergedMeta.model) ?? null;
-      const costUsd = asNumber(agentMeta?.costUsd ?? mergedMeta.costUsd, 0);
+      const cost = resolveReportedCost(agentMeta, mergedMeta);
+
+      if (ctx.onUsage && usage) {
+        await ctx.onUsage({
+          usage,
+          usageBasis: "per_run",
+          provider,
+          ...(model ? { model } : {}),
+          ...(cost.reported ? { costUsd: cost.usd, costStatus: "reported" } : { costStatus: "unpriced" }),
+          complete: true,
+        });
+      }
 
       await ctx.onLog(
         "stdout",
@@ -1445,7 +1511,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         provider,
         ...(model ? { model } : {}),
         ...(usage ? { usage } : {}),
-        ...(costUsd > 0 ? { costUsd } : {}),
+        ...(cost.reported ? { costUsd: cost.usd } : {}),
         resultJson: asRecord(latestResultPayload),
         ...(runtimeServices.length > 0 ? { runtimeServices } : {}),
         ...(summary ? { summary } : {}),
