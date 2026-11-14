@@ -1,6 +1,6 @@
 import { and, count, eq } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
-import { activityLog, heartbeatRuns } from "@paperclipai/db";
+import { activityLog, heartbeatRuns, issues } from "@paperclipai/db";
 import { isUuidLike, issueWriteDenialResponse } from "@paperclipai/shared";
 import { forbidden } from "../errors.js";
 import { logger } from "../middleware/logger.js";
@@ -27,10 +27,12 @@ export type CrossIssueInfluenceDecision = {
   enforceAt: string;
 };
 
-export function crossIssueInfluenceRunContextError() {
+export function crossIssueInfluenceRunContextError(
+  context: { runIdPresent?: boolean; runId?: string | null } = {},
+) {
   // Copy comes from the shared issue-write denial contract (the open cross-task write design (failure UX))
   // so the agent reading this 403 is told the fix, not just the refusal.
-  const { body } = issueWriteDenialResponse("cross_issue_influence_run_context_required");
+  const { body } = issueWriteDenialResponse("cross_issue_influence_run_context_required", context);
   return forbidden(body.error, body.details);
 }
 
@@ -115,6 +117,11 @@ export async function observeCrossIssueInfluence(
     // rejecting these writes as run-less left live heartbeat runs unable to
     // comment or update any task at all.
     const sourceIssueId = readRunSourceIssueId(run.contextSnapshot);
+    if (!sourceIssueId) {
+      // The run id was already validated above (UUID + run row match), so a run
+      // with no source issue is misdescribed by the run-less denial copy.
+      throw crossIssueInfluenceRunContextError({ runIdPresent: true, runId: input.runId });
+    }
     if (
       sourceIssueId !== null &&
       (sourceIssueId === input.targetIssueId ||
