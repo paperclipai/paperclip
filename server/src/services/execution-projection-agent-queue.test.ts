@@ -80,6 +80,44 @@ const minutesAgo = (minutes: number) => new Date(now.getTime() - minutes * 60_00
     });
   });
 
+  it("names the routine's open execution that holds a queued routine task, before the agent's limit", async () => {
+    const f = await fixture({ maxConcurrentRuns: 20, running: 0 });
+    const routineId = randomUUID();
+    const holderIssueId = randomUUID(), holderRunId = randomUUID();
+    const waitingIssueId = randomUUID(), waitingRunId = randomUUID();
+    await db.insert(heartbeatRuns).values({ id: holderRunId, companyId: f.companyId, agentId: f.agentId, status: "running",
+      startedAt: minutesAgo(18), createdAt: minutesAgo(30), issueId: holderIssueId, contextSnapshot: { issueId: holderIssueId } });
+    await db.insert(issues).values([
+      { id: holderIssueId, companyId: f.companyId, identifier: "Q-3093", title: "Nightly test gardening", status: "in_progress",
+        assigneeAgentId: f.agentId, originKind: "routine_execution", originId: routineId, executionRunId: holderRunId },
+      { id: waitingIssueId, companyId: f.companyId, identifier: "Q-3636", title: "Nightly test gardening", status: "in_progress",
+        assigneeAgentId: f.agentId, originKind: "routine_execution", originId: routineId },
+    ]);
+    await db.insert(heartbeatRuns).values({ id: waitingRunId, companyId: f.companyId, agentId: f.agentId, status: "queued",
+      createdAt: minutesAgo(8), issueId: waitingIssueId, contextSnapshot: { issueId: waitingIssueId } });
+
+    expect((await executionProjectionsForRuns(db, f.companyId, [waitingRunId], now)).get(waitingRunId)).toMatchObject({
+      phase: "queued",
+      label: "Waiting for Q-3093 to finish",
+      cause: "routine_execution_in_progress",
+    });
+    // The holder's own run is not waiting on itself.
+    expect((await executionProjectionsForRuns(db, f.companyId, [holderRunId], now)).get(holderRunId)?.cause).not.toBe("routine_execution_in_progress");
+
+    // A private holder is not named to readers of the waiting task.
+    await db.update(issues).set({ visibility: "private" }).where(eq(issues.id, holderIssueId));
+    const privateHold = (await executionProjectionsForRuns(db, f.companyId, [waitingRunId], now)).get(waitingRunId);
+    expect(privateHold).toMatchObject({ label: "Waiting for another task in this routine to finish", cause: "routine_execution_in_progress" });
+    expect(JSON.stringify(privateHold)).not.toContain("Q-3093");
+    await db.update(issues).set({ visibility: "open" }).where(eq(issues.id, holderIssueId));
+
+    // Once the holder closes, the routine slot is free and the run is plainly queued.
+    await db.update(issues).set({ status: "done" }).where(eq(issues.id, holderIssueId));
+    expect((await executionProjectionsForRuns(db, f.companyId, [waitingRunId], now)).get(waitingRunId)).toMatchObject({
+      label: "Queued", cause: null,
+    });
+  });
+
   it("leaves out queued runs that a preview worktree's cutoff keeps from starting", async () => {
     const f = await fixture({ maxConcurrentRuns: 1, running: 1 });
     const copiedOld = await f.queue({ priority: "critical", createdMinutesAgo: 120 });

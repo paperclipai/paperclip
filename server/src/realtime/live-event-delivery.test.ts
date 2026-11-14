@@ -303,3 +303,15 @@ it("keeps a read set at 249 ms and replaces it at 250 ms", async () => {
     f.delivery.dispose();
   } finally { clock.mockRestore(); }
 });
+it("sends tool call progress only to clients watching that run", async () => {
+  const f = fixture(); f.subscribe(["run-1"]);
+  const progress = (id: number, runId: string): LiveEvent => ({ id, companyId: "company", type: "heartbeat.run.tool_progress",
+    createdAt: "2026-11-13T00:00:00Z", payload: { runId, agentId: "agent", invocationId: `call-${id}`, progress: id, total: 10, message: "Exporting" } });
+  f.delivery.enqueue(progress(1, "run-1")); f.delivery.enqueue(progress(2, "run-2")); await settle();
+  const delivered = f.frames.filter(frame => frame.type === "heartbeat.run.tool_progress");
+  expect(delivered.map(frame => frame.payload.runId)).toEqual(["run-1"]);
+  // Another run's progress carries no content to this client.
+  expect(JSON.stringify(f.frames)).not.toContain("call-2");
+  expect(f.decorate).not.toHaveBeenCalled();
+  f.delivery.dispose();
+});

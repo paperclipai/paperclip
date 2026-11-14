@@ -15,10 +15,12 @@ import {
   toolMcpTasks,
 } from "@paperclipai/db";
 import { and, eq, lte, ne } from "drizzle-orm";
+import type { AskUserQuestionsPayload } from "@paperclipai/shared";
 import { forgetMcpHttpSessions } from "../services/mcp-http.js";
 import { createToolGatewayService } from "../services/tool-gateway.js";
 import { toolAccessService } from "../services/tool-access.js";
 import { instanceSettingsService } from "../services/instance-settings.js";
+import { issueThreadInteractionService } from "../services/issue-thread-interactions.js";
 import { adapterExecutionControls, createAdapterExecutionControl } from "../services/adapter-execution-control.js";
 import {
   createTasksDemoHttpServer,
@@ -144,11 +146,14 @@ const support = await getEmbeddedPostgresTestSupport();
     expect(first).toMatchObject({ reasonCode: "elicitation_required" });
     const [card] = await db.select().from(issueThreadInteractions).where(and(eq(issueThreadInteractions.companyId, org.id), eq(issueThreadInteractions.issueId, issue.id)));
     expect(card).toMatchObject({ kind: "ask_user_questions", status: "pending" });
-    await db.update(issueThreadInteractions).set({ status: "answered", result: { version: 1, answers: [
-      { questionId: "decision", optionIds: ["choice_1"] },
+    const decision = (card!.payload as unknown as AskUserQuestionsPayload).questions.find((question) => question.id === "decision")!;
+    const approve = decision.options.find((option) => option.label === "approve");
+    expect(approve).toBeDefined();
+    await issueThreadInteractionService(db).answerQuestions({ id: issue.id, companyId: org.id }, card!.id, { answers: [
+      { questionId: decision.id, optionIds: [approve!.id] },
       { questionId: "note", optionIds: [], otherText: "go ahead" },
-    ] } }).where(eq(issueThreadInteractions.id, card!.id));
-    const pending = call("needs_approval", { action: "rotate the demo key" });
+    ] }, { userId: actor.actorId });
+    const pending = call("needs_approval", { action: "rotate the demo key" }).catch((error) => error);
     await vi.waitFor(() => expect(demoTask("needs_approval")?.status).toBe("working"), { timeout: 5_000 });
     clock += 3_000;
     expect(await pending).toMatchObject({ status: "completed", result: { content: "Approved: rotate the demo key was carried out. Note: go ahead" } });

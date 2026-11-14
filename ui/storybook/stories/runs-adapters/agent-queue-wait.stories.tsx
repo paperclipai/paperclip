@@ -103,3 +103,23 @@ export const SingleSlot: Story = {
 };
 
 export const Mobile: Story = { globals: { viewport: { value: "mobile", isRotated: false } } };
+
+/** A queued turn with no named hold, past the 30-second startup feedback. */
+export const WaitingToStart: Story = {
+  render: () => <TaskChatLiveRunPill status="queued" execution={{ ...waitingExecution, cause: null, label: "Queued", agentQueue: null }}
+    startedAtMs={Date.now() - 15 * 60_000} toolSummary={null} />,
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expect(canvas.getByText("Waiting to start")).toBeVisible();
+    await expect(canvas.queryByText("Working")).not.toBeInTheDocument();
+  },
+};
+
+/** A routine task that waits for the routine's open execution. */
+export const WaitingForRoutine: Story = {
+  render: () => <TaskChatRunnerHeader agentName="Test Gardener" status="queued" startedAtMs={Date.now() - 8 * 60_000} runId="run-1"
+    execution={{ ...waitingExecution, cause: "routine_execution_in_progress", label: "Waiting for PAP-3093 to finish", agentQueue: null }} />,
+  play: async ({ canvasElement }) => {
+    await expect(within(canvasElement).getByText(/Waiting for PAP-3093 to finish/)).toBeVisible();
+  },
+};

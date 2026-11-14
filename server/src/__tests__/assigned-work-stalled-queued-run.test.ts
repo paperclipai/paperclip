@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { and, eq, sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
-import { activityLog, agents, agentWakeupRequests, companies, createDb, heartbeatRuns, issues, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS } from "@paperclipai/db";
+import { activityLog, agents, agentWakeupRequests, automaticRunBrakes, companies, createDb, heartbeatRuns, issues, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS } from "@paperclipai/db";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 import { createHeartbeatQueueTestDependencies } from "./helpers/heartbeat-queue.js";
 import { createHeartbeatQueue, shouldDeferFollowupWakeForSameIssue, shouldQueueFollowupForRunningIssueWake } from "../services/heartbeat/queue.js";
@@ -13,6 +13,7 @@ import { CHAT_CONTROL_RECOVERY_ADMISSION_KEY } from "../services/chat-control-re
 import { ASSIGNED_WORK_CONTINUED_ACTION, assignedWorkSweep } from "../services/recovery/assigned-work-sweep.js";
 import { CONTINUATION_CAP_WINDOW_MS } from "../services/recovery/assigned-work-invariant.js";
 import { logger } from "../middleware/logger.js";
+import { automaticRunBrake, automaticRunCreationHeldUntil } from "../services/recovery/automatic-run-brake.js";
 
 const support = await getEmbeddedPostgresTestSupport();
 const MINUTE = 60_000;
@@ -25,7 +26,7 @@ describe.skipIf(!support.supported)("a queued run the dispatcher keeps passing o
     db = createDb(database.connectionString);
   }, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS);
   afterAll(async () => { await db?.$client.end(); await database?.cleanup(); });
-  afterEach(() => { vi.restoreAllMocks(); });
+  afterEach(() => { vi.restoreAllMocks(); automaticRunBrake.reset(); });
 
   async function seed() {
     const prefix = `S${randomUUID().slice(0, 5)}`;
@@ -104,13 +105,39 @@ describe.skipIf(!support.supported)("a queued run the dispatcher keeps passing o
     const readRun = async (id: string) => (await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, id)))[0]!;
     const continuations = async () => db.select().from(activityLog).where(and(eq(activityLog.entityId, issue.id),
       eq(activityLog.action, ASSIGNED_WORK_CONTINUED_ACTION)));
-    return { companyId, agentId, issue, queuedRun, otherStarts, olderRun, queue, sweep, runsOfTask, readRun, continuations };
+    return { companyId, agentId, issue, other, queuedRun, otherStarts, olderRun, queue, sweep, runsOfTask, readRun, continuations };
   }
 
   async function replacementOf(f: Awaited<ReturnType<typeof seed>>, stalledId: string) {
     const runs = await f.runsOfTask();
     return runs.filter(run => run.id !== stalledId);
   }
+
+  it("a replacement spends the paused company's creation slot", async () => {
+    const f = await seed();
+    const stalled = await f.queuedRun();
+    await f.otherStarts(OLDEST_DISPATCH_SHARE + 1, QUEUED_RUN_AGING_MS / 2);
+    await db.insert(automaticRunBrakes).values({ companyId: f.companyId, state: "open", openedAt: new Date(), stateChangedAt: new Date() });
+    expect(await automaticRunCreationHeldUntil(db, f.companyId, { issueId: f.issue.id, sourceRunId: stalled.id })).toBeNull();
+
+    const check = await f.sweep().checkIssue({ companyId: f.companyId, issueId: f.issue.id });
+    expect(check).toMatchObject({ outcome: "replaced_stalled_run" });
+    const [brake] = await db.select().from(automaticRunBrakes).where(eq(automaticRunBrakes.companyId, f.companyId));
+    expect(brake!.nextCreationAt!.getTime()).toBeGreaterThan(Date.now());
+  }, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS);
+
+  it("an old finished request from a person does not exempt a replacement from the pause", async () => {
+    const f = await seed();
+    await db.insert(agentWakeupRequests).values({ companyId: f.companyId, agentId: f.agentId, source: "on_demand", triggerDetail: "manual",
+      reason: "task_retry", payload: { issueId: f.issue.id }, status: "completed", requestedByActorType: "user", requestedByActorId: "person-1",
+      requestedAt: new Date(Date.now() - 4 * 60 * MINUTE), finishedAt: new Date(Date.now() - 4 * 60 * MINUTE) });
+    const stalled = await f.queuedRun();
+    await f.otherStarts(OLDEST_DISPATCH_SHARE + 1, QUEUED_RUN_AGING_MS / 2);
+    await db.insert(automaticRunBrakes).values({ companyId: f.companyId, state: "open", openedAt: new Date(), stateChangedAt: new Date() });
+    expect(await f.sweep().checkIssue({ companyId: f.companyId, issueId: f.issue.id })).toMatchObject({ outcome: "replaced_stalled_run" });
+    const [brake] = await db.select().from(automaticRunBrakes).where(eq(automaticRunBrakes.companyId, f.companyId));
+    expect(brake!.nextCreationAt!.getTime()).toBeGreaterThan(Date.now());
+  }, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS);
 
   it("cancels an automatic run the claim keeps refusing and queues exactly one claimable replacement", async () => {
     const f = await seed();
@@ -188,6 +215,40 @@ describe.skipIf(!support.supported)("a queued run the dispatcher keeps passing o
     expect(started).toMatchObject({ outcome: "changed" });
     expect((await f.readRun(stalled.id)).status).toBe("running");
     expect(await f.runsOfTask()).toHaveLength(1);
+    expect(await f.continuations()).toHaveLength(0);
+  }, 60_000);
+
+  it("leaves an automatic run that waits behind work on tasks people created", async () => {
+    // Work people wait on goes first by design; a system run behind it is waiting its turn, not stalled.
+    const f = await seed();
+    await db.update(issues).set({ createdByUserId: "person-1" }).where(eq(issues.id, f.other.id));
+    const waiting = await f.queuedRun({ refused: false });
+    await f.otherStarts(OLDEST_DISPATCH_SHARE + 3, 10 * MINUTE);
+    const sweep = f.sweep();
+    expect(await sweep.checkIssue({ companyId: f.companyId, issueId: f.issue.id }))
+      .toMatchObject({ verdict: { kind: "ok", clause: "live_run", runId: waiting.id } });
+    expect((await f.readRun(waiting.id)).status).toBe("queued");
+    expect(await f.continuations()).toHaveLength(0);
+  }, 60_000);
+
+  it("leaves an automatic run that waits behind continuations of a person's Retry", async () => {
+    // The dispatcher ranks a recovery run as person work when its source chain leads to a person's request.
+    const f = await seed();
+    const waiting = await f.queuedRun({ refused: false });
+    const personSourceAt = new Date(Date.now() - 30 * MINUTE);
+    const [personSource] = await db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: f.agentId, invocationSource: "on_demand",
+      triggerDetail: "manual", status: "failed", createdAt: personSourceAt, startedAt: personSourceAt, finishedAt: personSourceAt,
+      contextSnapshot: { issueId: f.other.id, taskId: f.other.id, wakeReason: "task_retry" } }).returning();
+    for (let index = 0; index < OLDEST_DISPATCH_SHARE + 3; index++) {
+      const startedAt = new Date(Date.now() - 10 * MINUTE + index * 1_000);
+      await db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: f.agentId, invocationSource: "automation", triggerDetail: "system",
+        status: "succeeded", createdAt: new Date(startedAt.getTime() - 1_000), startedAt, finishedAt: new Date(startedAt.getTime() + 500),
+        contextSnapshot: { issueId: f.other.id, taskId: f.other.id, wakeReason: "issue_recovery_action_restored", previousRunId: personSource!.id } });
+    }
+    const sweep = f.sweep();
+    expect(await sweep.checkIssue({ companyId: f.companyId, issueId: f.issue.id }))
+      .toMatchObject({ verdict: { kind: "ok", clause: "live_run", runId: waiting.id } });
+    expect((await f.readRun(waiting.id)).status).toBe("queued");
     expect(await f.continuations()).toHaveLength(0);
   }, 60_000);
 

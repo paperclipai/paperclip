@@ -291,6 +291,9 @@ import {
   workspaceFileResourceQuerySchema,
   // Tool access
   connectToolAppSchema,
+  createMachineSignInSchema,
+  testMachineSignInSchema,
+  rotateMachineSignInSchema,
   configureRailwaySshSchema,
   createToolApplicationSchema,
   updateToolApplicationSchema,
@@ -1447,6 +1450,7 @@ const browserUseOperations = [
 // MCP Apps views in the task chat. Board only; reads follow task read access.
 const mcpAppsOperations = [
   ["get", "/api/issues/{issueId}/mcp-app-views", "List a task's MCP Apps views", undefined],
+  ["get", "/api/issues/{issueId}/tool-call-progress", "Read the latest progress of a task's running app tool calls", undefined],
   ["get", "/api/issues/{issueId}/mcp-app-views/{viewId}", "Read an MCP Apps view with its document", undefined],
   ["post", "/api/issues/{issueId}/mcp-app-views/{viewId}/tool-calls", "Call a tool from an MCP Apps view", mcpAppToolCallSchema],
   ["put", "/api/issues/{issueId}/mcp-app-views/{viewId}/model-context", "Store an MCP Apps view's context for the task's next run", mcpAppModelContextUpdateSchema],
@@ -12542,6 +12546,68 @@ registerCurrentRoute({
   path: "/api/tool-connections/{connectionId}",
   tags: ["tool-access"],
   summary: "Archive a tool connection",
+});
+
+const MACHINE_SIGN_IN_ERRORS = {
+  400: r.badRequest,
+  401: r.unauthorized,
+  403: r.forbidden,
+  404: r.notFound,
+  422: r.unprocessable,
+};
+
+registerCurrentRoute({
+  "x-paperclip-transport": "rest",
+  "x-paperclip-connection-management": "connections:configure",
+  method: "post",
+  path: "/api/companies/{companyId}/tools/machine-sign-in",
+  tags: ["tool-access"],
+  summary: "Start machine sign-in (OAuth client credentials) for an organization connection",
+  description: "Creates a draft organization connection to a remote MCP server that signs in as a registered client, with no person involved. With method paperclip_key, Paperclip creates a signing key, keeps the private half in the company vault, and returns the public key to register with the provider. Secrets are write-only.",
+  body: createMachineSignInSchema,
+  responses: { 201: r.ok(), ...MACHINE_SIGN_IN_ERRORS },
+});
+
+registerCurrentRoute({
+  "x-paperclip-transport": "rest",
+  "x-paperclip-connection-management": "connections:configure",
+  method: "get",
+  path: "/api/tool-connections/{connectionId}/machine-sign-in",
+  tags: ["tool-access"],
+  summary: "Read a connection's machine sign-in settings (no secret values)",
+  responses: { 200: r.ok(), ...MACHINE_SIGN_IN_ERRORS },
+});
+
+registerCurrentRoute({
+  "x-paperclip-transport": "rest",
+  "x-paperclip-connection-management": "connections:configure",
+  method: "post",
+  path: "/api/tool-connections/{connectionId}/machine-sign-in/test",
+  tags: ["tool-access"],
+  summary: "Test machine sign-in against the provider and server, then turn the connection on",
+  body: testMachineSignInSchema,
+  responses: { 200: r.ok(), ...MACHINE_SIGN_IN_ERRORS },
+});
+
+registerCurrentRoute({
+  "x-paperclip-transport": "rest",
+  "x-paperclip-connection-management": "connections:configure",
+  method: "post",
+  path: "/api/tool-connections/{connectionId}/machine-sign-in/rotate",
+  tags: ["tool-access"],
+  summary: "Replace the machine sign-in key or client secret without downtime",
+  body: rotateMachineSignInSchema,
+  responses: { 200: r.ok(), ...MACHINE_SIGN_IN_ERRORS },
+});
+
+registerCurrentRoute({
+  "x-paperclip-transport": "rest",
+  "x-paperclip-connection-management": "connections:configure",
+  method: "post",
+  path: "/api/tool-connections/{connectionId}/machine-sign-in/rotate/complete",
+  tags: ["tool-access"],
+  summary: "Switch to the new machine sign-in key once the provider accepts it",
+  responses: { 200: r.ok(), ...MACHINE_SIGN_IN_ERRORS },
 });
 
 registerCurrentRoute({

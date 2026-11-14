@@ -30,6 +30,7 @@ import { isInsufficientConnectionScope, INSUFFICIENT_CONNECTION_SCOPE_MESSAGE } 
 import { githubAccessDeniedInstructions, githubAccessError } from "./tool-access/github-access-errors.js";
 import { githubDefaultOwnerApplies, githubDefaultOwnerArguments } from "./tool-access/github-default-owner.js";
 import { toolSourceTemplateKeySql } from "./tool-access/source-template-key.js";
+import { usesClientCredentials } from "./tool-access/oauth/client-credentials.js";
 import { boundedMcpToolName } from "./mcp-tool-names.js";
 import { browserUseService } from "./browser-use.js";
 import { isBrowserUseConnection } from "./browser-use-client.js";
@@ -203,7 +204,9 @@ import {
   type McpInputRequired,
   mcpHttpRequestHeaders,
   parseMcpHttpResponseBody,
+  mcpProgressNotificationOf,
 } from "./mcp-http.js";
+import { createToolCallProgressReporter, saveToolCallProgress, type ToolCallProgressReporter } from "./tool-call-progress.js";
 import {
   buildElicitationQuestionSet,
   elicitationQuestionHash,
@@ -5505,6 +5508,8 @@ export function createToolGatewayService(
     protocolMethod?: string;
     protocolParams?: Record<string, unknown>;
     timeoutMs: number;
+    /** Receives the call's `notifications/progress`; its token is sent with tools/call. */
+    progressReporter?: ToolCallProgressReporter | null;
   },
   /** One restart and one deadline are shared by every protocol recovery in a call. */
   recovery: { restarted: boolean; deadline: number } = { restarted: false, deadline: Date.now() + input.timeoutMs },
@@ -5585,6 +5590,8 @@ export function createToolGatewayService(
           try {
             const message = JSON.parse(line) as Record<string, unknown>;
             const id = typeof message.id === "number" ? message.id : null;
+            const progressUpdate = mcpProgressNotificationOf(message, input.progressReporter?.token);
+            if (progressUpdate) input.progressReporter!.report(progressUpdate);
             if (id !== null && pending.has(id)) {
               const waiter = pending.get(id)!;
               pending.delete(id);
@@ -5760,6 +5767,7 @@ export function createToolGatewayService(
           withMeta(protocolVersion, input.protocolParams ?? {
             name: input.entry?.toolName,
             arguments: input.parameters ?? {},
+            ...(input.progressReporter ? { _meta: { progressToken: input.progressReporter.token } } : {}),
           }),
         );
       } catch (error) {
@@ -7816,6 +7824,7 @@ export function createToolGatewayService(
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), ms);
     timer.unref?.();
+    const progressReporter = toolCallProgressReporterFor(session, tool, invocationId);
     // The cached MCP session this call used, so a failure resets only this
     // identity's session and leaves other agents on the connection alone.
     let mcpSession: { scope: string; headers: Record<string, string>; sessionId: string } | undefined;
@@ -8026,8 +8035,10 @@ export function createToolGatewayService(
           toolInputSchema: entry.inputSchema ?? undefined,
           // Paperclip can wait on a task here, durably (see waitForMcpTask).
           declareTasks: tasksOn,
+          progressToken: progressReporter?.token,
           // A person can answer the app's form questions in the task chat.
           elicitationForm: Boolean(elicitationCall),
+          declareClientCredentials: usesClientCredentials(connection),
         }),
         redirect: "manual",
         signal: controller.signal,
@@ -8245,7 +8256,13 @@ export function createToolGatewayService(
       const body = response.ok
         ? JSON.stringify(await readMcpHttpResponse(response, callRequestId, {
             maxBytes: MAX_REMOTE_MCP_RESPONSE_BYTES,
+            // The call has a deadline (controller), so progress may outlast the total limit.
+            limitPerMessage: true,
             onProgress: (progress) => { execution.stream = progress; },
+            onNotification: (message) => {
+              const update = mcpProgressNotificationOf(message, progressReporter?.token);
+              if (update) progressReporter!.report(update);
+            },
             onRequest: async (message) => {
               const pending = extractRemoteMcpPending(message);
               if (pending) {
@@ -8508,7 +8525,22 @@ export function createToolGatewayService(
       );
     } finally {
       clearTimeout(timer);
+      progressReporter?.finish();
     }
+  }
+
+  /** Progress is shown to the run's viewers, so only a call made by a run reports it. */
+  function toolCallProgressReporterFor(session: ToolGatewaySession, tool: ToolGatewayDescriptor, invocationId: string | undefined) {
+    if (!session.runId || !invocationId) return null;
+    return createToolCallProgressReporter({
+      companyId: session.companyId,
+      runId: session.runId,
+      issueId: session.issueId,
+      agentId: session.agentId,
+      invocationId,
+      toolName: tool.name,
+      save: saveToolCallProgress(db, session.companyId, invocationId),
+    });
   }
 
   async function executeLocalStdioTool(
@@ -8517,6 +8549,7 @@ export function createToolGatewayService(
     parameters: unknown,
     ms: number,
     useProviderDefaultTimeout = false,
+    invocationId?: string,
   ): Promise<RemoteHttpExecutionResult> {
     const { entry, connection } = await resolveConnectedLocalStdioTool(
       session,
@@ -8530,8 +8563,10 @@ export function createToolGatewayService(
       template,
       grant,
     );
-    const invoke = () => callLocalStdioMcp({ connection, entry, template, env, parameters,
-      timeoutMs: useProviderDefaultTimeout && template.templateId === "paperclip.cognee-cloud" ? 60_000 : ms });
+    const progressReporter = template.templateId === "paperclip.cognee-cloud" ? null : toolCallProgressReporterFor(session, tool, invocationId);
+    const invoke = () => callLocalStdioMcp({ connection, entry, template, env, parameters, progressReporter,
+      timeoutMs: useProviderDefaultTimeout && template.templateId === "paperclip.cognee-cloud" ? 60_000 : ms })
+      .finally(() => progressReporter?.finish());
     // Cognee is a bundled HTTP client. Provider failures are tool failures, not
     // crashed local processes, and must never consume slots or restart budgets.
     const result = template.templateId === "paperclip.cognee-cloud"
@@ -9579,6 +9614,7 @@ export function createToolGatewayService(
                 args.parameters,
                 executionTimeoutMs,
                 args.timeoutMs === undefined,
+                args.invocationId,
               )
             : null;
       if (!connectedMcpExecution) {
@@ -10456,6 +10492,8 @@ export function createToolGatewayService(
                 tool,
                 parameters,
                 executionTimeoutMs,
+                false,
+                invocation.id,
               )
             : null;
       const result = connectedMcpExecution
@@ -13432,6 +13470,7 @@ export function createToolGatewayService(
                   effectiveParameters,
                   executionTimeoutMs,
                   input.timeoutMs === undefined,
+                  invocationId,
                 )
               : null;
         const result = recoveredGitHubPublication ?? (connectedMcpExecution

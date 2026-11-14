@@ -3,7 +3,7 @@ import { NATIVE_PREPARATION_FENCING_VERSION } from "./native-active-runs.js";
 import { notifyLiveRunRecovery } from "../live-run-recovery-notifications.js";
 import { createHash } from "node:crypto";
 import { and, eq, exists, gt, isNull, lte, inArray, notExists, or, sql, type SQL } from "drizzle-orm";
-import { checkpointDb, heartbeatRuns, issues, nativeRunFinalizations, nativeRunnerCheckpoints, type Db } from "@paperclipai/db";
+import { checkpointDb, heartbeatRuns, issues, nativeRunFinalizations, nativeRunnerCheckpoints, primeDatabaseWorkTransactionId, type Db } from "@paperclipai/db";
 import { inspectDurablePrpCheckpointHeader, inspectUnauthenticatedBootstrapCheckpoint, inspectUnclaimedBootstrapCheckpoint, decodeDurablePrpCheckpoint, type DurablePrpCheckpoint, type DurablePrpControlPlane, type DurableRecoveryIdentity } from "../../vendor/paperclip-runner/index.js";
 import { createLocalEncryptedCipher, deriveLocalEncryptedInstanceSecret } from "../../secrets/local-encrypted-provider.js";
 import { legacyControllerBootId } from "../legacy-controller-lease.js";
@@ -76,9 +76,12 @@ export async function lockNativeRunnerCheckpointOwner(
   // wall time. Sampling in the locking SELECT can precede its lock wait.
   // Keep both steps in one statement without another database round trip.
   const locked = nativeRunnerCheckpointOwnerLock(tx, owner);
-  const [owned] = await tx.with(locked).select({ leaseOwner: locked.leaseOwner,
-    leaseExpiresAt: locked.leaseExpiresAt, resultId: locked.resultId, phase: locked.phase, now: sql<Date>`clock_timestamp()` }).from(locked);
-  if (!owned) throw new Error("native_runner_checkpoint_owner_lost");
+  const [row] = await tx.with(locked).select({ leaseOwner: locked.leaseOwner,
+    leaseExpiresAt: locked.leaseExpiresAt, resultId: locked.resultId, phase: locked.phase, now: sql<Date>`clock_timestamp()`,
+    xid: sql<string>`pg_current_xact_id()::text` }).from(locked);
+  if (!row) throw new Error("native_runner_checkpoint_owner_lost");
+  const { xid, ...owned } = row;
+  primeDatabaseWorkTransactionId(tx, xid);
   return owned;
 }
 
