@@ -1888,9 +1888,6 @@ impl AcpxCommandExecutor {
             ));
         }
         let different_run = state.descriptor.run_id != attachment_context.run_id;
-        if different_run {
-            self.end_provider_turn_wait(false)?;
-        }
         if !self.rebind_prepared_session(&descriptor, &tool_set, next_candidate.is_some()) {
             if let Some(session) = self.session.as_mut() {
                 session
@@ -1921,6 +1918,11 @@ impl AcpxCommandExecutor {
         state.semantic_result = None;
         state.pending_events.clear();
         state.lifecycle = "suspended".to_owned();
+        let ended_wait = if different_run {
+            state.provider_turn_wait.take()
+        } else {
+            None
+        };
         // A new run starts a fresh provider generation; the previous run's
         // failed turn-end restart no longer applies to it. A same-run attach
         // keeps the restriction.
@@ -1939,6 +1941,11 @@ impl AcpxCommandExecutor {
         };
         if saved.is_ok() && clears_turn_end_restart_failure {
             self.failed_turn_end_restart = None;
+        }
+        if let (true, Some(wait), Some(session)) =
+            (saved.is_ok(), ended_wait.as_ref(), self.session.as_mut())
+        {
+            session.disarm_provider_turn(&wait.turn_id);
         }
         saved
     }
@@ -3294,6 +3301,21 @@ impl CommandExecutor for AcpxCommandExecutor {
         }
         self.poll_provider(false)?;
         self.retained_events()
+    }
+
+    fn provider_poll_is_live(&self) -> bool {
+        self.restore_checked
+            && self.persistence_error.is_none()
+            && self
+                .session
+                .as_ref()
+                .is_some_and(|session| !session.awaits_next_turn())
+            && self.state.as_ref().is_some_and(|state| {
+                matches!(state.lifecycle.as_str(), "turn_starting" | "turn_active")
+                    && state.active_turn_id.is_some()
+                    && !state.provider_exit_unconfirmed
+                    && state.descriptor.run_id == self.context.run_id
+            })
     }
 
     fn poll_disconnected_events(&mut self) -> Result<Vec<PolledEvent>, DurableRunnerError> {

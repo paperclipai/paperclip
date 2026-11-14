@@ -1,3 +1,5 @@
+use std::time::Instant;
+
 use serde_json::{json, Value};
 
 use super::AcpxProviderSession;
@@ -29,20 +31,30 @@ impl AcpxProviderSession {
     }
 
     pub fn arm_provider_turn(&mut self, turn_id: &str) -> bool {
-        self.transport
-            .request(
-                GeneratedAcpxSidecarCommand::SessionProviderTurn,
-                json!({"turnId": turn_id, "armed": true}),
-            )
-            .is_ok_and(|response| response.get("armed").and_then(Value::as_bool) == Some(true))
+        self.request_provider_turn(turn_id, true)
+            .is_some_and(|response| response.get("armed").and_then(Value::as_bool) == Some(true))
     }
 
     pub fn disarm_provider_turn(&mut self, turn_id: &str) {
         if !self.transport_terminated {
-            let _ = self.transport.request(
-                GeneratedAcpxSidecarCommand::SessionProviderTurn,
-                json!({"turnId": turn_id, "armed": false}),
-            );
+            self.request_provider_turn(turn_id, false);
+        }
+    }
+
+    fn request_provider_turn(&mut self, turn_id: &str, armed: bool) -> Option<Value> {
+        let deadline = Instant::now()
+            + super::ACPX_TURN_CANCEL_ACK_TIMEOUT.min(self.config.transport.request_timeout);
+        match self.transport.request_by(
+            GeneratedAcpxSidecarCommand::SessionProviderTurn,
+            json!({"turnId": turn_id, "armed": armed}),
+            deadline,
+        ) {
+            Ok(Ok(response)) => Some(response),
+            Ok(Err(_)) => None,
+            Err(error) => {
+                self.fail_closed(error);
+                None
+            }
         }
     }
 

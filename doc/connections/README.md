@@ -19,8 +19,15 @@ MCP protocol versions (2026-07-28 stateless MCP and older handshake servers):
 
 MCP extensions: [MCP Apps](./MCP-APPS.md) (interactive views in the task chat),
 [MCP Skills](./MCP-SKILLS.md) (skills that connected apps publish, reviewed
-by the board and delivered to agents), and [MCP Tasks](./MCP-TASKS.md) (long
-provider calls that survive timeouts, restarts, and deploys).
+by the board and delivered to agents), [MCP Tasks](./MCP-TASKS.md) (long
+provider calls that survive timeouts, restarts, and deploys),
+[MCP elicitation](./MCP-ELICITATION.md) (an app's question to the person,
+answered in the task chat), and [Machine sign-in](./MCP-CLIENT-CREDENTIALS.md)
+(OAuth client credentials for organization connections where no person signs
+in).
+
+[Machine sign-in](./MCP-CLIENT-CREDENTIALS.md) (OAuth client credentials for
+organization connections where no person signs in).
 
 Long-term memory: [Experimental memory connectors](./MEMORY.md).
 

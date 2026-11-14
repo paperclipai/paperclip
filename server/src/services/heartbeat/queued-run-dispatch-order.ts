@@ -27,6 +27,8 @@ export type QueuedRunDispatchFacts = {
   readinessRank: number;
   priorityRank: number;
   shareDeferred?: boolean;
+  /** The task was created by a person, who waits on its outcome whichever system wake moves it. */
+  personTask?: boolean;
 };
 
 export type QueuedRunDispatchClass = "person" | "work" | "recovery" | "recovery_backlog";
@@ -48,8 +50,18 @@ export function queuedRunDispatchClass(run: QueuedRunDispatchFacts, now: Date): 
   return "work";
 }
 
-const CLASS_TIER: Record<QueuedRunDispatchClass, number> = { person: 0, work: 1, recovery: 1, recovery_backlog: 2 };
+// System recovery sits below all other work and never ages out of it: a
+// person's run always goes first, and recovery takes only its share of the
+// starts that would otherwise go to agent work.
+const CLASS_TIER: Record<QueuedRunDispatchClass, number> = { person: 0, work: 1, recovery: 2, recovery_backlog: 3 };
 const NOT_READY_RANK = 3;
+const NOT_READY_TIER = 4;
+
+const isReady = (run: QueuedRunDispatchFacts) => run.readinessRank < NOT_READY_RANK;
+const isPersonRun = (run: QueuedRunDispatchFacts, now: Date) => queuedRunDispatchClass(run, now) === "person";
+/** A run a person asked for, or any run on a task a person created. */
+const isPersonWaitingRun = (run: QueuedRunDispatchFacts, now: Date) => Boolean(run.personTask) || isPersonRun(run, now);
+const isOldestShareEligible = (run: QueuedRunDispatchFacts) => isReady(run) && !run.shareDeferred;
 
 export type QueuedRunDispatchInput = { now: Date; startsSinceRecovery: number; startsSinceOldest?: number };
 
@@ -57,20 +69,102 @@ export function hasQueuedRunAged(run: Pick<QueuedRunDispatchFacts, "createdAt">,
   return now.getTime() - run.createdAt.getTime() >= QUEUED_RUN_AGING_MS;
 }
 
-export function oldestReadyQueuedRun<T extends QueuedRunDispatchFacts>(runs: readonly T[]): T | null {
+export function oldestReadyQueuedRun<T extends QueuedRunDispatchFacts>(runs: readonly T[],
+  include: (run: T) => boolean = () => true): T | null {
   let oldest: T | null = null;
   for (const run of runs) {
-    if (run.readinessRank >= NOT_READY_RANK || run.shareDeferred) continue;
+    if (!isOldestShareEligible(run) || !include(run)) continue;
     if (!oldest || run.createdAt.getTime() < oldest.createdAt.getTime()) oldest = run;
   }
   return oldest;
 }
 
+/**
+ * The run the oldest-run share serves next: the longest-waiting run past the
+ * aging bound that a person asked for or whose task a person created (a
+ * system continuation of a person's stalled task included), else the
+ * longest-waiting agent-work run past it. Other system recovery is never
+ * served by this share; it has its own.
+ *
+ * So such a run that has waited past the bound starts within
+ * OLDEST_DISPATCH_SHARE x (aged person-task runs queued before it + 1) starts,
+ * however much newer or higher-priority work arrives. Waiting never fails or
+ * cancels it; it only moves it forward.
+ */
+export function oldestShareCandidate<T extends QueuedRunDispatchFacts>(runs: readonly T[], now: Date): T | null {
+  const aged = (run: T) => hasQueuedRunAged(run, now);
+  return oldestReadyQueuedRun(runs, run => aged(run) && isPersonWaitingRun(run, now))
+    ?? oldestReadyQueuedRun(runs, run => aged(run) && !isSystemRecoveryRun(run));
+}
+
+/**
+ * One of the agent's recent starts. `personOrigin`: a person asked for it (its
+ * wake or source chain). `personWaiting`: that, or its task was created by a
+ * person.
+ */
+export type QueuedRunStart = { wakeReason: string | null; createdAt: Date; startedAt?: Date | null; personOrigin?: boolean;
+  personWaiting?: boolean };
+
+/** A dispatched run as the start history records it. */
+export function queuedRunStartOf(run: QueuedRunDispatchFacts, now: Date): QueuedRunStart {
+  return { wakeReason: run.wakeReason, createdAt: run.createdAt, personOrigin: isPersonRun(run, now),
+    personWaiting: isPersonWaitingRun(run, now) };
+}
+
+/**
+ * Whether a start used up the oldest-run share's turn: it was at least as old
+ * as the candidate, and, while the candidate is a run people wait on, it was
+ * one too. Older agent work never uses up a person's turn.
+ */
+function servesOldestShare(started: { createdAt: Date; personWaiting: boolean }, candidate: QueuedRunDispatchFacts, now: Date) {
+  return started.createdAt.getTime() <= candidate.createdAt.getTime()
+    && (started.personWaiting || !isPersonWaitingRun(candidate, now));
+}
+
+/** Where the start history must reach back to for `dispatchCountersFromStarts`, or null when no counter needs it. */
+export function dispatchHistoryStart<T extends QueuedRunDispatchFacts>(runs: readonly T[], now: Date): Date | null {
+  const recovery = runs.filter(run => isSystemRecoveryRun(run));
+  const countsRecovery = recovery.length > 0 && recovery.length < runs.length;
+  const candidate = runs.length > 1 ? oldestShareCandidate(runs, now) : null;
+  const at = Math.min(countsRecovery ? Math.min(...recovery.map(run => run.createdAt.getTime())) : Infinity,
+    candidate?.createdAt.getTime() ?? Infinity);
+  return Number.isFinite(at) ? new Date(at) : null;
+}
+
+/**
+ * Derives the share counters from this agent's recent starts, newest first.
+ * The dispatcher is rebuilt for every pass, so its shares carry over through
+ * the agent's own start history rather than process memory. A person's
+ * recovery restart (`personOrigin`) is person work, so it does not use up
+ * system recovery's share.
+ */
+export function dispatchCountersFromStarts<T extends QueuedRunDispatchFacts>(runs: readonly T[],
+  recentStarts: readonly QueuedRunStart[], now: Date): Pick<QueuedRunDispatchInput, "startsSinceRecovery" | "startsSinceOldest"> {
+  const startsSince = (at: number) => recentStarts.filter(start => !start.startedAt || start.startedAt.getTime() >= at);
+  const recovery = runs.filter(run => isSystemRecoveryRun(run));
+  let startsSinceRecovery = 0;
+  if (recovery.length > 0 && recovery.length < runs.length) {
+    const starts = startsSince(Math.min(...recovery.map(run => run.createdAt.getTime()))).slice(0, RECOVERY_DISPATCH_SHARE);
+    const last = starts.findIndex(start => isRecoveryWakeReason(start.wakeReason) && !start.personOrigin);
+    startsSinceRecovery = last < 0 ? starts.length : last;
+  }
+  let startsSinceOldest = 0;
+  const candidate = runs.length > 1 ? oldestShareCandidate(runs, now) : null;
+  if (candidate) {
+    const starts = startsSince(candidate.createdAt.getTime()).slice(0, OLDEST_DISPATCH_SHARE);
+    const last = starts.findIndex(start => servesOldestShare({ createdAt: start.createdAt,
+      personWaiting: Boolean(start.personWaiting) }, candidate, now));
+    startsSinceOldest = last < 0 ? starts.length : last;
+  }
+  return { startsSinceRecovery, startsSinceOldest };
+}
+
 function sortForDispatch<T extends QueuedRunDispatchFacts>(runs: readonly T[], now: Date): T[] {
   const tier = (run: T) => {
-    if (run.readinessRank >= NOT_READY_RANK) return 3;
-    const classTier = CLASS_TIER[queuedRunDispatchClass(run, now)];
-    return hasQueuedRunAged(run, now) ? Math.min(classTier, CLASS_TIER.work) : classTier;
+    if (!isReady(run)) return NOT_READY_TIER;
+    const runClass = queuedRunDispatchClass(run, now);
+    // Old backlog that has waited past the aging bound rejoins the other recovery, never more.
+    return runClass === "recovery_backlog" && hasQueuedRunAged(run, now) ? CLASS_TIER.recovery : CLASS_TIER[runClass];
   };
   return [...runs].sort((left, right) =>
     tier(left) - tier(right)
@@ -89,17 +183,24 @@ export function createQueuedRunDispatcher<T extends QueuedRunDispatchFacts>(
   return {
     next(): T | null {
       if (!remaining.length) return null;
-      const oldest = sinceOldest >= OLDEST_DISPATCH_SHARE - 1 ? oldestReadyQueuedRun(remaining) : null;
-      if (oldest && hasQueuedRunAged(oldest, input.now)) return remaining.splice(remaining.indexOf(oldest), 1)[0]!;
-      const recoveryIndex = sinceRecovery >= RECOVERY_DISPATCH_SHARE - 1
-        ? remaining.findIndex(run => run.readinessRank < NOT_READY_RANK && isSystemRecoveryRun(run))
-        : -1;
+      const oldest = sinceOldest >= OLDEST_DISPATCH_SHARE - 1 ? oldestShareCandidate(remaining, input.now) : null;
+      if (oldest) return remaining.splice(remaining.indexOf(oldest), 1)[0]!;
+      // Recovery's share comes out of agent work, never out of a person's turn.
+      const personWaiting = remaining.some(run => isReady(run) && isPersonRun(run, input.now));
+      // The share goes to the longest-waiting recovery run once one has waited
+      // past the aging bound, so fresh recovery cannot keep an old one waiting.
+      const agedRecovery = oldestReadyQueuedRun(remaining, run => isSystemRecoveryRun(run) && hasQueuedRunAged(run, input.now));
+      const recoveryIndex = personWaiting || sinceRecovery < RECOVERY_DISPATCH_SHARE - 1 ? -1
+        : agedRecovery ? remaining.indexOf(agedRecovery)
+        : remaining.findIndex(run => isReady(run) && isSystemRecoveryRun(run));
       return remaining.splice(recoveryIndex < 0 ? 0 : recoveryIndex, 1)[0]!;
     },
     claimed(run: T) {
       sinceRecovery = isSystemRecoveryRun(run) ? 0 : sinceRecovery + 1;
-      const oldest = oldestReadyQueuedRun(remaining);
-      sinceOldest = !oldest || oldest.createdAt.getTime() >= run.createdAt.getTime() ? 0 : sinceOldest + 1;
+      // The same rule dispatchCountersFromStarts reads from the start history.
+      const oldest = oldestShareCandidate([...remaining, run], input.now);
+      sinceOldest = !oldest || servesOldestShare({ createdAt: run.createdAt, personWaiting: isPersonWaitingRun(run, input.now) },
+        oldest, input.now) ? 0 : sinceOldest + 1;
     },
   };
 }
@@ -128,50 +229,50 @@ export function queuedRunDispatchLine<T extends QueuedRunDispatchFacts>(
   runs: readonly T[],
   input: QueuedRunDispatchInput,
 ): T[] {
-  const order = sortForDispatch(runs, input.now);
+  const now = input.now;
+  const order = sortForDispatch(runs, now);
   const removed = new Uint8Array(order.length);
-  // Eligible for the oldest share, oldest first; ties keep dispatch order,
-  // as oldestReadyQueuedRun keeps the first of equal ages.
-  const byAge = order.map((_, index) => index)
-    .filter(index => order[index]!.readinessRank < NOT_READY_RANK && !order[index]!.shareDeferred)
-    .sort((left, right) => order[left]!.createdAt.getTime() - order[right]!.createdAt.getTime() || left - right);
-  const recovery = order.map((_, index) => index)
-    .filter(index => order[index]!.readinessRank < NOT_READY_RANK && isSystemRecoveryRun(order[index]!));
-  let head = 0;
-  let agePointer = 0;
-  let recoveryPointer = 0;
-  const firstOf = (indexes: number[] | null, pointer: number) => {
-    if (!indexes) {
-      while (head < order.length && removed[head]) head += 1;
-      return head < order.length ? head : -1;
-    }
-    while (pointer < indexes.length && removed[indexes[pointer]!]) pointer += 1;
-    return pointer;
+  const indexes = (include: (run: T) => boolean) => order.map((_, index) => index).filter(index => include(order[index]!));
+  // Oldest first; ties keep dispatch order, as oldestReadyQueuedRun keeps the first of equal ages.
+  const byAge = (list: number[]) =>
+    list.sort((left, right) => order[left]!.createdAt.getTime() - order[right]!.createdAt.getTime() || left - right);
+  // A list's first entry not yet started; lists stay in their order, so each pointer only moves forward.
+  const cursor = (list: number[]) => {
+    let pointer = 0;
+    return () => {
+      while (pointer < list.length && removed[list[pointer]!]) pointer += 1;
+      return pointer < list.length ? list[pointer]! : -1;
+    };
   };
-  const oldestIndex = () => {
-    agePointer = firstOf(byAge, agePointer);
-    return agePointer < byAge.length ? byAge[agePointer]! : -1;
+  const agedFirst = (next: () => number) => () => {
+    const index = next();
+    return index >= 0 && hasQueuedRunAged(order[index]!, now) ? index : -1;
   };
+  const oldestPersonWaiting = agedFirst(cursor(byAge(indexes(run => isOldestShareEligible(run) && isPersonWaitingRun(run, now)))));
+  const oldestWork = agedFirst(cursor(byAge(indexes(run => isOldestShareEligible(run) && !isSystemRecoveryRun(run)))));
+  const oldestShare = () => { const person = oldestPersonWaiting(); return person >= 0 ? person : oldestWork(); };
+  const oldestRecovery = agedFirst(cursor(byAge(indexes(run => isOldestShareEligible(run) && isSystemRecoveryRun(run)))));
+  const firstRecovery = cursor(indexes(run => isReady(run) && isSystemRecoveryRun(run)));
+  const head = cursor(order.map((_, index) => index));
+  let readyPeople = order.filter(run => isReady(run) && isPersonRun(run, now)).length;
   let sinceRecovery = input.startsSinceRecovery;
   let sinceOldest = input.startsSinceOldest ?? 0;
   const result: T[] = [];
   while (result.length < order.length) {
-    let pick = -1;
-    if (sinceOldest >= OLDEST_DISPATCH_SHARE - 1) {
-      const oldest = oldestIndex();
-      if (oldest >= 0 && hasQueuedRunAged(order[oldest]!, input.now)) pick = oldest;
+    const candidate = oldestShare();
+    let pick = sinceOldest >= OLDEST_DISPATCH_SHARE - 1 ? candidate : -1;
+    if (pick < 0 && readyPeople === 0 && sinceRecovery >= RECOVERY_DISPATCH_SHARE - 1) {
+      pick = oldestRecovery();
+      if (pick < 0) pick = firstRecovery();
     }
-    if (pick < 0 && sinceRecovery >= RECOVERY_DISPATCH_SHARE - 1) {
-      recoveryPointer = firstOf(recovery, recoveryPointer);
-      if (recoveryPointer < recovery.length) pick = recovery[recoveryPointer]!;
-    }
-    if (pick < 0) pick = firstOf(null, 0);
+    if (pick < 0) pick = head();
     removed[pick] = 1;
     const run = order[pick]!;
+    if (isReady(run) && isPersonRun(run, now)) readyPeople -= 1;
     result.push(run);
     sinceRecovery = isSystemRecoveryRun(run) ? 0 : sinceRecovery + 1;
-    const oldest = oldestIndex();
-    sinceOldest = oldest < 0 || order[oldest]!.createdAt.getTime() >= run.createdAt.getTime() ? 0 : sinceOldest + 1;
+    sinceOldest = candidate < 0 || servesOldestShare({ createdAt: run.createdAt, personWaiting: isPersonWaitingRun(run, now) },
+      order[candidate]!, now) ? 0 : sinceOldest + 1;
   }
   return result;
 }

@@ -1465,6 +1465,19 @@ function StandardConnectionSetupFlow({
   };
 
   const effectiveGrantKind = fixedGrantKind ?? grantKind;
+  // A connected result (from the link probe or machine sign-in) goes straight to
+  // review with every discovered action enabled by default.
+  function acceptConnectedResult(result: ConnectToolAppResult) {
+    setLinkGuidance(null);
+    setConnectResult(result);
+    const defaults: Record<string, boolean> = {};
+    for (const a of result.actions.readOnly) defaults[a.catalogEntryId] = true;
+    for (const a of result.actions.canMakeChanges) defaults[a.catalogEntryId] = true;
+    setEnabled(defaults);
+    finishMutation.mutate({ result, enabled: defaults });
+  }
+  const acceptMachineSignInResult = acceptConnectedResult;
+
   const connectMutation = useMutation({
     mutationFn: async (entryOverride?: AppDefinition) => {
       if (requiredAgentId && !resumeConnectionId && !reconnectConnectionId
@@ -1590,13 +1603,7 @@ function StandardConnectionSetupFlow({
       }
       oauthPopupRef.current?.close();
       oauthPopupRef.current = null;
-      setLinkGuidance(null);
-      setConnectResult(result);
-      const defaults: Record<string, boolean> = {};
-      for (const a of result.actions.readOnly) defaults[a.catalogEntryId] = true;
-      for (const a of result.actions.canMakeChanges) defaults[a.catalogEntryId] = true;
-      setEnabled(defaults);
-      finishMutation.mutate({ result, enabled: defaults });
+      acceptConnectedResult(result);
     },
     onError: (error) => {
       oauthPopupRef.current?.close();
@@ -2826,6 +2833,9 @@ function StandardConnectionSetupFlow({
             setLinkGuidance(null);
             connectApp();
           }}
+          machineSignIn={effectiveGrantKind === "organization" && selectedCompanyId && !reconnectConnectionId
+            ? { companyId: selectedCompanyId, onConnected: acceptMachineSignInResult }
+            : null}
         />
       )}
 
