@@ -13,6 +13,7 @@ import { DELIVERY_QUEUES } from "../services/delivery-work-notifications.js";
 import { buildIssueMonitorTriggeredPatch, normalizeIssueExecutionPolicy } from "../services/issue-execution-policy.js";
 import { nativeResultCommitWork } from "../services/native-runtime/native-result-commit-work.js";
 import { finalizeNativeRun } from "../services/native-runtime/native-run-finalizer.js";
+import * as monitorDelivery from "../services/native-runtime/native-monitor-delivery.js";
 import { idleWorkSnapshot } from "../services/task-admission.js";
 import { PaperclipRunnerToolAuthority } from "../services/native-runtime/paperclip-runner-tool-authority.js";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
@@ -208,6 +209,33 @@ describe.skipIf(!support.supported)("native result commit of a recorded unfinali
     });
     await advance(5_000);
     expect(passes.filter(runId => runId === f.runId)).toHaveLength(2);
+    const idle = await observe(() => advance(30 * 60_000));
+    expect(idle).toEqual({ statements: 0, signals: 0, passes: 0 });
+  }, 300_000);
+
+  it("settles a monitor wake that reaches a successor run during finalization", async () => {
+    vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"], shouldAdvanceTime: true });
+    const f = await seed();
+    const successorId = randomUUID();
+    const original = monitorDelivery.readNativeMonitorDelivery;
+    const race = vi.spyOn(monitorDelivery, "readNativeMonitorDelivery").mockImplementationOnce(async (...args) => {
+      const before = await original(...args);
+      await db.insert(heartbeatRuns).values({ id: successorId, companyId: f.companyId, agentId: f.agentId, status: "running",
+        contextSnapshot: { issueId: f.issueId }, createdAt: new Date(Date.now() - 1_000) });
+      await db.insert(agentWakeupRequests).values({ companyId: f.companyId, agentId: f.agentId, source: "automation",
+        reason: "issue_monitor_due", status: "claimed", runId: successorId,
+        idempotencyKey: `issue-monitor:${f.issueId}:${f.nextCheckAt}`, payload: { issueId: f.issueId, nextCheckAt: f.nextCheckAt } });
+      await db.update(issues).set({ executionRunId: successorId, checkoutRunId: successorId, updatedAt: new Date(Date.now() - 1_000) })
+        .where(eq(issues.id, f.issueId));
+      return before;
+    });
+    try {
+      await start();
+      await advance(60_000);
+    } finally { race.mockRestore(); }
+    expect(await coordinatorRow(f.runId)).toMatchObject({ phase: "committed" });
+    expect((await db.select().from(statusDecisions).where(eq(statusDecisions.runId, f.runId))).map(row => row.reasonCode))
+      .toEqual(["scheduled_monitor_dispatched"]);
     const idle = await observe(() => advance(30 * 60_000));
     expect(idle).toEqual({ statements: 0, signals: 0, passes: 0 });
   }, 300_000);
