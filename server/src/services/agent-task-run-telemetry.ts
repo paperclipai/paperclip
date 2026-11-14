@@ -1,6 +1,6 @@
 import { and, eq, sql } from "drizzle-orm";
 import { agents, heartbeatRuns, type Db } from "@paperclipai/db";
-import { trackAgentTaskRun } from "@paperclipai/shared/telemetry";
+import { trackAgentTaskCompleted, trackAgentTaskRun } from "@paperclipai/shared/telemetry";
 import { parseObject } from "../adapters/utils.js";
 import { logger } from "../middleware/logger.js";
 import { getTelemetryClient } from "../telemetry.js";
@@ -147,5 +147,48 @@ export async function emitAgentTaskRunById(
     if (run) await emitAgentTaskRun(db, run);
   } catch (err) {
     logger.warn({ err, runId: input.runId }, "failed to load run for agent.task_run telemetry");
+  }
+}
+
+/**
+ * Emits one `agent.task_completed` telemetry event for a task that an agent's
+ * native run moved to done. The REST issue route emits the same event when an
+ * agent sets a task to done through the API. Each caller emits only on its own
+ * committed transition into done, so one completion never counts twice.
+ * Call this function after the status change commits. It never throws.
+ */
+export async function emitAgentTaskCompleted(
+  db: Db,
+  input: { agentId: string; issueId: string },
+): Promise<void> {
+  try {
+    const client = getTelemetryClient();
+    if (!client) return;
+
+    const agent = await db
+      .select({
+        id: agents.id,
+        role: agents.role,
+        adapterType: agents.adapterType,
+        adapterConfig: agents.adapterConfig,
+      })
+      .from(agents)
+      .where(eq(agents.id, input.agentId))
+      .then((rows) => rows[0] ?? null);
+    if (!agent) return;
+
+    const model = readNonEmptyString(parseObject(agent.adapterConfig).model) ?? undefined;
+    trackAgentTaskCompleted(client, {
+      agentRole: agent.role,
+      agentId: agent.id,
+      adapterType: agent.adapterType,
+      ...(model ? { model } : {}),
+      taskId: input.issueId,
+    });
+  } catch (err) {
+    logger.warn(
+      { err, issueId: input.issueId },
+      "failed to emit agent.task_completed telemetry",
+    );
   }
 }
