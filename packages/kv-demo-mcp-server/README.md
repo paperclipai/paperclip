@@ -1,7 +1,7 @@
 # KV Demo MCP Server
 
 A standalone, self-contained MCP server for demos. One process exposes four
-key/value MCP tools **and** a tiny web UI that renders the values those tools
+key/value MCP tools (plus a progress demo tool) **and** a tiny web UI that renders the values those tools
 mutate — so you can call a tool from a Paperclip agent and watch the value
 appear in a browser tab.
 
@@ -24,6 +24,10 @@ recorded walkthrough in [doc/MCP-DEMO-SCRIPT.md](../../doc/MCP-DEMO-SCRIPT.md).
   - `kv_set` (write) — set one key to a string value.
   - `kv_delete` (destructive) — delete a key. Carries `destructiveHint: true`
     so Paperclip's catalog quarantines it on first sight.
+- `slow_with_progress` (read) — waits `steps` × `stepMs` and sends MCP
+  `notifications/progress` after each step (`withTotal: false` leaves the total
+  out). For the task chat's tool progress; see
+  [doc/connections/MCP-PROGRESS.md](../../doc/connections/MCP-PROGRESS.md).
 - A Values UI at `/` — an auto-refreshing HTML table over the same store.
 - A JSON state route at `/api/state` — what the UI polls.
 
