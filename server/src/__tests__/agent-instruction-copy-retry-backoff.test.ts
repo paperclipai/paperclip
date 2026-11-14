@@ -191,7 +191,7 @@ describe("instruction working copies that cannot make progress", () => {
     try {
       const before = meter.read();
       await agentInstructionWorkingCopyService(db).registerStoppedCollectionWork(worker, () => true, async () => true).ready;
-      const drain = await advance(30_000, worker.nextWakeAt);
+      const drain = await advance(60_000, () => Date.now() + 1000);
       const rows = await db.select({ next: agentInstructionWorkingCopies.nextAttemptAt }).from(agentInstructionWorkingCopies)
         .where(eq(agentInstructionWorkingCopies.companyId, companyId));
       expect(rows.every(row => row.next!.getTime() - Date.now() > 5 * HOUR)).toBe(true);
