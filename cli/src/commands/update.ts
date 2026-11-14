@@ -7,7 +7,7 @@ import * as p from "@clack/prompts";
 import pc from "picocolors";
 import { assertManagedShimWritable, writeManagedShim, buildNextManifest, flipCurrentAtomic, isManagedExecutable, pruneInstallPayloads, readInstallManifest, resolveInstallStorePaths, withInstallStoreLock, writeInstallManifestAtomic, type InstallChannel, type InstallManifest, type InstallRecord, type InstallStorePaths } from "../install-store.js";
 import { dbBackupCommand } from "./db-backup.js";
-import { assertSupportedNodeVersion, installGitPayload, installNpmPayload, PUBLIC_NPM_REGISTRY, resolveGitHubRef, resolvePublishedVersion, type CommandRunner } from "./install.js";
+import { assertSupportedNodeVersion, installGitPayload, installNpmPayload, PUBLIC_NPM_REGISTRY, resolveGitHubRef, resolvePublishedVersion, runNpmCommand, type CommandRunner } from "./install.js";
 import { resolvePaperclipInstanceId, resolvePaperclipInstanceRoot } from "../config/home.js";
 import { resolveConfigPath } from "../config/store.js";
 import { detectServiceManager } from "../services/service-manager.js";
@@ -228,7 +228,7 @@ export async function updateCommand(options: UpdateOptions, overrides: Partial<D
       const npmUserConfigPath = path.join(npmConfigDir, "npmrc");
       try {
         fs.writeFileSync(npmUserConfigPath, `registry=${PUBLIC_NPM_REGISTRY}\n@paperclipai:registry=${PUBLIC_NPM_REGISTRY}\n`, { mode: 0o600 });
-        await runCommand("npm", args, {
+        await runNpmCommand(args, runCommand, {
           env: {
             ...process.env,
             npm_config_registry: PUBLIC_NPM_REGISTRY,
