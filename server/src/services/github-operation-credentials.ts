@@ -155,7 +155,10 @@ export async function resolveGitHubOperationCredentials(
       {
         agentId: input.agentId,
         heartbeatRunId: input.runId,
-        allowStandingDelegation: false,
+        // COR-4217: ownerless (company_default) continuation runs may resolve an
+        // explicit owner-created standing delegation — the same consent rule the
+        // workspace-git path already follows. Attributed runs stay delegation-free.
+        allowStandingDelegation: (context?.cause ?? null) === "company_default",
         responsibleUserId:
           context?.cause === "company_default"
             ? null
