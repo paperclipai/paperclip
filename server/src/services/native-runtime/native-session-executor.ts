@@ -1,6 +1,7 @@
 import { currentControllerProcess } from "../controller-process-identity.js";
 import { remoteRecoveryLeaseMismatch } from "./remote-recovery-lease-mismatch.js";
 import { isGovernancePauseStop } from "../governance-pause-stop.js";
+import { retryTransientLockContention } from "../transient-lock-contention.js";
 import { nativeLeaseHolder, notifyNativeTokenLeaseClaimed } from "./native-token-lease-settlement.js";
 import { captureRemoteNativeProviderArtifacts, shareNativeProviderArtifactCapture } from "./native-provider-artifact-capture.js";
 import { NativeSessionDiagnostics, nativeSessionDiagnostics, type NativeDiagnosticLease } from "./native-session-diagnostics.js";
@@ -45,7 +46,7 @@ import { notifyUnsafeWorkspaceExportRecovery } from "../unsafe-workspace-export-
 import { notifyCancelledWorkspacePreservation } from "../cancelled-workspace-preservation-notifications.js";
 import { notifyInstructionCollection } from "../instruction-collection-notifications.js";
 import { providerPackWorkspaceId, recordAdmittedRemoteProviderPack, resolveRemoteProviderPackAuthority } from "./remote-provider-pack-authority.js";
-import { nativeProviderPackAdmissionFailureCode, nativeProviderPackAdmissionPending, rememberAdmittedNativeProviderPack, rememberRecoveredNativeProviderPack, recordNativeProviderPackAdmission, type NativeProviderPackAdmissionSource } from "./native-provider-pack-admission.js";
+import { nativeProviderPackAdmissionFailureCode, prepareNativeProviderPackAdmission, rememberAdmittedNativeProviderPack, rememberRecoveredNativeProviderPack, recordNativeProviderPackAdmission, type NativeProviderPackAdmissionSource } from "./native-provider-pack-admission.js";
 import { type ProviderPackInstallation, verifyRemoteProviderPack as verifyRemoteProviderPackIdentity } from "./remote-provider-pack-verification.js";
 import { writeEnvironmentCleanup } from "../environment-cleanup-notifications.js";
 import { NATIVE_SESSION_EXECUTION_LEASE_TTL_MS, lockNativeExecutionLeaseForReacquire, nativeExecutionLeaseHeldCondition, releaseUnstartedNativeExecutionClaim, startNativeSessionExecutionLeaseRenewal, type NativeExecutionLeaseRenewal } from "./native-execution-lease.js";
@@ -106,9 +107,10 @@ import { redactNativeFailureError } from "./native-failure-redaction.js";
 import { parseCodexCliVersion } from "./codex-runtime-compatibility.js";
 import { createNativeToolTrace, type NativeToolTrace } from "./native-tool-trace.js";
 import { createNativeProviderFailureObservation } from "./native-provider-failure.js";
+import { explainNativeTurnFailure } from "./native-run-failure-explanation.js";
 import { nativeStartupRetryExhaustedAction, nativeStartupRetryWait, planNativeStartupRetry } from "./native-startup-retry.js";
 import { admitUnclaimedNativeBootstrapRetry } from "./native-bootstrap-retry.js";
-import { RUNNERD_CONTROL_PLANE_STATE_SCHEMAS, runnerdStateIsIncompleteBootstrap,
+import { attemptLaunchesFreshBootstrap, RUNNERD_CONTROL_PLANE_STATE_SCHEMAS, runnerdStateIsIncompleteBootstrap,
   runnerdStateHasNoProviderTurn, runnerdStateIsOpenedSessionBeforeTurn, runnerdStateIsUnconnectedBootstrap } from "./native-bootstrap-proof.js";
 import { createNativeDeliverableTextObservation } from "./native-deliverable-text.js";
 import { reconcileControllerJournalWithRunner, refreshRetiredWarmOwnerProjection } from "./warm-controller-journal.js";
@@ -232,6 +234,7 @@ import type { NativeRunnerAttachmentDownload, NativeRunnerAttachmentStage } from
 import { discoverRemoteExecutable, parseRemoteExecutableCandidate } from "./codex-model-fallback.js";
 export { parseRemoteExecutableCandidate } from "./codex-model-fallback.js";
 import type { CommandManagedRuntimeRunner } from "@paperclipai/adapter-utils/command-managed-runtime";
+import { readRemoteUserHome } from "./remote-user-home.js";
 import { NativeRunnerIngressAcquisitionError, prepareNativeRemoteRunner, createNativeRunnerExecutionDriver, resolveRemoteRunnerTransportMode } from "./native-runner-execution-driver.js";
 import type { Db } from "@paperclipai/db";
 import {
@@ -908,6 +911,7 @@ function forgetWarmNativeSession(scope: string, entry: WarmNativeSession) {
   if (warmNativeSessions.get(scope) !== entry) return;
   warmNativeSessions.delete(scope);
   entry.onReleased();
+  releaseIdleSessionToolAuthority(scope);
 }
 
 const pluginTaskSessionOwners = new WeakMap<NativeSession, ReturnType<typeof createPluginRunnerTaskOwner>>();
@@ -1188,6 +1192,7 @@ async function closeIdleWarmNativeSessions(input: {
       if (closingWarmNativeSessions.get(sessionId) === closing) {
         closingWarmNativeSessions.delete(sessionId);
       }
+      releaseIdleSessionToolAuthority(sessionId);
     }
     if (input.canRetire && !input.canRetire()) break;
   }
@@ -2257,6 +2262,19 @@ const executingNativeIngressAllocations = new Map<string, symbol>();
 /** Session scope -> the run releasing it after its turn (warm release and
  * hand-back), which a follow-up's instruction claim may wait for. */
 const settlingNativeSessionScopes = new Map<string, string>();
+
+function releaseIdleSessionToolAuthority(scope: string): void {
+  if (executingRunnerdSessionScopes.has(scope) || initializingSessionToolAuthorities.has(scope)
+    || settlingNativeSessionScopes.has(scope) || warmNativeSessions.has(scope) || closingWarmNativeSessions.has(scope)) return;
+  const epoch = sessionToolAuthorityEpochs.get(scope);
+  if (!epoch) return;
+  sessionToolAuthorityEpochs.delete(scope);
+  epoch.revoke();
+}
+
+export function sessionToolAuthorityCount(): number {
+  return sessionToolAuthorityEpochs.size;
+}
 
 export function nativeSessionScopeDigestIsBusy(digest: string): boolean {
   const scopes = [
@@ -8750,6 +8768,7 @@ function armWarmNativeSessionIdleTimer(
       .finally(() => {
         current.busy = false;
         if (closingWarmNativeSessions.get(sessionId) === closing) closingWarmNativeSessions.delete(sessionId);
+        releaseIdleSessionToolAuthority(sessionId);
       });
     // Admission waits for this checkpoint like a restart sweep's close.
     closingWarmNativeSessions.set(sessionId, closing);
@@ -10699,6 +10718,7 @@ export async function executePaperclipNativeSession(input: {
       // Always hand the settling mark back, even if a cleanup step throws.
       const settledScope = nativeSessionScopeKey(input.execution);
       if (settlingNativeSessionScopes.get(settledScope) === runId) settlingNativeSessionScopes.delete(settledScope);
+      releaseIdleSessionToolAuthority(settledScope);
     }
   }
 }
@@ -11242,10 +11262,8 @@ async function executePaperclipNativeSessionAttempt(
             .returning({ runId: nativeRunFinalizations.runId })
             .then((rows) => rows[0] ?? null);
           if (!claimed) throw new Error("native_session_lease_lost");
-          providerPackAdmissionSource = { runId: coordinator.runId,
-            receipt: boundRun.runnerProfileJson?.nativeProviderPackAdmission,
-            state: boundRun.runnerProfileJson?.nativeProviderPackAdmissionState,
-            artifacts: boundRun.runnerProfileJson?.nativeProviderArtifacts };
+          const providerPackAdmission = prepareNativeProviderPackAdmission(coordinator.runId, boundRun.runnerProfileJson, providerPackAdmissionEpoch);
+          providerPackAdmissionSource = providerPackAdmission.source;
           controllerGeneration = nextControllerGeneration;
           claimedStopCleanup = stopRecovery;
           await tx
@@ -11253,7 +11271,7 @@ async function executePaperclipNativeSessionAttempt(
             .set({
               nativePhase: "observed",
               nativePhaseUpdatedAt: leaseNow,
-              runnerProfileJson: sql`coalesce(${heartbeatRuns.runnerProfileJson}, '{}'::jsonb) || ${JSON.stringify({ nativeProviderPackAdmissionState: nativeProviderPackAdmissionPending(providerPackAdmissionEpoch),
+              runnerProfileJson: sql`coalesce(${heartbeatRuns.runnerProfileJson}, '{}'::jsonb) || ${JSON.stringify({ ...providerPackAdmission.patch,
                 ...(claimedStartupContext ? { nativeStartupContext: { schema: "paperclip.native-startup-context.v1",
                   companyId: input.execution.binding.companyId, agentId: input.execution.binding.agentId, runId: input.execution.binding.runId,
                   contextId: claimedStartupContext.id, deadlineAtMs: claimedStartupContext.deadlineAtMs, leaseId: target?.kind === "remote" ? target.leaseId : null,
@@ -12978,7 +12996,7 @@ async function executePaperclipNativeSessionAttempt(
             : nativeRemoteStartupRejectionCode(classifiedFailureCode, error, input.runnerExecutionTarget?.kind === "remote",
               previousStartupSignature);
       const bootstrap = input.useRunnerd && input.runnerExecutionTarget?.kind === "remote"
-          && !input.restartRecovery && !retainedTransition && !remoteWarmRecovery
+          && attemptLaunchesFreshBootstrap(input.restartRecovery) && !retainedTransition && !remoteWarmRecovery
           ? {
               binding: input.execution.binding,
               identity: { runnerInstanceId: effectiveRunnerInstanceId,
@@ -13084,7 +13102,11 @@ async function executePaperclipNativeSessionAttempt(
       // transitions the run into "failed". Read after the transaction
       // commits, so a rolled-back write never reports a false failure.
       let terminalRunToReport: typeof heartbeatRuns.$inferSelect | null = null;
-      await input.db.transaction(async (tx) => {
+      // A lock timeout rolls this write back whole, so a fresh attempt is safe.
+      // Without it a briefly held row strands the run under its dead lease and
+      // the task needs reconciliation instead of its recorded recovery.
+      await retryTransientLockContention(() => input.db.transaction(async (tx) => {
+        terminalRunToReport = null;
         await tx.execute(
           sql`select set_config('statement_timeout', '15000', true), set_config('lock_timeout', '1000', true)`,
         );
@@ -13479,7 +13501,7 @@ async function executePaperclipNativeSessionAttempt(
           supersedeOnIdentityChange:
             recoveryProjection.supersedeOnIdentityChange,
         });
-      }).catch(async (failure: unknown) => {
+      })).catch(async (failure: unknown) => {
         // Emit after rollback so the diagnostic sink cannot deadlock on the
         // coordinator transaction. Reporting failure cannot change fencing.
         if (failure instanceof NativePostResultFailureError) {
@@ -13811,7 +13833,8 @@ async function executePaperclipNativeSessionAttempt(
     errorMessage:
       native.terminal.runTerminalState === "succeeded"
         ? null
-        : providerFailure?.errorMessage ?? `Native session ${native.terminal.runTerminalState}`,
+        : providerFailure?.errorMessage ?? explainNativeTurnFailure(unclassifiedTurnFailure)?.error
+          ?? `Native session ${native.terminal.runTerminalState}`,
     ...(providerFailure ? { errorCode: providerFailure.errorCode } : {}),
     resultJson: {
       nativeResult: native.result as unknown as Record<string, unknown>,
@@ -16226,6 +16249,7 @@ async function createRunnerdBackendWithinSessionClaim(
         gateway: getAssignedMcpGateway(input.db),
         gatewayPublicId: assignedGatewayPublicId!,
         bearerToken: assignedMcpToken,
+        companyId: input.execution.binding.companyId,
         workMode: input.execution.task.workMode,
         ...(input.execution.provider.kind === "opencode" ? { delivery: "on_demand" as const } : {}),
       }))
@@ -16453,7 +16477,7 @@ async function createRunnerdBackendWithinSessionClaim(
       configuredEnvironmentVersion: description.configuredEnvironmentVersion,
       configuredEnvironment: taskConfiguredEnvironment,
       releaseResumeVersion: description.releaseResumeVersion,
-      resumeCredentialVersion: description.resumeCredentialVersion,
+      resumeLaunchInputsVersion: description.resumeLaunchInputsVersion,
       authorityRunId: description.releaseResumeVersion === 1 ? input.execution.binding.runId : undefined,
       releasedSource: input.remoteWarmRecovery?.releasedSource,
       sessionHandoff: !!input.remoteWarmRecovery?.portableSourceTaskId,
@@ -18030,14 +18054,7 @@ async function createRunnerdBackendWithinSessionClaim(
   delete effectiveRunnerEnvironmentBase.PAPERCLIP_RUNNER_PREPARED_HARNESS_HOME;
   if (preconfiguredHome) {
     if (remoteCommandRunner) {
-      const discovered = await remoteCommandRunner.execute({
-        command: "sh", args: ["-c", 'getent passwd "$(id -u)" | cut -d: -f6'],
-        bypassSession: true, timeoutMs: 10_000,
-      });
-      const home = discovered.stdout.trim();
-      if (discovered.exitCode !== 0 || discovered.timedOut || !home.startsWith("/") || /[\0\r\n]/.test(home)) {
-        throw new Error("runner_preconfigured_remote_home_unavailable");
-      }
+      const home = await readRemoteUserHome(remoteCommandRunner);
       // Paths from the controller's account cannot select a remote account's config.
       const hostPathKeys = new Set(["CODEX_HOME", "CLAUDE_CONFIG_DIR", "XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_CACHE_HOME"]);
       const configured = configuredEnvironment(effectiveRunnerEnvironmentBase);

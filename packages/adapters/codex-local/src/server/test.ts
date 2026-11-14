@@ -17,10 +17,12 @@ import {
   describeAdapterExecutionTarget,
   resolveAdapterExecutionTargetCwd,
   prepareAdapterExecutionTargetRuntime,
+  managedRemoteHomeEnvironment,
 } from "@paperclipai/adapter-utils/execution-target";
 import fs from "node:fs/promises";
 import path from "node:path";
 import os from "node:os";
+import { copyBackCodexAuth } from "./codex-auth-copyback.js";
 import { parseCodexJsonl } from "./parse.js";
 import { SANDBOX_INSTALL_COMMAND } from "../index.js";
 import { codexHomeDir, readCodexAuthInfo } from "./quota.js";
@@ -94,17 +96,25 @@ async function prepareCodexHelloProbe(input: {
   env: Record<string, string>;
   cleanup: () => Promise<void>;
 }> {
+  if (input.target?.kind === "remote" && input.target.transport === "ssh" && input.target.spec.useHostAuth === true) {
+    return { command: input.command, args: input.args, env: { ...input.env }, cleanup: async () => {} };
+  }
   let preparedRuntime: Awaited<ReturnType<typeof prepareAdapterExecutionTargetRuntime>> | null = null;
   let preparedRuntimeWorkspaceLocalDir: string | null = null;
   let probeHomeLocalDir: string | null = null;
 
   const cleanup = async () => {
-    await preparedRuntime?.restoreWorkspace().catch(() => {});
-    if (preparedRuntimeWorkspaceLocalDir) {
-      await fs.rm(preparedRuntimeWorkspaceLocalDir, { recursive: true, force: true }).catch(() => {});
-    }
-    if (probeHomeLocalDir) {
-      await fs.rm(probeHomeLocalDir, { recursive: true, force: true }).catch(() => {});
+    try {
+      await preparedRuntime?.restoreWorkspace();
+    } catch (error) {
+      if (input.managedAiConnection) throw error;
+    } finally {
+      if (preparedRuntimeWorkspaceLocalDir) {
+        await fs.rm(preparedRuntimeWorkspaceLocalDir, { recursive: true, force: true }).catch(() => {});
+      }
+      if (probeHomeLocalDir) {
+        await fs.rm(probeHomeLocalDir, { recursive: true, force: true }).catch(() => {});
+      }
     }
   };
 
@@ -157,7 +167,6 @@ async function prepareCodexHelloProbe(input: {
       path.join(os.tmpdir(), `paperclip-codex-probe-home-${input.runId}-`),
     );
     let seededAuth = false;
-    let seededConfig = false;
     for (const file of ["auth.json", "config.toml"]) {
       // `fs.readFile` follows the home's `auth.json` symlink into the host's
       // `~/.codex`, so we copy the resolved bytes as a plain file.
@@ -165,7 +174,6 @@ async function prepareCodexHelloProbe(input: {
       if (contents) {
         await fs.writeFile(path.join(probeHomeLocalDir, file), contents);
         if (file === "auth.json") seededAuth = true;
-        if (file === "config.toml") seededConfig = true;
       }
     }
 
@@ -173,7 +181,7 @@ async function prepareCodexHelloProbe(input: {
     // Pointing Codex at an empty uploaded home would mask any login already
     // baked into the sandbox (e.g. a captured custom-image snapshot); leaving
     // CODEX_HOME unset lets the probe exercise that in-sandbox login instead.
-    if (!seededAuth && !(input.managedAiConnection && seededConfig)) {
+    if (!seededAuth && !input.managedAiConnection) {
       return {
         command: input.command,
         args: input.args,
@@ -186,6 +194,7 @@ async function prepareCodexHelloProbe(input: {
       path.join(os.tmpdir(), `paperclip-codex-envtest-${input.runId}-`),
     );
     preparedRuntime = await prepareAdapterExecutionTargetRuntime({
+      privateRuntime: Boolean(input.managedAiConnection),
       runId: input.runId,
       target: input.target,
       adapterKey: "codex",
@@ -204,6 +213,15 @@ async function prepareCodexHelloProbe(input: {
           key: "home",
           localDir: probeHomeLocalDir,
           followSymlinks: true,
+          restore: input.managedAiConnection
+            ? async ({ assetDir, readFile }) => {
+              await copyBackCodexAuth({
+                readSandboxAuth: () => readFile(path.posix.join(assetDir, "auth.json")),
+                hostAuthPath: path.join(effectiveHome, "auth.json"),
+                log: async () => {},
+              });
+            }
+            : undefined,
         },
       ],
     });
@@ -212,7 +230,10 @@ async function prepareCodexHelloProbe(input: {
       command: input.command,
       args: input.args,
       env: preparedRuntime.assetDirs.home
-        ? { ...input.env, CODEX_HOME: preparedRuntime.assetDirs.home }
+        ? { ...input.env,
+          ...(input.target?.kind === "remote" && input.target.transport === "ssh" && input.target.spec.useHostAuth === false && input.managedAiConnection && preparedRuntime.runtimeRootDir
+            ? managedRemoteHomeEnvironment(preparedRuntime.runtimeRootDir) : {}),
+          CODEX_HOME: preparedRuntime.assetDirs.home }
         : { ...input.env },
       cleanup,
     };

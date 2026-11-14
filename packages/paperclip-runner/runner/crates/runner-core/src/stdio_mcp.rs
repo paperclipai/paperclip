@@ -95,9 +95,6 @@ pub fn assigned_bindings() -> McpResult<Vec<StdioMcpBinding>> {
         return Err(invalid("too many stdio MCP bindings"));
     }
     let mut names = BTreeSet::new();
-    if let Ok(gateway) = std::env::var("PAPERCLIP_NATIVE_MCP_NAME") {
-        names.insert(gateway);
-    }
     for binding in &bindings {
         binding.validate()?;
         if !names.insert(binding.name.clone()) {

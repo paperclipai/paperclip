@@ -1,4 +1,4 @@
-import { CONFIGURED_ENVIRONMENT_KEYS, SECRET_ENVIRONMENT_KEYS, configuredEnvironment, configuredEnvironmentProjection, configuredSecretEnvironment } from './configured-environment.js';
+import { CERTIFICATE_ENVIRONMENT_KEYS, CONFIGURED_ENVIRONMENT_KEYS, SECRET_ENVIRONMENT_KEYS, configuredEnvironment, configuredEnvironmentProjection, configuredSecretEnvironment } from './configured-environment.js';
 import { describe, expect, it, vi } from 'vitest';
 import { createSanitizedCodexEnvironment } from './drivers/codex/app-server-transport.js';
 import { createIsolatedCodexAppServerArgs } from './drivers/codex/codex-security-config.js';
@@ -98,7 +98,7 @@ describe("configured environment authority", () => {
     } finally { vi.unstubAllEnvs(); }
   });
 
-  it.each(["not-json", "[1]", '["NODE_OPTIONS"]', '["PAPERCLIP_API_KEY"]', '["PAPERCLIP_RUNNER_BOOTSTRAP_TICKET"]', '["OPENAI_API_KEY"]', '["KIMI_API_KEY"]', '["LD_PRELOAD"]', '["bad=name"]', '["CUSTOM","CUSTOM"]', '["MISSING"]'])
+  it.each(["not-json", "[1]", '["NODE_OPTIONS"]', '["PAPERCLIP_API_KEY"]', '["PAPERCLIP_RUNNER_BOOTSTRAP_TICKET"]', '["OPENAI_API_KEY"]', '["KIMI_API_KEY"]', '["PAPERCLIP_NATIVE_MCP_NAME"]', '["PAPERCLIP_NATIVE_MCP_URL"]', '["PAPERCLIP_NATIVE_MCP_TOKEN"]', '["LD_PRELOAD"]', '["bad=name"]', '["CUSTOM","CUSTOM"]', '["MISSING"]'])
     ("rejects malformed or reserved projection %s", raw => {
       expect(() => configuredEnvironment({ [CONFIGURED_ENVIRONMENT_KEYS]: raw })).toThrow("Invalid configured environment");
     });
@@ -163,4 +163,17 @@ describe("configured secret names", () => {
     expect(configuredSecretEnvironment(opencode)).toEqual([{ name: "PUBLISHING_API_KEY", value: "delivered-secret-value" }]);
     expect(JSON.parse(opencode[CONFIGURED_ENVIRONMENT_KEYS]!)).not.toContain(SECRET_ENVIRONMENT_KEYS);
   });
+});
+
+it("preserves sandbox certificate trust injected after policy construction", async () => {
+  const args = createIsolatedCodexAppServerArgs({ PATH: "/bin" });
+  const setting = args.find(value => value.startsWith("shell_environment_policy.include_only="))!;
+  const keys = JSON.parse(setting.slice(setting.indexOf("=") + 1)) as string[];
+  expect(keys).toEqual(expect.arrayContaining([...CERTIFICATE_ENVIRONMENT_KEYS]));
+  const injected = Object.fromEntries(CERTIFICATE_ENVIRONMENT_KEYS.map(key => [key, `/execution/${key.toLowerCase()}`]));
+  expect(createSanitizedCodexEnvironment(injected)).toMatchObject(injected);
+  const { createSanitizedAcpxSpawnInput } = await import("./drivers/acpx/environment.js");
+  expect({ ...createSanitizedAcpxSpawnInput(injected, "codex").env }).toMatchObject(injected);
+  // Names cross as policy; the injected values never serialize into argv.
+  for (const value of Object.values(injected)) expect(args.join("\n")).not.toContain(value);
 });

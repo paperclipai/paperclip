@@ -99,7 +99,7 @@ type ProjectionState = {
   cleanupSettling?: boolean;
   /** The fresh-continuation fallback is continuing this run's task (recorded,
    * not yet started) or will check it again at `nextCheckAt`. */
-  freshContinuation?: { state: "continuing" } | { state: "scheduled"; nextCheckAt: number };
+  freshContinuation?: { state: "continuing"; pendingSince?: number } | { state: "scheduled"; nextCheckAt: number };
   automaticDispositionAt?: number;
   waitingContinuation?: { queuedAt: number; personRequested: boolean };
   recoveryHandedToPerson?: boolean;
@@ -173,6 +173,11 @@ const retryWaitMessages: Record<string, string> = {
   // An edited saved message can never be replayed; only new input continues.
   retry_source_changed: "Retry cannot continue because its saved message changed. Send a new message to continue from saved work.",
 };
+
+/** The stable text for a Retry admission refusal, as the task view shows it. */
+export function taskRetryWaitMessage(reason: string): string {
+  return retryWaitMessages[reason] ?? "Retry is waiting for execution checks. Your message is saved.";
+}
 
 const UNIDENTIFIED_RUNNER_STOP_MESSAGE = "Paperclip can't confirm that the previous run stopped. The server restarted after it started the agent but before it recorded the agent's process. "
   + "If no agent is still working on this task, a board operator can confirm that it stopped, and your Retry starts right away. Your message is saved.";
@@ -283,7 +288,13 @@ function projectTaskInterruptionState(issue: ProjectionIssue, input: ProjectionS
     return { ...base, state: "working", canRetry: true, retryAction: "move_forward" };
   if (["running", "queued"].includes(run.status)) return { ...base, state: "working" };
   // Paperclip is continuing the task by itself: no failed attempt and no Retry.
-  if (input.freshContinuation?.state === "continuing") return { ...base, state: "working", canRetry: false };
+  if (input.freshContinuation?.state === "continuing") {
+    const pendingSince = input.freshContinuation.pendingSince;
+    if (pendingSince !== undefined && !input.retryWait && run.agentId === issue.assigneeAgentId
+        && now - pendingSince >= WAITING_CONTINUATION_MOVE_FORWARD_MS)
+      return { ...base, state: "working", canRetry: true, retryAction: "move_forward" };
+    return { ...base, state: "working", canRetry: false };
+  }
   if (input.freshContinuation?.state === "scheduled" && input.freshContinuation.nextCheckAt > now)
     return { ...base, state: "retry_scheduled", nextRetryAt: new Date(input.freshContinuation.nextCheckAt).toISOString(), canRetry: false };
   if (input.automaticDispositionAt !== undefined && ["failed", "timed_out", "interrupted", "cancelled"].includes(run.status)
@@ -610,16 +621,26 @@ export async function taskInterruptionPresentations(db: Db, companyId: string, i
     runId: sql<string>`${issueRecoveryActions.evidence}->>'runId'`,
     delivery: sql<string | null>`${issueRecoveryActions.evidence}->>'continuationDelivery'`,
     recorded: sql<boolean>`${issueRecoveryActions.evidence} ? 'freshContinuation'`,
+    status: issueRecoveryActions.status,
+    schema: sql<string | null>`${issueRecoveryActions.evidence}#>>'{freshContinuation,schema}'`,
+    recordedAt: sql<string | null>`${issueRecoveryActions.evidence}#>>'{freshContinuation,recordedAt}'`,
+    reconciledRunId: sql<string | null>`${issueRecoveryActions.evidence}#>>'{executionReconciliation,runId}'`,
     checkKind: sql<string | null>`${issueRecoveryActions.evidence}#>>'{freshContinuationCheck,kind}'`,
     nextCheckAt: sql<string | null>`${issueRecoveryActions.evidence}#>>'{freshContinuationCheck,nextCheckAt}'` })
     .from(issueRecoveryActions).where(and(eq(issueRecoveryActions.companyId, companyId), inArray(issueRecoveryActions.sourceIssueId, ids),
       inArray(sql`${issueRecoveryActions.evidence}->>'runId'`, runIds),
       sql`(${issueRecoveryActions.evidence} ? 'freshContinuationSettlement' or ${issueRecoveryActions.evidence} ? 'freshContinuationCheck')`)) : [];
+  const pendingSchema = freshRows.some(row => row.delivery === "pending")
+    ? (await import("./fresh-continuation-fallback.js")).FRESH_CONTINUATION_SCHEMA : null;
   const freshContinuationFor = (issueId: string, runId: string | undefined): ProjectionState["freshContinuation"] => {
     const rows = freshRows.filter(row => row.issueId === issueId && row.runId === runId);
     // Only the primary record (it carries `freshContinuation`) says whether a
     // continuation is still on its way; holds coalesced into it never do.
-    if (rows.some(row => row.recorded && ["not_requested", "pending"].includes(row.delivery ?? ""))) return { state: "continuing" };
+    if (rows.some(row => row.recorded && ["not_requested", "pending"].includes(row.delivery ?? ""))) {
+      const pendingSince = Math.max(...rows.filter(row => row.recorded && row.delivery === "pending" && row.status === "resolved"
+        && row.schema === pendingSchema && row.reconciledRunId === runId).map(row => Date.parse(row.recordedAt ?? "")));
+      return Number.isFinite(pendingSince) ? { state: "continuing", pendingSince } : { state: "continuing" };
+    }
     const scheduled = rows.filter(row => ["exact_recovery_pending", "backoff"].includes(row.checkKind ?? "") && row.nextCheckAt)
       .map(row => Number(row.nextCheckAt)).sort((a, b) => a - b)[0];
     return scheduled ? { state: "scheduled", nextCheckAt: scheduled } : undefined;
@@ -883,4 +904,24 @@ export async function taskInterruptionPresentations(db: Db, companyId: string, i
 
 export async function taskInterruptionPresentation(db: Db, issue: ProjectionIssue) {
   return (await taskInterruptionPresentations(db, issue.companyId, [issue])).get(issue.id) ?? null;
+}
+
+/**
+ * The refusal that admission recorded on this Retry request, when another
+ * click cannot change it. A Retry answer must name it instead of reporting
+ * the request as accepted: such a request starts no run by itself. The task
+ * view's projection says whether a quarantined session is still cleaning up.
+ */
+export async function taskRetryRefusal(db: Pick<Db, "select">, companyId: string, requestId: string,
+  presentation?: Pick<TaskInterruptionPresentation, "canRetry" | "retryWait"> | null):
+  Promise<{ reason: string; message: string } | null> {
+  const [wake] = await db.select({ status: agentWakeupRequests.status, runId: agentWakeupRequests.runId,
+    reason: sql<string | null>`${agentWakeupRequests.payload}#>>'{executionWait,reason}'` })
+    .from(agentWakeupRequests).where(and(eq(agentWakeupRequests.companyId, companyId), eq(agentWakeupRequests.id, requestId)));
+  if (!wake || wake.status !== "deferred_issue_execution" || wake.runId || !wake.reason) return null;
+  const shown = presentation?.retryWait?.reason === wake.reason ? presentation : null;
+  // A quarantined session that is still cleaning up is a refusal only while
+  // the task view hides Retry for it; every other reason has a fixed verdict.
+  if (heldRetryOffersRetry(wake.reason, wake.reason === "cleanup_quarantined" && shown?.canRetry === false)) return null;
+  return { reason: wake.reason, message: shown?.retryWait?.message ?? taskRetryWaitMessage(wake.reason) };
 }

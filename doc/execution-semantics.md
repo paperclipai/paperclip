@@ -598,6 +598,21 @@ The **Retry now** action returns `waiting` with the saved retry schedule while
 cleanup holds ownership. Its controls show the wait without claiming that a run
 started, and another click can check the gate again.
 
+For legacy local runs, physical cleanup and cost settlement have separate receipts.
+The owning controller can record verified process cleanup while usage is incomplete.
+The accounting worker then records an honest lower bound or an unpriced charge;
+missing usage does not prove zero cost. The run status and saved retry intent stay
+unchanged. A later usage receipt can still reconcile the same charge.
+
+If the controller stops before it saves the cleanup receipt, an authorized board
+member can retry that run through the existing company-scoped cost-accounting
+Retry endpoint. It checks the saved controller and child identities, local
+ownership, and environment cleanup before it records physical closure. A live
+process, an unknown identity, a foreign host, or pending cleanup keeps the hold.
+A repeated request or a lost HTTP response must not add a second charge. This
+action settles accounting; it does not start a provider turn or authorize task
+replay.
+
 A human comment may supersede a retry only while it remains `scheduled_retry`.
 Queued and running retries retain their execution and receive the comment through
 normal wake coalescing. Supersession rechecks the scheduled status atomically with
@@ -1648,7 +1663,7 @@ timeout retries still require a fresh allocation under the policy above.
 
 A person's task Retry on a connected task first asks the chat retry owner to repeat the exact failed chat request. When the latest run is that person's own saved board turn that cannot be certified for replay, when no chat retry owner is available, or when that owner refuses (`chat_failed_run_retry_not_authorized`), the refusal and any writes it made are rolled back and the same Retry receipt becomes an ordinary board continuation: the clicking person is the responsible user, the run starts a fresh session from saved work, and no chat action, chat authority, or output replay is created. This is the same authority as a new message from that person. When the conversation still holds saved or unadmitted chat input for the task, Retry keeps the exact-replay path and its refusal, because that input continues through its own admission. Dispatch keeps every normal gate (current task access, executor containment, recovery holds, unadmitted chat input). Projection and the route therefore agree: a shown Retry on a connected task is accepted. Retry that Paperclip requests by itself on a person's behalf (restart recovery, provider limit reset) keeps the exact-replay requirement and still settles on the refusal. A budget resume continues the person's own Retry, so it takes the board continuation too. No migration is needed; tasks blocked by an earlier release become retryable at the next click.
 
-A task whose run was interrupted and whose fresh continuation is recorded reads as continuing (`working`, no Retry) while the continuation waits to be delivered and while it waits in the agent's queue. Once the delivered continuation run has waited in the queue for 15 minutes, the task also offers Retry with `retryAction: "move_forward"`, labelled "Move it forward now". The Retry names that queued run as its observed run, so admission joins it to the run (`coalesced`) and starts no second run; a run that a person joined starts ahead of system recovery work. The offer ends once a person has joined the run or the run starts. While the continuation is still waiting to be delivered, no Retry is offered: a Retry there would start its own run beside the recorded continuation.
+A task whose run was interrupted and whose fresh continuation is recorded reads as continuing (`working`, no Retry) while the continuation waits to be delivered and while it waits in the agent's queue. Once the delivered continuation run has waited in the queue for 15 minutes, the task also offers Retry with `retryAction: "move_forward"`, labelled "Move it forward now". The Retry names that queued run as its observed run, so admission joins it to the run (`coalesced`) and starts no second run; a run that a person joined starts ahead of system recovery work. The offer ends once a person has joined the run or the run starts. The same action is offered while the continuation is recorded but not yet delivered (`continuationDelivery: "pending"`) once it has waited 15 minutes since it was recorded. The Retry then names the interrupted run as its observed run, and admission delivers the recorded continuation as the one run, with its recorded isolation; the delivery pass afterwards finds nothing left to start. When the continuation is delivered, the task moves to another run, or the system gives up the delivery between the offer and the click, the click starts no run (`stale` or `alreadyMovedOn`). No move-forward is offered for a continuation recorded without a delivery request (`not_requested`), when a person's Retry for the interrupted run already waits, or when the task's assignee changed; a held restore keeps its own blocker.
 
 The exact replay can also be refused after the click is accepted. This happens when chat source authorization was deferred by a busy identity or endpoint lock, or when it later fails, so the chat retry action settles `failed` with no admitted run. The task Retry receipt is then not failed. If it is a person's Retry, its source run is still the latest run, its chat wake has no run, and no saved or unadmitted chat input remains, the same receipt drops its chat action and becomes the board continuation described above, recorded as `issue.retry_continued_from_saved_work`. Saved chat input whose source comment was written no later than the failed run's stop boundary (the user's recorded Stop request, otherwise `finishedAt`, the same boundary admission uses) does not block this: admission holds such input as `message_predates_stop`, so it can never start alone. The continuation adopts it (the input receipt is coalesced into the Retry receipt) and the task continues from saved work. Saved input that arrived after the stop keeps its own admission path, and the Retry still settles as failed. When the latest run is an admission that the recovery hold cancelled before dispatch (`execution_reconciliation_required`), the saved work that counts is the recovered work of the run whose recovery action held it. The deferred-receipt worker dispatches it with every normal gate. Retry that Paperclip requests by itself still settles as failed. When a failed run's saved work is recovered, the task's execution blocker offers Retry (also on a connected task) and says "Saved work recovered. Retry continues from it." A stopped (cancelled) run keeps "Send a message to continue."
 
@@ -6178,6 +6193,18 @@ rollback requires a server that reads this envelope and the supported settled
 warm journal, including its PRP v2 idle goal suffix. Earlier local-only readers
 and readers lacking that suffix handling remain outside that rollback contract.
 
+### Resolved cards queued behind chat runs
+
+A resolved card is an independent continuation. Its saved chat message IDs
+remain authorization bindings even if a prior run received those messages.
+Queue promotion retains live, same-task message bindings for that continuation;
+deleted and self-authored messages still drop out. The new run must pass current
+chat authorization. Ordinary message-only wakes whose input was consumed remain
+cancelled and cannot start another turn.
+Retained bindings that a run already received are not fresh input: they never
+reopen a finished task. A card answer owed to a task the finishing run closed
+still continues it in progress through the owed-answer path.
+
 ### Stop a failed native retry
 
 A failed native run can still own a scheduled same-run bootstrap retry. The
@@ -6204,6 +6231,20 @@ can be accepted without a terminal acknowledgement. The selected run and its
 history refresh after either outcome. Stop does not resume the provider or change
 a manual task hold.
 
+### Provider-pack admission during restart recovery
+
+Provider-pack admission keeps a digest-bound historical proof when a controller
+claim changes its current admission to pending. If a restart or a failed recovery
+barrier interrupts that claim before its admission callback, the next same-run
+claim can reuse that proof only for the unchanged receipt. Normal session,
+company, agent, Runner and environment-lease checks still apply. Current artifact
+retention remains blocked until the new claim publishes verified admission.
+Unknown admission state discards the historical proof; a callback clears it when
+it records its decision. This adds no background work or provider replay.
+Previous-release verified receipts seed this proof on their first new claim.
+Older pending or unknown records without it remain unverified, as before. Older
+readers ignore the added profile field and retain their existing refusal behavior.
+
 ### Native session diagnostic ownership
 
 Native session diagnostics follow the current execution's recorder epoch, including
@@ -6216,3 +6257,11 @@ with company/run identifiers to the process logger; it cannot append provider te
 to a completed run or borrow a successor run's recorder. Canonical native output
 export, source coverage, secret redaction and persistence-failure warnings retain
 their existing contracts.
+
+Exact sandbox reattachment reports the current acquisition as `resumed` only
+when the recorded lease passes scope and identity checks and the provider confirms
+that same allocation. The lease's original acquisition can have been `replacement`;
+that historical label cannot describe the later reattachment. This changes the
+operation receipt passed separately through preparation to the execution target,
+not persisted lease metadata or the Runner verification guard. Missing,
+expired, foreign or changed allocations retain their named recovery refusals.

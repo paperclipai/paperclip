@@ -4,6 +4,7 @@ import { createPostgresWatchdogAdapter } from "./adapters/postgres.js";
 import { createProcessAdapter } from "./adapters/process.js";
 import {
   createBuildRunOutputSilence,
+  createBuildRunOutputSilences,
   createFoldSourceResolvedRun,
   createRecordWatchdogDecision,
   createScanSilentActiveRuns,
@@ -38,6 +39,11 @@ export function createActiveRunWatchdog(db: Db, config: ActiveRunWatchdogConfig)
       scan = scanSilentActiveRuns, enabled = async () => true) => registerActiveRunSilenceWork(db, coordinator, { reader: postgresAdapter,
         scan, enabled, suspicionThresholdMs: config.suspicionThresholdMs }, canRun),
     buildRunOutputSilence: createBuildRunOutputSilence({
+      reader: postgresAdapter,
+      suspicionThresholdMs: config.suspicionThresholdMs,
+      criticalThresholdMs: config.criticalThresholdMs,
+    }),
+    buildRunOutputSilences: createBuildRunOutputSilences({
       reader: postgresAdapter,
       suspicionThresholdMs: config.suspicionThresholdMs,
       criticalThresholdMs: config.criticalThresholdMs,

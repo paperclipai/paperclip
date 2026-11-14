@@ -28,6 +28,8 @@ it("runs every active nested/parameterized fixture case exactly once through the
       afterEach(() => { active = false; });
       function record(id) { expect(active).toBe(true); appendFileSync(${JSON.stringify(trace)}, JSON.stringify(id) + "\\n"); }
       it("top-level", () => record("top"));
+      it("second top-level", () => record("top-second"));
+      it("third top-level", () => record("top-third"));
       describe("nested", () => {
         it("first", () => record("nested-first"));
         it("second", () => record("nested-second"));
@@ -45,7 +47,7 @@ it("runs every active nested/parameterized fixture case exactly once through the
       expect(result.stdout).toContain("exact filter coverage verified");
     }
     const executed = readFileSync(trace, "utf8").trim().split("\n").map((line) => JSON.parse(line));
-    expect(executed.sort()).toEqual(["a", "b", "c", "d", "nested-first", "nested-second", "top"]);
+    expect(executed.sort()).toEqual(["a", "b", "c", "d", "nested-first", "nested-second", "top", "top-second", "top-third"]);
 
     // A real assertion failure must still fail the wrapper after successful
     // collection and filter validation.

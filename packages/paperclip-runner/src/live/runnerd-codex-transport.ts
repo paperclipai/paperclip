@@ -98,7 +98,6 @@ import type {
   NativeAcpxPermissionMode,
   NativeOpenCodePermissionMode,
 } from "../contracts/native-execution.js";
-import { nativeMcpLaunchBinding } from "../drivers/native-mcp.js";
 import {
   prepareIsolatedCodexHome,
   prepareIsolatedCodexRecoveryHome,
@@ -3793,16 +3792,10 @@ function createCapabilityRunnerdProviderEnvironmentBase(input: {
     const providerPackageAuthority = acpxProviderPackageAuthority(
       sidecarPath, packageRoot, input.options.acpxAgent,
     );
-    // This is the trusted runner/sidecar boundary. The provider sandbox still
-    // uses createSanitizedAcpxSpawnInput and does not inherit gateway tokens.
-    const assignedGateway = nativeMcpLaunchBinding(input.options.environment ?? {});
     const credentialBinding = createAcpxCredentialBinding(
       input.options.environment, input.options.acpxAgent ?? "codex", input.identity.normalizedSessionId,
     );
     return {
-      ...(assignedGateway ? {
-        PAPERCLIP_NATIVE_MCP_TOKEN: assignedGateway.token,
-      } : {}),
       ...createSanitizedAcpxSpawnInput(
         input.options.environment,
         input.options.acpxAgent ?? "codex",
@@ -3890,9 +3883,6 @@ const OPEN_CODE_RUNNER_ENVIRONMENT_KEYS = new Set([
   "WINDIR",
   "RUST_BACKTRACE",
   "OPENROUTER_API_KEY",
-  "PAPERCLIP_NATIVE_MCP_NAME",
-  "PAPERCLIP_NATIVE_MCP_URL",
-  "PAPERCLIP_NATIVE_MCP_TOKEN",
 ]);
 
 function createSanitizedOpenCodeRunnerEnvironment(
@@ -4690,8 +4680,10 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
     this.#recoverPendingSemanticInputsWhenReady();
   }
 
-  #recoverPendingSemanticInputsWhenReady(): void {
-    if (!this.#retainsSourceInputs() && this.options.recoveryPurpose !== "stop_cleanup" && this.#startupComplete && this.#handlerInstalled && this.#sourceRecoveryIdentity === null && this.#pendingWarmRecoveryCompletion === null) {
+  #recoverPendingSemanticInputsWhenReady(atAttach = false): void {
+    if (!this.#retainsSourceInputs() && this.options.recoveryPurpose !== "stop_cleanup"
+      && (atAttach || (this.#startupComplete && this.#handlerInstalled))
+      && this.#sourceRecoveryIdentity === null && this.#pendingWarmRecoveryCompletion === null) {
       void Promise.resolve().then(() => this.#core?.recoverPendingSemanticInputs())
         .catch(error => this.#failTransport(error instanceof Error ? error : new Error(String(error))));
     }
@@ -5879,6 +5871,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
     let checkpointFailed = false;
     let releaseFailed = false;
     let processStopFailed = false;
+    let retirementFailed = false;
     try {
       await releaseRunnerProcessOwnership({
         runnerSettled,
@@ -5920,12 +5913,27 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
             throw error;
           }
         }),
-        retireController: () => this.#stopAndDrainAuthority(closeDeadline),
+        retireController: async () => {
+          try {
+            await this.#stopAndDrainAuthority(closeDeadline);
+          } catch (error) {
+            retirementFailed = true;
+            throw error;
+          }
+        },
       });
     } catch (error) {
       if (checkpoint && checkpointFailed && !releaseFailed && !processStopFailed) {
         this.#pendingCloseCheckpointRetry = {
           checkpoint: () => checkpoint(runnerSettled ? "settled" : "unsettled"),
+          finish: finishClose,
+        };
+      } else if (retirementFailed && !releaseFailed && !processStopFailed) {
+        this.#pendingCloseCheckpointRetry = {
+          checkpoint: async () => {
+            await this.#stopAndDrainAuthority(Date.now() + runnerCloseGraceMs(this.options));
+            await checkpoint?.(runnerSettled ? "settled" : "unsettled");
+          },
           finish: finishClose,
         };
       }
@@ -6070,7 +6078,6 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
         apiKey:
           this.options.environment?.CODEX_API_KEY ??
           this.options.environment?.OPENAI_API_KEY,
-        nativeMcp: nativeMcpLaunchBinding(this.options.environment),
       });
     }
     this.#assertStartupOpen();
@@ -7194,7 +7201,6 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
         await prepareIsolatedCodexRecoveryHome({
           ...auth,
           observability: this.options.observability,
-          nativeMcp: nativeMcpLaunchBinding(this.options.environment),
         });
       } else {
         await releaseMaterializedNativeRuntimeSkills(resolve(localCodexHome, "skills"));
@@ -7203,7 +7209,6 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
           ...auth,
           context: sourceRuntimeContext,
           observability: this.options.observability,
-          nativeMcp: nativeMcpLaunchBinding(this.options.environment),
         });
       }
     }
@@ -7386,6 +7391,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
     }
     this.#assertStartupOpen();
     this.#startPump();
+    this.#recoverPendingSemanticInputsWhenReady(true);
     if (adoptedRunner) {
       await this.#awaitAdoptedRunnerConnection(
         adoptedRunner,
@@ -7469,7 +7475,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
     if (this.#retainsSourceInputs() || (this.#authorityRunId() !== undefined && call.correlation.runId !== this.#authorityRunId())) return null;
     if (this.#sourceRecoveryIdentity) throw new NativeRunnerSourceReconciliationRequiredError("semantic");
     if (call.operationId === "paperclip_finish" || call.operationId === "paperclip_block") {
-      return this.#handleSemanticToolInput(call);
+      return this.#startupComplete && this.#handlerInstalled ? this.#handleSemanticToolInput(call) : null;
     }
     const outcome = await this.options.recoverSemanticToolInput?.(call);
     return outcome ? this.#bindSemanticToolOutcome(call, outcome) : null;
@@ -8081,6 +8087,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
         }
         return progressAt;
       },
+      replayProgressAt: () => this.#core?.committedEventProgressAt() ?? null,
       describeStall: () => this.#core === null ? null : describeRunnerCommandStall({
         commands: this.#core.store.state.commands,
         commandId: commandId ?? this.#core.store.state.commands.find(candidate => candidate.type === type)?.commandId,
@@ -9307,6 +9314,7 @@ export async function probeNativeRunnerEnvironment(options: {
   const environment = { ...options.environment };
   const remoteFilesystemRoot = options.transportOptions?.runnerFilesystemRoot;
   const ownsPreparation = options.transportOptions?.prepareLaunch !== undefined;
+  const preconfiguredHome = options.transportOptions?.homeMode === "preconfigured";
   if (options.workingDirectory !== undefined && !remoteFilesystemRoot && !ownsPreparation) throw new Error("Native setup remote working directory requires a remote runner filesystem.");
   const workingDirectory = options.workingDirectory ?? resolve(options.runtimeDirectory, "workspace");
   if (!remoteFilesystemRoot && !ownsPreparation) mkdirSync(workingDirectory, { mode: 0o700 });
@@ -9328,9 +9336,9 @@ export async function probeNativeRunnerEnvironment(options: {
   };
   let registrationCleanupConfirmed = true;
   const cleanupBudget = probeCleanupBudget(options.cleanupTimeoutMs);
-  const sourceCodexHome = ownsPreparation ? undefined : options.transportOptions?.sourceCodexHome ?? resolveSourceCodexHome(environment);
+  const sourceCodexHome = ownsPreparation || preconfiguredHome ? undefined : options.transportOptions?.sourceCodexHome ?? resolveSourceCodexHome(environment);
   delete environment.PAPERCLIP_RUNNER_EXTERNAL_SANDBOX;
-  if (!ownsPreparation) {
+  if (!ownsPreparation && !preconfiguredHome) {
     environment.HOME = resolve(remoteFilesystemRoot ?? options.runtimeDirectory, "probe-home");
     environment.CODEX_HOME = resolve(remoteFilesystemRoot ?? options.runtimeDirectory, "codex-home");
   }
@@ -9727,6 +9735,7 @@ export class RunnerStallLedger {
 
 /** Shared polling path keeps startup cancellation separate from owned cleanup commands. */
 const RUNNER_ANSWERED_RESULT_STALL_MS = 30_000;
+export const RUNNER_REPLAY_PROGRESS_MAX_EXTENSION_MS = 300_000;
 
 export async function waitForRunnerCommand(input: {
   type: string;
@@ -9742,11 +9751,18 @@ export async function waitForRunnerCommand(input: {
   /** Bounded, content-free evidence of what the command waited behind. */
   describeStall?: () => string | null;
   answeredProgressAt?: () => number | null;
+  replayProgressAt?: () => number | null;
 }): Promise<void> {
   const now = () => input.clock ? input.clock.now() : Date.now();
   const answeredAndAdvancing = () => {
     const progressAt = input.answeredProgressAt?.() ?? null;
     return progressAt !== null && Date.now() - progressAt < RUNNER_ANSWERED_RESULT_STALL_MS;
+  };
+  const replayExtensionEndsAt = Date.now() + Math.max(0, input.deadline - now()) + RUNNER_REPLAY_PROGRESS_MAX_EXTENSION_MS;
+  const replayAdvancing = () => {
+    const progressAt = input.replayProgressAt?.() ?? null;
+    return progressAt !== null && Date.now() < replayExtensionEndsAt
+      && Date.now() - progressAt < RUNNER_ANSWERED_RESULT_STALL_MS;
   };
   let extended = false;
   const settled = () => {
@@ -9768,7 +9784,7 @@ export async function waitForRunnerCommand(input: {
     input.clock?.credit(Math.max(0, now() - input.deadline) + RUNNER_POST_STOP_GRACE_MS);
   };
   let observed = false;
-  while (now() < input.deadline || answeredAndAdvancing()) {
+  while (now() < input.deadline || answeredAndAdvancing() || replayAdvancing()) {
     observed = true;
     if (now() >= input.deadline) extended = true;
     input.throwIfFailed();

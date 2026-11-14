@@ -536,12 +536,13 @@ suite("recovery wake herd", () => {
     expect(await deliveryOf(healthy.action.id)).toBe("delivered");
   }, 120_000);
 
-  it("shows a task as continuing, never as needing Retry, while its recorded continuation is pending past the delivery bound", async () => {
+  it("shows a task as continuing, never as failed, while its recorded continuation is pending past the delivery bound", async () => {
     const agentId = await seedCompany(1);
     const record = await pendingContinuation(agentId, 240);
     await holdPastBound(record, RECOVERY_CONTINUATION_DELIVERY_BOUND_MS);
     const [issueRow] = await db.select().from(issues).where(eq(issues.id, record.issue.id));
-    expect(await taskInterruptionPresentation(db, issueRow!)).toMatchObject({ state: "working", canRetry: false, responsibility: "system" });
+    expect(await taskInterruptionPresentation(db, issueRow!)).toMatchObject({ state: "working", responsibility: "system",
+      canRetry: true, retryAction: "move_forward", observedRunId: record.source.id });
 
     const wake = fakeWake();
     await deliverReconciledExecutions(db, wake as never);
@@ -831,6 +832,62 @@ suite("recovery wake herd", () => {
       await heartbeat.resumeQueuedRuns();
       expect((await readRun(waiting.olderWork.id)).startedAt).not.toBeNull();
       expect(await readRun(waiting.continuation.id)).toMatchObject({ status: "queued", startedAt: null });
+    } finally {
+      await heartbeat.drainActiveRunExecutions();
+    }
+  }, 120_000);
+  it("starts the assigned-work sweep's continuation of a task whose run was interrupted, ahead of fresher retries", async () => {
+    const agentId = await seedCompany(1);
+    const stranded = await task(agentId);
+    await db.insert(heartbeatRuns).values({ companyId, agentId, issueId: stranded.id, invocationSource: "assignment",
+      status: "interrupted", errorCode: "server_shutdown_interrupted", livenessState: "needs_followup",
+      startedAt: new Date(Date.now() - 4 * 60 * 60_000), finishedAt: new Date(Date.now() - 3 * 60 * 60_000),
+      createdAt: new Date(Date.now() - 4 * 60 * 60_000), contextSnapshot: { issueId: stranded.id, taskId: stranded.id },
+      resultJson: { stopReason: "interrupted", executionRecovery: { kind: "bootstrap", providerWorkStarted: false } } });
+    await db.update(issues).set({ updatedAt: new Date(Date.now() - 3 * 60 * 60_000) }).where(eq(issues.id, stranded.id));
+    const heartbeat = heartbeatService(db);
+    try {
+      const blocker = await queuedRecoveryRun(agentId, 1, 1);
+      await db.update(heartbeatRuns).set({ status: "running", startedAt: new Date() }).where(eq(heartbeatRuns.id, blocker.id));
+      expect(await heartbeat.checkAssignedWorkInvariant({ companyId, issueId: stranded.id }))
+        .toMatchObject({ outcome: "repaired" });
+      const [continuation] = await db.select().from(heartbeatRuns).where(and(eq(heartbeatRuns.issueId, stranded.id),
+        eq(heartbeatRuns.status, "queued")));
+      expect(continuation).toBeDefined();
+      await db.update(heartbeatRuns).set({ createdAt: new Date(Date.now() - 2 * 60 * 60_000) })
+        .where(eq(heartbeatRuns.id, continuation!.id));
+      const fresher: Array<typeof heartbeatRuns.$inferSelect> = [];
+      for (let index = 0; index < 4; index += 1) fresher.push(await queuedRecoveryRun(agentId, 10 - index, 5));
+      await db.update(heartbeatRuns).set({ status: "failed", finishedAt: new Date() }).where(eq(heartbeatRuns.id, blocker.id));
+      await expect.poll(async () => {
+        await heartbeat.resumeQueuedRuns();
+        return (await readRun(continuation!.id)).startedAt;
+      }, { timeout: 60_000, interval: 250 }).not.toBeNull();
+    } finally {
+      await heartbeat.drainActiveRunExecutions();
+    }
+  }, 120_000);
+  it("gives system recovery its share when the agent's recent starts were a person's recovery restarts", async () => {
+    const agentId = await seedCompany(1);
+    const system = await queuedRecoveryRun(agentId, 20, 5);
+    for (let index = 0; index < 3; index += 1) {
+      const issue = await task(agentId);
+      const [request] = await db.insert(agentWakeupRequests).values({ companyId, agentId, source: "on_demand", triggerDetail: "manual",
+        reason: "issue_recovery_action_restored", status: "completed", requestedByActorType: "user", requestedByActorId: userId,
+        payload: { issueId: issue.id } }).returning();
+      const startedAt = new Date(Date.now() - (10 - index) * 60_000);
+      const [run] = await db.insert(heartbeatRuns).values({ companyId, agentId, issueId: issue.id, invocationSource: "on_demand",
+        triggerDetail: "manual", status: "succeeded", wakeupRequestId: request!.id, startedAt, finishedAt: startedAt,
+        createdAt: new Date(startedAt.getTime() - 1_000),
+        contextSnapshot: { issueId: issue.id, taskId: issue.id, wakeReason: "issue_recovery_action_restored" } }).returning();
+      await db.update(agentWakeupRequests).set({ runId: run!.id }).where(eq(agentWakeupRequests.id, request!.id));
+    }
+    const people = [await queuedPersonRetry(agentId), await queuedPersonRetry(agentId)];
+    const heartbeat = heartbeatService(db);
+    try {
+      await heartbeat.resumeQueuedRuns();
+      expect((await readRun(system.id)).startedAt).not.toBeNull();
+      for (const run of people) expect(await readRun(run.id)).toMatchObject({ status: "queued", startedAt: null });
     } finally {
       await heartbeat.drainActiveRunExecutions();
     }

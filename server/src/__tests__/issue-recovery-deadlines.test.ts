@@ -110,6 +110,56 @@ describeIssueRecovery("issue recovery production producers and deadlines", () =>
     expect(new Set(checked).size).toBe(1000);
     await quiet();
   });
+  it("checks only blocked tasks whose blockers are done, however many still wait", async () => {
+    const f = await fixture();
+    const [openBlocker, doneBlocker] = await state.db.insert(issues).values([
+      { companyId: f.companyId, title: "Open blocker", status: "in_progress", assigneeAgentId: f.agentId },
+      { companyId: f.companyId, title: "Done blocker", status: "done" },
+    ]).returning({ id: issues.id });
+    const waiting = await state.db.insert(issues).values(Array.from({ length: 300 }, (_, index) => ({
+      companyId: f.companyId, title: `Waiting ${index}`, status: "blocked", assigneeAgentId: f.agentId,
+    }))).returning({ id: issues.id });
+    const [ready] = await state.db.insert(issues).values({ companyId: f.companyId, title: "Ready", status: "blocked",
+      assigneeAgentId: f.agentId }).returning({ id: issues.id });
+    await state.db.insert(issueRelations).values([
+      ...waiting.map(row => ({ companyId: f.companyId, issueId: openBlocker.id, relatedIssueId: row.id, type: "blocks" as const })),
+      { companyId: f.companyId, issueId: doneBlocker.id, relatedIssueId: ready.id, type: "blocks" as const },
+    ]);
+    const checked: string[] = [];
+    vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });
+    state.coordinator = createDeliveryWorkCoordinator({ owner: state.db, canRun: () => true, onError: error => state.errors.push(error) });
+    const register = state.coordinator.register.bind(state.coordinator);
+    state.coordinator.register = (queue, task) => register(queue, { ...task, run: signal => {
+      const pass = task.run(signal); state.passes.add(pass);
+      void pass.then(() => state.passes.delete(pass), () => state.passes.delete(pass));
+      return pass;
+    } });
+    state.worker = registerIssueRecoveryWork(state.db, state.coordinator, {
+      stranded: async () => {}, orphanBlockers: async () => {}, recoveryActions: async () => {},
+      dependencies: async scope => { checked.push(scope.issueId); return { enqueueFailed: 0 }; }, locks: async () => {},
+      watchdogs: async () => ({ incomplete: 0 }), schedulingSuppressed: async () => false,
+    }, () => true);
+    await state.worker.ready;
+    async function settleWork() {
+      for (let step = 0; step < 120; step++) {
+        await vi.advanceTimersByTimeAsync(1000);
+        await Promise.allSettled([...state.passes]); await immediate();
+        if (state.coordinator.nextWakeAt() === null && idleWorkSnapshot().active === 0) return;
+      }
+      throw new Error("Recovery did not settle its committed work within two virtual minutes");
+    }
+    await settleWork();
+    expect(checked).toEqual([ready.id]);
+    checked.length = 0;
+    await state.db.transaction(tx => notifyIssueRecovery(tx, { companyId: f.companyId }));
+    await settleWork();
+    expect(checked).toEqual([ready.id]);
+    checked.length = 0;
+    await issueService(state.db).update(openBlocker.id, { status: "done" });
+    await settleWork();
+    expect(new Set(checked)).toEqual(new Set([ready.id, ...waiting.map(row => row.id)]));
+    await quiet();
+  });
   it("uses ordinary watchdog configuration and subtree closure to dispatch a reusable review", async () => {
     const f = await fixture();
     const source = await issueService(state.db).create(f.companyId, { title: "Finished subtree", status: "done" });

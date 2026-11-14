@@ -185,7 +185,7 @@
     },
     {
       "path": "fixtures/evals/native-execution-seeded.json",
-      "sha256": "9a89a18e01b2eef9066a4d84dcad385df173742ce8db1baf19e6d6e1d25ab72b",
+      "sha256": "8a23b12f3345339517ff0ec31ca4d9580a27f3599ea965700b81fe2cbf988cae",
       "expectation": "accept",
       "compatibilityCase": "canonical"
     },
@@ -228,6 +228,12 @@
     {
       "path": "fixtures/local-runner/scripts/permission-input.json",
       "sha256": "9b64b78ed75006b9190c80fd88c5ab555ef458f7ad023e8ebfdac8de373e1f9c",
+      "expectation": "accept",
+      "compatibilityCase": "canonical"
+    },
+    {
+      "path": "fixtures/provider-boundary/acpx-background-tasks.json",
+      "sha256": "25a8ee4368eaded9fd8a6784900c9918bbb5c8f59fffb2c37466971e1d5be438",
       "expectation": "accept",
       "compatibilityCase": "canonical"
     },

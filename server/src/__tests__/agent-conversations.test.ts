@@ -990,7 +990,8 @@ describe("chat prompt policy", () => {
   it("tells chat to name records the way the person sees them instead of raw IDs, internal codes, tool names or server paths", () => {
     expect(AGENT_CHAT_DIRECTIVE).toContain("give the specific reason returned by the platform, in plain words");
     expect(AGENT_CHAT_DIRECTIVE).toContain("Write replies for the person, not for the API.");
-    expect(AGENT_CHAT_DIRECTIVE).toContain("Do not write raw IDs (UUIDs or their short forms for runs, revisions, handoffs, interactions, routines, triggers, attachments, workspaces, incidents, users or agents), internal codes (status, error, cause or reason codes such as native_session_retry_exhausted or board_access_required), field or setting keys, tool names, internal process names or server file paths in a reply, even in parentheses or inline code.");
+    expect(AGENT_CHAT_DIRECTIVE).toContain("Do not write raw IDs (UUIDs or their short forms for runs, revisions, handoffs, interactions, routines, triggers, attachments, workspaces, incidents, users or agents), internal codes (status, error, cause or reason codes such as native_session_retry_exhausted or board_access_required), field or setting keys, tool names, internal process names, internal terms such as checkout, native run or local-board, or server file paths in a reply, even in parentheses or inline code.");
+    expect(AGENT_CHAT_DIRECTIVE).toContain("Name an actor by the actorName a record returns.");
     expect(AGENT_CHAT_DIRECTIVE).toContain("The only exceptions are link targets, values inside a command the person must run, and an ID the person explicitly asks for.");
     const prompt = buildPaperclipTaskMarkdown({ issue: { id: "chat", identifier: null, title: "Chat", workMode: "ask", conversationAgentId: "agent" } });
     expect(prompt).toContain("Write replies for the person, not for the API.");
