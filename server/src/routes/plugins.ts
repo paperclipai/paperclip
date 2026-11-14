@@ -486,6 +486,15 @@ interface PluginToolExecuteRequest {
   runContext: Omit<ToolRunContext, "projectId"> & { projectId?: string | null };
 }
 
+export function pluginWebhookJsonbValue<T>(value: T): T {
+  const json = JSON.stringify(value);
+  if (json === undefined || !/\\u(?:0000|d[89a-f])/i.test(json)) return value;
+  return JSON.parse(json.replace(
+    /(?<!\\)((?:\\\\)*)\\u(0000|d[89a-f][0-9a-f]{2})/gi,
+    (_match, backslashes: string, code: string) => `${backslashes}${code === "0000" ? "" : "\\ufffd"}`,
+  )) as T;
+}
+
 /**
  * Create Express router for plugin management API.
  *
@@ -2849,8 +2858,8 @@ export function pluginRoutes(
         pluginId: plugin.id,
         webhookKey: endpointKey,
         status: "pending",
-        payload,
-        headers: rawHeaders,
+        payload: pluginWebhookJsonbValue(payload),
+        headers: pluginWebhookJsonbValue(rawHeaders),
         startedAt,
       })
       .returning({ id: pluginWebhookDeliveries.id });
