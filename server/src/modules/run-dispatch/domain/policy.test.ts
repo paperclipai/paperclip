@@ -454,6 +454,23 @@ describe("decideQueuedRunStaleness", () => {
     expect(decideQueuedRunStaleness(facts, NOW)).toEqual({ stale: false });
   });
 
+  it("allows an interaction addressee wake to bypass the ownership check on a non-assigned issue", () => {
+    // Scenario: Tech (agent-1) is woken for a request_confirmation card on an
+    // issue assigned to Fullstack (agent-2). The status is patched to in_review
+    // in the same transaction. Without the fix, stale_queued_run_gate fires
+    // issue_assignee_changed and Tech's run is cancelled (NIC-6455).
+    const facts: QueuedRunFacts = {
+      ...baseStalenessFacts(),
+      runAgentId: "agent-1",
+      issueAssigneeAgentId: "agent-2",
+      isInteractionWake: true, // set by isInteractionAddresseeWake() in postgres.ts
+      wakeCommentIdPresent: false,
+      issueStatus: "in_review",
+      reviewParticipant: NO_PARTICIPANT,
+    };
+    expect(decideQueuedRunStaleness(facts, NOW)).toEqual({ stale: false });
+  });
+
   it("allows a comment wake to bypass the ownership, terminal-status, and review-participant checks", () => {
     const facts: QueuedRunFacts = {
       ...baseStalenessFacts(),

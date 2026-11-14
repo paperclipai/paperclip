@@ -81,6 +81,7 @@ import {
   WORKSPACE_BUSY_RETRY_REASON,
   allowsIssueInteractionWake,
   deriveCommentId,
+  isInteractionAddresseeWake,
   isNonAssigneeWorkspaceBusyRetry,
   isResolvedInteractionContinuationWakeContext,
 } from "../domain/wake-context.js";
@@ -640,10 +641,9 @@ export function createPostgresRunDispatchAdapter(
     );
 
     const wakeCommentId = deriveCommentId(context);
-    const isInteractionWake = allowsIssueInteractionWake(
-      context,
-      ISSUE_TREE_CONTROL_INTERACTION_WAKE_REASONS,
-    );
+    const isInteractionWake =
+      allowsIssueInteractionWake(context, ISSUE_TREE_CONTROL_INTERACTION_WAKE_REASONS) ||
+      isInteractionAddresseeWake(context);
     const resumeIntent = context.resumeIntent === true || context.followUpRequested === true;
     const wakeReason = readNonEmptyString(context.wakeReason);
     const retryReason =
