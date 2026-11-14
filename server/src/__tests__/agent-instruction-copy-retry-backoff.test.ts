@@ -81,9 +81,9 @@ describe("instruction working copies that cannot make progress", () => {
     }
     return ids;
   }
-  async function stuckCleanups(count: number) {
+  async function stuckCleanups(count: number, options: { lockRoot?: boolean } = {}) {
     const ids = await runs(count, 0, "legacy");
-    for (const runId of ids) await fs.mkdir(path.join(home, "agents", agentId, "file-sync", "runs", runId, "live"), { recursive: true });
+    if (options.lockRoot !== false) for (const runId of ids) await fs.mkdir(path.join(home, "agents", agentId, "file-sync", "runs", runId, "live"), { recursive: true });
     await db.insert(agentInstructionWorkingCopies).values(ids.map(runId => {
       const localRoot = path.join(home, "agents", agentId, "file-sync", "runs", runId, "live");
       return { runId, companyId, agentId, responsibleUserId: userId, entryFile: "AGENTS.md", baseHash: CONTENT_HASH,
@@ -123,7 +123,7 @@ describe("instruction working copies that cannot make progress", () => {
     return { statements: after.statements - before.statements, transactions: after.transactions - before.transactions,
       workSignals: log.filter(entry => entry.sql.includes("pg_current_xact_id")).length,
       stopChecks: log.filter(entry => entry.sql.includes(`from "heartbeat_run_events"`)).length,
-      cleanupChecks: log.filter(entry => entry.sql.includes(`from "environment_leases"`)).length };
+      cleanupClaims: log.filter(entry => /^update "agent_instruction_working_copies" set "next_attempt_at" = \$1, "updated_at" = \$2 where/.test(entry.sql)).length };
   }
   async function start(...queues: Array<"collection" | "cleanup">) {
     const worker = coordinator();
@@ -223,15 +223,15 @@ describe("instruction working copies that cannot make progress", () => {
     } finally { unsubscribe(); }
   }, 60_000);
 
-  it("backs off a cleanup that cannot finish and keeps the saved copy", async () => {
-    const [runId] = await stuckCleanups(1);
+  it.each([true, false])("backs off a cleanup that cannot finish and keeps the saved copy (cleanup throws: %s)", async throws => {
+    const [runId] = await stuckCleanups(1, { lockRoot: !throws });
     clock(); const worker = await start("cleanup");
     try {
       const window = await advance(6 * HOUR, worker.nextWakeAt);
-      expect(window.cleanupChecks).toBeGreaterThan(0);
+      expect(window.cleanupClaims).toBeGreaterThan(0);
       expect(window.workSignals).toBe(0);
-      expect(window.cleanupChecks).toBeLessThanOrEqual(16);
-      expect((await advance(6 * HOUR, worker.nextWakeAt)).cleanupChecks).toBeLessThanOrEqual(2);
+      expect(window.cleanupClaims).toBeLessThanOrEqual(32);
+      expect((await advance(6 * HOUR, worker.nextWakeAt)).cleanupClaims).toBeLessThanOrEqual(4);
       const row = await copy(runId!);
       expect(row).toMatchObject({ state: "saved", receipt: expect.objectContaining({ cleanupPending: true }) });
       expect(row.nextAttemptAt!.getTime()).toBeGreaterThan(Date.now());

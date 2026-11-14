@@ -555,11 +555,19 @@ export function agentInstructionWorkingCopyService(db: Db, options: { environmen
     if (!admitted()) throw new Error("Directory cleanup recovery stopped");
     const retryAt = instructionCopyRetryAt(row.processStoppedAt ?? row.updatedAt);
     const claimed = await tryPatch(row, { nextAttemptAt: new Date(Date.now() + INSTRUCTION_COPY_RETRY_MS) }, true);
-    if (claimed) await directories.release(claimed);
-    let latest = await get(entry.companyId, entry.id);
-    const pending = directoryCleanupEntry(latest);
-    if (claimed && latest && pending && pending.dueAt < retryAt.getTime()) latest = await patch(latest, { nextAttemptAt: retryAt });
-    const remaining = directoryCleanupEntry(latest);
+    const deferCleanup = async () => {
+      const latest = await get(entry.companyId, entry.id);
+      const pending = directoryCleanupEntry(latest);
+      return claimed && latest && pending && pending.dueAt < retryAt.getTime() ? patch(latest, { nextAttemptAt: retryAt }) : latest;
+    };
+    if (claimed) {
+      try { await directories.release(claimed); }
+      catch (error) {
+        await deferCleanup();
+        throw error;
+      }
+    }
+    const remaining = directoryCleanupEntry(await deferCleanup());
     if (remaining && remaining.dueAt <= Date.now()) throw new Error("Directory cleanup remains unresolved without a future retry");
     return remaining;
   }
