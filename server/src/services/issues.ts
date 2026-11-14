@@ -12184,6 +12184,9 @@ export function issueService(db: Db) {
           || patch.completedAt !== undefined || patch.cancelledAt !== undefined
           || issueData.parentId !== undefined || issueData.executionWorkspaceId !== undefined) {
           await notifyTerminalWorkspaceWork(tx, `issue:${id}`);
+          if (issueData.parentId !== undefined && receiptExisting.parentId && receiptExisting.parentId !== issueData.parentId) {
+            await notifyTerminalWorkspaceWork(tx, `issue:${receiptExisting.parentId}`);
+          }
         }
         await notifyIssueAttentionRetentionWork(tx, { companyId: receiptExisting.companyId, issueId: id, parentId: patch.parentId, originKind: patch.originKind, originId: patch.originId });
         if (patch.status !== undefined || patch.hiddenAt !== undefined) {
@@ -12647,7 +12650,8 @@ export function issueService(db: Db) {
 
     remove: (id: string, actorAgentId?: string | null) =>
       db.transaction(async (tx) => {
-        const [task] = await tx.select({ companyId: issues.companyId }).from(issues).where(eq(issues.id, id));
+        const [task] = await tx.select({ companyId: issues.companyId, parentId: issues.parentId,
+          executionWorkspaceId: issues.executionWorkspaceId }).from(issues).where(eq(issues.id, id)).for("update");
         if (task) await assertAgentInteraction(tx, { companyId: task.companyId, actorAgentId,
           operation: "edit", issueId: id, lock: true });
         const attachmentAssetIds = await tx
@@ -12662,6 +12666,8 @@ export function issueService(db: Db) {
         let removedIssue;
         try {
           await notifyTerminalWorkspaceWork(tx, `issue:${id}`);
+          if (task?.parentId) await notifyTerminalWorkspaceWork(tx, `issue:${task.parentId}`);
+          if (task?.executionWorkspaceId) await notifyTerminalWorkspaceWork(tx, `workspace:${task.executionWorkspaceId}`);
           await requestRestorePointDeletion(tx, { sourceIssueId: id });
           const [owner] = await tx.select({ companyId: issues.companyId }).from(issues).where(eq(issues.id, id));
           if (owner) {
