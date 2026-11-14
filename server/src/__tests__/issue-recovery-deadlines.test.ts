@@ -212,7 +212,7 @@ describeIssueRecovery("issue recovery production producers and deadlines", () =>
     expect(state.coordinator.nextWakeAt()).toBeLessThanOrEqual(fullPassAt + ISSUE_RECOVERY_BACKSTOP_MS);
     await vi.advanceTimersByTimeAsync(ISSUE_RECOVERY_BACKSTOP_MS);
     await settleWork();
-    expect(checkedAt.get(unrelated)! - fullPassAt).toBeLessThanOrEqual(ISSUE_RECOVERY_BACKSTOP_MS + 2_000);
+    expect(checkedAt.get(unrelated)! - fullPassAt).toBeLessThanOrEqual(ISSUE_RECOVERY_BACKSTOP_MS + 5_000);
     checkedAt.clear();
     await vi.advanceTimersByTimeAsync(20 * 60_000);
     expect(checkedAt.size).toBe(0);

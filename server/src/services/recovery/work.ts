@@ -62,11 +62,17 @@ export function registerIssueRecoveryWork(
     scope.issueIds = ids ?? undefined;
     scope.wholeCompany = ids === null;
   }
+  async function toCompany(scope: IssueRecoveryScope | undefined, worker: { invalidate(hint?: string): void }) {
+    await resolveGraph(scope);
+    if (!scope?.wholeCompany) return false;
+    worker.invalidate(JSON.stringify({ companyId: scope.companyId }));
+    return true;
+  }
   function register(queue: DeliveryQueue, statuses: string[] | null, check: (scope: Scope) => Promise<unknown>, eligible?: SQL) {
     const cursors = new Map<string, string>();
     const passes = fullPasses();
     let enabled = false;
-    return registerScopedDeadlineWork<Entry, IssueRecoveryScope>(coordinator, {
+    const worker: ReturnType<typeof registerScopedDeadlineWork<Entry, IssueRecoveryScope>> = registerScopedDeadlineWork<Entry, IssueRecoveryScope>(coordinator, {
       queue,
       reconstructionIntervalMs,
       backstop: passes.backstop,
@@ -76,7 +82,7 @@ export function registerIssueRecoveryWork(
       load: async scope => {
         const key = scopeKey(scope);
         if (!enabled) { cursors.delete(key); return []; }
-        await resolveGraph(scope);
+        if (await toCompany(scope, worker)) return { rows: null, complete: true };
         const cursor = cursors.get(key);
         const rows = await db.select({ id: issues.id, companyId: issues.companyId }).from(issues).where(and(
           scope ? eq(issues.companyId, scope.companyId) : undefined,
@@ -102,6 +108,7 @@ export function registerIssueRecoveryWork(
         return next === null ? null : { ...entry, dueAt: next };
       },
     }, canRun);
+    return worker;
   }
   /** Event-driven: run terminal states, hold settlements and boot mark the
    * company dirty; checks schedule their own grace and back-off deadlines.
@@ -111,7 +118,7 @@ export function registerIssueRecoveryWork(
     const cursors = new Map<string, string>();
     const passes = fullPasses();
     let enabled = false;
-    return registerScopedDeadlineWork<Suspect, IssueRecoveryScope>(coordinator, {
+    const worker: ReturnType<typeof registerScopedDeadlineWork<Suspect, IssueRecoveryScope>> = registerScopedDeadlineWork<Suspect, IssueRecoveryScope>(coordinator, {
       queue: DELIVERY_QUEUES.assignedWorkInvariant,
       reconstructionIntervalMs,
       backstop: passes.backstop,
@@ -124,7 +131,7 @@ export function registerIssueRecoveryWork(
       load: async scope => {
         const key = scopeKey(scope);
         if (!enabled) { cursors.delete(key); return []; }
-        await resolveGraph(scope);
+        if (await toCompany(scope, worker)) return { rows: null, complete: true };
         const rows = await sweep.listSuspects(scope ? { companyId: scope.companyId, issueId: scope.issueId,
           issueIds: scope.issueIds } : {}, cursors.get(key) ?? null, PAGE_SIZE);
         const complete = rows.length < PAGE_SIZE;
@@ -140,6 +147,7 @@ export function registerIssueRecoveryWork(
         return next === null ? null : { ...entry, dueAt: next };
       },
     }, canRun);
+    return worker;
   }
   function registerCompany(queue: DeliveryQueue, kind: "blockers" | "actions", check: (scope: { companyId: string }) => Promise<number | null | void>) {
     const cursors = new Map<string, string>();
