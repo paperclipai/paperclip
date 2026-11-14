@@ -1639,6 +1639,14 @@ the configured interval until the provider confirms the new one. An explicit `0`
 (auto-stop disabled), a longer configured interval, per-turn, and non-reusable
 sandboxes are unchanged by the warm floor, and idle sandboxes still auto-stop.
 
+The host's own warm-window stop of a retained sandbox waits 2 minutes past the
+warm window, so the host's idle close of the warm runner (suspend and its proof
+read) finishes before the sandbox stops. When an idle close still fails and every
+lease row for that sandbox is no longer active or retained, the host has given the
+sandbox up: the warm owner is released and the next run on the task prepares its
+instructions fresh. A follow-up whose predecessor's warm instruction copy cannot be
+handed off retires that owner and prepares fresh instead of failing.
+
 A remote runner also keeps working while its controller is offline, and the host
 reattaches it within the remote runner reconnect grace (7 minutes). Daytona counts
 only SDK and lifecycle calls as activity, so with no controller its idle auto-stop

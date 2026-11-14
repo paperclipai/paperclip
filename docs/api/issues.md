@@ -374,6 +374,33 @@ GET /api/attachments/{attachmentId}/content
 DELETE /api/attachments/{attachmentId}
 ```
 
+## Tool Call Progress
+
+```
+GET /api/issues/{issueId}/tool-call-progress
+```
+
+Returns the latest progress of the task's connected-app tool calls that are still running, for a page that loads mid-call, and the calls that finished in the last hour, marked `done`. A client should drop a call's progress only on `done`: a running call may not have saved its first update yet. Live updates arrive as `heartbeat.run.tool_progress` events on the company live-events socket.
+
+- Board callers only. The caller needs company access and read access to the task; otherwise the response is `404`.
+- Lists unfinished calls made by a run in the last 24 hours that reported progress (at most 50), then calls finished in the last hour (at most 50).
+
+Each item:
+
+| Field | Type | Meaning |
+| --- | --- | --- |
+| `invocationId` | string | The tool call. |
+| `runId` | string | The run that made the call. |
+| `toolName` | string | The tool name the agent called. |
+| `startedAt` | string (ISO) | When the call started. |
+| `updatedAt` | string (ISO) | When the app last reported progress. |
+| `progress` | number | Progress so far. |
+| `total` | number or null | Known end value; `null` when the app does not know it. |
+| `message` | string or null | The app's latest status line: plain text, at most 200 characters. |
+| `done` | boolean | `true` once the call has finished. |
+
+See `doc/connections/MCP-PROGRESS.md`.
+
 ## Issue Lifecycle
 
 ```
