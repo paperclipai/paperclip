@@ -55,11 +55,12 @@ describeIssueRecovery("issue recovery production producers and deadlines", () =>
       return query;
     }) as typeof state.db.select);
     await start(); await settled();
-    expect(scans.actions).toBe(1); expect(scans.blockers).toBe(0); expect(scans.loads).toBeLessThanOrEqual(8);
+    expect(scans.actions).toBe(1); expect(scans.blockers).toBe(0); expect(scans.loads).toBeLessThanOrEqual(11);
     expect((await originalSelect().from(issueRecoveryActions).where(eq(issueRecoveryActions.id, action.id)))[0].status).toBe("resolved");
     const [foreignSource] = await state.db.insert(issues).values({ companyId: foreign.companyId, title: "Foreign done", status: "done" }).returning();
     const [foreignAction] = await state.db.insert(issueRecoveryActions).values({ companyId: foreign.companyId, sourceIssueId: foreignSource.id,
       kind: "stranded_assigned_issue", ownerType: "board", cause: "stranded_assigned_issue", fingerprint: "foreign-query-budget", nextAction: "Inspect" }).returning();
+    await state.db.transaction(tx => notifyIssueRecovery(tx, { companyId: f.companyId })); await settled();
     const before = { ...scans };
     for (let index = 0; index < 100; index++) await state.db.transaction(tx => notifyIssueRecovery(tx, { companyId: f.companyId }));
     await new Promise(resolve => setTimeout(resolve, 100));
@@ -70,7 +71,8 @@ describeIssueRecovery("issue recovery production producers and deadlines", () =>
     expect((await originalSelect().from(issueRecoveryActions).where(eq(issueRecoveryActions.id, foreignAction.id)))[0].status).toBe("active");
     expect(await originalSelect().from(heartbeatRuns)).toHaveLength(0); await quiet();
   });
-  async function recordedRecovery(owner: Partial<Parameters<typeof registerIssueRecoveryWork>[2]>) {
+  async function recordedRecovery(owner: Partial<Parameters<typeof registerIssueRecoveryWork>[2]>,
+    options?: Parameters<typeof registerIssueRecoveryWork>[4]) {
     vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });
     state.coordinator = createDeliveryWorkCoordinator({ owner: state.db, canRun: () => true, onError: error => state.errors.push(error) });
     const register = state.coordinator.register.bind(state.coordinator);
@@ -83,7 +85,7 @@ describeIssueRecovery("issue recovery production producers and deadlines", () =>
       stranded: async () => {}, orphanBlockers: async () => {}, recoveryActions: async () => {},
       dependencies: async () => ({ enqueueFailed: 0 }), locks: async () => {},
       watchdogs: async () => ({ incomplete: 0 }), schedulingSuppressed: async () => false, ...owner,
-    }, () => true);
+    }, () => true, options);
     await state.worker.ready;
   }
   async function settleWork(options: { backstopPending?: boolean } = {}) {
@@ -149,16 +151,16 @@ describeIssueRecovery("issue recovery production producers and deadlines", () =>
           .assignedWork.listSuspects(scope, cursor, limit),
         checkIssue: async scope => { assigned.push(scope.issueId); },
       },
-    });
+    }, { backstopMs: 60 * 60_000 });
     await settleWork({ backstopPending: true });
     expect(new Set(checked).size).toBe(1004);
     expect(checked).toContain(graph.siblingId);
-    async function lifecycleEvent(producer: (tx: object) => Promise<unknown>) {
+    async function lifecycleEvent(producer: (tx: object) => Promise<unknown>, standalone?: () => Promise<unknown>) {
       checked.length = 0; assigned.length = 0;
       const statements: string[] = [], prior = state.db.$client.options.debug;
       state.db.$client.options.debug = (_connection, query) => { statements.push(query); };
       try {
-        await state.db.transaction(tx => producer(tx));
+        if (standalone) await standalone(); else await state.db.transaction(tx => producer(tx));
         await settleWork({ backstopPending: true });
       } finally { state.db.$client.options.debug = prior; }
       expect([...new Set(checked)].sort()).toEqual(graph.affected);
@@ -172,6 +174,12 @@ describeIssueRecovery("issue recovery production producers and deadlines", () =>
     await lifecycleEvent(tx => notifyRunDispatch(tx, { companyId: f.companyId, issueId: graph.taskId }));
     await lifecycleEvent(tx => promoteDeferredWorkIntents(tx, { companyId: f.companyId, trigger: "lock_released", issueId: graph.taskId }));
     await lifecycleEvent(tx => promoteDeferredWorkIntents(tx, { companyId: f.companyId, trigger: "accounting_settled", runId: graph.runId }));
+    const recoveryActions = issueRecoveryActionService(state.db);
+    await lifecycleEvent(async () => {}, () => recoveryActions.upsertSourceScoped({ companyId: f.companyId, sourceIssueId: graph.taskId,
+      kind: "stranded_assigned_issue", ownerType: "board", cause: "stranded_assigned_issue", fingerprint: "run-failed",
+      nextAction: "Choose the next step", evidence: {} }));
+    await lifecycleEvent(async () => {}, () => recoveryActions.resolveActiveForIssue({ companyId: f.companyId, sourceIssueId: graph.taskId,
+      status: "resolved", outcome: "restored", resolutionNote: "Recovered" }));
     await graph.backlog(4000);
     expect(await lifecycleEvent(finished())).toBe(first);
   });

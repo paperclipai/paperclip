@@ -43,6 +43,7 @@ function retentionReads(insideTransaction: () => boolean) {
     expect(statement.params).toContain("issue-1");
     if (statement.sql.includes("origin_kind")) return [{ id: "issue-1", originKind: null, originId: null }];
     if (statement.sql.includes("with recursive affected")) return [{ issueId: "issue-1" }];
+    if (statement.sql.includes("with seed(id)")) return [{ id: "issue-1" }];
     throw new Error(`Unexpected work-product fixture query: ${statement.sql}`);
   });
 }
