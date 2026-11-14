@@ -7,6 +7,7 @@ import { RunnerdMuseDriver, type RunnerdMuseDriverOptions } from "./runnerd-muse
 import { describeRunnerdNativeSessionBackend } from "../../backends/codex-native-backend.js";
 import { createNativeSessionBackend } from "../../backends/native-backend-factory.js";
 import * as controlPlane from "../../control-plane/durable-prp-control-plane.js";
+import { defaultCapabilityRunnerdBinary } from "../../live/runnerd-codex-transport.js";
 import { externalOperationDigest, type ExternalProviderOperation } from "../../contracts/external-provider.js";
 import { buildNativeModelEnvelope, parseNativeExecutionInput, type NativeExecutionInputV8 } from "../../contracts/native-execution.js";
 import { NATIVE_RUNTIME_ASSET_SCHEMA, PAPERCLIP_EXECUTION_PROMPT, PAPERCLIP_EXECUTION_PROMPT_REVISION,
@@ -327,7 +328,7 @@ it("keeps the exact Muse question and assignment alive past the native live wind
     normalizedSessionId: input.session.normalizedSessionId!, turnId: "turn-" + input.binding.runId, itemId: "item-" + input.binding.runId };
   const driver = new RunnerdMuseDriver({
     execution: input, stateDirectory: join(root, "state"), identity,
-    runnerBinary: resolve("runner/target/debug/paperclip-runnerd"), onSpawn: async process => { spawned = process; },
+    runnerBinary: process.env.PAPERCLIP_ATTACH_TRANSITION_RUNNER ?? defaultCapabilityRunnerdBinary(), onSpawn: async process => { spawned = process; },
     port: { dispatch: async event => { dispatches.push(event); }, inputAvailable: async event => { deliveries.push(event); },
       settle: async event => { settlements.set(String(event.payload.requestId), event.payload.outcome as Record<string, unknown>); },
       attach: async callback => { send = callback; return async () => { send = undefined; }; } },
