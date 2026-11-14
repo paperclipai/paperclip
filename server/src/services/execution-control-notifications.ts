@@ -10,7 +10,7 @@ import { DELIVERY_QUEUES, notifyDeliveryWork, type DeliveryQueue } from "./deliv
 export type ExecutionWorkScope = { companyId: string; agentId?: string; runId?: string; issueId?: string };
 
 async function notifyExecutionAttentionRetention(transaction: object, scope: ExecutionWorkScope) {
-  if (scope.issueId) await notifyIssueAttentionRetentionWork(transaction, { companyId: scope.companyId, issueId: scope.issueId });
+  if (scope.issueId || scope.runId) await notifyIssueAttentionRetentionWork(transaction, { companyId: scope.companyId, issueId: scope.issueId, runId: scope.runId });
   else await notifyAttentionRetentionWork(transaction, scope);
 }
 
