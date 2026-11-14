@@ -484,6 +484,22 @@ impl AcpxSidecarTransport {
         }
     }
 
+    pub(crate) fn request_by(
+        &mut self,
+        command: GeneratedAcpxSidecarCommand,
+        params: Value,
+        deadline: Instant,
+    ) -> Result<Result<Value, LocalRunnerError>, LocalRunnerError> {
+        let bound = self.request_deadline;
+        self.request_deadline = Some(bound.map_or(deadline, |bound| bound.min(deadline)));
+        let outcome = self.request_outcome(command, params);
+        self.request_deadline = bound;
+        match outcome? {
+            CommandOutcome::Success(value) => Ok(Ok(value)),
+            CommandOutcome::Rejected { error, .. } => Ok(Err(error)),
+        }
+    }
+
     pub(crate) fn request_turn_start(
         &mut self,
         params: Value,
@@ -939,6 +955,17 @@ impl AcpxSidecarTransport {
             command.as_str(),
             self.diagnostic_suffix()
         ))
+    }
+
+    pub(crate) fn exited_error(&mut self, stage: &str) -> Option<LocalRunnerError> {
+        match self.process.try_wait() {
+            Ok(None) => None,
+            Ok(Some(_)) | Err(_) => {
+                let error = self.closed_error(stage);
+                self.poison();
+                Some(error)
+            }
+        }
     }
 
     fn closed_error(&mut self, stage: &str) -> LocalRunnerError {

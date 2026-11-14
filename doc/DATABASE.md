@@ -1862,7 +1862,7 @@ current plugin records and enforce their existing readiness and worker checks.
 
 ### Persistent agent conversations
 
-Migration `0485` (`0485_multiple_agent_chat_conversations`) keeps the existing conversation as the default for its company, agent and user and permits additional conversations. The partial unique index still protects concurrent creation of the default conversation.
+Migration `0487` (`0487_multiple_agent_chat_conversations`) keeps the existing conversation as the default for its company, agent and user and permits additional conversations. The partial unique index still protects concurrent creation of the default conversation.
 
 Rolling deploys: the previous release looks up a person's chat with an agent by company, agent and user only. While servers of both releases run against the new schema, a previous-release server can therefore open or deliver into any one of that person's chats with the agent once a secondary chat exists, instead of the default one. Single-server and local installs are not affected, because they never run two releases at once. The window ends when no previous-release server remains.
 

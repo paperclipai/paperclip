@@ -1,6 +1,6 @@
 import { and, eq, sql } from "drizzle-orm";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { activityLog, heartbeatRuns, issueRecoveryActions, issues } from "@paperclipai/db";
+import { activityLog, automaticRunBrakes, heartbeatRuns, issueRecoveryActions, issues } from "@paperclipai/db";
 import { createDeliveryWorkCoordinator } from "./delivery-work-coordinator.js";
 import { registerIssueRecoveryWork } from "./recovery/work.js";
 import type { AdapterSandboxExecutionTarget } from "@paperclipai/adapter-utils/execution-target";
@@ -11,6 +11,7 @@ import { heartbeatService } from "./heartbeat.js";
 import { deliverReconciledExecutions } from "./execution-recovery-resolution.js";
 import { assignedWorkSweep, ASSIGNED_WORK_CONTINUED_ACTION } from "./recovery/assigned-work-sweep.js";
 import { SAVED_WORK_RECOVERY_START_BOUND_MS } from "./recovery/assigned-work-invariant.js";
+import { automaticRunBrake } from "./recovery/automatic-run-brake.js";
 import { action, connectionString, db, failedRemotePreparation, useWorkspaceRecoveryFixture } from "./__tests__/workspace-recovery-fixture.js";
 
 const targets = vi.hoisted(() => new Map<string, AdapterSandboxExecutionTarget>());
@@ -89,6 +90,17 @@ describe("a saved-work recovery the queue has not reached", () => {
       sql`${heartbeatRuns.contextSnapshot}->>'issueId' = ${f.issueId}`, sql`${heartbeatRuns.id} <> ${f.runId}`));
     expect(successor).toBeDefined();
   }, 90_000);
+
+  it("starts the overdue recovery while automatic work is paused, without using the pause's creation slot", async () => {
+    const f = await stagingShape(45 * 60_000);
+    await db.insert(automaticRunBrakes).values({ companyId: f.companyId, state: "open", openedAt: new Date() });
+    automaticRunBrake.reset();
+    expect(await f.sweep.checkIssue({ companyId: f.companyId, issueId: f.issueId }))
+      .toMatchObject({ verdict: { reason: "saved_work_recovery_overdue" }, outcome: "started_saved_work_recovery" });
+    expect((await db.select().from(automaticRunBrakes).where(eq(automaticRunBrakes.companyId, f.companyId)))[0])
+      .toMatchObject({ state: "open", nextCreationAt: null });
+    automaticRunBrake.reset();
+  });
 
   it("counts a recovery the queue has time to start as the task's pending path, and looks again when its bound ends", async () => {
     let clock = Date.now();
