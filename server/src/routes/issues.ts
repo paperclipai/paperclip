@@ -44,6 +44,7 @@ import {
 } from "../services/issue-creation-source.js";
 import { activeIssueInteractionCondition, readTaskQuestionContext } from "../services/issue-question-context.js";
 import { setIssueTitle } from "../services/issue-title.js";
+import { subscribeAllCompanyLiveEvents } from "../services/live-events.js";
 import { setIssueTitleSchema } from "@paperclipai/shared";
 import { resolveConfirmationFromComment } from "../services/confirmation-comment-resolution.js";
 import { createIssueReadTiming } from "../services/issue-read-timing.js";
@@ -3221,16 +3222,19 @@ type IssueListDiagnostics = {
 };
 
 type IssueListCacheEntry = {
+  companyId: string;
   response: IssueListPreparedResponse;
   expiresAt: number;
   staleUntil: number;
 };
 
 type IssueListInflightEntry = {
+  companyId: string;
   promise: Promise<IssueListPreparedResponse>;
   startedAt: number;
   waiterCount: number;
   stormLogged: boolean;
+  invalidated: boolean;
 };
 
 const issueListResponseCache = new Map<string, IssueListCacheEntry>();
@@ -3243,6 +3247,29 @@ export function __getIssueListResponseCacheSizeForTests() {
 
 export function __clearIssueListResponseCacheForTests() {
   issueListResponseCache.clear();
+}
+
+function invalidateCompanyIssueListResponses(companyId: string) {
+  for (const [key, entry] of issueListResponseCache) {
+    if (entry.companyId === companyId) issueListResponseCache.delete(key);
+  }
+  for (const [key, entry] of issueListInflight) {
+    if (entry.companyId !== companyId) continue;
+    entry.invalidated = true;
+    issueListInflight.delete(key);
+  }
+}
+
+let issueListInvalidationSubscribed = false;
+
+function subscribeIssueListInvalidation() {
+  if (issueListInvalidationSubscribed) return;
+  issueListInvalidationSubscribed = true;
+  subscribeAllCompanyLiveEvents((event) => {
+    if (event.type === "activity.logged" && event.payload.entityType === "issue") {
+      invalidateCompanyIssueListResponses(event.companyId);
+    }
+  });
 }
 
 function shortHash(value: string): string {
@@ -3533,10 +3560,12 @@ async function coordinateIssueListGet(input: {
     return input.compute();
   })();
   const inflightEntry: IssueListInflightEntry = {
+    companyId: input.companyId,
     promise,
     startedAt: now,
     waiterCount: 0,
     stormLogged: false,
+    invalidated: false,
   };
   issueListInflight.set(input.requestKey.key, inflightEntry);
   // Mine reads its primary rows before its optional context has necessarily
@@ -3553,8 +3582,9 @@ async function coordinateIssueListGet(input: {
 
   try {
     const response = await promise;
-    if (input.allowTtlCache) {
+    if (input.allowTtlCache && !inflightEntry.invalidated) {
       setIssueListResponseCacheEntry(input.requestKey.key, {
+        companyId: input.companyId,
         response,
         expiresAt: Date.now() + ISSUE_LIST_SERVER_CACHE_TTL_MS,
         staleUntil: Date.now() + ISSUE_LIST_SERVER_CACHE_STALE_MS,
@@ -3676,6 +3706,7 @@ export function issueRoutes(
     }) => Promise<unknown>;
   } = {},
 ) {
+  subscribeIssueListInvalidation();
   const router = Router();
   const svc = issueService(db);
   const runRedactions = createRunSecretRedactionRegistry(db);
