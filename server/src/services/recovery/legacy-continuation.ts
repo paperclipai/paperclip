@@ -27,6 +27,7 @@ export const LEGACY_DISPOSITION_REPAIR_INSTRUCTION =
   "The previous task run ended without a recorded disposition or an owned next execution path. " +
   "Re-read the current task state. Use Paperclip tools/API to record completion, a real blocker, " +
   "a question or approval request, or a supported next execution path. " +
+  "If the task is unfinished and nothing blocks it, continue the work in this run, then record the disposition. " +
   "A final message alone does not record disposition. Respect Stop, pause, budget and approval gates.";
 
 function record(value: unknown): Record<string, unknown> {
