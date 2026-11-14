@@ -44,7 +44,7 @@ export function registerIssueRecoveryWork(
       },
     };
   }
-  const reconstructionIntervalMs = (scope: IssueRecoveryScope | undefined) => scope?.backstop ? 0 : 30_000;
+  const reconstructionIntervalMs = (scope: IssueRecoveryScope | undefined) => scope?.backstop || scope?.graphRunId || scope?.graphIssueId ? 0 : 30_000;
   const scopeKey = (scope: IssueRecoveryScope | undefined) => scope
     ? JSON.stringify([scope.companyId, scope.issueId, scope.graphRunId, scope.graphIssueId, scope.backstop]) : "*";
   const isGraph = (scope: IssueRecoveryScope | undefined) => Boolean(scope?.graphRunId || scope?.graphIssueId);
