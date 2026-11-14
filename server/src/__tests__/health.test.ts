@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { gzipSync } from "node:zlib";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import express from "express";
 import request from "supertest";
@@ -237,7 +238,7 @@ describe("GET /health", () => {
   it("surfaces a stale database backup warning in full health details", async () => {
     const backupDir = fs.mkdtempSync(path.join(os.tmpdir(), "paperclip-health-backups-"));
     const backupFile = path.join(backupDir, "paperclip-20260705-031702.sql.gz");
-    fs.writeFileSync(backupFile, "backup");
+    fs.writeFileSync(backupFile, gzipSync("SELECT 1;\n"));
     fs.utimesSync(
       backupFile,
       new Date("2026-07-05T03:17:02.000Z"),
@@ -270,11 +271,80 @@ describe("GET /health", () => {
     expect(res.body.warnings).toEqual(res.body.databaseBackup.warnings);
   });
 
+  it("warns when the newest backup is a valid gzip with zero SQL bytes", async () => {
+    const backupDir = fs.mkdtempSync(path.join(os.tmpdir(), "paperclip-health-empty-backup-"));
+    const backupFile = path.join(backupDir, "paperclip-20261028-140958.sql.gz");
+    fs.writeFileSync(backupFile, gzipSync(""));
+    const app = createApp(createHealthyDb(), testServerInfo, {
+      enabled: true,
+      backupDir,
+      maxAgeHours: 26,
+      now: new Date(),
+    });
+
+    const res = await request(app).get("/health");
+
+    expect(res.status).toBe(200);
+    expect(res.body.databaseBackup).toMatchObject({
+      status: "warning",
+      latestBackup: { name: path.basename(backupFile), sizeBytes: 20 },
+      warnings: [{ code: "database_backup_invalid" }],
+    });
+  });
+
+  it("ignores an open incomplete archive until its final name is published", async () => {
+    const backupDir = fs.mkdtempSync(path.join(os.tmpdir(), "paperclip-health-inflight-backup-"));
+    const previousFile = path.join(backupDir, "paperclip-20261028-124604.sql.gz");
+    const finalFile = path.join(backupDir, "paperclip-20261028-140958.sql.gz");
+    const pendingFile = `${finalFile}.fixture.part.gz`;
+    fs.writeFileSync(previousFile, gzipSync("SELECT 1;\n"));
+    const pendingBytes = gzipSync("SELECT 2;\n");
+    const fd = fs.openSync(pendingFile, "w");
+    try {
+      fs.writeSync(fd, pendingBytes.subarray(0, 20));
+      const app = createApp(createHealthyDb(), testServerInfo, {
+        enabled: true,
+        backupDir,
+        maxAgeHours: 26,
+        now: new Date(),
+      });
+
+      const inProgress = await request(app).get("/health");
+      expect(inProgress.status).toBe(200);
+      expect(inProgress.body.databaseBackup).toMatchObject({
+        status: "ok",
+        latestBackup: { name: path.basename(previousFile) },
+        warnings: [],
+      });
+
+      fs.writeSync(fd, pendingBytes.subarray(20));
+    } finally {
+      fs.closeSync(fd);
+    }
+    try {
+      fs.linkSync(pendingFile, finalFile);
+      const app = createApp(createHealthyDb(), testServerInfo, {
+        enabled: true,
+        backupDir,
+        maxAgeHours: 26,
+        now: new Date(),
+      });
+      const published = await request(app).get("/health");
+      expect(published.body.databaseBackup).toMatchObject({
+        status: "ok",
+        latestBackup: { name: path.basename(finalFile) },
+        warnings: [],
+      });
+    } finally {
+      fs.rmSync(backupDir, { recursive: true, force: true });
+    }
+  });
+
   it("surfaces database backup failure markers in full health details", async () => {
     const backupDir = fs.mkdtempSync(path.join(os.tmpdir(), "paperclip-health-backups-"));
     const backupFile = path.join(backupDir, "paperclip-20260706-031702.sql.gz");
     const alertFile = path.join(backupDir, "db-backup-to-s3.failure");
-    fs.writeFileSync(backupFile, "backup");
+    fs.writeFileSync(backupFile, gzipSync("SELECT 1;\n"));
     fs.writeFileSync(alertFile, "db-backup-to-s3 failed at 2026-07-06T03:17:00.000Z exit=1\n");
     const app = createApp(createHealthyDb(), testServerInfo, {
       enabled: true,
@@ -308,7 +378,7 @@ describe("GET /health", () => {
     fs.mkdirSync(backupDir);
     const backupFile = path.join(backupDir, "paperclip-20260706-031702.sql.gz");
     const alertFile = path.join(backupRoot, "db-backup-to-s3.failure");
-    fs.writeFileSync(backupFile, "backup");
+    fs.writeFileSync(backupFile, gzipSync("SELECT 1;\n"));
     fs.writeFileSync(alertFile, "db-backup-to-s3 failed beside backups\n");
     const app = createApp(createHealthyDb(), testServerInfo, {
       enabled: true,
@@ -338,7 +408,7 @@ describe("GET /health", () => {
   it("surfaces redacted database backup warnings for anonymous authenticated probes", async () => {
     const backupDir = fs.mkdtempSync(path.join(os.tmpdir(), "paperclip-health-redacted-backups-"));
     const backupFile = path.join(backupDir, "paperclip-20260705-031702.sql.gz");
-    fs.writeFileSync(backupFile, "backup");
+    fs.writeFileSync(backupFile, gzipSync("SELECT 1;\n"));
     fs.utimesSync(
       backupFile,
       new Date("2026-07-05T03:17:02.000Z"),
