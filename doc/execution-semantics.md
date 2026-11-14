@@ -556,6 +556,13 @@ historical duplicate holds share the verified decision and one continuation
 delivery owner. Separate workspace or system recovery obligations and records
 with an existing reconciliation remain unchanged.
 
+An older release can record one decision for each duplicate hold of the same
+source execution. Delivery gives such decisions one continuation too. When a
+pending decision has a decision with the same task, source run, cause,
+fingerprint, and return owner that delivered a continuation or has a committed
+continuation wake, delivery invalidates the pending decision and records that
+decision as its owner. Workspace and system recovery obligations stay separate.
+
 A queued legacy run denied by that final gate is still a wait. Its matching
 dispatch-gate receipt, task identity, and absence of runtime selection, execution
 ownership, environment leases, coordinator, or execution events prove that it
