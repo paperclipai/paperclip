@@ -826,9 +826,10 @@ function interruptionEligibility(input: { now: Date; companyId: SQL; issueId: SQ
   // (`source_unavailable`, use another strategy). The only way on is a fresh
   // run in a new workspace, which is exactly what Retry would do: a person
   // adds nothing, so the system takes that step itself (needed-retry is 0%).
+  // Uncast keys, so the (company, task, evidence runId) index serves the lookup.
   const savedFilesLost = sql`exists (select 1 from ${issueRecoveryActions} lost where lost.company_id = source.company_id
-    and lost.source_issue_id::text = ${input.issueId}::text
-    and coalesce(lost.evidence->>'runId', lost.evidence->>'sourceRunId') = source.id::text
+    and lost.source_issue_id = ${input.issueId}
+    and (lost.evidence->>'runId' = source.id::text or (lost.evidence->>'runId' is null and lost.evidence->>'sourceRunId' = source.id::text))
     and lost.evidence#>>'{systemRecovery,state}' = 'exhausted'
     and lost.evidence#>>'{systemRecovery,failure,code}' in (${sqlList(UNVERIFIABLE_SOURCE_CODES)})
     and lost.evidence#>>'{systemRecovery,failure,retryClass}' in (${sqlList(PERMANENT_SOURCE_RETRY_CLASSES)}))`;
