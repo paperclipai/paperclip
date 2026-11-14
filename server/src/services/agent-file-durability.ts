@@ -15,7 +15,7 @@ import { AgentFileLimitError, MAX_AGENT_DIRECTORY_BYTES, MAX_AGENT_DIRECTORY_ENT
 type Tx = Parameters<Parameters<Db["transaction"]>[0]>[0];
 type Owner = { companyId: string; id: string; createdAt: Date };
 type Head = typeof agentFileRoots.$inferSelect;
-const where = (owner: Owner) => and(eq(agentFileRoots.companyId, owner.companyId), eq(agentFileRoots.agentId, owner.id));
+const where = (owner: Pick<Owner, "companyId" | "id">) => and(eq(agentFileRoots.companyId, owner.companyId), eq(agentFileRoots.agentId, owner.id));
 const marker = (root: string) => path.join(path.dirname(root), "file-sync", "durable-generation");
 const adoptionReceipt = (root: string) => path.join(path.dirname(root), "file-sync", "durable-adoption.json");
 export const durableAgentFilesEnabled = () => process.env.PAPERCLIP_DURABLE_AGENT_FILES === "true";
@@ -49,6 +49,28 @@ async function atomicPrivateWrite(filename: string, contents: string) {
     await fs.writeFile(temporary, contents, { mode: 0o600 });
     await fs.rename(temporary, filename);
   } finally { await fs.rm(temporary, { force: true }); }
+}
+
+/**
+ * True when the locked file-tree step of a save would change nothing for an
+ * unchanged run: the durable head exists and the local projection is marked at
+ * its generation (so restore is a no-op and persist only re-marks it), or
+ * durable files are off, no head exists and the one-time local adoption is
+ * already recorded (so persist returns at once). A false result asks the caller
+ * to take the locked path, which adopts, restores or heals the head.
+ */
+export async function agentFileProjectionCurrent(db: Db, owner: { companyId: string; id: string }, root: string): Promise<boolean> {
+  const [head] = await db.select({ generation: agentFileRoots.generation }).from(agentFileRoots).where(where(owner));
+  const exists = (filename: string) => fs.stat(filename).then(() => true, (error: NodeJS.ErrnoException) => {
+    if (error.code === "ENOENT") return false;
+    throw error;
+  });
+  if (!head) return !durableAgentFilesEnabled() && await exists(path.join(path.dirname(root), "file-sync", "adopted.json"));
+  const generation = await fs.readFile(marker(root), "utf8").catch((error: NodeJS.ErrnoException) => {
+    if (error.code === "ENOENT") return null;
+    throw error;
+  });
+  return generation === head.generation && await fs.stat(root).then(info => info.isDirectory(), () => false);
 }
 
 /** Under the agent row lock. A durable head remains authoritative even after
@@ -136,9 +158,69 @@ export async function restoreDurableAgentFiles(tx: Tx, owner: Owner, root: strin
   } finally { await fs.rm(temporary, { recursive: true, force: true }); }
 }
 
+/** Objects uploaded before the agent row lock, by content (`sha256:size`). */
+export type PreparedAgentFileObjects = ReadonlyMap<string, string>;
+const contentKey = (sha256: string, size: number) => `${sha256}:${size}`;
+
+/** Stream one file to object storage. The upload fails unless the bytes match
+ * the expected size and digest, so a stored object always has that content. */
+async function uploadAgentFile(service: ReturnType<typeof storage>, owner: { companyId: string; id: string },
+  filename: string, size: number, sha256: string, signal: AbortSignal): Promise<string> {
+  const handle = await fs.open(filename, constants.O_RDONLY | constants.O_NOFOLLOW);
+  const source = handle.createReadStream();
+  const hash = createHash("sha256");
+  let read = 0;
+  const body = new Transform({ transform(chunk: Buffer, _encoding, callback) {
+    read += chunk.length;
+    if (read > size) return callback(new Error("Agent file changed during upload"));
+    hash.update(chunk); callback(null, chunk);
+  }, flush(callback) {
+    callback(read === size && hash.digest("hex") === sha256 ? null : new Error("Agent file changed during upload"));
+  } });
+  try {
+    const [result] = await Promise.all([service.putFile({ companyId: owner.companyId, namespace: `agent-files/${owner.id}`,
+      originalFilename: null, contentType: "application/octet-stream", body,
+      byteSize: size, sha256, signal }), pipeline(source, body, { signal })]);
+    return result.objectKey;
+  } finally { source.destroy(); body.destroy(); await handle.close(); }
+}
+
+/**
+ * Upload the files a run changed before its save takes the agent row lock, so
+ * the locked commit only records object keys. Objects are immutable and
+ * verified by digest; the commit uses one only for a file with the same digest
+ * and size. An object that no commit uses (a refused save, or a crash before
+ * the commit) is never authoritative and is removed by the object collector
+ * after its grace period. This step is an optimization: a file it could not
+ * upload is uploaded by the locked commit as before.
+ */
+export async function uploadAgentFilesBeforeCommit(db: Db, owner: { companyId: string; id: string }, sourceDir: string,
+  files: ReadonlyArray<{ path: string; size: number; sha256: string }>): Promise<PreparedAgentFileObjects> {
+  const prepared = new Map<string, string>();
+  if (files.length === 0) return prepared;
+  try {
+    const [head] = await db.select({ entries: agentFileRoots.entries }).from(agentFileRoots).where(where(owner));
+    if (!head && !durableAgentFilesEnabled()) return prepared;
+    const service = storage();
+    const committed = new Map(head?.entries.map(entry => [entry.path, entry]));
+    const signal = AbortSignal.timeout(30_000);
+    for (const file of files) {
+      const key = contentKey(file.sha256, file.size);
+      const old = committed.get(file.path);
+      if (file.size === 0 || prepared.has(key) || (old?.kind === "file" && old.sha256 === file.sha256 && old.size === file.size)) continue;
+      const filename = await assertInstructionPathSafe(sourceDir, instructionPath(file.path));
+      prepared.set(key, await uploadAgentFile(service, owner, filename, file.size, file.sha256, signal));
+    }
+  } catch {
+    // The locked commit uploads whatever is missing and reports its own errors.
+  }
+  return prepared;
+}
+
 /** Publish immutable bytes before the database head. A failed/uncertain database
  * commit never removes uploaded bytes that may have become authoritative. */
-export async function persistDurableAgentFiles(tx: Tx, owner: Owner, root: string, importingLegacy = false) {
+export async function persistDurableAgentFiles(tx: Tx, owner: Owner, root: string, importingLegacy = false,
+  prepared: PreparedAgentFileObjects = new Map()) {
   const [previous] = await tx.select().from(agentFileRoots).where(where(owner));
   if (!previous && !durableAgentFilesEnabled()) return;
   const service = storage();
@@ -161,26 +243,10 @@ export async function persistDurableAgentFiles(tx: Tx, owner: Owner, root: strin
     if (entry.kind !== "file") throw new Error("Agent files cannot contain symbolic links");
     if (entry.size === undefined || entry.mode === undefined || !entry.hash) throw new Error("Agent file metadata is incomplete");
     const old = before.get(relative);
-    let objectKey = old?.kind === "file" && old.sha256 === entry.hash && old.size === entry.size ? old.objectKey : null;
+    let objectKey = old?.kind === "file" && old.sha256 === entry.hash && old.size === entry.size ? old.objectKey
+      : prepared.get(contentKey(entry.hash, entry.size)) ?? null;
     if (!objectKey && entry.size !== 0) {
-      const filename = await assertInstructionPathSafe(root, relative);
-      const handle = await fs.open(filename, constants.O_RDONLY | constants.O_NOFOLLOW);
-      const source = handle.createReadStream();
-      const hash = createHash("sha256");
-      let size = 0;
-      const body = new Transform({ transform(chunk: Buffer, _encoding, callback) {
-        size += chunk.length;
-        if (size > entry.size!) return callback(new Error("Agent file changed during upload"));
-        hash.update(chunk); callback(null, chunk);
-      }, flush(callback) {
-        callback(size === entry.size && hash.digest("hex") === entry.hash ? null : new Error("Agent file changed during upload"));
-      } });
-      try {
-        const [result] = await Promise.all([service.putFile({ companyId: owner.companyId, namespace: `agent-files/${owner.id}`,
-          originalFilename: null, contentType: "application/octet-stream", body,
-          byteSize: entry.size, sha256: entry.hash, signal }), pipeline(source, body, { signal })]);
-        objectKey = result.objectKey;
-      } finally { source.destroy(); body.destroy(); await handle.close(); }
+      objectKey = await uploadAgentFile(service, owner, await assertInstructionPathSafe(root, relative), entry.size, entry.hash, signal);
     }
     entries.push({ path: relative, kind: "file", mode: entry.mode, size: entry.size, sha256: entry.hash, objectKey });
   }

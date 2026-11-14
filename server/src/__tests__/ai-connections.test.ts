@@ -17,7 +17,7 @@ import { mkdtemp, realpath, rm, access, readFile, writeFile, stat } from "node:f
 import os from "node:os";
 import path from "node:path";
 import { and, eq, sql } from "drizzle-orm";
-import { createDb, type Db, companies, agents, agentTaskSessions, heartbeatRuns, companyMemberships, connectionGrants, toolApplications, connectionGrantDelegations, connectionGrantMembers, toolConnections, toolConnectionInstalls, aiConnectionDefaults, aiProviderDefaults, adapterAuthSessions, environments, plugins, issues, issueThreadInteractions, issueRecoveryActions, connectionIntentDeliveries, agentWakeupRequests, companySecrets, companySecretVersions, userSecretDefinitions, principalPermissionGrants } from "@paperclipai/db";
+import { createDb, type Db, companies, agents, agentTaskSessions, heartbeatRuns, companyMemberships, connectionGrants, toolApplications, connectionGrantDelegations, connectionGrantMembers, toolConnections, toolConnectionInstalls, aiConnectionDefaults, aiProviderDefaults, adapterAuthSessions, environments, plugins, issues, issueThreadInteractions, issueRecoveryActions, connectionIntentDeliveries, agentWakeupRequests, companySecrets, companySecretVersions, secretAccessEvents, userSecretDefinitions, principalPermissionGrants } from "@paperclipai/db";
 import { startEmbeddedPostgresTestDatabase } from "@paperclipai/db/test-embedded-postgres";
 import { fetchCompanyQuotaWindows } from "../services/quota-windows.js";
 import { quotaCredentialRecoveryPath, quotaCredentialRecovery, quotaCredentialHash } from "../services/quota-credential-recovery.js";
@@ -717,8 +717,10 @@ describe("managed AI connections", () => {
     try {
       const first = await fetchCompanyQuotaWindows(db, companyId, owner);
       const [after] = await db.select().from(companySecrets).where(eq(companySecrets.id, secretId));
-      expect(after.lastResolvedAt).not.toBeNull();
-      expect(after.updatedAt.getTime()).toBeGreaterThan(before.updatedAt.getTime());
+      // A read is recorded as an access event, never written to the row that
+      // admissions share-lock to fence rotation.
+      expect(after.updatedAt.getTime()).toBe(before.updatedAt.getTime());
+      expect(await db.select().from(secretAccessEvents).where(and(eq(secretAccessEvents.secretId, secretId), eq(secretAccessEvents.outcome, "success")))).not.toHaveLength(0);
       expect(first[0].ok).toBe(true);
       expect(await fetchCompanyQuotaWindows(db, companyId, owner)).toEqual(first);
       expect(fetchSpy).toHaveBeenCalledTimes(1);
@@ -1983,6 +1985,23 @@ console.log(JSON.stringify({ type: "result", subtype: "success", result: "hello"
       await expect(assertManagedAiProjectAuth({}, "openai", target)).rejects.toThrow("cannot validate");
       expect(execute).not.toHaveBeenCalled();
     } finally { execute.mockRestore(); }
+  });
+  it("defers new and retained plugin task capability checks to native launch", async () => {
+    const runnerTask = vi.fn().mockResolvedValue({ kind: "description", taskId: "task", projectAuthCheckVersion: 1,
+      runner: { version: "fixture", digest: `sha256:${"a".repeat(64)}` } });
+    const target = { kind: "remote", transport: "sandbox", providerKey: "plugin", remoteCwd: ".", runnerTask,
+      sandboxLeaseAcquisition: { outcome: "created", providerLeaseId: "task" } } as const;
+    const options = { deferRunnerTaskCapabilityCheck: true };
+
+    await expect(assertManagedAiProjectAuth({}, "openai", target, options)).resolves.toBeUndefined();
+    await expect(assertManagedAiProjectAuth({ args: ["--api-key=override"] }, "openai", target, options)).rejects.toThrow("overrides");
+    expect(runnerTask).not.toHaveBeenCalled();
+
+    const retained = { ...target, sandboxLeaseAcquisition: { ...target.sandboxLeaseAcquisition, outcome: "resumed" as const } };
+    await expect(assertManagedAiProjectAuth({}, "openai", retained, options)).resolves.toBeUndefined();
+    expect(runnerTask).not.toHaveBeenCalled();
+    await expect(assertManagedAiProjectAuth({}, "openai", retained)).resolves.toBeUndefined();
+    expect(runnerTask).toHaveBeenCalledExactlyOnceWith({ kind: "describe" });
   });
   it("keeps personal defaults separate and does not replace the first default", async () => {
     const first = await create("alice", "Alice first");

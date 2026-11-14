@@ -26,6 +26,14 @@ export async function workspaceArchive(input: {
   maxEntries?: number;
   maxManifestBytes?: number;
   singlePass?: boolean;
+  /**
+   * Restore only: give the archive's space back while extracting. Files are
+   * written from the last body to the first and the archive is truncated
+   * behind each one, so the archive and the restored tree together need about
+   * one workspace of space plus the largest file. The archive is unusable
+   * afterwards; use this only for a disposable copy of a durably saved archive.
+   */
+  consumeArchive?: boolean;
 }): Promise<{ schema: "paperclip.remote-workspace-archive.v1"; manifestDigest: string; byteSize: number; sha256: string; entries: number }> {
   const fs = await import("node:fs/promises");
   const { createReadStream } = await import("node:fs");
@@ -633,7 +641,7 @@ export async function workspaceArchive(input: {
   if (!input.targetDir || !/^[a-f0-9]{64}$/.test(input.expectedManifestDigest ?? "")) fail("restore_binding_invalid");
   if (input.maxEntries !== undefined && (!Number.isSafeInteger(input.maxEntries) || input.maxEntries < 0)) fail("restore_binding_invalid");
   if (input.maxManifestBytes !== undefined && (!Number.isSafeInteger(input.maxManifestBytes) || input.maxManifestBytes < 0)) fail("restore_binding_invalid");
-  const archive = await fs.open(input.archivePath, "r");
+  const archive = await fs.open(input.archivePath, input.consumeArchive === true ? "r+" : "r");
   let staging: string | undefined;
   const stagedDirectories: string[] = [];
   try {
@@ -663,19 +671,29 @@ export async function workspaceArchive(input: {
       kinds.set(entry.path, entry.type);
     }
     if (!Number.isSafeInteger(bodySize) || (await archive.stat()).size !== prefix.length + manifestSize + bodySize) fail("size_mismatch");
+    const archiveSize = prefix.length + manifestSize + bodySize;
     const parent = await fs.realpath(path.dirname(input.targetDir!));
     const existing = await fs.lstat(input.targetDir!).catch((error: NodeJS.ErrnoException) => { if (error.code !== "ENOENT") throw error; return null; });
     if (existing && (!existing.isDirectory() || existing.isSymbolicLink() || (await fs.readdir(input.targetDir!)).length)) fail("target_not_empty");
     check();
     staging = await fs.mkdtemp(path.join(parent, ".workspace-restore-"));
-    let offset = prefix.length + manifestSize;
+    // Each file body starts where the previous one ends. A consuming restore
+    // writes the bodies last to first and truncates the archive behind each.
+    const offsets = new Map<Entry, number>();
+    let next = prefix.length + manifestSize;
+    for (const entry of manifest.entries) if (entry.type === "file") { offsets.set(entry, next); next += entry.size!; }
+    const consume = input.consumeArchive === true;
+    const ordered = consume
+      ? [...manifest.entries.filter(entry => entry.type !== "file"), ...manifest.entries.filter(entry => entry.type === "file").reverse()]
+      : manifest.entries;
     const buffer = Buffer.alloc(1024 * 1024);
-    for (const entry of manifest.entries) {
+    for (const entry of ordered) {
       check(); const target = path.join(staging, entry.path);
       if (entry.type === "directory") { await fs.mkdir(target, { mode: 0o700 }); stagedDirectories.push(target); }
       else if (entry.type === "symlink") await fs.symlink(entry.target!, target);
       else {
         const output = await fs.open(target, "wx", 0o600), digest = crypto.createHash("sha256");
+        let offset = offsets.get(entry)!;
         try {
           let remaining = entry.size!;
           while (remaining) {
@@ -687,12 +705,15 @@ export async function workspaceArchive(input: {
           if (digest.digest("hex") !== entry.sha256) fail("file_hash_mismatch");
         } finally { await output.close(); }
         await fs.chmod(target, entry.mode!);
+        if (consume) await archive.truncate(offsets.get(entry)!);
       }
     }
     for (const entry of manifest.entries.filter(entry => entry.type === "directory").reverse()) {
       check(); await fs.chmod(path.join(staging, entry.path), entry.mode!);
     }
-    const content = await hashFile(input.archivePath);
+    // Every body was checked against the manifest, whose digest was checked
+    // against the expected one; a consumed archive has no bytes left to hash.
+    const content = consume ? { sha256: "", byteSize: archiveSize } : await hashFile(input.archivePath);
     check();
     await fs.rename(staging, input.targetDir!); staging = undefined;
     return { schema, manifestDigest: input.expectedManifestDigest!, ...content, entries: manifest.entries.length };
@@ -865,5 +886,5 @@ export function remoteWorkspaceFailureDetail(error: unknown): string {
 export function remoteWorkspaceArchiveScript(): string {
   // tsx's function-name preservation helper may appear in Function#toString.
   const source = workspaceArchive.toString().replaceAll("__vite_ssr_dynamic_import__", "import");
-  return `const __name = (value) => value;\nconst captureFailure = ${remoteWorkspaceCaptureFailureMessage.toString()};\nconst failureDetail = ${remoteWorkspaceFailureDetail.toString()};\nconst archive = ${source};\nconst [kind, first, second, digest] = process.argv.slice(2);\narchive(kind === 'capture' ? {kind,cwd:first,archivePath:second} : {kind,archivePath:first,targetDir:second,expectedManifestDigest:digest}).then(value=>process.stdout.write(JSON.stringify(value))).catch(error=>{const detail = failureDetail(error);process.stderr.write(kind === 'capture' ? captureFailure(error) ?? ('remote_workspace_archive_failed' + (detail ? ': ' + detail : '')) : error.message);process.exitCode=1;});\n`;
+  return `const __name = (value) => value;\nconst captureFailure = ${remoteWorkspaceCaptureFailureMessage.toString()};\nconst failureDetail = ${remoteWorkspaceFailureDetail.toString()};\nconst archive = ${source};\nconst [kind, first, second, digest] = process.argv.slice(2), mode = process.argv[6];\narchive(kind === 'capture' ? {kind,cwd:first,archivePath:second} : {kind,archivePath:first,targetDir:second,expectedManifestDigest:digest,consumeArchive:mode === 'consume'}).then(value=>process.stdout.write(JSON.stringify(value))).catch(error=>{const detail = failureDetail(error);process.stderr.write(kind === 'capture' ? captureFailure(error) ?? ('remote_workspace_archive_failed' + (detail ? ': ' + detail : '')) : error.message);process.exitCode=1;});\n`;
 }

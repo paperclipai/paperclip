@@ -18,12 +18,20 @@ resolved config has no positive finite numeric `timeoutMs`. A positive numeric
 `bridgeRequestTimeoutMs` can extend that budget. The host adds 30 seconds for RPC
 overhead. This applies to both sandbox providers and generic plugin drivers.
 
-Daytona declares 300,000 milliseconds for the entire fresh acquisition. Creation,
-workspace setup, shell detection, expiry setup, and inline failure cleanup share
-that budget. Its host RPC can therefore wait 330 seconds instead of the worker's
-normal 30 seconds. On timeout the provider returns the attempt's scoped cleanup
-record for durable host reconciliation. Late SDK results cannot admit the lease
-or start the next setup phase.
+Daytona declares 300,000 milliseconds, and its host RPC can therefore wait 330
+seconds instead of the worker's normal 30 seconds. The worker itself caps one
+fresh acquisition at 180 seconds. Creation, workspace setup, shell detection,
+expiry setup, and inline failure cleanup share that cap. A create that has not
+returned after 90 seconds is looked up once by its creation name: a sandbox that
+has started is adopted and setup continues, one still preparing its snapshot
+keeps waiting within the cap, and any other state ends the attempt. On timeout
+the provider returns the attempt's scoped cleanup record and an acquisition
+diagnostic whose elapsed time has reached the expired budget. The host treats
+that diagnostic as a transient provider failure (`environment_provider_unavailable`),
+so the run is retried with the bounded bootstrap budget while the creation
+reconciler removes the abandoned allocation. Late SDK results cannot admit the
+lease or start the next setup phase, and a late SDK failure never deletes an
+adopted sandbox.
 Drivers that omit the declaration keep the existing fallback. The host does not
 infer this budget from config-schema defaults: a field named `timeoutMs` can
 describe sandbox lifetime instead of the time needed to acquire it.

@@ -29,6 +29,7 @@ import type {
   CompanySkillVersionSummary,
 } from "@paperclipai/shared";
 import { companySkillsApi } from "../api/companySkills";
+import { ConnectedAppSkills } from "../components/skills/ConnectedAppSkills";
 import { foldersApi } from "../api/folders";
 import { agentsApi } from "../api/agents";
 import { useCompany } from "../context/CompanyContext";
@@ -5419,6 +5420,7 @@ export function CompanySkills({ collectionView }: { collectionView?: "authored" 
             </Tabs>
           </div>
         ) : null}
+        {collectionView !== "authored" ? <ConnectedAppSkills companyId={selectedCompanyId} /> : null}
         <DiscoveryGrid
           collectionView={collectionView}
           navigation={streamlinedUiEnabled ? <SkillsNavigationTabs activeView={collectionView ?? effectiveDiscoveryTab} /> : undefined}

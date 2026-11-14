@@ -185,7 +185,10 @@ export function isRawErrorCode(value: string): boolean {
 /** A server message that is safe to show: not a raw code, not a generic status line. */
 function readableServerMessage(err: unknown): string | null {
   const error = record(err);
-  const candidates = [stringField(record(error?.body)?.message), stringField(record(error?.body)?.error)];
+  const body = record(error?.body);
+  // OAuth endpoints (RFC 6749) put the readable sentence in `error_description`
+  // and a machine code in `error`.
+  const candidates = [stringField(body?.message), stringField(body?.error), stringField(body?.error_description)];
   if (err instanceof Error) candidates.push(stringField(err.message));
   for (const candidate of candidates) {
     if (!candidate) continue;

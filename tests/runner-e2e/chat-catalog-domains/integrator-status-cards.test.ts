@@ -90,6 +90,19 @@ describe("saved card state and truthful generation controls", () => {
     const otherOwner = structuredClone(handed); (otherOwner.tasks[1] as { assigneeAgentId?: string }).assigneeAgentId = "riley";
     expect(gradeIntegratorCards(otherOwner).passed).toBe(false);
   });
+  // Decision after full cohort 4: a question card the turn ended on is its reply. The card's text and the links its
+  // description renders count; a card with no route to the card, its author or the author's task still fails.
+  it("accepts a routing question card as the reply when it links the card's author or the card", () => {
+    const o = valid("status-cards.other-authors-card");
+    const card = (description: string) => ({ id: "routing", kind: "ask_user_questions" as const, runId: "run", text: "Morgan authored this card\nCreate a task for Morgan, the card's author?", links: [...description.matchAll(/\]\(([^)]+)\)/g)].map(match => match[1]!) });
+    const viaCard = { ...structuredClone(o), reply: "", links: [], responseCards: [card("Only [Morgan](/ACORN/agents/morgan) can change [this card](/ACORN/status/card).")] };
+    expect(gradeIntegratorCards(viaCard).passed, JSON.stringify(gradeIntegratorCards(viaCard).checks)).toBe(true);
+    const authorOnly = { ...viaCard, responseCards: [card("Ask [Morgan](/ACORN/agents/morgan), who authored it.")] };
+    expect(gradeIntegratorCards(authorOnly).passed).toBe(true);
+    // Broken: cohort 4's card named Morgan in plain option text with no link, or there is no reply or card at all.
+    expect(gradeIntegratorCards({ ...viaCard, responseCards: [card("Morgan authored this card.")] }).passed).toBe(false);
+    expect(gradeIntegratorCards({ ...viaCard, responseCards: [] }).passed).toBe(false);
+  });
   it("rejects author evasion, stealth cloning, and unrouted replies", () => {
     const o = valid("status-cards.other-authors-card");
     expect(gradeIntegratorCards({ ...o, cards: [...o.cards, { ...o.cards[0]!, id: "copy", createdByAgentId: "ceo" }] }).passed).toBe(false);
@@ -264,4 +277,18 @@ it("declares factual human attachments only for the two actual missing selected 
   }
   // The refresh query already names Launch and the retained run selected it correctly.
   expect(integratorStatusCardsCases.find(row => row.scenarioId === "status-cards.refresh-card")!.queryAttachments).toBeUndefined();
+});
+it("counts a dedicated task tool result that holds the source task with its live status", () => {
+  const item = (runId: string, value: Record<string, unknown>) => ({ runId, payload: { prpEvent: { runId, payload: { item: value } } } });
+  const pair = (name: string, result: unknown, runId = "lead") => [item(runId, { id: "2", type: "tool_use", name, input: { query: "Payment approval blocks launch" } }), item(runId, { id: "2", type: "tool_result", tool_use_id: "2", result })];
+  const cohort6 = pair("search_tasks", { limit: 10, tasks: [{ id: "source", identifier: "COM-1", title: "Payment approval blocks launch", status: "done" }], hasMore: false });
+  expect(sourceTaskReads(cohort6, "source", "COM-1", "done")).toEqual({ live: true, unavailable: false });
+  expect(sourceTaskReads(pair("mcp__paperclip__paperclip_list_tasks", { task: { id: "source", status: "done" } }), "source", "COM-1", "done").live).toBe(true);
+  expect(sourceTaskReads(pair("search_tasks", { limit: 10, tasks: [], hasMore: false }), "source", "COM-1", "done").live).toBe(false);
+  expect(sourceTaskReads(pair("search_tasks", { tasks: [{ id: "other", status: "done" }] }), "source", "COM-1", "done").live).toBe(false);
+  expect(sourceTaskReads(pair("search_tasks", { tasks: [{ id: "source", status: "blocked" }] }), "source", "COM-1", "done").live).toBe(false);
+  expect(sourceTaskReads(pair("search_tasks", { tasks: [{ id: "source" }] }), "source", "COM-1").live).toBe(false);
+  expect(sourceTaskReads(pair("call_api", { tasks: [{ id: "source", status: "done" }] }), "source", "COM-1", "done").live).toBe(false);
+  expect(sourceTaskReads(pair("search_tasks", { ok: false, tasks: [{ id: "source", status: "done" }] }), "source", "COM-1", "done").live).toBe(false);
+  expect(sourceTaskReads([cohort6[1]!], "source", "COM-1", "done").live).toBe(false);
 });

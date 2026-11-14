@@ -90,7 +90,7 @@ describe("genericConnectGuidance", () => {
   it("names the credentials for a challenge with no discoverable sign-in", () => {
     const guidance = genericConnectGuidance("oauth_challenge", null);
     expect(guidance.focus).toBe("credentials");
-    expect(guidance.body).toContain("Advanced authentication");
+    expect(guidance.body).toContain("key or headers its docs list below");
   });
 
   it("points at the deployment when Paperclip itself has no public HTTPS address", () => {
@@ -160,7 +160,7 @@ describe("genericConnectPayload", () => {
     expect(payload.credentialValues).toEqual({ "credentials.authorization": "abc" });
   });
 
-  it("sends the explicit mode chosen under Advanced authentication", () => {
+  it("sends the explicit sign-in mode the operator chose", () => {
     expect(genericConnectPayload(draft({ authMode: "none" }))).toMatchObject({ authMode: "none" });
     expect(genericConnectPayload(draft({ authMode: "bearer", keyValue: " abc " })))
       .toMatchObject({ authMode: "bearer", credentialValues: { "credentials.authorization": "abc" } });

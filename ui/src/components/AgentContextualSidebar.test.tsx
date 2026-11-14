@@ -33,7 +33,7 @@ vi.mock("./SidebarNavItem", () => ({
   SidebarNavItem: ({ to, label }: { to: string; label: string }) => <a href={to}>{label}</a>,
 }));
 
-vi.mock("@/plugins/slots", () => ({ usePluginSlots: () => ({ slots: [{ pluginKey: "test.plugin", id: "insights", displayName: "Insights" }] }) }));
+vi.mock("@/plugins/slots", () => ({ usePluginSlots: () => ({ slots: [{ pluginKey: "test.plugin", id: "insights", displayName: "Insights" }, { pluginKey: "example.computer", id: "desktop", displayName: "Desktop", agentEnvironmentDriver: "tasks" }] }) }));
 
 describe("AgentContextualSidebar", () => {
   it.each([false, true])("lists plugin tabs and keeps Channels and Tools out of the nav (%s)", (enabled) => {
@@ -74,4 +74,15 @@ describe("AgentContextualSidebar", () => {
     expect(markup).toContain("Harness / Runtime");
     expect(markup).toContain("Permissions / Trust");
   });
+});
+
+it.each(["computer", "local"])("offers environment-specific navigation only for the configured %s agent", environmentId => {
+  const client = new QueryClient();
+  client.setQueryData([...queryKeys.agents.detail("agent-1"), "company-1"], { id: "agent-1", companyId: "company-1", defaultEnvironmentId: environmentId });
+  client.setQueryData(queryKeys.environments.list("company-1"), [{ id: "computer", driver: "plugin", config: {}, pluginDriver: { pluginKey: "example.computer", driverKey: "tasks" } }]);
+  const markup = renderToStaticMarkup(<QueryClientProvider client={client}><MemoryRouter>
+    <AgentContextualSidebar agentRef="agent" agentId="agent-1" agentName="Agent" />
+  </MemoryRouter></QueryClientProvider>);
+  expect(markup.includes("Desktop")).toBe(environmentId === "computer");
+  expect(markup).toContain("Insights"); client.clear();
 });

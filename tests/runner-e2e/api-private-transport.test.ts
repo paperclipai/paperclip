@@ -31,3 +31,24 @@ it("uses sensitive PATCH outside Test with same session boundary and no raw pars
   transport.mockImplementation(async () => new Response("not-json-private-value"));
   await expect(api.patchSensitive("/api/agents/one", {})).rejects.toThrow("response body withheld");
 });
+
+it("surfaces a bounded product validation reason for 400/409/422 without request values, details or the session", async () => {
+  const { api } = fixture();
+  const reply = (status: number, body: unknown) => vi.fn(async () => new Response(typeof body === "string" ? body : JSON.stringify(body), { status, headers: { "content-type": "application/json" } }));
+  vi.stubGlobal("fetch", reply(422, { error: "Built-in fake sandbox environments are reserved for internal probes and cannot be saved.", details: { issues: [{ received: "private-detail-canary" }] } }));
+  const failure = await api.post("/api/companies/c/environments", { name: "control", config: { provider: "fake" } }).catch((error: Error) => error) as Error;
+  expect(failure).toBeInstanceOf(RunnerApiHttpError); expect((failure as RunnerApiHttpError).status).toBe(422);
+  expect(failure.message).toBe("POST /api/companies/c/environments returned 422; reason: Built-in fake sandbox environments are reserved for internal probes and cannot be saved.; other body fields withheld");
+  expect(failure.message).not.toContain("private-detail-canary");
+  vi.stubGlobal("fetch", reply(400, { error: "Invalid apiKey private-request-value-123 for synthetic-session-cookie-928364 token abcdefghijklmnopqrstuvwxyzABCDEFGHIJ" }));
+  const echoed = await api.post("/api/x", { apiKey: "private-request-value-123" }).catch((error: Error) => error) as Error;
+  expect(echoed.message).toContain("reason: Invalid apiKey [redacted] for [redacted] token [redacted]");
+  for (const canary of ["private-request-value-123", "synthetic-session-cookie-928364", "abcdefghijklmnopqrstuvwxyz"]) expect(echoed.message).not.toContain(canary);
+  vi.stubGlobal("fetch", reply(409, { error: "word ".repeat(400) }));
+  expect((await api.post("/api/x", {}).catch((error: Error) => error) as Error).message).toBe(`POST /api/x returned 409; reason: ${"word ".repeat(48).slice(0, 240)}...; other body fields withheld`);
+  for (const [status, body] of [[403, { error: "private-403-canary" }], [500, { error: "private-500-canary" }], [422, "not-json-private-canary"], [422, { message: "no-error-field-canary" }]] as const) {
+    vi.stubGlobal("fetch", reply(status, body));
+    const other = await api.post("/api/x", {}).catch((error: Error) => error) as Error;
+    expect(other.message).toBe(`POST /api/x returned ${status}; body withheld`);
+  }
+});

@@ -10,6 +10,7 @@ import { findSupersededExternalReviewRequests } from "./superseded-external-revi
 import { evaluateAgentInvokabilityFromDb } from "../agent-invokability.js";
 import { issueService } from "../issues.js";
 import { isConversation } from "../agent-conversations.js";
+import { completionReviewStageEntry } from "../issue-execution-policy.js";
 import { issueTreeControlService } from "../issue-tree-control.js";
 import { isPublishedGitHubReviewCompletionContinuation, readPublishedGitHubReviewCompletionContinuation, resolveExternalChatResponseWaitAuthorization } from "./chat-attachment-reuse.js";
 import { getNativeReviewAssignment, readNativeReviewAssignmentContext } from "./native-review-participant.js";
@@ -31,6 +32,33 @@ import {
 } from "../../vendor/paperclip-runner/index.js";
 
 const repositoryYieldCorrection = 'This task has a saved repository preparation for its next admission. This is routine setup, not a blocker. Call paperclip_finish with reportedWorkDisposition="yielded" and omit continuation (or use null); Paperclip will select the saved workspace continuation. Preserve the completed work and explain what remains. Do not repeat setup, set a timer, or ask the user to restart.';
+
+// A Paperclip stall or restart leaves the agent's Paperclip tool calls
+// unanswered until the server is back; they then return together. The agent can
+// read that silence as an outage and report it as a blocker. This report reached
+// the server and is being answered, which is the server's own proof that its
+// control plane is reachable now. Ask once per run to re-check with fresh
+// Paperclip calls instead of resting the task blocked on a past stall.
+const paperclipServiceRecheckCorrection = "Paperclip answered this report, so its control plane is reachable now. Paperclip tool calls that did not return earlier were most likely delayed by a Paperclip restart or pause, and their results may have arrived since. Do not report this as a blocker. Re-read the current Paperclip state (for example read_document) before writing again; when a write is still needed, repeat it with the same idempotencyKey so it cannot apply twice. Then continue the task and report its real outcome. Report blocked only if a fresh Paperclip call fails now.";
+const configuredReviewStageCorrection =
+  "This task has a configured review stage with its own reviewer. Do not request a separate review. Report done once the work is complete and verified, without listing that review as remaining work or an attention request; Paperclip then starts the configured review, and the task stays in review until that reviewer decides.";
+const PAPERCLIP_SERVICE_RECHECK_LIMIT = 1_000;
+const paperclipServiceRechecked = new Set<string>();
+
+function isPaperclipServiceOutageBlocker(result: PrpStructuredRunResult) {
+  const blocker = result.blocker;
+  return result.reportedWorkDisposition === "blocked" && blocker?.owner.kind === "system"
+    && blocker.reasonCode === "external_service_unavailable" && (blocker.owner.name ?? "").toLowerCase().includes("paperclip");
+}
+
+/** Once per run (per server process), so a real persistent failure still rests blocked. */
+function claimPaperclipServiceRecheck(runId: string) {
+  if (paperclipServiceRechecked.has(runId)) return false;
+  if (paperclipServiceRechecked.size >= PAPERCLIP_SERVICE_RECHECK_LIMIT)
+    paperclipServiceRechecked.delete(paperclipServiceRechecked.values().next().value!);
+  paperclipServiceRechecked.add(runId);
+  return true;
+}
 
 function record(value: unknown): Record<string, unknown> {
   return value && typeof value === "object" && !Array.isArray(value)
@@ -158,6 +186,14 @@ export async function nativeCompletionFeedback(
       signals.verification.some((entry) => entry.status === "failed") && "verification.failed",
       signals.actionableAttentionRequests.length > 0 && "attentionRequests.actionable",
     ].filter(Boolean).join(", ") : "";
+    if (result.completionClaim.objectiveSatisfied &&
+        result.completionClaim.criteria.every(entry => entry.status === "satisfied") &&
+        !signals.verification.some(entry => entry.status === "failed") &&
+        signals.actionableAttentionRequests.every(request => request.kind === "review") &&
+        issue.executionState?.status !== "pending" && !isConversation(issue) &&
+        completionReviewStageEntry(issue, run.agentId).kind === "starts") {
+      throw new Error(configuredReviewStageCorrection);
+    }
     throw new Error(
       "The done report includes unfinished work, failed verification, or an outstanding decision. Finish the work or report the concrete blocker/reviewer request. No human completion approval was created." +
       (failedActionChat ? ` Rejection fields: ${rejectionReasons}.` + " This chat turn may finish with a truthful report of the failed approved action; that does not mean the external action succeeded. Keep the failure, observed state, and unresolved work explicit in the summary. Verify the observed state factually. Use not_run with a truthful reason only for a check that could not run or complete because its dependency was unavailable. Do not change a failed check to passed or hide incomplete work. Do not automatically replay the action or request approval again to force success; report the outcome and let the user decide whether to retry." : ""),
@@ -323,6 +359,10 @@ export async function nativeCompletionFeedback(
       throw new Error(repositoryYieldCorrection);
     }
   }
+  if (isPaperclipServiceOutageBlocker(result) && issue.executionRunId === run.id && run.status === "running"
+      && claimPaperclipServiceRecheck(run.id)) {
+    throw new Error(paperclipServiceRecheckCorrection);
+  }
   if (result.reportedWorkDisposition === "yielded" && result.continuation?.kind === "monitor") {
     return `Monitor wait accepted. The task remains active and Paperclip will wake its assignee at or after ${issue.monitorNextCheckAt!.toISOString()} with issue_monitor_due. End this turn; do not poll or mark the task done.`;
   }
@@ -352,6 +392,21 @@ export async function nativeCompletionFeedback(
       );
     }
   }
+  // An approval request can be a governed action card, so only a review
+  // request duplicates the configured stage.
+  const reviewStage = issue.executionState?.status !== "pending" && !isConversation(issue) &&
+    completionReviewStageEntry(issue, run.agentId).kind === "starts";
+  // Only a review of finished work belongs to the configured stage; a review
+  // needed before the work can continue keeps its own request path.
+  const workFinished = result.completionClaim.objectiveSatisfied &&
+    result.completionClaim.criteria.every(entry => entry.status === "satisfied");
+  if (reviewStage && workFinished && result.reportedWorkDisposition === "needs_review" &&
+      (signals.actionableAttentionRequests.length === 0 ||
+        signals.actionableAttentionRequests.some(request => request.kind === "review"))) {
+    throw new Error(
+      configuredReviewStageCorrection,
+    );
+  }
   if (
     result.reportedWorkDisposition === "needs_review" &&
     signals.actionableAttentionRequests.length === 0
@@ -377,6 +432,9 @@ export async function nativeCompletionFeedback(
   }
   if (result.reportedWorkDisposition === "blocked") {
     return "Blocker report accepted. Explain why work cannot continue, name the blocker owner and give the unblock action in your final response; do not describe the task as completed.";
+  }
+  if (reviewStage && result.reportedWorkDisposition === "done") {
+    return `Completion report accepted. This task's configured review stage starts after this turn, and the task stays in review until its reviewer decides. Describe the delivered work and say it awaits that review on [this task](/issues/${issue.identifier ?? issue.id}); do not say the task is done.`;
   }
   const links = await savedDocumentLinks(db, run, issue);
   const documentGuidance = links.length

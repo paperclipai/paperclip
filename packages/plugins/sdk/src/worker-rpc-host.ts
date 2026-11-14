@@ -1,6 +1,6 @@
 import { freshWorkspaceSchema } from "./workspace-provider.js";
 import { workspaceProviderBindingSchema } from "@paperclipai/shared";
-import { pluginWorkspaceParamsSchema, parseWorkspaceProviderResult } from "./workspace-provider.js";
+import { pluginWorkspaceParamsSchema, pluginWorkspacePrepareParamsSchema, parseWorkspacePrepareResult, parseWorkspaceProviderResult } from "./workspace-provider.js";
 import { environmentTaskOperationSchema, parseEnvironmentTaskResult, type PluginEnvironmentTaskParams } from "./environment-tasks.js";
 import type { AgentLifecycleRequest, AgentLifecycleResult } from "@paperclipai/shared";
 import type { AiConnectionRouterRequest, AiConnectionRouterResult } from "@paperclipai/shared";
@@ -760,6 +760,14 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
         },
         async getInstanceSecrets(projectId, companyId) {
           return callHost("projects.getInstanceSecrets", { projectId, companyId });
+        },
+        async readSnapshots(projectIds, companyId, entityType) {
+          try {
+            return await callHost("projects.readSnapshots", { projectIds, companyId, entityType });
+          } catch (error) {
+            if (error instanceof JsonRpcCallError && error.code === JSONRPC_ERROR_CODES.METHOD_NOT_FOUND) return null;
+            throw error;
+          }
         },
 
         async listWorkspaces(projectId: string, companyId: string) {
@@ -1659,7 +1667,7 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
           : method === "environmentStopLease" ? environmentStopErrorData(err)
           : method === "environmentResumeLease" ? environmentResumeErrorData(err)
           : method === "environmentTask" ? taskError ?? environmentTaskErrorCodeData(err)
-          : method === "workspaceOperation" ? workspaceOperationErrorData(err) : undefined));
+          : method === "workspaceOperation" || method === "workspacePrepare" ? workspaceOperationErrorData(err) : undefined));
     } finally {
       done?.();
     }
@@ -1717,6 +1725,11 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
         return handleExecuteTool(params as ExecuteToolParams);
       case "detectExternalObjects":
         return handleDetectExternalObjects(params as DetectExternalObjectsParams);
+      case "workspacePrepare": {
+        if (!plugin.definition.onWorkspacePrepare) throw methodNotImplemented("workspacePrepare");
+        const input = pluginWorkspacePrepareParamsSchema.parse(params);
+        return parseWorkspacePrepareResult(input, await plugin.definition.onWorkspacePrepare(input));
+      }
       case "workspaceOperation": {
         if (!plugin.definition.onWorkspaceOperation) throw methodNotImplemented("workspaceOperation");
         const input = pluginWorkspaceParamsSchema.parse(params);
@@ -1867,6 +1880,7 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
     if (plugin.definition.onIdleDrain) supportedMethods.push("prepareIdleSleep", "releaseIdleSleep");
     if (plugin.definition.onApiRequest) supportedMethods.push("handleApiRequest");
     if (plugin.definition.onDetectExternalObjects) supportedMethods.push("detectExternalObjects");
+    if (plugin.definition.onWorkspacePrepare) supportedMethods.push("workspacePrepare");
     if (plugin.definition.onWorkspaceOperation) supportedMethods.push("workspaceOperation");
     if (plugin.definition.onResourceLifecycle) supportedMethods.push("resourceLifecycle");
     if (plugin.definition.onAgentLifecycle) supportedMethods.push("agentLifecycle");

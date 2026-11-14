@@ -183,6 +183,8 @@ export const pluginEnvironmentDriverDeclarationSchema = z.object({
   freshWorkspaceVersion: z.literal(1).optional(),
   creationOperationVersion: z.literal(1).optional(),
   warmTaskVersion: z.literal(1).optional(),
+  sessionHandoffVersion: z.literal(1).optional(),
+  protectedEnvironmentKeys: z.array(z.string().regex(/^[A-Za-z_][A-Za-z0-9_]{0,127}$/)).max(64).optional(),
   driverKey: z.string().min(1).regex(
     /^[a-z0-9][a-z0-9._-]*$/,
     "Environment driver key must start with a lowercase alphanumeric and contain only lowercase letters, digits, dots, hyphens, or underscores",
@@ -395,6 +397,7 @@ export const pluginUiSlotDeclarationSchema = z.object({
   displayName: z.string().min(1),
   exportName: z.string().min(1),
   entityTypes: z.array(z.enum(PLUGIN_UI_SLOT_ENTITY_TYPES)).optional(),
+  agentEnvironmentDriver: z.string().min(1).optional(),
   taskSidePanel: z.object({
     availabilityPath: z.string().regex(/^\/(?:[a-zA-Z0-9_-]+\/)*:entityId(?:\/[a-zA-Z0-9_-]+)*$/),
     activation: z.object({ namespace: runtimeActivityIdentifierSchema, activityKey: runtimeActivityIdentifierSchema }).strict().optional(),
@@ -404,6 +407,9 @@ export const pluginUiSlotDeclarationSchema = z.object({
   }).optional(),
   order: z.number().int().optional(),
 }).superRefine((value, ctx) => {
+  if (value.agentEnvironmentDriver && (value.type !== "detailTab" || value.entityTypes?.length !== 1 || value.entityTypes[0] !== "agent")) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, message: "agentEnvironmentDriver requires an agent-only detailTab", path: ["agentEnvironmentDriver"] });
+  }
   if (value.taskSidePanel && (value.type !== "detailTab" || !value.entityTypes?.includes("agent"))) {
     ctx.addIssue({ code: z.ZodIssueCode.custom, message: "taskSidePanel requires an agent detailTab", path: ["taskSidePanel"] });
   }
@@ -808,9 +814,11 @@ export const pluginManifestV1Schema = z.object({
   agentLifecycle: z.literal(true).optional(),
   workspaceProvider: z.object({
     finalizationVersion: z.literal(1).optional(),
+    workspaceVerificationVersion: z.literal(1).optional(),
     supportsMergeAncestry: z.boolean().optional(),
     recoveryPullRequestVersion: z.literal(1).optional(),
     freshWorkspaceVersion: z.literal(1).optional(),
+    workspaceEnvironmentVersion: z.literal(1).optional(),
     modes: z.array(z.enum(["shared_workspace", "isolated_workspace", "operator_branch"])).min(1).max(3),
     strategies: z.array(z.enum(["project_primary", "git_worktree"])).min(1).max(2),
     defaultForProjects: z.object({

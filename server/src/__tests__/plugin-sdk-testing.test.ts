@@ -42,6 +42,27 @@ function seededIssue(input: Partial<Issue> & Pick<Issue, "id" | "companyId" | "t
 }
 
 describe("plugin SDK test harness", () => {
+  it("rejects project snapshot requests that the host would deny", async () => {
+    const manifest: PaperclipPluginManifestV1 = {
+      id: "paperclip.test-project-snapshots",
+      apiVersion: 1,
+      version: "0.1.0",
+      displayName: "Project Snapshots",
+      description: "Test plugin",
+      author: "Paperclip",
+      categories: ["automation"],
+      capabilities: ["projects.read", "project.workspaces.read", "projects.instance-secrets"],
+      entrypoints: { worker: "./dist/worker.js" },
+    };
+    const harness = createTestHarness({ manifest });
+    const projectId = "10000000-0000-4000-8000-000000000001";
+    await expect(harness.ctx.projects.readSnapshots([], "company", "settings")).rejects.toThrow("Invalid project snapshot scope");
+    await expect(harness.ctx.projects.readSnapshots([projectId, projectId], "company", "settings")).rejects.toThrow("Invalid project snapshot scope");
+    await expect(harness.ctx.projects.readSnapshots([projectId], "company", "bad type")).rejects.toThrow("Invalid project snapshot scope");
+    const denied = createTestHarness({ manifest: { ...manifest, capabilities: [] } });
+    await expect(denied.ctx.projects.readSnapshots([], "company", "settings")).rejects.toThrow("missing required capability");
+  });
+
   it("returns scoped execution workspace metadata with the read capability", async () => {
     const manifest: PaperclipPluginManifestV1 = {
       id: "paperclip.test-execution-workspace-metadata",

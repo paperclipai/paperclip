@@ -544,3 +544,54 @@ describe("native cleanup quarantine presentation", () => {
       paused: false, approval: false })).toMatchObject({ state: "failed", canRetry: true });
   });
 });
+
+describe("automatic scheduled retry", () => {
+  const now = Date.parse("2026-11-12T23:00:00Z");
+  const scheduled = { ...run, status: "scheduled_retry", runtimeMode: "legacy", errorCode: null, resultJson: null,
+    scheduledRetryReason: "transient_failure", scheduledRetryAt: new Date(now + 60_000) };
+
+  it("shows a pending transient-failure retry as scheduled without a competing Retry", () => {
+    expect(projectTaskInterruption(issue, { run: scheduled, agent, paused: false, approval: false }, now))
+      .toMatchObject({ state: "retry_scheduled", canRetry: false, nextRetryAt: new Date(now + 60_000).toISOString() });
+  });
+
+  it("offers Retry once the scheduled retry is past due with nothing else pending", () => {
+    expect(projectTaskInterruption(issue, { run: { ...scheduled, scheduledRetryAt: new Date(now - 10 * 60_000) }, agent,
+      paused: false, approval: false }, now)).toMatchObject({ state: "failed", canRetry: true });
+  });
+
+  it("offers Retry once the scheduled retries are exhausted", () => {
+    expect(projectTaskInterruption(issue, { run: { ...scheduled, status: "failed", errorCode: "transient_failure_retry_exhausted",
+      scheduledRetryAt: new Date(now - 60_000) }, agent, paused: false, approval: false }, now))
+      .toMatchObject({ state: "failed", canRetry: true });
+  });
+});
+
+describe("hand-off of a run that failed before any provider work", () => {
+  const now = Date.parse("2026-11-13T15:08:12Z");
+  const failed = { ...run, runtimeMode: "native" as const, errorCode: "adapter_failed", finishedAt: new Date(now - 3_000),
+    resultJson: { failureCause: "native_predecessor_retirement_unproven", executionRecovery: { kind: "bootstrap", providerWorkStarted: false } } };
+  const inProgress = { ...issue, status: "in_progress" };
+
+  it("shows the task as working while its fresh-sandbox continuation is being queued", () => {
+    for (const failureCause of ["native_predecessor_retirement_unproven", "native_failed_before_provider_turn"]) {
+      expect(projectTaskInterruption(inProgress, { run: { ...failed, resultJson: { ...failed.resultJson, failureCause } },
+        agent, paused: false, approval: false }, now)).toMatchObject({ state: "working", canRetry: false });
+    }
+  });
+
+  it("keeps the task working after the fallback is recorded while its continuation is still being scheduled", () => {
+    const recorded = { ...failed, resultJson: { ...failed.resultJson, predecessorRetirementFallback: { version: 1, providerWorkStarted: false } } };
+    expect(projectTaskInterruption(inProgress, { run: recorded, agent, paused: false, approval: false }, now))
+      .toMatchObject({ state: "working", canRetry: false });
+  });
+
+  it("offers Retry when the continuation was refused or never queued", () => {
+    const refused = { ...failed, resultJson: { ...failed.resultJson, predecessorRetirementFallback: { version: 1, providerWorkStarted: false },
+      continuationScheduling: "refused" } };
+    expect(projectTaskInterruption(inProgress, { run: refused, agent, paused: false, approval: false }, now))
+      .toMatchObject({ state: "failed", canRetry: true });
+    expect(projectTaskInterruption(inProgress, { run: { ...failed, finishedAt: new Date(now - 31_000) }, agent, paused: false, approval: false }, now))
+      .toMatchObject({ state: "failed", canRetry: true });
+  });
+});

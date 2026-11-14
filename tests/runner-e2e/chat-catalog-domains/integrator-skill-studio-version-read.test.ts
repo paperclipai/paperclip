@@ -18,10 +18,12 @@ it("actual Studio observer reads immutable detail instead of treating the docume
     if (path.endsWith("/versions")) return [summary];
     if (path.endsWith("/skills/skill")) return skill;
     if (path.includes("/comments?")) return [];
+    // The saved completion delivery outcome, read from the source conversation's handoff listing.
+    if (path === "/api/issues/source/chat-handoffs?limit=100") return { items: [{ issueId: "harness", completionReportCommentId: null }], nextCursor: null };
     throw Error("Unexpected owned read");
   } } }, issue: () => ({ id: "source" }) } as unknown as ChatCatalogContext;
   const actual = await integratorSkillStudioCases[0]!.observe(ctx, { skill });
   expect(calls).toContain("/api/companies/company/skills/skill/versions/revision");
-  expect(actual).toMatchObject({ studioRuns: [{ skillVersion: summary }], pinnedVersions: { test: detail }, sourceIssueId: "source" });
+  expect(actual).toMatchObject({ studioRuns: [{ skillVersion: summary }], pinnedVersions: { test: detail }, sourceIssueId: "source", completionReports: { harness: null } });
   expect(summary.fileInventory[0]).not.toHaveProperty("content");
 });

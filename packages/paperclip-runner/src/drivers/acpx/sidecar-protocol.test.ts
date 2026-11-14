@@ -7,6 +7,7 @@ import {
   frameAcpxToolClassification,
   parseAcpxSidecarRequest,
   safeSidecarText,
+  acpxPlanSnapshot,
   sanitizeAcpxPlanEntries,
   stringifyAcpxSidecarFrame,
 } from "./sidecar-protocol.js";
@@ -173,6 +174,19 @@ describe("ACPX sidecar request parsing", () => {
 });
 
 describe("ACPX sidecar structured plans", () => {
+  it("reads plan snapshots from ACPX plan-tagged status events", () => {
+    const entries = [{ content: "Ship", status: "in_progress", priority: "high" }];
+    expect(acpxPlanSnapshot({ type: "status", text: "plan: Ship", tag: "plan", entries })).toEqual([
+      { content: "Ship", status: "in_progress", priority: "high" },
+    ]);
+    // An explicit empty snapshot clears the displayed plan.
+    expect(acpxPlanSnapshot({ type: "status", text: "plan updated", tag: "plan", entries: [] })).toEqual([]);
+    // A summary without usable entries, and other status tags, never replace the plan.
+    expect(acpxPlanSnapshot({ type: "status", text: "plan: Ship", tag: "plan" })).toBeNull();
+    expect(acpxPlanSnapshot({ type: "status", text: "usage", tag: "usage_update", entries })).toBeNull();
+    expect(acpxPlanSnapshot({ type: "plan", tag: "plan", entries })).toBeNull();
+  });
+
   it("preserves every valid ordered entry while bounding and sanitizing the snapshot", () => {
     const entries = sanitizeAcpxPlanEntries([
       { content: " Inspect ", status: "completed", priority: "high" },

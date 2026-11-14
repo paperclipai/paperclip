@@ -51,6 +51,12 @@ pub const PROVIDER_ATTACH_REFUSED: &str = "provider_attach_refused";
 /// recorded result. Replacing the session could repeat or lose that action.
 pub const PROVIDER_SIDE_EFFECT_PENDING: &str = "provider_side_effect_pending";
 
+/// The runner closed this run's provider session after a turn start whose
+/// prompt may have reached the provider. No later `turn.start` of the same run
+/// can reopen it; only a new run's attachment can. Resending could duplicate
+/// the prompt, so the controller stops same-run retries and offers Retry.
+pub const PROVIDER_SESSION_CLOSED: &str = "provider_session_closed";
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DurableRunnerError(String, Option<serde_json::Value>, Option<&'static str>);
 

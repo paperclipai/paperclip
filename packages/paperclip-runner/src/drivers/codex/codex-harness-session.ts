@@ -83,12 +83,16 @@ export class CodexHarnessSession
         "runtime_request_recovery_failed", error instanceof Error ? error.message : String(error),
       ));
     }
-    if (this.terminal) {
+    if (this.terminal && !this.awaitingProviderTurn) {
       this.#deferredNotificationPump = true;
       this.eventQueue.close();
     } else {
       void pumpNotifications(this);
     }
+  }
+
+  downloadAttachment(grant: Parameters<NonNullable<HarnessSession["downloadAttachment"]>>[0]) {
+    return this.transport.downloadAttachment?.(grant) ?? Promise.resolve(null);
   }
 
   supportsTurnReasoning(): boolean {
@@ -472,6 +476,19 @@ export class CodexHarnessSession
       );
       return;
     }
+    if (this.awaitingProviderTurn && this.activeTurnId === null && !this.turnStartPending) {
+      this.emit(
+        "item.completed",
+        {
+          kind: "interrupt_acknowledgement",
+          text: "Paperclip stopped waiting for the provider's own next turn.",
+          status: "provider_turn_wait_ended",
+          reason: boundedText(input.reason),
+        },
+        { itemId: `interrupt:provider-turn-wait:${++this.interruptSequence}` },
+      );
+      return;
+    }
     if (this.terminal || this.activeTurnId === null) {
       throw new HarnessOperationAlreadyTerminalError("interruption");
     }
@@ -743,7 +760,13 @@ export class CodexHarnessSession
     }
   }
 
-  async reconcile(): Promise<Record<string, unknown>> {
+  reconcile(): Promise<Record<string, unknown>> {
+    const reconciled = this.#reconcile();
+    this.recoveryReconciled = reconciled.then(() => undefined, () => undefined);
+    return reconciled;
+  }
+
+  async #reconcile(): Promise<Record<string, unknown>> {
     this.assertProtocolIntegrity();
     this.requireCapability("reconciliation");
     const snapshot = await this.read();
@@ -799,11 +822,17 @@ export class CodexHarnessSession
     const unexpectedActive = activeTurns.find(
       (turn) => text(turn.id) !== expectedTurnId,
     );
-    if (unexpectedActive !== undefined) {
-      throw new HarnessReconciliationError(
-        `thread/read exposed active turn ${text(unexpectedActive.id)} instead of persisted active turn ${expectedTurnId ?? "none"}`,
-      );
-    }
+    const expectedIndex = turns.findIndex((turn) => text(turn.id) === expectedTurnId);
+    const awaitedProviderTurn = unexpectedActive !== undefined && activeTurns.length === 1 && expectedIndex >= 0
+      && turns.indexOf(unexpectedActive) > expectedIndex && text(turns[expectedIndex]!.status) === "completed"
+      && turns[expectedIndex]!.awaitingProviderTurn === true;
+    const unexpectedActiveTurn = () => new HarnessReconciliationError(
+      `thread/read exposed active turn ${text(unexpectedActive?.id)} instead of persisted active turn ${expectedTurnId ?? "none"}`,
+    );
+    const lastTerminalIndex = turns.findLastIndex((turn) => this.terminalTurns.has(text(turn.id)));
+    const awaitedWhileWaiting = unexpectedActive !== undefined && activeTurns.length === 1 && expectedTurnId === null
+      && this.awaitingProviderTurn && lastTerminalIndex >= 0 && turns.indexOf(unexpectedActive) > lastTerminalIndex;
+    if (unexpectedActive !== undefined && !awaitedProviderTurn && !awaitedWhileWaiting) throw unexpectedActiveTurn();
 
     let reconciledTerminalTurnId: string | null = null;
     if (expectedTurnId !== null) {
@@ -832,7 +861,7 @@ export class CodexHarnessSession
           ["completed", "failed", "interrupted", "cancelled"].includes(status)
         ) {
           reconciledTerminalTurnId = expectedTurnId;
-          mapTerminalTurn(this, expectedTurn, expectedTurnId, true);
+          mapTerminalTurn(this, expectedTurn, expectedTurnId, true, expectedTurn.awaitingProviderTurn === true);
         } else {
           throw new HarnessReconciliationError(
             `persisted active turn ${expectedTurnId} has unreconcilable status ${status || "missing"}`,
@@ -840,6 +869,7 @@ export class CodexHarnessSession
         }
       }
     }
+    if (awaitedProviderTurn && !this.awaitingProviderTurn) throw unexpectedActiveTurn();
 
     for (const [turnId, fingerprint] of this.terminalTurns) {
       const reported = turns.find((turn) => text(turn.id) === turnId);
@@ -882,6 +912,10 @@ export class CodexHarnessSession
 
   async snapshot(): Promise<PersistedHarnessSession> {
     this.assertProtocolIntegrity();
+    return this.persistedSnapshot();
+  }
+
+  protected persistedSnapshot(): PersistedHarnessSession {
     return {
       driverKind: this.driverKind,
       workingDirectory: this.opened.context.workingDirectory,
@@ -916,6 +950,7 @@ export class CodexHarnessSession
         this.currentGoal === null ? null : structuredClone(this.currentGoal),
       lineage: this.lineage(),
       lastSourceSequence: this.sourceSequence,
+      ...(this.awaitingProviderTurn ? { awaitingProviderTurn: true } : {}),
     };
   }
 
@@ -933,11 +968,11 @@ export class CodexHarnessSession
   }
 
   // `force` is part of the contract. Codex closes the same way with or without it.
-  async close(input: { reason: string; force?: boolean }): Promise<void> {
+  async close(input: { reason: string; force?: boolean; retainUnsettledRemoteRunner?: boolean }): Promise<void> {
     this.cancelPendingRequests("session_closed");
     this.eventQueue.close();
     // Untyped callers (for example generated scripts) may still omit the input.
-    await this.transport.close(input?.reason);
+    await this.transport.close(input?.reason, { retainUnsettledRemoteRunner: input?.retainUnsettledRemoteRunner === true });
   }
 
   async release(): Promise<DurableRecoveryIdentity | false> {

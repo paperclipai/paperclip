@@ -226,7 +226,7 @@ If `@cryppadotta` is not the right reviewer identity in the public repo, change 
 - this workflow, on its `chore/refresh-lockfile` branch
 - Dependabot, but only when the lockfile in its pull request matches a verified Dependabot commit
 
-The reporting-lock proof (`tests/runner-e2e/report-lock.json` and `report-lock.patch`) controls the lock that paid evaluation jobs install, so it counts as lock content too. Only this workflow writes it.
+The reporting-lock proof (`tests/runner-e2e/report-lock.json` and `report-lock.patch`) controls the lock that paid evaluation jobs install, so it counts as lock content too. Only this workflow writes it. The same refresh commit also resyncs `tests/runner-e2e/source-sdk-public-inputs.json` with `node tests/runner-e2e/source-sdk-public-inputs.mjs <HEAD> --write`, because that registry pins the committed lock blob and copies `lockSha256` from the reviewed `report-lock.json` output. The refresh merges without CI, so a missing resync would turn the Runner support suite red on `master`.
 
 `.github/scripts/lockfile-trust.mjs` enforces these rules in the `pr-trusted.yml` policy job. The job runs the copy of the script from the current tip of the base branch, which is the first parent of GitHub's merge commit. A pull request therefore cannot change the check that judges it. The job does not use `pull_request.base.sha`, because GitHub does not update it on every push. To update a Dependabot pull request that is behind `master`, comment `@dependabot recreate`. Do not merge `master` into its branch, because a merged lockfile no longer matches Dependabot's commit.
 

@@ -12,6 +12,7 @@ on:
       - 'server/scripts/lib/backup-qualification.ts'
       - 'server/vitest.backup-qualification.config.ts'
       - '.github/workflows/backup-checkpoint-qualification.yml'
+      - '.github/actions/setup-ci-dependencies/**'
       - 'package.json'
       - 'pnpm-lock.yaml'
   push:
@@ -45,13 +46,12 @@ jobs:
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
         with:
           node-version: '24'
-          cache: pnpm
-      - run: pnpm install --frozen-lockfile --ignore-scripts
-      - name: Build workspace import prerequisites
-        run: |
-          pnpm --filter @paperclipai/shared build
-          pnpm --filter @paperclipai/db build
-          pnpm --filter @paperclipai/plugin-sdk ensure-build-deps
+          package-manager-cache: false
+      # Installs dependencies and builds the shared and plugin SDK packages.
+      - name: Restore materialized dependencies and shared builds
+        uses: ./.github/actions/setup-ci-dependencies
+      - name: Build the database package
+        run: pnpm --filter @paperclipai/db build
       - name: Use the service image's matching real PostgreSQL clients
         env:
           PG_CONTAINER: ${{ job.services.postgres.id }}

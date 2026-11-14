@@ -1754,7 +1754,7 @@ export function buildHostServices(
         return registry.upsertEntity(pluginId, params as any) as any;
       },
       async list(params) {
-        return registry.listEntities(pluginId, params as any) as any;
+        return registry.listEntities(pluginId, params) as any;
       },
     },
 

@@ -20,6 +20,7 @@ import { archiveFailedLegacyNativeController, hasArchivedLegacyNativeController 
 import { redactRunnerApiPayloads } from "./runner-api-log-redaction.js";
 import { archiveSettledFailedNativeController } from "./native-controller-archive-source.js";
 import { nativeControllerSourceDigest } from "./native-controller-source-digest.js";
+import { isVolumeFreeControllerStateOwnerEntry, volumeFreeControllerStateOwned } from "./volume-free-controller-state.js";
 
 type Selected = { id: string; companyId: string; agentId: string; issueId: string; sessionId: string; createdAt: Date; lastRunId: string };
 
@@ -209,19 +210,19 @@ async function preservedWarmMarker(db: Db, selected: Selected,
 async function preservedActiveCheckpoint(db: Db, selected: Selected,
   source: NonNullable<Awaited<ReturnType<typeof findNativeSessionResumeRun>>>, paths: Awaited<ReturnType<typeof localPaths>>) {
   if (source.status !== "running" || source.runtimeMode !== "native") return false;
-  let marker: Record<string, unknown>, bytes: string | undefined;
+  let marker: Record<string, unknown> | null, bytes: string | undefined;
   try {
     bytes = await readPrivateSource(paths.controlFile, 4096);
-    marker = record(JSON.parse(bytes ?? "null"));
+    marker = bytes === undefined ? null : record(JSON.parse(bytes));
   } catch { return false; }
-  if (marker.schema !== "paperclip.runner.external-control-plane-state.v1"
-    || Object.keys(marker).sort().join(",") !== "identity,schema") return false;
+  if (marker !== null && (marker.schema !== "paperclip.runner.external-control-plane-state.v1"
+    || Object.keys(marker).sort().join(",") !== "identity,schema")) return false;
   const binding = { companyId: selected.companyId, issueId: selected.issueId, runId: source.id };
   const checkpoint = await loadNativeRunnerCheckpoint(db, binding).catch(() => null);
   const header = checkpoint && inspectDurablePrpCheckpointHeader(checkpoint.records.get("header") ?? "");
   if (!header || header.runId !== source.id || header.runnerInstanceId !== source.runnerInstanceId
     || header.normalizedSessionId !== selected.sessionId) return false;
-  const exact = nativeSha256(header) === nativeSha256(marker.identity), markerIdentity = record(marker.identity);
+  const exact = marker === null || nativeSha256(header) === nativeSha256(marker.identity), markerIdentity = record(marker?.identity);
   if (!exact && (paths.execution.session.lifecyclePolicy.mode !== "warm"
     || ["runnerInstanceId", "normalizedSessionId", "environmentLeaseId"].some(field => markerIdentity[field] !== header[field as keyof typeof header])
     || !await preservedWarmMarker(db, selected, source, markerIdentity))) return false;
@@ -257,10 +258,15 @@ async function preservedActiveCheckpoint(db: Db, selected: Selected,
 }
 
 export async function hasLocalNativeControllerObligations(db: Db, storage?: StorageService | null): Promise<boolean> {
-  const roots = await readdir(nativeHarnessStateBase()).catch((error: NodeJS.ErrnoException) => {
+  return await findLocalNativeControllerObligation(db, storage) !== null;
+}
+
+export async function findLocalNativeControllerObligation(db: Db, storage?: StorageService | null) {
+  const base = nativeHarnessStateBase();
+  const roots = await readdir(base).catch((error: NodeJS.ErrnoException) => {
     if (error.code === "ENOENT") return [] as string[]; throw error;
   });
-  if (!roots.length) return false;
+  if (!roots.some(name => !isVolumeFreeControllerStateOwnerEntry(name)) || await volumeFreeControllerStateOwned(base)) return null;
   for await (const { selected, source, databaseRecoveryPreserved } of retainedSources(db, undefined, 8, true)) {
     const binding = { companyId: selected.companyId, issueId: selected.issueId, runId: source.id };
     if (databaseRecoveryPreserved) continue;
@@ -280,9 +286,10 @@ export async function hasLocalNativeControllerObligations(db: Db, storage?: Stor
         ? await readPrivateSource(paths.supervisorPath, 4 * 1024 * 1024) : undefined;
       if (controller !== undefined && archiveStorage && await hasArchivedLegacyNativeController(db, { ...binding, storage: archiveStorage, controller, supervisor })) continue;
     }
-    if (present || await hasNativeRunnerCheckpoint(db, binding)) return true;
+    if (present) return { runId: source.id, issueId: selected.issueId, source: paths.controlFile };
+    if (await hasNativeRunnerCheckpoint(db, binding)) return { runId: source.id, issueId: selected.issueId, source: "database_checkpoint" };
   }
-  return false;
+  return null;
 }
 
 function hasMatchingControllerRecovery(selected: Selected,
