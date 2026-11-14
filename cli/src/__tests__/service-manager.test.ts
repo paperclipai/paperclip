@@ -128,10 +128,11 @@ describe("launchd lifecycle", () => {
     const calls: string[] = [];
     const runner: CommandRunner = async (command, args) => {
       calls.push([command, ...args].join(" "));
+      if (args[0] === "print") throw Object.assign(new Error("Could not find service"), { code: 113 });
       if (args[0] === "print-disabled") return { stdout: `\"ing.paperclip.paperclipai.team-a\" => true`, stderr: "" };
       return { stdout: "", stderr: "" };
     };
-    const manager = new LaunchdServiceManager("team-a", runner, path.join(userHome, ".paperclip"), path.join(userHome, ".local/bin/paperclipai"), userHome);
+    const manager = new LaunchdServiceManager("team-a", runner, path.join(userHome, ".paperclip"), path.join(userHome, ".local/bin/paperclipai"), userHome, path.join(userHome, "LaunchDaemons"));
 
     await manager.start();
 
@@ -145,10 +146,11 @@ describe("launchd lifecycle", () => {
     const serviceName = "ing.paperclip.paperclipai.team[qa]+";
     const runner: CommandRunner = async (command, args) => {
       calls.push([command, ...args].join(" "));
+      if (args[0] === "print") throw Object.assign(new Error("Could not find service"), { code: 113 });
       if (args[0] === "print-disabled") return { stdout: `"${serviceName}" => true`, stderr: "" };
       return { stdout: "", stderr: "" };
     };
-    const manager = new LaunchdServiceManager("team[qa]+", runner, path.join(userHome, ".paperclip"), path.join(userHome, ".local/bin/paperclipai"), userHome);
+    const manager = new LaunchdServiceManager("team[qa]+", runner, path.join(userHome, ".paperclip"), path.join(userHome, ".local/bin/paperclipai"), userHome, path.join(userHome, "LaunchDaemons"));
 
     await manager.start();
 
@@ -161,9 +163,10 @@ describe("launchd lifecycle", () => {
     const calls: string[] = [];
     const runner: CommandRunner = async (command, args) => {
       calls.push([command, ...args].join(" "));
+      if (args[0] === "print") throw Object.assign(new Error("Could not find service"), { code: 113 });
       return { stdout: "", stderr: "" };
     };
-    const manager = new LaunchdServiceManager("team-a", runner, path.join(userHome, ".paperclip"), path.join(userHome, ".local/bin/paperclipai"), userHome);
+    const manager = new LaunchdServiceManager("team-a", runner, path.join(userHome, ".paperclip"), path.join(userHome, ".local/bin/paperclipai"), userHome, path.join(userHome, "LaunchDaemons"));
 
     await manager.install({ startNow: false, startOnLogin: false });
     await manager.stop();
@@ -178,13 +181,243 @@ describe("launchd lifecycle", () => {
     const calls: string[] = [];
     const runner: CommandRunner = async (command, args) => {
       calls.push([command, ...args].join(" "));
+      if (args[0] === "print") throw Object.assign(new Error("Could not find service"), { code: 113 });
       return { stdout: "", stderr: "" };
     };
-    const manager = new LaunchdServiceManager("team-a", runner, path.join(userHome, ".paperclip"), path.join(userHome, ".local/bin/paperclipai"), userHome);
+    const manager = new LaunchdServiceManager("team-a", runner, path.join(userHome, ".paperclip"), path.join(userHome, ".local/bin/paperclipai"), userHome, path.join(userHome, "LaunchDaemons"));
 
     await manager.uninstall();
 
     expect(calls).toContain(`launchctl disable gui/${process.getuid?.() ?? 0}/ing.paperclip.paperclipai.team-a`);
+  });
+
+  it("recognizes a loaded system LaunchDaemon without overwriting its root-owned definition", async () => {
+    const home = await temporaryDirectory();
+    const daemonDir = path.join(home, "LaunchDaemons");
+    const serviceName = "ing.paperclip.paperclipai.team-a";
+    const calls: string[] = [];
+    const runner: CommandRunner = async (command, args) => {
+      calls.push([command, ...args].join(" "));
+      if (command === "launchctl" && args[0] === "print" && args[1] === `system/${serviceName}`) {
+        return { stdout: `system/${serviceName} = {\n  state = running\n  pid = 4321\n}\n`, stderr: "" };
+      }
+      return { stdout: "", stderr: "" };
+    };
+    const manager = new LaunchdServiceManager("team-a", runner, path.join(home, ".paperclip"), "/usr/bin/paperclipai", home, daemonDir);
+    await fs.mkdir(daemonDir, { recursive: true });
+    await fs.mkdir(path.dirname(manager.definitionPath), { recursive: true });
+    await fs.writeFile(manager.definitionPath, "GUI_AGENT_STAGED_OFF");
+    await fs.writeFile(path.join(daemonDir, `${serviceName}.plist`), renderLaunchdPlist({
+      instanceId: "team-a", shimPath: "/opt/example/boot-service", homeDir: home,
+      stdoutPath: "/tmp/out", stderrPath: "/tmp/err",
+    }));
+
+    expect(await manager.status()).toMatchObject({ installed: true, active: true, pid: 4321 });
+    expect(await manager.installedExecutablePath()).toBe("/opt/example/boot-service");
+    await manager.restart();
+    expect(calls).toContain(`sudo -n launchctl kickstart -k system/${serviceName}`);
+    expect(await fs.readFile(manager.definitionPath, "utf8")).toBe("GUI_AGENT_STAGED_OFF");
+    await expect(manager.install({ startNow: true, startOnLogin: true })).rejects.toThrow("competing GUI agent");
+    await expect(manager.uninstall()).rejects.toThrow("uninstall must not");
+  });
+
+  it("restarts a still-loaded GUI job without re-enabling its staged-on-disk login agent", async () => {
+    const home = await temporaryDirectory();
+    const daemonDir = path.join(home, "LaunchDaemons");
+    const serviceName = "ing.paperclip.paperclipai.team-a";
+    const guiDomain = `gui/${process.getuid?.() ?? 0}`;
+    const calls: string[] = [];
+    const runner: CommandRunner = async (command, args) => {
+      calls.push([command, ...args].join(" "));
+      if (command === "launchctl" && args[0] === "print" && args[1] === `system/${serviceName}`) throw new Error("not bootstrapped yet");
+      if (command === "launchctl" && args[0] === "print" && args[1] === `${guiDomain}/${serviceName}`) {
+        return { stdout: `${guiDomain}/${serviceName} = {\n  state = running\n  pid = 1234\n}\n`, stderr: "" };
+      }
+      return { stdout: "", stderr: "" };
+    };
+    const manager = new LaunchdServiceManager("team-a", runner, path.join(home, ".paperclip"), "/usr/bin/paperclipai", home, daemonDir);
+    await fs.mkdir(daemonDir, { recursive: true });
+    await fs.mkdir(path.dirname(manager.definitionPath), { recursive: true });
+    await fs.writeFile(path.join(daemonDir, `${serviceName}.plist`), "SYSTEM_DAEMON_STAGED");
+    await fs.writeFile(manager.definitionPath, "GUI_AGENT_STAGED_OFF");
+
+    expect(await manager.status()).toMatchObject({ installed: true, active: true, pid: 1234 });
+    await manager.restart();
+    expect(calls).toContain(`launchctl kickstart -k ${guiDomain}/${serviceName}`);
+    expect(calls.some((call) => call.startsWith("sudo "))).toBe(false);
+    expect(await fs.readFile(manager.definitionPath, "utf8")).toBe("GUI_AGENT_STAGED_OFF");
+  });
+
+  it("bootstraps a configured daemon after system stop, without installing a GUI agent", async () => {
+    const home = await temporaryDirectory();
+    const daemonDir = path.join(home, "LaunchDaemons");
+    const name = "ing.paperclip.paperclipai.team-a";
+    const systemPlist = path.join(daemonDir, `${name}.plist`);
+    const calls: string[][] = [];
+    let loaded = true;
+    const runner: CommandRunner = async (command, args) => {
+      calls.push([command, ...args]);
+      if (command === "launchctl" && args[0] === "print") {
+        if (args[1] !== `system/${name}` || !loaded) throw Object.assign(new Error("Could not find service"), { code: 113 });
+        return { stdout: `system/${name} = {\n  pid = 4321\n}\n`, stderr: "" };
+      }
+      if (command === "sudo" && args[2] === "bootout") loaded = false;
+      if (command === "sudo" && args[2] === "bootstrap") loaded = true;
+      return { stdout: "", stderr: "" };
+    };
+    await fs.mkdir(daemonDir, { recursive: true });
+    await fs.writeFile(systemPlist, "system definition");
+    const manager = new LaunchdServiceManager("team-a", runner, path.join(home, ".paperclip"), "/bin/echo", home, daemonDir);
+
+    await manager.stop();
+    expect(await manager.status()).toMatchObject({ installed: true, active: false });
+    await manager.start();
+    expect(calls).toContainEqual(["sudo", "-n", "launchctl", "bootout", `system/${name}`]);
+    expect(calls).toContainEqual(["sudo", "-n", "launchctl", "bootstrap", "system", systemPlist]);
+    expect(calls).toContainEqual(["sudo", "-n", "launchctl", "kickstart", `system/${name}`]);
+    await manager.stop();
+    await manager.restart();
+    expect(calls.filter(([, , , action]) => action === "bootstrap")).toHaveLength(2);
+    expect(calls).not.toContainEqual(["sudo", "-n", "launchctl", "kickstart", "-k", `system/${name}`]);
+    await expect(fs.access(manager.definitionPath)).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("does not create GUI competition for a loaded daemon with a nonstandard plist filename", async () => {
+    const home = await temporaryDirectory();
+    const daemonDir = path.join(home, "LaunchDaemons");
+    const name = "ing.paperclip.paperclipai.team-a";
+    const calls: string[][] = [];
+    const runner: CommandRunner = async (command, args) => {
+      calls.push([command, ...args]);
+      if (command === "launchctl" && args[0] === "print") {
+        return { stdout: `system/${name} = {\n  pid = 456\n}\n`, stderr: "" };
+      }
+      return { stdout: "", stderr: "" };
+    };
+    const manager = new LaunchdServiceManager("team-a", runner, path.join(home, ".paperclip"), "/bin/echo", home, daemonDir);
+    await expect(manager.install({ startNow: true, startOnLogin: true })).rejects.toThrow("competing GUI agent");
+    await expect(manager.uninstall()).rejects.toThrow("competing GUI agent");
+    await expect(manager.stop()).rejects.toThrow("source plist");
+    expect(calls).not.toContainEqual(["sudo", "-n", "launchctl", "bootout", `system/${name}`]);
+    await manager.restart();
+    expect(calls).toContainEqual(["sudo", "-n", "launchctl", "kickstart", "-k", `system/${name}`]);
+    expect(await manager.definitionOwnership()).toEqual({ kind: "operator", path: `system/${name}` });
+    await expect(fs.access(manager.definitionPath)).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("refuses GUI writes when launchctl cannot inspect system ownership", async () => {
+    const home = await temporaryDirectory();
+    const calls: string[][] = [];
+    const runner: CommandRunner = async (command, args) => {
+      calls.push([command, ...args]);
+      throw new Error("Operation not permitted");
+    };
+    const manager = new LaunchdServiceManager("team-a", runner, path.join(home, ".paperclip"), "/bin/echo", home, path.join(home, "LaunchDaemons"));
+    await expect(manager.install({ startNow: true, startOnLogin: true })).rejects.toThrow("Cannot inspect launchd job");
+    await expect(manager.start()).rejects.toThrow("Cannot inspect launchd job");
+    await expect(manager.status()).rejects.toThrow("Cannot inspect launchd job");
+    expect(calls.every(([command]) => command === "launchctl")).toBe(true);
+    await expect(fs.access(manager.definitionPath)).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("does not suppress malformed launchctl print results", async () => {
+    const home = await temporaryDirectory();
+    const runner: CommandRunner = async () => ({ stdout: "unexpected response", stderr: "" });
+    const manager = new LaunchdServiceManager("team-a", runner, path.join(home, ".paperclip"), "/bin/echo", home, path.join(home, "LaunchDaemons"));
+    await expect(manager.install({ startNow: true, startOnLogin: true })).rejects.toThrow("Unexpected output");
+    await expect(fs.access(manager.definitionPath)).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("reads system disabled status with noninteractive sudo when access is denied", async () => {
+    const home = await temporaryDirectory();
+    const name = "ing.paperclip.paperclipai.team-a";
+    const calls: string[][] = [];
+    let authorized = true;
+    const runner: CommandRunner = async (command, args) => {
+      calls.push([command, ...args]);
+      if (command === "launchctl" && args[0] === "print") {
+        return { stdout: `system/${name} = {\n pid = 321\n}`, stderr: "" };
+      }
+      if (command === "launchctl" && args[0] === "print-disabled") throw new Error("Operation not permitted");
+      if (command === "sudo" && args[2] === "print-disabled") {
+        if (!authorized) throw new Error("sudo: a password is required");
+        return { stdout: `"${name}" => true`, stderr: "" };
+      }
+      throw new Error("Unexpected command");
+    };
+    const manager = new LaunchdServiceManager("team-a", runner, path.join(home, ".paperclip"), "/bin/echo", home, path.join(home, "LaunchDaemons"));
+    expect(await manager.status()).toMatchObject({ installed: true, active: true, enabled: false, pid: 321 });
+    expect(calls).toContainEqual(["sudo", "-n", "launchctl", "print-disabled", "system"]);
+    authorized = false;
+    await expect(manager.status()).rejects.toThrow("Run sudo launchctl print-disabled system");
+    expect(calls.some(([command, ...args]) => command === "launchctl" && args.includes("gui"))).toBe(false);
+  });
+
+  it("fails sudo without prompting or falling back to the GUI domain", async () => {
+    const home = await temporaryDirectory();
+    const daemonDir = path.join(home, "LaunchDaemons");
+    const name = "ing.paperclip.paperclipai.team-a";
+    const calls: string[][] = [];
+    const runner: CommandRunner = async (command, args) => {
+      calls.push([command, ...args]);
+      if (command === "launchctl") return { stdout: `system/${name} = {\n pid = 123\n}`, stderr: "" };
+      if (command === "sudo") throw new Error("sudo: a password is required");
+      throw new Error("unexpected executable");
+    };
+    const manager = new LaunchdServiceManager("team-a", runner, path.join(home, ".paperclip"), "/bin/echo", home, daemonDir);
+    await expect(manager.restart()).rejects.toThrow("Run sudo launchctl 'kickstart' '-k'");
+    expect(calls).toContainEqual(["sudo", "-n", "launchctl", "kickstart", "-k", `system/${name}`]);
+    expect(calls.some(([command, ...args]) => command === "launchctl" && args.includes("kickstart"))).toBe(false);
+    await expect(fs.access(manager.definitionPath)).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it.each(["symlink", "directory"] as const)(
+    "refuses to stop a loaded system daemon with a %s source plist",
+    async (kind) => {
+      const home = await temporaryDirectory();
+      const daemonDir = path.join(home, "LaunchDaemons");
+      const name = "ing.paperclip.paperclipai.team-a";
+      const source = path.join(daemonDir, `${name}.plist`);
+      await fs.mkdir(daemonDir, { recursive: true });
+      if (kind === "symlink") {
+        const target = path.join(home, "real.plist");
+        await fs.writeFile(target, "system definition");
+        await fs.symlink(target, source);
+      } else {
+        await fs.mkdir(source);
+      }
+      const calls: string[][] = [];
+      const runner: CommandRunner = async (command, args) => {
+        calls.push([command, ...args]);
+        if (command === "launchctl" && args[0] === "print") {
+          return { stdout: `system/${name} = {\n pid = 4321\n}`, stderr: "" };
+        }
+        return { stdout: "", stderr: "" };
+      };
+      const manager = new LaunchdServiceManager("team-a", runner, path.join(home, ".paperclip"), "/bin/echo", home, daemonDir);
+      await expect(manager.stop()).rejects.toThrow("Cannot safely stop system LaunchDaemon");
+      expect(calls).not.toContainEqual(["sudo", "-n", "launchctl", "bootout", `system/${name}`]);
+    },
+  );
+
+  it("never bootstraps a symlinked system plist as root", async () => {
+    const home = await temporaryDirectory();
+    const daemonDir = path.join(home, "LaunchDaemons");
+    const name = "ing.paperclip.paperclipai.team-a";
+    await fs.mkdir(daemonDir, { recursive: true });
+    const target = path.join(home, "plisted");
+    await fs.writeFile(target, "not a service");
+    await fs.symlink(target, path.join(daemonDir, `${name}.plist`));
+    const calls: string[][] = [];
+    const runner: CommandRunner = async (command, args) => {
+      calls.push([command, ...args]);
+      if (args[0] === "print") throw Object.assign(new Error("Could not find service"), { code: 113 });
+      return { stdout: "", stderr: "" };
+    };
+    const manager = new LaunchdServiceManager("team-a", runner, path.join(home, ".paperclip"), "/bin/echo", home, daemonDir);
+    await expect(manager.start()).rejects.toThrow("unsafe system LaunchDaemon plist");
+    expect(calls.some(([command]) => command === "sudo")).toBe(false);
+    await expect(manager.install({ startNow: true, startOnLogin: true })).rejects.toThrow("competing GUI agent");
   });
 });
 
