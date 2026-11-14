@@ -8,7 +8,7 @@ import { aiConnectionsApi } from "@/api/ai-connections";
 import { agentsApi } from "@/api/agents";
 import { useConnectionModels } from "./useConnectionModels";
 
-vi.mock("@/api/ai-connections", () => ({ aiConnectionsApi: { list: vi.fn() } }));
+vi.mock("@/api/ai-connections", () => ({ aiConnectionsApi: { list: vi.fn(), probeRoutingModels: vi.fn() } }));
 vi.mock("@/api/agents", () => ({ agentsApi: { adapterModels: vi.fn() } }));
 
 const binding: AiConnectionBinding = { provider: "openrouter", method: "api_key", mode: "shared", connectionId: "router", grantId: "grant" };
@@ -69,14 +69,57 @@ it("preserves an explicit connection model list instead of replacing it with the
   expect(agentsApi.adapterModels).not.toHaveBeenCalled();
 });
 
-it("does not reuse public OpenRouter models after switching to a custom gateway", async () => {
+it("lists a custom gateway's models from its endpoint instead of reusing public OpenRouter models", async () => {
   const gateway: AiManagedConnectionSummary = { ...account, id: "gateway", grantId: "gateway-grant", provider: "openai", routing: { kind: "gateway", protocol: "chat", auth: "bearer", baseUrl: "https://example.com/v1", models: [] } };
+  vi.mocked(aiConnectionsApi.probeRoutingModels).mockResolvedValue({
+    models: [{ id: "private-model", label: "private-model" }, { id: "team-alias", label: "team-alias" }],
+  });
   await mount([account, gateway]);
   await vi.waitFor(() => expect(result?.models).toEqual(catalog));
   await render({ provider: "openai", method: "api_key", mode: "shared", connectionId: gateway.id, grantId: gateway.grantId });
   expect(result?.models).toEqual([]);
-  expect(result?.resolveModel("private-model")).toBe("paperclip/private-model");
-  expect(result?.refreshModels).toBeUndefined();
+  expect(result?.resolveModel("manual-model")).toBe("paperclip/manual-model");
+  expect(result?.refreshModels).toBeTypeOf("function");
+  await act(async () => { await result?.refreshModels?.(); });
+  await vi.waitFor(() => expect(result?.models).toEqual([
+    { id: "paperclip/private-model", label: "private-model" },
+    { id: "paperclip/team-alias", label: "team-alias" },
+  ]));
+});
+
+it("never shows endpoint models probed for a different connection", async () => {
+  const gateway: AiManagedConnectionSummary = { ...account, id: "gateway", grantId: "gateway-grant", provider: "openai", routing: { kind: "gateway", protocol: "chat", auth: "bearer", baseUrl: "https://example.com/v1", models: [] } };
+  vi.mocked(aiConnectionsApi.probeRoutingModels).mockResolvedValue({ models: [{ id: "gateway-model", label: "gateway-model" }] });
+  await mount([account, gateway]);
+  const gatewayBinding: AiConnectionBinding = { provider: "openai", method: "api_key", mode: "shared", connectionId: gateway.id, grantId: gateway.grantId };
+  await render(gatewayBinding);
+  await act(async () => { await result?.refreshModels?.(); });
+  await vi.waitFor(() => expect(result?.models).toEqual([{ id: "paperclip/gateway-model", label: "gateway-model" }]));
+  await render(binding);
+  // Back on OpenRouter: its catalog refresh is offered again, and none of the gateway probe leaks in.
+  expect(result?.refreshModels).toBeTypeOf("function");
+  expect(aiConnectionsApi.probeRoutingModels).toHaveBeenCalledTimes(1);
+});
+
+it("keeps a successful empty endpoint list instead of the stale saved models", async () => {
+  const local: AiManagedConnectionSummary = { ...account, id: "local", grantId: "local-grant", provider: "openai", routing: { kind: "local", protocol: "chat", auth: "none", baseUrl: "http://localhost:11434/v1", models: [{ id: "preset-model", label: "preset-model" }] } };
+  vi.mocked(aiConnectionsApi.probeRoutingModels).mockResolvedValue({ models: [] });
+  await mount([local], "opencode_local", { provider: "openai", method: "api_key", mode: "shared", connectionId: local.id, grantId: local.grantId });
+  expect(result?.models).toEqual([{ id: "paperclip/preset-model", label: "preset-model" }]);
+  await act(async () => { await result?.refreshModels?.(); });
+  await vi.waitFor(() => expect(result?.models).toEqual([]));
+});
+
+it("does not show another connection's probe error after switching", async () => {
+  const gateway: AiManagedConnectionSummary = { ...account, id: "gateway", grantId: "gateway-grant", provider: "openai", routing: { kind: "gateway", protocol: "chat", auth: "bearer", baseUrl: "https://example.com/v1", models: [] } };
+  vi.mocked(aiConnectionsApi.probeRoutingModels).mockRejectedValue(new Error("Endpoint unreachable"));
+  await mount([account, gateway]);
+  const gatewayBinding: AiConnectionBinding = { provider: "openai", method: "api_key", mode: "shared", connectionId: gateway.id, grantId: gateway.grantId };
+  await render(gatewayBinding);
+  await act(async () => { await result?.refreshModels?.(); });
+  await vi.waitFor(() => expect(result?.error?.message).toBe("Endpoint unreachable"));
+  await render(binding);
+  await vi.waitFor(() => expect(result?.error).toBeNull());
 });
 
 it("leaves native model discovery alone", async () => {

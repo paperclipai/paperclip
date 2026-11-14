@@ -17,6 +17,7 @@ import {
   gitHubRepositoryPageQuerySchema,
   toggleAllGitHubRepositoriesSchema,
   createAiConnectionSchema,
+  aiRoutingModelsProbeSchema,
   updateDecisionModelSchema,
   updatePromptInjectionPreventionSchema,
   updateAgentObservabilitySchema,
@@ -11991,6 +11992,17 @@ registerCurrentRoute({
   summary: "Validate and connect an AI API key, or reconnect its existing grant",
   body: createAiConnectionSchema,
   responses: { 201: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 404: r.notFound, 422: r.unprocessable },
+});
+
+registerCurrentRoute({
+  "x-paperclip-transport": "rest",
+  "x-paperclip-connection-management": "connections:configure",
+  method: "post",
+  path: "/api/companies/{companyId}/ai-connections/probe-models",
+  tags: ["ai-connections"],
+  summary: "List model IDs from a local or gateway endpoint before the connection is saved",
+  body: aiRoutingModelsProbeSchema,
+  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 404: r.notFound, 422: r.unprocessable },
 });
 
 registerCurrentRoute({

@@ -814,13 +814,36 @@ OpenClaw Gateway, Hermes Gateway, Claude Managed, AWS AgentCore, Process, HTTP,
 and legacy `acpx_local` are excluded: external agents retain their own model
 configuration, and `acpx_local` is retired. Cursor/Copilot custom routing, Pi custom gateways and Bedrock,
 Vertex, ambient AWS identity, arbitrary authentication headers, and automatic
-catalog discovery for custom gateways are not part of this implementation.
+catalog discovery in the agent model picker for custom gateways are not part of
+this implementation. Connection setup does offer a **Fetch models** probe for
+custom gateway, local endpoint, and OpenRouter connections. The probe calls the
+configured endpoint's OpenAI-compatible model list (`GET {base URL}/models`)
+with the entered credential. It fills the connection's model ID field. Results
+are deduplicated, sorted, and capped at the routing schema's model limit. The
+read stops when the response passes 1 MiB.
+
+The destination rules are relative to the Paperclip server, not the agent's
+execution environment. The probe fetch runs on the server, so a `local` route
+means the server's own loopback; only the local operator can use it. A model
+server that is reachable only from agents inside a container, sandbox, or
+other host is not discoverable this way, even when agents can reach it at run
+time. Gateway targets must resolve to public addresses. A gateway on a private
+network — for example another container on a Docker bridge network — is
+rejected by design. For these deployments, enter the model IDs manually on the
+agent; the connection still routes runs correctly because discovery is a
+setup-time convenience, not the run path. An administrator-configured
+destination allowlist for gateway discovery is a possible future extension.
+Bedrock has no compatible model list; enter its model IDs manually.
 
 OpenRouter connections without an explicit model list automatically load its public
 [model catalog](https://openrouter.ai/docs/api/api-reference/models/list-all-models-and-their-properties),
 ordered with `sort=most-popular`. New-agent setup and agent settings share this
 discovery path, preserve the provider's ordering, and adapt model IDs to the selected
-harness. Explicit connection model lists take precedence. Catalog discovery sends
+harness. Local and gateway connections have no public catalog. On those, the same
+model picker's Refresh action lists models from the connection's endpoint through
+`probe-models`, resolving the stored credential server-side; the destination rules
+above apply. Explicit connection model lists take precedence until a refresh
+succeeds. Catalog discovery sends
 no credentials; a failed request offers refresh and manual model entry.
 
 `config.ai.routing` stores only kind, protocol, URL, auth method, region, and
@@ -843,7 +866,10 @@ harness bypasses outgoing proxies for loopback broker/MCP calls. This bounds key
 from shell tools reading the configuration; it is not an OS isolation boundary
 against a process debugger running as the runner user.
 
-Only fixed official provider endpoints receive control-plane key checks. Custom
+Only fixed official provider endpoints receive control-plane key checks. The
+setup-time **Fetch models** probe is the one exception. It sends the entered key
+only to that connection's configured endpoint, to list models. It never stores
+the key outside the normal connection save. Custom
 endpoints and Bedrock are exercised by the selected harness in the selected
 execution environment, through **Run test**. Saving a custom connection records
 configuration; it is not proof that the model can respond. HTTPS is required for

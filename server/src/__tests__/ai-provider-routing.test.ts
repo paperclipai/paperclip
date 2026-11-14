@@ -3,6 +3,7 @@ import {
   aiProviderRoutingSchema,
   aiRoutingHarness,
   aiRoutingModel,
+  aiRoutingModelsProbeSchema,
   createAiConnectionSchema,
   isAiConnectionCompatible,
 } from "@paperclipai/shared";
@@ -169,5 +170,44 @@ describe("provider routing", () => {
     });
     expect(aiProviderRoutingSchema.safeParse({ ...routing, auth: "aws_credentials" }).success).toBe(false);
     for (const key of ["AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_SESSION_TOKEN"]) expect(projected.env).not.toHaveProperty(key);
+  });
+});
+
+describe("routing model probe request", () => {
+  const localRouting = { kind: "local", protocol: "chat", baseUrl: "http://localhost:11434/v1", auth: "none" } as const;
+
+  it("accepts an inline endpoint and the matching credential form", () => {
+    expect(aiRoutingModelsProbeSchema.parse({ routing: localRouting })).toMatchObject({ routing: localRouting });
+    expect(aiRoutingModelsProbeSchema.parse({
+      routing: { kind: "gateway", protocol: "chat", baseUrl: "https://gw.example.com/v1", auth: "bearer" },
+      apiKey: "key",
+    })).toMatchObject({ apiKey: "key" });
+  });
+
+  it("carries the intended ownership so self-service setup authorizes", () => {
+    expect(aiRoutingModelsProbeSchema.parse({ routing: localRouting, ownership: "personal" }))
+      .toMatchObject({ ownership: "personal" });
+    expect(aiRoutingModelsProbeSchema.safeParse({
+      connectionId: "4b3f6d52-6f38-48ae-a0f1-79a49a7bbd1c",
+      ownership: "personal",
+    }).success).toBe(false);
+  });
+
+  it("accepts a saved connection without exposing or requiring a credential", () => {
+    expect(aiRoutingModelsProbeSchema.parse({ connectionId: "4b3f6d52-6f38-48ae-a0f1-79a49a7bbd1c" }))
+      .toEqual({ connectionId: "4b3f6d52-6f38-48ae-a0f1-79a49a7bbd1c" });
+    expect(aiRoutingModelsProbeSchema.parse({
+      connectionId: "4b3f6d52-6f38-48ae-a0f1-79a49a7bbd1c",
+      grantId: "1a2aec6e-13d5-4d20-9c14-1b4dfab95c1e",
+    })).toMatchObject({ grantId: "1a2aec6e-13d5-4d20-9c14-1b4dfab95c1e" });
+  });
+
+  it("rejects mixed, empty, and mismatched credential forms", () => {
+    expect(aiRoutingModelsProbeSchema.safeParse({}).success).toBe(false);
+    expect(aiRoutingModelsProbeSchema.safeParse({ connectionId: "4b3f6d52-6f38-48ae-a0f1-79a49a7bbd1c", routing: localRouting }).success).toBe(false);
+    expect(aiRoutingModelsProbeSchema.safeParse({ routing: localRouting, apiKey: "key" }).success).toBe(false);
+    expect(aiRoutingModelsProbeSchema.safeParse({
+      routing: { kind: "gateway", protocol: "chat", baseUrl: "https://gw.example.com/v1", auth: "bearer" },
+    }).success).toBe(false);
   });
 });

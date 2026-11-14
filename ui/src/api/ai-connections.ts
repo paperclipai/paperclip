@@ -1,8 +1,9 @@
-import type { AiConnectionList, AiConnectionUsage, AiConnectionAccountIdentity, CreateAiConnection, AiConnectionLoginIntent, LocalAiLoginAttempt, LocalAiLoginStatus } from "@paperclipai/shared";
+import type { AiConnectionList, AiConnectionUsage, AiConnectionAccountIdentity, AiRoutingModelsProbe, AiRoutingModelsProbeResult, CreateAiConnection, AiConnectionLoginIntent, LocalAiLoginAttempt, LocalAiLoginStatus } from "@paperclipai/shared";
 import { api, type RequestOptions } from "./client";
 export const aiConnectionsApi = {
   accountIdentity: (companyId: string, connectionId: string, grantId: string, options?: RequestOptions) => api.get<AiConnectionAccountIdentity>(`/companies/${companyId}/ai-connections/${connectionId}/identity?grantId=${encodeURIComponent(grantId)}`, { timeoutMs: 20_000, ...options }),
   loginSetup: (companyId: string, sessionId: string) => api.get<{ sessionId: string; intent: AiConnectionLoginIntent; environmentId: string; status: string; connectionId: string | null; grantId: string | null }>(`/companies/${companyId}/ai-connections/login/${encodeURIComponent(sessionId)}/setup`),
+  probeRoutingModels: (companyId: string, input: AiRoutingModelsProbe) => api.post<AiRoutingModelsProbeResult>(`/companies/${companyId}/ai-connections/probe-models`, input),
   probeUsage: (companyId: string, connectionId: string, grantId?: string) => api.get<AiConnectionUsage>(`/companies/${companyId}/ai-connections/${connectionId}/usage${grantId ? `?grantId=${encodeURIComponent(grantId)}` : ""}`),
   startLocalLogin: (companyId: string, input: AiConnectionLoginIntent & { restart?: boolean }) => api.post<LocalAiLoginAttempt>(`/companies/${companyId}/ai-connections/local/attempts`, input),
   checkLocalLogin: (companyId: string, input: AiConnectionLoginIntent & { localSessionId?: string }) => api.post<LocalAiLoginStatus>(`/companies/${companyId}/ai-connections/local/check`, input),

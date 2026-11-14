@@ -247,6 +247,40 @@ export const createAiConnectionSchema = z
   });
 export type CreateAiConnection = z.infer<typeof createAiConnectionSchema>;
 
+/** Pre-save model discovery for a routing endpoint. The inline form carries a
+ * transient key used for the probe only, plus the intended ownership so the
+ * connection-management guard can authorize self-service setup; the
+ * saved-connection form resolves the stored credential server-side. Neither is
+ * persisted by this operation. */
+export const aiRoutingModelsProbeSchema = z
+  .object({
+    routing: aiProviderRoutingSchema.optional(),
+    apiKey: z.string().trim().min(1).max(32768).optional(),
+    connectionId: z.string().uuid().optional(),
+    grantId: z.string().uuid().optional(),
+    ownership: z.enum(["personal", "shared"]).optional(),
+  })
+  .strict()
+  .superRefine((v, ctx) => {
+    if (v.connectionId) {
+      if (v.routing || v.apiKey || v.ownership) ctx.addIssue({ code: "custom", message: "Provide either a saved connection or an inline routing endpoint, not both." });
+      return;
+    }
+    if (!v.routing) {
+      ctx.addIssue({ code: "custom", message: "Provide a routing endpoint or a saved connection." });
+      return;
+    }
+    if (v.routing.auth === "none") {
+      if (v.apiKey) ctx.addIssue({ code: "custom", message: "Provide only the selected authentication method." });
+      return;
+    }
+    if (!v.apiKey) ctx.addIssue({ code: "custom", message: "Enter the API key before fetching models." });
+  });
+export type AiRoutingModelsProbe = z.infer<typeof aiRoutingModelsProbeSchema>;
+export interface AiRoutingModelsProbeResult {
+  models: Array<{ id: string; label?: string }>;
+}
+
 export const aiConnectionLoginIntentSchema = z
   .object({
     provider: z.enum(["anthropic", "openai", "xai", "google"]),
