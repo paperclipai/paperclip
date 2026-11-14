@@ -12,6 +12,12 @@ import {
   resolveNativeRunnerRequirement,
 } from "./dev-runner-native-binary.mjs";
 import { applyDevRunnerOptions } from "./dev-runner-options.ts";
+import {
+  serverGroupShutdownTimeoutMs,
+  signalProcessGroup,
+  usesProcessGroups,
+  waitForProcessGroupExit,
+} from "./dev-runner-process-group.ts";
 import { collectWatchedSnapshot as collectDevServerWatchedSnapshot, diffSnapshots } from "./dev-runner-snapshot.mjs";
 import { createDevServiceIdentity, repoRoot } from "./dev-service-profile.ts";
 import { bootstrapDevRunnerWorktreeEnv, isWorktreeSeedPending } from "../server/src/dev-runner-worktree.ts";
@@ -364,6 +370,7 @@ async function updateDevServiceRecord(extra?: Record<string, unknown>) {
       repoRoot,
       mode,
       childPid: child?.pid ?? null,
+      serverProcessGroupId: usesProcessGroups() ? child?.pid ?? null : null,
       url: `http://127.0.0.1:${serverPort}`,
       ...extra,
     },
@@ -699,14 +706,15 @@ async function waitForChildExit() {
 async function stopChildForRestart() {
   if (!child) return { code: 0, signal: null };
   childExitWasExpected = true;
-  child.kill("SIGTERM");
+  const restartingChild = child;
+  signalProcessGroup(restartingChild, "SIGTERM");
   const killTimer = setTimeout(() => {
-    if (child) {
-      child.kill("SIGKILL");
-    }
+    signalProcessGroup(restartingChild, "SIGKILL");
   }, gracefulShutdownTimeoutMs);
   try {
-    return await waitForChildExit();
+    const exit = await waitForChildExit();
+    await waitForProcessGroupExit(restartingChild.pid, gracefulShutdownTimeoutMs);
+    return exit;
   } finally {
     clearTimeout(killTimer);
   }
@@ -720,7 +728,12 @@ async function startServerChild() {
   child = spawn(
     pnpmBin,
     ["--filter", "@paperclipai/server", serverScript, ...forwardedArgs],
-    { stdio: "inherit", env, shell: process.platform === "win32" },
+    {
+      stdio: "inherit",
+      env,
+      shell: process.platform === "win32",
+      detached: usesProcessGroups(),
+    },
   );
 
   childExitPromise = new Promise((resolve, reject) => {
@@ -872,10 +885,14 @@ async function shutdown(signal: NodeJS.Signals) {
   }
 
   childExitWasExpected = true;
-  child.kill(signal);
+  const stoppingChild = child;
+  signalProcessGroup(stoppingChild, "SIGTERM");
   const exit = await waitForChildExit();
+  if (!(await waitForProcessGroupExit(stoppingChild.pid, serverGroupShutdownTimeoutMs))) {
+    signalProcessGroup(stoppingChild, "SIGKILL");
+  }
   if (exit.signal) {
-    exitForSignal(exit.signal);
+    exitForSignal(signal);
     return;
   }
   process.exit(exit.code ?? 0);
@@ -885,6 +902,9 @@ process.on("SIGINT", () => {
   void shutdown("SIGINT");
 });
 process.on("SIGTERM", () => {
+  void shutdown("SIGTERM");
+});
+process.on("SIGHUP", () => {
   void shutdown("SIGTERM");
 });
 
