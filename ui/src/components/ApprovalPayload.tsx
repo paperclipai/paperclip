@@ -1,4 +1,4 @@
-import { UserPlus, Lightbulb, ShieldAlert, ShieldCheck } from "lucide-react";
+import { UserPlus, Lightbulb, ShieldAlert, ShieldCheck, FileText } from "lucide-react";
 import { MarkdownBody } from "./MarkdownBody";
 import { formatCents } from "../lib/utils";
 
@@ -7,6 +7,7 @@ export const typeLabel: Record<string, string> = {
   approve_ceo_strategy: "CEO Strategy",
   budget_override_required: "Budget Override",
   request_board_approval: "Board Approval",
+  instruction_generation: "Instruction Generation",
 };
 
 function firstNonEmptyString(...values: unknown[]): string | null {
@@ -42,6 +43,7 @@ export const typeIcon: Record<string, typeof UserPlus> = {
   approve_ceo_strategy: Lightbulb,
   budget_override_required: ShieldAlert,
   request_board_approval: ShieldCheck,
+  instruction_generation: FileText,
 };
 
 export const defaultTypeIcon = ShieldCheck;
@@ -238,6 +240,67 @@ function BoardApprovalPayloadContent({ payload }: { payload: Record<string, unkn
   );
 }
 
+function instructionBundleFiles(payload: Record<string, unknown>): Record<string, unknown>[] | null {
+  const bundle = payload.bundle;
+  const rawFiles =
+    typeof bundle === "object" && bundle !== null && !Array.isArray(bundle)
+      ? (bundle as Record<string, unknown>).files
+      : payload.files;
+  if (!Array.isArray(rawFiles)) return null;
+  return rawFiles.filter(
+    (entry): entry is Record<string, unknown> => typeof entry === "object" && entry !== null,
+  );
+}
+
+function reviewedBaseLabel(file: Record<string, unknown>): string {
+  if (file.baseHash === null) return "new file";
+  if (typeof file.baseHash === "string") return file.baseHash;
+  return "not recorded (pinned at approval)";
+}
+
+/**
+ * Shows everything an approval writes: target agent, note, and every file path and
+ * content, as plain text. Summary fields never stand in for the bundle itself.
+ */
+export function InstructionGenerationPayload({ payload }: { payload: Record<string, unknown> }) {
+  const files = instructionBundleFiles(payload);
+  const note = firstNonEmptyString(payload.note);
+  return (
+    <div className="mt-3 space-y-2 text-sm">
+      <PayloadField label="Title" value={payload.title} />
+      <div className="flex items-center gap-2">
+        <span className="text-muted-foreground w-20 sm:w-24 shrink-0 text-xs">Target agent</span>
+        <span className="font-mono text-xs bg-muted px-1.5 py-0.5 rounded">
+          {typeof payload.agentId === "string" ? payload.agentId : "—"}
+        </span>
+      </div>
+      {note && (
+        <div className="space-y-1">
+          <p className="text-muted-foreground text-xs">Note</p>
+          <pre className="max-h-48 overflow-auto rounded-md bg-muted/40 px-3 py-2 font-mono text-xs text-muted-foreground whitespace-pre-wrap">
+            {note}
+          </pre>
+        </div>
+      )}
+      {files && files.length > 0 ? (
+        files.map((file, index) => (
+          <div key={`${index}-${String(file.path)}`} className="space-y-1">
+            <p className="font-mono text-xs text-foreground break-all">{String(file.path ?? "—")}</p>
+            <p className="text-muted-foreground text-xs break-all">Reviewed base: {reviewedBaseLabel(file)}</p>
+            <pre className="max-h-64 overflow-auto rounded-md bg-muted/40 px-3 py-2 font-mono text-xs text-muted-foreground whitespace-pre-wrap">
+              {typeof file.content === "string" ? file.content : JSON.stringify(file.content)}
+            </pre>
+          </div>
+        ))
+      ) : (
+        <pre className="mt-2 rounded-md bg-muted/40 px-3 py-2 text-xs text-muted-foreground overflow-x-auto max-h-48">
+          {JSON.stringify(payload, null, 2)}
+        </pre>
+      )}
+    </div>
+  );
+}
+
 export function ApprovalPayloadRenderer({
   type,
   payload,
@@ -249,6 +312,7 @@ export function ApprovalPayloadRenderer({
 }) {
   if (type === "hire_agent") return <HireAgentPayload payload={payload} />;
   if (type === "budget_override_required") return <BudgetOverridePayload payload={payload} />;
+  if (type === "instruction_generation") return <InstructionGenerationPayload payload={payload} />;
   if (type === "request_board_approval") {
     return <BoardApprovalPayload payload={payload} hideTitle={hidePrimaryTitle} />;
   }
