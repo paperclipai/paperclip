@@ -50,10 +50,10 @@ it.each([
   } })).toBe(true);
 });
 
-it("retains the hold until the provider actually acknowledges cancellation", () => {
+it("skips the hold for a clean interruption even before the host acknowledges cancellation", () => {
   expect(legacyExecutionNeedsReconciliation({ ...stopped, resultJson: {
     ...stopped.resultJson, executionCancellation: { state: "requested" },
-  } })).toBe(true);
+  } })).toBe(false);
 });
 
  it("continues a conversation without requiring receipts, even after automatic attempts are exhausted", () => {
