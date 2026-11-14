@@ -321,9 +321,12 @@ export function startPersistedQueryCache(client: QueryClient, options: {
     } catch { return null; }
   };
   const fresh = (updatedAt: number) => Number.isFinite(updatedAt) && now() - updatedAt >= 0 && now() - updatedAt <= QUERY_CACHE_MAX_AGE;
-  const savedQueries = (entry: Envelope, companyIds: string[]) => entry.state.queries.filter(query => query?.state?.data !== undefined && query.state.status === "success"
-    && fresh(query.state.dataUpdatedAt) && Array.isArray(query.queryKey) && !blockedQueries.has(hashKey(query.queryKey))
-    && persistedQueryScope(query.queryKey, query.state.data, entry.userId, companyIds, taskCompaniesOf(entry.state.queries)) === entry.companyId);
+  const savedQueries = (entry: Envelope, companyIds: string[]) => {
+    const taskCompanies = taskCompaniesOf(entry.state.queries);
+    return entry.state.queries.filter(query => query?.state?.data !== undefined && query.state.status === "success"
+      && fresh(query.state.dataUpdatedAt) && Array.isArray(query.queryKey) && !blockedQueries.has(hashKey(query.queryKey))
+      && persistedQueryScope(query.queryKey, query.state.data, entry.userId, companyIds, taskCompanies) === entry.companyId);
+  };
   const readSaved = (userId: string): Envelope[] => {
     if (!storage) return [];
     const prefix = `${QUERY_CACHE_PREFIX}${encodeURIComponent(userId)}:`;

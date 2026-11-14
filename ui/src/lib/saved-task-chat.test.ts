@@ -6,7 +6,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ApiError } from "@/api/client";
 import { EARLY_CHAT_BOOTSTRAP_GLOBAL } from "./issue-detail-preload-events";
 import { resetIssueChatBootstrapsForTest, startIssueChatBootstrap, type ChatBootstrapItem } from "./issue-chat-bootstrap";
-import { issueCommentInputFactsQueryKey, recentIssueActivityQueryKey, recentIssueRunWindowQueryKey } from "./issue-chat-history-queries";
+import { fetchRecentIssueActivity, issueCommentInputFactsQueryKey, recentIssueActivityQueryKey, recentIssueRunWindowQueryKey } from "./issue-chat-history-queries";
+import { getIssueRecentCommentsQueryOptions } from "./issue-comment-window-query";
 import {
   clearPersistedQueryCache,
   isRestoredSavedRead,
@@ -24,8 +25,9 @@ import { queryKeys } from "./queryKeys";
 // the read cache, so a hard load shows it before any response. The owner
 // approved saving recent comments on 2026-11-14, within these guardrails.
 
-const api = vi.hoisted(() => ({ chatBootstrap: vi.fn(), getSession: vi.fn() }));
-vi.mock("@/api/issues", () => ({ issuesApi: { chatBootstrap: api.chatBootstrap } }));
+const api = vi.hoisted(() => ({ chatBootstrap: vi.fn(), getSession: vi.fn(), recentComments: vi.fn(), listComments: vi.fn(), recentForIssue: vi.fn() }));
+vi.mock("@/api/issues", () => ({ issuesApi: { chatBootstrap: api.chatBootstrap, recentComments: api.recentComments, listComments: api.listComments } }));
+vi.mock("@/api/activity", () => ({ activityApi: { recentForIssue: api.recentForIssue } }));
 vi.mock("@/api/auth", () => ({ authApi: { getSession: api.getSession } }));
 
 class MemoryStorage {
@@ -282,6 +284,24 @@ describe("saved first chat frame of a recently opened task", () => {
       const handle = startPersistedQueryCache(client, { storage, buildId: "build-one", eventTarget: null, debounceMs: 100_000 });
       handles.push(() => { handle.dispose(); client.clear(); });
       expect(client.getQueryData<IssueRecentComments>(commentsKey("ABC-1"))!.comments[0]).toMatchObject({ body: "Newer from the server 0" });
+    });
+
+    it("is replaced, not merged, by its first refresh: a comment deleted on the server disappears", async () => {
+      const storage = savedPage((client) => { openTask(client, 1); });
+      const { client } = page(storage);
+      // comment-1-1 was deleted while the browser was closed.
+      const current = { ...recentComments(1), comments: recentComments(1).comments.filter((comment) => comment.id !== "comment-1-1") };
+      api.recentComments.mockResolvedValue(current);
+      api.listComments.mockResolvedValue([]);
+      const refreshed = await client.fetchQuery({ ...getIssueRecentCommentsQueryOptions(client, "ABC-1"), queryFn: ({ signal }) => getIssueRecentCommentsQueryOptions(client, "ABC-1").queryFn({ signal }) });
+      expect(refreshed.comments.map((comment) => comment.id)).toEqual(["comment-1-0", "comment-1-2"]);
+    });
+
+    it("replaces restored activity with its first refresh", async () => {
+      const storage = savedPage((client) => { openTask(client, 1); });
+      const { client } = page(storage);
+      api.recentForIssue.mockResolvedValue([{ id: "event-current" }]);
+      await expect(fetchRecentIssueActivity(client, "ABC-1")).resolves.toEqual([{ id: "event-current" }]);
     });
 
     it("is replaced by the bootstrap when it arrives", async () => {
