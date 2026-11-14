@@ -28,6 +28,7 @@ import {
   issueRelations,
   issueTreeHolds,
   issues,
+  principalPermissionGrants,
 } from "@paperclipai/db";
 import {
   getEmbeddedPostgresTestSupport,
@@ -75,6 +76,7 @@ describeEmbeddedPostgres("issue scheduled retry routes", () => {
     await db.delete(heartbeatRunEvents);
     await db.delete(heartbeatRuns);
     await db.delete(agentWakeupRequests);
+    await db.delete(principalPermissionGrants);
     await db.delete(agents);
     await db.delete(companyMemberships);
     await db.delete(companies);
@@ -978,6 +980,78 @@ describeEmbeddedPostgres("issue scheduled retry routes", () => {
       action: "issue.scheduled_retry_retry_now",
       entityId: issueId,
       runId: retryRunId,
+    });
+  });
+
+  describe("agent Retry with a board user's tasks:retry grant", () => {
+    async function grant(f: { companyId: string; agentId: string }, grantedByUserId: string | null) {
+      await db.insert(principalPermissionGrants).values({ companyId: f.companyId, principalType: "agent",
+        principalId: f.agentId, permissionKey: "tasks:retry", grantedByUserId });
+    }
+    function retry(f: { companyId: string; agentId: string; issueId: string; sourceRunId: string; retryRunId: string }) {
+      return request(createApp({ ...agentActor(f.companyId, f.agentId), runId: f.sourceRunId })).post(`/api/issues/${f.issueId}/retry`)
+        .send({ idempotencyKey: randomUUID(), observedRunId: f.retryRunId });
+    }
+    async function retryRunStatus(f: { retryRunId: string }) {
+      return db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.retryRunId)).then(rows => rows[0]!.status);
+    }
+
+    it("refuses an agent without the grant", async () => {
+      const f = await seedIssueWithRetry();
+      const res = await retry(f);
+      expect(res.status, JSON.stringify(res.body)).toBe(403);
+      expect(await retryRunStatus(f)).toBe("scheduled_retry");
+    });
+
+    it("refuses a grant that no board user saved", async () => {
+      const f = await seedIssueWithRetry();
+      await grant(f, null);
+      const res = await retry(f);
+      expect(res.status, JSON.stringify(res.body)).toBe(403);
+      expect(await retryRunStatus(f)).toBe("scheduled_retry");
+    });
+
+    it("presses Retry as the granting person and logs the agent and the person", async () => {
+      const f = await seedIssueWithRetry();
+      await db.update(heartbeatRuns).set({ createdAt: new Date("2026-05-06T18:00:01.000Z") })
+        .where(eq(heartbeatRuns.id, f.retryRunId));
+      await grant(f, "board-user");
+
+      const res = await retry(f);
+
+      expect(res.status, JSON.stringify(res.body)).toBe(202);
+      expect(res.body).toMatchObject({ accepted: true, scheduledRetry: { outcome: "promoted" } });
+      expect(await retryRunStatus(f)).toBe("queued");
+      const events = await db.select().from(activityLog).where(and(eq(activityLog.entityId, f.issueId),
+        eq(activityLog.action, "issue.retry_requested_by_agent")));
+      expect(events).toHaveLength(1);
+      expect(events[0]).toMatchObject({ actorType: "agent", actorId: f.agentId, agentId: f.agentId,
+        details: { grantedByUserId: "board-user" } });
+    });
+
+    it("applies the granting person's gates", async () => {
+      const f = await seedIssueWithRetry();
+      await db.update(issues).set({ visibility: "private", createdByUserId: "task-owner", responsibleUserId: "task-owner" })
+        .where(eq(issues.id, f.issueId));
+      await db.insert(companyMemberships).values({ companyId: f.companyId, principalType: "user", principalId: "other-member",
+        status: "active", membershipRole: "member" });
+      await grant(f, "other-member");
+
+      const res = await retry(f);
+
+      expect([403, 404], JSON.stringify(res.body)).toContain(res.status);
+      expect(await retryRunStatus(f)).toBe("scheduled_retry");
+    });
+
+    it("caps an agent's Retries on one task per day", async () => {
+      const f = await seedIssueWithRetry();
+      await grant(f, "board-user");
+      for (let i = 0; i < 3; i += 1) expect((await retry(f)).status).not.toBe(429);
+
+      const res = await retry(f);
+
+      expect(res.status, JSON.stringify(res.body)).toBe(429);
+      expect(res.body).toMatchObject({ details: { code: "agent_task_retry_cap_reached" } });
     });
   });
 
