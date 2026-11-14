@@ -2,6 +2,7 @@ import { chmod, mkdir, readFile, readlink, rename, rm, symlink, writeFile } from
 import path from "node:path";
 import { randomUUID } from "node:crypto";
 import { parse, stringify } from "smol-toml";
+import { withCodexMcpStartupWaitConfig } from "./codex-mcp-startup.js";
 import type { ProviderObservabilityLaunch } from "./agent-observability.js";
 
 /** ACPX starts app-server: its config must be private to this settings snapshot.
@@ -53,6 +54,6 @@ export async function prepareAcpxCodexObservabilityHome(home: string, launch: Pr
   });
   const current = parse(source);
   const features = current.features && typeof current.features === "object" && !Array.isArray(current.features) ? current.features : {};
-  await atomicFile("config.toml", stringify({ ...current, otel: launch.otelConfig, features: { ...features, shell_snapshot: false } }));
+  await atomicFile("config.toml", stringify(withCodexMcpStartupWaitConfig({ ...current, otel: launch.otelConfig, features: { ...features, shell_snapshot: false } })));
   return target;
 }

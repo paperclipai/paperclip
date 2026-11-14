@@ -1039,6 +1039,30 @@ describe("evaluateCodexCredentialReadiness", () => {
     }
   });
 
+  it("makes Codex wait for governed gateways before the first turn", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-codex-mcp-config-"));
+    try {
+      const configPath = path.join(root, "config.toml");
+      await fs.writeFile(configPath, 'model = "gpt-5"\n\n[mcp_servers.direct]\nurl = "https://direct.example/mcp"\n');
+      const gateways = [{ name: "assigned", endpointPath: "/mcp/gateways/gw_1", bearerToken: "token-1" }];
+
+      await writeManagedCodexMcpConfig({ codexHome: root, apiBaseUrl: "https://paperclip.example", gateways });
+      await writeManagedCodexMcpConfig({ codexHome: root, apiBaseUrl: "https://paperclip.example", gateways });
+      const config = await fs.readFile(configPath, "utf8");
+      expect(config.match(/^mcp_optional_startup_grace_ms = 0\b/gm)).toHaveLength(1);
+      expect(config.indexOf("mcp_optional_startup_grace_ms")).toBeLessThan(config.indexOf("[mcp_servers.direct]"));
+      expect(config).toContain('[mcp_servers.direct]\nurl = "https://direct.example/mcp"');
+      expect(config).toContain('[mcp_servers."assigned"]\nurl = "https://paperclip.example/mcp/gateways/gw_1"\nhttp_headers = { Authorization = "Bearer token-1" }\nstartup_timeout_sec = 120\n');
+
+      await writeManagedCodexMcpConfig({ codexHome: root, apiBaseUrl: "https://paperclip.example", gateways: [] });
+      const cleared = await fs.readFile(configPath, "utf8");
+      expect(cleared).not.toContain("mcp_optional_startup_grace_ms");
+      expect(cleared).toContain("[mcp_servers.direct]");
+    } finally {
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
   it("restricts permissions on an existing managed MCP config", async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-codex-mcp-config-"));
     try {
