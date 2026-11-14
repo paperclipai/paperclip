@@ -89,7 +89,7 @@ JavaScript on every run. Serve a production build
 
 A returning browser restores the saved read cache (`paperclip:query-cache:v1:*`)
 before the first render, including the core fields and the first chat frame of
-recently opened tasks (see the read-cache rules in `doc/DEVELOPING.md`). The
+recently opened tasks (see the read-cache rules in `doc/ui-internals.md`). The
 restored chat shows at once; its reads revalidate through the bootstrap and
 share that one request instead of reading each endpoint. The always-on tests
 check both: with every response held for 2.5 s, the frame appears before the
