@@ -3,6 +3,7 @@
   "main": "src/index.ts",
   "compatibility_date": "2026-05-09",
   "compatibility_flags": ["nodejs_compat"],
+  "vars": { "SANDBOX_TRANSPORT": "rpc" },
   "containers": [
     {
       "class_name": "Sandbox",
