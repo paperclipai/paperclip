@@ -2140,6 +2140,11 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
         const agent = agents.get(agentId);
         return isInCompany(agent, companyId) ? agent : null;
       },
+      async getQueuedRunCounts(input) {
+        requireCapability(manifest, capabilitySet, "agents.queued_counts.read");
+        requireCompanyId(input?.companyId);
+        return [];
+      },
       async pause(agentId, companyId) {
         requireCapability(manifest, capabilitySet, "agents.pause");
         const cid = requireCompanyId(companyId);

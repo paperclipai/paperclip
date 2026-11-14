@@ -878,6 +878,7 @@ The host enforces capabilities in the SDK layer and refuses calls outside the gr
 - `issue.relations.read`
 - `issue.subtree.read`
 - `agents.read`
+- `agents.queued_counts.read`
 - `goals.read`
 - `activity.read`
 - `costs.read`
