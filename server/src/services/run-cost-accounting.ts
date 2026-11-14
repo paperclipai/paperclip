@@ -166,8 +166,8 @@ const nativeProviderWorkNeverStarted = sql`${heartbeatRuns.runtimeMode} = 'nativ
 /** A run's accounting settled: an admission hold may have cleared. Held work
  * (queued runs, saved messages and Retries, and tasks whose start or
  * continuation was refused) waits passively, so wake its owners. */
-async function notifyAccountingHoldRelease(tx: object, companyId: string) {
-  await promoteDeferredWorkIntents(tx, { companyId, trigger: "accounting_settled" });
+async function notifyAccountingHoldRelease(tx: object, companyId: string, runId: string) {
+  await promoteDeferredWorkIntents(tx, { companyId, trigger: "accounting_settled", runId });
 }
 
 export const ACCOUNTING_CLOSURE_TIMEOUT_MS = REMOTE_RUNNER_RECONNECT_GRACE_MS + 3 * 60_000;
@@ -289,11 +289,11 @@ export async function accountRunCost(db: Db, runId: string, hooks: BudgetService
     if (run.costAccountedAt) {
       if (object(run.usageJson).accountingLateReceiptPending === true) {
         // Clearing late debt can release an admission hold too.
-        await notifyAccountingHoldRelease(tx, run.companyId);
+        await notifyAccountingHoldRelease(tx, run.companyId, run.id);
         return reconcileLateRunUsageReceiptInTransaction(tx, run, publications);
       }
       await notifyStrandedAgentStatus(tx, { companyId: run.companyId, agentId: run.agentId });
-      await notifyAccountingHoldRelease(tx, run.companyId);
+      await notifyAccountingHoldRelease(tx, run.companyId, run.id);
       await tx.update(heartbeatRuns).set({ costAccountingPending: false }).where(eq(heartbeatRuns.id, run.id));
       await queueBudgetEvaluation(tx, { companyId: run.companyId, agentId: run.agentId,
         projectId: text(object(object(run.usageJson).ledgerScope).projectId) });
@@ -333,7 +333,7 @@ export async function accountRunCost(db: Db, runId: string, hooks: BudgetService
     // Acknowledgement is part of the same transaction. Budget checks inside
     // this transaction must not mistake this receipt for missing accounting.
     await notifyStrandedAgentStatus(tx, { companyId: run.companyId, agentId: run.agentId });
-    await notifyAccountingHoldRelease(tx, run.companyId);
+    await notifyAccountingHoldRelease(tx, run.companyId, run.id);
     await tx.update(heartbeatRuns).set({ costAccountingPending: false, costAccountedAt: new Date() }).where(eq(heartbeatRuns.id, run.id));
     await tx.update(budgetReservations).set({ state: preProviderFailure ? "released" : "settled", settledAt: new Date() })
       .where(and(eq(budgetReservations.companyId, run.companyId), eq(budgetReservations.runId, run.id), eq(budgetReservations.state, "held")));
@@ -426,7 +426,7 @@ export async function accountRunCost(db: Db, runId: string, hooks: BudgetService
     await queueBudgetEvaluation(tx, { companyId: run.companyId, agentId: run.agentId, projectId: text(scope.projectId) });
     // Late usage reported by a later run can arrive before this charge posts.
     const lateDebt = usage.accountingLateReceiptPending === true;
-    if (!lateDebt) await notifyAccountingHoldRelease(tx, run.companyId);
+    if (!lateDebt) await notifyAccountingHoldRelease(tx, run.companyId, run.id);
     await tx.update(heartbeatRuns).set({ costAccountingPending: lateDebt, costAccountedAt: new Date(), accountingProjectionVersion: "v2",
       accountingLastError: lateDebt ? "late_usage_requires_reconciliation" : null, accountingLastAttemptAt: new Date(),
       // A complete receipt arriving later may price this charge (see usage-receipts).
