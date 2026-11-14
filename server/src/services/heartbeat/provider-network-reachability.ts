@@ -62,6 +62,24 @@ const DEFAULT_PROVIDER_REACHABILITY_PROBE_HOST = "api.anthropic.com";
  */
 export const PROVIDER_REACHABILITY_CACHE_MS = 15_000;
 
+/**
+ * When a held retry asks to be looked at again.
+ *
+ * Matched to the recovery sweep's own `reconstructionIntervalMs` (30s), and
+ * deliberately longer than the probe cache above so the next pass takes a FRESH
+ * probe rather than re-reading the cached "down" that caused the hold.
+ *
+ * This exists because holding a retry also removes the thing that used to bring
+ * the sweeper back. Before this gate, the doomed retry run itself was the clock:
+ * it spawned, failed, and its terminal state notified the recovery queue, which
+ * is what re-examined the issue. Suppress the spawn and that clock stops, and
+ * `scoped-deadline-work` drops an entry whose check reports no deadline
+ * (`check` returns null -> `entries.delete`), with the scope hint already out of
+ * `dirty`. The hold would then wait on an unrelated notification. So the hold
+ * MUST hand a deadline back; it is not optional bookkeeping.
+ */
+export const PROVIDER_NETWORK_UNREACHABLE_RECHECK_MS = 30_000;
+
 export function resolveProviderReachabilityProbeHost(
   env: NodeJS.ProcessEnv = process.env,
 ): string {
@@ -69,6 +87,40 @@ export function resolveProviderReachabilityProbeHost(
     env.PAPERCLIP_PROVIDER_PROBE_HOST ?? env.NETWORK_PARK_SWEEP_PROBE_HOST;
   const trimmed = typeof configured === "string" ? configured.trim() : "";
   return trimmed.length > 0 ? trimmed : DEFAULT_PROVIDER_REACHABILITY_PROBE_HOST;
+}
+
+/**
+ * Adapter types whose provider the DEFAULT probe host answers for.
+ *
+ * The default host is Anthropic's, so an Anthropic failure is the only one it
+ * can confirm. A `codex_local` or `gemini_local` run that failed with ENOTFOUND
+ * against its OWN endpoint is not evidence that `api.anthropic.com` is down, and
+ * holding its retry on this probe would withhold a spawn that could succeed.
+ *
+ * `opencode_local` and the ACPX/runner adapters are deliberately absent even
+ * though they CAN be pointed at Anthropic: their endpoint is configuration, so
+ * this process cannot know it. Leaving them ungated costs only today's
+ * behaviour (spend the attempt), which is the safe direction.
+ */
+const DEFAULT_PROBE_HOST_ADAPTER_TYPES = new Set(["claude_local"]);
+
+/**
+ * True when the configured probe host can speak for this run's provider.
+ *
+ * An explicit operator override answers yes for every adapter: naming the host
+ * is taking responsibility for which deployment it represents.
+ */
+export function isProbeHostRelevantToAdapter(
+  adapterType: unknown,
+  env: NodeJS.ProcessEnv = process.env,
+): boolean {
+  const override =
+    env.PAPERCLIP_PROVIDER_PROBE_HOST ?? env.NETWORK_PARK_SWEEP_PROBE_HOST;
+  if (typeof override === "string" && override.trim().length > 0) return true;
+  return (
+    typeof adapterType === "string" &&
+    DEFAULT_PROBE_HOST_ADAPTER_TYPES.has(adapterType)
+  );
 }
 
 function readNonEmptyString(value: unknown): string | null {
@@ -110,7 +162,22 @@ export function isHostNetworkUnreachableFailure(run: {
  * built-in deadline, so the call is raced against the timeout and a timeout is
  * reported as unreachable.
  */
-function lookupWithTimeout(host: string, timeoutMs: number): Promise<boolean> {
+export function lookupWithTimeout(
+  host: string,
+  timeoutMs: number,
+  /**
+   * Injection seam for tests ONLY, so the real race can be driven without a
+   * resolver. getaddrinfo cannot be cancelled, so a lookup that outlives its
+   * deadline keeps running and calls back late; the `settled` latch is what
+   * makes that late callback a no-op rather than a second settle. A test that
+   * mocks `resolveHost` one layer up never exercises either path, which is
+   * what `rules/runtime-dependency-boundaries.mdc` asks us to cover.
+   */
+  lookupFn: (host: string, callback: (error: unknown) => void) => void = (
+    target,
+    callback,
+  ) => lookup(target, callback),
+): Promise<boolean> {
   return new Promise<boolean>((resolve) => {
     let settled = false;
     const timer = setTimeout(() => {
@@ -119,7 +186,7 @@ function lookupWithTimeout(host: string, timeoutMs: number): Promise<boolean> {
       resolve(false);
     }, timeoutMs);
     timer.unref?.();
-    lookup(host, (error) => {
+    lookupFn(host, (error) => {
       if (settled) return;
       settled = true;
       clearTimeout(timer);

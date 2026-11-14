@@ -976,6 +976,13 @@ export type StrandedRecoveryOutcome = {
   /** The person's original Retry or message no longer authorizes this run's
    * continuation (for example the task or its message changed since). */
   continuationRefused?: boolean;
+  /**
+   * When no successor was queued because the retry is being HELD (today: the
+   * host cannot reach the provider) rather than refused or exhausted. The
+   * caller must report this through `onDeferredDeadline` or the entry is
+   * dropped and nothing comes back for it.
+   */
+  retryAt?: number;
 };
 
 export function recoveryService(
@@ -2105,9 +2112,18 @@ export function recoveryService(
      * Out-parameter: set `retryExhausted` when no successor was queued
      * because the failed predecessor has spent its bounded transient retry
      * budget. A null return without it means another authority owns the
-     * run (native runtime, reconciliation) and the caller must leave it.
+     * run (native runtime, reconciliation) and the caller must leave it,
+     * UNLESS `retryAt` is set, which means the retry was held and this issue
+     * must be looked at again at that time.
      */
     outcome?: StrandedRecoveryOutcome;
+    /**
+     * The sweep's deadline sink. A held retry reports its recheck through this
+     * so the entry keeps a `dueAt`; `scoped-deadline-work` deletes any entry
+     * whose check reports no deadline, and the hold has suppressed the retry
+     * run whose terminal state used to re-dirty the scope.
+     */
+    onDeferredDeadline?: (at: number) => void;
   }) {
     if (input.retryOfRunId) {
       const [predecessor] = await db
@@ -2141,6 +2157,14 @@ export function recoveryService(
           const retry = await deps.scheduleRecoveryRetry(predecessor.id, scheduling);
           if (retry) return retry;
           if (input.outcome && scheduling.continuationRefused) input.outcome.continuationRefused = true;
+          // A held retry is the one "no retry" that is neither exhaustion nor
+          // foreign ownership: it is coming back, but only if someone keeps a
+          // deadline for it. Report it before the exhaustion branch below so a
+          // hold is never mistaken for a spent budget.
+          if (scheduling.retryAt !== undefined) {
+            if (input.outcome) input.outcome.retryAt = scheduling.retryAt;
+            input.onDeferredDeadline?.(scheduling.retryAt);
+          }
           // A spent budget is the one "no retry" the sweeper must not wait
           // out: nothing else will ever queue a successor for this run, so
           // it reports the exhaustion instead of leaving the issue with no
@@ -4717,7 +4741,7 @@ export function recoveryService(
       }
       handled.add(issue.id);
       const outcome: StrandedRecoveryOutcome = {};
-      const queued = await enqueueStrandedIssueRecovery({ issueId: issue.id, agentId: issue.assigneeAgentId,
+      const queued = await enqueueStrandedIssueRecovery({ onDeferredDeadline: onDeferredDeadline, issueId: issue.id, agentId: issue.assigneeAgentId,
         reason: "issue_continuation_needed", retryReason: "issue_continuation_needed",
         source: "issue.shutdown_stopped_retry_preparation", retryOfRunId: run.id, outcome });
       if (queued) {
@@ -5409,7 +5433,7 @@ export function recoveryService(
             continue;
           }
 
-          const queued = await enqueueStrandedIssueRecovery({
+          const queued = await enqueueStrandedIssueRecovery({ onDeferredDeadline: opts?.onDeferredDeadline,
             issueId: issue.id,
             agentId,
             reason: "issue_continuation_needed",
@@ -5584,7 +5608,7 @@ export function recoveryService(
         }
 
         const reviewOutcome: { retryExhausted?: boolean } = {};
-        const queued = await enqueueStrandedIssueRecovery({
+        const queued = await enqueueStrandedIssueRecovery({ onDeferredDeadline: opts?.onDeferredDeadline,
           issueId: issue.id,
           agentId: participantAgentId,
           reason: EXECUTION_REVIEW_PARTICIPANT_RECOVERY_REASON,
@@ -5702,7 +5726,7 @@ export function recoveryService(
         }
 
         const dispatchOutcome: { retryExhausted?: boolean } = {};
-        const queued = await enqueueStrandedIssueRecovery({
+        const queued = await enqueueStrandedIssueRecovery({ onDeferredDeadline: opts?.onDeferredDeadline,
           issueId: issue.id,
           agentId,
           reason: "issue_assignment_recovery",
@@ -5789,7 +5813,7 @@ export function recoveryService(
             result.skipped += 1;
             continue;
           }
-          const retried = await enqueueStrandedIssueRecovery({
+          const retried = await enqueueStrandedIssueRecovery({ onDeferredDeadline: opts?.onDeferredDeadline,
             issueId: issue.id,
             agentId,
             reason: "issue_continuation_needed",
@@ -5873,7 +5897,7 @@ export function recoveryService(
           continue;
         }
 
-        const queued = await enqueueStrandedIssueRecovery({
+        const queued = await enqueueStrandedIssueRecovery({ onDeferredDeadline: opts?.onDeferredDeadline,
           issueId: issue.id,
           agentId,
           reason: "issue_continuation_needed",
@@ -5996,7 +6020,7 @@ export function recoveryService(
       }
 
       const recoveryOutcome: StrandedRecoveryOutcome = {};
-      const queued = await enqueueStrandedIssueRecovery({
+      const queued = await enqueueStrandedIssueRecovery({ onDeferredDeadline: opts?.onDeferredDeadline,
         issueId: issue.id,
         agentId,
         reason: "issue_continuation_needed",

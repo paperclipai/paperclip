@@ -10,8 +10,10 @@ import { notifyScheduledRetryDispatch } from "../run-dispatch-notifications.js";
 import { deriveTaskKeyWithHeartbeatFallback } from "./run-state.js";
 import {
   PROVIDER_NETWORK_UNREACHABLE_CODE,
+  PROVIDER_NETWORK_UNREACHABLE_RECHECK_MS,
   createProviderHostReachabilityProbe,
   isHostNetworkUnreachableFailure,
+  isProbeHostRelevantToAdapter,
 } from "./provider-network-reachability.js";
 import { infrastructureRetryDelayMs } from "../system-recovery-state.js";
 import {
@@ -594,15 +596,22 @@ export function createHeartbeatRetries(db: Db, dependencies: HeartbeatRetryDepen
     // called this (recovery sweeps, run completion) calls again on its own
     // cadence, and that is the re-probe loop.
     //
-    // Ordered last among the pure guards on purpose: the classifier is cheap but
-    // the probe is I/O, and it only runs once a failure has already named a
-    // host-level network error.
-    if (isHostNetworkUnreachableFailure(run) && !(await isProviderHostReachable())) {
+    // Ordered last among the pure guards on purpose: the classifier and the
+    // adapter-relevance check are cheap but the probe is I/O, and it only runs
+    // once a failure has already named a host-level network error ON an adapter
+    // the probe host actually answers for.
+    if (isHostNetworkUnreachableFailure(run)
+        && isProbeHostRelevantToAdapter(agent.adapterType)
+        && !(await isProviderHostReachable())) {
       return {
         outcome: "not_scheduled" as const,
         reason:
           "The host cannot reach the provider; holding the retry instead of spending an attempt on a spawn that cannot succeed.",
         errorCode: PROVIDER_NETWORK_UNREACHABLE_CODE,
+        // The caller MUST re-examine this run; the hold is not a refusal and
+        // nothing else will bring it back. See the constant's own comment: the
+        // suppressed retry run was the clock that used to re-wake the sweeper.
+        retryAt: Date.now() + PROVIDER_NETWORK_UNREACHABLE_RECHECK_MS,
         issueId: readNonEmptyString(run.contextSnapshot?.issueId),
       };
     }

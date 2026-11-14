@@ -1,7 +1,11 @@
 import { describe, expect, it, vi } from "vitest";
 import {
+  PROVIDER_NETWORK_UNREACHABLE_RECHECK_MS,
+  PROVIDER_REACHABILITY_CACHE_MS,
   createProviderHostReachabilityProbe,
   isHostNetworkUnreachableFailure,
+  isProbeHostRelevantToAdapter,
+  lookupWithTimeout,
   resolveProviderReachabilityProbeHost,
 } from "./provider-network-reachability.js";
 
@@ -209,5 +213,120 @@ describe("createProviderHostReachabilityProbe", () => {
       host: "paperclip-lac6885-does-not-exist.invalid",
     });
     await expect(probe()).resolves.toBe(false);
+  });
+});
+
+
+describe("lookupWithTimeout", () => {
+  // These drive the REAL race (timer vs getaddrinfo callback), not a mocked
+  // `resolveHost` one layer up. getaddrinfo cannot be cancelled, so the
+  // behaviour that matters is what happens to a lookup that outlives its
+  // deadline. `rules/runtime-dependency-boundaries.mdc` requires this.
+  it("reports unreachable when the lookup outlives the deadline", async () => {
+    vi.useFakeTimers();
+    try {
+      const pending = lookupWithTimeout("example.invalid", 3_000, () => {
+        /* never calls back: a resolver that hangs */
+      });
+      await vi.advanceTimersByTimeAsync(3_000);
+      await expect(pending).resolves.toBe(false);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("ignores a late callback from a lookup that already timed out", async () => {
+    vi.useFakeTimers();
+    let late: ((error: unknown) => void) | null = null;
+    try {
+      const pending = lookupWithTimeout("example.invalid", 3_000, (_host, cb) => {
+        late = cb;
+      });
+      await vi.advanceTimersByTimeAsync(3_000);
+      await expect(pending).resolves.toBe(false);
+      // The hung lookup finally answers, and answers SUCCESS. The latch must
+      // swallow it: a second settle would otherwise resolve an already-settled
+      // promise and, worse, report reachable for a probe that timed out.
+      expect(() => late?.(null)).not.toThrow();
+      await expect(pending).resolves.toBe(false);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("clears the deadline timer when the lookup answers first", async () => {
+    vi.useFakeTimers();
+    try {
+      const pending = lookupWithTimeout("example.test", 3_000, (_host, cb) =>
+        cb(null),
+      );
+      await expect(pending).resolves.toBe(true);
+      // Nothing is left armed, so the timer cannot hold the event loop open.
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("reports unreachable when the lookup fails", async () => {
+    await expect(
+      lookupWithTimeout("example.invalid", 3_000, (_host, cb) =>
+        cb(new Error("ENOTFOUND")),
+      ),
+    ).resolves.toBe(false);
+  });
+
+  it("recovers on a fresh probe once the cache has expired", async () => {
+    let reachable = false;
+    let at = 0;
+    const probe = createProviderHostReachabilityProbe({
+      now: () => at,
+      resolveHost: async () => reachable,
+    });
+    expect(await probe()).toBe(false);
+    // Still inside the cache window: the stale "down" stands, no new lookup.
+    reachable = true;
+    at += PROVIDER_REACHABILITY_CACHE_MS - 1;
+    expect(await probe()).toBe(false);
+    // The hold's recheck interval is longer than the cache on purpose, so the
+    // pass that acts on it always takes a fresh probe rather than re-reading
+    // the "down" that caused the hold.
+    expect(PROVIDER_NETWORK_UNREACHABLE_RECHECK_MS).toBeGreaterThan(
+      PROVIDER_REACHABILITY_CACHE_MS,
+    );
+    at += PROVIDER_NETWORK_UNREACHABLE_RECHECK_MS;
+    expect(await probe()).toBe(true);
+  });
+});
+
+describe("isProbeHostRelevantToAdapter", () => {
+  const noOverride = {} as NodeJS.ProcessEnv;
+
+  it("answers for claude_local, which the default probe host serves", () => {
+    expect(isProbeHostRelevantToAdapter("claude_local", noOverride)).toBe(true);
+  });
+
+  it.each(["codex_local", "gemini_local", "grok_local", "opencode_local"])(
+    "does not answer for %s on the default host",
+    (adapterType) => {
+      // Its ENOTFOUND came from its OWN endpoint. api.anthropic.com resolving
+      // or not is no evidence either way, so the gate must not hold its retry.
+      expect(isProbeHostRelevantToAdapter(adapterType, noOverride)).toBe(false);
+    },
+  );
+
+  it.each([null, undefined, "", 7])("does not answer for %p", (adapterType) => {
+    expect(isProbeHostRelevantToAdapter(adapterType, noOverride)).toBe(false);
+  });
+
+  it("answers for every adapter once an operator names the probe host", () => {
+    const env = { PAPERCLIP_PROVIDER_PROBE_HOST: "api.openai.com" } as NodeJS.ProcessEnv;
+    expect(isProbeHostRelevantToAdapter("codex_local", env)).toBe(true);
+    expect(resolveProviderReachabilityProbeHost(env)).toBe("api.openai.com");
+  });
+
+  it("ignores a blank override", () => {
+    const env = { PAPERCLIP_PROVIDER_PROBE_HOST: "   " } as NodeJS.ProcessEnv;
+    expect(isProbeHostRelevantToAdapter("codex_local", env)).toBe(false);
   });
 });
