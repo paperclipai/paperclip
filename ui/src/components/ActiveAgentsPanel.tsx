@@ -13,6 +13,7 @@ import { StatusGlyph } from "./StatusGlyph";
 import { RunChatSurface } from "./RunChatSurface";
 import { useLiveRunTranscripts } from "./transcript/useLiveRunTranscripts";
 import { usePublishSharedQueryData, useSharedPollingQuery } from "../hooks/useSharedPolling";
+import { isRussianLocale, useTx, useUiLanguage } from "../i18n/tx";
 
 const MIN_DASHBOARD_RUNS = 4;
 const DASHBOARD_RUN_CARD_LIMIT = 4;
@@ -61,6 +62,8 @@ export function ActiveAgentsPanel({
   showTranscripts = false,
   dedupeLinkedTasks = false,
 }: ActiveAgentsPanelProps) {
+  const tx = useTx();
+  const ru = isRussianLocale(useUiLanguage());
   const effectiveFetchLimit = fetchLimit;
   const liveRunsQueryKey = [...queryKeys.liveRuns(companyId), queryScope, { minRunCount, fetchLimit: effectiveFetchLimit, dedupeLinkedTasks }] as const;
   const sharedLiveRuns = useSharedPollingQuery({
@@ -131,11 +134,11 @@ export function ActiveAgentsPanel({
   return (
     <div>
       <h3 className="mb-3 text-sm font-semibold uppercase tracking-wide text-muted-foreground">
-        {title}
+        {tx(title)}
       </h3>
       {runs.length === 0 ? (
         <div className="rounded-xl border border-border p-4">
-          <p className="text-sm text-muted-foreground">{emptyMessage}</p>
+          <p className="text-sm text-muted-foreground">{tx(emptyMessage)}</p>
         </div>
       ) : (
         <div className={cn("grid grid-cols-1 items-start gap-2 sm:grid-cols-2 sm:gap-4 xl:grid-cols-4", gridClassName)}>
@@ -158,8 +161,10 @@ export function ActiveAgentsPanel({
         <div className="mt-3 flex justify-end text-xs text-muted-foreground">
           <Link to="/dashboard/live" className="hover:text-foreground hover:underline">
             {hiddenRunCount > 0
-              ? `${hiddenRunCount} more active/recent run${hiddenRunCount === 1 ? "" : "s"}`
-              : "View all runs"}
+              ? (ru
+                ? `Ещё ${hiddenRunCount} ${hiddenRunCount === 1 ? "запуск" : "запусков"}`
+                : `${hiddenRunCount} more active/recent run${hiddenRunCount === 1 ? "" : "s"}`)
+              : tx("View all runs")}
           </Link>
         </div>
       )}
@@ -186,13 +191,14 @@ export const AgentRunCard = memo(function AgentRunCard({
   issueLoadFailed?: boolean;
   className?: string;
 }) {
-  const statusLabel = runStatusLabels[run.status] ?? run.status.replace(/[_-]/g, " ");
+  const tx = useTx();
+  const statusLabel = tx(runStatusLabels[run.status] ?? run.status.replace(/[_-]/g, " "));
   const runUrl = `/agents/${run.agentId}/runs/${run.id}`;
   const timestamp = run.finishedAt
-    ? `Finished ${relativeTime(run.finishedAt)}`
-    : run.startedAt ? `Started ${relativeTime(run.startedAt)}` : `Queued ${relativeTime(run.createdAt)}`;
+    ? `${tx("Finished")} ${relativeTime(run.finishedAt)}`
+    : run.startedAt ? `${tx("Started")} ${relativeTime(run.startedAt)}` : `${tx("Queued")} ${relativeTime(run.createdAt)}`;
   const taskStatus = issue?.status === "in_review" && issue.externalConversationState === "waiting" ? "idle" : issue?.status ?? "backlog";
-  const taskTitle = issue?.title ?? (issueLoadFailed ? "Task unavailable" : "Loading task…");
+  const taskTitle = issue?.title ?? (issueLoadFailed ? tx("Task unavailable") : tx("Loading task…"));
 
   return (
     <div className={cn(
@@ -207,7 +213,7 @@ export const AgentRunCard = memo(function AgentRunCard({
         <Link
           to={runUrl}
           title={`${run.agentName} — ${statusLabel} · ${timestamp}`}
-          aria-label={`${run.agentName} — ${statusLabel}. View run`}
+          aria-label={`${run.agentName} — ${statusLabel}. ${tx("View run")}`}
           className="flex min-w-0 items-center gap-2 rounded-md text-foreground hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
         >
           <AgentIdentity agent={{ id: run.agentId, name: run.agentName, appearance: run.agentAppearance }} size="sm" className="gap-2 font-medium" />
@@ -235,7 +241,7 @@ export const AgentRunCard = memo(function AgentRunCard({
         ) : (
           <Link to={runUrl} className="flex items-center gap-1.5 rounded-lg border border-border/60 bg-background/60 px-2.5 py-2 text-sm text-muted-foreground hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
             <Clock3 className="size-4 shrink-0" aria-hidden />
-            <span className="truncate">{run.invocationSource === "timer" ? "Scheduled heartbeat" : "No linked task"}</span>
+            <span className="truncate">{run.invocationSource === "timer" ? tx("Scheduled heartbeat") : tx("No linked task")}</span>
           </Link>
         )}
         <time
