@@ -124,6 +124,30 @@ suite("heartbeat run JSON reads", () => {
     });
   });
 
+  it("reads large results only for the runs a limited task read returns", async () => {
+    const { companyId, agent, issue } = await fixture();
+    const runIds: string[] = [];
+    for (let index = 0; index < 10; index += 1) {
+      const [run] = await db.insert(heartbeatRuns).values({
+        companyId, agentId: agent.id, issueId: issue.id, status: "succeeded", livenessState: "completed",
+        createdAt: new Date(Date.UTC(2026, 0, 1, 0, index)),
+        contextSnapshot: { issueId: issue.id },
+        resultJson: { summary: `run ${index}`, stdout: randomBytes(128 * 1024).toString("base64") },
+      }).returning();
+      runIds.push(run.id);
+    }
+    const { blocks: resultRead } = await measured(() =>
+      db.execute(sql`select ${heartbeatRuns.resultJson} ->> 'summary' from ${heartbeatRuns} where ${heartbeatRuns.id} = ${runIds[9]}`));
+    expect(resultRead).toBeGreaterThan(10);
+
+    const limited = await measured(() => activityService(db).runsForIssue(
+      companyId, issue.id, null, 2, undefined, { skipLivenessBackfill: true },
+    ));
+
+    expect(limited.result.map((row) => row.runId)).toEqual([runIds[9], runIds[8]]);
+    expect(limited.blocks).toBe(2 * 2 * resultRead);
+  });
+
   it("reads a large run context once per listed run", async () => {
     const { companyId, agent, issue } = await fixture();
     const [run] = await db.insert(heartbeatRuns).values({

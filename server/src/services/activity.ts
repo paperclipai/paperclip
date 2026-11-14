@@ -482,6 +482,41 @@ export function activityService(db: Db) {
     ) => {
       if (selectedRunIds && !selectedRunIds.length) return [];
       if (!options.skipLivenessBackfill) scheduleRunLivenessBackfill(companyId, issueId);
+      const runsWhere = and(
+        eq(heartbeatRuns.companyId, companyId),
+        sql`(not exists (select 1 from ${issues} where ${issues.id} = ${issueId}
+          and ${issues.companyId} = ${companyId} and ${issues.conversationAgentId} is not null)
+          or coalesce(${heartbeatRuns.nativeIssueId}::text, ${heartbeatRuns.issueId}::text,
+            ${heartbeatRuns.contextSnapshot} ->> 'issueId', ${heartbeatRuns.contextSnapshot} ->> 'taskId') = ${issueId})`,
+        ...(selectedRunIds ? [inArray(heartbeatRuns.id, selectedRunIds)] : []),
+        or(
+          eq(heartbeatRuns.issueId, issueId),
+          sql`exists (
+            select 1
+            from ${activityLog}
+            where ${activityLog.companyId} = ${companyId}
+              and ${activityLog.entityType} = 'issue'
+              and ${activityLog.entityId} = ${issueId}
+              and ${activityLog.runId} = ${heartbeatRuns.id}
+          )`,
+        ),
+      );
+      const limitedRunIds = limit === undefined
+        ? undefined
+        : (await db
+          .select({ runId: heartbeatRuns.id })
+          .from(heartbeatRuns)
+          .innerJoin(
+            agents,
+            and(
+              eq(agents.id, heartbeatRuns.agentId),
+              eq(agents.companyId, heartbeatRuns.companyId),
+            ),
+          )
+          .where(runsWhere)
+          .orderBy(desc(heartbeatRuns.createdAt), desc(heartbeatRuns.id))
+          .limit(limit)).map((row) => row.runId);
+      if (limitedRunIds && !limitedRunIds.length) return [];
       const runsQuery = db
         .select({
           runId: heartbeatRuns.id,
@@ -532,29 +567,9 @@ export function activityService(db: Db) {
           ),
         )
         .leftJoinLateral(heartbeatRunJsonOnce, sql`true`)
-        .where(
-          and(
-            eq(heartbeatRuns.companyId, companyId),
-            sql`(not exists (select 1 from ${issues} where ${issues.id} = ${issueId}
-              and ${issues.companyId} = ${companyId} and ${issues.conversationAgentId} is not null)
-              or coalesce(${heartbeatRuns.nativeIssueId}::text, ${heartbeatRuns.issueId}::text,
-                ${heartbeatRuns.contextSnapshot} ->> 'issueId', ${heartbeatRuns.contextSnapshot} ->> 'taskId') = ${issueId})`,
-            ...(selectedRunIds ? [inArray(heartbeatRuns.id, selectedRunIds)] : []),
-            or(
-              eq(heartbeatRuns.issueId, issueId),
-              sql`exists (
-                select 1
-                from ${activityLog}
-                where ${activityLog.companyId} = ${companyId}
-                  and ${activityLog.entityType} = 'issue'
-                  and ${activityLog.entityId} = ${issueId}
-                  and ${activityLog.runId} = ${heartbeatRuns.id}
-              )`,
-            ),
-          ),
-        )
+        .where(and(runsWhere, ...(limitedRunIds ? [inArray(heartbeatRuns.id, limitedRunIds)] : [])))
         .orderBy(desc(heartbeatRuns.createdAt), desc(heartbeatRuns.id));
-      const runs = await (limit === undefined ? runsQuery : runsQuery.limit(limit));
+      const runs = await runsQuery;
 
       if (runs.length === 0) return runs;
       const runIds = runs.map((run) => run.runId);
