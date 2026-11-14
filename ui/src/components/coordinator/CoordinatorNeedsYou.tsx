@@ -12,12 +12,12 @@ import { useBreadcrumbs } from "@/context/BreadcrumbContext";
 import { usePanel } from "@/context/PanelContext";
 import { useSidebar } from "@/context/SidebarContext";
 import { useCoordinatorWorkspaceEnabled } from "@/hooks/useCoordinatorWorkspaceEnabled";
-import { useAttentionBadge, useAttentionCloseActions, useAttentionEveryoneView, useAttentionViewFeed, useClaimAttentionItem, useDismissAttentionReceipt } from "@/hooks/useAttentionViews";
+import { useAttentionCloseActions, useAttentionEveryoneAccess, useAttentionViewFeed, useClaimAttentionItem, useDismissAttentionReceipt } from "@/hooks/useAttentionViews";
 import { useNavigate, useSearchParams } from "@/lib/router";
 import { queryKeys } from "@/lib/queryKeys";
-import { COORDINATOR_ASSIGNEE_PARAM, COORDINATOR_RECENT_DECISION_MS, DEFAULT_DECISION_HISTORY_SCOPE, coordinatorAssignee, coordinatorAssigneeTarget, coordinatorAudienceKey, coordinatorCardDetail, coordinatorCardTitle, recentDecisionReceipts, type CoordinatorAssignee } from "@/lib/coordinator-attention";
+import { COORDINATOR_ASSIGNEE_PARAM, COORDINATOR_RECENT_DECISION_MS, DEFAULT_DECISION_HISTORY_SCOPE, coordinatorAssignee, coordinatorAssigneeNeedsEveryone, coordinatorAssigneeTarget, coordinatorAudienceKey, coordinatorCardDetail, coordinatorCardTitle, loadNeedsYouToolbar, needsYouToolbarStorageKey, openingCoordinatorAssignee, recentDecisionReceipts, saveNeedsYouToolbar, type CoordinatorAssignee, type NeedsYouGroup, type NeedsYouToolbar } from "@/lib/coordinator-attention";
 import { attentionDetailLine, isInlineResolvable } from "@/lib/attention";
-import { ATTENTION_VIEW_PARAM, attentionAudienceLineNamesResponders, parseAttentionView } from "@/lib/attention-views";
+import { ATTENTION_VIEW_PARAM, EMPTY_ATTENTION_VIEW_COUNTS, attentionAudienceLineNamesResponders, parseAttentionView } from "@/lib/attention-views";
 import { splitArchivedAttentionItems, splitStaleAttentionItems } from "@/lib/attention-close";
 import { attentionObligationEvidence, foldAttentionObligations } from "@/lib/attention-obligations";
 import { buildCompanyUserLabelMap } from "@/lib/company-members";
@@ -43,8 +43,6 @@ import { BlockedTaskCardBody, RecoveryCardBody, ReviewTaskCardBody } from "./Nee
 import { NEEDS_YOU_SECTIONS, NeedsYouPanelRow, needsYouSection, type NeedsYouSection } from "./NeedsYouCardKit";
 import { NeedsYouAudience, NeedsYouReceiptCard, NeedsYouRequester, NeedsYouTaskLink, NeedsYouTypeLabel, needsYouTaskRef } from "./NeedsYouCardParts";
 import { CoordinatorNeedsYouSidePanel, needsYouReviewTab, needsYouReviewTabId, needsYouTabArtifact, type NeedsYouReviewPayload } from "./CoordinatorNeedsYouSidePanel";
-
-type Group = "type" | "none" | "task" | "agent" | "project";
 
 /** Rule 7: a card that cannot answer inline links to the exact control, named by its verb. */
 function openLabel(item: AttentionItem) {
@@ -82,24 +80,36 @@ export function CoordinatorNeedsYou() {
   const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
   const deepLinkDecisionId = searchParams.get("decisionId");
-  // For you is the default; the other views live in the URL (PAP-749 Rule 3).
-  // Everyone opens for a board member only (PAP-768).
-  const everyone = useAttentionEveryoneView(selectedCompanyId);
-  const view = parseAttentionView(searchParams.get(ATTENTION_VIEW_PARAM), { everyone });
+  const toolbarKey = needsYouToolbarStorageKey(selectedCompanyId, userId);
+  const [toolbarState, setToolbarState] = useState(() => ({ key: toolbarKey, toolbar: loadNeedsYouToolbar(toolbarKey) }));
+  const toolbar = toolbarState.key === toolbarKey ? toolbarState.toolbar : loadNeedsYouToolbar(toolbarKey);
+  useEffect(() => {
+    setToolbarState(current => current.key === toolbarKey ? current : { key: toolbarKey, toolbar: loadNeedsYouToolbar(toolbarKey) });
+  }, [toolbarKey]);
+  const keepToolbar = (patch: Partial<NeedsYouToolbar>) => {
+    setToolbarState({ key: toolbarKey, toolbar: { ...toolbar, ...patch } });
+    saveNeedsYouToolbar(toolbarKey, { ...loadNeedsYouToolbar(toolbarKey), ...patch });
+  };
+  const clearToolbarFilters = useCallback(() => setToolbarState(current => ({ key: toolbarKey,
+    toolbar: { ...(current.key === toolbarKey ? current.toolbar : loadNeedsYouToolbar(toolbarKey)), agentId: "", project: null } })), [toolbarKey]);
+  const { everyone, settled: everyoneSettled } = useAttentionEveryoneAccess(selectedCompanyId);
+  const requestedView = searchParams.get(ATTENTION_VIEW_PARAM) || null;
+  const awaitingEveryone = !everyoneSettled
+    && (requestedView ? requestedView === "all" : coordinatorAssigneeNeedsEveryone(openingCoordinatorAssignee(toolbar.assignee, true)));
+  const mayOpenEveryone = everyone || awaitingEveryone;
+  const opening = coordinatorAssigneeTarget(openingCoordinatorAssignee(toolbar.assignee, mayOpenEveryone), userId);
+  const view = requestedView ? parseAttentionView(requestedView, { everyone: mayOpenEveryone }) : opening.view;
   // Everyone can be narrowed to one person (PAP-775); the person lives in the URL too.
-  const forUserId = view === "all" ? searchParams.get(COORDINATOR_ASSIGNEE_PARAM) : null;
-  const setView = useCallback((next: typeof view, person: string | null = null) => setSearchParams(current => {
+  const forUserId = view !== "all" ? null : requestedView ? searchParams.get(COORDINATOR_ASSIGNEE_PARAM) : opening.forUserId;
+  const setView = useCallback((next: typeof view | null, person: string | null = null) => setSearchParams(current => {
     const params = new URLSearchParams(current);
-    if (next === "mine") params.delete(ATTENTION_VIEW_PARAM); else params.set(ATTENTION_VIEW_PARAM, next);
+    if (next) params.set(ATTENTION_VIEW_PARAM, next); else params.delete(ATTENTION_VIEW_PARAM);
     if (person) params.set(COORDINATOR_ASSIGNEE_PARAM, person); else params.delete(COORDINATOR_ASSIGNEE_PARAM);
     return params;
   }, { replace: true }), [setSearchParams]);
   const assignee = coordinatorAssignee(view, forUserId);
   const reducedMotion = useReducedMotion();
   const [query, setQuery] = useState("");
-  const [agentFilter, setAgentFilter] = useState("");
-  const [projectFilter, setProjectFilter] = useState("");
-  const [groupBy, setGroupBy] = useState<Group>("type");
   const [historyOpen, setHistoryOpen] = useState(false);
   // Focus (PAP-770): documents a card asks about open as side-panel tabs, the
   // same chrome as task detail. Decision history is a main-pane view instead.
@@ -116,7 +126,7 @@ export function CoordinatorNeedsYou() {
   const archivedView = view === "archived";
   const [renderLimit, setRenderLimit] = useState(40);
   // Keyed by person and view; the For you key is the one the badge reads.
-  const feed = useAttentionViewFeed(selectedCompanyId, view);
+  const feed = useAttentionViewFeed(selectedCompanyId, view, { enabled: !awaitingEveryone });
   useEffect(() => {
     setSavedIds(current => {
       const pending = new Map([...current].filter(([, hidden]) => hidden.closed || hidden.version === feed.dataUpdatedAt));
@@ -125,7 +135,7 @@ export function CoordinatorNeedsYou() {
   }, [feed.dataUpdatedAt]);
   const feedView = useQueryView(feed);
   const feedWaiting = feedView.kind === "loading" || feedView.kind === "reconnecting";
-  const { viewCounts } = useAttentionBadge(selectedCompanyId);
+  const viewCounts = feed.data?.viewCounts ?? EMPTY_ATTENTION_VIEW_COUNTS;
   const claim = useClaimAttentionItem(selectedCompanyId);
   const receiptActions = useDismissAttentionReceipt(selectedCompanyId);
   const directory = useQuery({ queryKey: queryKeys.access.companyUserDirectory(selectedCompanyId!), queryFn: () => accessApi.listUserDirectory(selectedCompanyId!), enabled: !!selectedCompanyId });
@@ -154,6 +164,9 @@ export function CoordinatorNeedsYou() {
   const recent = useQuery({ queryKey: [...queryKeys.attention(selectedCompanyId!), "history", "recent", DEFAULT_DECISION_HISTORY_SCOPE],
     queryFn: () => attentionApi.history(selectedCompanyId!, { limit: 100, scope: DEFAULT_DECISION_HISTORY_SCOPE, since: new Date(Date.now() - COORDINATOR_RECENT_DECISION_MS).toISOString() }), enabled: !!selectedCompanyId, refetchOnWindowFocus: true });
   const agentMap = useMemo(() => new Map((agentQuery.data ?? []).map((agent) => [agent.id, agent])), [agentQuery.data]);
+  const agentFilter = agentMap.has(toolbar.agentId) ? toolbar.agentId : "";
+  const projectFilter = toolbar.project?.id ?? "";
+  const groupBy = toolbar.groupBy;
   const recentItems = useMemo(() => recentDecisionReceipts(recent.data?.items ?? [], now), [recent.data, now]);
   const settlingIds = useMemo(() => new Set(settling.map(item => `${item.sourceKind}:${item.subject.id}`)), [settling]);
   // One card for each obligation (PAP-749 Rule 11): evidence folds into its
@@ -204,7 +217,7 @@ export function CoordinatorNeedsYou() {
     }
     // A saved decision link takes precedence over local toolbar filters and the
     // rendering window. Consume it only after its actual card has mounted.
-    if (query || agentFilter || projectFilter) { setQuery(""); setAgentFilter(""); setProjectFilter(""); return; }
+    if (query || toolbar.agentId || projectFilter) { setQuery(""); clearToolbarFilters(); return; }
     if (forUserId) { setView("all"); return; }
     if (staleItems.some(item => item.sourceKind === "decision" && item.subject.id === deepLinkDecisionId)) setStaleOpen(true);
     const index = currentItems.findIndex(item => item.sourceKind === "decision" && item.subject.id === deepLinkDecisionId);
@@ -214,22 +227,33 @@ export function CoordinatorNeedsYou() {
     card.focus({ preventScroll: true });
     card.scrollIntoView({ block: "center", behavior: reducedMotion ? "auto" : "smooth" });
     setSearchParams(current => { const next = new URLSearchParams(current); next.delete("decisionId"); return next; }, { replace: true });
-  }, [deepLinkDecisionId, selectedCompanyId, pendingItems, currentItems, staleItems, feedWaiting, everyone, view, query, agentFilter, projectFilter, forUserId, setView, renderLimit, reducedMotion, setSearchParams]);
-  const projects = useMemo(() => [...new Map([
-    ...pendingItems.flatMap((item) => item.project ? [[item.project.id, item.project.name] as const] : []),
-    ...recentItems.flatMap((item) => item.projectId ? [[item.projectId, item.projectName ?? "Unnamed project"] as const] : []),
-  ]).entries()], [pendingItems, recentItems]);
+  }, [deepLinkDecisionId, selectedCompanyId, pendingItems, currentItems, staleItems, feedWaiting, everyone, view, query, toolbar.agentId, projectFilter, forUserId, setView, clearToolbarFilters, renderLimit, reducedMotion, setSearchParams]);
+  const keptProjectId = toolbar.project?.id;
+  const keptProjectName = toolbar.project?.name;
+  const projects = useMemo(() => {
+    const names = new Map([
+      ...pendingItems.flatMap((item) => item.project ? [[item.project.id, item.project.name] as const] : []),
+      ...recentItems.flatMap((item) => item.projectId ? [[item.projectId, item.projectName ?? "Unnamed project"] as const] : []),
+    ]);
+    if (keptProjectId && !names.has(keptProjectId)) names.set(keptProjectId, keptProjectName || "Unnamed project");
+    return [...names.entries()];
+  }, [pendingItems, recentItems, keptProjectId, keptProjectName]);
+  const chooseProject = (id: string) => keepToolbar({ project: id ? { id, name: projects.find(([projectId]) => projectId === id)?.[1] ?? "Unnamed project" } : null });
   // Assigned to you, everyone the viewer may see, one person, no owner yet, or company alerts.
   const assigneeOptions = useMemo(() => {
     const people = [...userLabelMap].filter(([id]) => id !== userId).sort(([, a], [, b]) => a.localeCompare(b));
     return [
       { value: "me" as CoordinatorAssignee, label: "Assigned to you" },
-      ...(everyone ? [{ value: "all" as CoordinatorAssignee, label: "All assignees" }, ...people.map(([id, name]) => ({ value: `user:${id}` as CoordinatorAssignee, label: name }))] : []),
+      ...(mayOpenEveryone ? [{ value: "all" as CoordinatorAssignee, label: "All assignees" }, ...people.map(([id, name]) => ({ value: `user:${id}` as CoordinatorAssignee, label: name }))] : []),
       { value: "unassigned" as CoordinatorAssignee, label: "No owner yet" },
       { value: "company" as CoordinatorAssignee, label: "Company alerts" },
     ];
-  }, [userLabelMap, userId, everyone]);
-  const chooseAssignee = (value: CoordinatorAssignee) => { const target = coordinatorAssigneeTarget(value, userId); setView(target.view, target.forUserId); };
+  }, [userLabelMap, userId, mayOpenEveryone]);
+  const chooseAssignee = (value: CoordinatorAssignee) => {
+    const target = coordinatorAssigneeTarget(value, userId);
+    keepToolbar({ assignee: value });
+    setView(target.view, target.forUserId);
+  };
   const closeHistory = useCallback(() => setHistoryOpen(false), []);
   const showHistory = () => setHistoryOpen(true);
   // Cards whose artifact can open beside them: the + launcher lists these.
@@ -385,19 +409,16 @@ export function CoordinatorNeedsYou() {
     {NEEDS_YOU_SECTIONS[section].title}
   </h2>;
   return <LayoutGroup id="coordinator-decisions"><section className="coordinator-needs-you mx-auto w-full max-w-4xl space-y-6" aria-label="Needs You">
-    {archivedView ? <div className="flex items-center gap-2"><Button variant="ghost" size="icon-sm" aria-label="Back to Needs You" onClick={() => setView("mine")}><ArrowLeft className="size-4" /></Button><h1 className="text-2xl font-medium">Archived</h1></div> : null}
-    {/* Assigned to you by default (PAP-775); the assignee filter widens to all
-        assignees, one person, no owner yet or company alerts. Archived and
-        Decision history sit in View. */}
+    {archivedView ? <div className="flex items-center gap-2"><Button variant="ghost" size="icon-sm" aria-label="Back to Needs You" onClick={() => setView(null)}><ArrowLeft className="size-4" /></Button><h1 className="text-2xl font-medium">Archived</h1></div> : null}
     <div role="toolbar" aria-label="Decisions controls" className="flex flex-wrap items-center gap-2">
       <div className="min-w-44 flex-1"><ToolbarSearch query={query} onQueryChange={setQuery} label="Search decisions" placeholder="Search…" /></div>
-      <NativeSelect aria-label="Filter decisions by agent" value={agentFilter} onChange={(event) => setAgentFilter(event.target.value)} className="w-auto"><option value="">All agents</option>{(agentQuery.data ?? []).map((agent) => <option key={agent.id} value={agent.id}>{agent.name}</option>)}</NativeSelect>
-      <NativeSelect aria-label="Filter decisions by project" value={projectFilter} onChange={(event) => setProjectFilter(event.target.value)} className="w-auto"><option value="">All projects</option>{projects.map(([id, name]) => <option key={id} value={id}>{name}</option>)}</NativeSelect>
-      {assignee ? <NativeSelect aria-label="Filter decisions by assignee" data-attention-assignee={assignee} value={assignee} onChange={(event) => chooseAssignee(event.target.value as CoordinatorAssignee)} className="w-auto">
+      <NativeSelect aria-label="Filter decisions by agent" value={agentFilter} onChange={(event) => keepToolbar({ agentId: event.target.value })} className="w-auto"><option value="">All agents</option>{(agentQuery.data ?? []).map((agent) => <option key={agent.id} value={agent.id}>{agent.name}</option>)}</NativeSelect>
+      <NativeSelect aria-label="Filter decisions by project" value={projectFilter} onChange={(event) => chooseProject(event.target.value)} className="w-auto"><option value="">All projects</option>{projects.map(([id, name]) => <option key={id} value={id}>{name}</option>)}</NativeSelect>
+      {assignee ? <NativeSelect aria-label="Filter decisions by assignee" data-attention-assignee={assignee} value={assignee} disabled={awaitingEveryone} onChange={(event) => chooseAssignee(event.target.value as CoordinatorAssignee)} className="w-auto">
         {assigneeOptions.map(option => <option key={option.value} value={option.value}>{option.label}</option>)}
         {assignee.startsWith("user:") && !assigneeOptions.some(option => option.value === assignee) ? <option value={assignee}>Someone else</option> : null}
       </NativeSelect> : null}
-      <NativeSelect aria-label="Group decisions" value={groupBy} onChange={(event) => setGroupBy(event.target.value as Group)} className="w-auto"><option value="type">By type</option><option value="task">By task</option><option value="agent">By agent</option><option value="project">By project</option><option value="none">No grouping</option></NativeSelect>
+      <NativeSelect aria-label="Group decisions" value={groupBy} onChange={(event) => keepToolbar({ groupBy: event.target.value as NeedsYouGroup })} className="w-auto"><option value="type">By type</option><option value="task">By task</option><option value="agent">By agent</option><option value="project">By project</option><option value="none">No grouping</option></NativeSelect>
       <DropdownMenu>
         <DropdownMenuTrigger asChild><Button variant="ghost" size="sm" data-attention-view-menu>View<ChevronDown className="size-4" /></Button></DropdownMenuTrigger>
         <DropdownMenuContent align="end">

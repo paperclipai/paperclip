@@ -4,14 +4,20 @@ import {
   COORDINATOR_RECENT_DECISION_MS,
   DECISION_HISTORY_OUTCOME_OPTIONS,
   coordinatorAudienceKey,
+  DEFAULT_NEEDS_YOU_TOOLBAR,
   coordinatorAssignee,
+  coordinatorAssigneeNeedsEveryone,
   coordinatorAssigneeTarget,
   coordinatorCardDetail,
   coordinatorCardTitle,
   decisionHistoryContext,
   decisionHistoryHeadline,
+  loadNeedsYouToolbar,
+  needsYouToolbarStorageKey,
+  openingCoordinatorAssignee,
   pendingDecisionTaskIds,
   recentDecisionReceipts,
+  saveNeedsYouToolbar,
 } from "./coordinator-attention";
 
 describe("Coordinator attention projections", () => {
@@ -122,5 +128,53 @@ describe("who a card is for (PAP-775)", () => {
     expect(coordinatorAssigneeTarget("user:dotta", "scott")).toEqual({ view: "all", forUserId: "dotta" });
     expect(coordinatorAssigneeTarget("user:scott", "scott")).toEqual({ view: "mine", forUserId: null });
     expect(coordinatorAssigneeTarget("unassigned", "scott")).toEqual({ view: "unassigned", forUserId: null });
+  });
+});
+
+describe("the Needs You toolbar a person keeps", () => {
+  const memoryStorage = () => {
+    const values = new Map<string, string>();
+    return { values, getItem: (key: string) => values.get(key) ?? null, setItem: (key: string, value: string) => { values.set(key, value); } };
+  };
+
+  it("opens on the kept assignee, else All assignees for Everyone, else Assigned to you", () => {
+    expect(openingCoordinatorAssignee(null, true)).toBe("all");
+    expect(openingCoordinatorAssignee(null, false)).toBe("me");
+    expect(openingCoordinatorAssignee("me", true)).toBe("me");
+    expect(openingCoordinatorAssignee("unassigned", false)).toBe("unassigned");
+    expect(openingCoordinatorAssignee("user:dotta", true)).toBe("user:dotta");
+    expect(openingCoordinatorAssignee("user:dotta", false)).toBe("me");
+    expect(openingCoordinatorAssignee("all", false)).toBe("me");
+    expect(["me", "all", "unassigned", "company", "user:dotta"].map((value) => coordinatorAssigneeNeedsEveryone(value as "me")))
+      .toEqual([false, true, false, false, true]);
+  });
+
+  it("keeps each person's toolbar in their own company scope", () => {
+    const storage = memoryStorage();
+    const mine = needsYouToolbarStorageKey("company", "scott");
+    expect(needsYouToolbarStorageKey("company", null)).toBeNull();
+    expect(needsYouToolbarStorageKey(null, "scott")).toBeNull();
+    expect(loadNeedsYouToolbar(mine, storage)).toEqual(DEFAULT_NEEDS_YOU_TOOLBAR);
+    const kept = { assignee: "user:dotta", agentId: "agent-cos", project: { id: "project-web", name: "Website" }, groupBy: "project" } as const;
+    saveNeedsYouToolbar(mine, kept, storage);
+    expect(loadNeedsYouToolbar(mine, storage)).toEqual(kept);
+    expect(loadNeedsYouToolbar(needsYouToolbarStorageKey("company", "dotta"), storage)).toEqual(DEFAULT_NEEDS_YOU_TOOLBAR);
+    expect(loadNeedsYouToolbar(needsYouToolbarStorageKey("other-company", "scott"), storage)).toEqual(DEFAULT_NEEDS_YOU_TOOLBAR);
+    saveNeedsYouToolbar(null, kept, storage);
+    expect(storage.values.size).toBe(1);
+  });
+
+  it("reads anything unreadable as its default, field by field", () => {
+    const storage = memoryStorage();
+    const key = needsYouToolbarStorageKey("company", "scott");
+    storage.setItem(key!, JSON.stringify({ assignee: "user:", agentId: 7, project: { id: "", name: "Gone" }, groupBy: "severity" }));
+    expect(loadNeedsYouToolbar(key, storage)).toEqual(DEFAULT_NEEDS_YOU_TOOLBAR);
+    storage.setItem(key!, JSON.stringify({ assignee: "company", project: { id: "project-web" }, groupBy: "agent" }));
+    expect(loadNeedsYouToolbar(key, storage)).toEqual({ ...DEFAULT_NEEDS_YOU_TOOLBAR, assignee: "company", groupBy: "agent" });
+    storage.setItem(key!, "{not json");
+    expect(loadNeedsYouToolbar(key, storage)).toEqual(DEFAULT_NEEDS_YOU_TOOLBAR);
+    const denied = { getItem: () => { throw new Error("denied"); }, setItem: () => { throw new Error("denied"); } };
+    expect(loadNeedsYouToolbar(key, denied)).toEqual(DEFAULT_NEEDS_YOU_TOOLBAR);
+    expect(() => saveNeedsYouToolbar(key, DEFAULT_NEEDS_YOU_TOOLBAR, denied)).not.toThrow();
   });
 });

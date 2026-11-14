@@ -69,7 +69,7 @@ beforeEach(() => {
   fixture.pending = ["1", "2", "3"].map((id) => ({ id, sourceKind: "issue_thread_interaction", inlineResolvable: true, subject: { id, kind: "interaction", title: `Review ${id}`, metadata: { issueId: `task-${id}` } }, relatedIssue: { id: `task-${id}`, identifier: `PAP-${id}`, title: `Task ${id}`, href: `/PAP/issues/PAP-${id}` }, activityAt: new Date().toISOString() } as unknown as AttentionItem));
   agentFixture.rows = [{ id: "agent-cos", name: "Chief of Staff" }] as Agent[];
   fixture.history = []; fixture.url = "/decisions"; vi.clearAllMocks();
-  fixture.byView = {}; fixture.viewCounts = undefined; fixture.receipts = []; fixture.listCalls = []; fixture.boardAccess = null; fixture.historyByScope = {}; fixture.historyCalls = [];
+  fixture.byView = {}; fixture.viewCounts = undefined; fixture.receipts = []; fixture.listCalls = []; fixture.boardAccess = null; localStorage.clear(); fixture.historyByScope = {}; fixture.historyCalls = [];
   fixture.historyFail = false; fixture.feedFail = false; fixture.partial = false; fixture.mobile = false;
   container = document.createElement("div"); document.body.appendChild(container); root = createRoot(container);
 });
@@ -876,9 +876,8 @@ describe("Coordinator Needs You views (PAP-749 task 1b)", () => {
     await choose("all");
     expect(container.querySelector("[data-location]")?.textContent).toBe("?view=all");
     expect(cards()).toEqual(["m1", "d1", "pool"]);
-    // "Assigned to you" is the page itself.
     await choose("me");
-    expect(container.querySelector("[data-location]")?.textContent).toBe("");
+    expect(container.querySelector("[data-location]")?.textContent).toBe("?view=mine");
     client.clear();
   });
 

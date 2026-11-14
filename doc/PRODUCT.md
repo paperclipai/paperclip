@@ -479,8 +479,11 @@ Coordinator navigation uses **Chat**, **Tasks**, and **Inbox**. Inbox uses the
 inbox icon and keeps the existing decision feed, its count, and decision history
 at `/decisions`. The previous Inbox destination under More is removed.
 
-Inbox opens with **Assigned to you**. Its assignee filter can show all accessible
-assignees, a particular person, ownerless requests, or company alerts. Cards for
+Inbox opens with **All assignees** for a board member and with **Assigned to you**
+for a viewer. Its assignee filter can show all accessible assignees, a particular
+person, ownerless requests, or company alerts. The assignee, agent, project, and
+grouping choices are saved per person and company, so the next visit opens the
+same way; a link that names a view still opens that view. Cards for
 someone else prepend that person's name to the action label; your own cards omit
 your name. Routing validates who may reassign a request and whether its recipient
 may answer it.

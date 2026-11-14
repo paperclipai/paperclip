@@ -152,3 +152,69 @@ export function coordinatorAssigneeTarget(assignee: CoordinatorAssignee, current
   if (assignee.startsWith("user:")) return { view: "all", forUserId: assignee.slice(5) };
   return { view: assignee as "all" | "unassigned" | "company", forUserId: null };
 }
+
+export function coordinatorAssigneeNeedsEveryone(assignee: CoordinatorAssignee) {
+  return assignee === "all" || assignee.startsWith("user:");
+}
+
+export function openingCoordinatorAssignee(kept: CoordinatorAssignee | null, everyone: boolean): CoordinatorAssignee {
+  if (kept && (everyone || !coordinatorAssigneeNeedsEveryone(kept))) return kept;
+  return everyone ? "all" : "me";
+}
+
+export type NeedsYouGroup = "type" | "none" | "task" | "agent" | "project";
+const NEEDS_YOU_GROUPS: readonly NeedsYouGroup[] = ["type", "task", "agent", "project", "none"];
+
+export interface NeedsYouToolbar {
+  assignee: CoordinatorAssignee | null;
+  agentId: string;
+  project: { id: string; name: string } | null;
+  groupBy: NeedsYouGroup;
+}
+
+export const DEFAULT_NEEDS_YOU_TOOLBAR: NeedsYouToolbar = { assignee: null, agentId: "", project: null, groupBy: "type" };
+
+export function needsYouToolbarStorageKey(companyId: string | null | undefined, userId: string | null | undefined): string | null {
+  return companyId && userId ? `paperclip:needs-you-toolbar:v1:${encodeURIComponent(companyId)}:${encodeURIComponent(userId)}` : null;
+}
+
+type ToolbarStorage = Pick<Storage, "getItem" | "setItem">;
+function browserStorage(): ToolbarStorage | null {
+  try {
+    return typeof localStorage === "undefined" ? null : localStorage;
+  } catch {
+    return null;
+  }
+}
+
+function isCoordinatorAssignee(value: unknown): value is CoordinatorAssignee {
+  return value === "me" || value === "all" || value === "unassigned" || value === "company"
+    || (typeof value === "string" && value.startsWith("user:") && value.length > "user:".length);
+}
+
+export function loadNeedsYouToolbar(key: string | null, storage: ToolbarStorage | null = browserStorage()): NeedsYouToolbar {
+  if (!key) return DEFAULT_NEEDS_YOU_TOOLBAR;
+  try {
+    const saved: unknown = JSON.parse(storage?.getItem(key) ?? "null");
+    if (!saved || typeof saved !== "object") return DEFAULT_NEEDS_YOU_TOOLBAR;
+    const { assignee, agentId, project, groupBy } = saved as Record<string, unknown>;
+    const { id, name } = (project && typeof project === "object" ? project : {}) as Record<string, unknown>;
+    return {
+      assignee: isCoordinatorAssignee(assignee) ? assignee : null,
+      agentId: typeof agentId === "string" ? agentId : "",
+      project: typeof id === "string" && id && typeof name === "string" ? { id, name } : null,
+      groupBy: NEEDS_YOU_GROUPS.find((group) => group === groupBy) ?? "type",
+    };
+  } catch {
+    return DEFAULT_NEEDS_YOU_TOOLBAR;
+  }
+}
+
+export function saveNeedsYouToolbar(key: string | null, toolbar: NeedsYouToolbar, storage: ToolbarStorage | null = browserStorage()): void {
+  if (!key) return;
+  try {
+    storage?.setItem(key, JSON.stringify(toolbar));
+  } catch {
+    return;
+  }
+}
