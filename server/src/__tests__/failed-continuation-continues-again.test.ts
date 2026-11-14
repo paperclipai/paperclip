@@ -1,7 +1,9 @@
 import { randomUUID } from "node:crypto";
 import { and, eq, inArray, sql } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
-import { activityLog, agentWakeupRequests, agents, companies, createDb, heartbeatRuns, issueRecoveryActions, issues } from "@paperclipai/db";
+import { activityLog, agentWakeupRequests, agents, companies, createDb, executionWorkspaces, heartbeatRuns, issueRecoveryActions,
+  issues } from "@paperclipai/db";
+import { REMOTE_WORKSPACE_WRITER_PENDING_MESSAGE } from "../services/remote-workspace-writer-hold.js";
 import { recoveryService } from "../services/recovery/service.js";
 import { ASSIGNED_WORK_CONTINUED_ACTION, ASSIGNED_WORK_REPAIRS_PER_MINUTE, assignedWorkSweep } from "../services/recovery/assigned-work-sweep.js";
 import { taskAutomaticAttempts, transientRetryWithinTaskCap } from "../services/recovery/task-automatic-attempts.js";
@@ -183,6 +185,48 @@ describePostgres("a continuation that fails before doing any work is continued a
       .toMatchObject({ status: "resolved", ownerType: "system" });
     expect(await continuationsOf(failed.id)).toHaveLength(1);
     expect(queue.calls).toHaveLength(0);
+  }, 60_000);
+
+  it("a board escalation whose continuation failed on its workspace's refused writer hold is left to the released-writer pass", async () => {
+    const f = await seed();
+    const blockedAt = new Date(Date.now() - 2 * MINUTE);
+    const task = await f.task({ status: "blocked", blockedTransitionAt: blockedAt });
+    const writer = await f.run(task.id, { runtimeMode: "native", nativeIssueId: task.id, issueId: task.id,
+      errorCode: "native_finalization_superseded", error: null, finishedAt: new Date(Date.now() - 9 * HOUR) });
+    const [workspace] = await db.insert(executionWorkspaces).values({ companyId: f.companyId, sourceIssueId: task.id, name: "Task workspace",
+      mode: "isolated_workspace", strategyType: "project_primary", status: "active", providerType: "cloud_sandbox",
+      metadata: { remoteWorkspace: { schema: "paperclip.remote-workspace.v1", epoch: 3, snapshotId: randomUUID(),
+        source: { kind: "empty" }, writerRunId: writer.id, dirty: true, location: null } } }).returning();
+    await db.update(issues).set({ executionWorkspaceId: workspace!.id }).where(eq(issues.id, task.id));
+    const failed = await f.run(task.id, { errorCode: "setup_failed", error: REMOTE_WORKSPACE_WRITER_PENDING_MESSAGE,
+      finishedAt: new Date(blockedAt.getTime() - 1_000),
+      contextSnapshot: { wakeReason: "issue_continuation_needed", source: "issue.assigned_work_invariant", previousRunId: randomUUID() } });
+    const [hold] = await db.insert(issueRecoveryActions).values({ companyId: f.companyId, sourceIssueId: task.id, kind: "stranded_assigned_issue",
+      status: "active", ownerType: "board", cause: "stranded_assigned_issue",
+      fingerprint: `source_scoped_recovery:${f.companyId}:${task.id}:stranded_assigned_issue`,
+      evidence: { previousStatus: "in_progress", latestRunId: failed.id, latestRunErrorCode: "setup_failed",
+        routingPolicy: "board_escalation_no_takeover_v1" }, nextAction: "Board operator: inspect the evidence.", attemptCount: 1,
+      createdAt: blockedAt, updatedAt: blockedAt }).returning();
+    await db.insert(activityLog).values({ companyId: f.companyId, actorType: "system", actorId: "system", action: "issue.updated",
+      entityType: "issue", entityId: task.id, details: { status: "blocked", previousStatus: "in_progress",
+        source: "recovery.reconcile_stranded_assigned_issue" }, createdAt: blockedAt });
+    const queue = wakeQueue();
+    const recovery = recoveryService(db, { enqueueWakeup: queue.enqueueWakeup });
+
+    expect(await recovery.assignedWork.checkIssue({ companyId: f.companyId, issueId: task.id }))
+      .toMatchObject({ outcome: "left_to_hold_owner", verdict: { reason: "recovery_block" } });
+    expect((await taskRow(task.id)).status).toBe("blocked");
+    expect((await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.id, hold!.id)))[0])
+      .toMatchObject({ status: "active", ownerType: "board" });
+    expect(await continuationsOf(failed.id)).toHaveLength(0);
+    expect(queue.calls).toHaveLength(0);
+
+    await db.update(executionWorkspaces).set({ metadata: { remoteWorkspace: { schema: "paperclip.remote-workspace.v1", epoch: 4,
+      snapshotId: randomUUID(), source: { kind: "empty" }, writerRunId: null, dirty: false, location: null } } })
+      .where(eq(executionWorkspaces.id, workspace!.id));
+    expect(await recovery.assignedWork.checkIssue({ companyId: f.companyId, issueId: task.id }))
+      .toMatchObject({ outcome: "repaired", verdict: { reason: "recovery_block" } });
+    expect(await continuationsOf(failed.id)).toHaveLength(1);
   }, 60_000);
 
   it.each([
