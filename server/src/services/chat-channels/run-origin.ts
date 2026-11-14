@@ -7,7 +7,7 @@ import { boundRunIssueId, boundRunIssueIdSql } from "../run-task-binding.js";
 type Run = Pick<typeof heartbeatRuns.$inferSelect,
   "id" | "companyId" | "agentId" | "responsibleUserId" | "activeIdentityContextId" | "nativeIssueId" | "issueId" | "contextSnapshot">;
 type Context = typeof runIdentityContexts.$inferSelect;
-type Options = { allowLegacyWakeComment?: boolean; provider?: ChatProvider };
+type Options = { allowLegacyWakeComment?: boolean; provider?: ChatProvider; stopAtOtherTask?: boolean };
 
 /** A value of one provenance read: a literal of the run in a single read, or a
  * column of the request row in a batch read. */
@@ -23,7 +23,9 @@ const readColumns = {
   link: { issueId: chatConversations.issueId, provider: chatEndpoints.provider },
   boardMessage: { authorUserId: issueComments.authorUserId },
   parent: contextColumns,
+  parentAny: contextColumns,
   sourceRun: {
+    agentId: heartbeatRuns.agentId,
     issueId: boundRunIssueIdSql().as("bound_issue_id"),
     responsibleUserId: heartbeatRuns.responsibleUserId,
     wakeCommentId: sql<unknown>`${heartbeatRuns.contextSnapshot}->'wakeCommentId'`.as("wake_comment_id"),
@@ -63,12 +65,15 @@ const provenanceReads = {
       eq(runIdentityContexts.companyId, of.companyId),
       eq(runIdentityContexts.status, "accepted"),
     )).limit(1),
-  /** The run of the parent context, for the same agent. */
-  sourceRun: (db: Db, of: Record<"runId" | "companyId" | "agentId", Value>) => db.select(readColumns.sourceRun)
+  parentAny: (db: Db, of: Record<"contextId" | "companyId", Value>) => db.select(readColumns.parentAny)
+    .from(runIdentityContexts).where(and(
+      eq(runIdentityContexts.id, of.contextId), eq(runIdentityContexts.companyId, of.companyId),
+    )).limit(1),
+  /** The owner of a parent context, within the company. */
+  sourceRun: (db: Db, of: Record<"runId" | "companyId", Value>) => db.select(readColumns.sourceRun)
     .from(heartbeatRuns).where(and(
       eq(heartbeatRuns.id, of.runId),
       eq(heartbeatRuns.companyId, of.companyId),
-      eq(heartbeatRuns.agentId, of.agentId),
     )).limit(1),
 };
 
@@ -84,6 +89,22 @@ const NO_TASK = "00000000-0000-0000-0000-000000000000";
 
 function* read<K extends Kind>(kind: K, values: Values<K>): Generator<Read, Row<K> | undefined, unknown> {
   return (yield { kind, values } as Read) as Row<K> | undefined;
+}
+
+/** Do not skip an earlier context of this task when crossing a delegation. */
+function* reentryContext(run: Run, from: Row<"parent">, visited: ReadonlySet<string>): Generator<Read, { context: Row<"parentAny">; owner: Row<"sourceRun"> } | null | undefined, unknown> {
+  const seen = new Set(visited);
+  let current: Row<"parentAny"> | undefined = from;
+  for (let depth = 0; current; depth += 1) {
+    if (depth >= 256 || seen.has(current.id)) return undefined;
+    seen.add(current.id);
+    const owner = yield* read("sourceRun", { runId: current.runId, companyId: run.companyId });
+    if (!owner) return undefined;
+    if (owner.issueId === boundRunIssueId(run)) return owner.agentId === run.agentId ? { context: current, owner } : undefined;
+    if (!current.parentContextId) return null;
+    current = yield* read("parentAny", { contextId: current.parentContextId, companyId: run.companyId });
+  }
+  return undefined;
 }
 
 /** The provenance decision for one run. The walk asks for one read at a time
@@ -127,15 +148,25 @@ function* sourceMessageWalk(run: Run, options: Options & { context?: Row<"contex
     if (!origin.parentContextId) return legacyMessageId;
     if (seen.has(origin.id)) throw forbidden("Chat source provenance could not be verified");
     seen.add(origin.id);
-    const parent: Row<"parent"> | undefined = yield* read("parent", { contextId: origin.parentContextId, companyId: run.companyId });
+    let parent: Row<"parent"> | undefined = yield* read("parent", { contextId: origin.parentContextId, companyId: run.companyId });
     if (!parent) throw forbidden("Chat requester provenance changed");
     if (parent.responsibleUserId !== run.responsibleUserId) {
       if (acceptedMessageSeen) return null;
       throw forbidden("Chat requester provenance changed");
     }
-    const sourceRun = yield* read("sourceRun", { runId: parent.runId, companyId: run.companyId, agentId: run.agentId });
-    if (!sourceRun || !boundRunIssueId(run) || sourceRun.issueId !== boundRunIssueId(run)) {
-      throw forbidden("Chat tools cannot be inherited by another task");
+    const issueId = boundRunIssueId(run);
+    let sourceRun = yield* read("sourceRun", { runId: parent.runId, companyId: run.companyId });
+    if (!sourceRun || !issueId || sourceRun.issueId !== issueId || sourceRun.agentId !== run.agentId) {
+      if (!sourceRun || !issueId || sourceRun.issueId === issueId || !options.stopAtOtherTask) {
+        throw forbidden("Chat tools cannot be inherited by another task");
+      }
+      const reentry = yield* reentryContext(run, parent, seen);
+      if (reentry === null) return legacyMessageId;
+      if (!reentry || reentry.context.status !== "accepted" || reentry.context.responsibleUserId !== run.responsibleUserId) {
+        throw forbidden("Chat tools cannot be inherited by another task");
+      }
+      parent = reentry.context;
+      sourceRun = reentry.owner;
     }
     if (options.allowLegacyWakeComment && sourceRun.responsibleUserId === run.responsibleUserId &&
         typeof sourceRun.wakeCommentId === "string") legacyMessageId ??= sourceRun.wakeCommentId;

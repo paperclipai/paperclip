@@ -15,9 +15,13 @@ import {
   runIdentityContexts,
   toolApplications,
   toolConnections,
+  toolProfileBindings,
+  toolProfileEntries,
+  toolProfiles,
 } from "@paperclipai/db";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "../__tests__/helpers/embedded-postgres.js";
 import { GITHUB_BOT_TOOLS, githubGuestBotConnectionForSession } from "./chat-github-tools.js";
+import { createToolGatewayService } from "./tool-gateway.js";
 
 describe("GitHub review tool contract", () => {
   it("discovers the repository-specific finding category constraint", () => {
@@ -121,6 +125,45 @@ const support = await getEmbeddedPostgresTestSupport();
     await guestSource(f, true);
     const session = await continuation(f, { agentId: f.first.id, issueId: f.issue.id });
     await expect(githubGuestBotConnectionForSession(db, session)).rejects.toMatchObject({ status: 403 });
+  });
+
+  it("does not inherit guest sponsorship from a delegating task", async () => {
+    const f = await fixture();
+    await guestSource(f, true);
+    const session = await continuation(f, { agentId: f.first.id, issueId: f.other.id });
+    expect(await githubGuestBotConnectionForSession(db, session)).toBeNull();
+  });
+
+  it("lists gateway tools for a delegated task with a guest message", async () => {
+    const f = await fixture();
+    await guestSource(f, true);
+    const session = await continuation(f, { agentId: f.first.id, issueId: f.other.id });
+    const [profile] = await db.insert(toolProfiles).values({ companyId: f.company.id, profileKey: `discovery-${randomUUID()}`, name: "Discovery", defaultAction: "deny" }).returning();
+    await db.insert(toolProfileBindings).values({ companyId: f.company.id, profileId: profile.id, targetType: "agent", targetId: f.second.id });
+    await db.insert(toolProfileEntries).values({ companyId: f.company.id, profileId: profile.id, selectorType: "tool_name", effect: "include", toolName: "paperclip-self:list_my_issues" });
+    const gateway = createToolGatewayService(db, { toolActionSigningSecret: "test-action-signing-secret" });
+    const named = await gateway.createNamedGateway({ companyId: f.company.id, body: { name: "Delegated task", profileId: profile.id, defaultProfileMode: "gateway_only" } });
+    const token = await gateway.createNamedGatewayToken({ companyId: f.company.id, gatewayId: named.id, body: {
+      name: "Runtime", subjectType: "heartbeat_run", subjectId: session.runId, clientLabel: "Runtime", ownerNote: "", allowedActions: ["tools/list"], expiresAt: new Date(Date.now() + 60_000),
+    }, actor: { agentId: f.second.id } });
+    const tools = await gateway.listToolsForNamedGateway({ gatewayId: named.id, bearerToken: token.token });
+    expect(tools.map(tool => tool.name)).toContain("paperclip-self:list_my_issues");
+  });
+
+  it("retains the task's guest restriction when ancestry returns after delegation", async () => {
+    const f = await fixture();
+    const source = await guestSource(f, true);
+    const guest = await sponsoredRun(f, source.commentId);
+    const [guestRun] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, guest.runId));
+    const [delegation, continued] = await db.insert(heartbeatRuns).values([
+      { companyId: f.company.id, agentId: f.first.id, status: "succeeded", nativeIssueId: f.other.id, responsibleUserId: "requester" },
+      { companyId: f.company.id, agentId: f.second.id, status: "running", nativeIssueId: f.issue.id, responsibleUserId: "requester" },
+    ]).returning();
+    const [message] = await db.insert(issueComments).values({ companyId: f.company.id, issueId: f.issue.id, authorType: "user", authorUserId: "requester", body: "Continue" }).returning();
+    const [foreign] = await db.insert(runIdentityContexts).values({ companyId: f.company.id, runId: delegation.id, revision: 1, responsibleUserId: "requester", parentContextId: guestRun.activeIdentityContextId, cause: "dispatch", correlationId: "dispatch" }).returning();
+    const [current] = await db.insert(runIdentityContexts).values({ companyId: f.company.id, runId: continued.id, revision: 1, responsibleUserId: "requester", messageId: message.id, parentContextId: foreign.id, cause: "dispatch", correlationId: "dispatch" }).returning();
+    await db.update(heartbeatRuns).set({ activeIdentityContextId: current.id }).where(eq(heartbeatRuns.id, continued.id));
+    expect(await githubGuestBotConnectionForSession(db, { companyId: f.company.id, agentId: f.second.id, runId: continued.id, issueId: f.issue.id })).toBe(source.connectionId);
   });
 
   it.each([true, false])("resolves the bot connection only for a run sponsored by a GitHub guest (guest=%s)", async (guest) => {

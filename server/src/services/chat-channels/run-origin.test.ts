@@ -81,6 +81,23 @@ const support = await getEmbeddedPostgresTestSupport();
     expect(await chatRunSourceMessageId(db, run, { provider: "github", allowLegacyWakeComment: true })).toBeNull();
   });
 
+  it("stops at another task after a verified board message only for discovery", async () => {
+    const f = await fixture();
+    const [message] = await db.insert(issueComments).values({ companyId: f.company.id, issueId: f.issue.id, authorType: "user", authorUserId: "requester", body: "Continue" }).returning();
+    await db.update(runIdentityContexts).set({ messageId: message.id }).where(eq(runIdentityContexts.id, f.context.id));
+    await breakInheritedAuthority(f, "task");
+    await expect(chatRunSourceMessageId(db, f.run, { provider: "github" })).rejects.toMatchObject({ status: 403 });
+    expect(await chatRunSourceMessageId(db, f.run, { provider: "github", allowLegacyWakeComment: true, stopAtOtherTask: true })).toBeNull();
+  });
+
+  it("does not cross to another agent on the same task after a board message", async () => {
+    const f = await fixture();
+    const [message] = await db.insert(issueComments).values({ companyId: f.company.id, issueId: f.issue.id, authorType: "user", authorUserId: "requester", body: "Continue" }).returning();
+    await db.update(runIdentityContexts).set({ messageId: message.id }).where(eq(runIdentityContexts.id, f.context.id));
+    await breakInheritedAuthority(f, "agent");
+    await expect(chatRunSourceMessageId(db, f.run, { provider: "github", stopAtOtherTask: true })).rejects.toMatchObject({ status: 403 });
+  });
+
   it("recovers a legacy GitHub source after a verified same-user board message", async () => {
     const f = await fixture();
     const [message] = await db.insert(issueComments).values({ companyId: f.company.id, issueId: f.issue.id, authorType: "user", authorUserId: "requester", body: "Continue" }).returning();
@@ -122,11 +139,56 @@ const support = await getEmbeddedPostgresTestSupport();
     },
   );
 
+  async function delegatedFixture() {
+    const f = await fixture();
+    const [delegator] = await db.insert(agents).values({ companyId: f.company.id, name: "Delegator", role: "general", adapterType: "codex_local" }).returning();
+    const [parentTask] = await db.insert(issues).values({ companyId: f.company.id, title: "Parent task", assigneeAgentId: delegator.id }).returning();
+    const [delegatorRun] = await db.insert(heartbeatRuns).values({ companyId: f.company.id, agentId: delegator.id, status: "succeeded", nativeIssueId: parentTask.id, responsibleUserId: "requester" }).returning();
+    await db.update(runIdentityContexts).set({ runId: delegatorRun.id, messageId: null, cause: "issue_assigned" }).where(eq(runIdentityContexts.id, f.origin.id));
+    return { ...f, delegator };
+  }
+
+  async function reenterTask(f: Awaited<ReturnType<typeof delegatedFixture>>, values: Partial<typeof heartbeatRuns.$inferInsert> = {}) {
+    const [earlier] = await db.insert(heartbeatRuns).values({ companyId: f.company.id, agentId: f.agent.id, status: "succeeded", nativeIssueId: f.issue.id, responsibleUserId: "requester", ...values }).returning();
+    const [context] = await db.insert(runIdentityContexts).values({ companyId: f.company.id, runId: earlier.id, revision: 1, responsibleUserId: "requester", cause: "issue_assigned", correlationId: "dispatch" }).returning();
+    await db.update(runIdentityContexts).set({ parentContextId: context.id }).where(eq(runIdentityContexts.id, f.origin.id));
+    return context;
+  }
+
+  it("keeps strict origin checks while allowing discovery to stop at a delegation", async () => {
+    const f = await delegatedFixture();
+    await expect(chatRunSourceMessageId(db, f.run)).rejects.toMatchObject({ status: 403 });
+    expect(await chatRunSourceMessageId(db, f.run, { provider: "github", allowLegacyWakeComment: true, stopAtOtherTask: true })).toBeNull();
+  });
+
+  it("checks a task context reached again through a delegation", async () => {
+    const f = await delegatedFixture();
+    const back = await reenterTask(f);
+    expect(await chatRunSourceMessageId(db, f.run, { provider: "github", stopAtOtherTask: true })).toBeNull();
+    await db.update(runIdentityContexts).set({ responsibleUserId: "another-person" }).where(eq(runIdentityContexts.id, back.id));
+    await expect(chatRunSourceMessageId(db, f.run, { provider: "github", stopAtOtherTask: true })).rejects.toMatchObject({ status: 403 });
+  });
+
+  it("does not reenter the task through another agent", async () => {
+    const f = await delegatedFixture();
+    await reenterTask(f, { agentId: f.delegator.id });
+    await expect(chatRunSourceMessageId(db, f.run, { provider: "github", stopAtOtherTask: true })).rejects.toMatchObject({ status: 403 });
+  });
+
+  it.each(["missing-run", "foreign-cycle"])("rejects a delegated chain with a %s", async fault => {
+    const f = await delegatedFixture();
+    if (fault === "missing-run") {
+      const [ghost] = await db.insert(runIdentityContexts).values({ companyId: f.company.id, runId: randomUUID(), revision: 1, responsibleUserId: "requester", cause: "monitor", correlationId: "dispatch" }).returning();
+      await db.update(runIdentityContexts).set({ parentContextId: ghost.id }).where(eq(runIdentityContexts.id, f.origin.id));
+    } else await db.update(runIdentityContexts).set({ parentContextId: f.origin.id }).where(eq(runIdentityContexts.id, f.origin.id));
+    await expect(chatRunSourceMessageId(db, f.run, { provider: "github", stopAtOtherTask: true })).rejects.toMatchObject({ status: 403 });
+  });
+
   type Run = Parameters<typeof chatRunSourceMessageId>[1];
-  type Options = { allowLegacyWakeComment?: boolean; provider?: ChatProvider };
+  type Options = { allowLegacyWakeComment?: boolean; provider?: ChatProvider; stopAtOtherTask?: boolean };
   type Seeded = Awaited<ReturnType<typeof seedGitHubReviewWait>>;
   const optionSets: Options[] = [{}, { allowLegacyWakeComment: true }, { provider: "github" },
-    { provider: "github", allowLegacyWakeComment: true }, { provider: "slack" }];
+    { provider: "github", allowLegacyWakeComment: true }, { provider: "github", allowLegacyWakeComment: true, stopAtOtherTask: true }, { provider: "slack" }];
   const FORBIDDEN = { changed: "Chat requester provenance changed", otherTask: "Chat request belongs to another task",
     inherited: "Chat tools cannot be inherited by another task", unverified: "Chat source provenance could not be verified" };
 
