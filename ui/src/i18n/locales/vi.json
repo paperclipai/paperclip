@@ -5,5 +5,15 @@
       "description": "Bắt đầu bằng cách tạo một công ty.",
       "newCompany": "Công ty mới"
     }
+  },
+  "taskChat": {
+    "focus": {
+      "viewGroup": "Thread view",
+      "fullView": "All activity",
+      "focusView": "Focus view",
+      "expand": "Activity hidden, click to expand",
+      "collapse": "Hide activity",
+      "stepCount": "(steps: {{count}})"
+    }
   }
 }
