@@ -20,6 +20,12 @@ export function isOAuthEndpointRejection(error: unknown): boolean {
   return typeof code === "string" && code.endsWith("_endpoint_rejected");
 }
 
+/** A caller without an agent grant has not tested the connection's credential. */
+export function isCallerAuthorizationFailure(error: unknown, actor?: ActorInfo): boolean {
+  return actor?.actorType === "agent" && error instanceof HttpError
+    && asRecord(error.details).code === "agent_authorization_required";
+}
+
 export function healthFailureHttpStatus(failure: {
   status: ToolConnectionHealthStatus;
   code: string;

@@ -2,9 +2,10 @@ import { randomUUID } from "node:crypto";
 import { createServer, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
-import { agents, companies, companySecretBindings, connectionGrants, createDb, toolApplications, toolConnections } from "@paperclipai/db";
+import { agents, authUsers, companies, companyMemberships, companySecretBindings, connectionGrants, createDb, principalPermissionGrants, toolApplications, toolCatalogEntries, toolConnections } from "@paperclipai/db";
 import { and, eq } from "drizzle-orm";
 import { syncConnectionCredentialBindings } from "../services/connection-credential-bindings.js";
+import { connectionManagementService } from "../services/connection-management.js";
 import { secretService } from "../services/secrets.js";
 import { toolAccessService } from "../services/tool-access.js";
 import type { PaperclipCloudConnector } from "../services/paperclip-cloud-connector.js";
@@ -111,17 +112,52 @@ describe("dedicated agent connection discovery", () => {
     expect(bindings).toHaveLength(1);
   });
 
-  it.each(["another agent", "another company", "missing agent identity"])("does not borrow authorization for %s", async scope => {
-    const f = await fixture();
-    const actorId = scope === "another company" ? (await fixture()).agent.id : scope === "missing agent identity" ? null : f.otherAgent.id;
-    await expect(f.service.refreshCatalog(f.connection.id, { actorType: "agent", actorId }))
-      .rejects.toMatchObject({ status: 422, details: { code: "agent_authorization_required" } });
-    await expect(f.service.checkHealth(f.connection.id, { actorType: "agent", actorId }))
-      .rejects.toMatchObject({ status: 422, details: { code: "agent_authorization_required" } });
-    expect(requests).toEqual([]);
-    expect(fetch).not.toHaveBeenCalled();
-    await expect(f.service.refreshCatalog(f.connection.id, { actorType: "agent", actorId: f.agent.id }))
-      .resolves.toMatchObject({ connection: { healthStatus: "ok" } });
+  describe.each(["refreshCatalog", "checkHealth"] as const)("%s caller isolation", operation => {
+    it.each(["another agent", "another company", "missing agent identity"])("denies %s without changing the owner's connection", async scope => {
+      const f = await fixture();
+      const actorId = scope === "another company" ? (await fixture()).agent.id : scope === "missing agent identity" ? null : f.otherAgent.id;
+      await f.service.refreshCatalog(f.connection.id, { actorType: "agent", actorId: f.agent.id });
+      const before = await db.select().from(toolConnections).where(eq(toolConnections.id, f.connection.id));
+      const catalog = await db.select().from(toolCatalogEntries).where(eq(toolCatalogEntries.connectionId, f.connection.id));
+      requests = [];
+      vi.mocked(fetch).mockClear();
+      await expect(f.service[operation](f.connection.id, { actorType: "agent", actorId }))
+        .rejects.toMatchObject({ status: 422, details: { code: "agent_authorization_required" } });
+      expect(requests).toEqual([]);
+      expect(fetch).not.toHaveBeenCalled();
+      expect(await db.select().from(toolConnections).where(eq(toolConnections.id, f.connection.id))).toEqual(before);
+      expect(await db.select().from(toolCatalogEntries).where(eq(toolCatalogEntries.connectionId, f.connection.id))).toEqual(catalog);
+      await expect(f.service.checkHealth(f.connection.id, { actorType: "agent", actorId: f.agent.id }))
+        .resolves.toMatchObject({ connection: { healthStatus: "ok" } });
+    });
+
+    it("keeps the owner's tools healthy when a permitted managing agent lacks the credential", async () => {
+      const f = await fixture();
+      const userId = randomUUID();
+      await db.insert(authUsers).values({ id: userId, name: "Manager", email: `${userId}@fixture.invalid`, createdAt: new Date(), updatedAt: new Date() });
+      await db.insert(companyMemberships).values([
+        { companyId: f.company.id, principalType: "user", principalId: userId, membershipRole: "owner", status: "active" },
+        { companyId: f.company.id, principalType: "agent", principalId: f.otherAgent.id, status: "active" },
+      ]);
+      await db.insert(principalPermissionGrants).values([
+        { companyId: f.company.id, principalType: "agent", principalId: f.otherAgent.id, permissionKey: "tools:manage_connections" },
+        { companyId: f.company.id, principalType: "user", principalId: userId, permissionKey: "tools:manage_connections" },
+      ]);
+      const managementContext = await connectionManagementService(db).authorize({
+        type: "agent", agentId: f.otherAgent.id, companyId: f.company.id, onBehalfOfUserId: userId,
+      }, "connections:configure", { type: "connection_management", companyId: f.company.id, connectionId: f.connection.id, operation });
+      expect(managementContext.decision.allowed).toBe(true);
+      await f.service.refreshCatalog(f.connection.id, { actorType: "agent", actorId: f.agent.id });
+      const before = await db.select().from(toolConnections).where(eq(toolConnections.id, f.connection.id));
+      requests = [];
+      vi.mocked(fetch).mockClear();
+      await expect(f.service[operation](f.connection.id, { actorType: "agent", actorId: f.otherAgent.id, managementContext }))
+        .rejects.toMatchObject({ status: 422, details: { code: "agent_authorization_required" } });
+      expect(requests).toEqual([]);
+      expect(fetch).not.toHaveBeenCalled();
+      expect(await db.select().from(toolConnections).where(eq(toolConnections.id, f.connection.id))).toEqual(before);
+      expect((await f.service.listCatalog(f.connection.id, f.company.id)).map(tool => tool.toolName)).toEqual(["get_fixture"]);
+    });
   });
 
   it("does not fall back to personal or organization grants when the agent grant is revoked", async () => {
