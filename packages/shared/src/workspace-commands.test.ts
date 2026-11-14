@@ -341,7 +341,7 @@ describe("resolveRuntimeServiceStopTarget", () => {
     })).toEqual({ scope: "one", runtimeServiceId: "runtime-web" });
   });
 
-  it("tells apart services that share a name by a matching fixed port", () => {
+  it("stops nothing when a sibling with the same name could have fallen back to the port", () => {
     const workspaceRuntime = {
       services: [
         { name: "web", command: "pnpm dev", port: 3000 },
@@ -360,7 +360,45 @@ describe("resolveRuntimeServiceStopTarget", () => {
     });
 
     expect(target(0)).toEqual({ scope: "one", runtimeServiceId: null });
-    expect(target(1)).toEqual({ scope: "one", runtimeServiceId: "runtime-3001" });
+    expect(target(1)).toEqual({ scope: "one", runtimeServiceId: null });
+  });
+
+  it("skips a stopped record that matches the service as well as the running one", () => {
+    expect(resolveRuntimeServiceStopTarget({
+      workspaceRuntime: { services: [{ name: "web", command: "pnpm dev", port: 3000 }, { name: "worker", command: "pnpm worker" }] },
+      runtimeServiceId: null,
+      serviceIndex: 0,
+      runtimeServices: [
+        { id: "runtime-old", serviceName: "web", command: "pnpm dev", cwd: "/repo", port: 3000, status: "stopped" },
+        { id: "runtime-current", serviceName: "web", command: "pnpm dev", cwd: "/repo", port: 3000, status: "running" },
+      ],
+      workspaceCwd: "/repo",
+    })).toEqual({ scope: "one", runtimeServiceId: "runtime-current" });
+  });
+
+  it("stops an exposed service whose saved command was rewritten to loopback", () => {
+    expect(resolveRuntimeServiceStopTarget({
+      workspaceRuntime: {
+        services: [
+          { name: "web", command: "pnpm dev --bind lan", expose: { provider: "tailscale_https" } },
+          { name: "worker", command: "pnpm worker" },
+        ],
+      },
+      runtimeServiceId: null,
+      serviceIndex: 0,
+      runtimeServices: [
+        {
+          id: "runtime-web",
+          serviceName: "web",
+          command: "pnpm dev --bind loopback",
+          cwd: "/repo",
+          port: 50123,
+          status: "running",
+          exposure: { provider: "tailscale_https" as const, state: "ready" as const, publicUrl: null, hostname: null, listeners: [], brokerRef: null, lastError: null, updatedAt: null },
+        },
+      ],
+      workspaceCwd: "/repo",
+    })).toEqual({ scope: "one", runtimeServiceId: "runtime-web" });
   });
 
   it("stops a lone unnamed service without needing the workspace cwd", () => {

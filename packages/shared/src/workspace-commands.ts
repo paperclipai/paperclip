@@ -285,7 +285,9 @@ function runtimeServiceNameForCommand(command: Pick<WorkspaceCommandDefinition, 
   return typeof rawName === "string" && rawName.length > 0 ? rawName : "service";
 }
 
-export function resolveRuntimeServiceStopTarget<T extends WorkspaceRuntimeServiceMatchCandidate & { id: string }>(input: {
+const ACTIVE_RUNTIME_SERVICE_STATUSES = new Set(["provisioning", "starting", "running"]);
+
+export function resolveRuntimeServiceStopTarget<T extends WorkspaceRuntimeServiceMatchCandidate & { id: string; status?: string | null }>(input: {
   workspaceRuntime: Record<string, unknown> | null | undefined;
   runtimeServiceId: string | null | undefined;
   serviceIndex: number | null | undefined;
@@ -315,11 +317,10 @@ export function resolveRuntimeServiceStopTarget<T extends WorkspaceRuntimeServic
   };
   const candidates = (input.runtimeServices ?? []).filter((service) => {
     if (service.serviceName !== runtimeName) return false;
+    if (service.status && !ACTIVE_RUNTIME_SERVICE_STATUSES.has(service.status)) return false;
     if (otherCommandsWithName.length === 0) return true;
     if (!couldHaveStarted(command, service)) return false;
-    const rivals = otherCommandsWithName.filter((entry) => couldHaveStarted(entry, service));
-    if (rivals.length === 0) return true;
-    return hasFixedPort(command, service) && !rivals.some((entry) => hasFixedPort(entry, service));
+    return !otherCommandsWithName.some((entry) => couldHaveStarted(entry, service));
   });
   const runtimeService = matchWorkspaceRuntimeServiceToCommand(
     portless(command),
@@ -330,8 +331,6 @@ export function resolveRuntimeServiceStopTarget<T extends WorkspaceRuntimeServic
   );
   return { scope: "one", runtimeServiceId: runtimeService?.id ?? null };
 }
-
-const ACTIVE_RUNTIME_SERVICE_STATUSES = new Set(["provisioning", "starting", "running"]);
 
 export function countRuntimeServicesActiveAfterStop(
   runtimeServices: Array<{ id: string; status?: string | null }> | null | undefined,
