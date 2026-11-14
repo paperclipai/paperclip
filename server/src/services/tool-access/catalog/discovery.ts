@@ -364,6 +364,12 @@ export function createToolCatalogDiscovery(db: Db, { now, audit, secrets, creden
               ),
             );
         }
+        throw unprocessable("OAuth authorization must be reconnected", {
+          code: "oauth_reauthorization_required",
+          status: response.status,
+          setupUrl: connectionSetupUrl(connection),
+          reconnectUrl: connectionReconnectUrl(connection),
+        });
       }
     }
     if (response.ok) await saveNegotiation();
