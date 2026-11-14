@@ -173,9 +173,6 @@ export function ComposerRunSettingsPicker({
   const exactMatch = models.some((item) => item.id.toLowerCase() === query.toLowerCase());
   const needsProvider = agent && (["opencode_local", "pi_local", "kimi_local"].includes(agent.adapterType)
     || (agent.adapterType === "paperclip_runner" && provider === "opencode"));
-  // Model names may contain spaces (for example "Claude Sonnet 5.5"); adapters
-  // pass the model as a single argument. OpenRouter IDs never contain spaces,
-  // whichever adapter routes them (native OpenCode reports its own provider).
   const openRouterId = provider === "openrouter" || query.startsWith("openrouter/");
   const manualValid = query.length > 0
     && (!needsProvider || /^[^/]+\/.+[^/]$/.test(query))
