@@ -4445,8 +4445,10 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
     takeDueTerminalWorkspaceTargets: (): { workspaceIds: string[]; rotation: boolean } => {
       const at = now().getTime();
       const due = (deadlines: Map<string, number>) => [...deadlines].filter(([, deadline]) => deadline <= at).map(([id]) => id);
-      const rotation = due(isolatedRehomeDeadlines).length + due(nestedCloneMigrationDeadlines).length + due(taskDirectoryDeadlines).length > 0;
-      return { workspaceIds: due(terminalWorkspaceDeadlines), rotation };
+      const workspaceKey = (key: string) => /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(key);
+      const migrations = [...due(isolatedRehomeDeadlines), ...due(nestedCloneMigrationDeadlines)];
+      const rotation = due(taskDirectoryDeadlines).length > 0 || migrations.some(key => !workspaceKey(key));
+      return { workspaceIds: [...new Set([...due(terminalWorkspaceDeadlines), ...migrations.filter(workspaceKey)])], rotation };
     },
 
     nextTerminalWorkspaceSweepAt: async () => {

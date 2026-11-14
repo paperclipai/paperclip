@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { installDatabaseWorkSignals } from "../../../packages/db/src/work-signals.js";
 import { createDeliveryWorkCoordinator } from "../services/delivery-work-coordinator.js";
-import { notifyTerminalWorkspaceWork, registerTerminalWorkspaceWork, TERMINAL_WORKSPACE_BACKSTOP_MS, TERMINAL_WORKSPACE_RETRY_MS, type TerminalWorkspaceTargets } from "../services/terminal-workspace-work.js";
+import { notifyTerminalWorkspaceWork, registerTerminalWorkspaceWork, TERMINAL_WORKSPACE_BACKSTOP_MS, TERMINAL_WORKSPACE_PLUGIN_HINT, TERMINAL_WORKSPACE_RETRY_MS, type TerminalWorkspaceTargets } from "../services/terminal-workspace-work.js";
 import { idleWorkSnapshot } from "../services/task-admission.js";
 
 const coordinators: ReturnType<typeof createDeliveryWorkCoordinator>[] = [];
@@ -128,6 +128,20 @@ describe("terminal workspace work", () => {
     await vi.advanceTimersByTimeAsync(due - Date.now());
     expect(s.service.sweepTerminalWorkspaces).toHaveBeenCalledTimes(3);
     expect(s.service.sweepTerminalWorkspaces.mock.calls[2]?.[2]?.targets).toBeUndefined();
+  });
+
+  it("retries the plugin workspace listing after it fails instead of waiting for the backstop", async () => {
+    const s = setup();
+    const pluginWorkspaceId = "6b1f9c2e-8a4d-4f3b-9c1e-2d7a5b8e0f13";
+    const listPluginTerminalWorkspaceIds = vi.fn<() => Promise<string[]>>()
+      .mockRejectedValueOnce(new Error("database unavailable")).mockResolvedValue([pluginWorkspaceId]);
+    await registerTerminalWorkspaceWork(s.coordinator, { ...s.service, listPluginTerminalWorkspaceIds }, s.enabled).ready;
+    await s.owner.transaction(tx => notifyTerminalWorkspaceWork(tx, TERMINAL_WORKSPACE_PLUGIN_HINT));
+    await vi.advanceTimersByTimeAsync(1);
+    expect(listPluginTerminalWorkspaceIds).toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(TERMINAL_WORKSPACE_RETRY_MS);
+    expect(listPluginTerminalWorkspaceIds).toHaveBeenCalledTimes(2);
+    expect(s.service.sweepTerminalWorkspaces.mock.calls.at(-1)?.[2]?.targets).toEqual({ workspaceIds: [pluginWorkspaceId], issueIds: [] });
   });
 
   it("works through more hinted workspaces than one inspection reads in targeted batches", async () => {

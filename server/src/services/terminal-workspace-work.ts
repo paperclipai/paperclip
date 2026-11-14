@@ -93,7 +93,12 @@ export function registerTerminalWorkspaceWork(
       }
       if (pluginRefresh && !startup && service.listPluginTerminalWorkspaceIds) {
         pluginRefresh = false;
-        for (const id of await service.listPluginTerminalWorkspaceIds()) pendingWorkspaceIds.add(id);
+        try {
+          for (const id of await service.listPluginTerminalWorkspaceIds()) pendingWorkspaceIds.add(id);
+        } catch (error) {
+          pluginRefresh = true;
+          throw error;
+        }
       }
       const backstopDue = backstopArmed && Date.now() >= lastFullRotationAt + TERMINAL_WORKSPACE_BACKSTOP_MS;
       if (startup || backstopDue || legacyDue || (continuing && Date.now() >= lastRotationPageAt + 1000)) {
