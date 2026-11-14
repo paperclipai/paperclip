@@ -3,7 +3,8 @@ import { randomBytes } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { eq, inArray, sql } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/postgres-js";
-import { agents, companies, createDb, heartbeatRunEvents, heartbeatRuns, issues, nativeRunnerCheckpoints, subscribeDatabaseWork } from "@paperclipai/db";
+import { agents, companies, createDb, heartbeatRunEvents, heartbeatRuns, issues, nativeRunnerCheckpoints, databaseWorkPending,
+  reconcileDatabaseWork, signalDatabaseWork, subscribeDatabaseWork } from "@paperclipai/db";
 import { DELIVERY_QUEUES } from "../services/delivery-work-notifications.js";
 import { appendHeartbeatRunEvent, appendHeartbeatRunEventBatch } from "../services/heartbeat-run-events.js";
 import { nativeSha256 } from "../services/native-runtime/canonical.js";
@@ -502,6 +503,84 @@ describeEmbeddedPostgres("atomic ordinary run events", () => {
       expect(replay.result).toEqual({ row: first.result.row, disposition: "duplicate", highestContiguousSourceSeq: 1 });
       expect(await readEvents(runId)).toEqual([first.result.row]);
     } finally { unsubscribe(); }
+  });
+
+  it("gives the wake the transaction id of the transaction that took the run lock", async () => {
+    const runId = await makeRun();
+    const [issue] = await db.insert(issues).values({ companyId, title: "Primed wake" }).returning();
+    await db.update(heartbeatRuns).set({ nativeIssueId: issue!.id, runtimeMode: "native" }).where(eq(heartbeatRuns.id, runId));
+    const topic = DELIVERY_QUEUES.chatNativeProgress;
+    const options = db.$client.options as { debug?: unknown };
+    const sent: Array<{ text: string; parameters: unknown[] }> = [];
+    let ownXid: string | undefined;
+    options.debug = (_connection: number, text: string, parameters: unknown[]) => {
+      sent.push({ text: text.trim().replace(/\s+/g, " "), parameters });
+    };
+    try {
+      await expect(db.transaction(async tx => {
+        await appendHeartbeatRunEvent(tx as unknown as typeof db, nativeEvent(runId, 1, "item.completed"));
+        expect(sent.filter(statement => /^select pg_current_xact_id\(\)/.test(statement.text))).toEqual([]);
+        expect(sent.filter(statement => statement.text.includes("pg_current_xact_id()"))).toHaveLength(1);
+        const [own] = await tx.execute<{ xid: string; pid: number }>(sql`select pg_current_xact_id()::text as xid, pg_backend_pid() as pid`);
+        ownXid = own!.xid;
+        await otherDb.execute(sql`select pg_terminate_backend(${own!.pid})`);
+        await tx.execute(sql`select 1`);
+      })).rejects.toThrow();
+      expect(databaseWorkPending(db, topic)).toBe(true);
+      sent.length = 0;
+      await reconcileDatabaseWork(db, topic);
+    } finally { options.debug = undefined; }
+    const statusRead = sent.find(statement => statement.text.includes("pg_xact_status"));
+    expect(ownXid).toMatch(/^\d+$/);
+    expect(statusRead?.parameters).toEqual([ownXid]);
+    expect(databaseWorkPending(db, topic)).toBe(false);
+    expect(await readEvents(runId)).toEqual([]);
+  });
+
+  it("primes nothing when the lock read fails, so the transaction is not left uncertain", async () => {
+    const runId = await makeRun();
+    const [issue] = await db.insert(issues).values({ companyId, title: "Failed lock read" }).returning();
+    await db.update(heartbeatRuns).set({ nativeIssueId: issue!.id, runtimeMode: "native" }).where(eq(heartbeatRuns.id, runId));
+    let release!: () => void, locked!: () => void;
+    const released = new Promise<void>(resolve => { release = resolve; });
+    const lockedRun = new Promise<void>(resolve => { locked = resolve; });
+    const holder = otherDb.transaction(async tx => {
+      await tx.execute(sql`select id from heartbeat_runs where id = ${runId} for update`);
+      locked();
+      await released;
+    });
+    await lockedRun;
+    const wakes: string[] = [];
+    const unsubscribe = subscribeDatabaseWork(db, DELIVERY_QUEUES.chatNativeProgress, wake => { wakes.push(wake); });
+    const options = db.$client.options as { debug?: unknown };
+    const sent: string[] = [];
+    try {
+      await expect(db.transaction(async tx => {
+        await tx.execute(sql`set local lock_timeout = '100ms'`);
+        await appendHeartbeatRunEvent(tx as unknown as typeof db, nativeEvent(runId, 1, "item.completed"));
+      })).rejects.toThrow();
+      expect(databaseWorkPending(db, DELIVERY_QUEUES.chatNativeProgress)).toBe(false);
+      await expect(db.transaction(async tx => {
+        await tx.execute(sql`set local lock_timeout = '100ms'`);
+        await expect(tx.transaction(savepoint =>
+          appendHeartbeatRunEvent(savepoint as unknown as typeof db, nativeEvent(runId, 1, "item.completed")))).rejects.toThrow();
+        options.debug = (_connection: number, text: string) => { sent.push(text.trim().replace(/\s+/g, " ")); };
+        await signalDatabaseWork(tx, "lock-read-failed");
+        options.debug = undefined;
+        throw new Error("roll back");
+      })).rejects.toThrow("roll back");
+    } finally {
+      options.debug = undefined;
+      unsubscribe();
+      release();
+      await holder;
+    }
+    expect(sent.filter(text => /^select pg_current_xact_id\(\)/.test(text))).toHaveLength(1);
+    await reconcileDatabaseWork(db, "lock-read-failed");
+    expect(databaseWorkPending(db, "lock-read-failed")).toBe(false);
+    expect(wakes).toEqual([]);
+    expect(databaseWorkPending(db, DELIVERY_QUEUES.chatNativeProgress)).toBe(false);
+    expect(await readEvents(runId)).toEqual([]);
   });
 
   it("finds a replay that another writer committed while the lock read waited, and registers no wake for it", async () => {
