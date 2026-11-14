@@ -94,7 +94,7 @@ test("Hermes keeps the operational Paperclip skill linked after an empty replace
   }
 });
 
-test("Hermes rejects a conflicting operational skill target", async () => {
+test("Hermes preserves a conflicting operational skill target", async () => {
   const home = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-hermes-core-conflict-"));
   try {
     const source = path.join(home, "runtime-skills", "paperclip");
@@ -117,13 +117,14 @@ test("Hermes rejects a conflicting operational skill target", async () => {
           source,
         }],
       },
-    }, [])).rejects.toThrow("occupied by another installation");
+    }, [])).resolves.toBeDefined();
+    expect(await fs.readFile(path.join(target, "SKILL.md"), "utf8")).toContain("Conflicting skill");
   } finally {
     await fs.rm(home, { recursive: true, force: true });
   }
 });
 
-test("Hermes rejects a live symlink owned by another operational skill", async () => {
+test("Hermes preserves a live symlink owned by another operational skill", async () => {
   const home = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-hermes-core-link-conflict-"));
   try {
     const source = path.join(home, "runtime-skills", "paperclip");
@@ -149,7 +150,8 @@ test("Hermes rejects a live symlink owned by another operational skill", async (
           source,
         }],
       },
-    }, [])).rejects.toThrow("occupied by another installation");
+    }, [])).resolves.toBeDefined();
+    expect(await fs.readlink(target)).toBe(conflictingSource);
   } finally {
     await fs.rm(home, { recursive: true, force: true });
   }

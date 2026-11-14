@@ -90,6 +90,20 @@ test("resolveProvider still infers from the requested model when Hermes config i
   });
 });
 
+test("resolveProvider preserves a named custom provider supplied by the agent", () => {
+  expect(resolveProvider({
+    explicitProvider: "custom:omniroute",
+    detectedProvider: "anthropic",
+    detectedModel: "claude-sonnet-4",
+    model: "free-model",
+  })).toEqual({ provider: "custom:omniroute", resolvedFrom: "adapterConfig" });
+});
+
+test("resolveProvider rejects malformed explicit provider identifiers", () => {
+  expect(resolveProvider({ explicitProvider: "--model", model: "unknown-model" }))
+    .toEqual({ provider: "auto", resolvedFrom: "auto" });
+});
+
 async function withHermesHomeConfig(
   configLines: string[],
   fn: () => Promise<void>,
@@ -134,7 +148,8 @@ test("testEnvironment does not warn about missing API keys when Hermes config pr
     const codes = result.checks.map((check) => check.code);
 
     expect(codes.includes("hermes_no_api_keys")).toBe(false);
-    expect(result.status).toBe("pass");
+    expect(result.status).toBe("fail");
+    expect(codes.includes("hermes_hello_probe_failed")).toBe(true);
   });
 });
 
@@ -181,6 +196,7 @@ test("testEnvironment does not warn about missing API keys when Hermes config pr
     const codes = result.checks.map((check) => check.code);
 
     expect(codes.includes("hermes_no_api_keys")).toBe(false);
-    expect(result.status).toBe("pass");
+    expect(result.status).toBe("fail");
+    expect(codes.includes("hermes_hello_probe_failed")).toBe(true);
   });
 });

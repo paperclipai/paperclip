@@ -233,15 +233,19 @@ export async function reconcileHermesPaperclipSkills(
   for (const entry of availableEntries) {
     if (!desiredSet.has(entry.key) || isPaperclipSkillSourceMissing(entry)) continue;
     const target = path.join(skillsHome, entry.runtimeName);
-    await ensurePaperclipSkillSymlink(entry.source, target);
+    const syncResult = await ensurePaperclipSkillSymlink(entry.source, target);
     const linkedSource = await fs.readlink(target).catch(() => null);
     const resolvedSource = linkedSource
       ? path.resolve(path.dirname(target), linkedSource)
       : null;
     if (resolvedSource !== path.resolve(entry.source)) {
-      throw new Error(
-        `Cannot reconcile Hermes skill "${entry.key}" because ${target} is occupied by another installation.`,
-      );
+      // A user's existing Hermes skill has priority. Never replace a real
+      // directory or a live link owned by another installation; Hermes will
+      // load that skill for this run. This keeps Paperclip from blocking an
+      // otherwise usable local Hermes setup merely because both installations
+      // use the same runtime skill name.
+      if (syncResult === "skipped") continue;
+      throw new Error(`Cannot reconcile Hermes skill "${entry.key}" at ${target}.`);
     }
   }
 
