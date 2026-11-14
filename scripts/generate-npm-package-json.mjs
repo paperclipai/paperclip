@@ -110,6 +110,7 @@ const publishPkg = {
   homepage: cliPkg.homepage,
   bugs: cliPkg.bugs,
   files: cliPkg.files,
+  bundleDependencies: cliPkg.bundleDependencies,
   engines: { node: ">=24.11.0" },
   dependencies: sortedDeps,
 };

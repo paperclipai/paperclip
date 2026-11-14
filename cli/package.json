@@ -26,6 +26,9 @@
   "files": [
     "dist"
   ],
+  "bundleDependencies": [
+    "postgres"
+  ],
   "publishConfig": {
     "access": "public"
   },
@@ -56,7 +59,8 @@
     "dotenv": "^17.4.2",
     "commander": "^15.0.0",
     "embedded-postgres": "^18.1.0-beta.16",
-    "picocolors": "^1.1.1"
+    "picocolors": "^1.1.1",
+    "postgres": "3.4.9"
   },
   "devDependencies": {
     "@types/node": "^24.0.0",

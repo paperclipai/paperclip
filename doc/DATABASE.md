@@ -9,6 +9,11 @@ and queue fixes to npm consumers that the workspace receives through pnpm.
 When updating the driver, update its exact version and tracked patch together,
 then verify the staged and normally installed driver payloads.
 
+The CLI bundles the same driver because its build includes DB source. Keep
+`postgres` and Drizzle external to that build. The CLI must own its driver so
+Drizzle can resolve it without relying on a hoisted transitive dependency.
+The publish-manifest generator retains the CLI bundle declaration.
+
 ### Better Auth 1.7.16 upgrade
 
 Better Auth 1.7.3 and later identify accounts by `provider_id` and `account_id`.
