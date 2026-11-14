@@ -2,6 +2,7 @@ import { QUEUED_MESSAGES_DELIVERED_REASON } from "../../modules/wake-queue/index
 import { connectionIntentService } from "../connection-intents.js";
 import { verifyBlockerStallWake } from "../recovery/blocker-stall-wakeups.js";
 import { CONTEXT_COMPACTION_WAKE_REASON, ContextCompactionError, isContextCompactionRun, readContextCompactionRequest } from "../context-compaction.js";
+import { listUnresolvedBlockerSummaries } from "./dependency-blockers.js";
 import { isProcessRunAdmissionClosed } from "./run-admission.js";
 import { continueFreshInTransaction, hasPendingFreshContinuation, isFreshIsolatedContinuationWake, settleCoalescedFreshContinuationHolds } from "../fresh-continuation-fallback.js";
 import { deliverContinuationAsRun, foldWaitingRetriesIntoContinuation, foldWaitingRetriesIntoRecordedContinuation, undeliveredContinuation,
@@ -124,7 +125,6 @@ import {
   heartbeatRuns,
   issueComments,
   issueRecoveryActions,
-  issueRelations,
   issues,
 } from "@paperclipai/db";
 import {
@@ -306,37 +306,6 @@ export function shouldRequireIssueCommentForWake(
     wakeReason === "execution_approval_requested" ||
     wakeReason === "execution_changes_requested"
   );
-}
-
-async function listUnresolvedBlockerSummaries(
-  dbOrTx: Pick<Db, "select">,
-  companyId: string,
-  issueId: string,
-  unresolvedBlockerIssueIds: string[],
-) {
-  const ids = [...new Set(unresolvedBlockerIssueIds.filter(Boolean))];
-  if (ids.length === 0) return [];
-  return dbOrTx
-    .select({
-      id: issues.id,
-      identifier: issues.identifier,
-      title: issues.title,
-      status: issues.status,
-      priority: issues.priority,
-      assigneeAgentId: issues.assigneeAgentId,
-      assigneeUserId: issues.assigneeUserId,
-    })
-    .from(issueRelations)
-    .innerJoin(issues, eq(issueRelations.issueId, issues.id))
-    .where(
-      and(
-        eq(issueRelations.companyId, companyId),
-        eq(issueRelations.type, "blocks"),
-        eq(issueRelations.relatedIssueId, issueId),
-        inArray(issues.id, ids),
-      ),
-    )
-    .orderBy(asc(issues.title));
 }
 
 export function shouldDeferFollowupWakeForSameIssue(input: {
