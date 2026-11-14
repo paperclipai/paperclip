@@ -185,6 +185,7 @@ export function validateAdapterModule(mod: unknown, packageName: string): Server
 export async function loadExternalAdapterPackage(
   packageName: string,
   localPath?: string,
+  options: { isStale?: () => boolean } = {},
 ): Promise<ServerAdapterModule> {
   assertExternalAdapterCodeAllowed();
   const packageDir = localPath
@@ -200,22 +201,72 @@ export async function loadExternalAdapterPackage(
   const mod = await import(pathToFileURL(modulePath).href);
   const adapterModule = validateAdapterModule(mod, packageName);
 
-  if (uiParserSource) {
+  if (uiParserSource && !options.isStale?.()) {
     uiParserCache.set(adapterModule.type, uiParserSource);
   }
 
   return adapterModule;
 }
 
-async function loadFromRecord(record: AdapterPluginRecord): Promise<ServerAdapterModule | null> {
-  try {
-    return await loadExternalAdapterPackage(record.packageName, record.localPath);
-  } catch (err) {
+export const DEFAULT_EXTERNAL_ADAPTER_LOAD_TIMEOUT_MS = 10_000;
+
+class ExternalAdapterLoadTimeoutError extends Error {
+  constructor(
+    readonly packageName: string,
+    readonly timeoutMs: number,
+  ) {
+    super(`External adapter "${packageName}" did not finish loading within ${timeoutMs}ms`);
+    this.name = "ExternalAdapterLoadTimeoutError";
+  }
+}
+
+function resolveLoadTimeoutMs(timeoutMs: number | undefined): number {
+  if (timeoutMs === undefined) return DEFAULT_EXTERNAL_ADAPTER_LOAD_TIMEOUT_MS;
+  if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) {
     logger.warn(
-      { err, packageName: record.packageName, type: record.type },
-      "Failed to dynamically load external adapter; skipping",
+      { timeoutMs, fallbackMs: DEFAULT_EXTERNAL_ADAPTER_LOAD_TIMEOUT_MS },
+      "Invalid external adapter load timeout; using the default",
     );
+    return DEFAULT_EXTERNAL_ADAPTER_LOAD_TIMEOUT_MS;
+  }
+  return timeoutMs;
+}
+
+async function loadFromRecord(
+  record: AdapterPluginRecord,
+  timeoutMs: number,
+): Promise<ServerAdapterModule | null> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  let expired = false;
+  const timedOut = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => {
+      expired = true;
+      reject(new ExternalAdapterLoadTimeoutError(record.packageName, timeoutMs));
+    }, timeoutMs);
+    (timer as { unref?: () => void }).unref?.();
+  });
+
+  try {
+    const load = loadExternalAdapterPackage(record.packageName, record.localPath, {
+      isStale: () => expired,
+    });
+    load.catch(() => {});
+    return await Promise.race([load, timedOut]);
+  } catch (err) {
+    if (err instanceof ExternalAdapterLoadTimeoutError) {
+      logger.warn(
+        { packageName: record.packageName, type: record.type, timeoutMs },
+        "External adapter load timed out; skipping it so startup can finish",
+      );
+    } else {
+      logger.warn(
+        { err, packageName: record.packageName, type: record.type },
+        "Failed to dynamically load external adapter; skipping",
+      );
+    }
     return null;
+  } finally {
+    if (timer) clearTimeout(timer);
   }
 }
 
@@ -276,13 +327,16 @@ export async function reloadExternalAdapter(
 /**
  * Build all external adapter modules from the plugin store.
  */
-export async function buildExternalAdapters(): Promise<ServerAdapterModule[]> {
+export async function buildExternalAdapters(options?: {
+  timeoutMs?: number;
+}): Promise<ServerAdapterModule[]> {
   if (isCloudManagedInstance()) return [];
   const results: ServerAdapterModule[] = [];
+  const timeoutMs = resolveLoadTimeoutMs(options?.timeoutMs);
 
   const storeRecords = listAdapterPlugins();
   for (const record of storeRecords) {
-    const adapter = await loadFromRecord(record);
+    const adapter = await loadFromRecord(record, timeoutMs);
     if (adapter) {
       results.push(adapter);
     }
