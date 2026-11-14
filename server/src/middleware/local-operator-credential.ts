@@ -31,6 +31,7 @@ const DEFAULT_MODE: LocalOperatorCredentialMode = "off";
 const DIRECT_BROWSER_READ_PATHS = [
   /^\/api\/attachments\/[^/]+\/content$/,
   /^\/api\/assets\/[^/]+\/content$/,
+  /^\/api\/issues\/[^/]+\/file-resources\/content$/,
   /^\/api\/heartbeat-runs\/[^/]+\/provider-trace\/download$/,
   /^\/api\/companies\/[^/]+\/audit\/agent-actions\.csv$/,
   /^\/api\/plugins\/[^/]+\/bridge\/stream\/[^/]+$/,

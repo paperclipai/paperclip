@@ -40,6 +40,7 @@ function startServer(operator: LocalOperatorCredential): Promise<{ server: Serve
   app.get("/api/whoami", whoami);
   app.post("/api/whoami", whoami);
   app.get("/api/attachments/:id/content", whoami);
+  app.get("/api/issues/:id/file-resources/content", whoami);
   app.post("/api/attachments/:id/content", whoami);
   return new Promise((resolve) => {
     const server = app.listen(0, "127.0.0.1", () => {
@@ -181,8 +182,10 @@ describe.skipIf(!supported)("operator browser sign-in", () => {
 
   it("lets the browser load a file it was shown with the cookie alone", async () => {
     const { cookie } = await signIn();
-    const response = await fetch(`${base}/api/attachments/a1/content`, { headers: { cookie } });
-    expect(await response.json()).toEqual({ type: "board", source: "local_implicit" });
+    for (const file of ["/api/attachments/a1/content", "/api/issues/i1/file-resources/content?path=a.txt"]) {
+      const response = await fetch(`${base}${file}`, { headers: { cookie } });
+      expect(await response.json()).toEqual({ type: "board", source: "local_implicit" });
+    }
   });
 
   it("accepts each sign-in link only once", async () => {
