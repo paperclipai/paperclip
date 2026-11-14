@@ -275,6 +275,56 @@ describeEmbeddedPostgres("dashboard service", () => {
     expect(bucket?.failedByErrorCode.process_lost).toBeUndefined();
   });
 
+  it("counts a run once when more than one successful retry recovers it", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const day = utcDay(-3);
+    const original = randomUUID();
+    const firstRetry = randomUUID();
+    const secondRetry = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "CodexCoder",
+      role: "engineer",
+      status: "running",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+
+    const base = {
+      companyId,
+      agentId,
+      invocationSource: "assignment" as const,
+      createdAt: day,
+    };
+    await db.insert(heartbeatRuns).values([
+      { ...base, id: original, status: "failed", errorCode: "process_lost" },
+      { ...base, id: firstRetry, status: "succeeded", retryOfRunId: original },
+      { ...base, id: secondRetry, status: "succeeded", retryOfRunId: original },
+    ]);
+
+    const summary = await dashboardService(db).summary(companyId);
+    const bucket = summary.runActivity.find((entry) => entry.date === utcDateKey(day));
+    expect(bucket).toMatchObject({
+      succeeded: 2,
+      recovered: 1,
+      failed: 0,
+      other: 0,
+      total: 3,
+      failedByErrorCode: {},
+    });
+  });
+
   it("counts a recovered shutdown interrupt toward recovered, not other", async () => {
     const companyId = randomUUID();
     const agentId = randomUUID();
