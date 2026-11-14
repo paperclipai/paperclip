@@ -310,6 +310,7 @@ import { emitStartupReuse, environmentStartupReuse } from "@paperclipai/adapter-
 import { persistActivity, publishActivity } from "../activity-log.js";
 import { commitNativeStatusDecision } from "./status-decision-committer.js";
 import { resolvePaperclipInstanceRoot } from "../../home-paths.js";
+import { localRunnerConfinementPolicy } from "./local-runner-confinement.js";
 import { documentService } from "../documents.js";
 import { issueThreadInteractionService } from "../issue-thread-interactions.js";
 import { issueService } from "../issues.js";
@@ -18659,6 +18660,7 @@ async function createRunnerdBackendWithinSessionClaim(
         onStartupStep: (step: Parameters<typeof recordNativeRunnerStartupStep>[1]) =>
           recordNativeRunnerStartupStep(input.trace, step, remoteTarget ? "remote" : "local"),
         onSpawn: input.onSpawn,
+        ...(remoteTarget ? {} : { runnerConfinement: localRunnerConfinementPolicy(input.execution.binding.companyId) }),
         ...(input.execution.provider.kind === "codex" ? { disableCodexWebSearch: "webSearch" in input.execution.provider && input.execution.provider.webSearch === "disabled" } : {}),
         homeMode: preconfiguredHome ? "preconfigured" : "isolated",
         ...accountingTransportOptions,

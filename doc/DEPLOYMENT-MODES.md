@@ -120,6 +120,31 @@ routes, and child-runtime configuration, even when provider variables are
 temporarily stale. Self-hosted deployments continue to use their configured
 `PAPERCLIP_PUBLIC_URL` and do not participate in this protocol.
 
+### Local agent session confinement
+
+Agents in the local execution environment run as the server's operating-system
+user. Each local OpenCode session starts inside a per-session operating-system
+scope that all of its processes inherit: macOS uses a Seatbelt profile through
+`sandbox-exec`, and Linux uses a Landlock domain. The session keeps its own saved
+state, its own company directory and the shared instance directories. It cannot
+read other sessions' saved state, other companies' directories, run logs,
+provider traces, storage, backups, the database files, `secrets/` or the
+instance `.env`. On macOS it also cannot connect to the embedded database port
+or run set-user-ID programs such as `ps`; use `pgrep` instead.
+
+`PAPERCLIP_LOCAL_AGENT_CONFINEMENT` selects the behavior:
+
+- `auto` (default): confine where the host supports it. Otherwise run without
+  confinement and log a warning once.
+- `required`: refuse to start a local session that cannot be confined, with the
+  named code `runner_confinement_unavailable`.
+- `off`: never confine.
+
+Other providers start their own operating-system sandboxes, which cannot nest
+inside this scope. They stay unconfined until they are qualified. Sessions that
+were already running when the server upgraded keep running unconfined until
+their runner exits.
+
 ## 4. Onboarding UX Contract
 
 Default onboarding remains interactive and flagless:

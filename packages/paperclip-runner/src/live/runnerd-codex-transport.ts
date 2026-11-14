@@ -1706,6 +1706,8 @@ export interface CapabilityRunnerdCodexTransportOptions extends RunnerExecutionD
   cursorCloudProxyPath?: string;
   cursorCloudProxySha256?: string;
   recoveryPurpose?: "execution" | "stop_cleanup";
+  /** Confines each local runnerd launch to its own session state (see runner-confinement.ts). */
+  runnerConfinement?: import("../control-plane/runner-confinement.js").RunnerConfinementPolicy;
   /** Cacheless preparation requires an authenticated authorityRunId throughout this transport's lifetime. */
   recoveryLaunch?: { requirements: RunnerProviderLaunchRequirements };
   opencodePermissionMode?: NativeOpenCodePermissionMode;
@@ -6605,6 +6607,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
       cursorCloudLaunchProfile: prepared.runnerCursorCloudLaunchProfile,
       environment: prepared.environment,
       diagnosticsDirectory: resolve(this.#root, "diagnostics"),
+      confinement: this.options.runnerConfinement,
       processLauncher: this.options.runnerProcessLauncher,
       isRunnerConnected: () => core.activeRunnerConnectionCount() > 0,
       refreshBootstrapTicket: () => this.#refreshBootstrapTicket(core),
@@ -7485,6 +7488,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
             this.options.environment,
           ),
           diagnosticsDirectory: resolve(this.#root, "diagnostics"),
+          confinement: this.options.runnerConfinement,
           processLauncher: this.options.runnerProcessLauncher,
           isRunnerConnected: () => core.activeRunnerConnectionCount() > 0,
           ...(warmRecovery ? {} : { refreshBootstrapTicket: () => this.#refreshBootstrapTicket(core) }),
