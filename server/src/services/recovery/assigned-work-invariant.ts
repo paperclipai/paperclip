@@ -146,6 +146,7 @@ export type AssignedWorkFacts = {
     queuedStall?: { personWork: boolean; replacement: boolean; queuedSince: Date } | null }>;
   latestRun: {
     id: string;
+    agentId?: string;
     status: string;
     errorCode: string | null;
     finishedAt: Date | null;

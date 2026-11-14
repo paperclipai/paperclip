@@ -143,4 +143,67 @@ describePostgres("assigned-work sweep database round trips", () => {
     expect([...batched].sort()).toEqual([...perIssue].sort());
     expect([...batched].sort()).toEqual([root, child, grandchild].sort());
   }, 60_000);
+
+  it("sets retryOfRunId for same-agent continuations and queues issue_assigned when newest run belongs to another agent", async () => {
+    const companyId = randomUUID();
+    await db.insert(companies).values({ id: companyId, name: "Sweep retry parent", issuePrefix: `S${companyId.slice(0, 7)}` });
+    const agentA = randomUUID();
+    const agentB = randomUUID();
+    await db.insert(agents).values([
+      { id: agentA, companyId, name: "Agent A", adapterType: "codex_local", status: "idle", adapterConfig: {} },
+      { id: agentB, companyId, name: "Agent B", adapterType: "codex_local", status: "idle", adapterConfig: {} },
+    ]);
+    const oldTime = new Date(Date.now() - 2 * HOUR);
+    const sameAgentIssue = randomUUID();
+    const reassignedIssue = randomUUID();
+    await db.insert(issues).values([
+      { id: sameAgentIssue, companyId, title: "Same agent continuation", status: "in_progress", assigneeAgentId: agentA, issueNumber: 1, identifier: `S${companyId.slice(0, 5)}-1`, createdAt: oldTime, updatedAt: oldTime },
+      { id: reassignedIssue, companyId, title: "Reassigned continuation", status: "in_progress", assigneeAgentId: agentA, issueNumber: 2, identifier: `S${companyId.slice(0, 5)}-2`, createdAt: oldTime, updatedAt: oldTime },
+    ]);
+    const runA = randomUUID();
+    const runB = randomUUID();
+    await db.insert(heartbeatRuns).values([
+      { id: runA, companyId, agentId: agentA, status: "succeeded", invocationSource: "assignment", triggerDetail: "system", contextSnapshot: { issueId: sameAgentIssue }, createdAt: oldTime, finishedAt: oldTime },
+      { id: runB, companyId, agentId: agentB, status: "succeeded", invocationSource: "assignment", triggerDetail: "system", contextSnapshot: { issueId: reassignedIssue }, createdAt: oldTime, finishedAt: oldTime },
+    ]);
+
+    const calls: Array<{ agentId: string; opts: Parameters<Parameters<typeof assignedWorkSweep>[1]["enqueueWakeup"]>[1] }> = [];
+    const sweep = assignedWorkSweep(db, {
+      enqueueWakeup: async (agentId, opts) => {
+        calls.push({ agentId, opts });
+        return { id: randomUUID() };
+      },
+    });
+
+    await sweep.checkIssue({ companyId, issueId: sameAgentIssue });
+    await sweep.checkIssue({ companyId, issueId: reassignedIssue });
+
+    expect(calls).toHaveLength(2);
+    expect(calls[0]).toMatchObject({
+      agentId: agentA,
+      opts: {
+        source: "automation",
+        reason: "issue_continuation_needed",
+        contextSnapshot: {
+          issueId: sameAgentIssue,
+          wakeReason: "issue_continuation_needed",
+          previousRunId: runA,
+          retryOfRunId: runA,
+        },
+      },
+    });
+    expect(calls[1]).toMatchObject({
+      agentId: agentA,
+      opts: {
+        source: "assignment",
+        reason: "issue_assigned",
+        contextSnapshot: {
+          issueId: reassignedIssue,
+          wakeReason: "issue_assigned",
+        },
+      },
+    });
+    expect(calls[1]?.opts.contextSnapshot.retryOfRunId).toBeUndefined();
+    expect(calls[1]?.opts.contextSnapshot.previousRunId).toBeUndefined();
+  }, 60_000);
 });

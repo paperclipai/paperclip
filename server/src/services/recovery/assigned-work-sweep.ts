@@ -433,7 +433,7 @@ export function assignedWorkSweep(db: Db, deps: AssignedWorkDeps) {
         },
         activeRuns: ownedRuns,
         latestRun: latest ? {
-          id: latest.id, status: latest.status, errorCode: latest.errorCode, finishedAt: latestFinishedAt,
+          id: latest.id, agentId: latest.agentId, status: latest.status, errorCode: latest.errorCode, finishedAt: latestFinishedAt,
           settlingUntil: latest.runtimeMode === "legacy" && latest.controllerBootId && leaseUntil
             && !NON_TERMINAL_RUN_STATUSES.includes(latest.status) ? leaseUntil : null,
           operatorStopped: latest.agentId === issue.assigneeAgentId && (
@@ -676,14 +676,15 @@ export function assignedWorkSweep(db: Db, deps: AssignedWorkDeps) {
       return { verdict: claimed.verdict, outcome: "deferred_rate_limit", retryAt: slot.heldUntil };
     }
     const release = async () => { if (slot && !slot.heldUntil) await slot.release(); };
+    const latestForAssignee = facts.latestRun?.agentId === issue.assigneeAgentId ? facts.latestRun : null;
     const run = await deps.enqueueWakeup(issue.assigneeAgentId!, {
-      source: facts.latestRun ? "automation" : "assignment", triggerDetail: "system",
-      reason: facts.latestRun ? "issue_continuation_needed" : "issue_assigned",
+      source: latestForAssignee ? "automation" : "assignment", triggerDetail: "system",
+      reason: latestForAssignee ? "issue_continuation_needed" : "issue_assigned",
       payload: { issueId: issue.id, mutation: "assigned_work_invariant" },
       requestedByActorType: "system", requestedByActorId: null,
-      contextSnapshot: { issueId: issue.id, taskId: issue.id, wakeReason: facts.latestRun ? "issue_continuation_needed" : "issue_assigned",
+      contextSnapshot: { issueId: issue.id, taskId: issue.id, wakeReason: latestForAssignee ? "issue_continuation_needed" : "issue_assigned",
         source: ASSIGNED_WORK_CONTINUATION_SOURCE, assignedWorkViolation: claimed.reason,
-        ...(facts.latestRun ? { previousRunId: facts.latestRun.id } : {}) },
+        ...(latestForAssignee ? { previousRunId: latestForAssignee.id, retryOfRunId: latestForAssignee.id } : {}) },
     }).catch(error => {
       logger.warn({ err: error, companyId: issue.companyId, issueId: issue.id }, "assigned-work continuation was not admitted");
       return null;
@@ -737,7 +738,7 @@ export function assignedWorkSweep(db: Db, deps: AssignedWorkDeps) {
       payload: { issueId: issue.id, mutation: "assigned_work_invariant" },
       requestedByActorType: "system", requestedByActorId: null,
       contextSnapshot: { issueId: issue.id, taskId: issue.id, wakeReason: "issue_continuation_needed",
-        source: ASSIGNED_WORK_CONTINUATION_SOURCE, assignedWorkViolation: claimed.reason, previousRunId: runId, replacesStalledRunId: runId },
+        source: ASSIGNED_WORK_CONTINUATION_SOURCE, assignedWorkViolation: claimed.reason, previousRunId: runId, retryOfRunId: runId, replacesStalledRunId: runId },
     }).catch(error => {
       logger.warn({ err: error, companyId: issue.companyId, issueId: issue.id }, "assigned-work replacement for a stalled run was not admitted");
       return null;
