@@ -303,6 +303,8 @@ import {
   agentInstructionsChangeTargetKey,
   agentProfileChangeTargetKey,
   changeConsentGateService,
+  consentValueDigest,
+  touchesAgentProfileAuthorityConsentFields,
   touchesAgentProfileChangeConsentFields,
 } from "../services/change-consent-gate.js";
 import {
@@ -2546,6 +2548,8 @@ export function agentRoutes(
     req: Request,
     targetAgent: { id: string; companyId: string },
     targetKeys: string[],
+    expectedValueDigest: string | null,
+    requiresHumanResolver: boolean,
   ) {
     if (!hasCompanyAccess(req, targetAgent.companyId)) {
       throw notFound("Agent not found");
@@ -2569,6 +2573,8 @@ export function agentRoutes(
           actorAgentId: req.actor.agentId,
           actorRunId: req.actor.runId ?? null,
           targetKeys,
+          expectedValueDigest,
+          requiresHumanResolver,
         });
       } catch (err) {
         if (err instanceof HttpError && err.status === 403) {
@@ -2597,17 +2603,29 @@ export function agentRoutes(
       req,
       targetAgent,
       [agentInstructionsChangeTargetKey(targetAgent.id)],
+      null,
+      false,
     );
   }
 
   async function assertCanApplyAgentProfileChange(
     req: Request,
     targetAgent: { id: string; companyId: string },
+    patchData: Record<string, unknown>,
   ) {
+    const targetKey = agentProfileChangeTargetKey(targetAgent.id);
+    const proposedValues: Record<string, unknown> = {};
+    for (const field of AGENT_PROFILE_CHANGE_CONSENT_FIELDS) {
+      if (Object.prototype.hasOwnProperty.call(patchData, field)) {
+        proposedValues[field] = patchData[field];
+      }
+    }
     await assertCanApplyProtectedAgentChange(
       req,
       targetAgent,
-      [agentProfileChangeTargetKey(targetAgent.id)],
+      [targetKey],
+      consentValueDigest(targetKey, proposedValues),
+      touchesAgentProfileAuthorityConsentFields(proposedValues),
     );
   }
 
@@ -5864,7 +5882,7 @@ export function agentRoutes(
       (AGENT_PROFILE_CHANGE_CONSENT_FIELDS as readonly string[]).includes(key),
     );
     if (profileOnlyChange) {
-      await assertCanApplyAgentProfileChange(req, existing);
+      await assertCanApplyAgentProfileChange(req, existing, patchData);
     } else {
       await assertCanConfigureAgentSetup(req, existing);
     }
