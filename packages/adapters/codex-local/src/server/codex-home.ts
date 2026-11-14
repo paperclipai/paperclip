@@ -7,6 +7,7 @@ import { shellQuote } from "@paperclipai/adapter-utils/ssh";
 import { buildCodexAuthInboundProvision, CODEX_AUTH_MERGE_EXTRACT_SCRIPT_NAME } from "./codex-auth-merge-scripts.js";
 import { resolvePaperclipInstanceRootForAdapter } from "@paperclipai/adapter-utils/server-utils";
 import { isCodexAuthCachePath, readSubscriptionAccountId } from "./codex-auth-cache.js";
+import { hasUsableAuthPayload, readApiKeyFromAuthPayload, readAuthLastRefreshMs } from "./codex-auth-payload.js";
 
 const TRUTHY_ENV_RE = /^(1|true|yes|on)$/i;
 const COPIED_SHARED_FILES = ["config.json", "config.toml", "instructions.md"] as const;
@@ -95,66 +96,6 @@ export async function pathExists(candidate: string): Promise<boolean> {
   return fs.access(candidate).then(() => true).catch(() => false);
 }
 
-// Co-change notice: this function's logic is mirrored by parseAuth in
-// packages/adapter-utils/src/sandbox-managed-runtime.ts (buildCodexAuthMergeDecisionScript).
-// If the auth format changes (new shape, renamed field), update both sites together.
-function hasUsableAuthPayload(authPayload: unknown): boolean {
-  if (authPayload === null || typeof authPayload !== "object" || Array.isArray(authPayload)) {
-    return false;
-  }
-
-  const parsedPayload = authPayload as Record<string, unknown>;
-  const apiKey = parsedPayload.OPENAI_API_KEY;
-  if (typeof apiKey === "string" && apiKey.trim().length > 0) {
-    return true;
-  }
-
-  const tokens = parsedPayload.tokens;
-  if (tokens !== null && typeof tokens === "object" && !Array.isArray(tokens)) {
-    const parsedTokens = tokens as Record<string, unknown>;
-    const accountId = parsedTokens.account_id;
-    const hasAccountId = typeof accountId === "string" && accountId.trim().length > 0;
-    const hasTokenMaterial = ["id_token", "access_token", "refresh_token"].some((key) => {
-      const value = parsedTokens[key];
-      return typeof value === "string" && value.trim().length > 0;
-    });
-    if (hasAccountId && hasTokenMaterial) return true;
-  }
-
-  return false;
-}
-
-function readApiKeyFromAuthPayload(authPayload: unknown): string | null {
-  if (authPayload === null || typeof authPayload !== "object" || Array.isArray(authPayload)) {
-    return null;
-  }
-  const raw = (authPayload as Record<string, unknown>).OPENAI_API_KEY;
-  return typeof raw === "string" && raw.trim().length > 0 ? raw.trim() : null;
-}
-
-/**
- * The `last_refresh` timestamp of an auth.json payload, in epoch milliseconds,
- * or null when the bytes are unreadable or carry no parseable timestamp. This is
- * the same freshness field the shared merge decision predicate
- * (`codex-auth-merge-decision.cjs`) compares, read the same way, so the seeding
- * heal below and the credential writers agree on what "fresher" means.
- */
-function readAuthLastRefreshMs(bytes: Buffer | null): number | null {
-  if (!bytes) return null;
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(bytes.toString("utf8"));
-  } catch {
-    return null;
-  }
-  if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
-    return null;
-  }
-  const raw = (parsed as Record<string, unknown>).last_refresh;
-  const ms = typeof raw === "string" ? Date.parse(raw) : NaN;
-  return Number.isFinite(ms) ? ms : null;
-}
-
 export function resolveSharedCodexHomeDir(
   env: NodeJS.ProcessEnv = process.env,
 ): string {
@@ -220,6 +161,13 @@ export async function codexHomeHasUsableAuth(home: string): Promise<boolean> {
   }
 }
 
+/**
+ * True only when `auth.json` already carries the canonical API-key shape for
+ * this key: a regular file with both `auth_mode: "apikey"` and a matching
+ * `OPENAI_API_KEY`. A legacy file holding just the key (no `auth_mode`) does
+ * NOT match — the codex CLI (>= 0.122) ignores it, so reconciliation must
+ * fall through and rewrite it via `buildApiKeyAuthContents`.
+ */
 async function codexHomeHasMatchingApiKeyAuth(home: string, apiKey: string): Promise<boolean> {
   const authPath = path.join(home, "auth.json");
   const existing = await fs.lstat(authPath).catch(() => null);
@@ -227,6 +175,7 @@ async function codexHomeHasMatchingApiKeyAuth(home: string, apiKey: string): Pro
   try {
     const raw = await fs.readFile(authPath, "utf8");
     const parsed = JSON.parse(raw);
+    if ((parsed as Record<string, unknown> | null)?.auth_mode !== "apikey") return false;
     return readApiKeyFromAuthPayload(parsed) === apiKey.trim();
   } catch {
     return false;
@@ -389,7 +338,18 @@ export async function writeManagedCodexMcpConfig(input: {
 }
 
 /**
- * Writes an `auth.json` containing only `OPENAI_API_KEY` so the codex CLI can
+ * Builds the canonical managed `auth.json` contents for API-key auth. The codex
+ * CLI (>= 0.122) requires both `auth_mode: "apikey"` and `OPENAI_API_KEY` to be
+ * present, otherwise it falls back to the (absent) ChatGPT login flow. Shared by
+ * the persisted managed home writer and the ephemeral probe-home builder so the
+ * two paths can never drift.
+ */
+export function buildApiKeyAuthContents(apiKey: string): string {
+  return JSON.stringify({ auth_mode: "apikey", OPENAI_API_KEY: apiKey });
+}
+
+/**
+ * Writes an `auth.json` containing API-key credentials so the codex CLI can
  * authenticate via API key. Overwrites any existing file or symlink at that
  * path. Required because the codex CLI (>= 0.122) ignores the `OPENAI_API_KEY`
  * environment variable and only reads credentials from `$CODEX_HOME/auth.json`.
@@ -398,7 +358,7 @@ export async function writeApiKeyAuthJson(home: string, apiKey: string): Promise
   await fs.mkdir(home, { recursive: true });
   const target = path.join(home, "auth.json");
   await fs.rm(target, { force: true });
-  await fs.writeFile(target, JSON.stringify({ OPENAI_API_KEY: apiKey }), { mode: 0o600 });
+  await fs.writeFile(target, buildApiKeyAuthContents(apiKey), { mode: 0o600 });
 }
 
 export interface StageCodexHomeForSyncOptions {
@@ -823,7 +783,14 @@ export async function prepareManagedCodexHome(
   options: { apiKey?: string | null } = {},
 ): Promise<string> {
   const targetHome = resolveManagedCodexHomeDir(env, companyId);
-  await seedManagedCodexHome(targetHome, env, onLog, options);
+  // When the caller does not explicitly pass an apiKey, fall back to the
+  // process/agent `OPENAI_API_KEY` so the env-driven test/runtime path
+  // (testEnvironment) seeds an API-key auth.json instead of symlinking the
+  // shared subscription auth. An explicit `null` (e.g. the remote-probe path)
+  // still means "no key" and is preserved — only `undefined` triggers the
+  // env fallback, so reconcile's intentional downgrade is never overridden.
+  const apiKey = options.apiKey === undefined ? nonEmpty(env.OPENAI_API_KEY) : options.apiKey;
+  await seedManagedCodexHome(targetHome, env, onLog, { apiKey });
   return targetHome;
 }
 
