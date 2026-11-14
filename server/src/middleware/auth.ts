@@ -198,6 +198,8 @@ const publicRoutineWebhookPath = /^\/api\/routine-triggers\/public\/[a-f0-9]{24}
 
 const publicMcpGatewayProtocolPath = /^\/mcp\/gateways\/gw_[a-f0-9]{32}\/?$/i;
 
+const publicChatWebhookPath = /^\/api\/chat-webhooks\/[A-Za-z0-9_-]+\/[A-Za-z0-9_-]+\/?$/;
+
 export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHandler {
   const boardAuth = boardAuthService(db);
   const localBoundary = opts.deploymentMode === "local_trusted"
@@ -218,7 +220,10 @@ export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHa
 
     // Routine ingress authenticates its own bearer/signature. Never interpret
     // webhook credentials as agent keys or attach an ambient browser session.
-    if (req.method === "POST" && publicRoutineWebhookPath.test(req.path)) {
+    if (
+      req.method === "POST" &&
+      (publicRoutineWebhookPath.test(req.path) || publicChatWebhookPath.test(req.path))
+    ) {
       req.actor = { type: "none", source: "none" };
       next();
       return;
