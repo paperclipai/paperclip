@@ -162,11 +162,13 @@ describe("plugin install and upgrade authz", () => {
     expect(packageNames).toContain("@paperclipai/plugin-workspace-diff");
     expect(packageNames).toContain("@paperclipai/plugin-llm-wiki");
     expect(packageNames).toContain("@paperclipai/plugin-modal");
+    expect(packageNames).toContain("@andhash/plugin-pc-telegram");
     expect(packageNames).toContain("@paperclipai/plugin-authoring-smoke-example");
     expect(packageNames).not.toContain("@paperclipai/plugin-sdk");
     expect(byPackageName.get("@paperclipai/plugin-workspace-diff")?.experimental).toBe(true);
     expect(byPackageName.get("@paperclipai/plugin-llm-wiki")?.experimental).toBe(true);
     expect(byPackageName.get("@paperclipai/plugin-modal")?.experimental).toBe(true);
+    expect(byPackageName.get("@andhash/plugin-pc-telegram")?.experimental).toBe(true);
     expect(byPackageName.get("@paperclipai/plugin-authoring-smoke-example")?.experimental).toBe(false);
     expect(typeof byPackageName.get("@paperclipai/plugin-workspace-diff")?.hasBuiltEntrypoints).toBe("boolean");
   }, 20_000);
