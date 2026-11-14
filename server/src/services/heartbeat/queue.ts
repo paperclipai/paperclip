@@ -13,6 +13,7 @@ import { deferredWorkIntentWait } from "../work-intent-outbox.js";
 import { notifyIssueRecovery } from "../issue-recovery-notifications.js";
 import { createHeartbeatTimerPolicy } from "./timer-policy.js";
 import { QUEUED_RUN_AGING_MS, RECOVERY_WAKE_REASONS, createQueuedRunDispatcher, hasQueuedRunAged, queuedRunDispatchClass } from "./queued-run-dispatch-order.js";
+import { holdAutomaticRunStart } from "../recovery/automatic-run-brake.js";
 import { queuedRunDispatchFacts } from "./queued-run-line.js";
 import { notifyExecutionRunWork } from "../execution-control-notifications.js";
 import { PersistedExecutionWaitRefusal, writeDeferredExecutionWait } from "../deferred-execution-wait.js";
@@ -2594,6 +2595,7 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
         if (claimedRuns.length >= availableSlots || slots.full || isRunAdmissionClosed() || signal.aborted) break;
         const taskStamp = queuedRunTaskStamp(candidate, issueById);
         if (triedRunIds.has(candidate.id) || (!retryRefused && claimBackedOff(candidate.id, new Date(), taskStamp))) continue;
+        if (await holdAutomaticRunStart(db, candidate, { personOrigin: dispatcher.personOrigin(candidate) || undefined })) continue;
         if (claimAttempts >= QUEUED_RUN_CLAIM_ATTEMPTS_PER_PASS) {
           void requestQueuedDispatch(agentId, { attachSetupRequest: false, retryRefused,
             continuesChain: true, triedRunIds: new Set([...triedRunIds, ...triedThisPass]) });

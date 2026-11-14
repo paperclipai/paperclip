@@ -1,7 +1,8 @@
 import { eq, sql } from "drizzle-orm";
 import { automaticRunBrakes, type Db } from "@paperclipai/db";
 import { logger } from "../../middleware/logger.js";
-import { PERSON_WAKE_REASONS, RECOVERY_WAKE_REASONS } from "../heartbeat/queued-run-dispatch-order.js";
+import { PERSON_WAKE_REASONS } from "../heartbeat/queued-run-dispatch-order.js";
+import { isPersonOwnedFailureCode, isRecoveryRun, isRestartClassFailureCode } from "../continuation-cause.js";
 import { ENVIRONMENT_PROVIDER_UNAVAILABLE_CODE } from "../environment-provider-unavailable-error.js";
 
 export const AUTOMATIC_RUN_BRAKE = {
@@ -37,15 +38,12 @@ export type AutomaticRunFacts = {
   contextSnapshot?: Record<string, unknown> | null;
 };
 
-const EXTRA_AUTOMATIC_WAKE_REASONS: ReadonlySet<string> = new Set(["issue_assignment_recovery", "transient_failure_retry"]);
-
 export function isAutomaticRun(run: AutomaticRunFacts): boolean {
   const context = run.contextSnapshot ?? {};
   const reason = typeof context.wakeReason === "string" ? context.wakeReason : null;
-  if (context.explicitUserContinuation || context.taskRetryRequestId || (reason && PERSON_WAKE_REASONS.has(reason))) return false;
-  return Boolean(run.retryOfRunId || run.scheduledRetryReason || context.previousRunId || context.retryReason
-    || context.freshContinuationIsolation
-    || (reason && (RECOVERY_WAKE_REASONS.has(reason) || EXTRA_AUTOMATIC_WAKE_REASONS.has(reason))));
+  if (context.taskRetryRequestId || (reason && PERSON_WAKE_REASONS.has(reason))) return false;
+  return isRecoveryRun({ retryOfRunId: run.retryOfRunId ?? null, scheduledRetryReason: run.scheduledRetryReason ?? null,
+    contextSnapshot: context });
 }
 
 export type AutomaticRunOutcome = "failed_before_starting" | "healthy" | "neutral";
@@ -62,8 +60,6 @@ export type AutomaticRunOutcomeFacts = {
 };
 
 export type AutomaticRunOutcomeRules = {
-  isPersonOwnedFailureCode: (code: string | null) => boolean;
-  restartCodes: readonly string[];
   isTransientSetupCode: (code: string | null) => boolean;
   hasNativePreDispatchFailureRecord: (resultJson: unknown) => boolean;
   listPersonOriginSourceRunIds: (db: Db, companyId: string, runIds: string[]) => Promise<string[]>;
@@ -72,11 +68,9 @@ export type AutomaticRunOutcomeRules = {
 let outcomeRules: Promise<AutomaticRunOutcomeRules> | null = null;
 
 export function automaticRunOutcomeRules(): Promise<AutomaticRunOutcomeRules> {
-  outcomeRules ??= Promise.all([import("../fresh-continuation-fallback.js"), import("../heartbeat/retries.js"),
+  outcomeRules ??= Promise.all([import("../heartbeat/retries.js"),
     import("../heartbeat/run-failure-cause.js"), import("../heartbeat/queued-run-line.js")])
-    .then(([fallback, retries, failureCause, queuedRunLine]) => ({
-      isPersonOwnedFailureCode: fallback.isPersonOwnedFailureCode,
-      restartCodes: fallback.BACKLOG_CONTINUATION_SOURCE_CODES,
+    .then(([retries, failureCause, queuedRunLine]) => ({
       isTransientSetupCode: retries.isTransientWorkspacePreparationCode,
       hasNativePreDispatchFailureRecord: failureCause.hasNativePreDispatchFailureRecord,
       listPersonOriginSourceRunIds: queuedRunLine.listPersonOriginSourceRunIds,
@@ -88,8 +82,8 @@ export function automaticRunOutcomeRules(): Promise<AutomaticRunOutcomeRules> {
 export function classifyAutomaticRunOutcome(run: AutomaticRunOutcomeFacts, rules: AutomaticRunOutcomeRules): AutomaticRunOutcome {
   if (run.status === "running") return run.executionStage === "dispatching" || run.hasOutput ? "healthy" : "neutral";
   if (!run.startedAt || run.status === "cancelled" || !["succeeded", "failed", "timed_out", "interrupted"].includes(run.status)) return "neutral";
-  if (run.status === "succeeded" || rules.isPersonOwnedFailureCode(run.errorCode)) return "healthy";
-  if (run.errorCode && rules.restartCodes.includes(run.errorCode)) return "neutral";
+  if (run.status === "succeeded" || isPersonOwnedFailureCode(run.errorCode)) return "healthy";
+  if (isRestartClassFailureCode(run.errorCode)) return "neutral";
   const startPhase = run.providerWorkStarted === "false" || rules.isTransientSetupCode(run.errorCode)
     || rules.hasNativePreDispatchFailureRecord({ nativePreDispatchFailure: run.nativePreDispatchFailure })
     || (run.runtimeMode === "legacy" && run.executionStage === "preparing");
@@ -156,6 +150,7 @@ function boundedMap<K, V>(max: number) {
       while (map.size > max) map.delete(map.keys().next().value as K);
     },
     delete(key: K) { map.delete(key); },
+    entries() { return [...map.entries()]; },
     clear() { map.clear(); },
     get size() { return map.size; },
   };
@@ -220,6 +215,7 @@ export function createAutomaticRunBrake(options: { loadRules?: () => Promise<Aut
   const loadRules = options.loadRules ?? automaticRunOutcomeRules;
   const companies = boundedMap<string, CacheEntry>(AUTOMATIC_RUN_BRAKE.maxCompanies);
   const personOrigin = boundedMap<string, boolean>(AUTOMATIC_RUN_BRAKE.maxRuns);
+  const wakes = boundedMap<string, number>(AUTOMATIC_RUN_BRAKE.maxCompanies);
   let rulesFailureLogged = false;
 
   async function rulesOrNull() {
@@ -511,12 +507,33 @@ export function createAutomaticRunBrake(options: { loadRules?: () => Promise<Aut
     const cached = companies.get(run.companyId);
     if (cached && cached.snapshot.state === "closed" && Date.now() - cached.readAt < AUTOMATIC_RUN_BRAKE.cacheTtlMs) return false;
     if (options.personOrigin ?? await isPersonOrigin(db, run)) return false;
-    if (cached && cached.heldUntil > Date.now()) return true;
+    if (cached && cached.heldUntil > Date.now()) return held(cached);
     const entry = await current(db, run.companyId);
     if (entry.snapshot.state === "closed") return false;
-    if (entry.heldUntil > Date.now()) return true;
+    if (entry.heldUntil > Date.now()) return held(entry);
     const allowed = entry.snapshot.state === "open" ? await grantProbe(db, entry, run) : await grantRelease(db, entry, run.companyId);
-    return !allowed;
+    return allowed ? false : held(entry);
+  }
+
+  function held(entry: CacheEntry) {
+    const now = Date.now();
+    const nextProbeAt = entry.snapshot.nextProbeAt ? entry.snapshot.nextProbeAt.getTime() - entry.skewMs : 0;
+    const due = entry.snapshot.state === "open" ? Math.max(entry.heldUntil, nextProbeAt) : entry.heldUntil;
+    const at = due - now < 1_000 ? now + AUTOMATIC_RUN_BRAKE.probeIntervalMs : due;
+    const known = wakes.get(entry.snapshot.companyId);
+    if (known === undefined || known <= now || at < known) wakes.set(entry.snapshot.companyId, at);
+    return true;
+  }
+
+  function takeDueWakes(now = Date.now()) {
+    const due: string[] = [];
+    let nextAt: number | null = null;
+    for (const [companyId, at] of wakes.entries()) {
+      if (at <= now) due.push(companyId);
+      else nextAt = nextAt === null ? at : Math.min(nextAt, at);
+    }
+    for (const companyId of due) wakes.delete(companyId);
+    return { companyIds: due, nextAt };
   }
 
   return {
@@ -525,12 +542,25 @@ export function createAutomaticRunBrake(options: { loadRules?: () => Promise<Aut
     creationHeldUntil,
     reserveCreation,
     holdAutomaticRunStart,
-    cacheSizes: () => ({ companies: companies.size, runs: personOrigin.size }),
-    reset: () => { companies.clear(); personOrigin.clear(); },
+    takeDueWakes,
+    cacheSizes: () => ({ companies: companies.size, runs: personOrigin.size, wakes: wakes.size }),
+    reset: () => { companies.clear(); personOrigin.clear(); wakes.clear(); },
   };
 }
 
 export const automaticRunBrake = createAutomaticRunBrake();
+
+export function holdAutomaticRunStart(db: Db, run: AutomaticRunFacts, options: { personOrigin?: boolean } = {}) {
+  return automaticRunBrake.holdAutomaticRunStart(db, run, options);
+}
+
+export function takeDueAutomaticRunWakes(now = Date.now()) {
+  return automaticRunBrake.takeDueWakes(now);
+}
+
+export function nextAutomaticRunWakeAt() {
+  return automaticRunBrake.takeDueWakes(Number.NEGATIVE_INFINITY).nextAt;
+}
 
 export function automaticRunCreationHeldUntil(db: Db, companyId: string, work: AutomaticWork) {
   return automaticRunBrake.creationHeldUntil(db, companyId, work);

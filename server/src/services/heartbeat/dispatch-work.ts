@@ -3,6 +3,7 @@ import type { createDeliveryWorkCoordinator } from "../delivery-work-coordinator
 import { registerDeadlineWork } from "../deadline-work.js";
 import { DELIVERY_QUEUES } from "../delivery-work-notifications.js";
 import { createQueuedRunRedriveSchedule, type QueuedRunRedrivePlan, type UndispatchedQueuedRun } from "../queued-run-dispatch-liveness.js";
+import { nextAutomaticRunWakeAt, takeDueAutomaticRunWakes } from "../recovery/automatic-run-brake.js";
 
 export function registerRunDispatchWork(
   coordinator: ReturnType<typeof createDeliveryWorkCoordinator>,
@@ -36,6 +37,7 @@ export function registerRunDispatchWork(
     canRun,
     onSettled: hints => { for (const hint of hints ?? ["*"]) scopes.add(hint); },
     run: async signal => {
+      for (const companyId of takeDueAutomaticRunWakes().companyIds) scopes.add(JSON.stringify({ companyId }));
       const requested = scopes.has("*") ? ["*"] : [...scopes];
       if (requested[0] === "*") scopes.clear();
       else for (const hint of requested) scopes.delete(hint);
@@ -75,7 +77,8 @@ export function registerRunDispatchWork(
         throw error;
       }
       for (const companyId of plan.companyIds) scopes.add(JSON.stringify({ companyId }));
-      return plan.nextAt;
+      const wakeAt = nextAutomaticRunWakeAt();
+      return plan.nextAt === null ? wakeAt : wakeAt === null ? plan.nextAt : Math.min(plan.nextAt, wakeAt);
     },
   });
   return {
