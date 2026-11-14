@@ -2333,6 +2333,7 @@ describe("review round circuit breaker", () => {
       completedStageIds: [],
       lastDecisionId: null,
       lastDecisionOutcome: null,
+      reviewRequest: null,
     };
 
     expect(isPendingExecutionStageParticipant({ status: "in_review", executionState: state }, qaAgentId)).toBe(true);

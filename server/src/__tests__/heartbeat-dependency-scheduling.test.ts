@@ -1717,6 +1717,14 @@ describeEmbeddedPostgres("heartbeat dependency-aware queued run selection", () =
       id: companyId,
       name: "Paperclip",
       issuePrefix: `R${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      defaultResponsibleUserId: "responsible-user",
+    });
+    await db.insert(companyMemberships).values({
+      companyId,
+      principalType: "user",
+      principalId: "responsible-user",
+      status: "active",
+      membershipRole: "member",
     });
     await db.insert(agents).values([
       {
@@ -1746,6 +1754,7 @@ describeEmbeddedPostgres("heartbeat dependency-aware queued run selection", () =
         status: "todo",
         issueNumber: 1,
         identifier: "REV-1",
+        responsibleUserId: "responsible-user",
       },
       {
         id: reviewIssueId,
@@ -1753,6 +1762,7 @@ describeEmbeddedPostgres("heartbeat dependency-aware queued run selection", () =
         title: "Review PR",
         status: "in_review",
         assigneeAgentId: reviewerAgentId,
+        responsibleUserId: "responsible-user",
         issueNumber: 2,
         identifier: "REV-2",
         executionState: {
@@ -1765,6 +1775,7 @@ describeEmbeddedPostgres("heartbeat dependency-aware queued run selection", () =
           completedStageIds: [],
           lastDecisionId: null,
           lastDecisionOutcome: null,
+          reviewRequest: null,
         },
       },
     ]);
