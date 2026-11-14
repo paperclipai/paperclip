@@ -1,6 +1,22 @@
 # Microsoft Teams live qualification result — 2026-09-05
 
-> **Status: blocked before provider setup; no live Teams scenario executed.** The branch contains substantial Teams hardening and local regression coverage, but none of it is real-provider evidence. This document is a blocker record, not a PASS.
+> **Status: blocked before provider setup; no live Teams scenario executed.** The branch contains substantial Teams hardening and local regression coverage, but none of it is real-provider evidence. This document is a blocker record, not a PASS. The 2026-10-30 section records a later work-tenant attempt; it is also blocked, by #13468.
+
+## 2026-10-30 work-tenant attempt on v2026.1023.0
+
+An external operator ran the setup path on a Microsoft 365 commercial work tenant. This removes the tenant blocker below. It did not produce a Teams round trip, because inbound activity stops at Paperclip authentication (#13468).
+
+Environment: Docker image `v2026.1023.0`, `authenticated` mode, `private` exposure, external Postgres. A Cloudflare tunnel publishes only `/api/chat-webhooks/<publicId>/microsoft-teams`; every other path stops at the edge with 404. Two new single-tenant Entra applications and Azure Bots, with the Teams channel enabled. Agents use the `process` adapter. No identifiers, secrets or tokens are recorded here.
+
+| Scenario | Result | Evidence |
+| --- | --- | --- |
+| Credential setup | PASS | Each client secret mints a Bot Framework token (`expires_in 3599`). `POST /api/chat-endpoints/:id/setup {"action":"configure"}` moves both endpoints to `verifying` at step `test`. |
+| Public ingress for the webhook path only | PASS | `/`, `/api/health` and `/api/chat-webhooks/<id>/slack` return 404 at the edge. The Teams path reaches the origin. |
+| Webhook ingress host in private mode | Docs gap, worked around | Before the ingress hostname is in `PAPERCLIP_ALLOWED_HOSTNAMES`, the private-hostname guard answers 403. A `Host` rewrite at the tunnel does not help, because the guard reads `X-Forwarded-Host` first. After the allowlist entry, an unknown publicId returns `404 Chat endpoint not found`. Docs: #18301. |
+| Unsigned and forged requests | Rejected | Draft endpoint: `409 chat_endpoint_runtime_unavailable`. Verifying endpoint, no header: `401 Missing authorization header`. Forged RS256 JWT: `401 Agent token did not verify; obtain fresh credentials and retry`. |
+| Real webhook authentication | BLOCKED by #13468 | `actorMiddleware` reads every `Authorization: Bearer` value as a Paperclip credential and answers 401 before the Teams route. An Entra client-credentials token gets the same agent-token 401. Bot Framework activity carries a Bearer JWT, so no activity reaches the adapter. #15185 proposes the fix. |
+
+All other rows of the remaining live matrix depend on inbound activity: installation, discovery, channel and reply ordering, DMs, group chats, reactions, Adaptive Card actions, identity linking, denial notices, edit and delete receipt, publication, files, duplicate delivery, revocation, reconnect and cleanup. They stay unexecuted. The operator can repeat the run on this tenant when a fix for #13468 is available.
 
 ## 2026-09-06 live-attempt checkpoint
 
