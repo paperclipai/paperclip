@@ -31,7 +31,7 @@ export async function grantConnectionAgentTools(db: Db, input: {
       companyId: connection.companyId,
       actor: { actorType: "agent", actorId: agentId, agentId: agentId },
       runContext: context ?? {},
-      request: { connectionId: connection.id, catalogEntryId: tool.id, toolName: tool.toolName, arguments: {} },
+      request: { connectionId: connection.id, catalogEntryId: tool.id, toolName: tool.toolName, arguments: {}, argumentsUnknown: true },
     });
     if (decision.decision === "deny" && decision.reasonCode !== "deny_default") {
       throw conflict("An existing policy blocks this tool. Review the connection's permissions before granting access.");
