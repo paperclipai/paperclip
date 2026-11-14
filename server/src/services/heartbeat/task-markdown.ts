@@ -2,6 +2,7 @@ import { REQUIRED_QUALITY_REVIEW_GUIDANCE, requiredQualityReview } from "../requ
 import { AGENT_CHAT_DIRECTIVE, CASES_CHAT_DIRECTIVE, CONFERENCE_ROOM_CHAT_DIRECTIVE, COORDINATOR_CHAT_HANDOFF_DIRECTIVE, STATUS_CARDS_CHAT_DIRECTIVE } from "../agent-conversations.js";
 import { publicChatTaskUrl } from "../chat-task-url.js";
 import { slackChatAgentGuidance } from "../connectors/slack/agent-guidance.js";
+import { slackUndeliveredFinalResponseGuidance } from "../connectors/slack/task-update-guidance.js";
 import type { ConversationConfirmationContext } from "../conversation-confirmation-context.js";
 import { TASK_QUESTION_GUIDANCE } from "../issue-question-context.js";
 
@@ -65,6 +66,7 @@ export function buildPaperclipTaskMarkdown(input: {
   } | null;
   externalChatProvider?: string | null;
   slackCommand?: string | null;
+  slackFinalResponseUndelivered?: { externalThreadId: string | null } | null;
   nativeRunner?: boolean;
   coordinatorWorkspace?: boolean;
   // IANA zone saved from the chat owner's browser; null when unknown.
@@ -156,6 +158,13 @@ export function buildPaperclipTaskMarkdown(input: {
   }
   if (input.externalChatProvider === "slack") {
     lines.push(...slackChatAgentGuidance(input.nativeRunner === true, input.slackCommand));
+  }
+  if (input.slackFinalResponseUndelivered) {
+    lines.push(
+      "",
+      "Slack updates in this run:",
+      slackUndeliveredFinalResponseGuidance(input.slackFinalResponseUndelivered.externalThreadId),
+    );
   }
   if (input.externalChatProvider && input.nativeRunner) {
     lines.push(

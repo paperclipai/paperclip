@@ -3,3 +3,10 @@ export const slackTaskUpdateGuidance = [
   "When you have results, update the user in the originating Slack channel thread or direct conversation. Include the outcome and accessible links or supported attachments. Do not leave results only in a Paperclip task, document, or work product. Put this update in your final response so Paperclip can deliver it; do not send a duplicate with slack_post_message.",
   "When the user needs to review a plan, approve an action, or review a result, notify them in the same Slack conversation. State what needs review, include the saved review link when available, and explain the action they must take. Follow the normal workflow to save the artifact and create the required human-input or approval interaction before you yield. Saving a plan or setting a task to in_review alone does not ask the user to review it. Do not claim notification or delivery without a successful receipt, and do not continue gated work until the required approval is recorded.",
 ];
+
+export function slackUndeliveredFinalResponseGuidance(externalThreadId: string | null): string {
+  const [, channel, threadTs] = (externalThreadId ?? "").split(":");
+  const threadLocation = threadTs ? `, thread_ts ${threadTs}` : "";
+  const location = channel ? ` (channel ${channel}${threadLocation})` : "";
+  return `A Slack message did not start this run, so Paperclip keeps this run's final response in Paperclip and does not send it to Slack. In this run, send each result or review update for the user with slack_post_message to the originating Slack conversation${location}. Send each update once.`;
+}
