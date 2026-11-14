@@ -1962,6 +1962,27 @@ it("settles a restored turn from the runner's reconciled result terminal", () =>
   expect(recovered([runTerminal], "turn-1")).toBeNull();
 });
 
+it("carries the provider-turn wait marker on a recovered turn terminal only when the PRP turn.completed has it", () => {
+  const { runnerdRecoveredTurnTerminal: recovered, runnerdPriorTurnTerminals: prior } = runnerdRecoveryInternals;
+  const event = (eventType: string, payload: Record<string, unknown>) => ({ eventType, envelope: { runId: "run-1", payload: { payload } } });
+  const awaited = event("turn.completed", { providerTurnId: "turn-1", awaitingProviderTurn: true });
+  const plain = event("turn.completed", { providerTurnId: "turn-1" });
+  const failed = event("turn.failed", { providerTurnId: "turn-1", awaitingProviderTurn: true });
+  const forged = event("turn.completed", { providerTurnId: "turn-1", awaitingProviderTurn: "true" });
+  expect(recovered([awaited], "turn-1")).toEqual({ status: "completed", error: null, awaitingProviderTurn: true });
+  expect(recovered([plain], "turn-1")).toStrictEqual({ status: "completed", error: null });
+  expect(recovered([failed], "turn-1")).toStrictEqual({ status: "failed", error: null });
+  expect(recovered([forged], "turn-1")).toStrictEqual({ status: "completed", error: null });
+  expect([...prior([awaited], "run-1", "turn-2").values()])
+    .toEqual([{ id: "turn-1", status: "completed", error: null, awaitingProviderTurn: true }]);
+  for (const unmarked of [plain, failed, forged]) {
+    expect([...prior([unmarked], "run-1", "turn-2").values()])
+      .toStrictEqual([{ id: "turn-1", status: unmarked.eventType.slice("turn.".length), error: null }]);
+  }
+  expect(prior([awaited], "run-1", "turn-1").size).toBe(0);
+  expect(prior([awaited], "run-other", "turn-2").size).toBe(0);
+});
+
 it("requires ACPX command results to preserve the requested turn identity", () => {
   expect(
     runnerdRecoveryInternals.turnStartCommandResultValid({
