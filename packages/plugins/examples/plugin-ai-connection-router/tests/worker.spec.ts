@@ -1,0 +1,133 @@
+import { describe, expect, it } from "vitest";
+import type { AiConnectionRouterRequest } from "@paperclipai/plugin-sdk";
+import { createTestHarness } from "@paperclipai/plugin-sdk/testing";
+import manifest from "../src/manifest.js";
+import plugin from "../src/worker.js";
+
+const NOW = "2026-01-01T00:00:00.000Z";
+const hour = (hours: number) => new Date(Date.parse(NOW) + hours * 3_600_000).toISOString();
+const companyId = "company-1";
+const members = ["member-a", "member-b"].map(id => ({
+  id,
+  binding: { mode: "delegated" as const, provider: "anthropic" as const, method: "subscription" as const, connectionId: `conn-${id}`, grantId: `grant-${id}` },
+  profile: { provider: "acpx" as const, acpxAgent: "claude" as const, model: "claude-sonnet-5" },
+}));
+const request = (taskKey: string, extra: Partial<AiConnectionRouterRequest> = {}): AiConnectionRouterRequest => ({
+  companyId, agentId: "agent-1", taskKey, lastMemberId: null, cursorVersion: 0, memberOrder: members.map(m => m.id), now: NOW,
+  pool: { id: "pool", companyId, pluginKey: manifest.id, revision: 1, name: "Pool", enabled: true, mode: "round_robin", thresholdPercent: 90, members },
+  candidates: members.map(member => ({ member, runtimeConfig: {}, notes: [] })), ...extra,
+});
+const cooldownKey = { scopeKind: "agent" as const, scopeId: "agent-1", namespace: "cooldowns", stateKey: "conn-member-a:grant-member-a" };
+
+async function setup() {
+  const harness = createTestHarness({ manifest });
+  await plugin.definition.setup(harness.ctx);
+  const route = (input: AiConnectionRouterRequest) => plugin.definition.onRouteAiConnection!(input);
+  const run = (type: "agent.run.failed" | "agent.run.finished", runId: string, payload: Record<string, unknown> = {}, occurredAt = NOW) =>
+    harness.emit(type, { runId, agentId: "agent-1", issueId: "issue-1", errorCode: type === "agent.run.failed" ? "provider_quota" : null, finishedAt: occurredAt, ...payload }, { companyId, occurredAt, entityId: runId });
+  return { harness, route, run };
+}
+
+describe("reference router worker", () => {
+  it("declares only the documented router capabilities", () => {
+    expect(manifest.capabilities.sort()).toEqual(["ai.connections.route", "events.subscribe", "plugin.state.read", "plugin.state.write"]);
+    expect(manifest.aiConnectionRouter?.name).toBeTruthy();
+  });
+
+  it("learns a provider_quota cool-down, fails new tasks over, keeps the pin waiting and clears on success", async () => {
+    const { harness, route, run } = await setup();
+    expect(await route(request("issue-1"))).toEqual({ kind: "selected", memberId: "member-a" });
+    await run("agent.run.failed", "run-1");
+    expect(harness.getState(cooldownKey)).toMatchObject({ until: "2026-01-01T01:00:00.000Z", strikes: 1 });
+    expect(await route(request("issue-2"))).toMatchObject({ kind: "selected", memberId: "member-b" });
+    expect(await route(request("issue-1", { pinnedMemberId: "member-a" }))).toMatchObject({ kind: "exhausted", retryAt: "2026-01-01T01:00:00.000Z" });
+    await route(request("issue-1", { now: hour(2), pinnedMemberId: "member-a" }));
+    await run("agent.run.finished", "run-2", {}, hour(2.5));
+    expect(harness.getState(cooldownKey)).toBeUndefined();
+  });
+
+  it("keeps a learned cool-down to the reporting agent: another agent's pin and new tasks on the shared account are not excluded", async () => {
+    const { harness, route, run } = await setup();
+    await route(request("issue-1"));
+    await run("agent.run.failed", "run-1");
+    expect(harness.getState(cooldownKey)).toMatchObject({ strikes: 1 });
+    expect(harness.getState({ ...cooldownKey, scopeKind: "company", scopeId: companyId })).toBeUndefined();
+    expect(await route(request("issue-9", { agentId: "agent-2", pinnedMemberId: "member-a" }))).toEqual({ kind: "selected", memberId: "member-a" });
+    expect(await route(request("issue-10", { agentId: "agent-2" }))).toEqual({ kind: "selected", memberId: "member-a" });
+    expect(await route(request("issue-1", { pinnedMemberId: "member-a" }))).toMatchObject({ kind: "exhausted", retryAt: hour(1) });
+  });
+
+  it("adds one strike per failed run; a redelivered event never consumes a later run's selection", async () => {
+    const { harness, route, run } = await setup();
+    await route(request("issue-1"));
+    await run("agent.run.failed", "run-1");
+    await run("agent.run.failed", "run-1");
+    expect(harness.getState(cooldownKey)).toMatchObject({ strikes: 1, until: hour(1) });
+    await route(request("issue-1", { pinnedMemberId: "member-a", now: hour(2) }));
+    await run("agent.run.failed", "run-1");
+    await run("agent.run.failed", "run-2", {}, hour(3));
+    expect(harness.getState(cooldownKey)).toEqual({ strikes: 2, until: hour(5), lastRunId: "run-2" });
+  });
+
+  it("ignores an older event that arrives after a later terminal outcome", async () => {
+    const { harness, route, run } = await setup();
+    await route(request("issue-1"));
+    await run("agent.run.finished", "run-1");
+    await route(request("issue-1", { now: hour(1) }));
+    await run("agent.run.failed", "run-2", {}, hour(2));
+    expect(harness.getState(cooldownKey)).toMatchObject({ strikes: 1, until: hour(3) });
+    await route(request("issue-1", { pinnedMemberId: "member-a", now: hour(4) }));
+    await run("agent.run.finished", "run-1");
+    await run("agent.run.failed", "run-2", {}, hour(2));
+    expect(harness.getState(cooldownKey)).toMatchObject({ strikes: 1, until: hour(3), lastRunId: "run-2" });
+    await run("agent.run.finished", "run-3", {}, hour(5));
+    expect(harness.getState(cooldownKey)).toBeUndefined();
+    await run("agent.run.failed", "run-2", {}, hour(2));
+    expect(harness.getState(cooldownKey)).toBeUndefined();
+  });
+
+  it("ignores other failures and runs it did not route", async () => {
+    const { harness, route, run } = await setup();
+    await run("agent.run.failed", "run-0");
+    await route(request("issue-1"));
+    await run("agent.run.failed", "run-1", { errorCode: "adapter_failed" });
+    expect(harness.getState(cooldownKey)).toBeUndefined();
+  });
+
+  it("rotates a mixed OpenAI/Anthropic pool and skips the threshold and hard-limit member of either provider", async () => {
+    const { route } = await setup();
+    const mixed = [
+      { id: "member-openai", binding: { mode: "delegated" as const, provider: "openai" as const, method: "subscription" as const, connectionId: "conn-openai", grantId: "grant-openai" }, profile: { provider: "codex" as const, model: "gpt-5" } },
+      { id: "member-anthropic", binding: { mode: "delegated" as const, provider: "anthropic" as const, method: "subscription" as const, connectionId: "conn-anthropic", grantId: "grant-anthropic" }, profile: { provider: "acpx" as const, acpxAgent: "claude" as const, model: "claude-sonnet-5" } },
+    ];
+    const usage = (member: (typeof mixed)[number], usedPercent: number, limitReached: boolean | null = null) => ({
+      connectionId: member.binding.connectionId, grantId: member.binding.grantId, provider: member.binding.provider, method: member.binding.method, status: "ok" as const, checkedAt: NOW, source: null, planType: null, overage: null,
+      limits: [{ id: "window", label: "Window", scope: null, windowDurationSeconds: 18_000, resetsAt: hour(1), usedPercent, remainingPercent: null, used: null, limit: null, remaining: null, unit: "percent", limitReached, allowed: null }],
+    });
+    const mixedRequest = (taskKey: string, lastMemberId: string | null, used: [number, number], reached: [boolean | null, boolean | null] = [null, null]) => request(taskKey, {
+      lastMemberId, memberOrder: mixed.map(m => m.id),
+      pool: { id: "pool", companyId, pluginKey: manifest.id, revision: 1, name: "Mixed pool", enabled: true, mode: "usage_aware", thresholdPercent: 90, members: mixed },
+      candidates: mixed.map((member, index) => ({ member, runtimeConfig: {}, notes: [], usage: usage(member, used[index], reached[index]) })),
+    });
+    // Rotation across both providers.
+    expect(await route(mixedRequest("issue-1", null, [10, 10]))).toEqual({ kind: "selected", memberId: "member-openai" });
+    expect(await route(mixedRequest("issue-2", "member-openai", [10, 10]))).toEqual({ kind: "selected", memberId: "member-anthropic" });
+    expect(await route(mixedRequest("issue-3", "member-anthropic", [10, 10]))).toEqual({ kind: "selected", memberId: "member-openai" });
+    // Threshold skip, each provider in turn.
+    expect(await route(mixedRequest("issue-4", "member-anthropic", [95, 10]))).toEqual({ kind: "selected", memberId: "member-anthropic", skipped: { "member-openai": "Usage at or above 90%" } });
+    expect(await route(mixedRequest("issue-5", "member-openai", [10, 95]))).toEqual({ kind: "selected", memberId: "member-openai", skipped: { "member-anthropic": "Usage at or above 90%" } });
+    // Hard-limit skip, each provider in turn; both blocked waits for the earliest reset.
+    expect(await route(mixedRequest("issue-6", "member-anthropic", [40, 10], [true, null]))).toEqual({ kind: "selected", memberId: "member-anthropic", skipped: { "member-openai": "At a provider usage limit" } });
+    expect(await route(mixedRequest("issue-7", "member-openai", [10, 100]))).toEqual({ kind: "selected", memberId: "member-openai", skipped: { "member-anthropic": "At a provider usage limit" } });
+    expect(await route(mixedRequest("issue-8", null, [100, 100]))).toMatchObject({ kind: "exhausted", retryAt: hour(1) });
+  });
+
+  it("routes without cool-downs when plugin state cannot be read", async () => {
+    const { harness, route, run } = await setup();
+    await route(request("issue-1"));
+    await run("agent.run.failed", "run-1");
+    harness.ctx.state.get = async () => { throw new Error("state unavailable"); };
+    expect(await route(request("issue-1", { pinnedMemberId: "member-a" }))).toEqual({ kind: "selected", memberId: "member-a" });
+    expect(await route(request("issue-3"))).toEqual({ kind: "selected", memberId: "member-a" });
+  });
+});
