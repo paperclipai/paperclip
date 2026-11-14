@@ -1,5 +1,5 @@
 import { registerTaskWatchdogWork } from "../task-watchdog-work.js";
-import { and, asc, eq, gt, inArray, isNotNull, isNull, or, sql } from "drizzle-orm";
+import { and, asc, eq, gt, inArray, isNotNull, isNull, or, sql, type SQL } from "drizzle-orm";
 import { issueRecoveryActions, issueRelations, issues, type Db } from "@paperclipai/db";
 import type { createDeliveryWorkCoordinator } from "../delivery-work-coordinator.js";
 import { DELIVERY_QUEUES, type DeliveryQueue } from "../delivery-work-notifications.js";
@@ -31,7 +31,7 @@ export function registerIssueRecoveryWork(
   },
   canRun: () => boolean,
 ) {
-  function register(queue: DeliveryQueue, statuses: string[] | null, check: (scope: Scope) => Promise<unknown>) {
+  function register(queue: DeliveryQueue, statuses: string[] | null, check: (scope: Scope) => Promise<unknown>, eligible?: SQL) {
     const cursors = new Map<string, string>();
     let enabled = false;
     return registerScopedDeadlineWork<Entry, IssueRecoveryScope>(coordinator, {
@@ -52,6 +52,7 @@ export function registerIssueRecoveryWork(
           statuses ? isNull(issues.hiddenAt) : undefined,
           statuses ? isNull(issues.assigneeUserId) : undefined,
           statuses ? or(isNotNull(issues.assigneeAgentId), eq(issues.status, "in_review")) : undefined,
+          eligible,
         )).orderBy(asc(issues.id)).limit(PAGE_SIZE);
         const complete = rows.length < PAGE_SIZE;
         if (complete) cursors.delete(key); else cursors.set(key, rows.at(-1)!.id);
@@ -154,7 +155,12 @@ export function registerIssueRecoveryWork(
   const dependencies = register(DELIVERY_QUEUES.resolvedDependencies, ["blocked"], async scope => {
     const result = await owner.dependencies(scope);
     if (result.enqueueFailed > 0) throw new Error("Resolved dependency wake remains undelivered");
-  });
+  }, sql`exists (select 1 from ${issueRelations} r where r.company_id = ${issues.companyId}
+      and r.related_issue_id = ${issues.id} and r.type = 'blocks')
+    and not exists (select 1 from ${issueRelations} r inner join ${issues} blocker
+      on blocker.id = r.issue_id and blocker.company_id = r.company_id
+      where r.company_id = ${issues.companyId} and r.related_issue_id = ${issues.id}
+        and r.type = 'blocks' and blocker.status <> 'done')`);
   const locks = register(DELIVERY_QUEUES.staleIssueLocks, null, owner.locks);
   const assignedWork = owner.assignedWork ? registerAssignedWork(owner.assignedWork) : null;
   const watchdogs = registerTaskWatchdogWork(db, coordinator, {

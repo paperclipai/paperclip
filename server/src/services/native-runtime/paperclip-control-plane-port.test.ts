@@ -52,6 +52,7 @@ import {
 import { startEmbeddedPostgresTestDatabase } from "../../__tests__/helpers/embedded-postgres.js";
 import { startRecoveryPostgres } from "../../__tests__/helpers/recovery-postgres.js";
 import { PaperclipControlPlanePort } from "./paperclip-control-plane-port.js";
+import { secretEnvironmentValues } from "../agent-identity-redaction.js";
 import { nativeSha256 } from "./canonical.js";
 import { NativeRunCoordinatorStore } from "./native-run-coordinator-store.js";
 import { finalizeNativeRun, repairCommittedNativeChatResponse } from "./native-run-finalizer.js";
@@ -458,6 +459,7 @@ describe("PaperclipControlPlanePort conformance", () => {
   });
 
   async function terminalObserverFixture(options: {
+    secrets?: readonly string[];
     onCommittedEvent?: (event: PrpEvent) => Promise<void>;
     onDuplicateEvent?: (event: PrpEvent) => Promise<void>;
     assertControllerActive?: () => void;
@@ -479,6 +481,86 @@ describe("PaperclipControlPlanePort conformance", () => {
     const result = { result: CONTROL_PLANE_CONFORMANCE_RESULT, terminal: CONTROL_PLANE_CONFORMANCE_TERMINAL };
     return { identity, runnerId, binding, port, event, snapshot, result };
   }
+
+  it("masks the rest of a secret that arrives after a controller restart between deltas", async () => {
+    const identity = { ...CONTROL_PLANE_CONFORMANCE_OPEN.identity, runId: randomUUID(), sessionId: randomUUID() };
+    const runnerId = randomUUID();
+    const secret = "abcdefgh1234567890";
+    await db.insert(heartbeatRuns).values({
+      id: identity.runId, companyId: identity.companyId, agentId: identity.agentId,
+      status: "running", runtimeMode: "native", nativeIssueId: identity.issueId,
+      nativeSessionId: identity.sessionId, runnerInstanceId: runnerId,
+      completionContractId: contractId, completionContractSha256: contractSha,
+      contextSnapshot: { issueId: identity.issueId },
+    });
+    const binding = { ...identity, completionContractId: contractId, completionContractSha256: contractSha,
+      sourceInstanceId: runnerId, controlPlaneSourceInstanceId: `restart-${identity.runId}` };
+    const delta = (sourceSeq: number, text: string): PrpEvent => ({
+      schema: "paperclip.prp.event.v1", sourceEventId: `${runnerId}:${sourceSeq}`, sourceSeq,
+      sourceInstanceId: runnerId, sourceKind: "runner", runId: identity.runId,
+      normalizedSessionId: identity.sessionId, turnId: "restart-turn", itemId: "restart-item",
+      eventType: "item.delta", schemaVersion: 1, priority: 1, emittedAt: new Date().toISOString(),
+      payload: { itemId: "restart-item", kind: "commandExecution", text, update: { delta: text } },
+    });
+    const before = new PaperclipControlPlanePort(db, binding, { secrets: [secret] });
+    await before.openRun({ identity, backendKind: "mock", sourceInstanceId: runnerId });
+    await before.appendEvent(delta(1, `echo ${secret.slice(0, 8)}`));
+    const after = new PaperclipControlPlanePort(db, binding, { secrets: [secret] });
+    await after.appendEvent(delta(2, `${secret.slice(8)} done`));
+    const persisted = await db.select().from(heartbeatRunEvents).where(eq(heartbeatRunEvents.runId, identity.runId));
+    expect(JSON.stringify(persisted)).not.toContain(secret.slice(8));
+    expect(JSON.stringify(persisted)).not.toContain(secret.slice(0, 8));
+    expect(JSON.stringify(persisted)).toContain('"text":"echo "');
+    expect(JSON.stringify(persisted)).toContain('"text":"***REDACTED*** done"');
+  });
+
+  it("keeps a held fragment of a resumed secret masked when the turn ends", async () => {
+    const identity = { ...CONTROL_PLANE_CONFORMANCE_OPEN.identity, runId: randomUUID(), sessionId: randomUUID() };
+    const runnerId = randomUUID();
+    await db.insert(heartbeatRuns).values({
+      id: identity.runId, companyId: identity.companyId, agentId: identity.agentId,
+      status: "running", runtimeMode: "native", nativeIssueId: identity.issueId,
+      nativeSessionId: identity.sessionId, runnerInstanceId: runnerId,
+      completionContractId: contractId, completionContractSha256: contractSha,
+      contextSnapshot: { issueId: identity.issueId },
+    });
+    const observed: PrpEvent[] = [];
+    const port = new PaperclipControlPlanePort(db, { ...identity, completionContractId: contractId, completionContractSha256: contractSha,
+      sourceInstanceId: runnerId, controlPlaneSourceInstanceId: `ending-${identity.runId}` },
+      { secrets: ["old-prefix-XYZabcdef", "abcdefghij"], onCommittedEvent: async event => { observed.push(event); } });
+    await port.openRun({ identity, backendKind: "mock", sourceInstanceId: runnerId });
+    const delta: PrpEvent = { schema: "paperclip.prp.event.v1", sourceEventId: `${runnerId}:1`, sourceSeq: 1,
+      sourceInstanceId: runnerId, sourceKind: "runner", runId: identity.runId, normalizedSessionId: identity.sessionId,
+      turnId: "ending-turn", itemId: "ending-item", eventType: "item.delta", schemaVersion: 1, priority: 1,
+      emittedAt: new Date().toISOString(), payload: { itemId: "ending-item", kind: "commandExecution", text: "XYZabcdef" } };
+    const terminal: PrpEvent = { schema: "paperclip.prp.event.v1", sourceEventId: `${runnerId}:2`, sourceSeq: 2,
+      sourceInstanceId: runnerId, sourceKind: "runner", runId: identity.runId, normalizedSessionId: identity.sessionId,
+      turnId: "ending-turn", eventType: "turn.completed", schemaVersion: 1, priority: 0,
+      emittedAt: new Date().toISOString(), payload: { status: "completed" } };
+    await port.appendEvent(delta);
+    await port.appendEvent(terminal);
+    const persisted = await db.select().from(heartbeatRunEvents).where(eq(heartbeatRunEvents.runId, identity.runId));
+    for (const value of [persisted, observed]) {
+      expect(JSON.stringify(value)).not.toContain("abcdef");
+      expect(JSON.stringify(value)).not.toContain("XYZ");
+    }
+    expect(observed.at(-1)?.payload.outputTails).toEqual([{ itemId: "ending-item",
+      payload: { itemId: "ending-item", kind: "commandExecution", text: "***REDACTED***" } }]);
+  });
+
+  it("completes a native run when a bound secret equals a protocol word", async () => {
+    const observed: PrpEvent[] = [];
+    const f = await terminalObserverFixture({ secrets: ["interrupted", "completed", "succeeded", "satisfied"],
+      async onCommittedEvent(event) { observed.push(event); } });
+    await f.port.appendEvent(f.event);
+    await f.port.checkpointSession(f.snapshot);
+    await f.port.completeRun(f.result);
+    expect(observed.map(event => [event.eventType, event.payload.status])).toEqual([["turn.interrupted", "interrupted"]]);
+    const [result] = await db.select().from(nativeRunResults).where(eq(nativeRunResults.runId, f.identity.runId));
+    expect(JSON.stringify(result)).toContain('"turnTerminalState":"completed"');
+    expect(JSON.stringify(result)).toContain('"runTerminalState":"succeeded"');
+    expect(JSON.stringify(result)).toContain('"status":"satisfied"');
+  });
 
   it.each(["default", "deferred"] as const)("keeps %s terminal observation owned before checkpoint and result acceptance", async mode => {
     let release!: () => void;
@@ -1188,6 +1270,62 @@ describe("PaperclipControlPlanePort conformance", () => {
       expect(deltas.map(delta => delta.text).join("")).toBe("***REDACTED***");
       expect(deltas.map(delta => (delta.update as { delta: string }).delta).join("")).toBe("***REDACTED***");
     }
+  });
+
+  it("masks secret-bound environment values in persisted native events and leaves plain values", async () => {
+    const identity = { ...CONTROL_PLANE_CONFORMANCE_OPEN.identity, runId: randomUUID(), sessionId: randomUUID() };
+    const runnerId = randomUUID();
+    const secret = `sk_test_synthetic_${randomUUID()}`;
+    const plain = "https://plain.example.test/api";
+    await db.insert(heartbeatRuns).values({
+      id: identity.runId, companyId: identity.companyId, agentId: identity.agentId,
+      status: "running", runtimeMode: "native", nativeIssueId: identity.issueId,
+      nativeSessionId: identity.sessionId, runnerInstanceId: runnerId,
+      completionContractId: contractId, completionContractSha256: contractSha,
+      contextSnapshot: { issueId: identity.issueId },
+    });
+    const observed: PrpEvent[] = [];
+    const port = new PaperclipControlPlanePort(db, {
+      ...identity, completionContractId: contractId, completionContractSha256: contractSha,
+      sourceInstanceId: runnerId, controlPlaneSourceInstanceId: `secret-env-${identity.runId}`,
+    }, {
+      secrets: secretEnvironmentValues({ STRIPE_KEY: secret, SHORT_PIN: "pin42", PLAIN_URL: plain },
+        ["STRIPE_KEY", "SHORT_PIN"]),
+      onCommittedEvent: async event => { observed.push(event); },
+    });
+    await port.openRun({ identity, backendKind: "mock", sourceInstanceId: runnerId });
+    const envOutput = `STRIPE_KEY=${secret}\nSHORT_PIN=pin42\nPLAIN_URL=${plain}\n`;
+    await port.appendEvent({
+      schema: "paperclip.prp.event.v1", sourceEventId: `${runnerId}:1`, sourceSeq: 1,
+      sourceInstanceId: runnerId, sourceKind: "runner", runId: identity.runId,
+      normalizedSessionId: identity.sessionId, eventType: "tool.execution.started", schemaVersion: 1,
+      priority: 0, emittedAt: new Date().toISOString(), payload: {
+        schema: "paperclip.tool.execution.v1", executionId: "secret-env-output", transport: "builtin",
+        operation: "execute", name: "env", target: null, namespace: null, readOnly: true,
+        status: "running", durationMs: null, exitCode: null, progress: null,
+        output: envOutput, outputBytes: Buffer.byteLength(envOutput), outputTruncated: false,
+        outputDigest: `sha256:${"a".repeat(64)}`,
+      },
+    });
+    let sourceSeq = 2;
+    for (const chunk of [`echo ${secret.slice(0, 15)}`, `${secret.slice(15)} done`]) {
+      await port.appendEvent({
+        schema: "paperclip.prp.event.v1", sourceEventId: `${runnerId}:${sourceSeq}`, sourceSeq: sourceSeq++,
+        sourceInstanceId: runnerId, sourceKind: "runner", runId: identity.runId,
+        normalizedSessionId: identity.sessionId, turnId: "secret-turn", itemId: "secret-item",
+        eventType: "item.delta", schemaVersion: 1, priority: 1, emittedAt: new Date().toISOString(),
+        payload: { itemId: "secret-item", kind: "commandExecution", text: chunk, update: { delta: chunk } },
+      });
+    }
+    const persistedEvents = await db.select().from(heartbeatRunEvents).where(eq(heartbeatRunEvents.runId, identity.runId));
+    for (const value of [persistedEvents, observed]) {
+      expect(JSON.stringify(value)).not.toContain(secret.slice(15));
+      expect(JSON.stringify(value)).toContain("***REDACTED***");
+      expect(JSON.stringify(value)).toContain(plain);
+      expect(JSON.stringify(value)).toContain("SHORT_PIN=pin42");
+    }
+    const deltas = observed.filter(event => event.payload.itemId === "secret-item").map(event => event.payload.text);
+    expect(deltas.join("")).toBe("echo ***REDACTED*** done");
   });
 
   it("runs the unchanged package conformance suite against Paperclip persistence", async () => {

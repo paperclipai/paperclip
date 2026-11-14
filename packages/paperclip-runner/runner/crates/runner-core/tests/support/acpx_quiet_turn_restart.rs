@@ -610,3 +610,96 @@ fn a_crash_after_cancelling_or_stopping_a_wait_still_delivers_the_held_run_termi
         let _ = harness.executor.shutdown();
     }
 }
+
+fn awaiting_and_quiesced(harness: &mut Harness) -> String {
+    harness
+        .fixture
+        .background("live provider-turn provider-turn-hold");
+    let first = complete_turn_accepting_provider_turns(harness, "first");
+    let events = [first, harness.drain()].concat();
+    assert!(!events.iter().any(|event| event["type"] == "run.terminal"));
+    assert!(harness.fixture.state().get("providerTurnWait").is_some());
+    harness.quiesce();
+    harness
+        .fixture
+        .journal()
+        .iter()
+        .rev()
+        .find(|line| {
+            line["command"] == "session.provider_turn" && line["params"]["armed"] == json!(true)
+        })
+        .expect("armed provider turn")["params"]["turnId"]
+        .as_str()
+        .unwrap()
+        .to_owned()
+}
+
+fn drain_briefly(harness: &mut Harness) -> Vec<Value> {
+    let mut seen = Vec::new();
+    let deadline = Instant::now() + Duration::from_millis(500);
+    while Instant::now() < deadline {
+        seen.extend(harness.drain());
+    }
+    seen
+}
+
+#[test]
+fn a_different_run_attaching_while_awaiting_ends_the_wait_without_the_old_run_terminal() {
+    let mut harness = Harness::new();
+    let turn_id = awaiting_and_quiesced(&mut harness);
+    let before = harness.fixture.journal().len();
+    let (attached, _) = harness.attach("run-2", |_| {});
+    let state = harness.fixture.state();
+    assert_eq!(state["descriptor"]["runId"], "run-2");
+    assert!(state.get("providerTurnWait").is_none(), "{state}");
+    assert!(
+        !state["pendingEvents"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|event| event.to_string().contains("run.terminal")),
+        "{state}"
+    );
+    let mut received = attached
+        .events
+        .iter()
+        .map(|(kind, _, payload)| json!({"type":kind,"payload":payload}))
+        .collect::<Vec<_>>();
+    received.extend(drain_briefly(&mut harness));
+    assert!(
+        !received.iter().any(|event| event["type"] == "run.terminal"),
+        "{received:?}"
+    );
+    assert!(harness.fixture.journal()[before..].iter().any(|line| {
+        line["command"] == "session.provider_turn"
+            && line["params"]["armed"] == json!(false)
+            && line["params"]["turnId"] == json!(turn_id)
+    }));
+    let _ = harness.executor.shutdown();
+}
+
+#[test]
+fn a_same_run_attach_while_awaiting_publishes_the_held_run_terminal_once() {
+    let mut harness = Harness::new();
+    awaiting_and_quiesced(&mut harness);
+    let attached = harness.execute(
+        "run.attach",
+        json!({"provider": harness.descriptor.clone()}),
+    );
+    let mut received = attached
+        .events
+        .iter()
+        .map(|(kind, _, payload)| json!({"type":kind,"payload":payload}))
+        .collect::<Vec<_>>();
+    received.extend(drain_briefly(&mut harness));
+    let terminals = received
+        .iter()
+        .filter(|event| event["type"] == "run.terminal")
+        .collect::<Vec<_>>();
+    assert_eq!(terminals.len(), 1, "{received:?}");
+    assert_eq!(
+        terminals[0]["payload"]["turnTerminalState"],
+        json!("completed")
+    );
+    let _ = harness.executor.shutdown();
+}

@@ -255,6 +255,8 @@ awaiting disarms and replaces the sidecar first. If the provider exits while arm
 sidecar reports `runtime.diagnostic` with code `ACPX_PROVIDER_PROCESS_LOST`; that,
 or a failed sidecar transport, ends the wait and Runner publishes the
 `run.terminal` it held back for the completed turn. Park is refused while awaiting.
+A `run.attach` from a different run ends the wait, disarms the sidecar, and
+discards the held `run.terminal`. A `run.attach` from the same run publishes it.
 Runner saves the wait with its held `run.terminal` in the provider state; a
 Runner restart during the wait publishes that `run.terminal` once and resumes
 in a fresh process.
