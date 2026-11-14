@@ -29,6 +29,8 @@ export function createDeliveryWorkCoordinator(input: {
       // Scoped hints belong to the outer transaction, including uncertainty recovery.
       onSettled?: (hints?: ReadonlySet<string>) => void;
       onStop?: () => void;
+      /** SQL-free cancellation of joins that require dispatch admission. */
+      onDispatchBlocked?: () => void;
       // Optional maintenance/retry deadline restored from durable state.
       nextRunAt?: () => number | null;
       // Opt in only when run has recorded per-item failure backoffs. Other
@@ -57,16 +59,21 @@ export function createDeliveryWorkCoordinator(input: {
         scheduledAt = at;
         scheduler.schedule(queue, at, start);
       }
+      function dispatchBlocked() {
+        try { task.onDispatchBlocked?.(); }
+        catch (error) { try { input.onError(error, queue); } catch { /* diagnostics cannot break scheduling */ } }
+      }
       function start() {
         if (workerStopped || running) return;
         scheduler.cancel(queue);
         scheduledAt = null;
-        if (!input.canRun() && !(input.canReconcile?.() ?? false)) { schedule(task.retryMs); return; }
+        if (!input.canRun() && !(input.canReconcile?.() ?? false)) { dispatchBlocked(); schedule(task.retryMs); return; }
         if (!input.canRun() && task.pausePassiveMaintenance && !pendingWork && !dirty &&
             !finishIntent && !databaseWorkPending(input.owner, queue)) {
           // A timer alone must not change the idle generation during a slow
           // backup. Retry without querying or admitting work; a notification
           // still preempts this deadline and retains its normal intent hold.
+          dispatchBlocked();
           schedule(task.retryMs);
           return;
         }
@@ -76,7 +83,11 @@ export function createDeliveryWorkCoordinator(input: {
         let runFailed = false;
         controller = attempt;
         running = withDatabaseOperation(`delivery.${queue}`, () => Promise.resolve().then(() => reconcileDatabaseWork(input.owner, queue))
-          .then(() => workerStopped || !(input.canRun() || (task.runDuringDrain && input.canReconcile?.())) ? undefined : task.run(attempt.signal).catch(error => { runFailed = true; throw error; })).then(() => workerStopped ? false : task.hasPending(input.canRun() || Boolean(task.runDuringDrain && input.canReconcile?.()))).then(pending => {
+          .then(() => {
+            if (workerStopped) return;
+            if (!(input.canRun() || (task.runDuringDrain && input.canReconcile?.()))) { dispatchBlocked(); return; }
+            return task.run(attempt.signal).catch(error => { runFailed = true; throw error; });
+          }).then(() => workerStopped ? false : task.hasPending(input.canRun() || Boolean(task.runDuringDrain && input.canReconcile?.()))).then(pending => {
           pendingWork = pending || databaseWorkPending(input.owner, queue);
           if (pendingWork) schedule(task.retryMs);
           else { finishIntent?.(); finishIntent = undefined; }

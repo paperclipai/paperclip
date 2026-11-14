@@ -1,3 +1,4 @@
+import { checkpointAuthorityMayAdvance, recordPhotonCheckpointAuthority } from "./external-owner.js";
 import { createChatSdkStatePersistence } from "../sdk-state.js";
 import { notifyChatEndpointWork } from "../../chat-work-notifications.js";
 import { writePhotonCheckpoint } from "../../photon/receiver.js";
@@ -5,6 +6,7 @@ import { PhotonState } from "../../photon/state.js";
 import { and, eq, inArray, sql } from "drizzle-orm";
 import { chatConversations, chatEndpoints, heartbeatRuns, toolConnections } from "@paperclipai/db";
 import type { ChatSdkRuntimeCallbacks } from "../../chat-sdk-runtime.js";
+import type { PhotonFailureResponsibility } from "../../photon/receiver.js";
 import type { Db } from "@paperclipai/db";
 import type { RuntimeContext, EndpointRow, EndpointRecord, LiveInboundMessage } from "../runtime-types.js";
 import type { createChatReceiverOwnership } from "../runtime/ownership.js";
@@ -14,10 +16,23 @@ type PhotonRuntimeOptions = {
   runtimeCallbackRecord: (endpointId: string, context: RuntimeContext, statuses: EndpointRow["status"][]) => Promise<EndpointRecord | null>;
   runtimeCallbackEndpoint: Parameters<typeof createChatMessageLifecycle>[1]["runtimeCallbackEndpoint"];
   renewDiscordGatewayOwnershipForMessageAdmission: ReturnType<typeof createChatReceiverOwnership>["renewDiscordGatewayOwnershipForMessageAdmission"];
+  failureOwners: {
+    retireClosedLocal: () => Promise<PhotonFailureResponsibility>;
+    recordFailure: (error: unknown) => Promise<void | PhotonFailureResponsibility>;
+    retainCleanup: () => Promise<PhotonFailureResponsibility>;
+  };
 };
-export function createPhotonRuntimeCallbacks(db: Db, options: PhotonRuntimeOptions): Pick<ChatSdkRuntimeCallbacks, "onPhotonAssertOwned" | "onPhotonCheckpoint"> {
+export function createPhotonRuntimeCallbacks(db: Db, options: PhotonRuntimeOptions): Pick<ChatSdkRuntimeCallbacks, "onPhotonAssertOwned" | "onPhotonCheckpoint" | "onPhotonFailure"> {
   const { endpointId, connectionId, companyId, assignedAgentId, context, lineId, runtimeCallbackRecord, runtimeCallbackEndpoint, renewDiscordGatewayOwnershipForMessageAdmission } = options;
   return {
+    onPhotonFailure: async (error, cleanup) => {
+      if (cleanup?.localClosed) {
+        const retired = await options.failureOwners.retireClosedLocal();
+        if (retired.kind === "retired-local") return retired;
+      }
+      const result = await options.failureOwners.recordFailure(error);
+      return result?.kind === "recorded" ? result : options.failureOwners.retainCleanup();
+    },
     onPhotonAssertOwned: async (activeThreadId) => {
       if (!(await runtimeCallbackRecord(endpointId, context, ["verifying", "active", "attention"]))) throw new Error("Photon receiver ownership changed");
       if (activeThreadId) {
@@ -39,7 +54,12 @@ export function createPhotonRuntimeCallbacks(db: Db, options: PhotonRuntimeOptio
     onPhotonCheckpoint: (sequence) => db.transaction(async (tx) => {
       if (!(await runtimeCallbackEndpoint(tx, endpointId, context, ["verifying", "active"]))) throw new Error("Photon receiver is no longer current");
       if ((await renewDiscordGatewayOwnershipForMessageAdmission(tx, endpointId, context)).kind !== "owned") throw new Error("Photon receiver lease was replaced");
-      await writePhotonCheckpoint(new PhotonState({ companyId: companyId, endpointId: endpointId }, createChatSdkStatePersistence(tx as unknown as Db)), lineId, sequence);
+      const state = new PhotonState({ companyId, endpointId }, createChatSdkStatePersistence(tx));
+      const identity = { companyId, endpointId, connectionId, runtimeGeneration: context.generation,
+        credentialReferences: context.credentialFingerprint, subject: "checkpoint-only" };
+      const provenance = await checkpointAuthorityMayAdvance(state, identity);
+      await writePhotonCheckpoint(state, lineId, sequence);
+      if (provenance) await recordPhotonCheckpointAuthority(state, identity, sequence);
     })
   };
 }

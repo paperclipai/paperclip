@@ -721,6 +721,15 @@ pnpm --filter @paperclipai/paperclip-runner demo:standalone
 
 ```
 
+The normal `test:rust` command covers the complete Rust workspace in two package
+partitions. Other crates keep the default test parallelism; `paperclip-runner-core`
+runs with the standard Rust harness `--test-threads=1`. Its process-lineage tests
+inspect the process-global same-user orphan census, while other core fixtures
+deliberately create orphaned children. Running those fixtures concurrently would
+make an unrelated orphan correctly prevent a clean-lineage proof. Every existing
+test and ignored-test policy stays in place; this does not relax orphan ownership
+or change reaper deadlines. Both partitions use the same release target cache.
+
 Live console provider-backed routes are loopback-only and reject wildcard/LAN
 binds. Browser mutations require same-origin Fetch Metadata, matching Origin,
 and JSON content; see the protocol-server tutorial for direct `curl` examples.

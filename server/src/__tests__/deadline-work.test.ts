@@ -1,3 +1,7 @@
+import { registerGitHubConnectionEventWork } from "../services/github-connection-work.js";
+import { joinConnectionEventWakeEnrollment } from "../services/connection-event-wake.js";
+import type { githubConnectionEventService } from "../services/github-connection-events.js";
+import type { Db } from "@paperclipai/db";
 import { idleWorkSnapshot } from "../services/task-admission.js";
 import { installDatabaseWorkSignals, signalDatabaseWork, databaseWorkPending } from "../../../packages/db/src/work-signals.js";
 import { afterEach, expect, it, vi } from "vitest";
@@ -219,4 +223,28 @@ it("does not certify a source hint arriving during a successful evaluation", asy
   await vi.advanceTimersByTimeAsync(0);
   release(); await vi.advanceTimersByTimeAsync(0);
   expect(worker.reconciliationSnapshot().reconciled).toBe(true);
+});
+
+
+it.each(["dispatcher", "domain"] as const)("declines an admitted event negotiation when the %s gate closes before dispatch", async gate => {
+  vi.useFakeTimers(); let dispatcher = true, domain = true, reject!: (error: unknown) => void;
+  const pending = new Promise<void>((_resolve, no) => { reject = no; });
+  const owner = installDatabaseWorkSignals({ execute: vi.fn(async () => []), transaction: vi.fn() });
+  coordinator = createDeliveryWorkCoordinator({ owner, canRun: () => dispatcher, onError: vi.fn() });
+  const service: ReturnType<typeof githubConnectionEventService> = {
+    joinEventWakeEnrollment: vi.fn(() => pending),
+    declineEventWakeEnrollment: vi.fn(() => { reject(new Error("Connection event enrollment dispatch is paused")); }),
+    pollOnce: vi.fn(async () => ({ leased: 0, processed: 0, duplicate: 0, ignored: 0, failed: 0 })),
+    nextPollAt: () => null,
+  };
+  const worker = registerGitHubConnectionEventWork(owner as unknown as Db, coordinator, service, () => domain);
+  try {
+    await worker.ready; expect(service.pollOnce).toHaveBeenCalledTimes(1);
+    const joined = joinConnectionEventWakeEnrollment(owner), declined = expect(joined).rejects.toThrow(/paused|changed/);
+    if (gate === "dispatcher") dispatcher = false; else domain = false;
+    await vi.advanceTimersByTimeAsync(0); await declined;
+    expect(service.declineEventWakeEnrollment).toHaveBeenCalled();
+    expect(service.pollOnce).toHaveBeenCalledTimes(1);
+    expect(owner.execute).not.toHaveBeenCalled();
+  } finally { await worker.stop(); }
 });

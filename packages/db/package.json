@@ -35,7 +35,8 @@
     "dist"
   ],
   "bundleDependencies": [
-    "embedded-postgres"
+    "embedded-postgres",
+    "postgres"
   ],
   "scripts": {
     "check:migrations": "tsx src/check-migration-numbering.ts && tsx src/check-migration-safety.ts && tsx scripts/migration-compatibility.ts --check",
@@ -51,7 +52,7 @@
     "@paperclipai/shared": "workspace:*",
     "drizzle-orm": "^0.45.2",
     "embedded-postgres": "^18.1.0-beta.16",
-    "postgres": "^3.4.9"
+    "postgres": "3.4.9"
   },
   "devDependencies": {
     "@types/node": "^24.0.0",

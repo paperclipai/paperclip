@@ -1,3 +1,14 @@
+import { currentControllerProcess } from "../../services/controller-process-identity.js";
+import { photonCoverageFingerprint } from "../../services/chat-channels/imessage-photon/idle-coverage.js";
+import { readIdleIncomingWakeProof } from "../../services/idle-incoming-wake.js";
+import type { VerifiedIdleCapabilities } from "../../services/idle-incoming-wake-capability.js";
+import { verifyCloudControlAssertion, CLOUD_CONTROL_AUDIENCE, CLOUD_CONTROL_JWS_TYPE, CLOUD_RUNTIME_IDENTITY_ISSUER } from "../../services/cloud-runtime-identity.js";
+import express from "express";
+import request from "supertest";
+import { createServer, type Server } from "node:http";
+import { toolAccessRoutes } from "../../routes/tool-access.js";
+import { errorHandler } from "../../middleware/error-handler.js";
+import { loadPaperclipCloudConnectorIdentity } from "../../services/paperclip-cloud-connector-enrollment.js";
 import { externalConversationSettlementWork } from "../../services/external-conversation-settlement-work.js";
 import { nativeStatusReassessmentWork } from "../../services/native-runtime/native-status-reassessment-work.js";
 import { nativeReviewResponseWork } from "../../services/native-runtime/native-review-response-work.js";
@@ -5,10 +16,13 @@ import { nativeResponsePresentationWork } from "../../services/native-runtime/na
 import { DELIVERY_QUEUES } from "../../services/delivery-work-notifications.js";
 import { idleWorkSnapshot } from "../../services/task-admission.js";
 import { createDeliveryWorkCoordinator } from "../../services/delivery-work-coordinator.js";
+import { githubConnectionEventService } from "../../services/github-connection-events.js";
+import { registerGitHubConnectionEventWork } from "../../services/github-connection-work.js";
+import { joinConnectionEventWakeEnrollment } from "../../services/connection-event-wake.js";
 import { resolveExternalTestDatabaseUrl } from "../helpers/external-test-database.js";
 import { Readable } from "node:stream";
 import type { StorageService } from "../../storage/types.js";
-import { createHash, randomUUID } from "node:crypto";
+import { createHash, createPublicKey, randomUUID, generateKeyPairSync, sign, verify } from "node:crypto";
 import { mkdtemp, rm, readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -69,8 +83,14 @@ import { issueThreadInteractionService } from "../../services/issue-thread-inter
 import { resolveExternalChatQuestionResponse } from "../../services/native-runtime/external-chat-question-response.js";
 import { resolveChatRunPresentationAuthorizationReason } from "../../services/chat-run-publications.js";
 import { PhotonChatAdapter } from "../../services/photon/adapter.js";
+import { PhotonReceiver } from "../../services/photon/receiver.js";
 import { PhotonCloudClient, PhotonError } from "../../services/photon/cloud.js";
 import { photonFixture, photonEvent as livePhotonEvent, photonChat, stream } from "./fixture.js";
+import * as cloudConnectors from "../../services/paperclip-cloud-connector.js";
+import * as photonExternalRuntime from "../../services/chat-channels/imessage-photon/external-runtime.js";
+import * as photonOwnedClients from "../../services/photon/owned-client.js";
+import { PHOTON_EXTERNAL_STATE, photonStateFor } from "../../services/chat-channels/imessage-photon/external-store.js";
+import { photonHash, readPhotonExternalState } from "../../services/chat-channels/imessage-photon/external-contract.js";
 
 // The fixture always builds a message event. Its declared return type is the wider LiveEvent.
 const photonEvent = (...args: Parameters<typeof livePhotonEvent>) =>
@@ -95,6 +115,7 @@ describe("iMessage Photon channel control plane", () => {
   const oldKey = process.env.PAPERCLIP_SECRETS_MASTER_KEY_FILE;
   const services: ChatChannelService[] = [];
   const coordinators: ReturnType<typeof createDeliveryWorkCoordinator>[] = [];
+  const connectionEventWorkers: ReturnType<typeof registerGitHubConnectionEventWork>[] = [];
   const companyIds: string[] = [];
   beforeAll(async () => {
     const external = resolveExternalTestDatabaseUrl("PAPERCLIP_PHOTON_TEST_DATABASE_URL");
@@ -108,6 +129,7 @@ describe("iMessage Photon channel control plane", () => {
     );
   }, 30_000);
   afterEach(async () => {
+    await Promise.all(connectionEventWorkers.splice(0).map(worker => worker.stop()));
     await Promise.all(coordinators.splice(0).map(coordinator => coordinator.stop()));
     await Promise.all(services.splice(0).map((service) => service.shutdown()));
     for (const id of companyIds.splice(0))
@@ -125,7 +147,7 @@ describe("iMessage Photon channel control plane", () => {
       delete process.env.PAPERCLIP_SECRETS_MASTER_KEY_FILE;
     else process.env.PAPERCLIP_SECRETS_MASTER_KEY_FILE = oldKey;
   });
-  async function setup(shared = false) {
+  async function setup(shared = false, ownershipOptions: Pick<NonNullable<Parameters<typeof chatChannelService>[1]>, "renewDiscordGatewayLease"> = {}) {
     const companyId = randomUUID(),
       agentId = randomUUID(),
       userId = randomUUID();
@@ -263,6 +285,7 @@ describe("iMessage Photon channel control plane", () => {
     const makeService = () => {
       const service = chatChannelService(db, {
         runtime,
+        ...ownershipOptions,
         publicBaseUrl: "https://paperclip.example",
         heartbeat: { wakeup },
         storage,
@@ -434,6 +457,145 @@ describe("iMessage Photon channel control plane", () => {
     } finally { unsubscribe(); db.$client.options.debug = debug; if ("stop" in worker) worker.stop(); }
   });
 
+  it("recovers local intake through normal Runtime ownership after a real failure-write rollback", async () => {
+    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+    const started: PhotonReceiver[] = [], start = PhotonReceiver.prototype.start;
+    vi.spyOn(PhotonReceiver.prototype, "start").mockImplementation(function(this: PhotonReceiver) { started.push(this); start.call(this); });
+    const t = await setup(), source = new PhotonError("network", "controlled recoverable Photon interruption"), persistence = new Error("controlled real failure-write rollback");
+    const coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => true, onError: vi.fn() });
+    coordinators.push(coordinator);
+    const transaction = db.transaction.bind(db);
+    let armed = true, rolledBack = false, failureWrites = 0, primary: unknown;
+    db.transaction = (work, ...args) => transaction(async tx => {
+      const result = await work(tx);
+      if (result && typeof result === "object" && "kind" in result && result.kind === "recorded") {
+        const [endpoint] = await tx.select({ status: chatEndpoints.status, healthMessage: chatEndpoints.healthMessage })
+          .from(chatEndpoints).where(and(eq(chatEndpoints.companyId, t.companyId), eq(chatEndpoints.id, t.endpoint.id)));
+        if (endpoint?.status === "attention" && endpoint.healthMessage === source.message) {
+          failureWrites++;
+          if (armed) { armed = false; throw persistence; }
+        }
+      }
+      return result;
+    }, ...args).catch(error => { if (error === persistence) rolledBack = true; throw error; });
+    try {
+      await t.service.registerReceiverWork(coordinator, () => true).ready;
+      const first = t.service.runtime.get(t.endpoint.id); expect(first).not.toBeNull();
+      const remove = vi.spyOn(t.service.runtime, "removeEndpoint");
+      const replay = vi.mocked(PhotonChatAdapter.prototype.recoveryStream);
+      await vi.waitFor(() => expect(replay.mock.calls.length).toBeGreaterThan(0), { timeout: 5000 });
+      const originalReads = replay.mock.calls.length, originalStarts = started.length;
+      replay.mockImplementationOnce(() => new TypedEventStream((async function* () { throw source; })()));
+      await vi.advanceTimersByTimeAsync(15_000);
+      await vi.waitFor(() => expect(rolledBack).toBe(true), { timeout: 5000 });
+      await new Promise<void>(resolve => setImmediate(resolve));
+      expect(failureWrites).toBe(1); expect(t.service.runtime.get(t.endpoint.id)).toBe(first);
+      expect(remove).not.toHaveBeenCalled();
+      const [beforeRecovery] = await db.select().from(chatEndpoints).where(eq(chatEndpoints.id, t.endpoint.id));
+      expect(beforeRecovery.status).not.toBe("attention");
+      const incoming = photonEvent(1), getMessage = t.f.client.messages.get.getMockImplementation();
+      if (!getMessage) throw new Error("normal controlled message lookup absent");
+      t.f.client.messages.get.mockImplementation(async guid => guid === incoming.message.guid ? incoming.message : getMessage(guid));
+      replay.mockImplementation(() => stream([incoming, { type: "catchup.complete", headSequence: 1 }]));
+      // The rollback was a one-shot real SQL fault. No direct failure callback,
+      // Runtime reset or manual retry schedules recovery: only its existing reader cadence.
+      await vi.advanceTimersByTimeAsync(15_000);
+      await vi.waitFor(() => expect(failureWrites, "restored SQL must be retried by the stopped receiver's owned reader").toBe(2), { timeout: 5000 });
+      await vi.waitFor(() => {
+        const current = t.service.runtime.get(t.endpoint.id);
+        expect(current).not.toBeNull(); expect(current).not.toBe(first);
+      }, { timeout: 5000 });
+      await vi.waitFor(async () => expect(await db.select().from(chatDeliveries).where(eq(chatDeliveries.endpointId, t.endpoint.id))).toHaveLength(1), { timeout: 5000 });
+      expect(remove).toHaveBeenCalledTimes(1);
+      expect(started).toHaveLength(originalStarts + 1);
+      expect(replay).toHaveBeenCalledTimes(originalReads + 2);
+      expect(t.wakeup).not.toHaveBeenCalled(); // First normal intake remains unlinked.
+      const [connection] = await db.select().from(toolConnections).where(eq(toolConnections.id, t.endpoint.connectionId));
+      expect(connection.enabled).toBe(true); expect(connection.credentialSecretRefs.length).toBeGreaterThan(0);
+      await vi.waitFor(() => expect(coordinator.nextWakeAt()).toBeNull(), { timeout: 5000 });
+    } catch (error) { primary = error; throw error; }
+    finally {
+      db.transaction = transaction;
+      const cleanup: unknown[] = [];
+      try { await coordinator.stop(); } catch (error) { cleanup.push(error); }
+      // Baseline failure still settles its actual debt under the same current
+      // callback before service shutdown fences that callback. This is cleanup,
+      // not the successful recovery observation asserted above.
+      for (const receiver of started) try { await receiver.close(); } catch (error) { cleanup.push(error); }
+      try { await t.service.shutdown(); } catch (error) { cleanup.push(error); }
+      vi.useRealTimers();
+      if (cleanup.length) throw new AggregateError(primary ? [primary, ...cleanup] : cleanup, "Photon failure-write recovery fixture cleanup remains owned");
+    }
+  }, 30_000);
+
+  it("settles failed local reporting through authorized pause and repeated removal without new intake", async () => {
+    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+    const t = await setup(); await t.start(); await t.qualify();
+    const source = new PhotonError("network", "controlled local retirement interruption");
+    const persistence = new Error("controlled real local failure-write rollback"), lostClose = new Error("controlled stream-close reply lost");
+    const transaction = db.transaction.bind(db), replay = vi.mocked(PhotonChatAdapter.prototype.recoveryStream);
+    let armed = false, rollbacks = 0, primary: unknown;
+    db.transaction = (work, ...args) => transaction(async tx => {
+      const result = await work(tx);
+      if (armed && result && typeof result === "object" && "kind" in result && result.kind === "recorded") {
+        const [endpoint] = await tx.select({ status: chatEndpoints.status, healthMessage: chatEndpoints.healthMessage })
+          .from(chatEndpoints).where(and(eq(chatEndpoints.companyId, t.companyId), eq(chatEndpoints.id, t.endpoint.id)));
+        if (endpoint?.status === "attention" && endpoint.healthMessage === source.message) { armed = false; throw persistence; }
+      }
+      return result;
+    }, ...args).catch(error => { if (error === persistence) rollbacks++; throw error; });
+    const failIntake = async (expected: number) => {
+      armed = true;
+      replay.mockImplementationOnce(() => new TypedEventStream((async function* () { throw source; })()));
+      await vi.advanceTimersByTimeAsync(15_000);
+      await vi.waitFor(() => expect(rollbacks).toBe(expected), { timeout: 5000 });
+      await new Promise<void>(resolve => setImmediate(resolve));
+    };
+    try {
+      const [before] = await db.select().from(toolConnections).where(eq(toolConnections.id, t.endpoint.connectionId));
+      const deliveries = await db.select({ id: chatDeliveries.id }).from(chatDeliveries).where(eq(chatDeliveries.endpointId, t.endpoint.id));
+      const conversations = await t.service.listConversations(t.endpoint.id), reads = replay.mock.calls.length;
+      await failIntake(1);
+      let pauseFailure: unknown;
+      try { await t.service.configure(t.endpoint.id, { action: "pause" }, t.userId); } catch (error) { pauseFailure = error; }
+      expect(pauseFailure, "the exact durably paused local owner must settle its already-joined reporting debt").toBeUndefined();
+      expect(t.service.runtime.hasUnsettledLifecycle()).toBe(false);
+      expect(replay).toHaveBeenCalledTimes(reads + 1);
+      const [paused] = await db.select().from(toolConnections).where(eq(toolConnections.id, t.endpoint.connectionId));
+      expect(paused).toMatchObject({ enabled: false, status: "disabled", credentialSecretRefs: before.credentialSecretRefs });
+      // Only ordinary authorized resume creates the next local owner.
+      await t.service.configure(t.endpoint.id, { action: "resume" }, t.userId);
+      await failIntake(2);
+      const owned = t.f.client.messages.subscribeEvents.mock.results.at(-1)?.value;
+      if (!owned) throw new Error("normal local subscription missing");
+      const close = owned.close.bind(owned);
+      vi.spyOn(owned, "close").mockImplementationOnce(async () => { await close(); throw lostClose; });
+      await expect(t.service.configure(t.endpoint.id, { action: "remove" }, t.userId)).rejects.toThrow(/shutdown|retirement|close/i);
+      const [held] = await db.select().from(toolConnections).where(eq(toolConnections.id, t.endpoint.connectionId));
+      expect(held).toMatchObject({ status: "archived", enabled: false, credentialSecretRefs: before.credentialSecretRefs });
+      expect((await t.service.get(t.endpoint.id)).status).toBe("archived");
+      expect(t.service.runtime.hasUnsettledLifecycle()).toBe(true);
+      const readsBeforeRetry = replay.mock.calls.length;
+      await t.service.configure(t.endpoint.id, { action: "remove" }, t.userId);
+      expect(t.service.runtime.hasUnsettledLifecycle()).toBe(false);
+      const [removed] = await db.select().from(toolConnections).where(eq(toolConnections.id, t.endpoint.connectionId));
+      expect(removed.credentialSecretRefs).toEqual([]);
+      expect(replay).toHaveBeenCalledTimes(readsBeforeRetry);
+      expect(await db.select({ id: chatDeliveries.id }).from(chatDeliveries).where(eq(chatDeliveries.endpointId, t.endpoint.id))).toEqual(deliveries);
+      expect((await t.service.listConversations(t.endpoint.id)).map(row => row.id)).toEqual(conversations.map(row => row.id));
+    } catch (error) { primary = error; throw error; }
+    finally {
+      db.transaction = transaction; vi.useRealTimers();
+      try { await t.service.shutdown(); }
+      catch (cleanup) {
+        // Old product retains this same real lifecycle debt after physical
+        // joins. Preserve normal teardown rejection; never fake a receipt or
+        // reset the registry, active status, credentials, or generation.
+        throw new AggregateError([...(primary ? [primary] : []), cleanup], "Photon local retirement causal failure with retained normal cleanup debt");
+      }
+    }
+  }, 30_000);
+
   it("recovers a Photon transport loss through the receiver worker and cancels fatal recovery", async () => {
     const t = await setup();
     const onError = vi.fn();
@@ -540,6 +702,667 @@ describe("iMessage Photon channel control plane", () => {
     const secretSafe = JSON.stringify(await t.service.get(t.endpoint.id));
     expect(secretSafe).not.toContain("private-line-token");
     expect(secretSafe).not.toContain('"projectSecret"');
+  }, 30_000);
+  async function onlinePhotonEnrollment(activityFails = false, reEnrollment = false, lateConfigLoss = false) {
+    const home = await mkdtemp(path.join(tmpdir(), "photon-online-enrollment-"));
+    const keys = ["PAPERCLIP_HOME", "PAPERCLIP_CONFIG", "PAPERCLIP_INSTANCE_ID", "PAPERCLIP_PUBLIC_URL",
+      "PAPERCLIP_AUTH_PUBLIC_BASE_URL", "BETTER_AUTH_URL", "BETTER_AUTH_BASE_URL",
+      "PAPERCLIP_CLOUD_CONNECTOR_INSTANCE_ID", "PAPERCLIP_CLOUD_CONNECTOR_SIGN_PRIVATE_KEY",
+      "PAPERCLIP_CLOUD_CONNECTOR_SEAL_PRIVATE_KEY", "PAPERCLIP_CLOUD_CONNECTOR_BASE_URL", "PAPERCLIP_CLOUD_CONNECTOR_ENVIRONMENT",
+      "PAPERCLIP_ID_CONNECTOR_INSTANCE_ID", "PAPERCLIP_ID_CONNECTOR_SIGN_PRIVATE_KEY", "PAPERCLIP_ID_CONNECTOR_SEAL_PRIVATE_KEY",
+      "PAPERCLIP_ID_CONNECTOR_BASE_URL", "PAPERCLIP_ID_CONNECTOR_ENVIRONMENT"];
+    const previous = new Map(keys.map(key => [key, process.env[key]]));
+    for (const key of keys) delete process.env[key];
+    process.env.PAPERCLIP_HOME = home;
+    process.env.PAPERCLIP_CONFIG = path.join(home, "config.json");
+    process.env.PAPERCLIP_INSTANCE_ID = "online-enrollment";
+    process.env.PAPERCLIP_PUBLIC_URL = "https://paperclip.example";
+    process.env.PAPERCLIP_CLOUD_CONNECTOR_BASE_URL = "https://cloud.example";
+    process.env.PAPERCLIP_CLOUD_CONNECTOR_ENVIRONMENT = "test";
+    let t: Awaited<ReturnType<typeof setup>> | undefined;
+    let coordinator: ReturnType<typeof createDeliveryWorkCoordinator> | undefined;
+    let eventWorker: ReturnType<typeof registerGitHubConnectionEventWork> | undefined;
+    let server: Server | undefined;
+    const trigger = `photon_enrollment_activity_${randomUUID().replaceAll("-", "")}`;
+    let installedTrigger = false;
+    let primary: { error: unknown } | undefined;
+    try {
+      expect(loadPaperclipCloudConnectorIdentity()).toBeNull();
+      expect(cloudConnectors.paperclipCloudConnectorConfigFromEnv()).toBeNull();
+      const brokerOperations: Record<string, unknown>[] = [];
+      const negotiations: { subject: string; companyId: string }[] = [];
+      const transport: typeof fetch = async (input, init) => {
+        const url = new URL(input instanceof Request ? input.url : String(input));
+        expect(url.origin).toBe("https://cloud.example");
+        if (url.pathname === "/v1/connector/enrollments") {
+          const body = JSON.parse(String(init?.body));
+          expect(body.origin).toBe("https://paperclip.example");
+          expect(body.returnUri).toBe("https://paperclip.example/api/tools/oauth/cloud-connector/enrollment-callback");
+          return Response.json({ enrollmentId: "online-case", verificationUrl: "https://cloud.example/connections/enroll?id=online-case",
+            expiresAt: new Date(Date.now() + 60_000).toISOString() }, { status: 201 });
+        }
+        const identity = loadPaperclipCloudConnectorIdentity();
+        if (!identity) throw new Error("Normal enrollment identity absent at controlled Cloud boundary");
+        const body = JSON.parse(String(init?.body));
+        const [header, payload, signature] = String(body.request).split(".");
+        const publicKey = createPublicKey({ key: { kty: "OKP", crv: "Ed25519", x: identity.signPublicKey }, format: "jwk" });
+        expect(verify(null, Buffer.from(`${header}.${payload}`), publicKey, Buffer.from(signature, "base64url"))).toBe(true);
+        const claims = JSON.parse(Buffer.from(payload, "base64url").toString());
+        expect(claims).toMatchObject({ iss: identity.instanceId, env: "test", aud: url.toString() });
+        if (url.pathname === "/v1/connector/enrollment-claims") {
+          expect(claims.op).toBe("enroll");
+          expect(body).toMatchObject({ enrollmentId: "online-case", approvalCode: "controlled-approval" });
+          return Response.json({ id: identity.instanceId, environment: "test", origins: ["https://paperclip.example"] });
+        }
+        if (url.pathname === "/v1/connector/events/lease") {
+          expect(claims.ewv).toBe(1);
+          expect(typeof claims.sub).toBe("string"); expect(typeof claims.cid).toBe("string");
+          negotiations.push({ subject: claims.sub, companyId: claims.cid });
+          return Response.json({ events: [], eventWakeVersion: 1 });
+        }
+        if (url.pathname === "/v1/connector/instance-status")
+          return Response.json({ active: true, status: "active", profiles: [], photonReceiver: { version: 1 } });
+        throw new Error("Unexpected controlled normal Cloud request");
+      };
+      vi.spyOn(globalThis, "fetch").mockImplementation(transport);
+      let retirementRequested = false;
+      const createConnector = cloudConnectors.createPaperclipCloudConnector;
+      vi.spyOn(cloudConnectors, "createPaperclipCloudConnector").mockImplementation(input => {
+        const connector = createConnector({ ...input, request: transport });
+        vi.spyOn(connector, "photonReceiverOperation").mockImplementation(async ({ operation }) => {
+          if (!t) throw new Error("Unexpected normal broker operation");
+          const saved = readPhotonExternalState(await photonStateFor(db, { companyId: t.companyId, endpointId: t.endpoint.id }).read(PHOTON_EXTERNAL_STATE));
+          if (!saved) throw new Error("Normal handoff intent absent before broker invocation");
+          expect(saved.identity.subject).toBe(t.userId);
+          expect(input.config.instanceId).toBe(loadPaperclipCloudConnectorIdentity()?.instanceId);
+          brokerOperations.push(structuredClone(operation));
+          if (operation.kind === "enroll") return { binding: saved.binding };
+          expect(operation.binding).toEqual(saved.binding);
+          if (operation.kind === "retire") { retirementRequested = true; return { binding: saved.binding }; }
+          if (operation.kind === "status") return { binding: saved.binding, handoffId: saved.handoffId,
+            phase: retirementRequested ? "retired" : "active" };
+          throw new Error("Unexpected controlled exact-owner retirement operation");
+        });
+        return connector;
+      });
+      t = await setup(); await t.start(); await t.qualify();
+      const localRuntime = t.service.runtime.get(t.endpoint.id);
+      expect(localRuntime).not.toBeNull();
+      const [originalLease] = await db.select().from(chatEndpointLeases).where(and(
+        eq(chatEndpointLeases.endpointId, t.endpoint.id), eq(chatEndpointLeases.leaseKey, "photon_receiver_runtime")));
+      if (!originalLease) throw new Error("Normal existing local Runtime lease is absent");
+      const [before] = await db.select().from(chatEndpoints).where(eq(chatEndpoints.id, t.endpoint.id));
+      const [connection] = await db.select().from(toolConnections).where(eq(toolConnections.id, t.endpoint.connectionId));
+      expect(before.status).toBe("active");
+      expect(Reflect.get(before.setup, "photonExternalSubject"), "normal configuration retains its authorized subject without Cloud").toBe(t.userId);
+      const state = photonStateFor(db, { companyId: t.companyId, endpointId: t.endpoint.id });
+      expect(readPhotonExternalState(await state.read(PHOTON_EXTERNAL_STATE))).toBeNull();
+      const errors: unknown[] = [];
+      coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => true, onError: error => errors.push(error) });
+      coordinators.push(coordinator);
+      const eventService = githubConnectionEventService(db);
+      eventWorker = registerGitHubConnectionEventWork(db, coordinator, eventService, () => true);
+      connectionEventWorkers.push(eventWorker);
+      const receiverWorker = t.service.registerReceiverWork(coordinator, () => true);
+      await Promise.all([eventWorker.ready, receiverWorker.ready]);
+      await vi.waitFor(() => expect(coordinator?.nextWakeAt()).toBeNull(), { timeout: 5000 });
+      expect(t.service.runtime.get(t.endpoint.id)).toBe(localRuntime);
+      expect(errors).toEqual([]); expect(negotiations).toEqual([]); expect(brokerOperations).toEqual([]);
+      const app = express(); app.use(express.json());
+      const userId = t.userId, companyId = t.companyId;
+      app.use((req, _res, next) => {
+        req.actor = { type: "board", source: "session", userId, companyIds: [companyId],
+          memberships: [{ companyId, membershipRole: "operator", status: "active" }], isInstanceAdmin: true };
+        next();
+      });
+      app.use("/api", toolAccessRoutes(db, { deploymentMode: "local_trusted", deploymentExposure: "private",
+        authPublicBaseUrl: "https://paperclip.example", paperclipCloudConnector: null }));
+      app.use(errorHandler);
+      const listener = createServer(app); server = listener;
+      await new Promise<void>((resolve, reject) => { listener.once("error", reject); listener.listen(0, "127.0.0.1", resolve); });
+      await request(listener).post("/api/tools/oauth/cloud-connector/enrollment").set("Connection", "close")
+        .send({ companyId }).expect(201);
+      const pending = loadPaperclipCloudConnectorIdentity();
+      if (!pending?.pending) throw new Error("Normal public enrollment did not save its pending owner");
+      expect(pending.status).toBe("pending");
+      expect(pending.pending).toMatchObject({ companyId, initiatedBy: `user:${userId}` });
+      await request(listener).get("/api/tools/oauth/cloud-connector/enrollment-callback").set("Connection", "close")
+        .query({ enrollment_id: "online-case", approval_code: "controlled-approval", state: "wrong-state" }).expect(400);
+      expect(cloudConnectors.paperclipCloudConnectorConfigFromEnv()).toBeNull();
+      expect(brokerOperations).toEqual([]);
+      if (activityFails) {
+        // Actual SQL write rollback after successful file enrollment. The fault
+        // is scoped to this company/action; no other lifecycle write is changed.
+        await db.execute(sql.raw(`CREATE FUNCTION ${trigger}() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN
+          IF NEW.company_id = '${companyId}'::uuid AND NEW.action = 'paperclip_cloud_connector.enrollment_completed'
+          THEN RAISE EXCEPTION 'controlled enrollment activity rollback'; END IF; RETURN NEW; END $$`));
+        await db.execute(sql.raw(`CREATE TRIGGER ${trigger} BEFORE INSERT ON activity_log FOR EACH ROW EXECUTE FUNCTION ${trigger}()`));
+        installedTrigger = true;
+      }
+      await request(listener).get("/api/tools/oauth/cloud-connector/enrollment-callback").set("Connection", "close")
+        .query({ enrollment_id: "online-case", approval_code: "controlled-approval", state: pending.pending.returnState })
+        .expect(activityFails ? 500 : 303);
+      expect(loadPaperclipCloudConnectorIdentity()).toMatchObject({ status: "active", instanceId: pending.instanceId });
+      expect(cloudConnectors.paperclipCloudConnectorConfigFromEnv()).toMatchObject({ instanceId: pending.instanceId, environment: "test" });
+      // Only the public callback may wake the already-settled owner. No manual
+      // changed(), forced discovery, connector replacement or service restart.
+      await vi.waitFor(async () => {
+        const recovered = readPhotonExternalState(await state.read(PHOTON_EXTERNAL_STATE));
+        expect(recovered?.phase, "online enrollment must hand off the existing settled local receiver without restart").toBe("external");
+      }, { timeout: 10_000 });
+      const recovered = readPhotonExternalState(await state.read(PHOTON_EXTERNAL_STATE));
+      expect(recovered).toMatchObject({ identity: { companyId, endpointId: t.endpoint.id, connectionId: t.endpoint.connectionId,
+        runtimeGeneration: Reflect.get(before.setup, "runtimeGeneration"), subject: userId }, localClosureConfirmed: true,
+        binding: { instanceId: pending.instanceId, environment: "test" } });
+      expect(t.service.runtime.get(t.endpoint.id)).toBeNull();
+      expect(t.f.client.close).toHaveBeenCalled();
+      expect(brokerOperations).toHaveLength(1);
+      expect(negotiations.some(row => row.subject === userId && row.companyId === companyId)).toBe(true);
+      const [after] = await db.select().from(chatEndpoints).where(eq(chatEndpoints.id, t.endpoint.id));
+      const [afterConnection] = await db.select().from(toolConnections).where(eq(toolConnections.id, t.endpoint.connectionId));
+      expect(after.connectionId).toBe(before.connectionId);
+      expect(Reflect.get(after.setup, "runtimeGeneration")).toBe(Reflect.get(before.setup, "runtimeGeneration"));
+      expect(Reflect.get(after.setup, "photonExternalSubject")).toBe(userId);
+      expect(afterConnection.credentialSecretRefs).toEqual(connection.credentialSecretRefs);
+      await vi.waitFor(() => expect(coordinator?.nextWakeAt()).toBeNull(), { timeout: 5000 });
+      expect(errors).toEqual([]);
+      expect(await db.select().from(chatEndpointLeases).where(and(eq(chatEndpointLeases.endpointId, t.endpoint.id),
+        eq(chatEndpointLeases.leaseKey, "photon_receiver_runtime")))).toEqual([]);
+      if (!recovered) throw new Error("Normal online handoff state is absent");
+      const ownerId = randomUUID(), generation = photonHash([ownerId, recovered.handoffId]);
+      const incomingWake = { version: 1, ownerId, generation, routes: ["photon-broker-events-v1"],
+        photonBroker: { version: 1, instanceId: pending.instanceId, generation, count: 1,
+          bindingsFingerprint: photonCoverageFingerprint([{ binding: recovered.binding, handoffId: recovered.handoffId,
+            subject: recovered.identity.subject, deliveredThrough: recovered.acceptedSequence }]) } };
+      // Controlled Cloud signing authority, verified by the normal production
+      // verifier; not a cast of parsed/unverified coverage or Cloud SDK readiness.
+      const pair = generateKeyPairSync("ed25519"), kid = randomUUID(), issued = Math.floor(Date.now() / 1000);
+      const encode = (value: unknown) => Buffer.from(JSON.stringify(value)).toString("base64url");
+      const header = encode({ alg: "EdDSA", typ: CLOUD_CONTROL_JWS_TYPE, kid });
+      const payload = encode({ v: 1, iss: CLOUD_RUNTIME_IDENTITY_ISSUER, aud: CLOUD_CONTROL_AUDIENCE,
+        sub: pending.instanceId, action: "task-drain:read", requestId: randomUUID(), iat: issued, exp: issued + 60,
+        idleCapabilities: { incomingWake } });
+      const compactJws = `${header}.${payload}.${sign(null, Buffer.from(`${header}.${payload}`), pair.privateKey).toString("base64url")}`;
+      const verified = verifyCloudControlAssertion({ compactJws, expectedAction: "task-drain:read", env: {
+        PAPERCLIP_CLOUD_STACK_ID: pending.instanceId,
+        PAPERCLIP_CLOUD_RUNTIME_IDENTITY_JWKS: JSON.stringify({ keys: [{ ...pair.publicKey.export({ format: "jwk" }), kid, use: "sig", alg: "EdDSA" }] }),
+      } }).idleCapabilities;
+      if (!verified) throw new Error("Normal signed Cloud coverage verification produced no capability");
+      const allocations = vi.spyOn(photonOwnedClients, "createOwnedPhotonClient");
+      const closeCalls = vi.mocked(t.f.client.close).mock.calls.length;
+      const retainedBeforeProof = await state.read(PHOTON_EXTERNAL_STATE);
+      await expect(db.transaction(tx => readIdleIncomingWakeProof(tx, { capabilities: verified as VerifiedIdleCapabilities,
+        ownerId, receiverOwner: db })), "normal online handoff must certify incoming wake after its exact local close")
+        .resolves.toMatchObject({ endpointIds: [t.endpoint.id], connectionIds: [connection.id] });
+      expect(recovered.localResource?.id).toBe(recovered.localResourceId);
+      expect(recovered.localResource?.closed).toBe(true);
+      expect(recovered.localResource?.leaseDigest).toBe(photonHash(originalLease.token));
+      expect(recovered.localResource?.controller).toEqual(await currentControllerProcess());
+      expect(await state.read(PHOTON_EXTERNAL_STATE)).toEqual(retainedBeforeProof);
+      expect(allocations).not.toHaveBeenCalled();
+      expect(t.f.client.close).toHaveBeenCalledTimes(closeCalls);
+      if (lateConfigLoss) {
+        const receiverStarts = vi.spyOn(PhotonReceiver.prototype, "start");
+        const rawClients: GrpcAdvancedIMessage[] = [];
+        const rawAdapters: PhotonChatAdapter[] = [];
+        const currentInitialize = PhotonChatAdapter.prototype.initialize;
+        const initialize = vi.isMockFunction(currentInitialize) ? currentInitialize.getMockImplementation() : currentInitialize;
+        if (!initialize) throw new Error("Normal controlled Photon initialize implementation is absent");
+        let entered = 0, armed = true, configurationHidden = false;
+        const originalCheckpoint = await state.read("checkpoint");
+        // Actual SDK initialization is after the normal lease/reservation and
+        // constructor/context attachment, before its final placement callback.
+        const initializing = vi.spyOn(PhotonChatAdapter.prototype, "initialize").mockImplementation(async function (this: PhotonChatAdapter, chat) {
+          if (armed) {
+            expect(allocations).toHaveBeenCalledTimes(1);
+            const allocated = allocations.mock.results.at(-1);
+            if (allocated?.type !== "return") throw new Error("Normal constructed Photon client result is absent");
+            const raw = allocated.value;
+            expect(this.client).toBe(raw);
+            expect(raw).not.toBe(t!.f.client);
+            rawClients.push(raw);
+            rawAdapters.push(this);
+            vi.spyOn(raw, "close"); // Observe the SAME normal close implementation.
+          }
+          const initialized = await initialize.call(this, chat);
+          if (!armed) return initialized;
+          expect(rawClients).toHaveLength(1);
+          expect(vi.mocked(rawClients[0].close)).toHaveBeenCalledTimes(1);
+          armed = false; entered++;
+          await request(listener).post("/api/tools/oauth/cloud-connector/enrollment").set("Connection", "close")
+            .send({ companyId }).expect(201);
+          const again = loadPaperclipCloudConnectorIdentity();
+          expect(again).toMatchObject({ status: "pending", instanceId: recovered.binding.instanceId });
+          expect(cloudConnectors.paperclipCloudConnectorConfigFromEnv()).toBeNull();
+          configurationHidden = true;
+          return initialized;
+        });
+        try {
+          const result = await t.service.reconcileProviderRuntimes();
+          expect(entered).toBe(1);
+          expect(configurationHidden, "normal public re-enrollment must hide configuration before final intake selection").toBe(true);
+          expect(receiverStarts, "late connector loss must not start local Photon intake after external custody was selected").not.toHaveBeenCalled();
+          expect(result).toMatchObject({ local: 0, failed: 1 });
+          expect(t.service.runtime.get(t.endpoint.id)).toBeNull();
+          expect(await state.read("checkpoint")).toEqual(originalCheckpoint);
+          expect(readPhotonExternalState(await state.read(PHOTON_EXTERNAL_STATE))).toMatchObject({
+            phase: "external", handoffId: recovered.handoffId, binding: recovered.binding, acceptedSequence: recovered.acceptedSequence });
+          // No new receiver owns f.client. Normal adapter disconnect instead
+          // joins the exact raw client already closed by controlled initialize.
+          expect(t.f.client.close).toHaveBeenCalledTimes(closeCalls);
+          expect(rawClients).toHaveLength(1);
+          const rawClose = vi.mocked(rawClients[0].close);
+          expect(rawClose).toHaveBeenCalledTimes(2);
+          expect(rawClose.mock.results.every(result => result.type === "return")).toBe(true);
+          await Promise.all(rawClose.mock.results.map(result => result.value));
+          expect(rawAdapters).toHaveLength(1);
+          await rawAdapters[0].joinDisconnectAttempt();
+        } finally {
+          if (vi.isMockFunction(currentInitialize)) initializing.mockImplementation(initialize);
+          else initializing.mockRestore();
+          const pendingAgain = loadPaperclipCloudConnectorIdentity();
+          if (pendingAgain?.pending) {
+            await request(listener).get("/api/tools/oauth/cloud-connector/enrollment-callback").set("Connection", "close")
+              .query({ enrollment_id: "online-case", approval_code: "controlled-approval", state: pendingAgain.pending.returnState }).expect(303);
+          }
+        }
+        expect(cloudConnectors.paperclipCloudConnectorConfigFromEnv()).toMatchObject({ instanceId: recovered.binding.instanceId });
+        expect(await t.service.reconcileProviderRuntimes()).toMatchObject({ failed: 0 });
+        expect(brokerOperations.filter(operation => operation.kind === "enroll")).toHaveLength(1);
+      }
+      if (reEnrollment) {
+        // The real public operation changes the SAME active on-disk identity to
+        // pending; the normal config getter must now hide the connector.
+        await request(listener).post("/api/tools/oauth/cloud-connector/enrollment").set("Connection", "close")
+          .send({ companyId }).expect(201);
+        const again = loadPaperclipCloudConnectorIdentity();
+        if (!again?.pending) throw new Error("Normal re-enrollment did not retain its pending owner");
+        expect(again).toMatchObject({ status: "pending", instanceId: recovered.binding.instanceId });
+        expect(cloudConnectors.paperclipCloudConnectorConfigFromEnv()).toBeNull();
+        const original = await state.read(PHOTON_EXTERNAL_STATE), operationCount = brokerOperations.length;
+        try {
+          const result = await t.service.reconcileProviderRuntimes();
+          expect(allocations, "pending connector identity must not construct duplicate local intake beside retained Cloud custody").not.toHaveBeenCalled();
+          expect(result).toMatchObject({ local: 0, failed: 1 });
+          expect(t.service.runtime.get(t.endpoint.id)).toBeNull();
+          expect(await state.read(PHOTON_EXTERNAL_STATE)).toEqual(original);
+          expect(brokerOperations).toHaveLength(operationCount);
+        } finally {
+          // Restore authority by the SAME public callback even when the causal
+          // assertion fails. No identity-file write or forged close is used.
+          await request(listener).get("/api/tools/oauth/cloud-connector/enrollment-callback").set("Connection", "close")
+            .query({ enrollment_id: "online-case", approval_code: "controlled-approval", state: again.pending.returnState }).expect(303);
+        }
+        expect(cloudConnectors.paperclipCloudConnectorConfigFromEnv()).toMatchObject({ instanceId: recovered.binding.instanceId });
+        expect(readPhotonExternalState(await state.read(PHOTON_EXTERNAL_STATE))).toMatchObject({
+          phase: "external", handoffId: recovered.handoffId, binding: recovered.binding, acceptedSequence: recovered.acceptedSequence });
+        // Normal current authority can be retried without replacing the old
+        // handoff or enrolling another Cloud receiver.
+        expect(await t.service.reconcileProviderRuntimes()).toMatchObject({ failed: 0 });
+        expect(brokerOperations.filter(operation => operation.kind === "enroll")).toHaveLength(1);
+      }
+    } catch (error) { primary = { error }; }
+    finally {
+      const cleanup: unknown[] = [];
+      try { if (server) await new Promise<void>((resolve, reject) => server!.close(error => error ? reject(error) : resolve())); } catch (error) { cleanup.push(error); }
+      try { await eventWorker?.stop(); } catch (error) { cleanup.push(error); }
+      try { await coordinator?.stop(); } catch (error) { cleanup.push(error); }
+      // Retire only this test's exact owned Cloud/local history through the
+      // normal authorized remove path, before restoring its identity context.
+      try { if (t) await t.service.configure(t.endpoint.id, { action: "remove" }, t.userId); } catch (error) { cleanup.push(error); }
+      try { await t?.service.shutdown(); } catch (error) { cleanup.push(error); }
+      if (installedTrigger) {
+        try { await db.execute(sql.raw(`DROP TRIGGER IF EXISTS ${trigger} ON activity_log`)); } catch (error) { cleanup.push(error); }
+        try { await db.execute(sql.raw(`DROP FUNCTION IF EXISTS ${trigger}()`)); } catch (error) { cleanup.push(error); }
+      }
+      for (const [key, value] of previous) { if (value === undefined) delete process.env[key]; else process.env[key] = value; }
+      try { await rm(home, { recursive: true, force: true }); } catch (error) { cleanup.push(error); }
+      if (cleanup.length) throw new AggregateError([...(primary ? [primary.error] : []), ...cleanup], "Online Photon fixture cleanup remains owned");
+    }
+    if (primary) throw primary.error;
+  }
+  it("hands a settled local Photon receiver to Cloud after normal online enrollment without restart",
+    () => onlinePhotonEnrollment(), 30_000);
+  it("keeps the normal online Photon handoff hint after its activity write rolls back",
+    () => onlinePhotonEnrollment(true), 30_000);
+  it("keeps retained Photon Cloud custody fenced during normal connector re-enrollment and restores its original handoff",
+    () => onlinePhotonEnrollment(false, true), 30_000);
+  it("fences late connector loss at the normal Photon SDK intake-placement callback and restores its original handoff",
+    () => onlinePhotonEnrollment(false, false, true), 30_000);
+  async function resumeOriginalHandoff(phase: "enrolling" | "joining", observeIdleRenewal = false) {
+    const renew = vi.fn(async () => true);
+    const signing = generateKeyPairSync("ed25519"), sealing = generateKeyPairSync("x25519");
+    const connectorConfig = { baseUrl: "https://cloud.example", instanceId: "instance", environment: "test" as const,
+      signPrivateKey: signing.privateKey.export({ type: "pkcs8", format: "pem" }).toString(),
+      sealPrivateKey: sealing.privateKey.export({ type: "pkcs8", format: "pem" }).toString() };
+    const eventEnrollments: { subject: string; companyId: string }[] = [];
+    const connector = cloudConnectors.createPaperclipCloudConnector({ config: connectorConfig,
+      request: async (input, init) => {
+        const url = new URL(input instanceof Request ? input.url : String(input));
+        expect(url.origin).toBe(connectorConfig.baseUrl);
+        if (url.pathname === "/v1/connector/events/lease") {
+          if (typeof init?.body !== "string") throw new Error("Missing normal signed event enrollment");
+          const body = JSON.parse(init.body);
+          const [header, payload, signature] = body.request.split(".");
+          expect(verify(null, Buffer.from(`${header}.${payload}`), signing.publicKey,
+            Buffer.from(signature, "base64url"))).toBe(true);
+          const claims = JSON.parse(Buffer.from(payload, "base64url").toString());
+          expect(claims).toMatchObject({ iss: connectorConfig.instanceId, env: connectorConfig.environment, aud: url.toString(), ewv: 1 });
+          expect(claims.sub).toEqual(expect.any(String));
+          expect(claims.cid).toEqual(expect.any(String));
+          eventEnrollments.push({ subject: claims.sub, companyId: claims.cid });
+          // Normal connector.leaseEvents parses this controlled protocol reply;
+          // no fixture writes the connector's negotiated state or join promise.
+          return Response.json({ events: [], eventWakeVersion: 1 });
+        }
+        return Response.json({ active: true, status: "active", profiles: [], photonReceiver: { version: 1 } });
+      } });
+    vi.spyOn(cloudConnectors, "paperclipCloudConnectorConfigFromEnv").mockReturnValue(connectorConfig);
+    vi.spyOn(cloudConnectors, "createPaperclipCloudConnector").mockReturnValue(connector);
+    const createOwner = photonExternalRuntime.createPhotonExternalRuntimeOwner;
+    let observedOwner: ReturnType<typeof createOwner> | undefined;
+    vi.spyOn(photonExternalRuntime, "createPhotonExternalRuntimeOwner").mockImplementation((...args) => {
+      observedOwner = createOwner(...args);
+      return observedOwner;
+    });
+    const requests: Record<string, unknown>[] = [];
+    let endpointId: string | undefined, companyId: string | undefined;
+    vi.spyOn(connector, "photonReceiverOperation").mockImplementation(async ({ operation }) => {
+      requests.push(structuredClone(operation));
+      if (!endpointId || !companyId || operation.kind !== "enroll") throw new Error("Unexpected controlled broker operation");
+      const retained = readPhotonExternalState(await photonStateFor(db, { companyId, endpointId }).read(PHOTON_EXTERNAL_STATE));
+      if (!retained) throw new Error("Normal staged enrollment absent");
+      return { binding: retained.binding };
+    });
+    const t = await setup(false, { renewDiscordGatewayLease: renew }); endpointId = t.endpoint.id; companyId = t.companyId;
+    await t.start(); await t.qualify();
+    const enrollmentErrors: unknown[] = [];
+    const eventCoordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => true,
+      onError: error => enrollmentErrors.push(error) });
+    coordinators.push(eventCoordinator);
+    const eventService = githubConnectionEventService(db, { connector });
+    const eventWorker = registerGitHubConnectionEventWork(db, eventCoordinator, eventService, () => true);
+    connectionEventWorkers.push(eventWorker);
+    // Match normal startup registration and join its actual first signed lease
+    // negotiation. No event drain, handwritten version or successful join stub.
+    await Promise.all([eventWorker.ready, joinConnectionEventWakeEnrollment(db)]);
+    expect(eventEnrollments.length).toBeGreaterThan(0);
+    expect(connector.eventWakeVersion()).toBe(1);
+    expect(enrollmentErrors).toEqual([]);
+    const owner = observedOwner;
+    if (!owner) throw new Error("Normal external Runtime owner absent");
+    const state = photonStateFor(db, { companyId: t.companyId, endpointId: t.endpoint.id });
+    if (phase === "joining") {
+      const local = t.service.runtime.get(t.endpoint.id);
+      if (!local) throw new Error("Normal local receiver absent");
+      vi.spyOn(local, "shutdown").mockRejectedValueOnce(new Error("Controlled original local join pending"));
+      await expect(owner.reconcile(t.endpoint.id)).rejects.toThrow("Controlled original local join pending");
+    }
+    const original = readPhotonExternalState(await state.read(PHOTON_EXTERNAL_STATE));
+    expect(original?.phase).toBe(phase);
+    if (!original) throw new Error("Normal unfinished handoff absent");
+    const [before] = await db.select().from(chatEndpoints).where(eq(chatEndpoints.id, t.endpoint.id));
+    const [connectionBefore] = await db.select().from(toolConnections).where(eq(toolConnections.id, t.endpoint.connectionId));
+    expect(before.status).toBe("active");
+    await t.service.configure(t.endpoint.id, { action: "pause" }, t.userId);
+    const [paused] = await db.select().from(chatEndpoints).where(eq(chatEndpoints.id, t.endpoint.id));
+    expect(paused.status).toBe("paused");
+    expect(Reflect.get(paused.setup, "runtimeGeneration")).toBe(Reflect.get(before.setup, "runtimeGeneration"));
+    expect(readPhotonExternalState(await state.read(PHOTON_EXTERNAL_STATE)))
+      .toMatchObject({ phase, binding: original.binding, handoffId: original.handoffId, identity: original.identity });
+    const outcome = await t.service.configure(t.endpoint.id, { action: "resume" }, t.userId)
+      .then(snapshot => ({ snapshot, error: null }), error => ({ snapshot: null, error }));
+    const [resumed] = await db.select().from(chatEndpoints).where(eq(chatEndpoints.id, t.endpoint.id));
+    const [connectionResumed] = await db.select().from(toolConnections).where(eq(toolConnections.id, t.endpoint.connectionId));
+    const recovered = readPhotonExternalState(await state.read(PHOTON_EXTERNAL_STATE));
+    expect(Reflect.get(resumed.setup, "runtimeGeneration")).toBe(Reflect.get(before.setup, "runtimeGeneration"));
+    expect(resumed.connectionId).toBe(before.connectionId);
+    expect(connectionResumed.credentialSecretRefs).toEqual(connectionBefore.credentialSecretRefs);
+    const cutoff = Date.parse(String(Reflect.get(resumed.setup, "photonIntakeAfter")));
+    expect(Number.isFinite(cutoff)).toBe(true);
+    expect(cutoff).toBeGreaterThan(Date.parse(original.binding.intakeAfter));
+    expect(outcome.error, "normal resume must finish original custody under unchanged authority").toBeNull();
+    expect(outcome.snapshot).toMatchObject({ status: "active" });
+    expect(recovered).toMatchObject({ phase: "external", identity: original.identity, binding: original.binding, handoffId: original.handoffId });
+    expect(requests).toHaveLength(1);
+    expect(requests[0].enrollment).toMatchObject({ intakeAfter: original.binding.intakeAfter, handoffId: original.handoffId });
+    if (!recovered) throw new Error("Normal recovered custody absent");
+    const receiverLeases = () => db.select().from(chatEndpointLeases).where(and(
+      eq(chatEndpointLeases.companyId, t.companyId), eq(chatEndpointLeases.endpointId, t.endpoint.id),
+      eq(chatEndpointLeases.leaseKey, "photon_receiver_runtime")));
+    if (observeIdleRenewal) {
+      const renewalsAfterResume = renew.mock.calls.length;
+      const idleLeaseBefore = await receiverLeases();
+      // The unchanged normal 15-second TTL renews every 5 seconds. Real DB and
+      // timer ownership remain active; no manually invoked callback or fake time.
+      await new Promise(resolve => setTimeout(resolve, 5_100));
+      const idleLeaseAfter = await receiverLeases();
+      expect(renew.mock.calls.length - renewalsAfterResume,
+        "settled Cloud resume must stop the normal renewable receiver owner").toBe(0);
+      expect(idleLeaseBefore).toEqual([]);
+      expect(idleLeaseAfter).toEqual([]);
+    }
+    // Match the existing managed external fixture: each useful allocation owns
+    // its distinct controlled client; provider receipts stay on the same port.
+    const usefulClients: { client: GrpcAdvancedIMessage; joined: boolean; methods: string[];
+      close: ReturnType<typeof photonFixture>["client"]["close"] }[] = [];
+    vi.spyOn(photonOwnedClients, "createOwnedPhotonClient").mockImplementation(() => {
+      const owned = photonFixture();
+      const row = { client: owned.adapter.client, joined: false, methods: new Array<string>(), close: owned.client.close };
+      const close = async () => {
+        if (row.joined) return;
+        await owned.client.close();
+        row.joined = true;
+      };
+      const channel = (name: "chats" | "messages" | "attachments" | "groups" | "polls" | "events") => new Proxy(owned.adapter.client[name], {
+        get(target, key, receiver) {
+          const method = Reflect.get(target, key, receiver);
+          if (typeof method !== "function") return method;
+          return (...args: unknown[]) => {
+            if (row.joined) throw new Error("Controlled useful client used after its own close");
+            row.methods.push(`${name}.${String(key)}`);
+            const providerMethod = Reflect.get(t.f.adapter.client[name], key);
+            if (typeof providerMethod !== "function") throw new Error("Unexpected controlled useful method");
+            return Reflect.apply(providerMethod, t.f.adapter.client[name], args);
+          };
+        },
+      });
+      row.client = new Proxy(owned.adapter.client, { get(target, key, receiver) {
+        if (key === "close") return close;
+        if (key === "chats" || key === "messages" || key === "attachments" || key === "groups" || key === "polls" || key === "events") return channel(key);
+        return Reflect.get(target, key, receiver);
+      } });
+      usefulClients.push(row);
+      return row.client;
+    });
+    // Same pinned protobuf framing pattern as external-owner.test.ts, decoded
+    // by the real SDK. Enter the registered Cloud ingress, not onPhotonEvent:
+    // its ordinary runtimeFor/lease acquisition and finally release stay real.
+    const varint = (input: number): Buffer => {
+      let value = BigInt(input); const bytes: number[] = [];
+      do { const byte = Number(value & 127n); value >>= 7n; bytes.push(byte | (value ? 128 : 0)); } while (value);
+      return Buffer.from(bytes);
+    };
+    const integer = (field: number, value: number) => Buffer.concat([varint(field * 8), varint(value)]);
+    const field = (number: number, value: Buffer | string) => {
+      const bytes = typeof value === "string" ? Buffer.from(value) : value;
+      return Buffer.concat([varint(number * 8 + 2), varint(bytes.length), bytes]);
+    };
+    const timestamp = (at: number) => Buffer.concat([integer(1, Math.floor(at / 1000)), integer(2, (at % 1000) * 1_000_000)]);
+    const packet = (sequence: number, previousSequence: number | null, occurredAt: number) => {
+      const sender = Buffer.concat([field(1, "+15555550101"), integer(2, 1)]);
+      const message = Buffer.concat([field(1, `idle-lease-message-${sequence}`), field(2, field(1, "Fresh normal Cloud admission")),
+        field(10, timestamp(occurredAt)), field(20, sender), field(92, t.f.chat.guid)]);
+      const change = Buffer.concat([field(1, t.f.chat.guid), field(2, timestamp(occurredAt)), field(10, field(1, message))]);
+      const rawFrame = Buffer.concat([integer(1, sequence), field(10, change)]).toString("base64");
+      const acceptedAt = new Date().toISOString();
+      return { id: `photon_${photonHash([recovered.binding.bindingId, sequence])}`, event: "message.received", createdAt: acceptedAt,
+        installationId: recovered.binding.bindingId, bindingIds: [recovered.binding.bindingId], payload: { photonEvent: {
+          version: 1, binding: recovered.binding, sequence, previousSequence, acceptedAt, rawFrame } } };
+    };
+    const wakeups = t.wakeup.mock.calls.length;
+    const previous = recovered.acceptedSequence;
+    const oldInput = packet((previous ?? 0) + 1, previous, cutoff - 1);
+    await photonExternalRuntime.dispatchPhotonCloudEvent(db, oldInput);
+    expect(t.wakeup).toHaveBeenCalledTimes(wakeups);
+    expect(usefulClients).toHaveLength(0);
+    expect(await receiverLeases()).toEqual([]);
+    const freshInput = packet((previous ?? 0) + 2, (previous ?? 0) + 1, cutoff);
+    const getChat = t.f.client.chats.get.getMockImplementation();
+    if (!getChat) throw new Error("Existing controlled provider lookup absent");
+    let release!: () => void;
+    const held = new Promise<void>(resolve => { release = resolve; });
+    let usefulEntered = false;
+    t.f.client.chats.get.mockImplementation(async (...args) => {
+      expect(await receiverLeases()).toHaveLength(1);
+      usefulEntered = true;
+      await held;
+      return getChat(...args);
+    });
+    const admitted = photonExternalRuntime.dispatchPhotonCloudEvent(db, freshInput);
+    const observed = admitted.then(() => ({ error: null }), error => ({ error }));
+    try {
+      await vi.waitFor(() => expect(usefulEntered).toBe(true));
+      if (observeIdleRenewal) {
+        const renewalsDuringUseful = renew.mock.calls.length;
+        await new Promise(resolve => setTimeout(resolve, 5_100));
+        expect(renew.mock.calls.length).toBeGreaterThan(renewalsDuringUseful);
+        expect(await receiverLeases()).toHaveLength(1);
+      }
+    } finally { release(); }
+    expect((await observed).error).toBeNull();
+    await t.service.processPendingDeliveries();
+    expect(t.wakeup).toHaveBeenCalledTimes(wakeups + 1);
+    expect(await receiverLeases()).toEqual([]);
+    await photonExternalRuntime.dispatchPhotonCloudEvent(db, freshInput);
+    expect(t.wakeup).toHaveBeenCalledTimes(wakeups + 1);
+    expect(await receiverLeases()).toEqual([]);
+    const afterAdmission = readPhotonExternalState(await state.read(PHOTON_EXTERNAL_STATE));
+    expect(afterAdmission).toMatchObject({ acceptedSequence: (previous ?? 0) + 2, pending: null, binding: original.binding });
+    if (observeIdleRenewal) {
+      const renewalsAfterDelivery = renew.mock.calls.length;
+      await new Promise(resolve => setTimeout(resolve, 5_100));
+      expect(renew.mock.calls.length).toBe(renewalsAfterDelivery);
+    }
+    const currentAdapter = t.service.runtime.get(t.endpoint.id)?.getProviderAdapter();
+    if (!(currentAdapter instanceof PhotonChatAdapter)) throw new Error("Current normal Photon adapter absent");
+    await currentAdapter.drainUsefulClient();
+    expect(usefulClients.length).toBeGreaterThan(0);
+    expect(new Set(usefulClients.map(row => row.client)).size).toBe(usefulClients.length);
+    expect(usefulClients.some(row => row.methods.includes("chats.get"))).toBe(true);
+    for (const row of usefulClients) {
+      expect(row.joined).toBe(true);
+      expect(row.close).toHaveBeenCalledTimes(1);
+    }
+  }
+  it.each(["enrolling", "joining"] as const)("resumes normal Photon configuration with its original %s custody and the new admission cutoff",
+    phase => resumeOriginalHandoff(phase), 30_000);
+  it("releases idle Cloud-resume ownership and reacquires it for normal authorized delivery",
+    () => resumeOriginalHandoff("enrolling", true), 30_000);
+  it("restores group membership queued during pause before admitting fresh messages after resume", async () => {
+    const t = await setup();
+    await t.start();
+    await t.qualify();
+    const group = photonChat("iMessage;+;pause-membership", true);
+    t.chats.set(group.guid, group);
+    await t.deliver(photonEvent(3, group));
+    const resource = (await t.service.listResources(t.endpoint.id)).find(row => row.type === "group_chat")!;
+    expect(resource).toBeDefined();
+    await t.service.replaceResources(t.endpoint.id, [{ id: resource.id, enabled: true }], t.userId);
+    await t.deliver(photonEvent(4, group));
+    const membership = (sequence: number, type: "participantRemoved" | "participantAdded", occurredAt = new Date()): LiveEvent => ({
+      type: "group.changed", chatGuid: group.guid, sequence, occurredAt, isFromMe: false,
+      change: { type, participant: { address: "+15555550100", service: "iMessage" } },
+    });
+    await t.deliver(membership(5, "participantRemoved"));
+    const removed = (await t.service.listResources(t.endpoint.id)).find(row => row.id === resource.id)!;
+    expect(removed).toMatchObject({ enabled: true, availability: "unavailable", metadata: { photonRemoved: true } });
+    const [before] = await db.select().from(chatEndpoints).where(eq(chatEndpoints.id, t.endpoint.id));
+    const [connectionBefore] = await db.select().from(toolConnections).where(eq(toolConnections.id, t.endpoint.connectionId));
+    await t.service.configure(t.endpoint.id, { action: "pause" }, t.userId);
+    const [paused] = await db.select().from(chatEndpoints).where(eq(chatEndpoints.id, t.endpoint.id));
+    const readded = membership(6, "participantAdded", paused.updatedAt);
+    await t.service.configure(t.endpoint.id, { action: "resume" }, t.userId);
+    const [resumed] = await db.select().from(chatEndpoints).where(eq(chatEndpoints.id, t.endpoint.id));
+    const [connectionResumed] = await db.select().from(toolConnections).where(eq(toolConnections.id, t.endpoint.connectionId));
+    const cutoffValue = Reflect.get(resumed.setup, "photonIntakeAfter");
+    if (typeof cutoffValue !== "string") throw new Error("Missing normal resume cutoff");
+    const cutoff = Date.parse(cutoffValue);
+    expect(Number.isFinite(cutoff)).toBe(true);
+    expect(readded.occurredAt.getTime()).toBeLessThan(cutoff);
+    expect(Reflect.get(resumed.setup, "runtimeGeneration")).toBe(Reflect.get(before.setup, "runtimeGeneration"));
+    expect(resumed.connectionId).toBe(before.connectionId);
+    expect(connectionResumed.credentialSecretRefs).toEqual(connectionBefore.credentialSecretRefs);
+    const wakeups = t.wakeup.mock.calls.length;
+    const deliveries = await db.select({ id: chatDeliveries.id }).from(chatDeliveries).where(eq(chatDeliveries.endpointId, t.endpoint.id));
+    await t.deliver(readded);
+    const restored = (await t.service.listResources(t.endpoint.id)).find(row => row.id === resource.id)!;
+    expect(restored, "pause-window membership must clear the removed tombstone").toMatchObject({ enabled: true, availability: "available", metadata: { photonRemoved: false } });
+    expect(t.wakeup).toHaveBeenCalledTimes(wakeups);
+    expect(await db.select({ id: chatDeliveries.id }).from(chatDeliveries).where(eq(chatDeliveries.endpointId, t.endpoint.id))).toEqual(deliveries);
+    await t.deliver(readded);
+    expect(t.wakeup).toHaveBeenCalledTimes(wakeups);
+    await t.deliver({ ...photonEvent(7, group, "Fresh after membership restoration"), occurredAt: new Date(cutoff) });
+    expect(t.wakeup).toHaveBeenCalledTimes(wakeups + 1);
+    await t.deliver({ ...photonEvent(7, group, "Fresh after membership restoration"), occurredAt: new Date(cutoff) });
+    expect(t.wakeup).toHaveBeenCalledTimes(wakeups + 1);
+    await expect(t.callbacks().onPhotonEvent!(membership(8, "participantAdded", new Date(NaN))))
+      .rejects.toMatchObject({ code: "invalid_response" });
+    await t.service.configure(t.endpoint.id, { action: "pause" }, t.userId);
+    await expect(t.callbacks().onPhotonEvent!(membership(9, "participantAdded")))
+      .rejects.toThrow("Photon receiver no longer owns this endpoint");
+  }, 30_000);
+  it("filters pause-window events through current Photon admission after a same-generation resume", async () => {
+    const t = await setup();
+    await t.start();
+    await t.qualify();
+    const [before] = await db.select().from(chatEndpoints).where(eq(chatEndpoints.id, t.endpoint.id));
+    const [connectionBefore] = await db.select().from(toolConnections).where(eq(toolConnections.id, t.endpoint.connectionId));
+    if (!before || !connectionBefore) throw new Error("Missing configured Photon endpoint");
+    const wakeups = t.wakeup.mock.calls.length;
+    const deliveredBefore = await db.select({ id: chatDeliveries.id }).from(chatDeliveries)
+      .where(eq(chatDeliveries.endpointId, t.endpoint.id));
+    await t.service.configure(t.endpoint.id, { action: "pause" }, t.userId);
+    const [paused] = await db.select().from(chatEndpoints).where(eq(chatEndpoints.id, t.endpoint.id));
+    if (!paused) throw new Error("Missing paused Photon endpoint");
+    const duringPause = { ...photonEvent(3, t.f.chat, "Queued while paused"), occurredAt: paused.updatedAt };
+    await t.service.configure(t.endpoint.id, { action: "resume" }, t.userId);
+    const [resumed] = await db.select().from(chatEndpoints).where(eq(chatEndpoints.id, t.endpoint.id));
+    const [connectionResumed] = await db.select().from(toolConnections).where(eq(toolConnections.id, t.endpoint.connectionId));
+    if (!resumed || !connectionResumed) throw new Error("Missing resumed Photon endpoint");
+    const cutoffValue = Reflect.get(resumed.setup, "photonIntakeAfter");
+    if (typeof cutoffValue !== "string") throw new Error("Missing normal Photon resume cutoff");
+    const cutoff = Date.parse(cutoffValue);
+    expect(Number.isFinite(cutoff)).toBe(true);
+    expect(duringPause.occurredAt.getTime()).toBeLessThan(cutoff);
+    const generation = Reflect.get(before.setup, "runtimeGeneration");
+    expect(Number.isSafeInteger(generation)).toBe(true);
+    expect(Reflect.get(resumed.setup, "runtimeGeneration")).toBe(generation);
+    expect(resumed.connectionId).toBe(before.connectionId);
+    expect(connectionResumed.credentialSecretRefs).toEqual(connectionBefore.credentialSecretRefs);
+    const providerReads = t.f.client.chats.get.mock.calls.length;
+    // This is the actual normal callback used by external-owner.dispatch. The
+    // local receiver's catch-up cutoff is deliberately not the tested boundary.
+    await t.deliver(duringPause);
+    expect(t.wakeup.mock.calls.length, "pause-window input must not create useful work after resume").toBe(wakeups);
+    expect(await db.select({ id: chatDeliveries.id }).from(chatDeliveries)
+      .where(eq(chatDeliveries.endpointId, t.endpoint.id))).toEqual(deliveredBefore);
+    expect(t.f.client.chats.get).toHaveBeenCalledTimes(providerReads);
+    const boundary = { ...photonEvent(4, t.f.chat, "Exactly at the resumed boundary"), occurredAt: new Date(cutoff) };
+    await t.deliver(boundary);
+    expect(t.wakeup).toHaveBeenCalledTimes(wakeups + 1);
+    await t.deliver(boundary);
+    expect(t.wakeup).toHaveBeenCalledTimes(wakeups + 1);
+    await t.deliver({ ...photonEvent(5, t.f.chat, "Fresh after resume"), occurredAt: new Date(cutoff + 1) });
+    expect(t.wakeup).toHaveBeenCalledTimes(wakeups + 2);
+    await expect(t.callbacks().onPhotonEvent!({ ...photonEvent(6), occurredAt: new Date(NaN) }))
+      .rejects.toMatchObject({ code: "invalid_response" });
+    expect(t.wakeup).toHaveBeenCalledTimes(wakeups + 2);
+    await t.service.configure(t.endpoint.id, { action: "pause" }, t.userId);
+    // Authority still wins before timestamp validation while inactive.
+    await expect(t.callbacks().onPhotonEvent!({ ...photonEvent(7), occurredAt: new Date(NaN) }))
+      .rejects.toThrow("Photon receiver no longer owns this endpoint");
+    expect(t.wakeup).toHaveBeenCalledTimes(wakeups + 2);
   }, 30_000);
   it("preserves DM identity across restart, ignores echoes, and reserves a paused number", async () => {
     const t = await setup();

@@ -2,7 +2,7 @@ import { notifyChatEndpointConfiguration } from "./configuration-work-notificati
 import { notifyChatConnectionHealth } from "./connection-health-notifications.js";
 import type { ConnectionManagementContext } from "../connection-management.js";
 import { CHAT_HUMAN_CREDENTIAL_FIELDS } from "./credentials.js";
-import { preparePhotonConfiguration, createPhotonConfiguration } from "./imessage-photon/setup.js";
+import { preparePhotonConfiguration, createPhotonConfiguration, photonIntakeAfter } from "./imessage-photon/setup.js";
 import { slackRuntimeConfig } from "./slack/setup.js";
 import { createTelegramSetup } from "./telegram/setup.js";
 import { createGitHubSetup } from "./github/setup.js";
@@ -80,6 +80,8 @@ type ChatConfigurationOptions = Pick<ReturnType<typeof createChatCredentials>, "
   withCredentialMutationLease: ReturnType<typeof chatCredentialMutationLease>;
   getWebhookPublicBaseUrl: () => string | null;
   invalidateRuntime: (endpointId: string) => Promise<boolean>;
+  /** Provider-owned durable/resource settlement before destroying credentials. */
+  prepareCredentialRemoval?: (endpointId: string, authority: { responsibleUserId?: string | null; reauthorize(): Promise<void> }) => Promise<"settled" | "unhandled">;
   reconcileProviderResourceRows: ReturnType<typeof createChatResourceReconciliation>["reconcileProviderResourceRows"];
   reconcileDiscordCommands: ReturnType<typeof createDiscordCommands>["reconcileDiscordCommands"];
   runtimeFor: (endpoint: EndpointRow, input?: { requireDiscordOwnership?: boolean; waitForDiscordOwnership?: boolean }) => Promise<ChatEndpointRuntime>;
@@ -179,7 +181,7 @@ export function createChatConfiguration(db: Db, options: ChatConfigurationOption
     const endpoint = record.endpoint;
     const mutate = <T>(work: (tx: Parameters<Parameters<Db["transaction"]>[0]>[0]) => Promise<T>) => db.transaction(async tx => {
       const result = await work(tx);
-      if (endpoint.provider === "slack" && options.stageConfigurationEffects) {
+      if ((endpoint.provider === "slack" || endpoint.provider === "imessage-photon") && options.stageConfigurationEffects) {
         await options.stageConfigurationEffects(tx as unknown as Db, endpointId, actorUserId);
         await credentialLease.assertOwned(tx);
       }
@@ -457,14 +459,25 @@ export function createChatConfiguration(db: Db, options: ChatConfigurationOption
       return get(endpoint.id);
     }
     if (input.action === "remove") {
+      const settleRemovalRuntime = async (invalidateUnhandled = true) => {
+        await credentialLease.assertOwned();
+        const result = await options.prepareCredentialRemoval?.(endpoint.id, {
+          responsibleUserId: managementContext?.responsibleUserId ?? actorUserId,
+          reauthorize: async () => { await managementContext?.reauthorize(); await credentialLease.assertOwned(); },
+        });
+        await credentialLease.assertOwned();
+        if (result !== "settled" && invalidateUnhandled) await invalidateRuntime(endpoint.id).catch(() => undefined);
+      };
       if (endpoint.status === "archived") {
         if (endpoint.provider === "slack") await options.slackRegistration.cleanup(endpoint.id, credentialLease);
         // Archival is the durable ingress fence and intentionally commits
         // before secret-store cleanup. If that cleanup failed, a repeated
         // remove is the recovery operation; once refs are empty, retain the
         // normal already-removed conflict contract.
+        // Repeated removal is an authorized retry even when an earlier caller
+        // already removed refs; unresolved provider responsibility still joins.
+        await settleRemovalRuntime(record.credentialSecretRefs.length > 0);
         if (record.credentialSecretRefs.length > 0) {
-          await invalidateRuntime(endpoint.id).catch(() => undefined);
           if (endpoint.provider === "telegram") {
             await credentialLease.assertOwned();
             const action = await stageTelegramMaintenance(
@@ -549,7 +562,7 @@ export function createChatConfiguration(db: Db, options: ChatConfigurationOption
         await credentialLease.assertOwned(tx);
       });
       if (endpoint.provider === "slack") await options.slackRegistration.cleanup(endpoint.id, credentialLease);
-      await invalidateRuntime(endpoint.id).catch(() => undefined);
+      await settleRemovalRuntime();
       if (endpoint.provider === "telegram") {
         await credentialLease.assertOwned();
         const action = await stageTelegramMaintenance(
@@ -957,7 +970,7 @@ export function createChatConfiguration(db: Db, options: ChatConfigurationOption
     if (endpoint.provider === "speko") throw conflict("Speko uses the voice runtime");
     if (endpoint.provider === "imessage-photon") return {
       provider: "imessage-photon", userName,
-      intakeAfter: Date.parse(String((endpoint.setup as InternalSetupState).photonIntakeAfter ?? endpoint.setup.testStartedAt ?? endpoint.createdAt.toISOString())),
+      intakeAfter: photonIntakeAfter(endpoint),
       credentials: { allocation: credentials.allocation === "shared" ? "shared" : "dedicated", projectId: credentials.projectId, lineId: credentials.lineId, projectSecret: credentials.projectSecret, phoneNumber: endpoint.botExternalId! },
     };
     if (endpoint.provider === "slack")

@@ -1,6 +1,6 @@
 import { describe, it, expect, vi } from "vitest";
 import { Client, Server, ServerCredentials, credentials } from "@grpc/grpc-js";
-import { IMessageError, type LiveEvent } from "@photon-ai/advanced-imessage";
+import { IMessageError, TypedEventStream, type LiveEvent } from "@photon-ai/advanced-imessage";
 import type { AskUserQuestionsInteraction } from "@paperclipai/shared";
 import {
   PhotonCloudClient,
@@ -64,6 +64,7 @@ const question = (id = "interaction"): AskUserQuestionsInteraction =>
     },
   }) as AskUserQuestionsInteraction;
 const guard = async () => {};
+const recordedFailure = async (): Promise<{ kind: "recorded" }> => ({ kind: "recorded" });
 
 describe("Photon Cloud and fixed line identity", () => {
   it("uses Basic project auth, verifies dedicated allocation, and never exposes tokens", async () => {
@@ -302,6 +303,243 @@ describe("Photon publication receipts", () => {
 });
 
 describe("Photon durable event recovery", () => {
+  it("replays old membership controls while skipping old useful input and preserving its cursor", async () => {
+    const f = photonFixture();
+    const cutoff = Date.now();
+    const membership = (sequence: number, type: "participantRemoved" | "participantAdded"): LiveEvent => ({
+      type: "group.changed",
+      chatGuid: "iMessage;+;membership",
+      sequence,
+      occurredAt: new Date(cutoff - 1),
+      isFromMe: false,
+      change: { type, participant: { address: "+15555550100", service: "iMessage" } },
+    });
+    const admit = vi.fn();
+    const receiver = new PhotonReceiver({
+      client: f.adapter.client,
+      state: f.state,
+      lineId: "line",
+      intakeAfter: cutoff,
+      assertOwned: guard,
+      admit,
+      failure: recordedFailure,
+      catchUp: () => stream([
+        { ...photonEvent(10), occurredAt: new Date(cutoff - 1) },
+        membership(11, "participantRemoved"),
+        membership(12, "participantAdded"),
+        { ...photonEvent(13), occurredAt: new Date(cutoff) },
+        { type: "catchup.complete", headSequence: 13 },
+      ]),
+    });
+    try {
+      await receiver.catchUp();
+      expect(admit.mock.calls.map(([event]) => event.sequence), "membership controls must survive the useful-input cutoff").toEqual([11, 12, 13]);
+      expect(await f.state.read("checkpoint")).toMatchObject({ sequence: 13 });
+      await receiver.catchUp();
+      expect(admit).toHaveBeenCalledTimes(3);
+      expect(await f.state.read("checkpoint")).toMatchObject({ sequence: 13 });
+      const invalid = new PhotonReceiver({
+        client: f.adapter.client, state: f.state, lineId: "line", intakeAfter: cutoff,
+        assertOwned: guard, admit, failure: recordedFailure,
+        catchUp: () => stream([
+          { ...membership(14, "participantAdded"), occurredAt: new Date(NaN) },
+          { type: "catchup.complete", headSequence: 14 },
+        ]),
+      });
+      try { await expect(invalid.catchUp()).rejects.toMatchObject({ code: "invalid_response" }); }
+      finally { await invalid.close(); }
+      expect(admit).toHaveBeenCalledTimes(3);
+      expect(await f.state.read("checkpoint")).toMatchObject({ sequence: 13 });
+    } finally { await receiver.close(); }
+  });
+  it("retries the original failure on the existing reader cadence without restarting stopped intake", async () => {
+    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+    const f = photonFixture(), source = new Error("controlled catch-up failure"), reporting = new Error("controlled SQL failure");
+    let releaseLive!: () => void, attempted!: () => void;
+    const live = new Promise<void>(resolve => { releaseLive = resolve; });
+    const reported = new Promise<void>(resolve => { attempted = resolve; });
+    for (const resource of [f.client.messages, f.client.chats, f.client.groups, f.client.polls])
+      resource.subscribeEvents.mockImplementation(() => new TypedEventStream((async function* () { await live; })(), async () => { releaseLive(); }));
+    const failure = vi.fn<(error: unknown) => Promise<void | { kind: "recorded" | "obsolete" }>>(async () => { attempted(); throw reporting; });
+    const catchUp = vi.fn(() => new TypedEventStream((async function* () { throw source; })()));
+    const admit = vi.fn();
+    const receiver = new PhotonReceiver({ client: f.adapter.client, state: f.state, lineId: "line", intakeAfter: 0,
+      assertOwned: guard, admit, failure, catchUp });
+    try {
+      receiver.start(); await reported; await new Promise<void>(resolve => setImmediate(resolve));
+      expect(failure).toHaveBeenCalledTimes(1);
+      failure.mockResolvedValue({ kind: "obsolete" });
+      await vi.advanceTimersByTimeAsync(15_000);
+      expect(failure, "stopped intake must retain the existing reader's reporting retry").toHaveBeenCalledTimes(2);
+      failure.mockResolvedValue(undefined);
+      await vi.advanceTimersByTimeAsync(15_000);
+      expect(failure).toHaveBeenCalledTimes(3);
+      expect(catchUp).toHaveBeenCalledTimes(1); expect(admit).not.toHaveBeenCalled();
+      expect(await f.state.read("checkpoint")).toBeNull();
+      failure.mockResolvedValue({ kind: "recorded" });
+      await vi.advanceTimersByTimeAsync(15_000);
+      expect(failure).toHaveBeenCalledTimes(4);
+      expect(failure.mock.calls.every(([error]) => error === source)).toBe(true);
+      expect(vi.getTimerCount()).toBe(0);
+      await vi.advanceTimersByTimeAsync(30_000);
+      expect(failure).toHaveBeenCalledTimes(4); expect(catchUp).toHaveBeenCalledTimes(1);
+      const closed = receiver.close(); expect(receiver.close()).toBe(closed); await closed;
+      expect(f.client.close).toHaveBeenCalledTimes(1);
+    } finally {
+      failure.mockResolvedValue({ kind: "recorded" });
+      try { await receiver.close(); } finally { vi.useRealTimers(); }
+    }
+  });
+
+  it("accepts retired-local responsibility only after the same close joins every owned resource", async () => {
+    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+    const f = photonFixture(), source = new Error("controlled stopped intake"), lostClose = new Error("controlled close reply lost");
+    let reported!: () => void, releaseLive!: () => void, releaseClose!: () => void;
+    const report = new Promise<void>(resolve => { reported = resolve; });
+    const live = new Promise<void>(resolve => { releaseLive = resolve; });
+    const closeGate = new Promise<void>(resolve => { releaseClose = resolve; });
+    const closes: Array<ReturnType<typeof vi.fn>> = [];
+    for (const resource of [f.client.messages, f.client.chats, f.client.groups, f.client.polls]) {
+      const close = vi.fn(async () => { await closeGate; releaseLive(); }); closes.push(close);
+      resource.subscribeEvents.mockImplementation(() => new TypedEventStream((async function* () { await live; })(), close));
+    }
+    const failure = vi.fn<(error: unknown, cleanup?: { localClosed: true }) => Promise<{ kind: "recorded" | "retired-local" }>>(async (error, cleanup) => {
+      expect(error).toBe(source); reported();
+      return { kind: "retired-local" as const };
+    });
+    const catchUp = vi.fn(() => new TypedEventStream((async function* () { throw source; })()));
+    const receiver = new PhotonReceiver({ client: f.adapter.client, state: f.state, lineId: "line", intakeAfter: 0,
+      assertOwned: guard, admit: guard, failure, catchUp });
+    try {
+      receiver.start(); await report; await new Promise<void>(resolve => setImmediate(resolve));
+      await vi.advanceTimersByTimeAsync(15_000);
+      expect(failure).toHaveBeenCalledTimes(2); // A retirement receipt is not current reporting authority.
+      expect(failure.mock.calls.every(([, cleanup]) => cleanup === undefined)).toBe(true);
+      f.client.close.mockRejectedValueOnce(lostClose);
+      const firstClose = receiver.close();
+      await new Promise<void>(resolve => setImmediate(resolve));
+      expect(failure).toHaveBeenCalledTimes(2); // Held streams still own their consumers.
+      releaseClose();
+      await expect(firstClose).rejects.toThrow("shutdown remains unconfirmed");
+      expect(failure.mock.calls.every(([, cleanup]) => cleanup === undefined)).toBe(true);
+      const retry = receiver.close(); expect(receiver.close()).toBe(retry); await retry;
+      expect(failure.mock.calls.at(-1)).toEqual([source, { localClosed: true }]);
+      expect(closes.every(close => close.mock.calls.length > 0)).toBe(true);
+      expect(f.client.close).toHaveBeenCalledTimes(2);
+      expect(catchUp).toHaveBeenCalledTimes(1);
+      expect(await f.state.read("checkpoint")).toBeNull();
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      releaseClose(); releaseLive();
+      // Unit cleanup records responsibility explicitly; the SQL control below
+      // uses only the actual normal owner callback, never this controlled port.
+      failure.mockImplementation(async () => ({ kind: "recorded" as const }));
+      try { await receiver.close(); } finally { vi.useRealTimers(); }
+    }
+  });
+
+  it("initial obsolete failure receipt cannot certify stopped responsibility", async () => {
+    const f = photonFixture(); let attempted!: () => void, releaseLive!: () => void;
+    const reported = new Promise<void>(resolve => { attempted = resolve; });
+    const live = new Promise<void>(resolve => { releaseLive = resolve; });
+    for (const resource of [f.client.messages, f.client.chats, f.client.groups, f.client.polls])
+      resource.subscribeEvents.mockImplementation(() => new TypedEventStream((async function* () { await live; })(), async () => { releaseLive(); }));
+    const failure = vi.fn<() => Promise<void | { kind: "recorded" | "obsolete" }>>(async () => { attempted(); return { kind: "obsolete" }; });
+    const receiver = new PhotonReceiver({ client: f.adapter.client, state: f.state, lineId: "line", intakeAfter: 0,
+      assertOwned: guard, admit: guard, failure, catchUp: () => new TypedEventStream((async function* () { throw new Error("controlled CatchUp failure"); })()) });
+    try {
+      receiver.start(); await reported; await new Promise<void>(resolve => setImmediate(resolve));
+      await expect(receiver.close()).rejects.toThrow("shutdown remains unconfirmed");
+      expect(await f.state.read("checkpoint")).toBeNull();
+      failure.mockResolvedValue({ kind: "recorded" }); await receiver.close();
+    } finally { failure.mockResolvedValue({ kind: "recorded" }); await receiver.close(); }
+  });
+
+  it("retains completed request reporting debt until the same owner durably records it on close retry", async () => {
+    const f = photonFixture(), source = new Error("controlled catch-up failure"), reporting = new Error("controlled attention persistence failure");
+    let attempted!: () => void;
+    const reported = new Promise<void>(resolve => { attempted = resolve; });
+    // Live subscriptions stay open; only the normal CatchUp request fails.
+    let releaseLive!: () => void;
+    const live = new Promise<void>(resolve => { releaseLive = resolve; });
+    for (const resource of [f.client.messages, f.client.chats, f.client.groups, f.client.polls])
+      resource.subscribeEvents.mockImplementation(() => new TypedEventStream((async function* () { await live; })(), async () => { releaseLive(); }));
+    const failure = vi.fn<() => Promise<void | { kind: "recorded" | "obsolete" }>>(async () => { attempted(); throw reporting; });
+    const receiver = new PhotonReceiver({ client: f.adapter.client, state: f.state, lineId: "line", intakeAfter: 0,
+      assertOwned: guard, admit: guard, failure, catchUp: () => new TypedEventStream((async function* () { throw source; })()) });
+    try {
+      receiver.start(); await reported;
+      // The failure callback and request have completed BEFORE shutdown starts.
+      await new Promise<void>(resolve => setImmediate(resolve));
+      expect(failure).toHaveBeenCalledTimes(1);
+      await expect(receiver.close()).rejects.toThrow("shutdown remains unconfirmed");
+      expect(failure).toHaveBeenCalledTimes(2);
+      failure.mockImplementation(async () => ({ kind: "recorded" as const }));
+      const repaired = receiver.close(); expect(receiver.close()).toBe(repaired);
+      await repaired; expect(receiver.close()).toBe(repaired);
+      expect(failure).toHaveBeenCalledTimes(3);
+      expect(await f.state.read("checkpoint")).toBeNull();
+    } finally {
+      failure.mockImplementation(async () => ({ kind: "recorded" as const }));
+      await receiver.close();
+    }
+  });
+  it("does not treat a stale or void reporting retry as current durable responsibility", async () => {
+    const f = photonFixture(); let attempted!: () => void;
+    const reported = new Promise<void>(resolve => { attempted = resolve; });
+    // Live subscriptions stay open; only the normal CatchUp request fails.
+    let releaseLive!: () => void;
+    const live = new Promise<void>(resolve => { releaseLive = resolve; });
+    for (const resource of [f.client.messages, f.client.chats, f.client.groups, f.client.polls])
+      resource.subscribeEvents.mockImplementation(() => new TypedEventStream((async function* () { await live; })(), async () => { releaseLive(); }));
+    const failure = vi.fn<() => Promise<void | { kind: "recorded" | "obsolete" }>>(async () => { attempted(); throw new Error("controlled persistence failure"); });
+    const receiver = new PhotonReceiver({ client: f.adapter.client, state: f.state, lineId: "line", intakeAfter: 0,
+      assertOwned: guard, admit: guard, failure, catchUp: () => new TypedEventStream((async function* () { throw new Error("controlled catch-up failure"); })()) });
+    try {
+      receiver.start(); await reported; await new Promise<void>(resolve => setImmediate(resolve));
+      failure.mockResolvedValue({ kind: "obsolete" });
+      await expect(receiver.close()).rejects.toThrow("shutdown remains unconfirmed");
+      failure.mockResolvedValue(undefined);
+      await expect(receiver.close()).rejects.toThrow("shutdown remains unconfirmed");
+    } finally {
+      failure.mockResolvedValue({ kind: "recorded" }); await receiver.close();
+    }
+  });
+  it("joins in-flight durable admission before close completes and never admits new work after stop", async () => {
+    const f = photonFixture(); let release!: () => void, entered!: () => void, finished = false;
+    const pending = new Promise<void>(resolve => { release = resolve; }), admitting = new Promise<void>(resolve => { entered = resolve; });
+    const admit = vi.fn(async () => { entered(); await pending; });
+    const receiver = new PhotonReceiver({ client: f.adapter.client, state: f.state, lineId: "line", intakeAfter: 0,
+      assertOwned: guard, admit, failure: recordedFailure, catchUp: () => stream([photonEvent(1), { type: "catchup.complete", headSequence: 1 }]) });
+    receiver.start(); await admitting;
+    const closing = receiver.close(); expect(receiver.close()).toBe(closing);
+    void closing.then(() => { finished = true; }); await Promise.resolve(); expect(finished).toBe(false);
+    release(); await closing; expect(finished).toBe(true); expect(admit).toHaveBeenCalledTimes(1);
+    await receiver.catchUp(); expect(admit).toHaveBeenCalledTimes(1); expect(f.client.close).toHaveBeenCalledTimes(1);
+    expect(await f.state.read("checkpoint")).toMatchObject({ sequence: 1 });
+  });
+  it("retries the same client close after failure and memoizes only successful joined shutdown", async () => {
+    const f = photonFixture(), original = new Error("controlled actual client close failure");
+    f.client.close.mockRejectedValueOnce(original);
+    const receiver = new PhotonReceiver({ client: f.adapter.client, state: f.state, lineId: "line", intakeAfter: 0,
+      assertOwned: guard, admit: guard, failure: recordedFailure });
+    const first = receiver.close(); expect(receiver.close()).toBe(first);
+    await expect(first).rejects.toMatchObject({ errors: [original] });
+    const second = receiver.close(); expect(second).not.toBe(first); expect(receiver.close()).toBe(second);
+    await second; expect(receiver.close()).toBe(second); expect(f.client.close).toHaveBeenCalledTimes(2);
+  });
+  it("never converts an unresolved SDK stream cleanup rejection into a successful repeated close", async () => {
+    const f = photonFixture(), original = new Error("controlled actual stream cleanup failure"); let unblock!: () => void;
+    const blocked = new Promise<void>(resolve => { unblock = resolve; });
+    f.client.messages.subscribeEvents.mockReturnValue(new TypedEventStream((async function* () { await blocked; })(), async () => { unblock(); throw original; }));
+    const receiver = new PhotonReceiver({ client: f.adapter.client, state: f.state, lineId: "line", intakeAfter: 0,
+      assertOwned: guard, admit: guard, failure: recordedFailure });
+    receiver.start();
+    await expect(receiver.close()).rejects.toMatchObject({ errors: expect.arrayContaining([original]) });
+    await expect(receiver.close()).rejects.toMatchObject({ errors: expect.arrayContaining([original]) });
+    expect(f.client.close).toHaveBeenCalledTimes(2);
+  });
+
   it("records preceding events, deduplicates, and does not checkpoint an unadmitted event", async () => {
     const f = photonFixture();
     const events = [photonEvent(1), photonEvent(2)];
@@ -316,7 +554,7 @@ describe("Photon durable event recovery", () => {
       intakeAfter: 0,
       assertOwned: guard,
       admit: admitted,
-      failure: guard,
+      failure: recordedFailure,
       catchUp: () =>
         stream([...events, { type: "catchup.complete", headSequence: 2 }]),
     });
@@ -339,7 +577,7 @@ describe("Photon durable event recovery", () => {
       intakeAfter: Date.now() + 1000,
       assertOwned: guard,
       admit,
-      failure: guard,
+      failure: recordedFailure,
       catchUp: () =>
         stream([
           photonEvent(10),
@@ -357,7 +595,7 @@ describe("Photon durable event recovery", () => {
       intakeAfter: 0,
       assertOwned: guard,
       admit,
-      failure: guard,
+      failure: recordedFailure,
       catchUp: () =>
         stream([
           photonEvent(13),
@@ -374,7 +612,7 @@ describe("Photon durable event recovery", () => {
         throw new Error("lease lost");
       },
       admit,
-      failure: guard,
+      failure: recordedFailure,
     });
     await expect(lost.catchUp()).rejects.toThrow("lease lost");
     expect(admit).not.toHaveBeenCalled();
@@ -384,7 +622,7 @@ describe("Photon durable event recovery", () => {
     const admit = vi.fn(guard);
     await f.state.update("checkpoint", () => ({schema:1, lineId:"line", sequence:0}));
     let events: any[] = [photonEvent(1_008_648_034), {type:"catchup.complete",headSequence:1_008_648_034}];
-    const receiver = new PhotonReceiver({client:f.adapter.client,state:f.state,lineId:"line",allocation:"shared",intakeAfter:0,assertOwned:guard,admit,failure:guard,catchUp:()=>stream(events)});
+    const receiver = new PhotonReceiver({client:f.adapter.client,state:f.state,lineId:"line",allocation:"shared",intakeAfter:0,assertOwned:guard,admit,failure:recordedFailure,catchUp:()=>stream(events)});
     await receiver.catchUp();
     expect(admit).toHaveBeenCalledTimes(1);
     expect(await f.state.read("checkpoint")).toMatchObject({sequence:1_008_648_034});
@@ -443,7 +681,7 @@ describe("Photon durable event recovery", () => {
         { type: "catchup.complete", headSequence: 3 },
       ]);
     } finally {
-      transport.close();
+      await transport.close();
       server.forceShutdown();
     }
   });

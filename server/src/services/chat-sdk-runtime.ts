@@ -2,7 +2,7 @@ import { isPassiveSlackAction, normalizeSlackSelectionAction, slackSelectionValu
 import { PhotonChatAdapter, parsePhotonThreadId } from "./photon/adapter.js";
 import { PhotonLineAuthentication } from "./photon/cloud.js";
 import { PhotonState } from "./photon/state.js";
-import { PhotonReceiver } from "./photon/receiver.js";
+import { PhotonReceiver, type PhotonFailureResponsibility, type PhotonFailureCleanup } from "./photon/receiver.js";
 import { photonAttachmentLocator, photonAttachmentLocatorSchema, downloadPhotonAttachment, type PhotonAttachmentLocator } from "./photon/attachments.js";
 import type { LiveEvent as PhotonEvent } from "@photon-ai/advanced-imessage";
 import {
@@ -469,10 +469,16 @@ export interface DiscordGatewayCallbackEvent extends ChatSdkCallbackEvent<Discor
  * Chat SDK event escape hatches; callers must never publish them directly.
  */
 export interface ChatSdkRuntimeCallbacks {
+  /** Photon leaf validates committed external custody. Absence keeps local intake. */
+  onPhotonUsefulClientDebt?(): Promise<void>;
+  /** Exact sender allocation receipt, after all normal physical joins succeed. */
+  onPhotonSenderRuntimeClosed?(): Promise<void>;
+  onPhotonIntakePlacement?(): Promise<{ kind: "local" } | { kind: "cloud"; bindingId: string }>;
+
   onPhotonEvent?(event: PhotonEvent): Promise<void>;
   onPhotonAssertOwned?(activeThreadId?: string): Promise<void>;
   onPhotonCheckpoint?(sequence: number): Promise<void>;
-  onPhotonFailure?(error: unknown): Promise<void>;
+  onPhotonFailure?(error: unknown, cleanup?: PhotonFailureCleanup): Promise<void | PhotonFailureResponsibility>;
   onMessage(event: ChatSdkMessageCallbackEvent): Promise<void> | void;
   onTelegramGenerationStopped?(
     event: ChatSdkCallbackEvent<TelegramGenerationStoppedProof>,
@@ -522,6 +528,8 @@ export interface ChatSdkRuntimeCallbacks {
 
 export interface CreateChatSdkEndpointRuntimeOptions {
   callbacks: ChatSdkRuntimeCallbacks;
+  /** Invoked only if registry replacement fails before constructor entry. */
+  onConstructionAborted?(): Promise<void>;
   companyId: string;
   concurrency?: ConcurrencyConfig | ConcurrencyStrategy;
   /** Start Discord's long-lived Gateway listener for the elected owner only. */
@@ -2295,17 +2303,24 @@ export class ChatSdkEndpointRuntime {
   async initialize(): Promise<void> {
     await this.initializeChat();
     this.assertNotRetired();
-    if (this.adapter instanceof PhotonChatAdapter && this.discordGatewayEnabled && !this.photonReceiver) {
+    if (this.adapter instanceof PhotonChatAdapter && !this.photonReceiver) {
       const options = this.runtimeOptions;
       const config = options.providerConfig as ResolvedPhotonChatConfig;
       if (!options.callbacks.onPhotonCheckpoint || !options.callbacks.onPhotonAssertOwned || !options.callbacks.onPhotonEvent || !options.callbacks.onPhotonFailure) throw new Error("Photon receiver requires durable admission callbacks");
       this.adapter.typingGuard = async (activeThreadId) => { this.assertNotRetired(); await options.callbacks.onPhotonAssertOwned!(activeThreadId); };
+      const placement = await options.callbacks.onPhotonIntakePlacement?.() ?? { kind: "local" };
+      if (placement.kind === "cloud") {
+        this.adapter.onUsefulClientDebt = options.callbacks.onPhotonUsefulClientDebt;
+        await this.adapter.useExternalIntake();
+      }
+      if (placement.kind === "local" && this.discordGatewayEnabled) {
       this.photonReceiver = new PhotonReceiver({ client: this.adapter.client, state: this.adapter.state,
         lineId: config.credentials.lineId, intakeAfter: config.intakeAfter, allocation: config.credentials.allocation,
         catchUp: (sequence) => (this.adapter as PhotonChatAdapter).recoveryStream(sequence),
         assertOwned: async () => { this.assertNotRetired(); await (this.adapter as PhotonChatAdapter).authentication.token(); await options.callbacks.onPhotonAssertOwned!(); },
         commitCheckpoint: options.callbacks.onPhotonCheckpoint, admit: options.callbacks.onPhotonEvent, failure: options.callbacks.onPhotonFailure });
       this.photonReceiver.start();
+      }
     }
     if (this.provider === "discord" && this.discordGatewayEnabled) {
       this.startDiscordGateway();
@@ -2938,7 +2953,7 @@ export class ChatSdkEndpointRuntime {
       const metadata = isRecord(descriptor.attachment) ? durableAttachmentMetadata(descriptor.attachment as unknown as Attachment) : null;
       if (!parsed.success || !metadata || parsed.data.lineId !== thread.lineId || parsed.data.chatGuid !== thread.chatGuid || parsed.data.messageGuid !== source.messageId) return null;
       const adapter = this.adapter;
-      return { ...metadata, fetchData: () => downloadPhotonAttachment(adapter.client, thread.lineId, parsed.data, adapter.authentication.identity.allocation) };
+      return { ...metadata, fetchData: () => adapter.withClient(client => downloadPhotonAttachment(client, thread.lineId, parsed.data, adapter.authentication.identity.allocation)) };
     }
     if (
       this.provider === "microsoft-teams" &&
@@ -3152,8 +3167,19 @@ export class ChatSdkEndpointRuntime {
       await this.initialization?.catch(() => undefined);
       await this.discordGatewayTask?.catch(() => undefined);
       this.discordGatewayAbort = null;
-      await this.photonReceiver?.close();
-      await this.chat.shutdown();
+      const failures: unknown[] = [];
+      try { await this.photonReceiver?.close(); } catch (error) { failures.push(error); }
+      // Receiver admission has joined (including its failure path) before the
+      // independently owned normal SDK/adapter teardown is attempted.
+      try { await this.chat.shutdown(); } catch (error) { failures.push(error); }
+      if (this.adapter instanceof PhotonChatAdapter) {
+        // Chat4.39 logs/swallow disconnect rejections. Observe the SAME normal
+        // adapter attempt, never an implicit second physical-close retry.
+        try { await this.adapter.joinDisconnectAttempt(); } catch (error) { failures.push(error); }
+      }
+      if (failures.length === 1) throw failures[0];
+      if (failures.length) throw new AggregateError(failures, "Chat SDK runtime shutdown remains incomplete");
+      if (this.adapter instanceof PhotonChatAdapter) await this.runtimeOptions.callbacks.onPhotonSenderRuntimeClosed?.();
       this.shutdownCompleted = true;
     })();
     this.shutdownTask = task;
@@ -3184,6 +3210,51 @@ export class ChatSdkEndpointNotRegisteredError extends Error {
 }
 
 /** Process-local lifecycle registry; durable state remains in Paperclip persistence. */
+/** Pending receipt ownership only; each registry keeps its existing lifecycle queue. */
+export class ChatRuntimeConstructionCleanup {
+  private readonly pending = new Map<string, Set<() => Promise<void>>>();
+
+  has(endpointId?: string): boolean {
+    return endpointId === undefined ? this.pending.size > 0 : this.pending.has(endpointId);
+  }
+
+  endpointIds(): Iterable<string> { return this.pending.keys(); }
+
+  retain(endpointId: string, cleanup: () => Promise<void>): void {
+    const owners = this.pending.get(endpointId) ?? new Set<() => Promise<void>>();
+    owners.add(cleanup);
+    this.pending.set(endpointId, owners);
+  }
+
+  private completed(endpointId: string, cleanup: () => Promise<void>): void {
+    const owners = this.pending.get(endpointId);
+    if (!owners) return;
+    owners.delete(cleanup);
+    if (!owners.size && this.pending.get(endpointId) === owners) this.pending.delete(endpointId);
+  }
+
+  async join(endpointId: string): Promise<void> {
+    const owners = this.pending.get(endpointId);
+    if (!owners) return;
+    const errors: unknown[] = [];
+    for (const cleanup of [...owners]) {
+      try { await cleanup(); this.completed(endpointId, cleanup); }
+      catch (error) { errors.push(error); }
+    }
+    if (errors.length === 1) throw errors[0];
+    if (errors.length) throw new AggregateError(errors, "Chat never-created resource cleanup remains owned");
+  }
+
+  async abort(endpointId: string, cleanup: (() => Promise<void>) | undefined, primary: unknown): Promise<never> {
+    if (cleanup) {
+      this.retain(endpointId, cleanup);
+      try { await cleanup(); this.completed(endpointId, cleanup); }
+      catch (error) { throw new AggregateError([primary, error], "Chat runtime construction abort cleanup failed"); }
+    }
+    throw primary;
+  }
+}
+
 export class ChatSdkRuntime {
   private readonly endpoints = new Map<string, ChatSdkEndpointRuntime>();
   private readonly retiringEndpoints = new Map<
@@ -3191,6 +3262,7 @@ export class ChatSdkRuntime {
     ChatSdkEndpointRuntime
   >();
   private readonly lifecycleTails = new Map<string, Promise<void>>();
+  private readonly constructionCleanup = new ChatRuntimeConstructionCleanup();
   private readonly replacementGenerations = new Map<string, number>();
   private shuttingDown = false;
 
@@ -3204,9 +3276,14 @@ export class ChatSdkRuntime {
     return [...this.endpoints.values()];
   }
 
+  /** Exact normal retirement ownership, never inferred from get() absence. */
+  isRetiringEndpoint(endpointId: string, expected: object): boolean {
+    return !this.endpoints.has(endpointId) && this.retiringEndpoints.get(endpointId) === expected;
+  }
+
   /** Retirement failures retain their owner even after get/list hide it. */
   hasUnsettledLifecycle(): boolean {
-    return this.retiringEndpoints.size > 0 || this.lifecycleTails.size > 0;
+    return this.retiringEndpoints.size > 0 || this.constructionCleanup.has() || this.lifecycleTails.size > 0;
   }
 
   private enqueueLifecycle<T>(
@@ -3231,15 +3308,32 @@ export class ChatSdkRuntime {
     return result;
   }
 
+  /** Transfer a captured never-created cleanup responsibility before returning its failure. */
+  retainPendingConstructionCleanup(endpointId: string, cleanup: () => Promise<void>): void {
+    this.constructionCleanup.retain(endpointId, cleanup);
+  }
+
+  /** Join only never-created cleanup; preserve active Runtime/consumer ownership. */
+  async joinPendingConstructionCleanup(endpointId: string): Promise<void> {
+    await this.enqueueLifecycle(endpointId, () => this.constructionCleanup.join(endpointId));
+  }
+
   private async retireEndpoint(endpointId: string): Promise<boolean> {
-    const previous =
-      this.endpoints.get(endpointId) ?? this.retiringEndpoints.get(endpointId);
-    if (!previous) return false;
-    this.endpoints.delete(endpointId);
-    this.retiringEndpoints.set(endpointId, previous);
-    await previous.shutdown();
-    this.retiringEndpoints.delete(endpointId);
-    return true;
+    const previous = this.endpoints.get(endpointId) ?? this.retiringEndpoints.get(endpointId);
+    const hadAbort = this.constructionCleanup.has(endpointId), errors: unknown[] = [];
+    if (previous) {
+      this.endpoints.delete(endpointId);
+      this.retiringEndpoints.set(endpointId, previous);
+      try { await previous.shutdown(); this.retiringEndpoints.delete(endpointId); }
+      catch (error) { errors.push(error); }
+    }
+    // Independent never-created receipt settlement must still be attempted when
+    // a predecessor's real shutdown fails. Both owners remain retryable.
+    try { await this.constructionCleanup.join(endpointId); }
+    catch (error) { errors.push(error); }
+    if (errors.length === 1) throw errors[0];
+    if (errors.length) throw new AggregateError(errors, "Chat runtime retirement and construction cleanup failed");
+    return Boolean(previous || hadAbort);
   }
 
   private nextReplacementGeneration(endpointId: string): number {
@@ -3263,17 +3357,25 @@ export class ChatSdkRuntime {
   async replaceEndpoint(
     options: CreateChatSdkEndpointRuntimeOptions,
   ): Promise<ChatSdkEndpointRuntime> {
-    if (this.shuttingDown) throw new Error("Chat SDK runtime is shutting down");
+    const abort = (primary: unknown): Promise<never> => this.constructionCleanup.abort(options.endpointId, options.onConstructionAborted, primary);
+    if (this.shuttingDown) {
+      return await this.enqueueLifecycle(options.endpointId, () => abort(new Error("Chat SDK runtime is shutting down")));
+    }
     const generation = this.nextReplacementGeneration(options.endpointId);
     return await this.enqueueLifecycle(options.endpointId, async () => {
-      this.assertReplacementCurrent(options.endpointId, generation);
-      await this.retireEndpoint(options.endpointId);
-      this.assertReplacementCurrent(options.endpointId, generation);
-      const next = createChatSdkEndpointRuntime(options);
-      this.endpoints.set(options.endpointId, next);
-      // The service installs callback context before initialize() starts the
-      // Discord gateway. Preserve that caller-owned initialization boundary.
-      return next;
+      let constructionStarted = false;
+      try {
+        this.assertReplacementCurrent(options.endpointId, generation);
+        await this.retireEndpoint(options.endpointId);
+        this.assertReplacementCurrent(options.endpointId, generation);
+        constructionStarted = true;
+        const next = createChatSdkEndpointRuntime(options);
+        this.endpoints.set(options.endpointId, next);
+        return next;
+      } catch (primary) {
+        if (!constructionStarted) return await abort(primary);
+        throw primary;
+      }
     });
   }
 
@@ -3301,6 +3403,7 @@ export class ChatSdkRuntime {
     const endpointIds = new Set([
       ...this.endpoints.keys(),
       ...this.retiringEndpoints.keys(),
+      ...this.constructionCleanup.endpointIds(),
       ...this.lifecycleTails.keys(),
     ]);
     const results = await Promise.allSettled(

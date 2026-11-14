@@ -1,3 +1,4 @@
+import { preparePhotonCompanyDeletion } from "./chat-channels/imessage-photon/company-retirement.js";
 import { mcpCompanyDeletion } from "./public-mcp/company-deletion.js";
 import { notifyStatusCardEvaluation } from "./status-card-notifications.js";
 import { notifyExternalObjectRefresh } from "./external-object-refresh-notifications.js";
@@ -63,7 +64,8 @@ import {
   routines,
 } from "@paperclipai/db";
 
-export async function deleteCompany(db: Db, id: string) {
+export async function deleteCompany(db: Db, id: string, actorUserId?: string | null) {
+  await preparePhotonCompanyDeletion(db, id, actorUserId);
   const tailscaleDeletion = createTailscaleCompanyDeletion();
   const lifecycle = createAgentLifecycle(db);
   const companyAgents = await db.select({ id: agents.id }).from(agents).where(eq(agents.companyId, id));

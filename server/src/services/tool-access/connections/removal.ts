@@ -1,3 +1,4 @@
+import { withPhotonConnectionRetirement } from "../../chat-channels/imessage-photon/company-retirement.js";
 import { notifyGitHubCredentialChange } from "../../github-connection-notifications.js";
 import { notifyVoiceChange } from "../../voice/voice-recovery-notifications.js";
 import { notifyChatEndpointWork } from "../../chat-work-notifications.js";
@@ -235,6 +236,9 @@ async function removeConnection(
   ): Promise<ToolConnectionRemovalResult> {
     await actor?.managementContext?.reauthorize();
     const connection = await getConnectionRow(connectionId, companyId);
+    const retirement = await withPhotonConnectionRetirement(db, connection.id, connection.companyId,
+      () => removeConnectionUnlocked(connectionId, companyId, actor), connectionActorUserId(actor), actor?.managementContext);
+    if (retirement.handled) return retirement.value;
     const [endpoint] = await db.select().from(chatEndpoints).where(and(eq(chatEndpoints.connectionId, connection.id), eq(chatEndpoints.companyId, connection.companyId), eq(chatEndpoints.provider, "slack")));
     if (!endpoint) return removeConnectionUnlocked(connectionId, companyId, actor);
     return chatCredentialMutationLease(db)(endpoint, async lease => {

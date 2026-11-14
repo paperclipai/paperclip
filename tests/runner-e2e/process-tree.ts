@@ -189,23 +189,24 @@ export async function readProcessTable(
     let settled = false;
     let truncated = false;
     let errorOutput = "";
-    const finish = (value: ProcessObservation[] | null, reason?: string) => {
+    const finish = (value: ProcessObservation[] | null, reason?: string, diagnostic?: { reason: "timeout" | "output_limit" | "spawn_error" | "nonzero_exit"; code?: string | number | null; signal?: NodeJS.Signals | null }) => {
       if (settled) return;
       settled = true;
       clearTimeout(inspectionTimeout);
+      if (diagnostic) console.error("[runner-process-inspector] " + JSON.stringify({ reason: diagnostic.reason, pid: inspector.pid ?? null, code: diagnostic.code ?? null, signal: diagnostic.signal ?? null, outputLength: output.length }));
       if (value === null && reason) onFailure?.(reason);
       resolve(value);
     };
     const inspectionTimeout = setTimeout(() => {
       inspector.kill("SIGKILL");
-      finish(null, "ps did not finish within 5000ms");
+      finish(null, "ps did not finish within 5000ms", { reason: "timeout" });
     }, 5_000);
     inspectionTimeout.unref();
     inspector.stdout?.setEncoding("utf8").on("data", (chunk: string) => {
       if (output.length + chunk.length > 1024 * 1024) {
         truncated = true;
         inspector.kill("SIGKILL");
-        finish(null, "ps output exceeded 1 MiB");
+        finish(null, "ps output exceeded 1 MiB", { reason: "output_limit" });
         return;
       }
       output += chunk;
@@ -213,10 +214,12 @@ export async function readProcessTable(
     inspector.stderr?.setEncoding("utf8").on("data", (chunk: string) => {
       errorOutput = (errorOutput + chunk).slice(-512);
     });
-    inspector.once("error", (error) => finish(null, `ps could not start: ${error.message}`));
+    inspector.once("error", (error: NodeJS.ErrnoException) => finish(null, `ps could not start: ${error.message}`,
+      { reason: "spawn_error", code: ["EAGAIN", "EMFILE", "ENFILE", "ENOENT", "EACCES", "EPERM"].includes(error.code ?? "") ? error.code : "other" }));
     inspector.once("close", (code, signal) => {
       if (code !== 0 || truncated) {
-        finish(null, `ps exited code=${code} signal=${signal}${errorOutput.trim() ? `: ${errorOutput.trim()}` : ""}`);
+        finish(null, `ps exited code=${code} signal=${signal}${errorOutput.trim() ? `: ${errorOutput.trim()}` : ""}`,
+          { reason: truncated ? "output_limit" : "nonzero_exit", code, signal });
         return;
       }
       const observations = output

@@ -1,3 +1,4 @@
+import { lockPhotonCompanyMutation } from "./imessage-photon/company-retirement.js";
 import { notifyChatCompanyAuthorityChange } from "../chat-run-milestone-notifications.js";
 import { chatConnectionTransport } from "./provider-catalog.js";
 import type { ConnectionManagementContext } from "../connection-management.js";
@@ -283,6 +284,7 @@ function providerSetupState(
     ).slice(0, 145);
     await managementContext?.reauthorize();
       await db.transaction(async (tx) => {
+      await lockPhotonCompanyMutation(tx, companyId, input.provider);
       if (input.applicationId) {
         const application = await tx
           .select({

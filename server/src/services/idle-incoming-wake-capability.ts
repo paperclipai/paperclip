@@ -1,14 +1,16 @@
+import { parsePhotonConfiguredCoverage, type PhotonConfiguredCoverage } from "./chat-channels/imessage-photon/idle-coverage.js";
 import { parseSlackConfiguredCoverage, type SlackConfiguredCoverage } from "./chat-channels/slack/configured-coverage.js";
 /** Closed Cloud-owned ingress catalog. No credential material belongs in this proof. */
 export interface IdleIncomingWakeCapability {
   version: 1;
   ownerId: string;
   generation: string;
-  routes: ("tenant-api-http-v2" | "github-broker-events-v1" | "slack-broker-events-v1" | "mcp-oauth-http-v1")[];
+  routes: ("tenant-api-http-v2" | "github-broker-events-v1" | "slack-broker-events-v1" | "mcp-oauth-http-v1" | "photon-broker-events-v1")[];
   apiKeyProof?: { version: 1; challenge: string };
   mcpOAuthProof?: { version: 1; challenge: string };
   githubBroker?: { instanceId: string; bindingsFingerprint: string };
   slackBroker?: SlackConfiguredCoverage;
+  photonBroker?: PhotonConfiguredCoverage;
 }
 export interface IdleCapabilities {
   incomingWake?: IdleIncomingWakeCapability;
@@ -43,6 +45,7 @@ export function parseIdleCapabilities(value: unknown): IdleCapabilities {
         "routes",
         "githubBroker",
         "slackBroker",
+        "photonBroker",
         "apiKeyProof",
         "mcpOAuthProof",
       ]) ||
@@ -54,9 +57,9 @@ export function parseIdleCapabilities(value: unknown): IdleCapabilities {
       !digest(v.generation) ||
       !Array.isArray(v.routes) ||
       v.routes.length < 1 ||
-      v.routes.length > 4 ||
+      v.routes.length > 5 ||
       v.routes.some(
-        (r) => !["tenant-api-http-v2", "github-broker-events-v1", "slack-broker-events-v1", "mcp-oauth-http-v1"].includes(r),
+        (r) => !["photon-broker-events-v1", "tenant-api-http-v2", "github-broker-events-v1", "slack-broker-events-v1", "mcp-oauth-http-v1"].includes(r),
       ) ||
       new Set(v.routes).size !== v.routes.length ||
       [...v.routes].sort().join() !== v.routes.join()
@@ -72,6 +75,10 @@ export function parseIdleCapabilities(value: unknown): IdleCapabilities {
       if (!object(proof) || Object.keys(proof).length !== 2 || !exact(proof, ["version", "challenge"])
         || proof.version !== 1 || !digest(proof.challenge)) throw new Error("Invalid MCP OAuth wake challenge");
     } else if (v.mcpOAuthProof !== undefined) throw new Error("Unexpected MCP OAuth wake challenge");
+    if (v.routes.includes("photon-broker-events-v1")) {
+      const coverage = parsePhotonConfiguredCoverage(v.photonBroker);
+      if (coverage.generation !== v.generation) throw new Error("Photon capability generation changed");
+    } else if (v.photonBroker !== undefined) throw new Error("Unexpected Photon wake binding");
     if (v.routes.includes("github-broker-events-v1")) {
       const b = v.githubBroker;
       if (
@@ -96,6 +103,7 @@ export function parseIdleCapabilities(value: unknown): IdleCapabilities {
   const parsed = JSON.parse(JSON.stringify(value)) as IdleCapabilities;
   if (parsed.incomingWake) {
     Object.freeze(parsed.incomingWake.routes);
+    if (parsed.incomingWake.photonBroker) parsed.incomingWake.photonBroker = parsePhotonConfiguredCoverage(parsed.incomingWake.photonBroker);
     if (parsed.incomingWake.slackBroker) parsed.incomingWake.slackBroker = parseSlackConfiguredCoverage(parsed.incomingWake.slackBroker);
     if (parsed.incomingWake.apiKeyProof) Object.freeze(parsed.incomingWake.apiKeyProof);
     if (parsed.incomingWake.mcpOAuthProof) Object.freeze(parsed.incomingWake.mcpOAuthProof);

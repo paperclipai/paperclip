@@ -683,6 +683,14 @@ and unsupported transports retain their blockers. See [authenticated incoming
 wake proof](idle-incoming-wake.md) for scope, HTTP versus durable-event guarantees,
 rate/availability bounds, compatibility and remaining transport dependencies.
 
+Photon's `photon-broker-events-v1` route requires a current signed aggregate
+of the exact managed receiver bindings and accepted custody, plus a positive
+physical-idle inspection of the same App resource owners. Initial clients,
+in-flight work, failed closes, uncommitted receipts, missing authority and
+partial or uncertain coverage keep the instance awake. Cloud can retain
+reception for already enrolled bindings while new enrollment is disabled.
+This local safety proof does not establish deployed suspension or wake behavior.
+
 ## Registered owner deadline coverage
 
 The negotiated domain deadline catalog also inspects the registered status-card,
