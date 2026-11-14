@@ -2684,6 +2684,7 @@ export function agentRoutes(
     "cwd",
     "env",
     "filesystemSandboxCommand",
+    "managedHooks",
   ] as const;
 
   const LOCAL_ADAPTER_CREDENTIAL_ENV_KEYS: Record<string, readonly string[]> = {
