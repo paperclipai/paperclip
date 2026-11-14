@@ -703,6 +703,36 @@ describe("HarnessDriverBackend", () => {
     });
   });
 
+  async function terminalsAfterEachTurnEnd(turnEnds: Array<Record<string, unknown>>) {
+    class TurnEndsSession extends FakeHarnessSession {
+      override async *events() {
+        for (const [index, payload] of turnEnds.entries()) yield prpEvent(index + 1, "turn.completed", payload);
+      }
+    }
+    const backend = new HarnessDriverBackend({ ...driver, async openSession() { return new TurnEndsSession(); } });
+    const session = await backend.openSession({
+      identity: { runId: "run-1", sessionId: "session-1", companyId: "company-1", issueId: "issue-1", agentId: "agent-1" },
+    });
+    const terminals: Array<PrpTerminalState | null> = [];
+    for await (const _event of session.events()) terminals.push((await session.snapshot()).terminal ?? null);
+    return terminals;
+  }
+
+  it("leaves the run terminal open when a turn ends waiting for the provider's own next turn", async () => {
+    await expect(terminalsAfterEachTurnEnd([{ status: "completed", awaitingProviderTurn: true }])).resolves.toEqual([null]);
+  });
+
+  it("sets the run terminal when a turn ends without waiting for the provider", async () => {
+    const [terminal] = await terminalsAfterEachTurnEnd([{ status: "completed" }]);
+    expect(terminal).toMatchObject({ turnTerminalState: "completed", runTerminalState: "succeeded" });
+  });
+
+  it("sets the run terminal at the first turn end that does not wait for the provider", async () => {
+    const [waiting, settled] = await terminalsAfterEachTurnEnd([{ status: "completed", awaitingProviderTurn: true }, { status: "completed" }]);
+    expect(waiting).toBeNull();
+    expect(settled).toMatchObject({ turnTerminalState: "completed", runTerminalState: "succeeded" });
+  });
+
   it("reconstructs a missing top-level terminal from a completed semantic turn", async () => {
     const recoveryDriver: HarnessDriver = {
       ...driver,

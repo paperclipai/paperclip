@@ -239,7 +239,7 @@ it.skipIf(process.platform === "win32")("never opts a non-Claude ACPX agent in",
   expectCleanClose(run);
 }, 60_000);
 
-async function restartFixture(tokens: string) {
+async function restartFixture(tokens: string, sidecarArgs = "", optIn = true) {
   const n = ++scenario;
   const root = await realpath(await mkdtemp(join(tmpdir(), "runner-acpx-provider-turn-restart-")));
   const journal = join(root, "calls"), fault = join(root, "fault"), wrapper = join(root, "sidecar"), script = join(root, "sidecar-entry");
@@ -248,7 +248,7 @@ async function restartFixture(tokens: string) {
   await mkdir(join(root, "acpx"), { mode: 0o700 }); await mkdir(join(root, "diagnostics"), { mode: 0o700 });
   await writeFile(script, "qualified fixture entry");
   await writeFile(background, tokens);
-  await writeFile(wrapper, `#!/bin/sh\nexec ${quote(sidecar)} --mode source-reconcile --profile-digest ${quote(QUALIFIED_ACPX_PROFILES.claude.commandDigest)} --journal ${quote(journal)} --source-fault ${quote(fault)} --background-tasks ${quote(background)} --spawn-owned-child\n`, { mode: 0o700 });
+  await writeFile(wrapper, `#!/bin/sh\nexec ${quote(sidecar)} --mode source-reconcile --profile-digest ${quote(QUALIFIED_ACPX_PROFILES.claude.commandDigest)} --journal ${quote(journal)} --source-fault ${quote(fault)} --background-tasks ${quote(background)} --spawn-owned-child${sidecarArgs}\n`, { mode: 0o700 });
   let authority: DurablePrpControlPlane | null = null, registrations = 0;
   const diagnostics: string[] = [];
   const server = createServer();
@@ -270,7 +270,7 @@ async function restartFixture(tokens: string) {
   const runnerPids = new Set<number>();
   let requirements: RunnerProviderLaunchRequirements | undefined;
   const transportOptions: CapabilityRunnerdCodexTransportOptions = {
-    provider: "acpx", acpxAgent: "claude", providerStartedTurns: true, onDiagnostic: message => diagnostics.push(message), runnerBinary: binary, stateDirectory: root, prpIdentity: identity,
+    provider: "acpx", acpxAgent: "claude", ...(optIn ? { providerStartedTurns: true } : {}), onDiagnostic: message => diagnostics.push(message), runnerBinary: binary, stateDirectory: root, prpIdentity: identity,
     runnerArtifact: readRunnerdArtifactBinding(binary), codexSourceRecoveryVersion: 1, acpxSourceRecoveryVersion: 1,
     lifecyclePolicy: { mode: "per_turn", idleTimeoutMs: null }, runnerProcessReconnectGraceMs: null, runnerReconnectGraceMs: 10_000,
     controlPlaneRegistration: async next => {
@@ -375,12 +375,12 @@ const replyResult: PrpStructuredRunResult = { schema: "paperclip.run_result.v1",
   completionClaim: { contractRevision: "acpx-provider-turns-v1", objectiveSatisfied: true, criteria: [{ criterionId: "objective", status: "satisfied", evidenceRefs: [] }], remainingWork: [] },
   evidence: [], verification: [], attentionRequests: [], artifacts: [] };
 
-async function runConsumerRestartScenario(tokens: string, options: { at: "wait" | "provider-turn"; waitMs: number; replyResult?: boolean }) {
-  const fixture = await restartFixture(tokens);
+async function runConsumerRestartScenario(tokens: string, options: { at: "wait" | "provider-turn" | "turn"; waitMs: number; replyResult?: boolean; holdFirstToolCall?: boolean; sidecarArgs?: string; optIn?: boolean }) {
+  const fixture = await restartFixture(tokens, options.sidecarArgs, options.optIn ?? true);
   const { identity, execution } = fixture;
   const appended: PrpEvent[] = [], committed: PrpEvent[] = [], appendedAt: number[] = [], checkpoints: PersistedNativeSession[] = [];
   const completeRun = vi.fn(async (_value: unknown) => undefined);
-  let fenced = false;
+  let fenced = false, held = false;
   const controlPlane = (fencedController: boolean) => {
     const guard = () => { if (fencedController && fenced) throw new Error("controller fenced for restart"); };
     return {
@@ -410,13 +410,15 @@ async function runConsumerRestartScenario(tokens: string, options: { at: "wait" 
     resolveMissingResult: async ({ terminalEvent }) => options.replyResult && terminalEvent.turnId === "provider-1" && !terminalEvent.payload.awaitingProviderTurn ? structuredClone(replyResult) : null,
   }).then(() => "finalized", (error: unknown) => String(error instanceof Error ? error.message : error));
   try {
-    const first = fixture.first(false);
+    const first = fixture.first(options.holdFirstToolCall, () => { held = true; });
     let session: NativeSession | null = null;
     const stopFirst = new AbortController();
     const firstOutcome = execute(fixture.backend(first), true, { signal: stopFirst.signal, onSession: value => { session = value ?? session; } });
-    const reached = (event: PrpEvent) => options.at === "wait" ? event.payload.awaitingProviderTurn === true : event.eventType === "turn.started" && event.payload.origin === "provider";
-    const shaped = (value: PersistedNativeSession) => options.at === "wait" ? value.awaitingProviderTurn === true : value.activeTurnId === "provider-1";
-    await vi.waitFor(() => expect(appended.some(reached)).toBe(true), { timeout: 20_000, interval: 20 });
+    const reached = (event: PrpEvent) => options.at === "wait" ? event.payload.awaitingProviderTurn === true
+      : options.at === "turn" ? event.eventType === "turn.started" : event.eventType === "turn.started" && event.payload.origin === "provider";
+    const shaped = (value: PersistedNativeSession) => options.at === "wait" ? value.awaitingProviderTurn === true
+      : options.at === "turn" ? typeof value.activeTurnId === "string" : value.activeTurnId === "provider-1";
+    await vi.waitFor(() => expect(appended.some(reached) && (!options.holdFirstToolCall || held)).toBe(true), { timeout: 20_000, interval: 20 });
     await vi.waitFor(() => expect(checkpoints.some(shaped)).toBe(true), { timeout: 1_000, interval: 20 }).catch(() => undefined);
     fenced = true;
     const checkpoint = checkpoints.at(-1)!;
@@ -429,11 +431,12 @@ async function runConsumerRestartScenario(tokens: string, options: { at: "wait" 
     const atRestart = await fixture.atRestart();
     const { second, pid, serverRequests } = restart();
     const awaitingAt = appendedAt[appended.findIndex(event => event.payload.awaitingProviderTurn === true)] ?? null;
+    const firstAppended = appended.length;
     const outcome = await execute(fixture.backend(second), false, { persistedSession: checkpoint, providerTurnWait: { startedAtMs: awaitingAt } });
     const recoveredPid = second.evidence().runnerPid;
     const closeOutcome = await second.transport.close().then(() => "closed", (error: unknown) => String(error instanceof Error ? error.message : error));
     const final = await fixture.atRestart();
-    return { runnerInstanceId: identity.runnerInstanceId, checkpoint, pid, recoveredPid, atRestart, serverRequests, appended, outcome, completeRun, closeOutcome,
+    return { runnerInstanceId: identity.runnerInstanceId, checkpoint, pid, recoveredPid, atRestart, serverRequests, appended, appendedAfterRestart: appended.slice(firstAppended), checkpoints, outcome, completeRun, closeOutcome,
       diagnostics: fixture.diagnostics, journalled: final.journalled, durable: final.durable };
   } catch (error) {
     throw await fixture.fail(error);
@@ -569,12 +572,15 @@ const expectSettledAfterRestart = (run: ConsumerRun, turnIds: string[]) => {
   expect(unsettled(run.diagnostics)).toEqual([]);
   expect(run.durable).not.toContain("conflicting duplicate");
 };
+const expectNoTerminalPersistedWithoutResult = (run: ConsumerRun) =>
+  expect(run.checkpoints.filter(checkpoint => (checkpoint.semanticResult ?? null) === null && (checkpoint.terminal ?? null) !== null)).toEqual([]);
 
 it.skipIf(process.platform === "win32")("settles a provider turn that starts after the new controller attached, from the checkpoint saved when the wait began", async () => {
   const run = await runConsumerRestartScenario("live provider-turn provider-result-resolved provider-goal-at-terminal provider-turn-after-snapshot", { at: "wait", waitMs: 200 });
   expect(run.checkpoint).toMatchObject(waitingCheckpoint);
   expect(run.atRestart.durable).not.toContain("call-provider-finish");
   expectSettledAfterRestart(run, ["provider-1"]);
+  expectNoTerminalPersistedWithoutResult(run);
 }, 60_000);
 
 it.skipIf(process.platform === "win32")("settles a provider turn that was running at a restart, from the checkpoint saved when it started", async () => {
@@ -601,4 +607,70 @@ it.skipIf(process.platform === "win32")("delivers the rest of a provider turn ac
   expect(run.serverRequests.map(request => [request.params.turnId, request.params.tool, request.response.success])).toEqual([["provider-2", "paperclip_finish", true]]);
   const sequence = run.delivered.map(event => event.sourceSeq);
   expect(sequence).toEqual([...new Set(sequence)].sort((left, right) => left - right));
+}, 60_000);
+
+const answeredCalls = (run: ConsumerRun) => run.serverRequests.map(request => [request.params.turnId, request.params.tool, request.response.success]);
+const providerTurnEvents = (events: PrpEvent[]) => events
+  .filter(event => event.turnId?.startsWith("provider-") && !event.eventType.startsWith("session.") && event.eventType !== "item.delta")
+  .map(event => [event.eventType, event.turnId, event.payload.kind ?? event.payload.origin ?? null]);
+const settledProviderTurn = (turnId: string, opening: unknown[][]) => [
+  ...opening,
+  ["item.completed", turnId, "usage"],
+  ["item.completed", turnId, "agentMessage"],
+  ["turn.completed", turnId, null],
+];
+const acceptedResult = (turnId: string) => [["run.result.accepted", turnId, null], ["run.terminal", turnId, null]];
+const startedWithResult = (turnId: string) => [["turn.started", turnId, "provider"], ["run.result.proposed", turnId, null]];
+
+it.skipIf(process.platform === "win32")("R0 settles an ordinary turn whose finish call was open at a restart and appends its result, completion and terminal once", async () => {
+  const run = await runConsumerRestartScenario("quiet", { at: "turn", waitMs: 500, holdFirstToolCall: true, sidecarArgs: " --wait-completion-feedback", optIn: false });
+  const turnId = run.checkpoint.activeTurnId!;
+  expect(turnId).toEqual(expect.any(String));
+  expect(run.outcome, run.diagnostics.slice(-12).join("\n")).toBe("finalized");
+  expect(run.recoveredPid).toBe(run.pid);
+  expect(run.completeRun).toHaveBeenCalledOnce();
+  expect(run.completeRun.mock.calls[0]![0]).toMatchObject({ turnId, result: { reportedWorkDisposition: "done" } });
+  expect(answeredCalls(run)).toEqual([[turnId, "paperclip_finish", true]]);
+  expect(run.appendedAfterRestart.filter(event => event.turnId === turnId && !event.eventType.startsWith("session.")).map(event => event.eventType))
+    .toEqual(["run.result.proposed", "turn.completed", "run.result.accepted", "run.terminal"]);
+  const sequence = run.appended.filter(event => event.sourceInstanceId === run.runnerInstanceId).map(event => event.sourceSeq);
+  expect(sequence).toEqual([...new Set(sequence)].sort((left, right) => left - right));
+  expect(run.closeOutcome).toBe("closed");
+  expect(unsettled(run.diagnostics)).toEqual([]);
+}, 60_000);
+
+it.skipIf(process.platform === "win32")("R1 appends a provider turn that ran while the controller was away, from the checkpoint saved when the wait began", async () => {
+  const run = await runConsumerRestartScenario("live provider-turn provider-result-resolved provider-goal-at-terminal provider-turn-delay-ms=1500", { at: "wait", waitMs: 3_000 });
+  expect(run.checkpoint).toMatchObject({ ...waitingCheckpoint, terminal: null });
+  expect(run.atRestart.durable).toContain("call-provider-finish");
+  expect(run.appended.filter(event => event.turnId === "provider-1")).toEqual(run.appendedAfterRestart.filter(event => event.turnId === "provider-1"));
+  expect(providerTurnEvents(run.appendedAfterRestart)).toEqual([...settledProviderTurn("provider-1", startedWithResult("provider-1")), ...acceptedResult("provider-1")]);
+  expectSettledAfterRestart(run, ["provider-1"]);
+  expectNoTerminalPersistedWithoutResult(run);
+}, 60_000);
+
+it.skipIf(process.platform === "win32")("R4 appends the rest of a provider turn whose finish call was open at a restart, from the checkpoint saved when the turn started", async () => {
+  const run = await runConsumerRestartScenario("live provider-turn provider-result-resolved provider-goal-at-terminal provider-turn-delay-ms=300", { at: "provider-turn", waitMs: 500, holdFirstToolCall: true });
+  expect(run.checkpoint).toMatchObject(providerTurnCheckpoint);
+  expect(resolvedCalls(run.atRestart.journalled)).toEqual([]);
+  expect(providerTurnEvents(run.appendedAfterRestart)).toEqual([...settledProviderTurn("provider-1", [["run.result.proposed", "provider-1", null]]), ...acceptedResult("provider-1")]);
+  expectSettledAfterRestart(run, ["provider-1"]);
+  expectNoTerminalPersistedWithoutResult(run);
+  expect(answeredCalls(run)).toEqual([["provider-1", "paperclip_finish", true]]);
+  expect(resolvedCalls(run.journalled)).toEqual([["provider-1", "call-provider-finish", null]]);
+}, 60_000);
+
+it.skipIf(process.platform === "win32")("R5 appends both provider turns after a restart during the first, from the checkpoint saved when it started", async () => {
+  const run = await runConsumerRestartScenario("live provider-turn provider-turns=live/resolved provider-goal-at-terminal provider-turn-delay-ms=300 provider-turn-gap-ms=2500", { at: "provider-turn", waitMs: 3_500 });
+  expect(run.checkpoint).toMatchObject(providerTurnCheckpoint);
+  expect(run.atRestart.journalled.filter(entry => entry.command === "session.provider_turn").map(entry => entry.params.turnId)).toEqual([expect.any(String), "provider-1"]);
+  expect(providerTurnEvents(run.appended)).toEqual([
+    ...settledProviderTurn("provider-1", [["turn.started", "provider-1", "provider"]]),
+    ...settledProviderTurn("provider-2", startedWithResult("provider-2")),
+    ...acceptedResult("provider-2"),
+  ]);
+  expectSettledAfterRestart(run, ["provider-1", "provider-2"]);
+  expectNoTerminalPersistedWithoutResult(run);
+  expect(answeredCalls(run)).toEqual([["provider-2", "paperclip_finish", true]]);
+  expect(resolvedCalls(run.journalled)).toEqual([["provider-2", "call-provider-finish", null]]);
 }, 60_000);
