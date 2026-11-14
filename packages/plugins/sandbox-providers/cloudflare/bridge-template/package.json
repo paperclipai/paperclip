@@ -13,7 +13,7 @@
     "@cloudflare/sandbox": "^0.7.0"
   },
   "devDependencies": {
-    "@cloudflare/workers-types": "^4.20260501.0",
+    "@cloudflare/workers-types": "^5.20261103.1",
     "typescript": "^5.7.3",
     "vitest": "^4.1.8",
     "wrangler": "^4.15.0"
