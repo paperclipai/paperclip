@@ -9,6 +9,7 @@ const navigateMock = vi.hoisted(() => vi.fn());
 const setSearchParamsMock = vi.hoisted(() => vi.fn());
 const setBreadcrumbsMock = vi.hoisted(() => vi.fn());
 let currentSearch = "";
+let isMobileValue = false;
 
 vi.mock("@/context/CompanyContext", () => ({
   useCompany: () => ({ selectedCompanyId: "company-1" }),
@@ -19,7 +20,7 @@ vi.mock("@/context/BreadcrumbContext", () => ({
 }));
 
 vi.mock("@/context/SidebarContext", () => ({
-  useSidebar: () => ({ isMobile: false }),
+  useSidebar: () => ({ isMobile: isMobileValue }),
 }));
 
 vi.mock("@/lib/router", () => ({
@@ -85,6 +86,7 @@ describe("AuditHub", () => {
 
   beforeEach(() => {
     currentSearch = "";
+    isMobileValue = false;
     container = document.createElement("div");
     document.body.appendChild(container);
   });
@@ -221,5 +223,21 @@ describe("AuditHub", () => {
     expect(navigateMock).toHaveBeenCalledWith(
       "/activity/runs?entityType=routine&entityId=routine-1",
     );
+  });
+
+  it("renders the section picker as a select on mobile and switches sections", () => {
+    isMobileValue = true;
+    render("activity");
+
+    const select = container.querySelector("select");
+    expect(select).not.toBeNull();
+    expect(select!.value).toBe("activity");
+    expect(select!.querySelectorAll("option")).toHaveLength(6);
+
+    flushSync(() => {
+      select!.value = "runs";
+      select!.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+    expect(navigateMock).toHaveBeenCalledWith("/activity/runs");
   });
 });
