@@ -1631,6 +1631,7 @@ const BOARD_ONLY_OPERATIONS = new Set([
 const INSTANCE_ADMIN_OPERATIONS = new Set([
   "GET /api/companies/{companyId}/tailscale-connections",
   "POST /api/companies/{companyId}/tailscale-connections",
+  "POST /api/companies/{companyId}/tailscale-connections/{connectionId}/device-login",
   "GET /api/companies/{companyId}/tailscale-connections/{connectionId}/devices",
   "DELETE /api/companies/{companyId}/tailscale-connections/{connectionId}",
   "POST /api/companies/{companyId}/tailscale-connections/{connectionId}/pairing",
@@ -9608,8 +9609,20 @@ const tailscaleCompanyParams = z.object({ companyId: z.string().uuid() });
 const tailscaleConnectionParams = tailscaleCompanyParams.extend({ connectionId: z.string().uuid() });
 const tailscaleConnectionResponse = z.object({
   id: z.string().uuid(), companyId: z.string().uuid(), name: z.string(),
-  status: z.enum(["pending", "connecting", "connected", "disconnected"]),
+  status: z.enum(["pending", "authorizing", "connecting", "connected", "disconnected", "expired", "error"]),
 }).strict();
+const tailscaleDeviceLoginResponse = {
+  ...r.ok(z.object({
+    connection: tailscaleConnectionResponse,
+    expiresAt: z.string().datetime().nullable(),
+    authorizationUrl: z.string().url().optional(),
+    needsApproval: z.boolean().optional(),
+  }).strict()),
+  headers: {
+    "Cache-Control": { schema: { type: "string", enum: ["no-store"] } },
+    "Referrer-Policy": { schema: { type: "string", enum: ["no-referrer"] } },
+  },
+};
 const tailscaleErrors = { 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 404: r.notFound, 422: r.unprocessable };
 
 registry.registerPath({
@@ -9622,15 +9635,20 @@ registry.registerPath({
 
 registry.registerPath({
   method: "post", path: "/api/companies/{companyId}/tailscale-connections", tags: ["tailscale"],
-  summary: "Start Tailscale network authorization",
-  description: "Requires an instance administrator with company access, or local implicit board access. Starts consent for a new connection or replaces consent for connectionId. An instance without a Cloud broker identity first returns an enrollment URL without a connection. Hosted authorization can return a signed Cloud handoff.",
+  summary: "Start Tailscale device sign-in",
+  description: "Requires an instance administrator with company access, or local implicit board access. Starts device sign-in without a Cloud broker or OAuth app. Reuses an unexpired sign-in for connectionId; a connected network must be disconnected before replacement. Pending sign-in is bound to its initiating user and has a fixed ten-minute deadline. The authorization URL is present when sign-in is ready; needsApproval identifies a device waiting for tailnet administrator approval.",
   request: { params: tailscaleCompanyParams, body: jsonBody(z.object({
     name: z.string().trim().min(1).max(100).default("My tailnet"), connectionId: z.string().uuid().optional(),
   }).strict()) },
-  responses: { 201: r.ok(z.object({
-    connection: tailscaleConnectionResponse.optional(), authorizationUrl: z.string().url(), expiresAt: z.string().datetime(),
-    handoff: z.object({ kind: z.literal("paperclip_cloud"), session: z.string().min(16).max(512).regex(/^[A-Za-z0-9_-]+$/) }).strict().optional(),
-  }).strict()), ...tailscaleErrors },
+  responses: { 201: tailscaleDeviceLoginResponse, ...tailscaleErrors },
+});
+
+registry.registerPath({
+  method: "post", path: "/api/companies/{companyId}/tailscale-connections/{connectionId}/device-login", tags: ["tailscale"],
+  summary: "Resume Tailscale device sign-in and read its progress",
+  description: "Requires the initiating user to retain instance-admin and company access, or local implicit board access. Resumes the private client for an existing sign-in without extending its deadline. Returns connection metadata, an optional sign-in URL or device approval flag, and expiresAt (null when no sign-in is pending). Does not return credentials or node state.",
+  request: { params: tailscaleConnectionParams },
+  responses: { 200: tailscaleDeviceLoginResponse, ...tailscaleErrors },
 });
 
 registry.registerPath({

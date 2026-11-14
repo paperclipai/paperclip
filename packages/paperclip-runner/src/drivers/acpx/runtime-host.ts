@@ -10,6 +10,7 @@ import { piProviderConfiguration } from "./pi-provider-config.js";
 import { withAcpxTurnCancellation } from "./turn-cancellation.js";
 import type { AcpxTerminalSessionFailure } from "./provider-failure.js";
 import type { ClaudeBackgroundTaskState } from "./claude-background-tasks.js";
+import type { ClaudeProviderCycleItem } from "./claude-provider-turns.js";
 import { resolveAcpxProviderMode } from "./provider-mode.js";
 import { resolvePiThinkingLevel, type PiThinkingLevel } from "./pi-thinking.js";
 import { preparedHarnessHome, preconfiguredHomeEnvironment, usesPreconfiguredHome } from "../preconfigured-home.js";
@@ -158,6 +159,21 @@ export interface AcpxRuntimeTurn {
 }
 
 /** Minimal third-party ACP runtime surface admitted by the host boundary. */
+export type AcpxProviderTurnBinding = {
+  onPermissionRequest: AcpxHostPermissionHandler;
+  onPlanProposal?: (proposal: AcpxPlanProposal) => void;
+  busy(): boolean;
+};
+
+export interface AcpxProviderCycleStream {
+  next(): Promise<ClaudeProviderCycleItem | null>;
+  adopt(binding: AcpxProviderTurnBinding): boolean;
+  drop(): void;
+  cancel(): boolean;
+  undecided(): Promise<boolean> | null;
+  decisionFor(toolCallId: unknown): Promise<boolean> | null;
+}
+
 export interface AcpxRuntimePort {
   identity(): Promise<AcpxRuntimePortIdentity>;
   getStatus(): Promise<AcpxModelStatus>;
@@ -168,6 +184,8 @@ export interface AcpxRuntimePort {
   goalCapability?(): AcpxRuntimeGoalCapability | null;
   goalSnapshot?(): AcpxRuntimeGoalSnapshot | null;
   backgroundTaskState?(): ClaudeBackgroundTaskState | null;
+  providerCycles?(): AcpxProviderCycleStream | null;
+  providerTurnsAvailable?(): boolean;
   controlGoal?(
     action: "set" | "pause" | "resume" | "clear",
     objective?: string,
@@ -895,6 +913,14 @@ export class AcpxRuntimeHost {
 
   backgroundTaskState(): ClaudeBackgroundTaskState | null {
     return this.#runtime.backgroundTaskState?.() ?? null;
+  }
+
+  providerCycles(): AcpxProviderCycleStream | null {
+    return this.#runtime.providerCycles?.() ?? null;
+  }
+
+  providerTurnsAvailable(): boolean {
+    return this.#runtime.providerTurnsAvailable?.() ?? false;
   }
 
   async controlGoal(

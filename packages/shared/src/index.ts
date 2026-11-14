@@ -2968,3 +2968,4 @@ export { recognizeLinkPreview, type LinkPreviewTarget, type LinkPreviewState, ty
 export * from "./mcp-apps.js";
 export * from "./tool-call-progress.js";
 export * from "./mcp-skills.js";
+export type { TailscaleConnection, TailscaleDeviceLogin } from "./types/tailscale.js";
