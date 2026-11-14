@@ -47,3 +47,16 @@ export function createEphemeralSessionEnvironmentStore(
     },
   };
 }
+
+export function hideRecordUntilSaved(store: AcpSessionStore, recordId: string): AcpSessionStore {
+  let hidden = true;
+  return {
+    async load(id) {
+      return hidden && id === recordId ? undefined : store.load(id);
+    },
+    save(record) {
+      if (record.acpxRecordId === recordId) hidden = false;
+      return store.save(record);
+    },
+  };
+}

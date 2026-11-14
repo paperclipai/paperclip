@@ -99,7 +99,7 @@ import {
   type PaperclipSkillEntry,
 } from "@paperclipai/adapter-utils/server-utils";
 import { shellQuote } from "@paperclipai/adapter-utils/ssh";
-import { createEphemeralSessionEnvironmentStore } from "./ephemeral-session-environment.js";
+import { createEphemeralSessionEnvironmentStore, hideRecordUntilSaved } from "./ephemeral-session-environment.js";
 import {
   createAcpRuntime,
   createAgentRegistry,
@@ -4582,7 +4582,9 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
           : undefined;
         flushChildStderr(childStderrState);
         childStderrState.logPath = prepared.childStderrLogPath;
-        const persistedRuntimeStore = createRuntimeStore({ stateDir: prepared.stateDir });
+        const diskRuntimeStore = createRuntimeStore({ stateDir: prepared.stateDir });
+        const persistedRuntimeStore = !resumeSessionId && !cached
+          ? hideRecordUntilSaved(diskRuntimeStore, prepared.sessionKey) : diskRuntimeStore;
         // Resume with this run's launch environment; keep it out of the saved
         // conversation record without mutating the live runtime's options.
         const runtimeStore = createEphemeralSessionEnvironmentStore(persistedRuntimeStore, prepared.env);
