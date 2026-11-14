@@ -87,6 +87,10 @@ scoped plugin APIs.
 Policy: Instance plugin management requires board/admin; declared tools and scoped APIs
 apply their own company/agent policy.
 
+Plugin issue create/update use plugin-origin identity. Worker-supplied actor IDs,
+origin run IDs, and explicit responsible-user IDs are rejected; they are not
+authenticated delegation. The other issue host methods retain their separate contracts.
+
 Evidence: `source-only` — [implementation](../../server/src/routes/plugins.ts#L965) at
 the reviewed commit above.
 
@@ -97,6 +101,10 @@ remaining operations before qualifying the whole capability.
 
 Gaps: Actual plugin tool use exists; a contributed UI route alone does not prove that
 plugin's API/tool coverage.
+
+The focused [host regression](../../server/src/__tests__/plugin-issue-actor-boundary.test.ts)
+is not yet run against the current master harness. Verify plugin-origin writes,
+forged actor and run rejection, company isolation, and no writes on rejection.
 
 ## `lifecycle`
 
