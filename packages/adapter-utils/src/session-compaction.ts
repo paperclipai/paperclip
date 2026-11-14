@@ -85,6 +85,18 @@ export const ADAPTER_SESSION_MANAGEMENT: Record<string, AdapterSessionManagement
     nativeContextManagement: "unknown",
     defaultSessionCompaction: DEFAULT_SESSION_COMPACTION_POLICY,
   },
+  kimchi_local: {
+    // Kimchi ACP v0.0.7 has no session persistence; every run is a fresh
+    // session, so there is nothing to resume or rotate.
+    supportsSessionResume: false,
+    nativeContextManagement: "unknown",
+    defaultSessionCompaction: {
+      enabled: false,
+      maxSessionRuns: 0,
+      maxRawInputTokens: 0,
+      maxSessionAgeHours: 0,
+    },
+  },
   opencode_local: {
     supportsSessionResume: true,
     nativeContextManagement: "unknown",
