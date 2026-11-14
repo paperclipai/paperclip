@@ -290,6 +290,54 @@ const delay = DEFAULT_DECISION_ARCHIVE_DAYS * 86_400_000;
     expect(bytes("issues")).toBeLessThan(60_000);
   });
 
+  it("reads blocker retention state once per page, not once per blocked task", async () => {
+    const blockers = await db.insert(issues).values(Array.from({ length: 160 }, () => ({ companyId, title: randomUUID(),
+      status: "todo", createdByAgentId: agentId, createdAt: old(), updatedAt: old() }))).returning({ id: issues.id });
+    const blocked = await db.insert(issues).values(blockers.map(() => ({ companyId, title: randomUUID(), status: "blocked",
+      createdByAgentId: agentId, createdAt: old(), updatedAt: old() }))).returning({ id: issues.id });
+    await db.insert(issueRelations).values(blocked.map((row, index) => ({ companyId, issueId: blockers[index].id,
+      relatedIssueId: row.id, type: "blocks" as const })));
+    const at = old();
+    const kept = blockers.slice(0, 40), archived = blockers.slice(40, 80), plain = blockers.slice(80, 120), missing = blockers.slice(120);
+    await db.insert(decisionRetention).values([
+      ...kept.map(row => ({ companyId, sourceKind: "blocker_attention", sourceId: row.id, sourceActivityAt: at, keep: true })),
+      ...archived.map(row => ({ companyId, sourceKind: "blocker_attention", sourceId: row.id, sourceActivityAt: at, archivedAt: new Date() })),
+      ...plain.map(row => ({ companyId, sourceKind: "blocker_attention", sourceId: row.id, sourceActivityAt: at })),
+    ]);
+    const service = attentionRetentionService(db), scope = { companyId, sourceKind: "blocker_attention" as const };
+    const observed = createDb(externalUrl ?? temporary!.connectionString), events: Array<Record<string, unknown>> = [], now = Date.now();
+    const capture = createFullDatabaseResponseCapture({ start: now - 100, end: now + 59_000 }, event => events.push(event));
+    installDatabaseResponseCapture(observed, { decisionRetention }, capture);
+    const retentionReads: string[] = [];
+    observed.$client.options.debug = (_connection, query) => { if (query.includes('from "decision_retention"')) retentionReads.push(query); };
+    const entries: Array<{ id: string; sourceId: string; rootId: string; variant?: string }> = [];
+    let pages = 0;
+    try {
+      const observedService = attentionRetentionService(observed);
+      for (; pages < 4; pages++) {
+        const loaded = await observedService.load(scope);
+        entries.push(...(loaded.rows ?? []));
+        if (loaded.complete) { pages++; break; }
+      }
+      capture.flush();
+    } finally { capture.flush(); await observed.$client.end(); }
+    const retentionBytes = events.filter(event => event.table === "decision_retention")
+      .reduce((total, event) => total + Number(event.responseValueBytes), 0);
+    expect(retentionBytes).toBeLessThan(10_000);
+    expect(retentionReads.length).toBeLessThanOrEqual(pages);
+    expect(retentionReads.every(query => !query.includes('"source_activity_at"'))).toBe(true);
+    const listed = new Set(entries.filter(entry => entry.variant === "terminal").map(entry => entry.sourceId));
+    expect(listed).toEqual(new Set([...plain, ...missing].map(row => row.id)));
+    const byRoot = new Map(blocked.map((row, index) => [row.id, blockers[index].id]));
+    for (const root of [blocked[0].id, blocked[40].id]) {
+      const candidate = { sourceKind: "blocker_attention" as const, sourceId: root, companyId, activityAt: at.toISOString(),
+        deadlineAt: Number.MAX_SAFE_INTEGER, issueId: root, id: `blocker_attention:${root}:terminal`, rootId: root,
+        variant: "terminal" as const, dueAt: Number.MAX_SAFE_INTEGER };
+      expect(byRoot.get(root)).toBeTruthy();
+      expect(await service.check(candidate)).toBeNull();
+    }
+  });
+
   it("batches 100 failed runs and rechecks late visibility and supersession before archive", async () => {
     const origins = await db.insert(issues).values(Array.from({ length: 100 }, () => ({ companyId,
       title: randomUUID(), status: "todo", updatedAt: old() }))).returning();
@@ -332,7 +380,7 @@ const delay = DEFAULT_DECISION_ARCHIVE_DAYS * 86_400_000;
     const queries = [...statements];
     expect(page.rows).toHaveLength(200); expect(page.complete).toBe(false);
     const retentionReads = queries.filter(query => query.includes('from "decision_retention"'));
-    expect(retentionReads).toHaveLength(200);
+    expect(retentionReads).toHaveLength(1);
     expect(queries.length - retentionReads.length).toBeLessThanOrEqual(30);
     const terminal = page.rows!.find(entry => entry.rootId === roots[99].id && entry.variant === "terminal")!;
     expect(terminal.sourceId).toBe(terminals[99].id);

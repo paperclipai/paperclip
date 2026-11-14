@@ -4,7 +4,8 @@ import path from "node:path";
 import { createHash, randomUUID } from "node:crypto";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { eq } from "drizzle-orm";
-import { agents, agentInstructionWorkingCopies, authUsers, companies, createDb, heartbeatRuns } from "@paperclipai/db";
+import { spawnSync } from "node:child_process";
+import { agents, agentInstructionWorkingCopies, authUsers, companies, createDb, environmentLeases, heartbeatRuns, subscribeDatabaseWork } from "@paperclipai/db";
 import { startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 import { meterDatabaseStatements } from "./helpers/database-statement-meter.js";
 import { resolveExternalTestDatabaseUrl } from "./helpers/external-test-database.js";
@@ -17,6 +18,10 @@ import {
   INSTRUCTION_COPY_RETRY_MS,
 } from "../services/agent-instruction-working-copies.js";
 import { appendHeartbeatRunEvent } from "../services/heartbeat-run-events.js";
+import { recordNativeLocalProcessStopInTransaction } from "../services/native-local-process-stop.js";
+import { notifyInstructionCopyStopEvidence } from "../services/instruction-collection-notifications.js";
+import { environmentService } from "../services/environments.js";
+import { remoteTerminationReceipt } from "../services/remote-execution-termination.js";
 import { idleWorkSnapshot } from "../services/task-admission.js";
 
 const external = resolveExternalTestDatabaseUrl("PAPERCLIP_INSTRUCTION_COPY_TEST_DATABASE_URL");
@@ -236,5 +241,80 @@ describe("instruction working copies that cannot make progress", () => {
       expect(row).toMatchObject({ state: "saved", receipt: expect.objectContaining({ cleanupPending: true }) });
       expect(row.nextAttemptAt!.getTime()).toBeGreaterThan(Date.now());
     } finally { await worker.stop(); }
+  }, 120_000);
+  it("collects a copy on the next pass once its local stop is recorded, long after its run finished", async () => {
+    const [runId] = await unprovenStops(1, 30 * DAY);
+    clock(); const worker = await start("collection");
+    try {
+      expect((await copy(runId!)).nextAttemptAt!.getTime() - Date.now()).toBeGreaterThan(5 * HOUR);
+      const deadPid = spawnSync(process.execPath, ["-e", ""]).pid!;
+      const [run] = await db.update(heartbeatRuns).set({ processPid: deadPid }).where(eq(heartbeatRuns.id, runId!)).returning();
+      expect(await db.transaction(tx => recordNativeLocalProcessStopInTransaction(tx as unknown as typeof db, run!))).toBe(true);
+      await advance(10_000, () => Date.now() + 1000);
+      expect(await copy(runId!)).toMatchObject({ state: "unchanged", nextAttemptAt: null });
+    } finally { await worker.stop(); }
+  }, 120_000);
+
+  it("collects a remote copy on the next pass once its lease records the termination receipt", async () => {
+    const [runId] = await runs(1, 30 * DAY);
+    const environmentId = randomUUID();
+    await db.insert(agentInstructionWorkingCopies).values({ runId: runId!, companyId, agentId, responsibleUserId: userId, entryFile: "AGENTS.md",
+      baseHash: CONTENT_HASH, localRoot: path.dirname(entryPath(runId!)), executionRoot: "/workspace/instructions",
+      location: `remote:${environmentId}`, state: "prepared" });
+    const [lease] = await db.insert(environmentLeases).values({ companyId, heartbeatRunId: runId!, provider: "fake-sandbox",
+      providerLeaseId: `sandbox-${runId}`, status: "active" }).returning();
+    clock(); const worker = await start("collection");
+    try {
+      expect(await copy(runId!)).toMatchObject({ state: "pending_collection", errorCode: "INSTRUCTION_STOP_UNCONFIRMED" });
+      expect((await copy(runId!)).nextAttemptAt!.getTime() - Date.now()).toBeGreaterThan(5 * HOUR);
+      await environmentService(db).releaseLease(lease!.id, "released", { cleanupStatus: "success",
+        remoteExecutionTermination: remoteTerminationReceipt(lease!, { providerLeaseId: lease!.providerLeaseId, state: "stopped" }) });
+      await advance(10_000, () => Date.now() + 1000);
+      expect(await copy(runId!)).toMatchObject({ state: "unavailable", errorCode: "INSTRUCTION_COLLECTION_UNAVAILABLE", nextAttemptAt: null });
+    } finally { await worker.stop(); }
+  }, 120_000);
+
+  it("sends a run-scoped hint only when a waiting copy is brought forward, and writes nothing otherwise", async () => {
+    const [waiting] = await unprovenStops(1, 30 * DAY);
+    const [none] = await runs(1, DAY);
+    const due = new Date(Date.now() + 6 * HOUR);
+    await db.update(agentInstructionWorkingCopies).set({ state: "pending_collection", nextAttemptAt: due }).where(eq(agentInstructionWorkingCopies.runId, waiting!));
+    const hints: string[] = [];
+    const unsubscribe = subscribeDatabaseWork(db, DELIVERY_QUEUES.instructionCollection, (event, scoped) => {
+      if (event === "settled") hints.push(...(scoped ?? ["*"]));
+    });
+    try {
+      meter.startLog();
+      await db.transaction(tx => notifyInstructionCopyStopEvidence(tx, { companyId, runId: none! }));
+      const quiet = meter.stopLog();
+      expect(quiet.filter(entry => !/^(begin|commit)/i.test(entry.sql.trim())).map(entry => entry.sql.trim().split(/\s/)[0])).toEqual(["select"]);
+      expect(hints).toEqual([]);
+      await db.transaction(tx => notifyInstructionCopyStopEvidence(tx, { companyId, runId: waiting! }));
+      await vi.waitFor(() => expect(hints).toEqual([JSON.stringify({ companyId, runId: waiting })]));
+      expect((await copy(waiting!)).nextAttemptAt!.getTime()).toBeLessThanOrEqual(Date.now());
+    } finally { unsubscribe(); }
+  }, 60_000);
+  it("collects a copy whose stop is recorded between the worker's evidence read and its backoff write", async () => {
+    const [runId] = await unprovenStops(1, 30 * DAY);
+    await db.update(agentInstructionWorkingCopies).set({ state: "pending_collection", nextAttemptAt: new Date(Date.now() - 1000) })
+      .where(eq(agentInstructionWorkingCopies.runId, runId!));
+    const deadPid = spawnSync(process.execPath, ["-e", ""]).pid!;
+    const [run] = await db.update(heartbeatRuns).set({ processPid: deadPid }).where(eq(heartbeatRuns.id, runId!)).returning();
+    const transaction = db.transaction.bind(db);
+    let recorded = false;
+    const transactions = vi.spyOn(db, "transaction").mockImplementation((async (callback, options) => {
+      if (!recorded) {
+        recorded = true;
+        expect(await transaction(tx => recordNativeLocalProcessStopInTransaction(tx as unknown as typeof db, run!))).toBe(true);
+      }
+      return transaction(callback, options);
+    }) as typeof db.transaction);
+    clock(); const worker = await start("collection");
+    try {
+      transactions.mockRestore();
+      expect(recorded).toBe(true);
+      await advance(10_000, () => Date.now() + 1000);
+      expect(await copy(runId!)).toMatchObject({ state: "unchanged", nextAttemptAt: null });
+    } finally { transactions.mockRestore(); await worker.stop(); }
   }, 120_000);
 });
