@@ -115,6 +115,8 @@ describeEmbeddedPostgres("issue blocker attention", () => {
     originFingerprint?: string | null;
     executionState?: Record<string, unknown> | null;
     description?: string | null;
+    unblockDescriptor?: { owner: { agentId: string } | { userId: string } | "board"; action: string } | null;
+    ownerNotified?: boolean;
   }) {
     const id = input.id ?? randomUUID();
     await db.insert(issues).values({
@@ -132,6 +134,9 @@ describeEmbeddedPostgres("issue blocker attention", () => {
       originFingerprint: input.originFingerprint ?? "default",
       executionState: input.executionState ?? null,
       description: input.description ?? null,
+      unblockDescriptor: input.unblockDescriptor ?? null,
+      // Mirrors routable-blocked delivery: the owner was woken for this transition.
+      ...(input.ownerNotified ? { blockedTransitionAt: new Date(), blockedOwnerNotifiedAt: new Date() } : {}),
     });
     return id;
   }
@@ -1016,5 +1021,253 @@ describeEmbeddedPostgres("issue blocker attention", () => {
     await expect(
       svc.count(companyId, { attention: "blocked", assigneeAgentId: "not-a-uuid" }),
     ).rejects.toThrow(/assigneeAgentId/i);
+  });
+  describe("blocked issues with no open blocker", () => {
+    it("treats an agent-owned unblock path as covered and keeps dependants live", async () => {
+      const { companyId, agentId } = await createCompany("PBU");
+      const waitingId = await insertIssue({
+        companyId,
+        identifier: "PBU-1",
+        title: "Waiting on an outside reply",
+        status: "blocked",
+        assigneeAgentId: agentId,
+        unblockDescriptor: { owner: { agentId }, action: "Resume when the outside reply arrives." },
+        ownerNotified: true,
+      });
+      const dependantId = await insertIssue({ companyId, identifier: "PBU-2", title: "Dependant", status: "blocked" });
+      await block({ companyId, blockerIssueId: waitingId, blockedIssueId: dependantId });
+
+      const listed = await svc.list(companyId, { status: "blocked" });
+
+      expect(listed.find((issue) => issue.id === waitingId)?.blockerAttention).toMatchObject({
+        state: "covered",
+        blockingTreeLive: true,
+        terminalBlockerIssueId: null,
+      });
+      expect(listed.find((issue) => issue.id === dependantId)?.blockerAttention).toMatchObject({
+        state: "covered",
+        coveredBlockerCount: 1,
+        blockingTreeLive: true,
+      });
+    });
+
+    it("covers a blocked parent whose blocked child has an agent-owned unblock path", async () => {
+      const { companyId, agentId } = await createCompany("PBN");
+      const parentId = await insertIssue({ companyId, identifier: "PBN-1", title: "Parent", status: "blocked" });
+      await insertIssue({
+        companyId,
+        identifier: "PBN-2",
+        title: "Child waiting on its owner",
+        status: "blocked",
+        parentId,
+        assigneeAgentId: agentId,
+        unblockDescriptor: { owner: { agentId }, action: "Resume after the rollout window." },
+        ownerNotified: true,
+      });
+
+      const parent = (await svc.list(companyId, { status: "blocked" })).find((issue) => issue.id === parentId);
+
+      expect(parent?.blockerAttention).toMatchObject({ state: "covered", blockingTreeLive: true });
+    });
+
+    it("still needs attention when the unblock owner cannot be invoked", async () => {
+      const { companyId, pausedAgentId } = await createCompany("PBP");
+      const issueId = await insertIssue({
+        companyId,
+        identifier: "PBP-1",
+        title: "Owner is paused",
+        status: "blocked",
+        assigneeAgentId: pausedAgentId,
+        unblockDescriptor: { owner: { agentId: pausedAgentId }, action: "Resume when unpaused." },
+        ownerNotified: true,
+      });
+
+      const issue = (await svc.list(companyId, { status: "blocked" })).find((row) => row.id === issueId);
+
+      expect(issue?.blockerAttention).toMatchObject({
+        state: "needs_attention",
+        reason: "attention_required",
+        blockingTreeLive: false,
+        terminalBlockerIssueId: issueId,
+      });
+    });
+
+    it("still needs attention when its only pending wake targets a paused agent", async () => {
+      const { companyId, pausedAgentId } = await createCompany("PBZ");
+      const issueId = await insertIssue({
+        companyId,
+        identifier: "PBZ-1",
+        title: "Wake deferred while paused",
+        status: "blocked",
+        assigneeAgentId: pausedAgentId,
+      });
+      await db.insert(agentWakeupRequests).values({
+        companyId,
+        agentId: pausedAgentId,
+        source: "automation",
+        reason: "issue_commented",
+        status: "deferred_issue_execution",
+        payload: { issueId },
+      });
+
+      const issue = (await svc.list(companyId, { status: "blocked" })).find((row) => row.id === issueId);
+
+      expect(issue?.blockerAttention).toMatchObject({
+        state: "needs_attention",
+        blockingTreeLive: false,
+        terminalBlockerIssueId: issueId,
+      });
+    });
+
+    it("covers a blocked issue whose pending wake targets an invokable agent", async () => {
+      const { companyId, agentId } = await createCompany("PBY");
+      const issueId = await insertIssue({
+        companyId,
+        identifier: "PBY-1",
+        title: "Wake queued for a live agent",
+        status: "blocked",
+        assigneeAgentId: agentId,
+      });
+      await db.insert(agentWakeupRequests).values({
+        companyId,
+        agentId,
+        source: "automation",
+        reason: "issue_commented",
+        status: "queued",
+        payload: { issueId },
+      });
+
+      const issue = (await svc.list(companyId, { status: "blocked" })).find((row) => row.id === issueId);
+
+      expect(issue?.blockerAttention).toMatchObject({ state: "covered", blockingTreeLive: true });
+    });
+
+    it("still needs attention with no owner, run, or waiting path", async () => {
+      const { companyId, agentId } = await createCompany("PBD");
+      const issueId = await insertIssue({
+        companyId,
+        identifier: "PBD-1",
+        title: "Dead blocked issue",
+        status: "blocked",
+        assigneeAgentId: agentId,
+      });
+
+      const issue = (await svc.list(companyId, { status: "blocked" })).find((row) => row.id === issueId);
+
+      expect(issue?.blockerAttention).toMatchObject({ state: "needs_attention", blockingTreeLive: false });
+    });
+
+    it("keeps surfacing an agent-owned unblock path whose owner was never woken", async () => {
+      const { companyId, agentId } = await createCompany("PBW");
+      const issueId = await insertIssue({
+        companyId,
+        identifier: "PBW-1",
+        title: "Descriptor added without delivery",
+        status: "blocked",
+        assigneeAgentId: agentId,
+        unblockDescriptor: { owner: { agentId }, action: "Resume when the outside reply arrives." },
+      });
+
+      const issue = (await svc.list(companyId, { status: "blocked" })).find((row) => row.id === issueId);
+
+      expect(issue?.blockerAttention).toMatchObject({ state: "needs_attention", blockingTreeLive: false });
+    });
+
+    it("keeps surfacing an agent-owned unblock path whose owner skips on-demand wakes", async () => {
+      const { companyId, agentId } = await createCompany("PBD");
+      await db.update(agents).set({ runtimeConfig: { heartbeat: { wakeOnDemand: false } } }).where(eq(agents.id, agentId));
+      const issueId = await insertIssue({
+        companyId,
+        identifier: "PBD-1",
+        title: "Unblock wake was skipped",
+        status: "blocked",
+        assigneeAgentId: agentId,
+        unblockDescriptor: { owner: { agentId }, action: "Resume when the outside reply arrives." },
+        ownerNotified: true,
+      });
+
+      const issue = (await svc.list(companyId, { status: "blocked" })).find((row) => row.id === issueId);
+
+      expect(issue?.blockerAttention).toMatchObject({ state: "needs_attention", blockingTreeLive: false });
+    });
+
+    it("clears delivery evidence when the unblock owner changes while the issue stays blocked", async () => {
+      const { companyId, agentId, pausedAgentId } = await createCompany("PBO");
+      const issueId = await insertIssue({
+        companyId,
+        identifier: "PBO-1",
+        title: "Owner handed over",
+        status: "blocked",
+        assigneeAgentId: agentId,
+        unblockDescriptor: { owner: { agentId }, action: "Resume when the outside reply arrives." },
+        ownerNotified: true,
+      });
+
+      await svc.update(issueId, { unblockDescriptor: { owner: { agentId }, action: "Resume after the new date." } });
+      const sameOwner = await db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => rows[0]);
+      expect(sameOwner?.blockedOwnerNotifiedAt).not.toBeNull();
+
+      await svc.update(issueId, { unblockDescriptor: { owner: { agentId: pausedAgentId }, action: "Resume after the new date." } });
+      const newOwner = await db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => rows[0]);
+      expect(newOwner?.blockedOwnerNotifiedAt).toBeNull();
+    });
+
+    it("covers a dependant whose blocked blocker has a queued run that is not yet its execution run", async () => {
+      const { companyId, agentId } = await createCompany("PBR");
+      const blockerId = await insertIssue({
+        companyId,
+        identifier: "PBR-1",
+        title: "Blocker woken after its child closed",
+        status: "blocked",
+        assigneeAgentId: agentId,
+      });
+      const dependantId = await insertIssue({ companyId, identifier: "PBR-2", title: "Dependant", status: "blocked" });
+      await block({ companyId, blockerIssueId: blockerId, blockedIssueId: dependantId });
+      await activeRun({ companyId, agentId, issueId: blockerId, status: "queued", current: false });
+
+      const dependant = (await svc.list(companyId, { status: "blocked" })).find((issue) => issue.id === dependantId);
+
+      expect(dependant?.blockerAttention).toMatchObject({ state: "covered", blockingTreeLive: true });
+    });
+
+    it("treats a pending wake for the issue as covered after its last blocker closes", async () => {
+      const { companyId, agentId } = await createCompany("PBK");
+      const issueId = await insertIssue({
+        companyId,
+        identifier: "PBK-1",
+        title: "Parent with a pending wake",
+        status: "blocked",
+        assigneeAgentId: agentId,
+      });
+      await db.insert(agentWakeupRequests).values({
+        companyId,
+        agentId,
+        source: "automation",
+        status: "queued",
+        payload: { issueId },
+      });
+
+      const issue = (await svc.list(companyId, { status: "blocked" })).find((row) => row.id === issueId);
+
+      expect(issue?.blockerAttention).toMatchObject({ state: "covered", blockingTreeLive: true });
+    });
+
+    it("treats a queued run for the issue as covered after its last blocker closes", async () => {
+      const { companyId, agentId } = await createCompany("PBQ");
+      const parentId = await insertIssue({
+        companyId,
+        identifier: "PBQ-1",
+        title: "Parent woken by child completion",
+        status: "blocked",
+        assigneeAgentId: agentId,
+      });
+      await insertIssue({ companyId, identifier: "PBQ-2", title: "Finished child", status: "done", parentId });
+      // The wake run waits in the agent queue; it is not the issue's executionRunId yet.
+      await activeRun({ companyId, agentId, issueId: parentId, status: "queued", current: false });
+
+      const parent = (await svc.list(companyId, { status: "blocked" })).find((issue) => issue.id === parentId);
+
+      expect(parent?.blockerAttention).toMatchObject({ state: "covered", blockingTreeLive: true });
+    });
   });
 });

@@ -62,7 +62,7 @@ import type {
   IssueThreadInteractionResolverPolicyProvenance,
   IssueReviewPolicy,
 } from "@paperclipai/shared";
-import { withoutSqlStatementText } from "@paperclipai/shared";
+import { isAgentStatusInvokable, withoutSqlStatementText, type IssueUnblockDescriptor } from "@paperclipai/shared";
 import { badRequest, conflict, forbidden, notFound, unprocessable } from "../errors.js";
 import { listAttentionExhaustedRuns } from "./attention-exhausted-runs.js";
 import { budgetService } from "./budgets.js";
@@ -1138,10 +1138,11 @@ type BlockedWorkEdge = {
  * Per-root visited sets make corrupt cycles harmless; the blocker analyzer's
  * existing traversal caps bound unusually large graphs.
  */
-async function blockedWorkCountMap(db: Db, companyId: string, blockerIssueIds: string[]) {
+/** Open work transitively blocked by each blocker, as issue-id sets. */
+async function blockedWorkMap(db: Db, companyId: string, blockerIssueIds: string[]) {
   const rootIds = [...new Set(blockerIssueIds)];
   const seenByRoot = new Map(rootIds.map((rootId) => [rootId, new Set<string>()]));
-  if (rootIds.length === 0) return new Map<string, number>();
+  if (rootIds.length === 0) return seenByRoot;
 
   const loadEdges = async (fromIssueIds: string[], includeChildren: boolean) => {
     const rows: BlockedWorkEdge[] = [];
@@ -1212,7 +1213,7 @@ async function blockedWorkCountMap(db: Db, companyId: string, blockerIssueIds: s
     rootsByFrontierId = nextRootsByFrontierId;
   }
 
-  return new Map([...seenByRoot].map(([rootId, seen]) => [rootId, seen.size]));
+  return seenByRoot;
 }
 
 /**
@@ -1227,6 +1228,144 @@ async function blockedWorkCountMap(db: Db, companyId: string, blockerIssueIds: s
  * blockerAttention, and otherwise nothing — a null lets the row fall back to
  * its `whyNow` line, which is honest about not knowing the blocker.
  */
+type TerminalBlockerAgent = { name: string; status: string };
+type TerminalBlockerFacts = {
+  status: string;
+  monitorNextCheckAt: Date | null;
+  ownerNotified: boolean;
+  assigneeAgent: TerminalBlockerAgent | null;
+  assigneeAgentId: string | null;
+  assigneeUserId: string | null;
+  unblockAction: string | null;
+  unblockOwner: { kind: "agent"; agent: TerminalBlockerAgent | null } | { kind: "board" } | { kind: "user"; userId: string } | null;
+};
+
+/**
+ * What a human needs in order to act on a terminal blocker: its status,
+ * assignee, and the unblock step its owner recorded. A card that only says
+ * "needs human attention" leaves the operator guessing why it was raised.
+ * Facts are read through the viewer's read condition, like the card subject.
+ */
+async function terminalBlockerFactsMap(db: Db, companyId: string, issueIds: string[], readCondition: SQL<boolean>) {
+  const facts = new Map<string, TerminalBlockerFacts>();
+  const ids = [...new Set(issueIds)];
+  if (ids.length === 0) return facts;
+  const rows: Array<{
+    id: string;
+    status: string;
+    assigneeAgentId: string | null;
+    assigneeUserId: string | null;
+    unblockDescriptor: IssueUnblockDescriptor | null;
+    monitorNextCheckAt: Date | null;
+    blockedOwnerNotifiedAt: Date | null;
+  }> = [];
+  for (const chunk of chunkValues(ids, ATTENTION_GRAPH_QUERY_CHUNK_SIZE)) {
+    rows.push(...await db
+      .select({
+        id: issues.id,
+        status: issues.status,
+        assigneeAgentId: issues.assigneeAgentId,
+        assigneeUserId: issues.assigneeUserId,
+        unblockDescriptor: issues.unblockDescriptor,
+        monitorNextCheckAt: issues.monitorNextCheckAt,
+        blockedOwnerNotifiedAt: issues.blockedOwnerNotifiedAt,
+      })
+      .from(issues)
+      .where(and(eq(issues.companyId, companyId), inArray(issues.id, chunk), readCondition)));
+  }
+  const ownerAgentId = (row: (typeof rows)[number]) => {
+    const owner = row.status === "blocked" ? row.unblockDescriptor?.owner : null;
+    return owner && typeof owner === "object" && "agentId" in owner ? owner.agentId : null;
+  };
+  const agentIds = [...new Set(rows.flatMap((row) => [row.assigneeAgentId, ownerAgentId(row)])
+    .filter((id): id is string => Boolean(id)))];
+  const agentById = new Map<string, TerminalBlockerAgent>();
+  for (const chunk of chunkValues(agentIds, ATTENTION_GRAPH_QUERY_CHUNK_SIZE)) {
+    const agentRows = await db
+      .select({ id: agents.id, name: agents.name, status: agents.status })
+      .from(agents)
+      .where(and(eq(agents.companyId, companyId), inArray(agents.id, chunk)));
+    for (const agent of agentRows) agentById.set(agent.id, { name: agent.name, status: agent.status });
+  }
+  for (const row of rows) {
+    const descriptor = row.status === "blocked" ? row.unblockDescriptor : null;
+    const owner = descriptor?.owner;
+    const agentOwnerId = ownerAgentId(row);
+    facts.set(row.id, {
+      status: row.status,
+      monitorNextCheckAt: row.monitorNextCheckAt,
+      ownerNotified: row.blockedOwnerNotifiedAt !== null,
+      assigneeAgentId: row.assigneeAgentId,
+      assigneeAgent: row.assigneeAgentId ? agentById.get(row.assigneeAgentId) ?? null : null,
+      assigneeUserId: row.assigneeUserId,
+      unblockAction: descriptor?.action?.trim() || null,
+      unblockOwner: !owner ? null
+        : owner === "board" ? { kind: "board" }
+        : agentOwnerId ? { kind: "agent", agent: agentById.get(agentOwnerId) ?? null }
+        : "userId" in owner ? { kind: "user", userId: owner.userId }
+        : null,
+    });
+  }
+  return facts;
+}
+
+function sentence(text: string) {
+  const trimmed = text.trim();
+  return /[.!?]$/.test(trimmed) ? trimmed : `${trimmed}.`;
+}
+
+function terminalBlockerAgentLabel(agent: TerminalBlockerAgent | null) {
+  if (!agent) return "a missing agent";
+  return isAgentStatusInvokable(agent.status) ? agent.name : `${agent.name} (${agent.status})`;
+}
+
+const TERMINAL_BLOCKER_UNASSIGNED_CAUSE = "Has no assignee.";
+
+function terminalBlockerCause(facts: TerminalBlockerFacts | undefined, now: number) {
+  if (!facts) return "No live owner, run, or wake path.";
+  switch (facts.status) {
+    case "blocked": {
+      const owner = facts.unblockOwner;
+      if (owner?.kind === "agent" && owner.agent && isAgentStatusInvokable(owner.agent.status) && !facts.ownerNotified) {
+        return `Blocked; its unblock owner ${owner.agent.name} has not been sent the request.`;
+      }
+      return "Blocked with no open blocker, pending request, or invokable unblock owner.";
+    }
+    case "cancelled":
+      return "Cancelled while open work still depends on it.";
+    case "in_review":
+      // Only claim facts this card checked: a saved future monitor is named,
+      // not denied.
+      return facts.monitorNextCheckAt && facts.monitorNextCheckAt.getTime() > now
+        ? `In review with no reviewer or active run; its monitor is next due ${facts.monitorNextCheckAt.toISOString()}.`
+        : "In review with no reviewer, active run, or scheduled monitor.";
+    case "backlog":
+      return "Parked in backlog.";
+  }
+  if (!facts.assigneeAgentId && !facts.assigneeUserId) return TERMINAL_BLOCKER_UNASSIGNED_CAUSE;
+  if (facts.assigneeAgentId && (!facts.assigneeAgent || !isAgentStatusInvokable(facts.assigneeAgent.status))) {
+    return `Assignee ${terminalBlockerAgentLabel(facts.assigneeAgent)} cannot be woken.`;
+  }
+  return `${facts.status.replaceAll("_", " ").replace(/^\w/, (c) => c.toUpperCase())} with no active run or queued wake.`;
+}
+
+function terminalBlockerOwnerLine(facts: TerminalBlockerFacts | undefined, viewerUserId: string | null | undefined) {
+  if (!facts) return null;
+  if (facts.unblockAction) {
+    const owner = facts.unblockOwner;
+    const ownerLabel = !owner ? null
+      : owner.kind === "board" ? "board"
+      : owner.kind === "agent" ? terminalBlockerAgentLabel(owner.agent)
+      : owner.userId === viewerUserId ? "you" : "an assigned user";
+    return ownerLabel
+      ? `Unblock step (${ownerLabel}): ${sentence(facts.unblockAction)}`
+      : `Unblock step: ${sentence(facts.unblockAction)}`;
+  }
+  if (facts.assigneeAgentId) return `Owner: ${terminalBlockerAgentLabel(facts.assigneeAgent)}.`;
+  if (facts.assigneeUserId) return `Owner: ${facts.assigneeUserId === viewerUserId ? "you" : "an assigned user"}.`;
+  return "Owner: none.";
+}
+
 function resolveBlockingIssue(
   issue: { id: string; identifier: string | null },
   fromRelation: BlockingIssueSummary | undefined,
@@ -2211,6 +2350,10 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
         terminalSummary: IssueSummaryRow | IssueSubjectRow;
         state: "stalled" | "needs_attention";
       }>();
+      // Blocked issues that resolved to each terminal blocker. A child blocks
+      // its blocked parent, which the relation-only work walk below does not
+      // follow, so the count is the union of both sets.
+      const blockedRootIdsByTerminal = new Map<string, Set<string>>();
 
       for (const issue of typedBlockedIssues) {
         const descriptor = issue.unblockDescriptor;
@@ -2261,6 +2404,11 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
         const terminalSummary = terminalBlockerSummaries.get(terminalIssueId)
           ?? (terminalIssueId === issue.id ? issueSummary ?? issue : null);
         if (!terminalSummary) continue;
+        if (terminalIssueId !== issue.id) {
+          const roots = blockedRootIdsByTerminal.get(terminalIssueId) ?? new Set<string>();
+          roots.add(issue.id);
+          blockedRootIdsByTerminal.set(terminalIssueId, roots);
+        }
         const current = terminalCandidates.get(terminalIssueId);
         if (!current || issue.updatedAt > current.issue.updatedAt) {
           terminalCandidates.set(terminalIssueId, {
@@ -2272,22 +2420,40 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
         }
       }
 
-      const blockedWorkCounts = summaryOnly
-        ? new Map<string, number>()
-        : await blockedWorkCountMap(db, companyId, [...terminalCandidates.keys()]);
+      const terminalIds = [...terminalCandidates.keys()];
+      const [blockedWork, terminalFacts] = summaryOnly
+        ? [new Map<string, Set<string>>(), new Map<string, TerminalBlockerFacts>()]
+        : await Promise.all([
+          blockedWorkMap(db, companyId, terminalIds),
+          terminalBlockerFactsMap(db, companyId, terminalIds, readCondition),
+        ]);
       for (const [terminalIssueId, candidate] of terminalCandidates) {
-        const blockedTaskCount = blockedWorkCounts.get(terminalIssueId) ?? 0;
+        const blockedTaskCount = new Set([
+          ...(blockedWork.get(terminalIssueId) ?? []),
+          ...(blockedRootIdsByTerminal.get(terminalIssueId) ?? []),
+        ]).size;
         const taskLabel = blockedTaskCount === 1 ? "task" : "tasks";
         const dedupKey = `blocker:${terminalIssueId}`;
+        const facts = terminalFacts.get(terminalIssueId);
+        const ownerLine = terminalBlockerOwnerLine(facts, options.userId);
+        const cause = terminalBlockerCause(facts, now);
         add(createItem({
           companyId,
           sourceKind: "blocker_attention",
           subject: issueSubject(prefix, candidate.terminalSummary),
-          whyNow: candidate.state === "needs_attention"
-            ? `Blocks ${blockedTaskCount} ${taskLabel} and needs human attention.`
-            : `Blocks ${blockedTaskCount} ${taskLabel}; choose the next owner or action.`,
+          // Say why the card exists (cause), who owns the next step and what it
+          // is, then how much work waits on it.
+          whyNow: [
+            cause,
+            cause === TERMINAL_BLOCKER_UNASSIGNED_CAUSE && ownerLine === "Owner: none." ? null : ownerLine,
+            `Blocks ${blockedTaskCount} ${taskLabel}.`,
+          ].filter(Boolean).join(" "),
           decisionVerbs: decisionVerbs(
-            { id: "unblock", label: "Unblock", description: "Repair or replace the stalled blocker path." },
+            {
+              id: "unblock",
+              label: "Unblock",
+              description: facts?.unblockAction ?? "Repair or replace the stalled blocker path.",
+            },
             { id: "reassign", label: "Reassign", description: "Assign the stalled blocker to a live owner." },
             { id: "nudge", label: "Nudge", description: "Wake or prompt the current owner." },
           ),
