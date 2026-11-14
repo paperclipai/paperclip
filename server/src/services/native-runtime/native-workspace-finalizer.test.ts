@@ -22,6 +22,7 @@ import {
   agentWakeupRequests,
   agents,
   companies,
+  closeDedicatedDbConnections,
   completionContracts,
   createDb,
   environmentLeases,
@@ -1050,6 +1051,7 @@ describe("native workspace finalization recovery", () => {
     const rows = await db.execute(sql`select current_user as name`);
     const role = String(rows[0].name);
     await db.execute(sql`alter role ${sql.identifier(role)} set idle_in_transaction_session_timeout = '1s'`);
+    await closeDedicatedDbConnections(db, 1);
     try {
       const result = await withNativeWorkspaceFinalizationOwnership({ db, companyId, runId: seeded.runId }, async ownership => {
         await new Promise(resolve => setTimeout(resolve, 3200));

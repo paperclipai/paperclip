@@ -886,7 +886,34 @@ function turnStartResponseReady(input: {
 type RunnerdRecoveredTurnTerminal = {
   status: "completed" | "failed" | "interrupted" | "cancelled";
   error: unknown;
+  awaitingProviderTurn?: true;
 };
+
+function awaitingProviderTurnMarker(eventType: string, payload: Record<string, unknown>): { awaitingProviderTurn?: true } {
+  return eventType === "turn.completed" && payload.awaitingProviderTurn === true ? { awaitingProviderTurn: true } : {};
+}
+
+function runnerdPriorTurnTerminals(
+  events: readonly Pick<DurableRecoveryCommittedEvent, "eventType" | "envelope">[],
+  runId: string | undefined,
+  boundTurnId: string,
+): Map<string, Record<string, unknown>> {
+  const priorTerminals = new Map<string, Record<string, unknown>>();
+  for (const event of events) {
+    if (event.envelope.runId !== runId ||
+        !["turn.completed", "turn.failed", "turn.interrupted", "turn.cancelled"].includes(event.eventType)) continue;
+    const payload = record(record(event.envelope.payload).payload);
+    const turnId = payload.providerTurnId ?? payload.turnId ?? record(payload.turn).id;
+    if (typeof turnId !== "string" || !turnId || turnId === boundTurnId) continue;
+    priorTerminals.set(turnId, {
+      id: turnId,
+      status: event.eventType.slice("turn.".length),
+      error: payload.error ?? record(payload.turn).error ?? null,
+      ...awaitingProviderTurnMarker(event.eventType, payload),
+    });
+  }
+  return priorTerminals;
+}
 
 const RUNNERD_TURN_TERMINAL_STATUSES = new Set(["completed", "failed", "interrupted", "cancelled"]);
 
@@ -916,7 +943,8 @@ function runnerdRecoveredTurnTerminal(
       // Reconciliation must retain the cause, including the runner's explicit
       // process-loss marker, rather than inventing error:null.
       terminal = { status: event.eventType.slice("turn.".length) as RunnerdRecoveredTurnTerminal["status"],
-        error: payload.error ?? record(payload.turn).error ?? null };
+        error: payload.error ?? record(payload.turn).error ?? null,
+        ...awaitingProviderTurnMarker(event.eventType, payload) };
       reconciledEndedTurn = false;
     } else if (event.eventType === "run.terminal" && reconciledEndedTurn) {
       const status = String(payload.turnTerminalState);
@@ -4652,19 +4680,8 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
       // Keep its prior terminal as the history anchor, so driver recovery can
       // adopt the later accepted turn instead of submitting it again. Items
       // remain lazy and fail closed if their start left the retained window.
-      const priorTerminals = new Map<string, Record<string, unknown>>();
-      for (const event of this.#core?.store.state.committedEvents ?? []) {
-        if (event.envelope.runId !== this.#core?.store.state.identity.runId ||
-            !["turn.completed", "turn.failed", "turn.interrupted", "turn.cancelled"].includes(event.eventType)) continue;
-        const payload = record(record(event.envelope.payload).payload);
-        const turnId = payload.providerTurnId ?? payload.turnId ?? record(payload.turn).id;
-        if (typeof turnId !== "string" || !turnId || turnId === this.#turnId) continue;
-        priorTerminals.set(turnId, {
-          id: turnId,
-          status: event.eventType.slice("turn.".length),
-          error: payload.error ?? record(payload.turn).error ?? null,
-        });
-      }
+      const priorTerminals = runnerdPriorTurnTerminals(
+        this.#core?.store.state.committedEvents ?? [], this.#core?.store.state.identity.runId, this.#turnId);
       recoveredTurns.unshift(...priorTerminals.values());
       this.#recoveryTurnBindingPending = false;
       this.#pumpEvents();
@@ -9786,6 +9803,7 @@ export const runnerdRecoveryInternals = Object.freeze({
   rotatedRunAttachPayload,
   localRunnerStateArchive,
   rotateAuthorityEpoch,
+  runnerdPriorTurnTerminals,
   runnerdRecoveredTurnTerminal,
   runnerdTerminalProviderTurnId,
   terminalMayBelongToPendingTurnStart,
