@@ -2660,6 +2660,37 @@ describeEmbeddedPostgres("secretService", () => {
     ).rejects.toThrow(/not bound/i);
   });
 
+  it("records a read as \"Last used\" without writing the secret row that admissions lock", async () => {
+    const companyId = await seedCompany();
+    const svc = secretService(db);
+    const secret = await svc.create(companyId, {
+      name: `last-used-${randomUUID()}`,
+      provider: "local_encrypted",
+      value: "runtime-secret",
+    });
+    await svc.createBinding({ companyId, secretId: secret.id, targetType: "system", targetId: "system", configPath: "env.API_KEY" });
+    const [before] = await db.select().from(companySecrets).where(eq(companySecrets.id, secret.id));
+    expect((await svc.list(companyId)).find((row) => row.id === secret.id)?.lastResolvedAt).toBeNull();
+
+    await svc.resolveSecretValue(companyId, secret.id, "latest", { consumerType: "system", consumerId: "system", configPath: "env.API_KEY" });
+
+    // The row keeps its version: a concurrent REPEATABLE READ admission that
+    // share-locks it to fence rotation is not aborted by this read.
+    const [after] = await db.select().from(companySecrets).where(eq(companySecrets.id, secret.id));
+    expect(after).toEqual(before);
+    const listed = (await svc.list(companyId)).find((row) => row.id === secret.id);
+    expect(listed?.lastResolvedAt).toBeInstanceOf(Date);
+    expect(listed!.lastResolvedAt!.getTime()).toBeGreaterThanOrEqual(before!.createdAt.getTime());
+
+    // A read made without a consumer context also counts as use.
+    const unattributed = await svc.create(companyId, { name: `last-used-unattributed-${randomUUID()}`, provider: "local_encrypted", value: "runtime-secret" });
+    const [unattributedBefore] = await db.select().from(companySecrets).where(eq(companySecrets.id, unattributed.id));
+    await svc.resolveSecretValue(companyId, unattributed.id, "latest");
+    const [unattributedAfter] = await db.select().from(companySecrets).where(eq(companySecrets.id, unattributed.id));
+    expect(unattributedAfter).toEqual(unattributedBefore);
+    expect((await svc.list(companyId)).find((row) => row.id === unattributed.id)?.lastResolvedAt).toBeInstanceOf(Date);
+  });
+
   it("preserves the original resolution error when failure access logging fails", async () => {
     const companyId = await seedCompany();
     const svc = secretService(db);
