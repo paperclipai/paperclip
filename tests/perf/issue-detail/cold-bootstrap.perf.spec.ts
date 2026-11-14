@@ -69,7 +69,7 @@ function scrub(url: string, seedData: Seed) {
 type StartState = "empty" | "no-saved-reads" | "saved-reads";
 const SAVED_READS_PREFIX = "paperclip:query-cache:v1:";
 
-async function measure(browser: Browser, baseURL: string, seedData: Seed, run: number, start: StartState = "empty"): Promise<Sample> {
+async function measure(browser: Browser, baseURL: string, seedData: Seed, run: number, start: StartState = "empty", apiDelayMs = API_DELAY_MS): Promise<Sample> {
   const context = await browser.newContext({ baseURL, viewport: { width: 1440, height: 900 }, serviceWorkers: "block" });
   if (WARM_HTTP_CACHE || start !== "empty") {
     // Load the app's JavaScript into this context's HTTP cache, then clear
@@ -101,7 +101,7 @@ async function measure(browser: Browser, baseURL: string, seedData: Seed, run: n
   // would disable the HTTP cache and download the warmed JavaScript again.
   const cdp = await context.newCDPSession(page);
   cdp.on("Fetch.requestPaused", (event: { requestId: string }) => {
-    setTimeout(() => { void cdp.send("Fetch.continueRequest", { requestId: event.requestId }).catch(() => {}); }, API_DELAY_MS);
+    setTimeout(() => { void cdp.send("Fetch.continueRequest", { requestId: event.requestId }).catch(() => {}); }, apiDelayMs);
   });
   await cdp.send("Fetch.enable", { patterns: [{ urlPattern: "*/api/*", requestStage: "Request" }] });
   const records = new Map<object, RequestRecord>();
@@ -214,6 +214,18 @@ test("a returning task load with saved reads revalidates its first frame through
   }
   expect(startedBefore.filter((record) => record.path.startsWith("/api/issues/:ref/chat-bootstrap"))).toHaveLength(1);
   expect(firstFrameReads.map((record) => record.path)).toEqual([]);
+});
+
+test("a returning task load shows its saved chat before any API response, then revalidates", async ({ browser, baseURL, request }) => {
+  const seedData = await seed(request);
+  // Every response arrives well after the app has booted, so a frame before
+  // the first response can only come from the saved read cache.
+  const sample = await measure(browser, baseURL!, seedData, 1, "saved-reads", 2_500);
+  await test.info().attach("requests.json", { body: JSON.stringify(sample, null, 2), contentType: "application/json" });
+  const firstResponse = Math.min(...sample.requests.filter((record) => record.endMs !== null).map((record) => record.endMs!));
+  expect(sample.revealMs).toBeLessThan(firstResponse);
+  // The saved chat is revalidated through the page's one bootstrap.
+  expect(sample.requests.filter((record) => record.path.startsWith("/api/issues/:ref/chat-bootstrap"))).toHaveLength(1);
 });
 
 test("cold direct task load benchmark", async ({ browser, baseURL, request }) => {
