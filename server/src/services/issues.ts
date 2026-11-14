@@ -12651,7 +12651,7 @@ export function issueService(db: Db) {
     remove: (id: string, actorAgentId?: string | null) =>
       db.transaction(async (tx) => {
         const [task] = await tx.select({ companyId: issues.companyId, parentId: issues.parentId,
-          executionWorkspaceId: issues.executionWorkspaceId }).from(issues).where(eq(issues.id, id));
+          executionWorkspaceId: issues.executionWorkspaceId }).from(issues).where(eq(issues.id, id)).for("update");
         if (task) await assertAgentInteraction(tx, { companyId: task.companyId, actorAgentId,
           operation: "edit", issueId: id, lock: true });
         const attachmentAssetIds = await tx
