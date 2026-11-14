@@ -6,6 +6,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vites
 describe("directory-lock crash point", () => {
   let root: string;
   let control: string;
+  let attempt = 0;
   let agentDirectoryWorkingCopyService: typeof import("../services/agent-directory-working-copies.js").agentDirectoryWorkingCopyService;
   let AgentDirectoryOperationBusyError: typeof import("../services/agent-directory-working-copies.js").AgentDirectoryOperationBusyError;
   let prepareWithAgentDirectoryDeferral: typeof import("../services/heartbeat/agent-directory-busy.js").prepareWithAgentDirectoryDeferral;
@@ -22,7 +23,8 @@ describe("directory-lock crash point", () => {
   }, 120_000);
 
   beforeEach(async () => {
-    await writeFile(control, "t1 agent_directory.operation_lock.before_acquire:1 fail\n");
+    attempt += 1;
+    await writeFile(control, `t${attempt} agent_directory.operation_lock.before_acquire:1 fail\n`);
   });
 
   afterAll(async () => {
