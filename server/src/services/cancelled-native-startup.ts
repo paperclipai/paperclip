@@ -106,8 +106,6 @@ async function hasSettledFailedPreparationEvidence(db: Db, run: Run, historicalR
       "lastOutputAt", "lastOutputStream", "lastOutputBytes"].includes(key)) &&
     !(emptyLog && ["logStore", "logRef", "logBytes", "logSha256", "stdoutExcerpt", "stderrExcerpt"].includes(key)) && value !== null)
     || !hasOnlyPreparationAccountingContext(source.usageJson, run.issueId ?? run.contextSnapshot?.issueId)
-    // Admission markers (chat control recovery, a non-assignee comment wake)
-    // record why dispatch admitted the run; they carry no execution evidence.
     || Object.entries(run.runnerProfileJson ?? {}).some(([key, value]) => !["adapterDispatch", "remoteWorkspace",
       "chatControlRecoveryAdmission"].includes(key) && !(key === "aiConnectionNonAssigneeCommentWake" && typeof value === "boolean")
       && !(key === "nativeWorkspaceOwnerStopProof" && isRetainedWorkspaceWorkerStopProof(value, run.id)))

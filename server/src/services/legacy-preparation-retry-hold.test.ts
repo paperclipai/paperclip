@@ -127,11 +127,6 @@ describe("Retry of a legacy preparation that automatic recovery stopped", () => 
     expect(wake).toMatchObject({ status: "coalesced", runId: expect.any(String) });
   });
 
-  // Staging shape (setup failure, then restore recovery): the failed
-  // preparation's copy-back failed, so restore recovery owns its lease and the
-  // workspace still names that location. Recovery saved the work, and the
-  // workspace was handed on unchanged for this run. The run also carries the
-  // dispatch admission marker of a non-assignee comment wake.
   it.each(["restore_failed", "held_location", "comment_wake_marker", "all", "attached_after_refusal"] as const)(
     "starts the person's Retry of a recovered setup failure: %s", async variant => {
       const f = await seed();
@@ -157,8 +152,6 @@ describe("Retry of a legacy preparation that automatic recovery stopped", () => 
       }).where(eq(heartbeatRuns.id, f.source.id));
       let earlier: string | undefined;
       if (variant === "attached_after_refusal") {
-        // An earlier click was refused while the sandbox stop was unconfirmed.
-        // The next click attaches to that saved request and must start it.
         await db.update(environmentLeases).set({ metadata: { pendingCleanupInFlight: false } }).where(eq(environmentLeases.id, f.leaseId));
         const refused = await requestTaskRetry({ db, companyId: f.companyId, issueId: f.issueId, actorId: f.actorId,
           observedRunId: f.source.id, idempotencyKey: randomUUID(), actorSource: "local_implicit" });
