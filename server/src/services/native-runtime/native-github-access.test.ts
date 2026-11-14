@@ -40,7 +40,7 @@ function localDuplexChannel(command: readonly string[], cwd: string): CommandMan
 async function broker(resolveCredentials = vi.fn(async (binding: ReturnType<typeof run>) => ({
   status: "available", env: { GH_TOKEN: `fixture-${binding.runId}` },
 })), remote = false, bridgeUnavailable = false, onLog?: (stream: "stdout" | "stderr", chunk: string) => Promise<void>,
-duplex?: { enabled?: boolean; capability: boolean; unavailable?: boolean; recorder?: DuplexObservabilityRecorder }) {
+duplex?: { enabled?: boolean; capability: boolean; unavailable?: boolean; startupFailure?: "lost" | "unreachable"; fallbackUnavailable?: boolean; recorder?: DuplexObservabilityRecorder }) {
   const root = await mkdtemp(path.join(tmpdir(), "native-github-reuse-"));
   cleanups.push(() => rm(root, { recursive: true, force: true }));
   const bin = path.join(root, "real-bin");
@@ -71,8 +71,18 @@ duplex?: { enabled?: boolean; capability: boolean; unavailable?: boolean; record
   const result = await createNativeGitHubAccess({ scope, target, cwd: root,
     env: { PATH: `${bin}:${path.dirname(process.execPath)}:/usr/bin:/bin`, PAPERCLIP_API_KEY: "old-run-api-key" }, resolveCredentials, onLog },
     bridgeUnavailable ? async () => { throw new Error("fixture bridge unavailable"); } : async input => {
+      if (duplex?.fallbackUnavailable && input.enableSandboxDuplexBridge === false) throw new Error("fixture fallback unavailable");
       const bridge = await startAdapterExecutionTargetPaperclipBridge(input);
       bridgeModes.push(bridge?.env.PAPERCLIP_API_BRIDGE_MODE);
+      if (duplex?.startupFailure && bridge?.env.PAPERCLIP_API_BRIDGE_MODE === "http2_v1") {
+        const channel = await openDuplexChannel.mock.results.at(-1)!.value;
+        channel.stop();
+        await vi.waitFor(() => expect(bridge.readRunDisposition?.().failed).toBe(true));
+        if (duplex.startupFailure === "unreachable") {
+          // A transport can stop serving before its control channel reports a loss.
+          bridge.readRunDisposition = () => ({ failed: false, lossReason: null });
+        }
+      }
       return bridge;
     });
   cleanups.push(result.stop);
@@ -156,6 +166,35 @@ it("marks a lost HTTP/2 bridge unavailable before the next warm admission", asyn
   const channel = await b.openDuplexChannel.mock.results[0]!.value;
   channel.stop();
   await vi.waitFor(() => expect(b.ready).toBe(false), { timeout: 2000 });
+});
+it.each(["lost", "unreachable"] as const)("recovers a %s GitHub bridge after its greeting before starting managed commands", async startupFailure => {
+  const b = await broker(undefined, true, false, undefined, { enabled: true, capability: true, startupFailure });
+  expect(b.bridgeModes).toEqual(["http2_v1", "queue_v1"]);
+  expect(b.ready).toBe(true);
+  expect(b.resolveCredentials).not.toHaveBeenCalled();
+  const release = b.activate(run("recovered"));
+  const result = await promisify(execFile)(path.join(b.env.PAPERCLIP_GITHUB_LAUNCHER_DIR, "gh"), [], {
+    env: { ...process.env, ...b.env, GH_TOKEN: "ambient-must-not-leak" },
+    timeout: 15_000,
+  });
+  expect(result.stdout).toBe("fixture-recovered");
+  expect(result.stderr).toBe("");
+  expect(b.resolveCredentials.mock.calls.map(([binding]) => binding.runId)).toEqual(["recovered"]);
+  release();
+}, 30_000);
+it("keeps host credentials isolated when neither GitHub startup transport works", async () => {
+  const b = await broker(undefined, true, false, undefined, {
+    enabled: true, capability: true, startupFailure: "lost", fallbackUnavailable: true,
+  });
+  expect(b.ready).toBe(false);
+  expect(b.openDuplexChannel).toHaveBeenCalledOnce();
+  expect(b.env.PAPERCLIP_GITHUB_BROKER_TOKEN).toBe("");
+  b.activate(run("unavailable"));
+  const result = await promisify(execFile)(path.join(b.env.PAPERCLIP_GITHUB_LAUNCHER_DIR, "gh"), [], {
+    env: { ...process.env, ...b.env, GH_TOKEN: "ambient-must-not-leak" },
+  });
+  expect(result.stdout).toBe("anonymous");
+  expect(b.resolveCredentials).not.toHaveBeenCalled();
 });
 it("closes a healthy HTTP/2 bridge without reporting a lost active run", async () => {
   const onLog = vi.fn(async (_stream: "stdout" | "stderr", _chunk: string) => undefined);

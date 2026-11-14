@@ -6,6 +6,7 @@ import {
   adapterExecutionTargetDuplexObservabilityRecorder,
   githubOperationLauncherDirectory,
   prepareGitHubOperationLaunchers,
+  runAdapterExecutionTargetProcess,
   startAdapterExecutionTargetPaperclipBridge,
 } from "@paperclipai/adapter-utils/execution-target";
 import { githubBrokerEnvironment } from "@paperclipai/adapter-utils/github-launcher";
@@ -98,7 +99,7 @@ export async function createNativeGitHubAccess(input: {
     const address = server.address();
     if (!address || typeof address === "string") throw new Error("GitHub broker did not listen");
     const url = `http://127.0.0.1:${address.port}`;
-    try {
+    const startVerifiedBridge = async (enableSandboxDuplexBridge: boolean) => {
       bridge = await startBridge({
         ...location,
         runtimeRootDir: input.target?.kind === "remote"
@@ -107,12 +108,45 @@ export async function createNativeGitHubAccess(input: {
         adapterKey: "native-github",
         hostApiToken: token,
         hostApiUrl: url,
-        enableSandboxDuplexBridge: duplexRequested,
+        enableSandboxDuplexBridge,
         duplexObservabilityRecorder: adapterExecutionTargetDuplexObservabilityRecorder(input.target),
         onLog: input.onLog,
       });
       if (input.target?.kind === "remote" && !bridge) {
         throw new Error("GitHub session requires a remote callback bridge");
+      }
+      if (!bridge) return null;
+      // A gateway greeting does not prove that HTTP/2 can carry a request.
+      // Probe from the execution target before publishing its endpoint. No run
+      // is active yet, so this checks transport/authentication without acquiring
+      // a GitHub credential or performing any provider operation.
+      const probe = await runAdapterExecutionTargetProcess(location.runId, input.target, "node", ["-e", `
+        (async () => {
+          const response = await fetch(process.env.PAPERCLIP_API_URL + '/runtime-tools/github/credentials', {
+            method: 'POST', redirect: 'error', signal: AbortSignal.timeout(10000),
+            headers: { authorization: 'Bearer ' + process.env.PAPERCLIP_API_KEY, 'content-type': 'application/json' },
+            body: '{}',
+          });
+          const body = await response.json();
+          if (response.status !== 403 || body.error !== 'No active GitHub run') process.exitCode = 1;
+        })().catch(() => { process.exitCode = 1; });
+      `], { cwd: input.cwd, env: bridge.env, timeoutSec: 15, graceSec: 1, onLog: async () => {} });
+      if (probe.exitCode !== 0 || probe.timedOut || bridge.readRunDisposition?.().failed) {
+        throw new Error("GitHub session transport verification failed");
+      }
+      return bridge;
+    };
+    try {
+      try {
+        bridge = await startVerifiedBridge(duplexRequested);
+      } catch (error) {
+        if (!duplexRequested || bridge?.env.PAPERCLIP_API_BRIDGE_MODE !== "http2_v1") throw error;
+        // Only the inactive readiness probe can have crossed this bridge.
+        // Replacing it cannot replay an agent command or change its identity.
+        await bridge.stop();
+        bridge = null;
+        await input.onLog?.("stderr", "[paperclip] GitHub HTTP/2 startup check failed; retrying with the file bridge.\n").catch(() => undefined);
+        bridge = await startVerifiedBridge(false);
       }
     } catch {
       // GitHub remains optional. Stage anonymous wrappers for this session;
