@@ -113,13 +113,22 @@ Rules for `plan.approved`:
 
 - An event holds no free text. Titles, names, document text, comments, file
   names, and prompts never enter the table.
-- A text property is stored only when it is a short fixed value that matches
-  `^[a-z0-9][a-z0-9._:-]{0,63}$`. Any other value is dropped.
-- A direct event stores a property only when it is such a fixed value, a finite
-  number, or a boolean. `recordDirectCloudProductEvent` applies this rule to
-  each caller.
-- An error message, a model name that is not a fixed value, a connection name,
-  and a plan text never enter the table.
+- A text property is stored only when its value is in a closed list in the
+  code, for example the list of agent roles. Any other value is dropped. The
+  shape of a value is not sufficient.
+- The `origin` property is a built-in origin, `plugin` for each origin that a
+  plugin defines, or `other`. The origin text that a plugin supplies never
+  enters the table.
+- A direct event stores a property only when it is a value from the closed
+  list of that property, a finite number, or a boolean.
+  `recordDirectCloudProductEvent` applies this rule to each caller.
+- The `model` property of `run.finished` is a model family from a closed list,
+  for example `claude-sonnet` or `gpt`, or `other`. The model name itself never
+  enters the table, because a customer can name a model.
+- The `errorCode` property is stored only when the code is in the failure class
+  lists. The `adapterType` property is a built-in adapter type or `other`. The
+  `connectorKey` property is a catalog key or `custom`.
+- An error message, a connection name, and a plan text never enter the table.
 - Each event holds the company ID, the actor type and ID, the responsible user
   ID, and the entity type and ID.
 - The responsible user of `run.finished` is the responsible user of the run.
@@ -153,11 +162,13 @@ the database delays later events until it ends.
 
 1. Add the name to `CLOUD_PRODUCT_EVENT_NAMES`.
 2. If an activity row describes the action, add the mapping to
-   `draftCloudProductEvent`. Copy fixed values only.
+   `draftCloudProductEvent`. Copy a text value only when it is in a closed
+   list.
 3. If no activity row describes the action, add the name to
    `DIRECT_CLOUD_PRODUCT_EVENT_NAMES` and call `recordDirectCloudProductEvent`
    from the module that owns the action, after the action commits. Do not wait
-   for the result in the product action.
+   for the result in the product action. Add a closed list for each new text
+   property.
 4. Add a test in `server/src/__tests__/cloud-product-events.test.ts`.
 5. Update the event list in this document.
 6. Request a privacy review.

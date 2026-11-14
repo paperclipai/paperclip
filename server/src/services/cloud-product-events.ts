@@ -1,8 +1,24 @@
-import { and, asc, eq, gte, lt, sql } from "drizzle-orm";
+import { createHash } from "node:crypto";
+import { and, asc, eq, lt, sql } from "drizzle-orm";
 import { z } from "zod";
 import type { Db } from "@paperclipai/db";
 import { agents, cloudProductEvents, companyOnboardingSeeds, heartbeatRuns, issues } from "@paperclipai/db";
-import { isUuidLike, ONBOARDING_FIRST_TASK_ORIGIN_KIND } from "@paperclipai/shared";
+import {
+  AGENT_ADAPTER_TYPES,
+  AGENT_ROLES,
+  AI_PROVIDERS,
+  aiAuthMethodSchema,
+  getConnectableAppDefinition,
+  ISSUE_ORIGIN_KINDS,
+  ISSUE_THREAD_INTERACTION_KINDS,
+  issueWorkProductTypeSchema,
+  isUuidLike,
+  ONBOARDING_FIRST_TASK_ORIGIN_KIND,
+  ROUTINE_RUN_SOURCES,
+  ROUTINE_RUN_STATUSES,
+  toolConnectionStatusSchema,
+  toolConnectionTransportSchema,
+} from "@paperclipai/shared";
 import { readBuiltInAgentMarker } from "../lib/built-in-agent-metadata.js";
 import { logger } from "../middleware/logger.js";
 import { isCloudManagedInstance, type CloudInstanceEnv } from "./cloud-instance.js";
@@ -98,7 +114,9 @@ export interface CloudProductEventPage {
 }
 
 const CLOUD_CONTROL_ACTOR_ID = "paperclip-cloud";
-const FIXED_VALUE_RE = /^[a-z0-9][a-z0-9._:-]{0,63}$/;
+const PLUGIN_ORIGIN_PREFIX = "plugin:";
+export const CLOUD_PRODUCT_EVENT_PLUGIN_ORIGIN = "plugin";
+export const CLOUD_PRODUCT_EVENT_OTHER_ORIGIN = "other";
 const RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
 const PRUNE_INTERVAL_MS = 60 * 60 * 1000;
 
@@ -144,17 +162,20 @@ const SKILL_SOURCES: Readonly<Record<string, string>> = {
   "company.skill_catalog_installed": "catalog",
 };
 
-function fixedValue(value: unknown): string | null {
-  return typeof value === "string" && FIXED_VALUE_RE.test(value) ? value : null;
-}
+type ListedValue = readonly [value: unknown, allowed: readonly string[]];
 
-function fixedValues(values: Record<string, unknown>): Properties {
+function listedValues(values: Record<string, ListedValue>): Properties {
   const properties: Properties = {};
-  for (const [key, value] of Object.entries(values)) {
-    const fixed = fixedValue(value);
-    if (fixed) properties[key] = fixed;
+  for (const [key, [value, allowed]] of Object.entries(values)) {
+    if (typeof value === "string" && allowed.includes(value)) properties[key] = value;
   }
   return properties;
+}
+
+export function cloudProductEventOrigin(originKind: unknown): string {
+  if (typeof originKind !== "string") return CLOUD_PRODUCT_EVENT_OTHER_ORIGIN;
+  if ((ISSUE_ORIGIN_KINDS as readonly string[]).includes(originKind)) return originKind;
+  return originKind.startsWith(PLUGIN_ORIGIN_PREFIX) ? CLOUD_PRODUCT_EVENT_PLUGIN_ORIGIN : CLOUD_PRODUCT_EVENT_OTHER_ORIGIN;
 }
 
 function previousStatus(details: Record<string, unknown>): string | null {
@@ -174,19 +195,25 @@ export function draftCloudProductEvent(source: CloudProductEventSource): CloudPr
   const details = source.details ?? {};
   switch (source.action) {
     case "ai_connection.connected":
-      return { name: "ai_provider.connected", properties: fixedValues({ provider: details.provider, method: details.method }) };
+      return {
+        name: "ai_provider.connected",
+        properties: listedValues({
+          provider: [details.provider, AI_PROVIDERS],
+          method: [details.method, aiAuthMethodSchema.options],
+        }),
+      };
     case "agent.created":
     case "agent.hire_created":
       return {
         name: "agent.created",
-        properties: { ...fixedValues({ role: details.role }), source: source.action === "agent.created" ? "direct" : "hire" },
+        properties: { ...listedValues({ role: [details.role, AGENT_ROLES] }), source: source.action === "agent.created" ? "direct" : "hire" },
       };
     case "issue.document_created":
       return details.key === "plan"
         ? { name: "plan.created", properties: {} }
         : { name: "artifact.created", properties: { kind: "document" } };
     case "issue.work_product_created":
-      return { name: "artifact.created", properties: { kind: "work_product", ...fixedValues({ type: details.type }) } };
+      return { name: "artifact.created", properties: { kind: "work_product", ...listedValues({ type: [details.type, issueWorkProductTypeSchema.options] }) } };
     case "issue.attachment_added":
       return { name: "artifact.created", properties: { kind: "attachment" } };
     case "issue.created":
@@ -199,12 +226,21 @@ export function draftCloudProductEvent(source: CloudProductEventSource): CloudPr
       return {
         name: "routine.run_triggered",
         properties: {
-          ...fixedValues({ source: details.source, status: details.status }),
+          ...listedValues({
+            source: [details.source, ROUTINE_RUN_SOURCES],
+            status: [details.status, ROUTINE_RUN_STATUSES],
+          }),
           ...(typeof details.routineId === "string" && isUuidLike(details.routineId) ? { routineId: details.routineId } : {}),
         },
       };
     case "tool_connection.created":
-      return { name: "connector.connected", properties: fixedValues({ transport: details.transport, status: details.status }) };
+      return {
+        name: "connector.connected",
+        properties: listedValues({
+          transport: [details.transport, toolConnectionTransportSchema.options],
+          status: [details.status, toolConnectionStatusSchema.options],
+        }),
+      };
     case "project.created":
       return { name: "project.created", properties: {} };
     case "goal.created":
@@ -217,7 +253,10 @@ export function draftCloudProductEvent(source: CloudProductEventSource): CloudPr
     case "issue.thread_interaction_answered":
       return {
         name: "interaction.resolved",
-        properties: { ...fixedValues({ kind: details.interactionKind }), result: INTERACTION_RESULTS[source.action]! },
+        properties: {
+          ...listedValues({ kind: [details.interactionKind, ISSUE_THREAD_INTERACTION_KINDS] }),
+          result: INTERACTION_RESULTS[source.action]!,
+        },
       };
     default:
       return null;
@@ -237,7 +276,7 @@ async function issueProperties(db: Db, source: CloudProductEventSource): Promise
     .then((rows) => rows[0] ?? null);
   if (!issue) return {};
   return {
-    ...fixedValues({ origin: issue.originKind }),
+    origin: cloudProductEventOrigin(issue.originKind),
     isSubtask: issue.parentId !== null,
     isOnboarding: issue.originKind === ONBOARDING_FIRST_TASK_ORIGIN_KIND || issue.seededIssueId !== null,
   };
@@ -321,6 +360,7 @@ export interface CloudProductEventConnectorUse {
 }
 
 const RUN_OUTCOMES: ReadonlySet<string> = new Set(["succeeded", "failed", "cancelled", "timed_out", "interrupted"]);
+const CONNECTOR_USE_STATUSES = ["succeeded", "failed", "denied", "cancelled", "timed_out", "rate_limited"] as const;
 
 const RUN_FAILURE_CODES_BY_CLASS: Readonly<Record<Exclude<CloudRunFailureClass, "other">, readonly string[]>> = {
   stopped: ["cancelled", "operator_cancelled", "operator_interrupted", "issue_cancelled", "issue_paused", "agent_paused"],
@@ -358,13 +398,65 @@ export function cloudRunFailureClass(errorCode: string | null | undefined): Clou
   return (errorCode ? RUN_FAILURE_CLASS_BY_CODE.get(errorCode) : undefined) ?? "other";
 }
 
+export const CLOUD_RUN_MODEL_FAMILIES = [
+  "claude-opus", "claude-sonnet", "claude-haiku", "claude-fable", "claude-mythos", "claude",
+  "gpt", "openai-o", "codex", "gemini", "grok", "kimi", "other",
+] as const;
+
+export type CloudRunModelFamily = (typeof CLOUD_RUN_MODEL_FAMILIES)[number];
+
+const RUN_MODEL_FAMILY_PATTERNS: ReadonlyArray<readonly [CloudRunModelFamily, RegExp]> = [
+  ["claude-opus", /claude.*opus/],
+  ["claude-sonnet", /claude.*sonnet/],
+  ["claude-haiku", /claude.*haiku/],
+  ["claude-fable", /claude.*fable/],
+  ["claude-mythos", /claude.*mythos/],
+  ["claude", /claude/],
+  ["gpt", /(?:^|[^a-z])gpt/],
+  ["openai-o", /(?:^|[^a-z0-9])o[0-9]/],
+  ["codex", /codex/],
+  ["gemini", /gemini/],
+  ["grok", /grok/],
+  ["kimi", /kimi|moonshot/],
+];
+
+export function cloudRunModelFamily(model: string): CloudRunModelFamily {
+  const name = model.toLowerCase();
+  return RUN_MODEL_FAMILY_PATTERNS.find(([, pattern]) => pattern.test(name))?.[0] ?? "other";
+}
+
+function listed(allowed: readonly string[] | ReadonlySet<string>): (value: string) => string | null {
+  const values = allowed instanceof Set ? allowed : new Set(allowed);
+  return (value) => (values.has(value) ? value : null);
+}
+
+const DIRECT_TEXT_VALUES: Readonly<Record<string, (value: string) => string | null>> = {
+  outcome: listed(RUN_OUTCOMES),
+  errorCode: (value) => (RUN_FAILURE_CLASS_BY_CODE.has(value) ? value : null),
+  failureClass: listed(CLOUD_RUN_FAILURE_CLASSES),
+  adapterType: (value) => ((AGENT_ADAPTER_TYPES as readonly string[]).includes(value) ? value : "other"),
+  model: cloudRunModelFamily,
+  role: listed(AGENT_ROLES),
+  connectorKey: (value) => (value !== "custom" && getConnectableAppDefinition(value) ? value : "custom"),
+  status: listed(CONNECTOR_USE_STATUSES),
+};
+
 function directProperties(values: Record<string, unknown>): Properties {
   const properties: Properties = {};
   for (const [key, value] of Object.entries(values)) {
     if (typeof value === "boolean" || (typeof value === "number" && Number.isFinite(value))) properties[key] = value;
-    else if (typeof value === "string" && fixedValue(value)) properties[key] = value;
+    else if (typeof value === "string") {
+      const listedValue = DIRECT_TEXT_VALUES[key]?.(value) ?? null;
+      if (listedValue) properties[key] = listedValue;
+    }
   }
   return properties;
+}
+
+function connectorUseEventId(companyId: string, connectionId: string, day: string): string {
+  const hex = createHash("sha256").update(`cloud-product-event:connector.used:${companyId}:${connectionId}:${day}`).digest("hex");
+  const variant = ((Number.parseInt(hex.slice(16, 18), 16) & 0x3f) | 0x80).toString(16);
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-5${hex.slice(13, 16)}-${variant}${hex.slice(18, 20)}-${hex.slice(20, 32)}`;
 }
 
 function runUsageProperties(usage: unknown): Properties {
@@ -392,21 +484,27 @@ async function insertDirectCloudProductEvent(
   event: DirectCloudProductEvent,
   now: number,
   occurredAt?: Date,
+  eventId?: string,
 ): Promise<boolean> {
   if (event.actorId === CLOUD_CONTROL_ACTOR_ID) return false;
-  await db.insert(cloudProductEvents).values({
-    companyId: event.companyId,
-    name: event.name,
-    actorType: event.actorType,
-    actorId: event.actorId,
-    responsibleUserId: event.responsibleUserId,
-    entityType: event.entityType,
-    entityId: event.entityId,
-    properties: directProperties(event.properties ?? {}),
-    ...(occurredAt ? { occurredAt } : {}),
-  });
+  const inserted = await db
+    .insert(cloudProductEvents)
+    .values({
+      companyId: event.companyId,
+      name: event.name,
+      actorType: event.actorType,
+      actorId: event.actorId,
+      responsibleUserId: event.responsibleUserId,
+      entityType: event.entityType,
+      entityId: event.entityId,
+      properties: directProperties(event.properties ?? {}),
+      ...(occurredAt ? { occurredAt } : {}),
+      ...(eventId ? { eventId } : {}),
+    })
+    .onConflictDoNothing({ target: cloudProductEvents.eventId })
+    .returning({ id: cloudProductEvents.id });
   await pruneCloudProductEvents(db, now);
-  return true;
+  return inserted.length > 0;
 }
 
 async function recordBestEffort(name: DirectCloudProductEventName, record: () => Promise<boolean>): Promise<boolean> {
@@ -538,34 +636,23 @@ export async function recordConnectorUsedCloudProductEvent(
   }
   if (connectorUsesOfDay.has(guardKey)) return false;
   connectorUsesOfDay.add(guardKey);
-  return recordBestEffort("connector.used", () => db.transaction(async (tx) => {
-    const scoped = tx as unknown as Db;
-    await tx.execute(sql`select pg_advisory_xact_lock(hashtextextended(${`cloud-product-event:connector.used:${guardKey}:${day}`}, 0))`);
-    const recorded = await tx
-      .select({ id: cloudProductEvents.id })
-      .from(cloudProductEvents)
-      .where(and(
-        eq(cloudProductEvents.companyId, use.companyId),
-        eq(cloudProductEvents.name, "connector.used"),
-        eq(cloudProductEvents.entityId, use.connectionId),
-        gte(cloudProductEvents.occurredAt, new Date(`${day}T00:00:00.000Z`)),
-      ))
-      .limit(1);
-    if (recorded.length > 0) return false;
-    return insertDirectCloudProductEvent(scoped, {
-      name: "connector.used",
-      companyId: use.companyId,
-      actorType: use.actorType,
-      actorId: use.actorId ?? use.actorType,
-      responsibleUserId: await connectorUseResponsibleUserId(scoped, use),
-      entityType: "tool_connection",
-      entityId: use.connectionId,
-      properties: { connectorKey: use.connectorKey, status: use.status },
-    }, now, new Date(now));
-  }).catch((err: unknown) => {
-    connectorUsesOfDay.delete(guardKey);
-    throw err;
-  }));
+  return recordBestEffort("connector.used", async () => {
+    try {
+      return await insertDirectCloudProductEvent(db, {
+        name: "connector.used",
+        companyId: use.companyId,
+        actorType: use.actorType,
+        actorId: use.actorId ?? use.actorType,
+        responsibleUserId: await connectorUseResponsibleUserId(db, use),
+        entityType: "tool_connection",
+        entityId: use.connectionId,
+        properties: { connectorKey: use.connectorKey, status: use.status },
+      }, now, new Date(now), connectorUseEventId(use.companyId, use.connectionId, day));
+    } catch (err) {
+      connectorUsesOfDay.delete(guardKey);
+      throw err;
+    }
+  });
 }
 
 export async function listCloudProductEvents(

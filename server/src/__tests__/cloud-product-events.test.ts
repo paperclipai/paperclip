@@ -17,6 +17,8 @@ import {
   CLOUD_RUN_FAILURE_CLASSES,
   DIRECT_CLOUD_PRODUCT_EVENT_NAMES,
   cloudRunFailureClass,
+  cloudProductEventOrigin,
+  cloudRunModelFamily,
   draftCloudProductEvent,
   hasCloudProductEvent,
   listCloudProductEvents,
@@ -78,6 +80,28 @@ describe("draftCloudProductEvent", () => {
     ["issue.thread_interaction_answered", { interactionKind: "ask_user_questions" }, "interaction.resolved", { kind: "ask_user_questions", result: "answered" }],
   ])("maps %s to a named event with fixed values only", (action, details, name, properties) => {
     expect(draftCloudProductEvent(source({ action, details }))).toMatchObject({ name, properties });
+  });
+
+  it.each([
+    ["ai_connection.connected", { provider: "acme-internal", method: "customer-sso" }, {}],
+    ["agent.created", { role: "acme-growth-lead" }, { source: "direct" }],
+    ["issue.work_product_created", { type: "acme-report" }, { kind: "work_product" }],
+    ["routine.run_triggered", { source: "acme-cron", status: "acme-state" }, {}],
+    ["tool_connection.created", { transport: "acme-bus", status: "acme-live" }, {}],
+    ["issue.thread_interaction_accepted", { interactionKind: "acme-kind" }, { result: "accepted" }],
+  ])("drops a %s value that is not in the closed list", (action, details, properties) => {
+    expect(draftCloudProductEvent(source({ action, details }))?.properties).toEqual(properties);
+  });
+
+  it.each([
+    ["manual", "manual"],
+    ["routine_execution", "routine_execution"],
+    ["plugin:example:operation", "plugin"],
+    ["plugin:example:private-customer-name", "plugin"],
+    ["private-customer-name", "other"],
+    [null, "other"],
+  ])("reports the task origin %s as %s", (originKind, origin) => {
+    expect(cloudProductEventOrigin(originKind)).toBe(origin);
   });
 
   it("keeps the routine identifier on a routine run", () => {
@@ -388,6 +412,32 @@ const support = await getEmbeddedPostgresTestSupport();
     expect(Object.values(rows[0]!).map((value) => JSON.stringify(value, (_key, item) => typeof item === "bigint" ? item.toString() : item)).join(" ")).not.toContain("Private customer wording");
   });
 
+  it("stores a plugin origin as a fixed category, without the text the plugin supplied", async () => {
+    const companyId = await createCompany();
+    const issueId = randomUUID();
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Plugin task",
+      originKind: "plugin:example:private-customer-name",
+    });
+
+    await logActivity(db, {
+      companyId,
+      actorType: "user",
+      actorId: "user-owner",
+      action: "issue.created",
+      entityType: "issue",
+      entityId: issueId,
+      details: {},
+    });
+
+    const rows = await db.select().from(cloudProductEvents).where(eq(cloudProductEvents.companyId, companyId));
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.properties).toEqual({ origin: "plugin", isSubtask: false, isOnboarding: false });
+    expect(JSON.stringify(rows[0]!.properties)).not.toContain("private-customer-name");
+  });
+
   it("marks the onboarding task, whether the wizard or the Cloud seed created it", async () => {
     const companyId = await createCompany();
     const seededId = randomUUID();
@@ -560,7 +610,7 @@ const support = await getEmbeddedPostgresTestSupport();
       errorCode: "provider_quota",
       failureClass: "provider_limit",
       adapterType: "claude_local",
-      model: "claude-fable-5-2",
+      model: "claude-fable",
       durationSeconds: 90,
       inputTokens: 1200,
       outputTokens: 340,
@@ -569,21 +619,62 @@ const support = await getEmbeddedPostgresTestSupport();
     expect(stored(rows)).not.toMatch(/Private/);
   });
 
-  it("omits the failure class of a successful run and a model that is not a fixed value", async () => {
+  it("omits the failure class of a successful run and reports a customer-named model as other", async () => {
     const companyId = await createCompany();
     const agentId = await createAgent(companyId, { adapterConfig: { model: "Customer Model (private)" } });
     const runId = await createRun(companyId, agentId);
 
     expect(await recordRunFinishedCloudProductEvent(db, runId)).toBe(true);
 
-    expect((await eventsNamed("run.finished"))[0]!.properties).toEqual({
+    const rows = await eventsNamed("run.finished");
+    expect(rows[0]!.properties).toEqual({
       outcome: "succeeded",
       adapterType: "claude_local",
+      model: "other",
       durationSeconds: 90,
     });
+    expect(stored(rows)).not.toMatch(/Customer Model|private/);
   });
 
-  it("classes an unlisted error code as other and drops an error code that is not a slug", async () => {
+  it.each([
+    ["claude-opus-5-5", "claude-opus"],
+    ["us.anthropic.claude-sonnet-5-5", "claude-sonnet"],
+    ["claude-acme-private", "claude"],
+    ["gpt-5.2", "gpt"],
+    ["ft:gpt-4o:acme-corp:secret", "gpt"],
+    ["o4-mini", "openai-o"],
+    ["gemini-3-pro", "gemini"],
+    ["grok-5", "grok"],
+    ["acme-internal-llm", "other"],
+  ])("reports the model %s as the family %s", (model, family) => {
+    expect(cloudRunModelFamily(model)).toBe(family);
+  });
+
+  it("reports an adapter type and a connector key outside the lists as other and custom", async () => {
+    const companyId = await createCompany();
+    const agentId = await createAgent(companyId, { adapterType: "acme_private_adapter" });
+    const runId = await createRun(companyId, agentId);
+    const connectionId = randomUUID();
+
+    await recordRunFinishedCloudProductEvent(db, runId);
+    await recordConnectorUsedCloudProductEvent(db, {
+      companyId,
+      connectionId,
+      connectorKey: "acme-private-server",
+      status: "acme-private-status",
+      actorType: "user",
+      actorId: "user-1",
+      runId: null,
+      issueId: null,
+    });
+
+    expect((await eventsNamed("run.finished"))[0]!.properties).toMatchObject({ adapterType: "other" });
+    const uses = await eventsNamed("connector.used");
+    expect(uses[0]!.properties).toEqual({ connectorKey: "custom" });
+    expect(stored(uses)).not.toMatch(/acme/);
+  });
+
+  it("classes an unlisted error code as other and stores no error code outside the lists", async () => {
     const companyId = await createCompany();
     const agentId = await createAgent(companyId);
     const unlisted = await createRun(companyId, agentId, { status: "failed", errorCode: "a_code_added_later" });
@@ -593,12 +684,18 @@ const support = await getEmbeddedPostgresTestSupport();
     await recordRunFinishedCloudProductEvent(db, freeText);
 
     const rows = await eventsNamed("run.finished");
-    expect(rows.find((row) => row.entityId === unlisted)!.properties).toMatchObject({ errorCode: "a_code_added_later", failureClass: "other" });
+    expect(rows.find((row) => row.entityId === unlisted)!.properties).toEqual({
+      outcome: "failed",
+      failureClass: "other",
+      adapterType: "claude_local",
+      model: "claude",
+      durationSeconds: 90,
+    });
     expect(rows.find((row) => row.entityId === freeText)!.properties).toEqual({
       outcome: "timed_out",
       failureClass: "other",
       adapterType: "claude_local",
-      model: "claude-configured-model",
+      model: "claude",
       durationSeconds: 90,
     });
   });
@@ -648,7 +745,7 @@ const support = await getEmbeddedPostgresTestSupport();
     expect(await db.select().from(cloudProductEvents)).toHaveLength(0);
   });
 
-  it("stores only fixed values, numbers, and booleans from a direct event", async () => {
+  it("stores only listed values, numbers, and booleans from a direct event", async () => {
     const companyId = await createCompany();
     const issueId = randomUUID();
 
@@ -661,7 +758,9 @@ const support = await getEmbeddedPostgresTestSupport();
       entityType: "issue",
       entityId: issueId,
       properties: {
+        role: "engineer",
         kind: "plan",
+        adapterNote: "claude_local",
         count: 3,
         flag: true,
         title: "Private plan title",
@@ -684,7 +783,7 @@ const support = await getEmbeddedPostgresTestSupport();
     const rows = await eventsNamed("plan.approved");
     expect(rows).toHaveLength(1);
     expect(rows[0]).toMatchObject({ actorId: "user-1", responsibleUserId: "user-1", entityType: "issue", entityId: issueId });
-    expect(rows[0]!.properties).toEqual({ kind: "plan", count: 3, flag: true });
+    expect(rows[0]!.properties).toEqual({ role: "engineer", count: 3, flag: true });
     expect(stored(rows)).not.toMatch(/Private/);
   });
 
