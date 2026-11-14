@@ -39,7 +39,7 @@ import { authorizationService, executionWorkspaceReadSqlCondition, projectReadSq
 import type { SQL } from "drizzle-orm";
 import { nativeSessionProviderEvidence } from "./native-runtime/native-session-resume.js";
 import { hasWorkspaceRestoreFailure } from "@paperclipai/shared";
-import { notifyTerminalWorkspaceWork, terminalWorkspaceTargetsFromHints, type TerminalWorkspaceTargets } from "./terminal-workspace-work.js";
+import { notifyTerminalWorkspaceWork, type TerminalWorkspaceTargets } from "./terminal-workspace-work.js";
 import {
   clearTerminalWorkspaceRetry, readTerminalWorkspaceRetry, recordTerminalWorkspaceFailure, terminalWorkspaceFailure,
   TERMINAL_WORKSPACE_RETRY_KEY, type TerminalWorkspaceFailure,
@@ -2234,6 +2234,67 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
     }
   }
 
+  type IssueTreeRow = Awaited<ReturnType<typeof listWorkspaceIssueTree>>[number];
+
+  async function readPageIssueTrees(workspaces: Array<Pick<ExecutionWorkspaceRow, "id" | "companyId" | "sourceIssueId">>) {
+    const trees = new Map<string, IssueTreeRow[]>();
+    const roots = workspaces.filter(workspace => workspace.sourceIssueId)
+      .map(workspace => ({ companyId: workspace.companyId, issueId: workspace.sourceIssueId! }));
+    if (roots.length === 0) return trees;
+    const rows = await retryIdempotentDatabaseOperation(() => db
+      .select({ id: issues.id, companyId: issues.companyId, parentId: issues.parentId, status: issues.status,
+        completedAt: issues.completedAt, cancelledAt: issues.cancelledAt, updatedAt: issues.updatedAt })
+      .from(issues)
+      .where(sql<boolean>`(${issues.companyId}, ${issues.id}) IN (
+        WITH RECURSIVE issue_tree(company_id, id) AS (
+          SELECT (root->>'companyId')::uuid, (root->>'issueId')::uuid FROM jsonb_array_elements(${JSON.stringify(roots)}::jsonb) root
+          UNION
+          SELECT child.company_id, child.id FROM ${issues} child
+          JOIN issue_tree parent ON child.parent_id = parent.id AND child.company_id = parent.company_id
+        )
+        SELECT company_id, id FROM issue_tree
+      )`));
+    const byId = new Map(rows.map(row => [row.id, row]));
+    const children = new Map<string, typeof rows>();
+    for (const row of rows) {
+      if (!row.parentId) continue;
+      const siblings = children.get(row.parentId);
+      if (siblings) siblings.push(row); else children.set(row.parentId, [row]);
+    }
+    for (const workspace of workspaces) {
+      const root = workspace.sourceIssueId ? byId.get(workspace.sourceIssueId) : undefined;
+      if (!root || root.companyId !== workspace.companyId) { trees.set(workspace.id, []); continue; }
+      const tree: IssueTreeRow[] = [];
+      const seen = new Set<string>();
+      const stack = [root];
+      while (stack.length) {
+        const row = stack.pop()!;
+        if (seen.has(row.id)) continue;
+        seen.add(row.id);
+        tree.push({ id: row.id, status: row.status, completedAt: row.completedAt, cancelledAt: row.cancelledAt, updatedAt: row.updatedAt });
+        for (const child of children.get(row.id) ?? []) if (child.companyId === workspace.companyId) stack.push(child);
+      }
+      trees.set(workspace.id, tree);
+    }
+    return trees;
+  }
+
+  async function readPageActiveRunWorkspaces(workspaces: Array<Pick<ExecutionWorkspaceRow, "id" | "companyId" | "sourceIssueId">>) {
+    if (workspaces.length === 0) return new Set<string>();
+    const pairs = workspaces.map(workspace => ({ id: workspace.id, companyId: workspace.companyId, sourceIssueId: workspace.sourceIssueId }));
+    const rows = await db.execute<{ id: string }>(sql`SELECT workspace.id::text AS id
+      FROM jsonb_to_recordset(${JSON.stringify(pairs)}::jsonb) AS workspace(id uuid, "companyId" uuid, "sourceIssueId" uuid)
+      WHERE EXISTS (
+        SELECT 1 FROM ${issues} linked
+        JOIN ${heartbeatRuns} live_run ON live_run.company_id = linked.company_id
+          AND live_run.id IN (linked.checkout_run_id, linked.execution_run_id)
+          AND live_run.status IN ('queued', 'running')
+        WHERE linked.company_id = workspace."companyId"
+          AND (linked.execution_workspace_id = workspace.id OR linked.id = workspace."sourceIssueId")
+      )`);
+    return new Set(rows.map(row => row.id));
+  }
+
   async function workspaceHasActiveRun(workspace: Pick<ExecutionWorkspaceRow, "id" | "companyId" | "sourceIssueId">) {
     const linkedIssues = await db
       .select({
@@ -3627,16 +3688,15 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
         : undefined;
       const scanFilter = targets ? and(baseCandidateFilter, terminalWorkspaceTargetFilter(targets))
         : and(baseCandidateFilter, boundaryFilter, cursorFilter);
-      const candidates = await db
+      const candidateQuery = db
         .select({ workspace: executionWorkspaces, cursorAt: sql<string>`${executionWorkspaces.updatedAt}::text` })
         .from(executionWorkspaces)
         .where(scanFilter)
-        .orderBy(asc(executionWorkspaces.updatedAt), asc(executionWorkspaces.id))
-        .limit(limit);
+        .orderBy(asc(executionWorkspaces.updatedAt), asc(executionWorkspaces.id));
+      const candidates = await (targets ? candidateQuery : candidateQuery.limit(limit));
       // Advance the cursor to this page's last row. A short page means the scan
       // reached the end of the bounded candidate set, so reset the cursor and
       // the bound to start a new rotation on the next sweep.
-      if (targets && candidates.length >= limit) terminalSweepRescanRequested = true;
       if (!targets && candidates.length < limit) {
         terminalSweepCursor = null;
         terminalSweepBoundary = null;
@@ -3660,7 +3720,11 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
         compacted: 0,
         compactionFailed: 0,
       };
+      if (targets) for (const id of [...targets.workspaceIds, ...candidates.map(candidate => candidate.workspace.id)]) terminalWorkspaceDeadlines.delete(id);
       const readinessByWorkingTree = new Map<string, ReturnType<typeof inspectWorkspace>>();
+      const pageWorkspaces = candidates.map(candidate => candidate.workspace);
+      const [pageIssueTrees, pageActiveRunWorkspaces] = await Promise.all([
+        readPageIssueTrees(pageWorkspaces), readPageActiveRunWorkspaces(pageWorkspaces)]);
       const backOffTerminalWorkspace = async (snapshot: ExecutionWorkspaceRow, failure: TerminalWorkspaceFailure) => {
         const [target] = await db.select().from(executionWorkspaces).where(eq(executionWorkspaces.id, snapshot.id));
         if (!target) return;
@@ -3786,7 +3850,8 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
           await expireTaskDirectory(workspace, now());
           continue;
         }
-        const issueTree = await listWorkspaceIssueTree(workspace);
+        const issueTree = workspace.sourceIssueId === candidate.workspace.sourceIssueId
+          ? pageIssueTrees.get(workspace.id) ?? await listWorkspaceIssueTree(workspace) : await listWorkspaceIssueTree(workspace);
         const sourceIssue = issueTree.find((issue) => issue.id === workspace.sourceIssueId);
         const reopenPending = metadataHasReopenPendingConsumption(
           workspace.metadata as Record<string, unknown> | null,
@@ -3911,9 +3976,10 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
           result.skippedBackoff += 1;
           continue;
         }
-        if (await workspaceHasActiveRun(workspace)) {
+        if (pageActiveRunWorkspaces.has(workspace.id)) {
           if (reopenPending) result.skippedReopened += 1;
           else result.skippedActiveRun += 1;
+          terminalWorkspaceDeadlines.delete(workspace.id);
           continue;
         }
         if (remoteWorkspace && isClosedExecutionWorkspaceStatus(workspace.status)) {
@@ -4152,8 +4218,9 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
           }
           continue;
         }
-        if (await workspaceHasActiveRun(workspace)) {
+        if (pageActiveRunWorkspaces.has(workspace.id)) {
           result.skippedActiveRun += 1;
+          terminalWorkspaceDeadlines.delete(workspace.id);
           continue;
         }
         result.eligible += 1;
@@ -4330,8 +4397,8 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
         if (!options.targets) {
           terminalSweepCursor = previousCursor;
           terminalSweepBoundary = previousBoundary;
+          terminalSweepRescanRequested = true;
         }
-        terminalSweepRescanRequested = true;
         throw error;
       } finally {
         terminalSweepInProgress = false;
@@ -4341,7 +4408,7 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
     hasTerminalWorkspaceSweepContinuation: () => terminalSweepCursor !== null || terminalSweepRescanRequested,
 
     terminalWorkspaceWorkSettled: (hints?: ReadonlySet<string>, options: { targeted?: boolean } = {}) => {
-      if ((terminalSweepInProgress || terminalSweepCursor !== null) && !(options.targeted && terminalWorkspaceTargetsFromHints(hints))) {
+      if ((terminalSweepInProgress || terminalSweepCursor !== null) && !options.targeted) {
         terminalSweepRescanRequested = true;
       }
       pullRequestStateCache.clear();
@@ -4362,6 +4429,26 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
           terminalInspections.delete(id);
         }
       }
+    },
+
+    listPluginTerminalWorkspaceIds: async () => {
+      const rows = await db.select({ id: executionWorkspaces.id }).from(executionWorkspaces).where(and(
+        eq(executionWorkspaces.providerType, "plugin"),
+        sql<boolean>`${executionWorkspaces.sourceIssueId} IS NOT NULL`,
+        or(and(inArray(executionWorkspaces.status, ["active", "idle", "in_review"]), isNull(executionWorkspaces.closedAt)),
+          and(inArray(executionWorkspaces.status, ["archived", "cleanup_failed"]),
+            sql`(${executionWorkspaces.metadata}->>'workspaceProviderRemoved') IS DISTINCT FROM 'true'`)),
+      ));
+      return rows.map(row => row.id);
+    },
+
+    takeDueTerminalWorkspaceTargets: (): { workspaceIds: string[]; rotation: boolean } => {
+      const at = now().getTime();
+      const due = (deadlines: Map<string, number>) => [...deadlines].filter(([, deadline]) => deadline <= at).map(([id]) => id);
+      const workspaceKey = (key: string) => /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(key);
+      const migrations = [...due(isolatedRehomeDeadlines), ...due(nestedCloneMigrationDeadlines)];
+      const rotation = due(taskDirectoryDeadlines).length > 0 || migrations.some(key => !workspaceKey(key));
+      return { workspaceIds: [...new Set([...due(terminalWorkspaceDeadlines), ...migrations.filter(workspaceKey)])], rotation };
     },
 
     nextTerminalWorkspaceSweepAt: async () => {

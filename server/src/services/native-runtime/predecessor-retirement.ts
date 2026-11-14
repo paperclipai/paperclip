@@ -21,7 +21,7 @@ export class NativePredecessorRetirementUnprovenError extends Error {
     cause: unknown,
   ) {
     super(`The previous run's session on this sandbox could not be retired (${
-      cause instanceof Error ? cause.message : String(cause)}). The next attempt starts on a fresh sandbox.`, { cause });
+      cause instanceof Error ? cause.message : String(cause)}).`, { cause });
     this.name = "NativePredecessorRetirementUnprovenError";
   }
 }

@@ -6,6 +6,7 @@ import { and, asc, desc, eq, inArray, isNull, or, sql, type SQL } from "drizzle-
 import type { Db } from "@paperclipai/db";
 import {
   activityLog,
+  agentWakeupRequests,
   agents,
   authUsers,
   documentRevisions,
@@ -59,6 +60,37 @@ export function activityActorFallbackName(actorType: string, actorId: string) {
   if (actorType === "agent") return "An agent";
   if (actorType === "plugin") return "A plugin";
   return "Paperclip";
+}
+
+/** Wake reasons recorded when a person presses Retry on a failed run or task. */
+const PERSON_RETRY_WAKE_REASONS = new Set(["retry_failed_run", "task_retry"]);
+
+export type RunRetriedBy = { kind: "person"; personName: string; summary: string } | { kind: "automatic"; summary: string };
+
+/**
+ * Who started a retry run, in plain words. A run's own invocation fields do
+ * not say this: a person's Retry is an on-demand run whose responsible user
+ * may also own automatic retries. The run's wake request records whether a
+ * person pressed Retry; automatic recovery creates an automation run. Returns
+ * null for a run that is not a retry or whose starter is not recorded, rather
+ * than guessing.
+ */
+export function describeRunRetry(
+  run: { retryOfRunId: string | null; taskRetryRequestId?: string | null; invocationSource: string | null },
+  wake: { reason: string | null; requestedByActorType: string | null } | null,
+  personName: string | null,
+): RunRetriedBy | null {
+  if (!run.retryOfRunId && !run.taskRetryRequestId) return null;
+  // The run's own start decides first: automatic recovery after a person's
+  // Task Retry inherits that Retry's request, but the person did not start it.
+  if (run.invocationSource === "automation") {
+    return { kind: "automatic", summary: "Paperclip retried the failed run automatically; no person pressed Retry." };
+  }
+  if (wake?.requestedByActorType === "user" && wake.reason && PERSON_RETRY_WAKE_REASONS.has(wake.reason)) {
+    const name = personName?.trim() || "A board member";
+    return { kind: "person", personName: name, summary: `${name} pressed Retry on the failed run. Paperclip did not retry it automatically.` };
+  }
+  return null;
 }
 
 export function activityService(db: Db) {
@@ -521,6 +553,8 @@ export function activityService(db: Db) {
           wakeCommentId: sql<string | null>`${heartbeatRuns.contextSnapshot} ->> 'wakeCommentId'`,
           contextCommentId: sql<string | null>`${heartbeatRuns.contextSnapshot} ->> 'commentId'`,
           contextIssueId: sql<string | null>`${heartbeatRuns.contextSnapshot} ->> 'issueId'`,
+          // A person's Task Retry links its saved request here instead of retryOfRunId.
+          taskRetryRequestId: sql<string | null>`${heartbeatRuns.contextSnapshot} ->> 'taskRetryRequestId'`,
         })
         .from(heartbeatRuns)
         .innerJoin(
@@ -554,9 +588,9 @@ export function activityService(db: Db) {
         .orderBy(desc(heartbeatRuns.createdAt), desc(heartbeatRuns.id));
       const runs = await (limit === undefined ? runsQuery : runsQuery.limit(limit));
 
-      if (runs.length === 0) return runs;
+      if (runs.length === 0) return [];
       const runIds = runs.map((run) => run.runId);
-      if (runIds.length === 0) return runs;
+      if (runIds.length === 0) return [];
 
       const exhaustionRowsQuery = db
         .select({
@@ -602,12 +636,39 @@ export function activityService(db: Db) {
           .where(and(eq(issueDocuments.companyId, companyId), eq(issueDocuments.issueId, issueId), eq(issueDocuments.key, "plan")))
           .limit(1)
         : Promise.resolve([]);
-      const [exhaustionRows, leaseRows, executionByRunId, [savedPlan]] = await Promise.all([
+      const retryWakeId = (run: (typeof runs)[number]) => run.taskRetryRequestId && UUID_PATTERN.test(run.taskRetryRequestId)
+        ? run.taskRetryRequestId : run.retryOfRunId ? run.wakeupRequestId : null;
+      const retryWakeIds = [...new Set(runs.flatMap(run => { const id = retryWakeId(run); return id ? [id] : []; }))];
+      const retryWakesQuery = retryWakeIds.length
+        ? db.select({
+          id: agentWakeupRequests.id,
+          reason: agentWakeupRequests.reason,
+          requestedByActorType: agentWakeupRequests.requestedByActorType,
+          requestedByActorId: agentWakeupRequests.requestedByActorId,
+        }).from(agentWakeupRequests)
+          .where(and(eq(agentWakeupRequests.companyId, companyId), inArray(agentWakeupRequests.id, retryWakeIds)))
+        : Promise.resolve([]);
+      const [exhaustionRows, leaseRows, executionByRunId, [savedPlan], retryWakes] = await Promise.all([
         exhaustionRowsQuery,
         leaseRowsQuery,
         executionProjectionsForRuns(db, companyId, runIds, new Date(), { retryDatabaseReads: true }),
         savedPlanQuery,
+        retryWakesQuery,
       ]);
+      const retryWakeById = new Map(retryWakes.map(wake => [wake.id, wake]));
+      const retryPersonIds = [...new Set(retryWakes.flatMap(wake =>
+        wake.requestedByActorType === "user" && wake.requestedByActorId && wake.requestedByActorId !== "local-board" ? [wake.requestedByActorId] : []))];
+      const retryPersonNames = new Map((retryPersonIds.length
+        ? await db.select({ id: authUsers.id, name: authUsers.name }).from(authUsers).where(inArray(authUsers.id, retryPersonIds))
+        : []).filter(row => row.name?.trim()).map(row => [row.id, row.name!.trim()]));
+      const retriedBy = (run: (typeof runs)[number]) => {
+        const wakeId = retryWakeId(run);
+        const wake = wakeId ? retryWakeById.get(wakeId) ?? null : null;
+        const actorId = wake?.requestedByActorId ?? null;
+        const personName = wake?.requestedByActorType === "user" && actorId
+          ? retryPersonNames.get(actorId) ?? activityActorFallbackName("user", actorId) : null;
+        return describeRunRetry(run, wake, personName);
+      };
       const retryExhaustedReasonByRunId = new Map<string, string>();
       for (const row of exhaustionRows) {
         if (!row.message || retryExhaustedReasonByRunId.has(row.runId)) continue;
@@ -666,6 +727,7 @@ export function activityService(db: Db) {
               }
             : null,
           retryExhaustedReason: retryExhaustedReasonByRunId.get(run.runId) ?? null,
+          retriedBy: retriedBy(run),
         };
       });
     },
