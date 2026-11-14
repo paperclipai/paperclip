@@ -171,7 +171,7 @@ export async function persistActivity(db: Db, input: LogActivityInput, receipt?:
   const responsibleUserId = await resolveResponsibleUserIdForActivity(db, input);
   const candidateApiKeyId = readNonEmptyString(input.apiKeyId)
     ?? readNonEmptyString(input.agentApiKeyId)
-    ?? readNonEmptyString(currentRequestActor()?.keyId);
+    ?? (input.actorType === "system" ? null : readNonEmptyString(currentRequestActor()?.keyId));
   const apiKeyId = candidateApiKeyId && isUuidLike(candidateApiKeyId) ? candidateApiKeyId : null;
   const insert = (runner: Db) => runner.insert(activityLog).values({
     ...(receipt ? { id: receipt.id } : {}),

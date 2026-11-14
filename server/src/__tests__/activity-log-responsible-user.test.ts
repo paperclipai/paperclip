@@ -266,6 +266,15 @@ describeEmbeddedPostgres("logActivity attribution stamping", () => {
         entityType: "company",
         entityId: companyId,
       }), []));
+    await withRequestActor({ type: "board", userId: "board-key-user", keyId: boardApiKeyId, source: "board_key" }, () =>
+      logActivity(db, activityInput({
+        companyId,
+        actorType: "system",
+        actorId: "recovery",
+        agentId: null,
+        entityType: "company",
+        entityId: companyId,
+      }), []));
     await withRequestActor({ type: "board", userId: "session-user", source: "session" }, () =>
       logActivity(db, activityInput({
         companyId,
@@ -283,6 +292,7 @@ describeEmbeddedPostgres("logActivity attribution stamping", () => {
 
     expect(rows).toEqual(expect.arrayContaining([
       { actorId: "board-key-user", apiKeyId: boardApiKeyId },
+      { actorId: "recovery", apiKeyId: null },
       { actorId: "session-user", apiKeyId: null },
     ]));
   });
