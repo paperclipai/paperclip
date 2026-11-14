@@ -144,9 +144,14 @@ const support = await getEmbeddedPostgresTestSupport();
     expect(first).toMatchObject({ reasonCode: "elicitation_required" });
     const [card] = await db.select().from(issueThreadInteractions).where(and(eq(issueThreadInteractions.companyId, org.id), eq(issueThreadInteractions.issueId, issue.id)));
     expect(card).toMatchObject({ kind: "ask_user_questions", status: "pending" });
+    // Answer with the card's own options, as the question form does: the
+    // app's "approve" choice is the option labelled "approve".
+    const questions = (card!.payload as { questions: Array<{ id: string; options: Array<{ id: string; label: string; freeText?: boolean }> }> }).questions;
+    const approve = questions.find((question) => question.id === "decision")!.options.find((option) => option.label === "approve")!;
+    const noteField = questions.find((question) => question.id === "note")!.options.find((option) => option.freeText)!;
     await db.update(issueThreadInteractions).set({ status: "answered", result: { version: 1, answers: [
-      { questionId: "decision", optionIds: ["approve"] },
-      { questionId: "note", optionIds: [], otherText: "go ahead" },
+      { questionId: "decision", optionIds: [approve.id] },
+      { questionId: "note", optionIds: [noteField.id], otherText: "go ahead" },
     ] } }).where(eq(issueThreadInteractions.id, card!.id));
     const pending = call("needs_approval", { action: "rotate the demo key" });
     await vi.waitFor(() => expect(demoTask("needs_approval")?.status).toBe("working"), { timeout: 5_000 });
