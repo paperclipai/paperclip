@@ -73,6 +73,34 @@ it("uploads, normalizes, serves privately, retries without duplication, and rese
   expect(reset.body.avatarUrl).toContain("/api/agent-avatars/");
 });
 
+it("centers an uploaded photo without rewriting the image, and clears that center when the photo changes", async () => {
+  const f = await fixture();
+  const app = appFor({ type: "agent", agentId: f.agent.id, companyId: f.company.id });
+  const path = `/api/companies/${f.company.id}/agents/${f.agent.id}/avatar`;
+  await request(app).put(path).send({ avatarFocus: { x: 25, y: 40 } }).expect(422);
+  const upload = await request(app).put(path).send({ imageBase64 }).expect(200);
+  expect(upload.body.appearance.avatarFocus).toBeUndefined();
+  const centered = await request(app).put(path).send({ avatarFocus: { x: 33.34, y: 80 } }).expect(200);
+  expect(centered.body.appearance.avatarFocus).toEqual({ x: 33.3, y: 80 });
+  expect(centered.body.avatarUrl).toBe(upload.body.avatarUrl);
+  const repeat = await request(app).put(path).send({ avatarFocus: { x: 33.3, y: 80 } }).expect(200);
+  expect(repeat.body.appearance).toEqual(centered.body.appearance);
+  const audit = await db.select().from(activityLog).where(eq(activityLog.companyId, f.company.id));
+  expect(audit.filter(row => row.action === "agent.avatar_updated")).toHaveLength(2);
+  expect(await db.select().from(assets).where(eq(assets.companyId, f.company.id))).toHaveLength(1);
+  const sameBytes = await request(app).put(path).send({ imageBase64 }).expect(200);
+  expect(sameBytes.body.appearance.avatarFocus).toEqual({ x: 33.3, y: 80 });
+  const replacement = (await sharp({ create: { width: 400, height: 800, channels: 3, background: "blue" } }).png().toBuffer()).toString("base64");
+  const replaced = await request(app).put(path).send({ imageBase64: replacement }).expect(200);
+  expect(replaced.body.appearance.avatarFocus).toBeUndefined();
+  expect(replaced.body.appearance.customAvatarAssetId).not.toBe(upload.body.appearance.customAvatarAssetId);
+  const reset = await request(app).put(path).send({ imageBase64: null }).expect(200);
+  expect(reset.body.appearance).toEqual(f.agent.appearance);
+  await request(app).put(path).send({ avatarFocus: { x: 120, y: 10 } }).expect(400);
+  await request(appFor({ type: "board", source: "session", companyIds: [f.company.id], memberships: [{ companyId: f.company.id, status: "active", membershipRole: "viewer" }] }))
+    .put(path).send({ avatarFocus: { x: 10, y: 10 } }).expect(403);
+});
+
 it("rejects other agents, companies, viewers, and foreign asset references", async () => {
   const f = await fixture(); const other = await fixture();
   const path = `/api/companies/${f.company.id}/agents/${f.agent.id}/avatar`;

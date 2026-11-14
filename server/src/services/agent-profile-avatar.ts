@@ -3,7 +3,7 @@ import { createHash } from "node:crypto";
 import { and, eq } from "drizzle-orm";
 import sharp from "sharp";
 import { agents, assets, companies, type Db } from "@paperclipai/db";
-import { MAX_AGENT_AVATAR_BYTES, resolveAgentAppearance, agentAvatarUrl, setAgentAvatarSchema, type SetAgentAvatarInput } from "@paperclipai/shared";
+import { MAX_AGENT_AVATAR_BYTES, resolveAgentAppearance, agentAvatarUrl, normalizeAgentAvatarFocus, setAgentAvatarSchema, type AgentAvatarFocus, type SetAgentAvatarInput } from "@paperclipai/shared";
 import { conflict, notFound, unprocessable } from "../errors.js";
 import type { StorageService } from "../storage/types.js";
 import { logActivity, publishActivity, type ActivityPublication, type LogActivityInput } from "./activity-log.js";
@@ -29,12 +29,36 @@ export async function normalizeAgentAvatar(input: string) {
 }
 
 type AvatarActor = Pick<LogActivityInput, "actorType" | "actorId" | "agentId" | "runId" | "agentApiKeyId">;
+async function setAgentAvatarFocus(db: Db, companyId: string, agentId: string, focus: AgentAvatarFocus, actor: AvatarActor) {
+  const next = normalizeAgentAvatarFocus(focus);
+  const publications: ActivityPublication[] = [];
+  const result = await db.transaction(async tx => {
+    const txDb = tx as unknown as Db;
+    const [agent] = await tx.select().from(agents).where(and(eq(agents.id, agentId), eq(agents.companyId, companyId))).for("update");
+    const [company] = await tx.select().from(companies).where(eq(companies.id, companyId));
+    if (!agent || company?.status !== "active" || ["terminated", "pending_approval"].includes(agent.status)) throw conflict("Agent avatar cannot be updated in its current state");
+    const appearance = resolveAgentAppearance(agent.appearance, agent.id);
+    if (!appearance.customAvatarAssetId) throw unprocessable("Upload a photo before centering it");
+    const current = normalizeAgentAvatarFocus(appearance.avatarFocus ?? { x: 50, y: 50 });
+    if (current.x === next.x && current.y === next.y) return { agentId, appearance, avatarUrl: agentAvatarUrl(appearance) };
+    appearance.avatarFocus = next;
+    await updateAgentConfigurationInTransaction(txDb, agentId, { appearance }, { recordRevision: {
+      createdByAgentId: actor.agentId, createdByUserId: actor.actorType === "user" ? actor.actorId : null, source: "avatar-upload",
+    } });
+    await logActivity(txDb, { ...actor, companyId, action: "agent.avatar_updated", entityType: "agent", entityId: agentId,
+      details: { assetId: appearance.customAvatarAssetId, avatarFocus: next } }, publications);
+    return { agentId, appearance, avatarUrl: agentAvatarUrl(appearance) };
+  });
+  publications.forEach(publishActivity);
+  return result;
+}
 export async function setAgentProfileAvatar(db: Db, storage: StorageService, companyId: string, agentId: string, input: SetAgentAvatarInput, actor: AvatarActor) {
   const parsed = setAgentAvatarSchema.parse(input);
   // Authorization belongs to the REST/MCP boundary. Validate scope and eligibility before decoding.
   const [target] = await db.select().from(agents).where(and(eq(agents.id, agentId), eq(agents.companyId, companyId)));
   if (!target) throw notFound("Agent not found");
   if (["terminated", "pending_approval"].includes(target.status)) throw conflict("Agent avatar cannot be updated in its current state");
+  if ("avatarFocus" in parsed) return setAgentAvatarFocus(db, companyId, agentId, parsed.avatarFocus, actor);
   const png = parsed.imageBase64 === null ? null : await normalizeAgentAvatar(parsed.imageBase64);
   const digest = png ? createHash("sha256").update(png).digest("hex") : null;
   let newObjectKey: string | undefined;
@@ -53,6 +77,7 @@ export async function setAgentProfileAvatar(db: Db, storage: StorageService, com
         return { agentId, appearance, avatarUrl: agentAvatarUrl(appearance) };
       }
       delete appearance.customAvatarAssetId;
+      delete appearance.avatarFocus;
       if (png) {
         const stored = await storage.putFile({ companyId, namespace: `agent-avatars/${agentId}`, originalFilename: "avatar.png", contentType: "image/png", body: png });
         newObjectKey = stored.objectKey;
