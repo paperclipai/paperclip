@@ -1691,6 +1691,11 @@ it.each([
   { label: "an unsafe nested code", failure: new Error("private query", { cause: Object.assign(new Error("private-host-fixture"), { code: "private SQL with spaces" }) }), code: "Error" },
   { label: "an outer code before a nested code", failure: Object.assign(new Error("private query", { cause: Object.assign(new Error("private-host-fixture"), { code: "40001" }) }), { code: "OUTER_FAILURE" }), code: "OUTER_FAILURE" },
   { label: "a cause beyond the depth limit", failure: new Error("private query", { cause: new Error("private query", { cause: new Error("private query", { cause: new Error("private query", { cause: Object.assign(new Error("private-host-fixture"), { code: "40001" }) }) }) }) }), code: "Error" },
+  { label: "a refusal coded only in its message", failure: new Error("native_event_source_binding_mismatch"), code: "native_event_source_binding_mismatch" },
+  { label: "a message code before private detail", failure: new Error("native_event_schema_invalid:private query"), code: "native_event_schema_invalid" },
+  { label: "a wrapped message code", failure: new Error("private query", { cause: new Error("native_result_not_persisted") }), code: "native_result_not_persisted" },
+  { label: "an error code before a message code", failure: new Error("native_result_not_persisted", { cause: Object.assign(new Error("private-host-fixture"), { code: "40001" }) }), code: "40001" },
+  { label: "a snake_case word inside private text", failure: new Error("private_query with SQL and parameters"), code: "Error" },
 ])("fails closed with $label when runner events keep failing to commit without progress", async ({ failure: callbackFailure, code }) => {
   const root = mkdtempSync(resolve(tmpdir(), "runner-event-delivery-stall-"));
   const commits = vi.fn(async () => {
