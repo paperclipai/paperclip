@@ -598,6 +598,21 @@ The **Retry now** action returns `waiting` with the saved retry schedule while
 cleanup holds ownership. Its controls show the wait without claiming that a run
 started, and another click can check the gate again.
 
+For legacy local runs, physical cleanup and cost settlement have separate receipts.
+The owning controller can record verified process cleanup while usage is incomplete.
+The accounting worker then records an honest lower bound or an unpriced charge;
+missing usage does not prove zero cost. The run status and saved retry intent stay
+unchanged. A later usage receipt can still reconcile the same charge.
+
+If the controller stops before it saves the cleanup receipt, an authorized board
+member can retry that run through the existing company-scoped cost-accounting
+Retry endpoint. It checks the saved controller and child identities, local
+ownership, and environment cleanup before it records physical closure. A live
+process, an unknown identity, a foreign host, or pending cleanup keeps the hold.
+A repeated request or a lost HTTP response must not add a second charge. This
+action settles accounting; it does not start a provider turn or authorize task
+replay.
+
 A human comment may supersede a retry only while it remains `scheduled_retry`.
 Queued and running retries retain their execution and receive the comment through
 normal wake coalescing. Supersession rechecks the scheduled status atomically with
@@ -1844,6 +1859,22 @@ the launch closed when it cannot prove them gone. A Runner that already exited
 mid-turn can leave provider or tool processes that the fence cannot find, so it
 keeps the fail-closed path below, and the task continues in a fresh session from
 the saved work.
+
+A slow answer is not a dead Runner. After a release swap the new server can reach
+a live Runner late, while the Runner is still replaying the events it saved with
+no controller attached; its first command then times out although the Runner is
+working. So a `replaceUnansweredRunner` attempt first checks whether the live
+Runner is making progress. It adopts the Runner, launching no second one and
+signalling nothing, when the Runner's saved event sequence is past the
+controller's last acknowledgement, or when its saved state (event and command
+sequences, generation, lifecycle) changes within a bounded wait of about ten
+seconds. Only a Runner that made no progress in that wait is replaced as above:
+the relaunch's launch fence stops it and its process lineage with proof, and the
+new Runner restores its own journal. This replacement also proceeds on a resumed
+sandbox lease, where the in-place reuse check would otherwise refuse the live
+Runner's unsuspended state (`runner_harness_state_mismatch: resumed_not_suspended`)
+and leave it running. A Runner that exits during the wait follows the exited-Runner
+rules: a settled suspension restores, a mid-turn exit stays fail-closed. A state read that fails is no evidence either way: the first successful read sets the baseline, and a Runner whose state could not be read at all during the wait is adopted, not replaced. A Runner whose identity changes during the wait fails closed. A settled exit during the wait restores on every attempt that admitted the replacement, including the extra fourth attempt.
 
 On every `reattach_remote_runner` attempt, a turn the Runner reports as
 `provider_turn_lost_on_restore` with `recoverable: true` continues once in the same
@@ -6177,6 +6208,18 @@ checkpoints publish the metadata without a separate migration write. Disk-free
 rollback requires a server that reads this envelope and the supported settled
 warm journal, including its PRP v2 idle goal suffix. Earlier local-only readers
 and readers lacking that suffix handling remain outside that rollback contract.
+
+### Resolved cards queued behind chat runs
+
+A resolved card is an independent continuation. Its saved chat message IDs
+remain authorization bindings even if a prior run received those messages.
+Queue promotion retains live, same-task message bindings for that continuation;
+deleted and self-authored messages still drop out. The new run must pass current
+chat authorization. Ordinary message-only wakes whose input was consumed remain
+cancelled and cannot start another turn.
+Retained bindings that a run already received are not fresh input: they never
+reopen a finished task. A card answer owed to a task the finishing run closed
+still continues it in progress through the owed-answer path.
 
 ### Stop a failed native retry
 

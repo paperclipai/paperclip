@@ -1,9 +1,12 @@
 import { randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
+import { setFlagsFromString } from "node:v8";
+import { runInNewContext } from "node:vm";
 import { describe, expect, it, vi } from "vitest";
 import type { Db } from "@paperclipai/db";
 import { ToolGatewayHttpError, type ToolGatewayDescriptor, type ToolGatewayService } from "../tool-gateway.js";
 import {
+  ASSIGNED_CATALOG_CACHE_BYTES, ASSIGNED_CATALOG_CACHE_ENTRIES, assignedCatalogCacheStats,
   ASSIGNED_SCHEMA_ADMISSION_CACHE_ENTRIES, ASSIGNED_SCHEMA_LISTING_BUDGET_BYTES, assignedSchemaAdmissionCacheSize,
   createAssignedMcpTools, getAssignedMcpGateway, registerAssignedMcpGateway,
 } from "./assigned-mcp-tools.js";
@@ -539,7 +542,7 @@ describe("assigned MCP runner tools", () => {
     const args = { query: "synthetic memory" };
     expect(await assigned.execute({ tool: definitions[0]!.name as string, arguments: args })).toEqual({ memories: [] });
     expect(f.executeTool).toHaveBeenCalledExactlyOnceWith({ gatewayPublicId: f.gatewayPublicId, sessionToken: f.bearerToken, tool: "recall", parameters: args });
-    (definitions[0]!.inputSchema as Record<string, unknown>).type = "string";
+    expect(() => { (definitions[0]!.inputSchema as Record<string, unknown>).type = "string"; }).toThrow(TypeError);
     expect(assigned.definitions()[0]!.inputSchema).toEqual(tool.parametersSchema);
   });
 
@@ -610,4 +613,173 @@ describe("assigned MCP runner tools", () => {
     f.executeTool.mockResolvedValueOnce({ status: "replayed", result: { memory: "synthetic" } });
     await expect(assigned.execute(call)).resolves.toEqual({ memory: "synthetic" });
   });
+});
+
+describe("shared assigned tool catalogs", () => {
+  const searchName = "paperclip_search_assigned_tools";
+
+  function catalog(prefix: string, count: number, schemaBytes = 400): ToolGatewayDescriptor[] {
+    return Array.from({ length: count }, (_, index) => {
+      const properties: Record<string, unknown> = {};
+      for (let field = 0; JSON.stringify(properties).length < schemaBytes; field += 1) {
+        properties[`field_${field}`] = { type: "string", description: `${prefix} field ${field} of tool ${index}` };
+      }
+      return { ...descriptor(`${prefix}:tool_${index}`), parametersSchema: { type: "object", properties, required: ["field_0"] } };
+    });
+  }
+
+  function session(listing: () => ToolGatewayDescriptor[], companyId?: string, workMode?: "standard" | "ask") {
+    const gateway = { listToolsForNamedGateway: async () => listing() } as unknown as ToolGatewayService;
+    return createAssignedMcpTools({ gateway, gatewayPublicId: "gateway-fixture", bearerToken: "token", ...(companyId ? { companyId } : {}), ...(workMode ? { workMode } : {}) });
+  }
+
+  function schemas(tools: Awaited<ReturnType<typeof createAssignedMcpTools>>) {
+    return tools.definitions().map(definition => definition.inputSchema);
+  }
+
+  function collectGarbage(): () => void {
+    setFlagsFromString("--expose-gc");
+    return runInNewContext("gc") as () => void;
+  }
+
+  it("keeps one catalog in memory for many sessions of the same company and admitted tools", async () => {
+    const gc = collectGarbage();
+    const company = `company-${randomUUID()}`;
+    const listing = () => catalog(`heap-${company}`, 60, 4096);
+    const heap = () => { gc(); gc(); return process.memoryUsage().heapUsed; };
+    await session(() => catalog("heap-warm-up", 60, 4096), `company-${randomUUID()}`);
+    const before = heap();
+    const held = [await session(listing, company)];
+    const one = heap() - before;
+    for (let index = 1; index < 20; index += 1) held.push(await session(listing, company));
+    const nineteenMore = heap() - before - one;
+    expect(one).toBeGreaterThan(0);
+    expect(nineteenMore).toBeLessThan(one * 2);
+    const first = schemas(held[0]!);
+    for (const tools of held) schemas(tools).forEach((schema, index) => expect(schema).toBe(first[index]));
+  }, 30_000);
+
+  it("shares deeply frozen schemas between sessions, including sessions that start together", async () => {
+    const company = `company-${randomUUID()}`;
+    const listing = () => catalog("together", 3);
+    const sessions = await Promise.all([1, 2, 3, 4].map(() => session(listing, company)));
+    const first = schemas(sessions[0]!);
+    for (const tools of sessions) schemas(tools).forEach((schema, index) => expect(schema).toBe(first[index]));
+    for (const definition of sessions[0]!.definitions()) {
+      expect(Object.isFrozen(definition)).toBe(true);
+      expect(Object.isFrozen((definition.inputSchema as { properties: object }).properties)).toBe(true);
+    }
+  });
+
+  it("never shares a catalog between companies or without a company", async () => {
+    const listing = () => catalog("identical", 3);
+    const a = await session(listing, `company-a-${randomUUID()}`);
+    const b = await session(listing, `company-b-${randomUUID()}`);
+    const unscoped = await session(listing);
+    expect(a.definitions()).toEqual(b.definitions());
+    schemas(b).forEach((schema, index) => expect(schema).not.toBe(schemas(a)[index]));
+    schemas(unscoped).forEach((schema, index) => expect(schema).not.toBe(schemas(a)[index]));
+  });
+
+  it("never shares between sessions that were admitted different tools, schemas, descriptions, or risks", async () => {
+    const company = `company-${randomUUID()}`;
+    const full = await session(() => catalog("differs", 3), company);
+    const fewer = await session(() => catalog("differs", 3).slice(1), company);
+    const edited = await session(() => catalog("differs", 3).map((tool, index) => index === 0
+      ? { ...tool, parametersSchema: { ...tool.parametersSchema, required: ["field_1"] } } : tool), company);
+    const described = await session(() => catalog("differs", 3).map(tool => ({ ...tool, description: `${tool.description} now` })), company);
+    const riskier = await session(() => catalog("differs", 3).map(tool => ({ ...tool, risk: "write" as const })), company, "ask");
+    const fullSchemas = schemas(full);
+    expect(fewer.definitions()).toHaveLength(2);
+    expect(full.has(String(full.definitions()[0]!.name))).toBe(true);
+    expect(fewer.has(String(full.definitions()[0]!.name))).toBe(false);
+    for (const schema of schemas(fewer)) expect(fullSchemas).not.toContain(schema);
+    expect((edited.definitions()[0]!.inputSchema as { required: string[] }).required).toEqual(["field_1"]);
+    expect((full.definitions()[0]!.inputSchema as { required: string[] }).required).toEqual(["field_0"]);
+    for (const schema of schemas(edited)) expect(fullSchemas).not.toContain(schema);
+    expect(described.definitions().map(tool => tool.description)).toEqual(full.definitions().map(tool => `${tool.description} now`));
+    for (const schema of schemas(described)) expect(fullSchemas).not.toContain(schema);
+    expect(riskier.definitions()).toEqual([]);
+    expect(full.definitions()).toHaveLength(3);
+  });
+
+  it("serves a revoked or edited tool from fresh discovery, never from a cached catalog", async () => {
+    const company = `company-${randomUUID()}`;
+    let current = catalog("revocable", 3);
+    const listing = () => current.map(tool => structuredClone(tool));
+    const before = await session(listing, company);
+    const revokedName = String(before.definitions()[0]!.name);
+    current = current.slice(1);
+    const after = await session(listing, company);
+    expect(after.has(revokedName)).toBe(false);
+    expect(after.definitions().map(tool => tool.name)).not.toContain(revokedName);
+    const page = await before.execute({ tool: searchName, arguments: { query: "", limit: 20 } }) as { tools: Array<{ name: string }> };
+    expect(page.tools.map(tool => tool.name)).not.toContain(revokedName);
+    current = current.map(tool => ({ ...tool, parametersSchema: { type: "object", properties: { replaced: { type: "boolean" } } } }));
+    const edited = await session(listing, company);
+    for (const definition of edited.definitions()) expect(definition.inputSchema).toEqual({ type: "object", properties: { replaced: { type: "boolean" } } });
+  });
+
+  it("keeps one session's mutation attempts invisible to every other session", async () => {
+    const company = `company-${randomUUID()}`;
+    const source = catalog("mutation", 2);
+    const listing = () => source;
+    const first = await session(listing, company);
+    const second = await session(listing, company);
+    const snapshot = structuredClone(second.definitions());
+    const [definition] = first.definitions() as Array<{ description: string; inputSchema: { properties: Record<string, unknown>; required: string[] } }>;
+    expect(() => { definition!.description = "changed"; }).toThrow(TypeError);
+    expect(() => { definition!.inputSchema.properties.injected = { type: "string" }; }).toThrow(TypeError);
+    expect(() => { definition!.inputSchema.required.push("injected"); }).toThrow(TypeError);
+    expect(() => { delete definition!.inputSchema.properties.field_0; }).toThrow(TypeError);
+    first.definitions().length = 0;
+    (source[0]!.parametersSchema as { properties: Record<string, unknown> }).properties.injected = { type: "string" };
+    source[0]!.description = "changed at the source";
+    const page = await first.execute({ tool: searchName, arguments: { query: "", limit: 20 } }) as { tools: Array<{ inputSchema: { properties: Record<string, unknown> } }> };
+    page.tools[0]!.inputSchema.properties.injected = { type: "string" };
+    expect(second.definitions()).toEqual(snapshot);
+    expect(first.definitions()).toEqual(snapshot);
+  });
+
+  it("releases the hold of a session that is dropped without close, such as a failed or cancelled start", async () => {
+    const gc = collectGarbage();
+    const company = `company-${randomUUID()}`;
+    const listing = () => catalog("dropped", 2);
+    const kept = await session(listing, company);
+    schemas(await session(listing, company)).forEach((schema, index) => expect(schema).toBe(schemas(kept)[index]));
+    for (let attempt = 0; attempt < 50; attempt += 1) {
+      await new Promise(resolve => setTimeout(resolve, 10));
+      gc();
+    }
+    kept.close();
+    const fresh = await session(listing, company);
+    schemas(fresh).forEach((schema, index) => expect(schema).not.toBe(schemas(kept)[index]));
+  }, 30_000);
+
+  it("releases a shared catalog when its last session closes and bounds the number of shared catalogs", async () => {
+    const company = `company-${randomUUID()}`;
+    const start = assignedCatalogCacheStats();
+    const listing = () => catalog("released", 2);
+    const first = await session(listing, company);
+    const second = await session(listing, company);
+    expect(assignedCatalogCacheStats().entries).toBe(start.entries + 1);
+    expect(assignedCatalogCacheStats().bytes).toBeGreaterThan(start.bytes);
+    first.close();
+    first.close();
+    expect(assignedCatalogCacheStats().entries).toBe(start.entries + 1);
+    second.close();
+    expect(assignedCatalogCacheStats()).toEqual(start);
+    expect(second.definitions()).toHaveLength(2);
+    const third = await session(listing, company);
+    schemas(third).forEach((schema, index) => expect(schema).not.toBe(schemas(first)[index]));
+    third.close();
+    const held = [];
+    for (let index = 0; index < ASSIGNED_CATALOG_CACHE_ENTRIES + 5; index += 1) {
+      held.push(await session(() => catalog("bounded", 1), `company-bounded-${index}-${randomUUID()}`));
+    }
+    expect(assignedCatalogCacheStats().entries).toBeLessThanOrEqual(ASSIGNED_CATALOG_CACHE_ENTRIES);
+    expect(assignedCatalogCacheStats().bytes).toBeLessThanOrEqual(ASSIGNED_CATALOG_CACHE_BYTES);
+    for (const tools of held) tools.close();
+    expect(assignedCatalogCacheStats()).toEqual({ entries: 0, bytes: 0 });
+  }, 30_000);
 });

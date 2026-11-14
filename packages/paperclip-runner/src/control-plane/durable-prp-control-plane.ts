@@ -1,6 +1,6 @@
 import { safeErrorCauseCode } from "./safe-error-cause.js";
 import { AGENT_OBSERVABILITY_ENV_KEYS } from "../drivers/agent-observability.js";
-import { configuredEnvironment } from "../configured-environment.js";
+import { CERTIFICATE_ENVIRONMENT_KEYS, configuredEnvironment } from "../configured-environment.js";
 import { spawn } from "node:child_process";
 import {
   createCipheriv,
@@ -4843,8 +4843,7 @@ const runnerPlatformEnvironmentKeys = [
   "HTTPS_PROXY",
   "NO_PROXY",
   "ALL_PROXY",
-  "SSL_CERT_FILE",
-  "SSL_CERT_DIR",
+  ...CERTIFICATE_ENVIRONMENT_KEYS,
   "RUST_BACKTRACE",
 ] as const;
 
@@ -4888,9 +4887,6 @@ const runnerExplicitProviderEnvironmentKeys = [
   "PAPERCLIP_RUNNER_INSTANCE_ID",
   "PAPERCLIP_RUN_ID",
   "PAPERCLIP_NORMALIZED_SESSION_ID",
-  "PAPERCLIP_NATIVE_MCP_NAME",
-  "PAPERCLIP_NATIVE_MCP_URL",
-  "PAPERCLIP_NATIVE_MCP_TOKEN",
   "PAPERCLIP_NATIVE_MCP_STDIO",
   "PAPERCLIP_NATIVE_MCP_PROXY",
   "PAPERCLIP_NATIVE_RUNTIME_CONTEXT_PATH",

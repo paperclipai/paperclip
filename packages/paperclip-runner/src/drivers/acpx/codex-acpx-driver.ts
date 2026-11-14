@@ -1,4 +1,5 @@
 import { type CopilotToolEvidence } from "./copilot-tool-evidence.js";
+import { RUNNER_TOOL_BRIDGE_DIAGNOSTIC_CODE } from "../tool-input-coercion.js";
 import { classifyClaudeStatusBanner } from "./claude-status-banners.js";
 import { resolveCompletionContinuation } from "../completion-continuation.js";
 import { isProviderMode } from "../../contracts/provider-mode.js";
@@ -499,6 +500,7 @@ export class CodexAcpxDriver implements HarnessDriver {
             }
             return session.dispatchTool(call);
           },
+          onDiagnostic: (message) => session?.recordToolBridgeDiagnostic(message),
         },
       },
       input.signal,
@@ -1149,6 +1151,13 @@ class CodexAcpxSession implements HarnessSession {
 
   captureSemanticReceipt() {
     return this.#copilotToolEvidence?.captureSemanticReceipt();
+  }
+
+  /** Records a runner tool bridge diagnostic, such as an accepted input coercion, as a run event. */
+  recordToolBridgeDiagnostic(message: string): void {
+    if (this.#closed) return;
+    this.#emit("harness.diagnostic", { code: RUNNER_TOOL_BRIDGE_DIAGNOSTIC_CODE, message },
+      this.#activeTurnId ? { turnId: this.#activeTurnId } : {});
   }
 
   async dispatchTool(call: RunnerToolCall): Promise<unknown> {

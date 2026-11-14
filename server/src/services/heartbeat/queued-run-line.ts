@@ -38,7 +38,7 @@ export function issueRunPriorityRank(priority: string | null | undefined) {
   }
 }
 
-async function listPersonOriginSourceRunIds(db: Db, companyId: string, sourceRunIds: string[]) {
+export async function listPersonOriginSourceRunIds(db: Db, companyId: string, sourceRunIds: string[]) {
   const uuidPattern = "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$";
   const result = await db.execute<{ root_id: string }>(sql`
     with recursive chain(root_id, run_id, depth) as (

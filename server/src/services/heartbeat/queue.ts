@@ -2,7 +2,7 @@ import { QUEUED_MESSAGES_DELIVERED_REASON } from "../../modules/wake-queue/index
 import { connectionIntentService } from "../connection-intents.js";
 import { verifyBlockerStallWake } from "../recovery/blocker-stall-wakeups.js";
 import { CONTEXT_COMPACTION_WAKE_REASON, ContextCompactionError, isContextCompactionRun, readContextCompactionRequest } from "../context-compaction.js";
-import { isProcessRunAdmissionClosed } from "./run-admission.js";
+import { isProcessRunAdmissionClosed, isReattachPhaseActive as isProcessReattachPhaseActive } from "./run-admission.js";
 import { continueFreshInTransaction, hasPendingFreshContinuation, isFreshIsolatedContinuationWake, settleCoalescedFreshContinuationHolds } from "../fresh-continuation-fallback.js";
 import { deliverContinuationAsRun, foldWaitingRetriesIntoContinuation, foldWaitingRetriesIntoRecordedContinuation, undeliveredContinuation,
   undeliveredContinuationContext } from "../fresh-continuation-retry-fold.js";
@@ -250,6 +250,7 @@ export interface HeartbeatQueueDependencies extends Pick<HeartbeatRetryDependenc
   filterZombieCoalesceTarget: <T extends { id: string; status: string }>(run: T | null, live: { has(id: string): boolean }) => T | null;
   getSchedulingSuppression: () => Promise<{ suppressed: boolean; reason: "worktree_instance" | "database_restore_in_progress" | "task_drain" | null }>;
   isRunAdmissionClosed?: () => boolean;
+  isReattachPhaseActive?: () => boolean;
   /** Before a dispatch pass, refresh admission inputs that have gone stale; null when current. */
   refreshRunAdmission?: () => Promise<void> | null;
   canStartNewExternalBotWork: (agent: typeof agents.$inferSelect) => Promise<boolean>;
@@ -471,7 +472,8 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
     isHeartbeatRunTerminalStatus,
     liveRunExecutions,
     getSchedulingSuppression,
-    isRunAdmissionClosed = isProcessRunAdmissionClosed,
+    isRunAdmissionClosed: isStartAdmissionClosed = isProcessRunAdmissionClosed,
+    isReattachPhaseActive = isProcessReattachPhaseActive,
     refreshRunAdmission = refreshRunStartYieldIfStale,
     resumeExecutionWaitComments,
     getWorktreeExecutionCutoff,
@@ -497,6 +499,8 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
     runTaskKey,
     filterZombieCoalesceTarget,
   } = dependencies;
+
+  const isRunAdmissionClosed = () => isStartAdmissionClosed() || isReattachPhaseActive();
 
   const { parseHeartbeatPolicy, getHeartbeatDailyCapBlock, hasActionableTimerWork, nextTimerHeartbeatAt } = createHeartbeatTimerPolicy(db);
 
@@ -2336,7 +2340,7 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
   // the full queued-run pass. Every run still passes the ordinary per-agent
   // claim and dispatch gates, exactly as a new wakeup during startup would.
   async function resumeFreshQueuedRunsAtStartup() {
-    if ((await getSchedulingSuppression()).suppressed) return { agents: 0 };
+    if (isRunAdmissionClosed() || (await getSchedulingSuppression()).suppressed) return { agents: 0 };
     const cutoff = await getWorktreeExecutionCutoff();
     const rows = await db
       .selectDistinct({ agentId: heartbeatRuns.agentId })
