@@ -919,6 +919,11 @@ dd {
 /* Disclosures ------------------------------------------------------------ */
 
 .ui-disclosure {
+  box-sizing: border-box;
+  display: block;
+  width: 100%;
+  min-width: 0;
+  max-width: 100%;
   padding: var(--space-2) var(--space-3);
   border: 0.0625rem solid var(--border);
   border-radius: var(--radius-md);
@@ -950,6 +955,10 @@ dd {
 }
 
 .ui-payload {
+  box-sizing: border-box;
+  width: 100%;
+  min-width: 0;
+  max-width: 100%;
   max-height: var(--transcript-height);
   margin: var(--space-2) 0 0;
   overflow: auto;

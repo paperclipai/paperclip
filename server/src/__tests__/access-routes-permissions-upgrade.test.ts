@@ -32,7 +32,7 @@ const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : 
 
 type Db = ReturnType<typeof createDb>;
 
-async function createApp(db: Db, companyId: string, userId: string) {
+async function createApp(db: Db, companyId: string, userId: string, role: "owner" | "operator" = "owner") {
   process.env.PAPERCLIP_LOG_DIR = "/tmp/paperclip-test-home/logs";
   process.env.PAPERCLIP_IN_WORKTREE = "false";
   const { accessRoutes } = await import("../routes/access.js");
@@ -42,10 +42,10 @@ async function createApp(db: Db, companyId: string, userId: string) {
     req.actor = {
       type: "board",
       userId,
-      source: "local_implicit",
+      source: role === "owner" ? "local_implicit" : "user_session",
       companyIds: [companyId],
-      memberships: [{ companyId, membershipRole: "owner", status: "active" }],
-      isInstanceAdmin: true,
+      memberships: [{ companyId, membershipRole: role, status: "active" }],
+      isInstanceAdmin: role === "owner",
     };
     next();
   });
@@ -92,7 +92,7 @@ describeEmbeddedPostgres("access routes permissions upgrade compatibility", () =
   // consume the first permission assertion's timeout budget.
   beforeAll(async () => {
     await import("../routes/access.js");
-  }, 30_000);
+  }, 60_000);
 
   beforeAll(async () => {
     tempDb = await startEmbeddedPostgresTestDatabase("paperclip-access-routes-permissions-upgrade-");
@@ -180,6 +180,87 @@ describeEmbeddedPostgres("access routes permissions upgrade compatibility", () =
       grantedByUserId: owner.principalId,
     });
   });
+
+  it("lets an owner grant explicit permissions to an agent member", async () => {
+    const { company, owner } = await createCompanyWithOwner(db);
+    const agent = await db.insert(agents).values({
+      companyId: company.id,
+      name: `Agent ${randomUUID()}`,
+      role: "general",
+      adapterType: "codex_local",
+      adapterConfig: {},
+    }).returning().then((rows) => rows[0]!);
+    const membership = await db.insert(companyMemberships).values({
+      companyId: company.id,
+      principalType: "agent",
+      principalId: agent.id,
+      status: "active",
+      membershipRole: "member",
+    }).returning().then((rows) => rows[0]!);
+
+    const res = await request(await createApp(db, company.id, owner.principalId))
+      .patch(`/api/companies/${company.id}/members/${membership.id}/permissions`)
+      .send({ grants: [{ permissionKey: "agents:configure" }] });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(res.body).toMatchObject({
+      id: membership.id,
+      principalType: "agent",
+      principalId: agent.id,
+      grants: [{ permissionKey: "agents:configure", scope: null }],
+    });
+    const saved = await db.select().from(principalPermissionGrants).where(
+      and(
+        eq(principalPermissionGrants.companyId, company.id),
+        eq(principalPermissionGrants.principalType, "agent"),
+        eq(principalPermissionGrants.principalId, agent.id),
+      ),
+    );
+    expect(saved).toHaveLength(1);
+    expect(saved[0]).toMatchObject({
+      permissionKey: "agents:configure",
+      grantedByUserId: owner.principalId,
+    });
+  }, 10_000);
+
+  it("denies a non-owner permission grant to an agent member", async () => {
+    const { company } = await createCompanyWithOwner(db);
+    const operator = await db.insert(companyMemberships).values({
+      companyId: company.id,
+      principalType: "user",
+      principalId: `operator-${randomUUID()}`,
+      status: "active",
+      membershipRole: "operator",
+    }).returning().then((rows) => rows[0]!);
+    const agent = await db.insert(agents).values({
+      companyId: company.id,
+      name: `Agent ${randomUUID()}`,
+      role: "general",
+      adapterType: "codex_local",
+      adapterConfig: {},
+    }).returning().then((rows) => rows[0]!);
+    const membership = await db.insert(companyMemberships).values({
+      companyId: company.id,
+      principalType: "agent",
+      principalId: agent.id,
+      status: "active",
+      membershipRole: "member",
+    }).returning().then((rows) => rows[0]!);
+
+    const res = await request(await createApp(db, company.id, operator.principalId, "operator"))
+      .patch(`/api/companies/${company.id}/members/${membership.id}/permissions`)
+      .send({ grants: [{ permissionKey: "agents:configure" }] });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(403);
+    const saved = await db.select().from(principalPermissionGrants).where(
+      and(
+        eq(principalPermissionGrants.companyId, company.id),
+        eq(principalPermissionGrants.principalType, "agent"),
+        eq(principalPermissionGrants.principalId, agent.id),
+      ),
+    );
+    expect(saved).toHaveLength(0);
+  }, 10_000);
 
   it("sweeps personal connection access when the member route suspends a user", async () => {
     const { company, owner } = await createCompanyWithOwner(db);

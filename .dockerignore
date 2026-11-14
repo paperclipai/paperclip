@@ -6,6 +6,9 @@ node_modules
 **/node_modules
 coverage
 data
+data/**
+data/paperclip/**
+**/.cache/**
 tmp
 *.log
 packages/paperclip-runner/dist

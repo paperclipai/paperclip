@@ -412,6 +412,25 @@ describeEmbeddedPostgres("applyPendingMigrations", () => {
     }
   }, 30_000);
 
+  it("uses the migration timestamp frontier when only some journal hashes resolve", async () => {
+    const connectionString = await createTempDatabase();
+    await applyPendingMigrations(connectionString);
+
+    const sql = postgres(connectionString, { max: 1, onnotice: () => {} });
+    try {
+      const hash = await migrationHash("0000_mature_masked_marvel.sql");
+      await sql`
+        UPDATE "drizzle"."__drizzle_migrations"
+        SET hash = 'historical-hash-no-longer-in-the-source-tree'
+        WHERE hash = ${hash}
+      `;
+
+      expect((await inspectMigrations(connectionString)).status).toBe("upToDate");
+    } finally {
+      await sql.end();
+    }
+  }, 30_000);
+
   it("rejects unallowlisted migration backfills that bump updated_at on user-visible tables", async () => {
     const entries = await fs.promises.readdir(new URL("./migrations", import.meta.url), {
       withFileTypes: true,

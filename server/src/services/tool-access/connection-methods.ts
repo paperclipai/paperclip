@@ -237,6 +237,62 @@ export function projectedConnectionHeaders(
   return headers;
 }
 
+function staticRemoteConnectionHeaders(
+  connection: ConnectionSettings,
+): Record<string, string> {
+  const rawPolicy =
+    asRecord(asRecord(connection.config).headerPolicy) ??
+    asRecord(asRecord(connection.transportConfig).headerPolicy) ??
+    {};
+  const rawHeaders = rawPolicy.staticHeaders;
+  const entries: Array<[string, unknown]> = Array.isArray(rawHeaders)
+    ? rawHeaders.flatMap((entry) => {
+        const record = asRecord(entry);
+        return typeof record.name === "string"
+          ? [[record.name, record.value] as [string, unknown]]
+          : [];
+      })
+    : Object.entries(asRecord(rawHeaders));
+  const reserved = new Set([
+    "accept",
+    "content-type",
+    "content-length",
+    "host",
+    "connection",
+  ]);
+  const headers: Record<string, string> = {};
+  for (const [rawName, rawValue] of entries) {
+    const name = rawName.trim().toLowerCase();
+    if (
+      !checkMcpRemoteHeaderName(name).ok ||
+      reserved.has(name) ||
+      typeof rawValue !== "string" ||
+      !checkMcpRemoteHeaderValue(rawValue).ok
+    ) {
+      continue;
+    }
+    headers[name] = rawValue;
+  }
+  return headers;
+}
+
+export function remoteDiscoveryHeaders(
+  connection: ConnectionSettings,
+  credentials: Record<string, string>,
+): Record<string, string> {
+  const headers: Record<string, string> = {};
+  for (const source of [
+    projectedConnectionHeaders(connection),
+    staticRemoteConnectionHeaders(connection),
+    credentials,
+  ]) {
+    for (const [name, value] of Object.entries(source)) {
+      headers[name.trim().toLowerCase()] = value;
+    }
+  }
+  return headers;
+}
+
 function mergeManagedToolArguments(
   supplied: Record<string, unknown>,
   managed: Record<string, unknown>,

@@ -6,6 +6,61 @@ import type { TaskChatThinkingItem } from "./task-chat-model";
 import { flattenSelfTalk } from "./transcript-adapter";
 import { useTaskChatShimmer } from "./TaskChatShimmer";
 
+const REASONING_RULE_LENGTH = 60;
+
+function parseReasoningFrame(body: string) {
+  const lines = body.split("\n");
+  const first = lines.findIndex((line) => line.trim());
+  let last = lines.length - 1;
+  while (last >= 0 && !lines[last].trim()) last -= 1;
+  if (first < 0 || last <= first) return null;
+
+  const header = lines[first].trim();
+  const footer = lines[last].trim();
+  const title = header.match(/[┌┏╭╔╒╓]?\s*[─━═-]*\s*(Reasoning(?:\s+detail)?)\b/i)?.[1];
+  const hasTopCorner = /^[┌┏╭╔╒╓]/.test(header);
+  const hasBottomCorner = /^[└┗╰╚╘╙]/.test(footer);
+  if (!title || !hasTopCorner || !hasBottomCorner) return null;
+
+  const content = lines
+    .slice(first + 1, last)
+    .map((line) => line.replace(/^\s*[│┃║]\s?/, "").replace(/\s*[│┃║]\s*$/, ""))
+    .join("\n")
+    .trim();
+  return { title, content };
+}
+
+function ReasoningRule({ title }: { title?: string }) {
+  const label = title ? `── ${title} ` : "";
+  const suffix = "─".repeat(Math.max(0, REASONING_RULE_LENGTH - label.length));
+  return (
+    <div className="inline-flex max-w-full items-center whitespace-pre font-mono" aria-label={title ? `${title} section` : undefined}>
+      {title ? <span className="shrink-0 text-muted-foreground/50">── </span> : null}
+      {title ? <span className="shrink-0 font-semibold text-sky-400">{title}</span> : null}
+      <span className="shrink-0 text-muted-foreground/50">{title ? " " : ""}{suffix}</span>
+    </div>
+  );
+}
+
+export function TaskChatReasoningText({ body }: { body: string }) {
+  const frame = parseReasoningFrame(body);
+  const singleLine = body.trim();
+  const reasoningHeader = singleLine.match(/^[┌┏╭╔╒╓]\s*[─━═-]*\s*(Reasoning(?:\s+detail)?)\b.*[┐┓╮╗╕╖]$/i)?.[1];
+  const reasoningFooter = /^[└┗╰╚╘╙]\s*[─━═-]*[┘┛╯╝╛╜]?$/.test(singleLine);
+  if (reasoningHeader) return <ReasoningRule title={reasoningHeader} />;
+  if (reasoningFooter) return <ReasoningRule />;
+  if (!frame) {
+    return <MarkdownBody className="task-chat-reasoning-markdown" softBreaks linkIssueReferences>{body}</MarkdownBody>;
+  }
+  return (
+    <div className="min-w-0 overflow-hidden" data-testid="task-chat-reasoning-frame">
+      <ReasoningRule title={frame.title} />
+      {frame.content ? <MarkdownBody className="task-chat-reasoning-markdown" softBreaks linkIssueReferences>{frame.content}</MarkdownBody> : null}
+      <ReasoningRule />
+    </div>
+  );
+}
+
 /** Provider-authored reasoning summaries and deltas; never reconstructed hidden reasoning. */
 export function TaskChatThinking({
   item,
@@ -24,7 +79,8 @@ export function TaskChatThinking({
   const [open, setOpen] = useState(defaultOpen ?? false);
   const shimmer = useTaskChatShimmer(item.id);
   const body = item.lines.join("\n").trim();
-  const preview = flattenSelfTalk(body);
+  const frame = parseReasoningFrame(body);
+  const preview = flattenSelfTalk(frame?.content ?? body);
   const baseLabel = item.channel === "detail" ? "Reasoning detail" : "Reasoning";
   const label = active
     ? body ? `${baseLabel}…` : "Thinking…"
@@ -48,7 +104,7 @@ export function TaskChatThinking({
           />
         </span>
         <div className="min-w-0 flex-1" data-testid="task-chat-thinking-text" data-conversation-text="progress">
-          <MarkdownBody softBreaks linkIssueReferences>{body}</MarkdownBody>
+          <TaskChatReasoningText body={body} />
         </div>
       </div>
     );
@@ -92,7 +148,7 @@ export function TaskChatThinking({
       </button>
       {open ? (
         <div data-conversation-text="progress" className="task-chat-expanded-line-wrap ml-2.5 mt-1 min-w-0 max-w-full overflow-hidden border-l-2 border-border pl-2.5 text-xs font-normal text-muted-foreground">
-          <MarkdownBody className="task-chat-reasoning-markdown" softBreaks linkIssueReferences>{body}</MarkdownBody>
+          <TaskChatReasoningText body={body} />
         </div>
       ) : null}
     </div>

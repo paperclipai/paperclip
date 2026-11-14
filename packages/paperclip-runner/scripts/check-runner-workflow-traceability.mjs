@@ -1,14 +1,24 @@
 import { access, readFile } from "node:fs/promises";
 import { resolve } from "node:path";
+import { pathToFileURL } from "node:url";
 
-const packageRoot = resolve(import.meta.dirname, "..");
-const evals = await import(resolve(packageRoot, "dist/eval/index.js"));
-const manifest = JSON.parse(await readFile(resolve(packageRoot, "spec/evals/stress-workflow-traceability.json"), "utf8"));
-const summary = evals.validateStressTraceabilityManifest(manifest);
-for (const finding of manifest.findings) {
-  for (const path of finding.regressionTests) await access(resolve(packageRoot, path));
+export async function loadWorkflowEvals(packageRoot) {
+  return import(pathToFileURL(resolve(packageRoot, "dist/eval/index.js")).href);
 }
-if (summary.coveredWorkflows !== evals.RUNNER_WORKFLOW_IDS.length) {
-  throw new Error(`stress traceability covers ${summary.coveredWorkflows}/${evals.RUNNER_WORKFLOW_IDS.length} workflows`);
+
+async function checkRunnerWorkflowTraceability() {
+  const packageRoot = resolve(import.meta.dirname, "..");
+  const evals = await loadWorkflowEvals(packageRoot);
+  const manifest = JSON.parse(await readFile(resolve(packageRoot, "spec/evals/stress-workflow-traceability.json"), "utf8"));
+  const summary = evals.validateStressTraceabilityManifest(manifest);
+  for (const finding of manifest.findings) {
+    for (const path of finding.regressionTests) await access(resolve(packageRoot, path));
+  }
+  if (summary.coveredWorkflows !== evals.RUNNER_WORKFLOW_IDS.length) {
+    throw new Error(`stress traceability covers ${summary.coveredWorkflows}/${evals.RUNNER_WORKFLOW_IDS.length} workflows`);
+  }
+  process.stdout.write(`Runner stress traceability passed: ${summary.findings} findings, ${summary.coveredWorkflows} workflows, ${summary.exclusions} explicit exclusion.\n`);
 }
-process.stdout.write(`Runner stress traceability passed: ${summary.findings} findings, ${summary.coveredWorkflows} workflows, ${summary.exclusions} explicit exclusion.\n`);
+
+const invokedUrl = process.argv[1] ? pathToFileURL(resolve(process.argv[1])).href : null;
+if (invokedUrl === import.meta.url) await checkRunnerWorkflowTraceability();

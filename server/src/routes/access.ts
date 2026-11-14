@@ -4599,7 +4599,11 @@ export function accessRoutes(
       await assertCompanyPermission(req, companyId, "users:manage_permissions");
       const memberToUpdate = await access.getMemberById(companyId, memberId);
       if (!memberToUpdate) throw notFound("Member not found");
-      await assertCanManageCompanyMember(req, access, companyId, memberToUpdate);
+      if (memberToUpdate.principalType === "user") {
+        await assertCanManageCompanyMember(req, access, companyId, memberToUpdate);
+      } else if (memberToUpdate.principalType !== "agent") {
+        throw forbidden("Only company users and agents can have explicit permissions updated.");
+      }
       const updated = await access.setMemberPermissions(
         companyId,
         memberId,
@@ -4618,6 +4622,20 @@ export function accessRoutes(
           grantCount: req.body.grants?.length ?? 0,
         },
       });
+      if (memberToUpdate.principalType === "agent") {
+        const grants = await db
+          .select()
+          .from(principalPermissionGrants)
+          .where(
+            and(
+              eq(principalPermissionGrants.companyId, companyId),
+              eq(principalPermissionGrants.principalType, "agent"),
+              eq(principalPermissionGrants.principalId, memberToUpdate.principalId),
+            ),
+          );
+        res.json({ ...updated, grants });
+        return;
+      }
       const member = (await loadCompanyMemberRecords(db, companyId)).find(
         (entry) => entry.id === memberId,
       );

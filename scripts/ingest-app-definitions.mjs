@@ -952,46 +952,17 @@ const apps = [
     ...extra,
   }),
 );
-apps.push({
-  schemaVersion: 1,
-  slug: "gmail",
-  name: "Gmail",
-  description:
-    "Search and read Gmail messages and create drafts without enabling mail sending.",
-  categories: ["communication", "productivity"],
-  featured: true,
-  branding: brandingFor("gmail"),
-  urlPatterns: ["https://gmailmcp.googleapis.com/*"],
-  docsUrl:
-    "https://developers.google.com/workspace/guides/configure-mcp-servers",
-  redirectConstraints: "https-or-loopback-http",
-  methods: [
-    {
-      key: "paperclip-id-oauth",
-      label: "Connect Gmail",
-      transport: "mcp_remote",
-      auth: "oauth",
-      oauthStrategy: "paperclip_id_connector",
-      grantKinds: ["user"],
-      ownershipModes: ["customer"],
-      whenToUse:
-        "Use Paperclip ID for a personal Gmail connection with centrally registered Google OAuth.",
-      defaults: {
-        serverUrl: "https://gmailmcp.googleapis.com/mcp/v1",
-        scopesHint: [
-          "https://www.googleapis.com/auth/gmail.readonly",
-          "https://www.googleapis.com/auth/gmail.compose",
-        ],
-      },
-      guidanceMd:
-        "Connect your Gmail identity. Paperclip can search and read mail and create drafts. Sending mail is not enabled.",
-      warnings: [
-        "This connection is personal. Agents need an explicit install, profile, and delegation before they can use it.",
-      ],
-      riskTier: "S3",
-    },
-  ],
-});
+// Gmail has reviewed connection methods and a distinct agent-scoped sender
+// profile. Keep its checked-in definition canonical so this legacy ingestion
+// script cannot replace those controls with its former personal-only profile.
+apps.push(
+  JSON.parse(
+    fs.readFileSync(
+      path.join(root, "packages/shared/src/app-definitions/gmail.json"),
+      "utf8",
+    ),
+  ),
+);
 
 // The reviewed MCP program is a durable input, not another hand-maintained
 // allowlist. Runtime definitions are generated from the same 46-row evidence

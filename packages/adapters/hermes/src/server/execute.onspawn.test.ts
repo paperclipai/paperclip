@@ -38,6 +38,19 @@ vi.mock("node:fs/promises", () => ({
   stat: vi.fn(async () => ({ isFile: () => true, isDirectory: () => false })),
 }));
 
+vi.mock("./runtime-mcp.js", () => ({
+  createHermesRuntimeMcpHome: vi.fn(async (input: { servers: unknown[] }) =>
+    input.servers.length > 0
+      ? {
+          home: "/tmp/paperclip-hermes-run-test/.hermes",
+          env: {},
+          serverNames: ["paperclip_assigned_testrun1_0"],
+          cleanup: vi.fn(async () => undefined),
+        }
+      : null,
+  ),
+}));
+
 import { execute } from "./execute.js";
 import * as serverUtils from "@paperclipai/adapter-utils/server-utils";
 
@@ -110,7 +123,8 @@ describe("hermes-local adapter onSpawn forwarding", () => {
     await execute({ ...ctx, context: { ...ctx.context, paperclipWake: wake } } as any);
     const call = vi.mocked(serverUtils.runChildProcess).mock.calls.at(-1)!;
     expect(call[3].env).not.toHaveProperty("PAPERCLIP_WAKE_PAYLOAD_JSON");
-    expect(call[2]).toContainEqual(expect.stringContaining("Current task brief"));
+    expect(call[2]).toEqual(expect.arrayContaining(["--query-file", "-"]));
+    expect(call[3].stdin).toContain("Current task brief");
   });
 
   it("launches in the assigned task workspace when no cwd was configured", async () => {
@@ -224,5 +238,56 @@ describe("hermes-local adapter onSpawn forwarding", () => {
       if (previousApiKey === undefined) delete process.env.PAPERCLIP_API_KEY;
       else process.env.PAPERCLIP_API_KEY = previousApiKey;
     }
+  });
+
+  it("adds run-authorized MCP servers without replacing configured toolsets", async () => {
+    const { ctx } = makeCtx({ toolsets: "safe" });
+    (ctx as any).runtimeMcp = {
+      getServers: () => [{
+        name: "paperclip-assigned",
+        url: "http://127.0.0.1:3100/mcp/gateways/gw_test",
+        token: "run-scoped-token",
+      }],
+    };
+
+    await execute(ctx as any);
+
+    const args = vi.mocked(serverUtils.runChildProcess).mock.calls.at(-1)?.[2] as string[];
+    const toolsetsIndex = args.indexOf("-t");
+    expect(args[toolsetsIndex + 1]).toBe("safe,paperclip_assigned_testrun1_0");
+  });
+
+  it("keeps large wake payloads out of the child environment", async () => {
+    const { ctx } = makeCtx({ env: { PAPERCLIP_WAKE_PAYLOAD_JSON: "stale configured wake" } });
+    const description = "large issue description ".repeat(7_000);
+    (ctx.context as Record<string, any>).paperclipWake = {
+      reason: "issue_assigned",
+      issue: {
+        id: "issue-1",
+        identifier: "TRI-41",
+        title: "Continue the report cleanup",
+        status: "in_progress",
+        priority: "medium",
+        workMode: "standard",
+        description,
+      },
+      checkedOutByHarness: true,
+      commentWindow: { requestedCount: 0, includedCount: 0, missingCount: 0 },
+      comments: [],
+      fallbackFetchNeeded: false,
+    };
+    (ctx.context as Record<string, any>).paperclipTaskMarkdown =
+      "Paperclip task context: use the supplied task brief.";
+
+    await execute(ctx as any);
+
+    const mocked = vi.mocked(serverUtils.runChildProcess);
+    const [, , args, options] = mocked.mock.calls[mocked.mock.calls.length - 1];
+    expect(args).toContain("--query-file");
+    expect(args).toContain("-");
+    expect(args).not.toContain(description);
+    expect(options.stdin).toContain("Paperclip task context: use the supplied task brief.");
+    expect(options.stdin).not.toContain(description);
+    expect(options.env.PAPERCLIP_WAKE_PAYLOAD_JSON).toBeUndefined();
   });
 });

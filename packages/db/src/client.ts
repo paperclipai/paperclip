@@ -685,6 +685,24 @@ async function columnHasDataType(
   ));
 }
 
+async function columnHasDefault(
+  sql: ReturnType<typeof postgres>,
+  tableName: string,
+  columnName: string,
+  expectedDefault: string,
+): Promise<boolean> {
+  const rows = await sql<{ columnDefault: string | null }[]>`
+    SELECT column_default AS "columnDefault"
+    FROM information_schema.columns
+    WHERE table_schema = 'public'
+      AND table_name = ${tableName}
+      AND column_name = ${columnName}
+  `;
+  const actual = rows[0]?.columnDefault?.replace(/::[a-zA-Z0-9_ ]+$/, "").replace(/[()]/g, "").trim();
+  const expected = expectedDefault.replace(/[()]/g, "").trim();
+  return actual === expected;
+}
+
 async function indexExists(
   sql: ReturnType<typeof postgres>,
   indexName: string,
@@ -816,6 +834,18 @@ async function migrationStatementAlreadyApplied(
     );
   }
 
+  const alterColumnDefaultMatch = normalized.match(
+    /^ALTER TABLE "([^"]+)" ALTER COLUMN "([^"]+)" SET DEFAULT (.+)$/i,
+  );
+  if (alterColumnDefaultMatch) {
+    return columnHasDefault(
+      sql,
+      alterColumnDefaultMatch[1],
+      alterColumnDefaultMatch[2],
+      alterColumnDefaultMatch[3],
+    );
+  }
+
   const createIndexMatch = normalized.match(/^CREATE (?:UNIQUE )?INDEX(?: IF NOT EXISTS)? "([^"]+)"/i);
   if (createIndexMatch) {
     return indexExists(sql, createIndexMatch[1]);
@@ -896,31 +926,39 @@ async function loadAppliedMigrations(
       .map((row) => hashesToMigrationFiles.get(row.hash))
       .filter((name): name is string => Boolean(name));
 
-    if (appliedFromHashes.length > 0) {
-      // Best-effort: when all hashes resolve, this is authoritative.
-      if (appliedFromHashes.length === rows.length) return appliedFromHashes;
-
-      // Partial hash resolution can happen when files have changed; return what we can trust.
-      return appliedFromHashes;
-    }
-
-    // Fallback only when hashes are unavailable/unresolved.
     if (columnNames.has("created_at")) {
       const journalEntries = await listJournalMigrationEntries();
       if (journalEntries.length > 0) {
         const lastDbRows = await sql.unsafe<{ created_at: string | number | null }[]>(
-          `SELECT created_at FROM ${qualifiedTable} ORDER BY created_at DESC LIMIT 1`,
+          `SELECT created_at FROM ${qualifiedTable} ORDER BY created_at DESC NULLS LAST LIMIT 1`,
         );
         const lastCreatedAt = Number(lastDbRows[0]?.created_at ?? -1);
         if (Number.isFinite(lastCreatedAt) && lastCreatedAt >= 0) {
-          return journalEntries
+          const appliedFromTimestamps = journalEntries
             .filter((entry) => availableMigrations.includes(entry.fileName))
             .filter((entry) => entry.folderMillis <= lastCreatedAt)
             .map((entry) => entry.fileName)
             .slice(0, rows.length);
+
+          if (appliedFromHashes.length === rows.length) return appliedFromHashes;
+
+          // Migration SQL can be edited after it has been applied, leaving a
+          // mix of resolvable and historical hashes. When the timestamp
+          // frontier covers every resolvable hash and the journal contains at
+          // least that many entries, use the contiguous journal history rather
+          // than treating the resolvable subset as the whole applied history.
+          if (
+            appliedFromTimestamps.length > appliedFromHashes.length &&
+            rows.length >= appliedFromTimestamps.length &&
+            appliedFromHashes.every((name) => appliedFromTimestamps.includes(name))
+          ) {
+            return appliedFromTimestamps;
+          }
         }
       }
     }
+
+    if (appliedFromHashes.length > 0) return appliedFromHashes;
   }
 
   const rows = await sql.unsafe<{ id: number }[]>(`SELECT id FROM ${qualifiedTable} ORDER BY id`);

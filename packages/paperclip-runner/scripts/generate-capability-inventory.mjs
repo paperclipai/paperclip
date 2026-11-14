@@ -49,7 +49,7 @@ const outputs = {
 if (process.argv.includes("--check")) {
   const stale = [];
   for (const [path, content] of Object.entries(outputs)) {
-    if (await readFile(path, "utf8").catch(() => "") !== content) stale.push(path);
+    if ((await readFile(path, "utf8").catch(() => "")).replace(/\r\n/g, "\n") !== content) stale.push(path);
   }
   if (stale.length > 0) throw new Error(`Capability generated outputs are stale:\n${stale.join("\n")}`);
   process.stdout.write("Capability inventories and generated contract match the canonical baselines.\n");

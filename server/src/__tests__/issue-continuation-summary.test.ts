@@ -131,4 +131,79 @@ describe("issue continuation summaries", () => {
 
     expect(continuationSummaryParksExecutor(body)).toBe(false);
   });
+
+  it("replaces a stale reviewer wait when the issue returns to in_progress", () => {
+    const body = buildContinuationSummaryMarkdown({
+      issue: {
+        id: "issue-1",
+        identifier: "PAP-1579",
+        title: "Add continuation summaries",
+        description: null,
+        status: "in_progress",
+        priority: "medium",
+      },
+      run: { id: "run-3", status: "succeeded", error: null },
+      agent: { id: "agent-1", name: "CodexCoder", adapterType: "codex_local" },
+      previousSummaryBody: [
+        "# Continuation Summary",
+        "",
+        "- Status: in_review",
+        "",
+        "## Next Action",
+        "",
+        "- Wait for reviewer feedback or approval before continuing executor work.",
+      ].join("\n"),
+    });
+
+    expect(extractContinuationSummaryNextAction(body)).toBe(
+      "Resume implementation from the acceptance criteria, latest comments, and this summary.",
+    );
+    expect(continuationSummaryParksExecutor(body)).toBe(false);
+  });
+
+  it("preserves a runnable prior next action for an in_progress issue", () => {
+    const body = buildContinuationSummaryMarkdown({
+      issue: {
+        id: "issue-1",
+        identifier: "PAP-1579",
+        title: "Add continuation summaries",
+        description: null,
+        status: "in_progress",
+        priority: "medium",
+      },
+      run: { id: "run-4", status: "succeeded", error: null },
+      agent: { id: "agent-1", name: "CodexCoder", adapterType: "codex_local" },
+      previousSummaryBody: [
+        "# Continuation Summary",
+        "",
+        "## Next Action",
+        "",
+        "- Finish the remaining acceptance checks.",
+      ].join("\n"),
+    });
+
+    expect(extractContinuationSummaryNextAction(body)).toBe(
+      "Finish the remaining acceptance checks.",
+    );
+  });
+
+  it("continues to generate a reviewer wait while the issue is in_review", () => {
+    const body = buildContinuationSummaryMarkdown({
+      issue: {
+        id: "issue-1",
+        identifier: "PAP-1579",
+        title: "Add continuation summaries",
+        description: null,
+        status: "in_review",
+        priority: "medium",
+      },
+      run: { id: "run-5", status: "succeeded", error: null },
+      agent: { id: "agent-1", name: "CodexCoder", adapterType: "codex_local" },
+    });
+
+    expect(extractContinuationSummaryNextAction(body)).toBe(
+      "Wait for reviewer feedback or approval before continuing executor work.",
+    );
+    expect(continuationSummaryParksExecutor(body)).toBe(true);
+  });
 });

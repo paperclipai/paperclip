@@ -5353,6 +5353,9 @@ export function agentRoutes(
     const id = req.params.id as string;
     const existing = await getAccessibleResource(req, res, svc.getById(id), "Agent not found");
     if (!existing) return;
+    if (req.actor.type === "agent" && req.actor.agentId === id && hasOwn(req.body as object, "role")) {
+      throw forbidden("Agents cannot change their own role");
+    }
 
     if (hasOwn(req.body as object, "permissions")) {
       res.status(422).json({ error: "Use /api/agents/:id/permissions for permission changes" });
@@ -5413,6 +5416,7 @@ export function agentRoutes(
     const requestedAdapterType = nextAdapterType === existing.adapterType
       ? nextAdapterType
       : await assertSelectableAdapterType(nextAdapterType, patchData.adapterConfig);
+    const adapterTypeChanged = requestedAdapterType !== existing.adapterType;
     let requestedRuntimeConfig: Record<string, unknown> | null = null;
     if (hasOwn(patchData, "runtimeConfig")) {
       const runtimeConfig = asRecord(patchData.runtimeConfig);
@@ -5553,6 +5557,27 @@ export function agentRoutes(
       && (touchesAdapterConfiguration || Object.prototype.hasOwnProperty.call(patchData, "defaultEnvironmentId"))) {
       requestedRuntimeConfig = { ...(requestedRuntimeConfig ?? existing.runtimeConfig),
         aiConnection: { provider: "github", method: "api_key", mode: "responsible_user" } };
+    }
+    const hasRequestedAiBinding =
+      requestedRuntimeConfig !== null && hasOwn(requestedRuntimeConfig, "aiConnection");
+    const existingAiBinding = aiRuntimeConnectionBindingSchema.safeParse(
+      existing.runtimeConfig.aiConnection,
+    ).data;
+    if (
+      adapterTypeChanged &&
+      existingAiBinding &&
+      existingAiBinding.mode !== "router" &&
+      !hasRequestedAiBinding &&
+      !isAiConnectionCompatible(
+        existingAiBinding,
+        requestedAdapterType,
+        nextAiConfig.model,
+        nextAiConfig.provider,
+        nextAiConfig.acpxAgent,
+      )
+    ) {
+      requestedRuntimeConfig = { ...(requestedRuntimeConfig ?? existing.runtimeConfig) };
+      delete requestedRuntimeConfig.aiConnection;
     }
     const nextAiBinding = aiRuntimeConnectionBindingSchema.safeParse(requestedRuntimeConfig ? requestedRuntimeConfig.aiConnection : existing.runtimeConfig.aiConnection).data;
     if (nextAiBinding) {
@@ -6175,7 +6200,21 @@ export function agentRoutes(
     });
 
     if (!run) {
-      res.status(202).json(await opts.skippedResponse(agent, wakePayload));
+      const skippedResponse = await opts.skippedResponse(agent, wakePayload);
+      logger.warn(
+        {
+          agentId: agent.id,
+          companyId: agent.companyId,
+          source: opts.source ?? "on_demand",
+          issueId: typeof wakePayload?.issueId === "string" ? wakePayload.issueId : null,
+          reason: skippedResponse && typeof skippedResponse === "object" && "reason" in skippedResponse
+            ? skippedResponse.reason
+            : "wakeup_skipped",
+          detail: skippedResponse,
+        },
+        "agent wakeup skipped",
+      );
+      res.status(202).json(skippedResponse);
       return;
     }
 

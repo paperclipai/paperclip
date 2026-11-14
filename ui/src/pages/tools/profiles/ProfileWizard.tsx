@@ -74,6 +74,8 @@ export function ProfileWizard({
   const [selections, setSelections] = useState<WizardSelections>({});
   const [advancedRules, setAdvancedRules] = useState<AdvancedRule[]>([]);
   const [newToolsAction, setNewToolsAction] = useState<"deny" | "allow">("deny");
+  const [requireIssueAssignee, setRequireIssueAssignee] = useState(false);
+  const [conditionedCatalogEntryIds, setConditionedCatalogEntryIds] = useState<string[]>([]);
   const [selectedAgentIds, setSelectedAgentIds] = useState<Set<string>>(new Set());
   const [selectedProjectIds, setSelectedProjectIds] = useState<Set<string>>(new Set());
   const [selectedRoutineIds, setSelectedRoutineIds] = useState<Set<string>>(new Set());
@@ -96,10 +98,12 @@ export function ProfileWizard({
     setDescription(existing.description ?? "");
     setProfileKey(existing.profileKey);
     setKeyEdited(true);
-    setNewToolsAction(existing.defaultAction);
     const parsed = parseEntries(appGroups, existing.entries);
+    setNewToolsAction(parsed.requireIssueAssignee ? "deny" : existing.defaultAction);
     setSelections(parsed.selections);
     setAdvancedRules(parsed.advancedRules);
+    setRequireIssueAssignee(parsed.requireIssueAssignee);
+    setConditionedCatalogEntryIds(parsed.conditionedCatalogEntryIds);
     const meta = readWizardMeta(existing);
     setTemplate(meta?.template ?? null);
     // Drafts resume at the first unfinished step; a finished profile being
@@ -145,7 +149,7 @@ export function ProfileWizard({
       seed?: WizardSelections;
     }) => {
       const effSelections = input.seed ?? selections;
-      const entries = buildEntries(appGroups, effSelections, advancedRules, newToolsAction);
+      const entries = buildEntries(appGroups, effSelections, advancedRules, newToolsAction, requireIssueAssignee, conditionedCatalogEntryIds);
       const metadata = withWizardMeta(existing?.metadata ?? null, {
         lastCompletedStep: input.completedStep,
         template,
@@ -185,7 +189,7 @@ export function ProfileWizard({
   const finish = useMutation({
     mutationFn: async () => {
       if (!draftId) throw new Error("No draft to finish");
-      const entries = buildEntries(appGroups, selections, advancedRules, newToolsAction);
+      const entries = buildEntries(appGroups, selections, advancedRules, newToolsAction, requireIssueAssignee, conditionedCatalogEntryIds);
       const profile = await toolsApi.updateProfile(draftId, {
         defaultAction: newToolsAction,
         entries,
@@ -260,6 +264,11 @@ export function ProfileWizard({
             onAdvancedRulesChange={setAdvancedRules}
             newToolsAction={newToolsAction}
             onNewToolsActionChange={setNewToolsAction}
+            requireIssueAssignee={requireIssueAssignee}
+            onRequireIssueAssigneeChange={(enabled) => {
+              setRequireIssueAssignee(enabled);
+              if (enabled) setNewToolsAction("deny");
+            }}
           />
         ) : null}
 

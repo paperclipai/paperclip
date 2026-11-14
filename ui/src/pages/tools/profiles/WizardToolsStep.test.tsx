@@ -46,6 +46,7 @@ describe("WizardToolsStep", () => {
   let root: Root;
   let selections: WizardSelections;
   let advancedRules: AdvancedRule[];
+  let requireIssueAssignee: boolean;
 
   beforeEach(() => {
     container = document.createElement("div");
@@ -53,6 +54,7 @@ describe("WizardToolsStep", () => {
     root = createRoot(container);
     selections = {};
     advancedRules = [];
+    requireIssueAssignee = false;
   });
 
   afterEach(() => {
@@ -80,6 +82,11 @@ describe("WizardToolsStep", () => {
           }}
           newToolsAction="deny"
           onNewToolsActionChange={() => undefined}
+          requireIssueAssignee={requireIssueAssignee}
+          onRequireIssueAssigneeChange={(next) => {
+            requireIssueAssignee = next;
+            render();
+          }}
         />,
       );
     });
@@ -120,5 +127,15 @@ describe("WizardToolsStep", () => {
       },
     ]);
     expect(container.textContent).toContain("Allow tools matching gmail.send*");
+  });
+
+  it("lets the editor enable task-assignee write access", () => {
+    render();
+    const checkbox = [...container.querySelectorAll('button[role="checkbox"]')].find((el) =>
+      el.parentElement?.textContent?.includes("Require task assignment for write tools"),
+    );
+    expect(checkbox).toBeTruthy();
+    flushSync(() => checkbox?.dispatchEvent(new MouseEvent("click", { bubbles: true })));
+    expect(requireIssueAssignee).toBe(true);
   });
 });

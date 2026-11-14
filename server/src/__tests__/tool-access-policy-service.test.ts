@@ -454,6 +454,135 @@ describeEmbeddedPostgres("tool access policy service", () => {
     });
   });
 
+  it("allows shared website reads but requires the current issue assignee for website edits", async () => {
+    const company = await createCompany(db);
+    const assignedAgent = await createAgent(db, company.id);
+    const otherAgent = await createAgent(db, company.id);
+    const application = await db.insert(toolApplications).values({
+      companyId: company.id,
+      applicationKey: "website-poc",
+      name: "Fake Website",
+      type: "mcp_http",
+      status: "active",
+    }).returning().then((rows) => rows[0]!);
+    const connection = await db.insert(toolConnections).values({
+      companyId: company.id,
+      applicationId: application.id,
+      name: "Fake Website",
+      uid: `website-poc/${randomUUID()}`,
+      transport: "mcp_remote",
+      status: "active",
+      enabled: true,
+      config: { url: "http://127.0.0.1:0/mcp" },
+    }).returning().then((rows) => rows[0]!);
+    const [readTool, editTool] = await db.insert(toolCatalogEntries).values([
+      {
+        companyId: company.id,
+        applicationId: application.id,
+        connectionId: connection.id,
+        name: "website_read_page",
+        toolName: "website_read_page",
+        riskLevel: "read",
+        versionHash: randomUUID(),
+        schemaHash: randomUUID(),
+        status: "active",
+      },
+      {
+        companyId: company.id,
+        applicationId: application.id,
+        connectionId: connection.id,
+        name: "website_update_page",
+        toolName: "website_update_page",
+        riskLevel: "write",
+        versionHash: randomUUID(),
+        schemaHash: randomUUID(),
+        status: "active",
+      },
+    ]).returning();
+    const issue = await db.insert(issues).values({
+      companyId: company.id,
+      title: `Website edit ${randomUUID()}`,
+      status: "in_progress",
+      assigneeAgentId: assignedAgent.id,
+    }).returning().then((rows) => rows[0]!);
+    const [sharedReadProfile, issueProfile] = await db.insert(toolProfiles).values([
+      {
+        companyId: company.id,
+        profileKey: `website-read-${randomUUID()}`,
+        name: "Website shared read",
+        defaultAction: "deny",
+      },
+      {
+        companyId: company.id,
+        profileKey: `website-issue-${randomUUID()}`,
+        name: "Website issue access",
+        defaultAction: "deny",
+      },
+    ]).returning();
+    await db.insert(toolProfileBindings).values([
+      {
+        companyId: company.id,
+        profileId: sharedReadProfile!.id,
+        targetType: "company",
+        targetId: company.id,
+      },
+      {
+        companyId: company.id,
+        profileId: issueProfile!.id,
+        targetType: "issue",
+        targetId: issue.id,
+      },
+    ]);
+    await db.insert(toolProfileEntries).values([
+      {
+        companyId: company.id,
+        profileId: sharedReadProfile!.id,
+        selectorType: "catalog_entry",
+        effect: "include",
+        catalogEntryId: readTool!.id,
+      },
+      {
+        companyId: company.id,
+        profileId: issueProfile!.id,
+        selectorType: "catalog_entry",
+        effect: "include",
+        catalogEntryId: readTool!.id,
+      },
+      {
+        companyId: company.id,
+        profileId: issueProfile!.id,
+        selectorType: "catalog_entry",
+        effect: "include",
+        catalogEntryId: editTool!.id,
+        conditions: { context: { requireIssueAssignee: true } },
+      },
+    ]);
+
+    const decide = (agent: typeof assignedAgent, tool: typeof readTool, issueId?: string) =>
+      toolAccessPolicyService(db).decide({
+        companyId: company.id,
+        actor: { actorType: "agent", actorId: agent.id, agentId: agent.id },
+        ...(issueId ? { runContext: { issueId } } : {}),
+        request: {
+          connectionId: connection.id,
+          catalogEntryId: tool.id,
+          toolName: tool.toolName,
+        },
+      });
+
+    expect((await decide(assignedAgent, readTool!)).allowed).toBe(true);
+    expect((await decide(otherAgent, readTool!)).allowed).toBe(true);
+    expect((await decide(assignedAgent, editTool!, issue.id)).allowed).toBe(true);
+    expect((await decide(otherAgent, editTool!, issue.id)).allowed).toBe(false);
+    expect((await decide(assignedAgent, editTool!)).allowed).toBe(false);
+
+    await db.update(issues).set({ assigneeAgentId: otherAgent.id }).where(eq(issues.id, issue.id));
+    expect((await decide(assignedAgent, editTool!, issue.id)).allowed).toBe(false);
+    expect((await decide(otherAgent, editTool!, issue.id)).allowed).toBe(true);
+    await db.update(issues).set({ assigneeAgentId: null }).where(eq(issues.id, issue.id));
+    expect((await decide(otherAgent, editTool!, issue.id)).allowed).toBe(false);
+  });
+
   it("denies calls through draft and archived profiles", async () => {
     const company = await createCompany(db);
     const draftAgent = await createAgent(db, company.id);

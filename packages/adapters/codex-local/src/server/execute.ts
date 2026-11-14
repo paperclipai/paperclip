@@ -66,6 +66,20 @@ import {
   parseLocalProcessNetworkScope,
   type LocalProcessSandboxOptions,
 } from "@paperclipai/adapter-utils/local-process-sandbox";
+
+function parseConfiguredWritableRoots(value: string | undefined): { path: string; access: "rw" }[] {
+  if (!value) return [];
+  try {
+    const parsed: unknown = JSON.parse(value);
+    if (!Array.isArray(parsed)) return [];
+    return parsed.flatMap((candidate) => {
+      if (typeof candidate !== "string" || !path.isAbsolute(candidate) || path.resolve(candidate) === path.parse(candidate).root) return [];
+      return [{ path: path.resolve(candidate), access: "rw" as const }];
+    });
+  } catch {
+    return [];
+  }
+}
 import {
   parseCodexJsonl, createCodexJsonlParser,
   classifyCodexAuthRefreshFailure,
@@ -1049,7 +1063,10 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
             workspaceDir: effectiveExecutionCwd,
             filesystemScope,
             managedPaths: [{ path: effectiveCodexHome, access: "rw" }],
-            extraPaths: parseLocalProcessSandboxExtraPaths(config.filesystemExtraPaths),
+            extraPaths: [
+              ...parseLocalProcessSandboxExtraPaths(config.filesystemExtraPaths),
+              ...parseConfiguredWritableRoots(effectiveEnv.PAPERCLIP_CODEX_FILESYSTEM_WRITE_ROOTS),
+            ],
             pathAliases: targetWorkspaceRealization?.mode === "copy"
               ? targetWorkspaceRealization.pathAliases
               : [],

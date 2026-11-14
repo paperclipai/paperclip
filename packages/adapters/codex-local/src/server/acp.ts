@@ -142,6 +142,13 @@ export function buildCodexAcpConfig(config: Record<string, unknown>): Record<str
   );
 
   const env = parseObject(config.env);
+  // The CLI lane maps this setting to --dangerously-bypass-approvals-and-sandbox.
+  // ACP uses the Codex ACP server's initial agent mode instead; without this
+  // mapping the persisted bypass setting is silently ignored and file writes
+  // outside the workspace remain read-only.
+  if (config.dangerouslyBypassApprovalsAndSandbox === true || config.dangerouslyBypassSandbox === true) {
+    env.INITIAL_AGENT_MODE = "agent-full-access";
+  }
   let networkAccess = env.PAPERCLIP_CODEX_ACP_NETWORK_ACCESS !== "false";
   const extraArgs = asStringArray(config.extraArgs);
   for (const arg of extraArgs.length > 0 ? extraArgs : asStringArray(config.args)) {

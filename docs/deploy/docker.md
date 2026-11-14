@@ -7,11 +7,42 @@ Run Paperclip in Docker without installing Node or pnpm locally.
 
 ## Compose Quickstart (Recommended)
 
+The quickstart uses Paperclip's `local_trusted` mode, so it opens without a
+login screen. The host port is published on `127.0.0.1` only. Keep that
+loopback-only port binding when changing the Compose file; this mode grants
+board access without authentication.
+
 ```sh
 docker compose -f docker/docker-compose.quickstart.yml up --build
 ```
 
 Open [http://localhost:3100](http://localhost:3100).
+
+The Compose project is named `paperclip-local`; its container is
+`paperclip-local-paperclip-1`. The quickstart uses Docker's
+`unless-stopped` restart policy. If the container has stopped but still
+exists, start it with:
+
+```powershell
+docker start paperclip-local-paperclip-1
+Invoke-WebRequest http://127.0.0.1:3100/api/health
+```
+
+To recreate the Compose container while keeping its existing data and signing
+secret, read the secret from the current container without printing it and run:
+
+```powershell
+$container = (docker inspect paperclip-local-paperclip-1 | ConvertFrom-Json)[0]
+$secret = $container.Config.Env | Where-Object { $_.StartsWith('BETTER_AUTH_SECRET=') } | Select-Object -First 1
+$env:BETTER_AUTH_SECRET = $secret.Substring('BETTER_AUTH_SECRET='.Length)
+$env:PAPERCLIP_DATA_DIR = '../data/paperclip'
+$env:PAPERCLIP_PORT = '3100'
+docker compose --project-name paperclip-local -f docker/docker-compose.quickstart.yml up --build --detach
+```
+
+Check recent logs with `docker logs --tail 100 paperclip-local-paperclip-1` if
+the health endpoint does not report `status: ok`. Keep the published address
+loopback-only; `local_trusted` grants unauthenticated board access.
 
 Defaults:
 

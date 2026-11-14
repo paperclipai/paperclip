@@ -30,8 +30,8 @@ export interface SetupTokenReaperDeps {
 
 /**
  * Builds the standalone setup-token reaper. One sweep reaps every reapable
- * record: it releases the lease and clears the row. A failed release stays
- * retryable, so the next sweep retries it.
+ * record: it releases any associated lease and clears the row. A lease-less
+ * record is cleared without a release attempt; cleanup failures stay retryable.
  */
 export function createSetupTokenReaper(deps: SetupTokenReaperDeps) {
   const now = deps.now ?? Date.now;

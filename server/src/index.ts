@@ -75,7 +75,7 @@ import {
 } from "@paperclipai/db";
 import detectPort from "detect-port";
 import { createApp } from "./app.js";
-import { loadConfig } from "./config.js";
+import { isDockerLocalTrustedBridgeEnabled, loadConfig } from "./config.js";
 import { logger } from "./middleware/logger.js";
 import { setStartupRecoveryPhase } from "./startup-recovery-state.js";
 import {
@@ -688,11 +688,15 @@ async function startServerWithDatabaseTeardown(
   if (restoredCloudRuntimeIdentity) config = loadConfig();
   const isWarmStandby = await createCloudWarmStandby(db as any);
 
-  if (config.deploymentMode === "local_trusted" && !isLoopbackHost(config.host)) {
+  const dockerLocalTrustedBridge = isDockerLocalTrustedBridgeEnabled();
+  if (config.deploymentMode === "local_trusted" && !isLoopbackHost(config.host) && !dockerLocalTrustedBridge) {
     throw new Error(
       `local_trusted mode requires loopback host binding (received: ${config.host}). ` +
         "Use authenticated mode for non-loopback deployments.",
     );
+  }
+  if (dockerLocalTrustedBridge) {
+    logger.warn("Docker local_trusted mode is enabled; publish its port on 127.0.0.1 only");
   }
   
   if (config.deploymentMode === "local_trusted" && config.deploymentExposure !== "private") {

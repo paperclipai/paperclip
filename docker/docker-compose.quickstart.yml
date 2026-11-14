@@ -10,9 +10,14 @@
 #
 services:
   paperclip:
+    image: paperclip-local:latest
+    # Codex bwrap needs nested user and mount namespaces inside this container.
+    security_opt:
+      - seccomp=unconfined
     build:
       context: ..
       dockerfile: Dockerfile
+    restart: unless-stopped
     # Ceiling on processes. The image makes tini PID 1 so orphaned agent
     # descendants are reaped instead of piling up as zombies; this is the
     # backstop if something leaks anyway — the container hits its own limit and
@@ -21,25 +26,36 @@ services:
     # Includes the shared 30s adapter-settlement window and final cleanup.
     stop_grace_period: 90s
     ports:
-      - "${PAPERCLIP_PORT:-3100}:3100"
+      - "127.0.0.1:${PAPERCLIP_PORT:-3100}:3100"
+      - "127.0.0.1:5260:5260"
     environment:
       HOST: "0.0.0.0"
       PAPERCLIP_HOME: "/paperclip"
+      PAPERCLIP_HERMES_HOME: "/hermes-default"
+      # Route runner Docker API calls through the private, policy-limited proxy.
+      DOCKER_HOST: "tcp://docker-socket-proxy:2375"
+      # Testcontainers cleanup uses container disposal; do not mount the daemon socket into Ryuk.
+      TESTCONTAINERS_RYUK_DISABLED: "true"
 
       # ── LLM provider keys (at least one is needed for agents to work) ──
       OPENAI_API_KEY: "${OPENAI_API_KEY:-}"
       ANTHROPIC_API_KEY: "${ANTHROPIC_API_KEY:-}"
 
       # ── Deployment settings ──
-      # "authenticated" requires login, "local_trusted" skips auth
-      PAPERCLIP_DEPLOYMENT_MODE: "authenticated"
+      # local_trusted skips login. Docker must listen on the container's
+      # interface, while the published host port above remains loopback-only.
+      PAPERCLIP_DEPLOYMENT_MODE: "local_trusted"
       # "private" = LAN only, "public" = internet-facing (use with TLS)
       PAPERCLIP_DEPLOYMENT_EXPOSURE: "private"
+      PAPERCLIP_BIND: "lan"
+      PAPERCLIP_DOCKER_LOCAL_TRUSTED: "true"
       # Base URL users will access the UI at
       PAPERCLIP_PUBLIC_URL: "${PAPERCLIP_PUBLIC_URL:-http://localhost:3100}"
       # Extra hostnames the instance accepts beyond the public URL host
       # (LAN or Tailscale aliases), comma-separated; empty means none
       PAPERCLIP_ALLOWED_HOSTNAMES: "${PAPERCLIP_ALLOWED_HOSTNAMES:-}"
+      # Grant Codex runs read/write access to the shared vault and Saved Docs.
+      PAPERCLIP_CODEX_FILESYSTEM_WRITE_ROOTS: '["/trinity/projects/Trinity Agent Memory","/mnt/c/Users/ericd/Desktop/Saved Docs"]'
 
       # ── Required secret for session signing (generate with: openssl rand -hex 32) ──
       BETTER_AUTH_SECRET: "${BETTER_AUTH_SECRET:?BETTER_AUTH_SECRET must be set}"
@@ -47,4 +63,71 @@ services:
       PAPERCLIP_TOOL_ACTION_SIGNING_SECRET: "${PAPERCLIP_TOOL_ACTION_SIGNING_SECRET:-}"
     volumes:
       # Persistent data directory (database, agent workspaces, uploads)
-      - "${PAPERCLIP_DATA_DIR:-../data/docker-paperclip}:/paperclip"
+      - "${PAPERCLIP_DATA_DIR:-../data/paperclip}:/paperclip"
+      # Serve the current locally built board UI so frontend fixes are not hidden by a stale image asset.
+      - "../ui/dist:/app/ui/dist:ro"
+      # Keep seeded historical skill snapshots byte-matched on Windows hosts.
+      - "../skills-releases:/app/skills-releases:ro"
+      # Agent file access across Trinity project folders.
+      - "D:/Trinity Legacy Systems/Trinity Projects:/trinity/projects"
+      # Expose the host Saved Docs folder at its standard Linux/WSL path to all agents.
+      - type: bind
+        source: "C:/Users/ericd/Desktop/Saved Docs"
+        target: "/mnt/c/Users/ericd/Desktop/Saved Docs"
+        read_only: false
+        bind:
+          create_host_path: false
+      # Isolated Linux-compatible Hermes home for the Paperclip runner.
+      - "hermes-paperclip-isolated-default-20261008:/hermes-default:rw"
+      # Apply Hermes HOME after the image drops from root to its runtime user.
+      - "../docker/hermes-home-entrypoint.sh:/run/tri7/hermes-home-entrypoint.sh:ro"
+      # Intended writable Build Engine checkout; it must already exist on host.
+      - type: bind
+        source: "C:/Users/ericd/Desktop/Trinity Legacy Systems/trinity-build-engine"
+        target: /trinity/build-engine-source
+        read_only: false
+        bind:
+          create_host_path: false
+      # TRI-105 canonical medical transport website source. Agent access is read-only.
+      - type: bind
+        source: "C:/Users/ericd/Desktop/Trinity Legacy Systems/trinity-medical-transport"
+        target: "/mnt/c/Users/ericd/Desktop/Trinity Legacy Systems/trinity-medical-transport"
+        read_only: true
+        bind:
+          create_host_path: false
+      # TRI-105 staging clone. Keep it read-only alongside the canonical source.
+      - type: bind
+        source: "C:/Users/ericd/Documents/Codex/2026-10-21/i-c/tri85-sites-staging"
+        target: "/mnt/c/Users/ericd/Documents/Codex/2026-10-21/i-c/tri85-sites-staging"
+        read_only: true
+        bind:
+          create_host_path: false
+    networks:
+      - default
+      - docker-api
+    # Keep the image's original tini/docker-entrypoint.sh privilege-drop path;
+    # run the Hermes HOME wrapper only after switching to the runtime user.
+    command: ["/bin/sh", "/run/tri7/hermes-home-entrypoint.sh", "node", "--import", "./server/node_modules/tsx/dist/loader.mjs", "server/dist/index.js"]
+
+  # Do not expose the daemon socket to Paperclip or other runner processes.
+  # The sidecar permits only unprivileged PostgreSQL
+  # operations, and the endpoint exists only on an internal Compose network.
+  docker-socket-proxy:
+    image: paperclip-local:latest
+    restart: unless-stopped
+    user: "0:0"
+    entrypoint: ["node"]
+    command: ["/run/tri7/docker-socket-proxy.mjs"]
+    volumes:
+      - "/var/run/docker.sock:/var/run/docker.sock"
+      - "../docker/docker-socket-proxy.mjs:/run/tri7/docker-socket-proxy.mjs:ro"
+    networks:
+      - docker-api
+
+volumes:
+  hermes-paperclip-isolated-default-20261008:
+    external: true
+
+networks:
+  docker-api:
+    internal: true

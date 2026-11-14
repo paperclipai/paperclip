@@ -57,6 +57,7 @@ type ToolAccessContext = {
   agentId: string | null;
   heartbeatRunId: string | null;
   issueId: string | null;
+  issueAssigneeAgentId: string | null;
   projectId: string | null;
   routineId: string | null;
   gatewayId: string | null;
@@ -518,6 +519,15 @@ function evaluatePolicyConditions(
     if (boolCondition(context.requireIssue) === true && !ctx.issueId) {
       return conditionGroupFail("context", "Policy condition requires issue context.");
     }
+    if (
+      boolCondition(context.requireIssueAssignee) === true &&
+      (!ctx.issueId ||
+        ctx.actorType !== "agent" ||
+        !ctx.agentId ||
+        ctx.issueAssigneeAgentId !== ctx.agentId)
+    ) {
+      return conditionGroupFail("context", "Policy condition requires the authenticated agent to be assigned to the current issue.");
+    }
     if (boolCondition(context.requireProject) === true && !ctx.projectId) {
       return conditionGroupFail("context", "Policy condition requires project context.");
     }
@@ -961,6 +971,7 @@ export function toolAccessPolicyService(db: Db) {
     let agentId = input.actor.agentId ?? (input.actor.actorType === "agent" ? input.actor.actorId : null);
     let heartbeatRunId = input.runContext?.heartbeatRunId ?? null;
     let issueId = input.runContext?.issueId ?? null;
+    let issueAssigneeAgentId: string | null = null;
     let projectId = input.runContext?.projectId ?? null;
     let routineId = input.runContext?.routineId ?? null;
     const gatewayId = input.runContext?.gatewayId ?? null;
@@ -1008,10 +1019,11 @@ export function toolAccessPolicyService(db: Db) {
     if (issueId) {
       const contextIssueId = issueId;
       const [issue] = await cachedRead(cache, `issue:${contextIssueId}`, async () =>
-        db.select({ companyId: issues.companyId, projectId: issues.projectId }).from(issues).where(eq(issues.id, contextIssueId)));
+        db.select({ companyId: issues.companyId, projectId: issues.projectId, assigneeAgentId: issues.assigneeAgentId }).from(issues).where(eq(issues.id, contextIssueId)));
       if (!issue || issue.companyId !== input.companyId) {
         return { ok: false, redaction, decision: decision("deny", "deny_company_boundary", "Issue context is outside the company.", [], [], { redactionPlan: redaction.redactionPlan }) };
       }
+      issueAssigneeAgentId = issue.assigneeAgentId;
       if (projectId && projectId !== issue.projectId) {
         return { ok: false, redaction, decision: decision("deny", "deny_run_context_mismatch", "Project context does not match the issue context.", [], [], { redactionPlan: redaction.redactionPlan }) };
       }
@@ -1140,6 +1152,7 @@ export function toolAccessPolicyService(db: Db) {
         agentId,
         heartbeatRunId,
         issueId,
+        issueAssigneeAgentId,
         projectId,
         routineId,
         gatewayId,
@@ -1551,6 +1564,7 @@ export function toolAccessPolicyService(db: Db) {
       actorId: input.actor.actorId,
       agentId: input.actor.agentId ?? null,
       issueId: input.runContext?.issueId ?? null,
+      issueAssigneeAgentId: null,
       gatewayId: input.runContext?.gatewayId ?? null,
       runId: input.runContext?.heartbeatRunId ?? null,
       connectionId: input.request.connectionId ?? null,
@@ -1718,11 +1732,12 @@ export function toolAccessPolicyService(db: Db) {
     const issueIds = [...new Set(invocations.map((row) => row.issueId).filter((id): id is string => Boolean(id)))];
     const issueRows = issueIds.length > 0
       ? await db
-        .select({ id: issues.id, projectId: issues.projectId })
+        .select({ id: issues.id, projectId: issues.projectId, assigneeAgentId: issues.assigneeAgentId })
         .from(issues)
         .where(and(eq(issues.companyId, input.companyId), inArray(issues.id, issueIds)))
       : [];
     const issueProjectById = new Map(issueRows.map((row) => [row.id, row.projectId]));
+    const issueAssigneeById = new Map(issueRows.map((row) => [row.id, row.assigneeAgentId]));
     const allowedHashes = new Set([
       ...(input.filters.allowedHashes ?? []),
       ...(input.filters.exactHash ? [input.filters.exactHash] : []),
@@ -1744,6 +1759,7 @@ export function toolAccessPolicyService(db: Db) {
         agentId: invocation.agentId,
         heartbeatRunId: invocation.runId,
         issueId: invocation.issueId,
+        issueAssigneeAgentId: invocation.issueId ? issueAssigneeById.get(invocation.issueId) ?? null : null,
         projectId: invocation.issueId ? issueProjectById.get(invocation.issueId) ?? null : null,
         routineId: null,
         gatewayId: null,

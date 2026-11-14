@@ -471,6 +471,18 @@ describe("codex_local ACP lane", () => {
     });
   });
 
+  it("maps the persisted sandbox bypass setting to Codex ACP full-access mode", () => {
+    expect(buildCodexAcpConfig({
+      dangerouslyBypassApprovalsAndSandbox: true,
+      env: { CUSTOM: "kept" },
+    })).toMatchObject({
+      env: {
+        CUSTOM: "kept",
+        INITIAL_AGENT_MODE: "agent-full-access",
+      },
+    });
+  });
+
   it.each([
     { env: { PAPERCLIP_CODEX_ACP_NETWORK_ACCESS: "false" } },
     { extraArgs: ["-c", "sandbox_workspace_write.network_access=false"] },

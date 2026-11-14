@@ -492,6 +492,16 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
         .where(and(...conditions));
       const observed = Number(row?.total ?? 0);
       if (observed >= policy.maxDailyRuns) {
+        logger.warn(
+          {
+            agentId: agent.id,
+            companyId: agent.companyId,
+            reason: "heartbeat.daily_run_limit",
+            observed,
+            limit: policy.maxDailyRuns,
+          },
+          "heartbeat daily run limit reached",
+        );
         return {
           reason: "heartbeat.daily_run_limit",
           observed,
@@ -516,6 +526,16 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
         );
       const observed = Number(row?.total ?? 0);
       if (compareCents(String(row?.total ?? 0), policy.maxDailyCostCents) >= 0) {
+        logger.warn(
+          {
+            agentId: agent.id,
+            companyId: agent.companyId,
+            reason: "heartbeat.daily_cost_limit",
+            observed,
+            limit: policy.maxDailyCostCents,
+          },
+          "heartbeat daily cost limit reached",
+        );
         return {
           reason: "heartbeat.daily_cost_limit",
           observed,
@@ -2445,6 +2465,13 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
       skipReason: string,
       details: Record<string, unknown>,
     ) => {
+      const log = skipReason === "heartbeat.daily_run_limit" || skipReason === "heartbeat.daily_cost_limit"
+        ? logger.warn.bind(logger)
+        : logger.info.bind(logger);
+      log(
+        { agentId, companyId: agent.companyId, issueId, source, triggerDetail, reason: skipReason, detail: details },
+        "heartbeat wake skipped before run creation",
+      );
       await writeSkippedRequest(skipReason, {
         payload: {
           ...(payload ?? {}),

@@ -442,6 +442,7 @@ type HeaderPolicyConfig = {
 type HeaderPolicySummary = {
   staticHeaderNames: string[];
   credentialHeaderNames: string[];
+  acceptedPassthroughHeaderNames: string[];
   passthroughHeaderNames: string[];
   droppedPassthroughHeaderNames: string[];
   metadataHeaderNames: string[];
@@ -3626,6 +3627,7 @@ export function createToolGatewayService(
   function buildRemoteHeaders(input: {
     session: ToolGatewaySession;
     connection: typeof toolConnections.$inferSelect;
+    projectedHeaders: Record<string, string>;
     credentialHeaders: Record<string, string>;
     callerHeaders?: ExecuteGatewayToolInput["callerHeaders"];
   }): { headers: Record<string, string>; summary: HeaderPolicySummary } {
@@ -3645,9 +3647,11 @@ export function createToolGatewayService(
     ]);
     const managedCredentialHeaders = new Set(Object.keys(credentialHeaders));
     const headers: Record<string, string> = {};
+    const headerSources = new Map<string, string>();
     const summary: HeaderPolicySummary = {
       staticHeaderNames: [],
       credentialHeaderNames: Object.keys(credentialHeaders).sort(),
+      acceptedPassthroughHeaderNames: [],
       passthroughHeaderNames: [],
       droppedPassthroughHeaderNames: [],
       metadataHeaderNames: [],
@@ -3687,7 +3691,32 @@ export function createToolGatewayService(
         continue;
       }
       headers[name] = value;
-      summary.passthroughHeaderNames.push(name);
+      headerSources.set(name, "caller");
+      summary.acceptedPassthroughHeaderNames.push(name);
+    }
+
+    const projectedHeaderNames = new Set<string>();
+    for (const [rawName, value] of Object.entries(input.projectedHeaders)) {
+      const name = headerName(rawName);
+      if (!name || reservedHeaders.has(name)) continue;
+      projectedHeaderNames.add(name);
+      if (managedCredentialHeaders.has(name)) {
+        summary.collisionRules.push({
+          header: name,
+          source: "projected",
+          action: "kept_managed_credential",
+        });
+        continue;
+      }
+      if (headers[name] !== undefined) {
+        summary.collisionRules.push({
+          header: name,
+          source: "projected",
+          action: "overrode_previous_header",
+        });
+      }
+      headers[name] = value;
+      headerSources.set(name, "projected");
     }
 
     for (const { name, value } of policy.staticHeaders) {
@@ -3711,10 +3740,13 @@ export function createToolGatewayService(
         summary.collisionRules.push({
           header: name,
           source: "static",
-          action: "overrode_passthrough",
+          action: projectedHeaderNames.has(name)
+            ? "overrode_projected"
+            : "overrode_passthrough",
         });
       }
       headers[name] = value;
+      headerSources.set(name, "static");
       summary.staticHeaderNames.push(name);
     }
 
@@ -3737,6 +3769,7 @@ export function createToolGatewayService(
         });
       }
       headers[name] = value;
+      headerSources.set(name, "metadata");
       summary.metadataHeaderNames.push(name);
     }
 
@@ -3749,10 +3782,16 @@ export function createToolGatewayService(
         });
       }
       headers[name] = value;
+      headerSources.set(name, "credential");
     }
 
     summary.staticHeaderNames.sort();
-    summary.passthroughHeaderNames.sort();
+    summary.acceptedPassthroughHeaderNames = [
+      ...new Set(summary.acceptedPassthroughHeaderNames),
+    ].sort();
+    summary.passthroughHeaderNames = summary.acceptedPassthroughHeaderNames
+      .filter((name) => headerSources.get(name) === "caller")
+      .sort();
     summary.droppedPassthroughHeaderNames = [
       ...new Set(summary.droppedPassthroughHeaderNames),
     ].sort();
@@ -5395,17 +5434,16 @@ export function createToolGatewayService(
       input.connection,
       grant,
     );
-    const credentialHeaders = {
-      ...projectedConnectionHeaders(input.connection),
-      ...(await resolveCredentialHeaders(
-        input.session,
-        input.connection,
-        grant,
-      )),
-    };
+    const projectedHeaders = projectedConnectionHeaders(input.connection);
+    const credentialHeaders = await resolveCredentialHeaders(
+      input.session,
+      input.connection,
+      grant,
+    );
     const { headers } = buildRemoteHeaders({
       session: input.session,
       connection: input.connection,
+      projectedHeaders,
       credentialHeaders,
       callerHeaders: input.callerHeaders,
     });
@@ -6099,16 +6137,14 @@ export function createToolGatewayService(
     }
     const endpoint = workspaceTarget?.serverUrl ?? await resolvedRemoteEndpoint(session, connection, grant);
     const upstreamToolName = workspaceTarget?.upstreamName ?? entry.toolName;
-    // Method-defined headers are trusted catalog configuration. Treat them as
-    // managed headers so callers cannot override the scope that was reviewed
-    // during tools/list. Credentials remain authoritative on collisions.
-    let credentialHeaders = {
-      ...projectedConnectionHeaders(connection),
-      ...(await resolveCredentialHeaders(session, connection, grant)),
-    };
+    // Projected connection headers are defaults; static policy can replace
+    // them, while resolved credentials remain authoritative.
+    const projectedHeaders = projectedConnectionHeaders(connection);
+    let credentialHeaders = await resolveCredentialHeaders(session, connection, grant);
     let builtHeaders = buildRemoteHeaders({
       session,
       connection,
+      projectedHeaders,
       credentialHeaders,
       callerHeaders,
     });
@@ -6257,15 +6293,13 @@ export function createToolGatewayService(
         connection.credentialSource === "paperclip_vault" &&
         isPaperclipCloudConnectorStrategy(oauth?.strategy)
       ) {
-        credentialHeaders = {
-          ...projectedConnectionHeaders(connection),
-          ...(await resolveCredentialHeaders(session, connection, grant, {
-            forceRefresh: true,
-          })),
-        };
+        credentialHeaders = await resolveCredentialHeaders(session, connection, grant, {
+          forceRefresh: true,
+        });
         builtHeaders = buildRemoteHeaders({
           session,
           connection,
+          projectedHeaders,
           credentialHeaders,
           callerHeaders,
         });
@@ -6280,15 +6314,13 @@ export function createToolGatewayService(
         !isPaperclipCloudConnectorStrategy(oauth?.strategy) &&
         options.oauthGrantRefresher
       ) {
-        credentialHeaders = {
-          ...projectedConnectionHeaders(connection),
-          ...(await resolveCredentialHeaders(session, connection, grant, {
-            forceRefresh: true,
-          })),
-        };
+        credentialHeaders = await resolveCredentialHeaders(session, connection, grant, {
+          forceRefresh: true,
+        });
         builtHeaders = buildRemoteHeaders({
           session,
           connection,
+          projectedHeaders,
           credentialHeaders,
           callerHeaders,
         });
@@ -6317,15 +6349,13 @@ export function createToolGatewayService(
           companyId: connection.companyId,
         });
         vercelConnect.evict(tokenRequest);
-        credentialHeaders = {
-          ...projectedConnectionHeaders(connection),
-          ...(await resolveCredentialHeaders(session, connection, grant, {
-            forceRefresh: true,
-          })),
-        };
+        credentialHeaders = await resolveCredentialHeaders(session, connection, grant, {
+          forceRefresh: true,
+        });
         builtHeaders = buildRemoteHeaders({
           session,
           connection,
+          projectedHeaders,
           credentialHeaders,
           callerHeaders,
         });

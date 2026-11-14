@@ -1491,6 +1491,7 @@ export interface ToolPolicyConditions {
   actor?: ToolAccessSelector;
   context?: ToolAccessSelector & {
     requireIssue?: boolean;
+    requireIssueAssignee?: boolean;
     requireProject?: boolean;
     requireRoutine?: boolean;
   };

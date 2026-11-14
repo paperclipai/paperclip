@@ -377,15 +377,27 @@ function defaultGrantKindFor(method: ConnectionMethodDef | null, preferPersonal 
   return "organization";
 }
 
+function supportedGrantKindFor(
+  method: ConnectionMethodDef | null,
+  preferred: ConnectionGrantKind,
+): ConnectionGrantKind {
+  if (!method?.grantKinds || method.grantKinds.includes(preferred)) return preferred;
+  return defaultGrantKindFor(method, preferred === "user");
+}
+
 function defaultInstallChoiceFor(method: ConnectionMethodDef | null, requestedAgentId?: string): "specific" | "all" {
   return requestedAgentId || method?.ai?.provider === "github" ? "specific" : "all";
 }
 
 function configuredAgentIdentity(connection: ToolConnection): string | undefined {
   const oauth = connection.config?.oauth;
-  if (!oauth || typeof oauth !== "object" || Array.isArray(oauth)) return undefined;
-  const value = (oauth as Record<string, unknown>).connectorSubjectAgentId;
-  return typeof value === "string" ? value : undefined;
+  const configuredId = oauth && typeof oauth === "object" && !Array.isArray(oauth)
+    ? (oauth as Record<string, unknown>).connectorSubjectAgentId
+    : undefined;
+  if (typeof configuredId === "string") return configuredId;
+  const grantedId = connection.grants?.find((grant) => grant.kind === "agent")?.subjectAgentId;
+  if (typeof grantedId === "string") return grantedId;
+  return connection.installs?.find((install) => install.targetType === "agent")?.targetId;
 }
 
 function isGoogleSheetsRobotMethod(
@@ -770,7 +782,11 @@ function StandardConnectionSetupFlow({
     restoredEnrollmentAccess?.grantKind ?? reconnectGrantKindHint ?? (requestedAgentId ? "user" : "organization"),
   );
   const [installChoice, setInstallChoice] = useState<"specific" | "all">(
-    restoredEnrollmentAccess?.installChoice ?? (requestedAgentId ? "specific" : "all"),
+    restoredEnrollmentAccess?.installChoice
+      ?? (requestedAgentId
+        || (restoredEnrollmentAccess?.grantKind ?? reconnectGrantKindHint ?? (requestedAgentId ? "user" : "organization")) === "agent"
+        ? "specific"
+        : "all"),
   );
   const resumingAfterOAuthFailure = Boolean(
     resumeConnectionId
@@ -1406,17 +1422,27 @@ function StandardConnectionSetupFlow({
     await toolsApi.putConnectionInstalls(connectionId, desired);
   };
 
-  const effectiveGrantKind = fixedGrantKind ?? grantKind;
+  const selectedAccessMethod = entry
+    ? availableToolConnectionMethod(entry, connectionMethodKey || null)
+    : null;
+  const effectiveGrantKind = fixedGrantKind ?? supportedGrantKindFor(selectedAccessMethod, grantKind);
   const connectMutation = useMutation({
     mutationFn: async (entryOverride?: AppDefinition) => {
       const connectEntry = entryOverride ?? entry;
       let result: ConnectToolAppResult;
       if (connectEntry) {
-        const requestedGrantKind = fixedGrantKind ?? grantKind;
         const selectedMethod = availableToolConnectionMethod(
           connectEntry,
           connectionMethodKey || null,
         );
+        const requestedGrantKind = fixedGrantKind
+          ?? (requestedAgentId && selectedMethod?.grantKinds?.includes("agent")
+            ? "agent"
+            : supportedGrantKindFor(selectedMethod, grantKind));
+        const agentIdentity = requestedAgentId
+          ?? (resumeConnection ? configuredAgentIdentity(resumeConnection) : undefined)
+          ?? (reconnectConnection ? configuredAgentIdentity(reconnectConnection) : undefined)
+          ?? [...installAgentIds][0];
         const sheetIds = isGoogleSheetsRobotMethod(connectEntry, selectedMethod)
           ? parseGoogleSheetIds(googleSheetsLinks).ids
           : [];
@@ -1454,7 +1480,7 @@ function StandardConnectionSetupFlow({
             ? { resumeConnectionId: resumeConnectionId ?? customerClientResumeRef.current! }
             : reconnectConnectionId ? { reconnectConnectionId } : {}),
           ...(requestedGrantKind !== "organization" ? { grantKind: requestedGrantKind } : {}),
-          ...(requestedGrantKind === "agent" ? { subjectAgentId: [...installAgentIds][0] } : {}),
+          ...(requestedGrantKind === "agent" ? { subjectAgentId: agentIdentity } : {}),
         });
         customerClientResumeRef.current = null;
       } else {
@@ -1722,11 +1748,15 @@ function StandardConnectionSetupFlow({
       const matchingEnrollmentAccess = restoredEnrollmentAccess?.companyId === selectedCompanyId
         ? restoredEnrollmentAccess
         : null;
-      setGrantKind(reconnectGrantKind ?? matchingEnrollmentAccess?.grantKind ?? defaultGrantKindFor(initialMethod, Boolean(requestedAgentId)));
+      const initialGrantKind = reconnectGrantKind
+        ?? matchingEnrollmentAccess?.grantKind
+        ?? defaultGrantKindFor(initialMethod, Boolean(requestedAgentId));
+      setGrantKind(initialGrantKind);
       setInstallAgentIds(new Set(
         matchingEnrollmentAccess?.agentIds ?? (requestedAgentId ? [requestedAgentId] : []),
       ));
-      setInstallChoice(matchingEnrollmentAccess?.installChoice ?? defaultInstallChoiceFor(initialMethod, requestedAgentId));
+      setInstallChoice(matchingEnrollmentAccess?.installChoice
+        ?? (requestedAgentId || initialGrantKind === "agent" ? "specific" : "all"));
       // Route/service selection initializes the wizard once. Later renders must
       // preserve the user's current step in both hosts instead of snapping back
       // to Access after they continue.

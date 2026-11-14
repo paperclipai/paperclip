@@ -190,6 +190,7 @@ export interface AdvancedRule {
   value: string;
   riskLevel?: ToolRiskLevel;
   effect: "include" | "exclude";
+  requireIssueAssignee?: boolean;
 }
 
 // --- Entry <-> selection translation --------------------------------------
@@ -205,8 +206,54 @@ export function buildEntries(
   selections: WizardSelections,
   advancedRules: AdvancedRule[] = [],
   defaultAction: ToolProfileDefaultAction = "deny",
+  requireIssueAssignee = false,
+  conditionedCatalogEntryIds: string[] = [],
 ): ToolProfileEntryInput[] {
   const entries: ToolProfileEntryInput[] = [];
+  if (requireIssueAssignee) {
+    if (defaultAction !== "deny") {
+      throw new Error("Task-assignee write access requires new tools to stay blocked until reviewed.");
+    }
+    // Assignee-scoped profiles must be deny-by-default. Expand app selections
+    // into concrete entries so shared read tools remain available without an
+    // issue while write-capable tools require the current assignee.
+    for (const group of groups) {
+      const selectedIds = selectedToolIds(group, selections[group.appKey]);
+      for (const tool of group.tools) {
+        if (!selectedIds.has(tool.id)) continue;
+        entries.push({
+          selectorType: "catalog_entry",
+          effect: "include",
+          catalogEntryId: tool.id,
+          ...(tool.isWrite || tool.isDestructive || conditionedCatalogEntryIds.includes(tool.id)
+            ? { conditions: { context: { requireIssueAssignee: true } } }
+            : {}),
+        });
+      }
+    }
+    for (const rule of advancedRules) {
+      const entry = rule.kind === "tool_name"
+        ? { selectorType: "tool_name" as const, effect: rule.effect, toolName: rule.value }
+        : rule.kind === "risk_level"
+          ? { selectorType: "risk_level" as const, effect: rule.effect, riskLevel: rule.riskLevel ?? "destructive" }
+          : { selectorType: "catalog_entry" as const, effect: rule.effect, catalogEntryId: rule.value };
+      const catalogTool = rule.kind === "catalog_entry"
+        ? groups.flatMap((group) => group.tools).find((tool) => tool.id === rule.value)
+        : undefined;
+      const requireForRule = rule.requireIssueAssignee || (
+        rule.effect === "include" && (
+          rule.kind === "tool_name" ||
+          (rule.kind === "risk_level" && rule.riskLevel !== "read") ||
+          (rule.kind === "catalog_entry" && (!catalogTool || catalogTool.isWrite || catalogTool.isDestructive))
+        )
+      );
+      entries.push(requireForRule
+        ? { ...entry, conditions: { context: { requireIssueAssignee: true } } }
+        : entry);
+    }
+    return entries;
+  }
+
   for (const group of groups) {
     const selection = selections[group.appKey];
     if (!selection) continue;
@@ -258,7 +305,7 @@ export function buildEntries(
 export function parseEntries(
   groups: AppGroup[],
   entries: ToolProfileEntry[],
-): { selections: WizardSelections; advancedRules: AdvancedRule[] } {
+): { selections: WizardSelections; advancedRules: AdvancedRule[]; requireIssueAssignee: boolean; conditionedCatalogEntryIds: string[] } {
   const selections: WizardSelections = {};
   const advancedRules: AdvancedRule[] = [];
   const toolIdToApp = new Map<string, string>();
@@ -275,6 +322,21 @@ export function parseEntries(
   const appOn = new Set<string>();
   const excludesByApp = new Map<string, Set<string>>();
   const includesByApp = new Map<string, Set<string>>();
+  const hasIssueAssigneeCondition = (entry: ToolProfileEntry) =>
+    entry.effect === "include" && entry.conditions?.context &&
+    (entry.conditions.context as Record<string, unknown>).requireIssueAssignee === true;
+  const requireIssueAssignee = entries.some(hasIssueAssigneeCondition);
+  const conditionedCatalogEntryIds = new Set<string>();
+  for (const entry of entries) {
+    if (!hasIssueAssigneeCondition(entry)) continue;
+    if (entry.selectorType === "catalog_entry" && entry.catalogEntryId) conditionedCatalogEntryIds.add(entry.catalogEntryId);
+    if (entry.selectorType === "application" && entry.applicationId) {
+      for (const group of groups) if (group.applicationId === entry.applicationId) for (const tool of group.tools) conditionedCatalogEntryIds.add(tool.id);
+    }
+    if (entry.selectorType === "connection" && entry.connectionId) {
+      for (const group of groups) if (group.connectionId === entry.connectionId) for (const tool of group.tools) conditionedCatalogEntryIds.add(tool.id);
+    }
+  }
 
   for (const entry of entries) {
     if (entry.effect === "include" && entry.selectorType === "application" && entry.applicationId) {
@@ -285,13 +347,13 @@ export function parseEntries(
     if (entry.effect === "include" && entry.selectorType === "connection" && entry.connectionId) {
       const group = appByConnectionId.get(entry.connectionId);
       if (group && !group.applicationId) appOn.add(group.appKey);
-      else advancedRules.push({ id: entry.id, kind: "catalog_entry", value: entry.connectionId, effect: "include" });
+      else advancedRules.push({ id: entry.id, kind: "catalog_entry", value: entry.connectionId, effect: "include", ...(hasIssueAssigneeCondition(entry) ? { requireIssueAssignee: true } : {}) });
       continue;
     }
     if (entry.selectorType === "catalog_entry" && entry.catalogEntryId) {
       const appKey = toolIdToApp.get(entry.catalogEntryId);
       if (!appKey) {
-        advancedRules.push({ id: entry.id, kind: "catalog_entry", value: entry.catalogEntryId, effect: entry.effect });
+        advancedRules.push({ id: entry.id, kind: "catalog_entry", value: entry.catalogEntryId, effect: entry.effect, ...(hasIssueAssigneeCondition(entry) ? { requireIssueAssignee: true } : {}) });
         continue;
       }
       const bucket = entry.effect === "exclude" ? excludesByApp : includesByApp;
@@ -301,11 +363,11 @@ export function parseEntries(
       continue;
     }
     if (entry.selectorType === "tool_name" && entry.toolName) {
-      advancedRules.push({ id: entry.id, kind: "tool_name", value: entry.toolName, effect: entry.effect });
+      advancedRules.push({ id: entry.id, kind: "tool_name", value: entry.toolName, effect: entry.effect, ...(hasIssueAssigneeCondition(entry) ? { requireIssueAssignee: true } : {}) });
       continue;
     }
     if (entry.selectorType === "risk_level" && entry.riskLevel) {
-      advancedRules.push({ id: entry.id, kind: "risk_level", value: entry.riskLevel, riskLevel: entry.riskLevel, effect: entry.effect });
+      advancedRules.push({ id: entry.id, kind: "risk_level", value: entry.riskLevel, riskLevel: entry.riskLevel, effect: entry.effect, ...(hasIssueAssigneeCondition(entry) ? { requireIssueAssignee: true } : {}) });
       continue;
     }
   }
@@ -327,7 +389,7 @@ export function parseEntries(
     }
   }
 
-  return { selections, advancedRules };
+  return { selections, advancedRules, requireIssueAssignee, conditionedCatalogEntryIds: [...conditionedCatalogEntryIds] };
 }
 
 // --- Live count ------------------------------------------------------------

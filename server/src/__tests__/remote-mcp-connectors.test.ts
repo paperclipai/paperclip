@@ -3,8 +3,8 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
-import { agents, heartbeatRuns, issues, toolCatalogEntries, toolConnectionInstalls, toolInvocations, companies, companyMemberships, instanceSettings, createDb, toolConnections, toolPolicies, toolProfileEntries } from "@paperclipai/db";
-import { eq } from "drizzle-orm";
+import { agents, heartbeatRuns, issues, toolCatalogEntries, toolConnectionInstalls, toolInvocations, companies, companyMemberships, instanceSettings, createDb, toolConnections, toolPolicies, toolProfileEntries, toolProfiles, toolProfileBindings } from "@paperclipai/db";
+import { and, eq } from "drizzle-orm";
 import { startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 import { toolAccessService } from "../services/tool-access.js";
 import { createToolGatewayService } from "../services/tool-gateway.js";
@@ -18,12 +18,13 @@ describe("remote connector lifecycle", () => {
   let fixture: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>>;
   let db: ReturnType<typeof createDb>;
   let keyDir: string;
+  // Embedded Postgres startup and migrations exceed the global 30s hook budget on Windows.
   beforeAll(async () => {
     keyDir = await mkdtemp(join(tmpdir(), "mcp-connector-secrets-"));
     vi.stubEnv("PAPERCLIP_SECRETS_MASTER_KEY_FILE", join(keyDir, "key"));
     fixture = await startEmbeddedPostgresTestDatabase("mcp-connectors-test-");
     db = createDb(fixture.connectionString);
-  });
+  }, 120_000);
   afterAll(async () => { await fixture?.cleanup(); vi.unstubAllEnvs(); if (keyDir) await rm(keyDir, { recursive: true, force: true }); });
   async function company() {
     const [row] = await db.insert(companies).values({ name: `MCP ${randomUUID()}`, issuePrefix: `M${randomUUID().slice(0, 5)}` }).returning();
@@ -291,6 +292,99 @@ describe("remote connector lifecycle", () => {
     await service.archiveConnection(connection.connectionId, org.id, actor);
     await expect(call(allowed.id, "resume")).rejects.toThrow("not found");
     expect(calls).toHaveLength(3);
+  });
+
+  it("lets all agents read a fake website and gates edits on the current task assignee", async () => {
+    const org = await company();
+    const [assigned, other] = await db.insert(agents).values(["Assigned editor", "Other agent"].map((name) => ({ companyId: org.id, name, role: "engineer", adapterType: "process", adapterConfig: {}, runtimeConfig: {} }))).returning();
+    let page = "Initial fake website";
+    const websiteCalls: Array<{ name: string; arguments: Record<string, unknown> }> = [];
+    const send = async (_url: string, init: RequestInit) => {
+      const body = JSON.parse(String(init.body));
+      if (body.method === "initialize") return Response.json({ id: body.id, jsonrpc: "2.0", result: { protocolVersion: "2025-06-18", capabilities: {} } }, { headers: { "Mcp-Session-Id": "fake-website-session" } });
+      if (body.method === "notifications/initialized") return new Response(null, { status: 202 });
+      if (body.method === "tools/list") return Response.json({ id: body.id, jsonrpc: "2.0", result: { tools: [
+        { name: "website_read_page", description: "Read the fake website", inputSchema: { type: "object", properties: {} }, annotations: { readOnlyHint: true } },
+        { name: "website_update_page", description: "Edit the fake website", inputSchema: { type: "object", properties: { content: { type: "string" } }, required: ["content"] }, annotations: { readOnlyHint: false } },
+      ] } });
+      if (body.method !== "tools/call") throw new Error(`Unexpected fake website method: ${body.method}`);
+      websiteCalls.push({ name: body.params.name, arguments: body.params.arguments });
+      if (body.params.name === "website_update_page") page = String(body.params.arguments.content);
+      const result = body.params.name === "website_read_page" ? page : `Updated fake website: ${page}`;
+      return Response.json({ id: body.id, jsonrpc: "2.0", result: { content: [{ type: "text", text: result }] } });
+    };
+    const service = toolAccessService(db, {
+      deploymentMode: "local_trusted",
+      deploymentExposure: "private",
+      remoteHttpEndpointLookup: async () => [{ address: "127.0.0.1", family: 4 }],
+      remoteHttpRequest: send,
+    });
+    const connected = await service.connectGalleryApp(org.id, {
+      galleryKey: "arcade",
+      connectionMethodKey: "mcp",
+      link: "https://api.arcade.dev/mcp/fake-website",
+      authMode: "none",
+    }, actor);
+    const toolIds = Object.fromEntries(connected.catalog.map((entry) => [entry.toolName, entry.id]));
+    const finished = await service.finishGalleryAppConnection(org.id, connected.connectionId, {
+      enabledCatalogEntryIds: [toolIds.website_read_page!, toolIds.website_update_page!],
+      askFirstCatalogEntryIds: [],
+      access: "all_agents",
+    }, actor);
+    await db.delete(toolProfileEntries).where(and(
+      eq(toolProfileEntries.profileId, finished.profile.id),
+      eq(toolProfileEntries.catalogEntryId, toolIds.website_update_page!),
+    ));
+    const [writeProfile] = await db.insert(toolProfiles).values({
+      companyId: org.id,
+      profileKey: `website-edit-${randomUUID()}`,
+      name: "Fake website edit while assigned",
+      defaultAction: "deny",
+    }).returning();
+    const [issue] = await db.insert(issues).values({ companyId: org.id, title: "Website change", status: "in_progress", assigneeAgentId: assigned.id }).returning();
+    await db.insert(toolProfileBindings).values({ companyId: org.id, profileId: writeProfile!.id, targetType: "issue", targetId: issue!.id });
+    await db.insert(toolProfileEntries).values([
+      { companyId: org.id, profileId: writeProfile!.id, selectorType: "catalog_entry", effect: "include", catalogEntryId: toolIds.website_read_page! },
+      { companyId: org.id, profileId: writeProfile!.id, selectorType: "catalog_entry", effect: "include", catalogEntryId: toolIds.website_update_page!, conditions: { context: { requireIssueAssignee: true } } },
+    ]);
+    await db.update(toolCatalogEntries).set({ riskLevel: "write" }).where(eq(toolCatalogEntries.id, toolIds.website_update_page!));
+
+    const gateway = createToolGatewayService(db, { deploymentMode: "local_trusted", deploymentExposure: "private", remoteHttpRequest: send });
+    const [assignedRun] = await db.insert(heartbeatRuns).values({ companyId: org.id, agentId: assigned!.id, invocationSource: "assignment", status: "running", contextSnapshot: { issueId: issue!.id } }).returning();
+    const assignedSession = await gateway.createSession({ companyId: org.id, agentId: assigned!.id, runId: assignedRun!.id });
+    expect(assignedSession.issueId).toBe(issue!.id);
+    const assignedTools = await gateway.listToolsForSession(assignedSession.token);
+    const assignedRead = assignedTools.find((entry) => entry.upstreamToolName === "website_read_page")!;
+    const assignedEdit = assignedTools.find((entry) => entry.upstreamToolName === "website_update_page")!;
+    expect(assignedRead).toBeDefined();
+    expect(assignedEdit, `Visible tools: ${assignedTools.map((entry) => entry.upstreamToolName).join(", ")}`).toBeDefined();
+    const initialRead = await gateway.executeTool({ sessionToken: assignedSession.token, tool: assignedRead.name, parameters: {} });
+    expect(JSON.stringify(initialRead)).toContain("Initial fake website");
+
+    const otherRun = await db.insert(heartbeatRuns).values({ companyId: org.id, agentId: other!.id, invocationSource: "manual", status: "running", contextSnapshot: {} }).returning().then((rows) => rows[0]!);
+    const otherSession = await gateway.createSession({ companyId: org.id, agentId: other!.id, runId: otherRun.id });
+    const otherRead = (await gateway.listToolsForSession(otherSession.token)).find((entry) => entry.upstreamToolName === "website_read_page")!;
+    expect(otherRead).toBeDefined();
+    const otherReadResult = await gateway.executeTool({ sessionToken: otherSession.token, tool: otherRead.name, parameters: {} });
+    expect(JSON.stringify(otherReadResult)).toContain("Initial fake website");
+    const callsBeforeDeniedEdit = websiteCalls.length;
+    await expect(gateway.executeTestCall({ companyId: org.id, connectionId: connected.connectionId, agentId: other!.id, userId: actor.actorId, toolName: "website_update_page", parameters: { content: "Unassigned edit" } })).resolves.toMatchObject({ decision: "off" });
+    expect(websiteCalls).toHaveLength(callsBeforeDeniedEdit);
+
+    await gateway.executeTool({ sessionToken: assignedSession.token, tool: assignedEdit.name, parameters: { content: "Assigned agent edit" } });
+    expect(page).toBe("Assigned agent edit");
+    expect(websiteCalls.map((call) => call.name)).toEqual(["website_read_page", "website_read_page", "website_update_page"]);
+
+    await db.update(issues).set({ assigneeAgentId: other!.id }).where(eq(issues.id, issue!.id));
+    await expect(gateway.executeTool({ sessionToken: assignedSession.token, tool: assignedEdit.name, parameters: { content: "Former assignee edit" } })).rejects.toMatchObject({ reasonCode: "deny_default" });
+    const [reassignedRun] = await db.insert(heartbeatRuns).values({ companyId: org.id, agentId: other!.id, invocationSource: "assignment", status: "running", contextSnapshot: { issueId: issue!.id } }).returning();
+    const reassignedSession = await gateway.createSession({ companyId: org.id, agentId: other!.id, runId: reassignedRun!.id });
+    const reassignedEdit = (await gateway.listToolsForSession(reassignedSession.token)).find((entry) => entry.upstreamToolName === "website_update_page")!;
+    await gateway.executeTool({ sessionToken: reassignedSession.token, tool: reassignedEdit.name, parameters: { content: "Reassigned agent edit" } });
+    expect(page).toBe("Reassigned agent edit");
+    await db.update(issues).set({ assigneeAgentId: null }).where(eq(issues.id, issue!.id));
+    await expect(gateway.executeTool({ sessionToken: reassignedSession.token, tool: reassignedEdit.name, parameters: { content: "Edit after unassignment" } })).rejects.toMatchObject({ reasonCode: "deny_default" });
+    expect(page).toBe("Reassigned agent edit");
   });
 
 });

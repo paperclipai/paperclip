@@ -8,7 +8,6 @@ import {
   Gauge,
 } from "lucide-react";
 import { useReducedMotion } from "motion/react";
-import { MarkdownBody } from "@/components/MarkdownBody";
 import { cn } from "@/lib/utils";
 import { useTaskChatExpansion } from "./expansion-state";
 import type { TaskChatActivityPhaseItem } from "./task-chat-model";
@@ -22,6 +21,7 @@ import {
   hasTaskChatProtocolActivityDetails,
 } from "./TaskChatProtocolActivityRow";
 import { TaskChatUsageReadout } from "./TaskChatUsageReadout";
+import { TaskChatReasoningText } from "./TaskChatThinking";
 import { toolActivityPresentation } from "./tool-taxonomy";
 import { useTaskChatShimmer } from "./TaskChatShimmer";
 
@@ -212,7 +212,7 @@ function RollingActivity({
 
 function ActivityDetails({ item }: { item: Activity }) {
   if (item.kind === "thinking")
-    return <div data-conversation-text="progress"><MarkdownBody softBreaks>{item.lines.join("\n")}</MarkdownBody></div>;
+    return <div data-conversation-text="progress"><TaskChatReasoningText body={item.lines.join("\n").trim()} /></div>;
   if (item.kind === "usage") return <TaskChatUsageReadout item={item} />;
   if (item.kind === "protocol")
     return <TaskChatProtocolActivityDetails item={item} neutral />;
@@ -340,9 +340,7 @@ export function TaskChatRunnerActivityGroup({
           data-testid="task-chat-phase-interstitial"
           data-conversation-text={item.interstitial.channel === "final" ? "final" : "progress"}
         >
-          <MarkdownBody softBreaks linkIssueReferences>
-            {item.interstitial.text}
-          </MarkdownBody>
+          <TaskChatReasoningText body={item.interstitial.text} />
         </div>
       ) : null}
       {latest ? (

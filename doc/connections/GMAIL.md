@@ -1,13 +1,16 @@
 # Gmail connection
 
+> **Candidate hold:** Gmail sending and sender connections are not implemented or enabled in this release copy. Do not set up a sender connection or run any send-verification steps below. Sender-specific sections are retained as future reference only.
+
 Paperclip connects to Google's hosted Gmail MCP server at
 `https://gmailmcp.googleapis.com/mcp/v1`. Gmail authorization is separate from
 Google sign-in:
 
 - Google sign-in identifies a Paperclip ID user and requests only
   `openid email profile`.
-- Gmail authorization lets that user's agents search and read mail and create
-  drafts. It requests only `gmail.readonly` and `gmail.compose`.
+- Gmail authorization lets agents search and read mail. An agent-specific
+  sender connection can also create drafts and send a selected existing draft.
+  It requests only `gmail.readonly` and `gmail.compose`.
 
 Do not add Gmail scopes to the Google sign-in client. The existing Paperclip
 Cloud application at `my.paperclip.app` hosts the public Gmail OAuth callback;
@@ -17,6 +20,14 @@ the durable owner of the encrypted access and refresh tokens.
 > Google Workspace MCP is a Developer Preview. Enroll the required Workspace
 > organization and test accounts in Google's Developer Preview Program before
 > relying on the service.
+
+## Personal Gmail on the local Paperclip instance
+
+For a personal Gmail account without Google Workspace Developer Preview enrollment, this candidate offers only the direct API read-only method. **Connect Gmail directly (read access)** uses a customer-owned OAuth client and `gmail.readonly` for general agent search, message reading, and bounded attachment retrieval. The separate “full access for Peter” sender connection described in this document is held reference only, is not available in this release copy, and must not be configured or used; sending remains unavailable.
+
+The local MCP routes must be deployed on Paperclip's internal Docker network at `http://privateemail-mcp:8788/mcp/gmail/read` and `/mcp/gmail/peter`. See the service's canonical setup instructions in `C:\Users\ericd\Documents\Codex\2026-10-21\paperclip-pocs\privateemail-paperclip-mcp\README.md`. In Google Cloud, enable the Gmail API, configure the OAuth consent screen and add the Gmail address as a test user if the app is in Testing, create a Web application OAuth client, and add Paperclip's exact callback URI. Enter the client ID and secret in each Paperclip connection. The Gmail REST API does not require the Gmail MCP Developer Preview. Google classifies `gmail.modify` as a restricted scope; OAuth verification and additional requirements may apply. Testing grants may expire.
+
+The remaining sections describe the separate Paperclip Cloud hosted Gmail MCP connector and its Developer Preview requirements.
 
 ## Deployment layout
 
@@ -305,16 +316,28 @@ Gmail uses the same credential ownership choice as the rest of the Apps setup:
 - **Any human in the organization** stores it on the default organization grant
   so a deliberately shared mailbox or Workspace account can back
   organization-wide use.
-- The disclosure states that Gmail access can search/read mail and create
-  drafts. Sending mail is not enabled.
+- Use a shared, read-only connection with **Any agent** for agents that need to
+  search and read mail.
+- Use a separate agent-owned `gmail.send` connection for the one designated
+  sender. At connection time, choose **Just agents I pick** and select Peter.
+  That profile uses the same `gmail.readonly` and `gmail.compose` scopes but
+  grants the Gmail connection only to Peter.
+- Paperclip does not expose a direct message-send tool from the hosted Gmail
+  MCP. Its separate `paperclip-gmail:send_existing_draft` action calls Gmail's
+  `users.drafts.send` endpoint and accepts only a draft ID. Gmail takes the
+  recipients and content from the saved draft.
+- Keep the `gmail.send` profile separate from shared read access. The gateway
+  exposes the send action only while the current agent has an active grant on
+  the agent-owned sender connection; it fails closed if the connection is
+  missing or ambiguous.
 - A user grant does not automatically authorize an agent. The user must also
   install the connection for that agent, select an access profile, and grant
   standing delegation before autonomous use.
 - Read, search, get, and list tools may be enabled after explicit profile
   review.
-- Draft creation and label changes require **Ask first**.
-- Trash, spam, destructive label changes, newly discovered tools, nested
-  execution, and any future send tool remain blocked until separately reviewed.
+- Draft creation and sending an existing draft require **Ask first**.
+- Direct send tools, trash, spam, destructive label changes, newly discovered
+  tools, and nested execution remain blocked.
 
 ## Broker rejection diagnostics
 
@@ -345,12 +368,16 @@ The existing error code, status, authorization, and retry behavior are unchanged
    `search_threads` query.
 6. Install the reviewed profile on one test agent and repeat one read-only call
    in a fresh agent run.
-7. Create a draft through an Ask-first approval and verify no send action is
-   exposed.
-8. Force access-token expiry and verify refresh changes only the originating
+7. Verify read-only agents can search and read but do not see the sender action.
+8. Install `gmail.send` only for Peter and verify only his fresh agent run sees
+   the existing-draft sender action.
+9. Create a harmless test draft and send it from Peter's test connection; verify
+   the sent message ID and Gmail Sent folder. Do not use a real recipient for
+   this check.
+10. Force access-token expiry and verify refresh changes only the originating
    instance's encrypted secret version.
-9. Revoke the grant and verify the next call fails closed.
-10. Confirm sanitized logs, activity, API payloads, agent context, and browser
+11. Revoke the grant and verify the next call fails closed.
+12. Confirm sanitized logs, activity, API payloads, agent context, and browser
     history contain no credential or authorization code.
 
 ### Staging

@@ -1,6 +1,6 @@
 import { usesPreconfiguredHome } from "../preconfigured-home.js";
 import { configuredEnvironmentKeys } from "../../configured-environment.js";
-import { resolve, isAbsolute, join, dirname, delimiter, relative, sep } from "node:path";
+import { resolve, isAbsolute, join, dirname, delimiter, relative, sep, posix } from "node:path";
 import { closeSync, constants, existsSync, fstatSync, openSync, realpathSync, readFileSync, statSync } from "node:fs";
 import { createRequire } from "node:module";
 import { QUALIFIED_ACPX_PROFILES } from "../acpx/qualified-profiles.js";
@@ -182,6 +182,17 @@ function usesExternalRunnerSandbox(source: NodeJS.ProcessEnv): boolean {
   return source.PAPERCLIP_RUNNER_EXTERNAL_SANDBOX === "1";
 }
 
+function codexFilesystemWriteRoots(source: NodeJS.ProcessEnv): string[] {
+  try {
+    const parsed: unknown = JSON.parse(source.PAPERCLIP_CODEX_FILESYSTEM_WRITE_ROOTS ?? "[]");
+    if (!Array.isArray(parsed)) return [];
+    return [...new Set(parsed
+      .filter((value): value is string => typeof value === "string" && posix.isAbsolute(value) && posix.normalize(value) !== "/")
+      .map((value) => posix.normalize(value)))];
+  } catch { /* Invalid host configuration grants no additional write roots. */ }
+  return [];
+}
+
 const SKILLLESS_BASE_CONFIG = {
   "skills.include_instructions": false,
   include_apps_instructions: false,
@@ -258,6 +269,7 @@ export function createIsolatedCodexAppServerArgs(
   const explicitSource = source;
   source ??= process.env;
   const gitRoots = gitFilesystemRoots(source);
+  const filesystemWriteRoots = codexFilesystemWriteRoots(source);
   readOnlyRoots = [...new Set([...readOnlyRoots, ...codexNetworkReadOnlyRoots(source)])];
   const networkAccess = codexNetworkAccess(source);
   const externalRunnerSandbox = usesExternalRunnerSandbox(source);
@@ -293,6 +305,7 @@ export function createIsolatedCodexAppServerArgs(
     ...protectedPaths.map((path) => `${tomlString(resolve(path))}="none"`),
     ...(usesPreconfiguredHome(source) && source.HOME ? [`${tomlString(source.HOME)}="write"`] : []),
     ...readOnlyRoots.map((path) => `${tomlString(resolve(path))}="read"`),
+    ...filesystemWriteRoots.map((path) => `${tomlString(path)}="write"`),
     ...gitRoots.read.map((path) => `${tomlString(path)}="read"`),
     ...gitRoots.write.map((path) => `${tomlString(path)}="write"`),
     ...(instructionWorkingCopyRoot ? [`${tomlString(resolve(instructionWorkingCopyRoot))}="write"`] : []),
@@ -308,6 +321,7 @@ export function createIsolatedCodexAppServerArgs(
     ...protectedPaths.map((path) => `${tomlString(resolve(path))}="none"`),
     ...(usesPreconfiguredHome(source) && source.HOME ? [`${tomlString(source.HOME)}="read"`] : []),
     ...readOnlyRoots.map((path) => `${tomlString(resolve(path))}="read"`),
+    ...filesystemWriteRoots.map((path) => `${tomlString(path)}="read"`),
     ...[...gitRoots.read, ...gitRoots.write].map((path) => `${tomlString(path)}="read"`),
     ...(instructionWorkingCopyRoot ? [`${tomlString(resolve(instructionWorkingCopyRoot))}="read"`] : []),
     ...(source.PAPERCLIP_GITHUB_BROKER_TOKEN && source.GH_CONFIG_DIR

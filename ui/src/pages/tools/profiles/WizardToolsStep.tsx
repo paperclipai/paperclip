@@ -49,6 +49,8 @@ export interface WizardToolsStepProps {
   onAdvancedRulesChange: (next: AdvancedRule[]) => void;
   newToolsAction: NewToolsAction;
   onNewToolsActionChange: (next: NewToolsAction) => void;
+  requireIssueAssignee: boolean;
+  onRequireIssueAssigneeChange: (next: boolean) => void;
 }
 
 export function WizardToolsStep(props: WizardToolsStepProps) {
@@ -163,7 +165,22 @@ export function WizardToolsStep(props: WizardToolsStepProps) {
         </div>
       )}
 
-      <NewToolsRadio value={props.newToolsAction} onChange={props.onNewToolsActionChange} />
+      <NewToolsRadio
+        value={props.newToolsAction}
+        onChange={props.onNewToolsActionChange}
+        requireIssueAssignee={props.requireIssueAssignee}
+      />
+
+      <fieldset className="space-y-2 rounded-lg border border-border p-4">
+        <legend className="px-1 text-sm font-medium text-foreground">Task access condition</legend>
+        <label className="flex cursor-pointer items-start gap-2.5">
+          <Checkbox checked={props.requireIssueAssignee} onCheckedChange={(checked) => props.onRequireIssueAssigneeChange(checked === true)} />
+          <span className="flex flex-col gap-0.5">
+            <span className="text-sm font-medium text-foreground">Require task assignment for write tools</span>
+            <span className="text-xs text-muted-foreground">Selected read tools stay shared. Selected write tools and allowed tool-name patterns require the calling agent to be assigned to the task. New tools stay blocked until reviewed.</span>
+          </span>
+        </label>
+      </fieldset>
 
       <AdvancedRules rules={props.advancedRules} onChange={props.onAdvancedRulesChange} />
     </div>
@@ -251,9 +268,11 @@ function AppRow({
 function NewToolsRadio({
   value,
   onChange,
+  requireIssueAssignee,
 }: {
   value: NewToolsAction;
   onChange: (next: NewToolsAction) => void;
+  requireIssueAssignee: boolean;
 }) {
   const options: Array<{ value: NewToolsAction; label: string; hint: string; recommended?: boolean }> = [
     {
@@ -273,11 +292,12 @@ function NewToolsRadio({
       <legend className="px-1 text-sm font-medium text-foreground">New tools that appear later</legend>
       <div className="space-y-2">
         {options.map((opt) => (
-          <label key={opt.value} className="flex cursor-pointer items-start gap-2.5">
+          <label key={opt.value} className={cn("flex cursor-pointer items-start gap-2.5", opt.value === "allow" && requireIssueAssignee && "cursor-not-allowed opacity-60")}>
             <input
               type="radio"
               name="new-tools-action"
               className="mt-0.5"
+              disabled={opt.value === "allow" && requireIssueAssignee}
               checked={value === opt.value}
               onChange={() => onChange(opt.value)}
             />
@@ -292,7 +312,11 @@ function NewToolsRadio({
                   <span className="text-xs font-normal text-amber-600">(risky)</span>
                 )}
               </span>
-              <span className="text-xs text-muted-foreground">{opt.hint}</span>
+              <span className="text-xs text-muted-foreground">
+                {opt.value === "allow" && requireIssueAssignee
+                  ? "Unavailable while task-scoped write access is enabled; new tools must stay blocked until reviewed."
+                  : opt.hint}
+              </span>
             </span>
           </label>
         ))}

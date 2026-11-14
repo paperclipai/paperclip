@@ -562,6 +562,195 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
     expect(popup.close).toHaveBeenCalled();
   });
 
+  it("uses a task-requested agent when the selected method supports agent grants", async () => {
+    mockSearch.value = "source=github&stage=setup&cloud_connector=enrolled";
+    listGalleryMock.mockResolvedValue({
+      apps: [GITHUB_MANAGED],
+      capabilities: {
+        canCreateOrganizationGrant: true,
+        organizationGrantReason: null,
+        canSetCompanyInstall: true,
+        companyInstallReason: null,
+      },
+    });
+    getCloudConnectorEnrollmentMock.mockResolvedValue(activeConnectorEnrollment());
+    connectAppMock.mockResolvedValue({
+      connectionId: "conn-github-agent",
+      connection: {
+        id: "conn-github-agent",
+        status: "draft",
+        authKind: "oauth",
+        credentialPolicy: "per_agent",
+        grants: [{ kind: "agent", subjectAgentId: "agent-1" }],
+      },
+      catalog: [],
+      auth: { kind: "oauth" },
+    });
+    vi.spyOn(window, "open").mockReturnValue(null);
+
+    await render(undefined, false, <ConnectionSetupFlow
+      host="dialog"
+      serviceSlug="github"
+      requestedAgentId="agent-1"
+      interactionId="github-agent-intent"
+    />);
+    await vi.waitFor(() => expect(buttonByText("Continue to GitHub")).toBeTruthy());
+    await act(async () => {
+      buttonByText("Continue to GitHub")?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await vi.waitFor(() => expect(connectAppMock).toHaveBeenCalled());
+
+    expect(connectAppMock).toHaveBeenCalledWith("company-1", expect.objectContaining({
+      galleryKey: "github",
+      grantKind: "agent",
+      subjectAgentId: "agent-1",
+    }));
+  });
+
+  it("uses the saved agent identity when resuming an OAuth draft", async () => {
+    const draft = {
+      id: "conn-github-agent-draft",
+      applicationId: "app-github",
+      companyId: "company-1",
+      status: "draft",
+      authKind: "oauth",
+      credentialPolicy: "per_agent",
+      grants: [{ kind: "agent", subjectAgentId: "agent-1" }],
+      config: { sourceTemplateKey: "github", connectionMethodKey: "managed" },
+    };
+    mockSearch.value = `source=github&stage=setup&cloud_connector=enrolled&resume=${draft.id}`;
+    listGalleryMock.mockResolvedValue({
+      apps: [GITHUB_MANAGED],
+      capabilities: {
+        canCreateOrganizationGrant: true,
+        organizationGrantReason: null,
+        canSetCompanyInstall: true,
+        companyInstallReason: null,
+      },
+    });
+    listApplicationsMock.mockResolvedValue({ applications: [{
+      id: "app-github",
+      companyId: "company-1",
+      metadata: { sourceTemplateKey: "github" },
+    }] });
+    listConnectionsMock.mockResolvedValue({ connections: [draft] });
+    connectAppMock.mockResolvedValue({ connectionId: draft.id, connection: draft, catalog: [], auth: { kind: "oauth" } });
+
+    await render(undefined, false, <ConnectionSetupFlow host="dialog" serviceSlug="github" />);
+    await vi.waitFor(() => expect(buttonByText("Continue to GitHub")).toBeTruthy());
+    await act(async () => buttonByText("Continue to GitHub")!.click());
+    await vi.waitFor(() => expect(startOAuthMock).toHaveBeenCalledWith(
+      draft.id,
+      expect.objectContaining({ asCurrentUser: false, asAgentId: "agent-1" }),
+    ));
+    expect(connectAppMock).not.toHaveBeenCalled();
+  });
+
+  it("uses an agent installation identity when resuming an OAuth draft", async () => {
+    const draft = {
+      id: "conn-github-agent-install-draft",
+      applicationId: "app-github",
+      companyId: "company-1",
+      status: "draft",
+      authKind: "oauth",
+      credentialPolicy: "per_agent",
+      installs: [{ targetType: "agent", targetId: "agent-1" }],
+      config: { sourceTemplateKey: "github", connectionMethodKey: "managed" },
+    };
+    mockSearch.value = `source=github&stage=setup&cloud_connector=enrolled&resume=${draft.id}`;
+    listGalleryMock.mockResolvedValue({
+      apps: [GITHUB_MANAGED],
+      capabilities: {
+        canCreateOrganizationGrant: true,
+        organizationGrantReason: null,
+        canSetCompanyInstall: true,
+        companyInstallReason: null,
+      },
+    });
+    listApplicationsMock.mockResolvedValue({ applications: [{
+      id: "app-github",
+      companyId: "company-1",
+      metadata: { sourceTemplateKey: "github" },
+    }] });
+    listConnectionsMock.mockResolvedValue({ connections: [draft] });
+    connectAppMock.mockResolvedValue({ connectionId: draft.id, connection: draft, catalog: [], auth: { kind: "oauth" } });
+
+    await render(undefined, false, <ConnectionSetupFlow host="dialog" serviceSlug="github" />);
+    await vi.waitFor(() => expect(buttonByText("Continue to GitHub")).toBeTruthy());
+    await act(async () => buttonByText("Continue to GitHub")!.click());
+    await vi.waitFor(() => expect(startOAuthMock).toHaveBeenCalledWith(
+      draft.id,
+      expect.objectContaining({ asCurrentUser: false, asAgentId: "agent-1" }),
+    ));
+  });
+
+  it("preserves the archived agent identity and access on GitHub reconnect", async () => {
+    const connection = {
+      id: "conn-github-agent-reconnect",
+      applicationId: "app-github",
+      companyId: "company-1",
+      status: "archived",
+      authKind: "oauth",
+      credentialPolicy: "per_agent",
+      grants: [{ kind: "agent", subjectAgentId: "agent-1" }],
+      installs: [{ targetType: "agent", targetId: "agent-1" }],
+      config: { sourceTemplateKey: "github", connectionMethodKey: "managed" },
+      transportConfig: {},
+    };
+    mockSearch.value = "source=github&stage=setup&cloud_connector=enrolled&applicationId=app-github&new=1&reconnect=conn-github-agent-reconnect&identity=organization";
+    listGalleryMock.mockResolvedValueOnce({
+      apps: [GITHUB_MANAGED],
+      capabilities: {
+        canCreateOrganizationGrant: true,
+        organizationGrantReason: null,
+        canSetCompanyInstall: true,
+        companyInstallReason: null,
+      },
+    });
+    getCloudConnectorEnrollmentMock.mockResolvedValueOnce(activeConnectorEnrollment());
+    listApplicationsMock.mockResolvedValueOnce({ applications: [{
+      id: "app-github",
+      companyId: "company-1",
+      status: "archived",
+      metadata: { sourceTemplateKey: "github" },
+    }] });
+    listConnectionsMock.mockResolvedValueOnce({ connections: [connection] });
+    connectAppMock.mockResolvedValueOnce({
+      connectionId: connection.id,
+      application: { id: "app-github", name: "GitHub" },
+      connection: {
+        ...connection,
+        status: "draft",
+      },
+      catalog: [],
+      suggestedDefaults: {},
+      auth: { kind: "oauth", startUrl: null },
+    });
+    startOAuthMock.mockResolvedValueOnce(oauthStartResponse(
+      connection.id,
+      "github",
+      "https://github.com/login/oauth/authorize?state=reconnect",
+    ));
+
+    await render();
+    await openAccessAdvanced();
+    await act(async () => {
+      radioContaining("A dedicated account for an agent")?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushReact();
+    expect(container.textContent).toContain("Existing agent access stays the same");
+    await vi.waitFor(() => expect(buttonByText("Continue to GitHub")).toBeTruthy());
+    await act(async () => buttonByText("Continue to GitHub")!.click());
+
+    await vi.waitFor(() => expect(connectAppMock).toHaveBeenCalledWith("company-1", expect.objectContaining({
+      galleryKey: "github",
+      applicationId: "app-github",
+      reconnectConnectionId: connection.id,
+      grantKind: "agent",
+      subjectAgentId: "agent-1",
+    })));
+  });
+
   it.each(["blocked", "throws", "closed"])("keeps inline Composio sign-in recoverable when its popup is %s", async (failure) => {
     const popup = { closed: true, location: { assign: vi.fn() }, focus: vi.fn(), close: vi.fn() };
     const open = vi.spyOn(window, "open").mockImplementation(() => {

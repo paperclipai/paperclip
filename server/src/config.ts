@@ -32,6 +32,17 @@ import {
   resolveHomeAwarePath,
 } from "./home-paths.js";
 
+export function isDockerLocalTrustedBridgeEnabled(): boolean {
+  return (
+    existsSync("/.dockerenv") &&
+    process.env.PAPERCLIP_DOCKER_LOCAL_TRUSTED === "true" &&
+    process.env.PAPERCLIP_DEPLOYMENT_MODE === "local_trusted" &&
+    process.env.PAPERCLIP_DEPLOYMENT_EXPOSURE === "private" &&
+    process.env.PAPERCLIP_BIND === "lan" &&
+    process.env.HOST === "0.0.0.0"
+  );
+}
+
 const PAPERCLIP_ENV_FILE_PATH = resolvePaperclipEnvPath();
 if (existsSync(PAPERCLIP_ENV_FILE_PATH)) {
   loadDotenv({ path: PAPERCLIP_ENV_FILE_PATH, override: false, quiet: true });
@@ -344,13 +355,16 @@ export function loadConfig(): Config {
   const gitRestorePointRetentionDays = Math.max(1, nonNegativeIntegerEnv("PAPERCLIP_GIT_RESTORE_POINT_RETENTION_DAYS", 90));
   const gitRestorePointTerminalDelayDays = nonNegativeIntegerEnv("PAPERCLIP_GIT_RESTORE_POINT_TERMINAL_DELAY_DAYS", 3);
   const gitRestorePointIdleDays = nonNegativeIntegerEnv("PAPERCLIP_GIT_RESTORE_POINT_IDLE_DAYS", 7);
-  const bindValidationErrors = validateConfiguredBindMode({
-    deploymentMode,
-    deploymentExposure,
-    bind,
-    host: configuredHost,
-    customBindHost,
-  });
+  const dockerLocalTrustedBridge = isDockerLocalTrustedBridgeEnabled();
+  const bindValidationErrors = dockerLocalTrustedBridge && deploymentMode === "local_trusted" && bind === "lan"
+    ? []
+    : validateConfiguredBindMode({
+        deploymentMode,
+        deploymentExposure,
+        bind,
+        host: configuredHost,
+        customBindHost,
+      });
   if (bindValidationErrors.length > 0) {
     throw new Error(bindValidationErrors[0]);
   }

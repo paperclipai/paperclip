@@ -52,6 +52,7 @@ import {
   detectModel,
   resolveProvider,
 } from "./detect-model.js";
+import { createHermesRuntimeMcpHome } from "./runtime-mcp.js";
 import { reconcileHermesPaperclipSkills } from "./skills.js";
 
 // ---------------------------------------------------------------------------
@@ -225,11 +226,19 @@ export function buildPrompt(
 // Output parsing
 // ---------------------------------------------------------------------------
 
-/** Regex to extract session ID from Hermes quiet-mode output: "session_id: <id>" */
-const SESSION_ID_REGEX = /^session_id:\s*(\S+)/m;
+/** Regex to extract the documented Hermes session trailer from stdout or stderr. */
+const SESSION_ID_REGEX = /^session_id:\s*([a-zA-Z0-9_-]+)\s*$/im;
 
-/** Regex for legacy session output format */
+/** Regex for legacy session output formats. */
 const SESSION_ID_REGEX_LEGACY = /session[_ ](?:id|saved)[:\s]+([a-zA-Z0-9_-]+)/i;
+
+function startsWithQueryEcho(raw: string): boolean {
+  const withoutAnsi = raw
+    .replace(/\u001B\][^\u0007]*(?:\u0007|\u001B\\)/g, "")
+    .replace(/\u001B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])/g, "");
+  const firstLine = (withoutAnsi.split(String.fromCharCode(10)).find((line) => line.trim()) ?? "").trim();
+  return /^Query:\s*/i.test(firstLine);
+}
 
 /** Regex to extract token usage from Hermes output. */
 const TOKEN_USAGE_REGEX =
@@ -283,30 +292,17 @@ function parseHermesOutput(stdout: string, stderr: string): ParsedOutput {
   const combined = stdout + "\n" + stderr;
   const result: ParsedOutput = {};
 
-  // In quiet mode, Hermes outputs:
-  //   <response text>
-  //
-  //   session_id: <id>
-  const sessionMatch = stdout.match(SESSION_ID_REGEX);
+  const sessionMatch =
+    stderr.match(SESSION_ID_REGEX) ??
+    stdout.match(SESSION_ID_REGEX) ??
+    combined.match(SESSION_ID_REGEX_LEGACY);
   if (sessionMatch?.[1]) {
-    result.sessionId = sessionMatch?.[1] ?? null;
-    // The response is everything before the session_id line
-    const sessionLineIdx = stdout.lastIndexOf("\nsession_id:");
-    if (sessionLineIdx > 0) {
-      result.response = cleanResponse(stdout.slice(0, sessionLineIdx));
-    }
-  } else {
-    // Legacy format (non-quiet mode)
-    const legacyMatch = combined.match(SESSION_ID_REGEX_LEGACY);
-    if (legacyMatch?.[1]) {
-      result.sessionId = legacyMatch?.[1] ?? null;
-    }
-    // In non-quiet mode, extract clean response from stdout by
-    // filtering out tool lines, system messages, and noise
-    const cleaned = cleanResponse(stdout);
-    if (cleaned.length > 0) {
-      result.response = cleaned;
-    }
+    result.sessionId = sessionMatch[1];
+  }
+
+  const cleaned = cleanResponse(stdout);
+  if (cleaned.length > 0 && !startsWithQueryEcho(stdout)) {
+    result.response = cleaned;
   }
 
   // Extract token usage
@@ -453,10 +449,7 @@ export async function execute(
   const prompt = buildPrompt(ctx, promptConfig, { resumedSession: Boolean(sessionId) });
 
   // ── Build command args ─────────────────────────────────────────────────
-  // Use -Q (quiet) to get clean output: just response + session_id line
-  const useQuiet = cfgBoolean(config.quiet) === true; // default false
-  const args: string[] = ["chat", "-q", prompt];
-  if (useQuiet) args.push("-Q");
+  const args: string[] = ["chat", "--query-file", "-"];
 
   if (model) {
     args.push("-m", model);
@@ -494,6 +487,7 @@ export async function execute(
   // Failed resumes remain failures. Do not infer a safe restart from CLI text.
   if (sessionId) args.push("--resume", sessionId);
   if (extraArgs?.length) args.push(...extraArgs);
+  args.push("-Q");
 
   // ── Build environment ──────────────────────────────────────────────────
   const userEnv = config.env as Record<string, string> | undefined;
@@ -582,14 +576,48 @@ export async function execute(
     return ctx.onLog(stream, chunk);
   };
 
-  const result = await runChildProcess(ctx.runId, hermesCmd, args, {
-    cwd,
+  const runtimeMcpServers = ctx.runtimeMcp?.getServers() ?? [];
+  const hermesMcpHome = await createHermesRuntimeMcpHome({
+    servers: runtimeMcpServers,
     env,
-    timeoutSec,
-    graceSec,
-    onLog: wrappedOnLog,
-    onSpawn: ctx.onSpawn,
+    runId: ctx.runId,
   });
+  if (hermesMcpHome) {
+    Object.assign(env, hermesMcpHome.env);
+    env.HERMES_HOME = hermesMcpHome.home;
+    const toolsetsIndex = args.indexOf("-t");
+    if (toolsetsIndex >= 0 && args[toolsetsIndex + 1]) {
+      const selectedToolsets = new Set(args[toolsetsIndex + 1].split(",").filter(Boolean));
+      hermesMcpHome.serverNames.forEach((serverName) => selectedToolsets.add(serverName));
+      args[toolsetsIndex + 1] = [...selectedToolsets].join(",");
+    } else if (hermesMcpHome.serverNames.length > 0) {
+      args.push("-t", hermesMcpHome.serverNames.join(","));
+    }
+    await ctx.onLog(
+      "stdout",
+      `[hermes] Exposed ${runtimeMcpServers.length} run-authorized Paperclip MCP server(s).\n`,
+    );
+  }
+
+  let result: Awaited<ReturnType<typeof runChildProcess>>;
+  try {
+    result = await runChildProcess(ctx.runId, hermesCmd, args, {
+      cwd,
+      env,
+      timeoutSec,
+      graceSec,
+      onLog: wrappedOnLog,
+      onSpawn: ctx.onSpawn,
+      stdin: prompt,
+    });
+  } finally {
+    if (hermesMcpHome) {
+      await hermesMcpHome.cleanup().catch(async (error: unknown) => {
+        const reason = error instanceof Error ? error.message : String(error);
+        await ctx.onLog("stdout", `[hermes] Warning: could not remove temporary MCP config: ${reason}\n`);
+      });
+    }
+  }
 
   // ── Parse output ───────────────────────────────────────────────────────
   const parsed = parseHermesOutput(result.stdout || "", result.stderr || "");
@@ -615,6 +643,12 @@ export async function execute(
     executionResult.errorMessage = parsed.errorMessage;
   } else if (!result.timedOut && typeof result.exitCode === "number" && result.exitCode !== 0) {
     executionResult.errorMessage = `Hermes exited with code ${result.exitCode}`;
+  }
+  if (!result.timedOut && !parsed.response) {
+    if (!result.signal) {
+      executionResult.errorMessage ??= "Hermes returned no assistant response";
+    }
+    if (result.exitCode === 0) executionResult.exitCode = 1;
   }
 
   if (parsed.usage) {

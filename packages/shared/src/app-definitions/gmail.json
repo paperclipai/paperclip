@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "slug": "gmail",
   "name": "Gmail",
-  "description": "Search and read Gmail messages and create drafts without enabling mail sending.",
+  "description": "Connect Gmail through Google's hosted MCP or through the direct Gmail API, with separate read-only and full mailbox access profiles.",
   "categories": [
     "communication",
     "productivity"
@@ -12,12 +12,13 @@
     "logoUrl": "/brands/apps/gmail.svg"
   },
   "urlPatterns": [
-    "https://gmailmcp.googleapis.com/*"
+    "https://gmailmcp.googleapis.com/*",
+    "http://privateemail-mcp:8788/*"
   ],
   "docsUrl": "https://developers.google.com/workspace/gmail/api/reference/mcp",
   "setupPrerequisite": {
-    "title": "Google Developer Preview access required",
-    "description": "Google must register both the Workspace email used to authorize Paperclip and the Google Cloud project that owns the OAuth client. Registration is limited to those emails and projects; it does not enable unrelated Paperclip customers.",
+    "title": "Required only for Google-hosted Gmail MCP methods",
+    "description": "The Paperclip-managed and hosted Gmail MCP methods require Google Developer Preview registration for both the Workspace email and Cloud project. The direct Gmail API method uses the Gmail REST API and does not require Developer Preview enrollment.",
     "steps": [
       "Apply with the Workspace email that will sign in and the Google Cloud project that owns the OAuth client.",
       "Wait for the Google Group notification and then Google's final project-registration email, usually within a couple of days.",
@@ -28,6 +29,47 @@
   },
   "redirectConstraints": "https-or-loopback-http",
   "methods": [
+    {
+      "key": "direct-read-oauth",
+      "label": "Connect Gmail directly (read access)",
+      "transport": "mcp_remote",
+      "auth": "oauth",
+      "capabilityProfile": {
+        "key": "read",
+        "label": "Read only",
+        "description": "Search and read Gmail messages and labels through the Gmail API."
+      },
+      "grantKinds": [
+        "user",
+        "agent"
+      ],
+      "ownershipModes": [
+        "customer"
+      ],
+      "whenToUse": "Use your Google OAuth client to connect a personal Gmail account directly through Paperclip's Gmail API read-only connector.",
+      "defaults": {
+        "serverUrl": "http://privateemail-mcp:8788/mcp/gmail/read",
+        "authorizationEndpoint": "https://accounts.google.com/o/oauth2/v2/auth",
+        "tokenEndpoint": "https://oauth2.googleapis.com/token",
+        "metadataUrl": "https://accounts.google.com/.well-known/openid-configuration",
+        "scopesHint": [
+          "https://www.googleapis.com/auth/gmail.readonly"
+        ],
+        "oauthAuthorizationParams": {
+          "access_type": "offline",
+          "prompt": "consent"
+        }
+      },
+      "guidanceMd": "Create a Google OAuth web client, add Paperclip's callback URI, enable the Gmail API, then authorize the Gmail account. This connector calls the Gmail REST API directly and does not require Gmail MCP Developer Preview enrollment.",
+      "consoleLinks": {
+        "register": "https://console.cloud.google.com/auth/clients",
+        "docs": "https://developers.google.com/workspace/gmail/api/quickstart/nodejs"
+      },
+      "warnings": [
+        "This connection is read only. Google may show an unverified app warning unless the OAuth app is verified."
+      ],
+      "riskTier": "S3"
+    },
     {
       "key": "paperclip-read",
       "label": "Connect with Paperclip",
@@ -114,8 +156,7 @@
         "description": "Read Gmail and create drafts for review in Gmail."
       },
       "grantKinds": [
-        "user",
-        "organization"
+        "agent"
       ],
       "ownershipModes": [
         "platform_shared"
@@ -128,9 +169,9 @@
           "https://www.googleapis.com/auth/gmail.compose"
         ]
       },
-      "guidanceMd": "Connect Gmail to search and read mail and create drafts. Sending mail is permanently disabled.",
+      "guidanceMd": "Connect Gmail to search and read mail and create drafts. Sending is unavailable on this shared profile.",
       "warnings": [
-        "Draft creation requires approval. Sending mail is not enabled.",
+        "Draft creation requires approval. Sending is unavailable on this profile.",
         "Google Workspace MCP servers are in Developer Preview."
       ],
       "riskTier": "S4"
@@ -146,8 +187,7 @@
         "description": "Read Gmail and create drafts for review in Gmail."
       },
       "grantKinds": [
-        "user",
-        "organization"
+        "agent"
       ],
       "ownershipModes": [
         "customer"
@@ -173,7 +213,7 @@
         "docs": "https://developers.google.com/workspace/guides/configure-mcp-servers"
       },
       "warnings": [
-        "Draft creation requires approval. Sending mail is not enabled.",
+        "Draft creation requires approval. Sending is unavailable on this profile.",
         "Google Workspace MCP servers are in Developer Preview."
       ],
       "riskTier": "S4"

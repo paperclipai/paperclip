@@ -724,6 +724,23 @@ describe("agent permission routes", () => {
     expect(res.status).toBe(403);
   });
 
+  it("prevents an agent from promoting itself to CEO despite its configuration grant", async () => {
+    const app = await createApp({
+      type: "agent",
+      agentId,
+      companyId,
+      runId: "run-1",
+      source: "agent_key",
+    });
+
+    const res = await requestApp(app, (baseUrl) => request(baseUrl)
+      .patch(`/api/agents/${agentId}`)
+      .send({ role: "ceo", title: "CEO" }));
+
+    expect(res.status).toBe(403);
+    expect(mockAgentService.update).not.toHaveBeenCalled();
+  });
+
   it("requires instance administration to enable agent-scoped raw provider traces", async () => {
     const app = await createApp({
       type: "board",

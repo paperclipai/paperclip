@@ -809,6 +809,66 @@ describeEmbeddedPostgres("tool gateway acceptance", () => {
     }
   });
 
+  it("passes bounded MCP image and binary resources through to agent clients", async () => {
+    const company = await createCompany(db);
+    const image = { type: "image", mimeType: "image/png", data: "A".repeat(1_100_000) };
+    const resource = {
+      type: "resource",
+      resource: { uri: "privateemail://messages/7/parts/2", mimeType: "application/pdf", blob: "cGRm" },
+    };
+    const remote = await startFakeRemoteMcpServer(async ({ body }) => ({
+      body: {
+        jsonrpc: "2.0",
+        id: body?.id,
+        result: { content: [{ type: "text", text: "attachment" }, image, resource] },
+      },
+    }));
+    try {
+      const remoteTool = await createRemoteMcpTool(db, company.id, {
+        url: remote.url,
+        applicationKey: "binary-gateway-app",
+        toolName: "email_get_attachment",
+        title: "Read attachment",
+        riskLevel: "read",
+      });
+      const toolName = expectedConnectedToolName({
+        applicationKey: remoteTool.application.applicationKey,
+        connectionId: remoteTool.connection.id,
+        toolName: remoteTool.catalogEntry.toolName,
+      });
+      const [profile] = await db.insert(toolProfiles).values({
+        companyId: company.id,
+        profileKey: `binary-gateway-${randomUUID()}`,
+        name: `Binary gateway ${randomUUID()}`,
+        defaultAction: "deny",
+      }).returning();
+      await db.insert(toolProfileEntries).values({
+        companyId: company.id,
+        profileId: profile.id,
+        selectorType: "tool_name",
+        effect: "include",
+        toolName,
+      });
+      const gateway = createTestToolGatewayService(db);
+      const created = await gateway.createNamedGateway({ companyId: company.id, body: { name: "Binary reader", profileId: profile.id } });
+      const token = await gateway.createNamedGatewayToken({
+        companyId: company.id,
+        gatewayId: created.id,
+        body: { name: "Simon", clientLabel: "Simon agent", ownerNote: "Binary pass-through test" },
+      });
+      const app = createGatewayRouteApp(db, gateway);
+      const called = await request(app)
+        .post(`/api/tool-gateway/gateways/${created.id}/mcp`)
+        .set("authorization", `Bearer ${token.token}`)
+        .send({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: toolName, arguments: { uid: 7, partId: "2" } } })
+        .expect(200);
+      expect(called.body.result.content).toEqual([{ type: "text", text: "attachment" }, image, resource]);
+      expect(called.body.result).not.toHaveProperty("structuredContent");
+    } finally {
+      await remote.close();
+    }
+  });
+
   it("keeps additive app-gallery assignments out of gateway-only runtimes", async () => {
     const company = await createCompany(db);
     const assigned = await createRemoteMcpTool(db, company.id, {
@@ -2803,6 +2863,7 @@ rl.on("line", (line) => {
     });
     const fake = await startFakeRemoteMcpServer((fakeRequest) => {
       expect(fakeRequest.headers.authorization).toBe(`Bearer ${credentialValue}`);
+      expect(fakeRequest.headers["x-mcp-toolsets"]).toBe("static-wins");
       expect(fakeRequest.headers["x-client-request-id"]).toBe("caller-123");
       expect(fakeRequest.headers["x-static-mode"]).toBe("canary");
       expect(fakeRequest.headers["x-paperclip-agent-id"]).toBe(agent.id);
@@ -2842,13 +2903,18 @@ rl.on("line", (line) => {
         .set({
           config: {
             url: fake.url,
+            sourceTemplateKey: "github",
             headerPolicy: {
               allowManagedCredentialOverride: true,
               passthrough: {
                 allowedHeaders: ["x-client-request-id", "authorization", "x-paperclip-tool-gateway-token"],
                 allowManagedCredentialOverride: true,
               },
-              staticHeaders: [{ name: "x-static-mode", value: "canary" }],
+              staticHeaders: [
+                { name: "authorization", value: "Bearer static-must-not-win" },
+                { name: "x-static-mode", value: "canary" },
+                { name: "x-mcp-toolsets", value: "static-wins" },
+              ],
               metadata: { forward: ["agent_id", "issue_id"] },
             },
           },
@@ -2886,10 +2952,12 @@ rl.on("line", (line) => {
             "x-paperclip-tool-gateway-token",
             "x-unlisted-header",
           ]),
-          staticHeaderNames: ["x-static-mode"],
+          staticHeaderNames: ["x-mcp-toolsets", "x-static-mode"],
           metadataHeaderNames: ["x-paperclip-agent-id", "x-paperclip-issue-id"],
           collisionRules: expect.arrayContaining([
             { header: "authorization", source: "caller", action: "kept_managed_credential" },
+            { header: "authorization", source: "static", action: "kept_managed_credential" },
+            { header: "x-mcp-toolsets", source: "static", action: "overrode_projected" },
             { header: "x-paperclip-tool-gateway-token", source: "caller", action: "dropped_sensitive_header" },
           ]),
         },
@@ -2903,6 +2971,66 @@ rl.on("line", (line) => {
       expect(persisted).not.toContain("caller-must-not-win");
       expect(persisted).not.toContain("caller-123");
       expect(persisted).not.toContain("caller-session-token");
+    } finally {
+      await fake.close();
+    }
+  });
+
+  it("distinguishes accepted caller headers from values overridden by static policy", async () => {
+    const company = await createCompany(db);
+    const agent = await createAgent(db, company.id);
+    const { run } = await createIssueAndRun(db, company.id, agent.id);
+    const fake = await startFakeRemoteMcpServer((fakeRequest) => {
+      expect(fakeRequest.headers["x-client-mode"]).toBe("static-value");
+      return {
+        body: {
+          jsonrpc: "2.0",
+          id: fakeRequest.body?.id,
+          result: { content: [{ type: "text", text: "header precedence ok" }] },
+        },
+      };
+    });
+    try {
+      const remoteTool = await createRemoteMcpTool(db, company.id, {
+        applicationKey: "header-summary",
+        toolName: "kv_set",
+        url: fake.url,
+        connectionConfig: {
+          headerPolicy: {
+            passthrough: { allowedHeaders: ["x-client-mode"] },
+            staticHeaders: [{ name: "x-client-mode", value: "static-value" }],
+          },
+        },
+      });
+      await allowAllToolsForAgent(db, company.id, agent.id);
+      const gateway = createTestToolGatewayService(db);
+      const session = await gateway.createSession({ companyId: company.id, agentId: agent.id, runId: run.id });
+      const connectedTool = (await gateway.listToolsForSession(session.token))
+        .find((tool) => tool.connectionId === remoteTool.connection.id);
+      expect(connectedTool).toBeTruthy();
+
+      await gateway.executeTool({
+        sessionToken: session.token,
+        tool: connectedTool!.name,
+        parameters: { key: "mode", value: "test" },
+        callerHeaders: { "x-client-mode": "caller-value" },
+      });
+
+      const [activity] = await db
+        .select()
+        .from(activityLog)
+        .where(eq(activityLog.action, "tool_gateway.call_completed"));
+      expect(activity.details).toMatchObject({
+        headerSummary: {
+          acceptedPassthroughHeaderNames: ["x-client-mode"],
+          passthroughHeaderNames: [],
+          staticHeaderNames: ["x-client-mode"],
+          collisionRules: [
+            { header: "x-client-mode", source: "static", action: "overrode_passthrough" },
+          ],
+        },
+      });
+      expect(JSON.stringify(activity.details)).not.toContain("caller-value");
     } finally {
       await fake.close();
     }

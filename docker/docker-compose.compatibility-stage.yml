@@ -1,0 +1,53 @@
+# Disposable compatibility stack. Keep it on loopback and isolated from the
+# live Paperclip data directory. Its database is restored from a SQL backup.
+services:
+  db:
+    image: postgres:18
+    container_name: ${PAPERCLIP_COMPAT_STAGE_NAME:?Set a unique stage name}-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: paperclip
+      POSTGRES_USER: paperclip
+      POSTGRES_PASSWORD: ${PAPERCLIP_STAGE_DB_PASSWORD:?Set the stage-only database password}
+    volumes:
+      - ${PAPERCLIP_COMPAT_DATA_DIR:?Set an isolated stage data directory}/postgres:/var/lib/postgresql
+      - ${PAPERCLIP_COMPAT_DATA_DIR:?Set an isolated stage data directory}/init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - pg_isready -U paperclip -d paperclip && psql -U paperclip -d paperclip -Atqc 'select count(*) from public.agents' >/dev/null
+      interval: 3s
+      timeout: 3s
+      retries: 30
+
+  paperclip:
+    image: ${PAPERCLIP_COMPAT_IMAGE:-paperclip-local:latest}
+    container_name: ${PAPERCLIP_COMPAT_STAGE_NAME:?Set a unique stage name}
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: unless-stopped
+    security_opt:
+      - ${PAPERCLIP_COMPAT_SECCOMP:-seccomp=builtin}
+    pids_limit: 2048
+    ports:
+      - "127.0.0.1:${PAPERCLIP_COMPAT_HTTP_PORT:-3110}:3100"
+    environment:
+      HOST: "0.0.0.0"
+      PORT: "3100"
+      PAPERCLIP_HOME: /paperclip
+      DATABASE_URL: postgres://paperclip:${PAPERCLIP_STAGE_DB_PASSWORD}@db:5432/paperclip
+      BETTER_AUTH_SECRET: ${PAPERCLIP_STAGE_AUTH_SECRET:?Set the stage-only auth secret}
+      PAPERCLIP_DEPLOYMENT_MODE: local_trusted
+      PAPERCLIP_DEPLOYMENT_EXPOSURE: private
+      PAPERCLIP_BIND: lan
+      PAPERCLIP_DOCKER_LOCAL_TRUSTED: "true"
+      PAPERCLIP_PUBLIC_URL: http://localhost:3110
+      PAPERCLIP_ALLOWED_HOSTNAMES: ""
+      PAPERCLIP_CODEX_FILESYSTEM_WRITE_ROOTS: '["/trinity/projects"]'
+      OPENAI_API_KEY: ""
+      ANTHROPIC_API_KEY: ""
+    volumes:
+      - ${PAPERCLIP_COMPAT_DATA_DIR:?Set an isolated stage data directory}/home:/paperclip
+      - ../skills-releases:/app/skills-releases:ro
+      - "D:/Trinity Legacy Systems/Trinity Projects:/trinity/projects"

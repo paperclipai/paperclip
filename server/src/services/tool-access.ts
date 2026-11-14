@@ -1915,7 +1915,7 @@ export function toolAccessService(
       retainedGrantKind ?? input.grantKind ?? (method?.grantKinds?.length === 1 ? method.grantKinds[0]! : "organization");
     if (method?.grantKinds && !method.grantKinds.includes(requestedGrantKind)) {
       throw badRequest(
-        `${galleryEntry?.name ?? "This app"} supports only ${method.grantKinds.join(" or ")} credentials`,
+        `${galleryEntry?.name ?? "This app"} supports only ${method.grantKinds.join(" or ")} credentials; selected identity was ${requestedGrantKind}`,
       );
     }
     const dedicatedAgentId =

@@ -319,9 +319,10 @@ describe("Codex security configuration", () => {
       OPENAI_API_KEY: "must-not-cross", DATABASE_URL: "must-not-cross", PAPERCLIP_API_KEY: "must-not-cross",
       PAPERCLIP_GITHUB_HOST_HOME: "/legacy", GH_CONFIG_DIR: "/legacy/.config/gh",
       SSH_AUTH_SOCK: "/agent/socket", PAPERCLIP_GIT_METADATA_ROOTS: '["/repo/.git","/repo/.git"]',
+      PAPERCLIP_CODEX_FILESYSTEM_WRITE_ROOTS: '["/trinity/projects","/trinity/projects","relative","/"]',
     }).join("\n");
     const allowlist = JSON.parse(args.split("\n").find((arg) => arg.startsWith("shell_environment_policy.include_only="))!.split("=", 2)[1]!);
-    expect(allowlist).toEqual(["GH_CONFIG_DIR", "HOME", "PAPERCLIP_GITHUB_AUTH_MODE", "PAPERCLIP_GITHUB_HOST_HOME", "PAPERCLIP_GIT_METADATA_ROOTS", "PATH", "SSH_AUTH_SOCK"]);
+    expect(allowlist).toEqual(["GH_CONFIG_DIR", "HOME", "PAPERCLIP_CODEX_FILESYSTEM_WRITE_ROOTS", "PAPERCLIP_GITHUB_AUTH_MODE", "PAPERCLIP_GITHUB_HOST_HOME", "PAPERCLIP_GIT_METADATA_ROOTS", "PATH", "SSH_AUTH_SOCK"]);
     expect(args).not.toContain("must-not-cross");
     expect(args).not.toContain("OPENAI_API_KEY");
     expect(args).not.toContain("DATABASE_URL");
@@ -332,9 +333,21 @@ describe("Codex security configuration", () => {
     expect(args).toContain('"/agent/socket"="read"');
     expect(args).toContain('"/repo/.git"="write"');
     expect(args).toContain('"/repo/.git"="read"');
+    expect(args).toContain('"/trinity/projects"="write"');
+    expect(args).not.toContain('"/"="write"');
+    expect(args).not.toContain('"relative"="write"');
     expect(args).toContain('"/provider"="none"');
     expect(args).not.toContain('"/legacy"="read"');
     expect(args.match(/"\/legacy\/.config\/gh"="read"/g)).toHaveLength(2);
+  });
+
+  it("keeps configured host write roots read-only in planning mode", () => {
+    const args = createIsolatedCodexAppServerArgs({
+      PAPERCLIP_CODEX_FILESYSTEM_WRITE_ROOTS: '["/trinity/projects"]',
+    }).join("\n");
+    const planningFilesystem = args.split("\n").find((arg) => arg.startsWith("permissions.paperclip-runner-workspace-read-only.filesystem="));
+    expect(planningFilesystem).toContain('"/trinity/projects"="read"');
+    expect(planningFilesystem).not.toContain('"/trinity/projects"="write"');
   });
 
   it("disables host extensions and makes collaboration instructions explicit", () => {

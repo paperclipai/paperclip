@@ -158,6 +158,34 @@ describe("buildEntries", () => {
     ]);
   });
 
+  it("keeps selected read tools shared while requiring assignment for write tools", () => {
+    const g = gmail();
+    expect(buildEntries([g], { [g.appKey]: { kind: "all" } }, [], "deny", true)).toEqual([
+      { selectorType: "catalog_entry", effect: "include", catalogEntryId: "g-delete", conditions: { context: { requireIssueAssignee: true } } },
+      { selectorType: "catalog_entry", effect: "include", catalogEntryId: "g-list" },
+      { selectorType: "catalog_entry", effect: "include", catalogEntryId: "g-read" },
+      {
+        selectorType: "catalog_entry",
+        effect: "include",
+        catalogEntryId: "g-send",
+        conditions: { context: { requireIssueAssignee: true } },
+      },
+    ]);
+  });
+
+  it("keeps read-level advanced allows shared and rejects allow-by-default in assignee mode", () => {
+    const g = gmail();
+    const entries = buildEntries([g], { [g.appKey]: { kind: "none" } }, [
+      { id: "read", kind: "risk_level", value: "read", riskLevel: "read", effect: "include" },
+      { id: "write", kind: "risk_level", value: "write", riskLevel: "write", effect: "include" },
+    ], "deny", true);
+    expect(entries).toEqual([
+      { selectorType: "risk_level", effect: "include", riskLevel: "read" },
+      { selectorType: "risk_level", effect: "include", riskLevel: "write", conditions: { context: { requireIssueAssignee: true } } },
+    ]);
+    expect(() => buildEntries([g], {}, [], "allow", true)).toThrow("new tools to stay blocked");
+  });
+
   it("maps bounded allow-default selections to catalog excludes", () => {
     const g = gmail();
     expect(
@@ -206,6 +234,29 @@ describe("parseEntries round-trips buildEntries", () => {
     );
     const parsed = parseEntries([g], entries);
     expect(parsed.selections[g.appKey]).toEqual({ kind: "some", included: ["g-list", "g-read"] });
+  });
+
+  it("restores the issue-assignee condition from a stored profile entry", () => {
+    const g = gmail();
+    const parsed = parseEntries([g], [entry({
+      selectorType: "catalog_entry",
+      catalogEntryId: "g-send",
+      effect: "include",
+      conditions: { context: { requireIssueAssignee: true } },
+    })]);
+    expect(parsed.requireIssueAssignee).toBe(true);
+  });
+
+  it("preserves a stored condition on a read-classified tool when editing", () => {
+    const g = gmail();
+    const parsed = parseEntries([g], [entry({
+      selectorType: "catalog_entry",
+      catalogEntryId: "g-read",
+      effect: "include",
+      conditions: { context: { requireIssueAssignee: true } },
+    })]);
+    expect(buildEntries([g], parsed.selections, parsed.advancedRules, "deny", parsed.requireIssueAssignee, parsed.conditionedCatalogEntryIds))
+      .toContainEqual({ selectorType: "catalog_entry", effect: "include", catalogEntryId: "g-read", conditions: { context: { requireIssueAssignee: true } } });
   });
 
   it("keeps all explicit catalog entries as a bounded selection", () => {

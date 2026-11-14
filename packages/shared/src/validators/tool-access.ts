@@ -819,6 +819,7 @@ const contextConditionSchema = z.object({
   issueId: z.string().guid().optional(),
   issueIds: z.array(z.string().guid()).max(100).optional(),
   requireIssue: z.boolean().optional(),
+  requireIssueAssignee: z.boolean().optional(),
   requireProject: z.boolean().optional(),
   requireRoutine: z.boolean().optional(),
 }).strict();

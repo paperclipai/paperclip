@@ -202,7 +202,7 @@ export async function main() {
   const output = await buildContract();
   for (const [path, contents] of Object.entries(output)) {
     if (checkOnly) {
-      if (!existsSync(path) || await readFile(path, "utf8") !== contents) throw new Error(`Generated contract drift: ${relative(packageRoot, path)}`);
+      if (!existsSync(path) || (await readFile(path, "utf8")).replace(/\r\n/g, "\n") !== contents) throw new Error(`Generated contract drift: ${relative(packageRoot, path)}`);
     } else {
       await writeFile(path, contents);
     }

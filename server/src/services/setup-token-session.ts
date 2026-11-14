@@ -309,9 +309,9 @@ export interface SetupTokenCleanupStore {
 
 /** The counts one reaper sweep produced over the durable cleanup store. */
 export interface SetupTokenReapResult {
-  /** The reapable records whose lease released and whose row cleared. */
+  /** The reapable records whose lease was released and whose row cleared. */
   released: number;
-  /** The reapable records whose lease release failed. The row stays for a retry. */
+  /** The reapable records whose cleanup failed. The row stays for a retry. */
   failed: number;
 }
 
@@ -319,9 +319,10 @@ export interface SetupTokenReapResult {
  * The shared setup-token reap logic. It reads the durable store and releases any
  * lease whose session is terminal, past its deadline, or already consumed. It
  * runs after a restart and on the scheduler interval, so it frees a lease that a
- * crash left behind (SR-4). A release failure stays retryable: the sweep leaves
- * the record for a later run. The standalone reaper and the in-flight session
- * service both call this function, so both flows use one reap convention.
+ * crash left behind (SR-4). A lease release or cleanup-row removal failure stays
+ * retryable: the sweep leaves the record for a later run. The standalone reaper
+ * and the in-flight session service both call this function, so both flows use
+ * one reap convention.
  */
 export async function reapSetupTokenLeases(
   deps: {
@@ -336,14 +337,24 @@ export async function reapSetupTokenLeases(
   let released = 0;
   let failed = 0;
   for (const record of records) {
+    const identity = {
+      sessionId: record.sessionId,
+      companyId: record.companyId,
+      ownerUserId: record.ownerUserId,
+      adapterType: record.adapterType,
+    };
+    if (record.leaseId.length === 0) {
+      try {
+        await deps.store.remove(identity);
+      } catch {
+        failed += 1;
+        log("[paperclip] Setup-token reaper: a lease-less cleanup record could not be cleared; it stays retryable.");
+      }
+      continue;
+    }
     try {
       await deps.leases.releaseById(record.leaseId);
-      await deps.store.remove({
-        sessionId: record.sessionId,
-        companyId: record.companyId,
-        ownerUserId: record.ownerUserId,
-        adapterType: record.adapterType,
-      });
+      await deps.store.remove(identity);
       released += 1;
     } catch {
       failed += 1;

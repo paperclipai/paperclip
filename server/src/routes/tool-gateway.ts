@@ -26,6 +26,44 @@ const TOOL_ACTIVITY_EVENT_TYPES = [
   "approval_resolved",
 ] as const;
 
+const MAX_MCP_AGENT_BINARY_CONTENT_BYTES = 1_000_000;
+const MAX_MCP_AGENT_ATTACHMENT_CONTENT_BYTES = 10_000_000;
+
+function binaryMcpContentForAgent(
+  data: unknown,
+  maxBytes = MAX_MCP_AGENT_BINARY_CONTENT_BYTES,
+): { content: Record<string, unknown>[]; tooLarge: boolean } | null {
+  if (!data || typeof data !== "object" || Array.isArray(data)) return null;
+  const rawContent = (data as Record<string, unknown>).content;
+  if (!Array.isArray(rawContent)) return null;
+  const containsBinary = rawContent.some((item) => {
+    if (!item || typeof item !== "object" || Array.isArray(item)) return false;
+    const block = item as Record<string, unknown>;
+    if (block.type === "image") return true;
+    if (block.type !== "resource" || !block.resource || typeof block.resource !== "object" || Array.isArray(block.resource)) return false;
+    return typeof (block.resource as Record<string, unknown>).blob === "string";
+  });
+  if (!containsBinary) return null;
+
+  const isSupportedBlock = rawContent.every((item) => {
+    if (!item || typeof item !== "object" || Array.isArray(item)) return false;
+    const block = item as Record<string, unknown>;
+    if (block.type === "text") return typeof block.text === "string";
+    if (block.type === "image") return typeof block.data === "string" && typeof block.mimeType === "string";
+    if (block.type === "resource" && block.resource && typeof block.resource === "object" && !Array.isArray(block.resource)) {
+      const resource = block.resource as Record<string, unknown>;
+      return typeof resource.uri === "string" && typeof resource.mimeType === "string" &&
+        (typeof resource.blob === "string" || typeof resource.text === "string");
+    }
+    return false;
+  });
+  if (!isSupportedBlock) return { content: [], tooLarge: true };
+
+  const bytes = Buffer.byteLength(JSON.stringify(rawContent), "utf8");
+  if (bytes > maxBytes) return { content: [], tooLarge: true };
+  return { content: rawContent as Record<string, unknown>[], tooLarge: false };
+}
+
 const TOOL_GATEWAY_WINDOWS: Record<string, number | null> = {
   "1h": 60 * 60 * 1000,
   "24h": 24 * 60 * 60 * 1000,
@@ -192,15 +230,27 @@ async function handleMcpGatewayProtocol(
       const resultRecord = result.result && typeof result.result === "object" && !Array.isArray(result.result)
         ? result.result as Record<string, unknown>
         : null;
-      const contentText = typeof resultRecord?.content === "string"
-        ? resultRecord.content
-        : JSON.stringify(resultRecord?.data ?? result.result ?? null);
+      const binaryLimit =
+        name.endsWith("email-get-attachment") ||
+        name.endsWith("email_get_attachment")
+        ? MAX_MCP_AGENT_ATTACHMENT_CONTENT_BYTES
+        : MAX_MCP_AGENT_BINARY_CONTENT_BYTES;
+      const binaryContent = binaryMcpContentForAgent(resultRecord?.data, binaryLimit);
+      const contentText = binaryContent
+        ? binaryContent.tooLarge
+          ? "MCP attachment content was omitted because it exceeded the gateway's binary-content limit."
+          : ""
+        : typeof resultRecord?.content === "string"
+          ? resultRecord.content
+          : JSON.stringify(resultRecord?.data ?? result.result ?? null);
       res.json({
         jsonrpc: "2.0",
         id,
         result: {
-          content: [{ type: "text", text: contentText }],
-          structuredContent: resultRecord?.data ?? null,
+          content: binaryContent && !binaryContent.tooLarge
+            ? binaryContent.content
+            : [{ type: "text", text: contentText }],
+          ...(binaryContent ? {} : { structuredContent: resultRecord?.data ?? null }),
           isError: false,
         },
       });
