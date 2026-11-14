@@ -19,6 +19,10 @@ const mockAuthApi = vi.hoisted(() => ({
   updateProfile: vi.fn(),
   signOut: vi.fn(),
 }));
+const mockBoardAccess = vi.hoisted(() => vi.fn());
+vi.mock("@/api/access", () => ({
+  accessApi: { getCurrentBoardAccess: mockBoardAccess },
+}));
 const mockNavigate = vi.hoisted(() => vi.fn());
 const mockOpenOnboarding = vi.hoisted(() => vi.fn());
 const mockSetSelectedCompanyId = vi.hoisted(() => vi.fn());
@@ -138,6 +142,7 @@ describe("SidebarCompanyMenu", () => {
   let container: HTMLDivElement;
 
   beforeEach(() => {
+    mockBoardAccess.mockResolvedValue({ source: "session", isInstanceAdmin: true });
     container = document.createElement("div");
     document.body.appendChild(container);
     mockAuthApi.getSession.mockResolvedValue({
@@ -198,6 +203,45 @@ describe("SidebarCompanyMenu", () => {
     });
     await flushReact();
   }
+
+  describe.each([false, true])("organization creation permissions (production=%s)", (production) => {
+    it.each(["owner", "admin", "operator", "viewer", "member"])("hides creation for an organization %s", async (membershipRole) => {
+      mockBoardAccess.mockResolvedValue({
+        source: "session",
+        isInstanceAdmin: false,
+        memberships: [{ companyId: "company-1", status: "active", membershipRole }],
+      });
+      const { root } = renderMenu({ production });
+      await flushReact();
+      await openMenu(`Open Acme Labs ${production ? "company" : "organization"} switcher`);
+      expect(document.body.textContent).not.toContain("Create organization");
+      expect(document.body.textContent).toContain("Anachronist Wiki");
+      act(() => root.unmount());
+    });
+
+    it.each(["pending", "error"])("hides creation when permissions are %s", async (state) => {
+      if (state === "pending") mockBoardAccess.mockImplementation(() => new Promise(() => {}));
+      else mockBoardAccess.mockRejectedValue(new Error("Access unavailable"));
+      const { root } = renderMenu({ production });
+      await flushReact();
+      await openMenu(`Open Acme Labs ${production ? "company" : "organization"} switcher`);
+      expect(document.body.textContent).not.toContain("Create organization");
+      act(() => root.unmount());
+    });
+
+    it.each(["session", "local_implicit"])("offers creation to an authorized %s board", async (source) => {
+      mockBoardAccess.mockResolvedValue({ source, isInstanceAdmin: source === "session" });
+      const { root } = renderMenu({ production });
+      await flushReact();
+      await openMenu(`Open Acme Labs ${production ? "company" : "organization"} switcher`);
+      const create = [...document.querySelectorAll('[role="menuitem"]')]
+        .find((item) => item.textContent?.includes("Create organization"));
+      expect(create).toBeDefined();
+      act(() => create!.dispatchEvent(new MouseEvent("click", { bubbles: true })));
+      expect(mockOpenOnboarding).toHaveBeenCalledWith({ initialStep: 1 });
+      act(() => root.unmount());
+    });
+  });
 
   // This menu is the one the app renders, so it is the only place a customer can
   // act on a failed company list. Saying "No companies" there states something

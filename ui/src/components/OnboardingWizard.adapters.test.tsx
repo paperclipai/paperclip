@@ -5,6 +5,11 @@ import { createRoot } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+vi.mock("../api/access", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../api/access")>();
+  return { ...actual, accessApi: { ...actual.accessApi, getCurrentBoardAccess: vi.fn(async () => ({ source: "session", isInstanceAdmin: true })) } };
+});
+
 // --- Mocks (hoisted so vi.mock factories can close over them) ----------------
 
 const ONBOARDING_STORAGE_KEY = "paperclip-onboarding-state";
