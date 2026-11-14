@@ -7,6 +7,65 @@ hands the agent the final result exactly as a quick call would return it. If
 the call outlives its timeout, or Paperclip restarts or deploys mid-call, the
 work is not lost and is never started a second time.
 
+## In plain words
+
+Without Tasks, an agent that asks an app to do something slow has to hold the
+line until the app finishes. If the wait is too long, or Paperclip restarts,
+the answer is lost, and calling again may start the work a second time.
+
+With Tasks, the app answers straight away with a ticket ("task") and does the
+work in the background. Paperclip keeps the ticket and checks on it every few
+seconds. When the work is done, the agent gets the result as if the call had
+simply been slow. If Paperclip restarts, it picks the ticket up again. It never
+asks the app to start the same work twice.
+
+A task can also stop and ask a question ("approve this deploy?"). Paperclip
+turns that into a question card on the task, and the person's answer goes back
+to the app.
+
+### What a person sees
+
+| Situation | In the task chat |
+| --- | --- |
+| A long action is running | The agent's turn shows the tool as running. The agent keeps waiting, or is told to call again later. |
+| The app asks a question | A **Tool needs input** card with the app's question. Answering it wakes the agent, which carries on. |
+| The app reports a failure | The agent receives a tool error with the app's message. |
+| Someone presses **Stop** on the run | Paperclip tells the app to cancel the work. |
+| The app no longer has the task | The agent is told the result is gone and to run the action again. |
+| Paperclip restarts mid-action | Nothing to do. The run resumes and the result arrives once. |
+
+### Try it yourself
+
+The repository includes a demo app that uses Tasks. It needs no accounts or
+keys, and its "work" is a timer. The steps take about 10 minutes.
+
+1. Start the demo app:
+
+   ```sh
+   pnpm --filter @paperclipai/kv-demo-mcp-server build
+   node packages/kv-demo-mcp-server/dist/tasks/main.js
+   ```
+
+   Open `http://127.0.0.1:8849/` to watch its tasks live.
+2. In Paperclip, open **Instance settings → Experimental** and turn on
+   **Durable app actions (MCP Tasks)**.
+3. Open **Apps → Connect your own MCP server**, paste
+   `http://127.0.0.1:8849/mcp`, and choose **Check link**. Six actions appear.
+4. Give an agent a task such as: *"Call the connected app tool `slow_report`
+   with `{"topic": "uptime", "seconds": 45}`. If it says the app is still
+   working, call it again with the same arguments. Post the report."* The
+   agent must be one that receives app tools: a Paperclip runner agent or a
+   Codex agent. Plain local OpenCode and Claude agents do not get app tools
+   yet.
+5. Try the other tools the same way: `needs_approval` (answer the card),
+   `will_fail`, `cancellable` (press **Stop** while it runs), and `expires`.
+6. To see a restart, start `slow_report` with `"seconds": 120`, stop the
+   Paperclip server, and start it again. The report still arrives once. On the
+   demo's status page, `slow_report` was started one time.
+
+The package [README](../../packages/kv-demo-mcp-server/README.md) lists the
+demo's options.
+
 ## Turning it on
 
 MCP Tasks are behind the experimental setting **Durable app actions (MCP
@@ -58,7 +117,7 @@ Paperclip polls, which the specification makes the default.
 | Attach | A call with the same endpoint, tool, full arguments, grant, agent, task, and actor attaches to the undelivered task instead of sending `tools/call` again. So does a retry with the same idempotency key, including after a crash mid-wait; the same key with other arguments is refused and leaves the original retry intact. One holder at a time (a lease): a second simultaneous caller is told to call again. | `findAttachableMcpTask`, `mcpTaskForKeyedRetry`, `claimMcpTask` |
 | Deliver | A completed task counts as delivered only once its result is recorded on the call. A crash in between leaves it collectable again. | `markMcpTaskDelivered` |
 | Restart | Background work reads pending rows at startup and polls each at its next deadline, with each request bounded to 30 s. It rechecks the same access a live call needs (grant, audience, delegation). When a task settles, or asks a new question, after its run has ended, the assignee is woken once; the agent's repeated call collects the result or shows the question. | `pollDueMcpTasks`, `server/src/services/mcp-task-work.ts` |
-| Input | URL requests show the provider link, as for a direct request; Paperclip never answers them for the person. Form requests become a question card on the task; only the person's answer is sent with `tasks/update`. Other requests (sampling, roots) stop with a clear "needs input" error. | `planMcpTaskInput` |
+| Input | URL requests show the provider link, as for a direct request; Paperclip never answers them for the person. Form requests become a question card on the task, built and answered as in [MCP-ELICITATION.md](./MCP-ELICITATION.md) (human-only, typed fields; skip sends `decline`, other endings `cancel`); only the person's answer is sent with `tasks/update`. Other requests (sampling, roots) stop with a clear "needs input" error. | `planMcpTaskInput` |
 | Cancel | Stopping the run sends `tasks/cancel` and marks the row cancelled. Closing the task or stopping its run does the same for a task in the background; a later call reports the cancellation and never revives it. A caller that only disconnects keeps the task. | `cancelMcpTaskRecord`, `mcpTaskStopReason` |
 | Finish | `failed` becomes a tool error with the provider's message. An unknown task (`-32602`) or a passed TTL becomes a clear error telling the agent to run the action again. Nothing waits forever: every task stops being tracked after its TTL, and seven days after Paperclip first saw it at most. | `provider_task_failed`, `provider_task_expired` |
 
@@ -120,8 +179,60 @@ returns to approved, and its next execution attaches to the same task.
 - Sampling and roots input requests.
 - Showing a long-running provider action's progress (`statusMessage`) in the
   task chat.
-- Validating question-card answers against the provider's form schema (types,
-  required fields) and letting the person correct them before `tasks/update`.
+
+## Live check with the demo app (2026-11-13)
+
+One local Paperclip (`test-drive`, embedded database, `enableMcpTasks` on), the
+demo app connected through **Connect your own MCP server**, and a Codex agent
+on a small model. Each behaviour was one task given to the agent in plain
+words.
+
+| Behaviour | Result | Demo app `tools/call` count | Stored task row |
+| --- | --- | --- | --- |
+| Polling (`slow_report`, 45 s) | Report delivered; 22 `tasks/get` at the app's 2 s interval | 1 | `completed`, delivered |
+| Question (`needs_approval`) | Card shown; the person's answer woke the agent; `tasks/update` sent; result delivered | 1 | `completed`, delivered |
+| Failure (`will_fail`) | Tool error with the app's message (`provider_task_failed`) | 1 | `failed` |
+| Cancel (`cancellable`) | **Stop** on the run sent `tasks/cancel`; the app stopped the work | 1 | `cancelled` (`run_cancelled`) |
+| Expiry (`expires`, 15 s TTL) | Clear "run the action again" error (`provider_task_expired`), no hang | 1 | `expired` (`ttl_expired`) |
+| Restart (`slow_report`, 120 s) | Server killed 6 s into the task and down for 2 min 23 s. On start it polled the stored task, woke the agent once, and the new run collected the report | 1 | `completed`, delivered, woken once |
+
+Afterwards no task row had a next poll, so background polling stopped.
+
+The run found one bug, fixed with the demo: every task stop (still working,
+expired, failed, cancelled) returned the call's audit record to the agent,
+including the server-side stack trace and request IDs. The agent pasted it into
+the task. Agent-facing errors now leave that record out; the audit keeps it.
+
+What the run also showed, outside Tasks itself:
+
+- Only Paperclip runner and Codex agents receive app tools. A plain local
+  OpenCode agent did not see the demo's tools and called the app directly with
+  `curl`, bypassing Paperclip.
+- The running-tool row and the agent's error text show the internal tool name
+  of a custom connection, including the connection ID
+  (`mcp.app-gallery-link-<id>-<hash>:slow-report`).
+- Pressing **Stop** shows "Couldn't finish this attempt", which reads as a
+  failure.
+- The running row shows no progress for a long action (`statusMessage` is not
+  displayed; listed under Follow-ups).
+
+## Is it ready to be on by default?
+
+**Not yet.** The demo showed every behaviour working with a real HTTP server,
+including a restart, with each action started exactly once. Three of the four
+findings in [#21389](https://github.com/paperclipai/paperclip/issues/21389)
+still stand, and the demo does not exercise them:
+
+1. Turning the setting off and on again leaves stored tasks idle until the
+   next unrelated wake.
+2. A cloud instance that turns it on through managed configuration does not
+   count pending tasks as an idle-sleep blocker.
+3. A failed settings read counts as "off". A retry can then skip its stored
+   task and send `tools/call` again, which breaks the "never started twice"
+   promise.
+
+Fix those three and turn it on by default. Validating question-card answers
+(the fourth finding) and showing progress can follow.
 
 ## Tests
 
@@ -131,3 +242,8 @@ attaching call, a keyed retry, a restart mid-task (fresh gateway, no second
 `tools/call`, one wake, one delivery), URL and form input, cancellation by the
 run and by closing the task, failure, an unknown task, TTL expiry, another
 agent never attaching, and synchronous calls left unchanged.
+
+`server/src/__tests__/mcp-tasks-demo-server.test.ts` runs the same gateway
+against the real demo app (`packages/kv-demo-mcp-server/src/tasks`) over HTTP,
+one test per demo tool, plus a restart. The demo's own tests are in
+`packages/kv-demo-mcp-server/src/tasks/http.test.ts`.

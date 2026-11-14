@@ -716,6 +716,7 @@ type WarmNativeSession = {
   pluginTaskId?: string;
   /** The sandbox that holds this owner's Runner, when it runs in one. */
   providerLeaseId?: string;
+  sandboxLeaseDb?: Db;
   /** A successor's retirement of this owner failed; it stays registered for its own sandbox. */
   retirementUnproven?: boolean;
   observabilityCompatibilityKey?: string;
@@ -1002,7 +1003,7 @@ export async function claimWarmNativeInstructionCopy(input: {
     const adopted = await input.adopt(entry.instructionWorkingCopy.runId);
     if (!adopted) {
       await retire("warm instruction materialization cannot be handed off");
-      throw new Error("native_instruction_materialization_handoff_unavailable");
+      return null;
     }
     if (adopted.runId !== input.runId || adopted.preparationKey !== input.preparationKey) throw new Error("native_instruction_materialization_handoff_mismatch");
     entry.instructionWorkingCopy = adopted;
@@ -1086,6 +1087,16 @@ export async function closeWarmNativeSessionsForEnvironment(input: {
   db?: Db;
 }): Promise<WarmNativeSessionCloseResult> {
   return closeIdleWarmNativeSessions(input);
+}
+
+async function warmSandboxGivenUpByHost(entry: WarmNativeSession): Promise<boolean> {
+  if (!entry.sandboxLeaseDb || !entry.providerLeaseId || !entry.environmentId) return false;
+  const leases = await entry.sandboxLeaseDb.select({ status: environmentLeases.status }).from(environmentLeases).where(and(
+    eq(environmentLeases.companyId, entry.companyId),
+    eq(environmentLeases.environmentId, entry.environmentId),
+    eq(environmentLeases.providerLeaseId, entry.providerLeaseId),
+  ));
+  return leases.length > 0 && leases.every(lease => lease.status !== "active" && lease.status !== "retained");
 }
 
 async function warmSandboxDestroyed(db: Db, entry: WarmNativeSession): Promise<boolean> {
@@ -8777,6 +8788,16 @@ function armWarmNativeSessionIdleTimer(
         logger.warn({ runId: current.runId, issueId: current.issueId, environmentId: current.environmentId,
           providerLeaseId: current.providerLeaseId ?? null, closeFailure: describeWarmCloseFailure(error) },
         released ? "idle warm native session detach failed" : "idle warm native session close failed");
+        if (released) return;
+        return warmSandboxGivenUpByHost(current).then(givenUp => {
+          if (!givenUp) return;
+          logger.warn({ runId: current.runId, issueId: current.issueId, environmentId: current.environmentId,
+            providerLeaseId: current.providerLeaseId ?? null },
+          "warm native session's sandbox was stopped by the host; released its owner");
+          forgetWarmNativeSession(sessionId, current);
+        }, proofError => {
+          logger.warn({ err: proofError, runId: current.runId }, "could not read the warm session's sandbox lease");
+        });
       })
       .finally(() => {
         current.busy = false;
@@ -12602,6 +12623,7 @@ async function executePaperclipNativeSessionAttempt(
                     pluginTaskId: usesPluginTask && input.runnerExecutionTarget?.kind === "remote" && input.runnerExecutionTarget.transport === "sandbox"
                       ? input.runnerExecutionTarget.sandboxLeaseAcquisition?.providerLeaseId : undefined,
                     providerLeaseId: sandboxProviderLeaseId(input.runnerExecutionTarget) ?? undefined,
+                    sandboxLeaseDb: input.db,
                     runId: input.execution.binding.runId,
                     issueId: input.execution.binding.issueId,
                     instructionWorkingCopy: input.instructionWorkingCopy?.checkpointWarm ? undefined : input.instructionWorkingCopy,
