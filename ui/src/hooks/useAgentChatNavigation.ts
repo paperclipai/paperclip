@@ -12,6 +12,7 @@ import { agentRouteRef } from "@/lib/utils";
 import { useAgentChatEnabled } from "./useAgentChatEnabled";
 import { classifySendFailure, clearPendingSend, pendingSendKeyFor, readPendingSend, writePendingSend } from "@/lib/pending-send";
 import { errorStatus } from "@/api/errors";
+import { createUuid } from "@/lib/uuid";
 
 function pendingChatCreate(companyId: string, userId: string | null, agentId: string) {
   // A tab owns its pending selection across picker closes and reloads.
@@ -23,7 +24,7 @@ function pendingChatCreate(companyId: string, userId: string | null, agentId: st
   }, "session");
   const record = pending && createAgentConversationSchema.safeParse({ clientRequestId: pending.idempotencyKey }).success
     ? pending
-    : { idempotencyKey: crypto.randomUUID(), payload: { companyId, userId, agentId }, createdAt: Date.now() };
+    : { idempotencyKey: createUuid(), payload: { companyId, userId, agentId }, createdAt: Date.now() };
   if (record !== pending && !writePendingSend(key, record, "session")) {
     throw new Error("Couldn’t save the chat request. Check browser storage and try again.");
   }

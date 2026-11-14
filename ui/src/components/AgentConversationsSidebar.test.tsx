@@ -104,6 +104,13 @@ it.each([false, true])("retries a lost create response without another chat (rem
   expect(state.navigate).toHaveBeenLastCalledWith(`/chats/bob/${conversation.id}`);
   expect(client.getQueryData<ReturnType<typeof chat>[]>(queryKeys.agentChats.list("company-a", "user-a"))!.filter(item => item.conversationAgentId === "bob")).toHaveLength(1);
 });
+it("starts a new chat on a plain-HTTP page, where the browser has no randomUUID", async () => {
+  const { randomUUID: _secureContextOnly, ...insecure } = { randomUUID: undefined, getRandomValues: crypto.getRandomValues.bind(crypto) };
+  vi.stubGlobal("crypto", insecure);
+  await render(); await addChat(); await choose("bob");
+  expect(state.ensure).toHaveBeenCalledTimes(1);
+  expect(state.ensure.mock.calls[0][2]).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i);
+});
 it("uses a fresh request for a new chat after confirmed creation", async () => {
   state.ensure.mockImplementation(async (companyId: string, agentId: string) => ({ ...chat(agentId), companyId, id: crypto.randomUUID() }));
   await render(); await addChat(); await choose("bob");
