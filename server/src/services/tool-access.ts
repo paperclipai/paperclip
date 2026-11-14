@@ -45,6 +45,7 @@ import { managedConnectorProfile } from "./tool-access/oauth/client-settings.js"
 import { createOAuthClientRegistration } from "./tool-access/oauth/client-registration.js";
 import { createOAuthRefreshLeases } from "./tool-access/oauth/refresh-leases.js";
 import { createLegacyOAuthRefresh } from "./tool-access/oauth/connection-refresh.js";
+import { createClientCredentialsService } from "./tool-access/oauth/client-credentials-service.js";
 import { createOAuthGrantRefresh } from "./tool-access/oauth/grant-refresh.js";
 import { createGitHubGrantContinuity } from "./tool-access/github-grant-continuity.js";
 import { createToolRuntimeHealth } from "./tool-access/runtime/health.js";
@@ -67,7 +68,7 @@ import { createOAuthClientProtocol } from "./tool-access/oauth/client.js";
 
 import type { OAuthClientRegistrationSource } from "./tool-access/oauth/types.js";
 export { OAUTH_CLIENT_ID_METADATA_DOCUMENT_PATH, resolveOAuthClientIdMetadataDocumentUrl, oauthClientIdMetadataDocument } from "./tool-access/oauth/client-metadata.js";
-import { connectionMethodFor, connectionMethodForConnection, credentialFieldsFor, normalizeConnectionMethodConfig, projectedConnectionToolInputSchema } from "./tool-access/connection-methods.js";
+import { connectionMethodFor, connectionMethodForConnection, credentialFieldsFor, normalizeConnectionMethodConfig, projectedConnectionHeaders, projectedConnectionToolInputSchema } from "./tool-access/connection-methods.js";
 export {
   normalizeConnectionMethodConfig,
   projectedConnectionHeaders,
@@ -788,8 +789,19 @@ export function toolAccessService(
   const { syncCredentialBindings, annotateSavedOAuthClientSecret, oauthClientForConnection, createOrRotateOAuthSecret, getOAuthGrantRow, resolveOAuthGrantSecret } = credentialStore;
   const ensureOAuthClient = createOAuthClientRegistration(db, { now, options, store: credentialStore, getConnectionRow, requestOAuthClientRegistration });
   const refreshLeases = createOAuthRefreshLeases(db, now, getConnectionRow, getOAuthGrantRow);
-  const maybeRefreshOAuthCredentials = createLegacyOAuthRefresh(db, { now, secrets, store: credentialStore, leases: refreshLeases, getConnectionRow, exchangeOAuthToken });
-  const refreshOAuthGrantCredentials = createOAuthGrantRefresh(db, { now, store: credentialStore, leases: refreshLeases, currentCloudConnector, getConnectionRow, exchangeOAuthToken });
+  // Later dependencies are reached through closures: they are only called at request time.
+  const clientCredentials = createClientCredentialsService(db, {
+    now, secrets, store: credentialStore, exchangeOAuthToken, getConnectionRow, fetchRemoteHttpUrl, assertOAuthEndpointUrl,
+    assertRemoteConnectionEndpointsAllowed, ensureDefaultOrganizationGrant, nextAvailableConnectionName,
+    checkConnectionHealth: (connectionId, actor) => checkConnectionHealth(connectionId, actor),
+    refreshCatalog: (connectionId, actor, refreshOptions) => refreshCatalog(connectionId, actor, refreshOptions),
+    probeServerWithToken: (connection, authorization, actor) => catalogDiscovery.remoteTools(
+      connection, { ...projectedConnectionHeaders(connection), Authorization: authorization }, actor, undefined, [], { live: true },
+    ),
+  });
+  const { requestClientCredentialsToken } = clientCredentials;
+  const maybeRefreshOAuthCredentials = createLegacyOAuthRefresh(db, { now, secrets, store: credentialStore, leases: refreshLeases, getConnectionRow, exchangeOAuthToken, requestClientCredentialsToken });
+  const refreshOAuthGrantCredentials = createOAuthGrantRefresh(db, { now, store: credentialStore, leases: refreshLeases, currentCloudConnector, getConnectionRow, exchangeOAuthToken, requestClientCredentialsToken });
   const { refreshManagedGitHubGrantAccess, syncGitHubGrantBindings, sweepGitHubConnectionContinuity, nextGitHubConnectionContinuityAt, githubConnectionContinuitySchedule } = createGitHubGrantContinuity(db, { now, currentCloudConnector, refreshOAuthGrantCredentials, resolveOAuthGrantSecret });
   const vercelCredentials = createVercelCredentialService(db, now, vercelConnect);
   const { resolveVercelCredentialHeaders, vercelGrantForConnection } = vercelCredentials;
@@ -803,7 +815,7 @@ export function toolAccessService(
   const defaultCatalogAccess = createCatalogDefaultAccess(db);
   const { enableCatalogEntriesByDefault, upsertAskFirstPolicies } = defaultCatalogAccess;
   const catalogDiscovery = createToolCatalogDiscovery(db, { now, audit, secrets, credentials: credentialAccess, vercel: vercelCredentials, vercelConnect, setupPolicy, requestRemoteHttpEndpoint, resolveOAuthGrantSecret, discoverOAuthEndpoints, localTools });
-  const connectionHealth = createConnectionHealth(db, { now, audit, getConnectionRow, discovery: catalogDiscovery, setupPolicy, resolveCredentialHeaders, refreshManagedGitHubGrantAccess, ensureRuntimeSlot, stdioTemplateId });
+  const connectionHealth = createConnectionHealth(db, { now, audit, getConnectionRow, discovery: catalogDiscovery, setupPolicy, resolveCredentialHeaders, vaultGrantForConnection, refreshManagedGitHubGrantAccess, ensureRuntimeSlot, stdioTemplateId });
   const { updateConnectionHealth, checkConnectionHealth, sweepConnectionHealth } = connectionHealth;
   const refreshCatalog = createToolCatalogPublication(db, { now, audit, getConnectionRow, discoverTools: catalogDiscovery.discoverTools, discoverSkills: catalogDiscovery.discoverSkills, assertConnectorConnectionSetupEnabled, updateConnectionHealth, vaultGrantForConnection, ensureRuntimeSlot, enableCatalogEntriesByDefault });
   const catalogReader = createToolCatalogReader(db, options, now, getConnectionRow, refreshCatalog, toCatalogEntryForConnection);
@@ -1065,8 +1077,10 @@ export function toolAccessService(
       const eligible = grants.filter(
         (grant) =>
           grant.connectionId === connection.id &&
-          (connection.credentialPolicy !== "per_user" ||
-            (grant.kind === "user" && grant.subjectUserId === userId)),
+          (connection.credentialPolicy === "per_agent"
+            ? grant.kind === "agent"
+            : connection.credentialPolicy !== "per_user" ||
+              (grant.kind === "user" && grant.subjectUserId === userId)),
       );
       connection.requiresReauthorization = !eligible.some(
         (grant) => grant.status === "active",
@@ -3892,6 +3906,12 @@ export function toolAccessService(
     connectGalleryApp,
 
     finishGalleryAppConnection,
+
+    createMachineSignIn: clientCredentials.createMachineSignIn,
+    testMachineSignIn: clientCredentials.testMachineSignIn,
+    rotateMachineSignIn: clientCredentials.rotateMachineSignIn,
+    completeMachineSignInRotation: clientCredentials.completeMachineSignInRotation,
+    getMachineSignIn: clientCredentials.getMachineSignIn,
 
     reconnectGalleryApp,
 
