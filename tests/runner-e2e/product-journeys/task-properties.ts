@@ -1,5 +1,6 @@
 import { expect } from "@playwright/test";
 import { JourneyError, type JourneyContext, type JourneyEvidence, type TargetSession } from "./types.js";
+import { taskPropertyRow } from "./task-side-panel.js";
 
 export async function taskProperties(context: JourneyContext, _session: TargetSession, _campaignId: string, evidence: JourneyEvidence) {
   for (const capability of ["company", "board-user", "task-write"]) {
@@ -11,13 +12,12 @@ export async function taskProperties(context: JourneyContext, _session: TargetSe
   // The declared starting point is the task list. Navigation to the task is a user action.
   await page.goto(`${api.origin}/${company.issuePrefix}/issues`);
   await page.getByRole("link").filter({ hasText: issue.title }).first().click();
-  const properties = page.getByRole("button", { name: /^(Show properties|Properties)$/ }).first();
-  if (await properties.isVisible()) await properties.click();
-  const assignee = page.locator("[data-property-row]").filter({ has: page.locator('[data-property-label="Assignee"]') });
+  const assignee = await taskPropertyRow(page, "Assignee");
   await assignee.locator("[data-property-value]").getByRole("button").first().click();
   await page.getByRole("button", { name: "Assign to me", exact: true }).click();
   await expect.poll(async () => (await api.get<{ assigneeUserId: string }>(`/api/issues/${issue.id}`)).assigneeUserId).toBe(user.id);
   await page.reload();
+  await taskPropertyRow(page, "Assignee");
   await expect(assignee.locator("[data-property-value]")).toContainText("You");
   const persisted = await api.get<{ assigneeUserId: string; assigneeAgentId: string | null; status: string }>(`/api/issues/${issue.id}`);
   if (persisted.assigneeUserId !== user.id || persisted.assigneeAgentId !== null || persisted.status !== "backlog") throw new JourneyError("failed", "assignment_persistence_mismatch");

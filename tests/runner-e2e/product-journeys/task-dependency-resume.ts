@@ -8,6 +8,7 @@ import { createObservedReader } from "./observation-read.js";
 import { openDocumentAuthoring } from "./task-document-flow.js";
 import { DEPENDENCY_IDLE_MS, dependencyNewAgentRuns, gradeTaskDependencyResume, type DependencyEvidence, type DependencyPoint, type DependencyScope } from "./task-dependency-resume-evidence.js";
 import { JourneyError, type JourneyContext, type JourneyEvidence, type TargetSession } from "./types.js";
+import { taskPropertyRow } from "./task-side-panel.js";
 
 type Row = Record<string, any>;
 const id = "task-dependency-resume" as const;
@@ -29,20 +30,7 @@ const documentSnapshot = (row: Row) => Object.fromEntries(["id", "companyId", "i
   "documentId", "createdByAgentId", "createdByUserId", "createdByRunId"].map(key => [key, row[key]]));
 
 async function properties(context: JourneyContext, label: string) {
-  const { page } = context;
-  const row = page.locator('[data-property-row]:not([inert] *):not([aria-hidden="true"] *)')
-    .filter({ has: page.locator(`[data-property-label="${label}"]`) }).filter({ visible: true });
-  const toggle = page.getByRole("button", { name: "Toggle side panel", exact: true, pressed: false }).filter({ visible: true });
-  const propertiesButton = page.getByRole("button", { name: /^(Show properties|Properties)$/ }).filter({ visible: true });
-  await expect.poll(async () => await row.isVisible() || await toggle.isVisible() || await propertiesButton.isVisible()).toBe(true);
-  if (!await row.isVisible()) {
-    if (await toggle.isVisible()) await toggle.click();
-    else await propertiesButton.click();
-  }
-  await expect(row).toBeVisible();
-  await row.scrollIntoViewIfNeeded();
-  await expect(row).toBeInViewport();
-  return row;
+  return taskPropertyRow(context.page, label);
 }
 async function setStatus(context: JourneyContext, label: string) {
   const { page } = context;
