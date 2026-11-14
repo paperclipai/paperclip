@@ -1,5 +1,6 @@
 import { and, eq, inArray, isNotNull, isNull, or, sql } from "drizzle-orm";
-import { environmentLeases, heartbeatRunEvents, heartbeatRuns, nativeRunFinalizations } from "@paperclipai/db";
+import { environmentLeases, heartbeatRunEvents, heartbeatRuns, nativeRunFinalizations, type Db } from "@paperclipai/db";
+import { isAgentLifecycleStopRecord, isGovernancePauseStop } from "./governance-pause-stop.js";
 import { PROCESS_IDENTITY_RECORDED, PROCESS_START_REQUESTED } from "./native-local-process-stop.js";
 import { LEGACY_WORKSPACE_RECOVERY_SCHEMA } from "./workspace-restore-recovery-state.js";
 
@@ -57,4 +58,14 @@ export function noRetainedExecutionPredicate() {
       where ${and(eq(heartbeatRunEvents.companyId, heartbeatRuns.companyId),
         eq(heartbeatRunEvents.runId, heartbeatRuns.id), executionStartedEventPredicate())})`,
   );
+}
+
+export async function isNeverStartedGovernanceStopVerified(db: Db,
+  run: typeof heartbeatRuns.$inferSelect): Promise<boolean> {
+  if (run.runtimeMode !== "legacy" || run.status !== "cancelled" || run.finishedAt === null) return false;
+  if (!isGovernancePauseStop(run) && !isAgentLifecycleStopRecord(run.resultJson)) return false;
+  const [unstarted] = await db.select({ id: heartbeatRuns.id }).from(heartbeatRuns).where(and(
+    eq(heartbeatRuns.companyId, run.companyId), eq(heartbeatRuns.id, run.id), noRetainedExecutionPredicate(),
+  )).limit(1);
+  return Boolean(unstarted);
 }
