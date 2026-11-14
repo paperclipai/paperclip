@@ -14,7 +14,7 @@ export function TailscaleDeviceSignIn({ connection, cancel, disabled }: {
   const status = useQuery({
     queryKey: ["tailscale-device-login", connection.companyId, connection.id],
     queryFn: () => tailscaleApi.deviceLogin(connection.companyId, connection.id),
-    retry: false, gcTime: 0,
+    gcTime: 0,
     refetchInterval: query => expired || query.state.error || query.state.data?.connection.status !== "authorizing" ? false : 2000,
     refetchOnWindowFocus: !expired,
   });

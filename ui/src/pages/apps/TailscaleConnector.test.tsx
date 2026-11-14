@@ -5,6 +5,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { TailscaleConnector, TailscaleConnectorCard } from "./TailscaleConnector";
 import { ApiError } from "@/api/client";
+import { shouldRetryRequest } from "@/lib/query-client";
 
 const fixture = vi.hoisted(() => ({ companyId: "company-1", search: "", navigate: vi.fn(), access: vi.fn(), list: vi.fn(), connect: vi.fn(), deviceLogin: vi.fn(), disconnect: vi.fn(), breadcrumbs: vi.fn() }));
 vi.mock("@/api/access", () => ({ accessApi: { getCurrentBoardAccess: fixture.access } }));
@@ -114,6 +115,26 @@ describe("Tailscale network connector", () => {
     render();await settle();
     expect(container.textContent).toContain("Tailscale administrator");
     expect(container.querySelector('a[href="https://login.tailscale.com/admin/machines"]')).not.toBeNull();
+  });
+
+  it("recovers a transient sign-in status failure using the shared retry policy", async () => {
+    client.setDefaultOptions({ queries: { retry: shouldRetryRequest, retryDelay: 0 } });
+    fixture.list.mockResolvedValue([{ ...connected, status: "authorizing" }]);
+    fixture.deviceLogin.mockRejectedValueOnce(new ApiError("Unavailable", 503, {}));
+    render();await settle();
+    expect(fixture.deviceLogin).toHaveBeenCalledTimes(2);
+    expect(container.querySelector('a[href="https://login.tailscale.com/a/fixture"]')).not.toBeNull();
+    expect(container.querySelector('[role="alert"]')).toBeNull();
+  });
+
+  it("does not automatically retry a denied sign-in status request", async () => {
+    client.setDefaultOptions({ queries: { retry: shouldRetryRequest, retryDelay: 0 } });
+    fixture.list.mockResolvedValue([{ ...connected, status: "authorizing" }]);
+    fixture.deviceLogin.mockRejectedValue(new ApiError("Forbidden", 403, {}));
+    render();await settle();
+    expect(fixture.deviceLogin).toHaveBeenCalledOnce();
+    expect(container.querySelector('[role="alert"]')).not.toBeNull();
+    expect(button("Check again")).toBeDefined();
   });
 
   it("shows the connected network when the server confirms enrollment", async () => {
