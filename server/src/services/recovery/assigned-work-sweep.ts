@@ -38,6 +38,7 @@ import { attributeBlock, BLOCK_ATTRIBUTION_WINDOW_MS, blockedStatusDetailsSql } 
 import { ASSIGNED_WORK_CONTINUED_ACTION, PAUSED_FOR_AUTOMATIC_WORK, taskAutomaticAttempts } from "./task-automatic-attempts.js";
 import { automaticRunCreationHeldUntil, readAutomaticWorkStatus, reserveAutomaticRunCreation } from "./automatic-run-brake.js";
 import { isReattachPhaseActive, reattachPhaseRecheckAt } from "../heartbeat/run-admission.js";
+import { wakeBecameFreshContinuation } from "./wake-became-fresh-continuation.js";
 import { continueSweepTaskFromSavedWork } from "./sweep-saved-work-continuation.js";
 import { STRANDED_CONTINUATION_MAX_AGE_MS, STRANDED_KIND, strandedHoldContinuesAutomatically, type StrandedHoldRun } from "./stranded-hold-continuation.js";
 import {
@@ -686,14 +687,14 @@ export function assignedWorkSweep(db: Db, deps: AssignedWorkDeps) {
       logger.warn({ err: error, companyId: issue.companyId, issueId: issue.id }, "assigned-work continuation was not admitted");
       return null;
     });
-    // A refused continuation stays a violation; the claim spaces the next try.
-    // A block lifted for it is put back, so the task never sits unblocked
-    // with nothing pending.
+    // Admission may coalesce this wake into a fresh continuation from saved work (a continuation, not a refusal).
+    // A refused one stays a violation, spaced by the claim; a block lifted for it is put back.
+    const continued = !run && await wakeBecameFreshContinuation(db, issue.companyId, issue.id);
     if (!run) await release();
-    if (!run && claimed.restoredTo) await revertRestoredBlock(issue, claimed);
-    await settleContinuationActivity(claimed, claimed.reason, run ? "queued" : "not_started",
-      fresh?.kind === "person_owned" ? { waitingFor: fresh.reason } : {});
-    return { verdict: claimed.verdict, outcome: run ? "repaired" : "enqueue_refused", retryAt: claimed.nextCheckAt };
+    if (!run && !continued && claimed.restoredTo) await revertRestoredBlock(issue, claimed);
+    await settleContinuationActivity(claimed, claimed.reason, run || continued ? "queued" : "not_started", continued
+      ? { continuedFromSavedWork: "true" } : fresh?.kind === "person_owned" ? { waitingFor: fresh.reason } : {});
+    return { verdict: claimed.verdict, outcome: run || continued ? "repaired" : "enqueue_refused", retryAt: claimed.nextCheckAt };
   }
 
   function repairBudgetDeferral(at: Date): Date | null {
