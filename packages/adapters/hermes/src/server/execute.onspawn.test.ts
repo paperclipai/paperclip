@@ -113,6 +113,26 @@ describe("hermes-local adapter onSpawn forwarding", () => {
     expect(call[2]).toContainEqual(expect.stringContaining("Current task brief"));
   });
 
+  it("lets Hermes use its own default model when no model is configured", async () => {
+    const { ctx } = makeCtx();
+    await execute(ctx as any);
+    const args = vi.mocked(serverUtils.runChildProcess).mock.calls.at(-1)![2] as string[];
+    expect(args).not.toContain("-m");
+    expect(args).not.toContain("auto");
+    expect(args).not.toContain("null");
+    expect(args).not.toContain("--provider");
+    expect(args.slice(0, 2)).toEqual(["chat", "-q"]);
+    expect(args[3]).toBe("--source");
+  });
+
+  it("passes a configured model and its inferred provider", async () => {
+    const { ctx } = makeCtx({ model: "anthropic/claude-sonnet-4" });
+    await execute(ctx as any);
+    const args = vi.mocked(serverUtils.runChildProcess).mock.calls.at(-1)![2] as string[];
+    expect(args).toEqual(expect.arrayContaining(["-m", "anthropic/claude-sonnet-4"]));
+    expect(args[args.indexOf("-m") + 1]).toBe("anthropic/claude-sonnet-4");
+  });
+
   it("launches in the assigned task workspace when no cwd was configured", async () => {
     const { ctx } = makeCtx();
     await execute({ ...ctx, context: { ...ctx.context, paperclipWorkspace: { cwd: "/private/qa/agent-workspace" } } } as any);
