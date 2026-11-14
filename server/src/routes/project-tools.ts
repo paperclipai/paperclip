@@ -16,10 +16,10 @@ export function projectToolRoutes(db: Db) {
     const send = (result: unknown) => res.json({ jsonrpc: "2.0", id, result });
     if (method === "initialize") return send({ protocolVersion: "2025-03-26", capabilities: { tools: { listChanged: false } }, serverInfo: { name: "paperclip-project-tools", version: "1" } });
     if (method === "notifications/initialized") return res.status(202).end();
-    const definitions = projectToolDefinitions(context.issue.workMode, true);
-    if (method === "tools/list") return send({ tools: definitions });
-    if (method !== "tools/call") return res.json({ jsonrpc: "2.0", id, error: { code: -32601, message: "Method not found" } });
+    if (method !== "tools/list" && method !== "tools/call") return res.json({ jsonrpc: "2.0", id, error: { code: -32601, message: "Method not found" } });
     try {
+      const definitions = projectToolDefinitions(context.issue.workMode, true);
+      if (method === "tools/list") return send({ tools: definitions });
       if (!definitions.some(tool => tool.name === params?.name)) throw forbidden("Tool is unavailable in this mode");
       const apiUrl = process.env.PAPERCLIP_API_URL;
       if (!apiUrl) throw new Error("Paperclip API origin is unavailable");
@@ -33,7 +33,11 @@ export function projectToolRoutes(db: Db) {
       });
       return send({ content: [{ type: "text", text: JSON.stringify(result) }], structuredContent: result });
     } catch (error) {
-      return send({ isError: true, content: [{ type: "text", text: error instanceof Error ? error.message : "Project tool failed" }] });
+      const message = error instanceof Error ? error.message : "Project tool failed";
+      if (method === "tools/list") {
+        return res.json({ jsonrpc: "2.0", id, error: { code: -32603, message } });
+      }
+      return send({ isError: true, content: [{ type: "text", text: message }] });
     }
   });
   return router;
