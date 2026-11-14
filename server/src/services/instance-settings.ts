@@ -654,6 +654,7 @@ export function instanceSettingsService(db: Db, options: InstanceSettingsService
         if (patch.enableStatusCards !== undefined) await notifyStatusCardEvaluation(tx);
         if (chatBecameEnabled) await notifyDeferredExecutionEligibility(tx);
         if(toExperimentalView(current.experimental).enablePublicMcp!==toExperimentalView(nextExperimental).enablePublicMcp)await prepareMcpClientMirrorPolicy(tx as unknown as Db,toExperimentalView(nextExperimental).enablePublicMcp);
+        if (patch.enableMcpTasks !== undefined) await notifyDeliveryWork(tx, DELIVERY_QUEUES.mcpTasks);
         await notifyDeliveryWork(tx, DELIVERY_QUEUES.mcpIngressHandoffs);
         await notifyDeliveryWork(tx, DELIVERY_QUEUES.mcpClientMirror);
         await notifyDeliveryWork(tx, DELIVERY_QUEUES.mcpRevocationIndex, "*");

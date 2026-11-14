@@ -85,7 +85,7 @@ describe("database backup owner", () => {
     let hold: IdleSleepDrainStatus = { ownerId: "owner", draining: true, startedAt: new Date(now - 1), expiresAt: new Date(now + 60_000), activeRuns: 0, pendingWakes: 0 };
     let finish!: () => void; const gate = new Promise<void>(resolve => { finish = resolve; });
     vi.mocked(runDatabaseBackup).mockImplementationOnce(async options => { await gate; return validArchive(options); });
-    const db = { transaction: async (fn: (tx: unknown) => unknown) => fn({ execute: async () => [{ blocked: false }] }) } as unknown as Db;
+    const db = { transaction: async (fn: (tx: unknown) => unknown) => fn({ select: () => ({ from: () => ({ where: async () => [] }) }), execute: async () => [{ blocked: false }] }) } as unknown as Db;
     const run = owner();
     const safety = readIdleSleepSafety(db, () => hold, () => now, "owner", async () => "none", undefined, async () => Boolean(await run("idle")));
     await vi.waitFor(() => expect(runDatabaseBackup).toHaveBeenCalledOnce());
