@@ -233,11 +233,17 @@ async function recordNativeProviderPackAdmissionOnce(db: Db, input: AdmissionInp
       || !["pending", "verified", "unknown"].includes(String(current.state))) return false;
     if (current.state === "unknown") return false;
     const previous = run.profile?.nativeProviderPackAdmission;
-    const verified = receipt != null && (previous == null ? current.state === "pending"
-      : canonicalProviderPackJson({ ...(previous as Record<string, unknown>), inheritedFromRunId: null })
-        === canonicalProviderPackJson({ ...receipt, inheritedFromRunId: null }));
+    const unchanged = previous != null && receipt != null
+      && canonicalProviderPackJson({ ...(previous as Record<string, unknown>), inheritedFromRunId: null })
+        === canonicalProviderPackJson({ ...receipt, inheritedFromRunId: null });
+    // A new claim's own fresh selection (a replacement Runner, or a new release's
+    // pack) supersedes the earlier claim's receipt only while no provider
+    // artifacts are retained under it. Retained artifacts bind that receipt.
+    const superseded = previous != null && !unchanged && receipt != null && current.state === "pending"
+      && receipt.inheritedFromRunId === undefined && run.profile?.nativeProviderArtifacts == null;
+    const verified = receipt != null && (previous == null ? current.state === "pending" : unchanged || superseded);
     if (verified && current.state === "verified") return true;
-    const patch = { ...(verified && previous == null ? { nativeProviderPackAdmission: receipt } : {}),
+    const patch = { ...(verified && (previous == null || superseded) ? { nativeProviderPackAdmission: receipt } : {}),
       ...(run.profile?.nativeProviderPackAdmissionRecovery != null ? { nativeProviderPackAdmissionRecovery: null } : {}),
       nativeProviderPackAdmissionState: { ...nativeProviderPackAdmissionPending(input.admissionEpoch), state: verified ? "verified" : "unknown" } };
     const saved = await tx.update(heartbeatRuns).set({

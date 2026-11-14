@@ -278,16 +278,60 @@ describe("provider pack admission PostgreSQL fencing", () => {
     await expect(recordNativeProviderPackAdmission(db, f)).resolves.toBe(false);
     expect((await read(f.identity.runId)).runnerProfileJson).toEqual(next);
   });
-  it.each(["runner", "lease", "unsupported"])("keeps the first receipt historical after an authorized %s replacement", async change => {
+  // A new controller claim of the same run: the previous claim admitted a pack,
+  // then a restart refused reattachment and the replacement bootstrapped a new
+  // Runner (and, after a release, a new provider pack) before any provider turn.
+  async function replacementClaim(retainedArtifacts: boolean) {
     const f = await fixture(); await recordNativeProviderPackAdmission(db, f);
-    const previous = (await read(f.identity.runId)).runnerProfileJson!;
+    const recorded = (await read(f.identity.runId)).runnerProfileJson!;
+    const previous = retainedArtifacts ? { ...recorded, nativeProviderArtifacts: { schema: "retained-under-the-first-pack" } } : recorded;
     const admissionEpoch = randomUUID();
     await db.update(heartbeatRuns).set({ runnerProfileJson: { ...previous,
       nativeProviderPackAdmissionState: nativeProviderPackAdmissionPending(admissionEpoch) } }).where(eq(heartbeatRuns.id, f.identity.runId));
-    const replacement = sessionFixture(f.identity);
+    return { f, previous, admissionEpoch, replacement: sessionFixture(f.identity) };
+  }
+  it.each([
+    ["runner", { runnerInstanceId: "replacement" }, manifest()],
+    ["lease", { environmentLeaseId: "replacement" }, manifest()],
+    ["release", { runnerInstanceId: "replacement" }, manifest("b".repeat(40))],
+  ] as const)("publishes a fresh %s replacement's verified selection when no provider artifacts were retained", async (_change, change, selected) => {
+    // Staging run d417a283: the replacement's different receipt was refused as
+    // unknown, artifact retention then refused unknown admission, and the run
+    // failed before its first turn as native_provider_artifacts_admission_unverified.
+    const { f, previous, admissionEpoch, replacement } = await replacementClaim(false);
+    rememberAdmittedNativeProviderPack(replacement.session, { identity: f.identity, manifest: selected, ...binding, ...change });
+    await expect(recordNativeProviderPackAdmission(db, { ...f, admissionEpoch, session: replacement.session })).resolves.toBe(true);
+    const published = (await read(f.identity.runId)).runnerProfileJson;
+    expect(published).toEqual({ ...previous,
+      nativeProviderPackAdmission: admittedNativeProviderPack(replacement.session, f.identity),
+      nativeProviderPackAdmissionState: { ...nativeProviderPackAdmissionPending(admissionEpoch), state: "verified" } });
+    await expect(recordNativeProviderPackAdmission(db, { ...f, admissionEpoch, session: replacement.session })).resolves.toBe(true);
+    // The superseded claim's late callback cannot take the admission back.
+    await expect(recordNativeProviderPackAdmission(db, { ...f, claim: { ...f.claim, controllerGeneration: 1 } })).resolves.toBe(false);
+    expect((await read(f.identity.runId)).runnerProfileJson).toEqual(published);
+  });
+  it.each(["runner", "lease", "unsupported"])("keeps the first receipt historical after a %s replacement once provider artifacts were retained", async change => {
+    const { f, previous, admissionEpoch, replacement } = await replacementClaim(true);
     if (change !== "unsupported") rememberAdmittedNativeProviderPack(replacement.session, { identity: f.identity, manifest: manifest(),
       ...binding, ...(change === "runner" ? { runnerInstanceId: "replacement" } : { environmentLeaseId: "replacement" }) });
     await expect(recordNativeProviderPackAdmission(db, { ...f, admissionEpoch, session: replacement.session })).resolves.toBe(false);
+    expect((await read(f.identity.runId)).runnerProfileJson).toEqual({ ...previous,
+      nativeProviderPackAdmissionState: { ...nativeProviderPackAdmissionPending(admissionEpoch), state: "unknown" } });
+  });
+  it("leaves an unsupported replacement unknown even without retained provider artifacts", async () => {
+    const { f, previous, admissionEpoch, replacement } = await replacementClaim(false);
+    await expect(recordNativeProviderPackAdmission(db, { ...f, admissionEpoch, session: replacement.session })).resolves.toBe(false);
+    expect((await read(f.identity.runId)).runnerProfileJson).toEqual({ ...previous,
+      nativeProviderPackAdmissionState: { ...nativeProviderPackAdmissionPending(admissionEpoch), state: "unknown" } });
+  });
+  it("does not let a retained attachment from another run replace this run's receipt", async () => {
+    const { f, previous, admissionEpoch } = await replacementClaim(false);
+    const source = { ...f.identity, runId: randomUUID() };
+    const inherited = sessionFixture(source);
+    rememberAdmittedNativeProviderPack(inherited.session, { identity: source, manifest: manifest("b".repeat(40)), ...binding });
+    await inherited.attach(f.identity);
+    expect(admittedNativeProviderPack(inherited.session, f.identity)).toMatchObject({ inheritedFromRunId: source.runId });
+    await expect(recordNativeProviderPackAdmission(db, { ...f, admissionEpoch, session: inherited.session })).resolves.toBe(false);
     expect((await read(f.identity.runId)).runnerProfileJson).toEqual({ ...previous,
       nativeProviderPackAdmissionState: { ...nativeProviderPackAdmissionPending(admissionEpoch), state: "unknown" } });
   });
