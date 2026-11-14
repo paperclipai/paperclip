@@ -113,13 +113,14 @@ describe.skipIf(!support.supported)("task interruption latest run query", () => 
       payload: { issueId: parent.id, taskRetry: { sourceRunId: runId } } }).returning();
     const presentation = await taskInterruptionPresentation(db, parent);
     expect(presentation).toMatchObject({ state: "working", canRetry: false, intentId: retry.id,
-      retryWait: { reason: "dependency_blocked" } });
+      retryWait: { reason: "dependency_blocked", unresolvedBlockerIssueIds: [child.id] } });
     expect(presentation?.retryWait?.message).toContain("blocked task this one depends on");
     expect(JSON.stringify(presentation)).not.toContain("Part 2");
     expect(JSON.stringify(presentation)).not.toContain("CHA-10");
     await db.update(issues).set({ status: "cancelled" }).where(eq(issues.id, child.id));
-    expect((await taskInterruptionPresentations(db, companyId, [parent])).get(parent.id)?.retryWait?.message)
-      .toContain("Remove or replace that dependency");
+    const cancelled = (await taskInterruptionPresentations(db, companyId, [parent])).get(parent.id);
+    expect(cancelled?.retryWait?.message).toContain("Remove or replace that dependency");
+    expect(cancelled?.retryWait?.unresolvedBlockerIssueIds).toEqual([child.id]);
     await db.update(issues).set({ status: "done" }).where(eq(issues.id, child.id));
     expect((await taskInterruptionPresentation(db, parent))?.retryWait?.reason).not.toBe("dependency_blocked");
   });
