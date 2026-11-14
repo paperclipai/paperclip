@@ -158,6 +158,8 @@ import {
   ISSUE_BLOCKERS_RESOLVED_WAKE_REASON,
   buildIssueBlockersResolvedWakeStateKey,
   findExistingIssueBlockersResolvedWakeForReadyState,
+  buildCancelledDependencyHandoffWake,
+  findExistingCancelledDependencyHandoffWake,
 } from "../issue-dependency-wakeups.js";
 import { evaluateAgentInvokabilityFromDb } from "../agent-invokability.js";
 import { isHeartbeatWakeOnDemandEnabled } from "../heartbeat-policy.js";
@@ -6096,7 +6098,17 @@ export function recoveryService(
 
     const queryCandidates = (afterIssueId: string | null) => {
       const filters = [
-        eq(issues.status, "blocked"),
+        or(eq(issues.status, "blocked"), and(
+          inArray(issues.status, ["todo", "in_progress"]),
+          sql`exists (
+            select 1 from issue_relations cancellation_edge
+            join issues cancelled_blocker on cancelled_blocker.id = cancellation_edge.issue_id
+            where cancellation_edge.company_id = ${issues.companyId}
+              and cancelled_blocker.company_id = ${issues.companyId}
+              and cancellation_edge.related_issue_id = ${issues.id}
+              and cancellation_edge.type = 'blocks' and cancelled_blocker.status = 'cancelled'
+          )`,
+        )),
         isNull(issues.conversationAgentId),
         visibleIssueCondition(),
         sql`${issues.assigneeAgentId} is not null`,
@@ -6119,6 +6131,7 @@ export function recoveryService(
             identifier: issues.identifier,
             assigneeAgentId: issues.assigneeAgentId,
             blockedTransitionAt: issues.blockedTransitionAt,
+            status: issues.status,
             totalCount: sql<number>`count(*) over()::int`,
           })
           .from(issueRelations)
@@ -6135,6 +6148,7 @@ export function recoveryService(
           identifier: issues.identifier,
           assigneeAgentId: issues.assigneeAgentId,
           blockedTransitionAt: issues.blockedTransitionAt,
+          status: issues.status,
           totalCount: sql<number>`count(*) over()::int`,
         })
         .from(issues)
@@ -6208,8 +6222,51 @@ export function recoveryService(
         if (!agentId) continue;
 
         const readiness = readinessMap.get(candidate.id);
+        if (readiness && !readiness.isDependencyReady) {
+          if (await hasActiveExecutionPath(companyId, candidate.id, agentId) ||
+              await hasQueuedIssueWake(companyId, candidate.id, agentId)) {
+            result.livePathSkipped += 1;
+            continue;
+          }
+          if (await hasPendingWakeInteraction(companyId, candidate.id)) {
+            result.interactionSkipped += 1;
+            continue;
+          }
+          if (await isAutomaticRecoverySuppressedByPauseHold(db, companyId, candidate.id, treeControlSvc)) {
+            result.pauseHoldSkipped += 1;
+            continue;
+          }
+          const handoff = await issuesSvc.getCancelledDependencyHandoff(candidate.id);
+          if (handoff) {
+            if (await findExistingCancelledDependencyHandoffWake(db, { companyId, commentId: handoff.commentId })) {
+              result.existingWakeSkipped += 1;
+              continue;
+            }
+            try {
+              const wake = await deps.enqueueWakeup(handoff.assigneeAgentId, {
+                ...buildCancelledDependencyHandoffWake(handoff),
+                requestedByActorType: "system",
+                requestedByActorId,
+              });
+              if (!wake) { result.deferredOrFailed += 1; continue; }
+              result.healed += 1;
+              result.issueIds.push(candidate.id);
+              await logActivity(db, { companyId, actorType: "system", actorId: requestedByActorId,
+                agentId: handoff.assigneeAgentId, runId: opts?.runId ?? null,
+                action: "issue.cancelled_dependency_handoff_emitted", entityType: "issue", entityId: candidate.id,
+                details: { source, commentId: handoff.commentId, cancelledBlockerIssueIds: handoff.cancelledBlockerIssueIds,
+                  wakeupRunId: wake.id } });
+            } catch (err) {
+              result.deferredOrFailed += 1;
+              result.enqueueFailed += 1;
+              logger.warn({ err, issueId: candidate.id, source }, "failed to deliver cancelled dependency handoff");
+            }
+            continue;
+          }
+        }
         const resolvedBlockerIssueId = readiness?.blockerIssueIds[0] ?? null;
         if (
+          candidate.status !== "blocked" ||
           !readiness ||
           !readiness.isDependencyReady ||
           readiness.blockerIssueIds.length === 0 ||
