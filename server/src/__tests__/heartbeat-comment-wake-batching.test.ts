@@ -559,6 +559,124 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
     expect(runs[0]?.id).toBe(runId);
   });
 
+  it.each([
+    { wakeReason: "execution_review_requested", wakeRole: "reviewer", allowedActions: ["approve", "request_changes"] },
+    { wakeReason: "execution_approval_requested", wakeRole: "approver", allowedActions: ["approve", "request_changes"] },
+    { wakeReason: "execution_changes_requested", wakeRole: "executor", allowedActions: ["address_changes", "resubmit"] },
+  ] as const)("starts a follow-up run with the stage context for a $wakeReason wake sent during the agent's running turn", async ({ wakeReason, wakeRole, allowedActions }) => {
+    const gateway = await createControlledGatewayServer();
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const issueId = randomUUID();
+    const issuePrefix = `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
+    const heartbeat = heartbeatService(db);
+    const executionStage = {
+      wakeRole,
+      stageId: randomUUID(),
+      stageType: wakeRole === "approver" ? "approval" : "review",
+      currentParticipant: { type: "agent", agentId },
+      returnAssignee: { type: "agent", agentId },
+      reviewRequest: null,
+      lastDecisionOutcome: wakeReason === "execution_changes_requested" ? "changes_requested" : null,
+      allowedActions: [...allowedActions],
+    };
+
+    try {
+      await db.insert(companies).values(wakeCompanyRow(companyId, issuePrefix));
+      await grantFixtureWorkspaceAccess(companyId, ["responsible-user", "user-1"]);
+
+      await db.insert(agents).values(wakeGatewayAgentRow(agentId, companyId, "Gateway Agent", gateway));
+
+      await db.insert(issues).values(wakeIssueRow(issueId, companyId, "Hand the stage back", agentId, issuePrefix));
+
+      const comment = await db
+        .insert(issueComments)
+        .values(wakeUserCommentRow(companyId, issueId, "user-1", "Please submit this for review"))
+        .returning()
+        .then((rows) => rows[0]);
+
+      const firstRun = await heartbeat.wakeup(agentId, {
+        source: "automation",
+        triggerDetail: "system",
+        reason: "issue_commented",
+        payload: { issueId, commentId: comment.id },
+        contextSnapshot: {
+          issueId,
+          taskId: issueId,
+          commentId: comment.id,
+          wakeReason: "issue_commented",
+        },
+        requestedByActorType: "user",
+        requestedByActorId: "user-1",
+      });
+
+      expect(firstRun).not.toBeNull();
+      await waitFor(() => gateway.getAgentPayloads().length === 1);
+
+      const stageRun = await heartbeat.wakeup(agentId, {
+        source: "assignment",
+        triggerDetail: "system",
+        reason: wakeReason,
+        payload: {
+          issueId,
+          mutation: "update",
+          executionStage,
+        },
+        contextSnapshot: {
+          issueId,
+          taskId: issueId,
+          wakeReason,
+          source: "issue.execution_stage",
+          executionStage,
+        },
+        requestedByActorType: "agent",
+        requestedByActorId: agentId,
+      });
+
+      expect(stageRun).toBeNull();
+      const deferred = await selectDeferredWakeForAgent(companyId, agentId);
+      expect(deferred?.reason).toBe("issue_execution_deferred");
+
+      gateway.releaseFirstWait();
+
+      await waitFor(() => gateway.getAgentPayloads().length >= 2, 90_000);
+      await waitFor(async () => {
+        const runs = await db
+          .select()
+          .from(heartbeatRuns)
+          .where(eq(heartbeatRuns.agentId, agentId))
+          .orderBy(asc(heartbeatRuns.createdAt));
+        const [initialRun, followupRun] = runs;
+        return (
+          initialRun?.id === firstRun?.id &&
+          initialRun.status === "succeeded" &&
+          followupRun?.status === "succeeded"
+        );
+      }, 90_000);
+
+      const [, followupRun] = await db
+        .select()
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.agentId, agentId))
+        .orderBy(asc(heartbeatRuns.createdAt));
+      expect(followupRun?.contextSnapshot).toMatchObject({
+        issueId,
+        wakeReason,
+        executionStage,
+      });
+
+      const followupWake = await readGatewayWakePayload(gateway.getAgentPayloads()[1] ?? {});
+      expect(followupWake).toMatchObject({
+        reason: wakeReason,
+        executionStage,
+        issue: { id: issueId },
+      });
+    } finally {
+      gateway.releaseFirstWait();
+      await gateway.close();
+    }
+  }, 120_000);
+
   it("batches deferred comment wakes and forwards the ordered batch to the next run", async () => {
     const gateway = await createControlledGatewayServer();
     const companyId = randomUUID();

@@ -13,6 +13,17 @@ describe("shouldQueueFollowupForRunningIssueWake", () => {
     })).toBe(true);
   });
 
+  it.each([
+    "execution_review_requested",
+    "execution_approval_requested",
+    "execution_changes_requested",
+  ])("queues a follow-up for a %s stage wake instead of merging it into the running turn", (wakeReason) => {
+    expect(shouldQueueFollowupForRunningIssueWake({
+      contextSnapshot: { wakeReason },
+      wakeCommentId: null,
+    })).toBe(true);
+  });
+
   it("still coalesces a generic issue wake without new input", () => {
     expect(shouldQueueFollowupForRunningIssueWake({
       contextSnapshot: { wakeReason: "issue_commented" },
