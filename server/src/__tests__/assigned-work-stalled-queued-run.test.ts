@@ -126,6 +126,19 @@ describe.skipIf(!support.supported)("a queued run the dispatcher keeps passing o
     expect(brake!.nextCreationAt!.getTime()).toBeGreaterThan(Date.now());
   }, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS);
 
+  it("an old finished request from a person does not exempt a replacement from the pause", async () => {
+    const f = await seed();
+    await db.insert(agentWakeupRequests).values({ companyId: f.companyId, agentId: f.agentId, source: "on_demand", triggerDetail: "manual",
+      reason: "task_retry", payload: { issueId: f.issue.id }, status: "completed", requestedByActorType: "user", requestedByActorId: "person-1",
+      requestedAt: new Date(Date.now() - 4 * 60 * MINUTE), finishedAt: new Date(Date.now() - 4 * 60 * MINUTE) });
+    const stalled = await f.queuedRun();
+    await f.otherStarts(OLDEST_DISPATCH_SHARE + 1, QUEUED_RUN_AGING_MS / 2);
+    await db.insert(automaticRunBrakes).values({ companyId: f.companyId, state: "open", openedAt: new Date(), stateChangedAt: new Date() });
+    expect(await f.sweep().checkIssue({ companyId: f.companyId, issueId: f.issue.id })).toMatchObject({ outcome: "replaced_stalled_run" });
+    const [brake] = await db.select().from(automaticRunBrakes).where(eq(automaticRunBrakes.companyId, f.companyId));
+    expect(brake!.nextCreationAt!.getTime()).toBeGreaterThan(Date.now());
+  }, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS);
+
   it("cancels an automatic run the claim keeps refusing and queues exactly one claimable replacement", async () => {
     const f = await seed();
     const stalled = await f.queuedRun();

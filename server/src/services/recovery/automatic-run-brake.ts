@@ -388,7 +388,7 @@ export function createAutomaticRunBrake(options: { loadRules?: () => Promise<Aut
     if (!work.sourceRunId) return true;
     const personReasons = sql.join([...PERSON_WAKE_REASONS].map(reason => sql`${reason}`), sql`, `);
     const [asked] = [...await db.execute<{ asked: boolean }>(sql`
-      with source as (select max(r.finished_at) as finished_at from heartbeat_runs r
+      with source as (select max(coalesce(r.finished_at, r.created_at)) as finished_at from heartbeat_runs r
         where r.company_id = ${companyId} and r.id = ${work.sourceRunId}::uuid)
       select exists (select 1 from agent_wakeup_requests w, source
           where w.company_id = ${companyId} and w.requested_by_actor_type = 'user' and w.payload->>'issueId' = ${work.issueId}
