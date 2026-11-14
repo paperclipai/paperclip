@@ -1016,47 +1016,6 @@ export function redactAgentAdapterConfig(
   return { ...(redactEventPayload(rest) ?? {}), env: redactedEnv };
 }
 
-export function isPrivateKeyFieldName(key: string): boolean {
-  return PRIVATE_KEY_PAYLOAD_KEY_RE.test(key);
-}
-
-export function containsPrivateKeyMaterial(value: unknown): boolean {
-  return typeof value === "string" && PRIVATE_KEY_PEM_RE.test(value);
-}
-
-function isSecretReference(value: unknown): boolean {
-  return isSecretRefBinding(value) || isUserSecretRefBinding(value);
-}
-
-export function omitPrivateKeyMaterial(value: unknown): unknown {
-  if (Array.isArray(value)) {
-    return value.filter((entry) => !containsPrivateKeyMaterial(entry)).map(omitPrivateKeyMaterial);
-  }
-  if (isSecretReference(value)) return sanitizeValue(value);
-  if (!isPlainObject(value)) return value;
-  const next: Record<string, unknown> = {};
-  for (const [key, entry] of Object.entries(value)) {
-    if (containsPrivateKeyMaterial(entry)) continue;
-    if (isPrivateKeyFieldName(key)) {
-      if (isSecretReference(entry)) next[key] = sanitizeValue(entry);
-      continue;
-    }
-    next[key] = omitPrivateKeyMaterial(entry);
-  }
-  return next;
-}
-
-export function omitRedactedPrivateKeyPlaceholders(value: unknown): unknown {
-  if (Array.isArray(value)) return value.map(omitRedactedPrivateKeyPlaceholders);
-  if (!isPlainObject(value)) return value;
-  const next: Record<string, unknown> = {};
-  for (const [key, entry] of Object.entries(value)) {
-    if (isPrivateKeyFieldName(key) && entry === REDACTED_EVENT_VALUE) continue;
-    next[key] = omitRedactedPrivateKeyPlaceholders(entry);
-  }
-  return next;
-}
-
 export function redactSensitiveText(input: string): string {
   if (PRIVATE_KEY_PEM_RE.test(input)) return REDACTED_EVENT_VALUE;
   if (!maybeContainsSecretText(input)) return input;

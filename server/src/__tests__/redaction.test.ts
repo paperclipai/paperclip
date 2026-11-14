@@ -18,8 +18,6 @@ import {
   PRP_V2_EVENT_TYPES,
   REDACTED_EVENT_VALUE,
   redactAgentAdapterConfig,
-  omitPrivateKeyMaterial,
-  omitRedactedPrivateKeyPlaceholders,
   redactEventPayload,
   redactSensitiveText,
   sanitizeRecord,
@@ -920,21 +918,6 @@ second-line\" status=401`,
       enabled: true,
     };
     expect(redactAgentAdapterConfig(config)).toEqual({ devicePrivateKeyPem: reference, nested: [{ content: REDACTED_EVENT_VALUE }], enabled: true });
-    expect(omitPrivateKeyMaterial(config)).toEqual({ devicePrivateKeyPem: reference, nested: [{}], enabled: true });
-  });
-
-  it("omits private key fields and PEM values from portable configuration", () => {
-    const pem = "-----BEGIN PRIVATE KEY-----\nsynthetic-only\n-----END PRIVATE KEY-----";
-    const config = { devicePrivateKeyPem: "synthetic-private-material", url: "wss://gateway.example.test", list: [pem, "kept"], nested: { signingPrivateKeyDer: "x", blob: pem, enabled: true } };
-    const omitted = omitPrivateKeyMaterial(config);
-    expect(omitted).toEqual({ url: "wss://gateway.example.test", list: ["kept"], nested: { enabled: true } });
-    expect(JSON.stringify(omitted)).not.toContain(REDACTED_EVENT_VALUE);
-    expect(config.devicePrivateKeyPem).toBe("synthetic-private-material");
-  });
-
-  it("drops redaction placeholders stored under private key names", () => {
-    const config = { devicePrivateKeyPem: REDACTED_EVENT_VALUE, apiKey: REDACTED_EVENT_VALUE, nested: [{ signingPrivateKeyDer: REDACTED_EVENT_VALUE, enabled: true }], url: "wss://gateway.example.test" };
-    expect(omitRedactedPrivateKeyPlaceholders(config)).toEqual({ apiKey: REDACTED_EVENT_VALUE, nested: [{ enabled: true }], url: "wss://gateway.example.test" });
   });
 });
 
