@@ -167,4 +167,19 @@ describe("repeated identical failing tool calls", () => {
     await expect(epoch.execute(patch(3))).resolves.toEqual({ ok: true, status: 200 });
     expect(authority.execute).toHaveBeenCalledTimes(4);
   });
+
+  it("keeps counting a returned rejection when unrelated calls in between fail transiently", async () => {
+    const { authority, epoch } = epochWith(async call => call.tool === "call_api"
+      ? rejected(422)
+      : { ok: false, status: call.callId === "u1" ? 503 : call.callId === "u2" ? 429 : null, error: "try again" });
+    const patch = (n: number) => ({ tool: "call_api", callId: `i${n}`, arguments: invalid });
+    await epoch.execute(patch(1));
+    await epoch.execute({ tool: "list_agents", callId: "u1", arguments: {} });
+    const second = await epoch.execute(patch(2)) as Record<string, unknown>;
+    expect(second.guidance).toContain("failed 2 times with the same arguments");
+    await epoch.execute({ tool: "list_agents", callId: "u2", arguments: {} });
+    await epoch.execute({ tool: "list_agents", callId: "u3", arguments: {} });
+    expect((await failure(epoch, patch(3)))?.message).toMatch(/^This call was not run/);
+    expect(authority.execute.mock.calls.filter(([call]) => call.tool === "call_api")).toHaveLength(2);
+  });
 });

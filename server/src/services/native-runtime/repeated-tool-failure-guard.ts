@@ -66,8 +66,12 @@ export class RepeatedToolFailureGuard {
     }
     const failure = returnedFailure(result);
     if (!failure) {
-      this.#failures.delete(key);
-      this.#forgetReturnedFailures();
+      // Only a success can have changed the state a route checked. A transient
+      // failure (5xx, 429, timeout) leaves every remembered rejection in place.
+      if (!isFailedResponse(result)) {
+        this.#failures.delete(key);
+        this.#forgetReturnedFailures();
+      }
       return result;
     }
     const count = this.#record(key, failure);
@@ -93,6 +97,10 @@ export class RepeatedToolFailureGuard {
 
 function callKey(call: ToolCall): string {
   return nativeSha256({ tool: call.tool, arguments: call.arguments ?? null });
+}
+
+function isFailedResponse(result: unknown): boolean {
+  return Boolean(result && typeof result === "object" && (result as Record<string, unknown>).ok === false);
 }
 
 function isValidationStatus(status: unknown): status is 400 | 422 {
