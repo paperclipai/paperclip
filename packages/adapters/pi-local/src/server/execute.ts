@@ -345,9 +345,6 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     env.PI_CODING_AGENT_DIR = localAgentConfigDir;
   }
   let attributionExtension: Awaited<ReturnType<typeof preparePiOpenRouterExtension>> | undefined;
-  // Releases the host-side workspace baseline on every exit path, including a
-  // failure before the restoring `finally` runs. Idempotent, so it is a no-op
-  // after a restore, which releases it itself.
   let releaseRemoteWorkspaceSnapshot: (() => Promise<void>) | null = null;
   try {
     attributionExtension = await preparePiOpenRouterExtension();
@@ -464,8 +461,6 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
                 : []),
             ],
           });
-          // Track the in-flight restore: it reads the baseline, so the release
-          // below must wait for it even when a sibling cleanup step rejected.
           let remoteWorkspaceRestore: Promise<void> | null = null;
           restoreRemoteWorkspace = () =>
             (remoteWorkspaceRestore = preparedRemoteRuntime.restoreWorkspace((line) => onLog("stdout", line)));

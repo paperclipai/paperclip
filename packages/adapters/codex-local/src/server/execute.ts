@@ -790,9 +790,6 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   let sshHostHome: Awaited<ReturnType<typeof readCodexSshHostHome>> | null = null;
   let sshHostProfilePath: string | null = null;
   let sshSessionState: Awaited<ReturnType<typeof prepareCodexSshSessionState>> | null = null;
-  // Releases the host-side workspace baseline on every exit path, including a
-  // failure before the restoring `finally` runs. Idempotent, so it is a no-op
-  // after a restore, which releases it itself.
   let releaseRemoteWorkspaceSnapshot: (() => Promise<void>) | null = null;
   let observabilityProfile: Awaited<ReturnType<typeof prepareCodexObservabilityProfile>> | null = null;
   let observabilityPreparationFailed = false;

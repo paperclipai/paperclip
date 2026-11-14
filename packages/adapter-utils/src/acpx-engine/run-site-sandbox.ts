@@ -290,8 +290,7 @@ export function createSandboxRunSite(options: SandboxRunSiteOptions): SandboxRun
             } catch (seamErr) {
               // The seam threw after a possible successful stage. Dispose the fresh
               // staged runtime so the abandoned in-sandbox managed home never leaks,
-              // then rethrow the seam error. The host-side workspace baseline of that
-              // stage is released too: no teardown will ever restore from it.
+              // then rethrow the seam error.
               if (freshlyStaged) {
                 const fresh: PreparedAdapterExecutionTargetRuntime = freshlyStaged;
                 await options.disposeFreshStagedRuntime(fresh);
@@ -302,9 +301,6 @@ export function createSandboxRunSite(options: SandboxRunSiteOptions): SandboxRun
           }
           return { stagedRuntime: await stage([]), teardown: null, dispose: null };
         });
-        // The host-side workspace baseline exists only for a teardown restore. With
-        // no teardown (no seam, or a seam that staged no home) nothing ever reads
-        // it, so release it now instead of leaking it for the process lifetime.
         if (!seam.teardown) await seam.stagedRuntime.cleanupWorkspaceSnapshot?.().catch(() => {});
         const envDelta: Record<string, string> = {};
         for (const [key, value] of Object.entries(options.env)) {

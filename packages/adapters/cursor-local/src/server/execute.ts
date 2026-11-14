@@ -347,9 +347,6 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   })();
   const autoTrustEnabled = !hasCursorTrustBypassArg(extraArgs);
   let restoreRemoteWorkspace: (() => Promise<void>) | null = null;
-  // Releases the host-side workspace baseline if the run fails before the
-  // restoring `finally` below runs. Idempotent, so a restore that already
-  // released it makes this a no-op.
   let releaseRemoteWorkspaceSnapshot: (() => Promise<void>) | null = null;
   let localSkillsDir: string | null = null;
   let remoteRuntimeRootDir: string | null = null;

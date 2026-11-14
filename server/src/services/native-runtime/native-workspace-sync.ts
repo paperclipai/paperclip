@@ -936,9 +936,6 @@ export async function prepareNativeWorkspaceSync(input: {
   );
 
   let runtime: PreparedAdapterExecutionTargetRuntime | undefined;
-  // A warm stamp mismatch prepares a second runtime from the first one's
-  // snapshots. The first runtime still owns its private manifests, so it is
-  // released together with the final runtime. Snapshot disposal is idempotent.
   let supersededRuntime: PreparedAdapterExecutionTargetRuntime | undefined;
   const releaseRuntimes = async () => {
     try { await runtime?.cleanupWorkspaceSnapshot?.(); } finally { await supersededRuntime?.cleanupWorkspaceSnapshot?.(); }

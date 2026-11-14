@@ -358,9 +358,6 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     return asStringArray(config.args);
   })();
   let restoreRemoteWorkspace: (() => Promise<void>) | null = null;
-  // Releases the host-side workspace baseline if the run fails before the
-  // restoring `finally` below runs. Idempotent, so a restore that already
-  // released it makes this a no-op.
   let releaseRemoteWorkspaceSnapshot: (() => Promise<void>) | null = null;
   let remoteSkillsDir: string | null = null;
   let localSkillsDir: string | null = null;
@@ -393,8 +390,6 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
             followSymlinks: true,
           }],
         });
-        // Track the in-flight restore: it reads the baseline, so the release
-        // below must wait for it even when a sibling cleanup step rejected.
         let remoteWorkspaceRestore: Promise<void> | null = null;
         restoreRemoteWorkspace = () =>
           (remoteWorkspaceRestore = preparedExecutionTargetRuntime.restoreWorkspace((line) => onLog("stdout", line)));
