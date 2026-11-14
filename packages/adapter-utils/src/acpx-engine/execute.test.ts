@@ -13,7 +13,17 @@ import {
   startAdapterExecutionTargetProcessSessionBridge,
 } from "@paperclipai/adapter-utils/execution-target";
 
-const preparedRuntimes = vi.hoisted(() => [] as Array<{ cleanupWorkspaceSnapshot?(): Promise<void> }>);
+const { preparedRuntimes, trackPreparedRuntimes } = vi.hoisted(() => {
+  const preparedRuntimes: Array<{ cleanupWorkspaceSnapshot?(): Promise<void> }> = [];
+  const trackPreparedRuntimes = <Args extends unknown[], Prepared extends { cleanupWorkspaceSnapshot?(): Promise<void> }>(
+    prepare: (...args: Args) => Promise<Prepared>,
+  ) => async (...args: Args) => {
+    const prepared = await prepare(...args);
+    preparedRuntimes.push(prepared);
+    return prepared;
+  };
+  return { preparedRuntimes, trackPreparedRuntimes };
+});
 
 // Wrap the staging seam + both sandbox bridges in call-recording spies that
 // still delegate to the real implementations (a runner-backed sandbox test
@@ -24,11 +34,7 @@ vi.mock("@paperclipai/adapter-utils/execution-target", async (importActual) => {
   const actual = await importActual<typeof import("@paperclipai/adapter-utils/execution-target")>();
   return {
     ...actual,
-    prepareAdapterExecutionTargetRuntime: vi.fn(async (...args: Parameters<typeof actual.prepareAdapterExecutionTargetRuntime>) => {
-      const prepared = await actual.prepareAdapterExecutionTargetRuntime(...args);
-      preparedRuntimes.push(prepared);
-      return prepared;
-    }),
+    prepareAdapterExecutionTargetRuntime: vi.fn(trackPreparedRuntimes(actual.prepareAdapterExecutionTargetRuntime)),
     startAdapterExecutionTargetPaperclipBridge: vi.fn(actual.startAdapterExecutionTargetPaperclipBridge),
     startAdapterExecutionTargetProcessSessionBridge: vi.fn(actual.startAdapterExecutionTargetProcessSessionBridge),
   };
@@ -4668,7 +4674,7 @@ describe("ACPX engine remote managed-home seam (PR 2: per-adapter home seed)", (
       expect(dispose).toHaveBeenCalledTimes(2);
       expect(stagedRuntimes.size).toBe(0);
     } finally {
-      vi.mocked(prepareAdapterExecutionTargetRuntime).mockReset().mockImplementation(actual.prepareAdapterExecutionTargetRuntime);
+      vi.mocked(prepareAdapterExecutionTargetRuntime).mockReset().mockImplementation(trackPreparedRuntimes(actual.prepareAdapterExecutionTargetRuntime));
       vi.mocked(startAdapterExecutionTargetPaperclipBridge).mockReset().mockImplementation(actual.startAdapterExecutionTargetPaperclipBridge);
       vi.mocked(startAdapterExecutionTargetProcessSessionBridge).mockReset().mockImplementation(actual.startAdapterExecutionTargetProcessSessionBridge);
     }

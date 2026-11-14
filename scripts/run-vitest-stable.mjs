@@ -468,15 +468,17 @@ function isolatedTestEnv() {
   return { testRoot, env };
 }
 
-async function collectVitestList(filters, { testRoot, env }, name) {
+async function collectVitestList(filters, { testRoot, env }, name, run) {
   const output = path.join(testRoot, `${name}.json`);
   await new Promise((resolve, reject) => {
     const child = spawn("pnpm", ["exec", "vitest", "list", ...sourceOnlyVitestArgs,
       ...filters, "--allowOnly=false", "--includeTaskLocation", `--json=${output}`], {
       cwd: repoRoot, env, stdio: "inherit",
     });
+    run.child = child;
     child.once("error", (error) => reject(new Error(`Vitest collection failed: ${error.message}`)));
     child.once("close", (code, signal) => {
+      run.child = null;
       if (code === 0) resolve();
       else reject(new Error(`Vitest collection failed: ${signal ?? code}`));
     });
@@ -503,7 +505,7 @@ async function runVitestInRoot(run, isolated, args, label, testShard, exactFiles
   if (testShard) {
     const file = path.resolve(repoRoot, chatSuite);
     const sourceLines = readFileSync(file, "utf8").split("\n");
-    const allCollected = testShard.collected ?? await collectVitestList(args, isolated, "all");
+    const allCollected = testShard.collected ?? await collectVitestList(args, isolated, "all", run);
     const collected = [];
     const bogusCollected = [];
     for (const test of allCollected) {
@@ -521,7 +523,7 @@ async function runVitestInRoot(run, isolated, args, label, testShard, exactFiles
     // chatSuiteRunLine).
     const validationFilters = selected.lines.map((line) => `${chatSuite}:${line}`);
     const validationArgs = [...args.filter((arg) => arg !== chatSuite), ...validationFilters];
-    assertSelectedTests(selected.tests, await collectVitestList(validationArgs, isolated, "selected"), file);
+    assertSelectedTests(selected.tests, await collectVitestList(validationArgs, isolated, "selected", run), file);
     console.log(`[test:run] chat shard ${testShard.index + 1}/${testShard.count}: ${selected.tests.length}/${collected.length} tests, ${selected.lines.length} source lines, ${Math.round(selected.weight / 1000)}s recorded; exact filter coverage verified`);
     const runFilters = selected.lines.map((line) => `${chatSuite}:${chatSuiteRunLine(sourceLines, line)}`);
     args = [...args.filter((arg) => arg !== chatSuite), ...runFilters, "--allowOnly=false"];
@@ -582,10 +584,13 @@ async function runGeneralGroup(routeTests, groupName, shardIndex = null, shardCo
     const args = ["--project", "@paperclipai/server", ...serializedServerVitestArgs, chatSuite];
     const workers = chatShardWorkers(shardIndex, shardCount);
     const collection = isolatedTestEnv();
+    const collectionRun = { testRoot: collection.testRoot, child: null };
+    activeRuns.add(collectionRun);
     let collected;
     try {
-      collected = await collectVitestList(args, collection, "all");
+      collected = await collectVitestList(args, collection, "all", collectionRun);
     } finally {
+      activeRuns.delete(collectionRun);
       removeTestRoot(collection.testRoot);
     }
     const results = await Promise.allSettled(workers.map((shard) =>
