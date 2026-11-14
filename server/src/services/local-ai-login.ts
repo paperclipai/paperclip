@@ -31,13 +31,8 @@ function loginHome(id: string) {
   catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
   return path.join(canonicalRoot, "ai-local-logins", id);
 }
-const shellQuote = (value: string) => `'${value.replaceAll("'", "'\\''")}'`;
-function presentAttempt(id: string, expiresAt: Date, provider: string): LocalAiLoginAttempt {
-  const directory = loginHome(id);
-  return {
-    sessionId: id, expiresAt: expiresAt.toISOString(),
-    ...(provider === "xai" ? { command: `(export GROK_HOME=${shellQuote(directory)} && mkdir -p "$GROK_HOME" && grok login --device-auth)` } : {}),
-  };
+function presentAttempt(id: string, expiresAt: Date): LocalAiLoginAttempt {
+  return { sessionId: id, expiresAt: expiresAt.toISOString() };
 }
 async function prepareHome(id: string, provider: string) {
   const directory = loginHome(id);
@@ -147,8 +142,9 @@ export function localAiLoginService(db: Db) {
     } finally { clearTimeout(timeout); }
   }
   function ensureBrowserLogin(id: string, provider: string) {
-    if (provider === "xai" || browserLogins.has(id)) return;
-    browserLogins.set(id, startLocalBrowserLogin(provider as "anthropic" | "openai" | "google", loginHome(id)));
+    if (browserLogins.has(id)) return;
+    if (provider !== "anthropic" && provider !== "openai" && provider !== "google" && provider !== "xai") return;
+    browserLogins.set(id, startLocalBrowserLogin(provider, loginHome(id)));
   }
   async function reapExpired() {
     // Waiting native owners have a completion wake, not a retry deadline. The
@@ -227,7 +223,7 @@ export function localAiLoginService(db: Db) {
             existing.aiConnection && sameTarget(existing.aiConnection, intent) &&
             existing.expiresAt && existing.expiresAt.getTime() > Date.now()) {
           await prepareHome(existing.id, intent.provider);
-          return presentAttempt(existing.id, existing.expiresAt, intent.provider);
+          return presentAttempt(existing.id, existing.expiresAt);
         }
         if (!restart || existing.connectionMethod !== LOCAL_LOGIN_METHOD)
           throw unprocessable("Another sign-in is still open. Finish it, or choose Start sign-in again to replace a local attempt.");
@@ -266,7 +262,7 @@ export function localAiLoginService(db: Db) {
           throw unprocessable("Another sign-in is still open. Finish or cancel it before starting again.");
         throw error;
       }
-      return presentAttempt(id, expiresAt, intent.provider);
+      return presentAttempt(id, expiresAt);
     });
     if (retiredAttemptId) deferredRetirements.delete(retiredAttemptId);
     ensureBrowserLogin(attempt.sessionId, intent.provider);
@@ -278,9 +274,7 @@ export function localAiLoginService(db: Db) {
   async function check(companyId: string, userId: string, intent: AiConnectionLoginIntent, id?: string): Promise<LocalAiLoginStatus> {
     let directory: string | undefined;
     {
-      if (!id) throw unprocessable(intent.provider === "xai"
-        ? "Start local sign-in before checking this account."
-        : "Start browser sign-in before checking this account.");
+      if (!id) throw unprocessable("Start browser sign-in before checking this account.");
       const [session] = await db.select().from(adapterAuthSessions).where(and(
         eq(adapterAuthSessions.id, id), eq(adapterAuthSessions.companyId, companyId),
         eq(adapterAuthSessions.startedByUserId, userId),
@@ -299,7 +293,7 @@ export function localAiLoginService(db: Db) {
     } catch {
       const login = id ? browserLogins.get(id) : undefined;
       return { status: "sign_in_required", authorizationUrl: login?.authorizationUrl, code: login?.code,
-        ...(!login && intent.provider !== "xai"
+        ...(!login
           ? { error: "The server restarted during sign-in. Start sign-in again." }
           : login?.outcome === "failure"
             ? { error: login.error ?? "Sign-in ended before the account was connected. Start sign-in again." }
