@@ -3,6 +3,7 @@ import { approvals, toolActionRequests, toolInvocations, type Db } from "@paperc
 
 import { readSignedToolArgumentsPayload } from "./tool-content-guards.js";
 import { notifyToolReviewChange } from "./tool-review-work-notifications.js";
+import { toolApprovalConnectionCanResume, TOOL_APPROVAL_CONNECTION_REQUIRED } from "./tool-approval-connection.js";
 
 type ReviewProjection = {
   actionRequestId: string;
@@ -85,6 +86,10 @@ export async function prepareApprovedToolReview(db: Db, input: {
         return { kind: "skip" } as const;
       }
     }
+    // A passive connection wait cannot outlive a withdrawn governance decision.
+    if (invocation.errorCode === TOOL_APPROVAL_CONNECTION_REQUIRED &&
+      !await toolApprovalConnectionCanResume(tx as unknown as Db, invocation.companyId, invocation.connectionId,
+        payload.approvalSnapshot, invocation.policyExplanation?.approvalConnectionWait)) return { kind: "skip" } as const;
     return { kind: "ready", request, invocation, payload } as const;
   });
 }

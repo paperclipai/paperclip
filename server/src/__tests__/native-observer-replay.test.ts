@@ -25,7 +25,7 @@ import { compareObserverReplays, type ObserverReplayMeasurement } from "./helper
 const output = "Synthetic replay output.\n";
 const fixturePayloads = [
   ...Array.from({ length: 6 }, (_, index) => ({
-    eventType: "tool.execution.started",
+    eventType: "tool.execution.started" as const,
     payload: {
       schema: "paperclip.tool.execution.v1", executionId: `fixture-tool-${index + 1}`,
       transport: "builtin", operation: "execute", name: "synthetic-tool", target: null,
@@ -33,8 +33,8 @@ const fixturePayloads = [
       progress: null, output: null, outputBytes: 0, outputTruncated: false, outputDigest: null,
     },
   })),
-  { eventType: "item.delta", payload: { kind: "agentMessage", text: output } },
-  { eventType: "item.completed", payload: { kind: "agentMessage", item: { id: "answer", text: output } } },
+  { eventType: "item.delta" as const, payload: { kind: "agentMessage", text: output } },
+  { eventType: "item.completed" as const, payload: { kind: "agentMessage", item: { id: "answer", text: output } } },
 ];
 const fixture = createHash("sha256").update(JSON.stringify(fixturePayloads)).digest("hex");
 const expectedDeliveries = fixturePayloads.length;

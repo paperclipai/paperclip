@@ -25,7 +25,7 @@ it.each([false, true])("keeps execution queue consumers intact and emits only a 
     const write = vi.fn(async () => "written");
     expect(await writeExecutionControl(owner as never, DELIVERY_QUEUES.workspaceRecovery, write, scope)).toBe("written");
     expect(write).toHaveBeenCalledOnce();
-    expect(new Set(settled.map(row => row.queue))).toEqual(new Set([DELIVERY_QUEUES.issueMonitors, DELIVERY_QUEUES.workspaceRecovery,
+    expect(new Set(settled.map(row => row.queue))).toEqual(new Set([DELIVERY_QUEUES.executionReplacement, DELIVERY_QUEUES.issueMonitors, DELIVERY_QUEUES.workspaceRecovery,
       ...(scoped ? [DELIVERY_QUEUES.statusCardEvaluation] : [])]));
   } finally { for (const stop of unsubscribe) stop(); }
 });

@@ -41,12 +41,29 @@ export function authorizedActors(run, ownerIds) {
     && allowed(run.actor) && allowed(run.triggering_actor);
 }
 
-export function associatedProfilePr(run, pulls, ownerIds) {
+// The PR at this exact revision, when its author, the run's actor and the
+// rerun actor are all CI CODEOWNERS.
+export function associatedOwnerPr(run, pulls, ownerIds, accept = () => true) {
   if (!authorizedActors(run, ownerIds)) return undefined;
   return pulls.find((pr) => pr.base.repo.id === repositoryId && pr.base.repo.full_name === repository
     && pr.head.repo?.id === run.head_repository?.id && pr.head.sha === run.head_sha
-    && pr.user?.type === "User" && ownerIds.includes(pr.user.id)
-    && pr.labels.some((label) => label.name === "profile-ci"));
+    && pr.user?.type === "User" && ownerIds.includes(pr.user.id) && accept(pr));
+}
+
+export function associatedProfilePr(run, pulls, ownerIds) {
+  return associatedOwnerPr(run, pulls, ownerIds, (pr) => pr.labels.some((label) => label.name === "profile-ci"));
+}
+
+// Always-on export keeps one run in this many, chosen by the workflow's
+// sequential run number so that ci-profile.yml can skip the others before
+// starting a runner.
+export const sampleRate = 10;
+
+// "label": a profile-ci run with test detail, always exported.
+// "sampled": an ordinary run chosen by its number, job and step timings only.
+export function exportMode(run) {
+  if (typeof run.display_title === "string" && run.display_title.startsWith("CI profile · PR #")) return "label";
+  return Number.isSafeInteger(run.run_number) && run.run_number > 0 && run.run_number % sampleRate === 0 ? "sampled" : undefined;
 }
 
 async function main() {

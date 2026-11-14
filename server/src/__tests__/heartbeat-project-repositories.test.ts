@@ -913,7 +913,7 @@ suite("task project repository provisioning", () => {
     const projectId = randomUUID();
     const agentId = randomUUID();
     const issueId = randomUUID();
-    const repositoryRows = [];
+    const repositoryRows: (typeof projectWorkspaces.$inferInsert & { id: string })[] = [];
     for (let index = 0; index < count; index++) {
       const source = path.join(root, companyId, `source-${index}`);
       await mkdir(source, { recursive: true });

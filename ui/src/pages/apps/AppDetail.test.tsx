@@ -19,7 +19,7 @@ const listApplicationsMock = vi.hoisted(() => vi.fn());
 const listGalleryMock = vi.hoisted(() => vi.fn());
 const listConnectionsMock = vi.hoisted(() => vi.fn());
 const listCatalogMock = vi.hoisted(() => vi.fn());
-const listProfilesMock = vi.hoisted(() => vi.fn());
+const listConnectionProfileConfigurationMock = vi.hoisted(() => vi.fn());
 const listPoliciesMock = vi.hoisted(() => vi.fn());
 const listConnectionActivityMock = vi.hoisted(() => vi.fn());
 const listActionRequestsMock = vi.hoisted(() => vi.fn());
@@ -49,6 +49,11 @@ const mockParams = vi.hoisted(() => ({ connectionId: "conn-1", tab: "permissions
 const mockSearchParams = vi.hoisted(() => ({ value: new URLSearchParams() }));
 const navigateComponentMock = vi.hoisted(() => vi.fn());
 const navigateTopLevelMock = vi.hoisted(() => vi.fn());
+const popupAssignMock = vi.hoisted(() => vi.fn());
+
+vi.mock("@/components/ai-connections/AiConnectionPoolConnector", () => ({
+  AiConnectionPoolConnector: () => <div>Connection pool controls</div>,
+}));
 
 vi.mock("@/api/tools", () => ({
   toolsApi: {
@@ -60,7 +65,7 @@ vi.mock("@/api/tools", () => ({
     listGallery: (companyId: string) => listGalleryMock(companyId),
     listConnections: (companyId: string) => listConnectionsMock(companyId),
     listCatalog: (connectionId: string) => listCatalogMock(connectionId),
-    listProfiles: (companyId: string) => listProfilesMock(companyId),
+    listConnectionProfileConfiguration: (connectionId: string) => listConnectionProfileConfigurationMock(connectionId),
     deleteProfile: (profileId: string) => deleteProfileMock(profileId),
     listPolicies: (companyId: string) => listPoliciesMock(companyId),
     listConnectionActivity: (connectionId: string, limit: number) =>
@@ -176,6 +181,7 @@ vi.mock("@/context/BreadcrumbContext", () => ({
 const pushToastMock = vi.hoisted(() => vi.fn());
 vi.mock("@/context/ToastContext", () => ({
   useToast: () => ({ pushToast: pushToastMock }),
+  useOptionalToastActions: () => ({ pushToast: pushToastMock }),
 }));
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -353,6 +359,9 @@ describe("AppDetail", () => {
   let root: ReturnType<typeof createRoot>;
 
   beforeEach(() => {
+    popupAssignMock.mockReset();
+    vi.spyOn(window, "open").mockReturnValue({ closed: false, location: { assign: popupAssignMock, href: "about:blank" }, focus: vi.fn(), close: vi.fn(), sessionStorage: window.sessionStorage } as unknown as Window);
+
     sessionStorage.clear();
     container = document.createElement("div");
     document.body.appendChild(container);
@@ -409,7 +418,7 @@ describe("AppDetail", () => {
         }),
       ],
     });
-    listProfilesMock.mockResolvedValue({
+    listConnectionProfileConfigurationMock.mockResolvedValue({
       profiles: [
         {
           profileKey: "app:conn-1",
@@ -713,6 +722,55 @@ describe("AppDetail", () => {
     expect(container.textContent).toContain("GitHub");
     expect(container.textContent).toContain("Loading tools…");
     expect(container.textContent).not.toContain("Action permissions");
+  });
+
+  it("keeps the loaded connection visible when a refetch fails transiently", async () => {
+    mockParams.tab = "permissions";
+    const client = await renderAppDetail();
+    expect(container.textContent).toContain("Which agents can use this connection?");
+
+    getConnectionMock.mockRejectedValue(new ApiError("Paperclip is restarting.", 503, { error: "tenant_app_unavailable" }));
+    await act(async () => { await client.invalidateQueries({ queryKey: queryKeys.tools.connection("conn-1") }); });
+    await flushReact();
+
+    expect(container.textContent).toContain("GitHub");
+    expect(container.textContent).toContain("Which agents can use this connection?");
+    expect(container.querySelector('[data-query-view="error"]')).toBeNull();
+    expect(container.textContent).not.toContain("Paperclip is restarting.");
+    expect(container.textContent).not.toContain("tenant_app_unavailable");
+  });
+
+  it("shows readable copy and a Retry for a real connection failure", async () => {
+    mockParams.tab = "permissions";
+    getConnectionMock.mockRejectedValueOnce(new ApiError("Boom", 500, { error: "Boom" }));
+
+    await renderAppDetail();
+
+    const errorView = container.querySelector('[data-query-view="error"]');
+    expect(errorView?.textContent).toContain("Couldn't load the connection");
+    expect(container.textContent).not.toContain("Which agents can use this connection?");
+    const retry = Array.from(container.querySelectorAll("button")).find((button) => button.textContent?.trim() === "Retry");
+    expect(retry).toBeTruthy();
+    await act(async () => retry!.click());
+    await flushReact();
+
+    expect(container.querySelector('[data-query-view="error"]')).toBeNull();
+    expect(container.textContent).toContain("Which agents can use this connection?");
+  });
+
+  it.each([false, true])("replaces a cached connection with not-found after deletion (router: %s)", async router => {
+    if (router) getConnectionMock.mockResolvedValue(connection({ config: { aiRouter: { pluginKey: "test-router" } } }));
+    const client = await renderAppDetail();
+    const controls = router ? "Connection pool controls" : "Which agents can use this connection?";
+    expect(container.textContent).toContain(controls);
+    getConnectionMock.mockRejectedValue(new ApiError("not_found", 404, null));
+    await act(async () => { await client.invalidateQueries({ queryKey: queryKeys.tools.connection("conn-1") }); });
+    await flushReact();
+    expect(client.getQueryData(queryKeys.tools.connection("conn-1"))).toBeDefined();
+    expect(container.textContent).toContain("We couldn't find that app.");
+    expect(container.textContent).toContain("Back to connectors");
+    expect(container.textContent).not.toContain(controls);
+    expect(container.textContent).not.toContain("not_found");
   });
 
   it("redirects the retired Test tab into Permissions", async () => {
@@ -1034,6 +1092,15 @@ describe("AppDetail", () => {
     });
   });
 
+  it("fetches the connection configuration under a distinct child of the profiles cache", async () => {
+    await renderAppDetail();
+    expect(listConnectionProfileConfigurationMock).toHaveBeenCalledWith("conn-1");
+    expect(queryKeys.tools.connectionProfileConfiguration("company-1", "conn-1").slice(0, 3))
+      .toEqual(queryKeys.tools.profiles("company-1"));
+    expect(queryKeys.tools.connectionProfileConfiguration("company-1", "conn-1"))
+      .not.toEqual(queryKeys.tools.connectionProfileConfiguration("company-1", "conn-2"));
+  });
+
   it("shows and removes task-granted access without changing the connection's default permissions", async () => {
     const grant = {
       id: "task-grant", status: "active", profileKey: "connection-intent:conn-1:agent-1",
@@ -1041,7 +1108,7 @@ describe("AppDetail", () => {
       bindings: [{ targetType: "agent", targetId: "agent-1" }],
       entries: [{ effect: "include", catalogEntryId: "catalog-write" }],
     };
-    listProfilesMock.mockResolvedValue({ profiles: [grant] });
+    listConnectionProfileConfigurationMock.mockResolvedValue({ profiles: [grant] });
     listPoliciesMock.mockResolvedValue({ policies: [{
       enabled: true, policyType: "require_approval",
       selectors: { catalogEntryId: "catalog-write" },
@@ -1051,7 +1118,7 @@ describe("AppDetail", () => {
     const section = Array.from(container.querySelectorAll("section")).find(section => section.textContent?.includes("Additional agent access"))!;
     expect(section.textContent).toContain("Write issue");
     expect(section.textContent).toContain("Ask first");
-    listProfilesMock.mockResolvedValue({ profiles: [] });
+    listConnectionProfileConfigurationMock.mockResolvedValue({ profiles: [] });
     await act(async () => section.querySelector("button")!.click());
     await flushReact();
     expect(deleteProfileMock).toHaveBeenCalledWith("task-grant");
@@ -1061,7 +1128,7 @@ describe("AppDetail", () => {
   });
 
   it("keeps the task grant visible when removal fails", async () => {
-    listProfilesMock.mockResolvedValue({ profiles: [{
+    listConnectionProfileConfigurationMock.mockResolvedValue({ profiles: [{
       id: "task-grant", status: "active", profileKey: "connection-intent:conn-1:agent-1",
       metadata: { source: "connection_intent", connectionId: "conn-1", agentId: "agent-1" },
       bindings: [{ targetType: "agent", targetId: "agent-1" }],
@@ -1078,7 +1145,7 @@ describe("AppDetail", () => {
 
   it("persists agent access independently from always-installed agents", async () => {
     mockParams.tab = "permissions";
-    listProfilesMock.mockResolvedValue({
+    listConnectionProfileConfigurationMock.mockResolvedValue({
       profiles: [{
         profileKey: "app:conn-1",
         entries: [
@@ -1144,7 +1211,7 @@ describe("AppDetail", () => {
 
   it("uses the setup-style agent access question without install terminology", async () => {
     mockParams.tab = "permissions";
-    listProfilesMock.mockResolvedValue({
+    listConnectionProfileConfigurationMock.mockResolvedValue({
       profiles: [{
         profileKey: "app:conn-1",
         entries: [
@@ -1498,7 +1565,7 @@ describe("AppDetail", () => {
     await flushReact();
 
     expect(startOAuthMock).toHaveBeenCalledWith("conn-1");
-    expect(navigateTopLevelMock).toHaveBeenCalledWith("https://example.test/oauth");
+    expect(popupAssignMock).toHaveBeenCalledWith("https://example.test/oauth");
   });
 
   it("reconnects an OAuth warning through the connection's existing personal identity", async () => {
@@ -1520,7 +1587,7 @@ describe("AppDetail", () => {
     await flushReact();
 
     expect(startOAuthMock).toHaveBeenCalledWith("conn-1", { asCurrentUser: true });
-    expect(navigateTopLevelMock).toHaveBeenCalledWith("https://example.test/oauth");
+    expect(popupAssignMock).toHaveBeenCalledWith("https://example.test/oauth");
   });
 
   it("does not offer a personal reconnect to someone other than its fixed owner", async () => {
@@ -1675,7 +1742,7 @@ describe("AppDetail", () => {
       subjectUserId: "user-1",
       returnTo: "/apps/conn-1/permissions",
     });
-    expect(navigateTopLevelMock).toHaveBeenCalledWith("https://accounts.example.test/authorize");
+    expect(popupAssignMock).toHaveBeenCalledWith("https://accounts.example.test/authorize");
   });
 
   it("keeps personal managed authorization in the tenant until the provider is ready", async () => {
@@ -1701,7 +1768,7 @@ describe("AppDetail", () => {
       body: JSON.stringify({ session }),
     }));
     await vi.waitFor(() => {
-      expect(navigateTopLevelMock).toHaveBeenCalledWith(
+      expect(popupAssignMock).toHaveBeenCalledWith(
         "https://provider.example.test/authorize?state=personal",
       );
     });

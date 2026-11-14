@@ -1,12 +1,16 @@
+import type { VerifiedIdleCapabilities } from "./idle-incoming-wake-capability.js";
+import { idleApiActivity } from "./idle-api-activity.js";
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import { resolvePaperclipInstanceRoot } from "../home-paths.js";
 import { idleWorkSnapshot } from "./task-admission.js";
+import type { IdleSleepDiagnosticSink } from "./idle-sleep-diagnostics.js";
 
+export type IdleLocalWorkOptions = { backupCheckpoint?: boolean; diagnostic?: IdleSleepDiagnosticSink; deadlineCapability?: VerifiedIdleCapabilities };
 export type IdleLocalWork = "none" | "present" | "unknown";
 const spoolDirectories = new Set<string>();
-const localWorkProbes = new Set<() => IdleLocalWork>();
-export function registerIdleLocalWorkProbe(probe: () => IdleLocalWork): () => void {
+const localWorkProbes = new Set<(options: IdleLocalWorkOptions) => IdleLocalWork>();
+export function registerIdleLocalWorkProbe(probe: (options: IdleLocalWorkOptions) => IdleLocalWork): () => void {
   localWorkProbes.add(probe);
   return () => { localWorkProbes.delete(probe); };
 }
@@ -61,21 +65,50 @@ export async function inspectIdleQuotaRecovery(directory: string): Promise<IdleL
   }
 }
 
-export async function readIdleLocalWork(options: { backupCheckpoint?: boolean } = {}): Promise<IdleLocalWork> {
-  if (!startupComplete || !ingressTracked) return "unknown";
+export async function readIdleLocalWork(options: IdleLocalWorkOptions = {}): Promise<IdleLocalWork> {
+  const record = options.diagnostic;
+  const states: IdleLocalWork[] = [];
+  record?.("local.startup", startupComplete ? "none" : "unknown");
+  record?.("local.ingress_tracking", ingressTracked ? "none" : "unknown");
+  if (!startupComplete || !ingressTracked) {
+    if (!record) return "unknown";
+    states.push("unknown");
+  }
   // This exemption belongs only to a scan which will finish a new backup
   // under the same admission hold before it can return an empty report.
-  if ((scheduledBackups && !options.backupCheckpoint) || idleWorkSnapshot().active !== 0) return "present";
+  const backup = scheduledBackups && !options.backupCheckpoint;
+  const active = idleWorkSnapshot().active !== 0;
+  record?.("local.automatic_backups", backup ? "present" : "none");
+  record?.("local.tracked_work", active ? "present" : "none");
+  if (backup || active) {
+    if (!record) return "present";
+    states.push("present");
+  }
+  let probes: IdleLocalWork;
   try {
-    const local = [...localWorkProbes].map(probe => probe());
-    if (local.includes("unknown")) return "unknown";
-    if (local.includes("present")) return "present";
-  } catch { return "unknown"; }
-  const directories = new Set([...spoolDirectories, idleAccountingSpoolPath(), idleOrphanSpoolPath()]);
+    const local = [idleApiActivity.active() ? "present" : "none", ...[...localWorkProbes].map(probe => probe(options))];
+    probes = local.some(state => state !== "none" && state !== "present") ? "unknown"
+      : local.includes("present") ? "present" : "none";
+  } catch { probes = "unknown"; }
+  record?.("local.registered_probes", probes);
+  if (probes !== "none" && !record) return probes;
+  states.push(probes);
+  const accounting = idleAccountingSpoolPath();
+  const orphan = idleOrphanSpoolPath();
+  const directories = new Set([...spoolDirectories, accounting, orphan]);
   const results = await Promise.all([
-    ...[...directories].map(inspectIdleSpool),
-    inspectIdleQuotaRecovery(idleQuotaRecoveryPath()),
+    ...[...directories].map(async directory => {
+      const state = await inspectIdleSpool(directory);
+      record?.(directory === accounting ? "local.accounting_spool"
+        : directory === orphan ? "local.orphan_spool" : "local.registered_spools", state);
+      return state;
+    }),
+    inspectIdleQuotaRecovery(idleQuotaRecoveryPath()).then(state => {
+      record?.("local.quota_recovery", state);
+      return state;
+    }),
   ]);
-  if (results.includes("unknown")) return "unknown";
-  return results.includes("present") ? "present" : "none";
+  states.push(...results);
+  if (states.includes("unknown")) return "unknown";
+  return states.includes("present") ? "present" : "none";
 }

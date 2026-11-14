@@ -7,7 +7,7 @@ import { environmentLeases, executionWorkspaceRestorePoints, executionWorkspaces
 import type { StoredSecretVersionMaterial } from "../secrets/types.js";
 import type { StorageService } from "../storage/types.js";
 import { resolvePaperclipInstanceRoot } from "../home-paths.js";
-import { openRestorePoint, sealRestorePoint } from "./git-restore-point.js";
+import { openRestorePoint, sealRestorePoint, verifyRestorePointPayloadCandidate } from "./git-restore-point.js";
 import { notifyGitRestorePointWork } from "./git-restore-point-ledger.js";
 import { abandonGitRestorePoint, activateGitRestorePoints, readRestorePointObject, storeSealedRestorePoint } from "./git-restore-point-storage.js";
 import { allocatedBytes, describeGitExpirationFailure, expirationScope, isGitWorkspaceExpirationEligible, type GitExpirationFailure } from "./git-workspace-expiration.js";
@@ -15,6 +15,7 @@ import { IsolatedRepositorySourceBusy, withIsolatedRepositorySourceLock } from "
 import { logActivity } from "./activity-log.js";
 import {
   captureTaskDirectorySnapshot,
+  createEmptyTaskDirectorySnapshot,
   inspectTaskDirectory,
   materializeTaskDirectorySnapshot,
   newestTaskDirectoryMtime,
@@ -124,7 +125,7 @@ function restorePointObjectKey(companyId: string, workspaceId: string, generatio
   return `${companyId}/${NAMESPACE}/${workspaceId}/${generation}/task-directory/${id}.pcrp`;
 }
 
-function validateRestorePointRef(ref: TaskDirectoryRestorePointRef | null | undefined, workspace: { companyId: string; id: string }) {
+export function validateTaskDirectoryRestorePointRef(ref: TaskDirectoryRestorePointRef | null | undefined, workspace: { companyId: string; id: string }) {
   if (!ref || ref.schema !== TASK_DIRECTORY_RESTORE_POINT_SCHEMA || typeof ref.id !== "string" || !UUID.test(ref.id)
     || !Number.isSafeInteger(ref.generation) || ref.generation < 1
     || ref.objectKey !== restorePointObjectKey(workspace.companyId, workspace.id, ref.generation, ref.id)
@@ -134,6 +135,35 @@ function validateRestorePointRef(ref: TaskDirectoryRestorePointRef | null | unde
     throw new TaskDirectoryRestoreFailure("invalid_restore_point_reference");
   }
   return ref;
+}
+
+/** Read a retained directory without reopening its workspace or replacing its
+ * original path. Administrative migration uses the same identity and byte checks
+ * as ordinary restore, and never treats an expired object as an empty folder. */
+export async function loadTaskDirectoryRestorePoint(input: {
+  storage: StorageService;
+  workspace: { companyId: string; id: string };
+  ref: TaskDirectoryRestorePointRef;
+  recoverMissingEmpty?: boolean;
+  signal?: AbortSignal;
+}) {
+  const ref = validateTaskDirectoryRestorePointRef(input.ref, input.workspace);
+  if (ref.expiredAt) throw new TaskDirectoryRestoreFailure("restore_point_expired");
+  const identity = { companyId: input.workspace.companyId, workspaceId: input.workspace.id, restorePointId: ref.id, generation: ref.generation };
+  const ciphertext = await readRestorePointObject(input.storage, input.workspace.companyId, ref.objectKey, input.signal).catch(async () => {
+    input.signal?.throwIfAborted();
+    if (!input.recoverMissingEmpty || ref.files !== 0 || ref.excluded !== 0) throw new TaskDirectoryRestoreFailure("restore_point_unavailable");
+    const head = await input.storage.headObject(input.workspace.companyId, ref.objectKey, { signal: input.signal }).catch(() => null);
+    input.signal?.throwIfAborted();
+    if (head?.exists !== false) throw new TaskDirectoryRestoreFailure("restore_point_unavailable");
+    const candidate = createEmptyTaskDirectorySnapshot();
+    if (candidate.digest !== ref.digest) throw new TaskDirectoryRestoreFailure("restored_contents_mismatch");
+    await verifyRestorePointPayloadCandidate({ payload: candidate.payload, key: ref.key, identity });
+    return null;
+  });
+  if (ciphertext === null) return createEmptyTaskDirectorySnapshot().payload;
+  if (ciphertext.length !== ref.byteSize) throw new TaskDirectoryRestoreFailure("ciphertext_size_mismatch");
+  return openRestorePoint({ ciphertext, sha256: ref.sha256, key: ref.key, identity });
 }
 
 function skipReason(error: unknown) {
@@ -341,7 +371,7 @@ export async function restoreIsolatedTaskDirectory(input: {
   const parent = path.dirname(cwd);
   await fs.mkdir(parent, { recursive: true, mode: 0o700 });
   if (await fs.realpath(parent) !== parent) throw new TaskDirectoryRestoreFailure("task_directory_identity_changed");
-  const ref = validateRestorePointRef(state.restorePoint, input.workspace);
+  const ref = validateTaskDirectoryRestorePointRef(state.restorePoint, input.workspace);
   if (await directoryState(cwd) === "present") {
     if (!state.removed) return { restored: false, expired: false };
     if ((await fs.readdir(cwd)).length === 0) await fs.rmdir(cwd);
@@ -355,12 +385,7 @@ export async function restoreIsolatedTaskDirectory(input: {
     await fs.mkdir(cwd, { mode: 0o700 });
     return { restored: false, expired: true };
   }
-  const ciphertext = await readRestorePointObject(input.storage, input.workspace.companyId, ref.objectKey, input.signal).catch(() => {
-    throw new TaskDirectoryRestoreFailure("restore_point_unavailable");
-  });
-  if (ciphertext.length !== ref.byteSize) throw new TaskDirectoryRestoreFailure("ciphertext_size_mismatch");
-  const payload = await openRestorePoint({ ciphertext, sha256: ref.sha256, key: ref.key,
-    identity: { companyId: input.workspace.companyId, workspaceId: input.workspace.id, restorePointId: ref.id, generation: ref.generation } });
+  const payload = await loadTaskDirectoryRestorePoint({ ...input, ref });
   const staging = await materializeTaskDirectorySnapshot({ payload, target: cwd, expectedDigest: ref.digest, signal: input.signal });
   try {
     await fs.rename(staging, cwd);

@@ -2,6 +2,7 @@ import type { QueryClient } from "@tanstack/react-query";
 import { queryKeys } from "./queryKeys";
 import { authApi } from "@/api/auth";
 import { classifySendFailure } from "./pending-send";
+import { hasUnverifiedSession } from "./cached-session";
 
 type AccountGeneration = { owner: string | undefined; generation: number };
 const accounts = new WeakMap<QueryClient, AccountGeneration>();
@@ -34,24 +35,24 @@ export function bindAccount(client: QueryClient) {
   }
   const { owner, generation } = account;
   const isCurrentScope = () => account.generation === generation && (owner === undefined ? generation === 0 : account.owner === owner);
-  const isCurrentAccount = () => account.owner !== undefined && isCurrentScope();
+  const isCurrentAccount = () => account.owner !== undefined && !hasUnverifiedSession(client) && isCurrentScope();
   const whenAccountReady = async () => {
-    if (account.owner !== undefined || !isCurrentScope()) return;
+    if ((account.owner !== undefined && !hasUnverifiedSession(client)) || !isCurrentScope()) return;
     let stopped = false;
     let unsubscribe = () => {};
     const ready = new Promise<void>(resolve => {
       unsubscribe = client.getQueryCache().subscribe(() => {
-        if (account.owner !== undefined || !isCurrentScope()) resolve();
+        if ((account.owner !== undefined && !hasUnverifiedSession(client)) || !isCurrentScope()) resolve();
       });
     });
     const lookup = async () => {
       for (let attempt = 0; attempt < 3; attempt += 1) {
-        if (stopped || account.owner !== undefined || !isCurrentScope()) return;
+        if (stopped || (account.owner !== undefined && !hasUnverifiedSession(client)) || !isCurrentScope()) return;
         try {
-          await client.fetchQuery({ queryKey: queryKeys.auth.session, queryFn: () => authApi.getSession(), retry: false });
+          await client.fetchQuery({ queryKey: queryKeys.auth.session, queryFn: () => authApi.getSession(), retry: false, staleTime: 0 });
           return;
         } catch (error) {
-          if (stopped || account.owner !== undefined || !isCurrentScope()) return;
+          if (stopped || (account.owner !== undefined && !hasUnverifiedSession(client)) || !isCurrentScope()) return;
           if (attempt === 2 || classifySendFailure(error) !== "pending") throw error;
           await new Promise(resolve => setTimeout(resolve, 250 * 2 ** attempt));
         }

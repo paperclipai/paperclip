@@ -129,8 +129,9 @@ async onResourceLifecycle(event) {
 ```
 
 Core delivers events to ready plugins with a configuration row for that company,
-unless the plugin is disabled there. Each invocation has the event's company
-scope. The dispatcher wakes after the mutation's outer transaction settles,
+unless the plugin is disabled there. A workspace storage provider receives project
+events only for projects attached to it, plus events for deleted projects. Each
+invocation has the event's company scope. The dispatcher wakes after the mutation's outer transaction settles,
 on host startup, plugin activation/worker start, and company configuration or
 enablement changes. Successful worker `onConfigChanged` completion wakes delivery
 again, so a callback that deferred while configuration was still applying is
@@ -717,6 +718,17 @@ Do not use `localFolders` to grant the UI direct browser-side access to the
 filesystem — there is no such capability. The browser still goes through the
 worker via `getData` / `performAction`, and the worker only exposes paths it
 chose to expose.
+
+### Reading project snapshots
+
+Workers with `projects.read`, `project.workspaces.read`, and
+`projects.instance-secrets` can call
+`ctx.projects.readSnapshots(projectIds, companyId, entityType)` to read up to
+64 distinct projects in one call. Each snapshot includes workspaces, the
+worker's authorized instance secrets, and its own company-scoped entity of the
+given type keyed by the project ID. A missing, archived, inaccessible, or
+changing project fails the whole request. Older hosts return `null` through
+the SDK. Keep instance secrets inside the trusted worker.
 
 ### When to keep worker-mediated project workspace browsing
 

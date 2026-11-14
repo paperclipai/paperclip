@@ -33,15 +33,25 @@ export function createLifecycleWorker(store: LifecycleStore, driver: LifecycleDr
       renewal.unref?.();
       try {
         const operation = agent.lifecycleOperation!;
-        const pluginIds = agent.lifecycleRequiredPluginIds ?? await runStep("select_plugins", () => driver.requiredPluginIds(agent));
-        if (agent.lifecycleRequiredPluginIds === null && !await runStep("save_plugins", () => store.setRequiredPlugins(agent, owner, pluginIds))) continue;
+        const saved = agent.lifecycleRequiredPluginIds;
+        const selecting = saved === null || (["preparing", "resuming"].includes(agent.lifecycleState)
+          && !operation.hostComplete && operation.completedPluginIds.length === 0);
+        const pluginIds = !selecting ? saved
+          : [...new Set([...(saved ?? []), ...await runStep("select_plugins", () => driver.requiredPluginIds(agent))])];
+        if ((saved === null || pluginIds.length !== saved.length) && !await runStep("save_plugins", () => store.setRequiredPlugins(agent, owner, pluginIds))) continue;
         if (!canRun()) {
           await runStep("defer", () => store.defer(agent, owner, null, new Date()));
           return;
         }
         if (!operation.hostComplete) {
           if (!await runStep("renew", () => store.renew(agent, owner, new Date()))) continue;
-          if (await runStep("host", () => driver.runHost(agent)) === "pending") {
+          const host = await runStep("host", () => driver.runHost(agent));
+          if (host === "waiting") {
+            if (agent.lifecycleState !== "verifying") throw new Error("Only host verification may await an external event");
+            if (!await runStep("defer", () => store.defer(agent, owner, null, new Date(), { waitForSignal: true }))) continue;
+            return;
+          }
+          if (host === "pending") {
             if (!await runStep("defer", () => store.defer(agent, owner, null, new Date()))) continue;
             return;
           }

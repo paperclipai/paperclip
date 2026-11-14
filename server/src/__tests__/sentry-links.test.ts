@@ -14,6 +14,58 @@ afterEach(() => {
 });
 
 describe("Sentry navigation links", () => {
+  it("adds filterable creation provenance to failures even without a public origin", async () => {
+    const routineId = "77777777-7777-4777-8777-777777777777";
+    setSentryRunLinkResolver(async () => ({ ...identity,
+      creationProvenance: { status: "complete" as const, routineIds: [routineId], shareable: true } }));
+    vi.stubEnv("PAPERCLIP_PUBLIC_URL", "");
+    const event = await addSentryRunLinks({ tags: { event_kind: "run_failure", run_id: runId, company_id: companyId } });
+    expect(event.tags).toMatchObject({ automation_origin_status: "complete", automation_routine_ids: routineId, task_shareable: "true" });
+    expect(event).toHaveProperty("contexts.paperclip_creation.routineIds", [routineId]);
+  });
+
+  it("keeps missing, failed, and excessive provenance unknown without changing unrelated events", async () => {
+    const failure = () => ({ tags: { event_kind: "run_failure", run_id: runId, company_id: companyId,
+      automation_origin_status: "complete", automation_routine_ids: "sender-claim" } });
+    expect((await addSentryRunLinks(failure())).tags).toMatchObject({ automation_origin_status: "unknown", automation_routine_ids: "unknown" });
+    setSentryRunLinkResolver(async () => { throw new Error("Database unavailable"); });
+    expect((await addSentryRunLinks(failure())).tags.automation_origin_status).toBe("unknown");
+    const routineIds = Array.from({ length: 6 }, (_, n) => `77777777-7777-4777-8777-${String(n).padStart(12, "0")}`);
+    setSentryRunLinkResolver(async () => ({ ...identity, creationProvenance: { status: "complete", routineIds, shareable: true } }));
+    const truncated = await addSentryRunLinks(failure());
+    expect(truncated.tags.automation_origin_status).toBe("unknown");
+    expect(String(truncated.tags.automation_routine_ids).length).toBeLessThanOrEqual(200);
+    expect(truncated).toHaveProperty("contexts.paperclip_creation.routineIds", routineIds);
+    const unrelated = { tags: { error_code: "unrelated" } };
+    expect(await addSentryRunLinks(unrelated)).toEqual(unrelated);
+    setSentryRunLinkResolver(async () => ({ ...identity,
+      creationProvenance: { status: "complete", routineIds: [], shareable: false } }));
+    expect((await addSentryRunLinks(failure())).tags).toMatchObject({
+      automation_origin_status: "complete", automation_routine_ids: "none", task_shareable: "false",
+    });
+  });
+
+  it("removes the caller run credential from all outgoing Sentry request headers", async () => {
+    const event = await addSentryRunLinks({ request: { headers: {
+      "X-Paperclip-Source-Run-Token": "private-source-credential", "content-type": "application/json",
+    } } });
+    expect(event.request.headers).toEqual({ "content-type": "application/json" });
+    expect(JSON.stringify(event)).not.toContain("private-source-credential");
+  });
+
+  it("does not turn an enrichment timeout into apparently independent work", async () => {
+    vi.useFakeTimers();
+    let finish!: (value: typeof identity) => void;
+    setSentryRunLinkResolver(() => new Promise(resolve => { finish = resolve; }));
+    const pending = addSentryRunLinks({ tags: { event_kind: "run_failure", run_id: runId } });
+    await vi.advanceTimersByTimeAsync(1_000);
+    const event = await pending;
+    expect(event.tags).toMatchObject({ automation_origin_status: "unknown", automation_routine_ids: "unknown" });
+    finish(identity);
+    await Promise.resolve();
+    expect(event.tags).toMatchObject({ automation_origin_status: "unknown", automation_routine_ids: "unknown" });
+  });
+
   it("adds normal UI URLs to run failures and Stop errors without changing API references or unrelated events", async () => {
     vi.stubEnv("PAPERCLIP_PUBLIC_URL", "https://paperclip.example.com");
     const resolve = vi.fn(async () => identity);

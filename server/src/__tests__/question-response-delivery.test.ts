@@ -280,6 +280,7 @@ describeEmbeddedPostgres("question response delivery", () => {
       },
       { userId: "board-user" },
     );
+    if (answered.kind !== "ask_user_questions") throw new Error("Expected an ask_user_questions interaction");
     return {
       companyId,
       agentId,

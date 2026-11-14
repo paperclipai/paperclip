@@ -5,11 +5,11 @@ import { buildRunnerCampaign } from "./history.js";
 import { assertSecretFree, findSecretLeakInJsonValues } from "./redaction.js";
 import { validateRetainedRunnerResult } from "./result-validation.js";
 import { publicBilling } from "./testops-chat-export.js";
-import { cases, targetSha, model, hash, validRunCount } from "./chat-completion-testops-contract.mjs";
+import { model, hash, validRunCount, catalogDefinition } from "./chat-completion-testops-contract.mjs";
 import type { RunnerE2EResult } from "./types.js";
 
 const pngMagic = Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]);
-interface Binding { runId: string; attempt: string; workflowSha: string; targetSha: string }
+interface Binding { runId: string; attempt: string; workflowSha: string; targetSha: string; catalog?: "full" }
 
 async function ownedRead(root: string, relative: string, limit: number) {
   if (!path.isAbsolute(root) || await realpath(root) !== root || relative.split("/").some(part => !/^[A-Za-z0-9._-]+$/.test(part) || [".", ".."].includes(part))) throw new Error("Invalid pilot evidence path");
@@ -32,8 +32,9 @@ async function ownedRead(root: string, relative: string, limit: number) {
  * verified here, but only its checksum and availability receipt cross jobs.
  */
 export async function exportCompletionPilot(root: string, output: string, binding: Binding, expectedIds: string[]) {
+  const { cases, targetSha } = catalogDefinition(binding);
   if (!/^[1-9][0-9]{0,15}$/.test(binding.runId) || binding.attempt !== "1" || !/^[a-f0-9]{40}$/.test(binding.workflowSha)
-    || binding.targetSha !== targetSha || !Array.isArray(expectedIds) || !expectedIds.length || expectedIds.length > 3
+    || binding.targetSha !== targetSha || !Array.isArray(expectedIds) || !expectedIds.length || expectedIds.length > cases.length
     || new Set(expectedIds).size !== expectedIds.length || expectedIds.some(id => !cases.some(row => row.executionId === id))) throw new Error("Invalid pilot binding");
   const campaignId = `gha-${binding.runId}-1`, runUrl = `https://github.com/paperclipai/paperclip/actions/runs/${binding.runId}`;
   const raw = JSON.parse((await ownedRead(root, "normalized-results.json", 8 * 1024 * 1024)).toString("utf8"));
@@ -55,7 +56,7 @@ export async function exportCompletionPilot(root: string, output: string, bindin
     if (checks.length > 200 || checks.some(check => check.matcher.kind !== "json_path" || !/^[A-Za-z0-9._-]{1,150}$/.test(check.matcher.path)
       || check.matcher.expected !== true || typeof check.passed !== "boolean")) throw new Error("Invalid pilot checks");
     if (original.status === "passed" && (original.cleanup !== "passed" || original.evidenceValid !== true
-      || checks.length !== descriptor.checks || checks.some(check => !check.passed) || !validRunCount(original.runIds, descriptor))) throw new Error("Incomplete pilot pass");
+      || (descriptor.checks == null ? checks.length < 1 : checks.length !== descriptor.checks) || checks.some(check => !check.passed) || !validRunCount(original.runIds, descriptor))) throw new Error("Incomplete pilot pass");
     let image: Buffer | undefined;
     const relative = `evidence/${id}/attempt-1/final-state.png`;
     try { image = await ownedRead(root, relative, 12 * 1024 * 1024); }
@@ -101,7 +102,9 @@ export async function exportCompletionPilot(root: string, output: string, bindin
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   exportCompletionPilot(path.resolve(process.env.TESTOPS_PILOT_REPORT_ROOT ?? "runner-e2e-merged-report/normalized"),
     path.resolve(process.env.TESTOPS_PILOT_EXPORT_ROOT ?? "runner-e2e-testops"), {
-      runId: process.env.GITHUB_RUN_ID ?? "", attempt: process.env.GITHUB_RUN_ATTEMPT ?? "", workflowSha: process.env.GITHUB_SHA ?? "", targetSha,
+      runId: process.env.GITHUB_RUN_ID ?? "", attempt: process.env.GITHUB_RUN_ATTEMPT ?? "", workflowSha: process.env.GITHUB_SHA ?? "",
+      ...(process.env.GITHUB_WORKFLOW_REF === "paperclipai/paperclip/.github/workflows/chat-catalog-testops.yml@refs/heads/master" ? { catalog: "full" as const } : {}),
+      targetSha: catalogDefinition(process.env.GITHUB_WORKFLOW_REF === "paperclipai/paperclip/.github/workflows/chat-catalog-testops.yml@refs/heads/master" ? { catalog: "full" } : {}).targetSha,
     }, JSON.parse(process.env.MANUAL_PRIVATE_IDS ?? "null"))
     .catch(() => { process.stderr.write("TestOps pilot projection rejected; originals remain protected\n"); process.exitCode = 1; });
 }

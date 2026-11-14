@@ -1,3 +1,4 @@
+import { queryViewKind } from "@/components/QueryView";
 import { useEffect, useMemo } from "react";
 import { useQueries, useQuery, useQueryClient } from "@tanstack/react-query";
 import type { Issue } from "@paperclipai/shared";
@@ -7,6 +8,7 @@ import { useTaskRunLiveUpdates, useTranscriptLiveStream } from "@/context/LiveUp
 import { createLiveQueryRecovery } from "@/lib/live-query-recovery";
 import { QueryNotReadyError } from "@/lib/query-client";
 import { queryKeys } from "@/lib/queryKeys";
+import { useAgentEnvironmentSlots } from "@/plugins/useAgentEnvironmentSlots";
 import { usePluginSlots, type ResolvedPluginSlot } from "@/plugins/slots";
 
 export interface TaskPluginPanel {
@@ -34,22 +36,26 @@ export function useTaskPluginPanels(issue: Issue | null | undefined, enabled = t
     slotTypes: ["detailTab"], entityType: "agent", taskSidePanel: true,
     companyId: issue?.companyId, enabled: savedTask,
   });
-  const panels = useMemo(() => declaredSlots.filter(slot => slot.taskSidePanel), [declaredSlots]);
-  const slots = useMemo(() => panels.filter(slot => slot.taskSidePanel?.activation), [panels]);
+  const declaredPanels = useMemo(() => declaredSlots.filter(slot => slot.taskSidePanel), [declaredSlots]);
   const connected = useTaskRunLiveUpdates({
-    companyId: savedTask && panels.length > 0 && !errorMessage ? issue?.companyId : null,
+    companyId: savedTask && declaredPanels.length > 0 && !errorMessage ? issue?.companyId : null,
     issueId: issue?.id, issueQueryRef: issue?.id ?? "pending", assigneeAgentId: issue?.assigneeAgentId,
   });
   const { data: runs, isError: runsError, isPending: runsPending } = useQuery({
     queryKey: queryKeys.issues.liveRuns(issue?.id ?? "pending"),
     queryFn: () => heartbeatsApi.liveRunsForIssue(issue!.id),
-    enabled: savedTask && panels.length > 0 && !errorMessage,
+    enabled: savedTask && declaredPanels.length > 0 && !errorMessage,
     refetchInterval: connected ? false : 3000,
     retry: (failures: number, error: Error) => failures < 2 && !(error instanceof ApiError && error.status >= 400 && error.status < 500),
     retryDelay: 1000,
   });
   const run = runs?.find(run => run.status === "running"
     && (!issue?.executionRunId || run.id === issue.executionRunId));
+  const agentId = (!runsError && run?.agentId) || issue?.assigneeAgentId;
+  const { slots: panels, isLoading: environmentLoading } = useAgentEnvironmentSlots(
+    declaredPanels, savedTask && !errorMessage ? agentId : null, issue?.companyId,
+  );
+  const slots = useMemo(() => panels.filter(slot => slot.taskSidePanel?.activation), [panels]);
   const active = savedTask && slots.length > 0 && !!run && !runsError && !errorMessage;
   const declarations = slots.map(slot => [slot.pluginKey, slot.id, slot.pluginVersion,
     slot.taskSidePanel!.activation!.namespace, slot.taskSidePanel!.activation!.activityKey]);
@@ -128,10 +134,9 @@ export function useTaskPluginPanels(issue: Issue | null | undefined, enabled = t
     retry: (failures: number, error: Error) => failures < 2 && !(error instanceof ApiError && error.status >= 400 && error.status < 500),
     retryDelay: 1000,
   })) });
-  const available = availability.map((result, index) => !activationsError && !result.isError && result.data?.available === true
+  const available = availability.map((result, index) => !activationsError && queryViewKind(result) !== "error" && result.data?.available === true
     && activations.some(panel => panel.pluginKey === slots[index]?.pluginKey && panel.slotId === slots[index]?.id));
   const availableKey = available.join(",");
-  const agentId = (!runsError && run?.agentId) || issue?.assigneeAgentId;
   const manualPanels = useMemo(() => savedTask && !errorMessage && agentId ? panels.map(slot => ({
     entityId: agentId,
     ...(!runsError && run ? { runId: run.id } : {}),
@@ -140,5 +145,5 @@ export function useTaskPluginPanels(issue: Issue | null | undefined, enabled = t
   })) : EMPTY_PANELS,
   [savedTask, errorMessage, agentId, panels, run?.id, runsError, active, slots, availableKey]);
   return { panels: manualPanels, isLoading: savedTask && !errorMessage
-    && (isLoading || (panels.length > 0 && runsPending)) };
+    && (isLoading || environmentLoading || (declaredPanels.length > 0 && runsPending)) };
 }

@@ -150,7 +150,7 @@ describe("Paperclip Runner native provider configuration", () => {
     expect(changedModel).not.toHaveProperty("modelReasoningEffort");
     expect(resolvePaperclipRunnerNativeProviderInput({ backend: "acpx_runtime", adapterConfig: { ...base, chrome: true, maxTurnsPerRun: 1000 } }))
       .toEqual(resolvePaperclipRunnerNativeProviderInput({ backend: "acpx_runtime", adapterConfig: base }));
-    expect(() => resolvePaperclipRunnerNativeProviderInput({ backend: "acpx_runtime", adapterConfig: { ...base, networkScope: "unrestricted" } })).toThrow("Legacy runner");
+    expect(() => resolvePaperclipRunnerNativeProviderInput({ backend: "acpx_runtime", adapterConfig: { ...base, networkScope: "unrestricted" } })).toThrow("networkScope");
   });
 
   it("projects Grok task model and effort while retaining the search policy and account", () => {

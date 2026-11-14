@@ -56,7 +56,8 @@ export async function largeJournalEvidence(input: {
       identity?: { runId?: string };
       committedEvents?: unknown[];
     };
-    if (state.schema === "paperclip.runner.durable.control-plane-state.v1" && state.identity?.runId === input.runId) {
+    if (["paperclip.runner.durable.control-plane-state.v1", "paperclip.runner.durable.control-plane-state.v2"]
+      .includes(String(state.schema)) && state.identity?.runId === input.runId) {
       const events = (state.committedEvents ?? []).map(entry => object(object(entry).envelope).payload);
       matches.push({ bytes: metadata.size, calls: completedJournalStimulusCalls(events, input.runId) });
     }

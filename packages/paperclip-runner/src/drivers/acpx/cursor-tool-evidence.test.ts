@@ -34,7 +34,7 @@ it.each(["tool-first", "permission-first"])("correlates opaque C0/C1/DEL native 
   expect(expectedIds.at(-1)).toBe("safe-tool-1");
   for (const [index, toolCallId] of rawIds.entries()) {
     const native = { sessionId: "session", inferredKind: "execute" as const, raw: {
-      sessionId: "session", toolCall: { toolCallId, kind: "execute" },
+      sessionId: "session", toolCall: { toolCallId, kind: "execute" as const },
       options: [{ kind: "reject_once" as const, optionId: `native-denial-${index}`, name: "Deny" }],
     } };
     const before = structuredClone(native);
@@ -99,7 +99,7 @@ it("ignores inactive turns and never lets observation errors undo a delivered de
 });
 it("bounds retained tool origins", () => {
   const s = setup(); for (let i = 0; i < 257; i++) s.p.tool({ ...initial, toolCallId: `tool-${i}` });
-  expect(s.fields().at(-1).stage).toBe("evidence_incomplete"); expect(s.events).toHaveLength(257);
+  expect(s.fields().at(-1)!.stage).toBe("evidence_incomplete"); expect(s.events).toHaveLength(257);
 });
 
 it("rejects commands missing from their original frame and bounded oversized input", () => {
@@ -159,5 +159,5 @@ it("preserves execute denial evidence after valid edit and read permission input
 it.each(["edit", "read", "unknown-native-kind"])("still rejects a contradictory permission kind %s", kind => {
   const s = setup(); s.p.tool(initial);
   s.p.permission({ raw: { sessionId: "session", toolCall: { toolCallId: "tool", kind, rawInput: { path: "/fixture/file" } } } }, "request", ["decline"]);
-  expect(s.fields().at(-1).stage).toBe("evidence_incomplete"); expect(s.unavailable()).toBe(true);
+  expect(s.fields().at(-1)!.stage).toBe("evidence_incomplete"); expect(s.unavailable()).toBe(true);
 });

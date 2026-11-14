@@ -290,3 +290,24 @@ export const MobileToolReviewWithBottomBar: Story = {
   args: { interaction: pendingToolActionWriteInteraction, mobile: true },
   globals: { viewport: { value: "mobile1", isRotated: false } },
 };
+
+const markdownSummaryRequest = {
+  ...genericPendingRequestConfirmationInteraction,
+  id: "interaction-confirmation-markdown-summary",
+  title: "Review the creative brief (v1)",
+  summary: "The `creative-brief` document is saved on this task. It covers:\n\n- **Brand voice and audience:** Gen Z core buyers and holiday gift buyers for Gen Alpha.\n- **10 trend themes, plus 1 seasonal,** each with a lifespan rating and a source.",
+};
+/** The collapsed timeline row previews an agent's markdown summary as one line of plain text. */
+export const PendingRequestMarkdownSummary: Story = {
+  args: { interaction: markdownSummaryRequest },
+  render: ({ interaction }) => <div className="min-h-dvh bg-background p-6 text-foreground"><div className="mx-auto max-w-3xl">
+    <TaskChatInteractionCard item={{ id: `interaction:${interaction.id}`, kind: "interaction", interaction }}
+      showPendingRequest onReviewRequest={() => {}} agentMap={storybookAgentMap}
+      currentUserId={issueThreadInteractionFixtureMeta.currentUserId} />
+  </div></div>,
+  play: async ({ canvasElement }) => {
+    const row = await within(canvasElement).findByRole("button", { name: /Open request: Review the creative brief/ });
+    await expect(row).toHaveTextContent("The creative-brief document is saved on this task. It covers: Brand voice and audience:");
+    await expect(row.textContent).not.toMatch(/[`*]/);
+  },
+};

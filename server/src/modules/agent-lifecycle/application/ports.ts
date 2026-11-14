@@ -20,13 +20,14 @@ export interface LifecycleStore {
   setRequiredPlugins(agent: LifecycleAgent, owner: string, pluginIds: string[]): Promise<boolean>;
   completeHost(agent: LifecycleAgent, owner: string): Promise<boolean>;
   completePlugin(agent: LifecycleAgent, owner: string, pluginId: string): Promise<boolean>;
-  defer(agent: LifecycleAgent, owner: string, error: string | null, now: Date, options?: { retryRequired: boolean; verificationFailures?: number }): Promise<boolean>;
+  defer(agent: LifecycleAgent, owner: string, error: string | null, now: Date, options?: { retryRequired?: boolean; verificationFailures?: number; waitForSignal?: boolean }): Promise<boolean>;
   pending(limit: number, now: Date): Promise<string[]>;
 }
 
 export interface LifecycleDriver {
   requiredPluginIds(agent: LifecycleAgent): Promise<string[]>;
-  runHost(agent: LifecycleAgent): Promise<"complete" | "pending">;
+  /** waiting is only a healthy verifying phase owned by an external event. */
+  runHost(agent: LifecycleAgent): Promise<"complete" | "pending" | "waiting">;
   runPlugin(agent: LifecycleAgent, pluginId: string): Promise<"complete" | "pending">;
   /** Notify the scheduler only after readiness has committed. */
   onReady?(agent: LifecycleAgent): Promise<void>;

@@ -376,7 +376,7 @@ describeEmbeddedPostgres("skill version snapshot retention", () => {
     const healthyDir = await writeSnapshot(healthyId, healthySkill.skillId, healthySkill.versionIds[0]!);
     const service = skillVersionRetentionService(db, { graceMs: 0 }), prune = service.pruneCompany;
     let failed = true;
-    service.pruneCompany = vi.fn(async (...args) => {
+    service.pruneCompany = vi.fn(async (...args: Parameters<typeof prune>) => {
       if (args[0] === companyId && failed) throw new Error("inspection unavailable");
       return prune(...args);
     });

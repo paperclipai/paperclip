@@ -15,6 +15,7 @@ import type {
 } from "../drivers/codex/app-server-transport.js";
 import type { CapabilityIssueThreadSnapshot, CapabilityThreadItem } from "../issue-thread/types.js";
 import type { CapabilityLiveTransportFactory } from "./live-session.js";
+import type { CapabilityRunnerdProcessEvidence } from "./runnerd-codex-transport.js";
 import {
   createCapabilityTurnStreamDecoder,
   readCapabilityTurnStream,
@@ -343,10 +344,25 @@ class FakeCleanRoomTransport implements CodexAppServerTransport {
 
 function fakeTransportFactory(state: FakeProviderState): CapabilityLiveTransportFactory {
   return (options) => {
-    const evidence = {
+    const evidence: CapabilityRunnerdProcessEvidence = {
       runnerPid: 7100,
       runnerProcessGroupId: 7100,
+      providerPid: null,
+      providerProcessStartedAt: null,
       codexPid: 7200,
+      codexProcessStartedAt: null,
+      sidecarPid: null,
+      sidecarProcessStartedAt: null,
+      agentPid: null,
+      agentProcessStartedAt: null,
+      providerDriver: null,
+      providerVersion: null,
+      acpxAgent: null,
+      agentServerVersion: null,
+      agentRuntimeVersion: null,
+      acpProtocolVersion: null,
+      providerExecutionKind: null,
+      providerService: null,
       runnerExited: false,
       runnerExitCode: null,
       runnerSignal: null,
@@ -359,7 +375,7 @@ function fakeTransportFactory(state: FakeProviderState): CapabilityLiveTransport
       options.onEvidence?.(evidence);
     });
     options.onEvidence?.(evidence);
-    return { transport, evidence: () => ({ ...evidence }) };
+    return { transport, evidence: () => ({ ...evidence }), detachControllerForRestart: async () => {} };
   };
 }
 
@@ -369,6 +385,8 @@ interface CleanRoomPayload {
   identity: { token: string; companyId: string; actorId: string; taskId: string; identifier: string };
   limits: { maxTurns: number; maxMessageBytes: number };
   view: CapabilityIssueThreadSnapshot;
+  toolResult?: unknown;
+  toolTurnId?: string | null;
   configuration: {
     provider: "codex" | "opencode";
     model: string | null;
@@ -801,9 +819,9 @@ describe("Capability clean-room chat server", () => {
     expect(after.toolTurnId).toMatch(/^turn-/);
     const turn = after.view.turns.find((candidate: { id: string }) => candidate.id === after.toolTurnId);
     expect(turn).toBeDefined();
-    expect(turn.items.some((item: CapabilityThreadItem) => item.kind === "user_message")).toBe(true);
-    expect(turn.items.some((item: CapabilityThreadItem) => item.kind === "tool_activity" && item.operationId === "report_progress")).toBe(true);
-    expect(turn.items.some((item: CapabilityThreadItem) => item.kind === "durable_comment" && item.body === "Progress entered manually from DevTools.")).toBe(true);
+    expect(turn!.items.some((item: CapabilityThreadItem) => item.kind === "user_message")).toBe(true);
+    expect(turn!.items.some((item: CapabilityThreadItem) => item.kind === "tool_activity" && item.operationId === "report_progress")).toBe(true);
+    expect(turn!.items.some((item: CapabilityThreadItem) => item.kind === "durable_comment" && item.body === "Progress entered manually from DevTools.")).toBe(true);
     expect(after.view.evidence.state.at(-1)?.toRevision).toBeGreaterThan(0);
   });
 

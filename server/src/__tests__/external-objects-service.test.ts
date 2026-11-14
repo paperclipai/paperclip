@@ -163,7 +163,7 @@ describe("GitHub external object provider", () => {
   }
 
   it("detects GitHub pull request and issue URLs before the generic fallback", async () => {
-    const provider = createGitHubExternalObjectProvider({} as any, { tokenProvider: null });
+    const provider = createGitHubExternalObjectProvider({} as any, { tokenProvider: () => null });
     const pr = canonicalizeExternalObjectUrl("https://github.com/Acme/App/pull/42?token=secret#discussion");
     const issue = canonicalizeExternalObjectUrl("https://github.com/Acme/App/issues/7");
     const other = canonicalizeExternalObjectUrl("https://example.com/Acme/App/pull/42");
@@ -226,7 +226,7 @@ describe("GitHub external object provider", () => {
     ],
   ])("resolves a %s pull request snapshot", async (_name, body, expected) => {
     const fetch = vi.fn(async () => response(body));
-    const provider = createGitHubExternalObjectProvider({} as any, { fetch, tokenProvider: null });
+    const provider = createGitHubExternalObjectProvider({} as any, { fetch, tokenProvider: () => null });
     const resolver = provider.resolvers.find((entry) => entry.objectType === "pull_request")!;
 
     const result = await resolver.resolve({
@@ -273,7 +273,7 @@ describe("GitHub external object provider", () => {
     ],
   ])("resolves a %s issue snapshot", async (_name, body, expected) => {
     const fetch = vi.fn(async () => response(body));
-    const provider = createGitHubExternalObjectProvider({} as any, { fetch, tokenProvider: null });
+    const provider = createGitHubExternalObjectProvider({} as any, { fetch, tokenProvider: () => null });
     const resolver = provider.resolvers.find((entry) => entry.objectType === "issue")!;
 
     const result = await resolver.resolve({
@@ -335,7 +335,7 @@ describe("GitHub external object provider", () => {
   ])("maps %s responses to provider-safe results", async (_name, githubResponse, expected) => {
     const provider = createGitHubExternalObjectProvider({} as any, {
       fetch: async () => githubResponse,
-      tokenProvider: null,
+      tokenProvider: () => null,
     });
     const resolver = provider.resolvers.find((entry) => entry.objectType === "pull_request")!;
 
@@ -358,7 +358,7 @@ describe("GitHub external object provider", () => {
       }
       return new Response("", { status: 404, headers: { etag: '"missing"' } });
     });
-    const provider = createGitHubExternalObjectProvider({} as any, { fetch, tokenProvider: null });
+    const provider = createGitHubExternalObjectProvider({} as any, { fetch, tokenProvider: () => null });
     const resolver = provider.resolvers.find((entry) => entry.objectType === "pull_request")!;
 
     const result = await resolver.resolve({
@@ -398,7 +398,7 @@ describe("GitHub external object provider", () => {
       }
       return new Response("", { status: 404, headers: { etag: '"missing"' } });
     });
-    const provider = createGitHubExternalObjectProvider({} as any, { fetch, tokenProvider: null });
+    const provider = createGitHubExternalObjectProvider({} as any, { fetch, tokenProvider: () => null });
     const resolver = provider.resolvers.find((entry) => entry.objectType === "pull_request")!;
 
     await resolver.resolve({ companyId: "company-1", object: githubObject("pull/42", "pull_request") });
@@ -458,7 +458,7 @@ describe("GitHub external object provider", () => {
       }
       return new Response("", { status: 404, headers: { etag: '"missing"' } });
     });
-    const provider = createGitHubExternalObjectProvider({} as any, { fetch, tokenProvider: null });
+    const provider = createGitHubExternalObjectProvider({} as any, { fetch, tokenProvider: () => null });
     const resolver = provider.resolvers.find((entry) => entry.objectType === "pull_request")!;
 
     const result = await resolver.resolve({
@@ -484,7 +484,7 @@ describe("GitHub external object provider", () => {
       }
       return new Response("", { status: 404, headers: { etag: '"missing"' } });
     });
-    const provider = createGitHubExternalObjectProvider({} as any, { fetch, tokenProvider: null });
+    const provider = createGitHubExternalObjectProvider({} as any, { fetch, tokenProvider: () => null });
     const resolver = provider.resolvers.find((entry) => entry.objectType === "pull_request")!;
 
     const result = await resolver.resolve({
@@ -512,7 +512,7 @@ describe("GitHub external object provider", () => {
       }
       return new Response("", { status: 404, headers: { etag: '"missing"' } });
     });
-    const provider = createGitHubExternalObjectProvider({} as any, { fetch, tokenProvider: null });
+    const provider = createGitHubExternalObjectProvider({} as any, { fetch, tokenProvider: () => null });
     const resolver = provider.resolvers.find((entry) => entry.objectType === "pull_request")!;
 
     const result = await resolver.resolve({
@@ -560,7 +560,7 @@ describe("GitHub external object provider", () => {
       status: 429,
       headers: { "retry-after": "60" },
     }));
-    const provider = createGitHubExternalObjectProvider({} as any, { fetch, tokenProvider: null });
+    const provider = createGitHubExternalObjectProvider({} as any, { fetch, tokenProvider: () => null });
     const resolver = provider.resolvers.find((entry) => entry.objectType === "pull_request")!;
 
     const result = await resolver.resolve({

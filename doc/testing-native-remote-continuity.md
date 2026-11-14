@@ -12,8 +12,21 @@ checkpoints and changed process configuration require verified suspension and
 replacement, while preserving the conversation and starting each turn once.
 Recovery can restart a provider to refresh its tool contract; process reuse is
 required for ordinary healthy follow-ups.
+The `stale-projection` case leaves a full local control projection from just
+before the prior run's terminal while its database checkpoint is complete. It
+must refresh that same-run projection before the next turn, then preserve the
+same Runner and provider history through another healthy follow-up. This is a
+controlled cache fault, not a reconstruction of a historical incident.
 Each recovery case includes another healthy turn after the recovered turn and
 asserts that it does not start another runner or provider process.
+The `warm-suspended` case suspends the first turn, resumes the second turn,
+then keeps that controller warm for the third turn. It must retire the first
+turn's local suspension receipt so the third turn can reuse the resumed Runner
+and provider history without a second process or repeated turn.
+The `finalizer-wait` case gives the completed predecessor a live finalization
+lease. The next run must wait without starting a provider turn or consuming an
+attempt. After lease release, one durable resumption claim continues that same
+run and preserves provider history through the third turn.
 The same-server case also starts preparation lease renewal during recovery and
 holds instruction collection open past a renewal tick after coordinator release.
 The executor must acquire renewal before preparation releases its reference, then
@@ -36,8 +49,13 @@ They do not qualify distinct application releases or complete webserver disk los
 
 `native-controller-recovery.integration.test.ts` separately verifies encrypted
 database discovery, one-source import, idempotency, live-owner waiting, corrupt
-bindings and paginated inventory. `native-session-resume-projection.test.ts`
-retains the 32-candidate and newer-progress barrier checks. Snapshot transaction
+bindings and paginated inventory. `native-recovered-owner-followup.test.ts`
+admits a per-turn follow-up after recovery committed an owner that never saved
+a suspension receipt, and keeps unsettled or ambiguous owners held. It also
+retries from that owner after an earlier follow-up failed before provider work,
+and keeps any follow-up with provider or controller evidence as the source.
+`native-session-resume-projection.test.ts` retains the 32-candidate and
+newer-progress barrier checks. Snapshot transaction
 counts and stale-generation rejection are exercised by the control-plane port
 tests; incomplete-publication retention is exercised by the expiration tests.
 
@@ -50,7 +68,7 @@ without target tool dispatch or a fabricated response. The staged restart helper
 and classifier tests cover target discovery before its first session snapshot,
 exact encrypted source/header/artifact bindings and the existing compatibility
 rebinder. Source accounting tests use real PostgreSQL to distinguish immutable
-receipt replay, equal finalized usage and late usage requiring reconciliation.
+receipt replay, equal finalized usage and late usage posted to its owning run.
 Handoff crash tests must restore the exact queued command or authenticated
 receipt, reuse the verified physical Runner and preserve endpoint binding. Test
 both direct callbacks and the same guest listener when that ingress is enabled;
@@ -62,7 +80,13 @@ The executor tests cover Claude and Codex, including reopening blocked work.
 The lease-authority integration test uses PostgreSQL to check that checkpoint
 discovery cannot launch work or bypass a termination receipt. A stale negative
 availability flag requires a fresh provider status before the checkpoint can
-be read for continuation.
+be read for continuation. It also checks that a follow-up can resume while the
+predecessor's lease release is held, using the stop receipt that the task
+recorded when it settled. A receipt for another task, a second predecessor
+lease without stop proof, or a release that has started and not settled still
+refuses continuation. The test holds a real lease release inside the provider
+call and checks that the follow-up is refused until that release settles.
+Each refusal is checked by the reason that it names.
 
 The executor can restore one quarantined journal in the same session scope.
 It requires a terminal prior run, completed commands, a terminal event, and an
@@ -136,15 +160,60 @@ The checkpoint owner authenticates/decrypts that header and delegates version an
 inspection to Runner; the identity must match the run, session and runner. Ordinary
 sandbox runs bind their workspace identity; plugin tasks bind their active dispatched
 environment lease and need no workspace-sync descriptor.
+Accepted terminal results can also qualify through their existing finalization
+owner. This requires the exact accepted result and contract, a remote workspace,
+and its retained provider lease or successful workspace barrier. Committed work
+also needs its applied decision and assessment. Unknown physical owners and
+finalizer leases beyond the five-minute budget remain blockers. The observation
+does not request stop proof or take a lease. Copyback still requires the old
+worker's signed stop receipt and an atomic owner claim. Committed projections
+use the existing accepted-result and decision receipts.
 Legacy/local executions, missing identities/checkpoints, foreign/expired owners,
 in-flight admission, and an incomplete census prevent a positive report. It
 returns aggregate counts only. The request does not stop admission, detach a
 runner, or authorize new work. Ordinary drain reads do not perform this SQL.
-The explicit probe uses a read-only transaction, a two-second statement timeout,
-and at most 1,001 run rows. Header reads are capped at 256 KiB each and 8 MiB total;
+The explicit probe uses read-only transactions, a two-second statement timeout,
+and at most 1,001 run rows. Post-result inspections share a two-second scheduling
+budget; after it expires, unchecked candidates remain blocking. An in-flight
+inspection retains its SQL statement timeout. Header reads are capped at 256 KiB each and 8 MiB total;
 oversized, malformed, legacy-format or local evidence falls back to the ordinary drain.
 This bounded header probe does not validate every journal record or prove a live sandbox. This is an observation; the existing shutdown and
 startup owners still perform the actual handoff and enforce Stop and fencing.
+
+The report also carries an additive `handoff` object, which a deployer can adopt
+in place of the top-level `ready`. The top-level version 1 fields keep their
+meaning: `blockingRuns` counts every execution without adoption evidence, and
+`ready` is false while any exists or an admission is in flight. `handoff`
+(its own `version: 1`) separates work a graceful server replacement would lose
+from work that is only in flight:
+
+| Field | Meaning |
+| --- | --- |
+| `recoverableRuns` | Same count as the top level: a successor adopts these running executions. |
+| `restartableRuns` | Runs marked `running` that have launched no agent work. Restart recovery starts the same work again without a Retry. |
+| `blockingRuns` | Executions that are neither. A swap would interrupt started agent work that no successor can adopt. |
+| `pendingWakes` | Same count as the top level, reported for information. It does not affect `handoff.ready`. |
+| `unsavedWakes` | The pending wakes that have not committed their wake request and queued run. They exist only in this process, so a swap can lose them. |
+| `ready` | `true` when the instance is not draining, the census is complete, and `handoff.blockingRuns` and `handoff.unsavedWakes` are 0. |
+
+A run is restartable only when all of this holds: the agent uses the
+`paperclip_runner` adapter; the run has no process identity, no provider session
+before or after, no checkpoint header and no dispatched runner task; no
+execution-start event exists (`native.process_start_requested`,
+`native.process_identity_recorded`, `adapter.invoke`, `tool.execution.started` or
+any runner-sourced event); and it is either a native run in the `observed` phase
+with preparation fencing and an unsettled finalization record, or a legacy run
+still in the `preparing` stage under a recorded controller. Follow-up runs that
+carry a previous provider session, local adapters and legacy runs with a child
+process stay blocking. An execution the census could not observe also blocks.
+
+`pendingWakes` counts wake admissions in flight inside this process, not queue
+rows. An admission commits its wake request and its queued run in one
+transaction; after that it only dispatches saved rows, and the next server
+dispatches queued runs at startup. Before that commit, for example while it
+waits on the agent row lock, nothing is saved. Shutdown waits at most 30 seconds
+for in-flight admissions and then exits, so an unsaved admission can be lost.
+`handoff.unsavedWakes` counts those and keeps `handoff.ready` false.
 A positive report alone does not prove hosted upgrade continuity.
 
 Retain Postgres and the instance secret encryption key across deployments. The
@@ -522,3 +591,26 @@ explicit incomplete usage report before failure; this preserves known budget
 exposure without settling ambiguous usage. That required report and its receipt
 retain the accounting measurements and matching saved prior identity, so an
 optional diagnostic acknowledgement cannot discard reconciliation evidence.
+
+## Shared allocation ingress retirement
+
+The `retires the completed child listener` cases in
+`native-session-executor.test.ts` use the actual executor and warm registry,
+PostgreSQL ownership rows, and real local TCP listeners. The provider process
+boundary is supplied by the fixture. The listeners use an ephemeral test port;
+production provider ingress keeps its fixed port. A completed child's listener
+must close before a distinct parent session binds in that allocation. The child's
+accepted result stays unchanged.
+
+```sh
+pnpm --filter @paperclipai/server exec vitest run \
+  src/services/native-runtime/native-session-executor.test.ts \
+  -t 'retires the completed child listener'
+```
+
+Controls cover foreign companies, allocations and workspaces; live or unaccounted
+owners; changed controllers, reassignment and competing leases; workspace-lock
+and cancellation races; unconfirmed close; and controller, Stop and writer
+changes inside awaited close. The latter must prevent parent backend invocation
+even when the old listener has closed. These local checks do not identify
+a hosted conflicting PID or prove a hosted provider Stop or recovery.

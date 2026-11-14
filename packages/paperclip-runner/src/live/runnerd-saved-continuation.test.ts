@@ -49,7 +49,7 @@ it.each(["omitted", "null", "resolved"] as const)("retains a server-owned worksp
     expect(terminals).toHaveLength(1);
     expect(terminals[0].envelope.payload).toMatchObject({ runId, eventType: "run.terminal", payload: { runTerminalState: "succeeded", reportedWorkDisposition: "yielded" } });
   } finally {
-    await session?.close();
+    await session?.close({ reason: "test complete" });
     await bundle.transport.close();
     await rm(root, { recursive: true, force: true });
   }

@@ -6,6 +6,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Issue, IssueAttachment, IssueDocument, IssueWorkProduct } from "@paperclipai/shared";
+import { TextAttachmentContext } from "@/context/TextAttachmentContext";
 import { IssuePropertiesArtifactsTab, TaskGeneralDocuments, type TaskDocumentEditorOptions } from "./IssuePropertiesArtifactsTab";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
@@ -177,12 +178,14 @@ describe("IssuePropertiesArtifactsTab with Artifacts V1 on", () => {
     vi.clearAllMocks();
   });
 
-  function render(props: { onOpenDocument?: (document: IssueDocument) => void; documentEditor?: TaskDocumentEditorOptions } = {}) {
+  function render(props: { onOpenDocument?: (document: IssueDocument) => void; documentEditor?: TaskDocumentEditorOptions; documentDeepLink?: { requestId: number; documentKey: string } } = {}, openText?: (attachmentId: string, name: string) => void) {
     const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
     flushSync(() => {
       root.render(
         <QueryClientProvider client={queryClient}>
-          <IssuePropertiesArtifactsTab issue={issue} documentEditor={editorOptions} {...props} />
+          <TextAttachmentContext.Provider value={openText ?? null}>
+            <IssuePropertiesArtifactsTab issue={issue} documentEditor={editorOptions} {...props} />
+          </TextAttachmentContext.Provider>
         </QueryClientProvider>,
       );
     });
@@ -297,6 +300,55 @@ describe("IssuePropertiesArtifactsTab with Artifacts V1 on", () => {
     const service = container.querySelector('a[aria-label="Open Preview server"]')?.closest('[data-testid="artifact-v1-row"]');
     expect(service?.textContent).toContain("Unhealthy");
     expect(service?.textContent).not.toContain("Running");
+  });
+
+  describe("a Markdown work product", () => {
+    const contentPath = `/api/attachments/${ATTACHMENT_ID}/content`;
+    const reviewKey = "artifact-review-wp-report";
+    const markdownWorkProduct = {
+      ...pdfWorkProduct,
+      id: "wp-report",
+      title: "Verification report",
+      metadata: { attachmentId: ATTACHMENT_ID, contentType: "text/markdown", byteSize: 64, contentPath, openPath: contentPath, downloadPath: `${contentPath}?download=1`, originalFilename: "report.md" },
+    };
+    const reviewDocument = { ...planDocument, id: "doc-review", key: reviewKey, title: "Verification report", body: "Rendered review body" };
+    const reviewRow = () => container.querySelector<HTMLButtonElement>('button[aria-label="Open report.md"]');
+
+    beforeEach(() => {
+      mockIssuesApi.listAttachments.mockResolvedValue([]);
+      mockIssuesApi.listWorkProducts.mockResolvedValue([markdownWorkProduct]);
+      mockUseIssueDocuments.mockReturnValue({ data: [reviewDocument] });
+    });
+
+    it("expands its review in place from the row", async () => {
+      render();
+      await waitFor(() => expect(reviewRow()).not.toBeNull());
+      expect(reviewRow()!.getAttribute("aria-expanded")).toBe("false");
+      expect(container.textContent).not.toContain("Rendered review body");
+      act(() => reviewRow()!.click());
+      expect(reviewRow()!.getAttribute("aria-expanded")).toBe("true");
+      await waitFor(() => expect(container.textContent).toContain("Rendered review body"));
+      expect(mockIssuesApi.ensureWorkProductReviewDocument).not.toHaveBeenCalled();
+    });
+
+    it("opens its review from a deep link", async () => {
+      render({ documentDeepLink: { requestId: 1, documentKey: reviewKey } });
+      await waitFor(() => expect(container.textContent).toContain("Rendered review body"));
+      expect(reviewRow()!.getAttribute("aria-expanded")).toBe("true");
+    });
+
+    it("keeps its open, raw and download actions beside the row", async () => {
+      const openText = vi.fn();
+      render({}, openText);
+      await waitFor(() => expect(reviewRow()).not.toBeNull());
+      const raw = container.querySelector<HTMLAnchorElement>('a[aria-label="Open raw Verification report"]');
+      expect(raw?.getAttribute("href")).toBe(contentPath);
+      expect(raw?.getAttribute("target")).toBe("_blank");
+      expect(container.querySelector('a[aria-label="Download Verification report"]')?.getAttribute("href")).toBe(`${contentPath}?download=1`);
+      act(() => container.querySelector<HTMLButtonElement>('button[aria-label="Open in tab: Verification report"]')!.click());
+      expect(openText).toHaveBeenCalledWith(ATTACHMENT_ID, "report.md");
+      expect(reviewRow()!.getAttribute("aria-expanded")).toBe("false");
+    });
   });
 
   it("opens a task document the way the panel asks, through onOpenDocument", async () => {

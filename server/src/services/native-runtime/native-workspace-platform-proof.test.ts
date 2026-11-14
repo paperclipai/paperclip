@@ -1,6 +1,6 @@
 import { generateKeyPairSync, sign } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
-import { verifyWorkspaceWorkerStopReceipt, requestWorkspaceWorkerStopProof, currentWorkspaceWorker } from "./native-workspace-platform-proof.js";
+import { verifyWorkspaceWorkerStopReceipt, requestWorkspaceWorkerStopProof, currentWorkspaceWorker, isRetainedWorkspaceWorkerStopProof } from "./native-workspace-platform-proof.js";
 const { privateKey, publicKey } = generateKeyPairSync("ed25519");
 const env = { PAPERCLIP_CLOUD_STACK_ID: "stack", PAPERCLIP_CLOUD_API_ORIGIN: "https://cloud.example", PAPERCLIP_CLOUD_TENANT_SERVER_TOKEN: "fixture-token", PAPERCLIP_CLOUD_RUNTIME_IDENTITY_JWKS: JSON.stringify({ keys: [{ ...publicKey.export({ format: "jwk" }), kid: "test", alg: "EdDSA", use: "sig" }] }) };
 const worker = { provider: "railway" as const, projectId: "project", environmentId: "environment", serviceId: "service", deploymentId: "old-deployment" };
@@ -18,6 +18,19 @@ describe("workspace platform stop proof", () => {
       expect(verifyWorkspaceWorkerStopReceipt(receipt(invalid), binding, env, now)).toBeNull();
     }
     expect(verifyWorkspaceWorkerStopReceipt(receipt().slice(0,-5)+"wrong", binding, env, now)).toBeNull();
+  });
+  it("retains verified same-run audit evidence after acquisition expiry without granting new stop authority", () => {
+    const proof = verifyWorkspaceWorkerStopReceipt(receipt(), binding, env, now)!;
+    const later = new Date(now.getTime() + 120_000);
+    expect(verifyWorkspaceWorkerStopReceipt(receipt(), binding, env, later)).toBeNull();
+    expect(isRetainedWorkspaceWorkerStopProof(proof, binding.runId)).toBe(true);
+    for (const invalid of [null, [], { stopped: true }, { ...proof, runId: "other-run" },
+      { ...proof, stopped: false }, { ...proof, exp: proof.iat }, { ...proof, exp: proof.iat + 61 },
+      { ...proof, iat: "100" }, { ...proof, ownerToken: "" }, { ...proof, sub: "" },
+      { ...proof, worker: { ...worker, deploymentId: "" } }, { ...proof, worker: { ...worker, provider: "other" } },
+      { ...proof, worker: { ...worker, providerStarted: true } }, { ...proof, providerStarted: true }]) {
+      expect(isRetainedWorkspaceWorkerStopProof(invalid, binding.runId)).toBe(false);
+    }
   });
   it("fails closed on live, unknown, unreachable and unsigned platform responses", async () => {
     for (const response of [{ stopped: false }, { stopped: true }, { receipt: "forged" }]) {

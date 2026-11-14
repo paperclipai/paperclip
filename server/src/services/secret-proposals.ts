@@ -324,6 +324,8 @@ export function createSecretProposalsService(db: Db) {
     value: string;
     justification: string;
   }) {
+    if (typeof input.name !== "string") throw unprocessable("Secret name is required");
+    if (typeof input.justification !== "string") throw unprocessable("Justification is required");
     const name = input.name.trim();
     const justification = input.justification.trim();
     if (!SECRET_NAME_RE.test(name)) throw unprocessable("Secret name must be a slash-separated path without empty segments");
@@ -381,7 +383,9 @@ export function createSecretProposalsService(db: Db) {
     if (input.sourceConfigPath && !CONFIG_PATH_RE.test(input.sourceConfigPath)) {
       throw unprocessable("sourceConfigPath must use env.<KEY> or access.<ALIAS>");
     }
-    if (!input.justification.trim()) throw unprocessable("Justification is required");
+    if (typeof input.justification !== "string" || !input.justification.trim()) {
+      throw unprocessable("Justification is required");
+    }
     if (input.justification.trim().length > 20_000) throw unprocessable("Justification must be at most 20000 characters");
     const { run, originIssueId } = await loadRunContext(db, context);
     const targetAgentId = input.targetAgentId ?? run.agentId;
@@ -446,6 +450,13 @@ export function createSecretProposalsService(db: Db) {
     return createWithinQuota(
       { companyId: context.companyId, agentId: run.agentId, runId: run.id, issueId: originIssueId },
       async (txDb) => {
+        if (resolvedSecretId) {
+          // Hold the secret against a concurrent delete: the delete marks it
+          // deleted first, then settles the proposals that reference it.
+          const live = await txDb.select({ status: companySecrets.status }).from(companySecrets)
+            .where(eq(companySecrets.id, resolvedSecretId)).for("share").then((rows) => rows[0] ?? null);
+          if (!live || live.status === "deleted") throw notFound("Secret not found");
+        }
         if (input.secretProposalId) {
           const dependency = await txDb.select().from(companySecretProposals).where(and(
             eq(companySecretProposals.id, input.secretProposalId),
@@ -542,12 +553,17 @@ export function createSecretProposalsService(db: Db) {
   async function listForBoard(
     companyId: string,
     status?: string | null,
-    options: { limit?: number; offset?: number } = {},
+    options: { limit?: number; offset?: number; order?: "created" | "resolved" } = {},
   ) {
     const rows = await db.select().from(companySecretProposals).where(and(
       eq(companySecretProposals.companyId, companyId),
       status ? eq(companySecretProposals.status, status) : undefined,
-    )).orderBy(desc(companySecretProposals.createdAt))
+    )).orderBy(
+      // "resolved" puts the most recent decisions first; undecided rows follow by age.
+      ...(options.order === "resolved"
+        ? [sql`${companySecretProposals.resolvedAt} desc nulls last`, desc(companySecretProposals.createdAt)]
+        : [desc(companySecretProposals.createdAt)]),
+    )
       .limit(options.limit ?? DEFAULT_PROPOSAL_LIST_LIMIT)
       .offset(options.offset ?? 0);
     return Promise.all(rows.map(enrich));
@@ -660,6 +676,12 @@ export function createSecretProposalsService(db: Db) {
     return updated;
   }
 
+  function isBlankConfigValue(value: unknown) {
+    if (value === undefined || value === "") return true;
+    const record = asRecord(value);
+    return record.type === "plain" && record.value === "";
+  }
+
   async function applyBindingApproval(
     txDb: Db,
     proposal: Proposal,
@@ -694,13 +716,13 @@ export function createSecretProposalsService(db: Db) {
     if (namespace === "env") {
       const env = { ...asRecord(adapterConfig.env) };
       const existing = env[key];
-      if (existing !== undefined && JSON.stringify(existing) !== JSON.stringify(binding)) {
+      if (!isBlankConfigValue(existing) && JSON.stringify(existing) !== JSON.stringify(binding)) {
         throw conflict(`Agent config path already exists: ${proposal.configPath}`);
       }
       adapterConfig.env = { ...env, [key]: binding };
     } else {
       const existing = adapterConfig[proposal.configPath];
-      if (existing !== undefined && JSON.stringify(existing) !== JSON.stringify(binding)) {
+      if (!isBlankConfigValue(existing) && JSON.stringify(existing) !== JSON.stringify(binding)) {
         throw conflict(`Agent config path already exists: ${proposal.configPath}`);
       }
       adapterConfig[proposal.configPath] = binding;
@@ -915,5 +937,35 @@ export function createSecretProposalsService(db: Db) {
     return row?.at == null ? null : new Date(row.at).getTime();
   }
 
-  return { getById, view: enrich, createSecret, createBinding, listForAgent, listForBoard, assertBindingSnapshotCurrent, approve, transition, sweepExpired, sweepExpiredForCompany, expiryDeadlines, nextExpiryAt };
+  /**
+   * Deleting a secret also deletes the binding proposals that reference it.
+   * Settle pending ones first, so their review cards close as rejected with
+   * the reason instead of pointing at a proposal that no longer exists. Call
+   * it after the secret is marked deleted: createBinding holds the secret row
+   * and refuses a deleted one, so no new pending proposal can follow.
+   */
+  async function rejectPendingBindingsForSecret(companyId: string, secretId: string, input: { resolvedByUserId?: string | null; reason: string }) {
+    const pending = await db.select().from(companySecretProposals).where(and(
+      eq(companySecretProposals.companyId, companyId),
+      eq(companySecretProposals.secretId, secretId),
+      eq(companySecretProposals.kind, "binding"),
+      eq(companySecretProposals.status, "pending"),
+    ));
+    const rejected: Proposal[] = [];
+    for (const row of pending) {
+      try {
+        await transition(companyId, row.id, "rejected", {
+          resolvedByUserId: input.resolvedByUserId ?? null,
+          reason: input.reason,
+        });
+        rejected.push(row);
+      } catch (error) {
+        // Resolved concurrently; the secret deletion still removes the row.
+        if (!(error instanceof HttpError) || error.status !== 409) throw error;
+      }
+    }
+    return rejected;
+  }
+
+  return { getById, view: enrich, createSecret, createBinding, listForAgent, listForBoard, assertBindingSnapshotCurrent, approve, transition, rejectPendingBindingsForSecret, sweepExpired, sweepExpiredForCompany, expiryDeadlines, nextExpiryAt };
 }

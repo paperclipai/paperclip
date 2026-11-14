@@ -9,7 +9,7 @@ export async function publishNativeHarnessBackup(input: {
 }) {
   const currentRoot = resolve(input.backupRoot, "current");
   const previousRoot = resolve(input.backupRoot, "previous");
-  removeNativeHarnessBackup(previousRoot);
+  await removeNativeHarnessBackup(previousRoot);
   let movedCurrent = false;
   if (existsSync(currentRoot)) {
     renameSync(currentRoot, previousRoot);
@@ -19,10 +19,10 @@ export async function publishNativeHarnessBackup(input: {
     renameSync(input.pendingRoot, currentRoot);
     await input.stamp?.(currentRoot);
   } catch (error) {
-    if (existsSync(currentRoot)) removeNativeHarnessBackup(currentRoot);
+    if (existsSync(currentRoot)) await removeNativeHarnessBackup(currentRoot);
     if (movedCurrent && existsSync(previousRoot) && !existsSync(currentRoot)) renameSync(previousRoot, currentRoot);
     throw error;
   }
-  removeNativeHarnessBackup(previousRoot);
+  await removeNativeHarnessBackup(previousRoot);
   noteNativeHarnessBackupChange(input.db, { companyId: input.companyId, scopeDigest: input.scopeDigest });
 }

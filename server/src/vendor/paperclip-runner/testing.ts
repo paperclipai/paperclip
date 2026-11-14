@@ -32,6 +32,7 @@ export const releaseMaterializedNativeRuntimeSkills: RunnerTestingModule["releas
   runnerTesting.releaseMaterializedNativeRuntimeSkills;
 export const resolveRunnerdCodexSkillInputs: RunnerTestingModule["resolveRunnerdCodexSkillInputs"] =
   runnerTesting.resolveRunnerdCodexSkillInputs;
+export const spawnRunner: RunnerTestingModule["spawnRunner"] = runnerTesting.spawnRunner;
 
 export const startOpenCodeMcpBridge:
   RunnerTestingModule["startOpenCodeMcpBridge"] =

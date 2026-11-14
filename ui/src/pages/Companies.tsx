@@ -6,6 +6,7 @@ import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { useCloudInstance } from "../hooks/useCloudInstance";
 import { companiesApi } from "../api/companies";
 import { queryKeys } from "../lib/queryKeys";
+import { QueryErrorState } from "../components/QueryView";
 import { formatCents, relativeTime } from "../lib/utils";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
@@ -39,6 +40,7 @@ export function Companies() {
     setSelectedCompanyId,
     loading,
     error,
+    retryCompanies,
   } = useCompany();
   const { openOnboarding } = useDialogActions();
   const { setBreadcrumbs } = useBreadcrumbs();
@@ -118,9 +120,11 @@ export function Companies() {
         )}
       </div>
 
-      <div className="h-6">
+      <div className="min-h-6">
         {loading && <p className="text-sm text-muted-foreground">Loading organizations...</p>}
-        {error && <p className="text-sm text-destructive">{error.message}</p>}
+        {error ? (
+          <QueryErrorState size="inline" error={error} action="load organizations" onRetry={() => void retryCompanies()} />
+        ) : null}
       </div>
 
       <div className="grid gap-4">

@@ -127,19 +127,17 @@ export function AnnotationPanelBody(props: AnnotationPanelProps) {
     onReplyAdded: (threadId) => setReplyDrafts((current) => ({ ...current, [threadId]: "" })),
   });
 
-  // Show every thread that can be anchored in the document (orphaned threads have
-  // lost their anchor). Filters were removed in favour of a single simple list.
   // Sort in document order (top-to-bottom) — not by recency — so the comment list
   // stays congruent with the highlights as you scroll the document.
   const visibleThreads = useMemo(
     () =>
       props.threads
-        .filter((thread) => thread.anchorState !== "orphaned")
+        .filter((thread) => thread.anchorState !== "orphaned" || thread.id === props.focusedThreadId)
         .sort((a, b) =>
           (a.normalizedStart - b.normalizedStart)
           || (a.markdownStart - b.markdownStart)
           || (new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime())),
-    [props.threads],
+    [props.threads, props.focusedThreadId],
   );
 
 

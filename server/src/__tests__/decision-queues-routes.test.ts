@@ -19,6 +19,7 @@ import {
   issues,
 } from "@paperclipai/db";
 import type { AttentionItem } from "@paperclipai/shared";
+import { DEFAULT_DECISION_SHELF_DAYS } from "../services/decision-retention.js";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
@@ -300,6 +301,13 @@ describeEmbeddedPostgres("decision queue routes", () => {
           metadata: input.metadata,
         },
         whyNow: "test",
+        audience: { kind: "pool", userId: null, reason: "none" },
+        stale: null,
+        required: false,
+        changeFingerprint: "fixture.candidate",
+        closeModes: ["archive", "snooze"],
+        obligationKey: null,
+        obligationLeadId: null,
         decisionVerbs: [],
         inlineResolvable: true,
         entryRule: "test",
@@ -323,6 +331,18 @@ describeEmbeddedPostgres("decision queue routes", () => {
         } : null,
         project: null,
         workspace: null,
+        expiresAt: null,
+        ruleKey: null,
+        originAgentName: null,
+        queues: [],
+        shelf: false,
+        retentionDays: DEFAULT_DECISION_SHELF_DAYS,
+        keep: false,
+        archivedAt: null,
+        retentionVersion: 0,
+        decideBy: null,
+        decideByAttribution: null,
+        snoozedUntil: null,
         detail: null,
         trainingExampleId: null,
       };

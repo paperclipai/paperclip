@@ -5,7 +5,7 @@ import { promises as fs, readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { applyPendingMigrations, chatActions, createDb, startEmbeddedPostgresTestDatabase, type Db } from "../packages/db/src/index.js";
-import { createDatabaseResponseCapture, installDatabaseResponseCapture } from "../packages/db/src/response-capture.js";
+import { createFullDatabaseResponseCapture, installDatabaseResponseCapture } from "../server/src/__tests__/helpers/full-database-response-capture.js";
 import { createGitHubWebhookIngress } from "../server/src/services/chat-channels/github/webhook-ingress.js";
 import { captureIngressQueries, cleanupIngressFixture, githubIngressFixture, type CapturedQuery } from "../server/src/__tests__/helpers/github-webhook-ingress.js";
 import { resolveExternalTestDatabaseUrl } from "../server/src/__tests__/helpers/external-test-database.js";
@@ -60,7 +60,7 @@ try {
         queries.length = 0;
         f.calls.length = 0;
         const events: Array<Record<string, unknown>> = [], timestamp = Date.now();
-        const capture = iteration === 11 ? createDatabaseResponseCapture({ start: timestamp - 1, end: timestamp + 59_000 }, event => events.push(event)) : undefined;
+        const capture = iteration === 11 ? createFullDatabaseResponseCapture({ start: timestamp - 1, end: timestamp + 59_000 }, event => events.push(event)) : undefined;
         if (capture) installDatabaseResponseCapture(db, { chatActions }, capture);
         const start = performance.now();
         const response = await service.processGitHubWebhookIngress(action.id);
@@ -80,7 +80,7 @@ try {
           const [plan] = await db.$client.unsafe(`EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) ${candidate.sql}`, candidate.params as never[]);
           const positionalRows = await db.$client.unsafe(candidate.sql, candidate.params as never[]).values();
           measurements[name] = { queries: executed, initialQueryPlan: plan["QUERY PLAN"], initialReadJsonBytes: Buffer.byteLength(JSON.stringify(positionalRows)),
-            responseValueBytes: events.find(event => event.event === "paperclip.db_response_capture.summary.v1")?.responseValueBytes,
+            responseValueBytes: events.find(event => event.event === "paperclip.test_db_response_capture.summary.v1")?.responseValueBytes,
             captureEvents: events };
         }
       }

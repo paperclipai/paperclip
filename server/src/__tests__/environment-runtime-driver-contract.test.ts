@@ -9,7 +9,6 @@ import {
   getSshEnvLabSupport,
   startSshEnvLabFixture,
   stopSshEnvLabFixture,
-  type SshEnvironmentConfig,
 } from "@paperclipai/adapter-utils/ssh";
 import {
   agents,
@@ -21,7 +20,7 @@ import {
   environments,
   heartbeatRuns,
 } from "@paperclipai/db";
-import type { Environment } from "@paperclipai/shared";
+import type { Environment, EnvironmentDriver } from "@paperclipai/shared";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
@@ -43,7 +42,7 @@ if (!embeddedPostgresSupport.supported) {
 
 interface RuntimeContractCase {
   name: string;
-  driver: string;
+  driver: EnvironmentDriver;
   config: Record<string, unknown>;
   setup?: () => Promise<() => Promise<void>>;
   expectLease: (lease: {
@@ -59,7 +58,7 @@ describeEmbeddedPostgres("environment runtime driver contract", () => {
 
   beforeAll(async () => {
     const started = await startEmbeddedPostgresTestDatabase("environment-runtime-contract");
-    stopDb = started.stop;
+    stopDb = started.cleanup;
     db = createDb(started.connectionString);
   });
 
@@ -84,7 +83,7 @@ describeEmbeddedPostgres("environment runtime driver contract", () => {
   });
 
   async function seedEnvironment(input: {
-    driver: string;
+    driver: EnvironmentDriver;
     config: Record<string, unknown>;
   }) {
     const companyId = randomUUID();
@@ -173,16 +172,16 @@ describeEmbeddedPostgres("environment runtime driver contract", () => {
       runId,
       environment: {
         id: resolvedEnvironmentId,
-        companyId,
         name: `${input.driver} contract`,
         description: null,
         driver: input.driver,
         status: "active",
         config,
+        envVars: {},
         metadata: null,
         createdAt: now,
         updatedAt: now,
-      } as Environment,
+      } satisfies Environment,
     };
   }
 
@@ -301,7 +300,7 @@ describeEmbeddedPostgres("environment runtime driver contract", () => {
     await runContract({
       name: "ssh",
       driver: "ssh",
-      config: sshConfig as SshEnvironmentConfig as unknown as Record<string, unknown>,
+      config: { ...sshConfig },
       expectLease: (lease) => {
         expect(lease.providerLeaseId).toContain(`ssh://${sshConfig.username}@${sshConfig.host}:${sshConfig.port}`);
         expect(lease.metadata).toMatchObject({

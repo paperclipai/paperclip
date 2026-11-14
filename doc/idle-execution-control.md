@@ -9,7 +9,7 @@ inside the six owning services. No table or migration is added.
 
 | Duty | Trigger and durable source | Remaining scheduled work | Quiet condition |
 | --- | --- | --- | --- |
-| Abandoned finalization | Committed control-deadline writes on `heartbeat_runs` and `native_run_finalizations` | Earliest non-null control deadline; a due row still present after recovery retries after 15 seconds | No control deadlines |
+| Abandoned finalization | Committed control-deadline writes on `heartbeat_runs` and `native_run_finalizations`; committed run transitions that leave a result-less `observed` owner on a failed, timed-out, or interrupted native run | Earliest non-null control deadline, or earliest lease expiry of such an owner whose environment leases are settled; a due row still present after recovery retries after 15 seconds | No control deadlines and no such owner |
 | Safe native replacement | Committed run transitions and reconciliation decisions; existing failed run/coordinator rows | Retry while the existing replacement predicate selects a candidate, including one awaiting provider termination or sandbox release | No replacement candidate, or a recorded successor/denial |
 | Reconciled continuation | Committed recovery-action marking/resolution; `evidence.continuationDelivery` | Retry pending delivery after 15 seconds | No resolved action awaiting continuation delivery |
 | Execution status | Committed run status writes; `execution_status_delivery_id` | Retry while a delivery marker remains | All markers acknowledged |

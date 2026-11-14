@@ -1,3 +1,4 @@
+import { createUuid } from "@/lib/uuid";
 import { useCurrentAccountGuard } from "../hooks/useAccountBoundMutation";
 import { resolveIssueChatHumanAuthor } from "@/lib/issue-chat-human-author";
 import { useCurrentWorkspaceRetry, useWorkspaceBaseRefRecovery, useWorkspaceRetry } from "./WorkspaceBaseRefRecovery";
@@ -48,6 +49,7 @@ import type {
   IssueAttachment,
   IssueDocumentSummary,
   IssueBlockerAttention,
+  IssueBlockerStalledWakeContext,
   IssueRecoveryAction,
   IssueQueuedCommentQueue,
   IssueRelationIssueSummary,
@@ -227,7 +229,8 @@ import {
 } from "../lib/transcriptPresentation";
 import { buildAgentMentionHref } from "@paperclipai/shared";
 import { useComposerStop } from "@/hooks/useComposerStop";
-import { cn, formatDateTime, formatShortDate } from "../lib/utils";
+import { useComposerSubmitKey } from "@/hooks/useComposerSubmitKey";
+import { agentUrl, cn, formatDateTime, formatShortDate } from "../lib/utils";
 import { liveBlueBadge } from "../lib/status-colors";
 import {
   nextWorkMode,
@@ -266,6 +269,7 @@ import {
   X,
 } from "lucide-react";
 import { IssueBlockedNotice } from "./IssueBlockedNotice";
+import { StalledDependencyNotice } from "./StalledDependencyNotice";
 import { IssueAssignedBacklogNotice } from "./IssueAssignedBacklogNotice";
 import {
   IssueRecoveryActionCard,
@@ -584,6 +588,8 @@ interface IssueChatThreadProps {
   /** Company-wide set of issue ids with a live (queued/running) run. */
   liveIssueIds?: ReadonlySet<string>;
   blockerAttention?: IssueBlockerAttention | null;
+  /** Children and blockers stalled on the board (`stalledDependencies` on the issue). */
+  stalledDependencies?: IssueBlockerStalledWakeContext[];
   successfulRunHandoff?: SuccessfulRunHandoffState | null;
   scheduledRetry?: IssueScheduledRetry | null;
   recoveryAction?: IssueRecoveryAction | null;
@@ -695,6 +701,8 @@ interface IssueChatThreadProps {
     revision: string,
   ) => Promise<void>;
   onSteerQueuedComment?: (commentId: string, revision: string) => Promise<void>;
+  /** Delay before an eligible queued message is steered automatically; null keeps every message queued. */
+  queuedMessageAutoSteerDelayMs?: number | null;
   onDiscardQueuedComment?: (
     commentId: string,
     revision: string,
@@ -820,6 +828,45 @@ export function IssueAssigneePausedNotice({
 }) {
   if (!agent || agent.status !== "paused" || issueStatusIsTerminalDisposition(issueStatus)) return null;
 
+  // Lifecycle setup is shown by the queued turn and its inline connection card.
+  // Resume changes operator holds; it cannot complete verification.
+  if (!agent.pauseReason && ["preparing", "verifying", "resuming"].includes(agent.lifecycleState ?? "")) return null;
+
+  // A freshly created agent is stored as paused with pauseReason "setup" until
+  // its setup finishes. That is not an operator pause, so say what is actually
+  // happening and point at the real recovery path instead of "Resume agent".
+  if (agent.pauseReason === "setup") {
+    // Only computer preparation advances on its own (matches NewAgentSetup).
+    // A "verifying" or parked draft waits for the user to finish the wizard.
+    const stillPreparing = ["preparing", "pausing"].includes(agent.lifecycleState ?? "");
+    return (
+      <div data-testid="issue-assignee-paused-notice" className="mb-3">
+        <InlineBanner
+          tone="info"
+          compact
+          title={
+            <>
+              <span className="font-medium">{agent.name}</span> is still being set up.
+            </>
+          }
+          actions={
+            stillPreparing ? undefined : (
+              <Button size="sm" variant="outline" asChild>
+                <Link to={agentUrl(agent)} data-testid="issue-assignee-finish-setup">
+                  Finish setup
+                </Link>
+              </Button>
+            )
+          }
+        >
+          {stillPreparing
+            ? "Its computer is being prepared. Runs start automatically when setup finishes."
+            : "Its setup isn't finished yet. Finish setup to let it start runs."}
+        </InlineBanner>
+      </div>
+    );
+  }
+
   const pauseDetail =
     agent.pauseReason === "budget"
       ? "It was paused by a budget hard stop."
@@ -827,10 +874,15 @@ export function IssueAssigneePausedNotice({
         ? "It arrived paused from an organization import — imported agents stay parked until you resume them."
         : agent.pauseReason === "system"
           ? "It was paused by the system."
-          : "It was paused manually.";
-  // Budget pauses clear on their own when the budget resets; resuming by hand
-  // would fight the hard stop, so the action is only offered for the rest.
-  const canResume = Boolean(onResume) && agent.pauseReason !== "budget";
+          : agent.pauseReason === "company_archived"
+            ? "It was paused because its company is archived."
+            : agent.pauseReason === "manual"
+              ? "It was paused manually."
+              : "";
+  // Budget pauses clear on their own when the budget resets and archive pauses
+  // clear when the company is restored; resuming by hand would fight either, so
+  // the action is only offered for the rest.
+  const canResume = Boolean(onResume) && agent.pauseReason !== "budget" && agent.pauseReason !== "company_archived";
 
   return (
     <div data-testid="issue-assignee-paused-notice" className="mb-3">
@@ -857,7 +909,7 @@ export function IssueAssigneePausedNotice({
           ) : undefined
         }
       >
-        New runs will not start until the agent is resumed. {pauseDetail}
+        New runs will not start until the agent is resumed.{pauseDetail ? ` ${pauseDetail}` : ""}
       </InlineBanner>
     </div>
   );
@@ -4691,6 +4743,7 @@ const IssueChatComposer = forwardRef<
   forwardedRef,
 ) {
   const stopControl = useComposerStop(onStop, stopPending);
+  const submitKey = useComposerSubmitKey();
   const restoredRecovery = useMemo(() => {
     const key = sharedDraftKey && loadDraftRecoveryKey(sharedDraftKey);
     return key ? { sourceKey: sharedDraftKey!, key, persisted: true } : null;
@@ -5130,7 +5183,7 @@ const IssueChatComposer = forwardRef<
         setBody(trimmed);
         return;
       }
-      attemptId = crypto.randomUUID();
+      attemptId = createUuid();
       if (requestOwner === undefined) markRequestUnbound(attemptId);
       // The exact request is stored before it is sent, so a lost response or
       // an outage can resend it with the same ID instead of losing it.
@@ -5537,6 +5590,7 @@ const IssueChatComposer = forwardRef<
         placeholder="Reply"
         mentions={mentions}
         onSubmit={handleSubmit}
+        submitKey={submitKey}
         imageUploadHandler={
           canAcceptFiles
             ? async (file) => {
@@ -5829,6 +5883,7 @@ export function IssueChatThread({
   blockedBy = [],
   liveIssueIds,
   blockerAttention = null,
+  stalledDependencies,
   successfulRunHandoff = null,
   scheduledRetry = null,
   recoveryAction = null,
@@ -6175,8 +6230,8 @@ export function IssueChatThread({
   const sendComposerComment = useCallback<IssueChatThreadProps["onAdd"]>(
     async (body, reopen, reassignment, attachmentIds, clientRequestId, runSettings) => {
       pendingSubmitScrollRef.current = true;
-      clientRequestId ??= crypto.randomUUID();
-      const attempt = beginSubmission(clientRequestId);
+      clientRequestId ??= createUuid();
+      const attempt = beginSubmission(clientRequestId, undefined, reopen);
       try {
         await (runSettings
           ? onAdd(body, reopen, reassignment, attachmentIds, clientRequestId, runSettings)
@@ -6803,6 +6858,7 @@ export function IssueChatThread({
                           : null
                       }
                     />
+                    <StalledDependencyNotice stalled={stalledDependencies} />
                     <IssueAssigneePausedNotice
                       agent={assignedAgent}
                       issueStatus={issueStatus}
@@ -6870,7 +6926,9 @@ export function IssueChatThread({
                 mentions={mentions}
                 agentMap={agentMap}
                 hasActiveRun={!!hasActiveRun}
-                onStop={hasActiveRun ? onCancelRun : undefined}
+                // A run still waiting in line is stoppable too: Stop takes the
+                // task out of the agent's queue before it ever starts.
+                onStop={activeRunIds.size > 0 ? onCancelRun : undefined}
                 stopPending={stopPending}
                 stopScope={stopScope}
                 currentUserId={currentUserId}

@@ -1,7 +1,7 @@
 import { resolveExternalTestDatabaseUrl } from "./helpers/external-test-database.js";
 import { EMBEDDED_POSTGRES_TEST_TIMEOUT_MS } from "@paperclipai/db";
 import { randomBytes, randomUUID } from "node:crypto";
-import { createDatabaseResponseCapture, installDatabaseResponseCapture } from "@paperclipai/db/response-capture";
+import { createFullDatabaseResponseCapture, installDatabaseResponseCapture } from "./helpers/full-database-response-capture.js";
 import { spawn } from "node:child_process";
 import os from "node:os";
 import { and, eq, sql } from "drizzle-orm";
@@ -222,11 +222,11 @@ suite("settled native run process identity", () => {
     const saved = await readRun(runId);
     const events: Array<Record<string, unknown>> = [];
     const now = Date.now();
-    const capture = createDatabaseResponseCapture({ start: now - 100, end: now + 59_000 }, event => events.push(event));
+    const capture = createFullDatabaseResponseCapture({ start: now - 100, end: now + 59_000 }, event => events.push(event));
     installDatabaseResponseCapture(db, { heartbeatRuns }, capture);
     try { expect(await releaseSettledNativeRunProcess(db, runId)).toBe("released"); }
     finally { capture.flush(); }
-    const summary = events.find(event => event.event === "paperclip.db_response_capture.summary.v1")!;
+    const summary = events.find(event => event.event === "paperclip.test_db_response_capture.summary.v1")!;
     expect(summary.responseValueBytes).toBeLessThan(8192);
     const after = await readRun(runId);
     expect(after).toEqual({ ...saved, processPid: null, processGroupId: null, processStartedAt: null,

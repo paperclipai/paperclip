@@ -29,6 +29,19 @@ describe("FileTree", () => {
     return container.querySelector(`[data-file-tree-path="${path}"]`) as HTMLDivElement | null;
   }
 
+  it("preserves readable plugin error details and retry without exposing raw codes", () => {
+    const retry = vi.fn();
+    const renderError = (message: string) => act(() => root.render(
+      <FileTree nodes={[]} selectedFile={null} expandedDirs={new Set()} onSelectFile={() => {}} onToggleDir={() => {}} error={{ message, retry }} />,
+    ));
+    renderError("The wiki source was removed. Choose another source.");
+    expect(container.textContent).toContain("The wiki source was removed. Choose another source.");
+    act(() => Array.from(container.querySelectorAll("button")).find(button => button.textContent === "Retry")!.click());
+    expect(retry).toHaveBeenCalledOnce();
+    renderError("source_unavailable");
+    expect(container.textContent).not.toContain("source_unavailable");
+  });
+
   it("selects file rows and expands directory rows", () => {
     const onSelectFile = vi.fn();
     const onToggleDir = vi.fn();

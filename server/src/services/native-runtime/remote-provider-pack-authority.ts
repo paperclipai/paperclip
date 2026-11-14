@@ -31,6 +31,7 @@ export function resolveRemoteProviderPackAuthority<T extends ProviderPackIdentit
   stateDirectory: string;
   binding: ProviderPackBinding;
   reattach: boolean;
+  retainProviderPack?: boolean;
   current: () => T;
   runnerArtifact: () => RunnerArtifactIdentity;
 }): { manifest: T; runnerArtifact: RunnerArtifactIdentity; select: (manifest: T) => void; verified: () => void } {
@@ -41,7 +42,7 @@ export function resolveRemoteProviderPackAuthority<T extends ProviderPackIdentit
   const path = join(input.stateDirectory, filename);
   let manifest: T | undefined;
   let runnerArtifact: RunnerArtifactIdentity | undefined;
-  if (input.reattach) {
+  if (input.reattach || input.retainProviderPack) {
     let fd: number | undefined;
     try {
       fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW);
@@ -55,7 +56,7 @@ export function resolveRemoteProviderPackAuthority<T extends ProviderPackIdentit
       if (typeof saved.runnerArtifact?.version !== "string" || !saved.runnerArtifact.version
         || !/^sha256:[a-f0-9]{64}$/.test(saved.runnerArtifact.digest)) throw new Error("invalid runner artifact identity");
       manifest = saved.manifest as T;
-      runnerArtifact = saved.runnerArtifact;
+      if (input.reattach) runnerArtifact = saved.runnerArtifact;
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
         throw new Error("runner_remote_provider_artifact_incompatible: saved provider pack authority is invalid or does not match this execution", { cause: error });
@@ -78,7 +79,7 @@ export function resolveRemoteProviderPackAuthority<T extends ProviderPackIdentit
   return {
     get manifest() { return selected; },
     select: (manifest: T) => {
-      if (input.reattach) throw new Error("runner_remote_provider_artifact_incompatible: cannot replace an attached pack authority");
+      if (input.reattach || input.retainProviderPack) throw new Error("runner_remote_provider_artifact_incompatible: cannot replace an attached pack authority");
       assertManifest(manifest);
       const next = structuredClone(manifest);
       receipt = serialize(next);

@@ -70,7 +70,7 @@ describeEmbeddedPostgres("GitHub connection event delivery", () => {
       companyId,
       applicationKey: `github-${randomUUID()}`,
       name: "GitHub",
-      type: "mcp_server",
+      type: "mcp_http",
       status: "active",
     });
     await db.insert(toolConnections).values({
@@ -287,7 +287,7 @@ describeEmbeddedPostgres("GitHub connection event delivery", () => {
       companyId,
       applicationKey: `github-${randomUUID()}`,
       name: "GitHub",
-      type: "mcp_server",
+      type: "mcp_http",
       status: "active",
     });
     await db.insert(toolConnections).values({
@@ -394,7 +394,7 @@ describeEmbeddedPostgres("GitHub connection event delivery", () => {
             const builder = update(table as typeof connectionEventDeliveries);
             if (table === connectionEventDeliveries) {
               const set = builder.set.bind(builder);
-              builder.set = ((values: { status?: string }) => {
+              builder.set = ((values: Parameters<typeof set>[0]) => {
                 const statement = set(values);
                 if (values.status === "failed") {
                   const where = statement.where.bind(statement);

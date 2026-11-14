@@ -3,6 +3,8 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { inspectIdleSpool, inspectIdleQuotaRecovery, idleQuotaRecoveryPath, readIdleLocalWork, markIdleIngressTracked, markIdleStartupComplete, registerIdleSpoolDirectory, registerIdleLocalWorkProbe } from "../services/idle-local-work.js";
+import { idleAccountingSpoolPath } from "../services/idle-local-work.js";
+import { createIdleSleepDiagnostics } from "../services/idle-sleep-diagnostics.js";
 
 let root: string;
 beforeEach(async () => { root = await fs.mkdtemp(path.join(os.tmpdir(), "idle-spool-")); });
@@ -64,6 +66,33 @@ describe("idle cleanup inspection", () => {
     expect(await readIdleLocalWork({ backupCheckpoint: true })).toBe("present");
     await fs.rm(custom, { recursive: true });
     expect(await readIdleLocalWork()).toBe("none");
+  });
+
+  it("collects simultaneous local blockers and errors without reading entries", async () => {
+    vi.stubEnv("PAPERCLIP_HOME", root);
+    const orphan = path.join(root, "orphan-spool");
+    vi.stubEnv("SANDBOX_ORPHAN_CLEANUP_SPOOL_DIR", orphan);
+    markIdleIngressTracked(); markIdleStartupComplete({ scheduledBackups: true });
+    const accounting = idleAccountingSpoolPath();
+    await fs.mkdir(accounting, { recursive: true });
+    await fs.mkdir(orphan);
+    await fs.writeFile(path.join(accounting, "private-receipt.json"), "malformed");
+    await fs.writeFile(path.join(orphan, "partial.tmp"), "private resource");
+    const unregister = registerIdleLocalWorkProbe(() => { throw new Error("private recovery failure"); });
+    const diagnostic = createIdleSleepDiagnostics();
+    const read = vi.spyOn(fs, "readFile");
+    try {
+      expect(await readIdleLocalWork({ diagnostic: diagnostic.record })).toBe("unknown");
+      expect(diagnostic.report().checks).toEqual(expect.arrayContaining([
+        { reason: "local.automatic_backups", state: "present" },
+        { reason: "local.registered_probes", state: "unknown" },
+        { reason: "local.accounting_spool", state: "present" },
+        { reason: "local.orphan_spool", state: "present" },
+      ]));
+      expect(diagnostic.report().complete).toBe(false);
+      expect(JSON.stringify(diagnostic.report())).not.toMatch(/private|partial.tmp|orphan-spool/);
+      expect(read).not.toHaveBeenCalled();
+    } finally { unregister(); markIdleStartupComplete({ scheduledBackups: false }); }
   });
 
 });

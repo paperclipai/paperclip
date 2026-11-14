@@ -12,6 +12,14 @@ export interface LocalEnvironmentConfig {
 }
 
 export interface SshEnvironmentConfig {
+  useHostAuth?: boolean;
+  tailscaleConnectionId?: string;
+  tailscaleDeviceId?: string;
+  network?: "direct" | "tailscale";
+  tailscaleAuthKey?: null;
+  tailscaleAuthKeySecretRef?: EnvSecretRefBinding | null;
+  tailscaleSocket?: string;
+  tailscaleIdentity?: string;
   host: string;
   port: number;
   username: string;
@@ -87,6 +95,8 @@ export interface Environment {
   driver: EnvironmentDriver;
   status: EnvironmentStatus;
   config: Record<string, unknown>;
+  /** Driver identity from the read API, including when config is redacted. */
+  pluginDriver?: Pick<PluginEnvironmentConfig, "pluginKey" | "driverKey">;
   envVars: AgentEnvConfig;
   metadata: Record<string, unknown> | null;
   createdAt: Date;
@@ -107,6 +117,10 @@ export type EnvironmentDeleteBlockedReason =
  */
 export interface EnvironmentDeleteReusableLeaseHolder {
   leaseId: string;
+  /** `reuse_by_environment`: a warm sandbox for the next turn (its workspace
+   * provisions a fresh one). `retain_on_failure`: a stopped sandbox kept as the
+   * only copy of a failed run's workspace files (destroying it loses them). */
+  leasePolicy: string;
   executionWorkspaceId: string | null;
   executionWorkspaceName: string | null;
   issueId: string | null;
