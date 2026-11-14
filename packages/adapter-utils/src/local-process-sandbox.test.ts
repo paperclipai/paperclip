@@ -6,6 +6,7 @@ import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import {
   buildLocalProcessSandboxSpawnTarget,
+  SYSTEM_READ_PATHS,
   parseLocalProcessFilesystemScope,
   parseLocalProcessNetworkAllowlist,
   parseLocalProcessNetworkScope,
@@ -31,6 +32,10 @@ afterEach(async () => {
 });
 
 describe("local process sandbox", () => {
+  it("mounts Claude Code managed settings read-only inside the workspace confinement", () => {
+    expect(SYSTEM_READ_PATHS).toContain("/etc/claude-code");
+  });
+
   it.runIf(process.platform !== "linux")("rejects sandbox scopes on unsupported hosts", async () => {
     await expect(buildLocalProcessSandboxSpawnTarget({
       executable: process.execPath, args: ["-e", "process.exit(0)"], cwd: process.cwd(),
