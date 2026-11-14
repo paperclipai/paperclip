@@ -46,6 +46,7 @@ import { actorForSecret, type OAuthCredentialStore } from "./credential-store.js
 import {
   asRecord,
   canonicalResourceIndicator,
+  challengeOAuthHints,
   normalizeOauthScopes,
   oauthConfig,
   protectedResourceMetadataUrls,
@@ -187,11 +188,30 @@ export function createClientCredentialsService(db: Db, deps: Dependencies) {
     return null;
   }
 
+  /** The `resource_metadata` address from the server's answer to an unauthenticated request, if any. */
+  async function challengedMetadataUrl(serverUrl: string): Promise<string | null> {
+    try {
+      const response = await fetchRemoteHttpUrl(serverUrl, {
+        method: "POST",
+        headers: { "content-type": "application/json", accept: "application/json, text/event-stream" },
+        body: JSON.stringify({ jsonrpc: "2.0", id: "paperclip-sign-in-probe", method: "server/discover", params: {} }),
+      });
+      await response.body?.cancel().catch(() => undefined);
+      if (response.status !== 401) return null;
+      return challengeOAuthHints(response.headers.get("www-authenticate") ?? "").metadataUrl;
+    } catch {
+      return null;
+    }
+  }
+
   /** The sign-in services an MCP server's protected-resource metadata lists, or null when it publishes none. */
   async function advertisedSignInServices(serverUrl: string): Promise<string[] | null> {
     let endpoint: URL;
     try { endpoint = new URL(serverUrl); } catch { return null; }
-    for (const url of protectedResourceMetadataUrls(endpoint)) {
+    // The server's own challenge may name where its metadata lives; follow
+    // that (through the same URL checks) before the well-known locations.
+    const hinted = await challengedMetadataUrl(serverUrl);
+    for (const url of [...new Set([...(hinted ? [hinted] : []), ...protectedResourceMetadataUrls(endpoint)])]) {
       const metadata = await fetchJson(url);
       if (!metadata) continue;
       const servers = Array.isArray(metadata.authorization_servers)
@@ -382,7 +402,7 @@ export function createClientCredentialsService(db: Db, deps: Dependencies) {
     const service = await discoverSignInService(serverUrl, input.authorizationServer);
     const createdAt = now();
     let authMethod: ClientCredentialsAuthMethod;
-    let generated: ReturnType<typeof generateClientKeyPair> | null = null;
+    let generated: Awaited<ReturnType<typeof generateClientKeyPair>> | null = null;
     if (input.method === "paperclip_key") {
       if (service.authMethods.length > 0 && !service.authMethods.includes("private_key_jwt")) {
         throw unprocessable("This provider doesn't accept Paperclip keys. Choose Client secret instead.", {
@@ -390,7 +410,7 @@ export function createClientCredentialsService(db: Db, deps: Dependencies) {
         });
       }
       authMethod = "private_key_jwt";
-      generated = generateClientKeyPair(chooseAssertionAlgorithm(service.signingAlgorithms), createdAt);
+      generated = await generateClientKeyPair(chooseAssertionAlgorithm(service.signingAlgorithms), createdAt);
     } else {
       if (service.authMethods.length > 0 && !service.authMethods.some((method) => method === "client_secret_basic" || method === "client_secret_post")) {
         throw unprocessable("This provider doesn't accept client secrets. Choose Paperclip key instead.", {
@@ -615,7 +635,7 @@ export function createClientCredentialsService(db: Db, deps: Dependencies) {
       for (const old of retired) await secrets.remove(old.secretId).catch(() => undefined);
       return { connectionId, connection: toConnection(updated), machineSignIn: machineSignInStatus(updated), completed: true };
     }
-    const generated = generateClientKeyPair(settings.key?.algorithm ?? "RS256", now());
+    const generated = await generateClientKeyPair(settings.key?.algorithm ?? "RS256", now());
     const existing = connection.credentialSecretRefs.find((ref) => ref.configPath === CLIENT_PRIVATE_KEY_NEXT_PATH);
     const ref = await writeVaultCredential(connection, CLIENT_PRIVATE_KEY_NEXT_PATH, "Machine sign-in replacement key", generated.privateKeyPem, actor, existing);
     const updated = await saveConnection(connection, {

@@ -1,4 +1,4 @@
-import { createHash, createPublicKey, generateKeyPairSync, randomUUID, sign, type JsonWebKey } from "node:crypto";
+import { createHash, createPublicKey, generateKeyPair, randomUUID, sign, type JsonWebKey, type KeyObject } from "node:crypto";
 import type { toolConnections } from "@paperclipai/db";
 import { asRecord, normalizeOauthScopes, oauthConfig } from "./metadata.js";
 
@@ -121,14 +121,25 @@ export function publicKeyForPrivateKey(privateKeyPem: string, algorithm: ClientA
   };
 }
 
-/** A fresh signing key. The private half goes straight to the vault; only the public half is kept in config. */
-export function generateClientKeyPair(algorithm: ClientAssertionAlgorithm, now = new Date()): {
+function generatePrivateKey(algorithm: ClientAssertionAlgorithm): Promise<KeyObject> {
+  return new Promise((resolve, reject) => {
+    const done = (error: Error | null, _publicKey: KeyObject, privateKey: KeyObject) =>
+      error ? reject(error) : resolve(privateKey);
+    if (algorithm === "ES256") generateKeyPair("ec", { namedCurve: "P-256" }, done);
+    else generateKeyPair("rsa", { modulusLength: 2048 }, done);
+  });
+}
+
+/**
+ * A fresh signing key. The private half goes straight to the vault; only the
+ * public half is kept in config. Generated off the event loop: RSA key
+ * generation takes long enough to stall unrelated requests if done inline.
+ */
+export async function generateClientKeyPair(algorithm: ClientAssertionAlgorithm, now = new Date()): Promise<{
   privateKeyPem: string;
   publicKey: ClientPublicKey;
-} {
-  const { privateKey } = algorithm === "ES256"
-    ? generateKeyPairSync("ec", { namedCurve: "P-256" })
-    : generateKeyPairSync("rsa", { modulusLength: 2048 });
+}> {
+  const privateKey = await generatePrivateKey(algorithm);
   const privateKeyPem = privateKey.export({ format: "pem", type: "pkcs8" }).toString();
   return { privateKeyPem, publicKey: publicKeyForPrivateKey(privateKeyPem, algorithm, now) };
 }

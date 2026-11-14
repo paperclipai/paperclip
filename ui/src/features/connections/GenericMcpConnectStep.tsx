@@ -176,6 +176,8 @@ export function GenericMcpConnectStep({
   const moveSelection = (event: KeyboardEvent<HTMLDivElement>) => {
     // Arrow keys inside an option's own fields belong to that field.
     if ((event.target as HTMLElement).getAttribute("role") !== "radio") return;
+    // Only this group's own options: a nested choice (machine sign-in's) handles its own keys.
+    if ((event.target as HTMLElement).closest('[role="radiogroup"]') !== event.currentTarget) return;
     const step = event.key === "ArrowDown" || event.key === "ArrowRight"
       ? 1
       : event.key === "ArrowUp" || event.key === "ArrowLeft"

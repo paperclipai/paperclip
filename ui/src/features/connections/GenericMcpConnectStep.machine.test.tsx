@@ -48,6 +48,17 @@ describe("Machine sign-in in the custom server step", () => {
     expect(buttons()).toContain("Create key");
   });
 
+  it("keeps machine sign-in open when arrow keys move its own method choice", async () => {
+    await render({ companyId: "company-1", onConnected: () => undefined });
+    const option = [...container.querySelectorAll('[role="radio"]')].find((item) => item.textContent?.includes("Machine sign-in"));
+    await act(async () => { (option as HTMLElement).click(); });
+    const inner = [...container.querySelectorAll('[role="radio"]')].find((item) => item.textContent === "Paperclip key (recommended)") as HTMLElement;
+    await act(async () => { inner.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowRight", bubbles: true })); });
+    expect(container.querySelector('[data-testid="machine-sign-in-setup"]')).not.toBeNull();
+    const secret = [...container.querySelectorAll('[role="radio"]')].find((item) => item.textContent === "Client secret");
+    expect(secret?.getAttribute("aria-checked")).toBe("true");
+  });
+
   it("is not offered for personal connections", async () => {
     await render(null);
     expect(container.textContent).not.toContain("Machine sign-in");

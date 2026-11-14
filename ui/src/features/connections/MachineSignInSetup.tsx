@@ -188,7 +188,22 @@ export function MachineSignInSetup({
 
       {!setup ? (
         <div className="space-y-4">
-          <div className="flex flex-wrap gap-2" role="radiogroup" aria-label="How Paperclip proves who it is">
+          <div
+            className="flex flex-wrap gap-2"
+            role="radiogroup"
+            aria-label="How Paperclip proves who it is"
+            onKeyDown={(event) => {
+              const step = event.key === "ArrowRight" || event.key === "ArrowDown" ? 1
+                : event.key === "ArrowLeft" || event.key === "ArrowUp" ? -1 : 0;
+              if (step === 0) return;
+              event.preventDefault();
+              event.stopPropagation();
+              const index = METHOD_OPTIONS.findIndex((option) => option.method === method);
+              const next = (index + step + METHOD_OPTIONS.length) % METHOD_OPTIONS.length;
+              setMethod(METHOD_OPTIONS[next]!.method);
+              event.currentTarget.querySelectorAll<HTMLButtonElement>('[role="radio"]')[next]?.focus();
+            }}
+          >
             {METHOD_OPTIONS.map((option) => (
               <button
                 key={option.method}

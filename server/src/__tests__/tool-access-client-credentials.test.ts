@@ -85,6 +85,8 @@ function fakeProvider() {
     /** Clients whose tokens the MCP server refuses. */
     mcpDeniedClients: new Set<string>(),
     tokenClients: new Map<string, string>(),
+    /** Serve protected-resource metadata only at the address the challenge names. */
+    metadataOnlyAtHint: false,
   };
   const metadata = (issuer: string) => ({
     issuer,
@@ -101,8 +103,12 @@ function fakeProvider() {
       if (url.includes("/.well-known/")) return json(metadata(OTHER_ISSUER));
       return json({ access_token: "stolen", expires_in: 3600 });
     }
+    if (url === `${new URL(MCP_URL).origin}/meta/custom-resource` && state.metadataOnlyAtHint) {
+      return json({ resource: MCP_URL, authorization_servers: state.advertisedIssuers });
+    }
     if (url === `${new URL(MCP_URL).origin}/.well-known/oauth-protected-resource/mcp`
       || url === `${new URL(MCP_URL).origin}/.well-known/oauth-protected-resource`) {
+      if (state.metadataOnlyAtHint) return new Response("not found", { status: 404 });
       return json({ resource: MCP_URL, authorization_servers: state.advertisedIssuers });
     }
     if (url === `${ISSUER}/.well-known/oauth-authorization-server`) return json(metadata(ISSUER));
@@ -147,7 +153,7 @@ function fakeProvider() {
       if (state.rejectAllTokens || !state.acceptedTokens.has(bearer) || state.mcpDeniedClients.has(state.tokenClients.get(bearer) ?? "")) {
         return new Response("", {
           status: 401,
-          headers: { "www-authenticate": `Bearer resource_metadata="${new URL(MCP_URL).origin}/.well-known/oauth-protected-resource/mcp"` },
+          headers: { "www-authenticate": `Bearer resource_metadata="${new URL(MCP_URL).origin}${state.metadataOnlyAtHint ? "/meta/custom-resource" : "/.well-known/oauth-protected-resource/mcp"}"` },
         });
       }
       if (body.method === "server/discover") {
@@ -166,8 +172,16 @@ function fakeProvider() {
 }
 
 describe("client credentials protocol", () => {
-  it("signs an RS256 assertion with iss = sub = client ID, the token endpoint as audience, a short expiry and a unique jti", () => {
-    const { privateKeyPem, publicKey } = generateClientKeyPair("RS256");
+  it("creates keys without blocking other work on the server", async () => {
+    let otherWorkRan = false;
+    const generating = generateClientKeyPair("RS256");
+    setImmediate(() => { otherWorkRan = true; });
+    await generating;
+    expect(otherWorkRan).toBe(true);
+  });
+
+  it("signs an RS256 assertion with iss = sub = client ID, the token endpoint as audience, a short expiry and a unique jti", async () => {
+    const { privateKeyPem, publicKey } = await generateClientKeyPair("RS256");
     const now = new Date("2026-11-13T12:00:00Z");
     const first = signClientAssertion({ privateKeyPem, algorithm: "RS256", keyId: publicKey.keyId, clientId: CLIENT_ID, audience: TOKEN_URL, now });
     const second = signClientAssertion({ privateKeyPem, algorithm: "RS256", keyId: publicKey.keyId, clientId: CLIENT_ID, audience: TOKEN_URL, now });
@@ -185,8 +199,8 @@ describe("client credentials protocol", () => {
     expect(publicKey.publicJwk).not.toHaveProperty("d");
   });
 
-  it("signs ES256 assertions in JOSE (raw r||s) form", () => {
-    const { privateKeyPem, publicKey } = generateClientKeyPair("ES256");
+  it("signs ES256 assertions in JOSE (raw r||s) form", async () => {
+    const { privateKeyPem, publicKey } = await generateClientKeyPair("ES256");
     const token = signClientAssertion({ privateKeyPem, algorithm: "ES256", keyId: publicKey.keyId, clientId: CLIENT_ID, audience: TOKEN_URL });
     expect(decodeJwt(token).signature).toHaveLength(64);
     expect(verifyJwt(token, createPublicKey(publicKey.publicKeyPem))).toBe(true);
@@ -360,6 +374,14 @@ describeEmbeddedPostgres("machine sign-in connections", () => {
     expect(JSON.stringify(row)).not.toContain(CLIENT_SECRET);
   });
 
+  it("follows the server's challenge to metadata published outside the well-known addresses", async () => {
+    const company = await createCompany();
+    const provider = useProvider();
+    provider.state.metadataOnlyAtHint = true;
+    const created = await service().createMachineSignIn(company.id, { link: MCP_URL, method: "paperclip_key" }, actor);
+    expect(created.machineSignIn).toMatchObject({ issuer: ISSUER, tokenUrl: TOKEN_URL });
+  });
+
   it("accepts a token URL directly when the provider publishes no sign-in metadata", async () => {
     const company = await createCompany();
     useProvider();
@@ -481,7 +503,7 @@ describeEmbeddedPostgres("machine sign-in connections", () => {
     // Another rotation overwrites the staged private key in the vault.
     const [row] = await db.select().from(toolConnections).where(eq(toolConnections.id, created.connectionId));
     const staged = row!.credentialSecretRefs.find((ref) => ref.configPath === "oauth.client_private_key_next")!;
-    const other = generateClientKeyPair("RS256");
+    const other = await generateClientKeyPair("RS256");
     registerKey(provider, { keyId: other.publicKey.keyId, pem: other.publicKey.publicKeyPem });
     await secretService(db).rotate(staged.secretId, { value: other.privateKeyPem });
     await expect(svc.completeMachineSignInRotation(company.id, created.connectionId, actor))
