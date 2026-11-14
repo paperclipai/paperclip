@@ -87,6 +87,23 @@ const manifest: PaperclipPluginManifestV1 = {
             description:
               "Annotations applied to the per-tenant ServiceAccount (e.g. `eks.amazonaws.com/role-arn` for IRSA).",
           },
+          podAntiAffinity: {
+            type: "object",
+            description:
+              "Optional soft pod anti-affinity for the sandbox-cr backend. Instructs the scheduler to prefer spreading sandbox agent pods across nodes within the same tenant namespace.",
+            properties: {
+              enabled: {
+                type: "boolean",
+                description:
+                  "When true, enables soft pod anti-affinity (preferredDuringSchedulingIgnoredDuringExecution) for agent pods. Defaults to false.",
+              },
+              topologyKey: {
+                type: "string",
+                description:
+                  "Kubernetes topology key label to spread pods across (e.g. `kubernetes.io/hostname` or `topology.kubernetes.io/zone`). Defaults to `kubernetes.io/hostname` when enabled. Only applies to the sandbox-cr backend.",
+              },
+            },
+          },
           jobTtlSecondsAfterFinished: {
             type: "integer",
             minimum: 0,

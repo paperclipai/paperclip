@@ -60,6 +60,24 @@ describe("plugin", () => {
     expect(result.normalizedConfig?.backend).toBe("job");
   });
 
+  it("validateConfig accepts podAntiAffinity configuration", async () => {
+    const result = await plugin.definition.onEnvironmentValidateConfig!({
+      driverKey: "kubernetes",
+      config: {
+        inCluster: true,
+        podAntiAffinity: {
+          enabled: true,
+          topologyKey: "kubernetes.io/hostname",
+        },
+      },
+    });
+    expect(result.ok).toBe(true);
+    expect(result.normalizedConfig?.podAntiAffinity).toEqual({
+      enabled: true,
+      topologyKey: "kubernetes.io/hostname",
+    });
+  });
+
   it("validateConfig rejects unknown backend value", async () => {
     const result = await plugin.definition.onEnvironmentValidateConfig!({
       driverKey: "kubernetes",

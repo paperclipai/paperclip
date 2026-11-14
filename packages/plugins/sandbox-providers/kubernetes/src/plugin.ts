@@ -381,6 +381,7 @@ const plugin = definePlugin({
           resources: config.defaultResources ?? {},
           runtimeClassName: config.runtimeClassName,
           imagePullSecrets: config.imagePullSecrets,
+          podAntiAffinity: config.podAntiAffinity,
         })
       : buildJobManifest({
           namespace,
