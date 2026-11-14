@@ -11,6 +11,7 @@ import {
   removeHotRestartIntent,
   resolveHotRestartIntentPath,
   resolveLegacyHotRestartIntentPath,
+  shouldHonorHotRestartIntentForProcess,
   writeHotRestartIntent,
 } from "./hot-restart.js";
 
@@ -533,5 +534,38 @@ describe("hot-restart path compatibility", () => {
         }],
       },
     })).toEqual(["missing-run"]);
+  });
+
+  it("honours a hot-restart intent that targets the server's supervisor pid", () => {
+    const intent = {
+      version: 1 as const,
+      requestedAt: "2026-08-01T04:00:00.000Z",
+      previousServerPid: 1234,
+      previousServerVersion: "old-version",
+      drainRequired: false,
+      requestedByRunId: null,
+      preflightActiveRunIds: [],
+    };
+
+    expect(shouldHonorHotRestartIntentForProcess(intent, 4321, 1234)).toBe(true);
+    expect(shouldHonorHotRestartIntentForProcess(intent, 4321, 9999)).toBe(false);
+    expect(shouldHonorHotRestartIntentForProcess(intent, 9999, 1234)).toBe(true);
+    expect(shouldHonorHotRestartIntentForProcess(intent, 9999, 9998)).toBe(false);
+  });
+
+  it("keeps direct-pid matching and never honours a drain-required intent", () => {
+    const intent = {
+      version: 1 as const,
+      requestedAt: "2026-08-01T04:00:00.000Z",
+      previousServerPid: 4321,
+      previousServerVersion: "old-version",
+      drainRequired: false,
+      requestedByRunId: null,
+      preflightActiveRunIds: [],
+    };
+
+    expect(shouldHonorHotRestartIntentForProcess(intent, 4321, 1)).toBe(true);
+    expect(shouldHonorHotRestartIntentForProcess({ ...intent, drainRequired: true }, 4321, 4321)).toBe(false);
+    expect(shouldHonorHotRestartIntentForProcess(intent, 4321, 4321)).toBe(true);
   });
 });
